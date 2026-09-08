@@ -1312,3 +1312,72 @@ describe('plan: gantt calendar shapes', () => {
     assert.ok(svg.includes('<svg'));
   });
 });
+
+// ── dependency lag / lead ({ id, lag } entries + the "id+n" string form) ──
+describe('dependency lag', () => {
+  const CAL = { weekends: [0, 6], holidays: [] };
+
+  it('FS+lag pushes the successor by lag working days', () => {
+    const r = sched.schedule([
+      { id: 'a', duration: 2 },
+      { id: 'b', duration: 2, depends: [{ id: 'a', lag: 3 }] },
+    ], CAL, '2026-09-07');   // a Monday
+    const plain = sched.schedule([
+      { id: 'a', duration: 2 },
+      { id: 'b', duration: 2, depends: ['a'] },
+    ], CAL, '2026-09-07');
+    const lagB = r.scheduled.find(t => t.id === 'b');
+    const plainB = plain.scheduled.find(t => t.id === 'b');
+    // 3 working days later than the no-lag start
+    assert.equal(cal.workingDays(plainB.earlyStart, lagB.earlyStart, CAL), 3);
+  });
+
+  it('negative lag (lead) pulls the successor earlier', () => {
+    const r = sched.schedule([
+      { id: 'a', duration: 5 },
+      { id: 'b', duration: 2, depends: [{ id: 'a', lag: -2 }] },
+    ], CAL, '2026-09-07');
+    const plain = sched.schedule([
+      { id: 'a', duration: 5 },
+      { id: 'b', duration: 2, depends: ['a'] },
+    ], CAL, '2026-09-07');
+    const leadB = r.scheduled.find(t => t.id === 'b');
+    const plainB = plain.scheduled.find(t => t.id === 'b');
+    assert.ok(leadB.earlyStart < plainB.earlyStart);
+  });
+
+  it('lag participates in the critical path (backward pass)', () => {
+    const r = sched.schedule([
+      { id: 'a', duration: 2 },
+      { id: 'b', duration: 2, depends: [{ id: 'a', lag: 5 }] },
+      { id: 'c', duration: 3, depends: ['a'] },              // parallel, no lag
+    ], CAL, '2026-09-07');
+    const a = r.scheduled.find(t => t.id === 'a');
+    const b = r.scheduled.find(t => t.id === 'b');
+    const c = r.scheduled.find(t => t.id === 'c');
+    // the lagged chain is longer → a and b critical, c has float
+    assert.ok(a.isCritical && b.isCritical);
+    assert.ok(!c.isCritical && c.totalFloat > 0);
+  });
+
+  it('buildSchedulerTasks parses "id+n" and "id-n"', async () => {
+    const fmt = await import('../ext/plan/src/format.js');
+    const tasks = fmt.buildSchedulerTasks([
+      { id: 'a', m: '2' },
+      { id: 'b', m: '2', depends: 'a+3, x' },
+      { id: 'c', m: '2', depends: 'a-1' },
+    ]);
+    assert.deepEqual(tasks[1].depends, [{ id: 'a', lag: 3 }, 'x']);
+    assert.deepEqual(tasks[2].depends, [{ id: 'a', lag: -1 }]);
+  });
+
+  it('graph utilities see through lag entries', () => {
+    const tasks = [
+      { id: 'a' },
+      { id: 'b', depends: [{ id: 'a', lag: 2 }] },
+    ];
+    assert.deepEqual(graph.predecessors('b', tasks), ['a']);
+    assert.deepEqual(graph.topoSort(tasks), ['a', 'b']);
+    assert.equal(graph.detectCycles(tasks), null);
+  });
+});

@@ -1,5 +1,6 @@
 // Analysis functions — schedule, resource, math models, progress tracking
 
+import { _depId } from './graph.js';
 import { schedule } from './schedule.js';
 import { workingDays, _parseDate, _fmtDate } from './calendar.js';
 import { effectiveDuration } from './pert.js';
@@ -48,7 +49,7 @@ function delayImpact(taskId, scheduledTasks) {
   for (const t of scheduledTasks) {
     if (!fwd.has(t.id)) fwd.set(t.id, []);
     if (t.depends) {
-      for (const dep of t.depends) {
+      for (const dep0 of t.depends) { const dep = _depId(dep0);
         if (!fwd.has(dep)) fwd.set(dep, []);
         fwd.get(dep).push(t.id);
       }
@@ -102,7 +103,7 @@ function nearCritical(scheduleResult, maxFloat = 5) {
   }
   for (const t of near) {
     if (t.depends) {
-      for (const dep of t.depends) {
+      for (const dep0 of t.depends) { const dep = _depId(dep0);
         if (nearIds.has(dep)) {
           fwd.get(dep).push(t.id);
           rev.get(t.id).push(dep);

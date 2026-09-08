@@ -71,7 +71,7 @@ function levelResources(scheduledTasks, calendar, resources) {
       const curr = taskById.get(sorted[i].id);
       // Add dependency if not already present
       if (!curr.depends) curr.depends = [];
-      if (!curr.depends.includes(prev.id)) {
+      if (!curr.depends.some(d => (typeof d === 'string' ? d : d.id) === prev.id)) {
         curr.depends.push(prev.id);
       }
     }

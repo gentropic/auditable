@@ -1,4 +1,11 @@
 // Dependency graph utilities
+//
+// A dependency entry is either a plain id string (finish-to-start, no lag)
+// or { id, lag } — lag in WORKING days after the predecessor finishes
+// (negative = lead). Every walker goes through _depId/_depLag.
+
+const _depId = (d) => (typeof d === 'string' ? d : d.id);
+const _depLag = (d) => (typeof d === 'string' ? 0 : (d.lag || 0));
 
 // Build id→task map
 function _taskMap(tasks) {
@@ -11,19 +18,23 @@ function _taskMap(tasks) {
 function _buildAdj(tasks) {
   const fwd = new Map(); // id → [successor ids]
   const rev = new Map(); // id → [predecessor ids]
+  const lags = new Map(); // 'pred\u0000succ' → working-day lag
   for (const t of tasks) {
     if (!fwd.has(t.id)) fwd.set(t.id, []);
     if (!rev.has(t.id)) rev.set(t.id, []);
     if (t.depends) {
       for (const dep of t.depends) {
-        if (!fwd.has(dep)) fwd.set(dep, []);
-        if (!rev.has(dep)) rev.set(dep, []);
-        fwd.get(dep).push(t.id);
-        rev.get(t.id).push(dep);
+        const depId = _depId(dep);
+        if (!fwd.has(depId)) fwd.set(depId, []);
+        if (!rev.has(depId)) rev.set(depId, []);
+        fwd.get(depId).push(t.id);
+        rev.get(t.id).push(depId);
+        const lag = _depLag(dep);
+        if (lag) lags.set(depId + '\u0000' + t.id, lag);
       }
     }
   }
-  return { fwd, rev };
+  return { fwd, rev, lags };
 }
 
 // Topological sort — Kahn's algorithm. Throws on cycles.
@@ -68,7 +79,8 @@ function detectCycles(tasks) {
   for (const t of tasks) {
     if (!adj.has(t.id)) adj.set(t.id, []);
     if (t.depends) {
-      for (const dep of t.depends) {
+      for (const dep0 of t.depends) {
+        const dep = _depId(dep0);
         if (!adj.has(dep)) adj.set(dep, []);
         adj.get(dep).push(t.id);
       }
@@ -134,4 +146,4 @@ function successors(taskId, tasks) {
   return [...visited];
 }
 
-export { topoSort, detectCycles, predecessors, successors, _taskMap, _buildAdj };
+export { topoSort, detectCycles, predecessors, successors, _taskMap, _buildAdj, _depId, _depLag };

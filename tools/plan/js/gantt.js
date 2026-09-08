@@ -749,7 +749,8 @@ function buildDependencyArrows(rows, taskRowMap, timeStart) {
     const toX = daysBetween(timeStart, toStart) * GANTT.pxPerDay;
     const toY = to.y + GANTT.rowH / 2;
 
-    for (const depId of r.depends) {
+    for (const dep0 of r.depends) {
+      const depId = typeof dep0 === 'string' ? dep0 : dep0.id;   // { id, lag } entries
       const from = taskRowMap[depId];
       if (!from) continue;
       hasAny = true;

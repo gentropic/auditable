@@ -89,6 +89,18 @@ try {
   });
   chk(`save/load round trip (${rt.back} tasks back, progress kept "${rt.progressKept}")`, rt.back === 4 && String(rt.progressKept) === '100');
 
+  // ── dependency lag: 'id+n' in the Depends column shifts the successor ──
+  const lag = await page.evaluate(() => {
+    const P = window._plan;
+    const before = P.PP.scheduleResult.scheduled.find((t) => t.id === 'dev').earlyStart;
+    P.PP.tasks[1].depends = 'design+3';
+    P.evaluate();
+    const after = P.PP.scheduleResult.scheduled.find((t) => t.id === 'dev').earlyStart;
+    P.PP.tasks[1].depends = 'design';
+    P.evaluate();
+    return { moved: new Date(after) - new Date(before) };
+  });
+  chk(`dependency lag: 'design+3' pushes dev by ${lag.moved / 86400000} days`, lag.moved >= 3 * 86400000);
   // ── the templates window still floats (Ctrl+T) ──
   await page.keyboard.press('Control+t');
   const tpl = await page.evaluate(() => { const w = document.querySelector('#pp-tpl-window'); return !!w && !w.classList.contains('hidden'); });

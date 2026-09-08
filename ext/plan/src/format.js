@@ -235,8 +235,12 @@ function buildSchedulerTasks(planTasks) {
     }
 
     if (t.depends) {
+      // string form: "a, b+2, c-1" — id with optional +lag / -lead working days
       task.depends = typeof t.depends === 'string'
-        ? t.depends.split(',').map(s => s.trim()).filter(Boolean)
+        ? t.depends.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+            const m2 = /^(.*?)\s*([+-]\d+(?:\.\d+)?)$/.exec(s);
+            return m2 ? { id: m2[1].trim(), lag: parseFloat(m2[2]) } : s;
+          })
         : t.depends;
     }
 

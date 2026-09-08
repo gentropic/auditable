@@ -252,7 +252,8 @@ function gantt(scheduleResult, options = {}) {
     for (const row of rows) {
       if (row.type !== 'task' || !row.task.depends) continue;
       const t = row.task;
-      for (const dep of t.depends) {
+      for (let dep of t.depends) {
+        if (typeof dep !== 'string') dep = dep.id;
         const fromRow = rowIdx.get(dep);
         const toRow = rowIdx.get(t.id);
         if (fromRow == null || toRow == null) continue;

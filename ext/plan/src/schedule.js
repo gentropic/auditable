@@ -2,11 +2,12 @@
 
 import { addWorkingDays, workingDays, nextWorkingDay, _parseDate } from './calendar.js';
 import { effectiveDuration } from './pert.js';
-import { topoSort, _taskMap, _buildAdj } from './graph.js';
+import { topoSort, _taskMap, _buildAdj, _depLag } from './graph.js';
 
 function schedule(tasks, calendar, projectStart, resources) {
   const taskMap = _taskMap(tasks);
-  const { fwd, rev } = _buildAdj(tasks);
+  const { fwd, rev, lags } = _buildAdj(tasks);
+  const lagOf = (predId, succId) => lags.get(predId + '\u0000' + succId) || 0;
   const order = topoSort(tasks);
   const resMap = new Map();
   if (resources) for (const r of resources) resMap.set(r.id, r);
@@ -25,10 +26,12 @@ function schedule(tasks, calendar, projectStart, resources) {
     const preds = rev.get(id) || [];
     if (preds.length > 0) {
       es = preds.reduce((latest, predId) => {
-        const predEF = scheduled.get(predId).earlyFinish;
+        let predEF = scheduled.get(predId).earlyFinish;
+        const lag = lagOf(predId, id);
+        if (lag) predEF = addWorkingDays(predEF, lag, calendar, resource);
         return predEF > latest ? predEF : latest;
       }, new Date(0));
-      // Move to next working day after predecessor finishes
+      // Move to next working day after predecessor finishes (+ lag)
       es = nextWorkingDay(es, calendar, resource);
     } else if (task.start) {
       es = nextWorkingDay(_parseDate(task.start), calendar, resource);
@@ -68,7 +71,9 @@ function schedule(tasks, calendar, projectStart, resources) {
       s.lateFinish = new Date(projectEnd);
     } else {
       s.lateFinish = succs.reduce((earliest, succId) => {
-        const succLS = scheduled.get(succId).lateStart;
+        let succLS = scheduled.get(succId).lateStart;
+        const lag = lagOf(id, succId);
+        if (lag) succLS = addWorkingDays(succLS, -lag, calendar, s._resource);
         return succLS < earliest ? succLS : earliest;
       }, new Date(8640000000000000)); // max date
     }
@@ -83,7 +88,9 @@ function schedule(tasks, calendar, projectStart, resources) {
     // Free float = min(earlyStart of successors) - earlyFinish
     if (succs.length > 0) {
       const minSuccES = succs.reduce((earliest, succId) => {
-        const succES = scheduled.get(succId).earlyStart;
+        let succES = scheduled.get(succId).earlyStart;
+        const lag = lagOf(id, succId);
+        if (lag) succES = addWorkingDays(succES, -lag, calendar, s._resource);
         return succES < earliest ? succES : earliest;
       }, new Date(8640000000000000));
       s.freeFloat = workingDays(s.earlyFinish, minSuccES, calendar, s._resource);
