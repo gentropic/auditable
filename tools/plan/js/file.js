@@ -303,12 +303,7 @@ function exportScheduleCSV() {
 // not a screenshot of the interactive one.
 function exportGanttSVG() {
   if (!PP.scheduleResult) { setStatus('msg', 'nothing to export — no schedule'); return; }
-  const svg = gantt(PP.scheduleResult, {
-    width: 1200,
-    calendar: PP.calendar,
-    baseline: PP.baseline || undefined,
-    deadlines: PP.deadlines && PP.deadlines.length ? PP.deadlines : undefined,
-  });
+  const svg = gantt(PP.scheduleResult, { width: 1200, showFloat: true });
   downloadBlob(svg, _planBaseName() + '-gantt.svg', 'image/svg+xml');
   setStatus('msg', 'exported gantt SVG');
 }

@@ -33,7 +33,7 @@ const tasks = [
   { id: "integrate", name: "Integration", duration: 3,
     depends: ["backend", "frontend"], resource: "bob" },
   { id: "test", name: "Testing", optimistic: 4, mostLikely: 6, pessimistic: 12,
-    depends: ["integrate"], resource: "carol" },
+    depends: [{ id: "integrate", lag: 2 }], resource: "carol" },   // FS + 2 working days of lag
   { id: "deploy", name: "Deploy", duration: 1, depends: ["test"], resource: "bob" },
 ];
 

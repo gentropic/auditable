@@ -47,6 +47,7 @@ function initMenuBar() {
       { label: 'Burndown...', action: () => showSidebar('burndown') },
     ]},
     { label: 'Help', items: [
+      { label: 'Guide', action: showGuide },
       { label: 'Keyboard Shortcuts', action: showShortcuts },
       { type: 'sep' },
       { label: 'About Plan', action: showAbout },
@@ -182,6 +183,39 @@ function buildRecentMenu(dropdown) {
 function closeMenus() {
   $$('.pp-menu-item.open').forEach(m => m.classList.remove('open'));
   PP.menuOpen = null;
+}
+
+function showGuide() {
+  showModal('Guide',
+    'TASKS\n'
+    + '  Each row is a task. Give it an ID and either M alone (fixed duration,\n'
+    + '  working days) or O / M / P (a PERT three-point estimate \u2014 Monte Carlo\n'
+    + '  samples these). Neither \u2192 a milestone (\u25c6 on the gantt).\n\n'
+    + 'DEPENDENCIES\n'
+    + '  Comma-separated predecessor IDs: "design, review". Add lag in working\n'
+    + '  days with +n, lead with \u2212n: "design+3" starts 3 days after design\n'
+    + '  finishes; "proto-2" overlaps its last 2 days.\n\n'
+    + 'COMPUTED COLUMNS\n'
+    + '  Start / Finish / Float / \u25c6 come from the CPM pass \u2014 copper marks the\n'
+    + '  critical path (zero float). % is yours to edit; it feeds EVM, health\n'
+    + '  and burndown (View menu).\n\n'
+    + 'CALENDAR\n'
+    + '  View \u2192 Calendar: weekends, holidays (Brazilian presets down to the\n'
+    + '  municipality), and blocked ranges (shutdowns). Durations always count\n'
+    + '  WORKING days.\n\n'
+    + 'UNCERTAINTY\n'
+    + '  Ctrl+M runs Monte Carlo over the O/M/P estimates: percentile bands land\n'
+    + '  on the gantt bars; Analysis \u2192 Results / Sensitivity for the numbers.\n'
+    + '  Promise the P90, not the M.\n\n'
+    + 'TEMPLATES (multi-project)\n'
+    + '  Ctrl+T: define a task template once, stamp it per deposit / area /\n'
+    + '  campaign with an ID prefix. Edits to the template propagate to linked\n'
+    + '  instances.\n\n'
+    + 'FILES\n'
+    + '  .plan is plain JSON (versionable, diffable). Import CSV pastes straight\n'
+    + '  from Excel (header row: id, name, group, o, m, p, depends, resource, %).\n'
+    + '  Export: schedule CSV, gantt SVG.'
+  );
 }
 
 function showShortcuts() {
