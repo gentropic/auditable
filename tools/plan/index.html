@@ -27,7 +27,7 @@
   --border-hi: #333;
   --mono: 'Courier New', Courier, monospace;
   --computed-bg: #0d0d11;
-  --critical-color: #c44;
+  --critical-color: #B87333;
 }
 
 :root.pp-light {
@@ -45,7 +45,7 @@
   --border: #ccc;
   --border-hi: #aaa;
   --computed-bg: #f0f0f8;
-  --critical-color: #c33;
+  --critical-color: #96591f;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -56,6 +56,10 @@ html, body {
   color: var(--fg);
   font: 13px/1.4 var(--mono);
   overflow: hidden;
+}
+body {
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── Menu Bar ── */
@@ -142,12 +146,37 @@ html, body {
 /* ── Main Layout ── */
 
 .pp-main {
-  height: calc(100% - 28px - 24px);
+  flex: 1 1 0;
+  min-height: 0;
   overflow: hidden;
   position: relative;
   display: flex;
   flex-direction: column;
 }
+
+/* ── the docked task pane (grid over gantt, resizable split) ── */
+.pp-task-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+}
+.pp-task-pane.hidden { display: none; }
+.pp-pane-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.pp-pane-divider {
+  flex: 0 0 auto;
+  height: 5px;
+  cursor: ns-resize;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.pp-pane-divider:hover { background: var(--accent); opacity: 0.5; }
 
 /* ── Sidebar ── */
 
@@ -716,8 +745,8 @@ html, body {
   background: rgba(200, 155, 60, 0.12);
 }
 
-.pp-grid tr.pp-critical td {
-  color: var(--critical-color);
+.pp-grid tr.pp-critical td:nth-child(3) {
+  color: var(--critical-color);                 /* the task NAME carries the cue; the row stays readable */
 }
 
 .pp-grid td.pp-computed {
@@ -1528,10 +1557,10 @@ select.pp-inst-input {
 
 
 <script>
-// @gcu/plan — Project management primitives for Auditable notebooks
-// Auto-generated from ext/plan/src/ — do not edit directly
+// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
+// @gcu/plan — Project scheduling and analysis: CPM, PERT, Monte Carlo, EVM, S-curves, resource leveling, sensitivity. Working calendars with holidays (pt-BR built-in). SVG Gantt and analysis rendering.
 
-// -- calendar.js --
+// ── src/calendar.js ──
 
 // Calendar engine — all scheduling flows through these functions
 
@@ -1672,7 +1701,7 @@ function getBlockedDays(start, end, calendar, resource) {
   return result;
 }
 
-// -- pert.js --
+// ── src/pert.js ──
 
 // PERT three-point estimation
 
@@ -1701,7 +1730,7 @@ function effectiveDuration(task) {
   return task.duration || 0;
 }
 
-// -- graph.js --
+// ── src/graph.js ──
 
 // Dependency graph utilities
 
@@ -1839,11 +1868,9 @@ function successors(taskId, tasks) {
   return [...visited];
 }
 
-// -- schedule.js --
+// ── src/schedule.js ──
 
 // CPM scheduler — forward/backward pass, float, critical path
-
-
 
 
 function schedule(tasks, calendar, projectStart, resources) {
@@ -1950,10 +1977,9 @@ function schedule(tasks, calendar, projectStart, resources) {
   return { scheduled: result, criticalPath, projectEnd, projectDuration };
 }
 
-// -- resource.js --
+// ── src/resource.js ──
 
 // Resource conflict detection and simple leveling
-
 
 
 // Detect resource conflicts (overlapping tasks for same resource)
@@ -2039,10 +2065,9 @@ function levelResources(scheduledTasks, calendar, resources) {
   return schedule(tasks, calendar, projectStart, resources);
 }
 
-// -- scurve.js --
+// ── src/scurve.js ──
 
 // S-curve generator — cumulative progress over time
-
 
 
 function scurve(scheduledTasks, options = {}) {
@@ -2203,10 +2228,9 @@ function _bucketLabel(date, bucket) {
   return _fmtDate(date);
 }
 
-// -- evm.js --
+// ── src/evm.js ──
 
 // Earned Value Management
-
 
 
 function evm(scheduledTasks, statusDate, calendar) {
@@ -2265,12 +2289,9 @@ function _calendarDayFraction(start, current, end) {
   return Math.max(0, elapsed / total);
 }
 
-// -- analysis.js --
+// ── src/analysis.js ──
 
 // Analysis functions — schedule, resource, math models, progress tracking
-
-
-
 
 
 // ── Group 1: Schedule Analysis ──
@@ -2939,7 +2960,7 @@ function compress(input, budget, options = {}) {
   };
 }
 
-// -- workflow.js --
+// ── src/workflow.js ──
 
 // Workflow engine — process templates, instantiation, stage-gate tracking
 
@@ -3150,10 +3171,9 @@ function throughput(workflow, instances, resources, calendar) {
   };
 }
 
-// -- montecarlo.js --
+// ── src/montecarlo.js ──
 
 // Monte Carlo schedule simulation with seedable PRNG
-
 
 
 // xoshiro128** — fast 32-bit seedable PRNG
@@ -3432,10 +3452,9 @@ function _stdDevDays(dates) {
   return Math.sqrt(variance) / (1000 * 60 * 60 * 24); // convert ms to days
 }
 
-// -- render.js --
+// ── src/render.js ──
 
 // SVG renderers — all produce SVG strings
-
 
 
 // ── SVG helpers ──
@@ -3594,10 +3613,13 @@ function gantt(scheduleResult, options = {}) {
         }
       }
     }
-    // Individual holidays
+    // Individual holidays — the calendar contract accepts BOTH plain date
+    // strings ('2026-04-03', what schedule/isWorkday take) and { date, label }
+    // objects (the plan tool's calendar panel); gantt read only .date and
+    // threw on the string form
     if (calendar.holidays) {
       for (const h of calendar.holidays) {
-        const hd = _parseDate(h.date);
+        const hd = _parseDate(typeof h === 'string' ? h : h.date);
         if (hd >= minDate && hd <= maxDate) {
           const hx = dateToX(hd);
           svg += _line(hx, headerHeight, hx, height, colors.blocked, 'stroke-width="1" opacity="0.25" stroke-dasharray="2,3"');
@@ -4341,10 +4363,9 @@ function deadlineRiskPlot(mcResult, deadlines, options = {}) {
   return _svg(width, height, svg);
 }
 
-// -- xlsx.js --
+// ── src/xlsx.js ──
 
 // XLSX export adapter — uses @sheet if available
-
 
 
 function planToXLSX(scheduleResult, scurveData, options = {}) {
@@ -4391,7 +4412,7 @@ function planToXLSX(scheduleResult, scurveData, options = {}) {
   return sheet.writeXLSX(wb);
 }
 
-// -- holidays-br.js --
+// ── src/holidays-br.js ──
 
 // Brazilian holidays — federal, state, and municipal
 // Returns arrays of { date: 'YYYY-MM-DD', label } compatible with plan calendar format
@@ -4602,7 +4623,7 @@ function brazilMunicipalities() {
   return Object.keys(MUNICIPAL_HOLIDAYS).sort();
 }
 
-// -- format.js --
+// ── src/format.js ──
 
 // .plan file format — parse, serialize, template instancing, calendar preset resolution
 
@@ -4855,6 +4876,11 @@ function buildSchedulerTasks(planTasks) {
   return tasks;
 }
 
+// ── src/main.js ──
+
+// @gcu/plan — entry point
+
+
 
 // -- state.js --
 
@@ -4932,147 +4958,69 @@ const STARTER_TASKS = [
 
 // -- grid.js --
 
-// DOM table grid — editable task table in floating window
+// DOM table grid — the editable task table, DOCKED above the gantt (a
+// resizable split, not a floating window: the computed half of the grid —
+// %, Start, Finish, Float, ◆ — was invisible in the old 780px float).
+// The templates window stays floating (it's a side editor, not the surface).
 
-function createTaskWindow() {
-  const existing = $('#pp-task-window');
+function createTaskWindow() {                 // name kept — call sites predate the dock
+  const existing = $('#pp-task-pane');
   if (existing) return existing;
 
-  const win = document.createElement('div');
-  win.id = 'pp-task-window';
-  win.className = 'pp-window';
+  const pane = document.createElement('div');
+  pane.id = 'pp-task-pane';
+  pane.className = 'pp-task-pane';
+  const saved = parseInt(localStorage.getItem('pp-grid-height') || '', 10);
+  pane.style.height = (saved >= 80 ? saved : 220) + 'px';
 
-  // Restore saved position or use defaults
-  const saved = localStorage.getItem('pp-win-pos');
-  let pos = { left: 40, top: 60, width: 780, height: 400 };
-  if (saved) {
-    try { pos = JSON.parse(saved); } catch (_) {}
-  }
-  win.style.left = pos.left + 'px';
-  win.style.top = pos.top + 'px';
-  win.style.width = pos.width + 'px';
-  win.style.height = pos.height + 'px';
-
-  // Title bar
-  const tb = document.createElement('div');
-  tb.className = 'pp-win-tb';
-
-  const title = document.createElement('span');
-  title.className = 'pp-win-title';
-  title.textContent = 'TASKS';
-  tb.appendChild(title);
-
-  const btns = document.createElement('div');
-  btns.className = 'pp-win-btns';
-
-  const minBtn = document.createElement('button');
-  minBtn.className = 'pp-win-btn';
-  minBtn.textContent = '\u2013';
-  minBtn.title = 'Minimize';
-  minBtn.addEventListener('click', () => win.classList.toggle('minimized'));
-  btns.appendChild(minBtn);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'pp-win-btn';
-  closeBtn.textContent = '\u00d7';
-  closeBtn.title = 'Close (Ctrl+E)';
-  closeBtn.addEventListener('click', () => toggleTaskWindow());
-  btns.appendChild(closeBtn);
-
-  tb.appendChild(btns);
-  win.appendChild(tb);
-
-  // Body
   const body = document.createElement('div');
-  body.className = 'pp-win-body';
+  body.className = 'pp-pane-body';
   body.id = 'pp-grid-wrap';
-  win.appendChild(body);
+  pane.appendChild(body);
 
-  // Resize handle
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'pp-win-resize';
-  win.appendChild(resizeHandle);
-
-  // Drag behavior
-  let dragging = false, dragX = 0, dragY = 0;
-  tb.addEventListener('mousedown', e => {
-    if (e.target.closest('.pp-win-btn')) return;
+  // the split divider — drag to resize, double-click to fit the rows
+  const divider = document.createElement('div');
+  divider.className = 'pp-pane-divider';
+  divider.title = 'drag to resize — Ctrl+E hides the task table';
+  let dragging = false, startY = 0, startH = 0;
+  divider.addEventListener('mousedown', e => {
     e.preventDefault();
-    dragging = true;
-    dragX = e.clientX - win.offsetLeft;
-    dragY = e.clientY - win.offsetTop;
-    document.body.style.cursor = 'grabbing';
+    dragging = true; startY = e.clientY; startH = pane.offsetHeight;
+    document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
   });
-
   document.addEventListener('mousemove', e => {
-    if (dragging) {
-      win.style.left = Math.max(0, e.clientX - dragX) + 'px';
-      win.style.top = Math.max(0, e.clientY - dragY) + 'px';
-    }
+    if (!dragging) return;
+    pane.style.height = Math.max(80, Math.min(window.innerHeight - 160, startH + (e.clientY - startY))) + 'px';
   });
-
   document.addEventListener('mouseup', () => {
-    if (dragging) {
-      dragging = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      saveWinPos(win);
-    }
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem('pp-grid-height', String(pane.offsetHeight));
   });
-
-  // Resize behavior
-  let resizing = false, resStartX = 0, resStartY = 0, resStartW = 0, resStartH = 0;
-  resizeHandle.addEventListener('mousedown', e => {
-    e.preventDefault();
-    e.stopPropagation();
-    resizing = true;
-    resStartX = e.clientX;
-    resStartY = e.clientY;
-    resStartW = win.offsetWidth;
-    resStartH = win.offsetHeight;
-    document.body.style.cursor = 'nwse-resize';
-    document.body.style.userSelect = 'none';
+  divider.addEventListener('dblclick', () => {
+    const want = Math.min(window.innerHeight - 160, body.scrollHeight + 8);
+    pane.style.height = Math.max(80, want) + 'px';
+    localStorage.setItem('pp-grid-height', String(pane.offsetHeight));
   });
+  pane.appendChild(divider);
 
-  document.addEventListener('mousemove', e => {
-    if (resizing) {
-      win.style.width = Math.max(300, resStartW + e.clientX - resStartX) + 'px';
-      win.style.height = Math.max(120, resStartH + e.clientY - resStartY) + 'px';
-    }
-  });
-
-  document.addEventListener('mouseup', () => {
-    if (resizing) {
-      resizing = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      saveWinPos(win);
-    }
-  });
-
-  $('#pp-main').appendChild(win);
-  return win;
-}
-
-function saveWinPos(win) {
-  localStorage.setItem('pp-win-pos', JSON.stringify({
-    left: win.offsetLeft,
-    top: win.offsetTop,
-    width: win.offsetWidth,
-    height: win.offsetHeight,
-  }));
+  const main = $('#pp-main');
+  main.parentNode.insertBefore(pane, main);
+  return pane;
 }
 
 function toggleTaskWindow() {
-  const win = $('#pp-task-window');
-  if (!win) return;
-  win.classList.toggle('hidden');
+  const pane = $('#pp-task-pane');
+  if (!pane) return;
+  pane.classList.toggle('hidden');
 }
 
 function showTaskWindow() {
-  const win = $('#pp-task-window');
-  if (win) win.classList.remove('hidden');
+  const pane = $('#pp-task-pane');
+  if (pane) pane.classList.remove('hidden');
 }
 
 function buildGrid() {
@@ -8677,6 +8625,9 @@ function handleSplashChoice(action, arg) {
     }
   }
 }
+
+// Automation handle (committed smoke: test/plan-smoke.mjs) — the micro/lamina pattern
+window._plan = { PP, COLUMNS, evaluate, scheduleEval, newFile, loadProjectData, serializeProject, openExample: (name) => handleSplashChoice('example', name), showEVMPanel, showHealthPanel, runMonteCarlo, toggleTaskWindow, toggleTemplateWindow };
 </script>
 </body>
 </html>

@@ -28,7 +28,8 @@
     "test:wuffle": "node test/wuffle-smoke.mjs",
     "test:wuffle:bench": "node test/wuffle-bench-smoke.mjs",
     "test:idb-browser": "node test/vfs-idb-browser.mjs",
-    "test:all": "npm test && npm run test:wasm"
+    "test:all": "npm test && npm run test:wasm",
+    "test:plan": "node build.js --target=plan && node test/plan-smoke.mjs"
   },
   "devDependencies": {
     "@codemirror/lang-python": "^6.2.1",

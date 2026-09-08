@@ -1,144 +1,66 @@
-// DOM table grid — editable task table in floating window
+// DOM table grid — the editable task table, DOCKED above the gantt (a
+// resizable split, not a floating window: the computed half of the grid —
+// %, Start, Finish, Float, ◆ — was invisible in the old 780px float).
+// The templates window stays floating (it's a side editor, not the surface).
 
-function createTaskWindow() {
-  const existing = $('#pp-task-window');
+function createTaskWindow() {                 // name kept — call sites predate the dock
+  const existing = $('#pp-task-pane');
   if (existing) return existing;
 
-  const win = document.createElement('div');
-  win.id = 'pp-task-window';
-  win.className = 'pp-window';
+  const pane = document.createElement('div');
+  pane.id = 'pp-task-pane';
+  pane.className = 'pp-task-pane';
+  const saved = parseInt(localStorage.getItem('pp-grid-height') || '', 10);
+  pane.style.height = (saved >= 80 ? saved : 220) + 'px';
 
-  // Restore saved position or use defaults
-  const saved = localStorage.getItem('pp-win-pos');
-  let pos = { left: 40, top: 60, width: 780, height: 400 };
-  if (saved) {
-    try { pos = JSON.parse(saved); } catch (_) {}
-  }
-  win.style.left = pos.left + 'px';
-  win.style.top = pos.top + 'px';
-  win.style.width = pos.width + 'px';
-  win.style.height = pos.height + 'px';
-
-  // Title bar
-  const tb = document.createElement('div');
-  tb.className = 'pp-win-tb';
-
-  const title = document.createElement('span');
-  title.className = 'pp-win-title';
-  title.textContent = 'TASKS';
-  tb.appendChild(title);
-
-  const btns = document.createElement('div');
-  btns.className = 'pp-win-btns';
-
-  const minBtn = document.createElement('button');
-  minBtn.className = 'pp-win-btn';
-  minBtn.textContent = '\u2013';
-  minBtn.title = 'Minimize';
-  minBtn.addEventListener('click', () => win.classList.toggle('minimized'));
-  btns.appendChild(minBtn);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'pp-win-btn';
-  closeBtn.textContent = '\u00d7';
-  closeBtn.title = 'Close (Ctrl+E)';
-  closeBtn.addEventListener('click', () => toggleTaskWindow());
-  btns.appendChild(closeBtn);
-
-  tb.appendChild(btns);
-  win.appendChild(tb);
-
-  // Body
   const body = document.createElement('div');
-  body.className = 'pp-win-body';
+  body.className = 'pp-pane-body';
   body.id = 'pp-grid-wrap';
-  win.appendChild(body);
+  pane.appendChild(body);
 
-  // Resize handle
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'pp-win-resize';
-  win.appendChild(resizeHandle);
-
-  // Drag behavior
-  let dragging = false, dragX = 0, dragY = 0;
-  tb.addEventListener('mousedown', e => {
-    if (e.target.closest('.pp-win-btn')) return;
+  // the split divider — drag to resize, double-click to fit the rows
+  const divider = document.createElement('div');
+  divider.className = 'pp-pane-divider';
+  divider.title = 'drag to resize — Ctrl+E hides the task table';
+  let dragging = false, startY = 0, startH = 0;
+  divider.addEventListener('mousedown', e => {
     e.preventDefault();
-    dragging = true;
-    dragX = e.clientX - win.offsetLeft;
-    dragY = e.clientY - win.offsetTop;
-    document.body.style.cursor = 'grabbing';
+    dragging = true; startY = e.clientY; startH = pane.offsetHeight;
+    document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
   });
-
   document.addEventListener('mousemove', e => {
-    if (dragging) {
-      win.style.left = Math.max(0, e.clientX - dragX) + 'px';
-      win.style.top = Math.max(0, e.clientY - dragY) + 'px';
-    }
+    if (!dragging) return;
+    pane.style.height = Math.max(80, Math.min(window.innerHeight - 160, startH + (e.clientY - startY))) + 'px';
   });
-
   document.addEventListener('mouseup', () => {
-    if (dragging) {
-      dragging = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      saveWinPos(win);
-    }
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem('pp-grid-height', String(pane.offsetHeight));
   });
-
-  // Resize behavior
-  let resizing = false, resStartX = 0, resStartY = 0, resStartW = 0, resStartH = 0;
-  resizeHandle.addEventListener('mousedown', e => {
-    e.preventDefault();
-    e.stopPropagation();
-    resizing = true;
-    resStartX = e.clientX;
-    resStartY = e.clientY;
-    resStartW = win.offsetWidth;
-    resStartH = win.offsetHeight;
-    document.body.style.cursor = 'nwse-resize';
-    document.body.style.userSelect = 'none';
+  divider.addEventListener('dblclick', () => {
+    const want = Math.min(window.innerHeight - 160, body.scrollHeight + 8);
+    pane.style.height = Math.max(80, want) + 'px';
+    localStorage.setItem('pp-grid-height', String(pane.offsetHeight));
   });
+  pane.appendChild(divider);
 
-  document.addEventListener('mousemove', e => {
-    if (resizing) {
-      win.style.width = Math.max(300, resStartW + e.clientX - resStartX) + 'px';
-      win.style.height = Math.max(120, resStartH + e.clientY - resStartY) + 'px';
-    }
-  });
-
-  document.addEventListener('mouseup', () => {
-    if (resizing) {
-      resizing = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      saveWinPos(win);
-    }
-  });
-
-  $('#pp-main').appendChild(win);
-  return win;
-}
-
-function saveWinPos(win) {
-  localStorage.setItem('pp-win-pos', JSON.stringify({
-    left: win.offsetLeft,
-    top: win.offsetTop,
-    width: win.offsetWidth,
-    height: win.offsetHeight,
-  }));
+  const main = $('#pp-main');
+  main.parentNode.insertBefore(pane, main);
+  return pane;
 }
 
 function toggleTaskWindow() {
-  const win = $('#pp-task-window');
-  if (!win) return;
-  win.classList.toggle('hidden');
+  const pane = $('#pp-task-pane');
+  if (!pane) return;
+  pane.classList.toggle('hidden');
 }
 
 function showTaskWindow() {
-  const win = $('#pp-task-window');
-  if (win) win.classList.remove('hidden');
+  const pane = $('#pp-task-pane');
+  if (pane) pane.classList.remove('hidden');
 }
 
 function buildGrid() {

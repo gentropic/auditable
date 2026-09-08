@@ -16,7 +16,7 @@
   --border-hi: #333;
   --mono: 'Courier New', Courier, monospace;
   --computed-bg: #0d0d11;
-  --critical-color: #c44;
+  --critical-color: #B87333;
 }
 
 :root.pp-light {
@@ -34,7 +34,7 @@
   --border: #ccc;
   --border-hi: #aaa;
   --computed-bg: #f0f0f8;
-  --critical-color: #c33;
+  --critical-color: #96591f;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -45,6 +45,10 @@ html, body {
   color: var(--fg);
   font: 13px/1.4 var(--mono);
   overflow: hidden;
+}
+body {
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── Menu Bar ── */
@@ -131,12 +135,37 @@ html, body {
 /* ── Main Layout ── */
 
 .pp-main {
-  height: calc(100% - 28px - 24px);
+  flex: 1 1 0;
+  min-height: 0;
   overflow: hidden;
   position: relative;
   display: flex;
   flex-direction: column;
 }
+
+/* ── the docked task pane (grid over gantt, resizable split) ── */
+.pp-task-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg1);
+}
+.pp-task-pane.hidden { display: none; }
+.pp-pane-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.pp-pane-divider {
+  flex: 0 0 auto;
+  height: 5px;
+  cursor: ns-resize;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.pp-pane-divider:hover { background: var(--accent); opacity: 0.5; }
 
 /* ── Sidebar ── */
 
@@ -705,8 +734,8 @@ html, body {
   background: rgba(200, 155, 60, 0.12);
 }
 
-.pp-grid tr.pp-critical td {
-  color: var(--critical-color);
+.pp-grid tr.pp-critical td:nth-child(3) {
+  color: var(--critical-color);                 /* the task NAME carries the cue; the row stays readable */
 }
 
 .pp-grid td.pp-computed {

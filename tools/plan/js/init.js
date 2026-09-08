@@ -220,3 +220,6 @@ function handleSplashChoice(action, arg) {
     }
   }
 }
+
+// Automation handle (committed smoke: test/plan-smoke.mjs) — the micro/lamina pattern
+window._plan = { PP, COLUMNS, evaluate, scheduleEval, newFile, loadProjectData, serializeProject, openExample: (name) => handleSplashChoice('example', name), showEVMPanel, showHealthPanel, runMonteCarlo, toggleTaskWindow, toggleTemplateWindow };
