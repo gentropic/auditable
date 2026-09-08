@@ -11,6 +11,10 @@ function initMenuBar() {
       { label: 'Save', action: saveFile, shortcut: 'Ctrl+S' },
       { label: 'Save As...', action: saveFileAs },
       { label: 'Rename...', action: renameProject },
+      { type: 'sep' },
+      { label: 'Import CSV...', action: importCSVDialog },
+      { label: 'Export Schedule CSV', action: exportScheduleCSV },
+      { label: 'Export Gantt SVG', action: exportGanttSVG },
     ], onOpen: buildRecentMenu },
     { label: 'Edit', items: [
       { label: 'Undo', action: undo, shortcut: 'Ctrl+Z' },

@@ -7521,6 +7521,10 @@ function initMenuBar() {
       { label: 'Save', action: saveFile, shortcut: 'Ctrl+S' },
       { label: 'Save As...', action: saveFileAs },
       { label: 'Rename...', action: renameProject },
+      { type: 'sep' },
+      { label: 'Import CSV...', action: importCSVDialog },
+      { label: 'Export Schedule CSV', action: exportScheduleCSV },
+      { label: 'Export Gantt SVG', action: exportGanttSVG },
     ], onOpen: buildRecentMenu },
     { label: 'Edit', items: [
       { label: 'Undo', action: undo, shortcut: 'Ctrl+Z' },
@@ -8012,6 +8016,146 @@ function mcDelete(projectId) {
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
   })).catch(() => {});
+}
+
+
+// ── Export ──────────────────────────────────────────────────────────────────
+
+function _planBaseName() {
+  return (PP.fileName || 'plan').replace(/\.\w+$/, '');
+}
+
+const _csvEsc = (v) => { v = String(v ?? ''); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+const _isoDay = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : (d || ''));
+
+// The full schedule as CSV — inputs AND computed columns, one row per task.
+// Opens straight in Excel/Sheets; re-imports through Import CSV.
+function exportScheduleCSV() {
+  if (!PP.scheduleResult) { setStatus('msg', 'nothing to export — no schedule'); return; }
+  const byId = new Map(PP.scheduleResult.scheduled.map(t => [t.id, t]));
+  const rows = [['ID', 'Name', 'Group', 'O', 'M', 'P', 'Depends', 'Resource', 'Progress', 'Start', 'Finish', 'Float', 'Critical']];
+  for (const t of PP.tasks) {
+    if (!t.id) continue;
+    const sch = byId.get(t.id);
+    rows.push([t.id, t.name, t.group, t.o, t.m, t.p, t.depends, t.resource, t.progress,
+      sch ? _isoDay(sch.earlyStart) : '', sch ? _isoDay(sch.earlyFinish) : '',
+      sch ? sch.totalFloat : '', sch && sch.isCritical ? 'yes' : '']);
+  }
+  const csv = rows.map(r => r.map(_csvEsc).join(',')).join('\n');
+  downloadBlob(csv, _planBaseName() + '-schedule.csv', 'text/csv');
+  setStatus('msg', 'exported ' + (rows.length - 1) + ' tasks as CSV');
+}
+
+// The gantt as standalone SVG — the LIBRARY renderer (print/report-ready),
+// not a screenshot of the interactive one.
+function exportGanttSVG() {
+  if (!PP.scheduleResult) { setStatus('msg', 'nothing to export — no schedule'); return; }
+  const svg = gantt(PP.scheduleResult, {
+    width: 1200,
+    calendar: PP.calendar,
+    baseline: PP.baseline || undefined,
+    deadlines: PP.deadlines && PP.deadlines.length ? PP.deadlines : undefined,
+  });
+  downloadBlob(svg, _planBaseName() + '-gantt.svg', 'image/svg+xml');
+  setStatus('msg', 'exported gantt SVG');
+}
+
+// ── Import CSV / paste from Excel ───────────────────────────────────────────
+// Header-mapped, delimiter-sniffed (tab wins if present — Excel paste is TSV).
+// Recognized headers (case-insensitive): id, name, group, o/optimistic,
+// m/most likely/duration, p/pessimistic, depends/predecessors, resource,
+// progress/%. Unknown columns are ignored.
+
+function _parseDelimited(text) {
+  const delim = text.includes('\t') ? '\t' : ',';
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') inQ = true;
+    else if (c === delim) { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.length > 1 || row[0] !== '') rows.push(row);
+  return rows;
+}
+
+const _IMPORT_HEADERS = {
+  id: 'id', name: 'name', task: 'name', group: 'group', phase: 'group',
+  o: 'o', optimistic: 'o', m: 'm', 'most likely': 'm', duration: 'm', dur: 'm',
+  p: 'p', pessimistic: 'p',
+  depends: 'depends', predecessors: 'depends', deps: 'depends', pred: 'depends',
+  resource: 'resource', who: 'resource',
+  progress: 'progress', '%': 'progress', 'progress %': 'progress',
+};
+
+function importTasksFromText(text, { append } = {}) {
+  const rows = _parseDelimited(String(text).trim());
+  if (rows.length < 2) throw new Error('need a header row + at least one task row');
+  const map = rows[0].map(h => _IMPORT_HEADERS[String(h).trim().toLowerCase()] || null);
+  if (!map.includes('id') && !map.includes('name')) throw new Error('no id or name column recognized in the header');
+  const tasks = [];
+  for (const r of rows.slice(1)) {
+    const t = createTask();
+    for (let i = 0; i < map.length; i++) {
+      if (!map[i] || r[i] == null) continue;
+      t[map[i]] = String(r[i]).trim();
+    }
+    if (!t.id && t.name) t.id = t.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (t.id || t.name) tasks.push(t);
+  }
+  if (!tasks.length) throw new Error('no tasks in the pasted data');
+  pushUndo();
+  PP.tasks = append ? [...PP.tasks.filter(x => x.id || x.name), ...tasks] : tasks;
+  PP.dirty = true;
+  renderRows();
+  scheduleEval();
+  return tasks.length;
+}
+
+function importCSVDialog() {
+  const existing = $('#pp-import-dlg');
+  if (existing) existing.remove();
+  const dlg = document.createElement('div');
+  dlg.id = 'pp-import-dlg';
+  dlg.className = 'pp-window';
+  dlg.style.cssText = 'left: 120px; top: 90px; width: 560px; height: 360px; display: flex; flex-direction: column;';
+  dlg.innerHTML =
+    '<div class="pp-win-tb"><span class="pp-win-title">IMPORT TASKS — CSV / paste from Excel</span>'
+    + '<div class="pp-win-btns"><button class="pp-win-btn" id="pp-import-close">\u00d7</button></div></div>'
+    + '<div class="pp-win-body" style="flex:1;display:flex;flex-direction:column;gap:6px;padding:8px">'
+    + '<textarea id="pp-import-text" spellcheck="false" style="flex:1;resize:none;font:12px var(--mono);background:var(--bg0);color:var(--fg);border:1px solid var(--border);padding:6px" placeholder="paste rows here (first row = headers: id, name, group, o, m, p, depends, resource, %)\u2026 or pick a file below"></textarea>'
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<button id="pp-import-file">file\u2026</button>'
+    + '<label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="pp-import-append"> append to current tasks</label>'
+    + '<span style="flex:1"></span>'
+    + '<button id="pp-import-go">import</button>'
+    + '</div></div>';
+  document.body.appendChild(dlg);
+  $('#pp-import-close').onclick = () => dlg.remove();
+  $('#pp-import-file').onclick = async () => {
+    const f = await pickFile('.csv,.tsv,.txt');
+    if (f) $('#pp-import-text').value = await f.text();
+  };
+  $('#pp-import-go').onclick = () => {
+    try {
+      const n = importTasksFromText($('#pp-import-text').value, { append: $('#pp-import-append').checked });
+      dlg.remove();
+      setStatus('msg', 'imported ' + n + ' tasks');
+    } catch (e) {
+      setStatus('msg', 'import failed: ' + e.message);
+    }
+  };
+  $('#pp-import-text').focus();
 }
 
 // -- splash.js --
@@ -8652,7 +8796,7 @@ function handleSplashChoice(action, arg) {
 }
 
 // Automation handle (committed smoke: test/plan-smoke.mjs) — the micro/lamina pattern
-window._plan = { PP, COLUMNS, evaluate, scheduleEval, newFile, loadProjectData, serializeProject, openExample: (name) => handleSplashChoice('example', name), showEVMPanel, showHealthPanel, runMonteCarlo, toggleTaskWindow, toggleTemplateWindow };
+window._plan = { PP, COLUMNS, evaluate, scheduleEval, newFile, loadProjectData, serializeProject, openExample: (name) => handleSplashChoice('example', name), showEVMPanel, showHealthPanel, runMonteCarlo, toggleTaskWindow, toggleTemplateWindow, exportScheduleCSV, exportGanttSVG, importTasksFromText, importCSVDialog };
 </script>
 </body>
 </html>

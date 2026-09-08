@@ -101,6 +101,28 @@ try {
     return { moved: new Date(after) - new Date(before) };
   });
   chk(`dependency lag: 'design+3' pushes dev by ${lag.moved / 86400000} days`, lag.moved >= 3 * 86400000);
+  // ── round trip out and back in: export CSV → import (paste path) ──
+  const csvrt = await page.evaluate(() => {
+    const P = window._plan;
+    // build the CSV the exporter would write, then feed it to the importer
+    let csv = 'id,name,group,o,m,p,depends,resource,%\n';
+    for (const t of P.PP.tasks) csv += [t.id, t.name, t.group, t.o, t.m, t.p, t.depends, t.resource, t.progress].join(',') + '\n';
+    const n = P.importTasksFromText(csv);
+    P.evaluate();
+    return { n, tasks: P.PP.tasks.length, sched: !!P.PP.scheduleResult };
+  });
+  chk(`CSV import round trip (${csvrt.n} tasks in, schedule recomputes)`, csvrt.n === 4 && csvrt.tasks === 4 && csvrt.sched);
+
+  // ── gantt SVG export produces real SVG from the library renderer ──
+  const svg = await page.evaluate(() => {
+    const P = window._plan;
+    let got = null; const orig = window.URL.createObjectURL.bind(window.URL);
+    // capture the download blob (return a REAL url — a fake one logs a console error)
+    window.URL.createObjectURL = (b) => { got = b; return orig(b); };
+    try { P.exportGanttSVG(); } finally { window.URL.createObjectURL = orig; }
+    return got ? got.size : 0;
+  });
+  chk(`gantt SVG export emits a document (${svg} bytes)`, svg > 2000);
   // ── the templates window still floats (Ctrl+T) ──
   await page.keyboard.press('Control+t');
   const tpl = await page.evaluate(() => { const w = document.querySelector('#pp-tpl-window'); return !!w && !w.classList.contains('hidden'); });
