@@ -421,8 +421,10 @@ chk(`the scrub slider is pinned — it cannot move as the readout's number chang
   r.scrubSpread === 0, JSON.stringify(r.scrubLabels));
 chk(`a second view honours the widget's stored camera (ortho ${r.orthoBefore} -> ${r.orthoAfter})`,
   r.orthoBefore === false && r.orthoAfter === true);
-chk(`pick readout shows the record (${JSON.stringify((r.pickBoxText || '').slice(0, 42))})`,
-  r.pickBoxShown && /row/.test(r.pickBoxText));
+chk(`pick readout shows the record incl. WORLD coords (${JSON.stringify((r.pickBoxText || '').slice(0, 42))})`,
+  // the coords line comes from the wire-v3 _pos reconstruction — requiring it
+  // here is what catches a dropped or layer-local position (slipped once)
+  r.pickBoxShown && /row/.test(r.pickBoxText) && /x y z/.test(r.pickBoxText));
 chk('dispose is clean and empties the host', !r.disposeErr && r.emptied, r.disposeErr || '');
 chk(`a malformed payload degrades quietly (hud "${r.badHud}")`, !r.badErr && /no data/.test(r.badHud || ''), r.badErr || '');
 

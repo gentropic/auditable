@@ -31,10 +31,10 @@ build time and the bytes that must reach the browser):
 
 | | condenser | pyvista |
 |---|---|---|
-| **full** regular lattice, 1.3M cells | 56 ms · 40 MiB | **1 ms · 41 MiB** (`ImageData`) |
-| **sparse** model (a deposit, 150k of those cells) | **7 ms · 4.6 MiB** | 74 ms · 17.7 MiB |
-| **sub-blocked**, 90k blocks, 2 sizes | **47 ms · 2.8 MiB** | 73 ms · 30.2 MiB (glyph) |
-| point cloud, 5M | 187 ms · 162 MiB | 134 ms · 153 MiB |
+| **full** regular lattice, 1.3M cells | 56 ms · 14 MiB | **1 ms · 41 MiB** (`ImageData`) |
+| **sparse** model (a deposit, 150k of those cells) | **7 ms · 1.6 MiB** | 74 ms · 17.7 MiB |
+| **sub-blocked**, 90k blocks, 2 sizes | **47 ms · 1.1 MiB** | 73 ms · 30.2 MiB (glyph) |
+| point cloud, 5M | 187 ms · 90 MiB | 134 ms · 153 MiB |
 
 Read that honestly:
 
@@ -43,7 +43,7 @@ Read that honestly:
   box and you are happy in a VTK pipeline, use pyvista.
 - **A real model is not a box.** The moment you keep only the cells that exist,
   `threshold` materializes explicit hexahedra — 547k points for 150k cells —
-  and it is 10× slower to build and ~4× more to ship.
+  and it is 10× slower to build and ~11× more to ship.
 - **Sub-blocked models cannot be `ImageData` at all**, so the only route is
   glyphing cubes: 540k cells and 720k points for 90k blocks, ~11× the bytes.
   That is the case that scales worst, and it is common.
@@ -327,11 +327,11 @@ notebook should be `1`, not `0`.
   subdivision). When they don't, the error says so and points at `cd.points(...)`
   rather than drawing a subtly wrong grid.
 - The payload crosses the Jupyter comm channel as one blob, so a layer is
-  bounded by your deployment's message limit — roughly 2M blocks ≈ 62 MB, and a
-  5M-point cloud is ~162 MB, which is past what many deployments allow.
-  Coordinates go over as f64 today even though the engine quantizes them per
-  chunk anyway, so there is a straightforward ~3× saving available here that
-  has not been taken yet.
+  bounded by your deployment's message limit. Wire v3 ships blocks as u16
+  lattice indices + f32 values (11 B/block — exact: coordinates are
+  reconstructed in f64 from the inferred axes) and points as f32 about the
+  layer's own center (18 B/point with a value) — roughly 5.5M blocks or 3.4M
+  points per 62 MB. Past that, the honest fix is streaming, not packing.
 
 ## Testing
 

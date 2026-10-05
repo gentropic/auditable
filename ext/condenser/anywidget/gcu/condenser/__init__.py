@@ -34,7 +34,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "export_html"]
 
 _STATIC = pathlib.Path(__file__).parent / "static" / "widget.js"
@@ -343,7 +343,7 @@ class Viewer(anywidget.AnyWidget):
                 cols[key] = arr
                 head["cols"][cname] = key
             heads.append(head)
-        self._payload = _pack({"frame": frame, "layers": heads}, cols)
+        self._payload = _pack({"wire": 3, "frame": frame, "layers": heads}, cols)
 
     def _push_styles(self):
         if self._syncing:
@@ -513,7 +513,10 @@ def _value_and_cat(src, value, category, n, cols, extra, kind):
         lo = float(finite.min()) if finite.size else 0.0
         hi = float(finite.max()) if finite.size else 1.0
         extra["value_range"] = [lo, hi]
-        cols["value"] = vf
+        # wire v3: values ride f32 — 7 significant digits covers any grade the
+        # readout or a threshold will ever show, at half the bytes. The f64
+        # range stays in the header for exact ramp/legend endpoints.
+        cols["value"] = vf.astype(np.float32)
         if kind == "points":
             # the points pipeline colors from its u16 intensity channel: map the
             # value onto it so `hi` lands on 65535 and the ramp spans the data
@@ -598,6 +601,19 @@ def points(src=None, x="x", y="y", z="z", value=None, category=None, rgb=None, *
 
     extra["bbox"] = [float(np.nanmin(xf)), float(np.nanmin(yf)), float(np.nanmin(zf)),
                      float(np.nanmax(xf)), float(np.nanmax(yf)), float(np.nanmax(zf))]
+
+    # ── wire v3: point positions ride f32 about the layer's own bbox center
+    # (12 B/point vs 24). At a 10 km extent f32 keeps ~0.5 mm — far inside any
+    # survey's noise. The f64 origin rides the header; JS adds it back in f64
+    # before the engine sees a coordinate, so the float32 wall never applies.
+    b = extra["bbox"]
+    if all(np.isfinite(b)):
+        ox, oy, oz = (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2
+        cols["x"] = (xf - ox).astype(np.float32)
+        cols["y"] = (yf - oy).astype(np.float32)
+        cols["z"] = (zf - oz).astype(np.float32)
+        extra["pos_origin"] = [ox, oy, oz]
+
     kw.setdefault("color", "value" if has_val else ("category" if "cat" in cols else "z"))
     return Layer("points", cols, extra, labels, **kw)
 
@@ -648,6 +664,20 @@ def blocks(src=None, x="x", y="y", z="z", value=None, category=None, size=None, 
         extra["sub_blocked"] = True
 
     extra["axes"] = axes
+
+    # ── wire v3: block positions ride as u16 LATTICE INDICES (6 B/block vs 24).
+    # The axes above are the decoder — coord = origin + index·pitch, recomputed
+    # f64-side in JS — so this is quantization WITHOUT loss: the lattice checks
+    # in _axis_from_centroids/_axis_subblocked already proved every centroid
+    # sits on it (residual ≤ 1e-3·pitch) and every count fits u16. Any
+    # non-finite coordinate falls back to the f64 xyz wire for the whole layer
+    # (rare, and parity with how such rows rendered before).
+    if bool(np.all(np.isfinite(xf) & np.isfinite(yf) & np.isfinite(zf))):
+        for cname, arr, ax in (("i", xf, axes[0]), ("j", yf, axes[1]), ("k", zf, axes[2])):
+            cols[cname] = np.rint((arr - ax[0]) / ax[1]).astype(np.uint16)
+        del cols["x"], cols["y"], cols["z"]
+        extra["pos"] = "ijk"
+
     half = [a[1] / 2 for a in axes]
     extra["bbox"] = [float(np.nanmin(xf)) - half[0], float(np.nanmin(yf)) - half[1], float(np.nanmin(zf)) - half[2],
                      float(np.nanmax(xf)) + half[0], float(np.nanmax(yf)) + half[1], float(np.nanmax(zf)) + half[2]]

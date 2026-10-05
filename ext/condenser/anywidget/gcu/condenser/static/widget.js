@@ -5771,7 +5771,18 @@ function render({ model, el }) {
           dimPalette: L.dim_palette || null,               // sub-blocked: per-code half-dims
           onChunk: (c) => renderer.addChunk(c, 'base', i),
         });
-        b.push({ count: L.count, x: cols.x, y: cols.y, z: cols.z, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
+        let bx = cols.x, by = cols.y, bz = cols.z;
+        if (L.pos === 'ijk') {
+          // wire v3: u16 lattice indices → exact f64 coords (origin + index·pitch,
+          // computed here in f64 — quantization without loss). Stashed as _pos so
+          // the pick readout / measure / select-through read reconstructed coords.
+          const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
+          const n = L.count, I = cols.i, J = cols.j, K = cols.k;
+          bx = new Float64Array(n); by = new Float64Array(n); bz = new Float64Array(n);
+          for (let q = 0; q < n; q++) { bx[q] = x0 + I[q] * xp; by[q] = y0 + J[q] * yp; bz[q] = z0 + K[q] * zp; }
+          L._pos = { x: bx, y: by, z: bz };
+        }
+        b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
         doc = b.flush();
         if (L.cat_n) renderer.setCategories(L.cat_n);
       } else if (L.kind === 'drillholes') {
@@ -5790,8 +5801,19 @@ function render({ model, el }) {
         if (L.cat_n) renderer.setCategories(L.cat_n);
       } else {
         const b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        let px = cols.x, py = cols.y, pz = cols.z;
+        if (L.pos_origin) {
+          // wire v3: f32 positions about the layer's bbox center — add the f64
+          // origin back BEFORE the engine sees a coordinate (the float32 wall
+          // never applies). Stashed as _pos for readout / measure / select-through.
+          const [ox, oy, oz] = L.pos_origin;
+          const n = L.count;
+          px = new Float64Array(n); py = new Float64Array(n); pz = new Float64Array(n);
+          for (let q = 0; q < n; q++) { px[q] = ox + cols.x[q]; py[q] = oy + cols.y[q]; pz[q] = oz + cols.z[q]; }
+          L._pos = { x: px, y: py, z: pz };
+        }
         b.push({
-          count: L.count, x: cols.x, y: cols.y, z: cols.z,
+          count: L.count, x: px, y: py, z: pz,
           intensity: cols.value_u16 || new Uint16Array(L.count),
           classification: cols.cat || new Uint8Array(L.count),
           rgb: cols.rgb || null, recStart: 0,
@@ -6006,8 +6028,9 @@ function render({ model, el }) {
       const code = c.i_bhid ? c.i_bhid[r] : null;
       rows.push(['hole', code != null && names[code] != null ? names[code] : `#${code}`]);
       if (c.i_from) rows.push(['from–to', `${fmtN(c.i_from[r])} – ${fmtN(c.i_to[r])}`]);
-    } else if (c.x) {
-      rows.push(['x y z', `${fmtN(c.x[r])} ${fmtN(c.y[r])} ${fmtN(c.z[r])}`]);
+    } else {
+      const pc = L._pos || c;                              // wire v3 reconstructs into _pos
+      if (pc.x) rows.push(['x y z', `${fmtN(pc.x[r])} ${fmtN(pc.y[r])} ${fmtN(pc.z[r])}`]);
     }
     if (c.value) rows.push(['value', fmtN(c.value[r])]);
     if (c.cat && L.cat_labels) rows.push(['category', L.cat_labels[c.cat[r]] ?? String(c.cat[r])]);
