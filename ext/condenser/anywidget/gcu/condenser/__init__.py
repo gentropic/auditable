@@ -34,7 +34,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "mesh", "surface", "open", "export_html"]
 
 _STATIC = pathlib.Path(__file__).parent / "static" / "widget.js"
