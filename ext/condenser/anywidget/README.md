@@ -163,6 +163,26 @@ read twice: once for the lattice and ranges, once for the data, which is why a
 bare generator is refused). Each extra view of the same Viewer requests its own
 epoch-tagged stream, so views never interleave.
 
+### `via='files'` — the kernel never reads a byte
+
+```python
+cd.open("model.dm", via="files")                           # yes, Datamine, in a notebook
+cd.open("blocks.csv", via="files")
+cd.open("cloud.las", via="files")
+```
+
+On **jupyter-server** (Lab, Notebook — not Colab/VS Code), the `/files/`
+endpoint serves **byte ranges** on the session cookie. `via='files'` exploits
+that: the kernel only *names* the file (the payload is a few hundred bytes of
+candidate paths), and the **browser** fetches it directly, reading it through
+the engine's own providers — the same CSV / Datamine `.dm` / LAS / PLY readers
+micro ships, column roles auto-sniffed the way micro sniffs a dropped file.
+Zero Python reading code, zero kernel memory, zero comm traffic for the data.
+A `.dm` opens in a notebook without anything in Python knowing the format.
+The layer's `count` / ranges / categories sync back to the kernel after
+discovery; when `/files` isn't reachable the view says so and the kernel paths
+(`via='kernel'`, resident constructors) remain.
+
 ## The toolbar
 
 | | |

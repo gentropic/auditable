@@ -15,7 +15,8 @@ import {
   createRenderer, createEdl, createOrbitCamera, attachOrbitInput,
   createChunkBuilder, createBlockChunkBuilder, createStickChunkBuilder,
   makeBlockGrid, buildMeshChunk, buildHeightfieldMesh, rampPixels, categoryPalettePixels, mat4Inverse,
-} from '../../core.js';
+  openBlockModel, openDmModel, openLas, openPly, documentFrame,
+} from '../../index.js';
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { createToolbar } from './toolbar.js';
 
@@ -60,7 +61,88 @@ function decodePayload(raw) {
     for (const [name, key] of Object.entries(L.cols || {})) if (all[key]) cols[name] = all[key];
     return { ...L, cols };
   });
-  return { frame: head.frame, layers };
+  return { frame: head.frame, frame_auto: !!head.frame_auto, layers };
+}
+
+// ── via='files': a Blob-shaped window onto jupyter-server's /files/ endpoint,
+// which serves byte ranges on the session cookie — so the engine's own file
+// providers (CSV/.dm/LAS/PLY, the same code micro ships) read straight from
+// the notebook's folder with ZERO kernel involvement. Only the Blob surface
+// the io layer actually touches is implemented: size/slice/arrayBuffer/text/
+// stream. A server that ignores Range (plain static hosting) still works —
+// the 200 fallback skips to the window.
+class RemoteBlob {
+  constructor(url, start, end) { this.url = url; this._start = start; this._end = end; }
+  get size() { return this._end - this._start; }
+  slice(a = 0, b = this.size) {
+    const n = this.size;
+    const s = Math.min(n, Math.max(0, a < 0 ? n + a : a));
+    const e = Math.min(n, Math.max(s, b < 0 ? n + b : b));
+    return new RemoteBlob(this.url, this._start + s, this._start + e);
+  }
+  async arrayBuffer() {
+    if (this.size <= 0) return new ArrayBuffer(0);
+    const res = await fetch(this.url, { headers: { Range: `bytes=${this._start}-${this._end - 1}` } });
+    if (!res.ok) throw new Error(`files: HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (res.status === 206) return buf;
+    return buf.slice(this._start, this._end);              // Range ignored → cut the window out
+  }
+  async text() { return new TextDecoder().decode(await this.arrayBuffer()); }
+  stream() {
+    const { url, _start, _end } = this;
+    let reader = null, skip = 0, left = _end - _start;
+    return new ReadableStream({
+      async start() {
+        const res = await fetch(url, { headers: { Range: `bytes=${_start}-${_end - 1}` } });
+        if (!res.ok || !res.body) throw new Error(`files: HTTP ${res.status}`);
+        if (res.status !== 206) skip = _start;             // Range ignored → skip up to the window
+        reader = res.body.getReader();
+      },
+      async pull(ctrl) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || left <= 0) { ctrl.close(); return; }
+          let v = value;
+          if (skip > 0) {
+            if (v.length <= skip) { skip -= v.length; continue; }
+            v = v.subarray(skip); skip = 0;
+          }
+          if (v.length > left) v = v.subarray(0, left);
+          left -= v.length;
+          ctrl.enqueue(v);
+          return;
+        }
+      },
+      cancel() { if (reader) reader.cancel().catch(() => {}); },
+    });
+  }
+}
+
+// probe the /files/ candidates (and a hub-style base prefix derived from the
+// page URL) until one answers a byte range; null when none does
+async function resolveFilesBlob(file) {
+  const prefixes = ['/files/'];
+  const m = (typeof document !== 'undefined' ? document.location.pathname : '').match(/^(.+?)\/(lab|notebooks|voila|tree)\b/);
+  if (m && m[1]) prefixes.push(`${m[1]}/files/`);
+  for (const cand of file.candidates || []) {
+    for (const pre of prefixes) {
+      const url = pre + cand.split('/').map(encodeURIComponent).join('/');
+      try {
+        const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+        if (!res.ok) continue;
+        let size = file.size || 0;
+        const cr = res.headers.get('Content-Range');
+        if (cr) { const mm = cr.match(/\/(\d+)\s*$/); if (mm) size = +mm[1]; }
+        else if (res.status === 200) {
+          const cl = +res.headers.get('Content-Length') || 0;
+          if (cl > 1) size = cl;                           // the server sent the whole file
+        }
+        if (size > 0) return new RemoteBlob(url, 0, size);
+      } catch { /* next candidate */ }
+    }
+  }
+  return null;
 }
 
 // which engine color mode a `color` choice means, per element kind. The engine
@@ -186,6 +268,8 @@ export function render({ model, el }) {
   let payload = null, disposed = false, needFit = false, converged = false;
   let docBbox = null;
   let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
+  let fileQueue = Promise.resolve();                       // via='files' layers build sequentially (frame adoption)
+  let fileMsg = null;                                      // a files-mode failure, pinned on the hud
   const kinds = [];
 
   try {
@@ -349,7 +433,7 @@ export function render({ model, el }) {
         ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals'
           : kinds[0] === 'mesh' || kinds[0] === 'surface' ? 'triangles' : 'points')
         : `elements · ${n} layers`;
-      hud.textContent = converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`;
+      hud.textContent = fileMsg || (converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`);
     }
     drawOverlay(w, h, dpr);
     if (!converged) schedule();
@@ -362,6 +446,7 @@ export function render({ model, el }) {
     renderer.clearChunks();
     payload = null; docBbox = null; kinds.length = 0;
     streams = null; streamEpoch = Math.random().toString(36).slice(2);
+    fileQueue = Promise.resolve(); fileMsg = null;
     const p = decodePayload(model.get('_payload'));
     if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
     payload = p;
@@ -378,13 +463,111 @@ export function render({ model, el }) {
       }
     });
 
-    docBbox = Float64Array.from(bb);
-    renderer.setDocBbox(docBbox);
+    if (Number.isFinite(bb[0])) {                          // files-only views have no bbox YET
+      docBbox = Float64Array.from(bb);
+      renderer.setDocBbox(docBbox);
+      needFit = true;
+    }
     applyStyles();
     if (tb) { tb.showPick(null); syncChrome(); }
-    needFit = true;
     invalidate();
     if (streams) model.send({ type: 'ready', epoch: streamEpoch });
+  };
+
+  // merge a layer's local bbox as it becomes known (files-mode discovery)
+  const mergeBbox = (lb) => {
+    if (!docBbox) docBbox = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+    for (let a = 0; a < 3; a++) {
+      if (lb[a] < docBbox[a]) docBbox[a] = lb[a];
+      if (lb[a + 3] > docBbox[a + 3]) docBbox[a + 3] = lb[a + 3];
+    }
+    if (Number.isFinite(docBbox[0])) {
+      renderer.setDocBbox(docBbox);
+      needFit = true;
+    }
+  };
+
+  // ── via='files': discover + stream a file BROWSER-SIDE through the engine's
+  // providers — the kernel never reads a byte. Sequential across layers: the
+  // FIRST discovery may set the shared frame (payload.frame_auto). ──
+  const buildFileLayer = async (L, i) => {
+    const epoch = streamEpoch;
+    try {
+      const blob = await resolveFilesBlob(L.file);
+      if (epoch !== streamEpoch || disposed) return;
+      if (!blob) {
+        fileMsg = `${L.file.name}: /files unreachable — jupyter-server serves it; elsewhere stream via the kernel`;
+        schedule();
+        return;
+      }
+      const ext2 = (L.file.name.match(/\.([a-z0-9]+)$/i) || [0, ''])[1].toLowerCase();
+      const opened = ext2 === 'dm' ? await openDmModel(blob)
+        : ext2 === 'las' ? await openLas(blob)
+          : ext2 === 'ply' ? await openPly(blob)
+            : await openBlockModel(blob);
+      if (epoch !== streamEpoch || disposed) return;
+      const { header, streamChunks } = opened;
+      const isBlocks = !!header.grid;
+      if (!isBlocks && !(ext2 === 'las' || ext2 === 'ply')) {
+        fileMsg = `${L.file.name}: not a regular block lattice — open resident, or as points via the kernel`;
+        schedule();
+        return;
+      }
+      if (payload.frame_auto) {                            // a files-only view adopts the first real frame
+        payload.frame = documentFrame(header).origin;
+        payload.frame_auto = false;
+      }
+      const frame = { origin: payload.frame, crs: null, units: 'm' };
+      if (header.bbox && Number.isFinite(header.bbox.min[0])) {
+        mergeBbox(Float64Array.of(
+          header.bbox.min[0] - frame.origin[0], header.bbox.min[1] - frame.origin[1], header.bbox.min[2] - frame.origin[2],
+          header.bbox.max[0] - frame.origin[0], header.bbox.max[1] - frame.origin[1], header.bbox.max[2] - frame.origin[2]));
+      }
+      let b;
+      if (isBlocks) {
+        kinds[i] = 'blocks';
+        const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
+        b = createBlockChunkBuilder({
+          frame, grid, chunkSize: 1 << 18, seed: 1,
+          dimPalette: header.dimPalette || null,
+          onChunk: (c) => renderer.addChunk(c, 'base', i),
+        });
+        if (header.categories) {
+          L.cat_labels = header.categories;
+          L.cat_n = header.categories.length;
+          renderer.setCategories(L.cat_n);
+        }
+      } else {
+        kinds[i] = 'points';
+        b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        L.cols.value_u16 = L.cols.value_u16 || new Uint16Array(0);   // 'value' → the intensity channel
+      }
+      let got = 0;
+      for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
+        if (epoch !== streamEpoch || disposed) return;
+        b.push(rc);
+        b.flush();                                         // progressive, chunk by chunk
+        got += rc.count;
+        invalidate();
+      }
+      const doc = b.flush();
+      L.count = header.count || got;
+      if (isBlocks && doc && Number.isFinite(doc.chanRange[0])) L.value_range = [doc.chanRange[0], doc.chanRange[1]];
+      if (doc && doc.bboxLocal && Number.isFinite(doc.bboxLocal[0])) mergeBbox(doc.bboxLocal);
+      applyStyles();
+      if (tb) syncChrome();
+      invalidate();
+      try {                                                // the kernel learns what the browser found
+        const info = { ...(model.get('_file_info') || {}) };
+        info[i] = { count: L.count, value_range: L.value_range || null,
+          cat_labels: L.cat_labels || null, cat_n: L.cat_n || null };
+        model.set('_file_info', info);
+        model.save_changes();
+      } catch { /* a detached test model */ }
+    } catch (e) {
+      fileMsg = `${L.file.name}: ${e.message}`;
+      schedule();
+    }
   };
 
   // the ACTIVE value channel: a layer may ship several (value=["FE","SIO2"]);
@@ -415,6 +598,10 @@ export function render({ model, el }) {
   // switch rebuilds just its own layer from the already-resident columns).
   // Returns the layer's local bbox (null while a streamed layer has no rows).
   const buildLayer = (L, i) => {
+    if (L.file) {                                          // via='files': async browser-side read
+      fileQueue = fileQueue.then(() => buildFileLayer(L, i));
+      return null;
+    }
     const frame = { origin: payload.frame, crs: null, units: 'm' };
     const cols = L.cols;
     resolveChannel(L, styleAt(i));
@@ -596,7 +783,7 @@ export function render({ model, el }) {
   // columns — no re-send from the kernel, the camera stays put
   const rebuildLayer = (i) => {
     const L = payload && payload.layers[i];
-    if (!L || L.streamed) return;                          // a streamed layer carries one channel
+    if (!L || L.streamed || L.file) return;                // streamed/files layers carry one channel
     renderer.removeLayer(i);
     buildLayer(L, i);
     invalidate();

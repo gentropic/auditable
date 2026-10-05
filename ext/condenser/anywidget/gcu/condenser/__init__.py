@@ -312,6 +312,9 @@ class Viewer(anywidget.AnyWidget):
     budget = traitlets.Int(3_000_000).tag(sync=True)
     #: the last pick: {'layer': i, 'name': str, 'row': int} — {} for none
     selection = traitlets.Dict(default_value={}).tag(sync=True)
+    #: via='files' layers: what the BROWSER discovered (count, value_range,
+    #: categories per layer index) — mirrored onto the Layer objects
+    _file_info = traitlets.Dict(default_value={}).tag(sync=True)
 
     def __init__(self, layers, **kw):
         self.layers = list(layers)
@@ -326,6 +329,7 @@ class Viewer(anywidget.AnyWidget):
         self.observe(self._on_selection, names="selection")
         self.observe(self._on_styles, names="_styles")
         self.observe(self._on_sel_rows, names="_sel_rows")
+        self.observe(self._on_file_info, names="_file_info")
         self.on_msg(self._on_custom)                       # streamed layers: ready → chunks
 
     # ── data ──
@@ -337,6 +341,18 @@ class Viewer(anywidget.AnyWidget):
     def _on_custom(self, widget, content=None, buffers=None):
         if isinstance(content, dict) and content.get("type") == "ready":
             self._stream_layers(str(content.get("epoch", "")))
+
+    def _on_file_info(self, change):
+        """via='files': the browser's discovery lands here — mirror it onto the
+        Layer so `layer.count` and the ranges read true in the kernel."""
+        for key, info in (change["new"] or {}).items():
+            try:
+                ly = self.layers[int(key)]
+            except (ValueError, IndexError):
+                continue
+            for k in ("count", "value_range", "cat_labels", "cat_n"):
+                if info.get(k) is not None:
+                    ly._extra[k] = info[k]
 
     def _stream_layers(self, epoch):
         for content, bufs in self._stream_messages(epoch):
@@ -407,8 +423,9 @@ class Viewer(anywidget.AnyWidget):
             if b:
                 mins = np.minimum(mins, np.array(b[:3]))
                 maxs = np.maximum(maxs, np.array(b[3:]))
-        if not np.all(np.isfinite(mins)):
-            mins = np.zeros(3)
+        frame_auto = not bool(np.all(np.isfinite(mins)))   # no layer knew its bbox
+        if frame_auto:                                     # (files-mode: the browser adopts
+            mins = np.zeros(3)                             #  the first discovered frame)
             maxs = np.ones(3)
         frame = ((mins + maxs) / 2).tolist()
 
@@ -422,7 +439,7 @@ class Viewer(anywidget.AnyWidget):
                 cols[key] = arr
                 head["cols"][cname] = key
             heads.append(head)
-        self._payload = _pack({"wire": 3, "frame": frame, "layers": heads}, cols)
+        self._payload = _pack({"wire": 3, "frame": frame, "frame_auto": frame_auto, "layers": heads}, cols)
 
     def _push_styles(self):
         if self._syncing:
@@ -825,8 +842,44 @@ def _batches_of(src, batch_rows, columns):
     )
 
 
+def _open_files(src, kind, kw):
+    """via='files': the KERNEL NEVER READS THE FILE. The browser fetches it
+    over jupyter-server's /files/ endpoint (which serves byte ranges), and the
+    engine's own providers — the same CSV/.dm/LAS/PLY readers micro ships —
+    discover and stream it client-side. The kernel only names the file."""
+    p = pathlib.Path(src)
+    if not p.exists():
+        raise FileNotFoundError(f"gcu-condenser: {src}")
+    ext = p.suffix.lower().lstrip(".")
+    if ext == "laz":
+        raise ValueError("gcu-condenser: LAZ is compressed LAS — decompress first (the reader is WASM-free by design)")
+    lkind = "points" if ext in ("las", "ply") else "blocks"
+    # candidate server-relative paths: the kernel can't know the server root,
+    # so offer the path relative to cwd and each parent — the browser probes
+    # each against /files/ until one answers a byte range
+    cands = []
+    rp = p.resolve()
+    probe = pathlib.Path.cwd().resolve()
+    for _ in range(8):
+        try:
+            cands.append(rp.relative_to(probe).as_posix())
+        except ValueError:
+            pass
+        if probe.parent == probe:
+            break
+        probe = probe.parent
+    if not cands:
+        cands = [p.name]
+    extra: dict[str, Any] = {
+        "count": 0,
+        "file": {"candidates": cands, "name": p.name, "size": int(p.stat().st_size)},
+    }
+    kw.setdefault("color", "value")
+    return Layer(lkind, {}, extra, None, **kw)
+
+
 def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
-         kind="blocks", size=None, batch_rows=1_048_576, **kw) -> Layer:
+         kind="blocks", size=None, batch_rows=1_048_576, via="kernel", **kw) -> Layer:
     """A dataset STREAMED from disk — never resident, no comm ceiling.
 
     The payload carries only the header (lattice/bbox, count, ranges); the rows
@@ -845,7 +898,29 @@ def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
     only the mapped columns batch-by-batch; pass 2 ships the chunks. The
     source is a Parquet path (pyarrow, column-projected), a list of table-like
     batches, or a zero-arg callable returning an iterator.
+
+    ``via='files'`` (jupyter-server only) skips the kernel entirely: the
+    BROWSER fetches the file over the server's ``/files/`` endpoint — which
+    serves byte ranges on the session cookie — and the engine's own providers
+    read it there. A CSV or Datamine ``.dm`` block model, a LAS cloud or a PLY
+    opens with zero Python reading code and zero kernel memory. Column roles
+    are auto-sniffed by the provider (the same sniff micro uses on a dropped
+    file), so the x/y/z/value/category/size arguments don't apply; the layer's
+    count and ranges sync back after discovery. Falls back with a message in
+    the view when ``/files`` is unreachable (e.g. Colab / VS Code).
     """
+    if via not in ("kernel", "files"):
+        raise ValueError(f"gcu-condenser: via must be 'kernel' or 'files', got {via!r}")
+    if via == "files":
+        if not isinstance(src, (str, pathlib.Path)):
+            raise TypeError("gcu-condenser: via='files' streams a FILE — pass its path")
+        if value is not None or category is not None or size is not None:
+            raise ValueError(
+                "gcu-condenser: via='files' reads the file browser-side and "
+                "auto-sniffs its columns — x/y/z/value/category/size don't apply "
+                "(use via='kernel' to map columns yourself)"
+            )
+        return _open_files(src, kind, kw)
     if kind not in ("blocks", "points"):
         raise ValueError(f"gcu-condenser: cd.open kind must be 'blocks' or 'points', got {kind!r}")
     if size is not None and kind != "blocks":

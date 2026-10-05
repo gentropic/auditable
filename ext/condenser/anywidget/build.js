@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Bundle the anywidget ESM into the Python package's static/ dir. The engine
-// rides along INLINE (the built ../core.js — the engine-only bundle, no I/O
-// layer), so the widget ships as one self-contained module: nothing is fetched
-// at runtime, which is what makes it usable on an air-gapped analysis box.
+// rides along INLINE (the built ../index.js — engine + the file providers,
+// which via='files' reads through), so the widget ships as one self-contained
+// module: nothing is fetched at runtime, which is what makes it usable on an
+// air-gapped analysis box.
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -15,7 +16,7 @@ const r = await bundle({
   at: import.meta.url,
   entry: 'src/widget.js',
   outFile: OUT,
-  inline: ['../core.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
+  inline: ['../index.js', '../../drillhole/src/samples.js', '../../drillhole/src/desurvey.js', '../../drillhole/src/validate.js'],
   sourcemap: false,
   meta: false,
 });

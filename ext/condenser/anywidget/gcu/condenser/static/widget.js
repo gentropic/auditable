@@ -1,9 +1,153 @@
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/widget.js
 
-// ── ../core.js ──
+// ── ../index.js ──
 
-// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/core.js
+// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
 // @gcu/condenser — Streaming no-preprocess renderer for massive spatial elements (point clouds, block models): stream-parse → quantize → chunk → prefix-LOD → progressive accumulation → EDL. The engine under micro.
+
+// ── src/io/las.js ──
+
+// @gcu/condenser — LAS provider (uncompressed point record formats 0–3 and 6–8).
+// Header-driven: the public header block gives bbox, count, format, and scale/offset
+// up front — no discovery pass. streamChunks() parses chunk-at-a-time from a
+// ReadableStream, never holding raw file bytes beyond the current chunk (+ a
+// partial-record carry). Positions come out as WORLD f64 (scale·raw + offset);
+// frame-local quantization happens downstream in chunks.js — providers know
+// formats, condenser knows rendering, nothing else crosses the seam.
+//
+// Provider contract (micro-spec §2.4):
+//   openLas(blob) → { header, streamChunks(opts): AsyncIterable<RawChunk> }
+//   RawChunk = { count, x, y, z: Float64Array, intensity: Uint16Array,
+//                classification: Uint8Array, rgb: Uint8Array(3N) | null,
+//                recStart: number }   — recStart = record index of element 0.
+
+const RECLEN = { 0: 20, 1: 28, 2: 26, 3: 34, 6: 30, 7: 36, 8: 38 };
+const RGB_OFF = { 2: 20, 3: 28, 7: 30, 8: 30 };
+
+class LasFormatError extends Error {
+  constructor(msg) { super(msg); this.name = 'LasFormatError'; }
+}
+
+// Parse the public header block from the file's first bytes (≥ 375 recommended).
+function parseLasHeader(bytes) {
+  const dv = bytes instanceof DataView ? bytes : new DataView(bytes.buffer ? bytes.buffer : bytes, bytes.byteOffset || 0, bytes.byteLength);
+  if (dv.byteLength < 227) throw new LasFormatError('file too small for a LAS header');
+  if (dv.getUint8(0) !== 0x4C || dv.getUint8(1) !== 0x41 || dv.getUint8(2) !== 0x53 || dv.getUint8(3) !== 0x46) {
+    throw new LasFormatError('not a LAS file (no LASF signature)');
+  }
+  const verMajor = dv.getUint8(24), verMinor = dv.getUint8(25);
+  const headerSize = dv.getUint16(94, true);
+  const pointOffset = dv.getUint32(96, true);
+  const fmtByte = dv.getUint8(104);
+  if (fmtByte & 0x80) throw new LasFormatError('LAZ (compressed) — not supported; export uncompressed LAS');
+  const format = fmtByte & 0x3f;
+  if (!(format in RECLEN)) throw new LasFormatError(`unsupported point record format ${format} (supported: 0–3, 6–8)`);
+  const recordLen = dv.getUint16(105, true);
+  if (recordLen < RECLEN[format]) throw new LasFormatError(`record length ${recordLen} < format ${format} minimum ${RECLEN[format]}`);
+  const legacyCount = dv.getUint32(107, true);
+  let count = legacyCount;
+  if (verMinor >= 4 && headerSize >= 255 && dv.byteLength >= 255) {
+    const c64 = dv.getBigUint64(247, true);
+    if (c64 > 0n) count = Number(c64);                    // 1.4 files may zero the legacy field
+  }
+  const scale = [dv.getFloat64(131, true), dv.getFloat64(139, true), dv.getFloat64(147, true)];
+  const offset = [dv.getFloat64(155, true), dv.getFloat64(163, true), dv.getFloat64(171, true)];
+  // bbox stored max/min interleaved per axis
+  const bbox = {
+    min: [dv.getFloat64(187, true), dv.getFloat64(203, true), dv.getFloat64(219, true)],
+    max: [dv.getFloat64(179, true), dv.getFloat64(195, true), dv.getFloat64(211, true)],
+  };
+  return {
+    kind: 'las', version: `${verMajor}.${verMinor}`, format, recordLen,
+    count, pointOffset, scale, offset, bbox,
+    hasRgb: format in RGB_OFF,
+    attributes: ['intensity', 'classification', ...(format in RGB_OFF ? ['rgb'] : [])],
+  };
+}
+
+// Decode `n` fixed-size records from dv starting at byte 0 into columnar arrays.
+// RGB: LAS stores u16 per channel, but many files carry 8-bit values in the low
+// byte. Decode as u16, decide once per chunk (any channel > 255 → 16-bit → >>8),
+// or accept a `forceRgb16` override (sticky across chunks — see streamChunks).
+function decodeLasRecords(dv, header, n, recStart, { forceRgb16 = false } = {}) {
+  const { format, recordLen, scale, offset } = header;
+  const clsOff = format >= 6 ? 16 : 15;
+  const rgbOff = RGB_OFF[format];
+  const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+  const intensity = new Uint16Array(n), classification = new Uint8Array(n);
+  const rgb16 = rgbOff != null ? new Uint16Array(3 * n) : null;
+  for (let i = 0; i < n; i++) {
+    const o = i * recordLen;
+    x[i] = dv.getInt32(o, true) * scale[0] + offset[0];
+    y[i] = dv.getInt32(o + 4, true) * scale[1] + offset[1];
+    z[i] = dv.getInt32(o + 8, true) * scale[2] + offset[2];
+    intensity[i] = dv.getUint16(o + 12, true);
+    classification[i] = dv.getUint8(o + clsOff);
+    if (rgb16) {
+      rgb16[i * 3] = dv.getUint16(o + rgbOff, true);
+      rgb16[i * 3 + 1] = dv.getUint16(o + rgbOff + 2, true);
+      rgb16[i * 3 + 2] = dv.getUint16(o + rgbOff + 4, true);
+    }
+  }
+  let rgb = null, rgbIs16 = forceRgb16;
+  if (rgb16) {
+    if (!rgbIs16) { for (let k = 0; k < rgb16.length; k++) if (rgb16[k] > 255) { rgbIs16 = true; break; } }
+    rgb = new Uint8Array(3 * n);
+    if (rgbIs16) for (let k = 0; k < rgb16.length; k++) rgb[k] = rgb16[k] >> 8;
+    else rgb.set(rgb16);                                   // values ≤255 fit as-is
+  }
+  return { count: n, x, y, z, intensity, classification, rgb, recStart, rgbIs16 };
+}
+
+/**
+ * Open a LAS Blob/File. Reads the header up front (one small slice), then
+ * streamChunks() yields RawChunks of ≤ chunkPoints records, parsing from a
+ * fresh ReadableStream (a cold re-runnable recipe — call it again for a second
+ * sweep). Carries partial records across stream chunk boundaries.
+ */
+async function openLas(blob, { headerBytes = 512 } = {}) {
+  const head = new DataView(await blob.slice(0, Math.min(headerBytes, blob.size)).arrayBuffer());
+  const header = parseLasHeader(head);
+  const recordLen = header.recordLen;
+
+  async function* streamChunks({ chunkPoints = 1 << 20, signal } = {}) {
+    const stream = blob.slice(header.pointOffset).stream();
+    const reader = stream.getReader();
+    let carry = new Uint8Array(0);
+    let recDone = 0;
+    let rgb16 = false;                                     // sticky: once 16-bit color is seen, stay >>8
+    try {
+      while (recDone < header.count) {
+        const { done, value } = await reader.read();
+        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        if (done) break;
+        let buf = value;
+        if (carry.length) {                                // stitch the partial record from last read
+          const joined = new Uint8Array(carry.length + value.length);
+          joined.set(carry, 0); joined.set(value, carry.length);
+          buf = joined; carry = new Uint8Array(0);
+        }
+        let avail = Math.floor(buf.length / recordLen);
+        if (avail * recordLen < buf.length) carry = buf.slice(avail * recordLen);
+        avail = Math.min(avail, header.count - recDone);
+        let off = 0;
+        while (avail > 0) {
+          const n = Math.min(avail, chunkPoints);
+          const dv = new DataView(buf.buffer, buf.byteOffset + off, n * recordLen);
+          const chunk = decodeLasRecords(dv, header, n, recDone, { forceRgb16: rgb16 });
+          if (chunk.rgbIs16) rgb16 = true;                 // sticky: once 16-bit color is seen, stay >>8
+          yield chunk;
+          recDone += n; off += n * recordLen; avail -= n;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+      try { await stream.cancel(); } catch { /* already done */ }
+    }
+  }
+
+  return { header, streamChunks };
+}
 
 // ── ../frame/src/frame.js ──
 
@@ -646,6 +790,1429 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
   };
 }
 
+// ── src/grid/infer.js ──
+
+// @gcu/condenser — grid inference (the grid layer): recover a regular lattice
+// from what a provider's discovery sweep observed. Home of the axis inference
+// today and the rotated-basis inference tomorrow (micro-rotated-models spec:
+// cluster nearest-neighbour centroid displacements → U/V/W generators).
+
+/**
+ * Infer a regular grid from per-axis distinct centroid values (collected by a
+ * provider's discovery sweep). Returns { origin (CENTROID of block 0 — i.e. the
+ * first lattice value), pitch, count } per axis, or null when the axis isn't a
+ * consistent lattice. `values` must be sorted ascending, deduped.
+ */
+function inferAxis(values, { rel = 1e-6 } = {}) {
+  if (!values.length) return null;
+  if (values.length === 1) return { origin: values[0], pitch: 0, count: 1 };
+  let pitch = Infinity;
+  for (let i = 1; i < values.length; i++) {
+    const d = values[i] - values[i - 1];
+    if (d > 0 && d < pitch) pitch = d;
+  }
+  if (!Number.isFinite(pitch) || pitch <= 0) return null;
+  const span = values[values.length - 1] - values[0];
+  const count = Math.round(span / pitch) + 1;
+  if (count > 65535) return null;                          // beyond u16 IJK — not this path
+  const eps = Math.max(pitch * 1e-3, Math.abs(values[0]) * rel);
+  for (const v of values) {
+    const k = Math.round((v - values[0]) / pitch);
+    if (Math.abs(values[0] + k * pitch - v) > eps) return null;   // off-lattice → not regular
+  }
+  return { origin: values[0], pitch, count };
+}
+
+// ── src/grid/grid-join.js ──
+
+// @gcu/condenser — grid compatibility + volume-weighted resample (micro join).
+//
+// A regular grid axis = { origin, pitch, count }, origin = block-0 CENTROID
+// (condenser convention). Cell i spans world [origin+(i-0.5)·pitch,
+// origin+(i+0.5)·pitch].
+//
+// Two grids are COMPATIBLE (per axis) when they share a common lattice
+// g = gcd(pitchA, pitchB) (both pitches integer multiples of g) AND their
+// origins are phase-aligned on g (offset an integer multiple of g). Then every
+// cell decomposes exactly into g-cells and a source→target resample is EXACT
+// (integer g-unit overlap weights, no float fuzz):
+//   - source coarser than target → refine-replicate,
+//   - source finer  → aggregate,
+//   - non-nested but common-lattice (e.g. 10 & 12 on g=2) → exact mixed weights.
+// Incompatible (no small common lattice, or off-phase) → refused with a reason.
+//
+// v1: axis-aligned grids. Rotated grids must share azimuth (not modelled here).
+
+const REL = 1e-6;                                          // relative tolerance
+
+// tolerant Euclidean gcd of two positive floats
+function floatGcd(a, b, tol) {
+  a = Math.abs(a); b = Math.abs(b);
+  if (a < b) { const t = a; a = b; b = t; }
+  let guard = 0;
+  while (b > tol && guard++ < 1000) { const r = a % b; a = b; b = r; }
+  return a;
+}
+
+// Per-axis source→target overlap map. Returns { ok, reason } or
+// { ok:true, g, sp, tp, map:[[{t,w}...] per source index], nested }.
+// map[si] = target cells overlapping source cell si, w = overlap in g-units.
+function axisMap(src, tgt, opts = {}) {
+  // degenerate (single-plane) axis: trivial pass-through
+  if (src.count === 1 && tgt.count === 1) return { ok: true, g: 1, sp: 1, tp: 1, map: [[{ t: 0, w: 1 }]], nested: true };
+  if (!(src.pitch > 0) || !(tgt.pitch > 0)) return { ok: false, reason: 'a single-plane axis cannot join a multi-cell axis' };
+  const tol = opts.tol || REL * Math.max(src.pitch, tgt.pitch, 1);
+  const g = floatGcd(src.pitch, tgt.pitch, tol);
+  if (!(g > tol)) return { ok: false, reason: 'no common lattice (pitches share no usable factor)' };
+  const sp = Math.round(src.pitch / g), tp = Math.round(tgt.pitch / g);
+  const capped = opts.cap || 4096;
+  if (sp > capped || tp > capped) return { ok: false, reason: `pitches ${src.pitch} and ${tgt.pitch} share no small common lattice (would need a ${g} unit grid)` };
+  // g-units measured from the target lattice low face (cell-0 low boundary)
+  const ref = tgt.origin - tgt.pitch / 2;
+  const srcLow0 = src.origin - src.pitch / 2;
+  const phaseF = (srcLow0 - ref) / g;
+  if (Math.abs(phaseF - Math.round(phaseF)) > 1e-4) return { ok: false, reason: `origins off-phase by ${(+(phaseF - Math.round(phaseF)) * g).toFixed(4)} on the ${g} lattice` };
+  const p0 = Math.round(phaseF);
+  const map = new Array(src.count);
+  for (let si = 0; si < src.count; si++) {
+    const lo = p0 + si * sp, hi = lo + sp;
+    const t0 = Math.floor(lo / tp), t1 = Math.floor((hi - 1) / tp);
+    const lst = [];
+    for (let ti = Math.max(0, t0); ti <= Math.min(tgt.count - 1, t1); ti++) {
+      const ov = Math.min(hi, (ti + 1) * tp) - Math.max(lo, ti * tp);
+      if (ov > 0) lst.push({ t: ti, w: ov });
+    }
+    map[si] = lst;
+  }
+  return { ok: true, g, sp, tp, map, nested: (sp % tp === 0 || tp % sp === 0) };
+}
+
+// Are two whole grids (each { x, y, z } of axes) compatible? → { ok, reason,
+// axes:[ax,ay,az], nested }. Uses each axis as source vs the other as target
+// (symmetric compatibility — direction doesn't change compatibility).
+function gridsCompatible(A, B, opts = {}) {
+  const axes = [];
+  let nested = true;
+  for (const k of ['x', 'y', 'z']) {
+    const m = axisMap(A[k], B[k], opts);
+    if (!m.ok) return { ok: false, reason: `${k.toUpperCase()}: ${m.reason}` };
+    axes.push(m); nested = nested && m.nested;
+  }
+  return { ok: true, axes, nested };
+}
+
+// Build a resampler from source axes → target axes. Returns { ok, reason } or a
+// resampler with dense target accumulators. Numeric ops: mean (weighted), sum,
+// count, coverage. Categorical: majority (weighted vote).
+function makeResampler(srcAxes, tgtAxes, opts = {}) {
+  const X = axisMap(srcAxes.x, tgtAxes.x, opts);
+  const Y = axisMap(srcAxes.y, tgtAxes.y, opts);
+  const Z = axisMap(srcAxes.z, tgtAxes.z, opts);
+  for (const [k, m] of [['X', X], ['Y', Y], ['Z', Z]]) if (!m.ok) return { ok: false, reason: `${k}: ${m.reason}` };
+  const nx = tgtAxes.x.count, ny = tgtAxes.y.count, nz = tgtAxes.z.count;
+  const cells = nx * ny * nz;
+  const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
+  // full target-cell g-volume, for coverage (= tp_x·tp_y·tp_z)
+  const fullW = X.tp * Y.tp * Z.tp;
+  const nested = X.nested && Y.nested && Z.nested;
+  return {
+    ok: true, nx, ny, nz, cells, idxOf, fullW, nested, X, Y, Z,
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    // scatter one NUMERIC source cell (si,sj,sk index in the SOURCE lattice)
+    scatter(si, sj, sk, v, wt, acc) {
+      const xm = X.map[si], ym = Y.map[sj], zm = Z.map[sk];
+      if (!xm || !ym || !zm) return;
+      for (const { t: ti, w: wi } of xm) for (const { t: tj, w: wj } of ym) for (const { t: tk, w: wk } of zm) {
+        const w = wi * wj * wk * wt; if (w <= 0) continue;
+        const idx = idxOf(ti, tj, tk); acc.sum[idx] += v * w; acc.w[idx] += w;
+      }
+    },
+    // finalize numeric → { out: Float64Array(cells), coverage: Float32Array, present: Uint8Array }
+    finalize(acc, op = 'mean') {
+      const out = new Float64Array(cells), coverage = new Float32Array(cells), present = new Uint8Array(cells);
+      for (let i = 0; i < cells; i++) {
+        const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
+        present[i] = 1; coverage[i] = Math.min(1, w / fullW);
+        out[i] = op === 'sum' ? acc.sum[i] : op === 'count' ? acc.w[i] : op === 'coverage' ? coverage[i] : acc.sum[i] / w;   // mean default
+      }
+      return { out, coverage, present };
+    },
+    // categorical: separate vote accumulator (Map per touched cell)
+    newCatAcc: () => new Map(),                             // idx → Map(code → weight)
+    scatterCat(si, sj, sk, code, wt, votes) {
+      const xm = X.map[si], ym = Y.map[sj], zm = Z.map[sk];
+      if (!xm || !ym || !zm) return;
+      for (const { t: ti, w: wi } of xm) for (const { t: tj, w: wj } of ym) for (const { t: tk, w: wk } of zm) {
+        const w = wi * wj * wk * wt; if (w <= 0) continue;
+        const idx = idxOf(ti, tj, tk);
+        let m = votes.get(idx); if (!m) { m = new Map(); votes.set(idx, m); }
+        m.set(code, (m.get(code) || 0) + w);
+      }
+    },
+    finalizeCat(votes) {   // → { out: Int32Array(cells) of winning code (-1 empty), tie: Uint8Array }
+      const out = new Int32Array(cells).fill(-1), tie = new Uint8Array(cells);
+      for (const [idx, m] of votes) {
+        let best = -1, bw = -1, tied = false;
+        for (const [code, w] of m) { if (w > bw + 1e-9) { best = code; bw = w; tied = false; } else if (Math.abs(w - bw) <= 1e-9) tied = true; }
+        out[idx] = best; tie[idx] = tied ? 1 : 0;
+      }
+      return { out, tie };
+    },
+  };
+}
+
+// Box → grid volume-weighted aggregator (sub-blocked reconcile). A sub-blocked
+// model has no source LATTICE — it's a set of variable-size axis-aligned boxes.
+// This scatters each box (world centroid + half-dims) onto a regular TARGET grid
+// weighted by geometric OVERLAP VOLUME, so a sub-blocked model aggregates up to
+// any compatible regular grid — the PARENT grid being the natural choice (each
+// sub-block lands wholly in its parent cell). Reuses the same acc/finalize shape
+// as makeResampler, so the reconcile Δ-map machinery is identical. The caller
+// controls WHICH boxes scatter (a selection/filter): just skip the ones it wants
+// excluded — volume weighting handles partial parent coverage correctly.
+function makeBoxAggregator(tgt, opts = {}) {
+  const nx = tgt.x.count, ny = tgt.y.count, nz = tgt.z.count;
+  const cells = nx * ny * nz;
+  const idxOf = (ti, tj, tk) => ti + nx * (tj + ny * tk);
+  // world volume of a full target cell (degenerate axes factor out as 1)
+  const cellVol = ['x', 'y', 'z'].reduce((p, k) => p * (tgt[k].pitch > 0 ? tgt[k].pitch : 1), 1);
+  // target cells overlapping world interval [lo,hi] on one axis → [{ i, ov }]
+  const axisCells = (ax, lo, hi) => {
+    if (!(ax.pitch > 0)) return [{ i: 0, ov: 1 }];           // single-plane axis: unit overlap (factors out)
+    const low0 = ax.origin - ax.pitch / 2;
+    const first = Math.floor((lo - low0) / ax.pitch);
+    const last = Math.floor((hi - low0) / ax.pitch - 1e-9);
+    const out = [];
+    for (let i = Math.max(0, first); i <= Math.min(ax.count - 1, last); i++) {
+      const cLo = low0 + i * ax.pitch, cHi = cLo + ax.pitch;
+      const ov = Math.min(hi, cHi) - Math.max(lo, cLo);
+      if (ov > 1e-12) out.push({ i, ov });
+    }
+    return out;
+  };
+  return {
+    ok: true, nx, ny, nz, cells, idxOf, cellVol,
+    newAcc: () => ({ sum: new Float64Array(cells), w: new Float64Array(cells) }),
+    // scatter one box (world centroid cx,cy,cz + half-dims hx,hy,hz), value v,
+    // extra weight wt (e.g. 0 to exclude). Accumulates v·overlapVol and overlapVol.
+    scatterBox(cx, cy, cz, hx, hy, hz, v, wt, acc) {
+      if (!(wt > 0) || !Number.isFinite(v)) return;
+      const xs = axisCells(tgt.x, cx - hx, cx + hx);
+      if (!xs.length) return;
+      const ys = axisCells(tgt.y, cy - hy, cy + hy);
+      if (!ys.length) return;
+      const zs = axisCells(tgt.z, cz - hz, cz + hz);
+      for (const X of xs) for (const Y of ys) for (const Z of zs) {
+        const w = X.ov * Y.ov * Z.ov * wt; if (w <= 0) continue;
+        const idx = idxOf(X.i, Y.i, Z.i); acc.sum[idx] += v * w; acc.w[idx] += w;
+      }
+    },
+    // → { out: Float64Array (NaN where empty), coverage: Float32Array (w/cellVol),
+    // present: Uint8Array }. op: 'mean' (default) | 'sum' | 'volume' | 'coverage'.
+    finalize(acc, op = 'mean') {
+      const out = new Float64Array(cells), coverage = new Float32Array(cells), present = new Uint8Array(cells);
+      for (let i = 0; i < cells; i++) {
+        const w = acc.w[i]; if (w <= 0) { out[i] = NaN; continue; }
+        present[i] = 1; coverage[i] = cellVol > 0 ? Math.min(1, w / cellVol) : 1;
+        out[i] = op === 'sum' ? acc.sum[i] : op === 'volume' ? w : op === 'coverage' ? coverage[i] : acc.sum[i] / w;
+      }
+      return { out, coverage, present };
+    },
+    // categorical: volume-weighted majority vote (parity with makeResampler)
+    newCatAcc: () => new Map(),                              // idx → Map(code → volume)
+    scatterCatBox(cx, cy, cz, hx, hy, hz, code, wt, votes) {
+      if (!(wt > 0)) return;
+      const xs = axisCells(tgt.x, cx - hx, cx + hx); if (!xs.length) return;
+      const ys = axisCells(tgt.y, cy - hy, cy + hy); if (!ys.length) return;
+      const zs = axisCells(tgt.z, cz - hz, cz + hz);
+      for (const X of xs) for (const Y of ys) for (const Z of zs) {
+        const w = X.ov * Y.ov * Z.ov * wt; if (w <= 0) continue;
+        const idx = idxOf(X.i, Y.i, Z.i);
+        let m = votes.get(idx); if (!m) { m = new Map(); votes.set(idx, m); }
+        m.set(code, (m.get(code) || 0) + w);
+      }
+    },
+    finalizeCat(votes) {
+      const out = new Int32Array(cells).fill(-1), tie = new Uint8Array(cells);
+      for (const [idx, m] of votes) {
+        let best = -1, bw = -1, tied = false;
+        for (const [code, w] of m) { if (w > bw + 1e-9) { best = code; bw = w; tied = false; } else if (Math.abs(w - bw) <= 1e-9) tied = true; }
+        out[idx] = best; tie[idx] = tied ? 1 : 0;
+      }
+      return { out, tie };
+    },
+  };
+}
+
+// A common target lattice covering the union of N grids AND compatible with all.
+// grids: [{x,y,z}]. resolution: 'finest' | 'coarsest' | 'gcd' | number(pitch,
+// per-axis via {x,y,z}). Returns { ok, reason } or { x, y, z } target axes.
+function commonLattice(grids, opts = {}) {
+  if (!grids.length) return { ok: false, reason: 'no grids' };
+  const res = opts.resolution || 'finest';
+  const out = {};
+  for (const k of ['x', 'y', 'z']) {
+    const ax = grids.map((G) => G[k]);
+    const real = ax.filter((a) => a.pitch > 0);            // count-1 with a real pitch still counts
+    if (!real.length) { out[k] = { origin: ax[0].origin, pitch: ax[0].pitch || 0, count: 1 }; continue; }
+    const tol = REL * Math.max(...real.map((a) => a.pitch), 1);
+    // common g across all real axes
+    let g = real[0].pitch;
+    for (const a of real) g = floatGcd(g, a.pitch, tol);
+    if (!(g > tol)) return { ok: false, reason: `${k.toUpperCase()}: grids share no common lattice` };
+    // all origins must share the same residue mod g (pairwise phase alignment)
+    const low = (a) => a.origin - a.pitch / 2;
+    const r0 = ((low(real[0]) % g) + g) % g;
+    for (const a of real) {
+      const r = ((low(a) % g) + g) % g;
+      let d = Math.abs(r - r0); d = Math.min(d, g - d);
+      if (d > 1e-4 + tol) return { ok: false, reason: `${k.toUpperCase()}: grids are off-phase (can't share a lattice)` };
+    }
+    // choose target pitch
+    let tp;
+    if (res === 'gcd') tp = g;
+    else if (res === 'coarsest') tp = Math.max(...real.map((a) => a.pitch));
+    else if (typeof res === 'object' && res && res[k] != null) tp = res[k];
+    else if (typeof res === 'number') tp = res;
+    else tp = Math.min(...real.map((a) => a.pitch));        // 'finest'
+    const kk = Math.round(tp / g);
+    if (Math.abs(kk * g - tp) > 1e-4 + tol || kk < 1) return { ok: false, reason: `${k.toUpperCase()}: resolution ${tp} is not a multiple of the common lattice ${g}` };
+    tp = kk * g;
+    // union extent (low faces / high faces)
+    const uLo = Math.min(...ax.map((a) => a.origin - (a.pitch || 0) / 2));
+    const uHi = Math.max(...ax.map((a) => a.origin + (a.count - 0.5) * (a.pitch || 0)));
+    // anchor target low face at the shared residue near uLo
+    const L = r0 + Math.floor((uLo - r0) / tp) * tp;
+    const count = Math.max(1, Math.ceil((uHi - L) / tp - 1e-6));
+    if (count > 65535) return { ok: false, reason: `${k.toUpperCase()}: ${count} cells at pitch ${tp} exceeds the grid limit` };
+    out[k] = { origin: L + tp / 2, pitch: tp, count };
+  }
+  return { ok: true, ...out };
+}
+
+// ── src/io/blockmodel.js ──
+
+// @gcu/condenser — delimited block-model provider (CSV/GSLIB-ish exports).
+// Centroid columns (XC/YC/ZC by convention, overridable) + one scalar grade
+// channel + one categorical channel. A CSV carries no header bbox, so this
+// provider runs an honest TWO-SWEEP recipe (both cold-re-runnable over the
+// Blob): sweep 1 (discovery) parses coordinates only → per-axis distinct
+// values → regular-grid inference (§2.5); sweep 2 streams full RawChunks.
+// Sub-blocked / off-lattice models fail grid inference and should be routed
+// to the points pipeline by the caller (header.grid === null).
+//
+// openBlockModel(blob, { mapping? }) → { header, streamChunks }
+//   header = { kind:'blockmodel', count, bbox, grid|null, columns, mapping,
+//              categories: string[]|null (code → value, ≤255) }
+//   RawChunk = { count, x, y, z: Float64Array, chan: Float64Array,
+//                cat: Uint8Array|null, recStart }
+
+
+const X_RE$blockmodel = /^(x|xc|xcent(er|re)?|xmid|east(ing)?|xworld|centroid_?x)$/i;
+const Y_RE$blockmodel = /^(y|yc|ycent(er|re)?|ymid|north(ing)?|yworld|centroid_?y)$/i;
+const Z_RE$blockmodel = /^(z|zc|zcent(er|re)?|zmid|elev(ation)?|rl|level|zworld|centroid_?z)$/i;
+const DIM_RE = /^(d[xyz]|[xyz]inc|[xyz]size|[xyz]dim|dim_?[xyz])$/i;
+const DIMX_RE = /^(dx|xinc|xsize|xdim|dim_?x)$/i;
+const DIMY_RE = /^(dy|yinc|ysize|ydim|dim_?y)$/i;
+const DIMZ_RE = /^(dz|zinc|zsize|zdim|dim_?z)$/i;
+const NONGRADE_RE = /^(ijk|id|index|row|i|j|k|dens|density|sg|topo|pct|proportion)$/i;
+
+const WS = 'ws';                                           // whitespace-delimiter sentinel ('\s' in a string is just 's')
+const splitter = (delim) => (delim === WS ? (l) => l.trim().split(/\s+/) : (l) => l.split(delim));
+
+// Detect delimiter + header from the first text block.
+function sniffDelimited(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(0, 24);
+  if (!lines.length) throw new Error('blockmodel: no data lines');
+  let best = null;
+  for (const d of [',', ';', '\t', WS]) {
+    const split = splitter(d);
+    const counts = lines.map((l) => split(l).length);
+    const n = counts[0];
+    if (n < 2) continue;
+    if (counts.every((c) => c === n) && (!best || n > best.n)) best = { delim: d, n };
+  }
+  if (!best) throw new Error('blockmodel: no consistent delimiter found');
+  const first = splitter(best.delim)(lines[0]).map((s) => s.trim());
+  const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
+  const hasHeader = first.some((s) => !numericish(s));
+  return { delim: best.delim, header: hasHeader ? first : null, columns: best.n };
+}
+
+// Pick column roles from names. Returns null when centroids can't be identified.
+function mapColumns(header) {
+  if (!header) return null;
+  const find = (re) => header.findIndex((h) => re.test(h.trim()));
+  const x = find(X_RE$blockmodel), y = find(Y_RE$blockmodel), z = find(Z_RE$blockmodel);
+  if (x < 0 || y < 0 || z < 0) return null;
+  const taken = new Set([x, y, z]);
+  header.forEach((h, i) => { if (DIM_RE.test(h.trim())) taken.add(i); });
+  let chan = -1;
+  for (let i = 0; i < header.length; i++) {
+    if (!taken.has(i) && !NONGRADE_RE.test(header[i].trim())) { chan = i; break; }
+  }
+  return { x, y, z, chan: chan >= 0 ? chan : null, cat: null };
+}
+
+// Async generator over the blob's data lines (cold recipe — call again for the
+// next sweep). Skips blanks + '#'; yields trimmed field arrays in batches so the
+// consumer controls pacing. Exported: the filter sweep (a mask by record index)
+// re-reads raw rows through the same path.
+async function* lineFields(blob, delim, hasHeader, { signal, onProgress } = {}) {
+  const reader = blob.stream().pipeThrough(new TextDecoderStream()).getReader();
+  const split = splitter(delim);
+  let carry = '', first = hasHeader, bytesSeen = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      if (done) break;
+      bytesSeen += value.length;
+      const text = carry + value;
+      const lines = text.split('\n');
+      carry = lines.pop();
+      const batch = [];
+      for (let l of lines) {
+        if (l.endsWith('\r')) l = l.slice(0, -1);
+        if (!l || l[0] === '#') continue;
+        if (first) { first = false; continue; }
+        batch.push(split(l));
+      }
+      if (onProgress) onProgress(bytesSeen, blob.size);
+      if (batch.length) yield batch;
+    }
+    if (carry && carry[0] !== '#' && carry.trim() && !first) yield [split(carry)];
+  } finally { reader.releaseLock(); }
+}
+
+// Byte-tracking sibling of lineFields for the discovery sweep: yields
+// { fields, at } batches where at[i] is the ABSOLUTE byte offset of that data
+// line's first byte. 0x0A never occurs inside a UTF-8 multi-byte sequence, so
+// byte-level line splitting is exact; text still decodes in BULK per chunk
+// (per-line decode would be ~50× slower at 50M rows). These offsets feed the
+// sparse record index (fetchDelimitedRecord) — the pick join on big CSVs.
+async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress } = {}) {
+  const reader = blob.stream().getReader();
+  const dec = new TextDecoder();
+  const split = splitter(delim);
+  let carryText = '', carryAt = 0, pos = 0, first = hasHeader, bytesSeen = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      if (done) break;
+      bytesSeen += value.length;
+      // newline BYTE positions in this chunk (absolute)
+      const nl = [];
+      for (let j = 0; j < value.length; j++) if (value[j] === 10) nl.push(pos + j);
+      const text = carryText + dec.decode(value, { stream: true });
+      const lines = text.split('\n');
+      const nextCarry = lines.pop();                       // == nl.length complete lines remain
+      const fields = [], at = [];
+      for (let i = 0; i < lines.length; i++) {
+        const start = i === 0 ? carryAt : nl[i - 1] + 1;
+        let l = lines[i];
+        if (l.endsWith('\r')) l = l.slice(0, -1);
+        if (!l || l[0] === '#') continue;
+        if (first) { first = false; continue; }
+        fields.push(split(l)); at.push(start);
+      }
+      carryText = nextCarry;
+      carryAt = nl.length ? nl[nl.length - 1] + 1 : carryAt;
+      pos += value.length;
+      if (onProgress) onProgress(bytesSeen, blob.size);
+      if (fields.length) yield { fields, at };
+    }
+    const tail = carryText + dec.decode();                 // flush any held-back multi-byte bytes
+    if (tail && tail[0] !== '#' && tail.trim() && !first) yield { fields: [split(tail.endsWith('\r') ? tail.slice(0, -1) : tail)], at: [carryAt] };
+  } finally { reader.releaseLock(); }
+}
+
+// O(anchors) record fetch: jump to the nearest preceding anchor, walk forward
+// applying the SAME accept predicate as the sweeps (blank/# skipped in the
+// reader; non-finite coords skipped here — record numbers count accepted rows
+// only). Reads ~indexEvery lines instead of the whole file.
+async function fetchDelimitedRecord(blob, header, rec) {
+  const idx = header.index;
+  if (!idx || !idx.offsets.length || rec < 0 || rec >= header.count) return null;
+  const a = Math.min(Math.floor(rec / idx.k), idx.offsets.length - 1);
+  let remaining = rec - a * idx.k;
+  const m = header.mapping;
+  const split = splitter(header.delim);
+  const reader = blob.slice(idx.offsets[a]).stream().pipeThrough(new TextDecoderStream()).getReader();
+  let carry = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
+      if (!done) carry = lines.pop();
+      for (let l of lines) {
+        if (l.endsWith('\r')) l = l.slice(0, -1);
+        if (!l || l[0] === '#') continue;
+        const f = split(l);
+        const xv = +f[m.x], yv = +f[m.y], zv = +f[m.z];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        if (remaining === 0) return f;
+        remaining--;
+      }
+      if (done) return null;
+    }
+  } finally { reader.releaseLock(); }
+}
+
+const CAP_DISTINCT = 300000;                               // per-axis discovery cap
+
+// sweep 2 as a shared factory: the same cold-recipe stream whether the header
+// came from a live discovery or a cached `discovered` payload (sidecars)
+function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null) {
+  const r10 = (v) => Number(v.toPrecision(10));
+  return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
+    const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
+    let buf = alloc(), fill = 0, recStart = 0;
+    for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2 })) {
+      for (const f of batch) {
+        const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
+        buf.chan[fill] = map.chan != null ? +f[map.chan] : 0;
+        if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
+        if (buf.dim) { const key = `${r10(+f[dimInfo.cols.x])},${r10(+f[dimInfo.cols.y])},${r10(+f[dimInfo.cols.z])}`; const c = dimInfo.code.get(key); buf.dim[fill] = c === undefined ? 0 : c; }
+        fill++;
+        if (fill === chunkPoints) {
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recStart };
+          recStart += fill; buf = alloc(); fill = 0;
+        }
+      }
+    }
+    if (fill) yield { count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill), chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null, dim: buf.dim ? buf.dim.subarray(0, fill) : null, recStart };
+  };
+}
+
+async function openBlockModel(blob, { mapping = null, discovered = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+  // a cached discovery (project sidecars / channel re-streams): skip sweep 1
+  // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
+  if (discovered) {
+    const header = {
+      ...discovered,
+      bbox: { min: [...discovered.bbox.min], max: [...discovered.bbox.max] },
+      index: discovered.index
+        ? { k: discovered.index.k, offsets: discovered.index.offsets instanceof Float64Array ? discovered.index.offsets : Float64Array.from(discovered.index.offsets) }
+        : undefined,
+    };
+    const map2 = header.mapping;
+    const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
+    // sub-blocked: rebuild the size-code map from the persisted half-dim palette (×2)
+    const r10b = (v) => Number(v.toPrecision(10));
+    const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
+      ? { cols: header.dimCols, code: new Map(header.dimPalette.map((hd, i) => [`${r10b(hd[0] * 2)},${r10b(hd[1] * 2)},${r10b(hd[2] * 2)}`, i])) }
+      : null;
+    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2) };
+  }
+  const head = await blob.slice(0, Math.min(sample, blob.size)).text();
+  const sniff = sniffDelimited(head);
+  // headerless numeric files (XYZ dumps): columns 0/1/2 = x/y/z, a 4th numeric = the
+  // scalar channel; names generated so schema/filter/autocomplete still work.
+  if (!sniff.header && sniff.columns >= 3) {
+    sniff.header = Array.from({ length: sniff.columns }, (_, i) => (i === 0 ? 'X' : i === 1 ? 'Y' : i === 2 ? 'Z' : `V${i + 1}`));
+    sniff.generated = true;
+    if (!mapping) mapping = { x: 0, y: 1, z: 2, chan: sniff.columns > 3 ? 3 : null, cat: null };
+  }
+  const map = mapping || mapColumns(sniff.header);
+  if (!map) throw new Error('blockmodel: could not identify X/Y/Z centroid columns — pass a mapping');
+
+  // mapColumns picks the channel BY NAME (first leftover column) — a text
+  // column (XC,YC,ZC,LITO) would claim it, killing both the channel and the
+  // category detection below (which skips map.chan). Demote a non-numeric
+  // AUTO pick; an explicit mapping stays the caller's call.
+  if (!mapping && map.chan != null && sniff.header) {
+    const lines0 = head.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(1, 40);
+    const split0 = splitter(sniff.delim);
+    const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
+    if (vals0.length && vals0.every((v) => Number.isNaN(Number(v)))) map.chan = null;
+  }
+
+  // auto category: first column whose head-sample values are all non-numeric
+  let catCol = map.cat;
+  if (catCol == null && sniff.header) {
+    const lines = head.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(1, 40);
+    const split = splitter(sniff.delim);
+    for (let i = 0; i < sniff.columns && catCol == null; i++) {
+      if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
+      const vals = lines.map((l) => (split(l)[i] || '').trim()).filter(Boolean);
+      if (vals.length && vals.every((v) => Number.isNaN(Number(v)))) catCol = i;
+    }
+  }
+
+  // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
+  // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
+  // distinct (dx,dy,dz) triples that become the size-code palette.
+  const dimCols = sniff.header ? { x: sniff.header.findIndex((h) => DIMX_RE.test(h.trim())), y: sniff.header.findIndex((h) => DIMY_RE.test(h.trim())), z: sniff.header.findIndex((h) => DIMZ_RE.test(h.trim())) } : { x: -1, y: -1, z: -1 };
+  const hasDims = dimCols.x >= 0 && dimCols.y >= 0 && dimCols.z >= 0;
+  const minDim = [Infinity, Infinity, Infinity];
+  const dimSet = new Set();
+
+  // ── sweep 1: discovery — axis distincts + extents + category dictionary ──
+  const ax = [new Set(), new Set(), new Set()];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const catCounts = new Map();
+  const round10 = (v) => Number(v.toPrecision(10));
+  let count = 0;
+  const hasHeaderRow = !!sniff.header && !sniff.generated;
+  const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
+  for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
+    for (let fi = 0; fi < fields.length; fi++) {
+      const f = fields[fi];
+      const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+      if (count % indexEvery === 0) anchors.push(at[fi]);
+      count++;
+      if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+      if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+      if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+      if (ax[0].size < CAP_DISTINCT) ax[0].add(round10(xv));
+      if (ax[1].size < CAP_DISTINCT) ax[1].add(round10(yv));
+      if (ax[2].size < CAP_DISTINCT) ax[2].add(round10(zv));
+      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); if (v) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+      if (hasDims) {
+        const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
+        if (dx > 0 && dy > 0 && dz > 0) {
+          if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
+          if (dimSet.size <= 300) dimSet.add(`${round10(dx)},${round10(dy)},${round10(dz)}`);
+        }
+      }
+    }
+  }
+
+  const axes = ax.map((s) => (s.size < CAP_DISTINCT ? inferAxis([...s].sort((a, b) => a - b)) : null));
+  let grid = axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+
+  // ── sub-blocked detection ── dims vary → fine-lattice IJK (pitch = min dim /2,
+  // so every power-of-2 sub-block centroid lands on it) + a size-code palette.
+  // Off the fine lattice (non-power-of-2 splits) → leave it null → points fallback.
+  let subBlocked = false, dimPalette = null, dimInfo = null;
+  if (hasDims && dimSet.size > 1 && Number.isFinite(minDim[0])) {
+    const finePitch = [minDim[0] / 2, minDim[1] / 2, minDim[2] / 2];
+    const fineAxes = [0, 1, 2].map((a) => {
+      if (ax[a].size >= CAP_DISTINCT || !(finePitch[a] > 0)) return null;
+      const vals = [...ax[a]].sort((u, v) => u - v);
+      const origin = vals[0], pitch = finePitch[a];
+      const cnt = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
+      if (cnt > 65535) return null;
+      const eps = Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6);
+      for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
+      return { origin, pitch, count: cnt };
+    });
+    if (fineAxes.every(Boolean)) {
+      subBlocked = true;
+      const dims = [...dimSet].slice(0, 256).map((k) => k.split(',').map(Number));
+      dimPalette = dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]);       // half-dims (box radius)
+      dimInfo = { cols: dimCols, code: new Map(dims.map((d, i) => [`${round10(d[0])},${round10(d[1])},${round10(d[2])}`, i])) };
+      grid = { x: fineAxes[0], y: fineAxes[1], z: fineAxes[2] };                // fine lattice → IJK
+    }
+  }
+  const categories = catCol != null && catCounts.size > 0 && catCounts.size <= 255
+    ? [...catCounts.keys()].sort() : null;
+  const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
+
+  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
+  // the UI offers these as color channels; switching re-runs sweep 2 only.
+  const numericColumns = [];
+  if (sniff.header) {
+    const lines2 = head.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(1, 40);
+    const split2 = splitter(sniff.delim);
+    for (let i = 0; i < sniff.columns; i++) {
+      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
+      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
+      if (vals.length && vals.every((v) => !Number.isNaN(Number(v)))) numericColumns.push({ i, name: sniff.header[i] });
+    }
+  }
+  const header = {
+    kind: 'blockmodel', count,
+    bbox: { min, max },
+    grid,                                                   // null → not a regular grid (points fallback)
+    subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
+    columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
+    delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
+    index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
+    numericColumns,
+    categories,
+    attributes: [
+      ...(map.chan != null && sniff.header ? [sniff.header[map.chan]] : []),
+      ...(categories && sniff.header ? [sniff.header[catCol]] : []),
+    ],
+  };
+
+  // ── sweep 2 (cold recipe): the shared stream factory ──
+  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo);
+
+  return { header, streamChunks };
+}
+
+// ── the TABLE provider: a delimited file with NO geometry ─────────────────────
+// Not every table in a project is spatial — a join source, a parameter table, a
+// cut-off/density lookup, a price deck, an analysis result. This reads one as a
+// plain tabular document: columns, a row count, numeric-column detection, and
+// the line index `fetchDelimitedRecord` needs. No coordinates, no bbox, no
+// chunks — nothing here reaches the renderer.
+async function openTable(blob, { signal, onProgress } = {}) {
+  const sniff = sniffDelimited(await blob.slice(0, 64 * 1024).text());   // { delim, header: [names]|null, columns: n }
+  const hasHeaderRow = !!sniff.header;
+  const columns = sniff.header
+    ? sniff.header.map((h, i) => String(h).trim() || `col${i + 1}`)
+    : Array.from({ length: sniff.columns }, (_, i) => `col${i + 1}`);
+  // one pass: count the rows and sample each column's type (a column is numeric
+  // when ≥90% of its non-empty values parse — the same tolerance the block
+  // provider uses, so mixed columns with a stray 'n/a' still read as numbers)
+  const stat = columns.map(() => ({ n: 0, num: 0 }));
+  let count = 0;
+  for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
+    for (const f of batch) {
+      for (let i = 0; i < columns.length && i < f.length; i++) {
+        const v = f[i];
+        if (v === '' || v == null) continue;
+        stat[i].n++;
+        if (Number.isFinite(+v)) stat[i].num++;
+      }
+      count++;
+    }
+  }
+  const numericColumns = [];
+  for (let i = 0; i < columns.length; i++) if (stat[i].n && stat[i].num / stat[i].n >= 0.9) numericColumns.push({ i, name: columns[i] });
+  // a table needs ROWS. Prose lands here with a plausible-looking delimiter and
+  // no data — "0 rows · 10 columns" is not a table, it is a misread file.
+  if (!count) throw new Error('no data rows — this does not look like a table');
+  return { header: { table: true, columns, count, delim: sniff.delim, hasHeaderRow, numericColumns, mapping: null, grid: null, bbox: null } };
+}
+
+// ── ../drillhole/src/desurvey.js ──
+
+// @gcu/drillhole — desurvey: collar + survey stations → the 3D hole trace, and a
+// method-consistent position at any down-hole depth.
+//
+// Conventions (D1): azimuth = degrees clockwise from north; dip = MINING convention,
+// positive DOWN (normalizeSurveys flips neg-down files; detectDipConvention infers
+// from the median); depths/lengths in any consistent unit (metres in practice).
+// World frame: x = east, y = north, z = up.
+//
+// Reverse-vendored from BMA (A7 Phase 0, Arthur 2026-06-11) — developed there in the
+// concat-source style, always intended to live here. BMA + dee re-vendor from here now.
+
+// Unit tangent from azimuth/dip (mining pos-down): x east, y north, z up.
+function dhTangent$index(azDeg, dipDeg) {
+  let az = azDeg * Math.PI / 180, dip = dipDeg * Math.PI / 180;
+  let c = Math.cos(dip);
+  return [Math.sin(az) * c, Math.cos(az) * c, -Math.sin(dip)];
+}
+
+// 'pos-down' (mining: +60 = 60° below horizontal) vs 'neg-down' (signed math: -60 =
+// below). Inferred from the median dip — exploration holes point down, so the sign of
+// the bulk tells the convention.
+function dhDetectDipConvention$index(surveys) {
+  let dips = [];
+  for (let i = 0; i < surveys.length; i++) {
+    let d = surveys[i].dip;
+    if (typeof d === 'number' && isFinite(d) && d !== 0) dips.push(d);
+  }
+  if (dips.length === 0) return 'pos-down';
+  dips.sort(function(a, b) { return a - b; });
+  let med = dips[Math.floor(dips.length / 2)];
+  return med < 0 ? 'neg-down' : 'pos-down';
+}
+
+// Sort, dedupe (last wins), normalize dip to pos-down, synthesize a station at depth 0
+// when the list starts deeper (copies the first attitude). Returns { stations:
+// [{depth, az, dip}], dupCount, badCount }.
+function dhNormalizeSurveys$index(rawSurveys, dipConvention) {
+  let flip = dipConvention === 'neg-down' ? -1 : 1;
+  let clean = [], badCount = 0;
+  for (let i = 0; i < rawSurveys.length; i++) {
+    let s = rawSurveys[i];
+    let depth = s.depth, az = s.az, dip = s.dip * flip;
+    if (!isFinite(depth) || depth < 0 || !isFinite(az) || !isFinite(dip) || Math.abs(dip) > 90.000001) {
+      badCount++;
+      continue;
+    }
+    clean.push({ depth: depth, az: az, dip: dip });
+  }
+  clean.sort(function(a, b) { return a.depth - b.depth; });
+  let stations = [], dupCount = 0;
+  for (let j = 0; j < clean.length; j++) {
+    if (stations.length && Math.abs(stations[stations.length - 1].depth - clean[j].depth) < 1e-9) {
+      stations[stations.length - 1] = clean[j]; // last wins
+      dupCount++;
+    } else {
+      stations.push(clean[j]);
+    }
+  }
+  if (stations.length && stations[0].depth > 1e-9) {
+    stations.unshift({ depth: 0, az: stations[0].az, dip: stations[0].dip });
+  }
+  return { stations: stations, dupCount: dupCount, badCount: badCount };
+}
+
+// Desurvey one hole. Methods:
+// - 'minimumCurvature' (default): circular-arc model, RF = (2/θ)·tan(θ/2)
+// - 'balancedTangential': the same without RF — averages the two end tangents per
+//   segment (matches legacy desurveys from several packages)
+// - 'tangential': straight segments along the LOWER station's attitude (sparse/legacy
+//   surveys; matches dee's simple-tangential seed)
+// collar = [x, y, z]; stations from dhNormalizeSurveys (pos-down). Returns { method,
+// depths, px, py, pz, tx, ty, tz, dogleg, dls } — tangents + method ride along so
+// dhPositionAt interpolates consistently. `dogleg[k]` is the angular change (degrees)
+// between stations k−1 and k; `dls[k]` is the dogleg SEVERITY in °/30 length-units (the
+// metric drilling-QC convention — multiply by ⅓ for °/10 m, or recompute from `dogleg`
+// for °/100 ft). Both are geometry of the survey attitudes — independent of `method` —
+// so they're the same whichever desurvey you pick. dogleg[0] = dls[0] = 0.
+function dhDesurveyHole$index(collar, stations, method) {
+  method = method || 'minimumCurvature';
+  let n = stations.length;
+  let out = {
+    method: method,
+    depths: new Float64Array(n),
+    px: new Float64Array(n), py: new Float64Array(n), pz: new Float64Array(n),
+    tx: new Float64Array(n), ty: new Float64Array(n), tz: new Float64Array(n),
+    dogleg: new Float64Array(n), dls: new Float64Array(n),
+  };
+  for (let i = 0; i < n; i++) {
+    out.depths[i] = stations[i].depth;
+    let t = dhTangent$index(stations[i].az, stations[i].dip);
+    out.tx[i] = t[0]; out.ty[i] = t[1]; out.tz[i] = t[2];
+  }
+  out.px[0] = collar[0]; out.py[0] = collar[1]; out.pz[0] = collar[2];
+
+  for (let k = 1; k < n; k++) {
+    let dl = out.depths[k] - out.depths[k - 1];
+    // dogleg angle between the two station tangents — drives both the min-curvature RF
+    // and the QC severity, and is the same for every method (it's the survey geometry).
+    let dot = out.tx[k - 1] * out.tx[k] + out.ty[k - 1] * out.ty[k] + out.tz[k - 1] * out.tz[k];
+    let doglegRad = Math.acos(Math.max(-1, Math.min(1, dot)));
+    out.dogleg[k] = doglegRad * 180 / Math.PI;
+    out.dls[k] = dl > 1e-12 ? out.dogleg[k] / dl * 30 : 0;
+    if (method === 'tangential') {
+      out.px[k] = out.px[k - 1] + dl * out.tx[k];
+      out.py[k] = out.py[k - 1] + dl * out.ty[k];
+      out.pz[k] = out.pz[k - 1] + dl * out.tz[k];
+    } else {
+      let rf = 1; // balanced tangential
+      // minimum curvature: RF = (2/θ)·tan(θ/2)
+      if (method !== 'balancedTangential') rf = doglegRad > 1e-6 ? (2 / doglegRad) * Math.tan(doglegRad / 2) : 1;
+      out.px[k] = out.px[k - 1] + 0.5 * dl * (out.tx[k - 1] + out.tx[k]) * rf;
+      out.py[k] = out.py[k - 1] + 0.5 * dl * (out.ty[k - 1] + out.ty[k]) * rf;
+      out.pz[k] = out.pz[k - 1] + 0.5 * dl * (out.tz[k - 1] + out.tz[k]) * rf;
+    }
+  }
+  return out;
+}
+
+// Position at an arbitrary down-hole depth, consistent with the hole's desurvey method
+// (depths between stations land on the SAME path the stations were placed on):
+// - minimumCurvature: arc-correct (D2) — the closed-form integral of the slerp of the
+//   end tangents: p(s) = p1 + L/(θ·sinθ)·[(cos(θ−φ) − cosθ)·d1 + (1 − cosφ)·d2],
+//   φ = θ·s/L (at s = L this reduces to the RF endpoint formula; the harness pins
+//   mid-segment points to an analytic circle at 1e-14)
+// - tangential: straight along the lower station's attitude (how the segment was built)
+// - balancedTangential: linear along the segment chord
+// Beyond the last station: straight extrapolation along the last tangent (standard
+// practice — intervals routinely outrun the survey).
+function dhPositionAt$index(hole, depth) {
+  let d = hole.depths, n = d.length;
+  if (n === 0) return null;
+  if (depth <= d[0]) {
+    let s0 = depth - d[0]; // above collar station (negative) — straight
+    return [hole.px[0] + s0 * hole.tx[0], hole.py[0] + s0 * hole.ty[0], hole.pz[0] + s0 * hole.tz[0]];
+  }
+  if (depth >= d[n - 1]) {
+    let sE = depth - d[n - 1];
+    return [hole.px[n - 1] + sE * hole.tx[n - 1], hole.py[n - 1] + sE * hole.ty[n - 1], hole.pz[n - 1] + sE * hole.tz[n - 1]];
+  }
+  // binary search: segment [lo, lo+1] with d[lo] <= depth < d[lo+1]
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    let mid = (lo + hi) >> 1;
+    if (d[mid] <= depth) lo = mid; else hi = mid;
+  }
+  let L = d[lo + 1] - d[lo], s = depth - d[lo];
+  if (L < 1e-12) return [hole.px[lo], hole.py[lo], hole.pz[lo]];
+
+  if (hole.method === 'tangential') {
+    return [
+      hole.px[lo] + s * hole.tx[lo + 1],
+      hole.py[lo] + s * hole.ty[lo + 1],
+      hole.pz[lo] + s * hole.tz[lo + 1],
+    ];
+  }
+  if (hole.method === 'balancedTangential') {
+    let t = s / L;
+    return [
+      hole.px[lo] + t * (hole.px[lo + 1] - hole.px[lo]),
+      hole.py[lo] + t * (hole.py[lo + 1] - hole.py[lo]),
+      hole.pz[lo] + t * (hole.pz[lo + 1] - hole.pz[lo]),
+    ];
+  }
+
+  let d1 = [hole.tx[lo], hole.ty[lo], hole.tz[lo]];
+  let d2 = [hole.tx[lo + 1], hole.ty[lo + 1], hole.tz[lo + 1]];
+  let dot = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2];
+  let theta = Math.acos(Math.max(-1, Math.min(1, dot)));
+  if (theta < 1e-9) {
+    return [hole.px[lo] + s * d1[0], hole.py[lo] + s * d1[1], hole.pz[lo] + s * d1[2]];
+  }
+  let phi = theta * s / L;
+  let kk = L / (theta * Math.sin(theta));
+  let a = (Math.cos(theta - phi) - Math.cos(theta)) * kk;
+  let b = (1 - Math.cos(phi)) * kk;
+  return [
+    hole.px[lo] + a * d1[0] + b * d2[0],
+    hole.py[lo] + a * d1[1] + b * d2[1],
+    hole.pz[lo] + a * d1[2] + b * d2[2],
+  ];
+}
+
+// ── ../drillhole/src/validate.js ──
+
+// @gcu/drillhole — validate: join + check the three tables. Nothing is silently
+// dropped; every exclusion lands in the report with a count and a BHID list.
+//
+// The collar+survey join (dhJoinHoles) and per-hole station normalization
+// (dhNormalizeHoleStations) are factored out so the point-sample locator
+// (dhDesurveySamples) reuses the exact same hole-building — one join, two consumers.
+
+
+// Build the per-hole structure from collars + surveys (NOT normalized yet — callers
+// normalize only the holes that pass their own gate, so a skipped hole doesn't accrue
+// advisory counts). Returns { holes: bhid→{bhid,collar,eoh,rawSurveys}, order: [] }.
+function dhJoinHoles$index(tables, dipConvention, hit) {
+  let holes = {}, order = [];
+  for (let ci = 0; ci < (tables.collars || []).length; ci++) {
+    let c0 = tables.collars[ci];
+    let bid = String(c0.bhid).trim();
+    if (!bid) { hit('bad-collar', 'Collar rows with missing BHID or non-numeric coordinates', null); continue; }
+    if (!isFinite(c0.x) || !isFinite(c0.y) || !isFinite(c0.z)) {
+      hit('bad-collar', 'Collar rows with missing BHID or non-numeric coordinates', bid);
+      continue;
+    }
+    if (holes[bid]) { hit('dup-collar', 'Duplicate collar BHIDs (first kept)', bid); continue; }
+    holes[bid] = { bhid: bid, collar: [c0.x, c0.y, c0.z], eoh: isFinite(c0.eoh) ? c0.eoh : null, rawSurveys: [] };
+    order.push(bid);
+  }
+  for (let si = 0; si < (tables.surveys || []).length; si++) {
+    let s0 = tables.surveys[si];
+    let sb = String(s0.bhid).trim();
+    let h = holes[sb];
+    if (!h) { hit('orphan-survey', 'Survey rows whose BHID has no collar (excluded)', sb); continue; }
+    h.rawSurveys.push({ depth: s0.depth, az: s0.az, dip: s0.dip });
+  }
+  return { holes: holes, order: order };
+}
+
+// Normalize one hole's raw surveys → hole.stations (pos-down, sorted, deduped, depth-0
+// synthesized), with the no-usable-survey straight-down fallback and the survey-side
+// past-EOH advisory. Counts ride into `hit`. Mutates + returns the hole.
+function dhNormalizeHoleStations$index(hole, dipConvention, hit) {
+  let norm = dhNormalizeSurveys$index(hole.rawSurveys, dipConvention);
+  if (norm.badCount) for (let bi = 0; bi < norm.badCount; bi++) hit('bad-survey', 'Survey rows with non-numeric depth/azimuth or |dip| > 90 (excluded)', hole.bhid);
+  if (norm.dupCount) for (let di = 0; di < norm.dupCount; di++) hit('dup-survey-depth', 'Duplicate survey depths in a hole (last kept)', hole.bhid);
+  if (norm.stations.length === 0) {
+    hit('collar-no-survey', 'Holes with no usable survey (desurveyed straight down)', hole.bhid);
+    norm.stations = [{ depth: 0, az: 0, dip: 90 }];
+  }
+  hole.stations = norm.stations;
+  if (hole.eoh != null && norm.stations[norm.stations.length - 1].depth > hole.eoh + 1e-9) {
+    hit('past-eoh', 'Survey or interval depths past the collar EOH (kept — EOH is advisory)', hole.bhid);
+  }
+  return hole;
+}
+
+// tables = {
+//   collars:  [{ bhid, x, y, z, eoh }],            // eoh optional/null
+//   surveys:  [{ bhid, depth, az, dip }],          // dip raw (per file)
+//   intervals: { bhid: [], from: [], to: [],
+//                cols: [{ name, type: 'num'|'cat', values: [] }] }
+// }
+// opts = { dipConvention: 'auto'|'pos-down'|'neg-down', method }
+function dhValidate$index(tables, opts) {
+  opts = opts || {};
+  let checks = {};
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let dipConvention = opts.dipConvention || 'auto';
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$index(tables.surveys || []);
+
+  let joined = dhJoinHoles$index(tables, dipConvention, hit);
+  let holes = joined.holes, order = joined.order;
+  for (let oi = 0; oi < order.length; oi++) holes[order[oi]].iv = [];
+
+  // intervals
+  let iv = tables.intervals || { bhid: [], from: [], to: [], cols: [] };
+  let nIv = iv.bhid.length;
+  for (let ii = 0; ii < nIv; ii++) {
+    let ib = String(iv.bhid[ii]).trim();
+    let h2 = holes[ib];
+    if (!h2) { hit('orphan-interval', 'Interval rows whose BHID has no collar (excluded)', ib); continue; }
+    let f = iv.from[ii], t = iv.to[ii];
+    if (!isFinite(f) || !isFinite(t) || f < 0 || t <= f) {
+      hit('bad-interval', 'Interval rows with FROM ≥ TO, negative or non-numeric depths (excluded)', ib);
+      continue;
+    }
+    h2.iv.push(ii);
+  }
+
+  // per-hole structure (normalize only the holes that have intervals)
+  let ready = [];
+  for (let oi = 0; oi < order.length; oi++) {
+    let hh = holes[order[oi]];
+    if (hh.iv.length === 0) { hit('collar-no-intervals', 'Collars with no interval rows (hole skipped)', hh.bhid); continue; }
+
+    dhNormalizeHoleStations$index(hh, dipConvention, hit);
+
+    // interval-side past-EOH advisory (kept, counted)
+    if (hh.eoh != null) {
+      for (let ei = 0; ei < hh.iv.length; ei++) {
+        if (iv.to[hh.iv[ei]] > hh.eoh + 1e-9) {
+          hit('past-eoh', 'Survey or interval depths past the collar EOH (kept — EOH is advisory)', hh.bhid);
+          break;
+        }
+      }
+    }
+
+    // overlap flag (composited as-is; SUPPORT double-counts — flagged per hole)
+    let idx = hh.iv.slice().sort(function(a, b) { return iv.from[a] - iv.from[b]; });
+    for (let vi = 1; vi < idx.length; vi++) {
+      if (iv.from[idx[vi]] < iv.to[idx[vi - 1]] - 1e-9) {
+        hit('overlap', 'Holes with overlapping intervals (composited as-is; SUPPORT double-counts)', hh.bhid);
+        break;
+      }
+    }
+    hh.iv = idx;
+    ready.push(hh);
+  }
+
+  return { holes: ready, checks: checks, dipConvention: dipConvention, intervals: iv };
+}
+
+// ── ../drillhole/src/samples.js ──
+
+// @gcu/drillhole — point-sample locator. Some data is point-support, not intervals:
+// single-depth assays (handheld XRF, density readings) or already-composited samples
+// re-imported. Compositing (length-weighting into windows) doesn't apply — you just
+// want each sample placed in 3D on the desurveyed trace. This is that path; it reuses
+// the same collar+survey join + station normalization as dhValidate.
+
+
+// tables = { collars, surveys, samples: { bhid:[], depth:[], cols:[{name,type,values}] } }
+// opts   = { dipConvention, method }
+// Returns { header: ['BHID','X','Y','Z','DEPTH', ...cols], rows, report } — one located
+// row per valid sample (sorted down-hole within each hole), with the same non-silent
+// consistency report style as the interval pipeline.
+function dhDesurveySamples$index(tables, opts) {
+  opts = opts || {};
+  let checks = {};
+  function hit(id, label, bhid) {
+    let c = checks[id];
+    if (!c) { c = checks[id] = { id: id, label: label, count: 0, bhids: [] }; }
+    c.count++;
+    if (bhid != null && c.bhids.indexOf(bhid) < 0 && c.bhids.length < 200) c.bhids.push(bhid);
+  }
+
+  let dipConvention = opts.dipConvention || 'auto';
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$index(tables.surveys || []);
+
+  let joined = dhJoinHoles$index(tables, dipConvention, hit);
+  let holes = joined.holes, order = joined.order;
+  for (let oi = 0; oi < order.length; oi++) holes[order[oi]].smp = [];
+
+  // samples → per-hole index lists
+  let smp = tables.samples || { bhid: [], depth: [], cols: [] };
+  let cols = smp.cols || [];
+  let nS = smp.bhid.length;
+  for (let ii = 0; ii < nS; ii++) {
+    let bid = String(smp.bhid[ii]).trim();
+    let h = holes[bid];
+    if (!h) { hit('orphan-sample', 'Sample rows whose BHID has no collar (excluded)', bid); continue; }
+    let d = smp.depth[ii];
+    if (!isFinite(d) || d < 0) { hit('bad-sample', 'Sample rows with negative or non-numeric depth (excluded)', bid); continue; }
+    h.smp.push(ii);
+  }
+
+  let header = ['BHID', 'X', 'Y', 'Z', 'DEPTH'];
+  for (let hc = 0; hc < cols.length; hc++) header.push(cols[hc].name);
+  let rows = [];
+  let nHoles = 0;
+
+  for (let oi = 0; oi < order.length; oi++) {
+    let hh = holes[order[oi]];
+    if (hh.smp.length === 0) { hit('collar-no-samples', 'Collars with no sample rows (hole skipped)', hh.bhid); continue; }
+    dhNormalizeHoleStations$index(hh, dipConvention, hit);
+    let path = dhDesurveyHole$index(hh.collar, hh.stations, opts.method);
+    nHoles++;
+
+    // EOH advisory (kept, counted)
+    if (hh.eoh != null) {
+      for (let ei = 0; ei < hh.smp.length; ei++) {
+        if (smp.depth[hh.smp[ei]] > hh.eoh + 1e-9) {
+          hit('past-eoh', 'Sample depths past the collar EOH (kept — EOH is advisory)', hh.bhid);
+          break;
+        }
+      }
+    }
+
+    let idx = hh.smp.slice().sort(function(a, b) { return smp.depth[a] - smp.depth[b]; });
+    for (let k = 0; k < idx.length; k++) {
+      let ii = idx[k], d = smp.depth[ii];
+      let pos = dhPositionAt$index(path, d);
+      let row = [hh.bhid, pos[0], pos[1], pos[2], d];
+      for (let c = 0; c < cols.length; c++) row.push(cols[c].values[ii]);
+      rows.push(row);
+    }
+  }
+
+  let checkList = [];
+  for (let k in checks) checkList.push(checks[k]);
+  return { header: header, rows: rows, report: { checks: checkList, nHoles: nHoles, nSamples: rows.length, dipConvention: dipConvention } };
+}
+
+// ── src/io/drillholes.js ──
+
+// @gcu/condenser — drillhole provider: collar + survey + interval tables →
+// desurveyed interval midpoints as an element layer (micro-layers spec §5).
+// The math is @gcu/drillhole's (minimum curvature / balanced tangential /
+// tangential, dip-convention detection, the non-silent consistency report);
+// this module is table intake + the identity plumbing.
+//
+// THE IDENTITY: record N == interval-table row N. desurveySamples returns
+// rows depth-sorted per hole, so a hidden __row column threads the original
+// row index through — recIdx survives the sort, and pick/measure/filter all
+// join back to the source assay row.
+//
+// Tables are read FULLY into memory (drillhole files are 10³–10⁶ rows — the
+// streaming machinery is for the 10⁸ element tables), which also makes
+// fetchRecord O(1) and channel switches free.
+
+
+const BHID_RE = /^(bhid|holeid|hole_?id|dhid|dh_?id|hole|collar_?id|id)$/i;
+const X_RE$drillholes = /^(x|xc|xcollar|east(ing)?|utm_?e)$/i;
+const Y_RE$drillholes = /^(y|yc|ycollar|north(ing)?|utm_?n)$/i;
+const Z_RE$drillholes = /^(z|zc|zcollar|elev(ation)?|rl)$/i;
+const AT_RE = /^(at|depth|dist(ance)?|md|measured_?depth)$/i;
+const AZ_RE = /^(az|azm|azim(uth)?|brg|bearing)$/i;
+const DIP_RE = /^(dip|incl(ination)?|plunge)$/i;
+const FROM_RE = /^(from|depfrom|depth_?from|de)$/i;
+const TO_RE = /^(to|depto|depth_?to|a)$/i;
+const EOH_RE = /^(eoh|depth|maxdepth|max_?depth|td|total_?depth|length)$/i;
+
+const find = (header, re) => header.findIndex((h) => re.test(String(h).trim()));
+
+// Classify one delimited header as collar / survey / intervals (or null).
+// Survey and intervals are keyed on their unambiguous columns (AZ+DIP / FROM+TO);
+// collar is BHID + coordinates. Returns { role, mapping }.
+function classifyDrillholeHeader(header) {
+  if (!header) return null;
+  const bhid = find(header, BHID_RE);
+  if (bhid < 0) return null;
+  const from = find(header, FROM_RE), to = find(header, TO_RE);
+  if (from >= 0 && to >= 0) return { role: 'intervals', mapping: { bhid, from, to } };
+  const az = find(header, AZ_RE), dip = find(header, DIP_RE), at = find(header, AT_RE);
+  if (az >= 0 && dip >= 0) return { role: 'survey', mapping: { bhid, at: at >= 0 ? at : -1, az, dip } };
+  const x = find(header, X_RE$drillholes), y = find(header, Y_RE$drillholes), z = find(header, Z_RE$drillholes);
+  if (x >= 0 && y >= 0 && z >= 0) {
+    let eoh = -1;
+    header.forEach((h, i) => { if (eoh < 0 && i !== x && i !== y && i !== z && EOH_RE.test(String(h).trim())) eoh = i; });
+    return { role: 'collar', mapping: { bhid, x, y, z, eoh } };
+  }
+  return null;
+}
+
+// Read a delimited blob fully: { columns, rows } (field arrays, header skipped).
+async function readDelimited(blob, { sample = 256 * 1024 } = {}) {
+  const head = await blob.slice(0, Math.min(sample, blob.size)).text();
+  const sniff = sniffDelimited(head);
+  if (!sniff.header) throw new Error('drillholes: table has no header row');
+  const rows = [];
+  for await (const batch of lineFields(blob, sniff.delim, true)) {
+    for (const f of batch) rows.push(f);
+  }
+  return { columns: sniff.header.map((c) => String(c).trim()), rows };
+}
+
+// Sniff a set of blobs into drillhole roles. Returns { collar, survey,
+// intervals } of { blob, name, columns, mapping } when all three distinct
+// roles are present, else null.
+async function sniffDrillholeFiles(files) {
+  const out = {};
+  for (const f of files) {
+    let sniff;
+    try { sniff = sniffDelimited(await f.slice(0, 64 * 1024).text()); } catch { continue; }
+    const cls = classifyDrillholeHeader(sniff.header);
+    if (cls && !out[cls.role]) out[cls.role] = { blob: f, name: f.name || cls.role, columns: sniff.header.map((c) => String(c).trim()), mapping: cls.mapping };
+  }
+  return out.collar && out.survey && out.intervals ? out : null;
+}
+
+/**
+ * openDrillholes({ collar, survey, intervals }, opts) — each input is a Blob.
+ * opts: mappings { collar: {bhid,x,y,z,eoh}, survey: {bhid,at,az,dip},
+ * intervals: {bhid,from,to} } (sniffed when omitted), method
+ * ('minimumCurvature' | 'balancedTangential' | 'tangential'), dipConvention
+ * ('auto' | 'pos-down' | 'neg-down'), chan (interval column index for the
+ * grade channel; default = first numeric non-key column), cat (category
+ * column index; default = first all-text non-key column).
+ *
+ * → { header, streamChunks, fetchRecord }
+ *   header = { kind:'drillholes', count (ORIGINAL interval rows), bbox,
+ *              columns, mapping {chan, cat}, numericColumns, categories,
+ *              attributes, report, method, dipConvention, holes }
+ *   RawChunk = { count, x, y, z, chan, cat, recIdx } (blockmodel shape —
+ *              the page's centroids-as-points path renders it)
+ *   fetchRecord(rec) → the ORIGINAL interval row (O(1), in memory)
+ */
+async function openDrillholes({ collar, survey, intervals }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const tIv = await readDelimited(intervals);
+  const m = {
+    collar: (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping,
+    survey: (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping,
+    intervals: (opts.mappings && opts.mappings.intervals) || (classifyDrillholeHeader(tIv.columns) || {}).mapping,
+  };
+  if (!m.collar || m.collar.x == null) throw new Error('drillholes: collar columns not identified (need BHID + X/Y/Z)');
+  if (!m.survey || m.survey.az == null) throw new Error('drillholes: survey columns not identified (need BHID + AZ + DIP)');
+  if (!m.intervals || m.intervals.from == null) throw new Error('drillholes: interval columns not identified (need BHID + FROM + TO)');
+
+  // @gcu/drillhole table shapes
+  const collars = tCollar.rows.map((r) => ({
+    bhid: r[m.collar.bhid], x: +r[m.collar.x], y: +r[m.collar.y], z: +r[m.collar.z],
+    eoh: m.collar.eoh >= 0 ? +r[m.collar.eoh] : undefined,
+  }));
+  const surveys = tSurvey.rows.map((r) => ({
+    bhid: r[m.survey.bhid], depth: m.survey.at >= 0 ? +r[m.survey.at] : 0, az: +r[m.survey.az], dip: +r[m.survey.dip],
+  }));
+
+  const n = tIv.rows.length;
+  const keyCols = new Set([m.intervals.bhid, m.intervals.from, m.intervals.to]);
+  // numeric / categorical detection over a head sample of the interval table
+  const probe = tIv.rows.slice(0, 200);
+  const numericCols = [], textCols = [];
+  tIv.columns.forEach((name, i) => {
+    if (keyCols.has(i)) return;
+    const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
+    if (!vals.length) return;
+    if (vals.every((v) => !Number.isNaN(Number(v)))) numericCols.push({ i, name });
+    else if (vals.every((v) => Number.isNaN(Number(v)))) textCols.push({ i, name });
+  });
+  const chan = opts.chan != null ? opts.chan : (numericCols[0] ? numericCols[0].i : null);
+  const catCol = opts.cat != null ? opts.cat : (textCols[0] ? textCols[0].i : null);
+
+  // samples = BOTH interval endpoints (2 per row): the desurveyed FROM and TO
+  // positions are the capsule segment, arc-correct via positionAt; the render
+  // midpoint derives as (A+B)/2. __row + __end thread the source row and
+  // which endpoint through the per-hole depth sort (the identity).
+  const bhid = new Array(2 * n), depth = new Float64Array(2 * n);
+  const rowIdx = new Float64Array(2 * n), endIdx = new Float64Array(2 * n);
+  const chanVals = new Float64Array(n), catVals = catCol != null ? new Array(n) : null;
+  const catCounts = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = tIv.rows[i];
+    const hb = r[m.intervals.bhid];
+    bhid[2 * i] = hb; bhid[2 * i + 1] = hb;
+    depth[2 * i] = +r[m.intervals.from]; depth[2 * i + 1] = +r[m.intervals.to];
+    rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
+    endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
+    chanVals[i] = chan != null ? +r[chan] : 0;
+    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+  }
+  const samples = { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] };
+
+  const ds = dhDesurveySamples$index({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
+
+  // the interval-shape checks (overlaps, inverted from/to…) come from validate
+  const iv = {
+    bhid, from: tIv.rows.map((r) => +r[m.intervals.from]), to: tIv.rows.map((r) => +r[m.intervals.to]), cols: [],
+  };
+  let report = ds.report;
+  try {
+    const v = dhValidate$index({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
+    const seen = new Set(report.checks.map((c) => c.id));
+    const extra = Object.values(v.checks || {}).filter((c) => !seen.has(c.id));
+    report = { ...report, checks: report.checks.concat(extra) };
+  } catch { /* validate's report is a bonus, not a gate */ }
+
+  const categories = catCounts.size > 0 && catCounts.size <= 255 ? [...catCounts.keys()].sort() : null;
+  const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
+
+  // pair the placed endpoints back into SEGMENTS keyed by source row
+  const endA = new Map(), endB = new Map();               // src row → [x,y,z]
+  for (let k = 0; k < ds.rows.length; k++) {
+    const row = ds.rows[k];
+    const src = row[5] | 0, end = row[6] | 0;             // __row, __end
+    (end === 0 ? endA : endB).set(src, [row[1], row[2], row[3]]);
+  }
+  const placedRows = [];
+  for (const [src, a] of endA) if (endB.has(src)) placedRows.push(src);
+  placedRows.sort((x, y) => x - y);
+  const nP = placedRows.length;
+  const ax = new Float64Array(nP), ay = new Float64Array(nP), az = new Float64Array(nP);
+  const bx = new Float64Array(nP), by = new Float64Array(nP), bz = new Float64Array(nP);
+  const px = new Float64Array(nP), py = new Float64Array(nP), pz = new Float64Array(nP);
+  const pChan = new Float64Array(nP), pCat = catCode ? new Uint8Array(nP) : null;
+  const pRec = new Uint32Array(nP);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < nP; k++) {
+    const src = placedRows[k];
+    const A = endA.get(src), B = endB.get(src);
+    ax[k] = A[0]; ay[k] = A[1]; az[k] = A[2];
+    bx[k] = B[0]; by[k] = B[1]; bz[k] = B[2];
+    px[k] = (A[0] + B[0]) / 2; py[k] = (A[1] + B[1]) / 2; pz[k] = (A[2] + B[2]) / 2;
+    pChan[k] = Number.isFinite(chanVals[src]) ? chanVals[src] : 0;
+    if (pCat) { const c = catCode.get(catVals[src]); pCat[k] = c === undefined ? 0 : c; }
+    pRec[k] = src;
+    for (let a2 = 0; a2 < 3; a2++) {
+      if (A[a2] < min[a2]) min[a2] = A[a2]; if (A[a2] > max[a2]) max[a2] = A[a2];
+      if (B[a2] < min[a2]) min[a2] = B[a2]; if (B[a2] > max[a2]) max[a2] = B[a2];
+    }
+  }
+
+  let cLo = Infinity, cHi = -Infinity;
+  for (let k = 0; k < nP; k++) { const v = pChan[k]; if (v < cLo) cLo = v; if (v > cHi) cHi = v; }
+  const header = {
+    kind: 'drillholes', count: n,
+    bbox: { min, max },
+    chanRange: [cLo === Infinity ? 0 : cLo, cHi === -Infinity ? 1 : cHi],
+    columns: tIv.columns,
+    mapping: { x: -1, y: -1, z: -1, chan, cat: categories ? catCol : null },
+    intervalMapping: m.intervals,                          // resolved bhid/from/to (role badges + joins)
+    // the collar/survey tables, so a host can re-map their columns and
+    // re-desurvey — the interval table above is only a third of the mapping
+    collarColumns: tCollar.columns, surveyColumns: tSurvey.columns,
+    collarMapping: m.collar, surveyMapping: m.survey,
+    numericColumns: numericCols,
+    categories,
+    attributes: [
+      ...(chan != null ? [tIv.columns[chan]] : []),
+      ...(categories ? [tIv.columns[catCol]] : []),
+    ],
+    report, method: opts.method || 'minimumCurvature', dipConvention: report.dipConvention,
+    holes: report.nHoles, placed: nP,
+  };
+
+  async function* streamChunks({ chunkPoints = 1 << 18 } = {}) {
+    for (let at = 0; at < nP; at += chunkPoints) {
+      const k = Math.min(chunkPoints, nP - at);
+      yield {
+        count: k,
+        // midpoints (points mode / section center / measure)
+        x: px.subarray(at, at + k), y: py.subarray(at, at + k), z: pz.subarray(at, at + k),
+        // segment endpoints (sticks mode)
+        ax: ax.subarray(at, at + k), ay: ay.subarray(at, at + k), az: az.subarray(at, at + k),
+        bx: bx.subarray(at, at + k), by: by.subarray(at, at + k), bz: bz.subarray(at, at + k),
+        chan: pChan.subarray(at, at + k), cat: pCat ? pCat.subarray(at, at + k) : null,
+        recIdx: pRec.subarray(at, at + k),
+      };
+    }
+  }
+
+  const fetchRecord = (rec) => (rec >= 0 && rec < n ? tIv.rows[rec] : null);
+  // the placed midpoint of a source row (measure across layers) — null for
+  // rows that never placed (orphans)
+  const recToPlaced = new Map();
+  for (let k = 0; k < nP; k++) recToPlaced.set(pRec[k], k);
+  const recordPosition = (rec) => {
+    const k = recToPlaced.get(rec >>> 0);
+    return k === undefined ? null : [px[k], py[k], pz[k]];
+  };
+
+  return { header, streamChunks, fetchRecord, recordPosition };
+}
+
+/**
+ * openDrillholeTraces({ collar, survey }, opts) — the bare hole PATHS: each
+ * hole's collar→EOH trace desurveyed at its survey stations (+ 0 and EOH),
+ * rendered as consecutive stick SEGMENTS. recIdx = the collar row (a hole), so
+ * pick → the collar record. No interval data — this is the geometry a set owns,
+ * so a drillhole set shows full coverage even where an assay table has gaps.
+ * → { header, streamChunks, fetchRecord } — RawChunk in the sticks shape.
+ */
+async function openDrillholeTraces({ collar, survey }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('drillhole traces: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('drillhole traces: survey columns not identified (need BHID + AZ + DIP)');
+  const collars = tCollar.rows.map((r) => ({
+    bhid: r[mc.bhid], x: +r[mc.x], y: +r[mc.y], z: +r[mc.z], eoh: mc.eoh >= 0 ? +r[mc.eoh] : undefined,
+  }));
+  const surveys = tSurvey.rows.map((r) => ({ bhid: r[ms.bhid], depth: ms.at >= 0 ? +r[ms.at] : 0, az: +r[ms.az], dip: +r[ms.dip] }));
+
+  // per hole: sample depths = {0} ∪ survey station depths ∪ {EOH}; EOH from the
+  // collar when present, else the deepest survey station
+  const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
+  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
+  for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
+  for (const c of collars) { if (depthsOf.has(c.bhid)) { const eoh = c.eoh != null && Number.isFinite(c.eoh) ? c.eoh : maxSurvey.get(c.bhid); if (eoh) depthsOf.get(c.bhid).add(eoh); } }
+
+  const sBhid = [], sDepth = [], sRow = [], sSeq = [];
+  for (const [hb, ds] of depthsOf) {
+    const sorted = [...ds].filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
+    sorted.forEach((d, k) => { sBhid.push(hb); sDepth.push(d); sRow.push(holeIdx.get(hb)); sSeq.push(k); });
+  }
+  const samples = { bhid: sBhid, depth: Float64Array.from(sDepth), cols: [{ name: '__row', values: Float64Array.from(sRow) }, { name: '__seq', values: Float64Array.from(sSeq) }] };
+  const ds = dhDesurveySamples$index({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
+
+  // group placed points by hole, order by __seq, connect consecutive → segments
+  const perHole = new Map();
+  for (const row of ds.rows) { const hi = row[5] | 0, sq = row[6] | 0; if (!perHole.has(hi)) perHole.set(hi, []); perHole.get(hi).push([sq, row[1], row[2], row[3]]); }
+  let nSeg = 0;
+  for (const pts of perHole.values()) { pts.sort((a, b) => a[0] - b[0]); nSeg += Math.max(0, pts.length - 1); }
+  const ax = new Float64Array(nSeg), ay = new Float64Array(nSeg), az = new Float64Array(nSeg);
+  const bx = new Float64Array(nSeg), by = new Float64Array(nSeg), bz = new Float64Array(nSeg);
+  const px = new Float64Array(nSeg), py = new Float64Array(nSeg), pz = new Float64Array(nSeg);
+  const pChan = new Float64Array(nSeg), pRec = new Uint32Array(nSeg);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let si = 0;
+  for (const [hi, pts] of perHole) {
+    for (let k = 0; k + 1 < pts.length; k++, si++) {
+      const a = pts[k], b = pts[k + 1];
+      ax[si] = a[1]; ay[si] = a[2]; az[si] = a[3]; bx[si] = b[1]; by[si] = b[2]; bz[si] = b[3];
+      px[si] = (a[1] + b[1]) / 2; py[si] = (a[2] + b[2]) / 2; pz[si] = (a[3] + b[3]) / 2;
+      pRec[si] = hi; pChan[si] = 0;
+      for (const pt of [a, b]) for (let d = 0; d < 3; d++) { const v = pt[d + 1]; if (v < min[d]) min[d] = v; if (v > max[d]) max[d] = v; }
+    }
+  }
+  const header = {
+    kind: 'drillholeTraces', count: nSeg, holes: depthsOf.size,
+    bbox: { min, max }, chanRange: [0, 1],
+    columns: tCollar.columns, collarMapping: mc, surveyMapping: ms,
+    method: opts.method || 'minimumCurvature', dipConvention: ds.report ? ds.report.dipConvention : (opts.dipConvention || 'auto'),
+  };
+  async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
+    for (let at = 0; at < nSeg; at += chunkPoints) {
+      const k = Math.min(chunkPoints, nSeg - at);
+      yield {
+        count: k,
+        x: px.subarray(at, at + k), y: py.subarray(at, at + k), z: pz.subarray(at, at + k),
+        ax: ax.subarray(at, at + k), ay: ay.subarray(at, at + k), az: az.subarray(at, at + k),
+        bx: bx.subarray(at, at + k), by: by.subarray(at, at + k), bz: bz.subarray(at, at + k),
+        chan: pChan.subarray(at, at + k), cat: null, recIdx: pRec.subarray(at, at + k),
+      };
+    }
+  }
+  const fetchRecord = (rec) => (rec >= 0 && rec < tCollar.rows.length ? tCollar.rows[rec] : null);
+  // a trace record is a hole; its position is the collar (endpoint 0). Coarse
+  // but correct — the same "fall back to the centroid" the picker uses when a hit
+  // has no face. Was a hard `() => null`, which made Measure silently no-op on a
+  // trace segment.
+  const recordPosition = (rec) => {
+    const c = collars[rec];
+    return c && Number.isFinite(c.x) ? [c.x, c.y, c.z] : null;
+  };
+  return { header, streamChunks, fetchRecord, recordPosition };
+}
+
 // ── src/core/sticks.js ──
 
 // @gcu/condenser — stick chunks: drillhole interval SEGMENTS (desurveyed
@@ -763,242 +2330,6 @@ function createStickChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, se
     flush() { flushBatch(); return doc; },
     get doc() { return doc; },
   };
-}
-
-// ── src/core/mesh-geom.js ──
-
-// @gcu/condenser — mesh GEOMETRY builders (core: no I/O). World-f64 vertices
-// → frame-local Float32 chunks for the static indexed pipeline (gl-mesh.js),
-// plus the heightfield triangulator (a regular grid IS a single-valued
-// surface). The file readers (.msh/.obj/.ply) live in io/mesh-io.js.
-// ── world f64 → one frame-local GPU-ready chunk ──
-// Float32 positions are safe at frame-local magnitudes (the whole point of
-// @gcu/frame); indices stay u32. Context meshes are ONE chunk — they draw
-// whole on clear frames, no prefix, no budget.
-function buildMeshChunk({ vertices, triangles, frame }) {
-  const o = frame ? frame.origin : [0, 0, 0];
-  const n = (vertices.length / 3) | 0;
-  const pos = new Float32Array(3 * n);
-  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < n; i++) {
-    for (let k = 0; k < 3; k++) {
-      const v = vertices[3 * i + k] - o[k];
-      pos[3 * i + k] = v;
-      if (v < bb[k]) bb[k] = v;
-      if (v > bb[k + 3]) bb[k + 3] = v;
-    }
-  }
-  return {
-    kind: 'mesh',
-    pos,
-    idx: triangles instanceof Uint32Array ? triangles : Uint32Array.from(triangles),
-    count: (triangles.length / 3) | 0,                     // elements = triangles
-    vertexCount: n,
-    bboxLocal: Float64Array.from(bb),
-  };
-}
-
-// A regular grid IS a single-valued heightfield — triangulate its lattice into a
-// mesh chunk with per-vertex smooth normals (grid-gradient central differences)
-// and a per-vertex value (the caller maps it to a color via its own colormap).
-// Quads touching a nodata corner are dropped → clean holes. Coords are frame-
-// local. Strided to a display cap by the caller (bounded triangle count).
-// flatZ (a world elevation) makes a FLAT horizontal sheet at that z instead of a
-// heightfield — for a 2D data grid (grade/geochem) with no DEM; `values` stays the
-// grid value so the caller still colors by it, and the normal is straight up.
-function buildHeightfieldMesh(grid, { stride = 1, frame = null, flatZ = null } = {}) {
-  const { nx, ny, data, x0, y0, dx, dy, nodata } = grid;
-  const o = (frame && frame.origin) || [0, 0, 0];
-  const flat = flatZ != null, flatLocal = flat ? flatZ - o[2] : 0;
-  const isBad = (v) => Number.isNaN(v) || (nodata != null && (nodata >= 1.7e38 ? v >= 1.7014e38 : v === nodata));
-  const cols = Math.floor((nx - 1) / stride) + 1, rows = Math.floor((ny - 1) / stride) + 1;
-  const vidx = new Int32Array(rows * cols).fill(-1);
-  let nv = 0;
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    if (!isBad(data[Math.min(ny - 1, r * stride) * nx + Math.min(nx - 1, c * stride)])) vidx[r * cols + c] = nv++;
-  }
-  if (!nv) return null;
-  const pos = new Float32Array(nv * 3), normal = new Float32Array(nv * 3), values = new Float32Array(nv);
-  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-  const zAt = (r, c) => { const v = data[Math.min(ny - 1, Math.max(0, r * stride)) * nx + Math.min(nx - 1, Math.max(0, c * stride))]; return isBad(v) ? NaN : v; };
-  const sx = 2 * stride * dx, sy = 2 * stride * dy;
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const vi = vidx[r * cols + c]; if (vi < 0) continue;
-    const gr = Math.min(ny - 1, r * stride), gc = Math.min(nx - 1, c * stride), z = data[gr * nx + gc];
-    const px = (x0 + gc * dx) - o[0], py = (y0 - gr * dy) - o[1], pz = flat ? flatLocal : z - o[2];
-    pos[vi * 3] = px; pos[vi * 3 + 1] = py; pos[vi * 3 + 2] = pz; values[vi] = z;
-    if (px < bb[0]) bb[0] = px; if (py < bb[1]) bb[1] = py; if (pz < bb[2]) bb[2] = pz;
-    if (px > bb[3]) bb[3] = px; if (py > bb[4]) bb[4] = py; if (pz > bb[5]) bb[5] = pz;
-    if (flat) { normal[vi * 3] = 0; normal[vi * 3 + 1] = 0; normal[vi * 3 + 2] = 1; continue; }   // flat sheet → up
-    // heightfield normal N = (-∂z/∂x, -∂z/∂y, 1); y decreases as row increases
-    let zl = zAt(r, c - 1), zr = zAt(r, c + 1), zdn = zAt(r - 1, c), zup = zAt(r + 1, c);
-    if (Number.isNaN(zl)) zl = z; if (Number.isNaN(zr)) zr = z; if (Number.isNaN(zdn)) zdn = z; if (Number.isNaN(zup)) zup = z;
-    const nX = -(zr - zl) / sx, nY = -(zdn - zup) / sy, nZ = 1, nl = Math.hypot(nX, nY, nZ) || 1;
-    normal[vi * 3] = nX / nl; normal[vi * 3 + 1] = nY / nl; normal[vi * 3 + 2] = nZ / nl;
-  }
-  const tris = [];
-  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {
-    const a = vidx[r * cols + c], b = vidx[r * cols + c + 1], d = vidx[(r + 1) * cols + c], e = vidx[(r + 1) * cols + c + 1];
-    if (a < 0 || b < 0 || d < 0 || e < 0) continue;        // drop quads touching nodata → clean holes
-    tris.push(a, d, b, b, d, e);
-  }
-  return { kind: 'mesh', pos, idx: Uint32Array.from(tris), normal, values, count: (tris.length / 3) | 0, vertexCount: nv, bboxLocal: Float64Array.from(bb) };
-}
-
-// ── src/core/soup-geom.js ──
-
-// @gcu/condenser — streaming-tier meshes (micro-layers §7, tier 2): TRIANGLE
-// SOUP under the full chunk discipline. Photogrammetry-scale meshes (10⁷–10⁸
-// tris) get what points get: batch-Morton on centroids, intra-chunk shuffle
-// (any prefix = a uniform subsample — valid because triangle size
-// anti-correlates with mesh size: a mesh is huge BECAUSE its triangles are
-// pixel-scale, and pixel-scale triangles subsample like points), per-chunk u16
-// quantization (~18 B/tri resident), budgeted progressive accumulation.
-// Flat shading needs no stored normals (screen-space derivatives in-shader).
-// Soup carries no records in v1 — context semantics at scale.
-//
-// Precision: streamed vertices are kept Float32 LOCAL to a provisional origin
-// (the first vertex) — world-f32 at UTM magnitudes loses ~1 m, local-f32 keeps
-// mm — and re-widened to world f64 on emit for the frame-local rebase.
-
-
-/**
- * Build one SoupChunk from columnar world-space corners + centroids.
- * raw = { ax..az, bx..bz, cx..cz (corners), x,y,z (centroids) }.
- * Corners are u16-quantized against the chunk bbox (the points trick ×3).
- */
-function buildSoupChunk(raw, frame, rnd, indices = null) {
-  const n = indices ? indices.length : raw.x.length;
-  const o = frame.origin;
-  const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
-  const C = [raw.ax, raw.ay, raw.az, raw.bx, raw.by, raw.bz, raw.cx, raw.cy, raw.cz];
-  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-  for (let k = 0; k < n; k++) {
-    const i = perm[k];
-    for (let c = 0; c < 9; c++) {
-      const a = c % 3, v = C[c][i] - o[a];
-      if (v < bb[a]) bb[a] = v;
-      if (v > bb[a + 3]) bb[a + 3] = v;
-    }
-  }
-  const sx = bb[3] > bb[0] ? 65535 / (bb[3] - bb[0]) : 0;
-  const sy = bb[4] > bb[1] ? 65535 / (bb[4] - bb[1]) : 0;
-  const sz = bb[5] > bb[2] ? 65535 / (bb[5] - bb[2]) : 0;
-  const S = [sx, sy, sz];
-  const tri = new Uint16Array(9 * n);
-  for (let k = 0; k < n; k++) {
-    const i = perm[k];
-    for (let c = 0; c < 9; c++) {
-      const a = c % 3;
-      tri[k * 9 + c] = ((C[c][i] - o[a] - bb[a]) * S[a] + 0.5) | 0;
-    }
-  }
-  return { kind: 'soup', count: n, tri, bboxLocal: Float64Array.from(bb) };
-}
-
-// Exact centroid of element k, frame-local (tests).
-function soupLocalCentroid(chunk, k) {
-  const b = chunk.bboxLocal, t = chunk.tri;
-  const d = (v, a) => (b[a + 3] > b[a] ? b[a] + (v / 65535) * (b[a + 3] - b[a]) : b[a]);
-  const out = [0, 0, 0];
-  for (let c = 0; c < 9; c++) out[c % 3] += d(t[k * 9 + c], c % 3) / 3;
-  return out;
-}
-
-/**
- * SoupChunkBuilder — the sticks builder's shape over triangle RawChunks
- * ({ count, ax..cz, x,y,z }). Batch-Morton on centroids, sliced, shuffled.
- */
-function createSoupChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, seed = 1, onChunk }) {
-  const rnd = mulberry32(seed);
-  const batchN = batchSize || chunkSize * 4;
-  let pend = [], pendCount = 0;
-  const doc = {
-    count: 0,
-    bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity),
-  };
-  const concat = (Type, parts) => {
-    const out = new Type(parts.reduce((t, p) => t + p.length, 0));
-    let off = 0;
-    for (const p of parts) { out.set(p, off); off += p.length; }
-    return out;
-  };
-  const COLS = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z'];
-  const flushBatch = () => {
-    if (!pendCount) return;
-    const cols = {};
-    for (const c of COLS) cols[c] = concat(Float64Array, pend.map((p) => p[c]));
-    const n = pendCount;
-    pend = []; pendCount = 0;
-    const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
-    for (let start = 0; start < n; start += chunkSize) {
-      const slice = order.subarray(start, Math.min(start + chunkSize, n));
-      const chunk = buildSoupChunk(cols, frame, rnd, slice);
-      doc.count += chunk.count;
-      const b = doc.bboxLocal, cb = chunk.bboxLocal;
-      for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
-      onChunk(chunk);
-    }
-  };
-  return {
-    push(raw) {
-      let taken = 0;
-      while (taken < raw.count) {
-        const room = batchN - pendCount;
-        const n = Math.min(room, raw.count - taken);
-        const part = {};
-        for (const c of COLS) part[c] = raw[c].subarray(taken, taken + n);
-        pend.push(part);
-        pendCount += n; taken += n;
-        if (pendCount >= batchN) flushBatch();
-      }
-    },
-    flush() { flushBatch(); return doc; },
-    get doc() { return doc; },
-  };
-}
-
-// world f64 corner columns from a resolved index triple against local-f32
-// vertices + their origin (the precision dance in the header comment)
-function emitBatch(verts, vo, ia, ib, ic, n) {
-  const out = { count: n };
-  for (const c of ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z']) out[c] = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    const a = ia[i] * 3, b = ib[i] * 3, c = ic[i] * 3;
-    const AX = vo[0] + verts[a], AY = vo[1] + verts[a + 1], AZ = vo[2] + verts[a + 2];
-    const BX = vo[0] + verts[b], BY = vo[1] + verts[b + 1], BZ = vo[2] + verts[b + 2];
-    const CX = vo[0] + verts[c], CY = vo[1] + verts[c + 1], CZ = vo[2] + verts[c + 2];
-    out.ax[i] = AX; out.ay[i] = AY; out.az[i] = AZ;
-    out.bx[i] = BX; out.by[i] = BY; out.bz[i] = BZ;
-    out.cx[i] = CX; out.cy[i] = CY; out.cz[i] = CZ;
-    out.x[i] = (AX + BX + CX) / 3; out.y[i] = (AY + BY + CY) / 3; out.z[i] = (AZ + BZ + CZ) / 3;
-  }
-  return out;
-}
-
-/**
- * Soup-stream an ALREADY-PARSED mesh (oversized .msh/.obj — their formats are
- * whole-file reads anyway; the vertices are transient, the soup is resident).
- * Yields RawChunks for createSoupChunkBuilder.
- */
-async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = {}) {
-  const nv = (vertices.length / 3) | 0;
-  const vo = nv ? [vertices[0], vertices[1], vertices[2]] : [0, 0, 0];
-  const verts = new Float32Array(3 * nv);
-  for (let i = 0; i < nv; i++) {
-    verts[3 * i] = vertices[3 * i] - vo[0];
-    verts[3 * i + 1] = vertices[3 * i + 1] - vo[1];
-    verts[3 * i + 2] = vertices[3 * i + 2] - vo[2];
-  }
-  const nt = (triangles.length / 3) | 0;
-  const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
-  let n = 0;
-  for (let t = 0; t < nt; t++) {
-    ia[n] = triangles[3 * t]; ib[n] = triangles[3 * t + 1]; ic[n] = triangles[3 * t + 2];
-    n++;
-    if (n === batchTris) { yield emitBatch(verts, vo, ia, ib, ic, n); n = 0; }
-  }
-  if (n) yield emitBatch(verts, vo, ia, ib, ic, n);
 }
 
 // ── src/core/gl-util.js ──
@@ -1379,6 +2710,876 @@ function createSticksPipeline(gl) {
   return { upload, drawSlice, begin, setRepaint };
 }
 
+// ── ../msh/msh.js ──
+
+// @gcu/msh — ARANZ-1.0 mesh file (.msh) reader and writer.
+// Single-file ESM, zero runtime deps. Works in browsers and Node 18+.
+//
+// Format (self-describing):
+//
+//   %ARANZ-1.0\n
+//   \n
+//   [index]\n
+//   <Name> <Type> <Components> <Count>;\n
+//   ...
+//   \n
+//   [binary]<12-byte signature><binary data in declared order, little-endian>
+//
+// The [index] section declares each binary array by name, element type
+// (Double | Integer), components per element (e.g. 3 for 3D vertices),
+// and element count. The [binary] section starts with a fixed 12-byte
+// signature whose meaning is undocumented; we preserve it verbatim on
+// round-trip. See the README for the bytes we've observed and our best
+// guesses about their meaning (short version: probably an ARANZ-internal
+// format sentinel; opaque to us).
+//
+// Common arrays in practice (single triangulated mesh per file):
+//   Location   Double  3   N    — flat XYZ, length 3*N
+//   Tri        Integer 3   M    — flat IJK indices, length 3*M
+//
+// Coordinates are returned unmodified — typically a UTM-like grid in
+// metres. Recentring is a rendering concern, not a parsing one (WebGL
+// f32 precision drops at the absolute coordinate magnitudes typical of
+// UTM, so renderers should subtract a centroid before uploading).
+//
+// SPDX-License-Identifier: BSD-3-Clause
+// Reference: vendor format, no public spec; reverse-engineered from
+// MacPass HG/LG and other Leapfrog Geo / Edge exports. ARANZ Geo was
+// the original developer (now Seequent / Bentley).
+
+/** Magic line at the start of every .msh file. */
+const MSH_MAGIC = '%ARANZ-1.0';
+
+/** Section headers we recognise (case-sensitive). */
+const SECTION_INDEX  = '[index]';
+const SECTION_BINARY = '[binary]';
+
+/** Length of the opaque-magic prefix that sits between '[binary]' and
+ *  the first array's bytes. See README "12-byte signature" section. */
+const BINARY_PREFIX_LENGTH = 12;
+
+/** The signature observed across all files we've seen — preserved on
+ *  writeback when the caller doesn't supply their own. Probably an
+ *  ARANZ-internal format sentinel; we don't interpret it. */
+const DEFAULT_BINARY_SIGNATURE = new Uint8Array([
+  0xFF, 0x0F, 0xF0, 0x00, 0x1B, 0xDE, 0x83, 0x42,
+  0xCA, 0xC0, 0xF3, 0x3F,
+]);
+
+/** Type catalog. Maps the index-declared Type name to its byte width
+ *  and a constructor for the typed-array we'll hand back. Little-endian
+ *  is assumed throughout; we don't write any other endianness either. */
+const MSH_TYPES = {
+  Double:  { bytes: 8, ctor: Float64Array, kind: 'float' },
+  Float:   { bytes: 4, ctor: Float32Array, kind: 'float' },
+  Integer: { bytes: 4, ctor: Int32Array,   kind: 'int'   },
+  Long:    { bytes: 8, ctor: BigInt64Array, kind: 'int'  },
+  Short:   { bytes: 2, ctor: Int16Array,   kind: 'int'   },
+  Byte:    { bytes: 1, ctor: Uint8Array,   kind: 'int'   },
+};
+
+/** Thrown on any MSH-specific failure: bad magic, malformed index,
+ *  unsupported type, declared/decoded size mismatch, out-of-range
+ *  triangle indices. */
+class MSHError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'MSHError';
+  }
+}
+
+/** @typedef {Object} MSHArray
+ *  @property {string} type        e.g. "Double", "Integer"
+ *  @property {number} components  values per element (3 for 3D vertex / triangle)
+ *  @property {number} count       element count (vertices, triangles, ...)
+ *  @property {TypedArray} data    flat values, length = components * count.
+ *                                  Float64Array for Double, Int32Array for
+ *                                  Integer, etc. */
+
+/** @typedef {Object} MSHResult
+ *  @property {string} version              From the magic line; '1.0' in practice.
+ *  @property {Map<string,MSHArray>} arrays Declared arrays, keyed by name in
+ *                                          DECLARATION ORDER (Map iteration
+ *                                          preserves insertion order).
+ *  @property {Uint8Array} binarySignature  The 12 bytes between '[binary]'
+ *                                          and the first array. Preserved
+ *                                          for byte-identical round-trip.
+ *  @property {Float64Array=} vertices      Convenience: the first Double-3
+ *                                          array (typically named "Location"),
+ *                                          if present.
+ *  @property {Int32Array=} triangles       Convenience: the first Integer-3
+ *                                          array (typically "Tri"), if present. */
+
+/** Read an .msh ArrayBuffer / Uint8Array and return a fully decoded
+ *  {@link MSHResult}. Throws {@link MSHError} on any structural problem.
+ *  @param {ArrayBuffer|Uint8Array} input
+ *  @param {Object} [opts]
+ *  @param {boolean} [opts.validateIndices=true]  Bounds-check triangle
+ *      indices against vertex count. Set false to skip if you have a
+ *      file with non-Location/Tri arrays whose meaning we can't infer.
+ *  @returns {Promise<MSHResult>}
+ */
+async function readMSH(input, opts = {}) {
+  const bytes = _coerceBytes(input);
+  const validateIndices = opts.validateIndices !== false;
+
+  // 1. Find the [binary] header by locating its literal bytes — the
+  //    section header sits on its own line in practice, but the binary
+  //    data starts IMMEDIATELY after the closing ']' (no newline).
+  const binaryHeaderStart = _indexOfBytes(bytes, SECTION_BINARY);
+  if (binaryHeaderStart < 0) {
+    throw new MSHError('missing [binary] section header');
+  }
+  const binaryStart = binaryHeaderStart + SECTION_BINARY.length;
+
+  // 2. Decode the text header (everything before [binary]) as UTF-8
+  //    and parse out the magic + index declarations.
+  const headerText = new TextDecoder('utf-8').decode(bytes.subarray(0, binaryHeaderStart));
+  const { version, declarations } = _parseTextHeader(headerText);
+
+  // 3. Capture the 12-byte signature.
+  if (binaryStart + BINARY_PREFIX_LENGTH > bytes.length) {
+    throw new MSHError('binary section truncated before signature');
+  }
+  const binarySignature = bytes.slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH);
+
+  // 4. Walk declarations in order, slicing the appropriate number of
+  //    bytes per array. Little-endian — we copy into a fresh typed
+  //    array rather than view-aliasing the source so the result is
+  //    independent of the input buffer (the caller may free it).
+  let cursor = binaryStart + BINARY_PREFIX_LENGTH;
+  const arrays = new Map();
+  for (const decl of declarations) {
+    const info = MSH_TYPES[decl.type];
+    if (!info) {
+      throw new MSHError(`unsupported type "${decl.type}" for array "${decl.name}"`);
+    }
+    const totalValues = decl.components * decl.count;
+    const totalBytes = totalValues * info.bytes;
+    if (cursor + totalBytes > bytes.length) {
+      throw new MSHError(
+        `array "${decl.name}" declared ${totalBytes} bytes but file has only ${bytes.length - cursor} remaining`
+      );
+    }
+    const data = _readTypedArray(bytes, cursor, totalValues, info);
+    arrays.set(decl.name, {
+      type: decl.type,
+      components: decl.components,
+      count: decl.count,
+      data,
+    });
+    cursor += totalBytes;
+  }
+  // Trailing bytes? Real files don't have any, but tolerate up to 8
+  // bytes of alignment padding (some writers append a record terminator).
+  const trailing = bytes.length - cursor;
+  if (trailing > 8) {
+    throw new MSHError(`${trailing} unexpected bytes after the last declared array`);
+  }
+
+  const result = { version, arrays, binarySignature };
+
+  // 5. Convenience accessors. Pick the FIRST Double-3 array as
+  //    vertices and the FIRST Integer-3 array as triangles. Files with
+  //    multiple Double-3 arrays (e.g. per-vertex normals) would need
+  //    the caller to reach into `arrays` directly — we don't try to
+  //    guess from names alone.
+  let vertices, triangles;
+  for (const [, arr] of arrays) {
+    if (!vertices && arr.type === 'Double' && arr.components === 3) {
+      vertices = arr.data;
+    } else if (!triangles && arr.type === 'Integer' && arr.components === 3) {
+      triangles = arr.data;
+    }
+  }
+  if (vertices) result.vertices = vertices;
+  if (triangles) result.triangles = triangles;
+
+  // 6. Validation: every triangle index must reference a real vertex.
+  //    Catches truncation / corruption that survived the size checks
+  //    (e.g. a swapped array order).
+  if (validateIndices && vertices && triangles) {
+    const vCount = vertices.length / 3 | 0;
+    for (let i = 0; i < triangles.length; i++) {
+      const idx = triangles[i];
+      if (idx < 0 || idx >= vCount) {
+        throw new MSHError(
+          `triangle index ${idx} at position ${i} is out of range (0..${vCount - 1})`
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+/** Serialise an {@link MSHResult} (or a synthesised mesh) back to bytes.
+ *  Round-trips byte-identical when given a result from readMSH that
+ *  hasn't been modified.
+ *  @param {Object} input
+ *  @param {string} [input.version='1.0']
+ *  @param {Map<string,MSHArray>|Object<string,MSHArray>} input.arrays
+ *  @param {Uint8Array} [input.binarySignature]   12-byte prefix; defaults
+ *      to the canonical observed signature.
+ *  @returns {Promise<Uint8Array>}
+ */
+async function writeMSH(input) {
+  const version = input.version || '1.0';
+  const arrays = input.arrays instanceof Map
+    ? input.arrays
+    : new Map(Object.entries(input.arrays || {}));
+  if (arrays.size === 0) {
+    throw new MSHError('writeMSH: at least one declared array is required');
+  }
+  const signature = input.binarySignature || DEFAULT_BINARY_SIGNATURE;
+  if (signature.length !== BINARY_PREFIX_LENGTH) {
+    throw new MSHError(`binarySignature must be ${BINARY_PREFIX_LENGTH} bytes`);
+  }
+
+  // 1. Validate every array AND compute total binary length so we can
+  //    allocate once. Keeps the writer single-pass and predictable.
+  let binaryLen = BINARY_PREFIX_LENGTH;
+  const orderedDeclarations = [];
+  for (const [name, arr] of arrays) {
+    const info = MSH_TYPES[arr.type];
+    if (!info) {
+      throw new MSHError(`writeMSH: unsupported type "${arr.type}" for array "${name}"`);
+    }
+    const declaredValues = arr.components * arr.count;
+    if (!arr.data || arr.data.length !== declaredValues) {
+      throw new MSHError(
+        `writeMSH: array "${name}" declares ${declaredValues} values but data has ${arr.data?.length ?? 0}`
+      );
+    }
+    orderedDeclarations.push({ name, ...arr, info });
+    binaryLen += declaredValues * info.bytes;
+  }
+
+  // 2. Build the text header.
+  const lines = [];
+  lines.push(`%ARANZ-${version}`);
+  lines.push('');
+  lines.push(SECTION_INDEX);
+  for (const decl of orderedDeclarations) {
+    lines.push(`${decl.name} ${decl.type} ${decl.components} ${decl.count};`);
+  }
+  lines.push('');
+  // The binary section header has NO trailing newline — the magic
+  // signature starts immediately after the closing ']' (matching what
+  // the readers in the wild expect, including the one this is based on).
+  // Join with \n and append the literal '[binary]' separately so we
+  // don't accidentally add one.
+  const headerText = lines.join('\n') + '\n' + SECTION_BINARY;
+  const headerBytes = new TextEncoder().encode(headerText);
+
+  // 3. Allocate the final buffer and copy in:
+  //    [header][signature][array 0 bytes][array 1 bytes]...
+  const out = new Uint8Array(headerBytes.length + binaryLen);
+  out.set(headerBytes, 0);
+  let cursor = headerBytes.length;
+  out.set(signature, cursor);
+  cursor += BINARY_PREFIX_LENGTH;
+  for (const decl of orderedDeclarations) {
+    _writeTypedArray(out, cursor, decl.data, decl.info);
+    cursor += decl.data.length * decl.info.bytes;
+  }
+  return out;
+}
+
+// ── internals ──
+
+function _coerceBytes(input) {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (input && input.buffer instanceof ArrayBuffer) {
+    // Other typed-array view: use its underlying buffer slice.
+    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  }
+  throw new MSHError('readMSH: input must be ArrayBuffer or Uint8Array');
+}
+
+function _indexOfBytes(haystack, needleString) {
+  // Search for an ASCII substring in a Uint8Array. Used to find the
+  // [binary] header; we don't decode the whole file as UTF-8 because
+  // the binary section will contain arbitrary bytes that may form
+  // partial-UTF-8 sequences and corrupt the decoder.
+  const needle = new TextEncoder().encode(needleString);
+  outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function _parseTextHeader(text) {
+  // Magic must be the first non-empty content line.
+  const lines = text.split('\n');
+  if (lines.length === 0 || !lines[0].startsWith('%ARANZ-')) {
+    throw new MSHError('missing %ARANZ-N magic line');
+  }
+  const version = lines[0].slice('%ARANZ-'.length).trim();
+  // Walk lines looking for [index]. Everything between [index] and the
+  // next bracketed-section header (we expect [binary]) is declarations.
+  let inIndex = false;
+  const declarations = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === '') continue;
+    if (line.startsWith('[') && line.endsWith(']')) {
+      if (line === SECTION_INDEX) { inIndex = true; continue; }
+      // Any other bracketed section ends the index. (We only know
+      // about [binary] here, but other vendors might extend later.)
+      inIndex = false;
+      continue;
+    }
+    if (!inIndex) continue;
+    declarations.push(_parseDeclaration(line));
+  }
+  if (declarations.length === 0) {
+    throw new MSHError('[index] section is missing or empty');
+  }
+  return { version, declarations };
+}
+
+function _parseDeclaration(line) {
+  // Shape: "<Name> <Type> <Components> <Count>;"
+  // Name can contain spaces in theory (vendor-defined); we treat the
+  // trailing ';' as the terminator and walk backwards through the
+  // 3 numeric / type tokens. Anything before them is the name.
+  const stripped = line.endsWith(';') ? line.slice(0, -1).trim() : line.trim();
+  const tokens = stripped.split(/\s+/);
+  if (tokens.length < 4) {
+    throw new MSHError(`malformed index declaration: "${line}"`);
+  }
+  const count      = parseInt(tokens[tokens.length - 1], 10);
+  const components = parseInt(tokens[tokens.length - 2], 10);
+  const type       = tokens[tokens.length - 3];
+  const name       = tokens.slice(0, tokens.length - 3).join(' ');
+  if (!Number.isFinite(count) || count < 0
+      || !Number.isFinite(components) || components < 1
+      || !name) {
+    throw new MSHError(`malformed index declaration: "${line}"`);
+  }
+  return { name, type, components, count };
+}
+
+function _readTypedArray(bytes, offset, length, info) {
+  // The src bytes may not be aligned to the typed-array's stride, and
+  // even when aligned, slicing into a fresh buffer guarantees the
+  // returned array is independent of the input (we make NO promises
+  // about the lifetime of the input ArrayBuffer). Copy bytes then
+  // build the typed view on the copy.
+  const totalBytes = length * info.bytes;
+  const buf = new ArrayBuffer(totalBytes);
+  new Uint8Array(buf).set(bytes.subarray(offset, offset + totalBytes));
+  // BigInt64Array constructor takes (buffer, byteOffset, length).
+  // All others same shape.
+  return new info.ctor(buf, 0, length);
+}
+
+function _writeTypedArray(dst, offset, src, info) {
+  // src is already a typed array (Float64Array etc.). We need its raw
+  // bytes copied into dst at the given byte offset. The simplest path
+  // is to view the SAME bytes via Uint8Array and let .set() handle
+  // the copy.
+  const view = new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
+  // Sanity check: declared values × stride MUST match.
+  if (view.byteLength !== src.length * info.bytes) {
+    throw new MSHError(
+      `writeMSH: typed-array stride mismatch (got ${view.byteLength}, expected ${src.length * info.bytes})`
+    );
+  }
+  dst.set(view, offset);
+}
+
+// ── src/io/ply.js ──
+
+// @gcu/condenser — PLY point-cloud provider (ascii + binary_little_endian).
+// Reads the vertex element only (meshes: faces are ignored — micro shows the
+// vertices). PLY carries no header bbox, so this provider runs a discovery
+// sweep (bbox + intensity range) before streaming — both cold recipes over
+// the Blob, same shape as the delimited provider. RawChunks match the LAS
+// shape so the points pipeline + chunk builder are reused verbatim:
+//   { count, x, y, z: Float64Array, intensity: Uint16Array,
+//     classification: Uint8Array, rgb: Uint8Array(3n)|null, recStart }
+//
+// openPly(blob) → { header, streamChunks, fetchRecord }
+//   header = { kind:'ply', format, count, bbox, columns, attributes, ply:{…} }
+//   fetchRecord(rec) → [values in property order] (O(1) binary, sweep ascii)
+//
+// Honest limits: binary_big_endian and list-typed VERTEX properties throw;
+// the vertex element must come first (a variable-size element before it
+// would make the binary offset unknowable).
+
+const TYPES$index = {
+  char: [1, 'getInt8'], int8: [1, 'getInt8'],
+  uchar: [1, 'getUint8'], uint8: [1, 'getUint8'],
+  short: [2, 'getInt16'], int16: [2, 'getInt16'],
+  ushort: [2, 'getUint16'], uint16: [2, 'getUint16'],
+  int: [4, 'getInt32'], int32: [4, 'getInt32'],
+  uint: [4, 'getUint32'], uint32: [4, 'getUint32'],
+  float: [4, 'getFloat32'], float32: [4, 'getFloat32'],
+  double: [8, 'getFloat64'], float64: [8, 'getFloat64'],
+};
+
+// Parse the ASCII header block. Returns null when 'end_header' isn't in the
+// sample (caller retries with a bigger slice).
+function parsePlyHeader(text) {
+  const endAt = text.indexOf('end_header');
+  if (endAt < 0) return null;
+  const nl = text.indexOf('\n', endAt);
+  if (nl < 0) return null;
+  const lines = text.slice(0, endAt).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines[0] !== 'ply') throw new Error('ply: missing magic');
+  let format = null;
+  const elements = [];
+  for (const l of lines.slice(1)) {
+    const f = l.split(/\s+/);
+    if (f[0] === 'format') {
+      if (f[1] === 'ascii') format = 'ascii';
+      else if (f[1] === 'binary_little_endian') format = 'binary_le';
+      else throw new Error(`ply: unsupported format ${f[1]}`);
+    } else if (f[0] === 'element') {
+      elements.push({ name: f[1], count: +f[2], props: [] });
+    } else if (f[0] === 'property') {
+      const el = elements[elements.length - 1];
+      if (!el) throw new Error('ply: property before element');
+      if (f[1] === 'list') el.props.push({ name: f[4], list: true, countType: f[2], idxType: f[3] });
+      else el.props.push({ name: f[2], type: f[1] });
+    }
+    // 'comment' / 'obj_info' — skipped
+  }
+  if (!format) throw new Error('ply: no format line');
+  const vertex = elements[0];
+  if (!vertex || vertex.name !== 'vertex') throw new Error('ply: vertex must be the first element');
+  let stride = 0;
+  for (const p of vertex.props) {
+    if (p.list) throw new Error('ply: list-typed vertex property unsupported');
+    const t = TYPES$index[p.type];
+    if (!t) throw new Error(`ply: unknown type ${p.type}`);
+    p.size = t[0]; p.getter = t[1]; p.offset = stride;
+    stride += t[0];
+  }
+  return { format, count: vertex.count, props: vertex.props, stride, dataOffset: nl + 1, elements };
+}
+
+const findProp = (props, ...names) => {
+  for (const n of names) { const p = props.find((q) => q.name.toLowerCase() === n); if (p) return p; }
+  return null;
+};
+
+async function openPly(blob, { signal, onProgress } = {}) {
+  // header is ASCII even for binary files — sample up front, grow if needed
+  let sampleLen = 64 * 1024, ply = null;
+  for (;;) {
+    const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
+    ply = parsePlyHeader(text);
+    if (ply) break;
+    if (sampleLen >= blob.size) throw new Error('ply: no end_header');
+    sampleLen *= 4;
+  }
+  const { props, stride, count } = ply;
+  const px = findProp(props, 'x'), py = findProp(props, 'y'), pz = findProp(props, 'z');
+  if (!px || !py || !pz) throw new Error('ply: vertex needs x/y/z properties');
+  const pr = findProp(props, 'red', 'r', 'diffuse_red'), pg = findProp(props, 'green', 'g', 'diffuse_green'), pb = findProp(props, 'blue', 'b', 'diffuse_blue');
+  const hasRgb = !!(pr && pg && pb);
+  const pi = findProp(props, 'intensity', 'scalar_intensity', 'quality', 'confidence');
+  const idx = { x: props.indexOf(px), y: props.indexOf(py), z: props.indexOf(pz), i: pi ? props.indexOf(pi) : -1, r: pr ? props.indexOf(pr) : -1, g: pg ? props.indexOf(pg) : -1, b: pb ? props.indexOf(pb) : -1 };
+  const ascii = ply.format === 'ascii';
+
+  // ── record iteration (cold recipe): yields batches of decoded raw fields ──
+  // binary: DataView slabs; ascii: line stream. Both yield {fields, recStart}
+  // where fields[k] is a Float64Array per needed property.
+  const NEED = [...new Set([idx.x, idx.y, idx.z, idx.i, idx.r, idx.g, idx.b].filter((v) => v >= 0))];
+  async function* recordBatches(batchRecords, s2, op2) {
+    const alloc = () => { const o = {}; for (const k of NEED) o[k] = new Float64Array(batchRecords); return o; };
+    if (!ascii) {
+      let rec = 0;
+      while (rec < count) {
+        if (s2 && s2.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        const n = Math.min(batchRecords, count - rec);
+        const off = ply.dataOffset + rec * stride;
+        const dv = new DataView(await blob.slice(off, off + n * stride).arrayBuffer());
+        const fields = alloc();
+        for (const k of NEED) {
+          const p = props[k], g = p.getter, po = p.offset, col = fields[k];
+          for (let i = 0; i < n; i++) col[i] = dv[g](i * stride + po, true);
+        }
+        if (op2) op2(off + n * stride, blob.size);
+        yield { fields, n, recStart: rec };
+        rec += n;
+      }
+    } else {
+      const reader = blob.slice(ply.dataOffset).stream().pipeThrough(new TextDecoderStream()).getReader();
+      let carry = '', rec = 0, fields = alloc(), n = 0, seen = ply.dataOffset;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (s2 && s2.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+          const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
+          if (!done) { carry = lines.pop(); seen += value.length; }
+          for (const l of lines) {
+            if (rec + n >= count) break;                    // face lines follow — stop at the vertex count
+            const t = l.trim();
+            if (!t) continue;
+            const f = t.split(/\s+/);
+            for (const k of NEED) fields[k][n] = +f[k];
+            n++;
+            if (n === batchRecords) { yield { fields, n, recStart: rec }; rec += n; fields = alloc(); n = 0; }
+          }
+          if (op2) op2(Math.min(seen, blob.size), blob.size);
+          if (done || rec + n >= count) break;
+        }
+        if (n) yield { fields, n, recStart: rec };
+      } finally { reader.releaseLock(); }
+    }
+  }
+
+  // ── discovery sweep: bbox + intensity range ──
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let iMin = Infinity, iMax = -Infinity;
+  for await (const { fields, n } of recordBatches(1 << 16, signal, onProgress)) {
+    const xs = fields[idx.x], ys = fields[idx.y], zs = fields[idx.z], is = idx.i >= 0 ? fields[idx.i] : null;
+    for (let i = 0; i < n; i++) {
+      const xv = xs[i], yv = ys[i], zv = zs[i];
+      if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+      if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+      if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+      if (is) { const v = is[i]; if (v < iMin) iMin = v; if (v > iMax) iMax = v; }
+    }
+  }
+  const iScale = idx.i >= 0 && iMax > iMin ? 65535 / (iMax - iMin) : 0;
+
+  const header = {
+    kind: 'ply', format: ply.format, count,
+    bbox: { min, max },
+    columns: props.map((p) => p.name),
+    attributes: [...(pi ? [pi.name] : []), ...(hasRgb ? ['rgb'] : [])],
+    hasRgb,
+    ply: { props, stride, dataOffset: ply.dataOffset, ascii },
+  };
+
+  // ── streaming sweep (cold recipe): LAS-shaped RawChunks ──
+  async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
+    for await (const { fields, n, recStart } of recordBatches(chunkPoints, s2, op2)) {
+      const intensity = new Uint16Array(n);
+      if (idx.i >= 0) { const is = fields[idx.i]; for (let i = 0; i < n; i++) intensity[i] = ((is[i] - iMin) * iScale) | 0; }
+      let rgb = null;
+      if (hasRgb) {
+        rgb = new Uint8Array(3 * n);
+        const rs = fields[idx.r], gs = fields[idx.g], bs = fields[idx.b];
+        for (let i = 0; i < n; i++) { rgb[3 * i] = rs[i]; rgb[3 * i + 1] = gs[i]; rgb[3 * i + 2] = bs[i]; }
+      }
+      yield {
+        count: n,
+        x: fields[idx.x].subarray(0, n), y: fields[idx.y].subarray(0, n), z: fields[idx.z].subarray(0, n),
+        intensity, classification: new Uint8Array(n), rgb, recStart,
+      };
+    }
+  }
+
+  // ── record fetch (the pick join): O(1) binary, early-exit sweep ascii ──
+  async function fetchRecord(rec) {
+    if (rec < 0 || rec >= count) return null;
+    if (!ascii) {
+      const off = ply.dataOffset + rec * stride;
+      const dv = new DataView(await blob.slice(off, off + stride).arrayBuffer());
+      return props.map((p) => dv[p.getter](p.offset, true));
+    }
+    const reader = blob.slice(ply.dataOffset).stream().pipeThrough(new TextDecoderStream()).getReader();
+    let carry = '', at = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
+        if (!done) carry = lines.pop();
+        for (const l of lines) {
+          const t = l.trim();
+          if (!t) continue;
+          if (at === rec) return t.split(/\s+/).map(Number);
+          at++;
+        }
+        if (done) return null;
+      }
+    } finally { reader.releaseLock(); }
+  }
+
+  return { header, streamChunks, fetchRecord };
+}
+
+// ── src/io/mesh-io.js ──
+
+// @gcu/condenser — context-tier mesh providers (micro-layers §7, tier 1).
+// Wireframes, solids, TINs: whole-file reads into { vertices, triangles },
+// then buildMeshChunk rebases to frame-local Float32 for the static indexed
+// pipeline (gl-mesh.js). The tier is bounded by design — huge triangle-soup
+// scans (photogrammetry) belong to the roadmapped streaming tier, which gets
+// the full Morton/prefix treatment. Context meshes carry no records: scenery.
+//
+// Providers (each → { header, vertices: Float64Array(3n), triangles: Uint32Array(3m) }):
+//   openMsh(blob)      — Leapfrog ARANZ-1.0 .msh via @gcu/msh
+//   openObj(blob)      — Wavefront OBJ (v/f; fans n-gons; negative indices)
+//   openPlyMesh(blob)  — PLY with a face element (ascii + binary_little_endian)
+// header = { kind:'mesh', format, vertexCount, triCount, bbox:{min,max}, vertexColumns }
+//
+// PLY additionally returns `attrs` — one typed array per non-coordinate vertex
+// property, named as the file named them, with `header.vertexColumns` listing
+// them in file order. That is where a painted mesh's red/green/blue lives, and
+// where nx/ny/nz and per-vertex quality live, so the vertex record space has
+// real columns rather than only coordinates. OBJ and .msh declare no per-vertex
+// attributes in their formats, so they report an empty list.
+
+
+function meshBbox(vertices) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < vertices.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const v = vertices[i + k];
+      if (v < min[k]) min[k] = v;
+      if (v > max[k]) max[k] = v;
+    }
+  }
+  return { min, max };
+}
+
+function meshHeader(format, vertices, triangles) {
+  return {
+    kind: 'mesh', format,
+    vertexCount: (vertices.length / 3) | 0,
+    triCount: (triangles.length / 3) | 0,
+    bbox: meshBbox(vertices),
+    vertexColumns: [],            // per-vertex attribute names carried by the file
+  };
+}
+
+// A per-vertex attribute keeps the width the file declared: a painted mesh's
+// red/green/blue is three bytes per vertex, and widening it to Float64 would
+// cost 24 on a model with millions of them.
+const ARRAY_FOR = {
+  char: Int8Array, int8: Int8Array, uchar: Uint8Array, uint8: Uint8Array,
+  short: Int16Array, int16: Int16Array, ushort: Uint16Array, uint16: Uint16Array,
+  int: Int32Array, int32: Int32Array, uint: Uint32Array, uint32: Uint32Array,
+  float: Float32Array, float32: Float32Array, double: Float64Array, float64: Float64Array,
+};
+
+// ── Leapfrog .msh ──
+async function openMsh(blob) {
+  const msh = await readMSH(new Uint8Array(await blob.arrayBuffer()));
+  if (!msh.vertices || !msh.triangles) throw new Error('msh: no vertex/triangle arrays found');
+  const vertices = Float64Array.from(msh.vertices);
+  const triangles = Uint32Array.from(msh.triangles);
+  return { header: meshHeader('msh', vertices, triangles), vertices, triangles };
+}
+
+// ── Wavefront OBJ — v + f only (groups/materials are the records roadmap) ──
+async function openObj(blob) {
+  const text = await blob.text();
+  const vx = [], tris = [];
+  let nv = 0;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line[0] === '#') continue;
+    if (line.startsWith('v ')) {
+      const f = line.split(/\s+/);
+      vx.push(+f[1], +f[2], +f[3]);
+      nv++;
+    } else if (line.startsWith('f ')) {
+      const f = line.split(/\s+/);
+      const ix = [];
+      for (let k = 1; k < f.length; k++) {
+        // "v", "v/vt", "v//vn", "v/vt/vn" — the vertex index leads; negatives
+        // count back from the vertices seen so far (OBJ spec)
+        let v = parseInt(f[k], 10);
+        if (!Number.isFinite(v) || v === 0) continue;
+        if (v < 0) v = nv + v; else v = v - 1;
+        ix.push(v);
+      }
+      for (let k = 2; k < ix.length; k++) tris.push(ix[0], ix[k - 1], ix[k]);   // fan
+    }
+  }
+  if (!nv || !tris.length) throw new Error('obj: no v/f geometry found');
+  const vertices = Float64Array.from(vx);
+  const triangles = Uint32Array.from(tris);
+  for (let i = 0; i < triangles.length; i++) if (triangles[i] >= nv) throw new Error(`obj: face index ${triangles[i]} out of range (${nv} vertices)`);
+  return { header: meshHeader('obj', vertices, triangles), vertices, triangles };
+}
+
+// ── PLY with faces — reuses ply.js's header parse (vertex first, face after) ──
+async function openPlyMesh(blob) {
+  let sampleLen = 64 * 1024, ply = null;
+  for (;;) {
+    const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
+    ply = parsePlyHeader(text);
+    if (ply) break;
+    if (sampleLen >= blob.size) throw new Error('ply: no end_header');
+    sampleLen *= 4;
+  }
+  const face = ply.elements.find((e) => e.name === 'face');
+  if (!face || !face.count) throw new Error('ply: no face element (points file — use openPly)');
+  const px = ply.props.findIndex((p) => p.name.toLowerCase() === 'x');
+  const py = ply.props.findIndex((p) => p.name.toLowerCase() === 'y');
+  const pz = ply.props.findIndex((p) => p.name.toLowerCase() === 'z');
+  if (px < 0 || py < 0 || pz < 0) throw new Error('ply: vertex needs x/y/z');
+  const nv = ply.count;
+  const vertices = new Float64Array(3 * nv);
+  const tris = [];
+  const SIZES = { char: 1, int8: 1, uchar: 1, uint8: 1, short: 2, int16: 2, ushort: 2, uint16: 2, int: 4, int32: 4, uint: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+  const GETTERS = { 1: 'getUint8', 2: 'getUint16', 4: 'getUint32' };
+
+  // Every vertex property that is not a coordinate becomes a per-vertex column:
+  // red/green/blue from a painted mesh, nx/ny/nz, quality, confidence, whatever
+  // the producing tool wrote. These are the mesh's own data and dropping them
+  // was silent loss — a painted outcrop's set colors live here.
+  const attrProps = ply.props
+    .map((p, i) => ({ p, i }))
+    .filter(({ i }) => i !== px && i !== py && i !== pz)
+    .map(({ p, i }) => ({ ...p, field: i, arr: new (ARRAY_FOR[p.type] || Float64Array)(nv) }));
+  const attrs = {};
+  for (const a of attrProps) attrs[a.name] = a.arr;
+
+  if (ply.format === 'ascii') {
+    const text = await blob.text();
+    const lines = text.slice(ply.dataOffset).split('\n');
+    let at = 0, rec = 0;
+    while (rec < nv && at < lines.length) {
+      const t = lines[at++].trim();
+      if (!t) continue;
+      const f = t.split(/\s+/);
+      vertices[3 * rec] = +f[px]; vertices[3 * rec + 1] = +f[py]; vertices[3 * rec + 2] = +f[pz];
+      for (const a of attrProps) a.arr[rec] = +f[a.field];
+      rec++;
+    }
+    let fc = 0;
+    while (fc < face.count && at < lines.length) {
+      const t = lines[at++].trim();
+      if (!t) continue;
+      const f = t.split(/\s+/);
+      const k = +f[0];
+      for (let j = 2; j < k; j++) tris.push(+f[1], +f[j], +f[j + 1]);   // fan
+      fc++;
+    }
+  } else {
+    const bytes = await blob.arrayBuffer();
+    const dv = new DataView(bytes);
+    for (let i = 0; i < nv; i++) {
+      const base = ply.dataOffset + i * ply.stride;
+      vertices[3 * i] = dv[ply.props[px].getter](base + ply.props[px].offset, true);
+      vertices[3 * i + 1] = dv[ply.props[py].getter](base + ply.props[py].offset, true);
+      vertices[3 * i + 2] = dv[ply.props[pz].getter](base + ply.props[pz].offset, true);
+      for (const a of attrProps) a.arr[i] = dv[a.getter](base + a.offset, true);
+    }
+    // faces: sequential walk (variable-size records). Only the vertex-index
+    // list is kept; other per-face properties are stepped over.
+    let off = ply.dataOffset + nv * ply.stride;
+    // counts + indices are unsigned in practice (int32 indices are non-negative)
+    const rd = (size) => { const v = dv[GETTERS[size]](off, true); off += size; return v; };
+    for (let i = 0; i < face.count; i++) {
+      for (const p of face.props) {
+        if (p.list) {
+          const cs = SIZES[p.countType] || 1, is = SIZES[p.idxType] || 4;
+          const k = rd(cs);
+          if (/vertex_ind/i.test(p.name) || face.props.length === 1) {
+            const ix = new Array(k);
+            for (let j = 0; j < k; j++) ix[j] = rd(is);
+            for (let j = 2; j < k; j++) tris.push(ix[0], ix[j - 1], ix[j]);
+          } else off += k * is;
+        } else {
+          const sz = SIZES[p.type] || 4;
+          off += sz;
+        }
+      }
+    }
+  }
+  if (!tris.length) throw new Error('ply: face element yielded no triangles');
+  const triangles = Uint32Array.from(tris);
+  for (let i = 0; i < triangles.length; i++) if (triangles[i] >= nv) throw new Error(`ply: face index ${triangles[i]} out of range (${nv} vertices)`);
+  const header = meshHeader(ply.format === 'ascii' ? 'ply-ascii' : 'ply-binary', vertices, triangles);
+  header.vertexColumns = attrProps.map((a) => a.name);
+  return { header, vertices, triangles, attrs };
+}
+
+// ── src/core/mesh-geom.js ──
+
+// @gcu/condenser — mesh GEOMETRY builders (core: no I/O). World-f64 vertices
+// → frame-local Float32 chunks for the static indexed pipeline (gl-mesh.js),
+// plus the heightfield triangulator (a regular grid IS a single-valued
+// surface). The file readers (.msh/.obj/.ply) live in io/mesh-io.js.
+// ── world f64 → one frame-local GPU-ready chunk ──
+// Float32 positions are safe at frame-local magnitudes (the whole point of
+// @gcu/frame); indices stay u32. Context meshes are ONE chunk — they draw
+// whole on clear frames, no prefix, no budget.
+function buildMeshChunk({ vertices, triangles, frame }) {
+  const o = frame ? frame.origin : [0, 0, 0];
+  const n = (vertices.length / 3) | 0;
+  const pos = new Float32Array(3 * n);
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) {
+    for (let k = 0; k < 3; k++) {
+      const v = vertices[3 * i + k] - o[k];
+      pos[3 * i + k] = v;
+      if (v < bb[k]) bb[k] = v;
+      if (v > bb[k + 3]) bb[k + 3] = v;
+    }
+  }
+  return {
+    kind: 'mesh',
+    pos,
+    idx: triangles instanceof Uint32Array ? triangles : Uint32Array.from(triangles),
+    count: (triangles.length / 3) | 0,                     // elements = triangles
+    vertexCount: n,
+    bboxLocal: Float64Array.from(bb),
+  };
+}
+
+// A regular grid IS a single-valued heightfield — triangulate its lattice into a
+// mesh chunk with per-vertex smooth normals (grid-gradient central differences)
+// and a per-vertex value (the caller maps it to a color via its own colormap).
+// Quads touching a nodata corner are dropped → clean holes. Coords are frame-
+// local. Strided to a display cap by the caller (bounded triangle count).
+// flatZ (a world elevation) makes a FLAT horizontal sheet at that z instead of a
+// heightfield — for a 2D data grid (grade/geochem) with no DEM; `values` stays the
+// grid value so the caller still colors by it, and the normal is straight up.
+function buildHeightfieldMesh(grid, { stride = 1, frame = null, flatZ = null } = {}) {
+  const { nx, ny, data, x0, y0, dx, dy, nodata } = grid;
+  const o = (frame && frame.origin) || [0, 0, 0];
+  const flat = flatZ != null, flatLocal = flat ? flatZ - o[2] : 0;
+  const isBad = (v) => Number.isNaN(v) || (nodata != null && (nodata >= 1.7e38 ? v >= 1.7014e38 : v === nodata));
+  const cols = Math.floor((nx - 1) / stride) + 1, rows = Math.floor((ny - 1) / stride) + 1;
+  const vidx = new Int32Array(rows * cols).fill(-1);
+  let nv = 0;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    if (!isBad(data[Math.min(ny - 1, r * stride) * nx + Math.min(nx - 1, c * stride)])) vidx[r * cols + c] = nv++;
+  }
+  if (!nv) return null;
+  const pos = new Float32Array(nv * 3), normal = new Float32Array(nv * 3), values = new Float32Array(nv);
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  const zAt = (r, c) => { const v = data[Math.min(ny - 1, Math.max(0, r * stride)) * nx + Math.min(nx - 1, Math.max(0, c * stride))]; return isBad(v) ? NaN : v; };
+  const sx = 2 * stride * dx, sy = 2 * stride * dy;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const vi = vidx[r * cols + c]; if (vi < 0) continue;
+    const gr = Math.min(ny - 1, r * stride), gc = Math.min(nx - 1, c * stride), z = data[gr * nx + gc];
+    const px = (x0 + gc * dx) - o[0], py = (y0 - gr * dy) - o[1], pz = flat ? flatLocal : z - o[2];
+    pos[vi * 3] = px; pos[vi * 3 + 1] = py; pos[vi * 3 + 2] = pz; values[vi] = z;
+    if (px < bb[0]) bb[0] = px; if (py < bb[1]) bb[1] = py; if (pz < bb[2]) bb[2] = pz;
+    if (px > bb[3]) bb[3] = px; if (py > bb[4]) bb[4] = py; if (pz > bb[5]) bb[5] = pz;
+    if (flat) { normal[vi * 3] = 0; normal[vi * 3 + 1] = 0; normal[vi * 3 + 2] = 1; continue; }   // flat sheet → up
+    // heightfield normal N = (-∂z/∂x, -∂z/∂y, 1); y decreases as row increases
+    let zl = zAt(r, c - 1), zr = zAt(r, c + 1), zdn = zAt(r - 1, c), zup = zAt(r + 1, c);
+    if (Number.isNaN(zl)) zl = z; if (Number.isNaN(zr)) zr = z; if (Number.isNaN(zdn)) zdn = z; if (Number.isNaN(zup)) zup = z;
+    const nX = -(zr - zl) / sx, nY = -(zdn - zup) / sy, nZ = 1, nl = Math.hypot(nX, nY, nZ) || 1;
+    normal[vi * 3] = nX / nl; normal[vi * 3 + 1] = nY / nl; normal[vi * 3 + 2] = nZ / nl;
+  }
+  const tris = [];
+  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {
+    const a = vidx[r * cols + c], b = vidx[r * cols + c + 1], d = vidx[(r + 1) * cols + c], e = vidx[(r + 1) * cols + c + 1];
+    if (a < 0 || b < 0 || d < 0 || e < 0) continue;        // drop quads touching nodata → clean holes
+    tris.push(a, d, b, b, d, e);
+  }
+  return { kind: 'mesh', pos, idx: Uint32Array.from(tris), normal, values, count: (tris.length / 3) | 0, vertexCount: nv, bboxLocal: Float64Array.from(bb) };
+}
+
 // ── src/core/gl-mesh.js ──
 
 // @gcu/condenser — the context-mesh pipeline (micro-layers §7, tier 1).
@@ -1589,6 +3790,329 @@ function createMeshPipeline(gl) {
   }
 
   return { upload, begin, draw };
+}
+
+// ── src/core/soup-geom.js ──
+
+// @gcu/condenser — streaming-tier meshes (micro-layers §7, tier 2): TRIANGLE
+// SOUP under the full chunk discipline. Photogrammetry-scale meshes (10⁷–10⁸
+// tris) get what points get: batch-Morton on centroids, intra-chunk shuffle
+// (any prefix = a uniform subsample — valid because triangle size
+// anti-correlates with mesh size: a mesh is huge BECAUSE its triangles are
+// pixel-scale, and pixel-scale triangles subsample like points), per-chunk u16
+// quantization (~18 B/tri resident), budgeted progressive accumulation.
+// Flat shading needs no stored normals (screen-space derivatives in-shader).
+// Soup carries no records in v1 — context semantics at scale.
+//
+// Precision: streamed vertices are kept Float32 LOCAL to a provisional origin
+// (the first vertex) — world-f32 at UTM magnitudes loses ~1 m, local-f32 keeps
+// mm — and re-widened to world f64 on emit for the frame-local rebase.
+
+
+/**
+ * Build one SoupChunk from columnar world-space corners + centroids.
+ * raw = { ax..az, bx..bz, cx..cz (corners), x,y,z (centroids) }.
+ * Corners are u16-quantized against the chunk bbox (the points trick ×3).
+ */
+function buildSoupChunk(raw, frame, rnd, indices = null) {
+  const n = indices ? indices.length : raw.x.length;
+  const o = frame.origin;
+  const perm = indices ? shuffleInPlace(Uint32Array.from(indices), rnd) : shuffledIndices(n, rnd);
+  const C = [raw.ax, raw.ay, raw.az, raw.bx, raw.by, raw.bz, raw.cx, raw.cy, raw.cz];
+  const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    for (let c = 0; c < 9; c++) {
+      const a = c % 3, v = C[c][i] - o[a];
+      if (v < bb[a]) bb[a] = v;
+      if (v > bb[a + 3]) bb[a + 3] = v;
+    }
+  }
+  const sx = bb[3] > bb[0] ? 65535 / (bb[3] - bb[0]) : 0;
+  const sy = bb[4] > bb[1] ? 65535 / (bb[4] - bb[1]) : 0;
+  const sz = bb[5] > bb[2] ? 65535 / (bb[5] - bb[2]) : 0;
+  const S = [sx, sy, sz];
+  const tri = new Uint16Array(9 * n);
+  for (let k = 0; k < n; k++) {
+    const i = perm[k];
+    for (let c = 0; c < 9; c++) {
+      const a = c % 3;
+      tri[k * 9 + c] = ((C[c][i] - o[a] - bb[a]) * S[a] + 0.5) | 0;
+    }
+  }
+  return { kind: 'soup', count: n, tri, bboxLocal: Float64Array.from(bb) };
+}
+
+// Exact centroid of element k, frame-local (tests).
+function soupLocalCentroid(chunk, k) {
+  const b = chunk.bboxLocal, t = chunk.tri;
+  const d = (v, a) => (b[a + 3] > b[a] ? b[a] + (v / 65535) * (b[a + 3] - b[a]) : b[a]);
+  const out = [0, 0, 0];
+  for (let c = 0; c < 9; c++) out[c % 3] += d(t[k * 9 + c], c % 3) / 3;
+  return out;
+}
+
+/**
+ * SoupChunkBuilder — the sticks builder's shape over triangle RawChunks
+ * ({ count, ax..cz, x,y,z }). Batch-Morton on centroids, sliced, shuffled.
+ */
+function createSoupChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, seed = 1, onChunk }) {
+  const rnd = mulberry32(seed);
+  const batchN = batchSize || chunkSize * 4;
+  let pend = [], pendCount = 0;
+  const doc = {
+    count: 0,
+    bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity),
+  };
+  const concat = (Type, parts) => {
+    const out = new Type(parts.reduce((t, p) => t + p.length, 0));
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const COLS = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z'];
+  const flushBatch = () => {
+    if (!pendCount) return;
+    const cols = {};
+    for (const c of COLS) cols[c] = concat(Float64Array, pend.map((p) => p[c]));
+    const n = pendCount;
+    pend = []; pendCount = 0;
+    const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
+    for (let start = 0; start < n; start += chunkSize) {
+      const slice = order.subarray(start, Math.min(start + chunkSize, n));
+      const chunk = buildSoupChunk(cols, frame, rnd, slice);
+      doc.count += chunk.count;
+      const b = doc.bboxLocal, cb = chunk.bboxLocal;
+      for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
+      onChunk(chunk);
+    }
+  };
+  return {
+    push(raw) {
+      let taken = 0;
+      while (taken < raw.count) {
+        const room = batchN - pendCount;
+        const n = Math.min(room, raw.count - taken);
+        const part = {};
+        for (const c of COLS) part[c] = raw[c].subarray(taken, taken + n);
+        pend.push(part);
+        pendCount += n; taken += n;
+        if (pendCount >= batchN) flushBatch();
+      }
+    },
+    flush() { flushBatch(); return doc; },
+    get doc() { return doc; },
+  };
+}
+
+// world f64 corner columns from a resolved index triple against local-f32
+// vertices + their origin (the precision dance in the header comment)
+function emitBatch(verts, vo, ia, ib, ic, n) {
+  const out = { count: n };
+  for (const c of ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z']) out[c] = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = ia[i] * 3, b = ib[i] * 3, c = ic[i] * 3;
+    const AX = vo[0] + verts[a], AY = vo[1] + verts[a + 1], AZ = vo[2] + verts[a + 2];
+    const BX = vo[0] + verts[b], BY = vo[1] + verts[b + 1], BZ = vo[2] + verts[b + 2];
+    const CX = vo[0] + verts[c], CY = vo[1] + verts[c + 1], CZ = vo[2] + verts[c + 2];
+    out.ax[i] = AX; out.ay[i] = AY; out.az[i] = AZ;
+    out.bx[i] = BX; out.by[i] = BY; out.bz[i] = BZ;
+    out.cx[i] = CX; out.cy[i] = CY; out.cz[i] = CZ;
+    out.x[i] = (AX + BX + CX) / 3; out.y[i] = (AY + BY + CY) / 3; out.z[i] = (AZ + BZ + CZ) / 3;
+  }
+  return out;
+}
+
+/**
+ * Soup-stream an ALREADY-PARSED mesh (oversized .msh/.obj — their formats are
+ * whole-file reads anyway; the vertices are transient, the soup is resident).
+ * Yields RawChunks for createSoupChunkBuilder.
+ */
+async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = {}) {
+  const nv = (vertices.length / 3) | 0;
+  const vo = nv ? [vertices[0], vertices[1], vertices[2]] : [0, 0, 0];
+  const verts = new Float32Array(3 * nv);
+  for (let i = 0; i < nv; i++) {
+    verts[3 * i] = vertices[3 * i] - vo[0];
+    verts[3 * i + 1] = vertices[3 * i + 1] - vo[1];
+    verts[3 * i + 2] = vertices[3 * i + 2] - vo[2];
+  }
+  const nt = (triangles.length / 3) | 0;
+  const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+  let n = 0;
+  for (let t = 0; t < nt; t++) {
+    ia[n] = triangles[3 * t]; ib[n] = triangles[3 * t + 1]; ic[n] = triangles[3 * t + 2];
+    n++;
+    if (n === batchTris) { yield emitBatch(verts, vo, ia, ib, ic, n); n = 0; }
+  }
+  if (n) yield emitBatch(verts, vo, ia, ib, ic, n);
+}
+
+// ── src/io/soup-io.js ──
+
+// @gcu/condenser — the streaming triangle-soup PROVIDER (io): openPlySoup
+// walks a photogrammetry-scale PLY in two passes, neither holding the file,
+// and emits RawChunk batches for core/soup-geom's builder. The geometry
+// discipline (Morton, shuffle, quantize) lives in core/soup-geom.js.
+
+
+/**
+ * openPlySoup(blob) — the TRUE streaming provider (binary_le + ascii PLY, the
+ * formats photogrammetry exports). Two passes over the blob, neither holding
+ * the file: (1) the vertex block → local-f32 xyz (12 B/vertex transient RAM —
+ * the honest open-time cost; freed when streaming ends), (2) the face block
+ * walked in slabs, fanned, emitted as RawChunk batches.
+ * → { header, streamChunks } — header = { kind:'mesh', soup:true, format,
+ *    vertexCount, triCount(≈ faces, exact after stream), bbox }
+ */
+async function openPlySoup(blob, { onProgress } = {}) {
+  let sampleLen = 64 * 1024, ply = null;
+  for (;;) {
+    const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
+    ply = parsePlyHeader(text);
+    if (ply) break;
+    if (sampleLen >= blob.size) throw new Error('ply: no end_header');
+    sampleLen *= 4;
+  }
+  const face = ply.elements.find((e) => e.name === 'face');
+  if (!face || !face.count) throw new Error('ply: no face element');
+  const px = ply.props.find((p) => p.name.toLowerCase() === 'x');
+  const py = ply.props.find((p) => p.name.toLowerCase() === 'y');
+  const pz = ply.props.find((p) => p.name.toLowerCase() === 'z');
+  if (!px || !py || !pz) throw new Error('ply: vertex needs x/y/z');
+  const nv = ply.count, ascii = ply.format === 'ascii';
+  const SIZES = { char: 1, int8: 1, uchar: 1, uint8: 1, short: 2, int16: 2, ushort: 2, uint16: 2, int: 4, int32: 4, uint: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+  const GETTERS = { 1: 'getUint8', 2: 'getUint16', 4: 'getUint32' };
+
+  // ── pass 1: vertices → local f32 (+ bbox in world f64) ──
+  const verts = new Float32Array(3 * nv);
+  const vo = [0, 0, 0];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let faceStart;                                            // byte offset where faces begin (binary) / line index (ascii)
+  let asciiLines = null;
+  if (!ascii) {
+    const SLAB = 1 << 23;                                   // 8 MB windows
+    let seen = 0;
+    while (seen < nv) {
+      const n = Math.min(Math.floor(SLAB / ply.stride) || 1, nv - seen);
+      const off = ply.dataOffset + seen * ply.stride;
+      const dv = new DataView(await blob.slice(off, off + n * ply.stride).arrayBuffer());
+      for (let i = 0; i < n; i++) {
+        const X = dv[px.getter](i * ply.stride + px.offset, true);
+        const Y = dv[py.getter](i * ply.stride + py.offset, true);
+        const Z = dv[pz.getter](i * ply.stride + pz.offset, true);
+        if (seen === 0 && i === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+        const k = (seen + i) * 3;
+        verts[k] = X - vo[0]; verts[k + 1] = Y - vo[1]; verts[k + 2] = Z - vo[2];
+        if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+        if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+        if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      }
+      seen += n;
+      if (onProgress) onProgress(off + n * ply.stride, blob.size);
+    }
+    faceStart = ply.dataOffset + nv * ply.stride;
+  } else {
+    // ascii: one decode, line-split (ascii photogrammetry at soup scale is
+    // rare; the binary path is the load-bearing one)
+    const text = await blob.text();
+    asciiLines = text.slice(ply.dataOffset).split('\n');
+    const xi = ply.props.indexOf(px), yi = ply.props.indexOf(py), zi = ply.props.indexOf(pz);
+    let rec = 0, at = 0;
+    while (rec < nv && at < asciiLines.length) {
+      const t = asciiLines[at++].trim();
+      if (!t) continue;
+      const f = t.split(/\s+/);
+      const X = +f[xi], Y = +f[yi], Z = +f[zi];
+      if (rec === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+      verts[rec * 3] = X - vo[0]; verts[rec * 3 + 1] = Y - vo[1]; verts[rec * 3 + 2] = Z - vo[2];
+      if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+      if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+      if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      rec++;
+    }
+    faceStart = at;
+  }
+
+  const header = {
+    kind: 'mesh', soup: true, format: ascii ? 'ply-ascii' : 'ply-binary',
+    vertexCount: nv, triCount: face.count, faces: face.count,
+    bbox: { min, max },
+  };
+
+  // ── pass 2: the face walk → RawChunk batches ──
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+    let n = 0, tris = 0;
+    const flushTo = function* (force) {
+      if (n && (force || n === batchTris)) { const b = emitBatch(verts, vo, ia, ib, ic, n); tris += n; n = 0; yield b; }
+    };
+    const pushFan = function* (ix, k) {
+      for (let j = 2; j < k; j++) {
+        ia[n] = ix[0]; ib[n] = ix[j - 1]; ic[n] = ix[j];
+        n++;
+        if (n === batchTris) yield* flushTo(true);
+      }
+    };
+    if (!ascii) {
+      const MAXREC = 4 + 255 * 8;                           // count + a generous n-gon
+      const SLAB = 1 << 23;
+      let base = faceStart, carry = new Uint8Array(0), done = 0;
+      const ix = new Uint32Array(256);
+      while (done < face.count && base < blob.size) {
+        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        const take = Math.min(SLAB, blob.size - base);
+        const slab = new Uint8Array(carry.length + take);
+        slab.set(carry, 0);
+        slab.set(new Uint8Array(await blob.slice(base, base + take).arrayBuffer()), carry.length);
+        base += take;
+        const dv = new DataView(slab.buffer);
+        let off = 0;
+        const last = base >= blob.size;
+        while (done < face.count && (last ? off < slab.length : off + MAXREC <= slab.length)) {
+          let rOff = off, bad = false;
+          for (const pr of face.props) {
+            if (pr.list) {
+              const cs = SIZES[pr.countType] || 1, is = SIZES[pr.idxType] || 4;
+              if (rOff + cs > slab.length) { bad = true; break; }
+              const k = dv[GETTERS[cs]](rOff, true); rOff += cs;
+              if (rOff + k * is > slab.length) { bad = true; break; }
+              if (/vertex_ind/i.test(pr.name) || face.props.length === 1) {
+                for (let j = 0; j < k; j++) ix[j] = dv[GETTERS[is]](rOff + j * is, true);
+                rOff += k * is;
+                yield* pushFan(ix, k);
+              } else rOff += k * is;
+            } else {
+              rOff += SIZES[pr.type] || 4;
+              if (rOff > slab.length) { bad = true; break; }
+            }
+          }
+          if (bad) break;
+          off = rOff;
+          done++;
+        }
+        carry = slab.subarray(off);
+        if (op2) op2(base, blob.size);
+      }
+    } else {
+      let at = faceStart, fc = 0;
+      while (fc < face.count && at < asciiLines.length) {
+        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        const t = asciiLines[at++].trim();
+        if (!t) continue;
+        const f = t.split(/\s+/);
+        const k = +f[0];
+        const ix = new Uint32Array(k);
+        for (let j = 0; j < k; j++) ix[j] = +f[1 + j];
+        yield* pushFan(ix, k);
+        fc++;
+      }
+    }
+    yield* flushTo(true);
+    header.triCount = tris + n;                             // exact after the stream (fans expand quads)
+  }
+
+  return { header, streamChunks };
 }
 
 // ── src/core/gl-soup.js ──
@@ -2955,6 +5479,606 @@ function createPickPipeline(gl) {
   }
 
   return { pick, pickRegion, captureViewport, NO_LAYER };
+}
+
+// ── ../dm/src/dm.js ──
+
+// @gcu/dm — Datamine .DM file reader (READ-ONLY). Zero-dependency, browser-native.
+//
+// Provenance / legal: the format is reverse-engineered from two public,
+// independent sources — VMine.com's format description (explicitly NOT from
+// Constellation/Datamine copyright material) and Jeremy Maccelari's BSD-licensed
+// ParaViewGeo `dmfile.h` (1999). The .DM file format is excluded from copyright
+// under the EU Software Directive. Full spec + references: SPEC.md. MIT.
+//
+// Two sub-formats share the .dm extension: Single Precision (SP, 2048-byte pages,
+// Float32, 4-byte words) and Extended Precision (EP, 4096-byte pages, Float64,
+// 8-byte words). Page 1 = Data Definition (fields); pages 2+ = packed records.
+// The last 16 bytes of every page are a legacy security block (skipped). Both
+// variants leave 508 usable words per page.
+
+class DMFormatError extends Error {
+  constructor(msg) { super(msg); this.name = 'DMFormatError'; }
+}
+
+const USABLE_WORDS = 508;      // per page, both SP and EP (16-byte security tail)
+const SENTINEL = 0.9e30;       // |value| above this = a Datamine special (missing/inf/trace)
+
+const toDV = (b) => (b instanceof DataView ? b : new DataView(b.buffer ? b.buffer : b, b.byteOffset || 0, b.byteLength));
+
+// Read N words as text: 4 ASCII chars per word (in EP, the first 4 bytes of each
+// 8-byte word; the rest is padding). Non-printable bytes dropped; result trimmed.
+function readText(dv, off, nWords, ws) {
+  let s = '';
+  for (let w = 0; w < nWords; w++) {
+    const base = off + w * ws;
+    for (let b = 0; b < 4; b++) {
+      if (base + b >= dv.byteLength) break;
+      const ch = dv.getUint8(base + b);
+      if (ch >= 32 && ch < 127) s += String.fromCharCode(ch);
+    }
+  }
+  return s.trim();
+}
+
+// Recover an EP extended field name (>8, up to 24 chars), or null if the entry
+// isn't flagged long. EP-only: SP's 4-byte words have no high half. Leapfrog and
+// other modern exporters hide chars 9–24 in bytes a legacy 8-char reader skips,
+// flagged by ASCII "LONG" in the high half of the type word — so old readers
+// still see a valid 8-char name (the encoding is purely additive). Chars 1–8 =
+// low halves of words 0–1; 9–16 = their high halves; 17–24 = word 5 (low then
+// high). Internal spaces kept; trailing pad stripped. Reverse-engineered from
+// real Leapfrog EP exports (independent byte observation), not from Datamine
+// copyright material. See SPEC §3.2.1.
+function readLongName(dv, o, ws) {
+  if (ws !== 8) return null;                              // EP-only mechanism
+  if (o + ws * 5 + 8 > dv.byteLength) return null;        // truncated buffer → legacy path
+  const flag = o + ws * 2 + 4;                            // high half of the type word
+  const LONG = [0x4C, 0x4F, 0x4E, 0x47];                  // "LONG"
+  for (let b = 0; b < 4; b++) if (dv.getUint8(flag + b) !== LONG[b]) return null;
+  const segs = [o, o + ws, o + 4, o + ws + 4, o + ws * 5, o + ws * 5 + 4];
+  //           low(w0) low(w1) high(w0) high(w1) low(w5)   high(w5)
+  let s = '';
+  for (const base of segs)
+    for (let b = 0; b < 4; b++) {
+      const c = dv.getUint8(base + b);
+      s += (c >= 32 && c < 127) ? String.fromCharCode(c) : ' ';
+    }
+  return s.replace(/\s+$/, '') || null;                   // strip trailing pad, keep internal spaces
+}
+
+const FMTS = [['sp', 'le'], ['sp', 'be'], ['ep', 'le'], ['ep', 'be']];
+const wordSize = (p) => (p === 'ep' ? 8 : 4);
+const pageSize = (p) => (p === 'ep' ? 4096 : 2048);
+const dateOffOf = (p) => (p === 'ep' ? 192 : 96);
+
+/**
+ * Detect { precision: 'sp'|'ep', byteOrder: 'le'|'be' } from the file head
+ * (≥ one page recommended), or null if it isn't a recognizable .dm. There's no
+ * magic number: validate NVAR (1–500, integral) + a printable first field name.
+ */
+function detectDM(bytes) {
+  const dv = toDV(bytes);
+  for (const [precision, byteOrder] of FMTS) {
+    const ws = wordSize(precision), isLE = byteOrder === 'le';
+    const fcOff = dateOffOf(precision) + ws;                         // NVAR position
+    if (fcOff + ws > dv.byteLength) continue;
+    const fc = precision === 'ep' ? dv.getFloat64(fcOff, isLE) : dv.getFloat32(fcOff, isLE);
+    const n = Math.round(fc);
+    if (n < 1 || n > 500 || Math.abs(fc - n) > 0.01) continue;
+    const fieldStart = dateOffOf(precision) + ws * 4;
+    let printable = fieldStart + 4 <= dv.byteLength;
+    for (let b = 0; printable && b < 4; b++) { const c = dv.getUint8(fieldStart + b); if (c < 32 || c >= 127) printable = false; }
+    if (printable) return { precision, byteOrder };
+  }
+  return null;
+}
+
+/**
+ * Parse the Data Definition (page 1) into a header: field schema, record layout,
+ * and counts. `fmt` (from detectDM) is optional — detected if omitted. `bytes`
+ * need only cover the first page.
+ */
+function parseHeader(bytes, fmt) {
+  const dv = toDV(bytes);
+  const f = fmt || detectDM(bytes);
+  if (!f) throw new DMFormatError('not a recognizable .dm file (no SP/EP + endianness matched)');
+  const { precision, byteOrder } = f;
+  const ws = wordSize(precision), ps = pageSize(precision), isLE = byteOrder === 'le';
+  const readNum = precision === 'ep' ? (o) => dv.getFloat64(o, isLE) : (o) => dv.getFloat32(o, isLE);
+
+  const dateOff = dateOffOf(precision);
+  const filename = readText(dv, 0, 2, ws);
+  const description = readText(dv, precision === 'ep' ? 32 : 16, 20, ws);
+  const dateNum = Math.round(readNum(dateOff));
+  const nvar = Math.round(readNum(dateOff + ws));
+  const lastPage = Math.round(readNum(dateOff + ws * 2));
+  const lastRec = Math.round(readNum(dateOff + ws * 3));
+  if (nvar < 1 || nvar > 256) throw new DMFormatError(`NVAR out of range: ${nvar}`);
+
+  // Field-definition entries (28 bytes SP / 56 EP each; alpha >4 chars span
+  // multiple entries sharing a name with incrementing WORDNO).
+  const fieldStart = dateOff + ws * 4, fieldSize = ws * 7;
+  const raw = [];
+  for (let i = 0; i < nvar; i++) {
+    const o = fieldStart + i * fieldSize;
+    if (o + fieldSize > ps) break;                                   // single-page DD (spec §3.2)
+    raw.push({
+      name: readLongName(dv, o, ws) ?? readText(dv, o, 2, ws),   // §3.2.1 EP long names, else legacy 8-char
+      type: (readText(dv, o + ws * 2, 1, ws).charAt(0) || 'N').toUpperCase(),
+      sw: Math.round(readNum(o + ws * 3)),
+      wordno: Math.round(readNum(o + ws * 4)),
+      def: readNum(o + ws * 6),
+    });
+  }
+
+  // Reconstruct logical columns (group entries by name).
+  const map = new Map();
+  for (const e of raw) {
+    if (!map.has(e.name)) map.set(e.name, { name: e.name, type: e.type, entries: [] });
+    map.get(e.name).entries.push(e);
+  }
+  let maxLen = 0;
+  const columns = [];
+  for (const c of map.values()) {
+    const sorted = c.entries.slice().sort((a, b) => a.wordno - b.wordno);
+    const sw = sorted.map((e) => e.sw);
+    for (const p of sw) if (p > maxLen) maxLen = p;
+    const isConstant = sorted[0].sw === 0;
+    let constantValue = null;
+    if (isConstant) {
+      if (c.type === 'A') constantValue = decodeAlphaDefault(sorted, precision, isLE);
+      else { const v = sorted[0].def; constantValue = Math.abs(v) > SENTINEL ? null : v; }
+    }
+    columns.push({ name: c.name, type: c.type, sw, width: c.type === 'A' ? sw.length * 4 : undefined, isConstant, constantValue });
+  }
+
+  const recordsPerPage = maxLen > 0 ? Math.floor(USABLE_WORDS / maxLen) : 0;
+  const recordCount = lastPage > 1 ? (lastPage - 2) * recordsPerPage + lastRec : lastRec;
+
+  return {
+    precision, byteOrder, wordSize: ws, pageSize: ps,
+    filename, description, date: dmDate(dateNum),
+    nvar, lastPage, lastRec, maxLen, recordsPerPage, recordCount,
+    columns,
+    schema: columns.map((c) => ({ name: c.name, type: c.type === 'A' ? 'string' : 'number' })),
+  };
+}
+
+function decodeAlphaDefault(entries, precision, isLE) {
+  let s = '';
+  const buf = new ArrayBuffer(precision === 'ep' ? 8 : 4);
+  const dv = new DataView(buf);
+  for (const e of entries) {
+    if (precision === 'ep') dv.setFloat64(0, e.def, isLE); else dv.setFloat32(0, e.def, isLE);
+    for (let b = 0; b < 4; b++) { const c = dv.getUint8(b); if (c >= 32 && c < 127) s += String.fromCharCode(c); }
+  }
+  return s.trim();
+}
+
+function dmDate(n) {
+  if (!n || n < 10000) return null;                                 // 10000×year + 100×month + day
+  const year = Math.floor(n / 10000), month = Math.floor((n % 10000) / 100), day = n % 100;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+/** Byte range of record `i` (0-based) in the file — a contiguous slice (records
+ *  never span a page). Read it and pass to decodeRecord. */
+function recordRange(h, i) {
+  const dataPage = Math.floor(i / h.recordsPerPage) + 2;            // 1-based; page 1 = DD
+  const recInPage = i % h.recordsPerPage;
+  return { offset: (dataPage - 1) * h.pageSize + recInPage * h.maxLen * h.wordSize, length: h.maxLen * h.wordSize };
+}
+
+/** Read ONE field of the record whose words begin at byte `recBase` in `dv`:
+ *  number | null (missing/sentinel) for numeric columns, trimmed string for
+ *  alpha, the header value for constants (no body access). This is the strided
+ *  projection primitive — a caller reads a single COLUMN by striding recBase =
+ *  pageBase + r·maxLen·wordSize across records, decoding only the field it wants
+ *  instead of the whole record. `dv` may span many records (a page run); the
+ *  offsets are relative to recBase. */
+function readField(dv, h, col, recBase) {
+  if (col.isConstant) return col.constantValue;
+  const ws = h.wordSize, isLE = h.byteOrder === 'le';
+  if (col.type === 'A') {
+    let s = '';
+    for (const sw of col.sw) { const b0 = recBase + (sw - 1) * ws; for (let b = 0; b < 4; b++) { if (b0 + b >= dv.byteLength) break; const c = dv.getUint8(b0 + b); if (c >= 32 && c < 127) s += String.fromCharCode(c); } }
+    return s.trim();
+  }
+  const off = recBase + (col.sw[0] - 1) * ws;
+  if (off + ws > dv.byteLength) return null;
+  const v = h.precision === 'ep' ? dv.getFloat64(off, isLE) : dv.getFloat32(off, isLE);
+  return Math.abs(v) > SENTINEL ? null : v;
+}
+
+/** Decode one record's word slice (from recordRange) into positional values:
+ *  number | null (missing/sentinel) for numeric columns, string for alpha. */
+function decodeRecord(bytes, h) {
+  const dv = toDV(bytes);
+  return h.columns.map((col) => readField(dv, h, col, 0));   // record bytes start at 0
+}
+
+/**
+ * Whole-file convenience: detect + parse + record access over an ArrayBuffer /
+ * Uint8Array. For huge files prefer the windowed path (detectDM → parseHeader →
+ * recordRange → decodeRecord over a File you slice).
+ */
+function readDM(buffer) {
+  const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (u8.byteLength < 2048) throw new DMFormatError('file too small for a .dm page');
+  const fmt = detectDM(u8.subarray(0, Math.min(4096, u8.byteLength)));
+  if (!fmt) throw new DMFormatError('not a recognizable .dm file');
+  const h = parseHeader(u8, fmt);
+  const sliceRec = (i) => { const { offset, length } = recordRange(h, i); return u8.subarray(offset, offset + length); };
+  return {
+    filename: h.filename, description: h.description, date: h.date,
+    precision: h.precision, byteOrder: h.byteOrder, fields: h.schema, recordCount: h.recordCount, header: h,
+    getRecord(i) {
+      if (i < 0 || i >= h.recordCount) return null;
+      const vals = decodeRecord(sliceRec(i), h);
+      const obj = {};
+      h.columns.forEach((c, k) => { obj[c.name] = vals[k]; });
+      return obj;
+    },
+    getColumns() {
+      const n = h.recordCount;
+      const out = {};
+      const numArr = h.precision === 'ep' ? Float64Array : Float32Array;
+      h.columns.forEach((c, k) => {
+        if (c.isConstant) { out[c.name] = c.constantValue; return; }
+        out[c.name] = c.type === 'A' ? new Array(n) : new numArr(n);
+      });
+      for (let i = 0; i < n; i++) {
+        const vals = decodeRecord(sliceRec(i), h);
+        h.columns.forEach((c, k) => {
+          if (c.isConstant) return;
+          if (c.type === 'A') out[c.name][i] = vals[k];
+          else out[c.name][i] = vals[k] == null ? NaN : vals[k];     // missing → NaN in typed arrays
+        });
+      }
+      return out;
+    },
+    * [Symbol.iterator]() { for (let i = 0; i < h.recordCount; i++) yield this.getRecord(i); },
+  };
+}
+
+// ── src/io/dm-provider.js ──
+
+// @gcu/condenser — Datamine .dm block-model provider, over @gcu/dm's windowed
+// reader (micro-spec Addendum A.2). The DD page carries the grid definition as
+// implicit constants (XMORIG/YMORIG/ZMORIG corner origin, XINC/YINC/ZINC block
+// dims, NX/NY/NZ counts), so — unlike CSV — there is NO discovery sweep: grid,
+// bbox, and schema are known from the first page. Centroids come from XC/YC/ZC
+// per-record fields; the centroid of block (0,0,0) is MORIG + INC/2.
+//
+// Record indices are RAW record numbers (rows with missing coordinates are
+// skipped but their numbers are not reused), so recordRange gives O(1) fetch of
+// any picked record. Categories (first alpha column) build their dictionary
+// incrementally during the single streaming sweep (≤255 distinct).
+//
+// v1 scope: regular uniform grids (INC as DD constants). Sub-blocked models
+// (per-record INC) and non-model .dm files are a later milestone.
+
+
+const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ']);
+
+// `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
+// categories }) skips the full-file discovery sweep — a 13 GB sub-blocked model
+// reopens straight to streaming. Callers own freshness (name+size match).
+async function openDmModel(blob, { mapping = null, forcePoints = false, onProgress = null, cached = null } = {}) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  const fmt = detectDM(head);
+  if (!fmt) throw new Error('dm: not a recognizable .dm file');
+  const h = parseHeader(head, fmt);
+  const names = h.columns.map((c) => c.name);
+  const idx = (n) => names.indexOf(n);
+  const constVal = (n) => { const c = h.columns[idx(n)]; return c && c.isConstant ? c.constantValue : null; };
+
+  const xc = idx('XC') >= 0 ? idx('XC') : idx('X');
+  const yc = idx('YC') >= 0 ? idx('YC') : idx('Y');
+  const zc = idx('ZC') >= 0 ? idx('ZC') : idx('Z');
+  if (xc < 0 || yc < 0 || zc < 0) throw new Error('dm: no XC/YC/ZC centroid fields — not a block model export');
+
+  // Decoded-record batches (a cold recipe). Reads ~4 MB page runs sequentially;
+  // yields { recStart, rows } with RAW record numbering (recStart + k, no skips
+  // here). Full decode — every field of every record. For a column-selective op
+  // (a filter, a grade scan, the render stream) prefer columnBatches, which
+  // strides only the fields it needs (≈ 3–30× less work; see bench-formats).
+  async function* recordBatches({ signal } = {}) {
+    const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+    for (let page = 2; page <= h.lastPage; page += pagesPer) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+      const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
+      const rows = [];
+      for (let pg = page; pg <= pEnd; pg++) {
+        const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+        const base = (pg - page) * h.pageSize;
+        for (let r = 0; r < nRec; r++) {
+          rows.push(decodeRecord(bytes.subarray(base + r * h.maxLen * h.wordSize, base + (r + 1) * h.maxLen * h.wordSize), h));
+        }
+      }
+      yield { recStart: (page - 2) * h.recordsPerPage, rows };
+    }
+  }
+
+  // PROJECTED batches — decode only the requested column indices by striding each
+  // field's fixed word-offset across records (no whole-record decode, no per-row
+  // allocation). Numeric col → Float64Array (NaN = missing); alpha col → string[]
+  // (''=missing); constants come free from the header. Yields { recStart, count,
+  // cols } where cols[idx] is the array for column `idx`. Same RAW numbering as
+  // recordBatches (recStart + k over ALL records, skips resolved by the caller).
+  // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
+  // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in
+  // the run can match a filter — parquet's row-group skip, retrofitted onto .dm)
+  async function* columnBatches(colIdxs, { signal, shouldRead = null } = {}) {
+    const ids = [...new Set(colIdxs)];
+    const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+    const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+    for (let page = 2; page <= h.lastPage; page += pagesPer) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+      if (shouldRead) {
+        let totalR = 0;
+        for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+        if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
+      }
+      const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      let total = 0;
+      for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+      const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+      let w = 0;
+      for (let pg = page; pg <= pEnd; pg++) {
+        const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
+        for (let r = 0; r < nRec; r++) {
+          const recBase = pageBase + r * h.maxLen * h.wordSize;
+          for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+          w++;
+        }
+      }
+      const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+      yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
+    }
+  }
+
+  // the grid, straight from the DD (corner origin → centroid convention).
+  // A regular model carries the grid as DD constants (XMORIG/XINC/NX…) → no sweep.
+  // A SUB-BLOCKED model has per-record XINC/YINC/ZINC (not constants) → a discovery
+  // sweep finds the fine lattice (pitch = min dim /2) + a size palette, exactly
+  // like the CSV provider → variable-size boxes. Anything else → points (grid:null).
+  const mor = [constVal('XMORIG'), constVal('YMORIG'), constVal('ZMORIG')];
+  const inc = [constVal('XINC'), constVal('YINC'), constVal('ZINC')];
+  const cnt = [constVal('NX'), constVal('NY'), constVal('NZ')];
+  const regular = !forcePoints && mor.every(Number.isFinite) && inc.every((v) => Number.isFinite(v) && v > 0) && cnt.every((v) => Number.isFinite(v) && v >= 1);
+  // per-record dim columns (non-constant XINC/YINC/ZINC) → sub-block candidate
+  const incIdx = { x: idx('XINC'), y: idx('YINC'), z: idx('ZINC') };
+  const perRecDims = !regular && !forcePoints && incIdx.x >= 0 && incIdx.y >= 0 && incIdx.z >= 0
+    && !h.columns[incIdx.x].isConstant && !h.columns[incIdx.y].isConstant && !h.columns[incIdx.z].isConstant;
+  let grid = null, bbox, subBlocked = false, dimPalette = null, dimCode = null;
+  if (cached && cached.bbox && !forcePoints) {
+    // sidecar-cached discovery: trust it wholesale (freshness is the caller's contract)
+    grid = cached.grid || null; bbox = cached.bbox;
+    subBlocked = !!cached.subBlocked;
+    dimPalette = cached.dimPalette || null;
+    if (subBlocked && dimPalette) {
+      const r10c = (v) => Number(v.toPrecision(10));
+      dimCode = new Map(dimPalette.map((h2, i) => [`${r10c(h2[0] * 2)},${r10c(h2[1] * 2)},${r10c(h2[2] * 2)}`, i]));
+    }
+  } else if (regular) {
+    grid = {
+      x: { origin: mor[0] + inc[0] / 2, pitch: inc[0], count: Math.round(cnt[0]) },
+      y: { origin: mor[1] + inc[1] / 2, pitch: inc[1], count: Math.round(cnt[1]) },
+      z: { origin: mor[2] + inc[2] / 2, pitch: inc[2], count: Math.round(cnt[2]) },
+    };
+    bbox = { min: [mor[0], mor[1], mor[2]], max: [mor[0] + inc[0] * cnt[0], mor[1] + inc[1] * cnt[1], mor[2] + inc[2] * cnt[2]] };
+  } else {
+    const CAP = 300000, r10 = (v) => Number(v.toPrecision(10));
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const ax = [new Set(), new Set(), new Set()];            // axis distinct centroids (for the fine lattice)
+    const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
+    const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
+    for await (const { recStart, count, cols } of columnBatches(sweepCols)) {
+      if (onProgress) onProgress({ phase: 'discovery', done: recStart + count, total: h.recordCount });
+      const X = cols[xc], Y = cols[yc], Z = cols[zc], DX = perRecDims ? cols[incIdx.x] : null, DY = perRecDims ? cols[incIdx.y] : null, DZ = perRecDims ? cols[incIdx.z] : null;
+      for (let k = 0; k < count; k++) {
+        const xv = X[k], yv = Y[k], zv = Z[k];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+        if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+        if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+        if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+        if (perRecDims) {
+          if (ax[0].size < CAP) ax[0].add(r10(xv)); if (ax[1].size < CAP) ax[1].add(r10(yv)); if (ax[2].size < CAP) ax[2].add(r10(zv));
+          const dx = DX[k], dy = DY[k], dz = DZ[k];
+          if (dx > 0 && dy > 0 && dz > 0) {
+            if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
+            if (dimSet.size <= 300) dimSet.add(`${r10(dx)},${r10(dy)},${r10(dz)}`);
+          }
+        }
+      }
+    }
+    if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
+    bbox = { min, max };
+    // sub-blocked: fine lattice (pitch = minDim/2) + size palette — same rule as CSV
+    if (perRecDims && dimSet.size > 1 && Number.isFinite(minDim[0])) {
+      const finePitch = [minDim[0] / 2, minDim[1] / 2, minDim[2] / 2];
+      const fineAxes = [0, 1, 2].map((a) => {
+        if (ax[a].size >= CAP || !(finePitch[a] > 0)) return null;
+        const vals = [...ax[a]].sort((u, v) => u - v);
+        const origin = vals[0], pitch = finePitch[a];
+        const c = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
+        if (c > 65535) return null;
+        const eps = Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6);
+        for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
+        return { origin, pitch, count: c };
+      });
+      if (fineAxes.every(Boolean)) {
+        subBlocked = true;
+        const dims = [...dimSet].slice(0, 256).map((k) => k.split(',').map(Number));
+        dimPalette = dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]);
+        dimCode = new Map(dims.map((d, i) => [`${r10(d[0])},${r10(d[1])},${r10(d[2])}`, i]));
+        grid = { x: fineAxes[0], y: fineAxes[1], z: fineAxes[2] };
+      }
+    }
+  }
+
+  // channels: every per-record numeric non-definition column; first alpha = category
+  const numericColumns = h.columns
+    .map((c, i) => ({ c, i }))
+    .filter((o) => o.c.type === 'N' && !o.c.isConstant && !DEF_NAMES.has(o.c.name))
+    .map((o) => ({ i: o.i, name: o.c.name }));
+  const chan = mapping && mapping.chan != null ? mapping.chan : (numericColumns[0] ? numericColumns[0].i : null);
+  // category: an explicit mapping.cat wins (any column — numeric domain codes
+  // dict-encode as strings below); default = the first non-constant alpha
+  const catIdx = mapping && mapping.cat != null ? mapping.cat : h.columns.findIndex((c) => c.type === 'A' && !c.isConstant);
+  // a sidecar's categories describe the column it was written for — a re-keyed
+  // cat must rebuild its dict during the sweep, not inherit the old column's
+  const cachedCats = cached && cached.categories && (!cached.mapping || cached.mapping.cat == null || cached.mapping.cat === catIdx) ? cached.categories : null;
+  const categories = catIdx >= 0 ? (cachedCats ? [...cachedCats] : []) : null;   // fills incrementally during the sweep (or prefilled from a sidecar)
+  const catCode = catIdx >= 0 ? new Map(categories.map((v, i) => [v, i])) : null;
+
+  const header = {
+    kind: 'blockmodel', count: h.recordCount,
+    bbox, grid, subBlocked, dimPalette, dimCols: subBlocked ? incIdx : null,
+    columns: names,
+    mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },
+    numericColumns, categories,
+    attributes: [...(chan != null ? [names[chan]] : []), ...(catIdx >= 0 ? [names[catIdx]] : [])],
+    dm: h,                                                  // the @gcu/dm header: O(1) record fetch + the filter sweep
+  };
+
+  const r10s = (v) => Number(v.toPrecision(10));
+  async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
+    const alloc = () => ({
+      x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
+      chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null,
+      dim: dimCode ? new Uint8Array(chunkPoints) : null,
+      recIdx: new Uint32Array(chunkPoints),
+    });
+    // project ONLY the fields the render needs (coords + grade + category + dims)
+    // — not all N columns. On the real Leapfrog .dm that's ~6 of 14+.
+    const streamCols = [xc, yc, zc];
+    if (chan != null) streamCols.push(chan);
+    if (catIdx >= 0) streamCols.push(catIdx);
+    if (dimCode) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
+    let buf = alloc(), fill = 0, done = 0;
+    for await (const { recStart, count, cols } of columnBatches(streamCols, { signal })) {
+      const X = cols[xc], Y = cols[yc], Z = cols[zc];
+      const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
+      const DX = dimCode ? cols[incIdx.x] : null, DY = dimCode ? cols[incIdx.y] : null, DZ = dimCode ? cols[incIdx.z] : null;
+      for (let k = 0; k < count; k++) {
+        const xv = X[k], yv = Y[k], zv = Z[k];
+        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // skipped, raw number NOT reused
+        buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
+        buf.chan[fill] = CH ? CH[k] : 0;                   // NaN already when missing
+        if (buf.cat) {
+          const raw = CA[k];                               // '' when missing; a NUMERIC cat column dict-encodes as strings
+          const v = raw == null || raw === '' || (typeof raw === 'number' && !Number.isFinite(raw)) ? '' : String(raw);
+          let code = catCode.get(v);
+          if (code === undefined) {
+            if (catCode.size < 255) { code = catCode.size; catCode.set(v, code); categories.push(v); }
+            else code = 0;
+          }
+          buf.cat[fill] = code;
+        }
+        if (buf.dim) { const c = dimCode.get(`${r10s(DX[k])},${r10s(DY[k])},${r10s(DZ[k])}`); buf.dim[fill] = c === undefined ? 0 : c; }
+        buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
+        fill++;
+        if (fill === chunkPoints) {
+          yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recIdx: buf.recIdx, recStart: 0 };
+          buf = alloc(); fill = 0;
+        }
+      }
+      done += count;
+      if (onProgress) onProgress(done, h.recordCount);
+    }
+    if (fill) {
+      yield {
+        count: fill, x: buf.x.subarray(0, fill), y: buf.y.subarray(0, fill), z: buf.z.subarray(0, fill),
+        chan: buf.chan.subarray(0, fill), cat: buf.cat ? buf.cat.subarray(0, fill) : null,
+        dim: buf.dim ? buf.dim.subarray(0, fill) : null,
+        recIdx: buf.recIdx.subarray(0, fill), recStart: 0,
+      };
+    }
+  }
+
+  return { header, streamChunks, recordBatches, columnBatches };
+}
+
+// O(1) fetch of one record by RAW record number (the pick → inspector path).
+async function fetchDmRecord(blob, h, rec) {
+  const { offset, length } = recordRange(h, rec);
+  const bytes = new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+  return decodeRecord(bytes, h);                           // positional values, h.columns order
+}
+
+// ── Datamine WIREFRAME (triangulated surface / DTM / solid) ──────────────────
+// A Datamine wireframe is a PAIR of .dm files: a POINTS file (XP/YP/ZP + PID) and
+// a TRIANGLES file (PID1/PID2/PID3 indexing the points by id), by convention named
+// <base>pt.dm / <base>tr.dm. Together they're an indexed mesh — the same
+// { vertices, triangles } shape the OBJ/MSH/PLY providers return, so buildMeshChunk
+// and the whole mesh pipeline take it unchanged.
+
+// Peek a .dm's column names without the block-model requirement (openDmModel throws
+// for non-block-model files). Returns names[] or null if not a recognizable .dm.
+async function peekDmColumns(blob) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  const fmt = detectDM(head);
+  if (!fmt) return null;
+  try { return parseHeader(head, fmt).columns.map((c) => c.name); } catch { return null; }
+}
+
+// Classify a .dm by its fields: a wireframe points half, a triangle half, or null.
+function dmWireframeRole(names) {
+  if (!names) return null;
+  const has = (n) => names.some((c) => String(c).toUpperCase() === n);
+  if (has('PID1') && has('PID2') && has('PID3')) return 'triangles';
+  if (has('PID') && has('XP') && has('YP') && has('ZP')) return 'points';
+  return null;
+}
+
+// Join a points file + a triangles file into a mesh. Reads both whole (wireframes
+// are small — 2–4 k records is typical); maps PID → 0-based vertex index (gaps ok);
+// drops any triangle whose vertices don't resolve (reports the count). Multiple
+// GROUPs merge into one mesh for v1.
+async function openDmWireframe(ptBlob, trBlob) {
+  const pb = new Uint8Array(await ptBlob.arrayBuffer());
+  const ph = parseHeader(pb, detectDM(pb) || {});
+  const pu = ph.columns.map((c) => c.name.toUpperCase());
+  const xi = pu.indexOf('XP'), yi = pu.indexOf('YP'), zi = pu.indexOf('ZP'), pid = pu.indexOf('PID');
+  if (xi < 0 || yi < 0 || zi < 0 || pid < 0) throw new Error('dm wireframe: the points file needs XP/YP/ZP/PID');
+  const idxOfPid = new Map();
+  const vx = [];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let n = 0;
+  for (let i = 0; i < ph.recordCount; i++) {
+    const { offset, length } = recordRange(ph, i);
+    const v = decodeRecord(pb.subarray(offset, offset + length), ph);
+    const id = v[pid], x = v[xi], y = v[yi], z = v[zi];
+    if (id == null || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    idxOfPid.set(id, n++); vx.push(x, y, z);
+    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+    if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+  }
+  const tb = new Uint8Array(await trBlob.arrayBuffer());
+  const th = parseHeader(tb, detectDM(tb) || {});
+  const tu = th.columns.map((c) => c.name.toUpperCase());
+  const a = tu.indexOf('PID1'), b = tu.indexOf('PID2'), c = tu.indexOf('PID3');
+  if (a < 0 || b < 0 || c < 0) throw new Error('dm wireframe: the triangles file needs PID1/PID2/PID3');
+  const tri = [];
+  let dropped = 0;
+  for (let i = 0; i < th.recordCount; i++) {
+    const { offset, length } = recordRange(th, i);
+    const r = decodeRecord(tb.subarray(offset, offset + length), th);
+    const i1 = idxOfPid.get(r[a]), i2 = idxOfPid.get(r[b]), i3 = idxOfPid.get(r[c]);
+    if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
+    tri.push(i1, i2, i3);
+  }
+  if (!n || !tri.length) throw new Error('dm wireframe: no resolvable triangles');
+  const vertices = Float64Array.from(vx), triangles = Uint32Array.from(tri);
+  return { header: { kind: 'mesh', format: 'dm-wireframe', vertexCount: n, triCount: triangles.length / 3 | 0, bbox: { min, max }, dropped }, vertices, triangles };
 }
 
 // ── src/core/camera.js ──
@@ -4775,12 +7899,16 @@ function createEdl(gl) {
   };
 }
 
-// ── src/core.js ──
+// ── src/main.js ──
 
-// @gcu/condenser/core — the render engine alone: chunk builders + GL pipelines
-// + camera + EDL + Morton. Zero I/O, zero providers; @gcu/frame is the one
-// inlined leaf (every chunk is frame-relative). The full package (main.js)
-// re-exports this same surface plus io/ + grid/.
+// @gcu/condenser — streaming no-preprocess renderer for massive spatial elements.
+// The engine under micro (the scope over lamina's slide). Curated public surface.
+//
+// Three layers (see core.js for the engine-only entry):
+//   core/ — chunk builders + GL pipelines + camera + EDL + Morton. Zero I/O.
+//   io/   — file providers (LAS, PLY, delimited/dm block models, drillholes, meshes).
+//   grid/ — lattice inference + the join/resample/reconcile engine.
+// mesh export (micro): the ARANZ writer rides the already-inlined @gcu/msh
 
 // ── ../../drillhole/src/desurvey.js ──
 
@@ -4796,7 +7924,7 @@ function createEdl(gl) {
 // concat-source style, always intended to live here. BMA + dee re-vendor from here now.
 
 // Unit tangent from azimuth/dip (mining pos-down): x east, y north, z up.
-function dhTangent(azDeg, dipDeg) {
+function dhTangent$desurvey(azDeg, dipDeg) {
   let az = azDeg * Math.PI / 180, dip = dipDeg * Math.PI / 180;
   let c = Math.cos(dip);
   return [Math.sin(az) * c, Math.cos(az) * c, -Math.sin(dip)];
@@ -4805,7 +7933,7 @@ function dhTangent(azDeg, dipDeg) {
 // 'pos-down' (mining: +60 = 60° below horizontal) vs 'neg-down' (signed math: -60 =
 // below). Inferred from the median dip — exploration holes point down, so the sign of
 // the bulk tells the convention.
-function dhDetectDipConvention(surveys) {
+function dhDetectDipConvention$desurvey(surveys) {
   let dips = [];
   for (let i = 0; i < surveys.length; i++) {
     let d = surveys[i].dip;
@@ -4820,7 +7948,7 @@ function dhDetectDipConvention(surveys) {
 // Sort, dedupe (last wins), normalize dip to pos-down, synthesize a station at depth 0
 // when the list starts deeper (copies the first attitude). Returns { stations:
 // [{depth, az, dip}], dupCount, badCount }.
-function dhNormalizeSurveys(rawSurveys, dipConvention) {
+function dhNormalizeSurveys$desurvey(rawSurveys, dipConvention) {
   let flip = dipConvention === 'neg-down' ? -1 : 1;
   let clean = [], badCount = 0;
   for (let i = 0; i < rawSurveys.length; i++) {
@@ -4861,7 +7989,7 @@ function dhNormalizeSurveys(rawSurveys, dipConvention) {
 // metric drilling-QC convention — multiply by ⅓ for °/10 m, or recompute from `dogleg`
 // for °/100 ft). Both are geometry of the survey attitudes — independent of `method` —
 // so they're the same whichever desurvey you pick. dogleg[0] = dls[0] = 0.
-function dhDesurveyHole(collar, stations, method) {
+function dhDesurveyHole$desurvey(collar, stations, method) {
   method = method || 'minimumCurvature';
   let n = stations.length;
   let out = {
@@ -4873,7 +8001,7 @@ function dhDesurveyHole(collar, stations, method) {
   };
   for (let i = 0; i < n; i++) {
     out.depths[i] = stations[i].depth;
-    let t = dhTangent(stations[i].az, stations[i].dip);
+    let t = dhTangent$desurvey(stations[i].az, stations[i].dip);
     out.tx[i] = t[0]; out.ty[i] = t[1]; out.tz[i] = t[2];
   }
   out.px[0] = collar[0]; out.py[0] = collar[1]; out.pz[0] = collar[2];
@@ -4912,7 +8040,7 @@ function dhDesurveyHole(collar, stations, method) {
 // - balancedTangential: linear along the segment chord
 // Beyond the last station: straight extrapolation along the last tangent (standard
 // practice — intervals routinely outrun the survey).
-function dhPositionAt(hole, depth) {
+function dhPositionAt$desurvey(hole, depth) {
   let d = hole.depths, n = d.length;
   if (n === 0) return null;
   if (depth <= d[0]) {
@@ -4979,7 +8107,7 @@ function dhPositionAt(hole, depth) {
 // Build the per-hole structure from collars + surveys (NOT normalized yet — callers
 // normalize only the holes that pass their own gate, so a skipped hole doesn't accrue
 // advisory counts). Returns { holes: bhid→{bhid,collar,eoh,rawSurveys}, order: [] }.
-function dhJoinHoles(tables, dipConvention, hit) {
+function dhJoinHoles$validate(tables, dipConvention, hit) {
   let holes = {}, order = [];
   for (let ci = 0; ci < (tables.collars || []).length; ci++) {
     let c0 = tables.collars[ci];
@@ -5006,8 +8134,8 @@ function dhJoinHoles(tables, dipConvention, hit) {
 // Normalize one hole's raw surveys → hole.stations (pos-down, sorted, deduped, depth-0
 // synthesized), with the no-usable-survey straight-down fallback and the survey-side
 // past-EOH advisory. Counts ride into `hit`. Mutates + returns the hole.
-function dhNormalizeHoleStations(hole, dipConvention, hit) {
-  let norm = dhNormalizeSurveys(hole.rawSurveys, dipConvention);
+function dhNormalizeHoleStations$validate(hole, dipConvention, hit) {
+  let norm = dhNormalizeSurveys$desurvey(hole.rawSurveys, dipConvention);
   if (norm.badCount) for (let bi = 0; bi < norm.badCount; bi++) hit('bad-survey', 'Survey rows with non-numeric depth/azimuth or |dip| > 90 (excluded)', hole.bhid);
   if (norm.dupCount) for (let di = 0; di < norm.dupCount; di++) hit('dup-survey-depth', 'Duplicate survey depths in a hole (last kept)', hole.bhid);
   if (norm.stations.length === 0) {
@@ -5028,7 +8156,7 @@ function dhNormalizeHoleStations(hole, dipConvention, hit) {
 //                cols: [{ name, type: 'num'|'cat', values: [] }] }
 // }
 // opts = { dipConvention: 'auto'|'pos-down'|'neg-down', method }
-function dhValidate(tables, opts) {
+function dhValidate$validate(tables, opts) {
   opts = opts || {};
   let checks = {};
   function hit(id, label, bhid) {
@@ -5039,9 +8167,9 @@ function dhValidate(tables, opts) {
   }
 
   let dipConvention = opts.dipConvention || 'auto';
-  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention(tables.surveys || []);
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$desurvey(tables.surveys || []);
 
-  let joined = dhJoinHoles(tables, dipConvention, hit);
+  let joined = dhJoinHoles$validate(tables, dipConvention, hit);
   let holes = joined.holes, order = joined.order;
   for (let oi = 0; oi < order.length; oi++) holes[order[oi]].iv = [];
 
@@ -5066,7 +8194,7 @@ function dhValidate(tables, opts) {
     let hh = holes[order[oi]];
     if (hh.iv.length === 0) { hit('collar-no-intervals', 'Collars with no interval rows (hole skipped)', hh.bhid); continue; }
 
-    dhNormalizeHoleStations(hh, dipConvention, hit);
+    dhNormalizeHoleStations$validate(hh, dipConvention, hit);
 
     // interval-side past-EOH advisory (kept, counted)
     if (hh.eoh != null) {
@@ -5107,7 +8235,7 @@ function dhValidate(tables, opts) {
 // Returns { header: ['BHID','X','Y','Z','DEPTH', ...cols], rows, report } — one located
 // row per valid sample (sorted down-hole within each hole), with the same non-silent
 // consistency report style as the interval pipeline.
-function dhDesurveySamples(tables, opts) {
+function dhDesurveySamples$samples(tables, opts) {
   opts = opts || {};
   let checks = {};
   function hit(id, label, bhid) {
@@ -5118,9 +8246,9 @@ function dhDesurveySamples(tables, opts) {
   }
 
   let dipConvention = opts.dipConvention || 'auto';
-  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention(tables.surveys || []);
+  if (dipConvention === 'auto') dipConvention = dhDetectDipConvention$desurvey(tables.surveys || []);
 
-  let joined = dhJoinHoles(tables, dipConvention, hit);
+  let joined = dhJoinHoles$validate(tables, dipConvention, hit);
   let holes = joined.holes, order = joined.order;
   for (let oi = 0; oi < order.length; oi++) holes[order[oi]].smp = [];
 
@@ -5145,8 +8273,8 @@ function dhDesurveySamples(tables, opts) {
   for (let oi = 0; oi < order.length; oi++) {
     let hh = holes[order[oi]];
     if (hh.smp.length === 0) { hit('collar-no-samples', 'Collars with no sample rows (hole skipped)', hh.bhid); continue; }
-    dhNormalizeHoleStations(hh, dipConvention, hit);
-    let path = dhDesurveyHole(hh.collar, hh.stations, opts.method);
+    dhNormalizeHoleStations$validate(hh, dipConvention, hit);
+    let path = dhDesurveyHole$desurvey(hh.collar, hh.stations, opts.method);
     nHoles++;
 
     // EOH advisory (kept, counted)
@@ -5162,7 +8290,7 @@ function dhDesurveySamples(tables, opts) {
     let idx = hh.smp.slice().sort(function(a, b) { return smp.depth[a] - smp.depth[b]; });
     for (let k = 0; k < idx.length; k++) {
       let ii = idx[k], d = smp.depth[ii];
-      let pos = dhPositionAt(path, d);
+      let pos = dhPositionAt$desurvey(path, d);
       let row = [hh.bhid, pos[0], pos[1], pos[2], d];
       for (let c = 0; c < cols.length; c++) row.push(cols[c].values[ii]);
       rows.push(row);
@@ -5578,7 +8706,7 @@ const RAMPS = {
 };
 RAMPS.greys = RAMPS.grays;    // matplotlib spells it 'Greys'; don't punish the muscle memory
 
-const TYPES = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uint16Array, u8: Uint8Array };
+const TYPES$widget = { f64: Float64Array, f32: Float32Array, u32: Uint32Array, u16: Uint16Array, u8: Uint8Array };
 
 // ── the wire format (mirrors gcu_condenser/__init__.py's _pack) ──
 //   'CDNS' | u32 version | u32 headerLen | header JSON (utf-8) | pad | body
@@ -5598,7 +8726,7 @@ function decodePayload(raw) {
   const bodyStart = (12 + headerLen + 7) & ~7;
   const all = {};
   for (const [name, c] of Object.entries(head.cols || {})) {
-    const T = TYPES[c.type];
+    const T = TYPES$widget[c.type];
     if (T) all[name] = new T(buf, base + bodyStart + c.off, c.len);
   }
   const layers = (head.layers || []).map((L) => {
@@ -5606,7 +8734,88 @@ function decodePayload(raw) {
     for (const [name, key] of Object.entries(L.cols || {})) if (all[key]) cols[name] = all[key];
     return { ...L, cols };
   });
-  return { frame: head.frame, layers };
+  return { frame: head.frame, frame_auto: !!head.frame_auto, layers };
+}
+
+// ── via='files': a Blob-shaped window onto jupyter-server's /files/ endpoint,
+// which serves byte ranges on the session cookie — so the engine's own file
+// providers (CSV/.dm/LAS/PLY, the same code micro ships) read straight from
+// the notebook's folder with ZERO kernel involvement. Only the Blob surface
+// the io layer actually touches is implemented: size/slice/arrayBuffer/text/
+// stream. A server that ignores Range (plain static hosting) still works —
+// the 200 fallback skips to the window.
+class RemoteBlob {
+  constructor(url, start, end) { this.url = url; this._start = start; this._end = end; }
+  get size() { return this._end - this._start; }
+  slice(a = 0, b = this.size) {
+    const n = this.size;
+    const s = Math.min(n, Math.max(0, a < 0 ? n + a : a));
+    const e = Math.min(n, Math.max(s, b < 0 ? n + b : b));
+    return new RemoteBlob(this.url, this._start + s, this._start + e);
+  }
+  async arrayBuffer() {
+    if (this.size <= 0) return new ArrayBuffer(0);
+    const res = await fetch(this.url, { headers: { Range: `bytes=${this._start}-${this._end - 1}` } });
+    if (!res.ok) throw new Error(`files: HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (res.status === 206) return buf;
+    return buf.slice(this._start, this._end);              // Range ignored → cut the window out
+  }
+  async text() { return new TextDecoder().decode(await this.arrayBuffer()); }
+  stream() {
+    const { url, _start, _end } = this;
+    let reader = null, skip = 0, left = _end - _start;
+    return new ReadableStream({
+      async start() {
+        const res = await fetch(url, { headers: { Range: `bytes=${_start}-${_end - 1}` } });
+        if (!res.ok || !res.body) throw new Error(`files: HTTP ${res.status}`);
+        if (res.status !== 206) skip = _start;             // Range ignored → skip up to the window
+        reader = res.body.getReader();
+      },
+      async pull(ctrl) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || left <= 0) { ctrl.close(); return; }
+          let v = value;
+          if (skip > 0) {
+            if (v.length <= skip) { skip -= v.length; continue; }
+            v = v.subarray(skip); skip = 0;
+          }
+          if (v.length > left) v = v.subarray(0, left);
+          left -= v.length;
+          ctrl.enqueue(v);
+          return;
+        }
+      },
+      cancel() { if (reader) reader.cancel().catch(() => {}); },
+    });
+  }
+}
+
+// probe the /files/ candidates (and a hub-style base prefix derived from the
+// page URL) until one answers a byte range; null when none does
+async function resolveFilesBlob(file) {
+  const prefixes = ['/files/'];
+  const m = (typeof document !== 'undefined' ? document.location.pathname : '').match(/^(.+?)\/(lab|notebooks|voila|tree)\b/);
+  if (m && m[1]) prefixes.push(`${m[1]}/files/`);
+  for (const cand of file.candidates || []) {
+    for (const pre of prefixes) {
+      const url = pre + cand.split('/').map(encodeURIComponent).join('/');
+      try {
+        const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+        if (!res.ok) continue;
+        let size = file.size || 0;
+        const cr = res.headers.get('Content-Range');
+        if (cr) { const mm = cr.match(/\/(\d+)\s*$/); if (mm) size = +mm[1]; }
+        else if (res.status === 200) {
+          const cl = +res.headers.get('Content-Length') || 0;
+          if (cl > 1) size = cl;                           // the server sent the whole file
+        }
+        if (size > 0) return new RemoteBlob(url, 0, size);
+      } catch { /* next candidate */ }
+    }
+  }
+  return null;
 }
 
 // which engine color mode a `color` choice means, per element kind. The engine
@@ -5666,7 +8875,7 @@ function drillholeSegments(head, cols) {
     rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
     endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
   }
-  const ds = dhDesurveySamples(
+  const ds = dhDesurveySamples$samples(
     { collars, surveys, samples: { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] } },
     { method: head.method || 'minimumCurvature', dipConvention: head.dip_convention || 'auto' },
   );
@@ -5732,6 +8941,8 @@ function render({ model, el }) {
   let payload = null, disposed = false, needFit = false, converged = false;
   let docBbox = null;
   let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
+  let fileQueue = Promise.resolve();                       // via='files' layers build sequentially (frame adoption)
+  let fileMsg = null;                                      // a files-mode failure, pinned on the hud
   const kinds = [];
 
   try {
@@ -5895,7 +9106,7 @@ function render({ model, el }) {
         ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals'
           : kinds[0] === 'mesh' || kinds[0] === 'surface' ? 'triangles' : 'points')
         : `elements · ${n} layers`;
-      hud.textContent = converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`;
+      hud.textContent = fileMsg || (converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`);
     }
     drawOverlay(w, h, dpr);
     if (!converged) schedule();
@@ -5908,6 +9119,7 @@ function render({ model, el }) {
     renderer.clearChunks();
     payload = null; docBbox = null; kinds.length = 0;
     streams = null; streamEpoch = Math.random().toString(36).slice(2);
+    fileQueue = Promise.resolve(); fileMsg = null;
     const p = decodePayload(model.get('_payload'));
     if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
     payload = p;
@@ -5924,13 +9136,111 @@ function render({ model, el }) {
       }
     });
 
-    docBbox = Float64Array.from(bb);
-    renderer.setDocBbox(docBbox);
+    if (Number.isFinite(bb[0])) {                          // files-only views have no bbox YET
+      docBbox = Float64Array.from(bb);
+      renderer.setDocBbox(docBbox);
+      needFit = true;
+    }
     applyStyles();
     if (tb) { tb.showPick(null); syncChrome(); }
-    needFit = true;
     invalidate();
     if (streams) model.send({ type: 'ready', epoch: streamEpoch });
+  };
+
+  // merge a layer's local bbox as it becomes known (files-mode discovery)
+  const mergeBbox = (lb) => {
+    if (!docBbox) docBbox = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+    for (let a = 0; a < 3; a++) {
+      if (lb[a] < docBbox[a]) docBbox[a] = lb[a];
+      if (lb[a + 3] > docBbox[a + 3]) docBbox[a + 3] = lb[a + 3];
+    }
+    if (Number.isFinite(docBbox[0])) {
+      renderer.setDocBbox(docBbox);
+      needFit = true;
+    }
+  };
+
+  // ── via='files': discover + stream a file BROWSER-SIDE through the engine's
+  // providers — the kernel never reads a byte. Sequential across layers: the
+  // FIRST discovery may set the shared frame (payload.frame_auto). ──
+  const buildFileLayer = async (L, i) => {
+    const epoch = streamEpoch;
+    try {
+      const blob = await resolveFilesBlob(L.file);
+      if (epoch !== streamEpoch || disposed) return;
+      if (!blob) {
+        fileMsg = `${L.file.name}: /files unreachable — jupyter-server serves it; elsewhere stream via the kernel`;
+        schedule();
+        return;
+      }
+      const ext2 = (L.file.name.match(/\.([a-z0-9]+)$/i) || [0, ''])[1].toLowerCase();
+      const opened = ext2 === 'dm' ? await openDmModel(blob)
+        : ext2 === 'las' ? await openLas(blob)
+          : ext2 === 'ply' ? await openPly(blob)
+            : await openBlockModel(blob);
+      if (epoch !== streamEpoch || disposed) return;
+      const { header, streamChunks } = opened;
+      const isBlocks = !!header.grid;
+      if (!isBlocks && !(ext2 === 'las' || ext2 === 'ply')) {
+        fileMsg = `${L.file.name}: not a regular block lattice — open resident, or as points via the kernel`;
+        schedule();
+        return;
+      }
+      if (payload.frame_auto) {                            // a files-only view adopts the first real frame
+        payload.frame = documentFrame(header).origin;
+        payload.frame_auto = false;
+      }
+      const frame = { origin: payload.frame, crs: null, units: 'm' };
+      if (header.bbox && Number.isFinite(header.bbox.min[0])) {
+        mergeBbox(Float64Array.of(
+          header.bbox.min[0] - frame.origin[0], header.bbox.min[1] - frame.origin[1], header.bbox.min[2] - frame.origin[2],
+          header.bbox.max[0] - frame.origin[0], header.bbox.max[1] - frame.origin[1], header.bbox.max[2] - frame.origin[2]));
+      }
+      let b;
+      if (isBlocks) {
+        kinds[i] = 'blocks';
+        const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
+        b = createBlockChunkBuilder({
+          frame, grid, chunkSize: 1 << 18, seed: 1,
+          dimPalette: header.dimPalette || null,
+          onChunk: (c) => renderer.addChunk(c, 'base', i),
+        });
+        if (header.categories) {
+          L.cat_labels = header.categories;
+          L.cat_n = header.categories.length;
+          renderer.setCategories(L.cat_n);
+        }
+      } else {
+        kinds[i] = 'points';
+        b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        L.cols.value_u16 = L.cols.value_u16 || new Uint16Array(0);   // 'value' → the intensity channel
+      }
+      let got = 0;
+      for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
+        if (epoch !== streamEpoch || disposed) return;
+        b.push(rc);
+        b.flush();                                         // progressive, chunk by chunk
+        got += rc.count;
+        invalidate();
+      }
+      const doc = b.flush();
+      L.count = header.count || got;
+      if (isBlocks && doc && Number.isFinite(doc.chanRange[0])) L.value_range = [doc.chanRange[0], doc.chanRange[1]];
+      if (doc && doc.bboxLocal && Number.isFinite(doc.bboxLocal[0])) mergeBbox(doc.bboxLocal);
+      applyStyles();
+      if (tb) syncChrome();
+      invalidate();
+      try {                                                // the kernel learns what the browser found
+        const info = { ...(model.get('_file_info') || {}) };
+        info[i] = { count: L.count, value_range: L.value_range || null,
+          cat_labels: L.cat_labels || null, cat_n: L.cat_n || null };
+        model.set('_file_info', info);
+        model.save_changes();
+      } catch { /* a detached test model */ }
+    } catch (e) {
+      fileMsg = `${L.file.name}: ${e.message}`;
+      schedule();
+    }
   };
 
   // the ACTIVE value channel: a layer may ship several (value=["FE","SIO2"]);
@@ -5961,6 +9271,10 @@ function render({ model, el }) {
   // switch rebuilds just its own layer from the already-resident columns).
   // Returns the layer's local bbox (null while a streamed layer has no rows).
   const buildLayer = (L, i) => {
+    if (L.file) {                                          // via='files': async browser-side read
+      fileQueue = fileQueue.then(() => buildFileLayer(L, i));
+      return null;
+    }
     const frame = { origin: payload.frame, crs: null, units: 'm' };
     const cols = L.cols;
     resolveChannel(L, styleAt(i));
@@ -6142,7 +9456,7 @@ function render({ model, el }) {
   // columns — no re-send from the kernel, the camera stays put
   const rebuildLayer = (i) => {
     const L = payload && payload.layers[i];
-    if (!L || L.streamed) return;                          // a streamed layer carries one channel
+    if (!L || L.streamed || L.file) return;                // streamed/files layers carry one channel
     renderer.removeLayer(i);
     buildLayer(L, i);
     invalidate();

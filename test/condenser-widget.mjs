@@ -148,6 +148,17 @@ wa = cd.view(mc, surf2, height=460)
 open(r"${T}/batcha.bin", "wb").write(wa._payload)
 open(r"${T}/batcha-styles.json", "w").write(json.dumps(wa._styles))
 
+# via='files': the kernel never reads the file — it only NAMES it
+fcsv = "XC,YC,ZC,FE\\n" + "\\n".join(
+    f"{i*10+5},{j*10+5},{k*10+5},{(i+j+k)/3:.4f}"
+    for i in range(12) for j in range(12) for k in range(4))
+open(f"{TD}/files-model.csv", "w").write(fcsv)
+fl = cd.open(f"{TD}/files-model.csv", via="files")
+assert fl.count == 0 and fl._extra["file"]["candidates"], fl._extra
+wf = cd.view(fl, height=460)
+open(f"{TD}/files.bin", "wb").write(wf._payload)
+open(f"{TD}/files-styles.json", "w").write(json.dumps(wf._styles))
+
 # MESH: a context surface co-registered over the block model
 mg = np.arange(0, 11) * 20.0
 mvx, mvy = np.meshgrid(mg, mg, indexing="ij")
@@ -200,8 +211,23 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/jav
 const server = http.createServer(async (req, res) => {
   try {
     const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    const data = await readFile(p.startsWith('/tmp/') ? join(TMP, p.slice(5)) : '.' + p);
-    res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' });
+    // /files/<path> emulates jupyter-server: byte ranges on the files endpoint
+    // (mapped by basename into TMP — the guard's files live there)
+    const fp = p.startsWith('/files/') ? join(TMP, p.split('/').pop())
+      : p.startsWith('/tmp/') ? join(TMP, p.slice(5)) : '.' + p;
+    const data = await readFile(fp);
+    const rng = req.headers.range && req.headers.range.match(/bytes=(\d+)-(\d*)/);
+    if (rng) {
+      const a = +rng[1];
+      const b = rng[2] ? Math.min(+rng[2], data.length - 1) : data.length - 1;
+      res.writeHead(206, {
+        'content-type': MIME[extname(p)] || 'application/octet-stream',
+        'content-range': `bytes ${a}-${b}/${data.length}`, 'accept-ranges': 'bytes',
+      });
+      res.end(data.subarray(a, b + 1));
+      return;
+    }
+    res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream', 'accept-ranges': 'bytes' });
     res.end(data);
   } catch { res.writeHead(404); res.end(); }
 });
@@ -600,6 +626,37 @@ const r = await page.evaluate(async (port) => {
     d7();
   }
 
+  // ── via='files': the BROWSER reads the CSV itself over byte ranges ──
+  {
+    const fPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/files.bin`)).arrayBuffer());
+    const fStyles = await (await fetch(`http://127.0.0.1:${port}/tmp/files-styles.json`)).json();
+    out.filesPayloadBytes = fPayload.byteLength;           // header-only: the kernel sent NO data
+    const m8 = makeModel({
+      _payload: fPayload, _styles: fStyles, _file_info: {}, _fit: 0, section: null,
+      background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {},
+    });
+    const d8 = render({ model: m8, el });
+    for (let k2 = 0; k2 < 20; k2++) { await settle(); if ((m8._get('_file_info') || {})[0]) break; }
+    await settle();
+    out.filesInfo = (m8._get('_file_info') || {})[0] || null;
+    out.filesLit = lit().n;
+    out.filesHud = (el.querySelector('.cdhud') || {}).textContent;
+    // the ID buffer answers picks even with nothing resident
+    const cv8 = el.querySelector('canvas');
+    const r8 = cv8.getBoundingClientRect();
+    let sel8 = {};
+    for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.55], [0.55, 0.45]]) {
+      const cx2 = r8.left + r8.width * fx, cy2 = r8.top + r8.height * fy;
+      cv8.dispatchEvent(new PointerEvent('pointerdown', { clientX: cx2, clientY: cy2, bubbles: true }));
+      cv8.dispatchEvent(new PointerEvent('pointerup', { clientX: cx2, clientY: cy2, bubbles: true }));
+      await settle();
+      sel8 = m8._get('selection') || {};
+      if (sel8.row != null && sel8.row >= 0) break;
+    }
+    out.filesSel = sel8;
+    d8();
+  }
+
   // ── MESH context layer: scenery co-registered over a block model ──
   {
     const mPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/mesh.bin`)).arrayBuffer());
@@ -758,6 +815,14 @@ chk(`streamed POINTS + SUB-BLOCKED render together (${meta.s2Points}+${meta.s2Bl
   r.s2Lit > 10000 && /3[,.]?704 elements · 2 layers/.test(r.s2Hud || ''));
 chk(`through-select sweeps BOTH streamed accessors (${r.s2ThroughRows.toLocaleString()} rows over ${r.s2ThroughLayers} layers)`,
   r.s2ThroughLayers === 2 && r.s2ThroughRows > 100);
+
+// ── via='files': browser-side read over byte ranges, zero kernel bytes ──
+chk(`via='files' ships a ${r.filesPayloadBytes}-byte payload and the BROWSER reads the file (${r.filesLit.toLocaleString()} px, hud "${r.filesHud}")`,
+  r.filesPayloadBytes < 2048 && r.filesLit > 10000 && /576 blocks/.test(r.filesHud || ''));
+chk(`discovery syncs back to the kernel (${JSON.stringify(r.filesInfo)})`,
+  r.filesInfo && r.filesInfo.count === 576 && Array.isArray(r.filesInfo.value_range) && r.filesInfo.value_range[1] > 8);
+chk(`pick works on a files-mode layer via the ID buffer (${JSON.stringify(r.filesSel)})`,
+  Number.isInteger(r.filesSel.row) && r.filesSel.row >= 0);
 
 // ── cd.mesh context layer ──
 chk(`a mesh renders co-registered over the model (${meta.meshTris} tris, ${r.meshLit.toLocaleString()} lit px, hud "${r.meshHud}")`,
