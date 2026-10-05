@@ -956,6 +956,44 @@ chk(`figure chrome draws (scale bar + north arrow: ${r.decoBase} ink px) and dec
 chk(`labels=True writes the BHIDs at the collars (+${r.decoLabels - r.decoBase} ink px)`,
   r.decoLabels > r.decoBase + 150);
 
+// ── the REAL jupyter-server /files contract (the thing the emulation above
+// approximates): start one on the venv, assert 206 byte ranges. Skipped — not
+// failed — when jupyter_server isn't installed. ──
+{
+  let hasJupyter = false;
+  try { execFileSync(PYTHON, ['-c', 'import jupyter_server'], { stdio: 'ignore' }); hasJupyter = true; } catch { /* absent */ }
+  if (!hasJupyter) {
+    console.log('skip real jupyter-server check (jupyter_server not in the venv)');
+  } else {
+    const { spawn } = await import('child_process');
+    const jport = 20000 + Math.floor(Math.random() * 20000);
+    const jp = spawn(PYTHON, ['-m', 'jupyter_server',
+      '--ServerApp.ip=127.0.0.1', `--ServerApp.port=${jport}`, '--ServerApp.port_retries=0',
+      '--ServerApp.token=cdtest', '--ServerApp.open_browser=False', `--ServerApp.root_dir=${TMP}`,
+      '--ServerApp.disable_check_xsrf=True'], { stdio: 'ignore' });
+    try {
+      let up = false;
+      for (let k = 0; k < 60 && !up; k++) {
+        await new Promise((res) => setTimeout(res, 500));
+        try { up = (await fetch(`http://127.0.0.1:${jport}/api?token=cdtest`)).ok; } catch { /* booting */ }
+      }
+      if (!up) { chk('real jupyter-server came up', false, 'never answered /api'); }
+      else {
+        const res = await fetch(`http://127.0.0.1:${jport}/files/files-model.csv?token=cdtest`,
+          { headers: { Range: 'bytes=3-11' } });
+        const body = await res.text();
+        const cr = res.headers.get('content-range') || '';
+        // python text-mode wrote the CSV, so on Windows byte 11 is \r not \n —
+        // assert the exact WINDOW, not the platform's line ending
+        chk(`REAL jupyter-server serves byte ranges on /files (HTTP ${res.status}, ${JSON.stringify(body)}, ${cr})`,
+          res.status === 206 && body.length === 9 && body.startsWith('YC,ZC,FE') && /^bytes 3-11\/\d+$/.test(cr));
+      }
+    } finally {
+      jp.kill();
+    }
+  }
+}
+
 console.log(fails ? `\nCONDENSER WIDGET: ${fails} FAILURES` : '\nCONDENSER WIDGET: PASS');
 await browser.close();
 server.close();
