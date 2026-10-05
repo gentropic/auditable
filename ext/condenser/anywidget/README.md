@@ -115,6 +115,30 @@ the float32 wall on the GPU).
 Drillholes desurvey in the browser through **@gcu/drillhole**, the same
 minimum-curvature code micro uses, so a hole lands in the same place in both.
 
+## Streaming: `cd.open` — never resident, no comm ceiling
+
+```python
+cd.open("model.parquet", x="XC", y="YC", z="ZC", value="FE", category="DOMAIN")
+cd.open(lambda: my_batches(), x="X", y="Y", z="Z", value="AU")   # any batch source
+```
+
+A block model streamed from disk: the widget's payload carries only the
+**header** (the inferred lattice, count, value range, category labels), and the
+rows follow as wire-v3 chunks (u16 lattice indices + f32 value + u8 category,
+~11 B/block) over Jupyter custom messages once the view is up — **rendering
+progressively**, batch by batch, exactly like the engine streaming a file in
+micro. The kernel never holds more than one batch; the browser keeps ~11 B per
+block and reconstructs coordinates lazily from the lattice, so pick, measure,
+select-through and `threshold` all work as on a resident layer.
+
+A Parquet path streams via **pyarrow** (row-group-aligned, column-projected —
+only the mapped columns are ever decoded); any other source is a list of
+table-like batches or a zero-arg callable returning an iterator (the source is
+read twice: once for the axes and ranges, once for the data, which is why a
+bare generator is refused). Each extra view of the same Viewer requests its own
+epoch-tagged stream, so views never interleave. Sub-blocked models are not
+streamable yet — open those resident via `blocks(..., size=...)`.
+
 ## The toolbar
 
 | | |
@@ -331,7 +355,8 @@ notebook should be `1`, not `0`.
   lattice indices + f32 values (11 B/block — exact: coordinates are
   reconstructed in f64 from the inferred axes) and points as f32 about the
   layer's own center (18 B/point with a value) — roughly 5.5M blocks or 3.4M
-  points per 62 MB. Past that, the honest fix is streaming, not packing.
+  points per 62 MB. Past that, stream the model with `cd.open(...)` — the
+  payload stays header-sized and the rows ride custom messages instead.
 
 ## Testing
 

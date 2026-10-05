@@ -180,6 +180,7 @@ export function render({ model, el }) {
   let renderer = null, edl = null, cam = null, detach = null, raf = 0, ro = null, tb = null;
   let payload = null, disposed = false, needFit = false, converged = false;
   let docBbox = null;
+  let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
   const kinds = [];
 
   try {
@@ -242,6 +243,7 @@ export function render({ model, el }) {
   const load = () => {
     renderer.clearChunks();
     payload = null; docBbox = null; kinds.length = 0;
+    streams = null; streamEpoch = Math.random().toString(36).slice(2);
     const p = decodePayload(model.get('_payload'));
     if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
     payload = p;
@@ -259,20 +261,49 @@ export function render({ model, el }) {
           dimPalette: L.dim_palette || null,               // sub-blocked: per-code half-dims
           onChunk: (c) => renderer.addChunk(c, 'base', i),
         });
-        let bx = cols.x, by = cols.y, bz = cols.z;
-        if (L.pos === 'ijk') {
-          // wire v3: u16 lattice indices → exact f64 coords (origin + index·pitch,
-          // computed here in f64 — quantization without loss). Stashed as _pos so
-          // the pick readout / measure / select-through read reconstructed coords.
+        if (L.streamed) {
+          // cd.open(): header-only in the payload — rows arrive as wire-v3
+          // chunks over custom messages, pushed into this SAME builder with a
+          // running recStart (progressive render for free). JS keeps only
+          // ijk + value + cat (~11 B/block); positions reconstruct lazily.
+          const n = L.count;
+          const st = {
+            b, got: 0, done: false,
+            i: new Uint16Array(n), j: new Uint16Array(n), k: new Uint16Array(n),
+            value: L.value_range ? new Float32Array(n) : null,
+            cat: L.cat_n ? new Uint8Array(n) : null,
+          };
+          (streams = streams || {})[i] = st;
+          if (st.value) L.cols.value = st.value;           // threshold/legend read these
+          if (st.cat) L.cols.cat = st.cat;
           const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
-          const n = L.count, I = cols.i, J = cols.j, K = cols.k;
-          bx = new Float64Array(n); by = new Float64Array(n); bz = new Float64Array(n);
-          for (let q = 0; q < n; q++) { bx[q] = x0 + I[q] * xp; by[q] = y0 + J[q] * yp; bz[q] = z0 + K[q] * zp; }
-          L._pos = { x: bx, y: by, z: bz };
+          L._posAt = (r) => [x0 + st.i[r] * xp, y0 + st.j[r] * yp, z0 + st.k[r] * zp];
+          L._ijk = { st, x0, xp, y0, yp, z0, zp };
+          if (L.cat_n) renderer.setCategories(L.cat_n);
+          if (L.bbox) {                                    // header bbox (world) seeds the fit before rows land
+            for (let a = 0; a < 3; a++) {
+              const lo = L.bbox[a] - frame.origin[a], hi = L.bbox[a + 3] - frame.origin[a];
+              if (lo < bb[a]) bb[a] = lo;
+              if (hi > bb[a + 3]) bb[a + 3] = hi;
+            }
+          }
+          doc = null;                                      // flushed at eof
+        } else {
+          let bx = cols.x, by = cols.y, bz = cols.z;
+          if (L.pos === 'ijk') {
+            // wire v3: u16 lattice indices → exact f64 coords (origin + index·pitch,
+            // computed here in f64 — quantization without loss). Stashed as _pos so
+            // the pick readout / measure / select-through read reconstructed coords.
+            const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
+            const n = L.count, I = cols.i, J = cols.j, K = cols.k;
+            bx = new Float64Array(n); by = new Float64Array(n); bz = new Float64Array(n);
+            for (let q = 0; q < n; q++) { bx[q] = x0 + I[q] * xp; by[q] = y0 + J[q] * yp; bz[q] = z0 + K[q] * zp; }
+            L._pos = { x: bx, y: by, z: bz };
+          }
+          b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
+          doc = b.flush();
+          if (L.cat_n) renderer.setCategories(L.cat_n);
         }
-        b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
-        doc = b.flush();
-        if (L.cat_n) renderer.setCategories(L.cat_n);
       } else if (L.kind === 'drillholes') {
         const seg = drillholeSegments(L, cols);
         // the desurvey computes these, so stash the interval midpoints by ROW:
@@ -323,6 +354,63 @@ export function render({ model, el }) {
     if (tb) { tb.showPick(null); syncChrome(); }
     needFit = true;
     invalidate();
+    if (streams) model.send({ type: 'ready', epoch: streamEpoch });
+  };
+
+  // ── streamed chunks (cd.open): epoch-guarded wire-v3 batches into the open
+  // builder — each push lands a chunk on the GPU, so the model renders as it
+  // arrives, exactly like the engine streaming a file in micro. ──
+  const asTyped = (b, T, n) => {
+    if (!b) return null;
+    const buf = ArrayBuffer.isView(b) ? b.buffer : b;
+    const off = ArrayBuffer.isView(b) ? b.byteOffset : 0;
+    if (off % T.BYTES_PER_ELEMENT === 0) return new T(buf, off, n);
+    return new T(new Uint8Array(buf, off, n * T.BYTES_PER_ELEMENT).slice().buffer);
+  };
+  const onCustom = (content, buffers) => {
+    if (disposed || !content || !streams || !payload) return;
+    if (content.epoch !== streamEpoch) return;             // a stale stream another view requested
+    const li = content.layer, st = streams[li];
+    const L = payload.layers[li];
+    if (!st || !L || st.done) return;
+    if (content.type === 'chunk') {
+      const names = content.cols || [];
+      const take = Math.min(content.rows >>> 0, st.i.length - st.got);
+      if (take <= 0) return;
+      const TA = { i: Uint16Array, j: Uint16Array, k: Uint16Array, value: Float32Array, cat: Uint8Array };
+      const got = {};
+      names.forEach((nm, bi) => { if (TA[nm]) got[nm] = asTyped(buffers[bi], TA[nm], take); });
+      if (!got.i || !got.j || !got.k) return;
+      st.i.set(got.i.subarray(0, take), st.got);
+      st.j.set(got.j.subarray(0, take), st.got);
+      st.k.set(got.k.subarray(0, take), st.got);
+      if (st.value && got.value) st.value.set(got.value.subarray(0, take), st.got);
+      if (st.cat && got.cat) st.cat.set(got.cat.subarray(0, take), st.got);
+      const { x0, xp, y0, yp, z0, zp } = L._ijk;
+      const bx = new Float64Array(take), by = new Float64Array(take), bz = new Float64Array(take);
+      for (let q = 0; q < take; q++) {
+        bx[q] = x0 + got.i[q] * xp; by[q] = y0 + got.j[q] * yp; bz[q] = z0 + got.k[q] * zp;
+      }
+      st.b.push({ count: take, x: bx, y: by, z: bz,
+        chan: got.value || new Float32Array(take),         // the builder concats chan unconditionally
+        cat: got.cat || null, dim: null, recStart: st.got });
+      st.b.flush();                                        // emit NOW — progressive at message granularity
+      st.got += take;
+      invalidate();                                        // new chunks restart the accumulation
+    } else if (content.type === 'eof') {
+      st.done = true;
+      const doc = st.b.flush();
+      if (doc && doc.bboxLocal && docBbox) {
+        for (let a = 0; a < 3; a++) {
+          if (doc.bboxLocal[a] < docBbox[a]) docBbox[a] = doc.bboxLocal[a];
+          if (doc.bboxLocal[a + 3] > docBbox[a + 3]) docBbox[a + 3] = doc.bboxLocal[a + 3];
+        }
+        renderer.setDocBbox(docBbox);
+      }
+      applyStyles();                                       // threshold masks now see the full column
+      if (tb) syncChrome();                                // legend over the final values
+      invalidate();
+    }
   };
 
   // ── styles: everything the engine keeps per LAYER ──
@@ -518,7 +606,8 @@ export function render({ model, el }) {
       if (c.i_from) rows.push(['from–to', `${fmtN(c.i_from[r])} – ${fmtN(c.i_to[r])}`]);
     } else {
       const pc = L._pos || c;                              // wire v3 reconstructs into _pos
-      if (pc.x) rows.push(['x y z', `${fmtN(pc.x[r])} ${fmtN(pc.y[r])} ${fmtN(pc.z[r])}`]);
+      const p3 = L._posAt ? L._posAt(r) : (pc.x ? [pc.x[r], pc.y[r], pc.z[r]] : null);
+      if (p3) rows.push(['x y z', `${fmtN(p3[0])} ${fmtN(p3[1])} ${fmtN(p3[2])}`]);
     }
     if (c.value) rows.push(['value', fmtN(c.value[r])]);
     if (c.cat && L.cat_labels) rows.push(['category', L.cat_labels[c.cat[r]] ?? String(c.cat[r])]);
@@ -531,6 +620,7 @@ export function render({ model, el }) {
   const posOf = (li, rec) => {
     const L = payload && payload.layers[li];
     if (!L) return null;
+    if (L._posAt) return L._posAt(rec);                    // streamed: lattice reconstruction
     const c = L._pos || L.cols;
     if (!c || !c.x) return null;
     return [c.x[rec], c.y[rec], c.z[rec]];
@@ -601,17 +691,20 @@ export function render({ model, el }) {
     styles().forEach((sty, li) => {
       const L = payload.layers[li];
       if (!L || sty.visible === false) return;
+      const A = L._ijk || null;                            // streamed: lattice accessor, only rows that arrived
       const c = L._pos || L.cols;
-      if (!c || !c.x) return;
+      if (!A && (!c || !c.x)) return;
       const val = L.cols.value, th = sty.threshold;
       const iso = !!(val && th && th.length === 2 && sty.filter_mode !== 'dim');
       const sec = sty.sectioned === false ? null : secAll;
       let set = selected.get(li);
       if (!set) selected.set(li, set = new Set());
-      const n = Math.min(L.count, c.x.length);
+      const n = A ? A.st.got : Math.min(L.count, c.x.length);
       for (let r = 0; r < n; r++) {
         if (iso && !(val[r] >= th[0] && val[r] <= th[1])) continue;
-        const X = c.x[r] - o[0], Y = c.y[r] - o[1], Z = c.z[r] - o[2];
+        let X, Y, Z;
+        if (A) { X = A.x0 + A.st.i[r] * A.xp - o[0]; Y = A.y0 + A.st.j[r] * A.yp - o[1]; Z = A.z0 + A.st.k[r] * A.zp - o[2]; }
+        else { X = c.x[r] - o[0]; Y = c.y[r] - o[1]; Z = c.z[r] - o[2]; }
         if (sec && Math.abs(X * sec.n[0] + Y * sec.n[1] + Z * sec.n[2] - sec.d) > sec.half) continue;
         const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
         if (cw <= 1e-9) continue;                          // behind the eye
@@ -780,6 +873,7 @@ export function render({ model, el }) {
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
     ['change:select_through', () => { if (tb) tb.syncThrough(model.get('select_through')); }],
     ['change:_view', applyView],
+    ['msg:custom', onCustom],
   ];
   for (const [ev, fn] of subs) model.on(ev, fn);
 

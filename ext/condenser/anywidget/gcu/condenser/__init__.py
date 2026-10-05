@@ -34,8 +34,8 @@ import anywidget
 import numpy as np
 import traitlets
 
-__version__ = "0.3.0"
-__all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "export_html"]
+__version__ = "0.4.0"
+__all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "open", "export_html"]
 
 _STATIC = pathlib.Path(__file__).parent / "static" / "widget.js"
 _U16MAX = 65535
@@ -312,8 +312,57 @@ class Viewer(anywidget.AnyWidget):
         self.observe(self._on_selection, names="selection")
         self.observe(self._on_styles, names="_styles")
         self.observe(self._on_sel_rows, names="_sel_rows")
+        self.on_msg(self._on_custom)                       # streamed layers: ready → chunks
 
     # ── data ──
+    # ── streaming: a layer built by cd.open() ships header-only in the payload;
+    # its rows follow as custom messages once the frontend says it is ready.
+    # Each 'ready' carries a view-chosen epoch echoed on every chunk, so a view
+    # only assembles the stream IT requested (a second view triggers a fresh
+    # serialized stream; the first view ignores it — it is already complete).
+    def _on_custom(self, widget, content=None, buffers=None):
+        if isinstance(content, dict) and content.get("type") == "ready":
+            self._stream_layers(str(content.get("epoch", "")))
+
+    def _stream_layers(self, epoch):
+        for content, bufs in self._stream_messages(epoch):
+            self.send(content, buffers=[np.ascontiguousarray(b).tobytes() for b in bufs])
+
+    def _stream_messages(self, epoch):
+        """Yield every streaming (content, buffers) pair — the testable seam:
+        the guard drives these through a fake frontend without a kernel."""
+        for li, ly in enumerate(self.layers):
+            st = getattr(ly, "_stream", None)
+            if not st:
+                continue
+            axes = ly._extra["axes"]
+            labels = st.get("labels")
+            lab_arr = np.asarray(labels) if labels else None
+            seq, sent = 0, 0
+            for batch in st["batches"]():
+                xf = _f64(_col(batch, st["x"], "x"))
+                n = int(xf.size)
+                yf = _f64(_col(batch, st["y"], "y", n))
+                zf = _f64(_col(batch, st["z"], "z", n))
+                cols, names = [], []
+                for nm, arr, ax in (("i", xf, axes[0]), ("j", yf, axes[1]), ("k", zf, axes[2])):
+                    cols.append(np.rint((arr - ax[0]) / ax[1]).astype(np.uint16))
+                    names.append(nm)
+                if st.get("value") is not None:
+                    v = _col(batch, st["value"], "value", n)
+                    cols.append(_f64(v).astype(np.float32))
+                    names.append("value")
+                if lab_arr is not None:
+                    cv = np.asarray(_col(batch, st["category"], "category", n)).astype(str)
+                    # labels are np.unique output (sorted) — searchsorted IS the code map
+                    cols.append(np.searchsorted(lab_arr, cv).astype(np.uint8))
+                    names.append("cat")
+                yield ({"type": "chunk", "epoch": epoch, "layer": li, "seq": seq,
+                        "rows": n, "cols": names}, cols)
+                seq += 1
+                sent += n
+            yield ({"type": "eof", "epoch": epoch, "layer": li, "rows_total": sent}, [])
+
     def _repack(self):
         """Pack every layer into ONE blob against ONE shared frame.
 
@@ -683,6 +732,120 @@ def blocks(src=None, x="x", y="y", z="z", value=None, category=None, size=None, 
                      float(np.nanmax(xf)) + half[0], float(np.nanmax(yf)) + half[1], float(np.nanmax(zf)) + half[2]]
     kw.setdefault("color", "value" if has_val else ("category" if "cat" in cols else "z"))
     return Layer("blocks", cols, extra, labels, **kw)
+
+
+def _batches_of(src, batch_rows, columns):
+    """Normalize a batch source into a ZERO-ARG CALLABLE yielding table-like
+    batches (dict of arrays / DataFrame / arrow RecordBatch — _col reads all
+    three). The source is read TWICE (axes + ranges first, data second), which
+    is why a bare generator is refused.
+
+    str/Path → pyarrow Parquet, row-group-aligned batches, column-projected —
+    the kernel never holds more than one batch.
+    """
+    if isinstance(src, (str, pathlib.Path)):
+        try:
+            import pyarrow.parquet as pq
+        except ImportError as e:
+            raise ImportError(
+                "gcu-condenser: cd.open(path) streams Parquet via pyarrow — "
+                "pip install pyarrow (or pass batches directly: a list, or a "
+                "callable returning an iterator)."
+            ) from e
+        pf = pq.ParquetFile(str(src))
+
+        def it():
+            for b in pf.iter_batches(batch_size=batch_rows, columns=columns):
+                yield {nm: b.column(nm).to_numpy(zero_copy_only=False) for nm in b.schema.names}
+        return it
+    if callable(src):
+        return src
+    if isinstance(src, (list, tuple)):
+        return lambda: iter(src)
+    raise TypeError(
+        "gcu-condenser: cd.open takes a Parquet path, a list of batches, or a "
+        "CALLABLE returning an iterator — not a bare generator (the source is "
+        "read twice: once for the axes, once for the data)."
+    )
+
+
+def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
+         batch_rows=1_048_576, **kw) -> Layer:
+    """A block model STREAMED from disk — never resident, no comm ceiling.
+
+    The payload carries only the header (axes, count, ranges); the rows follow
+    as wire-v3 chunks (u16 lattice indices + f32 value + u8 category,
+    ~11 B/block) once the view is up, rendering progressively exactly like the
+    engine does in micro.
+
+        cd.open("model.parquet", x="XC", y="YC", z="ZC", value="FE")
+        cd.open(lambda: my_batches(), x="X", y="Y", z="Z", value="AU")
+
+    Pass 1 sweeps the coordinate/value/category columns batch-by-batch for the
+    lattice, ranges and labels; pass 2 ships the chunks. Parquet batches are
+    column-projected, so only the mapped columns are ever decoded.
+    Sub-blocked models are not streamable yet — open the file with
+    ``blocks(..., size=...)`` resident, or view as points.
+    """
+    cols_needed = [c for c in (x, y, z, value, category) if isinstance(c, str)]
+    batches = _batches_of(src, batch_rows, cols_needed)
+
+    # ── pass 1: lattice + ranges + labels, one batch resident at a time ──
+    ux, uy, uz = [], [], []
+    vmin, vmax = np.inf, -np.inf
+    labels_seen: set[str] = set()
+    count = 0
+    for batch in batches():
+        xf = _f64(_col(batch, x, "x"))
+        n = int(xf.size)
+        yf = _f64(_col(batch, y, "y", n))
+        zf = _f64(_col(batch, z, "z", n))
+        if not bool(np.all(np.isfinite(xf) & np.isfinite(yf) & np.isfinite(zf))):
+            raise ValueError(
+                "gcu-condenser: cd.open found non-finite coordinates — row "
+                "numbering must stay aligned with your table, so clean the "
+                "coordinates (or load resident via blocks())."
+            )
+        count += n
+        ux.append(np.unique(xf)); uy.append(np.unique(yf)); uz.append(np.unique(zf))
+        if value is not None:
+            vf = _f64(_col(batch, value, "value", n))
+            fin = vf[np.isfinite(vf)]
+            if fin.size:
+                vmin = min(vmin, float(fin.min())); vmax = max(vmax, float(fin.max()))
+        if category is not None:
+            labels_seen.update(np.asarray(_col(batch, category, "category", n)).astype(str).tolist())
+    if count == 0:
+        raise ValueError("gcu-condenser: cd.open read zero rows")
+
+    axes = [list(_axis_from_centroids(np.unique(np.concatenate(u)), nm))
+            for u, nm in ((ux, "x"), (uy, "y"), (uz, "z"))]
+    half = [a[1] / 2 for a in axes]
+    extra: dict[str, Any] = {
+        "count": count, "axes": axes, "pos": "ijk", "streamed": True,
+        "bbox": [axes[0][0] - half[0], axes[1][0] - half[1], axes[2][0] - half[2],
+                 axes[0][0] + (axes[0][2] - 1) * axes[0][1] + half[0],
+                 axes[1][0] + (axes[1][2] - 1) * axes[1][1] + half[1],
+                 axes[2][0] + (axes[2][2] - 1) * axes[2][1] + half[2]],
+    }
+    labels = []
+    if value is not None:
+        extra["value_range"] = [vmin if np.isfinite(vmin) else 0.0,
+                                vmax if np.isfinite(vmax) else 1.0]
+    if category is not None:
+        labels = sorted(labels_seen)                       # np.unique order == sorted
+        if len(labels) > 256:
+            raise ValueError(f"gcu-condenser: {len(labels)} categories (max 256) — "
+                             "stream the value instead, or pre-code the column")
+        extra["cat_n"] = len(labels)
+        extra["cat_labels"] = labels
+
+    kw.setdefault("color", "value" if value is not None else ("category" if category is not None else "z"))
+    ly = Layer("blocks", {}, extra, labels, **kw)
+    ly._stream = {"batches": batches, "x": x, "y": y, "z": z,
+                  "value": value, "category": category,
+                  "labels": labels if category is not None else None}
+    return ly
 
 
 def drillholes(collar, survey, intervals, bhid="BHID", x="X", y="Y", z="Z", eoh=None,

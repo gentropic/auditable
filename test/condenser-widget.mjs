@@ -80,6 +80,33 @@ assert scalar_size.count == 27, "scalar size failed"
 w = cd.view(model, holes, topo, height=460)
 open(r"${T}/multi.bin", "wb").write(w._payload)
 open(r"${T}/styles.json", "w").write(json.dumps(w._styles))
+
+# STREAMED (cd.open): a callable batch source — no pyarrow needed. The payload
+# carries only the header; the rows are dumped as the exact (content, buffers)
+# messages _stream_messages would send, for the browser half to replay.
+gi, gj, gk = np.meshgrid(np.arange(20), np.arange(20), np.arange(10), indexing="ij")
+sxx = (gi.ravel()*10+5).astype(float); syy = (gj.ravel()*10+5).astype(float); szz = (gk.ravel()*10+5).astype(float)
+svv = sxx/10 + szz/100
+scc = np.where(sxx < 100, "OX", "SUL")
+half = sxx.size // 2
+bat = [{"X": sxx[:half], "Y": syy[:half], "Z": szz[:half], "V": svv[:half], "C": scc[:half]},
+       {"X": sxx[half:], "Y": syy[half:], "Z": szz[half:], "V": svv[half:], "C": scc[half:]}]
+streamed = cd.open(lambda: iter(bat), x="X", y="Y", z="Z", value="V", category="C", name="streamed")
+assert streamed._extra["streamed"] is True and streamed.count == sxx.size
+ws = cd.view(streamed, height=460)
+open(r"${T}/stream.bin", "wb").write(ws._payload)
+open(r"${T}/stream-styles.json", "w").write(json.dumps(ws._styles))
+import io
+manifest, blob = [], io.BytesIO()
+for content, bl in ws._stream_messages("E"):
+    lens = []
+    for b in bl:
+        bb = np.ascontiguousarray(b).tobytes()
+        lens.append(len(bb)); blob.write(bb)
+    manifest.append({"content": content, "lens": lens})
+open(r"${T}/stream-msgs.json", "w").write(json.dumps(manifest))
+open(r"${T}/stream-bufs.bin", "wb").write(blob.getvalue())
+
 print(json.dumps({
   "bytes": len(w._payload), "layers": [l.name for l in w.layers],
   "blocks": model.count, "intervals": holes.count, "points": topo.count,
@@ -87,6 +114,9 @@ print(json.dumps({
   "holes": holes._extra["holes"],
   "byName": by_name.count, "byNamePalette": len(by_name._extra["dim_palette"]),
   "scalarSize": scalar_size.count,
+  "streamCount": streamed.count, "streamBytes": len(ws._payload),
+  "streamMsgs": len(manifest), "streamBufBytes": blob.getbuffer().nbytes,
+  "streamCats": streamed._extra["cat_labels"],
 }))
 `;
 let meta;
@@ -101,6 +131,9 @@ console.log(`ok   python packed ${meta.layers.join(' + ')} → ${(meta.bytes / 1
   + ` (${meta.blocks} blocks / ${meta.intervals} intervals / ${meta.points.toLocaleString()} points)`);
 console.log(`ok   sub-blocked lattice: fine pitch ${JSON.stringify(meta.pitch)}, ${meta.palette} block sizes, ${meta.holes} holes`);
 console.log(`ok   size= accepts COLUMN NAMES (${meta.byName} blocks, ${meta.byNamePalette} sizes) and scalars (${meta.scalarSize} blocks)`);
+console.log(`ok   cd.open streamed ${meta.streamCount.toLocaleString()} blocks as a ${meta.streamBytes}-byte HEADER`
+  + ` + ${meta.streamMsgs} messages (${(meta.streamBufBytes / 1024).toFixed(0)} KB wire, cats ${JSON.stringify(meta.streamCats)})`);
+if (meta.streamBytes > 4096) { console.log('FAIL streamed payload is not header-only'); process.exit(1); }
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.bin': 'application/octet-stream', '.json': 'application/json' };
 const server = http.createServer(async (req, res) => {
@@ -132,12 +165,16 @@ const r = await page.evaluate(async (port) => {
   const makeModel = (init) => {
     const state = new Map(Object.entries(init));
     const subs = new Map();
+    const sent = [];
     return {
       get: (k) => state.get(k),
       set: (k, v) => { state.set(k, v); for (const f of subs.get('change:' + k) || []) f(); },
       on: (ev, f) => { if (!subs.has(ev)) subs.set(ev, []); subs.get(ev).push(f); },
       off: (ev, f) => { const a = subs.get(ev) || []; const i = a.indexOf(f); if (i >= 0) a.splice(i, 1); },
       save_changes: () => {},
+      send: (content) => { sent.push(content); },          // JS → kernel custom message
+      _sent: sent,
+      _deliver: (content, buffers) => { for (const f of [...(subs.get('msg:custom') || [])]) f(content, buffers); },
       _get: (k) => state.get(k),
     };
   };
@@ -382,6 +419,71 @@ const r = await page.evaluate(async (port) => {
   try { const d3 = render({ model: m3, el }); await settle(); out.badHud = (el.querySelector('.cdhud') || {}).textContent; d3(); }
   catch (e) { badErr = e.message; }
   out.badErr = badErr;
+
+  // ── STREAMED (cd.open): header-only payload renders empty, then the replayed
+  // chunk messages land PROGRESSIVELY into the same builder ──
+  {
+    const sPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/stream.bin`)).arrayBuffer());
+    const sStyles = await (await fetch(`http://127.0.0.1:${port}/tmp/stream-styles.json`)).json();
+    const sMsgs = await (await fetch(`http://127.0.0.1:${port}/tmp/stream-msgs.json`)).json();
+    const sBufs = await (await fetch(`http://127.0.0.1:${port}/tmp/stream-bufs.bin`)).arrayBuffer();
+    const m4 = makeModel({
+      _payload: sPayload, _styles: sStyles, _fit: 0, section: null,
+      background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {},
+    });
+    const d4 = render({ model: m4, el });
+    await settle();
+    out.streamReady = m4._sent.find((m2) => m2 && m2.type === 'ready') || null;
+    out.streamHeaderLit = lit().n;                         // nothing has arrived
+    let off4 = 0;
+    const msgs4 = sMsgs.map((m2) => ({
+      content: m2.content,
+      bufs: m2.lens.map((n2) => { const v = new DataView(sBufs, off4, n2); off4 += n2; return v; }),
+    }));
+    m4._deliver({ ...msgs4[0].content, epoch: 'WRONG' }, msgs4[0].bufs);   // a stale stream
+    await settle();
+    out.streamWrongLit = lit().n;
+    const ep = (out.streamReady || {}).epoch;
+    m4._deliver({ ...msgs4[0].content, epoch: ep }, msgs4[0].bufs);
+    await settle();
+    out.streamFirstLit = lit().n;                          // half the lattice renders already
+    for (const m2 of msgs4.slice(1)) m4._deliver({ ...m2.content, epoch: ep }, m2.bufs);
+    await settle(); await settle();
+    out.streamLit = lit().n;
+    out.streamHud = (el.querySelector('.cdhud') || {}).textContent;
+
+    const host4 = el.querySelector('div');
+    const cv4 = el.querySelector('canvas');
+    const r4 = cv4.getBoundingClientRect();
+    // pick → row + WORLD coords from the lazy lattice reconstruction (_posAt)
+    let sel4 = {};
+    for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.55], [0.55, 0.45]]) {
+      const cx2 = r4.left + r4.width * fx, cy2 = r4.top + r4.height * fy;
+      cv4.dispatchEvent(new PointerEvent('pointerdown', { clientX: cx2, clientY: cy2, bubbles: true }));
+      cv4.dispatchEvent(new PointerEvent('pointerup', { clientX: cx2, clientY: cy2, bubbles: true }));
+      await settle();
+      sel4 = m4._get('selection') || {};
+      if (sel4.row != null && sel4.row >= 0) break;
+    }
+    out.streamSel = sel4;
+    out.streamPickText = (host4.querySelector('.cdpick') || {}).textContent || '';
+
+    // select THROUGH sweeps the streamed rows (the _ijk lattice accessor)
+    const tbtn4 = (p) => [...host4.querySelectorAll('.cdt button')].find((b2) => (b2.title || '').startsWith(p));
+    tbtn4('Select through').click();
+    tbtn4('Rectangle').click();
+    host4.dispatchEvent(new PointerEvent('pointerdown', { clientX: r4.left + r4.width * 0.35, clientY: r4.top + r4.height * 0.35, bubbles: true }));
+    host4.dispatchEvent(new PointerEvent('pointermove', { clientX: r4.left + r4.width * 0.65, clientY: r4.top + r4.height * 0.65, bubbles: true }));
+    host4.dispatchEvent(new PointerEvent('pointerup', { clientX: r4.left + r4.width * 0.65, clientY: r4.top + r4.height * 0.65, bubbles: true }));
+    await settle();
+    out.streamThroughRows = totalOf(unpack(m4._get('_sel_rows')));
+
+    // threshold carves the streamed layer (the resident value column)
+    m4.set('_styles', sStyles.map((x2) => ({ ...x2, threshold: [15, 99] })));
+    await settle();
+    out.streamThrLit = lit().n;
+    d4();
+  }
   return out;
 }, PORT);
 
@@ -427,6 +529,21 @@ chk(`pick readout shows the record incl. WORLD coords (${JSON.stringify((r.pickB
   r.pickBoxShown && /row/.test(r.pickBoxText) && /x y z/.test(r.pickBoxText));
 chk('dispose is clean and empties the host', !r.disposeErr && r.emptied, r.disposeErr || '');
 chk(`a malformed payload degrades quietly (hud "${r.badHud}")`, !r.badErr && /no data/.test(r.badHud || ''), r.badErr || '');
+
+// ── cd.open streaming ──
+chk(`streamed view asks the kernel for rows (ready, epoch ${JSON.stringify((r.streamReady || {}).epoch)})`,
+  r.streamReady && typeof r.streamReady.epoch === 'string' && r.streamReady.epoch.length > 0);
+chk(`header-only payload renders empty, and a WRONG-epoch chunk is ignored (${r.streamHeaderLit} / ${r.streamWrongLit} lit px)`,
+  r.streamHeaderLit < 500 && r.streamWrongLit < 500);
+chk(`chunks render PROGRESSIVELY (first chunk ${r.streamFirstLit.toLocaleString()} px → full ${r.streamLit.toLocaleString()} px)`,
+  r.streamFirstLit > 1000 && r.streamLit > r.streamFirstLit * 1.2);
+chk(`eof completes the model (hud "${r.streamHud}")`,
+  /4[,.]?000 blocks/.test(r.streamHud || ''));
+chk(`pick on a streamed block gives the row + WORLD coords via the lattice (${JSON.stringify(r.streamSel)})`,
+  Number.isInteger(r.streamSel.row) && r.streamSel.row >= 0 && /x y z/.test(r.streamPickText) && /category/.test(r.streamPickText));
+chk(`select-through sweeps streamed rows (${r.streamThroughRows.toLocaleString()} rows)`, r.streamThroughRows > 100);
+chk(`threshold carves the streamed layer's resident values (${r.streamLit.toLocaleString()} → ${r.streamThrLit.toLocaleString()} px)`,
+  r.streamThrLit > 0 && r.streamThrLit < r.streamLit * 0.8);
 
 console.log(fails ? `\nCONDENSER WIDGET: ${fails} FAILURES` : '\nCONDENSER WIDGET: PASS');
 await browser.close();
