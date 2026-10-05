@@ -71,6 +71,7 @@ const CSS = `
   font:10px ui-monospace,Menlo,Consolas,monospace; color:#a8a8a8; text-shadow:0 1px 2px #000; }
 .cdleg canvas { display:block; width:96px; height:8px; border:1px solid #444; border-radius:1px; }
 .cdlegramp { display:flex; align-items:center; gap:5px; }
+.cdlegname { color:#c8781f; margin-right:2px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cdcats { display:flex; flex-direction:column; gap:1px; max-height:170px; overflow:auto;
   background:rgba(22,22,22,.85); border:1px solid #333; border-radius:4px; padding:4px 6px; }
 .cdcat { display:flex; align-items:center; gap:5px; cursor:pointer; padding:1px 2px; border-radius:2px; white-space:nowrap; }
@@ -237,10 +238,12 @@ export function createToolbar(host, api) {
   leg.className = 'cdleg';
   leg.style.display = 'none';
   const legLo = document.createElement('span'), legHi = document.createElement('span');
+  const legTitle = document.createElement('span');
+  legTitle.className = 'cdlegname';
   const legCv = document.createElement('canvas'); legCv.width = 96; legCv.height = 8;
   const legRamp = document.createElement('div');
   legRamp.className = 'cdlegramp';
-  legRamp.append(legLo, legCv, legHi);
+  legRamp.append(legTitle, legLo, legCv, legHi);
   const legCats = document.createElement('div');
   legCats.className = 'cdcats';
   leg.append(legRamp, legCats);
@@ -351,6 +354,8 @@ export function createToolbar(host, api) {
       }
       legCats.style.display = 'none';
       legRamp.style.display = '';
+      legTitle.textContent = info.label || '';
+      legTitle.style.display = info.label ? '' : 'none';
       legLo.textContent = fmt(info.range[0]);
       legHi.textContent = fmt(info.range[1]);
       const g = legCv.getContext('2d');

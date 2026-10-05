@@ -270,6 +270,7 @@ export function render({ model, el }) {
   let streams = null, streamEpoch = '';                    // cd.open(): layer → stream state, this view's epoch
   let fileQueue = Promise.resolve();                       // via='files' layers build sequentially (frame adoption)
   let fileMsg = null;                                      // a files-mode failure, pinned on the hud
+  let userCam = false;                                     // the user framed a shot — auto-fit must not steal it
   const kinds = [];
 
   try {
@@ -436,6 +437,7 @@ export function render({ model, el }) {
       hud.textContent = fileMsg || (converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`);
     }
     drawOverlay(w, h, dpr);
+    pushCamera();                                          // debounced by value — idle frames are free
     if (!converged) schedule();
   };
   const schedule = () => { if (!raf && !disposed) raf = requestAnimationFrame(draw); };
@@ -466,7 +468,7 @@ export function render({ model, el }) {
     if (Number.isFinite(bb[0])) {                          // files-only views have no bbox YET
       docBbox = Float64Array.from(bb);
       renderer.setDocBbox(docBbox);
-      needFit = true;
+      if (!userCam) needFit = true;                        // never steal a framed shot on a data change
     }
     applyStyles();
     if (tb) { tb.showPick(null); syncChrome(); }
@@ -483,7 +485,7 @@ export function render({ model, el }) {
     }
     if (Number.isFinite(docBbox[0])) {
       renderer.setDocBbox(docBbox);
-      needFit = true;
+      if (!userCam) needFit = true;
     }
   };
 
@@ -720,7 +722,17 @@ export function render({ model, el }) {
             L._collars.push({ name: names[code] != null ? names[code] : `#${code}`, x: cols.c_x[q], y: cols.c_y[q], z: cols.c_z[q] });
           }
         }
-        const seg = drillholeSegments(L, cols);
+        // the desurvey is GEOMETRY — cache it; a value-channel switch only
+        // needs the chan column re-read from the active channel by record
+        let seg = L._seg;
+        if (!seg) {
+          seg = L._seg = drillholeSegments(L, cols);
+        } else if (cols.value) {
+          for (let q = 0; q < seg.count; q++) {
+            const s2 = seg.recIdx[q];
+            seg.chan[q] = Number.isFinite(cols.value[s2]) ? cols.value[s2] : 0;
+          }
+        }
         // the desurvey computes these, so stash the interval midpoints by ROW:
         // measure and the readout need a position for a drillhole pick too
         L._pos = { x: new Float64Array(L.count), y: new Float64Array(L.count), z: new Float64Array(L.count) };
@@ -942,6 +954,49 @@ export function render({ model, el }) {
     invalidate();
   };
 
+  // ── the camera as PYTHON STATE, in geologist terms. azimuth = bearing of the
+  // VIEW direction (from north, clockwise); plunge positive downward; target in
+  // WORLD coordinates. Orbit math: eye = target + r·[cosφcosθ, cosφsinθ, sinφ],
+  // so the view's horizontal direction is (−cosθ, −sinθ) and plunge = φ. ──
+  const camToDict = () => {
+    const c = cam.state, o = (payload && payload.frame) || [0, 0, 0];
+    const az = (Math.atan2(-Math.cos(c.theta), -Math.sin(c.theta)) * 180 / Math.PI + 360) % 360;
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return {
+      azimuth: r2(az), plunge: r2(c.phi * 180 / Math.PI), distance: r2(c.radius),
+      target: [r2(c.target[0] + o[0]), r2(c.target[1] + o[1]), r2(c.target[2] + o[2])],
+      ortho: !!c.ortho,
+    };
+  };
+  let camLast = '';
+  const pushCamera = () => {                               // called from draw(): debounce-by-value
+    if (disposed) return;
+    const j = JSON.stringify(camToDict());
+    if (j === camLast) return;
+    camLast = j;
+    try { model.set('camera', JSON.parse(j)); model.save_changes(); } catch { /* detached */ }
+  };
+  const applyCamera = () => {
+    const v = model.get('camera') || {};
+    if (!Object.keys(v).length) return;
+    const cur = camToDict();
+    if (['azimuth', 'plunge', 'distance', 'ortho'].every((k) => v[k] == null || JSON.stringify(v[k]) === JSON.stringify(cur[k]))
+      && (v.target == null || JSON.stringify(v.target) === JSON.stringify(cur.target))) return;   // our own echo
+    const c = cam.state;
+    if (v.azimuth != null) { const az = (+v.azimuth) * Math.PI / 180; c.theta = Math.atan2(-Math.cos(az), -Math.sin(az)); }
+    if (v.plunge != null) c.phi = Math.max(-Math.PI / 2 + 0.011, Math.min(Math.PI / 2 - 0.011, (+v.plunge) * Math.PI / 180));
+    if (v.distance != null) c.radius = Math.max(0.05, +v.distance);
+    if (v.target) {
+      const o = (payload && payload.frame) || [0, 0, 0];
+      c.target = [v.target[0] - o[0], v.target[1] - o[1], v.target[2] - o[2]];
+    }
+    if (v.ortho != null) { cam.setOrtho(!!v.ortho); if (tb) tb.syncOrtho(!!v.ortho); }
+    cam.update();
+    userCam = true;                                        // a SET camera is sacred
+    needFit = false;
+    invalidate();
+  };
+
   // ── the section's world extent along its normal, for the scrub slider ──
   const sectionExtent = (sec) => {
     if (!payload || !docBbox) return [0, 1];
@@ -980,7 +1035,9 @@ export function render({ model, el }) {
         const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || null);
         if (!range) continue;
         const stops = RAMPS[s.ramp || 'viridis'];
-        return { range, pixels: rampPixels(256, stops || undefined) };
+        // the ramp needs a NAME — with channel switching, "0.2 — 34" alone is ambiguous
+        const label = (L._active && L._active !== 'value') ? L._active : (s.name || null);
+        return { range, pixels: rampPixels(256, stops || undefined), label };
       }
       if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
         const hid = new Set(s.categories_hidden || []);
@@ -1013,6 +1070,7 @@ export function render({ model, el }) {
     else if (k === 'west') { c.theta = 0; c.phi = 0; }
     else { c.theta = Math.PI / 4; c.phi = Math.PI / 5; }
     cam.update();
+    userCam = true;                                        // a chosen view is a framed shot
     needFit = true; invalidate();
   };
 
@@ -1382,13 +1440,34 @@ export function render({ model, el }) {
     if (tb) tb.showPick(pickInfo(hit));
     schedule();
   };
+  // hover readout (opt-in): the pick box follows the cursor — inspection
+  // without clicking. Throttled; only under the plain pick tool.
+  let hoverAt = 0;
+  const onHover = (e) => {
+    if (!model.get('hover') || !payload || !tb || dragging || down) return;
+    if (tb.tool !== 'pick') return;
+    const now = performance.now();
+    if (now - hoverAt < 90) return;
+    hoverAt = now;
+    const [hx, hy] = relXY(e);
+    const vo = viewOpts();
+    const hit = renderer.pick(hx, hy, cam, {
+      pointPx: vo.pointPx, blocksAsPoints: vo.asPoints,
+      section: sectionOf(model.get('section'), payload.frame),
+    });
+    tb.showPick(hit ? pickInfo(hit) : null);
+  };
+  const onHoverLeave = () => { if (model.get('hover') && tb) tb.showPick(null); };
+  canvas.addEventListener('pointermove', onHover);
+  canvas.addEventListener('pointerleave', onHoverLeave);
+
   // capture on the HOST so the knife can pre-empt the orbit handlers bound to
   // the canvas (capture runs parent → target)
   host.addEventListener('pointerdown', onDown, true);
   host.addEventListener('pointermove', onMove, true);
   host.addEventListener('pointerup', onUp, true);
 
-  detach = attachOrbitInput(canvas, cam, { onChange: () => { schedule(); if (tb) tb.syncOrtho(cam.state.ortho); } });
+  detach = attachOrbitInput(canvas, cam, { onChange: () => { userCam = true; schedule(); if (tb) tb.syncOrtho(cam.state.ortho); } });
 
   const subs = [
     ['change:_payload', load],
@@ -1404,6 +1483,8 @@ export function render({ model, el }) {
     ['change:_clear_sel', () => { selected.clear(); pushSelection(); if (tb) tb.showPick(null); }],
     ['change:select_through', () => { if (tb) tb.syncThrough(model.get('select_through')); }],
     ['change:_view', applyView],
+    ['change:camera', applyCamera],
+    ['change:hover', () => { if (!model.get('hover') && tb) tb.showPick(null); }],
     ['msg:custom', onCustom],
   ];
   for (const [ev, fn] of subs) model.on(ev, fn);
@@ -1417,6 +1498,7 @@ export function render({ model, el }) {
   if (tb) tb.syncThrough(model.get('select_through'));
   load();
   applyView();                                             // match any camera state already on the widget
+  applyCamera();                                           // a stored numeric camera wins over the preset
 
   return () => {
     disposed = true;
@@ -1427,6 +1509,8 @@ export function render({ model, el }) {
     host.removeEventListener('pointerdown', onDown, true);
     host.removeEventListener('pointermove', onMove, true);
     host.removeEventListener('pointerup', onUp, true);
+    canvas.removeEventListener('pointermove', onHover);
+    canvas.removeEventListener('pointerleave', onHoverLeave);
     for (const [ev, fn] of subs) model.off(ev, fn);
     try { renderer.clearChunks(); } catch { /* context already gone */ }
     const lose = renderer.gl.getExtension('WEBGL_lose_context');

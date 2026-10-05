@@ -512,6 +512,26 @@ const r = await page.evaluate(async (port) => {
   out.decoOff = decoInk();
   model.set('decorations', true); await settle();
 
+  // ── hover readout (opt-in): point, don't click ──
+  model.set('hover', true);
+  const cvH = document.querySelector('#host canvas');
+  const rH = cvH.getBoundingClientRect();
+  cvH.dispatchEvent(new PointerEvent('pointermove', { clientX: rH.left + 4, clientY: rH.top + 4, bubbles: true }));
+  await new Promise((res) => setTimeout(res, 150));
+  cvH.dispatchEvent(new PointerEvent('pointermove', { clientX: rH.left + rH.width * 0.5, clientY: rH.top + rH.height * 0.5, bubbles: true }));
+  await settle();
+  out.hoverText = (host.querySelector('.cdpick') || {}).textContent || '';
+  model.set('hover', false); await settle();
+
+  // ── the camera as Python state: read → set → survive a payload reload ──
+  out.camRead = model._get('camera');
+  model.set('camera', { azimuth: 0, plunge: 55, n: 1 });
+  await settle();
+  out.camApplied = model._get('camera');
+  model.set('_payload', payload);                          // a data change must NOT steal the framed shot
+  await settle(); await settle();
+  out.camAfterReload = model._get('camera');
+
   let disposeErr = null;
   try { dispose(); } catch (e) { disposeErr = e.message; }
   out.disposeErr = disposeErr;
@@ -700,10 +720,12 @@ const r = await page.evaluate(async (port) => {
     out.aLit = base6.n; out.aSig = base6.sig;
     out.aHud = (el.querySelector('.cdhud') || {}).textContent;
 
+    out.legName0 = (host6.querySelector('.cdlegname') || {}).textContent || '';
     // channel switch: FE → SIO2 recolors with NO re-send, pick names the channel
     patch6(0, { value: 'SIO2' });
     await settle();
     out.chanSig = lit().sig;
+    out.legNameSwitched = (host6.querySelector('.cdlegname') || {}).textContent || '';
     patch6(1, { visible: false });                         // the DEM covers the model from above — pick the BLOCKS
     await settle();
     let sel6 = {};
@@ -845,6 +867,18 @@ chk(`clicking a swatch hides that class and round-trips (hidden ${JSON.stringify
 chk(`the surface recolors on a ramp change (sig ${r.surfSig} → ${r.surfRampSig})`, r.surfRampSig !== r.surfSig);
 chk(`vertical exaggeration stretches the display (${r.aLit.toLocaleString()} → ${r.zexLit.toLocaleString()} px at 4×)`,
   Math.abs(r.zexLit - r.aLit) > r.aLit * 0.02);
+
+// ── feel: hover · camera state · legend naming ──
+chk(`hover readout follows the cursor without a click (${JSON.stringify((r.hoverText || '').slice(0, 30))})`,
+  /row/.test(r.hoverText));
+chk(`the camera reads back in geologist terms (az ${r.camRead && r.camRead.azimuth}°, plunge ${r.camRead && r.camRead.plunge}°, d ${r.camRead && r.camRead.distance})`,
+  r.camRead && Number.isFinite(r.camRead.azimuth) && Number.isFinite(r.camRead.plunge) && Number.isFinite(r.camRead.distance) && Array.isArray(r.camRead.target));
+chk(`a set camera applies and normalizes (az ${r.camApplied && r.camApplied.azimuth}, plunge ${r.camApplied && r.camApplied.plunge})`,
+  r.camApplied && Math.abs(((r.camApplied.azimuth + 180) % 360) - 180) < 1.5 && Math.abs(r.camApplied.plunge - 55) < 1.5);
+chk(`a payload reload does NOT steal the framed shot (plunge ${r.camAfterReload && r.camAfterReload.plunge} still ≈55)`,
+  r.camAfterReload && Math.abs(r.camAfterReload.plunge - 55) < 1.5);
+chk(`the ramp legend is NAMED and follows the channel switch ("${r.legName0}" → "${r.legNameSwitched}")`,
+  r.legName0 === 'FE' && r.legNameSwitched === 'SIO2');
 
 // ── figure chrome + hole labels (the composited overlay) ──
 chk(`figure chrome draws (scale bar + north arrow: ${r.decoBase} ink px) and decorations=False clears it (${r.decoOff})`,

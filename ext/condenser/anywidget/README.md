@@ -234,8 +234,20 @@ Per **layer** — every one is live, set it and the view updates with no re-send
 
 Per **view**: `section` (or `w.cut(...)`), `background`, `height`, `toolbar`, `edl`,
 `edl_strength`, `budget`, `z_exaggeration` (display-only — picks and measures stay in
-real coordinates), `selection`, `selected_rows`, `measurement`, `w.fit()`, `w.look(view, ortho=)`,
-`w.clear_selection()`, `w.copy()`, `w["name"]`, `w.add(layer)`.
+real coordinates), `hover` (the pick readout follows the cursor), `selection`,
+`selected_rows`, `measurement`, `w.fit()`, `w.clear_selection()`, `w.copy()`,
+`w["name"]`, `w.add(layer)`.
+
+### The camera is Python state
+
+`w.camera` reads back in geologist terms — `{'azimuth': ° from north clockwise,
+'plunge': ° downward, 'distance', 'target': [x, y, z] world, 'ortho'}` — and a
+set (full or partial) reproduces it. `w.look('plan' | 'north' | … )` keeps the
+presets; `w.look(azimuth=132, plunge=25)` is the numeric form. This is the
+**reproducible-figure knob**: put the `look(...)` in the cell, and the notebook
+renders the same shot every run. Navigating marks the camera as yours — a data
+change (`w.add`, a re-pack, a stream completing) never re-fits over a framed
+shot; `w.fit()` reclaims it explicitly.
 
 Colored by **category**, the legend becomes a swatch list and each row is an
 eye: click to hide that class (GPU-side, composes with `threshold`, and hidden

@@ -308,6 +308,13 @@ class Viewer(anywidget.AnyWidget):
     z_exaggeration = traitlets.Float(1.0).tag(sync=True)
     #: the figure chrome: north arrow + scale bar (drawn into snapshots too)
     decorations = traitlets.Bool(True).tag(sync=True)
+    #: the camera, in geologist terms: {'azimuth': ° from north (clockwise, of
+    #: the VIEW direction), 'plunge': ° downward, 'distance', 'target': [x,y,z]
+    #: WORLD, 'ortho'}. It tracks navigation (read it after framing a shot) and
+    #: a set — full or partial — reproduces it: the reproducible-figure knob.
+    camera = traitlets.Dict(default_value={}).tag(sync=True)
+    #: move the mouse, read the record — the pick readout follows the cursor
+    hover = traitlets.Bool(False).tag(sync=True)
     #: elements drawn per frame before the progressive pass continues
     budget = traitlets.Int(3_000_000).tag(sync=True)
     #: the last pick: {'layer': i, 'name': str, 'row': int} — {} for none
@@ -557,14 +564,32 @@ class Viewer(anywidget.AnyWidget):
         """Re-frame the camera on the data."""
         self._fit += 1
 
-    def look(self, view="iso", ortho=None):
-        """Point the camera: 'plan' | 'north' | 'south' | 'east' | 'west' | 'iso'.
+    def look(self, view=None, azimuth=None, plunge=None, distance=None,
+             target=None, ortho=None):
+        """Point the camera.
+
+        By NAME — ``look('plan' | 'north' | 'south' | 'east' | 'west' | 'iso')``
+        — or by NUMBERS: ``look(azimuth=132, plunge=25)`` (degrees; azimuth from
+        north clockwise, plunge positive downward), plus ``distance=`` and
+        ``target=[x, y, z]`` in world coordinates. Numeric looks merge into
+        :attr:`camera`, so a partial call keeps what you don't name — the
+        reproducible-figure idiom is ``w.look(azimuth=..., plunge=...)`` in the
+        cell that takes the snapshot.
 
         A section is only readable when you look ALONG it, so this is the usual
-        companion to :meth:`cut` -- and `ortho=True` (parallel projection) is
+        companion to :meth:`cut` -- and ``ortho=True`` (parallel projection) is
         what makes a section measurable rather than merely suggestive.
         """
-        v = {"name": view, "n": int(self._view.get("n", 0)) + 1}
+        numeric = {k: v for k, v in (("azimuth", azimuth), ("plunge", plunge),
+                                     ("distance", distance), ("target", target)) if v is not None}
+        if numeric:
+            if target is not None:
+                numeric["target"] = [float(v) for v in target]
+            if ortho is not None:
+                numeric["ortho"] = bool(ortho)
+            self.camera = {**self.camera, **numeric, "n": int(self.camera.get("n", 0)) + 1}
+            return
+        v = {"name": view or "iso", "n": int(self._view.get("n", 0)) + 1}
         if ortho is not None:
             v["ortho"] = bool(ortho)
         self._view = v
