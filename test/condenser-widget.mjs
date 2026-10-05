@@ -23,6 +23,26 @@ const TMP = join(process.env.CLAUDE_JOB_DIR || '.', 'tmp');
 await mkdir(TMP, { recursive: true });
 const T = TMP.replace(/\\/g, '\\\\');
 
+// a Parquet block model for the via='files' path, written with OUR OWN writer
+// (no pyarrow in the venv — and the kernel never reads it anyway). DENSITY
+// comes before FE so the auto-sniff would pick it: value='FE' passing through
+// proves the files-mode column mapping NON-VACUOUSLY.
+{
+  const { writeParquet } = await import('../ext/parquet/index.js');
+  const npq = 6 * 6 * 4;
+  const XC = new Float64Array(npq), YC = new Float64Array(npq), ZC = new Float64Array(npq);
+  const DEN = new Float64Array(npq).fill(2.7), FE = new Float64Array(npq);
+  let q = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) for (let k = 0; k < 4; k++) {
+    XC[q] = i * 25 + 12.5; YC[q] = j * 25 + 12.5; ZC[q] = k * 10 + 5; FE[q] = i + k / 2; q++;
+  }
+  const buf = writeParquet({ columnData: [
+    { name: 'XC', data: XC }, { name: 'YC', data: YC }, { name: 'ZC', data: ZC },
+    { name: 'DENSITY', data: DEN }, { name: 'FE', data: FE },
+  ], rowGroupSize: 64 });
+  await writeFile(join(TMP, 'files-model.parquet'), Buffer.from(buf));
+}
+
 // ── 1. the Python half: a stack that uses every kind + sub-blocking ──
 const PY = `
 import json, numpy as np, gcu.condenser as cd
@@ -158,6 +178,27 @@ assert fl.count == 0 and fl._extra["file"]["candidates"], fl._extra
 wf = cd.view(fl, height=460)
 open(f"{TD}/files.bin", "wb").write(wf._payload)
 open(f"{TD}/files-styles.json", "w").write(json.dumps(wf._styles))
+
+# via='files' PARQUET, value mapped BY NAME past an auto-sniff decoy (DENSITY)
+plf = cd.open(f"{TD}/files-model.parquet", via="files", value="FE")
+assert plf._extra["file"]["map"] == {"value": "FE"}
+wpq = cd.view(plf, height=460)
+open(f"{TD}/filespq.bin", "wb").write(wpq._payload)
+open(f"{TD}/filespq-styles.json", "w").write(json.dumps(wpq._styles))
+
+# via='files' DRILLHOLES: the trio as paths, desurveyed in the browser
+open(f"{TD}/dh-collar.csv", "w").write("BHID,X,Y,Z\\n" + "\\n".join(
+    f"{cid[i]},{cx[i]},{cy[i]},{cz[i]}" for i in range(len(cid))))
+open(f"{TD}/dh-survey.csv", "w").write("BHID,DEPTH,AZ,DIP\\n" + "\\n".join(
+    f"{sid[i]},{sd[i]},{sa[i]},{sdp[i]}" for i in range(len(sid))))
+open(f"{TD}/dh-assay.csv", "w").write("BHID,FROM,TO,AU\\n" + "\\n".join(
+    f"{iid[i]},{ifr[i]},{ito[i]},{iau[i]:.4f}" for i in range(len(iid))))
+dhf = cd.drillholes(f"{TD}/dh-collar.csv", f"{TD}/dh-survey.csv", f"{TD}/dh-assay.csv",
+                    via="files", value="AU", radius=2.5, name="holes-files")
+assert dhf._extra["file"]["drillholes"]["collar"]["candidates"]
+wdhf = cd.view(dhf, height=460)
+open(f"{TD}/filesdh.bin", "wb").write(wdhf._payload)
+open(f"{TD}/filesdh-styles.json", "w").write(json.dumps(wdhf._styles))
 
 # MESH: a context surface co-registered over the block model
 mg = np.arange(0, 11) * 20.0
@@ -677,6 +718,27 @@ const r = await page.evaluate(async (port) => {
     d8();
   }
 
+  // files-mode variants share one shape: render → wait for discovery → read back
+  const runFilesView = async (tag) => {
+    const pl = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/${tag}.bin`)).arrayBuffer());
+    const stl = await (await fetch(`http://127.0.0.1:${port}/tmp/${tag}-styles.json`)).json();
+    const mN = makeModel({
+      _payload: pl, _styles: stl, _file_info: {}, _fit: 0, section: null,
+      background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {},
+    });
+    const dN = render({ model: mN, el });
+    for (let k2 = 0; k2 < 24; k2++) { await settle(); if ((mN._get('_file_info') || {})[0]) break; }
+    await settle();
+    const res = {
+      info: (mN._get('_file_info') || {})[0] || null, lit: lit().n,
+      hud: (el.querySelector('.cdhud') || {}).textContent, bytes: pl.byteLength,
+    };
+    dN();
+    return res;
+  };
+  out.pqFiles = await runFilesView('filespq');             // Parquet, value mapped by name
+  out.dhFiles = await runFilesView('filesdh');             // the drillhole trio
+
   // ── MESH context layer: scenery co-registered over a block model ──
   {
     const mPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/mesh.bin`)).arrayBuffer());
@@ -845,6 +907,14 @@ chk(`discovery syncs back to the kernel (${JSON.stringify(r.filesInfo)})`,
   r.filesInfo && r.filesInfo.count === 576 && Array.isArray(r.filesInfo.value_range) && r.filesInfo.value_range[1] > 8);
 chk(`pick works on a files-mode layer via the ID buffer (${JSON.stringify(r.filesSel)})`,
   Number.isInteger(r.filesSel.row) && r.filesSel.row >= 0);
+chk(`PARQUET via='files' — browser reads row groups, value mapped BY NAME past the decoy (${JSON.stringify(r.pqFiles.info)}, hud "${r.pqFiles.hud}")`,
+  r.pqFiles.bytes < 2048 && r.pqFiles.info && r.pqFiles.info.count === 144
+  && r.pqFiles.info.value_range && r.pqFiles.info.value_range[1] > 6 && r.pqFiles.lit > 5000
+  && /144 blocks/.test(r.pqFiles.hud || ''));
+chk(`DRILLHOLES via='files' — the trio desurveys in the browser (${JSON.stringify(r.dhFiles.info)}, ${r.dhFiles.lit.toLocaleString()} px, hud "${r.dhFiles.hud}")`,
+  r.dhFiles.info && r.dhFiles.info.count === 240 && r.dhFiles.lit > 1000
+  && r.dhFiles.info.value_range && r.dhFiles.info.value_range[1] > 1
+  && /240 intervals/.test(r.dhFiles.hud || ''));
 
 // ── cd.mesh context layer ──
 chk(`a mesh renders co-registered over the model (${meta.meshTris} tris, ${r.meshLit.toLocaleString()} lit px, hud "${r.meshHud}")`,

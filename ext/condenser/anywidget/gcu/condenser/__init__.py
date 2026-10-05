@@ -867,21 +867,14 @@ def _batches_of(src, batch_rows, columns):
     )
 
 
-def _open_files(src, kind, kw):
-    """via='files': the KERNEL NEVER READS THE FILE. The browser fetches it
-    over jupyter-server's /files/ endpoint (which serves byte ranges), and the
-    engine's own providers — the same CSV/.dm/LAS/PLY readers micro ships —
-    discover and stream it client-side. The kernel only names the file."""
-    p = pathlib.Path(src)
+def _file_ref(path):
+    """A browser-resolvable reference to a LOCAL file: its name, size, and
+    candidate server-relative paths. The kernel can't know the jupyter-server
+    root, so the path is offered relative to cwd and each parent — the browser
+    probes each against /files/ until one answers a byte range."""
+    p = pathlib.Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"gcu-condenser: {src}")
-    ext = p.suffix.lower().lstrip(".")
-    if ext == "laz":
-        raise ValueError("gcu-condenser: LAZ is compressed LAS — decompress first (the reader is WASM-free by design)")
-    lkind = "points" if ext in ("las", "ply") else "blocks"
-    # candidate server-relative paths: the kernel can't know the server root,
-    # so offer the path relative to cwd and each parent — the browser probes
-    # each against /files/ until one answers a byte range
+        raise FileNotFoundError(f"gcu-condenser: {path}")
     cands = []
     rp = p.resolve()
     probe = pathlib.Path.cwd().resolve()
@@ -895,10 +888,43 @@ def _open_files(src, kind, kw):
         probe = probe.parent
     if not cands:
         cands = [p.name]
-    extra: dict[str, Any] = {
-        "count": 0,
-        "file": {"candidates": cands, "name": p.name, "size": int(p.stat().st_size)},
-    }
+    return {"candidates": cands, "name": p.name, "size": int(p.stat().st_size)}
+
+
+def _files_map(**names):
+    """Column-role NAMES for a files-mode layer (the browser resolves them
+    against the file's own header). Arrays make no sense here — the kernel
+    never reads the file."""
+    m = {}
+    for k, v in names.items():
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            raise TypeError(
+                f"gcu-condenser: via='files' maps columns BY NAME — {k}={v!r} "
+                "is not a name (the kernel never reads the file)"
+            )
+        m[k] = v
+    return m
+
+
+def _open_files(src, kind, kw, x=None, y=None, z=None, value=None, category=None):
+    """via='files': the KERNEL NEVER READS THE FILE. The browser fetches it
+    over jupyter-server's /files/ endpoint (which serves byte ranges), and the
+    engine's own providers — the same CSV/.dm/LAS/PLY/Parquet readers micro
+    ships — discover and stream it client-side. The kernel only names the
+    file; column roles are auto-sniffed, with x/y/z/value/category NAMES as
+    overrides."""
+    p = pathlib.Path(src)
+    ext = p.suffix.lower().lstrip(".")
+    if ext == "laz":
+        raise ValueError("gcu-condenser: LAZ is compressed LAS — decompress first (the reader is WASM-free by design)")
+    lkind = "points" if ext in ("las", "ply") else "blocks"
+    ref = _file_ref(src)
+    m = _files_map(x=x, y=y, z=z, value=value, category=category)
+    if m:
+        ref["map"] = m
+    extra: dict[str, Any] = {"count": 0, "file": ref}
     kw.setdefault("color", "value")
     return Layer(lkind, {}, extra, None, **kw)
 
@@ -939,13 +965,16 @@ def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
     if via == "files":
         if not isinstance(src, (str, pathlib.Path)):
             raise TypeError("gcu-condenser: via='files' streams a FILE — pass its path")
-        if value is not None or category is not None or size is not None:
+        if size is not None:
             raise ValueError(
-                "gcu-condenser: via='files' reads the file browser-side and "
-                "auto-sniffs its columns — x/y/z/value/category/size don't apply "
-                "(use via='kernel' to map columns yourself)"
+                "gcu-condenser: via='files' detects sub-blocking from the file's "
+                "own DX/DY/DZ-style columns (CSV and .dm) — size= doesn't apply"
             )
-        return _open_files(src, kind, kw)
+        # x/y/z default to XC/YC/ZC in the signature — only EXPLICIT overrides
+        # travel; the provider's own sniff handles the common spellings
+        return _open_files(src, kind, kw,
+                           x=None if x == "XC" else x, y=None if y == "YC" else y,
+                           z=None if z == "ZC" else z, value=value, category=category)
     if kind not in ("blocks", "points"):
         raise ValueError(f"gcu-condenser: cd.open kind must be 'blocks' or 'points', got {kind!r}")
     if size is not None and kind != "blocks":
@@ -1176,7 +1205,7 @@ def surface(data, origin=(0.0, 0.0), pitch=1.0, drape=None, nodata=None,
 def drillholes(collar, survey, intervals, bhid="BHID", x="X", y="Y", z="Z", eoh=None,
                depth="DEPTH", az="AZ", dip="DIP", frm="FROM", to="TO",
                value=None, category=None, method="minimumCurvature",
-               dip_convention="auto", **kw) -> Layer:
+               dip_convention="auto", via="kernel", **kw) -> Layer:
     """Drillholes from the usual three tables — desurveyed to capsule segments.
 
     The desurvey runs in the browser through **@gcu/drillhole**, the same
@@ -1185,7 +1214,32 @@ def drillholes(collar, survey, intervals, bhid="BHID", x="X", y="Y", z="Z", eoh=
     INTERVAL ROW.
 
         cd.drillholes(collars, surveys, assays, value="AU")
+        cd.drillholes("collar.csv", "survey.csv", "assay.csv", via="files")
+
+    ``via='files'`` (jupyter-server) takes the three FILE PATHS: the browser
+    fetches and desurveys them itself — the kernel never reads a row. Columns
+    are auto-sniffed there (micro's drillhole sniff); ``value``/``category``
+    NAMES override the interval-table picks, and ``method``/``dip_convention``
+    carry through.
     """
+    if via == "files":
+        for nm, src2 in (("collar", collar), ("survey", survey), ("intervals", intervals)):
+            if not isinstance(src2, (str, pathlib.Path)):
+                raise TypeError(f"gcu-condenser: via='files' takes PATHS — {nm} is not one")
+        ref = {
+            "name": pathlib.Path(intervals).name,
+            "drillholes": {
+                "collar": _file_ref(collar), "survey": _file_ref(survey),
+                "intervals": _file_ref(intervals),
+                "method": method, "dip_convention": dip_convention,
+            },
+        }
+        m = _files_map(value=value, category=category)
+        if m:
+            ref["map"] = m
+        extra: dict[str, Any] = {"count": 0, "file": ref}
+        kw.setdefault("color", "value" if value is not None else "z")
+        return Layer("drillholes", {}, extra, None, **kw)
     cb = _col(collar, bhid, "collar bhid")
     sb = _col(survey, bhid, "survey bhid")
     ib = _col(intervals, bhid, "interval bhid")

@@ -15,9 +15,11 @@ import {
   createRenderer, createEdl, createOrbitCamera, attachOrbitInput,
   createChunkBuilder, createBlockChunkBuilder, createStickChunkBuilder,
   makeBlockGrid, buildMeshChunk, buildHeightfieldMesh, rampPixels, categoryPalettePixels, mat4Inverse,
-  openBlockModel, openDmModel, openLas, openPly, documentFrame,
+  openBlockModel, openDmModel, openLas, openPly, openDrillholes, documentFrame,
+  sniffDelimited, mapColumns, peekDmColumns, readDelimited,
 } from '../../index.js';
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
+import { openParquetBlocks } from './parquet-blocks.js';
 import { createToolbar } from './toolbar.js';
 
 // ── ramp presets. rampPixels' default is the viridis-ish walk; these are the
@@ -492,9 +494,76 @@ export function render({ model, el }) {
   // ── via='files': discover + stream a file BROWSER-SIDE through the engine's
   // providers — the kernel never reads a byte. Sequential across layers: the
   // FIRST discovery may set the shared frame (payload.frame_auto). ──
+  // the shared epilogue: a files layer finished discovering/streaming — frame
+  // bookkeeping was done by the caller; here the styles, chrome, and the
+  // kernel's view of what the browser found.
+  const finishFileLayer = (L, i, doc) => {
+    if (doc && doc.bboxLocal && Number.isFinite(doc.bboxLocal[0])) mergeBbox(doc.bboxLocal);
+    applyStyles();
+    if (tb) syncChrome();
+    invalidate();
+    try {                                                  // the kernel learns what the browser found
+      const info = { ...(model.get('_file_info') || {}) };
+      info[i] = { count: L.count, value_range: L.value_range || null,
+        cat_labels: L.cat_labels || null, cat_n: L.cat_n || null };
+      model.set('_file_info', info);
+      model.save_changes();
+    } catch { /* a detached test model */ }
+  };
+  const adoptFrame = (header) => {                         // a files-only view takes the first real frame
+    if (payload.frame_auto) {
+      payload.frame = documentFrame(header).origin;
+      payload.frame_auto = false;
+    }
+    const frame = { origin: payload.frame, crs: null, units: 'm' };
+    if (header.bbox && Number.isFinite(header.bbox.min[0])) {
+      mergeBbox(Float64Array.of(
+        header.bbox.min[0] - frame.origin[0], header.bbox.min[1] - frame.origin[1], header.bbox.min[2] - frame.origin[2],
+        header.bbox.max[0] - frame.origin[0], header.bbox.max[1] - frame.origin[1], header.bbox.max[2] - frame.origin[2]));
+    }
+    return frame;
+  };
+
   const buildFileLayer = async (L, i) => {
     const epoch = streamEpoch;
     try {
+      // drillholes: THREE files (collar / survey / intervals) → desurveyed
+      // capsules, the provider's own column sniff + optional value/category names
+      if (L.file.drillholes) {
+        const fd = L.file.drillholes;
+        const [cb, sb, ib] = await Promise.all([resolveFilesBlob(fd.collar), resolveFilesBlob(fd.survey), resolveFilesBlob(fd.intervals)]);
+        if (epoch !== streamEpoch || disposed) return;
+        if (!cb || !sb || !ib) {
+          fileMsg = `${L.file.name}: /files unreachable — jupyter-server serves it; elsewhere stream via the kernel`;
+          schedule();
+          return;
+        }
+        const opts = { method: fd.method || 'minimumCurvature', dipConvention: fd.dip_convention || 'auto' };
+        const fm0 = L.file.map || null;
+        if (fm0 && (fm0.value || fm0.category)) {          // value/category BY NAME → interval column indices
+          const tIv = await readDelimited(ib.slice(0, Math.min(65536, ib.size)));
+          const idx = (nm) => tIv.columns.findIndex((h2) => h2.trim() === nm);
+          if (fm0.value) { const k2 = idx(fm0.value); if (k2 >= 0) opts.chan = k2; }
+          if (fm0.category) { const k2 = idx(fm0.category); if (k2 >= 0) opts.cat = k2; }
+        }
+        const { header, streamChunks, recordPosition } = await openDrillholes({ collar: cb, survey: sb, intervals: ib }, opts);
+        if (epoch !== streamEpoch || disposed) return;
+        const frame = adoptFrame(header);
+        kinds[i] = 'drillholes';
+        const b = createStickChunkBuilder({ frame, chunkSize: 1 << 16, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        for await (const rc of streamChunks()) {
+          if (epoch !== streamEpoch || disposed) return;
+          b.push(rc);
+        }
+        const doc = b.flush();
+        if (header.categories) { L.cat_labels = header.categories; L.cat_n = header.categories.length; renderer.setCategories(L.cat_n); }
+        L.count = header.count;
+        if (header.chanRange && Number.isFinite(header.chanRange[0])) L.value_range = header.chanRange;
+        L._posAt = (r) => recordPosition(r);               // measure / readout off the desurveyed midpoints
+        finishFileLayer(L, i, doc);
+        return;
+      }
+
       const blob = await resolveFilesBlob(L.file);
       if (epoch !== streamEpoch || disposed) return;
       if (!blob) {
@@ -503,10 +572,41 @@ export function render({ model, el }) {
         return;
       }
       const ext2 = (L.file.name.match(/\.([a-z0-9]+)$/i) || [0, ''])[1].toLowerCase();
-      const opened = ext2 === 'dm' ? await openDmModel(blob)
-        : ext2 === 'las' ? await openLas(blob)
-          : ext2 === 'ply' ? await openPly(blob)
-            : await openBlockModel(blob);
+      const fm = L.file.map || null;
+      let opened;
+      if (ext2 === 'parquet' || ext2 === 'pq') {
+        opened = await openParquetBlocks(blob, { map: fm });
+      } else if (ext2 === 'dm') {
+        let mapping = null;
+        if (fm && (fm.value || fm.category)) {             // .dm maps chan/cat by field name
+          const names = await peekDmColumns(blob);
+          if (names) {
+            mapping = {};
+            if (fm.value) { const k2 = names.indexOf(fm.value); if (k2 >= 0) mapping.chan = k2; }
+            if (fm.category) { const k2 = names.indexOf(fm.category); if (k2 >= 0) mapping.cat = k2; }
+          }
+        }
+        opened = await openDmModel(blob, { mapping });
+      } else if (ext2 === 'las') {
+        opened = await openLas(blob);
+      } else if (ext2 === 'ply') {
+        opened = await openPly(blob);
+      } else {
+        let mapping = null;
+        if (fm) {                                          // delimited: names → sniffed column indices
+          const sniff = sniffDelimited(await blob.slice(0, Math.min(65536, blob.size)).text());
+          if (sniff.header) {
+            const idx = (nm) => (nm == null ? -1 : sniff.header.findIndex((h2) => h2.trim() === nm));
+            mapping = { ...(mapColumns(sniff.header) || {}) };
+            for (const [k2, mk] of [['x', 'x'], ['y', 'y'], ['z', 'z'], ['chan', 'value'], ['cat', 'category']]) {
+              const k3 = idx(fm[mk]);
+              if (k3 >= 0) mapping[k2] = k3;
+            }
+            if (!(mapping.x >= 0 && mapping.y >= 0 && mapping.z >= 0)) mapping = null;
+          }
+        }
+        opened = await openBlockModel(blob, { mapping });
+      }
       if (epoch !== streamEpoch || disposed) return;
       const { header, streamChunks } = opened;
       const isBlocks = !!header.grid;
@@ -515,16 +615,7 @@ export function render({ model, el }) {
         schedule();
         return;
       }
-      if (payload.frame_auto) {                            // a files-only view adopts the first real frame
-        payload.frame = documentFrame(header).origin;
-        payload.frame_auto = false;
-      }
-      const frame = { origin: payload.frame, crs: null, units: 'm' };
-      if (header.bbox && Number.isFinite(header.bbox.min[0])) {
-        mergeBbox(Float64Array.of(
-          header.bbox.min[0] - frame.origin[0], header.bbox.min[1] - frame.origin[1], header.bbox.min[2] - frame.origin[2],
-          header.bbox.max[0] - frame.origin[0], header.bbox.max[1] - frame.origin[1], header.bbox.max[2] - frame.origin[2]));
-      }
+      const frame = adoptFrame(header);
       let b;
       if (isBlocks) {
         kinds[i] = 'blocks';
@@ -555,17 +646,7 @@ export function render({ model, el }) {
       const doc = b.flush();
       L.count = header.count || got;
       if (isBlocks && doc && Number.isFinite(doc.chanRange[0])) L.value_range = [doc.chanRange[0], doc.chanRange[1]];
-      if (doc && doc.bboxLocal && Number.isFinite(doc.bboxLocal[0])) mergeBbox(doc.bboxLocal);
-      applyStyles();
-      if (tb) syncChrome();
-      invalidate();
-      try {                                                // the kernel learns what the browser found
-        const info = { ...(model.get('_file_info') || {}) };
-        info[i] = { count: L.count, value_range: L.value_range || null,
-          cat_labels: L.cat_labels || null, cat_n: L.cat_n || null };
-        model.set('_file_info', info);
-        model.save_changes();
-      } catch { /* a detached test model */ }
+      finishFileLayer(L, i, doc);
     } catch (e) {
       fileMsg = `${L.file.name}: ${e.message}`;
       schedule();
