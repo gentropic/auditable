@@ -115,7 +115,7 @@ export function bundle(opts = {}) {
   const parser = makeNodeParser();
   const result = bundleModules(sources, {
     entry, srcRoot, parser, header: opts.header, packageName, packageDesc, version,
-    define: opts.define, inlineAliases, lintEscaping: opts.lintEscaping,
+    define: opts.define, inlineAliases, lintEscaping: opts.lintEscaping, lint: opts.lint,
     outFile: outFileName, sourcemap: opts.sourcemap,
   });
 
