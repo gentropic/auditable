@@ -5742,7 +5742,8 @@ function render({ model, el }) {
     if (payload) {
       const tot = renderer.elementCount, acc = renderer.accumulated;
       const n = payload.layers.length;
-      const what = n === 1 ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals' : 'points')
+      const what = n === 1
+        ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals' : kinds[0] === 'mesh' ? 'triangles' : 'points')
         : `elements · ${n} layers`;
       hud.textContent = converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`;
     }
@@ -5816,6 +5817,18 @@ function render({ model, el }) {
           doc = b.flush();
           if (L.cat_n) renderer.setCategories(L.cat_n);
         }
+      } else if (L.kind === 'mesh') {
+        // context tier: scenery, recordless, drawn whole. Vertices arrive f32
+        // about the mesh's own center — add the f64 origin back, then
+        // buildMeshChunk rebases to the SHARED frame (so meshes co-register
+        // with the data layers and mine-grid coordinates stay exact).
+        const [ox, oy, oz] = L.pos_origin || [0, 0, 0];
+        const vertices = new Float64Array(cols.verts.length);
+        for (let q = 0; q < cols.verts.length; q += 3) {
+          vertices[q] = ox + cols.verts[q]; vertices[q + 1] = oy + cols.verts[q + 1]; vertices[q + 2] = oz + cols.verts[q + 2];
+        }
+        doc = buildMeshChunk({ vertices, triangles: cols.tris, frame });
+        renderer.addChunk(doc, 'base', i);
       } else if (L.kind === 'drillholes') {
         const seg = drillholeSegments(L, cols);
         // the desurvey computes these, so stash the interval midpoints by ROW:
@@ -5938,6 +5951,13 @@ function render({ model, el }) {
       renderer.setLayerRamp(i, stops ? rampPixels(256, stops) : null);
       if (L.kind === 'blocks') renderer.setLayerEdges(i, !!s.block_edges);
       if (L.kind === 'drillholes') renderer.setLayerStickRadius(i, s.radius || 1.5);
+      if (L.kind === 'mesh') {
+        const hx = String(s.color || '').replace('#', '');  // mesh color is a hex TINT, not a mode
+        if (hx.length === 6) {
+          const v2 = parseInt(hx, 16);
+          renderer.setLayerMeshStyle(i, { tint: [((v2 >> 16) & 255) / 255, ((v2 >> 8) & 255) / 255, (v2 & 255) / 255] });
+        }
+      }
       const v = L.cols.value, t = s.threshold;
       if (v && t && t.length === 2) {
         const mask = new Uint8Array(v.length);

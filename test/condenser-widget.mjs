@@ -107,6 +107,22 @@ for content, bl in ws._stream_messages("E"):
 open(r"${T}/stream-msgs.json", "w").write(json.dumps(manifest))
 open(r"${T}/stream-bufs.bin", "wb").write(blob.getvalue())
 
+# MESH: a context surface co-registered over the block model
+mg = np.arange(0, 11) * 20.0
+mvx, mvy = np.meshgrid(mg, mg, indexing="ij")
+mvz = 130 + np.sin(mvx/40)*12 + np.cos(mvy/50)*9
+mverts = np.column_stack([mvx.ravel(), mvy.ravel(), mvz.ravel()])
+mtris = []
+for i2 in range(10):
+    for j2 in range(10):
+        a2 = i2*11+j2; b2 = a2+1; c2 = a2+11; d2 = c2+1
+        mtris += [[a2, c2, b2], [b2, c2, d2]]
+surf = cd.mesh(mverts, np.array(mtris), color="#4477aa", name="topo-mesh")
+assert surf.count == 200 and surf._extra["vertex_count"] == 121
+wm = cd.view(model, surf, height=460)
+open(r"${T}/mesh.bin", "wb").write(wm._payload)
+open(r"${T}/mesh-styles.json", "w").write(json.dumps(wm._styles))
+
 print(json.dumps({
   "bytes": len(w._payload), "layers": [l.name for l in w.layers],
   "blocks": model.count, "intervals": holes.count, "points": topo.count,
@@ -117,6 +133,7 @@ print(json.dumps({
   "streamCount": streamed.count, "streamBytes": len(ws._payload),
   "streamMsgs": len(manifest), "streamBufBytes": blob.getbuffer().nbytes,
   "streamCats": streamed._extra["cat_labels"],
+  "meshTris": surf.count, "meshVerts": surf._extra["vertex_count"], "meshBytes": len(wm._payload),
 }))
 `;
 let meta;
@@ -484,6 +501,31 @@ const r = await page.evaluate(async (port) => {
     out.streamThrLit = lit().n;
     d4();
   }
+
+  // ── MESH context layer: scenery co-registered over a block model ──
+  {
+    const mPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/mesh.bin`)).arrayBuffer());
+    const mStyles = await (await fetch(`http://127.0.0.1:${port}/tmp/mesh-styles.json`)).json();
+    const m5 = makeModel({
+      _payload: mPayload, _styles: mStyles, _fit: 0, section: null,
+      background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {},
+    });
+    const d5 = render({ model: m5, el });
+    await settle(); await settle();
+    const base5 = lit();
+    out.meshLit = base5.n;
+    out.meshSig = base5.sig;
+    out.meshHud = (el.querySelector('.cdhud') || {}).textContent;
+    // tint round-trips through the style (hex → setLayerMeshStyle)
+    m5.set('_styles', mStyles.map((x2, k2) => (k2 === 1 ? { ...x2, color: '#ff3300' } : x2)));
+    await settle();
+    out.meshTintSig = lit().sig;
+    // hiding the surface uncovers the model (fewer or different pixels, not a crash)
+    m5.set('_styles', mStyles.map((x2, k2) => (k2 === 1 ? { ...x2, visible: false } : x2)));
+    await settle();
+    out.meshHidLit = lit().n;
+    d5();
+  }
   return out;
 }, PORT);
 
@@ -544,6 +586,13 @@ chk(`pick on a streamed block gives the row + WORLD coords via the lattice (${JS
 chk(`select-through sweeps streamed rows (${r.streamThroughRows.toLocaleString()} rows)`, r.streamThroughRows > 100);
 chk(`threshold carves the streamed layer's resident values (${r.streamLit.toLocaleString()} → ${r.streamThrLit.toLocaleString()} px)`,
   r.streamThrLit > 0 && r.streamThrLit < r.streamLit * 0.8);
+
+// ── cd.mesh context layer ──
+chk(`a mesh renders co-registered over the model (${meta.meshTris} tris, ${r.meshLit.toLocaleString()} lit px, hud "${r.meshHud}")`,
+  r.meshLit > 20000 && /2 layers/.test(r.meshHud || ''));
+chk(`mesh tint round-trips through color (sig ${r.meshSig} → ${r.meshTintSig})`, r.meshTintSig !== r.meshSig);
+chk(`hiding the mesh changes the scene without a crash (${r.meshLit.toLocaleString()} → ${r.meshHidLit.toLocaleString()} px)`,
+  r.meshHidLit > 0 && Math.abs(r.meshHidLit - r.meshLit) > r.meshLit * 0.02);
 
 console.log(fails ? `\nCONDENSER WIDGET: ${fails} FAILURES` : '\nCONDENSER WIDGET: PASS');
 await browser.close();

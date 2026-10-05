@@ -35,7 +35,7 @@ import numpy as np
 import traitlets
 
 __version__ = "0.4.0"
-__all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "open", "export_html"]
+__all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "mesh", "open", "export_html"]
 
 _STATIC = pathlib.Path(__file__).parent / "static" / "widget.js"
 _U16MAX = 65535
@@ -846,6 +846,49 @@ def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
                   "value": value, "category": category,
                   "labels": labels if category is not None else None}
     return ly
+
+
+def mesh(vertices, triangles, color="#9aa4ab", **kw) -> Layer:
+    """A triangulated surface or solid as a CONTEXT layer — topography, a pit
+    shell, a wireframed domain. Scenery: it draws whole, sections as a trace,
+    and carries no records (no value column, no pick row).
+
+        cd.mesh(verts, tris)                       # (n,3) float + (m,3) int
+        cd.mesh(verts, tris, color="#b87333", opacity=0.5)
+
+    ``color`` is a hex TINT (meshes are flat-shaded by the renderer's own
+    lighting, not value-colored); ``opacity`` < 1 is the usual screen-door.
+    Vertices ship as f32 about the mesh's own center with the f64 origin in
+    the header — the same local-frame trick as points, so mine-grid
+    coordinates stay exact.
+    """
+    v = np.asarray(vertices, dtype=np.float64)
+    v = v.reshape(-1, 3) if v.ndim != 2 or v.shape[1] != 3 else v
+    t = np.asarray(triangles)
+    t = t.reshape(-1, 3) if t.ndim != 2 or t.shape[1] != 3 else t
+    if v.size == 0 or t.size == 0:
+        raise ValueError("gcu-condenser: cd.mesh needs vertices AND triangles")
+    if not np.all(np.isfinite(v)):
+        raise ValueError("gcu-condenser: cd.mesh found non-finite vertices")
+    ti = t.astype(np.int64)
+    if ti.min() < 0 or ti.max() >= v.shape[0]:
+        raise ValueError(
+            f"gcu-condenser: triangle indices run {ti.min()}..{ti.max()} but there "
+            f"are only {v.shape[0]} vertices"
+        )
+    mins, maxs = v.min(axis=0), v.max(axis=0)
+    origin = (mins + maxs) / 2
+    cols = {
+        "verts": (v - origin).astype(np.float32).ravel(),
+        "tris": ti.astype(np.uint32).ravel(),
+    }
+    extra: dict[str, Any] = {
+        "count": int(ti.shape[0]), "vertex_count": int(v.shape[0]),
+        "pos_origin": origin.tolist(),
+        "bbox": [*mins.tolist(), *maxs.tolist()],
+    }
+    kw.setdefault("color", color)
+    return Layer("mesh", cols, extra, None, **kw)
 
 
 def drillholes(collar, survey, intervals, bhid="BHID", x="X", y="Y", z="Z", eoh=None,

@@ -105,12 +105,19 @@ rebuild first: `node ext/condenser/anywidget/build.js`.
 cd.points(x, y, z, value=..., category=..., rgb=...)     # a cloud
 cd.blocks(x, y, z, value=..., size=(dx, dy, dz))         # a model (sub-blocking optional)
 cd.drillholes(collar, survey, intervals, value="AU")     # desurveyed capsules
+cd.mesh(vertices, triangles, color="#b87333")            # context: topo, a pit shell, a domain
 ```
 
 Each takes arrays *or* a table plus column names, and returns a **Layer**.
 Display a Layer directly, or stack several with `cd.view(...)` — they share one
 frame, so they co-register (and a local origin keeps mine-grid coordinates off
 the float32 wall on the GPU).
+
+A **mesh** is scenery, not data: it draws whole, its `color` is a hex tint
+(flat-shaded, not value-colored), it sections as a trace on the cut wall, and
+it carries no records — `opacity` and `visible` are its knobs. Hand it `(n,3)`
+vertices and `(m,3)` triangle indices, straight from trimesh / PyVista /
+anything that reads your wireframe format.
 
 Drillholes desurvey in the browser through **@gcu/drillhole**, the same
 minimum-curvature code micro uses, so a hole lands in the same place in both.
