@@ -315,6 +315,11 @@ class Viewer(anywidget.AnyWidget):
     camera = traitlets.Dict(default_value={}).tag(sync=True)
     #: move the mouse, read the record — the pick readout follows the cursor
     hover = traitlets.Bool(False).tag(sync=True)
+    _snapshot_req = traitlets.Int(0).tag(sync=True)
+    #: the last snapshot (PNG bytes, GL + chrome composited). Filled
+    #: ASYNCHRONOUSLY — a comm reply cannot land while a cell runs, so call
+    #: :meth:`snapshot` in one cell and read/save in the NEXT.
+    snapshot_png = traitlets.Bytes(b"").tag(sync=True)
     #: elements drawn per frame before the progressive pass continues
     budget = traitlets.Int(3_000_000).tag(sync=True)
     #: the last pick: {'layer': i, 'name': str, 'row': int} — {} for none
@@ -563,6 +568,25 @@ class Viewer(anywidget.AnyWidget):
     def fit(self):
         """Re-frame the camera on the data."""
         self._fit += 1
+
+    def snapshot(self):
+        """Ask the view for a PNG (the figure chrome composited in). The bytes
+        land in :attr:`snapshot_png` AFTER the current cell finishes — the
+        notebook idiom is snapshot in one cell, :meth:`save_snapshot` in the
+        next."""
+        self._snapshot_req += 1
+
+    def save_snapshot(self, path):
+        """Write the last :attr:`snapshot_png` to ``path``."""
+        if not self.snapshot_png:
+            raise RuntimeError(
+                "gcu-condenser: no snapshot yet — call w.snapshot(), let the "
+                "cell finish (the reply can't land mid-cell), then save in the "
+                "NEXT cell"
+            )
+        p = pathlib.Path(path)
+        p.write_bytes(self.snapshot_png)
+        return p
 
     def look(self, view=None, azimuth=None, plunge=None, distance=None,
              target=None, ortho=None):

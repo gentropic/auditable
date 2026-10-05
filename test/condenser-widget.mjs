@@ -278,8 +278,12 @@ await writeFile(join(TMP, 'host.html'), '<!doctype html><meta charset=utf-8><bod
 
 const browser = await chromium.launch({ args: ['--use-gl=angle'] });
 const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
+let workerEngaged = 0;
 page.on('pageerror', (e) => console.log('PAGEERROR:', e.message));
-page.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE:', m.text()); });
+page.on('console', (m) => {
+  if (m.type() === 'error') console.log('CONSOLE:', m.text());
+  if (/worker chunk builder engaged/.test(m.text())) workerEngaged++;
+});
 await page.goto(`http://127.0.0.1:${PORT}/tmp/host.html`, { waitUntil: 'load' });
 
 let fails = 0;
@@ -572,6 +576,13 @@ const r = await page.evaluate(async (port) => {
   model.set('_payload', payload);                          // a data change must NOT steal the framed shot
   await settle(); await settle();
   out.camAfterReload = model._get('camera');
+
+  // ── w.snapshot(): PNG bytes back over the wire ──
+  model.set('_snapshot_req', 1);
+  await settle();
+  const snap = model._get('snapshot_png');
+  out.snapBytes = snap && snap.byteLength ? snap.byteLength : 0;
+  out.snapMagic = snap && snap.byteLength > 8 ? [snap.getUint8(0), snap.getUint8(1)] : null;
 
   let disposeErr = null;
   try { dispose(); } catch (e) { disposeErr = e.message; }
@@ -899,6 +910,7 @@ chk(`streamed POINTS + SUB-BLOCKED render together (${meta.s2Points}+${meta.s2Bl
   r.s2Lit > 10000 && /3[,.]?704 elements · 2 layers/.test(r.s2Hud || ''));
 chk(`through-select sweeps BOTH streamed accessors (${r.s2ThroughRows.toLocaleString()} rows over ${r.s2ThroughLayers} layers)`,
   r.s2ThroughLayers === 2 && r.s2ThroughRows > 100);
+chk(`chunk building ran OFF the main thread (${workerEngaged} stream workers engaged)`, workerEngaged >= 3);
 
 // ── via='files': browser-side read over byte ranges, zero kernel bytes ──
 chk(`via='files' ships a ${r.filesPayloadBytes}-byte payload and the BROWSER reads the file (${r.filesLit.toLocaleString()} px, hud "${r.filesHud}")`,
@@ -949,6 +961,8 @@ chk(`a payload reload does NOT steal the framed shot (plunge ${r.camAfterReload 
   r.camAfterReload && Math.abs(r.camAfterReload.plunge - 55) < 1.5);
 chk(`the ramp legend is NAMED and follows the channel switch ("${r.legName0}" → "${r.legNameSwitched}")`,
   r.legName0 === 'FE' && r.legNameSwitched === 'SIO2');
+chk(`w.snapshot() returns PNG bytes to the kernel (${(r.snapBytes / 1024).toFixed(0)} KB, magic ${JSON.stringify(r.snapMagic)})`,
+  r.snapBytes > 20000 && r.snapMagic && r.snapMagic[0] === 137 && r.snapMagic[1] === 80);
 
 // ── figure chrome + hole labels (the composited overlay) ──
 chk(`figure chrome draws (scale bar + north arrow: ${r.decoBase} ink px) and decorations=False clears it (${r.decoOff})`,

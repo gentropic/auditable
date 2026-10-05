@@ -9038,6 +9038,48 @@ const fmtN = (v) => {
   return a >= 1e5 || (a < 0.01 && a > 0) ? v.toExponential(2) : String(Math.round(v * 100) / 100);
 };
 
+// ── the WORKER half: this same bundle, booted as a module worker (from
+// import.meta.url, so nothing extra ships). Chunk building — Morton keys,
+// radix sort, quantize, shuffle — runs here while streaming, so a multi-
+// million-row cd.open never stutters the notebook; the GPU upload stays with
+// the page. The main side mirrors every push into resident columns first, so
+// a worker failure just rebuilds inline from those — the fallback is free. ──
+if (typeof document === 'undefined' && typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+  let wb = null;
+  const ship = (c) => {
+    const transfers = new Set();
+    for (const k in c) { const v = c[k]; if (v && ArrayBuffer.isView(v)) transfers.add(v.buffer); }
+    self.postMessage({ chunk: c }, [...transfers]);
+  };
+  self.onmessage = (e) => {
+    const m = e.data;
+    try {
+      if (m.init) {
+        const frame = { origin: m.init.frameOrigin, crs: null, units: 'm' };
+        wb = m.init.kind === 'blocks'
+          ? createBlockChunkBuilder({
+            frame, chunkSize: 1 << 18, seed: 1,
+            grid: makeBlockGrid(m.init.axes.map(([origin, pitch, count]) => ({ origin, pitch, count })), frame),
+            dimPalette: m.init.dimPalette || null,
+            onChunk: ship,
+          })
+          : createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: ship });
+      } else if (m.push) {
+        wb.push(m.push);
+        wb.flush();                                        // progressive at message granularity
+      } else if (m.eof) {
+        const doc = wb.flush();
+        self.postMessage({ done: {
+          count: doc.count, bboxLocal: [...doc.bboxLocal],
+          chanRange: doc.chanRange ? [...doc.chanRange] : null,
+        } });
+      }
+    } catch (err) {
+      self.postMessage({ err: String((err && err.message) || err) });
+    }
+  };
+}
+
 // anywidget wants a DEFAULT export; @gcu/build emits named exports only (its
 // rename-on-collision pass needs names). So this is named, and build.js appends
 // the one-line `export default { render }` footer to the bundle.
@@ -9246,6 +9288,7 @@ function render({ model, el }) {
   const load = () => {
     renderer.clearChunks();
     payload = null; docBbox = null; kinds.length = 0;
+    if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     streams = null; streamEpoch = Math.random().toString(36).slice(2);
     fileQueue = Promise.resolve(); fileMsg = null;
     const p = decodePayload(model.get('_payload'));
@@ -9512,6 +9555,9 @@ function render({ model, el }) {
           const [[x0, xp], [y0, yp], [z0, zp]] = L.axes;
           L._posAt = (r) => [x0 + st.i[r] * xp, y0 + st.j[r] * yp, z0 + st.k[r] * zp];
           L._ijk = { st, x0, xp, y0, yp, z0, zp };
+          st.worker = spawnStreamWorker(L, i, st, {
+            kind: 'blocks', frameOrigin: [...frame.origin], axes: L.axes, dimPalette: L.dim_palette || null,
+          });
           if (L.cat_n) renderer.setCategories(L.cat_n);
           if (L.bbox) {                                    // header bbox (world) seeds the fit before rows land
             doc = { bboxLocal: Float64Array.from(L.bbox.map((v, a) => v - frame.origin[a % 3])) };
@@ -9642,6 +9688,7 @@ function render({ model, el }) {
         const [ox, oy, oz] = L.pos_origin || [0, 0, 0];
         L._posAt = (r) => [ox + st.x[r], oy + st.y[r], oz + st.z[r]];
         L._pstream = { st, ox, oy, oz };
+        st.worker = spawnStreamWorker(L, i, st, { kind: 'points', frameOrigin: [...frame.origin] });
         if (L.cat_n) renderer.setLayerCats(i, L.cat_n);
         if (L.bbox) doc = { bboxLocal: Float64Array.from(L.bbox.map((v, a) => v - frame.origin[a % 3])) };
       } else {
@@ -9679,6 +9726,72 @@ function render({ model, el }) {
     invalidate();
   };
 
+  const quantIntensity = (vals, range, n) => {             // points color from u16 intensity
+    const out = new Uint16Array(n);
+    if (!vals || !range) return out;
+    const [lo, hi] = range;
+    const span = hi - lo || 1;
+    for (let q = 0; q < n; q++) {
+      const v = vals[q];
+      out[q] = Number.isFinite(v) ? Math.max(0, Math.min(65535, Math.round(((v - lo) / span) * 65535))) : 0;
+    }
+    return out;
+  };
+
+  // ── the stream worker: chunk building off the main thread. The resident
+  // columns are ALWAYS written first, so a worker failure at any point just
+  // rebuilds inline from them — behavior-identical, only slower. ──
+  const streamWorkerFail = (L, i, st, wk) => {
+    try { wk.terminate(); } catch { /* gone */ }
+    if (st.worker !== wk) return;
+    st.worker = null;                                      // later chunks go inline
+    renderer.removeLayer(i);
+    const n = st.got;
+    if (n) {
+      if (st.kind === 'points') {
+        const { ox, oy, oz } = L._pstream;
+        const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+        for (let q = 0; q < n; q++) { x[q] = ox + st.x[q]; y[q] = oy + st.y[q]; z[q] = oz + st.z[q]; }
+        st.b.push({ count: n, x, y, z, intensity: quantIntensity(st.value, L.value_range, n),
+          classification: st.cat ? st.cat.subarray(0, n) : new Uint8Array(n), rgb: null, recStart: 0 });
+      } else {
+        const { x0, xp, y0, yp, z0, zp } = L._ijk;
+        const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+        for (let q = 0; q < n; q++) { x[q] = x0 + st.i[q] * xp; y[q] = y0 + st.j[q] * yp; z[q] = z0 + st.k[q] * zp; }
+        st.b.push({ count: n, x, y, z, chan: st.value ? st.value.subarray(0, n) : new Float32Array(n),
+          cat: st.cat ? st.cat.subarray(0, n) : null, dim: st.dim ? st.dim.subarray(0, n) : null, recStart: 0 });
+      }
+      st.b.flush();
+    }
+    invalidate();
+  };
+  const spawnStreamWorker = (L, i, st, init) => {
+    try {
+      if (typeof Worker === 'undefined' || !import.meta.url) return null;
+      const wk = new Worker(import.meta.url, { type: 'module' });
+      wk.onmessage = (e) => {
+        const m = e.data;
+        if (disposed || !streams || streams[i] !== st) { try { wk.terminate(); } catch { /* gone */ } return; }
+        if (m.chunk) {
+          renderer.addChunk(m.chunk, 'base', i);
+          invalidate();
+        } else if (m.done) {
+          if (m.done.bboxLocal && Number.isFinite(m.done.bboxLocal[0])) mergeBbox(Float64Array.from(m.done.bboxLocal));
+          applyStyles();
+          if (tb) syncChrome();
+          invalidate();
+          try { wk.terminate(); } catch { /* gone */ }
+        } else if (m.err) {
+          streamWorkerFail(L, i, st, wk);
+        }
+      };
+      wk.onerror = () => streamWorkerFail(L, i, st, wk);
+      wk.postMessage({ init });
+      console.log('gcu.condenser: worker chunk builder engaged');
+      return wk;
+    } catch { return null; }                               // file://, odd CSP — inline is identical
+  };
+
   // ── streamed chunks (cd.open): epoch-guarded wire-v3 batches into the open
   // builder — each push lands a chunk on the GPU, so the model renders as it
   // arrives, exactly like the engine streaming a file in micro. ──
@@ -9707,6 +9820,7 @@ function render({ model, el }) {
       names.forEach((nm, bi) => { if (TA[nm]) got[nm] = asTyped(buffers[bi], TA[nm], take); });
       if (st.value && got.value) st.value.set(got.value.subarray(0, take), st.got);
       if (st.cat && got.cat) st.cat.set(got.cat.subarray(0, take), st.got);
+      let raw;                                             // the builder push, worker or inline
       if (st.kind === 'points') {
         if (!got.x || !got.y || !got.z) return;
         st.x.set(got.x.subarray(0, take), st.got);
@@ -9717,20 +9831,10 @@ function render({ model, el }) {
         for (let q = 0; q < take; q++) { px2[q] = ox + got.x[q]; py2[q] = oy + got.y[q]; pz2[q] = oz + got.z[q]; }
         // the points pipeline colors from u16 intensity: quantize this batch
         // against the header's value range (fixed, so chunks agree)
-        let inten = null;
-        if (got.value && L.value_range) {
-          const [lo, hi] = L.value_range;
-          const span = hi - lo || 1;
-          inten = new Uint16Array(take);
-          for (let q = 0; q < take; q++) {
-            const v3 = got.value[q];
-            inten[q] = Number.isFinite(v3) ? Math.max(0, Math.min(65535, Math.round(((v3 - lo) / span) * 65535))) : 0;
-          }
-        }
-        st.b.push({ count: take, x: px2, y: py2, z: pz2,
-          intensity: inten || new Uint16Array(take),
-          classification: got.cat || new Uint8Array(take),
-          rgb: null, recStart: st.got });
+        raw = { count: take, x: px2, y: py2, z: pz2,
+          intensity: got.value ? quantIntensity(got.value, L.value_range, take) : new Uint16Array(take),
+          classification: got.cat ? got.cat.slice(0, take) : new Uint8Array(take),
+          rgb: null, recStart: st.got };
       } else {
         if (!got.i || !got.j || !got.k) return;
         st.i.set(got.i.subarray(0, take), st.got);
@@ -9742,15 +9846,29 @@ function render({ model, el }) {
         for (let q = 0; q < take; q++) {
           bx[q] = x0 + got.i[q] * xp; by[q] = y0 + got.j[q] * yp; bz[q] = z0 + got.k[q] * zp;
         }
-        st.b.push({ count: take, x: bx, y: by, z: bz,
-          chan: got.value || new Float32Array(take),       // the builder concats chan unconditionally
-          cat: got.cat || null, dim: got.dim || null, recStart: st.got });
+        raw = { count: take, x: bx, y: by, z: bz,
+          chan: got.value ? got.value.slice(0, take) : new Float32Array(take),   // the builder concats chan unconditionally
+          cat: got.cat ? got.cat.slice(0, take) : null,
+          dim: got.dim ? got.dim.slice(0, take) : null, recStart: st.got };
       }
-      st.b.flush();                                        // emit NOW — progressive at message granularity
       st.got += take;
-      invalidate();                                        // new chunks restart the accumulation
+      if (st.worker) {
+        // Morton/quantize OFF the main thread; raw's arrays are fresh copies,
+        // so they transfer — zero main-thread sort work per message
+        const t2 = new Set();
+        for (const k2 in raw) { const v = raw[k2]; if (v && ArrayBuffer.isView(v)) t2.add(v.buffer); }
+        st.worker.postMessage({ push: raw }, [...t2]);
+      } else {
+        st.b.push(raw);
+        st.b.flush();                                      // emit NOW — progressive at message granularity
+        invalidate();                                      // new chunks restart the accumulation
+      }
     } else if (content.type === 'eof') {
       st.done = true;
+      if (st.worker) {
+        st.worker.postMessage({ eof: true });              // its 'done' finishes bbox/styles/chrome
+        return;
+      }
       const doc = st.b.flush();
       if (doc && doc.bboxLocal && docBbox) {
         for (let a = 0; a < 3; a++) {
@@ -9962,6 +10080,17 @@ function render({ model, el }) {
     invalidate();
   };
 
+  // GL + the decorations overlay composited — labels/scale bar/north arrow
+  // belong in the figure. Shared by the toolbar button and w.snapshot().
+  const compositeBlob = () => new Promise((res, rej) => {
+    const tmp = document.createElement('canvas');
+    tmp.width = canvas.width; tmp.height = canvas.height;
+    const g2 = tmp.getContext('2d');
+    g2.drawImage(canvas, 0, 0);                            // preserveDrawingBuffer keeps this valid
+    if (deco.width) g2.drawImage(deco, 0, 0, tmp.width, tmp.height);
+    tmp.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png');
+  });
+
   // ── the toolbar ──
   const buildToolbar = () => {
     if (tb) { tb.destroy(); tb = null; }
@@ -9983,19 +10112,14 @@ function render({ model, el }) {
       setSection: (s) => { model.set('section', s); model.save_changes(); syncChrome(); invalidate(); },
       snapshot: () => {
         schedule();
-        requestAnimationFrame(() => {
+        requestAnimationFrame(async () => {
           try {
-            // composite GL + the decorations overlay — labels/scale bar/north
-            // arrow belong in the figure
-            const tmp = document.createElement('canvas');
-            tmp.width = canvas.width; tmp.height = canvas.height;
-            const g2 = tmp.getContext('2d');
-            g2.drawImage(canvas, 0, 0);                    // preserveDrawingBuffer keeps this valid
-            if (deco.width) g2.drawImage(deco, 0, 0, tmp.width, tmp.height);
+            const b = await compositeBlob();
             const a = document.createElement('a');
-            a.href = tmp.toDataURL('image/png');
+            a.href = URL.createObjectURL(b);
             a.download = 'condenser.png';
             a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
           } catch (e) { hud.textContent = `snapshot failed: ${e.message}`; }
         });
       },
@@ -10363,6 +10487,16 @@ function render({ model, el }) {
     ['change:_view', applyView],
     ['change:camera', applyCamera],
     ['change:hover', () => { if (!model.get('hover') && tb) tb.showPick(null); }],
+    ['change:_snapshot_req', () => {                       // w.snapshot(): PNG bytes back to the kernel
+      schedule();
+      requestAnimationFrame(async () => {
+        try {
+          const b = await compositeBlob();
+          model.set('snapshot_png', new DataView(await b.arrayBuffer()));
+          model.save_changes();
+        } catch { /* headless contexts without toBlob */ }
+      });
+    }],
     ['msg:custom', onCustom],
   ];
   for (const [ev, fn] of subs) model.on(ev, fn);
@@ -10380,6 +10514,7 @@ function render({ model, el }) {
 
   return () => {
     disposed = true;
+    if (streams) for (const k in streams) { const stw = streams[k] && streams[k].worker; if (stw) try { stw.terminate(); } catch { /* gone */ } }
     if (raf) cancelAnimationFrame(raf);
     if (ro) ro.disconnect();
     if (detach) detach();
