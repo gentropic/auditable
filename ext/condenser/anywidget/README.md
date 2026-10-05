@@ -140,25 +140,28 @@ minimum-curvature code micro uses, so a hole lands in the same place in both.
 
 ```python
 cd.open("model.parquet", x="XC", y="YC", z="ZC", value="FE", category="DOMAIN")
+cd.open("model.parquet", ..., size=("DX", "DY", "DZ"))           # sub-blocked
+cd.open("cloud.parquet", kind="points", x="X", y="Y", z="Z", value="Z")
 cd.open(lambda: my_batches(), x="X", y="Y", z="Z", value="AU")   # any batch source
 ```
 
-A block model streamed from disk: the widget's payload carries only the
-**header** (the inferred lattice, count, value range, category labels), and the
-rows follow as wire-v3 chunks (u16 lattice indices + f32 value + u8 category,
-~11 B/block) over Jupyter custom messages once the view is up — **rendering
-progressively**, batch by batch, exactly like the engine streaming a file in
-micro. The kernel never holds more than one batch; the browser keeps ~11 B per
-block and reconstructs coordinates lazily from the lattice, so pick, measure,
-select-through and `threshold` all work as on a resident layer.
+A dataset streamed from disk: the widget's payload carries only the
+**header** (the inferred lattice or bbox, count, value range, category
+labels), and the rows follow as wire-v3 chunks over Jupyter custom messages
+once the view is up — **rendering progressively**, batch by batch, exactly
+like the engine streaming a file in micro. The kernel never holds more than
+one batch. Blocks ride as u16 lattice indices (~11 B/block kept browser-side,
+coordinates reconstructed lazily); `size=` names the block-size columns of a
+**sub-blocked** model (fine lattice + a ≤256-size palette, +1 B/block, true
+box sizes); `kind='points'` ships f32 local positions (~17 B/point). Pick,
+measure, select-through and `threshold` all work as on a resident layer.
 
 A Parquet path streams via **pyarrow** (row-group-aligned, column-projected —
 only the mapped columns are ever decoded); any other source is a list of
 table-like batches or a zero-arg callable returning an iterator (the source is
-read twice: once for the axes and ranges, once for the data, which is why a
+read twice: once for the lattice and ranges, once for the data, which is why a
 bare generator is refused). Each extra view of the same Viewer requests its own
-epoch-tagged stream, so views never interleave. Sub-blocked models are not
-streamable yet — open those resident via `blocks(..., size=...)`.
+epoch-tagged stream, so views never interleave.
 
 ## The toolbar
 

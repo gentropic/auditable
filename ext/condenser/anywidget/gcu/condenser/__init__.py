@@ -349,9 +349,13 @@ class Viewer(anywidget.AnyWidget):
             st = getattr(ly, "_stream", None)
             if not st:
                 continue
-            axes = ly._extra["axes"]
             labels = st.get("labels")
             lab_arr = np.asarray(labels) if labels else None
+            points = st.get("kind") == "points"
+            axes = None if points else ly._extra["axes"]
+            origin = ly._extra.get("pos_origin") if points else None
+            palette = st.get("palette")
+            pmap = {t: i for i, t in enumerate(palette)} if palette else None
             seq, sent = 0, 0
             for batch in st["batches"]():
                 xf = _f64(_col(batch, st["x"], "x"))
@@ -359,9 +363,21 @@ class Viewer(anywidget.AnyWidget):
                 yf = _f64(_col(batch, st["y"], "y", n))
                 zf = _f64(_col(batch, st["z"], "z", n))
                 cols, names = [], []
-                for nm, arr, ax in (("i", xf, axes[0]), ("j", yf, axes[1]), ("k", zf, axes[2])):
-                    cols.append(np.rint((arr - ax[0]) / ax[1]).astype(np.uint16))
-                    names.append(nm)
+                if points:
+                    # f32 LOCAL about the bbox center (wire v3's points trick)
+                    for nm, arr, o in (("x", xf, origin[0]), ("y", yf, origin[1]), ("z", zf, origin[2])):
+                        cols.append((arr - o).astype(np.float32))
+                        names.append(nm)
+                else:
+                    for nm, arr, ax in (("i", xf, axes[0]), ("j", yf, axes[1]), ("k", zf, axes[2])):
+                        cols.append(np.rint((arr - ax[0]) / ax[1]).astype(np.uint16))
+                        names.append(nm)
+                    if pmap is not None:                   # sub-blocked: (dx,dy,dz) → palette code
+                        dims = np.stack([_f64(_col(batch, s, "size", n)) for s in st["size"]], axis=1)
+                        uniq, inverse = np.unique(dims, axis=0, return_inverse=True)
+                        lut = np.array([pmap[tuple(t)] for t in uniq.tolist()], dtype=np.uint8)
+                        cols.append(lut[inverse])
+                        names.append("dim")
                 if st.get("value") is not None:
                     v = _col(batch, st["value"], "value", n)
                     cols.append(_f64(v).astype(np.float32))
@@ -810,28 +826,42 @@ def _batches_of(src, batch_rows, columns):
 
 
 def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
-         batch_rows=1_048_576, **kw) -> Layer:
-    """A block model STREAMED from disk — never resident, no comm ceiling.
+         kind="blocks", size=None, batch_rows=1_048_576, **kw) -> Layer:
+    """A dataset STREAMED from disk — never resident, no comm ceiling.
 
-    The payload carries only the header (axes, count, ranges); the rows follow
-    as wire-v3 chunks (u16 lattice indices + f32 value + u8 category,
-    ~11 B/block) once the view is up, rendering progressively exactly like the
-    engine does in micro.
+    The payload carries only the header (lattice/bbox, count, ranges); the rows
+    follow as wire-v3 chunks over custom messages once the view is up,
+    rendering progressively exactly like the engine does in micro.
 
         cd.open("model.parquet", x="XC", y="YC", z="ZC", value="FE")
+        cd.open("model.parquet", ..., size=("DX", "DY", "DZ"))   # sub-blocked
+        cd.open("cloud.parquet", kind="points", x="X", y="Y", z="Z", value="Z")
         cd.open(lambda: my_batches(), x="X", y="Y", z="Z", value="AU")
 
-    Pass 1 sweeps the coordinate/value/category columns batch-by-batch for the
-    lattice, ranges and labels; pass 2 ships the chunks. Parquet batches are
-    column-projected, so only the mapped columns are ever decoded.
-    Sub-blocked models are not streamable yet — open the file with
-    ``blocks(..., size=...)`` resident, or view as points.
+    ``kind='blocks'`` (default) infers the lattice and ships u16 indices
+    (~11 B/block); ``size=`` names the per-axis block-size columns of a
+    SUB-BLOCKED model (fine lattice + a ≤256-size palette, +1 B/block).
+    ``kind='points'`` ships f32 local positions (~17 B/point). Pass 1 sweeps
+    only the mapped columns batch-by-batch; pass 2 ships the chunks. The
+    source is a Parquet path (pyarrow, column-projected), a list of table-like
+    batches, or a zero-arg callable returning an iterator.
     """
-    cols_needed = [c for c in (x, y, z, value, category) if isinstance(c, str)]
+    if kind not in ("blocks", "points"):
+        raise ValueError(f"gcu-condenser: cd.open kind must be 'blocks' or 'points', got {kind!r}")
+    if size is not None and kind != "blocks":
+        raise ValueError("gcu-condenser: size= (sub-blocked) applies to kind='blocks'")
+    if size is not None and not (isinstance(size, (tuple, list)) and len(size) == 3
+                                 and all(isinstance(s, str) for s in size)):
+        raise TypeError("gcu-condenser: streaming size= needs the three COLUMN NAMES, e.g. ('DX','DY','DZ')")
+    cols_needed = [c for c in (x, y, z, value, category, *(size or ())) if isinstance(c, str)]
     batches = _batches_of(src, batch_rows, cols_needed)
 
-    # ── pass 1: lattice + ranges + labels, one batch resident at a time ──
+    # ── pass 1: lattice/bbox + ranges + labels, one batch resident at a time ──
     ux, uy, uz = [], [], []
+    mins = np.full(3, np.inf)
+    maxs = np.full(3, -np.inf)
+    fines = np.full(3, np.inf)                             # sub-blocked: finest size per axis
+    trips: set[tuple] = set()                              # sub-blocked: distinct (dx,dy,dz)
     vmin, vmax = np.inf, -np.inf
     labels_seen: set[str] = set()
     count = 0
@@ -844,10 +874,23 @@ def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
             raise ValueError(
                 "gcu-condenser: cd.open found non-finite coordinates — row "
                 "numbering must stay aligned with your table, so clean the "
-                "coordinates (or load resident via blocks())."
+                "coordinates (or load resident)."
             )
         count += n
-        ux.append(np.unique(xf)); uy.append(np.unique(yf)); uz.append(np.unique(zf))
+        for a, arr in enumerate((xf, yf, zf)):
+            mins[a] = min(mins[a], float(arr.min()))
+            maxs[a] = max(maxs[a], float(arr.max()))
+        if kind == "blocks":
+            ux.append(np.unique(xf)); uy.append(np.unique(yf)); uz.append(np.unique(zf))
+        if size is not None:
+            dims = np.stack([_f64(_col(batch, s, f"size[{a}]", n)) for a, s in enumerate(size)], axis=1)
+            fines = np.minimum(fines, dims.min(axis=0))
+            trips.update(map(tuple, np.unique(dims, axis=0).tolist()))
+            if len(trips) > 256:
+                raise ValueError(
+                    f"gcu-condenser: more than 256 distinct block sizes. "
+                    "Round the size columns, or stream as kind='points'."
+                )
         if value is not None:
             vf = _f64(_col(batch, value, "value", n))
             fin = vf[np.isfinite(vf)]
@@ -858,16 +901,51 @@ def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
     if count == 0:
         raise ValueError("gcu-condenser: cd.open read zero rows")
 
-    axes = [list(_axis_from_centroids(np.unique(np.concatenate(u)), nm))
-            for u, nm in ((ux, "x"), (uy, "y"), (uz, "z"))]
-    half = [a[1] / 2 for a in axes]
-    extra: dict[str, Any] = {
-        "count": count, "axes": axes, "pos": "ijk", "streamed": True,
-        "bbox": [axes[0][0] - half[0], axes[1][0] - half[1], axes[2][0] - half[2],
-                 axes[0][0] + (axes[0][2] - 1) * axes[0][1] + half[0],
-                 axes[1][0] + (axes[1][2] - 1) * axes[1][1] + half[1],
-                 axes[2][0] + (axes[2][2] - 1) * axes[2][1] + half[2]],
-    }
+    extra: dict[str, Any] = {"count": count, "streamed": True}
+    palette = None
+    if kind == "blocks":
+        cents = [np.unique(np.concatenate(u)) for u in (ux, uy, uz)]
+        if size is not None:
+            # the fine lattice: every centroid (parent and child) must land on
+            # the finest size — or on half of it (even subdivisions put a parent
+            # centroid on a fine-cell boundary), the same rule the resident path
+            # and micro carry
+            axes = []
+            for a, nm in enumerate("xyz"):
+                lo, hi, fine = float(cents[a][0]), float(cents[a][-1]), float(fines[a])
+                if not fine or fine <= 0:
+                    raise ValueError(f"gcu-condenser: axis {nm} has a non-positive block size")
+                for pitch in (fine, fine / 2):
+                    off = (cents[a] - lo) / pitch
+                    if np.max(np.abs(off - np.round(off))) < 1e-3:
+                        n_cells = int(round((hi - lo) / pitch)) + 1
+                        if n_cells > _U16MAX:
+                            raise ValueError(
+                                f"gcu-condenser: sub-blocked axis {nm} needs {n_cells} fine "
+                                f"cells (max {_U16MAX}). Stream as kind='points'."
+                            )
+                        axes.append([lo, pitch, n_cells])
+                        break
+                else:
+                    raise ValueError(
+                        f"gcu-condenser: axis {nm} centroids do not land on the fine "
+                        "lattice. Stream as kind='points'."
+                    )
+            palette = sorted(trips)                        # deterministic code order
+            extra["dim_palette"] = [[d / 2.0 for d in t] for t in palette]
+            extra["sub_blocked"] = True
+            half = [max(t[a] for t in palette) / 2.0 for a in range(3)]
+        else:
+            axes = [list(_axis_from_centroids(c, nm)) for c, nm in zip(cents, "xyz")]
+            half = [a[1] / 2 for a in axes]
+        extra["axes"] = axes
+        extra["pos"] = "ijk"
+        extra["bbox"] = [mins[0] - half[0], mins[1] - half[1], mins[2] - half[2],
+                         maxs[0] + half[0], maxs[1] + half[1], maxs[2] + half[2]]
+    else:
+        origin = ((mins + maxs) / 2).tolist()
+        extra["pos_origin"] = origin
+        extra["bbox"] = [*mins.tolist(), *maxs.tolist()]
     labels = []
     if value is not None:
         extra["value_range"] = [vmin if np.isfinite(vmin) else 0.0,
@@ -881,9 +959,10 @@ def open(src, x="XC", y="YC", z="ZC", value=None, category=None,
         extra["cat_labels"] = labels
 
     kw.setdefault("color", "value" if value is not None else ("category" if category is not None else "z"))
-    ly = Layer("blocks", {}, extra, labels, **kw)
-    ly._stream = {"batches": batches, "x": x, "y": y, "z": z,
-                  "value": value, "category": category,
+    ly = Layer(kind, {}, extra, labels, **kw)
+    ly._stream = {"batches": batches, "kind": kind, "x": x, "y": y, "z": z,
+                  "value": value, "category": category, "size": size,
+                  "palette": palette,
                   "labels": labels if category is not None else None}
     return ly
 

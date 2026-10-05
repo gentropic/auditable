@@ -5979,8 +5979,9 @@ function render({ model, el }) {
           // ijk + value + cat (~11 B/block); positions reconstruct lazily.
           const n = L.count;
           const st = {
-            b, got: 0, done: false,
+            b, got: 0, done: false, kind: 'blocks',
             i: new Uint16Array(n), j: new Uint16Array(n), k: new Uint16Array(n),
+            dim: L.dim_palette ? new Uint8Array(n) : null,
             value: L.value_range ? new Float32Array(n) : null,
             cat: L.cat_n ? new Uint8Array(n) : null,
           };
@@ -6091,6 +6092,27 @@ function render({ model, el }) {
           x: seg.x, y: seg.y, z: seg.z, chan: seg.chan, cat: seg.cat, recIdx: seg.recIdx });
         doc = b.flush();
         if (L.cat_n) renderer.setCategories(L.cat_n);
+      } else if (L.streamed) {
+        // cd.open(kind='points'): f32 local positions stay RESIDENT (~17 B/pt —
+        // a cloud has no lattice to reconstruct from), value/cat beside them;
+        // the u16 intensity each chunk needs is quantized here from the
+        // header's value_range.
+        const b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
+        const n = L.count;
+        const st = {
+          b, got: 0, done: false, kind: 'points',
+          x: new Float32Array(n), y: new Float32Array(n), z: new Float32Array(n),
+          value: L.value_range ? new Float32Array(n) : null,
+          cat: L.cat_n ? new Uint8Array(n) : null,
+        };
+        (streams = streams || {})[i] = st;
+        if (st.value) L.cols.value = st.value;
+        if (st.cat) L.cols.cat = st.cat;
+        const [ox, oy, oz] = L.pos_origin || [0, 0, 0];
+        L._posAt = (r) => [ox + st.x[r], oy + st.y[r], oz + st.z[r]];
+        L._pstream = { st, ox, oy, oz };
+        if (L.cat_n) renderer.setLayerCats(i, L.cat_n);
+        if (L.bbox) doc = { bboxLocal: Float64Array.from(L.bbox.map((v, a) => v - frame.origin[a % 3])) };
       } else {
         const b = createChunkBuilder({ frame, chunkSize: 1 << 19, seed: 1, onChunk: (c) => renderer.addChunk(c, 'base', i) });
         let px = cols.x, py = cols.y, pz = cols.z;
@@ -6144,25 +6166,55 @@ function render({ model, el }) {
     if (!st || !L || st.done) return;
     if (content.type === 'chunk') {
       const names = content.cols || [];
-      const take = Math.min(content.rows >>> 0, st.i.length - st.got);
+      const cap = st.kind === 'points' ? st.x.length : st.i.length;
+      const take = Math.min(content.rows >>> 0, cap - st.got);
       if (take <= 0) return;
-      const TA = { i: Uint16Array, j: Uint16Array, k: Uint16Array, value: Float32Array, cat: Uint8Array };
+      const TA = st.kind === 'points'
+        ? { x: Float32Array, y: Float32Array, z: Float32Array, value: Float32Array, cat: Uint8Array }
+        : { i: Uint16Array, j: Uint16Array, k: Uint16Array, dim: Uint8Array, value: Float32Array, cat: Uint8Array };
       const got = {};
       names.forEach((nm, bi) => { if (TA[nm]) got[nm] = asTyped(buffers[bi], TA[nm], take); });
-      if (!got.i || !got.j || !got.k) return;
-      st.i.set(got.i.subarray(0, take), st.got);
-      st.j.set(got.j.subarray(0, take), st.got);
-      st.k.set(got.k.subarray(0, take), st.got);
       if (st.value && got.value) st.value.set(got.value.subarray(0, take), st.got);
       if (st.cat && got.cat) st.cat.set(got.cat.subarray(0, take), st.got);
-      const { x0, xp, y0, yp, z0, zp } = L._ijk;
-      const bx = new Float64Array(take), by = new Float64Array(take), bz = new Float64Array(take);
-      for (let q = 0; q < take; q++) {
-        bx[q] = x0 + got.i[q] * xp; by[q] = y0 + got.j[q] * yp; bz[q] = z0 + got.k[q] * zp;
+      if (st.kind === 'points') {
+        if (!got.x || !got.y || !got.z) return;
+        st.x.set(got.x.subarray(0, take), st.got);
+        st.y.set(got.y.subarray(0, take), st.got);
+        st.z.set(got.z.subarray(0, take), st.got);
+        const { ox, oy, oz } = L._pstream;
+        const px2 = new Float64Array(take), py2 = new Float64Array(take), pz2 = new Float64Array(take);
+        for (let q = 0; q < take; q++) { px2[q] = ox + got.x[q]; py2[q] = oy + got.y[q]; pz2[q] = oz + got.z[q]; }
+        // the points pipeline colors from u16 intensity: quantize this batch
+        // against the header's value range (fixed, so chunks agree)
+        let inten = null;
+        if (got.value && L.value_range) {
+          const [lo, hi] = L.value_range;
+          const span = hi - lo || 1;
+          inten = new Uint16Array(take);
+          for (let q = 0; q < take; q++) {
+            const v3 = got.value[q];
+            inten[q] = Number.isFinite(v3) ? Math.max(0, Math.min(65535, Math.round(((v3 - lo) / span) * 65535))) : 0;
+          }
+        }
+        st.b.push({ count: take, x: px2, y: py2, z: pz2,
+          intensity: inten || new Uint16Array(take),
+          classification: got.cat || new Uint8Array(take),
+          rgb: null, recStart: st.got });
+      } else {
+        if (!got.i || !got.j || !got.k) return;
+        st.i.set(got.i.subarray(0, take), st.got);
+        st.j.set(got.j.subarray(0, take), st.got);
+        st.k.set(got.k.subarray(0, take), st.got);
+        if (st.dim && got.dim) st.dim.set(got.dim.subarray(0, take), st.got);
+        const { x0, xp, y0, yp, z0, zp } = L._ijk;
+        const bx = new Float64Array(take), by = new Float64Array(take), bz = new Float64Array(take);
+        for (let q = 0; q < take; q++) {
+          bx[q] = x0 + got.i[q] * xp; by[q] = y0 + got.j[q] * yp; bz[q] = z0 + got.k[q] * zp;
+        }
+        st.b.push({ count: take, x: bx, y: by, z: bz,
+          chan: got.value || new Float32Array(take),       // the builder concats chan unconditionally
+          cat: got.cat || null, dim: got.dim || null, recStart: st.got });
       }
-      st.b.push({ count: take, x: bx, y: by, z: bz,
-        chan: got.value || new Float32Array(take),         // the builder concats chan unconditionally
-        cat: got.cat || null, dim: null, recStart: st.got });
       st.b.flush();                                        // emit NOW — progressive at message granularity
       st.got += take;
       invalidate();                                        // new chunks restart the accumulation
@@ -6525,19 +6577,21 @@ function render({ model, el }) {
     styles().forEach((sty, li) => {
       const L = payload.layers[li];
       if (!L || sty.visible === false) return;
-      const A = L._ijk || null;                            // streamed: lattice accessor, only rows that arrived
+      const A = L._ijk || null;                            // streamed blocks: lattice accessor, only rows that arrived
+      const P = L._pstream || null;                        // streamed points: resident local f32 + origin
       const c = L._pos || L.cols;
-      if (!A && (!c || !c.x)) return;
+      if (!A && !P && (!c || !c.x)) return;
       const val = L.cols.value, th = sty.threshold;
       const iso = !!(val && th && th.length === 2 && sty.filter_mode !== 'dim');
       const sec = sty.sectioned === false ? null : secAll;
       let set = selected.get(li);
       if (!set) selected.set(li, set = new Set());
-      const n = A ? A.st.got : Math.min(L.count, c.x.length);
+      const n = A ? A.st.got : P ? P.st.got : Math.min(L.count, c.x.length);
       for (let r = 0; r < n; r++) {
         if (iso && !(val[r] >= th[0] && val[r] <= th[1])) continue;
         let X, Y, Z;
         if (A) { X = A.x0 + A.st.i[r] * A.xp - o[0]; Y = A.y0 + A.st.j[r] * A.yp - o[1]; Z = A.z0 + A.st.k[r] * A.zp - o[2]; }
+        else if (P) { X = P.ox + P.st.x[r] - o[0]; Y = P.oy + P.st.y[r] - o[1]; Z = P.oz + P.st.z[r] - o[2]; }
         else { X = c.x[r] - o[0]; Y = c.y[r] - o[1]; Z = c.z[r] - o[2]; }
         if (sec && Math.abs(X * sec.n[0] + Y * sec.n[1] + Z * sec.n[2] - sec.d) > sec.half) continue;
         const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];

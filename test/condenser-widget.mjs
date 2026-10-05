@@ -94,18 +94,39 @@ bat = [{"X": sxx[:half], "Y": syy[:half], "Z": szz[:half], "V": svv[:half], "C":
 streamed = cd.open(lambda: iter(bat), x="X", y="Y", z="Z", value="V", category="C", name="streamed")
 assert streamed._extra["streamed"] is True and streamed.count == sxx.size
 ws = cd.view(streamed, height=460)
-open(r"${T}/stream.bin", "wb").write(ws._payload)
-open(r"${T}/stream-styles.json", "w").write(json.dumps(ws._styles))
+
 import io
-manifest, blob = [], io.BytesIO()
-for content, bl in ws._stream_messages("E"):
-    lens = []
-    for b in bl:
-        bb = np.ascontiguousarray(b).tobytes()
-        lens.append(len(bb)); blob.write(bb)
-    manifest.append({"content": content, "lens": lens})
-open(r"${T}/stream-msgs.json", "w").write(json.dumps(manifest))
-open(r"${T}/stream-bufs.bin", "wb").write(blob.getvalue())
+TD = r"${T}"
+def dump_stream(w2, tag):
+    manifest, blob = [], io.BytesIO()
+    for content, bl in w2._stream_messages("E"):
+        lens = []
+        for b in bl:
+            bb = np.ascontiguousarray(b).tobytes()
+            lens.append(len(bb)); blob.write(bb)
+        manifest.append({"content": content, "lens": lens})
+    open(f"{TD}/{tag}-msgs.json", "w").write(json.dumps(manifest))
+    open(f"{TD}/{tag}-bufs.bin", "wb").write(blob.getvalue())
+    open(f"{TD}/{tag}.bin", "wb").write(w2._payload)
+    open(f"{TD}/{tag}-styles.json", "w").write(json.dumps(w2._styles))
+    return manifest, blob.getbuffer().nbytes
+manifest, blob_n = dump_stream(ws, "stream")
+
+# streamed POINTS + streamed SUB-BLOCKED stacked in one view
+pn = 3000
+rng2 = np.random.default_rng(7)
+ppx = rng2.random(pn)*200; ppy = rng2.random(pn)*200; ppz = 120 + rng2.random(pn)*20
+pbat = [{"X": ppx[:1500], "Y": ppy[:1500], "Z": ppz[:1500], "V": ppz[:1500]},
+        {"X": ppx[1500:], "Y": ppy[1500:], "Z": ppz[1500:], "V": ppz[1500:]}]
+spts = cd.open(lambda: iter(pbat), kind="points", x="X", y="Y", z="Z", value="V", name="spts")
+assert spts._extra["streamed"] and len(spts._extra["pos_origin"]) == 3
+sbat = [{"X": np.array(xs, float), "Y": np.array(ys, float), "Z": np.array(zs, float),
+         "DX": np.array(dx), "DY": np.array(dy), "DZ": np.array(dz), "V": np.array(val)}]
+ssub = cd.open(lambda: iter(sbat), x="X", y="Y", z="Z", value="V", size=("DX", "DY", "DZ"), name="ssub")
+assert ssub._extra["sub_blocked"] and len(ssub._extra["dim_palette"]) == 2
+assert [a[1] for a in ssub._extra["axes"]] == [5.0, 5.0, 5.0], ssub._extra["axes"]
+wsp = cd.view(spts, ssub, height=460)
+dump_stream(wsp, "stream2")
 
 # BATCH A: multi-channel values + categories (legend/eyes) + a draped surface
 nxg, nyg = 30, 30
@@ -151,8 +172,9 @@ print(json.dumps({
   "byName": by_name.count, "byNamePalette": len(by_name._extra["dim_palette"]),
   "scalarSize": scalar_size.count,
   "streamCount": streamed.count, "streamBytes": len(ws._payload),
-  "streamMsgs": len(manifest), "streamBufBytes": blob.getbuffer().nbytes,
+  "streamMsgs": len(manifest), "streamBufBytes": blob_n,
   "streamCats": streamed._extra["cat_labels"],
+  "s2Points": spts.count, "s2Blocks": ssub.count, "s2Palette": len(ssub._extra["dim_palette"]),
   "meshTris": surf.count, "meshVerts": surf._extra["vertex_count"], "meshBytes": len(wm._payload),
   "mcChannels": mc._extra["value_channels"], "mcRanges": mc._extra["value_ranges"],
   "mcCats": mc._extra["cat_labels"], "surfCells": surf2.count,
@@ -541,6 +563,43 @@ const r = await page.evaluate(async (port) => {
     d4();
   }
 
+  // ── streamed POINTS + streamed SUB-BLOCKED in one view ──
+  {
+    const sPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/stream2.bin`)).arrayBuffer());
+    const sStyles = await (await fetch(`http://127.0.0.1:${port}/tmp/stream2-styles.json`)).json();
+    const sMsgs = await (await fetch(`http://127.0.0.1:${port}/tmp/stream2-msgs.json`)).json();
+    const sBufs = await (await fetch(`http://127.0.0.1:${port}/tmp/stream2-bufs.bin`)).arrayBuffer();
+    const m7 = makeModel({
+      _payload: sPayload, _styles: sStyles, _fit: 0, section: null,
+      background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {},
+    });
+    const d7 = render({ model: m7, el });
+    await settle();
+    const ep7 = (m7._sent.find((m2) => m2 && m2.type === 'ready') || {}).epoch;
+    let off7 = 0;
+    for (const m2 of sMsgs) {
+      const bufs = m2.lens.map((n2) => { const v = new DataView(sBufs, off7, n2); off7 += n2; return v; });
+      m7._deliver({ ...m2.content, epoch: ep7 }, bufs);
+    }
+    await settle(); await settle();
+    out.s2Lit = lit().n;
+    out.s2Hud = (el.querySelector('.cdhud') || {}).textContent;
+    // through-select must sweep BOTH streamed accessors (f32 points + lattice)
+    const host7 = el.querySelector('div');
+    const r7 = el.querySelector('canvas').getBoundingClientRect();
+    const tbtn7 = (p) => [...host7.querySelectorAll('.cdt button')].find((b2) => (b2.title || '').startsWith(p));
+    tbtn7('Select through').click();
+    tbtn7('Rectangle').click();
+    host7.dispatchEvent(new PointerEvent('pointerdown', { clientX: r7.left + r7.width * 0.3, clientY: r7.top + r7.height * 0.3, bubbles: true }));
+    host7.dispatchEvent(new PointerEvent('pointermove', { clientX: r7.left + r7.width * 0.7, clientY: r7.top + r7.height * 0.7, bubbles: true }));
+    host7.dispatchEvent(new PointerEvent('pointerup', { clientX: r7.left + r7.width * 0.7, clientY: r7.top + r7.height * 0.7, bubbles: true }));
+    await settle();
+    const sel7 = unpack(m7._get('_sel_rows'));
+    out.s2ThroughLayers = Object.keys(sel7).filter((k2) => sel7[k2].length).length;
+    out.s2ThroughRows = totalOf(sel7);
+    d7();
+  }
+
   // ── MESH context layer: scenery co-registered over a block model ──
   {
     const mPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/mesh.bin`)).arrayBuffer());
@@ -695,6 +754,10 @@ chk(`pick on a streamed block gives the row + WORLD coords via the lattice (${JS
 chk(`select-through sweeps streamed rows (${r.streamThroughRows.toLocaleString()} rows)`, r.streamThroughRows > 100);
 chk(`threshold carves the streamed layer's resident values (${r.streamLit.toLocaleString()} → ${r.streamThrLit.toLocaleString()} px)`,
   r.streamThrLit > 0 && r.streamThrLit < r.streamLit * 0.8);
+chk(`streamed POINTS + SUB-BLOCKED render together (${meta.s2Points}+${meta.s2Blocks} rows, ${meta.s2Palette} sizes, hud "${r.s2Hud}")`,
+  r.s2Lit > 10000 && /3[,.]?704 elements · 2 layers/.test(r.s2Hud || ''));
+chk(`through-select sweeps BOTH streamed accessors (${r.s2ThroughRows.toLocaleString()} rows over ${r.s2ThroughLayers} layers)`,
+  r.s2ThroughLayers === 2 && r.s2ThroughRows > 100);
 
 // ── cd.mesh context layer ──
 chk(`a mesh renders co-registered over the model (${meta.meshTris} tris, ${r.meshLit.toLocaleString()} lit px, hud "${r.meshHud}")`,
