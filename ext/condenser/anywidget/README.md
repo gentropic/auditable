@@ -105,8 +105,14 @@ rebuild first: `node ext/condenser/anywidget/build.js`.
 cd.points(x, y, z, value=..., category=..., rgb=...)     # a cloud
 cd.blocks(x, y, z, value=..., size=(dx, dy, dz))         # a model (sub-blocking optional)
 cd.drillholes(collar, survey, intervals, value="AU")     # desurveyed capsules
-cd.mesh(vertices, triangles, color="#b87333")            # context: topo, a pit shell, a domain
+cd.mesh(vertices, triangles, color="#b87333")            # context: a pit shell, a domain
+cd.surface(dem, origin=(x0, y0), pitch=12.5)             # a 2D grid as shaded relief
 ```
+
+`value` may be **several columns** — `value=["FE", "SIO2", "AL2O3"]` (or a dict
+`{name: array}`) ships every channel once, and `w["model"].value = "SIO2"`
+switches the live one client-side: no re-send, the threshold, legend and pick
+readout all follow. At wire-v3 cost an extra channel is ~4 B/block.
 
 Each takes arrays *or* a table plus column names, and returns a **Layer**.
 Display a Layer directly, or stack several with `cd.view(...)` — they share one
@@ -118,6 +124,14 @@ A **mesh** is scenery, not data: it draws whole, its `color` is a hex tint
 it carries no records — `opacity` and `visible` are its knobs. Hand it `(n,3)`
 vertices and `(m,3)` triangle indices, straight from trimesh / PyVista /
 anything that reads your wireframe format.
+
+A **surface** is a regular 2D grid (a DEM, a modeled horizon) triangulated in
+the browser with smooth normals and clean holes at `nodata`. Row 0 is the
+NORTHERNMOST row (the GeoTIFF convention) and `origin` is the top-left node.
+It colors by its own elevation through `ramp`/`clip`, by a **`drape=`** grid of
+the same shape (grade over topo), or — given a hex `color` — renders as a
+plain tinted relief. `flat_z=` makes a flat colored sheet instead (a geochem
+grid with no DEM). Like a mesh, it is recordless scenery.
 
 Drillholes desurvey in the browser through **@gcu/drillhole**, the same
 minimum-curvature code micro uses, so a hole lands in the same place in both.
@@ -178,11 +192,13 @@ Per **layer** — every one is live, set it and the view updates with no re-send
 
 | trait | |
 |---|---|
-| `color` | `'z'` · `'value'` · `'category'` · `'rgb'` · `'flat'` |
+| `color` | `'z'` · `'value'` · `'category'` · `'rgb'` · `'flat'` (mesh/surface: a hex tint) |
+| `value` | the ACTIVE value channel, when the layer ships several |
 | `ramp` | `viridis` · `magma` · `turbo` · `grays` · `spectral` · `fire` |
 | `clip` | `[lo, hi]` — clamp the color scale |
 | `threshold` | `[lo, hi]` — **cutoff on the value column** |
 | `filter_mode` | `'isolate'` (hide the rest) or `'dim'` |
+| `categories_hidden` | labels to hide (per-class eyes; the legend swatches toggle these) |
 | `opacity` | screen-door see-through, `1.0` = solid |
 | `visible`, `point_size`, `as_points`, `block_edges`, `radius` | |
 | `sectioned` | `True` · `False` (exempt) · `'front'` · `'behind'` |
@@ -190,8 +206,14 @@ Per **layer** — every one is live, set it and the view updates with no re-send
 | `selected_rows` | read back: rows caught by the rectangle/lasso tools |
 
 Per **view**: `section` (or `w.cut(...)`), `background`, `height`, `toolbar`, `edl`,
-`edl_strength`, `budget`, `selection`, `selected_rows`, `measurement`, `w.fit()`, `w.look(view, ortho=)`,
+`edl_strength`, `budget`, `z_exaggeration` (display-only — picks and measures stay in
+real coordinates), `selection`, `selected_rows`, `measurement`, `w.fit()`, `w.look(view, ortho=)`,
 `w.clear_selection()`, `w.copy()`, `w["name"]`, `w.add(layer)`.
+
+Colored by **category**, the legend becomes a swatch list and each row is an
+eye: click to hide that class (GPU-side, composes with `threshold`, and hidden
+classes don't pick). It round-trips — `w["model"].categories_hidden` names
+what you clicked off.
 
 ### Seeing inside a model
 

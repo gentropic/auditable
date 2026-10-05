@@ -14,7 +14,7 @@
 import {
   createRenderer, createEdl, createOrbitCamera, attachOrbitInput,
   createChunkBuilder, createBlockChunkBuilder, createStickChunkBuilder,
-  makeBlockGrid, buildMeshChunk, rampPixels, mat4Inverse,
+  makeBlockGrid, buildMeshChunk, buildHeightfieldMesh, rampPixels, categoryPalettePixels, mat4Inverse,
 } from '../../core.js';
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { createToolbar } from './toolbar.js';
@@ -231,7 +231,8 @@ export function render({ model, el }) {
       const tot = renderer.elementCount, acc = renderer.accumulated;
       const n = payload.layers.length;
       const what = n === 1
-        ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals' : kinds[0] === 'mesh' ? 'triangles' : 'points')
+        ? (kinds[0] === 'blocks' ? 'blocks' : kinds[0] === 'drillholes' ? 'intervals'
+          : kinds[0] === 'mesh' || kinds[0] === 'surface' ? 'triangles' : 'points')
         : `elements · ${n} layers`;
       hud.textContent = converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`;
     }
@@ -248,14 +249,61 @@ export function render({ model, el }) {
     const p = decodePayload(model.get('_payload'));
     if (!p || !p.layers.length) { hud.textContent = 'no data'; if (tb) { tb.showPick(null); tb.syncLegend(null); } schedule(); return; }
     payload = p;
-    const frame = { origin: p.frame, crs: null, units: 'm' };
     const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
 
     p.layers.forEach((L, i) => {
-      const cols = L.cols;
       kinds[i] = L.kind;
-      let doc = null;
-      if (L.kind === 'blocks') {
+      const lb = buildLayer(L, i);
+      if (lb) {
+        for (let a = 0; a < 3; a++) {
+          if (lb[a] < bb[a]) bb[a] = lb[a];
+          if (lb[a + 3] > bb[a + 3]) bb[a + 3] = lb[a + 3];
+        }
+      }
+    });
+
+    docBbox = Float64Array.from(bb);
+    renderer.setDocBbox(docBbox);
+    applyStyles();
+    if (tb) { tb.showPick(null); syncChrome(); }
+    needFit = true;
+    invalidate();
+    if (streams) model.send({ type: 'ready', epoch: streamEpoch });
+  };
+
+  // the ACTIVE value channel: a layer may ship several (value=["FE","SIO2"]);
+  // the style's `value` names the live one, and switching re-aliases
+  // L.cols.value / value_u16 / value_range so EVERY reader (the GPU build,
+  // threshold, pick readout, legend) sees the chosen channel.
+  const resolveChannel = (L, s) => {
+    const names = L.value_channels || [];
+    if (!names.length) return;
+    if (!L._chans) {
+      L._chans = names.map((nm, k) => ({
+        name: nm,
+        value: L.cols[k === 0 ? 'value' : 'value' + k],
+        u16: L.cols[k === 0 ? 'value_u16' : 'value_u16_' + k],
+        range: (L.value_ranges || [L.value_range])[k] || L.value_range,
+      }));
+    }
+    let k = s && s.value ? L._chans.findIndex((c) => c.name === s.value) : 0;
+    if (k < 0) k = 0;
+    const c = L._chans[k];
+    L.cols.value = c.value;
+    if (c.u16) L.cols.value_u16 = c.u16;
+    L.value_range = c.range;
+    L._active = c.name;
+  };
+
+  // one layer → engine chunks. Shared by load() and rebuildLayer() (a channel
+  // switch rebuilds just its own layer from the already-resident columns).
+  // Returns the layer's local bbox (null while a streamed layer has no rows).
+  const buildLayer = (L, i) => {
+    const frame = { origin: payload.frame, crs: null, units: 'm' };
+    const cols = L.cols;
+    resolveChannel(L, styleAt(i));
+    let doc = null;
+    if (L.kind === 'blocks') {
         const grid = makeBlockGrid(L.axes.map(([origin, pitch, count]) => ({ origin, pitch, count })), frame);
         const b = createBlockChunkBuilder({
           frame, grid, chunkSize: 1 << 18, seed: 1,
@@ -282,13 +330,8 @@ export function render({ model, el }) {
           L._ijk = { st, x0, xp, y0, yp, z0, zp };
           if (L.cat_n) renderer.setCategories(L.cat_n);
           if (L.bbox) {                                    // header bbox (world) seeds the fit before rows land
-            for (let a = 0; a < 3; a++) {
-              const lo = L.bbox[a] - frame.origin[a], hi = L.bbox[a + 3] - frame.origin[a];
-              if (lo < bb[a]) bb[a] = lo;
-              if (hi > bb[a + 3]) bb[a + 3] = hi;
-            }
+            doc = { bboxLocal: Float64Array.from(L.bbox.map((v, a) => v - frame.origin[a % 3])) };
           }
-          doc = null;                                      // flushed at eof
         } else {
           let bx = cols.x, by = cols.y, bz = cols.z;
           if (L.pos === 'ijk') {
@@ -304,6 +347,53 @@ export function render({ model, el }) {
           b.push({ count: L.count, x: bx, y: by, z: bz, chan: cols.value || null, cat: cols.cat || null, dim: cols.dim || null, recStart: 0 });
           doc = b.flush();
           if (L.cat_n) renderer.setCategories(L.cat_n);
+        }
+      } else if (L.kind === 'surface') {
+        // a regular 2D grid → shaded relief (smooth normals, nodata holes),
+        // colored by its own elevation or by the drape grid through the layer
+        // ramp + clip. Rebuilt by rebuildLayer when ramp/clip/color change —
+        // a DEM-sized mesh rebuilds in milliseconds.
+        const grid = {
+          nx: L.nx, ny: L.ny, data: cols.grid,
+          x0: L.x0, y0: L.y0, dx: L.dx, dy: L.dy,
+          nodata: L.nodata == null ? null : L.nodata,
+        };
+        const stride = L.stride || Math.max(1, Math.ceil(Math.sqrt((L.nx * L.ny * 2) / 2_000_000)));
+        const m = buildHeightfieldMesh(grid, { stride, frame, flatZ: L.flat_z != null ? L.flat_z : null });
+        if (m) {
+          const s = styleAt(i);
+          const hex = String(s.color || '').replace('#', '');
+          if (hex.length !== 6) {                          // 'value': ramp the drape (or the elevation itself)
+            let vals = m.values;
+            if (L.drape && cols.drape) {
+              // mirrors buildHeightfieldMesh's vertex walk (same stride, same
+              // DEM-nodata skip) to sample the drape at each kept vertex
+              const nd = grid.nodata;
+              const bad = (v) => Number.isNaN(v) || (nd != null && (nd >= 1.7e38 ? v >= 1.7014e38 : v === nd));
+              const cN = Math.floor((L.nx - 1) / stride) + 1, rN = Math.floor((L.ny - 1) / stride) + 1;
+              const dv = [];
+              for (let r = 0; r < rN; r++) {
+                for (let c2 = 0; c2 < cN; c2++) {
+                  const gr = Math.min(L.ny - 1, r * stride), gc = Math.min(L.nx - 1, c2 * stride);
+                  if (bad(cols.grid[gr * L.nx + gc])) continue;
+                  dv.push(cols.drape[gr * L.nx + gc]);
+                }
+              }
+              vals = Float32Array.from(dv);
+            }
+            const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || [0, 1]);
+            const px = rampPixels(256, RAMPS[s.ramp || 'viridis'] || undefined);
+            const span = range[1] - range[0] || 1;
+            const color = new Float32Array(vals.length * 3);
+            for (let q = 0; q < vals.length; q++) {
+              const t = Math.max(0, Math.min(255, Math.round(((vals[q] - range[0]) / span) * 255)));
+              color[q * 3] = px[t * 4] / 255; color[q * 3 + 1] = px[t * 4 + 1] / 255; color[q * 3 + 2] = px[t * 4 + 2] / 255;
+            }
+            m.color = color;
+          }
+          L._surfKey = `${s.color}|${s.ramp}|${s.clip}`;   // rebuild trigger (see applyStyles)
+          doc = m;
+          renderer.addChunk(m, 'base', i);
         }
       } else if (L.kind === 'mesh') {
         // context tier: scenery, recordless, drawn whole. Vertices arrive f32
@@ -353,21 +443,17 @@ export function render({ model, el }) {
         doc = b.flush();
         if (L.cat_n) renderer.setLayerCats(i, L.cat_n);
       }
-      if (doc && doc.bboxLocal) {
-        for (let a = 0; a < 3; a++) {
-          if (doc.bboxLocal[a] < bb[a]) bb[a] = doc.bboxLocal[a];
-          if (doc.bboxLocal[a + 3] > bb[a + 3]) bb[a + 3] = doc.bboxLocal[a + 3];
-        }
-      }
-    });
+      return doc && doc.bboxLocal ? doc.bboxLocal : null;
+  };
 
-    docBbox = Float64Array.from(bb);
-    renderer.setDocBbox(docBbox);
-    applyStyles();
-    if (tb) { tb.showPick(null); syncChrome(); }
-    needFit = true;
+  // a value-channel switch rebuilds ONE layer's chunks from the resident
+  // columns — no re-send from the kernel, the camera stays put
+  const rebuildLayer = (i) => {
+    const L = payload && payload.layers[i];
+    if (!L || L.streamed) return;                          // a streamed layer carries one channel
+    renderer.removeLayer(i);
+    buildLayer(L, i);
     invalidate();
-    if (streams) model.send({ type: 'ready', epoch: streamEpoch });
   };
 
   // ── streamed chunks (cd.open): epoch-guarded wire-v3 batches into the open
@@ -429,6 +515,17 @@ export function render({ model, el }) {
   // ── styles: everything the engine keeps per LAYER ──
   const applyStyles = () => {
     if (!payload) return;
+    styles().forEach((s, i) => {                           // chunk-rebuilding changes first
+      const L = payload.layers[i];
+      if (!L) return;
+      if (L.kind === 'surface') {                          // surface color bakes into vertices
+        if (L._surfKey != null && L._surfKey !== `${s.color}|${s.ramp}|${s.clip}`) rebuildLayer(i);
+        return;
+      }
+      if (!L.value_channels || L.value_channels.length < 2) return;
+      const want = s.value && L.value_channels.includes(s.value) ? s.value : L.value_channels[0];
+      if (L._active && want !== L._active) rebuildLayer(i);   // value-channel switch
+    });
     styles().forEach((s, i) => {
       const L = payload.layers[i];
       if (!L) return;
@@ -439,12 +536,22 @@ export function render({ model, el }) {
       renderer.setLayerRamp(i, stops ? rampPixels(256, stops) : null);
       if (L.kind === 'blocks') renderer.setLayerEdges(i, !!s.block_edges);
       if (L.kind === 'drillholes') renderer.setLayerStickRadius(i, s.radius || 1.5);
-      if (L.kind === 'mesh') {
-        const hx = String(s.color || '').replace('#', '');  // mesh color is a hex TINT, not a mode
+      if (L.kind === 'mesh' || L.kind === 'surface') {
+        const hx = String(s.color || '').replace('#', '');  // mesh/surface hex color is a TINT, not a mode
         if (hx.length === 6) {
           const v2 = parseInt(hx, 16);
           renderer.setLayerMeshStyle(i, { tint: [((v2 >> 16) & 255) / 255, ((v2 >> 8) & 255) / 255, (v2 & 255) / 255] });
         }
+      }
+      // per-class eyes: GPU-side cull by category code; composes with the
+      // threshold mask, and hidden classes don't pick either
+      const hid = s.categories_hidden;
+      if (L.cat_labels && hid && hid.length) {
+        const vis = new Uint8Array(256).fill(1);
+        for (const lb of hid) { const k = L.cat_labels.indexOf(lb); if (k >= 0) vis[k] = 0; }
+        renderer.setLayerCatVisibility(i, vis);
+      } else {
+        renderer.setLayerCatVisibility(i, null);
       }
       const v = L.cols.value, t = s.threshold;
       if (v && t && t.length === 2) {
@@ -466,6 +573,11 @@ export function render({ model, el }) {
     schedule();
   };
   const applyHeight = () => { host.style.height = `${model.get('height') || 460}px`; invalidate(); };
+  const applyZExag = () => {                               // display-only: queries stay in real coords
+    cam.state.zExag = Math.max(0.1, +model.get('z_exaggeration') || 1);
+    cam.update();
+    invalidate();
+  };
 
   // ── the section's world extent along its normal, for the scrub slider ──
   const sectionExtent = (sec) => {
@@ -481,16 +593,41 @@ export function render({ model, el }) {
     return [lo, hi];
   };
 
-  // the legend follows the first VISIBLE layer colored by value
+  // the legend follows the first VISIBLE layer colored by value (a ramp) or by
+  // category (a swatch list whose rows toggle that class's visibility)
+  const CAT_PX = categoryPalettePixels(256);               // the SAME palette the shaders sample
+  const toggleCat = (li, label) => {
+    const next = styles().map((s, k) => {
+      if (k !== li) return s;
+      const hid = new Set(s.categories_hidden || []);
+      if (hid.has(label)) hid.delete(label); else hid.add(label);
+      return { ...s, categories_hidden: [...hid] };
+    });
+    model.set('_styles', next);                            // round-trips to the Python Layer
+    model.save_changes();
+    applyStyles();
+    syncChrome();
+  };
   const legendInfo = () => {
     const st = styles();
     for (let i = 0; i < st.length; i++) {
       const s = st[i], L = payload && payload.layers[i];
-      if (!L || s.visible === false || s.color !== 'value') continue;
-      const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || null);
-      if (!range) continue;
-      const stops = RAMPS[s.ramp || 'viridis'];
-      return { range, pixels: rampPixels(256, stops || undefined) };
+      if (!L || s.visible === false) continue;
+      if (s.color === 'value') {
+        const range = (s.clip && s.clip.length === 2) ? s.clip : (L.value_range || null);
+        if (!range) continue;
+        const stops = RAMPS[s.ramp || 'viridis'];
+        return { range, pixels: rampPixels(256, stops || undefined) };
+      }
+      if (s.color === 'category' && L.cat_labels && L.cat_labels.length) {
+        const hid = new Set(s.categories_hidden || []);
+        return {
+          cats: L.cat_labels.map((lb, k) => ({
+            label: lb, rgb: [CAT_PX[k * 4], CAT_PX[k * 4 + 1], CAT_PX[k * 4 + 2]], hidden: hid.has(lb),
+          })),
+          onToggle: (lb) => toggleCat(i, lb),
+        };
+      }
     }
     return null;
   };
@@ -629,7 +766,7 @@ export function render({ model, el }) {
       const p3 = L._posAt ? L._posAt(r) : (pc.x ? [pc.x[r], pc.y[r], pc.z[r]] : null);
       if (p3) rows.push(['x y z', `${fmtN(p3[0])} ${fmtN(p3[1])} ${fmtN(p3[2])}`]);
     }
-    if (c.value) rows.push(['value', fmtN(c.value[r])]);
+    if (c.value) rows.push([L._active && L._active !== 'value' ? L._active : 'value', fmtN(c.value[r])]);
     if (c.cat && L.cat_labels) rows.push(['category', L.cat_labels[c.cat[r]] ?? String(c.cat[r])]);
     rows.push(['row', String(r)]);
     return { title: name, rows };
@@ -887,6 +1024,7 @@ export function render({ model, el }) {
     ['change:section', () => { syncChrome(); invalidate(); }],
     ['change:background', applyBackground],
     ['change:height', applyHeight],
+    ['change:z_exaggeration', applyZExag],
     ['change:toolbar', buildToolbar],
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],
@@ -901,6 +1039,7 @@ export function render({ model, el }) {
   ro.observe(host);
   applyHeight();
   applyBackground();
+  applyZExag();                                            // a re-displayed widget must match its stored state
   buildToolbar();
   if (tb) tb.syncThrough(model.get('select_through'));
   load();

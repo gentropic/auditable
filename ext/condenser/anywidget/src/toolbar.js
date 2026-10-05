@@ -70,6 +70,14 @@ const CSS = `
 .cdleg { position:absolute; right:6px; bottom:6px; z-index:3; display:flex; align-items:center; gap:5px;
   font:10px ui-monospace,Menlo,Consolas,monospace; color:#a8a8a8; text-shadow:0 1px 2px #000; }
 .cdleg canvas { display:block; width:96px; height:8px; border:1px solid #444; border-radius:1px; }
+.cdlegramp { display:flex; align-items:center; gap:5px; }
+.cdcats { display:flex; flex-direction:column; gap:1px; max-height:170px; overflow:auto;
+  background:rgba(22,22,22,.85); border:1px solid #333; border-radius:4px; padding:4px 6px; }
+.cdcat { display:flex; align-items:center; gap:5px; cursor:pointer; padding:1px 2px; border-radius:2px; white-space:nowrap; }
+.cdcat:hover { background:#ffffff14; }
+.cdcat .sw { width:9px; height:9px; border:1px solid #555; border-radius:1px; flex:none; }
+.cdcat.off { opacity:.45; }
+.cdcat.off span:last-child { text-decoration:line-through; }
 .cdknife { position:absolute; inset:0; z-index:2; pointer-events:none; }
 `;
 
@@ -224,13 +232,18 @@ export function createToolbar(host, api) {
   pickBox.style.display = 'none';
   host.appendChild(pickBox);
 
-  // ── the color legend ──
+  // ── the color legend (a ramp, or a category swatch list with eye toggles) ──
   const leg = document.createElement('div');
   leg.className = 'cdleg';
   leg.style.display = 'none';
   const legLo = document.createElement('span'), legHi = document.createElement('span');
   const legCv = document.createElement('canvas'); legCv.width = 96; legCv.height = 8;
-  leg.append(legLo, legCv, legHi);
+  const legRamp = document.createElement('div');
+  legRamp.className = 'cdlegramp';
+  legRamp.append(legLo, legCv, legHi);
+  const legCats = document.createElement('div');
+  legCats.className = 'cdcats';
+  leg.append(legRamp, legCats);
   host.appendChild(leg);
 
   // ── the knife rubber band ──
@@ -317,6 +330,27 @@ export function createToolbar(host, api) {
     syncLegend(info) {
       if (!info) { leg.style.display = 'none'; return; }
       leg.style.display = '';
+      if (info.cats) {                                     // categorical: swatch rows, click = class eye
+        legRamp.style.display = 'none';
+        legCats.style.display = '';
+        legCats.textContent = '';
+        for (const c of info.cats) {
+          const row = document.createElement('div');
+          row.className = 'cdcat' + (c.hidden ? ' off' : '');
+          row.title = c.hidden ? 'show' : 'hide';
+          const sw = document.createElement('span');
+          sw.className = 'sw';
+          sw.style.background = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
+          const lb = document.createElement('span');
+          lb.textContent = c.label;
+          row.append(sw, lb);
+          row.onclick = () => { if (info.onToggle) info.onToggle(c.label); };
+          legCats.appendChild(row);
+        }
+        return;
+      }
+      legCats.style.display = 'none';
+      legRamp.style.display = '';
       legLo.textContent = fmt(info.range[0]);
       legHi.textContent = fmt(info.range[1]);
       const g = legCv.getContext('2d');

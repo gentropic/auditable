@@ -35,7 +35,7 @@ import numpy as np
 import traitlets
 
 __version__ = "0.4.0"
-__all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "mesh", "open", "export_html"]
+__all__ = ["Viewer", "Layer", "view", "points", "blocks", "drillholes", "mesh", "surface", "open", "export_html"]
 
 _STATIC = pathlib.Path(__file__).parent / "static" / "widget.js"
 _U16MAX = 65535
@@ -201,6 +201,9 @@ class Layer(traitlets.HasTraits):
     visible = traitlets.Bool(True).tag(style=True)
     #: 'z' (elevation) | 'value' | 'category' | 'rgb' | 'flat'
     color = traitlets.Unicode("z").tag(style=True)
+    #: the ACTIVE value channel when the layer ships several (value=["FE","SIO2"]):
+    #: switching is client-side, no re-send — `w["model"].value = "SIO2"`
+    value = traitlets.Unicode("").tag(style=True)
     #: viridis | magma | turbo | greys | spectral | fire
     ramp = traitlets.Unicode("viridis").tag(style=True)
     #: [lo, hi] clamp for the color scale, [] = the data range
@@ -217,6 +220,10 @@ class Layer(traitlets.HasTraits):
     block_edges = traitlets.Bool(False).tag(style=True)
     #: drillhole capsule radius, in world units
     radius = traitlets.Float(1.5).tag(style=True)
+    #: category labels to HIDE (per-class eyes — GPU-side, composes with
+    #: threshold, and hidden classes don't pick). The legend's swatches toggle
+    #: these by click; [] shows everything.
+    categories_hidden = traitlets.List(traitlets.Unicode(), default_value=[]).tag(style=True)
     #: True | False (exempt — keep it whole while others are cut) | 'front' | 'behind'
     sectioned = traitlets.Any(True).tag(style=True)
     #: the row index of the last pick on THIS layer, or -1
@@ -294,6 +301,11 @@ class Viewer(anywidget.AnyWidget):
     toolbar = traitlets.Bool(True).tag(sync=True)
     edl = traitlets.Bool(True).tag(sync=True)
     edl_strength = traitlets.Float(1.0).tag(sync=True)
+    #: vertical exaggeration — a display z-scale about the camera target.
+    #: Picks, measures and selections stay in REAL coordinates.
+    z_exaggeration = traitlets.Float(1.0).tag(sync=True)
+    #: the figure chrome: north arrow + scale bar (drawn into snapshots too)
+    decorations = traitlets.Bool(True).tag(sync=True)
     #: elements drawn per frame before the progressive pass continues
     budget = traitlets.Int(3_000_000).tag(sync=True)
     #: the last pick: {'layer': i, 'name': str, 'row': int} — {} for none
@@ -554,32 +566,56 @@ def view(*layers, **kwargs) -> Viewer:
 
 # ── constructors ────────────────────────────────────────────────────────────
 def _value_and_cat(src, value, category, n, cols, extra, kind):
+    """Pack value channel(s) + category. `value` may be ONE column (name or
+    array) or SEVERAL (a list of names, or a dict {name: array}) — every
+    channel ships, and the ACTIVE one is the Layer's `value` trait, switched
+    client-side with no re-send. Returns (channel_names, cat_labels)."""
     labels = []
-    val = _col(src, value, "value", n)
-    if val is not None:
+    if value is None:
+        chans = []
+    elif isinstance(value, str):
+        chans = [(value, _col(src, value, "value", n))]
+    elif isinstance(value, dict):
+        chans = [(str(k), _col(src, v, f"value {k}", n)) for k, v in value.items()]
+    elif isinstance(value, (list, tuple)):
+        if not all(isinstance(v, str) for v in value):
+            raise TypeError(
+                "gcu-condenser: a multi-channel value as a list needs column "
+                "NAMES; pass arrays as a dict {name: array}"
+            )
+        chans = [(v, _col(src, v, f"value {v}", n)) for v in value]
+    else:
+        chans = [("value", _col(src, value, "value", n))]
+    names, ranges = [], []
+    for k, (nm, val) in enumerate(chans):
         vf = _f64(val)
         finite = vf[np.isfinite(vf)]
         lo = float(finite.min()) if finite.size else 0.0
         hi = float(finite.max()) if finite.size else 1.0
-        extra["value_range"] = [lo, hi]
+        names.append(nm)
+        ranges.append([lo, hi])
         # wire v3: values ride f32 — 7 significant digits covers any grade the
         # readout or a threshold will ever show, at half the bytes. The f64
         # range stays in the header for exact ramp/legend endpoints.
-        cols["value"] = vf.astype(np.float32)
+        cols["value" if k == 0 else f"value{k}"] = vf.astype(np.float32)
         if kind == "points":
             # the points pipeline colors from its u16 intensity channel: map the
             # value onto it so `hi` lands on 65535 and the ramp spans the data
             span = hi - lo if hi > lo else 1.0
             q = np.clip((vf - lo) / span, 0.0, 1.0)
             q[~np.isfinite(vf)] = 0.0
-            cols["value_u16"] = (q * 65535.0 + 0.5).astype(np.uint16)
+            cols["value_u16" if k == 0 else f"value_u16_{k}"] = (q * 65535.0 + 0.5).astype(np.uint16)
+    if names:
+        extra["value_range"] = ranges[0]
+        extra["value_channels"] = names
+        extra["value_ranges"] = ranges
     cat = _col(src, category, "category", n)
     if cat is not None:
         codes, labels = _codes(cat)
         cols["cat"] = codes
         extra["cat_n"] = len(labels)
         extra["cat_labels"] = labels
-    return (val is not None), labels
+    return names, labels
 
 
 def export_html(viewer, path, title="condenser", offline_note=True):
@@ -639,7 +675,7 @@ def points(src=None, x="x", y="y", z="z", value=None, category=None, rgb=None, *
     xf, yf, zf = _f64(xa), _f64(_col(src, y, "y", n)), _f64(_col(src, z, "z", n))
     cols = {"x": xf, "y": yf, "z": zf}
     extra: dict[str, Any] = {"count": n}
-    has_val, labels = _value_and_cat(src, value, category, n, cols, extra, "points")
+    chan_names, labels = _value_and_cat(src, value, category, n, cols, extra, "points")
 
     col_rgb = _col(src, rgb, "rgb", None)
     if col_rgb is not None:
@@ -663,7 +699,8 @@ def points(src=None, x="x", y="y", z="z", value=None, category=None, rgb=None, *
         cols["z"] = (zf - oz).astype(np.float32)
         extra["pos_origin"] = [ox, oy, oz]
 
-    kw.setdefault("color", "value" if has_val else ("category" if "cat" in cols else "z"))
+    kw.setdefault("color", "value" if chan_names else ("category" if "cat" in cols else "z"))
+    kw.setdefault("value", chan_names[0] if chan_names else "")
     return Layer("points", cols, extra, labels, **kw)
 
 
@@ -685,7 +722,7 @@ def blocks(src=None, x="x", y="y", z="z", value=None, category=None, size=None, 
     xf, yf, zf = _f64(xa), _f64(_col(src, y, "y", n)), _f64(_col(src, z, "z", n))
     cols = {"x": xf, "y": yf, "z": zf}
     extra: dict[str, Any] = {"count": n}
-    has_val, labels = _value_and_cat(src, value, category, n, cols, extra, "blocks")
+    chan_names, labels = _value_and_cat(src, value, category, n, cols, extra, "blocks")
 
     if size is None:
         axes = [list(_axis_from_centroids(a, nm)) for a, nm in ((xf, "x"), (yf, "y"), (zf, "z"))]
@@ -730,7 +767,8 @@ def blocks(src=None, x="x", y="y", z="z", value=None, category=None, size=None, 
     half = [a[1] / 2 for a in axes]
     extra["bbox"] = [float(np.nanmin(xf)) - half[0], float(np.nanmin(yf)) - half[1], float(np.nanmin(zf)) - half[2],
                      float(np.nanmax(xf)) + half[0], float(np.nanmax(yf)) + half[1], float(np.nanmax(zf)) + half[2]]
-    kw.setdefault("color", "value" if has_val else ("category" if "cat" in cols else "z"))
+    kw.setdefault("color", "value" if chan_names else ("category" if "cat" in cols else "z"))
+    kw.setdefault("value", chan_names[0] if chan_names else "")
     return Layer("blocks", cols, extra, labels, **kw)
 
 
@@ -891,6 +929,69 @@ def mesh(vertices, triangles, color="#9aa4ab", **kw) -> Layer:
     return Layer("mesh", cols, extra, None, **kw)
 
 
+def surface(data, origin=(0.0, 0.0), pitch=1.0, drape=None, nodata=None,
+            flat_z=None, stride=None, **kw) -> Layer:
+    """A regular 2D grid as a shaded RELIEF surface — a DEM, a modeled
+    horizon, a thickness grid. The browser triangulates it (smooth normals,
+    clean holes at nodata) and colors it by its own elevation or by a
+    ``drape`` grid of the same shape (grade over topo).
+
+        cd.surface(dem, origin=(451200, 8205800), pitch=12.5)
+        cd.surface(dem, origin=o, pitch=p, drape=grade2d, ramp="turbo")
+        cd.surface(geochem, origin=o, pitch=p, flat_z=1200)   # a flat colored sheet
+
+    ``data`` is (ny, nx) with **row 0 the NORTHERNMOST row** (the GeoTIFF /
+    ESRI ASCII convention): ``origin`` is the (x, y) of the top-left node and
+    rows advance south. ``color`` defaults to ``'value'`` (ramp over drape or
+    elevation); a hex string makes it a plain tinted relief instead. Like a
+    mesh it is scenery — recordless, sectioned as a trace.
+    """
+    g = np.asarray(data, dtype=np.float32)
+    if g.ndim != 2:
+        raise ValueError(f"gcu-condenser: surface data must be 2D (ny, nx), got shape {g.shape}")
+    ny, nx = int(g.shape[0]), int(g.shape[1])
+    dx, dy = (float(pitch[0]), float(pitch[1])) if isinstance(pitch, (tuple, list)) else (float(pitch), float(pitch))
+    if dx <= 0 or dy <= 0:
+        raise ValueError("gcu-condenser: surface pitch must be positive")
+    x0, y0 = float(origin[0]), float(origin[1])
+    ok = np.isfinite(g)
+    if nodata is not None:
+        ok &= g != np.float32(nodata)
+    if not ok.any():
+        raise ValueError("gcu-condenser: the surface grid has no valid values")
+    if flat_z is not None:
+        zlo = zhi = float(flat_z)
+    else:
+        zlo, zhi = float(g[ok].min()), float(g[ok].max())
+    cols = {"grid": g.ravel()}
+    extra: dict[str, Any] = {
+        "count": int(ok.sum()), "nx": nx, "ny": ny,
+        "x0": x0, "y0": y0, "dx": dx, "dy": dy,
+        "bbox": [x0, y0 - (ny - 1) * dy, zlo, x0 + (nx - 1) * dx, y0, zhi],
+    }
+    if nodata is not None:
+        extra["nodata"] = float(nodata)
+    if flat_z is not None:
+        extra["flat_z"] = float(flat_z)
+    if stride is not None:
+        extra["stride"] = max(1, int(stride))
+    if drape is not None:
+        d = np.asarray(drape, dtype=np.float32)
+        if d.shape != g.shape:
+            raise ValueError(
+                f"gcu-condenser: drape shape {d.shape} must match the surface grid {g.shape}"
+            )
+        cols["drape"] = d.ravel()
+        extra["drape"] = True
+        dok = np.isfinite(d)
+        src_vals = d[dok] if dok.any() else np.zeros(1, np.float32)
+    else:
+        src_vals = g[ok]
+    extra["value_range"] = [float(src_vals.min()), float(src_vals.max())]
+    kw.setdefault("color", "value")
+    return Layer("surface", cols, extra, None, **kw)
+
+
 def drillholes(collar, survey, intervals, bhid="BHID", x="X", y="Y", z="Z", eoh=None,
                depth="DEPTH", az="AZ", dip="DIP", frm="FROM", to="TO",
                value=None, category=None, method="minimumCurvature",
@@ -931,14 +1032,15 @@ def drillholes(collar, survey, intervals, bhid="BHID", x="X", y="Y", z="Z", eoh=
                              "holes": len(hole_names)}
     if len(hole_names) <= 5000:
         extra["hole_names"] = hole_names   # the pick readout names the hole
-    has_val, labels = _value_and_cat(intervals, value, category, n, cols, extra, "blocks")
+    chan_names, labels = _value_and_cat(intervals, value, category, n, cols, extra, "blocks")
 
     # a generous bbox from collars + total depth; the exact one comes back from
     # the desurvey in the browser, this only has to seed the shared frame
     reach = float(np.nanmax(cols["i_to"])) if n else 0.0
     extra["bbox"] = [float(np.nanmin(cx)) - reach, float(np.nanmin(cy)) - reach, float(np.nanmin(cz)) - reach,
                      float(np.nanmax(cx)) + reach, float(np.nanmax(cy)) + reach, float(np.nanmax(cz))]
-    kw.setdefault("color", "value" if has_val else ("category" if "cat" in cols else "z"))
+    kw.setdefault("color", "value" if chan_names else ("category" if "cat" in cols else "z"))
+    kw.setdefault("value", chan_names[0] if chan_names else "")
     lay = Layer("drillholes", cols, extra, labels, **kw)
     lay.hole_names = hole_names
     return lay

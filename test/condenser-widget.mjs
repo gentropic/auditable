@@ -107,6 +107,26 @@ for content, bl in ws._stream_messages("E"):
 open(r"${T}/stream-msgs.json", "w").write(json.dumps(manifest))
 open(r"${T}/stream-bufs.bin", "wb").write(blob.getvalue())
 
+# BATCH A: multi-channel values + categories (legend/eyes) + a draped surface
+nxg, nyg = 30, 30
+gxa, gya = np.meshgrid(np.arange(nxg)*10.+5, np.arange(nyg)*10.+5, indexing="ij")
+bxa = np.tile(gxa.ravel(), 3); bya = np.tile(gya.ravel(), 3)
+bza = np.repeat(np.array([15., 25., 35.]), nxg*nyg)
+fe = bxa/30 + bza/10; si = 100 - fe*2
+dom = np.where(bya < 150, "OX", "SUL")
+tblA = {"X": bxa, "Y": bya, "Z": bza, "FE": fe, "SIO2": si, "DOM": dom}
+mc = cd.blocks(tblA, x="X", y="Y", z="Z", value=["FE", "SIO2"], category="DOM", name="mc")
+assert mc._extra["value_channels"] == ["FE", "SIO2"], mc._extra.get("value_channels")
+assert mc.value == "FE"
+dem = 60 + np.fromfunction(lambda r, c: np.sin(c/6)*6 + np.cos(r/7)*5, (nyg+10, nxg+10))
+dem[5:9, 5:9] = -9999.0
+drp = np.fromfunction(lambda r, c: c*1.0, dem.shape)
+surf2 = cd.surface(dem, origin=(0.0, 300.0), pitch=8.0, drape=drp, nodata=-9999, name="dem")
+assert surf2._extra["value_range"][1] > 30, surf2._extra["value_range"]   # the DRAPE's range, not z's
+wa = cd.view(mc, surf2, height=460)
+open(r"${T}/batcha.bin", "wb").write(wa._payload)
+open(r"${T}/batcha-styles.json", "w").write(json.dumps(wa._styles))
+
 # MESH: a context surface co-registered over the block model
 mg = np.arange(0, 11) * 20.0
 mvx, mvy = np.meshgrid(mg, mg, indexing="ij")
@@ -134,6 +154,8 @@ print(json.dumps({
   "streamMsgs": len(manifest), "streamBufBytes": blob.getbuffer().nbytes,
   "streamCats": streamed._extra["cat_labels"],
   "meshTris": surf.count, "meshVerts": surf._extra["vertex_count"], "meshBytes": len(wm._payload),
+  "mcChannels": mc._extra["value_channels"], "mcRanges": mc._extra["value_ranges"],
+  "mcCats": mc._extra["cat_labels"], "surfCells": surf2.count,
 }))
 `;
 let meta;
@@ -526,6 +548,76 @@ const r = await page.evaluate(async (port) => {
     out.meshHidLit = lit().n;
     d5();
   }
+
+  // ── batch A: value channels · category legend/eyes · draped surface · z-exag ──
+  {
+    const aPayload = new DataView(await (await fetch(`http://127.0.0.1:${port}/tmp/batcha.bin`)).arrayBuffer());
+    const aStyles = await (await fetch(`http://127.0.0.1:${port}/tmp/batcha-styles.json`)).json();
+    const m6 = makeModel({
+      _payload: aPayload, _styles: aStyles, _fit: 0, section: null,
+      background: '#121212', height: 460, edl: true, edl_strength: 1, budget: 3000000, selection: {},
+    });
+    const d6 = render({ model: m6, el });
+    await settle(); await settle();
+    const host6 = el.querySelector('div');
+    const cv6 = el.querySelector('canvas');
+    const r6 = cv6.getBoundingClientRect();
+    const patch6 = (i2, p2) => m6.set('_styles', m6._get('_styles').map((x2, k2) => (k2 === i2 ? { ...x2, ...p2 } : x2)));
+    const base6 = lit();
+    out.aLit = base6.n; out.aSig = base6.sig;
+    out.aHud = (el.querySelector('.cdhud') || {}).textContent;
+
+    // channel switch: FE → SIO2 recolors with NO re-send, pick names the channel
+    patch6(0, { value: 'SIO2' });
+    await settle();
+    out.chanSig = lit().sig;
+    patch6(1, { visible: false });                         // the DEM covers the model from above — pick the BLOCKS
+    await settle();
+    let sel6 = {};
+    for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.55], [0.55, 0.45]]) {
+      const cx2 = r6.left + r6.width * fx, cy2 = r6.top + r6.height * fy;
+      cv6.dispatchEvent(new PointerEvent('pointerdown', { clientX: cx2, clientY: cy2, bubbles: true }));
+      cv6.dispatchEvent(new PointerEvent('pointerup', { clientX: cx2, clientY: cy2, bubbles: true }));
+      await settle();
+      sel6 = m6._get('selection') || {};
+      if (sel6.row != null && sel6.row >= 0) break;
+    }
+    out.chanPickText = (host6.querySelector('.cdpick') || {}).textContent || '';
+    patch6(0, { value: 'FE' });
+    await settle();
+
+    // category mode (surface still hidden, so the eyes' effect is visible):
+    // the legend becomes a swatch list whose rows are EYES
+    patch6(0, { color: 'category' });
+    await settle();
+    out.catRows = [...host6.querySelectorAll('.cdcat')].map((n2) => n2.textContent);
+    out.catLit = lit().n;
+    host6.querySelectorAll('.cdcat')[0].click();           // hide OX
+    await settle();
+    out.catHidLit = lit().n;
+    out.catHidden = (m6._get('_styles')[0] || {}).categories_hidden;
+    host6.querySelectorAll('.cdcat')[0].click();           // rows re-rendered — re-query, un-hide
+    await settle();
+    out.catRestoredLit = lit().n;
+    patch6(0, { color: 'value' });
+    patch6(1, { visible: true });
+    await settle();
+    out.chanBackSig = lit().sig;
+
+    // the surface recolors on a ramp change (vertex colors rebake)
+    out.surfSig = lit().sig;
+    patch6(1, { ramp: 'fire' });
+    await settle();
+    out.surfRampSig = lit().sig;
+
+    // vertical exaggeration stretches the DISPLAY
+    m6.set('z_exaggeration', 4);
+    await settle();
+    out.zexLit = lit().n;
+    m6.set('z_exaggeration', 1);
+    await settle();
+    d6();
+  }
   return out;
 }, PORT);
 
@@ -593,6 +685,21 @@ chk(`a mesh renders co-registered over the model (${meta.meshTris} tris, ${r.mes
 chk(`mesh tint round-trips through color (sig ${r.meshSig} → ${r.meshTintSig})`, r.meshTintSig !== r.meshSig);
 chk(`hiding the mesh changes the scene without a crash (${r.meshLit.toLocaleString()} → ${r.meshHidLit.toLocaleString()} px)`,
   r.meshHidLit > 0 && Math.abs(r.meshHidLit - r.meshLit) > r.meshLit * 0.02);
+
+// ── batch A: channels · categories · surface · exaggeration ──
+chk(`multi-channel model + draped surface render (${meta.mcChannels.join('/')}, ${r.aLit.toLocaleString()} px, hud "${r.aHud}")`,
+  r.aLit > 20000 && /2 layers/.test(r.aHud || '') && meta.mcChannels.length === 2);
+chk(`value-channel switch recolors client-side and switches back (sig ${r.aSig} → ${r.chanSig} → ${r.chanBackSig})`,
+  r.chanSig !== r.aSig && r.chanBackSig !== r.chanSig);
+chk(`the pick readout names the ACTIVE channel (${JSON.stringify((r.chanPickText || '').slice(0, 40))})`,
+  /SIO2/.test(r.chanPickText));
+chk(`category legend lists the classes as clickable eyes (${JSON.stringify(r.catRows)})`,
+  r.catRows.length === 2 && r.catRows.join() === meta.mcCats.join());
+chk(`clicking a swatch hides that class and round-trips (hidden ${JSON.stringify(r.catHidden)}, ${r.catLit.toLocaleString()} → ${r.catHidLit.toLocaleString()} → ${r.catRestoredLit.toLocaleString()} px)`,
+  r.catHidLit < r.catLit * 0.95 && JSON.stringify(r.catHidden) === '["OX"]' && Math.abs(r.catRestoredLit - r.catLit) < r.catLit * 0.05);
+chk(`the surface recolors on a ramp change (sig ${r.surfSig} → ${r.surfRampSig})`, r.surfRampSig !== r.surfSig);
+chk(`vertical exaggeration stretches the display (${r.aLit.toLocaleString()} → ${r.zexLit.toLocaleString()} px at 4×)`,
+  Math.abs(r.zexLit - r.aLit) > r.aLit * 0.02);
 
 console.log(fails ? `\nCONDENSER WIDGET: ${fails} FAILURES` : '\nCONDENSER WIDGET: PASS');
 await browser.close();
