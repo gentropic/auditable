@@ -447,6 +447,23 @@ const r = await page.evaluate(async (port) => {
   out.pickBoxShown = host.querySelector('.cdpick') && host.querySelector('.cdpick').style.display !== 'none';
   out.pickBoxText = (host.querySelector('.cdpick') || {}).textContent || '';
 
+  // ── decorations overlay: figure chrome ink + hole labels ──
+  const decoInk = () => {
+    const dc = host.querySelectorAll('canvas')[1];         // the 2D overlay
+    if (!dc || !dc.width) return -1;
+    const dd = dc.getContext('2d').getImageData(0, 0, dc.width, dc.height).data;
+    let n3 = 0;
+    for (let q = 3; q < dd.length; q += 4) if (dd[q] > 10) n3++;
+    return n3;
+  };
+  out.decoBase = decoInk();                                // scale bar + north arrow
+  patch(1, { labels: true }); await settle();
+  out.decoLabels = decoInk();                              // + 6 BHIDs
+  patch(1, { labels: false });
+  model.set('decorations', false); await settle();
+  out.decoOff = decoInk();
+  model.set('decorations', true); await settle();
+
   let disposeErr = null;
   try { dispose(); } catch (e) { disposeErr = e.message; }
   out.disposeErr = disposeErr;
@@ -700,6 +717,12 @@ chk(`clicking a swatch hides that class and round-trips (hidden ${JSON.stringify
 chk(`the surface recolors on a ramp change (sig ${r.surfSig} → ${r.surfRampSig})`, r.surfRampSig !== r.surfSig);
 chk(`vertical exaggeration stretches the display (${r.aLit.toLocaleString()} → ${r.zexLit.toLocaleString()} px at 4×)`,
   Math.abs(r.zexLit - r.aLit) > r.aLit * 0.02);
+
+// ── figure chrome + hole labels (the composited overlay) ──
+chk(`figure chrome draws (scale bar + north arrow: ${r.decoBase} ink px) and decorations=False clears it (${r.decoOff})`,
+  r.decoBase > 100 && r.decoOff < r.decoBase * 0.2);
+chk(`labels=True writes the BHIDs at the collars (+${r.decoLabels - r.decoBase} ink px)`,
+  r.decoLabels > r.decoBase + 150);
 
 console.log(fails ? `\nCONDENSER WIDGET: ${fails} FAILURES` : '\nCONDENSER WIDGET: PASS');
 await browser.close();

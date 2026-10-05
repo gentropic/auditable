@@ -220,6 +220,8 @@ class Layer(traitlets.HasTraits):
     block_edges = traitlets.Bool(False).tag(style=True)
     #: drillhole capsule radius, in world units
     radius = traitlets.Float(1.5).tag(style=True)
+    #: drillholes: draw the BHID at each collar (capped at 400 on screen)
+    labels = traitlets.Bool(False).tag(style=True)
     #: category labels to HIDE (per-class eyes — GPU-side, composes with
     #: threshold, and hidden classes don't pick). The legend's swatches toggle
     #: these by click; [] shows everything.

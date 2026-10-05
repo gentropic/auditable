@@ -171,6 +171,11 @@ export function render({ model, el }) {
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'display:block;width:100%;height:100%;';
   host.appendChild(canvas);
+  // figure chrome + hole labels: a 2D overlay redrawn with every frame and
+  // COMPOSITED into snapshots (DOM chrome would be lost by toDataURL)
+  const deco = document.createElement('canvas');
+  deco.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;';
+  host.appendChild(deco);
   const hud = document.createElement('div');
   hud.className = 'cdhud';
   hud.style.cssText = 'position:absolute;left:6px;bottom:5px;font:11px ui-monospace,Menlo,Consolas,monospace;color:#8b8b8b;pointer-events:none;text-shadow:0 1px 2px #000;z-index:1;';
@@ -200,6 +205,116 @@ export function render({ model, el }) {
     let pointPx = 2.5, asPoints = false;
     for (const s of styles()) if (s.visible !== false) { pointPx = Math.max(pointPx, s.point_size || 0); asPoints = asPoints || !!s.as_points; }
     return { pointPx, asPoints };
+  };
+
+  // ── the decorations overlay: hole labels + north arrow + scale bar. Redrawn
+  // with every frame (2D, cheap) and COMPOSITED into snapshots. Coordinates
+  // are frame-local, projected through the camera's viewProj — which already
+  // carries the z-exaggeration, so labels track the stretched display. ──
+  const drawOverlay = (w, h, dpr) => {
+    if (deco.width !== w || deco.height !== h) { deco.width = w; deco.height = h; }
+    const g = deco.getContext('2d');
+    g.clearRect(0, 0, w, h);
+    if (!payload) return;
+    const W = w / dpr, H = h / dpr;
+    g.save();
+    g.scale(dpr, dpr);
+    const vp = cam.state.viewProj;
+    const proj = (X, Y, Z) => {
+      const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
+      if (cw <= 1e-9) return null;
+      return [((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * W,
+        (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * H];
+    };
+    const o = payload.frame;
+    const halo = (text, x, y) => {
+      g.strokeStyle = 'rgba(0,0,0,.75)'; g.lineWidth = 3; g.lineJoin = 'round';
+      g.strokeText(text, x, y);
+      g.fillText(text, x, y);
+    };
+
+    // hole labels (labels=True on a drillhole layer): BHIDs at the collars
+    g.font = '10px ui-monospace,Menlo,Consolas,monospace';
+    g.textAlign = 'center'; g.textBaseline = 'bottom';
+    g.fillStyle = '#e4e4e4';
+    styles().forEach((s, i) => {
+      const L = payload.layers[i];
+      if (!L || L.kind !== 'drillholes' || !s.labels || s.visible === false || !L._collars) return;
+      let drawn2 = 0;
+      for (const c of L._collars) {
+        if (drawn2 >= 400) break;                          // a 10k-hole campaign is a texture, not labels
+        const p = proj(c.x - o[0], c.y - o[1], c.z - o[2]);
+        if (!p || p[0] < -20 || p[0] > W + 20 || p[1] < -10 || p[1] > H + 10) continue;
+        halo(c.name, p[0], p[1] - 4);
+        g.fillRect(p[0] - 1, p[1] - 2, 2, 2);              // the collar tick
+        drawn2++;
+      }
+    });
+
+    if (model.get('decorations') === false) { g.restore(); return; }
+    // scale at the CAMERA TARGET depth: unproject a 100-px screen step on the
+    // plane through the target, z divided back by zExag → REAL meters
+    const t = cam.state.target;
+    const inv = mat4Inverse(vp);
+    const tp = proj(t[0], t[1], t[2]);
+    if (inv && tp) {
+      const cwT = vp[3] * t[0] + vp[7] * t[1] + vp[11] * t[2] + vp[15];
+      const ndcZ = (vp[2] * t[0] + vp[6] * t[1] + vp[10] * t[2] + vp[14]) / cwT;
+      const un = (sx, sy) => {
+        const nx = (sx / W) * 2 - 1, ny = 1 - (sy / H) * 2;
+        const x = inv[0] * nx + inv[4] * ny + inv[8] * ndcZ + inv[12];
+        const y = inv[1] * nx + inv[5] * ny + inv[9] * ndcZ + inv[13];
+        const z = inv[2] * nx + inv[6] * ny + inv[10] * ndcZ + inv[14];
+        const w2 = inv[3] * nx + inv[7] * ny + inv[11] * ndcZ + inv[15];
+        return [x / w2, y / w2, z / w2];
+      };
+      const p1 = un(tp[0], tp[1]), p2 = un(tp[0] + 100, tp[1]);
+      const ze = cam.state.zExag || 1;
+      const m100 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], (p2[2] - p1[2]) / ze);
+      if (m100 > 1e-9 && Number.isFinite(m100)) {
+        const pxPerM = 100 / m100;
+        let len = Math.pow(10, Math.floor(Math.log10(120 / pxPerM)));
+        for (const k of [5, 2, 1]) if (len * k * pxPerM <= 160) { len *= k; break; }
+        const px = len * pxPerM;
+        const label = len >= 1000 ? `${len / 1000} km` : `${len} m`;
+        const bx0 = W / 2 - px / 2, by0 = H - 14;
+        for (const [col, lw] of [['rgba(0,0,0,.7)', 4], ['#d8d8d8', 1.6]]) {
+          g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'butt';
+          g.beginPath();
+          g.moveTo(bx0, by0); g.lineTo(bx0 + px, by0);
+          g.moveTo(bx0, by0 - 4); g.lineTo(bx0, by0 + 4);
+          g.moveTo(bx0 + px, by0 - 4); g.lineTo(bx0 + px, by0 + 4);
+          g.stroke();
+        }
+        g.fillStyle = '#cfcfcf';
+        halo(label, W / 2, by0 - 5);
+
+        // north arrow, left of the bar — world +Y projected at the target.
+        // Looking ALONG north the projection collapses: fade it rather than spin
+        const np = proj(t[0], t[1] + m100, t[2]);
+        if (np) {
+          const dxn = np[0] - tp[0], dyn = np[1] - tp[1];
+          const ln = Math.hypot(dxn, dyn);
+          const alpha = Math.max(0, Math.min(1, ln / 40));
+          if (alpha > 0.05) {
+            const ang = Math.atan2(dyn, dxn);
+            const cxN = bx0 - 30, cyN = by0 - 6;
+            g.globalAlpha = alpha;
+            g.save();
+            g.translate(cxN, cyN); g.rotate(ang);
+            g.beginPath();
+            g.moveTo(11, 0); g.lineTo(-6, 4.5); g.lineTo(-3, 0); g.lineTo(-6, -4.5); g.closePath();
+            g.fillStyle = '#d8d8d8'; g.strokeStyle = 'rgba(0,0,0,.7)'; g.lineWidth = 2;
+            g.stroke(); g.fill();
+            g.restore();
+            g.fillStyle = '#d8d8d8';
+            halo('N', cxN + Math.cos(ang) * 19, cyN + Math.sin(ang) * 19 + 4);
+            g.globalAlpha = 1;
+          }
+        }
+      }
+    }
+    g.restore();
   };
 
   const draw = () => {
@@ -236,6 +351,7 @@ export function render({ model, el }) {
         : `elements · ${n} layers`;
       hud.textContent = converged ? `${tot.toLocaleString()} ${what}` : `${tot.toLocaleString()} · ${Math.round((100 * acc) / (tot || 1))}%`;
     }
+    drawOverlay(w, h, dpr);
     if (!converged) schedule();
   };
   const schedule = () => { if (!raf && !disposed) raf = requestAnimationFrame(draw); };
@@ -408,6 +524,14 @@ export function render({ model, el }) {
         doc = buildMeshChunk({ vertices, triangles: cols.tris, frame });
         renderer.addChunk(doc, 'base', i);
       } else if (L.kind === 'drillholes') {
+        if (!L._collars) {                                 // labels: BHID + world collar position
+          const names = L.hole_names || [];
+          L._collars = [];
+          for (let q = 0; q < cols.c_bhid.length; q++) {
+            const code = cols.c_bhid[q];
+            L._collars.push({ name: names[code] != null ? names[code] : `#${code}`, x: cols.c_x[q], y: cols.c_y[q], z: cols.c_z[q] });
+          }
+        }
         const seg = drillholeSegments(L, cols);
         // the desurvey computes these, so stash the interval midpoints by ROW:
         // measure and the readout need a position for a drillhole pick too
@@ -686,8 +810,15 @@ export function render({ model, el }) {
         schedule();
         requestAnimationFrame(() => {
           try {
+            // composite GL + the decorations overlay — labels/scale bar/north
+            // arrow belong in the figure
+            const tmp = document.createElement('canvas');
+            tmp.width = canvas.width; tmp.height = canvas.height;
+            const g2 = tmp.getContext('2d');
+            g2.drawImage(canvas, 0, 0);                    // preserveDrawingBuffer keeps this valid
+            if (deco.width) g2.drawImage(deco, 0, 0, tmp.width, tmp.height);
             const a = document.createElement('a');
-            a.href = canvas.toDataURL('image/png');        // preserveDrawingBuffer keeps this valid
+            a.href = tmp.toDataURL('image/png');
             a.download = 'condenser.png';
             a.click();
           } catch (e) { hud.textContent = `snapshot failed: ${e.message}`; }
@@ -1025,6 +1156,7 @@ export function render({ model, el }) {
     ['change:background', applyBackground],
     ['change:height', applyHeight],
     ['change:z_exaggeration', applyZExag],
+    ['change:decorations', invalidate],
     ['change:toolbar', buildToolbar],
     ['change:edl', invalidate], ['change:edl_strength', invalidate], ['change:budget', invalidate],
     ['change:_fit', () => { needFit = true; invalidate(); }],

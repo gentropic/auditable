@@ -176,8 +176,12 @@ streamable yet — open those resident via `blocks(..., size=...)`.
 | **layers** | show/hide each layer |
 | **snapshot** | save the view as a PNG |
 
-Plus a **color legend** bottom-right, a **pick readout** top-right, and a
-**scrub bar** whenever a section exists — slide the plane through the model.
+Plus a **color legend** bottom-right (a ramp, or clickable category swatches —
+see the knobs), a **pick readout** top-right, a **scrub bar** whenever a
+section exists, and bottom-center the **figure chrome**: a north arrow and a
+scale bar (true at the camera-target depth), both drawn into snapshots.
+`w.decorations = False` for a bare canvas. Drillhole layers can write their
+**BHIDs at the collars** with `holes.labels = True` (capped at 400 on screen).
 
 It is deliberately small. The toolbar carries what is awkward from Python
 (mouse-driven geometry) and what you need *while looking* (the readout, the
