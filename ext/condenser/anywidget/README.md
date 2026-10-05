@@ -2,6 +2,8 @@
 
 **Block models, drillholes and big point clouds — in a Jupyter notebook.**
 
+![a thresholded block model under a draped topo surface, labeled drillholes through it, scale bar and legend](https://raw.githubusercontent.com/gentropic/auditable/main/ext/condenser/anywidget/docs/hero.png)
+
 ```python
 import numpy as np, gcu.condenser as cd
 
