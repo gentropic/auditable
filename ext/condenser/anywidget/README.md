@@ -363,6 +363,32 @@ section.look("north", ortho=True)     # …two panels, one dataset
 
 `copy()` reuses the payload bytes, so it costs a widget, not a re-pack.
 
+## `gcu.condenser.io` and `.stats` — the kernel-side analysis tier
+
+Compute where the data lives: a resident DataFrame belongs to pandas; these
+exist for the files pandas cannot hold.
+
+```python
+from gcu.condenser import io, stats
+
+cols = io.read_dm("model.dm", columns=["XC", "FE"])        # nothing else in Python reads Datamine
+src  = io.batches("model.dm")                              # .dm / .parquet / delimited → batch source
+
+stats.describe(src, ["FE", "SIO2"])                        # count/mean/std/min/max, one streamed pass
+stats.grade_tonnage(src, "FE", cutoffs=[30, 40, 50], density=3.2, block_volume=10*10*5)
+stats.swath(src, coord="XC", grade="FE")                   # the drift plot's numbers
+stats.histogram(src, "FE", bins=50)
+```
+
+The `.dm` reader is a second implementation of the same format spec as
+[`@gcu/dm`](https://github.com/gentropic/auditable/tree/main/ext/dm)
+(round-trip-tested against it, SP and EP, missing-value sentinels → NaN,
+constants, long names), **fully vectorized over `np.memmap`** — a column is one
+strided slice of the page lattice, so the OS pages in only what you touch.
+`io.batches(path)` returns exactly the two-pass source `cd.open(...)` and every
+`stats.*` function eat, so one line turns a file into a view and another into a
+curve — the kernel never holds more than a batch.
+
 ## Exporting: it keeps working without a kernel
 
 Everything interactive here runs in the browser, so an exported view stays live

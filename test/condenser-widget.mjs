@@ -43,6 +43,26 @@ const T = TMP.replace(/\\/g, '\\\\');
   await writeFile(join(TMP, 'files-model.parquet'), Buffer.from(buf));
 }
 
+// a synthetic Datamine .dm (SP + EP) for gcu.condenser.io — the Python reader
+// is a SECOND implementation of the same spec as @gcu/dm, round-tripped here
+// against @gcu/dm's own fixture maker
+{
+  const { makeDM } = await import('./dm-make.mjs');
+  const fields = [
+    { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
+    { name: 'FE', type: 'N' }, { name: 'LITO', type: 'A', width: 8 },
+    { name: 'DENSITY', type: 'N', constant: 2.7 },
+  ];
+  const rows = [];
+  for (let i = 0; i < 700; i++) {
+    rows.push({ XC: (i % 10) * 10 + 5, YC: (Math.floor(i / 10) % 10) * 10 + 5,
+      ZC: Math.floor(i / 100) * 5 + 2.5, FE: 20 + (i % 37), LITO: i % 2 ? 'CANGA' : 'BIF' });
+  }
+  rows[13].FE = null;                                      // a Datamine missing → NaN
+  await writeFile(join(TMP, 'io-model.dm'), Buffer.from(makeDM(fields, rows, { precision: 'sp' })));
+  await writeFile(join(TMP, 'io-model-ep.dm'), Buffer.from(makeDM(fields, rows, { precision: 'ep' })));
+}
+
 // ── 1. the Python half: a stack that uses every kind + sub-blocking ──
 const PY = `
 import json, numpy as np, gcu.condenser as cd
@@ -216,6 +236,33 @@ wm = cd.view(model, surf, height=460)
 open(r"${T}/mesh.bin", "wb").write(wm._payload)
 open(r"${T}/mesh-styles.json", "w").write(json.dumps(wm._styles))
 
+# gcu.condenser.io / .stats — the kernel-side analysis tier. The .dm reader is
+# verified against @gcu/dm's own fixture (SP and EP), the stats against numpy.
+from gcu.condenser import io as cio, stats as cstats
+info = cio.dm_info(f"{TD}/io-model.dm")
+assert info["count"] == 700 and info["precision"] == "sp", info
+assert set(info["names"]) == {"XC", "YC", "ZC", "FE", "LITO", "DENSITY"}, info["names"]
+dmc = cio.read_dm(f"{TD}/io-model.dm", columns=["XC", "FE", "LITO", "DENSITY"])
+assert dmc["XC"].shape == (700,) and dmc["XC"][0] == 5 and dmc["XC"][699] == 95
+assert np.isnan(dmc["FE"][13]) and dmc["FE"][14] == 20 + (14 % 37)
+assert dmc["LITO"][0] == "BIF" and dmc["LITO"][1] == "CANGA"
+assert np.allclose(dmc["DENSITY"], 2.7)                    # SP stores f32 — 2.7 is not exact
+epc = cio.read_dm(f"{TD}/io-model-ep.dm", columns=["FE"])
+assert np.isnan(epc["FE"][13]) and float(np.nansum(epc["FE"])) == float(np.nansum(dmc["FE"]))
+srcb = cio.batches(f"{TD}/io-model.dm", batch_rows=150)
+fe = dmc["FE"][np.isfinite(dmc["FE"])]
+d_ = cstats.describe(srcb, ["FE"])["FE"]
+assert d_["count"] == fe.size and abs(d_["mean"] - fe.mean()) < 1e-9 and abs(d_["std"] - fe.std(ddof=1)) < 1e-9, d_
+gt = cstats.grade_tonnage(srcb, "FE", cutoffs=[25, 40], density=2.7, block_volume=10*10*5)
+t25 = 2.7 * 500 * int(np.count_nonzero(fe >= 25))
+assert abs(gt[0]["tonnes"] - t25) < 1e-6 and abs(gt[0]["grade"] - fe[fe >= 25].mean()) < 1e-9, gt
+sw_ = cstats.swath(srcb, "XC", "FE", band=10.0)
+assert sw_["centers"].size == 9 and int(sw_["count"].sum()) == fe.size, (sw_["centers"].size, sw_["count"].sum())
+hc, _he = cstats.histogram(srcb, "FE", bins=10)
+assert int(hc.sum()) == fe.size
+dml = cd.open(srcb, x="XC", y="YC", z="ZC", value="FE")    # the .dm source feeds cd.open directly
+assert dml.count == 700 and [a[1] for a in dml._extra["axes"]] == [10.0, 10.0, 5.0]
+
 print(json.dumps({
   "bytes": len(w._payload), "layers": [l.name for l in w.layers],
   "blocks": model.count, "intervals": holes.count, "points": topo.count,
@@ -230,6 +277,7 @@ print(json.dumps({
   "meshTris": surf.count, "meshVerts": surf._extra["vertex_count"], "meshBytes": len(wm._payload),
   "mcChannels": mc._extra["value_channels"], "mcRanges": mc._extra["value_ranges"],
   "mcCats": mc._extra["cat_labels"], "surfCells": surf2.count,
+  "ioDmCount": info["count"], "ioMean": round(d_["mean"], 4), "ioGt25": gt[0]["tonnes"],
 }))
 `;
 let meta;
@@ -244,6 +292,8 @@ console.log(`ok   python packed ${meta.layers.join(' + ')} → ${(meta.bytes / 1
   + ` (${meta.blocks} blocks / ${meta.intervals} intervals / ${meta.points.toLocaleString()} points)`);
 console.log(`ok   sub-blocked lattice: fine pitch ${JSON.stringify(meta.pitch)}, ${meta.palette} block sizes, ${meta.holes} holes`);
 console.log(`ok   size= accepts COLUMN NAMES (${meta.byName} blocks, ${meta.byNamePalette} sizes) and scalars (${meta.scalarSize} blocks)`);
+console.log(`ok   gcu.condenser.io reads .dm (SP+EP, ${meta.ioDmCount} rows, strided memmap) and .stats match numpy`
+  + ` (mean ${meta.ioMean}, GT@25 ${meta.ioGt25.toLocaleString()} t) — and the source feeds cd.open`);
 console.log(`ok   cd.open streamed ${meta.streamCount.toLocaleString()} blocks as a ${meta.streamBytes}-byte HEADER`
   + ` + ${meta.streamMsgs} messages (${(meta.streamBufBytes / 1024).toFixed(0)} KB wire, cats ${JSON.stringify(meta.streamCats)})`);
 if (meta.streamBytes > 4096) { console.log('FAIL streamed payload is not header-only'); process.exit(1); }
