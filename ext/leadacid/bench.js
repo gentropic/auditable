@@ -2,6 +2,18 @@
 // Source of truth: gentropic/lead-acid  →  bench.js. Re-vendor on change.
 // Self-gating on ?bench; mocks /native for desktop dev. Fixtures via window.__benchFixtures.
 
+// bench.js — the desktop dev bench (SPEC §4.7).
+//
+// A classic <script> an instrument loads in DEV only. When the page URL carries
+// `?bench`, it installs a MOCK of the native layer so the artifact runs
+// shell-style ON THE DESKTOP — no APK, no device: `shell.present` becomes true
+// and `/native/**` is answered with canned fixtures. It mocks BELOW lead-acid.js
+// (fetch + the WebMessagePort), so the shim's real code paths (feature detect,
+// body sidecar, push streams) are exercised unchanged.
+//
+// Self-gating and self-contained (no imports); strip it at build (it does
+// nothing without `?bench`, but keep the built artifact clean). Override the
+// canned data before load via `window.__benchFixtures = { … }`.
 (function () {
   'use strict';
   if (!/[?&]bench\b/.test(location.search)) return;
@@ -38,7 +50,9 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', deliverPort);
   else deliverPort();
 
-  function push(sid, event, dataJson) { shellSide.postMessage(JSON.stringify({ s: sid, e: event, d: dataJson })); }
+  // The real shell splices the plugin's JSON into the message as an OBJECT
+  // (`"d":$data`), so the page sees m.d parsed — never a string. Match it.
+  function push(sid, event, dataJson) { shellSide.postMessage(JSON.stringify({ s: sid, e: event, d: typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson })); }
   function pushClose(sid) { shellSide.postMessage(JSON.stringify({ s: sid, close: true })); }
   function awaitBody(id) {
     return new Promise(function (res) {

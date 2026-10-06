@@ -58,6 +58,31 @@ const streamed = await p.evaluate(async () => {
 chk(`push stream delivers over the port (${streamed.n} events/0.8s, max gap ${streamed.max.toFixed(0)}ms)`,
   streamed.n > 10 && streamed.max < 150);
 
+// 3b. wuffle v2: shell.orientation turns the bench's synthetic rotation vector
+// (a tilt of 0.3 ± 0.2 rad about a horizontal axis) into W3C alpha/beta/gamma,
+// and wuffle itself rides the fused stream with the compass accuracy shown.
+const fused = await p.evaluate(async () => {
+  const o = await window.__wuffle.shell.orientation({ rateHz: 30 });
+  const readings = [];
+  o.on((r) => readings.push(r));
+  await new Promise(r => setTimeout(r, 400));
+  o.close();
+  const D = Math.PI / 180;
+  const tilts = readings.map((r) => Math.acos(Math.cos(r.beta * D) * Math.cos(r.gamma * D)) / D);
+  const w = window.__wuffle;
+  return {
+    n: readings.length,
+    finite: readings.every((r) => [r.alpha, r.beta, r.gamma].every(Number.isFinite)),
+    absolute: readings[0] && readings[0].absolute, acc: readings[0] && readings[0].accuracy,
+    tiltMin: Math.min(...tilts), tiltMax: Math.max(...tilts),
+    source: w.source, wAcc: w.accuracy, d1: w.reading && w.reading.d1, sub: document.getElementById('brandsub').textContent,
+  };
+});
+chk(`fused orientation: ${fused.n} readings, finite ${fused.finite}, absolute ${fused.absolute}, acc ${fused.acc}, tilt ${fused.tiltMin.toFixed(1)}–${fused.tiltMax.toFixed(1)}° (bench 5.7–28.6°); wuffle rides it (source ${fused.source}, "${fused.sub}", dip dir ${fused.d1 && fused.d1.toFixed(0)})`,
+  fused.n > 5 && fused.finite && fused.absolute === true && fused.acc === 3
+  && fused.tiltMin > 5 && fused.tiltMax < 29 && fused.source === 'fused' && fused.wAcc === 3
+  && /fused · high/.test(fused.sub) && Number.isFinite(fused.d1));
+
 // 4. body sidecar + attest: sign through the port body-sidecar, verify w/ WebCrypto
 const signed = await p.evaluate(async () => {
   const payload = new TextEncoder().encode('bench attest test');

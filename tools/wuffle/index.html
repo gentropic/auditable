@@ -196,6 +196,10 @@ function setMode(m) {
 $('mPlane').onclick = () => setMode('plane');
 $('mLine').onclick = () => setMode('line');
 
+// one reading → the live dial. Fed by the fused stream inside the shell, by the
+// deviceorientation events otherwise (or if the stream can't open).
+let source = 'event';           // 'fused' once shell.orientation delivers
+let accuracy = null;            // Android compass accuracy: 3 high · 2 med · 1 low · 0 unreliable
 function onOrient(e) {
   if (e.alpha == null) return;
   haveOrientation = true;
@@ -209,8 +213,36 @@ function onOrient(e) {
   requestLive();
 }
 // absolute frame carries a compass-referenced alpha (Android); fall back.
-window.addEventListener('deviceorientationabsolute', onOrient);
-window.addEventListener('deviceorientation', (e) => { if (!haveOrientation) onOrient(e); });
+window.addEventListener('deviceorientationabsolute', (e) => { if (source !== 'fused') onOrient(e); });
+window.addEventListener('deviceorientation', (e) => { if (source !== 'fused' && !haveOrientation) onOrient(e); });
+
+// v2: inside the shell, read the FUSED rotation vector through the sensor
+// plugin instead of the event — same math downstream, but we get the compass
+// accuracy the event hides, so the field geologist knows when to figure-8.
+const ACC_LABEL = ['unreliable', 'low', 'medium', 'high'];
+function setAccuracy(acc) {
+  accuracy = acc;
+  const label = ACC_LABEL[acc] || 'no contact';
+  $('brandsub').textContent = 'compass · fused · ' + label;
+  if (acc <= 1) msg('compass ' + label + ' — wave the phone in a figure-8 to calibrate', true);
+  else if (acc === 2) msg('compass medium — a figure-8 would sharpen it');
+  else msg('compass calibrated · lay the phone on a surface to measure');
+}
+async function startFused() {
+  if (!shell.present) return;
+  try {
+    const o = await shell.orientation({ rateHz: 30 });
+    o.on((r) => { source = 'fused'; onOrient(r); });
+    o.onAccuracy(setAccuracy);
+    o.onClose(() => { source = 'event'; });   // shell closed it (pause/reload) → events carry on
+  } catch (e) {
+    source = 'event';
+    msg('fused compass unavailable (' + (e.message || e) + ') — using device orientation events');
+  }
+}
+startFused();
+// the shell closes push streams on pause; reopen when we come back
+document.addEventListener('visibilitychange', () => { if (!document.hidden && source !== 'fused') startFused(); });
 
 function updateCount() {
   $('count').textContent = log.length + ' measurement' + (log.length === 1 ? '' : 's');
@@ -290,7 +322,10 @@ msg(shell.present ? 'lead-acid ready · lay the phone on a surface to measure'
 
 // programmatic hook — the smoke test and headless use plot through this;
 // `shell` is exposed so the bench smoke can exercise the mocked native layer.
-window.__wuffle = { plot: (d1, d2, m) => record(d1, d2, m), log, count: () => log.length, shell };
+window.__wuffle = {
+  plot: (d1, d2, m) => record(d1, d2, m), log, count: () => log.length, shell,
+  get source() { return source; }, get accuracy() { return accuracy; }, get reading() { return cur; },
+};
 </script>
 </body>
 </html>

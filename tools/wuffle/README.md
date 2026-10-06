@@ -50,9 +50,13 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
 
 - **Switchboard token migration** — the CSS is already GCU-dark; move it onto the
   `--au-*`/`--sw-*` cascade for full design-system alignment + CVD accents.
-- **sensor → v2** — consume lead-acid's `sensor` port stream (raw rotation-vector +
-  magnetometer calibration state) for survey-grade steadiness, and `attest`-sign
-  each reading.
+- ~~**sensor → v2**~~ ✓ 2026-10-06 — inside the shell, wuffle reads the FUSED rotation
+  vector through `shell.orientation()` (lead-acid.js converts Android's quaternion to the
+  W3C alpha/beta/gamma triple — unit-tested in `test/leadacid-orientation.test.mjs`), so
+  the same `compass.*` math runs on it, and the compass **accuracy** the event hides is
+  shown (`compass · fused · high`; low/unreliable → "figure-8 to calibrate"). Falls back
+  to `deviceorientation` if the stream can't open; reopens after the shell pauses it.
+  Still owed from that bullet: `attest`-signing each reading.
 - **WMM declination** — position (`gnss`) → World Magnetic Model → true north.
 - **Georeferencing** — stamp each measurement with `gnss` coordinates (wuffle v3);
   an outcrop photo via `camera`.
