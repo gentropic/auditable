@@ -142,10 +142,20 @@ test('colorToPairs: serialize back to the right group codes, round-trip', () => 
   assert.deepEqual(resolveColor({ trueColor: colorToPairs(c)[0].value }), c);
 });
 
-test('aciToRgb: the 7 standard named colours, null beyond', () => {
+test('aciToRgb: the FULL ramp — named, chromatic decades, grays', () => {
   assert.deepEqual(aciToRgb(1), [255, 0, 0]);
   assert.deepEqual(aciToRgb(5), [0, 0, 255]);
-  assert.equal(aciToRgb(42), null);
+  // canonical spot values from the published ACI table
+  assert.deepEqual(aciToRgb(30), [255, 127, 0]);           // orange, full sat/value
+  assert.deepEqual(aciToRgb(11), [255, 127, 127]);         // half-sat red
+  assert.deepEqual(aciToRgb(150), [0, 127, 255]);          // azure
+  assert.deepEqual(aciToRgb(250), [51, 51, 51]);           // the gray ramp
+  assert.deepEqual(aciToRgb(254), [214, 214, 214]);
+  assert.equal(aciToRgb(0), null);                         // BYBLOCK carries no rgb
+  assert.equal(aciToRgb(256), null);                       // BYLAYER
+  // every chromatic index resolves, and the decade value steps are monotone
+  for (let i = 10; i <= 249; i++) assert.ok(aciToRgb(i), `aci ${i}`);
+  assert.ok(aciToRgb(10)[0] > aciToRgb(18)[0], 'value falls through the decade');
 });
 
 // ── read (the Document assembler) ──────────────────────────────────────────────────
@@ -629,4 +639,40 @@ test('extractScene: 3DFACE soup + polyface merge into ONE mesh; strings sample b
   assert.equal(scene.points.length, 2);
   assert.deepEqual(scene.layers, ['CREST', 'PEGS', 'ROAD', 'SOLID', 'TOPO']);
   assert.deepEqual(scene.bbox.slice(0, 3), [0, 0, 0]);
+});
+
+test('extractScene resolves COLOURS: explicit ACI, bylayer through the table, uniform mesh tint', () => {
+  const txt = ['0', 'SECTION', '2', 'TABLES',
+    '0', 'TABLE', '2', 'LAYER',
+    '0', 'LAYER', '2', 'ORE', '62', '30',                  // layer ORE = ACI 30 (orange)
+    '0', 'LAYER', '2', 'ROADS', '62', '5',                 // layer ROADS = blue
+    '0', 'ENDTAB', '0', 'ENDSEC',
+    '0', 'SECTION', '2', 'ENTITIES',
+    // faces on ORE with NO entity colour → bylayer → orange, uniformly
+    ent('0', '3DFACE', '8', 'ORE', '10', '0', '20', '0', '30', '0', '11', '1', '21', '0', '31', '0',
+        '12', '1', '22', '1', '32', '0', '13', '1', '23', '1', '33', '0'),
+    ent('0', '3DFACE', '8', 'ORE', '10', '2', '20', '0', '30', '0', '11', '3', '21', '0', '31', '0',
+        '12', '3', '22', '1', '32', '0', '13', '3', '23', '1', '33', '0'),
+    // a string with an EXPLICIT entity ACI overriding its layer
+    '0', 'POLYLINE', '8', 'ROADS', '62', '1', '70', '8',
+    ...v3(0, 0, 5, 32), ...v3(9, 0, 5, 32),
+    '0', 'SEQEND',
+    // a string falling back to its layer's blue
+    '0', 'POLYLINE', '8', 'ROADS', '70', '8',
+    ...v3(0, 3, 5, 32), ...v3(9, 3, 5, 32),
+    '0', 'SEQEND',
+    '0', 'ENDSEC', '0', 'EOF', ''].flat().join(String.fromCharCode(10));
+  const scene = extractScene(read(txt));
+  assert.deepEqual(scene.mesh.color, [255, 127, 0], 'uniform bylayer faces → the mesh tint');
+  assert.deepEqual(scene.strings[0].color, [255, 0, 0], 'entity ACI beats the layer');
+  assert.deepEqual(scene.strings[1].color, [0, 0, 255], 'bylayer resolves through the table');
+  assert.deepEqual(scene.layerColors.ORE, [255, 127, 0]);
+  // mixed-colour faces → NO uniform tint
+  const mixed = wrap([
+    ent('0', '3DFACE', '8', 'A', '62', '1', '10', '0', '20', '0', '30', '0', '11', '1', '21', '0', '31', '0',
+        '12', '1', '22', '1', '32', '0', '13', '1', '23', '1', '33', '0'),
+    ent('0', '3DFACE', '8', 'A', '62', '3', '10', '2', '20', '0', '30', '0', '11', '3', '21', '0', '31', '0',
+        '12', '3', '22', '1', '32', '0', '13', '3', '23', '1', '33', '0'),
+  ].flat());
+  assert.equal(extractScene(read(mixed)).mesh.color, null);
 });

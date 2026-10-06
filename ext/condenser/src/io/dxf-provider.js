@@ -40,7 +40,13 @@ export async function openDxf(blob, { as = null } = {}) {
   // ≤255 layers fit the category byte; a wilder file keeps geometry, loses classes
   const categories = scene.layers.length && scene.layers.length <= 255 ? scene.layers : null;
   const catOf = (layer) => (categories ? Math.max(0, categories.indexOf(layer)) : 0);
-  const common = { format: 'dxf', bbox, dxfLayers: scene.layers, dxfCounts: scene.counts, warnings: doc.warnings };
+  // authored colours: a uniform mesh colour → the tint; per-layer colours →
+  // the category palette (indices track `categories`). Pure white is ACI 7 =
+  // "foreground" — a theme placeholder, not a colour choice — so it does NOT
+  // tint (the viewer's default reads better on any background).
+  const authored = (c) => (c && !(c[0] === 255 && c[1] === 255 && c[2] === 255) ? c : null);
+  const catColors = categories ? categories.map((l) => authored(scene.layerColors[l])) : null;
+  const common = { format: 'dxf', bbox, dxfLayers: scene.layers, dxfCounts: scene.counts, catColors, warnings: doc.warnings };
 
   if (want === 'mesh') {
     const { vertices, triangles } = scene.mesh;
@@ -49,6 +55,7 @@ export async function openDxf(blob, { as = null } = {}) {
         ...common, kind: 'mesh',
         vertexCount: (vertices.length / 3) | 0, triCount: (triangles.length / 3) | 0,
         vertexColumns: [],
+        meshColor: authored(scene.mesh.color),             // [r,g,b] 0..255 when every face agrees (foreground-white → null)
       },
       vertices, triangles,
     };

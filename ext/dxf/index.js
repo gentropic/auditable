@@ -182,14 +182,62 @@ function colorToPairs(color) {
   }
 }
 
-// The 7 standard ACI named colours, for renderers that want a quick RGB. The model keeps
-// the index; this is a convenience only. The full 256-entry ramp is deferred.
-const ACI_RGB = {
+// The FULL ACI ramp. 1–9 are the named colours; 10–249 follow the published
+// derivation (24 hues 15° apart × 5 value levels × {saturated, half-saturated},
+// decade-packed: hue = ((i−10)÷10)·15°, value level = (i−10)%10 >> 1 from
+// [255,204,153,127,76], odd offsets halve the chroma); 250–255 are the gray
+// ramp. Spot-checked against the canonical table (ACI 30 = FF7F00, 11 =
+// FF7F7F, 250 = 333333). Index 7 is "foreground" — white here, a renderer on
+// a light theme may substitute. The model keeps the index; this is the RGB view.
+const ACI_NAMED = {
   1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255],
   5: [0, 0, 255], 6: [255, 0, 255], 7: [255, 255, 255],
+  8: [128, 128, 128], 9: [192, 192, 192],
 };
+const ACI_GRAYS = { 250: 51, 251: 91, 252: 132, 253: 173, 254: 214, 255: 255 };
+const ACI_V = [255, 204, 153, 127, 76];
 
-function aciToRgb(index) { return ACI_RGB[index] || null; }
+function hueRgb(h, hi, lo) {
+  const sect = Math.floor(h / 60) % 6, f = h / 60 - Math.floor(h / 60);
+  const up = Math.floor(lo + (hi - lo) * f), dn = Math.floor(hi - (hi - lo) * f);
+  switch (sect) {
+    case 0: return [hi, up, lo];
+    case 1: return [dn, hi, lo];
+    case 2: return [lo, hi, up];
+    case 3: return [lo, dn, hi];
+    case 4: return [up, lo, hi];
+    default: return [hi, lo, dn];
+  }
+}
+
+function aciToRgb(index) {
+  if (ACI_NAMED[index]) return ACI_NAMED[index];
+  if (ACI_GRAYS[index] != null) { const v = ACI_GRAYS[index]; return [v, v, v]; }
+  if (index >= 10 && index <= 249) {
+    const k = index - 10;
+    const hue = ((k / 10) | 0) * 15;
+    const within = k % 10;
+    const hi = ACI_V[within >> 1];
+    const lo = (within & 1) ? Math.floor(hi / 2) : 0;
+    return hueRgb(hue, hi, lo);
+  }
+  return null;
+}
+
+// Resolve a feature's colour model to RGB for rendering: rgb → itself, aci →
+// the ramp, bylayer/byblock → the layer table's colour (byblock loses its
+// insert context after explode — the layer is the honest stand-in).
+function colorToRgb(color, layerName, layers) {
+  if (!color) return null;
+  if (color.mode === 'rgb') return [color.r, color.g, color.b];
+  if (color.mode === 'aci' && !color.off) return aciToRgb(color.index);
+  if (color.mode === 'bylayer' || color.mode === 'byblock') {
+    const lc = layers && layers[layerName] && layers[layerName].color;
+    if (lc && lc.mode === 'aci' && !lc.off && lc.index != null) return aciToRgb(lc.index);
+    if (lc && lc.mode === 'rgb') return [lc.r, lc.g, lc.b];
+  }
+  return null;
+}
 
 // ── ../frame/src/frame.js ──
 
@@ -1063,17 +1111,26 @@ function extractScene(doc) {
   const mv = [], mt = [];
   const strings = [], points = [];
   const layerSet = new Set();
+  const layerColors = {};                                  // layer name → [r,g,b] | null (first resolved wins)
+  let meshColor;                                           // uniform across every face → the mesh tint; mixed → null
 
   for (const f of flat.features || []) {
     const g = f.geometry;
     if (!g) continue;
     const layer = (f.properties && f.properties.layer) || '0';
+    const rgb = colorToRgb(f.properties && f.properties.color, layer, doc.layers);
+    if (!(layer in layerColors) || (layerColors[layer] == null && rgb)) layerColors[layer] = rgb;
 
+    const foldMeshColor = () => {
+      if (meshColor === undefined) meshColor = rgb;
+      else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
+    };
     if (g.kind === 'mesh') {
       const base = mv.length / 3;
       for (let i = 0; i < g.vertices.length; i++) mv.push(g.vertices[i]);
       for (let i = 0; i < g.triangles.length; i++) mt.push(base + g.triangles[i]);
       layerSet.add(layer);
+      foldMeshColor();
     } else if (g.kind === 'face') {
       const v = g.vertices;
       const base = mv.length / 3;
@@ -1082,6 +1139,7 @@ function extractScene(doc) {
       if (nV >= 3) mt.push(base, base + 1, base + 2);
       if (nV === 4) mt.push(base, base + 2, base + 3);
       layerSet.add(layer);
+      foldMeshColor();
     } else if (g.kind === 'polyline') {
       const v = g.vertices;
       const nV = v.length / 3;
@@ -1093,7 +1151,7 @@ function extractScene(doc) {
         const bulge = g.bulges ? g.bulges[a] || 0 : 0;
         sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
       }
-      strings.push({ layer, pts: Float64Array.from(pts) });
+      strings.push({ layer, color: rgb, pts: Float64Array.from(pts) });
       layerSet.add(layer);
     } else if (g.kind === 'circle') {
       const n = 32, pts = [];
@@ -1102,10 +1160,10 @@ function extractScene(doc) {
         const a = (k / n) * TAU;
         pts.push(g.center[0] + g.radius * Math.cos(a), g.center[1] + g.radius * Math.sin(a), z);
       }
-      strings.push({ layer, pts: Float64Array.from(pts) });
+      strings.push({ layer, color: rgb, pts: Float64Array.from(pts) });
       layerSet.add(layer);
     } else if (g.kind === 'point') {
-      points.push({ layer, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
+      points.push({ layer, color: rgb, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
       layerSet.add(layer);
     }
     // text / attdef / hatch metadata: not scene geometry
@@ -1125,9 +1183,10 @@ function extractScene(doc) {
   for (const p of points) grow(p.x, p.y, p.z);
 
   return {
-    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt) } : null,
+    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt), color: meshColor || null } : null,
     strings, points,
     layers: [...layerSet].sort(),
+    layerColors,
     counts: { triangles: mt.length / 3, strings: strings.length, points: points.length },
     bbox,
   };
@@ -1151,6 +1210,7 @@ export {
   resolveColor,
   colorToPairs,
   aciToRgb,
+  colorToRgb,
   read,
   write,
   explode,

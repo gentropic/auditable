@@ -1069,6 +1069,45 @@ test('openDxf: faces dominate → a mesh doc with the dxf layer census', async (
   assert.equal(r.header.bbox.max[2], 406);
 });
 
+test('openDxf carries AUTHORED colours: layer-table ACI → catColors; uniform faces → meshColor', async () => {
+  const txt = ['0', 'SECTION', '2', 'TABLES', '0', 'TABLE', '2', 'LAYER',
+    '0', 'LAYER', '2', 'CREST', '62', '30',
+    '0', 'LAYER', '2', 'TOE', '62', '5',
+    '0', 'ENDTAB', '0', 'ENDSEC',
+    '0', 'SECTION', '2', 'ENTITIES',
+    '0', 'POLYLINE', '8', 'CREST', '70', '8',
+    '0', 'VERTEX', '8', 'CREST', '70', '32', '10', '0', '20', '0', '30', '1',
+    '0', 'VERTEX', '8', 'CREST', '70', '32', '10', '9', '20', '0', '30', '1',
+    '0', 'SEQEND',
+    '0', 'POLYLINE', '8', 'TOE', '70', '8',
+    '0', 'VERTEX', '8', 'TOE', '70', '32', '10', '0', '20', '3', '30', '1',
+    '0', 'VERTEX', '8', 'TOE', '70', '32', '10', '9', '20', '3', '30', '1',
+    '0', 'SEQEND',
+    '0', 'ENDSEC', '0', 'EOF', ''].join(String.fromCharCode(10));
+  const r = await openDxf(new Blob([txt]));
+  assert.equal(r.header.kind, 'strings');
+  assert.deepEqual(r.header.categories, ['CREST', 'TOE']);
+  assert.deepEqual(r.header.catColors, [[255, 127, 0], [0, 0, 255]]);
+
+  const meshTxt = ['0', 'SECTION', '2', 'ENTITIES',
+    '0', '3DFACE', '8', 'Z', '62', '30',
+    '10', '0', '20', '0', '30', '0', '11', '1', '21', '0', '31', '0',
+    '12', '1', '22', '1', '32', '0', '13', '1', '23', '1', '33', '0',
+    '0', 'ENDSEC', '0', 'EOF', ''].join(String.fromCharCode(10));
+  const m = await openDxf(new Blob([meshTxt]));
+  assert.deepEqual(m.header.meshColor, [255, 127, 0]);
+
+  // ACI 7 ("foreground") is a theme placeholder, not an authored colour — no tint
+  const whiteTxt = ['0', 'SECTION', '2', 'ENTITIES',
+    '0', '3DFACE', '8', 'Z', '62', '7',
+    '10', '0', '20', '0', '30', '0', '11', '1', '21', '0', '31', '0',
+    '12', '1', '22', '1', '32', '0', '13', '1', '23', '1', '33', '0',
+    '0', 'ENDSEC', '0', 'EOF', ''].join(String.fromCharCode(10));
+  const w = await openDxf(new Blob([whiteTxt]));
+  assert.equal(w.header.triCount, 1);                       // 4th corner == 3rd → a triangle, still parses
+  assert.equal(w.header.meshColor, null);
+});
+
 test('openDxf as:strings → stick-shaped chunks, layer categories, fetch + position', async () => {
   const r = await openDxf(new Blob([DXF_FIXTURE]), { as: 'strings' });
   assert.equal(r.header.kind, 'strings');

@@ -33,11 +33,59 @@ export function colorToPairs(color) {
   }
 }
 
-// The 7 standard ACI named colours, for renderers that want a quick RGB. The model keeps
-// the index; this is a convenience only. The full 256-entry ramp is deferred.
-const ACI_RGB = {
+// The FULL ACI ramp. 1–9 are the named colours; 10–249 follow the published
+// derivation (24 hues 15° apart × 5 value levels × {saturated, half-saturated},
+// decade-packed: hue = ((i−10)÷10)·15°, value level = (i−10)%10 >> 1 from
+// [255,204,153,127,76], odd offsets halve the chroma); 250–255 are the gray
+// ramp. Spot-checked against the canonical table (ACI 30 = FF7F00, 11 =
+// FF7F7F, 250 = 333333). Index 7 is "foreground" — white here, a renderer on
+// a light theme may substitute. The model keeps the index; this is the RGB view.
+const ACI_NAMED = {
   1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255],
   5: [0, 0, 255], 6: [255, 0, 255], 7: [255, 255, 255],
+  8: [128, 128, 128], 9: [192, 192, 192],
 };
+const ACI_GRAYS = { 250: 51, 251: 91, 252: 132, 253: 173, 254: 214, 255: 255 };
+const ACI_V = [255, 204, 153, 127, 76];
 
-export function aciToRgb(index) { return ACI_RGB[index] || null; }
+function hueRgb(h, hi, lo) {
+  const sect = Math.floor(h / 60) % 6, f = h / 60 - Math.floor(h / 60);
+  const up = Math.floor(lo + (hi - lo) * f), dn = Math.floor(hi - (hi - lo) * f);
+  switch (sect) {
+    case 0: return [hi, up, lo];
+    case 1: return [dn, hi, lo];
+    case 2: return [lo, hi, up];
+    case 3: return [lo, dn, hi];
+    case 4: return [up, lo, hi];
+    default: return [hi, lo, dn];
+  }
+}
+
+export function aciToRgb(index) {
+  if (ACI_NAMED[index]) return ACI_NAMED[index];
+  if (ACI_GRAYS[index] != null) { const v = ACI_GRAYS[index]; return [v, v, v]; }
+  if (index >= 10 && index <= 249) {
+    const k = index - 10;
+    const hue = ((k / 10) | 0) * 15;
+    const within = k % 10;
+    const hi = ACI_V[within >> 1];
+    const lo = (within & 1) ? Math.floor(hi / 2) : 0;
+    return hueRgb(hue, hi, lo);
+  }
+  return null;
+}
+
+// Resolve a feature's colour model to RGB for rendering: rgb → itself, aci →
+// the ramp, bylayer/byblock → the layer table's colour (byblock loses its
+// insert context after explode — the layer is the honest stand-in).
+export function colorToRgb(color, layerName, layers) {
+  if (!color) return null;
+  if (color.mode === 'rgb') return [color.r, color.g, color.b];
+  if (color.mode === 'aci' && !color.off) return aciToRgb(color.index);
+  if (color.mode === 'bylayer' || color.mode === 'byblock') {
+    const lc = layers && layers[layerName] && layers[layerName].color;
+    if (lc && lc.mode === 'aci' && !lc.off && lc.index != null) return aciToRgb(lc.index);
+    if (lc && lc.mode === 'rgb') return [lc.r, lc.g, lc.b];
+  }
+  return null;
+}

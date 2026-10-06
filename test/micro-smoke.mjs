@@ -862,7 +862,7 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   const faces = [];
   for (let i = 0; i < 4; i++) {
     const x = X0 + i * 50;
-    faces.push('0', '3DFACE', '8', 'TOPO',
+    faces.push('0', '3DFACE', '8', 'TOPO', '62', '30',     // authored ACI 30 → the mesh tint
       '10', String(x), '20', String(Y0), '30', '700',
       '11', String(x + 50), '21', String(Y0), '31', '702',
       '12', String(x + 50), '22', String(Y0 + 50), '32', '704',
@@ -875,7 +875,13 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
     return out;
   };
   const dxfSurface = dxfWrap(faces);
-  const dxfStrings = dxfWrap([...pl('CREST', 710), ...pl('TOE', 690)]);
+  // the strings twin carries a LAYER table with colours (CREST orange, TOE blue)
+  const dxfStrings = ['0', 'SECTION', '2', 'TABLES', '0', 'TABLE', '2', 'LAYER',
+    '0', 'LAYER', '2', 'CREST', '62', '30',
+    '0', 'LAYER', '2', 'TOE', '62', '5',
+    '0', 'ENDTAB', '0', 'ENDSEC',
+    '0', 'SECTION', '2', 'ENTITIES', ...pl('CREST', 710), ...pl('TOE', 690),
+    '0', 'ENDSEC', '0', 'EOF', ''].join(String.fromCharCode(10));
   const dxfMixed = dxfWrap([...faces, ...pl('CREST', 710)]);
 
   const dxfInfo = await p.evaluate(async ({ surf, strs }) => {
@@ -890,10 +896,11 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
     const row0 = Ls ? await m.fetchLayerRow(Ls, 0) : null;
     return {
       added: m.layers().length - before,
-      mesh: Lm ? { kind: Lm.kind, tris: Lm.docs.meshDoc.header.triCount } : null,
+      mesh: Lm ? { kind: Lm.kind, tris: Lm.docs.meshDoc.header.triCount, tint: Lm.tint } : null,
       strings: Ls ? {
         kind: Ls.kind, count: h && h.count, cats: h && h.categories, colorSel: Ls.colorSel,
         loc: m.primaryLocationOf(Ls), rows: m.attrRowCountOf(Ls), row0,
+        legend: Ls.catLegend && Ls.catLegend.entries.map((e2) => [e2.values[0], e2.color]),
       } : null,
     };
   }, { surf: dxfSurface, strs: dxfStrings });
@@ -904,6 +911,9 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   chk(`DXF strings are RECORDS: location "${dxfInfo.strings && dxfInfo.strings.loc}", ${dxfInfo.strings && dxfInfo.strings.rows} rows, row0 ${JSON.stringify(dxfInfo.strings && dxfInfo.strings.row0)}`,
     dxfInfo.strings && dxfInfo.strings.loc === 'segments' && dxfInfo.strings.rows === 8
     && Array.isArray(dxfInfo.strings.row0) && dxfInfo.strings.row0[0] === 'CREST');
+  chk(`DXF AUTHORED colours: mesh tint ${dxfInfo.mesh && dxfInfo.mesh.tint} (ACI 30) + the string legend seeded ${JSON.stringify(dxfInfo.strings && dxfInfo.strings.legend)}`,
+    dxfInfo.mesh && dxfInfo.mesh.tint === '#ff7f00'
+    && dxfInfo.strings && JSON.stringify(dxfInfo.strings.legend) === '[["CREST","#ff7f00"],["TOE","#0000ff"]]');
 
   // THE DIALOG PATH (the one the clobber bug lived in): a dxf through
   // openFilesDialog + the Open button must land as its peeked kind, not the

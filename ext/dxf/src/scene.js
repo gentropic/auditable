@@ -5,6 +5,7 @@
 // layers from; the Document itself stays the canonical, lossless model.
 import { explode } from './explode.js';
 import { arcFromBulge, TAU } from './arc.js';
+import { colorToRgb } from './color.js';
 
 // sample one bulge span into chord points (excluding p0, including p1):
 // ~24 chords for a full circle, never fewer than 2 for a visible arc
@@ -27,17 +28,26 @@ export function extractScene(doc) {
   const mv = [], mt = [];
   const strings = [], points = [];
   const layerSet = new Set();
+  const layerColors = {};                                  // layer name → [r,g,b] | null (first resolved wins)
+  let meshColor;                                           // uniform across every face → the mesh tint; mixed → null
 
   for (const f of flat.features || []) {
     const g = f.geometry;
     if (!g) continue;
     const layer = (f.properties && f.properties.layer) || '0';
+    const rgb = colorToRgb(f.properties && f.properties.color, layer, doc.layers);
+    if (!(layer in layerColors) || (layerColors[layer] == null && rgb)) layerColors[layer] = rgb;
 
+    const foldMeshColor = () => {
+      if (meshColor === undefined) meshColor = rgb;
+      else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
+    };
     if (g.kind === 'mesh') {
       const base = mv.length / 3;
       for (let i = 0; i < g.vertices.length; i++) mv.push(g.vertices[i]);
       for (let i = 0; i < g.triangles.length; i++) mt.push(base + g.triangles[i]);
       layerSet.add(layer);
+      foldMeshColor();
     } else if (g.kind === 'face') {
       const v = g.vertices;
       const base = mv.length / 3;
@@ -46,6 +56,7 @@ export function extractScene(doc) {
       if (nV >= 3) mt.push(base, base + 1, base + 2);
       if (nV === 4) mt.push(base, base + 2, base + 3);
       layerSet.add(layer);
+      foldMeshColor();
     } else if (g.kind === 'polyline') {
       const v = g.vertices;
       const nV = v.length / 3;
@@ -57,7 +68,7 @@ export function extractScene(doc) {
         const bulge = g.bulges ? g.bulges[a] || 0 : 0;
         sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
       }
-      strings.push({ layer, pts: Float64Array.from(pts) });
+      strings.push({ layer, color: rgb, pts: Float64Array.from(pts) });
       layerSet.add(layer);
     } else if (g.kind === 'circle') {
       const n = 32, pts = [];
@@ -66,10 +77,10 @@ export function extractScene(doc) {
         const a = (k / n) * TAU;
         pts.push(g.center[0] + g.radius * Math.cos(a), g.center[1] + g.radius * Math.sin(a), z);
       }
-      strings.push({ layer, pts: Float64Array.from(pts) });
+      strings.push({ layer, color: rgb, pts: Float64Array.from(pts) });
       layerSet.add(layer);
     } else if (g.kind === 'point') {
-      points.push({ layer, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
+      points.push({ layer, color: rgb, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
       layerSet.add(layer);
     }
     // text / attdef / hatch metadata: not scene geometry
@@ -89,9 +100,10 @@ export function extractScene(doc) {
   for (const p of points) grow(p.x, p.y, p.z);
 
   return {
-    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt) } : null,
+    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt), color: meshColor || null } : null,
     strings, points,
     layers: [...layerSet].sort(),
+    layerColors,
     counts: { triangles: mt.length / 3, strings: strings.length, points: points.length },
     bbox,
   };

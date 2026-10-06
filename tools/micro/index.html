@@ -6822,9 +6822,11 @@ async function openDmWireframeBlob(ptFile, trFile, mode = 'replace', at = null) 
 async function openDxfBlob(blob, name, opts) {
   const lid = opts.layer, first = opts.first;
   const r = await openDxf(blob, { as: opts.as || null });
+  const dxfHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
   if (r.header.kind === 'mesh') {
     const L0 = layerById(lid); if (L0) L0.kind = 'mesh';
-    await openMeshDoc(blob, name, { layer: lid, first, prebuilt: r, tint: opts.tint, opacity: opts.opacity });
+    const tint = opts.tint !== undefined ? opts.tint : (r.header.meshColor ? dxfHex(r.header.meshColor) : undefined);
+    await openMeshDoc(blob, name, { layer: lid, first, prebuilt: r, tint, opacity: opts.opacity });
     const c = r.header.dxfCounts;
     $('#meta').textContent = `${name} — ${r.header.triCount.toLocaleString()} triangles · ${r.header.vertexCount.toLocaleString()} vertices${c.strings ? ` · +${c.strings} design strings (Reinterpret as…)` : ''}`;
     const L = layerById(lid); if (L) L.colorSel = $('#colorBy').value;
@@ -6843,6 +6845,14 @@ async function openDxfBlob(blob, name, opts) {
     const doc = cb.flush();
     const L = layerById(lid);
     if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
+    if (L && header.categories && header.catColors && header.catColors.some(Boolean)) {
+      L.catLegend = {
+        col: header.columns[header.mapping.cat],
+        entries: header.categories.map((nm, i) => (header.catColors[i] ? { values: [nm], color: dxfHex(header.catColors[i]) } : null)).filter(Boolean),
+        otherColor: '#555a5f',
+      };
+      applyCatLegend(L, true);
+    }
     recomputeUnion();
     $('#meta').textContent = `${name} — ${(header.strings || 0).toLocaleString()} design strings · ${header.count.toLocaleString()} segments · ${(header.categories || []).length} DXF layers`;
     return;
@@ -13569,7 +13579,7 @@ function renderIntervalTable(body, L, lo, hi) {
 const LAS_CLASSES = ['never classified', 'unclassified', 'ground', 'low vegetation', 'medium vegetation', 'high vegetation', 'building', 'low point (noise)', 'reserved', 'water', 'rail', 'road surface', 'reserved', 'wire — guard', 'wire — conductor', 'transmission tower', 'wire connector', 'bridge deck', 'high noise'];
 function layerClassInfo(L) {
   const d = L.docs || {};
-  const h = (d.blockDoc || d.dhDoc || {}).header;
+  const h = (d.blockDoc || d.dhDoc || d.stringsDoc || {}).header;
   if (h && h.categories && h.categories.length) {
     const px = categoryPalettePixels(256);
     return {
