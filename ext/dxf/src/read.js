@@ -98,25 +98,83 @@ function parseLwpolyline(rec) {
 }
 
 // Old-style POLYLINE: a header + a VERTEX stream + SEQEND. Returns the feature and the
-// index just past SEQEND. Polyface/polygon-mesh variants (flags 64/16) are punted (v0.2).
+// index just past SEQEND. The 3D mesh tier (v0.2): polyface meshes (flag 64) and
+// polygon meshes (flag 16) become 'mesh' features — the shape mine software exports
+// solids and surfaces in.
 function parsePolyline(rec, recs, i, warnings) {
   const flags = val(rec.pairs, 70, 0);
   let j = i + 1;
-  const pts = [], bs = [];
-  while (j < recs.length && recs[j].type === 'VERTEX') {
-    const vp = recs[j].pairs;
-    pts.push([val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0)]);
-    bs.push(val(vp, 42, 0));
-    j++;
-  }
+  const vrecs = [];
+  while (j < recs.length && recs[j].type === 'VERTEX') { vrecs.push(recs[j].pairs); j++; }
   if (j < recs.length && recs[j].type === 'SEQEND') j++;
-  if (flags & 64 || flags & 16) {                          // polyface / polygon mesh — punt
-    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(mesh)', reason: 'mesh POLYLINE not supported in v0.1 (metadata kept)' });
-    return { feature: nullFeature(rec), next: j };
-  }
+
+  if (flags & 64) return { feature: parsePolyfaceMesh(rec, vrecs, warnings), next: j };
+  if (flags & 16) return { feature: parsePolygonMesh(rec, vrecs, warnings), next: j };
+
+  const pts = vrecs.map((vp) => [val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0)]);
+  const bs = vrecs.map((vp) => val(vp, 42, 0));
   const vertices = packPts(pts);
   const bulges = bs.some((v) => v !== 0) ? Float64Array.from(bs) : null;
   return { feature: mkFeature('polyline', { kind: 'polyline', vertices, bulges, closed: (flags & 1) === 1 }, readCommon(rec.pairs)), next: j };
+}
+
+// Polyface mesh (POLYLINE flag 64): the VERTEX stream carries two record kinds —
+// geometry vertices (vertex flag 64|128) and FACE records (flag 128 alone) whose
+// codes 71–74 are 1-based indices into the geometry vertices (negative = the edge
+// is invisible; only |index| matters here). A 4-index face splits into two triangles.
+function parsePolyfaceMesh(rec, vrecs, warnings) {
+  const pts = [], faces = [];
+  for (const vp of vrecs) {
+    const vf = val(vp, 70, 0);
+    if (vf & 128 && !(vf & 64)) {
+      const idx = [val(vp, 71, 0), val(vp, 72, 0), val(vp, 73, 0), val(vp, 74, 0)].map((v) => Math.abs(v)).filter((v) => v > 0);
+      if (idx.length >= 3) faces.push(idx);
+    } else {
+      pts.push(val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0));
+    }
+  }
+  const nV = pts.length / 3;
+  const tris = [];
+  let dropped = 0;
+  for (const f of faces) {
+    if (f.some((ix) => ix > nV)) { dropped++; continue; }  // index past the vertex table
+    tris.push(f[0] - 1, f[1] - 1, f[2] - 1);
+    if (f.length === 4) tris.push(f[0] - 1, f[2] - 1, f[3] - 1);
+  }
+  if (dropped) warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: `${dropped} face(s) referenced vertices past the table — dropped` });
+  if (!tris.length) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: 'no resolvable faces' });
+    return nullFeature(rec);
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: Float64Array.from(pts), triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
+}
+
+// Polygon mesh (POLYLINE flag 16): an M×N vertex grid (codes 71/72 on the header),
+// vertices in row-major M-then-N order; faces are the grid quads, wrapping when the
+// mesh is closed in M (flag 1) and/or N (flag 32).
+function parsePolygonMesh(rec, vrecs, warnings) {
+  const M = val(rec.pairs, 71, 0), N = val(rec.pairs, 72, 0);
+  const flags = val(rec.pairs, 70, 0);
+  const gverts = vrecs.filter((vp) => !(val(vp, 70, 0) & 128) || (val(vp, 70, 0) & 64));
+  if (M < 2 || N < 2 || gverts.length < M * N) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polygon mesh)', reason: `grid ${M}×${N} but ${gverts.length} vertices — skipped` });
+    return nullFeature(rec);
+  }
+  const pts = new Float64Array(M * N * 3);
+  for (let k = 0; k < M * N; k++) {
+    const vp = gverts[k];
+    pts[k * 3] = val(vp, 10, 0); pts[k * 3 + 1] = val(vp, 20, 0); pts[k * 3 + 2] = val(vp, 30, 0);
+  }
+  const closedM = (flags & 1) === 1, closedN = (flags & 32) === 32;
+  const tris = [];
+  const at = (m, n) => m * N + n;
+  for (let m = 0; m < (closedM ? M : M - 1); m++) {
+    for (let n = 0; n < (closedN ? N : N - 1); n++) {
+      const a = at(m, n), b = at((m + 1) % M, n), c = at((m + 1) % M, (n + 1) % N), d = at(m, (n + 1) % N);
+      tris.push(a, b, c, a, c, d);
+    }
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: pts, triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
 }
 
 function parseCircle(rec) {

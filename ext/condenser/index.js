@@ -6077,6 +6077,883 @@ async function openDmWireframe(ptBlob, trBlob) {
   return { header: { kind: 'mesh', format: 'dm-wireframe', vertexCount: n, triCount: triangles.length / 3 | 0, bbox: { min, max }, dropped }, vertices, triangles };
 }
 
+// ── ../dxf/src/tokenize.js ──
+
+// DXF group-code pair reader/writer — the bulletproof spine of the parser.
+//
+// A DXF file is a flat stream of (integer code, value) pairs, one per two lines: the
+// group code on one line, its value on the next. The value's TYPE is dictated by the
+// code's numeric range, not by how the value looks — a whole-numbered coordinate is
+// still a double (the same code-driven-type rule as the AutoLISP entity model). The
+// reader is a TOTAL function: malformed input never throws, it resyncs by skipping a
+// bad code line. "Bulletproof" starts here.
+
+// Value kind by group-code range — the fixed DXF code→type table, common ranges.
+function valueKind(code) {
+  if (code >= 10 && code <= 59) return 'num';      // primary doubles (coordinates / reals)
+  if (code >= 60 && code <= 79) return 'int';      // int16 (incl. 62 = ACI colour, 70 = flags)
+  if (code >= 90 && code <= 99) return 'int';      // int32
+  if (code >= 140 && code <= 149) return 'num';    // doubles
+  if (code >= 160 && code <= 179) return 'int';    // int64 / int16
+  if (code >= 210 && code <= 239) return 'num';    // extrusion / OCS doubles
+  if (code >= 270 && code <= 289) return 'int';
+  if (code >= 290 && code <= 299) return 'bool';
+  if (code >= 370 && code <= 389) return 'int';    // lineweight / flags
+  if (code >= 400 && code <= 409) return 'int';
+  if (code === 420 || code === 440) return 'int';  // 24-bit true colour / transparency
+  if (code >= 1010 && code <= 1059) return 'num';  // XDATA doubles (points / reals)
+  if (code >= 1060 && code <= 1071) return 'int';  // XDATA ints
+  return 'str';                                    // 0-9, 100/102/105, 300-369, 430, 1000-1009, names, handles
+}
+
+function coerce(code, raw) {
+  const kind = valueKind(code);
+  if (kind === 'num') { const n = parseFloat(raw); return Number.isNaN(n) ? 0 : n; }
+  if (kind === 'int') { const n = parseInt(raw, 10); return Number.isNaN(n) ? 0 : n; }
+  if (kind === 'bool') return raw.trim() !== '0';
+  return raw;                                       // string: keep verbatim (trailing \r already stripped)
+}
+
+// Parse DXF text into an array of { code, value } pairs. Handles LF and CRLF, blank
+// lines, and a desynced stream (a non-integer where a code is expected → skip one line
+// and retry, rather than throw).
+function parsePairs(text) {
+  const lines = String(text).split('\n');
+  const pairs = [];
+  for (let i = 0; i < lines.length; ) {
+    const head = lines[i].trim();
+    if (head === '') { i++; continue; }
+    const code = Number(head);
+    if (!Number.isInteger(code)) { i++; continue; }               // desync guard
+    const raw = i + 1 < lines.length ? lines[i + 1].replace(/\r$/, '') : '';
+    pairs.push({ code, value: coerce(code, raw) });
+    i += 2;
+  }
+  return pairs;
+}
+
+// Decimal formatting that avoids exponential notation across the coordinate ranges DXF
+// readers expect (UTM magnitudes round-trip via String; only tiny/huge values fall back
+// to a fixed expansion).
+function fmtNum(n) {
+  if (!Number.isFinite(n)) return '0.0';
+  if (n === 0) return '0.0';
+  const s = String(n);
+  return (s.includes('e') || s.includes('E')) ? n.toFixed(12).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '.0') : s;
+}
+
+function fmtValue(code, value) {
+  const kind = valueKind(code);
+  if (kind === 'num') return fmtNum(value);
+  if (kind === 'int') return String(Math.trunc(value));
+  if (kind === 'bool') return value ? '1' : '0';
+  return String(value);
+}
+
+// Serialize { code, value } pairs back to DXF text (CRLF, as is traditional — readers
+// accept LF too, but CRLF is the safe default). Round-trips with parsePairs.
+function serializePairs(pairs) {
+  const out = [];
+  for (const { code, value } of pairs) out.push(String(code), fmtValue(code, value));
+  return out.join('\r\n') + '\r\n';
+}
+
+// Exposed for the reader/entity layer (code-driven type decisions, e.g. XDATA walking).
+
+// ── ../dxf/src/arc.js ──
+
+// Bulge ↔ arc conversions — the heart of the one-curve-type throughline.
+//
+// An arc span is stored as endpoint + bulge: `bulge = tan(θ/4)`, where θ is the signed
+// swept angle (+ = CCW). center / radius / angles are DERIVED here, never stored — a
+// gentle arc has a huge, far-flung center, which would drag the large-coordinate problem
+// (@gcu/frame) back in, and stored endpoints are what let adjacent spans meet watertight
+// (SPEC-curves §1). A straight span is just `bulge = 0`, so lines and arcs are the same
+// primitive. All angles here are RADIANS; the DXF degree boundary converts in read/write.
+
+const TAU = Math.PI * 2;
+
+// Endpoint + bulge → derived { center, radius, startAngle, endAngle, sweep, ccw }.
+// Returns null for a straight (bulge 0) or degenerate (coincident endpoints) span —
+// callers treat those as line segments.
+function arcFromBulge(p0, p1, bulge) {
+  if (!bulge) return null;
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
+  const c = Math.hypot(dx, dy);
+  if (c === 0) return null;
+  const theta = 4 * Math.atan(bulge);              // signed swept angle
+  const half = c / 2;
+  const r = half / Math.abs(Math.sin(theta / 2));
+  const m = half / Math.tan(theta / 2);            // signed offset from chord-mid along left normal
+  const nx = -dy / c, ny = dx / c;                 // unit left normal of p0→p1
+  const cx = p0[0] + dx / 2 + nx * m;
+  const cy = p0[1] + dy / 2 + ny * m;
+  return {
+    center: [cx, cy],
+    radius: r,
+    startAngle: Math.atan2(p0[1] - cy, p0[0] - cx),
+    endAngle: Math.atan2(p1[1] - cy, p1[0] - cx),
+    sweep: theta,
+    ccw: bulge > 0,
+  };
+}
+
+// Center-form arc (a DXF ARC: CCW from start to end, angles in RADIANS) → endpoint +
+// bulge canonical form `{ start, end, bulge }`. The inverse of `arcFromBulge` for a CCW
+// arc — this is how an ARC entity enters the bulge-native model losslessly.
+function bulgeFromArc(center, radius, startAngle, endAngle) {
+  let theta = ((endAngle - startAngle) % TAU + TAU) % TAU;   // normalize CCW sweep into (0, TAU]
+  if (theta === 0) theta = TAU;
+  const [cx, cy] = center;
+  return {
+    start: [cx + radius * Math.cos(startAngle), cy + radius * Math.sin(startAngle)],
+    end: [cx + radius * Math.cos(endAngle), cy + radius * Math.sin(endAngle)],
+    bulge: Math.tan(theta / 4),
+  };
+}
+
+// The point at the middle of an arc span — on the arc, not on the chord (snapping,
+// labels, midpoint object snap). Falls back to the chord midpoint for a straight span.
+function arcMidpoint(p0, p1, bulge) {
+  const a = arcFromBulge(p0, p1, bulge);
+  if (!a) return [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+  const mid = a.startAngle + a.sweep / 2;
+  return [a.center[0] + a.radius * Math.cos(mid), a.center[1] + a.radius * Math.sin(mid)];
+}
+
+// ── ../dxf/src/color.js ──
+
+// DXF colour resolution — kept UN-FLATTENED (SPEC-dxf §4).
+//
+// An ACI palette index, a BYLAYER / BYBLOCK reference, and a 24-bit true colour are
+// DISTINCT and must not collapse into one RGB triple. Flattening ACI → RGB discards the
+// layer-driven colour scheme mining/geology drawings rely on (the colour IS data). So
+// the model preserves the mode; aciToRgb is a render-time convenience, never canonical.
+
+const BYLAYER = 256, BYBLOCK = 0;
+
+// Resolve raw colour group codes into the typed colour model. `aci` is group 62 (may be
+// null/absent), `trueColor` is group 420 (24-bit packed RGB, may be null). True colour
+// wins when present (that's the DXF precedence). A negative ACI marks a layer turned off.
+function resolveColor({ aci = null, trueColor = null } = {}) {
+  if (trueColor != null) {
+    return { mode: 'rgb', r: (trueColor >> 16) & 0xff, g: (trueColor >> 8) & 0xff, b: trueColor & 0xff };
+  }
+  if (aci == null || aci === BYLAYER) return { mode: 'bylayer' };
+  if (aci === BYBLOCK) return { mode: 'byblock' };
+  if (aci < 0) return { mode: 'aci', index: -aci, off: true };
+  return { mode: 'aci', index: aci };
+}
+
+// Serialize the colour model back to the group-code pairs the writer emits, preserving
+// the distinction (rgb → 420, byblock → 62/0, bylayer → 62/256, aci → 62/index).
+function colorToPairs(color) {
+  if (!color) return [];
+  switch (color.mode) {
+    case 'rgb': return [{ code: 420, value: ((color.r & 0xff) << 16) | ((color.g & 0xff) << 8) | (color.b & 0xff) }];
+    case 'byblock': return [{ code: 62, value: BYBLOCK }];
+    case 'bylayer': return [{ code: 62, value: BYLAYER }];
+    case 'aci': return [{ code: 62, value: color.off ? -color.index : color.index }];
+    default: return [];
+  }
+}
+
+// The 7 standard ACI named colours, for renderers that want a quick RGB. The model keeps
+// the index; this is a convenience only. The full 256-entry ramp is deferred.
+const ACI_RGB = {
+  1: [255, 0, 0], 2: [255, 255, 0], 3: [0, 255, 0], 4: [0, 255, 255],
+  5: [0, 0, 255], 6: [255, 0, 255], 7: [255, 255, 255],
+};
+
+function aciToRgb(index) { return ACI_RGB[index] || null; }
+
+// ── ../dxf/src/read.js ──
+
+// @gcu/dxf reader — the Document assembler.
+//
+// Walks a DXF group-code stream into a typed Document: sections → entities → features,
+// with the coordinate-provenance contract front and centre. WORLD coordinates are
+// CANONICAL and never mutated — the reader computes a RECOMMENDED working offset (an
+// @gcu/frame) as metadata and attaches it; consumers derive local coordinates on demand
+// (`toLocalCoords(geom, doc.frame)`). The reader is bulletproof: a malformed entity is
+// punted to a null-geometry feature (its property bag preserved) plus a `warnings[]`
+// entry — never a throw.
+//
+// Geometry is normalised to 3D world coordinates in flat Float64Array buffers, and the
+// curve primitive is the bulge-polyline: LINE, LWPOLYLINE, POLYLINE, and ARC all become
+// `{ kind:'polyline', vertices, bulges, closed }` (ARC = a single bulge span) — the
+// one-curve-type throughline. CIRCLE and POINT stay distinct (a full circle has no
+// endpoints), 3DFACE is a face, INSERT is a block reference resolved by explode().
+
+
+const DEG$read = Math.PI / 180;
+const IMPORTER = '@gcu/dxf@0.1.0';
+
+// $INSUNITS → a units string (the common subset; default metres for a geo stack).
+const INSUNITS = { 1: 'in', 2: 'ft', 4: 'mm', 5: 'cm', 6: 'm', 9: 'mm', 10: 'm', 14: 'dm' };
+
+// ── small helpers ──────────────────────────────────────────────────────────────
+
+// First value for a group code in an entity's pairs (simple entities are last-wins-safe
+// because their codes don't repeat; vertex streams are iterated in order instead).
+function val(pairs, code, dflt) {
+  for (const p of pairs) if (p.code === code) return p.value;
+  return dflt;
+}
+
+const mkFeature = (type, geometry, properties) => ({ type, geometry, properties });
+
+// The shared attribute bag — hoard everything the format carries that means something.
+function readCommon(pairs) {
+  const props = {};
+  let aci = null, trueColor = null, xApp = null, xdata = null, ext = null;
+  for (const { code, value } of pairs) {
+    switch (code) {
+      case 5: props.handle = value; break;
+      case 8: props.layer = value; break;
+      case 6: props.linetype = value; break;
+      case 62: aci = value; break;
+      case 420: trueColor = value; break;
+      case 370: props.lineweight = value; break;
+      case 38: props.elevation = value; break;
+      case 39: props.thickness = value; break;
+      case 210: (ext ??= [0, 0, 1])[0] = value; break;
+      case 220: (ext ??= [0, 0, 1])[1] = value; break;
+      case 230: (ext ??= [0, 0, 1])[2] = value; break;
+      default:
+        if (code === 1001) { xApp = value; (xdata ??= {})[xApp] = []; }
+        else if (code >= 1000 && code <= 1071 && xApp) xdata[xApp].push({ code, value });
+    }
+  }
+  props.color = resolveColor({ aci, trueColor });
+  if (ext) props.extrusion = ext;
+  if (xdata) props.xdata = xdata;
+  return props;
+}
+
+// Pack an array of [x,y,z] points into a flat Float64Array.
+function packPts(pts) {
+  const out = new Float64Array(pts.length * 3);
+  for (let i = 0; i < pts.length; i++) { out[i * 3] = pts[i][0]; out[i * 3 + 1] = pts[i][1]; out[i * 3 + 2] = pts[i][2] || 0; }
+  return out;
+}
+
+// ── per-entity parsers ───────────────────────────────────────────────────────────
+
+function parseLine(rec) {
+  const p = rec.pairs;
+  const v = packPts([[val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], [val(p, 11, 0), val(p, 21, 0), val(p, 31, 0)]]);
+  return mkFeature('line', { kind: 'polyline', vertices: v, bulges: null, closed: false }, readCommon(p));
+}
+
+function parseLwpolyline(rec) {
+  const p = rec.pairs;
+  const closed = (val(p, 70, 0) & 1) === 1, elev = val(p, 38, 0);
+  const xs = [], ys = [], bs = [];
+  let x = null, y = 0, b = 0, open = false;
+  const flush = () => { if (open) { xs.push(x); ys.push(y); bs.push(b); } x = null; y = 0; b = 0; open = false; };
+  for (const { code, value } of p) {
+    if (code === 10) { flush(); x = value; open = true; }
+    else if (code === 20 && open) y = value;
+    else if (code === 42 && open) b = value;
+  }
+  flush();
+  const vertices = new Float64Array(xs.length * 3);
+  for (let i = 0; i < xs.length; i++) { vertices[i * 3] = xs[i]; vertices[i * 3 + 1] = ys[i]; vertices[i * 3 + 2] = elev; }
+  const bulges = bs.some((v) => v !== 0) ? Float64Array.from(bs) : null;
+  return mkFeature('polyline', { kind: 'polyline', vertices, bulges, closed }, readCommon(p));
+}
+
+// Old-style POLYLINE: a header + a VERTEX stream + SEQEND. Returns the feature and the
+// index just past SEQEND. The 3D mesh tier (v0.2): polyface meshes (flag 64) and
+// polygon meshes (flag 16) become 'mesh' features — the shape mine software exports
+// solids and surfaces in.
+function parsePolyline(rec, recs, i, warnings) {
+  const flags = val(rec.pairs, 70, 0);
+  let j = i + 1;
+  const vrecs = [];
+  while (j < recs.length && recs[j].type === 'VERTEX') { vrecs.push(recs[j].pairs); j++; }
+  if (j < recs.length && recs[j].type === 'SEQEND') j++;
+
+  if (flags & 64) return { feature: parsePolyfaceMesh(rec, vrecs, warnings), next: j };
+  if (flags & 16) return { feature: parsePolygonMesh(rec, vrecs, warnings), next: j };
+
+  const pts = vrecs.map((vp) => [val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0)]);
+  const bs = vrecs.map((vp) => val(vp, 42, 0));
+  const vertices = packPts(pts);
+  const bulges = bs.some((v) => v !== 0) ? Float64Array.from(bs) : null;
+  return { feature: mkFeature('polyline', { kind: 'polyline', vertices, bulges, closed: (flags & 1) === 1 }, readCommon(rec.pairs)), next: j };
+}
+
+// Polyface mesh (POLYLINE flag 64): the VERTEX stream carries two record kinds —
+// geometry vertices (vertex flag 64|128) and FACE records (flag 128 alone) whose
+// codes 71–74 are 1-based indices into the geometry vertices (negative = the edge
+// is invisible; only |index| matters here). A 4-index face splits into two triangles.
+function parsePolyfaceMesh(rec, vrecs, warnings) {
+  const pts = [], faces = [];
+  for (const vp of vrecs) {
+    const vf = val(vp, 70, 0);
+    if (vf & 128 && !(vf & 64)) {
+      const idx = [val(vp, 71, 0), val(vp, 72, 0), val(vp, 73, 0), val(vp, 74, 0)].map((v) => Math.abs(v)).filter((v) => v > 0);
+      if (idx.length >= 3) faces.push(idx);
+    } else {
+      pts.push(val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0));
+    }
+  }
+  const nV = pts.length / 3;
+  const tris = [];
+  let dropped = 0;
+  for (const f of faces) {
+    if (f.some((ix) => ix > nV)) { dropped++; continue; }  // index past the vertex table
+    tris.push(f[0] - 1, f[1] - 1, f[2] - 1);
+    if (f.length === 4) tris.push(f[0] - 1, f[2] - 1, f[3] - 1);
+  }
+  if (dropped) warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: `${dropped} face(s) referenced vertices past the table — dropped` });
+  if (!tris.length) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: 'no resolvable faces' });
+    return nullFeature(rec);
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: Float64Array.from(pts), triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
+}
+
+// Polygon mesh (POLYLINE flag 16): an M×N vertex grid (codes 71/72 on the header),
+// vertices in row-major M-then-N order; faces are the grid quads, wrapping when the
+// mesh is closed in M (flag 1) and/or N (flag 32).
+function parsePolygonMesh(rec, vrecs, warnings) {
+  const M = val(rec.pairs, 71, 0), N = val(rec.pairs, 72, 0);
+  const flags = val(rec.pairs, 70, 0);
+  const gverts = vrecs.filter((vp) => !(val(vp, 70, 0) & 128) || (val(vp, 70, 0) & 64));
+  if (M < 2 || N < 2 || gverts.length < M * N) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polygon mesh)', reason: `grid ${M}×${N} but ${gverts.length} vertices — skipped` });
+    return nullFeature(rec);
+  }
+  const pts = new Float64Array(M * N * 3);
+  for (let k = 0; k < M * N; k++) {
+    const vp = gverts[k];
+    pts[k * 3] = val(vp, 10, 0); pts[k * 3 + 1] = val(vp, 20, 0); pts[k * 3 + 2] = val(vp, 30, 0);
+  }
+  const closedM = (flags & 1) === 1, closedN = (flags & 32) === 32;
+  const tris = [];
+  const at = (m, n) => m * N + n;
+  for (let m = 0; m < (closedM ? M : M - 1); m++) {
+    for (let n = 0; n < (closedN ? N : N - 1); n++) {
+      const a = at(m, n), b = at((m + 1) % M, n), c = at((m + 1) % M, (n + 1) % N), d = at(m, (n + 1) % N);
+      tris.push(a, b, c, a, c, d);
+    }
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: pts, triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
+}
+
+function parseCircle(rec) {
+  const p = rec.pairs;
+  return mkFeature('circle', { kind: 'circle', center: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], radius: val(p, 40, 0) }, readCommon(p));
+}
+
+// ARC enters the bulge-native model: center-form (CCW, degrees) → endpoint + bulge.
+function parseArc(rec) {
+  const p = rec.pairs;
+  const center = [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], radius = val(p, 40, 0), z = center[2];
+  const { start, end, bulge } = bulgeFromArc(center, radius, val(p, 50, 0) * DEG$read, val(p, 51, 0) * DEG$read);
+  const vertices = packPts([[start[0], start[1], z], [end[0], end[1], z]]);
+  return mkFeature('arc', { kind: 'polyline', vertices, bulges: Float64Array.from([bulge]), closed: false }, readCommon(p));
+}
+
+function parsePoint(rec) {
+  const p = rec.pairs;
+  return mkFeature('point', { kind: 'point', position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)] }, readCommon(p));
+}
+
+// TEXT: insertion point (10/20/30), height (40), the string (1), rotation degrees (50).
+// MTEXT and the alignment codes (11/21/72/73) are v0.2 — single-line left-baseline for now.
+function parseText(rec) {
+  const p = rec.pairs;
+  let str = '';
+  for (const { code, value } of p) if (code === 1) str = value;
+  return mkFeature('text', { kind: 'text', position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], height: val(p, 40, 1), rotation: val(p, 50, 0), value: str }, readCommon(p));
+}
+
+// ATTDEF: an attribute-definition template inside a block — TEXT plus tag (2), prompt (3)
+// and a default value (1). The per-instance value is an ATTRIB on the INSERT (parseInsert).
+function parseAttdef(rec) {
+  const p = rec.pairs;
+  let value = '', tag = '', prompt = '';
+  for (const { code, value: v } of p) { if (code === 1) value = v; else if (code === 2) tag = v; else if (code === 3) prompt = v; }
+  return mkFeature('attdef', { kind: 'attdef', position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], height: val(p, 40, 1), rotation: val(p, 50, 0), tag, prompt, value }, readCommon(p));
+}
+
+function parse3dface(rec) {
+  const p = rec.pairs;
+  const c = [[val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], [val(p, 11, 0), val(p, 21, 0), val(p, 31, 0)],
+    [val(p, 12, 0), val(p, 22, 0), val(p, 32, 0)], [val(p, 13, 0), val(p, 23, 0), val(p, 33, 0)]];
+  const tri = c[3][0] === c[2][0] && c[3][1] === c[2][1] && c[3][2] === c[2][2];   // 4th==3rd → triangle
+  return mkFeature('face', { kind: 'face', vertices: packPts(tri ? c.slice(0, 3) : c) }, readCommon(p));
+}
+
+// INSERT: a placed block + (when flag 66=1) an ATTRIB stream folded into the bag. The
+// block geometry is referenced, not exploded — explode() resolves it on demand.
+function parseInsert(rec, recs, i) {
+  const p = rec.pairs;
+  const props = readCommon(p);
+  const geometry = {
+    kind: 'insert', block: val(p, 2, ''),
+    transform: { position: [val(p, 10, 0), val(p, 20, 0), val(p, 30, 0)], scale: [val(p, 41, 1), val(p, 42, 1), val(p, 43, 1)], rotation: val(p, 50, 0) },
+  };
+  let j = i + 1;
+  if (val(p, 66, 0) === 1) {
+    const attribs = [];
+    while (j < recs.length && recs[j].type === 'ATTRIB') {
+      const ap = recs[j].pairs;
+      attribs.push({ tag: val(ap, 2, ''), value: val(ap, 1, ''), position: [val(ap, 10, 0), val(ap, 20, 0), val(ap, 30, 0)] });
+      j++;
+    }
+    if (j < recs.length && recs[j].type === 'SEQEND') j++;
+    if (attribs.length) props.attribs = attribs;
+  }
+  return { feature: mkFeature('insert', geometry, props), next: j };
+}
+
+// An unsupported/unrecognised entity: geometry dropped, property bag (handle/layer/
+// XDATA) preserved so it round-trips as metadata and the gap is a logged decision.
+function nullFeature(rec) {
+  const props = readCommon(rec.pairs);
+  props.dropped = rec.type;
+  return mkFeature(null, null, props);
+}
+
+// ── structure ────────────────────────────────────────────────────────────────────
+
+// Split a flat pair list into entity records at each code-0 boundary.
+function splitRecords(pairs) {
+  const recs = [];
+  let cur = null;
+  for (const p of pairs) {
+    if (p.code === 0) recs.push((cur = { type: p.value, pairs: [] }));
+    else if (cur) cur.pairs.push(p);
+  }
+  return recs;
+}
+
+// Partition into named sections → arrays of entity records (HEADER body is empty here;
+// its variables are read directly via headerVar over the raw pairs).
+function partitionSections(pairs) {
+  const recs = splitRecords(pairs), sections = {};
+  for (let i = 0; i < recs.length; i++) {
+    if (recs[i].type !== 'SECTION') continue;
+    const name = val(recs[i].pairs, 2, '');
+    const body = [];
+    for (i++; i < recs.length && recs[i].type !== 'ENDSEC'; i++) body.push(recs[i]);
+    sections[name] = body;
+  }
+  return sections;
+}
+
+// A header variable: code 9 names it, the next pair carries the value.
+function headerVar(pairs, name) {
+  for (let i = 0; i < pairs.length - 1; i++) if (pairs[i].code === 9 && pairs[i].value === name) return pairs[i + 1].value;
+  return undefined;
+}
+
+function parseLayers(records) {
+  const layers = {};
+  for (const r of records) {
+    if (r.type !== 'LAYER') continue;
+    const name = val(r.pairs, 2, '');
+    layers[name] = { name, color: resolveColor({ aci: val(r.pairs, 62, null) }), linetype: val(r.pairs, 6, undefined) };
+  }
+  return layers;
+}
+
+function parseBlocks(records, warnings) {
+  const blocks = {};
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].type !== 'BLOCK') continue;
+    const name = val(records[i].pairs, 2, '');
+    const base = [val(records[i].pairs, 10, 0), val(records[i].pairs, 20, 0), val(records[i].pairs, 30, 0)];
+    const body = [];
+    for (i++; i < records.length && records[i].type !== 'ENDBLK'; i++) body.push(records[i]);
+    blocks[name] = { name, base, features: assembleEntities(body, warnings) };
+  }
+  return blocks;
+}
+
+// Walk entity records → features, resolving the compound entities (POLYLINE vertex
+// streams, INSERT attribute streams) and isolating per-entity parse errors.
+function assembleEntities(records, warnings) {
+  const features = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    try {
+      switch (rec.type) {
+        case 'LINE': features.push(parseLine(rec)); break;
+        case 'LWPOLYLINE': features.push(parseLwpolyline(rec)); break;
+        case 'CIRCLE': features.push(parseCircle(rec)); break;
+        case 'ARC': features.push(parseArc(rec)); break;
+        case 'POINT': features.push(parsePoint(rec)); break;
+        case 'TEXT': features.push(parseText(rec)); break;
+        case 'ATTDEF': features.push(parseAttdef(rec)); break;
+        case '3DFACE': features.push(parse3dface(rec)); break;
+        case 'POLYLINE': { const r = parsePolyline(rec, records, i, warnings); features.push(r.feature); i = r.next - 1; break; }
+        case 'INSERT': { const r = parseInsert(rec, records, i); features.push(r.feature); i = r.next - 1; break; }
+        case 'VERTEX': case 'SEQEND': case 'ATTRIB': break;        // consumed by their parent; stray → skip
+        default:
+          warnings.push({ handle: val(rec.pairs, 5, null), entity: rec.type, reason: 'unsupported entity (metadata kept)' });
+          features.push(nullFeature(rec));
+      }
+    } catch (e) {
+      warnings.push({ handle: val(rec.pairs, 5, null), entity: rec.type, reason: `parse error: ${e.message}` });
+      features.push(nullFeature(rec));
+    }
+  }
+  return features;
+}
+
+// Bounding box over all world geometry — drives the recommended working frame.
+function computeBounds(features) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const ext = (x, y, z) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+    const zz = Number.isFinite(z) ? z : 0;
+    if (zz < min[2]) min[2] = zz; if (zz > max[2]) max[2] = zz;
+  };
+  for (const f of features) {
+    const g = f.geometry;
+    if (!g) continue;
+    if (g.kind === 'polyline' || g.kind === 'face') for (let i = 0; i < g.vertices.length; i += 3) ext(g.vertices[i], g.vertices[i + 1], g.vertices[i + 2]);
+    else if (g.kind === 'circle') { ext(g.center[0] - g.radius, g.center[1] - g.radius, g.center[2]); ext(g.center[0] + g.radius, g.center[1] + g.radius, g.center[2]); }
+    else if (g.kind === 'point' || g.kind === 'text' || g.kind === 'attdef') ext(...g.position);
+    else if (g.kind === 'insert') ext(...g.transform.position);
+  }
+  return min[0] === Infinity ? null : { min, max };
+}
+
+// Read DXF text into a Document. Options: { offsetStrategy:'floor'|'centroid', round,
+// crs, units }. Total function — never throws on malformed input.
+function read(text, opts = {}) {
+  const warnings = [];
+  const pairs = parsePairs(text);
+  const sections = partitionSections(pairs);
+  const insunits = headerVar(pairs, '$INSUNITS');
+  const units = INSUNITS[insunits] ?? opts.units ?? 'm';
+  const layers = parseLayers(sections.TABLES || []);
+  const blocks = parseBlocks(sections.BLOCKS || [], warnings);
+  const features = assembleEntities(sections.ENTITIES || [], warnings);
+  const bounds = computeBounds(features);
+  const strategy = opts.offsetStrategy || 'floor';
+  const frame = bounds
+    ? frameFromBounds(bounds, { strategy, round: opts.round ?? 1, crs: opts.crs ?? null, units })
+    : makeFrame({ crs: opts.crs ?? null, units });
+  const coordinate_provenance = { canonical: 'WCS', bbox_original: bounds, frame, offset_strategy: strategy, importer: IMPORTER };
+  return {
+    header: { acadver: headerVar(pairs, '$ACADVER'), insunits, units, codepage: headerVar(pairs, '$DWGCODEPAGE'), coordinate_provenance },
+    frame, layers, blocks, features, warnings,
+  };
+}
+
+// ── ../dxf/src/explode.js ──
+
+// @gcu/dxf block resolver — the opt-in derived view.
+//
+// The canonical Document keeps blocks compact (a BlockDef + lightweight INSERTs), the
+// spine-principle "small auditable thing". explode() is the DERIVED "give me the legion"
+// view: it composes each INSERT's transform over its block definition to produce flat
+// world geometry, recursing through nested inserts with a cyclic-reference guard. You
+// opt into it; nothing bakes it at import.
+
+const DEG$explode = Math.PI / 180;
+
+// 4×4 affine, row-major. World = Translate(insertion) · RotZ · Scale · Translate(−base).
+const ident = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+function matMul(a, b) {
+  const m = new Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) { let s = 0; for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]; m[r * 4 + c] = s; }
+  return m;
+}
+
+function apply(m, [x, y, z]) {
+  return [m[0] * x + m[1] * y + m[2] * z + m[3], m[4] * x + m[5] * y + m[6] * z + m[7], m[8] * x + m[9] * y + m[10] * z + m[11]];
+}
+
+function insertMatrix(t, base = [0, 0, 0]) {
+  const c = Math.cos(t.rotation * DEG$explode), s = Math.sin(t.rotation * DEG$explode);
+  const [sx, sy, sz] = t.scale, [px, py, pz] = t.position, [bx, by, bz] = base;
+  const T = [1, 0, 0, px, 0, 1, 0, py, 0, 0, 1, pz, 0, 0, 0, 1];
+  const R = [c, -s, 0, 0, s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const S = [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, 0, 0, 0, 1];
+  const B = [1, 0, 0, -bx, 0, 1, 0, -by, 0, 0, 1, -bz, 0, 0, 0, 1];
+  return matMul(matMul(matMul(T, R), S), B);
+}
+
+const scaleX = (m) => Math.hypot(m[0], m[4], m[8]);   // uniform-scale factor for radius
+
+function transformFeature(f, M) {
+  const g = f.geometry;
+  if (g.kind === 'polyline' || g.kind === 'face') {
+    const v = new Float64Array(g.vertices.length);
+    for (let i = 0; i < v.length; i += 3) { const w = apply(M, [g.vertices[i], g.vertices[i + 1], g.vertices[i + 2]]); v[i] = w[0]; v[i + 1] = w[1]; v[i + 2] = w[2]; }
+    return { ...f, geometry: { ...g, vertices: v } };       // bulges survive: rotation + uniform scale preserve tan(θ/4)
+  }
+  if (g.kind === 'circle') return { ...f, geometry: { ...g, center: apply(M, g.center), radius: g.radius * scaleX(M) } };
+  if (g.kind === 'point') return { ...f, geometry: { ...g, position: apply(M, g.position) } };
+  return f;
+}
+
+function walk(features, blocks, M, stack, warnings, out) {
+  for (const f of features) {
+    const g = f.geometry;
+    if (g && g.kind === 'insert') {
+      const name = g.block;
+      if (stack.includes(name)) { warnings.push({ entity: 'INSERT', reason: `cyclic block reference: ${name}` }); continue; }
+      const blk = blocks[name];
+      if (!blk) { warnings.push({ entity: 'INSERT', reason: `undefined block: ${name}` }); continue; }
+      if (g.transform.scale[0] !== g.transform.scale[1]) warnings.push({ entity: 'INSERT', reason: `non-uniform scale on '${name}' distorts arcs/circles` });
+      walk(blk.features, blocks, matMul(M, insertMatrix(g.transform, blk.base)), [...stack, name], warnings, out);
+    } else if (g) out.push(transformFeature(f, M));
+    else out.push(f);                                        // null-geometry punt passes through
+  }
+}
+
+// Resolve every INSERT into transformed flat geometry. Returns a new Document with no
+// inserts (exploded:true), accumulating any cyclic / undefined-block / non-uniform-scale
+// warnings onto the existing log.
+function explode(doc, _opts = {}) {
+  const warnings = [], out = [];
+  walk(doc.features, doc.blocks || {}, ident(), [], warnings, out);
+  return { ...doc, features: out, exploded: true, warnings: [...(doc.warnings || []), ...warnings] };
+}
+
+// ── ../dxf/src/scene.js ──
+
+// scene — extract VIEWER-shaped geometry from a Document: one merged mesh
+// (3DFACE soup + polyface/polygon meshes), strings (polylines with bulges
+// sampled to chords, lines, arcs, circles), and points — each tagged with its
+// DXF layer. This is the bridge a 3D viewer (micro's condenser engine) builds
+// layers from; the Document itself stays the canonical, lossless model.
+
+// sample one bulge span into chord points (excluding p0, including p1):
+// ~24 chords for a full circle, never fewer than 2 for a visible arc
+function sampleSpan(p0, p1, bulge, z0, z1, out) {
+  const arc = arcFromBulge(p0, p1, bulge);
+  if (!arc) { out.push(p1[0], p1[1], z1); return; }
+  const n = Math.max(2, Math.ceil((Math.abs(arc.sweep) / TAU) * 24));
+  const a0 = arc.startAngle;
+  for (let k = 1; k <= n; k++) {
+    const t = k / n;
+    const a = a0 + arc.sweep * t;
+    out.push(arc.center[0] + arc.radius * Math.cos(a), arc.center[1] + arc.radius * Math.sin(a), z0 + (z1 - z0) * t);
+  }
+}
+
+// → { mesh: {vertices,triangles}|null, strings: [{layer,pts:Float64Array}],
+//     points: [{layer,x,y,z}], layers: [names], counts, bbox: [min3,max3]|null }
+function extractScene(doc) {
+  const flat = doc.exploded ? doc : explode(doc);
+  const mv = [], mt = [];
+  const strings = [], points = [];
+  const layerSet = new Set();
+
+  for (const f of flat.features || []) {
+    const g = f.geometry;
+    if (!g) continue;
+    const layer = (f.properties && f.properties.layer) || '0';
+
+    if (g.kind === 'mesh') {
+      const base = mv.length / 3;
+      for (let i = 0; i < g.vertices.length; i++) mv.push(g.vertices[i]);
+      for (let i = 0; i < g.triangles.length; i++) mt.push(base + g.triangles[i]);
+      layerSet.add(layer);
+    } else if (g.kind === 'face') {
+      const v = g.vertices;
+      const base = mv.length / 3;
+      for (let i = 0; i < v.length; i++) mv.push(v[i]);
+      const nV = v.length / 3;
+      if (nV >= 3) mt.push(base, base + 1, base + 2);
+      if (nV === 4) mt.push(base, base + 2, base + 3);
+      layerSet.add(layer);
+    } else if (g.kind === 'polyline') {
+      const v = g.vertices;
+      const nV = v.length / 3;
+      if (nV < 2) continue;
+      const pts = [v[0], v[1], v[2]];
+      const spans = g.closed ? nV : nV - 1;
+      for (let i = 0; i < spans; i++) {
+        const a = i, b = (i + 1) % nV;
+        const bulge = g.bulges ? g.bulges[a] || 0 : 0;
+        sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
+      }
+      strings.push({ layer, pts: Float64Array.from(pts) });
+      layerSet.add(layer);
+    } else if (g.kind === 'circle') {
+      const n = 32, pts = [];
+      const z = g.center[2] || 0;
+      for (let k = 0; k <= n; k++) {
+        const a = (k / n) * TAU;
+        pts.push(g.center[0] + g.radius * Math.cos(a), g.center[1] + g.radius * Math.sin(a), z);
+      }
+      strings.push({ layer, pts: Float64Array.from(pts) });
+      layerSet.add(layer);
+    } else if (g.kind === 'point') {
+      points.push({ layer, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
+      layerSet.add(layer);
+    }
+    // text / attdef / hatch metadata: not scene geometry
+  }
+
+  // the shared bbox over everything extracted
+  let bbox = null;
+  const grow = (x, y, z) => {
+    if (!bbox) bbox = [x, y, z, x, y, z];
+    else {
+      if (x < bbox[0]) bbox[0] = x; if (y < bbox[1]) bbox[1] = y; if (z < bbox[2]) bbox[2] = z;
+      if (x > bbox[3]) bbox[3] = x; if (y > bbox[4]) bbox[4] = y; if (z > bbox[5]) bbox[5] = z;
+    }
+  };
+  for (let i = 0; i < mv.length; i += 3) grow(mv[i], mv[i + 1], mv[i + 2]);
+  for (const s of strings) for (let i = 0; i < s.pts.length; i += 3) grow(s.pts[i], s.pts[i + 1], s.pts[i + 2]);
+  for (const p of points) grow(p.x, p.y, p.z);
+
+  return {
+    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt) } : null,
+    strings, points,
+    layers: [...layerSet].sort(),
+    counts: { triangles: mt.length / 3, strings: strings.length, points: points.length },
+    bbox,
+  };
+}
+
+// ── src/io/dxf-provider.js ──
+
+// DXF — the drafting exchange format mine software round-trips everything
+// through: triangulated surfaces and solids as 3DFACE soup or polyface-mesh
+// POLYLINEs, design strings / contours as 3D polylines, survey pegs as POINTs.
+// @gcu/dxf parses (read + explode + extractScene); this provider shapes the
+// scene into the standard docs:
+//
+//   openDxf(blob, { as }) →
+//     mesh    { header:{kind:'mesh', format:'dxf', …}, vertices, triangles }
+//     strings { header:{kind:'strings', …}, streamChunks, fetchRecord, recordPosition }
+//             — stick-shaped chunks (ax…bz segments), category = the DXF layer
+//     points  { header:{kind:'blockmodel', grid:null, …}, streamChunks, fetchRecord }
+//             — grid:null downgrades to a point cloud at the caller, like any
+//             irregular table
+//
+// `as` ('mesh' | 'strings' | 'points') overrides the dominant-content pick
+// (faces win, then strings, then points). A DXF is parsed resident — like OBJ
+// and MSH, these are design files, not block models.
+
+async function peekDxfScene(blob) {
+  const scene = extractScene(read(await blob.text()));
+  return scene.counts;
+}
+
+async function openDxf(blob, { as = null } = {}) {
+  const doc = read(await blob.text());
+  const scene = extractScene(doc);
+  const kinds = [];
+  if (scene.mesh) kinds.push('mesh');
+  if (scene.strings.length) kinds.push('strings');
+  if (scene.points.length) kinds.push('points');
+  const want = as || kinds[0];
+  if (!want || !kinds.length) throw new Error('dxf: no 3D scene geometry (no faces, polylines or points)');
+  if (as && !kinds.includes(as)) throw new Error(`dxf: no ${as} content — the file carries ${kinds.join(' + ')}`);
+
+  const bbox = scene.bbox
+    ? { min: scene.bbox.slice(0, 3), max: scene.bbox.slice(3) }
+    : { min: [0, 0, 0], max: [1, 1, 1] };
+  // ≤255 layers fit the category byte; a wilder file keeps geometry, loses classes
+  const categories = scene.layers.length && scene.layers.length <= 255 ? scene.layers : null;
+  const catOf = (layer) => (categories ? Math.max(0, categories.indexOf(layer)) : 0);
+  const common = { format: 'dxf', bbox, dxfLayers: scene.layers, dxfCounts: scene.counts, warnings: doc.warnings };
+
+  if (want === 'mesh') {
+    const { vertices, triangles } = scene.mesh;
+    return {
+      header: {
+        ...common, kind: 'mesh',
+        vertexCount: (vertices.length / 3) | 0, triCount: (triangles.length / 3) | 0,
+        vertexColumns: [],
+      },
+      vertices, triangles,
+    };
+  }
+
+  if (want === 'strings') {
+    // flatten the polylines into segment arrays once (already resident)
+    let nSeg = 0;
+    for (const s of scene.strings) nSeg += Math.max(0, s.pts.length / 3 - 1);
+    const ax = new Float64Array(nSeg), ay = new Float64Array(nSeg), az = new Float64Array(nSeg);
+    const bx = new Float64Array(nSeg), by = new Float64Array(nSeg), bz = new Float64Array(nSeg);
+    const mx = new Float64Array(nSeg), my = new Float64Array(nSeg), mz = new Float64Array(nSeg);
+    const cat = new Uint8Array(nSeg), ofString = new Uint32Array(nSeg);
+    let w = 0;
+    scene.strings.forEach((s, si) => {
+      const p = s.pts, code = catOf(s.layer);
+      for (let i = 0; i + 5 < p.length; i += 3) {
+        ax[w] = p[i]; ay[w] = p[i + 1]; az[w] = p[i + 2];
+        bx[w] = p[i + 3]; by[w] = p[i + 4]; bz[w] = p[i + 5];
+        mx[w] = (ax[w] + bx[w]) / 2; my[w] = (ay[w] + by[w]) / 2; mz[w] = (az[w] + bz[w]) / 2;
+        cat[w] = code; ofString[w] = si;
+        w++;
+      }
+    });
+    const header = {
+      ...common, kind: 'strings', count: nSeg,
+      columns: ['LAYER', 'STRING'], mapping: { chan: null, cat: 0 },
+      categories: categories ? [...categories] : null,
+      numericColumns: [], chanRange: [0, 0],
+      strings: scene.strings.length,
+    };
+    async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
+      for (let at = 0; at < nSeg; at += chunkPoints) {
+        const n = Math.min(chunkPoints, nSeg - at);
+        const recIdx = new Uint32Array(n);
+        for (let i = 0; i < n; i++) recIdx[i] = at + i;
+        const sub = (a) => a.subarray(at, at + n);
+        yield {
+          count: n,
+          ax: sub(ax), ay: sub(ay), az: sub(az), bx: sub(bx), by: sub(by), bz: sub(bz),
+          x: sub(mx), y: sub(my), z: sub(mz),
+          chan: new Float64Array(n), cat: sub(cat), recIdx,
+        };
+      }
+    }
+    return {
+      header, streamChunks,
+      fetchRecord: (rec) => [scene.strings[ofString[rec]].layer, ofString[rec]],
+      recordPosition: (rec) => [mx[rec], my[rec], mz[rec]],
+    };
+  }
+
+  // points: blockmodel-shaped with grid:null — the caller's points fallback
+  const n = scene.points.length;
+  const px = new Float64Array(n), py = new Float64Array(n), pz = new Float64Array(n);
+  const pcat = new Uint8Array(n);
+  scene.points.forEach((p, i) => { px[i] = p.x; py[i] = p.y; pz[i] = p.z; pcat[i] = catOf(p.layer); });
+  const header = {
+    ...common, kind: 'blockmodel', count: n, grid: null,
+    columns: ['X', 'Y', 'Z', 'LAYER'], mapping: { x: 0, y: 1, z: 2, chan: null, cat: 3 },
+    categories: categories ? [...categories] : null, numericColumns: [],
+  };
+  async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
+    for (let at = 0; at < n; at += chunkPoints) {
+      const k = Math.min(chunkPoints, n - at);
+      const recIdx = new Uint32Array(k);
+      for (let i = 0; i < k; i++) recIdx[i] = at + i;
+      yield {
+        count: k,
+        x: px.subarray(at, at + k), y: py.subarray(at, at + k), z: pz.subarray(at, at + k),
+        chan: new Float64Array(k), cat: pcat.subarray(at, at + k), recIdx, recStart: at,
+      };
+    }
+  }
+  return {
+    header, streamChunks,
+    fetchRecord: (rec) => [px[rec], py[rec], pz[rec], scene.points[rec].layer],
+  };
+}
+
 // ── src/core/camera.js ──
 
 // @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
@@ -7977,6 +8854,8 @@ export {
   openDmWireframe,
   parsePlyHeader,
   openPly,
+  openDxf,
+  peekDxfScene,
   mat4Perspective,
   mat4Ortho,
   mat4LookAt,

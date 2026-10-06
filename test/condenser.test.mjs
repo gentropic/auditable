@@ -3,7 +3,7 @@
 // synthetic LAS buffers built by test/las-make.mjs (no real data, no writer shipped).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLasHeader, openLas, documentFrame, createChunkBuilder, buildChunk, chunkLocalPosition, mulberry32, shuffledIndices, createOrbitCamera, transformPoint, mortonKey, mortonKeys, radixSortIndices, frustumPlanes, aabbInFrustum, openTable } from '../ext/condenser/src/main.js';
+import { parseLasHeader, openLas, documentFrame, createChunkBuilder, buildChunk, chunkLocalPosition, mulberry32, shuffledIndices, createOrbitCamera, transformPoint, mortonKey, mortonKeys, radixSortIndices, frustumPlanes, aabbInFrustum, openTable, openDxf } from '../ext/condenser/src/main.js';
 import { makeLas, makeTerrainPoints } from './las-make.mjs';
 
 const PTS = [
@@ -1028,4 +1028,83 @@ test('openTable: a headerless file gets synthetic column names', async () => {
   const { header } = await openTable(new Blob(['1,2,3\n4,5,6\n']));
   assert.deepEqual(header.columns, ['col1', 'col2', 'col3']);
   assert.equal(header.count, 2);
+});
+
+
+// ── openDxf: the mine-DXF provider (3DFACE surfaces, strings, pegs) ───────────────
+
+const dxfText = (lines) => ['0', 'SECTION', '2', 'ENTITIES', ...lines, '0', 'ENDSEC', '0', 'EOF', ''].join(String.fromCharCode(10));
+const DXF_FIXTURE = dxfText([
+  // two 3DFACEs over a mine-grid offset
+  '0', '3DFACE', '8', 'TOPO',
+  '10', '451200', '20', '8200500', '30', '400', '11', '451300', '21', '8200500', '31', '402',
+  '12', '451300', '22', '8200600', '32', '404', '13', '451200', '23', '8200600', '33', '401',
+  '0', '3DFACE', '8', 'TOPO',
+  '10', '451300', '20', '8200500', '30', '402', '11', '451400', '21', '8200500', '31', '405',
+  '12', '451400', '22', '8200600', '32', '406', '13', '451400', '23', '8200600', '33', '406',
+  // two design strings on different layers (3D polylines)
+  '0', 'POLYLINE', '8', 'CREST', '70', '8',
+  '0', 'VERTEX', '8', 'CREST', '70', '32', '10', '451210', '20', '8200510', '30', '390',
+  '0', 'VERTEX', '8', 'CREST', '70', '32', '10', '451250', '20', '8200510', '30', '392',
+  '0', 'VERTEX', '8', 'CREST', '70', '32', '10', '451250', '20', '8200550', '30', '394',
+  '0', 'SEQEND',
+  '0', 'POLYLINE', '8', 'TOE', '70', '8',
+  '0', 'VERTEX', '8', 'TOE', '70', '32', '10', '451220', '20', '8200520', '30', '380',
+  '0', 'VERTEX', '8', 'TOE', '70', '32', '10', '451260', '20', '8200520', '30', '381',
+  '0', 'SEQEND',
+  // survey pegs
+  '0', 'POINT', '8', 'PEGS', '10', '451230', '20', '8200530', '30', '395',
+  '0', 'POINT', '8', 'PEGS', '10', '451240', '20', '8200540', '30', '396',
+]);
+
+test('openDxf: faces dominate → a mesh doc with the dxf layer census', async () => {
+  const r = await openDxf(new Blob([DXF_FIXTURE]));
+  assert.equal(r.header.kind, 'mesh');
+  assert.equal(r.header.triCount, 3);                       // quad → 2, triangle → 1
+  assert.equal(r.header.vertexCount, 7);
+  assert.ok(r.vertices instanceof Float64Array && r.triangles instanceof Uint32Array);
+  assert.deepEqual(r.header.dxfLayers, ['CREST', 'PEGS', 'TOE', 'TOPO']);
+  assert.deepEqual(r.header.dxfCounts, { triangles: 3, strings: 2, points: 2 });
+  assert.equal(r.header.bbox.min[0], 451200);
+  assert.equal(r.header.bbox.max[2], 406);
+});
+
+test('openDxf as:strings → stick-shaped chunks, layer categories, fetch + position', async () => {
+  const r = await openDxf(new Blob([DXF_FIXTURE]), { as: 'strings' });
+  assert.equal(r.header.kind, 'strings');
+  assert.equal(r.header.count, 3);                          // 2 segs + 1 seg
+  assert.deepEqual(r.header.categories, ['CREST', 'PEGS', 'TOE', 'TOPO']);
+  let total = 0, firstChunk = null;
+  for await (const rc of r.streamChunks({ chunkPoints: 2 })) {
+    if (!firstChunk) firstChunk = rc;
+    total += rc.count;
+    assert.ok(rc.ax && rc.bx && rc.x && rc.cat && rc.recIdx, 'stick-shaped raw chunk');
+  }
+  assert.equal(total, 3);
+  // seg 0 = CREST first span: midpoint between the first two vertices
+  assert.deepEqual(r.recordPosition(0), [451230, 8200510, 391]);
+  assert.deepEqual(r.fetchRecord(0), ['CREST', 0]);
+  assert.deepEqual(r.fetchRecord(2), ['TOE', 1]);
+  assert.equal(firstChunk.cat[0], 0);                       // CREST is category 0
+});
+
+test('openDxf as:points → a grid:null table (the points fallback) with the layer column', async () => {
+  const r = await openDxf(new Blob([DXF_FIXTURE]), { as: 'points' });
+  assert.equal(r.header.kind, 'blockmodel');
+  assert.equal(r.header.grid, null);
+  assert.equal(r.header.count, 2);
+  let n = 0;
+  for await (const rc of r.streamChunks()) n += rc.count;
+  assert.equal(n, 2);
+  assert.deepEqual(r.fetchRecord(1), [451240, 8200540, 396, 'PEGS']);
+});
+
+test('openDxf: a strings-only file auto-picks strings; empty refuses; wrong `as` names the content', async () => {
+  const stringsOnly = dxfText([
+    '0', 'LWPOLYLINE', '8', 'ROAD', '90', '2', '70', '0', '10', '0', '20', '0', '10', '10', '20', '0',
+  ]);
+  const r = await openDxf(new Blob([stringsOnly]));
+  assert.equal(r.header.kind, 'strings');
+  await assert.rejects(() => openDxf(new Blob([dxfText([])])), /no 3D scene geometry/);
+  await assert.rejects(() => openDxf(new Blob([stringsOnly]), { as: 'mesh' }), /no mesh content — the file carries strings/);
 });

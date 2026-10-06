@@ -493,25 +493,83 @@ function parseLwpolyline(rec) {
 }
 
 // Old-style POLYLINE: a header + a VERTEX stream + SEQEND. Returns the feature and the
-// index just past SEQEND. Polyface/polygon-mesh variants (flags 64/16) are punted (v0.2).
+// index just past SEQEND. The 3D mesh tier (v0.2): polyface meshes (flag 64) and
+// polygon meshes (flag 16) become 'mesh' features — the shape mine software exports
+// solids and surfaces in.
 function parsePolyline(rec, recs, i, warnings) {
   const flags = val(rec.pairs, 70, 0);
   let j = i + 1;
-  const pts = [], bs = [];
-  while (j < recs.length && recs[j].type === 'VERTEX') {
-    const vp = recs[j].pairs;
-    pts.push([val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0)]);
-    bs.push(val(vp, 42, 0));
-    j++;
-  }
+  const vrecs = [];
+  while (j < recs.length && recs[j].type === 'VERTEX') { vrecs.push(recs[j].pairs); j++; }
   if (j < recs.length && recs[j].type === 'SEQEND') j++;
-  if (flags & 64 || flags & 16) {                          // polyface / polygon mesh — punt
-    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(mesh)', reason: 'mesh POLYLINE not supported in v0.1 (metadata kept)' });
-    return { feature: nullFeature(rec), next: j };
-  }
+
+  if (flags & 64) return { feature: parsePolyfaceMesh(rec, vrecs, warnings), next: j };
+  if (flags & 16) return { feature: parsePolygonMesh(rec, vrecs, warnings), next: j };
+
+  const pts = vrecs.map((vp) => [val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0)]);
+  const bs = vrecs.map((vp) => val(vp, 42, 0));
   const vertices = packPts(pts);
   const bulges = bs.some((v) => v !== 0) ? Float64Array.from(bs) : null;
   return { feature: mkFeature('polyline', { kind: 'polyline', vertices, bulges, closed: (flags & 1) === 1 }, readCommon(rec.pairs)), next: j };
+}
+
+// Polyface mesh (POLYLINE flag 64): the VERTEX stream carries two record kinds —
+// geometry vertices (vertex flag 64|128) and FACE records (flag 128 alone) whose
+// codes 71–74 are 1-based indices into the geometry vertices (negative = the edge
+// is invisible; only |index| matters here). A 4-index face splits into two triangles.
+function parsePolyfaceMesh(rec, vrecs, warnings) {
+  const pts = [], faces = [];
+  for (const vp of vrecs) {
+    const vf = val(vp, 70, 0);
+    if (vf & 128 && !(vf & 64)) {
+      const idx = [val(vp, 71, 0), val(vp, 72, 0), val(vp, 73, 0), val(vp, 74, 0)].map((v) => Math.abs(v)).filter((v) => v > 0);
+      if (idx.length >= 3) faces.push(idx);
+    } else {
+      pts.push(val(vp, 10, 0), val(vp, 20, 0), val(vp, 30, 0));
+    }
+  }
+  const nV = pts.length / 3;
+  const tris = [];
+  let dropped = 0;
+  for (const f of faces) {
+    if (f.some((ix) => ix > nV)) { dropped++; continue; }  // index past the vertex table
+    tris.push(f[0] - 1, f[1] - 1, f[2] - 1);
+    if (f.length === 4) tris.push(f[0] - 1, f[2] - 1, f[3] - 1);
+  }
+  if (dropped) warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: `${dropped} face(s) referenced vertices past the table — dropped` });
+  if (!tris.length) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polyface)', reason: 'no resolvable faces' });
+    return nullFeature(rec);
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: Float64Array.from(pts), triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
+}
+
+// Polygon mesh (POLYLINE flag 16): an M×N vertex grid (codes 71/72 on the header),
+// vertices in row-major M-then-N order; faces are the grid quads, wrapping when the
+// mesh is closed in M (flag 1) and/or N (flag 32).
+function parsePolygonMesh(rec, vrecs, warnings) {
+  const M = val(rec.pairs, 71, 0), N = val(rec.pairs, 72, 0);
+  const flags = val(rec.pairs, 70, 0);
+  const gverts = vrecs.filter((vp) => !(val(vp, 70, 0) & 128) || (val(vp, 70, 0) & 64));
+  if (M < 2 || N < 2 || gverts.length < M * N) {
+    warnings.push({ handle: val(rec.pairs, 5, null), entity: 'POLYLINE(polygon mesh)', reason: `grid ${M}×${N} but ${gverts.length} vertices — skipped` });
+    return nullFeature(rec);
+  }
+  const pts = new Float64Array(M * N * 3);
+  for (let k = 0; k < M * N; k++) {
+    const vp = gverts[k];
+    pts[k * 3] = val(vp, 10, 0); pts[k * 3 + 1] = val(vp, 20, 0); pts[k * 3 + 2] = val(vp, 30, 0);
+  }
+  const closedM = (flags & 1) === 1, closedN = (flags & 32) === 32;
+  const tris = [];
+  const at = (m, n) => m * N + n;
+  for (let m = 0; m < (closedM ? M : M - 1); m++) {
+    for (let n = 0; n < (closedN ? N : N - 1); n++) {
+      const a = at(m, n), b = at((m + 1) % M, n), c = at((m + 1) % M, (n + 1) % N), d = at(m, (n + 1) % N);
+      tris.push(a, b, c, a, c, d);
+    }
+  }
+  return mkFeature('mesh', { kind: 'mesh', vertices: pts, triangles: Uint32Array.from(tris) }, readCommon(rec.pairs));
 }
 
 function parseCircle(rec) {
@@ -976,6 +1034,105 @@ function explode(doc, _opts = {}) {
   return { ...doc, features: out, exploded: true, warnings: [...(doc.warnings || []), ...warnings] };
 }
 
+// ── src/scene.js ──
+
+// scene — extract VIEWER-shaped geometry from a Document: one merged mesh
+// (3DFACE soup + polyface/polygon meshes), strings (polylines with bulges
+// sampled to chords, lines, arcs, circles), and points — each tagged with its
+// DXF layer. This is the bridge a 3D viewer (micro's condenser engine) builds
+// layers from; the Document itself stays the canonical, lossless model.
+
+// sample one bulge span into chord points (excluding p0, including p1):
+// ~24 chords for a full circle, never fewer than 2 for a visible arc
+function sampleSpan(p0, p1, bulge, z0, z1, out) {
+  const arc = arcFromBulge(p0, p1, bulge);
+  if (!arc) { out.push(p1[0], p1[1], z1); return; }
+  const n = Math.max(2, Math.ceil((Math.abs(arc.sweep) / TAU) * 24));
+  const a0 = arc.startAngle;
+  for (let k = 1; k <= n; k++) {
+    const t = k / n;
+    const a = a0 + arc.sweep * t;
+    out.push(arc.center[0] + arc.radius * Math.cos(a), arc.center[1] + arc.radius * Math.sin(a), z0 + (z1 - z0) * t);
+  }
+}
+
+// → { mesh: {vertices,triangles}|null, strings: [{layer,pts:Float64Array}],
+//     points: [{layer,x,y,z}], layers: [names], counts, bbox: [min3,max3]|null }
+function extractScene(doc) {
+  const flat = doc.exploded ? doc : explode(doc);
+  const mv = [], mt = [];
+  const strings = [], points = [];
+  const layerSet = new Set();
+
+  for (const f of flat.features || []) {
+    const g = f.geometry;
+    if (!g) continue;
+    const layer = (f.properties && f.properties.layer) || '0';
+
+    if (g.kind === 'mesh') {
+      const base = mv.length / 3;
+      for (let i = 0; i < g.vertices.length; i++) mv.push(g.vertices[i]);
+      for (let i = 0; i < g.triangles.length; i++) mt.push(base + g.triangles[i]);
+      layerSet.add(layer);
+    } else if (g.kind === 'face') {
+      const v = g.vertices;
+      const base = mv.length / 3;
+      for (let i = 0; i < v.length; i++) mv.push(v[i]);
+      const nV = v.length / 3;
+      if (nV >= 3) mt.push(base, base + 1, base + 2);
+      if (nV === 4) mt.push(base, base + 2, base + 3);
+      layerSet.add(layer);
+    } else if (g.kind === 'polyline') {
+      const v = g.vertices;
+      const nV = v.length / 3;
+      if (nV < 2) continue;
+      const pts = [v[0], v[1], v[2]];
+      const spans = g.closed ? nV : nV - 1;
+      for (let i = 0; i < spans; i++) {
+        const a = i, b = (i + 1) % nV;
+        const bulge = g.bulges ? g.bulges[a] || 0 : 0;
+        sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
+      }
+      strings.push({ layer, pts: Float64Array.from(pts) });
+      layerSet.add(layer);
+    } else if (g.kind === 'circle') {
+      const n = 32, pts = [];
+      const z = g.center[2] || 0;
+      for (let k = 0; k <= n; k++) {
+        const a = (k / n) * TAU;
+        pts.push(g.center[0] + g.radius * Math.cos(a), g.center[1] + g.radius * Math.sin(a), z);
+      }
+      strings.push({ layer, pts: Float64Array.from(pts) });
+      layerSet.add(layer);
+    } else if (g.kind === 'point') {
+      points.push({ layer, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
+      layerSet.add(layer);
+    }
+    // text / attdef / hatch metadata: not scene geometry
+  }
+
+  // the shared bbox over everything extracted
+  let bbox = null;
+  const grow = (x, y, z) => {
+    if (!bbox) bbox = [x, y, z, x, y, z];
+    else {
+      if (x < bbox[0]) bbox[0] = x; if (y < bbox[1]) bbox[1] = y; if (z < bbox[2]) bbox[2] = z;
+      if (x > bbox[3]) bbox[3] = x; if (y > bbox[4]) bbox[4] = y; if (z > bbox[5]) bbox[5] = z;
+    }
+  };
+  for (let i = 0; i < mv.length; i += 3) grow(mv[i], mv[i + 1], mv[i + 2]);
+  for (const s of strings) for (let i = 0; i < s.pts.length; i += 3) grow(s.pts[i], s.pts[i + 1], s.pts[i + 2]);
+  for (const p of points) grow(p.x, p.y, p.z);
+
+  return {
+    mesh: mt.length ? { vertices: Float64Array.from(mv), triangles: Uint32Array.from(mt) } : null,
+    strings, points,
+    layers: [...layerSet].sort(),
+    counts: { triangles: mt.length / 3, strings: strings.length, points: points.length },
+    bbox,
+  };
+}
+
 // ── src/main.js ──
 
 // @gcu/dxf — module manifest. Build concat order. v0.1 foundation primitives are in
@@ -997,4 +1154,5 @@ export {
   read,
   write,
   explode,
+  extractScene,
 };

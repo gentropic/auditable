@@ -151,6 +151,7 @@ test('aciToRgb: the 7 standard named colours, null beyond', () => {
 // ── read (the Document assembler) ──────────────────────────────────────────────────
 
 import { read } from '../ext/dxf/src/read.js';
+import { extractScene } from '../ext/dxf/src/scene.js';
 
 const DXF = `0
 SECTION
@@ -535,4 +536,97 @@ test('ATTDEF (in a block) + ATTRIB (on an insert) round-trip', () => {
   const doc2 = read(dxfWrite(doc));
   assert.equal(doc2.blocks.collar.features.find((f) => f.type === 'attdef').geometry.tag, 'HOLEID');
   assert.equal(doc2.features.find((f) => f.type === 'insert').properties.attribs[0].value, 'DH-01');
+});
+
+// ── the 3D mesh tier (v0.2) + scene extraction ───────────────────────────────────
+
+const ent = (...pairs) => pairs.flat();
+const wrap = (lines) => ['0', 'SECTION', '2', 'ENTITIES', ...lines, '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
+const v3 = (x, y, z, flag, extra = []) => ent('0', 'VERTEX', '8', 'M', '70', String(flag), '10', String(x), '20', String(y), '30', String(z), ...extra);
+
+test('polyface mesh: vertices + face records → a mesh feature (quads split)', () => {
+  const txt = wrap([
+    '0', 'POLYLINE', '8', 'SOLID', '70', '64', '66', '1',
+    ...v3(0, 0, 0, 192), ...v3(10, 0, 0, 192), ...v3(10, 10, 0, 192), ...v3(0, 10, 5, 192),
+    // one quad face (negative index = invisible edge, geometry identical)
+    ent('0', 'VERTEX', '8', 'SOLID', '70', '128', '71', '1', '72', '-2', '73', '3', '74', '4'),
+    // one triangle face
+    ent('0', 'VERTEX', '8', 'SOLID', '70', '128', '71', '1', '72', '3', '73', '4'),
+    '0', 'SEQEND',
+  ].flat());
+  const doc = read(txt);
+  const mesh = doc.features.find((f) => f.geometry && f.geometry.kind === 'mesh');
+  assert.ok(mesh, 'mesh feature produced');
+  assert.equal(mesh.geometry.vertices.length / 3, 4);
+  assert.equal(mesh.geometry.triangles.length / 3, 3);      // quad → 2 + the triangle
+  assert.equal(mesh.properties.layer, 'SOLID');
+  assert.deepEqual([...mesh.geometry.triangles.slice(0, 3)], [0, 1, 2]);
+});
+
+test('polyface mesh: an out-of-range face index is dropped with a warning', () => {
+  const txt = wrap([
+    '0', 'POLYLINE', '8', 'S', '70', '64',
+    ...v3(0, 0, 0, 192), ...v3(1, 0, 0, 192), ...v3(0, 1, 0, 192),
+    ent('0', 'VERTEX', '8', 'S', '70', '128', '71', '1', '72', '2', '73', '9'),
+    ent('0', 'VERTEX', '8', 'S', '70', '128', '71', '1', '72', '2', '73', '3'),
+    '0', 'SEQEND',
+  ].flat());
+  const doc = read(txt);
+  const mesh = doc.features.find((f) => f.geometry && f.geometry.kind === 'mesh');
+  assert.equal(mesh.geometry.triangles.length / 3, 1);
+  assert.ok(doc.warnings.some((w) => /past the table/.test(w.reason)));
+});
+
+test('polygon mesh: a 2×3 grid becomes grid quads; closed-M wraps', () => {
+  const grid = [];
+  for (let m = 0; m < 2; m++) for (let n = 0; n < 3; n++) grid.push(...v3(n * 10, m * 10, m + n, 64));
+  const open = read(wrap(['0', 'POLYLINE', '8', 'G', '70', '16', '71', '2', '72', '3', ...grid, '0', 'SEQEND'].flat()));
+  const mOpen = open.features.find((f) => f.geometry && f.geometry.kind === 'mesh');
+  assert.equal(mOpen.geometry.triangles.length / 3, 4);     // (2−1)×(3−1) quads × 2
+  const closed = read(wrap(['0', 'POLYLINE', '8', 'G', '70', '17', '71', '2', '72', '3', ...grid, '0', 'SEQEND'].flat()));
+  const mClosed = closed.features.find((f) => f.geometry && f.geometry.kind === 'mesh');
+  assert.equal(mClosed.geometry.triangles.length / 3, 8);   // M wraps: 2×2 quads × 2
+});
+
+test('extractScene: 3DFACE soup + polyface merge into ONE mesh; strings sample bulges; points and layers survive', () => {
+  const txt = wrap([
+    // two 3DFACEs (a quad and a triangle = 4th point repeats the 3rd)
+    ent('0', '3DFACE', '8', 'TOPO', '10', '0', '20', '0', '30', '100', '11', '10', '21', '0', '31', '100',
+        '12', '10', '22', '10', '32', '101', '13', '0', '23', '10', '33', '101'),
+    ent('0', '3DFACE', '8', 'TOPO', '10', '0', '20', '0', '30', '100', '11', '10', '21', '10', '31', '101',
+        '12', '0', '22', '20', '32', '102', '13', '0', '23', '20', '33', '102'),
+    // a polyface mesh
+    '0', 'POLYLINE', '8', 'SOLID', '70', '64',
+    ...v3(50, 0, 0, 192), ...v3(60, 0, 0, 192), ...v3(55, 10, 0, 192),
+    ent('0', 'VERTEX', '8', 'SOLID', '70', '128', '71', '1', '72', '2', '73', '3'),
+    '0', 'SEQEND',
+    // a 3D polyline string (flag 8) with z per vertex
+    '0', 'POLYLINE', '8', 'CREST', '70', '8',
+    ...v3(0, 0, 310, 32), ...v3(20, 0, 312, 32), ...v3(20, 20, 314, 32),
+    '0', 'SEQEND',
+    // an LWPOLYLINE with ONE bulge span (quarter arc) — must sample into chords
+    ent('0', 'LWPOLYLINE', '8', 'ROAD', '90', '2', '70', '0',
+        '10', '0', '20', '0', '42', '0.4142135623730951', '10', '10', '20', '10'),
+    // points
+    ent('0', 'POINT', '8', 'PEGS', '10', '1', '20', '2', '30', '3'),
+    ent('0', 'POINT', '8', 'PEGS', '10', '4', '20', '5', '30', '6'),
+  ].flat());
+  const scene = extractScene(read(txt));
+  assert.equal(scene.counts.triangles, 4);                  // quad(2) + tri + polyface tri
+  assert.equal(scene.mesh.vertices.length / 3, 4 + 3 + 3);  // a triangle 3DFACE packs 3 vertices
+  assert.equal(scene.strings.length, 2);
+  const crest = scene.strings.find((st) => st.layer === 'CREST');
+  assert.equal(crest.pts.length / 3, 3);
+  assert.equal(crest.pts[8], 314);                          // z carried through
+  const road = scene.strings.find((st) => st.layer === 'ROAD');
+  assert.ok(road.pts.length / 3 >= 6, `bulge sampled into chords (${road.pts.length / 3} pts)`);
+  // every sampled point sits on the r=10 arc: +90° CCW from (0,0) to (10,10)
+  // centers at (0,10)
+  for (let i = 0; i < road.pts.length; i += 3) {
+    const r = Math.hypot(road.pts[i] - 0, road.pts[i + 1] - 10);
+    assert.ok(Math.abs(r - 10) < 1e-9, `on-arc (r=${r})`);
+  }
+  assert.equal(scene.points.length, 2);
+  assert.deepEqual(scene.layers, ['CREST', 'PEGS', 'ROAD', 'SOLID', 'TOPO']);
+  assert.deepEqual(scene.bbox.slice(0, 3), [0, 0, 0]);
 });
