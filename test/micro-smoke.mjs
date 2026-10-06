@@ -854,6 +854,81 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   await pv.close();
 }
 
+// ── DXF: a 3DFACE surface opens as a mesh; design strings open as capsules
+// categorized by their DXF layer; Reinterpret-as crosses between them ──
+{
+  const dxfWrap = (lines) => ['0', 'SECTION', '2', 'ENTITIES', ...lines, '0', 'ENDSEC', '0', 'EOF', ''].join(String.fromCharCode(10));
+  const X0 = 612000, Y0 = 7765000;
+  const faces = [];
+  for (let i = 0; i < 4; i++) {
+    const x = X0 + i * 50;
+    faces.push('0', '3DFACE', '8', 'TOPO',
+      '10', String(x), '20', String(Y0), '30', '700',
+      '11', String(x + 50), '21', String(Y0), '31', '702',
+      '12', String(x + 50), '22', String(Y0 + 50), '32', '704',
+      '13', String(x), '23', String(Y0 + 50), '33', '701');
+  }
+  const pl = (layer, z) => {
+    const out = ['0', 'POLYLINE', '8', layer, '70', '8'];
+    for (let k = 0; k < 5; k++) out.push('0', 'VERTEX', '8', layer, '70', '32', '10', String(X0 + k * 40), '20', String(Y0 + 20), '30', String(z));
+    out.push('0', 'SEQEND');
+    return out;
+  };
+  const dxfSurface = dxfWrap(faces);
+  const dxfStrings = dxfWrap([...pl('CREST', 710), ...pl('TOE', 690)]);
+  const dxfMixed = dxfWrap([...faces, ...pl('CREST', 710)]);
+
+  const dxfInfo = await p.evaluate(async ({ surf, strs }) => {
+    const m = window._micro;
+    const before = m.layers().length;
+    await m.openBlob(new Blob([surf]), 'topo_design.dxf', 'add');
+    await m.openBlob(new Blob([strs]), 'pit_strings.dxf', 'add');
+    await new Promise((r) => setTimeout(r, 600));
+    const Lm = m.layers().find((L) => L.name === 'topo_design.dxf');
+    const Ls = m.layers().find((L) => L.name === 'pit_strings.dxf');
+    const h = Ls && Ls.docs.stringsDoc && Ls.docs.stringsDoc.header;
+    const row0 = Ls ? await m.fetchLayerRow(Ls, 0) : null;
+    return {
+      added: m.layers().length - before,
+      mesh: Lm ? { kind: Lm.kind, tris: Lm.docs.meshDoc.header.triCount } : null,
+      strings: Ls ? {
+        kind: Ls.kind, count: h && h.count, cats: h && h.categories, colorSel: Ls.colorSel,
+        loc: m.primaryLocationOf(Ls), rows: m.attrRowCountOf(Ls), row0,
+      } : null,
+    };
+  }, { surf: dxfSurface, strs: dxfStrings });
+  chk(`DXF surface → mesh (${dxfInfo.mesh && dxfInfo.mesh.tris} tris) + strings → capsules (${dxfInfo.strings && dxfInfo.strings.count} segments, cats ${JSON.stringify(dxfInfo.strings && dxfInfo.strings.cats)})`,
+    dxfInfo.added === 2 && dxfInfo.mesh && dxfInfo.mesh.kind === 'mesh' && dxfInfo.mesh.tris === 8
+    && dxfInfo.strings && dxfInfo.strings.count === 8 && JSON.stringify(dxfInfo.strings.cats) === '["CREST","TOE"]'
+    && dxfInfo.strings.colorSel === 'cat');
+  chk(`DXF strings are RECORDS: location "${dxfInfo.strings && dxfInfo.strings.loc}", ${dxfInfo.strings && dxfInfo.strings.rows} rows, row0 ${JSON.stringify(dxfInfo.strings && dxfInfo.strings.row0)}`,
+    dxfInfo.strings && dxfInfo.strings.loc === 'segments' && dxfInfo.strings.rows === 8
+    && Array.isArray(dxfInfo.strings.row0) && dxfInfo.strings.row0[0] === 'CREST');
+
+  // a MIXED dxf opens as its dominant mesh, and Reinterpret-as crosses to strings
+  const reint = await p.evaluate(async (mixed) => {
+    const m = window._micro;
+    await m.openBlob(new Blob([mixed]), 'pit_mixed.dxf', 'add');
+    await new Promise((r) => setTimeout(r, 400));
+    let L = m.layers().find((x) => x.name === 'pit_mixed.dxf');
+    const asMesh = L && L.kind === 'mesh';
+    const opts = m.reinterpretOptions(L).map((o) => o.kind);
+    await m.reopenAs(L, 'lines');
+    await new Promise((r) => setTimeout(r, 600));
+    L = m.layers().find((x) => x.name === 'pit_mixed.dxf');
+    const afterKind = L && L.docs.stringsDoc ? 'strings' : L && L.kind;
+    const backOpts = m.reinterpretOptions(L).map((o) => o.kind);
+    // clean up the three dxf layers
+    for (const nm of ['pit_mixed.dxf', 'pit_strings.dxf', 'topo_design.dxf']) {
+      const Lx = m.layers().find((x) => x.name === nm);
+      if (Lx) { m.renderer.removeLayer(Lx.id); }
+    }
+    return { asMesh, opts, afterKind, backOpts };
+  }, dxfMixed);
+  chk(`DXF mixed: dominant mesh (${reint.asMesh}), Reinterpret offers ${JSON.stringify(reint.opts)}, → lines becomes strings (${reint.afterKind}), back-options ${JSON.stringify(reint.backOpts)}`,
+    reint.asMesh === true && reint.opts.includes('lines') && reint.afterKind === 'strings' && reint.backOpts.includes('mesh'));
+}
+
 console.log(ok && process.exitCode !== 1 ? '\nMICRO SMOKE: PASS' : '\nMICRO SMOKE: FAIL');
 await b.close(); server.close();
 process.exit(ok && process.exitCode !== 1 ? 0 : 1);

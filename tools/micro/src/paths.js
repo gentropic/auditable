@@ -25,6 +25,7 @@ export function kindDir(L) {
   const d = L.docs || {};
   if (d.tableDoc) return 'tables';
   if (d.meshDoc) return 'meshes';
+  if (d.stringsDoc) return 'meshes';                      // DXF design strings / pegs: design geometry
   if (d.gridDoc) return 'grids';
   if (d.blockDoc) return 'models';
   if (d.lasDoc || d.plyDoc) return 'clouds';

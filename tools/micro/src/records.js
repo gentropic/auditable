@@ -8,7 +8,7 @@
 // delimited text and how record numbering drifted (see the 2026-08 audit,
 // [[reference_micro_source_dispatch]]). This module is where those decisions
 // live now; a new source kind is added HERE, once.
-import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, lineFields } from '../../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields } from '../../../ext/condenser/src/main.js';
 import { streamParquetColumns, readParquetRow } from '../../../ext/parquet/index.js';
 import { compileValue, deps } from '../../../ext/expr/index.js';
 import { readLFM } from '../../../ext/lfm/lfm.js';
@@ -17,15 +17,15 @@ import { S, activeDocs } from './state.js';
 // ── headers + schema ──────────────────────────────────────────────────────────
 export function layerHeaderOf(L) {
   const d = L.docs || {};
-  return (d.blockDoc || d.dhDoc || d.tableDoc || d.meshDoc || d.plyDoc || d.lasDoc || {}).header || null;
+  return (d.blockDoc || d.dhDoc || d.stringsDoc || d.tableDoc || d.meshDoc || d.plyDoc || d.lasDoc || {}).header || null;
 }
-export const layerBlob = (L) => { const d = L.docs.blockDoc || L.docs.tableDoc || L.docs.plyDoc || L.docs.lasDoc || L.docs.meshDoc || L.docs.gridDoc; return d && d.blob || null; };
+export const layerBlob = (L) => { const d = L.docs.blockDoc || L.docs.tableDoc || L.docs.plyDoc || L.docs.lasDoc || L.docs.meshDoc || L.docs.gridDoc || L.docs.stringsDoc; return d && d.blob || null; };
 // the layer's COLUMN TABLE header (the table behind the attribute grid /
 // filter / stats), when it has one
 export function layerTableHeader(L) {
   const d = L.docs || {};
   if (d.meshDoc) return meshVertexHeader(L);               // the `vertices` location
-  const h = (d.blockDoc || d.dhDoc || d.tableDoc || {}).header;
+  const h = (d.blockDoc || d.dhDoc || d.stringsDoc || d.tableDoc || {}).header;
   return h && h.columns ? h : null;
 }
 export function colIsNumeric(L, h, i) {
@@ -252,6 +252,7 @@ export async function openLfmMesh(blob) {
 // wireframe is a pt/tr PAIR (md.ptBlob + md.blob); everything else is single-file.
 export async function reReadMesh(md) {
   if (md.header.format === 'dm-wireframe') return openDmWireframe(md.ptBlob, md.blob);
+  if (md.header.format === 'dxf' || /\.dxf$/i.test(md.name)) return openDxf(md.blob, { as: 'mesh' });
   const open = /\.msh$/i.test(md.name) ? openMsh : /\.obj$/i.test(md.name) ? openObj : /\.lfm$/i.test(md.name) ? openLfmMesh : openPlyMesh;
   return open(md.blob);
 }
@@ -333,6 +334,7 @@ export async function fetchLayerRow(L, rec) {
   if (d.tableDoc && d.tableDoc.xlsx) return d.tableDoc.xlsx.at(rec);
   if (d.tableDoc) return await fetchDelimitedRecord(d.tableDoc.blob, d.tableDoc.header, rec);
   if (d.dhDoc) return d.dhDoc.fetchRecord(rec);
+  if (d.stringsDoc) return d.stringsDoc.fetchRecord(rec);  // a segment knows its DXF layer + string
   if (d.tracesDoc) return d.tracesDoc.fetchRecord(rec);    // pick a trace → its collar record
   if (d.blockDoc && d.blockDoc.parquet) { const row = await readParquetRow(d.blockDoc.parquet.buf, rec, d.blockDoc.parquet.meta); return row ? d.blockDoc.parquet.names.map((n) => { const v = row[n]; return v == null ? '' : v; }) : null; }
   if (d.blockDoc && d.blockDoc.header.dm) return await fetchDmRecord(d.blockDoc.blob, d.blockDoc.header.dm, rec);
@@ -379,6 +381,7 @@ export function primaryLocationOf(L) {
   const d = (L && L.docs) || {};
   if (d.meshDoc) return 'vertices';
   if (d.gridDoc) return 'nodes';
+  if (d.stringsDoc) return 'segments';                     // design strings: one record per polyline span
   const h = layerHeaderOf(L);
   return (L && L.dh) || (h && h.kind === 'drillholes') ? 'intervals' : 'cells';
 }

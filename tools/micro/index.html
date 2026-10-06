@@ -842,7 +842,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openDxf, peekDxfScene, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
 import { convert as unitConvert } from '../../ext/units/index.js';   // @gcu/units — grade/density unit declarations (grade-tonnage)
@@ -6814,6 +6814,58 @@ async function openDmWireframeBlob(ptFile, trFile, mode = 'replace', at = null) 
     dispatchEvent(new Event('micro:project-dirty'));
   } catch (e) { $('#meta').textContent = `${name} — ${e.message}`; const L = layerById(lid); if (L) removeLayerUI(lid); }
 }
+// DXF: the drafting format mine software round-trips everything through.
+// condenser's openDxf picks the dominant content (3DFACE/polyface surfaces →
+// mesh, 3D polylines → design strings as capsules, POINTs → pegs) and `as`
+// overrides it (the dialog's Open-as / Reinterpret-as 'lines'). Strings become
+// a sticks layer whose CATEGORY is the DXF layer — class eyes hide a bench.
+async function openDxfBlob(blob, name, opts) {
+  const lid = opts.layer, first = opts.first;
+  const r = await openDxf(blob, { as: opts.as || null });
+  if (r.header.kind === 'mesh') {
+    const L0 = layerById(lid); if (L0) L0.kind = 'mesh';
+    await openMeshDoc(blob, name, { layer: lid, first, prebuilt: r, tint: opts.tint, opacity: opts.opacity });
+    const c = r.header.dxfCounts;
+    $('#meta').textContent = `${name} — ${r.header.triCount.toLocaleString()} triangles · ${r.header.vertexCount.toLocaleString()} vertices${c.strings ? ` · +${c.strings} design strings (Reinterpret as…)` : ''}`;
+    const L = layerById(lid); if (L) L.colorSel = $('#colorBy').value;
+    return;
+  }
+  if (r.header.kind === 'strings') {
+    const { header, streamChunks, fetchRecord, recordPosition } = r;
+    registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord, recordPosition } });
+    fitFromHeader(header, first);
+    renderer.setCategories(header.categories ? 1 : 0);
+    renderer.setLayerCats(lid, header.categories ? 256 : 0);
+    renderer.setLayerStickRadius(lid, 0.8);
+    setColorLabels(header);
+    const cb = createStickChunkBuilder({ frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
+    for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) { cb.push(rc); await new Promise((r2) => setTimeout(r2)); }
+    const doc = cb.flush();
+    const L = layerById(lid);
+    if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
+    recomputeUnion();
+    $('#meta').textContent = `${name} — ${(header.strings || 0).toLocaleString()} design strings · ${header.count.toLocaleString()} segments · ${(header.categories || []).length} DXF layers`;
+    return;
+  }
+  // pegs: a point layer; the stringsDoc carries the table (X/Y/Z/LAYER rows)
+  {
+    const { header, streamChunks, fetchRecord } = r;
+    registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord } });
+    fitFromHeader(header, first);
+    renderer.setCategories(header.categories ? 1 : 0);
+    renderer.setLayerCats(lid, header.categories ? 256 : 0);
+    setColorLabels(header);
+    const cb = createChunkBuilder({ frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
+    for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
+      cb.push({ count: rc.count, x: rc.x, y: rc.y, z: rc.z, intensity: new Uint16Array(rc.count), classification: rc.cat || new Uint8Array(rc.count), rgb: null, recStart: rc.recStart || 0 });
+    }
+    const doc = cb.flush();
+    const L = layerById(lid);
+    if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
+    recomputeUnion();
+    $('#meta').textContent = `${name} — ${header.count.toLocaleString()} points (DXF pegs)`;
+  }
+}
 // provenance: every layer carries a lineage tree — how it was made. Opened
 // files are leaves (op:'open'); derived ops (join/reconcile/optimize/keyjoin/
 // grid) wrap their sources. Embedded in Parquet exports (kvMetadata) + persisted
@@ -6845,7 +6897,8 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
   try {
-    if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
+    if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity }); }
+    else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
     else if (/\.dm$/i.test(name)) { await openDmBlob(blob, name, { layer: lid, first, forcePoints, cached: over.cached, mapping: over.mapping }); }
     // grid stays extension-driven (no table→grid provider yet); asKind only picks points↔surface.
     else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.(tif|tiff|grd)$/i.test(name)) { await openGridBlob(blob, name, { layer: lid, first, displayCache: over.displayCache, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, band: over.band || 0, smooth: over.smooth }); }
@@ -6860,7 +6913,7 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
     else if (/\.(csv|txt|dat|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered }); }
     else if (/\.ply$/i.test(name)) { await openPlyBlob(blob, name, { layer: lid, first }); }
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
-    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .tif .grd .asc`);
+    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .tif .grd .asc`);
     else {
       const { header, streamChunks } = await openLas(blob);
       registerDocs(lid, 'points', { lasDoc: { blob, header } });
@@ -6872,7 +6925,7 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
       requestRender();
     }
     const L = layerById(lid);
-    if (L) L.colorSel = $('#colorBy').value;
+    if (L && L.colorSel == null) L.colorSel = $('#colorBy').value;   // a fallback — a branch that chose (DXF strings → 'cat') keeps its choice
     renderLayers();
     dispatchEvent(new Event('micro:project-dirty'));
   } catch (e) {
@@ -7561,6 +7614,25 @@ async function describeFile(f) {
       d.objGroups = names;
       d.split = names.length > 1;
       d.desc = `Leapfrog model (.lfm)${names.length ? ` · ${names.length} mesh${names.length > 1 ? 'es' : ''}` : ''}`;
+    } else if (/\.dxf$/i.test(name)) {
+      d.kind = 'dxf';
+      d.desc = 'DXF drawing';
+      if (f.size <= 32 * 1024 * 1024) {
+        try {
+          const c = await peekDxfScene(f);
+          const parts = [];
+          if (c.triangles) parts.push(`${c.triangles.toLocaleString()} faces → mesh`);
+          if (c.strings) parts.push(`${c.strings.toLocaleString()} strings`);
+          if (c.points) parts.push(`${c.points.toLocaleString()} points`);
+          d.desc = `DXF drawing${parts.length ? ' · ' + parts.join(' · ') : ' (no 3D geometry)'}`;
+          d.interps = [
+            ...(c.triangles ? [['mesh', 'mesh (3DFACE surfaces)']] : []),
+            ...(c.strings ? [['lines', 'design strings (capsules)']] : []),
+            ...(c.points ? [['points', 'points (pegs)']] : []),
+          ];
+          d.asKind = d.interps.length ? d.interps[0][0] : null;
+        } catch (e2) { d.desc = `DXF — ${e2.message}`; }
+      }
     } else if (/\.msh$/i.test(name)) {
       d.kind = 'mesh'; d.desc = 'Leapfrog mesh (.msh)';
     } else if (/\.obj$/i.test(name)) {
@@ -9183,7 +9255,9 @@ function projectManifest() {
       external: L.storage === 'external' || undefined,
       colorSel: L.colorSel, clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
       sectioned: (() => { const m = renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
-      kind: (L.kind === 'mesh' && !L.gridSurface) ? 'mesh' : (L.kind === 'table' ? 'table' : undefined),
+      kind: (L.kind === 'mesh' && !L.gridSurface) ? 'mesh'
+        : L.kind === 'table' ? 'table'
+          : L.docs.stringsDoc ? (L.docs.stringsDoc.header.kind === 'strings' ? 'strings' : 'dxf-points') : undefined,
       sheet: L._sheet || undefined,                        // an xlsx layer reopens THIS worksheet   // a grid-surface is kind 'mesh' but reopens as a grid (gridSurface flag)
       tint: L.kind === 'mesh' ? L.tint : undefined,
       opacity: (L.opacity != null && L.opacity !== 1) ? L.opacity : undefined,   // any kind (mesh/blocks/drillholes)
@@ -9622,7 +9696,9 @@ async function openProjectDir(dir) {
         ? { tint: ls.tint, opacity: ls.opacity, forceSoup: !!ls.soup }
         : ls.kind === 'table'
           ? (ls.sheet ? { sheet: ls.sheet } : { asKind: 'table' })
-          : (/\.ply$/i.test(ls.source) ? { forcePoints: true } : (ls.mapping ? { mapping: ls.mapping } : {}));
+          : ls.kind === 'strings' ? { asKind: 'lines' }
+            : ls.kind === 'dxf-points' ? { asKind: 'points' }
+              : (/\.ply$/i.test(ls.source) ? { forcePoints: true } : (ls.mapping ? { mapping: ls.mapping } : {}));
       if (ls.gridSurface) { overR.asKind = 'surface'; if (ls.flatZ != null) overR.flatZ = ls.flatZ; if (ls.faceted) overR.smooth = false; }   // a grid saved as a surface reopens as one (relief/flat, smooth/faceted; drape applied post-load)
       if (ls.band) overR.band = ls.band;                    // multi-band GeoTIFF: the chosen band
       // grid display-cache: matching source size → display from the sidecar,
@@ -14452,6 +14528,15 @@ function reinterpretOptions(L) {
   if (d.blockDoc) return [...(d.blockDoc.forcePoints ? [{ kind: 'blocks', label: 'block model' }] : [{ kind: 'points', label: 'points' }]), { kind: 'table', label: 'table (drop the geometry)' }];
   if (d.plyDoc) return [{ kind: 'mesh', label: 'mesh' }];
   if (d.meshDoc && /\.ply$/i.test(L.name)) return [{ kind: 'points', label: 'points' }];
+  if (/\.dxf$/i.test(L.name)) {
+    const cur = d.stringsDoc ? (d.stringsDoc.header.kind === 'strings' ? 'lines' : 'points') : 'mesh';
+    const c = (d.stringsDoc ? d.stringsDoc.header.dxfCounts : d.meshDoc && d.meshDoc.header.dxfCounts) || {};
+    return [
+      ...(c.triangles && cur !== 'mesh' ? [{ kind: 'mesh', label: 'mesh (3DFACE surfaces)' }] : []),
+      ...(c.strings && cur !== 'lines' ? [{ kind: 'lines', label: 'design strings (capsules)' }] : []),
+      ...(c.points && cur !== 'points' ? [{ kind: 'points', label: 'points (pegs)' }] : []),
+    ];
+  }
   return [];
 }
 async function reopenAs(L, kind) {
