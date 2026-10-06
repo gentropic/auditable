@@ -56,7 +56,22 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
   the same `compass.*` math runs on it, and the compass **accuracy** the event hides is
   shown (`compass · fused · high`; low/unreliable → "figure-8 to calibrate"). Falls back
   to `deviceorientation` if the stream can't open; reopens after the shell pauses it.
-  Still owed from that bullet: `attest`-signing each reading.
+- ~~**attest-signed logs**~~ ✓ 2026-10-06 — inside the shell, **publish** signs the exact
+  bytes of `wuffle-log.csv` with the phone's hardware key (`attest`: StrongBox where the
+  phone has it, else the TEE) and publishes `wuffle-log.csv.sig` beside it — a small JSON
+  `{file, alg, sig, pub, hash, security, signedAt}` (ECDSA P-256 / SHA-256, raw r‖s, the
+  public key as base64 SPKI). Anyone verifies it with WebCrypto alone:
+
+  ```js
+  const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('spki', b64(sig.pub), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64(sig.sig), csvBytes);   // → true
+  ```
+
+  The unit of provenance is the published file, not each reading (a reading signed
+  alone proves nothing about the set). An instrument built without the attest plugin
+  publishes unsigned and says so. Guarded end to end by the bench smoke (the bench's
+  attest is a real WebCrypto key, so the verification there is real).
 - **WMM declination** — position (`gnss`) → World Magnetic Model → true north.
 - **Georeferencing** — stamp each measurement with `gnss` coordinates (wuffle v3);
   an outcrop photo via `camera`.

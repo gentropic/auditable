@@ -199,6 +199,7 @@ $('mLine').onclick = () => setMode('line');
 // one reading → the live dial. Fed by the fused stream inside the shell, by the
 // deviceorientation events otherwise (or if the stream can't open).
 let source = 'event';           // 'fused' once shell.orientation delivers
+let lastPublish = null;         // { name, bytes, signed } — the smoke verifies the .sig against bytes
 let accuracy = null;            // Android compass accuracy: 3 high · 2 med · 1 low · 0 unreliable
 function onOrient(e) {
   if (e.alpha == null) return;
@@ -303,9 +304,21 @@ $('publish').onclick = async () => {
   const csv = 'data:text/csv;charset=utf-8,' + encodeURIComponent(rows.join('\n') + '\n');
   const bytes = new TextEncoder().encode(rows.join('\n') + '\n');
   if (shell.present) {
-    try { await shell.publish('wuffle-log.csv', bytes, { collection: 'Downloads', mime: 'text/csv' });
-      msg('published ' + log.length + ' → Downloads/wuffle-log.csv'); }
-    catch (e) { msg('publish failed: ' + e, true); }
+    try {
+      await shell.publish('wuffle-log.csv', bytes, { collection: 'Downloads', mime: 'text/csv' });
+      // provenance by construction: sign the published bytes with the phone's
+      // hardware key (attest plugin) and publish the signature beside the log.
+      // An instrument built without the attest plugin simply publishes unsigned.
+      let signed = null;
+      try {
+        const a = await shell.attest.sign(bytes);
+        signed = { file: 'wuffle-log.csv', alg: a.alg, sig: a.sig, pub: a.pub, hash: a.hash, security: a.security, signedAt: new Date().toISOString() };
+        await shell.publish('wuffle-log.csv.sig', new TextEncoder().encode(JSON.stringify(signed, null, 1)),
+          { collection: 'Downloads', mime: 'application/json' });
+      } catch (e) { /* no attest in this build, or the keystore refused — the log is still published */ }
+      lastPublish = { name: 'wuffle-log.csv', bytes, signed };
+      msg('published ' + log.length + ' → Downloads/wuffle-log.csv' + (signed ? ' + .sig (' + signed.security + ')' : ' (unsigned)'));
+    } catch (e) { msg('publish failed: ' + e, true); }
   } else {
     // desktop: a plain download (two homes, one file)
     const a = document.createElement('a'); a.href = csv; a.download = 'wuffle-log.csv'; a.click();
@@ -325,6 +338,7 @@ msg(shell.present ? 'lead-acid ready · lay the phone on a surface to measure'
 window.__wuffle = {
   plot: (d1, d2, m) => record(d1, d2, m), log, count: () => log.length, shell,
   get source() { return source; }, get accuracy() { return accuracy; }, get reading() { return cur; },
+  get lastPublish() { return lastPublish; },
 };
 </script>
 </body>

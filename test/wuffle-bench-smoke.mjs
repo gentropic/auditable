@@ -97,6 +97,24 @@ const signed = await p.evaluate(async () => {
 chk(`body sidecar + attest sign/verify (valid ${signed.ok}, tampered-rejected ${!signed.okBad}, ${signed.security})`,
   signed.ok && !signed.okBad);
 
+// 4b. publish signs the log: the .sig sidecar verifies with WebCrypto against the exact bytes
+const pub = await p.evaluate(async () => {
+  const w = window.__wuffle;
+  w.plot(45, 30, 'plane');
+  document.getElementById('publish').click();
+  for (let i = 0; i < 50 && !w.lastPublish; i++) await new Promise(r => setTimeout(r, 100));
+  const lp = w.lastPublish;
+  if (!lp || !lp.signed) return { signed: false };
+  const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('spki', b64(lp.signed.pub), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64(lp.signed.sig), lp.bytes);
+  const tampered = new Uint8Array(lp.bytes); tampered[0] ^= 1;
+  const okBad = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64(lp.signed.sig), tampered);
+  return { signed: true, ok, okBad, security: lp.signed.security, msg: document.getElementById('msg').textContent };
+});
+chk(`publish → attest-signed .sig sidecar verifies against the log bytes (valid ${pub.ok}, tampered-rejected ${pub.okBad === false}, ${pub.security}; "${pub.msg}")`,
+  pub.signed && pub.ok === true && pub.okBad === false && /\+ \.sig/.test(pub.msg));
+
 // 5. fs ranged read from a fixture (set via __benchFixtures before load would be
 //    ideal; here we drive the route directly with a token we inject at runtime)
 const ranged = await p.evaluate(async () => {
