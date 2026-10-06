@@ -905,6 +905,25 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
     dxfInfo.strings && dxfInfo.strings.loc === 'segments' && dxfInfo.strings.rows === 8
     && Array.isArray(dxfInfo.strings.row0) && dxfInfo.strings.row0[0] === 'CREST');
 
+  // THE DIALOG PATH (the one the clobber bug lived in): a dxf through
+  // openFilesDialog + the Open button must land as its peeked kind, not the
+  // describeFile fall-through default ('points')
+  const viaDialog = await p.evaluate(async (surf) => {
+    const m = window._micro;
+    const f = new File([surf], 'dialog_surface.dxf');
+    await m.openFilesDialog([f]);
+    const dlgState = { shown: document.querySelector('#ofDlg').classList.contains('show') };
+    const before = m.layers().length;
+    document.querySelector('#ofOpen').click();
+    await new Promise((r) => setTimeout(r, 900));
+    const L = m.layers().find((x) => x.name === 'dialog_surface.dxf');
+    const out = { shown: dlgState.shown, added: m.layers().length - before, kind: L && L.kind, tris: L && L.docs.meshDoc && L.docs.meshDoc.header.triCount, meta: document.querySelector('#meta').textContent.slice(0, 80) };
+    if (L) m.renderer.removeLayer(L.id);
+    return out;
+  }, dxfSurface);
+  chk(`DXF through the OPEN DIALOG lands as a mesh (${JSON.stringify(viaDialog)}) — the describeFile fall-through no longer forces 'points'`,
+    viaDialog.shown === true && viaDialog.added === 1 && viaDialog.kind === 'mesh' && viaDialog.tris === 8);
+
   // a MIXED dxf opens as its dominant mesh, and Reinterpret-as crosses to strings
   const reint = await p.evaluate(async (mixed) => {
     const m = window._micro;

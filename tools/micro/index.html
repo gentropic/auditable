@@ -7625,12 +7625,12 @@ async function describeFile(f) {
           if (c.strings) parts.push(`${c.strings.toLocaleString()} strings`);
           if (c.points) parts.push(`${c.points.toLocaleString()} points`);
           d.desc = `DXF drawing${parts.length ? ' · ' + parts.join(' · ') : ' (no 3D geometry)'}`;
-          d.interps = [
+          d.dxfInterps = [
             ...(c.triangles ? [['mesh', 'mesh (3DFACE surfaces)']] : []),
             ...(c.strings ? [['lines', 'design strings (capsules)']] : []),
             ...(c.points ? [['points', 'points (pegs)']] : []),
           ];
-          d.asKind = d.interps.length ? d.interps[0][0] : null;
+          d.dxfAs = d.dxfInterps.length ? d.dxfInterps[0][0] : null;
         } catch (e2) { d.desc = `DXF — ${e2.message}`; }
       }
     } else if (/\.msh$/i.test(name)) {
@@ -7691,6 +7691,7 @@ async function describeFile(f) {
     : d.kind === 'las' ? [['points', 'points']]
     : d.kind === 'blocks' ? [['blocks', 'block model'], ['points', 'points']]
     : d.kind === 'delimited' ? [['blocks', 'block model'], ['points', 'points'], ['collar', 'DH collar'], ['survey', 'DH survey'], ['intervals', 'DH intervals']]
+    : d.kind === 'dxf' ? (d.dxfInterps && d.dxfInterps.length ? d.dxfInterps : [['mesh', 'mesh (3DFACE surfaces)'], ['lines', 'design strings (capsules)'], ['points', 'points (pegs)']])
     : [['points', 'points']];
   d.asKind = d.kind === 'xlsx' ? 'table'
     : d.kind === 'ply' ? (d.plyFaces ? 'mesh' : 'points')
@@ -7699,6 +7700,7 @@ async function describeFile(f) {
     : d.kind === 'las' ? 'points'
     : d.kind === 'delimited' ? (d.dhRole || (d.forcePoints ? 'points' : 'blocks'))
     : d.kind === 'blocks' ? (d.forcePoints ? 'points' : 'blocks')
+    : d.kind === 'dxf' ? d.dxfAs                           // null when the peek couldn't run → the dominant pick at open
     : 'points';
   return d;
 }
