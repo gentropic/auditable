@@ -386,11 +386,10 @@ $('camx').onclick = () => closeCamera();
 $('snap').onclick = async () => { await snapPhoto(); closeCamera(); };
 
 // the shell closes push streams on pause (and says so); reopen on resume
-const resumeNeeded = { fused: false, intake: false, gnss: false };
+const resumeNeeded = { fused: false, gnss: false };
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   if (resumeNeeded.fused || source !== 'fused') { resumeNeeded.fused = false; startFused(); }
-  if (resumeNeeded.intake) { resumeNeeded.intake = false; startIntake(); }
   if (resumeNeeded.gnss) { resumeNeeded.gnss = false; startGnss(); }
 });
 
@@ -422,14 +421,15 @@ function loadCsv(text, name) {
 async function startIntake() {
   if (!shell.present) return;
   try {
-    const s = await shell.intake(async (item) => {
+    // the shim reopens this stream itself when the shell pauses (SPEC §4.5) —
+    // a shared file is never lost to the pause that delivers it
+    await shell.intake(async (item) => {
       try {
         if (item.kind === 'file') loadCsv(new TextDecoder().decode(await item.source.arrayBuffer()), item.name);
         else if (item.kind === 'text') loadCsv(item.text, 'shared text');
         else if (item.kind === 'error') msg(item.error + ' (' + item.name + ')', true);
       } catch (e) { msg('could not load ' + (item.name || 'the shared item') + ': ' + (e.message || e), true); }
     });
-    s.onClose(() => { resumeNeeded.intake = true; if (!document.hidden) startIntake(); });
   } catch { /* no intake plugin in this build */ }
 }
 startIntake();

@@ -1760,9 +1760,11 @@ if (target === 'micro') {
     '../../ext/yaml/index.js': '#yaml',
     '../../ext/sheet/index.js': '#sheet',
     '../../ext/dispatch/index.js': '#dispatch',       // @gcu/dispatch — the EXPERIMENTAL NL command bar (off by default)
+    '../../ext/leadacid/index.js': '#leadacid',      // the lead-acid shell shim (feature-detected; dormant on the web)
   };
   const libs = [
     ['condenser', 'ext/condenser/index.js'],
+    ['leadacid',  'ext/leadacid/index.js'],           // @gcu/leadacid — intake + fileBlob inside the Android shell
     ['dispatch',  'ext/dispatch/index.js'],           // session-trained NL → command (zero-dep, no WASM: Sealed holds)
     ['expr',      'ext/expr/index.js'],
     ['filterui',  'ext/filterui/index.js'],           // the shared filter-widget engine (extracted from the fd* drawer)
@@ -1786,6 +1788,7 @@ if (target === 'micro') {
   }
 
   let html = fs.readFileSync(path.join(micDir, 'index.html'), 'utf8');
+  html = html.replace(/<!-- dev bench[\s\S]*?<script src="[^"]*bench\.js"><\/script>\s*/, '');   // dev-only bench
   const appMatch = html.match(/<script type="module">\n([\s\S]*?)<\/script>/);
   if (!appMatch) { console.error('Error: tools/micro/index.html — inline module script not found.'); process.exit(1); }
   let appSrc = appMatch[1];
