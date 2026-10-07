@@ -26,6 +26,42 @@
 // Self-gating and self-contained (no imports); strip it at build (it does
 // nothing without `?bench`, but keep the built artifact clean). Override the
 // canned data before load via `window.__benchFixtures = { … }`.
+// bench.js — the desktop dev bench (SPEC §4.7).
+//
+// A classic <script> an instrument loads in DEV only. When the page URL carries
+// `?bench`, it installs a MOCK of the native layer so the artifact runs
+// shell-style ON THE DESKTOP — no APK, no device: `shell.present` becomes true
+// and `/native/**` is answered with canned fixtures. It mocks BELOW lead-acid.js
+// (fetch + the WebMessagePort), so the shim's real code paths (feature detect,
+// body sidecar, push streams) are exercised unchanged.
+//
+// Self-gating and self-contained (no imports); strip it at build (it does
+// nothing without `?bench`, but keep the built artifact clean). Override the
+// canned data before load via `window.__benchFixtures = { … }`.
+// bench.js — the desktop dev bench (SPEC §4.7).
+//
+// A classic <script> an instrument loads in DEV only. When the page URL carries
+// `?bench`, it installs a MOCK of the native layer so the artifact runs
+// shell-style ON THE DESKTOP — no APK, no device: `shell.present` becomes true
+// and `/native/**` is answered with canned fixtures. It mocks BELOW lead-acid.js
+// (fetch + the WebMessagePort), so the shim's real code paths (feature detect,
+// body sidecar, push streams) are exercised unchanged.
+//
+// Self-gating and self-contained (no imports); strip it at build (it does
+// nothing without `?bench`, but keep the built artifact clean). Override the
+// canned data before load via `window.__benchFixtures = { … }`.
+// bench.js — the desktop dev bench (SPEC §4.7).
+//
+// A classic <script> an instrument loads in DEV only. When the page URL carries
+// `?bench`, it installs a MOCK of the native layer so the artifact runs
+// shell-style ON THE DESKTOP — no APK, no device: `shell.present` becomes true
+// and `/native/**` is answered with canned fixtures. It mocks BELOW lead-acid.js
+// (fetch + the WebMessagePort), so the shim's real code paths (feature detect,
+// body sidecar, push streams) are exercised unchanged.
+//
+// Self-gating and self-contained (no imports); strip it at build (it does
+// nothing without `?bench`, but keep the built artifact clean). Override the
+// canned data before load via `window.__benchFixtures = { … }`.
 (function () {
   'use strict';
   if (!/[?&]bench\b/.test(location.search)) return;
@@ -107,6 +143,14 @@
       console.log('[bench] fs/publish', req.query.name, (body ? body.length : 0) + 'B →', req.query.collection);
       return jsonResp({ uri: 'bench://' + req.query.collection + '/' + req.query.name, name: req.query.name, bytes: body ? body.length : 0 });
     },
+    'intake/stream': function () {
+      var id = 'bi' + (++streamSeq);
+      streams.set(id, { stop: function () { if (intakeStream === id) intakeStream = null; } });
+      intakeStream = id;
+      flushIntake();                 // synchronously, inside the open — like the real plugin
+      return jsonResp({ stream: id });
+    },
+    'intake/pending': function () { return jsonResp(intakeQueue.splice(0)); },
     'sensor/list': function () { return jsonResp([{ name: 'rotation', vendor: 'bench', resolution: 0 }]); },
     'sensor/stream': function (req) {
       var id = 'bs' + (++streamSeq);
@@ -186,6 +230,14 @@
     });
   };
 
-  console.log('[bench] active — /native mocked, shell.present=true. Plugins: shell, fs, sensor, share, attest.');
-  window.__bench = { fixtures: fx, push: push };
+  // intake: fixtures `intake: [items]` arrive when the page opens the stream;
+  // `window.__bench.intake(items)` injects more later (a smoke "sharing" a file).
+  // A file item needs its bytes in `__bench.files[token]` (= the fs fixtures).
+  var intakeQueue = (fx.intake || []).slice(), intakeStream = null;
+  function flushIntake() {
+    if (!intakeStream) return;
+    intakeQueue.splice(0).forEach(function (it) { push(intakeStream, 'item', JSON.stringify(it)); });
+  }
+  console.log('[bench] active — /native mocked, shell.present=true. Plugins: shell, fs, sensor, share, attest, intake.');
+  window.__bench = { fixtures: fx, push: push, files: fx.files, intake: function (items) { intakeQueue.push.apply(intakeQueue, items); flushIntake(); } };
 })();

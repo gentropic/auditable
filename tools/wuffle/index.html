@@ -235,15 +235,57 @@ async function startFused() {
     const o = await shell.orientation({ rateHz: 30 });
     o.on((r) => { source = 'fused'; onOrient(r); });
     o.onAccuracy(setAccuracy);
-    o.onClose(() => { source = 'event'; });   // shell closed it (pause/reload) → events carry on
+    o.onClose(() => { source = 'event'; resumeNeeded.fused = true; if (!document.hidden) startFused(); });   // shell closed it (pause) → reopen now if visible, else on resume
   } catch (e) {
     source = 'event';
     msg('fused compass unavailable (' + (e.message || e) + ') — using device orientation events');
   }
 }
 startFused();
-// the shell closes push streams on pause; reopen when we come back
-document.addEventListener('visibilitychange', () => { if (!document.hidden && source !== 'fused') startFused(); });
+// the shell closes push streams on pause (and says so); reopen on resume
+const resumeNeeded = { fused: false, intake: false };
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (resumeNeeded.fused || source !== 'fused') { resumeNeeded.fused = false; startFused(); }
+  if (resumeNeeded.intake) { resumeNeeded.intake = false; startIntake(); }
+});
+
+// intake (share's inbound twin): a CSV shared or opened into wuffle — a
+// published log, or anything with the same columns — reloads into the log.
+function loadCsv(text, name) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) throw new Error('empty');
+  const head = lines[0].toLowerCase().split(',');
+  const col = (k) => head.findIndex((h) => h.trim() === k);
+  const iType = col('type'), iD1 = col('dip_dir_or_trend'), iD2 = col('dip_or_plunge'), iS = col('strike'), iTs = col('timestamp');
+  if (iType < 0 || iD1 < 0 || iD2 < 0) throw new Error('not a wuffle log (needs type, dip_dir_or_trend, dip_or_plunge)');
+  let n = 0;
+  for (const line of lines.slice(1)) {
+    const f = line.split(',');
+    const m = f[iType].trim() === 'line' ? 'line' : 'plane';
+    const d1 = +f[iD1], d2 = +f[iD2];
+    if (!Number.isFinite(d1) || !Number.isFinite(d2)) continue;
+    const s = iS >= 0 && f[iS] !== undefined && f[iS].trim() !== '' ? +f[iS] : (m === 'plane' ? (fmt(d1) + 270) % 360 : null);
+    log.push({ i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2), strike: s, ts: (iTs >= 0 && f[iTs]) || new Date().toISOString() });
+    n++;
+  }
+  renderLog(); updateCount(); drawStatic();
+  msg('loaded ' + n + ' measurement' + (n === 1 ? '' : 's') + ' from ' + name);
+}
+async function startIntake() {
+  if (!shell.present) return;
+  try {
+    const s = await shell.intake(async (item) => {
+      try {
+        if (item.kind === 'file') loadCsv(new TextDecoder().decode(await item.source.arrayBuffer()), item.name);
+        else if (item.kind === 'text') loadCsv(item.text, 'shared text');
+        else if (item.kind === 'error') msg(item.error + ' (' + item.name + ')', true);
+      } catch (e) { msg('could not load ' + (item.name || 'the shared item') + ': ' + (e.message || e), true); }
+    });
+    s.onClose(() => { resumeNeeded.intake = true; if (!document.hidden) startIntake(); });
+  } catch { /* no intake plugin in this build */ }
+}
+startIntake();
 
 function updateCount() {
   $('count').textContent = log.length + ' measurement' + (log.length === 1 ? '' : 's');

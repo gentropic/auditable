@@ -115,6 +115,19 @@ const pub = await p.evaluate(async () => {
 chk(`publish → attest-signed .sig sidecar verifies against the log bytes (valid ${pub.ok}, tampered-rejected ${pub.okBad === false}, ${pub.security}; "${pub.msg}")`,
   pub.signed && pub.ok === true && pub.okBad === false && /\+ \.sig/.test(pub.msg));
 
+// 4c. intake: a csv "shared" to wuffle reloads into the log (share's inbound twin)
+const taken = await p.evaluate(async () => {
+  const w = window.__wuffle; const before = w.count();
+  const csv = 'type,dip_dir_or_trend,dip_or_plunge,strike,timestamp\nplane,120,35,30,2026-10-07T00:00:00Z\nline,250,12,,2026-10-07T00:00:01Z\n';
+  window.__bench.files['log.csv'] = new TextEncoder().encode(csv);
+  window.__bench.intake([{ kind: 'file', token: 'log.csv', name: 'log.csv', size: csv.length, mime: 'text/csv' }]);
+  for (let i = 0; i < 30 && w.count() < before + 2; i++) await new Promise((r) => setTimeout(r, 100));
+  const last = w.log[w.log.length - 1];
+  return { before, after: w.count(), last, msg: document.getElementById('msg').textContent };
+});
+chk(`intake: a shared csv reloads into the log (${taken.before} → ${taken.after}, last ${taken.last && taken.last.mode} ${taken.last && taken.last.d1}→${taken.last && taken.last.d2}; "${taken.msg}")`,
+  taken.after === taken.before + 2 && taken.last && taken.last.mode === 'line' && taken.last.d1 === 250 && /loaded 2 measurements from log\.csv/.test(taken.msg));
+
 // 5. fs ranged read from a fixture (set via __benchFixtures before load would be
 //    ideal; here we drive the route directly with a token we inject at runtime)
 const ranged = await p.evaluate(async () => {

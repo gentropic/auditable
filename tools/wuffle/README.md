@@ -72,6 +72,10 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
   alone proves nothing about the set). An instrument built without the attest plugin
   publishes unsigned and says so. Guarded end to end by the bench smoke (the bench's
   attest is a real WebCrypto key, so the verification there is real).
+- ~~**reload a log**~~ ✓ 2026-10-07 — `intake`, share's inbound twin: a CSV shared or
+  opened into wuffle (a published `wuffle-log.csv`, or anything with the same columns)
+  reloads into the log — "Open with wuffle" from Files, or the share sheet. Verified on the
+  S24+ both ways: a share that LAUNCHES wuffle, and one that reaches it while running.
 - **WMM declination** — position (`gnss`) → World Magnetic Model → true north.
 - **Georeferencing** — stamp each measurement with `gnss` coordinates (wuffle v3);
   an outcrop photo via `camera`.
