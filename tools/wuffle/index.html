@@ -79,11 +79,12 @@
   #msg { color:var(--dim); font-size:12px; margin-top:8px; min-height:16px; }
   .warn { color:var(--orange); }
   .vfoot { color:#4a5158; font-size:10px; margin-top:14px; text-align:right; letter-spacing:.04em; }
+  .pos { margin-left: 8px; font-size: 12px; color: var(--muted, #8a8780); }
 </style>
 </head>
 <body>
 <div class="top">
-  <div class="brand"><h1>wuffle</h1><span class="sub" id="brandsub">compass · magnetic N</span></div>
+  <div class="brand"><h1>wuffle</h1><span class="sub" id="brandsub">compass · magnetic N</span><span id="pos" class="pos"></span></div>
   <div class="modes">
     <button id="mPlane" class="on">plane</button>
     <button id="mLine">line</button>
@@ -242,12 +243,35 @@ async function startFused() {
   }
 }
 startFused();
+// v3: position. Inside the shell, a gnss fix stream stamps every measurement
+// with lat/lon (+ accuracy) — the first open asks for the location permission.
+let lastFix = null;
+async function startGnss() {
+  if (!shell.present) return;
+  try {
+    const g = await shell.gnss.location({ minMs: 2000 });
+    g.on('fix', (f) => {
+      const first = !lastFix;
+      lastFix = f;
+      $('pos').textContent = '±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m';
+      if (first) msg('position ' + f.lat.toFixed(5) + ', ' + f.lon.toFixed(5) + ' (±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m)');
+    });
+    g.onClose(() => { resumeNeeded.gnss = true; if (!document.hidden) startGnss(); });
+  } catch (e) {
+    lastFix = null;
+    $('pos').textContent = e.permission && e.permission.canRequest === false ? '' : 'no position';
+    if (e.permission) msg('location ' + (e.permission.canRequest ? 'denied — measurements will not carry a position' : 'not available in this build'));
+  }
+}
+startGnss();
+
 // the shell closes push streams on pause (and says so); reopen on resume
-const resumeNeeded = { fused: false, intake: false };
+const resumeNeeded = { fused: false, intake: false, gnss: false };
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   if (resumeNeeded.fused || source !== 'fused') { resumeNeeded.fused = false; startFused(); }
   if (resumeNeeded.intake) { resumeNeeded.intake = false; startIntake(); }
+  if (resumeNeeded.gnss) { resumeNeeded.gnss = false; startGnss(); }
 });
 
 // intake (share's inbound twin): a CSV shared or opened into wuffle — a
@@ -258,6 +282,7 @@ function loadCsv(text, name) {
   const head = lines[0].toLowerCase().split(',');
   const col = (k) => head.findIndex((h) => h.trim() === k);
   const iType = col('type'), iD1 = col('dip_dir_or_trend'), iD2 = col('dip_or_plunge'), iS = col('strike'), iTs = col('timestamp');
+  const iLat = col('lat'), iLon = col('lon'), iAcc = col('acc_m');
   if (iType < 0 || iD1 < 0 || iD2 < 0) throw new Error('not a wuffle log (needs type, dip_dir_or_trend, dip_or_plunge)');
   let n = 0;
   for (const line of lines.slice(1)) {
@@ -266,7 +291,9 @@ function loadCsv(text, name) {
     const d1 = +f[iD1], d2 = +f[iD2];
     if (!Number.isFinite(d1) || !Number.isFinite(d2)) continue;
     const s = iS >= 0 && f[iS] !== undefined && f[iS].trim() !== '' ? +f[iS] : (m === 'plane' ? (fmt(d1) + 270) % 360 : null);
-    log.push({ i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2), strike: s, ts: (iTs >= 0 && f[iTs]) || new Date().toISOString() });
+    const e = { i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2), strike: s, ts: (iTs >= 0 && f[iTs]) || new Date().toISOString() };
+    if (iLat >= 0 && iLon >= 0 && f[iLat] !== '' && Number.isFinite(+f[iLat])) { e.lat = +f[iLat]; e.lon = +f[iLon]; e.acc = iAcc >= 0 && f[iAcc] !== '' ? +f[iAcc] : null; }
+    log.push(e);
     n++;
   }
   renderLog(); updateCount(); drawStatic();
@@ -309,8 +336,10 @@ function renderLog() {
 }
 
 function record(d1, d2, m) {
-  log.push({ i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2),
-    strike: m === 'plane' ? (fmt(d1) + 270) % 360 : null, ts: new Date().toISOString() });
+  const e = { i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2),
+    strike: m === 'plane' ? (fmt(d1) + 270) % 360 : null, ts: new Date().toISOString() };
+  if (lastFix) { e.lat = +lastFix.lat.toFixed(6); e.lon = +lastFix.lon.toFixed(6); e.acc = lastFix.acc == null ? null : Math.round(lastFix.acc); }
+  log.push(e);
   renderLog(); updateCount(); drawStatic();
 }
 
@@ -341,8 +370,8 @@ $('clear').onclick = () => { log.length = 0; renderLog(); updateCount(); msg('')
 
 $('publish').onclick = async () => {
   if (!log.length) { msg('nothing to publish', true); return; }
-  const rows = ['type,dip_dir_or_trend,dip_or_plunge,strike,timestamp'];
-  for (const m of log) rows.push(`${m.mode},${m.d1},${m.d2},${m.strike ?? ''},${m.ts}`);
+  const rows = ['type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m'];
+  for (const m of log) rows.push(`${m.mode},${m.d1},${m.d2},${m.strike ?? ''},${m.ts},${m.lat ?? ''},${m.lon ?? ''},${m.acc ?? ''}`);
   const csv = 'data:text/csv;charset=utf-8,' + encodeURIComponent(rows.join('\n') + '\n');
   const bytes = new TextEncoder().encode(rows.join('\n') + '\n');
   if (shell.present) {
@@ -380,7 +409,7 @@ msg(shell.present ? 'lead-acid ready · lay the phone on a surface to measure'
 window.__wuffle = {
   plot: (d1, d2, m) => record(d1, d2, m), log, count: () => log.length, shell,
   get source() { return source; }, get accuracy() { return accuracy; }, get reading() { return cur; },
-  get lastPublish() { return lastPublish; },
+  get lastPublish() { return lastPublish; }, get fix() { return lastFix; },
 };
 </script>
 </body>

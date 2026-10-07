@@ -77,8 +77,11 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
   reloads into the log — "Open with wuffle" from Files, or the share sheet. Verified on the
   S24+ both ways: a share that LAUNCHES wuffle, and one that reaches it while running.
 - **WMM declination** — position (`gnss`) → World Magnetic Model → true north.
-- **Georeferencing** — stamp each measurement with `gnss` coordinates (wuffle v3);
-  an outcrop photo via `camera`.
+- ~~**Georeferencing**~~ ✓ 2026-10-07 (wuffle v3) — inside the shell, a `gnss` fix stream
+  stamps every measurement with lat/lon + accuracy (`lat,lon,acc_m` columns in the published
+  CSV, round-tripped by intake; a `±N m` badge beside the title). The first open asks for the
+  location permission; a refusal just means unstamped measurements. Verified on the S24+
+  with a real fix. Still open from that bullet: an outcrop photo via `camera`.
 - **Fabric analysis** — bearing has density contouring + mean-vector/eigen stats +
   rose diagrams; surface them for a session.
 

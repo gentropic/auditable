@@ -128,6 +128,17 @@ const taken = await p.evaluate(async () => {
 chk(`intake: a shared csv reloads into the log (${taken.before} → ${taken.after}, last ${taken.last && taken.last.mode} ${taken.last && taken.last.d1}→${taken.last && taken.last.d2}; "${taken.msg}")`,
   taken.after === taken.before + 2 && taken.last && taken.last.mode === 'line' && taken.last.d1 === 250 && /loaded 2 measurements from log\.csv/.test(taken.msg));
 
+// 4d. gnss: the bench fix stamps a measurement with lat/lon (+ it round-trips through the csv columns)
+const pos = await p.evaluate(async () => {
+  const w = window.__wuffle;
+  for (let i = 0; i < 30 && !w.fix; i++) await new Promise((r) => setTimeout(r, 100));
+  w.plot(200, 45, 'plane');
+  const e = w.log[w.log.length - 1];
+  return { fix: w.fix, lat: e.lat, lon: e.lon, acc: e.acc, badge: document.getElementById('pos').textContent };
+});
+chk(`gnss: a measurement is georeferenced (${pos.lat}, ${pos.lon} ±${pos.acc} m; badge "${pos.badge}")`,
+  pos.fix && Math.abs(pos.lat - -23.52) < 0.001 && Math.abs(pos.lon - -46.19) < 0.001 && pos.acc === 5 && pos.badge === '±5 m');
+
 // 5. fs ranged read from a fixture (set via __benchFixtures before load would be
 //    ideal; here we drive the route directly with a token we inject at runtime)
 const ranged = await p.evaluate(async () => {
