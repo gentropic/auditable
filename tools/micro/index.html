@@ -736,6 +736,78 @@
     footer #meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     footer #stats, footer #camTP { display: none; }
   }
+  /* ── REVIEW MODE — the phone layout (spec_inbox/micro-mobile-spec.md). Keyed on
+     body.mobile (set from the media query or ?mobile=1) so it is forceable and the
+     same components take a different host layout: one top bar, a bottom tool bar,
+     every floating thing a bottom SHEET, one sheet at a time. ── */
+  body.mobile #bar .title, body.mobile #bar .mb, body.mobile #bar .spacer { display: none; }
+  body.mobile #btnBurger, body.mobile #bar #btnCmd { display: inline-flex; }   /* outranks the .mb hide */
+  body.mobile #bar #filterWrap { flex: 1 1 auto; min-width: 0; }
+  body.mobile #bar button { min-height: 32px; }
+  body.mobile #bar2 { display: none; }
+  body.mobile #bar #btnSelLasso, body.mobile #bar #btnSelThrough, body.mobile #bar #btnPaint, body.mobile #bar #btnShot, body.mobile #bar #btnKnife { display: none; }
+  body.mobile #barTools {
+    display: flex; position: absolute; left: 0; right: 0; bottom: 24px; height: 56px; top: auto; z-index: 6;
+    align-items: stretch; justify-content: space-around; padding: 0 2px calc(0px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--border); border-bottom: none; background: var(--bg-bar);
+  }
+  body.mobile #barTools button {
+    flex: 1 1 0; min-width: 0; min-height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    border: none; background: none; border-radius: 0; padding: 4px 0; color: var(--muted); font-size: 10px;
+  }
+  body.mobile #barTools button svg { width: 20px; height: 20px; }
+  body.mobile #barTools button.on, body.mobile #barTools button.lit { color: var(--accent); background: none; }
+  .tl { display: none; }
+  body.mobile #barTools .tl { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em; white-space: nowrap; }
+  body.mobile #view { inset: 36px 0 calc(80px + var(--sheet-inset, 0px)) 0; }   /* the open sheet's height — the model re-centres above it */
+  body.mobile.sec-on #view { inset: 36px 0 calc(124px + var(--sheet-inset, 0px)) 0; }   /* + the section strip */
+  body.mobile #empty { inset: 36px 0 80px 0; }
+  body.mobile #empty { padding: 0 16px; }
+  body.mobile footer { gap: 10px; }
+  body.mobile footer #meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.mobile footer #stats, body.mobile footer #camTP { display: none; }
+  /* the section strip — the instrument row's section controls, moved, only while a section is on */
+  #secStrip { display: none; }
+  body.mobile.sec-on #secStrip {
+    display: flex; position: absolute; left: 0; right: 0; bottom: 80px; height: 44px; z-index: 6; align-items: center; gap: 8px; padding: 0 10px;
+    border-top: 1px solid var(--border); background: var(--bg-bar); font-family: var(--mono); font-size: 12px;
+  }
+  body.mobile #secStrip select { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 6px 6px; min-height: 36px; }
+  body.mobile #secStrip input[type="range"] { flex: 1 1 auto; width: auto !important; min-width: 0; accent-color: var(--accent); height: 36px; }
+  body.mobile #secStrip button { font-family: var(--mono); font-size: 14px; color: var(--text); background: var(--bg-btn); border: 1px solid var(--bd2); border-radius: 3px; min-width: 40px; min-height: 36px; }
+  /* sheets: windows + panels anchored to the bottom, one at a time, the head is the handle */
+  body.mobile .fwin, body.mobile #layersPanel, body.mobile #propPanel, body.mobile #recPanel {
+    position: fixed; left: 0 !important; right: 0; top: auto !important; bottom: 80px; width: auto !important; max-width: none;
+    height: min(var(--sheet-h, 60vh), calc(100vh - 36px - 80px)) !important; z-index: 60;
+    border-radius: 12px 12px 0 0; border-left: none; border-right: none; border-top: 1px solid var(--bd2);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
+  }
+  body.mobile.sec-on .fwin, body.mobile.sec-on #layersPanel, body.mobile.sec-on #propPanel, body.mobile.sec-on #recPanel { bottom: 124px; }
+  body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44vh; }
+  body.mobile .fwin-head { cursor: default; padding: 10px 12px 8px; position: relative; min-height: 44px; align-items: center; touch-action: none; }
+  body.mobile .fwin-head::before { content: ''; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--bd2); }
+  body.mobile .fwin-head button { min-width: 36px; min-height: 36px; font-size: 18px; }
+  body.mobile .fwin-grip { display: none; }
+  body.mobile #layersPanel .lp-head, body.mobile #propPanel .pp-head, body.mobile #recPanel .rp-head { min-height: 40px; }
+  /* minimized-window chips ride on the open sheet's top edge (like tabs), so a window
+     is always one tap away while another sheet is up — never behind it */
+  body.mobile #winStrip { left: 8px; right: 8px; bottom: calc(84px + var(--sheet-inset, 0px)); max-width: none; z-index: 61; }
+  body.mobile.sec-on #winStrip { bottom: calc(128px + var(--sheet-inset, 0px)); }
+  body.mobile .win-chip { min-height: 32px; padding: 4px 12px; }
+  /* analysis windows stack: the plot (the answer) on top, the form below it */
+  body.mobile .sw-body { flex-direction: column-reverse; }
+  body.mobile .sw-rail { width: auto; flex: 0 0 44%; border-right: none; border-top: 1px solid var(--border); padding: 8px 12px 0; }
+  body.mobile .sw-main { flex: 1 1 auto; min-height: 0; }
+  body.mobile .awin-ctrls select, body.mobile .awin-btn, body.mobile .awin-ctrls input { min-height: 32px; font-size: 12px; }
+  /* the command palette as a sheet: input on top, tap-sized rows, nothing pre-selected */
+  body.mobile #palOverlay { align-items: flex-end; }
+  body.mobile #palBox { margin: 0 0 80px; width: 100vw; max-width: none; border-radius: 12px 12px 0 0; border-left: none; border-right: none; }
+  body.mobile #palInput { font-size: 16px; padding: 14px 16px; }
+  body.mobile #palList { max-height: calc(100vh - 36px - 80px - 60px); }
+  body.mobile .pal-item { min-height: 44px; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 14px; }
+  body.mobile .pal-item.pal-nl { flex-direction: column; }
+  body.mobile .pal-g { min-width: 0; }
+  body.mobile .pal-t { font-size: 14px; }
 </style>
 </head>
 <body>
@@ -806,6 +878,9 @@
     <label id="sec2DW" title="2D mode: face the section, go orthographic, and lock rotation — drags pan instead of orbiting, so the view reads like a paper section/plan" style="display:none"><input id="sec2D" type="checkbox">2D</label>
   </div>
   <div id="barTools"></div>
+  <!-- review mode: the section strip (hosts #secMode + #secPos while a section is on) and the
+       layers / properties buttons for the bottom tool bar — populated by layoutBars() -->
+  <div id="secStrip"><button id="secThin" title="thinner slab">−</button><button id="secThick" title="thicker slab">+</button></div>
   <div id="view"><canvas id="cv"></canvas><canvas id="decoCv" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas><svg id="knifeSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="knifeLine" stroke="#c89b3c" stroke-width="1.5" stroke-dasharray="6 4"/></svg><svg id="secSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="secPoly" fill="rgba(200,155,60,0.05)" stroke="#c89b3c" stroke-width="1.2" stroke-dasharray="7 5"/></svg><svg id="bandSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="bandPolyA" fill="rgba(74,120,176,0.10)" stroke="#4a78b0" stroke-width="1.4"/><polygon id="bandPolyB" fill="none" stroke="#4a78b0" stroke-width="1.4" stroke-dasharray="4 3"/><text id="bandLabel" fill="#fff" font-size="11" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3"></text></svg><svg id="selSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="selShape" fill="rgba(255,217,77,0.08)" stroke="#ffd94d" stroke-width="1.2" stroke-dasharray="5 4"/></svg><svg id="measureSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="mLineCase" stroke="#121212" stroke-width="4" stroke-linecap="round"/><line id="mLine" stroke="#ff26b3" stroke-width="1.5"/><circle id="mA" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><circle id="mB" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><text id="mLabel" fill="#fff" font-size="12" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3.5"></text></svg></div>
   <div id="empty"><b>open a block model, drillholes, or point cloud</b><span>Open… or drag .csv / .dm / .parquet / .las / .ply / .xyz / .msh / .obj / .lfm / .tif / .grd anywhere — several at once become layers</span><span>nothing handy? <a id="sampleDemo" class="cta">▸ open the demo project</a></span><span style="margin-top:-4px">a block model + drillholes + topography, sectioned, with a grade–tonnage curve — nothing is downloaded, it is all made here</span><span>or just <a id="sampleBlocks">▸ a 2M-block model</a> · a bench scan at <a data-sample="2000000">▸ 2M</a> · <a data-sample="10000000">▸ 10M</a> · <a data-sample="50000000">▸ 50M</a> points — all made locally</span><span style="color:var(--faint)">new here? &nbsp;<a href="https://gentropic.org/micro/docs/" target="_blank" rel="noopener noreferrer">read the manual</a> &nbsp;·&nbsp; Help → Keyboard &amp; mouse — the whole vocabulary</span><span class="empty-sec">Evaluating this for work? → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a> — verify it, and how to bring it through approval</span><span class="empty-sec empty-dl">One file, no install — <a href="https://gentropic.org/micro/micro.html" download="micro.html">download micro.html</a> to keep, share, or run offline</span><div id="emptyRecents" class="empty-recents"></div><div id="emptyProjects" class="empty-recents"></div></div>
   <div id="drop-hint">drop to open</div>
@@ -6677,16 +6752,104 @@ try { const b = localStorage.getItem('micro.budget'); if (b && [...$('#budget').
 $('#budget').addEventListener('change', () => { try { localStorage.setItem('micro.budget', $('#budget').value); } catch { /* ignore */ } });
 $('#zExag').addEventListener('input', () => setZExag($('#zExag').value));
 $('#btnFit').onclick = () => { if (renderer.chunkCount) { cam.fit(rendererDocBbox()); requestRender(); } };
-// phones: the tool icons live on their OWN row — the same elements move, so
-// ids, listeners, and lit states travel with them; desktop puts them back
+// REVIEW MODE (spec_inbox/micro-mobile-spec.md): below the breakpoint — or with
+// ?mobile=1 so the desktop smokes can emulate a phone — the SAME elements move
+// into a different host layout: the tool buttons to a bottom bar (ids, listeners
+// and lit states travel with them), the section controls to a strip, every
+// floating thing becomes a bottom sheet (floatWin + the panels). Desktop puts
+// everything back where it came from.
 const _mqPhone = matchMedia('(max-width: 720px)');
+const _forceMobile = new URLSearchParams(location.search).get('mobile') === '1';
+const _isMobile = () => document.body.classList.contains('mobile');
 const _TOOLROW = ['#btnSelRect', '#btnSelLasso', '#btnSelThrough', '#btnPaint', '#btnMeasure', '#btnSection', '#btnShot', '#btnFit'];
-function layoutBars() {
-  const host = _mqPhone.matches ? $('#barTools') : $('#bar');
-  for (const sel of _TOOLROW) host.appendChild($(sel));
+const _TOOLROW_MOBILE = ['#btnLayersM', '#btnPropsM', '#btnSelRect', '#btnSection', '#btnMeasure', '#btnFit'];
+const _TOOL_LABELS = { btnLayersM: 'layers', btnPropsM: 'props', btnSelRect: 'select', btnSection: 'section', btnMeasure: 'measure', btnFit: 'fit' };
+const _home = new Map();                                   // element → where it lives on the desktop
+function _moveTo(el, host) { if (!_home.has(el)) _home.set(el, { parent: el.parentNode, next: el.nextSibling }); host.appendChild(el); }
+function _moveHome(el) { const h = _home.get(el); if (h && h.parent) h.parent.insertBefore(el, h.next && h.next.parentNode === h.parent ? h.next : null); }
+function ensureMobileChrome() {
+  if ($('#btnLayersM')) return;
+  const mk = (id, title, svg) => { const b = document.createElement('button'); b.id = id; b.title = title; b.innerHTML = svg; return b; };
+  const layersB = mk('btnLayersM', 'layers', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 10 6-10 6L2 8z"/><path d="m2 13 10 6 10-6"/></svg>');
+  const propsB = mk('btnPropsM', 'properties of the active layer', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2" fill="var(--bg-bar)"/><circle cx="15" cy="12" r="2" fill="var(--bg-bar)"/><circle cx="7" cy="18" r="2" fill="var(--bg-bar)"/></svg>');
+  layersB.onclick = () => toggleLayersPanel();
+  propsB.onclick = () => { if (_propOpen) closeProps(); else if (S.activeId != null) openProps(); else $('#meta').textContent = 'no active layer — open a file first'; };
+  $('#barTools').append(layersB, propsB);
+  for (const id in _TOOL_LABELS) { const b = $('#' + id); if (b && !b.querySelector('.tl')) { const l = document.createElement('span'); l.className = 'tl'; l.textContent = _TOOL_LABELS[id]; b.appendChild(l); } }
+  // the slab steppers — the Alt-wheel behaviour (×1.15 per step), as buttons
+  const step = (up) => { if ($('#secClip').value !== 'slab') return; const cur = Math.max(0.5, +$('#secHalf').value || 5); $('#secHalf').value = Math.max(0.5, +(cur * (up ? 1.15 : 1 / 1.15)).toPrecision(3)); $('#secHalf').dispatchEvent(new Event('input')); $('#meta').textContent = `slab half-thickness ${+$('#secHalf').value} m`; };
+  $('#secThin').onclick = () => step(false); $('#secThick').onclick = () => step(true);
+  $('#secMode').addEventListener('input', () => document.body.classList.toggle('sec-on', _isMobile() && $('#secMode').value !== 'off'));
 }
+function layoutBars() {
+  const mobile = _forceMobile || _mqPhone.matches;
+  document.body.classList.toggle('mobile', mobile);
+  ensureMobileChrome();
+  if (mobile) {
+    for (const sel of _TOOLROW) _moveTo($(sel), $('#bar'));             // park them (the hidden ones stay hidden by CSS)
+    for (const sel of _TOOLROW_MOBILE) _moveTo($(sel), $('#barTools'));
+    const strip = $('#secStrip'); strip.insertBefore($('#secMode'), $('#secThin')); strip.insertBefore($('#secPos'), $('#secThin'));
+    if (!_home.has($('#secMode'))) { /* first move happened above without recording — record the desktop homes */ }
+  } else {
+    for (const sel of _TOOLROW) _moveTo($(sel), $('#bar'));
+    for (const sel of ['#btnLayersM', '#btnPropsM']) _moveTo($(sel), $('#barTools'));
+    _moveHome($('#secMode')); _moveHome($('#secPos'));
+  }
+  document.body.classList.toggle('sec-on', mobile && $('#secMode').value !== 'off');
+}
+// record the section controls' desktop homes BEFORE the first layout moves them
+for (const sel of ['#secMode', '#secPos']) { const el = $(sel); _home.set(el, { parent: el.parentNode, next: el.nextSibling }); }
 _mqPhone.addEventListener('change', layoutBars);
 layoutBars();
+
+// one sheet at a time: showing a window or a panel minimizes the open windows
+// (chips on the strip) and hides the other panels
+function _sheetExclusive(keep) {
+  if (!_isMobile()) return;
+  for (const w of document.querySelectorAll('.fwin')) if (w !== keep && w.style.display !== 'none' && w._minimize) w._minimize();
+  const lp = $('#layersPanel'), pp = $('#propPanel'), rp = $('#recPanel');
+  if (keep !== lp && lp.classList.contains('show')) toggleLayersPanel(false);
+  if (keep !== pp && _propOpen) closeProps();
+  if (keep !== rp) rp.classList.remove('show');
+}
+// the view yields to whatever sheet is open: --sheet-inset = its height, so the
+// canvas (a ResizeObserver resizes it) shrinks to the region above and the camera
+// centre — hence the model — moves up with it. Re-measured on any sheet change.
+let _sheetLayoutRaf = 0;
+function _sheetLayout() {
+  if (_sheetLayoutRaf) return;
+  _sheetLayoutRaf = requestAnimationFrame(() => {
+    _sheetLayoutRaf = 0;
+    if (!_isMobile()) { document.body.style.removeProperty('--sheet-inset'); return; }
+    let h = 0;
+    for (const el of document.querySelectorAll('.fwin.sheet, #layersPanel.show, #propPanel.show, #recPanel.show')) {
+      if (el.style.display === 'none') continue;
+      h = Math.max(h, el.getBoundingClientRect().height);
+    }
+    document.body.style.setProperty('--sheet-inset', h ? h + 'px' : '0px');
+  });
+}
+new MutationObserver(_sheetLayout).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'] });
+addEventListener('resize', _sheetLayout);
+
+// the handle: drag the head vertically to snap peek / half / tall; past peek closes (or minimizes a window)
+const _SHEET_H = ['38vh', '60vh', '92vh'];
+function _sheetDrag(el, e, onDismiss) {
+  const y0 = e.clientY; let cur = _SHEET_H.indexOf(el.style.getPropertyValue('--sheet-h').trim()); if (cur < 0) cur = 1;
+  const move = (ev) => { ev.preventDefault(); };
+  const up = (ev) => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+    const dy = ev.clientY - y0;
+    if (dy > 70) { if (cur === 0) onDismiss(); else el.style.setProperty('--sheet-h', _SHEET_H[cur - 1]); }
+    else if (dy < -70) el.style.setProperty('--sheet-h', _SHEET_H[Math.min(2, cur + 1)]);
+    if (el._onResized) requestAnimationFrame(() => el._onResized());
+  };
+  addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', up);
+}
+for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => toggleLayersPanel(false)], ['#propPanel', '.pp-head', () => closeProps()], ['#recPanel', '.rp-head', () => $('#rpClose').click()]]) {
+  const h = $(id) && ($(id).querySelector(head) || $(id).firstElementChild);
+  if (h) h.addEventListener('pointerdown', (e) => { if (!_isMobile() || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; _sheetDrag($(id), e, dismiss); });
+}
 let _docBbox = null;
 const rendererDocBbox = () => _docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
 
@@ -11972,11 +12135,11 @@ function openPalette(opts = {}) {
     ov.innerHTML = '<div id="palBox"><input id="palInput" placeholder="Type a command…  (↑↓ to move · Enter to run · Esc to close)" autocomplete="off" spellcheck="false"><div id="palList"></div></div>';
     document.body.appendChild(ov);
     ov.addEventListener('pointerdown', (e) => { if (e.target === ov) closePalette(); });
-    $('#palInput').addEventListener('input', () => { _palSel = 0; renderPalette(); });
+    $('#palInput').addEventListener('input', () => { _palSel = _isMobile() ? -1 : 0; renderPalette(); });
     $('#palInput').addEventListener('keydown', palKeydown);
   }
   $('#palInput').placeholder = _palNlMode ? 'Ask in plain language…  (dispatch — experimental)' : 'Type a command…  (↑↓ to move · Enter to run · Esc to close)';
-  ov.style.display = 'flex'; $('#palInput').value = ''; _palSel = 0; renderPalette(); $('#palInput').focus();
+  ov.style.display = 'flex'; $('#palInput').value = ''; _palSel = _isMobile() ? -1 : 0; renderPalette(); $('#palInput').focus();
 }
 function closePalette() { _palOpen = false; _palNlMode = false; const ov = $('#palOverlay'); if (ov) ov.style.display = 'none'; }
 function renderPalette() {
@@ -12400,7 +12563,8 @@ function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose }) {
   w = Math.min(w, innerWidth - 12); h = Math.min(h, innerHeight - 72);
   x = Math.max(0, Math.min(x, innerWidth - w - 6)); y = Math.max(28, Math.min(y, innerHeight - h - 30));
   const el = document.createElement('div'); el.className = 'fwin'; el.dataset.kind = kind;
-  el.style.cssText += `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${++_fwinZ};`;
+  if (_isMobile()) { el.classList.add('sheet'); el.style.cssText += `z-index:${++_fwinZ};`; el.style.setProperty('--sheet-h', '60vh'); }
+  else el.style.cssText += `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${++_fwinZ};`;
   const head = document.createElement('div'); head.className = 'fwin-head';
   const t = document.createElement('span'); t.className = 't'; t.textContent = title;
   const subEl = document.createElement('span'); subEl.className = 'sub'; subEl.textContent = sub || '';
@@ -12411,6 +12575,7 @@ function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose }) {
   const grip = document.createElement('div'); grip.className = 'fwin-grip';
   el.append(head, body, grip);
   document.body.appendChild(el);
+  if (_isMobile()) _sheetExclusive(el);                      // one sheet at a time
   raiseWindow(el);
   el.addEventListener('pointerdown', () => raiseWindow(el));
   // a sub ending in "…" is a busy state — head shimmer + a thin bar across the body top
@@ -12418,20 +12583,22 @@ function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose }) {
   new MutationObserver(syncBusy).observe(subEl, { childList: true, characterData: true, subtree: true });
   syncBusy();
   const saveGeo = () => {                                   // per-kind geometry memory (survives reloads)
-    if (el.style.display === 'none' || !el.offsetWidth) return;
+    if (_isMobile() || el.style.display === 'none' || !el.offsetWidth) return;
     try { localStorage.setItem('micro.winGeo.' + kind, JSON.stringify({ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight })); } catch { /* private */ }
   };
   minB.onclick = () => {                                    // minimize → a titled chip on the bottom strip
     saveGeo(); el.style.display = 'none'; el.classList.remove('top');
     const chip = document.createElement('button'); chip.className = 'win-chip';
     chip.textContent = t.textContent; chip.title = 'restore ' + t.textContent;
-    chip.onclick = () => raiseWindow(el);
+    chip.onclick = () => { if (_isMobile()) _sheetExclusive(el); raiseWindow(el); };
     el._chip = chip; _winStrip().appendChild(chip);
   };
+  el._minimize = () => minB.onclick();
   closeB.onclick = () => { saveGeo(); if (el._chip) { el._chip.remove(); el._chip = null; } el.remove(); if (onClose) onClose(); };
   head.addEventListener('pointerdown', (e) => {
     if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
     e.preventDefault();
+    if (_isMobile()) { _sheetDrag(el, e, () => minB.onclick()); return; }   // the head is the sheet's handle
     const sx = e.clientX - el.offsetLeft, sy = e.clientY - el.offsetTop;
     let zone = null;                                        // drag to a screen edge → half-snap (preview first)
     const move = (ev) => {
@@ -12687,6 +12854,7 @@ function toggleLayersPanel(force) {
   const el = $('#layersPanel');
   const show = force != null ? force : !el.classList.contains('show');
   el.classList.toggle('show', show);
+  if (show) _sheetExclusive(el);
   if (force == null) _lpUserHidden = !show;
 }
 $('#lpClose').onclick = () => toggleLayersPanel(false);
@@ -12878,6 +13046,7 @@ function openProps() {
   _propOpen = true;
   $('#recPanel').classList.remove('show');
   $('#propPanel').classList.add('show');
+  _sheetExclusive($('#propPanel'));
   const L = activeLayer();
   if (L && !L._stagePend) L._styleSnap = styleSnap(L);
   renderProps();
@@ -15945,6 +16114,7 @@ function showRecPanel(title, rows, note) {
   paintRecList();
   if ($('#rpCfg').classList.contains('show')) renderRecCfg();
   $('#recPanel').classList.add('show');
+  _sheetExclusive($('#recPanel'));
 }
 $('#rpFieldsBtn').onclick = () => {
   const cfg = $('#rpCfg');
