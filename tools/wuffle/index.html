@@ -80,17 +80,20 @@
   #msg { color:var(--dim); font-size:12px; margin-top:8px; min-height:16px; }
   .warn { color:var(--orange); }
   .vfoot { color:#4a5158; font-size:10px; margin-top:14px; text-align:right; letter-spacing:.04em; }
-  .pos { margin-left: 8px; font-size: 12px; color: var(--muted, #8a8780); }
+  .strip { display:flex; gap:14px; min-height:16px; margin:-4px 0 8px; font-size:12px; color:#8a8780; letter-spacing:.02em; }
+  .strip span:empty { display:none; }
 </style>
 </head>
 <body>
 <div class="top">
-  <div class="brand"><h1>wuffle</h1><span class="sub" id="brandsub">compass · magnetic N</span><span id="pos" class="pos"></span><span id="north" class="pos"></span></div>
+  <div class="brand"><h1>wuffle</h1><span class="sub" id="brandsub">compass · magnetic N</span></div>
   <div class="modes">
     <button id="mPlane" class="on">plane</button>
     <button id="mLine">line</button>
   </div>
 </div>
+<!-- the status strip: position accuracy + which north the readings use (shell only) -->
+<div class="strip"><span id="pos"></span><span id="north"></span></div>
 
 <div class="net" id="net">
   <div id="netHost"></div>
