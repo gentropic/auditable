@@ -9280,9 +9280,10 @@ async function pickDirectory() {
 const rehydrateHandle = (h) => (shell.present && shell.tree.isTreeHandle(h)) ? shell.tree.rehydrate(h) : Promise.resolve(h);
 // ONE door for every export. On the web: an <a download>. Inside the lead-acid
 // shell a blob: download goes nowhere (no DownloadListener, by design), so the
-// bytes are PUBLISHED to Downloads (durable, visible to Files and other apps)
-// and the status bar offers the share sheet. Fire-and-forget: callers set their
-// own status first; the shell outcome is appended when it lands.
+// blob is STREAMED into Downloads (a pending MediaStore row, visible on close —
+// a multi-GB parquet never sits in page memory) and the status bar offers the
+// share sheet, by reference to the published file. Fire-and-forget: callers set
+// their own status first; the shell outcome is appended when it lands.
 async function deliverBlob(blob, filename) {
   if (!shell.present) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
@@ -9292,13 +9293,14 @@ async function deliverBlob(blob, filename) {
   const mime = blob.type || 'application/octet-stream';
   const meta = $('#meta');
   try {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const r = await shell.publish(filename, bytes, { collection: 'Downloads', mime });
+    const w = shell.publishStream(filename, { collection: 'Downloads', mime });
+    await blob.stream().pipeTo(w);
+    const r = await w.result;
     const name = r.name || filename;
     const prev = meta.textContent && !/ → Downloads/.test(meta.textContent) ? meta.textContent + ' · ' : '';
-    meta.textContent = `${prev}saved ${name} → Downloads `;
+    meta.textContent = `${prev}saved ${name} → Downloads (${fmtSize(r.bytes)}) `;
     const b = document.createElement('button'); b.className = 'meta-act'; b.textContent = 'share…'; b.title = 'hand the file to another app';
-    b.onclick = () => { shell.share(name, bytes, { mime }); };
+    b.onclick = () => { shell.share(name, null, { mime, uri: r.uri }); };
     meta.appendChild(b);
   } catch (e) { meta.textContent = `could not save ${filename}: ${e.message || e}`; }
 }

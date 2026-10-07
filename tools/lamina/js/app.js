@@ -1412,15 +1412,18 @@ function downloadText(text, name) {                            // fallback when 
 // to Downloads (durable, visible to Files and other apps) and the footer offers the
 // share sheet. One door for every file lamina hands out.
 async function deliverBytes(bytes, name, mime = 'application/octet-stream') {
+  const w = shell.publishStream(name, { collection: 'Downloads', mime });
+  try { await w.write(bytes); await w.close(); } catch (e) { $('#meta').textContent = `could not save ${name}: ${e.message || e}`; return; }
+  await publishedNote(await w.result, mime);
+}
+// the footer after a publish: what landed, and a share button (by reference — the
+// bytes are never re-sent)
+async function publishedNote(r, mime) {
   const meta = $('#meta');
-  try {
-    const r = await shell.publish(name, bytes, { collection: 'Downloads', mime });
-    const fname = r.name || name;
-    meta.textContent = `✓ saved ${fname} → Downloads `;
-    const b = document.createElement('button'); b.className = 'meta-act'; b.textContent = 'share…'; b.title = 'hand the file to another app';
-    b.onclick = () => { shell.share(fname, bytes, { mime }); };
-    meta.appendChild(b);
-  } catch (e) { meta.textContent = `could not save ${name}: ${e.message || e}`; }
+  meta.textContent = `✓ saved ${r.name} → Downloads (${fmtBytes(r.bytes)}) `;
+  const b = document.createElement('button'); b.className = 'meta-act'; b.textContent = 'share…'; b.title = 'hand the file to another app';
+  b.onclick = () => { shell.share(r.name, null, { mime, uri: r.uri }); };
+  meta.appendChild(b);
 }
 
 let _exSignal = null;
@@ -1490,6 +1493,10 @@ async function doExport() {
     catch { _exSignal = null; return; }                       // user cancelled the picker
     const w = await handle.createWritable();
     sink = { write: (t) => w.write(t), close: () => w.close() };
+  } else if (shell.present) {                                  // the shell: STREAM into Downloads (a pending row until close) — never resident
+    const mime = ext === '.tsv' ? 'text/tab-separated-values' : 'text/csv';
+    const w = shell.publishStream(fname, { collection: 'Downloads', mime });
+    sink = { write: (t) => w.write(t), close: async () => { await w.close(); await publishedNote(await w.result, mime); } };
   } else {                                                     // buffered download (size-capped)
     const parts = []; let total = 0;
     sink = { write: (t) => { total += t.length; if (total > 256 * 1024 * 1024) throw new Error('too large for the download fallback — use a Chromium browser for streaming export'); parts.push(t); }, close: () => downloadText(parts.join(''), fname) };
@@ -3771,7 +3778,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { $('#help').classList.remove('show'); closeCalcEditor(); closeCalcManager(); closeExportDialog(); }
 });
 
-window._lamina = { shell, deliverBytes, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { shell, deliverBytes, doExport, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;

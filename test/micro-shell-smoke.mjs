@@ -90,17 +90,21 @@ const third = await p.evaluate(async () => {
 chk(`a file shared AFTER a pause (stream closed by the shell) still lands: ${third.n} layers; "${third.meta}"`, third.n === 3 && /opened late\.csv from the shell/.test(third.meta));
 
 // 4. exports go OUT through the shell: a blob: download goes nowhere in a WebView,
-// so deliverBlob publishes to Downloads and offers the share sheet from the status bar
+// so deliverBlob STREAMS into Downloads (chunked; a 9 MiB blob crosses in ≥2 requests,
+// nothing held whole) and offers the share sheet BY REFERENCE (the published uri)
 const out = await p.evaluate(async () => {
   await window._micro.deliverBlob(new Blob(['x,y,z,fe\n1,2,3,4\n'], { type: 'text/csv' }), 'out.csv');
-  const pub = window.__bench.published.map((e) => ({ name: e.name, collection: e.collection, mime: e.mime, n: e.bytes.length }));
+  const big = new Uint8Array(9 * 1024 * 1024); for (let i = 0; i < big.length; i += 4096) big[i] = i & 255;
+  await window._micro.deliverBlob(new Blob([big], { type: 'application/octet-stream' }), 'big.bin');
+  const pub = window.__bench.published.map((e) => ({ name: e.name, collection: e.collection, mime: e.mime, n: e.bytes.length, chunks: e.chunks, sample: e.name === 'big.bin' ? e.bytes[8192] : null }));
   const btn = document.querySelector('#meta button.meta-act'); const meta = document.getElementById('meta').textContent;
   if (btn) btn.click();
   await new Promise((r) => setTimeout(r, 200));
-  return { pub, meta, shared: window.__bench.shared.map((e) => e.name) };
+  return { pub, meta, shared: window.__bench.shared.map((e) => ({ name: e.name, uri: e.uri, bytes: e.bytes ? e.bytes.length : null })) };
 });
-chk(`an export is PUBLISHED to Downloads + offered to share: ${JSON.stringify(out.pub)}; shared ${JSON.stringify(out.shared)}; "${out.meta}"`,
-  out.pub.length === 1 && out.pub[0].name === 'out.csv' && out.pub[0].collection === 'Downloads' && out.pub[0].n === 17 && /saved out\.csv → Downloads/.test(out.meta) && out.shared[0] === 'out.csv');
+chk(`exports are STREAMED to Downloads + shared by uri: ${JSON.stringify(out.pub)}; shared ${JSON.stringify(out.shared)}; "${out.meta.slice(-60)}"`,
+  out.pub.length === 2 && out.pub[0].name === 'out.csv' && out.pub[0].n === 17 && out.pub[1].name === 'big.bin' && out.pub[1].n === 9 * 1024 * 1024 && out.pub[1].chunks >= 2 && out.pub[1].sample === (8192 & 255)
+  && /saved big\.bin → Downloads/.test(out.meta) && out.shared[0].name === 'big.bin' && out.shared[0].uri === 'bench://Downloads/big.bin' && out.shared[0].bytes === null);
 
 // 5. a PROJECT FOLDER through the tree plugin: the WebView's showDirectoryPicker is a
 // false positive (defined, aborts), so inside the shell the folder comes from the

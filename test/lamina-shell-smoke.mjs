@@ -49,17 +49,22 @@ const first = await p.evaluate(async () => {
 chk(`a csv shared into lamina opens windowed: ${first.rows} rows × ${first.cols} cols, row 4321 → ${first.deep}, scan ${first.scan}; "${first.meta.slice(0, 90)}"; title "${first.title}"`,
   first.rows === 5000 && first.cols === 3 && first.deep === '4321' && first.scan === 'inline' && first.name === 'assays.csv' && /opened from the shell/.test(first.title));
 
-// 2. an export goes OUT through the shell: published to Downloads + offered to share
+// 2. the REAL export dialog run: its sink STREAMS into Downloads through the shell
+// (no save picker — the WebView's aborts), then the footer offers to share by uri
 const out = await p.evaluate(async () => {
   const text = await window._lamina.exportToString({});
-  await window._lamina.deliverBytes(new TextEncoder().encode(text), 'assays-export.csv', 'text/csv');
-  const pub = window.__bench.published.map((e) => ({ name: e.name, collection: e.collection, mime: e.mime, n: e.bytes.length }));
+  window._lamina.openExportDialog();
+  await window._lamina.doExport();
+  for (let i = 0; i < 100 && !/✓/.test(document.getElementById('exProgress').textContent); i++) await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 300));
+  const pub = window.__bench.published.map((e) => ({ name: e.name, collection: e.collection, mime: e.mime, n: e.bytes.length, chunks: e.chunks, same: new TextDecoder().decode(e.bytes) === text }));
   const btn = document.querySelector('#meta button.meta-act'); if (btn) btn.click();
   await new Promise((r) => setTimeout(r, 200));
-  return { pub, lines: text.split('\n').length, shared: window.__bench.shared.map((e) => e.name), meta: document.getElementById('meta').textContent };
+  return { pub, lines: text.split('\n').length, progress: document.getElementById('exProgress').textContent, shared: window.__bench.shared.map((e) => ({ name: e.name, uri: e.uri, bytes: e.bytes ? e.bytes.length : null })), meta: document.getElementById('meta').textContent };
 });
-chk(`an export is PUBLISHED to Downloads + offered to share: ${JSON.stringify(out.pub)} (${out.lines} lines), shared ${JSON.stringify(out.shared)}`,
-  out.pub.length === 1 && out.pub[0].name === 'assays-export.csv' && out.pub[0].collection === 'Downloads' && out.lines >= 5001 && out.shared[0] === 'assays-export.csv' && /saved assays-export\.csv → Downloads/.test(out.meta));
+chk(`the export dialog STREAMS to Downloads + shares by uri: ${JSON.stringify(out.pub)} (${out.lines} lines; "${out.progress}"), shared ${JSON.stringify(out.shared)}`,
+  out.pub.length === 1 && out.pub[0].name === 'assays.csv' && out.pub[0].collection === 'Downloads' && out.pub[0].same && out.lines >= 5001 && /✓/.test(out.progress)
+  && out.shared[0].name === 'assays.csv' && out.shared[0].uri === 'bench://Downloads/assays.csv' && out.shared[0].bytes === null && /saved assays\.csv → Downloads/.test(out.meta));
 
 chk(`no page errors (${errs.length ? errs.slice(0, 2).join(' ; ') : 'none'})`, errs.length === 0);
 await browser.close(); server.close();
