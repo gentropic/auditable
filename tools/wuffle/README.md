@@ -48,8 +48,13 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
 
 ## Roadmap
 
-- **Switchboard token migration** — the CSS is already GCU-dark; move it onto the
-  `--au-*`/`--sw-*` cascade for full design-system alignment + CVD accents.
+- ~~**Switchboard token migration**~~ ✓ 2026-10-07 — the 3-layer cascade: `--sw-*` basalt
+  swatches + the six CVD-tuned accents on `:root` (a dark-only field tool), `--au-*` roles the
+  components read (orange=action, blue=info, green=go, yellow=caution, red=fault,
+  violet=selected — the active mode is *selected*, so it went violet), fonts as
+  `--au-mono`/`--au-sans`. The stereonet's data colours come from the tokens at runtime (SVG
+  attributes can't resolve `var()`). gnsslog migrated alongside; constellations take the hue
+  swatches directly — they're categories, not roles.
 - ~~**sensor → v2**~~ ✓ 2026-10-06 — inside the shell, wuffle reads the FUSED rotation
   vector through `shell.orientation()` (lead-acid.js converts Android's quaternion to the
   W3C alpha/beta/gamma triple — unit-tested in `test/leadacid-orientation.test.mjs`), so
