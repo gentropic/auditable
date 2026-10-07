@@ -2113,6 +2113,7 @@ if (target === 'lamina') {
   const SPEC = {
     '@gcu/loom': '#loom', '@gcu/lamina': '#lamina', '@gcu/proc': '#proc',
     '@gcu/archive': '#archive', '@gcu/dm': '#dm', '@gcu/expr': '#expr', '@gcu/filterui': '#filterui', '@gcu/sluice': '#sluice', '@gcu/recon': '#recon', '@gcu/units': '#units', '@gcu/sheet': '#sheet', 'fflate': '#fflate', './idb-cache.js': '#idb-cache',
+    '@gcu/leadacid': '#leadacid',             // the lead-acid shell shim (feature-detected; dormant on the web)
   };
   const libs = [
     ['loom',    'ext/loom/index.js'],
@@ -2127,6 +2128,7 @@ if (target === 'lamina') {
     ['recon',   'ext/recon/index.js'],            // grid-geometry inference — the grid summary
     ['units',   'ext/units/index.js'],            // @gcu/units — grade/density unit declarations (block-model report)
     ['fflate',  'ext/archive/vendor/fflate.module.mjs'],
+    ['leadacid', 'ext/leadacid/index.js'],         // @gcu/leadacid — intake + publish/share inside the Android shell
   ];
   const modules = [];
   for (const [name, rel] of libs) {
@@ -2175,6 +2177,7 @@ if (target === 'lamina') {
   // sources is already escaped in the registry; the function replacement avoids
   // the $&/$1 backref trap since the boot is full of `${…}` from module code.)
   let html = fs.readFileSync(path.join(lamDir, 'index.html'), 'utf8');
+  html = html.replace(/<!-- dev bench[\s\S]*?<script src="[^"]*bench\.js"><\/script>\s*/, '');   // dev-only bench
   html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\s*/, '');
   html = html.replace(/<script type="module" src="\.\/js\/app\.js"><\/script>/, () => `<script>\n${bootStamped}\n</script>`);
 

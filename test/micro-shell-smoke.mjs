@@ -39,6 +39,7 @@ const browser = await chromium.launch({ args: ['--use-gl=angle'] });
 const p = await browser.newPage({ viewport: { width: 1280, height: 820 } });
 const errs = [];
 p.on('pageerror', (e) => errs.push(String(e)));
+await p.addInitScript(() => { try { localStorage.setItem('micro.autoOptimize', 'off'); } catch {} });   // the one-time optimize-on-save confirm is read at module init
 await p.goto(`http://127.0.0.1:${PORT}/tools/micro/index.html?bench`, { waitUntil: 'load' });
 await p.waitForFunction(() => window._micro && window._micro.shell && window._micro.shell.present, null, { timeout: 30000 });
 
@@ -87,6 +88,50 @@ const third = await p.evaluate(async () => {
   return { n: window._micro.layers().length, meta: document.getElementById('meta').textContent };
 });
 chk(`a file shared AFTER a pause (stream closed by the shell) still lands: ${third.n} layers; "${third.meta}"`, third.n === 3 && /opened late\.csv from the shell/.test(third.meta));
+
+// 4. exports go OUT through the shell: a blob: download goes nowhere in a WebView,
+// so deliverBlob publishes to Downloads and offers the share sheet from the status bar
+const out = await p.evaluate(async () => {
+  await window._micro.deliverBlob(new Blob(['x,y,z,fe\n1,2,3,4\n'], { type: 'text/csv' }), 'out.csv');
+  const pub = window.__bench.published.map((e) => ({ name: e.name, collection: e.collection, mime: e.mime, n: e.bytes.length }));
+  const btn = document.querySelector('#meta button.meta-act'); const meta = document.getElementById('meta').textContent;
+  if (btn) btn.click();
+  await new Promise((r) => setTimeout(r, 200));
+  return { pub, meta, shared: window.__bench.shared.map((e) => e.name) };
+});
+chk(`an export is PUBLISHED to Downloads + offered to share: ${JSON.stringify(out.pub)}; shared ${JSON.stringify(out.shared)}; "${out.meta}"`,
+  out.pub.length === 1 && out.pub[0].name === 'out.csv' && out.pub[0].collection === 'Downloads' && out.pub[0].n === 17 && /saved out\.csv → Downloads/.test(out.meta) && out.shared[0] === 'out.csv');
+
+// 5. a PROJECT FOLDER through the tree plugin: the WebView's showDirectoryPicker is a
+// false positive (defined, aborts), so inside the shell the folder comes from the
+// plugin; the three intake layers are copied in (the consent dialog), the manifest
+// lands, and the project reopens from its IndexedDB handle — rehydrated — with every
+// layer streaming back off the folder.
+const proj = await p.evaluate(async () => {
+  for (let i = 0; i < 50 && !window._micro.hasFSAA; i++) await new Promise((r) => setTimeout(r, 100));
+  const saving = window._micro.saveProjectAs();
+  for (let i = 0; i < 100 && !document.getElementById('svDlg').classList.contains('show'); i++) await new Promise((r) => setTimeout(r, 100));
+  const dlg = document.getElementById('svDlg').classList.contains('show');
+  if (dlg) document.getElementById('svCopy').click();
+  await saving;
+  const tree = window.__bench.tree;
+  const files = (n, pre = '') => Object.entries(n.children).flatMap(([k, v]) => v.kind === 'directory' ? files(v, pre + k + '/') : [pre + k]);
+  const mf = tree.children['project.json'] ? JSON.parse(new TextDecoder().decode(tree.children['project.json'].bytes)) : null;
+  const before = { dlg, files: files(tree).sort(), layers: mf && mf.layers.length, name: mf && mf.name, storage: window._micro.layers().map((l) => l.storage), hasFSAA: window._micro.hasFSAA };
+  window._micro.closeProject();
+  // reopen from the recents chip (its handle is the structured clone out of IndexedDB;
+  // rememberProject is fire-and-forget after the save, so poll for the chip)
+  let chip = null;
+  for (let i = 0; i < 50 && !chip; i++) { await window._micro.renderEmptyProjects(); chip = document.querySelector('#emptyProjects .er-chip'); if (!chip) await new Promise((r) => setTimeout(r, 100)); }
+  if (chip) chip.click();
+  for (let i = 0; i < 100 && !(window._micro.layers().length >= 3 && window._micro.layers().every((l) => l.header)); i++) await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 500));
+  return { before, chip: !!chip, after: { n: window._micro.layers().length, kinds: window._micro.layers().map((l) => l.kind), rows: window._micro.layers().map((l) => window._micro.attrRowCountOf(l)), meta: document.getElementById('meta').textContent } };
+});
+chk(`project saved INTO the picked folder (copy consent → ${proj.before.files.length} files: ${proj.before.files.join(', ')}); manifest ${proj.before.layers} layers; storage ${proj.before.storage.join('/')}`,
+  proj.before.hasFSAA && proj.before.dlg && proj.before.files.includes('project.json') && proj.before.layers === 3 && proj.before.storage.every((x) => x === 'project') && proj.before.files.some((f) => /deposit\.csv$/.test(f)));
+chk(`project REOPENS from its IndexedDB handle (rehydrated through the plugin): ${proj.after.n} layers (${proj.after.kinds.join(', ')}), rows ${proj.after.rows.join('/')}; "${proj.after.meta}"`,
+  proj.chip && proj.after.n === 3 && proj.after.rows[0] === 480);
 
 chk(`no page errors (${errs.length ? errs.slice(0, 2).join(' ; ') : 'none'})`, errs.length === 0);
 await browser.close();

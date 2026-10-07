@@ -8,6 +8,7 @@
 // build inlines them later).
 
 import { createGrid, PENDING } from '@gcu/loom';
+import { shell } from '@gcu/leadacid';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { detectKind, buildMemorySource, buildFileSource, buildStreamSource, buildSourceFromIndex, indexOf, fileKey, createRecordViewSource, scanFilter, createResultView, scanSortKeys, scanColumnStats, scanAllColumnStats, scanGroupBy, scanGradeTonnage, scanDataQuality, parseNum, createLaminaProvider, LOADING, withCalcCursor, withCalcView } from '@gcu/lamina';
 import { compile, compileBool, validate, deps, complete, tokenize, parse as exprParse, quoteIdent } from '@gcu/expr';   // SQL-WHERE-flavored filter + calc language; complete() drives autocomplete, tokenize() the highlight overlay
 import { gradeTonnage } from '@gcu/sluice';   // streaming accumulators — the grade-tonnage cutoff curve (one accumulator per grade field, driven from lamina's record cursor)
@@ -1224,7 +1225,7 @@ async function saveLens() {
   closeMenu();
   const text = JSON.stringify(lens, null, 2);
   const fname = ((current.label || 'view').replace(/\.[^.]*$/, '')) + '.lamina';
-  if (window.showSaveFilePicker) {
+  if (window.showSaveFilePicker && !shell.present) {                 // the WebView defines the picker but aborts it — the shell takes the fallback door
     try {
       const h = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'lamina lens', accept: { 'application/json': ['.lamina', '.lam'] } }] });
       const w = await h.createWritable(); await w.write(text); await w.close();
@@ -1400,10 +1401,26 @@ async function exportToString(opts = {}) {
   await runExport({ ...opts, sink: { write: (t) => parts.push(t), close: () => {} } });
   return parts.join('');
 }
-function downloadText(text, name) {                            // fallback when FSAA is absent (Firefox/Safari)
+function downloadText(text, name) {                            // fallback when FSAA is absent (Firefox/Safari) — and the shell's door
+  if (shell.present) return deliverBytes(new TextEncoder().encode(text), name, /\.tsv$/i.test(name) ? 'text/tab-separated-values' : /\.lam(ina)?$/i.test(name) ? 'application/json' : 'text/csv');
   const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// Inside the lead-acid shell a blob: download goes nowhere (no DownloadListener, by
+// design) and the save picker is defined-but-aborting — so an export is PUBLISHED
+// to Downloads (durable, visible to Files and other apps) and the footer offers the
+// share sheet. One door for every file lamina hands out.
+async function deliverBytes(bytes, name, mime = 'application/octet-stream') {
+  const meta = $('#meta');
+  try {
+    const r = await shell.publish(name, bytes, { collection: 'Downloads', mime });
+    const fname = r.name || name;
+    meta.textContent = `✓ saved ${fname} → Downloads `;
+    const b = document.createElement('button'); b.className = 'meta-act'; b.textContent = 'share…'; b.title = 'hand the file to another app';
+    b.onclick = () => { shell.share(fname, bytes, { mime }); };
+    meta.appendChild(b);
+  } catch (e) { meta.textContent = `could not save ${name}: ${e.message || e}`; }
 }
 
 let _exSignal = null;
@@ -1467,7 +1484,7 @@ async function doExport() {
   const fname = (c.label || 'export').replace(/\.[^.]*$/, '') + ext;
   const signal = { cancelled: false }; _exSignal = signal;
   let sink;
-  if (window.showSaveFilePicker) {
+  if (window.showSaveFilePicker && !shell.present) {                 // the WebView defines the picker but aborts it — the shell takes the buffered door
     let handle;
     try { handle = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'Delimited text', accept: { 'text/csv': [ext] } }] }); }
     catch { _exSignal = null; return; }                       // user cancelled the picker
@@ -1960,7 +1977,7 @@ async function openFile(file, force) {
   const opts = { kind: d.kind, delimiter: d.delimiter || ',', quote: d.quote || '"', encoding: enc };
   const onProgress = (r, t) => { $('#meta').textContent = `indexing… ${t ? Math.round((100 * r) / t) : 0}%`; };
   let src;
-  if (canWorker) {
+  if (canWorker && file instanceof Blob) {                            // a shell fileBlob (ranged, not a Blob) can't cross to a worker — inline
     $('#meta').textContent = 'indexing…';                          // worker scan has no progress callback
     try { src = await buildFileSource(file, { ...opts, scan: workerScan }); lastScan = 'worker'; }
     catch { src = await buildFileSource(file, { ...opts, onProgress }); lastScan = 'inline'; }  // worker blocked/failed → inline
@@ -3278,8 +3295,9 @@ function parseGtRanges(s) {
 // Save a chart canvas as PNG (at its dpr-scaled resolution) — blob + a[download],
 // no network involved. The memo-paste path until report export lands.
 function saveCanvasPng(canvas, filename) {
-  canvas.toBlob((blob) => {
+  canvas.toBlob(async (blob) => {
     if (!blob) return;
+    if (shell.present) return deliverBytes(new Uint8Array(await blob.arrayBuffer()), filename, 'image/png');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -3753,7 +3771,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { $('#help').classList.remove('show'); closeCalcEditor(); closeCalcManager(); closeExportDialog(); }
 });
 
-window._lamina = { open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { shell, deliverBytes, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
@@ -3786,4 +3804,21 @@ refreshRecents();   // load the recents list (empty-state + File menu) on boot
 // which case the picker is declined silently and the user clicks File → Open.
 if (new URLSearchParams(location.search).has('open')) {
   try { pickFile(); } catch { /* no activation on launch */ }
+}
+
+// ── inside the lead-acid shell (POSTURE A): "open with lamina" ───────────────
+// A file shared or opened INTO lamina arrives as an fs token (mmap'd ranged
+// reads); the shim's fileBlob makes it Blob-shaped and openFile indexes it off
+// the folder exactly like a dropped File — never resident. Shared text opens as
+// a memory source. On the web `shell.present` is false and none of this runs.
+if (shell.present) {
+  shell.intake(async (item) => {
+    try {
+      if (item.kind === 'file') {
+        await openFile(item.blob);                         // the mount's own footer status stands; the title bar carries the provenance
+        $('#fileName').title = `${item.name} — opened from the shell (${(item.size / 1048576).toFixed(1)} MB, ranged reads)`;
+      } else if (item.kind === 'text') open('shared text', new TextEncoder().encode(item.text));
+      else if (item.kind === 'error') $('#meta').textContent = `${item.error} (${item.name})`;
+    } catch (e) { $('#meta').textContent = `could not open ${item.name || 'the shared file'}: ${e.message || e}`; }
+  }).catch(() => { /* no intake plugin in this build */ });
 }

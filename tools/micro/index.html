@@ -736,6 +736,8 @@
     #empty { padding: 0 16px; }
     footer { gap: 10px; }
     footer #meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    footer #meta button.meta-act { margin-left: .5em; padding: 0 .55em; font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 3px; cursor: pointer; opacity: .85; }
+    footer #meta button.meta-act:hover { opacity: 1; }
     footer #stats, footer #camTP { display: none; }
   }
   /* ── REVIEW MODE — the phone layout (spec_inbox/micro-mobile-spec.md). Keyed on
@@ -1975,15 +1977,9 @@ async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimal
     if (buf.length) parts.push(buf.join('\r\n') + '\r\n');
     blob = new Blob(parts, { type: 'text/csv' });
   }
-  if (download) {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
-  }
   window._lastExport = blob;                               // the smoke reads content here
   $('#meta').textContent = `exported ${written.toLocaleString()} rows → ${filename} (${fmtSize(blob.size)})`;
+  if (download) deliverBlob(blob, filename);
   return written;
 }
 // materialize a block model as a Morton-sorted spatial-Parquet layer — the
@@ -3638,7 +3634,7 @@ function plotExportBtns(cv, nameFn, tableFn, group) {
   };
   if (cv) {
     const save = document.createElement('button'); save.className = 'awin-btn'; save.textContent = '⤓ png'; save.title = 'save the plot as PNG';
-    save.onclick = () => cv.toBlob((blob) => { if (!blob) return; const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nameFn(); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); $('#meta').textContent = `saved ${nameFn()}`; }, 'image/png');
+    save.onclick = () => cv.toBlob((blob) => { if (!blob) return; $('#meta').textContent = `saved ${nameFn()}`; deliverBlob(blob, nameFn()); }, 'image/png');
     const copy = document.createElement('button'); copy.className = 'awin-btn'; copy.textContent = '⧉ copy'; copy.title = 'copy the plot to the clipboard';
     copy.onclick = () => cv.toBlob(async (blob) => {
       if (!blob) return;
@@ -5771,9 +5767,7 @@ details{margin-top:1.5rem}pre{background:#f6f6f4;padding:8px;overflow:auto;font-
 function exportLineageReport(L) {
   if (!L || !L.lineage) return;
   const blob = new Blob([lineageReportHtml(L)], { type: 'text/html' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = (L.label || L.name).replace(/\.[^.]+$/, '') + '.lineage.html'; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  deliverBlob(blob, (L.label || L.name).replace(/\.[^.]+$/, '') + '.lineage.html');
   window._lastReport = blob;
   $('#meta').textContent = `lineage report → ${a.download}`;
 }
@@ -6452,11 +6446,7 @@ async function exportGridAsc(L) {
   if (!g) return;
   if (Math.abs(g.dx - g.dy) > g.dx * 1e-3) $('#meta').textContent = `note: non-square grid exported at cellsize ${g.dx}`;
   const blob = new Blob([writeEsriAsc(g)], { type: 'text/plain' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (L.label || L.name).replace(/\.[^.]+$/, '') + '.asc';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  deliverBlob(blob, (L.label || L.name).replace(/\.[^.]+$/, '') + '.asc');
   $('#meta').textContent = `exported ${a.download} (${g.nx}×${g.ny})`;
 }
 // ── MESH EXPORT — OBJ / PLY / MSH / LFM ──────────────────────────────────
@@ -6536,11 +6526,7 @@ async function exportMeshes(Ls, fmt, fname) {
           Tri: { type: 'Integer', components: 3, count: g.triangles.length / 3, data: Int32Array.from(g.triangles) },
         } })]);
   }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = fname;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  deliverBlob(blob, fname);
   const tris = meshes.reduce((s, m) => s + m.triangles.length / 3, 0);
   $('#meta').textContent = `exported ${fname} — ${Ls.length > 1 ? `${Ls.length} meshes, ` : ''}${tris.toLocaleString()} triangles (${fmtSize(blob.size)})`;
   return blob;
@@ -6743,10 +6729,8 @@ $('#ngGo').onclick = async () => {
 $('#btnShot').onclick = () => {
   cv.toBlob((blob) => {
     if (!blob) return;
-    const a = document.createElement('a');
     const stem = (activeDocs().blockDoc && activeDocs().blockDoc.name || activeDocs().lasDoc && 'pointcloud' || 'micro').replace(/\.[^.]*$/, '').replace(/[^\w.-]+/g, '_');
-    a.href = URL.createObjectURL(blob); a.download = `micro_${stem}.png`; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    deliverBlob(blob, `micro_${stem}.png`);
   }, 'image/png');
 };
 
@@ -9278,7 +9262,46 @@ refreshRecents();
 // in-memory sources INTO the folder (we hold the blobs), so a saved project is
 // self-contained. Handles persist in IDB (re-grant on reopen, never silent).
 // Write-on-save-only: Ctrl+S, dirty marker, no background writes.
-const hasFSAA = !!window.showDirectoryPicker;
+// Project folders: the File System Access API on the web; inside the lead-acid
+// shell the TREE plugin (Android's folder picker, grant persisted per folder).
+// The WebView DEFINES showDirectoryPicker but aborts it instantly — so when the
+// shell is present ITS answer decides, and the API's presence is ignored.
+let hasFSAA = shell.present ? false : !!window.showDirectoryPicker;
+if (shell.present) shell.tree.probe().then((ok) => { hasFSAA = ok; renderEmptyProjects(); }).catch(() => {});
+// the folder picker, one door: resolves to a directory handle, rejects when the user backs out (both hosts)
+async function pickDirectory() {
+  if (!shell.present) return window.showDirectoryPicker({ mode: 'readwrite' });
+  const d = await shell.tree.pick({ initial: 'primary:Download' });   // opens in Downloads — where phone data lives; the user navigates anywhere
+  if (!d) throw new DOMException('The user aborted a request.', 'AbortError');
+  return d;
+}
+// a handle out of IndexedDB: a web handle passes through; a shell tree handle's
+// structured clone comes back to life (re-validating the folder grant)
+const rehydrateHandle = (h) => (shell.present && shell.tree.isTreeHandle(h)) ? shell.tree.rehydrate(h) : Promise.resolve(h);
+// ONE door for every export. On the web: an <a download>. Inside the lead-acid
+// shell a blob: download goes nowhere (no DownloadListener, by design), so the
+// bytes are PUBLISHED to Downloads (durable, visible to Files and other apps)
+// and the status bar offers the share sheet. Fire-and-forget: callers set their
+// own status first; the shell outcome is appended when it lands.
+async function deliverBlob(blob, filename) {
+  if (!shell.present) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    return;
+  }
+  const mime = blob.type || 'application/octet-stream';
+  const meta = $('#meta');
+  try {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const r = await shell.publish(filename, bytes, { collection: 'Downloads', mime });
+    const name = r.name || filename;
+    const prev = meta.textContent && !/ → Downloads/.test(meta.textContent) ? meta.textContent + ' · ' : '';
+    meta.textContent = `${prev}saved ${name} → Downloads `;
+    const b = document.createElement('button'); b.className = 'meta-act'; b.textContent = 'share…'; b.title = 'hand the file to another app';
+    b.onclick = () => { shell.share(name, bytes, { mime }); };
+    meta.appendChild(b);
+  } catch (e) { meta.textContent = `could not save ${filename}: ${e.message || e}`; }
+}
 const PROJECTS_KEY = '__projects__';
 function markProjectDirty() {
   if (S.project && !S.project.dirty) { S.project.dirty = true; updateProjectTitle(); }
@@ -9502,7 +9525,7 @@ async function rememberProject(dir) {
 async function saveProjectAs() {
   if (!hasFSAA) return;
   let dir;
-  try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); } catch { return; }   // cancelled
+  try { dir = await pickDirectory(); } catch { return; }   // cancelled
   S.project = { dir, name: dir.name, dirty: false };
   await saveProject();
   rememberProject(dir);
@@ -9799,6 +9822,7 @@ function plEnd() {
 $('#plClose').onclick = () => { $('#plDlg').classList.remove('show'); };
 async function openProjectDir(dir) {
   try {
+    dir = await rehydrateHandle(dir);                       // an IDB clone of a shell tree handle → live (web handles pass through)
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: permission denied'; return; }
     const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
@@ -9992,7 +10016,7 @@ async function openProjectDir(dir) {
 }
 async function openProjectPicker() {
   if (!hasFSAA) return;
-  try { await openProjectDir(await window.showDirectoryPicker({ mode: 'readwrite' })); } catch { /* cancelled */ }
+  try { await openProjectDir(await pickDirectory()); } catch { /* cancelled */ }
 }
 function closeProject() { S.project = null; S.views = []; S.scenes = []; updateProjectTitle(); }
 // Tidy: migrate an already-saved project's files into their kind subfolders
@@ -11330,9 +11354,9 @@ function setFigScale(s) { _figScale = Math.max(1, Math.min(4, (s | 0) || 1)); tr
 function _figureDownload(out) {
   out.toBlob((blob) => {
     if (!blob) return; window._lastFigure = blob;
-    const a = document.createElement('a'); const stem = (activeLayer() && (activeLayer().label || activeLayer().name) || 'micro').replace(/\.[^.]*$/, '').replace(/[^\w.-]+/g, '_');
-    a.href = URL.createObjectURL(blob); a.download = `figure_${stem}.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 8000);
-    $('#meta').textContent = `figure → ${a.download}`;
+    const stem = (activeLayer() && (activeLayer().label || activeLayer().name) || 'micro').replace(/\.[^.]*$/, '').replace(/[^\w.-]+/g, '_');
+    const fname = `figure_${stem}.png`; deliverBlob(blob, fname);
+    $('#meta').textContent = `figure → ${fname}`;
   }, 'image/png');
 }
 // export the viewport + decorations as a PNG (cv has preserveDrawingBuffer). At
@@ -16276,7 +16300,7 @@ cv.addEventListener('pointerup', (e) => {
   showRecord(hit);
 });
 
-window._micro = { attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, deliverBlob, closeProject, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped
