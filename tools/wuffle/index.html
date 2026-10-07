@@ -80,6 +80,14 @@
   #msg { color:var(--dim); font-size:12px; margin-top:8px; min-height:16px; }
   .warn { color:var(--orange); }
   .vfoot { color:#4a5158; font-size:10px; margin-top:14px; text-align:right; letter-spacing:.04em; }
+  .cam { position:fixed; inset:0; z-index:30; background:#000; display:flex; flex-direction:column; }
+  .cam[hidden] { display:none; }
+  .cam video { flex:1; width:100%; object-fit:cover; background:#000; }
+  .camrow { display:flex; gap:12px; padding:14px 16px calc(14px + env(safe-area-inset-bottom)); justify-content:space-between; background:#121314; }
+  .camrow button { flex:1; padding:14px; font:inherit; border:1px solid #3a3a3a; border-radius:8px; background:#1e1f21; color:#e6e3dc; }
+  .camrow button.primary { border-color:#f0a040; color:#f0a040; }
+  .actions button#photo.has { border-color:#5aa2ff; color:#5aa2ff; }
+  ol li .pic { margin-left:6px; color:#5aa2ff; font-size:12px; }
   .strip { display:flex; gap:14px; min-height:16px; margin:-4px 0 8px; font-size:12px; color:#8a8780; letter-spacing:.02em; }
   .strip span:empty { display:none; }
 </style>
@@ -113,6 +121,7 @@
 
 <div class="actions">
   <span class="count" id="count">0 measurements</span>
+  <button id="photo" title="photograph the outcrop for the last measurement">photo</button>
   <span><button id="clear">clear</button><button id="publish">publish →</button></span>
 </div>
 
@@ -120,6 +129,15 @@
   <ol id="list"></ol>
 </div>
 <div id="msg"></div>
+
+<!-- the viewfinder: plain getUserMedia (environment camera) → canvas → JPEG -->
+<div id="cam" class="cam" hidden>
+  <video id="camv" autoplay playsinline muted></video>
+  <div class="camrow">
+    <button id="camx">cancel</button>
+    <button id="snap" class="primary">capture</button>
+  </div>
+</div>
 <div class="vfoot">wuffle · __WUFFLE_BUILD__</div>
 
 <script type="module">
@@ -279,6 +297,69 @@ async function startGnss() {
 }
 startGnss();
 
+// an outcrop photo per station: the viewfinder is plain getUserMedia (works on
+// the desktop with a webcam too); the JPEG attaches to the LAST measurement and
+// publishes beside the csv. In the shell, the camera plugin's permission is
+// asked for first so the system dialog isn't nested inside the viewfinder.
+const photos = new Map();           // entry.i → Blob (jpeg)
+let camStream = null;
+async function openCamera() {
+  if (!log.length) { msg('measure first — the photo attaches to the last measurement', true); return false; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('no camera API here', true); return false; }
+  if (shell.present) {
+    const p = await shell.camera.permission({ request: true });
+    if (!p.granted) { msg(p.canRequest ? 'camera denied' : 'no camera in this build', true); return false; }
+  }
+  try {
+    // a field photo wants pixels: ask for a large frame (ideal, not exact — the
+    // camera gives what it has; the desktop webcam gives 640×480 and that's fine)
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 2560 }, height: { ideal: 1920 } }, audio: false });
+  } catch (e) { msg('camera: ' + (e.message || e), true); return false; }
+  $('camv').srcObject = camStream;
+  $('cam').hidden = false;
+  return true;
+}
+function closeCamera() {
+  if (camStream) { for (const t of camStream.getTracks()) t.stop(); camStream = null; }
+  $('camv').srcObject = null;
+  $('cam').hidden = true;
+}
+let lastShot = null;                // { width, height, size } of the last capture (for the smokes)
+// a frame that has actually been painted: the first frames after the track
+// starts are black on real sensors — wait for a few presented frames
+function videoFrames(v, n = 3) {
+  return new Promise((resolve) => {
+    if (!('requestVideoFrameCallback' in v)) { setTimeout(resolve, 400); return; }
+    let k = 0;
+    const tick = () => { if (++k >= n) resolve(); else v.requestVideoFrameCallback(tick); };
+    v.requestVideoFrameCallback(tick);
+  });
+}
+async function snapPhoto() {
+  const v = $('camv');
+  for (let i = 0; i < 50 && !v.videoWidth; i++) await new Promise((r) => setTimeout(r, 100));
+  if (!v.videoWidth) return null;
+  await videoFrames(v);
+  return new Promise((resolve) => {
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
+    c.toBlob((blob) => {
+      if (!blob) { resolve(null); return; }
+      const m = log[log.length - 1];
+      m.photo = 'wuffle-' + String(m.i).padStart(3, '0') + '-' + m.ts.replace(/[:.]/g, '').slice(0, 15) + '.jpg';
+      photos.set(m.i, blob);
+      lastShot = { width: c.width, height: c.height, size: blob.size };
+      renderLog();
+      msg('photo attached to #' + m.i + ' (' + Math.round(blob.size / 1024) + ' KB)');
+      resolve(blob);
+    }, 'image/jpeg', 0.9);
+  });
+}
+$('photo').onclick = () => openCamera();
+$('camx').onclick = () => closeCamera();
+$('snap').onclick = async () => { await snapPhoto(); closeCamera(); };
+
 // the shell closes push streams on pause (and says so); reopen on resume
 const resumeNeeded = { fused: false, intake: false, gnss: false };
 document.addEventListener('visibilitychange', () => {
@@ -340,7 +421,7 @@ function renderLog() {
     const label = m.mode === 'plane'
       ? `<b>${String(m.d1).padStart(3, '0')}/${String(m.d2).padStart(2, '0')}</b><span>plane · strike ${String(m.strike).padStart(3, '0')}</span>`
       : `<b>${String(m.d1).padStart(3, '0')}→${String(m.d2).padStart(2, '0')}</b><span>line</span>`;
-    li.innerHTML = label + '<button class="del" aria-label="delete measurement">×</button>';
+    li.innerHTML = label + (m.photo ? '<span class="pic" title="' + m.photo + '">📷</span>' : '') + '<button class="del" aria-label="delete measurement">×</button>';
     li.querySelector('.del').onclick = () => {
       log.splice(k, 1); renderLog(); updateCount(); drawStatic();
       if (navigator.vibrate) navigator.vibrate(10);
@@ -387,8 +468,8 @@ $('clear').onclick = () => { log.length = 0; renderLog(); updateCount(); msg('')
 
 $('publish').onclick = async () => {
   if (!log.length) { msg('nothing to publish', true); return; }
-  const rows = ['type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg'];
-  for (const m of log) rows.push(`${m.mode},${m.d1},${m.d2},${m.strike ?? ''},${m.ts},${m.lat ?? ''},${m.lon ?? ''},${m.acc ?? ''},${m.north || 'magnetic'},${m.decl ?? ''}`);
+  const rows = ['type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg,photo'];
+  for (const m of log) rows.push(`${m.mode},${m.d1},${m.d2},${m.strike ?? ''},${m.ts},${m.lat ?? ''},${m.lon ?? ''},${m.acc ?? ''},${m.north || 'magnetic'},${m.decl ?? ''},${m.photo || ''}`);
   const csv = 'data:text/csv;charset=utf-8,' + encodeURIComponent(rows.join('\n') + '\n');
   const bytes = new TextEncoder().encode(rows.join('\n') + '\n');
   if (shell.present) {
@@ -404,12 +485,25 @@ $('publish').onclick = async () => {
         await shell.publish('wuffle-log.csv.sig', new TextEncoder().encode(JSON.stringify(signed, null, 1)),
           { collection: 'Downloads', mime: 'application/json' });
       } catch (e) { /* no attest in this build, or the keystore refused — the log is still published */ }
-      lastPublish = { name: 'wuffle-log.csv', bytes, signed };
-      msg('published ' + log.length + ' → Downloads/wuffle-log.csv' + (signed ? ' + .sig (' + signed.security + ')' : ' (unsigned)'));
+      // the station photos go to Pictures beside the log
+      let nPhotos = 0;
+      for (const m of log) {
+        const blob = m.photo && photos.get(m.i);
+        if (!blob) continue;
+        try { await shell.publish(m.photo, new Uint8Array(await blob.arrayBuffer()), { collection: 'Pictures', mime: 'image/jpeg' }); nPhotos++; }
+        catch (e) { /* the log is still published */ }
+      }
+      lastPublish = { name: 'wuffle-log.csv', bytes, signed, photos: nPhotos };
+      msg('published ' + log.length + ' → Downloads/wuffle-log.csv' + (signed ? ' + .sig (' + signed.security + ')' : ' (unsigned)') + (nPhotos ? ' + ' + nPhotos + ' photo' + (nPhotos === 1 ? '' : 's') + ' → Pictures' : ''));
     } catch (e) { msg('publish failed: ' + e, true); }
   } else {
     // desktop: a plain download (two homes, one file)
     const a = document.createElement('a'); a.href = csv; a.download = 'wuffle-log.csv'; a.click();
+    for (const m of log) {                       // desktop: each photo downloads beside the csv
+      const blob = m.photo && photos.get(m.i); if (!blob) continue;
+      const u = URL.createObjectURL(blob); const b = document.createElement('a'); b.href = u; b.download = m.photo; b.click();
+      setTimeout(() => URL.revokeObjectURL(u), 10000);
+    }
     msg('downloaded wuffle-log.csv (' + log.length + ' measurements)');
   }
 };
@@ -427,6 +521,7 @@ window.__wuffle = {
   plot: (d1, d2, m) => record(d1, d2, m), log, count: () => log.length, shell,
   get source() { return source; }, get accuracy() { return accuracy; }, get reading() { return cur; },
   get lastPublish() { return lastPublish; }, get fix() { return lastFix; },
+  photos, openCamera, snapPhoto, closeCamera, get lastShot() { return lastShot; },
 };
 </script>
 </body>

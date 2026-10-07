@@ -26,8 +26,10 @@ const PORT = server.address().port;
 let pass = 0, fail = 0;
 const chk = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}`); ok ? pass++ : fail++; };
 
-const browser = await chromium.launch();
-const p = await browser.newPage();
+// a fake camera (a moving test pattern) so the viewfinder + capture run headless
+const browser = await chromium.launch({ args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
+const ctx = await browser.newContext({ permissions: ['camera'] });
+const p = await ctx.newPage();
 const errs = [];
 p.on('pageerror', (e) => errs.push(String(e)));
 await p.goto(`http://127.0.0.1:${PORT}/tools/wuffle/index.html?bench`, { waitUntil: 'load' });
@@ -147,6 +149,21 @@ const north = await p.evaluate(() => {
 });
 chk(`true north via WMM at the bench fix (label "${north.label}", reading north=${north.north}, decl ${north.decl})`,
   /^true N · decl -2\d\.\d°$/.test(north.label) && north.north === 'true' && north.decl < -20 && north.decl > -24);
+
+// 4f. camera: the viewfinder opens on the fake device, capture attaches a jpeg to the last station
+const shot = await p.evaluate(async () => {
+  const w = window.__wuffle;
+  const opened = await w.openCamera();
+  const v = document.getElementById('camv');
+  for (let i = 0; i < 50 && !v.videoWidth; i++) await new Promise((r) => setTimeout(r, 100));
+  const blob = await w.snapPhoto();
+  const shotW = w.lastShot ? w.lastShot.width : 0;
+  w.closeCamera();
+  const m = w.log[w.log.length - 1];
+  return { opened, w: shotW, size: blob ? blob.size : 0, type: blob && blob.type, name: m.photo, mark: !!document.querySelector('#list li .pic'), hidden: document.getElementById('cam').hidden };
+});
+chk(`camera: viewfinder ${shot.w}px wide, capture → ${shot.type} ${shot.size} B attached as ${shot.name} (row marked ${shot.mark}, viewfinder closed ${shot.hidden})`,
+  shot.opened && shot.w > 0 && shot.size > 1000 && shot.type === 'image/jpeg' && /^wuffle-\d{3}-.*\.jpg$/.test(shot.name || '') && shot.mark && shot.hidden);
 
 // 5. fs ranged read from a fixture (set via __benchFixtures before load would be
 //    ideal; here we drive the route directly with a token we inject at runtime)

@@ -86,7 +86,14 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
   stamps every measurement with lat/lon + accuracy (`lat,lon,acc_m` columns in the published
   CSV, round-tripped by intake; a `±N m` badge beside the title). The first open asks for the
   location permission; a refusal just means unstamped measurements. Verified on the S24+
-  with a real fix. Still open from that bullet: an outcrop photo via `camera`.
+  with a real fix.
+- ~~**an outcrop photo per station**~~ ✓ 2026-10-07 — the **photo** button opens a viewfinder
+  (plain `getUserMedia`, environment camera, a 2560×1920 ideal frame — a webcam on the desktop)
+  and **capture** attaches a JPEG to the last measurement (a 📷 on its row, a `photo` column in
+  the CSV); publish sends each photo to Pictures beside the log (desktop: downloads them). The
+  capture waits for painted frames — the first frames off a real sensor are black. In the shell
+  the `camera` plugin asks for the permission first so the dialog isn't nested in the viewfinder.
+  Verified on the S24+ (1920×2560, 168 KB, landed in Pictures).
 - **Fabric analysis** — bearing has density contouring + mean-vector/eigen stats +
   rose diagrams; surface them for a session.
 
