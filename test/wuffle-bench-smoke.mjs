@@ -139,6 +139,15 @@ const pos = await p.evaluate(async () => {
 chk(`gnss: a measurement is georeferenced (${pos.lat}, ${pos.lon} ±${pos.acc} m; badge "${pos.badge}")`,
   pos.fix && Math.abs(pos.lat - -23.52) < 0.001 && Math.abs(pos.lon - -46.19) < 0.001 && pos.acc === 5 && pos.badge === '±5 m');
 
+// 4e. true north: the fix feeds @gcu/wmm; the label carries the declination and the log says 'true'
+const north = await p.evaluate(() => {
+  const w = window.__wuffle;
+  const e = w.log[w.log.length - 1];
+  return { label: document.getElementById('north').textContent, north: e.north, decl: e.decl };
+});
+chk(`true north via WMM at the bench fix (label "${north.label}", reading north=${north.north}, decl ${north.decl})`,
+  /^true N · decl -2\d\.\d°$/.test(north.label) && north.north === 'true' && north.decl < -20 && north.decl > -24);
+
 // 5. fs ranged read from a fixture (set via __benchFixtures before load would be
 //    ideal; here we drive the route directly with a token we inject at runtime)
 const ranged = await p.evaluate(async () => {

@@ -1,0 +1,31 @@
+{
+  "name": "@gcu/wmm",
+  "version": "0.1.0",
+  "description": "The World Magnetic Model (WMM2025), evaluated: geodetic position + date → the main geomagnetic field (X, Y, Z, H, F), inclination, declination, grid variation and their secular variation. Zero dependencies, offline, pinned by NOAA's published test values. The one number a compass needs to turn magnetic north into true north.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["wmm", "world-magnetic-model", "declination", "geomagnetism", "compass", "true-north", "geoscience", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/wmm"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/wmm",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

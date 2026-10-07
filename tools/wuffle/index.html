@@ -7,7 +7,8 @@
 <script type="importmap">
 { "imports": {
   "@gcu/bearing": "../../ext/bearing/index.js",
-  "@gcu/leadacid": "../../ext/leadacid/index.js"
+  "@gcu/leadacid": "../../ext/leadacid/index.js",
+  "@gcu/wmm": "../../ext/wmm/index.js"
 } }
 </script>
 <!-- dev bench: load with ?bench to run shell-style on the desktop (mocks /native). Stripped at build. -->
@@ -84,7 +85,7 @@
 </head>
 <body>
 <div class="top">
-  <div class="brand"><h1>wuffle</h1><span class="sub" id="brandsub">compass · magnetic N</span><span id="pos" class="pos"></span></div>
+  <div class="brand"><h1>wuffle</h1><span class="sub" id="brandsub">compass · magnetic N</span><span id="pos" class="pos"></span><span id="north" class="pos"></span></div>
   <div class="modes">
     <button id="mPlane" class="on">plane</button>
     <button id="mLine">line</button>
@@ -121,6 +122,7 @@
 <script type="module">
 import { compass, Stereonet, conversions, curves } from '@gcu/bearing';
 import { shell } from '@gcu/leadacid';
+import { declination as wmmDeclination } from '@gcu/wmm';
 
 const $ = id => document.getElementById(id);
 let mode = 'plane';          // 'plane' | 'line'
@@ -205,9 +207,10 @@ let accuracy = null;            // Android compass accuracy: 3 high · 2 med · 
 function onOrient(e) {
   if (e.alpha == null) return;
   haveOrientation = true;
+  const opt = { declination: decl == null ? 0 : decl };
   const [d1, d2] = mode === 'plane'
-    ? compass.planeFromDeviceOrientation(e.alpha, e.beta, e.gamma)
-    : compass.lineFromDeviceOrientation(e.alpha, e.beta, e.gamma);
+    ? compass.planeFromDeviceOrientation(e.alpha, e.beta, e.gamma, opt)
+    : compass.lineFromDeviceOrientation(e.alpha, e.beta, e.gamma, opt);
   cur = { d1, d2 };
   $('v1').innerHTML = fmt(d1) + '<small>°</small>';
   $('v2').innerHTML = Math.round(d2) + '<small>°</small>';
@@ -246,6 +249,13 @@ startFused();
 // v3: position. Inside the shell, a gnss fix stream stamps every measurement
 // with lat/lon (+ accuracy) — the first open asks for the location permission.
 let lastFix = null;
+// true north: the WMM declination at the fix (east positive; true = magnetic + decl).
+// null until a fix arrives → readings stay magnetic and the label says so.
+let decl = null;
+function updateDeclination(f) {
+  decl = wmmDeclination(f.lat, f.lon, new Date(), (f.alt || 0) / 1000);
+  $('north').textContent = 'true N · decl ' + (decl >= 0 ? '+' : '') + decl.toFixed(1) + '°';
+}
 async function startGnss() {
   if (!shell.present) return;
   try {
@@ -253,6 +263,7 @@ async function startGnss() {
     g.on('fix', (f) => {
       const first = !lastFix;
       lastFix = f;
+      if (first || Math.abs(f.lat - (decl == null ? 999 : lastFix.lat)) > 0.1) updateDeclination(f);
       $('pos').textContent = '±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m';
       if (first) msg('position ' + f.lat.toFixed(5) + ', ' + f.lon.toFixed(5) + ' (±' + (f.acc == null ? '?' : Math.round(f.acc)) + ' m)');
     });
@@ -335,10 +346,13 @@ function renderLog() {
   }
 }
 
-function record(d1, d2, m) {
+function record(d1, d2, m, src = 'live') {
   const e = { i: log.length + 1, mode: m, d1: fmt(d1), d2: Math.round(d2),
     strike: m === 'plane' ? (fmt(d1) + 270) % 360 : null, ts: new Date().toISOString() };
   if (lastFix) { e.lat = +lastFix.lat.toFixed(6); e.lon = +lastFix.lon.toFixed(6); e.acc = lastFix.acc == null ? null : Math.round(lastFix.acc); }
+  // what north this reading is referred to — a manual entry is whatever the user typed
+  e.north = src === 'manual' ? 'as-typed' : (decl == null ? 'magnetic' : 'true');
+  if (decl != null && src !== 'manual') e.decl = +decl.toFixed(2);
   log.push(e);
   renderLog(); updateCount(); drawStatic();
 }
@@ -359,7 +373,7 @@ function addManual(text) {
   const d1 = +mm[1], d2 = +mm[2];
   if (d2 > 90) { msg('dip/plunge must be 0–90', true); return false; }
   const kind = (mm[3] || (t.includes('→') ? 'line' : mode === 'line' ? 'line' : 'plane')).toLowerCase().startsWith('l') ? 'line' : 'plane';
-  record(d1, d2, kind);
+  record(d1, d2, kind, 'manual');   // typed by the user — referred to whatever north they used
   msg('added ' + String(fmt(d1)).padStart(3, '0') + (kind === 'plane' ? '/' : '→') + d2);
   return true;
 }
@@ -370,8 +384,8 @@ $('clear').onclick = () => { log.length = 0; renderLog(); updateCount(); msg('')
 
 $('publish').onclick = async () => {
   if (!log.length) { msg('nothing to publish', true); return; }
-  const rows = ['type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m'];
-  for (const m of log) rows.push(`${m.mode},${m.d1},${m.d2},${m.strike ?? ''},${m.ts},${m.lat ?? ''},${m.lon ?? ''},${m.acc ?? ''}`);
+  const rows = ['type,dip_dir_or_trend,dip_or_plunge,strike,timestamp,lat,lon,acc_m,north,declination_deg'];
+  for (const m of log) rows.push(`${m.mode},${m.d1},${m.d2},${m.strike ?? ''},${m.ts},${m.lat ?? ''},${m.lon ?? ''},${m.acc ?? ''},${m.north || 'magnetic'},${m.decl ?? ''}`);
   const csv = 'data:text/csv;charset=utf-8,' + encodeURIComponent(rows.join('\n') + '\n');
   const bytes = new TextEncoder().encode(rows.join('\n') + '\n');
   if (shell.present) {

@@ -1999,10 +1999,11 @@ if (target === 'wuffle') {
   // the desktop (manual entry / analysis) AND inside the lead-acid Android shell
   // (live compass, via the vendored @gcu/leadacid shim). Registry build like bands.
   const dir = path.join(__dirname, 'tools/wuffle');
-  const SPEC = { '@gcu/bearing': '#bearing', '@gcu/leadacid': '#leadacid' };
+  const SPEC = { '@gcu/bearing': '#bearing', '@gcu/leadacid': '#leadacid', '@gcu/wmm': '#wmm' };
   const libs = [
     ['bearing', 'ext/bearing/index.js'],
     ['leadacid', 'ext/leadacid/index.js'],
+    ['wmm', 'ext/wmm/index.js'],
   ];
   const modules = [];
   for (const [name, rel] of libs) {

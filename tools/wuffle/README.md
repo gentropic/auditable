@@ -76,7 +76,12 @@ imports `@gcu/bearing` + `@gcu/leadacid` via the import-map in `index.html`.
   opened into wuffle (a published `wuffle-log.csv`, or anything with the same columns)
   reloads into the log — "Open with wuffle" from Files, or the share sheet. Verified on the
   S24+ both ways: a share that LAUNCHES wuffle, and one that reaches it while running.
-- **WMM declination** — position (`gnss`) → World Magnetic Model → true north.
+- ~~**WMM declination**~~ ✓ 2026-10-07 — **true north, offline.** The gnss fix feeds
+  `@gcu/wmm` (WMM2025, pinned to NOAA's twelve published test values) and the declination
+  goes straight into bearing's `compass.*` as `options.declination`; the label reads
+  `true N · decl −21.9°` and each live reading records `north=true` + `declination_deg`
+  (manual entries are `as-typed` — they're whatever north the user used). Until a fix
+  arrives the readings stay magnetic and say so. Verified on the S24+ at a real fix.
 - ~~**Georeferencing**~~ ✓ 2026-10-07 (wuffle v3) — inside the shell, a `gnss` fix stream
   stamps every measurement with lat/lon + accuracy (`lat,lon,acc_m` columns in the published
   CSV, round-tripped by intake; a `±N m` badge beside the title). The first open asks for the
