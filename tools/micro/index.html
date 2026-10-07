@@ -788,7 +788,8 @@
   body.mobile .fwin-head::before { content: ''; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--bd2); }
   body.mobile .fwin-head button { min-width: 36px; min-height: 36px; font-size: 18px; }
   body.mobile .fwin-grip { display: none; }
-  body.mobile #layersPanel .lp-head, body.mobile #propPanel .pp-head, body.mobile #recPanel .rp-head { min-height: 40px; }
+  body.mobile #layersPanel .lp-head, body.mobile #propPanel .rp-head, body.mobile #recPanel .rp-head { min-height: 44px; touch-action: none; cursor: default; }
+  body.mobile .rp-grab, body.mobile .lp-grab { display: none; }   /* the desktop edge-resize grabs — a sheet resizes by its handle */
   /* minimized-window chips ride on the open sheet's top edge (like tabs), so a window
      is always one tap away while another sheet is up — never behind it */
   body.mobile #winStrip { left: 8px; right: 8px; bottom: calc(84px + var(--sheet-inset, 0px)); max-width: none; z-index: 61; }
@@ -6835,20 +6836,32 @@ addEventListener('resize', _sheetLayout);
 // the handle: drag the head vertically to snap peek / half / tall; past peek closes (or minimizes a window)
 const _SHEET_H = ['38vh', '60vh', '92vh'];
 function _sheetDrag(el, e, onDismiss) {
-  const y0 = e.clientY; let cur = _SHEET_H.indexOf(el.style.getPropertyValue('--sheet-h').trim()); if (cur < 0) cur = 1;
-  const move = (ev) => { ev.preventDefault(); };
+  const id = e.pointerId, y0 = e.clientY; let yLast = y0;
+  let cur = _SHEET_H.indexOf(el.style.getPropertyValue('--sheet-h').trim()); if (cur < 0) cur = 1;
+  const snap = (i) => { el.style.setProperty('--sheet-h', _SHEET_H[i]); if (el._onResized) requestAnimationFrame(() => el._onResized()); };
+  const done = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', cancel); };
+  const move = (ev) => { if (ev.pointerId !== id) return; yLast = ev.clientY; ev.preventDefault(); };
+  // the browser took the gesture (a cancel carries no position): NOT a drag — leave the sheet alone
+  const cancel = (ev) => { if (ev.pointerId === id) done(); };
   const up = (ev) => {
-    removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
-    const dy = ev.clientY - y0;
-    if (dy > 70) { if (cur === 0) onDismiss(); else el.style.setProperty('--sheet-h', _SHEET_H[cur - 1]); }
-    else if (dy < -70) el.style.setProperty('--sheet-h', _SHEET_H[Math.min(2, cur + 1)]);
-    if (el._onResized) requestAnimationFrame(() => el._onResized());
+    if (ev.pointerId !== id) return;
+    done();
+    const dy = yLast - y0;
+    if (Math.abs(dy) < 8) { snap(cur === 0 ? 1 : cur - 1); return; }          // a TAP on the handle steps the sheet down (peek ↔ half)
+    if (dy > 70) { if (cur === 0) onDismiss(); else snap(cur - 1); }
+    else if (dy < -70) snap(Math.min(2, cur + 1));
   };
-  addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', up);
+  addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', cancel);
 }
-for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => toggleLayersPanel(false)], ['#propPanel', '.pp-head', () => closeProps()], ['#recPanel', '.rp-head', () => $('#rpClose').click()]]) {
+for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => toggleLayersPanel(false)], ['#propPanel', '.rp-head', () => closeProps()], ['#recPanel', '.rp-head', () => $('#rpClose').click()]]) {
   const h = $(id) && ($(id).querySelector(head) || $(id).firstElementChild);
-  if (h) h.addEventListener('pointerdown', (e) => { if (!_isMobile() || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; _sheetDrag($(id), e, dismiss); });
+  if (h) {
+    h.addEventListener('pointerdown', (e) => { if (!_isMobile() || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; _sheetDrag($(id), e, dismiss); });
+    // a click listener makes the head a TOUCH-ADJUSTMENT candidate: Chromium snaps a
+    // tap near the WebGL canvas onto the canvas (it has listeners) unless the head is
+    // itself "clickable" — found on the S24+, where every handle tap landed on #cv
+    h.addEventListener('click', () => {});
+  }
 }
 let _docBbox = null;
 const rendererDocBbox = () => _docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
@@ -12595,6 +12608,7 @@ function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose }) {
   };
   el._minimize = () => minB.onclick();
   closeB.onclick = () => { saveGeo(); if (el._chip) { el._chip.remove(); el._chip = null; } el.remove(); if (onClose) onClose(); };
+  head.addEventListener('click', () => {});                 // a touch-adjustment candidate (see the panel handles)
   head.addEventListener('pointerdown', (e) => {
     if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
     e.preventDefault();

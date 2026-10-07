@@ -87,6 +87,36 @@ async function drive(url, tag) {
     one.a.winHidden && one.a.chip && one.a.props && one.a.propsLeft === 0 && one.a.propsW === 384 && one.b.layers && !one.b.props && one.b.chipAboveSheet);
   await shot('layers');
 
+  // 3b. the handle under real touch: a cancelled pointer leaves the sheet alone; a tap steps it peek ↔ half;
+  //     the desktop edge-grabs are gone
+  const handle = await p.evaluate(async () => {
+    window._micro.openProps();
+    await new Promise((r) => setTimeout(r, 200));
+    const pp = document.getElementById('propPanel'), head = pp.querySelector('.rp-head');
+    const h0 = Math.round(pp.getBoundingClientRect().height);
+    const hr = head.getBoundingClientRect(); const x = hr.left + hr.width * 0.5, y = hr.top + 6;
+    head.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 9, clientX: x, clientY: y, bubbles: true, pointerType: 'touch', isPrimary: true }));
+    window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 9, clientX: 0, clientY: 0, bubbles: true, pointerType: 'touch' }));
+    await new Promise((r) => setTimeout(r, 150));
+    const hCancel = Math.round(pp.getBoundingClientRect().height);
+    return { h0, hCancel, grabShown: getComputedStyle(document.getElementById('ppGrab')).display !== 'none', x, y };
+  });
+  // a tap on the handle — as a pointer click: headless Chromium's TOUCH hit test
+  // mis-targets the WebGL canvas under a fixed sheet (elementFromPoint says the
+  // head, the touch says #cv); on the device the touch reaches the head, and the
+  // real-touch check is experiments/drive-micro-handle-device.mjs
+  await p.mouse.click(handle.x, handle.y);
+  await p.waitForTimeout(250);
+  const hTap = await p.evaluate(() => Math.round(document.getElementById('propPanel').getBoundingClientRect().height));
+  // the sheet is shorter now, so its handle moved down — tap where it IS (tapping the old spot hits the view = a pick)
+  const h2 = await p.evaluate(() => { const r = document.querySelector('#propPanel .rp-head').getBoundingClientRect(); return { x: r.left + r.width * 0.5, y: r.top + 6 }; });
+  await p.mouse.click(h2.x, h2.y);
+  await p.waitForTimeout(250);
+  const hTap2 = await p.evaluate(() => Math.round(document.getElementById('propPanel').getBoundingClientRect().height));
+  chk(`[${tag}] sheet handle: cancel leaves ${handle.h0} → ${handle.hCancel}; a tap steps ${hTap} then back ${hTap2}; desktop grab hidden ${!handle.grabShown}`,
+    handle.hCancel === handle.h0 && hTap < handle.h0 && hTap2 === handle.h0 && !handle.grabShown);
+  await p.evaluate(() => window._micro.closeProps && window._micro.closeProps());
+
   // 4. the section strip: the demo's section is on → the strip hosts the controls; the bar's
   //    section button toggles it OFF (strip gone) and ON again (strip back)
   const secState = () => p.evaluate(() => {
