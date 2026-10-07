@@ -165,6 +165,22 @@ const shot = await p.evaluate(async () => {
 chk(`camera: viewfinder ${shot.w}px wide, capture → ${shot.type} ${shot.size} B attached as ${shot.name} (row marked ${shot.mark}, viewfinder closed ${shot.hidden})`,
   shot.opened && shot.w > 0 && shot.size > 1000 && shot.type === 'image/jpeg' && /^wuffle-\d{3}-.*\.jpg$/.test(shot.name || '') && shot.mark && shot.hidden);
 
+// 4g. the gnss logger through the shim: start, status grows, a second start is 409, stop seals a readable file
+const logged = await p.evaluate(async () => {
+  const g = window.__wuffle.shell.gnss.log;
+  const st = await g.start({ what: ['raw', 'location'], name: 'smoke' });
+  await new Promise((r) => setTimeout(r, 450));
+  const mid = await g.status();
+  let second = null; try { await g.start({ name: 'other' }); } catch (e) { second = e.status; }
+  const done = await g.stop();
+  const text = new TextDecoder().decode(await done.source.arrayBuffer());
+  const lines = text.trim().split('\n');
+  return { started: st.name, running: mid.running, epochs: mid.epochs, second, stopped: !done.running, token: done.token, bytes: done.bytes, first: lines[0], last: lines[lines.length - 1], n: lines.length };
+});
+chk(`gnss logger: start "${logged.started}" → running ${logged.running} with ${logged.epochs} epochs → second start ${logged.second} → stop seals ${logged.token} (${logged.bytes} B, ${logged.n} lines: ${logged.first.slice(0, 16)}… ${logged.last.slice(0, 14)}…)`,
+  logged.started === 'smoke' && logged.running === true && logged.epochs >= 3 && logged.second === 409 && logged.stopped && logged.token === 'gnss-log-smoke'
+  && logged.bytes > 100 && /^\{"kind":"start"/.test(logged.first) && /^\{"kind":"stop"/.test(logged.last));
+
 // 5. fs ranged read from a fixture (set via __benchFixtures before load would be
 //    ideal; here we drive the route directly with a token we inject at runtime)
 const ranged = await p.evaluate(async () => {
