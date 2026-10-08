@@ -1,0 +1,48 @@
+clause fuzz — n=2000 seed=7 locale=en
+
+GENERATED (grammatical, meaning known):
+  ok           2000  100.0%
+
+MUTATED (one word dropped/swapped/junked/duplicated on 2000 good sentences):
+  refused        1681  84.0%
+  accepted, same 278  13.9%   (robust)
+  accepted, diff, flagged 31  1.6%   (meaning changed, parser said so)
+  accepted, diff, SILENT  10  0.5%   (meaning changed, no warning)
+    drop  10/496 false accepts
+    dup   0/486 false accepts
+    swap  0/484 false accepts
+    junk  0/534 false accepts
+
+MUTANT FALSE ACCEPTS (10, showing 8):
+  › open the last fe variogram
+    ⇒ open the last variogram
+    want: Show exponential Fe variogram v2.
+    got:  Show exponential Co variogram v1.
+  › fit a variograms from fe samples
+    ⇒ fit a variograms from samples
+    want: Fit new variogram; source Fe samples.
+    got:  Fit new variogram; source samples.
+  › plot south domains
+    ⇒ plot domains
+    want: Show south.
+    got:  Show south, east, west, saprolite.
+  › fit semivariogram as nugget for saprolite zones and west zones
+    ⇒ fit semivariogram as nugget for saprolite zones and zones
+    want: Fit new nugget variogram; domain saprolite, west; model nugget.
+    got:  Fit new nugget variogram; domain saprolite, south, west, saprolite, east; model nugget.
+  › now delete sulfide domains
+    ⇒ now delete domains
+    want: Delete sulfide.
+    got:  Delete saprolite, north, west, sulfide.
+  › please fit spherical semivariogram for saprolite zones and the sulphide domains on co variables as gaussian from au composites
+    ⇒ please fit spherical semivariogram for saprolite zones and the domains on co variables as gaussian from au composites
+    want: Fit new gaussian Co variogram; domain saprolite, sulfide; variable Co; source Au composites; model gaussian.
+    got:  Fit new gaussian Co variogram; domain saprolite, west, transition, sulfide, saprolite; variable Co; source Au composites; model gaussian.
+  › display model bm1 for east zones
+    ⇒ display model bm1 for zones
+    want: Show block model bm1 from run r1; domain east.
+    got:  Show block model bm1 from run r1; domain south, east, north, oxide.
+  › fit a semivariogram on iron for oxide domains using gaussian
+    ⇒ fit a semivariogram on iron for domains using gaussian
+    want: Fit new gaussian Fe oxide variogram; domain oxide; variable Fe; model gaussian.
+    got:  Fit new gaussian Fe variogram; domain saprolite, sulfide, north, oxide; variable Fe; model gaussian.

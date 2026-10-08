@@ -1,0 +1,110 @@
+
+— flat —
+✓ krige Cu
+    → Krige Cu.
+✓ krige Cu in the west domain with variogram v2 and a 200 m search
+    → Krige Cu; domain west; exponential Cu variogram v2; search 200 m.
+✓ estimate copper in oxide using ordinary kriging with v1
+    → Krige Cu; domain oxide; spherical Cu variogram v1; method ordinary kriging.
+✓ clip Ni at 2 %
+    → Clip Ni; threshold 2 %.
+✓ composite the samples to 2 m in the sulfide domain
+    → Composite new sulfide samples; domain sulfide; length 2 m.
+✓ fit a spherical variogram for Ni in the east domain
+    → Fit new spherical Ni east variogram; domain east; variable Ni.
+
+— coordination / quantifiers —
+✓ krige Cu, Ni and Co in the west and east domains with v2
+    → Krige Cu; domain west, east; exponential Cu variogram v2. Then: Krige Ni; domain west, east; exponential Cu variogram v2. Then: Krige Co; domain west, east; exponential Cu variogram v2.
+    · exponential Cu variogram v2 was made for Cu, this is Ni; exponential Cu variogram v2 was made for Cu, this is Co
+✓ krige Cu in every domain except oxide using v1
+    → Krige Cu; domain west, east, sulfide; spherical Cu variogram v1.
+✓ delete all variograms
+    → Delete spherical Cu variogram v1, exponential Cu variogram v2, spherical Ni variogram v3.
+
+— reference —
+✓ krige Cu in west with the last Cu variogram
+    → Krige Cu; domain west; exponential Cu variogram v2.
+✓ show the previous run
+    → Show Cu run r2.
+✓ export the block model from run r1 as csv
+    → Export block model bm1 from run r1; format csv.
+    · 2 syntactic parses
+✓ compare the Cu variograms
+    → Compare spherical Cu variogram v1, exponential Cu variogram v2.
+
+— ellipsis —
+✓ krige Ni in east with v3 and 150 m
+    → Krige Ni; domain east; spherical Ni variogram v3; search 150 m.
+✓ again but with 300 m
+    → Krige Ni; domain east; spherical Ni variogram v3; search 300 m.
+✓ same for Cu
+    → Krige Cu; domain east; spherical Ni variogram v3; search 300 m.
+    · spherical Ni variogram v3 was made for Ni, this is Cu
+✓ rerun with simple kriging in the west domain
+    → Krige Cu; domain west; spherical Ni variogram v3; search 300 m; method simple kriging.
+    · spherical Ni variogram v3 was made for Ni, this is Cu
+✓ again
+    → Krige Cu; domain west; spherical Ni variogram v3; search 300 m; method simple kriging.
+    · spherical Ni variogram v3 was made for Ni, this is Cu
+
+— sequencing —
+✓ fit a spherical variogram for Cu in west, then krige Cu in west with it
+    → Fit new spherical Cu west variogram; domain west; variable Cu. Then: Krige Cu; domain west; new spherical Cu west variogram.
+
+— repair —
+✓ krig Cu in the wset domain with v1
+    → Krige Cu; domain west; spherical Cu variogram v1.
+    · read "wset" as "west"
+✓ krige coper in oxide with v1
+    → Krige Cu; domain oxide; spherical Cu variogram v1.
+    · read "coper" as "copper"
+
+— breakers —
+✗ frobnicate Cu
+    → REJECT: "frobnicate" is not a verb I know
+✗ krige Cu with a fluffy thing
+    → REJECT: understood "krige cu"; could not place "with a fluffy thing"; stopped at "fluffy" (unknown word); expected 'last', a comparative, a number, a thing
+✗ krige the variogram
+    → REJECT: "krige" takes variable, not variogram
+✗ krige Cu from the west domain
+    → REJECT: "from west": after "from" krige expects source (samples/composites)
+✗ krige Cu with the west domain
+    → REJECT: "with west": after "with" krige expects variogram (variogram) or search (search/quantity:length) or method (method)
+✗ krige Cu west
+    → REJECT: understood "krige cu"; could not place "west"; "cu west" fits the grammar but not the types — a variable does not modify a domain
+✓ krige Cu in west with 200
+    → Krige Cu; domain west; search 200.
+    · assuming 200 m
+? krige in the west domain
+    → CLARIFY: krige what?
+      (so far: Krige; domain west.)
+? clip Cu in west
+    → CLARIFY: missing threshold (quantity:grade) — say "at …"
+      (so far: Clip Cu; domain west.)
+? krige grade in west
+    → CLARIFY: which variable?
+      (so far: Krige; domain west.)
+↑ why is the Ni estimate so smooth
+    → OUTOFSCOPE: an open question — I read closed ones (what is …, which … are …), the rest needs the tier above
+✓ show me the block model
+    → Show block model bm1 from run r1.
+✓ krige Cu with v1 and v2
+    → Krige Cu; spherical Cu variogram v1, exponential Cu variogram v2.
+✓ compare v1 with v2
+    → Compare spherical Cu variogram v1; against exponential Cu variogram v2.
+✓ krige Cu in west with the last variogram
+    → Krige Cu; domain west; spherical Ni variogram v3.
+    · spherical Ni variogram v3 was made for Ni, this is Cu
+✓ krige Cu in west with v1 and 200 m and ordinary kriging and v2
+    → Krige Cu; domain west; spherical Cu variogram v1, exponential Cu variogram v2; search 200 m; method ordinary kriging.
+✓ krige Cu in west using composites
+    → Krige Cu; domain west; source composites.
+✓ krige Cu and Ni in west and east with v1 and 200 m
+    → Krige Cu; domain west, east; spherical Cu variogram v1; search 200 m. Then: Krige Ni; domain west, east; spherical Cu variogram v1; search 200 m.
+    · spherical Cu variogram v1 was made for Cu, this is Ni
+? export the Cu run as gslib and then delete it
+    → CLARIFY: which run? (Cu run r1, Cu run r2); "it" — nothing to refer to
+      (so far: Export; format gslib. / Delete.)
+✓ krige Cu in west with 200 m with v1
+    → Krige Cu; domain west; spherical Cu variogram v1; search 200 m.

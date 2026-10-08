@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>clause — controlled-English commands</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#262a2f; --panel:#30353b; --line:#3d434a; --ink:#e7eaed; --dim:#9aa3ac; --faint:#6b747d;
+  --ok:#68c692; --amb:#e3b54d; --ask:#74acdf; --no:#e07070; --up:#b193e6;
+  --sans:"Barlow",system-ui,sans-serif; --mono:"Space Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.45}
+body{min-height:100dvh;display:flex;flex-direction:column}
+header{position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+header h1{margin:0;font:700 17px/1 var(--mono);letter-spacing:-.01em}
+header h1 span{color:var(--dim);font:400 13px var(--sans);margin-left:10px}
+header button{background:none;border:1px solid var(--line);color:var(--dim);font:500 13px var(--sans);padding:5px 10px;border-radius:6px;cursor:pointer}
+header button:hover,header button:focus-visible{color:var(--ink);border-color:var(--dim);outline:none}
+#session{display:none;border-bottom:1px solid var(--line);background:var(--panel);padding:10px 16px 12px;font-size:14px;color:var(--dim)}
+#session.open{display:block}
+#session ul{margin:6px 0 0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:6px 14px}
+#session li{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+#session li i{font-style:normal;color:var(--faint)}
+main{flex:1;padding:8px 16px 16px;max-width:720px;width:100%;margin:0 auto}
+.turn{padding:14px 0;border-bottom:1px solid var(--line)}
+.turn:last-child{border-bottom:0}
+.said{font:400 14.5px var(--mono);color:var(--dim);margin:0 0 6px;word-break:break-word}
+.said::before{content:"› ";color:var(--faint)}
+.verdict{display:grid;grid-template-columns:18px 1fr;gap:10px;align-items:start}
+.mark{font:700 16px var(--mono);line-height:1.4}
+.echo{margin:0;font-size:19px;line-height:1.3;font-weight:500;letter-spacing:-.005em}
+.echo b{font-weight:600;color:var(--ink)}
+.echo .role{display:block;font-size:15px;font-weight:400;color:var(--ink);margin-top:2px}
+.echo .role i{font-style:normal;color:var(--dim);display:inline-block;min-width:82px}
+.echo .then{display:block;margin-top:4px;color:var(--faint);font-size:14px}
+.reason{margin:2px 0 0;font-size:15px}
+.note{margin:6px 0 0;font-size:13.5px;color:var(--dim);padding-left:28px}
+.note::before{content:"· "}
+.readings{margin:4px 0 0;padding-left:28px;font-size:14px}
+.readings li{margin:3px 0}
+.readings button{background:none;border:1px solid var(--line);color:var(--ink);font:inherit;text-align:left;padding:4px 8px;border-radius:6px;cursor:pointer}
+.readings button:hover{border-color:var(--amb)}
+.s-ok .mark{color:var(--ok)} .s-ambiguous .mark{color:var(--amb)} .s-clarify .mark{color:var(--ask)} .s-reject .mark{color:var(--no)} .s-outofscope .mark{color:var(--up)}
+.s-reject .reason{color:var(--ink)} .s-clarify .reason{color:var(--ink)}
+.empty{color:var(--dim);font-size:15px;padding:24px 0}
+.empty p{margin:0 0 10px}
+.tries{display:flex;flex-wrap:wrap;gap:6px}
+.tries button,.suggest button{background:var(--panel);border:1px solid var(--line);color:var(--ink);font:400 13px var(--mono);padding:6px 9px;border-radius:6px;cursor:pointer;text-align:left}
+.tries button:hover,.suggest button:hover{border-color:var(--dim)}
+
+.preview{max-width:720px;margin:0 auto 8px;min-height:1.3em;font-size:15px;color:var(--dim)}
+.preview b{color:var(--ink);font-weight:500}.preview .hole{color:var(--amb);font-family:var(--mono)}.preview.done{color:var(--ok)}
+.suggest button.role i{font-style:normal;color:var(--dim);font-size:11px;margin-left:6px}
+footer{position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+.bar{max-width:720px;margin:0 auto;display:flex;gap:8px}
+input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--ink);font:400 16px var(--mono);padding:11px 12px;border-radius:8px}
+input:focus{outline:none;border-color:var(--dim)}
+input::placeholder{color:var(--faint)}
+.bar button{background:var(--ink);color:var(--bg);border:0;font:600 15px var(--sans);padding:0 16px;border-radius:8px;cursor:pointer}
+.suggest{max-width:720px;margin:8px auto 0;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.suggest button{white-space:nowrap;flex:none}
+@media (prefers-reduced-motion:no-preference){.turn{animation:in .18s ease-out}@keyframes in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}}
+</style>
+</head>
+<body>
+<header>
+  <h1>clause<span>controlled-English commands, no model</span></h1>
+  <span><button id="modeBtn" title="strict / repair">repair</button> <button id="langBtn" title="switch language">pt</button> <button id="sessBtn" aria-expanded="false" aria-controls="session">session</button></span>
+</header>
+<div id="session">
+  What it can refer to. <span id="sessCount"></span>
+  <ul id="sessList"></ul>
+</div>
+<main id="log">
+  <div class="empty" id="empty">
+    <p>Type a command. Every verdict says why it was reached.</p>
+    <div class="tries" id="tries"></div>
+  </div>
+</main>
+<footer>
+  <p id="preview" class="preview" aria-live="polite"></p>
+  <div id="f" class="bar">
+    <input id="in" type="text" placeholder="krige Cu in west with v1 and 200 m" enterkeyhint="go" aria-label="command">
+    <button type="button" id="runBtn">Run</button>
+  </div>
+  <div class="suggest" id="suggest"></div>
+</footer>
+<script>
+/*__PARSER__*/
+</script>
+<script>
+let S = makeSession(structuredClone(DEMO_OBJECTS));
+let LOC = ENGLISH; let ENGINE = createEngine(ONTOLOGY, LOC);
+let MODE = { repair: { budget: 3 } };
+const understand = (t, s) => ENGINE.understand(t, s, MODE);
+$('modeBtn').addEventListener('click', () => { MODE = MODE.repair ? {} : { repair: { budget: 3 } }; $('modeBtn').textContent = MODE.repair ? 'repair' : 'strict'; });
+let ptimer;
+function livePreview() {
+  const text = $('in').value;
+  clearTimeout(ptimer);
+  ptimer = setTimeout(() => {
+    const pv = text.trim() ? ENGINE.preview(text, S) : null;
+    const el = $('preview');
+    el.className = 'preview' + (pv?.complete ? ' done' : '');
+    el.innerHTML = pv ? esc(pv.echo).replace(/___/g, '<span class="hole">___</span>').replace(/^([^;]+)/, '<b>$1</b>') : '';
+    const sg = ENGINE.suggest(text, S);
+    $('suggest').innerHTML = sg.map(x => `<button type="button" class="${x.kind.startsWith('role') ? 'role' : ''}" data-word="${esc(x.word)}">${esc(x.word)}${x.kind.startsWith('role') ? `<i>${esc(x.kind.slice(5))}</i>` : ''}</button>`).join('');
+  }, 40);
+}
+$('in').addEventListener('input', livePreview);
+$('in').addEventListener('focus', livePreview);
+const $ = id => document.getElementById(id);
+const MARK = { ok: '✓', ambiguous: '≈', clarify: '?', reject: '✗', outofscope: '↑' };
+const TRIES = [
+  'krige Cu in the west domain with variogram v2 and a 200 m search',
+  'krige Cu, Ni and Co in west and east with v1',
+  'fit a spherical variogram for Cu in west, then krige Cu with it',
+  'again but with 300 m',
+  'same for Ni',
+  'krige Cu in every domain except oxide',
+  'compare the Cu variograms',
+  'clip Cu in west',
+  'krige Cu with a fluffy thing',
+  'hey can you krige Cu west with v1 for me',
+  'krige in west with v1 Cu',
+  'krig coper in wset with v1',
+  'why is the Ni estimate so smooth',
+  'krige Cu with the variogram I fitted yesterday',
+  'show the runs from last week',
+  'again with a bigger search',
+  'delete the variograms',
+];
+const TRIES_PT = [
+  'kriga o cobre no domínio oeste com o variograma v2 e uma busca de 200 m',
+  'kriga Cu, Ni e Co no oeste e leste com v1',
+  'ajusta um variograma esférico pro Cu no oeste, depois kriga o Cu com ele',
+  'de novo mas com 300 m', 'mesmo para o Ni',
+  'kriga Cu em todos os domínios exceto o óxido', 'compara os variogramas de Cu',
+  'corta Cu no oeste', 'kriga Cu com uma coisa fofa', 'krga cobr no oeste com v1',
+  'por que a estimativa de Ni ficou tão suave',
+  'kriga Cu com o variograma que eu ajustei ontem',
+  'mostra as rodadas da semana passada',
+  'de novo com uma busca maior',
+];
+const FOLLOW = {
+  ok: ['again but with 300 m', 'same for Ni', 'rerun with simple kriging', 'show the last run'],
+  clarify: ['krige Cu in west with v1', 'clip Cu at 2 %'],
+  reject: ['krige Cu in west with v1', 'krige Cu using composites'],
+  ambiguous: [], outofscope: ['show the Ni run'],
+};
+const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+function fmtEcho(e) { // "Krige Cu; domain west; ..." → verb+theme bold, roles dim; "Then:" splits
+  return e.split(' Then: ').map((cmd, i) => {
+    const [head, ...roles] = cmd.replace(/\.$/, '').split('; ');
+    const html = `<b>${esc(head)}</b>${roles.map(r => { const [k, ...v] = r.split(' '); return `<span class="role"><i>${esc(k)}</i>${esc(v.join(' '))}</span>`; }).join('')}`;
+    return i ? `<span class="then">then ${html}</span>` : html;
+  }).join('');
+}
+function render(text, r) {
+  $('empty')?.remove();
+  const d = document.createElement('div');
+  d.className = `turn s-${r.status}`;
+  let body = '';
+  if (r.status === 'ok') body = `<p class="echo">${fmtEcho(r.echo)}</p>`;
+  else if (r.status === 'ambiguous') body = `<p class="reason">More than one reading. Pick one:</p><ul class="readings">${r.readings.map(x => `<li><button data-echo="${esc(x)}">${fmtEcho(x)}</button></li>`).join('')}</ul>`;
+  else if (r.status === 'clarify') body = `<p class="reason">${r.reasons.map(esc).join('; ')}</p>` + (r.partial ? `<p class="note">so far: ${esc(r.partial.join(' / '))}</p>` : '');
+  else body = `<p class="reason">${r.reasons.map(esc).join('; ')}</p>`;
+  const notes = (r.diag.notes || []).map(n => `<p class="note">${esc(n)}</p>`).join('') + (r.status !== 'ok' && r.diag.repairs?.length ? r.diag.repairs.map(n => `<p class="note">${esc(n)}</p>`).join('') : '');
+  const parses = r.diag.parses > 1 ? `<p class="note">${r.diag.parses} syntactic parses, ${r.status === 'ambiguous' ? r.readings.length : 1} reading${r.status === 'ambiguous' ? 's' : ''} survived</p>` : '';
+  d.innerHTML = `<p class="said">${esc(text)}</p><div class="verdict"><span class="mark">${MARK[r.status]}</span><div>${body}</div></div>${notes}${parses}`;
+  $('log').appendChild(d);
+  d.scrollIntoView({ block: 'end' });
+  const f = FOLLOW[r.status] || [];
+  $('suggest').innerHTML = f.map(t => `<button type="button">${esc(t)}</button>`).join('');
+}
+function run(text) {
+  text = text.trim(); if (!text) return;
+  const r = understand(text, S);
+  render(text, r);
+  if (r.status === 'ok') { // fresh objects created by the command enter the session
+    for (const c of r.commands) for (const t of c.theme) if (t.fresh && !t.name) {
+      const n = `${t.type[0]}${S.objects.filter(o => o.type === t.type).length + 1}`;
+      S.objects.push({ type: t.type, name: n, attrs: t.attrs, t: S.objects.length + 10 }); S.names[n] = t.type; t.name = n;
+    }
+    drawSession();
+  }
+  $('in').value = ''; $('in').focus(); $('preview').innerHTML = '';
+}
+function drawSession() {
+  const groups = {};
+  for (const o of S.objects) (groups[o.type] ??= []).push(o);
+  $('sessList').innerHTML = Object.entries(groups).map(([t, os]) => `<li><i>${t}</i> ${os.map(o => o.name ?? o.value).join(', ')}</li>`).join('');
+  $('sessCount').textContent = `${S.objects.length} things, ${S.history.length} commands run.`;
+}
+$('runBtn').addEventListener('click', () => run($('in').value));
+$('in').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); run($('in').value); } });
+$('langBtn').addEventListener('click', () => {
+  LOC = LOC === ENGLISH ? PORTUGUESE : ENGLISH; ENGINE = createEngine(ONTOLOGY, LOC); S = makeSession(structuredClone(DEMO_OBJECTS));
+  $('langBtn').textContent = LOC === ENGLISH ? 'pt' : 'en'; $('in').placeholder = LOC === ENGLISH ? 'krige Cu in west with v1 and 200 m' : 'kriga Cu no oeste com v1 e 200 m';
+  $('log').innerHTML = ''; $('suggest').innerHTML = ''; drawSession();
+  const T = LOC === ENGLISH ? TRIES : TRIES_PT; $('log').innerHTML = `<div class="empty" id="empty"><p>${LOC === ENGLISH ? 'Type a command. Every verdict says why it was reached.' : 'Digite um comando. Cada veredito diz por que chegou nele.'}</p><div class="tries" id="tries">${T.map(t => `<button type="button">${esc(t)}</button>`).join('')}</div></div>`;
+});
+$('sessBtn').addEventListener('click', () => { const o = $('session').classList.toggle('open'); $('sessBtn').setAttribute('aria-expanded', o); });
+document.addEventListener('click', e => {
+  const b = e.target.closest('button[type=button]'); if (!b || b.id === 'runBtn' || b.id === 'langBtn' || b.dataset.echo) return;
+  if (b.dataset.word !== undefined) {   // completion chip: replace the partial word, append a space, keep typing
+    const v = $('in').value; const partial = /\S$/.test(v) ? v.split(/\s+/).at(-1) : '';
+    $('in').value = v.slice(0, v.length - partial.length) + b.dataset.word + ' '; $('in').focus(); livePreview(); return;
+  }
+  run(b.textContent);
+});
+$('tries').innerHTML = TRIES.map(t => `<button type="button">${esc(t)}</button>`).join('');
+drawSession();
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+clause fuzz — n=2000 seed=7 locale=pt
+
+GENERATED (grammatical, meaning known):
+  ok           2000  100.0%
+
+MUTATED (one word dropped/swapped/junked/duplicated on 2000 good sentences):
+  refused        1685  84.3%
+  accepted, same 276  13.8%   (robust)
+  accepted, diff, flagged 26  1.3%   (meaning changed, parser said so)
+  accepted, diff, SILENT  13  0.7%   (meaning changed, no warning)
+    drop  10/513 false accepts
+    dup   0/475 false accepts
+    swap  3/516 false accepts
+    junk  0/496 false accepts
+
+MUTANT FALSE ACCEPTS (13, showing 8):
+  › agora ajustar um variograma com gaussiano pro teor cobalto e depois agora regularizar um analises pro o zonas leste por 150 km
+    ⇒ agora ajustar um variograma com gaussiano pro teor cobalto e depois agora regularizar um analises pro o zonas por 150 km
+    want: Ajustar novo variograma gaussiano de Co; variável Co; modelo gaussiano. Depois: Compositar novo amostras leste; domínio leste; comprimento 150 km.
+    got:  Ajustar novo variograma gaussiano de Co; variável Co; modelo gaussiano. Depois: Compositar novo amostras; domínio leste, fresca, oeste, saprolito; comprimento 150 km.
+  › agora ajustar semivariograma pepita usando exponencial dos os composites
+    ⇒ agora ajustar semivariograma pepita exponencial dos os composites
+    want: Ajustar novo variograma exponencial; origem compósitos; modelo exponencial.
+    got:  Ajustar novo variograma exponencial; origem compósitos.
+  › exporta domínios óxido
+    ⇒ exporta domínios
+    want: Exportar óxido.
+    got:  Exportar oeste, óxido, sulfeto, norte.
+  › modelar semivariograma exponencial das amostras ao teores ouro com gaussiano
+    ⇒ modelar semivariograma exponencial das amostras teores ao ouro com gaussiano
+    want: Ajustar novo variograma gaussiano de Au; variável Au; origem amostras; modelo gaussiano.
+    got:  Ajustar novo variograma gaussiano de Au; variável Au; origem amostras ?; modelo gaussiano.
+  › exporta o último semivariograma como xlsx nos domínios transição e o domínios leste
+    ⇒ exporta o último semivariograma como xlsx nos domínios transição e o domínios
+    want: Exportar variograma exponencial de Cu v2; domínio transição, leste; formato xlsx.
+    got:  Exportar variograma exponencial de Cu v2; domínio transição, leste, saprolito, norte, transição; formato xlsx.
+  › ajusta um variogramas esferico da os composites em zona sulfetado depois apaga o zona sulfeto
+    ⇒ ajusta um variogramas esferico da os composites zona em sulfetado depois apaga o zona sulfeto
+    want: Ajustar novo variograma esférico sulfeto; domínio sulfeto; origem compósitos. Depois: Apagar sulfeto.
+    got:  Ajustar novo variograma esférico sulfeto; domínio sulfeto; origem compósitos ?. Depois: Apagar sulfeto.
+  › kriga ni, ouro e cu das os compositos
+    ⇒ kriga ni, e cu das os compositos
+    want: Krigar Ni; origem compósitos. Depois: Krigar Au; origem compósitos. Depois: Krigar Cu; origem compósitos.
+    got:  Krigar Ni; origem compósitos. Depois: Krigar Cu; origem compósitos.
+  › interpola variável au no zonas norte com ks
+    ⇒ interpola variável au no zonas com ks
+    want: Krigar Au; domínio norte; método krigagem simples.
+    got:  Krigar Au; domínio fresca, norte, óxido, sul; método krigagem simples.

@@ -1,0 +1,85 @@
+
+— conversões —
+✓ 0.35 oz por tonelada curta em g/t
+    → Converter 0.35 oz/st; unidade g/t.
+✓ 2.7 g/cm3 em lb/ft3
+    → Converter 2.7 g/cm3; unidade lb/ft3.
+✓ 25 c em f
+    → Converter 25 °C; unidade °F.
+✓ converte 2 km para milhas
+    → Converter 2 km; unidade mi.
+✓ quanto é 2 km em milhas
+    → Converter 2 km; unidade mi.
+? 2 km
+    → CLARIFY: missing unit (unit) — say "in …"
+      (so far: Converter 2 km.)
+
+— consultas —
+✓ densidade da calcopirita
+    → Consultar densidade; de calcopirita.
+✓ qual é a densidade da calcopirita
+    → Consultar densidade; de calcopirita.
+✓ qual é a capital do brasil
+    → Consultar capital; de brasil.
+✓ densidade populacional da mongólia em pessoas por milha quadrada
+    → Consultar densidade populacional; de mongólia; unidade people/sq mi.
+✓ dureza da pirita
+    → Consultar dureza; de pirita.
+✓ área do brasil em milhas quadradas
+    → Consultar área; de brasil; unidade sq mi.
+
+— gráficos —
+✓ histograma de cu
+    → Plotar histograma; de Cu.
+✓ plota um histograma de ouro
+    → Plotar histograma; de Au.
+✓ histograma de cu em escala log
+    → Plotar histograma; de Cu; escala log.
+✓ variograma do cobre
+    → Plotar variograma; de Cu.
+? histograma do teor
+    → CLARIFY: which variable?
+      (so far: Plotar histograma.)
+
+— definições —
+✓ o que é um skiplist
+    → Definir skiplist.
+✓ define treap
+    → Definir treap.
+✓ calcopirita
+    → Definir calcopirita.
+✓ explica a tabela hash
+    → Definir hash table.
+
+— listas —
+✓ países sem litoral por população
+    → Listar país sem litoral; por população.
+✓ quais países são sem litoral
+    → Listar país sem litoral.
+✓ lista os países sem litoral por área
+    → Listar país sem litoral; por área.
+
+— dispositivo e sessão —
+✓ cronômetro de 5 min
+    → Cronômetro; duração 5 min.
+✓ timer de 10 minutos
+    → Cronômetro; duração 10 min.
+✓ exporta como script
+    → Exportar; como script.
+✓ abre assays.csv
+    → Abrir assays.csv.
+✓ identifica um mineral
+    → Identificar mineral.
+
+— fora de escopo e quebradores —
+↑ por que a densidade está tão alta
+    → OUTOFSCOPE: an open question — I read closed ones (what is …, which … are …), the rest needs the tier above
+✗ escreve um poema sobre krigagem
+    → REJECT: "escreve" is not a verb I know
+    · "escreve" could be "descrever" / "descreve" — not guessing
+✗ cu
+    → REJECT: no verb, and nothing takes Cu on its own
+✗ escala log
+    → REJECT: no verb, and nothing takes log on its own
+✗ em pés
+    → REJECT: understood nothing; could not place "em pés"; stopped at "em"; expected 'de novo', 'qual é', 'último', a comparative, a name, a number, a pronoun, a quantifier, a question word, a thing, a unit, a verb, an article

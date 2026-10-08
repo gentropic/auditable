@@ -1,0 +1,103 @@
+
+— conversions: a bare quantity and a unit —
+✓ 0.35 oz per short ton in g/t
+    → Convert 0.35 oz/st; unit g/t.
+✓ 2.7 g/cm3 in lb/ft3
+    → Convert 2.7 g/cm3; unit lb/ft3.
+✓ 5 km in kg
+    → Convert 5 km; unit kg.
+✓ 25 c in f
+    → Convert 25 °C; unit °F.
+✓ 1500 psi in mpa
+    → Convert 1500 psi; unit MPa.
+✓ convert 2 km to miles
+    → Convert 2 km; unit mi.
+✓ what is 2 km in miles
+    → Convert 2 km; unit mi.
+? 2 km
+    → CLARIFY: missing unit (unit) — say "in …"
+      (so far: Convert 2 km.)
+
+— lookups: a property of a thing —
+✓ density of chalcopyrite
+    → Look up density; of chalcopyrite.
+✓ what is the density of chalcopyrite
+    → Look up density; of chalcopyrite.
+✓ what's the capital of brazil
+    → Look up capital; of brazil.
+✓ population density of mongolia in people per square mile
+    → Look up population density; of mongolia; unit people/sq mi.
+✓ hardness of pyrite
+    → Look up hardness; of pyrite.
+✓ area of brazil in square miles
+    → Look up area; of brazil; unit sq mi.
+✓ density of mongolia
+    → Look up density; of mongolia.
+? density
+    → CLARIFY: missing of (mineral/country) — say "of …"
+      (so far: Look up density.)
+
+— plots —
+✓ histogram of cu
+    → Plot histogram; of Cu.
+✓ plot a histogram of gold
+    → Plot histogram; of Au.
+✓ histogram of cu in log scale
+    → Plot histogram; of Cu; scale log.
+✓ variogram of cu
+    → Plot variogram; of Cu.
+? histogram of grade
+    → CLARIFY: which variable?
+      (so far: Plot histogram.)
+✗ histogram of chalcopyrite
+    → REJECT: "of chalcopyrite": after "of" plot expects of (variable)
+
+— definitions —
+✓ what is a skiplist
+    → Define skiplist.
+✓ define treap
+    → Define treap.
+✓ chalcopyrite
+    → Define chalcopyrite.
+✓ explain the hash table
+    → Define hash table.
+
+— lists —
+✓ landlocked countries by population
+    → List landlocked country; by population.
+✓ which countries are landlocked
+    → List landlocked country.
+✓ list landlocked countries by area
+    → List landlocked country; by area.
+✓ countries by population
+    → List country; by population.
+
+— device and session —
+✓ set a timer for 5 min
+    → Set a timer; for 5 min.
+✓ timer for 10 minutes
+    → Set a timer; for 10 min.
+✓ export as script
+    → Export; as script.
+✓ open assays.csv
+    → Open assays.csv.
+✓ identify a mineral
+    → Identify mineral.
+
+— out of scope and breakers —
+↑ why is the density so high
+    → OUTOFSCOPE: an open question — I read closed ones (what is …, which … are …), the rest needs the tier above
+✗ write me a poem about kriging
+    → REJECT: "write" is not a verb I know
+✗ cu
+    → REJECT: no verb, and nothing takes Cu on its own
+✗ log scale
+    → REJECT: no verb, and nothing takes log on its own
+✗ in feet
+    → REJECT: understood nothing; could not place "in feet"; stopped at "in"; expected 'again', 'last', 'what is', a comparative, a name, a number, a pronoun, a quantifier, a question word, a thing, a unit, a verb, an article
+✗ what is
+    → REJECT: understood nothing; could not place "what is"; stopped at the end; expected 'last', a comparative, a name, a number, a pronoun, a quantifier, a thing, a unit, an article
+✗ 14 * cos(22) + 3^2
+    → REJECT: understood "14"; could not place "* cos(22) + 3^2"; stopped at "*" (unknown word); expected ',', 'and', 'then', a preposition, a thing, a unit
+✗ histogram of cu and density of pyrite
+    → REJECT: "of density": after "of" plot expects of (variable)

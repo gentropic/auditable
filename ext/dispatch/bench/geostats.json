@@ -1,0 +1,984 @@
+{
+  "$comment": "clause ontology: geostatistics. Everything domain-specific lives here; the engine only knows English function words and the grammar.",
+  "nouns": [
+    {
+      "type": "variable",
+      "needsId": true,
+      "words": {
+        "Cu": [
+          "cu",
+          "copper"
+        ],
+        "Ni": [
+          "ni",
+          "nickel"
+        ],
+        "Co": [
+          "co",
+          "cobalt"
+        ],
+        "Fe": [
+          "fe",
+          "iron"
+        ],
+        "Au": [
+          "au",
+          "gold"
+        ]
+      },
+      "generic": [
+        "grade",
+        "grades",
+        "variable",
+        "variables"
+      ],
+      "words_pt": {
+        "Cu": [
+          "cu",
+          "cobre"
+        ],
+        "Ni": [
+          "ni",
+          "níquel",
+          "niquel"
+        ],
+        "Co": [
+          "co",
+          "cobalto"
+        ],
+        "Fe": [
+          "fe",
+          "ferro"
+        ],
+        "Au": [
+          "au",
+          "ouro"
+        ]
+      },
+      "generic_pt": [
+        "teor",
+        "teores",
+        "variável",
+        "variavel",
+        "variáveis"
+      ]
+    },
+    {
+      "type": "domain",
+      "needsId": true,
+      "words": {
+        "west": [
+          "west"
+        ],
+        "east": [
+          "east"
+        ],
+        "north": [
+          "north"
+        ],
+        "south": [
+          "south"
+        ],
+        "oxide": [
+          "oxide"
+        ],
+        "sulfide": [
+          "sulfide",
+          "sulphide"
+        ],
+        "transition": [
+          "transition"
+        ],
+        "saprolite": [
+          "saprolite"
+        ],
+        "fresh": [
+          "fresh"
+        ]
+      },
+      "generic": [
+        "domain",
+        "domains",
+        "zone",
+        "zones"
+      ],
+      "words_pt": {
+        "west": [
+          "oeste"
+        ],
+        "east": [
+          "leste"
+        ],
+        "north": [
+          "norte"
+        ],
+        "south": [
+          "sul"
+        ],
+        "oxide": [
+          "óxido",
+          "oxido",
+          "oxidado"
+        ],
+        "sulfide": [
+          "sulfeto",
+          "sulfetado"
+        ],
+        "transition": [
+          "transição",
+          "transicao"
+        ],
+        "saprolite": [
+          "saprolito"
+        ],
+        "fresh": [
+          "fresca",
+          "fresco",
+          "sã"
+        ]
+      },
+      "generic_pt": [
+        "domínio",
+        "dominio",
+        "domínios",
+        "zona",
+        "zonas"
+      ]
+    },
+    {
+      "type": "variogram",
+      "needsId": true,
+      "ident": true,
+      "generic": [
+        "variogram",
+        "variograms",
+        "semivariogram"
+      ],
+      "generic_pt": [
+        "variograma",
+        "variogramas",
+        "semivariograma"
+      ]
+    },
+    {
+      "type": "search",
+      "ident": true,
+      "generic": [
+        "search",
+        "neighbourhood",
+        "neighborhood",
+        "search radius",
+        "search ellipse"
+      ],
+      "generic_pt": [
+        "busca",
+        "vizinhança",
+        "vizinhanca",
+        "raio de busca",
+        "elipse de busca",
+        "elipsoide"
+      ]
+    },
+    {
+      "type": "blockmodel",
+      "needsId": true,
+      "ident": true,
+      "generic": [
+        "block model",
+        "model",
+        "blocks"
+      ],
+      "generic_pt": [
+        "modelo de blocos",
+        "modelo",
+        "blocos"
+      ]
+    },
+    {
+      "type": "samples",
+      "generic": [
+        "samples",
+        "assays",
+        "data"
+      ],
+      "generic_pt": [
+        "amostras",
+        "análises",
+        "analises",
+        "dados"
+      ]
+    },
+    {
+      "type": "composites",
+      "generic": [
+        "composites"
+      ],
+      "generic_pt": [
+        "compósitos",
+        "compositos",
+        "composites"
+      ]
+    },
+    {
+      "type": "drillholes",
+      "generic": [
+        "drillholes",
+        "holes",
+        "collars"
+      ],
+      "generic_pt": [
+        "furos",
+        "sondagens",
+        "collares"
+      ]
+    },
+    {
+      "type": "run",
+      "needsId": true,
+      "ident": true,
+      "generic": [
+        "run",
+        "runs",
+        "estimate",
+        "estimation",
+        "result",
+        "results"
+      ],
+      "generic_pt": [
+        "rodada",
+        "rodadas",
+        "estimativa",
+        "estimativas",
+        "resultado",
+        "resultados"
+      ]
+    },
+    {
+      "type": "method",
+      "words": {
+        "OK": [
+          "ordinary kriging",
+          "ok"
+        ],
+        "SK": [
+          "simple kriging",
+          "sk"
+        ],
+        "IK": [
+          "indicator kriging",
+          "ik"
+        ],
+        "IDW": [
+          "inverse distance",
+          "idw"
+        ],
+        "NN": [
+          "nearest neighbour",
+          "nearest neighbor",
+          "nn"
+        ]
+      },
+      "words_pt": {
+        "OK": [
+          "krigagem ordinária",
+          "krigagem ordinaria",
+          "ko",
+          "ok"
+        ],
+        "SK": [
+          "krigagem simples",
+          "ks",
+          "sk"
+        ],
+        "IK": [
+          "krigagem indicadora",
+          "ki",
+          "ik"
+        ],
+        "IDW": [
+          "inverso da distância",
+          "inverso da distancia",
+          "idw"
+        ],
+        "NN": [
+          "vizinho mais próximo",
+          "vizinho mais proximo",
+          "nn"
+        ]
+      }
+    },
+    {
+      "type": "vmodel",
+      "words": {
+        "spherical": [
+          "spherical"
+        ],
+        "exponential": [
+          "exponential"
+        ],
+        "gaussian": [
+          "gaussian"
+        ],
+        "nugget": [
+          "nugget"
+        ]
+      },
+      "words_pt": {
+        "spherical": [
+          "esférico",
+          "esferico"
+        ],
+        "exponential": [
+          "exponencial"
+        ],
+        "gaussian": [
+          "gaussiano"
+        ],
+        "nugget": [
+          "pepita",
+          "efeito pepita"
+        ]
+      }
+    },
+    {
+      "type": "format",
+      "words": {
+        "csv": [
+          "csv"
+        ],
+        "json": [
+          "json"
+        ],
+        "gslib": [
+          "gslib"
+        ],
+        "xlsx": [
+          "xlsx"
+        ],
+        "dxf": [
+          "dxf"
+        ]
+      },
+      "words_pt": {
+        "csv": [
+          "csv"
+        ],
+        "json": [
+          "json"
+        ],
+        "gslib": [
+          "gslib"
+        ],
+        "xlsx": [
+          "xlsx",
+          "excel"
+        ],
+        "dxf": [
+          "dxf"
+        ]
+      }
+    }
+  ],
+  "units": [
+    {
+      "unit": "m",
+      "dim": "length",
+      "words": [
+        "m",
+        "metres",
+        "meters",
+        "metre",
+        "meter"
+      ],
+      "words_pt": [
+        "m",
+        "metros",
+        "metro"
+      ]
+    },
+    {
+      "unit": "km",
+      "dim": "length",
+      "words": [
+        "km",
+        "kilometres",
+        "kilometers"
+      ],
+      "words_pt": [
+        "km",
+        "quilômetros",
+        "quilometros"
+      ]
+    },
+    {
+      "unit": "%",
+      "dim": "grade",
+      "words": [
+        "%",
+        "percent",
+        "pct"
+      ],
+      "words_pt": [
+        "%",
+        "por cento",
+        "porcento"
+      ]
+    },
+    {
+      "unit": "g/t",
+      "dim": "grade",
+      "words": [
+        "ppm",
+        "g/t",
+        "gpt"
+      ],
+      "words_pt": [
+        "ppm",
+        "g/t",
+        "gpt"
+      ]
+    }
+  ],
+  "$compounds": "noun-noun: <mod> <head> → head gets attrs[attr]=mod.value. Same-type specific+generic (west domain) is built in.",
+  "compounds": [
+    {
+      "mod": "vmodel",
+      "heads": [
+        "variogram"
+      ],
+      "attr": "model"
+    },
+    {
+      "mod": "variable",
+      "heads": [
+        "variogram",
+        "samples",
+        "composites",
+        "run",
+        "blockmodel",
+        "search"
+      ],
+      "attr": "variable"
+    },
+    {
+      "mod": "domain",
+      "heads": [
+        "samples",
+        "composites",
+        "run",
+        "variogram"
+      ],
+      "attr": "domain"
+    },
+    {
+      "mod": "method",
+      "heads": [
+        "run"
+      ],
+      "attr": "method"
+    }
+  ],
+  "$postmods": "<head> <prep> <mod> → same effect as compounds; 'above'/'below' take a quantity",
+  "postmods": [
+    {
+      "prep": "of",
+      "mod": "variable",
+      "heads": [
+        "variogram",
+        "samples",
+        "composites",
+        "run",
+        "blockmodel"
+      ],
+      "attr": "variable"
+    },
+    {
+      "prep": "from",
+      "mod": "domain",
+      "heads": [
+        "samples",
+        "composites",
+        "variogram"
+      ],
+      "attr": "domain"
+    },
+    {
+      "prep": "from",
+      "mod": "run",
+      "heads": [
+        "blockmodel",
+        "variogram",
+        "search"
+      ],
+      "attr": "run",
+      "byName": true
+    },
+    {
+      "prep": "above",
+      "quantity": true,
+      "heads": [
+        "samples",
+        "composites",
+        "variable"
+      ],
+      "attr": "above"
+    },
+    {
+      "prep": "below",
+      "quantity": true,
+      "heads": [
+        "samples",
+        "composites",
+        "variable"
+      ],
+      "attr": "below"
+    }
+  ],
+  "$qmods": "<quantity> <head> → head gets attrs[attr]=quantity (a 200 m search)",
+  "qmods": [
+    {
+      "head": "search",
+      "attr": "radius",
+      "dims": [
+        "length",
+        "bare"
+      ]
+    },
+    {
+      "head": "composites",
+      "attr": "length",
+      "dims": [
+        "length",
+        "bare"
+      ]
+    }
+  ],
+  "verbs": [
+    {
+      "name": "krige",
+      "label": "Krige",
+      "words": [
+        "krige",
+        "estimate",
+        "interpolate"
+      ],
+      "theme": [
+        "variable"
+      ],
+      "required": [
+        "theme"
+      ],
+      "distributive": true,
+      "roles": {
+        "domain": {
+          "preps": [
+            "in",
+            "for",
+            "on"
+          ],
+          "types": [
+            "domain"
+          ]
+        },
+        "variogram": {
+          "preps": [
+            "with",
+            "using"
+          ],
+          "types": [
+            "variogram"
+          ]
+        },
+        "search": {
+          "preps": [
+            "with",
+            "using"
+          ],
+          "types": [
+            "search",
+            "quantity:length"
+          ]
+        },
+        "method": {
+          "preps": [
+            "with",
+            "using",
+            "by"
+          ],
+          "types": [
+            "method"
+          ]
+        },
+        "source": {
+          "preps": [
+            "from",
+            "using",
+            "on"
+          ],
+          "types": [
+            "samples",
+            "composites"
+          ]
+        },
+        "target": {
+          "preps": [
+            "into",
+            "to",
+            "on"
+          ],
+          "types": [
+            "blockmodel"
+          ]
+        }
+      },
+      "sanity": [
+        {
+          "role": "variogram",
+          "attr": "variable",
+          "against": "theme"
+        }
+      ],
+      "words_pt": [
+        "krigar",
+        "kriga",
+        "krige",
+        "estimar",
+        "estima",
+        "interpolar",
+        "interpola"
+      ],
+      "label_pt": "Krigar"
+    },
+    {
+      "name": "show",
+      "label": "Show",
+      "words": [
+        "show",
+        "display",
+        "list",
+        "open",
+        "plot"
+      ],
+      "theme": [
+        "*"
+      ],
+      "required": [
+        "theme"
+      ],
+      "roles": {
+        "domain": {
+          "preps": [
+            "in",
+            "for"
+          ],
+          "types": [
+            "domain"
+          ]
+        }
+      },
+      "words_pt": [
+        "mostrar",
+        "mostra",
+        "exibir",
+        "exibe",
+        "listar",
+        "lista",
+        "abrir",
+        "abre",
+        "plotar",
+        "plota"
+      ],
+      "label_pt": "Mostrar"
+    },
+    {
+      "name": "export",
+      "label": "Export",
+      "words": [
+        "export",
+        "save"
+      ],
+      "theme": [
+        "*"
+      ],
+      "required": [
+        "theme"
+      ],
+      "roles": {
+        "format": {
+          "preps": [
+            "as",
+            "to"
+          ],
+          "types": [
+            "format"
+          ]
+        },
+        "domain": {
+          "preps": [
+            "in",
+            "for"
+          ],
+          "types": [
+            "domain"
+          ]
+        }
+      },
+      "words_pt": [
+        "exportar",
+        "exporta",
+        "salvar",
+        "salva"
+      ],
+      "label_pt": "Exportar"
+    },
+    {
+      "name": "fit",
+      "label": "Fit",
+      "words": [
+        "fit"
+      ],
+      "theme": [
+        "variogram"
+      ],
+      "required": [
+        "theme"
+      ],
+      "creates": true,
+      "roles": {
+        "variable": {
+          "preps": [
+            "for",
+            "to",
+            "on"
+          ],
+          "types": [
+            "variable"
+          ]
+        },
+        "domain": {
+          "preps": [
+            "in",
+            "for"
+          ],
+          "types": [
+            "domain"
+          ]
+        },
+        "model": {
+          "preps": [
+            "with",
+            "using",
+            "as"
+          ],
+          "types": [
+            "vmodel"
+          ]
+        },
+        "source": {
+          "preps": [
+            "from",
+            "using",
+            "on"
+          ],
+          "types": [
+            "samples",
+            "composites"
+          ]
+        }
+      },
+      "words_pt": [
+        "ajustar",
+        "ajusta",
+        "modelar",
+        "modela"
+      ],
+      "label_pt": "Ajustar"
+    },
+    {
+      "name": "clip",
+      "label": "Clip",
+      "words": [
+        "clip",
+        "cap",
+        "topcut"
+      ],
+      "theme": [
+        "variable"
+      ],
+      "required": [
+        "theme",
+        "threshold"
+      ],
+      "roles": {
+        "threshold": {
+          "preps": [
+            "at",
+            "to",
+            "above",
+            "over"
+          ],
+          "types": [
+            "quantity:grade"
+          ]
+        },
+        "domain": {
+          "preps": [
+            "in",
+            "for"
+          ],
+          "types": [
+            "domain"
+          ]
+        }
+      },
+      "words_pt": [
+        "cortar",
+        "corta",
+        "capear",
+        "capeia",
+        "truncar",
+        "trunca"
+      ],
+      "label_pt": "Cortar"
+    },
+    {
+      "name": "composite",
+      "label": "Composite",
+      "words": [
+        "composite"
+      ],
+      "theme": [
+        "samples",
+        "drillholes",
+        "variable"
+      ],
+      "required": [
+        "theme",
+        "length"
+      ],
+      "creates": true,
+      "roles": {
+        "length": {
+          "preps": [
+            "to",
+            "at",
+            "by"
+          ],
+          "types": [
+            "quantity:length"
+          ]
+        },
+        "domain": {
+          "preps": [
+            "in",
+            "for"
+          ],
+          "types": [
+            "domain"
+          ]
+        }
+      },
+      "words_pt": [
+        "compositar",
+        "composita",
+        "regularizar",
+        "regulariza"
+      ],
+      "label_pt": "Compositar"
+    },
+    {
+      "name": "delete",
+      "label": "Delete",
+      "words": [
+        "delete",
+        "remove",
+        "drop"
+      ],
+      "theme": [
+        "*"
+      ],
+      "required": [
+        "theme"
+      ],
+      "roles": {},
+      "words_pt": [
+        "apagar",
+        "apaga",
+        "remover",
+        "remove",
+        "deletar",
+        "deleta"
+      ],
+      "label_pt": "Apagar"
+    },
+    {
+      "name": "compare",
+      "label": "Compare",
+      "words": [
+        "compare"
+      ],
+      "theme": [
+        "*"
+      ],
+      "required": [
+        "theme"
+      ],
+      "minTheme": 2,
+      "roles": {
+        "against": {
+          "preps": [
+            "with",
+            "to",
+            "against"
+          ],
+          "types": [
+            "*"
+          ]
+        }
+      },
+      "words_pt": [
+        "comparar",
+        "compara"
+      ],
+      "label_pt": "Comparar"
+    }
+  ],
+  "$creates": "for creating verbs, the new object inherits these roles as attrs so later references to it carry meaning",
+  "inherit": [
+    "variable",
+    "model",
+    "domain"
+  ],
+  "echoOrder": [
+    "domain",
+    "variable",
+    "source",
+    "variogram",
+    "model",
+    "search",
+    "length",
+    "threshold",
+    "method",
+    "target",
+    "format",
+    "against"
+  ],
+  "roleLabels_pt": {
+    "domain": "domínio",
+    "variogram": "variograma",
+    "search": "busca",
+    "method": "método",
+    "source": "origem",
+    "target": "destino",
+    "format": "formato",
+    "variable": "variável",
+    "model": "modelo",
+    "threshold": "corte",
+    "length": "comprimento",
+    "against": "contra"
+  },
+  "scales": {
+    "search": 1.5,
+    "length": 1.5
+  }
+}

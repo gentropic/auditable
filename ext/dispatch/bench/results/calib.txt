@@ -1,0 +1,5 @@
+start   obj=451  ✓505 ✗18 –77   (600 cases)
+  skipFunc=0.8  obj=452  ✓506 ✗18 –76
+
+best costs: {"skipFunc":0.8,"skipUnk":0.6,"skipContent":1.5,"insPrep":1,"order":1,"subst1":0.4,"substKnown":2,"budget":3}
+by perturbation: dropPrep ✓116/120 ✗2  reorder ✓115/120 ✗0  typo ✓110/120 ✗0  chatty ✓103/120 ✗0  mutation ✓62/120 ✗16

@@ -1,0 +1,116 @@
+
+— básico —
+✓ krigar Cu
+    → Krigar Cu.
+✓ kriga o cobre no domínio oeste com o variograma v2 e uma busca de 200 m
+    → Krigar Cu; domínio oeste; variograma exponencial de Cu v2; busca 200 m.
+✓ estima cobre no óxido usando krigagem ordinária com v1
+    → Krigar Cu; domínio óxido; variograma esférico de Cu v1; método krigagem ordinária.
+✓ corta o Ni a 2 %
+    → Cortar Ni; corte 2 %.
+✓ composita as amostras a 2 m na zona sulfetada
+    → Compositar novo amostras sulfeto; domínio sulfeto; comprimento 2 m.
+✓ ajusta um variograma esférico para o Ni no domínio leste
+    → Ajustar novo variograma esférico de Ni leste; domínio leste; variável Ni.
+
+— coordenação / quantificadores —
+✓ kriga Cu, Ni e Co nos domínios oeste e leste com v2
+    → Krigar Cu; domínio oeste, leste; variograma exponencial de Cu v2. Depois: Krigar Ni; domínio oeste, leste; variograma exponencial de Cu v2. Depois: Krigar Co; domínio oeste, leste; variograma exponencial de Cu v2.
+    · variograma exponencial de Cu v2 was made for Cu, this is Ni; variograma exponencial de Cu v2 was made for Cu, this is Co
+✓ kriga Cu em todos os domínios exceto o óxido usando v1
+    → Krigar Cu; domínio oeste, leste, sulfeto; variograma esférico de Cu v1.
+✓ apaga todos os variogramas
+    → Apagar variograma esférico de Cu v1, variograma exponencial de Cu v2, variograma esférico de Ni v3.
+
+— referência —
+✓ kriga Cu no oeste com o último variograma de Cu
+    → Krigar Cu; domínio oeste; variograma exponencial de Cu v2.
+✓ mostra a rodada anterior
+    → Mostrar rodada de Cu r2.
+✓ exporta o modelo de blocos da rodada r1 como csv
+    → Exportar modelo de blocos bm1 da rodada r1; formato csv.
+✓ compara os variogramas de Cu
+    → Comparar variograma esférico de Cu v1, variograma exponencial de Cu v2.
+
+— elipse —
+✓ kriga Ni no leste com v3 e 150 m
+    → Krigar Ni; domínio leste; variograma esférico de Ni v3; busca 150 m.
+✓ de novo mas com 300 m
+    → Krigar Ni; domínio leste; variograma esférico de Ni v3; busca 300 m.
+✓ mesmo para o Cu
+    → Krigar Cu; domínio leste; variograma esférico de Ni v3; busca 300 m.
+    · variograma esférico de Ni v3 was made for Ni, this is Cu
+✓ refaz com krigagem simples no domínio oeste
+    → Krigar Cu; domínio oeste; variograma esférico de Ni v3; busca 300 m; método krigagem simples.
+    · variograma esférico de Ni v3 was made for Ni, this is Cu
+✓ de novo
+    → Krigar Cu; domínio oeste; variograma esférico de Ni v3; busca 300 m; método krigagem simples.
+    · variograma esférico de Ni v3 was made for Ni, this is Cu
+
+— sequência —
+✓ ajusta um variograma esférico para o Cu no oeste, depois kriga o Cu no oeste com ele
+    → Ajustar novo variograma esférico de Cu oeste; domínio oeste; variável Cu. Depois: Krigar Cu; domínio oeste; novo variograma esférico de Cu oeste.
+
+— reparo —
+✓ krga Cu no dominio oeste com v1
+    → Krigar Cu; domínio oeste; variograma esférico de Cu v1.
+    · read "krga" as "kriga"
+✓ kriga cobr no óxido com v1
+    → Krigar Cu; domínio óxido; variograma esférico de Cu v1.
+
+— quebradores —
+✗ frobnica Cu
+    → REJECT: "frobnica" is not a verb I know
+✗ kriga Cu com uma coisa fofa
+    → REJECT: understood "kriga cu"; could not place "com uma coisa fofa"; stopped at "coisa" (unknown word); expected 'último', a comparative, a number, a thing
+✗ kriga o variograma
+    → REJECT: "krige" takes variable, not variograma
+✗ kriga Cu do domínio oeste
+    → REJECT: "do oeste": after "do" krige expects source (samples/composites)
+✗ kriga Cu com o domínio oeste
+    → REJECT: "com oeste": after "com" krige expects variogram (variogram) or search (search/quantity:length) or method (method)
+✗ kriga Cu oeste
+    → REJECT: understood "kriga cu"; could not place "oeste"; "cu oeste" fits the grammar but not the types — a variable does not modify a domain
+✓ kriga Cu no oeste com 200
+    → Krigar Cu; domínio oeste; busca 200.
+    · assumindo 200 m
+? kriga no domínio oeste
+    → CLARIFY: krige what?
+      (so far: Krigar; domínio oeste.)
+? corta Cu no oeste
+    → CLARIFY: missing threshold (quantity:grade) — say "at …"
+      (so far: Cortar Cu; domínio oeste.)
+? kriga o teor no oeste
+    → CLARIFY: which variable?
+      (so far: Krigar; domínio oeste.)
+↑ por que a estimativa de Ni ficou tão suave
+    → OUTOFSCOPE: an open question — I read closed ones (what is …, which … are …), the rest needs the tier above
+✓ me mostra o modelo de blocos
+    → Mostrar modelo de blocos bm1 da rodada r1.
+✓ kriga Cu com v1 e v2
+    → Krigar Cu; variograma esférico de Cu v1, variograma exponencial de Cu v2.
+✓ compara v1 com v2
+    → Comparar variograma esférico de Cu v1; contra variograma exponencial de Cu v2.
+✓ kriga Cu no oeste com o último variograma
+    → Krigar Cu; domínio oeste; variograma esférico de Ni v3.
+    · variograma esférico de Ni v3 was made for Ni, this is Cu
+✓ kriga Cu no oeste com v1 e 200 m e krigagem ordinária e v2
+    → Krigar Cu; domínio oeste; variograma esférico de Cu v1, variograma exponencial de Cu v2; busca 200 m; método krigagem ordinária.
+✓ kriga Cu no oeste usando compósitos
+    → Krigar Cu; domínio oeste; origem compósitos.
+✓ kriga Cu e Ni no oeste e leste com v1 e 200 m
+    → Krigar Cu; domínio oeste, leste; variograma esférico de Cu v1; busca 200 m. Depois: Krigar Ni; domínio oeste, leste; variograma esférico de Cu v1; busca 200 m.
+    · variograma esférico de Cu v1 was made for Cu, this is Ni
+? exporta a rodada de Cu como gslib e depois apaga ela
+    → CLARIFY: which run? (rodada de Cu r1, rodada de Cu r2); "ela" — nothing to refer to
+      (so far: Exportar; formato gslib. / Apagar.)
+✓ kriga o Cu no oeste com 200 m com v1
+    → Krigar Cu; domínio oeste; variograma esférico de Cu v1; busca 200 m.
+
+— só pt —
+✓ kriga o cobre pro modelo de blocos bm1
+    → Krigar Cu; destino modelo de blocos bm1 da rodada r1.
+✓ ajusta o variograma de Ni dos compósitos do óxido
+    → Ajustar novo variograma de Ni; origem compósitos óxido.
+✓ kriga Cu na zona oeste com uma busca de 200 metros
+    → Krigar Cu; domínio oeste; busca 200 m.

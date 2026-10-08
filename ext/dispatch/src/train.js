@@ -6,6 +6,9 @@ import { tokenize, shuffled } from './text.js';
 import { KINDS } from './kinds.js';
 
 export const TAGS = ['O', 'COL', 'OP', 'VAL', 'CAT', 'RNG', 'POS', 'THICK', 'ID', 'LAYER'];
+// the tag set a corpus actually uses ('O' first, then sorted) — so a host whose kinds emit other
+// tags (the grammar rung's THEME / R_<role>) trains without editing this file
+export const tagSetOf = (aligned) => ['O', ...new Set(aligned.flatMap((x) => x.tags || []).filter((t) => t !== 'O'))].sort((a, b) => a === 'O' ? -1 : b === 'O' ? 1 : a.localeCompare(b));
 
 export function alignCorpus(corpus, ctx, toolsByName) {
   const aligned = [];
@@ -22,7 +25,8 @@ export function alignCorpus(corpus, ctx, toolsByName) {
   return { aligned, dropped };
 }
 
-export function trainModels(aligned, ctx, { epochs = 25 } = {}) {
+export function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
+  const TAGS = tagSet || tagSetOf(aligned);
   // ── intent: averaged multiclass perceptron ──
   const CLASSES = [...new Set(aligned.map((x) => x.intent))].sort();
   const iw = {}, iacc = {};

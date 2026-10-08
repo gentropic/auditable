@@ -1,0 +1,49 @@
+golem fuzz — n=3000 seed=11 locale=pt
+
+GENERATED (grammatical, meaning known):
+  ok           3000  100.0%
+  by form: bare 539/539  verb 1842/1842  which 76/76  whcop 543/543
+
+MUTATED (one word dropped/swapped/junked/duplicated on 3000 good sentences):
+  refused        2491  83.0%
+  accepted, same 469  15.6%   (robust)
+  accepted, diff, flagged 16  0.5%   (meaning changed, parser said so)
+  accepted, diff, SILENT  24  0.8%   (meaning changed, no warning)
+    swap  0/750 false accepts
+    junk  0/733 false accepts
+    dup   0/755 false accepts
+    drop  24/762 false accepts
+
+MUTANT FALSE ACCEPTS (24, showing 8):
+  › por favor identifica uma magnetita
+    ⇒ por favor uma magnetita
+    want: Identificar magnetita.
+    got:  Definir magnetita.
+  › 2 psi pra km quadrados
+    ⇒ 2 psi pra km
+    want: Converter 2 psi; unidade km2.
+    got:  Converter 2 psi; unidade km.
+  › histograma na logarítmica pro a au
+    ⇒ histograma logarítmica pro a au
+    want: Plotar histograma; de Au; escala log.
+    got:  Plotar histograma log; de Au.
+  › identificar uma quartzo
+    ⇒ uma quartzo
+    want: Identificar quartzo.
+    got:  Definir quartzo.
+  › identificar a pirita
+    ⇒ a pirita
+    want: Identificar pirita.
+    got:  Definir pirita.
+  › gráfico escala linear nos logaritmica para a cobre
+    ⇒ gráfico escala linear logaritmica para a cobre
+    want: Plotar gráfico linear; de Cu; escala log.
+    got:  Plotar gráfico log; de Cu.
+  › identifica uma magnetita
+    ⇒ uma magnetita
+    want: Identificar magnetita.
+    got:  Definir magnetita.
+  › agora identifica um quartzo
+    ⇒ agora um quartzo
+    want: Identificar quartzo.
+    got:  Definir quartzo.

@@ -1,7 +1,7 @@
 {
   "name": "@gcu/dispatch",
   "version": "0.1.0",
-  "description": "Session-trained natural-language → tool-call dispatch: a Snips-shaped resolver (averaged-perceptron intent + CRF-class slot tagger + gazetteers + deterministic per-kind assemblers) that trains IN THE BROWSER from the host session's own vocabulary in under a second. Tools are declarative (ten kinds); no shipped model, no network, explainable per decision — refusals return empty calls so the host degrades into its command palette. Born from an incubator where this beat a 26M finetuned transformer 50/52 to 3/24 on a frozen yardstick.",
+  "description": "Session-trained natural-language → tool-call dispatch: a Snips-shaped resolver (averaged-perceptron intent + CRF-class slot tagger + gazetteers + deterministic per-kind assemblers) that trains IN THE BROWSER from the host session's own vocabulary in under a second. Tools are declarative (ten kinds) and a grammar rung (clause: case-grammar frames over an Earley chart with costed repairs, en + pt-BR) reads controlled commands before the learners see them; no shipped model, no network, explainable per decision — refusals return empty calls so the host degrades into its command palette. Born from an incubator where this beat a 26M finetuned transformer 50/52 to 3/24 on a frozen yardstick.",
   "type": "module",
   "main": "./src/main.js",
   "exports": {
@@ -14,7 +14,14 @@
     "index.js"
   ],
   "scripts": {
-    "build": "node build.js"
+    "build": "node build.js",
+    "test:grammar": "node bench/corpus.mjs && node bench/corpus-pt.mjs && node bench/golem-corpus.mjs && node bench/golem-corpus.mjs pt && node bench/fuzz.mjs 2000 7 en && node bench/fuzz.mjs 2000 7 pt && node bench/golem-fuzz.mjs 2000 7 en && node bench/golem-fuzz.mjs 2000 7 pt",
+    "fuzz": "node bench/fuzz.mjs 3000 11 en && node bench/fuzz.mjs 3000 11 pt",
+    "bench": "node bench/head2head.mjs",
+    "calib": "node bench/calib.mjs 120",
+    "perf": "node bench/perf.mjs",
+    "frames": "node bench/check-frames.mjs",
+    "playground": "node bench/build-playground.mjs"
   },
   "keywords": ["nlu", "intent", "slot-filling", "perceptron", "crf", "gazetteer", "tool-calling", "command-bar", "on-device", "sealed", "auditable", "gcu"],
   "license": "MIT",

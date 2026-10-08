@@ -1,0 +1,62 @@
+dispatch trained on 2000 generated utterances in 11.11 s; tags: O R_against R_domain R_format R_length R_method R_model R_search R_source R_target R_threshold R_variable R_variogram THEME
+
+held-out test: 547 utterances (none seen in training)
+
+— clean —
+  strict    ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+  repair    ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+  mixed     ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+  dispatch  ✓ 468 ( 86%)  wrong   0 ( 0.0%)  refused  79
+  cascade   ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+— one-word mutation —
+  strict    ✓  62 ( 11%)  wrong  18 ( 3.3%)  refused 467
+  repair    ✓ 246 ( 45%)  wrong  79 (14.4%)  refused 222
+  mixed     ✓ 244 ( 45%)  wrong  80 (14.6%)  refused 223
+  dispatch  ✓  98 ( 18%)  wrong  27 ( 4.9%)  refused 422
+  cascade   ✓ 276 ( 50%)  wrong  85 (15.5%)  refused 186
+— drop a preposition —
+  strict    ✓ 125 ( 23%)  wrong   0 ( 0.0%)  refused 422
+  repair    ✓ 530 ( 97%)  wrong   5 ( 0.9%)  refused  12
+  mixed     ✓ 529 ( 97%)  wrong   5 ( 0.9%)  refused  13
+  dispatch  ✓ 143 ( 26%)  wrong   6 ( 1.1%)  refused 398
+  cascade   ✓ 530 ( 97%)  wrong   5 ( 0.9%)  refused  12
+— object after the PPs —
+  strict    ✓ 121 ( 22%)  wrong   0 ( 0.0%)  refused 426
+  repair    ✓ 530 ( 97%)  wrong   4 ( 0.7%)  refused  13
+  mixed     ✓ 467 ( 85%)  wrong   9 ( 1.6%)  refused  71
+  dispatch  ✓ 213 ( 39%)  wrong  53 ( 9.7%)  refused 281
+  cascade   ✓ 532 ( 97%)  wrong   4 ( 0.7%)  refused  11
+— heavy typo (3 edits) —
+  strict    ✓ 154 ( 28%)  wrong   0 ( 0.0%)  refused 393
+  repair    ✓ 187 ( 34%)  wrong   1 ( 0.2%)  refused 359
+  mixed     ✓ 219 ( 40%)  wrong   1 ( 0.2%)  refused 327
+  dispatch  ✓ 193 ( 35%)  wrong   9 ( 1.6%)  refused 345
+  cascade   ✓ 243 ( 44%)  wrong   7 ( 1.3%)  refused 297
+— chatty wrapper —
+  strict    ✓ 255 ( 47%)  wrong   0 ( 0.0%)  refused 292
+  repair    ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+  mixed     ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+  dispatch  ✓ 128 ( 23%)  wrong   0 ( 0.0%)  refused 419
+  cascade   ✓ 547 (100%)  wrong   0 ( 0.0%)  refused   0
+
+samples where mixed accepted the wrong meaning (object after the PPs):
+  › fit in saprolite gaussian variogram
+    want: Fit new gaussian saprolite variogram; domain saprolite.
+    got:  Fit new gaussian saprolite variogram.
+    via:  ignored "in"
+  › fit in south zones variogram
+    want: Fit new south variogram; domain south.
+    got:  Fit new south variogram.
+    via:  ignored "in"
+  › fit for saprolite zones spherical semivariogram
+    want: Fit new spherical saprolite variogram; domain saprolite.
+    got:  Fit new spherical saprolite variogram.
+    via:  ignored "for"
+  › fit using exponential nugget variograms
+    want: Fit new exponential variogram; model exponential.
+    got:  Fit new exponential variogram.
+    via:  ignored "using"
+  › fit with gaussian exponential variogram
+    want: Fit new gaussian variogram; model gaussian.
+    got:  Fit new gaussian variogram.
+    via:  ignored "with"

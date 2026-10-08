@@ -1,5 +1,5 @@
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
-// @gcu/dispatch — Session-trained natural-language → tool-call dispatch: a Snips-shaped resolver (averaged-perceptron intent + CRF-class slot tagger + gazetteers + deterministic per-kind assemblers) that trains IN THE BROWSER from the host session's own vocabulary in under a second. Tools are declarative (ten kinds); no shipped model, no network, explainable per decision — refusals return empty calls so the host degrades into its command palette. Born from an incubator where this beat a 26M finetuned transformer 50/52 to 3/24 on a frozen yardstick.
+// @gcu/dispatch — Session-trained natural-language → tool-call dispatch: a Snips-shaped resolver (averaged-perceptron intent + CRF-class slot tagger + gazetteers + deterministic per-kind assemblers) that trains IN THE BROWSER from the host session's own vocabulary in under a second. Tools are declarative (ten kinds) and a grammar rung (clause: case-grammar frames over an Earley chart with costed repairs, en + pt-BR) reads controlled commands before the learners see them; no shipped model, no network, explainable per decision — refusals return empty calls so the host degrades into its command palette. Born from an incubator where this beat a 26M finetuned transformer 50/52 to 3/24 on a frozen yardstick.
 
 // ── src/vocab.js ──
 
@@ -672,6 +672,9 @@ function generate(ctx, tools, { seed = 42, targets = {}, refusalTarget = 70, ext
 // table. Seconds on any machine, browser included.
 
 const TAGS = ['O', 'COL', 'OP', 'VAL', 'CAT', 'RNG', 'POS', 'THICK', 'ID', 'LAYER'];
+// the tag set a corpus actually uses ('O' first, then sorted) — so a host whose kinds emit other
+// tags (the grammar rung's THEME / R_<role>) trains without editing this file
+const tagSetOf = (aligned) => ['O', ...new Set(aligned.flatMap((x) => x.tags || []).filter((t) => t !== 'O'))].sort((a, b) => a === 'O' ? -1 : b === 'O' ? 1 : a.localeCompare(b));
 
 function alignCorpus(corpus, ctx, toolsByName) {
   const aligned = [];
@@ -688,7 +691,8 @@ function alignCorpus(corpus, ctx, toolsByName) {
   return { aligned, dropped };
 }
 
-function trainModels(aligned, ctx, { epochs = 25 } = {}) {
+function trainModels(aligned, ctx, { epochs = 25, tagSet } = {}) {
+  const TAGS = tagSet || tagSetOf(aligned);
   // ── intent: averaged multiclass perceptron ──
   const CLASSES = [...new Set(aligned.map((x) => x.intent))].sort();
   const iw = {}, iacc = {};
@@ -845,12 +849,916 @@ function trainSession({ vocab, tools, seed = 42, targets, refusalTarget, extraRe
   return { dispatcher, weights, stats: { corpus: corpus.length, aligned: aligned.length, dropped, excluded } };
 }
 
+// ── src/grammar/earley.js ──
+
+// earley.mjs — Earley recogniser + packed semantic evaluation, with optional error-correcting repairs.
+//
+// chart(R, toks, term, start, opts) recognises the input for grammar R (R[sym] = [{rhs, act}]),
+// where term(sym, tok) returns the semantic nodes a terminal symbol yields for a token.
+//
+// opts.budget (default 0) enables error-correcting parsing (Aho & Peterson 1972): the parser may
+//   - skip a token   (cost opts.skip(i), default 1)
+//   - substitute a token by a near miss (opts.near(sym, i) → [{ v, cost, to }], default none) — spelling as an edit
+//   - insert a terminal the grammar expects (cost opts.insert(sym, i), default Infinity; typically only
+//     a few categories are insertable — a preposition, an article). The inserted node comes from
+//     opts.fabricate(sym) and is marked { inserted: true }.
+// The minimum-cost derivation wins; ties are kept as alternatives. With budget 0 nothing changes.
+//
+// Returns:
+//   derive(sym, i, j)  → [{ v, cost, repairs }] — packed: each (sym, i, j) evaluated once, alternatives
+//                        with equal meaning merged keeping the cheaper one, null actions pruned at the span.
+//   spans(sym, i)      → end positions j for which sym derives [i, j) within budget
+//   furthest, expected()  → diagnostics (where the chart died, what it wanted)
+function chart(R, toks, term, start, opts = {}) {
+  const budget = opts.budget ?? 0;
+  const skipCost = opts.skip ?? (() => 1);
+  const insCost = opts.insert ?? (() => Infinity);
+  const fabricate = opts.fabricate ?? (() => null);
+  const near = opts.near ?? (() => []);
+  const nearMin = (sym, i) => { const c = near(sym, i); return c.length ? Math.min(...c.map(x => x.cost)) : Infinity; };
+  const n = toks.length;
+  const rules = [];
+  for (const lhs in R) for (const r of R[lhs]) rules.push({ id: rules.length, lhs, rhs: r.rhs, act: r.act });
+  const byLhs = {}; for (const r of rules) (byLhs[r.lhs] ??= []).push(r);
+  const isNT = s => s in R;
+  const nullable = new Set();
+  for (let changed = true; changed;) { changed = false; for (const r of rules) if (!nullable.has(r.lhs) && r.rhs.every(s => nullable.has(s))) { nullable.add(r.lhs); changed = true; } }
+  const insertable = sym => !isNT(sym) && budget > 0 && insCost(sym, 0) < Infinity;
+
+  // ---- recognition (items carry cost; same (rule,dot,origin) at a lower cost supersedes) ----
+  const S = Array.from({ length: n + 1 }, () => ({ items: [], best: new Map() }));
+  const completed = {};                                   // completed[sym][origin] = Map(end → min cost)
+  const add = (k, rule, dot, origin, cost) => {
+    if (cost > budget) return;
+    const key = `${rule.id},${dot},${origin}`;
+    const prev = S[k].best.get(key);
+    if (prev !== undefined && prev <= cost) return;
+    S[k].best.set(key, cost); S[k].items.push({ rule, dot, origin, cost });
+  };
+  for (const r of byLhs[start]) add(0, r, 0, 0, 0);
+  let furthest = 0;
+  for (let k = 0; k <= n; k++) {
+    const set = S[k];
+    if (!set.items.length) break;
+    furthest = k;
+    for (let x = 0; x < set.items.length; x++) {
+      const it = set.items[x];
+      if (set.best.get(`${it.rule.id},${it.dot},${it.origin}`) < it.cost) continue;   // superseded
+      const next = it.rule.rhs[it.dot];
+      if (next === undefined) {
+        const m = (completed[it.rule.lhs] ??= {})[it.origin] ??= new Map();
+        if (!(m.has(k) && m.get(k) <= it.cost)) m.set(k, it.cost);
+        for (const w of S[it.origin].items) if (w.rule.rhs[w.dot] === it.rule.lhs) add(k, w.rule, w.dot + 1, w.origin, w.cost + it.cost);
+      } else if (isNT(next)) {
+        for (const r of byLhs[next]) add(k, r, 0, k, 0);
+        if (nullable.has(next)) add(k, it.rule, it.dot + 1, it.origin, it.cost);
+      } else {
+        if (k < n && term(next, toks[k]).length) add(k + 1, it.rule, it.dot + 1, it.origin, it.cost);
+        else if (k < n && budget > 0) { const nc = nearMin(next, k); if (nc < Infinity) add(k + 1, it.rule, it.dot + 1, it.origin, it.cost + nc); }   // substitute
+        if (insertable(next)) add(k, it.rule, it.dot + 1, it.origin, it.cost + insCost(next, k));   // insert the terminal
+      }
+      if (budget > 0 && k < n) add(k + 1, it.rule, it.dot, it.origin, it.cost + skipCost(k));        // skip the token
+    }
+  }
+  for (const sym of nullable) for (let k = 0; k <= furthest; k++) { const m = (completed[sym] ??= {})[k] ??= new Map(); if (!m.has(k)) m.set(k, 0); }
+
+  // ---- packed min-cost evaluation ----
+  // terminal over [i, j): tokens i..j-2 skipped, token j-1 matches; or i === j with an insertion
+  const termSpans = (sym, i) => {
+    const out = [];
+    if (insertable(sym)) out.push(i);
+    let c = 0;
+    for (let j = i + 1; j <= n; j++) { if (term(sym, toks[j - 1]).length || (budget > 0 && nearMin(sym, j - 1) + c <= budget)) out.push(j); if (budget === 0) break; c += skipCost(j - 1); if (c > budget) break; }
+    return out;
+  };
+  const spans = (sym, i) => isNT(sym) ? [...(completed[sym]?.[i]?.keys() ?? [])] : termSpans(sym, i);
+  const dMemo = new Map(), sMemo = new Map();
+  const skipsBetween = (i, j) => { let c = 0; const r = []; for (let k = i; k < j; k++) { c += skipCost(k); r.push({ op: 'skip', at: k, word: toks[k].word }); } return { c, r }; };
+  function derive(sym, i, j) {
+    const key = `${sym}@${i}-${j}`;
+    if (dMemo.has(key)) return dMemo.get(key);
+    dMemo.set(key, []);
+    let out = [];
+    if (!isNT(sym)) {
+      if (i === j) { const v = fabricate(sym); out = v ? [{ v: { ...v, inserted: true }, cost: insCost(sym, i), repairs: [{ op: 'insert', at: i, sym }] }] : []; }
+      else { const { c, r } = skipsBetween(i, j - 1); if (c <= budget) { out = term(sym, toks[j - 1]).map(v => ({ v, cost: c, repairs: r })); if (!out.length && budget > 0) out = near(sym, j - 1).filter(x => c + x.cost <= budget).map(x => ({ v: x.v, cost: c + x.cost, repairs: [...r, { op: 'subst', at: j - 1, word: toks[j - 1].word, to: x.to }] })); } }
+    } else if (completed[sym]?.[i]?.has(j)) {
+      const seen = new Map();
+      for (const r of byLhs[sym]) for (const kids of seq(r, 0, i, j)) {
+        const v = r.act(...kids.vs);
+        if (v === null) continue;
+        const vk = JSON.stringify(v);
+        const prev = seen.get(vk);
+        if (!prev || kids.cost < prev.cost) seen.set(vk, { v, cost: kids.cost, repairs: kids.repairs });
+      }
+      out = [...seen.values()];
+    }
+    dMemo.set(key, out); return out;
+  }
+  function seq(rule, idx, i, j) {
+    const key = `${rule.id},${idx},${i},${j}`;
+    if (sMemo.has(key)) return sMemo.get(key);
+    let out = [];
+    if (idx === rule.rhs.length) out = i === j ? [{ vs: [], cost: 0, repairs: [] }] : [];
+    else {
+      const sym = rule.rhs[idx];
+      for (const e of spans(sym, i)) {
+        if (e > j) continue;
+        const heads = derive(sym, i, e); if (!heads.length) continue;
+        const tails = seq(rule, idx + 1, e, j); if (!tails.length) continue;
+        for (const h of heads) for (const t of tails) { const cost = h.cost + t.cost; if (cost <= budget) out.push({ vs: [h.v, ...t.vs], cost, repairs: [...h.repairs, ...t.repairs] }); }
+      }
+      if (budget > 0) { const best = new Map(); for (const o of out) { const k = JSON.stringify(o.vs); const p = best.get(k); if (!p || o.cost < p.cost) best.set(k, o); } out = [...best.values()]; }
+    }
+    sMemo.set(key, out); return out;
+  }
+  const expected = () => [...new Set(S[furthest].items.map(it => it.rule.rhs[it.dot]).filter(s => s !== undefined && !isNT(s)))];
+  return { derive, spans, furthest, expected, nullable, skipCost };
+}
+
+// ── src/grammar/grammar.js ──
+
+// @gcu/dispatch grammar — the phrase-structure rules of the controlled command language (~50 rules).
+// Terminals: CATEGORY or CATEGORY:word. Nonterminals: capitalised. Actions return a node, or null to
+// kill the branch (type pruning inside the parse; return {} for a present-but-meaningless node, never
+// null for "nothing"). X carries the type-driven helpers the engine derives from the ontology:
+// headFirst, identTypes, postmodPreps, postmodQuantity, compound(), postmod(), qmod().
+function buildGrammar(X) {
+  const R = {};
+  const rule = (lhs, rhs, act) => (R[lhs] ??= []).push({ rhs: rhs ? rhs.split(' ') : [], act });
+
+  rule('Program', 'Cmd', c => [c]);
+  // closed, value-returning questions are commands with the verb left out: "what is the density of chalcopyrite"
+  // reads as "density of chalcopyrite". Open questions (why, how) have no rule here and stay out of scope.
+  rule('Program', 'Question', q => [q]);
+  rule('Question', 'WHCOP NPList PPs', (_, l, a) => ({ kind: 'cmd', verb: null, args: [{ kind: 'np', list: l }, ...a], question: true }));
+  // "which countries are landlocked" = "landlocked countries": the predicate must compound onto the subject
+  rule('Question', 'WH Core COP NPList PPs', (_, c, __, l, a) => {
+    let n = c; for (const m of l) { const r = X.compound(m, n); if (!r) return null; n = r; }
+    return { kind: 'cmd', verb: null, args: [{ kind: 'np', list: [n] }, ...a], question: true };
+  });
+  rule('Program', 'Cmd THEN Program', (c, _, p) => [c, ...p]);
+  rule('Program', 'Cmd CONJ THEN Program', (c, _, __, p) => [c, ...p]);
+  rule('Program', 'Cmd COMMA THEN Program', (c, _, __, p) => [c, ...p]);
+  rule('Program', 'Cmd COMMA CONJ THEN Program', (c, _, __, ___, p) => [c, ...p]);
+
+  // object comes right after the verb or not at all; everything after is prepositional
+  rule('Cmd', 'VERB Theme PPs', (v, t, a) => ({ kind: 'cmd', verb: v.verb, args: [...t, ...a] }));
+  rule('Cmd', 'AGAIN Theme PPs', (_, t, a) => ({ kind: 'again', args: [...t, ...a] }));
+  rule('Cmd', 'AGAIN BUT Theme PPs', (_, __, t, a) => ({ kind: 'again', args: [...t, ...a] }));
+  rule('Cmd', 'AGAIN COMMA BUT Theme PPs', (_, __, ___, t, a) => ({ kind: 'again', args: [...t, ...a] }));
+
+  rule('Cmd', 'VERB PPs LATE NPList', (v, a, _, l) => ({ kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }, ...a] }));   // object after the PPs — a repair, never free
+  rule('Cmd', 'LATE PP PPs VERB Theme PPs', (_, p, a, v, t, b) => ({ kind: 'cmd', verb: v.verb, args: [...t, p, ...a, ...b] }));   // arguments before the verb — also a repair
+  // no verb: a bare thing, maybe with arguments — "density of chalcopyrite", "2 km in miles", "histogram of cu".
+  // The engine binds it to the frames the ontology marks `elidable`; the ontology, not the grammar, says what
+  // can be asked for on its own. Two frames surviving is an honest ambiguity, reported as such.
+  rule('Cmd', 'NPList PPs', (l, a) => ({ kind: 'cmd', verb: null, args: [{ kind: 'np', list: l }, ...a] }));
+  rule('Theme', '', () => []);
+  rule('Theme', 'NPList', l => [{ kind: 'np', list: l }]);
+  rule('PPs', '', () => []);
+  rule('PPs', 'PP PPs', (a, r) => [a, ...r]);
+
+  rule('PP', 'PREP NPList', (p, l) => ({ kind: 'pp', prep: p.word, canon: p.canon, val: l }));
+
+  rule('NPList', 'NP NPTail', (n, t) => [n, ...t]);
+  rule('NPTail', '', () => []);
+  rule('NPTail', 'CONJ NP NPTail', (_, n, t) => [n, ...t]);
+  rule('NPTail', 'COMMA NP NPTail', (_, n, t) => [n, ...t]);
+  rule('NPTail', 'COMMA CONJ NP NPTail', (_, __, n, t) => [n, ...t]);
+
+  rule('NP', 'Core', c => c);
+  rule('NP', 'DET Core', (d, c) => ({ ...c, det: d.word }));
+  rule('NP', 'DET REF Core', (d, r, c) => ({ ...c, ref: r.word }));
+  rule('NP', 'REF Core', (r, c) => ({ ...c, ref: r.word }));
+  rule('NP', 'QUANT Core Except', (q, c, e) => c.generic ? { ...c, all: true, except: e } : null);
+  rule('NP', 'QUANT DET Core Except', (q, _, c, e) => c.generic ? { ...c, all: true, except: e } : null);   // all the domains / todos os domínios
+  if (X.headFirst) rule('NP', 'DET Core REF', (d, c, r) => ({ ...c, ref: r.word }));                        // a rodada anterior
+  rule('NP', 'PRON', p => ({ type: '*', pron: p.word }));
+  rule('NP', 'IDENT', t => t.type ? { type: t.type, name: t.name, generic: false, attrs: {} } : null);
+  rule('NP', 'Quantity', q => q);
+  rule('NP', 'UNIT', u => ({ type: 'unit', unit: u.unit, dim: u.dim, generic: false, attrs: {} }));   // "in miles": a unit as a thing
+  rule('NP', 'DET Quantity Head', (_, q, h) => X.qmod(q, h));
+  rule('NP', 'Quantity Head', (q, h) => X.qmod(q, h));
+  rule('Except', '', () => []);
+  rule('Except', 'EXCEPT NPList', (_, l) => l);
+
+  rule('Core', 'Head Ident PostMods', (h, id, pm) => {
+    const n = { ...h };
+    if (h.plural) n.plural = true;
+    if (!id.none) { if (!X.identTypes.has(h.type)) return null; n.name = id.name; n.generic = false; }
+    for (const m of pm) { const r = X.postmod(n, m); if (!r) return null; Object.assign(n, r); }
+    return n;
+  });
+  rule('Ident', '', () => ({ none: true }));
+  rule('Ident', 'IDENT', t => ({ name: t.name }));
+  rule('Ident', 'NUM', t => ({ name: String(t.n) }));
+  rule('PostMods', '', () => []);
+  rule('PostMods', 'PostMod PostMods', (m, r) => [m, ...r]);
+  for (const p of X.postmodPreps) {
+    if (X.postmodQuantity.has(p)) rule('PostMod', `PREP:${p} Quantity`, (_, q) => ({ prep: p, q }));
+    else rule('PostMod', `PREP:${p} NP`, (_, n) => ({ prep: p, np: n }));
+  }
+  rule('PostMod', 'PREP:of Quantity', (_, q) => ({ prep: 'of', q, qmod: true }));   // "a search of 200 m" / "busca de 200 m"
+  // relative clause: "the variogram (that) I fitted yesterday", "the run we did last week", "the variogram fitted this morning"
+  rule('PostMod', 'RelHead VERB When', (_, v, w) => ({ rel: { verb: v.verb, when: w } }));
+  rule('PostMod', 'VERB When', (v, w) => w ? { rel: { verb: v.verb, when: w } } : null);          // participle form needs the time to disambiguate
+  rule('PostMod', 'PREP:from TIME', (_, t) => ({ rel: { when: t } }));                              // "the run from yesterday"
+  rule('PostMod', 'TIME', t => ({ rel: { when: t } }));                                             // "yesterday's" is not modelled; "the run yesterday" is
+  rule('PostMod', 'PREP:with CompNP', (_, c) => ({ rel: { cmp: c.cmp } }));                              // "the run with the bigger search"
+  rule('RelHead', 'SUBJ', () => ({}));
+  rule('RelHead', 'REL SUBJ', () => ({}));
+  rule('When', '', () => null);
+  rule('When', 'TIME', t => t);
+  const compNP = (c, h) => h.type === 'search' || h.type === 'composites' ? { ...h, cmp: { sign: c.sign, sup: c.sup } } : null;
+  rule('CompNP', 'COMP Head', compNP); rule('CompNP', 'DET COMP Head', (_, c, h) => compNP(c, h));
+  if (X.headFirst) { rule('CompNP', 'Head COMP', (h, c) => compNP(c, h)); rule('CompNP', 'DET Head COMP', (_, h, c) => compNP(c, h)); }   // pt allows both orders
+  rule('NP', 'CompNP', c => c);
+
+  const leaf = t => ({ type: t.type, value: t.value, generic: !!t.generic, attrs: {}, ...(t.plural ? { plural: true } : {}) });
+  if (X.headFirst) {   // head then modifiers: "variograma esférico", "domínio oeste"
+    rule('Head', 'NOUN Mods', (t, ms) => ms.reduce((h, m) => h && X.compound(leaf(m), h), leaf(t)));
+    rule('Mods', '', () => []);
+    rule('Mods', 'NOUN Mods', (m, r) => [m, ...r]);
+  } else {             // modifiers then head: "spherical variogram", "west domain"
+    rule('Head', 'NOUN', leaf);
+    rule('Head', 'NOUN Head', (a, h) => X.compound(leaf(a), h));
+  }
+
+  rule('Quantity', 'NUM', t => ({ type: 'quantity', n: t.n, unit: null, dim: 'bare' }));
+  rule('Quantity', 'NUM UNIT', (t, u) => ({ type: 'quantity', n: t.n, unit: u.unit, dim: u.dim }));
+  return R;
+}
+
+// ── src/grammar/locales/en.js ──
+
+// @gcu/dispatch grammar — the English locale bank for the clause parser.
+// A locale bank is: the closed-class words by category, a map from each surface preposition to the
+// canonical (English) prepositions it can mean, morphology (stem, plural, gender agreement), the time
+// and comparative tables, and the phrase table the echo uses. Nothing else about the language lives
+// here; domain words come from the ontology.
+const ENGLISH = {
+  code: 'en', headFirst: false,
+  DET: 'the|a|an|this|that|my|our', REF: 'last|previous|latest|current|first|new',
+  QUANT: 'all|every|each', EXCEPT: 'except|excluding|minus', CONJ: 'and|or|plus', COMMA: ',',
+  PREP: 'with|using|by|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against',
+  THEN: 'then|afterwards|next', BUT: 'but', PRON: 'it|them|those', AGAIN: 'again|rerun|redo|repeat|same',
+  QWORD: 'why|how|what|when|who|is|are|does|do|should|can|could|would',
+  // closed questions the grammar reads as commands with the verb left out: a wh-word, a copula, the fused forms
+  WH: 'what|which', COP: 'is|are|was|were', WHCOP: "what is|what's|whats|what are|which is|which are|how much is|how many are",
+  FILLER: 'please|now|just|kindly|go|ahead|me|us|hey|hi|yo|thanks|thank you|cheers|pls|plz|so|can you|could you|would you|will you|i want you to|i need you to|i want to|let us|lets',
+  preps: {},   // identity: every English prep is its own canon
+  indefinite: ['a', 'an'], newRef: ['new'], firstRef: ['first'],
+  phr: { new: 'new', last: 'last', every: 'every', except: 'except', fromRun: 'from run', above: 'above', below: 'below', then: 'Then', assuming: 'assuming', of: 'of', hole: '___', than: 'than' },
+  // morphology: a stem both the lexicon and the input are folded through; plural = word ≠ lexeme and ends in s
+  stem: w => { let x = w; if (x.length > 4 && /ies$/.test(x)) x = x.slice(0, -3) + 'y'; else if (x.length > 4 && /(ss|sh|ch|x)es$/.test(x)) x = x.slice(0, -2); else if (x.length > 3 && /[^s]s$/.test(x)) x = x.slice(0, -1);
+    if (x.length > 5 && /ing$/.test(x)) x = x.slice(0, -3); else if (x.length > 4 && /ed$/.test(x)) x = x.slice(0, -2);
+    x = x.replace(/([b-df-hj-np-tv-z])\1$/, '$1'); if (x.length > 3 && /e$/.test(x)) x = x.slice(0, -1); return x; },
+  gender: () => 'm', agree: { m: {}, f: {} }, plural: w => /[^s]s$/.test(w),
+  // relative clauses and time
+  REL: 'that|which|who', SUBJ: 'i|we|you|they', TIME: 'today|yesterday|this morning|this week|last week|this month|last month|earlier',
+  times: { today: [0, 1], yesterday: [1, 2], 'this morning': [0, 1], 'this week': [0, 7], 'last week': [7, 14], 'this month': [0, 30], 'last month': [30, 60], earlier: [0, 3650] },   // days ago: [from, to)
+  COMP: 'bigger|larger|wider|smaller|narrower|longer|shorter|biggest|largest|widest|smallest|narrowest|longest|shortest',
+  comps: { bigger: ['+', 0], larger: ['+', 0], wider: ['+', 0], longer: ['+', 0], smaller: ['-', 0], narrower: ['-', 0], shorter: ['-', 0], biggest: ['+', 1], largest: ['+', 1], widest: ['+', 1], longest: ['+', 1], smallest: ['-', 1], narrowest: ['-', 1], shortest: ['-', 1] },
+};
+
+// ── src/grammar/engine.js ──
+
+// @gcu/dispatch grammar — the clause engine. Builds a lexicon from ontology + locale, tokenizes
+// (multiword, stems, identifiers, a one-edit typo pre-pass), parses with the Earley chart (strict,
+// then with a repair budget), binds the parse to a verb frame (prepositions = role labels, types prune),
+// resolves against the session (names, recency, quantifiers, ellipsis), and echoes the reading back.
+//
+//   understand(text, session, {repair:{budget}}) → { status: ok | ambiguous | clarify | reject | outofscope, … }
+//   suggest(text, session) / preview(text, session)   predictive input
+//   assemble({verb, theme, roles}, session)          a slot tagger's groups through the same binder
+//
+// See SPEC.md "The grammar rung" for the pipeline, the verdicts and the ceiling.
+
+function dl(a, b) { // Damerau-Levenshtein
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    const c = a[i - 1] === b[j - 1] ? 0 : 1;
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  }
+  return d[a.length][b.length];
+}
+
+// ───────────────────────────── engine ─────────────────────────────
+function createEngine(ont, locale = ENGLISH) {
+  // ---- lexicon from ontology + locale ----
+  const LEX = {};
+  const add = (words, cat, extra = {}) => { for (const w of words.split('|')) (LEX[w] ??= []).push({ cat, word: w, ...extra }); };
+  for (const cat of ['DET', 'REF', 'QUANT', 'EXCEPT', 'CONJ', 'COMMA', 'THEN', 'BUT', 'PRON', 'AGAIN', 'QWORD', 'FILLER', 'REL', 'SUBJ', 'WH', 'COP', 'WHCOP']) if (locale[cat]) add(locale[cat], cat);
+  for (const [w, r] of Object.entries(locale.times)) add(w, 'TIME', { from: r[0], to: r[1] });
+  for (const [w, c] of Object.entries(locale.comps)) add(w, 'COMP', { sign: c[0], sup: !!c[1] });
+  for (const p of locale.PREP.split('|')) add(p, 'PREP', { canon: locale.preps[p] ?? [p] });
+  const L = k => `${k}_${locale.code}`;   // ontology synonym column for this locale, falling back to the default column
+  const col = (o, k) => o[L(k)] ?? o[k];
+  const VERBS = Object.fromEntries(ont.verbs.map(v => [v.name, v]));
+  for (const v of ont.verbs) add(col(v, 'words').join('|'), 'VERB', { verb: v.name });
+  const NOUNS = Object.fromEntries(ont.nouns.map(n => [n.type, n]));
+  for (const n of ont.nouns) {
+    for (const [value, words] of Object.entries(col(n, 'words') ?? {})) add(words.join('|'), 'NOUN', { type: n.type, value });
+    if (col(n, 'generic')) add(col(n, 'generic').join('|'), 'NOUN', { type: n.type, value: null, generic: true });
+  }
+  for (const u of ont.units) add(col(u, 'words').join('|'), 'UNIT', { dim: u.dim, unit: u.unit });
+  const MULTI = Object.keys(LEX).filter(k => k.includes(' ')).map(k => k.split(' ')).sort((a, b) => b.length - a.length);
+  const SINGLE = Object.keys(LEX).filter(k => !k.includes(' '));
+  const CONTENT = new Set(Object.keys(LEX).filter(k => LEX[k].some(s => ['NOUN', 'VERB', 'UNIT'].includes(s.cat))));
+  const STEMS = {};   // stem → senses of content words, so inflected forms nobody listed still resolve
+  for (const k of CONTENT) if (!k.includes(' ')) (STEMS[locale.stem(k)] ??= []).push(...LEX[k].filter(s => ['NOUN', 'VERB', 'UNIT'].includes(s.cat)).map(s => ({ ...s, lexeme: k })));
+  const NEEDS_ID = new Set(ont.nouns.filter(n => n.needsId).map(n => n.type));
+
+  // ---- type-driven helpers used inside the grammar ----
+  const X = {
+    headFirst: !!locale.headFirst,
+    identTypes: new Set(ont.nouns.filter(n => n.ident).map(n => n.type)),
+    postmodPreps: [...new Set(ont.postmods.map(p => p.prep))],
+    postmodQuantity: new Set(ont.postmods.filter(p => p.quantity).map(p => p.prep)),
+    compound(a, h) {
+      if (a.type === h.type && !a.generic && h.generic) return { ...h, value: a.value, generic: false };
+      for (const c of ont.compounds) if (c.mod === a.type && c.heads.includes(h.type)) return { ...h, attrs: { ...h.attrs, [c.attr]: a.value ?? '?' } };
+      return null;
+    },
+    postmod(n, m) {
+      if (m.rel) { if (!X.identTypes.has(n.type) || n.type === 'search') return null; return { rel: { ...(n.rel ?? {}), ...m.rel }, generic: false }; }
+      if (m.qmod) return X.qmod(m.q, n) ? { attrs: { ...n.attrs, [ont.qmods.find(x => x.head === n.type).attr]: m.q }, generic: false } : null;
+      for (const p of ont.postmods) {
+        if (p.prep !== m.prep || !p.heads.includes(n.type)) continue;
+        if (p.quantity) return { attrs: { ...n.attrs, [p.attr]: m.q } };
+        if (m.np.type === p.mod) return { attrs: { ...n.attrs, [p.attr]: p.byName ? (m.np.name ?? m.np.ref ?? '?') : m.np.value } };
+      }
+      return null;
+    },
+    qmod(q, h) {
+      for (const m of ont.qmods) if (m.head === h.type && m.dims.includes(q.dim)) return { ...h, attrs: { ...h.attrs, [m.attr]: q }, generic: false };
+      return null;
+    },
+  };
+  const R = buildGrammar(X);
+
+  // ---- tokenizer ----
+  function tokenize(text, session) {
+    const raw = text.toLowerCase().replace(/([,?!])/g, ' $1 ').trim().split(/\s+/).filter(Boolean);
+    const toks = []; const notes = []; const unknown = [];
+    for (let i = 0; i < raw.length;) {
+      let hit = null;
+      let mwPlural = false;
+      for (const mw of MULTI) if (mw.every((w, k) => raw[i + k] === w || (k === mw.length - 1 && raw[i + k] && locale.stem(raw[i + k]) === locale.stem(w) && LEX[mw.join(' ')].some(x => x.cat === 'NOUN')))) { hit = mw; mwPlural = locale.plural(raw[i + mw.length - 1]); break; }
+      if (hit) { const w = hit.join(' '); if (LEX[w][0].cat !== 'FILLER') toks.push({ word: w, senses: mwPlural ? LEX[w].map(x => x.cat === 'NOUN' ? { ...x, plural: true } : x) : LEX[w] }); i += hit.length; continue; }
+      const w = raw[i++];
+      if (w === '?' || w === '!') continue;
+      if (LEX[w]) { if (LEX[w][0].cat !== 'FILLER') { const plural = locale.plural(w); toks.push({ word: w, senses: plural ? LEX[w].map(x => x.cat === 'NOUN' ? { ...x, plural } : x) : LEX[w] }); } continue; }
+      if (/^\d+(\.\d+)?$/.test(w)) { toks.push({ word: w, senses: [{ cat: 'NUM', n: parseFloat(w) }] }); continue; }
+      if (session?.names?.[w]) { toks.push({ word: w, senses: [{ cat: 'IDENT', name: w, type: session.names[w] }] }); continue; }
+      if (/^[a-z]+\d+$/.test(w)) { toks.push({ word: w, senses: [{ cat: 'IDENT', name: w }] }); continue; }
+      const st = STEMS[locale.stem(w)];
+      if (st) { const plural = locale.plural(w); toks.push({ word: w, senses: st.map(s => ({ ...s, plural })), stemmed: true }); continue; }
+      const tol = w.length < 7 ? 1 : 2;
+      const cands = SINGLE.filter(k => k.length > 2 && CONTENT.has(k) && dl(w, k) <= tol);   // never repair into a function word
+      if (cands.length === 1) { notes.push(`read "${w}" as "${cands[0]}"`); toks.push({ word: cands[0], senses: LEX[cands[0]], repaired: w }); continue; }
+      if (cands.length > 1) notes.push(`"${w}" could be ${cands.map(c => `"${c}"`).join(' / ')} — not guessing`);
+      unknown.push(w); toks.push({ word: w, senses: [{ cat: 'UNK' }] });
+    }
+    return { toks, notes, unknown };
+  }
+
+  // terminal match: a token yields one node per matching sense (lexical ambiguity lives here)
+  const term = (sym, t) => {
+    const [cat, word] = sym.split(':');
+    return t.senses.filter(s => s.cat === cat && (!word || t.word === word || (cat === 'PREP' && s.canon.includes(word)))).map(s => ({ ...s, word: t.word }));
+  };
+  const FAB = { PREP: () => ({ cat: 'PREP', word: '∅', canon: ['*'] }), DET: () => ({ cat: 'DET', word: '∅' }), LATE: () => ({ cat: 'LATE' }) };
+  // repair costs — a dozen numbers, calibrated by calib.mjs against the mutation benchmark
+  const COSTS = { skipFunc: 0.5, skipUnk: 0.6, skipContent: 1.5, skipTagged: 2, skipO: 0.5, insPrep: 1, insPrepTagged: 0.5, insDet: 0.5, order: 1, subst1: 0.4, subst2: 1.2, substKnown: 2 };
+  const NEAR_POOL = Object.keys(LEX).filter(k => !k.includes(' ') && LEX[k].some(x => ['NOUN', 'VERB', 'UNIT', 'PREP'].includes(x.cat)));
+  const CONTENT_CATS = ['NOUN', 'VERB', 'UNIT', 'NUM', 'IDENT', 'PREP'];
+  function makeParser(toks, repair) {
+    // repair = { budget, tags?, costs? } — tags (from a slot tagger) shape the costs: cheap to skip an O token,
+    // dear to skip a role token, cheap to insert a preposition right before a role span
+    let opts = {};
+    if (repair?.budget) {
+      const K = { ...COSTS, ...(repair.costs ?? {}) };
+      const tag = i => repair.tags?.[i] ?? null;
+      const nearCache = new Map();
+      const nearFor = i => {   // content lexemes within edit distance 2 of this token, once per token
+        if (nearCache.has(i)) return nearCache.get(i);
+        const w = toks[i].word; const out = [];
+        if (w.length >= 2 && !/^\d/.test(w)) {
+          for (const k of NEAR_POOL) { if (Math.abs(k.length - w.length) > 2) continue; const d = dl(w, k); if (d >= 1 && d <= 2 && (d === 1 || w.length >= 5)) for (const s of LEX[k]) if (CONTENT_CATS.includes(s.cat)) out.push({ v: { ...s, word: k }, cost: (d === 1 ? K.subst1 : K.subst2) * (toks[i].senses.every(x => x.cat === 'UNK') ? 1 : K.substKnown), to: k }); }
+          for (const [name, type] of Object.entries(repair.names ?? {})) { const d = dl(w, name); if (d === 1) out.push({ v: { cat: 'IDENT', name, type, word: name }, cost: K.subst1, to: name }); }
+        }
+        nearCache.set(i, out); return out;
+      };
+      opts = { budget: repair.budget,
+        skip: i => tag(i) && tag(i) !== 'O' ? K.skipTagged : toks[i].senses.every(x => x.cat === 'UNK') ? K.skipUnk : tag(i) === 'O' ? K.skipO : toks[i].senses.some(x => CONTENT_CATS.includes(x.cat)) ? K.skipContent : K.skipFunc,
+        insert: (sym, i) => sym === 'PREP' ? (tag(i)?.startsWith('R_') ? K.insPrepTagged : K.insPrep) : sym === 'DET' ? K.insDet : sym === 'LATE' ? K.order : Infinity,
+        near: (sym, i) => { const [cat, word] = sym.split(':'); return nearFor(i).filter(x => x.v.cat === cat && (!word || x.v.word === word)); },
+        fabricate: sym => FAB[sym]?.() ?? null };
+    }
+    const C = chart(R, toks, term, 'Program', opts);
+    const parse = (sym, i) => C.spans(sym, i).flatMap(j => C.derive(sym, i, j).map(d => ({ node: d.v, end: j, cost: d.cost, repairs: d.repairs })));
+    parse.chart = C;
+    return parse;
+  }
+  const describeRepairs = (toks, repairs) => repairs.map(r => r.op === 'skip' ? `ignored "${r.word}"` : r.op === 'subst' ? `read "${r.word}" as "${r.to}"` : r.sym === 'LATE' ? 'read the arguments out of order' : `assumed ${r.sym === 'PREP' ? 'a preposition' : 'an article'} before "${toks[r.at]?.word ?? 'the end'}"`);
+  // human names for the terminals the chart was waiting for
+  const EXPECT = { NOUN: 'a thing', VERB: 'a verb', DET: 'an article', PREP: 'a preposition', NUM: 'a number', UNIT: 'a unit', IDENT: 'a name', CONJ: `'${locale.CONJ.split('|')[0]}'`, THEN: `'${locale.THEN.split('|')[0]}'`, COMMA: "','", QUANT: 'a quantifier', REF: `'${locale.REF.split('|')[0]}'`, PRON: 'a pronoun', REL: `'${locale.REL.split('|')[0]}'`, SUBJ: `'${locale.SUBJ.split('|')[0]}'`, TIME: 'a time', COMP: 'a comparative', WH: 'a question word', COP: `'${(locale.COP ?? 'is').split('|')[0]}'`, WHCOP: `'${(locale.WHCOP ?? 'what is').split('|')[0]}'`, EXCEPT: `'${locale.EXCEPT.split('|')[0]}'`, BUT: `'${locale.BUT.split('|')[0]}'`, AGAIN: `'${locale.AGAIN.split('|')[0]}'` };
+  const expectName = sym => { const [cat, w] = sym.split(':'); if (cat === 'LATE') return null; return w ? `'${w}'` : (EXPECT[cat] ?? cat); };
+
+  // ---- binding ----
+  const typeOf = v => v.type === 'quantity' ? `quantity:${v.dim}` : v.type;
+  const typeOk = (want, v) => want === '*' || v.type === '*' || want === typeOf(v) || (v.type === 'quantity' && ((want === 'quantity:*' && v.dim !== 'bare') || (v.dim === 'bare' && want !== 'quantity:*' && want.startsWith('quantity:'))));   // a bare number fits a typed quantity slot (the unit is assumed), never an any-quantity one
+  const lbl = verb => VERBS[verb].label.toLowerCase();
+
+  function bind(cmd) {
+    if (cmd.verb == null) return bindElided(cmd);
+    const F = VERBS[cmd.verb]; const problems = [];
+    let alts = [{ verb: cmd.verb, theme: null, roles: {} }];
+    for (const a of cmd.args) {
+      if (a.kind === 'np') {
+        const bad = a.list.filter(n => !F.theme.some(t => typeOk(t, n)));
+        if (bad.length) { problems.push(`"${lbl(cmd.verb)}" takes ${F.theme.join('/')}, not ${bad.map(describe).join(', ')}`); return { alts: [], problems }; }
+        alts = alts.map(b => b.theme ? null : { ...b, theme: a.list }).filter(Boolean);
+        if (!alts.length) problems.push('two things in object position — which one did you mean?');
+        continue;
+      }
+      const byPrep = Object.entries(F.roles).filter(([, r]) => a.canon.includes('*') || r.preps.some(p => a.canon.includes(p)));
+      if (!byPrep.length) { problems.push(`"${a.prep}" is not something ${lbl(cmd.verb)} understands`); return { alts: [], problems }; }
+      for (const v of a.val) {
+        const roles = byPrep.filter(([, r]) => r.types.some(t => typeOk(t, v)));
+        if (!roles.length) {
+          problems.push(`"${a.prep} ${describe(v)}": after "${a.prep}" ${lbl(cmd.verb)} expects ${byPrep.map(([k, r]) => `${k} (${r.types.join('/')})`).join(' or ')}`);
+          return { alts: [], problems };
+        }
+        alts = alts.flatMap(b => roles.map(([k]) => ({ ...b, roles: { ...b.roles, [k]: [...(b.roles[k] ?? []), v] } })));
+      }
+    }
+    return { alts, problems };
+  }
+
+  // no verb was said: try every frame the ontology marks elidable. Readings that bind survive; more than one
+  // surviving frame is an ambiguity for the layer above, not a guess here.
+  function bindElided(cmd) {
+    const frames = ont.verbs.filter(v => v.elidable);
+    const theme = cmd.args.find(a => a.kind === 'np');
+    const what = theme ? theme.list.map(describe).join(', ') : 'that';
+    if (!frames.length) return { alts: [], problems: [`no verb, and nothing in this vocabulary is asked for on its own (${what})`] };
+    const alts = [], near = [];
+    for (const F of frames) {
+      const r = bind({ ...cmd, verb: F.name });
+      if (r.alts.length) alts.push(...r.alts);
+      else if (theme && theme.list.every(n => F.theme.some(t => typeOk(t, n)))) near.push(...r.problems);   // the thing fit, an argument did not
+    }
+    if (alts.length) return { alts, problems: [] };
+    return { alts: [], problems: near.length ? [...new Set(near)] : [`no verb, and nothing takes ${what} on its own`] };
+  }
+
+  // ---- resolution ----
+  function resolve(b, session, prev) {
+    const missing = []; const notes = [];
+    const F = VERBS[b.verb];
+    const out = { verb: b.verb, theme: [], roles: {} };
+    const fix = (list, slot) => list.flatMap(n => {
+      if (n.type === 'quantity') return [n];
+      if (n.pron) { const src = prev ?? session.last; if (!src?.theme?.length) { missing.push(`"${n.pron}" — nothing to refer to`); return []; } return src.theme; }
+      if (n.all) { const pool = session.objects.filter(o => o.type === n.type); const ex = new Set(n.except.map(e => e.value)); return pool.filter(o => !ex.has(o.value)); }
+      const now = session.now ?? 0; const DAY = 86400000;
+      const relOk = o => { const r = n.rel; if (!r) return true;
+        if (r.verb && o.by && o.by !== r.verb) return false;
+        if (r.when && !(now - o.t >= r.when.from * DAY && now - o.t < r.when.to * DAY)) return false;
+        return true; };
+      if (n.rel && !n.ref) {
+        let hits = session.objects.filter(o => o.type === n.type && Object.entries(n.attrs).every(([k, v]) => o.attrs?.[k] === v) && relOk(o));
+        if (n.rel.cmp) { const key = o => o.attrs?.search?.n ?? o.attrs?.radius?.n ?? -Infinity; hits = hits.filter(o => key(o) > -Infinity).sort((a, b) => n.rel.cmp.sign === '+' ? key(b) - key(a) : key(a) - key(b)).slice(0, 1); }
+        if (!hits.length) { missing.push(`no ${describe(n)} in session`); return []; }
+        if (hits.length > 1 && !n.plural) { missing.push(`which ${n.type}? (${hits.map(describe).join(', ')})`); return []; }
+        return [...hits].sort((a, b) => a.t - b.t);
+      }
+      if (n.cmp) {   // "a bigger search": scaled from the last command's value, or the session's extreme
+        const last = session.last?.roles?.[slot]?.[0]; const base = last?.type === 'quantity' ? last : last?.attrs?.radius;
+        const step = ont.scales?.[slot] ?? 1.5;
+        if (n.cmp.sup || !base) { const pool = session.objects.map(o => o.attrs?.search ?? o.attrs?.radius).filter(q => q?.n != null); if (!pool.length) { missing.push(`${describe(n)} — ${P.than} what?`); return []; }
+          const q = pool.sort((a, b) => n.cmp.sign === '+' ? b.n - a.n : a.n - b.n)[0]; return [{ ...q }]; }
+        return [{ type: 'quantity', n: +(n.cmp.sign === '+' ? base.n * step : base.n / step).toFixed(1), unit: base.unit, dim: base.dim }];
+      }
+      if (n.ref) {
+        const pool = session.objects.filter(o => o.type === n.type && (!n.attrs.variable || o.attrs?.variable === n.attrs.variable) && relOk(o)).sort((x, y) => y.t - x.t);
+        const pick = locale.firstRef.includes(n.ref) ? pool.at(-1) : pool[0];
+        if (!pick) { missing.push(`no ${n.ref} ${n.type}${n.attrs.variable ? ' for ' + n.attrs.variable : ''} in session`); return []; }
+        return [pick];
+      }
+      if (n.name) { const o = session.objects.find(o => o.name === n.name); if (!o) { missing.push(`${n.type} "${n.name}" not found`); return []; } if (o.type !== n.type) { missing.push(`"${n.name}" is a ${o.type}, not a ${n.type}`); return []; } return [o]; }
+      if (slot === 'object' && F.creates) return [{ ...n, fresh: true }];
+      if (n.generic && n.value == null) {
+        const hits = session.objects.filter(o => o.type === n.type && Object.entries(n.attrs).every(([k, v]) => o.attrs?.[k] === v));
+        if (hits.length === 1 || (hits.length > 1 && n.plural)) return [...hits].sort((a, b) => a.t - b.t);   // plural = all of them, oldest first; singular with several matches asks
+        if (NEEDS_ID.has(n.type)) {
+          if (!hits.length) missing.push(NOUNS[n.type].words ? `which ${n.type}?` : `no ${describe(n)} in session`);
+          else missing.push(`which ${n.type}? (${hits.map(describe).join(', ')})`);
+          return [];
+        }
+      }
+      return [n];
+    });
+    if (b.theme) out.theme = fix(b.theme, 'object');
+    for (const [k, v] of Object.entries(b.roles)) out.roles[k] = fix(v, k);
+    if (F.creates) for (const t of out.theme) { t.by = b.verb; t.t = session.now ?? 0; for (const k of ont.inherit) if (out.roles[k]?.length === 1) t.attrs = { ...t.attrs, [k]: out.roles[k][0].value }; }
+    for (const [k, vs] of Object.entries(out.roles)) if (!vs.every(v => F.roles[k].types.some(t => typeOk(t, v)))) return { cmd: out, missing, notes, dead: true };
+    if (b.theme && !out.theme.every(t => F.theme.some(ty => typeOk(ty, t)))) return { cmd: out, missing, notes, dead: true };
+    for (const r of F.required) {
+      if (r === 'theme') { if (!out.theme.length && !missing.length) missing.push(`${lbl(b.verb)} what?`); }
+      else if (!out.roles[r]) missing.push(`missing ${r} (${F.roles[r].types.join('/')}) — say "${F.roles[r].preps[0]} …"`);
+    }
+    if (F.minTheme && out.theme.length + (out.roles.against?.length ?? 0) < F.minTheme) missing.push(`${lbl(b.verb)} needs at least ${F.minTheme} things`);
+    for (const s of F.sanity ?? []) for (const v of out.roles[s.role] ?? []) for (const t of out.theme)
+      if (v.attrs?.[s.attr] && t.value && v.attrs[s.attr] !== t.value) notes.push(`${describe(v)} was made for ${v.attrs[s.attr]}, this is ${t.value}`);
+    for (const [k, vs] of Object.entries(out.roles)) for (const q of vs) if (q.type === 'quantity' && q.dim === 'bare') {
+      const want = F.roles[k].types.find(t => t.startsWith('quantity:'))?.split(':')[1];
+      const u = ont.units.find(u => u.dim === want); if (u) notes.push(`${P.assuming} ${q.n} ${u.unit}`);
+    }
+    return { cmd: out, missing, notes };
+  }
+
+  // ---- generator: canonical phrase in the active locale (the grammar run backwards, at the level the echo needs) ----
+  const P = locale.phr;
+  const typeName = t => (col(NOUNS[t] ?? {}, 'generic') ?? [t])[0];                      // "variogram" / "variograma"
+  const valueName = (t, v) => t === 'variable' ? v : ((col(NOUNS[t] ?? {}, 'words') ?? {})[v]?.[0] ?? v);   // Cu stays Cu; "west" / "oeste"
+  const roleLabel = k => (ont[`roleLabels_${locale.code}`] ?? {})[k] ?? k;
+  function describe(n) {
+    if (n.type === 'quantity') return `${n.n}${n.unit ? ' ' + n.unit : ''}`;
+    if (n.type === 'unit') return n.unit;
+    if (n.type === '*') return n.pron ?? 'that';
+    if (n.all) return `${locale.agree[locale.gender(typeName(n.type))]?.[P.every] ?? P.every} ${typeName(n.type)}${n.except?.length ? ` ${P.except} ` + n.except.map(describe).join(', ') : ''}`;
+    if (n.attrs?.radius) return describe(n.attrs.radius);
+    const head = n.value != null ? valueName(n.type, n.value) : typeName(n.type);
+    const mods = [];                                                                    // adjective-like modifiers
+    if (n.attrs?.model) mods.push(valueName('vmodel', n.attrs.model));
+    if (n.attrs?.variable) mods.push(n.attrs.variable);
+    if (n.attrs?.domain) mods.push(valueName('domain', n.attrs.domain));
+    for (const c of ont.compounds) if (c.echo && n.attrs?.[c.attr] != null) mods.push(valueName(c.mod, n.attrs[c.attr]));   // "landlocked country"
+    const g = locale.gender(head); const agree = w => locale.agree[g]?.[w] ?? w;
+    const pre = []; if (n.fresh) pre.push(agree(P.new)); if (n.ref) pre.push(locale.firstRef.includes(n.ref) ? n.ref : locale.newRef.includes(n.ref) ? agree(P.new) : agree(P.last));
+    if (n.cmp) pre.push(Object.entries(locale.comps).find(([, c]) => c[0] === n.cmp.sign && !!c[1] === n.cmp.sup)?.[0] ?? '');
+    const post = [];
+    if (n.name) post.push(n.name);
+    if (n.attrs?.run) post.push(`${P.fromRun} ${n.attrs.run}`);
+    if (n.attrs?.length) post.push(describe(n.attrs.length));
+    if (n.attrs?.above) post.push(`${P.above} ${describe(n.attrs.above)}`);
+    if (n.attrs?.below) post.push(`${P.below} ${describe(n.attrs.below)}`);
+    if (n.rel?.when) post.push(Object.entries(locale.times).find(([, r]) => r[0] === n.rel.when.from && r[1] === n.rel.when.to)?.[0] ?? '');
+    if (n.rel?.verb) post.push(`(${col(VERBS[n.rel.verb], 'words')[0]})`);
+    const core = locale.headFirst ? [head, ...mods.map(m => /^[A-Z]/.test(m) ? `${P.of} ${m}` : m)] : [...mods, head];   // "variograma esférico de Cu" / "spherical Cu variogram"
+    return [...pre, ...core, ...post].join(' ');
+  }
+  function echo(c) {
+    const parts = [c.theme.length ? `${col(VERBS[c.verb], 'label')} ${c.theme.map(describe).join(', ')}` : col(VERBS[c.verb], 'label')];
+    for (const k of ont.echoOrder) if (c.roles[k]?.length) { const vs = c.roles[k]; const redundant = vs.every(v => v.type === k && describe(v).includes(typeName(v.type))); parts.push(`${redundant ? '' : roleLabel(k) + ' '}${vs.map(describe).join(', ')}`); }
+    return parts.join('; ') + '.';
+  }
+
+  function smallestDeadSpan(toks, C) {
+    let best = null;
+    for (const sym of ['Head', 'Core', 'NP', 'PostMod']) for (let i = 0; i < toks.length; i++) for (const j of C.spans(sym, i)) {
+      if (j - i < 2 || C.derive(sym, i, j).length) continue;
+      if (!best || j - i < best.len) best = { len: j - i, sym, i, j };
+    }
+    if (!best) return null;
+    const words = toks.slice(best.i, best.j).map(t => t.word);
+    const types = toks.slice(best.i, best.j).flatMap(t => t.senses.filter(s => s.cat === 'NOUN').map(s => s.type));
+    const why = best.sym === 'Head' ? `a ${types[0] ?? 'thing'} does not modify a ${types.at(-1) ?? 'thing'}` : best.sym === 'PostMod' ? 'that modifier does not apply to this kind of thing' : 'these do not combine';
+    return { text: words.join(' '), why };
+  }
+  function islands(toks, parse) {
+    const segs = []; let i = 0;
+    while (i < toks.length) {
+      let best = null;
+      for (const sym of ['Cmd', 'PP', 'NPList', 'Quantity']) for (const r of parse(sym, i)) if (r.end > i && (!best || r.end > best.end)) best = { sym, end: r.end };
+      if (best) { segs.push({ text: toks.slice(i, best.end).map(t => t.word).join(' '), as: best.sym }); i = best.end; }
+      else { const last = segs.at(-1); const w = toks[i].word; if (last && !last.as) last.text += ' ' + w; else segs.push({ text: w, as: null }); i++; }
+    }
+    return segs;
+  }
+
+  function ellipsis(c, session, problems) {
+    if (!session.last) { problems.add('nothing to repeat yet'); return null; }
+    const L = session.last; const F = VERBS[L.verb];
+    const themeNP = c.args.find(a => a.kind === 'np');
+    const args = [{ kind: 'np', list: themeNP ? themeNP.list : L.theme }];
+    const overridden = new Set();
+    for (const a of c.args.filter(a => a.kind === 'pp')) {
+      const fits = Object.entries(F.roles).filter(([, r]) => (a.canon.includes('*') || r.preps.some(p => a.canon.includes(p))) && a.val.every(v => r.types.some(t => typeOk(t, v))));
+      if (!fits.length && !themeNP && a.val.every(v => F.theme.some(t => typeOk(t, v)))) { args[0] = { kind: 'np', list: a.val }; continue; }
+      args.push(a);
+      for (const [k] of fits) overridden.add(k);
+    }
+    for (const [k, v] of Object.entries(L.roles)) if (!overridden.has(k)) args.push({ kind: 'pp', prep: F.roles[k].preps[0], canon: [F.roles[k].preps[0]], val: v });
+    return { kind: 'cmd', verb: L.verb, args };
+  }
+
+  const fanout = c => (VERBS[c.verb].distributive && c.theme.length > 1) ? c.theme.map(t => ({ ...c, theme: [t] })) : [c];
+
+  function understand(text, session, opts = {}) {
+    const { toks, notes, unknown } = tokenize(text, session);
+    const diag = { notes, unknown, coverage: null, parses: 0, repairs: [] };
+    if (!toks.length) return { status: 'reject', reasons: ['nothing to parse'], diag };
+    const isQ = toks[0].senses.some(s => s.cat === 'QWORD'), isUnk = toks[0].senses.every(s => s.cat === 'UNK');
+    const parse = makeParser(toks);
+    const strictFull = isUnk ? [] : parse('Program', 0).filter(r => r.end === toks.length).map(r => ({ ...r, repairs: [] }));
+    diag.parses = strictFull.length;
+    let result = strictFull.length ? semantic(strictFull, toks, session, diag, opts) : null;
+    if ((!result || result.status === 'reject') && opts.repair?.budget) {
+      // error-correcting pass: candidate derivations by ascending repair cost; the first tier that survives binding wins
+      const P2 = makeParser(toks, { ...opts.repair, names: session.names }); const C2 = P2.chart;
+      const all = P2('Program', 0).flatMap(r => { let c = r.cost; const extra = []; for (let k = r.end; k < toks.length; k++) { c += C2.skipCost(k); extra.push({ op: 'skip', at: k, word: toks[k].word }); } return c <= opts.repair.budget && c > 0 ? [{ ...r, cost: c, repairs: [...r.repairs, ...extra] }] : []; });
+      for (const cost of [...new Set(all.map(r => r.cost))].sort((a, b) => a - b)) {
+        const d2 = { ...diag, repairs: [], repairCost: cost };
+        const r2 = semantic(all.filter(r => r.cost === cost), toks, session, d2, opts);
+        if (r2.status !== 'reject') { Object.assign(diag, d2); return r2; }
+      }
+    }
+    if (result) return result;
+    if (isQ) return { status: 'outofscope', reasons: ['an open question — I read closed ones (what is …, which … are …), the rest needs the tier above'], diag };
+    if (isUnk) return { status: 'reject', reasons: [`"${toks[0].word}" is not a verb I know`], diag };
+    return semantic([], toks, session, diag, opts);   // no parse at all: chart diagnostics
+  }
+  function semantic(full, toks, session, diag, opts) {
+    const repairsOf = full.map(r => r.repairs); full = full.map(r => r.node);
+    if (!full.length) {
+      const parse = makeParser(toks); const C = parse.chart;
+      diag.coverage = islands(toks, parse);
+      const stuck = diag.coverage.filter(s => !s.as).map(s => `"${s.text}"`);
+      const got = diag.coverage.filter(s => s.as).map(s => `"${s.text}"`);
+      const at = C.furthest;   // the chart died here: this token could not be scanned
+      const exp = [...new Set(C.expected().map(expectName).filter(Boolean))].sort();
+      diag.expected = exp; diag.stoppedAt = at;
+      const where = at < toks.length ? `at "${toks[at].word}"` : 'at the end';
+      const reasons = [];
+      if (stuck.length) reasons.push(`understood ${got.join(', ') || 'nothing'}; could not place ${stuck.join(', ')}`);
+      else if (diag.coverage[0]?.as === 'Cmd' && diag.coverage.length > 1) reasons.push(`understood "${diag.coverage[0].text}"; "${diag.coverage.slice(1).map(r => r.text).join(' ')}" is left over`);
+      // the grammar accepted the whole input but the type actions killed every reading: name the smallest span that died
+      const dead = at === toks.length ? smallestDeadSpan(toks, C) : null;
+      if (dead) reasons.push(`"${dead.text}" fits the grammar but not the types — ${dead.why}`);
+      else reasons.push(`stopped ${where}${at < toks.length && !toks[at].senses.some(s => s.cat !== 'UNK') ? ' (unknown word)' : ''}; expected ${exp.length ? exp.join(', ') : 'nothing more'}`);
+      return { status: 'reject', reasons, diag };
+    }
+
+    const readings = []; const perParse = []; const readingParse = [];
+    for (const [pi, prog] of full.entries()) {
+      let seqAlts = [[]]; let dead = false; const problems = new Set();
+      for (const c of prog) {
+        const cmd = c.kind === 'again' ? ellipsis(c, session, problems) : c;
+        if (!cmd) { dead = true; break; }
+        const { alts, problems: p } = bind(cmd);
+        p.forEach(x => problems.add(x));
+        if (!alts.length) { dead = true; break; }
+        seqAlts = seqAlts.flatMap(s => alts.map(a => [...s, a]));
+      }
+      perParse.push(problems);
+      if (!dead) for (const s of seqAlts) { readings.push(s); readingParse.push(pi); }
+    }
+    const problems = perParse.sort((a, b) => a.size - b.size)[0] ?? new Set();
+    const seen = new Map();
+    for (const [ri, r] of readings.entries()) { const k = JSON.stringify(r); if (!seen.has(k)) seen.set(k, { r, pi: readingParse[ri] }); }
+    const uniq = [...seen.values()].map(x => x.r); const uniqParse = [...seen.values()].map(x => x.pi);
+    if (!uniq.length) return { status: 'reject', reasons: [...problems], diag };
+
+    const resolved = uniq.map(seq => { let prev = null; return seq.map(b => { const r = resolve(b, session, prev); prev = r.cmd; return r; }); });
+    const alive = resolved.filter(seq => seq.every(r => !r.dead));
+    if (!alive.length) return { status: 'reject', reasons: ['a reference resolved to the wrong kind of thing for every reading'], diag };
+    const clean = alive.filter(seq => seq.every(r => !r.missing.length));
+    if (!clean.length) {
+      const missing = [...new Set(alive.flatMap(seq => seq.flatMap(r => r.missing)))];
+      return { status: 'clarify', reasons: missing, partial: alive[0].map(r => echo(r.cmd)), diag };
+    }
+    const echos = clean.map(seq => seq.map(r => echo(r.cmd)).join(` ${P.then}: `));
+    const distinct = [...new Set(echos)];
+    if (distinct.length > 1) return { status: 'ambiguous', reasons: ['more than one reading survives'], readings: distinct, diag };
+
+    const cmds = clean[0].map(r => r.cmd).flatMap(fanout);
+    const rawRepairs = repairsOf[uniqParse[resolved.indexOf(clean[0])]] ?? [];
+    diag.repairs = describeRepairs(toks, rawRepairs);
+    // a repair that discarded words it does not know is a guess, not an understanding: ask, showing what it would do
+    const droppedUnknown = rawRepairs.filter(r => r.op === 'skip' && toks[r.at].senses.every(x => x.cat === 'UNK')).map(r => `"${r.word}"`);
+    if (droppedUnknown.length) return { status: 'clarify', reasons: [`did not understand ${droppedUnknown.join(', ')} — ignore ${droppedUnknown.length > 1 ? 'them' : 'it'}?`], partial: cmds.map(echo), repaired: true, diag };
+    diag.notes.push(...clean[0].flatMap(r => r.notes), ...diag.repairs);
+    session.last = cmds.at(-1); session.history.push(...cmds);
+    return { status: 'ok', commands: cmds, echo: cmds.map(echo).join(` ${P.then}: `), repaired: diag.repairs.length > 0, diag };
+  }
+
+  // ───────────────────────────── predictive input ─────────────────────────────
+  // suggest(text): what can come next, filtered by grammar (chart expectations), frame (roles still open)
+  // and session (objects of the right type). preview(text): echo of what is understood so far, with a hole.
+  const surfacePreps = canon => locale.preps && Object.keys(locale.preps).length
+    ? Object.entries(locale.preps).filter(([, c]) => c.includes(canon)).map(([w]) => w).slice(0, 1) : [canon];
+  function suggest(text, session, limit = 8) {
+    const partial = /\S$/.test(text) ? text.split(/\s+/).at(-1).toLowerCase() : '';
+    const head = partial ? text.slice(0, text.length - partial.length) : text;
+    const { toks } = tokenize(head, session);
+    const out = [];
+    const push = (word, kind) => { if (!out.some(o => o.word === word) && (!partial || word.toLowerCase().startsWith(partial))) out.push({ word, kind }); };
+    if (!toks.length) { for (const v of ont.verbs) push(col(v, 'words')[0], 'verb'); for (const w of locale.AGAIN.split('|').slice(0, 1)) push(w, 'verb'); return out.slice(0, limit); }
+    const C = chart(R, toks, term, 'Program');
+    if (C.furthest < toks.length) return [];                             // already broken; nothing sensible follows
+    const exp = new Set(C.expected());
+    const verbTok = [...toks].reverse().find(t => t.senses.some(s => s.cat === 'VERB'));
+    const F = verbTok ? VERBS[verbTok.senses.find(s => s.cat === 'VERB').verb] : null;
+    const F0 = F ?? (toks.some(t => t.senses.some(s => s.cat === 'AGAIN')) && session.last ? VERBS[session.last.verb] : null);
+    // roles already used in this clause (approximate: by preposition canon since the verb)
+    const since = verbTok ? toks.lastIndexOf(verbTok) : 0;
+    const usedCanon = toks.slice(since).flatMap(t => t.senses.filter(s => s.cat === 'PREP').flatMap(s => s.canon));
+    const open = F0 ? Object.entries(F0.roles).filter(([, r]) => !r.preps.some(p => usedCanon.includes(p))) : [];
+    const lastTok = toks.at(-1);
+    const inList = lastTok?.senses.some(s => s.cat === 'CONJ' || s.cat === 'COMMA');
+    const lastPrep = inList ? [...toks.slice(since)].reverse().find(t => t.senses.some(s => s.cat === 'PREP'))?.senses.find(s => s.cat === 'PREP') : lastTok?.senses.find(s => s.cat === 'PREP');
+    const objectsOf = types => session.objects.filter(o => types.some(t => t === '*' || o.type === t));
+    const wordsOf = t => { const n = NOUNS[t]; if (!n) return []; return [...Object.keys(col(n, 'words') ?? {}).map(v => valueName(t, v)), ...(col(n, 'generic') ?? []).slice(0, 1)]; };
+    const nameOf = o => o.name ?? valueName(o.type, o.value);
+    if (lastPrep && F0) {                                                  // after a preposition: things the open roles accept
+      const roles = Object.entries(F0.roles).filter(([, r]) => r.preps.some(p => lastPrep.canon.includes(p)));
+      for (const [, r] of roles) {
+        for (const o of objectsOf(r.types)) push(nameOf(o), 'object');
+        for (const t of r.types) { if (t.startsWith('quantity')) { const u = ont.units.find(u => u.dim === t.split(':')[1]); push(`200 ${u ? col(u, 'words')[0] : ''}`.trim(), 'value'); } else for (const w of wordsOf(t)) push(w, 'value'); }
+      }
+    } else if (F0 && (exp.has('NOUN') || exp.has('DET')) && (since === toks.length - 1 || (inList && !lastPrep))) {   // theme position (or continuing the theme list)
+      for (const t of F0.theme) { for (const o of objectsOf([t])) push(nameOf(o), 'object'); for (const w of wordsOf(t)) push(w, 'value'); }
+      if (F0.theme.includes('*')) for (const o of session.objects.filter(o => o.name)) push(o.name, 'object');
+    }
+    if (exp.has('PREP') && F0) for (const [k, r] of open) for (const p of surfacePreps(r.preps[0])) push(p, `role:${roleLabel(k)}`);
+    if (exp.has('TIME')) for (const w of Object.keys(locale.times).slice(0, 4)) push(w, 'time');
+    if (exp.has('COMP')) for (const w of Object.keys(locale.comps).slice(0, 2)) push(w, 'comparative');
+    if (exp.has('SUBJ') || exp.has('REL')) push(locale.SUBJ.split('|')[0], 'relative');
+    if (exp.has('CONJ')) push(locale.CONJ.split('|')[0], 'and');
+    if (exp.has('THEN')) push(locale.THEN.split('|')[0], 'then');
+    if (exp.has('EXCEPT')) push(locale.EXCEPT.split('|')[0], 'except');
+    if (exp.has('VERB')) for (const v of ont.verbs) push(col(v, 'words')[0], 'verb');
+    return out.slice(0, limit);
+  }
+  function preview(text, session) {
+    const { toks } = tokenize(text, session);
+    if (!toks.length) return null;
+    const C = chart(R, toks, term, 'Program');
+    const ends = C.spans('Cmd', 0).filter(j => j <= toks.length).sort((a, b) => b - a);
+    for (const j of ends) {                                                // longest prefix that is a whole command
+      for (const { v: c } of C.derive('Cmd', 0, j)) {
+        const cmd = c.kind === 'again' ? ellipsis(c, session, new Set()) : c; if (!cmd) continue;
+        const { alts } = bind(cmd); if (!alts.length) continue;
+        const r = resolve(alts[0], session, null); if (r.dead) continue;
+        let e = echo(r.cmd).replace(/\.$/, '');
+        const tail = toks.slice(j); const prep = tail.find(t => t.senses.some(s => s.cat === 'PREP'))?.senses.find(s => s.cat === 'PREP');
+        const F = VERBS[r.cmd.verb];
+        if (prep) { const k = Object.entries(F.roles).find(([, ro]) => ro.preps.some(p => prep.canon.includes(p)))?.[0]; e += `; ${k ? roleLabel(k) : prep.word} ${P.hole}`; }
+        else if (r.missing.length) e += `; ${P.hole}`;
+        return { echo: e + '.', complete: j === toks.length && !r.missing.length, missing: r.missing };
+      }
+    }
+    return null;
+  }
+  // assemble: a verb plus role→text groups (e.g. from a slot tagger) go through the same binder and resolver
+  // as parsed input, so a statistical tagger's guess still has to type-check before it becomes a call.
+  function assemble({ verb, theme, roles }, session) {
+    const F = VERBS[verb]; if (!F) return { status: 'reject', reasons: [`unknown verb ${verb}`] };
+    const np = text => { const { toks } = tokenize(text, session); if (!toks.length) return null; const C = chart(R, toks, term, 'NPList'); const vs = C.derive('NPList', 0, toks.length); return vs.length ? vs[0].v : null; };
+    const args = [];
+    if (theme) { const l = np(theme); if (!l) return { status: 'reject', reasons: [`cannot read object "${theme}"`] }; args.push({ kind: 'np', list: l }); }
+    for (const [k, text] of Object.entries(roles)) {
+      if (!F.roles[k]) return { status: 'reject', reasons: [`${verb} has no role ${k}`] };
+      const l = np(text); if (!l) return { status: 'reject', reasons: [`cannot read ${k} "${text}"`] };
+      args.push({ kind: 'pp', prep: F.roles[k].preps[0], canon: [F.roles[k].preps[0]], val: l });
+    }
+    const { alts, problems } = bind({ kind: 'cmd', verb, args });
+    if (!alts.length) return { status: 'reject', reasons: problems };
+    const r = resolve(alts[0], session, null);
+    if (r.dead) return { status: 'reject', reasons: ['type check failed'] };
+    if (r.missing.length) return { status: 'clarify', reasons: r.missing };
+    const cmds = fanout(r.cmd);
+    return { status: 'ok', commands: cmds, echo: cmds.map(echo).join(` ${P.then}: `) };
+  }
+  return { understand, suggest, preview, assemble, echo, describe, tokenize, LEX, VERBS, NOUNS, ont, locale };
+}
+
+// the clock a session is born with when the host gives none: day 20, so relative times
+// ("yesterday", "last week") have room to resolve in demos and tests
+const DEMO_NOW = 20 * 86400000;
+function makeSession(objects = [], now = DEMO_NOW) {
+  const names = Object.fromEntries(objects.filter(o => o.name).map(o => [o.name, o.type]));
+  return { objects, names, last: null, history: [], now };
+}
+
+// ── src/grammar/frames-from.js ──
+
+// @gcu/dispatch grammar — ontology from tool signatures (the adoptMcpTool bridge for the frame kind).
+// Input: an MCP-style tool list (name, description, inputSchema with JSON-schema properties).
+// Output: clause verb frames + noun types for enums, mergeable into a hand ontology.
+// The only thing not in a signature is which preposition introduces which argument; that's a
+// small role-name heuristic table, overridable per parameter with "x-preps".
+
+// preposition heuristic by role name (English canon). Locale banks translate from these.
+const PREP_BY_ROLE = [
+  [/^(domain|zone|region|area|in)$/, ['in', 'for']],
+  [/^(source|from|input|data)$/, ['from', 'using']],
+  [/^(target|into|output|destination)$/, ['into', 'to']],
+  [/^(format|as)$/, ['as', 'to']],
+  [/^(threshold|cap|cutoff|limit)$/, ['at', 'to', 'above']],
+  [/^(length|size|interval)$/, ['to', 'at', 'by']],
+  [/(radius|search|neighbou?rhood)$/, ['with', 'using']],
+  [/^(variable|for|of)$/, ['for', 'to', 'on']],
+  [/^(against|versus|vs)$/, ['with', 'to', 'against']],
+];
+const prepsFor = (name, schema) => schema['x-preps'] ?? (PREP_BY_ROLE.find(([re]) => re.test(name))?.[1] ?? ['with', 'using']);
+
+// map a JSON-schema property to a clause type; may mint a noun type for enums
+function typeOf(name, p, ont, units) {
+  const s = p.type === 'array' ? p.items : p;
+  if (s['x-type']) return [s['x-type']];                                   // refers to an existing noun type (variogram, blockmodel, …)
+  if (s.enum && s.enum.every(v => ont.nouns.some(n => n.type === v))) return s.enum;   // enum of existing noun types = type union
+  if (s.enum) {                                                            // enum → noun type named after the parameter, values = enum
+    const type = s['x-noun'] ?? name;
+    if (!ont.nouns.some(n => n.type === type)) ont.nouns.push({ type, words: Object.fromEntries(s.enum.map(v => [v, [String(v).toLowerCase()]])), '$from': 'enum' });
+    return [type];
+  }
+  if (s.type === 'number' || s.type === 'integer') {
+    const u = units.find(u => u.unit === s['x-unit']);
+    const q = u ? `quantity:${u.dim}` : 'quantity:bare';
+    const noun = ont.qmods?.find(m => m.head === name && (!u || m.dims.includes(u.dim)));   // "a 200 m search" is also a search
+    return noun ? [name, q] : [q];
+  }
+  if (s.type === 'string') return ['*'];
+  return ['*'];
+}
+
+function framesFrom(tools, base) {
+  const ont = structuredClone(base);
+  const generated = [];
+  for (const t of tools) {
+    const props = t.inputSchema?.properties ?? {};
+    const required = t.inputSchema?.required ?? [];
+    const words = t['x-words'] ?? [t.name.split('_')[0]];
+    const themeName = Object.keys(props).find(k => props[k]['x-theme']) ?? required[0] ?? Object.keys(props)[0];
+    const frame = { name: t.name.split('_')[0], label: cap(t.name.split('_')[0]), words, theme: [], required: [], roles: {}, '$from': t.name };
+    for (const [k, p] of Object.entries(props)) {
+      const types = typeOf(k, p, ont, ont.units);
+      if (k === themeName) { frame.theme = types; if (required.includes(k)) frame.required.push('theme'); if (p.type === 'array' && p['x-distributive']) frame.distributive = true; continue; }
+      frame.roles[k] = { preps: prepsFor(k, p), types };
+      if (required.includes(k)) frame.required.push(k);
+    }
+    if (t['x-creates']) frame.creates = true;
+    if (t['x-min-theme']) frame.minTheme = t['x-min-theme'];
+    if (t['x-sanity']) frame.sanity = t['x-sanity'];
+    generated.push(frame);
+  }
+  // generated frames replace hand frames of the same verb, keeping hand locale columns (words_pt …); hand-only verbs are dropped (no tool)
+  ont.verbs = generated.map(g => { const h = base.verbs.find(v => v.name === g.name); const loc = Object.fromEntries(Object.entries(h ?? {}).filter(([k]) => /_[a-z]{2}$/.test(k))); return { ...loc, ...g }; });
+  return ont;
+}
+
+// ── src/grammar/locales/pt.js ──
+
+// @gcu/dispatch grammar — the pt-BR locale bank. Same shape as en.js; `preps` maps each surface
+// preposition to the canonical English set it can mean (de = of/from), and the types downstream
+// resolve the polysemy. `headFirst` flips the compound order (variograma esférico).
+const PORTUGUESE = {
+  code: 'pt', headFirst: true,
+  DET: 'o|a|os|as|um|uma|uns|umas|este|esta|esse|essa|meu|minha|nosso|nossa',
+  REF: 'último|última|ultimo|ultima|últimos|últimas|anterior|atual|primeiro|primeira|novo|nova',
+  QUANT: 'todos|todas|todo|toda|cada', EXCEPT: 'exceto|menos|excluindo|tirando|fora', CONJ: 'e|ou|mais', COMMA: ',',
+  PREP: 'com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|até|como|acima de|abaixo de|sem|contra|dentro de|sobre',
+  THEN: 'depois|então|em seguida|aí', BUT: 'mas|porém|só que', PRON: 'isso|isto|ele|ela|eles|elas',
+  AGAIN: 'de novo|novamente|repete|repetir|refaz|refazer|mesmo|mesma|igual|outra vez',
+  QWORD: 'por que|porque|como|qual|quais|quando|quem|é|são|será|pode|poderia|deveria|dá',
+  WH: 'qual|quais|que', COP: 'é|são|sao|era|foi|eram|foram', WHCOP: 'qual é|qual e|quais são|quais sao|o que é|o que e|quanto é|quanto e|quanto dá|quanto da|quanto são|quanto sao',
+  FILLER: 'por favor|agora|só|me|favor|pra mim|então|ei|oi|olá|valeu|obrigado|obrigada|beleza|aí|tá|dá pra|dá para|você pode|pode|consegue|queria que você|quero que você|vamos|bora',
+  preps: {   // surface → canonical set; polysemy is resolved by types downstream
+    com: ['with'], usando: ['using'], por: ['by'], em: ['in', 'on'], no: ['in', 'on'], na: ['in', 'on'], nos: ['in', 'on'], nas: ['in', 'on'],
+    para: ['for', 'to', 'into'], pra: ['for', 'to', 'into'], pro: ['for', 'to', 'into'], de: ['of', 'from'], do: ['of', 'from'], da: ['of', 'from'], dos: ['of', 'from'], das: ['of', 'from'],
+    a: ['to', 'at'], ao: ['to', 'at'], 'à': ['to', 'at'], 'até': ['to'], como: ['as'], 'acima de': ['above', 'over'], 'abaixo de': ['below', 'under'],
+    sem: ['without'], contra: ['against'], 'dentro de': ['into'], sobre: ['on'],
+  },
+  indefinite: ['um', 'uma', 'uns', 'umas'], newRef: ['novo', 'nova'], firstRef: ['primeiro', 'primeira'],
+  phr: { new: 'novo', last: 'último', every: 'todo', except: 'exceto', fromRun: 'da rodada', above: 'acima de', below: 'abaixo de', then: 'Depois', assuming: 'assumindo', of: 'de', hole: '___', than: 'que' },
+  stem: w => { let x = w.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (x.length > 5 && /(ando|endo|indo|amos|emos|imos|aram|eram|iram)$/.test(x)) return x.slice(0, -4);
+    if (x.length > 3 && /s$/.test(x)) x = x.slice(0, -1);
+    if (x.length > 4 && /(ou|eu|iu|ei|ar|er|ir|am|em)$/.test(x)) x = x.slice(0, -2); else if (x.length > 3 && /[aeo]$/.test(x)) x = x.slice(0, -1); return x; },
+  gender: w => ({ variograma: 'm', semivariograma: 'm', modelo: 'm', dia: 'm', mapa: 'm' }[w] ?? (/a$/.test(w) ? 'f' : 'm')),
+  agree: { m: { novo: 'novo', 'último': 'último', todo: 'todo' }, f: { novo: 'nova', 'último': 'última', todo: 'toda' } }, plural: w => /s$/.test(w),
+  REL: 'que', SUBJ: 'eu|a gente|nós|você|voce|vocês', TIME: 'hoje|ontem|hoje de manhã|hoje de manha|essa semana|esta semana|semana passada|esse mês|este mês|mês passado|mes passado|antes',
+  times: { hoje: [0, 1], ontem: [1, 2], 'hoje de manhã': [0, 1], 'hoje de manha': [0, 1], 'essa semana': [0, 7], 'esta semana': [0, 7], 'semana passada': [7, 14], 'esse mês': [0, 30], 'este mês': [0, 30], 'mês passado': [30, 60], 'mes passado': [30, 60], antes: [0, 3650] },
+  COMP: 'maior|menor|mais larga|mais larg|mais estreita|mais longa|mais curta',
+  comps: { maior: ['+', 0], menor: ['-', 0], 'mais larga': ['+', 0], 'mais larg': ['+', 0], 'mais estreita': ['-', 0], 'mais longa': ['+', 0], 'mais curta': ['-', 0] },
+};
+
 // ── src/main.js ──
 
 // @gcu/dispatch — module manifest / curated export surface.
 // One utterance in, one routed, explainable tool call out — session-trained
 // (the model is younger than your coffee), zero-dep, browser-pure, Sealed-
 // compatible. See SPEC.md; provenance: the gcu-dispatch incubator.
+// the grammar rung (clause): a controlled-command parser — case-grammar verb frames over an Earley
+// chart with costed repairs; ontology as data, locale banks for en and pt-BR. SPEC.md "The grammar rung".
 
 export {
   deriveVocab,
@@ -862,9 +1770,18 @@ export {
   alignCorpus,
   trainModels,
   TAGS,
+  tagSetOf,
   createDispatcher,
   trainSession,
   tokenize,
   normText,
   mulberry32,
+  createEngine,
+  makeSession,
+  DEMO_NOW,
+  buildGrammar,
+  chart,
+  framesFrom,
+  ENGLISH,
+  PORTUGUESE,
 };

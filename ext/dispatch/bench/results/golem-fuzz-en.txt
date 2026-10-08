@@ -1,0 +1,49 @@
+golem fuzz — n=3000 seed=11 locale=en
+
+GENERATED (grammatical, meaning known):
+  ok           3000  100.0%
+  by form: bare 539/539  verb 1842/1842  which 76/76  whcop 543/543
+
+MUTATED (one word dropped/swapped/junked/duplicated on 3000 good sentences):
+  refused        2451  81.7%
+  accepted, same 496  16.5%   (robust)
+  accepted, diff, flagged 15  0.5%   (meaning changed, parser said so)
+  accepted, diff, SILENT  38  1.3%   (meaning changed, no warning)
+    swap  0/750 false accepts
+    junk  0/733 false accepts
+    dup   0/755 false accepts
+    drop  38/762 false accepts
+
+MUTANT FALSE ACCEPTS (38, showing 8):
+  › please id a magnetite
+    ⇒ please a magnetite
+    want: Identify magnetite.
+    got:  Define magnetite.
+  › load sample table
+    ⇒ load table
+    want: Open assays.csv.
+    got:  Open table.
+  › please convert 200 square km to ppm
+    ⇒ please convert 200 km to ppm
+    want: Convert 200 km2; unit ppm.
+    got:  Convert 200 km; unit ppm.
+  › open sample table
+    ⇒ open table
+    want: Open assays.csv.
+    got:  Open table.
+  › which nation is landlocked by the population density
+    ⇒ which nation is landlocked by the density
+    want: List landlocked country; by population density.
+    got:  List landlocked country; by density.
+  › 2 per km2 to gpt
+    ⇒ 2 km2 to gpt
+    want: Convert 2 people/km2; unit g/t.
+    got:  Convert 2 km2; unit g/t.
+  › what's hardness for a mongolia in square miles
+    ⇒ what's hardness for a mongolia in miles
+    want: Look up hardness; of mongolia; unit sq mi.
+    got:  Look up hardness; of mongolia; unit mi.
+  › identify a quartz
+    ⇒ a quartz
+    want: Identify quartz.
+    got:  Define quartz.

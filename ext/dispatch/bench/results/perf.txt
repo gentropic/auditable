@@ -1,0 +1,9 @@
+engine build: 3.33 ms
+corpus (44)      0.446 ms/sentence
+long 45-token    3.429 ms/sentence
+long: ok, 1 syntactic parses
+4 coordinated values: 0.73 ms, 1 parses, ok
+8 coordinated values: 1.56 ms, 1 parses, ok
+12 coordinated values: 7.34 ms, 1 parses, ok
+16 coordinated values: 8.77 ms, 1 parses, ok
+engine source: 50.1 KB; ontology 16.5 KB
