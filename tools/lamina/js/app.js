@@ -1225,7 +1225,7 @@ async function saveLens() {
   closeMenu();
   const text = JSON.stringify(lens, null, 2);
   const fname = ((current.label || 'view').replace(/\.[^.]*$/, '')) + '.lamina';
-  if (window.showSaveFilePicker && !shell.present) {                 // the WebView defines the picker but aborts it — the shell takes the fallback door
+  if (window.showSaveFilePicker && !shell.present && !hostDoor()) {   // the WebView defines the picker but aborts it — the shell/host take the fallback door
     try {
       const h = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'lamina lens', accept: { 'application/json': ['.lamina', '.lam'] } }] });
       const w = await h.createWritable(); await w.write(text); await w.close();
@@ -1401,8 +1401,15 @@ async function exportToString(opts = {}) {
   await runExport({ ...opts, sink: { write: (t) => parts.push(t), close: () => {} } });
   return parts.join('');
 }
+// A HOST other than the lead-acid shell (a VS Code webview hosting lamina) sets
+// `window.__laminaHost = { deliver(bytes, name, mime), openInMicro?() }` before
+// anything is exported; exports go through it instead of an <a download> that
+// a webview silently drops. The shell door stays first.
+const hostDoor = () => (window.__laminaHost && typeof window.__laminaHost.deliver === 'function') ? window.__laminaHost : null;
 function downloadText(text, name) {                            // fallback when FSAA is absent (Firefox/Safari) — and the shell's door
-  if (shell.present) return deliverBytes(new TextEncoder().encode(text), name, /\.tsv$/i.test(name) ? 'text/tab-separated-values' : /\.lam(ina)?$/i.test(name) ? 'application/json' : 'text/csv');
+  const mime = /\.tsv$/i.test(name) ? 'text/tab-separated-values' : /\.lam(ina)?$/i.test(name) ? 'application/json' : 'text/csv';
+  if (shell.present) return deliverBytes(new TextEncoder().encode(text), name, mime);
+  if (hostDoor()) return hostDoor().deliver(new TextEncoder().encode(text), name, mime);
   const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -1487,7 +1494,7 @@ async function doExport() {
   const fname = (c.label || 'export').replace(/\.[^.]*$/, '') + ext;
   const signal = { cancelled: false }; _exSignal = signal;
   let sink;
-  if (window.showSaveFilePicker && !shell.present) {                 // the WebView defines the picker but aborts it — the shell takes the buffered door
+  if (window.showSaveFilePicker && !shell.present && !hostDoor()) {   // the WebView defines the picker but aborts it — the shell/host take the buffered door
     let handle;
     try { handle = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'Delimited text', accept: { 'text/csv': [ext] } }] }); }
     catch { _exSignal = null; return; }                       // user cancelled the picker
@@ -1497,6 +1504,10 @@ async function doExport() {
     const mime = ext === '.tsv' ? 'text/tab-separated-values' : 'text/csv';
     const w = shell.publishStream(fname, { collection: 'Downloads', mime });
     sink = { write: (t) => w.write(t), close: async () => { await w.close(); await publishedNote(await w.result, mime); } };
+  } else if (hostDoor()) {                                     // a hosting webview: buffered (size-capped), the host picks where it lands
+    const parts = []; let total = 0;
+    const mime = ext === '.tsv' ? 'text/tab-separated-values' : 'text/csv';
+    sink = { write: (t) => { total += t.length; if (total > 256 * 1024 * 1024) throw new Error('too large for the host door — export from the browser for a streaming write'); parts.push(t); }, close: () => hostDoor().deliver(new TextEncoder().encode(parts.join('')), fname, mime) };
   } else {                                                     // buffered download (size-capped)
     const parts = []; let total = 0;
     sink = { write: (t) => { total += t.length; if (total > 256 * 1024 * 1024) throw new Error('too large for the download fallback — use a Chromium browser for streaming export'); parts.push(t); }, close: () => downloadText(parts.join(''), fname) };
@@ -2265,6 +2276,7 @@ $('#mFile').onclick = () => {
     items.push({ label: 'Clear recents', action: clearRecents });
   }
   items.push({ sep: true }, { label: (_remember ? '✓ ' : '') + 'Remember recent files', action: () => setRemember(!_remember) });
+  if (hostDoor() && typeof hostDoor().openInMicro === 'function' && current) items.push({ sep: true }, { label: 'Open in micro 3D viewer', action: () => hostDoor().openInMicro() });
   menuAt($('#mFile'), items);
 };
 // Data = the file & its view; Tools = the instruments (analyses over it). Split so
@@ -3305,6 +3317,7 @@ function saveCanvasPng(canvas, filename) {
   canvas.toBlob(async (blob) => {
     if (!blob) return;
     if (shell.present) return deliverBytes(new Uint8Array(await blob.arrayBuffer()), filename, 'image/png');
+    if (hostDoor()) return hostDoor().deliver(new Uint8Array(await blob.arrayBuffer()), filename, 'image/png');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -3778,7 +3791,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { $('#help').classList.remove('show'); closeCalcEditor(); closeCalcManager(); closeExportDialog(); }
 });
 
-window._lamina = { shell, deliverBytes, doExport, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
@@ -3811,6 +3824,26 @@ refreshRecents();   // load the recents list (empty-state + File menu) on boot
 // which case the picker is declined silently and the user clicks File → Open.
 if (new URLSearchParams(location.search).has('open')) {
   try { pickFile(); } catch { /* no activation on launch */ }
+}
+
+// ── automation (a hosting webview's chat/agent bridge, the smokes) ──────────
+// status(): the open file as a small record. columnStats(name): the same scan
+// the Statistics popup runs, over the FILTERED rows when a filter is on.
+function laminaStatus() {
+  const c = current; const vs = window._laminaVS;
+  if (!c) return { open: false };
+  return {
+    open: true, name: c.label, bytes: c.totalBytes, rows: vs ? vs.rowCount() : null, totalRows: c.baseVs ? c.baseVs.rowCount() : null,
+    columns: (c.schema || []).map((s, i) => ({ i, name: c.baseVs ? c.baseVs.header(i).label : s.name, type: s.type })),
+    filter: $('#filter').value || '', sort: c.sort || null, scan: lastScan,
+  };
+}
+async function laminaColumnStats(name, { excludeZero = false, excludeNeg = false } = {}) {
+  const c = current; if (!c) throw new Error('no file open');
+  const uc = typeof name === 'number' ? name : (c.schema || []).findIndex((s, i) => (c.baseVs.header(i).label === name) || s.name === name);
+  if (uc < 0) throw new Error(`no column “${name}”`);
+  const numeric = (c.schema[uc] && c.schema[uc].type) === 'number';
+  return scanColumnStats(c.source, { col: uc, dataStart: c.dataStart, numeric, decimal: c.d.decimal, rows: c.filterResult ? c.filterResult.nums : null, excludeZero, excludeNeg });
 }
 
 // ── inside the lead-acid shell (POSTURE A): "open with lamina" ───────────────
