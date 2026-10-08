@@ -535,6 +535,15 @@ export function createPickPipeline(gl) {
       if (t) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u.rule, 7); }
     };
     ensure(viewportW, viewportH);
+    // the FBO's colour attachment is ALSO the id capture the resolve pass
+    // samples (captureViewport hands out colorTex itself), and that pass
+    // leaves it bound on unit 0 — exactly where every sampler this program
+    // never sets defaults to. Render into it while it is bound on a sampled
+    // unit and WebGL drops the draw as a feedback loop (INVALID_OPERATION):
+    // every pick after a re-shade is a miss until something else rebinds unit
+    // 0. Unbind the units these programs touch before drawing; a pick must
+    // not depend on the ambient texture state.
+    for (const u of [0, 2, 4, 5, 7]) { gl.activeTexture(gl.TEXTURE0 + u); gl.bindTexture(gl.TEXTURE_2D, null); }
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.viewport(0, 0, w, h);
     gl.enable(gl.SCISSOR_TEST);
