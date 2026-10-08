@@ -1,6 +1,6 @@
 # @gcu/vfs
 
-Virtual filesystem abstraction with pluggable backends. One `VFS` class, many backends: in-memory, File System Access API, OPFS, IndexedDB, HTML-comment embedded (for single-file notebooks), fetch, REST, and overlay. Glob matching, event emitter, permission checks.
+Virtual filesystem abstraction with pluggable backends. One `VFS` class, many backends: in-memory, File System Access API, OPFS, IndexedDB, HTML-comment embedded (for single-file notebooks), fetch, REST, overlay, and a real directory under node (`@gcu/vfs/node`, atomic writes). Glob matching, event emitter, permission checks.
 
 Part of [Auditable](https://github.com/gentropic/auditable).
 
@@ -22,7 +22,7 @@ await vfs.writeFile('/hello.txt', new TextEncoder().encode('hi'));
 const buf = await vfs.readFile('/hello.txt');
 ```
 
-Sub-path backend imports for finer control: `@gcu/vfs/memory`, `@gcu/vfs/fsaa`, `@gcu/vfs/opfs`, `@gcu/vfs/idb`, `@gcu/vfs/overlay`, `@gcu/vfs/fetch`, `@gcu/vfs/rest`, `@gcu/vfs/comment`.
+Sub-path backend imports for finer control: `@gcu/vfs/memory`, `@gcu/vfs/fsaa`, `@gcu/vfs/opfs`, `@gcu/vfs/idb`, `@gcu/vfs/overlay`, `@gcu/vfs/fetch`, `@gcu/vfs/rest`, `@gcu/vfs/comment`, `@gcu/vfs/node` (node only, not in the browser bundle).
 
 ## License
 

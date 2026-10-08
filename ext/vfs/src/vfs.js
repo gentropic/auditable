@@ -628,4 +628,4 @@ class VFS extends EventEmitter {
   }
 }
 
-export { VFS };
+export { VFS, BACKEND_TYPES };
