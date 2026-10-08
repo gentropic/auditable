@@ -2309,7 +2309,29 @@ async function solidOrientedMesh(meshL) {
   if (meshL._solidMesh) return meshL._solidMesh;
   const md = meshL.docs && meshL.docs.meshDoc;
   if (!md || md.header.soup) return null;                  // context tier only (soup keeps no CPU triangles)
-  const m = await meshVertexData(meshL);                   // one parse, shared with the vertex location
+  const m0 = await meshVertexData(meshL);                  // one parse, shared with the vertex location
+  // WELD first: a 3DFACE / STL / per-face OBJ soup repeats every vertex per face,
+  // so without it every edge is a "boundary" and a sheet closes as a pile of
+  // separate tents (the fixture topo: 144 boundary edges where the sheet has 24).
+  // New arrays — the shared parse stays as the file gave it.
+  const m = (() => {
+    const V0 = m0.vertices, T0 = m0.triangles;
+    const seen = new Map(), remap = new Int32Array(V0.length / 3), Vw = [];
+    let nv = 0;
+    for (let i = 0; i < V0.length / 3; i++) {
+      const k = `${V0[i * 3]},${V0[i * 3 + 1]},${V0[i * 3 + 2]}`;
+      let j = seen.get(k);
+      if (j == null) { j = nv++; seen.set(k, j); Vw.push(V0[i * 3], V0[i * 3 + 1], V0[i * 3 + 2]); }
+      remap[i] = j;
+    }
+    if (nv === V0.length / 3) return m0;                   // nothing to weld
+    const Tw = [];
+    for (let t = 0; t < T0.length; t += 3) {
+      const a = remap[T0[t]], b = remap[T0[t + 1]], c = remap[T0[t + 2]];
+      if (a !== b && b !== c && a !== c) Tw.push(a, b, c);   // welding can collapse a sliver
+    }
+    return { vertices: Float64Array.from(Vw), triangles: Uint32Array.from(Tw), welded: V0.length / 3 - nv };
+  })();
   // topology: edge → face count; a boundary edge has exactly one face
   const edges = new Map();
   const T = m.triangles;
@@ -2339,33 +2361,42 @@ async function solidOrientedMesh(meshL) {
   meshL._solidMesh = {
     vertices: m.vertices, triangles: tris,
     bbox: [...bb.min, ...bb.max],
-    closed, forced, boundaryEdges: boundary.length / 2, boundary,
+    closed, forced, boundaryEdges: boundary.length / 2, boundary, welded: m.welded || 0,
   };
   return meshL._solidMesh;
 }
-// a surface CLOSURE: the boundary edges fan to an apex far below ('below') or
-// above ('above') → a watertight volume = everything on that side of the
-// surface within its footprint. Signed-volume re-orient makes w ≥ 0.5 inside;
-// beyond the footprint is genuinely outside — unclassified, honestly.
+// a surface CLOSURE: a vertical PRISM — every boundary edge drops a wall straight
+// down ('below') or up ('above') to a flat cap far away, so the footprint does
+// NOT taper with depth (the earlier fan to a single apex shaved the outer blocks
+// deep under a surface: 1417 of 1536 "below" a topo that covered them all).
+// Each wall traverses its boundary edge REVERSED — the skirt is the "second
+// face" of that edge, so it must run backwards to stay consistently wound with
+// the sheet; the cap fans the base loop from its centroid, exact in signed area
+// for any loop and only ever wrong near the cap itself, far from every record.
+// Signed-volume re-orient makes w ≥ 0.5 inside; beyond the footprint is
+// genuinely outside — unclassified, honestly.
 function surfaceClosure(m, dir) {
   const [bx0, by0, bz0, bx1, by1, bz1] = m.bbox;
   const reach = Math.max(bx1 - bx0, by1 - by0, bz1 - bz0, 1) * 4;
-  const apexZ = dir === 'below' ? bz0 - reach : bz1 + reach;
+  const capZ = dir === 'below' ? bz0 - reach : bz1 + reach;
   const nv = m.vertices.length / 3;
-  const V = new Float64Array(m.vertices.length + 3);
+  const V = new Float64Array(m.vertices.length * 2 + 3);
   V.set(m.vertices);
-  V[nv * 3] = (bx0 + bx1) / 2; V[nv * 3 + 1] = (by0 + by1) / 2; V[nv * 3 + 2] = apexZ;
-  const fan = new Uint32Array(m.triangles.length + (m.boundary.length / 2) * 3);
-  fan.set(m.triangles);
+  for (let i = 0; i < nv; i++) { V[(nv + i) * 3] = m.vertices[i * 3]; V[(nv + i) * 3 + 1] = m.vertices[i * 3 + 1]; V[(nv + i) * 3 + 2] = capZ; }
+  const apex = nv * 2;
+  V[apex * 3] = (bx0 + bx1) / 2; V[apex * 3 + 1] = (by0 + by1) / 2; V[apex * 3 + 2] = capZ;
+  const nb = m.boundary.length / 2;
+  const T = new Uint32Array(m.triangles.length + nb * 9);
+  T.set(m.triangles);
   let at = m.triangles.length;
   for (let e = 0; e < m.boundary.length; e += 2) {
-    // REVERSED boundary direction — the skirt is the "second face" of each
-    // boundary edge, so it must traverse it backwards to stay consistently
-    // wound with the sheet (else the signed volume cancels and w goes mixed)
-    fan[at++] = m.boundary[e + 1]; fan[at++] = m.boundary[e]; fan[at++] = nv;
+    const a = m.boundary[e], b = m.boundary[e + 1], a2 = nv + a, b2 = nv + b;
+    T[at++] = b; T[at++] = a; T[at++] = a2;                // wall (b a a2) (b a2 b2) — the edge reversed
+    T[at++] = b; T[at++] = a2; T[at++] = b2;
+    T[at++] = b2; T[at++] = a2; T[at++] = apex;            // cap: the base edge reversed again, to the centroid
   }
-  const tris = orientBySignedVolume(V, fan);
-  const bbox = [bx0, by0, Math.min(bz0, apexZ), bx1, by1, Math.max(bz1, apexZ)];
+  const tris = orientBySignedVolume(V, T);
+  const bbox = [bx0, by0, Math.min(bz0, capZ), bx1, by1, Math.max(bz1, capZ)];
   return { vertices: V, triangles: tris, bbox, closed: true };
 }
 // the query VARIANT for a mode: a closed mesh is its own solid; an open

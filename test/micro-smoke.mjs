@@ -425,6 +425,33 @@ const openS = await p.evaluate(async () => {
 });
 chk(`peel on an OPEN surface: 'below' matches winding (open ${openS.topoOpen}; winding ${openS.w}, peel ${openS.pk})`, openS.topoOpen === true && openS.pk > 0 && openS.pk === openS.w);
 
+// an open surface as a per-face SOUP (every quad with its own 4 vertices, like a
+// 3DFACE / STL file), 2 m outside the model footprint, 105 m above its deepest slab:
+// the weld must find the sheet's 8 true boundary edges (not 32), and 'below' must
+// take EVERY block — the old single-apex closure tapered with depth and shaved the
+// outer column at the bottom (non-vacuous: 1584 vs ~1400 before the prism)
+await p.evaluate(() => {
+  const z = 705, x0 = 619998, x1 = 620112, y0 = 7764998, y1 = 7765112, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+  const v = [], f = [];
+  for (const [ax, bx] of [[x0, xm], [xm, x1]]) for (const [ay, by] of [[y0, ym], [ym, y1]]) {
+    const n = v.length;
+    v.push(`v ${ax} ${ay} ${z}`, `v ${bx} ${ay} ${z}`, `v ${bx} ${by} ${z}`, `v ${ax} ${by} ${z}`);
+    f.push(`f ${n + 1} ${n + 2} ${n + 3}`, `f ${n + 1} ${n + 3} ${n + 4}`);
+  }
+  return window._micro.openBlob(new Blob([v.concat(f).join('\n')]), 'soup.obj', 'add');
+});
+await p.waitForFunction(() => window._micro.layers().some((L) => L.name === 'soup.obj'), null, { timeout: 30000 });
+const soupS = await p.evaluate(async () => {
+  const m = window._micro;
+  const mesh = m.layers().find((L) => L.name === 'soup.obj'), model = m.layers().find((L) => L.name === 'zmodel.csv');
+  await m.flagBySolid(mesh, [model], { name: 'SOUP', label: 'Y', mode: 'below', method: 'winding' });
+  const col = model.paintCols.find((c) => c.name === 'SOUP');
+  let n = 0; for (let i = 0; i < col.codes.length; i++) if (col.codes[i]) n++;
+  return { below: n, records: col.codes.length, boundary: mesh._solidMesh && mesh._solidMesh.boundaryEdges, welded: mesh._solidMesh && mesh._solidMesh.welded, open: mesh._solidMesh && !mesh._solidMesh.closed };
+});
+chk(`a per-face soup surface WELDS to its true boundary (${soupS.boundary} edges, ${soupS.welded} vertices welded) and 'below' takes every block through the prism closure (${soupS.below} of ${soupS.records})`,
+  soupS.open === true && soupS.boundary === 8 && soupS.below === soupS.records && soupS.records === 1584);
+
 // ── 4b. mesh export: OBJ named object + LFM round-trip, exact world coords ──
 const mex = await p.evaluate(async () => {
   const m = window._micro;
