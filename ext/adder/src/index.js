@@ -6,7 +6,7 @@
 // ── high-level runtime API (tree-walker) ──
 // Most users start here. For faster execution, switch to '@gcu/adder/air' —
 // same API shape, transpiles to JS via @gcu/air.
-export { run, compile, evalExpr, isIncomplete, AdderRuntimeError } from './runner.js';
+export { run, compile, evalExpr, isIncomplete, AdderRuntimeError, registerModule, unregisterModule } from './runner.js';
 
 // ── language core (parse, evaluate) ──
 export { adderTokenize, adderParse } from './parse.js';

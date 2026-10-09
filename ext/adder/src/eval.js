@@ -60,10 +60,77 @@ class _BreakSignal { }
 class _ContinueSignal { }
 class _ReturnSignal { constructor(value) { this.value = value; } }
 
+// ── run options (sandbox) ──
+// Set per call by the runner (run / evalExpr / compile().run) and restored on
+// exit, the way the VFS is. `host: false` hides the `js` module; `remote:
+// false` turns off every path that would call fetch(); `budget` stops runaway
+// code at statement boundaries and offers a per-statement hook (the trace a
+// host like golem hangs its "line + changed names" table from).
+let _runOpts = { host: true, remote: true };
+export function _getRunOptions() { return _runOpts; }
+export function _setRunOptions(o) { const prev = _runOpts; _runOpts = o || { host: true, remote: true }; return prev; }
+
+// budget: { limit, deadline, onStep, count, spent } — one increment per statement
+// node, a wall-clock check every 256, and once exceeded it stays exceeded (code
+// that catches BudgetExceeded cannot resume: the next boundary raises again).
+let _budget = null;
+export function _setBudget(b) { const prev = _budget; _budget = b; return prev; }
+export function _makeBudget(spec) {
+  if (!spec) return null;
+  const steps = spec.steps != null ? Math.max(1, +spec.steps) : Infinity;
+  const ms = spec.ms != null ? Math.max(1, +spec.ms) : Infinity;
+  return { limit: steps, deadline: ms === Infinity ? Infinity : _now() + ms, ms, onStep: typeof spec.onStep === 'function' ? spec.onStep : null, count: 0, spent: null };
+}
+const _now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+const _STMT = new Set(['Expr', 'Assign', 'AugAssign', 'AnnAssign', 'If', 'For', 'While', 'With', 'FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Return', 'Pass', 'Break', 'Continue', 'Import', 'ImportFrom', 'Raise', 'Try', 'Assert', 'Delete', 'Global', 'Nonlocal']);
+// the read-only view of the current frame handed to onStep — one object, re-aimed
+// per statement (not a copy; the caller copies what it wants)
+const _view = {
+  scope: null,
+  has(name) { return this.scope.vars.has(name); },
+  get(name) { return this.scope.vars.get(name); },
+  names() { return [...this.scope.vars.keys()]; },
+  entries() { return [...this.scope.vars]; },
+};
+function _tick(node, scope) {
+  const b = _budget;
+  if (b.spent) throw new AdderError('BudgetExceeded', b.spent, node.line);
+  b.count++;
+  if (b.count > b.limit) { b.spent = `${b.limit} statements`; throw new AdderError('BudgetExceeded', b.spent, node.line); }
+  if (b.deadline !== Infinity && (b.count & 255) === 0 && _now() > b.deadline) { b.spent = `${b.ms} ms`; throw new AdderError('BudgetExceeded', b.spent, node.line); }
+  if (b.onStep) { _view.scope = scope; b.onStep({ line: node.line, kind: node.type, scope: _view }); }
+}
+
+// ── module registry (sandbox) ──
+// A host with no `window` (a worker, a Node test) makes a module importable
+// here; `_resolveModule` looks here FIRST, before the built-ins and before
+// window._auditableExtensions. Process-wide, like adderModules. Dotted names
+// walk into the registered object (`from natra.linalg import inv` → mod.linalg).
+const _registered = new Map();
+export function registerModule(name, mod) {
+  if (typeof name !== 'string' || !name) throw new TypeError('registerModule: name must be a non-empty string');
+  if (mod == null) throw new TypeError(`registerModule('${name}'): module must be an object`);
+  _registered.set(name, mod);
+  return mod;
+}
+export function unregisterModule(name) { return _registered.delete(name); }
+function _walkDotted(root, name) {
+  const dot = name.indexOf('.');
+  if (dot === -1) return null;
+  let mod = root(name.slice(0, dot));
+  if (!mod) return null;
+  for (const part of name.slice(dot + 1).split('.')) {
+    if (mod == null || (typeof mod !== 'object' && typeof mod !== 'function')) return null;
+    mod = mod[part];
+  }
+  return mod && (typeof mod === 'object' || typeof mod === 'function') ? mod : null;
+}
+
 // ── evaluator ──
 
 export async function adderEval(node, scope) {
   if (!node) return null;
+  if (_budget !== null && node.line != null && _STMT.has(node.type)) _tick(node, scope);
   switch (node.type) {
     case 'Module': return _evalModule(node, scope);
     case 'Expr': return adderEval(node.value, scope);
@@ -290,6 +357,7 @@ async function _evalModule(node, scope) {
   for (let i = 0; i < node.body.length; i++) {
     const stmt = node.body[i];
     if (i === node.body.length - 1 && stmt.type === 'Expr') {
+      if (_budget !== null) _tick(stmt, scope);
       lastExpr = await adderEval(stmt.value, scope);
     } else {
       await adderEval(stmt, scope);
@@ -1531,6 +1599,9 @@ async function _evalCompIter(node, scope, result, kind, genIdx) {
 // ── imports ──
 
 export function _resolveModule(name) {
+  if (_registered.has(name)) return _registered.get(name);
+  if (_registered.size) { const m = _walkDotted((r) => _registered.get(r), name); if (m) return m; }
+  if (name === 'js' && _runOpts.host === false) return null;   // host access off: `import js` is simply not found
   if (adderModules[name]) return adderModules[name];
   if (typeof window !== 'undefined') {
     if (window._auditableExtensions?.[name]) return window._auditableExtensions[name];
@@ -1626,7 +1697,7 @@ function _urlJoin(base, rel) {
 }
 
 export async function _loadHttpModule(name) {
-  if (typeof fetch !== 'function') return null;
+  if (typeof fetch !== 'function' || _runOpts.remote === false) return null;
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
 
@@ -1676,7 +1747,7 @@ export async function _loadDirectModule(path) {
 
   // Absolute or page-relative URL → fetch
   if (/^https?:\/\//.test(path) || path.startsWith('./') || path.startsWith('../') || path.startsWith('/')) {
-    if (typeof fetch === 'function') {
+    if (typeof fetch === 'function' && _runOpts.remote !== false) {
       try {
         const url = /^https?:\/\//.test(path)
           ? path
@@ -1706,11 +1777,24 @@ export async function _loadDirectModule(path) {
   return _instantiateModule(path, displayName, source, resolvedPath);
 }
 
+// when remote imports are off and the import could only have come from the
+// network (a URL path, or sys.path carrying URL bases), say so in the error
+function _remoteNote(nameOrPath) {
+  if (_runOpts.remote !== false) return '';
+  // a bare '.' / '..' on sys.path is a network base only where document.baseURI exists (the default
+  // sys.path starts with '.', and in Node that never meant the network)
+  const hasBase = typeof document !== 'undefined' && !!document.baseURI;
+  const urlish = (s) => typeof s === 'string' && (/^https?:\/\//.test(s) || s.startsWith('./') || s.startsWith('../') || (hasBase && (s === '.' || s === '..')));
+  if (urlish(nameOrPath)) return ' (remote imports are off)';
+  const sp = adderModules.sys && adderModules.sys.path;
+  return Array.isArray(sp) && sp.some(urlish) ? ' (remote imports are off)' : '';
+}
+
 async function _evalImport(node, scope) {
   for (const { module, alias, path } of node.names) {
     if (path) {
       const mod = await _loadDirectModule(path);
-      if (!mod) throw new AdderError('ModuleNotFoundError', `cannot load module from '${path}'`, node.line);
+      if (!mod) throw new AdderError('ModuleNotFoundError', `cannot load module from '${path}'${_remoteNote(path)}`, node.line);
       scope.set(alias, mod);
       continue;
     }
@@ -1727,7 +1811,7 @@ async function _evalImport(node, scope) {
     if (mod) { scope.set(alias || module, mod); continue; }
     mod = await _loadHttpModule(module);
     if (mod) { scope.set(alias || module, mod); continue; }
-    throw new AdderError('ModuleNotFoundError', `No module named '${module}'`, node.line);
+    throw new AdderError('ModuleNotFoundError', `No module named '${module}'${_remoteNote(module)}`, node.line);
   }
   return null;
 }
@@ -1745,7 +1829,7 @@ async function _evalImportFrom(node, scope) {
     if (!mod) mod = await _loadHttpModule(node.module);
     displayModule = node.module;
   }
-  if (!mod) throw new AdderError('ModuleNotFoundError', `No module named '${displayModule}'`, node.line);
+  if (!mod) throw new AdderError('ModuleNotFoundError', `No module named '${displayModule}'${_remoteNote(node.path || displayModule)}`, node.line);
   for (const { name, alias } of node.names) {
     if (name === '*') { for (const k of Object.keys(mod)) scope.set(k, mod[k]); }
     else {

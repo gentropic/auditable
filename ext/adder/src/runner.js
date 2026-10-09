@@ -3,7 +3,7 @@
 // (15-300x faster), at the cost of requiring @gcu/air as a peer dep.
 
 import { adderParse, _adderParseExpr } from './parse.js';
-import { adderEval, AdderScope } from './eval.js';
+import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule } from './eval.js';
 import { adderBuiltins, setAdderVFS, getAdderVFS } from './builtins.js';
 
 // Strip common leading whitespace. Python has no meaningful indentation at the
@@ -87,6 +87,16 @@ function _withVfs(opts, fn) {
   finally { setAdderVFS(prev); }
 }
 
+// the sandbox options (host / remote / budget) are module-level state for the
+// duration of ONE call, restored on exit like the VFS — so a notebook cell and
+// a worker host can share the interpreter without seeing each other's rules
+async function _withSandbox(opts, fn) {
+  const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false });
+  const prevBudget = _setBudget(_makeBudget(opts.budget));
+  try { return await fn(); }
+  finally { _setRunOptions(prevOpts); _setBudget(prevBudget); }
+}
+
 // Extract a plain object from an AdderScope, skipping names we injected as bindings.
 // scope.vars is a Map; iterate to preserve insertion order and skip injected names.
 function _scopeToObject(scope, bindings) {
@@ -113,6 +123,10 @@ function _scopeToObject(scope, bindings) {
  * @param {() => string | Promise<string | null>} [opts.stdin] - reads next line for input()
  * @param {(prompt?) => string | Promise<string>} [opts.input] - override for input()
  * @param {object} [opts.vfs] - @gcu/vfs-shaped VFS for open(), os, pathlib, pathlib.Path
+ * @param {boolean} [opts.host=true] - false removes the `js` module (no reach into globalThis)
+ * @param {boolean} [opts.remote=true] - false turns off every import path that would call fetch()
+ * @param {{steps?: number, ms?: number, onStep?: (ev: {line: number, kind: string, scope: object}) => void}} [opts.budget]
+ *   - stop with AdderError('BudgetExceeded') after `steps` statements or `ms` wall-clock; onStep sees every statement
  * @returns {Promise<Record<string, any>>} the module scope
  */
 export async function run(code, opts = {}) {
@@ -120,10 +134,10 @@ export async function run(code, opts = {}) {
   const scope = new AdderScope();
   const bindings = _makeBindings(opts);
   for (const [k, v] of Object.entries(bindings)) scope.set(k, v);
-  return await _withVfs(opts, async () => {
+  return await _withSandbox(opts, () => _withVfs(opts, async () => {
     await adderEval(ast, scope);
     return _scopeToObject(scope, bindings);
-  });
+  }));
 }
 
 /**
@@ -138,7 +152,7 @@ export async function evalExpr(code, opts = {}) {
   const scope = new AdderScope();
   const bindings = _makeBindings(opts);
   for (const [k, v] of Object.entries(bindings)) scope.set(k, v);
-  return await _withVfs(opts, async () => adderEval(ast, scope));
+  return await _withSandbox(opts, () => _withVfs(opts, async () => adderEval(ast, scope)));
 }
 
 /**
@@ -156,10 +170,10 @@ export function compile(code) {
       const scope = new AdderScope();
       const bindings = _makeBindings(opts);
       for (const [k, v] of Object.entries(bindings)) scope.set(k, v);
-      return await _withVfs(opts, async () => {
+      return await _withSandbox(opts, () => _withVfs(opts, async () => {
         await adderEval(ast, scope);
         return _scopeToObject(scope, bindings);
-      });
+      }));
     },
   };
 }
@@ -188,4 +202,4 @@ export function isIncomplete(code) {
   }
 }
 
-export { AdderRuntimeError };
+export { AdderRuntimeError, registerModule, unregisterModule };

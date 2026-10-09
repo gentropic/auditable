@@ -7,6 +7,7 @@ import { pythonParseNames, pythonFindUses, pythonExecute, setAdderVFS } from './
 import { tokenizePython, pythonCompletions } from './highlight.js';
 import { adderTag, mpy } from './tag.js';
 import { adderParse } from './parse.js';
+import { registerModule, unregisterModule } from './eval.js';
 import { lowerAdder } from './air-lower.js';
 
 const ADDER_VERSION = '0.3.0';
@@ -75,4 +76,7 @@ export const adder = {
   tokenizePython,
   pythonCompletions,
   setVFS: setAdderVFS,
+  // the sandbox registrar (spec_inbox/lang/adder-sandbox-spec.md §2.4): make a module
+  // importable without window._auditableExtensions — the same call a worker host makes
+  registerModule, unregisterModule,
 };

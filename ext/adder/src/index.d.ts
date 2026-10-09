@@ -22,9 +22,33 @@ export interface RunOpts {
   input?: (prompt?: unknown) => string | Promise<string>;
   /** VFS-shaped object exposed to `open()`, `os`, `pathlib`, `pathlib.Path`. */
   vfs?: VFSLike;
+  /** false removes the `js` module: no reach into globalThis from Python (default true). */
+  host?: boolean;
+  /** false turns off every import path that would call fetch(): sys.path URL bases, page-relative bases, `import "https://…" as x` (default true). VFS imports are untouched. */
+  remote?: boolean;
+  /** stop runaway code at statement boundaries; the error is AdderError('BudgetExceeded', …). Per call; once exceeded it stays exceeded. */
+  budget?: AdderBudget;
 }
 
 /** Execute adder source as a module. Returns an object mapping bound names to values. */
+export interface AdderStepEvent {
+  line: number;
+  /** the statement's AST node type ('Assign', 'While', …) */
+  kind: string;
+  /** a read-only view of the current frame's bindings — not a copy; copy what you keep */
+  scope: { has(name: string): boolean; get(name: string): unknown; names(): string[]; entries(): [string, unknown][] };
+}
+export interface AdderBudget {
+  /** statements before the run stops */
+  steps?: number;
+  /** wall-clock milliseconds (checked every 256 statements) */
+  ms?: number;
+  /** called at every statement boundary */
+  onStep?: (ev: AdderStepEvent) => void;
+}
+/** Make a module importable without `window` (looked up before the built-ins and before window._auditableExtensions; dotted names walk into it). Process-wide. */
+export function registerModule<T extends object>(name: string, mod: T): T;
+export function unregisterModule(name: string): boolean;
 export function run(code: string, opts?: RunOpts): Promise<Record<string, unknown>>;
 
 /** Evaluate a single adder expression and return its value. */
