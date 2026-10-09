@@ -20,32 +20,42 @@
 // bundle from window._importCache; in Node tests, fall back to a
 // dynamic relative import.
 
-let _scitra;
-if (typeof window !== 'undefined' && window._importCache) {
-  _scitra = window._importCache['@gcu/scitra']
-    || Object.values(window._importCache).find(m => m && m.stats && m.spatial && m.optimize);
-  if (!_scitra) {
-    throw new Error('@gcu/scitra not loaded — call load("@gcu/scitra") first');
-  }
-} else {
-  _scitra = await import('./index.js');
+//
+// NO TOP-LEVEL AWAIT (a classic-script worker can't have one): the library is
+// found synchronously in the notebook, attached by a host (`attachScitra`), or —
+// in Node — imported in the background; `scitraReady` resolves when it is there.
+
+const _module = {};
+const _NAMES = [
+  // submodules (scipy-shape namespaces)
+  'stats', 'spatial', 'optimize', 'special', 'random',
+  // top-level conveniences, mirroring scitra/index.js's flat re-exports
+  'KDTree', 'gaussian_kde', 'curve_fit', 'least_squares',
+];
+let _scitra = null;
+// fill the Python-facing module from the library (idempotent: the last attach wins)
+export function attachScitra(lib) {
+  if (!lib || !lib.stats || !lib.optimize) throw new TypeError('attachScitra: expected the @gcu/scitra module');
+  _scitra = lib;
+  for (const k of _NAMES) _module[k] = lib[k];
+  return _module;
 }
 
-const _module = {
-  // ── submodules (scipy-shape namespaces) ──
-  stats: _scitra.stats,
-  spatial: _scitra.spatial,
-  optimize: _scitra.optimize,
-  special: _scitra.special,
-  random: _scitra.random,
-
-  // ── top-level conveniences (rarely used directly, but mirror what
-  // scitra/index.js re-exports flat for ergonomic JS use) ──
-  KDTree: _scitra.KDTree,
-  gaussian_kde: _scitra.gaussian_kde,
-  curve_fit: _scitra.curve_fit,
-  least_squares: _scitra.least_squares,
-};
+let scitraReady;
+if (typeof window !== 'undefined' && window._importCache) {
+  const found = window._importCache['@gcu/scitra']
+    || Object.values(window._importCache).find(m => m && m.stats && m.spatial && m.optimize);
+  if (!found) {
+    throw new Error('@gcu/scitra not loaded — call load("@gcu/scitra") first');
+  }
+  attachScitra(found);
+  scitraReady = Promise.resolve(_module);
+} else {
+  // Node (tests, scripts): import beside this file. In a blob worker the relative
+  // import cannot resolve — that host calls attachScitra(lib) instead, and the
+  // failed background import is swallowed.
+  scitraReady = import('./index.js').then((m) => (_scitra ? _module : attachScitra(m)), () => _module);
+}
 
 // ── Registration ──
 // Auditable's manifest API is preferred; fall back to the legacy slot
@@ -65,4 +75,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { _module as scitraAdder };
+export { _module as scitraAdder, scitraReady };

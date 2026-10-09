@@ -14,6 +14,40 @@ let _activeOps = null;  // current cell's scope ops (set by hook)
 let _initPromise = null;
 let _natraFn = null;   // cached reference to natra() factory
 
+// ── host attach (no window, no relative import) ──
+// A host that is not the notebook — a Web Worker, a single-file app — hands the
+// bridge its natra library instead of letting it search window._importCache or
+// import('./index.js') (which a blob worker cannot resolve). Accepts the factory
+// (`natra`) or the module that exports it. Call before the first array op.
+export function attachNatra(lib) {
+  const fn = typeof lib === 'function' ? lib : lib && lib.natra;
+  if (typeof fn !== 'function') throw new TypeError('attachNatra: expected the natra factory or a module exporting `natra`');
+  if (_ctx || _initPromise) throw new Error('attachNatra: natra is already initialized — attach before the first array op');
+  _natraFn = fn;
+}
+
+// Arena scoping outside the notebook. The notebook scopes natra memory per CELL
+// through window._adderCellHooks; a host with no cells scopes per RUN:
+//   const s = await beginNatraScope();   … run(code, …) …   endNatraScope(s, keep);
+// `keep` are NdArray values to survive (promoted out of the arena), e.g. the
+// run's result values; everything else allocated in the run is freed. A fresh
+// worker per run makes this optional (the arena dies with the worker).
+export async function beginNatraScope() {
+  await _ensureCtx();
+  const { arena, ops } = _ctx._beginCellScope();
+  const prevOps = _activeOps;
+  _activeOps = ops;
+  return { arena, prevOps };
+}
+export function endNatraScope(token, keep = []) {
+  if (!token || !_ctx) return [];
+  const live = keep.filter((v) => _isNd(v) && v._arr._arena === token.arena);
+  const promoted = _ctx._endCellScope(token.arena, live.map((v) => v._arr));
+  live.forEach((v, i) => { v._arr = promoted[i]; });
+  _activeOps = token.prevOps;
+  return keep;
+}
+
 async function _ensureCtx() {
   if (_ctx) return _ctx;
   if (_initPromise) return _initPromise;

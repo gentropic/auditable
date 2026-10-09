@@ -26,7 +26,7 @@ globalThis.document = {
 globalThis.window = globalThis;
 globalThis.CSS = { escape: s => s };
 
-await import('../ext/scitra/adder.js');
+await (await import('../ext/scitra/adder.js')).scitraReady;   // the bridge imports scitra in the background (no top-level await)
 const { pythonExecute } = await import('../ext/adder/src/cell.js');
 
 async function runCell(code) {

@@ -31,6 +31,10 @@ function stripModuleSyntax(src) {
   src = src.replace(/^export let /gm, 'let ');
   src = src.replace(/^export class /gm, 'class ');
   src = src.replace(/^export async function /gm, 'async function ');
+  // generators (builtins.js `export function* pyIter`) — left in place they are a
+  // stray export inside the ES bundle and a syntax error in a classic-script concat
+  src = src.replace(/^export function\*\s*/gm, 'function* ');
+  src = src.replace(/^export async function\*\s*/gm, 'async function* ');
 
   // Strip export { ... } and export default lines
   src = src.replace(/^export\s*\{[^}]*\};?\s*$/gm, '');

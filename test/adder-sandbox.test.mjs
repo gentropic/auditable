@@ -116,3 +116,47 @@ test('the sandbox options are restored after the call', async () => {
   assert.equal(r2.s, 5000);
   assert.ok(AdderError);
 });
+
+// ── follow-ups from golem (spec §7) ──
+
+test('the single-file bundle carries run / evalExpr / compile with the sandbox options, no window', async () => {
+  const { adder } = await import('../ext/adder/index.js');
+  for (const k of ['run', 'evalExpr', 'compile', 'isIncomplete', 'registerModule', 'unregisterModule']) assert.equal(typeof adder[k], 'function', k);
+  const r = await adder.run('x = 6 * 7', { host: false, remote: false, budget: { steps: 100 } });
+  assert.equal(r.x, 42);
+  await rejectsWith(adder.run('import js', { host: false }), 'ModuleNotFoundError');
+  await rejectsWith(adder.run('while True: pass', { budget: { steps: 50 } }), 'BudgetExceeded');
+  adder.registerModule('bfake', { v: 1 });
+  try { assert.equal((await adder.run('import bfake\ny = bfake.v')).y, 1); } finally { adder.unregisterModule('bfake'); }
+  assert.equal(adder.isIncomplete('def f():'), true);
+});
+
+test('natra attaches from the host and scopes a run without cell hooks', async () => {
+  const natraLib = await import('../ext/natra/index.js');
+  const { natraAdder, attachNatra, beginNatraScope, endNatraScope } = await import('../ext/natra/adder.js');
+  attachNatra(natraLib);                                   // module form; the factory form is natraLib.natra
+  registerModule('numpy', natraAdder);
+  try {
+    const s = await beginNatraScope();
+    const r = await run('import numpy as np\na = np.arange(5)\nt = float(np.sum(a))', { host: false, remote: false });
+    assert.equal(r.t, 10);
+    const kept = endNatraScope(s, [r.a]);
+    assert.equal(kept[0], r.a);
+    assert.throws(() => attachNatra(natraLib), /already initialized/);
+  } finally { unregisterModule('numpy'); }
+});
+
+test('scitra attaches from the host; the bridge has no top-level await', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../ext/scitra/adder.js', import.meta.url), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.doesNotMatch(code, /^\s*(const|let|var)?[^\n]*=\s*await\b|^await\b/m, 'no top-level await');
+  const scitraLib = await import('../ext/scitra/index.js');
+  const { scitraAdder, attachScitra, scitraReady } = await import('../ext/scitra/adder.js');
+  await scitraReady;
+  attachScitra(scitraLib);
+  registerModule('scitra', scitraAdder);
+  try {
+    const r = await run('from scitra.special import erf\nv = erf(0)', { host: false, remote: false });
+    assert.equal(r.v, 0);
+  } finally { unregisterModule('scitra'); }
+});
