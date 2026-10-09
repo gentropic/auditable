@@ -51,6 +51,16 @@ const r = await page.evaluate(async () => {
   out.noHandler = await err('sendto', { kind: 'sms', to: '+55 11 99999', body: 'hi' });
   out.mailOk = await s.intent.send('sendto', { kind: 'mail', to: 'lab@example.com', subject: 'samples', body: 'on their way' });
   out.ledger = window.__bench.intents.map((i) => [i.name, i.fields]);
+  // voice: a scripted transcript arrives as partials + a result; 409 while open; tts lands in the ledger
+  const ev = [];
+  const st = await s.speech.listen({ lang: 'en-US', bias: ['chalcopyrite', 'pyrite'] });
+  for (const k of ['ready', 'partial', 'result', 'end']) st.on(k, (d) => ev.push([k, d]));
+  let busy = null; try { await s.speech.listen({ lang: 'en-US' }); } catch (e) { busy = e.status; }
+  await new Promise((res) => st.onClose(res));
+  let noPack = null; try { await s.speech.listen({ lang: 'pt-BR' }); } catch (e) { noPack = { status: e.status, capability: e.capability }; }
+  out.speech = { ev: ev.map((e) => e[0]), text: (ev.find((e) => e[0] === 'result') || [])[1], busy, noPack, logged: window.__bench.speech[0] };
+  out.tts = { said: await s.tts.speak('core shed', { lang: 'pt-BR' }), voices: (await s.tts.voices('en')).length, ledger: window.__bench.spoken.slice() };
+  try { await s.tts.speak('  '); } catch (e) { out.tts.empty = { status: e.status, field: e.field }; }
   return out;
 });
 await browser.close(); server.close();
@@ -63,6 +73,11 @@ chk(`400 names the field: range (${JSON.stringify(r.badRange)}), unknown (${JSON
   r.badRange.status === 400 && r.badRange.field === 'seconds' && r.badUnknown.status === 400 && r.badUnknown.field === 'snooze' && r.badMissing.status === 400 && r.badMissing.field === 'title' && r.badDial.status === 400 && r.badDial.field === 'number');
 chk(`404 off the allowlist (${r.offList.status}); 503 names the capability when no app handles it (${JSON.stringify(r.noHandler)}); the mail twin still goes (${JSON.stringify(r.mailOk)})`,
   r.offList.status === 404 && r.noHandler.status === 503 && r.noHandler.capability === 'intent.sendto' && r.mailOk.launched === true && r.ledger.length === 3);
+
+chk(`speech on the bench: ready → partials → result (${JSON.stringify(r.speech.text)}), 409 while open (${r.speech.busy}), 503 for a missing pack (${JSON.stringify(r.speech.noPack)}), the bias reached the shell (${JSON.stringify(r.speech.logged)})`,
+  r.speech.ev[0] === 'ready' && r.speech.ev.filter((e) => e === 'partial').length === 2 && r.speech.ev.includes('result') && r.speech.ev[r.speech.ev.length - 1] === 'end' && r.speech.text.alternatives[0].text === 'density of chalcopyrite' && r.speech.busy === 409 && r.speech.noPack.status === 503 && r.speech.noPack.capability === 'speech.ondevice' && r.speech.logged.bias.length === 2);
+chk(`tts on the bench: speak resolves when spoken (${JSON.stringify(r.tts.said)}), voices listed (${r.tts.voices}), empty text refused (${JSON.stringify(r.tts.empty)}), the ledger records it (${JSON.stringify(r.tts.ledger)})`,
+  r.tts.said.done === true && r.tts.said.voice === 'pt-br-x-bench-local' && r.tts.voices === 1 && r.tts.empty.status === 400 && r.tts.empty.field === 'text' && r.tts.ledger[0].text === 'core shed');
 
 console.log(fails ? `\nLEAD-ACID INTENT SMOKE: ${fails} FAILURES` : '\nLEAD-ACID INTENT SMOKE: PASS');
 process.exit(fails ? 1 : 0);
