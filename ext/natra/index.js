@@ -1,10 +1,28 @@
 // natra — ndarray for the browser
 // Bump-allocated f64 arrays over shared WebAssembly.Memory, with atra-compiled kernels.
 
-// Resolve atra: check import cache, then installed modules (blob), then relative import.
-// Blob URLs have no base path, so relative `import` fails inside embedded notebooks.
-// See CLAUDE.md "inter-module imports in embedded/blob context" for the longer story.
+// Resolve atra: what the host attached, then the import cache, then installed modules
+// (blob), then the relative import. Blob URLs have no base path, so relative `import` fails
+// inside embedded notebooks; in a worker there is no window and no import at all — the host
+// hands atra and alpack in with attachAtra (spec_inbox/lang/natra-worker-spec.md).
 let _atra;
+
+function _inWorker() {
+  return typeof window === 'undefined' && typeof importScripts === 'function';
+}
+const _ATTACH_HINT = 'natra: no atra compiler in this worker. The host calls attachAtra(atra, alpack) '
+  + '(or natra({ atra, alpack })), or hands over compiled kernels with natra({ modules })';
+
+// Hand natra the atra compiler and the alpack sources so it never looks for them. Accepts
+// the atra function or its module ({ atra }), and alpack's source string or its module ({ all }).
+function attachAtra(atra, alpack) {
+  const a = atra && typeof atra.run !== 'function' && atra.atra ? atra.atra : atra;
+  if (!a || typeof a.compile !== 'function') throw new TypeError('attachAtra: expected the atra compiler (or the module exporting it)');
+  const all = typeof alpack === 'string' ? alpack : alpack && typeof alpack.all === 'string' ? alpack.all : null;
+  if (all === null) throw new TypeError('attachAtra: expected the alpack sources (a string, or the module exporting `all`)');
+  _atra = a;
+  _alpackAll = all;
+}
 const ATRA_KEYS = ['@gcu/atra', './ext/atra/index.js', '@atra', '../atra/index.js'];
 async function getAtra() {
   if (_atra) return _atra;
@@ -37,7 +55,8 @@ async function getAtra() {
       }
     }
   }
-  // 3. direct file import (Node.js tests, local dev server)
+  // 3. direct file import (Node.js tests, local dev server) — never from a worker
+  if (_inWorker()) throw new Error(_ATTACH_HINT);
   const mod = await import('../atra/index.js');
   _atra = mod.atra;
   return _atra;
@@ -75,6 +94,7 @@ async function getAlpackAll() {
       }
     }
   }
+  if (_inWorker()) throw new Error(_ATTACH_HINT);
   const mod = await import('../atra/lib/alpack.src.js');
   _alpackAll = mod.all;
   return _alpackAll;
@@ -1095,6 +1115,51 @@ class Arena {
   }
 }
 
+// ── Kernels: compile once per realm, instantiate per context ──────────
+// The kernel module imports its memory (declared minimum one page), so one compiled module
+// serves every natra context. WebAssembly.Module is structured-cloneable: a host compiles
+// once and passes compiledModules() into each worker, which then needs no atra at all.
+
+let _kernelModule = null;
+
+async function _compileKernels() {
+  if (_kernelModule) return _kernelModule;
+  const atra = await getAtra();
+  const alpackSrc = await getAlpackAll();
+  // the same memory hint atra.run gives codegen, so the module imports env.memory
+  const probe = new WebAssembly.Memory({ initial: 1 });
+  const bytes = atra.compile(KERNEL_SRC + '\n' + alpackSrc, { memory: probe, __memory: probe });
+  _kernelModule = new WebAssembly.Module(bytes);
+  return _kernelModule;
+}
+
+const _MATH_IMPORTS = { sin: Math.sin, cos: Math.cos, ln: Math.log, exp: Math.exp, pow: Math.pow, atan2: Math.atan2 };
+
+function _instantiateKernels(module, memory) {
+  const imports = {};
+  for (const imp of WebAssembly.Module.imports(module)) {
+    let v;
+    if (imp.kind === 'memory') v = memory;
+    else if (imp.module === 'math' && _MATH_IMPORTS[imp.name]) v = _MATH_IMPORTS[imp.name];
+    else throw new Error(`natra: kernel module imports ${imp.module}.${imp.name}, which natra does not provide`);
+    (imports[imp.module] ||= {})[imp.name] = v;
+  }
+  const instance = new WebAssembly.Instance(module, imports);
+  // nest dotted export names ("ewise.add.f64" → K.ewise.add.f64), as atra.run does
+  const K = Object.create(instance.exports);
+  for (const key of Object.keys(instance.exports)) {
+    if (!key.includes('.')) continue;
+    const parts = key.split('.');
+    let obj = K;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!obj[parts[i]] || typeof obj[parts[i]] !== 'object') obj[parts[i]] = {};
+      obj = obj[parts[i]];
+    }
+    obj[parts[parts.length - 1]] = instance.exports[key];
+  }
+  return K;
+}
+
 // ── Context factory ──────────────────────────────────────────────────
 
 async function natra(opts = {}) {
@@ -1102,10 +1167,14 @@ async function natra(opts = {}) {
   const memory = opts.memory || new WebAssembly.Memory({ initial: pages });
   const maxPages = opts.maxPages !== undefined ? opts.maxPages : 16384; // default 1GB
 
-  // Compile kernels (natra elementwise/reduce + alpack linalg in one Wasm instance)
-  const atra = await getAtra();
-  const alpackSrc = await getAlpackAll();
-  const K = atra.run(KERNEL_SRC + '\n' + alpackSrc, { memory });
+  // Kernels (natra elementwise/reduce + alpack linalg in one Wasm module): handed-in compiled
+  // modules first, then the realm's cache, else compiled from atra + alpack.
+  if (opts.atra || opts.alpack) attachAtra(opts.atra, opts.alpack);
+  if (opts.modules && opts.modules.kernels) {
+    if (!(opts.modules.kernels instanceof WebAssembly.Module)) throw new TypeError('natra: modules.kernels must be a WebAssembly.Module (from natra.compiledModules())');
+    _kernelModule = opts.modules.kernels;
+  }
+  const K = _instantiateKernels(await _compileKernels(), memory);
 
   // Allocator state
   const permPtr = { value: 0 };
@@ -2366,4 +2435,9 @@ async function natra(opts = {}) {
   return instance;
 }
 
-export { natra };
+// The compiled kernels, for a host to hand to other realms: natra({ modules }).
+natra.compiledModules = async function compiledModules() {
+  return { kernels: await _compileKernels() };
+};
+
+export { natra, attachAtra };

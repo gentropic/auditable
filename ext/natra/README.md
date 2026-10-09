@@ -47,6 +47,29 @@ import '@gcu/natra/adder';   // registers with adder's import hook
 // Now in an adder cell: `import numpy as np` — resolves to natra.
 ```
 
+### In a worker
+
+natra compiles its Wasm kernels from atra source on first use. In a notebook or in Node it finds the atra compiler and the alpack sources itself. A worker has no `window` and should make no requests, so the host hands them in:
+
+```js
+import { natra, attachAtra } from '@gcu/natra';
+import { atra } from '@gcu/atra';
+import * as alpack from '@gcu/atra/lib/alpack.src.js';
+
+attachAtra(atra, alpack);            // or: await natra({ atra, alpack })
+```
+
+Without that, natra in a worker fails with a message naming the fix instead of trying an import.
+
+Compiled kernels are reused within a realm, so a second context costs well under a millisecond. To skip compiling in each worker, compile once and pass the module across. `WebAssembly.Module` survives `postMessage`, and a worker given it needs no atra at all:
+
+```js
+const { kernels } = await natra.compiledModules();   // host
+worker.postMessage({ kernels });
+// in the worker:
+const ctx = await natra({ modules: { kernels } });
+```
+
 ## Performance
 
 Underpinned by [`@gcu/alpack`](https://www.npmjs.com/package/@gcu/alpack)
