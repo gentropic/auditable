@@ -23,6 +23,7 @@
     "test:wasm": "node --no-warnings --test-force-exit test/adder-wasm.test.mjs",
     "test:examples": "node test/examples-smoke.mjs",
     "test:micro": "node test/micro-smoke.mjs",
+    "test:leadacid": "node test/leadacid-intent-smoke.mjs",
     "test:micro2": "node test/micro-smoke2.mjs",
     "test:micro:all": "npm run test:micro && npm run test:micro2",
     "test:wuffle": "node test/wuffle-smoke.mjs",
