@@ -50,10 +50,10 @@ if (typeof window !== 'undefined' && window._importCache) {
   }
   attachScitra(found);
   scitraReady = Promise.resolve(_module);
+} else if (typeof importScripts === 'function') {
+  scitraReady = Promise.resolve(_module);   // a worker: no request; the host calls attachScitra(lib)
 } else {
-  // Node (tests, scripts): import beside this file. In a blob worker the relative
-  // import cannot resolve — that host calls attachScitra(lib) instead, and the
-  // failed background import is swallowed.
+  // Node (tests, scripts): import beside this file.
   scitraReady = import('./index.js').then((m) => (_scitra ? _module : attachScitra(m)), () => _module);
 }
 

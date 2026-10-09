@@ -21,61 +21,74 @@
 // from window._importCache (must be load()-ed first); in Node tests,
 // fall back to a dynamic relative import.
 
-let _learn;
-if (typeof window !== 'undefined' && window._importCache) {
-  _learn = window._importCache['@gcu/learn']
-    || Object.values(window._importCache).find(m => m && m.BaseEstimator && m.Pipeline);
-  if (!_learn) {
-    throw new Error('@gcu/learn not loaded — call load("@gcu/learn") first');
-  }
-} else {
-  _learn = await import('./index.js');
+// NO TOP-LEVEL AWAIT (a classic-script worker can't have one): the library is
+// found synchronously in the notebook, attached by a host (`attachLearn`), or —
+// in Node — imported in the background; `learnReady` resolves when it is there.
+
+const _module = {};
+// submodules (sklearn-shape namespaces), top-level helpers, and flat re-exports of
+// the most-used classes (`from learn import Pipeline` beside `from learn.pipeline import …`)
+const _NAMES = [
+  'base',
+  'preprocessing',
+  'tree',
+  'cluster',
+  'decomposition',
+  'compositional',
+  'pipeline',
+  'compose',
+  'model_selection',
+  'metrics',
+  'utils',
+  'linear_model',
+  'ensemble',
+  'impute',
+  'neighbors',
+  'mixture',
+  'cross_decomposition',
+  'dump',
+  'load',
+  'clone',
+  'check_is_fitted',
+  'check_estimator',
+  'NotFittedError',
+  'learnRegistry',
+  'mulberry32',
+  'makeRng',
+  'BaseEstimator',
+  'ClassifierMixin',
+  'RegressorMixin',
+  'TransformerMixin',
+  'ClusterMixin',
+  'Pipeline',
+  'make_pipeline',
+  'ColumnTransformer',
+  'make_column_transformer'
+];
+let _learn = null;
+// fill the Python-facing module from the library (idempotent: the last attach wins)
+export function attachLearn(lib) {
+  if (!lib || !lib.BaseEstimator || !lib.Pipeline) throw new TypeError('attachLearn: expected the @gcu/learn module');
+  _learn = lib;
+  for (const k of _NAMES) _module[k] = lib[k];
+  return _module;
 }
 
-const _module = {
-  // ── submodules (sklearn-shape namespaces) ──
-  base: _learn.base,
-  preprocessing: _learn.preprocessing,
-  tree: _learn.tree,
-  cluster: _learn.cluster,
-  decomposition: _learn.decomposition,
-  compositional: _learn.compositional,
-  pipeline: _learn.pipeline,
-  compose: _learn.compose,
-  model_selection: _learn.model_selection,
-  metrics: _learn.metrics,
-  utils: _learn.utils,
-  linear_model: _learn.linear_model,
-  ensemble: _learn.ensemble,
-  impute: _learn.impute,
-  neighbors: _learn.neighbors,
-  mixture: _learn.mixture,
-  cross_decomposition: _learn.cross_decomposition,
-
-  // ── top-level helpers (exposed at `learn.<name>`) ──
-  dump: _learn.dump,
-  load: _learn.load,
-  clone: _learn.clone,
-  check_is_fitted: _learn.check_is_fitted,
-  check_estimator: _learn.check_estimator,
-  NotFittedError: _learn.NotFittedError,
-  learnRegistry: _learn.learnRegistry,
-  mulberry32: _learn.mulberry32,
-  makeRng: _learn.makeRng,
-
-  // ── flat re-exports of the most-used classes (so `from learn import …`
-  // pulls them directly, matching sklearn's habit of `from sklearn import
-  // pipeline` working alongside `from sklearn.pipeline import Pipeline`) ──
-  BaseEstimator: _learn.BaseEstimator,
-  ClassifierMixin: _learn.ClassifierMixin,
-  RegressorMixin: _learn.RegressorMixin,
-  TransformerMixin: _learn.TransformerMixin,
-  ClusterMixin: _learn.ClusterMixin,
-  Pipeline: _learn.Pipeline,
-  make_pipeline: _learn.make_pipeline,
-  ColumnTransformer: _learn.ColumnTransformer,
-  make_column_transformer: _learn.make_column_transformer,
-};
+let learnReady;
+if (typeof window !== 'undefined' && window._importCache) {
+  const found = window._importCache['@gcu/learn']
+    || Object.values(window._importCache).find(m => m && m.BaseEstimator && m.Pipeline);
+  if (!found) {
+    throw new Error('@gcu/learn not loaded — call load("@gcu/learn") first');
+  }
+  attachLearn(found);
+  learnReady = Promise.resolve(_module);
+} else if (typeof importScripts === 'function') {
+  learnReady = Promise.resolve(_module);   // a worker: no request; the host calls attachLearn(lib)
+} else {
+  // Node (tests, scripts): import beside this file.
+  learnReady = import('./index.js').then((m) => (_learn ? _module : attachLearn(m)), () => _module);
+}
 
 // ── Registration ──
 // Auditable's manifest API is preferred when available (auto-validates
@@ -95,4 +108,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { _module as learnAdder };
+export { _module as learnAdder, learnReady };

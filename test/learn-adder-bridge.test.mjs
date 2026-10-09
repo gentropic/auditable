@@ -32,7 +32,7 @@ globalThis.window = globalThis;
 globalThis.CSS = { escape: s => s };
 
 // Load learn first so its adder.js registers into window._auditableExtensions.
-await import('../ext/learn/adder.js');
+await (await import('../ext/learn/adder.js')).learnReady;   // the bridge imports learn in the background (no top-level await)
 const { pythonExecute } = await import('../ext/adder/src/cell.js');
 
 // Run an adder cell and return its `defines` map so tests can inspect

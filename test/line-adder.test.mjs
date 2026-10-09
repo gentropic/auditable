@@ -24,7 +24,7 @@ globalThis.window = globalThis;
 globalThis.CSS = { escape: s => s };
 
 const { pythonExecute } = await import('../ext/adder/src/cell.js');
-await import('../ext/line/adder.js');  // triggers registration on _auditableExtensions
+await (await import('../ext/line/adder.js')).lineReady;  // registers on _auditableExtensions; attached once the background import lands
 
 async function pyEval(code) {
   return pythonExecute(code, {}, { id: 'test' });
