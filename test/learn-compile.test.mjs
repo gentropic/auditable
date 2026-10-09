@@ -219,3 +219,13 @@ describe('compile internals', () => {
     for (const fn of rf._compiled_tree_values) assert.ok(typeof fn === 'function');
   });
 });
+
+// The single-file bundle must install the override too: its build drops src/main.js's
+// body, so the installCompile call has to be repeated in build.js (it was missing).
+describe('bundle', () => {
+  test('ext/learn/index.js installs .compile() for the tree family', async () => {
+    const L = await import('../ext/learn/index.js');
+    const m = new L.DecisionTreeClassifier().fit([[0], [1], [2], [3]], [0, 0, 1, 1]).compile();
+    assert.equal(typeof m._compiled_predict_class, 'function');
+  });
+});

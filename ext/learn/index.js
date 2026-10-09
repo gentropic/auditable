@@ -10759,6 +10759,15 @@ const neighbors = {
 const mixture = { GaussianMixture };
 const cross_decomposition = { PLSRegression };
 
+// The .compile() override for the tree family (SPEC §6.5), as src/main.js does it.
+// Without this call the bundle shipped the base no-op and every tree stayed interpreted.
+installCompile({
+  DecisionTreeClassifier, DecisionTreeRegressor,
+  RandomForestClassifier, RandomForestRegressor,
+  ExtraTreesClassifier, ExtraTreesRegressor,
+  GradientBoostingRegressor,
+});
+
 // ── exports ──
 export {
   // base
