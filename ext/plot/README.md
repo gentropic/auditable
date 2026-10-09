@@ -39,6 +39,23 @@ Quick helpers (`plot`, `scatter`, `imshow`, `hist`, `bar`) accept an options obj
 - Per-Axes `ax._margins = {left, right, top, bottom}` overrides the label/tick-driven margin computation — lets a grid of cells pin identical plot rects.
 - `aspect='equal'` for `imshow`-dominated axes shrinks the plot rect to match data aspect (was: expanded the data range). `colorbar` is pinned to the cell's right edge using the pre-aspect plot height so it doesn't shrink along.
 
+## Without a DOM: figures as data
+
+The `plt` module object is built in every host and exported as `pltAdder`. A worker or Node process registers it with adder the way the notebook does:
+
+```js
+import { pltAdder, replay } from '@gcu/plot';
+registerModule('plt', pltAdder);
+await run('import plt\nplt.plot([1, 2, 3])\nplt.show()');
+const figs = pltAdder.shown();          // figures shown since the last clf() / close('all')
+```
+
+With no `document`, `show()` records the figure and returns it instead of a canvas. `savefig(name)` records `{ name, figure }` for `pltAdder.saved()` instead of downloading.
+
+A figure becomes plain JSON with `fig.toDrawList()`. That is `{ width, height, facecolor, ops }`, the ordered 2D-context calls as `[op, ...args]`. Property assignments appear as `['set', name, value]`, and an `imshow` raster appears as one `['image', x, y, w, h, cols, rows, rgbaBase64]` op. Text widths come from the monospace advance, so a figure gives the same list in every host. `replay(ctx, list)` draws the list on a real canvas. `fig.draw(ctx)` draws straight onto any 2D context, and `fig.toPNG()` gives PNG bytes where `OffscreenCanvas` exists.
+
+In the notebook nothing changes: `show()` still returns a `<canvas>`.
+
 ## Matplotlib compatibility
 
 - `scatter` default marker size is 20 (matplotlib parity; was 4).

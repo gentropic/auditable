@@ -50,7 +50,7 @@ const header = '// \u26a0 GENERATED FILE \u2014 DO NOT EDIT. Source: ext/plot/sr
   + '// @gcu/plot \u2014 Canvas 2D plotting library for Auditable\n'
   + '// Line, scatter, bar, histogram, imshow. GCU dark theme.\n';
 
-const output = header + '\n' + chunks.join('\n\n') + '\n\nexport { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, getCmap };\n';
+const output = header + '\n' + chunks.join('\n\n') + '\n\nexport { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, getCmap, pltAdder, replay, recordingContext };\n';
 
 const outPath = path.join(__dirname, 'index.js');
 fs.writeFileSync(outPath, output);

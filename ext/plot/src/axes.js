@@ -4,6 +4,7 @@ import { LinearScale, LogScale } from './scale.js';
 import { getCmap, renderColorbar } from './color.js';
 import { parseFormat, dashArray } from './format.js';
 import { _style } from './style.js';
+import { isRecordingContext, parseColorBytes } from './record.js';
 
 const _defaultColors = ['#c89b3c', '#5ba3b5', '#e07050', '#7a8b99', '#b5854b', '#5bb58b'];
 
@@ -828,6 +829,10 @@ export class Axes {
     }
     const vr = vmax - vmin || 1;
 
+    // Recording (figures as data): the whole raster as one RGBA 'image' op, not one
+    // fillRect per cell. Falls through to the cell loop for a colour string it can't read.
+    if (isRecordingContext(ctx) && this._imshowRaster(ctx, data, nx, ny, nodata, origin, cmapFn, vmin, vr, xScale, yScale)) return;
+
     for (let iy = 0; iy < ny; iy++) {
       for (let ix = 0; ix < nx; ix++) {
         const idx = iy * nx + ix;
@@ -843,6 +848,26 @@ export class Axes {
         ctx.fillRect(px0, pyTop, px1 - px0 + 0.5, pyBot - pyTop + 0.5);
       }
     }
+  }
+
+  _imshowRaster(ctx, data, nx, ny, nodata, origin, cmapFn, vmin, vr, xScale, yScale) {
+    const rgba = new Uint8Array(nx * ny * 4);
+    for (let iy = 0; iy < ny; iy++) {
+      // image row 0 is the TOP: origin='lower' puts data row ny-1 there
+      const row = origin === 'lower' ? ny - 1 - iy : iy;
+      for (let ix = 0; ix < nx; ix++) {
+        const v = data[iy * nx + ix];
+        const o = (row * nx + ix) * 4;
+        if (nodata != null && v === nodata) continue;      // transparent
+        const c = parseColorBytes(cmapFn((v - vmin) / vr));
+        if (!c) return false;
+        rgba[o] = c[0]; rgba[o + 1] = c[1]; rgba[o + 2] = c[2]; rgba[o + 3] = c[3];
+      }
+    }
+    const x0 = xScale.transform(0), x1 = xScale.transform(nx);
+    const yTop = yScale.transform(ny), yBot = yScale.transform(0);
+    ctx._image(Math.min(x0, x1), Math.min(yTop, yBot), Math.abs(x1 - x0), Math.abs(yBot - yTop), nx, ny, rgba);
+    return true;
   }
 
   _renderHline(ctx, trace, xScale, yScale, plotX, plotW) {

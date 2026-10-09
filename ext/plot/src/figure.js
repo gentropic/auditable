@@ -2,6 +2,15 @@
 
 import { Axes } from './axes.js';
 import { _style } from './style.js';
+import { recordingContext, replay } from './record.js';
+
+// Figures shown (or saved) where there is no DOM, in order. plt.shown() / plt.saved() read
+// them, plt.close(fig) / plt.close('all') / plt.clf() clear them.
+export const _shownFigures = [];
+export const _savedFigures = [];
+export function _recordShown(fig) {
+  if (!_shownFigures.includes(fig)) _shownFigures.push(fig);
+}
 
 export class Figure {
   constructor(nrows, ncols, opts) {
@@ -62,17 +71,24 @@ export class Figure {
   subplots_adjust(_opts) { return this; }
   tight_layout(_opts) { return this; }
 
+  // In the notebook: a <canvas> node, which its display path picks up. With no DOM (a
+  // worker, Node): the figure is recorded for plt.shown() and returned, so the host can
+  // draw it (fig.draw / fig.toDrawList / replay).
   show() {
+    if (typeof document === 'undefined') { _recordShown(this); return this; }
     const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
-    const canvas = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
-    if (!canvas) return null;
-
+    const canvas = document.createElement('canvas');
     canvas.width = this.width * dpr;
     canvas.height = this.height * dpr;
     canvas.style.width = this.width + 'px';
     canvas.style.height = this.height + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    this.draw(canvas.getContext('2d'), { dpr });
+    return canvas;
+  }
+
+  // Draw the whole figure on anything shaped like a CanvasRenderingContext2D.
+  draw(ctx, { dpr = 1 } = {}) {
+    if (dpr !== 1) ctx.scale(dpr, dpr);
 
     // background
     if (this.facecolor !== 'transparent') {
@@ -156,15 +172,38 @@ export class Figure {
         ctx.fillText(label, cx, cy);
       }
     }
-
-    return canvas;
+    return ctx;
   }
 
+  // The figure as plain JSON: size, facecolor and the ordered 2D-context ops draw() makes.
+  // The same figure gives the same list in every host. replay(ctx, list) draws it.
+  toDrawList() {
+    const rec = recordingContext(this.width, this.height);
+    this.draw(rec);
+    return { width: this.width, height: this.height, facecolor: this.facecolor, ops: rec.ops };
+  }
+
+  // PNG bytes through OffscreenCanvas (workers in current browsers); rejects where there is none.
+  async toPNG({ dpr = 1 } = {}) {
+    if (typeof OffscreenCanvas === 'undefined') throw new Error('toPNG needs OffscreenCanvas; use toDrawList() and replay() instead');
+    const canvas = new OffscreenCanvas(Math.round(this.width * dpr), Math.round(this.height * dpr));
+    this.draw(canvas.getContext('2d'), { dpr });
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  // In the notebook: download a PNG. With no DOM: record { name, figure } for plt.saved()
+  // (and the figure for plt.shown()) so the host can offer the file.
   savefig(filename) {
+    const name = (typeof filename === 'string' && filename) || 'figure.png';
+    if (typeof document === 'undefined') {
+      _savedFigures.push({ name, figure: this });
+      _recordShown(this);
+      return this;
+    }
     const canvas = this.show();
-    if (!canvas) return;
     const link = document.createElement('a');
-    link.download = filename || 'figure.png';
+    link.download = name;
     link.href = canvas.toDataURL('image/png');
     link.click();
   }

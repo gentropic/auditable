@@ -381,9 +381,150 @@ function dashArray(linestyle) {
   }
 }
 
+// -- record.js --
+
+// Figures as data: a recording 2D context and its replay.
+//
+// `recordingContext(w, h)` stands in for a CanvasRenderingContext2D. Every call plot makes on
+// it becomes one plain-JSON op, `[name, ...args]`, and every property assignment becomes
+// `['set', name, value]`. `replay(ctx, list)` plays the ops back on a real context. Nothing here
+// touches the DOM, so a figure can be drawn in a worker or Node and shown somewhere else.
+//
+// Text widths: every font plot uses is monospace, so `measureText(s)` answers
+// s.length × 0.6 × px. That keeps layout identical in every host, Node included.
+//
+// Ops whose numeric arguments are not finite are dropped, which is what a canvas does with
+// them anyway (and JSON could not carry NaN).
+//
+// One op is not a canvas call: `['image', x, y, w, h, cols, rows, rgbaBase64]`, a whole
+// colour-mapped raster (imshow) in one op instead of one fillRect per cell.
+
+const _METHODS = new Set([
+  'save', 'restore', 'beginPath', 'closePath', 'moveTo', 'lineTo', 'arc', 'arcTo', 'rect',
+  'ellipse', 'quadraticCurveTo', 'bezierCurveTo', 'fill', 'stroke', 'clip', 'fillRect',
+  'strokeRect', 'clearRect', 'fillText', 'strokeText', 'translate', 'rotate', 'scale',
+  'transform', 'setTransform', 'resetTransform', 'setLineDash',
+]);
+
+const _DEFAULTS = {
+  fillStyle: '#000000', strokeStyle: '#000000', lineWidth: 1, font: '10px sans-serif',
+  textAlign: 'start', textBaseline: 'alphabetic', globalAlpha: 1, lineCap: 'butt',
+  lineJoin: 'miter', lineDashOffset: 0, imageSmoothingEnabled: true,
+};
+
+function _fontPx(font) {
+  const m = /(\d+(?:\.\d+)?)px/.exec(font || '');
+  return m ? +m[1] : 10;
+}
+
+function _finiteArgs(args) {
+  for (const a of args) if (typeof a === 'number' && !Number.isFinite(a)) return false;
+  return true;
+}
+
+function recordingContext(width, height) {
+  const ops = [];
+  let state = { ..._DEFAULTS };
+  let dash = [];
+  const stack = [];
+  const target = {
+    _plotRecorder: true,
+    ops,
+    canvas: { width, height },
+    measureText(s) {
+      return { width: String(s).length * 0.6 * _fontPx(state.font) };
+    },
+    getLineDash() { return dash.slice(); },
+    // the raster op (see the header)
+    _image(x, y, w, h, cols, rows, rgba) {
+      if (!_finiteArgs([x, y, w, h])) return;
+      ops.push(['image', x, y, w, h, cols, rows, _toBase64(rgba)]);
+    },
+  };
+  return new Proxy(target, {
+    get(t, name) {
+      if (name in t) return t[name];
+      if (typeof name === 'string' && _METHODS.has(name)) {
+        return (...args) => {
+          if (name === 'save') stack.push({ state: { ...state }, dash: dash.slice() });
+          if (name === 'restore' && stack.length) { const s = stack.pop(); state = s.state; dash = s.dash; }
+          if (name === 'setLineDash') { dash = Array.from(args[0] || []); ops.push(['setLineDash', dash.slice()]); return; }
+          if (!_finiteArgs(args)) return;
+          ops.push([name, ...args]);
+        };
+      }
+      return state[name];
+    },
+    set(t, name, value) {
+      state[name] = value;
+      ops.push(['set', name, value]);
+      return true;
+    },
+  });
+}
+
+function isRecordingContext(ctx) {
+  return !!(ctx && ctx._plotRecorder);
+}
+
+// Play a draw list back on a real 2D context.
+function replay(ctx, list) {
+  const ops = Array.isArray(list) ? list : list && list.ops;
+  if (!Array.isArray(ops)) throw new TypeError('replay: expected a draw list (fig.toDrawList()) or its ops');
+  for (const op of ops) {
+    const [name, ...args] = op;
+    if (name === 'set') { ctx[args[0]] = args[1]; continue; }
+    if (name === 'image') { _replayImage(ctx, ...args); continue; }
+    if (!_METHODS.has(name)) throw new Error(`replay: unknown op '${name}'`);
+    ctx[name](...args);
+  }
+}
+
+function _replayImage(ctx, x, y, w, h, cols, rows, b64) {
+  const bytes = _fromBase64(b64);
+  const make = (cw, ch) => (typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(cw, ch)
+    : Object.assign(document.createElement('canvas'), { width: cw, height: ch }));
+  const scratch = make(cols, rows);
+  const sctx = scratch.getContext('2d');
+  sctx.putImageData(new ImageData(new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length), cols, rows), 0, 0);
+  const smooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(scratch, x, y, w, h);
+  ctx.imageSmoothingEnabled = smooth;
+}
+
+// 'rgb(r,g,b)' / 'rgba(r,g,b,a)' / '#rgb' / '#rrggbb' → [r, g, b, a] bytes, or null
+function parseColorBytes(c) {
+  if (typeof c !== 'string') return null;
+  let m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(c);
+  if (m) return [+m[1], +m[2], +m[3], m[4] == null ? 255 : Math.round(+m[4] * 255)];
+  m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);
+  if (m) {
+    const h = m[1].length === 3 ? m[1].split('').map((x) => x + x).join('') : m[1];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), 255];
+  }
+  return null;
+}
+
+function _toBase64(bytes) {
+  let s = '';
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return btoa(s);
+}
+
+function _fromBase64(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
 // -- axes.js --
 
 // Axes — trace storage, layout computation, canvas rendering
+
 
 
 
@@ -1212,6 +1353,10 @@ class Axes {
     }
     const vr = vmax - vmin || 1;
 
+    // Recording (figures as data): the whole raster as one RGBA 'image' op, not one
+    // fillRect per cell. Falls through to the cell loop for a colour string it can't read.
+    if (isRecordingContext(ctx) && this._imshowRaster(ctx, data, nx, ny, nodata, origin, cmapFn, vmin, vr, xScale, yScale)) return;
+
     for (let iy = 0; iy < ny; iy++) {
       for (let ix = 0; ix < nx; ix++) {
         const idx = iy * nx + ix;
@@ -1227,6 +1372,26 @@ class Axes {
         ctx.fillRect(px0, pyTop, px1 - px0 + 0.5, pyBot - pyTop + 0.5);
       }
     }
+  }
+
+  _imshowRaster(ctx, data, nx, ny, nodata, origin, cmapFn, vmin, vr, xScale, yScale) {
+    const rgba = new Uint8Array(nx * ny * 4);
+    for (let iy = 0; iy < ny; iy++) {
+      // image row 0 is the TOP: origin='lower' puts data row ny-1 there
+      const row = origin === 'lower' ? ny - 1 - iy : iy;
+      for (let ix = 0; ix < nx; ix++) {
+        const v = data[iy * nx + ix];
+        const o = (row * nx + ix) * 4;
+        if (nodata != null && v === nodata) continue;      // transparent
+        const c = parseColorBytes(cmapFn((v - vmin) / vr));
+        if (!c) return false;
+        rgba[o] = c[0]; rgba[o + 1] = c[1]; rgba[o + 2] = c[2]; rgba[o + 3] = c[3];
+      }
+    }
+    const x0 = xScale.transform(0), x1 = xScale.transform(nx);
+    const yTop = yScale.transform(ny), yBot = yScale.transform(0);
+    ctx._image(Math.min(x0, x1), Math.min(yTop, yBot), Math.abs(x1 - x0), Math.abs(yBot - yTop), nx, ny, rgba);
+    return true;
   }
 
   _renderHline(ctx, trace, xScale, yScale, plotX, plotW) {
@@ -1342,6 +1507,15 @@ class Axes {
 
 
 
+
+// Figures shown (or saved) where there is no DOM, in order. plt.shown() / plt.saved() read
+// them, plt.close(fig) / plt.close('all') / plt.clf() clear them.
+const _shownFigures = [];
+const _savedFigures = [];
+function _recordShown(fig) {
+  if (!_shownFigures.includes(fig)) _shownFigures.push(fig);
+}
+
 class Figure {
   constructor(nrows, ncols, opts) {
     this.nrows = nrows || 1;
@@ -1401,17 +1575,24 @@ class Figure {
   subplots_adjust(_opts) { return this; }
   tight_layout(_opts) { return this; }
 
+  // In the notebook: a <canvas> node, which its display path picks up. With no DOM (a
+  // worker, Node): the figure is recorded for plt.shown() and returned, so the host can
+  // draw it (fig.draw / fig.toDrawList / replay).
   show() {
+    if (typeof document === 'undefined') { _recordShown(this); return this; }
     const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
-    const canvas = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
-    if (!canvas) return null;
-
+    const canvas = document.createElement('canvas');
     canvas.width = this.width * dpr;
     canvas.height = this.height * dpr;
     canvas.style.width = this.width + 'px';
     canvas.style.height = this.height + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    this.draw(canvas.getContext('2d'), { dpr });
+    return canvas;
+  }
+
+  // Draw the whole figure on anything shaped like a CanvasRenderingContext2D.
+  draw(ctx, { dpr = 1 } = {}) {
+    if (dpr !== 1) ctx.scale(dpr, dpr);
 
     // background
     if (this.facecolor !== 'transparent') {
@@ -1495,15 +1676,38 @@ class Figure {
         ctx.fillText(label, cx, cy);
       }
     }
-
-    return canvas;
+    return ctx;
   }
 
+  // The figure as plain JSON: size, facecolor and the ordered 2D-context ops draw() makes.
+  // The same figure gives the same list in every host. replay(ctx, list) draws it.
+  toDrawList() {
+    const rec = recordingContext(this.width, this.height);
+    this.draw(rec);
+    return { width: this.width, height: this.height, facecolor: this.facecolor, ops: rec.ops };
+  }
+
+  // PNG bytes through OffscreenCanvas (workers in current browsers); rejects where there is none.
+  async toPNG({ dpr = 1 } = {}) {
+    if (typeof OffscreenCanvas === 'undefined') throw new Error('toPNG needs OffscreenCanvas; use toDrawList() and replay() instead');
+    const canvas = new OffscreenCanvas(Math.round(this.width * dpr), Math.round(this.height * dpr));
+    this.draw(canvas.getContext('2d'), { dpr });
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  // In the notebook: download a PNG. With no DOM: record { name, figure } for plt.saved()
+  // (and the figure for plt.shown()) so the host can offer the file.
   savefig(filename) {
+    const name = (typeof filename === 'string' && filename) || 'figure.png';
+    if (typeof document === 'undefined') {
+      _savedFigures.push({ name, figure: this });
+      _recordShown(this);
+      return this;
+    }
     const canvas = this.show();
-    if (!canvas) return;
     const link = document.createElement('a');
-    link.download = filename || 'figure.png';
+    link.download = name;
     link.href = canvas.toDataURL('image/png');
     link.click();
   }
@@ -1512,6 +1716,7 @@ class Figure {
 // -- api.js --
 
 // Public API — subplots() factory, quick one-liners, plt extension registration
+
 
 
 
@@ -1662,7 +1867,20 @@ function show() {
 }
 // plt.close(fig?) — close a figure (matplotlib reclaims its handle).
 // We hold no figure registry, so no-op.
-function close(_fig) { /* no-op */ }
+// close(fig) forgets one figure, close() the current one, close('all') every one
+function close(fig) {
+  const drop = (f) => {
+    const i = _shownFigures.indexOf(f);
+    if (i >= 0) _shownFigures.splice(i, 1);
+    for (let j = _savedFigures.length - 1; j >= 0; j--) if (_savedFigures[j].figure === f) _savedFigures.splice(j, 1);
+    if (_currentFig === f) { _currentFig = null; _currentAx = null; }
+  };
+  if (fig === 'all') { _shownFigures.length = 0; _savedFigures.length = 0; _currentFig = null; _currentAx = null; return; }
+  drop(fig && typeof fig === 'object' && !fig._kw ? fig : _currentFig);
+}
+// The figures shown (or saved) with no DOM, in order, and the savefig calls among them.
+function shown() { return _shownFigures.slice(); }
+function saved() { return _savedFigures.map((s) => ({ ...s })); }
 
 // plt.subplot(nrows, ncols, index) — matplotlib's per-axes shortcut.
 // Also accepts the 3-digit form `plt.subplot(311)` (sugar for 3,1,1).
@@ -1736,7 +1954,7 @@ function text(x, y, s, opts) { _ax().text(x, y, s, opts); }
 function subplots_adjust(_opts) { /* no-op */ }
 function tight_layout(_opts) { /* no-op */ }
 function savefig(filename) { return _currentFig && _currentFig.savefig(filename); }
-function clf() { _currentFig = null; _currentAx = null; }
+function clf() { _currentFig = null; _currentAx = null; _shownFigures.length = 0; _savedFigures.length = 0; }
 function cla() { _currentAx = null; }
 
 // matplotlib's plt.xticks(ticks, labels) / yticks set tick positions
@@ -1775,16 +1993,20 @@ function suptitle(text, opts) {
   return fig && fig.suptitle ? fig.suptitle(text, opts) : null;
 }
 
+// The matplotlib-shaped module object, built in every host: a worker or Node registers it
+// with adder (registerModule('plt', pltAdder)); the notebook gets it below.
+const pltAdder = {
+  subplots, subplot, figure, Figure, cmap, cm, plot, scatter, imshow, matshow, hist, bar,
+  rc, rcParams, style, show, close, shown, saved, replay,
+  gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
+  legend, grid, vlines, hlines, axhline, axvline, text,
+  subplots_adjust, tight_layout, savefig, clf, cla,
+  xticks, yticks, colorbar, suptitle,
+};
+
 // register as auditable extension for adder `import plt`
 if (typeof window !== 'undefined') {
-  const _plt = {
-    subplots, subplot, figure, Figure, cmap, cm, plot, scatter, imshow, matshow, hist, bar,
-    rc, rcParams, style, show, close,
-    gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
-    legend, grid, vlines, hlines, axhline, axvline, text,
-    subplots_adjust, tight_layout, savefig, clf, cla,
-    xticks, yticks, colorbar, suptitle,
-  };
+  const _plt = pltAdder;
   const register = window.auditable?.registerExtension;
   if (register) {
     register({
@@ -1803,4 +2025,4 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, getCmap };
+export { subplots, plot, scatter, imshow, hist, bar, cmap, Figure, Axes, LinearScale, getCmap, pltAdder, replay, recordingContext };

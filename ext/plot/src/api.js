@@ -1,6 +1,7 @@
 // Public API — subplots() factory, quick one-liners, plt extension registration
 
-import { Figure } from './figure.js';
+import { Figure, _shownFigures, _savedFigures } from './figure.js';
+import { replay } from './record.js';
 import { getCmap } from './color.js';
 import { setStyle } from './style.js';
 
@@ -150,7 +151,20 @@ export function show() {
 }
 // plt.close(fig?) — close a figure (matplotlib reclaims its handle).
 // We hold no figure registry, so no-op.
-export function close(_fig) { /* no-op */ }
+// close(fig) forgets one figure, close() the current one, close('all') every one
+export function close(fig) {
+  const drop = (f) => {
+    const i = _shownFigures.indexOf(f);
+    if (i >= 0) _shownFigures.splice(i, 1);
+    for (let j = _savedFigures.length - 1; j >= 0; j--) if (_savedFigures[j].figure === f) _savedFigures.splice(j, 1);
+    if (_currentFig === f) { _currentFig = null; _currentAx = null; }
+  };
+  if (fig === 'all') { _shownFigures.length = 0; _savedFigures.length = 0; _currentFig = null; _currentAx = null; return; }
+  drop(fig && typeof fig === 'object' && !fig._kw ? fig : _currentFig);
+}
+// The figures shown (or saved) with no DOM, in order, and the savefig calls among them.
+export function shown() { return _shownFigures.slice(); }
+export function saved() { return _savedFigures.map((s) => ({ ...s })); }
 
 // plt.subplot(nrows, ncols, index) — matplotlib's per-axes shortcut.
 // Also accepts the 3-digit form `plt.subplot(311)` (sugar for 3,1,1).
@@ -224,7 +238,7 @@ export function text(x, y, s, opts) { _ax().text(x, y, s, opts); }
 export function subplots_adjust(_opts) { /* no-op */ }
 export function tight_layout(_opts) { /* no-op */ }
 export function savefig(filename) { return _currentFig && _currentFig.savefig(filename); }
-export function clf() { _currentFig = null; _currentAx = null; }
+export function clf() { _currentFig = null; _currentAx = null; _shownFigures.length = 0; _savedFigures.length = 0; }
 export function cla() { _currentAx = null; }
 
 // matplotlib's plt.xticks(ticks, labels) / yticks set tick positions
@@ -263,16 +277,20 @@ export function suptitle(text, opts) {
   return fig && fig.suptitle ? fig.suptitle(text, opts) : null;
 }
 
+// The matplotlib-shaped module object, built in every host: a worker or Node registers it
+// with adder (registerModule('plt', pltAdder)); the notebook gets it below.
+export const pltAdder = {
+  subplots, subplot, figure, Figure, cmap, cm, plot, scatter, imshow, matshow, hist, bar,
+  rc, rcParams, style, show, close, shown, saved, replay,
+  gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
+  legend, grid, vlines, hlines, axhline, axvline, text,
+  subplots_adjust, tight_layout, savefig, clf, cla,
+  xticks, yticks, colorbar, suptitle,
+};
+
 // register as auditable extension for adder `import plt`
 if (typeof window !== 'undefined') {
-  const _plt = {
-    subplots, subplot, figure, Figure, cmap, cm, plot, scatter, imshow, matshow, hist, bar,
-    rc, rcParams, style, show, close,
-    gca, gcf, xlabel, ylabel, title, xlim, ylim, xscale, yscale,
-    legend, grid, vlines, hlines, axhline, axvline, text,
-    subplots_adjust, tight_layout, savefig, clf, cla,
-    xticks, yticks, colorbar, suptitle,
-  };
+  const _plt = pltAdder;
   const register = window.auditable?.registerExtension;
   if (register) {
     register({

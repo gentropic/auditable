@@ -420,13 +420,12 @@ describe('Figure', () => {
     assert.equal(fig._suptitle.text, 'Main Title');
   });
 
-  // show() needs a real DOM so we just test it doesn't throw in Node
-  it('show returns null without DOM', () => {
-    // temporarily remove document
+  // without a DOM, show() records the figure for plt.shown() and returns it (test/plot-headless.test.mjs)
+  it('show returns the figure without DOM', () => {
     const origDoc = globalThis.document;
     globalThis.document = undefined;
     const fig = new Figure();
-    assert.equal(fig.show(), null);
+    assert.equal(fig.show(), fig);
     globalThis.document = origDoc;
   });
 });
