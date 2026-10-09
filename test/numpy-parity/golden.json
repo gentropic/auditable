@@ -1,0 +1,1636 @@
+{
+ "numpy": "2.4.4",
+ "cases": {
+  "create.array": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0
+   ]
+  },
+  "create.array2d": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     2.0
+    ],
+    [
+     3.0,
+     4.0
+    ]
+   ]
+  },
+  "create.zeros": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "create.zeros2d": {
+   "t": "arr",
+   "shape": [
+    2,
+    3
+   ],
+   "kind": "num",
+   "v": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "create.ones": {
+   "t": "arr",
+   "shape": [
+    4
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  "create.full": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    7.5,
+    7.5,
+    7.5
+   ]
+  },
+  "create.eye": {
+   "t": "arr",
+   "shape": [
+    3,
+    3
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0
+    ]
+   ]
+  },
+  "create.arange": {
+   "t": "arr",
+   "shape": [
+    5
+   ],
+   "kind": "num",
+   "v": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ]
+  },
+  "create.arange.step": {
+   "t": "arr",
+   "shape": [
+    4
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.25,
+    0.5,
+    0.75
+   ]
+  },
+  "create.linspace": {
+   "t": "arr",
+   "shape": [
+    5
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0
+   ]
+  },
+  "create.empty.shape": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "num",
+     "v": 3.0
+    }
+   ]
+  },
+  "create.zeros_like": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.0
+   ]
+  },
+  "create.ones_like": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    1.0
+   ]
+  },
+  "create.float64": {
+   "t": "num",
+   "v": 2.5
+  },
+  "create.int64": {
+   "t": "num",
+   "v": 3.0
+  },
+  "attr.shape": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "num",
+     "v": 2.0
+    },
+    {
+     "t": "num",
+     "v": 3.0
+    }
+   ]
+  },
+  "attr.ndim": {
+   "t": "num",
+   "v": 2.0
+  },
+  "attr.size": {
+   "t": "num",
+   "v": 6.0
+  },
+  "attr.T": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     3.0
+    ],
+    [
+     2.0,
+     4.0
+    ]
+   ]
+  },
+  "attr.len": {
+   "t": "num",
+   "v": 4.0
+  },
+  "attr.tolist": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "num",
+     "v": 1.0
+    },
+    {
+     "t": "num",
+     "v": 2.5
+    }
+   ]
+  },
+  "arith.add": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    4.0,
+    6.0
+   ]
+  },
+  "arith.sub.scalar": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.5,
+    1.5
+   ]
+  },
+  "arith.rsub": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    9.0,
+    8.0
+   ]
+  },
+  "arith.mul": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    6.0
+   ]
+  },
+  "arith.div": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.25,
+    0.5
+   ]
+  },
+  "arith.rdiv": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.5,
+    0.25
+   ]
+  },
+  "arith.pow": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    4.0,
+    9.0
+   ]
+  },
+  "arith.neg": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    -1.0,
+    2.0
+   ]
+  },
+  "arith.floordiv": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    -4.0
+   ]
+  },
+  "arith.mod": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0
+   ]
+  },
+  "arith.broadcast.row": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     11.0,
+     22.0
+    ],
+    [
+     13.0,
+     24.0
+    ]
+   ]
+  },
+  "arith.broadcast.col": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     2.0,
+     4.0
+    ],
+    [
+     9.0,
+     12.0
+    ]
+   ]
+  },
+  "arith.matmul": {
+   "t": "arr",
+   "shape": [
+    2,
+    1
+   ],
+   "kind": "num",
+   "v": [
+    [
+     17.0
+    ],
+    [
+     39.0
+    ]
+   ]
+  },
+  "arith.dot.vec": {
+   "t": "num",
+   "v": 32.0
+  },
+  "arith.dot.mat": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    7.0
+   ]
+  },
+  "arith.inplace": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    3.0
+   ]
+  },
+  "cmp.gt": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "bool",
+   "v": [
+    false,
+    true
+   ]
+  },
+  "cmp.le": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "bool",
+   "v": [
+    true,
+    false
+   ]
+  },
+  "cmp.eq": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "bool",
+   "v": [
+    true,
+    false
+   ]
+  },
+  "cmp.ne": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "bool",
+   "v": [
+    true,
+    false
+   ]
+  },
+  "cmp.sum.mask": {
+   "t": "num",
+   "v": 2.0
+  },
+  "cmp.any": {
+   "t": "bool",
+   "v": true
+  },
+  "cmp.all": {
+   "t": "bool",
+   "v": true
+  },
+  "cmp.mask.index": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    3.0
+   ]
+  },
+  "cmp.mask.assign": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    2.0,
+    0.0
+   ]
+  },
+  "cmp.where": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    0.0,
+    3.0
+   ]
+  },
+  "cmp.isnan": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "bool",
+   "v": [
+    false,
+    true
+   ]
+  },
+  "cmp.allclose": {
+   "t": "bool",
+   "v": true
+  },
+  "idx.scalar": {
+   "t": "num",
+   "v": 20.0
+  },
+  "idx.neg": {
+   "t": "num",
+   "v": 30.0
+  },
+  "idx.slice": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    20.0,
+    30.0
+   ]
+  },
+  "idx.2d": {
+   "t": "num",
+   "v": 3.0
+  },
+  "idx.row": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    4.0
+   ]
+  },
+  "idx.col": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    4.0
+   ]
+  },
+  "idx.setitem": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    5.0,
+    0.0
+   ]
+  },
+  "idx.intarray": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    30.0,
+    10.0
+   ]
+  },
+  "shape.reshape": {
+   "t": "arr",
+   "shape": [
+    2,
+    3
+   ],
+   "kind": "num",
+   "v": [
+    [
+     0.0,
+     1.0,
+     2.0
+    ],
+    [
+     3.0,
+     4.0,
+     5.0
+    ]
+   ]
+  },
+  "shape.reshape.tuple": {
+   "t": "arr",
+   "shape": [
+    3,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     0.0,
+     1.0
+    ],
+    [
+     2.0,
+     3.0
+    ],
+    [
+     4.0,
+     5.0
+    ]
+   ]
+  },
+  "shape.flatten": {
+   "t": "arr",
+   "shape": [
+    4
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+   ]
+  },
+  "shape.ravel": {
+   "t": "arr",
+   "shape": [
+    4
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+   ]
+  },
+  "shape.transpose": {
+   "t": "arr",
+   "shape": [
+    3,
+    1
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0
+    ],
+    [
+     2.0
+    ],
+    [
+     3.0
+    ]
+   ]
+  },
+  "shape.concatenate": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0
+   ]
+  },
+  "shape.vstack": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     2.0
+    ],
+    [
+     3.0,
+     4.0
+    ]
+   ]
+  },
+  "shape.hstack": {
+   "t": "arr",
+   "shape": [
+    4
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+   ]
+  },
+  "shape.stack": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     2.0
+    ],
+    [
+     3.0,
+     4.0
+    ]
+   ]
+  },
+  "shape.column_stack": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     3.0
+    ],
+    [
+     2.0,
+     4.0
+    ]
+   ]
+  },
+  "shape.astype.int": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1,
+    -1
+   ]
+  },
+  "shape.copy": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0
+   ]
+  },
+  "red.sum": {
+   "t": "num",
+   "v": 6.5
+  },
+  "red.sum.axis0": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    4.0,
+    6.0
+   ]
+  },
+  "red.sum.axis1": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    7.0
+   ]
+  },
+  "red.mean": {
+   "t": "num",
+   "v": 2.3333333333333335
+  },
+  "red.mean.list": {
+   "t": "num",
+   "v": 2.0
+  },
+  "red.mean.axis0": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    3.0
+   ]
+  },
+  "red.std": {
+   "t": "num",
+   "v": 1.118033988749895
+  },
+  "red.std.ddof": {
+   "t": "num",
+   "v": 1.2909944487358056
+  },
+  "red.var": {
+   "t": "num",
+   "v": 1.25
+  },
+  "red.min": {
+   "t": "num",
+   "v": 1.0
+  },
+  "red.max": {
+   "t": "num",
+   "v": 3.0
+  },
+  "red.argmin": {
+   "t": "num",
+   "v": 1.0
+  },
+  "red.argmax": {
+   "t": "num",
+   "v": 0.0
+  },
+  "red.prod": {
+   "t": "num",
+   "v": 24.0
+  },
+  "red.cumsum": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    3.0,
+    6.0
+   ]
+  },
+  "red.diff": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    5.0,
+    7.0
+   ]
+  },
+  "red.median": {
+   "t": "num",
+   "v": 2.0
+  },
+  "red.median.even": {
+   "t": "num",
+   "v": 2.5
+  },
+  "red.percentile": {
+   "t": "num",
+   "v": 2.5
+  },
+  "red.percentile.25": {
+   "t": "num",
+   "v": 2.0
+  },
+  "red.quantile": {
+   "t": "num",
+   "v": 3.7
+  },
+  "red.nanmean": {
+   "t": "num",
+   "v": 2.0
+  },
+  "red.nansum": {
+   "t": "num",
+   "v": 4.0
+  },
+  "red.nanmedian": {
+   "t": "num",
+   "v": 2.0
+  },
+  "red.average.w": {
+   "t": "num",
+   "v": 1.6
+  },
+  "ew.sqrt": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0
+   ]
+  },
+  "ew.abs": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.5,
+    2.0
+   ]
+  },
+  "ew.exp": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.718281828459045
+   ]
+  },
+  "ew.log": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    1.0
+   ]
+  },
+  "ew.log10": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    2.0
+   ]
+  },
+  "ew.log2": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    3.0
+   ]
+  },
+  "ew.sin": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    1.0
+   ]
+  },
+  "ew.cos": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    -1.0
+   ]
+  },
+  "ew.tan": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.9999999999999999
+   ]
+  },
+  "ew.arctan2": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.7853981633974483,
+    -0.7853981633974483
+   ]
+  },
+  "ew.arctan2.scalar": {
+   "t": "num",
+   "v": 0.7853981633974483
+  },
+  "ew.hypot": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    5.0,
+    13.0
+   ]
+  },
+  "ew.hypot.scalar": {
+   "t": "num",
+   "v": 5.0
+  },
+  "ew.radians": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    1.5707963267948966,
+    3.141592653589793
+   ]
+  },
+  "ew.degrees": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    180.0
+   ]
+  },
+  "ew.deg2rad": {
+   "t": "num",
+   "v": 0.7853981633974483
+  },
+  "ew.floor": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    -2.0
+   ]
+  },
+  "ew.ceil": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    -1.0
+   ]
+  },
+  "ew.sign": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    -1.0,
+    0.0,
+    1.0
+   ]
+  },
+  "ew.power": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    8.0,
+    27.0
+   ]
+  },
+  "ew.mod": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0
+   ]
+  },
+  "ew.clip": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.5,
+    1.0
+   ]
+  },
+  "ew.maximum": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    5.0
+   ]
+  },
+  "ew.minimum": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    3.0
+   ]
+  },
+  "round.decimals": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    0.33,
+    0.67
+   ]
+  },
+  "round.half.even": {
+   "t": "num",
+   "v": 2.0
+  },
+  "round.half.even.array": {
+   "t": "arr",
+   "shape": [
+    4
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    2.0,
+    2.0,
+    -0.0
+   ]
+  },
+  "round.scaled": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.12,
+    0.28
+   ]
+  },
+  "round.method": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.2,
+    2.3
+   ]
+  },
+  "round.around": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.2,
+    1.4
+   ]
+  },
+  "sort.sort": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0
+   ]
+  },
+  "sort.inplace": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0
+   ]
+  },
+  "sort.argsort": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1,
+    2,
+    0
+   ]
+  },
+  "sort.unique": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    2.0,
+    3.0
+   ]
+  },
+  "sort.unique.counts": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "arr",
+     "shape": [
+      3
+     ],
+     "kind": "num",
+     "v": [
+      1.0,
+      2.0,
+      3.0
+     ]
+    },
+    {
+     "t": "arr",
+     "shape": [
+      3
+     ],
+     "kind": "num",
+     "v": [
+      2,
+      1,
+      2
+     ]
+    }
+   ]
+  },
+  "la.eigh.diag": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    3.0
+   ]
+  },
+  "la.eigh.lower": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    -0.8541019662496848,
+    5.854101966249685
+   ]
+  },
+  "la.eigh.residual": {
+   "t": "bool",
+   "v": true
+  },
+  "la.eigvalsh": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    3.0
+   ]
+  },
+  "la.inv": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     0.6,
+     -0.7000000000000001
+    ],
+    [
+     -0.2,
+     0.4
+    ]
+   ]
+  },
+  "la.det": {
+   "t": "num",
+   "v": 10.000000000000002
+  },
+  "la.solve": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    3.0
+   ]
+  },
+  "la.norm.vec": {
+   "t": "num",
+   "v": 5.0
+  },
+  "la.norm.list": {
+   "t": "num",
+   "v": 5.0
+  },
+  "la.norm.fro": {
+   "t": "num",
+   "v": 5.477225575051661
+  },
+  "la.lstsq.x": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.666666666666666,
+    0.5000000000000003
+   ]
+  },
+  "la.lstsq.rank": {
+   "t": "num",
+   "v": 2.0
+  },
+  "la.svd.s": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    4.0,
+    3.0
+   ]
+  },
+  "la.cholesky": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     2.0,
+     0.0
+    ],
+    [
+     1.0,
+     1.4142135623730951
+    ]
+   ]
+  },
+  "la.trace": {
+   "t": "num",
+   "v": 5.0
+  },
+  "la.outer": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     3.0,
+     4.0
+    ],
+    [
+     6.0,
+     8.0
+    ]
+   ]
+  },
+  "la.cross": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    0.0,
+    1.0
+   ]
+  },
+  "stat.cov": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.6666666666666665,
+     3.6666666666666665
+    ],
+    [
+     3.6666666666666665,
+     8.666666666666666
+    ]
+   ]
+  },
+  "stat.corrcoef": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     0.9647638212377321
+    ],
+    [
+     0.9647638212377322,
+     1.0
+    ]
+   ]
+  },
+  "stat.histogram": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "arr",
+     "shape": [
+      3
+     ],
+     "kind": "num",
+     "v": [
+      1,
+      2,
+      2
+     ]
+    },
+    {
+     "t": "arr",
+     "shape": [
+      4
+     ],
+     "kind": "num",
+     "v": [
+      1.0,
+      2.0,
+      3.0,
+      4.0
+     ]
+    }
+   ]
+  },
+  "stat.polyfit": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    0.9999999999999996
+   ]
+  },
+  "stat.polyval": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    3.0,
+    5.0
+   ]
+  },
+  "stat.interp": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    5.0,
+    15.0
+   ]
+  },
+  "stat.trapezoid": {
+   "t": "num",
+   "v": 4.0
+  },
+  "const.pi": {
+   "t": "num",
+   "v": 3.141592653589793
+  },
+  "const.e": {
+   "t": "num",
+   "v": 2.718281828459045
+  },
+  "const.inf": {
+   "t": "bool",
+   "v": true
+  },
+  "print.str.1d": {
+   "t": "str",
+   "v": "[3. 1.]"
+  },
+  "print.repr.1d": {
+   "t": "str",
+   "v": "array([3., 1.])"
+  },
+  "print.str.2d": {
+   "t": "str",
+   "v": "[[1. 2.]\n [3. 4.]]"
+  },
+  "print.str.frac": {
+   "t": "str",
+   "v": "[0.5  1.25]"
+  },
+  "print.str.bool": {
+   "t": "str",
+   "v": "[False  True]"
+  },
+  "print.str.arange": {
+   "t": "str",
+   "v": "[0 1 2]"
+  },
+  "random.seeded.shape": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "num",
+     "v": 3.0
+    }
+   ]
+  }
+ }
+}
