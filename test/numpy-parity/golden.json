@@ -1631,6 +1631,389 @@
      "v": 3.0
     }
    ]
+  },
+  "bool.and": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    false,
+    true,
+    false
+   ]
+  },
+  "bool.or": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    true,
+    false,
+    true
+   ]
+  },
+  "bool.invert": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    true,
+    false,
+    false
+   ]
+  },
+  "bool.xor": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    false,
+    true,
+    false
+   ]
+  },
+  "bool.add": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    false,
+    true,
+    true
+   ]
+  },
+  "bool.mul": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    false,
+    false,
+    true
+   ]
+  },
+  "bool.sub": {
+   "t": "error",
+   "v": "TypeError"
+  },
+  "bool.neg": {
+   "t": "error",
+   "v": "TypeError"
+  },
+  "bool.sum": {
+   "t": "num",
+   "v": 2.0
+  },
+  "bool.method.sum": {
+   "t": "num",
+   "v": 2.0
+  },
+  "bool.mean": {
+   "t": "num",
+   "v": 0.75
+  },
+  "bool.index": {
+   "t": "bool",
+   "v": true
+  },
+  "bool.iter": {
+   "t": "seq",
+   "v": [
+    {
+     "t": "bool",
+     "v": false
+    },
+    {
+     "t": "bool",
+     "v": true
+    }
+   ]
+  },
+  "bool.float.and": {
+   "t": "error",
+   "v": "TypeError"
+  },
+  "bool.isfinite": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "bool",
+   "v": [
+    true,
+    false,
+    false
+   ]
+  },
+  "bool.isnan.scalar": {
+   "t": "bool",
+   "v": true
+  },
+  "bool.where": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    2.0,
+    3.0
+   ]
+  },
+  "red.var.ddof": {
+   "t": "num",
+   "v": 1.6666666666666667
+  },
+  "red.std.axis.kw": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    1.5
+   ]
+  },
+  "red.std.method.ddof": {
+   "t": "num",
+   "v": 1.2909944487358056
+  },
+  "red.sum.axis.kw": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    3.0,
+    8.0
+   ]
+  },
+  "round.negative": {
+   "t": "arr",
+   "shape": [
+    3
+   ],
+   "kind": "num",
+   "v": [
+    1200.0,
+    1400.0,
+    -1200.0
+   ]
+  },
+  "round.method.dec": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.12,
+    2.5
+   ]
+  },
+  "round.kw": {
+   "t": "arr",
+   "shape": [
+    1
+   ],
+   "kind": "num",
+   "v": [
+    0.333
+   ]
+  },
+  "round.negzero": {
+   "t": "str",
+   "v": "[-0.  0.]"
+  },
+  "la.eigh.vectors.abs": {
+   "t": "arr",
+   "shape": [
+    2,
+    2
+   ],
+   "kind": "num",
+   "v": [
+    [
+     0.7071067811865475,
+     0.7071067811865475
+    ],
+    [
+     0.7071067811865475,
+     0.7071067811865475
+    ]
+   ]
+  },
+  "la.eigh.upper": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.0,
+    5.0
+   ]
+  },
+  "la.lstsq.res": {
+   "t": "arr",
+   "shape": [
+    1
+   ],
+   "kind": "num",
+   "v": [
+    0.1666666666666669
+   ]
+  },
+  "la.lstsq.s": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    4.079143328941734,
+    0.6004912172131635
+   ]
+  },
+  "la.lstsq.square.res": {
+   "t": "arr",
+   "shape": [
+    0
+   ],
+   "kind": "empty",
+   "v": []
+  },
+  "la.lstsq.deficient.rank": {
+   "t": "num",
+   "v": 1.0
+  },
+  "la.lstsq.deficient.x": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    0.19999999999999996,
+    0.39999999999999997
+   ]
+  },
+  "print.sci": {
+   "t": "str",
+   "v": "[1.0e-05 1.5e+03]"
+  },
+  "print.repr.2d": {
+   "t": "str",
+   "v": "array([[1., 2.],\n       [3., 4.]])"
+  },
+  "print.nonfinite": {
+   "t": "str",
+   "v": "[ nan   1. -inf]"
+  },
+  "print.neg": {
+   "t": "str",
+   "v": "array([-0.5 , 10.25])"
+  },
+  "print.wrap": {
+   "t": "str",
+   "v": "[ 0.   1.5  3.   4.5  6.   7.5  9.  10.5 12.  13.5 15.  16.5 18.  19.5\n 21.  22.5 24.  25.5 27.  28.5 30.  31.5 33.  34.5 36.  37.5 39.  40.5\n 42.  43.5]"
+  },
+  "print.repr.wrap": {
+   "t": "str",
+   "v": "array([ 0. ,  1.5,  3. ,  4.5,  6. ,  7.5,  9. , 10.5, 12. , 13.5, 15. ,\n       16.5, 18. , 19.5, 21. , 22.5, 24. , 25.5, 27. , 28.5, 30. , 31.5,\n       33. , 34.5, 36. , 37.5, 39. , 40.5, 42. , 43.5])"
+  },
+  "print.summary": {
+   "t": "str",
+   "v": "[0.000e+00 1.000e+00 2.000e+00 ... 1.997e+03 1.998e+03 1.999e+03]"
+  },
+  "print.repr.bool": {
+   "t": "str",
+   "v": "array([False,  True])"
+  },
+  "print.precision": {
+   "t": "str",
+   "v": "[0.33333333 2.        ]"
+  },
+  "print.empty": {
+   "t": "str",
+   "v": "array([], dtype=float64)"
+  },
+  "print.3d": {
+   "t": "str",
+   "v": "[[[1. 1.]\n  [1. 1.]]\n\n [[1. 1.]\n  [1. 1.]]]"
+  },
+  "ar.power.arrays": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    8.0,
+    9.0
+   ]
+  },
+  "ar.power.scalar.base": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    2.0,
+    8.0
+   ]
+  },
+  "stat.corrcoef.2d": {
+   "t": "arr",
+   "shape": [
+    3,
+    3
+   ],
+   "kind": "num",
+   "v": [
+    [
+     1.0,
+     0.9647638212377321,
+     -0.9438798074485388
+    ],
+    [
+     0.9647638212377322,
+     1.0,
+     -0.8278373543847156
+    ],
+    [
+     -0.9438798074485388,
+     -0.8278373543847156,
+     1.0
+    ]
+   ]
+  },
+  "la.eig.nonsym": {
+   "t": "arr",
+   "shape": [
+    2
+   ],
+   "kind": "num",
+   "v": [
+    1.0,
+    3.0
+   ]
   }
  }
 }

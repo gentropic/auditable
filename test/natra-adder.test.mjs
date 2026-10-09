@@ -388,14 +388,14 @@ result = c.tolist()
 });
 
 describe('comparison operators', () => {
-  it('a > scalar returns mask', async () => {
+  it('a > scalar returns a boolean mask', async () => {
     const r = await pyEval(`
 import natra as np
 a = await np.array([1, 5, 3, 7, 2])
 mask = a > 3
 result = mask.tolist()
 `);
-    assert.deepStrictEqual(r.defines.result, [0, 1, 0, 1, 0]);
+    assert.deepStrictEqual(r.defines.result, [false, true, false, true, false]);
   });
 
   it('a == b', async () => {
@@ -406,7 +406,7 @@ b = await np.array([1, 0, 3])
 mask = a == b
 result = mask.tolist()
 `);
-    assert.deepStrictEqual(r.defines.result, [1, 0, 1]);
+    assert.deepStrictEqual(r.defines.result, [true, false, true]);
   });
 });
 

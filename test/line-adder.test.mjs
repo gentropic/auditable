@@ -450,13 +450,13 @@ result = (vals, vecs_shape)
     assert.deepStrictEqual(shape, [3, 3]);
   });
 
-  it('np.linalg.lstsq recovers regression coefficients', async () => {
+  it('np.linalg.lstsq recovers regression coefficients (numpy 4-tuple, x first)', async () => {
     const r = await pyEval(`
 import line as np
 # Fit y = 2x + 3 to 5 noiseless points.
 A = np.array([[0, 1], [1, 1], [2, 1], [3, 1], [4, 1]])
 b = np.array([3, 5, 7, 9, 11])
-beta = np.linalg.lstsq(A, b)
+beta = np.linalg.lstsq(A, b, rcond=None)[0]
 result = beta.tolist()
 `);
     const [slope, intercept] = r.defines.result;

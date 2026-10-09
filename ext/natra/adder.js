@@ -117,43 +117,253 @@ function _isNd(v) {
   return v && v._nd === true;
 }
 
+// ── numpy-style printing (numpy's arrayprint: floatmode 'maxprec', precision 8,
+// linewidth 75, threshold 1000, edgeitems 3). Twin copy in ext/line/adder.js —
+// keep the two identical; test/numpy-parity holds both to real numpy.
+
+function _npShortPos(x) {              // shortest unique, at most 8 fraction digits, trailing '.'
+  let s = String(Math.abs(x));
+  if (/e/.test(s)) s = Math.abs(x).toFixed(8);
+  let [ip, fp = ''] = s.split('.');
+  if (fp.length > 8) { [ip, fp = ''] = Math.abs(x).toFixed(8).split('.'); }
+  fp = fp.replace(/0+$/, '');
+  return [(x < 0 || Object.is(x, -0) ? '-' : '') + ip, fp];
+}
+function _npShortSci(x) {              // [int, frac, exp-digits, exp-sign]
+  let s = Math.abs(x).toExponential();
+  let [m, e] = s.split('e');
+  let [ip, fp = ''] = m.split('.');
+  if (fp.length > 8) { [m, e] = Math.abs(x).toExponential(8).split('e'); [ip, fp = ''] = m.split('.'); }
+  fp = fp.replace(/0+$/, '');
+  return [(x < 0 || Object.is(x, -0) ? '-' : '') + ip, fp, String(Math.abs(+e)), +e < 0 ? '-' : '+'];
+}
+
+function _npFloatFormatter(vals) {
+  const fin = vals.filter(Number.isFinite);
+  const nz = fin.filter((v) => v !== 0).map(Math.abs);
+  let exp = false;
+  if (nz.length) {
+    const mx = Math.max(...nz), mn = Math.min(...nz);
+    exp = mx >= 1e8 || mn < 1e-4 || mx / mn > 1e3;
+  }
+  let padL = 0, padR = 0, fmt;
+  if (exp) {
+    const parts = fin.map(_npShortSci);
+    const prec = Math.max(0, ...parts.map((p) => p[1].length));
+    const expSize = Math.max(2, ...parts.map((p) => p[2].length));
+    padL = Math.max(0, ...parts.map((p) => p[0].length));
+    padR = expSize + 2 + prec;
+    fmt = (x) => {
+      let [m, e] = Math.abs(x).toExponential(prec).split('e');
+      if (prec === 0) m += '.';
+      const [ip, fp] = m.split('.');
+      const ii = (x < 0 || Object.is(x, -0) ? '-' : '') + ip;
+      return ii.padStart(padL) + '.' + fp + 'e' + (+e < 0 ? '-' : '+') + String(Math.abs(+e)).padStart(expSize, '0');
+    };
+  } else {
+    const parts = fin.map(_npShortPos);
+    padL = Math.max(0, ...parts.map((p) => p[0].length));
+    padR = Math.max(0, ...parts.map((p) => p[1].length));
+    fmt = (x) => { const [ip, fp] = _npShortPos(x); return ip.padStart(padL) + '.' + fp.padEnd(padR); };
+  }
+  if (fin.length !== vals.length) {
+    const neg = vals.some((v) => v === -Infinity) ? 1 : 0;
+    padL = Math.max(padL, 3 - (padR + 1), 3 + neg - (padR + 1));
+  }
+  return (x) => {
+    if (Number.isFinite(x)) return fmt(x);
+    const s = Number.isNaN(x) ? 'nan' : x > 0 ? 'inf' : '-inf';
+    return s.padStart(padL + padR + 1);
+  };
+}
+
+// data: flat array of numbers; shape: dims; bool: print as True/False; repr: array(...) form
+function _npFormat(data, shape, bool, repr) {
+  const size = shape.reduce((a, b) => a * b, 1);
+  if (size === 0) return repr ? `array([], dtype=${bool ? 'bool' : 'float64'})` : '[]';
+  const prefix = repr ? 'array(' : '', suffix = repr ? ')' : '';
+  const sep = repr ? ', ' : ' ';
+  const width = 75 - suffix.length;
+  const summary = size > 1000, EDGE = 3;
+  const strides = shape.map((_, i) => shape.slice(i + 1).reduce((a, b) => a * b, 1));
+  // the values that will be shown decide the padding
+  const shown = [];
+  const collect = (axis, off) => {
+    if (axis === shape.length) { shown.push(data[off]); return; }
+    const n = shape[axis];
+    const idx = summary && n > 2 * EDGE ? [0, 1, 2, n - 3, n - 2, n - 1] : [...Array(n).keys()];
+    for (const i of idx) collect(axis + 1, off + i * strides[axis]);
+  };
+  collect(0, 0);
+  const f = bool ? (x) => (x ? ' True' : 'False') : _npFloatFormatter(shown);
+  const extend = (s, line, word, lw, nlp) => {
+    let wrap = line.length + word.length > lw;
+    if (line.length <= nlp.length) wrap = false;
+    if (wrap) { s += line.replace(/\s+$/, '') + '\n'; line = nlp; }
+    return [s, line + word];
+  };
+  const rec = (axis, off, hang, cw) => {
+    if (axis === shape.length) return f(data[off]);
+    const left = shape.length - axis, nextHang = hang + ' ', nextW = cw - 1;
+    const n = shape[axis];
+    const showSum = summary && 2 * EDGE < n;
+    const lead = showSum ? EDGE : 0, trail = showSum ? EDGE : n;
+    let s = '';
+    if (left === 1) {
+      const ew = cw - Math.max(sep.trimEnd().length, 1);
+      let line = hang;
+      for (let i = 0; i < lead; i++) { [s, line] = extend(s, line, rec(axis + 1, off + i * strides[axis], nextHang, nextW), ew, hang); line += sep; }
+      if (showSum) { [s, line] = extend(s, line, '...', ew, hang); line += sep; }
+      for (let i = trail; i > 1; i--) { [s, line] = extend(s, line, rec(axis + 1, off + (n - i) * strides[axis], nextHang, nextW), ew, hang); line += sep; }
+      [s, line] = extend(s, line, rec(axis + 1, off + (n - 1) * strides[axis], nextHang, nextW), ew, hang);
+      s += line;
+    } else {
+      const lsep = sep.trimEnd() + '\n'.repeat(left - 1);
+      for (let i = 0; i < lead; i++) s += hang + rec(axis + 1, off + i * strides[axis], nextHang, nextW) + lsep;
+      if (showSum) s += hang + '...' + lsep;
+      for (let i = trail; i > 1; i--) s += hang + rec(axis + 1, off + (n - i) * strides[axis], nextHang, nextW) + lsep;
+      s += hang + rec(axis + 1, off + (n - 1) * strides[axis], nextHang, nextW);
+    }
+    return '[' + s.slice(hang.length) + ']';
+  };
+  return prefix + rec(0, 0, ' ' + ' '.repeat(prefix.length), width) + suffix;
+}
+
+// numpy's rounding: scale by 10^d, round half to even, scale back (so 0.125 → 0.12)
+function _rintEven(x) {
+  if (!Number.isFinite(x)) return x;
+  const f = Math.floor(x), d = x - f;
+  const r = d > 0.5 ? f + 1 : d < 0.5 ? f : (f % 2 === 0 ? f : f + 1);
+  return r === 0 && (x < 0 || Object.is(x, -0)) ? -0 : r;
+}
+function _npRoundScalar(x, dec) {
+  if (!dec) return _rintEven(x);
+  if (dec > 0) { const p = 10 ** dec; return _rintEven(x * p) / p; }
+  const p = 10 ** -dec; return _rintEven(x / p) * p;
+}
+
+// boolean arrays: natra is float64 throughout, so a mask keeps 0/1 data (mask indexing,
+// sums and where keep working) and _bool decides how it reads back: tolist, indexing,
+// printing, and numpy's bool∘bool arithmetic
+function _flat(arr) { const v = _ctx.toArray(arr); return Array.isArray(v) ? v.flat(Infinity) : [v]; }
+function _deepBool(v) { return Array.isArray(v) ? v.map(_deepBool) : v !== 0; }
+function _boolOp(a, o, fn) {
+  const x = _flat(a._arr), y = _isNd(o) ? _flat(o._arr) : null;
+  if (y && y.length !== x.length) throw new RangeError(`operands could not be broadcast together with shapes [${a.shape}] [${o.shape}]`);
+  const ob = o !== 0 && o !== false;
+  const out = x.map((v, i) => (fn(v !== 0, y ? y[i] !== 0 : ob) ? 1 : 0));
+  return _makeNd(_ctx.array(out, { shape: a.shape }), true);
+}
+function _logic(a, o, fn, sym) {
+  const ob = _isNd(o) ? o._bool : typeof o === 'boolean';
+  if (!a._bool || !ob) throw new TypeError(`'${sym}' on float arrays: numpy refuses (ufunc not supported for float64); use it on boolean arrays`);
+  return _boolOp(a, o, fn);
+}
+// reductions: axis positionally or by keyword, ddof by keyword; anything else raises
+function _redOpts(axis, kw) {
+  if (axis && axis._kw) { kw = axis; axis = undefined; }
+  let ddof = 0;
+  if (kw) {
+    if (kw.axis !== undefined && kw.axis !== null) axis = kw.axis;
+    if (kw.ddof !== undefined) ddof = kw.ddof;
+    for (const k of Object.keys(kw)) {
+      if (k !== '_kw' && k !== 'axis' && k !== 'ddof') throw new TypeError(`unsupported keyword argument '${k}' (natra bridge)`);
+    }
+  }
+  return { axis: axis === null ? undefined : axis, ddof };
+}
+function _variance(a, axis, kw) {
+  const { axis: ax, ddof } = _redOpts(axis, kw);
+  const raw = _raw(a);
+  const m = _ops().mean(raw, ax);
+  const diff = _ops().sub(raw, m);
+  const sq = _ops().mul(diff, diff);
+  const r = _ops().sum(sq, ax);
+  const shape = raw.shape;
+  const n = ax === undefined ? shape.reduce((p, q) => p * q, 1) : shape[ax < 0 ? ax + shape.length : ax];
+  const den = n - ddof;
+  if (typeof r === 'number') return den > 0 ? r / den : NaN;
+  return _makeNd(_ops().map(r, (v) => (den > 0 ? v / den : NaN)));
+}
+function _std(a, axis, kw) {
+  const v = _variance(a, axis, kw);
+  if (typeof v === 'number') return Math.sqrt(v);
+  return _makeNd(_ops().map(v._arr, Math.sqrt));
+}
+function _round(a, decimals) {
+  let d = decimals;
+  if (d && d._kw) d = d.decimals;
+  d = d ?? 0;
+  if (!Number.isInteger(d)) throw new TypeError('decimals must be an integer');
+  const _r = (x) => {
+    if (typeof x === 'number') return _npRoundScalar(x, d);
+    if (Array.isArray(x)) return x.map(_r);
+    if (ArrayBuffer.isView(x)) {
+      const out = Array.from(x, (v) => _npRoundScalar(v, d));
+      if (Array.isArray(x.shape)) out.shape = x.shape.slice();
+      return out;
+    }
+    return x;
+  };
+  if (_isNd(a)) return _makeNd(_ops().map(a._arr, (v) => _npRoundScalar(v, d)));
+  return _r(a);
+}
+
 // ── NdArray wrapper ──
 
-function _makeNd(arr) {
+function _makeNd(arr, isBool) {
   const nd = {
     _nd: true,
     _arr: arr,
+    _bool: !!isBool,
     // Surface as `<class 'ndarray'>` to adder's type() builtin —
     // matches numpy's reporting closely enough for the common
     // `print(type(x))` debugging pattern.
     __adderClass__: 'ndarray',
     get shape() { return [...arr.shape]; },
     get ndim() { return arr.ndim; },
-    get dtype() { return arr.dtype; },
+    get dtype() { return nd._bool ? 'bool' : arr.dtype; },
     get size() { return arr.length; },
     get T() { return _makeNd(arr.T); },
 
     // arithmetic dunders
-    __add__(other) { return _makeNd(_ops().add(arr, _raw(other))); },
+    // numpy: bool + bool is OR, bool * bool is AND, bool - bool and -bool raise
+    __add__(other) { return nd._bool && _isNd(other) && other._bool ? _boolOp(nd, other, (a, b) => a || b) : _makeNd(_ops().add(arr, _raw(other))); },
     __radd__(other) { return _makeNd(_ops().add(_raw(other), arr)); },
-    __sub__(other) { return _makeNd(_ops().sub(arr, _raw(other))); },
+    __sub__(other) {
+      if (nd._bool && _isNd(other) && other._bool) throw new TypeError('numpy boolean subtract, the `-` operator, is not supported, use the bitwise_xor, the `^` operator, or the logical_xor function instead.');
+      return _makeNd(_ops().sub(arr, _raw(other)));
+    },
     __rsub__(other) { return _makeNd(_ops().sub(_raw(other), arr)); },
-    __mul__(other) { return _makeNd(_ops().mul(arr, _raw(other))); },
+    __mul__(other) { return nd._bool && _isNd(other) && other._bool ? _boolOp(nd, other, (a, b) => a && b) : _makeNd(_ops().mul(arr, _raw(other))); },
     __rmul__(other) { return _makeNd(_ops().mul(_raw(other), arr)); },
     __truediv__(other) { return _makeNd(_ops().div(arr, _raw(other))); },
     __rtruediv__(other) { return _makeNd(_ops().div(_raw(other), arr)); },
     __matmul__(other) { return _makeNd(_ops().matmul(arr, _raw(other))); },
     __rmatmul__(other) { return _makeNd(_ops().matmul(_raw(other), arr)); },
-    __neg__() { return _makeNd(_ops().neg(arr)); },
-    __abs__() { return _makeNd(_ops().map(arr, Math.abs)); },
+    __neg__() {
+      if (nd._bool) throw new TypeError('numpy boolean negative, the `-` operator, is not supported, use the `~` operator or the logical_not function instead.');
+      return _makeNd(_ops().neg(arr));
+    },
+    __abs__() { return _makeNd(_ops().map(arr, Math.abs), nd._bool); },
+    __invert__() {
+      if (!nd._bool) throw new TypeError("ufunc 'invert' not supported for float64 (numpy refuses ~ on floats)");
+      return _boolOp(nd, nd, (a) => !a);
+    },
+    __and__(o) { return _logic(nd, o, (a, b) => a && b, '&'); },
+    __rand__(o) { return _logic(nd, o, (a, b) => a && b, '&'); },
+    __or__(o) { return _logic(nd, o, (a, b) => a || b, '|'); },
+    __ror__(o) { return _logic(nd, o, (a, b) => a || b, '|'); },
+    __xor__(o) { return _logic(nd, o, (a, b) => !a !== !b, '^'); },
+    __rxor__(o) { return _logic(nd, o, (a, b) => !a !== !b, '^'); },
 
     // comparison dunders (return mask arrays)
-    __eq__(other) { return _makeNd(_ops().eq(arr, _raw(other))); },
-    __ne__(other) { return _makeNd(_ops().ne(arr, _raw(other))); },
-    __lt__(other) { return _makeNd(_ops().lt(arr, _raw(other))); },
-    __le__(other) { return _makeNd(_ops().le(arr, _raw(other))); },
-    __gt__(other) { return _makeNd(_ops().gt(arr, _raw(other))); },
-    __ge__(other) { return _makeNd(_ops().ge(arr, _raw(other))); },
+    __eq__(other) { return _makeNd(_ops().eq(arr, _raw(other)), true); },
+    __ne__(other) { return _makeNd(_ops().ne(arr, _raw(other)), true); },
+    __lt__(other) { return _makeNd(_ops().lt(arr, _raw(other)), true); },
+    __le__(other) { return _makeNd(_ops().le(arr, _raw(other)), true); },
+    __gt__(other) { return _makeNd(_ops().gt(arr, _raw(other)), true); },
+    __ge__(other) { return _makeNd(_ops().ge(arr, _raw(other)), true); },
 
     // container dunders
     __len__() { return arr.shape[0]; },
@@ -162,14 +372,14 @@ function _makeNd(arr) {
     // subscript
     __getitem__(key) {
       if (typeof key === 'number') {
-        if (arr.ndim === 1) return _ctx.get(arr, key < 0 ? key + arr.shape[0] : key);
-        return _makeNd(arr.slice(key < 0 ? key + arr.shape[0] : key));
+        if (arr.ndim === 1) return nd._el(_ctx.get(arr, key < 0 ? key + arr.shape[0] : key));
+        return _makeNd(arr.slice(key < 0 ? key + arr.shape[0] : key), nd._bool);
       }
       if (key && key._slice) {
         const lower = key.lower ?? 0;
         const upper = key.upper ?? arr.shape[0];
         const step = key.step ?? 1;
-        return _makeNd(arr.slice([lower < 0 ? lower + arr.shape[0] : lower, upper < 0 ? upper + arr.shape[0] : upper, step]));
+        return _makeNd(arr.slice([lower < 0 ? lower + arr.shape[0] : lower, upper < 0 ? upper + arr.shape[0] : upper, step]), nd._bool);
       }
       if (Array.isArray(key)) {
         // tuple indexing (multi-dimensional)
@@ -186,12 +396,12 @@ function _makeNd(arr) {
         const result = arr.slice(...sliceArgs);
         // if all dimensions were integer-indexed, we have a [1] array — return scalar
         if (result.ndim === 1 && result.length === 1 && sliceArgs.every(s => typeof s === 'number')) {
-          return _ctx.get(result, 0);
+          return nd._el(_ctx.get(result, 0));
         }
-        return _makeNd(result);
+        return _makeNd(result, nd._bool);
       }
       // boolean mask indexing
-      if (_isNd(key)) return _makeNd(_ops().compress(arr, key._arr));
+      if (_isNd(key)) return _makeNd(_ops().compress(arr, key._arr), nd._bool);
       throw new Error(`unsupported index type: ${typeof key}`);
     },
 
@@ -218,8 +428,10 @@ function _makeNd(arr) {
     },
 
     // display
-    __repr__() { return arr.toString(); },
-    __str__() { return arr.toString(); },
+    _el(x) { return nd._bool ? x !== 0 : x; },
+    __repr__() { return _npFormat(_flat(arr), arr.shape, nd._bool, true); },
+    __str__() { return _npFormat(_flat(arr), arr.shape, nd._bool, false); },
+    toString() { return nd.__str__(); },
     _repr_html_() { return _htmlTable(arr); },
 
     // methods
@@ -243,13 +455,16 @@ function _makeNd(arr) {
       const r = _ops().max(arr, a);
       return typeof r === 'number' ? r : _makeNd(r);
     },
+    std(axis, kw) { return _std(nd, axis, kw); },
+    var(axis, kw) { return _variance(nd, axis, kw); },
+    round(decimals) { return _round(nd, decimals); },
     reshape(...s) {
       const shape = s.length === 1 && Array.isArray(s[0]) ? s[0] : s;
       return _makeNd(arr.reshape(shape));
     },
-    flatten() { return _makeNd(arr.reshape([arr.length])); },
-    copy() { return _makeNd(_ctx.copy(arr)); },
-    tolist() { return _ctx.toArray(arr); },
+    flatten() { return _makeNd(arr.reshape([arr.length]), nd._bool); },
+    copy() { return _makeNd(_ctx.copy(arr), nd._bool); },
+    tolist() { return nd._bool ? _deepBool(_ctx.toArray(arr)) : _ctx.toArray(arr); },
     dot(other) {
       const r = _ops().dot(arr, _raw(other));
       return typeof r === 'number' ? r : _makeNd(r);
@@ -276,8 +491,8 @@ function _makeNd(arr) {
         next() {
           if (i >= len) return { done: true };
           const idx = i++;
-          if (arr.ndim === 1) return { value: _ctx.get(arr, idx), done: false };
-          return { value: _makeNd(arr.slice(idx)), done: false };
+          if (arr.ndim === 1) return { value: nd._el(_ctx.get(arr, idx)), done: false };
+          return { value: _makeNd(arr.slice(idx), nd._bool), done: false };
         }
       };
     },
@@ -512,24 +727,22 @@ const _module = {
     const lin = ctx.linspace(start, stop, num);
     return _makeNd(_ops().map(lin, (v) => Math.pow(base, v)));
   },
-  // np.var(a, axis=None) / np.std(a, axis=None)
-  var(a, axis) {
-    const raw = _raw(a);
-    const m = _ops().mean(raw, axis);
-    const diff = _ops().sub(raw, m);
-    const sq = _ops().mul(diff, diff);
-    const r = _ops().mean(sq, axis);
-    return typeof r === 'number' ? r : _makeNd(r);
-  },
-  std(a, axis) {
-    const v = this.var(a, axis);
-    if (typeof v === 'number') return Math.sqrt(v);
-    return _makeNd(_ops().map(v._arr, Math.sqrt));
-  },
+  // np.var / np.std (axis, ddof; keywords or positional axis)
+  var(a, axis, kw) { return _variance(a, axis, kw); },
+  std(a, axis, kw) { return _std(a, axis, kw); },
+  isnan(a) { return _isNd(a) ? _makeNd(_ops().map(a._arr, (v) => (Number.isNaN(v) ? 1 : 0)), true) : Number.isNaN(a); },
+  isfinite(a) { return _isNd(a) ? _makeNd(_ops().map(a._arr, (v) => (Number.isFinite(v) ? 1 : 0)), true) : Number.isFinite(a); },
+  logical_not(a) { return _isNd(a) ? _boolOp(a, a, (x) => !x) : !a; },
 
   // np.power(x, y) — element-wise x**y. Both can be arrays or scalars.
   power(x, y) {
-    if (_isNd(x)) return _makeNd(_ops().map(x._arr, (v) => Math.pow(v, _isNd(y) ? y : y)));
+    if (_isNd(y)) {
+      if (!_isNd(x)) return _makeNd(_ops().map(y._arr, (v) => Math.pow(x, v)));
+      const xs = _flat(x._arr), ys = _flat(y._arr);
+      if (xs.length !== ys.length) throw new RangeError(`operands could not be broadcast together with shapes [${x.shape}] [${y.shape}]`);
+      return _makeNd(_ctx.array(xs.map((v, i) => Math.pow(v, ys[i])), { shape: x.shape }));
+    }
+    if (_isNd(x)) return _makeNd(_ops().map(x._arr, (v) => Math.pow(v, y)));
     return Math.pow(x, y);
   },
   // numpy spells the rounding function `np.around` AND `np.round_`
@@ -539,23 +752,8 @@ const _module = {
   // np.round(a, decimals=0) — element-wise round, optionally to N decimal
   // places. Recurses into nested arrays so a 2D corr matrix from
   // np.corrcoef stays 2D after rounding.
-  round(a, decimals) {
-    if (decimals && decimals._kw) decimals = decimals.decimals;
-    const d = decimals || 0;
-    const f = Math.pow(10, d);
-    const _r = (x) => {
-      if (typeof x === 'number') return Math.round(x * f) / f;
-      if (Array.isArray(x)) return x.map(_r);
-      if (ArrayBuffer.isView(x)) {
-        const out = Array.from(x, v => Math.round(v * f) / f);
-        if (Array.isArray(x.shape)) out.shape = x.shape.slice();
-        return out;
-      }
-      return x;
-    };
-    if (_isNd(a)) return _makeNd(_ops().map(a._arr, (v) => Math.round(v * f) / f));
-    return _r(a);
-  },
+  // numpy rounding: scale by 10^decimals, half to even, scale back (0.125 → 0.12)
+  round(a, decimals) { return _round(a, decimals); },
   // np.corrcoef(x, y=None, rowvar=True) — Pearson correlation matrix.
   // Three input shapes (mirroring numpy):
   //   x=2D ndarray, rowvar=True (default)  → each row is a variable
@@ -585,7 +783,7 @@ const _module = {
       // tolist() to get a plain nested-array form.
       const arr2d = x.to_numpy();
       rows = arr2d && typeof arr2d.tolist === 'function' ? arr2d.tolist() : arr2d;
-    } else if (x && typeof x.tolist === 'function' && Array.isArray(x.tolist())) {
+    } else if (!_isNd(x) && x && typeof x.tolist === 'function' && Array.isArray(x.tolist())) {
       // _NumpyLikeArray2D passed directly
       rows = x.tolist();
     } else if (_isNd(x) && x.ndim === 2) {
@@ -597,7 +795,7 @@ const _module = {
       // 1D path — two vectors
       const _toJs = (v) => {
         if (Array.isArray(v)) return v;
-        if (_isNd(v)) return Array.from(new Float64Array(v._arr.memory.buffer, v._arr.ptr, v._arr.length));
+        if (_isNd(v)) return _flat(v._arr);
         if (ArrayBuffer.isView(v)) return Array.from(v);
         return v;
       };
@@ -634,7 +832,7 @@ const _module = {
       for (let j = 0; j < n; j++) row.push(i === j ? 1 : _r(vars[i], vars[j]));
       out.push(row);
     }
-    return out;
+    return _makeNd(_ctx.array(out));
   },
 
   // linear algebra helpers
@@ -688,8 +886,20 @@ const _module = {
     solve(a, b) { return _makeNd(_ops().solve(_raw(a), _raw(b))); },
     inv(a) { return _makeNd(_ops().inv(_raw(a))); },
     cholesky(a) { return _makeNd(_ops().cholesky(_raw(a))); },
-    eigh(a) { const [w, v] = _ops().eigh(_raw(a)); return [_makeNd(w), _makeNd(v)]; },
-    eig(a) { const [w, v] = _ops().eigh(_raw(a)); return [_makeNd(w), _makeNd(v)]; },
+    // numpy reads the LOWER triangle by default (UPLO='L'); values ascending
+    eigh(a, kw) {
+      const uplo = (kw && kw._kw && kw.UPLO) || (typeof kw === 'string' ? kw : 'L');
+      if (uplo !== 'L' && uplo !== 'U') throw new RangeError("UPLO argument must be 'L' or 'U'");
+      const M = _ctx.toArray(_raw(a));
+      const n = M.length;
+      const S = M.map((row, i) => row.map((v, j) => (j > i ? (uplo === 'L' ? M[j][i] : v) : (j < i && uplo === 'U' ? M[j][i] : v))));
+      const [w, v] = _ops().eigh(_ctx.array(S));
+      const ws = _flat(w), V = _ctx.toArray(v);
+      const order = [...Array(n).keys()].sort((p, q) => ws[p] - ws[q]);
+      return [_makeNd(_ctx.array(order.map((k) => ws[k]))), _makeNd(_ctx.array(V.map((row) => order.map((k) => row[k]))))];
+    },
+    // general eig would need a nonsymmetric solver: refuse rather than answer eigh
+    eig() { throw new Error('np.linalg.eig is not supported by the natra bridge (only eigh, for symmetric matrices)'); },
     det(a) { return _ops().det(_raw(a)); },
     norm(a) { return _ops().norm(_raw(a)); },
   },
