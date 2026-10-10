@@ -5,6 +5,8 @@
 import { adderParse, _adderParseExpr } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule } from './eval.js';
 import { adderBuiltins, setAdderVFS, getAdderVFS } from './builtins.js';
+import { _py } from './runtime.js';
+import { lowerAdder, PY_SPECIALIZATIONS } from './air-lower.js';
 
 // Strip common leading whitespace. Python has no meaningful indentation at the
 // module level, so a natural template literal like `\n    def foo(): ...` can
@@ -90,11 +92,83 @@ function _withVfs(opts, fn) {
 // the sandbox options (host / remote / budget) are module-level state for the
 // duration of ONE call, restored on exit like the VFS — so a notebook cell and
 // a worker host can share the interpreter without seeing each other's rules
-async function _withSandbox(opts, fn) {
+export async function _withSandbox(opts, fn) {
   const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false });
   const prevBudget = _setBudget(_makeBudget(opts.budget));
   try { return await fn(); }
   finally { _setRunOptions(prevOpts); _setBudget(prevBudget); }
+}
+
+// ── the AIR engine (opts.engine) ──
+// The same run() can compile adder to JavaScript through @gcu/air instead of walking the
+// tree: 10-600x faster on loops, same scope out, same sandbox (host / remote / budget —
+// the budget through _py.tick before every statement). The host attaches AIR once:
+//   attachAir(await import('@gcu/air'))   // or the @gcu/air bundle's namespace
+// engine: 'tree' (default) | 'air' (compile or throw) | 'auto' (compile when it can, else
+// tree-walk: no AIR attached, budget.onStep (a trace needs interpreter frames), a construct
+// the lowerer refuses, or a free name the bindings don't supply — the tree-walker raises the
+// proper NameError for that one, where compiled code would see undefined).
+
+const _AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+// JS intrinsics AIR's imports may list but which resolve via the ambient global scope
+export const _JS_INTRINSICS = new Set([
+  'Math', 'console', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
+  'Date', 'RegExp', 'Error', 'TypeError', 'ValueError', 'RangeError',
+  'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Symbol',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'NaN', 'Infinity',
+  'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
+  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
+  'ArrayBuffer', 'DataView', 'globalThis',
+]);
+
+let _airLib = null;
+export function attachAir(air) {
+  const a = air && air.default && !air.runPasses ? air.default : air;
+  if (!a || typeof a.runPasses !== 'function' || typeof a.emitJS !== 'function' || typeof a.needsAsync !== 'function') {
+    throw new TypeError('attachAir: expected @gcu/air (runPasses, emitJS, needsAsync)');
+  }
+  // adder's _py fast paths live in AIR's specialization registry: give them to this copy
+  if (typeof a.registerSpecializations === 'function') a.registerSpecializations('_py', PY_SPECIALIZATIONS);
+  _airLib = a;
+  return a;
+}
+export function airAttached() { return _airLib !== null; }
+
+// AIR-compile a parsed module. Throws on anything it cannot lower or emit.
+export function _airCompile(ast, src, ticks) {
+  if (!_airLib) throw new AdderRuntimeError("engine 'air' needs @gcu/air: call attachAir(air) first");
+  const mod = lowerAdder(ast, src, { ticks });
+  _airLib.runPasses(mod);
+  const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
+  const scopeKeys = ['_py', ...imports];
+  const body = _airLib.emitJS(mod, scopeKeys, []);
+  const Ctor = _airLib.needsAsync(mod) ? _AsyncFunction : Function;
+  return { air: mod, imports, fn: new Ctor(...scopeKeys, body) };
+}
+
+export async function _airCall(compiled, opts, bindings) {
+  const args = [_py, ...compiled.imports.map((name) => bindings[name])];
+  const scope = await _withSandbox(opts, () => _withVfs(opts, () => compiled.fn(...args)));
+  const out = {};
+  if (scope && typeof scope === 'object') for (const k of Object.keys(scope)) if (k !== '__lastExpr__') out[k] = scope[k];
+  return out;
+}
+
+// which engine runs this call, and why not AIR when it doesn't
+function _pickEngine(opts) {
+  const e = opts.engine || 'tree';
+  if (e !== 'tree' && e !== 'air' && e !== 'auto') throw new TypeError(`run: engine must be 'tree', 'air' or 'auto', not ${JSON.stringify(e)}`);
+  if (e === 'tree') return { engine: 'tree', why: 'asked' };
+  if (opts.budget && typeof opts.budget.onStep === 'function') {
+    if (e === 'air') throw new AdderRuntimeError("engine 'air' cannot honour budget.onStep (compiled code has no interpreter frames): use engine 'tree' to trace");
+    return { engine: 'tree', why: 'trace' };
+  }
+  if (!_airLib) {
+    if (e === 'air') throw new AdderRuntimeError("engine 'air' needs @gcu/air: call attachAir(air) first");
+    return { engine: 'tree', why: 'no AIR attached' };
+  }
+  return { engine: e, why: null };
 }
 
 // Extract a plain object from an AdderScope, skipping names we injected as bindings.
@@ -127,12 +201,32 @@ function _scopeToObject(scope, bindings) {
  * @param {boolean} [opts.remote=true] - false turns off every import path that would call fetch()
  * @param {{steps?: number, ms?: number, onStep?: (ev: {line: number, kind: string, scope: object}) => void}} [opts.budget]
  *   - stop with AdderError('BudgetExceeded') after `steps` statements or `ms` wall-clock; onStep sees every statement
+ * @param {'tree'|'air'|'auto'} [opts.engine='tree'] - tree-walk, AIR-compile (attachAir first), or AIR when it can
+ * @param {(engine: 'tree'|'air', why: string|null) => void} [opts.onEngine] - told which engine ran, and why not AIR
  * @returns {Promise<Record<string, any>>} the module scope
  */
 export async function run(code, opts = {}) {
-  const ast = adderParse(_dedent(code));
-  const scope = new AdderScope();
+  const src = _dedent(code);
+  const ast = adderParse(src);
   const bindings = _makeBindings(opts);
+  let pick = _pickEngine(opts);
+  if (pick.engine !== 'tree') {
+    let compiled = null;
+    try { compiled = _airCompile(ast, src, !!opts.budget); } catch (e) {
+      if (pick.engine === 'air') throw e;
+      pick = { engine: 'tree', why: `not compiled: ${String(e && e.message || e).split('\n')[0]}` };
+    }
+    if (compiled) {
+      const missing = compiled.imports.filter((n) => !(n in bindings));
+      if (missing.length && pick.engine === 'auto') pick = { engine: 'tree', why: `free name ${missing[0]}` };
+      else {
+        if (opts.onEngine) opts.onEngine('air', null);
+        return await _airCall(compiled, opts, bindings);
+      }
+    }
+  }
+  if (opts.onEngine) opts.onEngine('tree', pick.why);
+  const scope = new AdderScope();
   for (const [k, v] of Object.entries(bindings)) scope.set(k, v);
   return await _withSandbox(opts, () => _withVfs(opts, async () => {
     await adderEval(ast, scope);
@@ -203,3 +297,6 @@ export function isIncomplete(code) {
 }
 
 export { AdderRuntimeError, registerModule, unregisterModule };
+
+// the bindings run() builds, for @gcu/adder/air's compile().run
+export { _makeBindings as _makeBindingsForAir };

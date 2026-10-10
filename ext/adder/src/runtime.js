@@ -6,7 +6,7 @@ import {
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   adderGetAttr,
 } from './builtins.js';
-import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule } from './eval.js';
+import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine } from './eval.js';
 
 // ── Arithmetic (preserve Python semantics) ──
 
@@ -931,4 +931,6 @@ export const _py = {
   importFromPath: _importFromPath,
   // class
   createClass: _createClass,
+  // the run budget (emitted only when lowering with ticks: true)
+  tick: _tickLine,
 };

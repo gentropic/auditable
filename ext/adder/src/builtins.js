@@ -188,6 +188,7 @@ function _typedRepr(v) {
 
 export function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
+  if (v instanceof AdderError) return `${v.pyType}(${pyRepr(String(v.pyMessage))})`;
   if (v === true) return 'True';
   if (v === false) return 'False';
   if (typeof v === 'string') return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
@@ -215,6 +216,7 @@ export function pyRepr(v) {
 
 export function pyStr(v) {
   if (v === null || v === undefined) return 'None';
+  if (v instanceof AdderError) return String(v.pyMessage);
   if (v === true) return 'True';
   if (v === false) return 'False';
   if (typeof v === 'string') return v;
@@ -222,6 +224,45 @@ export function pyStr(v) {
   if (typeof v === 'function' && v._pyClass) return `<class '${v._pyName || v.name}'>`;
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
   return pyRepr(v);
+}
+
+// pyStr / pyRepr for values whose user dunders may be async (tree-walked methods are):
+// a plain string when nothing on the way returned a Promise, else a Promise of the string.
+// print, str(), repr() and the tree-walker's f-strings use these; compiled (AIR) methods
+// are sync, so they get plain strings and print stays synchronous.
+const _isThenable = (x) => x != null && typeof x.then === 'function';
+function _joinMaybe(parts, open, sep, close) {
+  return parts.some(_isThenable)
+    ? Promise.all(parts).then((ps) => open + ps.join(sep) + close)
+    : open + parts.join(sep) + close;
+}
+function _hasUserDunder(v, name) {
+  return v !== null && typeof v === 'object' && typeof v[name] === 'function'
+    && !(v instanceof Complex) && !ArrayBuffer.isView(v);
+}
+export function pyReprMaybe(v) {
+  if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
+  if (v instanceof Map) {
+    if (v.size === 0) return '{}';
+    const parts = [...v.entries()].map(([k, val]) => {
+      const a = pyReprMaybe(k), b = pyReprMaybe(val);
+      return _isThenable(a) || _isThenable(b) ? Promise.all([a, b]).then(([x, y]) => `${x}: ${y}`) : `${a}: ${b}`;
+    });
+    return _joinMaybe(parts, '{', ', ', '}');
+  }
+  if (_hasUserDunder(v, '__repr__')) {
+    const r = v.__repr__();
+    return _isThenable(r) ? r.then(String) : String(r);
+  }
+  return pyRepr(v);
+}
+export function pyStrMaybe(v) {
+  if (typeof v === 'string') return v;
+  if (_hasUserDunder(v, '__str__')) {
+    const r = v.__str__();
+    return _isThenable(r) ? r.then(String) : String(r);
+  }
+  return pyReprMaybe(v);
 }
 
 // ── iteration helper ──
@@ -1572,7 +1613,9 @@ export function adderBuiltins(printFn) {
         if (kw.sep !== undefined) sep = kw.sep;
         if (kw.end !== undefined) end = kw.end;
       }
-      printFn(args.map(pyStr).join(sep) + end);
+      const parts = args.map(pyStrMaybe);
+      if (parts.some(_isThenable)) return Promise.all(parts).then((ps) => { printFn(ps.join(sep) + end); return null; });
+      printFn(parts.join(sep) + end);
       return null;
     },
     len: (obj) => {
@@ -1589,7 +1632,7 @@ export function adderBuiltins(printFn) {
     range: (a, b, c) => new AdderRange(a, b, c),
     int: (x, base) => { if (x === undefined) return 0; if (base !== undefined) { const n = parseInt(String(x), base); if (isNaN(n)) throw new AdderError('ValueError', `invalid literal for int() with base ${base}: ${pyRepr(String(x))}`); return n; } if (typeof x === 'string') { const n = parseInt(x); if (isNaN(n)) throw new AdderError('ValueError', `invalid literal for int() with base 10: ${pyRepr(x)}`); return n; } return Math.trunc(Number(x)); },
     float: (x) => { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; } return Number(x); },
-    str: (x) => x === undefined ? '' : pyStr(x),
+    str: (x) => x === undefined ? '' : pyStrMaybe(x),
     bool: (x) => x === undefined ? false : pyBool(x),
     list: Object.assign(
       async (x) => x === undefined ? [] : await pyCollect(x),
@@ -1696,7 +1739,7 @@ export function adderBuiltins(printFn) {
     hex: (n) => { const v = Math.trunc(n); return v < 0 ? '-0x' + (-v).toString(16) : '0x' + v.toString(16); },
     oct: (n) => { const v = Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
     bin: (n) => { const v = Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
-    repr: pyRepr,
+    repr: pyReprMaybe,
     format: (value, spec) => pyFormatValue(value, spec || ''),
     pow: (x, y, mod) => mod !== undefined ? _modPow(x, y, mod) : Math.pow(x, y),
     divmod: (a, b) => [Math.floor(a / b), ((a % b) + b) % b],

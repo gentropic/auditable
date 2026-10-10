@@ -403,8 +403,10 @@ describe('adderEval — data structures', () => {
   });
 
   it('dict comprehension', async () => {
-    const { defines } = await pyEval('x = {str(i): i * i for i in range(4)}');
-    assert.deepStrictEqual(defines.x, { '0': 0, '1': 1, '2': 4, '3': 9 });
+    // a dict, as the AIR path has always built it (it was a plain object here)
+    const { defines } = await pyEval('x = {str(i): i * i for i in range(4)}\ny = {i: i for i in range(2)}');
+    assert.deepStrictEqual(defines.x, new Map([['0', 0], ['1', 1], ['2', 4], ['3', 9]]));
+    assert.deepStrictEqual(defines.y, new Map([[0, 0], [1, 1]]));
   });
 
   it('set literal', async () => {

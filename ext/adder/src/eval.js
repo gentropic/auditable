@@ -7,6 +7,7 @@ import {
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper,
+  pyStrMaybe, pyReprMaybe,
 } from './builtins.js';
 
 // ── scope ──
@@ -99,6 +100,18 @@ function _tick(node, scope) {
   if (b.count > b.limit) { b.spent = `${b.limit} statements`; throw new AdderError('BudgetExceeded', b.spent, node.line); }
   if (b.deadline !== Infinity && (b.count & 255) === 0 && _now() > b.deadline) { b.spent = `${b.ms} ms`; throw new AdderError('BudgetExceeded', b.spent, node.line); }
   if (b.onStep) { _view.scope = scope; b.onStep({ line: node.line, kind: node.type, scope: _view }); }
+}
+
+// The same budget for AIR-compiled code: the lowerer (ticks: true) emits _py.tick(line)
+// before every statement, so `steps` counts statements exactly as the tree-walker does.
+// No onStep here: compiled code has no interpreter frame to show (trace runs tree-walking).
+export function _tickLine(line) {
+  const b = _budget;
+  if (b === null) return;
+  if (b.spent) throw new AdderError('BudgetExceeded', b.spent, line);
+  b.count++;
+  if (b.count > b.limit) { b.spent = `${b.limit} statements`; throw new AdderError('BudgetExceeded', b.spent, line); }
+  if (b.deadline !== Infinity && (b.count & 255) === 0 && _now() > b.deadline) { b.spent = `${b.ms} ms`; throw new AdderError('BudgetExceeded', b.spent, line); }
 }
 
 // ── module registry (sandbox) ──
@@ -327,10 +340,12 @@ export async function adderEval(node, scope) {
       return result;
     }
     case 'FormattedValue': {
+      // tree-walked methods are async, so a user __str__ / __repr__ gives a Promise:
+      // the *Maybe formatters await it (and stay plain strings for everything else)
       let val = await adderEval(node.value, scope);
-      if (node.conversion === 'r') val = pyRepr(val);
-      else if (node.conversion === 's') val = pyStr(val);
-      return node.formatSpec ? pyFormatValue(val, node.formatSpec) : pyStr(val);
+      if (node.conversion === 'r') val = await pyReprMaybe(val);
+      else if (node.conversion === 's') val = await pyStrMaybe(val);
+      return node.formatSpec ? pyFormatValue(val, node.formatSpec) : await pyStrMaybe(val);
     }
 
     // ── await ──
@@ -1563,7 +1578,8 @@ async function* _genExprIter(node, scope, genIdx) {
 }
 
 async function _evalComp(node, scope, kind) {
-  const result = kind === 'list' ? [] : kind === 'set' ? new Set() : {};
+  // a dict comprehension builds a dict (a Map, like a dict literal), not a JS object
+  const result = kind === 'list' ? [] : kind === 'set' ? new Set() : new Map();
   const compScope = new AdderScope(scope);
   await _evalCompIter(node, compScope, result, kind, 0);
   return result;
@@ -1590,7 +1606,7 @@ async function _evalCompIter(node, scope, result, kind, genIdx) {
       } else {
         const k = await adderEval(node.key, scope);
         const v = await adderEval(node.value, scope);
-        result[k] = v;
+        result.set(k, v);
       }
     }
   }

@@ -8,7 +8,7 @@ import { tokenizePython, pythonCompletions } from './highlight.js';
 import { adderTag, mpy } from './tag.js';
 import { adderParse } from './parse.js';
 import { registerModule, unregisterModule } from './eval.js';
-import { run, evalExpr, compile, isIncomplete, AdderRuntimeError } from './runner.js';
+import { run, evalExpr, compile, isIncomplete, AdderRuntimeError, attachAir, airAttached } from './runner.js';
 import { lowerAdder } from './air-lower.js';
 
 const ADDER_VERSION = '0.3.0';
@@ -80,7 +80,8 @@ export const adder = {
   // the sandbox registrar (spec_inbox/lang/adder-sandbox-spec.md §2.4): make a module
   // importable without window._auditableExtensions — the same call a worker host makes
   registerModule, unregisterModule,
-  // the library API (tree-walker) with the sandbox options — host / remote / budget —
-  // so a single-file host vendors this bundle as is (golem's worker does)
-  run, evalExpr, compile, isIncomplete, AdderRuntimeError,
+  // the library API with the sandbox options — host / remote / budget — so a single-file
+  // host vendors this bundle as is (golem's worker does). attachAir(air) + run(code,
+  // { engine: 'auto' }) compiles through @gcu/air and falls back to the tree-walker.
+  run, evalExpr, compile, isIncomplete, AdderRuntimeError, attachAir, airAttached,
 };

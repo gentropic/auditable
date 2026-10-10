@@ -28,6 +28,10 @@ export interface RunOpts {
   remote?: boolean;
   /** stop runaway code at statement boundaries; the error is AdderError('BudgetExceeded', …). Per call; once exceeded it stays exceeded. */
   budget?: AdderBudget;
+  /** 'tree' tree-walks (default); 'air' compiles through @gcu/air (attachAir first) or throws; 'auto' compiles when it can and tree-walks otherwise (no AIR attached, budget.onStep, a construct the lowerer refuses, a free name the bindings lack). The sandbox holds either way: the budget counts statements in compiled code too. */
+  engine?: 'tree' | 'air' | 'auto';
+  /** told which engine ran this call, and why not AIR when it didn't */
+  onEngine?: (engine: 'tree' | 'air', why: string | null) => void;
 }
 
 /** Execute adder source as a module. Returns an object mapping bound names to values. */
@@ -49,6 +53,9 @@ export interface AdderBudget {
 /** Make a module importable without `window` (looked up before the built-ins and before window._auditableExtensions; dotted names walk into it). Process-wide. */
 export function registerModule<T extends object>(name: string, mod: T): T;
 export function unregisterModule(name: string): boolean;
+/** Hand adder @gcu/air (its module namespace or bundle) so run(code, { engine: 'air' | 'auto' }) can compile. Process-wide. */
+export function attachAir(air: object): object;
+export function airAttached(): boolean;
 export function run(code: string, opts?: RunOpts): Promise<Record<string, unknown>>;
 
 /** Evaluate a single adder expression and return its value. */

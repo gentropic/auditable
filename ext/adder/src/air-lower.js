@@ -17,7 +17,7 @@ import { registerSpecializations } from '../../air/src/passes.js';
 // Re-export AirLowerError from @gcu/air. Lifted to ext/air/src/lower/base.js
 // so all frontends share one definition; the marker `_airFallback: true`
 // is the load-bearing contract that AIR's wrapper checks.
-export { AirLowerError };
+export { AirLowerError, PY_SPECIALIZATIONS };
 
 // ── _py runtime helper specializations ─────────────────────────────
 //
@@ -456,11 +456,14 @@ function emitAwaitedCall_ad(ctx, fnId, argIds, loc, type, opts) {
 
 // ── Main entry ──
 
-export function lowerAdder(ast, source) {
+// opts.ticks: emit _py.tick(line) before every statement, for a run budget
+// (statement count + wall clock) that holds in compiled code too.
+export function lowerAdder(ast, source, opts) {
   // SSA id counter lives on the AdderLowerCtx instance now (via
   // BaseLowerCtx's _idGen); no module-level reset.
   const ctx = new AdderLowerCtx();
   ctx.source = source || null;
+  ctx.ticks = !!(opts && opts.ticks);
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
 
@@ -546,6 +549,10 @@ export function lowerAdder(ast, source) {
 function lowerStmt_ad(ctx, node) {
   if (!node) return null;
   const l = ctx.loc(node);
+  if (ctx.ticks && node.line != null) {
+    const ln = ctx.emit('const', [node.line], DYNAMIC, l);
+    emitPyCall(ctx, 'tick', [ln], l, VOID);
+  }
 
   switch (node.type) {
     case 'Pass': return null;
@@ -1714,6 +1721,9 @@ function _buildParamBinding(ctx, node, l) {
     }));
     // Prologue: strip trailing _kw bag if present (caller may pass kwargs)
     const prologueOps = [];
+    // the params are locals of the body, as the general path below records them: without
+    // this a parameter read in the body was reported as a free (imported) name
+    for (const p of params) ctx.symbols.set(p.name, null);
     return { params, prologueOps, isSimple: true };
   }
 
