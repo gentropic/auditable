@@ -336,7 +336,8 @@ export function createEngine(ont, locale = ENGLISH) {
   }
   function echo(c) {
     const parts = [c.theme.length ? `${col(VERBS[c.verb], 'label')} ${c.theme.map(describe).join(', ')}` : col(VERBS[c.verb], 'label')];
-    for (const k of ont.echoOrder) if (c.roles[k]?.length) { const vs = c.roles[k]; const redundant = vs.every(v => v.type === k && describe(v).includes(typeName(v.type))); parts.push(`${redundant ? '' : roleLabel(k) + ' '}${vs.map(describe).join(', ')}`); }
+    // every role the command has, the ontology's order first: two readings that differ only in a role must not echo the same
+    for (const k of [...ont.echoOrder, ...Object.keys(c.roles).filter(k => !ont.echoOrder.includes(k)).sort()]) if (c.roles[k]?.length) { const vs = c.roles[k]; const redundant = vs.every(v => v.type === k && describe(v).includes(typeName(v.type))); parts.push(`${redundant ? '' : roleLabel(k) + ' '}${vs.map(describe).join(', ')}`); }
     return parts.join('; ') + '.';
   }
 
@@ -396,6 +397,7 @@ export function createEngine(ont, locale = ENGLISH) {
   // a bare text role opens after the verb of its frame, or after a noun of that frame's theme type
   const BARE = ont.verbs.filter(v => Object.values(v.roles ?? {}).some(r => r.types.includes('text') && r.preps.includes('')));
   const BARE_VERBS = new Set(BARE.map(v => v.name)), BARE_TYPES = new Set(BARE.flatMap(v => v.theme ?? []));
+  const BARE_TEXT = ont.verbs.filter(v => Object.values(v.roles ?? {}).some(r => r.types.includes('text') && r.preps.includes('')));
   const TEXT_SUBJECT = new Set(ont.verbs.filter(v => (v.subject ?? []).includes('text')).map(v => v.name));
   // candidate readings with free text: lists of spans [{ i, from, j }] (tokens i..j replaced, text from 'from'),
   // fewest words of text first; a subject span is the words before the verb of a frame that takes one
@@ -421,6 +423,8 @@ export function createEngine(ont, locale = ENGLISH) {
         else if (sn.cat === 'COLON' && TEXT_PREPS.has(':') && meant(':')) open = 'colon';
         if ((sn.cat === 'VERB' && BARE_VERBS.has(sn.verb)) || (sn.cat === 'NOUN' && BARE_TYPES.has(sn.type))) open ??= 'bare';
       }
+      // a bare text role may also start at a word nothing else knows ("… 2% chalcopyrite"), where its frame is said or elidable
+      if (!open && i < toks.length && toks[i].senses.every(x => x.cat === 'UNK') && BARE_TEXT.some(v => v.elidable || said.has(v.name))) open = 'bare';
       if (!open || (i === toks.length && open !== 'colon')) continue;
       if (open === 'colon') { out.push({ i, from: i, j: toks.length, colon: toks[i - 1].e }); continue; }   // a payload is everything after the colon
       const from = i + lead;

@@ -278,6 +278,11 @@ Trailing tokens can only be skipped at the top level.
   searches for "resurvey". A span is one `TEXT` token: nothing inside it is looked up,
   stemmed or repaired, notes about words inside it are dropped, and the echo quotes it
   (cut at 60 characters; the command carries all of it).
+- **The echo names every role.** Roles the ontology's `echoOrder` lists come first, then the
+  rest, so two readings that differ only in a role never echo the same (and a host never
+  takes the first of two readings it could not tell apart).
+- **Bare text at an unknown word.** A frame's bare text role (`''`) may also start at a word
+  nothing else knows, where the frame is said or elidable ("… 2% chalcopyrite").
 - **Ambiguity with alternatives.** An `ambiguous` verdict carries `alternatives`, the
   commands of each reading, so a host whose tools take only one of them can bind each
   and say which (golem: "python" is a verb and a format; only the verb has a tool for a
