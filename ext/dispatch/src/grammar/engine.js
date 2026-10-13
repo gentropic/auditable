@@ -28,7 +28,7 @@ export function createEngine(ont, locale = ENGLISH) {
   // ---- lexicon from ontology + locale ----
   const LEX = {};
   const add = (words, cat, extra = {}) => { for (const w of words.split('|')) (LEX[w] ??= []).push({ cat, word: w, ...extra }); };
-  for (const cat of ['DET', 'REF', 'QUANT', 'EXCEPT', 'CONJ', 'COMMA', 'THEN', 'BUT', 'PRON', 'AGAIN', 'QWORD', 'FILLER', 'REL', 'SUBJ', 'WH', 'COP', 'WHCOP']) if (locale[cat]) add(locale[cat], cat);
+  for (const cat of ['DET', 'REF', 'QUANT', 'EXCEPT', 'CONJ', 'COMMA', 'THEN', 'BUT', 'PRON', 'AGAIN', 'QWORD', 'FILLER', 'REL', 'SUBJ', 'WH', 'COP', 'WHCOP', 'DEMO']) if (locale[cat]) add(locale[cat], cat);
   for (const [w, r] of Object.entries(locale.times)) add(w, 'TIME', { from: r[0], to: r[1] });
   for (const [w, c] of Object.entries(locale.comps)) add(w, 'COMP', { sign: c[0], sup: !!c[1] });
   for (const p of locale.PREP.split('|')) add(p, 'PREP', { canon: locale.preps[p] ?? [p] });
@@ -39,7 +39,8 @@ export function createEngine(ont, locale = ENGLISH) {
   if (locale.AMPM) add(locale.AMPM, 'AMPM');
   const L = k => `${k}_${locale.code}`;   // ontology synonym column for this locale, falling back to the default column
   const col = (o, k) => o[L(k)] ?? o[k];
-  const VERBS = Object.fromEntries(ont.verbs.map(v => [v.name, v]));
+  // a frame may take a subject before its verb ("pop means population"): it binds as the role 'subject'
+  const VERBS = Object.fromEntries(ont.verbs.map(v => [v.name, v.subject ? { ...v, roles: { ...v.roles, subject: { preps: ['subject'], types: v.subject } } } : v]));
   for (const v of ont.verbs) add(col(v, 'words').join('|'), 'VERB', { verb: v.name });
   const NOUNS = Object.fromEntries(ont.nouns.map(n => [n.type, n]));
   for (const n of ont.nouns) {
@@ -58,7 +59,9 @@ export function createEngine(ont, locale = ENGLISH) {
   // ---- type-driven helpers used inside the grammar ----
   const X = {
     headFirst: !!locale.headFirst,
-    nextDay: locale.THEN.split('|').includes('next'),   // "next friday" where the bank has the word
+    nextDay: locale.THEN.split('|').includes('next'),
+    subject: ont.verbs.some(v => v.subject),   // some frame takes a subject before its verb
+    bareText: ont.verbs.some(v => Object.values(v.roles ?? {}).some(r => r.types.includes('text') && r.preps.includes(''))),   // a text with no marker   // "next friday" where the bank has the word
     identTypes: new Set(ont.nouns.filter(n => n.ident).map(n => n.type)),
     postmodPreps: [...new Set(ont.postmods.map(p => p.prep))],
     postmodQuantity: new Set(ont.postmods.filter(p => p.quantity).map(p => p.prep)),
@@ -97,6 +100,7 @@ export function createEngine(ont, locale = ENGLISH) {
   function tokenize(text, session) {
     const raw = [...text.matchAll(PIECE)].map(m => ({ w: /^\r?\n/.test(m[0]) ? ':' : m[0].toLowerCase(), s: m.index, e: m.index + m[0].replace(/\s+$/, '').length, src: m[0] }));
     for (let k = raw.length - 1; k > 0; k--) if (raw[k].w === ':' && raw[k - 1].w === ':') raw.splice(k, 1);   // "check:\n…" is one break
+    const end = raw.at(-1); if (end && end.w.length > 1 && end.w.endsWith('.') && !/^\d|\.\w+\.$/.test(end.w)) { end.w = end.w.slice(0, -1); end.e--; end.src = end.src.replace(/\.(\s*)$/, '$1'); }   // a full stop ends the sentence, not the word (a.m. keeps its own)
     const toks = []; const notes = []; const unknown = [];
     const at = (t, a, b) => Object.assign(t, { s: raw[a].s, e: raw[b - 1].e });
     for (let i = 0; i < raw.length;) {
@@ -166,7 +170,7 @@ export function createEngine(ont, locale = ENGLISH) {
   }
   const describeRepairs = (toks, repairs) => repairs.map(r => r.op === 'skip' ? `ignored "${r.word}"` : r.op === 'subst' ? `read "${r.word}" as "${r.to}"` : r.sym === 'LATE' ? 'read the arguments out of order' : `assumed ${r.sym === 'PREP' ? 'a preposition' : 'an article'} before "${toks[r.at]?.word ?? 'the end'}"`);
   // human names for the terminals the chart was waiting for
-  const EXPECT = { NOUN: 'a thing', VERB: 'a verb', DET: 'an article', PREP: 'a preposition', NUM: 'a number', UNIT: 'a unit', IDENT: 'a name', CONJ: `'${locale.CONJ.split('|')[0]}'`, THEN: `'${locale.THEN.split('|')[0]}'`, COMMA: "','", QUANT: 'a quantifier', REF: `'${locale.REF.split('|')[0]}'`, PRON: 'a pronoun', REL: `'${locale.REL.split('|')[0]}'`, SUBJ: `'${locale.SUBJ.split('|')[0]}'`, TIME: 'a time', COMP: 'a comparative', WH: 'a question word', COP: `'${(locale.COP ?? 'is').split('|')[0]}'`, WHCOP: `'${(locale.WHCOP ?? 'what is').split('|')[0]}'`, EXCEPT: `'${locale.EXCEPT.split('|')[0]}'`, BUT: `'${locale.BUT.split('|')[0]}'`, AGAIN: `'${locale.AGAIN.split('|')[0]}'`, DAY: 'a date', MONTH: 'a date', DATE: 'a date', CLOCK: 'a clock time', AMPM: "'am' or 'pm'", COLON: "':'", LIT: 'a value' };
+  const EXPECT = { NOUN: 'a thing', VERB: 'a verb', DET: 'an article', PREP: 'a preposition', NUM: 'a number', UNIT: 'a unit', IDENT: 'a name', CONJ: `'${locale.CONJ.split('|')[0]}'`, THEN: `'${locale.THEN.split('|')[0]}'`, COMMA: "','", QUANT: 'a quantifier', REF: `'${locale.REF.split('|')[0]}'`, PRON: 'a pronoun', REL: `'${locale.REL.split('|')[0]}'`, SUBJ: `'${locale.SUBJ.split('|')[0]}'`, TIME: 'a time', COMP: 'a comparative', WH: 'a question word', COP: `'${(locale.COP ?? 'is').split('|')[0]}'`, WHCOP: `'${(locale.WHCOP ?? 'what is').split('|')[0]}'`, EXCEPT: `'${locale.EXCEPT.split('|')[0]}'`, BUT: `'${locale.BUT.split('|')[0]}'`, AGAIN: `'${locale.AGAIN.split('|')[0]}'`, DAY: 'a date', MONTH: 'a date', DATE: 'a date', CLOCK: 'a clock time', AMPM: "'am' or 'pm'", COLON: "':'", LIT: 'a value', DEMO: `'${(locale.DEMO ?? 'this').split('|')[0]}'` };
   const expectName = sym => { const [cat, w] = sym.split(':'); if (cat === 'LATE' || cat === 'TEXT' || (cat === 'LIT' && !(ont.shapes ?? []).length)) return null; return w ? `'${w}'` : (EXPECT[cat] ?? cat); };
 
   // ---- binding ----
@@ -371,30 +375,60 @@ export function createEngine(ont, locale = ENGLISH) {
   // The words inside are never repaired, stemmed or looked up: the span becomes one TEXT token before parsing.
   const TEXT_THEME = new Set(ont.verbs.filter(v => (v.theme ?? []).includes('text')).map(v => v.name));
   const TEXT_PREPS = new Set(ont.verbs.flatMap(v => Object.values(v.roles ?? {}).filter(r => r.types.includes('text')).flatMap(r => r.preps)));
+  const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const TRAIL = new RegExp(`(?:[\\s,;]*(?:${(locale.TRAIL ?? 'please').split('|').map(esc).join('|')})\\b|[\\s.?!]+)+$`, 'i');   // what closes a sentence, not a text
+  // a bare text role opens after the verb of its frame, or after a noun of that frame's theme type
+  const BARE = ont.verbs.filter(v => Object.values(v.roles ?? {}).some(r => r.types.includes('text') && r.preps.includes('')));
+  const BARE_VERBS = new Set(BARE.map(v => v.name)), BARE_TYPES = new Set(BARE.flatMap(v => v.theme ?? []));
+  const TEXT_SUBJECT = new Set(ont.verbs.filter(v => (v.subject ?? []).includes('text')).map(v => v.name));
+  // candidate readings with free text: lists of spans [{ i, from, j }] (tokens i..j replaced, text from 'from'),
+  // fewest words of text first; a subject span is the words before the verb of a frame that takes one
+  function textCands(toks) {
+    const one = textSpans(toks), cands = one.map(s => [s]);
+    // the verb as typed (not a typo repair), and a subject with no colon and no verb in it
+    for (let v = 1; v < toks.length; v++) if (!toks[v].repaired && toks[v].senses.some(sn => sn.cat === 'VERB' && TEXT_SUBJECT.has(sn.verb)) && toks.slice(0, v).every(t => !t.senses.some(x => x.cat === 'COLON' || x.cat === 'VERB'))) {
+      const subj = { i: 0, from: 0, j: v };
+      cands.push([subj], ...one.filter(s => s.i > v).map(s => [subj, s]));
+    }
+    const len = c => c.reduce((n, s) => n + s.j - s.from, 0);
+    return cands.sort((a, b) => len(a) - len(b) || a[0].i - b[0].i);
+  }
   function textSpans(toks) {
     const out = [];
-    for (let i = 1; i < toks.length; i++) {
+    for (let i = 1; i <= toks.length; i++) {
       let open = null, lead = 0;
       for (const sn of toks[i - 1].senses) {
-        if (sn.cat === 'VERB' && TEXT_THEME.has(sn.verb)) { open ??= 'verb'; if ((col(VERBS[sn.verb], 'lead') ?? []).includes(toks[i].word) && i + 1 < toks.length) lead = 1; }
+        if (sn.cat === 'VERB' && TEXT_THEME.has(sn.verb)) { open ??= 'verb'; if (i + 1 < toks.length && (col(VERBS[sn.verb], 'lead') ?? []).includes(toks[i].word)) lead = 1; }
         else if (sn.cat === 'PREP' && sn.canon.some(c => TEXT_PREPS.has(c))) open ??= 'prep';
         else if (sn.cat === 'COLON' && TEXT_PREPS.has(':')) open = 'colon';
+        if ((sn.cat === 'VERB' && BARE_VERBS.has(sn.verb)) || (sn.cat === 'NOUN' && BARE_TYPES.has(sn.type))) open ??= 'bare';
       }
-      if (!open) continue;
+      if (!open || (i === toks.length && open !== 'colon')) continue;
+      if (open === 'colon') { out.push({ i, from: i, j: toks.length, colon: toks[i - 1].e }); continue; }   // a payload is everything after the colon
       const from = i + lead;
       const stop = t => t.senses.some(x => x.cat === 'PREP' || x.cat === 'DAY') || (X.nextDay && t.word === 'next');   // where an argument can start
-      for (let j = from + 1; j <= toks.length; j++) if (j === toks.length || (open !== 'colon' && stop(toks[j]))) out.push({ i, from, j });
+      for (let j = from + 1; j <= toks.length; j++) if (j === toks.length || stop(toks[j])) out.push({ i, from, j });
     }
     return out.sort((a, b) => (a.j - a.from) - (b.j - b.from) || a.i - b.i);
   }
   function textRead(toks, text, session, diag, opts) {
     let fallback = null;
-    for (const { i, from, j } of textSpans(toks)) {
-      const t = { word: '«text»', senses: [{ cat: 'TEXT', text: text.slice(toks[from].s, toks[j - 1].e) }], s: toks[from].s, e: toks[j - 1].e };
-      const tt = [...toks.slice(0, i), t, ...toks.slice(j)];
+    for (const spans of textCands(toks)) {
+      let tt = toks;
+      let empty = false;
+      for (const { i, from, j, colon } of [...spans].sort((a, b) => b.i - a.i)) {   // right to left, so the indices hold
+        // after a colon: everything to the end, as typed. Elsewhere a span that runs to the end takes the words up
+        // to the end too (a filler there may be content: "… is ok"), less the closing politeness and punctuation
+        // that belong to the sentence ("…, please.", "… hole 12?"); a span that stops early stops at its last word.
+        const s0 = colon != null ? colon : toks[from].s;
+        const e = colon != null ? text.length : j === toks.length ? text.length - (TRAIL.exec(text)?.[0].length ?? 0) : toks[j - 1].e;
+        const t = text.slice(s0, e).trim(); if (!t) { empty = true; break; }
+        tt = [...tt.slice(0, i), { word: '«text»', senses: [{ cat: 'TEXT', text: t }], s: s0, e }, ...tt.slice(j)];
+      }
+      if (empty) continue;
       const full = makeParser(tt)('Program', 0).filter(r => r.end === tt.length).map(r => ({ ...r, repairs: [] }));
       if (!full.length) continue;
-      const inside = new Set(toks.slice(from, j).flatMap(x => [x.repaired, x.word]).filter(Boolean));
+      const inside = new Set(spans.flatMap(({ from, j }) => toks.slice(from, j)).flatMap(x => [x.repaired, x.word]).filter(Boolean));
       const d2 = { ...diag, notes: diag.notes.filter(n => ![...inside].some(w => n.startsWith(`read "${w}" as`) || n.startsWith(`"${w}" could be`))), unknown: diag.unknown.filter(w => !inside.has(w)), repairs: [] };
       const r = semantic(full, tt, session, d2, opts);
       if (r.status === 'ok') { Object.assign(diag, d2); return r; }
@@ -414,7 +448,7 @@ export function createEngine(ont, locale = ENGLISH) {
     const strictFull = isUnk ? [] : parse('Program', 0).filter(r => r.end === toks.length).map(r => ({ ...r, repairs: [] }));
     diag.parses = strictFull.length;
     let result = strictFull.length ? semantic(strictFull, toks, session, diag, opts) : null;
-    if ((!result || result.status !== 'ok') && (TEXT_THEME.size || TEXT_PREPS.size)) {   // a free-text slot, before any repair
+    if ((!result || result.status !== 'ok') && (TEXT_THEME.size || TEXT_PREPS.size || TEXT_SUBJECT.size || BARE.length)) {   // a free-text slot, before any repair
       const t = textRead(toks, text, session, diag, opts);
       if (t && (t.status === 'ok' || !result)) return t;
     }
@@ -484,7 +518,8 @@ export function createEngine(ont, locale = ENGLISH) {
     }
     const echos = clean.map(seq => seq.map(r => echo(r.cmd)).join(` ${P.then}: `));
     const distinct = [...new Set(echos)];
-    if (distinct.length > 1) return { status: 'ambiguous', reasons: ['more than one reading survives'], readings: distinct, diag };
+    // each reading's commands come along, so a host whose tools take only one of them can say which and why
+    if (distinct.length > 1) return { status: 'ambiguous', reasons: ['more than one reading survives'], readings: distinct, alternatives: distinct.map(e => clean[echos.indexOf(e)].map(r => r.cmd).flatMap(fanout)), diag };
 
     const cmds = clean[0].map(r => r.cmd).flatMap(fanout);
     const rawRepairs = repairsOf[uniqParse[resolved.indexOf(clean[0])]] ?? [];

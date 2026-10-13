@@ -259,19 +259,32 @@ Trailing tokens can only be skipped at the top level.
 
 - **Free text.** A theme or role of type `text` takes words verbatim. The span opens
   after the verb of a frame whose theme is `text` (past an optional `lead` word the
-  frame lists, such as "that" / "que"), after a preposition a text role declares, or
-  after a colon or line break when a role declares `':'`. It ends at the end of the
-  input or, unless it opened at a colon, before a preposition, a weekday or "next"
-  after which the rest still reads. Every candidate span is tried strictly, shortest
-  text first wherever it opened, before any repair; the first whole reading wins. So
-  "remind me to send the samples to the lab on friday at 9" keeps the date and time as
-  arguments, and "search my notes for resurvey" searches for "resurvey". The span is one
-  `TEXT` token: nothing inside it is looked up, stemmed or repaired, and the echo
-  quotes it (cut at 60 characters; the command carries all of it, as typed).
+  frame lists, such as "that" / "que"); after a preposition a text role declares; after
+  a colon or line break when a role declares `':'` (a demonstrative may come first:
+  "summarise this: …", "word count of this: …"); after the verb or a theme noun of a
+  frame whose text role declares the bare preposition `''` ("decode hex 676f"); or, for
+  a frame that declares `subject: ['text']`, it is the words before the verb ("pop means
+  population"; the verb as typed, not a typo repair, and no colon or other verb before
+  it). A payload after a colon is everything to the end, as typed, words the tokenizer
+  would drop included. Any other span ends before a preposition, a weekday or "next"
+  after which the rest still reads, or at the end of the input less the politeness and
+  punctuation that close the sentence (the bank's `TRAIL`: "…, thanks", "… hole 12?"),
+  so a filler that is content stays ("remember that hole 12 is ok"). Candidates are
+  tried strictly, fewest words of text first wherever they opened, before any repair;
+  the first whole reading wins. So "remind me to send the samples to the lab on friday
+  at 9" keeps the date and time as arguments, and "search my notes for resurvey"
+  searches for "resurvey". A span is one `TEXT` token: nothing inside it is looked up,
+  stemmed or repaired, notes about words inside it are dropped, and the echo quotes it
+  (cut at 60 characters; the command carries all of it).
+- **Ambiguity with alternatives.** An `ambiguous` verdict carries `alternatives`, the
+  commands of each reading, so a host whose tools take only one of them can bind each
+  and say which (golem: "python" is a verb and a format; only the verb has a tool for a
+  block of code).
 - **Tokens with offsets.** The tokenizer keeps each token's place in the input, so a
   text span is sliced from what was typed. A colon before a space and a line break are
   `COLON` tokens; `< > <= >= = ≤ ≥` stand alone; numbers may carry a sign and
-  thousands separators. Commas left at the edges after dropped fillers go too
+  thousands separators; a full stop ending the input is the sentence's, not the last
+  word's ("… in miles."). Commas left at the edges after dropped fillers go too
   ("hey golem, …").
 - **Dates and clock times.** Banks carry `days` (weekday numbers, or `{ rel }` days
   from today), `months`, `clocks` (noon, meio-dia) and `AMPM`. Things of type `date`

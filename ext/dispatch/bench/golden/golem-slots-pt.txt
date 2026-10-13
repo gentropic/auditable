@@ -21,6 +21,10 @@
 ✓ procura perda de testemunho nas minhas notas
     → Procurar "perda de testemunho"; em meus documentos.
 
+— sujeito antes do verbo —
+✓ pop significa população
+    → Ensinar "população"; subject "pop".
+
 — comparações —
 ✓ conta amostras onde cu > 0.5
     → Contar amostra; onde Cu acima de 0.5.

@@ -28,6 +28,8 @@
 ✓ review this:
 The fact that he had not succeeded was owing to the weather.
     → Check; text "The fact that he had not succeeded was owing to the weather.".
+✓ please check the following: Its a fine day.
+    → Check; text "Its a fine day.".
 ? check
     → CLARIFY: missing text (text) — say ": …"
       (so far: Check.)
@@ -41,6 +43,41 @@ The fact that he had not succeeded was owing to the weather.
     → Search "collar check"; in my documents.
 ✓ search my notes for chalcopyrite
     → Search my documents; for "chalcopyrite".
+
+— where a text ends: the end of the input, less the politeness that closes the sentence —
+✓ remember that hole 12 is ok
+    → Remember "hole 12 is ok".
+✓ remind me to call ana tomorrow, thanks
+    → Event "call ana"; on tomorrow.
+✓ remember to call ana now, please.
+    → Remember "to call ana now".
+
+— a payload is everything after the colon, even words the tokenizer drops —
+✓ check: golem
+    → Check; text "golem".
+
+— a bare text role: after the verb or the theme, no marker —
+✓ decode hex 676f6c656d
+    → Decode hex; text "676f6c656d".
+✓ hex decode: 676f6c656d
+    → Decode; subject hex; text "676f6c656d".
+✓ decode from base64 SGVsbG8=
+    → Decode; from base64; text "SGVsbG8=".
+
+— a text subject before the verb —
+✓ pop means population
+    → Teach "population"; subject "pop".
+✓ cu grade stands for copper grade
+    → Teach "copper grade"; subject "cu grade".
+✗ means population
+    → REJECT: "teach" takes text, not population
+✗ run this: import KMeans
+    → REJECT: "run" is not a verb I know
+    · read "kmeans" as "means"
+
+— a question that is a verb —
+✓ what do you know about hole 12?
+    → Recall "hole 12".
 
 — comparisons on a thing —
 ✓ count samples where cu > 0.5
