@@ -1040,6 +1040,7 @@ function buildGrammar(X) {
   rule('NP', 'REF Core', (r, c) => ({ ...c, ref: r.word }));
   rule('NP', 'QUANT Core Except', (q, c, e) => c.generic ? { ...c, all: true, except: e } : null);
   rule('NP', 'QUANT DET Core Except', (q, _, c, e) => c.generic ? { ...c, all: true, except: e } : null);   // all the domains / todos os domínios
+  rule('NP', 'QUANT Core', (q, c) => c.generic ? null : { ...c, each: true });   // "each hole" where hole names one thing (a column): per hole, for the host
   if (X.headFirst) rule('NP', 'DET Core REF', (d, c, r) => ({ ...c, ref: r.word }));                        // a rodada anterior
   rule('NP', 'PRON', p => ({ type: '*', pron: p.word }));
   rule('NP', 'IDENT', t => t.type ? { type: t.type, name: t.name, generic: false, attrs: {} } : null);
@@ -1146,7 +1147,7 @@ const ENGLISH = {
   code: 'en', headFirst: false,
   DET: 'the|a|an|this|that|my|our', REF: 'last|previous|latest|current|first|new',
   QUANT: 'all|every|each', EXCEPT: 'except|excluding|minus', CONJ: 'and|or|plus', COMMA: ',',
-  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|for each|for every|in each|in every|grouped by|weighted by|sorted by|ordered by|having|that have|which have|that has|which has|have|has|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
+  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|grouped by|weighted by|sorted by|ordered by|having|that have|which have|that has|which has|have|has|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
   THEN: 'then|afterwards|next', BUT: 'but', PRON: 'it|them|those', AGAIN: 'again|rerun|redo|repeat|same',
   QWORD: 'why|how|what|when|who|is|are|does|do|should|can|could|would',
   // closed questions the grammar reads as commands with the verb left out: a wh-word, a copula, the fused forms
@@ -1157,7 +1158,7 @@ const ENGLISH = {
   // identity for every English preposition except the comparisons, which share a canon with their words
   preps: { '>': ['above'], 'greater than': ['above'], 'more than': ['above'], '<': ['below'], 'less than': ['below'], '>=': ['atleast'], '≥': ['atleast'], 'at least': ['atleast'],
     '<=': ['atmost'], '≤': ['atmost'], 'at most': ['atmost'], '=': ['equals'], 'equal to': ['equals'], equals: ['equals'],
-    'for each': ['by'], 'for every': ['by'], 'in each': ['by'], 'in every': ['by'], 'grouped by': ['by'], 'weighted by': ['weighted'], 'sorted by': ['sort'], 'ordered by': ['sort'],
+    'grouped by': ['by'], 'weighted by': ['weighted'], 'sorted by': ['sort'], 'ordered by': ['sort'],
     having: ['where'], 'that have': ['where'], 'which have': ['where'], 'that has': ['where'], 'which has': ['where'], have: ['where'], has: ['where'] },
   // the calendar: weekday numbers (0 = Sunday) or a day relative to today; months; named clock times; am/pm.
   // "sun" is left out on purpose: it is the sun more often than Sunday.
@@ -1901,7 +1902,7 @@ const PORTUGUESE = {
   DET: 'o|a|os|as|um|uma|uns|umas|este|esta|esse|essa|meu|minha|nosso|nossa',
   REF: 'último|última|ultimo|ultima|últimos|últimas|anterior|atual|primeiro|primeira|novo|nova',
   QUANT: 'todos|todas|todo|toda|cada', EXCEPT: 'exceto|menos|excluindo|tirando|fora', CONJ: 'e|ou|mais', COMMA: ',',
-  PREP: 'com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|às|até|como|acima de|abaixo de|sem|contra|dentro de|sobre|onde|para cada|por cada|em cada|agrupado por|ponderado por|ordenado por|que têm|que tem|depois de|antes de|desde|entre|durante|através de|atraves de|perto de|>|<|>=|<=|=|≥|≤|maior que|menor que|pelo menos|no mínimo|no minimo|no máximo|no maximo|igual a',
+  PREP: 'com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|às|até|como|acima de|abaixo de|sem|contra|dentro de|sobre|onde|agrupado por|ponderado por|ordenado por|que têm|que tem|depois de|antes de|desde|entre|durante|através de|atraves de|perto de|>|<|>=|<=|=|≥|≤|maior que|menor que|pelo menos|no mínimo|no minimo|no máximo|no maximo|igual a',
   THEN: 'depois|então|em seguida|aí', BUT: 'mas|porém|só que', PRON: 'isso|isto|ele|ela|eles|elas',
   AGAIN: 'de novo|novamente|repete|repetir|refaz|refazer|mesmo|mesma|igual|outra vez',
   QWORD: 'por que|porque|como|qual|quais|quando|quem|é|são|será|pode|poderia|deveria|dá',
@@ -1913,7 +1914,7 @@ const PORTUGUESE = {
     com: ['with'], usando: ['using'], por: ['by'], em: ['in', 'on'], no: ['in', 'on'], na: ['in', 'on'], nos: ['in', 'on'], nas: ['in', 'on'],
     para: ['for', 'to', 'into'], pra: ['for', 'to', 'into'], pro: ['for', 'to', 'into'], de: ['of', 'from'], do: ['of', 'from'], da: ['of', 'from'], dos: ['of', 'from'], das: ['of', 'from'],
     a: ['to', 'at'], ao: ['to', 'at'], 'à': ['to', 'at'], 'até': ['to'], como: ['as'], 'acima de': ['above', 'over'], 'abaixo de': ['below', 'under'],
-    sem: ['without'], contra: ['against'], 'dentro de': ['into'], sobre: ['on'], 'às': ['at', 'to'], onde: ['where'], 'para cada': ['by'], 'por cada': ['by'], 'em cada': ['by'], 'agrupado por': ['by'], 'ponderado por': ['weighted'], 'ordenado por': ['sort'], 'que têm': ['where'], 'que tem': ['where'], 'depois de': ['after'], 'antes de': ['before'], desde: ['since', 'from'], entre: ['between'], durante: ['during'], 'através de': ['through'], 'atraves de': ['through'], 'perto de': ['near'],
+    sem: ['without'], contra: ['against'], 'dentro de': ['into'], sobre: ['on'], 'às': ['at', 'to'], onde: ['where'], 'agrupado por': ['by'], 'ponderado por': ['weighted'], 'ordenado por': ['sort'], 'que têm': ['where'], 'que tem': ['where'], 'depois de': ['after'], 'antes de': ['before'], desde: ['since', 'from'], entre: ['between'], durante: ['during'], 'através de': ['through'], 'atraves de': ['through'], 'perto de': ['near'],
     '>': ['above'], 'maior que': ['above'], '<': ['below'], 'menor que': ['below'], '>=': ['atleast'], '≥': ['atleast'], 'pelo menos': ['atleast'], 'no mínimo': ['atleast'], 'no minimo': ['atleast'],
     '<=': ['atmost'], '≤': ['atmost'], 'no máximo': ['atmost'], 'no maximo': ['atmost'], '=': ['equals'], 'igual a': ['equals'],
   },

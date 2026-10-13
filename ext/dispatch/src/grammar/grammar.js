@@ -60,6 +60,7 @@ export function buildGrammar(X) {
   rule('NP', 'REF Core', (r, c) => ({ ...c, ref: r.word }));
   rule('NP', 'QUANT Core Except', (q, c, e) => c.generic ? { ...c, all: true, except: e } : null);
   rule('NP', 'QUANT DET Core Except', (q, _, c, e) => c.generic ? { ...c, all: true, except: e } : null);   // all the domains / todos os domínios
+  rule('NP', 'QUANT Core', (q, c) => c.generic ? null : { ...c, each: true });   // "each hole" where hole names one thing (a column): per hole, for the host
   if (X.headFirst) rule('NP', 'DET Core REF', (d, c, r) => ({ ...c, ref: r.word }));                        // a rodada anterior
   rule('NP', 'PRON', p => ({ type: '*', pron: p.word }));
   rule('NP', 'IDENT', t => t.type ? { type: t.type, name: t.name, generic: false, attrs: {} } : null);

@@ -117,7 +117,7 @@ The fact that he had not succeeded was owing to the weather.
     → Count sample; where Cu at most 0.1.
     · 2 syntactic parses
 
-— grouping and quantifiers: for each, in each, grouped by; every X with no X in the session stays for the host —
+— grouping and quantifiers: grouped by, for each X, in each X; every X with no X in the session stays for the host —
 ✓ count samples grouped by gold
     → Count sample; by Au.
 ✓ count every sample in each cu
