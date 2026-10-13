@@ -14,6 +14,7 @@ import { runCorpus, CORPUS_EN, ONTOLOGY } from '../ext/dispatch/bench/corpus.mjs
 import { CORPUS_PT } from '../ext/dispatch/bench/corpus-pt.mjs';
 import { GOLEM, GOLEM_EN, GOLEM_PT } from '../ext/dispatch/bench/golem-corpus.mjs';
 import { SLOTS, SLOTS_EN, SLOTS_PT } from '../ext/dispatch/bench/golem-slots.mjs';
+import { FRAGMENTS } from '../ext/dispatch/bench/golem-fragments.mjs';
 import { DEMO_OBJECTS, DEMO_TOOLS } from '../ext/dispatch/bench/demo.js';
 
 const bench = (p) => new URL('../ext/dispatch/bench/' + p, import.meta.url);
@@ -41,6 +42,10 @@ test('grammar: free text, dates, clock times, shapes and comparisons match golde
 
 test('grammar: the same slots in Portuguese match golden/golem-slots-pt.txt', () => {
   assert.equal(runCorpus(SLOTS_PT, PORTUGUESE, { ontology: SLOTS, objects: [] }), golden('golem-slots-pt.txt'));
+});
+
+test('grammar: fragments read against the last command match golden/golem-fragments.txt', () => {
+  assert.equal(FRAGMENTS, golden('golem-fragments.txt'));
 });
 
 test('grammar: a text slot keeps the words as typed and never repairs inside them', () => {

@@ -18,6 +18,12 @@ export function buildGrammar(X) {
     return { kind: 'cmd', verb: null, args: [{ kind: 'np', list: [n] }, ...a], question: true };
   });
   rule('Program', 'Cmd THEN Program', (c, _, p) => [c, ...p]);
+  // a fragment (understand with { fragment: true }): what is left of a command when the rest is the session's last one —
+  // "in feet", "and chile", "log scale", "where au > 1", "again but with 300 m". It is an 'again' the ellipsis completes.
+  const frag = (t, a) => t.length || a.length ? [{ kind: 'again', args: [...t, ...a] }] : null;
+  rule('Fragment', 'Theme PPs', frag);
+  rule('Fragment', 'CONJ Theme PPs', (_, t, a) => frag(t, a));
+  rule('Fragment', 'Cmd', c => c.kind === 'again' ? [c] : null);
   rule('Program', 'Cmd CONJ THEN Program', (c, _, __, p) => [c, ...p]);
   rule('Program', 'Cmd COMMA THEN Program', (c, _, __, p) => [c, ...p]);
   rule('Program', 'Cmd COMMA CONJ THEN Program', (c, _, __, ___, p) => [c, ...p]);

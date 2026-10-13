@@ -342,8 +342,13 @@ Trailing tokens can only be skipped at the top level.
   `ontology.fillers`, which is where a word that is a value elsewhere belongs: "ok" is
   ordinary kriging in the geostatistics demo, so it is not in the English bank.
 
-Still to do for golem: amendments (`in feet`, `and chile`) through the ellipsis
-machinery, and answer fragments (below). Arithmetic stays outside: a token-shape check
+- **Fragments.** `understand(text, session, { fragment: true })` reads what is left of a command when
+  the rest is `session.last` (start symbol `Fragment`): a thing, some prepositional phrases, either after
+  "and", or an "again but …" ("and chile", "in feet", "log scale", "same for peru"). The ellipsis
+  completes it from the last command; a thing that does not fit the theme but fits exactly one role
+  replaces that role ("chile" after "density of mongolia"). Corpus `bench/golem-fragments.mjs`.
+
+Still to do for golem: answer fragments (below). Arithmetic stays outside: a token-shape check
 routes it to the expression parser before the grammar sees it.
 
 After the fold-in, in general: answer fragments (a second start symbol for replies to a

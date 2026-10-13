@@ -1,0 +1,30 @@
+✓ population density of mongolia in people per square mile
+    → Look up population density; of mongolia; unit people/sq mi.
+  … ✓ and chile
+    → Look up population density; of chile; unit people/sq mi.
+  … ✓ in people per km2
+    → Look up population density; of chile; unit people/km2.
+  … ✓ brazil
+    → Look up population density; of brazil; unit people/km2.
+  … ✓ same for peru
+    → Look up population density; of peru; unit people/km2.
+✓ 2 km in miles
+    → Convert 2 km; unit mi.
+  … ✓ in feet
+    → Convert 2 km; unit ft.
+  … ✓ and in km
+    → Convert 2 km; unit km.
+  … ✓ again but in miles
+    → Convert 2 km; unit mi.
+✓ histogram of cu
+    → Plot histogram; of Cu.
+  … ✓ log scale
+    → Plot histogram; of Cu; scale log.
+  … ✓ of gold
+    → Plot histogram; of Au; scale log.
+  … ✓ in linear scale
+    → Plot histogram; of Au; scale linear.
+✓ define treap
+    → Define treap.
+  … ✗ frobnicate
+    → REJECT: "frobnicate" is not a verb I know
