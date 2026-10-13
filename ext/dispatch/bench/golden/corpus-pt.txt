@@ -62,7 +62,7 @@
 ✗ frobnica Cu
     → REJECT: "frobnica" is not a verb I know
 ✗ kriga Cu com uma coisa fofa
-    → REJECT: understood "kriga cu"; could not place "com uma coisa fofa"; stopped at "coisa" (unknown word); expected 'último', a comparative, a number, a thing
+    → REJECT: understood "kriga cu"; could not place "com uma coisa fofa"; stopped at "coisa" (unknown word); expected 'último', a comparative, a number, a thing, a unit, an article
 ✗ kriga o variograma
     → REJECT: "krige" takes variable, not variograma
 ✗ kriga Cu do domínio oeste

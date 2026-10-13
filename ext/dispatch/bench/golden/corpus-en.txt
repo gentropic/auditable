@@ -64,7 +64,7 @@
 ✗ frobnicate Cu
     → REJECT: "frobnicate" is not a verb I know
 ✗ krige Cu with a fluffy thing
-    → REJECT: understood "krige cu"; could not place "with a fluffy thing"; stopped at "fluffy" (unknown word); expected 'last', a comparative, a number, a thing
+    → REJECT: understood "krige cu"; could not place "with a fluffy thing"; stopped at "fluffy" (unknown word); expected 'last', a comparative, a number, a thing, a unit, an article
 ✗ krige the variogram
     → REJECT: "krige" takes variable, not variogram
 ✗ krige Cu from the west domain

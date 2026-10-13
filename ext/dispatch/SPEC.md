@@ -310,6 +310,9 @@ Trailing tokens can only be skipped at the top level.
   typed, and a multi-piece shape never ends on a line break. A number glued to a unit the
   lexicon knows is the two of them ("5km", "45.2%", "2.7g/cm3"), and a filler that is also
   a unit is the unit right after a number ("75 um"; "um, …" stays a hesitation).
+- **Number words.** Banks carry `numbers` (one to twenty, the tens, a dozen, half, a quarter of
+  an, three quarters of a; pt um to cem, meia, um quarto de) as NUM senses, and "a/an + unit" is one
+  of that unit ("an hour", "half an hour", "set a timer for ninety seconds").
 - **Bare arguments.** A role whose `preps` include `''` takes a thing with no marker,
   only of the types such roles declare: "9am sao paulo in perth", "is 21 apr 2027 a
   working day".

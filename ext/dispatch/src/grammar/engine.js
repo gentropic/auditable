@@ -37,6 +37,7 @@ export function createEngine(ont, locale = ENGLISH) {
   for (const [w, m] of Object.entries(locale.months ?? {})) add(w, 'MONTH', { m });
   for (const [w, c] of Object.entries(locale.clocks ?? {})) add(w, 'CLOCK', { h: c[0], mi: c[1] });
   if (locale.AMPM) add(locale.AMPM, 'AMPM');
+  for (const [w, n] of Object.entries(locale.numbers ?? {})) add(w, 'NUM', { n });   // number words: "ninety", "half an", "a quarter of an"
   const L = k => `${k}_${locale.code}`;   // ontology synonym column for this locale, falling back to the default column
   const col = (o, k) => o[L(k)] ?? o[k];
   // a frame may take a subject before its verb ("pop means population"): it binds as the role 'subject'
@@ -61,6 +62,7 @@ export function createEngine(ont, locale = ENGLISH) {
   const X = {
     headFirst: !!locale.headFirst,
     nextDay: locale.THEN.split('|').includes('next'),
+    indefinite: locale.indefinite ?? [],
     subject: ont.verbs.some(v => v.subject),   // some frame takes a subject before its verb
     // a role with no marker ("decode hex 676f", "9am sao paulo in perth"): only things of the types such roles take
     bareTypes: new Set(ont.verbs.flatMap(v => Object.values(v.roles ?? {}).filter(r => r.preps.includes('')).flatMap(r => r.types))),   // "next friday" where the bank has the word
