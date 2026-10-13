@@ -1,0 +1,106 @@
+// Hand corpus for the slots golem's register needs beyond bare phrases: free text ("remember that …",
+// "remind me to … on friday at 9", "check: …", "search my notes for …"), dates and clock times, token
+// shapes the ontology declares (270/60), comparisons on a thing ("cu > 0.5"), host fillers ("hey golem"),
+// and politeness around all of it. `node golem-slots.mjs [pt]` prints the verdicts;
+// golden/golem-slots-en.txt and golden/golem-slots-pt.txt are the gates.
+import { ENGLISH, PORTUGUESE } from '../src/main.js';
+import { runCorpus } from './corpus.mjs';
+import { GOLEM } from './golem-corpus.mjs';
+
+// golem.json plus the frames and nouns these slots need; the generated fuzzers keep using golem.json alone
+export const SLOTS = {
+  ...GOLEM,
+  shapes: [{ type: 'orientation', re: '\\d{1,3}/\\d{1,2}' }],
+  fillers: ['golem', 'ok', 'okay'],   // this host has no "ok" of its own, so it may drop the word
+  nouns: [...GOLEM.nouns,
+    { type: 'docs', words: { docs: ['my documents', 'my docs', 'my notes', 'documents', 'notes'] }, words_pt: { docs: ['meus documentos', 'minhas notas', 'documentos', 'notas'] } },
+    { type: 'sample', words: {}, generic: ['sample', 'samples', 'row', 'rows', 'interval', 'intervals'], generic_pt: ['amostra', 'amostras', 'linha', 'linhas', 'intervalo', 'intervalos'] }],
+  postmods: [...GOLEM.postmods, ...['above', 'below', 'atleast', 'atmost', 'equals'].map(p => ({ prep: p, heads: ['variable'], attr: p, quantity: true }))],
+  verbs: [...GOLEM.verbs,
+    { name: 'remember', label: 'Remember', words: ['remember', 'note'], lead: ['that'], theme: ['text'], required: ['theme'], roles: {},
+      words_pt: ['lembra', 'lembre', 'anota', 'anote'], lead_pt: ['que'], label_pt: 'Lembrar' },
+    { name: 'event', label: 'Event', words: ['remind me to', 'remind me', 'schedule'], theme: ['text'], required: ['theme'],
+      roles: { on: { preps: ['on'], types: ['date'] }, at: { preps: ['at'], types: ['clock'] }, for: { preps: ['for'], types: ['quantity:time'] } },
+      words_pt: ['me lembra de', 'me lembre de', 'agenda', 'agende'], label_pt: 'Evento' },
+    { name: 'check', label: 'Check', words: ['check', 'lint', 'review', 'check this', 'review this'], theme: [], required: ['text'], roles: { text: { preps: [':'], types: ['text'] } },
+      words_pt: ['revisa', 'revise', 'confere', 'confira'], label_pt: 'Revisar' },
+    { name: 'search', label: 'Search', words: ['search', 'find', 'look for'], theme: ['text', 'docs'], required: ['theme'],
+      roles: { in: { preps: ['in'], types: ['docs'] }, for: { preps: ['for'], types: ['text'] } },
+      words_pt: ['procura', 'procure', 'busca', 'busque', 'acha', 'ache'], label_pt: 'Procurar' },
+    { name: 'count', label: 'Count', words: ['count', 'how many'], theme: ['sample'], required: ['theme'], roles: { where: { preps: ['where', 'with'], types: ['variable'] } },
+      words_pt: ['conta', 'conte', 'quantas', 'quantos'], label_pt: 'Contar' },
+    { name: 'stereonet', label: 'Stereonet', words: ['stereonet', 'plot plane'], theme: ['orientation'], required: ['theme'], roles: {},
+      words_pt: ['estereograma', 'estereonet'], label_pt: 'Estereograma' }],
+  echoOrder: [...GOLEM.echoOrder, 'on', 'at', 'in', 'where', 'text'],
+  roleLabels_pt: { ...GOLEM.roleLabels_pt, on: 'em', at: 'às', in: 'em', where: 'onde', text: 'texto' },
+};
+
+export const SLOTS_EN = [
+  ['— free text after the verb, with a lead word —'],
+  'remember that the core box at 120 m was relabelled',
+  'remember the lab closes at 4 on fridays',
+  'please remember that cu is high in hole 7',
+  ['— free text with trailing arguments: the shortest text that leaves a whole reading —'],
+  'remind me to send the samples to the lab on friday at 9',
+  'remind me to call the driller tomorrow at 2pm',
+  'could you remind me to check the pump on 25 december at 07:30 for 30 minutes',
+  'remind me to meet ana at the core shed next monday at noon',
+  'schedule the safety talk on oct 16 2026 at 9 am',
+  'remind me',
+  ['— free text after a colon or a line break —'],
+  'check: There is no doubt but that the report was late.',
+  'review this:\nThe fact that he had not succeeded was owing to the weather.',
+  'check',
+  ['— free text after a preposition the role declares —'],
+  'search my notes for resurvey',
+  'find core loss in my documents',
+  'please look for collar check in my notes',
+  'search my notes for chalcopyrite',
+  ['— comparisons on a thing —'],
+  'count samples where cu > 0.5',
+  'count rows where gold is at least 1.2 g/t',
+  'how many samples with cu above 0.5 %',
+  'count samples where cu ≤ 0.1',
+  ['— shapes the ontology declares —'],
+  'stereonet 045/30',
+  'plot plane 270/60 and 120/45',
+  ['— politeness and fillers around ordinary commands —'],
+  'hey golem, convert 2 km to miles',
+  'so, 5 km in miles',
+  'um, what is the density of pyrite?',
+  'i need 0.35 oz per short ton in g/t',
+  'could you please plot a histogram of cu for me',
+  'okay thanks, now the capital of chile',
+  ['— breakers —'],
+  'remind me to',
+  'count samples where cu > banana',
+  'stereonet 045',
+  'remember',
+];
+
+export const SLOTS_PT = [
+  ['— texto livre depois do verbo —'],
+  'lembra que a caixa de testemunho a 120 m foi reetiquetada',
+  'anota que o cu está alto no furo 7',
+  ['— texto livre com argumentos depois —'],
+  'me lembra de mandar as amostras pro laboratório na sexta às 9',
+  'me lembra de ligar pro sondador amanhã às 14:00',
+  'agenda a conversa de segurança em 16 de outubro de 2026 às 9h',
+  ['— depois de dois-pontos —'],
+  'revisa: o relatório atrasou.',
+  ['— depois de uma preposição —'],
+  'procura perda de testemunho nas minhas notas',
+  ['— comparações —'],
+  'conta amostras onde cu > 0.5',
+  'conta amostras onde cu maior que 0.5 %',
+  ['— formas declaradas —'],
+  'estereograma 045/30',
+  ['— cortesia —'],
+  'por favor, converte 2 km para milhas',
+  'ei golem, qual é a densidade da pirita',
+];
+
+if (/golem-slots\.mjs$/.test(process.argv[1] ?? '')) {
+  const pt = process.argv[2] === 'pt';
+  process.stdout.write(runCorpus(pt ? SLOTS_PT : SLOTS_EN, pt ? PORTUGUESE : ENGLISH, { ontology: SLOTS, objects: [] }));
+}

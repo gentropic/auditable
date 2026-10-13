@@ -32,6 +32,11 @@ export function createEngine(ont, locale = ENGLISH) {
   for (const [w, r] of Object.entries(locale.times)) add(w, 'TIME', { from: r[0], to: r[1] });
   for (const [w, c] of Object.entries(locale.comps)) add(w, 'COMP', { sign: c[0], sup: !!c[1] });
   for (const p of locale.PREP.split('|')) add(p, 'PREP', { canon: locale.preps[p] ?? [p] });
+  // the calendar: weekdays and relative days (DAY), months (MONTH), named clock times (CLOCK), am/pm (AMPM)
+  for (const [w, d] of Object.entries(locale.days ?? {})) add(w, 'DAY', typeof d === 'number' ? { dow: d } : { off: d.rel });   // off, not rel: rel is a relative clause downstream
+  for (const [w, m] of Object.entries(locale.months ?? {})) add(w, 'MONTH', { m });
+  for (const [w, c] of Object.entries(locale.clocks ?? {})) add(w, 'CLOCK', { h: c[0], mi: c[1] });
+  if (locale.AMPM) add(locale.AMPM, 'AMPM');
   const L = k => `${k}_${locale.code}`;   // ontology synonym column for this locale, falling back to the default column
   const col = (o, k) => o[L(k)] ?? o[k];
   const VERBS = Object.fromEntries(ont.verbs.map(v => [v.name, v]));
@@ -42,6 +47,7 @@ export function createEngine(ont, locale = ENGLISH) {
     if (col(n, 'generic')) add(col(n, 'generic').join('|'), 'NOUN', { type: n.type, value: null, generic: true });
   }
   for (const u of ont.units) add(col(u, 'words').join('|'), 'UNIT', { dim: u.dim, unit: u.unit });
+  for (const w of col(ont, 'fillers') ?? []) if (!LEX[w]) add(w, 'FILLER');   // host words that carry nothing ("golem" in "hey golem")
   const MULTI = Object.keys(LEX).filter(k => k.includes(' ')).map(k => k.split(' ')).sort((a, b) => b.length - a.length);
   const SINGLE = Object.keys(LEX).filter(k => !k.includes(' '));
   const CONTENT = new Set(Object.keys(LEX).filter(k => LEX[k].some(s => ['NOUN', 'VERB', 'UNIT'].includes(s.cat))));
@@ -52,6 +58,7 @@ export function createEngine(ont, locale = ENGLISH) {
   // ---- type-driven helpers used inside the grammar ----
   const X = {
     headFirst: !!locale.headFirst,
+    nextDay: locale.THEN.split('|').includes('next'),   // "next friday" where the bank has the word
     identTypes: new Set(ont.nouns.filter(n => n.ident).map(n => n.type)),
     postmodPreps: [...new Set(ont.postmods.map(p => p.prep))],
     postmodQuantity: new Set(ont.postmods.filter(p => p.quantity).map(p => p.prep)),
@@ -78,28 +85,44 @@ export function createEngine(ont, locale = ENGLISH) {
   const R = buildGrammar(X);
 
   // ---- tokenizer ----
+  // pieces of the input with their offsets: a line break or a colon before a space is a COLON (it opens a
+  // payload), comparison signs stand alone, a number may carry a sign and thousands separators, and a colon
+  // inside a word (09:30) stays in it
+  const PIECE = /\r?\n\s*|:(?=\s|$)|[,?!]|[<>]=?|[=≤≥]|-?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d,])|(?:[^\s,?!<>=≤≥:]|:(?!\s|$))+/g;
+  const SHAPES = (ont.shapes ?? []).map(x => ({ type: x.type, re: new RegExp(`^(?:${x.re})$`, 'i') }));
+  // shapes the grammar knows itself: clock times (09:30, 9pm, 9h30) and ISO dates
+  const clockOf = w => { let m = /^(\d{1,2}):(\d{2})(am|pm)?$/.exec(w) || /^(\d{1,2})()(am|pm)$/.exec(w) || /^(\d{1,2})h(\d{2})?()$/.exec(w); if (!m) return null;
+    let h = +m[1]; const mi = m[2] ? +m[2] : 0; if (m[3] === 'pm' && h < 12) h += 12; if (m[3] === 'am' && h === 12) h = 0; return h <= 24 && mi < 60 && (!m[3] || +m[1] <= 12) ? { cat: 'CLOCK', h, mi } : null; };
+  const dateOf = w => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(w); return m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31 ? { cat: 'DATE', y: +m[1], m: +m[2], d: +m[3] } : null; };
   function tokenize(text, session) {
-    const raw = text.toLowerCase().replace(/([,?!])/g, ' $1 ').trim().split(/\s+/).filter(Boolean);
+    const raw = [...text.matchAll(PIECE)].map(m => ({ w: /^\r?\n/.test(m[0]) ? ':' : m[0].toLowerCase(), s: m.index, e: m.index + m[0].replace(/\s+$/, '').length, src: m[0] }));
+    for (let k = raw.length - 1; k > 0; k--) if (raw[k].w === ':' && raw[k - 1].w === ':') raw.splice(k, 1);   // "check:\n…" is one break
     const toks = []; const notes = []; const unknown = [];
+    const at = (t, a, b) => Object.assign(t, { s: raw[a].s, e: raw[b - 1].e });
     for (let i = 0; i < raw.length;) {
       let hit = null;
       let mwPlural = false;
-      for (const mw of MULTI) if (mw.every((w, k) => raw[i + k] === w || (k === mw.length - 1 && raw[i + k] && locale.stem(raw[i + k]) === locale.stem(w) && LEX[mw.join(' ')].some(x => x.cat === 'NOUN')))) { hit = mw; mwPlural = locale.plural(raw[i + mw.length - 1]); break; }
-      if (hit) { const w = hit.join(' '); if (LEX[w][0].cat !== 'FILLER') toks.push({ word: w, senses: mwPlural ? LEX[w].map(x => x.cat === 'NOUN' ? { ...x, plural: true } : x) : LEX[w] }); i += hit.length; continue; }
-      const w = raw[i++];
+      for (const mw of MULTI) if (mw.every((w, k) => raw[i + k]?.w === w || (k === mw.length - 1 && raw[i + k] && locale.stem(raw[i + k].w) === locale.stem(w) && LEX[mw.join(' ')].some(x => x.cat === 'NOUN')))) { hit = mw; mwPlural = locale.plural(raw[i + mw.length - 1].w); break; }
+      if (hit) { const w = hit.join(' '); if (LEX[w][0].cat !== 'FILLER') toks.push(at({ word: w, senses: mwPlural ? LEX[w].map(x => x.cat === 'NOUN' ? { ...x, plural: true } : x) : LEX[w] }, i, i + hit.length)); i += hit.length; continue; }
+      const i0 = i, w = raw[i++].w, src = raw[i0].src.trim();
       if (w === '?' || w === '!') continue;
-      if (LEX[w]) { if (LEX[w][0].cat !== 'FILLER') { const plural = locale.plural(w); toks.push({ word: w, senses: plural ? LEX[w].map(x => x.cat === 'NOUN' ? { ...x, plural } : x) : LEX[w] }); } continue; }
-      if (/^\d+(\.\d+)?$/.test(w)) { toks.push({ word: w, senses: [{ cat: 'NUM', n: parseFloat(w) }] }); continue; }
-      if (session?.names?.[w]) { toks.push({ word: w, senses: [{ cat: 'IDENT', name: w, type: session.names[w] }] }); continue; }
-      if (/^[a-z]+\d+$/.test(w)) { toks.push({ word: w, senses: [{ cat: 'IDENT', name: w }] }); continue; }
+      if (w === ':') { toks.push(at({ word: ':', senses: [{ cat: 'COLON' }] }, i0, i)); continue; }
+      if (LEX[w]) { if (LEX[w][0].cat !== 'FILLER') { const plural = locale.plural(w); toks.push(at({ word: w, senses: plural ? LEX[w].map(x => x.cat === 'NOUN' ? { ...x, plural } : x) : LEX[w] }, i0, i)); } continue; }
+      const lit = [clockOf(w), dateOf(w), ...SHAPES.filter(x => x.re.test(w)).map(x => ({ cat: 'LIT', type: x.type, value: src }))].filter(Boolean);
+      const num = /^-?\d+(\.\d+)?$/.test(w) || /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(w) ? [{ cat: 'NUM', n: parseFloat(w.replace(/,/g, '')) }] : [];
+      if (lit.length || num.length) { toks.push(at({ word: w, senses: [...num, ...lit] }, i0, i)); continue; }
+      if (session?.names?.[w]) { toks.push(at({ word: w, senses: [{ cat: 'IDENT', name: w, type: session.names[w] }] }, i0, i)); continue; }
+      if (/^[a-z]+\d+$/.test(w)) { toks.push(at({ word: w, senses: [{ cat: 'IDENT', name: w }] }, i0, i)); continue; }
       const st = STEMS[locale.stem(w)];
-      if (st) { const plural = locale.plural(w); toks.push({ word: w, senses: st.map(s => ({ ...s, plural })), stemmed: true }); continue; }
+      if (st) { const plural = locale.plural(w); toks.push(at({ word: w, senses: st.map(s => ({ ...s, plural })), stemmed: true }, i0, i)); continue; }
       const tol = w.length < 7 ? 1 : 2;
       const cands = SINGLE.filter(k => k.length > 2 && CONTENT.has(k) && dl(w, k) <= tol);   // never repair into a function word
-      if (cands.length === 1) { notes.push(`read "${w}" as "${cands[0]}"`); toks.push({ word: cands[0], senses: LEX[cands[0]], repaired: w }); continue; }
+      if (cands.length === 1) { notes.push(`read "${w}" as "${cands[0]}"`); toks.push(at({ word: cands[0], senses: LEX[cands[0]], repaired: w }, i0, i)); continue; }
       if (cands.length > 1) notes.push(`"${w}" could be ${cands.map(c => `"${c}"`).join(' / ')} — not guessing`);
-      unknown.push(w); toks.push({ word: w, senses: [{ cat: 'UNK' }] });
+      unknown.push(w); toks.push(at({ word: w, senses: [{ cat: 'UNK' }] }, i0, i));
     }
+    while (toks[0]?.senses.every(x => x.cat === 'COMMA')) toks.shift();   // "hey golem, …": the filler went, its comma goes too
+    while (toks.at(-1)?.senses.every(x => x.cat === 'COMMA')) toks.pop();
     return { toks, notes, unknown };
   }
 
@@ -143,8 +166,8 @@ export function createEngine(ont, locale = ENGLISH) {
   }
   const describeRepairs = (toks, repairs) => repairs.map(r => r.op === 'skip' ? `ignored "${r.word}"` : r.op === 'subst' ? `read "${r.word}" as "${r.to}"` : r.sym === 'LATE' ? 'read the arguments out of order' : `assumed ${r.sym === 'PREP' ? 'a preposition' : 'an article'} before "${toks[r.at]?.word ?? 'the end'}"`);
   // human names for the terminals the chart was waiting for
-  const EXPECT = { NOUN: 'a thing', VERB: 'a verb', DET: 'an article', PREP: 'a preposition', NUM: 'a number', UNIT: 'a unit', IDENT: 'a name', CONJ: `'${locale.CONJ.split('|')[0]}'`, THEN: `'${locale.THEN.split('|')[0]}'`, COMMA: "','", QUANT: 'a quantifier', REF: `'${locale.REF.split('|')[0]}'`, PRON: 'a pronoun', REL: `'${locale.REL.split('|')[0]}'`, SUBJ: `'${locale.SUBJ.split('|')[0]}'`, TIME: 'a time', COMP: 'a comparative', WH: 'a question word', COP: `'${(locale.COP ?? 'is').split('|')[0]}'`, WHCOP: `'${(locale.WHCOP ?? 'what is').split('|')[0]}'`, EXCEPT: `'${locale.EXCEPT.split('|')[0]}'`, BUT: `'${locale.BUT.split('|')[0]}'`, AGAIN: `'${locale.AGAIN.split('|')[0]}'` };
-  const expectName = sym => { const [cat, w] = sym.split(':'); if (cat === 'LATE') return null; return w ? `'${w}'` : (EXPECT[cat] ?? cat); };
+  const EXPECT = { NOUN: 'a thing', VERB: 'a verb', DET: 'an article', PREP: 'a preposition', NUM: 'a number', UNIT: 'a unit', IDENT: 'a name', CONJ: `'${locale.CONJ.split('|')[0]}'`, THEN: `'${locale.THEN.split('|')[0]}'`, COMMA: "','", QUANT: 'a quantifier', REF: `'${locale.REF.split('|')[0]}'`, PRON: 'a pronoun', REL: `'${locale.REL.split('|')[0]}'`, SUBJ: `'${locale.SUBJ.split('|')[0]}'`, TIME: 'a time', COMP: 'a comparative', WH: 'a question word', COP: `'${(locale.COP ?? 'is').split('|')[0]}'`, WHCOP: `'${(locale.WHCOP ?? 'what is').split('|')[0]}'`, EXCEPT: `'${locale.EXCEPT.split('|')[0]}'`, BUT: `'${locale.BUT.split('|')[0]}'`, AGAIN: `'${locale.AGAIN.split('|')[0]}'`, DAY: 'a date', MONTH: 'a date', DATE: 'a date', CLOCK: 'a clock time', AMPM: "'am' or 'pm'", COLON: "':'", LIT: 'a value' };
+  const expectName = sym => { const [cat, w] = sym.split(':'); if (cat === 'LATE' || cat === 'TEXT' || (cat === 'LIT' && !(ont.shapes ?? []).length)) return null; return w ? `'${w}'` : (EXPECT[cat] ?? cat); };
 
   // ---- binding ----
   const typeOf = v => v.type === 'quantity' ? `quantity:${v.dim}` : v.type;
@@ -268,6 +291,8 @@ export function createEngine(ont, locale = ENGLISH) {
   function describe(n) {
     if (n.type === 'quantity') return `${n.n}${n.unit ? ' ' + n.unit : ''}`;
     if (n.type === 'unit') return n.unit;
+    if (n.type === 'text') return n.value.length > 60 ? `"${n.value.slice(0, 57).trimEnd()}…"` : `"${n.value}"`;
+    if (n.type === 'date' || n.type === 'clock') return n.value;
     if (n.type === '*') return n.pron ?? 'that';
     if (n.all) return `${locale.agree[locale.gender(typeName(n.type))]?.[P.every] ?? P.every} ${typeName(n.type)}${n.except?.length ? ` ${P.except} ` + n.except.map(describe).join(', ') : ''}`;
     if (n.attrs?.radius) return describe(n.attrs.radius);
@@ -286,6 +311,7 @@ export function createEngine(ont, locale = ENGLISH) {
     if (n.attrs?.length) post.push(describe(n.attrs.length));
     if (n.attrs?.above) post.push(`${P.above} ${describe(n.attrs.above)}`);
     if (n.attrs?.below) post.push(`${P.below} ${describe(n.attrs.below)}`);
+    for (const k of ['atleast', 'atmost', 'equals']) if (n.attrs?.[k]) post.push(`${P[k] ?? k} ${describe(n.attrs[k])}`);
     if (n.rel?.when) post.push(Object.entries(locale.times).find(([, r]) => r[0] === n.rel.when.from && r[1] === n.rel.when.to)?.[0] ?? '');
     if (n.rel?.verb) post.push(`(${col(VERBS[n.rel.verb], 'words')[0]})`);
     const core = locale.headFirst ? [head, ...mods.map(m => /^[A-Z]/.test(m) ? `${P.of} ${m}` : m)] : [...mods, head];   // "variograma esférico de Cu" / "spherical Cu variogram"
@@ -336,6 +362,47 @@ export function createEngine(ont, locale = ENGLISH) {
     return { kind: 'cmd', verb: L.verb, args };
   }
 
+  // A slot of type 'text' takes words verbatim: "remember that …", "remind me to … on friday", "check: …".
+  // It opens after the verb of a frame whose theme is text (past an optional lead word such as "that"), after a
+  // preposition a text role declares, or after a colon or line break when a role declares ':'. It ends at the
+  // end of the input, or (unless it opened at a colon) before a preposition after which the rest still reads.
+  // The shortest text that leaves a whole reading wins, wherever it opened: trailing arguments ("on friday at 9")
+  // stay arguments, and "search my notes for resurvey" searches for "resurvey".
+  // The words inside are never repaired, stemmed or looked up: the span becomes one TEXT token before parsing.
+  const TEXT_THEME = new Set(ont.verbs.filter(v => (v.theme ?? []).includes('text')).map(v => v.name));
+  const TEXT_PREPS = new Set(ont.verbs.flatMap(v => Object.values(v.roles ?? {}).filter(r => r.types.includes('text')).flatMap(r => r.preps)));
+  function textSpans(toks) {
+    const out = [];
+    for (let i = 1; i < toks.length; i++) {
+      let open = null, lead = 0;
+      for (const sn of toks[i - 1].senses) {
+        if (sn.cat === 'VERB' && TEXT_THEME.has(sn.verb)) { open ??= 'verb'; if ((col(VERBS[sn.verb], 'lead') ?? []).includes(toks[i].word) && i + 1 < toks.length) lead = 1; }
+        else if (sn.cat === 'PREP' && sn.canon.some(c => TEXT_PREPS.has(c))) open ??= 'prep';
+        else if (sn.cat === 'COLON' && TEXT_PREPS.has(':')) open = 'colon';
+      }
+      if (!open) continue;
+      const from = i + lead;
+      const stop = t => t.senses.some(x => x.cat === 'PREP' || x.cat === 'DAY') || (X.nextDay && t.word === 'next');   // where an argument can start
+      for (let j = from + 1; j <= toks.length; j++) if (j === toks.length || (open !== 'colon' && stop(toks[j]))) out.push({ i, from, j });
+    }
+    return out.sort((a, b) => (a.j - a.from) - (b.j - b.from) || a.i - b.i);
+  }
+  function textRead(toks, text, session, diag, opts) {
+    let fallback = null;
+    for (const { i, from, j } of textSpans(toks)) {
+      const t = { word: '«text»', senses: [{ cat: 'TEXT', text: text.slice(toks[from].s, toks[j - 1].e) }], s: toks[from].s, e: toks[j - 1].e };
+      const tt = [...toks.slice(0, i), t, ...toks.slice(j)];
+      const full = makeParser(tt)('Program', 0).filter(r => r.end === tt.length).map(r => ({ ...r, repairs: [] }));
+      if (!full.length) continue;
+      const inside = new Set(toks.slice(from, j).flatMap(x => [x.repaired, x.word]).filter(Boolean));
+      const d2 = { ...diag, notes: diag.notes.filter(n => ![...inside].some(w => n.startsWith(`read "${w}" as`) || n.startsWith(`"${w}" could be`))), unknown: diag.unknown.filter(w => !inside.has(w)), repairs: [] };
+      const r = semantic(full, tt, session, d2, opts);
+      if (r.status === 'ok') { Object.assign(diag, d2); return r; }
+      if (r.status !== 'reject' && !fallback) fallback = r;
+    }
+    return fallback;
+  }
+
   const fanout = c => (VERBS[c.verb].distributive && c.theme.length > 1) ? c.theme.map(t => ({ ...c, theme: [t] })) : [c];
 
   function understand(text, session, opts = {}) {
@@ -347,6 +414,10 @@ export function createEngine(ont, locale = ENGLISH) {
     const strictFull = isUnk ? [] : parse('Program', 0).filter(r => r.end === toks.length).map(r => ({ ...r, repairs: [] }));
     diag.parses = strictFull.length;
     let result = strictFull.length ? semantic(strictFull, toks, session, diag, opts) : null;
+    if ((!result || result.status !== 'ok') && (TEXT_THEME.size || TEXT_PREPS.size)) {   // a free-text slot, before any repair
+      const t = textRead(toks, text, session, diag, opts);
+      if (t && (t.status === 'ok' || !result)) return t;
+    }
     if ((!result || result.status === 'reject') && opts.repair?.budget) {
       // error-correcting pass: candidate derivations by ascending repair cost; the first tier that survives binding wins
       const P2 = makeParser(toks, { ...opts.repair, names: session.names }); const C2 = P2.chart;
@@ -429,8 +500,7 @@ export function createEngine(ont, locale = ENGLISH) {
   // ───────────────────────────── predictive input ─────────────────────────────
   // suggest(text): what can come next, filtered by grammar (chart expectations), frame (roles still open)
   // and session (objects of the right type). preview(text): echo of what is understood so far, with a hole.
-  const surfacePreps = canon => locale.preps && Object.keys(locale.preps).length
-    ? Object.entries(locale.preps).filter(([, c]) => c.includes(canon)).map(([w]) => w).slice(0, 1) : [canon];
+  const surfacePreps = canon => { const ws = locale.PREP.split('|').filter(w => (locale.preps[w] ?? [w]).includes(canon)); return ws.length ? ws.slice(0, 1) : [canon]; };
   function suggest(text, session, limit = 8) {
     const partial = /\S$/.test(text) ? text.split(/\s+/).at(-1).toLowerCase() : '';
     const head = partial ? text.slice(0, text.length - partial.length) : text;

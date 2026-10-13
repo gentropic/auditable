@@ -13,6 +13,7 @@ import { createEngine, makeSession, ENGLISH, PORTUGUESE, framesFrom, tagSetOf, t
 import { runCorpus, CORPUS_EN, ONTOLOGY } from '../ext/dispatch/bench/corpus.mjs';
 import { CORPUS_PT } from '../ext/dispatch/bench/corpus-pt.mjs';
 import { GOLEM, GOLEM_EN, GOLEM_PT } from '../ext/dispatch/bench/golem-corpus.mjs';
+import { SLOTS, SLOTS_EN, SLOTS_PT } from '../ext/dispatch/bench/golem-slots.mjs';
 import { DEMO_OBJECTS, DEMO_TOOLS } from '../ext/dispatch/bench/demo.js';
 
 const bench = (p) => new URL('../ext/dispatch/bench/' + p, import.meta.url);
@@ -32,6 +33,26 @@ test('grammar: golem register (bare phrases, closed questions) matches golden/go
 
 test('grammar: golem register matches golden/golem-pt.txt', () => {
   assert.equal(runCorpus(GOLEM_PT, PORTUGUESE, { ontology: GOLEM, objects: [] }), golden('golem-pt.txt'));
+});
+
+test('grammar: free text, dates, clock times, shapes and comparisons match golden/golem-slots-en.txt', () => {
+  assert.equal(runCorpus(SLOTS_EN, ENGLISH, { ontology: SLOTS, objects: [] }), golden('golem-slots-en.txt'));
+});
+
+test('grammar: the same slots in Portuguese match golden/golem-slots-pt.txt', () => {
+  assert.equal(runCorpus(SLOTS_PT, PORTUGUESE, { ontology: SLOTS, objects: [] }), golden('golem-slots-pt.txt'));
+});
+
+test('grammar: a text slot keeps the words as typed and never repairs inside them', () => {
+  const E = createEngine(SLOTS, ENGLISH);
+  const r = E.understand('remind me to meet Ana at the Core Shed next monday at noon', makeSession([]));
+  assert.equal(r.status, 'ok');
+  const c = r.commands[0];
+  assert.equal(c.theme[0].value, 'meet Ana at the Core Shed');
+  assert.deepEqual([c.roles.on[0].dow, c.roles.on[0].next, c.roles.at[0].h], [1, true, 12]);
+  assert.deepEqual(r.diag.notes, [], 'no typo note about "meet" from inside the text');
+  const p = E.understand('check:\nThe report, which was late, came:\n  in two parts.', makeSession([]));
+  assert.equal(p.commands[0].roles.text[0].value, 'The report, which was late, came:\n  in two parts.', 'a payload keeps line breaks, commas and colons');
 });
 
 test('grammar: an elided verb binds through the ontology, a closed question is the same command', () => {

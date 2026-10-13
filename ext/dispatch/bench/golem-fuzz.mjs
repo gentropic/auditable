@@ -26,7 +26,8 @@ const gen = t => pick(col(NOUN[t], 'generic'));
 const unitsOf = dim => ont.units.filter(u => u.dim === dim);
 const DIMS = [...new Set(ont.units.map(u => u.dim))];
 // a surface preposition for a canonical one: identity in English, a bank lookup in Portuguese
-const surf = canon => { const ws = Object.keys(LOC.preps).length ? Object.entries(LOC.preps).filter(([, c]) => c.includes(canon)).map(([w]) => w) : [canon]; return ws.length ? pick(ws) : null; };
+// surface prepositions for a canon: the bank's map where it has one, identity for the rest (en maps only the comparisons)
+const surf = canon => { const ws = LOC.PREP.split('|').filter(w => (LOC.preps[w] ?? [w]).includes(canon)); return ws.length ? pick(ws) : null; };
 const PHR = {
   en: { det: w => pick([w, `the ${w}`, `a ${w}`]), comp: (mod, head) => `${mod} ${head}`, whcop: q => pick(q.type === 'quantity' ? ['what is', "what's", 'how much is'] : ['what is', "what's"]), which: (g, pred) => `${pick(['which', 'what'])} ${g} ${pick(['are', 'is'])} ${pred}`, filler: () => pick(['please ', 'hey ', 'now ']) },
   pt: { det: w => pick([w, `o ${w}`, `a ${w}`, `um ${w}`, `uma ${w}`]), comp: (mod, head) => `${head} ${mod}`, whcop: q => pick(q.type === 'quantity' ? ['quanto é', 'quanto dá', 'qual é'] : ['qual é', 'o que é']), which: (g, pred) => `${pick(['quais', 'que'])} ${g} ${pick(['são', 'sao'])} ${pred}`, filler: () => pick(['por favor ', 'ei ', 'agora ']) },

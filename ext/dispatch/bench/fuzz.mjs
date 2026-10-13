@@ -25,7 +25,8 @@ const PHR = {
 // a surface preposition for a canonical one
 const PAST = { en: { fit: ['fitted', 'fit'], krige: ['kriged', 'estimated'] }, pt: { fit: ['ajustei', 'ajustou', 'ajustamos'], krige: ['kriguei', 'krigou', 'krigamos', 'estimei', 'estimou'] } }[LOC.code];
 const TIMES = Object.entries(LOC.times).filter(([w]) => !/manh|morning|antes|earlier|month|mês|mes/.test(w));
-const surf = canon => pick(Object.keys(LOC.preps).length ? Object.entries(LOC.preps).filter(([, c]) => c.includes(canon)).map(([w]) => w) : [canon]);
+// surface prepositions for a canon: the bank's map where it has one, identity for the rest (en maps only the comparisons)
+const surf = canon => { const ws = LOC.PREP.split('|').filter(w => (LOC.preps[w] ?? [w]).includes(canon)); return pick(ws.length ? ws : [canon]); };
 const col = (o, k) => o[`${k}_${LOC.code}`] ?? o[k];
 const { understand, echo } = E;
 

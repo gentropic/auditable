@@ -254,12 +254,46 @@ Trailing tokens can only be skipped at the top level.
     CRF-informed costs (`mixed`) stay. The tagger is confidently wrong on
     reordered input until then; do not wire `mixed` into the cascade before this.
 
-After the fold-in, for golem's register: free-text roles (`remember that …`,
-`check: …`, `X means Y`, event titles — a role type `text` that swallows the
-remainder, never repairs, and is legal only where a frame declares it), an
-absolute date and clock lexicon beyond the relative `TIME` words, an
-orientation token shape (`270/60`), and amendments (`in feet`, `and chile`)
-through the ellipsis machinery. Arithmetic stays outside: a token-shape check
+**Slots for golem's register** (2026-10-13; corpus `bench/golem-slots.mjs`, goldens
+`golden/golem-slots-{en,pt}.txt`):
+
+- **Free text.** A theme or role of type `text` takes words verbatim. The span opens
+  after the verb of a frame whose theme is `text` (past an optional `lead` word the
+  frame lists, such as "that" / "que"), after a preposition a text role declares, or
+  after a colon or line break when a role declares `':'`. It ends at the end of the
+  input or, unless it opened at a colon, before a preposition, a weekday or "next"
+  after which the rest still reads. Every candidate span is tried strictly, shortest
+  text first wherever it opened, before any repair; the first whole reading wins. So
+  "remind me to send the samples to the lab on friday at 9" keeps the date and time as
+  arguments, and "search my notes for resurvey" searches for "resurvey". The span is one
+  `TEXT` token: nothing inside it is looked up, stemmed or repaired, and the echo
+  quotes it (cut at 60 characters; the command carries all of it, as typed).
+- **Tokens with offsets.** The tokenizer keeps each token's place in the input, so a
+  text span is sliced from what was typed. A colon before a space and a line break are
+  `COLON` tokens; `< > <= >= = ≤ ≥` stand alone; numbers may carry a sign and
+  thousands separators. Commas left at the edges after dropped fillers go too
+  ("hey golem, …").
+- **Dates and clock times.** Banks carry `days` (weekday numbers, or `{ rel }` days
+  from today), `months`, `clocks` (noon, meio-dia) and `AMPM`. Things of type `date`
+  (`{ dow, next }`, `{ off }`, or `{ d, m, y? }`, plus ISO dates) and `clock`
+  (`{ h, mi }`: 09:30, 9pm, 9h30, "9 am", a bare hour) are NPs; a bare date is also a
+  time argument with canon `on` ("call him tomorrow"). The host resolves a date
+  against its own clock; the grammar never does.
+- **Shapes.** `ontology.shapes: [{ type, re }]` declares token shapes (a regex source,
+  so the ontology stays JSON) that become things of that type: `270/60` as an
+  orientation, a hole id. A token may also stay a number.
+- **Comparisons.** Prepositions with canons `above`, `below`, `atleast`, `atmost`,
+  `equals` cover the words and the signs ("greater than", "at least", ">=", "maior
+  que", "pelo menos"); quantity postmods on those canons read "cu > 0.5" and "gold is
+  at least 1.2 g/t". English maps only these in `preps`; every other English
+  preposition is its own canon.
+- **Fillers.** The banks gained the hesitations and wrappers people type (um, well, i
+  need, give me, for me; hum, me diz, preciso de). A host adds its own through
+  `ontology.fillers`, which is where a word that is a value elsewhere belongs: "ok" is
+  ordinary kriging in the geostatistics demo, so it is not in the English bank.
+
+Still to do for golem: amendments (`in feet`, `and chile`) through the ellipsis
+machinery, and answer fragments (below). Arithmetic stays outside: a token-shape check
 routes it to the expression parser before the grammar sees it.
 
 After the fold-in, in general: answer fragments (a second start symbol for replies to a

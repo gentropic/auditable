@@ -1,0 +1,88 @@
+
+— free text after the verb, with a lead word —
+✓ remember that the core box at 120 m was relabelled
+    → Remember "the core box at 120 m was relabelled".
+✓ remember the lab closes at 4 on fridays
+    → Remember "the lab closes at 4 on fridays".
+✓ please remember that cu is high in hole 7
+    → Remember "cu is high in hole 7".
+
+— free text with trailing arguments: the shortest text that leaves a whole reading —
+✓ remind me to send the samples to the lab on friday at 9
+    → Event "send the samples to the lab"; on friday; at 09:00.
+✓ remind me to call the driller tomorrow at 2pm
+    → Event "call the driller"; on tomorrow; at 14:00.
+✓ could you remind me to check the pump on 25 december at 07:30 for 30 minutes
+    → Event "check the pump"; for 30 min; on 25 december; at 07:30.
+✓ remind me to meet ana at the core shed next monday at noon
+    → Event "meet ana at the core shed"; on next monday; at 12:00.
+✓ schedule the safety talk on oct 16 2026 at 9 am
+    → Event "the safety talk"; on 16 oct 2026; at 09:00.
+? remind me
+    → CLARIFY: event what?
+      (so far: Event.)
+
+— free text after a colon or a line break —
+✓ check: There is no doubt but that the report was late.
+    → Check; text "There is no doubt but that the report was late.".
+✓ review this:
+The fact that he had not succeeded was owing to the weather.
+    → Check; text "The fact that he had not succeeded was owing to the weather.".
+? check
+    → CLARIFY: missing text (text) — say ": …"
+      (so far: Check.)
+
+— free text after a preposition the role declares —
+✓ search my notes for resurvey
+    → Search my documents; for "resurvey".
+✓ find core loss in my documents
+    → Search "core loss"; in my documents.
+✓ please look for collar check in my notes
+    → Search "collar check"; in my documents.
+✓ search my notes for chalcopyrite
+    → Search my documents; for "chalcopyrite".
+
+— comparisons on a thing —
+✓ count samples where cu > 0.5
+    → Count sample; where Cu above 0.5.
+    · 2 syntactic parses
+✓ count rows where gold is at least 1.2 g/t
+    → Count sample; where Au at least 1.2 g/t.
+✓ how many samples with cu above 0.5 %
+    → Count sample; where Cu above 0.5 %.
+    · 2 syntactic parses
+✓ count samples where cu ≤ 0.1
+    → Count sample; where Cu at most 0.1.
+    · 2 syntactic parses
+
+— shapes the ontology declares —
+✓ stereonet 045/30
+    → Stereonet 045/30.
+✓ plot plane 270/60 and 120/45
+    → Stereonet 270/60, 120/45.
+
+— politeness and fillers around ordinary commands —
+✓ hey golem, convert 2 km to miles
+    → Convert 2 km; unit mi.
+✓ so, 5 km in miles
+    → Convert 5 km; unit mi.
+✓ um, what is the density of pyrite?
+    → Look up density; of pyrite.
+✓ i need 0.35 oz per short ton in g/t
+    → Convert 0.35 oz/st; unit g/t.
+✓ could you please plot a histogram of cu for me
+    → Plot histogram; of Cu.
+✓ okay thanks, now the capital of chile
+    → Look up capital; of chile.
+
+— breakers —
+? remind me to
+    → CLARIFY: event what?
+      (so far: Event.)
+✗ count samples where cu > banana
+    → REJECT: understood "count samples where cu"; could not place "> banana"; stopped at "banana" (unknown word); expected 'last', 'next', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a thing, a unit, a value, an article
+✗ stereonet 045
+    → REJECT: "stereonet" takes orientation, not 45
+? remember
+    → CLARIFY: remember what?
+      (so far: Remember.)

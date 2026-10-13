@@ -1,0 +1,38 @@
+
+— texto livre depois do verbo —
+✓ lembra que a caixa de testemunho a 120 m foi reetiquetada
+    → Lembrar "a caixa de testemunho a 120 m foi reetiquetada".
+✓ anota que o cu está alto no furo 7
+    → Lembrar "o cu está alto no furo 7".
+
+— texto livre com argumentos depois —
+✓ me lembra de mandar as amostras pro laboratório na sexta às 9
+    → Evento "mandar as amostras pro laboratório"; em sexta; às 09:00.
+✓ me lembra de ligar pro sondador amanhã às 14:00
+    → Evento "ligar pro sondador"; em amanhã; às 14:00.
+✓ agenda a conversa de segurança em 16 de outubro de 2026 às 9h
+    → Evento "a conversa de segurança"; em 16 outubro 2026; às 09:00.
+
+— depois de dois-pontos —
+✓ revisa: o relatório atrasou.
+    → Revisar; texto "o relatório atrasou.".
+
+— depois de uma preposição —
+✓ procura perda de testemunho nas minhas notas
+    → Procurar "perda de testemunho"; em meus documentos.
+
+— comparações —
+✓ conta amostras onde cu > 0.5
+    → Contar amostra; onde Cu acima de 0.5.
+✓ conta amostras onde cu maior que 0.5 %
+    → Contar amostra; onde Cu acima de 0.5 %.
+
+— formas declaradas —
+✓ estereograma 045/30
+    → Estereograma 045/30.
+
+— cortesia —
+✓ por favor, converte 2 km para milhas
+    → Converter 2 km; unidade mi.
+✓ ei golem, qual é a densidade da pirita
+    → Consultar densidade; de pirita.

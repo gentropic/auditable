@@ -82,4 +82,4 @@
 ✗ escala log
     → REJECT: no verb, and nothing takes log on its own
 ✗ em pés
-    → REJECT: understood nothing; could not place "em pés"; stopped at "em"; expected 'de novo', 'qual é', 'último', a comparative, a name, a number, a pronoun, a quantifier, a question word, a thing, a unit, a verb, an article
+    → REJECT: understood nothing; could not place "em pés"; stopped at "em"; expected 'de novo', 'qual é', 'último', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a question word, a thing, a unit, a verb, an article

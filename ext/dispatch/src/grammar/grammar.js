@@ -40,6 +40,8 @@ export function buildGrammar(X) {
   rule('PPs', 'PP PPs', (a, r) => [a, ...r]);
 
   rule('PP', 'PREP NPList', (p, l) => ({ kind: 'pp', prep: p.word, canon: p.canon, val: l }));
+  rule('PP', 'COLON NPList', (_, l) => ({ kind: 'pp', prep: ':', canon: [':'], val: l }));   // "check: …", a payload after a line break
+  rule('PP', 'Date', d => ({ kind: 'pp', prep: '', canon: ['on'], val: [d] }));                   // a bare date is a time argument: "call him tomorrow"
 
   rule('NPList', 'NP NPTail', (n, t) => [n, ...t]);
   rule('NPTail', '', () => []);
@@ -58,6 +60,10 @@ export function buildGrammar(X) {
   rule('NP', 'IDENT', t => t.type ? { type: t.type, name: t.name, generic: false, attrs: {} } : null);
   rule('NP', 'Quantity', q => q);
   rule('NP', 'UNIT', u => ({ type: 'unit', unit: u.unit, dim: u.dim, generic: false, attrs: {} }));   // "in miles": a unit as a thing
+  rule('NP', 'TEXT', t => ({ type: 'text', value: t.text, generic: false, attrs: {} }));            // a free-text span (the engine cuts it)
+  rule('NP', 'LIT', t => ({ type: t.type, value: t.value, generic: false, attrs: {} }));            // a token shape the ontology declares (270/60, DH-03)
+  rule('NP', 'Date', d => d);
+  rule('NP', 'Clock', c => c);
   rule('NP', 'DET Quantity Head', (_, q, h) => X.qmod(q, h));
   rule('NP', 'Quantity Head', (q, h) => X.qmod(q, h));
   rule('Except', '', () => []);
@@ -76,7 +82,7 @@ export function buildGrammar(X) {
   rule('PostMods', '', () => []);
   rule('PostMods', 'PostMod PostMods', (m, r) => [m, ...r]);
   for (const p of X.postmodPreps) {
-    if (X.postmodQuantity.has(p)) rule('PostMod', `PREP:${p} Quantity`, (_, q) => ({ prep: p, q }));
+    if (X.postmodQuantity.has(p)) { rule('PostMod', `PREP:${p} Quantity`, (_, q) => ({ prep: p, q })); rule('PostMod', `COP PREP:${p} Quantity`, (_, __, q) => ({ prep: p, q })); }   // "cu above 1", "cu is above 1"
     else rule('PostMod', `PREP:${p} NP`, (_, n) => ({ prep: p, np: n }));
   }
   rule('PostMod', 'PREP:of Quantity', (_, q) => ({ prep: 'of', q, qmod: true }));   // "a search of 200 m" / "busca de 200 m"
@@ -104,6 +110,31 @@ export function buildGrammar(X) {
     rule('Head', 'NOUN', leaf);
     rule('Head', 'NOUN Head', (a, h) => X.compound(leaf(a), h));
   }
+
+  // dates: a weekday or relative day ("friday", "tomorrow", "next monday"), a day and month with an optional
+  // year in either order ("25 december", "oct 16 2026", "16 de outubro de 2026"), an ISO date; a weekday in
+  // front of a full date is checked by the host, not here. Clock times: 09:30, 9pm, "9 am", noon, a bare hour.
+  const date = o => ({ type: 'date', generic: false, attrs: {}, ...o });
+  const dayOf = (n, m, y) => Number.isInteger(n.n) && n.n >= 1 && n.n <= 31 && (!y || (Number.isInteger(y.n) && y.n >= 1000 && y.n <= 9999))
+    ? date({ d: n.n, m: m.m, ...(y ? { y: y.n } : {}), value: [n.n, m.word, y && y.n].filter(Boolean).join(' ') }) : null;
+  rule('Date', 'DAY', d => date(d.dow != null ? { dow: d.dow, value: d.word } : { off: d.off, value: d.word }));   // off = days from today
+  if (X.nextDay) rule('Date', 'THEN:next DAY', (_, d) => d.dow != null ? date({ dow: d.dow, next: true, value: `next ${d.word}` }) : null);
+  rule('Date', 'DATE', d => date({ y: d.y, m: d.m, d: d.d, value: d.word }));
+  rule('Date', 'NUM MONTH', (n, m) => dayOf(n, m));
+  rule('Date', 'NUM MONTH NUM', (n, m, y) => dayOf(n, m, y));
+  rule('Date', 'NUM PREP:of MONTH', (n, _, m) => dayOf(n, m));
+  rule('Date', 'NUM PREP:of MONTH PREP:of NUM', (n, _, m, __, y) => dayOf(n, m, y));
+  rule('Date', 'MONTH NUM', (m, n) => dayOf(n, m));
+  rule('Date', 'MONTH NUM NUM', (m, n, y) => dayOf(n, m, y));
+  rule('Date', 'MONTH NUM COMMA NUM', (m, n, _, y) => dayOf(n, m, y));
+  rule('Date', 'DAY Date', (w, d) => w.dow != null && d.d != null ? { ...d, dow: w.dow, value: `${w.word} ${d.value}` } : null);
+  rule('Date', 'DAY COMMA Date', (w, _, d) => w.dow != null && d.d != null ? { ...d, dow: w.dow, value: `${w.word} ${d.value}` } : null);
+  const clock = (h, mi, value) => ({ type: 'clock', h, mi, value, generic: false, attrs: {} });
+  const hhmm = (h, mi) => `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+  rule('Clock', 'CLOCK', c => clock(c.h, c.mi, hhmm(c.h, c.mi)));
+  rule('Clock', 'NUM AMPM', (n, a) => { if (!Number.isInteger(n.n) || n.n < 1 || n.n > 12) return null; const pm = /^p/.test(a.word), am = /^a/.test(a.word);
+    const h = pm && n.n < 12 ? n.n + 12 : am && n.n === 12 ? 0 : n.n; return clock(h, 0, hhmm(h, 0)); });
+  rule('Clock', 'NUM', n => Number.isInteger(n.n) && n.n >= 0 && n.n <= 24 ? clock(n.n, 0, hhmm(n.n, 0)) : null);
 
   rule('Quantity', 'NUM', t => ({ type: 'quantity', n: t.n, unit: null, dim: 'bare' }));
   rule('Quantity', 'NUM UNIT', (t, u) => ({ type: 'quantity', n: t.n, unit: u.unit, dim: u.dim }));
