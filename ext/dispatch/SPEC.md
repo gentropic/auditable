@@ -300,6 +300,11 @@ Trailing tokens can only be skipped at the top level.
   "14 on 14 off"); the longest that ends where a piece ends is taken first. A one-piece
   token may also stay a number. A shaped thing takes postmodifiers like a noun ("14 on 14
   off from 6 oct").
+- **Case and glue.** A shape may declare `flags` (`''` for a case-sensitive one, such as a
+  chemical formula: CuFeS2 is not cufes2 by accident); shapes are tested on the piece as
+  typed, and a multi-piece shape never ends on a line break. A number glued to a unit the
+  lexicon knows is the two of them ("5km", "45.2%", "2.7g/cm3"), and a filler that is also
+  a unit is the unit right after a number ("75 um"; "um, …" stays a hesitation).
 - **Bare arguments.** A role whose `preps` include `''` takes a thing with no marker,
   only of the types such roles declare: "9am sao paulo in perth", "is 21 apr 2027 a
   working day".

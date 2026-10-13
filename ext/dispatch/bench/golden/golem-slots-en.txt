@@ -149,6 +149,14 @@ The fact that he had not succeeded was owing to the weather.
 ✓ okay thanks, now the capital of chile
     → Look up capital; of chile.
 
+— a number glued to its unit —
+✓ convert 5km to miles
+    → Convert 5 km; unit mi.
+✓ 2.7g/cm3 in lb/ft3
+    → Convert 2.7 g/cm3; unit lb/ft3.
+✓ um, 25c in f
+    → Convert 25 °C; unit °F.
+
 — breakers —
 ? remind me to
     → CLARIFY: event what?
