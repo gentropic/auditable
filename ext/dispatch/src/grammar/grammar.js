@@ -91,6 +91,11 @@ export function buildGrammar(X) {
   rule('PostMods', '', () => []);
   rule('PostMods', 'PostMod PostMods', (m, r) => [m, ...r]);
   for (const p of X.postmodPreps) {
+    if (p === '') {   // a bare modifier: a shaped token or a number right after the noun ("hole 270/60", "rake 30")
+      if (X.postmodQuantity.has('')) rule('PostMod', 'Quantity', q => ({ prep: '', q }));
+      rule('PostMod', 'LIT', t => ({ prep: '', np: { type: t.type, value: t.value } }));
+      continue;
+    }
     if (X.postmodQuantity.has(p)) { rule('PostMod', `PREP:${p} Quantity`, (_, q) => ({ prep: p, q })); rule('PostMod', `COP PREP:${p} Quantity`, (_, __, q) => ({ prep: p, q })); }   // "cu above 1", "cu is above 1"
     else rule('PostMod', `PREP:${p} NP`, (_, n) => ({ prep: p, np: n }));
   }

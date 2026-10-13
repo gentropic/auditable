@@ -77,8 +77,8 @@ export function createEngine(ont, locale = ENGLISH) {
       if (m.qmod) return X.qmod(m.q, n) ? { attrs: { ...n.attrs, [ont.qmods.find(x => x.head === n.type).attr]: m.q }, generic: false } : null;
       for (const p of ont.postmods) {
         if (p.prep !== m.prep || !p.heads.includes(n.type)) continue;
-        if (p.quantity) return { attrs: { ...n.attrs, [p.attr]: m.q } };
-        if (m.np.type === p.mod) return { attrs: { ...n.attrs, [p.attr]: p.byName ? (m.np.name ?? m.np.ref ?? '?') : m.np.value } };
+        if (p.quantity) { if (!m.q) continue; return { attrs: { ...n.attrs, [p.attr]: m.q } }; }
+        if (m.np && m.np.type === p.mod) return { attrs: { ...n.attrs, [p.attr]: p.byName ? (m.np.name ?? m.np.ref ?? '?') : m.np.value } };
       }
       return null;
     },
@@ -317,6 +317,7 @@ export function createEngine(ont, locale = ENGLISH) {
     if (n.cmp) pre.push(Object.entries(locale.comps).find(([, c]) => c[0] === n.cmp.sign && !!c[1] === n.cmp.sup)?.[0] ?? '');
     const post = [];
     if (n.name) post.push(n.name);
+    for (const pm of ont.postmods) if (pm.prep === '' && pm.heads.includes(n.type) && n.attrs?.[pm.attr] != null) { const v = n.attrs[pm.attr]; post.push(typeof v === 'object' ? describe(v) : String(v)); }   // "bedding 045/30": a bare modifier is part of the name
     if (n.attrs?.run) post.push(`${P.fromRun} ${n.attrs.run}`);
     if (n.attrs?.length) post.push(describe(n.attrs.length));
     if (n.attrs?.above) post.push(`${P.above} ${describe(n.attrs.above)}`);

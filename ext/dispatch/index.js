@@ -1071,6 +1071,11 @@ function buildGrammar(X) {
   rule('PostMods', '', () => []);
   rule('PostMods', 'PostMod PostMods', (m, r) => [m, ...r]);
   for (const p of X.postmodPreps) {
+    if (p === '') {   // a bare modifier: a shaped token or a number right after the noun ("hole 270/60", "rake 30")
+      if (X.postmodQuantity.has('')) rule('PostMod', 'Quantity', q => ({ prep: '', q }));
+      rule('PostMod', 'LIT', t => ({ prep: '', np: { type: t.type, value: t.value } }));
+      continue;
+    }
     if (X.postmodQuantity.has(p)) { rule('PostMod', `PREP:${p} Quantity`, (_, q) => ({ prep: p, q })); rule('PostMod', `COP PREP:${p} Quantity`, (_, __, q) => ({ prep: p, q })); }   // "cu above 1", "cu is above 1"
     else rule('PostMod', `PREP:${p} NP`, (_, n) => ({ prep: p, np: n }));
   }
@@ -1251,8 +1256,8 @@ function createEngine(ont, locale = ENGLISH) {
       if (m.qmod) return X.qmod(m.q, n) ? { attrs: { ...n.attrs, [ont.qmods.find(x => x.head === n.type).attr]: m.q }, generic: false } : null;
       for (const p of ont.postmods) {
         if (p.prep !== m.prep || !p.heads.includes(n.type)) continue;
-        if (p.quantity) return { attrs: { ...n.attrs, [p.attr]: m.q } };
-        if (m.np.type === p.mod) return { attrs: { ...n.attrs, [p.attr]: p.byName ? (m.np.name ?? m.np.ref ?? '?') : m.np.value } };
+        if (p.quantity) { if (!m.q) continue; return { attrs: { ...n.attrs, [p.attr]: m.q } }; }
+        if (m.np && m.np.type === p.mod) return { attrs: { ...n.attrs, [p.attr]: p.byName ? (m.np.name ?? m.np.ref ?? '?') : m.np.value } };
       }
       return null;
     },
@@ -1491,6 +1496,7 @@ function createEngine(ont, locale = ENGLISH) {
     if (n.cmp) pre.push(Object.entries(locale.comps).find(([, c]) => c[0] === n.cmp.sign && !!c[1] === n.cmp.sup)?.[0] ?? '');
     const post = [];
     if (n.name) post.push(n.name);
+    for (const pm of ont.postmods) if (pm.prep === '' && pm.heads.includes(n.type) && n.attrs?.[pm.attr] != null) { const v = n.attrs[pm.attr]; post.push(typeof v === 'object' ? describe(v) : String(v)); }   // "bedding 045/30": a bare modifier is part of the name
     if (n.attrs?.run) post.push(`${P.fromRun} ${n.attrs.run}`);
     if (n.attrs?.length) post.push(describe(n.attrs.length));
     if (n.attrs?.above) post.push(`${P.above} ${describe(n.attrs.above)}`);

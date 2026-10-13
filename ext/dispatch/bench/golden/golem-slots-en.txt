@@ -122,6 +122,8 @@ The fact that he had not succeeded was owing to the weather.
     → Stereonet 045/30.
 ✓ plot plane 270/60 and 120/45
     → Stereonet 270/60, 120/45.
+✓ stereonet bedding 045/30 and vein 120/80
+    → Stereonet bedding 045/30, vein 120/80.
 
 — politeness and fillers around ordinary commands —
 ✓ hey golem, convert 2 km to miles
@@ -144,7 +146,7 @@ The fact that he had not succeeded was owing to the weather.
 ✗ count samples where cu > banana
     → REJECT: understood "count samples where cu"; could not place "> banana"; stopped at "banana" (unknown word); expected 'last', 'next', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a thing, a unit, a value, an article
 ✗ stereonet 045
-    → REJECT: "stereonet" takes orientation, not 45
+    → REJECT: "stereonet" takes orientation/plane, not 45
 ? remember
     → CLARIFY: remember what?
       (so far: Remember.)
