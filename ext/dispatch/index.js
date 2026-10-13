@@ -1146,7 +1146,7 @@ const ENGLISH = {
   code: 'en', headFirst: false,
   DET: 'the|a|an|this|that|my|our', REF: 'last|previous|latest|current|first|new',
   QUANT: 'all|every|each', EXCEPT: 'except|excluding|minus', CONJ: 'and|or|plus', COMMA: ',',
-  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
+  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|for each|for every|in each|in every|grouped by|weighted by|sorted by|ordered by|having|that have|which have|that has|which has|have|has|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
   THEN: 'then|afterwards|next', BUT: 'but', PRON: 'it|them|those', AGAIN: 'again|rerun|redo|repeat|same',
   QWORD: 'why|how|what|when|who|is|are|does|do|should|can|could|would',
   // closed questions the grammar reads as commands with the verb left out: a wh-word, a copula, the fused forms
@@ -1156,7 +1156,9 @@ const ENGLISH = {
   FILLER: "please|now|just|kindly|go|ahead|me|us|hey|hi|hello|yo|thanks|thank you|cheers|pls|plz|so|um|uh|er|erm|hmm|well|oh|alright|can you|could you|would you|will you|i want you to|i need you to|i want to|i need|i'd like|i would like|give me|tell me|for me|let us|lets",
   // identity for every English preposition except the comparisons, which share a canon with their words
   preps: { '>': ['above'], 'greater than': ['above'], 'more than': ['above'], '<': ['below'], 'less than': ['below'], '>=': ['atleast'], '≥': ['atleast'], 'at least': ['atleast'],
-    '<=': ['atmost'], '≤': ['atmost'], 'at most': ['atmost'], '=': ['equals'], 'equal to': ['equals'], equals: ['equals'] },
+    '<=': ['atmost'], '≤': ['atmost'], 'at most': ['atmost'], '=': ['equals'], 'equal to': ['equals'], equals: ['equals'],
+    'for each': ['by'], 'for every': ['by'], 'in each': ['by'], 'in every': ['by'], 'grouped by': ['by'], 'weighted by': ['weighted'], 'sorted by': ['sort'], 'ordered by': ['sort'],
+    having: ['where'], 'that have': ['where'], 'which have': ['where'], 'that has': ['where'], 'which has': ['where'], have: ['where'], has: ['where'] },
   // the calendar: weekday numbers (0 = Sunday) or a day relative to today; months; named clock times; am/pm.
   // "sun" is left out on purpose: it is the sun more often than Sunday.
   days: { sunday: 0, monday: 1, mon: 1, tuesday: 2, tue: 2, tues: 2, wednesday: 3, wed: 3, thursday: 4, thu: 4, thur: 4, thurs: 4, friday: 5, fri: 5, saturday: 6, sat: 6,
@@ -1414,7 +1416,8 @@ function createEngine(ont, locale = ENGLISH) {
     const fix = (list, slot) => list.flatMap(n => {
       if (n.type === 'quantity') return [n];
       if (n.pron) { const src = prev ?? session.last; if (!src?.theme?.length) { missing.push(`"${n.pron}" — nothing to refer to`); return []; } return src.theme; }
-      if (n.all) { const pool = session.objects.filter(o => o.type === n.type); const ex = new Set(n.except.map(e => e.value)); return pool.filter(o => !ex.has(o.value)); }
+      // every X: the session's Xs; when the session holds none, the quantifier stays for the host ("every intercept" of a table)
+      if (n.all) { const pool = session.objects.filter(o => o.type === n.type); if (!pool.length) return [n]; const ex = new Set(n.except.map(e => e.value)); return pool.filter(o => !ex.has(o.value)); }
       const now = session.now ?? 0; const DAY = 86400000;
       const relOk = o => { const r = n.rel; if (!r) return true;
         if (r.verb && o.by && o.by !== r.verb) return false;
@@ -1574,8 +1577,8 @@ function createEngine(ont, locale = ENGLISH) {
   // fewest words of text first; a subject span is the words before the verb of a frame that takes one
   function textCands(toks) {
     const one = textSpans(toks), cands = one.map(s => [s]);
-    // the verb as typed (not a typo repair), and a subject with no colon and no verb in it
-    for (let v = 1; v < toks.length; v++) if (!toks[v].repaired && toks[v].senses.some(sn => sn.cat === 'VERB' && TEXT_SUBJECT.has(sn.verb)) && toks.slice(0, v).every(t => !t.senses.some(x => x.cat === 'COLON' || x.cat === 'VERB'))) {
+    // the verb as typed (not a typo repair), and a subject with no colon and no verb in it as typed ("pop" is not "top")
+    for (let v = 1; v < toks.length; v++) if (!toks[v].repaired && toks[v].senses.some(sn => sn.cat === 'VERB' && TEXT_SUBJECT.has(sn.verb)) && toks.slice(0, v).every(t => t.repaired || !t.senses.some(x => x.cat === 'COLON' || x.cat === 'VERB'))) {
       const subj = { i: 0, from: 0, j: v };
       cands.push([subj], ...one.filter(s => s.i > v).map(s => [subj, s]));
     }
@@ -1898,7 +1901,7 @@ const PORTUGUESE = {
   DET: 'o|a|os|as|um|uma|uns|umas|este|esta|esse|essa|meu|minha|nosso|nossa',
   REF: 'último|última|ultimo|ultima|últimos|últimas|anterior|atual|primeiro|primeira|novo|nova',
   QUANT: 'todos|todas|todo|toda|cada', EXCEPT: 'exceto|menos|excluindo|tirando|fora', CONJ: 'e|ou|mais', COMMA: ',',
-  PREP: 'com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|às|até|como|acima de|abaixo de|sem|contra|dentro de|sobre|onde|depois de|antes de|desde|entre|durante|através de|atraves de|perto de|>|<|>=|<=|=|≥|≤|maior que|menor que|pelo menos|no mínimo|no minimo|no máximo|no maximo|igual a',
+  PREP: 'com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|às|até|como|acima de|abaixo de|sem|contra|dentro de|sobre|onde|para cada|por cada|em cada|agrupado por|ponderado por|ordenado por|que têm|que tem|depois de|antes de|desde|entre|durante|através de|atraves de|perto de|>|<|>=|<=|=|≥|≤|maior que|menor que|pelo menos|no mínimo|no minimo|no máximo|no maximo|igual a',
   THEN: 'depois|então|em seguida|aí', BUT: 'mas|porém|só que', PRON: 'isso|isto|ele|ela|eles|elas',
   AGAIN: 'de novo|novamente|repete|repetir|refaz|refazer|mesmo|mesma|igual|outra vez',
   QWORD: 'por que|porque|como|qual|quais|quando|quem|é|são|será|pode|poderia|deveria|dá',
@@ -1910,7 +1913,7 @@ const PORTUGUESE = {
     com: ['with'], usando: ['using'], por: ['by'], em: ['in', 'on'], no: ['in', 'on'], na: ['in', 'on'], nos: ['in', 'on'], nas: ['in', 'on'],
     para: ['for', 'to', 'into'], pra: ['for', 'to', 'into'], pro: ['for', 'to', 'into'], de: ['of', 'from'], do: ['of', 'from'], da: ['of', 'from'], dos: ['of', 'from'], das: ['of', 'from'],
     a: ['to', 'at'], ao: ['to', 'at'], 'à': ['to', 'at'], 'até': ['to'], como: ['as'], 'acima de': ['above', 'over'], 'abaixo de': ['below', 'under'],
-    sem: ['without'], contra: ['against'], 'dentro de': ['into'], sobre: ['on'], 'às': ['at', 'to'], onde: ['where'], 'depois de': ['after'], 'antes de': ['before'], desde: ['since', 'from'], entre: ['between'], durante: ['during'], 'através de': ['through'], 'atraves de': ['through'], 'perto de': ['near'],
+    sem: ['without'], contra: ['against'], 'dentro de': ['into'], sobre: ['on'], 'às': ['at', 'to'], onde: ['where'], 'para cada': ['by'], 'por cada': ['by'], 'em cada': ['by'], 'agrupado por': ['by'], 'ponderado por': ['weighted'], 'ordenado por': ['sort'], 'que têm': ['where'], 'que tem': ['where'], 'depois de': ['after'], 'antes de': ['before'], desde: ['since', 'from'], entre: ['between'], durante: ['during'], 'através de': ['through'], 'atraves de': ['through'], 'perto de': ['near'],
     '>': ['above'], 'maior que': ['above'], '<': ['below'], 'menor que': ['below'], '>=': ['atleast'], '≥': ['atleast'], 'pelo menos': ['atleast'], 'no mínimo': ['atleast'], 'no minimo': ['atleast'],
     '<=': ['atmost'], '≤': ['atmost'], 'no máximo': ['atmost'], 'no maximo': ['atmost'], '=': ['equals'], 'igual a': ['equals'],
   },

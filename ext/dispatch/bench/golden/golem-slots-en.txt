@@ -117,6 +117,16 @@ The fact that he had not succeeded was owing to the weather.
     → Count sample; where Cu at most 0.1.
     · 2 syntactic parses
 
+— grouping and quantifiers: for each, in each, grouped by; every X with no X in the session stays for the host —
+✓ count samples grouped by gold
+    → Count sample; by Au.
+✓ count every sample in each cu
+    → Count every sample; by Cu.
+    · 2 syntactic parses
+✓ count samples having cu above 0.5
+    → Count sample; where Cu above 0.5.
+    · 2 syntactic parses
+
 — shapes the ontology declares —
 ✓ stereonet 045/30
     → Stereonet 045/30.

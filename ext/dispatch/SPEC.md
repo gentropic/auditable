@@ -308,7 +308,17 @@ Trailing tokens can only be skipped at the top level.
   name stays unknown (and can fall to a text role) instead of becoming a near one.
 - **Prepositions.** The English bank gained until, till, after, before, since, between,
   across, through, during, within, around, near; pt gained depois de, antes de, desde,
-  entre, durante, através de, perto de.
+  entre, durante, através de, perto de. Role markers that are not prepositions in a
+  grammar book but mark a role the same way: for each, for every, in each, in every,
+  grouped by (canon `by`); weighted by (`weighted`); sorted by, ordered by (`sort`);
+  having, that have, which have, have, has (`where`); pt para cada, por cada, em cada,
+  agrupado por, ponderado por, ordenado por, que têm.
+- **Quantifiers the session cannot fill.** "every X" resolves to the session's Xs; when
+  the session holds none, the quantified thing stays in the command (`all: true`) for
+  the host to apply ("true thickness of every intercept" of a table).
+- **Subjects and typo repairs.** A subject before a verb may contain a word the typo
+  pass turned into a verb: the check is on what was typed ("pop means population" when
+  "pop" is one edit from "top").
 - **Comparisons.** Prepositions with canons `above`, `below`, `atleast`, `atmost`,
   `equals` cover the words and the signs ("greater than", "at least", ">=", "maior
   que", "pelo menos"); quantity postmods on those canons read "cu > 0.5" and "gold is

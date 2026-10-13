@@ -235,7 +235,8 @@ export function createEngine(ont, locale = ENGLISH) {
     const fix = (list, slot) => list.flatMap(n => {
       if (n.type === 'quantity') return [n];
       if (n.pron) { const src = prev ?? session.last; if (!src?.theme?.length) { missing.push(`"${n.pron}" — nothing to refer to`); return []; } return src.theme; }
-      if (n.all) { const pool = session.objects.filter(o => o.type === n.type); const ex = new Set(n.except.map(e => e.value)); return pool.filter(o => !ex.has(o.value)); }
+      // every X: the session's Xs; when the session holds none, the quantifier stays for the host ("every intercept" of a table)
+      if (n.all) { const pool = session.objects.filter(o => o.type === n.type); if (!pool.length) return [n]; const ex = new Set(n.except.map(e => e.value)); return pool.filter(o => !ex.has(o.value)); }
       const now = session.now ?? 0; const DAY = 86400000;
       const relOk = o => { const r = n.rel; if (!r) return true;
         if (r.verb && o.by && o.by !== r.verb) return false;
@@ -395,8 +396,8 @@ export function createEngine(ont, locale = ENGLISH) {
   // fewest words of text first; a subject span is the words before the verb of a frame that takes one
   function textCands(toks) {
     const one = textSpans(toks), cands = one.map(s => [s]);
-    // the verb as typed (not a typo repair), and a subject with no colon and no verb in it
-    for (let v = 1; v < toks.length; v++) if (!toks[v].repaired && toks[v].senses.some(sn => sn.cat === 'VERB' && TEXT_SUBJECT.has(sn.verb)) && toks.slice(0, v).every(t => !t.senses.some(x => x.cat === 'COLON' || x.cat === 'VERB'))) {
+    // the verb as typed (not a typo repair), and a subject with no colon and no verb in it as typed ("pop" is not "top")
+    for (let v = 1; v < toks.length; v++) if (!toks[v].repaired && toks[v].senses.some(sn => sn.cat === 'VERB' && TEXT_SUBJECT.has(sn.verb)) && toks.slice(0, v).every(t => t.repaired || !t.senses.some(x => x.cat === 'COLON' || x.cat === 'VERB'))) {
       const subj = { i: 0, from: 0, j: v };
       cands.push([subj], ...one.filter(s => s.i > v).map(s => [subj, s]));
     }
