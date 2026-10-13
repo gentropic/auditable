@@ -262,7 +262,9 @@ Trailing tokens can only be skipped at the top level.
   frame lists, such as "that" / "que"); after a preposition a text role declares; after
   a colon or line break when a role declares `':'` (a demonstrative may come first:
   "summarise this: …", "word count of this: …"); after the verb or a theme noun of a
-  frame whose text role declares the bare preposition `''` ("decode hex 676f"); or, for
+  frame whose text role declares the bare preposition `''` ("decode hex 676f"); a
+  preposition or colon opens a span only where a frame that uses it is said or can be
+  elided, and at most 160 candidates are tried; or, for
   a frame that declares `subject: ['text']`, it is the words before the verb ("pop means
   population"; the verb as typed, not a typo repair, and no colon or other verb before
   it). A payload after a colon is everything to the end, as typed, words the tokenizer
@@ -294,7 +296,19 @@ Trailing tokens can only be skipped at the top level.
   against its own clock; the grammar never does.
 - **Shapes.** `ontology.shapes: [{ type, re }]` declares token shapes (a regex source,
   so the ontology stays JSON) that become things of that type: `270/60` as an
-  orientation, a hole id. A token may also stay a number.
+  orientation, a hole id. A shape may span several pieces ("-19.92, -43.94",
+  "14 on 14 off"); the longest that ends where a piece ends is taken first. A one-piece
+  token may also stay a number. A shaped thing takes postmodifiers like a noun ("14 on 14
+  off from 6 oct").
+- **Bare arguments.** A role whose `preps` include `''` takes a thing with no marker,
+  only of the types such roles declare: "9am sao paulo in perth", "is 21 apr 2027 a
+  working day".
+- **Exact names.** A noun marked `exact: true` (places, file names) is matched as
+  written: its words are never the target of a typo repair or a stem, so an unknown
+  name stays unknown (and can fall to a text role) instead of becoming a near one.
+- **Prepositions.** The English bank gained until, till, after, before, since, between,
+  across, through, during, within, around, near; pt gained depois de, antes de, desde,
+  entre, durante, através de, perto de.
 - **Comparisons.** Prepositions with canons `above`, `below`, `atleast`, `atmost`,
   `equals` cover the words and the signs ("greater than", "at least", ">=", "maior
   que", "pelo menos"); quantity postmods on those canons read "cu > 0.5" and "gold is

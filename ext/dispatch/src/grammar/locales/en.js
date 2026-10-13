@@ -7,7 +7,7 @@ export const ENGLISH = {
   code: 'en', headFirst: false,
   DET: 'the|a|an|this|that|my|our', REF: 'last|previous|latest|current|first|new',
   QUANT: 'all|every|each', EXCEPT: 'except|excluding|minus', CONJ: 'and|or|plus', COMMA: ',',
-  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
+  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
   THEN: 'then|afterwards|next', BUT: 'but', PRON: 'it|them|those', AGAIN: 'again|rerun|redo|repeat|same',
   QWORD: 'why|how|what|when|who|is|are|does|do|should|can|could|would',
   // closed questions the grammar reads as commands with the verb left out: a wh-word, a copula, the fused forms

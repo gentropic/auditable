@@ -45,7 +45,8 @@ export function buildGrammar(X) {
   rule('PP', 'DEMO COLON NPList', (_, __, l) => ({ kind: 'pp', prep: ':', canon: [':'], val: l }));             // "summarise this: …", "diff these: …"
   rule('PP', 'PREP:of DEMO COLON NPList', (_, __, ___, l) => ({ kind: 'pp', prep: ':', canon: [':'], val: l }));   // "word count of this: …"
   rule('PP', 'Date', d => ({ kind: 'pp', prep: '', canon: ['on'], val: [d] }));
-  if (X.bareText) rule('PP', 'TEXT', t => ({ kind: 'pp', prep: '', canon: [''], val: [{ type: 'text', value: t.text, generic: false, attrs: {} }] }));   // a bare text role                   // a bare date is a time argument: "call him tomorrow"
+  const bareOk = n => X.bareTypes.has(n.type) || (n.type === 'quantity' && (X.bareTypes.has('quantity:*') || X.bareTypes.has(`quantity:${n.dim}`)));
+  if (X.bareTypes.size) rule('PP', 'NP', n => bareOk(n) ? { kind: 'pp', prep: '', canon: [''], val: [n] } : null);   // a role with no marker, of a type a frame declares one for                   // a bare date is a time argument: "call him tomorrow"
 
   rule('NPList', 'NP NPTail', (n, t) => [n, ...t]);
   rule('NPTail', '', () => []);
@@ -65,7 +66,11 @@ export function buildGrammar(X) {
   rule('NP', 'Quantity', q => q);
   rule('NP', 'UNIT', u => ({ type: 'unit', unit: u.unit, dim: u.dim, generic: false, attrs: {} }));   // "in miles": a unit as a thing
   rule('NP', 'TEXT', t => ({ type: 'text', value: t.text, generic: false, attrs: {} }));            // a free-text span (the engine cuts it)
-  rule('NP', 'LIT', t => ({ type: t.type, value: t.value, generic: false, attrs: {} }));            // a token shape the ontology declares (270/60, DH-03)
+  rule('NP', 'LIT PostMods', (t, pm) => {   // a token shape the ontology declares (270/60, DH-03), with its modifiers ("14 on 14 off from 6 oct")
+    const n = { type: t.type, value: t.value, generic: false, attrs: {} };
+    for (const m of pm) { const r = X.postmod(n, m); if (!r) return null; Object.assign(n, r); }
+    return n;
+  });
   rule('NP', 'Date', d => d);
   rule('NP', 'Clock', c => c);
   rule('NP', 'DET Quantity Head', (_, q, h) => X.qmod(q, h));

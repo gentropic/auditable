@@ -64,6 +64,31 @@ The fact that he had not succeeded was owing to the weather.
 ✓ decode from base64 SGVsbG8=
     → Decode; from base64; text "SGVsbG8=".
 
+— names are matched as written: "perht" is not repaired into a place, it stays words —
+✓ distance from -19.92, -43.94 to perth
+    → Distance; from -19.92, -43.94; to perth.
+✓ distance from home to perht
+    → Distance; from home; to "perht".
+✓ how far between home and -6.07,-50.16
+    → Distance; from home, -6.07,-50.16.
+
+— a bare argument, of a type a frame declares one for —
+✓ 9am sao paulo in perth
+    → Time in 09:00; from sao paulo; to perth.
+✗ 9am chalcopyrite in perth
+    → REJECT: understood "9am", "in perth"; could not place "chalcopyrite"; stopped at the end; expected ',', ':', 'above', 'and', 'atleast', 'atmost', 'below', 'equals', 'from', 'i', 'is', 'last', 'next', 'of', 'that', 'then', 'this', 'with', a clock time, a comparative, a date, a name, a number, a preposition, a pronoun, a quantifier, a thing, a time, a unit, a value, a verb, an article
+
+— a shape with modifiers; a list of a shape and a question —
+✓ 14 on 14 off from 6 oct, am i off on 25 december
+    → Roster 14 on 14 off, am i off; on 25 december.
+    · 2 syntactic parses
+
+— the common prepositions —
+✓ working days until 20 dec
+    → Working days; until 20 dec.
+✓ working days between 1 dec and 20 dec
+    → Working days; from 1 dec, 20 dec.
+
 — a text subject before the verb —
 ✓ pop means population
     → Teach "population"; subject "pop".
