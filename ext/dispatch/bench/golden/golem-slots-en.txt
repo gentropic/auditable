@@ -197,6 +197,13 @@ The fact that he had not succeeded was owing to the weather.
 ✓ remind me to stretch at 10:15 am for one and a half hours
     → Event "stretch"; for 1.5 h; at 10:15.
 
+— a multiplier after a number —
+✓ select samples where cu > 2 thousand
+    → Select sample; where Cu > 2000.
+    · 3 syntactic parses
+✓ convert 2.5 million km to miles
+    → Convert 2500000 km; unit mi.
+
 — a multiword gives way to a longer one inside it ("is at" + "least") —
 ✓ count samples where cu is at least 0.5
     → Count sample; where Cu at least 0.5.

@@ -376,6 +376,7 @@ Trailing tokens can only be skipped at the top level.
   "a 000/30 plane", "a 14 on 14 off roster"; a number in front, through the qmods ("a 045 section").
   A preposition may carry quantities for one noun and things for another ("a section at 045", "a hole
   at 270/60").
+- **Multipliers.** Banks carry `multipliers` (thousand, million, billion, trillion; pt mil, milhão, bilhão) that only follow a number: "100 million", "2.5 billion tonnes".
 - **Clock times and fractions.** "2:30 pm" (a clock with am/pm after it); banks carry `fractions`
   ("a half", "a quarter"; pt meia, um quarto) that only follow a whole: "an hour and a half", "one and
   a half hours", "uma hora e meia". "starting", "beginning" (pt "a partir de", "começando em") mark

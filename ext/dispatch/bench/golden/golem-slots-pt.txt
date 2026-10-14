@@ -39,6 +39,10 @@
 ✓ seleciona as amostras com o maior cu
     → Selecionar amostra; maior Cu.
 
+— multiplicadores —
+✓ seleciona amostras onde cu > 2 mil
+    → Selecionar amostra; onde Cu > 2000.
+
 — hora e meia —
 ✓ agenda a conversa de segurança na sexta às 9h por uma hora e meia
     → Evento "a conversa de segurança"; duração 1.5 h; em sexta; às 09:00.

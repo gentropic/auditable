@@ -32,6 +32,7 @@ export const PORTUGUESE = {
   numbers: { dois: 2, duas: 2, três: 3, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, quinze: 15, vinte: 20, trinta: 30, quarenta: 40, cinquenta: 50, sessenta: 60, noventa: 90, cem: 100,
     meia: 0.5, meio: 0.5, 'um quarto de': 0.25, 'uma dúzia de': 12 },
   fractions: { meia: 0.5, meio: 0.5, 'um quarto': 0.25 },
+  multipliers: { mil: 1e3, 'milhão': 1e6, milhao: 1e6, 'milhões': 1e6, milhoes: 1e6, 'bilhão': 1e9, bilhao: 1e9, 'bilhões': 1e9, bilhoes: 1e9 },
   indefinite: ['um', 'uma', 'uns', 'umas'], newRef: ['novo', 'nova'], firstRef: ['primeiro', 'primeira'],
   phr: { new: 'novo', last: 'último', every: 'todo', except: 'exceto', fromRun: 'da rodada', above: 'acima de', below: 'abaixo de', atleast: 'pelo menos', atmost: 'no máximo', equals: 'igual a', then: 'Depois', assuming: 'assumindo', of: 'de', hole: '___', than: 'que' },
   stem: w => { let x = w.normalize('NFD').replace(/[\u0300-\u036f]/g, '');

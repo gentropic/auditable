@@ -98,6 +98,6 @@
 ✗ what is
     → REJECT: understood nothing; could not place "what is"; stopped at the end; expected 'last', 'next', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a thing, a unit, an article
 ✗ 14 * cos(22) + 3^2
-    → REJECT: understood "14"; could not place "* cos(22) + 3^2"; stopped at "*" (unknown word); expected ',', ':', 'am' or 'pm', 'and', 'next', 'of', 'then', 'this', a date, a number, a preposition, a thing, a unit, a verb
+    → REJECT: understood "14"; could not place "* cos(22) + 3^2"; stopped at "*" (unknown word); expected ',', ':', 'am' or 'pm', 'and', 'million', 'next', 'of', 'then', 'this', a date, a number, a preposition, a thing, a unit, a verb
 ✗ histogram of cu and density of pyrite
     → REJECT: "of density": after "of" plot expects of (variable)

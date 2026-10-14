@@ -188,6 +188,9 @@ export function buildGrammar(X) {
   // a fraction said after the whole: "an hour and a half", "one and a half hours", "2 km and a quarter" (never a list)
   rule('Quantity', `Quantity CONJ:${X.and} FRAC`, (q, _, f) => q.unit ? { ...q, n: q.n + f.n } : null);
   rule('Quantity', `NUM CONJ:${X.and} FRAC UNIT`, (t, _, f, u) => ({ type: 'quantity', n: t.n + f.n, unit: u.unit, dim: u.dim }));
+  // a number with its multiplier: "100 million", "2.5 billion tonnes"
+  rule('Quantity', 'NUM MULT', (t, m) => ({ type: 'quantity', n: +(t.n * m.n).toPrecision(15), unit: null, dim: 'bare' }));
+  rule('Quantity', 'NUM MULT UNIT', (t, m, u) => ({ type: 'quantity', n: +(t.n * m.n).toPrecision(15), unit: u.unit, dim: u.dim }));
   rule('Quantity', 'DET UNIT', (d, u) => X.indefinite.includes(d.word) ? { type: 'quantity', n: 1, unit: u.unit, dim: u.dim } : null);   // "an hour", "um minuto"
   // conditions on rows, for roles of type 'cond': "cu > 0.5 and lith is BRX", "au between 1 and 2", "lith in BRX, GRD",
   // "cu is not blank", "not au above 1". A condition is one thing; "and" binds tighter than "or". The columns it may
