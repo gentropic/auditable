@@ -1,6 +1,10 @@
-// Unit dimension registry and convert function
+// Unit dimension registry and convert function. Factors are exact where a definition makes them so: the international
+// inch, foot, yard and mile (1959), the avoirdupois pound (0.45359237 kg, 1959) and its ounce, the troy ounce
+// (31.1034768 g), the short and long tons, the US gallon (231 in³), the oil barrel (42 gal), the psi (lbf/in²,
+// standard gravity), the acre (66 × 660 ft). Temperature is affine: a unit carries an offset as well as a factor.
 
 const PI = Math.PI;
+const IN = 0.0254, FT = 0.3048, LB_G = 453.59237, OZT_G = 31.1034768, ST_G = 2000 * LB_G, LT_G = 2240 * LB_G;
 
 const UNITS = {
   // length (canonical: m)
@@ -9,8 +13,10 @@ const UNITS = {
   cm:  { dim: 'length', mul: 1e-2 },
   m:   { dim: 'length', mul: 1 },
   km:  { dim: 'length', mul: 1e3 },
-  in:  { dim: 'length', mul: 0.0254 },
-  ft:  { dim: 'length', mul: 0.3048 },
+  in:  { dim: 'length', mul: IN },
+  ft:  { dim: 'length', mul: FT },
+  yd:  { dim: 'length', mul: 3 * FT },
+  mi:  { dim: 'length', mul: 5280 * FT },
 
   // mass (canonical: g)
   mg:      { dim: 'mass', mul: 1e-3 },
@@ -19,11 +25,12 @@ const UNITS = {
   t:       { dim: 'mass', mul: 1e6 },
   kt:      { dim: 'mass', mul: 1e9 },
   Mt:      { dim: 'mass', mul: 1e12 },
-  st:      { dim: 'mass', mul: 907185 },
-  lt_mass: { dim: 'mass', mul: 1016047 },
-  oz:      { dim: 'mass', mul: 28.3495 },
-  lb:      { dim: 'mass', mul: 453.592 },
-  ozt:     { dim: 'mass', mul: 31.1035 },
+  st:      { dim: 'mass', mul: ST_G },
+  lt_mass: { dim: 'mass', mul: LT_G },
+  oz:      { dim: 'mass', mul: LB_G / 16 },
+  lb:      { dim: 'mass', mul: LB_G },
+  ozt:     { dim: 'mass', mul: OZT_G },
+  ct:      { dim: 'mass', mul: 0.2 },
 
   // concentration / grade (canonical: fraction, dimensionless 0–1)
   fraction: { dim: 'grade', mul: 1 },
@@ -32,14 +39,14 @@ const UNITS = {
   pct:      { dim: 'grade', mul: 1e-2 },
   'g/t':    { dim: 'grade', mul: 1e-6 },
   'mg/kg':  { dim: 'grade', mul: 1e-6 },
-  'oz/t':   { dim: 'grade', mul: 31.1035 / 907185 },   // troy oz per short ton
-  'oz/lt':  { dim: 'grade', mul: 31.1035 / 1016047 },   // troy oz per long ton
+  'oz/t':   { dim: 'grade', mul: OZT_G / ST_G },   // troy oz per short ton
+  'oz/lt':  { dim: 'grade', mul: OZT_G / LT_G },   // troy oz per long ton
 
   // density (canonical: g/cm3)
   'g/cm3':  { dim: 'density', mul: 1 },
   'kg/m3':  { dim: 'density', mul: 1e-3 },
   't/m3':   { dim: 'density', mul: 1 },
-  'lb/ft3': { dim: 'density', mul: 0.016018 },
+  'lb/ft3': { dim: 'density', mul: LB_G / (FT * FT * FT * 1e6) },
 
   // area (canonical: m2)
   mm2: { dim: 'area', mul: 1e-6 },
@@ -47,11 +54,17 @@ const UNITS = {
   m2:  { dim: 'area', mul: 1 },
   ha:  { dim: 'area', mul: 1e4 },
   km2: { dim: 'area', mul: 1e6 },
+  ft2: { dim: 'area', mul: FT * FT },
+  acre: { dim: 'area', mul: 43560 * FT * FT },
+  mi2: { dim: 'area', mul: (5280 * FT) ** 2 },
 
   // volume (canonical: m3)
   cm3: { dim: 'volume', mul: 1e-6 },
   L:   { dim: 'volume', mul: 1e-3 },
   m3:  { dim: 'volume', mul: 1 },
+  ft3: { dim: 'volume', mul: FT * FT * FT },
+  gal: { dim: 'volume', mul: 231 * IN * IN * IN },   // US gallon
+  bbl: { dim: 'volume', mul: 42 * 231 * IN * IN * IN },   // oil barrel
 
   // angle (canonical: rad)
   deg:  { dim: 'angle', mul: PI / 180 },
@@ -65,6 +78,26 @@ const UNITS = {
   uT: { dim: 'magnetic', mul: 1e-6 },
   nT: { dim: 'magnetic', mul: 1e-9 },
   Oe: { dim: 'magnetic', mul: 1e-4 },  // 1 Oe = 1 G = 1e-4 T (free space)
+
+  // pressure (canonical: Pa)
+  Pa:  { dim: 'pressure', mul: 1 },
+  kPa: { dim: 'pressure', mul: 1e3 },
+  MPa: { dim: 'pressure', mul: 1e6 },
+  GPa: { dim: 'pressure', mul: 1e9 },
+  bar: { dim: 'pressure', mul: 1e5 },
+  atm: { dim: 'pressure', mul: 101325 },
+  psi: { dim: 'pressure', mul: LB_G / 1000 * 9.80665 / (IN * IN) },
+
+  // time (canonical: s)
+  s:   { dim: 'time', mul: 1 },
+  min: { dim: 'time', mul: 60 },
+  h:   { dim: 'time', mul: 3600 },
+  day: { dim: 'time', mul: 86400 },
+
+  // temperature (canonical: K) — affine: K = (value + off) × mul
+  K:  { dim: 'temperature', mul: 1, off: 0 },
+  C:  { dim: 'temperature', mul: 1, off: 273.15 },
+  F:  { dim: 'temperature', mul: 5 / 9, off: 459.67 },
 };
 
 function convert(value, from, to, opts) {
@@ -72,22 +105,24 @@ function convert(value, from, to, opts) {
   if (!f) throw new Error(`unknown unit: ${from}`);
   if (!t) throw new Error(`unknown unit: ${to}`);
   if (f.dim !== t.dim) throw new Error(`incompatible dimensions: ${f.dim} → ${t.dim}`);
-  const factor = f.mul / t.mul;
-  if (typeof value === 'number') return value * factor;
+  const factor = f.mul / t.mul, fo = f.off || 0, too = t.off || 0;
+  // a factor alone for every dimension but temperature, so those results are bit-for-bit what they were
+  const one = fo || too ? v => (v + fo) * factor - too : v => v * factor;
+  if (typeof value === 'number') return one(value);
   // typed array / array-like (duck-type on .length + indexing)
   const data = value.data || value;
   if (opts?.inplace) {
-    for (let i = 0; i < data.length; i++) data[i] *= factor;
+    for (let i = 0; i < data.length; i++) data[i] = one(data[i]);
     return value;
   }
   if (typeof data.constructor === 'function' && data.constructor !== Object && typeof data.length === 'number') {
     const out = new data.constructor(data.length);
-    for (let i = 0; i < data.length; i++) out[i] = data[i] * factor;
+    for (let i = 0; i < data.length; i++) out[i] = one(data[i]);
     return out;
   }
   // plain array
   const out = new Array(data.length);
-  for (let i = 0; i < data.length; i++) out[i] = data[i] * factor;
+  for (let i = 0; i < data.length; i++) out[i] = one(data[i]);
   return out;
 }
 

@@ -16,16 +16,16 @@ describe('convert', () => {
 
   it('mass: kg → g', () => near(convert(3.5, 'kg', 'g'), 3500));
   it('mass: t → kg', () => near(convert(1, 't', 'kg'), 1000));
-  it('mass: ozt → g', () => near(convert(1, 'ozt', 'g'), 31.1035));
+  it('mass: ozt → g', () => near(convert(1, 'ozt', 'g'), 31.1034768));
   it('mass: lb → kg', () => near(convert(1, 'lb', 'kg'), 0.453592));
-  it('mass: st → t', () => near(convert(1, 'st', 't'), 0.907185));
+  it('mass: st → t', () => near(convert(1, 'st', 't'), 0.90718474));
 
   it('grade: g/t → ppm (identity)', () => near(convert(5.0, 'g/t', 'ppm'), 5.0));
   it('grade: oz/t → g/t', () => {
-    // 1 oz/t = 31.1035 g / 907185 g as fraction
+    // 1 oz/t = 31.1034768 g / 907184.74 g as fraction
     // 1 g/t = 1e-6 as fraction
     // factor = (31.1035/907185) / 1e-6 = 34.2857
-    near(convert(1, 'oz/t', 'g/t'), 31.1035 / 907185 * 1e6, 0.01);
+    near(convert(1, 'oz/t', 'g/t'), 31.1034768 / 907184.74 * 1e6, 1e-9);
   });
   it('grade: pct → fraction', () => near(convert(62.3, 'pct', 'fraction'), 0.623));
   it('grade: fraction → pct', () => near(convert(0.623, 'fraction', 'pct'), 62.3));
@@ -33,7 +33,20 @@ describe('convert', () => {
 
   it('density: g/cm3 → kg/m3', () => near(convert(2.65, 'g/cm3', 'kg/m3'), 2650));
   it('density: t/m3 → g/cm3', () => near(convert(2.65, 't/m3', 'g/cm3'), 2.65));
-  it('density: lb/ft3 → g/cm3', () => near(convert(1, 'lb/ft3', 'g/cm3'), 0.016018, 1e-4));
+  it('density: lb/ft3 → g/cm3', () => near(convert(1, 'lb/ft3', 'g/cm3'), 0.01601846337396, 1e-12));
+  it('exact definitions: mile, acre, square mile, gallon, barrel, psi', () => {
+    near(convert(1, 'mi', 'm'), 1609.344, 1e-9); near(convert(1, 'acre', 'm2'), 4046.8564224, 1e-7); near(convert(1, 'mi2', 'km2'), 2.589988110336, 1e-12);
+    near(convert(1, 'gal', 'L'), 3.785411784, 1e-12); near(convert(1, 'bbl', 'L'), 158.987294928, 1e-9); near(convert(1, 'psi', 'Pa'), 6894.757293168, 1e-6);
+  });
+  it('time and pressure', () => { near(convert(90, 'min', 'h'), 1.5); near(convert(1500, 'psi', 'MPa'), 10.34213593975, 1e-9); near(convert(1, 'atm', 'bar'), 1.01325); });
+  it('temperature is affine', () => {
+    near(convert(100, 'C', 'F'), 212, 1e-9); near(convert(-40, 'F', 'C'), -40, 1e-9); near(convert(0, 'C', 'K'), 273.15, 1e-9);
+    assert.deepEqual([...convert(new Float64Array([0, 100]), 'C', 'F')], [32, 212].map(x => convert(x === 32 ? 0 : 100, 'C', 'F')));
+  });
+  it('core.unitVolume runs from the source module (PI is its own)', async () => {
+    const { core } = await import('../ext/units/src/core.js');
+    assert.equal(core.unitVolume('NQ').cm3_per_m, 1779.5);
+  });
 
   it('area: ha → m2', () => near(convert(1, 'ha', 'm2'), 10000));
   it('area: km2 → m2', () => near(convert(1, 'km2', 'm2'), 1e6));

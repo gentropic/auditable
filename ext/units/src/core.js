@@ -1,5 +1,7 @@
 // DCDMA wireline diamond core sizes
 
+const PI = Math.PI;   // unitVolume uses it; the module stood on the bundle's copy before
+
 const CORES = [
   { code: 'AQ',  core_mm: 27.0, hole_mm: 48.0,  variant: 'standard' },
   { code: 'BQ',  core_mm: 36.5, hole_mm: 60.0,  variant: 'standard' },
