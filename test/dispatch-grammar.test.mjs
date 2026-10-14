@@ -147,3 +147,11 @@ test('grammar: a condition on rows is one structured thing; and binds tighter th
   assert.equal(e.status, 'ok');
   assert.deepEqual([e.commands[0].roles.for[0].n, e.commands[0].roles.at[0].h], [1.5, 22]);
 });
+
+test('grammar: suggest follows the frames when the verb is left out, and offers units of the same dimension', () => {
+  const E = createEngine(GOLEM, ENGLISH);
+  const words = t => E.suggest(t, makeSession([])).map(s => s.word);
+  assert.ok(words('2 km in ').length && E.suggest('2 km in ', makeSession([])).every(s => s.kind === 'unit'));
+  assert.ok(words('2 km in mi').includes('mi'));
+  assert.ok(!words('histogram of cu ').includes('yesterday'), 'relative times only when the session holds things');
+});

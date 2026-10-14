@@ -381,6 +381,11 @@ Trailing tokens can only be skipped at the top level.
   a half hours", "uma hora e meia". "starting", "beginning" (pt "a partir de", "começando em") mark
   `from`; "with the highest", "by lowest" (pt "com o maior") mark `highest` / `lowest`; "right now"
   is a filler.
+- **Suggest.** With no verb said, or a verb word that is also a thing ("mean"), the frames in play are the
+  elidable ones whose theme takes a thing typed before the first preposition, merged, a thing's frames first;
+  after a role that takes a unit, the units of the dimension already typed; dates, clock times and
+  condition columns are offered for those types; relative times, comparatives and relative clauses only
+  when the session holds things they could pick out.
 - **Tokenizer.** A multiword gives way when a longer one starts inside it and the words before are
   known on their own: "is at least" is "is" + "at least", not "is at" + "least". A free text that stops
   early leaves its trailing comma to the sentence.
