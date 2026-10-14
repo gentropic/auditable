@@ -34,6 +34,19 @@ export function buildGrammar(X) {
   rule('Cmd', 'AGAIN BUT Theme PPs', (_, __, t, a) => ({ kind: 'again', args: [...t, ...a] }));
   rule('Cmd', 'AGAIN COMMA BUT Theme PPs', (_, __, ___, t, a) => ({ kind: 'again', args: [...t, ...a] }));
 
+  // question shapes around a verb: a copula after the thing ("how much fe is in 45.2% fe2o3"), "are there" ("how many
+  // working days are there between …"), do-support with the verb last ("where do 090/45 and 270/45 intersect"), and a
+  // verb said last, as a noun ("fe to fe2o3 factor")
+  rule('Cmd', 'VERB NPList COP PPs', (v, l, _, a) => a.length ? { kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }, ...a] } : null);
+  rule('Cmd', 'VERB NPList COP', (v, l) => ({ kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }] }));   // the copula last: "what day 15 nov 2027 is"
+  // what is asked for first, then the copula and the thing: "how many g/t is 0.35 oz per short ton" — the first thing is placed by its type
+  rule('Cmd', 'VERB NP COP NPList PPs', (v, n, _, l, a) => ({ kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }, ...a, { kind: 'pp', prep: '', canon: [''], val: [n], topic: true }] }));
+  if (X.exist) rule('Cmd', 'VERB Theme EXIST PPs', (v, t, _, a) => ({ kind: 'cmd', verb: v.verb, args: [...t, ...a] }));
+  if (X.doq) rule('Cmd', 'DOQ NPList PPs VERB PPs', (_, l, a, v, b) => ({ kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }, ...a, ...b] }));   // "what does 1 m of nq core weigh at 2.7"
+  rule('Cmd', 'NPList PPs VERB', (l, a, v) => ({ kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }, ...a] }));
+  // an argument said first, before a comma: "on a 14 on 14 off roster, am i off on 25 dec". The binder places it by its
+  // preposition, or, when the preposition names no role that takes it, as one of the things the command is about
+  rule('Cmd', 'PP COMMA Cmd', (p, _, c) => c.kind === 'cmd' ? { ...c, args: [...c.args, { ...p, topic: true }] } : null);
   if (X.subject) rule('Cmd', 'NP VERB Theme PPs', (n, v, t, a) => ({ kind: 'cmd', verb: v.verb, args: [...t, { kind: 'pp', prep: '', canon: ['subject'], val: [n] }, ...a] }));   // "pop means population": only frames that declare a subject
   rule('Cmd', 'VERB PPs LATE NPList', (v, a, _, l) => ({ kind: 'cmd', verb: v.verb, args: [{ kind: 'np', list: l }, ...a] }));   // object after the PPs — a repair, never free
   rule('Cmd', 'LATE PP PPs VERB Theme PPs', (_, p, a, v, t, b) => ({ kind: 'cmd', verb: v.verb, args: [...t, p, ...a, ...b] }));   // arguments before the verb — also a repair
@@ -45,6 +58,7 @@ export function buildGrammar(X) {
   rule('Theme', 'NPList', l => [{ kind: 'np', list: l }]);
   rule('PPs', '', () => []);
   rule('PPs', 'PP PPs', (a, r) => [a, ...r]);
+  rule('PPs', 'COMMA PP PPs', (_, a, r) => [a, ...r]);   // arguments set off by commas: "landlocked countries, sorted by population"
 
   rule('PP', 'PREP NPList', (p, l) => ({ kind: 'pp', prep: p.word, canon: p.canon, val: l }));
   rule('PP', 'COLON NPList', (_, l) => ({ kind: 'pp', prep: ':', canon: [':'], val: l }));   // "check: …", a payload after a line break
@@ -78,6 +92,16 @@ export function buildGrammar(X) {
     for (const m of pm) { const r = X.postmod(n, m); if (!r) return null; Object.assign(n, r); }
     return n;
   });
+  // a shaped value before its noun: "a 000/30 plane", "a 14 on 14 off roster" — the value names the thing, or modifies it
+  // the way it would after it ("plane 000/30")
+  const litHead = (t, h, pm) => {
+    let n = h.type === t.type && h.generic ? { ...h, value: t.value, generic: false } : null;
+    if (!n) { const r = X.postmod(h, { prep: '', np: { type: t.type, value: t.value } }); if (!r) return null; n = { ...h, ...r, generic: false }; }
+    for (const m of pm) { const r = X.postmod(n, m); if (!r) return null; Object.assign(n, r); }
+    return n;
+  };
+  rule('NP', 'LIT Head PostMods', litHead);
+  rule('NP', 'DET LIT Head PostMods', (_, t, h, pm) => litHead(t, h, pm));
   rule('NP', 'Date', d => d);
   rule('NP', 'Clock', c => c);
   rule('NP', 'DET Quantity Head', (_, q, h) => X.qmod(q, h));
@@ -104,7 +128,7 @@ export function buildGrammar(X) {
       continue;
     }
     if (X.postmodQuantity.has(p)) { rule('PostMod', `PREP:${p} Quantity`, (_, q) => ({ prep: p, q })); rule('PostMod', `COP PREP:${p} Quantity`, (_, __, q) => ({ prep: p, q })); }   // "cu above 1", "cu is above 1"
-    else rule('PostMod', `PREP:${p} NP`, (_, n) => ({ prep: p, np: n }));
+    if (X.postmodThing.has(p)) rule('PostMod', `PREP:${p} NP`, (_, n) => ({ prep: p, np: n }));   // "a section at 045" and "a hole at 270/60" both
   }
   rule('PostMod', 'PREP:of Quantity', (_, q) => ({ prep: 'of', q, qmod: true }));   // "a search of 200 m" / "busca de 200 m"
   // relative clause: "the variogram (that) I fitted yesterday", "the run we did last week", "the variogram fitted this morning"
@@ -155,10 +179,56 @@ export function buildGrammar(X) {
   rule('Clock', 'CLOCK', c => clock(c.h, c.mi, hhmm(c.h, c.mi)));
   rule('Clock', 'NUM AMPM', (n, a) => { if (!Number.isInteger(n.n) || n.n < 1 || n.n > 12) return null; const pm = /^p/.test(a.word), am = /^a/.test(a.word);
     const h = pm && n.n < 12 ? n.n + 12 : am && n.n === 12 ? 0 : n.n; return clock(h, 0, hhmm(h, 0)); });
+  rule('Clock', 'CLOCK AMPM', (c, a) => { if (c.h < 1 || c.h > 12) return null; const pm = /^p/.test(a.word), am = /^a/.test(a.word);   // "2:30 pm"
+    const h = pm && c.h < 12 ? c.h + 12 : am && c.h === 12 ? 0 : c.h; return clock(h, c.mi, hhmm(h, c.mi)); });
   rule('Clock', 'NUM', n => Number.isInteger(n.n) && n.n >= 0 && n.n <= 24 ? clock(n.n, 0, hhmm(n.n, 0)) : null);
 
   rule('Quantity', 'NUM', t => ({ type: 'quantity', n: t.n, unit: null, dim: 'bare' }));
   rule('Quantity', 'NUM UNIT', (t, u) => ({ type: 'quantity', n: t.n, unit: u.unit, dim: u.dim }));
+  // a fraction said after the whole: "an hour and a half", "one and a half hours", "2 km and a quarter" (never a list)
+  rule('Quantity', `Quantity CONJ:${X.and} FRAC`, (q, _, f) => q.unit ? { ...q, n: q.n + f.n } : null);
+  rule('Quantity', `NUM CONJ:${X.and} FRAC UNIT`, (t, _, f, u) => ({ type: 'quantity', n: t.n + f.n, unit: u.unit, dim: u.dim }));
   rule('Quantity', 'DET UNIT', (d, u) => X.indefinite.includes(d.word) ? { type: 'quantity', n: 1, unit: u.unit, dim: u.dim } : null);   // "an hour", "um minuto"
+  // conditions on rows, for roles of type 'cond': "cu > 0.5 and lith is BRX", "au between 1 and 2", "lith in BRX, GRD",
+  // "cu is not blank", "not au above 1". A condition is one thing; "and" binds tighter than "or". The columns it may
+  // name are the ontology's (conditions.subjects); a value is a number, a name, a shape, or a word nobody declared
+  // ("lith is granite"), which the host matches against its data.
+  if (X.cond) {
+    const leafC = (c, op, v) => ({ col: { type: c.type, value: c.value ?? c.name ?? null }, op, ...(Array.isArray(v) ? { vals: v } : v === undefined ? {} : { val: v }) });
+    const node = c => ({ type: 'cond', value: X.condText(c), cond: c, generic: false, attrs: {} });
+    rule('Cond', 'CAnd', a => a);
+    rule('Cond', `Cond CONJ:${X.or} CAnd`, (a, _, b) => ({ or: [...(a.or ?? [a]), b] }));
+    rule('CAnd', 'CAtom', a => a);
+    rule('CAnd', `CAnd CONJ:${X.and} CAtom`, (a, _, b) => ({ and: [...(a.and ?? [a]), b] }));
+    rule('CAtom', 'NOT CAtom', (_, a) => ({ not: a }));
+    for (const op of ['above', 'below', 'atleast', 'atmost', 'equals']) {
+      rule('CAtom', `CCol PREP:${op} CVal`, (c, _, v) => leafC(c, op, v));
+      rule('CAtom', `CCol COP PREP:${op} CVal`, (c, _, __, v) => leafC(c, op, v));
+      rule('CAtom', `CCol NOT PREP:${op} CVal`, (c, _, __, v) => ({ not: leafC(c, op, v) }));
+    }
+    rule('CAtom', 'CCol COP CVal', (c, _, v) => leafC(c, 'equals', v));
+    rule('CAtom', 'CCol NOT CVal', (c, _, v) => leafC(c, 'differs', v));
+    rule('CAtom', 'CCol COP NOT CVal', (c, _, __, v) => leafC(c, 'differs', v));
+    rule('CAtom', 'CCol CVal', (c, v) => v.n == null ? leafC(c, 'equals', v) : null);   // "lith BRX": a name, never a bare number
+    rule('CAtom', `CCol PREP:between CVal CONJ:${X.and} CVal`, (c, _, a, __, b) => a.n != null && b.n != null ? leafC(c, 'between', [a, b]) : null);
+    rule('CAtom', `CCol COP PREP:between CVal CONJ:${X.and} CVal`, (c, _, __, a, ___, b) => a.n != null && b.n != null ? leafC(c, 'between', [a, b]) : null);
+    rule('CAtom', 'CCol PREP:in CVals', (c, _, vs) => leafC(c, 'in', vs));
+    rule('CAtom', 'CCol COP PREP:in CVals', (c, _, __, vs) => leafC(c, 'in', vs));
+    rule('CAtom', 'CCol COP BLANK', c => leafC(c, 'blank'));
+    rule('CAtom', 'CCol NOT BLANK', c => leafC(c, 'present'));
+    rule('CAtom', 'CCol COP NOT BLANK', c => leafC(c, 'present'));
+    rule('CCol', 'Head', h => X.cond.subjects.includes(h.type) && !h.generic ? h : null);
+    rule('CCol', 'DET Head', (_, h) => X.cond.subjects.includes(h.type) && !h.generic ? h : null);
+    rule('CVal', 'Quantity', q => ({ n: q.n, ...(q.unit ? { unit: q.unit } : {}) }));
+    rule('CVal', 'NOUN', t => ({ s: t.value ?? t.word }));
+    rule('CVal', 'IDENT', t => ({ s: t.name }));
+    rule('CVal', 'LIT', t => ({ s: t.value }));
+    rule('CVal', 'UNK', t => ({ s: t.word }));
+    rule('CVals', 'CVal', v => [v]);
+    rule('CVals', 'CVal COMMA CVals', (v, _, r) => [v, ...r]);
+    rule('CVals', 'CVal CONJ CVals', (v, _, r) => [v, ...r]);
+    rule('PP', 'PREP Cond', (p, c) => ({ kind: 'pp', prep: p.word, canon: p.canon, val: [node(c)] }));
+    for (const p of X.condPostPreps) rule('PostMod', `PREP:${p} Cond`, (_, c) => ({ prep: p, np: node(c) }));   // "samples with au above 0.1"
+  }
   return R;
 }

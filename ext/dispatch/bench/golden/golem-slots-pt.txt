@@ -31,6 +31,18 @@
 ✓ conta amostras onde cu maior que 0.5 %
     → Contar amostra; onde Cu acima de 0.5 %.
 
+— condições —
+✓ seleciona amostras onde cu > 0.5 e au pelo menos 1
+    → Selecionar amostra; onde Cu > 0.5 e Au ≥ 1.
+✓ seleciona amostras onde cu > 1 ou au não é vazio
+    → Selecionar amostra; onde Cu > 1 ou Au ≠ ∅.
+✓ seleciona as amostras com o maior cu
+    → Selecionar amostra; maior Cu.
+
+— hora e meia —
+✓ agenda a conversa de segurança na sexta às 9h por uma hora e meia
+    → Evento "a conversa de segurança"; duração 1.5 h; em sexta; às 09:00.
+
 — formas declaradas —
 ✓ estereograma 045/30
     → Estereograma 045/30.

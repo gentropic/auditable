@@ -6,16 +6,19 @@ export const PORTUGUESE = {
   DET: 'o|a|os|as|um|uma|uns|umas|este|esta|esse|essa|meu|minha|nosso|nossa',
   REF: 'último|última|ultimo|ultima|últimos|últimas|anterior|atual|primeiro|primeira|novo|nova',
   QUANT: 'todos|todas|todo|toda|cada', EXCEPT: 'exceto|menos|excluindo|tirando|fora', CONJ: 'e|ou|mais', COMMA: ',',
-  PREP: 'com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|às|até|como|acima de|abaixo de|sem|contra|dentro de|sobre|onde|agrupado por|ponderado por|ordenado por|que têm|que tem|depois de|antes de|desde|entre|durante|através de|atraves de|perto de|>|<|>=|<=|=|≥|≤|maior que|menor que|pelo menos|no mínimo|no minimo|no máximo|no maximo|igual a',
+  PREP: 'com o maior|com a maior|com os maiores|com as maiores|com o menor|com a menor|com os menores|com as menores|começando em|a partir de|com|usando|por|em|no|na|nos|nas|para|pra|pro|de|do|da|dos|das|a|ao|à|às|até|como|acima de|abaixo de|sem|contra|dentro de|sobre|onde|agrupado por|ponderado por|ordenado por|que têm|que tem|depois de|antes de|desde|entre|durante|através de|atraves de|perto de|>|<|>=|<=|=|≥|≤|maior que|menor que|pelo menos|no mínimo|no minimo|no máximo|no maximo|igual a',
   THEN: 'depois|então|em seguida|aí', BUT: 'mas|porém|só que', PRON: 'isso|isto|ele|ela|eles|elas',
   AGAIN: 'de novo|novamente|repete|repetir|refaz|refazer|mesmo|mesma|igual|outra vez',
   QWORD: 'por que|porque|como|qual|quais|quando|quem|é|são|será|pode|poderia|deveria|dá',
   DEMO: 'isto|isso|este|esta|estes|estas|o seguinte|o seguinte texto|o texto|os dois|ambos',   // antes dos dois-pontos: "resume isto: …"
+  OR: 'ou', NOT: 'não|nao|não é|nao e', BLANK: 'vazio|vazia|nulo|nula|em branco', EXIST: 'tem|há|ha|existem',
   WH: 'qual|quais|que', COP: 'é|são|sao|era|foi|eram|foram', WHCOP: 'qual é|qual e|quais são|quais sao|o que é|o que e|quanto é|quanto e|quanto dá|quanto da|quanto são|quanto sao',
   TRAIL: 'por favor|obrigado|obrigada|valeu|pfv|pf|pra mim|para mim',   // cortesia que fecha a frase, cortada do fim de um texto livre
   FILLER: 'por favor|agora|só|me|favor|pra mim|então|ei|oi|olá|valeu|obrigado|obrigada|beleza|aí|tá|dá pra|dá para|você pode|pode|consegue|queria que você|quero que você|vamos|bora|hum|bom|me diz|me fala|me dá|preciso de|eu preciso de|gostaria de|eu queria',
   preps: {   // surface → canonical set; polysemy is resolved by types downstream
-    com: ['with'], usando: ['using'], por: ['by'], em: ['in', 'on'], no: ['in', 'on'], na: ['in', 'on'], nos: ['in', 'on'], nas: ['in', 'on'],
+    'com o maior': ['highest'], 'com a maior': ['highest'], 'com os maiores': ['highest'], 'com as maiores': ['highest'], 'com o menor': ['lowest'], 'com a menor': ['lowest'], 'com os menores': ['lowest'], 'com as menores': ['lowest'],
+    'começando em': ['from'], 'a partir de': ['from'],
+    com: ['with'], usando: ['using'], por: ['by', 'for'], em: ['in', 'on'], no: ['in', 'on'], na: ['in', 'on'], nos: ['in', 'on'], nas: ['in', 'on'],
     para: ['for', 'to', 'into'], pra: ['for', 'to', 'into'], pro: ['for', 'to', 'into'], de: ['of', 'from'], do: ['of', 'from'], da: ['of', 'from'], dos: ['of', 'from'], das: ['of', 'from'],
     a: ['to', 'at'], ao: ['to', 'at'], 'à': ['to', 'at'], 'até': ['to'], como: ['as'], 'acima de': ['above', 'over'], 'abaixo de': ['below', 'under'],
     sem: ['without'], contra: ['against'], 'dentro de': ['into'], sobre: ['on'], 'às': ['at', 'to'], onde: ['where'], 'agrupado por': ['by'], 'ponderado por': ['weighted'], 'ordenado por': ['sort'], 'que têm': ['where'], 'que tem': ['where'], 'depois de': ['after'], 'antes de': ['before'], desde: ['since', 'from'], entre: ['between'], durante: ['during'], 'através de': ['through'], 'atraves de': ['through'], 'perto de': ['near'],
@@ -28,6 +31,7 @@ export const PORTUGUESE = {
   clocks: { 'meio-dia': [12, 0], 'meia-noite': [0, 0] },
   numbers: { dois: 2, duas: 2, três: 3, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, quinze: 15, vinte: 20, trinta: 30, quarenta: 40, cinquenta: 50, sessenta: 60, noventa: 90, cem: 100,
     meia: 0.5, meio: 0.5, 'um quarto de': 0.25, 'uma dúzia de': 12 },
+  fractions: { meia: 0.5, meio: 0.5, 'um quarto': 0.25 },
   indefinite: ['um', 'uma', 'uns', 'umas'], newRef: ['novo', 'nova'], firstRef: ['primeiro', 'primeira'],
   phr: { new: 'novo', last: 'último', every: 'todo', except: 'exceto', fromRun: 'da rodada', above: 'acima de', below: 'abaixo de', atleast: 'pelo menos', atmost: 'no máximo', equals: 'igual a', then: 'Depois', assuming: 'assumindo', of: 'de', hole: '___', than: 'que' },
   stem: w => { let x = w.normalize('NFD').replace(/[\u0300-\u036f]/g, '');

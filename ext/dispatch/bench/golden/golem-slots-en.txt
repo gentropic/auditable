@@ -76,7 +76,7 @@ The fact that he had not succeeded was owing to the weather.
 ✓ 9am sao paulo in perth
     → Time in 09:00; from sao paulo; to perth.
 ✗ 9am chalcopyrite in perth
-    → REJECT: understood "9am", "in perth"; could not place "chalcopyrite"; stopped at the end; expected ',', ':', 'above', 'and', 'atleast', 'atmost', 'below', 'equals', 'from', 'i', 'is', 'last', 'next', 'of', 'that', 'then', 'this', 'with', a clock time, a comparative, a date, a name, a number, a preposition, a pronoun, a quantifier, a thing, a time, a unit, a value, a verb, an article
+    → REJECT: understood "9am", "in perth"; could not place "chalcopyrite"; stopped at the end; expected ',', ':', 'above', 'and', 'atleast', 'atmost', 'below', 'between', 'equals', 'from', 'i', 'in', 'is', 'last', 'next', 'not', 'of', 'that', 'then', 'this', 'with', a clock time, a comparative, a date, a name, a number, a preposition, a pronoun, a quantifier, a thing, a time, a unit, a value, a verb, a word, an article
 
 — a shape with modifiers; a list of a shape and a question —
 ✓ 14 on 14 off from 6 oct, am i off on 25 december
@@ -107,15 +107,16 @@ The fact that he had not succeeded was owing to the weather.
 — comparisons on a thing —
 ✓ count samples where cu > 0.5
     → Count sample; where Cu above 0.5.
-    · 2 syntactic parses
+    · 3 syntactic parses
 ✓ count rows where gold is at least 1.2 g/t
     → Count sample; where Au at least 1.2 g/t.
+    · 2 syntactic parses
 ✓ how many samples with cu above 0.5 %
     → Count sample; where Cu above 0.5 %.
-    · 2 syntactic parses
+    · 3 syntactic parses
 ✓ count samples where cu ≤ 0.1
     → Count sample; where Cu at most 0.1.
-    · 2 syntactic parses
+    · 3 syntactic parses
 
 — grouping and quantifiers: grouped by, for each X, in each X; every X with no X in the session stays for the host —
 ✓ count samples grouped by gold
@@ -125,7 +126,7 @@ The fact that he had not succeeded was owing to the weather.
     · 2 syntactic parses
 ✓ count samples having cu above 0.5
     → Count sample; where Cu above 0.5.
-    · 2 syntactic parses
+    · 3 syntactic parses
 
 — shapes the ontology declares —
 ✓ stereonet 045/30
@@ -157,12 +158,60 @@ The fact that he had not succeeded was owing to the weather.
 ✓ um, 25c in f
     → Convert 25 °C; unit °F.
 
+— conditions on rows: and binds tighter than or; not, between, in, blank; a word nobody declared is a value —
+✓ select samples where cu > 0.5 and au is at least 1.2 g/t
+    → Select sample; where Cu > 0.5 and Au ≥ 1.2 g/t.
+    · 3 syntactic parses
+✓ select samples where cu between 0.2 and 0.8 or au over 1
+    → Select sample; where Cu ≥ 0.2 and Cu ≤ 0.8 or Au > 1.
+    · 4 syntactic parses
+✓ select samples where cu is not blank and not au below 0.1
+    → Select sample; where Cu ≠ ∅ and not (Au < 0.1).
+✓ select samples where gold is in 1, 2 and 3
+    → Select sample; where Au ∈ {1, 2, 3}.
+✓ filter samples with cu equal to banana
+    → Select sample; where Cu = banana.
+✓ select the samples with the highest cu
+    → Select sample; highest Cu.
+
+— question shapes: "are there", the copula last, an argument said first, arguments set off by commas —
+✓ how many working days are there between 1 dec and 20 dec
+    → Working days; from 1 dec, 20 dec.
+✓ how many samples are there where cu > 0.5
+    → Count sample; where Cu above 0.5.
+    · 3 syntactic parses
+✓ on a 14 on 14 off roster starting 6 oct, am i off on 25 december
+    → Roster am i off, 14 on 14 off; on 25 december.
+✓ remind me to call ana, on friday, at 9
+    → Event "call ana"; on friday; at 09:00.
+
+— a value before its noun; a list after a colon or after the theme, placed by type —
+✓ stereonet a 045/30 vein
+    → Stereonet vein 045/30.
+✓ stereonet: 045/30, 120/45
+    → Stereonet 045/30, 120/45.
+
+— clock times with am/pm after the minutes; fractions after the whole —
+✓ schedule the safety talk on oct 16 at 2:30 pm for an hour and a half
+    → Event "the safety talk"; for 1.5 h; on 16 oct; at 14:30.
+✓ remind me to stretch at 10:15 am for one and a half hours
+    → Event "stretch"; for 1.5 h; at 10:15.
+
+— a multiword gives way to a longer one inside it ("is at" + "least") —
+✓ count samples where cu is at least 0.5
+    → Count sample; where Cu at least 0.5.
+    · 2 syntactic parses
+
 — breakers —
+✗ select samples where cu >
+    → REJECT: understood "select samples where cu"; could not place ">"; stopped at the end; expected 'last', 'next', 'not', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a thing, a unit, a value, a word, an article
+✗ select samples where banana > 1
+    → REJECT: understood "select samples"; could not place "where banana > 1"; stopped at "banana" (unknown word); expected 'last', 'next', 'not', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a thing, a unit, a value, an article
 ? remind me to
     → CLARIFY: event what?
       (so far: Event.)
 ✗ count samples where cu > banana
-    → REJECT: understood "count samples where cu"; could not place "> banana"; stopped at "banana" (unknown word); expected 'last', 'next', a clock time, a comparative, a date, a name, a number, a pronoun, a quantifier, a thing, a unit, a value, an article
+    → REJECT: "where Cu > banana": after "where" count expects where (variable)
 ✗ stereonet 045
     → REJECT: "stereonet" takes orientation/plane, not 45
 ? remember

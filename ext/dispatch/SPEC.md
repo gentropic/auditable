@@ -347,6 +347,43 @@ Trailing tokens can only be skipped at the top level.
   "and", or an "again but …" ("and chile", "in feet", "log scale", "same for peru"). The ellipsis
   completes it from the last command; a thing that does not fit the theme but fits exactly one role
   replaces that role ("chile" after "density of mongolia"). Corpus `bench/golem-fragments.mjs`.
+- **Conditions on rows.** When the ontology declares `conditions: { subjects: [types] }`, a role of type
+  `cond` takes a condition after any preposition it declares ("where", "with", "having"), and a postmod
+  with `mod: 'cond'` hangs one on a noun ("samples with au above 0.1"). A condition names a thing of
+  a subject type and compares it: the comparison prepositions, "is" (equals), "is not" / "isn't" /
+  "not" (differs), "between a and b", "in a, b and c", "is blank" / "is not blank", "not …" in front,
+  or a bare value after the column ("lith BRX": a name, never a bare number). "and" binds tighter
+  than "or". A value is a quantity (with its unit), a noun's value, a name, a shape, or a word nobody
+  declared ("lith is granite"), which the host matches against its data. The node is
+  `{ type: 'cond', value: <echo text>, cond: { and | or | not | col, op, val | vals } }`; the host
+  translates the tree, never the text. "over" and "under" now also carry the canons above and below.
+- **Question shapes.** "how much fe is in 45.2% fe2o3" (a copula between the thing and its arguments);
+  "how many working days are there between …" (`EXIST`: are there, is there); "where do 090/45 and
+  270/45 intersect", "what does 1 m of nq core weigh at 2.7" (`DOQ`: do-support, the verb last,
+  arguments on either side); "fe to fe2o3 factor" (a verb said last, as a noun); "what day 15 nov
+  2027 is" (the copula last); "how many g/t is 0.35 oz per short ton" (what is asked for first: placed
+  by its type, below).
+- **Arguments said first, set off, or just listed.** A prepositional phrase before a comma belongs to
+  the command after it ("on a 14 on 14 off roster starting 6 oct, am i off on 25 dec"); commas may set
+  arguments off ("landlocked countries, sorted by population"). Loose things — a list after the theme
+  with no prepositions ("true thickness, bedding 045/30, hole 270/60, 14 m intercept"), a list after a
+  colon when the frame has no colon role ("work out the true thickness: 14 m intercept, …"), a fronted
+  phrase whose preposition names no role that takes it — join the theme when they are of its type and
+  otherwise go to the roles their type fits, preferring roles that may go unmarked; several roles are
+  several readings. When the strict parse is ambiguous, free text does not win over it: the host chooses
+  among the readings.
+- **A value before its noun.** A shape in front of a noun names it or modifies it as it would after it:
+  "a 000/30 plane", "a 14 on 14 off roster"; a number in front, through the qmods ("a 045 section").
+  A preposition may carry quantities for one noun and things for another ("a section at 045", "a hole
+  at 270/60").
+- **Clock times and fractions.** "2:30 pm" (a clock with am/pm after it); banks carry `fractions`
+  ("a half", "a quarter"; pt meia, um quarto) that only follow a whole: "an hour and a half", "one and
+  a half hours", "uma hora e meia". "starting", "beginning" (pt "a partir de", "começando em") mark
+  `from`; "with the highest", "by lowest" (pt "com o maior") mark `highest` / `lowest`; "right now"
+  is a filler.
+- **Tokenizer.** A multiword gives way when a longer one starts inside it and the words before are
+  known on their own: "is at least" is "is" + "at least", not "is at" + "least". A free text that stops
+  early leaves its trailing comma to the sentence.
 
 Still to do for golem: answer fragments (below). Arithmetic stays outside: a token-shape check
 routes it to the expression parser before the grammar sees it.
@@ -354,8 +391,8 @@ routes it to the expression parser before the grammar sees it.
 After the fold-in, in general: answer fragments (a second start symbol for replies to a
 pending `clarify`: `the second`, `v2`, `both`, `yes`); rank-then-ask with
 pick-priors `(verb, prep, type) → role` as a printed table; a session fuzzer;
-a rejection log; negation / `without` / ranges / number words / full pt gender
-agreement.
+a rejection log; `without` / full pt gender agreement. (Negation and ranges inside conditions, and
+number words, are done.)
 
 ## Roadmap
 

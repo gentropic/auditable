@@ -7,16 +7,21 @@ export const ENGLISH = {
   code: 'en', headFirst: false,
   DET: 'the|a|an|this|that|my|our', REF: 'last|previous|latest|current|first|new',
   QUANT: 'all|every|each', EXCEPT: 'except|excluding|minus', CONJ: 'and|or|plus', COMMA: ',',
-  PREP: 'with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|grouped by|weighted by|sorted by|ordered by|having|that have|which have|that has|which has|have|has|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
+  PREP: 'with the highest|with the largest|with the most|with the lowest|with the smallest|with the least|by highest|by lowest|starting|starting on|starting from|beginning|beginning on|with|using|by|per|in|on|for|from|to|at|as|above|below|over|under|of|into|without|against|where|until|till|after|before|since|between|across|through|during|within|around|near|grouped by|weighted by|sorted by|ordered by|having|that have|which have|that has|which has|have|has|>|<|>=|<=|=|≥|≤|greater than|more than|less than|at least|at most|equal to|equals',
   THEN: 'then|afterwards|next', BUT: 'but', PRON: 'it|them|those', AGAIN: 'again|rerun|redo|repeat|same',
   QWORD: 'why|how|what|when|who|is|are|does|do|should|can|could|would',
   // closed questions the grammar reads as commands with the verb left out: a wh-word, a copula, the fused forms
   DEMO: 'this|these|it|that|them|the following|the following text|the text|the two|both',   // before a colon: "summarise this: …"
+  // do-support questions, the verb last ("where do … intersect", "what does … weigh"); "are there"; negation and blanks in conditions
+  DOQ: 'where do|where does|what do|what does|how much does|how much do|how many do|when do|when does|how do|how does|do|does', EXIST: 'are there|is there|were there|was there|will there be|there are|there is',
+  OR: 'or', NOT: "not|isn't|aren't|is not|are not", BLANK: 'blank|empty|null|missing|nan',
   WH: 'what|which', COP: 'is|are|was|were', WHCOP: "what is|what's|whats|what are|which is|which are|how much is|how many are",
-  TRAIL: 'please|thanks|thank you|pls|plz|cheers|for me|for us',   // politeness that closes a sentence, trimmed from the end of a free text
-  FILLER: "please|now|just|kindly|go|ahead|me|us|hey|hi|hello|yo|thanks|thank you|cheers|pls|plz|so|um|uh|er|erm|hmm|well|oh|alright|can you|could you|would you|will you|i want you to|i need you to|i want to|i need|i'd like|i would like|give me|tell me|for me|let us|lets",
+  TRAIL: 'right now|please|thanks|thank you|pls|plz|cheers|for me|for us',   // politeness that closes a sentence, trimmed from the end of a free text
+  FILLER: "right now|please|now|just|kindly|go|ahead|me|us|hey|hi|hello|yo|thanks|thank you|cheers|pls|plz|so|um|uh|er|erm|hmm|well|oh|alright|can you|could you|would you|will you|i want you to|i need you to|i want to|i need|i'd like|i would like|give me|tell me|for me|let us|lets",
   // identity for every English preposition except the comparisons, which share a canon with their words
-  preps: { '>': ['above'], 'greater than': ['above'], 'more than': ['above'], '<': ['below'], 'less than': ['below'], '>=': ['atleast'], '≥': ['atleast'], 'at least': ['atleast'],
+  preps: { over: ['over', 'above'], under: ['under', 'below'], starting: ['from'], 'starting on': ['from'], 'starting from': ['from'], beginning: ['from'], 'beginning on': ['from'],
+    'with the highest': ['highest'], 'with the largest': ['highest'], 'with the most': ['highest'], 'by highest': ['highest'], 'with the lowest': ['lowest'], 'with the smallest': ['lowest'], 'with the least': ['lowest'], 'by lowest': ['lowest'],
+    '>': ['above'], 'greater than': ['above'], 'more than': ['above'], '<': ['below'], 'less than': ['below'], '>=': ['atleast'], '≥': ['atleast'], 'at least': ['atleast'],
     '<=': ['atmost'], '≤': ['atmost'], 'at most': ['atmost'], '=': ['equals'], 'equal to': ['equals'], equals: ['equals'],
     'grouped by': ['by'], 'weighted by': ['weighted'], 'sorted by': ['sort'], 'ordered by': ['sort'],
     having: ['where'], 'that have': ['where'], 'which have': ['where'], 'that has': ['where'], 'which has': ['where'], have: ['where'], has: ['where'] },
@@ -29,7 +34,8 @@ export const ENGLISH = {
   // number words, and the fractions people say before a unit
   numbers: { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
     twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, 'a hundred': 100, dozen: 12, 'a dozen': 12, 'a couple of': 2, 'a few': 3,
-    'half an': 0.5, 'half a': 0.5, half: 0.5, 'a quarter of an': 0.25, 'a quarter of a': 0.25, 'quarter of an': 0.25, 'quarter of a': 0.25, 'three quarters of an': 0.75, 'three quarters of a': 0.75, 'an hour and a half': 1.5 },
+    'half an': 0.5, 'half a': 0.5, half: 0.5, 'a quarter of an': 0.25, 'a quarter of a': 0.25, 'quarter of an': 0.25, 'quarter of a': 0.25, 'three quarters of an': 0.75, 'three quarters of a': 0.75 },
+  fractions: { 'a half': 0.5, 'a quarter': 0.25, 'three quarters': 0.75 },
   AMPM: "am|pm|a.m.|p.m.|o'clock",
   indefinite: ['a', 'an'], newRef: ['new'], firstRef: ['first'],
   phr: { new: 'new', last: 'last', every: 'every', except: 'except', fromRun: 'from run', above: 'above', below: 'below', atleast: 'at least', atmost: 'at most', equals: 'equal to', then: 'Then', assuming: 'assuming', of: 'of', hole: '___', than: 'than' },

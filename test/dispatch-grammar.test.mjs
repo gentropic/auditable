@@ -134,3 +134,16 @@ test('train: tag set is derived from the aligned corpus', () => {
   assert.deepEqual(W.tags, ['O', 'R_domain', 'R_threshold', 'THEME']);
   assert.ok(W.tag.R_domain, 'weights exist for a tag the fixed set never had');
 });
+
+test('grammar: a condition on rows is one structured thing; and binds tighter than or; a fraction joins its whole', () => {
+  const E = createEngine(SLOTS, ENGLISH);
+  const r = E.understand('select samples where cu > 0.5 and au is at least 1 or gold is blank', makeSession([]));
+  assert.equal(r.status, 'ok');
+  const c = r.commands[0].roles.where[0].cond;
+  assert.deepEqual(c, { or: [
+    { and: [{ col: { type: 'variable', value: 'Cu' }, op: 'above', val: { n: 0.5 } }, { col: { type: 'variable', value: 'Au' }, op: 'atleast', val: { n: 1 } }] },
+    { col: { type: 'variable', value: 'Au' }, op: 'blank' }] });
+  const e = E.understand('remind me to stretch at 10:15 pm for an hour and a half', makeSession([]));
+  assert.equal(e.status, 'ok');
+  assert.deepEqual([e.commands[0].roles.for[0].n, e.commands[0].roles.at[0].h], [1.5, 22]);
+});
