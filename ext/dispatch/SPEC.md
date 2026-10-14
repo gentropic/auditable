@@ -386,6 +386,16 @@ Trailing tokens can only be skipped at the top level.
   after a role that takes a unit, the units of the dimension already typed; dates, clock times and
   condition columns are offered for those types; relative times, comparatives and relative clauses only
   when the session holds things they could pick out.
+- **Repairs a host asks about.** A repair that dropped unknown words comes back as `clarify` with the reading
+  it would make, and now with its `commands` too, so a host that asks before acting can run the one picked
+  (golem's rung 4 offers the readings of the repair pass, budget 3, and runs none until one is picked).
+- **A statistical rung from the frames: tried.** `bench/loose.mjs` generates sentences from the frames,
+  trains an intent perceptron and a THEME/ARG tagger on the grammar's tokens, and rewrites a guess as a
+  controlled sentence for the grammar to read. On golem's ontology it scored well on held-out generated
+  sentences and badly on natural ones (1 of 31); the repair pass alone offered the right reading first for 13.
+  The file records the numbers; the `frame` kind waits for real corrections to train on.
+- **Speed.** Multiwords are indexed by their first word; typo-repair targets are bucketed by length, cut off
+  past the tolerance and remembered per word. Tokenizing golem's register went from about 0.5 ms to 0.1 ms.
 - **Tokenizer.** A multiword gives way when a longer one starts inside it and the words before are
   known on their own: "is at least" is "is" + "at least", not "is at" + "least". A free text that stops
   early leaves its trailing comma to the sentence.
