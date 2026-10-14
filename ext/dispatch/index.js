@@ -997,6 +997,8 @@ function buildGrammar(X) {
     let n = c; for (const m of l) { const r = X.compound(m, n); if (!r) return null; n = r; }
     return { kind: 'cmd', verb: null, args: [{ kind: 'np', list: [n] }, ...a], question: true };
   });
+  // "which countries have a population over 100 million" = "countries having a population over …": the question word, a thing, its arguments
+  rule('Question', 'WH NPList PPs', (_, l, a) => a.length ? { kind: 'cmd', verb: null, args: [{ kind: 'np', list: l }, ...a], question: true } : null);
   rule('Program', 'Cmd THEN Program', (c, _, p) => [c, ...p]);
   // a fragment (understand with { fragment: true }): what is left of a command when the rest is the session's last one —
   // "in feet", "and chile", "log scale", "where au > 1", "again but with 300 m". It is an 'again' the ellipsis completes.

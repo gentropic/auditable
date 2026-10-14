@@ -361,7 +361,7 @@ Trailing tokens can only be skipped at the top level.
   "how many working days are there between …" (`EXIST`: are there, is there); "where do 090/45 and
   270/45 intersect", "what does 1 m of nq core weigh at 2.7" (`DOQ`: do-support, the verb last,
   arguments on either side); "fe to fe2o3 factor" (a verb said last, as a noun); "what day 15 nov
-  2027 is" (the copula last); "how many g/t is 0.35 oz per short ton" (what is asked for first: placed
+  2027 is" (the copula last); "which countries have a population over 100 million" (a question word, a thing and its arguments); "how many g/t is 0.35 oz per short ton" (what is asked for first: placed
   by its type, below).
 - **Arguments said first, set off, or just listed.** A prepositional phrase before a comma belongs to
   the command after it ("on a 14 on 14 off roster starting 6 oct, am i off on 25 dec"); commas may set

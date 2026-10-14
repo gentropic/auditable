@@ -180,6 +180,9 @@ The fact that he had not succeeded was owing to the weather.
 ✓ how many samples are there where cu > 0.5
     → Count sample; where Cu above 0.5.
     · 3 syntactic parses
+✓ which samples have cu above 0.5
+    → Select sample; where Cu > 0.5.
+    · 3 syntactic parses
 ✓ on a 14 on 14 off roster starting 6 oct, am i off on 25 december
     → Roster am i off, 14 on 14 off; on 25 december.
 ✓ remind me to call ana, on friday, at 9
