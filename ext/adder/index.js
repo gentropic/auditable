@@ -1877,6 +1877,16 @@ class Complex {
 // type object registry — populated by adderBuiltins()
 const _typeObjects = {};
 
+// adder has two dict representations: a Map (any keys), and a plain JS object for a dict whose
+// keys are all strings (a {"a": 1} literal — kept as an object for JS interop). A plain dict is
+// an object whose prototype is Object's (or null): class instances have their own prototype,
+// and a keyword-argument bag carries _kw.
+function isPlainDict(v) {
+  if (v === null || typeof v !== 'object') return false;
+  const p = Object.getPrototypeOf(v);
+  return (p === Object.prototype || p === null) && !v._kw && !('__adderType__' in v) && !('__adderClass__' in v);
+}
+
 function pyTypeName(v) {
   if (v === null || v === undefined) return 'NoneType';
   if (typeof v === 'boolean') return 'bool';
@@ -1890,6 +1900,7 @@ function pyTypeName(v) {
   if (v instanceof Uint8Array) return 'bytes';
   if (typeof v === 'function') return 'function';
   if (v?.__adderClass__) return v.__adderClass__;
+  if (isPlainDict(v)) return 'dict';
   return 'object';
 }
 
@@ -1972,6 +1983,7 @@ function pyRepr(v) {
   }
   if (typeof v === 'object' && typeof v.__repr__ === 'function') return v.__repr__();
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
+  if (isPlainDict(v)) return `{${Object.keys(v).map((k) => `${pyRepr(k)}: ${pyRepr(v[k])}`).join(', ')}}`;
   try { return JSON.stringify(v); } catch { return String(v); }
 }
 
@@ -2014,6 +2026,13 @@ function pyReprMaybe(v) {
   if (_hasUserDunder(v, '__repr__')) {
     const r = v.__repr__();
     return _isThenable(r) ? r.then(String) : String(r);
+  }
+  if (isPlainDict(v)) {
+    const parts = Object.keys(v).map((k) => {
+      const b = pyReprMaybe(v[k]);
+      return _isThenable(b) ? b.then((y) => `${pyRepr(k)}: ${y}`) : `${pyRepr(k)}: ${b}`;
+    });
+    return _joinMaybe(parts, '{', ', ', '}');
   }
   return pyRepr(v);
 }
@@ -3400,13 +3419,30 @@ function adderBuiltins(printFn) {
       { _pyContainerType: 'list' },
     ),
     tuple: async (x) => x === undefined ? [] : await pyCollect(x),
-    dict: async (x) => {
-      if (x === undefined) return {};
-      if (x instanceof Map) return Object.fromEntries(x);
-      const arr = Array.isArray(x) ? x : await pyCollect(x);
-      if (arr.length && Array.isArray(arr[0])) { const o = {}; for (const [k, v] of arr) o[k] = v; return o; }
-      if (typeof x === 'object') return { ...x };
-      throw new AdderError('TypeError', `cannot convert '${pyTypeName(x)}' to dict`);
+    dict: async (...args) => {
+      const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
+      if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
+      const entries = [];
+      const x = args[0];
+      if (args.length === 0) { /* empty */ }
+      else if (x === null || x === undefined || typeof x !== 'object' && typeof x !== 'string') throw new AdderError('TypeError', `'${pyTypeName(x)}' object is not iterable`);
+      else if (x instanceof Map) entries.push(...x.entries());
+      else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
+      else {
+        const items = Array.isArray(x) ? x : await pyCollect(x);
+        items.forEach((it, i) => {
+          const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
+          if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
+          entries.push(pair);
+        });
+      }
+      if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') entries.push([k, kw[k]]);
+      if (entries.every(([k]) => typeof k === 'string')) {
+        const o = {};
+        for (const [k, v] of entries) o[k] = v;
+        return o;
+      }
+      return new Map(entries);
     },
     set: async (x) => x === undefined ? new Set() : new Set(await pyCollect(x)),
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),

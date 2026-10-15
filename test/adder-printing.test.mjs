@@ -54,11 +54,18 @@ test('inf, -inf and nan in print, repr, str, f-strings and format()', async () =
   assert.equal(await printed('import src\nprint(src.nonfinite())'), '[inf, -inf, nan, -0.0]');
 });
 
-test('plain objects and bytes keep their old form; finite numbers are unchanged', () => {
-  assert.equal(pyRepr({ a: 1 }), '{"a":1}');
+test('bytes keep their old form; finite numbers are unchanged', () => {
   assert.equal(pyRepr(3), '3');
   assert.equal(pyRepr(2.5), '2.5');
   assert.equal(pyStr(-0.25), '-0.25');
   assert.equal(pyFormatValue(3.14159, '.2f'), '3.14');
   assert.notEqual(pyRepr(Uint8Array.from([1, 2])), '[1, 2]');
+});
+
+test('dicts print as Python dicts, both representations; dict() takes a mapping, pairs and keywords', async () => {
+  assert.equal(await printed('print({"a": 1, "b": [1, 2]})'), "{'a': 1, 'b': [1, 2]}");
+  assert.equal(await printed('print(dict(a=1), dict([("x", 1), (2, "y")]), dict({"k": 1}, z=2), dict())'), "{'a': 1} {'x': 1, 2: 'y'} {'k': 1, 'z': 2} {}");
+  assert.equal(await printed('d = {"a": 1}\nprint(isinstance(d, dict), repr(d), f"{d}")'), "True {'a': 1} {'a': 1}");
+  assert.equal(await printed('class P:\n    def __repr__(self):\n        return "P!"\nprint({"p": P()})'), "{'p': P!}");
+  assert.equal(pyRepr({ a: 1 }), "{'a': 1}");
 });
