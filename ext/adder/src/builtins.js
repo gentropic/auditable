@@ -417,6 +417,12 @@ function _isNativeClass(fn) {
 }
 
 export function adderGetAttr(obj, attr) {
+  // functions, classes and builtin type objects (all JS functions here)
+  if (typeof obj === 'function') {
+    if (attr === '__name__' || attr === '__qualname__') return obj._pyName || obj.name || '<function>';
+    if (attr === '__doc__') return obj.__doc__ ?? null;
+    if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
+  }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
   // list methods

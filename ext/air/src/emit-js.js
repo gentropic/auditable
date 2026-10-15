@@ -946,7 +946,7 @@ function emitFunc(ctx, op) {
       ? '\n' + bodyLines.join('\n') + '\n' + '  '.repeat(ctx.indent)
       : '';
 
-    if (name || op.is_generator) {
+    if (name || op.is_generator || op.needs_arguments) {
       register(ctx, op, `${asyncPrefix}function${star}${name ? ' ' + name : ''}(${params}) {${bodyStr}}`);
     } else {
       register(ctx, op, `${asyncPrefix}(${params}) => {${bodyStr}}`);

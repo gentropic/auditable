@@ -33,7 +33,7 @@ export async function runEngine(engine) {
     try {
       await A.run(c.code, { engine, host: false, remote: false, budget: { steps: 2e6, ms: 5000 }, stdout: (s) => out.push(String(s)), onEngine: (e) => { used = e; } });
     } catch (e) {
-      err = e.pyType || (e instanceof SyntaxError ? 'SyntaxError' : e.name || 'Error');
+      err = (e && e.pyType) || (e instanceof SyntaxError ? 'SyntaxError' : (e && e.name) || 'Error');
     }
     const got = out.join('');
     const okOut = got === want.out, okErr = err === want.error;

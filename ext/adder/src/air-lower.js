@@ -266,12 +266,22 @@ function _astHasAwaitOrYield(node) {
   if (node.type === 'Await' || node.type === 'Yield' || node.type === 'YieldFrom') {
     return true;
   }
-  // Don't descend into nested function definitions — their async-ness is
-  // their own affair.
-  if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' ||
-      node.type === 'Lambda') {
-    return false;
+  // Statements the lowerer itself lowers to an `await` in this body: a `+=` with an
+  // in-place helper (_py.iadd may run an async __iadd__), `with` (__exit__ is awaited),
+  // a class statement (members and class creation), imports, and a nested def's
+  // decorators (applied here). Missing one made the function async while its call
+  // sites were emitted sync — a `global` update then landed after the caller moved on.
+  if (node.type === 'AugAssign' && IBINOP_HELPER[node.op]) return true;
+  if (node.type === 'With' || node.type === 'AsyncWith' || node.type === 'ClassDef' ||
+      node.type === 'Import' || node.type === 'ImportFrom') {
+    return true;
   }
+  // Don't descend into nested function definitions — their async-ness is
+  // their own affair (but their decorators run in this body).
+  if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef') {
+    return !!(node.decorators && node.decorators.length);
+  }
+  if (node.type === 'Lambda') return false;
   for (const key of Object.keys(node)) {
     if (key === 'type' || key === 'line' || key === 'col') continue;
     const v = node[key];
@@ -368,6 +378,32 @@ function analyseSyncFunctions(moduleStmts) {
       funcs.push({
         name: stmt.name,
         disqualified: hasAwaitOrYield || disqualifyRef.value || decorated,
+        callees,
+      });
+    } else if (stmt.type === 'ClassDef') {
+      // A class is sync-callable when constructing it is: _py.createClass's constructor
+      // returns the instance synchronously when __init__ does not return a Promise. So an
+      // undecorated class with no bases (or only sync classes as bases) and an __init__
+      // that is itself sync can be called without an await — which keeps the methods that
+      // construct it (a value class's __add__ returning P(...)) sync too, so _py.add gets
+      // an instance from them, not a Promise.
+      const init = (stmt.body || []).find((m) => m.type === 'FunctionDef' && m.name === '__init__');
+      const asyncInit = (stmt.body || []).some((m) => m.type === 'AsyncFunctionDef' && m.name === '__init__');
+      const callees = [];
+      const disqualifyRef = { value: false };
+      let hasAwait = false;
+      if (init) {
+        hasAwait = _astHasAwaitOrYield({ type: 'Block', body: init.body }) || !!(init.decorators && init.decorators.length);
+        _collectNameCallees({ type: 'Block', body: init.body }, callees, disqualifyRef);
+      }
+      const bases = stmt.bases || [];
+      const nameBases = bases.filter((b) => b && b.type === 'Name' && b.id !== 'object');
+      for (const b of nameBases) callees.push(b.id);
+      funcs.push({
+        name: stmt.name,
+        disqualified: asyncInit || hasAwait || disqualifyRef.value ||
+          !!(stmt.decorators && stmt.decorators.length) || (stmt.keywords && stmt.keywords.length > 0) ||
+          nameBases.length !== bases.filter((b) => !(b && b.type === 'Name' && b.id === 'object')).length,
         callees,
       });
     }
@@ -610,8 +646,8 @@ function lowerStmt_ad(ctx, node) {
       const truthy = emitPyCall(ctx, 'truthy', [test], l, BOOL);
       // if (!truthy) raise AssertionError
       const thenBody = captureOps(ctx, () => {
-        const msg = node.msg ? lowerExpr_ad(ctx, node.msg) : ctx.emit('const', ['assertion failed'], STRING, l);
-        emitPyCall(ctx, 'raise', [msg], l, VOID);
+        if (node.msg) emitPyCall(ctx, 'assertFail', [lowerExpr_ad(ctx, node.msg)], l, VOID);
+        else emitPyCall(ctx, 'assertFail', [], l, VOID);
       });
       // Emit: if (!_py.truthy(test)) { raise msg }
       const notTruthy = ctx.emit('logical_not', [truthy.id], BOOL, l);
@@ -750,7 +786,10 @@ function lowerExpr_ad(ctx, node) {
         if (part.type === 'Constant') {
           piece = ctx.emit('const', [part.value], STRING, l);
         } else if (part.type === 'FormattedValue') {
-          const val = lowerExpr_ad(ctx, part.value);
+          let val = lowerExpr_ad(ctx, part.value);
+          // {x!r} / {x!a} / {x!s}: convert before formatting
+          if (part.conversion === 'r' || part.conversion === 'a') val = emitPyCall(ctx, 'repr', [val], l, STRING);
+          else if (part.conversion === 's') val = emitPyCall(ctx, 'str', [val], l, STRING);
           let spec;
           if (part.formatSpec == null) {
             spec = ctx.emit('const', [''], STRING, l);
@@ -1035,7 +1074,7 @@ function lowerAssignTarget(ctx, target, value, l) {
     const name = target.id;
     ctx.emit('store', [name, value.id], VOID, l);
     ctx.symbols.set(name, value.id);
-    if (ctx.topLevel) ctx.defines.add(name);
+    if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(name);
     return;
   }
   if (target.type === 'Tuple' || target.type === 'List') {
@@ -1567,7 +1606,7 @@ function _lowerForLoopBody(ctx, node, l) {
     const undefOp = ctx.emit('const', [undefined], VOID, l);
     ctx.emit('store', [loopVar, undefOp.id], VOID, l);
     ctx.symbols.set(loopVar, undefOp.id);
-    if (ctx.topLevel) ctx.defines.add(loopVar);
+    if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(loopVar);
 
     const body = captureOps(ctx, () => {
       for (const s of node.body) lowerStmt_ad(ctx, s);
@@ -1609,7 +1648,7 @@ function _preDeclareTargetNames(ctx, target, l) {
       const undef = ctx.emit('const', [undefined], VOID, l);
       ctx.emit('store', [target.id, undef.id], VOID, l);
       ctx.symbols.set(target.id, undef.id);
-      if (ctx.topLevel) ctx.defines.add(target.id);
+      if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(target.id);
     }
     return;
   }
@@ -1719,12 +1758,24 @@ function _buildParamBinding(ctx, node, l) {
       name: p.name,
       type: resolveAdderAnnotation(p.annotation),
     }));
-    // Prologue: strip trailing _kw bag if present (caller may pass kwargs)
-    const prologueOps = [];
+    // Prologue: a call that does not fit the native params (keywords, too few, too many)
+    // goes through _py.bindArgs, which binds by name and raises Python's TypeErrors.
+    // Reading `arguments` is cheap in strict-mode code; the function must not be an arrow.
+    const fname = JSON.stringify(node.name || '<lambda>');
+    const names = params.map(p => p.name);
+    // (More arguments than params is fine: JS callers pass extras, as Array.map does.)
+    const prologueOps = captureOps(ctx, () => {
+      const bag = `_py.isKwBag(arguments[arguments.length - 1])`;
+      if (names.length === 0) {
+        emitRaw(ctx, `if (arguments.length && ${bag}) _py.bindArgs(${fname}, [], arguments);`);
+      } else {
+        emitRaw(ctx, `if (arguments.length < ${names.length} || ${bag}) [${names.join(', ')}] = _py.bindArgs(${fname}, ${JSON.stringify(names)}, arguments);`);
+      }
+    });
     // the params are locals of the body, as the general path below records them: without
     // this a parameter read in the body was reported as a free (imported) name
     for (const p of params) ctx.symbols.set(p.name, null);
-    return { params, prologueOps, isSimple: true };
+    return { params, prologueOps, isSimple: true, needsArguments: true };
   }
 
   // Complex path: use ...callArgs and bind in prologue.
@@ -1734,8 +1785,12 @@ function _buildParamBinding(ctx, node, l) {
   const prologueOps = captureOps(ctx, () => {
   // _kwObj = (last arg has _kw marker) ? args.pop() : null
   // const _kwObj = (__args.length > 0 && __args[__args.length-1]?._kw) ? __args.pop() : null;
+  const fname = JSON.stringify(node.name || '<lambda>');
+  const allNames = JSON.stringify([...positionalParams.map(p => p.name), ...kwonly.map(p => p.name)]);
+  const defaults = ctx._paramDefaults || {};
   emitRaw(ctx, `let __kw = null;`, '__kw');
   emitRaw(ctx, `if (__args.length > 0 && __args[__args.length-1] && __args[__args.length-1]._kw) __kw = __args.pop();`);
+  emitRaw(ctx, `if (__kw) _py.checkKw(${fname}, ${allNames}, __args.length, __kw, ${kwarg ? 'true' : 'false'});`);
 
   // Track parameter names used (for **kwargs exclusion)
   const usedNames = [];
@@ -1745,11 +1800,11 @@ function _buildParamBinding(ctx, node, l) {
     const p = positionalParams[i];
     usedNames.push(p.name);
     if (p.default) {
-      // Evaluate default in case not provided
-      const defVal = lowerExpr_ad(ctx, p.default);
-      emitRaw(ctx, `let ${p.name} = (__args.length > ${i}) ? __args[${i}] : (__kw && '${p.name}' in __kw ? __kw['${p.name}'] : ${_refExpr(ctx, defVal.id)});`, p.name);
+      // the default was evaluated once, at definition (lowerFuncDef / lowerLambda)
+      const def = defaults[p.name] || _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
+      emitRaw(ctx, `let ${p.name} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : ${def});`, p.name);
     } else {
-      emitRaw(ctx, `let ${p.name} = (__args.length > ${i}) ? __args[${i}] : (__kw && '${p.name}' in __kw ? __kw['${p.name}'] : (() => { throw new Error("${node.name || '<fn>'}() missing required argument: '${p.name}'"); })());`, p.name);
+      emitRaw(ctx, `let ${p.name} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : _py.argError(${fname} + "() missing 1 required positional argument: '${p.name}'"));`, p.name);
     }
     ctx.symbols.set(p.name, null);
   }
@@ -1765,10 +1820,10 @@ function _buildParamBinding(ctx, node, l) {
   for (const p of kwonly) {
     usedNames.push(p.name);
     if (p.default) {
-      const defVal = lowerExpr_ad(ctx, p.default);
-      emitRaw(ctx, `let ${p.name} = (__kw && '${p.name}' in __kw) ? __kw['${p.name}'] : ${_refExpr(ctx, defVal.id)};`, p.name);
+      const def = defaults[p.name] || _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
+      emitRaw(ctx, `let ${p.name} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : ${def};`, p.name);
     } else {
-      emitRaw(ctx, `let ${p.name} = (__kw && '${p.name}' in __kw) ? __kw['${p.name}'] : (() => { throw new Error("${node.name || '<fn>'}() missing keyword argument: '${p.name}'"); })();`, p.name);
+      emitRaw(ctx, `let ${p.name} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : _py.argError(${fname} + "() missing 1 required keyword-only argument: '${p.name}'");`, p.name);
     }
     ctx.symbols.set(p.name, null);
   }
@@ -1797,6 +1852,16 @@ function emitRaw(ctx, jsLine, declaredName = null) {
 // Helper: stringify SSA id into a ref that the emitter will resolve.
 // Since we're building raw JS strings for prologue, we need the SSA value as a JS expression.
 // Approach: emit a store to a synthetic name, then use that name in the raw line.
+// Evaluate a def's / lambda's parameter defaults in the enclosing scope, each into a named
+// temp the parameter binding then reads: once per definition, as Python does.
+function _lowerParamDefaults(ctx, node) {
+  const out = {};
+  for (const p of [...(node.params || []), ...(node.kwonly || [])]) {
+    if (p.default) out[p.name] = _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
+  }
+  return out;
+}
+
 function _refExpr(ctx, ssaId) {
   // Emit a store to a fresh name, then reference it
   const name = `__tmp_${ssaId.slice(1)}`;
@@ -1810,8 +1875,17 @@ function lowerFuncDef(ctx, node) {
   const name = node.name;
   const isGenerator = _containsYield(node.body);
 
-  // Lower decorators (evaluated at def time, applied bottom-up after def)
-  const decorators = (node.decorators || []).map(d => lowerExpr_ad(ctx, d));
+  // Lower decorators (evaluated at def time, applied bottom-up after def). Each is bound to a
+  // temp HERE: left as an expression it was inlined at the apply site, after the def had
+  // rebound the name — so `@v.setter` read the new function instead of the property.
+  const decorators = (node.decorators || []).map(d => {
+    const v = lowerExpr_ad(ctx, d);
+    const name = _refExpr(ctx, v.id);
+    return ctx.emit('load', [name], DYNAMIC, l);
+  });
+  // then the defaults, once, here in the enclosing scope (Python semantics)
+  const savedDefaults = ctx._paramDefaults;
+  ctx._paramDefaults = _lowerParamDefaults(ctx, node);
 
   // Lower body in nested scope. The save-and-Map-clone idiom we used to
   // run is replaced by ScopeChain push/pop now that ctx.symbols extends
@@ -1822,10 +1896,11 @@ function lowerFuncDef(ctx, node) {
 
   let params = null;
   let isSimple = null;
+  let needsArgs = false;
   const body = captureOps(ctx, () => {
     // Build parameter binding (prologue + JS params)
     const r = _buildParamBinding(ctx, node, l);
-    params = r.params; isSimple = r.isSimple;
+    params = r.params; isSimple = r.isSimple; needsArgs = !!r.needsArguments;
 
     // Emit prologue ops
     for (const op of r.prologueOps) ctx.ops.push(op);
@@ -1842,6 +1917,7 @@ function lowerFuncDef(ctx, node) {
 
   ctx.topLevel = savedTopLevel;
   ctx.symbols = ctx.symbols.pop();
+  ctx._paramDefaults = savedDefaults;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;
@@ -1865,6 +1941,7 @@ function lowerFuncDef(ctx, node) {
     // synchronous JS callback.
     is_async: savedTopLevel ? (!isSync && !isGenerator) : false,
     is_generator: isGenerator,
+    needs_arguments: needsArgs,
   });
 
   // Always emit a store so the function name is visible in the enclosing scope.
@@ -1873,6 +1950,9 @@ function lowerFuncDef(ctx, node) {
   ctx.emit('store', [name, op.id], VOID, l);
   ctx.symbols.set(name, op.id);
   let finalId = op.id;
+  const doc = node.body.length > 0 && node.body[0].type === 'Expr' && node.body[0].value.type === 'Constant' &&
+    typeof node.body[0].value.value === 'string' ? node.body[0].value.value : null;
+  if (doc !== null) emitRaw(ctx, `${name}.__doc__ = ${JSON.stringify(doc)};`);
 
   // Apply decorators bottom-up: name = decorator(name)
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -1895,15 +1975,19 @@ function lowerFuncDef(ctx, node) {
 
 function lowerLambda(ctx, node) {
   const l = ctx.loc(node);
+  // defaults: once, here in the enclosing scope (so `lambda i=i:` captures each i)
+  const savedDefaults = ctx._paramDefaults;
+  ctx._paramDefaults = _lowerParamDefaults(ctx, node);
   const savedTopLevel = ctx.topLevel;
   ctx.topLevel = false;
   ctx.symbols = ctx.symbols.push();
 
   let params = null;
+  let needsArgs = false;
   const body = captureOps(ctx, () => {
     // Reuse the function param binding logic
     const r = _buildParamBinding(ctx, node, l);
-    params = r.params;
+    params = r.params; needsArgs = !!r.needsArguments;
     for (const op of r.prologueOps) ctx.ops.push(op);
 
     const val = lowerExpr_ad(ctx, node.body);
@@ -1912,9 +1996,10 @@ function lowerLambda(ctx, node) {
 
   ctx.topLevel = savedTopLevel;
   ctx.symbols = ctx.symbols.pop();
+  ctx._paramDefaults = savedDefaults;
 
   return ctx.emit('func_region', [null], DYNAMIC, l, {
-    name: null, params, body, ret_type: DYNAMIC,
+    name: null, params, body, ret_type: DYNAMIC, needs_arguments: needsArgs,
     // Lambdas are never async-defs (Python has no `async lambda`). emit-js's
     // emitFunc promotes to async iff the body actually awaits (_bodyHasAwait), so a
     // sync lambda — the common map/filter/sort/Series.apply callback — emits a plain
@@ -2043,7 +2128,10 @@ function lowerComprehension(ctx, node) {
     });
   }
 
-  buildComp(0);
+  // comprehension variables are the comprehension's own (Python 3): not module defines,
+  // which would put a loop-scoped `let` into the module's returned names
+  ctx._compDepth = (ctx._compDepth || 0) + 1;
+  try { buildComp(0); } finally { ctx._compDepth--; }
 
   return ctx.emit('load', [tempName], DYNAMIC, l);
 }

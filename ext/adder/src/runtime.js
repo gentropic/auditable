@@ -881,6 +881,43 @@ function _raise(exc) {
   throw exc;
 }
 
+// ── Argument binding (compiled functions) ──
+// The simple path keeps native JS params and calls this only when a call does not fit them
+// (keywords, too few, too many); the general path checks with _checkKw / _argError.
+
+const _isKwBag = (v) => v !== null && typeof v === 'object' && v._kw === true;
+
+function _argError(msg) { throw new AdderError('TypeError', msg); }
+
+function _checkKw(fname, names, nPositional, kw, allowExtra) {
+  for (const k of Object.keys(kw)) {
+    if (k === '_kw') continue;
+    const i = names.indexOf(k);
+    if (i >= 0 && i < nPositional) _argError(`${fname}() got multiple values for argument '${k}'`);
+    if (i < 0 && !allowExtra) _argError(`${fname}() got an unexpected keyword argument '${k}'`);
+  }
+}
+
+function _bindArgs(fname, names, args) {
+  const a = Array.prototype.slice.call(args);
+  while (a.length && a[a.length - 1] === undefined) a.pop();
+  const kw = a.length && _isKwBag(a[a.length - 1]) ? a.pop() : null;
+  // extra positionals are dropped, not refused: JS calls Python callbacks with more
+  // arguments than they declare (Array.map passes index and array)
+  if (a.length > names.length) a.length = names.length;
+  if (kw) _checkKw(fname, names, a.length, kw, false);
+  for (let i = a.length; i < names.length; i++) {
+    if (kw && Object.hasOwn(kw, names[i])) a.push(kw[names[i]]);
+    else _argError(`${fname}() missing 1 required positional argument: '${names[i]}'`);
+  }
+  return a;
+}
+
+// assert test, msg → AssertionError (an empty message when there is none, as Python)
+function _assertFail(msg) {
+  throw new AdderError('AssertionError', msg === undefined ? '' : pyStr(msg));
+}
+
 // ── Export as single namespace ──
 
 export const _py = {
@@ -933,4 +970,7 @@ export const _py = {
   createClass: _createClass,
   // the run budget (emitted only when lowering with ticks: true)
   tick: _tickLine,
+  // argument binding
+  bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
+  assertFail: _assertFail,
 };

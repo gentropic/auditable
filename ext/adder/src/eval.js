@@ -198,17 +198,16 @@ export async function adderEval(node, scope) {
 
     // ── functions / classes ──
     case 'FunctionDef': case 'AsyncFunctionDef': {
-      let fn = _makeFunction(node, scope);
-      for (let i = node.decorators.length - 1; i >= 0; i--) {
-        const dec = await adderEval(node.decorators[i], scope);
-        fn = await _callValue(dec, [fn], [], node.line);
-      }
-      fn._pyName = node.name;
+      // decorators are evaluated before the defaults and the function (Python's order)
+      const decs = [];
+      for (const d of node.decorators) decs.push(await adderEval(d, scope));
+      let fn = _makeFunction(node, scope, await _evalDefaults(node, scope));
+      for (let i = decs.length - 1; i >= 0; i--) fn = await _callValue(decs[i], [fn], [], node.line);
       scope.set(node.name, fn);
       return null;
     }
     case 'ClassDef': return _evalClass(node, scope);
-    case 'Lambda': return _makeLambda(node, scope);
+    case 'Lambda': return _makeLambda(node, scope, await _evalDefaults(node, scope));
 
     // ── exceptions ──
     case 'Try': return _evalTry(node, scope);
@@ -222,8 +221,8 @@ export async function adderEval(node, scope) {
     case 'Assert': {
       const test = await adderEval(node.test, scope);
       if (!pyBool(test)) {
-        const msg = node.msg ? await adderEval(node.msg, scope) : 'assertion failed';
-        throw new AdderError('AssertionError', pyStr(msg), node.line);
+        const msg = node.msg ? await pyStrMaybe(await adderEval(node.msg, scope)) : '';
+        throw new AdderError('AssertionError', msg, node.line);
       }
       return null;
     }
@@ -906,7 +905,7 @@ async function _callValue(func, args, kwArgs, line) {
   try {
     if (kwArgs.length > 0) {
       if (func._pyFunc) {
-        return await func(...args, ...kwArgs.map(([_, v]) => v), { _kw: true, ...Object.fromEntries(kwArgs) });
+        return await func(...args, { _kw: true, ...Object.fromEntries(kwArgs) });
       }
       const kw = { _kw: true };
       for (const [k, v] of kwArgs) kw[k] = v;
@@ -955,25 +954,37 @@ function _hasYield(node) {
   return false;
 }
 
-function _makeFunction(node, scope) {
+// Python evaluates parameter defaults ONCE, when the def / lambda runs — so `lambda i=i:` in a
+// loop captures each i, and a mutable default is shared between calls.
+async function _evalDefaults(node, scope) {
+  const d = {};
+  for (const p of [...(node.params || []), ...(node.kwonly || [])]) {
+    if (p.default) d[p.name] = await adderEval(p.default, scope);
+  }
+  return d;
+}
+
+function _docstringOf(node) {
+  const s = node.body && node.body[0];
+  return s && s.type === 'Expr' && s.value && s.value.type === 'Constant' && typeof s.value.value === 'string' ? s.value.value : null;
+}
+
+function _makeFunction(node, scope, defaults = {}) {
   const isAsync = node.type === 'AsyncFunctionDef';
   const isGenerator = node.body.some(s => _hasYield(s));
 
-  if (isGenerator) return _makeGeneratorFunction(node, scope);
+  if (isGenerator) return _makeGeneratorFunction(node, scope, defaults);
 
   const fn = async function (...callArgs) {
     const localScope = new AdderScope(scope);
     // bind parameters
-    await _bindParams(node, callArgs, localScope);
+    await _bindParams(node, callArgs, localScope, defaults);
     // execute body
     try {
       for (let i = 0; i < node.body.length; i++) {
         const stmt = node.body[i];
         // docstring — skip first string expression
-        if (i === 0 && stmt.type === 'Expr' && stmt.value.type === 'Constant' && typeof stmt.value.value === 'string') {
-          fn.__doc__ = stmt.value.value;
-          continue;
-        }
+        if (i === 0 && stmt.type === 'Expr' && stmt.value.type === 'Constant' && typeof stmt.value.value === 'string') continue;
         await adderEval(stmt, localScope);
       }
       return null;
@@ -984,10 +995,11 @@ function _makeFunction(node, scope) {
   };
   fn._pyFunc = true;
   fn._pyName = node.name;
+  fn.__doc__ = _docstringOf(node);
   return fn;
 }
 
-function _makeGeneratorFunction(node, scope) {
+function _makeGeneratorFunction(node, scope, defaults = {}) {
   // Generator functions use a _YieldSignal to communicate yield values
   // back to the async-generator wrapper.
   const fn = function (...callArgs) {
@@ -997,7 +1009,7 @@ function _makeGeneratorFunction(node, scope) {
     // that collects eagerly — but the primary path is for-await.
     const genObj = {
       [Symbol.asyncIterator]() {
-        return _runGenerator(node, scope, callArgs);
+        return _runGenerator(node, scope, callArgs, defaults);
       },
       // sync iterator: collect all values eagerly (used by list(), sorted(), etc.)
       [Symbol.iterator]() {
@@ -1009,12 +1021,13 @@ function _makeGeneratorFunction(node, scope) {
   fn._pyFunc = true;
   fn._pyName = node.name;
   fn._isGenerator = true;
+  fn.__doc__ = _docstringOf(node);
   return fn;
 }
 
-async function* _runGenerator(node, scope, callArgs) {
+async function* _runGenerator(node, scope, callArgs, defaults = {}) {
   const localScope = new AdderScope(scope);
-  await _bindParams(node, callArgs, localScope);
+  await _bindParams(node, callArgs, localScope, defaults);
   try {
     for (let i = 0; i < node.body.length; i++) {
       const stmt = node.body[i];
@@ -1108,8 +1121,10 @@ async function* _evalGenStmt(node, scope) {
   }
 }
 
-async function _bindParams(node, callArgs, localScope) {
-  const { params, vararg, kwonly, kwarg } = node;
+async function _bindParams(node, callArgs, localScope, defaults = {}) {
+  const { params, vararg, kwarg } = node;
+  const kwonly = node.kwonly || [];
+  const fname = node.name || '<lambda>';
   let positionalIdx = 0;
   let kwObj = null;
 
@@ -1117,18 +1132,28 @@ async function _bindParams(node, callArgs, localScope) {
   if (callArgs.length > 0 && callArgs[callArgs.length - 1]?._kw) {
     kwObj = callArgs.pop();
   }
+  // (more positionals than params is not refused: JS calls Python callbacks with extras)
+  if (kwObj) {
+    const names = new Set([...params.map(p => p.name), ...kwonly.map(p => p.name)]);
+    for (const k of Object.keys(kwObj)) {
+      if (k === '_kw') continue;
+      const i = params.findIndex(p => p.name === k);
+      if (i >= 0 && i < callArgs.length) throw new AdderError('TypeError', `${fname}() got multiple values for argument '${k}'`);
+      if (!names.has(k) && !kwarg) throw new AdderError('TypeError', `${fname}() got an unexpected keyword argument '${k}'`);
+    }
+  }
 
   // bind positional params
   for (let i = 0; i < params.length; i++) {
     const p = params[i];
     if (positionalIdx < callArgs.length) {
       localScope.set(p.name, callArgs[positionalIdx++]);
-    } else if (kwObj && p.name in kwObj) {
+    } else if (kwObj && Object.hasOwn(kwObj, p.name)) {
       localScope.set(p.name, kwObj[p.name]);
     } else if (p.default) {
-      localScope.set(p.name, await adderEval(p.default, localScope));
+      localScope.set(p.name, p.name in defaults ? defaults[p.name] : await adderEval(p.default, localScope));
     } else {
-      throw new AdderError('TypeError', `${node.name}() missing required argument: '${p.name}'`);
+      throw new AdderError('TypeError', `${fname}() missing 1 required positional argument: '${p.name}'`);
     }
   }
 
@@ -1140,12 +1165,12 @@ async function _bindParams(node, callArgs, localScope) {
 
   // keyword-only params
   for (const p of kwonly) {
-    if (kwObj && p.name in kwObj) {
+    if (kwObj && Object.hasOwn(kwObj, p.name)) {
       localScope.set(p.name, kwObj[p.name]);
     } else if (p.default) {
-      localScope.set(p.name, await adderEval(p.default, localScope));
+      localScope.set(p.name, p.name in defaults ? defaults[p.name] : await adderEval(p.default, localScope));
     } else {
-      throw new AdderError('TypeError', `${node.name}() missing keyword argument: '${p.name}'`);
+      throw new AdderError('TypeError', `${fname}() missing 1 required keyword-only argument: '${p.name}'`);
     }
   }
 
@@ -1162,24 +1187,10 @@ async function _bindParams(node, callArgs, localScope) {
   }
 }
 
-function _makeLambda(node, scope) {
+function _makeLambda(node, scope, defaults = {}) {
   const fn = async function (...callArgs) {
     const localScope = new AdderScope(scope);
-    let positionalIdx = 0;
-    let kwObj = null;
-    if (callArgs.length > 0 && callArgs[callArgs.length - 1]?._kw) kwObj = callArgs.pop();
-    for (let i = 0; i < node.params.length; i++) {
-      const p = node.params[i];
-      if (positionalIdx < callArgs.length) localScope.set(p.name, callArgs[positionalIdx++]);
-      else if (kwObj && p.name in kwObj) localScope.set(p.name, kwObj[p.name]);
-      else if (p.default) localScope.set(p.name, await adderEval(p.default, localScope));
-    }
-    if (node.vararg) localScope.set(node.vararg, callArgs.slice(positionalIdx));
-    if (node.kwarg) {
-      const extra = {};
-      if (kwObj) { const used = new Set([...node.params.map(p => p.name), '_kw']); for (const k of Object.keys(kwObj)) if (!used.has(k)) extra[k] = kwObj[k]; }
-      localScope.set(node.kwarg, extra);
-    }
+    await _bindParams(node, callArgs, localScope, defaults);
     return adderEval(node.body, localScope);
   };
   fn._pyFunc = true;

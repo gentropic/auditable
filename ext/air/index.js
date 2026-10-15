@@ -4378,11 +4378,14 @@ function specializeRuntimeHelpers(module, types) {
         }
       }
 
-      // --- Special: getitem specialization ---
-      // Plain object literal + const string key → obj.key
-      // Plain/typed array + const non-negative index → arr[idx]
-      // (Skip the helper's negative-index/dict/dunder handling.)
-      if (method === 'getitem' && op.args.length === 3) {
+      // --- getitem: no specialization ---
+      // This used to turn `[…][k]` (array literal, const index) into arr[k] and `{…}["k"]`
+      // (object literal, const key) into obj.k. Both were unsound: the list can shrink or the
+      // key be deleted between creation and access, and an out-of-range index or missing key
+      // then read `undefined` where the language raises IndexError / KeyError. Hot loops
+      // index with variables, which this never touched, so the helper costs nothing that
+      // matters. Kept as a dead branch so the reasoning stays next to the code.
+      if (false && method === 'getitem' && op.args.length === 3) {
         const objId = op.args[1];
         const idxId = op.args[2];
         const objOp = traceOp(objId);
@@ -5540,7 +5543,7 @@ function emitFunc(ctx, op) {
       ? '\n' + bodyLines.join('\n') + '\n' + '  '.repeat(ctx.indent)
       : '';
 
-    if (name || op.is_generator) {
+    if (name || op.is_generator || op.needs_arguments) {
       register(ctx, op, `${asyncPrefix}function${star}${name ? ' ' + name : ''}(${params}) {${bodyStr}}`);
     } else {
       register(ctx, op, `${asyncPrefix}(${params}) => {${bodyStr}}`);
