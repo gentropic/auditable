@@ -15493,6 +15493,35 @@ function _containsYield(stmts) {
 // Build a parameter list + prologue ops that binds positional/vararg/kwonly/kwarg
 // Returns { jsParams, prologueOps } where jsParams is the JS function signature
 // and prologueOps are ops to emit at the start of the body.
+// Python: a name a function body assigns is local to that function (unless the body declares
+// it global / nonlocal), even when an enclosing scope binds the same name. Without a declaration
+// here, a store would find the enclosing `let` (the module hoists its names) and overwrite it:
+// a helper's `ix = ...` clobbered the caller's loop variable `ix`.
+function _declareFunctionLocals(ctx, node) {
+  const assigned = new Set();
+  collectDefines_ad(node.body, assigned);
+  const keep = new Set([
+    ...(node.params || []).map((p) => p.name), ...(node.kwonly || []).map((p) => p.name),
+    ...(node.vararg ? [node.vararg.name || node.vararg] : []), ...(node.kwarg ? [node.kwarg.name || node.kwarg] : []),
+  ]);
+  const walk = (stmts) => {
+    for (const s of stmts || []) {
+      if (!s) continue;
+      if (s.type === 'Global' || s.type === 'Nonlocal') for (const n of s.names) keep.add(n);
+      if (s.type === 'FunctionDef' || s.type === 'AsyncFunctionDef' || s.type === 'ClassDef') { keep.add(s.name); continue; }
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(s[k])) walk(s[k]);
+      if (Array.isArray(s.handlers)) for (const h of s.handlers) walk(h.body);
+      if (Array.isArray(s.cases)) for (const c of s.cases) walk(c.body);
+    }
+  };
+  walk(node.body);
+  for (const n of assigned) {
+    if (keep.has(n) || typeof n !== 'string') continue;
+    emitRaw(ctx, `let ${n} = undefined;`, n);
+    ctx.symbols.set(n, null);
+  }
+}
+
 function _buildParamBinding(ctx, node, l) {
   const positionalParams = node.params || [];
   const kwonly = node.kwonly || [];
@@ -15671,6 +15700,7 @@ function lowerFuncDef(ctx, node) {
 
     // Emit prologue ops
     for (const op of r.prologueOps) ctx.ops.push(op);
+    _declareFunctionLocals(ctx, node);
 
     // Docstring skip (first string expression)
     let startIdx = 0;
