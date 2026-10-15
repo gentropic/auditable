@@ -537,6 +537,7 @@ export function adderGetAttr(obj, attr) {
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
+  if (obj instanceof Uint8Array) return _bytesMethod(obj, attr);
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
   // dict (Map) methods
@@ -770,6 +771,63 @@ function _strMaketrans(x, y, z) {
   a.forEach((ch, i) => t.set(ch.codePointAt(0), b[i].codePointAt(0)));
   if (z) for (const ch of z) t.set(ch.codePointAt(0), null);
   return t;
+}
+
+// a dict display with **unpacking: entries in order, later keys win; a plain object when every
+// key is a string (as a literal would be), else a Map
+export function dictLiteral(keys, values, spreads) {
+  const entries = [];
+  for (let i = 0; i < keys.length; i++) {
+    if (!spreads[i]) { entries.push([keys[i], values[i]]); continue; }
+    const src = values[i];
+    if (src instanceof Map) entries.push(...src.entries());
+    else if (isPlainDict(src)) entries.push(...Object.entries(src));
+    else if (src && typeof src.keys === 'function' && typeof src.__getitem__ === 'function') {
+      for (const k of pyIter(src.keys())) entries.push([k, src.__getitem__(k)]);
+    } else throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not a mapping`);
+  }
+  if (entries.every(([k]) => typeof k === 'string')) {
+    const o = {};
+    for (const [k, v] of entries) o[k] = v;
+    return o;
+  }
+  const m = new Map();
+  for (const [k, v] of entries) m.set(k, v);
+  return m;
+}
+
+// bytes methods: through the latin-1 string view, results back to bytes where Python gives bytes
+const _b2s = (b) => { let s = ''; for (const c of b) s += String.fromCharCode(c); return s; };
+const _s2b = (s) => bytesLit(s);
+function _bytesMethod(b, attr) {
+  const bytesArg = (x) => (x instanceof Uint8Array ? _b2s(x) : Array.isArray(x) ? x.map(bytesArg) : x);
+  const back = (r) => (typeof r === 'string' ? _s2b(r) : Array.isArray(r) ? r.map(back) : r);
+  const m = {
+    decode: (encoding, errors) => {
+      if (encoding && encoding._kw) encoding = encoding.encoding;
+      const enc = (encoding || 'utf-8').toLowerCase().replace('_', '-');
+      if (enc === 'latin-1' || enc === 'latin1' || enc === 'iso-8859-1' || enc === 'ascii') return _b2s(b);
+      try { return new TextDecoder(enc, { fatal: errors !== 'replace' && errors !== 'ignore' }).decode(b); }
+      catch { throw new AdderError('UnicodeDecodeError', `'${enc}' codec can't decode bytes`); }
+    },
+    hex: (sep) => [...b].map((c) => c.toString(16).padStart(2, '0')).join(sep || ''),
+  };
+  if (attr in m) return m[attr];
+  const STR_LIKE = ['startswith', 'endswith', 'find', 'rfind', 'index', 'rindex', 'count', 'replace', 'split', 'rsplit',
+    'strip', 'lstrip', 'rstrip', 'upper', 'lower', 'join', 'partition', 'rpartition', 'isdigit', 'isalpha', 'isalnum',
+    'isspace', 'isupper', 'islower', 'startswith', 'removeprefix', 'removesuffix', 'center', 'ljust', 'rjust', 'zfill', 'title', 'capitalize', 'splitlines'];
+  if (STR_LIKE.includes(attr)) {
+    const f = _strMethod(_b2s(b), attr);
+    return (...a) => back(f(...a.map(bytesArg)));
+  }
+  throw new AdderError('AttributeError', `'bytes' object has no attribute '${attr}'`);
+}
+
+// a bytes literal's value (latin-1 text from the parser) as bytes
+export function bytesLit(s) {
+  const b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+  return b;
 }
 
 // repr of bytes: b'…' with Python's quoting and \xNN for the unprintable
@@ -1035,6 +1093,7 @@ export function pyAdd(a, b) {
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
   if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
+  if (a instanceof Uint8Array && b instanceof Uint8Array) { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
   throw _binErr('+', a, b);
 }
 export function pySub(a, b) {
@@ -1047,6 +1106,7 @@ function _repeat(seq, n) {
   if (!_isIntish(n)) return null;
   n = Number(_asInt(n));
   if (typeof seq === 'string') return n > 0 ? seq.repeat(n) : '';
+  if (seq instanceof Uint8Array) { const r = new Uint8Array(Math.max(0, n) * seq.length); for (let i = 0; i < n; i++) r.set(seq, i * seq.length); return r; }
   const r = [];
   for (let i = 0; i < n; i++) r.push(...seq);
   return r;
@@ -1054,8 +1114,8 @@ function _repeat(seq, n) {
 export function pyMul(a, b) {
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) * _asInt(b);
-  if (typeof a === 'string' || Array.isArray(a)) { const r = _repeat(a, b); if (r !== null) return r; }
-  if (typeof b === 'string' || Array.isArray(b)) { const r = _repeat(b, a); if (r !== null) return r; }
+  if (typeof a === 'string' || Array.isArray(a) || a instanceof Uint8Array) { const r = _repeat(a, b); if (r !== null) return r; }
+  if (typeof b === 'string' || Array.isArray(b) || b instanceof Uint8Array) { const r = _repeat(b, a); if (r !== null) return r; }
   throw _binErr('*', a, b);
 }
 export function pyTrueDiv(a, b) {
@@ -1367,6 +1427,7 @@ export function pyEq(a, b) {
     return true;
   }
   if (a instanceof AdderRange && b instanceof AdderRange) return pyEq([...a], [...b]);
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i]);
   if (a instanceof Complex || b instanceof Complex) return typeof a?.__eq__ === 'function' ? a.__eq__(b) : false;
   return false;
 }
@@ -1378,6 +1439,7 @@ function _orderError(op, a, b) {
 function _ltPlain(op, a, b) {
   if (_numLike(a) && _numLike(b)) return a < b;
   if (typeof a === 'string' && typeof b === 'string') return a < b;
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return _ltPlain(op, [...a], [...b]);
   if (Array.isArray(a) && Array.isArray(b)) {
     const n = Math.min(a.length, b.length);
     for (let i = 0; i < n; i++) {

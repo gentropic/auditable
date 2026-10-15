@@ -743,6 +743,17 @@ function lowerExpr_ad(ctx, node) {
     case 'Tuple': return lowerListOrTuple(ctx, node);
 
     case 'Dict': {
+      // A literal with **unpacking builds at run time (_py.dictLiteral): the sources may be
+      // Maps or plain dicts, and the keys decide the representation. (The Map path below
+      // dropped the unpack's key slot and misaligned keys and values.)
+      if (node.keys.some(k => k === null)) {
+        const keys = node.keys.map(k => (k ? lowerExpr_ad(ctx, k) : ctx.emit('const', [null], DYNAMIC, l)).id);
+        const values = node.values.map(v => lowerExpr_ad(ctx, v).id);
+        const spreads = node.keys.map(k => ctx.emit('const', [k === null], BOOL, l).id);
+        return emitPyCall(ctx, 'dictLiteral', [
+          ctx.emit('array_new', keys, DYNAMIC, l), ctx.emit('array_new', values, DYNAMIC, l),
+          ctx.emit('array_new', spreads, DYNAMIC, l)], l);
+      }
       // Plain object if all keys are string constants; otherwise build a Map.
       const allStringKeys = node.keys.every(k =>
         k && k.type === 'Constant' && typeof k.value === 'string');
@@ -820,6 +831,7 @@ function lowerExpr_ad(ctx, node) {
     }
 
     case 'Lambda': return lowerLambda(ctx, node);
+    case 'Bytes': return emitPyCall(ctx, 'bytesLit', [ctx.emit('const', [node.value], STRING, l)], l);
 
     case 'ListComp': return lowerComprehension(ctx, node);
 

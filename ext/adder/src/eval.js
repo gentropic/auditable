@@ -9,7 +9,7 @@ import {
   _builtinEval, _builtinExec, _builtinSuper,
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
-  isUserIterable, pyIterAsync, pyBinOps, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice,
+  isUserIterable, pyIterAsync, pyBinOps, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -343,6 +343,8 @@ export async function adderEval(node, scope) {
     case 'SetComp': return _evalComp(node, scope, 'set');
     case 'DictComp': return _evalComp(node, scope, 'dict');
     case 'GeneratorExp': return _evalGenExpr(node, scope);
+
+    case 'Bytes': return bytesLit(node.value);
 
     // ── f-strings ──
     case 'JoinedStr': {

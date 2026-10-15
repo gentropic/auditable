@@ -6,7 +6,7 @@ import {
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
-  pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, excValue, excMatches, excTypeOf, initExceptionInstance,
+  pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine } from './eval.js';
 
@@ -813,4 +813,5 @@ export const _py = {
   bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
   super: pySuper,
+  bytesLit, dictLiteral,
 };

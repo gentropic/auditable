@@ -164,7 +164,13 @@ export function adderTokenize(code) {
               pos++; col++;
             }
             if (code[pos - 1] !== '}' && depth === 0) { /* closing } already consumed */ }
-            parts.push({ expr: expr.trim(), spec, conv });
+            const selfDoc = /=\s*$/.test(expr) && !/[=!<>]=\s*$/.test(expr);
+            if (selfDoc) {
+              parts.push(expr);   // the text as written, `=` and spaces included
+              parts.push({ expr: expr.replace(/=\s*$/, '').trim(), spec, conv: conv || (spec === null ? 'r' : null) });
+            } else {
+              parts.push({ expr: expr.trim(), spec, conv });
+            }
             continue;
           }
           if (code[pos] === '}') {
@@ -197,7 +203,8 @@ export function adderTokenize(code) {
             raw += code[pos]; pos++; col++;
           }
         }
-        tokens.push(tok('STRING', isRaw ? raw : _processEscapes(raw)));
+        const val = isRaw ? raw : _processEscapes(raw);
+        tokens.push(/[bB]/.test(prefix) ? tok('BYTES', val) : tok('STRING', val));
       }
       continue;
     }
@@ -726,7 +733,7 @@ class _Parser {
     // star is binary if preceded by a value token
     if (this.pos === 0) return false;
     const prev = this.tokens[this.pos - 1];
-    return prev && (prev.type === 'NAME' || prev.type === 'NUMBER' || prev.type === 'STRING' ||
+    return prev && (prev.type === 'NAME' || prev.type === 'NUMBER' || prev.type === 'STRING' || prev.type === 'BYTES' || prev.type === 'FSTRING' ||
       prev.value === ')' || prev.value === ']' || prev.value === '}');
   }
 
@@ -955,6 +962,14 @@ class _Parser {
       return { type: 'Constant', value, line: t.line, col: t.col };
     }
 
+    // bytes literal b'...' (adjacent ones concatenate): its value as a latin-1 string
+    if (t.type === 'BYTES') {
+      this.advance();
+      let value = t.value;
+      while (this.peek().type === 'BYTES') value += this.advance().value;
+      return { type: 'Bytes', value, line: t.line, col: t.col };
+    }
+
     // f-string
     if (t.type === 'FSTRING') { this.advance(); return this._parseFstring(t); }
 
@@ -1007,9 +1022,9 @@ class _Parser {
     if (t.type === 'OP' && t.value === '{') {
       this.advance();
       if (this.eat('OP', '}')) return { type: 'Dict', keys: [], values: [], line: t.line, col: t.col };
-      // dict unpacking
-      if (this.at('OP', '**')) {
-        return this._parseDictBody(t, [], []);
+      // dict unpacking first: {**a, ...}
+      if (this.eat('OP', '**')) {
+        return this._parseDictBody(t, [null], [this.parseExpr()]);
       }
       const first = this.parseExpr();
       if (this.eat('OP', ':')) {

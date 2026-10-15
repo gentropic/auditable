@@ -817,7 +817,13 @@ function adderTokenize(code) {
               pos++; col++;
             }
             if (code[pos - 1] !== '}' && depth === 0) { /* closing } already consumed */ }
-            parts.push({ expr: expr.trim(), spec, conv });
+            const selfDoc = /=\s*$/.test(expr) && !/[=!<>]=\s*$/.test(expr);
+            if (selfDoc) {
+              parts.push(expr);   // the text as written, `=` and spaces included
+              parts.push({ expr: expr.replace(/=\s*$/, '').trim(), spec, conv: conv || (spec === null ? 'r' : null) });
+            } else {
+              parts.push({ expr: expr.trim(), spec, conv });
+            }
             continue;
           }
           if (code[pos] === '}') {
@@ -850,7 +856,8 @@ function adderTokenize(code) {
             raw += code[pos]; pos++; col++;
           }
         }
-        tokens.push(tok('STRING', isRaw ? raw : _processEscapes(raw)));
+        const val = isRaw ? raw : _processEscapes(raw);
+        tokens.push(/[bB]/.test(prefix) ? tok('BYTES', val) : tok('STRING', val));
       }
       continue;
     }
@@ -1379,7 +1386,7 @@ class _Parser {
     // star is binary if preceded by a value token
     if (this.pos === 0) return false;
     const prev = this.tokens[this.pos - 1];
-    return prev && (prev.type === 'NAME' || prev.type === 'NUMBER' || prev.type === 'STRING' ||
+    return prev && (prev.type === 'NAME' || prev.type === 'NUMBER' || prev.type === 'STRING' || prev.type === 'BYTES' || prev.type === 'FSTRING' ||
       prev.value === ')' || prev.value === ']' || prev.value === '}');
   }
 
@@ -1608,6 +1615,14 @@ class _Parser {
       return { type: 'Constant', value, line: t.line, col: t.col };
     }
 
+    // bytes literal b'...' (adjacent ones concatenate): its value as a latin-1 string
+    if (t.type === 'BYTES') {
+      this.advance();
+      let value = t.value;
+      while (this.peek().type === 'BYTES') value += this.advance().value;
+      return { type: 'Bytes', value, line: t.line, col: t.col };
+    }
+
     // f-string
     if (t.type === 'FSTRING') { this.advance(); return this._parseFstring(t); }
 
@@ -1660,9 +1675,9 @@ class _Parser {
     if (t.type === 'OP' && t.value === '{') {
       this.advance();
       if (this.eat('OP', '}')) return { type: 'Dict', keys: [], values: [], line: t.line, col: t.col };
-      // dict unpacking
-      if (this.at('OP', '**')) {
-        return this._parseDictBody(t, [], []);
+      // dict unpacking first: {**a, ...}
+      if (this.eat('OP', '**')) {
+        return this._parseDictBody(t, [null], [this.parseExpr()]);
       }
       const first = this.parseExpr();
       if (this.eat('OP', ':')) {
@@ -2300,6 +2315,7 @@ function adderGetAttr(obj, attr) {
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
+  if (obj instanceof Uint8Array) return _bytesMethod(obj, attr);
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
   // dict (Map) methods
@@ -2533,6 +2549,63 @@ function _strMaketrans(x, y, z) {
   a.forEach((ch, i) => t.set(ch.codePointAt(0), b[i].codePointAt(0)));
   if (z) for (const ch of z) t.set(ch.codePointAt(0), null);
   return t;
+}
+
+// a dict display with **unpacking: entries in order, later keys win; a plain object when every
+// key is a string (as a literal would be), else a Map
+function dictLiteral(keys, values, spreads) {
+  const entries = [];
+  for (let i = 0; i < keys.length; i++) {
+    if (!spreads[i]) { entries.push([keys[i], values[i]]); continue; }
+    const src = values[i];
+    if (src instanceof Map) entries.push(...src.entries());
+    else if (isPlainDict(src)) entries.push(...Object.entries(src));
+    else if (src && typeof src.keys === 'function' && typeof src.__getitem__ === 'function') {
+      for (const k of pyIter(src.keys())) entries.push([k, src.__getitem__(k)]);
+    } else throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not a mapping`);
+  }
+  if (entries.every(([k]) => typeof k === 'string')) {
+    const o = {};
+    for (const [k, v] of entries) o[k] = v;
+    return o;
+  }
+  const m = new Map();
+  for (const [k, v] of entries) m.set(k, v);
+  return m;
+}
+
+// bytes methods: through the latin-1 string view, results back to bytes where Python gives bytes
+const _b2s = (b) => { let s = ''; for (const c of b) s += String.fromCharCode(c); return s; };
+const _s2b = (s) => bytesLit(s);
+function _bytesMethod(b, attr) {
+  const bytesArg = (x) => (x instanceof Uint8Array ? _b2s(x) : Array.isArray(x) ? x.map(bytesArg) : x);
+  const back = (r) => (typeof r === 'string' ? _s2b(r) : Array.isArray(r) ? r.map(back) : r);
+  const m = {
+    decode: (encoding, errors) => {
+      if (encoding && encoding._kw) encoding = encoding.encoding;
+      const enc = (encoding || 'utf-8').toLowerCase().replace('_', '-');
+      if (enc === 'latin-1' || enc === 'latin1' || enc === 'iso-8859-1' || enc === 'ascii') return _b2s(b);
+      try { return new TextDecoder(enc, { fatal: errors !== 'replace' && errors !== 'ignore' }).decode(b); }
+      catch { throw new AdderError('UnicodeDecodeError', `'${enc}' codec can't decode bytes`); }
+    },
+    hex: (sep) => [...b].map((c) => c.toString(16).padStart(2, '0')).join(sep || ''),
+  };
+  if (attr in m) return m[attr];
+  const STR_LIKE = ['startswith', 'endswith', 'find', 'rfind', 'index', 'rindex', 'count', 'replace', 'split', 'rsplit',
+    'strip', 'lstrip', 'rstrip', 'upper', 'lower', 'join', 'partition', 'rpartition', 'isdigit', 'isalpha', 'isalnum',
+    'isspace', 'isupper', 'islower', 'startswith', 'removeprefix', 'removesuffix', 'center', 'ljust', 'rjust', 'zfill', 'title', 'capitalize', 'splitlines'];
+  if (STR_LIKE.includes(attr)) {
+    const f = _strMethod(_b2s(b), attr);
+    return (...a) => back(f(...a.map(bytesArg)));
+  }
+  throw new AdderError('AttributeError', `'bytes' object has no attribute '${attr}'`);
+}
+
+// a bytes literal's value (latin-1 text from the parser) as bytes
+function bytesLit(s) {
+  const b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+  return b;
 }
 
 // repr of bytes: b'…' with Python's quoting and \xNN for the unprintable
@@ -2798,6 +2871,7 @@ function pyAdd(a, b) {
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
   if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
+  if (a instanceof Uint8Array && b instanceof Uint8Array) { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
   throw _binErr('+', a, b);
 }
 function pySub(a, b) {
@@ -2810,6 +2884,7 @@ function _repeat(seq, n) {
   if (!_isIntish(n)) return null;
   n = Number(_asInt(n));
   if (typeof seq === 'string') return n > 0 ? seq.repeat(n) : '';
+  if (seq instanceof Uint8Array) { const r = new Uint8Array(Math.max(0, n) * seq.length); for (let i = 0; i < n; i++) r.set(seq, i * seq.length); return r; }
   const r = [];
   for (let i = 0; i < n; i++) r.push(...seq);
   return r;
@@ -2817,8 +2892,8 @@ function _repeat(seq, n) {
 function pyMul(a, b) {
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) * _asInt(b);
-  if (typeof a === 'string' || Array.isArray(a)) { const r = _repeat(a, b); if (r !== null) return r; }
-  if (typeof b === 'string' || Array.isArray(b)) { const r = _repeat(b, a); if (r !== null) return r; }
+  if (typeof a === 'string' || Array.isArray(a) || a instanceof Uint8Array) { const r = _repeat(a, b); if (r !== null) return r; }
+  if (typeof b === 'string' || Array.isArray(b) || b instanceof Uint8Array) { const r = _repeat(b, a); if (r !== null) return r; }
   throw _binErr('*', a, b);
 }
 function pyTrueDiv(a, b) {
@@ -3130,6 +3205,7 @@ function pyEq(a, b) {
     return true;
   }
   if (a instanceof AdderRange && b instanceof AdderRange) return pyEq([...a], [...b]);
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i]);
   if (a instanceof Complex || b instanceof Complex) return typeof a?.__eq__ === 'function' ? a.__eq__(b) : false;
   return false;
 }
@@ -3141,6 +3217,7 @@ function _orderError(op, a, b) {
 function _ltPlain(op, a, b) {
   if (_numLike(a) && _numLike(b)) return a < b;
   if (typeof a === 'string' && typeof b === 'string') return a < b;
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return _ltPlain(op, [...a], [...b]);
   if (Array.isArray(a) && Array.isArray(b)) {
     const n = Math.min(a.length, b.length);
     for (let i = 0; i < n; i++) {
@@ -4919,6 +4996,8 @@ async function adderEval(node, scope) {
     case 'SetComp': return _evalComp(node, scope, 'set');
     case 'DictComp': return _evalComp(node, scope, 'dict');
     case 'GeneratorExp': return _evalGenExpr(node, scope);
+
+    case 'Bytes': return bytesLit(node.value);
 
     // ── f-strings ──
     case 'JoinedStr': {
@@ -7161,6 +7240,7 @@ const _py = {
   bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
   super: pySuper,
+  bytesLit, dictLiteral,
 };
 
 // -- runner.js --
@@ -8384,6 +8464,17 @@ function lowerExpr_ad(ctx, node) {
     case 'Tuple': return lowerListOrTuple(ctx, node);
 
     case 'Dict': {
+      // A literal with **unpacking builds at run time (_py.dictLiteral): the sources may be
+      // Maps or plain dicts, and the keys decide the representation. (The Map path below
+      // dropped the unpack's key slot and misaligned keys and values.)
+      if (node.keys.some(k => k === null)) {
+        const keys = node.keys.map(k => (k ? lowerExpr_ad(ctx, k) : ctx.emit('const', [null], DYNAMIC, l)).id);
+        const values = node.values.map(v => lowerExpr_ad(ctx, v).id);
+        const spreads = node.keys.map(k => ctx.emit('const', [k === null], BOOL, l).id);
+        return emitPyCall(ctx, 'dictLiteral', [
+          ctx.emit('array_new', keys, DYNAMIC, l), ctx.emit('array_new', values, DYNAMIC, l),
+          ctx.emit('array_new', spreads, DYNAMIC, l)], l);
+      }
       // Plain object if all keys are string constants; otherwise build a Map.
       const allStringKeys = node.keys.every(k =>
         k && k.type === 'Constant' && typeof k.value === 'string');
@@ -8461,6 +8552,7 @@ function lowerExpr_ad(ctx, node) {
     }
 
     case 'Lambda': return lowerLambda(ctx, node);
+    case 'Bytes': return emitPyCall(ctx, 'bytesLit', [ctx.emit('const', [node.value], STRING, l)], l);
 
     case 'ListComp': return lowerComprehension(ctx, node);
 
