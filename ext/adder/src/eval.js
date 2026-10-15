@@ -1007,7 +1007,8 @@ async function* _evalGenStmt(node, scope) {
       }
       if (node.value.type === 'YieldFrom') {
         const iterable = await adderEval(node.value.value, scope);
-        if (iterable[Symbol.asyncIterator]) { for await (const v of iterable) yield v; }
+        if (isUserIterable(iterable)) { for await (const v of pyIterAsync(iterable)) yield v; }
+        else if (iterable[Symbol.asyncIterator]) { for await (const v of iterable) yield v; }
         else { for (const v of pyIter(iterable)) yield v; }
         return;
       }
@@ -1509,7 +1510,9 @@ async function _evalComp(node, scope, kind) {
 async function _evalCompIter(node, scope, result, kind, genIdx) {
   const gen = node.generators[genIdx];
   const iterable = await adderEval(gen.iter, scope);
-  for (const value of pyIter(iterable)) {
+  // the same iteration as a for loop: user iterables and async ones (generators, itertools)
+  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable && iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  for await (const value of iter) {
     await _assignTarget(gen.target, value, scope);
     // check if filters
     let pass = true;

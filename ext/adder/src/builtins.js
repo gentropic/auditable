@@ -134,7 +134,7 @@ export function pyTypeName(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'str';
   if (Array.isArray(v)) return 'list';
-  if (v instanceof Map) return 'dict';
+  if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
   if (v instanceof AdderRange) return 'range';
   if (v instanceof Complex) return 'complex';
@@ -215,6 +215,7 @@ export function pyRepr(v) {
   if (typeof v === 'string') return _strRepr(v);
   if (typeof v === 'number') return _numRepr(v);
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
+  if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (_isListLikeTyped(v)) return _typedRepr(v);
   if (v instanceof Uint8Array) return _bytesRepr(v);
   if (v instanceof Map) {
@@ -270,6 +271,7 @@ function _hasUserDunder(v, name) {
 }
 export function pyReprMaybe(v) {
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
+  if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
     if (v.size === 0) return '{}';
     const parts = [...v.entries()].map(([k, val]) => {
@@ -540,8 +542,14 @@ export function adderGetAttr(obj, attr) {
   if (obj instanceof Uint8Array) return _bytesMethod(obj, attr);
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
-  // dict (Map) methods
-  if (obj instanceof Map) return _mapMethod(obj, attr);
+  // dict (Map) methods — a Map subclass (Counter, defaultdict, OrderedDict) answers with its own first
+  if (obj instanceof Map) {
+    if (Object.getPrototypeOf(obj) !== Map.prototype && attr in obj && !(attr in Map.prototype)) {
+      const v = obj[attr];
+      return typeof v === 'function' ? v.bind(obj) : v;
+    }
+    return _mapMethod(obj, attr);
+  }
   // set methods
   if (obj instanceof Set) return _setMethod(obj, attr);
   // numpy-shape Float64Array — common when learn/scitra return a
@@ -1314,7 +1322,10 @@ const _SEQ_NAMES = (obj) => (typeof obj === 'string' ? 'string' : obj instanceof
 export function pyGetItem(obj, key) {
   if (obj === null || obj === undefined) throw new AdderError('TypeError', `'NoneType' object is not subscriptable`);
   if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+    if (!obj.has(key)) {
+      if (typeof obj.__missing__ === 'function') return obj.__missing__(key);
+      throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+    }
     return obj.get(key);
   }
   const isSeq = typeof obj === 'string' || Array.isArray(obj) || obj instanceof AdderRange ||
@@ -1576,17 +1587,102 @@ const _mathModule = {
   modf: (x) => { const i = Math.trunc(x); return [x - i, i]; },
 };
 
-const _jsonModule = {
-  dumps: (obj, indent) => {
-    const replacer = (k, v) => {
-      if (v instanceof Map) return Object.fromEntries(v);
-      if (v instanceof Set) return [...v];
-      return v;
-    };
-    return JSON.stringify(obj, replacer, indent);
-  },
-  loads: (s) => JSON.parse(s),
+// math: CPython's integer functions are exact (BigInt where the result can leave 2**53)
+const _bigToNum = (b) => Number(b);
+const _isqrtBig = (n) => {
+  if (n < 0n) throw new AdderError('ValueError', 'isqrt() argument must be nonnegative');
+  if (n < 2n) return n;
+  let x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  while (x * x > n) x--;
+  while ((x + 1n) * (x + 1n) <= n) x++;
+  return x;
 };
+const _needInt = (name, ...vs) => {
+  for (const v of vs) if (!(typeof v === 'boolean' || (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'bigint')) {
+    throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+  }
+};
+Object.assign(_mathModule, {
+  isclose: (a, b, kw) => {
+    const rel = kw && kw._kw && kw.rel_tol != null ? kw.rel_tol : 1e-9;
+    const abs = kw && kw._kw && kw.abs_tol != null ? kw.abs_tol : 0;
+    if (a === b) return true;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    const d = Math.abs(a - b);
+    return d <= Math.abs(rel * b) || d <= Math.abs(rel * a) || d <= abs;
+  },
+  isqrt: (n) => { _needInt('isqrt', n); return _bigToNum(_isqrtBig(BigInt(Number(n)))); },
+  factorial: (n) => {
+    _needInt('factorial', n);
+    if (n < 0) throw new AdderError('ValueError', 'factorial() not defined for negative values');
+    let r = 1n; for (let i = 2n; i <= BigInt(n); i++) r *= i; return _bigToNum(r);
+  },
+  comb: (n, k) => {
+    _needInt('comb', n, k);
+    if (n < 0 || k < 0) throw new AdderError('ValueError', 'n must be a non-negative integer');
+    if (k > n) return 0;
+    k = Math.min(k, n - k);
+    let r = 1n; for (let i = 0n; i < BigInt(k); i++) r = (r * (BigInt(n) - i)) / (i + 1n); return _bigToNum(r);
+  },
+  perm: (n, k) => {
+    if (k === undefined || k === null) k = n;
+    _needInt('perm', n, k);
+    if (n < 0 || k < 0) throw new AdderError('ValueError', 'n must be a non-negative integer');
+    if (k > n) return 0;
+    let r = 1n; for (let i = 0n; i < BigInt(k); i++) r *= BigInt(n) - i; return _bigToNum(r);
+  },
+  gcd: (...xs) => { _needInt('gcd', ...xs); let g = 0n; for (const x of xs) { let a = BigInt(Math.abs(Number(x))), b = g; while (b) [a, b] = [b, a % b]; g = a; } return _bigToNum(g); },
+  lcm: (...xs) => {
+    _needInt('lcm', ...xs);
+    let l = 1n;
+    for (const x of xs) {
+      const v = BigInt(Math.abs(Number(x)));
+      if (v === 0n) return 0;
+      let a = l, b = v; while (b) [a, b] = [b, a % b];
+      l = (l / a) * v;
+    }
+    return _bigToNum(l);
+  },
+  dist: (p, q) => { const a = [...pyIter(p)], b = [...pyIter(q)]; if (a.length !== b.length) throw new AdderError('ValueError', 'both points must have the same number of dimensions'); return Math.hypot(...a.map((x, i) => x - b[i])); },
+  log: (x, base) => {
+    if (x <= 0) throw new AdderError('ValueError', 'math domain error');
+    return base === undefined ? Math.log(x) : Math.log(x) / Math.log(base);
+  },
+  sqrt: (x) => { if (x < 0) throw new AdderError('ValueError', 'math domain error'); return Math.sqrt(x); },
+  log1p: Math.log1p, expm1: Math.expm1, cbrt: Math.cbrt, exp2: (x) => 2 ** x,
+  fmod: (x, y) => { if (y === 0) throw new AdderError('ValueError', 'math domain error'); return x % y; },
+  modf: (x) => { const i = Math.trunc(x); return [x - i, i]; },
+  frexp: (x) => { if (x === 0 || !Number.isFinite(x)) return [x, 0]; let e = Math.ceil(Math.log2(Math.abs(x))); let m = x / 2 ** e; if (Math.abs(m) >= 1) { m /= 2; e++; } if (Math.abs(m) < 0.5) { m *= 2; e--; } return [m, e]; },
+  ldexp: (x, i) => x * 2 ** i,
+  fsum: (iterable) => {
+    // Shewchuk / Neumaier: exactly rounded like CPython's fsum for ordinary inputs
+    const partials = [];
+    for (const v of pyIter(iterable)) {
+      let x = Number(v);
+      let i = 0;
+      for (let y of partials) {
+        if (Math.abs(x) < Math.abs(y)) [x, y] = [y, x];
+        const hi = x + y, lo = y - (hi - x);
+        if (lo) partials[i++] = lo;
+        x = hi;
+      }
+      partials.length = i;
+      partials.push(x);
+    }
+    return partials.reduce((a, b) => a + b, 0);
+  },
+  prod: (iterable, start) => {
+    if (start && start._kw) start = start.start;
+    let r = start !== undefined ? start : 1;
+    for (const v of pyIter(iterable)) r = pyMul(r, v);
+    return r;
+  },
+  sumprod: (p, q) => { const a = [...pyIter(p)], b = [...pyIter(q)]; return a.reduce((s, x, i) => s + x * b[i], 0); },
+  nextafter: (x, y) => { if (x === y) return y; const f = new Float64Array([x]), u = new BigInt64Array(f.buffer); if (x === 0) { f[0] = y > 0 ? 5e-324 : -5e-324; return f[0]; } u[0] += (y > x) === (x > 0) ? 1n : -1n; return f[0]; },
+  ulp: (x) => { x = Math.abs(x); if (!Number.isFinite(x)) return x; const f = new Float64Array([x]), u = new BigInt64Array(f.buffer); u[0] += 1n; return f[0] - x; },
+});
+
+
 
 const _jsModule = new Proxy({}, {
   get(_, prop) { return typeof globalThis !== 'undefined' ? globalThis[prop] : undefined; },
@@ -1641,8 +1737,13 @@ const _itertoolsModule = {
   product: (...iterables) => ({
     [Symbol.asyncIterator]() {
       return (async function*() {
+        // product(*its, repeat=n): the keyword bag is not an iterable
+        const kw = iterables.length && iterables[iterables.length - 1]?._kw ? iterables.pop() : null;
+        const repeat = kw && kw.repeat != null ? kw.repeat : 1;
+        const base = [];
+        for (const it of iterables) base.push(await pyCollect(it));
         const arrs = [];
-        for (const it of iterables) arrs.push(await pyCollect(it));
+        for (let r = 0; r < repeat; r++) arrs.push(...base);
         if (arrs.length === 0) { yield []; return; }
         const indices = arrs.map(() => 0);
         while (true) {
@@ -1755,9 +1856,11 @@ const _itertoolsModule = {
     [Symbol.asyncIterator]() {
       return (async function*() {
         let currentKey, currentGroup = [], first = true;
+        if (key && key._kw) key = key.key;
         for await (const item of _aiter(iterable)) {
-          const k = key ? key(item) : item;
-          if (first || k !== currentKey) {
+          let k = key ? key(item) : item;
+          if (k && typeof k.then === 'function') k = await k;
+          if (first || !pyEq(k, currentKey)) {
             if (currentGroup.length > 0) yield [currentKey, currentGroup];
             currentKey = k; currentGroup = [item]; first = false;
           } else { currentGroup.push(item); }
@@ -1800,147 +1903,474 @@ const _itertoolsModule = {
 // ── functools ──
 
 const _functoolsModule = {
-  reduce: (func, iterable, initial) => {
-    const arr = [...pyIter(iterable)];
-    if (initial !== undefined) return arr.reduce((a, b) => func(a, b), initial);
-    if (arr.length === 0) throw new AdderError('TypeError', 'reduce() of empty iterable with no initial value');
-    return arr.reduce((a, b) => func(a, b));
+  // reduce awaits each step: a tree-walked function returns a Promise
+  reduce: async (func, iterable, initial) => {
+    const arr = await pyCollect(iterable);
+    let i = 0, acc;
+    if (initial !== undefined) acc = initial;
+    else {
+      if (arr.length === 0) throw new AdderError('TypeError', 'reduce() of empty iterable with no initial value');
+      acc = arr[0]; i = 1;
+    }
+    for (; i < arr.length; i++) { acc = func(acc, arr[i]); if (acc && typeof acc.then === 'function') acc = await acc; }
+    return acc;
   },
   partial: (func, ...partialArgs) => {
-    const wrapped = (...args) => func(...partialArgs, ...args);
-    wrapped._pyName = `partial(${func._pyName || func.name || '?'})`;
-    return wrapped;
-  },
-  lru_cache: (fn) => {
-    const cache = new Map();
+    let pkw = null;
+    if (partialArgs.length && partialArgs[partialArgs.length - 1]?._kw) pkw = partialArgs.pop();
     const wrapped = (...args) => {
-      const key = JSON.stringify(args);
-      if (cache.has(key)) return cache.get(key);
-      const result = fn(...args);
-      cache.set(key, result);
-      return result;
+      let kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
+      if (pkw) kw = { ...pkw, ...(kw || {}), _kw: true };
+      return kw ? func(...partialArgs, ...args, kw) : func(...partialArgs, ...args);
     };
-    wrapped.cache_clear = () => cache.clear();
-    wrapped._pyName = fn._pyName || fn.name;
+    wrapped._pyName = `partial(${func._pyName || func.name || '?'})`;
+    wrapped.func = func; wrapped.args = partialArgs; wrapped.keywords = pkw ? Object.fromEntries(Object.entries(pkw).filter(([k]) => k !== '_kw')) : {};
     return wrapped;
   },
+  // lru_cache / cache: as a decorator (@lru_cache) or a factory (@lru_cache(maxsize=…))
+  lru_cache: (arg) => {
+    const wrap = (fn, maxsize) => {
+      const cache = new Map();
+      let hits = 0, misses = 0;
+      const keyOf = (args) => JSON.stringify(args, (k, v) => (v instanceof Map ? [...v] : v instanceof Set ? [...v] : v));
+      const wrapped = (...args) => {
+        const key = keyOf(args);
+        if (cache.has(key)) { hits++; const v = cache.get(key); cache.delete(key); cache.set(key, v); return v; }
+        misses++;
+        const result = fn(...args);
+        cache.set(key, result);
+        if (maxsize != null && cache.size > maxsize) cache.delete(cache.keys().next().value);
+        if (result && typeof result.then === 'function') result.catch(() => cache.delete(key));
+        return result;
+      };
+      wrapped.cache_clear = () => { cache.clear(); hits = misses = 0; return null; };
+      wrapped.cache_info = () => `CacheInfo(hits=${hits}, misses=${misses}, maxsize=${maxsize ?? 'None'}, currsize=${cache.size})`;
+      wrapped._pyName = fn._pyName || fn.name;
+      wrapped.__wrapped__ = fn;
+      return wrapped;
+    };
+    if (typeof arg === 'function') return wrap(arg, 128);
+    const maxsize = arg && arg._kw ? arg.maxsize : arg;
+    return (fn) => wrap(fn, maxsize === undefined ? 128 : maxsize);
+  },
+  cache: (fn) => _functoolsModule.lru_cache({ _kw: true, maxsize: null })(fn),
+  wraps: (wrapped) => (fn) => { fn._pyName = wrapped._pyName || wrapped.name; fn.__doc__ = wrapped.__doc__ ?? null; fn.__wrapped__ = wrapped; return fn; },
+  cmp_to_key: (cmp) => (x) => ({
+    __adderClass__: 'K', obj: x,
+    __lt__: (o) => { const r = cmp(x, o.obj); return r && typeof r.then === 'function' ? r.then((v) => v < 0) : r < 0; },
+    __gt__: (o) => { const r = cmp(x, o.obj); return r && typeof r.then === 'function' ? r.then((v) => v > 0) : r > 0; },
+    __eq__: (o) => { const r = cmp(x, o.obj); return r && typeof r.then === 'function' ? r.then((v) => v === 0) : r === 0; },
+  }),
 };
 
 // ── collections ──
+// Counter / defaultdict / OrderedDict are Maps (dict-shaped everywhere: printing, indexing,
+// iteration, len, in) with their extra behaviour; deque is a list-backed class; namedtuple
+// makes classes whose instances index, unpack and print like Python's.
 
-const _collectionsModule = {
-  OrderedDict: (items) => {
-    // JS Map preserves insertion order
-    if (!items) return new Map();
-    return new Map(Array.isArray(items) ? items : Object.entries(items));
-  },
-  defaultdict: (factory, items) => {
-    const map = new Map();
-    if (items) { for (const [k, v] of (Array.isArray(items) ? items : Object.entries(items))) map.set(k, v); }
-    return new Proxy(map, {
-      get(target, prop) {
-        if (prop === 'get' || prop === 'has' || prop === 'set' || prop === 'delete' || prop === 'size' || prop === 'keys' || prop === 'values' || prop === 'items' || prop === 'clear' || prop === 'entries' || typeof prop === 'symbol') return Reflect.get(target, prop);
-        if (!target.has(prop)) target.set(prop, factory());
-        return target.get(prop);
-      },
+function _counterAdd(map, iterable) {
+  if (iterable instanceof Map) { for (const [k, v] of iterable) map.set(k, (map.get(k) || 0) + v); return; }
+  if (isPlainDict(iterable)) { for (const k of Object.keys(iterable)) map.set(k, (map.get(k) || 0) + iterable[k]); return; }
+  for (const v of pyIter(iterable)) map.set(v, (map.get(v) || 0) + 1);
+}
+class AdderCounter extends Map {
+  constructor(iterable) { super(); if (iterable != null && !iterable._kw) _counterAdd(this, iterable); if (iterable && iterable._kw) for (const k of Object.keys(iterable)) if (k !== '_kw') this.set(k, iterable[k]); }
+  __missing__() { return 0; }
+  most_common(n) {
+    const e = [...this.entries()].sort((a, b) => b[1] - a[1]);   // stable: ties keep insertion order
+    return n == null ? e : e.slice(0, n);
+  }
+  elements() { const out = []; for (const [k, v] of this) for (let i = 0; i < v; i++) out.push(k); return out; }
+  update(iterable) { if (iterable != null) _counterAdd(this, iterable); return null; }
+  subtract(iterable) { const tmp = new AdderCounter(iterable); for (const [k, v] of tmp) this.set(k, (this.get(k) || 0) - v); return null; }
+  total() { let t = 0; for (const v of this.values()) t += v; return t; }
+  __repr__() { return this.size ? `Counter({${this.most_common().map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'Counter()'; }
+}
+AdderCounter.prototype.__adderClass__ = 'Counter';
+
+class AdderDefaultDict extends Map {
+  constructor(factory, items) { super(); this.default_factory = factory ?? null; if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items))) this.set(k, v); }
+  __missing__(key) {
+    if (this.default_factory == null) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+    const v = this.default_factory();
+    if (v && typeof v.then === 'function') return v.then((x) => { this.set(key, x); return x; });
+    this.set(key, v);
+    return v;
+  }
+  __repr__() { return `defaultdict(${this.default_factory ? pyRepr(this.default_factory) : 'None'}, {${[...this].map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})`; }
+}
+AdderDefaultDict.prototype.__adderClass__ = 'defaultdict';
+
+class AdderOrderedDict extends Map {
+  constructor(items) { super(); if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items).filter(([k]) => k !== '_kw'))) this.set(k, v); }
+  move_to_end(key, last = true) {
+    if (last && last._kw) last = last.last;
+    if (!this.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+    const v = this.get(key); this.delete(key);
+    if (last === false) { const rest = [...this]; this.clear(); this.set(key, v); for (const [k, x] of rest) this.set(k, x); }
+    else this.set(key, v);
+    return null;
+  }
+  popitem(last = true) {
+    if (last && last._kw) last = last.last;
+    if (!this.size) throw new AdderError('KeyError', "'dictionary is empty'");
+    const keys = [...this.keys()], k = last === false ? keys[0] : keys[keys.length - 1], v = this.get(k);
+    this.delete(k);
+    return [k, v];
+  }
+  __repr__() { return this.size ? `OrderedDict({${[...this].map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'OrderedDict()'; }
+}
+AdderOrderedDict.prototype.__adderClass__ = 'OrderedDict';
+
+class AdderDeque {
+  constructor(iterable, maxlen) {
+    if (iterable && iterable._kw) { maxlen = iterable.maxlen; iterable = iterable.iterable; }
+    if (maxlen && maxlen._kw) maxlen = maxlen.maxlen;
+    this.maxlen = maxlen ?? null;
+    this._a = iterable == null ? [] : [...pyIter(iterable)];
+    this._trim(true);
+  }
+  _trim(fromLeft) { if (this.maxlen != null) while (this._a.length > this.maxlen) (fromLeft ? this._a.shift() : this._a.pop()); }
+  append(x) { this._a.push(x); this._trim(true); return null; }
+  appendleft(x) { this._a.unshift(x); this._trim(false); return null; }
+  pop() { if (!this._a.length) throw new AdderError('IndexError', 'pop from an empty deque'); return this._a.pop(); }
+  popleft() { if (!this._a.length) throw new AdderError('IndexError', 'pop from an empty deque'); return this._a.shift(); }
+  extend(it) { for (const x of pyIter(it)) this.append(x); return null; }
+  extendleft(it) { for (const x of pyIter(it)) this.appendleft(x); return null; }
+  rotate(n = 1) { const len = this._a.length; if (!len) return null; n = ((n % len) + len) % len; if (n) this._a.unshift(...this._a.splice(len - n, n)); return null; }
+  clear() { this._a.length = 0; return null; }
+  count(x) { return this._a.filter((v) => pyEq(v, x)).length; }
+  remove(x) { const i = this._a.findIndex((v) => pyEq(v, x)); if (i < 0) throw new AdderError('ValueError', 'deque.remove(x): x not in deque'); this._a.splice(i, 1); return null; }
+  reverse() { this._a.reverse(); return null; }
+  copy() { return new AdderDeque(this._a, this.maxlen); }
+  __len__() { return this._a.length; }
+  __getitem__(i) { return pyGetItem(this._a, i); }
+  __setitem__(i, v) { const n = this._a.length, j = i < 0 ? n + i : i; if (j < 0 || j >= n) throw new AdderError('IndexError', 'deque index out of range'); this._a[j] = v; return null; }
+  __contains__(x) { return this._a.some((v) => pyEq(v, x)); }
+  __eq__(o) { return o instanceof AdderDeque && pyEq(this._a, o._a); }
+  __iter__() { return this._a[Symbol.iterator](); }
+  [Symbol.iterator]() { return this._a[Symbol.iterator](); }
+  __repr__() { return this.maxlen == null ? `deque(${pyRepr(this._a)})` : `deque(${pyRepr(this._a)}, maxlen=${this.maxlen})`; }
+}
+AdderDeque.prototype.__adderClass__ = 'deque';
+
+function _namedtuple(name, fields, opts) {
+  let defaults = [];
+  if (fields && fields._kw) { opts = fields; fields = opts.field_names; }
+  if (opts && opts._kw && opts.defaults) defaults = [...pyIter(opts.defaults)];
+  const names = typeof fields === 'string' ? fields.replace(/,/g, ' ').split(/\s+/).filter(Boolean) : [...pyIter(fields)];
+  const cls = function (...args) {
+    const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
+    const vals = names.map((f, i) => {
+      if (i < args.length) return args[i];
+      if (kw && Object.hasOwn(kw, f)) return kw[f];
+      const d = i - (names.length - defaults.length);
+      if (d >= 0) return defaults[d];
+      throw new AdderError('TypeError', `${name}.__new__() missing 1 required positional argument: '${f}'`);
     });
+    const inst = Object.create(cls.prototype);
+    names.forEach((f, i) => { inst[f] = vals[i]; });
+    inst._values = vals;
+    return inst;
+  };
+  cls._pyName = name; cls._pyClass = true; cls._fields = names;
+  cls._pyMRO = [cls];
+  cls.prototype = {
+    __adderClass__: name,
+    __len__() { return this._values.length; },
+    __getitem__(i) { return pyGetItem(this._values, i); },
+    __iter__() { return this._values[Symbol.iterator](); },
+    [Symbol.iterator]() { return this._values[Symbol.iterator](); },
+    __eq__(o) { return Array.isArray(o) ? pyEq(this._values, o) : !!(o && o._values) && pyEq(this._values, o._values); },
+    __lt__(o) { return pyLt(this._values, o._values || o); },
+    __repr__() { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this._values[i])}`).join(', ')})`; },
+    _asdict() { const o = {}; names.forEach((f, i) => { o[f] = this._values[i]; }); return o; },
+    _replace(kw) { const v = names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this._values[i])); return cls(...v); },
+  };
+  for (const f of names) Object.defineProperty(cls.prototype, f, { get() { return this._values[names.indexOf(f)]; }, set(v) { this._values && (this._values[names.indexOf(f)] = v); }, configurable: true });
+  cls.prototype.__adderType__ = cls;
+  cls._make = (it) => cls(...pyIter(it));
+  return cls;
+}
+
+const _ctor = (C, name) => Object.assign((...a) => new C(...a), { _pyName: name, _pyClass: true });
+const _collectionsModule = {
+  Counter: _ctor(AdderCounter, 'Counter'),
+  defaultdict: _ctor(AdderDefaultDict, 'defaultdict'),
+  OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
+  deque: _ctor(AdderDeque, 'deque'),
+  namedtuple: _namedtuple,
+  ChainMap: (...maps) => { const m = new Map(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
+};
+
+// ── json ──
+// Python's json.dumps: separators (', ', ': ') — (',', ': ') with indent —, ensure_ascii,
+// sort_keys, NaN / Infinity, default=; loads returns dicts (plain objects) and lists.
+function _jsonEsc(s, ascii) {
+  let out = '"';
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (ch === '"') out += '\\"';
+    else if (ch === '\\') out += '\\\\';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\t') out += '\\t';
+    else if (ch === '\b') out += '\\b';
+    else if (ch === '\f') out += '\\f';
+    else if (c < 0x20 || (ascii && c > 0x7e)) {
+      if (c > 0xffff) { const h = Math.floor((c - 0x10000) / 0x400) + 0xd800, l = ((c - 0x10000) % 0x400) + 0xdc00; out += `\\u${h.toString(16).padStart(4, '0')}\\u${l.toString(16).padStart(4, '0')}`; }
+      else out += `\\u${c.toString(16).padStart(4, '0')}`;
+    } else out += ch;
+  }
+  return out + '"';
+}
+function _jsonDumps(obj, opts) {
+  const indent = opts.indent == null ? null : typeof opts.indent === 'number' ? ' '.repeat(opts.indent) : String(opts.indent);
+  const [itemSep, keySep] = opts.separators ? [...opts.separators] : indent === null ? [', ', ': '] : [',', ': '];
+  const ascii = opts.ensure_ascii !== false;
+  const enc = (v, depth) => {
+    if (v === null || v === undefined) return 'null';
+    if (v === true) return 'true';
+    if (v === false) return 'false';
+    if (typeof v === 'number') return Number.isNaN(v) ? 'NaN' : v === Infinity ? 'Infinity' : v === -Infinity ? '-Infinity' : String(v);
+    if (typeof v === 'string') return _jsonEsc(v, ascii);
+    const nl = indent === null ? '' : '\n' + indent.repeat(depth + 1), end = indent === null ? '' : '\n' + indent.repeat(depth);
+    if (Array.isArray(v)) return v.length ? `[${nl}${v.map((x) => enc(x, depth + 1)).join(itemSep + nl)}${end}]` : '[]';
+    if (v instanceof Map || isPlainDict(v)) {
+      let entries = v instanceof Map ? [...v.entries()] : Object.entries(v);
+      entries = entries.map(([k, x]) => [typeof k === 'string' ? k : typeof k === 'number' ? String(k) : k === true ? 'true' : k === false ? 'false' : k === null ? 'null' : (() => { throw new AdderError('TypeError', `keys must be str, int, float, bool or None, not ${pyTypeName(k)}`); })(), x]);
+      if (opts.sort_keys) entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      return entries.length ? `{${nl}${entries.map(([k, x]) => _jsonEsc(k, ascii) + keySep + enc(x, depth + 1)).join(itemSep + nl)}${end}}` : '{}';
+    }
+    if (v instanceof Set || v instanceof AdderDeque) { if (opts.default) return enc(opts.default(v), depth); throw new AdderError('TypeError', `Object of type ${pyTypeName(v)} is not JSON serializable`); }
+    if (opts.default) return enc(opts.default(v), depth);
+    throw new AdderError('TypeError', `Object of type ${pyTypeName(v)} is not JSON serializable`);
+  };
+  return enc(obj, 0);
+}
+const _jsonModule = {
+  dumps: (obj, ...rest) => {
+    const kw = rest.length && rest[rest.length - 1]?._kw ? rest.pop() : {};
+    return _jsonDumps(obj, kw);
   },
-  Counter: (iterable) => {
-    const counts = {};
-    if (iterable) { for (const v of pyIter(iterable)) counts[v] = (counts[v] || 0) + 1; }
-    counts.most_common = (n) => {
-      const entries = Object.entries(counts).filter(([k]) => k !== 'most_common' && k !== 'elements' && k !== 'update');
-      entries.sort((a, b) => b[1] - a[1]);
-      return n !== undefined ? entries.slice(0, n) : entries;
-    };
-    counts.update = (iterable) => { for (const v of pyIter(iterable)) counts[v] = (counts[v] || 0) + 1; };
-    return counts;
-  },
-  namedtuple: (name, fields) => {
-    const fieldNames = typeof fields === 'string' ? fields.split(/[\s,]+/).filter(Boolean) : [...fields];
-    return (...args) => {
-      const obj = {};
-      for (let i = 0; i < fieldNames.length; i++) obj[fieldNames[i]] = args[i];
-      obj.__adderClass__ = name;
-      obj.__repr__ = () => `${name}(${fieldNames.map(f => `${f}=${pyRepr(obj[f])}`).join(', ')})`;
-      return obj;
-    };
+  loads: (s) => {
+    if (s instanceof Uint8Array) s = new TextDecoder().decode(s);
+    try { return JSON.parse(String(s)); } catch (e0) {
+      try { return JSON.parse(String(s).replace(/(?<=[:\[,]\s*)(-?)Infinity|(?<=[:\[,]\s*)NaN/g, (m) => `"__py_${m}__"`), (k, v) => (v === '__py_Infinity__' ? Infinity : v === '__py_-Infinity__' ? -Infinity : v === '__py_NaN__' ? NaN : v)); }
+      catch (e) { throw new AdderError('JSONDecodeError', String(e0.message || e0)); }
+    }
   },
 };
 
 // ── re (regex) ──
+// Python's re over JS RegExp. Patterns are translated ((?P<n>…), (?P=n), \A, \Z, leading inline
+// flags, verbose mode); Pattern and Match objects follow Python's API (group/groups/groupdict/
+// span/start/end/expand, match is anchored at pos, fullmatch, finditer, sub with \1 / \g<name>
+// templates or a function — awaited when it is async, as tree-walked functions are).
 
-// Translate Python regex syntax to JS: (?P<name>...) → (?<name>...), (?P=name) → \k<name>
-function _pyRegexToJs(pattern) {
-  return pattern.replace(/\(\?P<([^>]+)>/g, '(?<$1>').replace(/\(\?P=([a-zA-Z_]\w*)\)/g, '\\k<$1>');
+const RE_FLAGS = { I: 2, IGNORECASE: 2, L: 4, LOCALE: 4, M: 8, MULTILINE: 8, S: 16, DOTALL: 16, U: 32, UNICODE: 32, X: 64, VERBOSE: 64, A: 256, ASCII: 256 };
+
+function _reVerbose(p) {
+  let out = '', inClass = false;
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '\\') { out += c + (p[i + 1] ?? ''); i++; continue; }
+    if (inClass) { if (c === ']') inClass = false; out += c; continue; }
+    if (c === '[') { inClass = true; out += c; continue; }
+    if (/\s/.test(c)) continue;
+    if (c === '#') { while (i < p.length && p[i] !== '\n') i++; continue; }
+    out += c;
+  }
+  return out;
+}
+// Python pattern + flags → { source, flags } for RegExp
+function _reTranslate(pattern, flags) {
+  let p = pattern instanceof Uint8Array ? String.fromCharCode(...pattern) : String(pattern);
+  let f = flags | 0;
+  const lead = /^\(\?([aiLmsux]+)\)/.exec(p);
+  if (lead) {
+    for (const ch of lead[1]) f |= { a: 256, i: 2, L: 4, m: 8, s: 16, u: 32, x: 64 }[ch];
+    p = p.slice(lead[0].length);
+  }
+  if (f & 64) p = _reVerbose(p);
+  p = p.replace(/\(\?P<([^>]+)>/g, '(?<$1>').replace(/\(\?P=([A-Za-z_]\w*)\)/g, '\\k<$1>')
+    .replace(/(^|[^\\])\\A/g, '$1(?<![\\s\\S])').replace(/(^|[^\\])\\Z/g, '$1(?![\\s\\S])');
+  let js = '';
+  if (f & 2) js += 'i';
+  if (f & 8) js += 'm';
+  if (f & 16) js += 's';
+  if (!(f & 256)) js += 'u';
+  return { source: p, flags: js, pyFlags: f };
+}
+
+function _reGroupNames(source) {
+  const names = {};
+  let idx = 0;
+  const re = /\\.|\[(?:\\.|[^\]])*\]|\((\?<([A-Za-z_]\w*)>|\?)?/g;
+  let m;
+  while ((m = re.exec(source))) {
+    if (m[0][0] !== '(') continue;
+    if (m[1] === '?') continue;           // (?: (?= (?! (?<= (?<! — not capturing
+    idx++;
+    if (m[2]) names[m[2]] = idx;
+  }
+  return { count: idx, names };
+}
+
+function _reMatchObject(m, pattern, string, pos, endpos) {
+  const groupIndex = pattern.groupindex;
+  const resolve = (g) => {
+    if (g === undefined) return 0;
+    if (typeof g === 'string') {
+      if (!(g in groupIndex)) throw new AdderError('IndexError', 'no such group');
+      return groupIndex[g];
+    }
+    if (typeof g !== 'number' || g < 0 || g > pattern.groups) throw new AdderError('IndexError', 'no such group');
+    return g;
+  };
+  const val = (i) => (m[i] === undefined ? null : m[i]);
+  const span = (g) => { const i = resolve(g); const ix = m.indices && m.indices[i]; return ix ? [ix[0], ix[1]] : [-1, -1]; };
+  let lastindex = null;
+  for (let i = 1; i <= pattern.groups; i++) if (m[i] !== undefined) lastindex = i;
+  const obj = {
+    __adderClass__: 're.Match',
+    string, re: pattern, pos, endpos, lastindex,
+    lastgroup: lastindex === null ? null : (Object.keys(groupIndex).find((k) => groupIndex[k] === lastindex) || null),
+    group: (...gs) => (gs.length <= 1 ? val(resolve(gs[0])) : gs.map((g) => val(resolve(g)))),
+    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]); return out; },
+    groupdict: (dflt) => { const o = {}; for (const [k, i] of Object.entries(groupIndex)) o[k] = m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]; return o; },
+    start: (g) => span(g)[0],
+    end: (g) => span(g)[1],
+    span,
+    expand: (template) => _reExpand(template, (i) => val(resolve(i))),
+    __getitem__: (g) => val(resolve(g)),
+    __bool__: () => true,
+    __repr__: () => `<re.Match object; span=(${span(0).join(', ')}), match=${pyRepr(m[0])}>`,
+  };
+  return obj;
+}
+
+// a replacement template: \1 … \99, \g<name>, \g<1>, and the usual escapes
+function _reExpand(template, group) {
+  let out = '';
+  for (let i = 0; i < template.length; i++) {
+    const c = template[i];
+    if (c !== '\\') { out += c; continue; }
+    const n = template[i + 1];
+    if (n === 'g' && template[i + 2] === '<') {
+      const close = template.indexOf('>', i + 3);
+      const ref = template.slice(i + 3, close);
+      out += group(/^\d+$/.test(ref) ? +ref : ref) ?? '';
+      i = close;
+    } else if (/\d/.test(n)) {
+      let num = n;
+      if (/\d/.test(template[i + 2] || '')) { num += template[i + 2]; i++; }
+      out += group(+num) ?? '';
+      i++;
+    } else {
+      out += { n: '\n', t: '\t', r: '\r', f: '\f', v: '\v', a: '\x07', b: '\b', '\\': '\\' }[n] ?? ('\\' + n);
+      i++;
+    }
+  }
+  return out;
+}
+
+function _reCompile(pattern, flags) {
+  if (pattern && pattern.__adderClass__ === 're.Pattern') return pattern;
+  const t = _reTranslate(pattern, flags);
+  let probe;
+  try { probe = new RegExp(t.source, t.flags); } catch (e) { throw new AdderError('re.error', String(e.message || e)); }
+  void probe;
+  const { count, names } = _reGroupNames(t.source);
+  const make = (extra) => new RegExp(t.source, t.flags + 'd' + extra);
+  const P = {
+    __adderClass__: 're.Pattern',
+    pattern, flags: t.pyFlags, groups: count, groupindex: names,
+    __repr__: () => `re.compile(${pyRepr(pattern)})`,
+  };
+  const at = (s, pos, endpos, sticky) => {
+    const end = endpos == null ? s.length : Math.min(endpos, s.length);
+    const re = make(sticky ? 'y' : 'g');
+    re.lastIndex = pos || 0;
+    const m = re.exec(s.slice(0, end));
+    return m ? _reMatchObject(m, P, s, pos || 0, end) : null;
+  };
+  P.search = (s, pos, endpos) => at(s, pos, endpos, false);
+  P.match = (s, pos, endpos) => at(s, pos, endpos, true);
+  P.fullmatch = (s, pos, endpos) => {
+    const end = endpos == null ? s.length : Math.min(endpos, s.length);
+    const re = new RegExp(`(?:${t.source})(?![\\s\\S])`, t.flags + 'dy');
+    re.lastIndex = pos || 0;
+    const m = re.exec(s.slice(0, end));
+    return m ? _reMatchObject(m, P, s, pos || 0, end) : null;
+  };
+  const allMatches = (s) => {
+    const re = make('g');
+    const out = [];
+    let m;
+    while ((m = re.exec(s))) { out.push(m); if (m[0] === '') re.lastIndex++; }
+    return out;
+  };
+  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? m[0] : count === 1 ? (m[1] ?? '') : m.slice(1).map((g) => g ?? '')));
+  P.finditer = (s) => allMatches(s).map((m) => _reMatchObject(m, P, s, 0, s.length));
+  P.split = (s, maxsplit) => {
+    if (maxsplit && maxsplit._kw) maxsplit = maxsplit.maxsplit;
+    const out = [];
+    let last = 0, n = 0;
+    for (const m of allMatches(s)) {
+      if (maxsplit && n >= maxsplit) break;
+      out.push(s.slice(last, m.index), ...m.slice(1).map((g) => (g === undefined ? null : g)));
+      last = m.index + m[0].length;
+      n++;
+    }
+    out.push(s.slice(last));
+    return out;
+  };
+  P.subn = (repl, s, count = 0) => {
+    if (count && count._kw) count = count.count;
+    const ms = allMatches(s).slice(0, count > 0 ? count : undefined);
+    const pieces = ms.map((m) => {
+      if (typeof repl === 'function') return repl(_reMatchObject(m, P, s, 0, s.length));
+      return _reExpand(String(repl), (i) => (m[i] === undefined ? '' : m[i]));
+    });
+    const build = (ps) => {
+      let out = '', last = 0;
+      ms.forEach((m, i) => { out += s.slice(last, m.index) + (ps[i] ?? ''); last = m.index + m[0].length; });
+      return [out + s.slice(last), ms.length];
+    };
+    return pieces.some((x) => x && typeof x.then === 'function') ? Promise.all(pieces).then(build) : build(pieces);
+  };
+  P.sub = (repl, s, count = 0) => {
+    const r = P.subn(repl, s, count);
+    return r && typeof r.then === 'function' ? r.then((x) => x[0]) : r[0];
+  };
+  return P;
 }
 
 const _reModule = {
-  match: (pattern, string) => { const m = string.match(new RegExp(_pyRegexToJs(pattern))); return m ? _reMatch(m) : null; },
-  search: (pattern, string) => { const m = string.match(new RegExp(_pyRegexToJs(pattern))); return m ? _reMatch(m) : null; },
-  findall: (pattern, string) => { const re = new RegExp(_pyRegexToJs(pattern), 'g'); const r = []; let m; while ((m = re.exec(string))) r.push(m[1] !== undefined ? m[1] : m[0]); return r; },
-  sub: (pattern, repl, string, count) => {
-    const jsPat = _pyRegexToJs(pattern);
-    if (count !== undefined && count > 0) {
-      let n = 0;
-      return string.replace(new RegExp(jsPat, 'g'), (...args) => n++ < count ? (typeof repl === 'function' ? repl(_reMatch(_reMatchFromArgs(args))) : repl) : args[0]);
-    }
-    return string.replace(new RegExp(jsPat, 'g'), typeof repl === 'function' ? (...args) => repl(_reMatch(_reMatchFromArgs(args))) : repl);
+  ...RE_FLAGS,
+  compile: (pattern, flags) => _reCompile(pattern, flags),
+  search: (pattern, string, flags) => _reCompile(pattern, flags).search(string),
+  match: (pattern, string, flags) => _reCompile(pattern, flags).match(string),
+  fullmatch: (pattern, string, flags) => _reCompile(pattern, flags).fullmatch(string),
+  findall: (pattern, string, flags) => _reCompile(pattern, flags).findall(string),
+  finditer: (pattern, string, flags) => _reCompile(pattern, flags).finditer(string),
+  split: (pattern, string, maxsplit, flags) => {
+    if (maxsplit && maxsplit._kw) { flags = maxsplit.flags; maxsplit = maxsplit.maxsplit; }
+    return _reCompile(pattern, flags).split(string, maxsplit);
   },
-  split: (pattern, string, maxsplit) => {
-    const jsPat = _pyRegexToJs(pattern);
-    if (maxsplit !== undefined) {
-      const parts = []; let rest = string;
-      for (let i = 0; i < maxsplit; i++) {
-        const m = rest.match(new RegExp(jsPat));
-        if (!m) break;
-        parts.push(rest.slice(0, m.index));
-        rest = rest.slice(m.index + m[0].length);
-      }
-      parts.push(rest);
-      return parts;
-    }
-    return string.split(new RegExp(jsPat));
+  sub: (pattern, repl, string, count, flags) => {
+    if (count && count._kw) { flags = count.flags; count = count.count; }
+    return _reCompile(pattern, flags).sub(repl, string, count || 0);
   },
-  compile: (pattern) => {
-    const jsPat = _pyRegexToJs(pattern);
-    const re = new RegExp(jsPat, 'g');
-    return {
-      match: (s) => { re.lastIndex = 0; const m = re.exec(s); return m && m.index === 0 ? _reMatch(m) : null; },
-      search: (s) => { re.lastIndex = 0; const m = re.exec(s); return m ? _reMatch(m) : null; },
-      findall: (s) => { re.lastIndex = 0; const r = []; let m; while ((m = re.exec(s))) r.push(m[1] !== undefined ? m[1] : m[0]); return r; },
-      sub: (repl, s) => s.replace(new RegExp(jsPat, 'g'), repl),
-      split: (s) => s.split(new RegExp(jsPat)),
-    };
+  subn: (pattern, repl, string, count, flags) => {
+    if (count && count._kw) { flags = count.flags; count = count.count; }
+    return _reCompile(pattern, flags).subn(repl, string, count || 0);
   },
-  escape: (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-  IGNORECASE: 'i', I: 'i',
-  MULTILINE: 'm', M: 'm',
-  DOTALL: 's', S: 's',
+  escape: (s) => String(s).replace(/[()[\]{}?*+\-|^$\\.&~# \t\n\r\v\f]/g, '\\$&'),
+  error: Object.assign((msg) => new AdderError('re.error', msg), { _pyName: 'error', _pyClass: true }),
 };
 
-function _reMatchFromArgs(args) {
-  // Reconstruct match object from replace callback args
-  const m = [args[0]];
-  let i = 1;
-  while (i < args.length && typeof args[i] !== 'number') { m.push(args[i]); i++; }
-  m.index = args[i]; m.input = args[i + 1];
-  if (typeof args[i + 2] === 'object') m.groups = args[i + 2];
-  return m;
-}
-
-function _reMatch(m) {
-  return {
-    group: (n) => n === undefined ? m[0] : (typeof n === 'string' ? (m.groups?.[n] ?? null) : m[n]),
-    groups: () => m.slice(1),
-    groupdict: () => m.groups || {},
-    start: () => m.index,
-    end: () => m.index + m[0].length,
-    span: () => [m.index, m.index + m[0].length],
-    string: m.input,
-    0: m[0],
-  };
-}
 
 // ── string module ──
 
@@ -2833,6 +3263,7 @@ function _pyIsInstance(obj, typeOrTuple) {
         // type object — match by name
         if (name === t._pyName) return true;
         if (t._pyName === 'object') return true;
+        if (t._pyName === 'dict' && (obj instanceof Map || isPlainDict(obj))) return true;
         if (t._pyName === 'int' && typeof obj === 'boolean') return true;
         // walk MRO of the object's adder type
         const objType = obj?.__adderType__;
