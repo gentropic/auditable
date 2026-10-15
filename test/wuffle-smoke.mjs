@@ -112,6 +112,17 @@ const labels = await p.evaluate(() => {
 chk(`mode toggle relabels (plane ${labels.plane}, line ${labels.line})`,
   labels.plane[0] === 'dip dir' && labels.plane[1] === 'dip' && labels.line[0] === 'trend' && labels.line[1] === 'plunge');
 
+// 9. the live reading points the right way (bearing 0.2.4: until then every attitude read 180° off). Worked by hand:
+// facing North, top edge raised 30° → the plane dips 180/30; top North and lowered 30° → the line plunges 000/30
+const live = async (mode, beta) => p.evaluate(([mode, beta]) => {
+  document.getElementById(mode === 'plane' ? 'mPlane' : 'mLine').click();
+  window.dispatchEvent(new DeviceOrientationEvent('deviceorientationabsolute', { alpha: 0, beta, gamma: 0, absolute: true }));
+  return [parseFloat(document.getElementById('v1').textContent), parseFloat(document.getElementById('v2').textContent)];
+}, [mode, beta]);
+const pl = await live('plane', 30), ln = await live('line', -30);
+chk(`live attitudes by hand (plane ${pl.join('/')} want 180/30, line ${ln.join('/')} want 0/30)`,
+  Math.round(pl[0]) === 180 && Math.round(pl[1]) === 30 && Math.round(ln[0]) % 360 === 0 && Math.round(ln[1]) === 30);
+
 await browser.close();
 server.close();
 console.log(`\nwuffle-smoke: ${pass} passed, ${fail} failed`);

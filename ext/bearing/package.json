@@ -1,6 +1,6 @@
 {
   "name": "@gcu/bearing",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "type": "module",
   "private": true,
   "description": "Vendored build of @gcu/bearing (structural-geology stereonet library) — shipped as a Works /usr/lib builtin so load('@gcu/bearing') resolves the current version offline.",
