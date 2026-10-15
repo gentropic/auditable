@@ -635,8 +635,15 @@ function lowerStmt_ad(ctx, node) {
       return lowerWith(ctx, node);
 
     case 'Raise': {
-      const exc = node.exc ? lowerExpr_ad(ctx, node.exc) : ctx.emit('const', [null], VOID, l);
-      emitPyCall(ctx, 'raise', [exc], l, VOID);
+      if (!node.exc) {
+        // bare raise: the exception this handler is handling, else Python's RuntimeError
+        if (ctx._excName) ctx.emit('throw', [ctx.emit('load', [ctx._excName], DYNAMIC, l).id], VOID, l);
+        else emitPyCall(ctx, 'reraise', [], l, VOID);
+        return null;
+      }
+      const exc = lowerExpr_ad(ctx, node.exc);
+      if (node.hasCause) emitPyCall(ctx, 'raise', [exc, lowerExpr_ad(ctx, node.cause)], l, VOID);
+      else emitPyCall(ctx, 'raise', [exc], l, VOID);
       return null;
     }
 
@@ -1236,77 +1243,81 @@ function lowerAnnAssign(ctx, node) {
 
 function lowerTry_ad(ctx, node) {
   // try: body [except [Type] [as name]: handler] [else: orelse] [finally: finalbody]
+  //
+  //   try {                                  ← only when there is a finally
+  //     let __noexc = false;                 ← only when there is an else
+  //     try { body; __noexc = true; }
+  //     catch (__exc) { BudgetExceeded passes; handler ladder; else re-throw }
+  //     if (__noexc) { else }                ← outside the handlers, as in Python
+  //   } finally { finalbody }
   const l = ctx.loc(node);
+  const hasHandlers = !!(node.handlers && node.handlers.length);
+  const hasElse = !!(node.orelse && node.orelse.length) && hasHandlers;
+  const flag = hasElse ? ctx.makeTempName('noexc') : null;
 
-  // try body (plus else clause appended — represents Python's "run else
-  // only when no exception" semantically by treating it as the tail of
-  // the try body)
-  const tryBody = captureOps(ctx, () => {
-    for (const s of node.body) lowerStmt_ad(ctx, s);
-    if (node.orelse && node.orelse.length) {
-      for (const s of node.orelse) lowerStmt_ad(ctx, s);
+  const inner = captureOps(ctx, () => {
+    if (flag) emitRaw(ctx, `let ${flag} = false;`, flag);
+    const tryBody = captureOps(ctx, () => {
+      for (const st of node.body) lowerStmt_ad(ctx, st);
+      if (flag) emitRaw(ctx, `${flag} = true;`);
+      if (!hasHandlers && node.orelse && node.orelse.length) for (const st of node.orelse) lowerStmt_ad(ctx, st);
+    });
+
+    let catchParam = null;
+    let catchBody = [];
+    if (hasHandlers) {
+      catchParam = '__exc';
+      const bindName = (h) => {
+        if (!h.name) return;
+        const v = emitPyCall(ctx, 'excValue', [ctx.emit('load', [catchParam], DYNAMIC, l)], l);
+        ctx.emit('store', [h.name, v.id], VOID, l);
+        ctx.symbols.set(h.name, v.id);
+      };
+      const handlerBody = (h) => {
+        const saved = ctx._excName;
+        ctx._excName = catchParam;
+        try { for (const st of h.body) lowerStmt_ad(ctx, st); } finally { ctx._excName = saved; }
+      };
+      const buildHandler = (idx) => {
+        if (idx >= node.handlers.length) {
+          ctx.emit('throw', [ctx.emit('load', [catchParam], DYNAMIC, l).id], VOID, l);
+          return;
+        }
+        const h = node.handlers[idx];
+        if (!h.excType) { bindName(h); handlerBody(h); return; }
+        const excType = lowerExpr_ad(ctx, h.excType);
+        const cond = emitPyCall(ctx, 'matchException', [ctx.emit('load', [catchParam], DYNAMIC, l), excType], l, BOOL);
+        const thenBody = captureOps(ctx, () => { bindName(h); handlerBody(h); });
+        const elseBody = captureOps(ctx, () => buildHandler(idx + 1));
+        ctx.emit('if_region', [cond.id], VOID, l, { then_body: thenBody, else_body: elseBody, phis: [] });
+      };
+      catchBody = captureOps(ctx, () => {
+        // the run budget is not an exception a program may catch
+        emitRaw(ctx, `if (${catchParam} && ${catchParam}.pyType === 'BudgetExceeded') throw ${catchParam};`);
+        buildHandler(0);
+      });
+    }
+    if (hasHandlers) {
+      ctx.emit('try_region', [], VOID, l, {
+        try_body: tryBody, catch_param: catchParam, catch_body: catchBody, finally_body: [],
+      });
+    } else {
+      for (const op of tryBody) ctx.ops.push(op);   // try/finally: the finally wraps it below
+    }
+    if (flag) {
+      const cond = ctx.emit('load', [flag], BOOL, l);
+      const elseBody = captureOps(ctx, () => { for (const st of node.orelse) lowerStmt_ad(ctx, st); });
+      ctx.emit('if_region', [cond.id], VOID, l, { then_body: elseBody, else_body: [], phis: [] });
     }
   });
 
-  // Catch handlers — build a combined catch body that checks each handler's type
-  // Use a single JS catch(__e) that does an if/else chain of _py.matchException.
-  let catchParam = null;
-  let catchBody = [];
-  if (node.handlers && node.handlers.length) {
-    catchParam = '__exc';
-
-    // We'll manually build a nested if_region ladder
-    function buildHandler(idx) {
-      if (idx >= node.handlers.length) {
-        // No handler matched — re-throw
-        const excLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-        ctx.emit('throw', [excLoad.id], VOID, l);
-        return;
-      }
-      const h = node.handlers[idx];
-      if (!h.excType) {
-        // bare except: catches everything
-        if (h.name) {
-          const excLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-          ctx.emit('store', [h.name, excLoad.id], VOID, l);
-          ctx.symbols.set(h.name, excLoad.id);
-        }
-        for (const s of h.body) lowerStmt_ad(ctx, s);
-        return;
-      }
-      const excType = lowerExpr_ad(ctx, h.excType);
-      const excLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-      const cond = emitPyCall(ctx, 'matchException', [excLoad, excType], l, BOOL);
-
-      const thenBody = captureOps(ctx, () => {
-        if (h.name) {
-          const excLoad2 = ctx.emit('load', [catchParam], DYNAMIC, l);
-          ctx.emit('store', [h.name, excLoad2.id], VOID, l);
-          ctx.symbols.set(h.name, excLoad2.id);
-        }
-        for (const s of h.body) lowerStmt_ad(ctx, s);
-      });
-      const elseBody = captureOps(ctx, () => buildHandler(idx + 1));
-      ctx.emit('if_region', [cond.id], VOID, l, {
-        then_body: thenBody, else_body: elseBody, phis: [],
-      });
-    }
-    catchBody = captureOps(ctx, () => buildHandler(0));
+  if (!(node.finalbody && node.finalbody.length)) {
+    for (const op of inner) ctx.ops.push(op);
+    return null;
   }
-
-  // Finally
-  let finallyBody = [];
-  if (node.finalbody && node.finalbody.length) {
-    finallyBody = captureOps(ctx, () => {
-      for (const s of node.finalbody) lowerStmt_ad(ctx, s);
-    });
-  }
-
+  const finallyBody = captureOps(ctx, () => { for (const st of node.finalbody) lowerStmt_ad(ctx, st); });
   return ctx.emit('try_region', [], VOID, l, {
-    try_body: tryBody,
-    catch_param: catchParam,
-    catch_body: catchBody,
-    finally_body: finallyBody,
+    try_body: inner, catch_param: null, catch_body: [], finally_body: finallyBody,
   });
 }
 
@@ -1886,6 +1897,8 @@ function lowerFuncDef(ctx, node) {
   // then the defaults, once, here in the enclosing scope (Python semantics)
   const savedDefaults = ctx._paramDefaults;
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
+  const savedExcName = ctx._excName;
+  ctx._excName = null;
 
   // Lower body in nested scope. The save-and-Map-clone idiom we used to
   // run is replaced by ScopeChain push/pop now that ctx.symbols extends
@@ -1918,6 +1931,7 @@ function lowerFuncDef(ctx, node) {
   ctx.topLevel = savedTopLevel;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
+  ctx._excName = savedExcName;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;

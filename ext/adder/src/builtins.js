@@ -31,11 +31,13 @@ export class AdderRange {
 // ── AdderError ──
 
 export class AdderError extends Error {
-  constructor(pyType, message, adderLine) {
+  // args: the Python exception's constructor arguments, when known (str/repr use them)
+  constructor(pyType, message, adderLine, args) {
     super(`${pyType}: ${message}${adderLine ? ` (line ${adderLine})` : ''}`);
     this.pyType = pyType;
     this.pyMessage = message;
     this.adderLine = adderLine;
+    if (args) this.args = args;
   }
 }
 
@@ -139,6 +141,7 @@ export function pyTypeName(v) {
   if (v instanceof Uint8Array) return 'bytes';
   if (typeof v === 'function') return 'function';
   if (v?.__adderClass__) return v.__adderClass__;
+  if (v instanceof AdderError) return v.pyType;
   if (isPlainDict(v)) return 'dict';
   return 'object';
 }
@@ -199,10 +202,17 @@ function _typedRepr(v) {
 
 export function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
-  if (v instanceof AdderError) return `${v.pyType}(${pyRepr(String(v.pyMessage))})`;
+  if (v instanceof AdderError) {
+    if (v.args) return `${v.pyType}(${v.args.map(pyRepr).join(', ')})`;
+    return `${v.pyType}(${v.pyMessage === '' || v.pyMessage == null ? '' : pyRepr(String(v.pyMessage))})`;
+  }
+  // a user exception instance without its own __repr__: Name(args)
+  if (v && typeof v === 'object' && typeof v.__repr__ !== 'function' && isExceptionClass(v.__adderType__)) {
+    return `${v.__adderType__._pyName}(${(v.args || []).map(pyRepr).join(', ')})`;
+  }
   if (v === true) return 'True';
   if (v === false) return 'False';
-  if (typeof v === 'string') return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (typeof v === 'string') return _strRepr(v);
   if (typeof v === 'number') return _numRepr(v);
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -228,7 +238,8 @@ export function pyRepr(v) {
 
 export function pyStr(v) {
   if (v === null || v === undefined) return 'None';
-  if (v instanceof AdderError) return String(v.pyMessage);
+  if (v instanceof AdderError) return v.args ? _argsStr(v.pyType, v.args) : String(v.pyMessage ?? '');
+  if (v && typeof v === 'object' && typeof v.__str__ !== 'function' && isExceptionClass(v.__adderType__)) return _argsStr(v.__adderType__._pyName, v.args);
   if (v === true) return 'True';
   if (v === false) return 'False';
   if (typeof v === 'string') return v;
@@ -277,11 +288,59 @@ export function pyReprMaybe(v) {
 }
 export function pyStrMaybe(v) {
   if (typeof v === 'string') return v;
+  if (v instanceof AdderError) return pyStr(v);
+  if (v && typeof v === 'object' && typeof v.__str__ !== 'function' && isExceptionClass(v.__adderType__)) return pyStr(v);
   if (_hasUserDunder(v, '__str__')) {
     const r = v.__str__();
     return _isThenable(r) ? r.then(String) : String(r);
   }
   return pyReprMaybe(v);
+}
+
+// repr of a str, as Python writes it: single quotes unless the text has a ' and no ",
+// backslash escapes for \\ \n \r \t and the other control characters
+function _strRepr(s) {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let out = q;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (ch === '\\') out += '\\\\';
+    else if (ch === q) out += '\\' + q;
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\t') out += '\\t';
+    else if (c < 0x20 || c === 0x7f) out += '\\x' + c.toString(16).padStart(2, '0');
+    else out += ch;
+  }
+  return out + q;
+}
+
+// int(str, base): Python's whole-string rule (JS parseInt stops at the first bad digit and
+// accepts "12abc"): optional sign, a 0x/0o/0b prefix (required to match a 16/8/2 base, or
+// choosing the base when base is 0), underscores between digits, surrounding whitespace.
+function _parseIntStrict(str, base) {
+  const bad = () => new AdderError('ValueError', `invalid literal for int() with base ${base}: ${pyRepr(str)}`);
+  if (base !== 0 && (base < 2 || base > 36)) throw new AdderError('ValueError', 'int() base must be >= 2 and <= 36, or 0');
+  const m = /^\s*([+-]?)(0[xXoObB])?((?:[0-9a-zA-Z]_?)*[0-9a-zA-Z])\s*$/.exec(str);
+  if (!m) throw bad();
+  const pref = m[2] ? m[2][1].toLowerCase() : null;
+  const pbase = pref === 'x' ? 16 : pref === 'o' ? 8 : pref === 'b' ? 2 : null;
+  let b = base;
+  if (base === 0) {
+    b = pbase || 10;
+    if (!pbase && /^0+[1-9]/.test(m[3])) throw bad();   // base 0 refuses leading zeros
+  } else if (pbase && pbase !== base) {
+    throw bad();
+  }
+  const digits = m[3].replace(/_/g, '').toLowerCase();
+  let n = 0n;
+  for (const ch of digits) {
+    const d = parseInt(ch, 36);
+    if (Number.isNaN(d) || d >= b) throw bad();
+    n = n * BigInt(b) + BigInt(d);
+  }
+  if (m[1] === '-') n = -n;
+  return Number(n);
 }
 
 // ── iteration helper ──
@@ -417,6 +476,12 @@ function _isNativeClass(fn) {
 }
 
 export function adderGetAttr(obj, attr) {
+  if (obj instanceof AdderError) {
+    if (attr === 'args') return obj.args || (obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
+    if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
+    if (attr === '__traceback__') return null;
+    if (attr === '__class__') return excTypeOf(obj);
+  }
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
     if (attr === '__name__' || attr === '__qualname__') return obj._pyName || obj.name || '<function>';
@@ -716,7 +781,7 @@ function _mapMethod(map, attr) {
     values: () => [...map.values()],
     items: () => [...map.entries()],
     get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
-    pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k)); },
+    pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
     update: (other) => { if (other instanceof Map) { for (const [k, v] of other) map.set(k, v); } else if (typeof other === 'object') { for (const k of Object.keys(other)) map.set(k, other[k]); } return null; },
     clear: () => { map.clear(); return null; },
@@ -732,7 +797,7 @@ const _objDictMethods = {
   values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
   items: (obj) => { const fn = () => Object.entries(obj); fn._pyName = 'dict.items'; return fn; },
   get: (obj) => { const fn = (k, def) => k in obj ? obj[k] : (def !== undefined ? def : null); fn._pyName = 'dict.get'; return fn; },
-  pop: (obj) => { const fn = (k, def) => { if (k in obj) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k)); }; fn._pyName = 'dict.pop'; return fn; },
+  pop: (obj) => { const fn = (k, def) => { if (k in obj) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
   setdefault: (obj) => { const fn = (k, def) => { if (k in obj) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
   update: (obj) => { const fn = (other) => { if (other instanceof Map) { for (const [k, v] of other) obj[k] = v; } else if (typeof other === 'object') Object.assign(obj, other); return null; }; fn._pyName = 'dict.update'; return fn; },
   clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
@@ -1256,11 +1321,125 @@ export const adderModules = {
 
 // ── filesystem exception hierarchy ──
 
+
+// ── exceptions: one model for both engines ──
+// Builtin exceptions are AdderErrors (pyType = the class name, args = the constructor's
+// arguments). A user class deriving from a builtin exception makes ordinary instances (with
+// `args`); raising one throws a wrapper AdderError whose pyValue is the instance, so `except
+// ValueError as e` binds the instance (type(e), e.args, isinstance work) while the error still
+// carries Python's message. excMatches is THE except-matcher (tree-walker and AIR); BudgetExceeded
+// is never caught, by any clause.
+
+// Python 3.13's hierarchy (the parts adder can raise or a program can name)
 export const _excParents = {
-  FileNotFoundError: 'OSError', FileExistsError: 'OSError',
-  IsADirectoryError: 'OSError', NotADirectoryError: 'OSError',
-  PermissionError: 'OSError', IOError: 'OSError',
+  Exception: 'BaseException', SystemExit: 'BaseException', KeyboardInterrupt: 'BaseException', GeneratorExit: 'BaseException',
+  ArithmeticError: 'Exception', AssertionError: 'Exception', AttributeError: 'Exception', BufferError: 'Exception',
+  EOFError: 'Exception', ImportError: 'Exception', LookupError: 'Exception', MemoryError: 'Exception',
+  NameError: 'Exception', OSError: 'Exception', ReferenceError: 'Exception', RuntimeError: 'Exception',
+  StopIteration: 'Exception', StopAsyncIteration: 'Exception', SyntaxError: 'Exception', SystemError: 'Exception',
+  TypeError: 'Exception', ValueError: 'Exception', Warning: 'Exception',
+  FloatingPointError: 'ArithmeticError', OverflowError: 'ArithmeticError', ZeroDivisionError: 'ArithmeticError',
+  ModuleNotFoundError: 'ImportError', IndexError: 'LookupError', KeyError: 'LookupError',
+  UnboundLocalError: 'NameError', NotImplementedError: 'RuntimeError', RecursionError: 'RuntimeError',
+  IndentationError: 'SyntaxError', TabError: 'IndentationError',
+  UnicodeError: 'ValueError', UnicodeDecodeError: 'UnicodeError', UnicodeEncodeError: 'UnicodeError',
+  BlockingIOError: 'OSError', ChildProcessError: 'OSError', ConnectionError: 'OSError', FileExistsError: 'OSError',
+  FileNotFoundError: 'OSError', InterruptedError: 'OSError', IsADirectoryError: 'OSError', NotADirectoryError: 'OSError',
+  PermissionError: 'OSError', ProcessLookupError: 'OSError', TimeoutError: 'OSError', IOError: 'OSError',
+  BrokenPipeError: 'ConnectionError', ConnectionAbortedError: 'ConnectionError',
+  ConnectionRefusedError: 'ConnectionError', ConnectionResetError: 'ConnectionError',
+  UserWarning: 'Warning', DeprecationWarning: 'Warning', RuntimeWarning: 'Warning', SyntaxWarning: 'Warning',
+  FutureWarning: 'Warning', ImportWarning: 'Warning', UnicodeWarning: 'Warning', BytesWarning: 'Warning', ResourceWarning: 'Warning',
 };
+const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
+// JS errors surfacing through compiled code or a JS library
+const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
+
+function _excChain(name) {
+  if (name === 'BudgetExceeded') return [name];
+  const out = [name];
+  let p = _excParents[name] || (name === 'BaseException' ? null : 'Exception');
+  while (p) { out.push(p); p = _excParents[p] || (p === 'BaseException' ? null : 'Exception'); }
+  return out;
+}
+
+// a builtin exception type object (ValueError, ...): a type with no MRO of its own
+export function isBuiltinExcType(t) {
+  return typeof t === 'function' && !!t._pyClass && !t._pyMRO && _EXC_NAMES.includes(t._pyName);
+}
+// a user class whose MRO reaches a builtin exception
+export function isExceptionClass(cls) {
+  if (typeof cls !== 'function' || !cls._pyMRO) return false;
+  if (cls._isExcClass === undefined) cls._isExcClass = cls._pyMRO.some((c) => c !== cls && isBuiltinExcType(c));
+  return cls._isExcClass;
+}
+// class construction calls this: an exception instance keeps its constructor arguments
+export function initExceptionInstance(cls, instance, args) {
+  if (!isExceptionClass(cls)) return;
+  const a = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.slice(0, -1) : args.slice();
+  instance.args = a;
+}
+function _argsStr(name, args) {
+  if (!args || args.length === 0) return '';
+  if (args.length === 1) return name === 'KeyError' ? pyRepr(args[0]) : pyStr(args[0]);
+  return `(${args.map(pyRepr).join(', ')})`;
+}
+// what a raise throws, for whatever was raised (an AdderError, a JS Error, a builtin or user
+// exception class or instance); may be a Promise when constructing a class is async
+export function excToThrowable(exc, line) {
+  if (exc instanceof AdderError || exc instanceof Error) return exc;
+  if (typeof exc === 'function' && (isBuiltinExcType(exc) || isExceptionClass(exc))) {
+    const inst = exc();
+    return inst && typeof inst.then === 'function' ? inst.then((i) => excToThrowable(i, line)) : excToThrowable(inst, line);
+  }
+  if (exc && typeof exc === 'object' && isExceptionClass(exc.__adderType__)) {
+    const cls = exc.__adderType__;
+    let msg = _argsStr(cls._pyName, exc.args);
+    if (typeof exc.__str__ === 'function') { try { const s = exc.__str__(); if (typeof s === 'string') msg = s; } catch { /* keep args */ } }
+    const err = new AdderError(cls._pyName, msg, line, exc.args || []);
+    err.pyValue = exc;
+    err.pyClass = cls;
+    return err;
+  }
+  return new AdderError('TypeError', 'exceptions must derive from BaseException', line);
+}
+// what `except ... as e` binds
+export function excValue(err) {
+  return err && err.pyValue !== undefined ? err.pyValue : err;
+}
+// the exception's names, most specific first, for matching
+function _excNames(err) {
+  if (err && err.pyValue && err.pyClass) {
+    const names = [];
+    for (const c of err.pyClass._pyMRO) {
+      if (isBuiltinExcType(c)) { names.push(..._excChain(c._pyName)); return names; }
+      names.push(c._pyName);
+    }
+    return names;
+  }
+  if (err instanceof AdderError) return _excChain(err.pyType);
+  if (err instanceof Error) return _excChain(/call stack/i.test(err.message || '') ? 'RecursionError' : (_JS_EXC[err.name] || 'Exception'));
+  return [];
+}
+export function excMatches(err, t) {
+  if (err && err.pyType === 'BudgetExceeded') return false;
+  if (t === null || t === undefined) return true;
+  if (Array.isArray(t)) return t.some((x) => excMatches(err, x));
+  if (typeof t === 'function' && t._pyMRO && !isBuiltinExcType(t)) {
+    const v = err && err.pyValue;
+    return !!(v && v.__adderType__ && v.__adderType__._pyMRO && v.__adderType__._pyMRO.includes(t));
+  }
+  if (typeof t === 'function' && !t._pyClass) { try { if (err instanceof t) return true; } catch { /* arrow */ } }
+  const name = typeof t === 'function' ? (t._pyName || t.name) : (typeof t === 'string' ? t : null);
+  return !!name && _excNames(err).includes(name);
+}
+// the type object of a caught exception (for __exit__ and type())
+export function excTypeOf(err) {
+  if (err && err.pyClass) return err.pyClass;
+  if (err instanceof AdderError) return _typeObjects[err.pyType] || null;
+  if (err instanceof Error) return _typeObjects[_JS_EXC[err.name] || 'Exception'] || null;
+  return null;
+}
 
 function _mapVFSError(e) {
   const map = { ENOENT: 'FileNotFoundError', EEXIST: 'FileExistsError',
@@ -1655,7 +1834,26 @@ export function adderBuiltins(printFn) {
       throw new AdderError('TypeError', `object of type '${pyTypeName(obj)}' has no len()`);
     },
     range: (a, b, c) => new AdderRange(a, b, c),
-    int: (x, base) => { if (x === undefined) return 0; if (base !== undefined) { const n = parseInt(String(x), base); if (isNaN(n)) throw new AdderError('ValueError', `invalid literal for int() with base ${base}: ${pyRepr(String(x))}`); return n; } if (typeof x === 'string') { const n = parseInt(x); if (isNaN(n)) throw new AdderError('ValueError', `invalid literal for int() with base 10: ${pyRepr(x)}`); return n; } return Math.trunc(Number(x)); },
+    int: (x, base) => {
+      if (base && base._kw) base = base.base;
+      if (x && x._kw) { base = x.base; x = undefined; }
+      if (x === undefined) return 0;
+      if (base !== undefined && base !== null) {
+        if (typeof x !== 'string') throw new AdderError('TypeError', "int() can't convert non-string with explicit base");
+        return _parseIntStrict(x, base);
+      }
+      if (typeof x === 'string') return _parseIntStrict(x, 10);
+      if (typeof x === 'boolean') return x ? 1 : 0;
+      if (typeof x === 'number') {
+        if (Number.isNaN(x)) throw new AdderError('ValueError', 'cannot convert float NaN to integer');
+        if (!Number.isFinite(x)) throw new AdderError('OverflowError', 'cannot convert float infinity to integer');
+        return Math.trunc(x) || 0;
+      }
+      if (typeof x === 'bigint') return x;
+      if (x && typeof x.__int__ === 'function') return x.__int__();
+      if (x && typeof x.__index__ === 'function') return x.__index__();
+      throw new AdderError('TypeError', `int() argument must be a string, a bytes-like object or a real number, not '${pyTypeName(x)}'`);
+    },
     float: (x) => { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; } return Number(x); },
     str: (x) => x === undefined ? '' : pyStrMaybe(x),
     bool: (x) => x === undefined ? false : pyBool(x),
@@ -1827,11 +2025,14 @@ export function adderBuiltins(printFn) {
   for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex']) {
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = builtins[name]; }
   }
-  for (const name of ['ValueError', 'TypeError', 'KeyError', 'IndexError', 'AttributeError',
-                       'RuntimeError', 'StopIteration', 'ZeroDivisionError', 'NotImplementedError',
-                       'AssertionError', 'Exception', 'FileNotFoundError', 'FileExistsError',
-                       'IsADirectoryError', 'NotADirectoryError', 'PermissionError', 'OSError', 'IOError']) {
-    if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; _typeObjects[name] = builtins[name]; }
+  for (const name of _EXC_NAMES) {
+    const ctor = (...a) => {
+      if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+      return new AdderError(name, _argsStr(name, a), undefined, a);
+    };
+    ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
+    builtins[name] = ctor;
+    _typeObjects[name] = ctor;
   }
   return builtins;
 }

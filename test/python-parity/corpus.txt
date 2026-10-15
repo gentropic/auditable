@@ -560,3 +560,54 @@ print(str([1, "a", None, True, 2.5]), str((1,)), str({"k": (1, 2)}), str([[]]))
 print(eval("1 + 2 * 3"), eval("[x for x in range(3)]"))
 ### builtin/input-free
 print(callable(print), callable(5), abs.__name__ if hasattr(abs, "__name__") else "abs")
+
+### exc/hierarchy
+out = []
+for f in [lambda: {}["k"], lambda: [][1], lambda: 1 / 0, lambda: int("x"), lambda: None.foo]:
+    try:
+        f()
+    except LookupError as e:
+        out.append("lookup " + type(e).__name__)
+    except ArithmeticError as e:
+        out.append("arith " + type(e).__name__)
+    except Exception as e:
+        out.append("exc " + type(e).__name__)
+print(out)
+### exc/raise-class-and-subclass
+class AppError(Exception):
+    pass
+class DbError(AppError):
+    def __init__(self, table):
+        super().__init__(f"bad table {table}")
+        self.table = table
+for thrower in [AppError, lambda: DbError("t1")]:
+    try:
+        raise thrower() if not isinstance(thrower, type) else thrower
+    except AppError as e:
+        print(type(e).__name__, str(e), isinstance(e, Exception), getattr(e, "table", None))
+### exc/finally-after-handler-raises
+log = []
+try:
+    try:
+        raise ValueError("a")
+    except ValueError:
+        log.append("handler")
+        raise KeyError("b")
+    finally:
+        log.append("finally")
+except KeyError:
+    log.append("outer")
+print(log)
+### exc/else-not-protected
+try:
+    try:
+        x = 1
+    except ValueError:
+        print("wrongly caught")
+    else:
+        raise ValueError("from else")
+except ValueError as e:
+    print("outer got", e)
+### exc/args-and-str
+e = ValueError("a", 2)
+print(e.args, str(e), repr(e), str(KeyError("k")), repr(KeyError("k")), str(ValueError()), repr(ValueError()))

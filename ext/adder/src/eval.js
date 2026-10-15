@@ -8,7 +8,11 @@ import {
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper,
   pyStrMaybe, pyReprMaybe,
+  excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
+
+// the exceptions being handled (innermost last): a bare `raise` re-raises the top one
+const _excStack = [];
 
 // ── scope ──
 
@@ -212,11 +216,18 @@ export async function adderEval(node, scope) {
     // ── exceptions ──
     case 'Try': return _evalTry(node, scope);
     case 'Raise': {
-      const exc = node.exc ? await adderEval(node.exc, scope) : null;
-      if (exc instanceof AdderError) throw exc;
-      if (exc instanceof Error) throw exc;
-      if (typeof exc === 'function') throw await _callValue(exc, [], [], node.line);
-      throw new AdderError('RuntimeError', exc ? pyStr(exc) : 're-raise outside except', node.line);
+      if (!node.exc) {
+        if (_excStack.length) throw _excStack[_excStack.length - 1];
+        throw new AdderError('RuntimeError', 'No active exception to reraise', node.line);
+      }
+      const err = await excToThrowable(await adderEval(node.exc, scope), node.line);
+      if (node.hasCause) {
+        const c = await adderEval(node.cause, scope);
+        const cause = c === null ? null : excValue(await excToThrowable(c, node.line));
+        err.__cause__ = cause;
+        if (err.pyValue && typeof err.pyValue === 'object') err.pyValue.__cause__ = cause;
+      }
+      throw err;
     }
     case 'Assert': {
       const test = await adderEval(node.test, scope);
@@ -744,7 +755,7 @@ async function _evalSubscript(node, scope) {
   }
   const key = await adderEval(node.slice, scope);
   if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), node.line);
+    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), node.line, [key]);
     return obj.get(key);
   }
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -755,7 +766,7 @@ async function _evalSubscript(node, scope) {
   if (typeof obj === 'object' && obj !== null) {
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
     if (key in obj) return obj[key];
-    throw new AdderError('KeyError', pyRepr(key), node.line);
+    throw new AdderError('KeyError', pyRepr(key), node.line, [key]);
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`, node.line);
 }
@@ -1252,6 +1263,7 @@ async function _evalClass(node, scope) {
     for (const [k, v] of Object.entries(classVars)) {
       if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) instance[k] = v;
     }
+    initExceptionInstance(cls, instance, args);
     // call __init__ if present
     if (typeof cls.prototype.__init__ === 'function') {
       const result = cls.prototype.__init__.call(instance, ...args);
@@ -1433,7 +1445,7 @@ async function _evalWith(node, scope) {
     for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
   } catch (e) {
     for (const { mgr, exit } of managers.reverse()) {
-      const suppress = await exit.call(mgr, e.pyType || 'Exception', e, null);
+      const suppress = await exit.call(mgr, excTypeOf(e), excValue(e), null);
       if (!suppress) throw e;
     }
   }
@@ -1443,69 +1455,39 @@ async function _evalWith(node, scope) {
 // ── try/except ──
 
 async function _evalTry(node, scope) {
-  let caught = false;
   try {
-    for (const stmt of node.body) await adderEval(stmt, scope);
-  } catch (e) {
-    if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
-    caught = true;
-    let handled = false;
+    let raised = null;
+    try {
+      for (const stmt of node.body) await adderEval(stmt, scope);
+    } catch (e) {
+      if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
+      raised = e;
+    }
+    if (raised === null) {
+      for (const stmt of node.orelse) await adderEval(stmt, scope);
+      return null;
+    }
     for (const handler of node.handlers) {
-      let excTypeVal = null;
-      if (handler.excType) try { excTypeVal = await adderEval(handler.excType, scope); } catch {}
-      if (!handler.excType || _matchException(e, excTypeVal)) {
-        if (handler.name) scope.set(handler.name, e);
-        handled = true;
-        try {
-          for (const stmt of handler.body) await adderEval(stmt, scope);
-        } catch (e2) {
-          if (e2 instanceof _BreakSignal || e2 instanceof _ContinueSignal || e2 instanceof _ReturnSignal) throw e2;
-          throw e2;
-        }
-        break;
+      const excTypeVal = handler.excType ? await adderEval(handler.excType, scope) : null;
+      if (!excMatches(raised, excTypeVal)) continue;
+      if (handler.name) scope.set(handler.name, excValue(raised));
+      _excStack.push(raised);
+      try {
+        for (const stmt of handler.body) await adderEval(stmt, scope);
+      } finally {
+        _excStack.pop();
       }
+      return null;
     }
-    if (!handled) {
-      // execute finally before re-throwing
-      for (const stmt of node.finalbody) await adderEval(stmt, scope);
-      throw e;
-    }
+    throw raised;
+  } finally {
+    for (const stmt of node.finalbody) await adderEval(stmt, scope);
   }
-  if (!caught) {
-    // else clause runs if no exception
-    for (const stmt of node.orelse) await adderEval(stmt, scope);
-  }
-  // finally always runs
-  for (const stmt of node.finalbody) await adderEval(stmt, scope);
-  return null;
 }
 
 function _matchException(error, excTypeVal) {
-  if (!excTypeVal) return true;
-  if (Array.isArray(excTypeVal)) return excTypeVal.some(t => _matchException(error, t));
-  if (error instanceof AdderError) {
-    const targetName = typeof excTypeVal === 'function' ? (excTypeVal._pyName || excTypeVal.name) :
-                       (typeof excTypeVal === 'string' ? excTypeVal : null);
-    if (targetName) {
-      if (error.pyType === targetName) return true;
-      let pt = _excParents[error.pyType];
-      while (pt) { if (pt === targetName) return true; pt = _excParents[pt]; }
-    }
-  }
-  // custom class exceptions — walk prototype chain
-  if (typeof excTypeVal === 'function' && excTypeVal._pyClass && error !== null && typeof error === 'object') {
-    let proto = error;
-    while (proto) {
-      if (proto.__adderClass__ === (excTypeVal._pyName || excTypeVal.name)) return true;
-      proto = Object.getPrototypeOf(proto);
-    }
-  }
-  if (typeof excTypeVal === 'function' && !excTypeVal._pyClass) {
-    try { return error instanceof excTypeVal; } catch { /* arrow fn without prototype */ }
-  }
-  return false;
+  return excMatches(error, excTypeVal);
 }
-
 // ── super() / eval() / exec() builtins ──
 
 function _evalSuperCall(args, scope, line) {

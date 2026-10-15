@@ -18,7 +18,6 @@
   "str/percent": "output",
   "str/fstring-spec": "output",
   "str/fstring-expr": "output",
-  "str/repr-escapes": "output",
   "str/encode": "error AttributeError vs CPython null",
   "str/partition": "output",
   "str/maketrans": "error AttributeError vs CPython null",
@@ -44,13 +43,7 @@
   "cls/default-repr": "output",
   "cls/dataclass": "error ModuleNotFoundError vs CPython null",
   "cls/lt-sorting": "output",
-  "exc/try-except-else-finally": "output",
-  "exc/raise-custom": "error RuntimeError vs CPython null",
-  "exc/str-repr": "output",
-  "exc/reraise": "error RuntimeError vs CPython null",
-  "exc/raise-from": "error SyntaxError vs CPython null",
-  "exc/multiple-except": "output",
-  "exc/with-statement": "error AttributeError vs CPython null",
+  "exc/raise-custom": "output",
   "mod/math": "error AttributeError vs CPython null",
   "mod/math-int": "error AttributeError vs CPython null",
   "mod/json": "output",
@@ -72,7 +65,9 @@
   "builtin/type-names": "error AttributeError vs CPython null",
   "builtin/sum-start": "output",
   "builtin/sorted-stable": "error AttributeError vs CPython null",
-  "builtin/str-of-containers": "output"
+  "builtin/str-of-containers": "output",
+  "exc/raise-class-and-subclass": "error AttributeError vs CPython null",
+  "exc/args-and-str": "output"
  },
  "auto": {
   "num/int-float-print": "output",
@@ -92,7 +87,6 @@
   "str/percent": "output",
   "str/fstring-spec": "output",
   "str/fstring-expr": "output",
-  "str/repr-escapes": "output",
   "str/encode": "error AttributeError vs CPython null",
   "str/partition": "output",
   "str/maketrans": "error AttributeError vs CPython null",
@@ -117,12 +111,7 @@
   "cls/default-repr": "output",
   "cls/dataclass": "error ModuleNotFoundError vs CPython null",
   "cls/lt-sorting": "output",
-  "exc/raise-custom": "error ReferenceError vs CPython null",
-  "exc/str-repr": "error ReferenceError vs CPython null",
-  "exc/reraise": "error Error vs CPython null",
-  "exc/raise-from": "error SyntaxError vs CPython null",
-  "exc/multiple-except": "error ReferenceError vs CPython null",
-  "exc/with-statement": "output",
+  "exc/raise-custom": "output",
   "mod/math": "error AttributeError vs CPython null",
   "mod/math-int": "error AttributeError vs CPython null",
   "mod/json": "output",
@@ -144,6 +133,8 @@
   "builtin/type-names": "error AttributeError vs CPython null",
   "builtin/sum-start": "output",
   "builtin/sorted-stable": "error AttributeError vs CPython null",
-  "builtin/str-of-containers": "output"
+  "builtin/str-of-containers": "output",
+  "exc/raise-class-and-subclass": "error AttributeError vs CPython null",
+  "exc/args-and-str": "output"
  }
 }

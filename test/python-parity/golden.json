@@ -532,6 +532,26 @@
   "builtin/input-free": {
    "out": "True False abs\n",
    "error": null
+  },
+  "exc/hierarchy": {
+   "out": "['lookup KeyError', 'lookup IndexError', 'arith ZeroDivisionError', 'exc ValueError', 'exc AttributeError']\n",
+   "error": null
+  },
+  "exc/raise-class-and-subclass": {
+   "out": "AppError  True None\nDbError bad table t1 True t1\n",
+   "error": null
+  },
+  "exc/finally-after-handler-raises": {
+   "out": "['handler', 'finally', 'outer']\n",
+   "error": null
+  },
+  "exc/else-not-protected": {
+   "out": "outer got from else\n",
+   "error": null
+  },
+  "exc/args-and-str": {
+   "out": "('a', 2) ('a', 2) ValueError('a', 2) 'k' KeyError('k')  ValueError()\n",
+   "error": null
   }
  }
 }

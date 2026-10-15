@@ -1081,6 +1081,8 @@ class _Parser {
     const t = this.advance();
     let exc = null;
     if (!this.at('NEWLINE') && !this.at('OP', ';') && !this.at('EOF')) exc = this.parseExpr();
+    // raise X from Y (Y may be None): `hasCause` tells `from None` from no `from` at all
+    if (exc && this.eat('NAME', 'from')) return { type: 'Raise', exc, cause: this.parseExpr(), hasCause: true, line: t.line, col: t.col };
     return { type: 'Raise', exc, line: t.line, col: t.col };
   }
 
@@ -1792,11 +1794,13 @@ class AdderRange {
 // ── AdderError ──
 
 class AdderError extends Error {
-  constructor(pyType, message, adderLine) {
+  // args: the Python exception's constructor arguments, when known (str/repr use them)
+  constructor(pyType, message, adderLine, args) {
     super(`${pyType}: ${message}${adderLine ? ` (line ${adderLine})` : ''}`);
     this.pyType = pyType;
     this.pyMessage = message;
     this.adderLine = adderLine;
+    if (args) this.args = args;
   }
 }
 
@@ -1900,6 +1904,7 @@ function pyTypeName(v) {
   if (v instanceof Uint8Array) return 'bytes';
   if (typeof v === 'function') return 'function';
   if (v?.__adderClass__) return v.__adderClass__;
+  if (v instanceof AdderError) return v.pyType;
   if (isPlainDict(v)) return 'dict';
   return 'object';
 }
@@ -1960,10 +1965,17 @@ function _typedRepr(v) {
 
 function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
-  if (v instanceof AdderError) return `${v.pyType}(${pyRepr(String(v.pyMessage))})`;
+  if (v instanceof AdderError) {
+    if (v.args) return `${v.pyType}(${v.args.map(pyRepr).join(', ')})`;
+    return `${v.pyType}(${v.pyMessage === '' || v.pyMessage == null ? '' : pyRepr(String(v.pyMessage))})`;
+  }
+  // a user exception instance without its own __repr__: Name(args)
+  if (v && typeof v === 'object' && typeof v.__repr__ !== 'function' && isExceptionClass(v.__adderType__)) {
+    return `${v.__adderType__._pyName}(${(v.args || []).map(pyRepr).join(', ')})`;
+  }
   if (v === true) return 'True';
   if (v === false) return 'False';
-  if (typeof v === 'string') return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (typeof v === 'string') return _strRepr(v);
   if (typeof v === 'number') return _numRepr(v);
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -1989,7 +2001,8 @@ function pyRepr(v) {
 
 function pyStr(v) {
   if (v === null || v === undefined) return 'None';
-  if (v instanceof AdderError) return String(v.pyMessage);
+  if (v instanceof AdderError) return v.args ? _argsStr(v.pyType, v.args) : String(v.pyMessage ?? '');
+  if (v && typeof v === 'object' && typeof v.__str__ !== 'function' && isExceptionClass(v.__adderType__)) return _argsStr(v.__adderType__._pyName, v.args);
   if (v === true) return 'True';
   if (v === false) return 'False';
   if (typeof v === 'string') return v;
@@ -2038,11 +2051,59 @@ function pyReprMaybe(v) {
 }
 function pyStrMaybe(v) {
   if (typeof v === 'string') return v;
+  if (v instanceof AdderError) return pyStr(v);
+  if (v && typeof v === 'object' && typeof v.__str__ !== 'function' && isExceptionClass(v.__adderType__)) return pyStr(v);
   if (_hasUserDunder(v, '__str__')) {
     const r = v.__str__();
     return _isThenable(r) ? r.then(String) : String(r);
   }
   return pyReprMaybe(v);
+}
+
+// repr of a str, as Python writes it: single quotes unless the text has a ' and no ",
+// backslash escapes for \\ \n \r \t and the other control characters
+function _strRepr(s) {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let out = q;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (ch === '\\') out += '\\\\';
+    else if (ch === q) out += '\\' + q;
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\r') out += '\\r';
+    else if (ch === '\t') out += '\\t';
+    else if (c < 0x20 || c === 0x7f) out += '\\x' + c.toString(16).padStart(2, '0');
+    else out += ch;
+  }
+  return out + q;
+}
+
+// int(str, base): Python's whole-string rule (JS parseInt stops at the first bad digit and
+// accepts "12abc"): optional sign, a 0x/0o/0b prefix (required to match a 16/8/2 base, or
+// choosing the base when base is 0), underscores between digits, surrounding whitespace.
+function _parseIntStrict(str, base) {
+  const bad = () => new AdderError('ValueError', `invalid literal for int() with base ${base}: ${pyRepr(str)}`);
+  if (base !== 0 && (base < 2 || base > 36)) throw new AdderError('ValueError', 'int() base must be >= 2 and <= 36, or 0');
+  const m = /^\s*([+-]?)(0[xXoObB])?((?:[0-9a-zA-Z]_?)*[0-9a-zA-Z])\s*$/.exec(str);
+  if (!m) throw bad();
+  const pref = m[2] ? m[2][1].toLowerCase() : null;
+  const pbase = pref === 'x' ? 16 : pref === 'o' ? 8 : pref === 'b' ? 2 : null;
+  let b = base;
+  if (base === 0) {
+    b = pbase || 10;
+    if (!pbase && /^0+[1-9]/.test(m[3])) throw bad();   // base 0 refuses leading zeros
+  } else if (pbase && pbase !== base) {
+    throw bad();
+  }
+  const digits = m[3].replace(/_/g, '').toLowerCase();
+  let n = 0n;
+  for (const ch of digits) {
+    const d = parseInt(ch, 36);
+    if (Number.isNaN(d) || d >= b) throw bad();
+    n = n * BigInt(b) + BigInt(d);
+  }
+  if (m[1] === '-') n = -n;
+  return Number(n);
 }
 
 // ── iteration helper ──
@@ -2178,6 +2239,12 @@ function _isNativeClass(fn) {
 }
 
 function adderGetAttr(obj, attr) {
+  if (obj instanceof AdderError) {
+    if (attr === 'args') return obj.args || (obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
+    if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
+    if (attr === '__traceback__') return null;
+    if (attr === '__class__') return excTypeOf(obj);
+  }
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
     if (attr === '__name__' || attr === '__qualname__') return obj._pyName || obj.name || '<function>';
@@ -2477,7 +2544,7 @@ function _mapMethod(map, attr) {
     values: () => [...map.values()],
     items: () => [...map.entries()],
     get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
-    pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k)); },
+    pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
     update: (other) => { if (other instanceof Map) { for (const [k, v] of other) map.set(k, v); } else if (typeof other === 'object') { for (const k of Object.keys(other)) map.set(k, other[k]); } return null; },
     clear: () => { map.clear(); return null; },
@@ -2493,7 +2560,7 @@ const _objDictMethods = {
   values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
   items: (obj) => { const fn = () => Object.entries(obj); fn._pyName = 'dict.items'; return fn; },
   get: (obj) => { const fn = (k, def) => k in obj ? obj[k] : (def !== undefined ? def : null); fn._pyName = 'dict.get'; return fn; },
-  pop: (obj) => { const fn = (k, def) => { if (k in obj) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k)); }; fn._pyName = 'dict.pop'; return fn; },
+  pop: (obj) => { const fn = (k, def) => { if (k in obj) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
   setdefault: (obj) => { const fn = (k, def) => { if (k in obj) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
   update: (obj) => { const fn = (other) => { if (other instanceof Map) { for (const [k, v] of other) obj[k] = v; } else if (typeof other === 'object') Object.assign(obj, other); return null; }; fn._pyName = 'dict.update'; return fn; },
   clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
@@ -3017,11 +3084,125 @@ const adderModules = {
 
 // ── filesystem exception hierarchy ──
 
+
+// ── exceptions: one model for both engines ──
+// Builtin exceptions are AdderErrors (pyType = the class name, args = the constructor's
+// arguments). A user class deriving from a builtin exception makes ordinary instances (with
+// `args`); raising one throws a wrapper AdderError whose pyValue is the instance, so `except
+// ValueError as e` binds the instance (type(e), e.args, isinstance work) while the error still
+// carries Python's message. excMatches is THE except-matcher (tree-walker and AIR); BudgetExceeded
+// is never caught, by any clause.
+
+// Python 3.13's hierarchy (the parts adder can raise or a program can name)
 const _excParents = {
-  FileNotFoundError: 'OSError', FileExistsError: 'OSError',
-  IsADirectoryError: 'OSError', NotADirectoryError: 'OSError',
-  PermissionError: 'OSError', IOError: 'OSError',
+  Exception: 'BaseException', SystemExit: 'BaseException', KeyboardInterrupt: 'BaseException', GeneratorExit: 'BaseException',
+  ArithmeticError: 'Exception', AssertionError: 'Exception', AttributeError: 'Exception', BufferError: 'Exception',
+  EOFError: 'Exception', ImportError: 'Exception', LookupError: 'Exception', MemoryError: 'Exception',
+  NameError: 'Exception', OSError: 'Exception', ReferenceError: 'Exception', RuntimeError: 'Exception',
+  StopIteration: 'Exception', StopAsyncIteration: 'Exception', SyntaxError: 'Exception', SystemError: 'Exception',
+  TypeError: 'Exception', ValueError: 'Exception', Warning: 'Exception',
+  FloatingPointError: 'ArithmeticError', OverflowError: 'ArithmeticError', ZeroDivisionError: 'ArithmeticError',
+  ModuleNotFoundError: 'ImportError', IndexError: 'LookupError', KeyError: 'LookupError',
+  UnboundLocalError: 'NameError', NotImplementedError: 'RuntimeError', RecursionError: 'RuntimeError',
+  IndentationError: 'SyntaxError', TabError: 'IndentationError',
+  UnicodeError: 'ValueError', UnicodeDecodeError: 'UnicodeError', UnicodeEncodeError: 'UnicodeError',
+  BlockingIOError: 'OSError', ChildProcessError: 'OSError', ConnectionError: 'OSError', FileExistsError: 'OSError',
+  FileNotFoundError: 'OSError', InterruptedError: 'OSError', IsADirectoryError: 'OSError', NotADirectoryError: 'OSError',
+  PermissionError: 'OSError', ProcessLookupError: 'OSError', TimeoutError: 'OSError', IOError: 'OSError',
+  BrokenPipeError: 'ConnectionError', ConnectionAbortedError: 'ConnectionError',
+  ConnectionRefusedError: 'ConnectionError', ConnectionResetError: 'ConnectionError',
+  UserWarning: 'Warning', DeprecationWarning: 'Warning', RuntimeWarning: 'Warning', SyntaxWarning: 'Warning',
+  FutureWarning: 'Warning', ImportWarning: 'Warning', UnicodeWarning: 'Warning', BytesWarning: 'Warning', ResourceWarning: 'Warning',
 };
+const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
+// JS errors surfacing through compiled code or a JS library
+const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
+
+function _excChain(name) {
+  if (name === 'BudgetExceeded') return [name];
+  const out = [name];
+  let p = _excParents[name] || (name === 'BaseException' ? null : 'Exception');
+  while (p) { out.push(p); p = _excParents[p] || (p === 'BaseException' ? null : 'Exception'); }
+  return out;
+}
+
+// a builtin exception type object (ValueError, ...): a type with no MRO of its own
+function isBuiltinExcType(t) {
+  return typeof t === 'function' && !!t._pyClass && !t._pyMRO && _EXC_NAMES.includes(t._pyName);
+}
+// a user class whose MRO reaches a builtin exception
+function isExceptionClass(cls) {
+  if (typeof cls !== 'function' || !cls._pyMRO) return false;
+  if (cls._isExcClass === undefined) cls._isExcClass = cls._pyMRO.some((c) => c !== cls && isBuiltinExcType(c));
+  return cls._isExcClass;
+}
+// class construction calls this: an exception instance keeps its constructor arguments
+function initExceptionInstance(cls, instance, args) {
+  if (!isExceptionClass(cls)) return;
+  const a = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.slice(0, -1) : args.slice();
+  instance.args = a;
+}
+function _argsStr(name, args) {
+  if (!args || args.length === 0) return '';
+  if (args.length === 1) return name === 'KeyError' ? pyRepr(args[0]) : pyStr(args[0]);
+  return `(${args.map(pyRepr).join(', ')})`;
+}
+// what a raise throws, for whatever was raised (an AdderError, a JS Error, a builtin or user
+// exception class or instance); may be a Promise when constructing a class is async
+function excToThrowable(exc, line) {
+  if (exc instanceof AdderError || exc instanceof Error) return exc;
+  if (typeof exc === 'function' && (isBuiltinExcType(exc) || isExceptionClass(exc))) {
+    const inst = exc();
+    return inst && typeof inst.then === 'function' ? inst.then((i) => excToThrowable(i, line)) : excToThrowable(inst, line);
+  }
+  if (exc && typeof exc === 'object' && isExceptionClass(exc.__adderType__)) {
+    const cls = exc.__adderType__;
+    let msg = _argsStr(cls._pyName, exc.args);
+    if (typeof exc.__str__ === 'function') { try { const s = exc.__str__(); if (typeof s === 'string') msg = s; } catch { /* keep args */ } }
+    const err = new AdderError(cls._pyName, msg, line, exc.args || []);
+    err.pyValue = exc;
+    err.pyClass = cls;
+    return err;
+  }
+  return new AdderError('TypeError', 'exceptions must derive from BaseException', line);
+}
+// what `except ... as e` binds
+function excValue(err) {
+  return err && err.pyValue !== undefined ? err.pyValue : err;
+}
+// the exception's names, most specific first, for matching
+function _excNames(err) {
+  if (err && err.pyValue && err.pyClass) {
+    const names = [];
+    for (const c of err.pyClass._pyMRO) {
+      if (isBuiltinExcType(c)) { names.push(..._excChain(c._pyName)); return names; }
+      names.push(c._pyName);
+    }
+    return names;
+  }
+  if (err instanceof AdderError) return _excChain(err.pyType);
+  if (err instanceof Error) return _excChain(/call stack/i.test(err.message || '') ? 'RecursionError' : (_JS_EXC[err.name] || 'Exception'));
+  return [];
+}
+function excMatches(err, t) {
+  if (err && err.pyType === 'BudgetExceeded') return false;
+  if (t === null || t === undefined) return true;
+  if (Array.isArray(t)) return t.some((x) => excMatches(err, x));
+  if (typeof t === 'function' && t._pyMRO && !isBuiltinExcType(t)) {
+    const v = err && err.pyValue;
+    return !!(v && v.__adderType__ && v.__adderType__._pyMRO && v.__adderType__._pyMRO.includes(t));
+  }
+  if (typeof t === 'function' && !t._pyClass) { try { if (err instanceof t) return true; } catch { /* arrow */ } }
+  const name = typeof t === 'function' ? (t._pyName || t.name) : (typeof t === 'string' ? t : null);
+  return !!name && _excNames(err).includes(name);
+}
+// the type object of a caught exception (for __exit__ and type())
+function excTypeOf(err) {
+  if (err && err.pyClass) return err.pyClass;
+  if (err instanceof AdderError) return _typeObjects[err.pyType] || null;
+  if (err instanceof Error) return _typeObjects[_JS_EXC[err.name] || 'Exception'] || null;
+  return null;
+}
 
 function _mapVFSError(e) {
   const map = { ENOENT: 'FileNotFoundError', EEXIST: 'FileExistsError',
@@ -3416,7 +3597,26 @@ function adderBuiltins(printFn) {
       throw new AdderError('TypeError', `object of type '${pyTypeName(obj)}' has no len()`);
     },
     range: (a, b, c) => new AdderRange(a, b, c),
-    int: (x, base) => { if (x === undefined) return 0; if (base !== undefined) { const n = parseInt(String(x), base); if (isNaN(n)) throw new AdderError('ValueError', `invalid literal for int() with base ${base}: ${pyRepr(String(x))}`); return n; } if (typeof x === 'string') { const n = parseInt(x); if (isNaN(n)) throw new AdderError('ValueError', `invalid literal for int() with base 10: ${pyRepr(x)}`); return n; } return Math.trunc(Number(x)); },
+    int: (x, base) => {
+      if (base && base._kw) base = base.base;
+      if (x && x._kw) { base = x.base; x = undefined; }
+      if (x === undefined) return 0;
+      if (base !== undefined && base !== null) {
+        if (typeof x !== 'string') throw new AdderError('TypeError', "int() can't convert non-string with explicit base");
+        return _parseIntStrict(x, base);
+      }
+      if (typeof x === 'string') return _parseIntStrict(x, 10);
+      if (typeof x === 'boolean') return x ? 1 : 0;
+      if (typeof x === 'number') {
+        if (Number.isNaN(x)) throw new AdderError('ValueError', 'cannot convert float NaN to integer');
+        if (!Number.isFinite(x)) throw new AdderError('OverflowError', 'cannot convert float infinity to integer');
+        return Math.trunc(x) || 0;
+      }
+      if (typeof x === 'bigint') return x;
+      if (x && typeof x.__int__ === 'function') return x.__int__();
+      if (x && typeof x.__index__ === 'function') return x.__index__();
+      throw new AdderError('TypeError', `int() argument must be a string, a bytes-like object or a real number, not '${pyTypeName(x)}'`);
+    },
     float: (x) => { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; } return Number(x); },
     str: (x) => x === undefined ? '' : pyStrMaybe(x),
     bool: (x) => x === undefined ? false : pyBool(x),
@@ -3588,11 +3788,14 @@ function adderBuiltins(printFn) {
   for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex']) {
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = builtins[name]; }
   }
-  for (const name of ['ValueError', 'TypeError', 'KeyError', 'IndexError', 'AttributeError',
-                       'RuntimeError', 'StopIteration', 'ZeroDivisionError', 'NotImplementedError',
-                       'AssertionError', 'Exception', 'FileNotFoundError', 'FileExistsError',
-                       'IsADirectoryError', 'NotADirectoryError', 'PermissionError', 'OSError', 'IOError']) {
-    if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; _typeObjects[name] = builtins[name]; }
+  for (const name of _EXC_NAMES) {
+    const ctor = (...a) => {
+      if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+      return new AdderError(name, _argsStr(name, a), undefined, a);
+    };
+    ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
+    builtins[name] = ctor;
+    _typeObjects[name] = ctor;
   }
   return builtins;
 }
@@ -3653,6 +3856,9 @@ let _idCounter = 0;
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
 
+
+// the exceptions being handled (innermost last): a bare `raise` re-raises the top one
+const _excStack = [];
 
 // ── scope ──
 
@@ -3856,11 +4062,18 @@ async function adderEval(node, scope) {
     // ── exceptions ──
     case 'Try': return _evalTry(node, scope);
     case 'Raise': {
-      const exc = node.exc ? await adderEval(node.exc, scope) : null;
-      if (exc instanceof AdderError) throw exc;
-      if (exc instanceof Error) throw exc;
-      if (typeof exc === 'function') throw await _callValue(exc, [], [], node.line);
-      throw new AdderError('RuntimeError', exc ? pyStr(exc) : 're-raise outside except', node.line);
+      if (!node.exc) {
+        if (_excStack.length) throw _excStack[_excStack.length - 1];
+        throw new AdderError('RuntimeError', 'No active exception to reraise', node.line);
+      }
+      const err = await excToThrowable(await adderEval(node.exc, scope), node.line);
+      if (node.hasCause) {
+        const c = await adderEval(node.cause, scope);
+        const cause = c === null ? null : excValue(await excToThrowable(c, node.line));
+        err.__cause__ = cause;
+        if (err.pyValue && typeof err.pyValue === 'object') err.pyValue.__cause__ = cause;
+      }
+      throw err;
     }
     case 'Assert': {
       const test = await adderEval(node.test, scope);
@@ -4388,7 +4601,7 @@ async function _evalSubscript(node, scope) {
   }
   const key = await adderEval(node.slice, scope);
   if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), node.line);
+    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), node.line, [key]);
     return obj.get(key);
   }
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -4399,7 +4612,7 @@ async function _evalSubscript(node, scope) {
   if (typeof obj === 'object' && obj !== null) {
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
     if (key in obj) return obj[key];
-    throw new AdderError('KeyError', pyRepr(key), node.line);
+    throw new AdderError('KeyError', pyRepr(key), node.line, [key]);
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`, node.line);
 }
@@ -4896,6 +5109,7 @@ async function _evalClass(node, scope) {
     for (const [k, v] of Object.entries(classVars)) {
       if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) instance[k] = v;
     }
+    initExceptionInstance(cls, instance, args);
     // call __init__ if present
     if (typeof cls.prototype.__init__ === 'function') {
       const result = cls.prototype.__init__.call(instance, ...args);
@@ -5077,7 +5291,7 @@ async function _evalWith(node, scope) {
     for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
   } catch (e) {
     for (const { mgr, exit } of managers.reverse()) {
-      const suppress = await exit.call(mgr, e.pyType || 'Exception', e, null);
+      const suppress = await exit.call(mgr, excTypeOf(e), excValue(e), null);
       if (!suppress) throw e;
     }
   }
@@ -5087,69 +5301,39 @@ async function _evalWith(node, scope) {
 // ── try/except ──
 
 async function _evalTry(node, scope) {
-  let caught = false;
   try {
-    for (const stmt of node.body) await adderEval(stmt, scope);
-  } catch (e) {
-    if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
-    caught = true;
-    let handled = false;
+    let raised = null;
+    try {
+      for (const stmt of node.body) await adderEval(stmt, scope);
+    } catch (e) {
+      if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
+      raised = e;
+    }
+    if (raised === null) {
+      for (const stmt of node.orelse) await adderEval(stmt, scope);
+      return null;
+    }
     for (const handler of node.handlers) {
-      let excTypeVal = null;
-      if (handler.excType) try { excTypeVal = await adderEval(handler.excType, scope); } catch {}
-      if (!handler.excType || _matchException(e, excTypeVal)) {
-        if (handler.name) scope.set(handler.name, e);
-        handled = true;
-        try {
-          for (const stmt of handler.body) await adderEval(stmt, scope);
-        } catch (e2) {
-          if (e2 instanceof _BreakSignal || e2 instanceof _ContinueSignal || e2 instanceof _ReturnSignal) throw e2;
-          throw e2;
-        }
-        break;
+      const excTypeVal = handler.excType ? await adderEval(handler.excType, scope) : null;
+      if (!excMatches(raised, excTypeVal)) continue;
+      if (handler.name) scope.set(handler.name, excValue(raised));
+      _excStack.push(raised);
+      try {
+        for (const stmt of handler.body) await adderEval(stmt, scope);
+      } finally {
+        _excStack.pop();
       }
+      return null;
     }
-    if (!handled) {
-      // execute finally before re-throwing
-      for (const stmt of node.finalbody) await adderEval(stmt, scope);
-      throw e;
-    }
+    throw raised;
+  } finally {
+    for (const stmt of node.finalbody) await adderEval(stmt, scope);
   }
-  if (!caught) {
-    // else clause runs if no exception
-    for (const stmt of node.orelse) await adderEval(stmt, scope);
-  }
-  // finally always runs
-  for (const stmt of node.finalbody) await adderEval(stmt, scope);
-  return null;
 }
 
 function _matchException(error, excTypeVal) {
-  if (!excTypeVal) return true;
-  if (Array.isArray(excTypeVal)) return excTypeVal.some(t => _matchException(error, t));
-  if (error instanceof AdderError) {
-    const targetName = typeof excTypeVal === 'function' ? (excTypeVal._pyName || excTypeVal.name) :
-                       (typeof excTypeVal === 'string' ? excTypeVal : null);
-    if (targetName) {
-      if (error.pyType === targetName) return true;
-      let pt = _excParents[error.pyType];
-      while (pt) { if (pt === targetName) return true; pt = _excParents[pt]; }
-    }
-  }
-  // custom class exceptions — walk prototype chain
-  if (typeof excTypeVal === 'function' && excTypeVal._pyClass && error !== null && typeof error === 'object') {
-    let proto = error;
-    while (proto) {
-      if (proto.__adderClass__ === (excTypeVal._pyName || excTypeVal.name)) return true;
-      proto = Object.getPrototypeOf(proto);
-    }
-  }
-  if (typeof excTypeVal === 'function' && !excTypeVal._pyClass) {
-    try { return error instanceof excTypeVal; } catch { /* arrow fn without prototype */ }
-  }
-  return false;
+  return excMatches(error, excTypeVal);
 }
-
 // ── super() / eval() / exec() builtins ──
 
 function _evalSuperCall(args, scope, line) {
@@ -5746,7 +5930,7 @@ function _getitem(obj, key) {
     return _ndarrayTupleGet(obj, key);
   }
   if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key));
+    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     return obj.get(key);
   }
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -5757,7 +5941,7 @@ function _getitem(obj, key) {
   if (typeof obj === 'object') {
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
     if (key in obj) return obj[key];
-    throw new AdderError('KeyError', pyRepr(key));
+    throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
 }
@@ -6037,11 +6221,8 @@ async function _exitWith(mgr, exc) {
     return false;
   }
   // Exception path: pass (type, value, None) and return suppression flag.
-  const excType =
-    (exc !== null && typeof exc === 'object' && exc.__class__) ||
-    (exc && exc.constructor) ||
-    null;
-  return await mgr.__exit__(excType, exc, null);
+  if (exc && exc.pyType === 'BudgetExceeded') { await mgr.__exit__(null, null, null); return false; }
+  return await mgr.__exit__(excTypeOf(exc), excValue(exc), null);
 }
 
 // ── Attribute access ──
@@ -6181,6 +6362,7 @@ function _createClass(name, bases, members) {
         instance[k] = v;
       }
     }
+    initExceptionInstance(cls, instance, args);
     if (typeof cls.prototype.__init__ === 'function') {
       const result = cls.prototype.__init__.call(instance, ...args);
       if (result instanceof Promise) return result.then(() => instance);
@@ -6274,31 +6456,8 @@ function _createClass(name, bases, members) {
 // _excParents comes from builtins.js
 
 function _rtMatchException(error, excTypeVal) {
-  if (!excTypeVal) return true;
-  if (Array.isArray(excTypeVal)) return excTypeVal.some(t => _rtMatchException(error, t));
-  if (error instanceof AdderError) {
-    const targetName = typeof excTypeVal === 'function'
-      ? (excTypeVal._pyName || excTypeVal.name)
-      : (typeof excTypeVal === 'string' ? excTypeVal : null);
-    if (targetName) {
-      if (error.pyType === targetName) return true;
-      let pt = _excParents[error.pyType];
-      while (pt) { if (pt === targetName) return true; pt = _excParents[pt]; }
-    }
-  }
-  if (typeof excTypeVal === 'function' && excTypeVal._pyClass && error !== null && typeof error === 'object') {
-    let proto = error;
-    while (proto) {
-      if (proto.__adderClass__ === (excTypeVal._pyName || excTypeVal.name)) return true;
-      proto = Object.getPrototypeOf(proto);
-    }
-  }
-  if (typeof excTypeVal === 'function' && !excTypeVal._pyClass) {
-    try { return error instanceof excTypeVal; } catch { /* arrow fn */ }
-  }
-  return false;
+  return excMatches(error, excTypeVal);
 }
-
 // ── Unary ──
 
 function _neg(a) {
@@ -6384,12 +6543,19 @@ function _iterArray(obj) {
 
 // ── Exceptions ──
 
-function _raise(exc) {
-  if (exc instanceof Error) throw exc;
-  if (exc instanceof AdderError) throw exc;
-  if (typeof exc === 'string') throw new AdderError('Exception', exc);
-  throw exc;
+// raise exc [from cause]: the same conversion as the tree-walker (excToThrowable); a class
+// whose construction is async cannot be awaited here, so it raises by name without args
+function _raise(exc, cause) {
+  let err = excToThrowable(exc);
+  if (err && typeof err.then === 'function') err = new AdderError((exc && exc._pyName) || 'Exception', '');
+  if (arguments.length > 1) {
+    const c = cause === null ? null : excValue(excToThrowable(cause));
+    err.__cause__ = c;
+    if (err.pyValue && typeof err.pyValue === 'object') err.pyValue.__cause__ = c;
+  }
+  throw err;
 }
+function _reraise() { throw new AdderError('RuntimeError', 'No active exception to reraise'); }
 
 // ── Argument binding (compiled functions) ──
 // The simple path keeps native JS params and calls this only when a call does not fit them
@@ -6470,6 +6636,8 @@ const _py = {
   repr: pyRepr,
   // exception
   raise: _raise,
+  reraise: _reraise,
+  excValue,
   matchException: _rtMatchException,
   // imports
   import: _import,
@@ -6602,7 +6770,9 @@ const _AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 // JS intrinsics AIR's imports may list but which resolve via the ambient global scope
 const _JS_INTRINSICS = new Set([
   'Math', 'console', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
-  'Date', 'RegExp', 'Error', 'TypeError', 'ValueError', 'RangeError',
+  // (not Error / TypeError / ValueError / RangeError: in Python those names are the
+  // exception types adder's builtins provide, not JS globals)
+  'Date', 'RegExp',
   'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Symbol',
   'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'NaN', 'Infinity',
   'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
@@ -7596,8 +7766,15 @@ function lowerStmt_ad(ctx, node) {
       return lowerWith(ctx, node);
 
     case 'Raise': {
-      const exc = node.exc ? lowerExpr_ad(ctx, node.exc) : ctx.emit('const', [null], VOID, l);
-      emitPyCall(ctx, 'raise', [exc], l, VOID);
+      if (!node.exc) {
+        // bare raise: the exception this handler is handling, else Python's RuntimeError
+        if (ctx._excName) ctx.emit('throw', [ctx.emit('load', [ctx._excName], DYNAMIC, l).id], VOID, l);
+        else emitPyCall(ctx, 'reraise', [], l, VOID);
+        return null;
+      }
+      const exc = lowerExpr_ad(ctx, node.exc);
+      if (node.hasCause) emitPyCall(ctx, 'raise', [exc, lowerExpr_ad(ctx, node.cause)], l, VOID);
+      else emitPyCall(ctx, 'raise', [exc], l, VOID);
       return null;
     }
 
@@ -8197,77 +8374,81 @@ function lowerAnnAssign(ctx, node) {
 
 function lowerTry_ad(ctx, node) {
   // try: body [except [Type] [as name]: handler] [else: orelse] [finally: finalbody]
+  //
+  //   try {                                  ← only when there is a finally
+  //     let __noexc = false;                 ← only when there is an else
+  //     try { body; __noexc = true; }
+  //     catch (__exc) { BudgetExceeded passes; handler ladder; else re-throw }
+  //     if (__noexc) { else }                ← outside the handlers, as in Python
+  //   } finally { finalbody }
   const l = ctx.loc(node);
+  const hasHandlers = !!(node.handlers && node.handlers.length);
+  const hasElse = !!(node.orelse && node.orelse.length) && hasHandlers;
+  const flag = hasElse ? ctx.makeTempName('noexc') : null;
 
-  // try body (plus else clause appended — represents Python's "run else
-  // only when no exception" semantically by treating it as the tail of
-  // the try body)
-  const tryBody = captureOps(ctx, () => {
-    for (const s of node.body) lowerStmt_ad(ctx, s);
-    if (node.orelse && node.orelse.length) {
-      for (const s of node.orelse) lowerStmt_ad(ctx, s);
+  const inner = captureOps(ctx, () => {
+    if (flag) emitRaw(ctx, `let ${flag} = false;`, flag);
+    const tryBody = captureOps(ctx, () => {
+      for (const st of node.body) lowerStmt_ad(ctx, st);
+      if (flag) emitRaw(ctx, `${flag} = true;`);
+      if (!hasHandlers && node.orelse && node.orelse.length) for (const st of node.orelse) lowerStmt_ad(ctx, st);
+    });
+
+    let catchParam = null;
+    let catchBody = [];
+    if (hasHandlers) {
+      catchParam = '__exc';
+      const bindName = (h) => {
+        if (!h.name) return;
+        const v = emitPyCall(ctx, 'excValue', [ctx.emit('load', [catchParam], DYNAMIC, l)], l);
+        ctx.emit('store', [h.name, v.id], VOID, l);
+        ctx.symbols.set(h.name, v.id);
+      };
+      const handlerBody = (h) => {
+        const saved = ctx._excName;
+        ctx._excName = catchParam;
+        try { for (const st of h.body) lowerStmt_ad(ctx, st); } finally { ctx._excName = saved; }
+      };
+      const buildHandler = (idx) => {
+        if (idx >= node.handlers.length) {
+          ctx.emit('throw', [ctx.emit('load', [catchParam], DYNAMIC, l).id], VOID, l);
+          return;
+        }
+        const h = node.handlers[idx];
+        if (!h.excType) { bindName(h); handlerBody(h); return; }
+        const excType = lowerExpr_ad(ctx, h.excType);
+        const cond = emitPyCall(ctx, 'matchException', [ctx.emit('load', [catchParam], DYNAMIC, l), excType], l, BOOL);
+        const thenBody = captureOps(ctx, () => { bindName(h); handlerBody(h); });
+        const elseBody = captureOps(ctx, () => buildHandler(idx + 1));
+        ctx.emit('if_region', [cond.id], VOID, l, { then_body: thenBody, else_body: elseBody, phis: [] });
+      };
+      catchBody = captureOps(ctx, () => {
+        // the run budget is not an exception a program may catch
+        emitRaw(ctx, `if (${catchParam} && ${catchParam}.pyType === 'BudgetExceeded') throw ${catchParam};`);
+        buildHandler(0);
+      });
+    }
+    if (hasHandlers) {
+      ctx.emit('try_region', [], VOID, l, {
+        try_body: tryBody, catch_param: catchParam, catch_body: catchBody, finally_body: [],
+      });
+    } else {
+      for (const op of tryBody) ctx.ops.push(op);   // try/finally: the finally wraps it below
+    }
+    if (flag) {
+      const cond = ctx.emit('load', [flag], BOOL, l);
+      const elseBody = captureOps(ctx, () => { for (const st of node.orelse) lowerStmt_ad(ctx, st); });
+      ctx.emit('if_region', [cond.id], VOID, l, { then_body: elseBody, else_body: [], phis: [] });
     }
   });
 
-  // Catch handlers — build a combined catch body that checks each handler's type
-  // Use a single JS catch(__e) that does an if/else chain of _py.matchException.
-  let catchParam = null;
-  let catchBody = [];
-  if (node.handlers && node.handlers.length) {
-    catchParam = '__exc';
-
-    // We'll manually build a nested if_region ladder
-    function buildHandler(idx) {
-      if (idx >= node.handlers.length) {
-        // No handler matched — re-throw
-        const excLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-        ctx.emit('throw', [excLoad.id], VOID, l);
-        return;
-      }
-      const h = node.handlers[idx];
-      if (!h.excType) {
-        // bare except: catches everything
-        if (h.name) {
-          const excLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-          ctx.emit('store', [h.name, excLoad.id], VOID, l);
-          ctx.symbols.set(h.name, excLoad.id);
-        }
-        for (const s of h.body) lowerStmt_ad(ctx, s);
-        return;
-      }
-      const excType = lowerExpr_ad(ctx, h.excType);
-      const excLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-      const cond = emitPyCall(ctx, 'matchException', [excLoad, excType], l, BOOL);
-
-      const thenBody = captureOps(ctx, () => {
-        if (h.name) {
-          const excLoad2 = ctx.emit('load', [catchParam], DYNAMIC, l);
-          ctx.emit('store', [h.name, excLoad2.id], VOID, l);
-          ctx.symbols.set(h.name, excLoad2.id);
-        }
-        for (const s of h.body) lowerStmt_ad(ctx, s);
-      });
-      const elseBody = captureOps(ctx, () => buildHandler(idx + 1));
-      ctx.emit('if_region', [cond.id], VOID, l, {
-        then_body: thenBody, else_body: elseBody, phis: [],
-      });
-    }
-    catchBody = captureOps(ctx, () => buildHandler(0));
+  if (!(node.finalbody && node.finalbody.length)) {
+    for (const op of inner) ctx.ops.push(op);
+    return null;
   }
-
-  // Finally
-  let finallyBody = [];
-  if (node.finalbody && node.finalbody.length) {
-    finallyBody = captureOps(ctx, () => {
-      for (const s of node.finalbody) lowerStmt_ad(ctx, s);
-    });
-  }
-
+  const finallyBody = captureOps(ctx, () => { for (const st of node.finalbody) lowerStmt_ad(ctx, st); });
   return ctx.emit('try_region', [], VOID, l, {
-    try_body: tryBody,
-    catch_param: catchParam,
-    catch_body: catchBody,
-    finally_body: finallyBody,
+    try_body: inner, catch_param: null, catch_body: [], finally_body: finallyBody,
   });
 }
 
@@ -8847,6 +9028,8 @@ function lowerFuncDef(ctx, node) {
   // then the defaults, once, here in the enclosing scope (Python semantics)
   const savedDefaults = ctx._paramDefaults;
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
+  const savedExcName = ctx._excName;
+  ctx._excName = null;
 
   // Lower body in nested scope. The save-and-Map-clone idiom we used to
   // run is replaced by ScopeChain push/pop now that ctx.symbols extends
@@ -8879,6 +9062,7 @@ function lowerFuncDef(ctx, node) {
   ctx.topLevel = savedTopLevel;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
+  ctx._excName = savedExcName;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;

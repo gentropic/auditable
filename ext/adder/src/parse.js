@@ -428,6 +428,8 @@ class _Parser {
     const t = this.advance();
     let exc = null;
     if (!this.at('NEWLINE') && !this.at('OP', ';') && !this.at('EOF')) exc = this.parseExpr();
+    // raise X from Y (Y may be None): `hasCause` tells `from None` from no `from` at all
+    if (exc && this.eat('NAME', 'from')) return { type: 'Raise', exc, cause: this.parseExpr(), hasCause: true, line: t.line, col: t.col };
     return { type: 'Raise', exc, line: t.line, col: t.col };
   }
 

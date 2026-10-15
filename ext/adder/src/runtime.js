@@ -4,7 +4,7 @@
 import {
   AdderError, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
-  adderGetAttr,
+  adderGetAttr, excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine } from './eval.js';
 
@@ -235,7 +235,7 @@ function _getitem(obj, key) {
     return _ndarrayTupleGet(obj, key);
   }
   if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key));
+    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     return obj.get(key);
   }
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -246,7 +246,7 @@ function _getitem(obj, key) {
   if (typeof obj === 'object') {
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
     if (key in obj) return obj[key];
-    throw new AdderError('KeyError', pyRepr(key));
+    throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
 }
@@ -526,11 +526,8 @@ async function _exitWith(mgr, exc) {
     return false;
   }
   // Exception path: pass (type, value, None) and return suppression flag.
-  const excType =
-    (exc !== null && typeof exc === 'object' && exc.__class__) ||
-    (exc && exc.constructor) ||
-    null;
-  return await mgr.__exit__(excType, exc, null);
+  if (exc && exc.pyType === 'BudgetExceeded') { await mgr.__exit__(null, null, null); return false; }
+  return await mgr.__exit__(excTypeOf(exc), excValue(exc), null);
 }
 
 // ── Attribute access ──
@@ -670,6 +667,7 @@ function _createClass(name, bases, members) {
         instance[k] = v;
       }
     }
+    initExceptionInstance(cls, instance, args);
     if (typeof cls.prototype.__init__ === 'function') {
       const result = cls.prototype.__init__.call(instance, ...args);
       if (result instanceof Promise) return result.then(() => instance);
@@ -764,31 +762,8 @@ function _createClass(name, bases, members) {
 import { _excParents } from './builtins.js';
 
 function _rtMatchException(error, excTypeVal) {
-  if (!excTypeVal) return true;
-  if (Array.isArray(excTypeVal)) return excTypeVal.some(t => _rtMatchException(error, t));
-  if (error instanceof AdderError) {
-    const targetName = typeof excTypeVal === 'function'
-      ? (excTypeVal._pyName || excTypeVal.name)
-      : (typeof excTypeVal === 'string' ? excTypeVal : null);
-    if (targetName) {
-      if (error.pyType === targetName) return true;
-      let pt = _excParents[error.pyType];
-      while (pt) { if (pt === targetName) return true; pt = _excParents[pt]; }
-    }
-  }
-  if (typeof excTypeVal === 'function' && excTypeVal._pyClass && error !== null && typeof error === 'object') {
-    let proto = error;
-    while (proto) {
-      if (proto.__adderClass__ === (excTypeVal._pyName || excTypeVal.name)) return true;
-      proto = Object.getPrototypeOf(proto);
-    }
-  }
-  if (typeof excTypeVal === 'function' && !excTypeVal._pyClass) {
-    try { return error instanceof excTypeVal; } catch { /* arrow fn */ }
-  }
-  return false;
+  return excMatches(error, excTypeVal);
 }
-
 // ── Unary ──
 
 function _neg(a) {
@@ -874,12 +849,19 @@ function _iterArray(obj) {
 
 // ── Exceptions ──
 
-function _raise(exc) {
-  if (exc instanceof Error) throw exc;
-  if (exc instanceof AdderError) throw exc;
-  if (typeof exc === 'string') throw new AdderError('Exception', exc);
-  throw exc;
+// raise exc [from cause]: the same conversion as the tree-walker (excToThrowable); a class
+// whose construction is async cannot be awaited here, so it raises by name without args
+function _raise(exc, cause) {
+  let err = excToThrowable(exc);
+  if (err && typeof err.then === 'function') err = new AdderError((exc && exc._pyName) || 'Exception', '');
+  if (arguments.length > 1) {
+    const c = cause === null ? null : excValue(excToThrowable(cause));
+    err.__cause__ = c;
+    if (err.pyValue && typeof err.pyValue === 'object') err.pyValue.__cause__ = c;
+  }
+  throw err;
 }
+function _reraise() { throw new AdderError('RuntimeError', 'No active exception to reraise'); }
 
 // ── Argument binding (compiled functions) ──
 // The simple path keeps native JS params and calls this only when a call does not fit them
@@ -960,6 +942,8 @@ export const _py = {
   repr: pyRepr,
   // exception
   raise: _raise,
+  reraise: _reraise,
+  excValue,
   matchException: _rtMatchException,
   // imports
   import: _import,

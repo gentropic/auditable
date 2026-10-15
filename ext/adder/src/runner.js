@@ -114,7 +114,9 @@ const _AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 // JS intrinsics AIR's imports may list but which resolve via the ambient global scope
 export const _JS_INTRINSICS = new Set([
   'Math', 'console', 'JSON', 'Object', 'Array', 'String', 'Number', 'Boolean',
-  'Date', 'RegExp', 'Error', 'TypeError', 'ValueError', 'RangeError',
+  // (not Error / TypeError / ValueError / RangeError: in Python those names are the
+  // exception types adder's builtins provide, not JS globals)
+  'Date', 'RegExp',
   'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Symbol',
   'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'NaN', 'Infinity',
   'Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
