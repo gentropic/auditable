@@ -409,7 +409,8 @@ function emitConst(ctx, op) {
     // f32 zero → Math.fround(0) (keeps f32 representation)
     // Everything else: plain number literal (V8 handles Smi fine)
     if (ctx.hinted && op.type?.kind === 'f64' && v === 0) expr = '0.0';
-    else if (ctx.hinted && op.type?.kind === 'f64' && Number.isInteger(v)) expr = v + '.0';
+    // the f64 hint `N.0` only where the literal is plain digits: 1e+300 + '.0' is not JS
+    else if (ctx.hinted && op.type?.kind === 'f64' && Number.isInteger(v) && /^-?\d+$/.test(String(v))) expr = v + '.0';
     else if (ctx.hinted && op.type?.kind === 'f32' && v === 0) expr = 'Math.fround(0)';
     else expr = String(v);
   }

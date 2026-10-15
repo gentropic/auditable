@@ -3037,6 +3037,19 @@ export function adderBuiltins(printFn) {
       return new Map(entries);
     },
     set: async (x) => x === undefined ? new Set() : new Set(await pyCollect(x)),
+    // bytes(): b'', bytes(n) zeros, bytes(ints), bytes(str, encoding)
+    bytes: (x, encoding) => {
+      if (x === undefined) return new Uint8Array(0);
+      if (typeof x === 'number') return new Uint8Array(x);
+      if (typeof x === 'string') {
+        if (encoding === undefined) throw new AdderError('TypeError', 'string argument without an encoding');
+        return _strMethod(x, 'encode')(encoding);
+      }
+      if (x instanceof Uint8Array) return new Uint8Array(x);
+      const items = [...pyIter(x)];   // sync: AIR calls bytes() without an await
+      for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
+      return Uint8Array.from(items);
+    },
     frozenset: async (x) => { const s = x === undefined ? new Set() : new Set(await pyCollect(x)); s._frozen = true; return s; },
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
