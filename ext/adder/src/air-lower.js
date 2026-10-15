@@ -6,7 +6,7 @@
 import {
   I32, F64, BOOL, STRING, VOID, DYNAMIC,
   I8, U8, I16, U16, U32, I64, U64, F32,
-  typedArray, isDynamic, isNumeric, arithmeticResult, func,
+  typedArray, isDynamic, isNumeric, isInteger, arithmeticResult, func,
 } from '../../air/src/types.js';
 import {
   BaseLowerCtx, captureOps, emitPhiSelect, AirLowerError,
@@ -56,6 +56,10 @@ const PY_SPECIALIZATIONS = {
   lte: { op: 'lte', check: _bothNumeric, resultType: () => BOOL },
   gt:  { op: 'gt',  check: _bothNumeric, resultType: () => BOOL },
   gte: { op: 'gte', check: _bothNumeric, resultType: () => BOOL },
+  and_:   { op: 'bitwise_and', check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
+  or_:    { op: 'bitwise_or',  check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
+  xor:    { op: 'bitwise_xor', check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
+  rshift: { op: 'shift_right', check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
   neg: {
     op: 'neg',
     arity: 1,
@@ -866,11 +870,8 @@ function lowerBinOp_ad(ctx, node) {
   const rhs = lowerExpr_ad(ctx, node.right);
   const op = node.op;
 
-  // Shifts: JS i32 matches Python int. No `__lshift__` overloading worth
-  // supporting in cell-side code (vs &/|/^ where libraries like sadpan
-  // overload them for boolean masks).
-  if (op === '<<') return ctx.emit('shift_left', [lhs.id, rhs.id], I32, l);
-  if (op === '>>') return ctx.emit('shift_right', [lhs.id, rhs.id], I32, l);
+  // All operators go through _py helpers (Python semantics: bools as ints, sets, exact past
+  // 32 bits); the specialization pass turns integer-typed bitwise ops back into raw ones.
   // &, |, ^ go through `_py.and_` / `or_` / `xor` so dunder methods
   // (`__and__`, `__or__`, `__xor__`) fire — sadpan's BooleanMask combines
   // via these. The runtime helpers fast-path to native bitwise when both
@@ -1216,12 +1217,7 @@ function lowerAugAssign(ctx, node) {
   const rhs = lowerExpr_ad(ctx, node.value);
   const op = node.op;
   let result;
-  if (op === '&') result = ctx.emit('bitwise_and', [current.id, rhs.id], I32, l);
-  else if (op === '|') result = ctx.emit('bitwise_or', [current.id, rhs.id], I32, l);
-  else if (op === '^') result = ctx.emit('bitwise_xor', [current.id, rhs.id], I32, l);
-  else if (op === '<<') result = ctx.emit('shift_left', [current.id, rhs.id], I32, l);
-  else if (op === '>>') result = ctx.emit('shift_right', [current.id, rhs.id], I32, l);
-  else {
+  {
     const inPlace = IBINOP_HELPER[op];
     const helper = inPlace || BINOP_HELPER[op];
     if (!helper) throw new AirLowerError(`unsupported augassign op: ${op}`);

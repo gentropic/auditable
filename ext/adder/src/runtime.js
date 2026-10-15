@@ -4,21 +4,13 @@
 import {
   AdderError, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
-  adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance,
+  adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
+  pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
+  pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine } from './eval.js';
 
 // ── Arithmetic (preserve Python semantics) ──
-
-function _add(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a + b;
-  if (typeof a === 'string' && typeof b === 'string') return a + b;
-  if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
-  // dunder fallback
-  if (a !== null && typeof a === 'object' && typeof a.__add__ === 'function') return a.__add__(b);
-  if (b !== null && typeof b === 'object' && typeof b.__radd__ === 'function') return b.__radd__(a);
-  throw new AdderError('TypeError', `unsupported operand type(s) for +: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
 
 // In-place add used by `+=`. Python semantics: try __iadd__ first; if the
 // LHS is a mutable container (list, set), extend it in-place; otherwise
@@ -40,60 +32,6 @@ function _iadd(a, b) {
     return a;
   }
   return _add(a, b);
-}
-
-function _sub(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a - b;
-  if (a !== null && typeof a === 'object' && typeof a.__sub__ === 'function') return a.__sub__(b);
-  if (b !== null && typeof b === 'object' && typeof b.__rsub__ === 'function') return b.__rsub__(a);
-  throw new AdderError('TypeError', `unsupported operand type(s) for -: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _mul(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a * b;
-  if (typeof a === 'string' && typeof b === 'number') return a.repeat(b);
-  if (typeof a === 'number' && typeof b === 'string') return b.repeat(a);
-  if (Array.isArray(a) && typeof b === 'number') { const r = []; for (let i = 0; i < b; i++) r.push(...a); return r; }
-  if (typeof a === 'number' && Array.isArray(b)) { const r = []; for (let i = 0; i < a; i++) r.push(...b); return r; }
-  if (a !== null && typeof a === 'object' && typeof a.__mul__ === 'function') return a.__mul__(b);
-  if (b !== null && typeof b === 'object' && typeof b.__rmul__ === 'function') return b.__rmul__(a);
-  throw new AdderError('TypeError', `unsupported operand type(s) for *: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _div(a, b) {
-  if (b === 0) throw new AdderError('ZeroDivisionError', 'division by zero');
-  if (typeof a === 'number' && typeof b === 'number') return a / b;
-  if (a !== null && typeof a === 'object' && typeof a.__truediv__ === 'function') return a.__truediv__(b);
-  throw new AdderError('TypeError', `unsupported operand type(s) for /: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _floordiv(a, b) {
-  if (b === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero');
-  if (typeof a === 'number' && typeof b === 'number') return Math.floor(a / b);
-  if (a !== null && typeof a === 'object' && typeof a.__floordiv__ === 'function') return a.__floordiv__(b);
-  throw new AdderError('TypeError', `unsupported operand type(s) for //: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _mod(a, b) {
-  if (b === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero');
-  if (typeof a === 'string') return _strPctFormat(a, Array.isArray(b) ? b : [b]);
-  if (typeof a === 'number' && typeof b === 'number') return ((a % b) + b) % b;
-  if (a !== null && typeof a === 'object' && typeof a.__mod__ === 'function') return a.__mod__(b);
-  throw new AdderError('TypeError', `unsupported operand type(s) for %: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _pow(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return Math.pow(a, b);
-  if (a !== null && typeof a === 'object' && typeof a.__pow__ === 'function') return a.__pow__(b);
-  throw new AdderError('TypeError', `unsupported operand type(s) for **: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _strPctFormat(fmt, args) {
-  let i = 0;
-  return fmt.replace(/%([sd%fegx])/g, (_, code) => {
-    if (code === '%') return '%';
-    return pyStr(args[i++]);
-  });
 }
 
 // ── Comparison ──
@@ -191,21 +129,7 @@ function _getitem(obj, key) {
   if (Array.isArray(key) && _looksLikeNdarray(obj)) {
     return _ndarrayTupleGet(obj, key);
   }
-  if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
-    return obj.get(key);
-  }
-  if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
-    const idx = key < 0 ? obj.length + key : key;
-    if (idx < 0 || idx >= obj.length) throw new AdderError('IndexError', `${pyTypeName(obj)} index out of range`);
-    return obj[idx];
-  }
-  if (typeof obj === 'object') {
-    if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
-    if (key in obj) return obj[key];
-    throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
-  }
-  throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
+  return pyGetItem(obj, key);
 }
 
 function _setitem(obj, key, value) {
@@ -293,6 +217,7 @@ function _ndarrayTupleSet(obj, key, value) {
 }
 
 function _slice(obj, lower, upper, step) {
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
   step = step ?? 1;
   if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -723,51 +648,12 @@ function _rtMatchException(error, excTypeVal) {
 }
 // ── Unary ──
 
-function _neg(a) {
-  if (typeof a === 'number') return -a;
-  if (a !== null && typeof a === 'object' && typeof a.__neg__ === 'function') return a.__neg__();
-  throw new AdderError('TypeError', `bad operand type for unary -: '${pyTypeName(a)}'`);
-}
-
-function _pos(a) {
-  if (typeof a === 'number') return +a;
-  return a;
-}
-
-function _invert(a) {
-  if (typeof a === 'number') return ~a;
-  // dunder fallback so e.g. sadpan's BooleanMask.__invert__ fires
-  if (a !== null && typeof a === 'object' && typeof a.__invert__ === 'function') return a.__invert__();
-  throw new AdderError('TypeError', `bad operand type for unary ~: '${pyTypeName(a)}'`);
-}
-
 // ── Bitwise (with dunder fallback) ──
 // Lowered from `&`, `|`, `^` between values whose types AIR can't prove
 // are ints. Fast-path real ints to native bitwise; fall through to
 // __and__/__or__/__xor__ so libraries like sadpan can overload (their
 // BooleanMask combines via these). The constant-fold pass in passes.js
 // can short-circuit back to native bitwise once both operands are typed.
-
-function _and_(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a & b;
-  if (a !== null && typeof a === 'object' && typeof a.__and__ === 'function') return a.__and__(b);
-  if (b !== null && typeof b === 'object' && typeof b.__rand__ === 'function') return b.__rand__(a);
-  throw new AdderError('TypeError', `unsupported operand type(s) for &: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _or_(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a | b;
-  if (a !== null && typeof a === 'object' && typeof a.__or__ === 'function') return a.__or__(b);
-  if (b !== null && typeof b === 'object' && typeof b.__ror__ === 'function') return b.__ror__(a);
-  throw new AdderError('TypeError', `unsupported operand type(s) for |: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
-
-function _xor(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a ^ b;
-  if (a !== null && typeof a === 'object' && typeof a.__xor__ === 'function') return a.__xor__(b);
-  if (b !== null && typeof b === 'object' && typeof b.__rxor__ === 'function') return b.__rxor__(a);
-  throw new AdderError('TypeError', `unsupported operand type(s) for ^: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
-}
 
 // ── Function call with kwargs ──
 
@@ -857,6 +743,10 @@ function _assertFail(msg) {
   throw new AdderError('AssertionError', msg === undefined ? '' : pyStr(msg));
 }
 
+// arithmetic: the shared rules (builtins.js)
+const _add = pyAdd, _sub = pySub, _mul = pyMul, _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
+const _and_ = pyAnd, _or_ = pyOr, _xor = pyXor, _neg = pyNeg, _pos = pyPos, _invert = pyInvert;
+
 // comparisons: the shared rules (builtins.js), so both engines compare alike
 const _eq = pyEq, _lt = pyLt, _lte = pyLe, _gt = pyGt, _gte = pyGe;
 function _neq(a, b) {
@@ -874,7 +764,7 @@ export const _py = {
   // in-place: __iadd__ dispatch + list extend semantics for `+=`
   iadd: _iadd,
   // bitwise (with dunder fallback for masks/sets/etc.)
-  and_: _and_, or_: _or_, xor: _xor,
+  and_: _and_, or_: _or_, xor: _xor, lshift: pyLshift, rshift: pyRshift,
   // unary
   neg: _neg, pos: _pos, invert: _invert,
   // comparison

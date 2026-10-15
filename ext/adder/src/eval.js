@@ -9,7 +9,7 @@ import {
   _builtinEval, _builtinExec, _builtinSuper,
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
-  isUserIterable, pyIterAsync,
+  isUserIterable, pyIterAsync, pyBinOps, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -256,9 +256,9 @@ export async function adderEval(node, scope) {
     }
     case 'UnaryOp': {
       const operand = await adderEval(node.operand, scope);
-      if (node.op === '-') return typeof operand === 'number' ? -operand : (typeof operand?.__neg__ === 'function' ? operand.__neg__() : -operand);
-      if (node.op === '+') return +operand;
-      if (node.op === '~') return typeof operand?.__invert__ === 'function' ? operand.__invert__() : ~operand;
+      if (node.op === '-') return _withLine(() => pyNeg(operand), node.line);
+      if (node.op === '+') return _withLine(() => pyPos(operand), node.line);
+      if (node.op === '~') return _withLine(() => pyInvert(operand), node.line);
       if (node.op === 'not') return !pyBool(operand);
       throw new AdderError('TypeError', `unsupported unary op: ${node.op}`, node.line);
     }
@@ -544,63 +544,17 @@ async function _deleteTarget(target, scope) {
 
 // ── binary operations ──
 
-function _binOp(op, left, right, line) {
-  // check dunder methods (left operand first, then reflected on right)
-  if (left !== null && typeof left === 'object') {
-    const dunder = _dunders[op];
-    if (dunder && typeof left[dunder] === 'function') return left[dunder](right);
-  }
-  if (right !== null && typeof right === 'object') {
-    const rdunder = _rdunders[op];
-    if (rdunder && typeof right[rdunder] === 'function') return right[rdunder](left);
-  }
-  switch (op) {
-    case '+':
-      if (typeof left === 'number' && typeof right === 'number') return left + right;
-      if (typeof left === 'string' && typeof right === 'string') return left + right;
-      if (Array.isArray(left) && Array.isArray(right)) return [...left, ...right];
-      throw new AdderError('TypeError', `unsupported operand type(s) for +: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '-':
-      if (typeof left === 'number' && typeof right === 'number') return left - right;
-      throw new AdderError('TypeError', `unsupported operand type(s) for -: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '*':
-      if (typeof left === 'number' && typeof right === 'number') return left * right;
-      if (typeof left === 'string' && typeof right === 'number') return left.repeat(right);
-      if (typeof left === 'number' && typeof right === 'string') return right.repeat(left);
-      if (Array.isArray(left) && typeof right === 'number') { const r = []; for (let i = 0; i < right; i++) r.push(...left); return r; }
-      throw new AdderError('TypeError', `unsupported operand type(s) for *: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '/':
-      if (right === 0) throw new AdderError('ZeroDivisionError', 'division by zero', line);
-      if (typeof left === 'number' && typeof right === 'number') return left / right;
-      throw new AdderError('TypeError', `unsupported operand type(s) for /: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '//':
-      if (right === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero', line);
-      if (typeof left === 'number' && typeof right === 'number') return Math.floor(left / right);
-      throw new AdderError('TypeError', `unsupported operand type(s) for //: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '%': if (right === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero', line);
-      if (typeof left === 'string') return _strPercentFormat(left, Array.isArray(right) ? right : [right]);
-      if (typeof left === 'number' && typeof right === 'number') return ((left % right) + right) % right;
-      throw new AdderError('TypeError', `unsupported operand type(s) for %: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '**':
-      if (typeof left === 'number' && typeof right === 'number') return Math.pow(left, right);
-      throw new AdderError('TypeError', `unsupported operand type(s) for **: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    case '&': return left & right;
-    case '|': return left | right;
-    case '^': return left ^ right;
-    case '<<': return left << right;
-    case '>>': return left >> right;
-    case '@': throw new AdderError('TypeError', `unsupported operand type(s) for @: '${pyTypeName(left)}' and '${pyTypeName(right)}'`, line);
-    default: throw new AdderError('TypeError', `unsupported operator: ${op}`, line);
+// binary operators: the shared rules (builtins.js); an error gets this node's line
+function _withLine(fn, line) {
+  try { return fn(); } catch (e) {
+    if (e instanceof AdderError && !e.adderLine && line) { e.adderLine = line; e.message += ` (line ${line})`; }
+    throw e;
   }
 }
-
-function _strPercentFormat(fmt, args) {
-  // Python % formatting: "%s %d" % (arg1, arg2)
-  let i = 0;
-  return fmt.replace(/%([sd%fegx])/g, (_, code) => {
-    if (code === '%') return '%';
-    return pyStr(args[i++]);
-  });
+function _binOp(op, left, right, line) {
+  const fn = pyBinOps[op];
+  if (!fn) throw new AdderError('TypeError', `unsupported operator: ${op}`, line);
+  return _withLine(() => fn(left, right), line);
 }
 
 const _dunders = {
@@ -751,24 +705,11 @@ async function _evalSubscript(node, scope) {
       node.line);
   }
   const key = await adderEval(node.slice, scope);
-  if (obj instanceof Map) {
-    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), node.line, [key]);
-    return obj.get(key);
-  }
-  if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
-    const idx = key < 0 ? obj.length + key : key;
-    if (idx < 0 || idx >= obj.length) throw new AdderError('IndexError', `${pyTypeName(obj)} index out of range`, node.line);
-    return obj[idx];
-  }
-  if (typeof obj === 'object' && obj !== null) {
-    if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
-    if (key in obj) return obj[key];
-    throw new AdderError('KeyError', pyRepr(key), node.line, [key]);
-  }
-  throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`, node.line);
+  return _withLine(() => pyGetItem(obj, key), node.line);
 }
 
 function _applySlice(obj, lower, upper, step) {
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
     const len = obj.length;
     step = step ?? 1;
