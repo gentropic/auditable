@@ -7,8 +7,9 @@ import {
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper,
-  pyStrMaybe, pyReprMaybe,
-  excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance,
+  pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
+  excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
+  isUserIterable, pyIterAsync,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -281,7 +282,7 @@ export async function adderEval(node, scope) {
       // chained comparisons: coerce to boolean (a < b < c → a < b and b < c)
       for (let i = 0; i < node.ops.length; i++) {
         const right = await adderEval(node.comparators[i], scope);
-        if (!_compareOp(node.ops[i], left, right)) return false;
+        if (!(await _compareOp(node.ops[i], left, right))) return false;
         left = right;
       }
       return true;
@@ -625,12 +626,16 @@ const _iDunders = {
 
 function _compareOp(op, left, right) {
   switch (op) {
-    case '==': return _pyEq(left, right);
-    case '!=': return typeof left?.__ne__ === 'function' ? left.__ne__(right) : !_pyEq(left, right);
-    case '<': return typeof left?.__lt__ === 'function' ? left.__lt__(right) : left < right;
-    case '<=': return typeof left?.__le__ === 'function' ? left.__le__(right) : left <= right;
-    case '>': return typeof left?.__gt__ === 'function' ? left.__gt__(right) : left > right;
-    case '>=': return typeof left?.__ge__ === 'function' ? left.__ge__(right) : left >= right;
+    case '==': return pyEq(left, right);
+    case '!=': {
+      if (typeof left?.__ne__ === 'function') return left.__ne__(right);
+      const r = pyEq(left, right);
+      return r && typeof r.then === 'function' ? r.then((x) => !x) : !r;
+    }
+    case '<': return pyLt(left, right);
+    case '<=': return pyLe(left, right);
+    case '>': return pyGt(left, right);
+    case '>=': return pyGe(left, right);
     case 'in': return _pyIn(right, left);
     case 'not in': return !_pyIn(right, left);
     case 'is': return left === right;
@@ -640,16 +645,8 @@ function _compareOp(op, left, right) {
 }
 
 function _pyEq(a, b) {
-  if (a === b) return true;
-  if (typeof a?.__eq__ === 'function') return a.__eq__(b);
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!_pyEq(a[i], b[i])) return false;
-    return true;
-  }
-  return false;
+  return pyEq(a, b);
 }
-
 function _pyIn(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
   if (Array.isArray(container)) return container.some(v => _pyEq(v, value));
@@ -1018,11 +1015,17 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
     // We use an async generator internally, exposed via Symbol.asyncIterator.
     // For sync consumers (for..of), we also provide Symbol.iterator
     // that collects eagerly — but the primary path is for-await.
+    // ONE underlying generator per call, as in Python: next(g) then list(g) continues
+    // where next left off (each for-await used to restart the body)
+    let gen = null;
+    const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults));
     const genObj = {
-      [Symbol.asyncIterator]() {
-        return _runGenerator(node, scope, callArgs, defaults);
-      },
-      // sync iterator: collect all values eagerly (used by list(), sorted(), etc.)
+      __adderClass__: 'generator',
+      [Symbol.asyncIterator]() { return run(); },
+      next(v) { return run().next(v); },
+      send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
+      close() { return run().return(undefined).then(() => null); },
+      // sync iteration needs the values now; generators here are async (for await / list())
       [Symbol.iterator]() {
         throw new AdderError('TypeError', 'Use "for await" or list() with generators');
       },
@@ -1070,7 +1073,7 @@ async function* _evalGenStmt(node, scope) {
     case 'For': {
       const iterable = await adderEval(node.iter, scope);
       let broke = false;
-      const iter = iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+      const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
       for await (const value of iter) {
         await _assignTarget(node.target, value, scope);
         try {
@@ -1382,7 +1385,7 @@ async function _evalFor(node, scope) {
   const iterable = await adderEval(node.iter, scope);
   let broke = false;
   // for-await handles both sync iterables and async generators
-  const iter = iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
   let _loopCount = 0;
   for await (const value of iter) {
     // yield to event loop periodically to prevent page lockup
@@ -1491,30 +1494,12 @@ function _matchException(error, excTypeVal) {
 // ── super() / eval() / exec() builtins ──
 
 function _evalSuperCall(args, scope, line) {
+  if (args.length >= 2) return pySuper(args[0], args[1]);
   let cls;
   try { cls = scope.get('__class__'); } catch { throw new AdderError('RuntimeError', 'super(): __class__ not found', line); }
   let self;
   try { self = scope.get('self'); } catch { throw new AdderError('RuntimeError', 'super(): self not found', line); }
-  const mro = cls._pyMRO || [cls];
-  const idx = mro.indexOf(cls);
-  if (idx < 0 || idx + 1 >= mro.length) return {};
-  // create proxy that delegates to next class in MRO
-  return new Proxy({}, {
-    get(_, name) {
-      // search MRO starting from the class after current
-      for (let i = idx + 1; i < mro.length; i++) {
-        const base = mro[i];
-        if (!base.prototype) continue;
-        const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
-        if (desc) {
-          if (desc.get) return desc.get.call(self);
-          if (typeof desc.value === 'function') return (...a) => desc.value.call(self, ...a);
-          return desc.value;
-        }
-      }
-      return undefined;
-    }
-  });
+  return pySuper(cls, self);
 }
 
 async function _evalBuiltinEval(args, scope, line) {
@@ -1554,7 +1539,7 @@ function _evalGenExpr(node, scope) {
 async function* _genExprIter(node, scope, genIdx) {
   const gen = node.generators[genIdx];
   const iterable = await adderEval(gen.iter, scope);
-  const iter = iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
   for await (const value of iter) {
     await _assignTarget(gen.target, value, scope);
     let pass = true;

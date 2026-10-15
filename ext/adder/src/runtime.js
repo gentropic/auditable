@@ -4,7 +4,7 @@
 import {
   AdderError, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
-  adderGetAttr, excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance,
+  adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine } from './eval.js';
 
@@ -97,49 +97,6 @@ function _strPctFormat(fmt, args) {
 }
 
 // ── Comparison ──
-
-function _eq(a, b) {
-  if (a === b) return true;
-  if (a !== null && typeof a === 'object' && typeof a.__eq__ === 'function') return a.__eq__(b);
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!_eq(a[i], b[i])) return false;
-    return true;
-  }
-  return false;
-}
-
-function _neq(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
-  return !_eq(a, b);
-}
-
-function _lt(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__lt__ === 'function') return a.__lt__(b);
-  if (typeof a === 'number' && typeof b === 'number') return a < b;
-  if (typeof a === 'string' && typeof b === 'string') return a < b;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    const min = Math.min(a.length, b.length);
-    for (let i = 0; i < min; i++) { if (_lt(a[i], b[i])) return true; if (_lt(b[i], a[i])) return false; }
-    return a.length < b.length;
-  }
-  return a < b;
-}
-
-function _lte(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__le__ === 'function') return a.__le__(b);
-  return _lt(a, b) || _eq(a, b);
-}
-
-function _gt(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__gt__ === 'function') return a.__gt__(b);
-  return _lt(b, a);
-}
-
-function _gte(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__ge__ === 'function') return a.__ge__(b);
-  return _lt(b, a) || _eq(a, b);
-}
 
 function _contains(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
@@ -900,6 +857,14 @@ function _assertFail(msg) {
   throw new AdderError('AssertionError', msg === undefined ? '' : pyStr(msg));
 }
 
+// comparisons: the shared rules (builtins.js), so both engines compare alike
+const _eq = pyEq, _lt = pyLt, _lte = pyLe, _gt = pyGt, _gte = pyGe;
+function _neq(a, b) {
+  if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
+  const r = pyEq(a, b);
+  return r && typeof r.then === 'function' ? r.then((x) => !x) : !r;
+}
+
 // ── Export as single namespace ──
 
 export const _py = {
@@ -957,4 +922,5 @@ export const _py = {
   // argument binding
   bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
+  super: pySuper,
 };

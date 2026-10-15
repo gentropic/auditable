@@ -2121,7 +2121,41 @@ function* pyIter(obj) {
 }
 
 // Collect iterable (sync or async) to array
+// A user object that iterates the Python way: __iter__ (returning itself or another object
+// with __next__, or any JS iterable), or the old __getitem__ protocol (0, 1, 2, … until
+// IndexError). Tree-walked dunders are async, so this is an async generator; for-loops and
+// list() / sorted() / … go through it.
+function isUserIterable(obj) {
+  return obj !== null && typeof obj === 'object' && !Array.isArray(obj) && !(obj instanceof Map) &&
+    !(obj instanceof Set) && typeof obj[Symbol.iterator] !== 'function' && typeof obj[Symbol.asyncIterator] !== 'function' &&
+    (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function' || typeof obj.__getitem__ === 'function');
+}
+const _awaitIf = async (v) => (v && typeof v.then === 'function' ? await v : v);
+async function* pyIterAsync(obj) {
+  if (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+    const it = typeof obj.__iter__ === 'function' ? await _awaitIf(obj.__iter__()) : obj;
+    if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* it; return; }
+    if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { yield* pyIter(it); return; }
+    if (!it || typeof it.__next__ !== 'function') throw new AdderError('TypeError', `iter() returned non-iterator of type '${pyTypeName(it)}'`);
+    while (true) {
+      let v;
+      try { v = await _awaitIf(it.__next__()); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+      yield v;
+    }
+  }
+  for (let i = 0; ; i++) {
+    let v;
+    try { v = await _awaitIf(obj.__getitem__(i)); } catch (e) { if (e && (e.pyType === 'IndexError' || e.pyType === 'StopIteration')) return; throw e; }
+    yield v;
+  }
+}
+
 async function pyCollect(obj) {
+  if (isUserIterable(obj)) {
+    const arr = [];
+    for await (const v of pyIterAsync(obj)) arr.push(v);
+    return arr;
+  }
   if (obj && typeof obj[Symbol.asyncIterator] === 'function') {
     const arr = [];
     for await (const v of obj) arr.push(v);
@@ -2530,7 +2564,7 @@ function _listMethod(arr, attr) {
     clear: () => { arr.length = 0; return null; },
     index: (v, start, end) => { const i = arr.indexOf(v, start || 0); if (i < 0 || (end !== undefined && i >= end)) throw new AdderError('ValueError', `${pyRepr(v)} is not in list`); return i; },
     count: (v) => arr.filter(x => x === v).length,
-    sort: (key, reverse) => { if (key) { const keyed = arr.map((v, i) => [key(v), i, v]); keyed.sort((a, b) => _pyCompare(a[0], b[0])); const sorted = keyed.map(x => x[2]); arr.length = 0; arr.push(...(reverse ? sorted.reverse() : sorted)); } else { arr.sort((a, b) => _pyCompare(a, b)); if (reverse) arr.reverse(); } return null; },
+    sort: async (key, reverse) => { if (key && key._kw) { reverse = key.reverse; key = key.key; } else if (reverse && reverse._kw) reverse = reverse.reverse; const sorted = await pySorted(arr, key || null, !!reverse); arr.length = 0; arr.push(...sorted); return null; },
     reverse: () => { arr.reverse(); return null; },
     copy: () => [...arr],
   };
@@ -2587,10 +2621,158 @@ function _setMethod(set, attr) {
   throw new AdderError('AttributeError', `'set' object has no attribute '${attr}'`);
 }
 
-function _pyCompare(a, b) {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
+// ── comparison: one set of rules for both engines ──
+// Python's ==, <, <=, >, >= (the tree-walker and AIR both call these). A dunder wins, then its
+// reflection on the right operand; numbers and bools compare as numbers (True == 1); lists
+// and tuples lexicographically; dicts and sets by content; anything else that Python would
+// refuse raises TypeError instead of letting JS coerce (1 < "a" was false, [10] < [9] true).
+const _numLike = (v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint';
+const _hasDunder = (v, name) => v !== null && (typeof v === 'object' || typeof v === 'function') && typeof v[name] === 'function';
+
+function _dictEntries(d) { return d instanceof Map ? [...d.entries()] : Object.keys(d).map((k) => [k, d[k]]); }
+function _dictGet(d, k) { return d instanceof Map ? (d.has(k) ? { v: d.get(k) } : null) : (typeof k === 'string' && Object.hasOwn(d, k) ? { v: d[k] } : null); }
+function _dictSize(d) { return d instanceof Map ? d.size : Object.keys(d).length; }
+
+function pyEq(a, b) {
+  if (a === b) return true;
+  if (_hasDunder(a, '__eq__')) return a.__eq__(b);
+  if (_hasDunder(b, '__eq__')) return b.__eq__(a);
+  if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!pyEq(a[i], b[i])) return false;
+    return true;
+  }
+  const da = a instanceof Map || isPlainDict(a), db = b instanceof Map || isPlainDict(b);
+  if (da && db) {
+    if (_dictSize(a) !== _dictSize(b)) return false;
+    for (const [k, v] of _dictEntries(a)) { const o = _dictGet(b, k); if (!o || !pyEq(v, o.v)) return false; }
+    return true;
+  }
+  if (a instanceof Set && b instanceof Set) {
+    if (a.size !== b.size) return false;
+    for (const v of a) if (!b.has(v)) return false;
+    return true;
+  }
+  if (a instanceof AdderRange && b instanceof AdderRange) return pyEq([...a], [...b]);
+  if (a instanceof Complex || b instanceof Complex) return typeof a?.__eq__ === 'function' ? a.__eq__(b) : false;
+  return false;
+}
+
+function _orderError(op, a, b) {
+  return new AdderError('TypeError', `'${op}' not supported between instances of '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+}
+// the built-in ordering (no dunders): strict less-than
+function _ltPlain(op, a, b) {
+  if (_numLike(a) && _numLike(b)) return a < b;
+  if (typeof a === 'string' && typeof b === 'string') return a < b;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      const e = pyEq(a[i], b[i]);
+      if (!e) return pyLt(a[i], b[i]);
+    }
+    return a.length < b.length;
+  }
+  if (a instanceof Set && b instanceof Set) {
+    if (a.size >= b.size) return false;
+    for (const v of a) if (!b.has(v)) return false;
+    return true;
+  }
+  // two JS objects of the same class (Date, …) keep JS's ordering
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object' &&
+      Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && !isPlainDict(a) && !Array.isArray(a)) return a < b;
+  throw _orderError(op, a, b);
+}
+function pyLt(a, b) {
+  if (_hasDunder(a, '__lt__')) return a.__lt__(b);
+  if (_hasDunder(b, '__gt__')) return b.__gt__(a);
+  return _ltPlain('<', a, b);
+}
+function pyGt(a, b) {
+  if (_hasDunder(a, '__gt__')) return a.__gt__(b);
+  if (_hasDunder(b, '__lt__')) return b.__lt__(a);
+  return _ltPlain('>', b, a);
+}
+function pyLe(a, b) {
+  if (_hasDunder(a, '__le__')) return a.__le__(b);
+  if (_hasDunder(b, '__ge__')) return b.__ge__(a);
+  if (_numLike(a) && _numLike(b)) return a <= b;
+  if (typeof a === 'string' && typeof b === 'string') return a <= b;
+  if (a instanceof Set && b instanceof Set) { for (const v of a) if (!b.has(v)) return false; return true; }
+  return _ltPlain('<=', a, b) || pyEq(a, b);
+}
+function pyGe(a, b) {
+  if (_hasDunder(a, '__ge__')) return a.__ge__(b);
+  if (_hasDunder(b, '__le__')) return b.__le__(a);
+  if (_numLike(a) && _numLike(b)) return a >= b;
+  if (typeof a === 'string' && typeof b === 'string') return a >= b;
+  if (a instanceof Set && b instanceof Set) return pyLe(b, a);
+  return _ltPlain('>=', b, a) || pyEq(a, b);
+}
+
+// Python's sort: stable, only `<`, reverse=True keeps equal items in their original order.
+// Keys are computed once (a tree-walked key function is async); comparisons that return a
+// Promise (an async __lt__) switch to an awaited merge sort.
+async function _sortKeys(arr, key) {
+  if (!key) return arr.slice();
+  const keys = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) {
+    const k = key(arr[i]);
+    keys[i] = k && typeof k.then === 'function' ? await k : k;
+  }
+  return keys;
+}
+async function pySorted(arr, key, reverse) {
+  const keys = await _sortKeys(arr, key);
+  const order = arr.map((_, i) => i);
+  const less = (i, j) => (reverse ? pyLt(keys[j], keys[i]) : pyLt(keys[i], keys[j]));
+  let pending = false;
+  order.sort((i, j) => {
+    if (pending) return 0;
+    const lt = less(i, j);
+    if (lt && typeof lt.then === 'function') { pending = true; return 0; }
+    if (lt) return -1;
+    const gt = less(j, i);
+    if (gt && typeof gt.then === 'function') { pending = true; return 0; }
+    return gt ? 1 : 0;
+  });
+  if (!pending) return order.map((i) => arr[i]);
+  // async comparisons: stable merge sort, awaiting each `<`
+  const ms = async (idx) => {
+    if (idx.length < 2) return idx;
+    const mid = idx.length >> 1;
+    const l = await ms(idx.slice(0, mid)), r = await ms(idx.slice(mid));
+    const out = [];
+    let i = 0, j = 0;
+    while (i < l.length && j < r.length) {
+      if (await less(r[j], l[i])) out.push(r[j++]); else out.push(l[i++]);
+    }
+    return out.concat(l.slice(i), r.slice(j));
+  };
+  return (await ms(arr.map((_, i) => i))).map((i) => arr[i]);
+}
+// min / max: the first extreme item, by key, through `<`
+async function pyExtreme(which, args) {
+  let key = null, dflt, hasDefault = false;
+  if (args.length > 0 && args[args.length - 1]?._kw) {
+    const kw = args.pop();
+    key = kw.key || null;
+    if ('default' in kw) { dflt = kw.default; hasDefault = true; }
+  }
+  const items = args.length === 1 ? await pyCollect(args[0]) : args;
+  if (items.length === 0) {
+    if (hasDefault) return dflt;
+    throw new AdderError('ValueError', `${which}() iterable argument is empty`);
+  }
+  const keys = await _sortKeys(items, key);
+  let best = 0;
+  for (let i = 1; i < items.length; i++) {
+    let better = which === 'max' ? pyLt(keys[best], keys[i]) : pyLt(keys[i], keys[best]);
+    if (better && typeof better.then === 'function') better = await better;
+    if (better) best = i;
+  }
+  return items[best];
 }
 
 // ── modules ──
@@ -3657,35 +3839,37 @@ function adderBuiltins(printFn) {
       const f = Math.pow(10, n);
       return Math.round(x * f) / f;
     },
-    max: async (...args) => {
-      let key = null;
-      if (args.length > 0 && args[args.length - 1]?._kw) { const kw = args.pop(); key = kw.key; }
-      const items = args.length === 1 ? await pyCollect(args[0]) : args;
-      if (items.length === 0) throw new AdderError('ValueError', 'max() arg is an empty sequence');
-      return items.reduce((a, b) => (key ? key(b) > key(a) : b > a) ? b : a);
+    max: async (...args) => pyExtreme('max', args),
+    min: async (...args) => pyExtreme('min', args),
+    // sum: numbers with compensated (Neumaier) summation, as CPython 3.12+ does for floats;
+    // lists concatenate; anything else through its __add__; strings are refused, as in Python
+    sum: async (iterable, start) => {
+      if (start && start._kw) start = start.start;
+      const items = await pyCollect(iterable);
+      let s = start !== undefined ? start : 0;
+      if (typeof s === 'string') throw new AdderError('TypeError', "sum() can't sum strings [use ''.join(seq) instead]");
+      if (_numLike(s) && items.every(_numLike)) {
+        let total = Number(s), c = 0;
+        for (const v of items) {
+          const x = Number(v), t = total + x;
+          c += Math.abs(total) >= Math.abs(x) ? (total - t) + x : (x - t) + total;
+          total = t;
+        }
+        return total + c;
+      }
+      for (const v of items) {
+        if (Array.isArray(s) && Array.isArray(v)) s = s.concat(v);
+        else if (_hasDunder(s, '__add__')) { const r = s.__add__(v); s = r && typeof r.then === 'function' ? await r : r; }
+        else if (_hasDunder(v, '__radd__')) { const r = v.__radd__(s); s = r && typeof r.then === 'function' ? await r : r; }
+        else if (_numLike(s) && _numLike(v)) s = s + v;
+        else throw new AdderError('TypeError', `unsupported operand type(s) for +: '${pyTypeName(s)}' and '${pyTypeName(v)}'`);
+      }
+      return s;
     },
-    min: async (...args) => {
-      let key = null;
-      if (args.length > 0 && args[args.length - 1]?._kw) { const kw = args.pop(); key = kw.key; }
-      const items = args.length === 1 ? await pyCollect(args[0]) : args;
-      if (items.length === 0) throw new AdderError('ValueError', 'min() arg is an empty sequence');
-      return items.reduce((a, b) => (key ? key(b) < key(a) : b < a) ? b : a);
-    },
-    sum: async (iterable, start) => { let s = start !== undefined ? start : 0; for (const v of await pyCollect(iterable)) s += v; return s; },
     sorted: async (iterable, key, reverse) => {
       if (key?._kw) { reverse = key.reverse; key = key.key; }
-      const arr = await pyCollect(iterable);
-      if (key) {
-        const keyed = [];
-        for (let i = 0; i < arr.length; i++) keyed.push([await key(arr[i]), i, arr[i]]);
-        keyed.sort((a, b) => _pyCompare(a[0], b[0]));
-        const result = keyed.map(x => x[2]);
-        if (reverse) result.reverse();
-        return result;
-      }
-      arr.sort(_pyCompare);
-      if (reverse) arr.reverse();
-      return arr;
+      else if (reverse?._kw) reverse = reverse.reverse;
+      return pySorted(await pyCollect(iterable), key || null, !!reverse);
     },
     reversed: async (iterable) => { const arr = await pyCollect(iterable); arr.reverse(); return arr; },
     enumerate: async (iterable, start) => {
@@ -3749,9 +3933,30 @@ function adderBuiltins(printFn) {
     id: (obj) => { if (typeof obj === 'object' && obj !== null) { if (!obj.__id__) obj.__id__ = ++_idCounter; return obj.__id__; } return 0; },
     hash: (obj) => { if (typeof obj === 'number') return obj; if (typeof obj === 'string') { let h = 0; for (let i = 0; i < obj.length; i++) h = (h * 31 + obj.charCodeAt(i)) | 0; return h; } return 0; },
     iter: (obj) => pyIter(obj),
-    next: (iter, def) => { const r = iter.next(); if (r.done) { if (def !== undefined) return def; throw new AdderError('StopIteration', ''); } return r.value; },
+    next: (iter, def) => {
+      const done = () => { if (def !== undefined) return def; throw new AdderError('StopIteration', '', undefined, []); };
+      if (iter && typeof iter.__next__ === 'function') {
+        if (def === undefined) return iter.__next__();
+        try { const v = iter.__next__(); return v && typeof v.then === 'function' ? v.catch((e) => { if (e && e.pyType === 'StopIteration') return def; throw e; }) : v; }
+        catch (e) { if (e && e.pyType === 'StopIteration') return def; throw e; }
+      }
+      if (!iter || typeof iter.next !== 'function') throw new AdderError('TypeError', `'${pyTypeName(iter)}' object is not an iterator`);
+      const r = iter.next();
+      if (r && typeof r.then === 'function') return r.then((x) => (x.done ? done() : x.value));
+      return r.done ? done() : r.value;
+    },
     input: () => { throw new AdderError('NotImplementedError', 'input() is not supported in the browser'); },
-    issubclass: () => false,
+    issubclass: (c, t) => {
+      if (Array.isArray(t)) return t.some((x) => builtins.issubclass(c, x));
+      if (typeof c !== 'function') throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
+      if (c === t || (t && t._pyName === 'object')) return true;
+      if (c._pyMRO && c._pyMRO.includes(t)) return true;
+      const cn = c._pyName, tn = t && t._pyName;
+      if (cn === 'bool' && tn === 'int') return true;
+      if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
+      if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
+      return false;
+    },
     vars: (obj) => obj ? { ...obj } : {},
     dir: (obj) => obj ? Object.keys(obj).sort() : [],
     object: () => ({}),
@@ -3800,6 +4005,42 @@ function adderBuiltins(printFn) {
   return builtins;
 }
 
+// super(): the next class after `cls` in self's MRO, as a proxy whose attributes are bound to
+// self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR
+// passes them). A builtin exception base supplies __init__ (it keeps the args, as
+// BaseException does) and __str__; `object` supplies a no-op __init__.
+function pySuper(cls, self) {
+  const mro = (cls && cls._pyMRO) || [cls];
+  const start = mro.indexOf(cls) + 1;
+  return new Proxy({}, {
+    get(_, name) {
+      if (typeof name !== 'string') return undefined;
+      for (let i = start; i < mro.length; i++) {
+        const base = mro[i];
+        if (isBuiltinExcType(base)) {
+          if (name === '__init__') return (...a) => {
+            if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+            self.args = a;
+            return null;
+          };
+          if (name === '__str__') return () => _argsStr(base._pyName, self.args);
+          continue;
+        }
+        if (!base || !base.prototype) continue;
+        const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
+        if (desc) {
+          if (desc.get) return desc.get.call(self);
+          if (typeof desc.value === 'function') return (...a) => desc.value.call(self, ...a);
+          return desc.value;
+        }
+      }
+      if (name === '__init__') return () => null;   // object.__init__
+      return undefined;
+    },
+    has(_, name) { return this.get(_, name) !== undefined; },
+  });
+}
+
 // Sentinel functions for eval/exec/super — handled specially by the evaluator
 const _builtinEval = Object.assign(() => {}, { _pyName: 'eval', _sentinel: 'eval' });
 const _builtinExec = Object.assign(() => {}, { _pyName: 'exec', _sentinel: 'exec' });
@@ -3815,6 +4056,8 @@ function _pyIsInstance(obj, typeOrTuple) {
       if (t._pyClass && t._pyName) {
         // type object — match by name
         if (name === t._pyName) return true;
+        if (t._pyName === 'object') return true;
+        if (t._pyName === 'int' && typeof obj === 'boolean') return true;
         // walk MRO of the object's adder type
         const objType = obj?.__adderType__;
         if (objType?._pyMRO) {
@@ -4127,7 +4370,7 @@ async function adderEval(node, scope) {
       // chained comparisons: coerce to boolean (a < b < c → a < b and b < c)
       for (let i = 0; i < node.ops.length; i++) {
         const right = await adderEval(node.comparators[i], scope);
-        if (!_compareOp(node.ops[i], left, right)) return false;
+        if (!(await _compareOp(node.ops[i], left, right))) return false;
         left = right;
       }
       return true;
@@ -4471,12 +4714,16 @@ const _iDunders = {
 
 function _compareOp(op, left, right) {
   switch (op) {
-    case '==': return _pyEq(left, right);
-    case '!=': return typeof left?.__ne__ === 'function' ? left.__ne__(right) : !_pyEq(left, right);
-    case '<': return typeof left?.__lt__ === 'function' ? left.__lt__(right) : left < right;
-    case '<=': return typeof left?.__le__ === 'function' ? left.__le__(right) : left <= right;
-    case '>': return typeof left?.__gt__ === 'function' ? left.__gt__(right) : left > right;
-    case '>=': return typeof left?.__ge__ === 'function' ? left.__ge__(right) : left >= right;
+    case '==': return pyEq(left, right);
+    case '!=': {
+      if (typeof left?.__ne__ === 'function') return left.__ne__(right);
+      const r = pyEq(left, right);
+      return r && typeof r.then === 'function' ? r.then((x) => !x) : !r;
+    }
+    case '<': return pyLt(left, right);
+    case '<=': return pyLe(left, right);
+    case '>': return pyGt(left, right);
+    case '>=': return pyGe(left, right);
     case 'in': return _pyIn(right, left);
     case 'not in': return !_pyIn(right, left);
     case 'is': return left === right;
@@ -4486,16 +4733,8 @@ function _compareOp(op, left, right) {
 }
 
 function _pyEq(a, b) {
-  if (a === b) return true;
-  if (typeof a?.__eq__ === 'function') return a.__eq__(b);
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!_pyEq(a[i], b[i])) return false;
-    return true;
-  }
-  return false;
+  return pyEq(a, b);
 }
-
 function _pyIn(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
   if (Array.isArray(container)) return container.some(v => _pyEq(v, value));
@@ -4864,11 +5103,17 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
     // We use an async generator internally, exposed via Symbol.asyncIterator.
     // For sync consumers (for..of), we also provide Symbol.iterator
     // that collects eagerly — but the primary path is for-await.
+    // ONE underlying generator per call, as in Python: next(g) then list(g) continues
+    // where next left off (each for-await used to restart the body)
+    let gen = null;
+    const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults));
     const genObj = {
-      [Symbol.asyncIterator]() {
-        return _runGenerator(node, scope, callArgs, defaults);
-      },
-      // sync iterator: collect all values eagerly (used by list(), sorted(), etc.)
+      __adderClass__: 'generator',
+      [Symbol.asyncIterator]() { return run(); },
+      next(v) { return run().next(v); },
+      send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
+      close() { return run().return(undefined).then(() => null); },
+      // sync iteration needs the values now; generators here are async (for await / list())
       [Symbol.iterator]() {
         throw new AdderError('TypeError', 'Use "for await" or list() with generators');
       },
@@ -4916,7 +5161,7 @@ async function* _evalGenStmt(node, scope) {
     case 'For': {
       const iterable = await adderEval(node.iter, scope);
       let broke = false;
-      const iter = iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+      const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
       for await (const value of iter) {
         await _assignTarget(node.target, value, scope);
         try {
@@ -5228,7 +5473,7 @@ async function _evalFor(node, scope) {
   const iterable = await adderEval(node.iter, scope);
   let broke = false;
   // for-await handles both sync iterables and async generators
-  const iter = iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
   let _loopCount = 0;
   for await (const value of iter) {
     // yield to event loop periodically to prevent page lockup
@@ -5337,30 +5582,12 @@ function _matchException(error, excTypeVal) {
 // ── super() / eval() / exec() builtins ──
 
 function _evalSuperCall(args, scope, line) {
+  if (args.length >= 2) return pySuper(args[0], args[1]);
   let cls;
   try { cls = scope.get('__class__'); } catch { throw new AdderError('RuntimeError', 'super(): __class__ not found', line); }
   let self;
   try { self = scope.get('self'); } catch { throw new AdderError('RuntimeError', 'super(): self not found', line); }
-  const mro = cls._pyMRO || [cls];
-  const idx = mro.indexOf(cls);
-  if (idx < 0 || idx + 1 >= mro.length) return {};
-  // create proxy that delegates to next class in MRO
-  return new Proxy({}, {
-    get(_, name) {
-      // search MRO starting from the class after current
-      for (let i = idx + 1; i < mro.length; i++) {
-        const base = mro[i];
-        if (!base.prototype) continue;
-        const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
-        if (desc) {
-          if (desc.get) return desc.get.call(self);
-          if (typeof desc.value === 'function') return (...a) => desc.value.call(self, ...a);
-          return desc.value;
-        }
-      }
-      return undefined;
-    }
-  });
+  return pySuper(cls, self);
 }
 
 async function _evalBuiltinEval(args, scope, line) {
@@ -5400,7 +5627,7 @@ function _evalGenExpr(node, scope) {
 async function* _genExprIter(node, scope, genIdx) {
   const gen = node.generators[genIdx];
   const iterable = await adderEval(gen.iter, scope);
-  const iter = iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
   for await (const value of iter) {
     await _assignTarget(gen.target, value, scope);
     let pass = true;
@@ -5792,49 +6019,6 @@ function _strPctFormat(fmt, args) {
 }
 
 // ── Comparison ──
-
-function _eq(a, b) {
-  if (a === b) return true;
-  if (a !== null && typeof a === 'object' && typeof a.__eq__ === 'function') return a.__eq__(b);
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!_eq(a[i], b[i])) return false;
-    return true;
-  }
-  return false;
-}
-
-function _neq(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
-  return !_eq(a, b);
-}
-
-function _lt(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__lt__ === 'function') return a.__lt__(b);
-  if (typeof a === 'number' && typeof b === 'number') return a < b;
-  if (typeof a === 'string' && typeof b === 'string') return a < b;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    const min = Math.min(a.length, b.length);
-    for (let i = 0; i < min; i++) { if (_lt(a[i], b[i])) return true; if (_lt(b[i], a[i])) return false; }
-    return a.length < b.length;
-  }
-  return a < b;
-}
-
-function _lte(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__le__ === 'function') return a.__le__(b);
-  return _lt(a, b) || _eq(a, b);
-}
-
-function _gt(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__gt__ === 'function') return a.__gt__(b);
-  return _lt(b, a);
-}
-
-function _gte(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__ge__ === 'function') return a.__ge__(b);
-  return _lt(b, a) || _eq(a, b);
-}
 
 function _contains(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
@@ -6594,6 +6778,14 @@ function _assertFail(msg) {
   throw new AdderError('AssertionError', msg === undefined ? '' : pyStr(msg));
 }
 
+// comparisons: the shared rules (builtins.js), so both engines compare alike
+const _eq = pyEq, _lt = pyLt, _lte = pyLe, _gt = pyGt, _gte = pyGe;
+function _neq(a, b) {
+  if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
+  const r = pyEq(a, b);
+  return r && typeof r.then === 'function' ? r.then((x) => !x) : !r;
+}
+
 // ── Export as single namespace ──
 
 const _py = {
@@ -6651,6 +6843,7 @@ const _py = {
   // argument binding
   bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
+  super: pySuper,
 };
 
 // -- runner.js --
@@ -8130,6 +8323,17 @@ function _lowerSliceElt(ctx, elt, l) {
 function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
+  // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
+  if (node.func.type === 'Name' && node.func.id === 'super' && !ctx.symbols.has('super') && !(node.keywords || []).length) {
+    if (node.args.length === 0) {
+      if (!ctx._superCtx) throw new AirLowerError('super() outside a method');
+      const cls = ctx.emit('load', [ctx._superCtx.cls], DYNAMIC, l);
+      const self = ctx.emit('load', [ctx._superCtx.self], DYNAMIC, l);
+      return emitPyCall(ctx, 'super', [cls, self], l);
+    }
+    if (node.args.length === 2) return emitPyCall(ctx, 'super', node.args.map((a) => lowerExpr_ad(ctx, a)), l);
+  }
+
   const hasStarred = node.args.some(a => a.type === 'Starred');
   const hasKwargs = node.keywords && node.keywords.length > 0;
   const hasSplatKw = hasKwargs && node.keywords.some(kw => kw.name === null);
@@ -8549,10 +8753,12 @@ function lowerClassDef(ctx, node) {
   const savedTopLevel = ctx.topLevel;
   ctx.topLevel = false;
   ctx.symbols = ctx.symbols.push();
+  const savedClass = ctx._classBodyOf;
+  ctx._classBodyOf = name;
 
   const body = captureOps(ctx, () => {
     // Run class body — method defs become locals, assignments become locals
-    for (const stmt of node.body) lowerStmt_ad(ctx, stmt);
+    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; }
 
     // Build the class members dict from the locals
     // We need to track which names were defined in the class body.
@@ -9030,6 +9236,10 @@ function lowerFuncDef(ctx, node) {
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
   const savedExcName = ctx._excName;
   ctx._excName = null;
+  // zero-argument super() in a method: the enclosing class and the method's first parameter
+  const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf;
+  if (ctx._classBodyOf && (node.params || []).length) ctx._superCtx = { cls: ctx._classBodyOf, self: node.params[0].name };
+  ctx._classBodyOf = null;
 
   // Lower body in nested scope. The save-and-Map-clone idiom we used to
   // run is replaced by ScopeChain push/pop now that ctx.symbols extends
@@ -9063,6 +9273,8 @@ function lowerFuncDef(ctx, node) {
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
   ctx._excName = savedExcName;
+  ctx._superCtx = savedSuper;
+  ctx._classBodyOf = savedClassBody;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;

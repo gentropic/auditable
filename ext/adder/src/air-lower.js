@@ -999,6 +999,17 @@ function _lowerSliceElt(ctx, elt, l) {
 function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
+  // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
+  if (node.func.type === 'Name' && node.func.id === 'super' && !ctx.symbols.has('super') && !(node.keywords || []).length) {
+    if (node.args.length === 0) {
+      if (!ctx._superCtx) throw new AirLowerError('super() outside a method');
+      const cls = ctx.emit('load', [ctx._superCtx.cls], DYNAMIC, l);
+      const self = ctx.emit('load', [ctx._superCtx.self], DYNAMIC, l);
+      return emitPyCall(ctx, 'super', [cls, self], l);
+    }
+    if (node.args.length === 2) return emitPyCall(ctx, 'super', node.args.map((a) => lowerExpr_ad(ctx, a)), l);
+  }
+
   const hasStarred = node.args.some(a => a.type === 'Starred');
   const hasKwargs = node.keywords && node.keywords.length > 0;
   const hasSplatKw = hasKwargs && node.keywords.some(kw => kw.name === null);
@@ -1418,10 +1429,12 @@ function lowerClassDef(ctx, node) {
   const savedTopLevel = ctx.topLevel;
   ctx.topLevel = false;
   ctx.symbols = ctx.symbols.push();
+  const savedClass = ctx._classBodyOf;
+  ctx._classBodyOf = name;
 
   const body = captureOps(ctx, () => {
     // Run class body — method defs become locals, assignments become locals
-    for (const stmt of node.body) lowerStmt_ad(ctx, stmt);
+    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; }
 
     // Build the class members dict from the locals
     // We need to track which names were defined in the class body.
@@ -1899,6 +1912,10 @@ function lowerFuncDef(ctx, node) {
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
   const savedExcName = ctx._excName;
   ctx._excName = null;
+  // zero-argument super() in a method: the enclosing class and the method's first parameter
+  const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf;
+  if (ctx._classBodyOf && (node.params || []).length) ctx._superCtx = { cls: ctx._classBodyOf, self: node.params[0].name };
+  ctx._classBodyOf = null;
 
   // Lower body in nested scope. The save-and-Map-clone idiom we used to
   // run is replaced by ScopeChain push/pop now that ctx.symbols extends
@@ -1932,6 +1949,8 @@ function lowerFuncDef(ctx, node) {
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
   ctx._excName = savedExcName;
+  ctx._superCtx = savedSuper;
+  ctx._classBodyOf = savedClassBody;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;
