@@ -1,0 +1,537 @@
+{
+ "python": "3.13.12",
+ "cases": {
+  "num/int-float-print": {
+   "out": "1 2.0 -0.0 1.5 1e+16 1e-05 123456789012.0 0.30000000000000004\n",
+   "error": null
+  },
+  "num/division": {
+   "out": "3.5 3 -4 1 2 3.0 0.5 (3, 2) (-4, 3)\n",
+   "error": null
+  },
+  "num/int-result-types": {
+   "out": "float int int float\n",
+   "error": null
+  },
+  "num/bigint": {
+   "out": "18446744073709551616 1267650600228229401496703205376 100000000000000000001 1\n",
+   "error": null
+  },
+  "num/round": {
+   "out": "2 4 0 0.12 1200 2.67\n",
+   "error": null
+  },
+  "num/int-parse": {
+   "out": "42 7 255 5 3 -3 1000.0\n",
+   "error": null
+  },
+  "num/bool-arith": {
+   "out": "2 3 2 1 True True\n",
+   "error": null
+  },
+  "num/float-repr": {
+   "out": "1.0 0.1 0.3333333333333333 inf -inf False\n",
+   "error": null
+  },
+  "num/abs-minmax": {
+   "out": "3 2.5 3 2 c (2, 'b')\n",
+   "error": null
+  },
+  "num/pow-mod": {
+   "out": "1024 24 5 1 1\n",
+   "error": null
+  },
+  "num/zero-div": {
+   "out": "",
+   "error": "ZeroDivisionError"
+  },
+  "num/zero-mod": {
+   "out": "",
+   "error": "ZeroDivisionError"
+  },
+  "num/bin-hex": {
+   "out": "0b1010 0xff 0o10 -0x1 11111111 ff\n",
+   "error": null
+  },
+  "num/bitwise": {
+   "out": "1 7 6 -6 1024 -4\n",
+   "error": null
+  },
+  "num/complex": {
+   "out": "(5+5j) 5.0 1.0\n",
+   "error": null
+  },
+  "str/methods": {
+   "out": "HELLO, WORLD hello, world hELLO, wORLD Hello, World Hello, world\n",
+   "error": null
+  },
+  "str/find": {
+   "out": "1 3 2 3 -1 True\n",
+   "error": null
+  },
+  "str/split-join": {
+   "out": "['a', 'b', '', 'c'] ['a', 'b', 'c'] ['a', 'b c'] x-y ['a', 'b']\n",
+   "error": null
+  },
+  "str/strip": {
+   "out": "'hi' 'hi' 'hi' 'hi'\n",
+   "error": null
+  },
+  "str/replace-startswith": {
+   "out": "bba True True bc\n",
+   "error": null
+  },
+  "str/justify": {
+   "out": "'007' '**ab**' 'ab  ' '00ab'\n",
+   "error": null
+  },
+  "str/predicates": {
+   "out": "True True True True True True\n",
+   "error": null
+  },
+  "str/slicing": {
+   "out": "cde abcdef aceg hgfedcba fgh  bdf\n",
+   "error": null
+  },
+  "str/index-error": {
+   "out": "",
+   "error": "IndexError"
+  },
+  "str/multiply-compare": {
+   "out": "ababab True True True 97 a\n",
+   "error": null
+  },
+  "str/format-method": {
+   "out": "1 and 2 b a x!   3.14|\n",
+   "error": null
+  },
+  "str/percent": {
+   "out": "3 items at 1.50 each, ok     a|b    | ff 10 1.234568e+04\n",
+   "error": null
+  },
+  "str/fstring-spec": {
+   "out": "1,234,567.89 1.234568e+06 1.23e+06 00042 +42   hi  | 50% 111\n",
+   "error": null
+  },
+  "str/fstring-expr": {
+   "out": "6 [0, 1, 2] 3 'q' n=3\n",
+   "error": null
+  },
+  "str/repr-escapes": {
+   "out": "\"a'b\" 'a\"b' 'tab\\there' 'nl\\n' 'back\\\\slash'\n",
+   "error": null
+  },
+  "str/encode": {
+   "out": "b'h\\xc3\\xa9llo' 6 abc b'hi'\n",
+   "error": null
+  },
+  "str/partition": {
+   "out": "('k', '=', 'v=w') ('k=v', '=', 'w') ('abc', '', '')\n",
+   "error": null
+  },
+  "str/maketrans": {
+   "out": "hippo Abc\n",
+   "error": null
+  },
+  "list/methods": {
+   "out": "[3, 1, 2, 5] 7 9 2 0 4\n",
+   "error": null
+  },
+  "list/sort": {
+   "out": "['a', 'bb', 'ccc'] [3, 2, 1] ['e', 'h', 'l', 'l', 'o'] [(1, 'z'), (2, 'a'), (2, 'b')]\n",
+   "error": null
+  },
+  "list/sort-key-lambda": {
+   "out": "[('ana', 31), ('cy', 31), ('bo', 25)] ('ana', 31) ('ana', 31)\n",
+   "error": null
+  },
+  "list/slicing-assign": {
+   "out": "[0, 'x', 5, 0, 7, 8, 0]\n",
+   "error": null
+  },
+  "list/negative-index": {
+   "out": "3 1 [2] [2, 3]\n",
+   "error": null
+  },
+  "list/comprehension-nested": {
+   "out": "[(1, 0), (2, 0), (2, 1)] [0, 3, 6, 9]\n",
+   "error": null
+  },
+  "list/copy-semantics": {
+   "out": "[[1, 0], [1, 0]] [[1, 0], [0, 0]]\n",
+   "error": null
+  },
+  "list/equality": {
+   "out": "True True [1, 2, 3] [1, 1, 1] True True\n",
+   "error": null
+  },
+  "list/unpacking": {
+   "out": "1 [2, 3, 4] 5 1 2 3 7 8\n",
+   "error": null
+  },
+  "list/index-error": {
+   "out": "",
+   "error": "IndexError"
+  },
+  "list/remove-missing": {
+   "out": "",
+   "error": "ValueError"
+  },
+  "tuple/basics": {
+   "out": "(1, 2, 3) 2 3 (1, 2, 3, 4) (1, 2, 3, 1, 2, 3) (1,) (1, 2) 2 1 tuple\n",
+   "error": null
+  },
+  "tuple/immutable": {
+   "out": "",
+   "error": "TypeError"
+  },
+  "tuple/compare-hash": {
+   "out": "True True a [(1, 2), (2, 1)]\n",
+   "error": null
+  },
+  "dict/basics": {
+   "out": "{'b': 2, 'a': 1, 'c': 3} 3 True None 0 ['b', 'a', 'c'] [2, 1, 3] [('b', 2), ('a', 1), ('c', 3)]\n",
+   "error": null
+  },
+  "dict/methods": {
+   "out": "1 9 {'b': 2, 'c': 3} ('x', 9) {'a': 0, 'b': 0}\n",
+   "error": null
+  },
+  "dict/int-keys": {
+   "out": "{1: 'one', 2: 'two', 3: 'three'} two [1, 2, 3] {2: 'two', 3: 'three'}\n",
+   "error": null
+  },
+  "dict/mixed-keys": {
+   "out": "{'a': 1, 2: 'b', (1, 2): 't'} t 3\n",
+   "error": null
+  },
+  "dict/key-error": {
+   "out": "",
+   "error": "KeyError"
+  },
+  "dict/iteration-order": {
+   "out": "['z', 'y', 'x'] ['z', 'y', 'x'] {'z': 0, 'y': 1, 'x': 2}\n",
+   "error": null
+  },
+  "dict/equality-merge": {
+   "out": "True {'x': 1, 'y': 2} {'x': 1, 'z': 3} True\n",
+   "error": null
+  },
+  "dict/del-in": {
+   "out": "{'b': 2} True\n",
+   "error": null
+  },
+  "dict/counter-pattern": {
+   "out": "{'the': 3, 'cat': 1, 'dog': 1, 'end': 1} the\n",
+   "error": null
+  },
+  "set/basics": {
+   "out": "[2, 3, 4] 3 True [1, 2, 3] [2] [1] [1, 3]\n",
+   "error": null
+  },
+  "set/print-ints": {
+   "out": "{1, 2, 3} set() True True frozenset({1, 2})\n",
+   "error": null
+  },
+  "set/comprehension": {
+   "out": "[0, 1, 2] 4\n",
+   "error": null
+  },
+  "ctl/for-else": {
+   "out": "no break\n",
+   "error": null
+  },
+  "ctl/while-continue": {
+   "out": "[2, 4, 6, 8, 10]\n",
+   "error": null
+  },
+  "ctl/ternary-chain": {
+   "out": "big True False 0 5 d\n",
+   "error": null
+  },
+  "ctl/match": {
+   "out": "zero pair 1 2 dict 9 str x other\n",
+   "error": null
+  },
+  "ctl/walrus": {
+   "out": "long 3\n",
+   "error": null
+  },
+  "ctl/enumerate-zip": {
+   "out": "[(1, 'a'), (2, 'b')] [(1, 'a'), (2, 'b')] {'a': 1, 'b': 2}\n",
+   "error": null
+  },
+  "ctl/range": {
+   "out": "[0, 1, 2, 3, 4] [2, 5, 8] [5, 3, 1] 15 1 True\n",
+   "error": null
+  },
+  "ctl/any-all": {
+   "out": "True False False True 14\n",
+   "error": null
+  },
+  "ctl/reversed-sorted": {
+   "out": "[3, 2, 1] cba [3, 2, 1]\n",
+   "error": null
+  },
+  "ctl/map-filter": {
+   "out": "['1', '2'] [1, 'a'] [11, 22]\n",
+   "error": null
+  },
+  "fn/defaults-kwargs": {
+   "out": "(1, 2, (), 3, []) (1, 5, (6, 7), 0, [('y', 2), ('z', 1)])\n",
+   "error": null
+  },
+  "fn/closure-nonlocal": {
+   "out": "3\n",
+   "error": null
+  },
+  "fn/global": {
+   "out": "7\n",
+   "error": null
+  },
+  "fn/recursion": {
+   "out": "[0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]\n",
+   "error": null
+  },
+  "fn/lambda-default-capture": {
+   "out": "[0, 10, 20]\n",
+   "error": null
+  },
+  "fn/decorator": {
+   "out": "6 wrap\n",
+   "error": null
+  },
+  "fn/generator": {
+   "out": "0 1 [4, 9] 30\n",
+   "error": null
+  },
+  "fn/yield-from": {
+   "out": "[0, 1, 2]\n",
+   "error": null
+  },
+  "fn/stop-iteration": {
+   "out": "",
+   "error": "StopIteration"
+  },
+  "fn/arg-error": {
+   "out": "",
+   "error": "TypeError"
+  },
+  "fn/star-args-call": {
+   "out": "6 6\n",
+   "error": null
+  },
+  "fn/docstring": {
+   "out": "doc here 1\n",
+   "error": null
+  },
+  "cls/basics": {
+   "out": "Point(4, 6) True Point(0, 0)\n",
+   "error": null
+  },
+  "cls/inheritance-super": {
+   "out": "BA True True B\n",
+   "error": null
+  },
+  "cls/class-attr-static": {
+   "out": "2 static 2\n",
+   "error": null
+  },
+  "cls/property": {
+   "out": "50\n",
+   "error": null
+  },
+  "cls/dunder-len-iter-contains": {
+   "out": "2 [3, 4] True 3 [3, 4]\n",
+   "error": null
+  },
+  "cls/str-vs-repr": {
+   "out": "str-Q [repr-Q] str-Q repr-Q str-Q repr-Q\n",
+   "error": null
+  },
+  "cls/default-repr": {
+   "out": "E True\n",
+   "error": null
+  },
+  "cls/dataclass": {
+   "out": "D(a=1, b='x') True y\n",
+   "error": null
+  },
+  "cls/attr-error": {
+   "out": "",
+   "error": "AttributeError"
+  },
+  "cls/lt-sorting": {
+   "out": "[V1, V2, V3] V5\n",
+   "error": null
+  },
+  "exc/try-except-else-finally": {
+   "out": "[5, 'else', 'finally'] ['zde:integer division or modulo by zero', 'finally']\n",
+   "error": null
+  },
+  "exc/raise-custom": {
+   "out": "MyErr boom True ('boom',)\n",
+   "error": null
+  },
+  "exc/str-repr": {
+   "out": "invalid literal for int() with base 10: 'x'\nValueError(\"invalid literal for int() with base 10: 'x'\")\n",
+   "error": null
+  },
+  "exc/reraise": {
+   "out": "outer KeyError('k')\n",
+   "error": null
+  },
+  "exc/raise-from": {
+   "out": "wrapped ZeroDivisionError\n",
+   "error": null
+  },
+  "exc/uncaught-type": {
+   "out": "",
+   "error": "TypeError"
+  },
+  "exc/assert": {
+   "out": "",
+   "error": "AssertionError"
+  },
+  "exc/name-error": {
+   "out": "",
+   "error": "NameError"
+  },
+  "exc/type-error-add": {
+   "out": "",
+   "error": "TypeError"
+  },
+  "exc/multiple-except": {
+   "out": "1\nValueError\nTypeError\n",
+   "error": null
+  },
+  "exc/with-statement": {
+   "out": "enter\nexit ValueError\nafter\n",
+   "error": null
+  },
+  "mod/math": {
+   "out": "4.0 -3 3 3.141592653589793 6 True inf 1.0 5.0\n",
+   "error": null
+  },
+  "mod/math-int": {
+   "out": "3628800 10 20 4 24 -3\n",
+   "error": null
+  },
+  "mod/json": {
+   "out": "{\"a\": [1, 2.5, null, true], \"b\": \"x\"} [1, 2.5, None, True] [\n  1,\n  2\n]\n",
+   "error": null
+  },
+  "mod/json-sort": {
+   "out": "{\"a\": 2, \"b\": 1} {'x': {'y': [1]}}\n",
+   "error": null
+  },
+  "mod/re": {
+   "out": "['1', '22', '333'] 1a2b True ['a', 'b', 'c']\n",
+   "error": null
+  },
+  "mod/re-groups": {
+   "out": "key=42 key key ('key', '42') (2, 8) {'k': 'key'}\n",
+   "error": null
+  },
+  "mod/collections": {
+   "out": "[('a', 5), ('b', 2)] {'x': [1]} [0, 1, 2] P(x=1, y=2) 3 {'x': 1, 'y': 2}\n",
+   "error": null
+  },
+  "mod/itertools": {
+   "out": "[1, 2, 3] [('a', 'a'), ('a', 'b'), ('b', 'a'), ('b', 'b')] [(1, 2), (1, 3), (2, 3)] [('a', 'b'), ('b', 'a')] [1, 3, 6] [5, 6, 7]\n",
+   "error": null
+  },
+  "mod/itertools-groupby": {
+   "out": "[('a', ['a', 'a']), ('b', ['b', 'b', 'b']), ('c', ['c'])] [(1, 'a'), (2, '-')]\n",
+   "error": null
+  },
+  "mod/functools": {
+   "out": "24 32\n1548008755920\n",
+   "error": null
+  },
+  "mod/string": {
+   "out": "abcde 0123456789 !\"#$\n",
+   "error": null
+  },
+  "mod/random-seeded": {
+   "out": "0.6394267984578837 4 c\n",
+   "error": null
+  },
+  "mod/statistics": {
+   "out": "2.5 2 2.138089935299395 1\n",
+   "error": null
+  },
+  "mod/datetime": {
+   "out": "2024-03-01 2024-03-01 4 01/01/2024\n",
+   "error": null
+  },
+  "mod/fractions-decimal": {
+   "out": "1/2 0.3\n",
+   "error": null
+  },
+  "mod/heapq-bisect": {
+   "out": "0 [1, 2] 2 3\n",
+   "error": null
+  },
+  "mod/textwrap-copy": {
+   "out": "['the quick', 'brown fox', 'jumps'] [[1], [2]] [[1, 9], [2]]\n",
+   "error": null
+  },
+  "mod/csv-io": {
+   "out": "[['a', 'b'], ['1', '2'], ['3', '4']]\n",
+   "error": null
+  },
+  "mod/import-missing": {
+   "out": "",
+   "error": "ModuleNotFoundError"
+  },
+  "builtin/print-kwargs": {
+   "out": "1-2-3!\nxy\n",
+   "error": null
+  },
+  "builtin/isinstance-types": {
+   "out": "True True True True True True\n",
+   "error": null
+  },
+  "builtin/type-names": {
+   "out": "int float str list dict set NoneType builtin_function_or_method\n",
+   "error": null
+  },
+  "builtin/len-errors": {
+   "out": "",
+   "error": "TypeError"
+  },
+  "builtin/sum-start": {
+   "out": "13 [1, 2] 1.0\n",
+   "error": null
+  },
+  "builtin/sorted-stable": {
+   "out": "['A', 'B', 'a', 'b'] ['A', 'a', 'b', 'B']\n",
+   "error": null
+  },
+  "builtin/hasattr-getattr": {
+   "out": "True def 1\n2\n",
+   "error": null
+  },
+  "builtin/iter-next-default": {
+   "out": "1 done\n",
+   "error": null
+  },
+  "builtin/chr-ord-unicode": {
+   "out": "λ 955 Λ 5 ï\n",
+   "error": null
+  },
+  "builtin/str-of-containers": {
+   "out": "[1, 'a', None, True, 2.5] (1,) {'k': (1, 2)} [[]]\n",
+   "error": null
+  },
+  "builtin/eval-literal": {
+   "out": "7 [0, 1, 2]\n",
+   "error": null
+  },
+  "builtin/input-free": {
+   "out": "True False abs\n",
+   "error": null
+  }
+ }
+}

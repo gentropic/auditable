@@ -1,0 +1,562 @@
+# CPython parity corpus for adder. Each case starts with a line "### group/name" and runs in a
+# fresh interpreter; its stdout (and the type of an uncaught exception, if any) is compared with
+# CPython's, recorded in golden.json by gen.py. Keep cases deterministic: no hash order of str
+# sets, no id(), no time, no unseeded random.
+
+### num/int-float-print
+print(1, 2.0, -0.0, 1.5, 1e16, 1e-5, 123456789012.0, 0.1 + 0.2)
+### num/division
+print(7 / 2, 7 // 2, -7 // 2, 7 % 3, -7 % 3, 7.5 // 2, 2 ** -1, divmod(17, 5), divmod(-17, 5))
+### num/int-result-types
+print(type(4 / 2).__name__, type(4 // 2).__name__, type(2 ** 3).__name__, type(3 * 1.0).__name__)
+### num/bigint
+print(2 ** 64, 2 ** 100, 10 ** 20 + 1, factorial_check := 1)
+### num/round
+print(round(2.5), round(3.5), round(-0.5), round(0.125, 2), round(1234, -2), round(2.675, 2))
+### num/int-parse
+print(int("42"), int(" 7 "), int("ff", 16), int("0b101", 0), int(3.99), int(-3.99), float("1e3"))
+### num/bool-arith
+print(True + True, True * 3, sum([True, False, True]), int(True), 1 == 1.0, True is not False)
+### num/float-repr
+print(repr(1.0), repr(0.1), str(1/3), 1e300 * 1e10, -1e300 * 1e10, float("nan") == float("nan"))
+### num/abs-minmax
+print(abs(-3), abs(-2.5), max(3, 1, 2), min([4, 2, 8]), max("abc"), min((3, "a"), (2, "b")))
+### num/pow-mod
+print(pow(2, 10), pow(2, 10, 1000), pow(3, -1, 7), 10 ** 0, 0 ** 0)
+### num/zero-div
+print(1 / 0)
+### num/zero-mod
+print(5 % 0)
+### num/bin-hex
+print(bin(10), hex(255), oct(8), hex(-1), format(255, "08b"), format(255, "x"))
+### num/bitwise
+print(5 & 3, 5 | 3, 5 ^ 3, ~5, 1 << 10, -16 >> 2)
+### num/complex
+print(complex(1, 2) * complex(3, -1), abs(3 + 4j), (1 + 2j).real)
+
+### str/methods
+s = "Hello, World"
+print(s.upper(), s.lower(), s.swapcase(), s.title(), s.capitalize())
+### str/find
+s = "banana"
+print(s.find("an"), s.rfind("an"), s.index("na"), s.count("a"), s.find("x"), "an" in s)
+### str/split-join
+print("a,b,,c".split(","), "a b  c".split(), "a b c".split(" ", 1), "-".join(["x", "y"]), "a\nb\n".splitlines())
+### str/strip
+print(repr("  hi  ".strip()), repr("xxhixx".strip("x")), repr("  hi".lstrip()), repr("hi  ".rstrip()))
+### str/replace-startswith
+print("aaa".replace("a", "b", 2), "file.py".endswith(".py"), "file.py".startswith(("x", "fi")), "abc".removeprefix("a"))
+### str/justify
+print(repr("7".zfill(3)), repr("ab".center(6, "*")), repr("ab".ljust(4)), repr("ab".rjust(4, "0")))
+### str/predicates
+print("123".isdigit(), "abc".isalpha(), "a1".isalnum(), "   ".isspace(), "Abc".istitle(), "ABC".isupper())
+### str/slicing
+s = "abcdefgh"
+print(s[2:5], s[:-2], s[::2], s[::-1], s[-3:], s[10:], s[1:6:2])
+### str/index-error
+print("abc"[5])
+### str/multiply-compare
+print("ab" * 3, "a" < "b", "abc" < "abd", "B" < "a", ord("a"), chr(97))
+### str/format-method
+print("{} and {}".format(1, 2), "{1} {0}".format("a", "b"), "{name}!".format(name="x"), "{:>6.2f}|".format(3.14159))
+### str/percent
+print("%d items at %.2f each, %s" % (3, 1.5, "ok"), "%5s|%-5s|" % ("a", "b"), "%x %o %e" % (255, 8, 12345.678))
+### str/fstring-spec
+x = 1234567.891
+print(f"{x:,.2f} {x:e} {x:.3g} {42:05d} {42:+d} {'hi':^6}| {0.5:.0%} {7:b}")
+### str/fstring-expr
+n = 3
+print(f"{n * 2} {[i for i in range(n)]} {n!r} {'q'!r} {n=}")
+### str/repr-escapes
+print(repr("a'b"), repr('a"b'), repr("tab\there"), repr("nl\n"), repr("back\\slash"))
+### str/encode
+print("héllo".encode("utf-8"), len("héllo".encode()), b"abc".decode(), bytes([104, 105]))
+### str/partition
+print("k=v=w".partition("="), "k=v=w".rpartition("="), "abc".partition("x"))
+### str/maketrans
+print("hello".translate(str.maketrans("el", "ip")), "abc".translate({97: "A"}))
+
+### list/methods
+a = [3, 1, 2]
+a.append(5); a.insert(0, 9); a.extend([7, 7]); a.remove(7)
+print(a, a.pop(), a.pop(0), a.index(2), a.count(7), len(a))
+### list/sort
+a = ["bb", "a", "ccc"]
+a.sort(key=len)
+b = sorted([3, 1, 2], reverse=True)
+print(a, b, sorted("hello"), sorted([(2, "b"), (1, "z"), (2, "a")]))
+### list/sort-key-lambda
+people = [("ana", 31), ("bo", 25), ("cy", 31)]
+people.sort(key=lambda t: (-t[1], t[0]))
+print(people, max(people, key=lambda t: t[1]), min(people, key=lambda t: t[0]))
+### list/slicing-assign
+a = list(range(10))
+a[2:5] = ["x"]
+del a[0]
+a[::3] = [0, 0, 0] if len(a[::3]) == 3 else a[::3]
+print(a)
+### list/negative-index
+a = [1, 2, 3]
+print(a[-1], a[-3], a[1:-1], a[-2:])
+### list/comprehension-nested
+print([(i, j) for i in range(3) for j in range(i)], [x for x in range(10) if x % 3 == 0])
+### list/copy-semantics
+a = [[0] * 2] * 2
+a[0][0] = 1
+b = [[0] * 2 for _ in range(2)]
+b[0][0] = 1
+print(a, b)
+### list/equality
+print([1, 2] == [1, 2], [1, 2] < [1, 3], [1, 2] + [3], [1] * 3, [] == [], [1, [2]] == [1, [2]])
+### list/unpacking
+a, *b, c = [1, 2, 3, 4, 5]
+(x, y), z = (1, 2), 3
+print(a, b, c, x, y, z, *[7, 8])
+### list/index-error
+[1, 2][5]
+### list/remove-missing
+[1, 2].remove(9)
+
+### tuple/basics
+t = (1, 2, 3)
+print(t, t[1], len(t), t + (4,), t * 2, (1,), tuple([1, 2]), t.index(3), t.count(1), type(t).__name__)
+### tuple/immutable
+t = (1, 2)
+t[0] = 5
+### tuple/compare-hash
+print((1, 2) < (1, 3), (1, 2) == (1, 2), {(1, 2): "a"}[(1, 2)], sorted([(2, 1), (1, 2)]))
+
+### dict/basics
+d = {"b": 2, "a": 1}
+d["c"] = 3
+print(d, len(d), "a" in d, d.get("z"), d.get("z", 0), list(d), list(d.values()), list(d.items()))
+### dict/methods
+d = {"a": 1}
+d.update({"b": 2}, c=3)
+print(d.pop("a"), d.setdefault("x", 9), d, d.popitem(), dict.fromkeys("ab", 0))
+### dict/int-keys
+d = {1: "one", 2: "two"}
+d[3] = "three"
+print(d, d[2], sorted(d.keys()), {k: v for k, v in d.items() if k > 1})
+### dict/mixed-keys
+d = {"a": 1, 2: "b", (1, 2): "t"}
+print(d, d[(1, 2)], len(d))
+### dict/key-error
+{"a": 1}["b"]
+### dict/iteration-order
+d = {}
+for k in ["z", "y", "x"]:
+    d[k] = len(d)
+print(list(d), [k for k in d], d)
+### dict/equality-merge
+a = {"x": 1}
+b = {"x": 1}
+print(a == b, {**a, "y": 2}, a | {"z": 3}, a.copy() is not a)
+### dict/del-in
+d = {"a": 1, "b": 2}
+del d["a"]
+print(d, "a" not in d)
+### dict/counter-pattern
+words = "the cat the dog the end".split()
+counts = {}
+for w in words:
+    counts[w] = counts.get(w, 0) + 1
+print(counts, max(counts, key=counts.get))
+
+### set/basics
+s = {3, 1, 2}
+s.add(2); s.add(4); s.discard(1)
+print(sorted(s), len(s), 3 in s, sorted({1, 2} | {2, 3}), sorted({1, 2} & {2, 3}), sorted({1, 2} - {2}), sorted({1, 2} ^ {2, 3}))
+### set/print-ints
+print({1, 2, 3}, set(), {2, 1} == {1, 2}, {1, 2} <= {1, 2, 3}, frozenset([1, 2]))
+### set/comprehension
+print(sorted({x % 3 for x in range(10)}), len(set("hello")))
+
+### ctl/for-else
+for i in range(3):
+    if i == 5:
+        break
+else:
+    print("no break")
+### ctl/while-continue
+i, out = 0, []
+while i < 10:
+    i += 1
+    if i % 2:
+        continue
+    out.append(i)
+print(out)
+### ctl/ternary-chain
+x = 5
+print("big" if x > 3 else "small", 1 < x < 10, not x, x and 0, x or 0, None or "d")
+### ctl/match
+def kind(v):
+    match v:
+        case 0:
+            return "zero"
+        case [a, b]:
+            return f"pair {a} {b}"
+        case {"k": k}:
+            return f"dict {k}"
+        case str() as s:
+            return f"str {s}"
+        case _:
+            return "other"
+print(kind(0), kind([1, 2]), kind({"k": 9}), kind("x"), kind(3.5))
+### ctl/walrus
+data = [1, 5, 9]
+if (n := len(data)) > 2:
+    print("long", n)
+### ctl/enumerate-zip
+print(list(enumerate("ab", 1)), list(zip([1, 2, 3], "ab")), dict(zip("ab", [1, 2])))
+### ctl/range
+print(list(range(5)), list(range(2, 10, 3)), list(range(5, 0, -2)), len(range(0, 100, 7)), range(3)[1], 4 in range(5))
+### ctl/any-all
+print(any([0, 0, 1]), all([1, 2, 0]), any([]), all([]), sum(x * x for x in range(4)))
+### ctl/reversed-sorted
+print(list(reversed([1, 2, 3])), "".join(reversed("abc")), sorted([3, 1, 2])[::-1])
+### ctl/map-filter
+print(list(map(str, [1, 2])), list(filter(None, [0, 1, "", "a"])), list(map(lambda a, b: a + b, [1, 2], [10, 20])))
+
+### fn/defaults-kwargs
+def f(a, b=2, *args, c=3, **kw):
+    return (a, b, args, c, sorted(kw.items()))
+print(f(1), f(1, 5, 6, 7, c=0, z=1, y=2))
+### fn/closure-nonlocal
+def counter():
+    n = 0
+    def inc():
+        nonlocal n
+        n += 1
+        return n
+    return inc
+c = counter()
+c(); c()
+print(c())
+### fn/global
+total = 0
+def add(v):
+    global total
+    total += v
+add(3); add(4)
+print(total)
+### fn/recursion
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+print([fib(i) for i in range(12)])
+### fn/lambda-default-capture
+fs = [lambda i=i: i * 10 for i in range(3)]
+print([f() for f in fs])
+### fn/decorator
+def twice(fn):
+    def wrap(*a):
+        return fn(*a) * 2
+    return wrap
+@twice
+def three():
+    return 3
+print(three(), three.__name__ if hasattr(three, "__name__") else "?")
+### fn/generator
+def gen(n):
+    for i in range(n):
+        yield i * i
+g = gen(4)
+print(next(g), next(g), list(g), sum(gen(5)))
+### fn/yield-from
+def inner():
+    yield 1
+    yield 2
+def outer():
+    yield 0
+    yield from inner()
+print(list(outer()))
+### fn/stop-iteration
+g = iter([1])
+next(g)
+next(g)
+### fn/arg-error
+def f(a, b):
+    return a
+f(1)
+### fn/star-args-call
+def f(a, b, c):
+    return a + b + c
+print(f(*[1, 2], 3), f(**{"a": 1, "b": 2, "c": 3}))
+### fn/docstring
+def f():
+    """doc here"""
+    return 1
+print(f.__doc__, f())
+
+### cls/basics
+class Point:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+    def __repr__(self):
+        return f"Point({self.x}, {self.y})"
+    def __add__(self, o):
+        return Point(self.x + o.x, self.y + o.y)
+    def __eq__(self, o):
+        return self.x == o.x and self.y == o.y
+print(Point(1, 2) + Point(3, 4), Point(1, 2) == Point(1, 2), str(Point(0, 0)))
+### cls/inheritance-super
+class A:
+    def hi(self):
+        return "A"
+class B(A):
+    def hi(self):
+        return "B" + super().hi()
+print(B().hi(), isinstance(B(), A), issubclass(B, A), type(B()).__name__)
+### cls/class-attr-static
+class C:
+    count = 0
+    def __init__(self):
+        C.count += 1
+    @staticmethod
+    def s():
+        return "static"
+    @classmethod
+    def c(cls):
+        return cls.count
+C(); C()
+print(C.count, C.s(), C.c())
+### cls/property
+class T:
+    def __init__(self):
+        self._v = 1
+    @property
+    def v(self):
+        return self._v * 10
+    @v.setter
+    def v(self, x):
+        self._v = x
+t = T()
+t.v = 5
+print(t.v)
+### cls/dunder-len-iter-contains
+class Bag:
+    def __init__(self, items):
+        self.items = items
+    def __len__(self):
+        return len(self.items)
+    def __iter__(self):
+        return iter(self.items)
+    def __contains__(self, x):
+        return x in self.items
+    def __getitem__(self, i):
+        return self.items[i]
+b = Bag([3, 4])
+print(len(b), list(b), 4 in b, b[0], sorted(b))
+### cls/str-vs-repr
+class Q:
+    def __str__(self):
+        return "str-Q"
+    def __repr__(self):
+        return "repr-Q"
+q = Q()
+print(q, [q], str(q), repr(q), f"{q} {q!r}")
+### cls/default-repr
+class E:
+    pass
+print(type(E()).__name__, isinstance(E(), object))
+### cls/dataclass
+from dataclasses import dataclass
+@dataclass
+class D:
+    a: int
+    b: str = "x"
+print(D(1), D(1) == D(1, "x"), D(2, "y").b)
+### cls/attr-error
+class Z:
+    pass
+Z().missing
+### cls/lt-sorting
+class V:
+    def __init__(self, n):
+        self.n = n
+    def __lt__(self, o):
+        return self.n < o.n
+    def __repr__(self):
+        return f"V{self.n}"
+print(sorted([V(3), V(1), V(2)]), max([V(3), V(5)]))
+
+### exc/try-except-else-finally
+def f(x):
+    out = []
+    try:
+        out.append(10 // x)
+    except ZeroDivisionError as e:
+        out.append(f"zde:{e}")
+    else:
+        out.append("else")
+    finally:
+        out.append("finally")
+    return out
+print(f(2), f(0))
+### exc/raise-custom
+class MyErr(ValueError):
+    pass
+try:
+    raise MyErr("boom")
+except ValueError as e:
+    print(type(e).__name__, e, isinstance(e, MyErr), e.args)
+### exc/str-repr
+try:
+    int("x")
+except ValueError as e:
+    print(str(e))
+    print(repr(e))
+### exc/reraise
+try:
+    try:
+        {}["k"]
+    except KeyError:
+        raise
+except KeyError as e:
+    print("outer", repr(e))
+### exc/raise-from
+try:
+    try:
+        1 / 0
+    except ZeroDivisionError as e:
+        raise RuntimeError("wrapped") from e
+except RuntimeError as e:
+    print(e, type(e.__cause__).__name__)
+### exc/uncaught-type
+raise TypeError("bad")
+### exc/assert
+assert 1 == 2, "nope"
+### exc/name-error
+print(undefined_thing)
+### exc/type-error-add
+print("a" + 1)
+### exc/multiple-except
+for v in ["1", "x", None]:
+    try:
+        print(int(v))
+    except (ValueError, TypeError) as e:
+        print(type(e).__name__)
+### exc/with-statement
+class CM:
+    def __enter__(self):
+        print("enter")
+        return self
+    def __exit__(self, t, v, tb):
+        print("exit", t.__name__ if t else None)
+        return True
+with CM():
+    raise ValueError("x")
+print("after")
+
+### mod/math
+import math
+print(math.sqrt(16), math.floor(-2.5), math.ceil(2.1), math.pi, math.gcd(12, 18), math.isclose(0.1 + 0.2, 0.3), math.inf, math.log(math.e), math.hypot(3, 4))
+### mod/math-int
+import math
+print(math.factorial(10), math.comb(5, 2), math.perm(5, 2), math.isqrt(17), math.prod([1, 2, 3, 4]), math.trunc(-3.7))
+### mod/json
+import json
+s = json.dumps({"a": [1, 2.5, None, True], "b": "x"})
+print(s, json.loads(s)["a"], json.dumps([1, 2], indent=2))
+### mod/json-sort
+import json
+print(json.dumps({"b": 1, "a": 2}, sort_keys=True), json.loads('{"x": {"y": [1]}}'))
+### mod/re
+import re
+print(re.findall(r"\d+", "a1b22c333"), re.sub(r"(\w)(\d)", r"\2\1", "a1b2"), bool(re.match(r"^h", "hi")), re.split(r"[,;]", "a,b;c"))
+### mod/re-groups
+import re
+m = re.search(r"(?P<k>\w+)=(\d+)", "x key=42 y")
+print(m.group(0), m.group(1), m.group("k"), m.groups(), m.span(), m.groupdict())
+### mod/collections
+from collections import Counter, defaultdict, deque, namedtuple, OrderedDict
+c = Counter("abracadabra")
+d = defaultdict(list)
+d["x"].append(1)
+q = deque([1, 2, 3])
+q.appendleft(0); q.pop()
+P = namedtuple("P", ["x", "y"])
+p = P(1, 2)
+print(c.most_common(2), dict(d), list(q), p, p.x + p.y, p._asdict() if hasattr(p, "_asdict") else "?")
+### mod/itertools
+import itertools
+print(list(itertools.chain([1], [2, 3])), list(itertools.product("ab", repeat=2)), list(itertools.combinations([1, 2, 3], 2)), list(itertools.permutations("ab")), list(itertools.accumulate([1, 2, 3])), list(itertools.islice(itertools.count(5), 3)))
+### mod/itertools-groupby
+import itertools
+print([(k, list(g)) for k, g in itertools.groupby("aabbbc")], list(itertools.zip_longest([1, 2], "a", fillvalue="-")))
+### mod/functools
+import functools
+print(functools.reduce(lambda a, b: a * b, [1, 2, 3, 4]), functools.partial(pow, 2)(5))
+@functools.lru_cache(maxsize=None)
+def f(n):
+    return n if n < 2 else f(n - 1) + f(n - 2)
+print(f(60))
+### mod/string
+import string
+print(string.ascii_lowercase[:5], string.digits, string.punctuation[:4])
+### mod/random-seeded
+import random
+random.seed(42)
+print(random.random(), random.randint(1, 100), random.choice("abc"))
+### mod/statistics
+import statistics
+print(statistics.mean([1, 2, 3, 4]), statistics.median([3, 1, 2]), statistics.stdev([2, 4, 4, 4, 5, 5, 7, 9]), statistics.mode([1, 1, 2]))
+### mod/datetime
+import datetime
+d = datetime.date(2024, 2, 28) + datetime.timedelta(days=2)
+print(d, d.isoformat(), d.weekday(), datetime.date(2024, 1, 1).strftime("%d/%m/%Y"))
+### mod/fractions-decimal
+from fractions import Fraction
+from decimal import Decimal
+print(Fraction(1, 3) + Fraction(1, 6), Decimal("0.1") + Decimal("0.2"))
+### mod/heapq-bisect
+import heapq, bisect
+h = [5, 1, 4]
+heapq.heapify(h)
+heapq.heappush(h, 0)
+print(heapq.heappop(h), heapq.nsmallest(2, [5, 1, 4, 2]), bisect.bisect_left([1, 3, 5], 4), bisect.bisect([1, 3, 3], 3))
+### mod/textwrap-copy
+import textwrap, copy
+a = [[1], [2]]
+b = copy.deepcopy(a)
+b[0].append(9)
+print(textwrap.wrap("the quick brown fox jumps", 10), a, b)
+### mod/csv-io
+import csv, io
+f = io.StringIO("a,b\n1,2\n3,4\n")
+print(list(csv.reader(f)))
+### mod/import-missing
+import no_such_module_here
+
+### builtin/print-kwargs
+print(1, 2, 3, sep="-", end="!\n")
+print("x", end="")
+print("y")
+### builtin/isinstance-types
+print(isinstance(1, int), isinstance(1.0, float), isinstance(True, int), isinstance("s", (int, str)), isinstance([], list), isinstance(None, type(None)))
+### builtin/type-names
+print(type(1).__name__, type(1.5).__name__, type("").__name__, type([]).__name__, type({}).__name__, type(set()).__name__, type(None).__name__, type(len).__name__)
+### builtin/len-errors
+print(len(5))
+### builtin/sum-start
+print(sum([1, 2], 10), sum([[1], [2]], []), sum([0.1] * 10))
+### builtin/sorted-stable
+print(sorted(["b", "A", "a", "B"]), sorted(["b", "A", "a", "B"], key=str.lower))
+### builtin/hasattr-getattr
+class O:
+    a = 1
+print(hasattr(O, "a"), getattr(O, "b", "def"), getattr(O(), "a"))
+setattr(O, "b", 2)
+print(O.b)
+### builtin/iter-next-default
+it = iter([1])
+print(next(it), next(it, "done"))
+### builtin/chr-ord-unicode
+print(chr(955), ord("λ"), "λ".upper(), len("héllo"), "naïve"[2])
+### builtin/str-of-containers
+print(str([1, "a", None, True, 2.5]), str((1,)), str({"k": (1, 2)}), str([[]]))
+### builtin/eval-literal
+print(eval("1 + 2 * 3"), eval("[x for x in range(3)]"))
+### builtin/input-free
+print(callable(print), callable(5), abs.__name__ if hasattr(abs, "__name__") else "abs")
