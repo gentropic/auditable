@@ -3,6 +3,8 @@
 
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
+// Python tuples are frozen PyTuple arrays and dicts PyDict maps; compare by value
+const plain = (v) => Array.isArray(v) ? v.map(plain) : v instanceof Map ? new Map([...v].map(([k, x]) => [plain(k), plain(x)])) : v;
 
 // DOM shim (matches natra-adder.test.mjs / engine pattern).
 globalThis.document = {
@@ -86,7 +88,7 @@ a = np.ones([2, 2]).tolist()
 b = np.full([3], 7.0).tolist()
 result = (a, b)
 `);
-    assert.deepStrictEqual(r.defines.result, [[[1, 1], [1, 1]], [7, 7, 7]]);
+    assert.deepStrictEqual(plain(r.defines.result), [[[1, 1], [1, 1]], [7, 7, 7]]);
   });
 
   it('np.eye(n)', async () => {
@@ -213,7 +215,7 @@ import line as np
 a = np.array([10, 20, 30, 40])
 result = (a[0], a[-1], a[2])
 `);
-    assert.deepStrictEqual(r.defines.result, [10, 40, 30]);
+    assert.deepStrictEqual(plain(r.defines.result), [10, 40, 30]);
   });
 
   it('1D slice', async () => {
@@ -289,7 +291,7 @@ import line as np
 a = np.array([1, 2, 3, 4])
 result = (a.sum(), np.sum(a))
 `);
-    assert.deepStrictEqual(r.defines.result, [10, 10]);
+    assert.deepStrictEqual(plain(r.defines.result), [10, 10]);
   });
 
   it('a.mean() / a.max() / a.min()', async () => {
@@ -310,7 +312,7 @@ import line as np
 m = np.array([[1, 2, 3], [4, 5, 6]])
 result = (m.sum(0).tolist(), m.sum(1).tolist())
 `);
-    assert.deepStrictEqual(r.defines.result, [[5, 7, 9], [6, 15]]);
+    assert.deepStrictEqual(plain(r.defines.result), [[5, 7, 9], [6, 15]]);
   });
 
   it('a.dot(b) and np.dot', async () => {
@@ -320,7 +322,7 @@ a = np.array([1, 2, 3])
 b = np.array([4, 5, 6])
 result = (a.dot(b), np.dot(a, b))
 `);
-    assert.deepStrictEqual(r.defines.result, [32, 32]);
+    assert.deepStrictEqual(plain(r.defines.result), [32, 32]);
   });
 
   it('a.T (transpose property)', async () => {
@@ -340,7 +342,7 @@ m = a.reshape([2, 3])
 f = m.flatten()
 result = (m.tolist(), f.tolist())
 `);
-    assert.deepStrictEqual(r.defines.result, [[[0, 1, 2], [3, 4, 5]], [0, 1, 2, 3, 4, 5]]);
+    assert.deepStrictEqual(plain(r.defines.result), [[[0, 1, 2], [3, 4, 5]], [0, 1, 2, 3, 4, 5]]);
   });
 
   it('np.sqrt / np.exp / np.sin element-wise', async () => {

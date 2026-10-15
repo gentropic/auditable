@@ -1627,7 +1627,8 @@ class _Parser {
     if (t.type === 'FSTRING') { this.advance(); return this._parseFstring(t); }
 
     // ellipsis
-    if (t.type === 'OP' && t.value === '...') { this.advance(); return { type: 'Constant', value: null, line: t.line, col: t.col }; }
+    // `...` is the Ellipsis singleton (a builtin name, so both engines resolve it like any other)
+    if (t.type === 'OP' && t.value === '...') { this.advance(); return { type: 'Name', id: 'Ellipsis', ellipsis: true, line: t.line, col: t.col }; }
 
     // parenthesized / tuple / generator
     if (t.type === 'OP' && t.value === '(') {
@@ -1806,6 +1807,120 @@ class AdderRange {
   }
 }
 
+// ── tuples, and dict / set keys ──
+// A Python tuple is a frozen PyTuple: an Array (so JS code, unpacking, indexing, numpy-style
+// arr[i, j] keys and Array.isArray all keep working) that prints (1, 2), refuses mutation, and
+// whose derived arrays (map, filter, slice, concat) are plain lists, never tuples by accident.
+class PyTuple extends Array {
+  static get [Symbol.species]() { return Array; }
+}
+PyTuple.prototype.__adderClass__ = 'tuple';
+function mkTuple(items) {
+  const t = new PyTuple();
+  if (items) for (const x of items) t.push(x);
+  return Object.freeze(t);
+}
+const isTuple = (v) => v instanceof PyTuple;
+
+// Dict keys and set members, as Python hashes them: equal tuples are ONE object (interned in a
+// weakly held table keyed by their contents), so a JS Map / Set finds them; a user object with
+// __hash__ is found through its hash and __eq__; lists, dicts and sets are unhashable.
+const _interned = new Map();   // signature → [WeakRef, …] (more than one only on a __hash__ collision)
+const _internGC = typeof FinalizationRegistry !== 'undefined'
+  ? new FinalizationRegistry((sig) => { const l = _interned.get(sig); if (l) { const live = l.filter((r) => r.deref()); if (live.length) _interned.set(sig, live); else _interned.delete(sig); } })
+  : null;
+const _objIds = new WeakMap();
+let _nextObjId = 1;
+function _unhashable(v) { return new AdderError('TypeError', `unhashable type: '${pyTypeName(v)}'`); }
+function _needsCanon(k) {
+  return k !== null && typeof k === 'object' && (k instanceof PyTuple || (k instanceof Set && k._frozen) ||
+    (typeof k.__hash__ === 'function' && !(k instanceof Map) && !Array.isArray(k)));
+}
+function _isUnhashable(k) {
+  if (k !== null && typeof k === 'object' && k.__hash__ === null) return true;   // __hash__ = None (an eq dataclass)
+  return k !== null && typeof k === 'object' && !(k instanceof PyTuple) &&
+    (Array.isArray(k) || k instanceof Map || (k instanceof Set && !k._frozen) || isPlainDict(k)) &&
+    typeof k.__hash__ !== 'function';
+}
+function _sigOf(v) {
+  if (v === null || v === undefined) return 'N';
+  switch (typeof v) {
+    case 'number': return v === 0 ? 'n0' : 'n' + v;
+    case 'boolean': return v ? 'n1' : 'n0';
+    case 'bigint': return 'n' + v;
+    case 'string': return 's' + v.length + ':' + v;
+    default: break;
+  }
+  if (v instanceof PyTuple) return '(' + v.map(_sigOf).join(',') + ')';
+  if (v instanceof Set && v._frozen) return 'f{' + [...v].map(_sigOf).sort().join(',') + '}';
+  if (_isUnhashable(v)) throw _unhashable(v);
+  if (typeof v.__hash__ === 'function') {
+    const h = v.__hash__();
+    if (h && typeof h.then === 'function') { h.catch(() => {}); let id = _objIds.get(v); if (!id) { id = _nextObjId++; _objIds.set(v, id); } return 'o' + id; }   // a tree-walked (async) __hash__: identity
+    return 'h' + h;
+  }
+  let id = _objIds.get(v);
+  if (!id) { id = _nextObjId++; _objIds.set(v, id); }
+  return 'o' + id;
+}
+// hash(x): ints hash to themselves (so 1 == 1.0 == True agree), strings and tuples by their
+// contents, objects by __hash__ or identity; lists, dicts, sets and __hash__ = None refuse
+function _pyHash(v) {
+  if (v === null || v === undefined) return 0x5f3759df;
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'number') return Number.isInteger(v) ? v : _strHash(String(v));
+  if (typeof v === 'bigint') return Number(BigInt.asIntN(53, v));
+  if (typeof v === 'string') return _strHash(v);
+  if (_isUnhashable(v)) throw _unhashable(v);
+  if (typeof v.__hash__ === 'function') return v.__hash__();
+  if (v instanceof PyTuple) { let h = 0x345678; for (const x of v) { const xh = _pyHash(x); h = (Math.imul(h ^ (typeof xh === 'number' ? xh | 0 : 0), 1000003)) | 0; } return h; }
+  let id = _objIds.get(v);
+  if (!id) { id = _nextObjId++; _objIds.set(v, id); }
+  return id;
+}
+function _strHash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+// the canonical object for a key being stored (interning it if new)
+function hk(k) {
+  if (!_needsCanon(k)) { if (_isUnhashable(k)) throw _unhashable(k); return k; }
+  const sig = _sigOf(k);
+  const list = _interned.get(sig);
+  if (list) {
+    for (const r of list) {
+      const c = r.deref();
+      if (c !== undefined && (c === k || k instanceof PyTuple || (k instanceof Set) || pyEq(c, k) === true)) return c;
+    }
+  }
+  const ref = new WeakRef(k);
+  if (list) list.push(ref); else _interned.set(sig, [ref]);
+  if (_internGC) _internGC.register(k, sig);
+  return k;
+}
+// the canonical object for a key being looked up (never interns)
+function hkLookup(k) {
+  if (!_needsCanon(k)) { if (_isUnhashable(k)) throw _unhashable(k); return k; }
+  const list = _interned.get(_sigOf(k));
+  if (list) {
+    for (const r of list) {
+      const c = r.deref();
+      if (c !== undefined && (c === k || k instanceof PyTuple || (k instanceof Set) || pyEq(c, k) === true)) return c;
+    }
+  }
+  return k;
+}
+// Python's dict and set: Map / Set whose keys go through hk, so every get / set / has / delete
+// (from either engine, or from JS code holding the object) treats equal tuples as one key
+class PyDict extends Map {
+  set(k, v) { return super.set(hk(k), v); }
+  get(k) { return super.get(hkLookup(k)); }
+  has(k) { return super.has(hkLookup(k)); }
+  delete(k) { return super.delete(hkLookup(k)); }
+}
+class PySet extends Set {
+  add(v) { return super.add(hk(v)); }
+  has(v) { return super.has(hkLookup(v)); }
+  delete(v) { return super.delete(hkLookup(v)); }
+}
+
 // ── AdderError ──
 
 class AdderError extends Error {
@@ -1815,7 +1930,7 @@ class AdderError extends Error {
     this.pyType = pyType;
     this.pyMessage = message;
     this.adderLine = adderLine;
-    if (args) this.args = args;
+    if (args) this.args = mkTuple(args);
   }
 }
 
@@ -1911,6 +2026,7 @@ function pyTypeName(v) {
   if (typeof v === 'boolean') return 'bool';
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'str';
+  if (v instanceof PyTuple) return v.__adderClass__ || 'tuple';
   if (Array.isArray(v)) return 'list';
   if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
@@ -1992,6 +2108,8 @@ function pyRepr(v) {
   if (v === false) return 'False';
   if (typeof v === 'string') return _strRepr(v);
   if (typeof v === 'number') return _numRepr(v);
+  if (Array.isArray(v) && typeof v.__repr__ === 'function') return v.__repr__();   // namedtuple & co.
+  if (v instanceof PyTuple) return v.length === 1 ? `(${pyRepr(v[0])},)` : `(${v.map(pyRepr).join(', ')})`;
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -2048,6 +2166,8 @@ function _hasUserDunder(v, name) {
     && !(v instanceof Complex) && !ArrayBuffer.isView(v);
 }
 function pyReprMaybe(v) {
+  if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
+  if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
@@ -2189,6 +2309,8 @@ async function pyCollect(obj) {
 // ── format spec ──
 
 function pyFormatValue(value, spec) {
+  // an object that formats itself (Decimal, Fraction, enum members, a user __format__)
+  if (value !== null && typeof value === 'object' && typeof value.__format__ === 'function') return value.__format__(spec || '');
   if (!spec) return pyStr(value);
   // parse spec: [[fill]align][sign][z][#][0][width][grouping_option][.precision][type]
   let fill = ' ', align = '', sign = '', width = 0, precision = -1, ftype = '', grouping = '';
@@ -2294,7 +2416,7 @@ function _isNativeClass(fn) {
 
 function adderGetAttr(obj, attr) {
   if (obj instanceof AdderError) {
-    if (attr === 'args') return obj.args || (obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
+    if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
     if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
     if (attr === '__traceback__') return null;
     if (attr === '__class__') return excTypeOf(obj);
@@ -2302,27 +2424,37 @@ function adderGetAttr(obj, attr) {
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
-    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new Map(ks.map((k) => [k, value])); };
+    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
     if ((tn === 'str' || tn === 'list' || tn === 'dict' || tn === 'set') && !attr.startsWith('__')) {
       const get = tn === 'str' ? _strMethod : tn === 'list' ? _listMethod : tn === 'set' ? _setMethod : _mapMethod;
-      const probe = tn === 'str' ? '' : tn === 'list' ? [] : tn === 'set' ? new Set() : new Map();
+      const probe = tn === 'str' ? '' : tn === 'list' ? [] : tn === 'set' ? new PySet() : new PyDict();
       let ok = true;
       try { get(probe, attr); } catch { ok = false; }
       if (ok) { const fn = (self, ...a) => (tn === 'dict' && isPlainDict(self) && _objDictMethods[attr] ? _objDictMethods[attr](self) : get(self, attr))(...a); fn._pyName = `${tn}.${attr}`; return fn; }
     }
-    if (attr === '__name__' || attr === '__qualname__') return obj._pyName || obj.name || '<function>';
+    if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || obj.name || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
   if (obj instanceof Uint8Array) return _bytesMethod(obj, attr);
+  // tuple methods (count, index) — a tuple has none of list's mutators
+  // (a namedtuple class adds its fields and _asdict / _replace / _fields on its own prototype)
+  if (obj instanceof PyTuple) {
+    if (attr === 'count' || attr === 'index') return _listMethod(obj, attr);
+    if (attr in obj && !(attr in Array.prototype)) {
+      const v = obj[attr];
+      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+    }
+    throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
+  }
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
   // dict (Map) methods — a Map subclass (Counter, defaultdict, OrderedDict) answers with its own first
   if (obj instanceof Map) {
-    if (Object.getPrototypeOf(obj) !== Map.prototype && attr in obj && !(attr in Map.prototype)) {
+    if (Object.getPrototypeOf(obj) !== Map.prototype && Object.getPrototypeOf(obj) !== PyDict.prototype && attr in obj && !(attr in Map.prototype)) {
       const v = obj[attr];
       return typeof v === 'function' ? v.bind(obj) : v;
     }
@@ -2349,7 +2481,7 @@ function adderGetAttr(obj, attr) {
   if (obj !== null && typeof obj === 'object' && !(obj instanceof Array) && !(obj instanceof Map) && !(obj instanceof Set)) {
     // check for adder class method on prototype
     if (typeof obj[attr] === 'function') {
-      if (_isNativeClass(obj[attr])) return obj[attr];
+      if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
       // adder functions expect self as first arg — inject it (skip for modules)
       if (obj[attr]._pyFunc && !obj.__adderModule__) {
         const originalFn = obj[attr];
@@ -2382,7 +2514,7 @@ function adderGetAttr(obj, attr) {
   if (obj !== null && obj !== undefined && attr in obj) {
     const val = obj[attr];
     if (typeof val === 'function') {
-      if (_isNativeClass(val)) return val;
+      if (_isNativeClass(val) || val._pyClass) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
       return val.bind(obj);
     }
@@ -2513,8 +2645,8 @@ function _strMethod(s, attr) {
       }
       return out;
     },
-    partition: (sep) => { const i = s.indexOf(sep); return i < 0 ? [s, '', ''] : [s.slice(0, i), sep, s.slice(i + sep.length)]; },
-    rpartition: (sep) => { const i = s.lastIndexOf(sep); return i < 0 ? ['', '', s] : [s.slice(0, i), sep, s.slice(i + sep.length)]; },
+    partition: (sep) => { const i = s.indexOf(sep); return mkTuple(i < 0 ? [s, '', ''] : [s.slice(0, i), sep, s.slice(i + sep.length)]); },
+    rpartition: (sep) => { const i = s.lastIndexOf(sep); return mkTuple(i < 0 ? ['', '', s] : [s.slice(0, i), sep, s.slice(i + sep.length)]); },
     removeprefix: (prefix) => (prefix && s.startsWith(prefix) ? s.slice(prefix.length) : s),
     removesuffix: (suffix) => (suffix && s.endsWith(suffix) ? s.slice(0, s.length - suffix.length) : s),
     splitlines: (...args) => {
@@ -2546,7 +2678,7 @@ function _strMethod(s, attr) {
 
 // str.maketrans(dict) / (from, to[, delete]): a code point → replacement table
 function _strMaketrans(x, y, z) {
-  const t = new Map();
+  const t = new PyDict();
   if (y === undefined) {
     const entries = x instanceof Map ? [...x.entries()] : Object.entries(x);
     for (const [k, v] of entries) t.set(typeof k === 'string' ? k.codePointAt(0) : Number(k), v);
@@ -2572,12 +2704,7 @@ function dictLiteral(keys, values, spreads) {
       for (const k of pyIter(src.keys())) entries.push([k, src.__getitem__(k)]);
     } else throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not a mapping`);
   }
-  if (entries.every(([k]) => typeof k === 'string')) {
-    const o = {};
-    for (const [k, v] of entries) o[k] = v;
-    return o;
-  }
-  const m = new Map();
+  const m = new PyDict();
   for (const [k, v] of entries) m.set(k, v);
   return m;
 }
@@ -2634,9 +2761,9 @@ function _bytesRepr(b) {
   return out + q;
 }
 
-function _stripChars(s, chars) { const cs = new Set(chars); let l = 0, r = s.length; while (l < r && cs.has(s[l])) l++; while (r > l && cs.has(s[r - 1])) r--; return s.slice(l, r); }
-function _lstripChars(s, chars) { const cs = new Set(chars); let l = 0; while (l < s.length && cs.has(s[l])) l++; return s.slice(l); }
-function _rstripChars(s, chars) { const cs = new Set(chars); let r = s.length; while (r > 0 && cs.has(s[r - 1])) r--; return s.slice(0, r); }
+function _stripChars(s, chars) { const cs = new PySet(chars); let l = 0, r = s.length; while (l < r && cs.has(s[l])) l++; while (r > l && cs.has(s[r - 1])) r--; return s.slice(l, r); }
+function _lstripChars(s, chars) { const cs = new PySet(chars); let l = 0; while (l < s.length && cs.has(s[l])) l++; return s.slice(l); }
+function _rstripChars(s, chars) { const cs = new PySet(chars); let r = s.length; while (r > 0 && cs.has(s[r - 1])) r--; return s.slice(0, r); }
 
 function _strFormat(s, args) {
   let ai = 0;
@@ -2797,14 +2924,14 @@ function _mapMethod(map, attr) {
   const m = {
     keys: () => [...map.keys()],
     values: () => [...map.values()],
-    items: () => [...map.entries()],
+    items: () => [...map.entries()].map(mkTuple),
     get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
     pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
     update: (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) map.set(k, v); } else if (Array.isArray(other)) { for (const [k, v] of other) map.set(k, v); } else if (typeof other === 'object' && other !== null) { for (const k of Object.keys(other)) if (k !== '_kw') map.set(k, other[k]); } } return null; },
-    popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return [k, v]; },
+    popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return mkTuple([k, v]); },
     clear: () => { map.clear(); return null; },
-    copy: () => new Map(map),
+    copy: () => new PyDict(map),
   };
   if (attr in m) { const fn = m[attr]; fn._pyName = `dict.${attr}`; return fn; }
   if (attr === 'size') return map.size;
@@ -2814,10 +2941,10 @@ function _mapMethod(map, attr) {
 const _objDictMethods = {
   keys: (obj) => { const fn = () => Object.keys(obj); fn._pyName = 'dict.keys'; return fn; },
   values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
-  items: (obj) => { const fn = () => Object.entries(obj); fn._pyName = 'dict.items'; return fn; },
+  items: (obj) => { const fn = () => Object.entries(obj).map(mkTuple); fn._pyName = 'dict.items'; return fn; },
   get: (obj) => { const fn = (k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null)); fn._pyName = 'dict.get'; return fn; },
   pop: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
-  popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return [k, v]; }; fn._pyName = 'dict.popitem'; return fn; },
+  popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }; fn._pyName = 'dict.popitem'; return fn; },
   setdefault: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
   update: (obj) => { const fn = (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) obj[k] = v; } else if (other && other._kw) { for (const k of Object.keys(other)) if (k !== '_kw') obj[k] = other[k]; } else if (Array.isArray(other)) { for (const [k, v] of other) obj[k] = v; } else if (typeof other === 'object' && other !== null) Object.assign(obj, other); } return null; }; fn._pyName = 'dict.update'; return fn; },
   clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
@@ -2831,14 +2958,14 @@ function _setMethod(set, attr) {
     discard: (v) => { set.delete(v); return null; },
     pop: () => { if (set.size === 0) throw new AdderError('KeyError', 'pop from an empty set'); const v = set.values().next().value; set.delete(v); return v; },
     clear: () => { set.clear(); return null; },
-    union: (...others) => { const r = new Set(set); for (const o of others) for (const v of pyIter(o)) r.add(v); return r; },
-    intersection: (...others) => { const r = new Set(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new Set(pyIter(o)); return s.has(v); })) r.add(v); } return r; },
-    difference: (...others) => { const r = new Set(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; },
-    symmetric_difference: (other) => { const r = new Set(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; },
+    union: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.add(v); return r; },
+    intersection: (...others) => { const r = new PySet(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new PySet(pyIter(o)); return s.has(v); })) r.add(v); } return r; },
+    difference: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; },
+    symmetric_difference: (other) => { const r = new PySet(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; },
     update: (...others) => { for (const o of others) for (const v of pyIter(o)) set.add(v); return null; },
-    issubset: (other) => { const o = other instanceof Set ? other : new Set(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; },
+    issubset: (other) => { const o = other instanceof Set ? other : new PySet(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; },
     issuperset: (other) => { for (const v of pyIter(other)) if (!set.has(v)) return false; return true; },
-    copy: () => new Set(set),
+    copy: () => new PySet(set),
   };
   if (attr in m) { const fn = m[attr]; fn._pyName = `set.${attr}`; return fn; }
   throw new AdderError('AttributeError', `'set' object has no attribute '${attr}'`);
@@ -2855,10 +2982,27 @@ function _binErr(sym, a, b) {
   return new AdderError('TypeError', `unsupported operand type(s) for ${sym}: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
 }
 function _viaDunder(a, b, d, rd) {
-  if (_obj(a) && typeof a[d] === 'function') return { r: a[d](b) };
-  if (_obj(b) && typeof b[rd] === 'function') return { r: b[rd](a) };
+  const refl = () => (_obj(b) && typeof b[rd] === 'function' && b[rd] !== a[d] ? b[rd](a) : NotImplemented);
+  const fail = (r) => {
+    if (r !== NotImplemented) return r;
+    throw new AdderError('TypeError', `unsupported operand type(s) for ${_DUNDER_SYM[d] || d}: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+  };
+  if (_obj(a) && typeof a[d] === 'function') {
+    const r = a[d](b);
+    if (r && typeof r.then === 'function') return { r: r.then((v) => (v === NotImplemented ? Promise.resolve(refl()).then(fail) : v)) };
+    if (r !== NotImplemented) return { r };
+    const r2 = refl();
+    return { r: r2 && typeof r2.then === 'function' ? r2.then(fail) : fail(r2) };
+  }
+  if (_obj(b) && typeof b[rd] === 'function') {
+    const r = b[rd](a);
+    if (r && typeof r.then === 'function') return { r: r.then(fail) };
+    return { r: fail(r) };
+  }
   return null;
 }
+const _DUNDER_SYM = { __add__: '+', __sub__: '-', __mul__: '*', __truediv__: '/', __floordiv__: '//', __mod__: '%', __pow__: '** or pow()',
+  __matmul__: '@', __and__: '&', __or__: '|', __xor__: '^', __lshift__: '<<', __rshift__: '>>' };
 const _isIntish = (v) => (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'boolean' || typeof v === 'bigint';
 const _isNum = (v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint';
 const _dictLike = (v) => v instanceof Map || isPlainDict(v);
@@ -2878,7 +3022,11 @@ function pyAdd(a, b) {
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
-  if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const ta = a instanceof PyTuple, tb = b instanceof PyTuple;
+    if (ta !== tb) throw new AdderError('TypeError', `can only concatenate ${ta ? 'tuple' : 'list'} (not "${pyTypeName(b)}") to ${ta ? 'tuple' : 'list'}`);
+    return ta ? mkTuple([...a, ...b]) : [...a, ...b];
+  }
   if (a instanceof Uint8Array && b instanceof Uint8Array) { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
   throw _binErr('+', a, b);
 }
@@ -2895,7 +3043,7 @@ function _repeat(seq, n) {
   if (seq instanceof Uint8Array) { const r = new Uint8Array(Math.max(0, n) * seq.length); for (let i = 0; i < n; i++) r.set(seq, i * seq.length); return r; }
   const r = [];
   for (let i = 0; i < n; i++) r.push(...seq);
-  return r;
+  return seq instanceof PyTuple ? mkTuple(r) : r;
 }
 function pyMul(a, b) {
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
@@ -2947,7 +3095,7 @@ function pyPow(a, b, mod) {
   throw _binErr('**', a, b);
 }
 function _setLike(proto, items) {
-  const s = new Set(items);
+  const s = new PySet(items);
   if (proto && proto._frozen) s._frozen = true;
   return s;
 }
@@ -2965,12 +3113,12 @@ function _bitwise(sym, a, b, d, rd) {
   if (sym === '|' && _dictLike(a) && _dictLike(b)) {
     const entries = [..._dictEntries(a), ..._dictEntries(b)];
     if (!(a instanceof Map) && !(b instanceof Map)) return Object.assign({}, a, b);
-    return new Map(entries);
+    return new PyDict(entries);
   }
   throw _binErr(sym, a, b);
 }
 const pyAnd = (a, b) => _bitwise('&', a, b, '__and__', '__rand__');
-const pyOr = (a, b) => _bitwise('|', a, b, '__or__', '__ror__');
+const pyOr = (a, b) => (_isTypeLike(a) && _isTypeLike(b) && !(a === null && b === null) ? makeUnion(a, b) : _bitwise('|', a, b, '__or__', '__ror__'));
 const pyXor = (a, b) => _bitwise('^', a, b, '__xor__', '__rxor__');
 function pyLshift(a, b) {
   const d = _viaDunder(a, b, '__lshift__', '__rlshift__'); if (d) return d.r;
@@ -3010,8 +3158,8 @@ const pyBinOps = {
 // ── printf-style formatting: str % args ──
 // %[(key)][flags][width][.precision][length]type, flags - + space 0 #, * for width/precision
 function pyPercentFormat(fmt, args) {
-  const isMap = _dictLike(args) && !Array.isArray(args);
-  const list = Array.isArray(args) ? args : [args];
+  const isMap = _dictLike(args);
+  const list = args instanceof PyTuple ? args : [args];
   let i = 0, usedMap = false;
   const next = () => {
     if (i >= list.length) throw new AdderError('TypeError', 'not enough arguments for format string');
@@ -3121,6 +3269,10 @@ function pyGetItem(obj, key) {
   }
   if (typeof obj === 'object' || typeof obj === 'function') {
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
+    if (typeof obj === 'function' && obj._pyClass) {
+      if (typeof obj.__class_getitem__ === 'function') return obj.__class_getitem__(key);
+      return new GenericAlias(obj, key instanceof PyTuple ? [...key] : [key]);
+    }
     if (isPlainDict(obj)) {
       if (typeof key === 'string' && Object.hasOwn(obj, key)) return obj[key];
       if (typeof key === 'number' && Object.hasOwn(obj, String(key))) return obj[key];
@@ -3196,10 +3348,20 @@ function _dictSize(d) { return d instanceof Map ? d.size : Object.keys(d).length
 
 function pyEq(a, b) {
   if (a === b) return true;
-  if (_hasDunder(a, '__eq__')) return a.__eq__(b);
-  if (_hasDunder(b, '__eq__')) return b.__eq__(a);
+  if (_hasDunder(a, '__eq__') || _hasDunder(b, '__eq__')) {
+    // a's __eq__, then b's (reflected) when a's says NotImplemented, then identity
+    const refl = () => (_hasDunder(b, '__eq__') && b.__eq__ !== a.__eq__ ? b.__eq__(a) : false);
+    const last = (v) => (v === NotImplemented ? false : v);
+    if (!_hasDunder(a, '__eq__')) { const r = b.__eq__(a); return r && typeof r.then === 'function' ? r.then(last) : last(r); }
+    const r = a.__eq__(b);
+    if (r && typeof r.then === 'function') return r.then((v) => (v === NotImplemented ? Promise.resolve(refl()).then(last) : v));
+    if (r !== NotImplemented) return r;
+    const r2 = refl();
+    return r2 && typeof r2.then === 'function' ? r2.then(last) : last(r2);
+  }
   if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
   if (Array.isArray(a) && Array.isArray(b)) {
+    if ((a instanceof PyTuple) !== (b instanceof PyTuple)) return false;
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (!pyEq(a[i], b[i])) return false;
     return true;
@@ -3229,7 +3391,7 @@ function _ltPlain(op, a, b) {
   if (_numLike(a) && _numLike(b)) return a < b;
   if (typeof a === 'string' && typeof b === 'string') return a < b;
   if (a instanceof Uint8Array && b instanceof Uint8Array) return _ltPlain(op, [...a], [...b]);
-  if (Array.isArray(a) && Array.isArray(b)) {
+  if (Array.isArray(a) && Array.isArray(b) && (a instanceof PyTuple) === (b instanceof PyTuple)) {
     const n = Math.min(a.length, b.length);
     for (let i = 0; i < n; i++) {
       const e = pyEq(a[i], b[i]);
@@ -3362,7 +3524,7 @@ const _mathModule = {
   remainder: (x, y) => x - Math.round(x / y) * y,
   ldexp: (x, i) => x * Math.pow(2, i),
   frexp: (x) => { if (x === 0) return [0, 0]; const e = Math.ceil(Math.log2(Math.abs(x))); return [x / Math.pow(2, e), e]; },
-  modf: (x) => { const i = Math.trunc(x); return [x - i, i]; },
+  modf: (x) => { const i = Math.trunc(x); return mkTuple([x - i, i]); },
 };
 
 // math: CPython's integer functions are exact (BigInt where the result can leave 2**53)
@@ -3429,8 +3591,8 @@ Object.assign(_mathModule, {
   sqrt: (x) => { if (x < 0) throw new AdderError('ValueError', 'math domain error'); return Math.sqrt(x); },
   log1p: Math.log1p, expm1: Math.expm1, cbrt: Math.cbrt, exp2: (x) => 2 ** x,
   fmod: (x, y) => { if (y === 0) throw new AdderError('ValueError', 'math domain error'); return x % y; },
-  modf: (x) => { const i = Math.trunc(x); return [x - i, i]; },
-  frexp: (x) => { if (x === 0 || !Number.isFinite(x)) return [x, 0]; let e = Math.ceil(Math.log2(Math.abs(x))); let m = x / 2 ** e; if (Math.abs(m) >= 1) { m /= 2; e++; } if (Math.abs(m) < 0.5) { m *= 2; e--; } return [m, e]; },
+  modf: (x) => { const i = Math.trunc(x); return mkTuple([x - i, i]); },
+  frexp: (x) => { if (x === 0 || !Number.isFinite(x)) return mkTuple([x, 0]); let e = Math.ceil(Math.log2(Math.abs(x))); let m = x / 2 ** e; if (Math.abs(m) >= 1) { m /= 2; e++; } if (Math.abs(m) < 0.5) { m *= 2; e--; } return mkTuple([m, e]); },
   ldexp: (x, i) => x * 2 ** i,
   fsum: (iterable) => {
     // Shewchuk / Neumaier: exactly rounded like CPython's fsum for ordinary inputs
@@ -3522,10 +3684,10 @@ const _itertoolsModule = {
         for (const it of iterables) base.push(await pyCollect(it));
         const arrs = [];
         for (let r = 0; r < repeat; r++) arrs.push(...base);
-        if (arrs.length === 0) { yield []; return; }
+        if (arrs.length === 0) { yield mkTuple([]); return; }
         const indices = arrs.map(() => 0);
         while (true) {
-          yield indices.map((idx, i) => arrs[i][idx]);
+          yield mkTuple(indices.map((idx, i) => arrs[i][idx]));
           let i = arrs.length - 1;
           while (i >= 0) { indices[i]++; if (indices[i] < arrs[i].length) break; indices[i] = 0; i--; }
           if (i < 0) break;
@@ -3540,14 +3702,14 @@ const _itertoolsModule = {
         const n = pool.length;
         if (r > n) return;
         const indices = Array.from({ length: r }, (_, i) => i);
-        yield indices.map(i => pool[i]);
+        yield mkTuple(indices.map(i => pool[i]));
         while (true) {
           let i = r - 1;
           while (i >= 0 && indices[i] === i + n - r) i--;
           if (i < 0) break;
           indices[i]++;
           for (let j = i + 1; j < r; j++) indices[j] = indices[j - 1] + 1;
-          yield indices.map(i => pool[i]);
+          yield mkTuple(indices.map(i => pool[i]));
         }
       })();
     },
@@ -3561,13 +3723,13 @@ const _itertoolsModule = {
         if (r > n) return;
         const indices = Array.from({ length: n }, (_, i) => i);
         const cycles = Array.from({ length: r }, (_, i) => n - i);
-        yield indices.slice(0, r).map(i => pool[i]);
+        yield mkTuple(indices.slice(0, r).map(i => pool[i]));
         while (true) {
           let found = false;
           for (let i = r - 1; i >= 0; i--) {
             cycles[i]--;
             if (cycles[i] === 0) { indices.push(indices.splice(i, 1)[0]); cycles[i] = n - i; }
-            else { const j = indices.length - cycles[i]; [indices[i], indices[j]] = [indices[j], indices[i]]; yield indices.slice(0, r).map(i => pool[i]); found = true; break; }
+            else { const j = indices.length - cycles[i]; [indices[i], indices[j]] = [indices[j], indices[i]]; yield mkTuple(indices.slice(0, r).map(i => pool[i])); found = true; break; }
           }
           if (!found) break;
         }
@@ -3625,7 +3787,7 @@ const _itertoolsModule = {
           const arrs = [];
           for (const it of args) arrs.push(await pyCollect(it));
           const maxLen = Math.max(...arrs.map(a => a.length));
-          for (let i = 0; i < maxLen; i++) yield arrs.map(a => i < a.length ? a[i] : fillvalue);
+          for (let i = 0; i < maxLen; i++) yield mkTuple(arrs.map(a => i < a.length ? a[i] : fillvalue));
         })();
       },
     };
@@ -3639,11 +3801,11 @@ const _itertoolsModule = {
           let k = key ? key(item) : item;
           if (k && typeof k.then === 'function') k = await k;
           if (first || !pyEq(k, currentKey)) {
-            if (currentGroup.length > 0) yield [currentKey, currentGroup];
+            if (currentGroup.length > 0) yield mkTuple([currentKey, currentGroup]);
             currentKey = k; currentGroup = [item]; first = false;
           } else { currentGroup.push(item); }
         }
-        if (currentGroup.length > 0) yield [currentKey, currentGroup];
+        if (currentGroup.length > 0) yield mkTuple([currentKey, currentGroup]);
       })();
     },
   }),
@@ -3670,7 +3832,7 @@ const _itertoolsModule = {
       return (async function*() {
         let prev, hasPrev = false;
         for await (const v of _aiter(iterable)) {
-          if (hasPrev) yield [prev, v];
+          if (hasPrev) yield mkTuple([prev, v]);
           prev = v; hasPrev = true;
         }
       })();
@@ -3708,7 +3870,7 @@ const _functoolsModule = {
   // lru_cache / cache: as a decorator (@lru_cache) or a factory (@lru_cache(maxsize=…))
   lru_cache: (arg) => {
     const wrap = (fn, maxsize) => {
-      const cache = new Map();
+      const cache = new PyDict();
       let hits = 0, misses = 0;
       const keyOf = (args) => JSON.stringify(args, (k, v) => (v instanceof Map ? [...v] : v instanceof Set ? [...v] : v));
       const wrapped = (...args) => {
@@ -3751,11 +3913,11 @@ function _counterAdd(map, iterable) {
   if (isPlainDict(iterable)) { for (const k of Object.keys(iterable)) map.set(k, (map.get(k) || 0) + iterable[k]); return; }
   for (const v of pyIter(iterable)) map.set(v, (map.get(v) || 0) + 1);
 }
-class AdderCounter extends Map {
+class AdderCounter extends PyDict {
   constructor(iterable) { super(); if (iterable != null && !iterable._kw) _counterAdd(this, iterable); if (iterable && iterable._kw) for (const k of Object.keys(iterable)) if (k !== '_kw') this.set(k, iterable[k]); }
   __missing__() { return 0; }
   most_common(n) {
-    const e = [...this.entries()].sort((a, b) => b[1] - a[1]);   // stable: ties keep insertion order
+    const e = [...this.entries()].sort((a, b) => b[1] - a[1]).map(mkTuple);   // stable: ties keep insertion order
     return n == null ? e : e.slice(0, n);
   }
   elements() { const out = []; for (const [k, v] of this) for (let i = 0; i < v; i++) out.push(k); return out; }
@@ -3766,7 +3928,7 @@ class AdderCounter extends Map {
 }
 AdderCounter.prototype.__adderClass__ = 'Counter';
 
-class AdderDefaultDict extends Map {
+class AdderDefaultDict extends PyDict {
   constructor(factory, items) { super(); this.default_factory = factory ?? null; if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items))) this.set(k, v); }
   __missing__(key) {
     if (this.default_factory == null) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
@@ -3779,7 +3941,7 @@ class AdderDefaultDict extends Map {
 }
 AdderDefaultDict.prototype.__adderClass__ = 'defaultdict';
 
-class AdderOrderedDict extends Map {
+class AdderOrderedDict extends PyDict {
   constructor(items) { super(); if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items).filter(([k]) => k !== '_kw'))) this.set(k, v); }
   move_to_end(key, last = true) {
     if (last && last._kw) last = last.last;
@@ -3794,7 +3956,7 @@ class AdderOrderedDict extends Map {
     if (!this.size) throw new AdderError('KeyError', "'dictionary is empty'");
     const keys = [...this.keys()], k = last === false ? keys[0] : keys[keys.length - 1], v = this.get(k);
     this.delete(k);
-    return [k, v];
+    return mkTuple([k, v]);
   }
   __repr__() { return this.size ? `OrderedDict({${[...this].map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'OrderedDict()'; }
 }
@@ -3837,6 +3999,7 @@ function _namedtuple(name, fields, opts) {
   if (fields && fields._kw) { opts = fields; fields = opts.field_names; }
   if (opts && opts._kw && opts.defaults) defaults = [...pyIter(opts.defaults)];
   const names = typeof fields === 'string' ? fields.replace(/,/g, ' ').split(/\s+/).filter(Boolean) : [...pyIter(fields)];
+  class NT extends PyTuple {}
   const cls = function (...args) {
     const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
     const vals = names.map((f, i) => {
@@ -3846,27 +4009,20 @@ function _namedtuple(name, fields, opts) {
       if (d >= 0) return defaults[d];
       throw new AdderError('TypeError', `${name}.__new__() missing 1 required positional argument: '${f}'`);
     });
-    const inst = Object.create(cls.prototype);
-    names.forEach((f, i) => { inst[f] = vals[i]; });
-    inst._values = vals;
-    return inst;
+    const t = new NT();
+    for (const v of vals) t.push(v);
+    return Object.freeze(t);
   };
-  cls._pyName = name; cls._pyClass = true; cls._fields = names;
-  cls._pyMRO = [cls];
-  cls.prototype = {
-    __adderClass__: name,
-    __len__() { return this._values.length; },
-    __getitem__(i) { return pyGetItem(this._values, i); },
-    __iter__() { return this._values[Symbol.iterator](); },
-    [Symbol.iterator]() { return this._values[Symbol.iterator](); },
-    __eq__(o) { return Array.isArray(o) ? pyEq(this._values, o) : !!(o && o._values) && pyEq(this._values, o._values); },
-    __lt__(o) { return pyLt(this._values, o._values || o); },
-    __repr__() { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this._values[i])}`).join(', ')})`; },
-    _asdict() { const o = {}; names.forEach((f, i) => { o[f] = this._values[i]; }); return o; },
-    _replace(kw) { const v = names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this._values[i])); return cls(...v); },
-  };
-  for (const f of names) Object.defineProperty(cls.prototype, f, { get() { return this._values[names.indexOf(f)]; }, set(v) { this._values && (this._values[names.indexOf(f)] = v); }, configurable: true });
-  cls.prototype.__adderType__ = cls;
+  cls._pyName = name; cls._pyClass = true; cls._fields = mkTuple(names);
+  cls._pyMRO = [cls, _typeObjects.tuple].filter(Boolean);
+  NT.prototype.__adderClass__ = name;
+  NT.prototype.__adderType__ = cls;
+  NT.prototype._fields = cls._fields;
+  cls._ntProto = NT.prototype;   // typing.NamedTuple re-homes it onto the user's class
+  names.forEach((f, i) => Object.defineProperty(NT.prototype, f, { get() { return this[i]; }, configurable: true }));
+  NT.prototype.__repr__ = function () { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
+  NT.prototype._asdict = function () { const o = {}; names.forEach((f, i) => { o[f] = this[i]; }); return o; };
+  NT.prototype._replace = function (kw) { return cls(...names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this[i]))); };
   cls._make = (it) => cls(...pyIter(it));
   return cls;
 }
@@ -3878,7 +4034,7 @@ const _collectionsModule = {
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
   deque: _ctor(AdderDeque, 'deque'),
   namedtuple: _namedtuple,
-  ChainMap: (...maps) => { const m = new Map(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
+  ChainMap: (...maps) => { const m = new PyDict(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
 };
 
 // ── json ──
@@ -4007,15 +4163,15 @@ function _reMatchObject(m, pattern, string, pos, endpos) {
     return g;
   };
   const val = (i) => (m[i] === undefined ? null : m[i]);
-  const span = (g) => { const i = resolve(g); const ix = m.indices && m.indices[i]; return ix ? [ix[0], ix[1]] : [-1, -1]; };
+  const span = (g) => { const i = resolve(g); const ix = m.indices && m.indices[i]; return mkTuple(ix ? [ix[0], ix[1]] : [-1, -1]); };
   let lastindex = null;
   for (let i = 1; i <= pattern.groups; i++) if (m[i] !== undefined) lastindex = i;
   const obj = {
     __adderClass__: 're.Match',
     string, re: pattern, pos, endpos, lastindex,
     lastgroup: lastindex === null ? null : (Object.keys(groupIndex).find((k) => groupIndex[k] === lastindex) || null),
-    group: (...gs) => (gs.length <= 1 ? val(resolve(gs[0])) : gs.map((g) => val(resolve(g)))),
-    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]); return out; },
+    group: (...gs) => (gs.length <= 1 ? val(resolve(gs[0])) : mkTuple(gs.map((g) => val(resolve(g))))),
+    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]); return mkTuple(out); },
     groupdict: (dflt) => { const o = {}; for (const [k, i] of Object.entries(groupIndex)) o[k] = m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]; return o; },
     start: (g) => span(g)[0],
     end: (g) => span(g)[1],
@@ -4089,7 +4245,7 @@ function _reCompile(pattern, flags) {
     while ((m = re.exec(s))) { out.push(m); if (m[0] === '') re.lastIndex++; }
     return out;
   };
-  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? m[0] : count === 1 ? (m[1] ?? '') : m.slice(1).map((g) => g ?? '')));
+  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? m[0] : count === 1 ? (m[1] ?? '') : mkTuple(m.slice(1).map((g) => g ?? ''))));
   P.finditer = (s) => allMatches(s).map((m) => _reMatchObject(m, P, s, 0, s.length));
   P.split = (s, maxsplit) => {
     if (maxsplit && maxsplit._kw) maxsplit = maxsplit.maxsplit;
@@ -4114,7 +4270,7 @@ function _reCompile(pattern, flags) {
     const build = (ps) => {
       let out = '', last = 0;
       ms.forEach((m, i) => { out += s.slice(last, m.index) + (ps[i] ?? ''); last = m.index + m[0].length; });
-      return [out + s.slice(last), ms.length];
+      return mkTuple([out + s.slice(last), ms.length]);
     };
     return pieces.some((x) => x && typeof x.then === 'function') ? Promise.all(pieces).then(build) : build(pieces);
   };
@@ -4228,8 +4384,11 @@ const _sysModule = {
   modules: {},
   argv: [''],
   exit: (code) => { throw new AdderError('SystemExit', String(code ?? 0)); },
-  stdout: { write(s) { return String(s).length; }, flush() {}, encoding: 'utf-8' },
-  stderr: { write(s) { return String(s).length; }, flush() {}, encoding: 'utf-8' },
+  exc_info: () => (excStack.length ? mkTuple([excTypeOf(excStack[excStack.length - 1]), excValue(excStack[excStack.length - 1]), null]) : mkTuple([null, null, null])),
+  exception: () => (excStack.length ? excValue(excStack[excStack.length - 1]) : null),
+  // write to the running program's stdout / stderr (run()'s opts, or the notebook cell)
+  stdout: { write(s) { s = String(s); _stdioWrite('out', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
+  stderr: { write(s) { s = String(s); _stdioWrite('err', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
   getsizeof: () => 0,
   getrecursionlimit: () => 1000,
   setrecursionlimit: () => null,
@@ -4279,6 +4438,33 @@ const _excParents = {
   FutureWarning: 'Warning', ImportWarning: 'Warning', UnicodeWarning: 'Warning', BytesWarning: 'Warning', ResourceWarning: 'Warning',
 };
 const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
+// A module's own exception type (dataclasses.FrozenInstanceError, statistics.StatisticsError,
+// binascii.Error, ...): a builtin-style type under `parent`, raised and caught like ValueError.
+function makeExcType(name, parent, ...moreParents) {
+  if (!_excParents[name]) { _excParents[name] = parent; _EXC_NAMES.push(name); }
+  if (moreParents.length) _excExtraParents[name] = moreParents;
+  if (_typeObjects[name]) return _typeObjects[name];
+  const ctor = (...a) => {
+    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+    return new AdderError(name, _argsStr(name, a), undefined, a);
+  };
+  ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name.split('.').pop();
+  _typeObjects[name] = ctor;
+  return ctor;
+}
+// A class-body attribute onto the class object (a JS function): defined, not assigned, so
+// `name` / `length` (read-only on functions) work; recorded in _pyAttrs, which is how
+// dataclasses and enum tell the body's attributes from the function's own properties.
+function setClassAttr(cls, k, v) {
+  Object.defineProperty(cls, k, { value: v, writable: true, enumerable: true, configurable: true });
+  (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
+}
+// obj.name = value, from either engine: a frozen dataclass instance refuses every assignment
+function guardSetAttr(obj, name) {
+  if (obj !== null && typeof obj === 'object' && obj.__dataclass_frozen__ === true) {
+    throw new AdderError('FrozenInstanceError', `cannot assign to field '${name}'`);
+  }
+}
 // JS errors surfacing through compiled code or a JS library
 const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
 
@@ -4287,8 +4473,11 @@ function _excChain(name) {
   const out = [name];
   let p = _excParents[name] || (name === 'BaseException' ? null : 'Exception');
   while (p) { out.push(p); p = _excParents[p] || (p === 'BaseException' ? null : 'Exception'); }
+  // a type with more than one exception base (decimal.DivisionByZero is a ZeroDivisionError too)
+  for (const n of [...out]) for (const extra of _excExtraParents[n] || []) for (const x of _excChain(extra)) if (!out.includes(x)) out.push(x);
   return out;
 }
+const _excExtraParents = {};
 
 // a builtin exception type object (ValueError, ...): a type with no MRO of its own
 function isBuiltinExcType(t) {
@@ -4304,7 +4493,7 @@ function isExceptionClass(cls) {
 function initExceptionInstance(cls, instance, args) {
   if (!isExceptionClass(cls)) return;
   const a = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.slice(0, -1) : args.slice();
-  instance.args = a;
+  instance.args = mkTuple(a);
 }
 function _argsStr(name, args) {
   if (!args || args.length === 0) return '';
@@ -4507,7 +4696,7 @@ function _createOsModule(getVfs, pth) {
     join: (...parts) => pth.join(...parts),
     dirname: (p) => pth.dirname(p),
     basename: (p) => pth.basename(p),
-    splitext: (p) => { const ext = pth.extname(p); return ext ? [p.slice(0, -ext.length), ext] : [p, '']; },
+    splitext: (p) => { const ext = pth.extname(p); return mkTuple(ext ? [p.slice(0, -ext.length), ext] : [p, '']); },
     normpath: (p) => pth.normalize(p),
     relpath: (p, start) => pth.relative(start || _cwd.value, p),
     isabs: (p) => pth.isAbsolute(p),
@@ -4732,6 +4921,146 @@ function _ensureFsModules(pathUtils) {
   adderModules.glob = _createGlobModule(getVfs);
 }
 
+// dict(mapping | pairs, **kw)
+async function _dictFrom(args) {
+  const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
+  if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
+  const entries = [];
+  const x = args[0];
+  if (args.length === 0) { /* empty */ }
+  else if (x === null || x === undefined || typeof x !== 'object' && typeof x !== 'string') throw new AdderError('TypeError', `'${pyTypeName(x)}' object is not iterable`);
+  else if (x instanceof Map) entries.push(...x.entries());
+  else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
+  else if (typeof x.keys === 'function' && typeof x.__getitem__ === 'function') {
+    // a mapping (anything with keys() and __getitem__), as CPython's dict() reads it
+    for (const k of await pyCollect(await x.keys())) entries.push([k, await x.__getitem__(k)]);
+  } else {
+    const items = Array.isArray(x) ? x : await pyCollect(x);
+    items.forEach((it, i) => {
+      const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
+      if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
+      entries.push(pair);
+    });
+  }
+  if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') entries.push([k, kw[k]]);
+  // string keys only → a plain object (JS cells read d.a), as a literal; empty → PyDict
+  if (entries.length && entries.every(([k]) => typeof k === 'string')) {
+    const o = {};
+    for (const [k, v] of entries) o[k] = v;
+    return o;
+  }
+  return new PyDict(entries);
+}
+
+// ── stdout / stderr ──
+// The host's writers for the program running now: run() sets them from its options, a notebook
+// cell from its output. sys.stdout / sys.stderr and print(file=sys.stderr) write through here.
+const _stdio = { out: null, err: null, redirect: null };
+// the exceptions being handled, innermost last: both engines push on entering an except body and
+// pop on leaving it (a bare `raise`, sys.exc_info(), sys.exception(), logging.exception read it)
+const excStack = [];
+function _stdioWrite(which, s) {
+  const w = _stdio[which];
+  if (w) { w(s); return; }
+  if (typeof process !== 'undefined' && process[which === 'out' ? 'stdout' : 'stderr']) process[which === 'out' ? 'stdout' : 'stderr'].write(s);
+  else if (typeof console !== 'undefined') console[which === 'out' ? 'log' : 'error'](s.replace(/\n$/, ''));
+}
+// print(..., file=f): f.write(text), awaited when the file's write is async (a VFS file)
+function printToFile(file, text) {
+  const w = adderGetAttr(file, 'write');
+  return w(text);
+}
+
+// ── list[int], dict[str, int], int | None ──
+// The runtime objects annotations evaluate to: printable, comparable, and usable in isinstance
+// (a union); typing's Optional / List / … are the same objects under their typing names.
+const Ellipsis = Object.freeze({ __adderClass__: 'ellipsis', __repr__: () => 'Ellipsis', __str__: () => 'Ellipsis' });
+// a binary dunder's "not mine": Python then tries the reflected method (_viaDunder, pyEq)
+const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __repr__: () => 'NotImplemented', __bool__: () => true });
+function _typeArgText(t) {
+  if (t === Ellipsis) return '...';
+  if (t === null || t === undefined) return 'None';
+  if (typeof t === 'function') return t._pyName || t.name || '?';
+  if (typeof t === 'string') return pyRepr(t);
+  if (Array.isArray(t) && !(t instanceof PyTuple)) return `[${t.map(_typeArgText).join(', ')}]`;
+  return pyRepr(t);
+}
+class GenericAlias {
+  constructor(origin, args, name) {
+    this.__origin__ = origin;
+    this.__args__ = mkTuple(args);
+    this._name = name || null;
+  }
+  __repr__() { return `${this._name || _typeArgText(this.__origin__)}[${this.__args__.length ? this.__args__.map(_typeArgText).join(', ') : '()'}]`; }
+  __eq__(o) { return o instanceof GenericAlias && o.__origin__ === this.__origin__ && o._name === this._name && pyEq(this.__args__, o.__args__); }
+  __hash__() { return `ga:${this.__repr__()}`; }
+  __getitem__(k) { return new GenericAlias(this.__origin__, k instanceof PyTuple ? [...k] : [k], this._name); }
+  __or__(o) { return makeUnion(this, o); }
+  __ror__(o) { return makeUnion(o, this); }
+}
+GenericAlias.prototype.__adderClass__ = 'GenericAlias';
+class UnionType {
+  constructor(args) { this.__args__ = mkTuple(args); }
+  __repr__() { return this.__args__.map(_typeArgText).join(' | '); }
+  __eq__(o) { return o instanceof UnionType && this.__args__.length === o.__args__.length && this.__args__.every((a) => o.__args__.some((b) => a === b || pyEq(a, b) === true)); }
+  __hash__() { return `ut:${this.__repr__()}`; }
+  __or__(o) { return makeUnion(this, o); }
+  __ror__(o) { return makeUnion(o, this); }
+}
+UnionType.prototype.__adderClass__ = 'UnionType';
+function _isTypeLike(t) {
+  return t === null || (typeof t === 'function' && !!t._pyClass) || t instanceof GenericAlias || t instanceof UnionType;
+}
+// A | B: flattened, without repeats (int | int is int)
+function makeUnion(a, b) {
+  const out = [];
+  for (const t of [a, b]) for (const x of (t instanceof UnionType ? t.__args__ : [t])) if (!out.some((y) => y === x || (x instanceof GenericAlias && pyEq(x, y) === true))) out.push(x);
+  return out.length === 1 ? out[0] : new UnionType(out);
+}
+
+// ── class hooks shared by both engines ──
+// An annotation's source text: what __annotations__ holds (as under `from __future__ import
+// annotations`), and what dataclasses reads the field list from.
+const _BINOP_TEXT = new Set(['|', '+', '-', '*', '/', '&']);
+function annotationText(n) {
+  if (!n) return '';
+  switch (n.type) {
+    case 'Name': return n.ellipsis ? '...' : n.id;
+    case 'Attribute': return `${annotationText(n.value)}.${n.attr}`;
+    case 'Subscript': return `${annotationText(n.value)}[${n.slice && n.slice.type === 'Tuple' ? n.slice.elts.map(annotationText).join(', ') : annotationText(n.slice)}]`;
+    case 'Constant': return typeof n.value === 'string' ? n.value : n.value === null ? 'None' : String(n.value);
+    case 'Tuple': return n.elts.map(annotationText).join(', ');
+    case 'List': return `[${n.elts.map(annotationText).join(', ')}]`;
+    case 'BinOp': return _BINOP_TEXT.has(n.op) ? `${annotationText(n.left)} ${n.op} ${annotationText(n.right)}` : '...';
+    default: return '...';
+  }
+}
+// the class body's `name: annotation [= value]` lines, in order
+function classAnnotations(body) {
+  const out = [];
+  for (const s of body || []) if (s.type === 'AnnAssign' && s.target && s.target.type === 'Name') out.push([s.target.id, annotationText(s.annotation)]);
+  return out;
+}
+// The last step of building a class, after its members and MRO and before its decorators:
+// record __annotations__, then run the nearest base's __init_subclass__ (Python calls it
+// implicitly as a classmethod; enum.Enum is built on it). May return a promise.
+function finishClass(cls, annotations) {
+  if (annotations && annotations.length) {
+    const d = new PyDict();
+    for (const [k, t] of annotations) d.set(k, t);
+    cls.__annotations__ = d;
+  }
+  const mro = cls._pyMRO || [cls];
+  for (let i = 1; i < mro.length; i++) {
+    const hook = mro[i].__init_subclass__;
+    if (typeof hook === 'function') {
+      const r = hook(cls);
+      return r && typeof r.then === 'function' ? r.then(() => cls) : cls;
+    }
+  }
+  return cls;
+}
+
 // ── builtins ──
 
 function adderBuiltins(printFn) {
@@ -4739,20 +5068,25 @@ function adderBuiltins(printFn) {
     print: (...args) => {
       let sep = ' ', end = '\n';
       // handle keyword args passed as last object with _kw marker
+      let file = null;
       if (args.length > 0 && args[args.length - 1]?._kw) {
         const kw = args.pop();
-        if (kw.sep !== undefined) sep = kw.sep;
-        if (kw.end !== undefined) end = kw.end;
+        if (kw.sep != null) sep = kw.sep;
+        if (kw.end != null) end = kw.end;
+        if (kw.file != null && kw.file !== _sysModule.stdout) file = kw.file;
       }
+      if (!file && _stdio.redirect) file = _stdio.redirect;   // contextlib.redirect_stdout
+      const out = file ? (t) => printToFile(file, t) : printFn;
       const parts = args.map(pyStrMaybe);
-      if (parts.some(_isThenable)) return Promise.all(parts).then((ps) => { printFn(ps.join(sep) + end); return null; });
-      printFn(parts.join(sep) + end);
-      return null;
+      if (parts.some(_isThenable)) return Promise.all(parts).then((ps) => out(ps.join(sep) + end)).then(() => null);
+      const r = out(parts.join(sep) + end);
+      return _isThenable(r) ? r.then(() => null) : null;
     },
     len: (obj) => {
       if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) return obj.length;
       if (obj instanceof Map || obj instanceof Set) return obj.size;
       if (obj instanceof AdderRange) return obj.length;
+      if (typeof obj === 'function' && typeof obj.__len__ === 'function') return obj.__len__();   // a class (an Enum)
       if (typeof obj === 'object' && obj !== null) {
         if (typeof obj.__len__ === 'function') return obj.__len__();
         if (typeof obj.length === 'number') return obj.length;
@@ -4785,36 +5119,13 @@ function adderBuiltins(printFn) {
     str: (x) => x === undefined ? '' : pyStrMaybe(x),
     bool: (x) => x === undefined ? false : pyBool(x),
     list: Object.assign(
-      async (x) => x === undefined ? [] : await pyCollect(x),
+      (x) => x === undefined ? [] : pyCollect(x),
       { _pyContainerType: 'list' },
     ),
-    tuple: async (x) => x === undefined ? [] : await pyCollect(x),
-    dict: async (...args) => {
-      const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
-      if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
-      const entries = [];
-      const x = args[0];
-      if (args.length === 0) { /* empty */ }
-      else if (x === null || x === undefined || typeof x !== 'object' && typeof x !== 'string') throw new AdderError('TypeError', `'${pyTypeName(x)}' object is not iterable`);
-      else if (x instanceof Map) entries.push(...x.entries());
-      else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
-      else {
-        const items = Array.isArray(x) ? x : await pyCollect(x);
-        items.forEach((it, i) => {
-          const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
-          if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
-          entries.push(pair);
-        });
-      }
-      if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') entries.push([k, kw[k]]);
-      if (entries.every(([k]) => typeof k === 'string')) {
-        const o = {};
-        for (const [k, v] of entries) o[k] = v;
-        return o;
-      }
-      return new Map(entries);
-    },
-    set: async (x) => x === undefined ? new Set() : new Set(await pyCollect(x)),
+    // a call with no argument answers synchronously, so defaultdict(list) & co. store a value
+    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : pyCollect(x).then(mkTuple)),
+    dict: (...args) => (args.length === 0 ? new PyDict() : _dictFrom(args)),
+    set: (x) => x === undefined ? new PySet() : pyCollect(x).then((xs) => new PySet(xs)),
     // bytes(): b'', bytes(n) zeros, bytes(ints), bytes(str, encoding)
     bytes: (x, encoding) => {
       if (x === undefined) return new Uint8Array(0);
@@ -4828,7 +5139,7 @@ function adderBuiltins(printFn) {
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
-    frozenset: async (x) => { const s = x === undefined ? new Set() : new Set(await pyCollect(x)); s._frozen = true; return s; },
+    frozenset: async (x) => { const s = x === undefined ? new PySet() : new PySet(await pyCollect(x)); s._frozen = true; return s; },
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
     max: async (...args) => pyExtreme('max', args),
@@ -4867,7 +5178,7 @@ function adderBuiltins(printFn) {
     enumerate: async (iterable, start) => {
       const result = [];
       let i = start || 0;
-      for (const v of await pyCollect(iterable)) result.push([i++, v]);
+      for (const v of await pyCollect(iterable)) result.push(mkTuple([i++, v]));
       return result;
     },
     zip: async (...iterables) => {
@@ -4875,7 +5186,7 @@ function adderBuiltins(printFn) {
       const arrs = []; for (const it of iterables) arrs.push(await pyCollect(it));
       const minLen = Math.min(...arrs.map(a => a.length));
       const result = [];
-      for (let i = 0; i < minLen; i++) result.push(arrs.map(a => a[i]));
+      for (let i = 0; i < minLen; i++) result.push(mkTuple(arrs.map(a => a[i])));
       return result;
     },
     map: async (fn, ...iterables) => {
@@ -4907,7 +5218,7 @@ function adderBuiltins(printFn) {
     },
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
     getattr: (obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } },
-    setattr: (obj, name, value) => { obj[name] = value; return null; },
+    setattr: (obj, name, value) => { guardSetAttr(obj, name); obj[name] = value; return null; },
     delattr: (obj, name) => { delete obj[name]; return null; },
     property: (fget) => {
       const prop = { __property__: true, fget, fset: null };
@@ -4924,11 +5235,12 @@ function adderBuiltins(printFn) {
     oct: (n) => { const v = Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
     bin: (n) => { const v = Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
     repr: pyReprMaybe,
+    Ellipsis, NotImplemented,
     format: (value, spec) => pyFormatValue(value, spec || ''),
     pow: (x, y, mod) => mod !== undefined ? _modPow(x, y, mod) : Math.pow(x, y),
-    divmod: (a, b) => [Math.floor(a / b), ((a % b) + b) % b],
+    divmod: (a, b) => mkTuple([pyFloorDiv(a, b), pyMod(a, b)]),
     id: (obj) => { if (typeof obj === 'object' && obj !== null) { if (!obj.__id__) obj.__id__ = ++_idCounter; return obj.__id__; } return 0; },
-    hash: (obj) => { if (typeof obj === 'number') return obj; if (typeof obj === 'string') { let h = 0; for (let i = 0; i < obj.length; i++) h = (h * 31 + obj.charCodeAt(i)) | 0; return h; } return 0; },
+    hash: (obj) => _pyHash(obj),
     iter: (obj) => pyIter(obj),
     next: (iter, def) => {
       const done = () => { if (def !== undefined) return def; throw new AdderError('StopIteration', '', undefined, []); };
@@ -4976,7 +5288,14 @@ function adderBuiltins(printFn) {
     PermissionError: (msg) => new AdderError('PermissionError', msg),
     OSError: (msg) => new AdderError('OSError', msg),
     IOError: (msg) => new AdderError('IOError', msg),
-    open: async (pathOrObj, mode) => {
+    // open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, ...): the VFS
+    // stores text as UTF-8, so encoding / newline / buffering are accepted and need no work here
+    open: async (pathOrObj, ...rest) => {
+      const kw = rest.length && rest[rest.length - 1] && rest[rest.length - 1]._kw ? rest.pop() : null;
+      if (pathOrObj && pathOrObj._kw) { const k = pathOrObj; pathOrObj = k.file; if (k.mode !== undefined) rest[0] = k.mode; }
+      let mode = rest[0] ?? (kw && kw.mode !== undefined ? kw.mode : 'r');
+      if (typeof mode !== 'string') throw new AdderError('TypeError', `open() argument 'mode' must be str, not ${pyTypeName(mode)}`);
+      if (mode.includes('x')) mode = mode.replace('x', 'w');
       if (!_adderVFS) throw new AdderError('RuntimeError', 'filesystem not available — call adder.setVFS(vfsInstance, pathUtils) first');
       const raw = pathOrObj?._path ? pathOrObj._path : String(pathOrObj);
       const p = _resolvePath(raw, _vfsPath);
@@ -5017,7 +5336,7 @@ function pySuper(cls, self) {
         if (isBuiltinExcType(base)) {
           if (name === '__init__') return (...a) => {
             if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
-            self.args = a;
+            self.args = mkTuple(a);
             return null;
           };
           if (name === '__str__') return () => _argsStr(base._pyName, self.args);
@@ -5047,6 +5366,9 @@ function _pyIsInstance(obj, typeOrTuple) {
   const types = Array.isArray(typeOrTuple) ? typeOrTuple : [typeOrTuple];
   const name = pyTypeName(obj);
   for (const t of types) {
+    if (t instanceof UnionType) { if (_pyIsInstance(obj, [...t.__args__])) return true; continue; }
+    // an abstract type that recognises its instances structurally (collections.abc.Mapping, ...)
+    if (typeof t === 'function' && typeof t.__instancecheck__ === 'function' && t.__instancecheck__(obj)) return true;
     if (typeof t === 'string') {
       if (name === t) return true;
     } else if (typeof t === 'function') {
@@ -5064,10 +5386,7 @@ function _pyIsInstance(obj, typeOrTuple) {
           }
         }
         // walk exception parent chain
-        if (obj instanceof AdderError) {
-          let pt = _excParents[obj.pyType];
-          while (pt) { if (pt === t._pyName) return true; pt = _excParents[pt]; }
-        }
+        if (obj instanceof AdderError && _excChain(obj.pyType).includes(t._pyName)) return true;
       } else {
         try { if (obj instanceof t) return true; } catch { /* arrow fn without prototype */ }
       }
@@ -5108,18 +5427,24 @@ let _idCounter = 0;
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
 
+// the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
+
+
+
+
+
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
-const _excStack = [];
+const _excStack = excStack;   // shared with the AIR runtime (builtins.js)
 
 // ── scope ──
 
 class AdderScope {
   constructor(parent = null) {
-    this.vars = new Map();
+    this.vars = new PyDict();
     this.parent = parent;
-    this.globals = new Set();
-    this.nonlocals = new Set();
+    this.globals = new PySet();
+    this.nonlocals = new PySet();
   }
   get(name) {
     if (this.globals.has(name)) return this._getGlobal(name);
@@ -5185,7 +5510,7 @@ function _makeBudget(spec) {
   return { limit: steps, deadline: ms === Infinity ? Infinity : _now() + ms, ms, onStep: typeof spec.onStep === 'function' ? spec.onStep : null, count: 0, spent: null };
 }
 const _now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
-const _STMT = new Set(['Expr', 'Assign', 'AugAssign', 'AnnAssign', 'If', 'For', 'While', 'With', 'FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Return', 'Pass', 'Break', 'Continue', 'Import', 'ImportFrom', 'Raise', 'Try', 'Assert', 'Delete', 'Global', 'Nonlocal']);
+const _STMT = new PySet(['Expr', 'Assign', 'AugAssign', 'AnnAssign', 'If', 'For', 'While', 'With', 'FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Return', 'Pass', 'Break', 'Continue', 'Import', 'ImportFrom', 'Raise', 'Try', 'Assert', 'Delete', 'Global', 'Nonlocal']);
 // the read-only view of the current frame handed to onStep — one object, re-aimed
 // per statement (not a copy; the caller copies what it wants)
 const _view = {
@@ -5221,7 +5546,7 @@ function _tickLine(line) {
 // here; `_resolveModule` looks here FIRST, before the built-ins and before
 // window._auditableExtensions. Process-wide, like adderModules. Dotted names
 // walk into the registered object (`from natra.linalg import inv` → mod.linalg).
-const _registered = new Map();
+const _registered = new PyDict();
 function registerModule(name, mod) {
   if (typeof name !== 'string' || !name) throw new TypeError('registerModule: name must be a non-empty string');
   if (mod == null) throw new TypeError(`registerModule('${name}'): module must be an object`);
@@ -5401,9 +5726,12 @@ async function adderEval(node, scope) {
 
     // ── collections ──
     case 'List': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return elts; }
-    case 'Tuple': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return elts; }
+    case 'Tuple': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return mkTuple(elts); }
     case 'Dict': {
-      const allStringKeys = node.keys.every(k => k && (k.type === 'Constant' && typeof k.value === 'string') || k === null);
+      // A literal whose keys are all string constants is a plain object, so JS cells read it
+      // as d.a. An EMPTY literal is a PyDict: it is filled with data keys later, and a plain
+      // object would turn d[5] into d['5'] and order integer-like keys first.
+      const allStringKeys = node.keys.length > 0 && node.keys.every(k => k && (k.type === 'Constant' && typeof k.value === 'string') || k === null);
       if (allStringKeys) {
         const obj = {};
         for (let i = 0; i < node.keys.length; i++) {
@@ -5417,12 +5745,15 @@ async function adderEval(node, scope) {
         }
         return obj;
       }
-      const map = new Map();
+      const map = new PyDict();
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i] === null) {
           const src = await adderEval(node.values[i], scope);
           if (src instanceof Map) { for (const [k, v] of src) map.set(k, v); }
-          else { for (const k of Object.keys(src)) map.set(k, src[k]); }
+          else if (isPlainDict(src)) { for (const k of Object.keys(src)) map.set(k, src[k]); }
+          else if (src && typeof src.keys === 'function' && typeof src.__getitem__ === 'function') {
+            for (const k of await pyCollect(await src.keys())) map.set(k, await src.__getitem__(k));
+          } else throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not a mapping`);
         } else {
           map.set(await adderEval(node.keys[i], scope), await adderEval(node.values[i], scope));
         }
@@ -5430,7 +5761,7 @@ async function adderEval(node, scope) {
       return map;
     }
     case 'Set': {
-      const s = new Set();
+      const s = new PySet();
       for (const e of node.elts) s.add(await adderEval(e, scope));
       return s;
     }
@@ -5504,11 +5835,13 @@ async function _assignTarget(target, value, scope) {
         if (d?.set?._pyFset) { await d.set._pyFset(obj, value); return null; }
         if (d) break;
       }
+      guardSetAttr(obj, target.attr);
       obj[target.attr] = value;
       break;
     }
     case 'Subscript': {
       const obj = await adderEval(target.value, scope);
+      if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`, target.line);
       if (target.slice.type === 'Slice') {
         const lower = target.slice.lower ? await adderEval(target.slice.lower, scope) : null;
         const upper = target.slice.upper ? await adderEval(target.slice.upper, scope) : null;
@@ -5521,10 +5854,13 @@ async function _assignTarget(target, value, scope) {
         break;
       }
       if (target.slice.type === 'Tuple') {
-        const key = [];
+        const raw = [];
         for (const elt of target.slice.elts) {
-          key.push(await _evalSliceElt(elt, scope));
+          raw.push(await _evalSliceElt(elt, scope));
         }
+        const key = mkTuple(raw);
+        if (obj instanceof Map) { obj.set(key, value); break; }
+        if (isPlainDict(obj)) { obj[key] = value; break; }
         if (obj && typeof obj.__setitem__ === 'function') {
           await obj.__setitem__(key, value);
           break;
@@ -5706,7 +6042,7 @@ function _pyIn(container, value) {
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
   if (container instanceof AdderRange) return container.includes(value);
-  if (typeof container === 'object' && container !== null) {
+  if (container !== null && (typeof container === 'object' || typeof container === 'function' && typeof container.__contains__ === 'function')) {
     if (typeof container.__contains__ === 'function') return container.__contains__(value);
     return value in container;
   }
@@ -5749,11 +6085,13 @@ async function _evalSubscript(node, scope) {
   // Falls back to a generic 2D ndarray-shape path (`{data, shape}`)
   // when __getitem__ isn't defined — covers learn / scitra outputs.
   if (node.slice.type === 'Tuple') {
-    const key = [];
+    const raw = [];
     for (const elt of node.slice.elts) {
-      key.push(await _evalSliceElt(elt, scope));
+      raw.push(await _evalSliceElt(elt, scope));
     }
+    const key = mkTuple(raw);
     if (obj && typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
+    if (obj instanceof Map || isPlainDict(obj)) return _withLine(() => pyGetItem(obj, key), node.line);
     // Generic 2D-ndarray-shape tuple subscript — accepts either a
     // wrapper `{data: Float64Array, shape}` or a bare Float64Array
     // with `.shape` tacked on (learn's transformer outputs).
@@ -5799,9 +6137,8 @@ async function _evalSubscript(node, scope) {
         return out;
       }
     }
-    throw new AdderError('TypeError',
-      `'${pyTypeName(obj)}' object is not subscriptable with tuple`,
-      node.line);
+    // anything else takes the tuple as one key (dict[str, int] on a class, a sequence's TypeError)
+    return _withLine(() => pyGetItem(obj, key), node.line);
   }
   const key = await adderEval(node.slice, scope);
   return _withLine(() => pyGetItem(obj, key), node.line);
@@ -5816,7 +6153,7 @@ function _applySlice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return typeof obj === 'string' ? obj.slice(l, u) : obj.slice(l, u);
+      return typeof obj === 'string' ? obj.slice(l, u) : obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
     }
     // general step
     let start, stop;
@@ -5830,7 +6167,7 @@ function _applySlice(obj, lower, upper, step) {
     const result = [];
     if (step > 0) { for (let i = start; i < stop; i += step) result.push(obj[i]); }
     else { for (let i = start; i > stop; i += step) result.push(obj[i]); }
-    return typeof obj === 'string' ? result.join('') : result;
+    return typeof obj === 'string' ? result.join('') : obj instanceof PyTuple ? mkTuple(result) : result;
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support slicing`);
 }
@@ -6065,6 +6402,16 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
       next(v) { return run().next(v); },
       send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
       close() { return run().return(undefined).then(() => null); },
+      // g.throw(exc): raise exc at the paused yield; the next value it yields, or StopIteration
+      throw(t, v) {
+        let exc = v ?? t;
+        if (typeof exc === 'function' && exc._pyClass) exc = exc();
+        return Promise.resolve(exc).then((x) => run().throw(excToThrowable(x))).then((r) => {
+          if (r.done) throw new AdderError('StopIteration', '', undefined, []);
+          return r.value;
+        });
+      },
+      _jsThrow(err) { return run().throw(err); },   // the JS protocol ({value, done}), for contextlib
       // sync iteration needs the values now; generators here are async (for await / list())
       [Symbol.iterator]() {
         throw new AdderError('TypeError', 'Use "for await" or list() with generators');
@@ -6189,7 +6536,7 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   }
   // (more positionals than params is not refused: JS calls Python callbacks with extras)
   if (kwObj) {
-    const names = new Set([...params.map(p => p.name), ...kwonly.map(p => p.name)]);
+    const names = new PySet([...params.map(p => p.name), ...kwonly.map(p => p.name)]);
     for (const k of Object.keys(kwObj)) {
       if (k === '_kw') continue;
       const i = params.findIndex(p => p.name === k);
@@ -6214,7 +6561,7 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
 
   // vararg
   if (vararg) {
-    localScope.set(vararg, callArgs.slice(positionalIdx));
+    localScope.set(vararg, mkTuple(callArgs.slice(positionalIdx)));
     positionalIdx = callArgs.length;
   }
 
@@ -6233,7 +6580,7 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   if (kwarg) {
     const extra = {};
     if (kwObj) {
-      const usedNames = new Set([...params.map(p => p.name), ...kwonly.map(p => p.name), '_kw']);
+      const usedNames = new PySet([...params.map(p => p.name), ...kwonly.map(p => p.name), '_kw']);
       for (const k of Object.keys(kwObj)) {
         if (!usedNames.has(k)) extra[k] = kwObj[k];
       }
@@ -6296,6 +6643,7 @@ async function _evalClass(node, scope) {
 
   // constructor function
   const cls = function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
     const instance = listBase
       ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: node.name, __adderType__: cls })
       : Object.create(cls.prototype);
@@ -6379,7 +6727,7 @@ async function _evalClass(node, scope) {
   // copy class variables to constructor (for @classmethod access via cls.attr)
   for (const [k, v] of Object.entries(classVars)) {
     if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-      cls[k] = v;
+      setClassAttr(cls, k, v);
     }
   }
 
@@ -6401,13 +6749,14 @@ async function _evalClass(node, scope) {
     if (value && (value.__staticmethod__ || value.__classmethod__) && cls[name]) { /* already set */ }
   }
 
-  cls._pyOwnMembers = new Set();
+  cls._pyOwnMembers = new PySet();
   for (const [name, value] of Object.entries(classVars)) {
     if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) cls._pyOwnMembers.add(name);
   }
 
   // set __class__ in class scope so super() works inside methods
   classScope.set('__class__', cls);
+  await finishClass(cls, classAnnotations(node.body));
 
   // handle decorators
   let result = cls;
@@ -6598,7 +6947,7 @@ async function* _genExprIter(node, scope, genIdx) {
 
 async function _evalComp(node, scope, kind) {
   // a dict comprehension builds a dict (a Map, like a dict literal), not a JS object
-  const result = kind === 'list' ? [] : kind === 'set' ? new Set() : new Map();
+  const result = kind === 'list' ? [] : kind === 'set' ? new PySet() : new PyDict();
   const compScope = new AdderScope(scope);
   await _evalCompIter(node, compScope, result, kind, 0);
   return result;
@@ -6679,7 +7028,7 @@ async function _instantiateModule(cacheKey, displayName, source, filePath) {
   const ast = adderParse(source);
   const modScope = new AdderScope();
   const builtins = adderBuiltins(() => {});
-  const builtinNames = new Set(Object.keys(builtins));
+  const builtinNames = new PySet(Object.keys(builtins));
   for (const [k, v] of Object.entries(builtins)) modScope.set(k, v);
   modScope.set('__name__', displayName);
   modScope.set('__file__', filePath);
@@ -6827,6 +7176,25 @@ function _remoteNote(nameOrPath) {
   return Array.isArray(sp) && sp.some(urlish) ? ' (remote imports are off)' : '';
 }
 
+// `import a.b.c` binds `a`, with b and c reachable as attributes (the module objects are
+// linked up, a namespace object standing in for a parent that is not a module of its own)
+async function _importRoot(module, sub) {
+  const parts = module.split('.');
+  let root = _resolveModule(parts[0]) || await _loadVfsModule(parts[0]);
+  if (!root || (typeof root !== 'object' && typeof root !== 'function')) root = { __adderModule__: true, __name__: parts[0] };
+  let cur = root;
+  for (let i = 1; i < parts.length; i++) {
+    const name = parts.slice(0, i + 1).join('.');
+    let next = cur[parts[i]];
+    if (next === null || next === undefined || (typeof next !== 'object' && typeof next !== 'function')) {
+      next = i === parts.length - 1 ? sub : (_resolveModule(name) || { __adderModule__: true, __name__: name });
+      try { cur[parts[i]] = next; } catch { /* a frozen module: reachable already or not at all */ }
+    }
+    cur = next;
+  }
+  return root;
+}
+
 async function _evalImport(node, scope) {
   for (const { module, alias, path } of node.names) {
     if (path) {
@@ -6836,18 +7204,19 @@ async function _evalImport(node, scope) {
       continue;
     }
     let mod = _resolveModule(module);
+    const bind = async (m) => scope.set(alias || module.split('.')[0], !alias && module.includes('.') ? await _importRoot(module, m) : m);
     if (mod) {
-      scope.set(alias || module, mod);
+      await bind(mod);
       // import this — print the zen (side effect, like CPython)
       if (module === 'this' && mod.s) { const printFn = scope.has('print') ? scope.get('print') : null; if (printFn) await printFn(mod.s); }
       continue;
     }
     mod = await _loadVfsModule(module);
-    if (mod) { scope.set(alias || module, mod); continue; }
+    if (mod) { await bind(mod); continue; }
     mod = await _loadAuditableModule(module);
-    if (mod) { scope.set(alias || module, mod); continue; }
+    if (mod) { await bind(mod); continue; }
     mod = await _loadHttpModule(module);
-    if (mod) { scope.set(alias || module, mod); continue; }
+    if (mod) { await bind(mod); continue; }
     throw new AdderError('ModuleNotFoundError', `No module named '${module}'${_remoteNote(module)}`, node.line);
   }
   return null;
@@ -6917,7 +7286,7 @@ function _contains(container, value) {
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
   if (container instanceof AdderRange) return container.includes(value);
-  if (container !== null && typeof container === 'object') {
+  if (container !== null && (typeof container === 'object' || typeof container === 'function' && typeof container.__contains__ === 'function')) {
     if (typeof container.__contains__ === 'function') return container.__contains__(value);
     return value in container;
   }
@@ -7008,6 +7377,7 @@ function _getitem(obj, key) {
 }
 
 function _setitem(obj, key, value) {
+  if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`);
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
     const idx = key < 0 ? obj.length + key : key;
@@ -7100,7 +7470,7 @@ function _slice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return obj.slice(l, u);
+      return obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
     }
     const positive = step > 0;
     let l = lower == null ? (positive ? 0 : len - 1) : lower < 0 ? Math.max(positive ? 0 : -1, len + lower) : Math.min(lower, positive ? len : len - 1);
@@ -7108,7 +7478,8 @@ function _slice(obj, lower, upper, step) {
     const result = [];
     if (positive) { for (let i = l; i < u; i += step) result.push(obj[i]); }
     else { for (let i = l; i > u; i += step) result.push(obj[i]); }
-    return typeof obj === 'string' ? result.join('') : result;
+    return typeof obj === 'string' ? result.join('') : obj instanceof PyTuple ? mkTuple(result)
+      : obj instanceof Uint8Array ? Uint8Array.from(result) : result;
   }
   if (typeof obj?.__getitem__ === 'function') {
     return obj.__getitem__({ _slice: true, lower, upper, step });
@@ -7299,6 +7670,7 @@ function _setattr(obj, name, value) {
   // `Strength.REQUIRED = Strength(0)` deltablue uses for module-level
   // singletons set after the class body has evaluated).
   if (obj !== null && (typeof obj === 'object' || typeof obj === 'function')) {
+    guardSetAttr(obj, name);
     obj[name] = value;
   }
 }
@@ -7324,13 +7696,13 @@ function _delattr(obj, name) {
 }
 
 function _makeDict(keys, values) {
-  const m = new Map();
+  const m = new PyDict();
   for (let i = 0; i < keys.length; i++) m.set(keys[i], values[i]);
   return m;
 }
 
 function _makeSet(arr) {
-  return new Set(arr);
+  return new PySet(arr);
 }
 
 // ── Imports ──
@@ -7406,12 +7778,13 @@ function _rtComputeMRO(cls) {
   return result;
 }
 
-function _createClass(name, bases, members) {
+function _createClass(name, bases, members, annotations) {
   // `class X(list): …` — instance must BE an Array so native list methods
   // (append/pop/indexing) dispatch via adderGetAttr's Array branch. See
   // _evalClass for the mirror-image logic on the tree-walker side.
   const listBase = (bases || []).find(b => b && b._pyContainerType === 'list');
   const cls = function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
     const instance = listBase
       ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: name, __adderType__: cls })
       : Object.create(cls.prototype);
@@ -7486,7 +7859,7 @@ function _createClass(name, bases, members) {
 
   for (const [k, v] of Object.entries(members)) {
     if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-      cls[k] = v;
+      setClassAttr(cls, k, v);
     }
   }
 
@@ -7503,14 +7876,17 @@ function _createClass(name, bases, members) {
     }
   }
 
-  cls._pyOwnMembers = new Set();
+  cls._pyOwnMembers = new PySet();
   for (const [mName, value] of Object.entries(members)) {
     if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
       cls._pyOwnMembers.add(mName);
     }
   }
 
-  return cls;
+  // annotations arrive flattened: [name, text, name, text, …]
+  const ann = [];
+  for (let k = 0; annotations && k < annotations.length; k += 2) ann.push([annotations[k], annotations[k + 1]]);
+  return finishClass(cls, ann);
 }
 
 // ── Exception matching (for try/except) ──
@@ -7688,6 +8064,5154 @@ const _py = {
   assertFail: _assertFail,
   super: pySuper,
   bytesLit, dictLiteral,
+  tuple: mkTuple,
+  importRoot: _importRoot,
+  excPush: (e) => { excStack.push(e); },
+  excPop: () => { excStack.pop(); },
+  // f(**m): a dict (PyDict, plain object, or a mapping with keys/__getitem__) → a plain object
+  // the call's keyword bag can spread
+  kwSplat(m) {
+    if (m instanceof Map) {
+      const o = {};
+      for (const [k, v] of m) {
+        if (typeof k !== 'string') throw new AdderError('TypeError', 'keywords must be strings');
+        o[k] = v;
+      }
+      return o;
+    }
+    if (m && typeof m.keys === 'function' && typeof m.__getitem__ === 'function' && !isPlainDict(m)) {
+      const o = {};
+      for (const k of pyIter(m.keys())) o[k] = m.__getitem__(k);
+      return o;
+    }
+    if (m === null || typeof m !== 'object') throw new AdderError('TypeError', `argument after ** must be a mapping, not ${pyTypeName(m)}`);
+    return m;
+  },
+};
+
+// -- stdlib.js --
+
+// adder stdlib — the modules beyond builtins.js's core (math, json, re, itertools, collections,
+// …): __future__, typing, copy, operator, heapq, bisect, base64, binascii, html, textwrap,
+// contextlib, io, enum and dataclasses. CPython's API and behaviour, values as JS values; what a
+// module leaves out is said at the module. Each registers itself into adderModules at load.
+//
+// This file is concat-bundled with the rest of adder (one shared scope), so every top-level
+// name here carries an `_sl` prefix.
+
+
+// ── shared helpers ──
+
+const _slIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _slThen = (v, f) => (_slIsThen(v) ? v.then(f) : f(v));
+// the trailing keyword bag of a call from adder code (f(x, key=1) → [x, {_kw: true, key: 1}])
+const _slKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
+  args[args.length - 1]._kw === true ? args.pop() : null);
+const _slOpt = (kw, k, d) => (kw && Object.hasOwn(kw, k) && kw[k] !== undefined ? kw[k] : d);
+// a JS class presented as a Python type: callable without `new`, named for type() / isinstance
+function _slType(name, Cls, module) {
+  const ctor = (...a) => new Cls(...a);
+  ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
+  if (module) ctor.__module__ = module;
+  Cls.prototype.__adderClass__ = name;
+  Cls.prototype.__adderType__ = ctor;
+  ctor._jsClass = Cls;
+  return ctor;
+}
+// call fns in order, synchronously until one returns a promise (a tree-walked Python callable)
+function _slChain(fns, i = 0) {
+  for (; i < fns.length; i++) {
+    const r = fns[i]();
+    if (_slIsThen(r)) return r.then(() => _slChain(fns, i + 1));
+  }
+  return undefined;
+}
+const _slTruthy = async (v) => pyBool(_slIsThen(v) ? await v : v);
+// a Python callable called from JS (f(x)), keyword bag appended when there is one
+const _slCall = (f, args, kw) => (kw ? f(...args, { _kw: true, ...kw }) : f(...args));
+// FNV-1a over a string, as a 32-bit int: __hash__ for values hashed by their contents
+function _slHashStr(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h | 0;
+}
+const _slIsBytes = (b) => b instanceof Uint8Array;
+const _slBytesLike = (b, fn) => {
+  if (b instanceof Uint8Array) return b;
+  if (b instanceof ArrayBuffer) return new Uint8Array(b);
+  if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(b)}'`);
+};
+const _slUtf8 = new TextEncoder();
+const _slUtf8d = new TextDecoder();
+
+// ── __future__ ──
+// Every feature is already on; the names exist so `from __future__ import annotations` imports.
+const _slFeature = (name) => ({ __adderClass__: '_Feature', __repr__: () => `_Feature((3, 0), (3, 0), 0)`, compiler_flag: 0, _name: name });
+adderModules.__future__ = Object.fromEntries(['nested_scopes', 'generators', 'division', 'absolute_import', 'with_statement',
+  'print_function', 'unicode_literals', 'barry_as_FLUFL', 'generator_stop', 'annotations'].map((n) => [n, _slFeature(n)]));
+
+// ── typing ──
+// The runtime objects of annotations: List[int], Optional[str], Union[...], Callable[...],
+// TypeVar, Generic, Protocol, cast, overload — subscriptable, printable, and ignored by
+// execution, as at CPython's run time. NamedTuple and TypedDict make real classes. Not here:
+// get_type_hints beyond the annotation strings, runtime_checkable protocols' isinstance.
+class _SlTypingForm {
+  constructor(name, origin) { this._name = name; this.__origin__ = origin || null; }
+  __getitem__(k) {
+    const args = k instanceof PyTuple ? [...k] : [k];
+    if (this._name === 'typing.Optional') return new GenericAlias(this.__origin__, args, this._name);
+    return new GenericAlias(this.__origin__, args, this._name);
+  }
+  __repr__() { return this._name; }
+  __or__(o) { return makeUnion(this, o); }
+  __ror__(o) { return makeUnion(o, this); }
+  __call__() { throw new AdderError('TypeError', `Cannot instantiate ${this._name}`); }
+}
+_SlTypingForm.prototype.__adderClass__ = '_SpecialForm';
+class _SlTypeVar {
+  constructor(name, ...rest) {
+    const kw = _slKw(rest);
+    this.__name__ = name;
+    this.__constraints__ = mkTuple(rest);
+    this.__bound__ = _slOpt(kw, 'bound', null);
+    this.__covariant__ = !!_slOpt(kw, 'covariant', false);
+    this.__contravariant__ = !!_slOpt(kw, 'contravariant', false);
+  }
+  __repr__() { return (this.__covariant__ ? '+' : this.__contravariant__ ? '-' : '~') + this.__name__; }
+  __or__(o) { return makeUnion(this, o); }
+  __ror__(o) { return makeUnion(o, this); }
+}
+const _slTypeVar = _slType('TypeVar', _SlTypeVar, 'typing');
+const _slForm = (name, origin) => new _SlTypingForm(`typing.${name}`, origin);
+// a class whose subclasses typing turns into something else (NamedTuple → tuple, TypedDict → dict)
+function _slHookBase(name, hook, call) {
+  const base = function (...a) { return call(...a); };
+  base._pyName = name; base._pyClass = true; base.__name__ = name; base.__module__ = 'typing';
+  base.prototype = {}; base._pyBases = []; base._pyMRO = [base]; base._pyOwnMembers = new PySet();
+  base.__init_subclass__ = hook;
+  return base;
+}
+// class P(NamedTuple): x: int; y: int = 0  → a namedtuple, with the class's methods
+const _slNamedTupleBase = _slHookBase('NamedTuple', (cls) => {
+  const fields = cls.__annotations__ ? [...cls.__annotations__.keys()] : [];
+  const defaults = [];
+  for (const f of fields) if (cls._pyAttrs && cls._pyAttrs.has(f)) defaults.push(cls[f]);
+  const nt = _namedtuple(cls._pyName, fields, { _kw: true, defaults });
+  const proto = nt._ntProto;
+  for (const key of cls._pyOwnMembers || []) {
+    const d = Object.getOwnPropertyDescriptor(cls.prototype, key);
+    if (d) Object.defineProperty(proto, key, d);
+  }
+  proto.__adderType__ = cls;
+  cls._pyNew = (...a) => nt(...a);
+  cls._fields = nt._fields;
+  cls._make = nt._make;
+  cls._field_defaults = Object.fromEntries(fields.slice(fields.length - defaults.length).map((f, i) => [f, defaults[i]]));
+  cls._pyMRO = [cls, _typeObjects.tuple].filter(Boolean);
+  for (const f of fields) delete cls[f];
+}, (name, fields) => _namedtuple(name, [...pyIter(fields)].map((f) => (Array.isArray(f) ? f[0] : f))));
+// class Movie(TypedDict): title: str  → Movie(title='x') is a dict
+const _slTypedDictBase = _slHookBase('TypedDict', (cls) => {
+  cls._pyNew = (...a) => {
+    const kw = _slKw(a);
+    const d = a.length ? { ...(a[0] instanceof Map ? Object.fromEntries(a[0]) : a[0]) } : {};
+    if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') d[k] = kw[k];
+    return d;
+  };
+  cls._pyMRO = [cls, _typeObjects.dict].filter(Boolean);
+}, (name) => { throw new AdderError('TypeError', `TypedDict('${name}', …) is not supported; use the class form`); });
+adderModules.typing = {
+  Any: _slForm('Any'), Optional: _slForm('Optional'), Union: _slForm('Union'), Callable: _slForm('Callable'),
+  List: _slForm('List'), Dict: _slForm('Dict'), Tuple: _slForm('Tuple'), Set: _slForm('Set'), FrozenSet: _slForm('FrozenSet'),
+  Type: _slForm('Type'), Iterable: _slForm('Iterable'), Iterator: _slForm('Iterator'), Generator: _slForm('Generator'),
+  Sequence: _slForm('Sequence'), MutableSequence: _slForm('MutableSequence'), Mapping: _slForm('Mapping'),
+  MutableMapping: _slForm('MutableMapping'), Collection: _slForm('Collection'), Container: _slForm('Container'),
+  AbstractSet: _slForm('AbstractSet'), Hashable: _slForm('Hashable'), Sized: _slForm('Sized'),
+  Awaitable: _slForm('Awaitable'), Coroutine: _slForm('Coroutine'), AsyncIterator: _slForm('AsyncIterator'),
+  AsyncIterable: _slForm('AsyncIterable'), AsyncGenerator: _slForm('AsyncGenerator'), Deque: _slForm('Deque'),
+  DefaultDict: _slForm('DefaultDict'), OrderedDict: _slForm('OrderedDict'), Counter: _slForm('Counter'),
+  ChainMap: _slForm('ChainMap'), Pattern: _slForm('Pattern'), Match: _slForm('Match'), IO: _slForm('IO'),
+  TextIO: _slForm('TextIO'), BinaryIO: _slForm('BinaryIO'), ClassVar: _slForm('ClassVar'), Final: _slForm('Final'),
+  Literal: _slForm('Literal'), Annotated: _slForm('Annotated'), Generic: _slForm('Generic'), Protocol: _slForm('Protocol'),
+  NoReturn: _slForm('NoReturn'), Never: _slForm('Never'), Self: _slForm('Self'), LiteralString: _slForm('LiteralString'),
+  TypeAlias: _slForm('TypeAlias'), TypeGuard: _slForm('TypeGuard'), Concatenate: _slForm('Concatenate'),
+  Required: _slForm('Required'), NotRequired: _slForm('NotRequired'), Unpack: _slForm('Unpack'),
+  SupportsInt: _slForm('SupportsInt'), SupportsFloat: _slForm('SupportsFloat'), SupportsIndex: _slForm('SupportsIndex'),
+  SupportsAbs: _slForm('SupportsAbs'), Text: _typeObjects.str || _slForm('Text'), AnyStr: new _SlTypeVar('AnyStr'),
+  TypeVar: _slTypeVar, ParamSpec: _slTypeVar, TypeVarTuple: _slTypeVar,
+  NamedTuple: _slNamedTupleBase, TypedDict: _slTypedDictBase,
+  TYPE_CHECKING: false,
+  cast: (_t, v) => v,
+  overload: (f) => f, final: (f) => f, no_type_check: (f) => f, runtime_checkable: (c) => c,
+  assert_type: (v) => v, assert_never: (v) => { throw new AdderError('AssertionError', `Expected code to be unreachable, but got: ${pyRepr(v)}`); },
+  reveal_type: (v) => v,
+  NewType: (name, _tp) => { const f = (x) => x; f._pyName = name; f.__name__ = name; return f; },
+  get_type_hints: (obj) => {
+    const d = new PyDict();
+    for (const c of [...(obj && obj._pyMRO ? obj._pyMRO : [obj])].reverse()) if (c && c.__annotations__) for (const [k, v] of c.__annotations__) d.set(k, v);
+    return d;
+  },
+  get_origin: (t) => (t instanceof GenericAlias ? t.__origin__ : null),
+  get_args: (t) => (t instanceof GenericAlias || t instanceof UnionType ? t.__args__ : mkTuple([])),
+};
+
+// ── copy ──
+// copy / deepcopy, honouring __copy__ / __deepcopy__(memo). Containers keep their type
+// (tuple, set, dict and its subclasses); other objects get a fresh instance of the same class
+// with their attributes copied.
+function _slShallow(x) {
+  if (x === null || typeof x !== 'object') return x;
+  if (typeof x.__copy__ === 'function') return x.__copy__();
+  if (x instanceof PyTuple) return x;
+  if (Array.isArray(x)) return Array.prototype.slice.call(x);
+  if (x instanceof Uint8Array) return x;
+  if (ArrayBuffer.isView(x)) return x.slice();
+  if (x instanceof Map) {
+    if (typeof x.copy === 'function' && !(x.constructor === PyDict || x.constructor === Map)) return x.copy();
+    return new (x instanceof PyDict ? PyDict : Map)(x);
+  }
+  if (x instanceof Set) { if (x._frozen) return x; return new PySet(x); }
+  if (isPlainDict(x)) return { ...x };
+  const c = Object.create(Object.getPrototypeOf(x));
+  for (const k of Object.keys(x)) c[k] = x[k];
+  return c;
+}
+function _slDeep(x, memo) {
+  if (x === null || typeof x !== 'object') return x;
+  if (memo.has(x)) return memo.get(x);
+  if (typeof x.__deepcopy__ === 'function') { const r = x.__deepcopy__(memo); memo.set(x, r); return r; }
+  if (x instanceof PyTuple) {
+    const items = x.map((v) => _slDeep(v, memo));
+    const r = items.every((v, i) => v === x[i]) ? x : (x.constructor !== PyTuple && x._replace ? Object.freeze(Object.setPrototypeOf(Object.assign([], items), Object.getPrototypeOf(x))) : mkTuple(items));
+    memo.set(x, r);
+    return r;
+  }
+  if (Array.isArray(x)) { const r = []; memo.set(x, r); for (const v of x) r.push(_slDeep(v, memo)); return r; }
+  if (ArrayBuffer.isView(x)) { const r = x.slice(); memo.set(x, r); return r; }
+  if (x instanceof Map) {
+    let r;
+    if (x.constructor !== PyDict && x.constructor !== Map && typeof x.copy === 'function') { r = x.copy(); r.clear(); }
+    else r = new (x instanceof PyDict ? PyDict : Map)();
+    memo.set(x, r);
+    for (const [k, v] of x) r.set(_slDeep(k, memo), _slDeep(v, memo));
+    return r;
+  }
+  if (x instanceof Set) {
+    if (x._frozen) return x;
+    const r = new PySet(); memo.set(x, r);
+    for (const v of x) r.add(_slDeep(v, memo));
+    return r;
+  }
+  if (isPlainDict(x)) { const r = {}; memo.set(x, r); for (const k of Object.keys(x)) r[k] = _slDeep(x[k], memo); return r; }
+  const c = Object.create(Object.getPrototypeOf(x));
+  memo.set(x, c);
+  for (const k of Object.keys(x)) {
+    const d = Object.getOwnPropertyDescriptor(x, k);
+    if (d && 'value' in d) c[k] = _slDeep(d.value, memo);
+  }
+  return c;
+}
+adderModules.copy = {
+  copy: _slShallow,
+  deepcopy: (x, memo) => _slDeep(x, memo instanceof Map ? memo : new Map()),
+  replace: (obj, ...a) => {
+    const kw = _slKw(a) || {};
+    if (typeof obj.__replace__ === 'function') return obj.__replace__({ ...kw, _kw: true });
+    throw new AdderError('TypeError', `replace() does not support ${pyTypeName(obj)} objects`);
+  },
+  Error: makeExcType('copy.Error', 'Exception'),
+};
+
+// ── operator ──
+// The operators as functions, plus itemgetter / attrgetter / methodcaller.
+function _slItemgetter(...items) {
+  const f = items.length === 1 ? (o) => pyGetItem(o, items[0]) : (o) => mkTuple(items.map((k) => pyGetItem(o, k)));
+  f._pyName = 'itemgetter';
+  f.__repr__ = () => `operator.itemgetter(${items.map(pyRepr).join(', ')})`;
+  return f;
+}
+function _slAttrgetter(...names) {
+  const get = (o, n) => n.split('.').reduce((v, part) => adderGetAttr(v, part), o);
+  const f = names.length === 1 ? (o) => get(o, names[0]) : (o) => mkTuple(names.map((n) => get(o, n)));
+  f._pyName = 'attrgetter';
+  f.__repr__ = () => `operator.attrgetter(${names.map(pyRepr).join(', ')})`;
+  return f;
+}
+function _slMethodcaller(name, ...args) {
+  const kw = _slKw(args);
+  const f = (o) => _slCall(adderGetAttr(o, name), args, kw ? Object.fromEntries(Object.entries(kw).filter(([k]) => k !== '_kw')) : null);
+  f._pyName = 'methodcaller';
+  return f;
+}
+const _slContains = (a, b) => {
+  if (typeof a === 'string') return a.includes(b);
+  if (Array.isArray(a)) return a.some((v) => pyEq(v, b) === true);
+  if (a instanceof Map || a instanceof Set) return a.has(b);
+  if (a && typeof a.__contains__ === 'function') return a.__contains__(b);
+  return [...pyIter(a)].some((v) => pyEq(v, b) === true);
+};
+adderModules.operator = {
+  add: pyAdd, sub: pySub, mul: pyMul, truediv: pyTrueDiv, floordiv: pyFloorDiv, mod: pyMod, pow: pyPow,
+  matmul: pyMatmul, neg: pyNeg, pos: pyPos, invert: pyInvert, inv: pyInvert, abs: (a) => (a && typeof a.__abs__ === 'function' ? a.__abs__() : Math.abs(a)),
+  and_: pyAnd, or_: pyOr, xor: pyXor, lshift: pyLshift, rshift: pyRshift,
+  eq: pyEq, ne: (a, b) => _slThen(pyEq(a, b), (r) => !r), lt: pyLt, le: pyLe, gt: pyGt, ge: pyGe,
+  not_: (a) => !pyBool(a), truth: (a) => pyBool(a), is_: (a, b) => a === b, is_not: (a, b) => a !== b,
+  is_none: (a) => a === null, is_not_none: (a) => a !== null,
+  contains: _slContains, countOf: (a, b) => [...pyIter(a)].filter((v) => pyEq(v, b) === true).length,
+  indexOf: (a, b) => { let i = 0; for (const v of pyIter(a)) { if (pyEq(v, b) === true) return i; i++; } throw new AdderError('ValueError', 'sequence.index(x): x not in sequence'); },
+  getitem: pyGetItem,
+  setitem: (o, k, v) => { if (o instanceof Map) o.set(k, v); else if (typeof o.__setitem__ === 'function') return _slThen(o.__setitem__(k, v), () => null); else o[Array.isArray(o) && k < 0 ? o.length + k : k] = v; return null; },
+  delitem: (o, k) => { if (o instanceof Map) o.delete(k); else if (Array.isArray(o)) o.splice(k < 0 ? o.length + k : k, 1); else delete o[k]; return null; },
+  concat: (a, b) => pyAdd(a, b), index: (a) => (typeof a === 'number' && Number.isInteger(a) ? a : a && typeof a.__index__ === 'function' ? a.__index__() : (() => { throw new AdderError('TypeError', `'${pyTypeName(a)}' object cannot be interpreted as an integer`); })()),
+  iadd: pyAdd, isub: pySub, imul: pyMul, itruediv: pyTrueDiv, ifloordiv: pyFloorDiv, imod: pyMod, ipow: pyPow,
+  iand: pyAnd, ior: pyOr, ixor: pyXor, ilshift: pyLshift, irshift: pyRshift, iconcat: pyAdd,
+  length_hint: (o, d = 0) => { try { return o.length ?? o.size ?? d; } catch { return d; } },
+  call: (f, ...a) => f(...a),
+  itemgetter: _slItemgetter, attrgetter: _slAttrgetter, methodcaller: _slMethodcaller,
+};
+for (const n of ['add', 'sub', 'mul', 'truediv', 'floordiv', 'mod', 'pow', 'neg', 'pos', 'abs', 'and_', 'or_', 'xor',
+  'invert', 'lshift', 'rshift', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'not_', 'truth', 'contains', 'getitem', 'index']) {
+  adderModules.operator[`__${n.replace(/_$/, '')}__`] = adderModules.operator[n];
+}
+
+// ── heapq ──
+// CPython's pure-Python heapq, line for line, so a heap's layout matches CPython's.
+async function _slSiftdown(heap, startpos, pos) {
+  const newitem = heap[pos];
+  while (pos > startpos) {
+    const parentpos = (pos - 1) >> 1;
+    const parent = heap[parentpos];
+    if (await _slTruthy(pyLt(newitem, parent))) { heap[pos] = parent; pos = parentpos; continue; }
+    break;
+  }
+  heap[pos] = newitem;
+}
+async function _slSiftup(heap, pos) {
+  const endpos = heap.length, startpos = pos, newitem = heap[pos];
+  let childpos = 2 * pos + 1;
+  while (childpos < endpos) {
+    const rightpos = childpos + 1;
+    if (rightpos < endpos && !(await _slTruthy(pyLt(heap[childpos], heap[rightpos])))) childpos = rightpos;
+    heap[pos] = heap[childpos];
+    pos = childpos;
+    childpos = 2 * pos + 1;
+  }
+  heap[pos] = newitem;
+  await _slSiftdown(heap, startpos, pos);
+}
+const _slHeapList = (h) => { if (!Array.isArray(h) || h instanceof PyTuple) throw new AdderError('TypeError', 'heap argument must be a list'); return h; };
+adderModules.heapq = {
+  heappush: async (heap, item) => { _slHeapList(heap).push(item); await _slSiftdown(heap, 0, heap.length - 1); return null; },
+  heappop: async (heap) => {
+    if (!_slHeapList(heap).length) throw new AdderError('IndexError', 'index out of range');
+    const last = heap.pop();
+    if (heap.length) { const ret = heap[0]; heap[0] = last; await _slSiftup(heap, 0); return ret; }
+    return last;
+  },
+  heapreplace: async (heap, item) => {
+    if (!_slHeapList(heap).length) throw new AdderError('IndexError', 'index out of range');
+    const ret = heap[0]; heap[0] = item; await _slSiftup(heap, 0); return ret;
+  },
+  heappushpop: async (heap, item) => {
+    if (_slHeapList(heap).length && await _slTruthy(pyLt(heap[0], item))) { const t = heap[0]; heap[0] = item; item = t; await _slSiftup(heap, 0); }
+    return item;
+  },
+  heapify: async (x) => { _slHeapList(x); for (let i = (x.length >> 1) - 1; i >= 0; i--) await _slSiftup(x, i); return null; },
+  nlargest: async (n, iterable, ...a) => {
+    const kw = _slKw(a);
+    const s = await pySorted(await pyCollect(iterable), _slOpt(kw, 'key', a[0] ?? null), true);
+    return s.slice(0, Math.max(0, n));
+  },
+  nsmallest: async (n, iterable, ...a) => {
+    const kw = _slKw(a);
+    const s = await pySorted(await pyCollect(iterable), _slOpt(kw, 'key', a[0] ?? null), false);
+    return s.slice(0, Math.max(0, n));
+  },
+  // the inputs are sorted, so a stable sort of their concatenation is the merge (ties keep
+  // the earlier input first, as heapq.merge does)
+  merge: async (...its) => {
+    const kw = _slKw(its);
+    const all = [];
+    for (const it of its) all.push(...(await pyCollect(it)));
+    return (await pySorted(all, _slOpt(kw, 'key', null), !!_slOpt(kw, 'reverse', false)))[Symbol.iterator]();
+  },
+};
+
+// ── bisect ──
+async function _slBisect(right, a, x, args) {
+  const kw = _slKw(args);
+  let lo = _slOpt(kw, 'lo', args[0] ?? 0);
+  let hi = _slOpt(kw, 'hi', args[1] ?? null);
+  const key = _slOpt(kw, 'key', null);
+  if (lo < 0) throw new AdderError('ValueError', 'lo must be non-negative');
+  if (hi === null) hi = a.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    let v = pyGetItem(a, mid);
+    if (key !== null) v = await key(v);
+    if (right ? await _slTruthy(pyLt(x, v)) : !(await _slTruthy(pyLt(v, x)))) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+async function _slInsort(right, a, x, args) {
+  const kw = _slKw(args);
+  const key = _slOpt(kw, 'key', null);
+  const i = await _slBisect(right, a, key === null ? x : await key(x), [...args, { ...(kw || {}), _kw: true }]);
+  a.splice(i, 0, x);
+  return null;
+}
+adderModules.bisect = {
+  bisect_left: (a, x, ...r) => _slBisect(false, a, x, r),
+  bisect_right: (a, x, ...r) => _slBisect(true, a, x, r),
+  bisect: (a, x, ...r) => _slBisect(true, a, x, r),
+  insort_left: (a, x, ...r) => _slInsort(false, a, x, r),
+  insort_right: (a, x, ...r) => _slInsort(true, a, x, r),
+  insort: (a, x, ...r) => _slInsort(true, a, x, r),
+};
+
+// ── base64 / binascii ──
+// base64, urlsafe, base32, base16 and encodebytes; binascii's hexlify / crc32. Not here: a85,
+// b85, z85.
+const _slBinErr = makeExcType('binascii.Error', 'ValueError');
+const _SL_B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function _slB64enc(bytes, alt) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
+    out += _SL_B64[(n >> 18) & 63] + _SL_B64[(n >> 12) & 63] + (i + 1 < bytes.length ? _SL_B64[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? _SL_B64[n & 63] : '=');
+  }
+  if (alt) out = out.replace(/[+/]/g, (c) => (c === '+' ? alt[0] : alt[1]));
+  return out;
+}
+function _slB64dec(input, alt, validate) {
+  let s = typeof input === 'string' ? input : _slUtf8d.decode(_slBytesLike(input));
+  if (typeof input === 'string' && /[^\x00-\x7f]/.test(s)) throw new AdderError('ValueError', 'string argument should contain only ASCII characters');
+  if (alt) s = s.replace(/[-_]/g, (c) => (c === alt[0] ? '+' : c === alt[1] ? '/' : c));
+  if (validate) { if (!/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new AdderError('binascii.Error', 'Non-base64 digit found'); }
+  else s = s.replace(/[^A-Za-z0-9+/=]/g, '');
+  const body = s.replace(/=+$/, '');
+  const pad = s.length - body.length;
+  if (body.includes('=')) throw new AdderError('binascii.Error', 'Incorrect padding');
+  if (body.length % 4 === 1) throw new AdderError('binascii.Error', `Invalid base64-encoded string: number of data characters (${body.length}) cannot be 1 more than a multiple of 4`);
+  if ((body.length + pad) % 4 !== 0) throw new AdderError('binascii.Error', 'Incorrect padding');
+  const out = [];
+  let buf = 0, bits = 0;
+  for (const c of body) {
+    buf = (buf << 6) | _SL_B64.indexOf(c); bits += 6;
+    if (bits >= 8) { bits -= 8; out.push((buf >> bits) & 255); }
+  }
+  return Uint8Array.from(out);
+}
+const _SL_B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function _slB32enc(b) {
+  let out = '', buf = 0, bits = 0;
+  for (const x of b) { buf = (buf << 8) | x; bits += 8; while (bits >= 5) { bits -= 5; out += _SL_B32[(buf >> bits) & 31]; } }
+  if (bits) out += _SL_B32[(buf << (5 - bits)) & 31];
+  while (out.length % 8) out += '=';
+  return out;
+}
+function _slB32dec(input, casefold) {
+  let s = typeof input === 'string' ? input : _slUtf8d.decode(_slBytesLike(input));
+  if (casefold) s = s.toUpperCase();
+  if (s.length % 8) throw new AdderError('binascii.Error', 'Incorrect padding');
+  const body = s.replace(/=+$/, '');
+  const out = [];
+  let buf = 0, bits = 0;
+  for (const c of body) {
+    const v = _SL_B32.indexOf(c);
+    if (v < 0) throw new AdderError('binascii.Error', 'Non-base32 digit found');
+    buf = (buf << 5) | v; bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((buf >> bits) & 255); }
+  }
+  return Uint8Array.from(out);
+}
+const _slAscii = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+const _slHex = (b, sep) => [...b].map((x) => x.toString(16).padStart(2, '0')).join(sep || '');
+function _slUnhex(input, upperOnly) {
+  const s = typeof input === 'string' ? input : _slUtf8d.decode(_slBytesLike(input));
+  if (s.length % 2) throw new AdderError('binascii.Error', upperOnly ? 'Incorrect padding' : 'Odd-length string');
+  if (upperOnly ? /[^0-9A-F]/.test(s) : /[^0-9A-Fa-f]/.test(s)) throw new AdderError('binascii.Error', upperOnly ? 'Non-base16 digit found' : 'Non-hexadecimal digit found');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(2 * i, 2), 16);
+  return out;
+}
+adderModules.base64 = {
+  b64encode: (b, altchars) => _slAscii(_slB64enc(_slBytesLike(b), altchars ? _slUtf8d.decode(_slBytesLike(altchars)) : null)),
+  b64decode: (s, ...a) => { const kw = _slKw(a); const alt = _slOpt(kw, 'altchars', a[0] ?? null); return _slB64dec(s, alt ? (typeof alt === 'string' ? alt : _slUtf8d.decode(alt)) : null, _slOpt(kw, 'validate', a[1] ?? false)); },
+  standard_b64encode: (b) => _slAscii(_slB64enc(_slBytesLike(b))),
+  standard_b64decode: (s) => _slB64dec(s),
+  urlsafe_b64encode: (b) => _slAscii(_slB64enc(_slBytesLike(b), '-_')),
+  urlsafe_b64decode: (s) => _slB64dec(s, '-_'),
+  b32encode: (b) => _slAscii(_slB32enc(_slBytesLike(b))),
+  b32decode: (s, ...a) => { const kw = _slKw(a); return _slB32dec(s, _slOpt(kw, 'casefold', a[0] ?? false)); },
+  b16encode: (b) => _slAscii(_slHex(_slBytesLike(b)).toUpperCase()),
+  b16decode: (s, ...a) => { const kw = _slKw(a); const cf = _slOpt(kw, 'casefold', a[0] ?? false); const t = typeof s === 'string' ? s : _slUtf8d.decode(s); return _slUnhex(cf ? t.toUpperCase() : t, true); },
+  encodebytes: (b) => { const e = _slB64enc(_slBytesLike(b)); let o = ''; for (let i = 0; i < e.length; i += 76) o += e.slice(i, i + 76) + '\n'; return _slAscii(o); },
+  decodebytes: (b) => _slB64dec(b),
+};
+adderModules.binascii = {
+  hexlify: (b, sep) => _slAscii(_slHex(_slBytesLike(b), sep ? (typeof sep === 'string' ? sep : _slUtf8d.decode(sep)) : '')),
+  b2a_hex: (b, sep) => _slAscii(_slHex(_slBytesLike(b), sep ? (typeof sep === 'string' ? sep : _slUtf8d.decode(sep)) : '')),
+  unhexlify: (s) => _slUnhex(s, false),
+  a2b_hex: (s) => _slUnhex(s, false),
+  b2a_base64: (b, ...a) => { const kw = _slKw(a); return _slAscii(_slB64enc(_slBytesLike(b)) + (_slOpt(kw, 'newline', true) ? '\n' : '')); },
+  a2b_base64: (s) => _slB64dec(s),
+  crc32: (b, v = 0) => _slCrc32(_slBytesLike(b), v),
+  Error: _slBinErr,
+};
+
+// crc32 / adler32 (zlib, binascii, zipfile)
+const _SL_CRC = (() => { const t = new Int32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c; } return t; })();
+function _slCrc32(bytes, start = 0) {
+  let c = (start ^ 0xffffffff) >>> 0;
+  for (let i = 0; i < bytes.length; i++) c = _SL_CRC[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function _slAdler32(bytes, start = 1) {
+  let a = start & 0xffff, b = (start >>> 16) & 0xffff;
+  for (let i = 0; i < bytes.length; i++) { a = (a + bytes[i]) % 65521; b = (b + a) % 65521; }
+  return ((b << 16) | a) >>> 0;
+}
+
+// ── html ──
+// escape and unescape. unescape knows the common named entities (the Latin-1 set, typography,
+// Greek letters) and every numeric one; CPython's table is the full HTML5 list.
+const _SL_ENT = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0', iexcl: '¡', cent: '¢', pound: '£', curren: '¤',
+  yen: '¥', brvbar: '¦', sect: '§', uml: '¨', copy: '©', ordf: 'ª', laquo: '«', not: '¬', shy: '\u00ad', reg: '®',
+  macr: '¯', deg: '°', plusmn: '±', sup2: '²', sup3: '³', acute: '´', micro: 'µ', para: '¶', middot: '·', cedil: '¸',
+  sup1: '¹', ordm: 'º', raquo: '»', frac14: '¼', frac12: '½', frac34: '¾', iquest: '¿', times: '×', divide: '÷',
+  Agrave: 'À', Aacute: 'Á', Acirc: 'Â', Atilde: 'Ã', Auml: 'Ä', Aring: 'Å', AElig: 'Æ', Ccedil: 'Ç', Egrave: 'È',
+  Eacute: 'É', Ecirc: 'Ê', Euml: 'Ë', Igrave: 'Ì', Iacute: 'Í', Icirc: 'Î', Iuml: 'Ï', ETH: 'Ð', Ntilde: 'Ñ',
+  Ograve: 'Ò', Oacute: 'Ó', Ocirc: 'Ô', Otilde: 'Õ', Ouml: 'Ö', Oslash: 'Ø', Ugrave: 'Ù', Uacute: 'Ú', Ucirc: 'Û',
+  Uuml: 'Ü', Yacute: 'Ý', THORN: 'Þ', szlig: 'ß', agrave: 'à', aacute: 'á', acirc: 'â', atilde: 'ã', auml: 'ä',
+  aring: 'å', aelig: 'æ', ccedil: 'ç', egrave: 'è', eacute: 'é', ecirc: 'ê', euml: 'ë', igrave: 'ì', iacute: 'í',
+  icirc: 'î', iuml: 'ï', eth: 'ð', ntilde: 'ñ', ograve: 'ò', oacute: 'ó', ocirc: 'ô', otilde: 'õ', ouml: 'ö',
+  oslash: 'ø', ugrave: 'ù', uacute: 'ú', ucirc: 'û', uuml: 'ü', yacute: 'ý', thorn: 'þ', yuml: 'ÿ',
+  ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', sbquo: '‚', ldquo: '“', rdquo: '”', bdquo: '„', dagger: '†',
+  Dagger: '‡', bull: '•', hellip: '…', permil: '‰', prime: '′', Prime: '″', lsaquo: '‹', rsaquo: '›', euro: '€',
+  trade: '™', larr: '←', uarr: '↑', rarr: '→', darr: '↓', harr: '↔', minus: '−', infin: '∞', ne: '≠', le: '≤', ge: '≥',
+  asymp: '≈', sum: '∑', prod: '∏', radic: '√', part: '∂', int: '∫', alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ',
+  epsilon: 'ε', zeta: 'ζ', eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ',
+  omicron: 'ο', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ', phi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Alpha: 'Α', Beta: 'Β', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+};
+// CPython's invalid-codepoint replacements for numeric references (the Windows-1252 block)
+const _SL_INVALID_CHARREFS = { 0x00: '�', 0x0d: '\r', 0x80: '€', 0x81: '\x81', 0x82: '‚', 0x83: 'ƒ', 0x84: '„', 0x85: '…', 0x86: '†',
+  0x87: '‡', 0x88: 'ˆ', 0x89: '‰', 0x8a: 'Š', 0x8b: '‹', 0x8c: 'Œ', 0x8d: '\x8d', 0x8e: 'Ž', 0x8f: '\x8f', 0x90: '\x90',
+  0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—', 0x98: '˜', 0x99: '™', 0x9a: 'š',
+  0x9b: '›', 0x9c: 'œ', 0x9d: '\x9d', 0x9e: 'ž', 0x9f: 'Ÿ' };
+adderModules.html = {
+  escape: (s, ...a) => {
+    const kw = _slKw(a);
+    const quote = _slOpt(kw, 'quote', a[0] ?? true);
+    s = String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return quote ? s.replace(/"/g, '&quot;').replace(/'/g, '&#x27;') : s;
+  },
+  unescape: (s) => String(s).replace(/&(#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;?)/g, (m, body) => {
+    if (body[0] === '#') {
+      const n = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      if (n in _SL_INVALID_CHARREFS) return _SL_INVALID_CHARREFS[n];
+      if ((n >= 0xd800 && n <= 0xdfff) || n > 0x10ffff) return '�';
+      return String.fromCodePoint(n);
+    }
+    const name = body.replace(/;$/, '');
+    return Object.hasOwn(_SL_ENT, name) ? _SL_ENT[name] : m;
+  }),
+};
+
+// ── textwrap ──
+// CPython's TextWrapper algorithm: the same chunking regex (word / hyphen / em-dash
+// boundaries), the same line filling and placeholder truncation, so wrap() splits where
+// CPython's does. dedent / indent / shorten as in CPython.
+const _SL_WS = '[\\t\\n\\x0b\\x0c\\r ]';
+const _SL_NWS = '[^\\t\\n\\x0b\\x0c\\r ]';
+const _SL_WP = '[\\p{L}\\p{N}\\p{M}_!"\'&.,?]';
+const _SL_LT = '[\\p{L}\\p{M}_]';
+const _SL_W = '[\\p{L}\\p{N}\\p{M}_]';
+const _slWordsep = new RegExp(`(${_SL_WS}+|(?<=${_SL_WP})-{2,}(?=${_SL_W})|${_SL_NWS}+?(?:-(?:(?<=${_SL_LT}{2}-)|(?<=${_SL_LT}-${_SL_LT}-))(?=${_SL_LT}-?${_SL_LT})|(?=${_SL_WS}|$)|(?<=${_SL_WP})(?=-{2,}${_SL_W})))`, 'u');
+const _slWordsepSimple = new RegExp(`(${_SL_WS}+)`);
+const _slSentenceEnd = /[a-z][.!?]["']?$/;
+const _slExpandTabs = (s, ts) => {
+  let out = '', col = 0;
+  for (const c of s) {
+    if (c === '\t') { if (ts > 0) { const n = ts - (col % ts); out += ' '.repeat(n); col += n; } }
+    else if (c === '\n' || c === '\r') { out += c; col = 0; }
+    else { out += c; col++; }
+  }
+  return out;
+};
+class _SlTextWrapper {
+  constructor(...a) {
+    const kw = _slKw(a) || {};
+    const names = ['width', 'initial_indent', 'subsequent_indent', 'expand_tabs', 'replace_whitespace', 'fix_sentence_endings',
+      'break_long_words', 'drop_whitespace', 'break_on_hyphens', 'tabsize'];
+    const d = { width: 70, initial_indent: '', subsequent_indent: '', expand_tabs: true, replace_whitespace: true,
+      fix_sentence_endings: false, break_long_words: true, drop_whitespace: true, break_on_hyphens: true, tabsize: 8,
+      max_lines: null, placeholder: ' [...]' };
+    names.forEach((n, i) => { if (i < a.length) d[n] = a[i]; });
+    for (const k of Object.keys(kw)) if (k !== '_kw') d[k] = kw[k];
+    Object.assign(this, d);
+  }
+  _munge(text) {
+    if (this.expand_tabs) text = _slExpandTabs(text, this.tabsize);
+    if (this.replace_whitespace) text = text.replace(/[\t\n\x0b\x0c\r]/g, ' ');
+    return text;
+  }
+  _split(text) {
+    return text.split(this.break_on_hyphens ? _slWordsep : _slWordsepSimple).filter((c) => c);
+  }
+  _handleLongWord(chunks, cur, curLen, width) {
+    const spaceLeft = width < 1 ? 1 : width - curLen;
+    if (this.break_long_words) {
+      let end = spaceLeft;
+      const chunk = chunks[chunks.length - 1];
+      if (this.break_on_hyphens && chunk.length > spaceLeft) {
+        const hyphen = chunk.lastIndexOf('-', spaceLeft - 1);
+        if (hyphen > 0 && [...chunk.slice(0, hyphen)].some((c) => c !== '-')) end = hyphen + 1;
+      }
+      cur.push(chunk.slice(0, end));
+      chunks[chunks.length - 1] = chunk.slice(end);
+    } else if (!cur.length) cur.push(chunks.pop());
+  }
+  _wrapChunks(chunks) {
+    const lines = [];
+    if (typeof this.width !== 'number' || !(this.width > 0)) throw new AdderError('ValueError', `invalid width ${pyRepr(this.width)} (must be > 0)`);
+    if (this.max_lines !== null) {
+      const indent = this.max_lines > 1 ? this.subsequent_indent : this.initial_indent;
+      if (indent.length + this.placeholder.replace(/^\s+/, '').length > this.width) throw new AdderError('ValueError', 'placeholder too large for max width');
+    }
+    chunks.reverse();
+    const strip = (s) => s.trim() === '';
+    while (chunks.length) {
+      let cur = [], curLen = 0;
+      const indent = lines.length ? this.subsequent_indent : this.initial_indent;
+      const width = this.width - indent.length;
+      if (this.drop_whitespace && strip(chunks[chunks.length - 1]) && lines.length) chunks.pop();
+      while (chunks.length) {
+        const l = chunks[chunks.length - 1].length;
+        if (curLen + l <= width) { cur.push(chunks.pop()); curLen += l; } else break;
+      }
+      if (chunks.length && chunks[chunks.length - 1].length > width) {
+        this._handleLongWord(chunks, cur, curLen, width);
+        curLen = cur.reduce((n, c) => n + c.length, 0);
+      }
+      if (this.drop_whitespace && cur.length && strip(cur[cur.length - 1])) { curLen -= cur[cur.length - 1].length; cur.pop(); }
+      if (cur.length) {
+        if (this.max_lines === null || lines.length + 1 < this.max_lines ||
+            ((!chunks.length || (this.drop_whitespace && chunks.length === 1 && strip(chunks[0]))) && curLen <= width)) {
+          lines.push(indent + cur.join(''));
+        } else {
+          let placed = false;
+          while (cur.length) {
+            if (!strip(cur[cur.length - 1]) && curLen + this.placeholder.length <= width) {
+              cur.push(this.placeholder);
+              lines.push(indent + cur.join(''));
+              placed = true;
+              break;
+            }
+            curLen -= cur[cur.length - 1].length;
+            cur.pop();
+          }
+          if (!placed) {
+            if (lines.length) {
+              const prev = lines[lines.length - 1].replace(/\s+$/, '');
+              if (prev.length + this.placeholder.length <= this.width) { lines[lines.length - 1] = prev + this.placeholder; break; }
+            }
+            lines.push(indent + this.placeholder.replace(/^\s+/, ''));
+          }
+          break;
+        }
+      }
+    }
+    return lines;
+  }
+  wrap(text) {
+    const chunks = this._split(this._munge(String(text)));
+    if (this.fix_sentence_endings) {
+      let i = 0;
+      while (i < chunks.length - 1) {
+        if (chunks[i + 1] === ' ' && _slSentenceEnd.test(chunks[i])) { chunks[i + 1] = '  '; i += 2; } else i += 1;
+      }
+    }
+    return this._wrapChunks(chunks);
+  }
+  fill(text) { return this.wrap(text).join('\n'); }
+}
+const _slTextWrapperType = _slType('TextWrapper', _SlTextWrapper, 'textwrap');
+// wrap(text, width=70, **kw) / fill / shorten: the width may come positionally or by keyword
+const _slWrapper = (a, extra) => { const kw = _slKw(a) || {}; return new _SlTextWrapper({ ...kw, width: a[0] ?? kw.width ?? 70, ...extra, _kw: true }); };
+function _slDedent(text) {
+  text = text.replace(/^[ \t]+$/gm, '');
+  let margin = null;
+  for (const m of text.matchAll(/^([ \t]*)(?:[^ \t\n])/gm)) {
+    const ind = m[1];
+    if (margin === null) margin = ind;
+    else if (ind.startsWith(margin)) { /* deeper */ }
+    else if (margin.startsWith(ind)) margin = ind;
+    else { let i = 0; while (i < margin.length && i < ind.length && margin[i] === ind[i]) i++; margin = margin.slice(0, i); }
+  }
+  if (margin) text = text.split('\n').map((l) => (l.startsWith(margin) ? l.slice(margin.length) : l)).join('\n');
+  return text;
+}
+const _slSplitlinesKeep = (s) => s.match(/[^\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]|$)/g).filter((l) => l !== '');
+adderModules.textwrap = {
+  TextWrapper: _slTextWrapperType,
+  wrap: (text, ...a) => _slWrapper(a).wrap(text),
+  fill: (text, ...a) => _slWrapper(a).fill(text),
+  shorten: (text, ...a) => _slWrapper(a, { max_lines: 1 }).fill(String(text).trim().split(/\s+/).filter(Boolean).join(' ')),
+  dedent: (t) => _slDedent(String(t)),
+  indent: async (text, prefix, predicate) => {
+    let out = '';
+    for (const line of _slSplitlinesKeep(String(text))) {
+      const keep = predicate == null ? line.trim() !== '' : await _slTruthy(predicate(line));
+      out += (keep ? prefix : '') + line;
+    }
+    return out;
+  },
+};
+
+// ── contextlib ──
+// contextmanager (generator-based, either engine's generators), suppress, nullcontext,
+// closing, ExitStack, redirect_stdout / redirect_stderr, AbstractContextManager. Not here:
+// the async variants (asynccontextmanager, AsyncExitStack).
+const _slNext = async (gen) => { const r = gen.next(); return _slIsThen(r) ? await r : r; };
+class _SlGenCM {
+  constructor(gen) { this._gen = gen; }
+  async __enter__() {
+    const r = await _slNext(this._gen);
+    if (r.done) throw new AdderError('RuntimeError', "generator didn't yield");
+    return r.value;
+  }
+  async __exit__(type, value) {
+    if (type === null || type === undefined) {
+      const r = await _slNext(this._gen);
+      if (!r.done) throw new AdderError('RuntimeError', "generator didn't stop");
+      return false;
+    }
+    let r;
+    try {
+      r = this._gen._jsThrow ? this._gen._jsThrow(excToThrowable(value)) : this._gen.throw(excToThrowable(value));
+      if (_slIsThen(r)) r = await r;
+    } catch (e) {
+      if (excValue(e) === value) return false;   // re-raised: the with statement raises the original
+      if (e && e.pyType === 'StopIteration') return true;
+      throw e;
+    }
+    if (!r.done) throw new AdderError('RuntimeError', "generator didn't stop after throw()");
+    return true;
+  }
+}
+_SlGenCM.prototype.__adderClass__ = '_GeneratorContextManager';
+function _slContextmanager(fn) {
+  const wrapped = (...a) => _slThen(fn(...a), (gen) => new _SlGenCM(gen));
+  wrapped._pyName = fn._pyName || fn.name; wrapped.__name__ = wrapped._pyName; wrapped.__wrapped__ = fn;
+  return wrapped;
+}
+class _SlSuppress {
+  constructor(...excs) { this._excs = excs; }
+  __enter__() { return null; }
+  __exit__(type, value) {
+    if (type === null || type === undefined) return false;
+    const thrown = excToThrowable(value);
+    return this._excs.some((t) => excMatches(thrown, t));
+  }
+}
+class _SlNullContext {
+  constructor(enter = null) { this.enter_result = enter; }
+  __enter__() { return this.enter_result; }
+  __exit__() { return false; }
+}
+class _SlClosing {
+  constructor(thing) { this.thing = thing; }
+  __enter__() { return this.thing; }
+  __exit__() { return _slThen(adderGetAttr(this.thing, 'close')(), () => false); }
+}
+class _SlExitStack {
+  constructor() { this._cbs = []; }
+  __enter__() { return this; }
+  async enter_context(cm) {
+    const v = await adderGetAttr(cm, '__enter__')();
+    this._cbs.push({ cm });
+    return v;
+  }
+  push(exit) { this._cbs.push({ exit }); return exit; }
+  callback(fn, ...a) { const kw = _slKw(a); this._cbs.push({ fn: () => _slCall(fn, a, kw ? Object.fromEntries(Object.entries(kw).filter(([k]) => k !== '_kw')) : null) }); return fn; }
+  pop_all() { const n = new _SlExitStack(); n._cbs = this._cbs; this._cbs = []; return n; }
+  async close() { await this.__exit__(null, null, null); return null; }
+  async __exit__(type, value, tb) {
+    let pending = type == null ? null : value;
+    let suppressed = false;
+    while (this._cbs.length) {
+      const cb = this._cbs.pop();
+      try {
+        if (cb.fn) await cb.fn();
+        else {
+          const exit = cb.cm ? adderGetAttr(cb.cm, '__exit__') : cb.exit;
+          const r = await (pending === null ? exit(null, null, null) : exit(excTypeOf(excToThrowable(pending)), pending, tb));
+          if (pending !== null && pyBool(r)) { pending = null; suppressed = true; }
+        }
+      } catch (e) { pending = excValue(e); suppressed = false; }
+    }
+    if (pending !== null && pending !== value) throw excToThrowable(pending);
+    return type != null && (suppressed || pending === null);
+  }
+}
+class _SlRedirect {
+  constructor(target, which) { this._target = target; this._which = which; this._prev = []; }
+  __enter__() {
+    if (this._which === 'out') { this._prev.push(_stdio.redirect); _stdio.redirect = this._target; }
+    else { this._prev.push(_stdio.err); _stdio.err = (s) => { adderGetAttr(this._target, 'write')(s); }; }
+    return this._target;
+  }
+  __exit__() {
+    if (this._which === 'out') _stdio.redirect = this._prev.pop(); else _stdio.err = this._prev.pop();
+    return false;
+  }
+}
+adderModules.contextlib = {
+  contextmanager: _slContextmanager,
+  suppress: _slType('suppress', _SlSuppress, 'contextlib'),
+  nullcontext: _slType('nullcontext', _SlNullContext, 'contextlib'),
+  closing: _slType('closing', _SlClosing, 'contextlib'),
+  ExitStack: _slType('ExitStack', _SlExitStack, 'contextlib'),
+  redirect_stdout: (t) => new _SlRedirect(t, 'out'),
+  redirect_stderr: (t) => new _SlRedirect(t, 'err'),
+};
+_SlRedirect.prototype.__adderClass__ = 'redirect_stdout';
+
+// ── io ──
+// StringIO and BytesIO: in-memory files with CPython's read / write / seek semantics. Not
+// here: TextIOWrapper over raw streams, buffered readers.
+const _slIoErr = (closed) => { if (closed) throw new AdderError('ValueError', 'I/O operation on closed file.'); };
+class _SlStringIO {
+  constructor(initial = '', ...a) {
+    _slKw(a);
+    if (initial !== null && initial !== undefined && typeof initial === 'object' && initial._kw) initial = initial.initial_value ?? '';
+    if (initial === null || initial === undefined) initial = '';
+    if (typeof initial !== 'string') throw new AdderError('TypeError', `initial_value must be str or None, not ${pyTypeName(initial)}`);
+    this._buf = initial; this._pos = 0; this.closed = false;
+  }
+  write(s) {
+    _slIoErr(this.closed);
+    if (typeof s !== 'string') throw new AdderError('TypeError', `string argument expected, got '${pyTypeName(s)}'`);
+    if (this._pos > this._buf.length) this._buf += '\0'.repeat(this._pos - this._buf.length);
+    this._buf = this._buf.slice(0, this._pos) + s + this._buf.slice(this._pos + s.length);
+    this._pos += s.length;
+    return s.length;
+  }
+  writelines(lines) { for (const l of pyIter(lines)) this.write(l); return null; }
+  read(n = -1) {
+    _slIoErr(this.closed);
+    const end = n === null || n < 0 ? this._buf.length : Math.min(this._buf.length, this._pos + n);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = Math.max(this._pos, end);
+    return r;
+  }
+  readline(n = -1) {
+    _slIoErr(this.closed);
+    let end = this._buf.indexOf('\n', this._pos);
+    end = end < 0 ? this._buf.length : end + 1;
+    if (n !== null && n >= 0) end = Math.min(end, this._pos + n);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = Math.max(this._pos, end);
+    return r;
+  }
+  readlines() { const out = []; for (let l = this.readline(); l; l = this.readline()) out.push(l); return out; }
+  getvalue() { _slIoErr(this.closed); return this._buf; }
+  seek(pos, whence = 0) {
+    _slIoErr(this.closed);
+    if (whence === 0) { if (pos < 0) throw new AdderError('ValueError', `Negative seek position ${pos}`); this._pos = pos; }
+    else if (whence === 1) { if (pos !== 0) throw new AdderError('OSError', "Can't do nonzero cur-relative seeks"); }
+    else if (whence === 2) { if (pos !== 0) throw new AdderError('OSError', "Can't do nonzero end-relative seeks"); this._pos = this._buf.length; }
+    else throw new AdderError('ValueError', `Invalid whence (${whence}, should be 0, 1 or 2)`);
+    return this._pos;
+  }
+  tell() { _slIoErr(this.closed); return this._pos; }
+  truncate(size = null) { _slIoErr(this.closed); if (size === null) size = this._pos; this._buf = this._buf.slice(0, size); return size; }
+  close() { this.closed = true; return null; }
+  flush() { return null; }
+  readable() { return true; } writable() { return true; } seekable() { return true; } isatty() { return false; }
+  __enter__() { return this; }
+  __exit__() { this.close(); return false; }
+  *[Symbol.iterator]() { for (let l = this.readline(); l; l = this.readline()) yield l; }
+  __iter__() { return this[Symbol.iterator](); }
+}
+class _SlBytesIO {
+  constructor(initial = null) {
+    if (initial !== null && typeof initial === 'object' && initial._kw) initial = initial.initial_bytes ?? null;
+    this._buf = initial === null || initial === undefined ? new Uint8Array(0) : Uint8Array.from(_slBytesLike(initial));
+    this._len = this._buf.length; this._pos = 0; this.closed = false;
+  }
+  _grow(n) {
+    if (n <= this._buf.length) return;
+    const b = new Uint8Array(Math.max(n, this._buf.length * 2, 64));
+    b.set(this._buf.subarray(0, this._len));
+    this._buf = b;
+  }
+  write(b) {
+    _slIoErr(this.closed);
+    const src = _slBytesLike(b);
+    this._grow(this._pos + src.length);
+    this._buf.set(src, this._pos);
+    this._pos += src.length;
+    this._len = Math.max(this._len, this._pos);
+    return src.length;
+  }
+  writelines(lines) { for (const l of pyIter(lines)) this.write(l); return null; }
+  read(n = -1) {
+    _slIoErr(this.closed);
+    const end = n === null || n < 0 ? this._len : Math.min(this._len, this._pos + n);
+    const r = this._buf.slice(Math.min(this._pos, this._len), end);
+    this._pos = Math.max(this._pos, end);
+    return r;
+  }
+  read1(n = -1) { return this.read(n); }
+  readline(n = -1) {
+    _slIoErr(this.closed);
+    let end = this._buf.subarray(0, this._len).indexOf(10, this._pos);
+    end = end < 0 ? this._len : end + 1;
+    if (n !== null && n >= 0) end = Math.min(end, this._pos + n);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = Math.max(this._pos, end);
+    return r;
+  }
+  readlines() { const out = []; for (let l = this.readline(); l.length; l = this.readline()) out.push(l); return out; }
+  getvalue() { _slIoErr(this.closed); return this._buf.slice(0, this._len); }
+  getbuffer() { return this._buf.subarray(0, this._len); }
+  seek(pos, whence = 0) {
+    _slIoErr(this.closed);
+    const base = whence === 0 ? 0 : whence === 1 ? this._pos : this._len;
+    const p = base + pos;
+    if (p < 0) throw new AdderError('ValueError', `negative seek value ${p}`);
+    this._pos = p;
+    return p;
+  }
+  tell() { _slIoErr(this.closed); return this._pos; }
+  truncate(size = null) { if (size === null) size = this._pos; this._len = Math.min(this._len, size); return size; }
+  close() { this.closed = true; return null; }
+  flush() { return null; }
+  readable() { return true; } writable() { return true; } seekable() { return true; } isatty() { return false; }
+  __enter__() { return this; }
+  __exit__() { this.close(); return false; }
+  *[Symbol.iterator]() { for (let l = this.readline(); l.length; l = this.readline()) yield l; }
+  __iter__() { return this[Symbol.iterator](); }
+}
+adderModules.io = {
+  StringIO: _slType('StringIO', _SlStringIO, 'io'),
+  BytesIO: _slType('BytesIO', _SlBytesIO, 'io'),
+  SEEK_SET: 0, SEEK_CUR: 1, SEEK_END: 2, DEFAULT_BUFFER_SIZE: 8192,
+  UnsupportedOperation: makeExcType('UnsupportedOperation', 'OSError'),
+};
+
+// ── collections.abc ──
+// The abstract collection types: isinstance() recognises builtins and JS values structurally
+// (a dict is a Mapping, a tuple a Sequence, a generator an Iterator), and a class deriving from
+// one inherits its mixin methods, written from CPython's _collections_abc (Mapping gives get /
+// keys / items / values / __contains__ / __eq__ from __getitem__ / __iter__ / __len__, and so
+// on). Not here: Set's operator mixins, register().
+const _slIsMapLike = (x) => x instanceof Map || isPlainDict(x);
+const _slIsGen = (x) => x !== null && typeof x === 'object' && (x.__adderClass__ === 'generator' || Object.prototype.toString.call(x) === '[object Generator]' || Object.prototype.toString.call(x) === '[object AsyncGenerator]');
+const _slHasIter = (x) => x !== null && x !== undefined && (typeof x === 'string' || typeof x[Symbol.iterator] === 'function' || typeof x[Symbol.asyncIterator] === 'function' || (typeof x === 'object' && typeof x.__iter__ === 'function'));
+const _slIsSeq = (x) => typeof x === 'string' || Array.isArray(x) || x instanceof Uint8Array || (x !== null && typeof x === 'object' && x.constructor && x.constructor.name === 'AdderRange');
+const _slUnhashable = (x) => x !== null && typeof x === 'object' && ((Array.isArray(x) && !(x instanceof PyTuple)) || x instanceof Map || (x instanceof Set && !x._frozen) || isPlainDict(x) || x.__hash__ === null);
+function _slAbc(name, bases, check, mixins = {}) {
+  const cls = function () { throw new AdderError('TypeError', `Can't instantiate abstract class ${name}`); };
+  cls._pyName = name; cls._pyClass = true; cls.__name__ = name; cls.__module__ = 'collections.abc';
+  cls._pyBases = bases;
+  cls._pyMRO = [cls];
+  for (const b of bases) for (const c of b._pyMRO) if (!cls._pyMRO.includes(c)) cls._pyMRO.push(c);
+  cls.prototype = {};
+  cls._pyOwnMembers = new PySet();
+  for (const b of [...bases].reverse()) for (const k of b._pyOwnMembers) { cls.prototype[k] = b.prototype[k]; cls._pyOwnMembers.add(k); }
+  for (const [k, fn] of Object.entries(mixins)) { cls.prototype[k] = fn; cls._pyOwnMembers.add(k); }
+  cls.__instancecheck__ = (x) => {
+    if (x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(cls)) return true;
+    return !!check(x);
+  };
+  cls.__class_getitem__ = (k) => new GenericAlias(cls, k instanceof PyTuple ? [...k] : [k]);
+  return cls;
+}
+const _slIsKeyError = (e) => !!e && excMatches(e, 'KeyError');
+const _slIsIndexError = (e) => !!e && excMatches(e, 'IndexError');
+const _slIterable = _slAbc('Iterable', [], _slHasIter);
+const _slSized = _slAbc('Sized', [], (x) => x !== null && x !== undefined && (typeof x === 'string' || typeof x.length === 'number' || typeof x.size === 'number' || typeof x.__len__ === 'function'));
+const _slContainer = _slAbc('Container', [], (x) => _slIsSeq(x) || x instanceof Map || x instanceof Set || isPlainDict(x) || (x !== null && typeof x === 'object' && typeof x.__contains__ === 'function'));
+const _slHashable = _slAbc('Hashable', [], (x) => !_slUnhashable(x));
+const _slCallable = _slAbc('Callable', [], (x) => typeof x === 'function' || (x !== null && typeof x === 'object' && typeof x.__call__ === 'function'));
+const _slIterator = _slAbc('Iterator', [_slIterable], (x) => _slIsGen(x) || (x !== null && typeof x === 'object' && (typeof x.__next__ === 'function' || (typeof x.next === 'function' && typeof x[Symbol.iterator] === 'function' && !Array.isArray(x)))));
+const _slReversible = _slAbc('Reversible', [_slIterable], (x) => _slIsSeq(x) || x instanceof Map || isPlainDict(x) || (x !== null && typeof x === 'object' && typeof x.__reversed__ === 'function'));
+const _slGenerator = _slAbc('Generator', [_slIterator], _slIsGen);
+const _slCollection = _slAbc('Collection', [_slSized, _slIterable, _slContainer], (x) => _slIsSeq(x) || x instanceof Map || x instanceof Set || isPlainDict(x));
+// `in` and `==` call __contains__ / __eq__ without awaiting (in compiled code), so those two stay
+// synchronous while the class's own methods are: these helpers only turn into promises when a
+// step does (a tree-walked method)
+function _slSeqMap(arr, fn) {
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    const r = fn(arr[i], i);
+    if (_slIsThen(r)) {
+      return (async () => { out.push(await r); for (let j = i + 1; j < arr.length; j++) out.push(await fn(arr[j], j)); return out; })();
+    }
+    out.push(r);
+  }
+  return out;
+}
+// the elements of a user collection: its __iter__, else the __getitem__ / __len__ protocol
+function _slElems(obj) {
+  if (typeof obj.__iter__ === 'function') {
+    return _slThen(obj.__iter__(), (it) => (it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function' ? [...pyIter(it)] : pyCollect(it)));
+  }
+  if (typeof obj.__getitem__ === 'function' && typeof obj.__len__ === 'function') {
+    return _slThen(obj.__len__(), (n) => _slSeqMap(Array.from({ length: n }, (_, i) => i), (i) => obj.__getitem__(i)));
+  }
+  return pyCollect(obj);
+}
+const _slAnyEq = (xs, v) => _slThen(_slSeqMap(xs, (x) => (x === v ? true : pyEq(x, v))), (rs) => rs.some((r) => r === true));
+const _slSeqMixins = {
+  __contains__(v) { return _slThen(_slElems(this), (xs) => _slAnyEq(xs, v)); },
+  async index(v, start = 0, stop = null) {
+    const n = await this.__len__();
+    if (start < 0) start = Math.max(n + start, 0);
+    if (stop !== null && stop < 0) stop += n;
+    for (let i = start; stop === null || i < stop; i++) {
+      let x;
+      try { x = await this.__getitem__(i); } catch (e) { if (_slIsIndexError(e)) break; throw e; }
+      if (x === v || await pyEq(x, v)) return i;
+    }
+    throw new AdderError('ValueError', 'sequence.index(x): x not in sequence');
+  },
+  async count(v) { let n = 0; for (const x of await pyCollect(this)) if (x === v || await pyEq(x, v)) n++; return n; },
+  async __reversed__() { const xs = await pyCollect(this); return xs.reverse()[Symbol.iterator](); },
+};
+const _slSequence = _slAbc('Sequence', [_slReversible, _slCollection], _slIsSeq, _slSeqMixins);
+const _slMutableSequence = _slAbc('MutableSequence', [_slSequence], (x) => Array.isArray(x) && !(x instanceof PyTuple), {
+  async append(v) { return this.insert(await this.__len__(), v); },
+  async extend(vs) { for (const v of await pyCollect(vs)) await this.append(v); return null; },
+  async pop(i = -1) { const v = await this.__getitem__(i); await this.__delitem__(i); return v; },
+  async remove(v) { await this.__delitem__(await this.index(v)); return null; },
+  async reverse() { const n = await this.__len__(); for (let i = 0; i < Math.floor(n / 2); i++) { const a = await this.__getitem__(i), b = await this.__getitem__(n - i - 1); await this.__setitem__(i, b); await this.__setitem__(n - i - 1, a); } return null; },
+  async clear() { for (;;) { try { await this.pop(); } catch (e) { if (_slIsIndexError(e)) return null; throw e; } } },
+  async __iadd__(vs) { await this.extend(vs); return this; },
+});
+const _slMapMixins = {
+  async get(k, d = null) { try { return await this.__getitem__(k); } catch (e) { if (_slIsKeyError(e)) return d; throw e; } },
+  __contains__(k) {
+    let r;
+    try { r = this.__getitem__(k); } catch (e) { if (_slIsKeyError(e)) return false; throw e; }
+    return _slIsThen(r) ? r.then(() => true, (e) => { if (_slIsKeyError(e)) return false; throw e; }) : true;
+  },
+  async keys() { return await pyCollect(this); },
+  async items() { const out = []; for (const k of await pyCollect(this)) out.push(mkTuple([k, await this.__getitem__(k)])); return out; },
+  async values() { const out = []; for (const k of await pyCollect(this)) out.push(await this.__getitem__(k)); return out; },
+  __eq__(o) {
+    if (!(o instanceof Map || isPlainDict(o) || (o && o.__adderType__ && _slMapping.__instancecheck__(o)))) return false;
+    const pairs = (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slThen(m.__getitem__(k), (v) => [k, v])));
+    const other = o instanceof Map ? o : isPlainDict(o) ? new PyDict(Object.entries(o)) : _slThen(pairs(o), (ps) => new PyDict(ps));
+    return _slThen(pairs(this), (ps) => _slThen(other, (b) => pyEq(new PyDict(ps), b)));
+  },
+};
+const _slMapping = _slAbc('Mapping', [_slCollection], _slIsMapLike, _slMapMixins);
+const _slMutableMapping = _slAbc('MutableMapping', [_slMapping], _slIsMapLike, {
+  async pop(k, ...d) {
+    let v;
+    try { v = await this.__getitem__(k); } catch (e) { if (_slIsKeyError(e) && d.length) return d[0]; throw e; }
+    await this.__delitem__(k);
+    return v;
+  },
+  async popitem() {
+    const ks = await pyCollect(this);
+    if (!ks.length) throw new AdderError('KeyError', '', undefined, []);
+    const k = ks[0], v = await this.__getitem__(k);
+    await this.__delitem__(k);
+    return mkTuple([k, v]);
+  },
+  async clear() { for (const k of await pyCollect(this)) await this.__delitem__(k); return null; },
+  async update(other = null, ...rest) {
+    const kw = _slKw(rest);
+    if (other !== null && other !== undefined && !other._kw) {
+      if (other instanceof Map) for (const [k, v] of other) await this.__setitem__(k, v);
+      else if (isPlainDict(other)) for (const k of Object.keys(other)) await this.__setitem__(k, other[k]);
+      else if (typeof other.keys === 'function') for (const k of await pyCollect(await other.keys())) await this.__setitem__(k, await adderGetAttr(other, '__getitem__')(k));
+      else for (const pair of await pyCollect(other)) { const [k, v] = pair; await this.__setitem__(k, v); }
+    } else if (other && other._kw) for (const k of Object.keys(other)) if (k !== '_kw') await this.__setitem__(k, other[k]);
+    if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') await this.__setitem__(k, kw[k]);
+    return null;
+  },
+  async setdefault(k, d = null) { try { return await this.__getitem__(k); } catch (e) { if (!_slIsKeyError(e)) throw e; await this.__setitem__(k, d); return d; } },
+});
+const _slSetAbc = _slAbc('Set', [_slCollection], (x) => x instanceof Set);
+const _slMutableSet = _slAbc('MutableSet', [_slSetAbc], (x) => x instanceof Set && !x._frozen);
+const _slAwaitable = _slAbc('Awaitable', [], (x) => x !== null && x !== undefined && typeof x.then === 'function');
+const _slView = (name) => _slAbc(name, [_slSized, _slIterable], () => false);
+const _slAbcModule = {
+  Iterable: _slIterable, Iterator: _slIterator, Reversible: _slReversible, Generator: _slGenerator, Sized: _slSized,
+  Container: _slContainer, Collection: _slCollection, Hashable: _slHashable, Callable: _slCallable,
+  Sequence: _slSequence, MutableSequence: _slMutableSequence, Mapping: _slMapping, MutableMapping: _slMutableMapping,
+  Set: _slSetAbc, MutableSet: _slMutableSet, Awaitable: _slAwaitable, Coroutine: _slAwaitable,
+  AsyncIterable: _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function'),
+  AsyncIterator: _slAbc('AsyncIterator', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function'),
+  ByteString: _slAbc('ByteString', [_slSequence], (x) => x instanceof Uint8Array), Buffer: _slAbc('Buffer', [], (x) => ArrayBuffer.isView(x)),
+  MappingView: _slView('MappingView'), KeysView: _slView('KeysView'), ItemsView: _slView('ItemsView'), ValuesView: _slView('ValuesView'),
+};
+adderModules['collections.abc'] = _slAbcModule;
+adderModules.collections.abc = _slAbcModule;
+// typing's aliases of the abstract types check like them
+for (const k of ['Iterable', 'Iterator', 'Sequence', 'MutableSequence', 'Mapping', 'MutableMapping', 'Collection', 'Container', 'Hashable', 'Sized', 'Callable', 'Generator', 'Awaitable', 'Coroutine', 'AsyncIterator', 'AsyncIterable']) {
+  const form = adderModules.typing[k];
+  if (form && _slAbcModule[k]) form.__origin__ = _slAbcModule[k];
+}
+
+// -- stdlib-types.js --
+
+// adder stdlib — enum and dataclasses: the two modules that build classes. Both work on the
+// classes either engine makes (a function with _pyName / _pyMRO / prototype / _pyOwnMembers):
+// enum through __init_subclass__ (finishClass calls it on Enum's subclasses), dataclasses as a
+// decorator reading __annotations__.
+//
+// Concat-bundled with the rest of adder: top-level names carry an `_st` prefix.
+
+
+const _stIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _stKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
+  args[args.length - 1]._kw === true ? args.pop() : null);
+const _stHas = (kw, k) => !!kw && Object.hasOwn(kw, k) && k !== '_kw';
+// join a list of maybe-promise strings
+const _stJoin = (parts, f) => (parts.some(_stIsThen) ? Promise.all(parts).then(f) : f(parts));
+
+// A class built from JS, in the shape both engines build (so isinstance, MRO walks, attribute
+// inheritance and the __init_subclass__ hook all apply): calling it makes an instance and runs
+// its __init__, unless the class answers calls itself (_pyNew).
+function _stMakeClass(name, bases, attrs) {
+  const cls = function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);
+    const instance = Object.create(cls.prototype);
+    instance.__adderClass__ = name;
+    instance.__adderType__ = cls;
+    if (typeof cls.prototype.__init__ === 'function') {
+      const r = cls.prototype.__init__.call(instance, ...args);
+      if (_stIsThen(r)) return r.then(() => instance);
+    }
+    return instance;
+  };
+  cls.prototype = {};
+  cls._pyName = name; cls._pyClass = true; cls.__name__ = name;
+  cls._pyBases = bases.filter((b) => b && b._pyClass);
+  const mro = [cls];
+  for (const b of cls._pyBases) for (const c of (b._pyMRO || [b])) if (!mro.includes(c)) mro.push(c);
+  cls._pyMRO = mro;
+  for (let i = mro.length - 1; i >= 1; i--) {
+    const base = mro[i];
+    if (!base.prototype || !base._pyOwnMembers) continue;
+    for (const key of base._pyOwnMembers) {
+      const d = Object.getOwnPropertyDescriptor(base.prototype, key);
+      if (d) Object.defineProperty(cls.prototype, key, d);
+    }
+  }
+  cls._pyOwnMembers = new PySet();
+  if (attrs) for (const [k, v] of attrs) setClassAttr(cls, k, v);
+  return cls;
+}
+// a base class written in JS: its prototype members are inherited the way a Python base's are
+function _stBaseClass(name, bases, proto, statics) {
+  const cls = _stMakeClass(name, bases);
+  for (const key of Reflect.ownKeys(proto)) {
+    Object.defineProperty(cls.prototype, key, Object.getOwnPropertyDescriptor(proto, key));
+    if (typeof key === 'string') cls._pyOwnMembers.add(key);
+  }
+  if (statics) Object.assign(cls, statics);
+  cls.__module__ = 'enum';
+  return cls;
+}
+
+// ── enum ──
+// Enum, IntEnum, StrEnum, Flag, IntFlag, auto, unique, the functional API (Enum('Color',
+// 'RED GREEN')), aliases, _missing_, member __init__ from tuple values, iteration / len /
+// `in` / Color['RED'] / Color(1), and 3.12's str / repr / format for each kind. Not here:
+// _generate_next_value_ overrides, member __new__, EnumMeta subclassing, Flag boundary modes.
+class _StAuto { __repr__() { return 'auto()'; } }
+_StAuto.prototype.__adderClass__ = 'auto';
+const _stAuto = () => new _StAuto();
+_stAuto._pyName = 'auto'; _stAuto._pyClass = true; _stAuto.__name__ = 'auto';
+
+const _stEnumName = (m) => m.__adderType__._pyName;
+// a class's kind, from the bases it reaches
+function _stKind(cls) {
+  const mro = cls._pyMRO || [];
+  const has = (b) => mro.includes(b);
+  return {
+    flag: has(_stFlag),
+    int: has(_stIntEnum) || has(_stIntFlag),
+    str: has(_stStrEnum),
+  };
+}
+function _stMember(cls, name, value) {
+  const m = Object.create(cls.prototype);
+  m.__adderClass__ = cls._pyName;
+  m.__adderType__ = cls;
+  m._name_ = name;
+  m._value_ = value;
+  return m;
+}
+// Flag value → member (a canonical one, or a composite named by its bits in definition order)
+function _stFlagMember(cls, v) {
+  const known = cls._value2member_.find(([val]) => val === v);
+  if (known) return known[1];
+  const cache = cls._stComposite || (cls._stComposite = new Map());
+  if (cache.has(v)) return cache.get(v);
+  const all = cls._member_names_.reduce((acc, n) => acc | cls._member_map_.get(n)._value_, 0);
+  if (v & ~all && !_stKind(cls).int) throw new AdderError('ValueError', `${pyRepr(v)} is not a valid ${cls._pyName}`);
+  const names = cls._member_names_.filter((n) => { const b = cls._member_map_.get(n)._value_; return b !== 0 && (v & b) === b; });
+  const m = _stMember(cls, v === 0 ? null : names.join('|'), v);
+  cache.set(v, m);
+  return m;
+}
+// value → member, for Color(1)
+function _stLookup(cls, value) {
+  if (value && value.__adderType__ === cls) return value;
+  for (const [v, m] of cls._value2member_) if (v === value || pyEq(v, value) === true) return m;
+  if (_stKind(cls).flag && Number.isInteger(value)) return _stFlagMember(cls, value);
+  if (typeof cls._missing_ === 'function') {
+    const r = cls._missing_(value);
+    const done = (m) => { if (m === null || m === undefined) throw new AdderError('ValueError', `${pyRepr(value)} is not a valid ${cls._pyName}`); return m; };
+    return _stIsThen(r) ? r.then(done) : done(r);
+  }
+  throw new AdderError('ValueError', `${pyRepr(value)} is not a valid ${cls._pyName}`);
+}
+function _stEnumHook(cls) {
+  const kind = _stKind(cls);
+  // an enum with members cannot be extended
+  for (const b of cls._pyMRO.slice(1)) {
+    if (b._member_names_ && b._member_names_.length) throw new AdderError('TypeError', `<enum '${cls._pyName}'> cannot extend <enum '${b._pyName}'>`);
+  }
+  const candidates = [];
+  for (const k of cls._pyAttrs || []) {
+    if (k.startsWith('_')) continue;
+    const v = cls[k];
+    if (typeof v === 'function') continue;
+    candidates.push([k, v]);
+  }
+  cls._member_names_ = [];
+  cls._member_map_ = new PyDict();
+  cls._value2member_ = [];
+  cls._stAliases = [];
+  const ownInit = cls._pyMRO.some((c) => c._pyOwnMembers && c._pyOwnMembers.has('__init__') && !c._stEnumBase);
+  const inits = [];
+  let last = null;
+  for (let [name, value] of candidates) {
+    if (value instanceof _StAuto) {
+      if (kind.str) value = name.toLowerCase();
+      else if (kind.flag) { const hi = cls._member_names_.reduce((a, n) => Math.max(a, cls._member_map_.get(n)._value_), 0); value = hi ? 2 ** Math.floor(Math.log2(hi) + 1) : 1; }
+      else value = typeof last === 'number' ? last + 1 : 1;
+    }
+    if (kind.str && typeof value !== 'string') throw new AdderError('TypeError', `${pyRepr(value)} is not a string`);
+    last = value;
+    const canon = cls._value2member_.find(([v]) => v === value || pyEq(v, value) === true);
+    if (canon) { setClassAttr(cls, name, canon[1]); cls._member_map_.set(name, canon[1]); cls._stAliases.push([name, canon[1]._name_]); continue; }
+    const m = _stMember(cls, name, value);
+    if (ownInit) inits.push(() => cls.prototype.__init__.call(m, ...(value instanceof PyTuple ? value : [value])));
+    setClassAttr(cls, name, m);
+    cls._member_names_.push(name);
+    cls._member_map_.set(name, m);
+    cls._value2member_.push([value, m]);
+  }
+  // a Flag member iterates its bits (the engines copy only string-keyed members to subclasses)
+  if (kind.flag) cls.prototype[Symbol.iterator] = _stFlagProto[Symbol.iterator];
+  const members = () => cls._member_names_.map((n) => cls._member_map_.get(n));
+  cls[Symbol.iterator] = function* () { yield* members(); };
+  cls.__len__ = () => cls._member_names_.length;
+  cls.__contains__ = (x) => (x && x.__adderType__ === cls) || cls._value2member_.some(([v]) => v === x || pyEq(v, x) === true);
+  cls.__getitem__ = (k) => { if (cls._member_map_.has(k)) return cls._member_map_.get(k); throw new AdderError('KeyError', pyRepr(k), undefined, [k]); };
+  cls.__reversed__ = () => members().reverse()[Symbol.iterator]();
+  cls.__members__ = cls._member_map_;
+  cls._pyNew = (...a) => {
+    const kw = _stKw(a);
+    if (a.length >= 2 || (kw && _stHas(kw, 'names'))) return _stFunctional(cls, a, kw);
+    return _stLookup(cls, a[0]);
+  };
+  let r;
+  for (const f of inits) { r = _stIsThen(r) ? r.then(f) : f(); }
+  return _stIsThen(r) ? r.then(() => null) : null;
+}
+// Enum('Color', 'RED GREEN') / Enum('Color', ['RED', 'GREEN']) / (('RED', 1), …) / {'RED': 1}
+function _stFunctional(base, a, kw) {
+  const name = a[0];
+  let names = a.length > 1 ? a[1] : kw.names;
+  const start = kw && _stHas(kw, 'start') ? kw.start : 1;
+  let entries;
+  if (typeof names === 'string') names = names.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+  if (names instanceof Map) entries = [...names];
+  else if (isPlainDict(names)) entries = Object.entries(names);
+  else {
+    const items = [...pyIter(names)];
+    entries = items.map((it, i) => (typeof it === 'string' ? [it, _stKind(base).flag ? 2 ** i : start + i] : [it[0], it[1]]));
+  }
+  const cls = _stMakeClass(name, [base], entries);
+  const r = finishClass(cls, []);
+  return _stIsThen(r) ? r.then(() => cls) : cls;
+}
+const _stIntOps = {
+  __int__() { return this._value_; },
+  __index__() { return this._value_; },
+  __float__() { return this._value_; },
+  valueOf() { return this._value_; },
+  __bool__() { return this._value_ !== 0; },
+  __hash__() { return _pyHash(this._value_); },
+  __eq__(o) { return o === this || pyEq(this._value_, o && o._value_ !== undefined && typeof o._value_ === 'number' ? o._value_ : o); },
+  __ne__(o) { return !this.__eq__(o); },
+  __lt__(o) { return pyLt(this._value_, o && o._value_ !== undefined ? o._value_ : o); },
+  __le__(o) { return pyLe(this._value_, o && o._value_ !== undefined ? o._value_ : o); },
+  __gt__(o) { return pyGt(this._value_, o && o._value_ !== undefined ? o._value_ : o); },
+  __ge__(o) { return pyGe(this._value_, o && o._value_ !== undefined ? o._value_ : o); },
+  __add__(o) { return pyAdd(this._value_, o); }, __radd__(o) { return pyAdd(o, this._value_); },
+  __sub__(o) { return pySub(this._value_, o); }, __rsub__(o) { return pySub(o, this._value_); },
+  __mul__(o) { return pyMul(this._value_, o); }, __rmul__(o) { return pyMul(o, this._value_); },
+  __truediv__(o) { return pyTrueDiv(this._value_, o); }, __rtruediv__(o) { return pyTrueDiv(o, this._value_); },
+  __floordiv__(o) { return pyFloorDiv(this._value_, o); }, __rfloordiv__(o) { return pyFloorDiv(o, this._value_); },
+  __mod__(o) { return pyMod(this._value_, o); }, __rmod__(o) { return pyMod(o, this._value_); },
+  __pow__(o) { return pyPow(this._value_, o); }, __rpow__(o) { return pyPow(o, this._value_); },
+  __neg__() { return -this._value_; }, __pos__() { return this._value_; }, __abs__() { return Math.abs(this._value_); },
+};
+const _stEnumProto = {
+  get name() { return this._name_; },
+  get value() { return this._value_; },
+  __repr__() {
+    return this._name_ === null ? `<${_stEnumName(this)}: ${pyRepr(this._value_)}>` : `<${_stEnumName(this)}.${this._name_}: ${pyRepr(this._value_)}>`;
+  },
+  __str__() { return this._name_ === null ? `${_stEnumName(this)}(${pyRepr(this._value_)})` : `${_stEnumName(this)}.${this._name_}`; },
+  __format__(spec) { return pyFormatValue(this.__str__(), spec || ''); },
+  __reduce_ex__() { return mkTuple([this.__adderType__, mkTuple([this._value_])]); },
+};
+// IntEnum / StrEnum print as their values (3.11+); IntEnum is an int
+const _stReprValueProto = {
+  __str__() { return pyStr(this._value_); },
+  __format__(spec) { return pyFormatValue(this._value_, spec || ''); },
+};
+const _stFlagProto = {
+  __or__(o) { return _stFlagOp(this, o, (a, b) => a | b); },
+  __and__(o) { return _stFlagOp(this, o, (a, b) => a & b); },
+  __xor__(o) { return _stFlagOp(this, o, (a, b) => a ^ b); },
+  __ror__(o) { return _stFlagOp(this, o, (a, b) => a | b); },
+  __rand__(o) { return _stFlagOp(this, o, (a, b) => a & b); },
+  __rxor__(o) { return _stFlagOp(this, o, (a, b) => a ^ b); },
+  __invert__() {
+    const cls = this.__adderType__;
+    const all = cls._member_names_.reduce((acc, n) => acc | cls._member_map_.get(n)._value_, 0);
+    return _stFlagMember(cls, all & ~this._value_);
+  },
+  __contains__(o) {
+    if (!o || o.__adderType__ !== this.__adderType__) throw new AdderError('TypeError', `unsupported operand type(s) for 'in': '${pyTypeName(o)}' and '${pyTypeName(this)}'`);
+    return (this._value_ & o._value_) === o._value_;
+  },
+  __bool__() { return this._value_ !== 0; },
+  __len__() { return [..._stFlagProto[Symbol.iterator].call(this)].length; },
+  *[Symbol.iterator]() {
+    const cls = this.__adderType__;
+    for (const n of cls._member_names_) { const m = cls._member_map_.get(n); if (m._value_ !== 0 && (this._value_ & m._value_) === m._value_ && (m._value_ & (m._value_ - 1)) === 0) yield m; }
+  },
+  __iter__() { return _stFlagProto[Symbol.iterator].call(this); },
+};
+function _stFlagOp(self, o, f) {
+  const cls = self.__adderType__;
+  if (o && o.__adderType__ === cls) return _stFlagMember(cls, f(self._value_, o._value_));
+  if (_stKind(cls).int && Number.isInteger(o)) return _stFlagMember(cls, f(self._value_, o));
+  throw new AdderError('TypeError', `unsupported operand type(s): '${pyTypeName(self)}' and '${pyTypeName(o)}'`);
+}
+const _stEnum = _stBaseClass('Enum', [], _stEnumProto, { __init_subclass__: _stEnumHook, _stEnumBase: true });
+_stEnum._pyNew = (...a) => { const kw = _stKw(a); return _stFunctional(_stEnum, a, kw); };
+const _stReprEnum = _stBaseClass('ReprEnum', [_stEnum], _stReprValueProto, { _stEnumBase: true });
+const _stIntProtoAll = Object.defineProperties({}, Object.getOwnPropertyDescriptors({ ..._stIntOps }));
+const _stIntEnum = _stBaseClass('IntEnum', [_stReprEnum], _stIntProtoAll, { _stEnumBase: true });
+const _stStrEnum = _stBaseClass('StrEnum', [_stReprEnum], {
+  __eq__(o) { return o === this || (typeof o === 'string' && o === this._value_); },
+  __hash__() { return _pyHash(this._value_); },
+  toString() { return this._value_; },
+}, { _stEnumBase: true });
+const _stFlag = _stBaseClass('Flag', [_stEnum], _stFlagProto, { _stEnumBase: true });
+const _stIntFlag = _stBaseClass('IntFlag', [_stFlag, _stReprEnum], _stIntProtoAll, { _stEnumBase: true });
+// int / str as bases too, once the builtins exist (isinstance(Color.RED, int) for an IntEnum)
+// (the engines build a subclass's MRO from _pyBases, so the builtin type goes there, first, as
+// in CPython's `class IntEnum(int, ReprEnum)`)
+for (const [b, t] of [[_stIntEnum, 'int'], [_stStrEnum, 'str'], [_stIntFlag, 'int']]) {
+  const ownBases = b._pyBases, ownMro = b._pyMRO;
+  Object.defineProperty(b, '_pyBases', { get() { const tt = _typeObjects[t]; return tt ? [tt, ...ownBases] : ownBases; }, configurable: true });
+  Object.defineProperty(b, '_pyMRO', { get() { const tt = _typeObjects[t]; return tt ? [ownMro[0], tt, ...ownMro.slice(1)] : ownMro; }, configurable: true });
+}
+for (const b of [_stReprEnum, _stIntEnum, _stStrEnum, _stFlag, _stIntFlag]) b._pyNew = (...a) => { const kw = _stKw(a); return _stFunctional(b, a, kw); };
+function _stUnique(cls) {
+  if (cls._stAliases && cls._stAliases.length) {
+    throw new AdderError('ValueError', `duplicate values found in <enum '${cls._pyName}'>: ${cls._stAliases.map(([a, c]) => `${a} -> ${c}`).join(', ')}`);
+  }
+  return cls;
+}
+adderModules.enum = {
+  Enum: _stEnum, IntEnum: _stIntEnum, StrEnum: _stStrEnum, Flag: _stFlag, IntFlag: _stIntFlag, ReprEnum: _stReprEnum,
+  auto: _stAuto, unique: _stUnique, EnumMeta: _typeObjects.type || null, EnumType: _typeObjects.type || null,
+  member: (v) => v, nonmember: (v) => v,
+  global_enum: (cls) => cls, verify: () => (cls) => cls, property: (f) => ({ __property__: true, fget: f, fset: null }),
+};
+
+// ── dataclasses ──
+// @dataclass (and @dataclass(init=, repr=, eq=, order=, frozen=, unsafe_hash=, kw_only=,
+// match_args=)), field(), fields(), asdict(), astuple(), replace(), is_dataclass(),
+// make_dataclass(), KW_ONLY, InitVar, __post_init__, inherited fields, frozen instances
+// (FrozenInstanceError), eq dataclasses unhashable as in CPython. The field list comes from the
+// class body's annotations, kept as their source text (fields()[i].type is a string, as under
+// `from __future__ import annotations`). Not here: slots=True's __slots__, weakref_slot.
+const _stFrozenErr = makeExcType('FrozenInstanceError', 'AttributeError');
+const _ST_MISSING = Object.freeze({ __adderClass__: '_MISSING_TYPE', __repr__: () => '<dataclasses._MISSING_TYPE object>' });
+const _ST_KW_ONLY = Object.freeze({ __adderClass__: '_KW_ONLY_TYPE', __repr__: () => '<dataclasses._KW_ONLY_TYPE object>' });
+class _StField {
+  constructor(o) {
+    this.name = null; this.type = null;
+    this.default = o.default; this.default_factory = o.default_factory;
+    this.init = o.init; this.repr = o.repr; this.hash = o.hash; this.compare = o.compare;
+    this.metadata = o.metadata; this.kw_only = o.kw_only; this._ftype = 'field';
+  }
+  __repr__() {
+    const d = (v) => (v === _ST_MISSING ? '<dataclasses._MISSING_TYPE object>' : pyRepr(v));
+    return `Field(name=${pyRepr(this.name)},type=${pyRepr(this.type)},default=${d(this.default)},default_factory=${d(this.default_factory)},init=${pyRepr(this.init)},repr=${pyRepr(this.repr)},hash=${pyRepr(this.hash)},compare=${pyRepr(this.compare)},metadata=${pyRepr(this.metadata)},kw_only=${d(this.kw_only)},_field_type=_FIELD)`;
+  }
+}
+_StField.prototype.__adderClass__ = 'Field';
+function _stFieldFn(...a) {
+  const kw = _stKw(a) || {};
+  const g = (k, d) => (_stHas(kw, k) ? kw[k] : d);
+  if (_stHas(kw, 'default') && _stHas(kw, 'default_factory')) throw new AdderError('ValueError', 'cannot specify both default and default_factory');
+  return new _StField({ default: g('default', _ST_MISSING), default_factory: g('default_factory', _ST_MISSING), init: g('init', true),
+    repr: g('repr', true), hash: g('hash', null), compare: g('compare', true), metadata: g('metadata', new PyDict()), kw_only: g('kw_only', _ST_MISSING) });
+}
+const _stIsMutableDefault = (v) => (Array.isArray(v) && !(v instanceof PyTuple)) || v instanceof Map || isPlainDict(v) || (v instanceof Set && !v._frozen);
+const _stTypeName = (v) => (Array.isArray(v) ? 'list' : v instanceof Set ? 'set' : 'dict');
+// "'a'" / "'a' and 'b'" / "'a', 'b', and 'c'" — CPython's missing-argument list
+const _stNameList = (ns) => (ns.length === 1 ? `'${ns[0]}'` : ns.length === 2 ? `'${ns[0]}' and '${ns[1]}'` : `${ns.slice(0, -1).map((n) => `'${n}'`).join(', ')}, and '${ns[ns.length - 1]}'`);
+const _stDcOf = (x) => (typeof x === 'function' && x._pyClass ? x : x && x.__adderType__);
+function _stProcess(cls, p) {
+  const fields = new Map();
+  for (const b of [...cls._pyMRO.slice(1)].reverse()) if (b.__dataclass_fields__) for (const [k, f] of b.__dataclass_fields__) fields.set(k, f);
+  let kwOnlyFromHere = false;
+  const ann = Object.hasOwn(cls, '__annotations__') && cls.__annotations__ ? [...cls.__annotations__] : [];
+  for (const [name, type] of ann) {
+    const t = String(type);
+    if (/^(typing\.|dataclasses\.)?KW_ONLY$/.test(t)) { kwOnlyFromHere = true; continue; }
+    if (/^(typing\.)?ClassVar(\[|$)/.test(t)) continue;
+    let f;
+    const dflt = cls._pyAttrs && cls._pyAttrs.has(name) ? cls[name] : _ST_MISSING;
+    if (dflt instanceof _StField) f = dflt;
+    else f = _stFieldFn({ _kw: true, ...(dflt === _ST_MISSING ? {} : { default: dflt }) });
+    f.name = name; f.type = t;
+    f._ftype = /^(dataclasses\.)?InitVar(\[|$)/.test(t) ? 'initvar' : 'field';
+    if (f.kw_only === _ST_MISSING) f.kw_only = kwOnlyFromHere || !!p.kw_only;
+    if (f.default !== _ST_MISSING && _stIsMutableDefault(f.default)) {
+      throw new AdderError('ValueError', `mutable default <class '${_stTypeName(f.default)}'> for field ${name} is not allowed: use default_factory`);
+    }
+    if (f._ftype === 'field' && f.default !== _ST_MISSING) setClassAttr(cls, name, f.default);
+    else if (cls._pyAttrs && cls._pyAttrs.has(name)) { delete cls[name]; cls._pyAttrs.delete(name); }
+    fields.set(name, f);
+  }
+  const all = [...fields.values()];
+  const real = all.filter((f) => f._ftype === 'field');
+  const initFields = all.filter((f) => f.init);
+  const positional = initFields.filter((f) => !f.kw_only);
+  const kwonly = initFields.filter((f) => f.kw_only);
+  const hasDefault = (f) => f.default !== _ST_MISSING || f.default_factory !== _ST_MISSING;
+  let seenDefault = null;
+  for (const f of positional) {
+    if (hasDefault(f)) seenDefault = f;
+    else if (seenDefault) throw new AdderError('TypeError', `non-default argument '${f.name}' follows default argument '${seenDefault.name}'`);
+  }
+  const fieldMap = new PyDict(); for (const f of all) fieldMap.set(f.name, f);
+  cls.__dataclass_fields__ = fieldMap;
+  cls.__dataclass_params__ = { __adderClass__: '_DataclassParams', ...p };
+  const own = (k) => cls._pyOwnMembers.has(k);
+  const set = (k, fn) => { cls.prototype[k] = fn; cls._pyOwnMembers.add(k); };
+  const qual = cls._pyName;
+  if (p.init && !own('__init__')) {
+    set('__init__', function (...args) {
+      const kw = _stKw(args);
+      if (args.length > positional.length) {
+        const req = positional.filter((f) => !hasDefault(f)).length + 1, max = positional.length + 1;
+        const takes = req === max ? `${max} positional argument${max > 1 ? 's' : ''}` : `from ${req} to ${max} positional arguments`;
+        throw new AdderError('TypeError', `${qual}.__init__() takes ${takes} but ${args.length + 1} were given`);
+      }
+      if (kw) {
+        for (const k of Object.keys(kw)) {
+          if (k === '_kw') continue;
+          const f = fields.get(k);
+          if (!f || !f.init) throw new AdderError('TypeError', `${qual}.__init__() got an unexpected keyword argument '${k}'`);
+          const pi = positional.indexOf(f);
+          if (pi >= 0 && pi < args.length) throw new AdderError('TypeError', `${qual}.__init__() got multiple values for argument '${k}'`);
+        }
+      }
+      const vals = new Map();
+      const missPos = [], missKw = [];
+      positional.forEach((f, i) => {
+        if (i < args.length) vals.set(f, args[i]);
+        else if (_stHas(kw, f.name)) vals.set(f, kw[f.name]);
+        else if (!hasDefault(f)) missPos.push(f.name);
+      });
+      for (const f of kwonly) { if (_stHas(kw, f.name)) vals.set(f, kw[f.name]); else if (!hasDefault(f)) missKw.push(f.name); }
+      if (missPos.length) throw new AdderError('TypeError', `${qual}.__init__() missing ${missPos.length} required positional argument${missPos.length > 1 ? 's' : ''}: ${_stNameList(missPos)}`);
+      if (missKw.length) throw new AdderError('TypeError', `${qual}.__init__() missing ${missKw.length} required keyword-only argument${missKw.length > 1 ? 's' : ''}: ${_stNameList(missKw)}`);
+      const self = this;
+      const initvars = [];
+      const steps = [];
+      for (const f of all) {
+        if (vals.has(f)) {
+          const v = vals.get(f);
+          if (f._ftype === 'initvar') initvars.push(v); else self[f.name] = v;
+        } else if (f.default !== _ST_MISSING) {
+          if (f._ftype === 'initvar') initvars.push(f.default); else self[f.name] = f.default;
+        } else if (f.default_factory !== _ST_MISSING && f._ftype === 'field') {
+          steps.push(() => { const r = f.default_factory(); if (_stIsThen(r)) return r.then((v) => { self[f.name] = v; }); self[f.name] = r; return null; });
+        }
+      }
+      if (typeof self.__post_init__ === 'function') steps.push(() => self.__post_init__(...initvars));
+      let r = null;
+      for (const s of steps) r = _stIsThen(r) ? r.then(s) : s();
+      return _stIsThen(r) ? r.then(() => null) : null;
+    });
+  }
+  if (p.repr && !own('__repr__')) {
+    set('__repr__', function () {
+      const parts = real.filter((f) => f.repr).map((f) => {
+        const r = pyReprMaybe(this[f.name]);
+        return _stIsThen(r) ? r.then((s) => `${f.name}=${s}`) : `${f.name}=${r}`;
+      });
+      return _stJoin(parts, (ps) => `${qual}(${ps.join(', ')})`);
+    });
+  }
+  const cmpFields = real.filter((f) => f.compare);
+  const tupleOf = (o) => mkTuple(cmpFields.map((f) => o[f.name]));
+  if (p.eq && !own('__eq__')) {
+    set('__eq__', function (o) { return o === this || (!!o && o.__adderType__ === this.__adderType__ && pyEq(tupleOf(this), tupleOf(o))); });
+  }
+  if (p.order) {
+    for (const [k, op, f] of [['__lt__', '<', pyLt], ['__le__', '<=', pyLe], ['__gt__', '>', pyGt], ['__ge__', '>=', pyGe]]) {
+      if (own(k)) throw new AdderError('TypeError', `Cannot overwrite attribute ${k} in class ${qual}. Consider using functools.total_ordering`);
+      set(k, function (o) {
+        if (!o || o.__adderType__ !== this.__adderType__) throw new AdderError('TypeError', `'${op}' not supported between instances of '${pyTypeName(this)}' and '${pyTypeName(o)}'`);
+        return f(tupleOf(this), tupleOf(o));
+      });
+    }
+  }
+  const hashFields = real.filter((f) => (f.hash === null ? f.compare : f.hash));
+  if (p.unsafe_hash || (p.eq && p.frozen)) {
+    if (!own('__hash__') || p.unsafe_hash) set('__hash__', function () { return _pyHash(mkTuple(hashFields.map((f) => this[f.name]))); });
+  } else if (p.eq && !own('__hash__')) {
+    cls.prototype.__hash__ = null;   // unhashable, as CPython makes an eq dataclass that isn't frozen
+  }
+  if (p.frozen) { cls.prototype.__dataclass_frozen__ = true; }
+  if (p.match_args) cls.__match_args__ = mkTuple(positional.map((f) => f.name));
+  set('__replace__', function (...a) { return _stReplace(this, ...a); });
+  return cls;
+}
+const _ST_DEFAULTS = { init: true, repr: true, eq: true, order: false, unsafe_hash: false, frozen: false, match_args: true, kw_only: false, slots: false, weakref_slot: false };
+function _stDataclass(...a) {
+  if (a.length === 1 && typeof a[0] === 'function' && a[0]._pyClass) return _stProcess(a[0], { ..._ST_DEFAULTS });
+  const kw = _stKw(a) || {};
+  const p = { ..._ST_DEFAULTS };
+  for (const k of Object.keys(kw)) if (k !== '_kw') p[k] = !!kw[k];
+  if (p.order && !p.eq) throw new AdderError('ValueError', 'eq must be true if order is true');
+  return (cls) => _stProcess(cls, p);
+}
+function _stFields(x) {
+  const cls = _stDcOf(x);
+  if (!cls || !cls.__dataclass_fields__) throw new AdderError('TypeError', 'must be called with a dataclass type or instance');
+  return mkTuple([...cls.__dataclass_fields__.values()].filter((f) => f._ftype === 'field'));
+}
+const _stIsDcInstance = (x) => x !== null && typeof x === 'object' && !!x.__adderType__ && !!x.__adderType__.__dataclass_fields__;
+function _stAsInner(x, mk, tupleMode) {
+  if (_stIsDcInstance(x)) {
+    const pairs = _stFields(x).map((f) => [f.name, _stAsInner(x[f.name], mk, tupleMode)]);
+    return tupleMode ? mkTuple(pairs.map((p) => p[1])) : mk(pairs);
+  }
+  if (x instanceof PyTuple) {
+    const items = x.map((v) => _stAsInner(v, mk, tupleMode));
+    return x._fields && x.__adderType__ ? x.__adderType__(...items) : mkTuple(items);
+  }
+  if (Array.isArray(x)) return x.map((v) => _stAsInner(v, mk, tupleMode));
+  if (x instanceof Map) { const m = new PyDict(); for (const [k, v] of x) m.set(_stAsInner(k, mk, tupleMode), _stAsInner(v, mk, tupleMode)); return m; }
+  if (isPlainDict(x)) { const o = {}; for (const k of Object.keys(x)) o[k] = _stAsInner(x[k], mk, tupleMode); return o; }
+  return adderModules.copy.deepcopy(x);
+}
+function _stAsdict(obj, ...a) {
+  if (!_stIsDcInstance(obj)) throw new AdderError('TypeError', 'asdict() should be called on dataclass instances');
+  const kw = _stKw(a);
+  const factory = kw && _stHas(kw, 'dict_factory') ? kw.dict_factory : null;
+  const mk = factory ? (pairs) => factory(pairs.map((p) => mkTuple(p))) : (pairs) => Object.fromEntries(pairs);
+  return _stAsInner(obj, mk, false);
+}
+function _stAstuple(obj) {
+  if (!_stIsDcInstance(obj)) throw new AdderError('TypeError', 'astuple() should be called on dataclass instances');
+  return _stAsInner(obj, null, true);
+}
+function _stReplace(obj, ...a) {
+  if (!_stIsDcInstance(obj)) throw new AdderError('TypeError', 'replace() should be called on dataclass instances');
+  const kw = _stKw(a) || {};
+  const cls = obj.__adderType__;
+  const args = { _kw: true };
+  for (const f of cls.__dataclass_fields__.values()) {
+    if (f._ftype === 'initvar') {
+      if (!f.init) continue;
+      if (!_stHas(kw, f.name) && f.default === _ST_MISSING) throw new AdderError('TypeError', `InitVar '${f.name}' must be specified with replace()`);
+      if (_stHas(kw, f.name)) args[f.name] = kw[f.name];
+      continue;
+    }
+    if (!f.init) { if (_stHas(kw, f.name)) throw new AdderError('TypeError', `field ${f.name} is declared with init=False, it cannot be specified with replace()`); continue; }
+    args[f.name] = _stHas(kw, f.name) ? kw[f.name] : obj[f.name];
+  }
+  for (const k of Object.keys(kw)) if (k !== '_kw' && !cls.__dataclass_fields__.has(k)) throw new AdderError('TypeError', `${cls._pyName}.__init__() got an unexpected keyword argument '${k}'`);
+  return cls(args);
+}
+function _stMakeDataclass(name, fieldsIn, ...a) {
+  const kw = _stKw(a) || {};
+  const bases = _stHas(kw, 'bases') ? [...pyIter(kw.bases)] : a[0] ? [...pyIter(a[0])] : [];
+  const cls = _stMakeClass(name, bases);
+  const ann = [];
+  for (const spec of pyIter(fieldsIn)) {
+    if (typeof spec === 'string') { ann.push([spec, 'typing.Any']); continue; }
+    const [n, t, f] = spec;
+    ann.push([n, t === undefined ? 'typing.Any' : typeof t === 'string' ? t : (t && t._pyName) || pyRepr(t)]);
+    if (f !== undefined) setClassAttr(cls, n, f);
+  }
+  if (_stHas(kw, 'namespace') && kw.namespace) {
+    const ns = kw.namespace instanceof Map ? [...kw.namespace] : Object.entries(kw.namespace);
+    for (const [k, v] of ns) {
+      if (typeof v === 'function') { cls.prototype[k] = function (...args) { return v(this, ...args); }; cls._pyOwnMembers.add(k); } else setClassAttr(cls, k, v);
+    }
+  }
+  const p = { ..._ST_DEFAULTS };
+  for (const k of Object.keys(kw)) if (k !== '_kw' && k in _ST_DEFAULTS) p[k] = !!kw[k];
+  const r = finishClass(cls, ann);
+  return _stIsThen(r) ? r.then(() => _stProcess(cls, p)) : _stProcess(cls, p);
+}
+const _stInitVar = { __adderClass__: 'InitVar', __getitem__: (t) => ({ __adderClass__: 'InitVar', type: t, __repr__: () => `dataclasses.InitVar[${pyRepr(t)}]` }), __repr__: () => "<class 'dataclasses.InitVar'>" };
+adderModules.dataclasses = {
+  dataclass: _stDataclass, field: _stFieldFn, Field: _StField, fields: _stFields, asdict: _stAsdict, astuple: _stAstuple,
+  replace: _stReplace, is_dataclass: (x) => !!(_stDcOf(x) && _stDcOf(x).__dataclass_fields__),
+  make_dataclass: _stMakeDataclass, MISSING: _ST_MISSING, KW_ONLY: _ST_KW_ONLY, InitVar: _stInitVar,
+  FrozenInstanceError: _stFrozenErr,
+};
+
+// -- stdlib-num.js --
+
+// adder stdlib — numbers: fractions, decimal, statistics, and the math functions they need
+// (erf, erfc, gamma, lgamma, an exact sumprod). CPython computes statistics exactly (sums of
+// floats as rationals, one rounding at the end), so this does too: a small BigInt rational core
+// with a correctly rounded conversion back to float.
+//
+// Concat-bundled with the rest of adder: top-level names carry an `_nm` prefix.
+
+
+const _nmIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _nmKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
+  args[args.length - 1]._kw === true ? args.pop() : null);
+const _nmHas = (kw, k) => !!kw && Object.hasOwn(kw, k) && k !== '_kw';
+const _nmType = (name, Cls, module) => {
+  const ctor = (...a) => new Cls(...a);
+  ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
+  if (module) ctor.__module__ = module;
+  Cls.prototype.__adderClass__ = name;
+  Cls.prototype.__adderType__ = ctor;
+  ctor._jsClass = Cls;
+  return ctor;
+};
+// an int as a Python value: a Number while it is exact, a BigInt beyond 2**53
+const _nmInt = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
+const _nmIsInt = (v) => (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'bigint' || typeof v === 'boolean';
+const _nmBig = (v) => (typeof v === 'bigint' ? v : BigInt(typeof v === 'boolean' ? +v : v));
+// a float repr that keeps the '.0' (NormalDist's and the statistics reprs print floats)
+const _nmFloatRepr = (x) => (Number.isInteger(x) && Math.abs(x) < 1e16 ? `${x}.0` : pyRepr(x));
+
+// ── exact rationals: [numerator, denominator] BigInts, denominator > 0 ──
+const _nmAbs = (b) => (b < 0n ? -b : b);
+function _nmGcd(a, b) { a = _nmAbs(a); b = _nmAbs(b); while (b) [a, b] = [b, a % b]; return a; }
+const _nmBitlen = (b) => (b === 0n ? 0 : _nmAbs(b).toString(2).length);
+// a finite float, exactly
+function _nmFromFloat(x) {
+  if (!Number.isFinite(x)) throw new AdderError(Number.isNaN(x) ? 'ValueError' : 'OverflowError', Number.isNaN(x) ? 'cannot convert NaN to integer ratio' : 'cannot convert Infinity to integer ratio');
+  if (Number.isInteger(x)) return [BigInt(x), 1n];
+  const f = new Float64Array([x]);
+  const u = new BigUint64Array(f.buffer)[0];
+  const neg = u >> 63n;
+  const e = Number((u >> 52n) & 0x7ffn);
+  let m = u & 0xfffffffffffffn;
+  let exp;
+  if (e === 0) exp = -1074; else { m |= 1n << 52n; exp = e - 1075; }
+  let n = neg ? -m : m;
+  let d = 1n;
+  if (exp >= 0) n <<= BigInt(exp); else d = 1n << BigInt(-exp);
+  const g = _nmGcd(n, d);
+  return [n / g, d / g];
+}
+// n / d, correctly rounded to the nearest float (ties to even), as CPython's int / int
+function _nmToFloat(n, d) {
+  if (d < 0n) { n = -n; d = -d; }
+  if (n === 0n) return 0;
+  const neg = n < 0n;
+  if (neg) n = -n;
+  let k = 55 - (_nmBitlen(n) - _nmBitlen(d));
+  let q, r;
+  for (;;) {
+    if (k >= 0) { const nn = n << BigInt(k); q = nn / d; r = nn % d; } else { const dd = d << BigInt(-k); q = n / dd; r = n % dd; }
+    if (_nmBitlen(q) >= 55) break;
+    k += 2;
+  }
+  const L = _nmBitlen(q);
+  const E = L - 1 - k;                       // the value lies in [2**E, 2**(E+1))
+  let p = 53;
+  if (E < -1022) p = 53 - (-1022 - E);       // subnormal: fewer mantissa bits
+  if (p < 0) p = 0;
+  const drop = L - p;
+  let m = q >> BigInt(drop);
+  const rem = q & ((1n << BigInt(drop)) - 1n);
+  const half = 1n << BigInt(drop - 1);
+  if (rem > half || (rem === half && (r !== 0n || (m & 1n) === 1n))) m += 1n;
+  let e2 = drop - k;
+  let v = Number(m);
+  if (e2 > 1023) { v *= 2 ** 1023; e2 -= 1023; if (e2 > 1023) return neg ? -Infinity : Infinity; }
+  if (e2 < -1022) { v *= 2 ** (e2 + 600); v *= 2 ** -600; } else v *= 2 ** e2;
+  return neg ? -v : v;
+}
+const _nmRat = (n, d) => { if (d < 0n) { n = -n; d = -d; } const g = _nmGcd(n, d) || 1n; return [n / g, d / g]; };
+const _nmRadd = (a, b) => _nmRat(a[0] * b[1] + b[0] * a[1], a[1] * b[1]);
+const _nmRmul = (a, b) => _nmRat(a[0] * b[0], a[1] * b[1]);
+// a number / Fraction / Decimal, exactly (null for inf / nan, which the caller then propagates)
+function _nmExact(x) {
+  if (typeof x === 'boolean') return [BigInt(+x), 1n];
+  if (typeof x === 'bigint') return [x, 1n];
+  if (typeof x === 'number') return Number.isFinite(x) ? _nmFromFloat(x) : null;
+  if (x instanceof _NmFraction) return [x._n, x._d];
+  if (x instanceof _NmDecimal) return x._special ? null : x._ratio();
+  if (x && typeof x.as_integer_ratio === 'function') { const t = x.as_integer_ratio(); return [_nmBig(t[0]), _nmBig(t[1])]; }
+  throw new AdderError('TypeError', `can't convert type '${pyTypeName(x)}' to numerator/denominator`);
+}
+
+// ── math additions: erf / erfc (fdlibm), gamma / lgamma (CPython's Lanczos), sumprod ──
+const _nmF = (hi, lo) => { const b = new DataView(new ArrayBuffer(8)); b.setUint32(0, hi); b.setUint32(4, lo); return b.getFloat64(0); };
+const _nmHi = (x) => { const b = new DataView(new ArrayBuffer(8)); b.setFloat64(0, x); return b.getInt32(0); };
+const _nmLoZero = (x) => { const b = new DataView(new ArrayBuffer(8)); b.setFloat64(0, x); b.setUint32(4, 0); return b.getFloat64(0); };
+const _NM_ERX = _nmF(0x3FEB0AC1, 0x60000000), _NM_EFX = _nmF(0x3FC06EBA, 0x8214DB69), _NM_EFX8 = _nmF(0x3FF06EBA, 0x8214DB69);
+const _NM_PP = [_nmF(0x3FC06EBA, 0x8214DB68), _nmF(0xBFD4CD7D, 0x691CB913), _nmF(0xBF9D2A51, 0xDBD7194F), _nmF(0xBF77A291, 0x236668E4), _nmF(0xBEF8EAD6, 0x120016AC)];
+const _NM_QQ = [0, _nmF(0x3FD97779, 0xCDDADC09), _nmF(0x3FB0A54C, 0x5536CEBA), _nmF(0x3F74D022, 0xC4D36B0F), _nmF(0x3F215DC9, 0x221C1A10), _nmF(0xBED09C43, 0x42A26120)];
+const _NM_PA = [_nmF(0xBF6359B8, 0xBEF77538), _nmF(0x3FDA8D00, 0xAD92B34D), _nmF(0xBFD7D240, 0xFBB8C3F1), _nmF(0x3FD45FCA, 0x805120E4), _nmF(0xBFBC6398, 0x3D3E28EC), _nmF(0x3FA22A36, 0x599795EB), _nmF(0xBF61BF38, 0x0A96073F)];
+const _NM_QA = [0, _nmF(0x3FBB3E66, 0x18EEE323), _nmF(0x3FE14AF0, 0x92EB6F33), _nmF(0x3FB2635C, 0xD99FE9A7), _nmF(0x3FC02660, 0xE763351F), _nmF(0x3F8BEDC2, 0x6B51DD1C), _nmF(0x3F888B54, 0x5735151D)];
+const _NM_RA = [_nmF(0xBF843412, 0x600D6435), _nmF(0xBFE63416, 0xE4BA7360), _nmF(0xC0251E04, 0x41B0E726), _nmF(0xC04F300A, 0xE4CBA38D), _nmF(0xC0644CB1, 0x84282266), _nmF(0xC067135C, 0xEBCCABB2), _nmF(0xC0545265, 0x57E4D2F2), _nmF(0xC023A0EF, 0xC69AC25C)];
+const _NM_SA = [0, _nmF(0x4033A6B9, 0xBD707687), _nmF(0x4061350C, 0x526AE721), _nmF(0x407B290D, 0xD58A1A71), _nmF(0x40842B19, 0x21EC2868), _nmF(0x407AD021, 0x57700314), _nmF(0x405B28A3, 0xEE48AE2C), _nmF(0x401A47EF, 0x8E484A93), _nmF(0xBFAEEFF2, 0xEE749A62)];
+const _NM_RB = [_nmF(0xBF843412, 0x39E86F4A), _nmF(0xBFE993BA, 0x70C285DE), _nmF(0xC031C209, 0x555F995A), _nmF(0xC064145D, 0x43C5ED98), _nmF(0xC083EC88, 0x1375F228), _nmF(0xC0900461, 0x6A2E5992), _nmF(0xC07E384E, 0x9BDC383F)];
+const _NM_SB = [0, _nmF(0x403E568B, 0x261D5190), _nmF(0x40745CAE, 0x221B9F0A), _nmF(0x409802EB, 0x189D5118), _nmF(0x40A8FFB7, 0x688C246A), _nmF(0x40A3F219, 0xCEDF3BE6), _nmF(0x407DA874, 0xE79FE763), _nmF(0xC03670E2, 0x42712D62)];
+const _nmPoly = (c, z, from = 0) => { let r = c[c.length - 1]; for (let i = c.length - 2; i >= from; i--) r = c[i] + z * r; return r; };
+const _nmQ = (c, z) => { let r = c[c.length - 1]; for (let i = c.length - 2; i >= 1; i--) r = c[i] + z * r; return 1 + z * r; };
+function _nmErfTail(x, ix, cut) {
+  const ax = Math.abs(x);
+  const s = 1 / (ax * ax);
+  let R, S;
+  if (ix < cut) { R = _nmPoly(_NM_RA, s); S = _nmQ(_NM_SA, s); } else { R = _nmPoly(_NM_RB, s); S = _nmQ(_NM_SB, s); }
+  const z = _nmLoZero(ax);
+  return Math.exp(-z * z - 0.5625) * Math.exp((z - ax) * (z + ax) + R / S) / ax;
+}
+function _nmErf(x) {
+  if (Number.isNaN(x)) return x;
+  if (!Number.isFinite(x)) return x > 0 ? 1 : -1;
+  const hx = _nmHi(x), ix = hx & 0x7fffffff;
+  if (ix < 0x3feb0000) {
+    if (ix < 0x3e300000) return ix < 0x00800000 ? 0.125 * (8.0 * x + _NM_EFX8 * x) : x + _NM_EFX * x;
+    const z = x * x;
+    return x + x * (_nmPoly(_NM_PP, z) / _nmQ(_NM_QQ, z));
+  }
+  if (ix < 0x3ff40000) {
+    const s = Math.abs(x) - 1;
+    const P = _nmPoly(_NM_PA, s), Q = _nmQ(_NM_QA, s);
+    return hx >= 0 ? _NM_ERX + P / Q : -_NM_ERX - P / Q;
+  }
+  if (ix >= 0x40180000) return hx >= 0 ? 1 - 1e-300 : 1e-300 - 1;
+  const r = _nmErfTail(x, ix, 0x4006DB6E);
+  return hx >= 0 ? 1 - r : r - 1;
+}
+function _nmErfc(x) {
+  if (Number.isNaN(x)) return x;
+  if (!Number.isFinite(x)) return x > 0 ? 0 : 2;
+  const hx = _nmHi(x), ix = hx & 0x7fffffff;
+  if (ix < 0x3feb0000) {
+    if (ix < 0x3c700000) return 1 - x;
+    const z = x * x;
+    const y = _nmPoly(_NM_PP, z) / _nmQ(_NM_QQ, z);
+    if (hx < 0x3fd00000) return 1 - (x + x * y);
+    let r = x * y;
+    r += (x - 0.5);
+    return 0.5 - r;
+  }
+  if (ix < 0x3ff40000) {
+    const s = Math.abs(x) - 1;
+    const P = _nmPoly(_NM_PA, s), Q = _nmQ(_NM_QA, s);
+    if (hx >= 0) return (1 - _NM_ERX) - P / Q;
+    return 1 + (_NM_ERX + P / Q);
+  }
+  if (ix < 0x403c0000) {
+    if (hx < 0 && ix >= 0x40180000) return 2 - 1e-300;
+    const r = _nmErfTail(x, ix, 0x4006DB6D);
+    return hx > 0 ? r : 2 - r;
+  }
+  return hx > 0 ? 1e-300 * 1e-300 : 2 - 1e-300;
+}
+const _NM_LANCZOS_G = 6.024680040776729583740234375;
+const _NM_LANCZOS_GMH = 5.524680040776729583740234375;
+const _NM_LANCZOS_NUM = [23531376880.410759688572007674451636754734846804940, 42919803642.649098768957899047001988850926355848959,
+  35711959237.355668049440185451547166705960488635843, 17921034426.037209699919755754458931112671403265390,
+  6039542586.3520280050642916443072979210699388420708, 1439720407.3117216736632230727949123939715485786772,
+  248874557.86205415651146038641322942321632125127801, 31426415.585400194380614231628318205362874684987640,
+  2876370.6289353724412254090516208496135991145378768, 186056.26539522349504029498971604569928220784236328,
+  8071.6720023658162106380029022722506138218516325024, 210.82427775157934587250973392071336271166969580291,
+  2.5066282746310002701649081771338373386264310793408];
+const _NM_LANCZOS_DEN = [0.0, 39916800.0, 120543840.0, 150917976.0, 105258076.0, 45995730.0, 13339535.0, 2637558.0, 357423.0, 32670.0, 1925.0, 66.0, 1.0];
+const _NM_GAMMA_INT = [1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0, 3628800.0, 39916800.0, 479001600.0, 6227020800.0,
+  87178291200.0, 1307674368000.0, 20922789888000.0, 355687428096000.0, 6402373705728000.0, 121645100408832000.0,
+  2432902008176640000.0, 51090942171709440000.0, 1124000727777607680000.0];
+const _NM_LOGPI = 1.144729885849400174143427351353058711647;
+function _nmLanczosSum(x) {
+  let num = 0, den = 0;
+  if (x < 5.0) for (let i = 12; i >= 0; i--) { num = num * x + _NM_LANCZOS_NUM[i]; den = den * x + _NM_LANCZOS_DEN[i]; }
+  else for (let i = 0; i < 13; i++) { num = num / x + _NM_LANCZOS_NUM[i]; den = den / x + _NM_LANCZOS_DEN[i]; }
+  return num / den;
+}
+function _nmSinpi(x) {
+  const y = Math.abs(x) % 2.0;
+  const n = Math.round(2.0 * y);
+  let r;
+  switch (n) {
+    case 0: r = Math.sin(Math.PI * y); break;
+    case 1: r = Math.cos(Math.PI * (y - 0.5)); break;
+    case 2: r = Math.sin(Math.PI * (1.0 - y)); break;
+    case 3: r = -Math.cos(Math.PI * (y - 1.5)); break;
+    default: r = Math.sin(Math.PI * (y - 2.0));
+  }
+  return (x < 0 || Object.is(x, -0) ? -1 : 1) * r;
+}
+const _nmDomain = () => new AdderError('ValueError', 'math domain error');
+const _nmRange = () => new AdderError('OverflowError', 'math range error');
+function _nmGamma(x) {
+  if (!Number.isFinite(x)) { if (Number.isNaN(x) || x > 0) return x; throw _nmDomain(); }
+  if (x === 0) throw _nmDomain();
+  if (x === Math.floor(x)) {
+    if (x < 0) throw _nmDomain();
+    if (x <= 23) return _NM_GAMMA_INT[x - 1];
+  }
+  const absx = Math.abs(x);
+  if (absx < 1e-20) { const r = 1.0 / x; if (!Number.isFinite(r)) throw _nmRange(); return r; }
+  if (absx > 200.0) { if (x < 0) return 0.0 / _nmSinpi(x); throw _nmRange(); }
+  const y = absx + _NM_LANCZOS_GMH;
+  let z;
+  if (absx > _NM_LANCZOS_GMH) { const q = y - absx; z = q - _NM_LANCZOS_GMH; } else { const q = y - _NM_LANCZOS_GMH; z = q - absx; }
+  z = z * _NM_LANCZOS_G / y;
+  let r;
+  if (x < 0) {
+    r = -Math.PI / _nmSinpi(absx) / absx * Math.exp(y) / _nmLanczosSum(absx);
+    r -= z * r;
+    if (absx < 140.0) r /= Math.pow(y, absx - 0.5);
+    else { const sp = Math.pow(y, absx / 2.0 - 0.25); r /= sp; r /= sp; }
+  } else {
+    r = _nmLanczosSum(absx) / Math.exp(y);
+    r += z * r;
+    if (absx < 140.0) r *= Math.pow(y, absx - 0.5);
+    else { const sp = Math.pow(y, absx / 2.0 - 0.25); r *= sp; r *= sp; }
+  }
+  if (!Number.isFinite(r)) throw _nmRange();
+  return r;
+}
+function _nmLgamma(x) {
+  if (!Number.isFinite(x)) return Number.isNaN(x) ? x : Infinity;
+  if (x === Math.floor(x) && x <= 2.0) { if (x <= 0) throw _nmDomain(); return 0.0; }
+  const absx = Math.abs(x);
+  if (absx < 1e-20) return -Math.log(absx);
+  let r = Math.log(_nmLanczosSum(absx)) - _NM_LANCZOS_G;
+  r += (absx - 0.5) * (Math.log(absx + _NM_LANCZOS_G - 0.5) - 1);
+  if (x < 0.0) r = _NM_LOGPI - Math.log(Math.abs(_nmSinpi(absx))) - Math.log(absx) - r;
+  if (!Number.isFinite(r)) throw _nmRange();
+  return r;
+}
+// sum(p[i] * q[i]) computed exactly and rounded once (CPython's sumprod is accurate to the ulp)
+function _nmSumprod(p, q) {
+  const a = [...pyIter(p)], b = [...pyIter(q)];
+  if (a.length !== b.length) throw new AdderError('ValueError', 'Inputs are not the same length');
+  if (!a.every((v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') || !b.every((v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint')) {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s = pyAdd(s, pyMul(a[i], b[i]));
+    return s;
+  }
+  const allInt = a.every(_nmIsInt) && b.every(_nmIsInt);
+  let acc = [0n, 1n];
+  for (let i = 0; i < a.length; i++) {
+    const x = _nmExact(a[i]), y = _nmExact(b[i]);
+    if (!x || !y) return a.reduce((s, v, j) => s + v * b[j], 0);
+    acc = _nmRadd(acc, _nmRmul(x, y));
+  }
+  return allInt ? _nmInt(acc[0]) : _nmToFloat(acc[0], acc[1]);
+}
+Object.assign(adderModules.math, {
+  erf: _nmErf, erfc: _nmErfc, gamma: _nmGamma, lgamma: _nmLgamma, sumprod: _nmSumprod,
+  fsum: (it) => { let acc = [0n, 1n]; const special = []; for (const v of pyIter(it)) { const x = Number(v); if (!Number.isFinite(x)) special.push(x); else acc = _nmRadd(acc, _nmFromFloat(x)); } if (special.length) return special.reduce((s, v) => s + v, 0); return _nmToFloat(acc[0], acc[1]); },
+});
+
+// ── fractions ──
+// Fraction over BigInts: from ints, floats (exactly), strings ('3/4', '-1.5e2'), Decimals and
+// other Fractions; arithmetic with ints, floats (giving floats) and Fractions; comparison,
+// hashing equal to an equal int's, limit_denominator, as_integer_ratio, round / floor / ceil.
+class _NmFraction {
+  constructor(numerator = 0, denominator = null, ...rest) {
+    if (numerator !== null && typeof numerator === 'object' && numerator._kw) { const kw = numerator; numerator = kw.numerator ?? 0; denominator = kw.denominator ?? null; }
+    if (denominator !== null && typeof denominator === 'object' && denominator._kw) denominator = denominator.denominator ?? null;
+    let n, d;
+    if (denominator === null || denominator === undefined) {
+      if (_nmIsInt(numerator)) { n = _nmBig(numerator); d = 1n; }
+      else if (numerator instanceof _NmFraction) { n = numerator._n; d = numerator._d; }
+      else if (typeof numerator === 'number') [n, d] = _nmFromFloat(numerator);
+      else if (numerator instanceof _NmDecimal) { if (numerator._special) throw new AdderError('ValueError', `cannot convert ${numerator} to Fraction`); [n, d] = numerator._ratio(); }
+      else if (typeof numerator === 'string') [n, d] = _nmParseFraction(numerator);
+      else throw new AdderError('TypeError', 'argument should be a string or a Rational instance');
+    } else {
+      const a = _nmFracArg(numerator), b = _nmFracArg(denominator);
+      n = a[0] * b[1]; d = a[1] * b[0];
+    }
+    if (d === 0n) throw new AdderError('ZeroDivisionError', `Fraction(${n}, 0)`);
+    const g = _nmGcd(n, d) || 1n;
+    if (d < 0n) { n = -n; d = -d; }
+    this._n = n / g; this._d = d / g;
+  }
+  get numerator() { return _nmInt(this._n); }
+  get denominator() { return _nmInt(this._d); }
+  __repr__() { return `Fraction(${this._n}, ${this._d})`; }
+  __str__() { return this._d === 1n ? String(this._n) : `${this._n}/${this._d}`; }
+  __format__(spec) { return spec ? pyFormatValue(this.valueOf(), spec) : this.__str__(); }
+  valueOf() { return _nmToFloat(this._n, this._d); }
+  __float__() { return this.valueOf(); }
+  __int__() { return _nmInt(this._n / this._d); }
+  __trunc__() { return this.__int__(); }
+  __floor__() { const q = this._n / this._d; return _nmInt(this._n < 0n && q * this._d !== this._n ? q - 1n : q); }
+  __ceil__() { const q = this._n / this._d; return _nmInt(this._n > 0n && q * this._d !== this._n ? q + 1n : q); }
+  __round__(nd) {
+    if (nd === undefined || nd === null) {
+      const fl = _nmBig(this.__floor__()); const rem = [this._n - fl * this._d, this._d];   // remainder in [0, 1)
+      const twice = 2n * rem[0];
+      return _nmInt(twice > rem[1] || (twice === rem[1] && (fl & 1n) === 1n) ? fl + 1n : fl);
+    }
+    const shift = 10n ** BigInt(Math.abs(nd));
+    const scaled = nd > 0 ? new _NmFraction(_nmInt(this._n * shift), _nmInt(this._d)) : new _NmFraction(_nmInt(this._n), _nmInt(this._d * shift));
+    const r = _nmBig(scaled.__round__());
+    return nd > 0 ? new _NmFraction(_nmInt(r), _nmInt(shift)) : new _NmFraction(_nmInt(r * shift));
+  }
+  __hash__() { return this._d === 1n ? _pyHash(_nmInt(this._n)) : _pyHash(this.valueOf()); }
+  __bool__() { return this._n !== 0n; }
+  __neg__() { return _nmFrac(-this._n, this._d); }
+  __pos__() { return this; }
+  __abs__() { return _nmFrac(_nmAbs(this._n), this._d); }
+  is_integer() { return this._d === 1n; }
+  as_integer_ratio() { return mkTuple([_nmInt(this._n), _nmInt(this._d)]); }
+  limit_denominator(max = 1000000) {
+    // CPython's continued-fraction walk, then the nearer of the two best candidates
+    if (max !== null && typeof max === 'object' && max._kw) max = max.max_denominator ?? 1000000;
+    const maxD = _nmBig(max);
+    if (maxD < 1n) throw new AdderError('ValueError', 'max_denominator should be at least 1');
+    if (this._d <= maxD) return _nmFrac(this._n, this._d);
+    let p0 = 0n, q0 = 1n, p1 = 1n, q1 = 0n, n = this._n, d = this._d;
+    for (;;) {
+      const a = _nmBig(_nmFloorDiv(n, d));
+      const q2 = q0 + a * q1;
+      if (q2 > maxD) break;
+      [p0, q0, p1, q1] = [p1, q1, p0 + a * p1, q2];
+      [n, d] = [d, n - a * d];
+    }
+    const k = (maxD - q0) / q1;
+    return 2n * d * (q0 + k * q1) <= this._d ? _nmFrac(p1, q1) : _nmFrac(p0 + k * p1, q0 + k * q1);
+  }
+  _bin(o, f, rf) {
+    if (o instanceof _NmFraction || _nmIsInt(o)) return f(this, o instanceof _NmFraction ? o : _nmFrac(_nmBig(o), 1n));
+    if (typeof o === 'number') return rf(this.valueOf(), o);
+    return _nmNotImpl;
+  }
+  __add__(o) { return this._bin(o, (a, b) => _nmFrac(a._n * b._d + b._n * a._d, a._d * b._d), (a, b) => a + b); }
+  __radd__(o) { return this.__add__(o); }
+  __sub__(o) { return this._bin(o, (a, b) => _nmFrac(a._n * b._d - b._n * a._d, a._d * b._d), (a, b) => a - b); }
+  __rsub__(o) { return this._bin(o, (a, b) => _nmFrac(b._n * a._d - a._n * b._d, a._d * b._d), (a, b) => b - a); }
+  __mul__(o) { return this._bin(o, (a, b) => _nmFrac(a._n * b._n, a._d * b._d), (a, b) => a * b); }
+  __rmul__(o) { return this.__mul__(o); }
+  __truediv__(o) {
+    return this._bin(o, (a, b) => { if (b._n === 0n) throw new AdderError('ZeroDivisionError', `Fraction(${a._n * b._d}, 0)`); return _nmFrac(a._n * b._d, a._d * b._n); }, (a, b) => pyTrueDiv(a, b));
+  }
+  __rtruediv__(o) {
+    return this._bin(o, (a, b) => { if (a._n === 0n) throw new AdderError('ZeroDivisionError', `Fraction(${b._n * a._d}, 0)`); return _nmFrac(b._n * a._d, b._d * a._n); }, (a, b) => pyTrueDiv(b, a));
+  }
+  __floordiv__(o) { return this._bin(o, (a, b) => _nmFloorDiv(a._n * b._d, a._d * b._n), (a, b) => Math.floor(a / b)); }
+  __rfloordiv__(o) { return this._bin(o, (a, b) => _nmFloorDiv(b._n * a._d, b._d * a._n), (a, b) => Math.floor(b / a)); }
+  __mod__(o) { return this._bin(o, (a, b) => { const q = _nmBig(_nmFloorDiv(a._n * b._d, a._d * b._n)); return _nmFrac(a._n * b._d - q * b._n * a._d, a._d * b._d); }, (a, b) => ((a % b) + b) % b); }
+  __pow__(o) {
+    if (_nmIsInt(o)) {
+      const e = _nmBig(o);
+      if (e >= 0n) return _nmFrac(this._n ** e, this._d ** e);
+      if (this._n === 0n) throw new AdderError('ZeroDivisionError', `Fraction(${this._d ** -e}, 0)`);
+      return _nmFrac(this._d ** -e, this._n ** -e);
+    }
+    if (o instanceof _NmFraction && o._d === 1n) return this.__pow__(_nmInt(o._n));
+    return Math.pow(this.valueOf(), Number(o));
+  }
+  __rpow__(o) { return this._d === 1n && _nmIsInt(o) ? new _NmFraction(o).__pow__(_nmInt(this._n)) : Math.pow(Number(o), this.valueOf()); }
+  _cmp(o) {
+    if (o instanceof _NmFraction || _nmIsInt(o)) { const b = o instanceof _NmFraction ? o : _nmFrac(_nmBig(o), 1n); const l = this._n * b._d, r = b._n * this._d; return l < r ? -1 : l > r ? 1 : 0; }
+    if (typeof o === 'number') { if (Number.isNaN(o)) return NaN; if (!Number.isFinite(o)) return o > 0 ? -1 : 1; const [n, d] = _nmFromFloat(o); const l = this._n * d, r = n * this._d; return l < r ? -1 : l > r ? 1 : 0; }
+    return null;
+  }
+  __eq__(o) { const c = this._cmp(o); return c === null ? _nmNotImpl : c === 0; }
+  __lt__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('<', this, o); return c < 0; }
+  __le__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('<=', this, o); return c <= 0; }
+  __gt__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('>', this, o); return c > 0; }
+  __ge__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('>=', this, o); return c >= 0; }
+}
+const _nmNotImpl = NotImplemented;
+const _nmCmpErr = (op, a, b) => new AdderError('TypeError', `'${op}' not supported between instances of '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+const _nmFrac = (n, d) => new _NmFraction(_nmInt(n), _nmInt(d));
+function _nmFloorDiv(n, d) { let q = n / d; if ((n % d !== 0n) && ((n < 0n) !== (d < 0n))) q -= 1n; return _nmInt(q); }
+function _nmFracArg(v) {
+  if (_nmIsInt(v)) return [_nmBig(v), 1n];
+  if (v instanceof _NmFraction) return [v._n, v._d];
+  throw new AdderError('TypeError', 'both arguments should be Rational instances');
+}
+function _nmParseFraction(s) {
+  const m = /^\s*([+-]?)(?=\d|\.\d)(\d*(?:_\d+)*)(?:(?:\/(\d+(?:_\d+)*))?|(?:\.(\d*(?:_\d+)*))?(?:[eE]([+-]?\d+(?:_\d+)*))?)\s*$/.exec(s);
+  if (!m) throw new AdderError('ValueError', `Invalid literal for Fraction: ${pyRepr(s)}`);
+  const clean = (t) => (t || '').replace(/_/g, '');
+  let n = BigInt(clean(m[2]) || '0'), d = 1n;
+  if (m[3] !== undefined) { d = BigInt(clean(m[3])); if (d === 0n) throw new AdderError('ZeroDivisionError', `Fraction(${n}, 0)`); }
+  else {
+    const frac = clean(m[4]);
+    if (frac) { n = n * 10n ** BigInt(frac.length) + BigInt(frac); d = 10n ** BigInt(frac.length); }
+    if (m[5] !== undefined) { const e = Number(clean(m[5])); if (e >= 0) n *= 10n ** BigInt(e); else d *= 10n ** BigInt(-e); }
+  }
+  if (m[1] === '-') n = -n;
+  return [n, d];
+}
+const _nmFractionType = _nmType('Fraction', _NmFraction, 'fractions');
+_nmFractionType.from_float = (f) => new _NmFraction(f);
+_nmFractionType.from_decimal = (d) => new _NmFraction(d);
+adderModules.fractions = { Fraction: _nmFractionType };
+
+// ── decimal ──
+// Decimal: arbitrary-precision decimal floating point, as a sign + BigInt coefficient +
+// exponent, under a context (prec, default 28; rounding, default ROUND_HALF_EVEN). +, -, *, /,
+// //, %, ** (integer exponents), sqrt, quantize, normalize, to_integral_value, comparison
+// with ints / floats / Decimals, exact Decimal(float), CPython's str / repr / format('f').
+// Signals InvalidOperation and DivisionByZero raise (CPython's default traps). Not here: the
+// other traps and flags, Emax / Emin limits, ln / log10 / exp, non-integer powers beyond float.
+const _NM_ROUNDINGS = ['ROUND_DOWN', 'ROUND_HALF_UP', 'ROUND_HALF_EVEN', 'ROUND_CEILING', 'ROUND_FLOOR', 'ROUND_UP', 'ROUND_HALF_DOWN', 'ROUND_05UP'];
+const _nmDecExc = makeExcType('decimal.DecimalException', 'ArithmeticError');
+const _nmInvalidOp = makeExcType('decimal.InvalidOperation', 'decimal.DecimalException');
+const _nmDivZero = makeExcType('decimal.DivisionByZero', 'decimal.DecimalException', 'ZeroDivisionError');
+class _NmContext {
+  constructor(...a) {
+    const kw = _nmKw(a) || {};
+    this.prec = _nmHas(kw, 'prec') ? kw.prec : a[0] ?? 28;
+    this.rounding = _nmHas(kw, 'rounding') ? kw.rounding : a[1] ?? 'ROUND_HALF_EVEN';
+    this.Emin = _nmHas(kw, 'Emin') ? kw.Emin : -999999;
+    this.Emax = _nmHas(kw, 'Emax') ? kw.Emax : 999999;
+    this.capitals = _nmHas(kw, 'capitals') ? kw.capitals : 1;
+  }
+  copy() { return new _NmContext({ _kw: true, prec: this.prec, rounding: this.rounding, Emin: this.Emin, Emax: this.Emax, capitals: this.capitals }); }
+  __repr__() { return `Context(prec=${this.prec}, rounding=${this.rounding}, Emin=${this.Emin}, Emax=${this.Emax}, capitals=${this.capitals}, clamp=0, flags=[], traps=[InvalidOperation, DivisionByZero, Overflow])`; }
+}
+let _nmCtx = new _NmContext();
+const _nmPow10 = (k) => 10n ** BigInt(k);
+const _nmDigits = (c) => (c === 0n ? 1 : c.toString().length);
+// drop `drop` digits from coeff with the rounding mode; the result's sign is `sign`
+function _nmRoundDrop(coeff, drop, mode, sign) {
+  if (drop <= 0) return coeff * _nmPow10(-drop);
+  const p = _nmPow10(drop);
+  const q = coeff / p, rem = coeff % p;
+  if (rem === 0n) return q;
+  const half = p / 2n;
+  switch (mode) {
+    case 'ROUND_DOWN': return q;
+    case 'ROUND_UP': return q + 1n;
+    case 'ROUND_HALF_UP': return rem >= half ? q + 1n : q;
+    case 'ROUND_HALF_DOWN': return rem > half ? q + 1n : q;
+    case 'ROUND_CEILING': return sign ? q : q + 1n;
+    case 'ROUND_FLOOR': return sign ? q + 1n : q;
+    case 'ROUND_05UP': return (q % 10n === 0n || q % 10n === 5n) ? q + 1n : q;
+    default: return rem > half || (rem === half && (q & 1n) === 1n) ? q + 1n : q;
+  }
+}
+class _NmDecimal {
+  constructor(value = '0', context = null) {
+    if (value !== null && typeof value === 'object' && value._kw) { context = value.context ?? null; value = value.value ?? '0'; }
+    this._sign = 0; this._coeff = 0n; this._exp = 0; this._special = null;
+    if (value instanceof _NmDecimal) { Object.assign(this, { _sign: value._sign, _coeff: value._coeff, _exp: value._exp, _special: value._special }); return; }
+    if (typeof value === 'boolean') value = +value;
+    if (typeof value === 'bigint' || (typeof value === 'number' && Number.isInteger(value) && !Object.is(value, -0))) {
+      const b = _nmBig(value); this._sign = b < 0n ? 1 : 0; this._coeff = _nmAbs(b); return;
+    }
+    if (typeof value === 'number') { this._fromFloat(value); return; }
+    if (value instanceof PyTuple || Array.isArray(value)) {
+      const [s, digits, e] = value;
+      this._sign = s ? 1 : 0;
+      this._coeff = BigInt([...digits].join('') || '0');
+      if (typeof e === 'string') this._special = e === 'F' ? 'F' : e === 'n' ? 'n' : 'N'; else this._exp = e;
+      return;
+    }
+    if (typeof value !== 'string') throw new AdderError('TypeError', `conversion from ${pyTypeName(value)} to Decimal is not supported`);
+    const s = value.trim().replace(/_/g, '');
+    const m = /^([+-])?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(s);
+    if (m) {
+      const intPart = m[2] ?? '', frac = m[3] ?? m[4] ?? '';
+      this._sign = m[1] === '-' ? 1 : 0;
+      this._coeff = BigInt((intPart + frac) || '0');
+      this._exp = (m[5] ? parseInt(m[5], 10) : 0) - frac.length;
+      return;
+    }
+    const sp = /^([+-])?(inf|infinity|nan|snan)(\d*)$/i.exec(s);
+    if (sp) {
+      this._sign = sp[1] === '-' ? 1 : 0;
+      const w = sp[2].toLowerCase();
+      this._special = w.startsWith('inf') ? 'F' : w === 'nan' ? 'n' : 'N';
+      return;
+    }
+    throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.ConversionSyntax'>]");
+  }
+  _fromFloat(x) {
+    if (Number.isNaN(x)) { this._special = 'n'; return; }
+    if (!Number.isFinite(x)) { this._special = 'F'; this._sign = x < 0 ? 1 : 0; return; }
+    const neg = x < 0 || Object.is(x, -0);
+    const [n, d] = _nmFromFloat(Math.abs(x));
+    // d is a power of two: n / 2**k = n * 5**k / 10**k
+    const k = _nmBitlen(d) - 1;
+    this._sign = neg ? 1 : 0; this._coeff = n * 5n ** BigInt(k); this._exp = -k;
+  }
+  _ratio() { return this._exp >= 0 ? [(this._sign ? -1n : 1n) * this._coeff * _nmPow10(this._exp), 1n] : _nmRat((this._sign ? -1n : 1n) * this._coeff, _nmPow10(-this._exp)); }
+  _isZero() { return !this._special && this._coeff === 0n; }
+  // CPython's to-sci-string
+  __str__() {
+    const sign = this._sign ? '-' : '';
+    if (this._special === 'F') return `${sign}Infinity`;
+    if (this._special) return `${sign}${this._special === 'N' ? 'sNaN' : 'NaN'}`;
+    const digits = this._coeff.toString();
+    const left = this._exp + digits.length;
+    const dot = this._exp <= 0 && left > -6 ? left : 1;
+    let intpart, fracpart;
+    if (dot <= 0) { intpart = '0'; fracpart = '.' + '0'.repeat(-dot) + digits; }
+    else if (dot >= digits.length) { intpart = digits + '0'.repeat(dot - digits.length); fracpart = ''; }
+    else { intpart = digits.slice(0, dot); fracpart = '.' + digits.slice(dot); }
+    const e = left === dot ? '' : `E${left - dot >= 0 ? '+' : ''}${left - dot}`;
+    return sign + intpart + fracpart + e;
+  }
+  __repr__() { return `Decimal('${this.__str__()}')`; }
+  __format__(spec) { return _nmDecFormat(this, spec || ''); }
+  valueOf() { return this._special === 'F' ? (this._sign ? -Infinity : Infinity) : this._special ? NaN : Number(this.__str__()); }
+  __float__() { return this.valueOf(); }
+  __int__() {
+    if (this._special) throw new AdderError(this._special === 'F' ? 'OverflowError' : 'ValueError', this._special === 'F' ? 'cannot convert Infinity to integer' : 'cannot convert NaN to integer');
+    const v = this._exp >= 0 ? this._coeff * _nmPow10(this._exp) : this._coeff / _nmPow10(-this._exp);
+    return _nmInt(this._sign ? -v : v);
+  }
+  __trunc__() { return this.__int__(); }
+  __floor__() { return this.to_integral_value({ _kw: true, rounding: 'ROUND_FLOOR' }).__int__(); }
+  __ceil__() { return this.to_integral_value({ _kw: true, rounding: 'ROUND_CEILING' }).__int__(); }
+  __round__(nd) {
+    if (nd === undefined || nd === null) return this.to_integral_value({ _kw: true, rounding: 'ROUND_HALF_EVEN' }).__int__();
+    return this.quantize(_nmDec(0, 1n, -nd), 'ROUND_HALF_EVEN');
+  }
+  __hash__() {
+    if (this._special) return _pyHash(this.valueOf());
+    const [n, d] = this._ratio();
+    return d === 1n ? _pyHash(_nmInt(n)) : _pyHash(_nmToFloat(n, d));
+  }
+  __bool__() { return !this._isZero(); }
+  __neg__() { return _nmFix(_nmDec(this._special ? this._sign ^ 1 : (this._coeff === 0n ? 0 : this._sign ^ 1), this._coeff, this._exp, this._special)); }
+  __pos__() { return _nmFix(_nmDec(this._coeff === 0n && !this._special ? 0 : this._sign, this._coeff, this._exp, this._special)); }
+  __abs__() { return _nmFix(_nmDec(0, this._coeff, this._exp, this._special)); }
+  copy_abs() { return _nmDec(0, this._coeff, this._exp, this._special); }
+  copy_negate() { return _nmDec(this._sign ^ 1, this._coeff, this._exp, this._special); }
+  is_nan() { return this._special === 'n' || this._special === 'N'; }
+  is_infinite() { return this._special === 'F'; }
+  is_finite() { return !this._special; }
+  is_zero() { return this._isZero(); }
+  is_signed() { return this._sign === 1; }
+  adjusted() { return this._special ? 0 : this._exp + _nmDigits(this._coeff) - 1; }
+  as_tuple() {
+    const digits = this._special ? (this._special === 'F' ? [0] : []) : [...this._coeff.toString()].map(Number);
+    return _nmDecimalTuple(this._sign, mkTuple(digits), this._special ? this._special : this._exp);
+  }
+  as_integer_ratio() {
+    if (this._special) throw new AdderError(this._special === 'F' ? 'OverflowError' : 'ValueError', 'cannot convert to integer ratio');
+    const [n, d] = this._ratio(); return mkTuple([_nmInt(n), _nmInt(d)]);
+  }
+  _bin(o, op) {
+    const b = _nmCoerce(o, op);
+    if (b === null) return _nmNotImpl;
+    return b;
+  }
+  __add__(o) { const b = this._bin(o, '+'); return b === _nmNotImpl ? b : _nmAdd(this, b); }
+  __radd__(o) { const b = this._bin(o, '+'); return b === _nmNotImpl ? b : _nmAdd(b, this); }
+  __sub__(o) { const b = this._bin(o, '-'); return b === _nmNotImpl ? b : _nmAdd(this, b.copy_negate()); }
+  __rsub__(o) { const b = this._bin(o, '-'); return b === _nmNotImpl ? b : _nmAdd(b, this.copy_negate()); }
+  __mul__(o) { const b = this._bin(o, '*'); return b === _nmNotImpl ? b : _nmMul(this, b); }
+  __rmul__(o) { const b = this._bin(o, '*'); return b === _nmNotImpl ? b : _nmMul(b, this); }
+  __truediv__(o) { const b = this._bin(o, '/'); return b === _nmNotImpl ? b : _nmDiv(this, b); }
+  __rtruediv__(o) { const b = this._bin(o, '/'); return b === _nmNotImpl ? b : _nmDiv(b, this); }
+  __floordiv__(o) { const b = this._bin(o, '//'); return b === _nmNotImpl ? b : _nmDivInt(this, b)[0]; }
+  __rfloordiv__(o) { const b = this._bin(o, '//'); return b === _nmNotImpl ? b : _nmDivInt(b, this)[0]; }
+  __mod__(o) { const b = this._bin(o, '%'); return b === _nmNotImpl ? b : _nmDivInt(this, b)[1]; }
+  __rmod__(o) { const b = this._bin(o, '%'); return b === _nmNotImpl ? b : _nmDivInt(b, this)[1]; }
+  __divmod__(o) { const b = this._bin(o, 'divmod()'); return b === _nmNotImpl ? b : mkTuple(_nmDivInt(this, b)); }
+  __pow__(o) { const b = this._bin(o, '**'); return b === _nmNotImpl ? b : _nmPow(this, b); }
+  __rpow__(o) { const b = this._bin(o, '**'); return b === _nmNotImpl ? b : _nmPow(b, this); }
+  _cmp(o) {
+    let b;
+    if (o instanceof _NmDecimal) b = o;
+    else if (_nmIsInt(o)) b = new _NmDecimal(o);
+    else if (typeof o === 'number') b = new _NmDecimal(o);
+    else if (o instanceof _NmFraction) { if (this._special) return this._special === 'F' ? (this._sign ? -1 : 1) : NaN; const [n, d] = this._ratio(); const l = n * o._d, r = o._n * d; return l < r ? -1 : l > r ? 1 : 0; }
+    else return null;
+    if (this.is_nan() || b.is_nan()) return NaN;
+    if (this._special || b._special) {
+      const v = (x) => (x._special === 'F' ? (x._sign ? -Infinity : Infinity) : 0);
+      const av = this._special ? v(this) : 0, bv = b._special ? v(b) : 0;
+      if (this._special && b._special) return av === bv ? 0 : av < bv ? -1 : 1;
+      return this._special ? (av < 0 ? -1 : 1) : (bv < 0 ? 1 : -1);
+    }
+    const [an, ad] = this._ratio(), [bn, bd] = b._ratio();
+    const l = an * bd, r = bn * ad;
+    return l < r ? -1 : l > r ? 1 : 0;
+  }
+  __eq__(o) { const c = this._cmp(o); return c === null ? _nmNotImpl : c === 0; }
+  __lt__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('<', this, o); if (Number.isNaN(c)) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]"); return c < 0; }
+  __le__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('<=', this, o); if (Number.isNaN(c)) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]"); return c <= 0; }
+  __gt__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('>', this, o); if (Number.isNaN(c)) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]"); return c > 0; }
+  __ge__(o) { const c = this._cmp(o); if (c === null) throw _nmCmpErr('>=', this, o); if (Number.isNaN(c)) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]"); return c >= 0; }
+  compare(o) { const c = this._cmp(o); return Number.isNaN(c) ? _nmDec(0, 0n, 0, 'n') : new _NmDecimal(c); }
+  max(o) { return this._cmp(o) >= 0 ? this : new _NmDecimal(o); }
+  min(o) { return this._cmp(o) <= 0 ? this : new _NmDecimal(o); }
+  quantize(exp, ...a) {
+    const kw = _nmKw(a);
+    const rounding = (kw && _nmHas(kw, 'rounding') ? kw.rounding : a[0]) || _nmCtx.rounding;
+    const target = exp instanceof _NmDecimal ? exp : new _NmDecimal(exp);
+    if (this._special || target._special) {
+      if (this.is_nan() || target.is_nan()) return _nmDec(0, 0n, 0, 'n');
+      if (this._special === 'F' && target._special === 'F') return this;
+      throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]");
+    }
+    const coeff = _nmRoundDrop(this._coeff, target._exp - this._exp, rounding, this._sign);
+    if (_nmDigits(coeff) > _nmCtx.prec) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]");
+    return _nmDec(this._sign, coeff, target._exp);
+  }
+  to_integral_value(...a) {
+    const kw = _nmKw(a);
+    const rounding = (kw && _nmHas(kw, 'rounding') ? kw.rounding : a[0]) || _nmCtx.rounding;
+    if (this._special || this._exp >= 0) return this;
+    return _nmDec(this._sign, _nmRoundDrop(this._coeff, -this._exp, rounding, this._sign), 0);
+  }
+  to_integral(...a) { return this.to_integral_value(...a); }
+  to_integral_exact(...a) { return this.to_integral_value(...a); }
+  normalize() {
+    if (this._special) return this;
+    const d = _nmFix(this);
+    if (d._coeff === 0n) return _nmDec(d._sign, 0n, 0);
+    let c = d._coeff, e = d._exp;
+    while (c % 10n === 0n) { c /= 10n; e += 1; }
+    return _nmDec(d._sign, c, e);
+  }
+  sqrt() {
+    if (this._special) { if (this.is_nan() || !this._sign) return this; throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]"); }
+    if (this._coeff === 0n) return _nmDec(this._sign, 0n, this._exp >> 1);
+    if (this._sign) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]");
+    // CPython's _pydecimal algorithm
+    const prec = _nmCtx.prec + 1;
+    let e = this._exp >> 1, c, l;
+    if (this._exp & 1) { c = this._coeff * 10n; l = (_nmDigits(this._coeff) >> 1) + 1; } else { c = this._coeff; l = (_nmDigits(this._coeff) + 1) >> 1; }
+    const shift = prec - l;
+    let exact;
+    if (shift >= 0) { c *= 100n ** BigInt(shift); exact = true; } else { const p = 100n ** BigInt(-shift); exact = c % p === 0n; c /= p; }
+    e -= shift;
+    let n = _nmPow10(prec);
+    for (;;) { const q = c / n; if (n <= q) break; n = (n + q) >> 1n; }
+    exact = exact && n * n === c;
+    if (exact) { if (shift >= 0) n /= _nmPow10(shift); else n *= _nmPow10(-shift); e += shift; }
+    else if (n % 5n === 0n) n += 1n;
+    return _nmFix(_nmDec(0, n, e), 'ROUND_HALF_EVEN');
+  }
+  exp() { return new _NmDecimal(Math.exp(this.valueOf())).__pos__(); }
+  ln() { return new _NmDecimal(Math.log(this.valueOf())).__pos__(); }
+  log10() { return new _NmDecimal(Math.log10(this.valueOf())).__pos__(); }
+  scaleb(n) { return _nmFix(_nmDec(this._sign, this._coeff, this._exp + Number(n), this._special)); }
+  fma(b, c) { return _nmAdd(_nmMul(this, new _NmDecimal(b), true), new _NmDecimal(c)); }
+}
+const _nmDec = (sign, coeff, exp, special = null) => { const d = Object.create(_NmDecimal.prototype); d._sign = sign; d._coeff = coeff; d._exp = exp; d._special = special; return d; };
+// round to the context's precision
+function _nmFix(d, rounding) {
+  if (d._special) return d;
+  const digits = _nmDigits(d._coeff);
+  if (digits <= _nmCtx.prec) return d;
+  const drop = digits - _nmCtx.prec;
+  let c = _nmRoundDrop(d._coeff, drop, rounding || _nmCtx.rounding, d._sign), e = d._exp + drop;
+  if (_nmDigits(c) > _nmCtx.prec) { c /= 10n; e += 1; }
+  return _nmDec(d._sign, c, e);
+}
+function _nmCoerce(o, op) {
+  if (o instanceof _NmDecimal) return o;
+  if (_nmIsInt(o)) return new _NmDecimal(o);
+  if (typeof o === 'number') throw new AdderError('TypeError', `unsupported operand type(s) for ${op}: 'decimal.Decimal' and 'float'`);
+  return null;
+}
+const _nmInvalid = () => new AdderError('decimal.InvalidOperation', "[<class 'decimal.InvalidOperation'>]");
+function _nmAdd(a, b) {
+  if (a.is_nan() || b.is_nan()) return _nmDec(0, 0n, 0, 'n');
+  if (a._special === 'F' || b._special === 'F') {
+    if (a._special === 'F' && b._special === 'F' && a._sign !== b._sign) throw _nmInvalid();
+    return a._special === 'F' ? a : b;
+  }
+  const e = Math.min(a._exp, b._exp);
+  const av = (a._sign ? -1n : 1n) * a._coeff * _nmPow10(a._exp - e);
+  const bv = (b._sign ? -1n : 1n) * b._coeff * _nmPow10(b._exp - e);
+  const s = av + bv;
+  let sign = s < 0n ? 1 : 0;
+  if (s === 0n) sign = a._sign && b._sign ? 1 : (_nmCtx.rounding === 'ROUND_FLOOR' && (a._sign || b._sign) ? 1 : 0);
+  return _nmFix(_nmDec(sign, _nmAbs(s), e));
+}
+function _nmMul(a, b, noFix) {
+  const sign = a._sign ^ b._sign;
+  if (a.is_nan() || b.is_nan()) return _nmDec(0, 0n, 0, 'n');
+  if (a._special === 'F' || b._special === 'F') {
+    if ((a._special !== 'F' && a._coeff === 0n) || (b._special !== 'F' && b._coeff === 0n)) throw _nmInvalid();
+    return _nmDec(sign, 0n, 0, 'F');
+  }
+  const d = _nmDec(sign, a._coeff * b._coeff, a._exp + b._exp);
+  return noFix ? d : _nmFix(d);
+}
+function _nmDiv(a, b) {
+  const sign = a._sign ^ b._sign;
+  if (a.is_nan() || b.is_nan()) return _nmDec(0, 0n, 0, 'n');
+  if (a._special === 'F') { if (b._special === 'F') throw _nmInvalid(); return _nmDec(sign, 0n, 0, 'F'); }
+  if (b._special === 'F') return _nmDec(sign, 0n, 0 - 1000000);
+  if (b._coeff === 0n) {
+    if (a._coeff === 0n) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.DivisionUndefined'>]");
+    throw new AdderError('decimal.DivisionByZero', "[<class 'decimal.DivisionByZero'>]");
+  }
+  let coeff, exp;
+  if (a._coeff === 0n) { exp = a._exp - b._exp; coeff = 0n; }
+  else {
+    const shift = _nmDigits(b._coeff) - _nmDigits(a._coeff) + _nmCtx.prec + 1;
+    exp = a._exp - b._exp - shift;
+    let rem;
+    if (shift >= 0) { const n = a._coeff * _nmPow10(shift); coeff = n / b._coeff; rem = n % b._coeff; }
+    else { const dd = b._coeff * _nmPow10(-shift); coeff = a._coeff / dd; rem = a._coeff % dd; }
+    if (rem) { if (coeff % 5n === 0n) coeff += 1n; }
+    else { const ideal = a._exp - b._exp; while (exp < ideal && coeff % 10n === 0n) { coeff /= 10n; exp += 1; } }
+  }
+  return _nmFix(_nmDec(sign, coeff, exp));
+}
+// a // b truncates toward zero (unlike int //), a % b takes the dividend's sign
+function _nmDivInt(a, b) {
+  if (a._special || b._special) throw _nmInvalid();
+  if (b._coeff === 0n) {
+    if (a._coeff === 0n) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.DivisionUndefined'>]");
+    throw new AdderError('decimal.DivisionByZero', "[<class 'decimal.DivisionByZero'>]");
+  }
+  const e = Math.min(a._exp, b._exp);
+  const av = a._coeff * _nmPow10(a._exp - e), bv = b._coeff * _nmPow10(b._exp - e);
+  const q = av / bv, r = av % bv;
+  if (_nmDigits(q) > _nmCtx.prec) throw new AdderError('decimal.InvalidOperation', "[<class 'decimal.DivisionImpossible'>]");
+  return [_nmDec(a._sign ^ b._sign, q, 0), _nmFix(_nmDec(a._sign, r, e))];
+}
+function _nmPow(a, b) {
+  if (!b._special && b._exp >= 0) {
+    let e = b._coeff * _nmPow10(b._exp);
+    if (b._sign) {
+      if (a._coeff === 0n && !a._special) throw new AdderError('decimal.DivisionByZero', "[<class 'decimal.DivisionByZero'>]");
+      const prec = _nmCtx.prec;
+      _nmCtx.prec = prec + 10;
+      let r;
+      try { r = _nmDiv(_nmDec(0, 1n, 0), _nmPowInt(a, e)); } finally { _nmCtx.prec = prec; }
+      return _nmFix(r);
+    }
+    return _nmFix(_nmPowInt(a, e));
+  }
+  return _nmFix(new _NmDecimal(Math.pow(a.valueOf(), b.valueOf())));
+}
+function _nmPowInt(a, e) {
+  if (a._special) return e === 0n ? _nmDec(0, 1n, 0) : _nmDec(a._sign && (e & 1n) ? 1 : 0, 0n, 0, a._special);
+  return _nmDec(a._sign && (e & 1n) ? 1 : 0, a._coeff ** e, a._exp * Number(e));
+}
+// format(Decimal, spec): fixed ('f'), percent ('%'), scientific ('e'), general / str; width,
+// fill / align, sign, ',' / '_' grouping
+function _nmDecFormat(d, spec) {
+  const m = /^(?:(.)?([<>=^]))?([+\- ]?)(z?)(#?)(0?)(\d*)([,_]?)(?:\.(\d+))?([eEfFgG%n]?)$/.exec(spec);
+  if (!m) throw new AdderError('ValueError', `Invalid format specifier '${spec}' for object of type 'decimal.Decimal'`);
+  let [, fill, align, sign, , , zero, width, group, precS, type] = m;
+  const prec = precS === undefined ? null : Number(precS);
+  let v = d;
+  let body;
+  if (v._special) body = v._special === 'F' ? 'Infinity' : 'NaN';
+  else if (type === 'f' || type === 'F' || type === '%') {
+    if (type === '%') v = _nmDec(v._sign, v._coeff, v._exp + 2);
+    if (prec !== null) v = v.quantize(_nmDec(0, 1n, -prec), 'ROUND_HALF_EVEN');
+    const digits = v._coeff.toString();
+    if (v._exp >= 0) body = digits + '0'.repeat(v._exp);
+    else { const p = digits.padStart(-v._exp + 1, '0'); body = p.slice(0, p.length + v._exp) + '.' + p.slice(p.length + v._exp); }
+    if (type === '%') body += '%';
+  } else if (type === 'e' || type === 'E') {
+    const digits = v._coeff.toString();
+    const adj = v._exp + digits.length - 1;
+    let mant = digits;
+    if (prec !== null) { const r = _nmRoundDrop(v._coeff, digits.length - (prec + 1), 'ROUND_HALF_EVEN', v._sign).toString(); mant = r.length > prec + 1 ? r.slice(0, prec + 1) : r.padEnd(prec + 1, '0'); }
+    body = (mant.length > 1 ? mant[0] + '.' + mant.slice(1) : mant) + type + (adj >= 0 ? '+' : '-') + String(Math.abs(adj));
+  } else {
+    body = _nmDec(0, v._coeff, v._exp).__str__();
+  }
+  if (group) { const [ip, fp] = body.split('.'); body = ip.replace(/\B(?=(\d{3})+(?!\d))/g, group) + (fp !== undefined ? '.' + fp : ''); }
+  const neg = v._sign === 1;
+  const signStr = neg ? '-' : sign === '+' ? '+' : sign === ' ' ? ' ' : '';
+  let out = signStr + body;
+  const w = width ? Number(width) : 0;
+  if (out.length < w) {
+    if (zero && !align) { fill = '0'; align = '='; }
+    const f = fill || ' ', pad = w - out.length;
+    const al = align || '>';
+    if (al === '<') out += f.repeat(pad);
+    else if (al === '^') out = f.repeat(pad >> 1) + out + f.repeat(pad - (pad >> 1));
+    else if (al === '=') out = signStr + f.repeat(pad) + body;
+    else out = f.repeat(pad) + out;
+  }
+  return out;
+}
+const _nmDecimalTuple = _namedtuple('DecimalTuple', ['sign', 'digits', 'exponent']);
+const _nmDecimalType = _nmType('Decimal', _NmDecimal, 'decimal');
+_nmDecimalType.from_float = (f) => new _NmDecimal(f);
+class _NmLocalContext {
+  constructor(ctx, kw) { this._ctx = ctx; this._kw = kw; this._saved = null; }
+  __enter__() {
+    this._saved = _nmCtx;
+    _nmCtx = (this._ctx || _nmCtx).copy();
+    if (this._kw) for (const k of ['prec', 'rounding', 'Emin', 'Emax', 'capitals']) if (_nmHas(this._kw, k)) _nmCtx[k] = this._kw[k];
+    return _nmCtx;
+  }
+  __exit__() { _nmCtx = this._saved; return false; }
+}
+_NmLocalContext.prototype.__adderClass__ = '_ContextManager';
+adderModules.decimal = {
+  Decimal: _nmDecimalType, Context: _nmType('Context', _NmContext, 'decimal'),
+  getcontext: () => _nmCtx, setcontext: (c) => { _nmCtx = c; return null; },
+  localcontext: (...a) => { const kw = _nmKw(a); return new _NmLocalContext(a[0] || (kw && kw.ctx) || null, kw); },
+  DecimalException: _nmDecExc, InvalidOperation: _nmInvalidOp, DivisionByZero: _nmDivZero,
+  ...Object.fromEntries(_NM_ROUNDINGS.map((r) => [r, r])),
+  MAX_PREC: 999999999999999999, MAX_EMAX: 999999999999999999, MIN_EMIN: -999999999999999999,
+};
+Object.defineProperty(adderModules.decimal, 'DefaultContext', { get: () => _nmCtx, enumerable: true });
+
+// ── statistics ──
+// CPython's algorithms: means and the sum of squares exact (rationals), stdev as the correctly
+// rounded square root of a fraction, quantiles / median_grouped / correlation / covariance /
+// linear_regression as written in statistics.py, and NormalDist. Not here: kde, kde_random.
+const _nmStatErr = makeExcType('statistics.StatisticsError', 'ValueError');
+const _nmStatFail = (msg) => new AdderError('statistics.StatisticsError', msg);
+// the result type of a sum: int, float, Fraction or Decimal (as statistics._coerce)
+function _nmKind(values) {
+  let k = 'int';
+  for (const v of values) {
+    const t = v instanceof _NmFraction ? 'Fraction' : v instanceof _NmDecimal ? 'Decimal' : (typeof v === 'number' && !Number.isInteger(v)) ? 'float' : _nmIsInt(v) ? 'int' : null;
+    if (t === null) throw new AdderError('TypeError', `can't convert type '${pyTypeName(v)}' to numerator/denominator`);
+    if (t === 'int') continue;
+    if (k === 'int') k = t;
+    else if (k !== t) {
+      if ((k === 'Fraction' && t === 'float') || (k === 'float' && t === 'Fraction')) k = 'float';
+      else throw new AdderError('TypeError', `can't convert type '${t}' to '${k}'`);
+    }
+  }
+  return k;
+}
+// a rational result, converted to the data's type (statistics._convert)
+function _nmConvert([n, d], kind) {
+  if (kind === 'Fraction') return _nmFrac(n, d);
+  if (kind === 'Decimal') return _nmDiv(new _NmDecimal(_nmInt(n)), new _NmDecimal(_nmInt(d)));
+  if (kind === 'int' && d === 1n) return _nmInt(n);
+  return _nmToFloat(n, d);
+}
+// sum of the data, exactly; non-finite values propagate as in CPython
+function _nmSum(values) {
+  let acc = [0n, 1n], special = null;
+  for (const v of values) {
+    const r = _nmExact(v);
+    if (r === null) { special = special === null ? Number(v) : special + Number(v); continue; }
+    acc = _nmRadd(acc, r);
+  }
+  return { acc, special };
+}
+const _nmData = async (data) => {
+  const xs = await pyCollect(data);
+  return xs;
+};
+async function _nmMean(data) {
+  const xs = await _nmData(data);
+  if (!xs.length) throw _nmStatFail('mean requires at least one data point');
+  const kind = _nmKind(xs);
+  const { acc, special } = _nmSum(xs);
+  if (special !== null) return special;
+  return _nmConvert(_nmRat(acc[0], acc[1] * BigInt(xs.length)), kind);
+}
+// sum of squared deviations, exact (statistics._ss)
+function _nmSS(xs, c) {
+  const kind = _nmKind(xs);
+  const n = BigInt(xs.length);
+  if (c !== undefined && c !== null) {
+    let acc = [0n, 1n];
+    for (const x of xs) {
+      const dv = pySub(x, c);
+      const sq = pyMul(dv, dv);
+      const r = _nmExact(sq);
+      if (r === null) return { kind, ss: null, special: Number(sq) };
+      acc = _nmRadd(acc, r);
+    }
+    return { kind, ss: acc, mean: _nmExact(c) };
+  }
+  let sx = [0n, 1n], sxx = [0n, 1n];
+  for (const x of xs) {
+    const r = _nmExact(x);
+    if (r === null) return { kind, ss: null, special: Number(x) };
+    sx = _nmRadd(sx, r);
+    sxx = _nmRadd(sxx, _nmRmul(r, r));
+  }
+  // (n * sxx - sx * sx) / n — poor for floats, exact for fractions
+  const ss = _nmRat(n * sxx[0] * sx[1] * sx[1] - sx[0] * sx[0] * sxx[1], n * sxx[1] * sx[1] * sx[1]);
+  return { kind, ss, mean: _nmRat(sx[0], sx[1] * n) };
+}
+// sqrt(n / m) correctly rounded (statistics._float_sqrt_of_frac)
+const _nmIsqrt = (n) => { if (n < 2n) return n; let x = BigInt(Math.floor(Math.sqrt(Number(n)))); if (x === 0n) x = 1n; for (;;) { const y = (x + n / x) >> 1n; if (y >= x) { while (x * x > n) x--; while ((x + 1n) * (x + 1n) <= n) x++; return x; } x = y; } };
+function _nmSqrtOfFrac(n, m) {
+  const rto = (a, b) => { const r = _nmIsqrt(a / b); return r | (r * r * b !== a ? 1n : 0n); };
+  const q = Math.floor((_nmBitlen(n) - _nmBitlen(m) - 109) / 2);
+  if (q >= 0) return _nmToFloat(rto(n, m << BigInt(2 * q)) << BigInt(q), 1n);
+  return _nmToFloat(rto(n << BigInt(-2 * q), m), 1n << BigInt(-q));
+}
+function _nmDecSqrt(dec) { return dec.sqrt(); }
+async function _nmVariance(data, xbar, population) {
+  const xs = await _nmData(data);
+  const n = xs.length;
+  if (population ? n < 1 : n < 2) throw _nmStatFail(population ? 'pvariance requires at least one data point' : 'variance requires at least two data points');
+  const r = _nmSS(xs, xbar);
+  if (r.ss === null) return { kind: r.kind, special: r.special };
+  const div = BigInt(population ? n : n - 1);
+  return { kind: r.kind, v: _nmRat(r.ss[0], r.ss[1] * div) };
+}
+const _nmVarOut = (r) => (r.special !== undefined ? r.special : _nmConvert(r.v, r.kind));
+const _nmStdOut = (r) => {
+  if (r.special !== undefined) return Math.sqrt(r.special);
+  if (r.kind === 'Decimal') return _nmDecSqrt(_nmConvert(r.v, 'Decimal'));
+  return _nmSqrtOfFrac(r.v[0], r.v[1]);
+};
+async function _nmSortedData(data) { return pySorted(await pyCollect(data), null, false); }
+const _nmFsum = (xs) => adderModules.math.fsum(xs);
+// sum((x - xbar) * (y - ybar)) the way statistics computes it (fsum means, sumprod of deviations)
+function _nmDevs(xs) { const m = _nmFsum(xs) / xs.length; return xs.map((x) => x - m); }
+function _nmSqrtprod(x, y) {
+  const h = Math.sqrt(x * y);
+  if (!Number.isFinite(h)) {
+    if (h === Infinity && Number.isFinite(x) && Number.isFinite(y)) { const s = 2.0 ** -512; return _nmSqrtprod(s * x, s * y) / s; }
+    return h;
+  }
+  if (!h) { if (x && y) { const s = 2.0 ** 537; return _nmSqrtprod(s * x, s * y) / s; } return h; }
+  const d = _nmSumprod([x, h], [y, -h]);
+  return h + d / (2.0 * h);
+}
+// the inverse normal CDF: Wichura's AS241 (statistics._normal_dist_inv_cdf)
+function _nmInvCdf(p, mu, sigma) {
+  const q = p - 0.5;
+  let num, den, x;
+  if (Math.abs(q) <= 0.425) {
+    const r = 0.180625 - q * q;
+    num = (((((((2.5090809287301226727e+3 * r + 3.3430575583588128105e+4) * r + 6.7265770927008700853e+4) * r +
+      4.5921953931549871457e+4) * r + 1.3731693765509461125e+4) * r + 1.9715909503065514427e+3) * r +
+      1.3314166789178437745e+2) * r + 3.3871328727963666080e+0) * q;
+    den = (((((((5.2264952788528545610e+3 * r + 2.8729085735721942674e+4) * r + 3.9307895800092710610e+4) * r +
+      2.1213794301586595867e+4) * r + 5.3941960214247511077e+3) * r + 6.8718700749205790830e+2) * r +
+      4.2313330701600911252e+1) * r + 1.0);
+    x = num / den;
+    return mu + (x * sigma);
+  }
+  let r = q <= 0.0 ? p : 1.0 - p;
+  r = Math.sqrt(-Math.log(r));
+  if (r <= 5.0) {
+    r = r - 1.6;
+    num = (((((((7.7454501427834140764e-4 * r + 2.27238449892691845833e-2) * r + 2.41780725177450611770e-1) * r +
+      1.27045825245236838258e+0) * r + 3.64784832476320460504e+0) * r + 5.76949722146069140550e+0) * r +
+      4.63033784615654529590e+0) * r + 1.42343711074968357734e+0);
+    den = (((((((1.05075007164441684324e-9 * r + 5.47593808499534494600e-4) * r + 1.51986665636164571966e-2) * r +
+      1.48103976427480074590e-1) * r + 6.89767334985100004550e-1) * r + 1.67638483018380384940e+0) * r +
+      2.05319162663775882187e+0) * r + 1.0);
+  } else {
+    r = r - 5.0;
+    num = (((((((2.01033439929228813265e-7 * r + 2.71155556874348757815e-5) * r + 1.24266094738807843860e-3) * r +
+      2.65321895265761230930e-2) * r + 2.96560571828504891230e-1) * r + 1.78482653991729133580e+0) * r +
+      5.46378491116411436990e+0) * r + 6.65790464350110377720e+0);
+    den = (((((((2.04426310338993978564e-15 * r + 1.42151175831644588870e-7) * r + 1.84631831751005468180e-5) * r +
+      7.86869131145613259100e-4) * r + 1.48753612908506148525e-2) * r + 1.36929880922735805310e-1) * r +
+      5.99832206555887937690e-1) * r + 1.0);
+  }
+  x = num / den;
+  if (q < 0.0) x = -x;
+  return mu + (x * sigma);
+}
+class _NmNormalDist {
+  constructor(mu = 0.0, sigma = 1.0) {
+    if (mu !== null && typeof mu === 'object' && mu._kw) { const kw = mu; mu = kw.mu ?? 0.0; sigma = kw.sigma ?? 1.0; }
+    else if (sigma !== null && typeof sigma === 'object' && sigma._kw) sigma = sigma.sigma ?? 1.0;
+    if (sigma < 0.0) throw _nmStatFail('sigma must be non-negative');
+    this._mu = Number(mu); this._sigma = Number(sigma);
+  }
+  get mean() { return this._mu; }
+  get median() { return this._mu; }
+  get mode() { return this._mu; }
+  get stdev() { return this._sigma; }
+  get variance() { return this._sigma * this._sigma; }
+  pdf(x) {
+    const variance = this._sigma * this._sigma;
+    if (!variance) throw _nmStatFail('pdf() not defined when sigma is zero');
+    const diff = x - this._mu;
+    return Math.exp(diff * diff / (-2.0 * variance)) / Math.sqrt(2 * Math.PI * variance);
+  }
+  cdf(x) {
+    if (!this._sigma) throw _nmStatFail('cdf() not defined when sigma is zero');
+    return 0.5 * _nmErfc((this._mu - x) / (this._sigma * Math.SQRT2));
+  }
+  inv_cdf(p) {
+    if (p <= 0.0 || p >= 1.0) throw _nmStatFail('p must be in the range 0.0 < p < 1.0');
+    return _nmInvCdf(p, this._mu, this._sigma);
+  }
+  quantiles(n = 4) { if (n && n._kw) n = n.n ?? 4; return Array.from({ length: n - 1 }, (_, i) => this.inv_cdf((i + 1) / n)); }
+  zscore(x) { if (!this._sigma) throw _nmStatFail('zscore() not defined when sigma is zero'); return (x - this._mu) / this._sigma; }
+  overlap(other) {
+    if (!(other instanceof _NmNormalDist)) throw new AdderError('TypeError', 'Expected another NormalDist instance');
+    let X = this, Y = other;
+    if (Y._sigma < X._sigma || (Y._sigma === X._sigma && Y._mu < X._mu)) [X, Y] = [Y, X];   // sorted, so overlap commutes
+    const X_var = X.variance, Y_var = Y.variance;
+    if (!X_var || !Y_var) throw _nmStatFail('overlap() not defined when sigma is zero');
+    const dv = Y_var - X_var;
+    const dm = Math.abs(Y._mu - X._mu);
+    if (!dv) return _nmErfc(dm / (2.0 * X._sigma * Math.SQRT2));
+    const a = X._mu * Y_var - Y._mu * X_var;
+    const b = X._sigma * Y._sigma * Math.sqrt(dm * dm + dv * Math.log(Y_var / X_var));
+    const x1 = (a + b) / dv;
+    const x2 = (a - b) / dv;
+    return 1.0 - (Math.abs(Y.cdf(x1) - X.cdf(x1)) + Math.abs(Y.cdf(x2) - X.cdf(x2)));
+  }
+  samples(n, ...a) {
+    const kw = _nmKw(a);
+    const seed = kw && _nmHas(kw, 'seed') ? kw.seed : a[0] ?? null;
+    const rnd = seed === null ? Math.random : adderModules.random && adderModules.random.Random ? (() => { const g = adderModules.random.Random(seed); return () => g.random(); })() : Math.random;
+    return Array.from({ length: n }, () => this.inv_cdf(rnd() || Number.MIN_VALUE));
+  }
+  __add__(o) { return o instanceof _NmNormalDist ? new _NmNormalDist(this._mu + o._mu, Math.hypot(this._sigma, o._sigma)) : new _NmNormalDist(this._mu + o, this._sigma); }
+  __radd__(o) { return this.__add__(o); }
+  __sub__(o) { return o instanceof _NmNormalDist ? new _NmNormalDist(this._mu - o._mu, Math.hypot(this._sigma, o._sigma)) : new _NmNormalDist(this._mu - o, this._sigma); }
+  __rsub__(o) { return new _NmNormalDist(o - this._mu, this._sigma); }
+  __mul__(o) { return new _NmNormalDist(this._mu * o, this._sigma * Math.abs(o)); }
+  __rmul__(o) { return this.__mul__(o); }
+  __truediv__(o) { return new _NmNormalDist(this._mu / o, this._sigma / Math.abs(o)); }
+  __pos__() { return new _NmNormalDist(this._mu, this._sigma); }
+  __neg__() { return new _NmNormalDist(-this._mu, this._sigma); }
+  __eq__(o) { return o instanceof _NmNormalDist ? this._mu === o._mu && this._sigma === o._sigma : false; }
+  __hash__() { return _pyHash(mkTuple([this._mu, this._sigma])); }
+  __repr__() { return `NormalDist(mu=${_nmFloatRepr(this._mu)}, sigma=${_nmFloatRepr(this._sigma)})`; }
+}
+const _nmNormalDistType = _nmType('NormalDist', _NmNormalDist, 'statistics');
+_nmNormalDistType.from_samples = async (data) => {
+  const xs = await pyCollect(data);
+  const xbar = _nmFsum(xs) / xs.length;
+  const r = await _nmVariance(xs, null, false);
+  return new _NmNormalDist(xbar, _nmStdOut(r));
+};
+const _nmLinReg = _namedtuple('LinearRegression', ['slope', 'intercept']);
+function _nmPairs(x, y, need) {
+  const xs = [...pyIter(x)], ys = [...pyIter(y)];
+  if (xs.length !== ys.length) throw _nmStatFail(need === 'linear_regression' ? 'linear regression requires that both inputs have same number of data points' : `${need} requires that both inputs have same number of data points`);
+  if (xs.length < 2) throw _nmStatFail(need === 'linear_regression' ? 'linear regression requires at least two data points' : `${need} requires at least two data points`);
+  return [xs.map(Number), ys.map(Number)];
+}
+async function _nmMedianLowHigh(data, which) {
+  const xs = await _nmSortedData(data);
+  const n = xs.length;
+  if (!n) throw _nmStatFail('no median for empty data');
+  if (n % 2 === 1) return xs[n >> 1];
+  return which === 'low' ? xs[(n >> 1) - 1] : xs[n >> 1];
+}
+function _nmRank(xs) {
+  const order = xs.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+  const ranks = new Array(xs.length);
+  for (let i = 0; i < order.length;) {
+    let j = i;
+    while (j + 1 < order.length && order[j + 1][0] === order[i][0]) j++;
+    const r = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) ranks[order[k][1]] = r;
+    i = j + 1;
+  }
+  return ranks;
+}
+adderModules.statistics = {
+  StatisticsError: _nmStatErr,
+  NormalDist: _nmNormalDistType,
+  mean: _nmMean,
+  fmean: async (data, ...a) => {
+    const kw = _nmKw(a);
+    const weights = kw && _nmHas(kw, 'weights') ? kw.weights : a[0] ?? null;
+    const xs = (await pyCollect(data)).map(Number);
+    if (weights === null) {
+      if (!xs.length) throw _nmStatFail('fmean requires at least one data point');
+      return _nmFsum(xs) / xs.length;
+    }
+    const ws = (await pyCollect(weights)).map(Number);
+    if (ws.length !== xs.length) throw _nmStatFail('data and weights must be the same length');
+    const wsum = _nmFsum(ws);
+    if (!wsum) throw _nmStatFail('sum of weights must be non-zero');
+    return _nmSumprod(xs, ws) / wsum;
+  },
+  geometric_mean: async (data) => {
+    let n = 0, foundZero = false;
+    const logs = [];
+    for (const x of await pyCollect(data)) {
+      const v = Number(x);
+      if (v > 0) { n++; logs.push(Math.log(v)); }
+      else if (v === 0) { n++; foundZero = true; }
+      else throw _nmStatFail('No negative inputs allowed');
+    }
+    const total = _nmFsum(logs);
+    if (!n) throw _nmStatFail('Must have a non-empty dataset');
+    if (Number.isNaN(total)) return NaN;
+    if (foundZero) return total === Infinity ? NaN : 0.0;
+    return Math.exp(total / n);
+  },
+  harmonic_mean: async (data, ...a) => {
+    const kw = _nmKw(a);
+    const weights = kw && _nmHas(kw, 'weights') ? kw.weights : a[0] ?? null;
+    const xs = await pyCollect(data);
+    const n = xs.length;
+    if (n < 1) throw _nmStatFail('harmonic_mean requires at least one data point');
+    if (n === 1 && weights === null) { if (Number(xs[0]) < 0) throw _nmStatFail('harmonic mean does not support negative values'); return xs[0]; }
+    const ws = weights === null ? xs.map(() => 1) : await pyCollect(weights);
+    if (ws.length !== n) throw _nmStatFail('Number of weights does not match data size');
+    let sumW = [0n, 1n];
+    for (const w of ws) sumW = _nmRadd(sumW, _nmExact(w));
+    const terms = [];
+    for (let i = 0; i < n; i++) {
+      if (Number(xs[i]) < 0) throw _nmStatFail('harmonic mean does not support negative values');
+      if (!ws[i]) { terms.push(0); continue; }
+      if (Number(xs[i]) === 0) return 0;
+      terms.push(pyTrueDiv(ws[i], xs[i]));
+    }
+    const kind = _nmKind([...xs, ...ws]);
+    const { acc } = _nmSum(terms);
+    if (acc[0] <= 0n) throw _nmStatFail('Weighted sum must be positive');
+    return _nmConvert(_nmRat(sumW[0] * acc[1], sumW[1] * acc[0]), kind === 'int' ? 'float' : kind);
+  },
+  median: async (data) => {
+    const xs = await _nmSortedData(data);
+    const n = xs.length;
+    if (!n) throw _nmStatFail('no median for empty data');
+    if (n % 2 === 1) return xs[n >> 1];
+    const i = n >> 1;
+    return pyTrueDiv(pyAdd(xs[i - 1], xs[i]), 2);
+  },
+  median_low: (data) => _nmMedianLowHigh(data, 'low'),
+  median_high: (data) => _nmMedianLowHigh(data, 'high'),
+  median_grouped: async (data, ...a) => {
+    const kw = _nmKw(a);
+    let interval = kw && _nmHas(kw, 'interval') ? kw.interval : a[0] ?? 1.0;
+    const xs = await _nmSortedData(data);
+    const n = xs.length;
+    if (!n) throw _nmStatFail('no median for empty data');
+    let x = xs[n >> 1];
+    let i = 0; while (i < n && pyLt(xs[i], x) === true) i++;
+    let j = i; while (j < n && !(pyLt(x, xs[j]) === true)) j++;
+    interval = Number(interval); x = Number(x);
+    const L = x - interval / 2.0;
+    return L + interval * (n / 2 - i) / (j - i);
+  },
+  mode: async (data) => {
+    const xs = await pyCollect(data);
+    if (!xs.length) throw _nmStatFail('no mode for empty data');
+    const counts = new PyDict();
+    for (const x of xs) counts.set(x, (counts.get(x) || 0) + 1);
+    let best = null, bc = 0;
+    for (const [k, c] of counts) if (c > bc) { best = k; bc = c; }
+    return best;
+  },
+  multimode: async (data) => {
+    const counts = new PyDict();
+    for (const x of await pyCollect(data)) counts.set(x, (counts.get(x) || 0) + 1);
+    const max = Math.max(0, ...counts.values());
+    return [...counts].filter(([, c]) => c === max).map(([k]) => k);
+  },
+  variance: async (data, xbar = null) => _nmVarOut(await _nmVariance(data, xbar && xbar._kw ? xbar.xbar ?? null : xbar, false)),
+  pvariance: async (data, mu = null) => _nmVarOut(await _nmVariance(data, mu && mu._kw ? mu.mu ?? null : mu, true)),
+  stdev: async (data, xbar = null) => _nmStdOut(await _nmVariance(data, xbar && xbar._kw ? xbar.xbar ?? null : xbar, false)),
+  pstdev: async (data, mu = null) => _nmStdOut(await _nmVariance(data, mu && mu._kw ? mu.mu ?? null : mu, true)),
+  quantiles: async (data, ...a) => {
+    const kw = _nmKw(a) || {};
+    const n = _nmHas(kw, 'n') ? kw.n : 4;
+    const method = _nmHas(kw, 'method') ? kw.method : 'exclusive';
+    if (n < 1) throw _nmStatFail('n must be at least 1');
+    const xs = await _nmSortedData(data);
+    const ld = xs.length;
+    if (ld < 2) { if (ld === 1) return Array(n - 1).fill(xs[0]); throw _nmStatFail('must have at least one data point'); }
+    const out = [];
+    if (method === 'inclusive') {
+      const m = ld - 1;
+      for (let i = 1; i < n; i++) { const j = Math.floor(i * m / n), delta = (i * m) % n; out.push(pyTrueDiv(pyAdd(pyMul(xs[j], n - delta), pyMul(xs[j + 1], delta)), n)); }
+      return out;
+    }
+    if (method === 'exclusive') {
+      const m = ld + 1;
+      for (let i = 1; i < n; i++) {
+        let j = Math.floor(i * m / n);
+        j = j < 1 ? 1 : j > ld - 1 ? ld - 1 : j;
+        const delta = i * m - j * n;
+        out.push(pyTrueDiv(pyAdd(pyMul(xs[j - 1], n - delta), pyMul(xs[j], delta)), n));
+      }
+      return out;
+    }
+    throw new AdderError('ValueError', `Unknown method: ${pyRepr(method)}`);
+  },
+  covariance: (x, y) => {
+    const [xs, ys] = _nmPairs(x, y, 'covariance');
+    return _nmSumprod(_nmDevs(xs), _nmDevs(ys)) / (xs.length - 1);
+  },
+  correlation: (x, y, ...a) => {
+    const kw = _nmKw(a);
+    const method = kw && _nmHas(kw, 'method') ? kw.method : a[0] ?? 'linear';
+    let [xs, ys] = _nmPairs(x, y, 'correlation');
+    if (method === 'ranked') { xs = _nmRank(xs); ys = _nmRank(ys); }
+    else if (method !== 'linear') throw new AdderError('ValueError', `Unknown method: ${pyRepr(method)}`);
+    const dx = _nmDevs(xs), dy = _nmDevs(ys);
+    const sxy = _nmSumprod(dx, dy), sxx = _nmSumprod(dx, dx), syy = _nmSumprod(dy, dy);
+    if (!sxx || !syy) throw _nmStatFail('at least one of the inputs is constant');
+    return sxy / _nmSqrtprod(sxx, syy);
+  },
+  linear_regression: (x, y, ...a) => {
+    const kw = _nmKw(a);
+    const proportional = !!(kw && _nmHas(kw, 'proportional') ? kw.proportional : false);
+    const [xs, ys] = _nmPairs(x, y, 'linear_regression');
+    let sxy, sxx, xbar = 0, ybar = 0;
+    if (!proportional) { xbar = _nmFsum(xs) / xs.length; ybar = _nmFsum(ys) / ys.length; const dx = xs.map((v) => v - xbar), dy = ys.map((v) => v - ybar); sxy = _nmSumprod(dx, dy); sxx = _nmSumprod(dx, dx); }
+    else { sxy = _nmSumprod(xs, ys); sxx = _nmSumprod(xs, xs); }
+    if (!sxx) throw _nmStatFail('x is constant');
+    const slope = sxy / sxx;
+    return _nmLinReg(slope, ybar - slope * xbar);
+  },
+};
+
+// -- stdlib-time.js --
+
+// adder stdlib — time and datetime. datetime follows CPython's pure-Python datetime.py: dates
+// as proleptic Gregorian ordinals (_ymd2ord / _ord2ymd), timedelta normalised to (days,
+// seconds, microseconds), the same str / repr / isoformat / strftime / strptime text, fixed-offset
+// timezones. The clock (now, today, time.time, local time) is the browser's.
+// Not here: zoneinfo / named zones, tzinfo subclasses with DST rules, locale-specific names.
+//
+// Concat-bundled with the rest of adder: top-level names carry a `_tm` prefix.
+
+
+const _tmIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _tmKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
+  args[args.length - 1]._kw === true ? args.pop() : null);
+const _tmHas = (kw, k) => !!kw && Object.hasOwn(kw, k) && k !== '_kw';
+// positional / keyword arguments by name, as CPython binds them
+function _tmArgs(a, names, defaults) {
+  const kw = _tmKw(a);
+  const out = {};
+  names.forEach((n, i) => {
+    if (i < a.length) out[n] = a[i];
+    else if (_tmHas(kw, n)) out[n] = kw[n];
+    else out[n] = defaults[n];
+  });
+  if (kw) for (const k of Object.keys(kw)) if (k !== '_kw' && !names.includes(k)) throw new AdderError('TypeError', `'${k}' is an invalid keyword argument`);
+  return out;
+}
+const _tmType = (name, Cls, extraName) => {
+  const ctor = (...a) => new Cls(...a);
+  ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = extraName || name; ctor.__module__ = 'datetime';
+  Cls.prototype.__adderClass__ = name;
+  Cls.prototype.__adderType__ = ctor;
+  ctor._jsClass = Cls;
+  return ctor;
+};
+const _tmPad = (n, w) => { const s = String(Math.abs(n)); return (n < 0 ? '-' : '') + s.padStart(w, '0'); };
+const _tmInt = (v, what) => {
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'number' && Number.isInteger(v)) return v;
+  if (v && typeof v.__index__ === 'function') return v.__index__();
+  throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+};
+const _tmFloorDiv = (a, b) => Math.floor(a / b);
+const _tmMod = (a, b) => ((a % b) + b) % b;
+
+// ── the proleptic Gregorian calendar (datetime.py) ──
+const _TM_DIM = [-1, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const _TM_DBM = [-1]; { let dbm = 0; for (const d of _TM_DIM.slice(1)) { _TM_DBM.push(dbm); dbm += d; } }
+const _tmLeap = (y) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+const _tmDaysBeforeYear = (y) => { y -= 1; return y * 365 + _tmFloorDiv(y, 4) - _tmFloorDiv(y, 100) + _tmFloorDiv(y, 400); };
+const _tmDaysInMonth = (y, m) => (m === 2 && _tmLeap(y) ? 29 : _TM_DIM[m]);
+const _tmDaysBeforeMonth = (y, m) => _TM_DBM[m] + (m > 2 && _tmLeap(y) ? 1 : 0);
+const _tmYmd2ord = (y, m, d) => _tmDaysBeforeYear(y) + _tmDaysBeforeMonth(y, m) + d;
+const _TM_DI400Y = _tmDaysBeforeYear(401), _TM_DI100Y = _tmDaysBeforeYear(101), _TM_DI4Y = _tmDaysBeforeYear(5);
+function _tmOrd2ymd(n) {
+  n -= 1;
+  const n400 = _tmFloorDiv(n, _TM_DI400Y); n = _tmMod(n, _TM_DI400Y);
+  let year = n400 * 400 + 1;
+  const n100 = _tmFloorDiv(n, _TM_DI100Y); n = _tmMod(n, _TM_DI100Y);
+  const n4 = _tmFloorDiv(n, _TM_DI4Y); n = _tmMod(n, _TM_DI4Y);
+  const n1 = _tmFloorDiv(n, 365); n = _tmMod(n, 365);
+  year += n100 * 100 + n4 * 4 + n1;
+  if (n1 === 4 || n100 === 4) return [year - 1, 12, 31];
+  const leap = n1 === 3 && (n4 !== 24 || n100 === 3);
+  let month = (n + 50) >> 5;
+  let preceding = _TM_DBM[month] + (month > 2 && leap ? 1 : 0);
+  if (preceding > n) { month -= 1; preceding -= _TM_DIM[month] + (month === 2 && leap ? 1 : 0); }
+  return [year, month, n - preceding + 1];
+}
+const _TM_MAXORD = _tmYmd2ord(9999, 12, 31);
+function _tmCheckDate(y, m, d) {
+  y = _tmInt(y); m = _tmInt(m); d = _tmInt(d);
+  if (y < 1 || y > 9999) throw new AdderError('ValueError', `year ${y} is out of range`);
+  if (m < 1 || m > 12) throw new AdderError('ValueError', 'month must be in 1..12');
+  if (d < 1 || d > _tmDaysInMonth(y, m)) throw new AdderError('ValueError', 'day is out of range for month');
+  return [y, m, d];
+}
+function _tmCheckTime(h, mi, s, us, fold) {
+  h = _tmInt(h); mi = _tmInt(mi); s = _tmInt(s); us = _tmInt(us);
+  if (h < 0 || h > 23) throw new AdderError('ValueError', 'hour must be in 0..23');
+  if (mi < 0 || mi > 59) throw new AdderError('ValueError', 'minute must be in 0..59');
+  if (s < 0 || s > 59) throw new AdderError('ValueError', 'second must be in 0..59');
+  if (us < 0 || us > 999999) throw new AdderError('ValueError', 'microsecond must be in 0..999999');
+  if (fold !== 0 && fold !== 1) throw new AdderError('ValueError', 'fold must be either 0 or 1');
+  return [h, mi, s, us];
+}
+function _tmIsoweek1monday(year) {
+  const firstday = _tmYmd2ord(year, 1, 1);
+  const firstweekday = (firstday + 6) % 7;
+  let w1m = firstday - firstweekday;
+  if (firstweekday > 3) w1m += 7;
+  return w1m;
+}
+const _TM_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const _TM_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// ── timedelta ──
+const _TM_US_DAY = 86400000000n;
+class _TmTimedelta {
+  constructor(...a) {
+    const p = _tmArgs(a, ['days', 'seconds', 'microseconds', 'milliseconds', 'minutes', 'hours', 'weeks'],
+      { days: 0, seconds: 0, microseconds: 0, milliseconds: 0, minutes: 0, hours: 0, weeks: 0 });
+    // each unit, exactly, in microseconds; one round-half-even at the end (as CPython)
+    const units = [['days', 86400000000], ['seconds', 1000000], ['microseconds', 1], ['milliseconds', 1000], ['minutes', 60000000], ['hours', 3600000000], ['weeks', 604800000000]];
+    let whole = 0n, num = 0n, den = 1n;
+    for (const [k, mult] of units) {
+      const v = p[k];
+      if (typeof v === 'boolean' || (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'bigint') whole += BigInt(typeof v === 'boolean' ? +v : v) * BigInt(mult);
+      else if (typeof v === 'number') {
+        if (!Number.isFinite(v)) throw new AdderError(Number.isNaN(v) ? 'ValueError' : 'OverflowError', Number.isNaN(v) ? 'cannot convert float NaN to integer' : 'cannot convert float infinity to integer');
+        const [n, d] = _tmFromFloat(v);
+        const nn = n * BigInt(mult);
+        num = num * d + nn * den; den *= d;
+      } else throw new AdderError('TypeError', `unsupported type for timedelta ${k} component: ${pyTypeName(v)}`);
+    }
+    // round num/den to an integer, half to even
+    let q = num / den, r = num % den;
+    if (r < 0n) { r += den; q -= 1n; }
+    if (2n * r > den || (2n * r === den && (q & 1n) === 1n)) q += 1n;
+    this._set(whole + q);
+  }
+  _set(total) {
+    let days = total / _TM_US_DAY, rest = total % _TM_US_DAY;
+    if (rest < 0n) { rest += _TM_US_DAY; days -= 1n; }
+    if (days > 999999999n || days < -999999999n) throw new AdderError('OverflowError', `days=${days}; must have magnitude <= 999999999`);
+    this._days = Number(days);
+    this._seconds = Number(rest / 1000000n);
+    this._us = Number(rest % 1000000n);
+  }
+  _total() { return BigInt(this._days) * _TM_US_DAY + BigInt(this._seconds) * 1000000n + BigInt(this._us); }
+  get days() { return this._days; }
+  get seconds() { return this._seconds; }
+  get microseconds() { return this._us; }
+  total_seconds() { return Number(this._total()) / 1e6; }
+  __repr__() {
+    const parts = [];
+    if (this._days) parts.push(`days=${this._days}`);
+    if (this._seconds) parts.push(`seconds=${this._seconds}`);
+    if (this._us) parts.push(`microseconds=${this._us}`);
+    return `datetime.timedelta(${parts.length ? parts.join(', ') : '0'})`;
+  }
+  __str__() {
+    const mm = Math.floor(this._seconds / 60), ss = this._seconds % 60, hh = Math.floor(mm / 60);
+    let s = `${hh}:${_tmPad(mm % 60, 2)}:${_tmPad(ss, 2)}`;
+    if (this._days) s = `${this._days} day${Math.abs(this._days) !== 1 ? 's' : ''}, ${s}`;
+    if (this._us) s += `.${_tmPad(this._us, 6)}`;
+    return s;
+  }
+  __bool__() { return this._total() !== 0n; }
+  __hash__() { return _pyHash(mkTuple([this._days, this._seconds, this._us])); }
+  __neg__() { return _tmTd(-this._total()); }
+  __pos__() { return this; }
+  __abs__() { return this._days < 0 ? this.__neg__() : this; }
+  __add__(o) {
+    if (o instanceof _TmTimedelta) return _tmTd(this._total() + o._total());
+    if (o instanceof _TmDate) return o.__add__(this);
+    return NotImplemented;
+  }
+  __radd__(o) { return this.__add__(o); }
+  __sub__(o) { return o instanceof _TmTimedelta ? _tmTd(this._total() - o._total()) : NotImplemented; }
+  __rsub__(o) { return o instanceof _TmTimedelta ? _tmTd(o._total() - this._total()) : NotImplemented; }
+  __mul__(o) {
+    if (typeof o === 'boolean' || (typeof o === 'number' && Number.isInteger(o))) return _tmTd(this._total() * BigInt(+o));
+    if (typeof o === 'number') { const [n, d] = _tmFromFloat(o); return _tmTd(_tmDivRound(this._total() * n, d)); }
+    return NotImplemented;
+  }
+  __rmul__(o) { return this.__mul__(o); }
+  __truediv__(o) {
+    if (o instanceof _TmTimedelta) { if (o._total() === 0n) throw new AdderError('ZeroDivisionError', 'division by zero'); return Number(this._total()) / Number(o._total()); }
+    if (typeof o === 'number' && Number.isInteger(o)) { if (o === 0) throw new AdderError('ZeroDivisionError', 'division by zero'); return _tmTd(_tmDivRound(this._total(), BigInt(o))); }
+    if (typeof o === 'number') { if (o === 0) throw new AdderError('ZeroDivisionError', 'division by zero'); const [n, d] = _tmFromFloat(o); return _tmTd(_tmDivRound(this._total() * d, n)); }
+    return NotImplemented;
+  }
+  __floordiv__(o) {
+    if (o instanceof _TmTimedelta) { if (o._total() === 0n) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero'); return Number(_tmBigFloorDiv(this._total(), o._total())); }
+    if (typeof o === 'number' && Number.isInteger(o)) { if (o === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero'); return _tmTd(_tmBigFloorDiv(this._total(), BigInt(o))); }
+    return NotImplemented;
+  }
+  __mod__(o) {
+    if (!(o instanceof _TmTimedelta)) return NotImplemented;
+    const a = this._total(), b = o._total();
+    if (b === 0n) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero');
+    return _tmTd(a - _tmBigFloorDiv(a, b) * b);
+  }
+  __divmod__(o) {
+    if (!(o instanceof _TmTimedelta)) return NotImplemented;
+    const a = this._total(), b = o._total(), q = _tmBigFloorDiv(a, b);
+    return mkTuple([Number(q), _tmTd(a - q * b)]);
+  }
+  _cmp(o) { if (!(o instanceof _TmTimedelta)) return null; const a = this._total(), b = o._total(); return a < b ? -1 : a > b ? 1 : 0; }
+  __eq__(o) { const c = this._cmp(o); return c === null ? false : c === 0; }
+  __lt__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('<', this, o); return c < 0; }
+  __le__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('<=', this, o); return c <= 0; }
+  __gt__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('>', this, o); return c > 0; }
+  __ge__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('>=', this, o); return c >= 0; }
+}
+const _tmCmpErr = (op, a, b) => new AdderError('TypeError', `'${op}' not supported between instances of '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+function _tmBigFloorDiv(a, b) { let q = a / b; if ((a % b !== 0n) && ((a < 0n) !== (b < 0n))) q -= 1n; return q; }
+function _tmDivRound(a, b) {
+  if (b < 0n) { a = -a; b = -b; }
+  let q = a / b, r = a % b;
+  if (r < 0n) { r += b; q -= 1n; }
+  if (2n * r > b || (2n * r === b && (q & 1n) === 1n)) q += 1n;
+  return q;
+}
+function _tmFromFloat(x) {
+  if (Number.isInteger(x)) return [BigInt(x), 1n];
+  const f = new Float64Array([x]);
+  const u = new BigUint64Array(f.buffer)[0];
+  const e = Number((u >> 52n) & 0x7ffn);
+  let m = u & 0xfffffffffffffn;
+  let exp;
+  if (e === 0) exp = -1074; else { m |= 1n << 52n; exp = e - 1075; }
+  const n = (u >> 63n) ? -m : m;
+  return exp >= 0 ? [n << BigInt(exp), 1n] : [n, 1n << BigInt(-exp)];
+}
+const _tmTd = (total) => { const t = Object.create(_TmTimedelta.prototype); t._set(total); return t; };
+const _tmTdType = _tmType('timedelta', _TmTimedelta);
+
+// ── tzinfo / timezone (fixed offsets) ──
+class _TmTimezone {
+  constructor(offset, name = null) {
+    if (offset !== null && typeof offset === 'object' && offset._kw) { name = offset.name ?? null; offset = offset.offset; }
+    if (name !== null && typeof name === 'object' && name._kw) name = name.name ?? null;
+    if (!(offset instanceof _TmTimedelta)) throw new AdderError('TypeError', 'timezone() argument 1 must be datetime.timedelta, not ' + pyTypeName(offset));
+    if (offset._total() <= -_TM_US_DAY || offset._total() >= _TM_US_DAY) throw new AdderError('ValueError', 'offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24).');
+    this._offset = offset; this._name = name;
+  }
+  utcoffset() { return this._offset; }
+  dst() { return null; }
+  tzname() { return this._name !== null ? this._name : _tmOffsetName(this._offset); }
+  fromutc(dt) { return dt.__add__(this._offset); }
+  __repr__() {
+    if (this === _tmUTC) return 'datetime.timezone.utc';
+    return this._name === null ? `datetime.timezone(${this._offset.__repr__()})` : `datetime.timezone(${this._offset.__repr__()}, ${pyRepr(this._name)})`;
+  }
+  __str__() { return this.tzname(); }
+  __eq__(o) { return o instanceof _TmTimezone && o._offset.__eq__(this._offset); }
+  __hash__() { return this._offset.__hash__(); }
+}
+function _tmOffsetName(off) {
+  const t = off._total();
+  if (t === 0n) return 'UTC';
+  const sign = t < 0n ? '-' : '+';
+  let us = t < 0n ? -t : t;
+  const h = us / 3600000000n; us %= 3600000000n;
+  const m = us / 60000000n; us %= 60000000n;
+  const s = us / 1000000n; us %= 1000000n;
+  let out = `UTC${sign}${_tmPad(Number(h), 2)}:${_tmPad(Number(m), 2)}`;
+  if (s || us) out += `:${_tmPad(Number(s), 2)}`;
+  if (us) out += `.${_tmPad(Number(us), 6)}`;
+  return out;
+}
+// ±HH:MM[:SS[.ffffff]] for isoformat / %z (with `sep`)
+function _tmFormatOffset(off, sep = ':') {
+  if (off === null || off === undefined) return '';
+  const t = off._total();
+  const sign = t < 0n ? '-' : '+';
+  let us = t < 0n ? -t : t;
+  const h = us / 3600000000n; us %= 3600000000n;
+  const m = us / 60000000n; us %= 60000000n;
+  const s = us / 1000000n; us %= 1000000n;
+  let out = `${sign}${_tmPad(Number(h), 2)}${sep}${_tmPad(Number(m), 2)}`;
+  if (s || us) out += `${sep}${_tmPad(Number(s), 2)}`;
+  if (us) out += `.${_tmPad(Number(us), 6)}`;
+  return out;
+}
+const _tmTimezoneType = _tmType('timezone', _TmTimezone);
+const _tmUTC = new _TmTimezone(new _TmTimedelta(0));
+_tmTimezoneType.utc = _tmUTC;
+_tmTimezoneType.min = new _TmTimezone(new _TmTimedelta({ _kw: true, hours: -23, minutes: -59 }));
+_tmTimezoneType.max = new _TmTimezone(new _TmTimedelta({ _kw: true, hours: 23, minutes: 59 }));
+const _tmTzOffset = (tz, dt) => {
+  if (tz === null || tz === undefined) return null;
+  const o = typeof tz.utcoffset === 'function' ? tz.utcoffset(dt) : null;
+  return o;
+};
+
+// ── date ──
+class _TmDate {
+  constructor(...a) {
+    const p = _tmArgs(a, ['year', 'month', 'day'], {});
+    if (p.year === undefined || p.month === undefined || p.day === undefined) {
+      const miss = ['year', 'month', 'day'].find((k) => p[k] === undefined);
+      throw new AdderError('TypeError', `function missing required argument '${miss}' (pos ${['year', 'month', 'day'].indexOf(miss) + 1})`);
+    }
+    [this._y, this._m, this._d] = _tmCheckDate(p.year, p.month, p.day);
+  }
+  get year() { return this._y; }
+  get month() { return this._m; }
+  get day() { return this._d; }
+  toordinal() { return _tmYmd2ord(this._y, this._m, this._d); }
+  weekday() { return (this.toordinal() + 6) % 7; }
+  isoweekday() { return this.weekday() + 1; }
+  isocalendar() {
+    let year = this._y;
+    let w1m = _tmIsoweek1monday(year);
+    const today = this.toordinal();
+    let week = _tmFloorDiv(today - w1m, 7), day = _tmMod(today - w1m, 7);
+    if (week < 0) { year -= 1; w1m = _tmIsoweek1monday(year); week = _tmFloorDiv(today - w1m, 7); day = _tmMod(today - w1m, 7); }
+    else if (week >= 52 && today >= _tmIsoweek1monday(year + 1)) { year += 1; week = 0; }
+    return _tmIsoCal(year, week + 1, day + 1);
+  }
+  isoformat() { return `${_tmPad(this._y, 4)}-${_tmPad(this._m, 2)}-${_tmPad(this._d, 2)}`; }
+  __str__() { return this.isoformat(); }
+  __repr__() { return `datetime.date(${this._y}, ${this._m}, ${this._d})`; }
+  __format__(spec) { return spec ? this.strftime(spec) : this.__str__(); }
+  ctime() { return _tmStrftime(this, '%a %b %e %H:%M:%S %Y'); }
+  strftime(fmt) { return _tmStrftime(this, fmt); }
+  timetuple() { return _tmStructTime([this._y, this._m, this._d, 0, 0, 0, this.weekday(), this.toordinal() - _tmYmd2ord(this._y, 1, 1) + 1, -1]); }
+  replace(...a) {
+    const p = _tmArgs(a, ['year', 'month', 'day'], { year: this._y, month: this._m, day: this._d });
+    return new _TmDate(p.year, p.month, p.day);
+  }
+  __add__(o) {
+    if (!(o instanceof _TmTimedelta)) return NotImplemented;
+    const n = this.toordinal() + o._days;
+    if (n < 1 || n > _TM_MAXORD) throw new AdderError('OverflowError', 'date value out of range');
+    return _tmDateFromOrd(n);
+  }
+  __radd__(o) { return this.__add__(o); }
+  __sub__(o) {
+    if (o instanceof _TmTimedelta) return this.__add__(o.__neg__());
+    if (o instanceof _TmDate && !(o instanceof _TmDatetime)) return _tmTd(BigInt(this.toordinal() - o.toordinal()) * _TM_US_DAY);
+    return NotImplemented;
+  }
+  _cmp(o) {
+    if (!(o instanceof _TmDate) || (o instanceof _TmDatetime) !== (this instanceof _TmDatetime)) return null;
+    const a = [this._y, this._m, this._d], b = [o._y, o._m, o._d];
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+  }
+  __eq__(o) { const c = this._cmp(o); return c === null ? false : c === 0; }
+  __lt__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('<', this, o); return c < 0; }
+  __le__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('<=', this, o); return c <= 0; }
+  __gt__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('>', this, o); return c > 0; }
+  __ge__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('>=', this, o); return c >= 0; }
+  __hash__() { return _pyHash(mkTuple([this._y, this._m, this._d])); }
+}
+const _tmDateFromOrd = (n) => { const [y, m, d] = _tmOrd2ymd(n); const o = Object.create(_TmDate.prototype); o._y = y; o._m = m; o._d = d; return o; };
+const _tmIsoCalType = _namedtuple('IsoCalendarDate', ['year', 'week', 'weekday']);
+const _tmIsoCal = (y, w, d) => { const t = _tmIsoCalType(y, w, d); return t; };
+Object.getPrototypeOf(_tmIsoCalType(1, 1, 1)).__repr__ = function () { return `datetime.IsoCalendarDate(year=${this[0]}, week=${this[1]}, weekday=${this[2]})`; };
+const _tmDateType = _tmType('date', _TmDate);
+
+// ── time ──
+class _TmTime {
+  constructor(...a) {
+    const p = _tmArgs(a, ['hour', 'minute', 'second', 'microsecond', 'tzinfo'], { hour: 0, minute: 0, second: 0, microsecond: 0, tzinfo: null });
+    const fold = 0;
+    [this._h, this._mi, this._s, this._us] = _tmCheckTime(p.hour, p.minute, p.second, p.microsecond, fold);
+    this._tz = p.tzinfo ?? null;
+  }
+  get hour() { return this._h; }
+  get minute() { return this._mi; }
+  get second() { return this._s; }
+  get microsecond() { return this._us; }
+  get tzinfo() { return this._tz; }
+  get fold() { return 0; }
+  utcoffset() { return _tmTzOffset(this._tz, null); }
+  tzname() { return this._tz ? this._tz.tzname(null) : null; }
+  isoformat(...a) {
+    const p = _tmArgs(a, ['timespec'], { timespec: 'auto' });
+    return _tmIsoTime(this._h, this._mi, this._s, this._us, p.timespec) + _tmFormatOffset(this.utcoffset());
+  }
+  __str__() { return this.isoformat(); }
+  __repr__() {
+    let args = `${this._h}, ${this._mi}`;
+    if (this._s || this._us) args += `, ${this._s}`;
+    if (this._us) args += `, ${this._us}`;
+    if (this._tz) args += `, tzinfo=${pyRepr(this._tz)}`;
+    return `datetime.time(${args})`;
+  }
+  __format__(spec) { return spec ? this.strftime(spec) : this.__str__(); }
+  strftime(fmt) { return _tmStrftime(this, fmt); }
+  replace(...a) {
+    const p = _tmArgs(a, ['hour', 'minute', 'second', 'microsecond', 'tzinfo'], { hour: this._h, minute: this._mi, second: this._s, microsecond: this._us, tzinfo: this._tz });
+    return new _TmTime(p.hour, p.minute, p.second, p.microsecond, p.tzinfo);
+  }
+  _key() { return ((this._h * 60 + this._mi) * 60 + this._s) * 1e6 + this._us; }
+  _cmp(o) { if (!(o instanceof _TmTime)) return null; const a = this._key(), b = o._key(); return a < b ? -1 : a > b ? 1 : 0; }
+  __eq__(o) { const c = this._cmp(o); return c === null ? false : c === 0; }
+  __lt__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('<', this, o); return c < 0; }
+  __le__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('<=', this, o); return c <= 0; }
+  __gt__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('>', this, o); return c > 0; }
+  __ge__(o) { const c = this._cmp(o); if (c === null) throw _tmCmpErr('>=', this, o); return c >= 0; }
+  __hash__() { return _pyHash(this._key()); }
+  __bool__() { return true; }
+}
+function _tmIsoTime(h, mi, s, us, timespec) {
+  const hh = _tmPad(h, 2), mm = _tmPad(mi, 2), ss = _tmPad(s, 2);
+  if (timespec === 'auto') timespec = us ? 'microseconds' : 'seconds';
+  switch (timespec) {
+    case 'hours': return hh;
+    case 'minutes': return `${hh}:${mm}`;
+    case 'seconds': return `${hh}:${mm}:${ss}`;
+    case 'milliseconds': return `${hh}:${mm}:${ss}.${_tmPad(Math.floor(us / 1000), 3)}`;
+    case 'microseconds': return `${hh}:${mm}:${ss}.${_tmPad(us, 6)}`;
+    default: throw new AdderError('ValueError', 'Unknown timespec value');
+  }
+}
+const _tmTimeType = _tmType('time', _TmTime);
+
+// ── datetime ──
+// the local UTC offset at a moment (the browser's time zone)
+const _tmLocalOffsetMin = (y, m, d, h, mi, s) => -new Date(y, m - 1, d, h, mi, s).getTimezoneOffset();
+class _TmDatetime extends _TmDate {
+  constructor(...a) {
+    const p = _tmArgs(a, ['year', 'month', 'day', 'hour', 'minute', 'second', 'microsecond', 'tzinfo', 'fold'],
+      { hour: 0, minute: 0, second: 0, microsecond: 0, tzinfo: null, fold: 0 });
+    if (p.year === undefined || p.month === undefined || p.day === undefined) {
+      const miss = ['year', 'month', 'day'].find((k) => p[k] === undefined);
+      throw new AdderError('TypeError', `function missing required argument '${miss}' (pos ${['year', 'month', 'day'].indexOf(miss) + 1})`);
+    }
+    super(p.year, p.month, p.day);
+    [this._h, this._mi, this._s, this._us] = _tmCheckTime(p.hour, p.minute, p.second, p.microsecond, p.fold);
+    this._tz = p.tzinfo ?? null;
+    this._fold = p.fold;
+  }
+  get hour() { return this._h; }
+  get minute() { return this._mi; }
+  get second() { return this._s; }
+  get microsecond() { return this._us; }
+  get tzinfo() { return this._tz; }
+  get fold() { return this._fold; }
+  date() { return new _TmDate(this._y, this._m, this._d); }
+  time() { return new _TmTime(this._h, this._mi, this._s, this._us); }
+  timetz() { return new _TmTime(this._h, this._mi, this._s, this._us, this._tz); }
+  utcoffset() { return _tmTzOffset(this._tz, this); }
+  tzname() { return this._tz ? this._tz.tzname(this) : null; }
+  dst() { return this._tz && typeof this._tz.dst === 'function' ? this._tz.dst(this) : null; }
+  // microseconds since 0001-01-01T00:00 of the wall clock (BigInt)
+  _wall() { return BigInt(this.toordinal()) * _TM_US_DAY + BigInt(((this._h * 60 + this._mi) * 60 + this._s)) * 1000000n + BigInt(this._us); }
+  _utc() { const off = this.utcoffset(); return off === null ? null : this._wall() - off._total(); }
+  timestamp() {
+    if (this._tz) return Number(this._utc() - _TM_EPOCH_US) / 1e6;
+    const ms = new Date(this._y, this._m - 1, this._d, this._h, this._mi, this._s).getTime();
+    return ms / 1000 + this._us / 1e6;
+  }
+  isoformat(...a) {
+    const p = _tmArgs(a, ['sep', 'timespec'], { sep: 'T', timespec: 'auto' });
+    return `${_TmDate.prototype.isoformat.call(this)}${p.sep}${_tmIsoTime(this._h, this._mi, this._s, this._us, p.timespec)}${_tmFormatOffset(this.utcoffset())}`;
+  }
+  __str__() { return this.isoformat(' '); }
+  __repr__() {
+    let args = `${this._y}, ${this._m}, ${this._d}, ${this._h}, ${this._mi}`;
+    if (this._s || this._us) args += `, ${this._s}`;
+    if (this._us) args += `, ${this._us}`;
+    if (this._tz) args += `, tzinfo=${pyRepr(this._tz)}`;
+    if (this._fold) args += ', fold=1';
+    return `datetime.datetime(${args})`;
+  }
+  ctime() { return _tmStrftime(this, '%a %b %e %H:%M:%S %Y'); }
+  timetuple() {
+    return _tmStructTime([this._y, this._m, this._d, this._h, this._mi, this._s, this.weekday(), this.toordinal() - _tmYmd2ord(this._y, 1, 1) + 1, -1]);
+  }
+  utctimetuple() { const u = this._tz ? this.__sub__(this.utcoffset()) : this; return _tmStructTime([u._y, u._m, u._d, u._h, u._mi, u._s, u.weekday(), u.toordinal() - _tmYmd2ord(u._y, 1, 1) + 1, 0]); }
+  replace(...a) {
+    const p = _tmArgs(a, ['year', 'month', 'day', 'hour', 'minute', 'second', 'microsecond', 'tzinfo', 'fold'],
+      { year: this._y, month: this._m, day: this._d, hour: this._h, minute: this._mi, second: this._s, microsecond: this._us, tzinfo: this._tz, fold: this._fold });
+    return new _TmDatetime(p.year, p.month, p.day, p.hour, p.minute, p.second, p.microsecond, p.tzinfo, { _kw: true, fold: p.fold });
+  }
+  astimezone(tz = null) {
+    if (tz !== null && typeof tz === 'object' && tz._kw) tz = tz.tz ?? null;
+    let utc;
+    if (this._tz) utc = this._utc();
+    else utc = this._wall() - BigInt(_tmLocalOffsetMin(this._y, this._m, this._d, this._h, this._mi, this._s)) * 60000000n;
+    if (tz === null) {
+      const ms = Number((utc - _TM_EPOCH_US) / 1000n);
+      const off = -new Date(ms).getTimezoneOffset();
+      tz = new _TmTimezone(new _TmTimedelta({ _kw: true, minutes: off }));
+    }
+    const off = tz.utcoffset(null) || new _TmTimedelta(0);
+    return _tmDtFromWall(utc + off._total(), tz);
+  }
+  __add__(o) {
+    if (!(o instanceof _TmTimedelta)) return NotImplemented;
+    return _tmDtFromWall(this._wall() + o._total(), this._tz);
+  }
+  __radd__(o) { return this.__add__(o); }
+  __sub__(o) {
+    if (o instanceof _TmTimedelta) return _tmDtFromWall(this._wall() - o._total(), this._tz);
+    if (o instanceof _TmDatetime) {
+      const a = this._tz ? this._utc() : null, b = o._tz ? o._utc() : null;
+      if ((a === null) !== (b === null)) throw new AdderError('TypeError', "can't subtract offset-naive and offset-aware datetimes");
+      return _tmTd(a === null ? this._wall() - o._wall() : a - b);
+    }
+    return NotImplemented;
+  }
+  _cmp(o) {
+    if (!(o instanceof _TmDatetime)) return null;
+    let a, b;
+    if (this._tz && o._tz) { a = this._utc(); b = o._utc(); }
+    else if (!this._tz && !o._tz) { a = this._wall(); b = o._wall(); }
+    else return 'mixed';
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  __eq__(o) { const c = this._cmp(o); return c === null || c === 'mixed' ? false : c === 0; }
+  __lt__(o) { return this._order('<', o, (c) => c < 0); }
+  __le__(o) { return this._order('<=', o, (c) => c <= 0); }
+  __gt__(o) { return this._order('>', o, (c) => c > 0); }
+  __ge__(o) { return this._order('>=', o, (c) => c >= 0); }
+  _order(op, o, f) {
+    const c = this._cmp(o);
+    if (c === null) throw _tmCmpErr(op, this, o);
+    if (c === 'mixed') throw new AdderError('TypeError', "can't compare offset-naive and offset-aware datetimes");
+    return f(c);
+  }
+  __hash__() { const u = this._tz ? this._utc() : this._wall(); return _pyHash(Number(u % 9007199254740991n)); }
+}
+const _TM_EPOCH_US = BigInt(_tmYmd2ord(1970, 1, 1)) * _TM_US_DAY;
+function _tmDtFromWall(us, tz) {
+  let days = us / _TM_US_DAY, rest = us % _TM_US_DAY;
+  if (rest < 0n) { rest += _TM_US_DAY; days -= 1n; }
+  const n = Number(days);
+  if (n < 1 || n > _TM_MAXORD) throw new AdderError('OverflowError', 'date value out of range');
+  const [y, m, d] = _tmOrd2ymd(n);
+  const r = Number(rest);
+  const usec = r % 1e6, secs = Math.floor(r / 1e6);
+  return new _TmDatetime(y, m, d, Math.floor(secs / 3600), Math.floor(secs / 60) % 60, secs % 60, usec, tz);
+}
+function _tmFromTimestamp(ts, tz) {
+  if (typeof ts !== 'number') ts = Number(ts);
+  const [n, d] = _tmFromFloat(ts);
+  const us = _tmDivRound(n * 1000000n, d);
+  if (tz) {
+    const off = tz.utcoffset(null) || new _TmTimedelta(0);
+    return _tmDtFromWall(_TM_EPOCH_US + us + off._total(), tz);
+  }
+  const ms = Number(us / 1000n);
+  const dt = new Date(ms);
+  const usec = Number(((us % 1000000n) + 1000000n) % 1000000n);
+  return new _TmDatetime(dt.getFullYear(), dt.getMonth() + 1, dt.getDate(), dt.getHours(), dt.getMinutes(), dt.getSeconds(), usec);
+}
+const _tmNowUs = () => {
+  const p = typeof performance !== 'undefined' && performance.timeOrigin ? performance.timeOrigin + performance.now() : Date.now();
+  return p;
+};
+const _tmDtType = _tmType('datetime', _TmDatetime);
+
+// ── strftime / strptime ──
+function _tmStrftime(o, fmt) {
+  const has = (k) => k in o;
+  const y = has('_y') ? o._y : 1900, mo = has('_m') ? o._m : 1, d = has('_d') ? o._d : 1;
+  const h = o._h || 0, mi = o._mi || 0, s = o._s || 0, us = o._us || 0;
+  const isDate = typeof o.weekday === 'function';   // a date / datetime, or time's struct_time view
+  const wd = isDate ? o.weekday() : (_tmYmd2ord(1900, 1, 1) + 6) % 7;
+  const yday = isDate ? o.toordinal() - _tmYmd2ord(y, 1, 1) + 1 : 1;
+  const sundayWd = (wd + 1) % 7;
+  const off = typeof o.utcoffset === 'function' ? o.utcoffset() : null;
+  return String(fmt).replace(/%([-#]?)([a-zA-Z%:])/g, (m, flag, c) => {
+    const p2 = (n) => (flag === '-' ? String(n) : _tmPad(n, 2));
+    switch (c) {
+      case 'a': return _TM_DAYS[wd].slice(0, 3);
+      case 'A': return _TM_DAYS[wd];
+      case 'w': return String(sundayWd);
+      case 'u': return String(wd + 1);
+      case 'd': return p2(d);
+      case 'e': return String(d).padStart(2, ' ');
+      case 'b': case 'h': return _TM_MONTHS[mo - 1].slice(0, 3);
+      case 'B': return _TM_MONTHS[mo - 1];
+      case 'm': return p2(mo);
+      case 'y': return _tmPad(y % 100, 2);
+      case 'Y': return String(y);
+      case 'C': return _tmPad(Math.floor(y / 100), 2);
+      case 'H': return p2(h);
+      case 'I': return p2(h % 12 === 0 ? 12 : h % 12);
+      case 'p': return h < 12 ? 'AM' : 'PM';
+      case 'M': return p2(mi);
+      case 'S': return p2(s);
+      case 'f': return _tmPad(us, 6);
+      case 'j': return flag === '-' ? String(yday) : _tmPad(yday, 3);
+      case 'U': return _tmPad(Math.floor((yday - 1 + 7 - sundayWd) / 7), 2);
+      case 'W': return _tmPad(Math.floor((yday - 1 + 7 - wd) / 7), 2);
+      case 'G': return String(isDate ? o.isocalendar()[0] : y);
+      case 'V': return _tmPad(isDate ? o.isocalendar()[1] : 1, 2);
+      case 'z': return off ? _tmFormatOffset(off, '') : '';
+      case ':': return m;
+      case 'Z': return o._tz ? o._tz.tzname(o) ?? '' : '';
+      case 'c': return _tmStrftime(o, '%a %b %e %H:%M:%S %Y');
+      case 'x': return _tmStrftime(o, '%m/%d/%y');
+      case 'X': return _tmStrftime(o, '%H:%M:%S');
+      case 'D': return _tmStrftime(o, '%m/%d/%y');
+      case 'F': return _tmStrftime(o, '%Y-%m-%d');
+      case 'T': return _tmStrftime(o, '%H:%M:%S');
+      case 'R': return _tmStrftime(o, '%H:%M');
+      case 'n': return '\n';
+      case 't': return '\t';
+      case '%': return '%';
+      default: return m;
+    }
+  }).replace(/%:z/g, () => (off ? _tmFormatOffset(off, ':') : ''));
+}
+const _tmRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// strptime's directive patterns (the C locale)
+const _TM_PT = {
+  d: '(?<d>3[01]|[12]\\d|0[1-9]|[1-9]| [1-9])', f: '(?<f>[0-9]{1,6})', H: '(?<H>2[0-3]|[0-1]\\d|\\d)', I: '(?<I>1[0-2]|0[1-9]|[1-9])',
+  j: '(?<j>36[0-6]|3[0-5]\\d|[12]\\d\\d|0[1-9]\\d|00[1-9]|[1-9]\\d|0[1-9]|[1-9])', m: '(?<m>1[0-2]|0[1-9]|[1-9])', M: '(?<M>[0-5]\\d|\\d)',
+  S: '(?<S>6[0-1]|[0-5]\\d|\\d)', y: '(?<y>\\d\\d)', Y: '(?<Y>\\d\\d\\d\\d)', p: '(?<p>am|pm)', b: `(?<b>${_TM_MONTHS.map((x) => x.slice(0, 3)).join('|')})`,
+  B: `(?<B>${_TM_MONTHS.join('|')})`, a: `(?<a>${_TM_DAYS.map((x) => x.slice(0, 3)).join('|')})`, A: `(?<A>${_TM_DAYS.join('|')})`,
+  w: '(?<w>[0-6])', u: '(?<u>[1-7])', z: '(?<z>[+-]\\d\\d:?[0-5]\\d(:?[0-5]\\d(\\.\\d{1,6})?)?|(?-i:Z))', Z: '(?<Z>utc|gmt)', '%': '%',
+};
+function _tmStrptimeParts(str, fmt) {
+  if (typeof str !== 'string') throw new AdderError('TypeError', `strptime() argument 1 must be str, not ${pyTypeName(str)}`);
+  let pat = '';
+  const seen = new Set();
+  for (let i = 0; i < fmt.length; i++) {
+    const c = fmt[i];
+    if (c === '%' && i + 1 < fmt.length) {
+      const dch = fmt[++i];
+      if (!(dch in _TM_PT)) throw new AdderError('ValueError', `'${dch}' is a bad directive in format '${fmt}'`);
+      if (seen.has(dch) && dch !== '%') pat += `\\k<${dch}>`; else pat += _TM_PT[dch];
+      seen.add(dch);
+    } else if (/\s/.test(c)) { pat += '\\s+'; while (i + 1 < fmt.length && /\s/.test(fmt[i + 1])) i++; }
+    else pat += _tmRe(c);
+  }
+  const re = new RegExp(`^${pat}`, 'i');
+  const m = re.exec(str);
+  if (!m) throw new AdderError('ValueError', `time data ${pyRepr(str)} does not match format ${pyRepr(fmt)}`);
+  if (m[0].length !== str.length) throw new AdderError('ValueError', `unconverted data remains: ${str.slice(m[0].length)}`);
+  const g = m.groups || {};
+  let year = 1900, month = 1, day = 1, hour = 0, minute = 0, second = 0, us = 0, tz = null, yday = null;
+  const ix = (arr, v) => arr.findIndex((x) => x.toLowerCase() === v.toLowerCase());
+  if (g.Y) year = Number(g.Y);
+  else if (g.y) { const yy = Number(g.y); year = yy <= 68 ? 2000 + yy : 1900 + yy; }
+  if (g.m) month = Number(g.m);
+  else if (g.B) month = ix(_TM_MONTHS, g.B) + 1;
+  else if (g.b) month = ix(_TM_MONTHS.map((x) => x.slice(0, 3)), g.b) + 1;
+  if (g.d) day = Number(g.d);
+  if (g.H) hour = Number(g.H);
+  else if (g.I) { hour = Number(g.I) % 12; if (g.p && g.p.toLowerCase() === 'pm') hour += 12; }
+  if (g.M) minute = Number(g.M);
+  if (g.S) second = Number(g.S);
+  if (g.f) us = Number(g.f.padEnd(6, '0'));
+  if (g.j) yday = Number(g.j);
+  if (g.z) {
+    if (/^z$/i.test(g.z)) tz = _tmUTC;
+    else {
+      const zm = /^([+-])(\d\d):?(\d\d)(?::?(\d\d)(?:\.(\d{1,6}))?)?$/.exec(g.z);
+      const sign = zm[1] === '-' ? -1 : 1;
+      tz = new _TmTimezone(new _TmTimedelta({ _kw: true, hours: sign * Number(zm[2]), minutes: sign * Number(zm[3]), seconds: sign * Number(zm[4] || 0), microseconds: sign * Number((zm[5] || '0').padEnd(6, '0')) }));
+    }
+  } else if (g.Z) tz = null;
+  if (yday !== null && !g.m && !g.b && !g.B && !g.d) { const [, mm, dd] = _tmOrd2ymd(_tmYmd2ord(year, 1, 1) + yday - 1); month = mm; day = dd; }
+  return { year, month, day, hour, minute, second, us, tz };
+}
+
+// ── the datetime module ──
+Object.assign(_tmDateType, {
+  today: () => { const t = new Date(); return new _TmDate(t.getFullYear(), t.getMonth() + 1, t.getDate()); },
+  fromordinal: (n) => { n = _tmInt(n); if (n < 1 || n > _TM_MAXORD) throw new AdderError('ValueError', `ordinal must be >= 1`); return _tmDateFromOrd(n); },
+  fromtimestamp: (ts) => _tmFromTimestamp(ts, null).date(),
+  fromisoformat: (s) => {
+    const m = /^(\d{4})-?(\d\d)-?(\d\d)$/.exec(String(s)) || /^(\d{4})-?W(\d\d)-?(\d)$/.exec(String(s));
+    if (!m) throw new AdderError('ValueError', `Invalid isoformat string: ${pyRepr(s)}`);
+    if (String(s).includes('W')) return _tmDateType.fromisocalendar(Number(m[1]), Number(m[2]), Number(m[3]));
+    return new _TmDate(Number(m[1]), Number(m[2]), Number(m[3]));
+  },
+  fromisocalendar: (year, week, day) => {
+    if (week < 1 || week > 53) throw new AdderError('ValueError', `Invalid week: ${week}`);
+    if (day < 1 || day > 7) throw new AdderError('ValueError', `Invalid weekday: ${day} (range is [1, 7])`);
+    return _tmDateFromOrd(_tmIsoweek1monday(year) + (week - 1) * 7 + (day - 1));
+  },
+  min: new _TmDate(1, 1, 1), max: new _TmDate(9999, 12, 31), resolution: new _TmTimedelta(1),
+});
+Object.assign(_tmTimeType, {
+  fromisoformat: (s) => {
+    const m = /^(\d\d)(?::?(\d\d)(?::?(\d\d)(?:[.,](\d{1,6})\d*)?)?)?(Z|[+-]\d\d(?::?\d\d(?::?\d\d(?:\.\d{1,6})?)?)?)?$/.exec(String(s));
+    if (!m) throw new AdderError('ValueError', `Invalid isoformat string: ${pyRepr(s)}`);
+    return new _TmTime(Number(m[1]), Number(m[2] || 0), Number(m[3] || 0), Number((m[4] || '0').padEnd(6, '0')), _tmParseIsoTz(m[5]));
+  },
+  min: new _TmTime(0, 0), max: new _TmTime(23, 59, 59, 999999), resolution: new _TmTimedelta(0, 0, 1),
+});
+function _tmParseIsoTz(t) {
+  if (!t) return null;
+  if (t === 'Z') return _tmUTC;
+  const zm = /^([+-])(\d\d)(?::?(\d\d)(?::?(\d\d)(?:\.(\d{1,6}))?)?)?$/.exec(t);
+  const sign = zm[1] === '-' ? -1 : 1;
+  return new _TmTimezone(new _TmTimedelta({ _kw: true, hours: sign * Number(zm[2]), minutes: sign * Number(zm[3] || 0), seconds: sign * Number(zm[4] || 0), microseconds: sign * Number((zm[5] || '0').padEnd(6, '0')) }));
+}
+Object.assign(_tmDtType, {
+  now: (...a) => {
+    const p = _tmArgs(a, ['tz'], { tz: null });
+    const ms = _tmNowUs();
+    return _tmFromTimestamp(ms / 1000, p.tz);
+  },
+  today: () => _tmFromTimestamp(_tmNowUs() / 1000, null),
+  utcnow: () => _tmFromTimestamp(_tmNowUs() / 1000, _tmUTC).replace({ _kw: true, tzinfo: null }),
+  fromtimestamp: (...a) => { const p = _tmArgs(a, ['timestamp', 'tz'], { tz: null }); return _tmFromTimestamp(p.timestamp, p.tz); },
+  utcfromtimestamp: (ts) => _tmFromTimestamp(ts, _tmUTC).replace({ _kw: true, tzinfo: null }),
+  fromordinal: (n) => { const d = _tmDateType.fromordinal(n); return new _TmDatetime(d._y, d._m, d._d); },
+  combine: (...a) => {
+    const p = _tmArgs(a, ['date', 'time', 'tzinfo'], { tzinfo: undefined });
+    const t = p.time;
+    return new _TmDatetime(p.date._y, p.date._m, p.date._d, t._h, t._mi, t._s, t._us, p.tzinfo === undefined ? t._tz : p.tzinfo);
+  },
+  fromisoformat: (s) => {
+    s = String(s);
+    const m = /^(\d{4})-?(\d\d)-?(\d\d)(?:[T ](.+))?$/.exec(s);
+    if (!m) throw new AdderError('ValueError', `Invalid isoformat string: ${pyRepr(s)}`);
+    let t = new _TmTime();
+    if (m[4]) { try { t = _tmTimeType.fromisoformat(m[4]); } catch { throw new AdderError('ValueError', `Invalid isoformat string: ${pyRepr(s)}`); } }
+    return new _TmDatetime(Number(m[1]), Number(m[2]), Number(m[3]), t._h, t._mi, t._s, t._us, t._tz);
+  },
+  fromisocalendar: (y, w, d) => { const dd = _tmDateType.fromisocalendar(y, w, d); return new _TmDatetime(dd._y, dd._m, dd._d); },
+  strptime: (s, fmt) => {
+    const p = _tmStrptimeParts(s, String(fmt));
+    return new _TmDatetime(p.year, p.month, p.day, p.hour, p.minute, p.second, p.us, p.tz);
+  },
+  min: new _TmDatetime(1, 1, 1), max: new _TmDatetime(9999, 12, 31, 23, 59, 59, 999999), resolution: new _TmTimedelta(0, 0, 1),
+});
+Object.assign(_tmTdType, {
+  min: _tmTd(-999999999n * _TM_US_DAY), max: _tmTd(999999999n * _TM_US_DAY + 86399999999n), resolution: new _TmTimedelta(0, 0, 1),
+});
+const _tmTzinfoType = (() => { const t = function () { return Object.create(_tmTzinfoType.prototype); }; t._pyName = 'tzinfo'; t._pyClass = true; t.__name__ = 'tzinfo'; t.prototype = {}; t._pyBases = []; t._pyMRO = [t]; t._pyOwnMembers = new Set(); return t; })();
+adderModules.datetime = {
+  date: _tmDateType, time: _tmTimeType, datetime: _tmDtType, timedelta: _tmTdType, timezone: _tmTimezoneType,
+  tzinfo: _tmTzinfoType, MINYEAR: 1, MAXYEAR: 9999, UTC: _tmUTC,
+};
+
+// ── time ──
+// time / time_ns / perf_counter / monotonic / process_time / sleep (async), gmtime / localtime
+// as struct_time, mktime, strftime / strptime, asctime / ctime, timezone / altzone / tzname.
+const _tmStructType = _namedtuple('struct_time', ['tm_year', 'tm_mon', 'tm_mday', 'tm_hour', 'tm_min', 'tm_sec', 'tm_wday', 'tm_yday', 'tm_isdst']);
+Object.getPrototypeOf(_tmStructType(0, 0, 0, 0, 0, 0, 0, 0, 0)).__repr__ = function () {
+  return `time.struct_time(${['tm_year', 'tm_mon', 'tm_mday', 'tm_hour', 'tm_min', 'tm_sec', 'tm_wday', 'tm_yday', 'tm_isdst'].map((f, i) => `${f}=${this[i]}`).join(', ')})`;
+};
+const _tmStructTime = (v) => _tmStructType(...v);
+const _tmSecsToStruct = (secs, utc) => {
+  const dt = new Date(secs * 1000);
+  const g = (n, u) => (utc ? dt[`getUTC${n}`]() : dt[`get${n}`]());
+  const y = g('FullYear'), mo = g('Month') + 1, d = g('Date');
+  const wd = (g('Day') + 6) % 7, yd = _tmYmd2ord(y, mo, d) - _tmYmd2ord(y, 1, 1) + 1;
+  return _tmStructTime([y, mo, d, g('Hours'), g('Minutes'), g('Seconds'), wd, yd, utc ? 0 : -1]);
+};
+const _tmT0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+const _tmStructToObj = (t) => {
+  const v = [...t];
+  return { _y: v[0], _m: v[1], _d: v[2], _h: v[3], _mi: v[4], _s: v[5], _us: 0, weekday: () => v[6], toordinal: () => _tmYmd2ord(v[0], v[1], v[2]), isocalendar: () => new _TmDate(v[0], v[1], v[2]).isocalendar(), utcoffset: () => null };
+};
+adderModules.time = {
+  time: () => _tmNowUs() / 1000,
+  time_ns: () => BigInt(Math.round(_tmNowUs() * 1e6)),
+  perf_counter: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000,
+  perf_counter_ns: () => BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6)),
+  monotonic: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000,
+  monotonic_ns: () => BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6)),
+  process_time: () => ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - _tmT0) / 1000,
+  thread_time: () => ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - _tmT0) / 1000,
+  sleep: (secs) => {
+    if (typeof secs !== 'number' || secs < 0) throw new AdderError('ValueError', 'sleep length must be non-negative');
+    return new Promise((res) => setTimeout(() => res(null), secs * 1000));
+  },
+  gmtime: (secs = null) => _tmSecsToStruct(secs === null ? Date.now() / 1000 : Number(secs), true),
+  localtime: (secs = null) => _tmSecsToStruct(secs === null ? Date.now() / 1000 : Number(secs), false),
+  mktime: (t) => { const v = [...t]; return new Date(v[0], v[1] - 1, v[2], v[3], v[4], v[5]).getTime() / 1000; },
+  strftime: (fmt, t = null) => _tmStrftime(_tmStructToObj(t === null ? _tmSecsToStruct(Date.now() / 1000, false) : t), String(fmt)),
+  strptime: (s, fmt = '%a %b %d %H:%M:%S %Y') => {
+    const p = _tmStrptimeParts(s, String(fmt));
+    const d = new _TmDate(p.year, p.month, p.day);
+    return _tmStructTime([p.year, p.month, p.day, p.hour, p.minute, p.second, d.weekday(), d.toordinal() - _tmYmd2ord(p.year, 1, 1) + 1, -1]);
+  },
+  asctime: (t = null) => _tmStrftime(_tmStructToObj(t === null ? _tmSecsToStruct(Date.now() / 1000, false) : t), '%a %b %e %H:%M:%S %Y'),
+  ctime: (secs = null) => _tmStrftime(_tmStructToObj(_tmSecsToStruct(secs === null ? Date.now() / 1000 : Number(secs), false)), '%a %b %e %H:%M:%S %Y'),
+  get timezone() { return new Date(2024, 0, 1).getTimezoneOffset() * 60; },
+  get altzone() { return new Date(2024, 6, 1).getTimezoneOffset() * 60; },
+  get daylight() { return new Date(2024, 0, 1).getTimezoneOffset() !== new Date(2024, 6, 1).getTimezoneOffset() ? 1 : 0; },
+  tzname: mkTuple(['UTC', 'UTC']),
+  struct_time: _tmStructType,
+};
+
+// -- stdlib-data.js --
+
+// adder stdlib — data formats and plumbing: csv, struct, hashlib, hmac, zlib, gzip, zipfile,
+// uuid, urllib.parse, warnings, logging, tempfile. CPython's API and output; compression rides
+// the platform's CompressionStream (so zlib / gzip / zipfile calls are async — adder awaits
+// them like any call), hashing is synchronous pure JS. Files go through adder's VFS.
+//
+// Concat-bundled with the rest of adder: top-level names carry a `_dt` prefix.
+
+
+const _dtIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _dtKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
+  args[args.length - 1]._kw === true ? args.pop() : null);
+const _dtHas = (kw, k) => !!kw && Object.hasOwn(kw, k) && k !== '_kw';
+function _dtArgs(a, names, defaults) {
+  const kw = _dtKw(a);
+  const out = {};
+  names.forEach((n, i) => { out[n] = i < a.length ? a[i] : _dtHas(kw, n) ? kw[n] : defaults[n]; });
+  return { args: out, kw };
+}
+const _dtType = (name, Cls, module) => {
+  const ctor = (...a) => new Cls(...a);
+  ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
+  if (module) ctor.__module__ = module;
+  Cls.prototype.__adderClass__ = name;
+  Cls.prototype.__adderType__ = ctor;
+  ctor._jsClass = Cls;
+  return ctor;
+};
+const _dtBytes = (b, what = 'a bytes-like object') => {
+  if (b instanceof Uint8Array) return b;
+  if (b instanceof ArrayBuffer) return new Uint8Array(b);
+  if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  throw new AdderError('TypeError', `${what} is required, not '${pyTypeName(b)}'`);
+};
+const _dtEnc = new TextEncoder();
+const _dtDec = new TextDecoder();
+const _dtConcat = (parts) => { const n = parts.reduce((s, p) => s + p.length, 0); const out = new Uint8Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
+const _dtWrite = (f, s) => adderGetAttr(f, 'write')(s);
+
+// ── csv ──
+// reader / writer / DictReader / DictWriter with CPython's quoting rules and dialects (excel,
+// excel-tab, unix, registered ones). Not here: Sniffer.
+const _dtCsvErr = makeExcType('_csv.Error', 'Exception');
+const _DT_QUOTE = { QUOTE_MINIMAL: 0, QUOTE_ALL: 1, QUOTE_NONNUMERIC: 2, QUOTE_NONE: 3, QUOTE_STRINGS: 4, QUOTE_NOTNULL: 5 };
+const _DT_DIALECTS = {
+  excel: { delimiter: ',', quotechar: '"', escapechar: null, doublequote: true, skipinitialspace: false, lineterminator: '\r\n', quoting: 0, strict: false },
+  'excel-tab': { delimiter: '\t', quotechar: '"', escapechar: null, doublequote: true, skipinitialspace: false, lineterminator: '\r\n', quoting: 0, strict: false },
+  unix: { delimiter: ',', quotechar: '"', escapechar: null, doublequote: true, skipinitialspace: false, lineterminator: '\n', quoting: 1, strict: false },
+};
+function _dtDialect(dialect, kw) {
+  let base = _DT_DIALECTS.excel;
+  if (typeof dialect === 'string') { base = _DT_DIALECTS[dialect]; if (!base) throw new AdderError('_csv.Error', 'unknown dialect'); }
+  else if (dialect && typeof dialect === 'object') base = { ..._DT_DIALECTS.excel, ...Object.fromEntries(Object.keys(_DT_DIALECTS.excel).filter((k) => k in dialect).map((k) => [k, dialect[k]])) };
+  const d = { ...base };
+  if (kw) for (const k of Object.keys(d)) if (_dtHas(kw, k)) d[k] = kw[k];
+  if (typeof d.delimiter !== 'string' || d.delimiter.length !== 1) throw new AdderError('TypeError', '"delimiter" must be a 1-character string');
+  return d;
+}
+class _DtCsvReader {
+  constructor(src, d) { this._src = src; this._d = d; this.line_num = 0; this.dialect = d; this._it = null; }
+  _lines() { return this._it || (this._it = pyIter(this._src)); }
+  _nextRow() {
+    const d = this._d, it = this._lines();
+    const row = [];
+    let field = '', state = 'start', quoted = false;
+    let first = true;
+    for (;;) {
+      const nx = it.next();
+      if (nx.done) {
+        if (first) return null;
+        if (state === 'inquote' && d.strict) throw new AdderError('_csv.Error', 'unexpected end of data');
+        if (state !== 'start' || row.length) { row.push(this._conv(field, quoted)); }
+        return row;
+      }
+      first = false;
+      this.line_num++;
+      let line = nx.value;
+      if (typeof line !== 'string') throw new AdderError('_csv.Error', `iterator should return strings, not ${pyTypeName(line)} (the file should be opened in text mode)`);
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (state === 'start' || state === 'field') {
+          if (state === 'start' && c === d.quotechar && d.quoting !== 3) { state = 'inquote'; quoted = true; continue; }
+          if (c === d.delimiter) { row.push(this._conv(field, quoted)); field = ''; quoted = false; state = 'start'; if (d.skipinitialspace) while (line[i + 1] === ' ') i++; continue; }
+          if (c === '\n' || c === '\r') {
+            if (state === 'start' && !row.length && !quoted) return [];   // a blank line is an empty row
+            if (c === '\r' && line[i + 1] === '\n') i++;
+            row.push(this._conv(field, quoted)); return row;
+          }
+          if (d.escapechar && c === d.escapechar && i + 1 < line.length) { field += line[++i]; state = 'field'; continue; }
+          if (state === 'start' && d.skipinitialspace && c === ' ' && field === '') continue;
+          field += c; state = 'field';
+        } else if (state === 'inquote') {
+          if (d.escapechar && c === d.escapechar && i + 1 < line.length) { field += line[++i]; continue; }
+          if (c === d.quotechar) {
+            if (d.doublequote && line[i + 1] === d.quotechar) { field += c; i++; continue; }
+            state = 'afterquote'; continue;
+          }
+          field += c;
+        } else if (state === 'afterquote') {
+          if (c === d.delimiter) { row.push(this._conv(field, quoted)); field = ''; quoted = false; state = 'start'; if (d.skipinitialspace) while (line[i + 1] === ' ') i++; continue; }
+          if (c === '\n' || c === '\r') { if (c === '\r' && line[i + 1] === '\n') i++; row.push(this._conv(field, quoted)); return row; }
+          if (d.strict) throw new AdderError('_csv.Error', `'${d.delimiter}' expected after '${d.quotechar}'`);
+          field += c; state = 'field';
+        }
+      }
+      if (state !== 'inquote') { if (state !== 'start' || row.length || field !== '' || quoted) row.push(this._conv(field, quoted)); return row; }
+      // a quoted field continues on the next line (the newline was consumed with the line)
+    }
+  }
+  _conv(field, quoted) {
+    if (this._d.quoting === 2 && !quoted) { if (field === '') return field; const v = Number(field); if (Number.isNaN(v) && field.trim().toLowerCase() !== 'nan') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(field)}`); return v; }
+    return field;
+  }
+  *[Symbol.iterator]() { for (let r = this._nextRow(); r !== null; r = this._nextRow()) yield r; }
+  __next__() { const r = this._nextRow(); if (r === null) throw new AdderError('StopIteration', '', undefined, []); return r; }
+}
+_DtCsvReader.prototype.__adderClass__ = '_csv.reader';
+function _dtCsvField(v, d) {
+  if (v === null || v === undefined) return { s: '', num: false, none: true };
+  if (typeof v === 'string') return { s: v, num: false };
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean') return { s: typeof v === 'boolean' ? (v ? 'True' : 'False') : pyStr(v), num: typeof v !== 'boolean' };
+  return { s: pyStr(v), num: false };
+}
+function _dtCsvFormatRow(row, d) {
+  const fields = [...pyIter(row)];
+  const out = fields.map((v) => {
+    const { s, num, none } = _dtCsvField(v, d);
+    let quote = false;
+    const special = s.includes(d.delimiter) || (d.quotechar && s.includes(d.quotechar)) || /[\r\n]/.test(s) || [...d.lineterminator].some((c) => s.includes(c)) || (d.escapechar && s.includes(d.escapechar));
+    if (d.quoting === 1) quote = true;
+    else if (d.quoting === 2) quote = !num && !none;
+    else if (d.quoting === 4) quote = typeof v === 'string';
+    else if (d.quoting === 5) quote = !none;
+    else if (d.quoting === 0) quote = special || (fields.length === 1 && s === '');
+    let body = s;
+    if (d.quoting === 3) {
+      if (special) {
+        if (!d.escapechar) throw new AdderError('_csv.Error', 'need to escape, but no escapechar set');
+        body = s.replace(new RegExp(`[${[d.delimiter, d.quotechar, d.escapechar, '\r', '\n'].filter(Boolean).map((c) => c.replace(/[\]\\^-]/g, '\\$&')).join('')}]`, 'g'), (c) => d.escapechar + c);
+      }
+      return body;
+    }
+    if (d.quotechar) {
+      if (d.doublequote) body = body.split(d.quotechar).join(d.quotechar + d.quotechar);
+      else if (d.escapechar) body = body.split(d.quotechar).join(d.escapechar + d.quotechar);
+      else if (body.includes(d.quotechar)) throw new AdderError('_csv.Error', 'need to escape, but no escapechar set');
+    }
+    return quote ? d.quotechar + body + d.quotechar : body;
+  });
+  return out.join(d.delimiter) + d.lineterminator;
+}
+class _DtCsvWriter {
+  constructor(f, d) { this._f = f; this._d = d; this.dialect = d; }
+  writerow(row) { const r = _dtWrite(this._f, _dtCsvFormatRow(row, this._d)); return _dtIsThen(r) ? r : r; }
+  async writerows(rows) { for (const r of pyIter(rows)) { const w = this.writerow(r); if (_dtIsThen(w)) await w; } return null; }
+}
+_DtCsvWriter.prototype.__adderClass__ = '_csv.writer';
+class _DtDictReader {
+  constructor(...a) {
+    const { args, kw } = _dtArgs(a, ['f', 'fieldnames', 'restkey', 'restval', 'dialect'], { fieldnames: null, restkey: null, restval: null, dialect: 'excel' });
+    this._reader = new _DtCsvReader(args.f, _dtDialect(args.dialect, kw));
+    this._fieldnames = args.fieldnames === null ? null : [...pyIter(args.fieldnames)];
+    this.restkey = args.restkey; this.restval = args.restval;
+  }
+  get fieldnames() {
+    if (this._fieldnames === null) { const r = this._reader._nextRow(); this._fieldnames = r || []; }
+    return this._fieldnames;
+  }
+  get line_num() { return this._reader.line_num; }
+  _next() {
+    const names = this.fieldnames;
+    let row = this._reader._nextRow();
+    while (row !== null && row.length === 0) row = this._reader._nextRow();
+    if (row === null) return null;
+    // a dict of the row; the surplus values go under restkey (None by default, which a plain
+    // object cannot hold as a key, so that row is a PyDict)
+    const extra = row.length > names.length;
+    const d = extra && (this.restkey === null || typeof this.restkey !== 'string') ? new PyDict() : {};
+    const put = (k, v) => (d instanceof Map ? d.set(k, v) : (d[k] = v));
+    names.forEach((n, i) => put(n, i < row.length ? row[i] : this.restval));
+    if (extra) put(this.restkey, row.slice(names.length));
+    return d;
+  }
+  *[Symbol.iterator]() { for (let r = this._next(); r !== null; r = this._next()) yield r; }
+  __next__() { const r = this._next(); if (r === null) throw new AdderError('StopIteration', '', undefined, []); return r; }
+}
+class _DtDictWriter {
+  constructor(...a) {
+    const { args, kw } = _dtArgs(a, ['f', 'fieldnames', 'restval', 'extrasaction', 'dialect'], { restval: '', extrasaction: 'raise', dialect: 'excel' });
+    this.fieldnames = [...pyIter(args.fieldnames)];
+    this.restval = args.restval;
+    this.extrasaction = String(args.extrasaction).toLowerCase();
+    if (this.extrasaction !== 'raise' && this.extrasaction !== 'ignore') throw new AdderError('ValueError', `extrasaction (${args.extrasaction}) must be 'raise' or 'ignore'`);
+    this._w = new _DtCsvWriter(args.f, _dtDialect(args.dialect, kw));
+  }
+  writeheader() { return this._w.writerow(this.fieldnames); }
+  _row(d) {
+    const get = (k) => (d instanceof Map ? (d.has(k) ? d.get(k) : this.restval) : Object.hasOwn(d, k) ? d[k] : this.restval);
+    if (this.extrasaction === 'raise') {
+      const keys = d instanceof Map ? [...d.keys()] : Object.keys(d);
+      const wrong = keys.filter((k) => !this.fieldnames.includes(k));
+      if (wrong.length) throw new AdderError('ValueError', `dict contains fields not in fieldnames: ${wrong.map(pyRepr).join(', ')}`);
+    }
+    return this.fieldnames.map(get);
+  }
+  writerow(d) { return this._w.writerow(this._row(d)); }
+  async writerows(rows) { for (const d of pyIter(rows)) { const w = this.writerow(d); if (_dtIsThen(w)) await w; } return null; }
+}
+adderModules.csv = {
+  reader: (f, ...a) => { const { args, kw } = _dtArgs(a, ['dialect'], { dialect: 'excel' }); return new _DtCsvReader(f, _dtDialect(args.dialect, kw)); },
+  writer: (f, ...a) => { const { args, kw } = _dtArgs(a, ['dialect'], { dialect: 'excel' }); return new _DtCsvWriter(f, _dtDialect(args.dialect, kw)); },
+  DictReader: _dtType('DictReader', _DtDictReader, 'csv'),
+  DictWriter: _dtType('DictWriter', _DtDictWriter, 'csv'),
+  register_dialect: (name, ...a) => { const { args, kw } = _dtArgs(a, ['dialect'], { dialect: null }); _DT_DIALECTS[name] = _dtDialect(args.dialect || 'excel', kw); return null; },
+  unregister_dialect: (name) => { if (!_DT_DIALECTS[name]) throw new AdderError('_csv.Error', 'unknown dialect'); delete _DT_DIALECTS[name]; return null; },
+  get_dialect: (name) => { if (!_DT_DIALECTS[name]) throw new AdderError('_csv.Error', 'unknown dialect'); return { __adderClass__: 'Dialect', ..._DT_DIALECTS[name] }; },
+  list_dialects: () => Object.keys(_DT_DIALECTS),
+  field_size_limit: () => 131072,
+  excel: 'excel', excel_tab: 'excel-tab', unix_dialect: 'unix',
+  Error: _dtCsvErr,
+  ..._DT_QUOTE,
+};
+
+// ── struct ──
+// pack / unpack / calcsize / pack_into / unpack_from / iter_unpack / Struct: byte orders
+// @ = < > !, codes x c b B ? h H i I l L q Q n N e f d s p P. '@' uses the LP64 sizes (Linux,
+// macOS: long is 8 bytes) with native alignment.
+const _dtStructErr = makeExcType('struct.error', 'Exception');
+const _DT_STD = { x: 1, c: 1, b: 1, B: 1, '?': 1, h: 2, H: 2, i: 4, I: 4, l: 4, L: 4, q: 8, Q: 8, e: 2, f: 4, d: 8, s: 1, p: 1 };
+const _DT_NATIVE = { ..._DT_STD, l: 8, L: 8, n: 8, N: 8, P: 8 };
+function _dtParseFmt(fmt) {
+  if (fmt instanceof Uint8Array) fmt = _dtDec.decode(fmt);
+  if (typeof fmt !== 'string') throw new AdderError('TypeError', `Struct() argument 1 must be a str or bytes object, not ${pyTypeName(fmt)}`);
+  let i = 0, order = '@';
+  if ('@=<>!'.includes(fmt[0])) { order = fmt[0]; i = 1; }
+  const native = order === '@';
+  const little = order === '<' || ((order === '@' || order === '=') && true);
+  const sizes = native ? _DT_NATIVE : _DT_STD;
+  const items = [];
+  let size = 0;
+  while (i < fmt.length) {
+    const c0 = fmt[i];
+    if (/\s/.test(c0)) { i++; continue; }
+    let num = '';
+    while (i < fmt.length && /\d/.test(fmt[i])) num += fmt[i++];
+    const code = fmt[i++];
+    if (code === undefined) throw new AdderError('struct.error', 'repeat count given without format specifier');
+    if (!(code in sizes)) throw new AdderError('struct.error', 'bad char in struct format');
+    const count = num === '' ? 1 : Number(num);
+    const s = sizes[code];
+    if (native && s > 1 && code !== 's' && code !== 'p') size = Math.ceil(size / s) * s;
+    if (code === 's' || code === 'p') { items.push({ code, count, offset: size, size: count }); size += count; }
+    else if (code === 'x') size += count;
+    else for (let k = 0; k < count; k++) { items.push({ code, offset: size, size: s }); size += s; }
+  }
+  return { items, size, little: order === '<' || order === '@' || order === '=' ? true : false, fmt };
+}
+const _dtIntRange = { b: [-128n, 127n], B: [0n, 255n], h: [-32768n, 32767n], H: [0n, 65535n], i: [-2147483648n, 2147483647n], I: [0n, 4294967295n],
+  l: [-9223372036854775808n, 9223372036854775807n], L: [0n, 18446744073709551615n], q: [-9223372036854775808n, 9223372036854775807n], Q: [0n, 18446744073709551615n],
+  n: [-9223372036854775808n, 9223372036854775807n], N: [0n, 18446744073709551615n], P: [0n, 18446744073709551615n] };
+function _dtHalf(v) {
+  const f32 = new Float32Array([v]), u = new Uint32Array(f32.buffer)[0];
+  const sign = (u >>> 16) & 0x8000;
+  let e = ((u >>> 23) & 0xff) - 127 + 15, m = u & 0x7fffff;
+  if (Number.isNaN(v)) return sign | 0x7e00;
+  if (e >= 31) { if (Number.isFinite(v)) throw new AdderError('OverflowError', 'float too large to pack with e format'); return sign | 0x7c00; }
+  if (e <= 0) { if (e < -10) return sign; m |= 0x800000; const shift = 14 - e; let h = m >> shift; const rem = m & ((1 << shift) - 1), half = 1 << (shift - 1); if (rem > half || (rem === half && (h & 1))) h++; return sign | h; }
+  let h = (e << 10) | (m >> 13);
+  const rem = m & 0x1fff;
+  if (rem > 0x1000 || (rem === 0x1000 && (h & 1))) h++;
+  if ((h & 0x7c00) === 0x7c00 && Number.isFinite(v)) throw new AdderError('OverflowError', 'float too large to pack with e format');
+  return sign | h;
+}
+function _dtUnhalf(h) {
+  const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+  if (e === 0) return s * m * 2 ** -24;
+  if (e === 31) return m ? NaN : s * Infinity;
+  return s * (1 + m / 1024) * 2 ** (e - 15);
+}
+function _dtPackInto(st, buf, off, values) {
+  if (values.length !== st.items.length) throw new AdderError('struct.error', `pack expected ${st.items.length} items for packing (got ${values.length})`);
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  st.items.forEach((it, k) => {
+    const v = values[k], o = off + it.offset, le = st.little;
+    switch (it.code) {
+      case 'c': {
+        const b = v instanceof Uint8Array ? v : null;
+        if (!b || b.length !== 1) throw new AdderError('struct.error', 'char format requires a bytes object of length 1');
+        dv.setUint8(o, b[0]); break;
+      }
+      case '?': dv.setUint8(o, v ? 1 : 0); break;
+      case 'e': dv.setUint16(o, _dtHalf(Number(v)), le); break;
+      case 'f': {
+        const x = Number(v);
+        if (Number.isFinite(x) && Math.abs(x) > 3.4028234663852886e38 && Math.fround(x) === (x > 0 ? Infinity : -Infinity)) throw new AdderError('OverflowError', 'float too large to pack with f format');
+        dv.setFloat32(o, x, le); break;
+      }
+      case 'd': dv.setFloat64(o, Number(v), le); break;
+      case 's': case 'p': {
+        const b = v instanceof Uint8Array ? v : null;
+        if (!b) throw new AdderError('struct.error', `argument for '${it.code}' must be a bytes object`);
+        if (it.code === 's') { for (let j = 0; j < it.count; j++) dv.setUint8(o + j, j < b.length ? b[j] : 0); }
+        else { const n = Math.min(b.length, it.count - 1, 255); if (it.count > 0) dv.setUint8(o, n); for (let j = 1; j < it.count; j++) dv.setUint8(o + j, j - 1 < n ? b[j - 1] : 0); }
+        break;
+      }
+      default: {
+        let bi;
+        if (typeof v === 'boolean') bi = BigInt(+v);
+        else if (typeof v === 'number' && Number.isInteger(v)) bi = BigInt(v);
+        else if (typeof v === 'bigint') bi = v;
+        else if (v && typeof v.__index__ === 'function') bi = BigInt(v.__index__());
+        else throw new AdderError('struct.error', 'required argument is not an integer');
+        const [lo, hi] = _dtIntRange[it.code];
+        if (bi < lo || bi > hi) {
+          const c = it.code;
+          const what = `'${c}' format`;
+          throw new AdderError('struct.error', 'qQnNP'.includes(c) ? 'argument out of range' : `${what} requires ${lo} <= number <= ${hi}`);
+        }
+        if (it.size === 1) dv.setUint8(o, Number(bi & 0xffn));
+        else if (it.size === 2) dv.setUint16(o, Number(bi & 0xffffn), le);
+        else if (it.size === 4) dv.setUint32(o, Number(bi & 0xffffffffn), le);
+        else dv.setBigUint64(o, BigInt.asUintN(64, bi), le);
+      }
+    }
+  });
+}
+function _dtUnpackFrom(st, buf, off) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const asInt = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
+  return mkTuple(st.items.map((it) => {
+    const o = off + it.offset, le = st.little;
+    switch (it.code) {
+      case 'c': return buf.slice(o, o + 1);
+      case '?': return dv.getUint8(o) !== 0;
+      case 'b': return dv.getInt8(o);
+      case 'B': return dv.getUint8(o);
+      case 'h': return dv.getInt16(o, le);
+      case 'H': return dv.getUint16(o, le);
+      case 'i': case 'l': return it.size === 4 ? dv.getInt32(o, le) : asInt(dv.getBigInt64(o, le));
+      case 'I': case 'L': return it.size === 4 ? dv.getUint32(o, le) : asInt(dv.getBigUint64(o, le));
+      case 'q': case 'n': return asInt(dv.getBigInt64(o, le));
+      case 'Q': case 'N': case 'P': return asInt(dv.getBigUint64(o, le));
+      case 'e': return _dtUnhalf(dv.getUint16(o, le));
+      case 'f': return dv.getFloat32(o, le);
+      case 'd': return dv.getFloat64(o, le);
+      case 's': return buf.slice(o, o + it.count);
+      case 'p': { const n = Math.min(dv.getUint8(o), it.count - 1); return buf.slice(o + 1, o + 1 + n); }
+      default: return null;
+    }
+  }));
+}
+const _dtStructCache = new Map();
+const _dtStruct = (fmt) => { const k = fmt instanceof Uint8Array ? _dtDec.decode(fmt) : fmt; if (!_dtStructCache.has(k)) _dtStructCache.set(k, _dtParseFmt(k)); return _dtStructCache.get(k); };
+function _dtPack(fmt, ...values) { const st = _dtStruct(fmt); const out = new Uint8Array(st.size); _dtPackInto(st, out, 0, values); return out; }
+function _dtUnpack(fmt, buffer) {
+  const st = _dtStruct(fmt), b = _dtBytes(buffer);
+  if (b.length !== st.size) throw new AdderError('struct.error', `unpack requires a buffer of ${st.size} bytes`);
+  return _dtUnpackFrom(st, b, 0);
+}
+function _dtUnpackFromFn(fmt, buffer, offset = 0) {
+  if (offset && typeof offset === 'object' && offset._kw) offset = offset.offset ?? 0;
+  const st = _dtStruct(fmt), b = _dtBytes(buffer);
+  if (offset < 0) offset += b.length;
+  if (b.length - offset < st.size) throw new AdderError('struct.error', `unpack_from requires a buffer of at least ${st.size + offset} bytes for unpacking ${st.size} bytes at offset ${offset} (actual buffer size is ${b.length})`);
+  return _dtUnpackFrom(st, b, offset);
+}
+class _DtStruct {
+  constructor(fmt) { this._st = _dtStruct(fmt); this.format = typeof fmt === 'string' ? fmt : _dtDec.decode(fmt); this.size = this._st.size; }
+  pack(...v) { const out = new Uint8Array(this.size); _dtPackInto(this._st, out, 0, v); return out; }
+  unpack(b) { return _dtUnpack(this.format, b); }
+  unpack_from(b, off = 0) { return _dtUnpackFromFn(this.format, b, off); }
+  pack_into(buf, off, ...v) { _dtPackInto(this._st, _dtBytes(buf), off, v); return null; }
+  iter_unpack(b) { return adderModules.struct.iter_unpack(this.format, b); }
+  __repr__() { return `Struct(${pyRepr(this.format)})`; }
+}
+adderModules.struct = {
+  pack: _dtPack, unpack: _dtUnpack, unpack_from: _dtUnpackFromFn,
+  pack_into: (fmt, buf, off, ...v) => { const st = _dtStruct(fmt); const b = _dtBytes(buf); if (off < 0) off += b.length; if (off + st.size > b.length) throw new AdderError('struct.error', `pack_into requires a buffer of at least ${st.size + off} bytes for packing ${st.size} bytes at offset ${off} (actual buffer size is ${b.length})`); _dtPackInto(st, b, off, v); return null; },
+  calcsize: (fmt) => _dtStruct(fmt).size,
+  iter_unpack: (fmt, buffer) => {
+    const st = _dtStruct(fmt), b = _dtBytes(buffer);
+    if (st.size === 0) throw new AdderError('struct.error', 'cannot iteratively unpack with a struct of length 0');
+    if (b.length % st.size) throw new AdderError('struct.error', `iterative unpacking requires a buffer of a multiple of ${st.size} bytes`);
+    const out = [];
+    for (let o = 0; o < b.length; o += st.size) out.push(_dtUnpackFrom(st, b, o));
+    return out[Symbol.iterator]();
+  },
+  Struct: _dtType('Struct', _DtStruct, 'struct'),
+  error: _dtStructErr,
+};
+
+// ── hashlib / hmac ──
+// md5, sha1, sha224, sha256, sha384, sha512 (+ new, pbkdf2_hmac), synchronous pure JS; the SHA-2
+// round constants are derived exactly (integer roots of the primes), not typed in. hmac.new /
+// digest / compare_digest. Not here: blake2, sha3, shake.
+const _dtPrimes = (n) => { const ps = []; for (let k = 2; ps.length < n; k++) if (ps.every((p) => k % p)) ps.push(k); return ps; };
+const _dtIroot = (n, k) => {
+  // floor(n ** (1/k)) for BigInt n, by Newton from above
+  if (n < 2n) return n;
+  let x = 1n << BigInt(Math.ceil(n.toString(2).length / k) + 1);
+  for (;;) { const y = ((BigInt(k) - 1n) * x + n / x ** BigInt(k - 1)) / BigInt(k); if (y >= x) break; x = y; }
+  while (x ** BigInt(k) > n) x -= 1n;
+  return x;
+};
+const _dtFrac = (p, root, bits) => { const v = _dtIroot(BigInt(p) << BigInt(root * bits), root); return v & ((1n << BigInt(bits)) - 1n); };
+const _DT_P80 = _dtPrimes(80);
+const _DT_K256 = Uint32Array.from(_DT_P80.slice(0, 64).map((p) => Number(_dtFrac(p, 3, 32))));
+const _DT_H256 = Uint32Array.from(_DT_P80.slice(0, 8).map((p) => Number(_dtFrac(p, 2, 32))));
+const _DT_H224 = Uint32Array.from([0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4]);
+const _DT_K512 = _DT_P80.map((p) => _dtFrac(p, 3, 64));
+const _DT_H512 = _DT_P80.slice(0, 8).map((p) => _dtFrac(p, 2, 64));
+const _DT_H384 = _DT_P80.slice(8, 16).map((p) => _dtFrac(p, 2, 64));
+const _dtPad = (msg, block, lenBytes, littleEndian) => {
+  const bitLen = BigInt(msg.length) * 8n;
+  const total = Math.ceil((msg.length + 1 + lenBytes) / block) * block;
+  const out = new Uint8Array(total);
+  out.set(msg); out[msg.length] = 0x80;
+  for (let i = 0; i < 16 && i < lenBytes; i++) {
+    const byte = Number((bitLen >> BigInt(8 * i)) & 0xffn);
+    if (littleEndian) out[msg.length + 1 + (total - msg.length - 1 - lenBytes) + i] = byte;
+    else out[total - 1 - i] = byte;
+  }
+  return out;
+};
+const _dtRotr = (x, n) => (x >>> n) | (x << (32 - n));
+function _dtSha256(msg, init, outWords) {
+  const m = _dtPad(msg, 64, 8, false);
+  const H = Uint32Array.from(init), W = new Uint32Array(64);
+  const dv = new DataView(m.buffer);
+  for (let off = 0; off < m.length; off += 64) {
+    for (let t = 0; t < 16; t++) W[t] = dv.getUint32(off + 4 * t);
+    for (let t = 16; t < 64; t++) {
+      const s0 = _dtRotr(W[t - 15], 7) ^ _dtRotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);
+      const s1 = _dtRotr(W[t - 2], 17) ^ _dtRotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);
+      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) | 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let t = 0; t < 64; t++) {
+      const S1 = _dtRotr(e, 6) ^ _dtRotr(e, 11) ^ _dtRotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + _DT_K256[t] + W[t]) | 0;
+      const S0 = _dtRotr(a, 2) ^ _dtRotr(a, 13) ^ _dtRotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+  }
+  const out = new Uint8Array(outWords * 4), odv = new DataView(out.buffer);
+  for (let i = 0; i < outWords; i++) odv.setUint32(4 * i, H[i]);
+  return out;
+}
+function _dtSha512(msg, init, outBytes) {
+  const M64 = (1n << 64n) - 1n;
+  const rotr = (x, n) => ((x >> BigInt(n)) | (x << BigInt(64 - n))) & M64;
+  const m = _dtPad(msg, 128, 16, false);
+  const H = [...init], W = new Array(80);
+  const dv = new DataView(m.buffer);
+  for (let off = 0; off < m.length; off += 128) {
+    for (let t = 0; t < 16; t++) W[t] = dv.getBigUint64(off + 8 * t);
+    for (let t = 16; t < 80; t++) {
+      const s0 = rotr(W[t - 15], 1) ^ rotr(W[t - 15], 8) ^ (W[t - 15] >> 7n);
+      const s1 = rotr(W[t - 2], 19) ^ rotr(W[t - 2], 61) ^ (W[t - 2] >> 6n);
+      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) & M64;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let t = 0; t < 80; t++) {
+      const S1 = rotr(e, 14) ^ rotr(e, 18) ^ rotr(e, 41);
+      const ch = (e & f) ^ (~e & M64 & g);
+      const t1 = (h + S1 + ch + _DT_K512[t] + W[t]) & M64;
+      const S0 = rotr(a, 28) ^ rotr(a, 34) ^ rotr(a, 39);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) & M64;
+      h = g; g = f; f = e; e = (d + t1) & M64; d = c; c = b; b = a; a = (t1 + t2) & M64;
+    }
+    H[0] = (H[0] + a) & M64; H[1] = (H[1] + b) & M64; H[2] = (H[2] + c) & M64; H[3] = (H[3] + d) & M64;
+    H[4] = (H[4] + e) & M64; H[5] = (H[5] + f) & M64; H[6] = (H[6] + g) & M64; H[7] = (H[7] + h) & M64;
+  }
+  const out = new Uint8Array(64), odv = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) odv.setBigUint64(8 * i, H[i]);
+  return out.slice(0, outBytes);
+}
+function _dtSha1(msg) {
+  const m = _dtPad(msg, 64, 8, false);
+  const H = Uint32Array.from([0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0]), W = new Uint32Array(80);
+  const dv = new DataView(m.buffer);
+  const rotl = (x, n) => (x << n) | (x >>> (32 - n));
+  for (let off = 0; off < m.length; off += 64) {
+    for (let t = 0; t < 16; t++) W[t] = dv.getUint32(off + 4 * t);
+    for (let t = 16; t < 80; t++) W[t] = rotl(W[t - 3] ^ W[t - 8] ^ W[t - 14] ^ W[t - 16], 1);
+    let [a, b, c, d, e] = H;
+    for (let t = 0; t < 80; t++) {
+      const [f, k] = t < 20 ? [(b & c) | (~b & d), 0x5A827999] : t < 40 ? [b ^ c ^ d, 0x6ED9EBA1] : t < 60 ? [(b & c) | (b & d) | (c & d), 0x8F1BBCDC] : [b ^ c ^ d, 0xCA62C1D6];
+      const tmp = (rotl(a, 5) + f + e + k + W[t]) | 0;
+      e = d; d = c; c = rotl(b, 30); b = a; a = tmp;
+    }
+    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e;
+  }
+  const out = new Uint8Array(20), odv = new DataView(out.buffer);
+  for (let i = 0; i < 5; i++) odv.setUint32(4 * i, H[i]);
+  return out;
+}
+const _DT_MD5_S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+const _DT_MD5_K = Int32Array.from({ length: 64 }, (_, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 2 ** 32));
+function _dtMd5(msg) {
+  const m = _dtPad(msg, 64, 8, true);
+  let a0 = 0x67452301, b0 = 0xefcdab89 | 0, c0 = 0x98badcfe | 0, d0 = 0x10325476;
+  const dv = new DataView(m.buffer);
+  const M = new Int32Array(16);
+  for (let off = 0; off < m.length; off += 64) {
+    for (let j = 0; j < 16; j++) M[j] = dv.getInt32(off + 4 * j, true);
+    let A = a0, B = b0, C = c0, D = d0;
+    for (let i = 0; i < 64; i++) {
+      let F, g;
+      if (i < 16) { F = (B & C) | (~B & D); g = i; }
+      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+      else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+      F = (F + A + _DT_MD5_K[i] + M[g]) | 0;
+      A = D; D = C; C = B;
+      const s = _DT_MD5_S[(i >> 4) * 4 + (i % 4)];
+      B = (B + ((F << s) | (F >>> (32 - s)))) | 0;
+    }
+    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+  }
+  const out = new Uint8Array(16), odv = new DataView(out.buffer);
+  [a0, b0, c0, d0].forEach((v, i) => odv.setInt32(4 * i, v, true));
+  return out;
+}
+const _DT_HASHES = {
+  md5: { fn: _dtMd5, size: 16, block: 64 },
+  sha1: { fn: _dtSha1, size: 20, block: 64 },
+  sha224: { fn: (m) => _dtSha256(m, _DT_H224, 7), size: 28, block: 64 },
+  sha256: { fn: (m) => _dtSha256(m, _DT_H256, 8), size: 32, block: 64 },
+  sha384: { fn: (m) => _dtSha512(m, _DT_H384, 48), size: 48, block: 128 },
+  sha512: { fn: (m) => _dtSha512(m, _DT_H512, 64), size: 64, block: 128 },
+};
+const _dtHashInput = (data) => {
+  if (typeof data === 'string') throw new AdderError('TypeError', 'Strings must be encoded before hashing');
+  return _dtBytes(data, 'object supporting the buffer API');
+};
+const _dtHexOf = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+class _DtHash {
+  constructor(name, data) { this.name = name; this._alg = _DT_HASHES[name]; this._parts = []; this.digest_size = this._alg.size; this.block_size = this._alg.block; if (data !== undefined && data !== null) this.update(data); }
+  update(data) { this._parts.push(Uint8Array.from(_dtHashInput(data))); return null; }
+  digest() { return this._alg.fn(_dtConcat(this._parts)); }
+  hexdigest() { return _dtHexOf(this.digest()); }
+  copy() { const h = new _DtHash(this.name); h._parts = [...this._parts]; return h; }
+  __repr__() { return `<${this.name} _hashlib.HASH object>`; }
+}
+_DtHash.prototype.__adderClass__ = 'HASH';
+const _dtHashCtor = (name) => {
+  const f = (...a) => { const { args } = _dtArgs(a, ['data'], { data: undefined }); return new _DtHash(name, args.data ?? (a.length ? a[0] : undefined)); };
+  f._pyName = `openssl_${name}`; f.__name__ = f._pyName;
+  return f;
+};
+function _dtHashName(d) {
+  if (typeof d === 'string') { const n = d.toLowerCase().replace('-', ''); if (!_DT_HASHES[n]) throw new AdderError('ValueError', `unsupported hash type ${d}`); return n; }
+  if (typeof d === 'function') { const h = d(); return h.name; }
+  if (d && d.name) return d.name;
+  throw new AdderError('TypeError', 'Missing required parameter \'digestmod\'.');
+}
+class _DtHmac {
+  constructor(key, msg, digestmod) {
+    const name = _dtHashName(digestmod);
+    this._name = name; this._alg = _DT_HASHES[name];
+    let k = _dtHashInput(key);
+    if (k.length > this._alg.block) k = this._alg.fn(k);
+    const kp = new Uint8Array(this._alg.block); kp.set(k);
+    this._ipad = kp.map((b) => b ^ 0x36); this._opad = kp.map((b) => b ^ 0x5c);
+    this._inner = [this._ipad];
+    this.digest_size = this._alg.size; this.block_size = this._alg.block; this.name = `hmac-${name}`;
+    if (msg !== null && msg !== undefined) this.update(msg);
+  }
+  update(m) { this._inner.push(Uint8Array.from(_dtHashInput(m))); return null; }
+  digest() { const ih = this._alg.fn(_dtConcat(this._inner)); return this._alg.fn(_dtConcat([this._opad, ih])); }
+  hexdigest() { return _dtHexOf(this.digest()); }
+  copy() { const c = Object.create(_DtHmac.prototype); Object.assign(c, this); c._inner = [...this._inner]; return c; }
+}
+_DtHmac.prototype.__adderClass__ = 'HMAC';
+const _dtHmacNew = (key, ...a) => { const { args } = _dtArgs(a, ['msg', 'digestmod'], { msg: null, digestmod: null }); return new _DtHmac(key, args.msg, args.digestmod); };
+adderModules.hashlib = {
+  ...Object.fromEntries(Object.keys(_DT_HASHES).map((n) => [n, _dtHashCtor(n)])),
+  new: (name, data) => { const n = _dtHashName(name); return new _DtHash(n, data && data._kw ? data.data : data); },
+  algorithms_guaranteed: new Set(Object.keys(_DT_HASHES)),
+  algorithms_available: new Set(Object.keys(_DT_HASHES)),
+  pbkdf2_hmac: (hash_name, password, salt, iterations, dklen = null) => {
+    const name = _dtHashName(hash_name), size = _DT_HASHES[name].size;
+    const len = dklen === null || dklen === undefined ? size : dklen;
+    const out = new Uint8Array(len);
+    const s = _dtHashInput(salt);
+    for (let block = 1, pos = 0; pos < len; block++) {
+      const ib = new Uint8Array(4); new DataView(ib.buffer).setUint32(0, block);
+      let u = new _DtHmac(password, _dtConcat([s, ib]), name).digest();
+      const t = Uint8Array.from(u);
+      for (let i = 1; i < iterations; i++) { u = new _DtHmac(password, u, name).digest(); for (let j = 0; j < t.length; j++) t[j] ^= u[j]; }
+      out.set(t.subarray(0, Math.min(t.length, len - pos)), pos);
+      pos += t.length;
+    }
+    return out;
+  },
+  file_digest: async (f, digest) => { const h = typeof digest === 'string' ? new _DtHash(_dtHashName(digest)) : digest(); h.update(await adderGetAttr(f, 'read')()); return h; },
+};
+adderModules.hmac = {
+  new: _dtHmacNew, HMAC: _dtHmacNew,
+  digest: (key, msg, digest) => new _DtHmac(key, msg, digest).digest(),
+  compare_digest: (a, b) => {
+    const x = typeof a === 'string' ? _dtEnc.encode(a) : _dtBytes(a), y = typeof b === 'string' ? _dtEnc.encode(b) : _dtBytes(b);
+    let diff = x.length ^ y.length;
+    for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
+    return diff === 0;
+  },
+};
+
+// ── zlib / gzip ──
+// compress / decompress (zlib, raw and gzip framing through wbits) on CompressionStream; crc32
+// and adler32 are binascii's. Output bytes are the platform's deflate, not CPython's zlib —
+// they decompress to the same data. Not here: compressobj / decompressobj streaming objects.
+const _dtZlibErr = makeExcType('zlib.error', 'Exception');
+const _dtCrc = (() => { const t = new Int32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c; } return t; })();
+function _dtCrc32(bytes, start = 0) {
+  let c = (start ^ 0xffffffff) >>> 0;
+  for (let i = 0; i < bytes.length; i++) c = _dtCrc[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function _dtAdler32(bytes, start = 1) {
+  let a = start & 0xffff, b = (start >>> 16) & 0xffff;
+  for (let i = 0; i < bytes.length; i++) { a = (a + bytes[i]) % 65521; b = (b + a) % 65521; }
+  return ((b << 16) | a) >>> 0;
+}
+async function _dtStream(bytes, Ctor, format) {
+  if (typeof Ctor !== 'function') throw new AdderError('RuntimeError', 'CompressionStream is not available in this environment');
+  const s = new Blob([bytes]).stream().pipeThrough(new Ctor(format));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
+const _dtFormat = (wbits) => (wbits >= 25 ? 'gzip' : wbits < 0 ? 'deflate-raw' : 'deflate');
+async function _dtCompress(data, ...a) {
+  const { args } = _dtArgs(a, ['level', 'wbits'], { level: -1, wbits: 15 });
+  return _dtStream(_dtBytes(data), globalThis.CompressionStream, _dtFormat(args.wbits));
+}
+async function _dtDecompress(data, ...a) {
+  const { args } = _dtArgs(a, ['wbits', 'bufsize'], { wbits: 15, bufsize: 16384 });
+  let fmt = _dtFormat(args.wbits);
+  const b = _dtBytes(data);
+  if (args.wbits >= 40) fmt = b[0] === 0x1f && b[1] === 0x8b ? 'gzip' : 'deflate';
+  try { return await _dtStream(b, globalThis.DecompressionStream, fmt); }
+  catch (e) { if (e instanceof AdderError) throw e; throw new AdderError('zlib.error', `Error -3 while decompressing data: ${fmt === 'gzip' ? 'incorrect header check' : 'invalid stored block lengths'}`); }
+}
+adderModules.zlib = {
+  compress: _dtCompress, decompress: _dtDecompress,
+  crc32: (data, value = 0) => _dtCrc32(_dtBytes(data), value),
+  adler32: (data, value = 1) => _dtAdler32(_dtBytes(data), value),
+  MAX_WBITS: 15, DEFLATED: 8, DEF_MEM_LEVEL: 8, DEF_BUF_SIZE: 16384, Z_DEFAULT_COMPRESSION: -1, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9,
+  Z_NO_COMPRESSION: 0, Z_DEFAULT_STRATEGY: 0, Z_FINISH: 4, Z_SYNC_FLUSH: 2, ZLIB_VERSION: '1.3', ZLIB_RUNTIME_VERSION: '1.3',
+  error: _dtZlibErr,
+};
+const _dtBadGzip = makeExcType('gzip.BadGzipFile', 'OSError');
+adderModules.gzip = {
+  compress: async (data) => _dtStream(_dtBytes(data), globalThis.CompressionStream, 'gzip'),
+  decompress: async (data) => {
+    const b = _dtBytes(data);
+    if (b[0] !== 0x1f || b[1] !== 0x8b) throw new AdderError('gzip.BadGzipFile', `Not a gzipped file (${pyRepr(b.slice(0, 2))})`);
+    return _dtStream(b, globalThis.DecompressionStream, 'gzip');
+  },
+  BadGzipFile: _dtBadGzip,
+};
+
+// ── zipfile ──
+// ZipFile over a VFS path or a file object (BytesIO): read ('r'), write ('w', 'x') and append
+// ('a'); ZIP_STORED and ZIP_DEFLATED; namelist / infolist / getinfo / read / open / writestr /
+// write / extract / extractall / testzip; ZipInfo; is_zipfile. Not here: ZIP64, encryption,
+// bzip2 / lzma, a streamed ZipFile.open for writing.
+const _dtBadZip = makeExcType('zipfile.BadZipFile', 'Exception');
+const _dtLargeZip = makeExcType('zipfile.LargeZipFile', 'Exception');
+class _DtZipInfo {
+  constructor(filename = 'NoName', date_time = mkTuple([1980, 1, 1, 0, 0, 0])) {
+    if (filename && typeof filename === 'object' && filename._kw) { const kw = filename; filename = kw.filename ?? 'NoName'; date_time = kw.date_time ?? date_time; }
+    this.filename = String(filename).replace(/\\/g, '/');
+    this.date_time = mkTuple([...pyIter(date_time)]);
+    this.compress_type = 0; this.compress_level = null; this.comment = new Uint8Array(0); this.extra = new Uint8Array(0);
+    this.create_system = 3; this.create_version = 20; this.extract_version = 20; this.reserved = 0; this.flag_bits = 0;
+    this.volume = 0; this.internal_attr = 0; this.external_attr = this.filename.endsWith('/') ? (0o40775 << 16) | 0x10 : 0o600 << 16;
+    this.header_offset = 0; this.CRC = 0; this.compress_size = 0; this.file_size = 0;
+  }
+  is_dir() { return this.filename.endsWith('/'); }
+  __repr__() {
+    const parts = [`filename=${pyRepr(this.filename)}`];
+    if (this.compress_type) parts.push(`compress_type=${this.compress_type === 8 ? 'deflate' : this.compress_type}`);
+    const mode = this.external_attr >>> 16;
+    if (mode) parts.push(`filemode=${pyRepr(_dtFilemode(mode))}`);
+    if (this.is_dir()) parts.push('external_attr=0x10');
+    if (!this.is_dir() || this.file_size) parts.push(`file_size=${this.file_size}`);
+    if ((!this.is_dir() || this.compress_size) && (this.compress_type !== 0 || this.file_size !== this.compress_size)) parts.push(`compress_size=${this.compress_size}`);
+    return `<ZipInfo ${parts.join(' ')}>`;
+  }
+}
+function _dtFilemode(mode) {
+  const t = (mode & 0o170000) === 0o040000 ? 'd' : '-';
+  const perms = ['r', 'w', 'x'];
+  let s = t;
+  for (let i = 8; i >= 0; i--) s += mode & (1 << i) ? perms[(8 - i) % 3] : '-';
+  return s;
+}
+const _dtDosTime = (dt) => { const [y, mo, d, h, mi, s] = dt; return [((y - 1980) << 9) | (mo << 5) | d, (h << 11) | (mi << 5) | (s >> 1)]; };
+const _dtNowTuple = () => { const t = new Date(); return mkTuple([t.getFullYear(), t.getMonth() + 1, t.getDate(), t.getHours(), t.getMinutes(), t.getSeconds()]); };
+async function _dtVfsRead(path) {
+  const vfs = getAdderVFS();
+  if (!vfs) throw new AdderError('RuntimeError', 'filesystem not available');
+  try { return await vfs.readFile(_resolvePath(String(path), _getVfsPath()), 'bytes'); }
+  catch (e) { throw _mapVFSError(e); }
+}
+async function _dtVfsWrite(path, bytes) {
+  const vfs = getAdderVFS();
+  if (!vfs) throw new AdderError('RuntimeError', 'filesystem not available');
+  const p = _resolvePath(String(path), _getVfsPath());
+  const dir = p.slice(0, p.lastIndexOf('/'));
+  if (dir) { try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ } }
+  try { await vfs.writeFile(p, bytes); } catch (e) { throw _mapVFSError(e); }
+}
+class _DtZipFile {
+  async _init(file, mode, compression, compresslevel) {
+    if (!['r', 'w', 'x', 'a'].includes(mode)) throw new AdderError('ValueError', "ZipFile requires mode 'r', 'w', 'x', or 'a'");
+    if (![0, 8].includes(compression)) throw new AdderError('NotImplementedError', 'That compression method is not supported');
+    this.mode = mode; this.compression = compression; this.compresslevel = compresslevel;
+    this._file = file; this.filename = typeof file === 'string' ? file : (file && file.name) || null;
+    this._entries = []; this._data = new Map(); this._closed = false; this.comment = new Uint8Array(0); this.debug = 0;
+    if (mode === 'r' || mode === 'a') {
+      let bytes;
+      if (typeof file === 'string' || (file && file._path && !file.read)) {
+        try { bytes = await _dtVfsRead(typeof file === 'string' ? file : file._path); }
+        catch (e) { if (mode === 'a' && e && e.pyType === 'FileNotFoundError') bytes = null; else throw e; }
+      } else {
+        const fseek = file.seek ? adderGetAttr(file, 'seek') : null;
+        if (fseek) await fseek(0);
+        bytes = _dtBytes(await adderGetAttr(file, 'read')());
+      }
+      if (bytes && bytes.length) this._parse(bytes);
+      else if (mode === 'r') throw new AdderError('zipfile.BadZipFile', 'File is not a zip file');
+    }
+    return this;
+  }
+  _parse(b) {
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    let eocd = -1;
+    for (let i = b.length - 22; i >= Math.max(0, b.length - 22 - 65535); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) throw new AdderError('zipfile.BadZipFile', 'File is not a zip file');
+    const count = dv.getUint16(eocd + 10, true);
+    let off = dv.getUint32(eocd + 16, true);
+    const clen = dv.getUint16(eocd + 20, true);
+    this.comment = b.slice(eocd + 22, eocd + 22 + clen);
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(off, true) !== 0x02014b50) throw new AdderError('zipfile.BadZipFile', 'Bad magic number for central directory');
+      const flags = dv.getUint16(off + 8, true), method = dv.getUint16(off + 10, true);
+      const time = dv.getUint16(off + 12, true), date = dv.getUint16(off + 14, true);
+      const crc = dv.getUint32(off + 16, true), csize = dv.getUint32(off + 20, true), usize = dv.getUint32(off + 24, true);
+      const nlen = dv.getUint16(off + 28, true), elen = dv.getUint16(off + 30, true), cmlen = dv.getUint16(off + 32, true);
+      const ext = dv.getUint32(off + 38, true), lho = dv.getUint32(off + 42, true);
+      const nameBytes = b.slice(off + 46, off + 46 + nlen);
+      const name = flags & 0x800 ? _dtDec.decode(nameBytes) : String.fromCharCode(...nameBytes);
+      const zi = new _DtZipInfo(name, mkTuple([(date >> 9) + 1980, (date >> 5) & 15, date & 31, time >> 11, (time >> 5) & 63, (time & 31) * 2]));
+      Object.assign(zi, { compress_type: method, CRC: crc, compress_size: csize, file_size: usize, external_attr: ext, header_offset: lho, flag_bits: flags, create_system: b[off + 5] });
+      const lnlen = dv.getUint16(lho + 26, true), lelen = dv.getUint16(lho + 28, true);
+      const start = lho + 30 + lnlen + lelen;
+      this._data.set(zi, { raw: b.slice(start, start + csize) });
+      this._entries.push(zi);
+      off += 46 + nlen + elen + cmlen;
+    }
+  }
+  _check(mode) {
+    if (this._closed) throw new AdderError('ValueError', 'Attempt to use ZIP archive that was already closed');
+    if (mode === 'r' && this.mode !== 'r' && this.mode !== 'a') throw new AdderError('ValueError', 'read() requires mode "r"');
+    if (mode === 'w' && this.mode === 'r') throw new AdderError('ValueError', 'write() requires mode "w", "x", or "a"');
+  }
+  namelist() { return this._entries.map((z) => z.filename); }
+  infolist() { return [...this._entries]; }
+  getinfo(name) {
+    const z = this._entries.slice().reverse().find((e) => e.filename === (name instanceof _DtZipInfo ? name.filename : name));
+    if (!z) throw new AdderError('KeyError', `"There is no item named ${pyRepr(name)} in the archive"`, undefined, [`There is no item named ${pyRepr(name)} in the archive`]);
+    return z;
+  }
+  async read(name) {
+    this._check('r');
+    const zi = name instanceof _DtZipInfo ? name : this.getinfo(name);
+    const ent = this._data.get(zi);
+    let out;
+    if (ent.plain) out = ent.plain;
+    else if (zi.compress_type === 0) out = ent.raw;
+    else if (zi.compress_type === 8) out = await _dtStream(ent.raw, globalThis.DecompressionStream, 'deflate-raw');
+    else throw new AdderError('NotImplementedError', 'That compression method is not supported');
+    if (_dtCrc32(out) !== zi.CRC) throw new AdderError('zipfile.BadZipFile', `Bad CRC-32 for file ${pyRepr(zi.filename)}`);
+    return out;
+  }
+  async open(name, mode = 'r') {
+    if (mode !== 'r' && !(mode && mode._kw && (mode.mode ?? 'r') === 'r')) throw new AdderError('NotImplementedError', "ZipFile.open() supports mode 'r' only here; use writestr() to add a member");
+    const data = await this.read(name);
+    return adderModules.io.BytesIO(data);
+  }
+  async writestr(zinfo, data, ...a) {
+    this._check('w');
+    const { args } = _dtArgs(a, ['compress_type', 'compresslevel'], { compress_type: null, compresslevel: null });
+    const zi = zinfo instanceof _DtZipInfo ? zinfo : new _DtZipInfo(String(zinfo), _dtNowTuple());
+    if (!(zinfo instanceof _DtZipInfo)) zi.compress_type = this.compression;
+    if (args.compress_type !== null) zi.compress_type = args.compress_type;
+    const bytes = typeof data === 'string' ? _dtEnc.encode(data) : _dtBytes(data);
+    zi.file_size = bytes.length; zi.CRC = _dtCrc32(bytes);
+    const raw = zi.compress_type === 8 ? await _dtStream(bytes, globalThis.CompressionStream, 'deflate-raw') : bytes;
+    zi.compress_size = raw.length;
+    if (zi.filename.endsWith('/')) zi.external_attr = (0o40775 << 16) | 0x10;
+    this._entries.push(zi);
+    this._data.set(zi, { raw, plain: bytes });
+    return null;
+  }
+  async write(filename, arcname = null, ...a) {
+    const { args } = _dtArgs(a, ['compress_type', 'compresslevel'], { compress_type: null, compresslevel: null });
+    if (arcname && arcname._kw) { args.compress_type = arcname.compress_type ?? null; arcname = arcname.arcname ?? null; }
+    const bytes = await _dtVfsRead(filename);
+    const name = String(arcname ?? filename).replace(/^\/+/, '');
+    const zi = new _DtZipInfo(name, _dtNowTuple());
+    zi.compress_type = args.compress_type ?? this.compression;
+    return this.writestr(zi, bytes);
+  }
+  async extract(member, path = null) {
+    const zi = member instanceof _DtZipInfo ? member : this.getinfo(member);
+    const base = path === null ? _getVfsPath() || '/' : String(path);
+    const target = `${base.replace(/\/$/, '')}/${zi.filename}`;
+    if (zi.is_dir()) { const vfs = getAdderVFS(); try { await vfs.mkdir(_resolvePath(target, _getVfsPath()), { recursive: true }); } catch { /* exists */ } return target; }
+    await _dtVfsWrite(target, await this.read(zi));
+    return target;
+  }
+  async extractall(path = null, members = null) {
+    if (path && path._kw) { members = path.members ?? null; path = path.path ?? null; }
+    const list = members === null ? this._entries : [...pyIter(members)].map((m) => (m instanceof _DtZipInfo ? m : this.getinfo(m)));
+    for (const zi of list) await this.extract(zi, path);
+    return null;
+  }
+  async testzip() { for (const zi of this._entries) { try { await this.read(zi); } catch { return zi.filename; } } return null; }
+  printdir() { _stdio.out && _stdio.out(this._entries.map((z) => `${z.filename.padEnd(46)} ${z.date_time.slice(0, 3).map((v, i) => String(v).padStart(i ? 2 : 4, '0')).join('-')} ${z.date_time.slice(3).map((v) => String(v).padStart(2, '0')).join(':')} ${String(z.file_size).padStart(12)}`).join('\n') + '\n'); return null; }
+  _build() {
+    const parts = [], central = [];
+    let off = 0;
+    for (const zi of this._entries) {
+      const { raw } = this._data.get(zi);
+      const nameB = _dtEnc.encode(zi.filename);
+      const utf8 = [...zi.filename].some((c) => c.charCodeAt(0) > 127);
+      const flags = utf8 ? 0x800 : 0;
+      const [date, time] = _dtDosTime(zi.date_time);
+      const lh = new Uint8Array(30 + nameB.length), l = new DataView(lh.buffer);
+      l.setUint32(0, 0x04034b50, true); l.setUint16(4, 20, true); l.setUint16(6, flags, true); l.setUint16(8, zi.compress_type, true);
+      l.setUint16(10, time, true); l.setUint16(12, date, true); l.setUint32(14, zi.CRC, true); l.setUint32(18, raw.length, true);
+      l.setUint32(22, zi.file_size, true); l.setUint16(26, nameB.length, true); l.setUint16(28, 0, true); lh.set(nameB, 30);
+      const ch = new Uint8Array(46 + nameB.length), c = new DataView(ch.buffer);
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, (3 << 8) | 20, true); c.setUint16(6, 20, true); c.setUint16(8, flags, true);
+      c.setUint16(10, zi.compress_type, true); c.setUint16(12, time, true); c.setUint16(14, date, true); c.setUint32(16, zi.CRC, true);
+      c.setUint32(20, raw.length, true); c.setUint32(24, zi.file_size, true); c.setUint16(28, nameB.length, true);
+      c.setUint32(38, zi.external_attr >>> 0, true); c.setUint32(42, off, true); ch.set(nameB, 46);
+      zi.header_offset = off;
+      parts.push(lh, raw); central.push(ch);
+      off += lh.length + raw.length;
+    }
+    const cd = _dtConcat(central);
+    const end = new Uint8Array(22 + this.comment.length), e = new DataView(end.buffer);
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, this._entries.length, true); e.setUint16(10, this._entries.length, true);
+    e.setUint32(12, cd.length, true); e.setUint32(16, off, true); e.setUint16(20, this.comment.length, true); end.set(this.comment, 22);
+    return _dtConcat([...parts, cd, end]);
+  }
+  async close() {
+    if (this._closed) return null;
+    if (this.mode !== 'r') {
+      const bytes = this._build();
+      if (typeof this._file === 'string') await _dtVfsWrite(this._file, bytes);
+      else {
+        const f = this._file;
+        if (f.seek) { await adderGetAttr(f, 'seek')(0); }
+        await adderGetAttr(f, 'write')(bytes);
+        if (f.truncate) { try { await adderGetAttr(f, 'truncate')(); } catch { /* not truncatable */ } }
+      }
+    }
+    this._closed = true;
+    return null;
+  }
+  __enter__() { return this; }
+  async __exit__() { await this.close(); return false; }
+  __repr__() { return `<zipfile.ZipFile ${this.filename ? `filename=${pyRepr(this.filename)} ` : ''}mode=${pyRepr(this.mode)}${this._closed ? ' [closed]' : ''}>`; }
+}
+_DtZipFile.prototype.__adderClass__ = 'ZipFile';
+const _dtZipFileCtor = (file, ...a) => {
+  const { args } = _dtArgs(a, ['mode', 'compression', 'allowZip64', 'compresslevel'], { mode: 'r', compression: 0, allowZip64: true, compresslevel: null });
+  return new _DtZipFile()._init(file, args.mode, args.compression, args.compresslevel);
+};
+_dtZipFileCtor._pyName = 'ZipFile'; _dtZipFileCtor._pyClass = true; _dtZipFileCtor.__name__ = 'ZipFile';
+_DtZipFile.prototype.__adderType__ = _dtZipFileCtor;
+adderModules.zipfile = {
+  ZipFile: _dtZipFileCtor, ZipInfo: _dtType('ZipInfo', _DtZipInfo, 'zipfile'),
+  is_zipfile: async (f) => {
+    try {
+      const b = typeof f === 'string' ? await _dtVfsRead(f) : _dtBytes(await (async () => { if (f.seek) await adderGetAttr(f, 'seek')(0); return adderGetAttr(f, 'read')(); })());
+      for (let i = b.length - 22; i >= Math.max(0, b.length - 22 - 65535); i--) if (b[i] === 0x50 && b[i + 1] === 0x4b && b[i + 2] === 5 && b[i + 3] === 6) return true;
+      return false;
+    } catch { return false; }
+  },
+  ZIP_STORED: 0, ZIP_DEFLATED: 8, ZIP_BZIP2: 12, ZIP_LZMA: 14,
+  BadZipFile: _dtBadZip, BadZipfile: _dtBadZip, LargeZipFile: _dtLargeZip, error: _dtBadZip,
+};
+
+// ── uuid ──
+// UUID (from hex / bytes / bytes_le / fields / int), uuid1 (random node), uuid3, uuid4, uuid5,
+// the NAMESPACE_* constants, CPython's str / repr / urn / version / variant.
+const _dtRandBytes = (n) => { const b = new Uint8Array(n); if (globalThis.crypto && crypto.getRandomValues) crypto.getRandomValues(b); else for (let i = 0; i < n; i++) b[i] = Math.floor(Math.random() * 256); return b; };
+class _DtUUID {
+  constructor(...a) {
+    const { args } = _dtArgs(a, ['hex', 'bytes', 'bytes_le', 'fields', 'int', 'version'], { hex: null, bytes: null, bytes_le: null, fields: null, int: null, version: null });
+    const given = ['hex', 'bytes', 'bytes_le', 'fields', 'int'].filter((k) => args[k] !== null);
+    if (given.length !== 1) throw new AdderError('TypeError', 'one of the hex, bytes, bytes_le, fields, or int arguments must be given');
+    let n;
+    if (args.hex !== null) {
+      const h = String(args.hex).replace(/^urn:/, '').replace(/^uuid:/, '').replace(/[{}-]/g, '').trim();
+      if (!/^[0-9a-fA-F]{32}$/.test(h)) throw new AdderError('ValueError', 'badly formed hexadecimal UUID string');
+      n = BigInt('0x' + h);
+    } else if (args.bytes !== null) {
+      const b = _dtBytes(args.bytes);
+      if (b.length !== 16) throw new AdderError('ValueError', 'bytes is not a 16-char string');
+      n = BigInt('0x' + _dtHexOf(b));
+    } else if (args.bytes_le !== null) {
+      const b = _dtBytes(args.bytes_le);
+      if (b.length !== 16) throw new AdderError('ValueError', 'bytes_le is not a 16-char string');
+      const r = Uint8Array.from([b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6], ...b.slice(8)]);
+      n = BigInt('0x' + _dtHexOf(r));
+    } else if (args.fields !== null) {
+      const [tl, tm, th, csh, csl, node] = [...pyIter(args.fields)].map(BigInt);
+      n = (tl << 96n) | (tm << 80n) | (th << 64n) | (((csh << 8n) | csl) << 48n) | node;
+    } else {
+      n = BigInt(args.int);
+      if (n < 0n || n >= 1n << 128n) throw new AdderError('ValueError', 'int is out of range (need a 128-bit value)');
+    }
+    if (args.version !== null) {
+      n &= ~(0xc000n << 48n); n |= 0x8000n << 48n;
+      n &= ~(0xf000n << 64n); n |= BigInt(args.version) << 76n;
+    }
+    this._n = n;
+  }
+  get int() { return this._n <= 9007199254740991n ? Number(this._n) : this._n; }
+  get hex() { return this._n.toString(16).padStart(32, '0'); }
+  get bytes() { const h = this.hex; return Uint8Array.from({ length: 16 }, (_, i) => parseInt(h.substr(2 * i, 2), 16)); }
+  get bytes_le() { const b = this.bytes; return Uint8Array.from([b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6], ...b.slice(8)]); }
+  get urn() { return `urn:uuid:${this.__str__()}`; }
+  get variant() {
+    const v = Number((this._n >> 61n) & 7n);
+    if (!(v & 4)) return 'reserved for NCS compatibility';
+    if (!(v & 2)) return 'specified in RFC 4122';
+    if (!(v & 1)) return 'reserved for Microsoft compatibility';
+    return 'reserved for future definition';
+  }
+  get version() { return this.variant === 'specified in RFC 4122' ? Number((this._n >> 76n) & 0xfn) : null; }
+  get time_low() { return Number(this._n >> 96n); }
+  get time_mid() { return Number((this._n >> 80n) & 0xffffn); }
+  get time_hi_version() { return Number((this._n >> 64n) & 0xffffn); }
+  get clock_seq_hi_variant() { return Number((this._n >> 56n) & 0xffn); }
+  get clock_seq_low() { return Number((this._n >> 48n) & 0xffn); }
+  get node() { return Number(this._n & 0xffffffffffffn); }
+  get fields() { return mkTuple([this.time_low, this.time_mid, this.time_hi_version, this.clock_seq_hi_variant, this.clock_seq_low, this.node]); }
+  __str__() { const h = this.hex; return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`; }
+  __repr__() { return `UUID('${this.__str__()}')`; }
+  __eq__(o) { return o instanceof _DtUUID && o._n === this._n; }
+  __lt__(o) { if (!(o instanceof _DtUUID)) throw new AdderError('TypeError', `'<' not supported between instances of 'UUID' and '${pyTypeName(o)}'`); return this._n < o._n; }
+  __gt__(o) { if (!(o instanceof _DtUUID)) throw new AdderError('TypeError', `'>' not supported between instances of 'UUID' and '${pyTypeName(o)}'`); return this._n > o._n; }
+  __le__(o) { return this._n <= o._n; }
+  __ge__(o) { return this._n >= o._n; }
+  __hash__() { return _pyHash(Number(this._n % 9007199254740991n)); }
+  __int__() { return this.int; }
+}
+const _dtUuidType = _dtType('UUID', _DtUUID, 'uuid');
+const _dtUuidName = (alg, ns, name) => {
+  const data = _dtConcat([ns.bytes, typeof name === 'string' ? _dtEnc.encode(name) : _dtBytes(name)]);
+  const h = _DT_HASHES[alg].fn(data).slice(0, 16);
+  return new _DtUUID({ _kw: true, bytes: h, version: alg === 'md5' ? 3 : 5 });
+};
+let _dtClockSeq = null;
+adderModules.uuid = {
+  UUID: _dtUuidType,
+  uuid4: () => new _DtUUID({ _kw: true, bytes: _dtRandBytes(16), version: 4 }),
+  uuid3: (ns, name) => _dtUuidName('md5', ns, name),
+  uuid5: (ns, name) => _dtUuidName('sha1', ns, name),
+  uuid1: (node = null, clock_seq = null) => {
+    const ns100 = BigInt(Date.now()) * 10000n + 0x01b21dd213814000n;
+    if (clock_seq === null) { if (_dtClockSeq === null) _dtClockSeq = (_dtRandBytes(2)[0] << 6 | _dtRandBytes(1)[0]) & 0x3fff; clock_seq = _dtClockSeq; }
+    if (node === null) { const r = _dtRandBytes(6); r[0] |= 1; node = Number(BigInt('0x' + _dtHexOf(r))); }
+    const tl = ns100 & 0xffffffffn, tm = (ns100 >> 32n) & 0xffffn, th = (ns100 >> 48n) & 0x0fffn;
+    return new _DtUUID({ _kw: true, fields: mkTuple([tl, tm, th, (clock_seq >> 8) & 0x3f, clock_seq & 0xff, node]), version: 1 });
+  },
+  NAMESPACE_DNS: new _DtUUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8'),
+  NAMESPACE_URL: new _DtUUID('6ba7b811-9dad-11d1-80b4-00c04fd430c8'),
+  NAMESPACE_OID: new _DtUUID('6ba7b812-9dad-11d1-80b4-00c04fd430c8'),
+  NAMESPACE_X500: new _DtUUID('6ba7b814-9dad-11d1-80b4-00c04fd430c8'),
+  RESERVED_NCS: 'reserved for NCS compatibility', RFC_4122: 'specified in RFC 4122',
+  RESERVED_MICROSOFT: 'reserved for Microsoft compatibility', RESERVED_FUTURE: 'reserved for future definition',
+};
+
+// ── urllib.parse ──
+// urlparse / urlsplit / urlunparse / urlunsplit / urljoin / urldefrag, quote / quote_plus /
+// unquote / unquote_plus / urlencode / parse_qs / parse_qsl, written after CPython's
+// urllib/parse.py (its scheme tables, its RFC 3986 dot-segment resolution).
+const _DT_USES_RELATIVE = ['', 'ftp', 'http', 'gopher', 'nntp', 'imap', 'wais', 'file', 'https', 'shttp', 'mms', 'prospero', 'rtsp', 'rtsps', 'rtspu', 'sftp', 'svn', 'svn+ssh', 'ws', 'wss'];
+const _DT_USES_NETLOC = ['', 'ftp', 'http', 'gopher', 'nntp', 'telnet', 'imap', 'wais', 'file', 'mms', 'https', 'shttp', 'snews', 'prospero', 'rtsp', 'rtsps', 'rtspu', 'rsync', 'svn', 'svn+ssh', 'sftp', 'nfs', 'git', 'git+ssh', 'ws', 'wss', 'itms-services'];
+const _DT_USES_PARAMS = ['', 'ftp', 'hdl', 'prospero', 'http', 'imap', 'https', 'shttp', 'rtsp', 'rtsps', 'rtspu', 'sip', 'sips', 'mms', 'sftp', 'tel'];
+const _DT_SCHEME_CHARS = /^[A-Za-z0-9+\-.]+$/;
+function _dtNetlocParts(netloc) {
+  let userinfo = null, hostport = netloc;
+  const at = netloc.lastIndexOf('@');
+  if (at >= 0) { userinfo = netloc.slice(0, at); hostport = netloc.slice(at + 1); }
+  let username = null, password = null;
+  if (userinfo !== null) { const c = userinfo.indexOf(':'); if (c >= 0) { username = userinfo.slice(0, c); password = userinfo.slice(c + 1); } else username = userinfo; }
+  let hostname, port = null;
+  if (hostport.startsWith('[')) { const e = hostport.indexOf(']'); hostname = hostport.slice(1, e); const rest = hostport.slice(e + 1); if (rest.startsWith(':')) port = rest.slice(1); }
+  else { const c = hostport.indexOf(':'); if (c >= 0) { hostname = hostport.slice(0, c); port = hostport.slice(c + 1); } else hostname = hostport; }
+  return { username, password, hostname: hostname ? hostname.toLowerCase() : null, port };
+}
+function _dtResultType(name, fields, geturl) {
+  const T = _namedtuple(name, fields);
+  const proto = Object.getPrototypeOf(T(...fields.map(() => '')));
+  for (const k of ['username', 'password', 'hostname']) Object.defineProperty(proto, k, { get() { return _dtNetlocParts(this.netloc)[k]; }, configurable: true });
+  Object.defineProperty(proto, 'port', {
+    get() {
+      const p = _dtNetlocParts(this.netloc).port;
+      if (p === null || p === '') return null;
+      if (!/^\d+$/.test(p)) throw new AdderError('ValueError', `Port could not be cast to integer value as ${pyRepr(p)}`);
+      const n = Number(p);
+      if (n > 65535) throw new AdderError('ValueError', 'Port out of range 0-65535');
+      return n;
+    }, configurable: true,
+  });
+  proto.geturl = function () { return geturl(this); };
+  proto.encode = function () { return this; };
+  return T;
+}
+const _dtSplitResult = _dtResultType('SplitResult', ['scheme', 'netloc', 'path', 'query', 'fragment'], (r) => _dtUrlunsplit(r));
+const _dtParseResult = _dtResultType('ParseResult', ['scheme', 'netloc', 'path', 'params', 'query', 'fragment'], (r) => _dtUrlunparse(r));
+const _dtDefragResult = _namedtuple('DefragResult', ['url', 'fragment']);
+Object.getPrototypeOf(_dtDefragResult('', '')).geturl = function () { return this.fragment ? `${this.url}#${this.fragment}` : this.url; };
+function _dtUrlsplit(url, scheme = '', allowFragments = true) {
+  url = String(url).replace(/^[\x00-\x20]+/, '').replace(/[\t\r\n]/g, '');
+  scheme = String(scheme).replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\r\n]/g, '');
+  let netloc = '', query = '', fragment = '';
+  const i = url.indexOf(':');
+  if (i > 0 && /^[A-Za-z]/.test(url[0]) && _DT_SCHEME_CHARS.test(url.slice(0, i))) { scheme = url.slice(0, i).toLowerCase(); url = url.slice(i + 1); }
+  if (url.slice(0, 2) === '//') {
+    let delim = url.length;
+    for (const c of '/?#') { const w = url.indexOf(c, 2); if (w >= 0) delim = Math.min(delim, w); }
+    netloc = url.slice(2, delim); url = url.slice(delim);
+    if ((netloc.includes('[') && !netloc.includes(']')) || (netloc.includes(']') && !netloc.includes('['))) throw new AdderError('ValueError', 'Invalid IPv6 URL');
+  }
+  if (allowFragments && url.includes('#')) { const k = url.indexOf('#'); fragment = url.slice(k + 1); url = url.slice(0, k); }
+  if (url.includes('?')) { const k = url.indexOf('?'); query = url.slice(k + 1); url = url.slice(0, k); }
+  return _dtSplitResult(scheme, netloc, url, query, fragment);
+}
+function _dtUrlparse(url, scheme = '', allowFragments = true) {
+  const [sch, netloc, path0, query, fragment] = _dtUrlsplit(url, scheme, allowFragments);
+  let path = path0, params = '';
+  if (_DT_USES_PARAMS.includes(sch) && path.includes(';')) {
+    let i;
+    if (path.includes('/')) { i = path.indexOf(';', path.lastIndexOf('/')); if (i < 0) i = null; }
+    else i = path.indexOf(';');
+    if (i !== null) { params = path.slice(i + 1); path = path.slice(0, i); }
+  }
+  return _dtParseResult(sch, netloc, path, params, query, fragment);
+}
+function _dtUrlunsplit(parts) {
+  let [scheme, netloc, url, query, fragment] = [...pyIter(parts)].map((x) => x ?? '');
+  if (netloc) { if (url && url[0] !== '/') url = '/' + url; url = '//' + netloc + url; }
+  else if (url.slice(0, 2) === '//') url = '//' + url;
+  else if (scheme && _DT_USES_NETLOC.includes(scheme) && (!url || url[0] === '/')) url = '//' + url;
+  if (scheme) url = scheme + ':' + url;
+  if (query) url = url + '?' + query;
+  if (fragment) url = url + '#' + fragment;
+  return url;
+}
+function _dtUrlunparse(parts) {
+  let [scheme, netloc, url, params, query, fragment] = [...pyIter(parts)].map((x) => x ?? '');
+  if (params) url = `${url};${params}`;
+  return _dtUrlunsplit([scheme, netloc, url, query, fragment]);
+}
+function _dtUrljoin(base, url, allowFragments = true) {
+  if (!base) return url;
+  if (!url) return base;
+  const [bscheme, bnetloc, bpath, bparams, bquery] = _dtUrlparse(base, '', allowFragments);
+  let [scheme, netloc, path, params, query, fragment] = _dtUrlparse(url, bscheme, allowFragments);
+  if (scheme !== bscheme || !_DT_USES_RELATIVE.includes(scheme)) return url;
+  if (_DT_USES_NETLOC.includes(scheme)) {
+    if (netloc) return _dtUrlunparse([scheme, netloc, path, params, query, fragment]);
+    netloc = bnetloc;
+  }
+  if (!path && !params) {
+    path = bpath; params = bparams;
+    if (!query) query = bquery;
+    return _dtUrlunparse([scheme, netloc, path, params, query, fragment]);
+  }
+  const baseParts = bpath.split('/');
+  if (baseParts[baseParts.length - 1] !== '') baseParts.pop();
+  let segments;
+  if (path[0] === '/') segments = path.split('/');
+  else {
+    segments = [...baseParts, ...path.split('/')];
+    segments = [segments[0], ...segments.slice(1, -1).filter(Boolean), ...(segments.length > 1 ? [segments[segments.length - 1]] : [])];
+  }
+  const resolved = [];
+  for (const seg of segments) {
+    if (seg === '..') { if (resolved.length) resolved.pop(); }
+    else if (seg === '.') continue;
+    else resolved.push(seg);
+  }
+  if (segments[segments.length - 1] === '.' || segments[segments.length - 1] === '..') resolved.push('');
+  return _dtUrlunparse([scheme, netloc, resolved.join('/') || '/', params, query, fragment]);
+}
+const _DT_ALWAYS_SAFE = /[A-Za-z0-9_.\-~]/;
+function _dtQuote(s, safe = '/', encoding = null, errors = null) {
+  if (safe && typeof safe === 'object' && safe._kw) { const kw = safe; safe = kw.safe ?? '/'; }
+  const bytes = typeof s === 'string' ? _dtEnc.encode(s) : _dtBytes(s);
+  const safeSet = typeof safe === 'string' ? safe : _dtDec.decode(safe);
+  let out = '';
+  for (const b of bytes) {
+    const c = String.fromCharCode(b);
+    if (b < 128 && (_DT_ALWAYS_SAFE.test(c) || safeSet.includes(c))) out += c;
+    else out += '%' + b.toString(16).toUpperCase().padStart(2, '0');
+  }
+  return out;
+}
+function _dtQuotePlus(s, safe = '', encoding = null, errors = null) {
+  if (safe && typeof safe === 'object' && safe._kw) safe = safe.safe ?? '';
+  const str = typeof s === 'string' ? s : _dtDec.decode(_dtBytes(s));
+  if (str.includes(' ')) return _dtQuote(str, safe + ' ').replace(/ /g, '+');
+  return _dtQuote(s, safe);
+}
+function _dtUnquote(s) {
+  if (s instanceof Uint8Array) s = _dtDec.decode(s);
+  if (!String(s).includes('%')) return String(s);
+  return String(s).replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    const bytes = Uint8Array.from(run.match(/%([0-9A-Fa-f]{2})/g).map((h) => parseInt(h.slice(1), 16)));
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  });
+}
+function _dtParseQsl(qs, ...a) {
+  const { args } = _dtArgs(a, ['keep_blank_values', 'strict_parsing', 'encoding', 'errors', 'max_num_fields', 'separator'],
+    { keep_blank_values: false, strict_parsing: false, encoding: 'utf-8', errors: 'replace', max_num_fields: null, separator: '&' });
+  const r = [];
+  const fields = qs ? String(qs).split(args.separator) : [];
+  if (args.max_num_fields !== null && fields.length > args.max_num_fields) throw new AdderError('ValueError', 'Max number of fields exceeded');
+  for (const nv0 of fields) {
+    if (!nv0 && !args.strict_parsing) continue;
+    const k = nv0.indexOf('=');
+    const nv = k >= 0 ? [nv0.slice(0, k), nv0.slice(k + 1)] : [nv0];
+    if (nv.length !== 2) {
+      if (args.strict_parsing) throw new AdderError('ValueError', `bad query field: ${pyRepr(nv0)}`);
+      if (args.keep_blank_values) nv.push(''); else continue;
+    }
+    if (nv[1].length || args.keep_blank_values) r.push(mkTuple([_dtUnquote(nv[0].replace(/\+/g, ' ')), _dtUnquote(nv[1].replace(/\+/g, ' '))]));
+  }
+  return r;
+}
+function _dtUrlencode(query, ...a) {
+  const { args } = _dtArgs(a, ['doseq', 'safe', 'encoding', 'errors', 'quote_via'], { doseq: false, safe: '', encoding: null, errors: null, quote_via: null });
+  const q = args.quote_via || _dtQuotePlus;
+  const pairs = query instanceof Map ? [...query] : isPlainDict(query) ? Object.entries(query) : [...pyIter(query)].map((p) => [...pyIter(p)]);
+  const enc = (v) => (v instanceof Uint8Array ? q(v, args.safe) : q(pyStr(v), args.safe));
+  const out = [];
+  for (const [k, v] of pairs) {
+    if (!args.doseq || typeof v === 'string' || v instanceof Uint8Array || !(Array.isArray(v) || v instanceof Set || (v && typeof v[Symbol.iterator] === 'function'))) out.push(`${enc(k)}=${enc(v)}`);
+    else for (const x of pyIter(v)) out.push(`${enc(k)}=${enc(x)}`);
+  }
+  return out.join('&');
+}
+const _dtUrlParseMod = {
+  urlparse: (url, ...a) => { const { args } = _dtArgs(a, ['scheme', 'allow_fragments'], { scheme: '', allow_fragments: true }); return _dtUrlparse(url, args.scheme, args.allow_fragments); },
+  urlsplit: (url, ...a) => { const { args } = _dtArgs(a, ['scheme', 'allow_fragments'], { scheme: '', allow_fragments: true }); return _dtUrlsplit(url, args.scheme, args.allow_fragments); },
+  urlunparse: _dtUrlunparse, urlunsplit: _dtUrlunsplit,
+  urljoin: (base, url, ...a) => { const { args } = _dtArgs(a, ['allow_fragments'], { allow_fragments: true }); return _dtUrljoin(base, url, args.allow_fragments); },
+  urldefrag: (url) => {
+    if (String(url).includes('#')) { const [s, n, p, pa, q, frag] = _dtUrlparse(url); return _dtDefragResult(_dtUrlunparse([s, n, p, pa, q, '']), frag); }
+    return _dtDefragResult(String(url), '');
+  },
+  quote: _dtQuote, quote_plus: _dtQuotePlus,
+  quote_from_bytes: (b, safe = '/') => _dtQuote(_dtBytes(b), safe),
+  unquote: _dtUnquote, unquote_plus: (s) => _dtUnquote(String(s).replace(/\+/g, ' ')),
+  unquote_to_bytes: (s) => _dtEnc.encode(_dtUnquote(s)),
+  urlencode: _dtUrlencode, parse_qsl: _dtParseQsl,
+  parse_qs: (qs, ...a) => {
+    const d = {};
+    for (const [k, v] of _dtParseQsl(qs, ...a)) (d[k] || (d[k] = [])).push(v);
+    return d;
+  },
+  SplitResult: _dtSplitResult, ParseResult: _dtParseResult, DefragResult: _dtDefragResult,
+  uses_relative: _DT_USES_RELATIVE, uses_netloc: _DT_USES_NETLOC, uses_params: _DT_USES_PARAMS,
+};
+adderModules['urllib.parse'] = _dtUrlParseMod;
+adderModules.urllib = Object.assign(adderModules.urllib || {}, { parse: _dtUrlParseMod });
+
+// ── warnings ──
+// warn / warn_explicit / simplefilter / filterwarnings / resetwarnings / catch_warnings(record=)
+// with the actions default, error, ignore, always, module, once. Shown warnings go to stderr as
+// "<adder>:1: UserWarning: message" (adder has no frame line to show).
+let _dtFilters = [];
+let _dtOnceSeen = new Set();
+let _dtShowTarget = null;
+const _dtWarningMessage = (message, category, filename, lineno) => ({
+  __adderClass__: 'WarningMessage', message, category, filename, lineno, file: null, line: null, source: null,
+  __str__() { return `{message : ${pyRepr(message)}, category : ${pyRepr(category && category.__name__)}, filename : ${pyRepr(filename)}, lineno : ${lineno}, line : None}`; },
+});
+const _dtCatName = (c) => (c && (c.__name__ || c._pyName)) || 'UserWarning';
+const _dtIsSubcat = (cat, filt) => {
+  if (!filt) return true;
+  const a = _dtCatName(cat), b = _dtCatName(filt);
+  if (a === b || b === 'Warning' || b === 'Exception' || b === 'BaseException') return true;
+  if (typeof cat === 'function' && cat._pyMRO) return cat._pyMRO.some((c) => c === filt || _dtCatName(c) === b);
+  return false;
+};
+function _dtWarn(message, ...a) {
+  const { args } = _dtArgs(a, ['category', 'stacklevel', 'source', 'skip_file_prefixes'], { category: null, stacklevel: 1, source: null, skip_file_prefixes: null });
+  let category = args.category;
+  let text;
+  if (message instanceof AdderError || (message && message.__adderType__)) { category = excTypeOf(message) || message.__adderType__; text = pyStr(message); }
+  else { text = pyStr(message); if (!category) category = _typeObjects.UserWarning || null; }
+  const catName = category ? _dtCatName(category) : 'UserWarning';
+  let action = 'default';
+  for (const f of _dtFilters) {
+    if (f.message && !new RegExp(`^(?:${f.message})`, 'i').test(text)) continue;
+    if (!_dtIsSubcat(category, f.category)) continue;
+    action = f.action; break;
+  }
+  if (action === 'ignore') return null;
+  if (action === 'error') {
+    if (message instanceof AdderError) throw message;
+    if (category && typeof category === 'function') { const e = category(text); throw e instanceof AdderError ? e : new AdderError(catName, text); }
+    throw new AdderError(catName, text);
+  }
+  const key = `${catName}:${text}`;
+  if ((action === 'default' || action === 'module' || action === 'once') && _dtOnceSeen.has(key)) return null;
+  _dtOnceSeen.add(key);
+  const msg = _dtWarningMessage(message instanceof AdderError ? message : (category ? category(text) : text), category, '<adder>', 1);
+  if (_dtShowTarget) { _dtShowTarget.push(msg); return null; }
+  const line = `<adder>:1: ${catName}: ${text}\n`;
+  if (_stdio.err) _stdio.err(line); else if (typeof console !== 'undefined') console.warn(line.trimEnd());
+  return null;
+}
+class _DtCatchWarnings {
+  constructor(...a) { const { args } = _dtArgs(a, ['record', 'module', 'action', 'category'], { record: false, module: null, action: null, category: null }); this._record = !!args.record; this._action = args.action; this._category = args.category; }
+  __enter__() {
+    this._saved = [_dtFilters, _dtShowTarget, _dtOnceSeen];
+    _dtFilters = [..._dtFilters];
+    _dtOnceSeen = new Set(_dtOnceSeen);
+    if (this._action) _dtFilters.unshift({ action: this._action, category: this._category, message: '' });
+    if (this._record) { _dtShowTarget = []; return _dtShowTarget; }
+    return null;
+  }
+  __exit__() { [_dtFilters, _dtShowTarget, _dtOnceSeen] = this._saved; return false; }
+}
+adderModules.warnings = {
+  warn: _dtWarn,
+  warn_explicit: (message, category, filename, lineno) => _dtWarn(message, { _kw: true, category }),
+  simplefilter: (action, ...a) => { const { args } = _dtArgs(a, ['category', 'lineno', 'append'], { category: null, lineno: 0, append: false }); const f = { action, category: args.category, message: '' }; if (args.append) _dtFilters.push(f); else _dtFilters.unshift(f); return null; },
+  filterwarnings: (action, ...a) => { const { args } = _dtArgs(a, ['message', 'category', 'module', 'lineno', 'append'], { message: '', category: null, module: '', lineno: 0, append: false }); const f = { action, category: args.category, message: args.message }; if (args.append) _dtFilters.push(f); else _dtFilters.unshift(f); return null; },
+  resetwarnings: () => { _dtFilters = []; _dtOnceSeen = new Set(); return null; },
+  catch_warnings: _dtType('catch_warnings', _DtCatchWarnings, 'warnings'),
+  showwarning: (message, category, filename, lineno) => { const line = `${filename}:${lineno}: ${_dtCatName(category)}: ${pyStr(message)}\n`; if (_stdio.err) _stdio.err(line); return null; },
+  formatwarning: (message, category, filename, lineno) => `${filename}:${lineno}: ${_dtCatName(category)}: ${pyStr(message)}\n`,
+  get filters() { return _dtFilters.map((f) => mkTuple([f.action, f.message || null, f.category, null, 0])); },
+};
+
+// ── logging ──
+// Loggers in a dotted hierarchy (propagation to the parents' handlers), the root logger and the
+// last-resort handler, basicConfig, Formatter with %-style / {-style / $-style formats,
+// StreamHandler / NullHandler / FileHandler (VFS), Filters, the level table. exception() adds
+// the exception's "Type: message" line in place of a traceback.
+const _DT_LEVELS = { CRITICAL: 50, FATAL: 50, ERROR: 40, WARNING: 30, WARN: 30, INFO: 20, DEBUG: 10, NOTSET: 0 };
+const _dtLevelNames = { 50: 'CRITICAL', 40: 'ERROR', 30: 'WARNING', 20: 'INFO', 10: 'DEBUG', 0: 'NOTSET' };
+const _dtLevelOf = (l) => {
+  if (typeof l === 'number') return l;
+  if (typeof l === 'string') { if (!(l.toUpperCase() in _DT_LEVELS) && !Object.values(_dtLevelNames).includes(l)) throw new AdderError('ValueError', `Unknown level: ${pyRepr(l)}`); return _DT_LEVELS[l.toUpperCase()] ?? Number(Object.keys(_dtLevelNames).find((k) => _dtLevelNames[k] === l)); }
+  throw new AdderError('TypeError', `Level not an integer or a valid string: ${pyRepr(l)}`);
+};
+const _dtT0 = Date.now();
+class _DtLogRecord {
+  constructor(name, level, msg, args, exc) {
+    this.name = name; this.levelno = level; this.levelname = _dtLevelNames[level] ?? `Level ${level}`;
+    this.msg = msg; this.args = args; this.exc_info = exc || null; this.exc_text = null;
+    this.created = Date.now() / 1000; this.msecs = Math.floor((Date.now() % 1000)); this.relativeCreated = Date.now() - _dtT0;
+    this.pathname = '<adder>'; this.filename = '<adder>'; this.module = '<adder>'; this.lineno = 1; this.funcName = '<module>';
+    this.process = 1; this.processName = 'MainProcess'; this.thread = 1; this.threadName = 'MainThread'; this.taskName = null; this.stack_info = null;
+  }
+  getMessage() {
+    let m = pyStr(this.msg);
+    if (this.args && (!Array.isArray(this.args) || this.args.length)) {
+      const a = Array.isArray(this.args) && this.args.length === 1 && (isPlainDict(this.args[0]) || this.args[0] instanceof Map) ? this.args[0] : Array.isArray(this.args) ? mkTuple(this.args) : this.args;
+      m = pyPercentFormat(m, a);
+    }
+    return m;
+  }
+}
+_DtLogRecord.prototype.__adderClass__ = 'LogRecord';
+class _DtFormatter {
+  constructor(...a) {
+    const { args } = _dtArgs(a, ['fmt', 'datefmt', 'style', 'validate', 'defaults'], { fmt: null, datefmt: null, style: '%', validate: true, defaults: null });
+    this._style = args.style;
+    this._fmt = args.fmt ?? (args.style === '{' ? '{message}' : args.style === '$' ? '${message}' : '%(message)s');
+    this.datefmt = args.datefmt;
+    this.default_time_format = '%Y-%m-%d %H:%M:%S'; this.default_msec_format = '%s,%03d';
+  }
+  usesTime() { return /asctime/.test(this._fmt); }
+  formatTime(record, datefmt = null) {
+    const t = new Date(record.created * 1000);
+    const pad = (n, w = 2) => String(n).padStart(w, '0');
+    const base = (datefmt || this.default_time_format).replace(/%([YmdHMSyb%jpIAaBf])/g, (_, c) => ({
+      Y: t.getFullYear(), m: pad(t.getMonth() + 1), d: pad(t.getDate()), H: pad(t.getHours()), M: pad(t.getMinutes()), S: pad(t.getSeconds()),
+      y: pad(t.getFullYear() % 100), j: pad(Math.floor((t - new Date(t.getFullYear(), 0, 0)) / 864e5), 3), p: t.getHours() < 12 ? 'AM' : 'PM',
+      I: pad(t.getHours() % 12 || 12), '%': '%', b: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][t.getMonth()],
+      B: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][t.getMonth()],
+      a: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][t.getDay()], A: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][t.getDay()],
+      f: pad(record.msecs * 1000, 6),
+    })[c]);
+    return datefmt ? base : `${base},${pad(record.msecs, 3)}`;
+  }
+  formatException(exc) {
+    const v = Array.isArray(exc) ? exc[1] : exc;
+    if (!v) return '';
+    const t = excTypeOf(v);
+    return `Traceback (most recent call last):\n${t ? t.__name__ || t._pyName : 'Exception'}: ${pyStr(excValue(v) ?? v)}`;
+  }
+  formatMessage(record) {
+    const fields = { ...record, message: record.message, asctime: record.asctime };
+    if (this._style === '{') return this._fmt.replace(/\{(\w+)(?::([^}]*))?\}/g, (_, k, spec) => (spec ? pyFormatValue(fields[k], spec) : pyStr(fields[k])));
+    if (this._style === '$') return this._fmt.replace(/\$\{?(\w+)\}?/g, (_, k) => pyStr(fields[k]));
+    return pyPercentFormat(this._fmt, fields);
+  }
+  format(record) {
+    record.message = record.getMessage();
+    if (this.usesTime()) record.asctime = this.formatTime(record, this.datefmt);
+    let s = this.formatMessage(record);
+    if (record.exc_info) { if (!record.exc_text) record.exc_text = this.formatException(record.exc_info); }
+    if (record.exc_text) s = s + (s.endsWith('\n') ? '' : '\n') + record.exc_text;
+    return s;
+  }
+}
+const _dtFormatterType = _dtType('Formatter', _DtFormatter, 'logging');
+class _DtFilter {
+  constructor(name = '') { this.name = name; }
+  filter(record) { return !this.name || record.name === this.name || record.name.startsWith(this.name + '.'); }
+}
+class _DtHandler {
+  constructor(level = 0) { this.level = _dtLevelOf(level && level._kw ? level.level ?? 0 : level); this.formatter = null; this.filters = []; this.name = null; }
+  setLevel(l) { this.level = _dtLevelOf(l); return null; }
+  setFormatter(f) { this.formatter = f; return null; }
+  addFilter(f) { this.filters.push(f); return null; }
+  removeFilter(f) { this.filters = this.filters.filter((x) => x !== f); return null; }
+  filter(record) { return this.filters.every((f) => (typeof f === 'function' ? f(record) : f.filter(record))); }
+  format(record) { return (this.formatter || _dtDefaultFormatter).format(record); }
+  handle(record) { if (!this.filter(record)) return false; return _dtThenTrue(this.emit(record)); }
+  emit() { return null; }
+  flush() { return null; }
+  close() { return null; }
+}
+const _dtThenTrue = (r) => (_dtIsThen(r) ? r.then(() => true) : true);
+const _dtDefaultFormatter = new _DtFormatter();
+class _DtStreamHandler extends _DtHandler {
+  constructor(stream = null) { super(); this.stream = stream && stream._kw ? stream.stream ?? null : stream; this.terminator = '\n'; }
+  emit(record) {
+    const msg = this.format(record) + this.terminator;
+    if (this.stream === null) { if (_stdio.err) _stdio.err(msg); else if (typeof console !== 'undefined') console.error(msg.trimEnd()); return null; }
+    return adderGetAttr(this.stream, 'write')(msg);
+  }
+  setStream(s) { const old = this.stream; this.stream = s; return old; }
+}
+class _DtFileHandler extends _DtStreamHandler {
+  constructor(...a) {
+    super();
+    const { args } = _dtArgs(a, ['filename', 'mode', 'encoding', 'delay'], { mode: 'a', encoding: null, delay: false });
+    this.baseFilename = String(args.filename); this.mode = args.mode; this._pending = Promise.resolve();
+    this._first = args.mode === 'w';
+  }
+  emit(record) {
+    const msg = this.format(record) + this.terminator;
+    const vfs = getAdderVFS();
+    if (!vfs) throw new AdderError('RuntimeError', 'filesystem not available');
+    const p = _resolvePath(this.baseFilename, _getVfsPath());
+    this._pending = this._pending.then(async () => {
+      let prev = '';
+      if (!this._first) { try { prev = await vfs.readFile(p); } catch { prev = ''; } }
+      this._first = false;
+      await vfs.writeFile(p, (typeof prev === 'string' ? prev : _dtDec.decode(prev)) + msg);
+    });
+    return this._pending;
+  }
+}
+class _DtNullHandler extends _DtHandler { emit() { return null; } handle() { return null; } }
+const _dtLoggers = new Map();
+class _DtLogger {
+  constructor(name, level = 0) { this.name = name; this.level = _dtLevelOf(level); this.parent = null; this.propagate = true; this.handlers = []; this.disabled = false; this.filters = []; }
+  setLevel(l) { this.level = _dtLevelOf(l); return null; }
+  getEffectiveLevel() { for (let l = this; l; l = l.parent) if (l.level) return l.level; return 0; }
+  isEnabledFor(level) { return !this.disabled && level >= _dtManagerDisable + 1 && level >= this.getEffectiveLevel(); }
+  addHandler(h) { if (!this.handlers.includes(h)) this.handlers.push(h); return null; }
+  removeHandler(h) { this.handlers = this.handlers.filter((x) => x !== h); return null; }
+  hasHandlers() { for (let l = this; l; l = l.propagate ? l.parent : null) if (l.handlers.length) return true; return false; }
+  addFilter(f) { this.filters.push(f); return null; }
+  removeFilter(f) { this.filters = this.filters.filter((x) => x !== f); return null; }
+  getChild(suffix) { return _dtGetLogger(this === _dtRoot ? suffix : `${this.name}.${suffix}`); }
+  _log(level, msg, args, kw) {
+    if (!this.isEnabledFor(level)) return null;
+    let exc = kw && _dtHas(kw, 'exc_info') ? kw.exc_info : null;
+    if (exc === true) exc = excStack.length ? excStack[excStack.length - 1] : null;
+    const rec = new _DtLogRecord(this.name, level, msg, args, exc || null);
+    if (kw && _dtHas(kw, 'extra') && kw.extra) Object.assign(rec, kw.extra instanceof Map ? Object.fromEntries(kw.extra) : kw.extra);
+    if (!this.filters.every((f) => (typeof f === 'function' ? f(rec) : f.filter(rec)))) return null;
+    const pend = [];
+    let found = 0;
+    for (let l = this; l; l = l.propagate ? l.parent : null) {
+      for (const h of l.handlers) { found++; if (level >= h.level) { const r = h.handle(rec); if (_dtIsThen(r)) pend.push(r); } }
+      if (!l.propagate) break;
+    }
+    if (!found && level >= _dtLastResort.level) { const r = _dtLastResort.handle(rec); if (_dtIsThen(r)) pend.push(r); }
+    return pend.length ? Promise.all(pend).then(() => null) : null;
+  }
+  debug(msg, ...a) { const kw = _dtKw(a); return this._log(10, msg, a, kw); }
+  info(msg, ...a) { const kw = _dtKw(a); return this._log(20, msg, a, kw); }
+  warning(msg, ...a) { const kw = _dtKw(a); return this._log(30, msg, a, kw); }
+  warn(msg, ...a) { return this.warning(msg, ...a); }
+  error(msg, ...a) { const kw = _dtKw(a); return this._log(40, msg, a, kw); }
+  exception(msg, ...a) { const kw = _dtKw(a) || {}; return this._log(40, msg, a, { exc_info: true, ...kw }); }
+  critical(msg, ...a) { const kw = _dtKw(a); return this._log(50, msg, a, kw); }
+  fatal(msg, ...a) { return this.critical(msg, ...a); }
+  log(level, msg, ...a) { const kw = _dtKw(a); return this._log(_dtLevelOf(level), msg, a, kw); }
+  __repr__() { return `<${this === _dtRoot ? 'RootLogger' : 'Logger'} ${this.name} (${_dtLevelNames[this.getEffectiveLevel()] ?? `Level ${this.getEffectiveLevel()}`})>`; }
+}
+_DtLogger.prototype.__adderClass__ = 'Logger';
+let _dtManagerDisable = -1;
+const _dtRoot = new _DtLogger('root', 30);
+const _dtLastResort = new _DtStreamHandler(null); _dtLastResort.level = 30;
+function _dtGetLogger(name = null) {
+  if (name === null || name === undefined || name === '' || name === 'root') return _dtRoot;
+  if (_dtLoggers.has(name)) return _dtLoggers.get(name);
+  const lg = new _DtLogger(name);
+  _dtLoggers.set(name, lg);
+  // parent: the nearest existing ancestor; re-parent existing children
+  const parts = name.split('.');
+  lg.parent = _dtRoot;
+  for (let i = parts.length - 1; i > 0; i--) { const p = parts.slice(0, i).join('.'); if (_dtLoggers.has(p)) { lg.parent = _dtLoggers.get(p); break; } }
+  for (const [n, child] of _dtLoggers) if (n !== name && n.startsWith(name + '.') && (child.parent === lg.parent || !child.parent.name.startsWith(name))) child.parent = lg;
+  return lg;
+}
+const _dtRootCall = (m) => (msg, ...a) => { if (!_dtRoot.handlers.length) _dtBasicConfig(); return _dtRoot[m](msg, ...a); };
+function _dtBasicConfig(...a) {
+  const kw = _dtKw(a) || {};
+  if (_dtHas(kw, 'force') && kw.force) _dtRoot.handlers = [];
+  if (_dtRoot.handlers.length) return null;
+  let h;
+  if (_dtHas(kw, 'handlers') && kw.handlers) { for (const x of pyIter(kw.handlers)) _dtRoot.addHandler(x); }
+  else {
+    h = _dtHas(kw, 'filename') ? new _DtFileHandler(kw.filename, _dtHas(kw, 'filemode') ? kw.filemode : 'a') : new _DtStreamHandler(_dtHas(kw, 'stream') ? kw.stream : null);
+    h.setFormatter(new _DtFormatter(_dtHas(kw, 'format') ? kw.format : '%(levelname)s:%(name)s:%(message)s', _dtHas(kw, 'datefmt') ? kw.datefmt : null, _dtHas(kw, 'style') ? kw.style : '%'));
+    _dtRoot.addHandler(h);
+  }
+  if (_dtHas(kw, 'level')) _dtRoot.setLevel(kw.level);
+  return null;
+}
+adderModules.logging = {
+  ..._DT_LEVELS,
+  getLogger: _dtGetLogger, root: _dtRoot, basicConfig: _dtBasicConfig,
+  debug: _dtRootCall('debug'), info: _dtRootCall('info'), warning: _dtRootCall('warning'), warn: _dtRootCall('warning'),
+  error: _dtRootCall('error'), exception: _dtRootCall('exception'), critical: _dtRootCall('critical'), fatal: _dtRootCall('critical'),
+  log: (level, msg, ...a) => { if (!_dtRoot.handlers.length) _dtBasicConfig(); return _dtRoot.log(level, msg, ...a); },
+  disable: (level = 50) => { _dtManagerDisable = _dtLevelOf(level); return null; },
+  getLevelName: (l) => (typeof l === 'number' ? _dtLevelNames[l] ?? `Level ${l}` : _DT_LEVELS[l] ?? `Level ${l}`),
+  getLevelNamesMapping: () => ({ ..._DT_LEVELS }),
+  addLevelName: (level, name) => { _dtLevelNames[level] = name; _DT_LEVELS[name] = level; return null; },
+  shutdown: () => null, captureWarnings: () => null, lastResort: _dtLastResort,
+  Logger: _dtType('Logger', _DtLogger, 'logging'), LogRecord: _dtType('LogRecord', _DtLogRecord, 'logging'),
+  Formatter: _dtFormatterType, Filter: _dtType('Filter', _DtFilter, 'logging'),
+  Handler: _dtType('Handler', _DtHandler, 'logging'), StreamHandler: _dtType('StreamHandler', _DtStreamHandler, 'logging'),
+  FileHandler: _dtType('FileHandler', _DtFileHandler, 'logging'), NullHandler: _dtType('NullHandler', _DtNullHandler, 'logging'),
+  BASIC_FORMAT: '%(levelname)s:%(name)s:%(message)s',
+};
+
+// ── tempfile ──
+// gettempdir / mkdtemp / mkstemp / TemporaryDirectory / NamedTemporaryFile / TemporaryFile /
+// SpooledTemporaryFile, all under the VFS's /tmp.
+const _dtTmpName = () => { const c = 'abcdefghijklmnopqrstuvwxyz0123456789_'; const r = _dtRandBytes(8); return [...r].map((b) => c[b % c.length]).join(''); };
+const _dtVfsOr = () => { const v = getAdderVFS(); if (!v) throw new AdderError('RuntimeError', 'filesystem not available — tempfile needs a VFS'); return v; };
+async function _dtMkdtemp(...a) {
+  const { args } = _dtArgs(a, ['suffix', 'prefix', 'dir'], { suffix: '', prefix: 'tmp', dir: null });
+  const vfs = _dtVfsOr();
+  const dir = args.dir ?? '/tmp';
+  try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
+  const p = `${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`;
+  await vfs.mkdir(p);
+  return p;
+}
+class _DtTempDir {
+  async _init(...a) { this.name = await _dtMkdtemp(...a); return this; }
+  __enter__() { return this.name; }
+  async cleanup() { try { await _dtVfsOr().rm(this.name, { recursive: true }); } catch { /* gone */ } return null; }
+  async __exit__() { await this.cleanup(); return false; }
+  __repr__() { return `<TemporaryDirectory ${pyRepr(this.name)}>`; }
+}
+_DtTempDir.prototype.__adderClass__ = 'TemporaryDirectory';
+async function _dtNamedTemp(...a) {
+  const { args } = _dtArgs(a, ['mode', 'buffering', 'encoding', 'newline', 'suffix', 'prefix', 'dir', 'delete'],
+    { mode: 'w+b', buffering: -1, encoding: null, newline: null, suffix: '', prefix: 'tmp', dir: null, delete: true });
+  const vfs = _dtVfsOr();
+  const dir = args.dir ?? '/tmp';
+  try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
+  const p = `${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`;
+  await vfs.writeFile(p, '');
+  const mode = String(args.mode).replace('+', '').replace('x', 'w');
+  const f = await _createAdderFile(vfs, p, mode.startsWith('r') ? mode : mode);
+  const close = f.close ? f.close.bind(f) : null;
+  if (args.delete) {
+    f.close = async () => { if (close) await close(); try { await vfs.unlink(p); } catch { /* gone */ } return null; };
+    const exit = f.__exit__ ? f.__exit__.bind(f) : null;
+    f.__exit__ = async (...e) => { if (exit) await exit(...e); try { await vfs.unlink(p); } catch { /* gone */ } return false; };
+  }
+  return f;
+}
+const _dtTempDirCtor = (...a) => new _DtTempDir()._init(...a);
+_dtTempDirCtor._pyName = 'TemporaryDirectory'; _dtTempDirCtor._pyClass = true; _dtTempDirCtor.__name__ = 'TemporaryDirectory';
+_DtTempDir.prototype.__adderType__ = _dtTempDirCtor;
+adderModules.tempfile = {
+  gettempdir: () => '/tmp', gettempdirb: () => _dtEnc.encode('/tmp'), gettempprefix: () => 'tmp', tempdir: null,
+  mkdtemp: _dtMkdtemp,
+  mkstemp: async (...a) => {
+    const { args } = _dtArgs(a, ['suffix', 'prefix', 'dir', 'text'], { suffix: '', prefix: 'tmp', dir: null, text: false });
+    const vfs = _dtVfsOr();
+    const dir = args.dir ?? '/tmp';
+    try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
+    const p = `${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`;
+    await vfs.writeFile(p, '');
+    return mkTuple([3, p]);
+  },
+  mktemp: (suffix = '', prefix = 'tmp', dir = null) => `${(dir ?? '/tmp').replace(/\/$/, '')}/${prefix}${_dtTmpName()}${suffix}`,
+  TemporaryDirectory: _dtTempDirCtor,
+  NamedTemporaryFile: _dtNamedTemp, TemporaryFile: _dtNamedTemp,
+  SpooledTemporaryFile: (...a) => (String((_dtArgs([...a], ['max_size', 'mode'], { max_size: 0, mode: 'w+b' }).args.mode)).includes('b') ? adderModules.io.BytesIO() : adderModules.io.StringIO()),
 };
 
 // -- runner.js --
@@ -7788,8 +13312,11 @@ function _withVfs(opts, fn) {
 async function _withSandbox(opts, fn) {
   const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false });
   const prevBudget = _setBudget(_makeBudget(opts.budget));
+  const prevOut = _stdio.out, prevErr = _stdio.err;
+  _stdio.out = opts.stdout || _defaultStdout;
+  _stdio.err = opts.stderr || _defaultStderr;
   try { return await fn(); }
-  finally { _setRunOptions(prevOpts); _setBudget(prevBudget); }
+  finally { _setRunOptions(prevOpts); _setBudget(prevBudget); _stdio.out = prevOut; _stdio.err = prevErr; }
 }
 
 // ── the AIR engine (opts.engine) ──
@@ -8365,7 +13892,7 @@ function collectDefines_ad(stmts, defines) {
         defines.add(node.name);
         break;
       case 'Import':
-        for (const alias of node.names) defines.add(alias.alias || alias.module);
+        for (const alias of node.names) defines.add(alias.alias || alias.module.split('.')[0]);   // import a.b binds a
         break;
       case 'ImportFrom':
         for (const alias of node.names) defines.add(alias.alias || alias.name);
@@ -8717,11 +14244,13 @@ function lowerAdder(ast, source, opts) {
     ctx.symbols.set(name, undef.id);
   }
 
-  // Lower each statement; track last Expr for REPL-like display
+  // Lower each statement; the module's LAST statement, when an expression, is its display value
+  // (an earlier expression must not be: its call would be inlined at the store, after the
+  // statements that follow it)
   let lastExpr = null;
   for (const stmt of ast.body) {
     const result = lowerStmt_ad(ctx, stmt);
-    if (stmt.type === 'Expr' && result) lastExpr = result.id;
+    lastExpr = stmt.type === 'Expr' && result ? result.id : null;
   }
 
   // If there's a trailing Expr, store it as __lastExpr__ so the caller can read it
@@ -8908,7 +14437,7 @@ function lowerExpr_ad(ctx, node) {
     case 'Subscript': return lowerSubscript(ctx, node);
 
     case 'List': return lowerListOrTuple(ctx, node);
-    case 'Tuple': return lowerListOrTuple(ctx, node);
+    case 'Tuple': return emitPyCall(ctx, 'tuple', [lowerListOrTuple(ctx, node)], l);
 
     case 'Dict': {
       // A literal with **unpacking builds at run time (_py.dictLiteral): the sources may be
@@ -8923,7 +14452,9 @@ function lowerExpr_ad(ctx, node) {
           ctx.emit('array_new', spreads, DYNAMIC, l)], l);
       }
       // Plain object if all keys are string constants; otherwise build a Map.
-      const allStringKeys = node.keys.every(k =>
+      // Plain object if all keys are string constants (JS cells read d.a); otherwise, and
+      // for an empty literal, a PyDict via _py.makeDict (see eval.js)
+      const allStringKeys = node.keys.length > 0 && node.keys.every(k =>
         k && k.type === 'Constant' && typeof k.value === 'string');
       if (allStringKeys) {
         const pairs = [];
@@ -9156,7 +14687,8 @@ function lowerSubscript(ctx, node) {
     // objects) and pass it to `_py.getitem`. The target __getitem__
     // (natra ndarray, DataFrame, etc.) interprets the array as a tuple.
     const elts = node.slice.elts.map(elt => _lowerSliceElt(ctx, elt, l));
-    const tupleKey = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+    const arr = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+    const tupleKey = emitPyCall(ctx, 'tuple', [arr], l);
     return emitPyCall(ctx, 'getitem', [obj, tupleKey], l);
   }
   const key = lowerExpr_ad(ctx, node.slice);
@@ -9217,7 +14749,7 @@ function lowerCall_ad(ctx, node) {
       if (kw.name === null) {
         // **kw splat
         hasSplat = true;
-        const src = lowerExpr_ad(ctx, kw.value);
+        const src = emitPyCall(ctx, 'kwSplat', [lowerExpr_ad(ctx, kw.value)], l);
         pairs.push({ spread: true, id: src.id });
       } else {
         const val = lowerExpr_ad(ctx, kw.value);
@@ -9261,6 +14793,18 @@ function lowerCall_ad(ctx, node) {
 
 function lowerAssign(ctx, node) {
   const l = ctx.loc(node);
+  const tgt = node.targets.length === 1 ? node.targets[0] : null;
+  const src = node.value;
+  if (tgt && (tgt.type === 'Tuple' || tgt.type === 'List') && src && (src.type === 'Tuple' || src.type === 'List') &&
+      tgt.elts.length === src.elts.length && !tgt.elts.some((e) => e.type === 'Starred') && !src.elts.some((e) => e.type === 'Starred')) {
+    const vals = src.elts.map((e) => {
+      const v = lowerExpr_ad(ctx, e);
+      // materialise each value before any store (a, b = b, a + b reads the old a and b)
+      return ctx.emit('load', [_refExpr(ctx, v.id)], DYNAMIC, l);
+    });
+    tgt.elts.forEach((t, i) => lowerAssignTarget(ctx, t, vals[i], l));
+    return null;
+  }
   const value = lowerExpr_ad(ctx, node.value);
   for (const target of node.targets) {
     lowerAssignTarget(ctx, target, value, l);
@@ -9344,7 +14888,8 @@ function lowerAssignTarget(ctx, target, value, l) {
     }
     if (target.slice.type === 'Tuple') {
       const elts = target.slice.elts.map(elt => _lowerSliceElt(ctx, elt, l));
-      const tupleKey = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+      const arr = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+      const tupleKey = emitPyCall(ctx, 'tuple', [arr], l);
       emitPyCall(ctx, 'setitem', [obj, tupleKey, value], l, VOID);
       return;
     }
@@ -9460,10 +15005,16 @@ function lowerTry_ad(ctx, node) {
         ctx.emit('store', [h.name, v.id], VOID, l);
         ctx.symbols.set(h.name, v.id);
       };
+      // the handler runs with its exception on the shared stack (sys.exc_info(), logging.exception)
       const handlerBody = (h) => {
         const saved = ctx._excName;
         ctx._excName = catchParam;
-        try { for (const st of h.body) lowerStmt_ad(ctx, st); } finally { ctx._excName = saved; }
+        try {
+          emitRaw(ctx, `_py.excPush(${catchParam});`);
+          const body = captureOps(ctx, () => { for (const st of h.body) lowerStmt_ad(ctx, st); });
+          const fin = captureOps(ctx, () => emitRaw(ctx, '_py.excPop();'));
+          ctx.emit('try_region', [], VOID, l, { try_body: body, catch_param: null, catch_body: [], finally_body: fin });
+        } finally { ctx._excName = saved; }
       };
       const buildHandler = (idx) => {
         if (idx >= node.handlers.length) {
@@ -9653,7 +15204,12 @@ function lowerClassDef(ctx, node) {
 
   // _py.createClass(name, bases, members)
   const nameConst = ctx.emit('const', [name], STRING, l);
-  let classOp = emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited], l);
+  // the body's annotations (name, source text), flattened, for __annotations__ / dataclasses
+  const annIds = [];
+  for (const [k, t] of classAnnotations(node.body)) annIds.push(ctx.emit('const', [k], STRING, l).id, ctx.emit('const', [t], STRING, l).id);
+  const annArr = ctx.emit('array_new', annIds, DYNAMIC, l);
+  // createClass may return a promise (a base's __init_subclass__ written in Python)
+  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr], l).id], DYNAMIC, l);
 
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -9687,8 +15243,12 @@ function lowerImport(ctx, node) {
       // (add, sub, truthy, ...), the result is a Promise, not the module.
       const call = emitPyCall(ctx, 'import', [nameConst], l);
       mod = ctx.emit('await', [call.id], DYNAMIC, l);
-      // For dotted names like `a.b`, bind the top-level `a` unless aliased.
+      // For dotted names like `a.b`, bind the top-level `a` (with `b` reachable on it) unless aliased.
       bindName = alias || module.split('.')[0];
+      if (!alias && module.includes('.')) {
+        const rootCall = emitPyCall(ctx, 'importRoot', [ctx.emit('const', [module], STRING, l), mod], l);
+        mod = ctx.emit('await', [rootCall.id], DYNAMIC, l);
+      }
     }
     ctx.emit('store', [bindName, mod.id], VOID, l);
     ctx.symbols.set(bindName, mod.id);
@@ -9990,7 +15550,8 @@ function _buildParamBinding(ctx, node, l) {
   const defaults = ctx._paramDefaults || {};
   emitRaw(ctx, `let __kw = null;`, '__kw');
   emitRaw(ctx, `if (__args.length > 0 && __args[__args.length-1] && __args[__args.length-1]._kw) __kw = __args.pop();`);
-  emitRaw(ctx, `if (__kw) _py.checkKw(${fname}, ${allNames}, __args.length, __kw, ${kwarg ? 'true' : 'false'});`);
+  // only the positional parameters can be filled twice (a keyword-only one after *args cannot)
+  emitRaw(ctx, `if (__kw) _py.checkKw(${fname}, ${allNames}, Math.min(__args.length, ${positionalParams.length}), __kw, ${kwarg ? 'true' : 'false'});`);
 
   // Track parameter names used (for **kwargs exclusion)
   const usedNames = [];
@@ -10011,7 +15572,7 @@ function _buildParamBinding(ctx, node, l) {
 
   // *args — vararg
   if (vararg) {
-    emitRaw(ctx, `let ${vararg} = __args.slice(${positionalParams.length});`, vararg);
+    emitRaw(ctx, `let ${vararg} = _py.tuple(__args.slice(${positionalParams.length}));`, vararg);
     ctx.symbols.set(vararg, null);
     usedNames.push(vararg);
   }
@@ -10393,7 +15954,7 @@ function _collectDefines(stmts, defines) {
         defines.add(node.name);
         break; // don't descend — new scope
       case 'Import':
-        for (const alias of node.names) defines.add(alias.alias || alias.module);
+        for (const alias of node.names) defines.add(alias.alias || alias.module.split('.')[0]);   // import a.b binds a
         break;
       case 'ImportFrom':
         for (const alias of node.names) defines.add(alias.alias || alias.name);
@@ -10555,11 +16116,20 @@ async function pythonExecute(code, scopeIn, cell) {
     const ctx = cell._ctx;
     // override print to render directly to the output DOM (not buffered)
     // so print output coexists with canvases and other DOM content
+    const show = (text) => ctx.display(text.endsWith('\n') ? text.slice(0, -1) : text);
+    _stdio.out = show; _stdio.err = show;   // sys.stdout / sys.stderr write into this cell
     scope.set('print', (...args) => {
-      let sep = ' ', end = '\n';
-      if (args.length > 0 && args[args.length - 1]?._kw) { const kw = args.pop(); if (kw.sep !== undefined) sep = kw.sep; if (kw.end !== undefined) end = kw.end; }
+      let sep = ' ', end = '\n', file = null;
+      if (args.length > 0 && args[args.length - 1]?._kw) {
+        const kw = args.pop();
+        if (kw.sep != null) sep = kw.sep;
+        if (kw.end != null) end = kw.end;
+        if (kw.file != null) file = kw.file;
+      }
       const text = args.map(pyStr).join(sep) + end;
-      ctx.display(text.endsWith('\n') ? text.slice(0, -1) : text);
+      if (!file && _stdio.redirect) file = _stdio.redirect;   // contextlib.redirect_stdout
+      if (file) return printToFile(file, text);
+      show(text);
       return null;
     });
     // expose key builtins — skip internal/DOM-only ones
@@ -10742,6 +16312,7 @@ async function adderTag(strings, ...values) {
   // extract non-underscore-prefixed names
   const result = {};
   for (const [k, v] of scope.vars) {
+    if (builtins[k] === v) continue;   // an untouched builtin (Ellipsis, NotImplemented, …)
     if (!k.startsWith('_') && typeof v !== 'function' || (typeof v === 'function' && v._pyFunc)) {
       if (!k.startsWith('_')) result[k] = v;
     }

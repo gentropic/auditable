@@ -6,9 +6,10 @@ import {
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
-  pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral, excValue, excMatches, excTypeOf, initExceptionInstance,
+  pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
-import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine } from './eval.js';
+import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine, _importRoot } from './eval.js';
 
 // ── Arithmetic (preserve Python semantics) ──
 
@@ -42,7 +43,7 @@ function _contains(container, value) {
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
   if (container instanceof AdderRange) return container.includes(value);
-  if (container !== null && typeof container === 'object') {
+  if (container !== null && (typeof container === 'object' || typeof container === 'function' && typeof container.__contains__ === 'function')) {
     if (typeof container.__contains__ === 'function') return container.__contains__(value);
     return value in container;
   }
@@ -133,6 +134,7 @@ function _getitem(obj, key) {
 }
 
 function _setitem(obj, key, value) {
+  if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`);
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
     const idx = key < 0 ? obj.length + key : key;
@@ -225,7 +227,7 @@ function _slice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return obj.slice(l, u);
+      return obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
     }
     const positive = step > 0;
     let l = lower == null ? (positive ? 0 : len - 1) : lower < 0 ? Math.max(positive ? 0 : -1, len + lower) : Math.min(lower, positive ? len : len - 1);
@@ -233,7 +235,8 @@ function _slice(obj, lower, upper, step) {
     const result = [];
     if (positive) { for (let i = l; i < u; i += step) result.push(obj[i]); }
     else { for (let i = l; i > u; i += step) result.push(obj[i]); }
-    return typeof obj === 'string' ? result.join('') : result;
+    return typeof obj === 'string' ? result.join('') : obj instanceof PyTuple ? mkTuple(result)
+      : obj instanceof Uint8Array ? Uint8Array.from(result) : result;
   }
   if (typeof obj?.__getitem__ === 'function') {
     return obj.__getitem__({ _slice: true, lower, upper, step });
@@ -424,6 +427,7 @@ function _setattr(obj, name, value) {
   // `Strength.REQUIRED = Strength(0)` deltablue uses for module-level
   // singletons set after the class body has evaluated).
   if (obj !== null && (typeof obj === 'object' || typeof obj === 'function')) {
+    guardSetAttr(obj, name);
     obj[name] = value;
   }
 }
@@ -449,13 +453,13 @@ function _delattr(obj, name) {
 }
 
 function _makeDict(keys, values) {
-  const m = new Map();
+  const m = new PyDict();
   for (let i = 0; i < keys.length; i++) m.set(keys[i], values[i]);
   return m;
 }
 
 function _makeSet(arr) {
-  return new Set(arr);
+  return new PySet(arr);
 }
 
 // ── Imports ──
@@ -531,12 +535,13 @@ function _rtComputeMRO(cls) {
   return result;
 }
 
-function _createClass(name, bases, members) {
+function _createClass(name, bases, members, annotations) {
   // `class X(list): …` — instance must BE an Array so native list methods
   // (append/pop/indexing) dispatch via adderGetAttr's Array branch. See
   // _evalClass for the mirror-image logic on the tree-walker side.
   const listBase = (bases || []).find(b => b && b._pyContainerType === 'list');
   const cls = function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
     const instance = listBase
       ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: name, __adderType__: cls })
       : Object.create(cls.prototype);
@@ -611,7 +616,7 @@ function _createClass(name, bases, members) {
 
   for (const [k, v] of Object.entries(members)) {
     if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-      cls[k] = v;
+      setClassAttr(cls, k, v);
     }
   }
 
@@ -628,14 +633,17 @@ function _createClass(name, bases, members) {
     }
   }
 
-  cls._pyOwnMembers = new Set();
+  cls._pyOwnMembers = new PySet();
   for (const [mName, value] of Object.entries(members)) {
     if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
       cls._pyOwnMembers.add(mName);
     }
   }
 
-  return cls;
+  // annotations arrive flattened: [name, text, name, text, …]
+  const ann = [];
+  for (let k = 0; annotations && k < annotations.length; k += 2) ann.push([annotations[k], annotations[k + 1]]);
+  return finishClass(cls, ann);
 }
 
 // ── Exception matching (for try/except) ──
@@ -814,4 +822,27 @@ export const _py = {
   assertFail: _assertFail,
   super: pySuper,
   bytesLit, dictLiteral,
+  tuple: mkTuple,
+  importRoot: _importRoot,
+  excPush: (e) => { excStack.push(e); },
+  excPop: () => { excStack.pop(); },
+  // f(**m): a dict (PyDict, plain object, or a mapping with keys/__getitem__) → a plain object
+  // the call's keyword bag can spread
+  kwSplat(m) {
+    if (m instanceof Map) {
+      const o = {};
+      for (const [k, v] of m) {
+        if (typeof k !== 'string') throw new AdderError('TypeError', 'keywords must be strings');
+        o[k] = v;
+      }
+      return o;
+    }
+    if (m && typeof m.keys === 'function' && typeof m.__getitem__ === 'function' && !isPlainDict(m)) {
+      const o = {};
+      for (const k of pyIter(m.keys())) o[k] = m.__getitem__(k);
+      return o;
+    }
+    if (m === null || typeof m !== 'object') throw new AdderError('TypeError', `argument after ** must be a mapping, not ${pyTypeName(m)}`);
+    return m;
+  },
 };

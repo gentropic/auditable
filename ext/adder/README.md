@@ -264,7 +264,17 @@ Available via `import` inside adder code:
 | `collections` | `OrderedDict`, `defaultdict`, `Counter`, `namedtuple` |
 | `re`          | `match`, `search`, `findall`, `sub`, `split`, `compile` |
 | `string`      | `ascii_lowercase`, `digits`, `punctuation`, etc. |
-| `sys`         | `version`, `platform`, `path`, `argv`, `exit` |
+| `sys`         | `version`, `platform`, `path`, `argv`, `exit`, `stdout` / `stderr`, `exc_info()` |
+| `collections.abc` | `Mapping`, `Sequence`, `Iterable`, ... — `isinstance` checks and mixin methods |
+| `typing`, `__future__` | the runtime objects of annotations; `NamedTuple`, `TypedDict` |
+| `dataclasses`, `enum` | `@dataclass` (frozen, order, `field`, `asdict`, ...), `Enum` / `IntEnum` / `Flag` / `auto` |
+| `copy`, `operator`, `heapq`, `bisect`, `contextlib`, `io` | as CPython |
+| `fractions`, `decimal`, `statistics` | exact `Fraction`, `Decimal` with contexts, statistics incl. `NormalDist` |
+| `datetime`, `time` | dates, times, timedeltas, fixed-offset timezones, `strftime` / `strptime` |
+| `csv`, `struct`, `base64`, `binascii`, `html`, `textwrap` | as CPython |
+| `hashlib`, `hmac`, `uuid` | md5 / sha1 / sha2, HMAC, PBKDF2; UUIDs 1/3/4/5 |
+| `zlib`, `gzip`, `zipfile` | via `CompressionStream` (async) |
+| `urllib.parse`, `warnings`, `logging`, `tempfile` | as CPython (`tempfile` needs a VFS) |
 | `js`          | proxy to `globalThis` — reach any host API |
 | `this`        | the Zen of Python |
 

@@ -28,6 +28,120 @@ export class AdderRange {
   }
 }
 
+// ── tuples, and dict / set keys ──
+// A Python tuple is a frozen PyTuple: an Array (so JS code, unpacking, indexing, numpy-style
+// arr[i, j] keys and Array.isArray all keep working) that prints (1, 2), refuses mutation, and
+// whose derived arrays (map, filter, slice, concat) are plain lists, never tuples by accident.
+export class PyTuple extends Array {
+  static get [Symbol.species]() { return Array; }
+}
+PyTuple.prototype.__adderClass__ = 'tuple';
+export function mkTuple(items) {
+  const t = new PyTuple();
+  if (items) for (const x of items) t.push(x);
+  return Object.freeze(t);
+}
+export const isTuple = (v) => v instanceof PyTuple;
+
+// Dict keys and set members, as Python hashes them: equal tuples are ONE object (interned in a
+// weakly held table keyed by their contents), so a JS Map / Set finds them; a user object with
+// __hash__ is found through its hash and __eq__; lists, dicts and sets are unhashable.
+const _interned = new Map();   // signature → [WeakRef, …] (more than one only on a __hash__ collision)
+const _internGC = typeof FinalizationRegistry !== 'undefined'
+  ? new FinalizationRegistry((sig) => { const l = _interned.get(sig); if (l) { const live = l.filter((r) => r.deref()); if (live.length) _interned.set(sig, live); else _interned.delete(sig); } })
+  : null;
+const _objIds = new WeakMap();
+let _nextObjId = 1;
+function _unhashable(v) { return new AdderError('TypeError', `unhashable type: '${pyTypeName(v)}'`); }
+function _needsCanon(k) {
+  return k !== null && typeof k === 'object' && (k instanceof PyTuple || (k instanceof Set && k._frozen) ||
+    (typeof k.__hash__ === 'function' && !(k instanceof Map) && !Array.isArray(k)));
+}
+function _isUnhashable(k) {
+  if (k !== null && typeof k === 'object' && k.__hash__ === null) return true;   // __hash__ = None (an eq dataclass)
+  return k !== null && typeof k === 'object' && !(k instanceof PyTuple) &&
+    (Array.isArray(k) || k instanceof Map || (k instanceof Set && !k._frozen) || isPlainDict(k)) &&
+    typeof k.__hash__ !== 'function';
+}
+function _sigOf(v) {
+  if (v === null || v === undefined) return 'N';
+  switch (typeof v) {
+    case 'number': return v === 0 ? 'n0' : 'n' + v;
+    case 'boolean': return v ? 'n1' : 'n0';
+    case 'bigint': return 'n' + v;
+    case 'string': return 's' + v.length + ':' + v;
+    default: break;
+  }
+  if (v instanceof PyTuple) return '(' + v.map(_sigOf).join(',') + ')';
+  if (v instanceof Set && v._frozen) return 'f{' + [...v].map(_sigOf).sort().join(',') + '}';
+  if (_isUnhashable(v)) throw _unhashable(v);
+  if (typeof v.__hash__ === 'function') {
+    const h = v.__hash__();
+    if (h && typeof h.then === 'function') { h.catch(() => {}); let id = _objIds.get(v); if (!id) { id = _nextObjId++; _objIds.set(v, id); } return 'o' + id; }   // a tree-walked (async) __hash__: identity
+    return 'h' + h;
+  }
+  let id = _objIds.get(v);
+  if (!id) { id = _nextObjId++; _objIds.set(v, id); }
+  return 'o' + id;
+}
+// hash(x): ints hash to themselves (so 1 == 1.0 == True agree), strings and tuples by their
+// contents, objects by __hash__ or identity; lists, dicts, sets and __hash__ = None refuse
+export function _pyHash(v) {
+  if (v === null || v === undefined) return 0x5f3759df;
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'number') return Number.isInteger(v) ? v : _strHash(String(v));
+  if (typeof v === 'bigint') return Number(BigInt.asIntN(53, v));
+  if (typeof v === 'string') return _strHash(v);
+  if (_isUnhashable(v)) throw _unhashable(v);
+  if (typeof v.__hash__ === 'function') return v.__hash__();
+  if (v instanceof PyTuple) { let h = 0x345678; for (const x of v) { const xh = _pyHash(x); h = (Math.imul(h ^ (typeof xh === 'number' ? xh | 0 : 0), 1000003)) | 0; } return h; }
+  let id = _objIds.get(v);
+  if (!id) { id = _nextObjId++; _objIds.set(v, id); }
+  return id;
+}
+function _strHash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
+// the canonical object for a key being stored (interning it if new)
+export function hk(k) {
+  if (!_needsCanon(k)) { if (_isUnhashable(k)) throw _unhashable(k); return k; }
+  const sig = _sigOf(k);
+  const list = _interned.get(sig);
+  if (list) {
+    for (const r of list) {
+      const c = r.deref();
+      if (c !== undefined && (c === k || k instanceof PyTuple || (k instanceof Set) || pyEq(c, k) === true)) return c;
+    }
+  }
+  const ref = new WeakRef(k);
+  if (list) list.push(ref); else _interned.set(sig, [ref]);
+  if (_internGC) _internGC.register(k, sig);
+  return k;
+}
+// the canonical object for a key being looked up (never interns)
+function hkLookup(k) {
+  if (!_needsCanon(k)) { if (_isUnhashable(k)) throw _unhashable(k); return k; }
+  const list = _interned.get(_sigOf(k));
+  if (list) {
+    for (const r of list) {
+      const c = r.deref();
+      if (c !== undefined && (c === k || k instanceof PyTuple || (k instanceof Set) || pyEq(c, k) === true)) return c;
+    }
+  }
+  return k;
+}
+// Python's dict and set: Map / Set whose keys go through hk, so every get / set / has / delete
+// (from either engine, or from JS code holding the object) treats equal tuples as one key
+export class PyDict extends Map {
+  set(k, v) { return super.set(hk(k), v); }
+  get(k) { return super.get(hkLookup(k)); }
+  has(k) { return super.has(hkLookup(k)); }
+  delete(k) { return super.delete(hkLookup(k)); }
+}
+export class PySet extends Set {
+  add(v) { return super.add(hk(v)); }
+  has(v) { return super.has(hkLookup(v)); }
+  delete(v) { return super.delete(hkLookup(v)); }
+}
+
 // ── AdderError ──
 
 export class AdderError extends Error {
@@ -37,7 +151,7 @@ export class AdderError extends Error {
     this.pyType = pyType;
     this.pyMessage = message;
     this.adderLine = adderLine;
-    if (args) this.args = args;
+    if (args) this.args = mkTuple(args);
   }
 }
 
@@ -116,7 +230,7 @@ export class Complex {
 // ── type helpers ──
 
 // type object registry — populated by adderBuiltins()
-const _typeObjects = {};
+export const _typeObjects = {};
 
 // adder has two dict representations: a Map (any keys), and a plain JS object for a dict whose
 // keys are all strings (a {"a": 1} literal — kept as an object for JS interop). A plain dict is
@@ -133,6 +247,7 @@ export function pyTypeName(v) {
   if (typeof v === 'boolean') return 'bool';
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'str';
+  if (v instanceof PyTuple) return v.__adderClass__ || 'tuple';
   if (Array.isArray(v)) return 'list';
   if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
@@ -214,6 +329,8 @@ export function pyRepr(v) {
   if (v === false) return 'False';
   if (typeof v === 'string') return _strRepr(v);
   if (typeof v === 'number') return _numRepr(v);
+  if (Array.isArray(v) && typeof v.__repr__ === 'function') return v.__repr__();   // namedtuple & co.
+  if (v instanceof PyTuple) return v.length === 1 ? `(${pyRepr(v[0])},)` : `(${v.map(pyRepr).join(', ')})`;
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -270,6 +387,8 @@ function _hasUserDunder(v, name) {
     && !(v instanceof Complex) && !ArrayBuffer.isView(v);
 }
 export function pyReprMaybe(v) {
+  if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
+  if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
@@ -411,6 +530,8 @@ export async function pyCollect(obj) {
 // ── format spec ──
 
 export function pyFormatValue(value, spec) {
+  // an object that formats itself (Decimal, Fraction, enum members, a user __format__)
+  if (value !== null && typeof value === 'object' && typeof value.__format__ === 'function') return value.__format__(spec || '');
   if (!spec) return pyStr(value);
   // parse spec: [[fill]align][sign][z][#][0][width][grouping_option][.precision][type]
   let fill = ' ', align = '', sign = '', width = 0, precision = -1, ftype = '', grouping = '';
@@ -516,7 +637,7 @@ function _isNativeClass(fn) {
 
 export function adderGetAttr(obj, attr) {
   if (obj instanceof AdderError) {
-    if (attr === 'args') return obj.args || (obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
+    if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
     if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
     if (attr === '__traceback__') return null;
     if (attr === '__class__') return excTypeOf(obj);
@@ -524,27 +645,37 @@ export function adderGetAttr(obj, attr) {
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
-    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new Map(ks.map((k) => [k, value])); };
+    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
     if ((tn === 'str' || tn === 'list' || tn === 'dict' || tn === 'set') && !attr.startsWith('__')) {
       const get = tn === 'str' ? _strMethod : tn === 'list' ? _listMethod : tn === 'set' ? _setMethod : _mapMethod;
-      const probe = tn === 'str' ? '' : tn === 'list' ? [] : tn === 'set' ? new Set() : new Map();
+      const probe = tn === 'str' ? '' : tn === 'list' ? [] : tn === 'set' ? new PySet() : new PyDict();
       let ok = true;
       try { get(probe, attr); } catch { ok = false; }
       if (ok) { const fn = (self, ...a) => (tn === 'dict' && isPlainDict(self) && _objDictMethods[attr] ? _objDictMethods[attr](self) : get(self, attr))(...a); fn._pyName = `${tn}.${attr}`; return fn; }
     }
-    if (attr === '__name__' || attr === '__qualname__') return obj._pyName || obj.name || '<function>';
+    if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || obj.name || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
   if (obj instanceof Uint8Array) return _bytesMethod(obj, attr);
+  // tuple methods (count, index) — a tuple has none of list's mutators
+  // (a namedtuple class adds its fields and _asdict / _replace / _fields on its own prototype)
+  if (obj instanceof PyTuple) {
+    if (attr === 'count' || attr === 'index') return _listMethod(obj, attr);
+    if (attr in obj && !(attr in Array.prototype)) {
+      const v = obj[attr];
+      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+    }
+    throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
+  }
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
   // dict (Map) methods — a Map subclass (Counter, defaultdict, OrderedDict) answers with its own first
   if (obj instanceof Map) {
-    if (Object.getPrototypeOf(obj) !== Map.prototype && attr in obj && !(attr in Map.prototype)) {
+    if (Object.getPrototypeOf(obj) !== Map.prototype && Object.getPrototypeOf(obj) !== PyDict.prototype && attr in obj && !(attr in Map.prototype)) {
       const v = obj[attr];
       return typeof v === 'function' ? v.bind(obj) : v;
     }
@@ -571,7 +702,7 @@ export function adderGetAttr(obj, attr) {
   if (obj !== null && typeof obj === 'object' && !(obj instanceof Array) && !(obj instanceof Map) && !(obj instanceof Set)) {
     // check for adder class method on prototype
     if (typeof obj[attr] === 'function') {
-      if (_isNativeClass(obj[attr])) return obj[attr];
+      if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
       // adder functions expect self as first arg — inject it (skip for modules)
       if (obj[attr]._pyFunc && !obj.__adderModule__) {
         const originalFn = obj[attr];
@@ -604,7 +735,7 @@ export function adderGetAttr(obj, attr) {
   if (obj !== null && obj !== undefined && attr in obj) {
     const val = obj[attr];
     if (typeof val === 'function') {
-      if (_isNativeClass(val)) return val;
+      if (_isNativeClass(val) || val._pyClass) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
       return val.bind(obj);
     }
@@ -735,8 +866,8 @@ function _strMethod(s, attr) {
       }
       return out;
     },
-    partition: (sep) => { const i = s.indexOf(sep); return i < 0 ? [s, '', ''] : [s.slice(0, i), sep, s.slice(i + sep.length)]; },
-    rpartition: (sep) => { const i = s.lastIndexOf(sep); return i < 0 ? ['', '', s] : [s.slice(0, i), sep, s.slice(i + sep.length)]; },
+    partition: (sep) => { const i = s.indexOf(sep); return mkTuple(i < 0 ? [s, '', ''] : [s.slice(0, i), sep, s.slice(i + sep.length)]); },
+    rpartition: (sep) => { const i = s.lastIndexOf(sep); return mkTuple(i < 0 ? ['', '', s] : [s.slice(0, i), sep, s.slice(i + sep.length)]); },
     removeprefix: (prefix) => (prefix && s.startsWith(prefix) ? s.slice(prefix.length) : s),
     removesuffix: (suffix) => (suffix && s.endsWith(suffix) ? s.slice(0, s.length - suffix.length) : s),
     splitlines: (...args) => {
@@ -768,7 +899,7 @@ function _strMethod(s, attr) {
 
 // str.maketrans(dict) / (from, to[, delete]): a code point → replacement table
 function _strMaketrans(x, y, z) {
-  const t = new Map();
+  const t = new PyDict();
   if (y === undefined) {
     const entries = x instanceof Map ? [...x.entries()] : Object.entries(x);
     for (const [k, v] of entries) t.set(typeof k === 'string' ? k.codePointAt(0) : Number(k), v);
@@ -794,12 +925,7 @@ export function dictLiteral(keys, values, spreads) {
       for (const k of pyIter(src.keys())) entries.push([k, src.__getitem__(k)]);
     } else throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not a mapping`);
   }
-  if (entries.every(([k]) => typeof k === 'string')) {
-    const o = {};
-    for (const [k, v] of entries) o[k] = v;
-    return o;
-  }
-  const m = new Map();
+  const m = new PyDict();
   for (const [k, v] of entries) m.set(k, v);
   return m;
 }
@@ -856,9 +982,9 @@ function _bytesRepr(b) {
   return out + q;
 }
 
-function _stripChars(s, chars) { const cs = new Set(chars); let l = 0, r = s.length; while (l < r && cs.has(s[l])) l++; while (r > l && cs.has(s[r - 1])) r--; return s.slice(l, r); }
-function _lstripChars(s, chars) { const cs = new Set(chars); let l = 0; while (l < s.length && cs.has(s[l])) l++; return s.slice(l); }
-function _rstripChars(s, chars) { const cs = new Set(chars); let r = s.length; while (r > 0 && cs.has(s[r - 1])) r--; return s.slice(0, r); }
+function _stripChars(s, chars) { const cs = new PySet(chars); let l = 0, r = s.length; while (l < r && cs.has(s[l])) l++; while (r > l && cs.has(s[r - 1])) r--; return s.slice(l, r); }
+function _lstripChars(s, chars) { const cs = new PySet(chars); let l = 0; while (l < s.length && cs.has(s[l])) l++; return s.slice(l); }
+function _rstripChars(s, chars) { const cs = new PySet(chars); let r = s.length; while (r > 0 && cs.has(s[r - 1])) r--; return s.slice(0, r); }
 
 function _strFormat(s, args) {
   let ai = 0;
@@ -1019,14 +1145,14 @@ function _mapMethod(map, attr) {
   const m = {
     keys: () => [...map.keys()],
     values: () => [...map.values()],
-    items: () => [...map.entries()],
+    items: () => [...map.entries()].map(mkTuple),
     get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
     pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
     update: (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) map.set(k, v); } else if (Array.isArray(other)) { for (const [k, v] of other) map.set(k, v); } else if (typeof other === 'object' && other !== null) { for (const k of Object.keys(other)) if (k !== '_kw') map.set(k, other[k]); } } return null; },
-    popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return [k, v]; },
+    popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return mkTuple([k, v]); },
     clear: () => { map.clear(); return null; },
-    copy: () => new Map(map),
+    copy: () => new PyDict(map),
   };
   if (attr in m) { const fn = m[attr]; fn._pyName = `dict.${attr}`; return fn; }
   if (attr === 'size') return map.size;
@@ -1036,10 +1162,10 @@ function _mapMethod(map, attr) {
 const _objDictMethods = {
   keys: (obj) => { const fn = () => Object.keys(obj); fn._pyName = 'dict.keys'; return fn; },
   values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
-  items: (obj) => { const fn = () => Object.entries(obj); fn._pyName = 'dict.items'; return fn; },
+  items: (obj) => { const fn = () => Object.entries(obj).map(mkTuple); fn._pyName = 'dict.items'; return fn; },
   get: (obj) => { const fn = (k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null)); fn._pyName = 'dict.get'; return fn; },
   pop: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
-  popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return [k, v]; }; fn._pyName = 'dict.popitem'; return fn; },
+  popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }; fn._pyName = 'dict.popitem'; return fn; },
   setdefault: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
   update: (obj) => { const fn = (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) obj[k] = v; } else if (other && other._kw) { for (const k of Object.keys(other)) if (k !== '_kw') obj[k] = other[k]; } else if (Array.isArray(other)) { for (const [k, v] of other) obj[k] = v; } else if (typeof other === 'object' && other !== null) Object.assign(obj, other); } return null; }; fn._pyName = 'dict.update'; return fn; },
   clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
@@ -1053,14 +1179,14 @@ function _setMethod(set, attr) {
     discard: (v) => { set.delete(v); return null; },
     pop: () => { if (set.size === 0) throw new AdderError('KeyError', 'pop from an empty set'); const v = set.values().next().value; set.delete(v); return v; },
     clear: () => { set.clear(); return null; },
-    union: (...others) => { const r = new Set(set); for (const o of others) for (const v of pyIter(o)) r.add(v); return r; },
-    intersection: (...others) => { const r = new Set(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new Set(pyIter(o)); return s.has(v); })) r.add(v); } return r; },
-    difference: (...others) => { const r = new Set(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; },
-    symmetric_difference: (other) => { const r = new Set(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; },
+    union: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.add(v); return r; },
+    intersection: (...others) => { const r = new PySet(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new PySet(pyIter(o)); return s.has(v); })) r.add(v); } return r; },
+    difference: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; },
+    symmetric_difference: (other) => { const r = new PySet(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; },
     update: (...others) => { for (const o of others) for (const v of pyIter(o)) set.add(v); return null; },
-    issubset: (other) => { const o = other instanceof Set ? other : new Set(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; },
+    issubset: (other) => { const o = other instanceof Set ? other : new PySet(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; },
     issuperset: (other) => { for (const v of pyIter(other)) if (!set.has(v)) return false; return true; },
-    copy: () => new Set(set),
+    copy: () => new PySet(set),
   };
   if (attr in m) { const fn = m[attr]; fn._pyName = `set.${attr}`; return fn; }
   throw new AdderError('AttributeError', `'set' object has no attribute '${attr}'`);
@@ -1077,10 +1203,27 @@ function _binErr(sym, a, b) {
   return new AdderError('TypeError', `unsupported operand type(s) for ${sym}: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
 }
 function _viaDunder(a, b, d, rd) {
-  if (_obj(a) && typeof a[d] === 'function') return { r: a[d](b) };
-  if (_obj(b) && typeof b[rd] === 'function') return { r: b[rd](a) };
+  const refl = () => (_obj(b) && typeof b[rd] === 'function' && b[rd] !== a[d] ? b[rd](a) : NotImplemented);
+  const fail = (r) => {
+    if (r !== NotImplemented) return r;
+    throw new AdderError('TypeError', `unsupported operand type(s) for ${_DUNDER_SYM[d] || d}: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+  };
+  if (_obj(a) && typeof a[d] === 'function') {
+    const r = a[d](b);
+    if (r && typeof r.then === 'function') return { r: r.then((v) => (v === NotImplemented ? Promise.resolve(refl()).then(fail) : v)) };
+    if (r !== NotImplemented) return { r };
+    const r2 = refl();
+    return { r: r2 && typeof r2.then === 'function' ? r2.then(fail) : fail(r2) };
+  }
+  if (_obj(b) && typeof b[rd] === 'function') {
+    const r = b[rd](a);
+    if (r && typeof r.then === 'function') return { r: r.then(fail) };
+    return { r: fail(r) };
+  }
   return null;
 }
+const _DUNDER_SYM = { __add__: '+', __sub__: '-', __mul__: '*', __truediv__: '/', __floordiv__: '//', __mod__: '%', __pow__: '** or pow()',
+  __matmul__: '@', __and__: '&', __or__: '|', __xor__: '^', __lshift__: '<<', __rshift__: '>>' };
 const _isIntish = (v) => (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'boolean' || typeof v === 'bigint';
 const _isNum = (v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint';
 const _dictLike = (v) => v instanceof Map || isPlainDict(v);
@@ -1100,7 +1243,11 @@ export function pyAdd(a, b) {
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
-  if (Array.isArray(a) && Array.isArray(b)) return [...a, ...b];
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const ta = a instanceof PyTuple, tb = b instanceof PyTuple;
+    if (ta !== tb) throw new AdderError('TypeError', `can only concatenate ${ta ? 'tuple' : 'list'} (not "${pyTypeName(b)}") to ${ta ? 'tuple' : 'list'}`);
+    return ta ? mkTuple([...a, ...b]) : [...a, ...b];
+  }
   if (a instanceof Uint8Array && b instanceof Uint8Array) { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
   throw _binErr('+', a, b);
 }
@@ -1117,7 +1264,7 @@ function _repeat(seq, n) {
   if (seq instanceof Uint8Array) { const r = new Uint8Array(Math.max(0, n) * seq.length); for (let i = 0; i < n; i++) r.set(seq, i * seq.length); return r; }
   const r = [];
   for (let i = 0; i < n; i++) r.push(...seq);
-  return r;
+  return seq instanceof PyTuple ? mkTuple(r) : r;
 }
 export function pyMul(a, b) {
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
@@ -1169,7 +1316,7 @@ export function pyPow(a, b, mod) {
   throw _binErr('**', a, b);
 }
 function _setLike(proto, items) {
-  const s = new Set(items);
+  const s = new PySet(items);
   if (proto && proto._frozen) s._frozen = true;
   return s;
 }
@@ -1187,12 +1334,12 @@ function _bitwise(sym, a, b, d, rd) {
   if (sym === '|' && _dictLike(a) && _dictLike(b)) {
     const entries = [..._dictEntries(a), ..._dictEntries(b)];
     if (!(a instanceof Map) && !(b instanceof Map)) return Object.assign({}, a, b);
-    return new Map(entries);
+    return new PyDict(entries);
   }
   throw _binErr(sym, a, b);
 }
 export const pyAnd = (a, b) => _bitwise('&', a, b, '__and__', '__rand__');
-export const pyOr = (a, b) => _bitwise('|', a, b, '__or__', '__ror__');
+export const pyOr = (a, b) => (_isTypeLike(a) && _isTypeLike(b) && !(a === null && b === null) ? makeUnion(a, b) : _bitwise('|', a, b, '__or__', '__ror__'));
 export const pyXor = (a, b) => _bitwise('^', a, b, '__xor__', '__rxor__');
 export function pyLshift(a, b) {
   const d = _viaDunder(a, b, '__lshift__', '__rlshift__'); if (d) return d.r;
@@ -1232,8 +1379,8 @@ export const pyBinOps = {
 // ── printf-style formatting: str % args ──
 // %[(key)][flags][width][.precision][length]type, flags - + space 0 #, * for width/precision
 export function pyPercentFormat(fmt, args) {
-  const isMap = _dictLike(args) && !Array.isArray(args);
-  const list = Array.isArray(args) ? args : [args];
+  const isMap = _dictLike(args);
+  const list = args instanceof PyTuple ? args : [args];
   let i = 0, usedMap = false;
   const next = () => {
     if (i >= list.length) throw new AdderError('TypeError', 'not enough arguments for format string');
@@ -1343,6 +1490,10 @@ export function pyGetItem(obj, key) {
   }
   if (typeof obj === 'object' || typeof obj === 'function') {
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
+    if (typeof obj === 'function' && obj._pyClass) {
+      if (typeof obj.__class_getitem__ === 'function') return obj.__class_getitem__(key);
+      return new GenericAlias(obj, key instanceof PyTuple ? [...key] : [key]);
+    }
     if (isPlainDict(obj)) {
       if (typeof key === 'string' && Object.hasOwn(obj, key)) return obj[key];
       if (typeof key === 'number' && Object.hasOwn(obj, String(key))) return obj[key];
@@ -1418,10 +1569,20 @@ function _dictSize(d) { return d instanceof Map ? d.size : Object.keys(d).length
 
 export function pyEq(a, b) {
   if (a === b) return true;
-  if (_hasDunder(a, '__eq__')) return a.__eq__(b);
-  if (_hasDunder(b, '__eq__')) return b.__eq__(a);
+  if (_hasDunder(a, '__eq__') || _hasDunder(b, '__eq__')) {
+    // a's __eq__, then b's (reflected) when a's says NotImplemented, then identity
+    const refl = () => (_hasDunder(b, '__eq__') && b.__eq__ !== a.__eq__ ? b.__eq__(a) : false);
+    const last = (v) => (v === NotImplemented ? false : v);
+    if (!_hasDunder(a, '__eq__')) { const r = b.__eq__(a); return r && typeof r.then === 'function' ? r.then(last) : last(r); }
+    const r = a.__eq__(b);
+    if (r && typeof r.then === 'function') return r.then((v) => (v === NotImplemented ? Promise.resolve(refl()).then(last) : v));
+    if (r !== NotImplemented) return r;
+    const r2 = refl();
+    return r2 && typeof r2.then === 'function' ? r2.then(last) : last(r2);
+  }
   if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
   if (Array.isArray(a) && Array.isArray(b)) {
+    if ((a instanceof PyTuple) !== (b instanceof PyTuple)) return false;
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (!pyEq(a[i], b[i])) return false;
     return true;
@@ -1451,7 +1612,7 @@ function _ltPlain(op, a, b) {
   if (_numLike(a) && _numLike(b)) return a < b;
   if (typeof a === 'string' && typeof b === 'string') return a < b;
   if (a instanceof Uint8Array && b instanceof Uint8Array) return _ltPlain(op, [...a], [...b]);
-  if (Array.isArray(a) && Array.isArray(b)) {
+  if (Array.isArray(a) && Array.isArray(b) && (a instanceof PyTuple) === (b instanceof PyTuple)) {
     const n = Math.min(a.length, b.length);
     for (let i = 0; i < n; i++) {
       const e = pyEq(a[i], b[i]);
@@ -1584,7 +1745,7 @@ const _mathModule = {
   remainder: (x, y) => x - Math.round(x / y) * y,
   ldexp: (x, i) => x * Math.pow(2, i),
   frexp: (x) => { if (x === 0) return [0, 0]; const e = Math.ceil(Math.log2(Math.abs(x))); return [x / Math.pow(2, e), e]; },
-  modf: (x) => { const i = Math.trunc(x); return [x - i, i]; },
+  modf: (x) => { const i = Math.trunc(x); return mkTuple([x - i, i]); },
 };
 
 // math: CPython's integer functions are exact (BigInt where the result can leave 2**53)
@@ -1651,8 +1812,8 @@ Object.assign(_mathModule, {
   sqrt: (x) => { if (x < 0) throw new AdderError('ValueError', 'math domain error'); return Math.sqrt(x); },
   log1p: Math.log1p, expm1: Math.expm1, cbrt: Math.cbrt, exp2: (x) => 2 ** x,
   fmod: (x, y) => { if (y === 0) throw new AdderError('ValueError', 'math domain error'); return x % y; },
-  modf: (x) => { const i = Math.trunc(x); return [x - i, i]; },
-  frexp: (x) => { if (x === 0 || !Number.isFinite(x)) return [x, 0]; let e = Math.ceil(Math.log2(Math.abs(x))); let m = x / 2 ** e; if (Math.abs(m) >= 1) { m /= 2; e++; } if (Math.abs(m) < 0.5) { m *= 2; e--; } return [m, e]; },
+  modf: (x) => { const i = Math.trunc(x); return mkTuple([x - i, i]); },
+  frexp: (x) => { if (x === 0 || !Number.isFinite(x)) return mkTuple([x, 0]); let e = Math.ceil(Math.log2(Math.abs(x))); let m = x / 2 ** e; if (Math.abs(m) >= 1) { m /= 2; e++; } if (Math.abs(m) < 0.5) { m *= 2; e--; } return mkTuple([m, e]); },
   ldexp: (x, i) => x * 2 ** i,
   fsum: (iterable) => {
     // Shewchuk / Neumaier: exactly rounded like CPython's fsum for ordinary inputs
@@ -1744,10 +1905,10 @@ const _itertoolsModule = {
         for (const it of iterables) base.push(await pyCollect(it));
         const arrs = [];
         for (let r = 0; r < repeat; r++) arrs.push(...base);
-        if (arrs.length === 0) { yield []; return; }
+        if (arrs.length === 0) { yield mkTuple([]); return; }
         const indices = arrs.map(() => 0);
         while (true) {
-          yield indices.map((idx, i) => arrs[i][idx]);
+          yield mkTuple(indices.map((idx, i) => arrs[i][idx]));
           let i = arrs.length - 1;
           while (i >= 0) { indices[i]++; if (indices[i] < arrs[i].length) break; indices[i] = 0; i--; }
           if (i < 0) break;
@@ -1762,14 +1923,14 @@ const _itertoolsModule = {
         const n = pool.length;
         if (r > n) return;
         const indices = Array.from({ length: r }, (_, i) => i);
-        yield indices.map(i => pool[i]);
+        yield mkTuple(indices.map(i => pool[i]));
         while (true) {
           let i = r - 1;
           while (i >= 0 && indices[i] === i + n - r) i--;
           if (i < 0) break;
           indices[i]++;
           for (let j = i + 1; j < r; j++) indices[j] = indices[j - 1] + 1;
-          yield indices.map(i => pool[i]);
+          yield mkTuple(indices.map(i => pool[i]));
         }
       })();
     },
@@ -1783,13 +1944,13 @@ const _itertoolsModule = {
         if (r > n) return;
         const indices = Array.from({ length: n }, (_, i) => i);
         const cycles = Array.from({ length: r }, (_, i) => n - i);
-        yield indices.slice(0, r).map(i => pool[i]);
+        yield mkTuple(indices.slice(0, r).map(i => pool[i]));
         while (true) {
           let found = false;
           for (let i = r - 1; i >= 0; i--) {
             cycles[i]--;
             if (cycles[i] === 0) { indices.push(indices.splice(i, 1)[0]); cycles[i] = n - i; }
-            else { const j = indices.length - cycles[i]; [indices[i], indices[j]] = [indices[j], indices[i]]; yield indices.slice(0, r).map(i => pool[i]); found = true; break; }
+            else { const j = indices.length - cycles[i]; [indices[i], indices[j]] = [indices[j], indices[i]]; yield mkTuple(indices.slice(0, r).map(i => pool[i])); found = true; break; }
           }
           if (!found) break;
         }
@@ -1847,7 +2008,7 @@ const _itertoolsModule = {
           const arrs = [];
           for (const it of args) arrs.push(await pyCollect(it));
           const maxLen = Math.max(...arrs.map(a => a.length));
-          for (let i = 0; i < maxLen; i++) yield arrs.map(a => i < a.length ? a[i] : fillvalue);
+          for (let i = 0; i < maxLen; i++) yield mkTuple(arrs.map(a => i < a.length ? a[i] : fillvalue));
         })();
       },
     };
@@ -1861,11 +2022,11 @@ const _itertoolsModule = {
           let k = key ? key(item) : item;
           if (k && typeof k.then === 'function') k = await k;
           if (first || !pyEq(k, currentKey)) {
-            if (currentGroup.length > 0) yield [currentKey, currentGroup];
+            if (currentGroup.length > 0) yield mkTuple([currentKey, currentGroup]);
             currentKey = k; currentGroup = [item]; first = false;
           } else { currentGroup.push(item); }
         }
-        if (currentGroup.length > 0) yield [currentKey, currentGroup];
+        if (currentGroup.length > 0) yield mkTuple([currentKey, currentGroup]);
       })();
     },
   }),
@@ -1892,7 +2053,7 @@ const _itertoolsModule = {
       return (async function*() {
         let prev, hasPrev = false;
         for await (const v of _aiter(iterable)) {
-          if (hasPrev) yield [prev, v];
+          if (hasPrev) yield mkTuple([prev, v]);
           prev = v; hasPrev = true;
         }
       })();
@@ -1930,7 +2091,7 @@ const _functoolsModule = {
   // lru_cache / cache: as a decorator (@lru_cache) or a factory (@lru_cache(maxsize=…))
   lru_cache: (arg) => {
     const wrap = (fn, maxsize) => {
-      const cache = new Map();
+      const cache = new PyDict();
       let hits = 0, misses = 0;
       const keyOf = (args) => JSON.stringify(args, (k, v) => (v instanceof Map ? [...v] : v instanceof Set ? [...v] : v));
       const wrapped = (...args) => {
@@ -1973,11 +2134,11 @@ function _counterAdd(map, iterable) {
   if (isPlainDict(iterable)) { for (const k of Object.keys(iterable)) map.set(k, (map.get(k) || 0) + iterable[k]); return; }
   for (const v of pyIter(iterable)) map.set(v, (map.get(v) || 0) + 1);
 }
-class AdderCounter extends Map {
+class AdderCounter extends PyDict {
   constructor(iterable) { super(); if (iterable != null && !iterable._kw) _counterAdd(this, iterable); if (iterable && iterable._kw) for (const k of Object.keys(iterable)) if (k !== '_kw') this.set(k, iterable[k]); }
   __missing__() { return 0; }
   most_common(n) {
-    const e = [...this.entries()].sort((a, b) => b[1] - a[1]);   // stable: ties keep insertion order
+    const e = [...this.entries()].sort((a, b) => b[1] - a[1]).map(mkTuple);   // stable: ties keep insertion order
     return n == null ? e : e.slice(0, n);
   }
   elements() { const out = []; for (const [k, v] of this) for (let i = 0; i < v; i++) out.push(k); return out; }
@@ -1988,7 +2149,7 @@ class AdderCounter extends Map {
 }
 AdderCounter.prototype.__adderClass__ = 'Counter';
 
-class AdderDefaultDict extends Map {
+class AdderDefaultDict extends PyDict {
   constructor(factory, items) { super(); this.default_factory = factory ?? null; if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items))) this.set(k, v); }
   __missing__(key) {
     if (this.default_factory == null) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
@@ -2001,7 +2162,7 @@ class AdderDefaultDict extends Map {
 }
 AdderDefaultDict.prototype.__adderClass__ = 'defaultdict';
 
-class AdderOrderedDict extends Map {
+class AdderOrderedDict extends PyDict {
   constructor(items) { super(); if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items).filter(([k]) => k !== '_kw'))) this.set(k, v); }
   move_to_end(key, last = true) {
     if (last && last._kw) last = last.last;
@@ -2016,7 +2177,7 @@ class AdderOrderedDict extends Map {
     if (!this.size) throw new AdderError('KeyError', "'dictionary is empty'");
     const keys = [...this.keys()], k = last === false ? keys[0] : keys[keys.length - 1], v = this.get(k);
     this.delete(k);
-    return [k, v];
+    return mkTuple([k, v]);
   }
   __repr__() { return this.size ? `OrderedDict({${[...this].map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'OrderedDict()'; }
 }
@@ -2054,11 +2215,12 @@ class AdderDeque {
 }
 AdderDeque.prototype.__adderClass__ = 'deque';
 
-function _namedtuple(name, fields, opts) {
+export function _namedtuple(name, fields, opts) {
   let defaults = [];
   if (fields && fields._kw) { opts = fields; fields = opts.field_names; }
   if (opts && opts._kw && opts.defaults) defaults = [...pyIter(opts.defaults)];
   const names = typeof fields === 'string' ? fields.replace(/,/g, ' ').split(/\s+/).filter(Boolean) : [...pyIter(fields)];
+  class NT extends PyTuple {}
   const cls = function (...args) {
     const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
     const vals = names.map((f, i) => {
@@ -2068,27 +2230,20 @@ function _namedtuple(name, fields, opts) {
       if (d >= 0) return defaults[d];
       throw new AdderError('TypeError', `${name}.__new__() missing 1 required positional argument: '${f}'`);
     });
-    const inst = Object.create(cls.prototype);
-    names.forEach((f, i) => { inst[f] = vals[i]; });
-    inst._values = vals;
-    return inst;
+    const t = new NT();
+    for (const v of vals) t.push(v);
+    return Object.freeze(t);
   };
-  cls._pyName = name; cls._pyClass = true; cls._fields = names;
-  cls._pyMRO = [cls];
-  cls.prototype = {
-    __adderClass__: name,
-    __len__() { return this._values.length; },
-    __getitem__(i) { return pyGetItem(this._values, i); },
-    __iter__() { return this._values[Symbol.iterator](); },
-    [Symbol.iterator]() { return this._values[Symbol.iterator](); },
-    __eq__(o) { return Array.isArray(o) ? pyEq(this._values, o) : !!(o && o._values) && pyEq(this._values, o._values); },
-    __lt__(o) { return pyLt(this._values, o._values || o); },
-    __repr__() { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this._values[i])}`).join(', ')})`; },
-    _asdict() { const o = {}; names.forEach((f, i) => { o[f] = this._values[i]; }); return o; },
-    _replace(kw) { const v = names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this._values[i])); return cls(...v); },
-  };
-  for (const f of names) Object.defineProperty(cls.prototype, f, { get() { return this._values[names.indexOf(f)]; }, set(v) { this._values && (this._values[names.indexOf(f)] = v); }, configurable: true });
-  cls.prototype.__adderType__ = cls;
+  cls._pyName = name; cls._pyClass = true; cls._fields = mkTuple(names);
+  cls._pyMRO = [cls, _typeObjects.tuple].filter(Boolean);
+  NT.prototype.__adderClass__ = name;
+  NT.prototype.__adderType__ = cls;
+  NT.prototype._fields = cls._fields;
+  cls._ntProto = NT.prototype;   // typing.NamedTuple re-homes it onto the user's class
+  names.forEach((f, i) => Object.defineProperty(NT.prototype, f, { get() { return this[i]; }, configurable: true }));
+  NT.prototype.__repr__ = function () { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
+  NT.prototype._asdict = function () { const o = {}; names.forEach((f, i) => { o[f] = this[i]; }); return o; };
+  NT.prototype._replace = function (kw) { return cls(...names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this[i]))); };
   cls._make = (it) => cls(...pyIter(it));
   return cls;
 }
@@ -2100,7 +2255,7 @@ const _collectionsModule = {
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
   deque: _ctor(AdderDeque, 'deque'),
   namedtuple: _namedtuple,
-  ChainMap: (...maps) => { const m = new Map(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
+  ChainMap: (...maps) => { const m = new PyDict(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
 };
 
 // ── json ──
@@ -2229,15 +2384,15 @@ function _reMatchObject(m, pattern, string, pos, endpos) {
     return g;
   };
   const val = (i) => (m[i] === undefined ? null : m[i]);
-  const span = (g) => { const i = resolve(g); const ix = m.indices && m.indices[i]; return ix ? [ix[0], ix[1]] : [-1, -1]; };
+  const span = (g) => { const i = resolve(g); const ix = m.indices && m.indices[i]; return mkTuple(ix ? [ix[0], ix[1]] : [-1, -1]); };
   let lastindex = null;
   for (let i = 1; i <= pattern.groups; i++) if (m[i] !== undefined) lastindex = i;
   const obj = {
     __adderClass__: 're.Match',
     string, re: pattern, pos, endpos, lastindex,
     lastgroup: lastindex === null ? null : (Object.keys(groupIndex).find((k) => groupIndex[k] === lastindex) || null),
-    group: (...gs) => (gs.length <= 1 ? val(resolve(gs[0])) : gs.map((g) => val(resolve(g)))),
-    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]); return out; },
+    group: (...gs) => (gs.length <= 1 ? val(resolve(gs[0])) : mkTuple(gs.map((g) => val(resolve(g))))),
+    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]); return mkTuple(out); },
     groupdict: (dflt) => { const o = {}; for (const [k, i] of Object.entries(groupIndex)) o[k] = m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]; return o; },
     start: (g) => span(g)[0],
     end: (g) => span(g)[1],
@@ -2311,7 +2466,7 @@ function _reCompile(pattern, flags) {
     while ((m = re.exec(s))) { out.push(m); if (m[0] === '') re.lastIndex++; }
     return out;
   };
-  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? m[0] : count === 1 ? (m[1] ?? '') : m.slice(1).map((g) => g ?? '')));
+  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? m[0] : count === 1 ? (m[1] ?? '') : mkTuple(m.slice(1).map((g) => g ?? ''))));
   P.finditer = (s) => allMatches(s).map((m) => _reMatchObject(m, P, s, 0, s.length));
   P.split = (s, maxsplit) => {
     if (maxsplit && maxsplit._kw) maxsplit = maxsplit.maxsplit;
@@ -2336,7 +2491,7 @@ function _reCompile(pattern, flags) {
     const build = (ps) => {
       let out = '', last = 0;
       ms.forEach((m, i) => { out += s.slice(last, m.index) + (ps[i] ?? ''); last = m.index + m[0].length; });
-      return [out + s.slice(last), ms.length];
+      return mkTuple([out + s.slice(last), ms.length]);
     };
     return pieces.some((x) => x && typeof x.then === 'function') ? Promise.all(pieces).then(build) : build(pieces);
   };
@@ -2450,8 +2605,11 @@ const _sysModule = {
   modules: {},
   argv: [''],
   exit: (code) => { throw new AdderError('SystemExit', String(code ?? 0)); },
-  stdout: { write(s) { return String(s).length; }, flush() {}, encoding: 'utf-8' },
-  stderr: { write(s) { return String(s).length; }, flush() {}, encoding: 'utf-8' },
+  exc_info: () => (excStack.length ? mkTuple([excTypeOf(excStack[excStack.length - 1]), excValue(excStack[excStack.length - 1]), null]) : mkTuple([null, null, null])),
+  exception: () => (excStack.length ? excValue(excStack[excStack.length - 1]) : null),
+  // write to the running program's stdout / stderr (run()'s opts, or the notebook cell)
+  stdout: { write(s) { s = String(s); _stdioWrite('out', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
+  stderr: { write(s) { s = String(s); _stdioWrite('err', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
   getsizeof: () => 0,
   getrecursionlimit: () => 1000,
   setrecursionlimit: () => null,
@@ -2501,6 +2659,33 @@ export const _excParents = {
   FutureWarning: 'Warning', ImportWarning: 'Warning', UnicodeWarning: 'Warning', BytesWarning: 'Warning', ResourceWarning: 'Warning',
 };
 const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
+// A module's own exception type (dataclasses.FrozenInstanceError, statistics.StatisticsError,
+// binascii.Error, ...): a builtin-style type under `parent`, raised and caught like ValueError.
+export function makeExcType(name, parent, ...moreParents) {
+  if (!_excParents[name]) { _excParents[name] = parent; _EXC_NAMES.push(name); }
+  if (moreParents.length) _excExtraParents[name] = moreParents;
+  if (_typeObjects[name]) return _typeObjects[name];
+  const ctor = (...a) => {
+    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+    return new AdderError(name, _argsStr(name, a), undefined, a);
+  };
+  ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name.split('.').pop();
+  _typeObjects[name] = ctor;
+  return ctor;
+}
+// A class-body attribute onto the class object (a JS function): defined, not assigned, so
+// `name` / `length` (read-only on functions) work; recorded in _pyAttrs, which is how
+// dataclasses and enum tell the body's attributes from the function's own properties.
+export function setClassAttr(cls, k, v) {
+  Object.defineProperty(cls, k, { value: v, writable: true, enumerable: true, configurable: true });
+  (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
+}
+// obj.name = value, from either engine: a frozen dataclass instance refuses every assignment
+export function guardSetAttr(obj, name) {
+  if (obj !== null && typeof obj === 'object' && obj.__dataclass_frozen__ === true) {
+    throw new AdderError('FrozenInstanceError', `cannot assign to field '${name}'`);
+  }
+}
 // JS errors surfacing through compiled code or a JS library
 const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
 
@@ -2509,8 +2694,11 @@ function _excChain(name) {
   const out = [name];
   let p = _excParents[name] || (name === 'BaseException' ? null : 'Exception');
   while (p) { out.push(p); p = _excParents[p] || (p === 'BaseException' ? null : 'Exception'); }
+  // a type with more than one exception base (decimal.DivisionByZero is a ZeroDivisionError too)
+  for (const n of [...out]) for (const extra of _excExtraParents[n] || []) for (const x of _excChain(extra)) if (!out.includes(x)) out.push(x);
   return out;
 }
+const _excExtraParents = {};
 
 // a builtin exception type object (ValueError, ...): a type with no MRO of its own
 export function isBuiltinExcType(t) {
@@ -2526,7 +2714,7 @@ export function isExceptionClass(cls) {
 export function initExceptionInstance(cls, instance, args) {
   if (!isExceptionClass(cls)) return;
   const a = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.slice(0, -1) : args.slice();
-  instance.args = a;
+  instance.args = mkTuple(a);
 }
 function _argsStr(name, args) {
   if (!args || args.length === 0) return '';
@@ -2590,7 +2778,7 @@ export function excTypeOf(err) {
   return null;
 }
 
-function _mapVFSError(e) {
+export function _mapVFSError(e) {
   const map = { ENOENT: 'FileNotFoundError', EEXIST: 'FileExistsError',
     EISDIR: 'IsADirectoryError', ENOTDIR: 'NotADirectoryError', EACCES: 'PermissionError' };
   return new AdderError(map[e?.code] || 'OSError', e?.message || String(e));
@@ -2598,7 +2786,7 @@ function _mapVFSError(e) {
 
 // ── file object ──
 
-async function _createAdderFile(vfs, filePath, mode) {
+export async function _createAdderFile(vfs, filePath, mode) {
   const isBinary = mode.includes('b');
   const isRead = mode[0] === 'r';
   const isAppend = mode[0] === 'a';
@@ -2729,7 +2917,7 @@ function _createOsModule(getVfs, pth) {
     join: (...parts) => pth.join(...parts),
     dirname: (p) => pth.dirname(p),
     basename: (p) => pth.basename(p),
-    splitext: (p) => { const ext = pth.extname(p); return ext ? [p.slice(0, -ext.length), ext] : [p, '']; },
+    splitext: (p) => { const ext = pth.extname(p); return mkTuple(ext ? [p.slice(0, -ext.length), ext] : [p, '']); },
     normpath: (p) => pth.normalize(p),
     relpath: (p, start) => pth.relative(start || _cwd.value, p),
     isabs: (p) => pth.isAbsolute(p),
@@ -2954,6 +3142,146 @@ export function _ensureFsModules(pathUtils) {
   adderModules.glob = _createGlobModule(getVfs);
 }
 
+// dict(mapping | pairs, **kw)
+async function _dictFrom(args) {
+  const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
+  if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
+  const entries = [];
+  const x = args[0];
+  if (args.length === 0) { /* empty */ }
+  else if (x === null || x === undefined || typeof x !== 'object' && typeof x !== 'string') throw new AdderError('TypeError', `'${pyTypeName(x)}' object is not iterable`);
+  else if (x instanceof Map) entries.push(...x.entries());
+  else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
+  else if (typeof x.keys === 'function' && typeof x.__getitem__ === 'function') {
+    // a mapping (anything with keys() and __getitem__), as CPython's dict() reads it
+    for (const k of await pyCollect(await x.keys())) entries.push([k, await x.__getitem__(k)]);
+  } else {
+    const items = Array.isArray(x) ? x : await pyCollect(x);
+    items.forEach((it, i) => {
+      const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
+      if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
+      entries.push(pair);
+    });
+  }
+  if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') entries.push([k, kw[k]]);
+  // string keys only → a plain object (JS cells read d.a), as a literal; empty → PyDict
+  if (entries.length && entries.every(([k]) => typeof k === 'string')) {
+    const o = {};
+    for (const [k, v] of entries) o[k] = v;
+    return o;
+  }
+  return new PyDict(entries);
+}
+
+// ── stdout / stderr ──
+// The host's writers for the program running now: run() sets them from its options, a notebook
+// cell from its output. sys.stdout / sys.stderr and print(file=sys.stderr) write through here.
+export const _stdio = { out: null, err: null, redirect: null };
+// the exceptions being handled, innermost last: both engines push on entering an except body and
+// pop on leaving it (a bare `raise`, sys.exc_info(), sys.exception(), logging.exception read it)
+export const excStack = [];
+function _stdioWrite(which, s) {
+  const w = _stdio[which];
+  if (w) { w(s); return; }
+  if (typeof process !== 'undefined' && process[which === 'out' ? 'stdout' : 'stderr']) process[which === 'out' ? 'stdout' : 'stderr'].write(s);
+  else if (typeof console !== 'undefined') console[which === 'out' ? 'log' : 'error'](s.replace(/\n$/, ''));
+}
+// print(..., file=f): f.write(text), awaited when the file's write is async (a VFS file)
+export function printToFile(file, text) {
+  const w = adderGetAttr(file, 'write');
+  return w(text);
+}
+
+// ── list[int], dict[str, int], int | None ──
+// The runtime objects annotations evaluate to: printable, comparable, and usable in isinstance
+// (a union); typing's Optional / List / … are the same objects under their typing names.
+export const Ellipsis = Object.freeze({ __adderClass__: 'ellipsis', __repr__: () => 'Ellipsis', __str__: () => 'Ellipsis' });
+// a binary dunder's "not mine": Python then tries the reflected method (_viaDunder, pyEq)
+export const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __repr__: () => 'NotImplemented', __bool__: () => true });
+function _typeArgText(t) {
+  if (t === Ellipsis) return '...';
+  if (t === null || t === undefined) return 'None';
+  if (typeof t === 'function') return t._pyName || t.name || '?';
+  if (typeof t === 'string') return pyRepr(t);
+  if (Array.isArray(t) && !(t instanceof PyTuple)) return `[${t.map(_typeArgText).join(', ')}]`;
+  return pyRepr(t);
+}
+export class GenericAlias {
+  constructor(origin, args, name) {
+    this.__origin__ = origin;
+    this.__args__ = mkTuple(args);
+    this._name = name || null;
+  }
+  __repr__() { return `${this._name || _typeArgText(this.__origin__)}[${this.__args__.length ? this.__args__.map(_typeArgText).join(', ') : '()'}]`; }
+  __eq__(o) { return o instanceof GenericAlias && o.__origin__ === this.__origin__ && o._name === this._name && pyEq(this.__args__, o.__args__); }
+  __hash__() { return `ga:${this.__repr__()}`; }
+  __getitem__(k) { return new GenericAlias(this.__origin__, k instanceof PyTuple ? [...k] : [k], this._name); }
+  __or__(o) { return makeUnion(this, o); }
+  __ror__(o) { return makeUnion(o, this); }
+}
+GenericAlias.prototype.__adderClass__ = 'GenericAlias';
+export class UnionType {
+  constructor(args) { this.__args__ = mkTuple(args); }
+  __repr__() { return this.__args__.map(_typeArgText).join(' | '); }
+  __eq__(o) { return o instanceof UnionType && this.__args__.length === o.__args__.length && this.__args__.every((a) => o.__args__.some((b) => a === b || pyEq(a, b) === true)); }
+  __hash__() { return `ut:${this.__repr__()}`; }
+  __or__(o) { return makeUnion(this, o); }
+  __ror__(o) { return makeUnion(o, this); }
+}
+UnionType.prototype.__adderClass__ = 'UnionType';
+function _isTypeLike(t) {
+  return t === null || (typeof t === 'function' && !!t._pyClass) || t instanceof GenericAlias || t instanceof UnionType;
+}
+// A | B: flattened, without repeats (int | int is int)
+export function makeUnion(a, b) {
+  const out = [];
+  for (const t of [a, b]) for (const x of (t instanceof UnionType ? t.__args__ : [t])) if (!out.some((y) => y === x || (x instanceof GenericAlias && pyEq(x, y) === true))) out.push(x);
+  return out.length === 1 ? out[0] : new UnionType(out);
+}
+
+// ── class hooks shared by both engines ──
+// An annotation's source text: what __annotations__ holds (as under `from __future__ import
+// annotations`), and what dataclasses reads the field list from.
+const _BINOP_TEXT = new Set(['|', '+', '-', '*', '/', '&']);
+export function annotationText(n) {
+  if (!n) return '';
+  switch (n.type) {
+    case 'Name': return n.ellipsis ? '...' : n.id;
+    case 'Attribute': return `${annotationText(n.value)}.${n.attr}`;
+    case 'Subscript': return `${annotationText(n.value)}[${n.slice && n.slice.type === 'Tuple' ? n.slice.elts.map(annotationText).join(', ') : annotationText(n.slice)}]`;
+    case 'Constant': return typeof n.value === 'string' ? n.value : n.value === null ? 'None' : String(n.value);
+    case 'Tuple': return n.elts.map(annotationText).join(', ');
+    case 'List': return `[${n.elts.map(annotationText).join(', ')}]`;
+    case 'BinOp': return _BINOP_TEXT.has(n.op) ? `${annotationText(n.left)} ${n.op} ${annotationText(n.right)}` : '...';
+    default: return '...';
+  }
+}
+// the class body's `name: annotation [= value]` lines, in order
+export function classAnnotations(body) {
+  const out = [];
+  for (const s of body || []) if (s.type === 'AnnAssign' && s.target && s.target.type === 'Name') out.push([s.target.id, annotationText(s.annotation)]);
+  return out;
+}
+// The last step of building a class, after its members and MRO and before its decorators:
+// record __annotations__, then run the nearest base's __init_subclass__ (Python calls it
+// implicitly as a classmethod; enum.Enum is built on it). May return a promise.
+export function finishClass(cls, annotations) {
+  if (annotations && annotations.length) {
+    const d = new PyDict();
+    for (const [k, t] of annotations) d.set(k, t);
+    cls.__annotations__ = d;
+  }
+  const mro = cls._pyMRO || [cls];
+  for (let i = 1; i < mro.length; i++) {
+    const hook = mro[i].__init_subclass__;
+    if (typeof hook === 'function') {
+      const r = hook(cls);
+      return r && typeof r.then === 'function' ? r.then(() => cls) : cls;
+    }
+  }
+  return cls;
+}
+
 // ── builtins ──
 
 export function adderBuiltins(printFn) {
@@ -2961,20 +3289,25 @@ export function adderBuiltins(printFn) {
     print: (...args) => {
       let sep = ' ', end = '\n';
       // handle keyword args passed as last object with _kw marker
+      let file = null;
       if (args.length > 0 && args[args.length - 1]?._kw) {
         const kw = args.pop();
-        if (kw.sep !== undefined) sep = kw.sep;
-        if (kw.end !== undefined) end = kw.end;
+        if (kw.sep != null) sep = kw.sep;
+        if (kw.end != null) end = kw.end;
+        if (kw.file != null && kw.file !== _sysModule.stdout) file = kw.file;
       }
+      if (!file && _stdio.redirect) file = _stdio.redirect;   // contextlib.redirect_stdout
+      const out = file ? (t) => printToFile(file, t) : printFn;
       const parts = args.map(pyStrMaybe);
-      if (parts.some(_isThenable)) return Promise.all(parts).then((ps) => { printFn(ps.join(sep) + end); return null; });
-      printFn(parts.join(sep) + end);
-      return null;
+      if (parts.some(_isThenable)) return Promise.all(parts).then((ps) => out(ps.join(sep) + end)).then(() => null);
+      const r = out(parts.join(sep) + end);
+      return _isThenable(r) ? r.then(() => null) : null;
     },
     len: (obj) => {
       if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) return obj.length;
       if (obj instanceof Map || obj instanceof Set) return obj.size;
       if (obj instanceof AdderRange) return obj.length;
+      if (typeof obj === 'function' && typeof obj.__len__ === 'function') return obj.__len__();   // a class (an Enum)
       if (typeof obj === 'object' && obj !== null) {
         if (typeof obj.__len__ === 'function') return obj.__len__();
         if (typeof obj.length === 'number') return obj.length;
@@ -3007,36 +3340,13 @@ export function adderBuiltins(printFn) {
     str: (x) => x === undefined ? '' : pyStrMaybe(x),
     bool: (x) => x === undefined ? false : pyBool(x),
     list: Object.assign(
-      async (x) => x === undefined ? [] : await pyCollect(x),
+      (x) => x === undefined ? [] : pyCollect(x),
       { _pyContainerType: 'list' },
     ),
-    tuple: async (x) => x === undefined ? [] : await pyCollect(x),
-    dict: async (...args) => {
-      const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
-      if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
-      const entries = [];
-      const x = args[0];
-      if (args.length === 0) { /* empty */ }
-      else if (x === null || x === undefined || typeof x !== 'object' && typeof x !== 'string') throw new AdderError('TypeError', `'${pyTypeName(x)}' object is not iterable`);
-      else if (x instanceof Map) entries.push(...x.entries());
-      else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
-      else {
-        const items = Array.isArray(x) ? x : await pyCollect(x);
-        items.forEach((it, i) => {
-          const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
-          if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
-          entries.push(pair);
-        });
-      }
-      if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') entries.push([k, kw[k]]);
-      if (entries.every(([k]) => typeof k === 'string')) {
-        const o = {};
-        for (const [k, v] of entries) o[k] = v;
-        return o;
-      }
-      return new Map(entries);
-    },
-    set: async (x) => x === undefined ? new Set() : new Set(await pyCollect(x)),
+    // a call with no argument answers synchronously, so defaultdict(list) & co. store a value
+    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : pyCollect(x).then(mkTuple)),
+    dict: (...args) => (args.length === 0 ? new PyDict() : _dictFrom(args)),
+    set: (x) => x === undefined ? new PySet() : pyCollect(x).then((xs) => new PySet(xs)),
     // bytes(): b'', bytes(n) zeros, bytes(ints), bytes(str, encoding)
     bytes: (x, encoding) => {
       if (x === undefined) return new Uint8Array(0);
@@ -3050,7 +3360,7 @@ export function adderBuiltins(printFn) {
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
-    frozenset: async (x) => { const s = x === undefined ? new Set() : new Set(await pyCollect(x)); s._frozen = true; return s; },
+    frozenset: async (x) => { const s = x === undefined ? new PySet() : new PySet(await pyCollect(x)); s._frozen = true; return s; },
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
     max: async (...args) => pyExtreme('max', args),
@@ -3089,7 +3399,7 @@ export function adderBuiltins(printFn) {
     enumerate: async (iterable, start) => {
       const result = [];
       let i = start || 0;
-      for (const v of await pyCollect(iterable)) result.push([i++, v]);
+      for (const v of await pyCollect(iterable)) result.push(mkTuple([i++, v]));
       return result;
     },
     zip: async (...iterables) => {
@@ -3097,7 +3407,7 @@ export function adderBuiltins(printFn) {
       const arrs = []; for (const it of iterables) arrs.push(await pyCollect(it));
       const minLen = Math.min(...arrs.map(a => a.length));
       const result = [];
-      for (let i = 0; i < minLen; i++) result.push(arrs.map(a => a[i]));
+      for (let i = 0; i < minLen; i++) result.push(mkTuple(arrs.map(a => a[i])));
       return result;
     },
     map: async (fn, ...iterables) => {
@@ -3129,7 +3439,7 @@ export function adderBuiltins(printFn) {
     },
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
     getattr: (obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } },
-    setattr: (obj, name, value) => { obj[name] = value; return null; },
+    setattr: (obj, name, value) => { guardSetAttr(obj, name); obj[name] = value; return null; },
     delattr: (obj, name) => { delete obj[name]; return null; },
     property: (fget) => {
       const prop = { __property__: true, fget, fset: null };
@@ -3146,11 +3456,12 @@ export function adderBuiltins(printFn) {
     oct: (n) => { const v = Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
     bin: (n) => { const v = Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
     repr: pyReprMaybe,
+    Ellipsis, NotImplemented,
     format: (value, spec) => pyFormatValue(value, spec || ''),
     pow: (x, y, mod) => mod !== undefined ? _modPow(x, y, mod) : Math.pow(x, y),
-    divmod: (a, b) => [Math.floor(a / b), ((a % b) + b) % b],
+    divmod: (a, b) => mkTuple([pyFloorDiv(a, b), pyMod(a, b)]),
     id: (obj) => { if (typeof obj === 'object' && obj !== null) { if (!obj.__id__) obj.__id__ = ++_idCounter; return obj.__id__; } return 0; },
-    hash: (obj) => { if (typeof obj === 'number') return obj; if (typeof obj === 'string') { let h = 0; for (let i = 0; i < obj.length; i++) h = (h * 31 + obj.charCodeAt(i)) | 0; return h; } return 0; },
+    hash: (obj) => _pyHash(obj),
     iter: (obj) => pyIter(obj),
     next: (iter, def) => {
       const done = () => { if (def !== undefined) return def; throw new AdderError('StopIteration', '', undefined, []); };
@@ -3198,7 +3509,14 @@ export function adderBuiltins(printFn) {
     PermissionError: (msg) => new AdderError('PermissionError', msg),
     OSError: (msg) => new AdderError('OSError', msg),
     IOError: (msg) => new AdderError('IOError', msg),
-    open: async (pathOrObj, mode) => {
+    // open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, ...): the VFS
+    // stores text as UTF-8, so encoding / newline / buffering are accepted and need no work here
+    open: async (pathOrObj, ...rest) => {
+      const kw = rest.length && rest[rest.length - 1] && rest[rest.length - 1]._kw ? rest.pop() : null;
+      if (pathOrObj && pathOrObj._kw) { const k = pathOrObj; pathOrObj = k.file; if (k.mode !== undefined) rest[0] = k.mode; }
+      let mode = rest[0] ?? (kw && kw.mode !== undefined ? kw.mode : 'r');
+      if (typeof mode !== 'string') throw new AdderError('TypeError', `open() argument 'mode' must be str, not ${pyTypeName(mode)}`);
+      if (mode.includes('x')) mode = mode.replace('x', 'w');
       if (!_adderVFS) throw new AdderError('RuntimeError', 'filesystem not available — call adder.setVFS(vfsInstance, pathUtils) first');
       const raw = pathOrObj?._path ? pathOrObj._path : String(pathOrObj);
       const p = _resolvePath(raw, _vfsPath);
@@ -3239,7 +3557,7 @@ export function pySuper(cls, self) {
         if (isBuiltinExcType(base)) {
           if (name === '__init__') return (...a) => {
             if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
-            self.args = a;
+            self.args = mkTuple(a);
             return null;
           };
           if (name === '__str__') return () => _argsStr(base._pyName, self.args);
@@ -3269,6 +3587,9 @@ function _pyIsInstance(obj, typeOrTuple) {
   const types = Array.isArray(typeOrTuple) ? typeOrTuple : [typeOrTuple];
   const name = pyTypeName(obj);
   for (const t of types) {
+    if (t instanceof UnionType) { if (_pyIsInstance(obj, [...t.__args__])) return true; continue; }
+    // an abstract type that recognises its instances structurally (collections.abc.Mapping, ...)
+    if (typeof t === 'function' && typeof t.__instancecheck__ === 'function' && t.__instancecheck__(obj)) return true;
     if (typeof t === 'string') {
       if (name === t) return true;
     } else if (typeof t === 'function') {
@@ -3286,10 +3607,7 @@ function _pyIsInstance(obj, typeOrTuple) {
           }
         }
         // walk exception parent chain
-        if (obj instanceof AdderError) {
-          let pt = _excParents[obj.pyType];
-          while (pt) { if (pt === t._pyName) return true; pt = _excParents[pt]; }
-        }
+        if (obj instanceof AdderError && _excChain(obj.pyType).includes(t._pyName)) return true;
       } else {
         try { if (obj instanceof t) return true; } catch { /* arrow fn without prototype */ }
       }

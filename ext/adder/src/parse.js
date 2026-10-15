@@ -974,7 +974,8 @@ class _Parser {
     if (t.type === 'FSTRING') { this.advance(); return this._parseFstring(t); }
 
     // ellipsis
-    if (t.type === 'OP' && t.value === '...') { this.advance(); return { type: 'Constant', value: null, line: t.line, col: t.col }; }
+    // `...` is the Ellipsis singleton (a builtin name, so both engines resolve it like any other)
+    if (t.type === 'OP' && t.value === '...') { this.advance(); return { type: 'Name', id: 'Ellipsis', ellipsis: true, line: t.line, col: t.col }; }
 
     // parenthesized / tuple / generator
     if (t.type === 'OP' && t.value === '(') {

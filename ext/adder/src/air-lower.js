@@ -13,6 +13,7 @@ import {
   lowerIfRegion, lowerLoopRegion,
 } from '../../air/src/lower/base.js';
 import { registerSpecializations } from '../../air/src/passes.js';
+import { classAnnotations } from './builtins.js';
 
 // Re-export AirLowerError from @gcu/air. Lifted to ext/air/src/lower/base.js
 // so all frontends share one definition; the marker `_airFallback: true`
@@ -197,7 +198,7 @@ function collectDefines_ad(stmts, defines) {
         defines.add(node.name);
         break;
       case 'Import':
-        for (const alias of node.names) defines.add(alias.alias || alias.module);
+        for (const alias of node.names) defines.add(alias.alias || alias.module.split('.')[0]);   // import a.b binds a
         break;
       case 'ImportFrom':
         for (const alias of node.names) defines.add(alias.alias || alias.name);
@@ -549,11 +550,13 @@ export function lowerAdder(ast, source, opts) {
     ctx.symbols.set(name, undef.id);
   }
 
-  // Lower each statement; track last Expr for REPL-like display
+  // Lower each statement; the module's LAST statement, when an expression, is its display value
+  // (an earlier expression must not be: its call would be inlined at the store, after the
+  // statements that follow it)
   let lastExpr = null;
   for (const stmt of ast.body) {
     const result = lowerStmt_ad(ctx, stmt);
-    if (stmt.type === 'Expr' && result) lastExpr = result.id;
+    lastExpr = stmt.type === 'Expr' && result ? result.id : null;
   }
 
   // If there's a trailing Expr, store it as __lastExpr__ so the caller can read it
@@ -740,7 +743,7 @@ function lowerExpr_ad(ctx, node) {
     case 'Subscript': return lowerSubscript(ctx, node);
 
     case 'List': return lowerListOrTuple(ctx, node);
-    case 'Tuple': return lowerListOrTuple(ctx, node);
+    case 'Tuple': return emitPyCall(ctx, 'tuple', [lowerListOrTuple(ctx, node)], l);
 
     case 'Dict': {
       // A literal with **unpacking builds at run time (_py.dictLiteral): the sources may be
@@ -755,7 +758,9 @@ function lowerExpr_ad(ctx, node) {
           ctx.emit('array_new', spreads, DYNAMIC, l)], l);
       }
       // Plain object if all keys are string constants; otherwise build a Map.
-      const allStringKeys = node.keys.every(k =>
+      // Plain object if all keys are string constants (JS cells read d.a); otherwise, and
+      // for an empty literal, a PyDict via _py.makeDict (see eval.js)
+      const allStringKeys = node.keys.length > 0 && node.keys.every(k =>
         k && k.type === 'Constant' && typeof k.value === 'string');
       if (allStringKeys) {
         const pairs = [];
@@ -988,7 +993,8 @@ function lowerSubscript(ctx, node) {
     // objects) and pass it to `_py.getitem`. The target __getitem__
     // (natra ndarray, DataFrame, etc.) interprets the array as a tuple.
     const elts = node.slice.elts.map(elt => _lowerSliceElt(ctx, elt, l));
-    const tupleKey = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+    const arr = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+    const tupleKey = emitPyCall(ctx, 'tuple', [arr], l);
     return emitPyCall(ctx, 'getitem', [obj, tupleKey], l);
   }
   const key = lowerExpr_ad(ctx, node.slice);
@@ -1049,7 +1055,7 @@ function lowerCall_ad(ctx, node) {
       if (kw.name === null) {
         // **kw splat
         hasSplat = true;
-        const src = lowerExpr_ad(ctx, kw.value);
+        const src = emitPyCall(ctx, 'kwSplat', [lowerExpr_ad(ctx, kw.value)], l);
         pairs.push({ spread: true, id: src.id });
       } else {
         const val = lowerExpr_ad(ctx, kw.value);
@@ -1093,6 +1099,18 @@ function lowerCall_ad(ctx, node) {
 
 function lowerAssign(ctx, node) {
   const l = ctx.loc(node);
+  const tgt = node.targets.length === 1 ? node.targets[0] : null;
+  const src = node.value;
+  if (tgt && (tgt.type === 'Tuple' || tgt.type === 'List') && src && (src.type === 'Tuple' || src.type === 'List') &&
+      tgt.elts.length === src.elts.length && !tgt.elts.some((e) => e.type === 'Starred') && !src.elts.some((e) => e.type === 'Starred')) {
+    const vals = src.elts.map((e) => {
+      const v = lowerExpr_ad(ctx, e);
+      // materialise each value before any store (a, b = b, a + b reads the old a and b)
+      return ctx.emit('load', [_refExpr(ctx, v.id)], DYNAMIC, l);
+    });
+    tgt.elts.forEach((t, i) => lowerAssignTarget(ctx, t, vals[i], l));
+    return null;
+  }
   const value = lowerExpr_ad(ctx, node.value);
   for (const target of node.targets) {
     lowerAssignTarget(ctx, target, value, l);
@@ -1176,7 +1194,8 @@ function lowerAssignTarget(ctx, target, value, l) {
     }
     if (target.slice.type === 'Tuple') {
       const elts = target.slice.elts.map(elt => _lowerSliceElt(ctx, elt, l));
-      const tupleKey = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+      const arr = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
+      const tupleKey = emitPyCall(ctx, 'tuple', [arr], l);
       emitPyCall(ctx, 'setitem', [obj, tupleKey, value], l, VOID);
       return;
     }
@@ -1292,10 +1311,16 @@ function lowerTry_ad(ctx, node) {
         ctx.emit('store', [h.name, v.id], VOID, l);
         ctx.symbols.set(h.name, v.id);
       };
+      // the handler runs with its exception on the shared stack (sys.exc_info(), logging.exception)
       const handlerBody = (h) => {
         const saved = ctx._excName;
         ctx._excName = catchParam;
-        try { for (const st of h.body) lowerStmt_ad(ctx, st); } finally { ctx._excName = saved; }
+        try {
+          emitRaw(ctx, `_py.excPush(${catchParam});`);
+          const body = captureOps(ctx, () => { for (const st of h.body) lowerStmt_ad(ctx, st); });
+          const fin = captureOps(ctx, () => emitRaw(ctx, '_py.excPop();'));
+          ctx.emit('try_region', [], VOID, l, { try_body: body, catch_param: null, catch_body: [], finally_body: fin });
+        } finally { ctx._excName = saved; }
       };
       const buildHandler = (idx) => {
         if (idx >= node.handlers.length) {
@@ -1485,7 +1510,12 @@ function lowerClassDef(ctx, node) {
 
   // _py.createClass(name, bases, members)
   const nameConst = ctx.emit('const', [name], STRING, l);
-  let classOp = emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited], l);
+  // the body's annotations (name, source text), flattened, for __annotations__ / dataclasses
+  const annIds = [];
+  for (const [k, t] of classAnnotations(node.body)) annIds.push(ctx.emit('const', [k], STRING, l).id, ctx.emit('const', [t], STRING, l).id);
+  const annArr = ctx.emit('array_new', annIds, DYNAMIC, l);
+  // createClass may return a promise (a base's __init_subclass__ written in Python)
+  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr], l).id], DYNAMIC, l);
 
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -1519,8 +1549,12 @@ function lowerImport(ctx, node) {
       // (add, sub, truthy, ...), the result is a Promise, not the module.
       const call = emitPyCall(ctx, 'import', [nameConst], l);
       mod = ctx.emit('await', [call.id], DYNAMIC, l);
-      // For dotted names like `a.b`, bind the top-level `a` unless aliased.
+      // For dotted names like `a.b`, bind the top-level `a` (with `b` reachable on it) unless aliased.
       bindName = alias || module.split('.')[0];
+      if (!alias && module.includes('.')) {
+        const rootCall = emitPyCall(ctx, 'importRoot', [ctx.emit('const', [module], STRING, l), mod], l);
+        mod = ctx.emit('await', [rootCall.id], DYNAMIC, l);
+      }
     }
     ctx.emit('store', [bindName, mod.id], VOID, l);
     ctx.symbols.set(bindName, mod.id);
@@ -1822,7 +1856,8 @@ function _buildParamBinding(ctx, node, l) {
   const defaults = ctx._paramDefaults || {};
   emitRaw(ctx, `let __kw = null;`, '__kw');
   emitRaw(ctx, `if (__args.length > 0 && __args[__args.length-1] && __args[__args.length-1]._kw) __kw = __args.pop();`);
-  emitRaw(ctx, `if (__kw) _py.checkKw(${fname}, ${allNames}, __args.length, __kw, ${kwarg ? 'true' : 'false'});`);
+  // only the positional parameters can be filled twice (a keyword-only one after *args cannot)
+  emitRaw(ctx, `if (__kw) _py.checkKw(${fname}, ${allNames}, Math.min(__args.length, ${positionalParams.length}), __kw, ${kwarg ? 'true' : 'false'});`);
 
   // Track parameter names used (for **kwargs exclusion)
   const usedNames = [];
@@ -1843,7 +1878,7 @@ function _buildParamBinding(ctx, node, l) {
 
   // *args — vararg
   if (vararg) {
-    emitRaw(ctx, `let ${vararg} = __args.slice(${positionalParams.length});`, vararg);
+    emitRaw(ctx, `let ${vararg} = _py.tuple(__args.slice(${positionalParams.length}));`, vararg);
     ctx.symbols.set(vararg, null);
     usedNames.push(vararg);
   }

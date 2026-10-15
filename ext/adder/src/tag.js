@@ -48,6 +48,7 @@ export async function adderTag(strings, ...values) {
   // extract non-underscore-prefixed names
   const result = {};
   for (const [k, v] of scope.vars) {
+    if (builtins[k] === v) continue;   // an untouched builtin (Ellipsis, NotImplemented, …)
     if (!k.startsWith('_') && typeof v !== 'function' || (typeof v === 'function' && v._pyFunc)) {
       if (!k.startsWith('_')) result[k] = v;
     }

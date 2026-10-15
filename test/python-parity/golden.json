@@ -552,6 +552,154 @@
   "exc/args-and-str": {
    "out": "('a', 2) ('a', 2) ValueError('a', 2) 'k' KeyError('k')  ValueError()\n",
    "error": null
+  },
+  "mod/generic-alias": {
+   "out": "list[float] dict[str, list[int]] int | None True False\nTrue True tuple[int, ...]\n",
+   "error": null
+  },
+  "mod/typing-runtime": {
+   "out": "4 None 3 x ~T\ntyping.Optional[int] typing.List[int] typing.Dict[str, int] typing.Union[int, str]\n",
+   "error": null
+  },
+  "mod/typing-namedtuple": {
+   "out": "Point(x=3, y=-4) 3 7 Point(x=1, y=0) {'x': 3, 'y': -4} Point(x=3, y=9) ('x', 'y')\n3 -4 True True True 2\n",
+   "error": null
+  },
+  "mod/enum-basic": {
+   "out": "Color.RED <Color.GREEN: 2> Color.BLUE Color.RED [<Color.RED: 1>, <Color.GREEN: 2>, <Color.BLUE: 3>] 3\nTrue RED 1 True\nColor True False Color.BLUE ['BLUE', 'CRIMSON', 'GREEN', 'RED']\n7 is not a valid Color\nKeyError 'PINK'\n",
+   "error": null
+  },
+  "mod/enum-int-str-flag": {
+   "out": "2 True True 1 <N.B: 2>   1 True 30\nlow <S.HIGH: 'hi'> True low! hi\n<P.R|W: 3> True False P.R|W [<P.R: 1>, <P.W: 2>] 2 False <P.W|X: 6>\n6 <Perm.R|X: 5> 5\n",
+   "error": null
+  },
+  "mod/enum-functional-unique": {
+   "out": "[<Animal.CAT: 1>, <Animal.DOG: 2>] 2 Animal.CAT\n4 Shape.TRIANGLE\nduplicate values found in <enum 'U'>: B -> A\n5 (5, 2) 1 Planet.MARS\nhappy True\n",
+   "error": null
+  },
+  "mod/dataclass-full": {
+   "out": "Item(name='x', qty=2, tags=[]) Item(name='y', qty=0, tags=[]) True True [Item(name='x', qty=2, tags=[]), Item(name='y', qty=0, tags=[])]\n['name', 'qty', 'tags'] {'name': 'x', 'qty': 2, 'tags': []} ('y', 0, []) Item(name='x', qty=5, tags=[]) True False\nfrozen: cannot assign to field 'x'\nTrue ok 2\nunhashable type: 'Q'\nChild(a=10, b=1, c=2) 13 ['a', 'b', 'c']\nItem.__init__() missing 1 required positional argument: 'name'\nItem.__init__() takes from 2 to 4 positional arguments but 5 were given\nnon-default argument 'b' follows default argument 'a'\nmutable default <class 'list'> for field a is not allowed: use default_factory\n",
+   "error": null
+  },
+  "mod/dataclass-kwonly-initvar": {
+   "out": "Conf(name='svc', debug=False, level=3)\nScaled(v=10) Scaled(v=50)\nK(a=1, b=0) K(a=3, b=2)\nH(x=1) True\n",
+   "error": null
+  },
+  "mod/copy-deep": {
+   "out": "[1, [2, 3, 9], {'k': [4]}] [1, [2, 3, 9], {'k': [4]}] [1, [2, 3], {'k': [4, 8]}] True False\n2 99 Node\n(1, [2]) (1, [2, 3]) True\n",
+   "error": null
+  },
+  "mod/operator": {
+   "out": "[('c', 1), ('b', 2), ('a', 3)] [('a', 3), ('b', 2), ('c', 1)] ('b', 2)\n[1, 3] HI ['a', 'b']\n5 abab -4 3.5 3\nTrue True True 1 True\n24 5 2\n",
+   "error": null
+  },
+  "mod/heapq-full": {
+   "out": "[2, 3, 8, 5, 9] 1 [2, 3, 8, 5, 9]\n[3, 4, 7, 10, 9] 0 1 [3, 4, 7, 10, 9]\n[5, 4] [1, 1, 3] ['a', 'bb']\n[1, 2, 3, 4, 5, 7]\n['plan', 'write', 'ship']\n",
+   "error": null
+  },
+  "mod/bisect-key": {
+   "out": "2 4 4 0\n[1, 2, 4, 4, 4, 5, 8]\n1 2\n['F', 'A', 'C', 'C', 'B', 'A', 'A']\n",
+   "error": null
+  },
+  "mod/base64": {
+   "out": "b'aGVsbG8sIHdvcmxkIT8=' b'hello, world!?' b'-_8=' b'+/8='\nb'MFRGG===' b'abc' b'01AB' b'\\x01\\xab'\nb'hi' b'eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4\\neHh4\\n' b'00ff' b'\\x00\\xff'\nError: Incorrect padding\n907060870 b'YWI='\n",
+   "error": null
+  },
+  "mod/html": {
+   "out": "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#x27;s&lt;/a&gt; &lt;b&gt;\n<p> &amp; © ' A é &nosuch; —\n",
+   "error": null
+  },
+  "mod/textwrap-wrap": {
+   "out": "['The quick brown fox', 'jumps over the lazy', 'dog. A well-known', 'pangram, used for', 'type-setting', 'demonstrations.']\n> The quick brown fox jumps\n  over the lazy dog. A well-\n  known pangram, used for\n  type-setting demonstrations.\nThe quick brown fox jumps over the [...] Hello world\n'a\\n  b\\nc\\n' '+ x\\n\\n+ y\\n'\n['supercalif', 'ragilistic', 'expialidoc', 'ious word'] ['a-b-c-d-', 'e-f-g', 'long-hyp', 'henated-', 'word']\n['The quick brown fox jumps', 'over the lazy dog. [...]']\n['tiny', 'incomprehensibilities', 'here']\n",
+   "error": null
+  },
+  "mod/contextlib": {
+   "out": "['enter a', 'A', 'exit a', 'enter b', 'exit b', 'caught boom']\nswallowed\nafter suppress\n5\nclosed\ncb2\ncb1\n['enter c', 'exit c']\n'captured\\n'\n",
+   "error": null
+  },
+  "mod/io-stringio": {
+   "out": "line1\n lin 9 ['e2\\n', 'line3']\n['line1', 'line2', 'line3']\naXcdef 2\n'aXto file|1|2\\n'\nb'hello' b' world' b'hello world' 11\nb'abC' 3\nx\nTrue\n",
+   "error": null
+  },
+  "mod/sys-stdout": {
+   "out": "no newline|done\nto stdout\nabc\n4\n",
+   "error": null
+  },
+  "mod/fractions-full": {
+   "out": "3/4 Fraction(3, 4) 1/2 3/2 2 -1/4 1/4 9/16 16/9 -3/4 3/4\n1/8 -1/3 3602879701896397/36028797018963968 5/2 -5/2 True True True\n0.75 3 2 4 33/100 -4 -3\n355/113 1/5 (3, 4) 1.25 True\n1 3 1/2 3 4 False half\n",
+   "error": null
+  },
+  "mod/decimal-full": {
+   "out": "1.10 Decimal('1.10') 3.305 3.30 0.1428571428571428571428571429 2.5 0.65 0.1000000000000000055511151231257827021181583404541015625\n123.46 2.68 2 -3 -1.5\n1.414213562373095048801688724 1.0 1E+5 0.000001 1E-7 1.2E-10 -0 1E+2 1.5\nTrue False True True [Decimal('0.9'), Decimal('1.1')] 2\n7 0.25 2 3.14 1,234.57 3.142 50%\n1.21 0.25 NaN -Infinity DecimalTuple(sign=0, digits=(1,), exponent=3) True\n0.142857 1.23457E+8\n0.667\n0.6666666666666666666666666667\nDivisionByZero True\nInvalidOperation\nunsupported operand type(s) for +: 'decimal.Decimal' and 'float'\n",
+   "error": null
+  },
+  "mod/statistics-full": {
+   "out": "2.5 0.2 0.19999999999999998 2.5 3 5\nb ['c'] 1.3720238095238095 1.25\n1.0810874155219827 0.986893273527251 2.5 1/2\n[2.75, 5.5, 8.25] 52.5 36.000000000000014\n0.31622776601683794 0.75 LinearRegression(slope=0.1, intercept=1.5)\nNormalDist(mu=100.0, sigma=15.0) 0.9772498681 119.2232734832 0.026596152027 ['89.882654', '100.000000', '110.117346']\nNormalDist(mu=2.716666666666667, sigma=0.5076087732365021) 0.8035050657\nStatisticsError: mean requires at least one data point\n",
+   "error": null
+  },
+  "mod/math-special": {
+   "out": "0.5204998778130465 0.033894853524689274 1.7724538509055159 52.34277778455352 13.48203678613836 2.3632718012073544 0.9999779095030014\nTrue 0.11000000000000001 11.631728396567446 0.5723649429247004\nmath domain error\n",
+   "error": null
+  },
+  "mod/datetime-full": {
+   "out": "2024-03-01 2024-03-01 4 datetime.date(2024, 3, 1) 5 738946\ndatetime.IsoCalendarDate(year=2024, week=9, weekday=5) datetime.IsoCalendarDate(year=2020, week=53, weekday=7) datetime.IsoCalendarDate(year=2026, week=53, weekday=4) 2021-01-01\n366 days, 0:00:00 2021-07-29 2023-07-14 True\n2023-03-01 Fri Mar  1 00:00:00 2024 Friday March 061 08 09 Fri Mar 24 5 2024-W09-5 2024/03/01 61\n1 day, 2:03:04.500000 datetime.timedelta(days=1, seconds=7384, microseconds=500000) 2 days, 4:06:09 13:01:32.250000 -2 days, 21:56:55.500000 1 day, 2:03:04.500000 26 0:03:04.500000\n7 days, 0:00:00.001000 -1 day, 23:59:59 datetime.timedelta(0) 0:00:00.000002 0:00:00.000002\n-3 days, 0:00:03 True True (2, datetime.timedelta(seconds=3600))\n2024-03-10 14:30:05.123456 datetime.datetime(2024, 3, 10, 14, 30, 5, 123456) 2024-03-10T14:30:05.123456 2024-03-10 14:30 2024-03-10 14:30:05.123456 2024-03-10 14:30:05.123456 02PM\n2024-03-11 00:30:05.123456 2024-01-30 14:30:05.123456 69 days, 14:30:05.123456 2024-03-10 00:00:05.123456 datetime.datetime(2024, 1, 1, 0, 0)\n2023-07-14 09:05:01 2023-07-14 21:05:00 2011-11-04 00:05:23.283000\n2024-03-10 12:00:00+00:00 datetime.datetime(2024, 3, 10, 12, 0, tzinfo=datetime.timezone.utc) 2024-03-10 17:30:00+05:30 2024-03-10T12:00:00+00:00 0:00:00 UTC UTC+05:30 datetime.timezone(datetime.timedelta(seconds=19800)) BRT\n1970-01-01 00:00:00+00:00 2023-11-14 22:13:20.500000+00:00 11:30:00\n2024-03-10 12:00:00+02:00 2024-03-10 12:00:00+02:00 +0000 UTC\n09:05:00 datetime.time(9, 5, 3) 23:59:59.000999 10:20:30 2020-05-17 08:15:00\n[datetime.date(2023, 1, 9), datetime.date(2024, 1, 1), datetime.date(2024, 5, 1)] new year 2 days, 0:00:00\nday is out of range for month\ncan't compare offset-naive and offset-aware datetimes\ntime data '2024-13-01' does not match format '%Y-%m-%d'\n1 9999 0001-01-01 9999-12-31 9999-12-31 23:59:59.999999 999999999 days, 23:59:59.999999 -999999999 days, 0:00:00 0:00:00.000001\n",
+   "error": null
+  },
+  "mod/time-struct": {
+   "out": "time.struct_time(tm_year=1970, tm_mon=1, tm_mday=1, tm_hour=0, tm_min=0, tm_sec=0, tm_wday=3, tm_yday=1, tm_isdst=0) 1970 1970 1971-01-01 00:00:00 Sun Sep  9 01:46:40 2001\n(2000, 11, 30, 0, 0, 0) float True\n",
+   "error": null
+  },
+  "mod/csv-full": {
+   "out": "[['a', 'b'], ['1', '2'], [], ['x, y', 'he said \"hi\"'], ['multi\\nline', 'z']] [['a', 'b', 'c'], ['1', '', '3']]\n'name,note,3,,\"say \"\"hi\"\"\",\"a,b\"\\r\\n1,2\\r\\n\"x\\ny\",\\r\\n\"q\",\"5\"\\n'\n[{'name': 'ann', 'age': '31'}, {'name': 'bob', 'age': '27', None: ['extra']}, {'name': 'cid', 'age': None}] ['name', 'age']\n'x,y\\r\\n1,two\\r\\n3,\\r\\n,4\\r\\n' ['excel', 'excel-tab', 'unix']\ndict contains fields not in fieldnames: 'z'\n",
+   "error": null
+  },
+  "mod/struct": {
+   "out": "b'\\xfe\\xff\\xff\\xff\\x07\\x00\\x00\\x00' b'\\x00\\x00\\x00\\x01' (-2, 65535, 7) 8 8\nb'\\x00\\x00\\x00\\x00\\x00\\x00\\xf8?' (0.10000000149011612,) b'ab\\x00\\x01z' (-1,) b'\\xf2/\\xces:\\x0b\\x00\\x00'\nb'\\x00>' [(1,), (2,)] 8 (1, 2)\nstruct.error: 'b' format requires -128 <= number <= 127\nstruct.error: unpack requires a buffer of 4 bytes\nstruct.error: pack expected 2 items for packing (got 1)\n",
+   "error": null
+  },
+  "mod/hashlib-hmac": {
+   "out": "md5 900150983cd24fb0d6963f7d28e17f72\nsha1 a9993e364706816aba3e25717850c26c9cd0d89d\nsha224 23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7\nsha256 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nsha384 cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7\nsha512 ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\nb94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9 5e3235a8346e5a4585f8c58562f5052b8fe26a3bb122e1e96c76784964dfc461 32 64 sha256 d41d8cd98f00b204e9800998ecf8427e 291e9a6c66994949b57ba5e650361e98fc36b1ba\nef978e23dc520404ae16fd17bde9ee59 40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880\n203d1e5cedd2d18f8c5a3beff0bd9c1ebcb97097dfcb288c46b00c9227fde2c0 ed7e724d3a91554aaa2043041d9c5305 True\nae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43 102900b72b7bf1031eec76b4804b66052376896b\nStrings must be encoded before hashing\n",
+   "error": null
+  },
+  "mod/uuid": {
+   "out": "12345678-1234-5678-1234-567812345678 UUID('12345678-1234-5678-1234-567812345678') 12345678123456781234567812345678 24197857161011715162171839636988778104 None reserved for NCS compatibility urn:uuid:12345678-1234-5678-1234-567812345678 886313e1-3b8a-5372-9b90-0c9aee199e5d 60a7f89c-e446-309c-8b4f-460bfdfd0dee\nTrue 4 36 (305419896, 4660, 22136, 18, 52, 95073701484152) 00000000-0000-0000-0000-000000000001 True\n",
+   "error": null
+  },
+  "mod/urllib-parse": {
+   "out": "ParseResult(scheme='https', netloc='user:pw@Example.COM:8080', path='/a/b', params='p', query='q=1&r=2', fragment='frag') example.com 8080 user pw https://user:pw@Example.COM:8080/a/b;p?q=1&r=2#frag\nSplitResult(scheme='', netloc='host', path='/path', query='', fragment='') ParseResult(scheme='mailto', netloc='', path='a@b.c', params='', query='', fragment='') ParseResult(scheme='', netloc='', path='/just/path', params='', query='x=1', fragment='') http://h/p?a=1\n['http://a/b/c/g', 'http://a/b/c/g', 'http://a/b/c/g/', 'http://a/g', 'http://g', 'http://a/b/c/d;p?y', 'http://a/b/c/g?y', 'http://a/b/c/d;p?q#s', 'http://a/b/c/g#s', 'http://a/b/', 'http://a/b/g', 'http://a/', 'http://a/g', 'http://a/b/c/', 'http://a/b/c/', 'http://a/b/c/g;x']\na%20b/c%3Fd%3D%C3%A9%26%E2%82%AC %2Fx%20y a+b%26c%3Dd café x a b+c\na=1&b=x+y&c=%C3%A9 k=v&k=w l=1&l=2\n{'a': ['1', '3'], 'b': ['2']} {'c': ['']} [('x', '1'), ('y', 'a b!')] DefragResult(url='http://h/p', fragment='frag')\n~x%20y\n",
+   "error": null
+  },
+  "mod/warnings": {
+   "out": "[('deprecated thing', 'DeprecationWarning'), ('plain', 'UserWarning')]\nraised boom\ndone\n",
+   "error": null
+  },
+  "mod/logging": {
+   "out": "'DEBUG|app.db|x=5 y=z\\nINFO|app.db|info v\\nWARNING|app.db|warn\\nERROR|app.db|err\\nCRITICAL|app.db.pool|deep\\n'\nWARNING 40 40 40 30 app.db True\n'WARNING:hi there\\n'\n",
+   "error": null
+  },
+  "mod/sys-exc-info": {
+   "out": "ZeroDivisionError ZeroDivisionError('division by zero')\n'k'\nZeroDivisionError('division by zero')\n(None, None, None)\n",
+   "error": null
+  },
+  "mod/zlib-roundtrip": {
+   "out": "True True 907060870 103547413 b'gz!'\nb'raw' 222957957\n",
+   "error": null
+  },
+  "mod/zipfile-bytesio": {
+   "out": "['a.txt', 'dir/b.bin'] b'alpha alpha' b'\\x00\\x01\\x02' 60 None\nb'alpha'\nTrue False\nBadZipFile: File is not a zip file\n",
+   "error": null
+  },
+  "mod/open-kwargs": {
+   "out": "open\n",
+   "error": null
+  },
+  "mod/print-file-redirect": {
+   "out": "'a-1! b\\n'\nstill stdout\n",
+   "error": null
+  },
+  "mod/collections-abc": {
+   "out": "True True True True True\nFalse True True False True False\nTrue 1 0 True False ['a', 'b'] [('a', 1), ('b', 2)] [1, 2] {'a': 1, 'b': 2} True\n9 1 dflt 3 [('w', 9), ('y', 2), ('z', 3)]\nTrue 1 2 [3, 1, 3] True\n~x%20y Sized\n",
+   "error": null
   }
  }
 }

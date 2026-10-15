@@ -18,7 +18,9 @@ export function parseCorpus(text) {
   flush();
   return out;
 }
-export const corpus = parseCorpus(readFileSync(new URL('corpus.txt', HERE), 'utf8'));
+// `--only=<substring>` narrows the run to matching case names (a debugging aid)
+const _only = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
+export const corpus = parseCorpus(readFileSync(new URL('corpus.txt', HERE), 'utf8')).filter((c) => !_only || c.name.includes(_only));
 
 const A = await import('../../ext/adder/src/index.js');
 A.attachAir(await import('../../ext/air/index.js'));

@@ -3,7 +3,7 @@
 
 import { adderParse } from './parse.js';
 import { adderEval, AdderScope, AdderError } from './eval.js';
-import { adderBuiltins, pyStr, pyRepr, _ensureFsModules, getAdderVFS, setAdderVFS } from './builtins.js';
+import { adderBuiltins, pyStr, pyRepr, _ensureFsModules, getAdderVFS, setAdderVFS, _stdio, printToFile } from './builtins.js';
 import { _py } from './runtime.js';
 
 // ── parseNames: extract module-scope defines from Python code ──
@@ -45,7 +45,7 @@ function _collectDefines(stmts, defines) {
         defines.add(node.name);
         break; // don't descend — new scope
       case 'Import':
-        for (const alias of node.names) defines.add(alias.alias || alias.module);
+        for (const alias of node.names) defines.add(alias.alias || alias.module.split('.')[0]);   // import a.b binds a
         break;
       case 'ImportFrom':
         for (const alias of node.names) defines.add(alias.alias || alias.name);
@@ -207,11 +207,20 @@ export async function pythonExecute(code, scopeIn, cell) {
     const ctx = cell._ctx;
     // override print to render directly to the output DOM (not buffered)
     // so print output coexists with canvases and other DOM content
+    const show = (text) => ctx.display(text.endsWith('\n') ? text.slice(0, -1) : text);
+    _stdio.out = show; _stdio.err = show;   // sys.stdout / sys.stderr write into this cell
     scope.set('print', (...args) => {
-      let sep = ' ', end = '\n';
-      if (args.length > 0 && args[args.length - 1]?._kw) { const kw = args.pop(); if (kw.sep !== undefined) sep = kw.sep; if (kw.end !== undefined) end = kw.end; }
+      let sep = ' ', end = '\n', file = null;
+      if (args.length > 0 && args[args.length - 1]?._kw) {
+        const kw = args.pop();
+        if (kw.sep != null) sep = kw.sep;
+        if (kw.end != null) end = kw.end;
+        if (kw.file != null) file = kw.file;
+      }
       const text = args.map(pyStr).join(sep) + end;
-      ctx.display(text.endsWith('\n') ? text.slice(0, -1) : text);
+      if (!file && _stdio.redirect) file = _stdio.redirect;   // contextlib.redirect_stdout
+      if (file) return printToFile(file, text);
+      show(text);
       return null;
     });
     // expose key builtins — skip internal/DOM-only ones

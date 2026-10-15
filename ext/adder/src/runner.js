@@ -4,7 +4,7 @@
 
 import { adderParse, _adderParseExpr } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule } from './eval.js';
-import { adderBuiltins, setAdderVFS, getAdderVFS } from './builtins.js';
+import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio } from './builtins.js';
 import { _py } from './runtime.js';
 import { lowerAdder, PY_SPECIALIZATIONS } from './air-lower.js';
 
@@ -95,8 +95,11 @@ function _withVfs(opts, fn) {
 export async function _withSandbox(opts, fn) {
   const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false });
   const prevBudget = _setBudget(_makeBudget(opts.budget));
+  const prevOut = _stdio.out, prevErr = _stdio.err;
+  _stdio.out = opts.stdout || _defaultStdout;
+  _stdio.err = opts.stderr || _defaultStderr;
   try { return await fn(); }
-  finally { _setRunOptions(prevOpts); _setBudget(prevBudget); }
+  finally { _setRunOptions(prevOpts); _setBudget(prevBudget); _stdio.out = prevOut; _stdio.err = prevErr; }
 }
 
 // ── the AIR engine (opts.engine) ──

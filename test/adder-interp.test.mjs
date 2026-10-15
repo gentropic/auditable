@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+// Python tuples are frozen PyTuple arrays and dicts PyDict maps; compare by value
+const plain = (v) => Array.isArray(v) ? v.map(plain) : v instanceof Map ? new Map([...v].map(([k, x]) => [plain(k), plain(x)])) : v;
 
 // ── shim DOM ──
 globalThis.document = {
@@ -405,8 +407,8 @@ describe('adderEval — data structures', () => {
   it('dict comprehension', async () => {
     // a dict, as the AIR path has always built it (it was a plain object here)
     const { defines } = await pyEval('x = {str(i): i * i for i in range(4)}\ny = {i: i for i in range(2)}');
-    assert.deepStrictEqual(defines.x, new Map([['0', 0], ['1', 1], ['2', 4], ['3', 9]]));
-    assert.deepStrictEqual(defines.y, new Map([[0, 0], [1, 1]]));
+    assert.deepStrictEqual(plain(defines.x), new Map([['0', 0], ['1', 1], ['2', 4], ['3', 9]]));
+    assert.deepStrictEqual(plain(defines.y), new Map([[0, 0], [1, 1]]));
   });
 
   it('set literal', async () => {
@@ -504,12 +506,12 @@ describe('adderEval — builtins', () => {
 
   it('enumerate', async () => {
     const { defines } = await pyEval('x = list(enumerate(["a", "b", "c"]))');
-    assert.deepStrictEqual(defines.x, [[0, 'a'], [1, 'b'], [2, 'c']]);
+    assert.deepStrictEqual(plain(defines.x), [[0, 'a'], [1, 'b'], [2, 'c']]);
   });
 
   it('zip', async () => {
     const { defines } = await pyEval('x = list(zip([1, 2], [3, 4]))');
-    assert.deepStrictEqual(defines.x, [[1, 3], [2, 4]]);
+    assert.deepStrictEqual(plain(defines.x), [[1, 3], [2, 4]]);
   });
 
   it('sorted', async () => {
@@ -589,12 +591,12 @@ describe('adderEval — modules', () => {
 
   it('itertools.product', async () => {
     const { defines } = await pyEval('from itertools import product\nx = list(product([1, 2], ["a", "b"]))');
-    assert.deepStrictEqual(defines.x, [[1, 'a'], [1, 'b'], [2, 'a'], [2, 'b']]);
+    assert.deepStrictEqual(plain(defines.x), [[1, 'a'], [1, 'b'], [2, 'a'], [2, 'b']]);
   });
 
   it('itertools.combinations', async () => {
     const { defines } = await pyEval('from itertools import combinations\nx = list(combinations([1, 2, 3], 2))');
-    assert.deepStrictEqual(defines.x, [[1, 2], [1, 3], [2, 3]]);
+    assert.deepStrictEqual(plain(defines.x), [[1, 2], [1, 3], [2, 3]]);
   });
 
   it('functools.reduce', async () => {
@@ -1240,7 +1242,7 @@ result = list(islice(cycle([1, 2, 3]), 7))`);
     const { defines } = await pyEval(`
 from itertools import pairwise
 result = list(pairwise([1, 2, 3, 4]))`);
-    assert.deepStrictEqual(defines.result, [[1, 2], [2, 3], [3, 4]]);
+    assert.deepStrictEqual(plain(defines.result), [[1, 2], [2, 3], [3, 4]]);
   });
 
   it('accumulate lazy', async () => {

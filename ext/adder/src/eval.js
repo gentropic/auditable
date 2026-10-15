@@ -2,6 +2,12 @@
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
 import { adderParse, _adderParseExpr } from './parse.js';
+// the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
+import './stdlib.js';
+import './stdlib-types.js';
+import './stdlib-num.js';
+import './stdlib-time.js';
+import './stdlib-data.js';
 import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
@@ -10,19 +16,20 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
-const _excStack = [];
+const _excStack = excStack;   // shared with the AIR runtime (builtins.js)
 
 // ── scope ──
 
 export class AdderScope {
   constructor(parent = null) {
-    this.vars = new Map();
+    this.vars = new PyDict();
     this.parent = parent;
-    this.globals = new Set();
-    this.nonlocals = new Set();
+    this.globals = new PySet();
+    this.nonlocals = new PySet();
   }
   get(name) {
     if (this.globals.has(name)) return this._getGlobal(name);
@@ -88,7 +95,7 @@ export function _makeBudget(spec) {
   return { limit: steps, deadline: ms === Infinity ? Infinity : _now() + ms, ms, onStep: typeof spec.onStep === 'function' ? spec.onStep : null, count: 0, spent: null };
 }
 const _now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
-const _STMT = new Set(['Expr', 'Assign', 'AugAssign', 'AnnAssign', 'If', 'For', 'While', 'With', 'FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Return', 'Pass', 'Break', 'Continue', 'Import', 'ImportFrom', 'Raise', 'Try', 'Assert', 'Delete', 'Global', 'Nonlocal']);
+const _STMT = new PySet(['Expr', 'Assign', 'AugAssign', 'AnnAssign', 'If', 'For', 'While', 'With', 'FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Return', 'Pass', 'Break', 'Continue', 'Import', 'ImportFrom', 'Raise', 'Try', 'Assert', 'Delete', 'Global', 'Nonlocal']);
 // the read-only view of the current frame handed to onStep — one object, re-aimed
 // per statement (not a copy; the caller copies what it wants)
 const _view = {
@@ -124,7 +131,7 @@ export function _tickLine(line) {
 // here; `_resolveModule` looks here FIRST, before the built-ins and before
 // window._auditableExtensions. Process-wide, like adderModules. Dotted names
 // walk into the registered object (`from natra.linalg import inv` → mod.linalg).
-const _registered = new Map();
+const _registered = new PyDict();
 export function registerModule(name, mod) {
   if (typeof name !== 'string' || !name) throw new TypeError('registerModule: name must be a non-empty string');
   if (mod == null) throw new TypeError(`registerModule('${name}'): module must be an object`);
@@ -304,9 +311,12 @@ export async function adderEval(node, scope) {
 
     // ── collections ──
     case 'List': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return elts; }
-    case 'Tuple': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return elts; }
+    case 'Tuple': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return mkTuple(elts); }
     case 'Dict': {
-      const allStringKeys = node.keys.every(k => k && (k.type === 'Constant' && typeof k.value === 'string') || k === null);
+      // A literal whose keys are all string constants is a plain object, so JS cells read it
+      // as d.a. An EMPTY literal is a PyDict: it is filled with data keys later, and a plain
+      // object would turn d[5] into d['5'] and order integer-like keys first.
+      const allStringKeys = node.keys.length > 0 && node.keys.every(k => k && (k.type === 'Constant' && typeof k.value === 'string') || k === null);
       if (allStringKeys) {
         const obj = {};
         for (let i = 0; i < node.keys.length; i++) {
@@ -320,12 +330,15 @@ export async function adderEval(node, scope) {
         }
         return obj;
       }
-      const map = new Map();
+      const map = new PyDict();
       for (let i = 0; i < node.keys.length; i++) {
         if (node.keys[i] === null) {
           const src = await adderEval(node.values[i], scope);
           if (src instanceof Map) { for (const [k, v] of src) map.set(k, v); }
-          else { for (const k of Object.keys(src)) map.set(k, src[k]); }
+          else if (isPlainDict(src)) { for (const k of Object.keys(src)) map.set(k, src[k]); }
+          else if (src && typeof src.keys === 'function' && typeof src.__getitem__ === 'function') {
+            for (const k of await pyCollect(await src.keys())) map.set(k, await src.__getitem__(k));
+          } else throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not a mapping`);
         } else {
           map.set(await adderEval(node.keys[i], scope), await adderEval(node.values[i], scope));
         }
@@ -333,7 +346,7 @@ export async function adderEval(node, scope) {
       return map;
     }
     case 'Set': {
-      const s = new Set();
+      const s = new PySet();
       for (const e of node.elts) s.add(await adderEval(e, scope));
       return s;
     }
@@ -407,11 +420,13 @@ async function _assignTarget(target, value, scope) {
         if (d?.set?._pyFset) { await d.set._pyFset(obj, value); return null; }
         if (d) break;
       }
+      guardSetAttr(obj, target.attr);
       obj[target.attr] = value;
       break;
     }
     case 'Subscript': {
       const obj = await adderEval(target.value, scope);
+      if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`, target.line);
       if (target.slice.type === 'Slice') {
         const lower = target.slice.lower ? await adderEval(target.slice.lower, scope) : null;
         const upper = target.slice.upper ? await adderEval(target.slice.upper, scope) : null;
@@ -424,10 +439,13 @@ async function _assignTarget(target, value, scope) {
         break;
       }
       if (target.slice.type === 'Tuple') {
-        const key = [];
+        const raw = [];
         for (const elt of target.slice.elts) {
-          key.push(await _evalSliceElt(elt, scope));
+          raw.push(await _evalSliceElt(elt, scope));
         }
+        const key = mkTuple(raw);
+        if (obj instanceof Map) { obj.set(key, value); break; }
+        if (isPlainDict(obj)) { obj[key] = value; break; }
         if (obj && typeof obj.__setitem__ === 'function') {
           await obj.__setitem__(key, value);
           break;
@@ -609,7 +627,7 @@ function _pyIn(container, value) {
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
   if (container instanceof AdderRange) return container.includes(value);
-  if (typeof container === 'object' && container !== null) {
+  if (container !== null && (typeof container === 'object' || typeof container === 'function' && typeof container.__contains__ === 'function')) {
     if (typeof container.__contains__ === 'function') return container.__contains__(value);
     return value in container;
   }
@@ -652,11 +670,13 @@ async function _evalSubscript(node, scope) {
   // Falls back to a generic 2D ndarray-shape path (`{data, shape}`)
   // when __getitem__ isn't defined — covers learn / scitra outputs.
   if (node.slice.type === 'Tuple') {
-    const key = [];
+    const raw = [];
     for (const elt of node.slice.elts) {
-      key.push(await _evalSliceElt(elt, scope));
+      raw.push(await _evalSliceElt(elt, scope));
     }
+    const key = mkTuple(raw);
     if (obj && typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
+    if (obj instanceof Map || isPlainDict(obj)) return _withLine(() => pyGetItem(obj, key), node.line);
     // Generic 2D-ndarray-shape tuple subscript — accepts either a
     // wrapper `{data: Float64Array, shape}` or a bare Float64Array
     // with `.shape` tacked on (learn's transformer outputs).
@@ -702,9 +722,8 @@ async function _evalSubscript(node, scope) {
         return out;
       }
     }
-    throw new AdderError('TypeError',
-      `'${pyTypeName(obj)}' object is not subscriptable with tuple`,
-      node.line);
+    // anything else takes the tuple as one key (dict[str, int] on a class, a sequence's TypeError)
+    return _withLine(() => pyGetItem(obj, key), node.line);
   }
   const key = await adderEval(node.slice, scope);
   return _withLine(() => pyGetItem(obj, key), node.line);
@@ -719,7 +738,7 @@ function _applySlice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return typeof obj === 'string' ? obj.slice(l, u) : obj.slice(l, u);
+      return typeof obj === 'string' ? obj.slice(l, u) : obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
     }
     // general step
     let start, stop;
@@ -733,7 +752,7 @@ function _applySlice(obj, lower, upper, step) {
     const result = [];
     if (step > 0) { for (let i = start; i < stop; i += step) result.push(obj[i]); }
     else { for (let i = start; i > stop; i += step) result.push(obj[i]); }
-    return typeof obj === 'string' ? result.join('') : result;
+    return typeof obj === 'string' ? result.join('') : obj instanceof PyTuple ? mkTuple(result) : result;
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support slicing`);
 }
@@ -968,6 +987,16 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
       next(v) { return run().next(v); },
       send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
       close() { return run().return(undefined).then(() => null); },
+      // g.throw(exc): raise exc at the paused yield; the next value it yields, or StopIteration
+      throw(t, v) {
+        let exc = v ?? t;
+        if (typeof exc === 'function' && exc._pyClass) exc = exc();
+        return Promise.resolve(exc).then((x) => run().throw(excToThrowable(x))).then((r) => {
+          if (r.done) throw new AdderError('StopIteration', '', undefined, []);
+          return r.value;
+        });
+      },
+      _jsThrow(err) { return run().throw(err); },   // the JS protocol ({value, done}), for contextlib
       // sync iteration needs the values now; generators here are async (for await / list())
       [Symbol.iterator]() {
         throw new AdderError('TypeError', 'Use "for await" or list() with generators');
@@ -1092,7 +1121,7 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   }
   // (more positionals than params is not refused: JS calls Python callbacks with extras)
   if (kwObj) {
-    const names = new Set([...params.map(p => p.name), ...kwonly.map(p => p.name)]);
+    const names = new PySet([...params.map(p => p.name), ...kwonly.map(p => p.name)]);
     for (const k of Object.keys(kwObj)) {
       if (k === '_kw') continue;
       const i = params.findIndex(p => p.name === k);
@@ -1117,7 +1146,7 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
 
   // vararg
   if (vararg) {
-    localScope.set(vararg, callArgs.slice(positionalIdx));
+    localScope.set(vararg, mkTuple(callArgs.slice(positionalIdx)));
     positionalIdx = callArgs.length;
   }
 
@@ -1136,7 +1165,7 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   if (kwarg) {
     const extra = {};
     if (kwObj) {
-      const usedNames = new Set([...params.map(p => p.name), ...kwonly.map(p => p.name), '_kw']);
+      const usedNames = new PySet([...params.map(p => p.name), ...kwonly.map(p => p.name), '_kw']);
       for (const k of Object.keys(kwObj)) {
         if (!usedNames.has(k)) extra[k] = kwObj[k];
       }
@@ -1199,6 +1228,7 @@ async function _evalClass(node, scope) {
 
   // constructor function
   const cls = function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
     const instance = listBase
       ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: node.name, __adderType__: cls })
       : Object.create(cls.prototype);
@@ -1282,7 +1312,7 @@ async function _evalClass(node, scope) {
   // copy class variables to constructor (for @classmethod access via cls.attr)
   for (const [k, v] of Object.entries(classVars)) {
     if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-      cls[k] = v;
+      setClassAttr(cls, k, v);
     }
   }
 
@@ -1304,13 +1334,14 @@ async function _evalClass(node, scope) {
     if (value && (value.__staticmethod__ || value.__classmethod__) && cls[name]) { /* already set */ }
   }
 
-  cls._pyOwnMembers = new Set();
+  cls._pyOwnMembers = new PySet();
   for (const [name, value] of Object.entries(classVars)) {
     if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) cls._pyOwnMembers.add(name);
   }
 
   // set __class__ in class scope so super() works inside methods
   classScope.set('__class__', cls);
+  await finishClass(cls, classAnnotations(node.body));
 
   // handle decorators
   let result = cls;
@@ -1501,7 +1532,7 @@ async function* _genExprIter(node, scope, genIdx) {
 
 async function _evalComp(node, scope, kind) {
   // a dict comprehension builds a dict (a Map, like a dict literal), not a JS object
-  const result = kind === 'list' ? [] : kind === 'set' ? new Set() : new Map();
+  const result = kind === 'list' ? [] : kind === 'set' ? new PySet() : new PyDict();
   const compScope = new AdderScope(scope);
   await _evalCompIter(node, compScope, result, kind, 0);
   return result;
@@ -1582,7 +1613,7 @@ async function _instantiateModule(cacheKey, displayName, source, filePath) {
   const ast = adderParse(source);
   const modScope = new AdderScope();
   const builtins = adderBuiltins(() => {});
-  const builtinNames = new Set(Object.keys(builtins));
+  const builtinNames = new PySet(Object.keys(builtins));
   for (const [k, v] of Object.entries(builtins)) modScope.set(k, v);
   modScope.set('__name__', displayName);
   modScope.set('__file__', filePath);
@@ -1730,6 +1761,25 @@ function _remoteNote(nameOrPath) {
   return Array.isArray(sp) && sp.some(urlish) ? ' (remote imports are off)' : '';
 }
 
+// `import a.b.c` binds `a`, with b and c reachable as attributes (the module objects are
+// linked up, a namespace object standing in for a parent that is not a module of its own)
+export async function _importRoot(module, sub) {
+  const parts = module.split('.');
+  let root = _resolveModule(parts[0]) || await _loadVfsModule(parts[0]);
+  if (!root || (typeof root !== 'object' && typeof root !== 'function')) root = { __adderModule__: true, __name__: parts[0] };
+  let cur = root;
+  for (let i = 1; i < parts.length; i++) {
+    const name = parts.slice(0, i + 1).join('.');
+    let next = cur[parts[i]];
+    if (next === null || next === undefined || (typeof next !== 'object' && typeof next !== 'function')) {
+      next = i === parts.length - 1 ? sub : (_resolveModule(name) || { __adderModule__: true, __name__: name });
+      try { cur[parts[i]] = next; } catch { /* a frozen module: reachable already or not at all */ }
+    }
+    cur = next;
+  }
+  return root;
+}
+
 async function _evalImport(node, scope) {
   for (const { module, alias, path } of node.names) {
     if (path) {
@@ -1739,18 +1789,19 @@ async function _evalImport(node, scope) {
       continue;
     }
     let mod = _resolveModule(module);
+    const bind = async (m) => scope.set(alias || module.split('.')[0], !alias && module.includes('.') ? await _importRoot(module, m) : m);
     if (mod) {
-      scope.set(alias || module, mod);
+      await bind(mod);
       // import this — print the zen (side effect, like CPython)
       if (module === 'this' && mod.s) { const printFn = scope.has('print') ? scope.get('print') : null; if (printFn) await printFn(mod.s); }
       continue;
     }
     mod = await _loadVfsModule(module);
-    if (mod) { scope.set(alias || module, mod); continue; }
+    if (mod) { await bind(mod); continue; }
     mod = await _loadAuditableModule(module);
-    if (mod) { scope.set(alias || module, mod); continue; }
+    if (mod) { await bind(mod); continue; }
     mod = await _loadHttpModule(module);
-    if (mod) { scope.set(alias || module, mod); continue; }
+    if (mod) { await bind(mod); continue; }
     throw new AdderError('ModuleNotFoundError', `No module named '${module}'${_remoteNote(module)}`, node.line);
   }
   return null;

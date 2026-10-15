@@ -39,9 +39,9 @@ No `micropython.mjs`, no `micropython.wasm`, no `bridge.js`, no `init.js`. The e
 | `None` | `null` | |
 | `str` | `string` | |
 | `list` | `Array` | `append` → `push`, `len()` → `.length` |
-| `tuple` | `Array` | No enforcement of immutability. |
-| `dict` | plain `Object` (string keys) or `Map` (non-string keys) | See below. |
-| `set` | `Set` | |
+| `tuple` | `PyTuple` (a frozen `Array` subclass) | Prints `(1, 2)`, refuses item assignment, never equals a list; hashable, so a dict key or set member. `map` / `slice` / `concat` on it give plain arrays. |
+| `dict` | plain `Object` (a non-empty literal of string keys) or `PyDict` (a `Map` subclass) | See below. |
+| `set` | `PySet` (a `Set` subclass) | Members canonicalised like dict keys. |
 | `bytes` | `Uint8Array` | |
 | `function` | `function` | Closures work naturally. |
 | `class instance` | plain `Object` with `__adderClass__` | Prototype-based dispatch. |
@@ -49,7 +49,7 @@ No `micropython.mjs`, no `micropython.wasm`, no `bridge.js`, no `init.js`. The e
 
 ### Dict representation
 
-Dict literals with all string keys produce a plain `Object`. Dict literals with any non-string key produce a `Map`. This maximizes JS interop — downstream JS cells can use dot access on Python dicts:
+A non-empty dict literal whose keys are all string constants (and `dict(a=1)`) produces a plain `Object`; anything else — an empty `{}` or `dict()`, a literal with any non-string key, a comprehension — produces a `PyDict`. The plain object maximizes JS interop — downstream JS cells can use dot access on Python dicts:
 
 ```python
 # Python cell
@@ -60,7 +60,11 @@ config = {"host": "localhost", "port": 8080}
 display(config.host)  // works, no proxy
 ```
 
-`Map` dicts (non-string keys) have full `keys()`, `values()`, `items()`, `get()`, `pop()`, `setdefault()`, `update()`, `clear()`, `copy()` methods. Plain `Object` dicts also expose these same methods via `_objDictMethods` dispatch.
+`PyDict` dicts have full `keys()`, `values()`, `items()`, `get()`, `pop()`, `setdefault()`, `update()`, `clear()`, `copy()` methods. Plain `Object` dicts also expose these same methods via `_objDictMethods` dispatch.
+
+An empty `{}` is a `PyDict` because it is usually filled with data keys: as a plain object, `d[5] = 1` would store the key `'5'` and integer-like keys would iterate first.
+
+**Keys.** `PyDict` / `PySet` canonicalise keys through `hk()`: equal tuples (and frozensets, and objects with `__hash__`) are interned to one object, so the underlying JS `Map` / `Set` finds them; lists, dicts, sets and objects whose `__hash__` is `None` raise `TypeError: unhashable type`. Every `get` / `set` / `has` / `delete` goes through this, from either engine or from JS code holding the dict.
 
 ### No FFI boundary
 
@@ -239,7 +243,7 @@ The evaluator checks for dunder methods on the left operand before falling back 
 - **Tuple literals:** `(1, 2, 3)` — comma is the tuple operator, parens are grouping
 - **Starred unpacking** in literals: `[*a, *b]`, `{**d1, **d2}`
 - **Slicing:** `x[1:3]`, `x[::2]`, `x[::-1]` — works on strings, lists, bytes. Negative indices supported.
-- **Ellipsis:** `...` — parsed as `Constant(null)`
+- **Ellipsis:** `...` — the `Ellipsis` singleton (parsed as a reference to the builtin name); `NotImplemented` is a builtin too, and a binary dunder returning it falls back to the reflected one, then `TypeError`
 
 ### 3.9 Strings
 
@@ -639,11 +643,35 @@ sys.path              # ['.', 'lib', '/usr/lib/python']
 sys.modules           # cache of imported VFS modules
 sys.argv              # ['']
 sys.exit(code=0)      # raises SystemExit
-sys.stdout / stderr   # write() and flush() stubs
+sys.stdout / stderr   # write() to the program's output (run()'s stdout / stderr, a notebook cell's output)
+sys.exc_info() / sys.exception()   # the exception being handled, from either engine
 sys.getsizeof()       # returns 0
 sys.getrecursionlimit() / setrecursionlimit()
 sys.executable / prefix / exec_prefix / home
 ```
+
+### 8.1b Standard library
+
+Further modules live in `src/stdlib*.js` and register into `adderModules` at load. Each follows
+CPython's API and output and is held to it by the parity corpus (`test/python-parity/`); each
+module's header comment in the source says what it leaves out.
+
+| file | modules |
+|---|---|
+| `stdlib.js` | `__future__`, `typing` (incl. `NamedTuple`, `TypedDict`), `copy`, `operator`, `heapq`, `bisect`, `base64`, `binascii`, `html`, `textwrap`, `contextlib`, `io` (`StringIO`, `BytesIO`), `collections.abc` |
+| `stdlib-types.js` | `enum` (`Enum`, `IntEnum`, `StrEnum`, `Flag`, `IntFlag`, `auto`, `unique`, functional API), `dataclasses` |
+| `stdlib-num.js` | `fractions`, `decimal`, `statistics` (incl. `NormalDist`), and `math.erf` / `erfc` / `gamma` / `lgamma` / exact `fsum` / `sumprod` |
+| `stdlib-time.js` | `datetime` (`date`, `time`, `datetime`, `timedelta`, fixed-offset `timezone`), `time` |
+| `stdlib-data.js` | `csv`, `struct`, `hashlib`, `hmac`, `zlib`, `gzip`, `zipfile`, `uuid`, `urllib.parse`, `warnings`, `logging`, `tempfile` |
+
+Class-building modules hook the class machinery both engines share (`builtins.js`): a class
+body's annotations become `__annotations__` (their source text), `finishClass` calls the nearest
+base's `__init_subclass__` (enum is built on it), and a class may answer calls itself (`_pyNew`;
+`Color(1)` returns the member). Compression (`zlib`, `gzip`, `zipfile`) rides the platform's
+`CompressionStream`, so those calls are async; the output bytes are the platform's deflate, not
+CPython's zlib, and decompress to the same data. `datetime` is the proleptic Gregorian arithmetic
+of CPython's `datetime.py`, independent of the JS `Date` time zone; only the clock (`now`, `today`,
+local time) reads the browser.
 
 ### 8.2 Filesystem modules (VFS-backed)
 

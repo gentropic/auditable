@@ -611,3 +611,648 @@ except ValueError as e:
 ### exc/args-and-str
 e = ValueError("a", 2)
 print(e.args, str(e), repr(e), str(KeyError("k")), repr(KeyError("k")), str(ValueError()), repr(ValueError()))
+### mod/generic-alias
+from __future__ import annotations
+Vec = list[float]
+print(Vec, dict[str, list[int]], int | None, isinstance(3, int | str), isinstance(2.5, int | str))
+print(list[int] == list[int], (int | None) == (None | int), tuple[int, ...])
+### mod/typing-runtime
+from typing import Optional, List, Dict, Union, Callable, TypeVar, Generic, Any, cast
+T = TypeVar("T")
+class Box(Generic[T]):
+    def __init__(self, item: T) -> None:
+        self.item = item
+def first(xs: List[int]) -> Optional[int]:
+    return xs[0] if xs else None
+print(first([4, 5]), first([]), Box(3).item, cast(int, "x"), T)
+print(Optional[int], List[int], Dict[str, int], Union[int, str])
+### mod/typing-namedtuple
+from typing import NamedTuple
+class Point(NamedTuple):
+    x: int
+    y: int = 0
+    def norm1(self):
+        return abs(self.x) + abs(self.y)
+p = Point(3, -4)
+print(p, p.x, p.norm1(), Point(1), p._asdict(), p._replace(y=9), Point._fields)
+a, b = p
+print(a, b, p == (3, -4), isinstance(p, tuple), isinstance(p, Point), len(p))
+### mod/enum-basic
+from enum import Enum, auto
+class Color(Enum):
+    RED = 1
+    GREEN = 2
+    BLUE = auto()
+    CRIMSON = 1
+print(Color.RED, repr(Color.GREEN), Color(3), Color["RED"], list(Color), len(Color))
+print(Color.CRIMSON is Color.RED, Color.RED.name, Color.RED.value, isinstance(Color.RED, Color))
+print(type(Color.RED).__name__, Color.RED in Color, Color.RED == 1, f"{Color.BLUE}", sorted(Color.__members__))
+try:
+    Color(7)
+except ValueError as e:
+    print(e)
+try:
+    Color["PINK"]
+except KeyError as e:
+    print("KeyError", e)
+### mod/enum-int-str-flag
+from enum import IntEnum, StrEnum, Flag, IntFlag, auto
+class N(IntEnum):
+    A = 1
+    B = 2
+print(N.A + 1, N.B == 2, N.A < N.B, str(N.A), repr(N.B), f"{N.A:>3}", isinstance(N.A, int), [10, 20, 30][N.B])
+class S(StrEnum):
+    LOW = auto()
+    HIGH = "hi"
+print(S.LOW, repr(S.HIGH), S.HIGH == "hi", f"{S.LOW}!", S("hi"))
+class P(Flag):
+    R = auto()
+    W = auto()
+    X = auto()
+rw = P.R | P.W
+print(repr(rw), P.R in rw, P.X in rw, str(rw), list(rw), len(rw), bool(P.R & P.X), repr(~P.R))
+class Perm(IntFlag):
+    R = 4
+    W = 2
+    X = 1
+print(Perm.R | Perm.W, repr(Perm.R | Perm.X), Perm.R + 1)
+### mod/enum-functional-unique
+from enum import Enum, unique
+Animal = Enum("Animal", "CAT DOG")
+print(list(Animal), Animal.DOG.value, Animal(1))
+Shape = Enum("Shape", [("SQUARE", 4), ("TRIANGLE", 3)])
+print(Shape.SQUARE.value, Shape(3))
+try:
+    @unique
+    class U(Enum):
+        A = 1
+        B = 1
+except ValueError as e:
+    print(e)
+class Planet(Enum):
+    EARTH = (5, 2)
+    MARS = (1, 1)
+    def __init__(self, mass, radius):
+        self.mass = mass
+        self.radius = radius
+    def ratio(self):
+        return self.mass // self.radius
+print(Planet.EARTH.mass, Planet.EARTH.value, Planet.MARS.ratio(), Planet((1, 1)))
+class Base(Enum):
+    def describe(self):
+        return self.name.lower()
+class Mood(Base):
+    HAPPY = 1
+print(Mood.HAPPY.describe(), isinstance(Mood.HAPPY, Base))
+### mod/dataclass-full
+from dataclasses import dataclass, field, fields, asdict, astuple, replace, is_dataclass, FrozenInstanceError
+@dataclass(order=True)
+class Item:
+    name: str
+    qty: int = 0
+    tags: list = field(default_factory=list)
+a = Item("x", 2)
+b = Item("y")
+print(a, b, a < b, a == Item("x", 2, []), sorted([b, a]))
+print([f.name for f in fields(a)], asdict(a), astuple(b), replace(a, qty=5), is_dataclass(a), is_dataclass(3))
+@dataclass(frozen=True)
+class P:
+    x: int
+    y: int
+p = P(1, 2)
+try:
+    p.x = 9
+except FrozenInstanceError as e:
+    print("frozen:", e)
+print(hash(p) == hash(P(1, 2)), {p: "ok"}[P(1, 2)], len({P(1, 2), P(1, 2), P(2, 1)}))
+@dataclass
+class Q:
+    x: int
+try:
+    hash(Q(1))
+except TypeError as e:
+    print(e)
+@dataclass
+class Base:
+    a: int
+    b: int = 1
+@dataclass
+class Child(Base):
+    c: int = 2
+    def __post_init__(self):
+        self.total = self.a + self.b + self.c
+ch = Child(10)
+print(ch, ch.total, [f.name for f in fields(Child)])
+try:
+    Item()
+except TypeError as e:
+    print(e)
+try:
+    Item("a", 1, [], 4)
+except TypeError as e:
+    print(e)
+try:
+    @dataclass
+    class Bad:
+        a: int = 1
+        b: int
+except TypeError as e:
+    print(e)
+try:
+    @dataclass
+    class Bad2:
+        a: list = []
+except ValueError as e:
+    print(e)
+### mod/dataclass-kwonly-initvar
+from dataclasses import dataclass, field, KW_ONLY, InitVar
+@dataclass
+class Conf:
+    name: str
+    _: KW_ONLY
+    debug: bool = False
+    level: int = 1
+c = Conf("svc", level=3)
+print(c)
+@dataclass
+class Scaled:
+    v: int
+    factor: InitVar[int] = 2
+    def __post_init__(self, factor):
+        self.v = self.v * factor
+print(Scaled(5), Scaled(5, 10))
+@dataclass(kw_only=True)
+class K:
+    a: int
+    b: int = 0
+print(K(a=1), K(b=2, a=3))
+@dataclass
+class H:
+    x: int
+    y: int = field(default=0, repr=False, compare=False)
+print(H(1, 5), H(1, 5) == H(1, 6))
+### mod/copy-deep
+import copy
+a = [1, [2, 3], {"k": [4]}]
+b = copy.copy(a)
+c = copy.deepcopy(a)
+b[1].append(9)
+c[2]["k"].append(8)
+print(a, b, c, b[1] is a[1], c[1] is a[1])
+class Node:
+    def __init__(self, v):
+        self.v = v
+        self.kids = []
+n = Node(1)
+n.kids.append(Node(2))
+m = copy.deepcopy(n)
+m.kids[0].v = 99
+print(n.kids[0].v, m.kids[0].v, type(m).__name__)
+t = (1, [2])
+u = copy.deepcopy(t)
+u[1].append(3)
+print(t, u, copy.copy(t) is t)
+### mod/operator
+import operator
+from operator import itemgetter, attrgetter, methodcaller
+rows = [("b", 2), ("a", 3), ("c", 1)]
+print(sorted(rows, key=itemgetter(1)), sorted(rows, key=itemgetter(0)), itemgetter(0, 1)(rows[0]))
+class O:
+    def __init__(self, n):
+        self.n = n
+print([o.n for o in sorted([O(3), O(1)], key=attrgetter("n"))], methodcaller("upper")("hi"), methodcaller("split", ",")("a,b"))
+print(operator.add(2, 3), operator.mul("ab", 2), operator.neg(4), operator.truediv(7, 2), operator.floordiv(7, 2))
+print(operator.eq(1, 1), operator.lt(1, 2), operator.contains([1, 2], 2), operator.getitem({"a": 1}, "a"), operator.not_(0))
+from functools import reduce
+print(reduce(operator.mul, [1, 2, 3, 4]), operator.index(5), operator.countOf([1, 2, 1], 1))
+### mod/heapq-full
+import heapq
+h = []
+for x in [5, 1, 8, 3, 2, 9]:
+    heapq.heappush(h, x)
+print(h, heapq.heappop(h), h)
+data = [9, 4, 7, 1, 3]
+heapq.heapify(data)
+print(data, heapq.heappushpop(data, 0), heapq.heapreplace(data, 10), data)
+print(heapq.nlargest(2, [3, 1, 4, 1, 5]), heapq.nsmallest(3, [3, 1, 4, 1, 5]), heapq.nsmallest(2, ["bb", "a", "ccc"], key=len))
+print(list(heapq.merge([1, 4, 7], [2, 5], [3])))
+tasks = []
+heapq.heappush(tasks, (2, "write"))
+heapq.heappush(tasks, (1, "plan"))
+heapq.heappush(tasks, (3, "ship"))
+print([heapq.heappop(tasks)[1] for _ in range(3)])
+### mod/bisect-key
+import bisect
+a = [1, 2, 4, 4, 8]
+print(bisect.bisect_left(a, 4), bisect.bisect_right(a, 4), bisect.bisect(a, 5), bisect.bisect_left(a, 0))
+bisect.insort(a, 5)
+bisect.insort_left(a, 4)
+print(a)
+recs = [("a", 1), ("b", 3), ("c", 5)]
+print(bisect.bisect_left(recs, 3, key=lambda r: r[1]), bisect.bisect_right(recs, 3, key=lambda r: r[1]))
+grades = "FDCBA"
+print([grades[bisect.bisect([60, 70, 80, 90], s)] for s in [33, 99, 77, 70, 89, 90, 100]])
+### mod/base64
+import base64, binascii
+s = b"hello, world!?"
+e = base64.b64encode(s)
+print(e, base64.b64decode(e), base64.urlsafe_b64encode(b"\xfb\xff"), base64.b64encode(b"\xfb\xff"))
+print(base64.b32encode(b"abc"), base64.b32decode(b"MFRGG==="), base64.b16encode(b"\x01\xab"), base64.b16decode("01AB"))
+print(base64.b64decode("aGk="), base64.encodebytes(b"x" * 60), binascii.hexlify(b"\x00\xff"), binascii.unhexlify("00ff"))
+try:
+    base64.b64decode("abc")
+except binascii.Error as e:
+    print("Error:", e)
+print(binascii.crc32(b"hello"), base64.b64encode("ab".encode()))
+### mod/html
+import html
+print(html.escape('<a href="x">Tom & Jerry\'s</a>'), html.escape("<b>", quote=False))
+print(html.unescape("&lt;p&gt; &amp;amp; &copy; &#39; &#x41; &eacute; &nosuch; &mdash;"))
+### mod/textwrap-wrap
+import textwrap
+t = "The quick brown fox jumps over the lazy dog. A well-known pangram, used for type-setting demonstrations."
+print(textwrap.wrap(t, 20))
+print(textwrap.fill(t, width=30, initial_indent="> ", subsequent_indent="  "))
+print(textwrap.shorten(t, width=40), textwrap.shorten("Hello  world", width=12))
+print(repr(textwrap.dedent("    a\n      b\n    c\n")), repr(textwrap.indent("x\n\ny\n", "+ ")))
+print(textwrap.wrap("supercalifragilisticexpialidocious word", 10), textwrap.wrap("a-b-c-d-e-f-g long-hyphenated-word", 8))
+print(textwrap.wrap(t, 25, max_lines=2))
+w = textwrap.TextWrapper(width=15, break_long_words=False)
+print(w.wrap("tiny incomprehensibilities here"))
+### mod/contextlib
+from contextlib import contextmanager, suppress, nullcontext, closing, ExitStack, redirect_stdout
+import io
+log = []
+@contextmanager
+def tag(name):
+    log.append("enter " + name)
+    try:
+        yield name.upper()
+    finally:
+        log.append("exit " + name)
+with tag("a") as v:
+    log.append(v)
+try:
+    with tag("b"):
+        raise ValueError("boom")
+except ValueError as e:
+    log.append("caught " + str(e))
+print(log)
+@contextmanager
+def swallow():
+    try:
+        yield
+    except KeyError:
+        print("swallowed")
+with swallow():
+    raise KeyError("k")
+with suppress(ZeroDivisionError, KeyError):
+    1 / 0
+print("after suppress")
+with nullcontext(5) as n:
+    print(n)
+class R:
+    def close(self):
+        print("closed")
+with closing(R()):
+    pass
+with ExitStack() as st:
+    st.callback(print, "cb1")
+    st.callback(print, "cb2")
+    st.enter_context(tag("c"))
+print(log[-2:])
+buf = io.StringIO()
+with redirect_stdout(buf):
+    print("captured")
+print(repr(buf.getvalue()))
+### mod/io-stringio
+import io
+f = io.StringIO("line1\nline2\nline3")
+print(f.readline(), f.read(3), f.tell(), f.readlines())
+f.seek(0)
+print([l.strip() for l in f])
+g = io.StringIO()
+g.write("abc")
+g.write("def")
+g.seek(1)
+g.write("X")
+print(g.getvalue(), g.tell())
+print("to file", 1, 2, sep="|", file=g)
+print(repr(g.getvalue()))
+b = io.BytesIO(b"hello world")
+print(b.read(5), b.read(), b.getvalue(), b.tell())
+b2 = io.BytesIO()
+b2.write(b"ab")
+b2.write(bytes([67]))
+print(b2.getvalue(), len(b2.getvalue()))
+with io.StringIO("x") as h:
+    print(h.read())
+print(h.closed)
+### mod/sys-stdout
+import sys
+sys.stdout.write("no newline")
+sys.stdout.write("|done\n")
+print("to stdout", file=sys.stdout)
+n = sys.stdout.write("abc\n")
+print(n)
+### mod/fractions-full
+from fractions import Fraction
+import math
+f = Fraction(3, 4)
+print(f, repr(f), Fraction(1, 3) + Fraction(1, 6), f * 2, f / Fraction(3, 8), f - 1, 1 - f, f ** 2, f ** -2, -f, abs(-f))
+print(Fraction("0.125"), Fraction("-3/9"), Fraction(0.1), Fraction(2.5), Fraction(10, -4), f == 0.75, f < 1, f > Fraction(1, 2))
+print(float(f), int(Fraction(7, 2)), round(Fraction(5, 2)), round(Fraction(7, 2)), round(Fraction(1, 3), 2), math.floor(Fraction(-7, 2)), math.ceil(Fraction(-7, 2)))
+print(Fraction(3.141592653589793).limit_denominator(1000), Fraction(1, 7).limit_denominator(5), f.as_integer_ratio(), f + 0.5, hash(Fraction(2)) == hash(2))
+print(sum([Fraction(1, 3)] * 3), Fraction(7, 2) // 1, Fraction(7, 2) % 1, f.numerator, f.denominator, Fraction(2, 4).is_integer(), {Fraction(1, 2): "half"}[Fraction(2, 4)])
+### mod/decimal-full
+from decimal import Decimal, getcontext, localcontext, ROUND_HALF_UP, InvalidOperation, DivisionByZero
+d = Decimal("1.10")
+print(d, repr(d), d + Decimal("2.205"), d * 3, Decimal(1) / Decimal(7), Decimal(10) / Decimal(4), Decimal("1.30") / 2, Decimal(0.1))
+print(Decimal("123.456").quantize(Decimal("0.01")), Decimal("2.675").quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), Decimal("2.5").quantize(Decimal("1")), Decimal("-7.5") // 2, Decimal("-7.5") % 2)
+print(Decimal(2).sqrt(), Decimal("1.00").sqrt(), Decimal("1E+5"), Decimal("0.000001"), Decimal("0.0000001"), Decimal("1.2E-10"), Decimal("-0"), Decimal("100").normalize(), Decimal("1.500").normalize())
+print(Decimal("1.5") == Decimal("1.50"), Decimal("0.1") == 0.1, Decimal(3) == 3, Decimal("2.5") < 3, sorted([Decimal("1.1"), Decimal("0.9")]), max(Decimal("1"), Decimal("2")))
+print(int(Decimal("7.9")), float(Decimal("0.25")), round(Decimal("2.5")), round(Decimal("3.14159"), 2), f"{Decimal('1234.5678'):,.2f}", f"{Decimal('3.14159'):.3f}", format(Decimal("0.5"), "%"))
+print(Decimal("1.1") ** 2, Decimal(2) ** -2, Decimal("NaN"), Decimal("-Infinity"), Decimal("1e3").as_tuple(), hash(Decimal("0.5")) == hash(0.5))
+getcontext().prec = 6
+print(Decimal(1) / Decimal(7), Decimal("123456789") + 1)
+getcontext().prec = 28
+with localcontext() as ctx:
+    ctx.prec = 3
+    print(Decimal(2) / Decimal(3))
+print(Decimal(2) / Decimal(3))
+try:
+    Decimal(1) / Decimal(0)
+except DivisionByZero as e:
+    print("DivisionByZero", isinstance(e, ZeroDivisionError))
+try:
+    Decimal("abc")
+except InvalidOperation:
+    print("InvalidOperation")
+try:
+    Decimal("1.1") + 1.5
+except TypeError as e:
+    print(e)
+### mod/statistics-full
+import statistics as st
+from fractions import Fraction
+print(st.mean([1, 2, 3, 4]), st.mean([0.1, 0.2, 0.3]), st.fmean([0.1, 0.2, 0.3]), st.median([5, 1, 3, 2]), st.median_low([1, 3, 5, 7]), st.median_high([1, 3, 5, 7]))
+print(st.mode(["a", "b", "b", "c"]), st.multimode("aabbbcccc"), st.variance([2.75, 1.75, 1.25, 0.25, 0.5, 1.25, 3.5]), st.pvariance([0.0, 0.25, 0.25, 1.25, 1.5, 1.75, 2.75, 3.25]))
+print(st.stdev([1.5, 2.5, 2.5, 2.75, 3.25, 4.75]), st.pstdev([1.5, 2.5, 2.5, 2.75, 3.25, 4.75]), st.variance([1, 2, 3, 4, 5]), st.mean([Fraction(1, 3), Fraction(2, 3)]))
+print(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], n=4), st.median_grouped([52, 52, 53, 54]), st.geometric_mean([54, 24, 36]))
+x = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+y = [1, 2, 3, 1, 2, 3, 1, 2, 3]
+print(st.correlation(x, y), st.covariance(x, y), st.linear_regression(x, y))
+nd = st.NormalDist(100, 15)
+print(nd, round(nd.cdf(130), 10), round(nd.inv_cdf(0.9), 10), round(nd.pdf(100), 12), [f"{q:.6f}" for q in nd.quantiles()])
+print(st.NormalDist.from_samples([2.5, 3.1, 2.1, 2.4, 2.7, 3.5]), round(st.NormalDist(2.4, 1.6).overlap(st.NormalDist(3.2, 2.0)), 10))
+try:
+    st.mean([])
+except st.StatisticsError as e:
+    print("StatisticsError:", e)
+### mod/math-special
+import math
+print(math.erf(0.5), math.erfc(1.5), math.gamma(0.5), math.gamma(5.5), math.lgamma(10.3), math.gamma(-1.5), math.erf(3.0))
+print(math.fsum([0.1] * 10) == 1, math.sumprod([0.1, 0.2], [0.3, 0.4]), math.gamma(4.5), math.lgamma(0.5))
+try:
+    math.gamma(0)
+except ValueError as e:
+    print(e)
+### mod/datetime-full
+import datetime as dt
+from datetime import date, datetime, timedelta, timezone, time
+d = date(2024, 2, 28) + timedelta(days=2)
+print(d, d.isoformat(), d.weekday(), repr(d), d.isoweekday(), d.toordinal())
+print(d.isocalendar(), date(2021, 1, 3).isocalendar(), date(2026, 12, 31).isocalendar(), date.fromisocalendar(2020, 53, 5))
+print(date(2024, 3, 1) - date(2023, 3, 1), date.fromordinal(738000), date.fromisoformat("2023-07-14"), date(2000, 1, 1) < date(2000, 1, 2))
+print(d.replace(year=2023), d.ctime(), d.strftime("%A %B %j %U %W %a %b %y %w %G-W%V-%u"), f"{d:%Y/%m/%d}", d.timetuple().tm_yday)
+td = timedelta(days=1, hours=2, minutes=3, seconds=4.5)
+print(td, repr(td), td * 2, td / 2, -td, abs(-td), td // timedelta(hours=1), td % timedelta(hours=1))
+print(timedelta(weeks=1, milliseconds=1), timedelta(seconds=-1), repr(timedelta(0)), timedelta(microseconds=1.5), timedelta(microseconds=2.5))
+print(str(timedelta(days=-3, seconds=3)), timedelta(days=2) > timedelta(hours=47), timedelta(minutes=90) == timedelta(hours=1.5), divmod(timedelta(hours=5), timedelta(hours=2)))
+x = datetime(2024, 3, 10, 14, 30, 5, 123456)
+print(x, repr(x), x.isoformat(), x.isoformat(sep=" ", timespec="minutes"), x.date(), x.time(), x.strftime("%Y-%m-%d %H:%M:%S.%f %I%p"))
+print(x + timedelta(hours=10), x - timedelta(days=40), x - datetime(2024, 1, 1), x.replace(hour=0, minute=0), repr(datetime(2024, 1, 1)))
+print(datetime.strptime("2023-07-14 09:05:01", "%Y-%m-%d %H:%M:%S"), datetime.strptime("14/Jul/23 9:05 PM", "%d/%b/%y %I:%M %p"), datetime.fromisoformat("2011-11-04T00:05:23.283"))
+u = datetime(2024, 3, 10, 12, 0, tzinfo=timezone.utc)
+k = timezone(timedelta(hours=5, minutes=30))
+print(u, repr(u), u.astimezone(k), u.isoformat(), u.utcoffset(), u.tzname(), k, repr(k), timezone(timedelta(hours=-3), "BRT"))
+print(datetime.fromtimestamp(0, timezone.utc), datetime.fromtimestamp(1700000000.5, tz=timezone.utc), u - datetime(2024, 3, 10, 6, 0, tzinfo=k))
+print(datetime.fromisoformat("2024-03-10T12:00:00+02:00"), datetime.strptime("2024-03-10 12:00 +0200", "%Y-%m-%d %H:%M %z"), u.strftime("%z %Z"))
+print(time(9, 5), repr(time(9, 5, 3)), time(23, 59, 59, 999).isoformat(), time.fromisoformat("10:20:30"), datetime.combine(date(2020, 5, 17), time(8, 15)))
+print(sorted([date(2024, 5, 1), date(2023, 1, 9), date(2024, 1, 1)]), {date(2024, 1, 1): "new year"}[date(2024, 1, 1)], max(td, timedelta(days=2)))
+try:
+    date(2023, 2, 29)
+except ValueError as e:
+    print(e)
+try:
+    datetime(2024, 1, 1) < u
+except TypeError as e:
+    print(e)
+try:
+    datetime.strptime("2024-13-01", "%Y-%m-%d")
+except ValueError as e:
+    print(e)
+print(dt.MINYEAR, dt.MAXYEAR, date.min, date.max, datetime.max, timedelta.max, timedelta.min, timedelta.resolution)
+### mod/time-struct
+import time
+st = time.gmtime(0)
+print(st, st.tm_year, st[0], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(86400 * 365)), time.asctime(time.gmtime(1e9)))
+print(time.strptime("30 Nov 00", "%d %b %y")[:6], type(time.time()).__name__, time.mktime(time.localtime(1700000000)) == 1700000000)
+### mod/csv-full
+import csv, io
+f = io.StringIO('a,b\n1,2\n\n"x, y","he said ""hi"""\n"multi\nline",z\n')
+print(list(csv.reader(f)), list(csv.reader(["a;b;c", "1;;3"], delimiter=";")))
+out = io.StringIO()
+w = csv.writer(out)
+w.writerow(["name", "note", 3, None, 'say "hi"', "a,b"])
+w.writerows([[1, 2], ["x\ny", ""]])
+w2 = csv.writer(out, quoting=csv.QUOTE_ALL, lineterminator="\n")
+w2.writerow(["q", 5])
+print(repr(out.getvalue()))
+r = csv.DictReader(io.StringIO("name,age\nann,31\nbob,27,extra\ncid\n"))
+print([row for row in r], r.fieldnames)
+o2 = io.StringIO()
+dw = csv.DictWriter(o2, fieldnames=["x", "y"])
+dw.writeheader()
+dw.writerow({"x": 1, "y": "two"})
+dw.writerows([{"x": 3}, {"y": 4}])
+print(repr(o2.getvalue()), csv.list_dialects())
+try:
+    dw.writerow({"z": 1})
+except ValueError as e:
+    print(e)
+### mod/struct
+import struct
+print(struct.pack("<hHi", -2, 65535, 7), struct.pack(">I", 1), struct.unpack("<hHi", b"\xfe\xff\xff\xff\x07\x00\x00\x00"), struct.calcsize("<hHi"), struct.calcsize("@bi"))
+print(struct.pack("<d", 1.5), struct.unpack("<f", struct.pack("<f", 0.1)), struct.pack("<3s?c", b"ab", True, b"z"), struct.unpack(">q", b"\xff" * 8), struct.pack("<Q", 12345678901234))
+print(struct.pack("<e", 1.5), list(struct.iter_unpack("<H", b"\x01\x00\x02\x00")), struct.Struct("<ii").size, struct.Struct("<ii").unpack(b"\x01\x00\x00\x00\x02\x00\x00\x00"))
+for bad in [lambda: struct.pack("b", 200), lambda: struct.unpack("<i", b"ab"), lambda: struct.pack("<hh", 1)]:
+    try:
+        bad()
+    except struct.error as e:
+        print("struct.error:", e)
+### mod/hashlib-hmac
+import hashlib, hmac
+for name in ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"]:
+    print(name, hashlib.new(name, b"abc").hexdigest())
+h = hashlib.sha256()
+h.update(b"hello ")
+h2 = h.copy()
+h.update(b"world")
+print(h.hexdigest(), h2.hexdigest(), h.digest_size, h.block_size, h.name, hashlib.md5(b"").hexdigest(), hashlib.sha1(b"a" * 1000).hexdigest())
+print(hashlib.sha512(b"x" * 200).hexdigest()[:32], hashlib.sha256(bytes(range(256))).hexdigest())
+print(hmac.new(b"key", b"The quick brown fox", hashlib.sha256).hexdigest(), hmac.new(b"k", b"m", "md5").hexdigest(), hmac.compare_digest("a", "a"))
+print(hashlib.pbkdf2_hmac("sha256", b"password", b"salt", 2).hex(), hmac.digest(b"key", b"msg", "sha1").hex())
+try:
+    hashlib.sha256("text")
+except TypeError as e:
+    print(e)
+### mod/uuid
+import uuid
+u = uuid.UUID("12345678-1234-5678-1234-567812345678")
+print(u, repr(u), u.hex, u.int, u.version, u.variant, u.urn, uuid.uuid5(uuid.NAMESPACE_DNS, "python.org"), uuid.uuid3(uuid.NAMESPACE_URL, "x"))
+print(uuid.UUID(bytes=u.bytes) == u, uuid.uuid4().version, len(str(uuid.uuid4())), u.fields, uuid.UUID(int=1), uuid.UUID("{12345678-1234-5678-1234-567812345678}") == u)
+### mod/urllib-parse
+from urllib.parse import urlparse, urlsplit, urlunparse, urljoin, quote, quote_plus, unquote, unquote_plus, urlencode, parse_qs, parse_qsl, urldefrag
+p = urlparse("https://user:pw@Example.COM:8080/a/b;p?q=1&r=2#frag")
+print(p, p.hostname, p.port, p.username, p.password, p.geturl())
+print(urlsplit("//host/path"), urlparse("mailto:a@b.c"), urlparse("/just/path?x=1"), urlunparse(("http", "h", "/p", "", "a=1", "")))
+print([urljoin("http://a/b/c/d;p?q", rel) for rel in ["g", "./g", "g/", "/g", "//g", "?y", "g?y", "#s", "g#s", "..", "../g", "../..", "../../../g", ".", "./", "g;x"]])
+print(quote("a b/c?d=é&€"), quote("/x y", safe=""), quote_plus("a b&c=d"), unquote("caf%C3%A9%20x"), unquote_plus("a+b%2Bc"))
+print(urlencode({"a": 1, "b": "x y", "c": "é"}), urlencode([("k", "v"), ("k", "w")]), urlencode({"l": [1, 2]}, doseq=True))
+print(parse_qs("a=1&b=2&a=3&c="), parse_qs("c=", keep_blank_values=True), parse_qsl("x=1&y=a+b%21"), urldefrag("http://h/p#frag"))
+import urllib.parse
+print(urllib.parse.quote("~x y"))
+### mod/warnings
+import warnings
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    warnings.warn("deprecated thing", DeprecationWarning)
+    warnings.warn("plain")
+print([(str(c.message), c.category.__name__) for c in caught])
+with warnings.catch_warnings():
+    warnings.simplefilter("error")
+    try:
+        warnings.warn("boom", RuntimeWarning)
+    except RuntimeWarning as e:
+        print("raised", e)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    warnings.warn("silent")
+print("done")
+### mod/logging
+import io, logging
+stream = io.StringIO()
+log = logging.getLogger("app.db")
+handler = logging.StreamHandler(stream)
+handler.setFormatter(logging.Formatter("%(levelname)s|%(name)s|%(message)s"))
+log.addHandler(handler)
+log.setLevel(logging.DEBUG)
+log.debug("x=%d y=%s", 5, "z")
+log.info("info %(k)s", {"k": "v"})
+log.warning("warn")
+log.error("err")
+child = logging.getLogger("app.db.pool")
+child.critical("deep")
+log.propagate = False
+log.setLevel(logging.ERROR)
+log.info("hidden")
+print(repr(stream.getvalue()))
+print(logging.getLevelName(30), logging.getLevelName("ERROR"), log.getEffectiveLevel(), child.getEffectiveLevel(), logging.getLogger().level, child.parent.name, logging.getLogger("app.db") is log)
+s2 = io.StringIO()
+h3 = logging.StreamHandler(s2)
+h3.setFormatter(logging.Formatter("{levelname}:{message}", style="{"))
+lg = logging.getLogger("brace")
+lg.addHandler(h3)
+lg.warning("hi %s", "there")
+print(repr(s2.getvalue()))
+### mod/sys-exc-info
+import sys
+try:
+    1 / 0
+except ZeroDivisionError:
+    print(sys.exc_info()[0].__name__, repr(sys.exception()))
+    try:
+        raise KeyError("k")
+    except KeyError:
+        print(sys.exception())
+    print(repr(sys.exception()))
+print(sys.exc_info())
+### mod/zlib-roundtrip
+import zlib, gzip
+data = b"the quick brown fox " * 20
+c = zlib.compress(data)
+print(len(c) < len(data), zlib.decompress(c) == data, zlib.crc32(b"hello"), zlib.adler32(b"hello"), gzip.decompress(gzip.compress(b"gz!")))
+print(zlib.decompress(zlib.compress(b"raw", wbits=-15), wbits=-15), zlib.crc32(b"world", zlib.crc32(b"hello ")))
+### mod/zipfile-bytesio
+import zipfile, io
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+    z.writestr("a.txt", "alpha " * 10)
+    z.writestr("dir/b.bin", b"\x00\x01\x02")
+buf.seek(0)
+with zipfile.ZipFile(buf) as z:
+    print(z.namelist(), z.read("a.txt")[:11], z.read("dir/b.bin"), z.getinfo("a.txt").file_size, z.testzip())
+    with z.open("a.txt") as f:
+        print(f.read(5))
+print(zipfile.is_zipfile(buf), zipfile.is_zipfile(io.BytesIO(b"nope")))
+try:
+    zipfile.ZipFile(io.BytesIO(b"not a zip"))
+except zipfile.BadZipFile as e:
+    print("BadZipFile:", e)
+### mod/open-kwargs
+print(open.__name__)
+### mod/print-file-redirect
+import io, sys
+from contextlib import redirect_stdout, redirect_stderr
+buf = io.StringIO()
+print("a", 1, sep="-", end="!", file=buf)
+with redirect_stdout(buf):
+    print(" b")
+print(repr(buf.getvalue()))
+print("to stderr", file=sys.stderr)
+print("still stdout")
+### mod/collections-abc
+from collections.abc import Mapping, MutableMapping, Sequence, Iterable, Iterator, Hashable, Callable, Sized, MutableSequence
+import collections.abc
+import urllib.parse
+print(isinstance({}, Mapping), isinstance([], Sequence), isinstance((1,), Sequence), isinstance("s", Iterable), isinstance(iter([1]), Iterator))
+print(isinstance([], Hashable), isinstance((1, 2), Hashable), isinstance(len, Callable), isinstance(5, Iterable), isinstance({1}, Sized), isinstance((), MutableSequence))
+class M(Mapping):
+    def __init__(self, d):
+        self._d = d
+    def __getitem__(self, k):
+        return self._d[k]
+    def __iter__(self):
+        return iter(self._d)
+    def __len__(self):
+        return len(self._d)
+m = M({"a": 1, "b": 2})
+print(isinstance(m, Mapping), m.get("a"), m.get("z", 0), "a" in m, "q" in m, list(m.keys()), list(m.items()), list(m.values()), dict(m), m == {"a": 1, "b": 2})
+class Store(MutableMapping):
+    def __init__(self):
+        self.data = {}
+    def __getitem__(self, k):
+        return self.data[k]
+    def __setitem__(self, k, v):
+        self.data[k] = v
+    def __delitem__(self, k):
+        del self.data[k]
+    def __iter__(self):
+        return iter(self.data)
+    def __len__(self):
+        return len(self.data)
+s = Store()
+s["x"] = 1
+s.update({"y": 2}, z=3)
+print(s.setdefault("w", 9), s.pop("x"), s.pop("nope", "dflt"), len(s), sorted(s.items()))
+class Seq(Sequence):
+    def __init__(self, items):
+        self.items = items
+    def __getitem__(self, i):
+        return self.items[i]
+    def __len__(self):
+        return len(self.items)
+q = Seq([3, 1, 3])
+print(3 in q, q.index(1), q.count(3), list(reversed(q)), isinstance(q, Iterable))
+print(urllib.parse.quote("~x y"), collections.abc.Sized.__name__)

@@ -390,8 +390,7 @@ for vec in gen():
     out.append(vec)
 print(out)
 `);
-    // adder prints tuples as lists (tuple===Array in the data model)
-    assert.equal(r.output, '[[0], [0, 1], [0, 1, 2]]');
+    assert.equal(r.output, '[(0,), (0, 1), (0, 1, 2)]');
   });
 
   it('nested gen-in-gen with chained-eq inside (nqueens-shaped)', async () => {
