@@ -7,7 +7,7 @@ import {
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine, _importRoot } from './eval.js';
 
@@ -687,6 +687,9 @@ const _matchDescs = new Map();
 function _iterArray(obj) {
   if (Array.isArray(obj)) return obj;
   if (typeof obj === 'string') return obj;  // strings iterate char-by-char in JS for...of
+  // an iterator or generator (itertools.count, a generator expression) is read lazily, one item
+  // per step, so an infinite one can be broken out of; dicts and sets are snapshotted below
+  if (obj && typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') return obj;
   // Async iterables can't be materialised synchronously — return a Promise
   // and let the call site `await` it. Returning a sync iterable on the
   // common path keeps that fast path free of microtasks.
@@ -825,6 +828,16 @@ export const _py = {
   super: pySuper,
   bytesLit, dictLiteral,
   tuple: mkTuple,
+  // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
+  // when there is one, else the async variant
+  genExpr: (src, syncGen, asyncGen) => {
+    const sync = syncGen && src !== null && src !== undefined && !isUserIterable(src) &&
+      (Array.isArray(src) || typeof src === 'string' || typeof src[Symbol.iterator] === 'function');
+    const g = sync ? syncGen(_iterArray(src)) : asyncGen(_pyEach(src));
+    g.__adderClass__ = 'generator';
+    return g;
+  },
+  each: (src) => _pyEach(src),
   // match: [true, ...captures in `names` order] when the pattern fits, else null
   match: async (subject, descJson, vals, names) => {
     let desc = _matchDescs.get(descJson);

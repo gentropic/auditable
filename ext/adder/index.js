@@ -2315,8 +2315,21 @@ function _typedRepr(v) {
   return `[${parts.join(', ')}]`;
 }
 
+// <generator object g at 0x...>: a generator / iterator object as CPython shows it (the address
+// is a per-object id, as CPython's is its memory address)
+const _objAddr = (v) => `0x${(_pyHash(v) >>> 0).toString(16).toUpperCase().padStart(16, '0')}`;
+function _iterObjRepr(v) {
+  if (v === null || typeof v !== 'object') return null;
+  const tag = Object.prototype.toString.call(v);
+  if (v.__adderClass__ === 'generator' || tag === '[object Generator]' || tag === '[object AsyncGenerator]') {
+    return `<${tag === '[object AsyncGenerator]' && !v.__adderClass__ ? 'async_generator' : 'generator'} object ${v._genName || '<genexpr>'} at ${_objAddr(v)}>`;
+  }
+  return null;
+}
+
 function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
+  { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (v instanceof AdderError) {
     if (v.args) return `${v.pyType}(${v.args.map(pyRepr).join(', ')})`;
     return `${v.pyType}(${v.pyMessage === '' || v.pyMessage == null ? '' : pyRepr(String(v.pyMessage))})`;
@@ -2351,7 +2364,7 @@ function pyRepr(v) {
   if (v instanceof Complex) return v.__repr__();
   if (typeof v === 'function') {
     if (v._pyClass) return `<class '${v._pyName || v.name}'>`;
-    return `<function ${v._pyName || v.name || '<lambda>'}>`;
+    return `<function ${v._pyName || _jsFnName(v) || '<lambda>'}>`;
   }
   if (typeof v === 'object' && typeof v.__repr__ === 'function') return v.__repr__();
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
@@ -2387,6 +2400,7 @@ function _hasUserDunder(v, name) {
     && !(v instanceof Complex) && !ArrayBuffer.isView(v);
 }
 function pyReprMaybe(v) {
+  { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
   if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
@@ -2494,9 +2508,24 @@ function _lazyIter(name, genFn) {
     __adderClass__: name,
     [Symbol.asyncIterator]() { return run(); },
     next(v) { return run().next(v); },
-    __repr__() { return `<${name} object>`; },
+    __repr__() { return `<${name} object at ${_objAddr(this)}>`; },
   };
 }
+// the synchronous twin: a plain JS iterator (for-of reads it lazily), next() works, Python names its type
+function _lazySyncIter(name, genFn) {
+  let gen = null;
+  const run = () => gen || (gen = genFn());
+  return {
+    __adderClass__: name,
+    [Symbol.iterator]() { return run(); },
+    next(v) { return run().next(v); },
+    __repr__() { return ['count', 'repeat'].includes(name) ? `${name}(...)` : `<${name} object at ${_objAddr(this)}>`; },
+  };
+}
+// can this be read synchronously, item by item? (a list, str, range, dict, set, JS iterator —
+// not a user class's __iter__ or a tree-walked generator, which are async)
+const _isSyncSource = (v) => v !== null && v !== undefined && !isUserIterable(v) &&
+  (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function');
 const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && typeof v[Symbol.iterator] !== 'function';
 // iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
 function _pyEach(obj) {
@@ -2676,7 +2705,7 @@ function adderGetAttr(obj, attr) {
       try { get(probe, attr); } catch { ok = false; }
       if (ok) { const fn = (self, ...a) => (tn === 'dict' && isPlainDict(self) && _objDictMethods[attr] ? _objDictMethods[attr](self) : get(self, attr))(...a); fn._pyName = `${tn}.${attr}`; return fn; }
     }
-    if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || obj.name || '<function>';
+    if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
   }
@@ -3914,16 +3943,10 @@ function _aiter(obj) {
 }
 
 const _itertoolsModule = {
-  chain: (...iterables) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  chain: (...iterables) => _lazyIter('chain', async function*() {
         for (const it of iterables) for await (const v of _aiter(it)) yield v;
-      })();
-    },
   }),
-  product: (...iterables) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  product: (...iterables) => _lazyIter('product', async function*() {
         // product(*its, repeat=n): the keyword bag is not an iterable
         const kw = iterables.length && iterables[iterables.length - 1]?._kw ? iterables.pop() : null;
         const repeat = kw && kw.repeat != null ? kw.repeat : 1;
@@ -3939,12 +3962,8 @@ const _itertoolsModule = {
           while (i >= 0) { indices[i]++; if (indices[i] < arrs[i].length) break; indices[i] = 0; i--; }
           if (i < 0) break;
         }
-      })();
-    },
   }),
-  combinations: (iterable, r) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  combinations: (iterable, r) => _lazyIter('combinations', async function*() {
         const pool = await pyCollect(iterable);
         const n = pool.length;
         if (r > n) return;
@@ -3958,12 +3977,8 @@ const _itertoolsModule = {
           for (let j = i + 1; j < r; j++) indices[j] = indices[j - 1] + 1;
           yield mkTuple(indices.map(i => pool[i]));
         }
-      })();
-    },
   }),
-  permutations: (iterable, r) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  permutations: (iterable, r) => _lazyIter('permutations', async function*() {
         const pool = await pyCollect(iterable);
         const n = pool.length;
         r = r !== undefined ? r : n;
@@ -3980,38 +3995,22 @@ const _itertoolsModule = {
           }
           if (!found) break;
         }
-      })();
-    },
   }),
-  repeat: (value, times) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  repeat: (value, times) => _lazySyncIter('repeat', function*() {
         if (times === undefined) { while (true) yield value; }
         else { for (let i = 0; i < times; i++) yield value; }
-      })();
-    },
   }),
-  accumulate: (iterable, func) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  accumulate: (iterable, func) => _lazyIter('accumulate', async function*() {
         let acc, first = true;
         for await (const v of _aiter(iterable)) {
           if (first) { acc = v; first = true; yield acc; first = false; }
           else { acc = func ? func(acc, v) : acc + v; yield acc; }
         }
-      })();
-    },
   }),
-  starmap: (func, iterable) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  starmap: (func, iterable) => _lazyIter('starmap', async function*() {
         for await (const args of _aiter(iterable)) yield await func(...args);
-      })();
-    },
   }),
-  islice: (iterable, ...args) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  islice: (iterable, ...args) => _lazyIter('islice', async function*() {
         let start = 0, stop, step = 1;
         if (args.length === 1) { stop = args[0]; }
         else if (args.length === 2) { start = args[0]; stop = args[1]; }
@@ -4022,26 +4021,18 @@ const _itertoolsModule = {
           if (i >= start && (i - start) % step === 0) yield v;
           i++;
         }
-      })();
-    },
   }),
   zip_longest: (...args) => {
     let fillvalue = null;
     if (args.length > 0 && args[args.length - 1]?._kw) { fillvalue = args.pop().fillvalue ?? null; }
-    return {
-      [Symbol.asyncIterator]() {
-        return (async function*() {
-          const arrs = [];
-          for (const it of args) arrs.push(await pyCollect(it));
-          const maxLen = Math.max(...arrs.map(a => a.length));
-          for (let i = 0; i < maxLen; i++) yield mkTuple(arrs.map(a => i < a.length ? a[i] : fillvalue));
-        })();
-      },
-    };
+    return _lazyIter('zip_longest', async function*() {
+      const arrs = [];
+      for (const it of args) arrs.push(await pyCollect(it));
+      const maxLen = Math.max(...arrs.map(a => a.length));
+      for (let i = 0; i < maxLen; i++) yield mkTuple(arrs.map(a => i < a.length ? a[i] : fillvalue));
+    });
   },
-  groupby: (iterable, key) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  groupby: (iterable, key) => _lazyIter('groupby', async function*() {
         let currentKey, currentGroup = [], first = true;
         if (key && key._kw) key = key.key;
         for await (const item of _aiter(iterable)) {
@@ -4053,37 +4044,23 @@ const _itertoolsModule = {
           } else { currentGroup.push(item); }
         }
         if (currentGroup.length > 0) yield mkTuple([currentKey, currentGroup]);
-      })();
-    },
   }),
-  count: (start, step) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  count: (start, step) => _lazySyncIter('count', function*() {
         let n = start ?? 0;
         const s = step ?? 1;
         while (true) { yield n; n += s; }
-      })();
-    },
   }),
-  cycle: (iterable) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  cycle: (iterable) => _lazyIter('cycle', async function*() {
         const saved = [];
         for await (const v of _aiter(iterable)) { saved.push(v); yield v; }
         while (saved.length > 0) { for (const v of saved) yield v; }
-      })();
-    },
   }),
-  pairwise: (iterable) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  pairwise: (iterable) => _lazyIter('pairwise', async function*() {
         let prev, hasPrev = false;
         for await (const v of _aiter(iterable)) {
           if (hasPrev) yield mkTuple([prev, v]);
           prev = v; hasPrev = true;
         }
-      })();
-    },
   }),
 };
 
@@ -5222,6 +5199,9 @@ function printToFile(file, text) {
 // ── list[int], dict[str, int], int | None ──
 // The runtime objects annotations evaluate to: printable, comparable, and usable in isinstance
 // (a union); typing's Optional / List / … are the same objects under their typing names.
+// a compiled function's JS name, as Python names it: AIR emits a JS-reserved Python name with a
+// trailing `$` (function new$ for `def new`), and no Python identifier contains a `$`
+const _jsFnName = (f) => (typeof f.name === 'string' && f.name.endsWith('$') ? f.name.slice(0, -1) : f.name);
 const Ellipsis = Object.freeze({ __adderClass__: 'ellipsis', __repr__: () => 'Ellipsis', __str__: () => 'Ellipsis' });
 // a binary dunder's "not mine": Python then tries the reflected method (_viaDunder, pyEq)
 const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __repr__: () => 'NotImplemented', __bool__: () => true });
@@ -5530,19 +5510,52 @@ function adderBuiltins(printFn) {
       return pySorted(await pyCollect(iterable), key || null, !!reverse);
     },
     reversed: async (iterable) => { const arr = await pyCollect(iterable); arr.reverse(); return arr; },
-    enumerate: async (iterable, start) => {
-      const result = [];
+    // lazy iterators, as in Python 3 (zip(count(), xs) works); synchronous when every input is
+    enumerate: (iterable, start) => {
+      if (start && start._kw) start = start.start;
       let i = start || 0;
-      for (const v of await pyCollect(iterable)) result.push(mkTuple([i++, v]));
-      return result;
+      if (_isSyncSource(iterable)) return _lazySyncIter('enumerate', function* () { for (const v of pyIter(iterable)) yield mkTuple([i++, v]); });
+      return _lazyIter('enumerate', async function* () { for await (const v of _pyEach(iterable)) yield mkTuple([i++, v]); });
     },
-    zip: async (...iterables) => {
-      if (iterables.length === 0) return [];
-      const arrs = []; for (const it of iterables) arrs.push(await pyCollect(it));
-      const minLen = Math.min(...arrs.map(a => a.length));
-      const result = [];
-      for (let i = 0; i < minLen; i++) result.push(mkTuple(arrs.map(a => a[i])));
-      return result;
+    zip: (...iterables) => {
+      const kw = iterables.length && iterables[iterables.length - 1] && iterables[iterables.length - 1]._kw ? iterables.pop() : null;
+      const strict = !!(kw && kw.strict);
+      const shortErr = (i) => new AdderError('ValueError', `zip() argument ${i + 1} is shorter than argument${i > 1 ? 's 1-' + i : ' 1'}`);
+      const longErr = (i) => new AdderError('ValueError', `zip() argument ${i + 1} is longer than argument${i > 1 ? 's 1-' + i : ' 1'}`);
+      if (iterables.every(_isSyncSource)) {
+        return _lazySyncIter('zip', function* () {
+          if (!iterables.length) return;
+          const its = iterables.map((x) => pyIter(x));
+          for (;;) {
+            const vals = [];
+            for (let i = 0; i < its.length; i++) {
+              const r = its[i].next();
+              if (r.done) {
+                if (strict) { if (i > 0) throw shortErr(i); for (let k = 1; k < its.length; k++) if (!its[k].next().done) throw longErr(k); }
+                return;
+              }
+              vals.push(r.value);
+            }
+            yield mkTuple(vals);
+          }
+        });
+      }
+      return _lazyIter('zip', async function* () {
+        if (!iterables.length) return;
+        const its = iterables.map((x) => { const e = _pyEach(x); return e[Symbol.asyncIterator] ? e[Symbol.asyncIterator]() : e[Symbol.iterator](); });
+        for (;;) {
+          const vals = [];
+          for (let i = 0; i < its.length; i++) {
+            const r = await its[i].next();
+            if (r.done) {
+              if (strict) { if (i > 0) throw shortErr(i); for (let k = 1; k < its.length; k++) if (!(await its[k].next()).done) throw longErr(k); }
+              return;
+            }
+            vals.push(r.value);
+          }
+          yield mkTuple(vals);
+        }
+      });
     },
     // lazy iterators, as in Python 3: the function runs per item as the result is consumed
     map: (fn, ...iterables) => {
@@ -6764,6 +6777,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
     const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults));
     const genObj = {
       __adderClass__: 'generator',
+      _genName: node.name,
       [Symbol.asyncIterator]() { return run(); },
       next(v) { return run().next(v); },
       send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
@@ -8325,6 +8339,9 @@ const _matchDescs = new Map();
 function _iterArray(obj) {
   if (Array.isArray(obj)) return obj;
   if (typeof obj === 'string') return obj;  // strings iterate char-by-char in JS for...of
+  // an iterator or generator (itertools.count, a generator expression) is read lazily, one item
+  // per step, so an infinite one can be broken out of; dicts and sets are snapshotted below
+  if (obj && typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') return obj;
   // Async iterables can't be materialised synchronously — return a Promise
   // and let the call site `await` it. Returning a sync iterable on the
   // common path keeps that fast path free of microtasks.
@@ -8463,6 +8480,16 @@ const _py = {
   super: pySuper,
   bytesLit, dictLiteral,
   tuple: mkTuple,
+  // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
+  // when there is one, else the async variant
+  genExpr: (src, syncGen, asyncGen) => {
+    const sync = syncGen && src !== null && src !== undefined && !isUserIterable(src) &&
+      (Array.isArray(src) || typeof src === 'string' || typeof src[Symbol.iterator] === 'function');
+    const g = sync ? syncGen(_iterArray(src)) : asyncGen(_pyEach(src));
+    g.__adderClass__ = 'generator';
+    return g;
+  },
+  each: (src) => _pyEach(src),
   // match: [true, ...captures in `names` order] when the pattern fits, else null
   match: async (subject, descJson, vals, names) => {
     let desc = _matchDescs.get(descJson);
@@ -13778,10 +13805,10 @@ function _airCompile(ast, src, ticks) {
 }
 
 async function _airCall(compiled, opts, bindings) {
-  const args = [_py, ...compiled.imports.map((name) => bindings[name])];
+  const args = [_py, ...compiled.imports.map((name) => bindings[pyNameOf(name)])];
   const scope = await _withSandbox(opts, () => _withVfs(opts, () => compiled.fn(...args)));
   const out = {};
-  if (scope && typeof scope === 'object') for (const k of Object.keys(scope)) if (k !== '__lastExpr__') out[k] = scope[k];
+  if (scope && typeof scope === 'object') for (const k of Object.keys(scope)) if (k !== '__lastExpr__') out[pyNameOf(k)] = scope[k];
   return out;
 }
 
@@ -13847,7 +13874,7 @@ async function run(code, opts = {}) {
       pick = { engine: 'tree', why: `not compiled: ${String(e && e.message || e).split('\n')[0]}` };
     }
     if (compiled) {
-      const missing = compiled.imports.filter((n) => !(n in bindings));
+      const missing = compiled.imports.filter((n) => !(pyNameOf(n) in bindings));
       if (missing.length && pick.engine === 'auto') pick = { engine: 'tree', why: `free name ${missing[0]}` };
       else {
         if (opts.onEngine) opts.onEngine('air', null);
@@ -14268,6 +14295,17 @@ class AdderLowerCtx extends BaseLowerCtx {
     this._callSiteId = 0;
   }
   nextCallSiteId() { return this._callSiteId++; }
+  // the ops that put a Python name into the JS as a binding (see jsSafeName)
+  emit(op, args, type, loc, extra) {
+    if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && _JS_RESERVED.has(args[0])) args = [jsSafeName(args[0]), ...args.slice(1)];
+    else if (op === 'func_region' && extra) {
+      if (typeof args[0] === 'string') args = [jsSafeName(args[0]), ...args.slice(1)];
+      extra = { ...extra, name: extra.name ? jsSafeName(extra.name) : extra.name,
+        params: extra.params ? extra.params.map((p) => (p && typeof p.name === 'string' && _JS_RESERVED.has(p.name) ? { ...p, name: jsSafeName(p.name) } : p)) : extra.params };
+    } else if (op === 'for_of_region' && extra && _JS_RESERVED.has(extra.target_name)) extra = { ...extra, target_name: jsSafeName(extra.target_name) };
+    else if (op === 'opaque' && extra && _JS_RESERVED.has(extra._markDeclared)) extra = { ...extra, _markDeclared: jsSafeName(extra._markDeclared) };
+    return super.emit(op, args, type, loc, extra);
+  }
   loc(node) {
     return node?.line != null ? { line: node.line, col: node.col || 0 } : null;
   }
@@ -14279,6 +14317,18 @@ class AdderLowerCtx extends BaseLowerCtx {
     return this.emitNamespacedCall('_py', 'truthy', [valueOp], loc, BOOL);
   }
 }
+
+// ── Python names that JS reserves ──
+// `default`, `case`, `enum`, `eval`, ... are ordinary Python names but not legal JS bindings
+// (strict mode). In the emitted JS they become `name$` — `$` can't occur in a Python
+// identifier, so nothing collides. Everything Python sees keeps the Python name: keyword
+// arguments, class attributes, the names a cell exports and the free names it reads.
+const _JS_RESERVED = new Set(['break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
+  'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'new', 'null',
+  'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'let', 'static',
+  'implements', 'interface', 'package', 'private', 'protected', 'public', 'await', 'arguments', 'eval']);
+function jsSafeName(n) { return typeof n === 'string' && _JS_RESERVED.has(n) ? `${n}$` : n; }
+function pyNameOf(n) { return typeof n === 'string' && n.endsWith('$') && _JS_RESERVED.has(n.slice(0, -1)) ? n.slice(0, -1) : n; }
 
 // ── Module-level define collection ──
 // Python: any assignment at module level creates a binding in module scope.
@@ -14587,7 +14637,9 @@ function emitPyCall(ctx, method, args, loc, type) {
 // than crashing — debuggable but not catastrophic.
 function emitPyIter(ctx, src, loc, type) {
   const call = emitPyCall(ctx, 'iter', [src], loc, type);
-  if (src && src.op === 'await') {
+  // an awaited value, or a generator expression (its async variant), may be an async iterable,
+  // which _py.iter collects behind a promise
+  if (src && (src.op === 'await' || src._mayBeAsyncIter)) {
     return ctx.emit('await', [call.id], type || DYNAMIC, loc);
   }
   return call;
@@ -14680,7 +14732,7 @@ function lowerAdder(ast, source, opts) {
   for (const name of ctx.defines) {
     const ssaId = ctx.symbols.get(name);
     const type = ssaId ? (ctx.types.get(ssaId) || DYNAMIC) : DYNAMIC;
-    exports.set(name, { ssa_name: ssaId || null, type });
+    exports.set(jsSafeName(name), { ssa_name: ssaId || null, type });
   }
 
   return {
@@ -14689,8 +14741,8 @@ function lowerAdder(ast, source, opts) {
     // for downstream consumers (validator, debug tools).
     symbol_table: ctx.symbols.flatten(),
     exports,
-    imports: new Set(ctx.imports),
-    defines: new Set(ctx.defines),
+    imports: new Set([...ctx.imports].map(jsSafeName)),
+    defines: new Set([...ctx.defines].map(jsSafeName)),
     side_effects: true,
     _lastExpr: lastExpr,
   };
@@ -15128,6 +15180,11 @@ function _lowerSliceElt(ctx, elt, l) {
 
 function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
+
+  // eval / exec run source against the caller's live scope, which only the tree-walker has
+  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec') && !ctx.symbols.has(node.func.id)) {
+    throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
+  }
 
   // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
   if (node.func.type === 'Name' && node.func.id === 'super' && !ctx.symbols.has('super') && !(node.keywords || []).length) {
@@ -15648,7 +15705,7 @@ function lowerClassDef(ctx, node) {
     }
     // Append object literal containing all member names
     const pairs = classMemberNames.map(n => ({
-      key: n,
+      key: pyNameOf(n),
       id: ctx.emit('load', [n], DYNAMIC, l).id,
     }));
     const membersObj = ctx.emit('object_new', pairs, DYNAMIC, l);
@@ -15986,7 +16043,7 @@ function _declareFunctionLocals(ctx, node) {
   walk(node.body);
   for (const n of assigned) {
     if (keep.has(n) || typeof n !== 'string') continue;
-    emitRaw(ctx, `let ${n} = undefined;`, n);
+    emitRaw(ctx, `let ${jsSafeName(n)} = undefined;`, n);
     ctx.symbols.set(n, null);
   }
 }
@@ -16027,7 +16084,7 @@ function _buildParamBinding(ctx, node, l) {
       if (names.length === 0) {
         emitRaw(ctx, `if (arguments.length && ${bag}) _py.bindArgs(${fname}, [], arguments);`);
       } else {
-        emitRaw(ctx, `if (arguments.length < ${names.length} || ${bag}) [${names.join(', ')}] = _py.bindArgs(${fname}, ${JSON.stringify(names)}, arguments);`);
+        emitRaw(ctx, `if (arguments.length < ${names.length} || ${bag}) [${names.map(jsSafeName).join(', ')}] = _py.bindArgs(${fname}, ${JSON.stringify(names)}, arguments);`);
       }
     });
     // the params are locals of the body, as the general path below records them: without
@@ -16061,16 +16118,16 @@ function _buildParamBinding(ctx, node, l) {
     if (p.default) {
       // the default was evaluated once, at definition (lowerFuncDef / lowerLambda)
       const def = defaults[p.name] || _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
-      emitRaw(ctx, `let ${p.name} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : ${def});`, p.name);
+      emitRaw(ctx, `let ${jsSafeName(p.name)} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : ${def});`, p.name);
     } else {
-      emitRaw(ctx, `let ${p.name} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : _py.argError(${fname} + "() missing 1 required positional argument: '${p.name}'"));`, p.name);
+      emitRaw(ctx, `let ${jsSafeName(p.name)} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : _py.argError(${fname} + "() missing 1 required positional argument: '${p.name}'"));`, p.name);
     }
     ctx.symbols.set(p.name, null);
   }
 
   // *args — vararg
   if (vararg) {
-    emitRaw(ctx, `let ${vararg} = _py.tuple(__args.slice(${positionalParams.length}));`, vararg);
+    emitRaw(ctx, `let ${jsSafeName(vararg)} = _py.tuple(__args.slice(${positionalParams.length}));`, vararg);
     ctx.symbols.set(vararg, null);
     usedNames.push(vararg);
   }
@@ -16080,9 +16137,9 @@ function _buildParamBinding(ctx, node, l) {
     usedNames.push(p.name);
     if (p.default) {
       const def = defaults[p.name] || _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
-      emitRaw(ctx, `let ${p.name} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : ${def};`, p.name);
+      emitRaw(ctx, `let ${jsSafeName(p.name)} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : ${def};`, p.name);
     } else {
-      emitRaw(ctx, `let ${p.name} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : _py.argError(${fname} + "() missing 1 required keyword-only argument: '${p.name}'");`, p.name);
+      emitRaw(ctx, `let ${jsSafeName(p.name)} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : _py.argError(${fname} + "() missing 1 required keyword-only argument: '${p.name}'");`, p.name);
     }
     ctx.symbols.set(p.name, null);
   }
@@ -16090,7 +16147,7 @@ function _buildParamBinding(ctx, node, l) {
   // **kwargs — collect remaining
   if (kwarg) {
     const excludeList = [...usedNames, '_kw'].map(n => `'${n}'`).join(',');
-    emitRaw(ctx, `let ${kwarg} = {}; if (__kw) { const __used = new Set([${excludeList}]); for (const __k in __kw) if (!__used.has(__k)) ${kwarg}[__k] = __kw[__k]; }`, kwarg);
+    emitRaw(ctx, `let ${jsSafeName(kwarg)} = {}; if (__kw) { const __used = new Set([${excludeList}]); for (const __k in __kw) if (!__used.has(__k)) ${jsSafeName(kwarg)}[__k] = __kw[__k]; }`, kwarg);
     ctx.symbols.set(kwarg, null);
   }
   });
@@ -16101,6 +16158,7 @@ function _buildParamBinding(ctx, node, l) {
 // Helper: emit a raw JS line via an 'opaque' op (statement-level)
 function emitRaw(ctx, jsLine, declaredName = null) {
   const op = ctx.emit('opaque', [jsLine], VOID, null);
+  if (declaredName) declaredName = jsSafeName(declaredName);
   // When the raw line declares a name (`let X = ...;`), record it on the
   // op so the emitter pushes X into the current scope chain. Without this
   // hook, downstream `store X` ops re-emit `let X = ...` and trigger a
@@ -16221,7 +16279,9 @@ function lowerFuncDef(ctx, node) {
   let finalId = op.id;
   const doc = node.body.length > 0 && node.body[0].type === 'Expr' && node.body[0].value.type === 'Constant' &&
     typeof node.body[0].value.value === 'string' ? node.body[0].value.value : null;
-  if (doc !== null) emitRaw(ctx, `${name}.__doc__ = ${JSON.stringify(doc)};`);
+  if (doc !== null) emitRaw(ctx, `${jsSafeName(name)}.__doc__ = ${JSON.stringify(doc)};`);
+  // its generator objects show the function's name (`<generator object g at ...>`)
+  if (isGenerator) emitRaw(ctx, `${jsSafeName(name)}.prototype._genName = ${JSON.stringify(name)};`);
 
   // Apply decorators bottom-up: name = decorator(name)
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -16314,10 +16374,11 @@ function lowerListOrTuple(ctx, node) {
 function lowerComprehension(ctx, node) {
   const l = ctx.loc(node);
   const kind = node.type; // 'ListComp' | 'SetComp' | 'DictComp' | 'GeneratorExp'
+  if (kind === 'GeneratorExp') return lowerGeneratorExp(ctx, node);
 
   // Result storage depends on kind
   let tempName, initOp;
-  if (kind === 'ListComp' || kind === 'GeneratorExp') {
+  if (kind === 'ListComp') {
     initOp = ctx.emit('array_new', [], DYNAMIC, l);
     tempName = ctx.makeTempName('comp');
   } else if (kind === 'SetComp') {
@@ -16334,84 +16395,145 @@ function lowerComprehension(ctx, node) {
   ctx.emit('store', [tempName, initOp.id], VOID, l);
   ctx.symbols.set(tempName, initOp.id);
 
-  function buildComp(genIdx) {
-    if (genIdx >= node.generators.length) {
-      // innermost: append/add/set to result
-      const loadResult = ctx.emit('load', [tempName], DYNAMIC, l);
-      if (kind === 'ListComp' || kind === 'GeneratorExp') {
-        const val = lowerExpr_ad(ctx, node.elt);
-        ctx.emit('call_method', [loadResult.id, 'push', val.id], VOID, l);
-      } else if (kind === 'SetComp') {
-        const val = lowerExpr_ad(ctx, node.elt);
-        ctx.emit('call_method', [loadResult.id, 'add', val.id], VOID, l);
-      } else {
-        // DictComp: key and value
-        const key = lowerExpr_ad(ctx, node.key);
-        const val = lowerExpr_ad(ctx, node.value);
-        ctx.emit('call_method', [loadResult.id, 'set', key.id, val.id], VOID, l);
-      }
-      return;
+  // innermost: append / add / set into the result
+  const innermost = () => {
+    const loadResult = ctx.emit('load', [tempName], DYNAMIC, l);
+    if (kind === 'ListComp') {
+      const val = lowerExpr_ad(ctx, node.elt);
+      ctx.emit('call_method', [loadResult.id, 'push', val.id], VOID, l);
+    } else if (kind === 'SetComp') {
+      const val = lowerExpr_ad(ctx, node.elt);
+      ctx.emit('call_method', [loadResult.id, 'add', val.id], VOID, l);
+    } else {
+      const key = lowerExpr_ad(ctx, node.key);
+      const val = lowerExpr_ad(ctx, node.value);
+      ctx.emit('call_method', [loadResult.id, 'set', key.id, val.id], VOID, l);
     }
-    const gen = node.generators[genIdx];
-    const iter = lowerExpr_ad(ctx, gen.iter);
-    const iterArr = emitPyIter(ctx, iter, l);
-
-    let targetName;
-    const body = captureOps(ctx, () => {
-      // Handle target (Name or Tuple/List for unpacking)
-      if (gen.target.type === 'Name') {
-        targetName = gen.target.id;
-        ctx.symbols.set(targetName, null);
-      } else if (gen.target.type === 'Tuple' || gen.target.type === 'List') {
-        targetName = ctx.makeTempName('gen');
-        _preDeclareTargetNames(ctx, gen.target, l);
-        // Unpack inside the loop body
-        const tempLoad = ctx.emit('load', [targetName], DYNAMIC, l);
-        for (let i = 0; i < gen.target.elts.length; i++) {
-          const elt = gen.target.elts[i];
-          const idx = ctx.emit('const', [i], I32, l);
-          const item = emitPyCall(ctx, 'getitem', [tempLoad, idx], l);
-          lowerAssignTarget(ctx, elt, item, l);
-        }
-      } else {
-        throw new AirLowerError('unsupported comprehension target type');
-      }
-
-      function withFilters(filterIdx) {
-        if (!gen.ifs || filterIdx >= gen.ifs.length) {
-          buildComp(genIdx + 1);
-          return;
-        }
-        const cond = lowerExpr_ad(ctx, gen.ifs[filterIdx]);
-        const truthy = emitPyCall(ctx, 'truthy', [cond], l, BOOL);
-        const thenBody = captureOps(ctx, () => withFilters(filterIdx + 1));
-        ctx.emit('if_region', [truthy.id], VOID, l, {
-          then_body: thenBody, else_body: [], phis: [],
-        });
-      }
-      withFilters(0);
-    });
-
-    ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: targetName,
-    });
-  }
+  };
 
   // comprehension variables are the comprehension's own (Python 3): not module defines,
   // which would put a loop-scoped `let` into the module's returned names
   ctx._compDepth = (ctx._compDepth || 0) + 1;
-  try { buildComp(0); } finally { ctx._compDepth--; }
+  try {
+    _lowerCompLoops(ctx, node, 0, {
+      iterOf: (gen) => emitPyIter(ctx, lowerExpr_ad(ctx, gen.iter), l),
+      innermost, isAwait: false,
+    });
+  } finally { ctx._compDepth--; }
 
-  // a generator expression is computed eagerly here, but handed out as an iterator (next()
-  // works on it, it iterates once), as Python's generator object is
-  if (kind === 'GeneratorExp') return emitPyCall(ctx, 'genIter', [ctx.emit('load', [tempName], DYNAMIC, l)], l);
   return ctx.emit('load', [tempName], DYNAMIC, l);
+}
+
+// The loops of a comprehension: one for_of_region per `for` clause, its filters as nested ifs,
+// `opts.innermost` at the bottom. The loop variables are fresh bindings of each loop (a
+// comprehension's own scope, as in Python 3), never the enclosing function's or module's
+// variables of the same name.
+function _lowerCompLoops(ctx, node, genIdx, opts) {
+  const l = ctx.loc(node);
+  if (genIdx >= node.generators.length) { opts.innermost(); return; }
+  const gen = node.generators[genIdx];
+  const iterArr = opts.iterOf(gen, genIdx);
+
+  let targetName;
+  const body = captureOps(ctx, () => {
+    if (gen.target.type === 'Name') {
+      targetName = gen.target.id;
+      ctx.symbols.set(targetName, null);
+    } else if (gen.target.type === 'Tuple' || gen.target.type === 'List') {
+      targetName = ctx.makeTempName('gen');
+      // the unpacked names are this loop's own, declared afresh in its body
+      const names = new Set();
+      collectTargetNames(gen.target, names);
+      for (const n of names) { emitRaw(ctx, `let ${jsSafeName(n)};`, n); ctx.symbols.set(n, null); }
+      const tempLoad = ctx.emit('load', [targetName], DYNAMIC, l);
+      for (let i = 0; i < gen.target.elts.length; i++) {
+        const elt = gen.target.elts[i];
+        const idx = ctx.emit('const', [i], I32, l);
+        const item = emitPyCall(ctx, 'getitem', [tempLoad, idx], l);
+        lowerAssignTarget(ctx, elt, item, l);
+      }
+    } else {
+      throw new AirLowerError('unsupported comprehension target type');
+    }
+
+    const withFilters = (filterIdx) => {
+      if (!gen.ifs || filterIdx >= gen.ifs.length) { _lowerCompLoops(ctx, node, genIdx + 1, opts); return; }
+      const cond = lowerExpr_ad(ctx, gen.ifs[filterIdx]);
+      const truthy = emitPyCall(ctx, 'truthy', [cond], l, BOOL);
+      const thenBody = captureOps(ctx, () => withFilters(filterIdx + 1));
+      ctx.emit('if_region', [truthy.id], VOID, l, { then_body: thenBody, else_body: [], phis: [] });
+    };
+    withFilters(0);
+  });
+
+  ctx.emit('for_of_region', [iterArr.id], VOID, l, {
+    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait,
+  });
+}
+
+// does an op list await anywhere (not counting nested functions, which await for themselves)?
+function _opsAwait(ops) {
+  for (const op of ops || []) {
+    if (op.op === 'await' || (op.op === 'for_of_region' && op.is_await)) return true;
+    if (op.op === 'func_region' || op.op === 'class_region') continue;
+    for (const k of Object.keys(op)) {
+      const v = op[k];
+      if (Array.isArray(v) && v.length && v[0] && typeof v[0] === 'object' && typeof v[0].op === 'string' && _opsAwait(v)) return true;
+    }
+  }
+  return false;
+}
+
+// A generator expression is lazy, as in Python: it lowers to a generator function that yields
+// each element, called on its outermost iterable (evaluated now, as CPython does). Two
+// variants, chosen at run time by _py.genExpr:
+//   sync  — function*: a plain for-of over a synchronous source, when the expression has one
+//           `for` clause and its body awaits nothing. The common, fast case.
+//   async — async function*: for await at every level, for an async source (a tree-walked
+//           generator, itertools, map) or a body that awaits.
+function lowerGeneratorExp(ctx, node) {
+  const l = ctx.loc(node);
+  const src = lowerExpr_ad(ctx, node.generators[0].iter);
+  const SRC = '__gsrc';
+  const build = (isAwait) => {
+    const savedTop = ctx.topLevel;
+    ctx.topLevel = false;
+    ctx.symbols = ctx.symbols.push();
+    ctx.symbols.set(SRC, null);
+    ctx._compDepth = (ctx._compDepth || 0) + 1;
+    try {
+      return captureOps(ctx, () => _lowerCompLoops(ctx, node, 0, {
+        iterOf: (gen, idx) => (idx === 0 ? ctx.emit('load', [SRC], DYNAMIC, l)
+          : isAwait ? emitPyCall(ctx, 'each', [lowerExpr_ad(ctx, gen.iter)], l)
+            : emitPyIter(ctx, lowerExpr_ad(ctx, gen.iter), l)),
+        innermost: () => { ctx.emit('yield', [lowerExpr_ad(ctx, node.elt).id], DYNAMIC, l); },
+        isAwait,
+      }));
+    } finally {
+      ctx._compDepth--;
+      ctx.symbols = ctx.symbols.pop();
+      ctx.topLevel = savedTop;
+    }
+  };
+  const genFn = (body, isAsync) => ctx.emit('func_region', [null], DYNAMIC, l, {
+    name: null, params: [{ name: SRC, type: DYNAMIC }], body, ret_type: DYNAMIC, is_async: isAsync, is_generator: true,
+  });
+  let syncFn;
+  if (node.generators.length === 1) {
+    const syncBody = build(false);
+    syncFn = _opsAwait(syncBody) ? null : genFn(syncBody, false);
+  }
+  const asyncFn = genFn(build(true), true);
+  const call = emitPyCall(ctx, 'genExpr', [src, syncFn || ctx.emit('const', [null], VOID, l), asyncFn], l);
+  call._mayBeAsyncIter = true;   // a `for` over it may need to await (emitPyIter)
+  return call;
 }
 
 // -- cell.js --
 
 // Python cell type handler: parseNames, findUses, execute
 // adder v2 — pure JS interpreter, no WASM
+
 
 
 
@@ -16691,7 +16813,8 @@ async function pythonExecute(code, scopeIn, cell) {
         const fn = new AF(...allParams, emittedJS);
 
         // Resolve each import from scope
-        const argValues = importNames.map(name => {
+        const argValues = importNames.map(js => {
+          const name = pyNameOf(js);   // `default$` in the JS is `default` in Python
           if (scope.vars.has(name)) return scope.vars.get(name);
           return undefined;
         });
@@ -16701,8 +16824,9 @@ async function pythonExecute(code, scopeIn, cell) {
 
         // Extract defines (excluding synthetic __lastExpr__)
         if (result && typeof result === 'object') {
-          for (const [k, v] of Object.entries(result)) {
-            if (k === '__lastExpr__') { lastExpr = v; continue; }
+          for (const [jsk, v] of Object.entries(result)) {
+            if (jsk === '__lastExpr__') { lastExpr = v; continue; }
+            const k = pyNameOf(jsk);
             defines[k] = v;
             scope.set(k, v); // also populate scope for hooks
           }

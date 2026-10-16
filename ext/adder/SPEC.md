@@ -305,9 +305,11 @@ class AdderScope {
 
 **`in` on dicts:** checks keys (via `key in obj` for plain Objects, `map.has(key)` for Maps).
 
-**Generator expressions in AIR are computed eagerly** (then handed out as an iterator, so `next()` works): `any(f(x) for x in xs)` calls `f` on every item before deciding, and an infinite source never ends. The tree-walker's are lazy, as CPython's. `map()` and `filter()` are lazy iterators in both engines.
+**Lazy iteration.** Generator expressions, `map`, `filter`, `zip`, `enumerate` and itertools are lazy iterators in both engines, as in Python 3: `any(f(x) for x in xs)` stops at the first hit, `next(n for n in itertools.count() if ...)` and `for n in count(): ... break` end. AIR lowers a generator expression to a generator function with two variants chosen at run time: a sync `function*` over a synchronous source when the body awaits nothing (the fast, common case), else an `async function*` stepping with `for await`. AIR's own `for` loop still collects an *async* source (a tree-walked generator, an async itertools / map) before looping, so an infinite async source in a plain AIR `for` doesn't end; synchronous ones (lists, ranges, generator expressions, `count`, `zip` / `enumerate` of synchronous inputs) are read lazily.
 
-**JS reserved words as Python names** (`default`, `case`, `eval`, `enum`, ...) make AIR refuse the cell; it runs on the tree-walker instead (correct, slower).
+**JS reserved words as Python names** (`default`, `case`, `new`, `enum`, ...) are emitted as `name$` in AIR's JS (`$` can't occur in a Python identifier); keyword arguments, class attributes, a cell's exported names and its free names keep the Python spelling. `eval()` / `exec()` need the caller's live scope, so a cell calling them runs on the tree-walker.
+
+**Comprehension variables** belong to the comprehension (Python 3): `[x for x in xs]` leaves an outer `x` alone, in both engines.
 
 **Loop limits:** `while` loops are capped at 1,000,000 iterations. `for` loops yield to the event loop every 1,000 iterations to prevent page lockup.
 

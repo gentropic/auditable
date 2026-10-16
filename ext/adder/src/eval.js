@@ -992,6 +992,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
     const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults));
     const genObj = {
       __adderClass__: 'generator',
+      _genName: node.name,
       [Symbol.asyncIterator]() { return run(); },
       next(v) { return run().next(v); },
       send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },

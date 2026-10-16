@@ -24,7 +24,6 @@
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output",
-  "expr/genexp-lazy-any": "output"
+  "builtin/sum-start": "output"
  }
 }

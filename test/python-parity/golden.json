@@ -724,6 +724,18 @@
   "ctl/match-soft-keyword": {
    "out": "42\n1\n5\n",
    "error": null
+  },
+  "fn/js-reserved-names": {
+   "out": "1 dflt positional\n((1, 2), 5, [('this', 1), ('void', 2)]) 3 12 2\n15 class attr 10 True\n2\n[0, 1, 2] 4 4\nrest [1, 2]\n1 ['a', 'b']\n2\ncaught x\n8 10\nColor.RED switch new\n",
+   "error": null
+  },
+  "expr/lazy-iteration": {
+   "out": "8\n5 [0, 1, 2, 3, 4, 5]\nTrue [1, 2]\n[10, 12, 14]\nstopped at 30\n0 a 1 b 2 c \n2 5 [10] []\n4\n0 10 20 \nH EY\n[0, 1, 2, 3]\n1 [2, 3]\n[('a', 1), ('b', 2)]\n(8, 'brownest')\n{'ab': 2, 'c': 1} (0, 1, 2)\n5 False True\nTrue\nTrue True\n",
+   "error": null
+  },
+  "expr/comprehension-scope": {
+   "out": "[0, 2, 4] 5\n(['a', 'b'], 'kept', {1: 2}) outer a\n6 5\n",
+   "error": null
   }
  }
 }

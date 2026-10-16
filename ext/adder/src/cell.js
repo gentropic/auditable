@@ -5,6 +5,7 @@ import { adderParse, collectWalrusTargets, matchPatternNames } from './parse.js'
 import { adderEval, AdderScope, AdderError } from './eval.js';
 import { adderBuiltins, pyStr, pyRepr, _ensureFsModules, getAdderVFS, setAdderVFS, _stdio, printToFile } from './builtins.js';
 import { _py } from './runtime.js';
+import { pyNameOf } from './air-lower.js';
 
 // ── parseNames: extract module-scope defines from Python code ──
 // Uses the AST to find assignments at module scope — descends into with/for/if/
@@ -280,7 +281,8 @@ export async function pythonExecute(code, scopeIn, cell) {
         const fn = new AF(...allParams, emittedJS);
 
         // Resolve each import from scope
-        const argValues = importNames.map(name => {
+        const argValues = importNames.map(js => {
+          const name = pyNameOf(js);   // `default$` in the JS is `default` in Python
           if (scope.vars.has(name)) return scope.vars.get(name);
           return undefined;
         });
@@ -290,8 +292,9 @@ export async function pythonExecute(code, scopeIn, cell) {
 
         // Extract defines (excluding synthetic __lastExpr__)
         if (result && typeof result === 'object') {
-          for (const [k, v] of Object.entries(result)) {
-            if (k === '__lastExpr__') { lastExpr = v; continue; }
+          for (const [jsk, v] of Object.entries(result)) {
+            if (jsk === '__lastExpr__') { lastExpr = v; continue; }
+            const k = pyNameOf(jsk);
             defines[k] = v;
             scope.set(k, v); // also populate scope for hooks
           }

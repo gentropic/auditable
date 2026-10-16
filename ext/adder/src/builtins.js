@@ -315,8 +315,21 @@ function _typedRepr(v) {
   return `[${parts.join(', ')}]`;
 }
 
+// <generator object g at 0x...>: a generator / iterator object as CPython shows it (the address
+// is a per-object id, as CPython's is its memory address)
+const _objAddr = (v) => `0x${(_pyHash(v) >>> 0).toString(16).toUpperCase().padStart(16, '0')}`;
+function _iterObjRepr(v) {
+  if (v === null || typeof v !== 'object') return null;
+  const tag = Object.prototype.toString.call(v);
+  if (v.__adderClass__ === 'generator' || tag === '[object Generator]' || tag === '[object AsyncGenerator]') {
+    return `<${tag === '[object AsyncGenerator]' && !v.__adderClass__ ? 'async_generator' : 'generator'} object ${v._genName || '<genexpr>'} at ${_objAddr(v)}>`;
+  }
+  return null;
+}
+
 export function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
+  { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (v instanceof AdderError) {
     if (v.args) return `${v.pyType}(${v.args.map(pyRepr).join(', ')})`;
     return `${v.pyType}(${v.pyMessage === '' || v.pyMessage == null ? '' : pyRepr(String(v.pyMessage))})`;
@@ -351,7 +364,7 @@ export function pyRepr(v) {
   if (v instanceof Complex) return v.__repr__();
   if (typeof v === 'function') {
     if (v._pyClass) return `<class '${v._pyName || v.name}'>`;
-    return `<function ${v._pyName || v.name || '<lambda>'}>`;
+    return `<function ${v._pyName || _jsFnName(v) || '<lambda>'}>`;
   }
   if (typeof v === 'object' && typeof v.__repr__ === 'function') return v.__repr__();
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
@@ -387,6 +400,7 @@ function _hasUserDunder(v, name) {
     && !(v instanceof Complex) && !ArrayBuffer.isView(v);
 }
 export function pyReprMaybe(v) {
+  { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
   if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
@@ -494,9 +508,24 @@ function _lazyIter(name, genFn) {
     __adderClass__: name,
     [Symbol.asyncIterator]() { return run(); },
     next(v) { return run().next(v); },
-    __repr__() { return `<${name} object>`; },
+    __repr__() { return `<${name} object at ${_objAddr(this)}>`; },
   };
 }
+// the synchronous twin: a plain JS iterator (for-of reads it lazily), next() works, Python names its type
+function _lazySyncIter(name, genFn) {
+  let gen = null;
+  const run = () => gen || (gen = genFn());
+  return {
+    __adderClass__: name,
+    [Symbol.iterator]() { return run(); },
+    next(v) { return run().next(v); },
+    __repr__() { return ['count', 'repeat'].includes(name) ? `${name}(...)` : `<${name} object at ${_objAddr(this)}>`; },
+  };
+}
+// can this be read synchronously, item by item? (a list, str, range, dict, set, JS iterator —
+// not a user class's __iter__ or a tree-walked generator, which are async)
+const _isSyncSource = (v) => v !== null && v !== undefined && !isUserIterable(v) &&
+  (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function');
 const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && typeof v[Symbol.iterator] !== 'function';
 // iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
 export function _pyEach(obj) {
@@ -676,7 +705,7 @@ export function adderGetAttr(obj, attr) {
       try { get(probe, attr); } catch { ok = false; }
       if (ok) { const fn = (self, ...a) => (tn === 'dict' && isPlainDict(self) && _objDictMethods[attr] ? _objDictMethods[attr](self) : get(self, attr))(...a); fn._pyName = `${tn}.${attr}`; return fn; }
     }
-    if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || obj.name || '<function>';
+    if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
   }
@@ -1914,16 +1943,10 @@ function _aiter(obj) {
 }
 
 const _itertoolsModule = {
-  chain: (...iterables) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  chain: (...iterables) => _lazyIter('chain', async function*() {
         for (const it of iterables) for await (const v of _aiter(it)) yield v;
-      })();
-    },
   }),
-  product: (...iterables) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  product: (...iterables) => _lazyIter('product', async function*() {
         // product(*its, repeat=n): the keyword bag is not an iterable
         const kw = iterables.length && iterables[iterables.length - 1]?._kw ? iterables.pop() : null;
         const repeat = kw && kw.repeat != null ? kw.repeat : 1;
@@ -1939,12 +1962,8 @@ const _itertoolsModule = {
           while (i >= 0) { indices[i]++; if (indices[i] < arrs[i].length) break; indices[i] = 0; i--; }
           if (i < 0) break;
         }
-      })();
-    },
   }),
-  combinations: (iterable, r) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  combinations: (iterable, r) => _lazyIter('combinations', async function*() {
         const pool = await pyCollect(iterable);
         const n = pool.length;
         if (r > n) return;
@@ -1958,12 +1977,8 @@ const _itertoolsModule = {
           for (let j = i + 1; j < r; j++) indices[j] = indices[j - 1] + 1;
           yield mkTuple(indices.map(i => pool[i]));
         }
-      })();
-    },
   }),
-  permutations: (iterable, r) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  permutations: (iterable, r) => _lazyIter('permutations', async function*() {
         const pool = await pyCollect(iterable);
         const n = pool.length;
         r = r !== undefined ? r : n;
@@ -1980,38 +1995,22 @@ const _itertoolsModule = {
           }
           if (!found) break;
         }
-      })();
-    },
   }),
-  repeat: (value, times) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  repeat: (value, times) => _lazySyncIter('repeat', function*() {
         if (times === undefined) { while (true) yield value; }
         else { for (let i = 0; i < times; i++) yield value; }
-      })();
-    },
   }),
-  accumulate: (iterable, func) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  accumulate: (iterable, func) => _lazyIter('accumulate', async function*() {
         let acc, first = true;
         for await (const v of _aiter(iterable)) {
           if (first) { acc = v; first = true; yield acc; first = false; }
           else { acc = func ? func(acc, v) : acc + v; yield acc; }
         }
-      })();
-    },
   }),
-  starmap: (func, iterable) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  starmap: (func, iterable) => _lazyIter('starmap', async function*() {
         for await (const args of _aiter(iterable)) yield await func(...args);
-      })();
-    },
   }),
-  islice: (iterable, ...args) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  islice: (iterable, ...args) => _lazyIter('islice', async function*() {
         let start = 0, stop, step = 1;
         if (args.length === 1) { stop = args[0]; }
         else if (args.length === 2) { start = args[0]; stop = args[1]; }
@@ -2022,26 +2021,18 @@ const _itertoolsModule = {
           if (i >= start && (i - start) % step === 0) yield v;
           i++;
         }
-      })();
-    },
   }),
   zip_longest: (...args) => {
     let fillvalue = null;
     if (args.length > 0 && args[args.length - 1]?._kw) { fillvalue = args.pop().fillvalue ?? null; }
-    return {
-      [Symbol.asyncIterator]() {
-        return (async function*() {
-          const arrs = [];
-          for (const it of args) arrs.push(await pyCollect(it));
-          const maxLen = Math.max(...arrs.map(a => a.length));
-          for (let i = 0; i < maxLen; i++) yield mkTuple(arrs.map(a => i < a.length ? a[i] : fillvalue));
-        })();
-      },
-    };
+    return _lazyIter('zip_longest', async function*() {
+      const arrs = [];
+      for (const it of args) arrs.push(await pyCollect(it));
+      const maxLen = Math.max(...arrs.map(a => a.length));
+      for (let i = 0; i < maxLen; i++) yield mkTuple(arrs.map(a => i < a.length ? a[i] : fillvalue));
+    });
   },
-  groupby: (iterable, key) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  groupby: (iterable, key) => _lazyIter('groupby', async function*() {
         let currentKey, currentGroup = [], first = true;
         if (key && key._kw) key = key.key;
         for await (const item of _aiter(iterable)) {
@@ -2053,37 +2044,23 @@ const _itertoolsModule = {
           } else { currentGroup.push(item); }
         }
         if (currentGroup.length > 0) yield mkTuple([currentKey, currentGroup]);
-      })();
-    },
   }),
-  count: (start, step) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  count: (start, step) => _lazySyncIter('count', function*() {
         let n = start ?? 0;
         const s = step ?? 1;
         while (true) { yield n; n += s; }
-      })();
-    },
   }),
-  cycle: (iterable) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  cycle: (iterable) => _lazyIter('cycle', async function*() {
         const saved = [];
         for await (const v of _aiter(iterable)) { saved.push(v); yield v; }
         while (saved.length > 0) { for (const v of saved) yield v; }
-      })();
-    },
   }),
-  pairwise: (iterable) => ({
-    [Symbol.asyncIterator]() {
-      return (async function*() {
+  pairwise: (iterable) => _lazyIter('pairwise', async function*() {
         let prev, hasPrev = false;
         for await (const v of _aiter(iterable)) {
           if (hasPrev) yield mkTuple([prev, v]);
           prev = v; hasPrev = true;
         }
-      })();
-    },
   }),
 };
 
@@ -3222,6 +3199,9 @@ export function printToFile(file, text) {
 // ── list[int], dict[str, int], int | None ──
 // The runtime objects annotations evaluate to: printable, comparable, and usable in isinstance
 // (a union); typing's Optional / List / … are the same objects under their typing names.
+// a compiled function's JS name, as Python names it: AIR emits a JS-reserved Python name with a
+// trailing `$` (function new$ for `def new`), and no Python identifier contains a `$`
+const _jsFnName = (f) => (typeof f.name === 'string' && f.name.endsWith('$') ? f.name.slice(0, -1) : f.name);
 export const Ellipsis = Object.freeze({ __adderClass__: 'ellipsis', __repr__: () => 'Ellipsis', __str__: () => 'Ellipsis' });
 // a binary dunder's "not mine": Python then tries the reflected method (_viaDunder, pyEq)
 export const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __repr__: () => 'NotImplemented', __bool__: () => true });
@@ -3530,19 +3510,52 @@ export function adderBuiltins(printFn) {
       return pySorted(await pyCollect(iterable), key || null, !!reverse);
     },
     reversed: async (iterable) => { const arr = await pyCollect(iterable); arr.reverse(); return arr; },
-    enumerate: async (iterable, start) => {
-      const result = [];
+    // lazy iterators, as in Python 3 (zip(count(), xs) works); synchronous when every input is
+    enumerate: (iterable, start) => {
+      if (start && start._kw) start = start.start;
       let i = start || 0;
-      for (const v of await pyCollect(iterable)) result.push(mkTuple([i++, v]));
-      return result;
+      if (_isSyncSource(iterable)) return _lazySyncIter('enumerate', function* () { for (const v of pyIter(iterable)) yield mkTuple([i++, v]); });
+      return _lazyIter('enumerate', async function* () { for await (const v of _pyEach(iterable)) yield mkTuple([i++, v]); });
     },
-    zip: async (...iterables) => {
-      if (iterables.length === 0) return [];
-      const arrs = []; for (const it of iterables) arrs.push(await pyCollect(it));
-      const minLen = Math.min(...arrs.map(a => a.length));
-      const result = [];
-      for (let i = 0; i < minLen; i++) result.push(mkTuple(arrs.map(a => a[i])));
-      return result;
+    zip: (...iterables) => {
+      const kw = iterables.length && iterables[iterables.length - 1] && iterables[iterables.length - 1]._kw ? iterables.pop() : null;
+      const strict = !!(kw && kw.strict);
+      const shortErr = (i) => new AdderError('ValueError', `zip() argument ${i + 1} is shorter than argument${i > 1 ? 's 1-' + i : ' 1'}`);
+      const longErr = (i) => new AdderError('ValueError', `zip() argument ${i + 1} is longer than argument${i > 1 ? 's 1-' + i : ' 1'}`);
+      if (iterables.every(_isSyncSource)) {
+        return _lazySyncIter('zip', function* () {
+          if (!iterables.length) return;
+          const its = iterables.map((x) => pyIter(x));
+          for (;;) {
+            const vals = [];
+            for (let i = 0; i < its.length; i++) {
+              const r = its[i].next();
+              if (r.done) {
+                if (strict) { if (i > 0) throw shortErr(i); for (let k = 1; k < its.length; k++) if (!its[k].next().done) throw longErr(k); }
+                return;
+              }
+              vals.push(r.value);
+            }
+            yield mkTuple(vals);
+          }
+        });
+      }
+      return _lazyIter('zip', async function* () {
+        if (!iterables.length) return;
+        const its = iterables.map((x) => { const e = _pyEach(x); return e[Symbol.asyncIterator] ? e[Symbol.asyncIterator]() : e[Symbol.iterator](); });
+        for (;;) {
+          const vals = [];
+          for (let i = 0; i < its.length; i++) {
+            const r = await its[i].next();
+            if (r.done) {
+              if (strict) { if (i > 0) throw shortErr(i); for (let k = 1; k < its.length; k++) if (!(await its[k].next()).done) throw longErr(k); }
+              return;
+            }
+            vals.push(r.value);
+          }
+          yield mkTuple(vals);
+        }
+      });
     },
     // lazy iterators, as in Python 3: the function runs per item as the result is consumed
     map: (fn, ...iterables) => {

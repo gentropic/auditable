@@ -6,7 +6,7 @@ import { adderParse, _adderParseExpr } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule } from './eval.js';
 import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio } from './builtins.js';
 import { _py } from './runtime.js';
-import { lowerAdder, PY_SPECIALIZATIONS } from './air-lower.js';
+import { lowerAdder, PY_SPECIALIZATIONS, pyNameOf } from './air-lower.js';
 
 // Strip common leading whitespace. Python has no meaningful indentation at the
 // module level, so a natural template literal like `\n    def foo(): ...` can
@@ -153,10 +153,10 @@ export function _airCompile(ast, src, ticks) {
 }
 
 export async function _airCall(compiled, opts, bindings) {
-  const args = [_py, ...compiled.imports.map((name) => bindings[name])];
+  const args = [_py, ...compiled.imports.map((name) => bindings[pyNameOf(name)])];
   const scope = await _withSandbox(opts, () => _withVfs(opts, () => compiled.fn(...args)));
   const out = {};
-  if (scope && typeof scope === 'object') for (const k of Object.keys(scope)) if (k !== '__lastExpr__') out[k] = scope[k];
+  if (scope && typeof scope === 'object') for (const k of Object.keys(scope)) if (k !== '__lastExpr__') out[pyNameOf(k)] = scope[k];
   return out;
 }
 
@@ -222,7 +222,7 @@ export async function run(code, opts = {}) {
       pick = { engine: 'tree', why: `not compiled: ${String(e && e.message || e).split('\n')[0]}` };
     }
     if (compiled) {
-      const missing = compiled.imports.filter((n) => !(n in bindings));
+      const missing = compiled.imports.filter((n) => !(pyNameOf(n) in bindings));
       if (missing.length && pick.engine === 'auto') pick = { engine: 'tree', why: `free name ${missing[0]}` };
       else {
         if (opts.onEngine) opts.onEngine('air', null);

@@ -773,14 +773,16 @@ function emitForOf(ctx, op) {
   // to the cell-level binding so the value persists past the loop.
   ctx.pushScope();
   try {
+    // fresh_target: the variable belongs to this loop alone (a comprehension's), even when an
+    // enclosing scope has one of the same name
     let kind;
-    if (ctx.scope.has(target)) {
+    if (ctx.scope.has(target) && !op.fresh_target) {
       kind = '';
     } else {
       kind = 'let ';
       ctx.scope.declare(target);
     }
-    ctx.line(`for (${kind}${target} of ${iter}) {`);
+    ctx.line(`for ${op.is_await ? 'await ' : ''}(${kind}${target} of ${iter}) {`);
     ctx.push();
     ctx.pushLoop(null);
     if (op.body) emitOps(ctx, op.body);
@@ -837,7 +839,7 @@ function emitLoop(ctx, op) {
 function _bodyHasAwait(body) {
   if (!body || !body.length) return false;
   for (const op of body) {
-    if (op.op === 'await') return true;
+    if (op.op === 'await' || (op.op === 'for_of_region' && op.is_await)) return true;
     if (op.op === 'func_region' || op.op === 'class_region') continue;
     let found = false;
     forEachRegion(op, (_n, rops) => { if (!found && _bodyHasAwait(rops)) found = true; });
