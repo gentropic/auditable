@@ -579,6 +579,14 @@ export async function* pyIterAsync(obj) {
 }
 
 export async function pyCollect(obj) {
+  // the common sources, without a generator step per item: a list or tuple copies (a fresh
+  // plain list — PyTuple's species is Array), a range fills by counting
+  if (Array.isArray(obj)) return obj.slice();
+  if (obj instanceof AdderRange) {
+    const out = new Array(obj.length);
+    for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
+    return out;
+  }
   if (isUserIterable(obj)) {
     const arr = [];
     for await (const v of pyIterAsync(obj)) arr.push(v);
@@ -1272,6 +1280,7 @@ function _binErr(sym, a, b) {
   return new AdderError('TypeError', `unsupported operand type(s) for ${sym}: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
 }
 function _viaDunder(a, b, d, rd) {
+  if (!_obj(a) && !_obj(b)) return null;   // numbers, strings, …: no dunders, and no closures allocated per call
   const refl = () => (_obj(b) && typeof b[rd] === 'function' && b[rd] !== a[d] ? b[rd](a) : NotImplemented);
   const fail = (r) => {
     if (r !== NotImplemented) return r;
@@ -1309,6 +1318,7 @@ function _bitOp(op, a, b) {
 }
 
 export function pyAdd(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;   // the hot case, first
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
@@ -1333,6 +1343,7 @@ export function pyIAddBuiltin(a, b) {
   return pyAdd(a, b);
 }
 export function pySub(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);
   if (a instanceof Set && b instanceof Set) return _setLike(a, [...a].filter((x) => !b.has(x)));
@@ -1348,6 +1359,7 @@ function _repeat(seq, n) {
   return seq instanceof PyTuple ? mkTuple(r) : r;
 }
 export function pyMul(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a * b;
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) * _asInt(b);
   if (typeof a === 'string' || Array.isArray(a) || a instanceof Uint8Array) { const r = _repeat(a, b); if (r !== null) return r; }
@@ -1712,16 +1724,19 @@ function _ltPlain(op, a, b) {
   throw _orderError(op, a, b);
 }
 export function pyLt(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a < b;
   if (_hasDunder(a, '__lt__')) return a.__lt__(b);
   if (_hasDunder(b, '__gt__')) return b.__gt__(a);
   return _ltPlain('<', a, b);
 }
 export function pyGt(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a > b;
   if (_hasDunder(a, '__gt__')) return a.__gt__(b);
   if (_hasDunder(b, '__lt__')) return b.__lt__(a);
   return _ltPlain('>', b, a);
 }
 export function pyLe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a <= b;
   if (_hasDunder(a, '__le__')) return a.__le__(b);
   if (_hasDunder(b, '__ge__')) return b.__ge__(a);
   if (_numLike(a) && _numLike(b)) return a <= b;
@@ -1730,6 +1745,7 @@ export function pyLe(a, b) {
   return _ltPlain('<=', a, b) || pyEq(a, b);
 }
 export function pyGe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a >= b;
   if (_hasDunder(a, '__ge__')) return a.__ge__(b);
   if (_hasDunder(b, '__le__')) return b.__le__(a);
   if (_numLike(a) && _numLike(b)) return a >= b;
@@ -3513,17 +3529,22 @@ export function adderBuiltins(printFn) {
     // lists concatenate; anything else through its __add__; strings are refused, as in Python
     sum: async (iterable, start) => {
       if (start && start._kw) start = start.start;
-      const items = await pyCollect(iterable);
+      const items = Array.isArray(iterable) ? iterable : await pyCollect(iterable);   // read, never kept: no copy
       let s = start !== undefined ? start : 0;
       if (typeof s === 'string') throw new AdderError('TypeError', "sum() can't sum strings [use ''.join(seq) instead]");
-      if (_numLike(s) && items.every(_numLike)) {
-        let total = Number(s), c = 0;
-        for (const v of items) {
-          const x = Number(v), t = total + x;
+      if (_numLike(s)) {
+        // one pass; the first non-number abandons it for the general path below, from the start
+        let total = Number(s), c = 0, i = 0;
+        const n = items.length;
+        for (; i < n; i++) {
+          const v = items[i];
+          const x = typeof v === 'number' ? v : _numLike(v) ? Number(v) : NaN;
+          if (x !== x && !(typeof v === 'number')) break;
+          const t = total + x;
           c += Math.abs(total) >= Math.abs(x) ? (total - t) + x : (x - t) + total;
           total = t;
         }
-        return total + c;
+        if (i === n) return total + c;
       }
       for (const v of items) {
         if (Array.isArray(s) && Array.isArray(v)) s = s.concat(v);

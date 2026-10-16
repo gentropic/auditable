@@ -5424,7 +5424,8 @@ function emitForIn(ctx, op) {
 }
 
 function emitForOf(ctx, op) {
-  if (op.hybrid) return emitForOfHybrid(ctx, op);
+  if (op.hybrid) return emitForOfHybrid(ctx, op, false);
+  if (op.indexed && !op.is_await) return emitForOfHybrid(ctx, op, true);
   const iter = ctx.ref(op.args[0]);
   const target = op.target_name || '_v';
   // Loop variable is scoped to this loop unless it's a cell-export
@@ -5461,15 +5462,23 @@ function emitForOf(ctx, op) {
 // async source is read lazily (an infinite one can be broken out of) without making a loop over
 // a plain list pay for `for await`. Must be inside an async function (the frontend only asks for
 // it there).
-function emitForOfHybrid(ctx, op) {
+// syncOnly (the op's `indexed` flag, a frontend's opt-in): the same shape without the async arm —
+// arrays by index, anything else through its iterator — for a sync context. An array read by
+// index rather than through its iterator is ~2× faster in a hot loop, and is a Python list
+// iterator's own semantics (an index checked against the live length). Not for JS for-of, which
+// must honour an array's own [Symbol.iterator].
+function emitForOfHybrid(ctx, op, syncOnly) {
   const iter = ctx.ref(op.args[0]);
   const target = op.target_name || '_v';
   const n = (ctx._hybridSeq = (ctx._hybridSeq || 0) + 1);
   const S = `__hs${n}`, A = `__ha${n}`, I = `__hi${n}`, Y = `__hy${n}`, K = `__hk${n}`, R = `__hr${n}`;
   ctx.line(`const ${S} = ${iter};`);
   ctx.line(`const ${A} = Array.isArray(${S}) || (ArrayBuffer.isView(${S}) && !(${S} instanceof DataView)) ? ${S} : null;`);
-  ctx.line(`const ${Y} = !${A} && typeof ${S}[Symbol.iterator] === 'function';`);
-  ctx.line(`const ${I} = ${A} ? null : ${Y} ? ${S}[Symbol.iterator]() : ${S}[Symbol.asyncIterator]();`);
+  if (syncOnly) ctx.line(`const ${I} = ${A} ? null : ${S}[Symbol.iterator]();`);
+  else {
+    ctx.line(`const ${Y} = !${A} && typeof ${S}[Symbol.iterator] === 'function';`);
+    ctx.line(`const ${I} = ${A} ? null : ${Y} ? ${S}[Symbol.iterator]() : ${S}[Symbol.asyncIterator]();`);
+  }
   ctx.pushScope();
   try {
     let assign;
@@ -5479,7 +5488,8 @@ function emitForOfHybrid(ctx, op) {
     ctx.push();
     if (assign === null) ctx.line(`let ${target};`);
     ctx.line(`if (${A}) { if (${K} >= ${A}.length) break; ${target} = ${A}[${K}++]; }`);
-    ctx.line(`else { const ${R} = ${Y} ? ${I}.next() : await ${I}.next(); if (${R}.done) break; ${target} = ${R}.value; }`);
+    ctx.line(syncOnly ? `else { const ${R} = ${I}.next(); if (${R}.done) break; ${target} = ${R}.value; }`
+      : `else { const ${R} = ${Y} ? ${I}.next() : await ${I}.next(); if (${R}.done) break; ${target} = ${R}.value; }`);
     ctx.pushLoop(null);
     if (op.body) emitOps(ctx, op.body);
     ctx.popLoop();

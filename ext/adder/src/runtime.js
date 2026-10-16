@@ -18,6 +18,7 @@ import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _lo
 // fall through to _add (creates a new value, caller rebinds via the
 // surrounding assignment). Always returns the value to rebind.
 function _iadd(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;
   if (a !== null && typeof a === 'object' && typeof a.__iadd__ === 'function') {
     return a.__iadd__(b);
   }
@@ -110,6 +111,10 @@ function _ndarrayData(obj) {
 }
 
 function _getitem(obj, key) {
+  // the hot case: a list or tuple at an in-range non-negative int (a user list subclass with its
+  // own __getitem__ goes the long way)
+  if (Array.isArray(obj) && typeof key === 'number' && key >= 0 && key < obj.length && (key | 0) === key &&
+      typeof obj.__getitem__ !== 'function') return obj[key];
   if (obj === null || obj === undefined) {
     throw new AdderError('TypeError', `'NoneType' object is not subscriptable`);
   }
@@ -747,11 +752,22 @@ function _assertFail(msg) {
 }
 
 // arithmetic: the shared rules (builtins.js)
-const _add = pyAdd, _sub = pySub, _mul = pyMul, _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
+// The operators AIR calls per iteration are small wrappers: two numbers take the JS operator, all
+// else the full helper. Kept tiny on purpose, so V8 inlines them into the loop — the full helpers
+// (dunders, sequences, bytes, errors) are too big to inline, and a call per `s = s + x` costs
+// more than the addition (measured: 11 ms → 4 ms over a million items).
+const _add = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a + b : pyAdd(a, b));
+const _sub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pySub(a, b));
+const _mul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyMul(a, b));
+const _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
 const _and_ = pyAnd, _or_ = pyOr, _xor = pyXor, _neg = pyNeg, _pos = pyPos, _invert = pyInvert;
 
 // comparisons: the shared rules (builtins.js), so both engines compare alike
-const _eq = pyEq, _lt = pyLt, _lte = pyLe, _gt = pyGt, _gte = pyGe;
+const _eq = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : pyEq(a, b));
+const _lt = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a < b : pyLt(a, b));
+const _lte = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a <= b : pyLe(a, b));
+const _gt = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a > b : pyGt(a, b));
+const _gte = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a >= b : pyGe(a, b));
 function _neq(a, b) {
   if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
   const r = pyEq(a, b);

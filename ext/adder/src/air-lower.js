@@ -1789,8 +1789,12 @@ function _isPlainRangeCall(ctx, n) {
   return n && n.type === 'Call' && n.func.type === 'Name' && n.func.id === 'range' && !ctx.symbols.has('range') &&
     !(n.keywords && n.keywords.length) && n.args.length >= 1 && n.args.length <= 3 && !n.args.some((a) => a.type === 'Starred');
 }
-function _lowerRangeLoop(ctx, node, l) {
-  const argOps = node.iter.args.map((a) => lowerExpr_ad(ctx, a));
+// The counted loop over `range(...)` (rangeCall: the Call node), shared by `for` statements and
+// comprehension clauses. `prepare()` runs once the arguments are evaluated (before the loop);
+// `bindTarget(curId)` binds the loop variable from the counter's value at the top of each
+// iteration; `lowerBody()` lowers the rest of the body.
+function _emitCountedRange(ctx, rangeCall, l, { prepare, bindTarget, lowerBody }) {
+  const argOps = rangeCall.args.map((a) => lowerExpr_ad(ctx, a));
   const rng = emitPyCall(ctx, 'rangeArgs', [ctx.emit('array_new', argOps.map((o) => o.id), DYNAMIC, l)], l);
   const rngName = ctx.makeTempName('rng');
   ctx.emit('store', [rngName, rng.id], VOID, l);
@@ -1802,12 +1806,10 @@ function _lowerRangeLoop(ctx, node, l) {
   };
   const K = part(0), STOP = part(1), STEP = part(2);
   // a literal positive step (or none) needs no direction test
-  const stepArg = node.iter.args[2];
+  const stepArg = rangeCall.args[2];
   const ascending = !stepArg || (stepArg.type === 'Constant' && typeof stepArg.value === 'number' && stepArg.value > 0);
   const DIR = ascending ? null : part(3);
-
-  const loopVar = node.target.id;
-  _preDeclareTargetNames(ctx, node.target, l);   // only if unbound: an empty loop leaves an existing value
+  if (prepare) prepare();
 
   let test = null;
   const testOps = captureOps(ctx, () => {
@@ -1825,13 +1827,20 @@ function _lowerRangeLoop(ctx, node, l) {
   });
   const bodyOps = captureOps(ctx, () => {
     // the loop variable: an integer (as the `_py.iter(range(...))` typing gave it)
-    const cur = ctx.emit('load', [K], I32, l);
-    ctx.emit('store', [loopVar, cur.id], VOID, l);
-    ctx.symbols.set(loopVar, cur.id);
-    for (const s of node.body) lowerStmt_ad(ctx, s);
+    bindTarget(ctx.emit('load', [K], I32, l).id);
+    lowerBody();
   });
   return ctx.emit('for_region', [], VOID, l, {
     init: [], test: testOps, test_val: test.id, update: updateOps, body: bodyOps, phis: [],
+  });
+}
+
+function _lowerRangeLoop(ctx, node, l) {
+  const loopVar = node.target.id;
+  return _emitCountedRange(ctx, node.iter, l, {
+    prepare: () => _preDeclareTargetNames(ctx, node.target, l),   // only if unbound: an empty loop leaves an existing value
+    bindTarget: (cur) => { ctx.emit('store', [loopVar, cur], VOID, l); ctx.symbols.set(loopVar, cur); },
+    lowerBody: () => { for (const st of node.body) lowerStmt_ad(ctx, st); },
   });
 }
 
@@ -1854,7 +1863,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: loopVar, hybrid,
+      body, phis: [], target_name: loopVar, hybrid, indexed: !hybrid,
     });
   }
 
@@ -1876,7 +1885,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: tempName, hybrid,
+      body, phis: [], target_name: tempName, hybrid, indexed: !hybrid,
     });
   }
 
@@ -2379,6 +2388,7 @@ function lowerComprehension(ctx, node) {
   try {
     _lowerCompLoops(ctx, node, 0, {
       iterOf: (gen) => emitPyIter(ctx, lowerExpr_ad(ctx, gen.iter), l),
+      countedRange: () => true,
       innermost, isAwait: false,
     });
   } finally { ctx._compDepth--; }
@@ -2394,8 +2404,34 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   const l = ctx.loc(node);
   if (genIdx >= node.generators.length) { opts.innermost(); return; }
   const gen = node.generators[genIdx];
-  const iterArr = opts.iterOf(gen, genIdx);
 
+  // this clause's filters as nested ifs, then the next clause (or the innermost body)
+  const withFilters = (filterIdx) => {
+    if (!gen.ifs || filterIdx >= gen.ifs.length) { _lowerCompLoops(ctx, node, genIdx + 1, opts); return; }
+    const cond = lowerExpr_ad(ctx, gen.ifs[filterIdx]);
+    const truthy = emitPyCall(ctx, 'truthy', [cond], l, BOOL);
+    const thenBody = captureOps(ctx, () => withFilters(filterIdx + 1));
+    ctx.emit('if_region', [truthy.id], VOID, l, { then_body: thenBody, else_body: [], phis: [] });
+  };
+
+  // `for k in range(...)` — a counted loop, as for statements (no range object stepped through an
+  // iterator). The variable is declared afresh in the body: the comprehension's own, like the
+  // for-of target below. Not for a clause whose source was already evaluated (a generator
+  // expression's first, which Python evaluates eagerly, outside).
+  if (gen.target.type === 'Name' && opts.countedRange && opts.countedRange(genIdx) && _isPlainRangeCall(ctx, gen.iter)) {
+    const name = gen.target.id;
+    _emitCountedRange(ctx, gen.iter, l, {
+      bindTarget: (cur) => {
+        emitRaw(ctx, `let ${jsSafeName(name)};`, name);
+        ctx.symbols.set(name, null);
+        ctx.emit('store', [name, cur], VOID, l);
+      },
+      lowerBody: () => withFilters(0),
+    });
+    return;
+  }
+
+  const iterArr = opts.iterOf(gen, genIdx);
   let targetName;
   const body = captureOps(ctx, () => {
     if (gen.target.type === 'Name') {
@@ -2417,19 +2453,11 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
     } else {
       throw new AirLowerError('unsupported comprehension target type');
     }
-
-    const withFilters = (filterIdx) => {
-      if (!gen.ifs || filterIdx >= gen.ifs.length) { _lowerCompLoops(ctx, node, genIdx + 1, opts); return; }
-      const cond = lowerExpr_ad(ctx, gen.ifs[filterIdx]);
-      const truthy = emitPyCall(ctx, 'truthy', [cond], l, BOOL);
-      const thenBody = captureOps(ctx, () => withFilters(filterIdx + 1));
-      ctx.emit('if_region', [truthy.id], VOID, l, { then_body: thenBody, else_body: [], phis: [] });
-    };
     withFilters(0);
   });
 
   ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait,
+    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait, indexed: !opts.isAwait,
   });
 }
 
@@ -2468,6 +2496,7 @@ function lowerGeneratorExp(ctx, node) {
         iterOf: (gen, idx) => (idx === 0 ? ctx.emit('load', [SRC], DYNAMIC, l)
           : isAwait ? emitPyCall(ctx, 'each', [lowerExpr_ad(ctx, gen.iter)], l)
             : emitPyIter(ctx, lowerExpr_ad(ctx, gen.iter), l)),
+        countedRange: (idx) => idx > 0,   // the first source is evaluated outside, eagerly (Python)
         innermost: () => { ctx.emit('yield', [lowerExpr_ad(ctx, node.elt).id], DYNAMIC, l); },
         isAwait,
       }));

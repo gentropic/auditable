@@ -2579,6 +2579,14 @@ async function* pyIterAsync(obj) {
 }
 
 async function pyCollect(obj) {
+  // the common sources, without a generator step per item: a list or tuple copies (a fresh
+  // plain list — PyTuple's species is Array), a range fills by counting
+  if (Array.isArray(obj)) return obj.slice();
+  if (obj instanceof AdderRange) {
+    const out = new Array(obj.length);
+    for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
+    return out;
+  }
   if (isUserIterable(obj)) {
     const arr = [];
     for await (const v of pyIterAsync(obj)) arr.push(v);
@@ -3272,6 +3280,7 @@ function _binErr(sym, a, b) {
   return new AdderError('TypeError', `unsupported operand type(s) for ${sym}: '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
 }
 function _viaDunder(a, b, d, rd) {
+  if (!_obj(a) && !_obj(b)) return null;   // numbers, strings, …: no dunders, and no closures allocated per call
   const refl = () => (_obj(b) && typeof b[rd] === 'function' && b[rd] !== a[d] ? b[rd](a) : NotImplemented);
   const fail = (r) => {
     if (r !== NotImplemented) return r;
@@ -3309,6 +3318,7 @@ function _bitOp(op, a, b) {
 }
 
 function pyAdd(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;   // the hot case, first
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
@@ -3333,6 +3343,7 @@ function pyIAddBuiltin(a, b) {
   return pyAdd(a, b);
 }
 function pySub(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);
   if (a instanceof Set && b instanceof Set) return _setLike(a, [...a].filter((x) => !b.has(x)));
@@ -3348,6 +3359,7 @@ function _repeat(seq, n) {
   return seq instanceof PyTuple ? mkTuple(r) : r;
 }
 function pyMul(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a * b;
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) * _asInt(b);
   if (typeof a === 'string' || Array.isArray(a) || a instanceof Uint8Array) { const r = _repeat(a, b); if (r !== null) return r; }
@@ -3712,16 +3724,19 @@ function _ltPlain(op, a, b) {
   throw _orderError(op, a, b);
 }
 function pyLt(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a < b;
   if (_hasDunder(a, '__lt__')) return a.__lt__(b);
   if (_hasDunder(b, '__gt__')) return b.__gt__(a);
   return _ltPlain('<', a, b);
 }
 function pyGt(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a > b;
   if (_hasDunder(a, '__gt__')) return a.__gt__(b);
   if (_hasDunder(b, '__lt__')) return b.__lt__(a);
   return _ltPlain('>', b, a);
 }
 function pyLe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a <= b;
   if (_hasDunder(a, '__le__')) return a.__le__(b);
   if (_hasDunder(b, '__ge__')) return b.__ge__(a);
   if (_numLike(a) && _numLike(b)) return a <= b;
@@ -3730,6 +3745,7 @@ function pyLe(a, b) {
   return _ltPlain('<=', a, b) || pyEq(a, b);
 }
 function pyGe(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a >= b;
   if (_hasDunder(a, '__ge__')) return a.__ge__(b);
   if (_hasDunder(b, '__le__')) return b.__le__(a);
   if (_numLike(a) && _numLike(b)) return a >= b;
@@ -5513,17 +5529,22 @@ function adderBuiltins(printFn) {
     // lists concatenate; anything else through its __add__; strings are refused, as in Python
     sum: async (iterable, start) => {
       if (start && start._kw) start = start.start;
-      const items = await pyCollect(iterable);
+      const items = Array.isArray(iterable) ? iterable : await pyCollect(iterable);   // read, never kept: no copy
       let s = start !== undefined ? start : 0;
       if (typeof s === 'string') throw new AdderError('TypeError', "sum() can't sum strings [use ''.join(seq) instead]");
-      if (_numLike(s) && items.every(_numLike)) {
-        let total = Number(s), c = 0;
-        for (const v of items) {
-          const x = Number(v), t = total + x;
+      if (_numLike(s)) {
+        // one pass; the first non-number abandons it for the general path below, from the start
+        let total = Number(s), c = 0, i = 0;
+        const n = items.length;
+        for (; i < n; i++) {
+          const v = items[i];
+          const x = typeof v === 'number' ? v : _numLike(v) ? Number(v) : NaN;
+          if (x !== x && !(typeof v === 'number')) break;
+          const t = total + x;
           c += Math.abs(total) >= Math.abs(x) ? (total - t) + x : (x - t) + total;
           total = t;
         }
-        return total + c;
+        if (i === n) return total + c;
       }
       for (const v of items) {
         if (Array.isArray(s) && Array.isArray(v)) s = s.concat(v);
@@ -7703,6 +7724,7 @@ async function _evalImportFrom(node, scope) {
 // fall through to _add (creates a new value, caller rebinds via the
 // surrounding assignment). Always returns the value to rebind.
 function _iadd(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a + b;
   if (a !== null && typeof a === 'object' && typeof a.__iadd__ === 'function') {
     return a.__iadd__(b);
   }
@@ -7795,6 +7817,10 @@ function _ndarrayData(obj) {
 }
 
 function _getitem(obj, key) {
+  // the hot case: a list or tuple at an in-range non-negative int (a user list subclass with its
+  // own __getitem__ goes the long way)
+  if (Array.isArray(obj) && typeof key === 'number' && key >= 0 && key < obj.length && (key | 0) === key &&
+      typeof obj.__getitem__ !== 'function') return obj[key];
   if (obj === null || obj === undefined) {
     throw new AdderError('TypeError', `'NoneType' object is not subscriptable`);
   }
@@ -8431,11 +8457,22 @@ function _assertFail(msg) {
 }
 
 // arithmetic: the shared rules (builtins.js)
-const _add = pyAdd, _sub = pySub, _mul = pyMul, _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
+// The operators AIR calls per iteration are small wrappers: two numbers take the JS operator, all
+// else the full helper. Kept tiny on purpose, so V8 inlines them into the loop — the full helpers
+// (dunders, sequences, bytes, errors) are too big to inline, and a call per `s = s + x` costs
+// more than the addition (measured: 11 ms → 4 ms over a million items).
+const _add = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a + b : pyAdd(a, b));
+const _sub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pySub(a, b));
+const _mul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyMul(a, b));
+const _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
 const _and_ = pyAnd, _or_ = pyOr, _xor = pyXor, _neg = pyNeg, _pos = pyPos, _invert = pyInvert;
 
 // comparisons: the shared rules (builtins.js), so both engines compare alike
-const _eq = pyEq, _lt = pyLt, _lte = pyLe, _gt = pyGt, _gte = pyGe;
+const _eq = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : pyEq(a, b));
+const _lt = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a < b : pyLt(a, b));
+const _lte = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a <= b : pyLe(a, b));
+const _gt = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a > b : pyGt(a, b));
+const _gte = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a >= b : pyGe(a, b));
 function _neq(a, b) {
   if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
   const r = pyEq(a, b);
@@ -15959,8 +15996,12 @@ function _isPlainRangeCall(ctx, n) {
   return n && n.type === 'Call' && n.func.type === 'Name' && n.func.id === 'range' && !ctx.symbols.has('range') &&
     !(n.keywords && n.keywords.length) && n.args.length >= 1 && n.args.length <= 3 && !n.args.some((a) => a.type === 'Starred');
 }
-function _lowerRangeLoop(ctx, node, l) {
-  const argOps = node.iter.args.map((a) => lowerExpr_ad(ctx, a));
+// The counted loop over `range(...)` (rangeCall: the Call node), shared by `for` statements and
+// comprehension clauses. `prepare()` runs once the arguments are evaluated (before the loop);
+// `bindTarget(curId)` binds the loop variable from the counter's value at the top of each
+// iteration; `lowerBody()` lowers the rest of the body.
+function _emitCountedRange(ctx, rangeCall, l, { prepare, bindTarget, lowerBody }) {
+  const argOps = rangeCall.args.map((a) => lowerExpr_ad(ctx, a));
   const rng = emitPyCall(ctx, 'rangeArgs', [ctx.emit('array_new', argOps.map((o) => o.id), DYNAMIC, l)], l);
   const rngName = ctx.makeTempName('rng');
   ctx.emit('store', [rngName, rng.id], VOID, l);
@@ -15972,12 +16013,10 @@ function _lowerRangeLoop(ctx, node, l) {
   };
   const K = part(0), STOP = part(1), STEP = part(2);
   // a literal positive step (or none) needs no direction test
-  const stepArg = node.iter.args[2];
+  const stepArg = rangeCall.args[2];
   const ascending = !stepArg || (stepArg.type === 'Constant' && typeof stepArg.value === 'number' && stepArg.value > 0);
   const DIR = ascending ? null : part(3);
-
-  const loopVar = node.target.id;
-  _preDeclareTargetNames(ctx, node.target, l);   // only if unbound: an empty loop leaves an existing value
+  if (prepare) prepare();
 
   let test = null;
   const testOps = captureOps(ctx, () => {
@@ -15995,13 +16034,20 @@ function _lowerRangeLoop(ctx, node, l) {
   });
   const bodyOps = captureOps(ctx, () => {
     // the loop variable: an integer (as the `_py.iter(range(...))` typing gave it)
-    const cur = ctx.emit('load', [K], I32, l);
-    ctx.emit('store', [loopVar, cur.id], VOID, l);
-    ctx.symbols.set(loopVar, cur.id);
-    for (const s of node.body) lowerStmt_ad(ctx, s);
+    bindTarget(ctx.emit('load', [K], I32, l).id);
+    lowerBody();
   });
   return ctx.emit('for_region', [], VOID, l, {
     init: [], test: testOps, test_val: test.id, update: updateOps, body: bodyOps, phis: [],
+  });
+}
+
+function _lowerRangeLoop(ctx, node, l) {
+  const loopVar = node.target.id;
+  return _emitCountedRange(ctx, node.iter, l, {
+    prepare: () => _preDeclareTargetNames(ctx, node.target, l),   // only if unbound: an empty loop leaves an existing value
+    bindTarget: (cur) => { ctx.emit('store', [loopVar, cur], VOID, l); ctx.symbols.set(loopVar, cur); },
+    lowerBody: () => { for (const st of node.body) lowerStmt_ad(ctx, st); },
   });
 }
 
@@ -16024,7 +16070,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: loopVar, hybrid,
+      body, phis: [], target_name: loopVar, hybrid, indexed: !hybrid,
     });
   }
 
@@ -16046,7 +16092,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: tempName, hybrid,
+      body, phis: [], target_name: tempName, hybrid, indexed: !hybrid,
     });
   }
 
@@ -16549,6 +16595,7 @@ function lowerComprehension(ctx, node) {
   try {
     _lowerCompLoops(ctx, node, 0, {
       iterOf: (gen) => emitPyIter(ctx, lowerExpr_ad(ctx, gen.iter), l),
+      countedRange: () => true,
       innermost, isAwait: false,
     });
   } finally { ctx._compDepth--; }
@@ -16564,8 +16611,34 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   const l = ctx.loc(node);
   if (genIdx >= node.generators.length) { opts.innermost(); return; }
   const gen = node.generators[genIdx];
-  const iterArr = opts.iterOf(gen, genIdx);
 
+  // this clause's filters as nested ifs, then the next clause (or the innermost body)
+  const withFilters = (filterIdx) => {
+    if (!gen.ifs || filterIdx >= gen.ifs.length) { _lowerCompLoops(ctx, node, genIdx + 1, opts); return; }
+    const cond = lowerExpr_ad(ctx, gen.ifs[filterIdx]);
+    const truthy = emitPyCall(ctx, 'truthy', [cond], l, BOOL);
+    const thenBody = captureOps(ctx, () => withFilters(filterIdx + 1));
+    ctx.emit('if_region', [truthy.id], VOID, l, { then_body: thenBody, else_body: [], phis: [] });
+  };
+
+  // `for k in range(...)` — a counted loop, as for statements (no range object stepped through an
+  // iterator). The variable is declared afresh in the body: the comprehension's own, like the
+  // for-of target below. Not for a clause whose source was already evaluated (a generator
+  // expression's first, which Python evaluates eagerly, outside).
+  if (gen.target.type === 'Name' && opts.countedRange && opts.countedRange(genIdx) && _isPlainRangeCall(ctx, gen.iter)) {
+    const name = gen.target.id;
+    _emitCountedRange(ctx, gen.iter, l, {
+      bindTarget: (cur) => {
+        emitRaw(ctx, `let ${jsSafeName(name)};`, name);
+        ctx.symbols.set(name, null);
+        ctx.emit('store', [name, cur], VOID, l);
+      },
+      lowerBody: () => withFilters(0),
+    });
+    return;
+  }
+
+  const iterArr = opts.iterOf(gen, genIdx);
   let targetName;
   const body = captureOps(ctx, () => {
     if (gen.target.type === 'Name') {
@@ -16587,19 +16660,11 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
     } else {
       throw new AirLowerError('unsupported comprehension target type');
     }
-
-    const withFilters = (filterIdx) => {
-      if (!gen.ifs || filterIdx >= gen.ifs.length) { _lowerCompLoops(ctx, node, genIdx + 1, opts); return; }
-      const cond = lowerExpr_ad(ctx, gen.ifs[filterIdx]);
-      const truthy = emitPyCall(ctx, 'truthy', [cond], l, BOOL);
-      const thenBody = captureOps(ctx, () => withFilters(filterIdx + 1));
-      ctx.emit('if_region', [truthy.id], VOID, l, { then_body: thenBody, else_body: [], phis: [] });
-    };
     withFilters(0);
   });
 
   ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait,
+    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait, indexed: !opts.isAwait,
   });
 }
 
@@ -16638,6 +16703,7 @@ function lowerGeneratorExp(ctx, node) {
         iterOf: (gen, idx) => (idx === 0 ? ctx.emit('load', [SRC], DYNAMIC, l)
           : isAwait ? emitPyCall(ctx, 'each', [lowerExpr_ad(ctx, gen.iter)], l)
             : emitPyIter(ctx, lowerExpr_ad(ctx, gen.iter), l)),
+        countedRange: (idx) => idx > 0,   // the first source is evaluated outside, eagerly (Python)
         innermost: () => { ctx.emit('yield', [lowerExpr_ad(ctx, node.elt).id], DYNAMIC, l); },
         isAwait,
       }));
