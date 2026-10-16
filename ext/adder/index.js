@@ -954,6 +954,60 @@ function _adderParseExpr(code) {
   return new _Parser(adderTokenize(code + '\n')).parseExpr();
 }
 
+// the names a match pattern binds, in order of first appearance
+function matchPatternNames(p, out = []) {
+  if (!p) return out;
+  const add = (n) => { if (n && !out.includes(n)) out.push(n); };
+  switch (p.type) {
+    case 'MatchAs': if (p.pattern) matchPatternNames(p.pattern, out); add(p.name); break;
+    case 'MatchStar': add(p.name); break;
+    case 'MatchOr': for (const q of p.patterns) matchPatternNames(q, out); break;
+    case 'MatchSequence': for (const q of p.patterns) matchPatternNames(q, out); break;
+    case 'MatchMapping': for (const q of p.patterns) matchPatternNames(q, out); add(p.rest); break;
+    case 'MatchClass': for (const q of [...p.patterns, ...p.kwdPatterns]) matchPatternNames(q, out); break;
+    default: break;
+  }
+  return out;
+}
+
+// A match pattern as a plain descriptor for pyMatch (builtins.js): the shape only. The values
+// it compares against — literals, dotted names like Color.RED, mapping keys, the class of a
+// class pattern — go into `valueNodes` as expressions for the engine to evaluate; the
+// descriptor refers to them by index. Both engines match through the same descriptor.
+function compileMatchPattern(p, valueNodes) {
+  const val = (node) => { valueNodes.push(node); return valueNodes.length - 1; };
+  switch (p.type) {
+    case 'MatchAs':
+      if (!p.pattern) return p.name ? { k: 'cap', name: p.name } : { k: 'any' };
+      return { k: 'as', p: compileMatchPattern(p.pattern, valueNodes), name: p.name };
+    case 'MatchStar': return { k: 'star', name: p.name };
+    case 'MatchValue': return { k: 'val', i: val(p.value) };
+    case 'MatchSingleton': return { k: 'single', v: p.value };
+    case 'MatchOr': return { k: 'or', ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)) };
+    case 'MatchSequence': return { k: 'seq', ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)) };
+    case 'MatchMapping':
+      return { k: 'map', keys: p.keys.map(val), ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)), rest: p.rest };
+    case 'MatchClass':
+      return { k: 'cls', c: val(p.cls), ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)),
+        kw: p.kwdAttrs, kps: p.kwdPatterns.map((q) => compileMatchPattern(q, valueNodes)) };
+    default: throw new SyntaxError(`unknown pattern ${p.type}`);
+  }
+}
+
+// the targets of `:=` anywhere in a statement's expressions (comprehensions included: a walrus
+// binds in the enclosing scope), not inside a nested def / class / lambda, which have their own
+function collectWalrusTargets(node, defines) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const n of node) collectWalrusTargets(n, defines); return; }
+  if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' || node.type === 'ClassDef' || node.type === 'Lambda') return;
+  if (node.type === 'NamedExpr' && node.target && node.target.type === 'Name') defines.add(node.target.id);
+  for (const k of Object.keys(node)) {
+    if (k === 'body' || k === 'orelse' || k === 'finalbody' || k === 'handlers') continue;   // statements: the define scans walk those
+    const v = node[k];
+    if (v && typeof v === 'object') collectWalrusTargets(v, defines);
+  }
+}
+
 const _AUGASSIGN = new Set(['+=', '-=', '*=', '/=', '//=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '@=']);
 
 class _Parser {
@@ -1028,8 +1082,175 @@ class _Parser {
       if (t.value === 'class') return [this.parseClass()];
       if (t.value === 'try') return [this.parseTry()];
       if (t.value === 'with') return [this.parseWith()];
+      // `match` is a soft keyword: a match statement only when `match <subject>:` opens a block
+      // of cases; otherwise (`match = ...`, `match.group()`) it is an ordinary name
+      if (t.value === 'match') { const m = this._tryParseMatch(); if (m) return [m]; }
     }
     return this.parseSimpleList();
+  }
+
+  // ── match statement (structural pattern matching, PEP 634) ──
+
+  _tryParseMatch() {
+    const start = this.pos;
+    const t = this.advance();
+    let subject;
+    try {
+      subject = this.parseStarExpr();
+      if (this.at('OP', ',')) {
+        const elts = [subject];
+        while (this.eat('OP', ',')) { if (this.at('OP', ':')) break; elts.push(this.parseStarExpr()); }
+        subject = { type: 'Tuple', elts, line: subject.line, col: subject.col };
+      }
+      this.expect('OP', ':');
+      this.expect('NEWLINE');
+      this.expect('INDENT');
+      if (!this.at('NAME', 'case')) throw new SyntaxError('expected case');
+    } catch {
+      this.pos = start;
+      return null;
+    }
+    const cases = [];
+    while (!this.at('DEDENT') && !this.at('EOF')) {
+      if (this.eat('NEWLINE')) continue;
+      const c = this.expect('NAME', 'case');
+      const pattern = this._parseCasePattern();
+      const guard = this.eat('NAME', 'if') ? this.parseExpr() : null;
+      this.expect('OP', ':');
+      cases.push({ type: 'match_case', pattern, guard, body: this.parseBlock(), line: c.line, col: c.col });
+    }
+    this.eat('DEDENT');
+    return { type: 'Match', subject, cases, line: t.line, col: t.col };
+  }
+
+  // case a, b, *rest:  — an open sequence, or a single pattern
+  _parseCasePattern() {
+    const first = this._parseStarOrPattern();
+    if (!this.at('OP', ',')) {
+      if (first.type === 'MatchStar') throw new SyntaxError(`can't use starred pattern here (line ${first.line})`);
+      return first;
+    }
+    const patterns = [first];
+    while (this.eat('OP', ',')) {
+      if (this.at('NAME', 'if') || this.at('OP', ':')) break;
+      patterns.push(this._parseStarOrPattern());
+    }
+    return { type: 'MatchSequence', patterns, line: first.line, col: first.col };
+  }
+
+  _parseStarOrPattern() {
+    if (this.at('OP', '*')) {
+      const t = this.advance();
+      const n = this.expect('NAME').value;
+      return { type: 'MatchStar', name: n === '_' ? null : n, line: t.line, col: t.col };
+    }
+    return this._parseAsPattern();
+  }
+
+  _parseAsPattern() {
+    const p = this._parseOrPattern();
+    if (this.eat('NAME', 'as')) {
+      const n = this.expect('NAME').value;
+      if (n === '_') throw new SyntaxError(`cannot use '_' as a target (line ${p.line})`);
+      return { type: 'MatchAs', pattern: p, name: n, line: p.line, col: p.col };
+    }
+    return p;
+  }
+
+  _parseOrPattern() {
+    const patterns = [this._parseClosedPattern()];
+    while (this.eat('OP', '|')) patterns.push(this._parseClosedPattern());
+    return patterns.length === 1 ? patterns[0] : { type: 'MatchOr', patterns, line: patterns[0].line, col: patterns[0].col };
+  }
+
+  _parseClosedPattern() {
+    const t = this.peek();
+    // numbers, negative numbers and complex literals (1, -2.5, 1+2j)
+    if (t.type === 'NUMBER' || (t.type === 'OP' && t.value === '-')) {
+      return { type: 'MatchValue', value: this.parseArith(), line: t.line, col: t.col };
+    }
+    if (t.type === 'STRING' || t.type === 'BYTES') {
+      return { type: 'MatchValue', value: this.parseAtom(), line: t.line, col: t.col };
+    }
+    if (t.type === 'NAME') {
+      if (t.value === 'True' || t.value === 'False' || t.value === 'None') {
+        this.advance();
+        return { type: 'MatchSingleton', value: t.value === 'True' ? true : t.value === 'False' ? false : null, line: t.line, col: t.col };
+      }
+      this.advance();
+      let expr = { type: 'Name', id: t.value, line: t.line, col: t.col };
+      let dotted = false;
+      while (this.at('OP', '.')) {
+        this.advance();
+        expr = { type: 'Attribute', value: expr, attr: this.expect('NAME').value, line: t.line, col: t.col };
+        dotted = true;
+      }
+      if (this.at('OP', '(')) return this._parseClassPattern(expr, t);
+      if (dotted) return { type: 'MatchValue', value: expr, line: t.line, col: t.col };
+      if (t.value === '_') return { type: 'MatchAs', pattern: null, name: null, line: t.line, col: t.col };
+      return { type: 'MatchAs', pattern: null, name: t.value, line: t.line, col: t.col };
+    }
+    if (t.type === 'OP' && (t.value === '(' || t.value === '[')) {
+      const close = t.value === '(' ? ')' : ']';
+      this.advance();
+      if (this.eat('OP', close)) return { type: 'MatchSequence', patterns: [], line: t.line, col: t.col };
+      const first = this._parseStarOrPattern();
+      if (t.value === '(' && this.eat('OP', ')')) {
+        if (first.type === 'MatchStar') return { type: 'MatchSequence', patterns: [first], line: t.line, col: t.col };
+        return first;   // (p) groups
+      }
+      const patterns = [first];
+      while (this.eat('OP', ',')) {
+        if (this.at('OP', close)) break;
+        patterns.push(this._parseStarOrPattern());
+      }
+      this.expect('OP', close);
+      return { type: 'MatchSequence', patterns, line: t.line, col: t.col };
+    }
+    if (t.type === 'OP' && t.value === '{') {
+      this.advance();
+      const keys = [], patterns = [];
+      let rest = null;
+      while (!this.at('OP', '}')) {
+        if (this.eat('OP', '**')) { rest = this.expect('NAME').value; this.eat('OP', ','); break; }
+        const kt = this.peek();
+        let key;
+        if (kt.type === 'NAME' && !['True', 'False', 'None'].includes(kt.value)) {
+          this.advance();
+          key = { type: 'Name', id: kt.value, line: kt.line, col: kt.col };
+          while (this.eat('OP', '.')) key = { type: 'Attribute', value: key, attr: this.expect('NAME').value, line: kt.line, col: kt.col };
+          if (key.type === 'Name') throw new SyntaxError(`mapping pattern keys may only match literals and attribute lookups (line ${kt.line})`);
+        } else if (kt.type === 'NAME') { this.advance(); key = { type: 'Constant', value: kt.value === 'True' ? true : kt.value === 'False' ? false : null, line: kt.line, col: kt.col }; }
+        else if (kt.type === 'NUMBER' || (kt.type === 'OP' && kt.value === '-')) key = this.parseArith();
+        else key = this.parseAtom();
+        this.expect('OP', ':');
+        keys.push(key);
+        patterns.push(this._parseAsPattern());
+        if (!this.eat('OP', ',')) break;
+      }
+      this.expect('OP', '}');
+      return { type: 'MatchMapping', keys, patterns, rest, line: t.line, col: t.col };
+    }
+    throw new SyntaxError(`invalid pattern at '${t.value}' (line ${t.line})`);
+  }
+
+  // Point(1, y=2): positional sub-patterns, then keyword ones
+  _parseClassPattern(cls, t) {
+    this.expect('OP', '(');
+    const patterns = [], kwdAttrs = [], kwdPatterns = [];
+    while (!this.at('OP', ')')) {
+      if (this.at('NAME') && this.tokens[this.pos + 1]?.type === 'OP' && this.tokens[this.pos + 1]?.value === '=') {
+        kwdAttrs.push(this.advance().value);
+        this.advance();
+        kwdPatterns.push(this._parseAsPattern());
+      } else {
+        if (kwdAttrs.length) throw new SyntaxError(`positional patterns follow keyword patterns (line ${t.line})`);
+        patterns.push(this._parseAsPattern());
+      }
+      if (!this.eat('OP', ',')) break;
+    }
+    this.expect('OP', ')');
+    return { type: 'MatchClass', cls, patterns, kwdAttrs, kwdPatterns, line: t.line, col: t.col };
   }
 
   parseSimpleList() {
@@ -2256,10 +2477,32 @@ function* pyIter(obj) {
   if (obj instanceof Map) { for (const k of obj.keys()) yield k; return; }
   if (obj instanceof Set || obj instanceof AdderRange) { yield* obj; return; }
   if (typeof obj[Symbol.iterator] === 'function') { yield* obj; return; }
+  // an async iterable (a tree-walked generator) can't be read synchronously: say so, rather
+  // than falling through to the plain-object case and yielding nothing
+  if (typeof obj[Symbol.asyncIterator] === 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object must be collected asynchronously here (list(...) it first)`);
   if (typeof obj === 'object' && typeof obj.length === 'number') { for (let i = 0; i < obj.length; i++) yield obj[i]; return; }
   // plain object — iterate keys
   if (typeof obj === 'object') { for (const k of Object.keys(obj)) yield k; return; }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
+}
+
+// a lazy iterator object (map, filter): iterates once, next() works, Python names its type
+function _lazyIter(name, genFn) {
+  let gen = null;
+  const run = () => gen || (gen = genFn());
+  return {
+    __adderClass__: name,
+    [Symbol.asyncIterator]() { return run(); },
+    next(v) { return run().next(v); },
+    __repr__() { return `<${name} object>`; },
+  };
+}
+const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && typeof v[Symbol.iterator] !== 'function';
+// iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
+function _pyEach(obj) {
+  if (isUserIterable(obj)) return pyIterAsync(obj);
+  if (obj && typeof obj[Symbol.asyncIterator] === 'function') return obj;
+  return pyIter(obj);
 }
 
 // Collect iterable (sync or async) to array
@@ -2585,9 +2828,13 @@ function _strMethod(s, attr) {
       return parts;
     },
     join: (iterable) => {
-      const items = [...pyIter(iterable)];
-      items.forEach((x, i) => { if (typeof x !== 'string') throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
-      return items.join(s);
+      const finish = (items) => {
+        items.forEach((x, i) => { if (typeof x !== 'string') throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
+        return items.join(s);
+      };
+      // a generator expression / user iterable may be async: collect it first
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      return finish([...pyIter(iterable)]);
     },
     replace: (old, nw, count) => {
       if (count == null || count < 0) return s.split(old).join(nw);
@@ -4018,6 +4265,7 @@ function _namedtuple(name, fields, opts) {
   NT.prototype.__adderClass__ = name;
   NT.prototype.__adderType__ = cls;
   NT.prototype._fields = cls._fields;
+  cls.__match_args__ = cls._fields;
   cls._ntProto = NT.prototype;   // typing.NamedTuple re-homes it onto the user's class
   names.forEach((f, i) => Object.defineProperty(NT.prototype, f, { get() { return this[i]; }, configurable: true }));
   NT.prototype.__repr__ = function () { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
@@ -5018,6 +5266,113 @@ function makeUnion(a, b) {
   return out.length === 1 ? out[0] : new UnionType(out);
 }
 
+// ── match / case: one matcher for both engines ──
+// pyMatch(subject, descriptor, values, binds): does the subject fit the pattern? Captures go
+// into `binds` (a Map). The descriptor comes from compileMatchPattern (parse.js); `values`
+// holds the evaluated literals / dotted names / mapping keys / classes it refers to.
+const _MATCH_SELF_TYPES = new Set(['bool', 'bytearray', 'bytes', 'dict', 'float', 'frozenset', 'int', 'list', 'set', 'str', 'tuple']);
+const _mroNamed = (x, names) => !!(x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.some((c) => names.includes(c._pyName)));
+// a sequence pattern matches lists, tuples, ranges, deques and Sequence subclasses — never
+// str / bytes, and not a dict
+function _matchSeqItems(x) {
+  if (Array.isArray(x)) return x;
+  if (x instanceof AdderRange) return [...x];
+  if (x !== null && typeof x === 'object' && (x.__adderClass__ === 'deque' || _mroNamed(x, ['Sequence', 'MutableSequence']))) return null;   // collected below
+  return undefined;
+}
+const _isMatchMapping = (x) => x instanceof Map || isPlainDict(x) || _mroNamed(x, ['Mapping', 'MutableMapping']);
+async function _matchGetattr(obj, name) {
+  try { const v = adderGetAttr(obj, name); return { ok: true, v: v && typeof v.then === 'function' ? await v : v }; }
+  catch (e) { if (e && e.pyType === 'AttributeError') return { ok: false }; throw e; }
+}
+async function pyMatch(subject, d, vals, binds) {
+  switch (d.k) {
+    case 'any': return true;
+    case 'cap': binds.set(d.name, subject); return true;
+    case 'as':
+      if (!(await pyMatch(subject, d.p, vals, binds))) return false;
+      binds.set(d.name, subject);
+      return true;
+    case 'val': { const r = pyEq(subject, vals[d.i]); return pyBool(r && typeof r.then === 'function' ? await r : r); }
+    case 'single': return subject === d.v || (d.v === null && subject === undefined);
+    case 'or':
+      for (const alt of d.ps) {
+        const b = new Map(binds);
+        if (await pyMatch(subject, alt, vals, b)) { for (const [k, v] of b) binds.set(k, v); return true; }
+      }
+      return false;
+    case 'seq': {
+      let items = _matchSeqItems(subject);
+      if (items === undefined) return false;
+      if (items === null) items = await pyCollect(subject);
+      const star = d.ps.findIndex((q) => q.k === 'star');
+      if (star < 0) {
+        if (items.length !== d.ps.length) return false;
+        for (let i = 0; i < items.length; i++) if (!(await pyMatch(items[i], d.ps[i], vals, binds))) return false;
+        return true;
+      }
+      const after = d.ps.length - star - 1;
+      if (items.length < star + after) return false;
+      for (let i = 0; i < star; i++) if (!(await pyMatch(items[i], d.ps[i], vals, binds))) return false;
+      for (let i = 0; i < after; i++) if (!(await pyMatch(items[items.length - after + i], d.ps[star + 1 + i], vals, binds))) return false;
+      if (d.ps[star].name) binds.set(d.ps[star].name, items.slice(star, items.length - after));
+      return true;
+    }
+    case 'map': {
+      if (!_isMatchMapping(subject)) return false;
+      const keys = d.keys.map((i) => vals[i]);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        let v;
+        if (subject instanceof Map) { if (!subject.has(k)) return false; v = subject.get(k); }
+        else if (isPlainDict(subject)) { if (typeof k !== 'string' || !Object.hasOwn(subject, k)) return false; v = subject[k]; }
+        else {
+          const has = await subject.__contains__(k);
+          if (!pyBool(has)) return false;
+          v = await subject.__getitem__(k);
+        }
+        if (!(await pyMatch(v, d.ps[i], vals, binds))) return false;
+      }
+      if (d.rest) {
+        if (isPlainDict(subject)) { const o = {}; for (const kk of Object.keys(subject)) if (!keys.includes(kk)) o[kk] = subject[kk]; binds.set(d.rest, o); }
+        else {
+          const out = new PyDict();
+          const entries = subject instanceof Map ? [...subject] : await Promise.all((await pyCollect(subject)).map(async (kk) => [kk, await subject.__getitem__(kk)]));
+          for (const [kk, vv] of entries) if (!keys.some((x) => x === kk || pyEq(x, kk) === true)) out.set(kk, vv);
+          binds.set(d.rest, out);
+        }
+      }
+      return true;
+    }
+    case 'cls': {
+      const cls = vals[d.c];
+      if (typeof cls !== 'function' || !cls._pyClass) throw new AdderError('TypeError', 'called match pattern must be a class');
+      if (!_pyIsInstance(subject, cls)) return false;
+      const name = cls.__name__ || cls._pyName;
+      if (d.ps.length) {
+        if (!cls._pyMRO && _MATCH_SELF_TYPES.has(cls._pyName)) {
+          if (d.ps.length > 1) throw new AdderError('TypeError', `${name}() accepts 1 positional sub-pattern (${d.ps.length} given)`);
+          if (!(await pyMatch(subject, d.ps[0], vals, binds))) return false;
+        } else {
+          const ma = cls.__match_args__;
+          const args = ma === undefined || ma === null ? [] : [...pyIter(ma)];
+          if (d.ps.length > args.length) throw new AdderError('TypeError', `${name}() accepts ${args.length} positional sub-pattern${args.length === 1 ? '' : 's'} (${d.ps.length} given)`);
+          for (let i = 0; i < d.ps.length; i++) {
+            const a = await _matchGetattr(subject, args[i]);
+            if (!a.ok || !(await pyMatch(a.v, d.ps[i], vals, binds))) return false;
+          }
+        }
+      }
+      for (let i = 0; i < d.kw.length; i++) {
+        const a = await _matchGetattr(subject, d.kw[i]);
+        if (!a.ok || !(await pyMatch(a.v, d.kps[i], vals, binds))) return false;
+      }
+      return true;
+    }
+    default: throw new AdderError('SystemError', `unknown match pattern ${d.k}`);
+  }
+}
+
 // ── class hooks shared by both engines ──
 // An annotation's source text: what __annotations__ holds (as under `from __future__ import
 // annotations`), and what dataclasses reads the field list from.
@@ -5189,22 +5544,24 @@ function adderBuiltins(printFn) {
       for (let i = 0; i < minLen; i++) result.push(mkTuple(arrs.map(a => a[i])));
       return result;
     },
-    map: async (fn, ...iterables) => {
-      const arr0 = await pyCollect(iterables[0]);
-      if (iterables.length === 1) { const r = []; for (const v of arr0) r.push(await fn(v)); return r; }
-      const arrs = [arr0]; for (let i = 1; i < iterables.length; i++) arrs.push(await pyCollect(iterables[i]));
-      const minLen = Math.min(...arrs.map(a => a.length));
-      const result = [];
-      for (let i = 0; i < minLen; i++) result.push(await fn(...arrs.map(a => a[i])));
-      return result;
+    // lazy iterators, as in Python 3: the function runs per item as the result is consumed
+    map: (fn, ...iterables) => {
+      if (!iterables.length) throw new AdderError('TypeError', 'map() must have at least two arguments.');
+      return _lazyIter('map', async function* () {
+        const its = iterables.map((it) => { const e = _pyEach(it); return e[Symbol.asyncIterator] ? e[Symbol.asyncIterator]() : e[Symbol.iterator](); });
+        for (;;) {
+          const vals = [];
+          for (const it of its) { const r = await it.next(); if (r.done) return; vals.push(r.value); }
+          yield await fn(...vals);
+        }
+      });
     },
-    filter: async (fn, iterable) => {
-      const result = [];
-      for (const v of await pyCollect(iterable)) { if (fn ? pyBool(await fn(v)) : pyBool(v)) result.push(v); }
-      return result;
-    },
-    any: async (iterable) => { for (const v of await pyCollect(iterable)) if (pyBool(v)) return true; return false; },
-    all: async (iterable) => { for (const v of await pyCollect(iterable)) if (!pyBool(v)) return false; return true; },
+    filter: (fn, iterable) => _lazyIter('filter', async function* () {
+      for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
+    }),
+    // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
+    any: async (iterable) => { for await (const v of _pyEach(iterable)) if (pyBool(v)) return true; return false; },
+    all: async (iterable) => { for await (const v of _pyEach(iterable)) if (!pyBool(v)) return false; return true; },
     isinstance: (obj, typeOrTuple) => _pyIsInstance(obj, typeOrTuple),
     type: (obj) => {
       if (obj !== null && obj !== undefined && obj.__adderType__) return obj.__adderType__;
@@ -5638,6 +5995,7 @@ async function adderEval(node, scope) {
 
     // ── exceptions ──
     case 'Try': return _evalTry(node, scope);
+    case 'Match': { const c = await _matchCase(node, scope); if (c) for (const s of c.body) await adderEval(s, scope); return null; }
     case 'Raise': {
       if (!node.exc) {
         if (_excStack.length) throw _excStack[_excStack.length - 1];
@@ -5793,7 +6151,15 @@ async function adderEval(node, scope) {
     case 'Await': return await (await adderEval(node.value, scope));
     case 'Yield': throw new AdderError('SyntaxError', 'yield outside function', node.line);
     case 'YieldFrom': throw new AdderError('SyntaxError', 'yield outside function', node.line);
-    case 'NamedExpr': { const value = await adderEval(node.value, scope); scope.set(node.target.id, value); return value; }
+    case 'NamedExpr': {
+      // (name := value) binds in the enclosing function or module scope, even from inside a
+      // comprehension (PEP 572), so the name is readable after the comprehension ends
+      const value = await adderEval(node.value, scope);
+      let target = scope;
+      while (target._isComp && target.parent) target = target.parent;
+      target.set(node.target.id, value);
+      return value;
+    }
 
     // ── starred (in expression context) ──
     case 'Starred': return await adderEval(node.value, scope);
@@ -6496,6 +6862,11 @@ async function* _evalGenStmt(node, scope) {
       for (const stmt of branch) yield* await _evalGenStmt(stmt, scope);
       return;
     }
+    case 'Match': {
+      const c = await _matchCase(node, scope);
+      if (c) for (const stmt of c.body) yield* await _evalGenStmt(stmt, scope);
+      return;
+    }
     case 'Try': {
       try {
         for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
@@ -6847,6 +7218,22 @@ async function _evalWith(node, scope) {
 
 // ── try/except ──
 
+// match: the first case whose pattern fits (its captures bound) and whose guard holds, or null
+async function _matchCase(node, scope) {
+  const subject = await adderEval(node.subject, scope);
+  for (const c of node.cases) {
+    if (!c._desc) { c._valueNodes = []; c._desc = compileMatchPattern(c.pattern, c._valueNodes); }
+    const values = [];
+    for (const v of c._valueNodes) values.push(await adderEval(v, scope));
+    const binds = new Map();
+    if (!(await pyMatch(subject, c._desc, values, binds))) continue;
+    for (const [k, v] of binds) scope.set(k, v);
+    if (c.guard && !pyBool(await adderEval(c.guard, scope))) continue;
+    return c;
+  }
+  return null;
+}
+
 async function _evalTry(node, scope) {
   try {
     let raised = null;
@@ -6918,11 +7305,19 @@ async function _evalBuiltinExec(args, scope, line) {
 // ── comprehensions ──
 
 function _evalGenExpr(node, scope) {
-  // Return an object with async iteration — lazy, not materialized
+  // A generator object, as Python's: lazy, iterates once, and an iterator itself (next() works).
+  // The body runs on first use; its outermost iterable is evaluated then too.
+  let gen = null;
+  const run = () => {
+    if (!gen) { const genScope = new AdderScope(scope); genScope._isComp = true; gen = _genExprIter(node, genScope, 0); }
+    return gen;
+  };
   return {
-    [Symbol.asyncIterator]() {
-      return _genExprIter(node, new AdderScope(scope), 0);
-    },
+    __adderClass__: 'generator',
+    [Symbol.asyncIterator]() { return run(); },
+    next(v) { return run().next(v); },
+    close() { return run().return(undefined).then(() => null); },
+    _jsThrow(err) { return run().throw(err); },
   };
 }
 
@@ -6949,6 +7344,7 @@ async function _evalComp(node, scope, kind) {
   // a dict comprehension builds a dict (a Map, like a dict literal), not a JS object
   const result = kind === 'list' ? [] : kind === 'set' ? new PySet() : new PyDict();
   const compScope = new AdderScope(scope);
+  compScope._isComp = true;   // a walrus inside binds past it (see NamedExpr)
   await _evalCompIter(node, compScope, result, kind, 0);
   return result;
 }
@@ -7921,6 +8317,8 @@ function _call(fn, args, kwargs) {
   return fn(...(args || []));
 }
 
+const _matchDescs = new Map();
+
 // ── Iteration helpers ──
 
 // Convert any iterable to an array (for for-of compatibility)
@@ -8065,6 +8463,15 @@ const _py = {
   super: pySuper,
   bytesLit, dictLiteral,
   tuple: mkTuple,
+  // match: [true, ...captures in `names` order] when the pattern fits, else null
+  match: async (subject, descJson, vals, names) => {
+    let desc = _matchDescs.get(descJson);
+    if (!desc) { desc = JSON.parse(descJson); _matchDescs.set(descJson, desc); }
+    const binds = new Map();
+    if (!(await pyMatch(subject, desc, vals, binds))) return null;
+    return [true, ...names.map((n) => binds.get(n))];
+  },
+  genIter: (arr) => { const it = arr[Symbol.iterator](); it.__adderClass__ = 'generator'; return it; },
   importRoot: _importRoot,
   excPush: (e) => { excStack.push(e); },
   excPop: () => { excStack.pop(); },
@@ -8206,6 +8613,7 @@ const _slNamedTupleBase = _slHookBase('NamedTuple', (cls) => {
   proto.__adderType__ = cls;
   cls._pyNew = (...a) => nt(...a);
   cls._fields = nt._fields;
+  cls.__match_args__ = nt._fields;
   cls._make = nt._make;
   cls._field_defaults = Object.fromEntries(fields.slice(fields.length - defaults.length).map((f, i) => [f, defaults[i]]));
   cls._pyMRO = [cls, _typeObjects.tuple].filter(Boolean);
@@ -13878,6 +14286,7 @@ class AdderLowerCtx extends BaseLowerCtx {
 
 function collectDefines_ad(stmts, defines) {
   for (const node of stmts || []) {
+    collectWalrusTargets(node, defines);
     switch (node.type) {
       case 'Assign':
         for (const t of node.targets) collectTargetNames(t, defines);
@@ -13915,6 +14324,12 @@ function collectDefines_ad(stmts, defines) {
           if (item.optionalVar) collectTargetNames(item.optionalVar, defines);
         }
         collectDefines_ad(node.body, defines);
+        break;
+      case 'Match':
+        for (const c of node.cases) {
+          for (const n of matchPatternNames(c.pattern)) defines.add(n);
+          collectDefines_ad(c.body, defines);
+        }
         break;
       case 'Try':
         collectDefines_ad(node.body, defines);
@@ -13972,7 +14387,7 @@ function _astHasAwaitOrYield(node) {
   // sites were emitted sync — a `global` update then landed after the caller moved on.
   if (node.type === 'AugAssign' && IBINOP_HELPER[node.op]) return true;
   if (node.type === 'With' || node.type === 'AsyncWith' || node.type === 'ClassDef' ||
-      node.type === 'Import' || node.type === 'ImportFrom') {
+      node.type === 'Import' || node.type === 'ImportFrom' || node.type === 'Match') {
     return true;
   }
   // Don't descend into nested function definitions — their async-ness is
@@ -14364,6 +14779,8 @@ function lowerStmt_ad(ctx, node) {
       });
       return null;
     }
+
+    case 'Match': return lowerMatch(ctx, node);
 
     case 'Global':
     case 'Nonlocal':
@@ -14973,6 +15390,55 @@ function lowerAnnAssign(ctx, node) {
   return null;
 }
 
+// match subject: case p [if guard]: body ...
+//   __subj = subject; __matched = false;
+//   if (!__matched) { __m = await _py.match(__subj, "<descriptor>", [values], [names]);
+//                     if (__m) { name1 = __m[1]; ...; if (guard) { __matched = true; body } } }
+//   ... one such block per case
+// A flag, not an else-chain: a failed guard falls through to the next case without duplicating
+// it, and break / continue in a body still reach the enclosing loop.
+function lowerMatch(ctx, node) {
+  const l = ctx.loc(node);
+  const subj = lowerExpr_ad(ctx, node.subject);
+  const subjName = ctx.makeTempName('subj');
+  ctx.emit('store', [subjName, subj.id], VOID, l);
+  ctx.symbols.set(subjName, subj.id);
+  const flag = ctx.makeTempName('matched');
+  emitRaw(ctx, `let ${flag} = false;`, flag);
+  for (const c of node.cases) {
+    const cl = ctx.loc(c);
+    const body = captureOps(ctx, () => {
+      const valueNodes = [];
+      const desc = compileMatchPattern(c.pattern, valueNodes);
+      const names = matchPatternNames(c.pattern);
+      const vals = ctx.emit('array_new', valueNodes.map((v) => lowerExpr_ad(ctx, v).id), DYNAMIC, cl);
+      const nameArr = ctx.emit('array_new', names.map((n) => ctx.emit('const', [n], STRING, cl).id), DYNAMIC, cl);
+      const call = emitPyCall(ctx, 'match', [ctx.emit('load', [subjName], DYNAMIC, cl), ctx.emit('const', [JSON.stringify(desc)], STRING, cl), vals, nameArr], cl);
+      const res = ctx.emit('await', [call.id], DYNAMIC, cl);
+      const resName = ctx.makeTempName('m');
+      ctx.emit('store', [resName, res.id], VOID, cl);
+      ctx.symbols.set(resName, res.id);
+      const hit = emitPyCall(ctx, 'truthy', [ctx.emit('load', [resName], DYNAMIC, cl)], cl, BOOL);
+      const thenBody = captureOps(ctx, () => {
+        names.forEach((n, i) => {
+          const v = emitPyCall(ctx, 'getitem', [ctx.emit('load', [resName], DYNAMIC, cl), ctx.emit('const', [i + 1], I32, cl)], cl);
+          lowerAssignTarget(ctx, { type: 'Name', id: n, line: c.line, col: c.col }, v, cl);
+        });
+        const run = () => { emitRaw(ctx, `${flag} = true;`); for (const s of c.body) lowerStmt_ad(ctx, s); };
+        if (c.guard) {
+          const g = emitPyCall(ctx, 'truthy', [lowerExpr_ad(ctx, c.guard)], cl, BOOL);
+          const guarded = captureOps(ctx, run);
+          ctx.emit('if_region', [g.id], VOID, cl, { then_body: guarded, else_body: [], phis: [] });
+        } else run();
+      });
+      ctx.emit('if_region', [hit.id], VOID, cl, { then_body: thenBody, else_body: [], phis: [] });
+    });
+    const notYet = ctx.emit('logical_not', [ctx.emit('load', [flag], BOOL, l).id], BOOL, l);
+    ctx.emit('if_region', [notYet.id], VOID, l, { then_body: body, else_body: [], phis: [] });
+  }
+  return null;
+}
+
 function lowerTry_ad(ctx, node) {
   // try: body [except [Type] [as name]: handler] [else: orelse] [finally: finalbody]
   //
@@ -15168,8 +15634,11 @@ function lowerClassDef(ctx, node) {
     // Use a synthetic approach: collect names via post-analysis of the ops.
     const classMemberNames = [];
     for (const op of ctx.ops) {
+      // the lowerer's temporaries (`__rep_42`) are not members; dunders (`__match_args__`,
+      // `__slots__`, `__hash__ = None`) are
+      const isTemp = (n) => n.startsWith('__') && !n.endsWith('__');
       if (op.op === 'store' && typeof op.args[0] === 'string' &&
-          !op.args[0].startsWith('__') && !classMemberNames.includes(op.args[0])) {
+          !isTemp(op.args[0]) && !classMemberNames.includes(op.args[0])) {
         classMemberNames.push(op.args[0]);
       }
       // Also catch func_region direct defines
@@ -15933,6 +16402,9 @@ function lowerComprehension(ctx, node) {
   ctx._compDepth = (ctx._compDepth || 0) + 1;
   try { buildComp(0); } finally { ctx._compDepth--; }
 
+  // a generator expression is computed eagerly here, but handed out as an iterator (next()
+  // works on it, it iterates once), as Python's generator object is
+  if (kind === 'GeneratorExp') return emitPyCall(ctx, 'genIter', [ctx.emit('load', [tempName], DYNAMIC, l)], l);
   return ctx.emit('load', [tempName], DYNAMIC, l);
 }
 
@@ -15966,7 +16438,14 @@ function pythonParseNames(code) {
 // Descends into block statements (with/for/if/try/while) but stops at def/class.
 function _collectDefines(stmts, defines) {
   for (const node of stmts) {
+    collectWalrusTargets(node, defines);
     switch (node.type) {
+      case 'Match':
+        for (const c of node.cases) {
+          for (const n of matchPatternNames(c.pattern)) defines.add(n);
+          _collectDefines(c.body, defines);
+        }
+        break;
       case 'Assign':
         for (const t of node.targets) _collectTargetNames(t, defines);
         break;

@@ -301,6 +301,60 @@ export function _adderParseExpr(code) {
   return new _Parser(adderTokenize(code + '\n')).parseExpr();
 }
 
+// the names a match pattern binds, in order of first appearance
+export function matchPatternNames(p, out = []) {
+  if (!p) return out;
+  const add = (n) => { if (n && !out.includes(n)) out.push(n); };
+  switch (p.type) {
+    case 'MatchAs': if (p.pattern) matchPatternNames(p.pattern, out); add(p.name); break;
+    case 'MatchStar': add(p.name); break;
+    case 'MatchOr': for (const q of p.patterns) matchPatternNames(q, out); break;
+    case 'MatchSequence': for (const q of p.patterns) matchPatternNames(q, out); break;
+    case 'MatchMapping': for (const q of p.patterns) matchPatternNames(q, out); add(p.rest); break;
+    case 'MatchClass': for (const q of [...p.patterns, ...p.kwdPatterns]) matchPatternNames(q, out); break;
+    default: break;
+  }
+  return out;
+}
+
+// A match pattern as a plain descriptor for pyMatch (builtins.js): the shape only. The values
+// it compares against — literals, dotted names like Color.RED, mapping keys, the class of a
+// class pattern — go into `valueNodes` as expressions for the engine to evaluate; the
+// descriptor refers to them by index. Both engines match through the same descriptor.
+export function compileMatchPattern(p, valueNodes) {
+  const val = (node) => { valueNodes.push(node); return valueNodes.length - 1; };
+  switch (p.type) {
+    case 'MatchAs':
+      if (!p.pattern) return p.name ? { k: 'cap', name: p.name } : { k: 'any' };
+      return { k: 'as', p: compileMatchPattern(p.pattern, valueNodes), name: p.name };
+    case 'MatchStar': return { k: 'star', name: p.name };
+    case 'MatchValue': return { k: 'val', i: val(p.value) };
+    case 'MatchSingleton': return { k: 'single', v: p.value };
+    case 'MatchOr': return { k: 'or', ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)) };
+    case 'MatchSequence': return { k: 'seq', ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)) };
+    case 'MatchMapping':
+      return { k: 'map', keys: p.keys.map(val), ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)), rest: p.rest };
+    case 'MatchClass':
+      return { k: 'cls', c: val(p.cls), ps: p.patterns.map((q) => compileMatchPattern(q, valueNodes)),
+        kw: p.kwdAttrs, kps: p.kwdPatterns.map((q) => compileMatchPattern(q, valueNodes)) };
+    default: throw new SyntaxError(`unknown pattern ${p.type}`);
+  }
+}
+
+// the targets of `:=` anywhere in a statement's expressions (comprehensions included: a walrus
+// binds in the enclosing scope), not inside a nested def / class / lambda, which have their own
+export function collectWalrusTargets(node, defines) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const n of node) collectWalrusTargets(n, defines); return; }
+  if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' || node.type === 'ClassDef' || node.type === 'Lambda') return;
+  if (node.type === 'NamedExpr' && node.target && node.target.type === 'Name') defines.add(node.target.id);
+  for (const k of Object.keys(node)) {
+    if (k === 'body' || k === 'orelse' || k === 'finalbody' || k === 'handlers') continue;   // statements: the define scans walk those
+    const v = node[k];
+    if (v && typeof v === 'object') collectWalrusTargets(v, defines);
+  }
+}
+
 const _AUGASSIGN = new Set(['+=', '-=', '*=', '/=', '//=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '@=']);
 
 class _Parser {
@@ -375,8 +429,175 @@ class _Parser {
       if (t.value === 'class') return [this.parseClass()];
       if (t.value === 'try') return [this.parseTry()];
       if (t.value === 'with') return [this.parseWith()];
+      // `match` is a soft keyword: a match statement only when `match <subject>:` opens a block
+      // of cases; otherwise (`match = ...`, `match.group()`) it is an ordinary name
+      if (t.value === 'match') { const m = this._tryParseMatch(); if (m) return [m]; }
     }
     return this.parseSimpleList();
+  }
+
+  // ── match statement (structural pattern matching, PEP 634) ──
+
+  _tryParseMatch() {
+    const start = this.pos;
+    const t = this.advance();
+    let subject;
+    try {
+      subject = this.parseStarExpr();
+      if (this.at('OP', ',')) {
+        const elts = [subject];
+        while (this.eat('OP', ',')) { if (this.at('OP', ':')) break; elts.push(this.parseStarExpr()); }
+        subject = { type: 'Tuple', elts, line: subject.line, col: subject.col };
+      }
+      this.expect('OP', ':');
+      this.expect('NEWLINE');
+      this.expect('INDENT');
+      if (!this.at('NAME', 'case')) throw new SyntaxError('expected case');
+    } catch {
+      this.pos = start;
+      return null;
+    }
+    const cases = [];
+    while (!this.at('DEDENT') && !this.at('EOF')) {
+      if (this.eat('NEWLINE')) continue;
+      const c = this.expect('NAME', 'case');
+      const pattern = this._parseCasePattern();
+      const guard = this.eat('NAME', 'if') ? this.parseExpr() : null;
+      this.expect('OP', ':');
+      cases.push({ type: 'match_case', pattern, guard, body: this.parseBlock(), line: c.line, col: c.col });
+    }
+    this.eat('DEDENT');
+    return { type: 'Match', subject, cases, line: t.line, col: t.col };
+  }
+
+  // case a, b, *rest:  — an open sequence, or a single pattern
+  _parseCasePattern() {
+    const first = this._parseStarOrPattern();
+    if (!this.at('OP', ',')) {
+      if (first.type === 'MatchStar') throw new SyntaxError(`can't use starred pattern here (line ${first.line})`);
+      return first;
+    }
+    const patterns = [first];
+    while (this.eat('OP', ',')) {
+      if (this.at('NAME', 'if') || this.at('OP', ':')) break;
+      patterns.push(this._parseStarOrPattern());
+    }
+    return { type: 'MatchSequence', patterns, line: first.line, col: first.col };
+  }
+
+  _parseStarOrPattern() {
+    if (this.at('OP', '*')) {
+      const t = this.advance();
+      const n = this.expect('NAME').value;
+      return { type: 'MatchStar', name: n === '_' ? null : n, line: t.line, col: t.col };
+    }
+    return this._parseAsPattern();
+  }
+
+  _parseAsPattern() {
+    const p = this._parseOrPattern();
+    if (this.eat('NAME', 'as')) {
+      const n = this.expect('NAME').value;
+      if (n === '_') throw new SyntaxError(`cannot use '_' as a target (line ${p.line})`);
+      return { type: 'MatchAs', pattern: p, name: n, line: p.line, col: p.col };
+    }
+    return p;
+  }
+
+  _parseOrPattern() {
+    const patterns = [this._parseClosedPattern()];
+    while (this.eat('OP', '|')) patterns.push(this._parseClosedPattern());
+    return patterns.length === 1 ? patterns[0] : { type: 'MatchOr', patterns, line: patterns[0].line, col: patterns[0].col };
+  }
+
+  _parseClosedPattern() {
+    const t = this.peek();
+    // numbers, negative numbers and complex literals (1, -2.5, 1+2j)
+    if (t.type === 'NUMBER' || (t.type === 'OP' && t.value === '-')) {
+      return { type: 'MatchValue', value: this.parseArith(), line: t.line, col: t.col };
+    }
+    if (t.type === 'STRING' || t.type === 'BYTES') {
+      return { type: 'MatchValue', value: this.parseAtom(), line: t.line, col: t.col };
+    }
+    if (t.type === 'NAME') {
+      if (t.value === 'True' || t.value === 'False' || t.value === 'None') {
+        this.advance();
+        return { type: 'MatchSingleton', value: t.value === 'True' ? true : t.value === 'False' ? false : null, line: t.line, col: t.col };
+      }
+      this.advance();
+      let expr = { type: 'Name', id: t.value, line: t.line, col: t.col };
+      let dotted = false;
+      while (this.at('OP', '.')) {
+        this.advance();
+        expr = { type: 'Attribute', value: expr, attr: this.expect('NAME').value, line: t.line, col: t.col };
+        dotted = true;
+      }
+      if (this.at('OP', '(')) return this._parseClassPattern(expr, t);
+      if (dotted) return { type: 'MatchValue', value: expr, line: t.line, col: t.col };
+      if (t.value === '_') return { type: 'MatchAs', pattern: null, name: null, line: t.line, col: t.col };
+      return { type: 'MatchAs', pattern: null, name: t.value, line: t.line, col: t.col };
+    }
+    if (t.type === 'OP' && (t.value === '(' || t.value === '[')) {
+      const close = t.value === '(' ? ')' : ']';
+      this.advance();
+      if (this.eat('OP', close)) return { type: 'MatchSequence', patterns: [], line: t.line, col: t.col };
+      const first = this._parseStarOrPattern();
+      if (t.value === '(' && this.eat('OP', ')')) {
+        if (first.type === 'MatchStar') return { type: 'MatchSequence', patterns: [first], line: t.line, col: t.col };
+        return first;   // (p) groups
+      }
+      const patterns = [first];
+      while (this.eat('OP', ',')) {
+        if (this.at('OP', close)) break;
+        patterns.push(this._parseStarOrPattern());
+      }
+      this.expect('OP', close);
+      return { type: 'MatchSequence', patterns, line: t.line, col: t.col };
+    }
+    if (t.type === 'OP' && t.value === '{') {
+      this.advance();
+      const keys = [], patterns = [];
+      let rest = null;
+      while (!this.at('OP', '}')) {
+        if (this.eat('OP', '**')) { rest = this.expect('NAME').value; this.eat('OP', ','); break; }
+        const kt = this.peek();
+        let key;
+        if (kt.type === 'NAME' && !['True', 'False', 'None'].includes(kt.value)) {
+          this.advance();
+          key = { type: 'Name', id: kt.value, line: kt.line, col: kt.col };
+          while (this.eat('OP', '.')) key = { type: 'Attribute', value: key, attr: this.expect('NAME').value, line: kt.line, col: kt.col };
+          if (key.type === 'Name') throw new SyntaxError(`mapping pattern keys may only match literals and attribute lookups (line ${kt.line})`);
+        } else if (kt.type === 'NAME') { this.advance(); key = { type: 'Constant', value: kt.value === 'True' ? true : kt.value === 'False' ? false : null, line: kt.line, col: kt.col }; }
+        else if (kt.type === 'NUMBER' || (kt.type === 'OP' && kt.value === '-')) key = this.parseArith();
+        else key = this.parseAtom();
+        this.expect('OP', ':');
+        keys.push(key);
+        patterns.push(this._parseAsPattern());
+        if (!this.eat('OP', ',')) break;
+      }
+      this.expect('OP', '}');
+      return { type: 'MatchMapping', keys, patterns, rest, line: t.line, col: t.col };
+    }
+    throw new SyntaxError(`invalid pattern at '${t.value}' (line ${t.line})`);
+  }
+
+  // Point(1, y=2): positional sub-patterns, then keyword ones
+  _parseClassPattern(cls, t) {
+    this.expect('OP', '(');
+    const patterns = [], kwdAttrs = [], kwdPatterns = [];
+    while (!this.at('OP', ')')) {
+      if (this.at('NAME') && this.tokens[this.pos + 1]?.type === 'OP' && this.tokens[this.pos + 1]?.value === '=') {
+        kwdAttrs.push(this.advance().value);
+        this.advance();
+        kwdPatterns.push(this._parseAsPattern());
+      } else {
+        if (kwdAttrs.length) throw new SyntaxError(`positional patterns follow keyword patterns (line ${t.line})`);
+        patterns.push(this._parseAsPattern());
+      }
+      if (!this.eat('OP', ',')) break;
+    }
+    this.expect('OP', ')');
+    return { type: 'MatchClass', cls, patterns, kwdAttrs, kwdPatterns, line: t.line, col: t.col };
   }
 
   parseSimpleList() {

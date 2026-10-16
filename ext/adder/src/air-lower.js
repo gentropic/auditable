@@ -14,6 +14,7 @@ import {
 } from '../../air/src/lower/base.js';
 import { registerSpecializations } from '../../air/src/passes.js';
 import { classAnnotations } from './builtins.js';
+import { collectWalrusTargets, matchPatternNames, compileMatchPattern } from './parse.js';
 
 // Re-export AirLowerError from @gcu/air. Lifted to ext/air/src/lower/base.js
 // so all frontends share one definition; the marker `_airFallback: true`
@@ -184,6 +185,7 @@ class AdderLowerCtx extends BaseLowerCtx {
 
 function collectDefines_ad(stmts, defines) {
   for (const node of stmts || []) {
+    collectWalrusTargets(node, defines);
     switch (node.type) {
       case 'Assign':
         for (const t of node.targets) collectTargetNames(t, defines);
@@ -221,6 +223,12 @@ function collectDefines_ad(stmts, defines) {
           if (item.optionalVar) collectTargetNames(item.optionalVar, defines);
         }
         collectDefines_ad(node.body, defines);
+        break;
+      case 'Match':
+        for (const c of node.cases) {
+          for (const n of matchPatternNames(c.pattern)) defines.add(n);
+          collectDefines_ad(c.body, defines);
+        }
         break;
       case 'Try':
         collectDefines_ad(node.body, defines);
@@ -278,7 +286,7 @@ function _astHasAwaitOrYield(node) {
   // sites were emitted sync — a `global` update then landed after the caller moved on.
   if (node.type === 'AugAssign' && IBINOP_HELPER[node.op]) return true;
   if (node.type === 'With' || node.type === 'AsyncWith' || node.type === 'ClassDef' ||
-      node.type === 'Import' || node.type === 'ImportFrom') {
+      node.type === 'Import' || node.type === 'ImportFrom' || node.type === 'Match') {
     return true;
   }
   // Don't descend into nested function definitions — their async-ness is
@@ -670,6 +678,8 @@ function lowerStmt_ad(ctx, node) {
       });
       return null;
     }
+
+    case 'Match': return lowerMatch(ctx, node);
 
     case 'Global':
     case 'Nonlocal':
@@ -1279,6 +1289,55 @@ function lowerAnnAssign(ctx, node) {
   return null;
 }
 
+// match subject: case p [if guard]: body ...
+//   __subj = subject; __matched = false;
+//   if (!__matched) { __m = await _py.match(__subj, "<descriptor>", [values], [names]);
+//                     if (__m) { name1 = __m[1]; ...; if (guard) { __matched = true; body } } }
+//   ... one such block per case
+// A flag, not an else-chain: a failed guard falls through to the next case without duplicating
+// it, and break / continue in a body still reach the enclosing loop.
+function lowerMatch(ctx, node) {
+  const l = ctx.loc(node);
+  const subj = lowerExpr_ad(ctx, node.subject);
+  const subjName = ctx.makeTempName('subj');
+  ctx.emit('store', [subjName, subj.id], VOID, l);
+  ctx.symbols.set(subjName, subj.id);
+  const flag = ctx.makeTempName('matched');
+  emitRaw(ctx, `let ${flag} = false;`, flag);
+  for (const c of node.cases) {
+    const cl = ctx.loc(c);
+    const body = captureOps(ctx, () => {
+      const valueNodes = [];
+      const desc = compileMatchPattern(c.pattern, valueNodes);
+      const names = matchPatternNames(c.pattern);
+      const vals = ctx.emit('array_new', valueNodes.map((v) => lowerExpr_ad(ctx, v).id), DYNAMIC, cl);
+      const nameArr = ctx.emit('array_new', names.map((n) => ctx.emit('const', [n], STRING, cl).id), DYNAMIC, cl);
+      const call = emitPyCall(ctx, 'match', [ctx.emit('load', [subjName], DYNAMIC, cl), ctx.emit('const', [JSON.stringify(desc)], STRING, cl), vals, nameArr], cl);
+      const res = ctx.emit('await', [call.id], DYNAMIC, cl);
+      const resName = ctx.makeTempName('m');
+      ctx.emit('store', [resName, res.id], VOID, cl);
+      ctx.symbols.set(resName, res.id);
+      const hit = emitPyCall(ctx, 'truthy', [ctx.emit('load', [resName], DYNAMIC, cl)], cl, BOOL);
+      const thenBody = captureOps(ctx, () => {
+        names.forEach((n, i) => {
+          const v = emitPyCall(ctx, 'getitem', [ctx.emit('load', [resName], DYNAMIC, cl), ctx.emit('const', [i + 1], I32, cl)], cl);
+          lowerAssignTarget(ctx, { type: 'Name', id: n, line: c.line, col: c.col }, v, cl);
+        });
+        const run = () => { emitRaw(ctx, `${flag} = true;`); for (const s of c.body) lowerStmt_ad(ctx, s); };
+        if (c.guard) {
+          const g = emitPyCall(ctx, 'truthy', [lowerExpr_ad(ctx, c.guard)], cl, BOOL);
+          const guarded = captureOps(ctx, run);
+          ctx.emit('if_region', [g.id], VOID, cl, { then_body: guarded, else_body: [], phis: [] });
+        } else run();
+      });
+      ctx.emit('if_region', [hit.id], VOID, cl, { then_body: thenBody, else_body: [], phis: [] });
+    });
+    const notYet = ctx.emit('logical_not', [ctx.emit('load', [flag], BOOL, l).id], BOOL, l);
+    ctx.emit('if_region', [notYet.id], VOID, l, { then_body: body, else_body: [], phis: [] });
+  }
+  return null;
+}
+
 function lowerTry_ad(ctx, node) {
   // try: body [except [Type] [as name]: handler] [else: orelse] [finally: finalbody]
   //
@@ -1474,8 +1533,11 @@ function lowerClassDef(ctx, node) {
     // Use a synthetic approach: collect names via post-analysis of the ops.
     const classMemberNames = [];
     for (const op of ctx.ops) {
+      // the lowerer's temporaries (`__rep_42`) are not members; dunders (`__match_args__`,
+      // `__slots__`, `__hash__ = None`) are
+      const isTemp = (n) => n.startsWith('__') && !n.endsWith('__');
       if (op.op === 'store' && typeof op.args[0] === 'string' &&
-          !op.args[0].startsWith('__') && !classMemberNames.includes(op.args[0])) {
+          !isTemp(op.args[0]) && !classMemberNames.includes(op.args[0])) {
         classMemberNames.push(op.args[0]);
       }
       // Also catch func_region direct defines
@@ -2239,5 +2301,8 @@ function lowerComprehension(ctx, node) {
   ctx._compDepth = (ctx._compDepth || 0) + 1;
   try { buildComp(0); } finally { ctx._compDepth--; }
 
+  // a generator expression is computed eagerly here, but handed out as an iterator (next()
+  // works on it, it iterates once), as Python's generator object is
+  if (kind === 'GeneratorExp') return emitPyCall(ctx, 'genIter', [ctx.emit('load', [tempName], DYNAMIC, l)], l);
   return ctx.emit('load', [tempName], DYNAMIC, l);
 }

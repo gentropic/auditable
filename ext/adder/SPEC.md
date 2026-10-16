@@ -126,6 +126,8 @@ This means:
 - `with` / `as` — context managers via `__enter__`/`__exit__` (or `enter`/`exit`). Both dunders may be async; the tree-walker (`eval.js _evalWith`) awaits them directly, and the AIR transpile path lowers the suite to `await _py.exitWith(__mgr, exc)` — which awaits internally — so a file opened in `"w"` mode flushes its `await vfs.writeFile(...)` before the cell's own function returns. Implicit contract: any new caller of `_py.exitWith` MUST be at an `await`.
 - `assert test, msg`
 - `async for`, `async with`
+- `match` / `case` (PEP 634) — literal, capture, wildcard, value (`Color.RED`), sequence (with `*rest`), mapping (with `**rest`), class (positional through `__match_args__`, keyword), `|` alternatives, `as`, guards. `match` and `case` are soft keywords: `match = re.match(...)` is still an assignment. One matcher serves both engines (`pyMatch` in `builtins.js`, fed a descriptor from `compileMatchPattern` in `parse.js`); AIR lowers each case behind a matched-flag, so a failed guard falls through to the next case and `break` / `continue` in a case body reach the enclosing loop.
+- `:=` (walrus) — binds in the enclosing function or module scope, including from inside a comprehension, as PEP 572 specifies.
 
 ### 3.4 Functions
 
@@ -302,6 +304,10 @@ class AdderScope {
 **Equality:** `==` on lists does deep structural comparison. `is` does identity comparison (`===`).
 
 **`in` on dicts:** checks keys (via `key in obj` for plain Objects, `map.has(key)` for Maps).
+
+**Generator expressions in AIR are computed eagerly** (then handed out as an iterator, so `next()` works): `any(f(x) for x in xs)` calls `f` on every item before deciding, and an infinite source never ends. The tree-walker's are lazy, as CPython's. `map()` and `filter()` are lazy iterators in both engines.
+
+**JS reserved words as Python names** (`default`, `case`, `eval`, `enum`, ...) make AIR refuse the cell; it runs on the tree-walker instead (correct, slower).
 
 **Loop limits:** `while` loops are capped at 1,000,000 iterations. `for` loops yield to the event loop every 1,000 iterations to prevent page lockup.
 

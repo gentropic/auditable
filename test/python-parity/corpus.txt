@@ -1286,3 +1286,196 @@ def outer():
     return n
 k = -1
 print(outer(), k)
+### expr/walrus
+data = [1, 5, 9, 2]
+if (n := len(data)) > 3:
+    print("long", n)
+print([y for x in data if (y := x * 2) > 4], y)
+print({x: (last := x + 1) for x in range(3)}, last)
+while (k := data.pop()) != 5:
+    print("popped", k)
+print(k, data)
+def f(items):
+    if (m := max(items)) > 3:
+        return m, [q for q in items if (r := q % 3) == 0], r
+    return None
+print(f([3, 4, 6]))
+def g():
+    return [(z := i * i) for i in range(4)], z
+print(g())
+z = "module z untouched"
+print(z)
+print((w := 10), w + 1)
+### expr/genexp-consumers
+import itertools
+xs = [3, 1, 2]
+def sq(v):
+    return v * v
+class Box:
+    def __init__(self, v):
+        self.v = v
+    def get(self):
+        return self.v
+print(sum(x * x for x in xs), sum(sq(x) for x in xs), "-".join(str(x) for x in xs), "".join(c.upper() for c in "abc"))
+print(list(x for x in xs if x > 1), tuple(x for x in xs), dict((x, sq(x)) for x in xs))
+print(sorted(x for x in xs), min(x for x in xs), max(sq(x) for x in xs), any(x > 2 for x in xs), all(x > 0 for x in xs))
+print(next(x for x in xs if x < 3), next((x for x in xs if x > 9), "none"), list(zip(xs, (sq(x) for x in xs))))
+print(list(enumerate(b.get() for b in [Box(5), Box(6)])), [p for p in ((x, y) for x in range(2) for y in "ab")])
+def gen_in_func(items):
+    return list(i + 1 for i in items), sum(i for i in items if i % 2 == 0)
+print(gen_in_func(range(6)))
+print(sum(1 for _ in range(1000)), len(list(c for c in "hello" if c != "l")))
+### expr/genexp-lazy-any
+data = [1, 5, 9, 2]
+print(any((hit := v) > 8 for v in data), hit)
+seen = []
+def note(v):
+    seen.append(v)
+    return v
+print(next(x for x in map(note, data) if x > 4), seen)
+### ctl/match-patterns
+import re
+from dataclasses import dataclass
+from collections import namedtuple
+from enum import Enum
+
+class Color(Enum):
+    RED = 1
+    GREEN = 2
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+Pair = namedtuple("Pair", ["a", "b"])
+
+class Shape:
+    __match_args__ = ("kind", "size")
+    def __init__(self, kind, size):
+        self.kind = kind
+        self.size = size
+
+def describe(v):
+    match v:
+        case 0 | 1:
+            return "bit"
+        case -5:
+            return "minus five"
+        case 2.5:
+            return "two and a half"
+        case "hi" | "hello":
+            return "greeting"
+        case True:
+            return "never: 1 matched first"
+        case None:
+            return "none"
+        case Color.RED:
+            return "red"
+        case Point(x=0, y=0):
+            return "origin"
+        case Point(0, y):
+            return f"on y axis at {y}"
+        case Point(x, y) if x == y:
+            return f"diagonal {x}"
+        case Point():
+            return "some point"
+        case Pair(a, b=7):
+            return f"pair with 7, a={a}"
+        case Shape("circle", r):
+            return f"circle r={r}"
+        case Shape(kind="square"):
+            return "a square"
+        case []:
+            return "empty seq"
+        case [x]:
+            return f"one: {x}"
+        case [1, 2, *rest]:
+            return f"starts 1,2 rest={rest}"
+        case [first, *_, last]:
+            return f"first {first} last {last}"
+        case {"action": "load", "path": p}:
+            return f"load {p}"
+        case {"action": a, **others}:
+            return f"action {a} with {sorted(others)}"
+        case {}:
+            return "some mapping"
+        case int(n) if n > 100:
+            return f"big int {n}"
+        case int() | float() as num:
+            return f"number {num}"
+        case str(s):
+            return f"string {s!r}"
+        case (a, b):
+            return "unreachable: tuples matched above"
+        case _:
+            return "other"
+
+for v in [0, 1, -5, 2.5, "hello", True, None, Color.RED, Color.GREEN, Point(0, 0), Point(0, 3), Point(4, 4), Point(1, 2),
+          Pair(1, 7), Pair(1, 2), Shape("circle", 3), Shape("square", 2), [], [9], (9,), [1, 2, 3, 4], (1, 2),
+          ["a", "b", "c"], "ab", {"action": "load", "path": "/x"}, {"action": "go", "speed": 1, "dir": "n"}, {"k": 1},
+          500, 7, 3.25, "str", b"by", range(3), {1, 2}]:
+    print(repr(v) if not isinstance(v, (Point, Pair, Shape, Color)) else type(v).__name__, "->", describe(v))
+
+def cmd(c):
+    match c.split():
+        case ["go", ("north" | "south") as d]:
+            return f"going {d}"
+        case ["go", d]:
+            return f"can't go {d}"
+        case ["drop", *items] if items:
+            return f"dropping {', '.join(items)}"
+        case ["drop"]:
+            return "drop what?"
+        case [verb, *_]:
+            return f"unknown verb {verb}"
+    return "nothing"
+print([cmd(s) for s in ["go north", "go west", "drop a b", "drop", "dance now", ""]])
+
+x = 10
+match x:
+    case 1:
+        print("one")
+    case other:
+        print("captured", other)
+print(other)
+
+for i in range(4):
+    match i:
+        case 1:
+            continue
+        case 3:
+            break
+    print("loop", i)
+
+def gen():
+    for v in [1, "a", [2]]:
+        match v:
+            case int():
+                yield "i"
+            case str():
+                yield "s"
+            case _:
+                yield "?"
+print(list(gen()))
+
+try:
+    match 5:
+        case int(a, b):
+            pass
+except TypeError as e:
+    print("TypeError:", e)
+try:
+    match Point(1, 2):
+        case Point(1, 2, 3):
+            pass
+except TypeError as e:
+    print("TypeError:", e)
+### ctl/match-soft-keyword
+import re
+match = re.match(r"(\d+)", "42abc")
+print(match.group(1))
+match = {"case": 1}
+print(match["case"])
+case = 5
+print(case)

@@ -704,6 +704,26 @@
   "fn/local-shadows-module-name": {
    "out": "[0, 1, 7, 8, 104, 105] 2 1\n6 100 6\n2 -1\n",
    "error": null
+  },
+  "expr/walrus": {
+   "out": "long 4\n[10, 18] 4\n{0: 1, 1: 2, 2: 3} 3\npopped 2\npopped 9\n5 [1]\n(6, [3, 6], 0)\n([0, 1, 4, 9], 9)\nmodule z untouched\n10 11\n",
+   "error": null
+  },
+  "expr/genexp-consumers": {
+   "out": "14 14 3-1-2 ABC\n[3, 2] (3, 1, 2) {3: 9, 1: 1, 2: 4}\n[1, 2, 3] 1 9 True True\n1 none [(3, 9), (1, 1), (2, 4)]\n[(0, 5), (1, 6)] [(0, 'a'), (0, 'b'), (1, 'a'), (1, 'b')]\n([1, 2, 3, 4, 5, 6], 6)\n1000 3\n",
+   "error": null
+  },
+  "expr/genexp-lazy-any": {
+   "out": "True 9\n5 [1, 5]\n",
+   "error": null
+  },
+  "ctl/match-patterns": {
+   "out": "0 -> bit\n1 -> bit\n-5 -> minus five\n2.5 -> two and a half\n'hello' -> greeting\nTrue -> bit\nNone -> none\nColor -> red\nColor -> other\nPoint -> origin\nPoint -> on y axis at 3\nPoint -> diagonal 4\nPoint -> some point\nPair -> pair with 7, a=1\nPair -> starts 1,2 rest=[]\nShape -> circle r=3\nShape -> a square\n[] -> empty seq\n[9] -> one: 9\n(9,) -> one: 9\n[1, 2, 3, 4] -> starts 1,2 rest=[3, 4]\n(1, 2) -> starts 1,2 rest=[]\n['a', 'b', 'c'] -> first a last c\n'ab' -> string 'ab'\n{'action': 'load', 'path': '/x'} -> load /x\n{'action': 'go', 'speed': 1, 'dir': 'n'} -> action go with ['dir', 'speed']\n{'k': 1} -> some mapping\n500 -> big int 500\n7 -> number 7\n3.25 -> number 3.25\n'str' -> string 'str'\nb'by' -> other\nrange(0, 3) -> first 0 last 2\n{1, 2} -> other\n['going north', \"can't go west\", 'dropping a, b', 'drop what?', 'unknown verb dance', 'nothing']\ncaptured 10\n10\nloop 0\nloop 2\n['i', 's', '?']\nTypeError: int() accepts 1 positional sub-pattern (2 given)\nTypeError: Point() accepts 2 positional sub-patterns (3 given)\n",
+   "error": null
+  },
+  "ctl/match-soft-keyword": {
+   "out": "42\n1\n5\n",
+   "error": null
   }
  }
 }

@@ -7,7 +7,7 @@ import {
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine, _importRoot } from './eval.js';
 
@@ -679,6 +679,8 @@ function _call(fn, args, kwargs) {
   return fn(...(args || []));
 }
 
+const _matchDescs = new Map();
+
 // ── Iteration helpers ──
 
 // Convert any iterable to an array (for for-of compatibility)
@@ -823,6 +825,15 @@ export const _py = {
   super: pySuper,
   bytesLit, dictLiteral,
   tuple: mkTuple,
+  // match: [true, ...captures in `names` order] when the pattern fits, else null
+  match: async (subject, descJson, vals, names) => {
+    let desc = _matchDescs.get(descJson);
+    if (!desc) { desc = JSON.parse(descJson); _matchDescs.set(descJson, desc); }
+    const binds = new Map();
+    if (!(await pyMatch(subject, desc, vals, binds))) return null;
+    return [true, ...names.map((n) => binds.get(n))];
+  },
+  genIter: (arr) => { const it = arr[Symbol.iterator](); it.__adderClass__ = 'generator'; return it; },
   importRoot: _importRoot,
   excPush: (e) => { excStack.push(e); },
   excPop: () => { excStack.pop(); },

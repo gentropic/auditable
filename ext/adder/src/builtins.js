@@ -477,10 +477,32 @@ export function* pyIter(obj) {
   if (obj instanceof Map) { for (const k of obj.keys()) yield k; return; }
   if (obj instanceof Set || obj instanceof AdderRange) { yield* obj; return; }
   if (typeof obj[Symbol.iterator] === 'function') { yield* obj; return; }
+  // an async iterable (a tree-walked generator) can't be read synchronously: say so, rather
+  // than falling through to the plain-object case and yielding nothing
+  if (typeof obj[Symbol.asyncIterator] === 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object must be collected asynchronously here (list(...) it first)`);
   if (typeof obj === 'object' && typeof obj.length === 'number') { for (let i = 0; i < obj.length; i++) yield obj[i]; return; }
   // plain object — iterate keys
   if (typeof obj === 'object') { for (const k of Object.keys(obj)) yield k; return; }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
+}
+
+// a lazy iterator object (map, filter): iterates once, next() works, Python names its type
+function _lazyIter(name, genFn) {
+  let gen = null;
+  const run = () => gen || (gen = genFn());
+  return {
+    __adderClass__: name,
+    [Symbol.asyncIterator]() { return run(); },
+    next(v) { return run().next(v); },
+    __repr__() { return `<${name} object>`; },
+  };
+}
+const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && typeof v[Symbol.iterator] !== 'function';
+// iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
+export function _pyEach(obj) {
+  if (isUserIterable(obj)) return pyIterAsync(obj);
+  if (obj && typeof obj[Symbol.asyncIterator] === 'function') return obj;
+  return pyIter(obj);
 }
 
 // Collect iterable (sync or async) to array
@@ -806,9 +828,13 @@ function _strMethod(s, attr) {
       return parts;
     },
     join: (iterable) => {
-      const items = [...pyIter(iterable)];
-      items.forEach((x, i) => { if (typeof x !== 'string') throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
-      return items.join(s);
+      const finish = (items) => {
+        items.forEach((x, i) => { if (typeof x !== 'string') throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
+        return items.join(s);
+      };
+      // a generator expression / user iterable may be async: collect it first
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      return finish([...pyIter(iterable)]);
     },
     replace: (old, nw, count) => {
       if (count == null || count < 0) return s.split(old).join(nw);
@@ -2239,6 +2265,7 @@ export function _namedtuple(name, fields, opts) {
   NT.prototype.__adderClass__ = name;
   NT.prototype.__adderType__ = cls;
   NT.prototype._fields = cls._fields;
+  cls.__match_args__ = cls._fields;
   cls._ntProto = NT.prototype;   // typing.NamedTuple re-homes it onto the user's class
   names.forEach((f, i) => Object.defineProperty(NT.prototype, f, { get() { return this[i]; }, configurable: true }));
   NT.prototype.__repr__ = function () { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
@@ -3239,6 +3266,113 @@ export function makeUnion(a, b) {
   return out.length === 1 ? out[0] : new UnionType(out);
 }
 
+// ── match / case: one matcher for both engines ──
+// pyMatch(subject, descriptor, values, binds): does the subject fit the pattern? Captures go
+// into `binds` (a Map). The descriptor comes from compileMatchPattern (parse.js); `values`
+// holds the evaluated literals / dotted names / mapping keys / classes it refers to.
+const _MATCH_SELF_TYPES = new Set(['bool', 'bytearray', 'bytes', 'dict', 'float', 'frozenset', 'int', 'list', 'set', 'str', 'tuple']);
+const _mroNamed = (x, names) => !!(x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.some((c) => names.includes(c._pyName)));
+// a sequence pattern matches lists, tuples, ranges, deques and Sequence subclasses — never
+// str / bytes, and not a dict
+function _matchSeqItems(x) {
+  if (Array.isArray(x)) return x;
+  if (x instanceof AdderRange) return [...x];
+  if (x !== null && typeof x === 'object' && (x.__adderClass__ === 'deque' || _mroNamed(x, ['Sequence', 'MutableSequence']))) return null;   // collected below
+  return undefined;
+}
+const _isMatchMapping = (x) => x instanceof Map || isPlainDict(x) || _mroNamed(x, ['Mapping', 'MutableMapping']);
+async function _matchGetattr(obj, name) {
+  try { const v = adderGetAttr(obj, name); return { ok: true, v: v && typeof v.then === 'function' ? await v : v }; }
+  catch (e) { if (e && e.pyType === 'AttributeError') return { ok: false }; throw e; }
+}
+export async function pyMatch(subject, d, vals, binds) {
+  switch (d.k) {
+    case 'any': return true;
+    case 'cap': binds.set(d.name, subject); return true;
+    case 'as':
+      if (!(await pyMatch(subject, d.p, vals, binds))) return false;
+      binds.set(d.name, subject);
+      return true;
+    case 'val': { const r = pyEq(subject, vals[d.i]); return pyBool(r && typeof r.then === 'function' ? await r : r); }
+    case 'single': return subject === d.v || (d.v === null && subject === undefined);
+    case 'or':
+      for (const alt of d.ps) {
+        const b = new Map(binds);
+        if (await pyMatch(subject, alt, vals, b)) { for (const [k, v] of b) binds.set(k, v); return true; }
+      }
+      return false;
+    case 'seq': {
+      let items = _matchSeqItems(subject);
+      if (items === undefined) return false;
+      if (items === null) items = await pyCollect(subject);
+      const star = d.ps.findIndex((q) => q.k === 'star');
+      if (star < 0) {
+        if (items.length !== d.ps.length) return false;
+        for (let i = 0; i < items.length; i++) if (!(await pyMatch(items[i], d.ps[i], vals, binds))) return false;
+        return true;
+      }
+      const after = d.ps.length - star - 1;
+      if (items.length < star + after) return false;
+      for (let i = 0; i < star; i++) if (!(await pyMatch(items[i], d.ps[i], vals, binds))) return false;
+      for (let i = 0; i < after; i++) if (!(await pyMatch(items[items.length - after + i], d.ps[star + 1 + i], vals, binds))) return false;
+      if (d.ps[star].name) binds.set(d.ps[star].name, items.slice(star, items.length - after));
+      return true;
+    }
+    case 'map': {
+      if (!_isMatchMapping(subject)) return false;
+      const keys = d.keys.map((i) => vals[i]);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        let v;
+        if (subject instanceof Map) { if (!subject.has(k)) return false; v = subject.get(k); }
+        else if (isPlainDict(subject)) { if (typeof k !== 'string' || !Object.hasOwn(subject, k)) return false; v = subject[k]; }
+        else {
+          const has = await subject.__contains__(k);
+          if (!pyBool(has)) return false;
+          v = await subject.__getitem__(k);
+        }
+        if (!(await pyMatch(v, d.ps[i], vals, binds))) return false;
+      }
+      if (d.rest) {
+        if (isPlainDict(subject)) { const o = {}; for (const kk of Object.keys(subject)) if (!keys.includes(kk)) o[kk] = subject[kk]; binds.set(d.rest, o); }
+        else {
+          const out = new PyDict();
+          const entries = subject instanceof Map ? [...subject] : await Promise.all((await pyCollect(subject)).map(async (kk) => [kk, await subject.__getitem__(kk)]));
+          for (const [kk, vv] of entries) if (!keys.some((x) => x === kk || pyEq(x, kk) === true)) out.set(kk, vv);
+          binds.set(d.rest, out);
+        }
+      }
+      return true;
+    }
+    case 'cls': {
+      const cls = vals[d.c];
+      if (typeof cls !== 'function' || !cls._pyClass) throw new AdderError('TypeError', 'called match pattern must be a class');
+      if (!_pyIsInstance(subject, cls)) return false;
+      const name = cls.__name__ || cls._pyName;
+      if (d.ps.length) {
+        if (!cls._pyMRO && _MATCH_SELF_TYPES.has(cls._pyName)) {
+          if (d.ps.length > 1) throw new AdderError('TypeError', `${name}() accepts 1 positional sub-pattern (${d.ps.length} given)`);
+          if (!(await pyMatch(subject, d.ps[0], vals, binds))) return false;
+        } else {
+          const ma = cls.__match_args__;
+          const args = ma === undefined || ma === null ? [] : [...pyIter(ma)];
+          if (d.ps.length > args.length) throw new AdderError('TypeError', `${name}() accepts ${args.length} positional sub-pattern${args.length === 1 ? '' : 's'} (${d.ps.length} given)`);
+          for (let i = 0; i < d.ps.length; i++) {
+            const a = await _matchGetattr(subject, args[i]);
+            if (!a.ok || !(await pyMatch(a.v, d.ps[i], vals, binds))) return false;
+          }
+        }
+      }
+      for (let i = 0; i < d.kw.length; i++) {
+        const a = await _matchGetattr(subject, d.kw[i]);
+        if (!a.ok || !(await pyMatch(a.v, d.kps[i], vals, binds))) return false;
+      }
+      return true;
+    }
+    default: throw new AdderError('SystemError', `unknown match pattern ${d.k}`);
+  }
+}
+
 // ── class hooks shared by both engines ──
 // An annotation's source text: what __annotations__ holds (as under `from __future__ import
 // annotations`), and what dataclasses reads the field list from.
@@ -3410,22 +3544,24 @@ export function adderBuiltins(printFn) {
       for (let i = 0; i < minLen; i++) result.push(mkTuple(arrs.map(a => a[i])));
       return result;
     },
-    map: async (fn, ...iterables) => {
-      const arr0 = await pyCollect(iterables[0]);
-      if (iterables.length === 1) { const r = []; for (const v of arr0) r.push(await fn(v)); return r; }
-      const arrs = [arr0]; for (let i = 1; i < iterables.length; i++) arrs.push(await pyCollect(iterables[i]));
-      const minLen = Math.min(...arrs.map(a => a.length));
-      const result = [];
-      for (let i = 0; i < minLen; i++) result.push(await fn(...arrs.map(a => a[i])));
-      return result;
+    // lazy iterators, as in Python 3: the function runs per item as the result is consumed
+    map: (fn, ...iterables) => {
+      if (!iterables.length) throw new AdderError('TypeError', 'map() must have at least two arguments.');
+      return _lazyIter('map', async function* () {
+        const its = iterables.map((it) => { const e = _pyEach(it); return e[Symbol.asyncIterator] ? e[Symbol.asyncIterator]() : e[Symbol.iterator](); });
+        for (;;) {
+          const vals = [];
+          for (const it of its) { const r = await it.next(); if (r.done) return; vals.push(r.value); }
+          yield await fn(...vals);
+        }
+      });
     },
-    filter: async (fn, iterable) => {
-      const result = [];
-      for (const v of await pyCollect(iterable)) { if (fn ? pyBool(await fn(v)) : pyBool(v)) result.push(v); }
-      return result;
-    },
-    any: async (iterable) => { for (const v of await pyCollect(iterable)) if (pyBool(v)) return true; return false; },
-    all: async (iterable) => { for (const v of await pyCollect(iterable)) if (!pyBool(v)) return false; return true; },
+    filter: (fn, iterable) => _lazyIter('filter', async function* () {
+      for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
+    }),
+    // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
+    any: async (iterable) => { for await (const v of _pyEach(iterable)) if (pyBool(v)) return true; return false; },
+    all: async (iterable) => { for await (const v of _pyEach(iterable)) if (!pyBool(v)) return false; return true; },
     isinstance: (obj, typeOrTuple) => _pyIsInstance(obj, typeOrTuple),
     type: (obj) => {
       if (obj !== null && obj !== undefined && obj.__adderType__) return obj.__adderType__;

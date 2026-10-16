@@ -1,7 +1,7 @@
 // adder v2 — tree-walking evaluator
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
-import { adderParse, _adderParseExpr } from './parse.js';
+import { adderParse, _adderParseExpr, compileMatchPattern } from './parse.js';
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
 import './stdlib.js';
 import './stdlib-types.js';
@@ -16,7 +16,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -223,6 +223,7 @@ export async function adderEval(node, scope) {
 
     // ── exceptions ──
     case 'Try': return _evalTry(node, scope);
+    case 'Match': { const c = await _matchCase(node, scope); if (c) for (const s of c.body) await adderEval(s, scope); return null; }
     case 'Raise': {
       if (!node.exc) {
         if (_excStack.length) throw _excStack[_excStack.length - 1];
@@ -378,7 +379,15 @@ export async function adderEval(node, scope) {
     case 'Await': return await (await adderEval(node.value, scope));
     case 'Yield': throw new AdderError('SyntaxError', 'yield outside function', node.line);
     case 'YieldFrom': throw new AdderError('SyntaxError', 'yield outside function', node.line);
-    case 'NamedExpr': { const value = await adderEval(node.value, scope); scope.set(node.target.id, value); return value; }
+    case 'NamedExpr': {
+      // (name := value) binds in the enclosing function or module scope, even from inside a
+      // comprehension (PEP 572), so the name is readable after the comprehension ends
+      const value = await adderEval(node.value, scope);
+      let target = scope;
+      while (target._isComp && target.parent) target = target.parent;
+      target.set(node.target.id, value);
+      return value;
+    }
 
     // ── starred (in expression context) ──
     case 'Starred': return await adderEval(node.value, scope);
@@ -1081,6 +1090,11 @@ async function* _evalGenStmt(node, scope) {
       for (const stmt of branch) yield* await _evalGenStmt(stmt, scope);
       return;
     }
+    case 'Match': {
+      const c = await _matchCase(node, scope);
+      if (c) for (const stmt of c.body) yield* await _evalGenStmt(stmt, scope);
+      return;
+    }
     case 'Try': {
       try {
         for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
@@ -1432,6 +1446,22 @@ async function _evalWith(node, scope) {
 
 // ── try/except ──
 
+// match: the first case whose pattern fits (its captures bound) and whose guard holds, or null
+async function _matchCase(node, scope) {
+  const subject = await adderEval(node.subject, scope);
+  for (const c of node.cases) {
+    if (!c._desc) { c._valueNodes = []; c._desc = compileMatchPattern(c.pattern, c._valueNodes); }
+    const values = [];
+    for (const v of c._valueNodes) values.push(await adderEval(v, scope));
+    const binds = new Map();
+    if (!(await pyMatch(subject, c._desc, values, binds))) continue;
+    for (const [k, v] of binds) scope.set(k, v);
+    if (c.guard && !pyBool(await adderEval(c.guard, scope))) continue;
+    return c;
+  }
+  return null;
+}
+
 async function _evalTry(node, scope) {
   try {
     let raised = null;
@@ -1503,11 +1533,19 @@ async function _evalBuiltinExec(args, scope, line) {
 // ── comprehensions ──
 
 function _evalGenExpr(node, scope) {
-  // Return an object with async iteration — lazy, not materialized
+  // A generator object, as Python's: lazy, iterates once, and an iterator itself (next() works).
+  // The body runs on first use; its outermost iterable is evaluated then too.
+  let gen = null;
+  const run = () => {
+    if (!gen) { const genScope = new AdderScope(scope); genScope._isComp = true; gen = _genExprIter(node, genScope, 0); }
+    return gen;
+  };
   return {
-    [Symbol.asyncIterator]() {
-      return _genExprIter(node, new AdderScope(scope), 0);
-    },
+    __adderClass__: 'generator',
+    [Symbol.asyncIterator]() { return run(); },
+    next(v) { return run().next(v); },
+    close() { return run().return(undefined).then(() => null); },
+    _jsThrow(err) { return run().throw(err); },
   };
 }
 
@@ -1534,6 +1572,7 @@ async function _evalComp(node, scope, kind) {
   // a dict comprehension builds a dict (a Map, like a dict literal), not a JS object
   const result = kind === 'list' ? [] : kind === 'set' ? new PySet() : new PyDict();
   const compScope = new AdderScope(scope);
+  compScope._isComp = true;   // a walrus inside binds past it (see NamedExpr)
   await _evalCompIter(node, compScope, result, kind, 0);
   return result;
 }

@@ -1,7 +1,7 @@
 // Python cell type handler: parseNames, findUses, execute
 // adder v2 — pure JS interpreter, no WASM
 
-import { adderParse } from './parse.js';
+import { adderParse, collectWalrusTargets, matchPatternNames } from './parse.js';
 import { adderEval, AdderScope, AdderError } from './eval.js';
 import { adderBuiltins, pyStr, pyRepr, _ensureFsModules, getAdderVFS, setAdderVFS, _stdio, printToFile } from './builtins.js';
 import { _py } from './runtime.js';
@@ -27,7 +27,14 @@ export function pythonParseNames(code) {
 // Descends into block statements (with/for/if/try/while) but stops at def/class.
 function _collectDefines(stmts, defines) {
   for (const node of stmts) {
+    collectWalrusTargets(node, defines);
     switch (node.type) {
+      case 'Match':
+        for (const c of node.cases) {
+          for (const n of matchPatternNames(c.pattern)) defines.add(n);
+          _collectDefines(c.body, defines);
+        }
+        break;
       case 'Assign':
         for (const t of node.targets) _collectTargetNames(t, defines);
         break;

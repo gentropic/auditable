@@ -8,7 +8,6 @@
   "num/int-parse": "output",
   "num/float-repr": "output",
   "num/complex": "output",
-  "ctl/match": "error SyntaxError vs CPython null",
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
@@ -22,10 +21,10 @@
   "num/int-parse": "output",
   "num/float-repr": "output",
   "num/complex": "output",
-  "ctl/match": "error SyntaxError vs CPython null",
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output"
+  "builtin/sum-start": "output",
+  "expr/genexp-lazy-any": "output"
  }
 }

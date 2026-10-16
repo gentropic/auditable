@@ -120,6 +120,7 @@ const _slNamedTupleBase = _slHookBase('NamedTuple', (cls) => {
   proto.__adderType__ = cls;
   cls._pyNew = (...a) => nt(...a);
   cls._fields = nt._fields;
+  cls.__match_args__ = nt._fields;
   cls._make = nt._make;
   cls._field_defaults = Object.fromEntries(fields.slice(fields.length - defaults.length).map((f, i) => [f, defaults[i]]));
   cls._pyMRO = [cls, _typeObjects.tuple].filter(Boolean);
