@@ -65,10 +65,13 @@ function fail(msg) { throw new ExprParseError(msg); }
 // `-` is ALWAYS subtraction (v0.2; `AU-CU` is arithmetic, as pandas/SQL fingers expect).
 // Any other column name takes the BACKTICK escape — `Assay Au ppm` — the pandas
 // df.query() convention; \` escapes a literal backtick, \\ a backslash. The legacy
-// `["…"]` bracket form still parses (shipped lenses) but is undocumented.
+// `["…"]` bracket form still parses (shipped lenses) but is undocumented. `${name}` —
+// XLSForm's own reference syntax — is a field ref in every dialect (`$` was an illegal
+// character before, so it's additive); inside the braces any of [A-Za-z0-9_.-], so
+// digit-leading and hyphenated names work: `${1st_pass}`, `${fe-pct}`.
 // Strings: "double" (canonical) or 'single' (tolerated). Numbers: ints, decimals,
 // leading-dot (.5) and scientific (1e4, 2.5e-3). `^` and `**` are power.
-const TOKEN_RE = /(\s+)|(#[^\n]*)|(\[\s*"[^"]*"\s*\]|`(?:[^`\\]|\\.)*`)|("[^"]*"|'[^']*')|(&&|\|\||\*\*|==|<>|<=|>=|!=|!~|<|>|=|~)|([-+*/(),^])|((?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)|([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)/y;
+const TOKEN_RE = /(\s+)|(#[^\n]*)|(\[\s*"[^"]*"\s*\]|`(?:[^`\\]|\\.)*`|\$\{[A-Za-z0-9_.-]+\})|("[^"]*"|'[^']*')|(&&|\|\||\*\*|==|<>|<=|>=|!=|!~|<|>|=|~)|([-+*/(),^])|((?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)|([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)/y;
 
 // Lex into tokens carrying source positions. `tolerant` (for highlighting) emits a
 // 1-char 'err' token on an unexpected character instead of throwing.
@@ -89,20 +92,89 @@ function lexAll(src, tolerant) {
       continue;                                                              //  this is purely additive). parse skips;
     }                                                                        //  tokenize keeps them for highlighting.
     let k, v;
+    let q;                                                                   // how a field was written (see aggPath)
     if (m[3] !== undefined) {
       k = 'field';
-      v = m[3][0] === '`'
-        ? m[3].slice(1, -1).replace(/\\([`\\])/g, '$1')                    // `…` backtick escape (canonical)
-        : m[3].replace(/^\[\s*"/, '').replace(/"\s*\]$/, '');              // ["…"] legacy bracket form
+      if (m[3][0] === '$') { v = m[3].slice(2, -1); q = 'brace'; }           // ${name} — XLSForm's reference form
+      else if (m[3][0] === '`') { v = m[3].slice(1, -1).replace(/\\([`\\])/g, '$1'); q = 'tick'; }   // `…` backtick escape (canonical)
+      else { v = m[3].replace(/^\[\s*"/, '').replace(/"\s*\]$/, ''); q = 'tick'; }                   // ["…"] legacy bracket form
     }
     else if (m[4] !== undefined) { k = 'str'; v = m[4].slice(1, -1); }       // "double" or 'single'
     else if (m[5] !== undefined) { k = 'op'; v = m[5]; }
     else if (m[6] !== undefined) { k = 'op'; v = m[6]; }
     else if (m[7] !== undefined) { k = 'num'; v = parseFloat(m[7]); }
     else { k = 'word'; v = m[8]; }
-    toks.push({ k, v, start, end: last });
+    toks.push(q ? { k, v, q, start, end: last } : { k, v, start, end: last });
   }
   return toks;
+}
+
+// ── dialect options ──────────────────────────────────────────────────────────
+// The default dialect is the record calculus above. Options switch on additions a
+// host asks for; with every option off, nothing parses differently.
+//   aggregates: true  — repeat aggregates over a field holding a LIST OF INSTANCE
+//                       OBJECTS (an XLSForm repeat): count(r), total(r.f) (alias
+//                       sum), mean / min / max (r.f). See aggPath for the syntax.
+//   profile: 'form'   — the bundle for form engines (Hopper): aggregates on.
+// An explicit flag beats the profile's default.
+const PROFILES = { form: { aggregates: true } };
+function dialect(opts) {
+  const base = (opts && PROFILES[opts.profile]) || {};
+  return { aggregates: !!(opts && opts.aggregates !== undefined ? opts.aggregates : base.aggregates) };
+}
+// Aggregate name → canonical fn. `sum` is an alias of `total` (empty → 0, as in Hopper).
+const AGGREGATES = { count: 'count', total: 'total', sum: 'total', mean: 'mean', min: 'min', max: 'max' };
+
+// ── pattern guard ────────────────────────────────────────────────────────────
+// `matches "…"` hands a pattern to a backtracking regex engine, and a pattern like
+// `(a+)+$` or `(x|xx)+y` takes exponential time on a crafted value — a frozen tab,
+// which breaks the totality promise (every expression terminates). Rejected at parse,
+// conservatively: an unbounded or ranged quantifier (`*`, `+`, `{n,}`, `{n,m}`) on a
+// group that itself contains a quantifier or an alternation, and backreferences
+// (`\1`, `\k<name>`). `?` and `{n}` on such a group are fine (bounded repetition).
+// An invalid pattern is a parse error too (it used to match nothing, silently).
+// Residual: several `.*` in sequence are polynomial, not exponential — slow only on
+// long values.
+function checkPattern(src) {
+  try { new RegExp(src); } catch (e) { fail(`invalid pattern "${src}": ${e.message}`); }
+  const groups = [];                       // open groups: { inner: has quantifier or alternation }
+  let lastGroup = null;                    // the group that just closed, if the next token may quantify it
+  const unsafe = () => fail(`pattern "${src}" can backtrack catastrophically (a repeated group containing a quantifier or '|') — rewrite it without nesting`);
+  const mark = () => { if (groups.length) groups[groups.length - 1].inner = true; };
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === '\\') {
+      const d = src[i + 1];
+      if (/[1-9]/.test(d) || (d === 'k' && src[i + 2] === '<')) fail(`pattern "${src}" uses a backreference — not supported (it can backtrack catastrophically)`);
+      i++; lastGroup = null; continue;
+    }
+    if (c === '[') {                       // character class: skip to its unescaped ']'
+      let j = i + 1; if (src[j] === '^') j++; if (src[j] === ']') j++;
+      while (j < src.length && src[j] !== ']') { if (src[j] === '\\') j++; j++; }
+      i = j; lastGroup = null; continue;
+    }
+    if (c === '(') {
+      groups.push({ inner: false }); lastGroup = null;
+      if (src[i + 1] === '?') {            // group modifier, not a quantifier: (?: (?= (?! (?<= (?<! (?<name>
+        if (src[i + 2] === '<' && src[i + 3] !== '=' && src[i + 3] !== '!') { const e = src.indexOf('>', i); i = e < 0 ? src.length : e; }
+        else i += src[i + 2] === '<' ? 3 : 2;
+      }
+      continue;
+    }
+    if (c === ')') { lastGroup = groups.pop() || null; if (lastGroup && lastGroup.inner) mark(); continue; }
+    if (c === '|') { mark(); lastGroup = null; continue; }
+    let q = null;                          // quantifier at i: '?', 'n' (exact {n}), or 'many'
+    if (c === '*' || c === '+') q = 'many';
+    else if (c === '?') q = '?';
+    else if (c === '{') { const m = /^\{(\d+)(,(\d*))?\}/.exec(src.slice(i)); if (m) { q = m[2] ? 'many' : 'n'; i += m[0].length - 1; } }
+    if (q) {
+      if (q === 'many' && lastGroup && lastGroup.inner) unsafe();
+      mark();
+      if (src[i + 1] === '?') i++;         // lazy suffix
+      lastGroup = null; continue;
+    }
+    lastGroup = null;
+  }
 }
 
 // SQL LIKE pattern → an anchored RegExp source (% = any run, _ = one char).
@@ -112,7 +184,20 @@ function likeToRegex(pat) {
 }
 
 // ── parser ───────────────────────────────────────────────────────────────────
-function parse(src) {
+// The argument of a repeat aggregate is ONE field token naming a path `r` or `r.f`:
+// `samples`, `samples.fe_pct`, or `${samples.fe-pct}` (the brace form allows any name
+// characters). It splits at the first dot — `r` is the repeat (a field whose value is
+// a list of instance objects), `f` the field read off each instance. A backticked
+// name is never split (that's the escape for a repeat whose name has a dot).
+function aggPath(tok) {
+  if (!tok || (tok.k !== 'word' && tok.k !== 'field')) return null;
+  if (tok.q === 'tick') return [tok.v];
+  const d = tok.v.indexOf('.');
+  return d < 0 ? [tok.v] : [tok.v.slice(0, d), tok.v.slice(d + 1)];
+}
+
+function parse(src, opts) {
+  const D = dialect(opts);
   const toks = lexAll(src, false);
   let i = 0;
   const op = (v) => toks[i] && toks[i].k === 'op' && toks[i].v === v;
@@ -132,7 +217,21 @@ function parse(src) {
     if (t.k === 'field') { i++; return { t: 'field', name: t.v }; }     // ["…"] bracket escape
     if (t.k === 'word') {
       const lw = t.v.toLowerCase();
-      if (CALLFNS[lw] && toks[i + 1] && toks[i + 1].k === 'op' && toks[i + 1].v === '(') {
+      const opens = toks[i + 1] && toks[i + 1].k === 'op' && toks[i + 1].v === '(';
+      // repeat aggregate (dialect option): count(r) · total|sum|mean|min|max(r.f).
+      // min/max are aggregates only for exactly one DOTTED path — `min(a, b)` and
+      // `min(x)` stay the scalar functions.
+      if (D.aggregates && opens && AGGREGATES[lw]) {
+        const fn = AGGREGATES[lw], arg = toks[i + 2], close = toks[i + 3];
+        const path = aggPath(arg), single = !!(path && close && close.k === 'op' && close.v === ')');
+        if (fn === 'min' || fn === 'max' ? (single && path.length === 2) : true) {
+          if (!single) fail(`${lw}() expects ${fn === 'count' ? 'a repeat name, e.g. count(samples)' : `a repeat field, e.g. ${lw}(samples.fe_pct)`}`);
+          if (fn !== 'count' && path.length < 2) fail(`${lw}() expects a repeat field r.f, e.g. ${lw}(${path[0]}.fe_pct) — got '${path[0]}'`);
+          i += 4;
+          return { t: 'agg', fn, path, start: t.start, end: close.end };
+        }
+      }
+      if (CALLFNS[lw] && opens) {
         i += 2;
         const args = [];
         if (!op(')')) { args.push(expr()); while (op(',')) { i++; args.push(expr()); } }
@@ -191,7 +290,7 @@ function parse(src) {
     if (word('contains')) { const kt = toks[i]; i++; return fin({ t: 'contains', l, r: add(), opStart: kt.start, opEnd: kt.end }); }
     if (word('in')) { const kt = toks[i]; i++; return fin({ t: 'in', e: l, set: inList(), opStart: kt.start, opEnd: kt.end }); }
     if (word('like')) { const kt = toks[i]; i++; return fin({ t: 'matches', e: l, re: likeToRegex(eatStr()), opStart: kt.start, opEnd: kt.end }); }
-    if (word('matches')) { const kt = toks[i]; i++; return fin({ t: 'matches', e: l, re: eatStr(), opStart: kt.start, opEnd: kt.end }); }
+    if (word('matches')) { const kt = toks[i]; i++; const re = eatStr(); checkPattern(re); return fin({ t: 'matches', e: l, re, opStart: kt.start, opEnd: kt.end }); }
     if (word('not')) {                                                    // postfix negation: `x not in/contains/like …`
       if (peekWord('in')) { i += 2; return fin({ t: 'not', e: { t: 'in', e: l, set: inList() } }); }
       if (peekWord('contains')) { i += 2; return fin({ t: 'not', e: { t: 'contains', l, r: add() } }); }
@@ -216,12 +315,13 @@ function parse(src) {
   return ast;
 }
 
-const asAst = (x) => (typeof x === 'string' ? parse(x) : x);
+const asAst = (x, opts) => (typeof x === 'string' ? parse(x, opts) : x);
 
 // ── tokenize: classified, positioned tokens for syntax highlighting + completion.
 // Best-effort (tolerant lexer) so it works on a half-typed expression. kinds:
 // column · string · number · operator · punct · keyword · function · boolean · error.
-function tokenize(src) {
+function tokenize(src, opts) {
+  const D = dialect(opts);
   const raw = lexAll(String(src == null ? '' : src), true);
   // one-token lookaround (skipping comments) so classification matches the PARSER:
   // a CALLFNS word is a 'function' only when a '(' follows (else it's a column,
@@ -245,7 +345,7 @@ function tokenize(src) {
         const p1 = prevAt(i), w1 = wordAt(p1);
         kind = (w1 === 'is' || (w1 === 'not' && wordAt(prevAt(p1)) === 'is')) ? 'keyword' : 'boolean';
       }
-      else if (CALLFNS[lw]) { const n = nextAt(i); kind = (n >= 0 && raw[n].k === 'op' && raw[n].v === '(') ? 'function' : 'column'; }
+      else if (CALLFNS[lw] || (D.aggregates && AGGREGATES[lw])) { const n = nextAt(i); kind = (n >= 0 && raw[n].k === 'op' && raw[n].v === '(') ? 'function' : 'column'; }
       else kind = RESERVED.has(lw) ? 'keyword' : 'column';
     }
     return { kind, value: src.slice(t.start, t.end), start: t.start, end: t.end };
@@ -385,6 +485,25 @@ function matches(a, re) {       // re = a precompiled RegExp or null (invalid pa
 }
 function makeRegExp(src) { try { return new RegExp(src); } catch { return null; } }
 
+// Repeat aggregate (dialect option `aggregates`): `list` is the value of the repeat
+// field — an array of instance objects; `field` the instance field to read (absent for
+// count). A blank or non-list repeat has no instances. Non-numeric values are skipped
+// (the blank model: a missing grade is not a 0). count/total of nothing → 0; mean/min/
+// max of nothing → blank. Loops, not Math.min(...xs): a long repeat can't blow the stack.
+function aggregate(fn, list, field, N = num) {
+  const insts = Array.isArray(list) ? list : [];
+  if (fn === 'count') return insts.length;
+  let n = 0, sum = 0, lo = Infinity, hi = -Infinity;
+  for (const inst of insts) {
+    const x = N(inst !== null && typeof inst === 'object' ? inst[field] : undefined);
+    if (x === null) continue;
+    n++; sum += x; if (x < lo) lo = x; if (x > hi) hi = x;
+  }
+  if (fn === 'total') return sum;
+  if (n === 0) return null;
+  return fn === 'min' ? lo : fn === 'max' ? hi : sum / n;
+}
+
 // ── src/eval.js ──
 
 // @gcu/expr — tree-walk evaluator. The REFERENCE path: walks the AST over a
@@ -398,6 +517,7 @@ function ev(n, V, N) {
     case 'num': case 'str': case 'bool': return n.v;
     case 'blank': return null;                            // the blank literal
     case 'field': { const x = V[n.name]; return x === undefined ? null : x; }
+    case 'agg': return aggregate(n.fn, V[n.path[0]], n.path[1], N);   // repeat aggregate (dialect option)
     case 'neg': { const a = N(ev(n.e, V, N)); return a === null ? null : -a; }
     case '+': case '-': case '*': case '/': return arith(n.t, N(ev(n.l, V, N)), N(ev(n.r, V, N)));
     case 'cmp': return compare(ev(n.l, V, N), ev(n.r, V, N), n.op, N);
@@ -423,7 +543,7 @@ function ev(n, V, N) {
 // Raw value: boolean, number, string, set, or `null` (blank). For a calc-column.
 // opts.decimal === ',' reads comma-decimal field strings numerically.
 function evaluate(exprOrAst, values, opts = {}) {
-  const r = ev(asAst(exprOrAst), values || {}, makeNum(opts.decimal));
+  const r = ev(asAst(exprOrAst, opts), values || {}, makeNum(opts.decimal));
   return r === undefined ? null : r;
 }
 
@@ -478,6 +598,11 @@ function walk(n, idx, N) {
       if (i === undefined) return BLANK;                       // unknown column → blank (validate() reports it)
       return (f) => { const x = f[i]; return x === undefined ? null : x; };
     }
+    case 'agg': {                                          // repeat aggregate: the repeat's cell holds the instance list
+      const i = idx.get(String(n.path[0]).toLowerCase()), fn = n.fn, fld = n.path[1];
+      if (i === undefined) { const v = aggregate(fn, undefined, fld, N); return () => v; }   // unknown repeat → no instances
+      return (f) => aggregate(fn, f[i], fld, N);
+    }
     case 'neg': { const c = walk(n.e, idx, N); return (f) => { const a = N(c(f)); return a === null ? null : -a; }; }
     case '+': case '-': case '*': case '/': {
       const cl = walk(n.l, idx, N), cr = walk(n.r, idx, N), t = n.t;
@@ -507,7 +632,7 @@ function walk(n, idx, N) {
 
 // compile(astOrSrc, columns, opts) → (fields[]) => value. Alias compileValue.
 function compile(exprOrAst, columns, opts = {}) {
-  const c = walk(asAst(exprOrAst), indexMap(columns), makeNum(opts.decimal));
+  const c = walk(asAst(exprOrAst, opts), indexMap(columns), makeNum(opts.decimal));
   return (fields) => { const r = c(fields || []); return r === undefined ? null : r; };
 }
 const compileValue = compile;
@@ -528,15 +653,16 @@ function compileBool(exprOrAst, columns, opts) {
 
 
 // Free field references — the expression's source columns (original case, deduped).
-function deps(exprOrAst) {
+function deps(exprOrAst, opts) {
   const out = new Set();
   (function descend(n) {
     if (!n || typeof n !== 'object') return;
     if (n.t === 'field') { out.add(n.name); return; }
+    if (n.t === 'agg') { out.add(n.path[0]); return; }              // depends on the whole repeat
     if (Array.isArray(n.args)) for (const a of n.args) descend(a);   // function-call args
     if (Array.isArray(n.set)) for (const a of n.set) descend(a);     // `in` set members
     for (const k of ['e', 'l', 'r', 'lo', 'hi']) if (n[k]) descend(n[k]);
-  })(asAst(exprOrAst));
+  })(asAst(exprOrAst, opts));
   return [...out];
 }
 
@@ -561,9 +687,9 @@ function editDist(a, b, cap = 3) {
 // columns get a did-you-mean: nearest known name by edit distance, or — the hyphen
 // migration case — a known name that *starts with* the unknown + '-' (`OK` typed
 // bare where `OK-Indic` exists → suggest the backticked form; `-` is subtraction).
-function validate(exprOrAst, columns) {
+function validate(exprOrAst, columns, opts) {
   let ast;
-  try { ast = asAst(exprOrAst); }
+  try { ast = asAst(exprOrAst, opts); }
   catch (e) { return { ok: false, errors: [{ kind: 'parse', message: (e instanceof ExprParseError ? e.message : String(e && e.message || e)) }] }; }
   const errors = [];
   if (columns) {
@@ -598,9 +724,9 @@ function validate(exprOrAst, columns) {
 // min/max stats don't describe blanks — so `!=` prunes only when the stats assert
 // `hasBlank: false`. (Hand-rolled pushdowns typically miss this.)
 const FLIP = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '=': '=', '!=': '!=' };
-function canMatch(exprOrAst, ranges) {
+function canMatch(exprOrAst, ranges, opts) {
   let ast;
-  try { ast = asAst(exprOrAst); } catch { return true; }
+  try { ast = asAst(exprOrAst, opts); } catch { return true; }
   const R = new Map(Object.entries(ranges || {}).map(([k, v]) => [String(k).toLowerCase(), v]));
   const rangeOf = (n) => (n && n.t === 'field' ? (R.get(n.name.toLowerCase()) || null) : null);
   const cnum = (n) => {                                               // constant-fold a field-free subtree to a finite number
@@ -677,7 +803,7 @@ function bget(t, buf, i) {
 }
 
 function compileChunk(exprOrAst, columns, opts = {}) {
-  const ast = asAst(exprOrAst);
+  const ast = asAst(exprOrAst, opts);
   const N = makeNum(opts.decimal);
   const idx = indexMap(columns);
 
@@ -708,6 +834,8 @@ function compileChunk(exprOrAst, columns, opts = {}) {
       return { s: v === undefined ? null : v };
     }
     switch (node.t) {
+      case 'agg':                                          // a list-valued cell isn't a column vector
+        throw new Error(`@gcu/expr compileChunk: ${node.fn}(${node.path.join('.')}) is a repeat aggregate — not columnar; use compile()`);
       case 'field': {
         const i = idx.get(String(node.name).toLowerCase());
         if (i === undefined) return { s: null };           // unknown column → blank (validate reports it)
@@ -978,7 +1106,7 @@ function compareColumn(toks) {
 /**
  * @param {string} src
  * @param {number} pos  caret index (default = end)
- * @param {object} ctx  { columns: [{name,type}|name], values?: (col)=>string[] | {col:[…]} }
+ * @param {object} ctx  { columns: [{name,type}|name], values?: (col)=>string[] | {col:[…]}, aggregates?, profile? }
  * @returns {{from:number, to:number, options:Array<{value:string,kind:string,detail?:string}>}}
  */
 function complete(src, pos, ctx = {}) {
@@ -998,7 +1126,8 @@ function complete(src, pos, ctx = {}) {
   let to = pos;
   if (quote && src[to] === quote) to++;                  // a value typed between quotes → replace the closing one too
 
-  const toks = tokenize(src.slice(0, from)).filter((t) => t.kind !== 'error');
+  const D = dialect(ctx);                                // the same dialect options parse() takes
+  const toks = tokenize(src.slice(0, from), D).filter((t) => t.kind !== 'error');
   const last = toks[toks.length - 1];
   const lastLc = last ? last.value.toLowerCase() : '';
   const lc = frag.toLowerCase();
@@ -1030,6 +1159,7 @@ function complete(src, pos, ctx = {}) {
   // Non-plain names emit the backtick escape (quoteIdent — the pandas convention).
   for (const c of columns) if (pre(c.name)) opts.push({ value: quoteIdent(c.name), kind: 'column', detail: c.type });
   for (const fn of Object.keys(CALLFNS)) if (pre(fn)) opts.push({ value: fn + '(', kind: 'function' });
+  if (D.aggregates) for (const fn of Object.keys(AGGREGATES)) if (!CALLFNS[fn] && pre(fn)) opts.push({ value: fn + '(', kind: 'function', detail: 'repeat aggregate' });
   if (pre('not')) opts.push({ value: 'not', kind: 'keyword' });
   return { from, to, options: opts.slice(0, 50) };
 }
@@ -1048,6 +1178,8 @@ export {
   tokenize,
   quoteIdent,
   CALLFNS,
+  AGGREGATES,
+  dialect,
   ExprParseError,
   evaluate,
   evalBool,
@@ -1064,4 +1196,5 @@ export {
   isBlank,
   num,
   FN,
+  aggregate,
 };

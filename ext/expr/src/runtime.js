@@ -128,3 +128,22 @@ export function matches(a, re) {       // re = a precompiled RegExp or null (inv
   return re.test(String(a));
 }
 export function makeRegExp(src) { try { return new RegExp(src); } catch { return null; } }
+
+// Repeat aggregate (dialect option `aggregates`): `list` is the value of the repeat
+// field — an array of instance objects; `field` the instance field to read (absent for
+// count). A blank or non-list repeat has no instances. Non-numeric values are skipped
+// (the blank model: a missing grade is not a 0). count/total of nothing → 0; mean/min/
+// max of nothing → blank. Loops, not Math.min(...xs): a long repeat can't blow the stack.
+export function aggregate(fn, list, field, N = num) {
+  const insts = Array.isArray(list) ? list : [];
+  if (fn === 'count') return insts.length;
+  let n = 0, sum = 0, lo = Infinity, hi = -Infinity;
+  for (const inst of insts) {
+    const x = N(inst !== null && typeof inst === 'object' ? inst[field] : undefined);
+    if (x === null) continue;
+    n++; sum += x; if (x < lo) lo = x; if (x > hi) hi = x;
+  }
+  if (fn === 'total') return sum;
+  if (n === 0) return null;
+  return fn === 'min' ? lo : fn === 'max' ? hi : sum / n;
+}

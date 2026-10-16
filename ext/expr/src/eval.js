@@ -4,13 +4,14 @@
 // compile.js (positional closures); both share runtime.js so they agree.
 
 import { asAst } from './parse.js';
-import { makeNum, compare, contains, inSet, matches, makeRegExp, arith, FN, isBlank } from './runtime.js';
+import { makeNum, compare, contains, inSet, matches, makeRegExp, arith, FN, isBlank, aggregate } from './runtime.js';
 
 function ev(n, V, N) {
   switch (n.t) {
     case 'num': case 'str': case 'bool': return n.v;
     case 'blank': return null;                            // the blank literal
     case 'field': { const x = V[n.name]; return x === undefined ? null : x; }
+    case 'agg': return aggregate(n.fn, V[n.path[0]], n.path[1], N);   // repeat aggregate (dialect option)
     case 'neg': { const a = N(ev(n.e, V, N)); return a === null ? null : -a; }
     case '+': case '-': case '*': case '/': return arith(n.t, N(ev(n.l, V, N)), N(ev(n.r, V, N)));
     case 'cmp': return compare(ev(n.l, V, N), ev(n.r, V, N), n.op, N);
@@ -36,7 +37,7 @@ function ev(n, V, N) {
 // Raw value: boolean, number, string, set, or `null` (blank). For a calc-column.
 // opts.decimal === ',' reads comma-decimal field strings numerically.
 export function evaluate(exprOrAst, values, opts = {}) {
-  const r = ev(asAst(exprOrAst), values || {}, makeNum(opts.decimal));
+  const r = ev(asAst(exprOrAst, opts), values || {}, makeNum(opts.decimal));
   return r === undefined ? null : r;
 }
 

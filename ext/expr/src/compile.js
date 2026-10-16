@@ -15,7 +15,7 @@
 // object lookup — the two agree on any record whose keys match the columns.
 
 import { asAst } from './parse.js';
-import { makeNum, compare, contains, inSet, matches, makeRegExp, arith, FN, isBlank } from './runtime.js';
+import { makeNum, compare, contains, inSet, matches, makeRegExp, arith, FN, isBlank, aggregate } from './runtime.js';
 
 const BLANK = () => null;
 
@@ -38,6 +38,11 @@ function walk(n, idx, N) {
       const i = idx.get(String(n.name).toLowerCase());
       if (i === undefined) return BLANK;                       // unknown column → blank (validate() reports it)
       return (f) => { const x = f[i]; return x === undefined ? null : x; };
+    }
+    case 'agg': {                                          // repeat aggregate: the repeat's cell holds the instance list
+      const i = idx.get(String(n.path[0]).toLowerCase()), fn = n.fn, fld = n.path[1];
+      if (i === undefined) { const v = aggregate(fn, undefined, fld, N); return () => v; }   // unknown repeat → no instances
+      return (f) => aggregate(fn, f[i], fld, N);
     }
     case 'neg': { const c = walk(n.e, idx, N); return (f) => { const a = N(c(f)); return a === null ? null : -a; }; }
     case '+': case '-': case '*': case '/': {
@@ -68,7 +73,7 @@ function walk(n, idx, N) {
 
 // compile(astOrSrc, columns, opts) → (fields[]) => value. Alias compileValue.
 export function compile(exprOrAst, columns, opts = {}) {
-  const c = walk(asAst(exprOrAst), indexMap(columns), makeNum(opts.decimal));
+  const c = walk(asAst(exprOrAst, opts), indexMap(columns), makeNum(opts.decimal));
   return (fields) => { const r = c(fields || []); return r === undefined ? null : r; };
 }
 export const compileValue = compile;

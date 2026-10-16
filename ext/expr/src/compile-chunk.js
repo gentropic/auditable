@@ -34,7 +34,7 @@ function bget(t, buf, i) {
 }
 
 export function compileChunk(exprOrAst, columns, opts = {}) {
-  const ast = asAst(exprOrAst);
+  const ast = asAst(exprOrAst, opts);
   const N = makeNum(opts.decimal);
   const idx = indexMap(columns);
 
@@ -65,6 +65,8 @@ export function compileChunk(exprOrAst, columns, opts = {}) {
       return { s: v === undefined ? null : v };
     }
     switch (node.t) {
+      case 'agg':                                          // a list-valued cell isn't a column vector
+        throw new Error(`@gcu/expr compileChunk: ${node.fn}(${node.path.join('.')}) is a repeat aggregate — not columnar; use compile()`);
       case 'field': {
         const i = idx.get(String(node.name).toLowerCase());
         if (i === undefined) return { s: null };           // unknown column → blank (validate reports it)

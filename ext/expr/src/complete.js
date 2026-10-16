@@ -10,7 +10,7 @@
 // shapes people actually type. Returns { from, to, options:[{value,kind,detail}] };
 // the host replaces src[from..to] with a chosen option.value.
 
-import { tokenize, CALLFNS, quoteIdent } from './parse.js';
+import { tokenize, CALLFNS, AGGREGATES, dialect, quoteIdent } from './parse.js';
 
 const CMP_OPS = ['=', '!=', '<', '>', '<=', '>=', '==', '<>'];
 const VALUE_KW = ['in', 'contains', 'like', 'matches'];
@@ -45,7 +45,7 @@ function compareColumn(toks) {
 /**
  * @param {string} src
  * @param {number} pos  caret index (default = end)
- * @param {object} ctx  { columns: [{name,type}|name], values?: (col)=>string[] | {col:[…]} }
+ * @param {object} ctx  { columns: [{name,type}|name], values?: (col)=>string[] | {col:[…]}, aggregates?, profile? }
  * @returns {{from:number, to:number, options:Array<{value:string,kind:string,detail?:string}>}}
  */
 export function complete(src, pos, ctx = {}) {
@@ -65,7 +65,8 @@ export function complete(src, pos, ctx = {}) {
   let to = pos;
   if (quote && src[to] === quote) to++;                  // a value typed between quotes → replace the closing one too
 
-  const toks = tokenize(src.slice(0, from)).filter((t) => t.kind !== 'error');
+  const D = dialect(ctx);                                // the same dialect options parse() takes
+  const toks = tokenize(src.slice(0, from), D).filter((t) => t.kind !== 'error');
   const last = toks[toks.length - 1];
   const lastLc = last ? last.value.toLowerCase() : '';
   const lc = frag.toLowerCase();
@@ -97,6 +98,7 @@ export function complete(src, pos, ctx = {}) {
   // Non-plain names emit the backtick escape (quoteIdent — the pandas convention).
   for (const c of columns) if (pre(c.name)) opts.push({ value: quoteIdent(c.name), kind: 'column', detail: c.type });
   for (const fn of Object.keys(CALLFNS)) if (pre(fn)) opts.push({ value: fn + '(', kind: 'function' });
+  if (D.aggregates) for (const fn of Object.keys(AGGREGATES)) if (!CALLFNS[fn] && pre(fn)) opts.push({ value: fn + '(', kind: 'function', detail: 'repeat aggregate' });
   if (pre('not')) opts.push({ value: 'not', kind: 'keyword' });
   return { from, to, options: opts.slice(0, 50) };
 }

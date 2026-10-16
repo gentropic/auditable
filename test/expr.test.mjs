@@ -43,8 +43,12 @@ test('totality — bad syntax throws at parse; eval never throws', () => {
   assert.equal(evaluate('missing + 1', {}), null);
   assert.equal(evalBool('missing > 5', {}), false);
   assert.equal(evaluate('sqrt(x)', { x: -4 }), null);
-  // a malformed regex in matches → false, not a throw
-  assert.equal(evalBool('s matches "("', { s: 'x' }), false);
+  // a malformed regex in matches is a PARSE error (it used to match nothing, silently);
+  // an AST carrying one anyway (hand-built) still evaluates to false, never a throw
+  assert.throws(() => parse('s matches "("'), /invalid pattern/);
+  const badRe = { t: 'matches', e: { t: 'field', name: 's' }, re: '(' };
+  assert.equal(evalBool(badRe, { s: 'x' }), false);
+  assert.equal(compileBool(badRe, ['s'])(['x']), false);
   // the compiled path is equally total
   assert.equal(compile('a / b', ['a', 'b'])([5, 0]), null);
   assert.equal(compileBool('a > b', ['a', 'b'])([null, 1]), false);
@@ -406,4 +410,104 @@ test('dotted names: deps + validate + quoteIdent know them', () => {
 
 test('dotted names: the backtick escape still works (nothing regressed)', () => {
   assert.equal(compileValue('`Fe.pct` + 0', DOT_SCHEMA, {})(DOT_ROW), 61);
+});
+
+// ── the form profile (Hopper's contract) ────────────────────────────────────
+// test/fixtures/expr-form-profile.json is Hopper's own vector file verbatim plus the
+// profile's additions. Hopper's stored forms depend on these meanings: a failure here
+// is a compatibility event for Hopper, not just a test to update.
+const formFx = JSON.parse(readFileSync(new URL('./fixtures/expr-form-profile.json', import.meta.url), 'utf8'));
+
+test('form profile — fixture vectors, tree-walk reference path', () => {
+  const o = formFx.options;
+  assert.ok(formFx.vectors.length >= formFx.source.count + 15);
+  for (const v of formFx.vectors) {
+    if (v.verb === 'constrain') assert.equal(constraintValid(v.expr, v.values, v.target, o), v.expectedConstraintValid, v.expr);
+    else if (v.verb === 'calculate') assert.equal(evaluate(v.expr, v.values, o), v.expected, v.expr);
+    else assert.equal(evalBool(v.expr, v.values, o), v.expected, v.expr);
+  }
+});
+
+test('form profile — ORACLE: compiled closures ≡ tree-walk, every vector', () => {
+  const o = formFx.options;
+  for (const v of formFx.vectors) {
+    if (v.verb === 'constrain') continue;
+    const columns = Object.keys(v.values), fields = columns.map((c) => v.values[c]);
+    const ast = parse(v.expr, o);
+    const tree = evaluate(ast, v.values);
+    assert.deepEqual(compile(ast, columns)(fields), tree, `compiled≠treewalk for: ${v.expr}`);
+    assert.equal(compileBool(ast, columns)(fields), tree === true, `compileBool≠ for: ${v.expr}`);
+  }
+});
+
+test('form profile — options: { aggregates } and { profile: "form" } agree; explicit flag wins', () => {
+  const V = { samples: [{ x: 1 }, { x: 5 }] };
+  assert.equal(evaluate('max(samples.x)', V, { aggregates: true }), 5);
+  assert.equal(evaluate('max(samples.x)', V, { profile: 'form' }), 5);
+  assert.equal(evaluate('max(samples.x)', V, { profile: 'form', aggregates: false }), null);   // the dotted-name scalar
+});
+
+test('form profile — the default dialect is unchanged', () => {
+  const V = { samples: [{ fe_pct: 60 }, { fe_pct: 40 }] };
+  // min/max stay variadic scalars; a dotted name stays a name (the silent case Hopper hit)
+  assert.equal(evaluate('min(samples.fe_pct)', V), null);
+  assert.deepEqual(deps('min(samples.fe_pct)'), ['samples.fe_pct']);
+  assert.equal(evaluate('min(samples.fe_pct)', { 'samples.fe_pct': 7 }), 7);
+  // count / total / sum / mean are not functions without the option
+  for (const e of ['count(samples)', 'total(samples.fe_pct)', 'sum(samples.fe_pct)', 'mean(samples.fe_pct)']) {
+    assert.throws(() => parse(e), /parse error/, e);
+  }
+  // and a column NAMED count still works bare, in both dialects
+  assert.equal(evaluate('count + 1', { count: 2 }), 3);
+  assert.equal(evaluate('count + 1', { count: 2 }, { profile: 'form' }), 3);
+  assert.equal(tokenize('count(samples)').find((t) => t.value === 'count').kind, 'column');
+  assert.equal(tokenize('count(samples)', { profile: 'form' }).find((t) => t.value === 'count').kind, 'function');
+  assert.ok(!complete('cou', 3, { columns: [] }).options.some((o) => o.value === 'count('));
+  assert.ok(complete('cou', 3, { columns: [], profile: 'form' }).options.some((o) => o.value === 'count('));
+});
+
+test('${name} references — every dialect', () => {
+  assert.equal(evalBool('${site_id} is filled', { site_id: 'QF-118' }), true);
+  assert.equal(evaluate('${1st_pass} + ${fe-pct}', { '1st_pass': 1, 'fe-pct': 2 }), 3);
+  assert.deepEqual(deps('${fe-pct} > 60 and ${a.b} = 1'), ['fe-pct', 'a.b']);
+  assert.deepEqual(tokenize('${fe-pct} > 1').map((t) => t.kind), ['column', 'operator', 'number']);
+  assert.equal(compile('${fe-pct} * 2', ['FE-PCT'])([4]), 8);            // binds case-insensitively, like any field
+  assert.equal(quoteIdent('fe-pct'), '`fe-pct`');                         // backticks stay canonical
+  assert.throws(() => parse('${}'), /unexpected character/);
+  assert.throws(() => parse('${a b}'), /unexpected character/);
+});
+
+test('form profile — aggregate grammar and analysis', () => {
+  const F = { profile: 'form' };
+  assert.deepEqual(parse('count(samples)', F), { t: 'agg', fn: 'count', path: ['samples'], start: 0, end: 14 });
+  assert.equal(parse('sum(samples.fe_pct)', F).fn, 'total');
+  assert.deepEqual(parse('count(`odd.name`)', { aggregates: true }).path, ['odd.name']);  // a backticked name never splits…
+  assert.throws(() => parse('mean(`odd.name`)', F), /expects a repeat field r\.f/);      // …so it has no field to read
+  assert.throws(() => parse('total(samples)', F), /expects a repeat field r\.f/);
+  assert.throws(() => parse('count(1)', F), /expects a repeat name/);
+  assert.throws(() => parse('mean(a, b)', F), /expects a repeat field/);
+  assert.deepEqual(deps('total(samples.fe_pct) > n', F), ['samples', 'n']);
+  assert.deepEqual(validate('count(samplez) > 0', ['samples'], F).errors.map((e) => e.suggestion), ['samples']);
+  assert.equal(validate('count(samples) > 0', ['samples'], F).ok, true);
+  assert.equal(canMatch('count(samples) > 0', {}, F), true);
+  // a list-valued cell isn't a column vector: compileChunk declines, loudly
+  assert.throws(() => compileChunk('count(samples)', ['samples'], F), /not columnar/);
+  // an unknown repeat in the compiled path behaves like the tree-walk's absent one
+  assert.equal(compile('count(ghost)', ['a'], F)([1]), 0);
+  assert.equal(compile('mean(ghost.x)', ['a'], F)([1]), null);
+});
+
+test('matches — patterns that can backtrack catastrophically are parse errors', () => {
+  for (const p of ['(a+)+$', '(x|xx)+y', '(a*)*', '((ab)+)+', '(a?){2,}', String.raw`(\w+\s?)+$`, '(?:a|b)+', '(a{1,3})+']) {
+    assert.throws(() => parse(`s matches "${p}"`), /backtrack catastrophically/, p);
+  }
+  assert.throws(() => parse(String.raw`s matches "(a)\1"`), /backreference/);
+  assert.throws(() => parse(String.raw`s matches "(?<n>a)\k<n>"`), /backreference/);
+  for (const p of [String.raw`^QF-\d+$`, '(ab)+', '(?:abc)*', String.raw`[a-z]+\d*`, 'a.*b.*c', '(ab|cd)?', '(a+){2}', '[(+*)]+',
+    String.raw`\(a+\)+`, '^(?=.*x)', String.raw`(?<yr>\d{4})-\d{2}`, String.raw`[\]]+`]) {
+    assert.doesNotThrow(() => parse(`s matches "${p}"`), p);
+  }
+  assert.equal(evalBool(String.raw`s matches "^QF-\d+$"`, { s: 'QF-118' }), true);
+  assert.equal(validate('s matches "(a+)+$"', ['s']).ok, false);
+  assert.equal(evalBool('s like "%a%b%"', { s: 'zzazb' }), true);       // like builds no groups: never rejected
 });

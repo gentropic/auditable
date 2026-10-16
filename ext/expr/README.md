@@ -48,6 +48,8 @@ columns        bare ident (case-insensitive): AU, fe_pct  —  [A-Za-z_][A-Za-z0
                backtick escape for anything else: `Assay Au ppm`, `OK-Indic`, `in`
                (\` for a literal backtick, \\ for a backslash — the pandas
                df.query() convention)
+               ${name} — XLSForm's reference form, any of [A-Za-z0-9_.-] inside:
+               ${site_id}, ${1st_pass}, ${fe-pct}
 
 tolerated (parse, not the canonical form):  ==  <>  &&  ||  ~  !~  'single quotes'  in "a","b"
                                             ["…"] (the legacy bracket escape)
@@ -62,6 +64,39 @@ tolerated (parse, not the canonical form):  ==  <>  &&  ||  ~  !~  'single quote
 > **`-` is always subtraction** (v0.2): `AU-CU` is arithmetic, as SQL/pandas
 > fingers expect. A hyphenated column name takes backticks — `` `OK-Indic` `` —
 > and `validate` suggests exactly that when you type it bare.
+
+> **`matches` patterns are checked at parse.** A pattern that could backtrack
+> catastrophically on a crafted value — an unbounded or ranged quantifier on a group
+> that contains a quantifier or `|` (`(a+)+`, `(x|xx)+`, `(a|b)*`), or a
+> backreference — is a parse error, as is an invalid pattern: every expression must
+> terminate, and a frozen tab is not termination. Rewrite without the nesting
+> (`[ab]*` for `(a|b)*`). `like` never trips it (it builds no groups).
+
+### The form profile (repeat aggregates)
+
+`parse(src, { profile: 'form' })` (or `{ aggregates: true }`) adds aggregates over a
+**repeat** — a field whose value is a list of instance objects, as an XLSForm repeat
+is. Every function taking `src` takes the same option (`evaluate`, `compile`,
+`deps`, `validate`, `canMatch`, `tokenize`; `complete` reads it off its `ctx`).
+
+```
+count(samples)            number of instances (blank / non-list → 0)
+total(samples.fe_pct)     sum over instances (alias sum); none → 0
+mean(samples.fe_pct)      over instances; none → blank
+min(samples.fe_pct)       — also max; none → blank
+```
+
+The argument is one name split at its first dot into repeat · field —
+`samples.fe_pct`, or `${samples.fe-pct}` for any name characters; a backticked name
+never splits. Non-numeric instance values are skipped (the blank model).
+`min`/`max` are aggregates only for exactly one dotted name: `min(a, b)` and
+`min(x)` stay the scalar functions. `deps` reports the repeat. `compileChunk`
+declines an aggregate (a list-valued cell is not a column vector) — use `compile`.
+
+**With the option off nothing changes**: `min(samples.fe_pct)` is the scalar `min`
+of a column named `samples.fe_pct`, and `count(…)` is not a function. The contract
+is `test/fixtures/expr-form-profile.json` — Hopper's own vectors verbatim plus the
+profile's additions; Hopper's stored form definitions depend on those meanings.
 
 ### Functions (all total — blank/bad input → blank)
 
@@ -108,7 +143,8 @@ on the `not` side instead of vanishing from both (SQL's most confusing habit).
 ```js
 import { parse, evaluate, evalBool, compile, compileBool, deps, validate } from '@gcu/expr';
 
-parse(src)                       // → analyzable AST (throws ExprParseError on bad syntax)
+parse(src, opts?)                // → analyzable AST (throws ExprParseError on bad syntax)
+//   opts: { profile: 'form' } / { aggregates: true } — the form profile (above)
 
 evaluate(srcOrAst, valuesObj)    // tree-walk reference path; name-keyed record → value | null
 evalBool(srcOrAst, valuesObj)    // → boolean (blank → false)
@@ -162,4 +198,5 @@ node --test test/expr.test.mjs
 
 The tests are the executable spec: `test/fixtures/expr.json` (carried core +
 GCU additions) run through the tree-walk path, then a **`compiled ≡ tree-walk`
-oracle** over every vector.
+oracle** over every vector. `test/fixtures/expr-form-profile.json` does the same
+with the form profile on.

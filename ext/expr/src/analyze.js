@@ -8,15 +8,16 @@ import { parse, asAst, quoteIdent, ExprParseError } from './parse.js';
 import { evaluate } from './eval.js';
 
 // Free field references — the expression's source columns (original case, deduped).
-export function deps(exprOrAst) {
+export function deps(exprOrAst, opts) {
   const out = new Set();
   (function descend(n) {
     if (!n || typeof n !== 'object') return;
     if (n.t === 'field') { out.add(n.name); return; }
+    if (n.t === 'agg') { out.add(n.path[0]); return; }              // depends on the whole repeat
     if (Array.isArray(n.args)) for (const a of n.args) descend(a);   // function-call args
     if (Array.isArray(n.set)) for (const a of n.set) descend(a);     // `in` set members
     for (const k of ['e', 'l', 'r', 'lo', 'hi']) if (n[k]) descend(n[k]);
-  })(asAst(exprOrAst));
+  })(asAst(exprOrAst, opts));
   return [...out];
 }
 
@@ -41,9 +42,9 @@ function editDist(a, b, cap = 3) {
 // columns get a did-you-mean: nearest known name by edit distance, or — the hyphen
 // migration case — a known name that *starts with* the unknown + '-' (`OK` typed
 // bare where `OK-Indic` exists → suggest the backticked form; `-` is subtraction).
-export function validate(exprOrAst, columns) {
+export function validate(exprOrAst, columns, opts) {
   let ast;
-  try { ast = asAst(exprOrAst); }
+  try { ast = asAst(exprOrAst, opts); }
   catch (e) { return { ok: false, errors: [{ kind: 'parse', message: (e instanceof ExprParseError ? e.message : String(e && e.message || e)) }] }; }
   const errors = [];
   if (columns) {
@@ -78,9 +79,9 @@ export function validate(exprOrAst, columns) {
 // min/max stats don't describe blanks — so `!=` prunes only when the stats assert
 // `hasBlank: false`. (Hand-rolled pushdowns typically miss this.)
 const FLIP = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '=': '=', '!=': '!=' };
-export function canMatch(exprOrAst, ranges) {
+export function canMatch(exprOrAst, ranges, opts) {
   let ast;
-  try { ast = asAst(exprOrAst); } catch { return true; }
+  try { ast = asAst(exprOrAst, opts); } catch { return true; }
   const R = new Map(Object.entries(ranges || {}).map(([k, v]) => [String(k).toLowerCase(), v]));
   const rangeOf = (n) => (n && n.t === 'field' ? (R.get(n.name.toLowerCase()) || null) : null);
   const cnum = (n) => {                                               // constant-fold a field-free subtree to a finite number
