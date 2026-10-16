@@ -4618,6 +4618,7 @@ function needsAsync(module) {
   function check(ops) {
     for (const op of ops) {
       if (canBeAsync(op)) return true;
+      if (op.op === 'for_of_region' && (op.is_await || op.hybrid)) return true;
       let found = false;
       forEachRegion(op, (_name, rops) => { if (!found && check(rops)) found = true; });
       if (found) return true;
@@ -5361,6 +5362,7 @@ function emitForIn(ctx, op) {
 }
 
 function emitForOf(ctx, op) {
+  if (op.hybrid) return emitForOfHybrid(ctx, op);
   const iter = ctx.ref(op.args[0]);
   const target = op.target_name || '_v';
   // Loop variable is scoped to this loop unless it's a cell-export
@@ -5381,6 +5383,41 @@ function emitForOf(ctx, op) {
     }
     ctx.line(`for ${op.is_await ? 'await ' : ''}(${kind}${target} of ${iter}) {`);
     ctx.push();
+    ctx.pushLoop(null);
+    if (op.body) emitOps(ctx, op.body);
+    ctx.popLoop();
+    ctx.pop();
+    ctx.line('}');
+  } finally {
+    ctx.popScope();
+  }
+}
+
+// A loop that reads its source the cheapest way it can, decided at run time, with ONE body:
+// an array (or typed array) by index — as fast as for-of, and live like Python's list
+// iterator; a synchronous iterable through next(); an async iterable by awaiting next(). So an
+// async source is read lazily (an infinite one can be broken out of) without making a loop over
+// a plain list pay for `for await`. Must be inside an async function (the frontend only asks for
+// it there).
+function emitForOfHybrid(ctx, op) {
+  const iter = ctx.ref(op.args[0]);
+  const target = op.target_name || '_v';
+  const n = (ctx._hybridSeq = (ctx._hybridSeq || 0) + 1);
+  const S = `__hs${n}`, A = `__ha${n}`, I = `__hi${n}`, Y = `__hy${n}`, K = `__hk${n}`, R = `__hr${n}`;
+  ctx.line(`const ${S} = ${iter};`);
+  ctx.line(`const ${A} = Array.isArray(${S}) || (ArrayBuffer.isView(${S}) && !(${S} instanceof DataView)) ? ${S} : null;`);
+  ctx.line(`const ${Y} = !${A} && typeof ${S}[Symbol.iterator] === 'function';`);
+  ctx.line(`const ${I} = ${A} ? null : ${Y} ? ${S}[Symbol.iterator]() : ${S}[Symbol.asyncIterator]();`);
+  ctx.pushScope();
+  try {
+    let assign;
+    if (ctx.scope.has(target) && !op.fresh_target) assign = `${target} = `;
+    else { ctx.scope.declare(target); assign = null; }
+    ctx.line(`for (let ${K} = 0; ; ) {`);
+    ctx.push();
+    if (assign === null) ctx.line(`let ${target};`);
+    ctx.line(`if (${A}) { if (${K} >= ${A}.length) break; ${target} = ${A}[${K}++]; }`);
+    ctx.line(`else { const ${R} = ${Y} ? ${I}.next() : await ${I}.next(); if (${R}.done) break; ${target} = ${R}.value; }`);
     ctx.pushLoop(null);
     if (op.body) emitOps(ctx, op.body);
     ctx.popLoop();
@@ -5436,7 +5473,7 @@ function emitLoop(ctx, op) {
 function _bodyHasAwait(body) {
   if (!body || !body.length) return false;
   for (const op of body) {
-    if (op.op === 'await' || (op.op === 'for_of_region' && op.is_await)) return true;
+    if (op.op === 'await' || (op.op === 'for_of_region' && (op.is_await || op.hybrid))) return true;
     if (op.op === 'func_region' || op.op === 'class_region') continue;
     let found = false;
     forEachRegion(op, (_n, rops) => { if (!found && _bodyHasAwait(rops)) found = true; });

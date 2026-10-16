@@ -1585,3 +1585,56 @@ def f():
 a = "outer a"
 print(f(), a)
 print(sum(x for x in range(4)), x)
+### expr/lazy-for
+import itertools
+def naturals():
+    n = 0
+    while True:
+        yield n
+        n += 1
+for n in naturals():
+    if n > 3:
+        break
+print("gen stopped", n)
+for v in map(lambda x: x * 2, itertools.count()):
+    if v > 6:
+        break
+print("map stopped", v)
+seen = []
+for a, b in zip(itertools.count(), "xyz"):
+    seen.append((a, b))
+print(seen)
+data = [1, 2, 3]
+for x in data:
+    if x == 1:
+        data.append(4)
+print(data, x)
+for ch in "héllo":
+    pass
+print(ch)
+def total(xs):
+    t = 0
+    for x in xs:
+        t += x
+    return t
+print(total(range(5)), total(v for v in [1, 2]), total(map(int, "123")))
+d = {"a": 1, "b": 2}
+for k in d:
+    print(k, end=" ")
+print()
+for i, (a, b) in enumerate([(1, 2), (3, 4)]):
+    print(i, a + b, end=" ")
+print()
+for x in itertools.count():
+    if x == 2:
+        continue
+    if x > 3:
+        break
+    print("c", x, end=" ")
+else:
+    print("never")
+print()
+for x in [1, 2]:
+    pass
+else:
+    print("else ran", x)

@@ -736,6 +736,10 @@
   "expr/comprehension-scope": {
    "out": "[0, 2, 4] 5\n(['a', 'b'], 'kept', {1: 2}) outer a\n6 5\n",
    "error": null
+  },
+  "expr/lazy-for": {
+   "out": "gen stopped 4\nmap stopped 8\n[(0, 'x'), (1, 'y'), (2, 'z')]\n[1, 2, 3, 4] 4\no\n10 3 6\na b \n0 3 1 7 \nc 0 c 1 c 3 \nelse ran 2\n",
+   "error": null
   }
  }
 }

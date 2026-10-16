@@ -7,7 +7,7 @@ import {
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
 import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine, _importRoot } from './eval.js';
 
@@ -838,6 +838,18 @@ export const _py = {
     return g;
   },
   each: (src) => _pyEach(src),
+  // the source of a hybrid for loop (emitForOfHybrid): arrays and typed arrays as they are
+  // (indexed, live), dicts / sets / plain dicts snapshotted as a list (as before), and anything
+  // else — strings, ranges, iterators, generators, async sources, user __iter__ — as an
+  // iterable stepped lazily
+  iterLazy: (obj) => {
+    if (obj === null || obj === undefined) throw new AdderError('TypeError', `'NoneType' object is not iterable`);
+    if (Array.isArray(obj) || (ArrayBuffer.isView(obj) && !(obj instanceof DataView))) return obj;
+    if (obj instanceof Map || obj instanceof Set || isPlainDict(obj)) return [...pyIter(obj)];
+    if (isUserIterable(obj)) return pyIterAsync(obj);
+    if (typeof obj === 'string' || typeof obj[Symbol.iterator] === 'function' || typeof obj[Symbol.asyncIterator] === 'function') return obj;
+    return pyIter(obj);
+  },
   // match: [true, ...captures in `names` order] when the pattern fits, else null
   match: async (subject, descJson, vals, names) => {
     let desc = _matchDescs.get(descJson);

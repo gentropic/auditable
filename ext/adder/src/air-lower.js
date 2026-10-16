@@ -583,6 +583,7 @@ export function lowerAdder(ast, source, opts) {
     ctx.symbols.set(name, undef.id);
   }
 
+  ctx._loopMayAwait = true;   // cell-level code is async
   // Lower each statement; the module's LAST statement, when an expression, is its display value
   // (an earlier expression must not be: its call would be inlined at the store, after the
   // statements that follow it)
@@ -1756,7 +1757,12 @@ function _withClearedBreakHook(ctx, fn) {
 
 function _lowerForLoopBody(ctx, node, l) {
   const iter = lowerExpr_ad(ctx, node.iter);
-  const iterArr = emitPyIter(ctx, iter, l);
+  // Where the code is async anyway (cell level, a top-level function that isn't sync), the loop
+  // is hybrid (emitForOfHybrid): lists by index, sync iterators by next(), async sources awaited
+  // item by item — lazily. Elsewhere, and for range() (which passes type as i32), a plain for-of.
+  const isRange = node.iter.type === 'Call' && node.iter.func.type === 'Name' && node.iter.func.id === 'range' && !ctx.symbols.has('range');
+  const hybrid = !!ctx._loopMayAwait && !isRange;
+  const iterArr = hybrid ? emitPyCall(ctx, 'iterLazy', [iter], l) : emitPyIter(ctx, iter, l);
 
   // Simple case: target is an Identifier
   if (node.target.type === 'Name') {
@@ -1770,7 +1776,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: loopVar,
+      body, phis: [], target_name: loopVar, hybrid,
     });
   }
 
@@ -1792,7 +1798,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: tempName,
+      body, phis: [], target_name: tempName, hybrid,
     });
   }
 
@@ -2088,6 +2094,10 @@ function lowerFuncDef(ctx, node) {
   const savedTopLevel = ctx.topLevel;
   ctx.topLevel = false;
   ctx.symbols = ctx.symbols.push();
+  // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
+  // method, not a generator, not one analyseSyncFunctions proved sync
+  const savedLoopAwait = ctx._loopMayAwait;
+  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name);
 
   let params = null;
   let isSimple = null;
@@ -2112,6 +2122,7 @@ function lowerFuncDef(ctx, node) {
   });
 
   ctx.topLevel = savedTopLevel;
+  ctx._loopMayAwait = savedLoopAwait;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
   ctx._excName = savedExcName;
