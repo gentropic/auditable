@@ -1320,6 +1320,18 @@ export function pyAdd(a, b) {
   if (a instanceof Uint8Array && b instanceof Uint8Array) { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
   throw _binErr('+', a, b);
 }
+// `a += b` without an __iadd__: a list extends IN PLACE from any iterable (list.__iadd__ is
+// list.extend, so aliases see the change); everything else — tuples included, which are arrays
+// here but immutable — rebinds to `a + b`. Shared by both engines (the caller has already tried
+// a user __iadd__).
+export function pyIAddBuiltin(a, b) {
+  if (Array.isArray(a) && !(a instanceof PyTuple)) {
+    if (Array.isArray(b)) { if (b === a) b = b.slice(); for (const x of b) a.push(x); }
+    else for (const x of pyIter(b)) a.push(x);
+    return a;
+  }
+  return pyAdd(a, b);
+}
 export function pySub(a, b) {
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);

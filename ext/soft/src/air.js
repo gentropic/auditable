@@ -63,7 +63,9 @@ async function _compileModule(ast, code) {
   runPasses(air);
   const imports = [...(air.imports || [])].filter(n => !_JS_INTRINSICS.has(n));
   const scopeKeys = ['_soft', ...imports];
-  const jsBody = emitJS(air, scopeKeys, []);
+  // unhinted, as the notebook cell path emits: soft numbers are unbounded doubles, and the
+  // `| 0` an i32 hint adds would wrap 2**31 and beyond (2000000000 + 2000000000 → -294967296)
+  const jsBody = emitJS(air, scopeKeys, [], { hinted: false });
   const isAsync = needsAsync(air);
   const Ctor = isAsync ? _AsyncFunction : Function;
   const fn = new Ctor(...scopeKeys, jsBody);

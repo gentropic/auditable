@@ -134,3 +134,12 @@ describe('soft transpile — collections', () => {
     assert.deepEqual(r.output, [10]);
   });
 });
+
+describe('soft transpile — headless runner', () => {
+  it('integers past 2**31 do not wrap', async () => {
+    const { run } = await import('../ext/soft/src/air.js');
+    let out = '';
+    await run('set x to 2000000000\nset x to x + x\nsay x', { stdout: (s) => { out += s; } });
+    assert.equal(out.trim(), '4000000000');
+  });
+});

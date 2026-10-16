@@ -309,7 +309,9 @@ class AdderScope {
 
 **JS reserved words as Python names** (`default`, `case`, `new`, `enum`, ...) are emitted as `name$` in AIR's JS (`$` can't occur in a Python identifier); keyword arguments, class attributes, a cell's exported names and its free names keep the Python spelling. `eval()` / `exec()` need the caller's live scope, so a cell calling them runs on the tree-walker.
 
-**`+=` under AIR** calls the in-place helper (`_py.iadd`) and awaits only when it returns a promise (an async user `__iadd__`), so an accumulator loop over numbers, strings or lists takes no microtask per iteration.
+**`+=`** on a list extends it in place from any iterable (aliases see the change, as `list.__iadd__` is `list.extend`); on anything else without an `__iadd__` — a tuple included — it rebinds to `a + b`. Both engines share the rule (`pyIAddBuiltin`). Under AIR it calls the in-place helper (`_py.iadd`) and awaits only when that returns a promise (an async user `__iadd__`), so an accumulator loop takes no microtask per iteration; once the operands are known numbers or strings it is a plain `+`, the guarded await is pruned, and a function left with no await is emitted as a plain (sync) function.
+
+**Typed loops under AIR.** Type inference follows a variable through a loop to a fixed point, typing a runtime-helper call (`_py.add(s, i)`) from its operands' types before the call is rewritten — so `s = 0; for i in range(n): s += i` emits raw `s + i` on a typed counter, at plain-JS speed. The counter of a `range` loop is an integer (`rangeArgs` validated it). A name a nested function rebinds (`global` / `nonlocal`) is never typed: a call can change it behind the loop's back. An integer type means *integer-valued*, not 32-bit: adder emits AIR's JS unhinted (no `| 0`), and the helpers whose JS operator differs from Python on values a type can't rule out stay helpers — `/`, `//`, `%` (ZeroDivisionError), `**` (`0 ** -1`) and the bitwise operators (JS truncates to 32 bits; `(h * 31 + c) & 0xFFFFFFFF` must stay unsigned).
 
 **Comprehension variables** belong to the comprehension (Python 3): `[x for x in xs]` leaves an outer `x` alone, in both engines.
 

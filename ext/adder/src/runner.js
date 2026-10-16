@@ -147,7 +147,9 @@ export function _airCompile(ast, src, ticks) {
   _airLib.runPasses(mod);
   const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
   const scopeKeys = ['_py', ...imports];
-  const body = _airLib.emitJS(mod, scopeKeys, []);
+  // unhinted, as the notebook cell path emits: an integer type means "integer-valued" in adder
+  // (ints are unbounded doubles), so the `| 0` an i32 hint adds would wrap 2**31 and beyond
+  const body = _airLib.emitJS(mod, scopeKeys, [], { hinted: false });
   const Ctor = _airLib.needsAsync(mod) ? _AsyncFunction : Function;
   return { air: mod, imports, fn: new Ctor(...scopeKeys, body) };
 }

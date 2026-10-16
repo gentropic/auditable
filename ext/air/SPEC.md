@@ -633,6 +633,28 @@ exceptions: `bitwise_or` always produces `i32`).
 Cross-cell propagation: when processing a `cell_import`, look up the exporting
 cell's module and read the type from its exports map.
 
+Loops (`for_region`, `loop_region`, `for_of_region`, `for_in_region`) are walked to
+a fixed point: every name the loop writes is re-walked with the union of its
+types until nothing widens, and a loop that hasn't settled after the cap gives
+those names up as `dynamic` and is walked once more, so no op keeps a type from
+a narrower round.
+
+A call to a registered runtime helper (`_py.add(a, b)`) is typed by its
+specialization's `resultType` whenever the spec's `check` holds for the current
+operand types, before specialization rewrites it, and re-typed every round. This
+is what keeps a loop accumulator typed: otherwise `s = _py.add(s, i)` types
+`DYNAMIC`, widens `s`, and the rewrite that needs `s` typed never fires.
+
+A name some op marks `rebinds` (a frontend's `global`/`nonlocal` declaration in a
+nested function) is always `dynamic`: a call can change it with no store in the
+scope being typed.
+
+A spec may declare `constValue`: the call becomes that constant
+(`_py.isThen(number)` → `false`). `pruneConstBranches` then replaces a
+statement-level `if_region` whose test is a boolean constant by the branch that
+runs, dropping any `await` in the dead branch with it; it runs after every
+specialization round.
+
 ### 8.2 Constant Folding
 
 If all arguments to an arithmetic op are `const`, replace with a single `const`

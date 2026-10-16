@@ -5,7 +5,7 @@ import {
   AdderError, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
-  pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
+  pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
@@ -21,18 +21,8 @@ function _iadd(a, b) {
   if (a !== null && typeof a === 'object' && typeof a.__iadd__ === 'function') {
     return a.__iadd__(b);
   }
-  if (Array.isArray(a)) {
-    // list += iterable — Python list.__iadd__ accepts any iterable.
-    if (Array.isArray(b)) {
-      for (const x of b) a.push(x);
-    } else if (typeof b === 'string') {
-      for (const ch of b) a.push(ch);
-    } else if (b !== null && b !== undefined) {
-      for (const x of pyIter(b)) a.push(x);
-    }
-    return a;
-  }
-  return _add(a, b);
+  // a list extends in place; anything else (a tuple too) rebinds to a + b
+  return pyIAddBuiltin(a, b);
 }
 
 // ── Comparison ──

@@ -3649,6 +3649,72 @@ function propagateTypes(module, opts = {}) {
     return types.get(id) || DYNAMIC;
   }
 
+  // Names a nested function rebinds in an enclosing scope (Python `global`/`nonlocal`, marked by
+  // the lowerer as `rebinds` on the declaring op). A call anywhere can change their value, and
+  // their type, without a store in this scope's ops — so they are never typed.
+  const rebound = new Set();
+  (function scan(ops) {
+    for (const op of ops || []) {
+      if (typeof op.rebinds === 'string') rebound.add(op.rebinds);
+      forEachRegion(op, (_name, rops) => scan(rops));
+    }
+  })(module.ops);
+
+  // SSA id → op, for resolving a call's callee. Built once: propagation retypes ops but never
+  // reshapes the tree.
+  const opById = new Map();
+  (function index(ops) {
+    for (const op of ops || []) {
+      if (op.id) opById.set(op.id, op);
+      forEachRegion(op, (_name, rops) => index(rops));
+    }
+  })(module.ops);
+
+  // The type a runtime-helper call (`_py.add(a, b)`) returns, when its specialization's check
+  // holds for the operand types — whether or not the call has been rewritten yet. This is what
+  // lets a loop accumulator stay typed: `s = 0; for …: s = _py.add(s, i)` would otherwise type
+  // the call DYNAMIC, widen `s` to DYNAMIC, and the specialization that needs `s` typed could
+  // never fire. Optimistic, and sound under the loop fixed point: if `s` widens, the next round
+  // re-checks with the widened type.
+  function helperResultType(op) {
+    const callee = opById.get(op.args[0]);
+    if (!callee || callee.op !== 'object_get') return null;
+    const ns = opById.get(callee.args[0]);
+    if (!ns || ns.op !== 'load' || typeof ns.args[0] !== 'string') return null;
+    const specs = getSpecializations(ns.args[0]);
+    const spec = specs && specs[callee.args[1]];
+    if (!spec || typeof spec.resultType !== 'function') return null;
+    const argTypes = op.args.slice(1).map(typeOf);
+    if (argTypes.length !== (spec.arity ?? 2) || !spec.check(...argTypes)) return null;
+    return spec.resultType(...argTypes);
+  }
+
+  // Loop fixed point. The body runs many times, so every read of a name the loop writes must
+  // see the union of all the types it can hold — not just its type on entry. Re-walk until the
+  // written names' types stop widening; if they haven't settled after the cap, give them up as
+  // DYNAMIC and walk once more, so no op keeps a type from a narrower round.
+  function loopFixpoint(regions) {
+    const writtenNames = new Set();
+    for (const r of regions) collectWrittenNames(r || [], writtenNames);
+    const walk = () => { for (const r of regions) if (r) propagate(r); };
+    for (let iter = 0; iter < 8; iter++) {
+      const before = new Map();
+      for (const name of writtenNames) before.set(name, nameTypes.get(name));
+      walk();
+      let stable = true;
+      for (const name of writtenNames) {
+        const prev = before.get(name);
+        const u = unionType(prev, nameTypes.get(name));
+        if (!prev || !typeEq(u, prev)) stable = false;
+        nameTypes.set(name, u);
+      }
+      if (stable) return;
+    }
+    for (const name of writtenNames) nameTypes.set(name, DYNAMIC);
+    walk();
+    for (const name of writtenNames) nameTypes.set(name, DYNAMIC);
+  }
+
   // When processing a branched region, collect writes so outer scope can
   // union/invalidate. Schema-derived: forEachRegion walks every region
   // declared on the op (incl. switch cases, class methods, try/catch/
@@ -3730,7 +3796,7 @@ function propagateTypes(module, opts = {}) {
         case 'load': {
           const name = op.args[0];
           // Prefer tracked name type; fallback to op's declared type
-          const t = nameTypes.has(name) ? nameTypes.get(name) : (op.type || DYNAMIC);
+          const t = rebound.has(name) ? DYNAMIC : nameTypes.has(name) ? nameTypes.get(name) : (op.type || DYNAMIC);
           op.type = t;
           types.set(op.id, t);
           break;
@@ -3743,7 +3809,7 @@ function propagateTypes(module, opts = {}) {
           // If store has a declared type (from annotation), prefer it.
           // Otherwise inherit the value's type.
           const declared = op.type && !isDynamic(op.type) && op.type.kind !== 'void';
-          const t = declared ? op.type : valType;
+          const t = rebound.has(name) ? DYNAMIC : declared ? op.type : valType;
           nameTypes.set(name, t);
           nameOrigins.set(name, valId);
           types.set(op.id, VOID);
@@ -3823,6 +3889,14 @@ function propagateTypes(module, opts = {}) {
             if (calleeT && calleeT.kind === 'function' && calleeT.ret) {
               inferred = calleeT.ret;
             }
+          }
+          // A runtime-helper call is re-typed every round from its current operand types (never
+          // kept from a previous round: the operands may have widened since).
+          if (op.op === 'call' && op.args.length > 0) {
+            const helperT = helperResultType(op);
+            if (helperT) inferred = helperT;
+            else if (op._helperTyped) inferred = DYNAMIC;
+            op._helperTyped = !!helperT;
           }
           op.type = inferred;
           types.set(op.id, inferred);
@@ -3907,55 +3981,17 @@ function propagateTypes(module, opts = {}) {
 
         case 'for_region': {
           if (op.init) propagate(op.init);
-
-          // Type-fixed-point for loop variables. Without this, a variable
-          // declared `let x = 0` (i32) and then reassigned `x = expr_f64`
-          // inside the body stays inferred as i32 for the *whole* body —
-          // including the first iteration's reads — because we only walk
-          // the body once. Re-walking with the unioned type seeded lets
-          // every read see the widened type. Mandelbrot's `tmp = x*x +
-          // x0_f64; x = tmp` regressed without this.
-          const writtenNames = new Set();
-          collectWrittenNames(op.body || [], writtenNames);
-          collectWrittenNames(op.update || [], writtenNames);
-
-          for (let iter = 0; iter < 4; iter++) {
-            const before = new Map();
-            for (const name of writtenNames) before.set(name, nameTypes.get(name));
-            if (op.test) propagate(op.test);
-            if (op.body) propagate(op.body);
-            if (op.update) propagate(op.update);
-            let stable = true;
-            for (const name of writtenNames) {
-              const prev = before.get(name);
-              const u = unionType(prev, nameTypes.get(name));
-              if (!prev || !typeEq(u, prev)) stable = false;
-              nameTypes.set(name, u);
-            }
-            if (stable) break;
-          }
+          // Type-fixed-point for loop variables (see loopFixpoint): a variable declared
+          // `let x = 0` (i32) and reassigned `x = expr_f64` in the body must read as f64 on every
+          // iteration, the first included. Mandelbrot's `tmp = x*x + x0_f64; x = tmp` regressed
+          // without this.
+          loopFixpoint([op.test, op.body, op.update]);
           types.set(op.id, VOID);
           break;
         }
 
         case 'loop_region': {
-          // Type-fixed-point (see for_region above for rationale).
-          const writtenNames = new Set();
-          collectWrittenNames(op.body || [], writtenNames);
-          for (let iter = 0; iter < 4; iter++) {
-            const before = new Map();
-            for (const name of writtenNames) before.set(name, nameTypes.get(name));
-            if (op.test) propagate(op.test);
-            if (op.body) propagate(op.body);
-            let stable = true;
-            for (const name of writtenNames) {
-              const prev = before.get(name);
-              const u = unionType(prev, nameTypes.get(name));
-              if (!prev || !typeEq(u, prev)) stable = false;
-              nameTypes.set(name, u);
-            }
-            if (stable) break;
-          }
+          loopFixpoint([op.test, op.body]);
           types.set(op.id, VOID);
           break;
         }
@@ -3967,25 +4003,9 @@ function propagateTypes(module, opts = {}) {
             const elT = inferIterableElementType(op.args[0], module.ops);
             if (elT) nameTypes.set(op.target_name, elT);
           }
-          // Type-fixed-point — same shape as for_region. The loop body runs
-          // multiple times at runtime; a variable widened by a body
-          // assignment (`total = total + x * 0.5`) needs every read to
-          // see the widened type, not just reads after the first assign.
-          const writtenNames = new Set();
-          collectWrittenNames(op.body || [], writtenNames);
-          for (let iter = 0; iter < 4; iter++) {
-            const before = new Map();
-            for (const name of writtenNames) before.set(name, nameTypes.get(name));
-            if (op.body) propagate(op.body);
-            let stable = true;
-            for (const name of writtenNames) {
-              const prev = before.get(name);
-              const u = unionType(prev, nameTypes.get(name));
-              if (!prev || !typeEq(u, prev)) stable = false;
-              nameTypes.set(name, u);
-            }
-            if (stable) break;
-          }
+          // A variable widened by a body assignment (`total = total + x * 0.5`) needs every
+          // read to see the widened type, not just reads after the first assign.
+          loopFixpoint([op.body]);
           types.set(op.id, VOID);
           break;
         }
@@ -4441,6 +4461,16 @@ function specializeRuntimeHelpers(module, types) {
       // Determine result type
       const resT = spec.resultType(...argTypes);
 
+      // Constant: the result is known from the operand types alone (`_py.isThen(number)` → false)
+      if ('constValue' in spec) {
+        op.op = 'const';
+        op.args = [spec.constValue];
+        op.type = resT;
+        types.set(op.id, resT);
+        changed = true;
+        continue;
+      }
+
       // Passthrough: replace the call result with the single arg
       if (spec.passthrough) {
         replacements.set(op.id, argIds[0]);
@@ -4562,6 +4592,14 @@ const PASSES = [
     invalidates: ['typeMap'],  // rewrites IR; types may further refine
   },
   {
+    name: 'pruneConstBranches',
+    fn: pruneConstBranches,
+    iterates: 'fixed_point',   // runs after each specialization round
+    requires: [],
+    produces: [],
+    invalidates: ['typeMap'],
+  },
+  {
     name: 'insertHints',
     fn: insertHints,
     iterates: 'once',
@@ -4579,6 +4617,29 @@ const PASSES = [
   },
 ];
 
+// Statement-level `if` regions whose test is a boolean constant (typically a helper call that
+// specialization proved, like `_py.isThen(number)` → false) are replaced by the branch that runs.
+// Besides the dead code, this drops an `await` in the dead branch — which would otherwise keep
+// the enclosing function async. Expression-level ifs (with phis) are left alone.
+function pruneConstBranches(module) {
+  let changed = false;
+  function prune(ops) {
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      forEachRegion(op, (_name, rops) => prune(rops));
+      if (op.op !== 'if_region' || (op.phis && op.phis.length)) continue;
+      const test = findOpById(module.ops, op.args[0]);
+      if (!test || test.op !== 'const' || typeof test.args[0] !== 'boolean') continue;
+      const kept = (test.args[0] ? op.then_body : op.else_body) || [];
+      ops.splice(i, 1, ...kept);
+      i += kept.length - 1;
+      changed = true;
+    }
+  }
+  prune(module.ops);
+  return changed;
+}
+
 function runPasses(module, opts = {}) {
   let typeMap = propagateTypes(module, opts);
   foldConstants(module);
@@ -4587,6 +4648,7 @@ function runPasses(module, opts = {}) {
   for (let i = 0; i < 5; i++) {
     const { changed } = specializeRuntimeHelpers(module, typeMap);
     if (!changed) break;
+    pruneConstBranches(module);
     typeMap = propagateTypes(module, opts);
   }
   insertHints(module, typeMap);
@@ -6894,6 +6956,7 @@ export {
   parseText,
   prettyPrint,
   propagateTypes,
+  pruneConstBranches,
   registerLowerer,
   registerSpecializations,
   requiredExtras,

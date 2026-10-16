@@ -1715,3 +1715,109 @@ fs = []
 for i in range(3):
     fs.append(lambda: i)
 print([g() for g in fs])
+
+### expr/loop-accumulators
+s = 0
+def bump():
+    global s
+    s = "x"
+try:
+    for i in range(3):
+        bump()
+        s = s + i
+    print("no error", s)
+except TypeError:
+    print("TypeError")
+
+def outer():
+    t = 0
+    def poke():
+        nonlocal t
+        t = [1]
+    out = []
+    for i in range(2):
+        poke()
+        t = t + [i]
+        out.append(t)
+    return out
+print(outer())
+
+def widen(n):
+    a = 0
+    for i in range(n):
+        a = a + 0.5
+        a += i
+    return a
+print(widen(3))
+
+def h(word):
+    h = 0
+    for i in range(len(word)):
+        h = (h * 31 + i * 1000003) & 0xFFFFFFFF
+        h = h ^ (h >> 3)
+    return h
+print(h("hello world, this is long"))
+
+def strs(n):
+    s = ""
+    for i in range(n):
+        s += "ab"
+    return s
+print(strs(3))
+
+def big():
+    s = 0
+    for i in range(3):
+        s = s + 2000000000
+    return s * 3, 2000000000 + 2000000000
+print(big())
+
+def zp():
+    r = []
+    for i in range(1):
+        try:
+            r.append(0 ** -1)
+        except ZeroDivisionError:
+            r.append("zde")
+    return r
+print(zp())
+
+def morph(n):
+    v = 1
+    for i in range(n):
+        if i == 1:
+            v = str(v)
+        v = v + v
+    return v
+print(morph(3))
+
+def whiley():
+    k = 0
+    tot = 0
+    while k < 5:
+        tot += k
+        k += 1
+    return tot, k
+print(whiley())
+
+### expr/inplace-add-aliasing
+t = (1,)
+u = t
+t += (2,)
+print(t, u)
+xs = [1]
+ys = xs
+xs += "ab"
+xs += (9,)
+xs += range(2)
+print(xs, ys, xs is ys)
+zs = [1, 2]
+zs += zs
+print(zs)
+def f():
+    acc = []
+    alias = acc
+    for i in range(3):
+        acc += [i]
+    return acc, alias, acc is alias
+print(f())

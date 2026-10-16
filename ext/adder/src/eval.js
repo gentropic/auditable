@@ -15,7 +15,7 @@ import {
   _builtinEval, _builtinExec, _builtinSuper,
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
-  isUserIterable, pyIterAsync, pyBinOps, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
+  isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
 } from './builtins.js';
 
@@ -183,6 +183,8 @@ export async function adderEval(node, scope) {
       let result;
       if (iDunder && current !== null && typeof current === 'object' && typeof current[iDunder] === 'function') {
         result = current[iDunder](value);
+      } else if (node.op === '+' && Array.isArray(current) && !(current instanceof PyTuple)) {
+        result = pyIAddBuiltin(current, value);   // list += iterable extends in place
       } else {
         result = _binOp(node.op, current, value, node.line);
       }

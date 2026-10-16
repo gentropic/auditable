@@ -948,7 +948,7 @@ describe('PASSES metadata table', () => {
     // exercise this end-to-end; this just ensures the table isn't out of
     // sync with what we ship.
     const expectedNames = new Set([
-      'propagateTypes', 'foldConstants', 'specializeRuntimeHelpers',
+      'propagateTypes', 'foldConstants', 'specializeRuntimeHelpers', 'pruneConstBranches',
       'insertHints', 'extractDependencies',
     ]);
     const actualNames = new Set(PASSES.map(p => p.name));

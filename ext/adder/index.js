@@ -3320,6 +3320,18 @@ function pyAdd(a, b) {
   if (a instanceof Uint8Array && b instanceof Uint8Array) { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
   throw _binErr('+', a, b);
 }
+// `a += b` without an __iadd__: a list extends IN PLACE from any iterable (list.__iadd__ is
+// list.extend, so aliases see the change); everything else — tuples included, which are arrays
+// here but immutable — rebinds to `a + b`. Shared by both engines (the caller has already tried
+// a user __iadd__).
+function pyIAddBuiltin(a, b) {
+  if (Array.isArray(a) && !(a instanceof PyTuple)) {
+    if (Array.isArray(b)) { if (b === a) b = b.slice(); for (const x of b) a.push(x); }
+    else for (const x of pyIter(b)) a.push(x);
+    return a;
+  }
+  return pyAdd(a, b);
+}
 function pySub(a, b) {
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);
@@ -5986,6 +5998,8 @@ async function adderEval(node, scope) {
       let result;
       if (iDunder && current !== null && typeof current === 'object' && typeof current[iDunder] === 'function') {
         result = current[iDunder](value);
+      } else if (node.op === '+' && Array.isArray(current) && !(current instanceof PyTuple)) {
+        result = pyIAddBuiltin(current, value);   // list += iterable extends in place
       } else {
         result = _binOp(node.op, current, value, node.line);
       }
@@ -7692,18 +7706,8 @@ function _iadd(a, b) {
   if (a !== null && typeof a === 'object' && typeof a.__iadd__ === 'function') {
     return a.__iadd__(b);
   }
-  if (Array.isArray(a)) {
-    // list += iterable — Python list.__iadd__ accepts any iterable.
-    if (Array.isArray(b)) {
-      for (const x of b) a.push(x);
-    } else if (typeof b === 'string') {
-      for (const ch of b) a.push(ch);
-    } else if (b !== null && b !== undefined) {
-      for (const x of pyIter(b)) a.push(x);
-    }
-    return a;
-  }
-  return _add(a, b);
+  // a list extends in place; anything else (a tuple too) rebinds to a + b
+  return pyIAddBuiltin(a, b);
 }
 
 // ── Comparison ──
@@ -13835,7 +13839,9 @@ function _airCompile(ast, src, ticks) {
   _airLib.runPasses(mod);
   const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
   const scopeKeys = ['_py', ...imports];
-  const body = _airLib.emitJS(mod, scopeKeys, []);
+  // unhinted, as the notebook cell path emits: an integer type means "integer-valued" in adder
+  // (ints are unbounded doubles), so the `| 0` an i32 hint adds would wrap 2**31 and beyond
+  const body = _airLib.emitJS(mod, scopeKeys, [], { hinted: false });
   const Ctor = _airLib.needsAsync(mod) ? _AsyncFunction : Function;
   return { air: mod, imports, fn: new Ctor(...scopeKeys, body) };
 }
@@ -14212,20 +14218,35 @@ const PY_SPECIALIZATIONS = {
       return STRING;
     },
   },
+  // `x += y` on numbers or strings is plain `+`: neither is mutable, so there is no __iadd__
+  // and no list-extend to dispatch to.
+  iadd: {
+    op: 'add',
+    check: (lt, rt) => (isNumeric(lt) && isNumeric(rt)) || (lt.kind === 'string' && rt.kind === 'string'),
+    resultType: (lt, rt) => (isNumeric(lt) ? arithmeticResult(lt, rt) : STRING),
+  },
   sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
   mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
-  // div/mod/floordiv stay in helpers: Python raises ZeroDivisionError, JS returns Infinity/NaN
-  pow: { op: 'exp', check: _bothNumeric, resultType: arithmeticResult },
+  // Stay in helpers, because JS differs from Python on values the types can't rule out:
+  //   div/mod/floordiv — Python raises ZeroDivisionError, JS returns Infinity/NaN;
+  //   pow — `0 ** -1` raises in Python, is Infinity in JS;
+  //   and_/or_/xor/rshift — JS bitwise ops truncate to 32 bits; Python ints don't
+  //     (`(h * 31 + c) & 0xFFFFFFFF` must stay unsigned). An integer type says
+  //     "integer-valued", not "fits in 32 bits": adder ints are unbounded doubles.
   eq:  { op: 'eq',  check: _bothNumeric, resultType: () => BOOL },
   neq: { op: 'neq', check: _bothNumeric, resultType: () => BOOL },
   lt:  { op: 'lt',  check: _bothNumeric, resultType: () => BOOL },
   lte: { op: 'lte', check: _bothNumeric, resultType: () => BOOL },
   gt:  { op: 'gt',  check: _bothNumeric, resultType: () => BOOL },
   gte: { op: 'gte', check: _bothNumeric, resultType: () => BOOL },
-  and_:   { op: 'bitwise_and', check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
-  or_:    { op: 'bitwise_or',  check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
-  xor:    { op: 'bitwise_xor', check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
-  rshift: { op: 'shift_right', check: (lt, rt) => isInteger(lt) && isInteger(rt), resultType: () => I32 },
+  // `_py.isThen(v)` (the `+=` await guard) is false for a value that is provably a number,
+  // string or bool; the guarded `await` branch is then pruned.
+  isThen: {
+    op: null, arity: 1,
+    check: (t) => isNumeric(t) || t.kind === 'string' || t.kind === 'bool',
+    resultType: () => BOOL,
+    constValue: false,
+  },
   neg: {
     op: 'neg',
     arity: 1,
@@ -14880,7 +14901,7 @@ function lowerStmt_ad(ctx, node) {
         // Track in ctx.symbols to signal "this name exists in enclosing scope"
         if (!ctx.symbols.has(n)) ctx.symbols.set(n, null);
         // Emit a special opaque that marks `decl:name` as set in emitter scope
-        ctx.emit('opaque', [`/* ${node.type.toLowerCase()} ${n} */`], VOID, l, { _markDeclared: n });
+        ctx.emit('opaque', [`/* ${node.type.toLowerCase()} ${n} */`], VOID, l, { _markDeclared: n, rebinds: jsSafeName(n) });
       }
       return null;
 
@@ -15946,7 +15967,7 @@ function _lowerRangeLoop(ctx, node, l) {
   const part = (i) => {
     const v = emitPyCall(ctx, 'getitem', [ctx.emit('load', [rngName], DYNAMIC, l), ctx.emit('const', [i], I32, l)], l);
     const name = ctx.makeTempName(['k', 'stop', 'step', 'dir'][i]);
-    ctx.emit('store', [name, v.id], VOID, l);
+    ctx.emit('store', [name, v.id], I32, l);   // declared integer: rangeArgs validated it
     return name;
   };
   const K = part(0), STOP = part(1), STEP = part(2);
@@ -16370,13 +16391,14 @@ function lowerFuncDef(ctx, node) {
 
   const op = ctx.emit('func_region', [name], fType, l, {
     name, params, body, ret_type: retType,
-    // Top-level: trust analyseSyncFunctions (it handles decorators, cross-function
-    // async, and the await-insertion at call sites). Nested functions are never
-    // analysed there, so don't force them async — emit-js's emitFunc promotes to
-    // async iff the body actually awaits (the same _bodyHasAwait path generators
-    // use). A sync nested function thus emits a plain `function`, usable as a
-    // synchronous JS callback.
-    is_async: savedTopLevel ? (!isSync && !isGenerator) : false,
+    // Never forced async: emit-js's emitFunc promotes to async iff the emitted body
+    // actually awaits (the same _bodyHasAwait path generators use). analyseSyncFunctions
+    // still decides the call sites — a function it can't prove sync is awaited by its
+    // callers, which is right whether it ends up async or not. What it can't see is an
+    // await the passes removed: `s += i` on numbers loses its guarded await once the types
+    // are known, and a function whose only async-looking statement was that is plain.
+    // A sync function thus emits a plain `function`, usable as a synchronous JS callback.
+    is_async: false,
     is_generator: isGenerator,
     needs_arguments: needsArgs,
   });
