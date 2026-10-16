@@ -6,9 +6,23 @@
 // ── PyRange — lazy range ──
 
 export class AdderRange {
-  constructor(start, stop, step) {
-    if (stop === undefined) { this.start = 0; this.stop = start; this.step = 1; }
-    else { this.start = start; this.stop = stop; this.step = step || 1; }
+  // range(stop) / range(start, stop[, step]): integers (bool and __index__ objects count), as
+  // CPython checks them; a zero step is a ValueError
+  constructor(...args) {
+    if (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' && args[args.length - 1]._kw) {
+      throw new AdderError('TypeError', 'range() takes no keyword arguments');
+    }
+    while (args.length && args[args.length - 1] === undefined) args.pop();
+    if (!args.length) throw new AdderError('TypeError', 'range expected at least 1 argument, got 0');
+    if (args.length > 3) throw new AdderError('TypeError', `range expected at most 3 arguments, got ${args.length}`);
+    const ints = args.map((v) => {
+      if (typeof v === 'boolean') return +v;
+      if (typeof v === 'number' && Number.isInteger(v)) return v;
+      if (typeof v === 'bigint') return Number(v);
+      if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return v.__index__();
+      throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+    });
+    [this.start, this.stop, this.step] = ints.length === 1 ? [0, ints[0], 1] : ints.length === 2 ? [ints[0], ints[1], 1] : ints;
     if (this.step === 0) throw new AdderError('ValueError', 'range() arg 3 must not be zero');
     this.length = Math.max(0, Math.ceil((this.stop - this.start) / this.step));
   }
@@ -3429,7 +3443,11 @@ export function adderBuiltins(printFn) {
       }
       throw new AdderError('TypeError', `object of type '${pyTypeName(obj)}' has no len()`);
     },
-    range: (a, b, c) => new AdderRange(a, b, c),
+    // a tree-walked __index__ is async: resolve the arguments first, then build the range
+    range: (...a) => {
+      const vals = a.map((v) => (v !== null && typeof v === 'object' && !v._kw && typeof v.__index__ === 'function' ? v.__index__() : v));
+      return vals.some(_isThenable) ? Promise.all(vals).then((r) => new AdderRange(...r)) : new AdderRange(...vals);
+    },
     int: (x, base) => {
       if (base && base._kw) base = base.base;
       if (x && x._kw) { base = x.base; x = undefined; }

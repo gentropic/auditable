@@ -2006,9 +2006,23 @@ class _Parser {
 // ── PyRange — lazy range ──
 
 class AdderRange {
-  constructor(start, stop, step) {
-    if (stop === undefined) { this.start = 0; this.stop = start; this.step = 1; }
-    else { this.start = start; this.stop = stop; this.step = step || 1; }
+  // range(stop) / range(start, stop[, step]): integers (bool and __index__ objects count), as
+  // CPython checks them; a zero step is a ValueError
+  constructor(...args) {
+    if (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' && args[args.length - 1]._kw) {
+      throw new AdderError('TypeError', 'range() takes no keyword arguments');
+    }
+    while (args.length && args[args.length - 1] === undefined) args.pop();
+    if (!args.length) throw new AdderError('TypeError', 'range expected at least 1 argument, got 0');
+    if (args.length > 3) throw new AdderError('TypeError', `range expected at most 3 arguments, got ${args.length}`);
+    const ints = args.map((v) => {
+      if (typeof v === 'boolean') return +v;
+      if (typeof v === 'number' && Number.isInteger(v)) return v;
+      if (typeof v === 'bigint') return Number(v);
+      if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return v.__index__();
+      throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+    });
+    [this.start, this.stop, this.step] = ints.length === 1 ? [0, ints[0], 1] : ints.length === 2 ? [ints[0], ints[1], 1] : ints;
     if (this.step === 0) throw new AdderError('ValueError', 'range() arg 3 must not be zero');
     this.length = Math.max(0, Math.ceil((this.stop - this.start) / this.step));
   }
@@ -5429,7 +5443,11 @@ function adderBuiltins(printFn) {
       }
       throw new AdderError('TypeError', `object of type '${pyTypeName(obj)}' has no len()`);
     },
-    range: (a, b, c) => new AdderRange(a, b, c),
+    // a tree-walked __index__ is async: resolve the arguments first, then build the range
+    range: (...a) => {
+      const vals = a.map((v) => (v !== null && typeof v === 'object' && !v._kw && typeof v.__index__ === 'function' ? v.__index__() : v));
+      return vals.some(_isThenable) ? Promise.all(vals).then((r) => new AdderRange(...r)) : new AdderRange(...vals);
+    },
     int: (x, base) => {
       if (base && base._kw) base = base.base;
       if (x && x._kw) { base = x.base; x = undefined; }
@@ -8480,6 +8498,12 @@ const _py = {
   super: pySuper,
   bytesLit, dictLiteral,
   tuple: mkTuple,
+  isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',
+  // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range() does
+  rangeArgs: (args) => {
+    const r = new AdderRange(...args);   // the same validation as range()
+    return [r.start, r.stop, r.step, r.step > 0 ? 1 : -1];
+  },
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
   // when there is one, else the async variant
   genExpr: (src, syncGen, asyncGen) => {
@@ -15434,13 +15458,22 @@ function lowerAugAssign(ctx, node) {
     const helper = inPlace || BINOP_HELPER[op];
     if (!helper) throw new AirLowerError(`unsupported augassign op: ${op}`);
     const call = emitPyCall(ctx, helper, [current, rhs], l);
-    // In-place helpers (`_py.iadd`) dispatch to `__iadd__` which can be an
-    // async adder-class method returning a Promise. Wrap with await so the
-    // assigned value is always the resolved instance, not a pending Promise
-    // that would break the next `+=` (operating on the Promise instead of
-    // the instance). For sync paths (numbers, lists, etc.) the await on a
-    // non-Promise is a no-op modulo the microtask hop.
-    result = inPlace ? ctx.emit('await', [call.id], DYNAMIC, l) : call;
+    // In-place helpers (`_py.iadd`) dispatch to `__iadd__`, which can be an async adder-class
+    // method returning a Promise: the assigned value must be the resolved instance. But only
+    // that case awaits — numbers, strings and lists take no microtask per `+=` (an unconditional
+    // await cost an accumulator loop half its time):
+    //   __t = _py.iadd(x, y); if (_py.isThen(__t)) __t = await __t; x = __t
+    if (inPlace) {
+      const tmp = ctx.makeTempName('iop');
+      ctx.emit('store', [tmp, call.id], VOID, l);
+      const isThen = emitPyCall(ctx, 'isThen', [ctx.emit('load', [tmp], DYNAMIC, l)], l, BOOL);
+      const thenBody = captureOps(ctx, () => {
+        const awaited = ctx.emit('await', [ctx.emit('load', [tmp], DYNAMIC, l).id], DYNAMIC, l);
+        ctx.emit('store', [tmp, awaited.id], VOID, l);
+      });
+      ctx.emit('if_region', [isThen.id], VOID, l, { then_body: thenBody, else_body: [], phis: [] });
+      result = ctx.emit('load', [tmp], DYNAMIC, l);
+    } else result = call;
   }
 
   lowerAssignTarget(ctx, node.target, result, l);
@@ -15895,7 +15928,64 @@ function _withClearedBreakHook(ctx, fn) {
   try { return fn(); } finally { ctx.breakHook = prev; }
 }
 
+// `for i in range(...)` as a counted loop: no range object or array is built (range(10**8) used
+// to allocate the whole list first), and the loop variable is typed as an integer.
+//   __rng = _py.rangeArgs([args])    // [start, stop, step, sign(step)], validated once (ints, step != 0)
+//   for (__k = start; (__k - stop) * sign < 0; __k += step) { i = __k; body }
+// The counter is separate from `i`, so assigning to `i` in the body doesn't change the
+// iteration, and after the loop `i` keeps its last value (untouched when the range is empty).
+function _isPlainRangeCall(ctx, n) {
+  return n && n.type === 'Call' && n.func.type === 'Name' && n.func.id === 'range' && !ctx.symbols.has('range') &&
+    !(n.keywords && n.keywords.length) && n.args.length >= 1 && n.args.length <= 3 && !n.args.some((a) => a.type === 'Starred');
+}
+function _lowerRangeLoop(ctx, node, l) {
+  const argOps = node.iter.args.map((a) => lowerExpr_ad(ctx, a));
+  const rng = emitPyCall(ctx, 'rangeArgs', [ctx.emit('array_new', argOps.map((o) => o.id), DYNAMIC, l)], l);
+  const rngName = ctx.makeTempName('rng');
+  ctx.emit('store', [rngName, rng.id], VOID, l);
+  const part = (i) => {
+    const v = emitPyCall(ctx, 'getitem', [ctx.emit('load', [rngName], DYNAMIC, l), ctx.emit('const', [i], I32, l)], l);
+    const name = ctx.makeTempName(['k', 'stop', 'step', 'dir'][i]);
+    ctx.emit('store', [name, v.id], VOID, l);
+    return name;
+  };
+  const K = part(0), STOP = part(1), STEP = part(2);
+  // a literal positive step (or none) needs no direction test
+  const stepArg = node.iter.args[2];
+  const ascending = !stepArg || (stepArg.type === 'Constant' && typeof stepArg.value === 'number' && stepArg.value > 0);
+  const DIR = ascending ? null : part(3);
+
+  const loopVar = node.target.id;
+  _preDeclareTargetNames(ctx, node.target, l);   // only if unbound: an empty loop leaves an existing value
+
+  let test = null;
+  const testOps = captureOps(ctx, () => {
+    const k = ctx.emit('load', [K], DYNAMIC, l), stop = ctx.emit('load', [STOP], DYNAMIC, l);
+    if (ascending) test = ctx.emit('lt', [k.id, stop.id], BOOL, l);
+    else {
+      const diff = ctx.emit('sub', [k.id, stop.id], DYNAMIC, l);
+      const signed = ctx.emit('mul', [diff.id, ctx.emit('load', [DIR], DYNAMIC, l).id], DYNAMIC, l);
+      test = ctx.emit('lt', [signed.id, ctx.emit('const', [0], I32, l).id], BOOL, l);
+    }
+  });
+  const updateOps = captureOps(ctx, () => {
+    const next = ctx.emit('add', [ctx.emit('load', [K], DYNAMIC, l).id, ctx.emit('load', [STEP], DYNAMIC, l).id], DYNAMIC, l);
+    ctx.emit('store', [K, next.id], VOID, l);
+  });
+  const bodyOps = captureOps(ctx, () => {
+    // the loop variable: an integer (as the `_py.iter(range(...))` typing gave it)
+    const cur = ctx.emit('load', [K], I32, l);
+    ctx.emit('store', [loopVar, cur.id], VOID, l);
+    ctx.symbols.set(loopVar, cur.id);
+    for (const s of node.body) lowerStmt_ad(ctx, s);
+  });
+  return ctx.emit('for_region', [], VOID, l, {
+    init: [], test: testOps, test_val: test.id, update: updateOps, body: bodyOps, phis: [],
+  });
+}
+
 function _lowerForLoopBody(ctx, node, l) {
+  if (node.target.type === 'Name' && _isPlainRangeCall(ctx, node.iter)) return _lowerRangeLoop(ctx, node, l);
   const iter = lowerExpr_ad(ctx, node.iter);
   // Where the code is async anyway (cell level, a top-level function that isn't sync), the loop
   // is hybrid (emitForOfHybrid): lists by index, sync iterators by next(), async sources awaited
@@ -15907,10 +15997,7 @@ function _lowerForLoopBody(ctx, node, l) {
   // Simple case: target is an Identifier
   if (node.target.type === 'Name') {
     const loopVar = node.target.id;
-    const undefOp = ctx.emit('const', [undefined], VOID, l);
-    ctx.emit('store', [loopVar, undefOp.id], VOID, l);
-    ctx.symbols.set(loopVar, undefOp.id);
-    if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(loopVar);
+    _preDeclareTargetNames(ctx, node.target, l);   // only if unbound: an empty loop leaves an existing value
 
     const body = captureOps(ctx, () => {
       for (const s of node.body) lowerStmt_ad(ctx, s);

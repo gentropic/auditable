@@ -828,6 +828,12 @@ export const _py = {
   super: pySuper,
   bytesLit, dictLiteral,
   tuple: mkTuple,
+  isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',
+  // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range() does
+  rangeArgs: (args) => {
+    const r = new AdderRange(...args);   // the same validation as range()
+    return [r.start, r.stop, r.step, r.step > 0 ? 1 : -1];
+  },
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
   // when there is one, else the async variant
   genExpr: (src, syncGen, asyncGen) => {

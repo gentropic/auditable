@@ -740,6 +740,10 @@
   "expr/lazy-for": {
    "out": "gen stopped 4\nmap stopped 8\n[(0, 'x'), (1, 'y'), (2, 'z')]\n[1, 2, 3, 4] 4\no\n10 3 6\na b \n0 3 1 7 \nc 0 c 1 c 3 \nelse ran 2\n",
    "error": null
+  },
+  "expr/range-loops": {
+   "out": "[0, 1, 2, 3, 4, 2, 5, 8, 10, 6, 2, -3, -2, -1, 0, 1, 2] 2\nuntouched\n[0, 100, 200] 200\n0 2 4 6 \nelse 2\n25\n[6, 4, 2, 0]\n6 4 2 0 \nidx 0 idx 1 idx 2 \n1 2 \nTypeError 'float' object cannot be interpreted as an integer\nValueError range() arg 3 must not be zero\nTypeError 'float' object cannot be interpreted as an integer\nValueError range() arg 3 must not be zero\n499500 0\n[2, 2, 2]\n",
+   "error": null
   }
  }
 }
