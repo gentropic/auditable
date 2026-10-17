@@ -2521,3 +2521,72 @@ print(pickle.HIGHEST_PROTOCOL, pickle.DEFAULT_PROTOCOL)
 ### mod/identity-of-module-functions
 import builtins, collections
 print(builtins.len is len, builtins.len is builtins.len, collections.namedtuple is collections.namedtuple)
+### class/str-subclass
+import json, enum, re
+
+class Safe(str):
+    def __new__(cls, base="", encoding=None, errors="strict"):
+        if hasattr(base, "__html__"):
+            base = base.__html__()
+        if encoding is None:
+            return super().__new__(cls, base)
+        return super().__new__(cls, base, encoding, errors)
+    def __html__(self):
+        return self
+    def __add__(self, other):
+        if isinstance(other, str):
+            return self.__class__(super().__add__(esc(other)))
+        return NotImplemented
+    def __radd__(self, other):
+        if isinstance(other, str):
+            return esc(other).__add__(self)
+        return NotImplemented
+    def __mod__(self, value):
+        if not isinstance(value, tuple):
+            value = (value,)
+        return self.__class__(super().__mod__(tuple(esc(v) for v in value)))
+    def __repr__(self):
+        return f"{self.__class__.__name__}({super().__repr__()})"
+    def __getitem__(self, key):
+        return self.__class__(super().__getitem__(key))
+    def upper(self):
+        return self.__class__(super().upper())
+    def join(self, seq):
+        return self.__class__(super().join(map(esc, seq)))
+
+def esc(s):
+    if hasattr(s, "__html__"):
+        return s.__html__()
+    return Safe(str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+m = Safe("<b>%s</b>")
+print(m % "<i>", repr(m % "<i>"), type(m % "x").__name__)
+print(repr(m + "<u>"), repr("<u>" + Safe("x")), repr(Safe("a").upper()), repr(Safe("abc")[1:]))
+print(repr(Safe(", ").join(["<", ">"])), Safe("x") == "x", "x" == Safe("x"), Safe("b") > "a", hash(Safe("k")) == hash("k"))
+d = {"k": 1}
+print(d[Safe("k")], Safe("k") in d, "b" in Safe("abc"), len(Safe("héllo")), list(Safe("ab")), bool(Safe("")))
+print(f"[{Safe('f')}]", "{}-{}".format(Safe("a"), 1), "%s|%r" % (Safe("p"), Safe("q")), str(Safe("s")), type(str(Safe("s"))).__name__)
+print(Safe("a,b").split(","), Safe("  x ").strip(), Safe("abc").replace("b", "B"), Safe("abc").startswith(Safe("a")), Safe("x").encode())
+print(json.dumps({"a": Safe("v")}), isinstance(Safe("x"), str), issubclass(Safe, str), Safe("x").__class__.__name__)
+print(re.sub("a", "b", Safe("aaa")), re.match(r"\w+", Safe("hi")).group(), sorted([Safe("b"), "a"]), max(Safe("b"), "c"))
+print("-".join([Safe("a"), "b"]), Safe(b"\xc3\xa9", "utf-8"), repr(Safe()), Safe(5) + "!")
+
+class Color(str, enum.Enum):
+    RED = "red"
+    BLUE = "blue"
+print(Color.RED == "red", Color("blue").name, Color.RED.value, isinstance(Color.RED, str), Color.RED.upper())
+
+class Path2(str):
+    @property
+    def ext(self):
+        return self.rsplit(".", 1)[-1]
+p = Path2("a.txt")
+print(p.ext, p + "x", type(p + "x").__name__, p * 2)
+### class/str-enums
+import enum
+class Color(str, enum.Enum):
+    RED = "red"
+print(repr(Color.RED), str(Color.RED), f"{Color.RED}", Color.RED.upper(), Color.RED + "!", {Color.RED: 1}["red"])
+class S(enum.StrEnum):
+    A = "a"
+print(repr(S.A), str(S.A), S.A.upper(), S.A + "!", f"{S.A}")

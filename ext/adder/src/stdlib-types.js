@@ -90,6 +90,8 @@ function _stMember(cls, name, value) {
   m.__adderType__ = cls;
   m._name_ = name;
   m._value_ = value;
+  // a str-mixin enum (`class Color(str, Enum)`, StrEnum): the member IS its string (a boxed str)
+  if ((cls._pyStrBase || _stKind(cls).str) && typeof value === 'string') Object.defineProperty(m, '_pyStrValue', { value, enumerable: false, writable: false, configurable: false });
   return m;
 }
 // Flag value → member (a canonical one, or a composite named by its bits in definition order)

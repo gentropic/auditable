@@ -880,6 +880,14 @@
   "mod/identity-of-module-functions": {
    "out": "True True True\n",
    "error": null
+  },
+  "class/str-subclass": {
+   "out": "<b>&lt;i&gt;</b> Safe('<b>&lt;i&gt;</b>') Safe\nSafe('<b>%s</b>&lt;u&gt;') Safe('&lt;u&gt;x') Safe('A') Safe('bc')\nSafe('&lt;, &gt;') True True True True\n1 True True 5 ['a', 'b'] False\n[f] a-1 p|Safe('q') s str\n['a', 'b'] x aBc True b'x'\n{\"a\": \"v\"} True True Safe\nbbb hi ['a', Safe('b')] c\na-b é Safe('') 5!\nTrue BLUE red True RED\ntxt a.txtx str a.txta.txt\n",
+   "error": null
+  },
+  "class/str-enums": {
+   "out": "<Color.RED: 'red'> Color.RED Color.RED RED red! 1\n<S.A: 'a'> a A a! a\n",
+   "error": null
   }
  }
 }

@@ -55,6 +55,73 @@ const _toBA = (items) => { const b = new PyByteArray(); for (const x of items) b
 const _byteCheck = (v) => { if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'byte must be in range(0, 256)'); return v; };
 const _isBytesLike = (v) => v instanceof Uint8Array || v instanceof PyByteArray;
 const _asU8 = (v) => (v instanceof Uint8Array ? v : Uint8Array.from(v));
+// ── subclasses of str: boxed strings ──
+// adder's strings are JS primitives, which can't carry a class — so an instance of a str
+// SUBCLASS (markupsafe's Markup, `class Color(str, Enum)`) is a box: an object with the
+// subclass's prototype and the string in `_pyStrValue`. Plain strings are untouched. str's
+// dunders live on _StrBoxProto (the `str` type's prototype), so every generic path that
+// dispatches on __eq__ / __hash__ / __len__ / __getitem__ / __add__ … handles a box, a
+// subclass's own methods shadow them, and super() reaches them; str's other methods (upper,
+// replace …) come from the value and return plain str, as CPython's do. To JS the box is its
+// string (toString / valueOf / Symbol.toPrimitive).
+export const strValue = (x) => (typeof x === 'string' ? x : x !== null && typeof x === 'object' && typeof x._pyStrValue === 'string' ? x._pyStrValue : null);
+const _strCmp = (op) => function (o) { const v = strValue(o); return v === null ? NotImplemented : op(this._pyStrValue, v); };
+export const _StrBoxProto = {
+  __str__() { return this._pyStrValue; },
+  __repr__() { return pyRepr(this._pyStrValue); },
+  __format__(spec) { return pyFormatValue(this._pyStrValue, spec || ''); },
+  __len__() { return [...this._pyStrValue].length; },
+  __hash__() { return _pyHash(this._pyStrValue); },
+  __bool__() { return this._pyStrValue.length > 0; },
+  __eq__: _strCmp((a, b) => a === b), __ne__: _strCmp((a, b) => a !== b),
+  __lt__: _strCmp((a, b) => a < b), __le__: _strCmp((a, b) => a <= b),
+  __gt__: _strCmp((a, b) => a > b), __ge__: _strCmp((a, b) => a >= b),
+  __add__(o) { const v = strValue(o); return v === null ? NotImplemented : this._pyStrValue + v; },
+  __radd__(o) { const v = strValue(o); return v === null ? NotImplemented : v + this._pyStrValue; },
+  __mul__(n) { return pyMul(this._pyStrValue, n); },
+  __rmul__(n) { return pyMul(this._pyStrValue, n); },
+  __mod__(a) { return pyMod(this._pyStrValue, a); },
+  __getitem__(k) { return k !== null && typeof k === 'object' && k._slice ? _strSlice(this._pyStrValue, k.lower, k.upper, k.step) : pyGetItem(this._pyStrValue, k); },
+  __contains__(x) {
+    const v = strValue(x);
+    if (v === null) throw new AdderError('TypeError', `'in <string>' requires string as left operand, not ${pyTypeName(x)}`);
+    return this._pyStrValue.includes(v);
+  },
+  __iter__() { return this._pyStrValue[Symbol.iterator](); },
+  __getnewargs__() { return mkTuple([this._pyStrValue]); },
+};
+const _StrBoxRoot = Object.create(Object.prototype, {
+  toString: { value() { return this._pyStrValue; } },
+  valueOf: { value() { return this._pyStrValue; } },
+  [Symbol.toPrimitive]: { value() { return this._pyStrValue; } },
+});
+// s[lower:upper:step] (a slice object, as __getitem__ receives one), Python's index rules
+function _strSlice(s, lower, upper, step) {
+  step = step ?? 1;
+  if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
+  const n = s.length;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  let a, b;
+  if (step > 0) {
+    a = lower == null ? 0 : lower < 0 ? clamp(n + lower, 0, n) : clamp(lower, 0, n);
+    b = upper == null ? n : upper < 0 ? clamp(n + upper, 0, n) : clamp(upper, 0, n);
+    if (step === 1) return a < b ? s.slice(a, b) : '';
+  } else {
+    a = lower == null ? n - 1 : lower < 0 ? clamp(n + lower, -1, n - 1) : clamp(lower, -1, n - 1);
+    b = upper == null ? -1 : upper < 0 ? clamp(n + upper, -1, n - 1) : clamp(upper, -1, n - 1);
+  }
+  let out = '';
+  for (let i = a; step > 0 ? i < b : i > b; i += step) out += s[i];
+  return out;
+}
+// str's other methods on a box: the value's, with boxed arguments read as their strings
+function _boxStrMethod(box, attr) {
+  const m = _strMethod(box._pyStrValue, attr);
+  const f = (...a) => m(...a.map((x) => (x !== null && typeof x === 'object' && typeof x._pyStrValue === 'string' ? x._pyStrValue : x)));
+  f._pyName = m._pyName;
+  return f;
+}
+
 // memoryview: a view of a bytes / bytearray object's bytes (format 'B', one dimension) —
 // len, indexing, slicing (another view), tobytes / tolist / hex, iteration, equality
 export class PyMemoryView {
@@ -176,6 +243,7 @@ export function _pyHash(v) {
 function _strHash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; }
 // the canonical object for a key being stored (interning it if new)
 export function hk(k) {
+  if (k !== null && typeof k === 'object' && typeof k._pyStrValue === 'string' && k.__hash__ === _StrBoxProto.__hash__) return k._pyStrValue;
   if (!_needsCanon(k)) { if (_isUnhashable(k)) throw _unhashable(k); return k; }
   const sig = _sigOf(k);
   const list = _interned.get(sig);
@@ -192,6 +260,7 @@ export function hk(k) {
 }
 // the canonical object for a key being looked up (never interns)
 function hkLookup(k) {
+  if (k !== null && typeof k === 'object' && typeof k._pyStrValue === 'string' && k.__hash__ === _StrBoxProto.__hash__) return k._pyStrValue;
   if (!_needsCanon(k)) { if (_isUnhashable(k)) throw _unhashable(k); return k; }
   const list = _interned.get(_sigOf(k));
   if (list) {
@@ -1054,6 +1123,8 @@ export function adderGetAttr(obj, attr) {
     // an instance attribute it doesn't have: the class's (and its bases'), as Python looks them up
     const ot = obj.__adderType__;
     if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (_ownPyClassAttr(c, attr)) return c[attr];
+    // a boxed string (a str subclass instance): str's methods, on its value
+    if (typeof obj._pyStrValue === 'string') { try { return _boxStrMethod(obj, attr); } catch (e) { if (!(e && e.pyType === 'AttributeError')) throw e; } }
     // dict-like attribute access — keys, values, items, get, etc.
     if (_objDictMethods[attr]) return _objDictMethods[attr](obj);
     // __getattr__ dunder
@@ -1142,8 +1213,8 @@ function _strMethod(s, attr) {
     },
     join: (iterable) => {
       const finish = (items) => {
-        items.forEach((x, i) => { if (typeof x !== 'string') throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
-        return items.join(s);
+        items.forEach((x, i) => { if (strValue(x) === null) throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
+        return items.map(strValue).join(s);
       };
       // a generator expression / user iterable may be async: collect it first
       if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
@@ -1904,6 +1975,8 @@ export function pyAdd(a, b) {
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
+  // a boxed str (a StrEnum member, a str subclass without __add__) is a str
+  { const sa = strValue(a), sb = strValue(b); if (sa !== null && sb !== null) return sa + sb; }
   if (Array.isArray(a) && Array.isArray(b)) {
     const ta = a instanceof PyTuple, tb = b instanceof PyTuple;
     if (ta !== tb) throw new AdderError('TypeError', `can only concatenate ${ta ? 'tuple' : 'list'} (not "${pyTypeName(b)}") to ${ta ? 'tuple' : 'list'}`);
@@ -2053,10 +2126,13 @@ export const pyBinOps = {
 
 // ── printf-style formatting: str % args ──
 // %[(key)][flags][width][.precision][length]type, flags - + space 0 #, * for width/precision
-export function pyPercentFormat(fmt, args) {
+// (a %s / %r whose __str__ / __repr__ is tree-walked answers with a Promise: they are resolved,
+// in order, and the format runs again with the strings — `pre`, one per %s / %r)
+export function pyPercentFormat(fmt, args, pre = null) {
   const isMap = _dictLike(args);
   const list = args instanceof PyTuple ? args : [args];
-  let i = 0, usedMap = false;
+  let i = 0, usedMap = false, slot = 0;
+  const pending = [];
   const next = () => {
     if (i >= list.length) throw new AdderError('TypeError', 'not enough arguments for format string');
     return list[i++];
@@ -2093,8 +2169,15 @@ export function pyPercentFormat(fmt, args) {
         case 'f': case 'F': { const x = num(); body = Number.isFinite(x) ? x.toFixed(p ?? 6) : (Number.isNaN(x) ? 'nan' : 'inf'); if (type === 'F') body = body.toUpperCase(); break; }
         case 'g': case 'G': body = _fmtGeneral(num(), p ?? 6, type === 'G', alt); break;
         case 'c': numeric = false; body = typeof v === 'string' ? v : String.fromCodePoint(Number(v)); break;
-        case 'r': case 'a': numeric = false; body = pyRepr(v); if (p !== undefined) body = body.slice(0, p); break;
-        case 's': numeric = false; body = pyStr(v); if (p !== undefined) body = body.slice(0, p); break;
+        case 'r': case 'a': case 's': {
+          numeric = false;
+          const k = slot++;
+          body = pre ? pre[k] : type === 's' ? pyStrMaybe(v) : pyReprMaybe(v);
+          if (body && typeof body.then === 'function') { pending[k] = body; body = ''; }
+          else if (!pre) pending[k] = body;
+          if (p !== undefined) body = body.slice(0, p);
+          break;
+        }
         default: numeric = false; body = '%';
       }
       if (numeric) {
@@ -2107,6 +2190,7 @@ export function pyPercentFormat(fmt, args) {
       return left ? body.padEnd(w) : body.padStart(w);
     });
   if (!isMap && i < list.length) throw new AdderError('TypeError', 'not all arguments converted during string formatting');
+  if (!pre && pending.some((x) => x && typeof x.then === 'function')) return Promise.all(pending).then((strs) => pyPercentFormat(fmt, args, strs));
   return out;
 }
 
@@ -2170,6 +2254,7 @@ export function pyGetItem(obj, key) {
       return new GenericAlias(obj, key instanceof PyTuple ? [...key] : [key]);
     }
     if (isPlainDict(obj)) {
+      if (key !== null && typeof key === 'object' && typeof key._pyStrValue === 'string') key = key._pyStrValue;   // a boxed str subclass instance
       if (typeof key === 'string' && Object.hasOwn(obj, key)) return obj[key];
       if (typeof key === 'number' && Object.hasOwn(obj, String(key))) return obj[key];
       throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
@@ -2916,6 +3001,7 @@ function _jsonDumps(obj, opts) {
   const ascii = opts.ensure_ascii !== false;
   const enc = (v, depth) => {
     if (v === null || v === undefined) return 'null';
+    if (v !== null && typeof v === 'object' && typeof v._pyStrValue === 'string') v = v._pyStrValue;   // a str subclass is a str
     if (v === true) return 'true';
     if (v === false) return 'false';
     if (typeof v === 'number') return Number.isNaN(v) ? 'NaN' : v === Infinity ? 'Infinity' : v === -Infinity ? '-Infinity' : String(v);
@@ -4229,6 +4315,20 @@ const _isSubclass = (a, b) => a === b || ((a && a._pyMRO) || []).includes(b);
 
 // object.__new__(cls): a bare instance of cls
 export function objectNew(cls, args = []) {
+  if (cls._pyStrBase) {
+    // str(object='') / str(bytes, encoding[, errors]): the string the box holds
+    const a = args.filter((x) => !(x && x._kw));
+    const kw = args.find((x) => x && x._kw) || {};
+    let v;
+    if (a.length === 0) v = '';
+    else if (a.length >= 2 || kw.encoding !== undefined) v = pyDecodePartial(a[0] instanceof Uint8Array ? a[0] : Uint8Array.from(a[0]), a[1] ?? kw.encoding, a[2] ?? kw.errors ?? 'strict', true).text;
+    else v = strValue(a[0]) ?? pyStr(a[0]);
+    const box = Object.create(cls.prototype);
+    box.__adderClass__ = cls._pyName;
+    box.__adderType__ = cls;
+    Object.defineProperty(box, '_pyStrValue', { value: String(v), enumerable: false, writable: false, configurable: false });
+    return box;
+  }
   const instance = cls._pyListBase
     ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: cls._pyName, __adderType__: cls })
     : Object.create(cls.prototype);
@@ -4293,16 +4393,24 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyBases = (bases || []).filter(b => b?._pyClass && b !== pyObjectObj);   // object is every class's implicit root
   // `class X(list): …` — instances must BE Arrays so native list methods dispatch
   cls._pyListBase = (bases || []).some(b => b && (b._pyContainerType === 'list' || b._pyListBase));
+  // `class X(str): …` — instances are boxed strings (see _StrBoxProto)
+  cls._pyStrBase = (bases || []).some(b => b && (b === _stableTypes.str || b._pyStrBase));
+  if (cls._pyStrBase) Object.setPrototypeOf(cls.prototype, _StrBoxRoot);
   if (opts.meta) cls.__adderMeta__ = opts.meta;
 
   const mro = computeMRO(cls);
   cls._pyMRO = mro;
 
   // Inherit methods from MRO
+  const enumMixin = cls._pyStrBase && mro.some((c) => c && c._stEnumBase);
   for (let i = mro.length - 1; i >= 1; i--) {
     const base = mro[i];
     if (!base.prototype || !base._pyOwnMembers) continue;
+    // str's dunders are a box's: only a real str subclass takes them (StrEnum's MRO names str too)
+    if (base === _stableTypes.str && !cls._pyStrBase) continue;
     for (const key of base._pyOwnMembers) {
+      // `class Color(str, Enum)`: Enum's repr / str / format win over str's (as CPython's EnumType sees to)
+      if (base === _stableTypes.str && enumMixin && (key === '__repr__' || key === '__str__' || key === '__format__')) continue;
       const desc = Object.getOwnPropertyDescriptor(base.prototype, key);
       if (desc) Object.defineProperty(cls.prototype, key, desc);
     }
@@ -4552,6 +4660,7 @@ function _inheritedNew(T) {
   }
   const f = (c, ...a) => {
     if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+    if (T === _stableTypes.str && c && c !== T && c._pyStrBase) return objectNew(c, a);
     if (T._pyName === 'tuple' && c && c !== T) {
       const t = new PyTuple();
       for (const x of a.length ? pyIter(a[0]) : []) t.push(x);
@@ -5028,6 +5137,7 @@ export function adderBuiltins(printFn) {
   for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray']) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
+    if (name === 'str' && builtins.str) { builtins.str.prototype = _StrBoxProto; builtins.str._pyOwnMembers = new PySet(Object.keys(_StrBoxProto)); }
   }
   for (const name of _EXC_NAMES) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
@@ -5086,6 +5196,13 @@ export function pySuper(cls, self) {
           continue;
         }
         if (!base) continue;
+        // a builtin base (str, tuple …): its __new__ makes the subclass's instance
+        if (name === '__new__' && base._pyClass && !base._pyMRO && base !== pyObjectObj && base !== pyTypeObj && !isBuiltinExcType(base)) return _inheritedNew(base);
+        // str under a str subclass: its dunders and methods, on the box's value
+        if (base === _stableTypes.str && self && typeof self._pyStrValue === 'string') {
+          if (Object.hasOwn(_StrBoxProto, name)) return _StrBoxProto[name].bind(self);
+          try { return _boxStrMethod(self, name); } catch { continue; }
+        }
         // __new__ is static: the function itself, called with the class explicitly
         if (name === '__new__') { if (Object.hasOwn(base, '_pyNewFn')) return base._pyNewFn; continue; }
         if (viaClass) {

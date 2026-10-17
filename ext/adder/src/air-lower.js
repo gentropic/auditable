@@ -2313,7 +2313,9 @@ function _functionLocalNames(node) {
   for (const n of assigned) if (typeof n === 'string' && !out.includes(n)) out.push(n);
   return out.filter((n) => typeof n === 'string' && !outer.has(n));
 }
-const AWAITED_DUNDERS = new Set(['__init__', '__new__', '__call__', '__post_init__', '__del__',
+// (__new__ is NOT here: it's construction plumbing — `self.__class__(…)` in a sync-mode
+// __add__ must get an instance, not a Promise — and I/O in __new__ is rare; __init__ may do I/O)
+const AWAITED_DUNDERS = new Set(['__init__', '__call__', '__post_init__', '__del__',
   '__enter__', '__exit__', '__aenter__', '__aexit__', '__iter__', '__next__', '__aiter__', '__anext__', '__await__',
   '__iadd__', '__isub__', '__imul__', '__imatmul__', '__itruediv__', '__ifloordiv__', '__imod__', '__ipow__',
   '__ilshift__', '__irshift__', '__iand__', '__ixor__', '__ior__',
