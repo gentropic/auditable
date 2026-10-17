@@ -1003,6 +1003,7 @@ export function adderGetAttr(obj, attr) {
     }
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
+    if (attr === '__code__' && obj._pySig && !obj._pyClass) return _codeObject(obj);
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
     // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
     // looks class attributes up. A function's JS properties (name, length) don't count as the
@@ -4699,6 +4700,33 @@ function _objectDunder(o, attr) {
   }
 }
 
+// fn.__code__: what a code object says about a Python function — its name, file and first line
+// (ply orders lexer rules by co_firstlineno), its arguments and flags. No bytecode: co_code is
+// empty. One object per function (a set of code objects keeps working).
+const _codeObjects = new WeakMap();
+function _codeObject(fn) {
+  let c = _codeObjects.get(fn);
+  if (c) return c;
+  const sig = fn._pySig;
+  const pos = (sig.params || []).map((p) => p.name);
+  const kwonly = (sig.kwonly || []).map((p) => p.name);
+  const varnames = [...pos, ...kwonly, ...(sig.vararg ? [sig.vararg.name || sig.vararg] : []), ...(sig.kwarg ? [sig.kwarg.name || sig.kwarg] : [])];
+  const gen = fn._isGenerator || /GeneratorFunction$/.test((fn.constructor && fn.constructor.name) || '');
+  const flags = 0x3 | (sig.vararg ? 0x4 : 0) | (sig.kwarg ? 0x8 : 0) | (gen ? 0x20 : 0) | (sig.isAsync ? 0x80 : 0);
+  const name = fn._pyName || fn.__name__ || fn.name || '<lambda>';
+  c = {
+    __adderClass__: 'code', co_name: name, co_qualname: fn.__qualname__ || name,
+    co_filename: sig.file || '<string>', co_firstlineno: sig.line || 0,
+    co_argcount: pos.length, co_posonlyargcount: (sig.params || []).filter((p) => p.kind === 'POSITIONAL_ONLY').length,
+    co_kwonlyargcount: kwonly.length, co_nlocals: varnames.length, co_varnames: mkTuple(varnames),
+    co_flags: flags, co_code: new Uint8Array(0), co_consts: mkTuple([]), co_names: mkTuple([]),
+    co_freevars: mkTuple([]), co_cellvars: mkTuple([]), co_stacksize: 0, co_lnotab: new Uint8Array(0),
+    __repr__() { return `<code object ${name} at 0x${(0x7f0000000000 + (_pyHash(this) & 0xffffff)).toString(16)}, file "${this.co_filename}", line ${this.co_firstlineno}>`; },
+  };
+  _codeObjects.set(fn, c);
+  return c;
+}
+
 // type(x)
 export function typeOf(obj) {
   if (obj !== null && obj !== undefined && obj.__adderType__) return obj.__adderType__;
@@ -5087,6 +5115,12 @@ export function adderBuiltins(printFn) {
       if (cn === 'bool' && tn === 'int') return true;
       if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
       if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
+      // an ABC's own say (a registered virtual subclass, a __subclasshook__)
+      if (t && t._pyClass && t._pyMRO) {
+        let sc = null;
+        try { sc = adderGetAttr(t, '__subclasscheck__'); } catch { sc = null; }
+        if (typeof sc === 'function') { const r = sc(c); if (r === true) return true; }
+      }
       return false;
     },
     vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),

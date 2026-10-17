@@ -941,12 +941,41 @@ function _slAbc(name, bases, check, mixins = {}) {
   cls._pyOwnMembers = new PySet();
   for (const b of [...bases].reverse()) for (const k of b._pyOwnMembers) { cls.prototype[k] = b.prototype[k]; cls._pyOwnMembers.add(k); }
   for (const [k, fn] of Object.entries(mixins)) { cls.prototype[k] = fn; cls._pyOwnMembers.add(k); }
+  // register(sub): a virtual subclass — of this ABC and of the ABCs it derives from (a class
+  // registered as a MutableMapping is a Mapping too)
+  cls._pyAbcRegistry = new Set();
+  cls.register = (sub) => { cls._pyAbcRegistry.add(sub); return sub; };
+  const registered = (t) => {
+    if (!t) return false;
+    const mro = t._pyMRO || [t];
+    for (const a of _slAllAbcs) if (a._pyMRO.includes(cls) && a._pyAbcRegistry.size) for (const r of a._pyAbcRegistry) if (mro.includes(r)) return true;
+    return false;
+  };
   cls.__instancecheck__ = (x) => {
     if (x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(cls)) return true;
+    if (registered(x && x.__adderType__)) return true;
     return !!check(x);
   };
+  // a builtin type (list, dict, str …) has no MRO here: it's judged by an empty value of it
+  cls.__subclasscheck__ = (sub) => {
+    if (!sub) return false;
+    if ((sub._pyMRO && sub._pyMRO.includes(cls)) || registered(sub)) return true;
+    const sample = !sub._pyMRO && _slSampleOf(sub._pyName);
+    return sample !== undefined && sample !== false ? !!check(sample) : false;
+  };
   cls.__class_getitem__ = (k) => new GenericAlias(cls, k instanceof PyTuple ? [...k] : [k]);
+  _slAllAbcs.push(cls);
   return cls;
+}
+const _slAllAbcs = [];
+function _slSampleOf(name) {
+  switch (name) {
+    case 'list': return []; case 'tuple': return mkTuple([]); case 'str': return ''; case 'bytes': return new Uint8Array(0);
+    case 'dict': return new PyDict(); case 'set': return new PySet();
+    case 'frozenset': { const s = new PySet(); s._frozen = true; return s; }
+    case 'int': return 0; case 'float': return 0.5; case 'bool': return false;
+    default: return undefined;
+  }
 }
 const _slIsKeyError = (e) => !!e && excMatches(e, 'KeyError');
 const _slIsIndexError = (e) => !!e && excMatches(e, 'IndexError');

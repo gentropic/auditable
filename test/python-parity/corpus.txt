@@ -2603,3 +2603,23 @@ class D(C):
     def m(self):
         return super().m() + "!"
 print(C.y, C().m(), C().n(), D().m())
+### class/abc-register
+from collections import abc
+import abc as A
+@abc.MutableMapping.register
+class M:
+    pass
+print(isinstance(M(), abc.Mapping), isinstance(M(), abc.MutableMapping), issubclass(M, abc.Mapping), isinstance(M(), abc.Sequence), issubclass(list, abc.Sequence))
+class Base(A.ABC):
+    pass
+class Other:
+    pass
+Base.register(Other)
+print(isinstance(Other(), Base), issubclass(Other, Base), issubclass(int, Base))
+### fn/code-object
+def f(a, b=1, *args, c, **kw):
+    pass
+
+def g():
+    yield 1
+print(f.__code__.co_name, f.__code__.co_argcount, f.__code__.co_varnames, f.__code__.co_firstlineno, f.__code__.co_flags & 0x2c, g.__code__.co_firstlineno, g.__code__.co_flags & 0x20, f.__code__ is f.__code__)

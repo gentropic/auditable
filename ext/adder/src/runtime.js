@@ -712,10 +712,10 @@ export const _py = {
   fnOf: asCallable,
   aw: awaitTarget,
   // a def's metadata (both engines record the same: the tree-walker in eval.js _attachSignature)
-  defSig: (fn, shape, defaults) => {
+  defSig: (fn, shape, defaults, mod = null) => {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
-    fn._pySig = { ...shape, defaults };
+    fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
     const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
     fn.__defaults__ = pos.length ? mkTuple(pos) : null;
     const kwd = shape.kwonly.filter((p) => p.hasDefault);

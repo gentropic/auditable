@@ -892,6 +892,14 @@
   "class/body-scope": {
    "out": "class module ['module'] module!\n",
    "error": null
+  },
+  "class/abc-register": {
+   "out": "True True True False True\nTrue True False\n",
+   "error": null
+  },
+  "fn/code-object": {
+   "out": "f 2 ('a', 'b', 'c', 'args', 'kw') 1 12 4 32 True\n",
+   "error": null
   }
  }
 }

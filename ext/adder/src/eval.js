@@ -971,12 +971,16 @@ async function _evalDefaults(node, scope) {
 // What inspect / __defaults__ read off a `def` or lambda: its parameters as written, with the
 // defaults evaluated at definition time. `_pyDef` marks a Python function (type 'function'),
 // separately from `_pyFunc` (which also decides self-binding on plain objects).
-function _attachSignature(fn, node, defaults) {
+function _attachSignature(fn, node, defaults, scope = null) {
   const posonly = node.posonly || 0;
   const pos = (node.params || []).map((p, i) => ({ name: p.name, kind: i < posonly ? 'POSITIONAL_ONLY' : 'POSITIONAL_OR_KEYWORD', hasDefault: Object.hasOwn(defaults, p.name) }));
   const kwonly = (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: Object.hasOwn(defaults, p.name) }));
   fn._pyDef = true;
   fn._pySig = { params: pos, vararg: node.vararg || null, kwonly, kwarg: node.kwarg || null, defaults, isAsync: node.type === 'AsyncFunctionDef' };
+  // where it's defined (its __code__'s co_firstlineno / co_filename)
+  let root = scope; while (root && root.parent) root = root.parent;
+  fn._pySig.line = node.line || 0;
+  fn._pySig.file = root && root.vars.has('__file__') ? root.vars.get('__file__') : '<string>';
   const posDefaults = pos.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
   fn.__defaults__ = posDefaults.length ? mkTuple(posDefaults) : null;
   const kwd = kwonly.filter((p) => p.hasDefault);
@@ -1016,7 +1020,7 @@ function _makeFunction(node, scope, defaults = {}) {
   fn._pyFunc = true;
   fn._pyName = node.name;
   fn.__doc__ = _docstringOf(node);
-  return _attachSignature(fn, node, defaults);
+  return _attachSignature(fn, node, defaults, scope);
 }
 
 function _makeGeneratorFunction(node, scope, defaults = {}) {
@@ -1059,7 +1063,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
   fn._pyName = node.name;
   fn._isGenerator = true;
   fn.__doc__ = _docstringOf(node);
-  return _attachSignature(fn, node, defaults);
+  return _attachSignature(fn, node, defaults, scope);
 }
 
 async function* _runGenerator(node, scope, callArgs, defaults = {}) {
@@ -1240,7 +1244,7 @@ function _makeLambda(node, scope, defaults = {}) {
   };
   fn._pyFunc = true;
   fn._pyName = '<lambda>';
-  return _attachSignature(fn, node, defaults);
+  return _attachSignature(fn, node, defaults, scope);
 }
 
 // ── class ──

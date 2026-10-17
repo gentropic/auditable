@@ -2265,6 +2265,7 @@ function _sigShape(node) {
     kwonly: (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: !!p.default })),
     kwarg: node.kwarg ? (node.kwarg.name || node.kwarg) : null,
     isAsync: node.type === 'AsyncFunctionDef',
+    line: node.line || 0,
   };
 }
 
@@ -2464,7 +2465,7 @@ function lowerFuncDef(ctx, node) {
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   if (doc !== null) emitRaw(ctx, `${refName}.__doc__ = ${JSON.stringify(doc)};`);
   // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
-  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}});`);
+  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}}${ctx.moduleMirror ? ', __adder_module__' : ''});`);
   // its generator objects show the function's name (`<generator object g at ...>`)
   if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
 

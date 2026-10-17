@@ -3078,6 +3078,7 @@ function adderGetAttr(obj, attr) {
     }
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
+    if (attr === '__code__' && obj._pySig && !obj._pyClass) return _codeObject(obj);
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
     // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
     // looks class attributes up. A function's JS properties (name, length) don't count as the
@@ -6774,6 +6775,33 @@ function _objectDunder(o, attr) {
   }
 }
 
+// fn.__code__: what a code object says about a Python function — its name, file and first line
+// (ply orders lexer rules by co_firstlineno), its arguments and flags. No bytecode: co_code is
+// empty. One object per function (a set of code objects keeps working).
+const _codeObjects = new WeakMap();
+function _codeObject(fn) {
+  let c = _codeObjects.get(fn);
+  if (c) return c;
+  const sig = fn._pySig;
+  const pos = (sig.params || []).map((p) => p.name);
+  const kwonly = (sig.kwonly || []).map((p) => p.name);
+  const varnames = [...pos, ...kwonly, ...(sig.vararg ? [sig.vararg.name || sig.vararg] : []), ...(sig.kwarg ? [sig.kwarg.name || sig.kwarg] : [])];
+  const gen = fn._isGenerator || /GeneratorFunction$/.test((fn.constructor && fn.constructor.name) || '');
+  const flags = 0x3 | (sig.vararg ? 0x4 : 0) | (sig.kwarg ? 0x8 : 0) | (gen ? 0x20 : 0) | (sig.isAsync ? 0x80 : 0);
+  const name = fn._pyName || fn.__name__ || fn.name || '<lambda>';
+  c = {
+    __adderClass__: 'code', co_name: name, co_qualname: fn.__qualname__ || name,
+    co_filename: sig.file || '<string>', co_firstlineno: sig.line || 0,
+    co_argcount: pos.length, co_posonlyargcount: (sig.params || []).filter((p) => p.kind === 'POSITIONAL_ONLY').length,
+    co_kwonlyargcount: kwonly.length, co_nlocals: varnames.length, co_varnames: mkTuple(varnames),
+    co_flags: flags, co_code: new Uint8Array(0), co_consts: mkTuple([]), co_names: mkTuple([]),
+    co_freevars: mkTuple([]), co_cellvars: mkTuple([]), co_stacksize: 0, co_lnotab: new Uint8Array(0),
+    __repr__() { return `<code object ${name} at 0x${(0x7f0000000000 + (_pyHash(this) & 0xffffff)).toString(16)}, file "${this.co_filename}", line ${this.co_firstlineno}>`; },
+  };
+  _codeObjects.set(fn, c);
+  return c;
+}
+
 // type(x)
 function typeOf(obj) {
   if (obj !== null && obj !== undefined && obj.__adderType__) return obj.__adderType__;
@@ -7162,6 +7190,12 @@ function adderBuiltins(printFn) {
       if (cn === 'bool' && tn === 'int') return true;
       if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
       if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
+      // an ABC's own say (a registered virtual subclass, a __subclasshook__)
+      if (t && t._pyClass && t._pyMRO) {
+        let sc = null;
+        try { sc = adderGetAttr(t, '__subclasscheck__'); } catch { sc = null; }
+        if (typeof sc === 'function') { const r = sc(c); if (r === true) return true; }
+      }
       return false;
     },
     vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),
@@ -8342,12 +8376,16 @@ async function _evalDefaults(node, scope) {
 // What inspect / __defaults__ read off a `def` or lambda: its parameters as written, with the
 // defaults evaluated at definition time. `_pyDef` marks a Python function (type 'function'),
 // separately from `_pyFunc` (which also decides self-binding on plain objects).
-function _attachSignature(fn, node, defaults) {
+function _attachSignature(fn, node, defaults, scope = null) {
   const posonly = node.posonly || 0;
   const pos = (node.params || []).map((p, i) => ({ name: p.name, kind: i < posonly ? 'POSITIONAL_ONLY' : 'POSITIONAL_OR_KEYWORD', hasDefault: Object.hasOwn(defaults, p.name) }));
   const kwonly = (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: Object.hasOwn(defaults, p.name) }));
   fn._pyDef = true;
   fn._pySig = { params: pos, vararg: node.vararg || null, kwonly, kwarg: node.kwarg || null, defaults, isAsync: node.type === 'AsyncFunctionDef' };
+  // where it's defined (its __code__'s co_firstlineno / co_filename)
+  let root = scope; while (root && root.parent) root = root.parent;
+  fn._pySig.line = node.line || 0;
+  fn._pySig.file = root && root.vars.has('__file__') ? root.vars.get('__file__') : '<string>';
   const posDefaults = pos.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
   fn.__defaults__ = posDefaults.length ? mkTuple(posDefaults) : null;
   const kwd = kwonly.filter((p) => p.hasDefault);
@@ -8387,7 +8425,7 @@ function _makeFunction(node, scope, defaults = {}) {
   fn._pyFunc = true;
   fn._pyName = node.name;
   fn.__doc__ = _docstringOf(node);
-  return _attachSignature(fn, node, defaults);
+  return _attachSignature(fn, node, defaults, scope);
 }
 
 function _makeGeneratorFunction(node, scope, defaults = {}) {
@@ -8430,7 +8468,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
   fn._pyName = node.name;
   fn._isGenerator = true;
   fn.__doc__ = _docstringOf(node);
-  return _attachSignature(fn, node, defaults);
+  return _attachSignature(fn, node, defaults, scope);
 }
 
 async function* _runGenerator(node, scope, callArgs, defaults = {}) {
@@ -8611,7 +8649,7 @@ function _makeLambda(node, scope, defaults = {}) {
   };
   fn._pyFunc = true;
   fn._pyName = '<lambda>';
-  return _attachSignature(fn, node, defaults);
+  return _attachSignature(fn, node, defaults, scope);
 }
 
 // ── class ──
@@ -9992,10 +10030,10 @@ const _py = {
   fnOf: asCallable,
   aw: awaitTarget,
   // a def's metadata (both engines record the same: the tree-walker in eval.js _attachSignature)
-  defSig: (fn, shape, defaults) => {
+  defSig: (fn, shape, defaults, mod = null) => {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
-    fn._pySig = { ...shape, defaults };
+    fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
     const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
     fn.__defaults__ = pos.length ? mkTuple(pos) : null;
     const kwd = shape.kwonly.filter((p) => p.hasDefault);
@@ -11009,12 +11047,41 @@ function _slAbc(name, bases, check, mixins = {}) {
   cls._pyOwnMembers = new PySet();
   for (const b of [...bases].reverse()) for (const k of b._pyOwnMembers) { cls.prototype[k] = b.prototype[k]; cls._pyOwnMembers.add(k); }
   for (const [k, fn] of Object.entries(mixins)) { cls.prototype[k] = fn; cls._pyOwnMembers.add(k); }
+  // register(sub): a virtual subclass — of this ABC and of the ABCs it derives from (a class
+  // registered as a MutableMapping is a Mapping too)
+  cls._pyAbcRegistry = new Set();
+  cls.register = (sub) => { cls._pyAbcRegistry.add(sub); return sub; };
+  const registered = (t) => {
+    if (!t) return false;
+    const mro = t._pyMRO || [t];
+    for (const a of _slAllAbcs) if (a._pyMRO.includes(cls) && a._pyAbcRegistry.size) for (const r of a._pyAbcRegistry) if (mro.includes(r)) return true;
+    return false;
+  };
   cls.__instancecheck__ = (x) => {
     if (x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(cls)) return true;
+    if (registered(x && x.__adderType__)) return true;
     return !!check(x);
   };
+  // a builtin type (list, dict, str …) has no MRO here: it's judged by an empty value of it
+  cls.__subclasscheck__ = (sub) => {
+    if (!sub) return false;
+    if ((sub._pyMRO && sub._pyMRO.includes(cls)) || registered(sub)) return true;
+    const sample = !sub._pyMRO && _slSampleOf(sub._pyName);
+    return sample !== undefined && sample !== false ? !!check(sample) : false;
+  };
   cls.__class_getitem__ = (k) => new GenericAlias(cls, k instanceof PyTuple ? [...k] : [k]);
+  _slAllAbcs.push(cls);
   return cls;
+}
+const _slAllAbcs = [];
+function _slSampleOf(name) {
+  switch (name) {
+    case 'list': return []; case 'tuple': return mkTuple([]); case 'str': return ''; case 'bytes': return new Uint8Array(0);
+    case 'dict': return new PyDict(); case 'set': return new PySet();
+    case 'frozenset': { const s = new PySet(); s._frozen = true; return s; }
+    case 'int': return 0; case 'float': return 0.5; case 'bool': return false;
+    default: return undefined;
+  }
 }
 const _slIsKeyError = (e) => !!e && excMatches(e, 'KeyError');
 const _slIsIndexError = (e) => !!e && excMatches(e, 'IndexError');
@@ -21535,6 +21602,7 @@ function _sigShape(node) {
     kwonly: (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: !!p.default })),
     kwarg: node.kwarg ? (node.kwarg.name || node.kwarg) : null,
     isAsync: node.type === 'AsyncFunctionDef',
+    line: node.line || 0,
   };
 }
 
@@ -21734,7 +21802,7 @@ function lowerFuncDef(ctx, node) {
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   if (doc !== null) emitRaw(ctx, `${refName}.__doc__ = ${JSON.stringify(doc)};`);
   // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
-  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}});`);
+  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}}${ctx.moduleMirror ? ', __adder_module__' : ''});`);
   // its generator objects show the function's name (`<generator object g at ...>`)
   if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
 
