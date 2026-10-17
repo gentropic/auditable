@@ -20,7 +20,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, frozenPyModules, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
+  _registerImportMachinery, stdoutWrite, frozenPyModules, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -1565,6 +1565,21 @@ async function _evalBuiltinExec(args, scope, line) {
   }
   return null;
 }
+// exec / eval called as a plain function (compiled code has no caller scope to hand over): only
+// with the namespaces given
+const _runningModules = [];
+setScopeExec((kind, args) => {
+  const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args[args.length - 1] : {};
+  const g = args.length > 1 && !(args[1] && args[1]._kw) ? args[1] : kw.globals;
+  if ((g === undefined || g === null) && _runningModules.length && args.length === 1) {
+    const ns = _runningModules[_runningModules.length - 1];
+    return kind === 'exec' ? _evalBuiltinExec([args[0], ns], null) : _evalBuiltinEval([args[0], ns], null);
+  }
+  if (g === undefined || g === null) {
+    throw new AdderError('RuntimeError', `${kind}() without a globals dict needs the caller's scope: run this code on the tree-walker`);
+  }
+  return kind === 'exec' ? _evalBuiltinExec(args, null) : _evalBuiltinEval(args, null);
+});
 // exec / eval's source: a string, bytes, or a code object from compile()
 function _sourceOf(x) {
   if (x !== null && typeof x === 'object' && typeof x._pySource === 'string') return x._pySource;
@@ -1753,6 +1768,10 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
     try { compiled = _moduleCompiler(ast, source, { name: displayName, package: pkg }); } catch { compiled = null; }
   }
+  // the namespace of the module whose top level is running: an exec() reached without namespaces
+  // from compiled code (six's `exec_ = getattr(builtins, "exec")`) runs in it, as CPython's does
+  // in the calling module's
+  _runningModules.push(compiled ? mod : modScope.vars);
   try {
     if (compiled) {
       const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
@@ -1766,6 +1785,8 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   } catch (e) {
     delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
     throw e;
+  } finally {
+    _runningModules.pop();
   }
   // what the import gives is sys.modules[name] after the code ran: a module may replace itself
   // there (pygments.lexers swaps in a lazy-loading module subclass)

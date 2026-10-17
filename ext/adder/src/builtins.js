@@ -761,6 +761,22 @@ export function _lazyIter(name, genFn) {
     __repr__() { return `<${name} object at ${_objAddr(this)}>`; },
   };
 }
+// a lazy iterator over synchronous sources whose per-item step may still wait (map / filter
+// calling a tree-walked or async-compiled function): _maybeNext() is the next IteratorResult —
+// or a Promise of it, only when that step really waited. Readers that can go either way (list(),
+// join, sorted, compiled loops) stay synchronous whenever every step is; async readers await.
+export function _lazyMaybeIter(name, makeStep) {
+  let step = null;
+  const st = () => step || (step = makeStep());
+  return {
+    __adderClass__: name,
+    _maybeNext() { return st()(); },
+    next() { return st()(); },
+    async *[Symbol.asyncIterator]() { for (;;) { const r = await st()(); if (r.done) return; yield r.value; } },
+    __repr__() { return `<${name} object at ${_objAddr(this)}>`; },
+  };
+}
+const _DONE = { done: true, value: undefined };
 // the synchronous twin: a plain JS iterator (for-of reads it lazily), next() works, Python names its type
 function _lazySyncIter(name, genFn) {
   let gen = null;
@@ -862,6 +878,7 @@ function* _gForEach(obj, fn) {
       if (fn(v)) return;
     }
   }
+  if (obj && typeof obj._maybeNext === 'function') { yield* viaAsync({ next: () => obj._maybeNext() }); return; }
   if (obj && typeof obj[Symbol.asyncIterator] === 'function') { yield* viaAsync(obj[Symbol.asyncIterator]()); return; }
   for (const v of pyIter(obj)) if (fn(v)) return;
 }
@@ -1101,6 +1118,14 @@ export function adderGetAttr(obj, attr) {
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
     if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
+    // a builtin type's operator dunders, unbound (`str.__mod__(fmt, args)`, `int.__add__(1, 2)`,
+    // `list.__len__(xs)` — markupsafe calls str's): the operators themselves
+    if (tn && _TYPE_DUNDER_TYPES.has(tn) && Object.hasOwn(_TYPE_DUNDERS, attr)) {
+      const f = _TYPE_DUNDERS[attr];
+      const fn = (self, ...a) => f(_baseValue(self), ...a);
+      fn._pyName = `${tn}.${attr}`;
+      return fn;
+    }
     if ((tn === 'str' || tn === 'list' || tn === 'dict' || tn === 'set') && !attr.startsWith('__')) {
       const get = tn === 'str' ? _strMethod : tn === 'list' ? _listMethod : tn === 'set' ? _setMethod : _mapMethod;
       const probe = tn === 'str' ? '' : tn === 'list' ? [] : tn === 'set' ? new PySet() : new PyDict();
@@ -1150,17 +1175,17 @@ export function adderGetAttr(obj, attr) {
       if (Object.hasOwn(obj, attr) && attr !== 'length' && !/^\d+$/.test(attr)) return obj[attr];
       if (tt.prototype && Object.hasOwn(tt.prototype, attr)) {
         const v = Reflect.get(tt.prototype, attr, obj);
-        return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+        return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
       }
       for (const c of tt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, tt) : cv; }
     } else if (tt && tt.prototype && !(attr in obj) && attr in tt.prototype) {
       const v = Reflect.get(tt.prototype, attr, obj);
-      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+      return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
     }
     if (attr === 'count' || attr === 'index') return _listMethod(obj, attr);
     if (attr in obj && !(attr in Array.prototype)) {
       const v = obj[attr];
-      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+      return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
     }
     if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
@@ -1185,7 +1210,7 @@ export function adderGetAttr(obj, attr) {
       if (Object.hasOwn(obj, attr) && attr !== 'length' && !/^\d+$/.test(attr)) return obj[attr];
       if (lt.prototype && Object.hasOwn(lt.prototype, attr)) {
         const v = Reflect.get(lt.prototype, attr, obj);
-        return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+        return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
       }
       for (const c of lt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, lt) : cv; }
     }
@@ -1195,7 +1220,7 @@ export function adderGetAttr(obj, attr) {
   if (obj instanceof Map) {
     if (Object.getPrototypeOf(obj) !== Map.prototype && Object.getPrototypeOf(obj) !== PyDict.prototype && attr in obj && !(attr in Map.prototype)) {
       const v = obj[attr];
-      return typeof v === 'function' ? v.bind(obj) : v;
+      return typeof v === 'function' ? _bindTwin(v, obj) : v;
     }
     return _mapMethod(obj, attr);
   }
@@ -1258,9 +1283,10 @@ export function adderGetAttr(obj, attr) {
       // (`t.cdf`, `t.pdf` etc. — scipy-style "callable namespace" pattern).
       // Copy them over so dotted access (`stats.t.cdf`) still resolves.
       for (const k of Object.getOwnPropertyNames(v)) {
-        if (k === 'length' || k === 'name' || k === 'prototype') continue;
+        if (k === 'length' || k === 'name' || k === 'prototype' || k === '_pySync' || k === '_pySyncCall') continue;
         try { fn[k] = v[k]; } catch {}
       }
+      if (v._pySync) _defTwin(fn, v._pySync.bind(obj));
       fn._pyName = attr;
       if (obj.__adderModule__) _moduleBound.get(obj).set(attr, [v, fn]);
       return fn;
@@ -1294,7 +1320,7 @@ export function adderGetAttr(obj, attr) {
       // is just that function: only a function found on an instance's class binds
       if (typeof obj === 'function' && (val._pyDef || val._pyFunc) && Object.hasOwn(obj, attr)) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
-      return val.bind(obj);
+      return _bindTwin(val, obj);
     }
     return val;
   }
@@ -1367,8 +1393,8 @@ function _strMethod(s, attr) {
         items.forEach((x, i) => { if (strValue(x) === null) throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
         return items.map(strValue).join(s);
       };
-      // a generator expression / user iterable may be async: collect it first
-      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      // a generator expression / user iterable / map may be async: collected — synchronously when it is
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable) || (iterable && iterable._maybeNext)) return _thenMaybe(pyCollectMaybe(iterable), finish);
       return finish([...pyIter(iterable)]);
     },
     replace: (old, nw, count) => {
@@ -1836,7 +1862,7 @@ function _bytesMethod(b, attr) {
         parts.forEach((p, i) => { if (i) { r.set(b, o); o += b.length; } r.set(p, o); o += p.length; });
         return r;
       };
-      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable) || (iterable && iterable._maybeNext)) return _thenMaybe(pyCollectMaybe(iterable), finish);
       return finish([...pyIter(iterable)]);
     },
   };
@@ -2331,6 +2357,33 @@ export function pyInvert(a) {
   throw new AdderError('TypeError', `bad operand type for unary ~: '${pyTypeName(a)}'`);
 }
 // the binary operators by their Python symbol (the tree-walker dispatches through this)
+// a subclass instance as its builtin base's plain value — `str.__mod__(markup, x)` formats the
+// string itself; dispatching on the instance would find the subclass's own __mod__ again
+function _baseValue(v) {
+  if (v === null || typeof v !== 'object') return v;
+  if (typeof v._pyStrValue === 'string') return v._pyStrValue;
+  if (v instanceof PyTuple) return Object.getPrototypeOf(v) === PyTuple.prototype ? v : mkTuple([...v]);
+  if (Array.isArray(v)) return Object.getPrototypeOf(v) === Array.prototype ? v : [...v];
+  if (v instanceof Map && v.__adderType__) return new PyDict(v);
+  if (v instanceof Set && v.__adderType__) { const r = new PySet(v); if (v._frozen) r._frozen = true; return r; }
+  return v;
+}
+const _TYPE_DUNDER_TYPES = new Set(['str', 'int', 'float', 'bool', 'complex', 'list', 'tuple', 'dict', 'set', 'frozenset', 'bytes', 'bytearray']);
+const _sizeOf = (s) => (typeof s === 'string' || Array.isArray(s) || s instanceof Uint8Array ? s.length : s instanceof Map || s instanceof Set ? s.size : isPlainDict(s) ? Object.keys(s).length : s.length);
+const _TYPE_DUNDERS = {
+  __add__: (a, b) => pyAdd(a, b), __sub__: (a, b) => pySub(a, b), __mul__: (a, b) => pyMul(a, b),
+  __truediv__: (a, b) => pyTrueDiv(a, b), __floordiv__: (a, b) => pyFloorDiv(a, b), __mod__: (a, b) => pyMod(a, b),
+  __pow__: (a, b, m) => pyPow(a, b, m), __and__: (a, b) => pyAnd(a, b), __or__: (a, b) => pyOr(a, b), __xor__: (a, b) => pyXor(a, b),
+  __lshift__: (a, b) => pyLshift(a, b), __rshift__: (a, b) => pyRshift(a, b),
+  __radd__: (a, b) => pyAdd(b, a), __rsub__: (a, b) => pySub(b, a), __rmul__: (a, b) => pyMul(b, a),
+  __rtruediv__: (a, b) => pyTrueDiv(b, a), __rfloordiv__: (a, b) => pyFloorDiv(b, a), __rmod__: (a, b) => pyMod(b, a),
+  __rpow__: (a, b) => pyPow(b, a), __rand__: (a, b) => pyAnd(b, a), __ror__: (a, b) => pyOr(b, a), __rxor__: (a, b) => pyXor(b, a),
+  __eq__: (a, b) => pyEq(a, b), __ne__: (a, b) => !pyEq(a, b), __lt__: (a, b) => pyLt(a, b), __le__: (a, b) => pyLe(a, b),
+  __gt__: (a, b) => pyGt(a, b), __ge__: (a, b) => pyGe(a, b),
+  __neg__: (a) => pyNeg(a), __len__: (a) => _sizeOf(a), __getitem__: (a, k) => pyGetItem(a, k),
+  __contains__: (a, x) => (typeof a === 'string' ? a.includes(x) : a instanceof Map || a instanceof Set ? a.has(x) : isPlainDict(a) ? Object.hasOwn(a, x) : [...pyIter(a)].some((v) => pyEq(v, x))),
+  __str__: (a) => pyStr(a), __repr__: (a) => pyRepr(a), __hash__: (a) => _pyHash(a),
+};
 export const pyBinOps = {
   '+': pyAdd, '-': pySub, '*': pyMul, '/': pyTrueDiv, '//': pyFloorDiv, '%': pyMod, '**': pyPow,
   '&': pyAnd, '|': pyOr, '^': pyXor, '<<': pyLshift, '>>': pyRshift, '@': pyMatmul,
@@ -4726,6 +4779,32 @@ export function objectNew(cls, args = []) {
   return instance;
 }
 
+// Sync twins (air-lower.js lowerFuncDef): a compiled function that may be async carries its
+// synchronous version as fn._pySync; a method's wrapper, a bound method, a classmethod forward it;
+// a class's is a construction that calls the twins of __new__ / __init__. Code that can't wait
+// (sync mode) calls through this. Anything without one (a builtin, a tree-walked function) is
+// called as it is.
+//
+// A twin is right only while everything it reaches really is synchronous. At the first value it
+// would have had to wait for (an import not yet loaded, a tree-walked function) it gives up — it
+// throws NEEDS_ASYNC — and the call falls back to the function itself, whose Promise then flows
+// out exactly as it did before twins (a lazy module's __getattr__ hands the import machinery a
+// Promise it awaits). What the twin did before giving up runs again in the fallback: in practice
+// lookups and pure computation, which is what precedes such a wait.
+export const NEEDS_ASYNC = Object.assign(new AdderError('RuntimeError', 'a value that has to be waited for, in code that cannot wait (run this on the tree-walker)'), { _needsAsync: true });
+export function syncOf(f) {
+  if (typeof f !== 'function' || !f._pySync) return f;
+  if (Object.hasOwn(f, '_pySyncCall')) return f._pySyncCall;
+  const call = function (...a) {
+    try { return f._pySync.apply(this, a); } catch (e) { if (e === NEEDS_ASYNC) return f.apply(this, a); throw e; }
+  };
+  Object.defineProperty(f, '_pySyncCall', { value: call, configurable: true, writable: true });
+  return call;
+}
+const _defTwin = (fn, twin) => Object.defineProperty(fn, '_pySync', { value: twin, configurable: true, writable: true });
+// fn.bind(obj), keeping the twin (bound the same way)
+const _bindTwin = (f, obj) => { const b = f.bind(obj); if (f._pySync) _defTwin(b, f._pySync.bind(obj)); return b; };
+
 // the class's __new__: the nearest one in its MRO (a user `def __new__`, or type's for a metaclass)
 function _findNew(cls) {
   for (const c of cls._pyMRO || [cls]) if (Object.hasOwn(c, '_pyNewFn')) return c._pyNewFn;
@@ -4733,19 +4812,21 @@ function _findNew(cls) {
 }
 
 // type.__call__(cls, *args): __new__, then __init__ when __new__ gave back an instance of cls
-export function typeCall(cls, args) {
+export function typeCall(cls, args, sync = false) {
   const finish = (inst) => {
     if (!_isInstanceOfClass(inst, cls)) return inst;
     // read with the instance as the receiver: an __init__ that is a descriptor (a
     // functools.partialmethod — tqdm's envwrap) binds to it, not to the prototype
-    const init = Reflect.get(cls.prototype, '__init__', inst);
+    let init = Reflect.get(cls.prototype, '__init__', inst);
+    if (sync) init = syncOf(init);
     if (typeof init === 'function') {
       const r = init.call(inst, ...args);
       if (r && typeof r.then === 'function') return r.then(() => inst);
     }
     return inst;
   };
-  const nf = _findNew(cls);
+  let nf = _findNew(cls);
+  if (sync) nf = syncOf(nf);
   if (!nf) return finish(objectNew(cls, args));       // the common case: no __new__ anywhere
   const inst = nf(cls, ...args);
   return inst && typeof inst.then === 'function' ? inst.then(finish) : finish(inst);
@@ -4754,7 +4835,11 @@ export function typeCall(cls, args) {
 // a classmethod, as a class attribute: bound to the class it's looked up on (a subclass too)
 function _classMethodDescriptor(fn, qual) {
   return {
-    get() { const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; return m; },
+    get() {
+      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn;
+      if (fn._pySync) { const tw = fn._pySync; _defTwin(m, (...a) => tw(c, ...a)); }
+      return m;
+    },
     configurable: true, enumerable: true,
   };
 }
@@ -4781,6 +4866,13 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
     if (meta) { const call = meta.prototype.__call__; if (typeof call === 'function') return call.call(cls, ...args); }
     return typeCall(cls, args);
   };
+  // calling the class from code that can't wait: the same, through the twins
+  _defTwin(cls, function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);
+    const meta = cls.__adderMeta__;
+    if (meta) { const call = meta.prototype.__call__; if (typeof call === 'function') return syncOf(call).call(cls, ...args); }
+    return typeCall(cls, args, true);
+  });
 
   cls.prototype = {};
   cls._pyName = name;
@@ -4858,6 +4950,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
     } else if (value && value.__staticmethod__) {
       const rawFn = value.fn;
       const sm = (...args) => rawFn(...args);
+      if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
       sm._pyName = `${name}.${mName}`;
       cls.prototype[mName] = sm;
       cls[mName] = sm;
@@ -4866,6 +4959,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
       const fn = value.fn, qual = `${name}.${mName}`;
       const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
       cm._pyName = qual;
+      if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
       cls.prototype[mName] = cm;
       Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
     } else if (_isMethodFn(value, opts)) {
@@ -4881,6 +4975,11 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
       // `Cls.method` is the plain function: its name, signature, docstring, abstractness
       Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
       if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
+      if (originalFn._pySync) {
+        const tw = originalFn._pySync;
+        _defTwin(cls.prototype[mName], function (...args) { return tw(this, ...args); });
+        _defTwin(cls[mName], tw);
+      }
     }
   }
 
@@ -5566,6 +5665,17 @@ export function adderBuiltins(printFn) {
     // lazy iterators, as in Python 3: the function runs per item as the result is consumed
     map: (fn, ...iterables) => {
       if (!iterables.length) throw new AdderError('TypeError', 'map() must have at least two arguments.');
+      if (iterables.every(_isSyncSource)) {
+        return _lazyMaybeIter('map', () => {
+          const its = iterables.map((x) => pyIter(x));
+          return () => {
+            const vals = [];
+            for (const it of its) { const r = it.next(); if (r.done) return _DONE; vals.push(r.value); }
+            const v = fn(...vals);
+            return _isThenable(v) ? v.then((x) => ({ done: false, value: x })) : { done: false, value: v };
+          };
+        });
+      }
       return _lazyIter('map', async function* () {
         const its = iterables.map((it) => { const e = _pyEach(it); return e[Symbol.asyncIterator] ? e[Symbol.asyncIterator]() : e[Symbol.iterator](); });
         for (;;) {
@@ -5575,9 +5685,26 @@ export function adderBuiltins(printFn) {
         }
       });
     },
-    filter: (fn, iterable) => _lazyIter('filter', async function* () {
-      for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
-    }),
+    filter: (fn, iterable) => {
+      if (_isSyncSource(iterable)) {
+        return _lazyMaybeIter('filter', () => {
+          const it = pyIter(iterable);
+          const step = () => {
+            for (;;) {
+              const r = it.next();
+              if (r.done) return _DONE;
+              const v = r.value, t = fn ? fn(v) : v;
+              if (_isThenable(t)) return t.then((tv) => (pyBool(tv) ? { done: false, value: v } : step()));
+              if (pyBool(t)) return { done: false, value: v };
+            }
+          };
+          return step;
+        });
+      }
+      return _lazyIter('filter', async function* () {
+        for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
+      });
+    },
     // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
     any: maybeSync(function* (iterable) { let r = false; yield* _gForEach(iterable, (v) => (r = pyBool(v))); return r; }),
     all: maybeSync(function* (iterable) { let r = true; yield* _gForEach(iterable, (v) => !(r = pyBool(v))); return r; }),
@@ -5828,8 +5955,14 @@ export function pySuper(cls, self) {
 }
 
 // Sentinel functions for eval/exec/super — handled specially by the evaluator
-export const _builtinEval = Object.assign(() => {}, { _pyName: 'eval', _sentinel: 'eval' });
-export const _builtinExec = Object.assign(() => {}, { _pyName: 'exec', _sentinel: 'exec' });
+// eval / exec: the tree-walker runs them against the caller's scope (it recognises the sentinel);
+// called as plain functions — from compiled code, or through an alias like six's
+// `exec_ = getattr(builtins, "exec")` — they run in the namespaces they are given (eval.js
+// registers how, setScopeExec)
+let _scopeExec = null;
+export function setScopeExec(f) { _scopeExec = f; }
+export const _builtinEval = Object.assign((...a) => _scopeExec('eval', a), { _pyName: 'eval', _sentinel: 'eval' });
+export const _builtinExec = Object.assign((...a) => _scopeExec('exec', a), { _pyName: 'exec', _sentinel: 'exec' });
 export const _builtinSuper = Object.assign(() => {}, { _pyName: 'super', _sentinel: 'super' });
 // globals() / locals(): the caller's namespaces, which only the tree-walker has (AIR lowering
 // refuses them, so the module falls back)

@@ -2883,6 +2883,22 @@ function _lazyIter(name, genFn) {
     __repr__() { return `<${name} object at ${_objAddr(this)}>`; },
   };
 }
+// a lazy iterator over synchronous sources whose per-item step may still wait (map / filter
+// calling a tree-walked or async-compiled function): _maybeNext() is the next IteratorResult —
+// or a Promise of it, only when that step really waited. Readers that can go either way (list(),
+// join, sorted, compiled loops) stay synchronous whenever every step is; async readers await.
+function _lazyMaybeIter(name, makeStep) {
+  let step = null;
+  const st = () => step || (step = makeStep());
+  return {
+    __adderClass__: name,
+    _maybeNext() { return st()(); },
+    next() { return st()(); },
+    async *[Symbol.asyncIterator]() { for (;;) { const r = await st()(); if (r.done) return; yield r.value; } },
+    __repr__() { return `<${name} object at ${_objAddr(this)}>`; },
+  };
+}
+const _DONE = { done: true, value: undefined };
 // the synchronous twin: a plain JS iterator (for-of reads it lazily), next() works, Python names its type
 function _lazySyncIter(name, genFn) {
   let gen = null;
@@ -2984,6 +3000,7 @@ function* _gForEach(obj, fn) {
       if (fn(v)) return;
     }
   }
+  if (obj && typeof obj._maybeNext === 'function') { yield* viaAsync({ next: () => obj._maybeNext() }); return; }
   if (obj && typeof obj[Symbol.asyncIterator] === 'function') { yield* viaAsync(obj[Symbol.asyncIterator]()); return; }
   for (const v of pyIter(obj)) if (fn(v)) return;
 }
@@ -3223,6 +3240,14 @@ function adderGetAttr(obj, attr) {
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
     if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
+    // a builtin type's operator dunders, unbound (`str.__mod__(fmt, args)`, `int.__add__(1, 2)`,
+    // `list.__len__(xs)` — markupsafe calls str's): the operators themselves
+    if (tn && _TYPE_DUNDER_TYPES.has(tn) && Object.hasOwn(_TYPE_DUNDERS, attr)) {
+      const f = _TYPE_DUNDERS[attr];
+      const fn = (self, ...a) => f(_baseValue(self), ...a);
+      fn._pyName = `${tn}.${attr}`;
+      return fn;
+    }
     if ((tn === 'str' || tn === 'list' || tn === 'dict' || tn === 'set') && !attr.startsWith('__')) {
       const get = tn === 'str' ? _strMethod : tn === 'list' ? _listMethod : tn === 'set' ? _setMethod : _mapMethod;
       const probe = tn === 'str' ? '' : tn === 'list' ? [] : tn === 'set' ? new PySet() : new PyDict();
@@ -3272,17 +3297,17 @@ function adderGetAttr(obj, attr) {
       if (Object.hasOwn(obj, attr) && attr !== 'length' && !/^\d+$/.test(attr)) return obj[attr];
       if (tt.prototype && Object.hasOwn(tt.prototype, attr)) {
         const v = Reflect.get(tt.prototype, attr, obj);
-        return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+        return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
       }
       for (const c of tt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, tt) : cv; }
     } else if (tt && tt.prototype && !(attr in obj) && attr in tt.prototype) {
       const v = Reflect.get(tt.prototype, attr, obj);
-      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+      return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
     }
     if (attr === 'count' || attr === 'index') return _listMethod(obj, attr);
     if (attr in obj && !(attr in Array.prototype)) {
       const v = obj[attr];
-      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+      return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
     }
     if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
@@ -3307,7 +3332,7 @@ function adderGetAttr(obj, attr) {
       if (Object.hasOwn(obj, attr) && attr !== 'length' && !/^\d+$/.test(attr)) return obj[attr];
       if (lt.prototype && Object.hasOwn(lt.prototype, attr)) {
         const v = Reflect.get(lt.prototype, attr, obj);
-        return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+        return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
       }
       for (const c of lt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, lt) : cv; }
     }
@@ -3317,7 +3342,7 @@ function adderGetAttr(obj, attr) {
   if (obj instanceof Map) {
     if (Object.getPrototypeOf(obj) !== Map.prototype && Object.getPrototypeOf(obj) !== PyDict.prototype && attr in obj && !(attr in Map.prototype)) {
       const v = obj[attr];
-      return typeof v === 'function' ? v.bind(obj) : v;
+      return typeof v === 'function' ? _bindTwin(v, obj) : v;
     }
     return _mapMethod(obj, attr);
   }
@@ -3380,9 +3405,10 @@ function adderGetAttr(obj, attr) {
       // (`t.cdf`, `t.pdf` etc. — scipy-style "callable namespace" pattern).
       // Copy them over so dotted access (`stats.t.cdf`) still resolves.
       for (const k of Object.getOwnPropertyNames(v)) {
-        if (k === 'length' || k === 'name' || k === 'prototype') continue;
+        if (k === 'length' || k === 'name' || k === 'prototype' || k === '_pySync' || k === '_pySyncCall') continue;
         try { fn[k] = v[k]; } catch {}
       }
+      if (v._pySync) _defTwin(fn, v._pySync.bind(obj));
       fn._pyName = attr;
       if (obj.__adderModule__) _moduleBound.get(obj).set(attr, [v, fn]);
       return fn;
@@ -3416,7 +3442,7 @@ function adderGetAttr(obj, attr) {
       // is just that function: only a function found on an instance's class binds
       if (typeof obj === 'function' && (val._pyDef || val._pyFunc) && Object.hasOwn(obj, attr)) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
-      return val.bind(obj);
+      return _bindTwin(val, obj);
     }
     return val;
   }
@@ -3489,8 +3515,8 @@ function _strMethod(s, attr) {
         items.forEach((x, i) => { if (strValue(x) === null) throw new AdderError('TypeError', `sequence item ${i}: expected str instance, ${pyTypeName(x)} found`); });
         return items.map(strValue).join(s);
       };
-      // a generator expression / user iterable may be async: collect it first
-      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      // a generator expression / user iterable / map may be async: collected — synchronously when it is
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable) || (iterable && iterable._maybeNext)) return _thenMaybe(pyCollectMaybe(iterable), finish);
       return finish([...pyIter(iterable)]);
     },
     replace: (old, nw, count) => {
@@ -3958,7 +3984,7 @@ function _bytesMethod(b, attr) {
         parts.forEach((p, i) => { if (i) { r.set(b, o); o += b.length; } r.set(p, o); o += p.length; });
         return r;
       };
-      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable) || (iterable && iterable._maybeNext)) return _thenMaybe(pyCollectMaybe(iterable), finish);
       return finish([...pyIter(iterable)]);
     },
   };
@@ -4453,6 +4479,33 @@ function pyInvert(a) {
   throw new AdderError('TypeError', `bad operand type for unary ~: '${pyTypeName(a)}'`);
 }
 // the binary operators by their Python symbol (the tree-walker dispatches through this)
+// a subclass instance as its builtin base's plain value — `str.__mod__(markup, x)` formats the
+// string itself; dispatching on the instance would find the subclass's own __mod__ again
+function _baseValue(v) {
+  if (v === null || typeof v !== 'object') return v;
+  if (typeof v._pyStrValue === 'string') return v._pyStrValue;
+  if (v instanceof PyTuple) return Object.getPrototypeOf(v) === PyTuple.prototype ? v : mkTuple([...v]);
+  if (Array.isArray(v)) return Object.getPrototypeOf(v) === Array.prototype ? v : [...v];
+  if (v instanceof Map && v.__adderType__) return new PyDict(v);
+  if (v instanceof Set && v.__adderType__) { const r = new PySet(v); if (v._frozen) r._frozen = true; return r; }
+  return v;
+}
+const _TYPE_DUNDER_TYPES = new Set(['str', 'int', 'float', 'bool', 'complex', 'list', 'tuple', 'dict', 'set', 'frozenset', 'bytes', 'bytearray']);
+const _sizeOf = (s) => (typeof s === 'string' || Array.isArray(s) || s instanceof Uint8Array ? s.length : s instanceof Map || s instanceof Set ? s.size : isPlainDict(s) ? Object.keys(s).length : s.length);
+const _TYPE_DUNDERS = {
+  __add__: (a, b) => pyAdd(a, b), __sub__: (a, b) => pySub(a, b), __mul__: (a, b) => pyMul(a, b),
+  __truediv__: (a, b) => pyTrueDiv(a, b), __floordiv__: (a, b) => pyFloorDiv(a, b), __mod__: (a, b) => pyMod(a, b),
+  __pow__: (a, b, m) => pyPow(a, b, m), __and__: (a, b) => pyAnd(a, b), __or__: (a, b) => pyOr(a, b), __xor__: (a, b) => pyXor(a, b),
+  __lshift__: (a, b) => pyLshift(a, b), __rshift__: (a, b) => pyRshift(a, b),
+  __radd__: (a, b) => pyAdd(b, a), __rsub__: (a, b) => pySub(b, a), __rmul__: (a, b) => pyMul(b, a),
+  __rtruediv__: (a, b) => pyTrueDiv(b, a), __rfloordiv__: (a, b) => pyFloorDiv(b, a), __rmod__: (a, b) => pyMod(b, a),
+  __rpow__: (a, b) => pyPow(b, a), __rand__: (a, b) => pyAnd(b, a), __ror__: (a, b) => pyOr(b, a), __rxor__: (a, b) => pyXor(b, a),
+  __eq__: (a, b) => pyEq(a, b), __ne__: (a, b) => !pyEq(a, b), __lt__: (a, b) => pyLt(a, b), __le__: (a, b) => pyLe(a, b),
+  __gt__: (a, b) => pyGt(a, b), __ge__: (a, b) => pyGe(a, b),
+  __neg__: (a) => pyNeg(a), __len__: (a) => _sizeOf(a), __getitem__: (a, k) => pyGetItem(a, k),
+  __contains__: (a, x) => (typeof a === 'string' ? a.includes(x) : a instanceof Map || a instanceof Set ? a.has(x) : isPlainDict(a) ? Object.hasOwn(a, x) : [...pyIter(a)].some((v) => pyEq(v, x))),
+  __str__: (a) => pyStr(a), __repr__: (a) => pyRepr(a), __hash__: (a) => _pyHash(a),
+};
 const pyBinOps = {
   '+': pyAdd, '-': pySub, '*': pyMul, '/': pyTrueDiv, '//': pyFloorDiv, '%': pyMod, '**': pyPow,
   '&': pyAnd, '|': pyOr, '^': pyXor, '<<': pyLshift, '>>': pyRshift, '@': pyMatmul,
@@ -6848,6 +6901,32 @@ function objectNew(cls, args = []) {
   return instance;
 }
 
+// Sync twins (air-lower.js lowerFuncDef): a compiled function that may be async carries its
+// synchronous version as fn._pySync; a method's wrapper, a bound method, a classmethod forward it;
+// a class's is a construction that calls the twins of __new__ / __init__. Code that can't wait
+// (sync mode) calls through this. Anything without one (a builtin, a tree-walked function) is
+// called as it is.
+//
+// A twin is right only while everything it reaches really is synchronous. At the first value it
+// would have had to wait for (an import not yet loaded, a tree-walked function) it gives up — it
+// throws NEEDS_ASYNC — and the call falls back to the function itself, whose Promise then flows
+// out exactly as it did before twins (a lazy module's __getattr__ hands the import machinery a
+// Promise it awaits). What the twin did before giving up runs again in the fallback: in practice
+// lookups and pure computation, which is what precedes such a wait.
+const NEEDS_ASYNC = Object.assign(new AdderError('RuntimeError', 'a value that has to be waited for, in code that cannot wait (run this on the tree-walker)'), { _needsAsync: true });
+function syncOf(f) {
+  if (typeof f !== 'function' || !f._pySync) return f;
+  if (Object.hasOwn(f, '_pySyncCall')) return f._pySyncCall;
+  const call = function (...a) {
+    try { return f._pySync.apply(this, a); } catch (e) { if (e === NEEDS_ASYNC) return f.apply(this, a); throw e; }
+  };
+  Object.defineProperty(f, '_pySyncCall', { value: call, configurable: true, writable: true });
+  return call;
+}
+const _defTwin = (fn, twin) => Object.defineProperty(fn, '_pySync', { value: twin, configurable: true, writable: true });
+// fn.bind(obj), keeping the twin (bound the same way)
+const _bindTwin = (f, obj) => { const b = f.bind(obj); if (f._pySync) _defTwin(b, f._pySync.bind(obj)); return b; };
+
 // the class's __new__: the nearest one in its MRO (a user `def __new__`, or type's for a metaclass)
 function _findNew(cls) {
   for (const c of cls._pyMRO || [cls]) if (Object.hasOwn(c, '_pyNewFn')) return c._pyNewFn;
@@ -6855,19 +6934,21 @@ function _findNew(cls) {
 }
 
 // type.__call__(cls, *args): __new__, then __init__ when __new__ gave back an instance of cls
-function typeCall(cls, args) {
+function typeCall(cls, args, sync = false) {
   const finish = (inst) => {
     if (!_isInstanceOfClass(inst, cls)) return inst;
     // read with the instance as the receiver: an __init__ that is a descriptor (a
     // functools.partialmethod — tqdm's envwrap) binds to it, not to the prototype
-    const init = Reflect.get(cls.prototype, '__init__', inst);
+    let init = Reflect.get(cls.prototype, '__init__', inst);
+    if (sync) init = syncOf(init);
     if (typeof init === 'function') {
       const r = init.call(inst, ...args);
       if (r && typeof r.then === 'function') return r.then(() => inst);
     }
     return inst;
   };
-  const nf = _findNew(cls);
+  let nf = _findNew(cls);
+  if (sync) nf = syncOf(nf);
   if (!nf) return finish(objectNew(cls, args));       // the common case: no __new__ anywhere
   const inst = nf(cls, ...args);
   return inst && typeof inst.then === 'function' ? inst.then(finish) : finish(inst);
@@ -6876,7 +6957,11 @@ function typeCall(cls, args) {
 // a classmethod, as a class attribute: bound to the class it's looked up on (a subclass too)
 function _classMethodDescriptor(fn, qual) {
   return {
-    get() { const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; return m; },
+    get() {
+      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn;
+      if (fn._pySync) { const tw = fn._pySync; _defTwin(m, (...a) => tw(c, ...a)); }
+      return m;
+    },
     configurable: true, enumerable: true,
   };
 }
@@ -6903,6 +6988,13 @@ function buildClass(name, bases, members, annotations, opts = {}) {
     if (meta) { const call = meta.prototype.__call__; if (typeof call === 'function') return call.call(cls, ...args); }
     return typeCall(cls, args);
   };
+  // calling the class from code that can't wait: the same, through the twins
+  _defTwin(cls, function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);
+    const meta = cls.__adderMeta__;
+    if (meta) { const call = meta.prototype.__call__; if (typeof call === 'function') return syncOf(call).call(cls, ...args); }
+    return typeCall(cls, args, true);
+  });
 
   cls.prototype = {};
   cls._pyName = name;
@@ -6980,6 +7072,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
     } else if (value && value.__staticmethod__) {
       const rawFn = value.fn;
       const sm = (...args) => rawFn(...args);
+      if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
       sm._pyName = `${name}.${mName}`;
       cls.prototype[mName] = sm;
       cls[mName] = sm;
@@ -6988,6 +7081,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
       const fn = value.fn, qual = `${name}.${mName}`;
       const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
       cm._pyName = qual;
+      if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
       cls.prototype[mName] = cm;
       Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
     } else if (_isMethodFn(value, opts)) {
@@ -7003,6 +7097,11 @@ function buildClass(name, bases, members, annotations, opts = {}) {
       // `Cls.method` is the plain function: its name, signature, docstring, abstractness
       Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
       if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
+      if (originalFn._pySync) {
+        const tw = originalFn._pySync;
+        _defTwin(cls.prototype[mName], function (...args) { return tw(this, ...args); });
+        _defTwin(cls[mName], tw);
+      }
     }
   }
 
@@ -7688,6 +7787,17 @@ function adderBuiltins(printFn) {
     // lazy iterators, as in Python 3: the function runs per item as the result is consumed
     map: (fn, ...iterables) => {
       if (!iterables.length) throw new AdderError('TypeError', 'map() must have at least two arguments.');
+      if (iterables.every(_isSyncSource)) {
+        return _lazyMaybeIter('map', () => {
+          const its = iterables.map((x) => pyIter(x));
+          return () => {
+            const vals = [];
+            for (const it of its) { const r = it.next(); if (r.done) return _DONE; vals.push(r.value); }
+            const v = fn(...vals);
+            return _isThenable(v) ? v.then((x) => ({ done: false, value: x })) : { done: false, value: v };
+          };
+        });
+      }
       return _lazyIter('map', async function* () {
         const its = iterables.map((it) => { const e = _pyEach(it); return e[Symbol.asyncIterator] ? e[Symbol.asyncIterator]() : e[Symbol.iterator](); });
         for (;;) {
@@ -7697,9 +7807,26 @@ function adderBuiltins(printFn) {
         }
       });
     },
-    filter: (fn, iterable) => _lazyIter('filter', async function* () {
-      for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
-    }),
+    filter: (fn, iterable) => {
+      if (_isSyncSource(iterable)) {
+        return _lazyMaybeIter('filter', () => {
+          const it = pyIter(iterable);
+          const step = () => {
+            for (;;) {
+              const r = it.next();
+              if (r.done) return _DONE;
+              const v = r.value, t = fn ? fn(v) : v;
+              if (_isThenable(t)) return t.then((tv) => (pyBool(tv) ? { done: false, value: v } : step()));
+              if (pyBool(t)) return { done: false, value: v };
+            }
+          };
+          return step;
+        });
+      }
+      return _lazyIter('filter', async function* () {
+        for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
+      });
+    },
     // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
     any: maybeSync(function* (iterable) { let r = false; yield* _gForEach(iterable, (v) => (r = pyBool(v))); return r; }),
     all: maybeSync(function* (iterable) { let r = true; yield* _gForEach(iterable, (v) => !(r = pyBool(v))); return r; }),
@@ -7950,8 +8077,14 @@ function pySuper(cls, self) {
 }
 
 // Sentinel functions for eval/exec/super — handled specially by the evaluator
-const _builtinEval = Object.assign(() => {}, { _pyName: 'eval', _sentinel: 'eval' });
-const _builtinExec = Object.assign(() => {}, { _pyName: 'exec', _sentinel: 'exec' });
+// eval / exec: the tree-walker runs them against the caller's scope (it recognises the sentinel);
+// called as plain functions — from compiled code, or through an alias like six's
+// `exec_ = getattr(builtins, "exec")` — they run in the namespaces they are given (eval.js
+// registers how, setScopeExec)
+let _scopeExec = null;
+function setScopeExec(f) { _scopeExec = f; }
+const _builtinEval = Object.assign((...a) => _scopeExec('eval', a), { _pyName: 'eval', _sentinel: 'eval' });
+const _builtinExec = Object.assign((...a) => _scopeExec('exec', a), { _pyName: 'exec', _sentinel: 'exec' });
 const _builtinSuper = Object.assign(() => {}, { _pyName: 'super', _sentinel: 'super' });
 // globals() / locals(): the caller's namespaces, which only the tree-walker has (AIR lowering
 // refuses them, so the module falls back)
@@ -9584,6 +9717,21 @@ async function _evalBuiltinExec(args, scope, line) {
   }
   return null;
 }
+// exec / eval called as a plain function (compiled code has no caller scope to hand over): only
+// with the namespaces given
+const _runningModules = [];
+setScopeExec((kind, args) => {
+  const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args[args.length - 1] : {};
+  const g = args.length > 1 && !(args[1] && args[1]._kw) ? args[1] : kw.globals;
+  if ((g === undefined || g === null) && _runningModules.length && args.length === 1) {
+    const ns = _runningModules[_runningModules.length - 1];
+    return kind === 'exec' ? _evalBuiltinExec([args[0], ns], null) : _evalBuiltinEval([args[0], ns], null);
+  }
+  if (g === undefined || g === null) {
+    throw new AdderError('RuntimeError', `${kind}() without a globals dict needs the caller's scope: run this code on the tree-walker`);
+  }
+  return kind === 'exec' ? _evalBuiltinExec(args, null) : _evalBuiltinEval(args, null);
+});
 // exec / eval's source: a string, bytes, or a code object from compile()
 function _sourceOf(x) {
   if (x !== null && typeof x === 'object' && typeof x._pySource === 'string') return x._pySource;
@@ -9772,6 +9920,10 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
     try { compiled = _moduleCompiler(ast, source, { name: displayName, package: pkg }); } catch { compiled = null; }
   }
+  // the namespace of the module whose top level is running: an exec() reached without namespaces
+  // from compiled code (six's `exec_ = getattr(builtins, "exec")`) runs in it, as CPython's does
+  // in the calling module's
+  _runningModules.push(compiled ? mod : modScope.vars);
   try {
     if (compiled) {
       const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
@@ -9785,6 +9937,8 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   } catch (e) {
     delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
     throw e;
+  } finally {
+    _runningModules.pop();
   }
   // what the import gives is sys.modules[name] after the code ran: a module may replace itself
   // there (pygments.lexers swaps in a lazy-loading module subclass)
@@ -10471,6 +10625,37 @@ function _callMethod(obj, name, siteId, ...args) {
   return result;
 }
 
+// a method call from code that can't wait (sync mode): the method's sync twin when it has one —
+// the same lookup and inline cache as _callMethod
+function _callMethodSync(obj, name, siteId, ...args) {
+  const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
+  const cache = _PIC[siteId];
+  if (cache && t !== undefined && cache.name === name) {
+    const types = cache.types;
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === t) return syncOf(cache.methods[i]).call(obj, ...args);
+    }
+  }
+  const result = _fnOfSync(adderGetAttr(obj, name))(...args);
+  if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
+    let c = cache;
+    if (!c) { c = { types: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
+    if (c.types.length < _PIC_SIZE) { c.types.push(t); c.methods.push(t.prototype[name]); }
+    else { const idx = c.next; c.types[idx] = t; c.methods[idx] = t.prototype[name]; c.next = (idx + 1) % _PIC_SIZE; }
+  }
+  return result;
+}
+// a value called from sync mode: a function's twin, a class's synchronous construction, an
+// object's __call__ twin
+function _fnOfSync(x) {
+  if (typeof x === 'function') return syncOf(x);
+  if (x !== null && typeof x === 'object') {
+    const c = x.__call__;
+    if (typeof c === 'function' && c._pySync) { const s = syncOf(c); return (...a) => s.call(x, ...a); }
+  }
+  return asCallable(x);
+}
+
 // ── Context manager __exit__ ──
 
 // Called by `with` lowering. When the body completes normally, `exc` is
@@ -10636,6 +10821,7 @@ function _iterArray(obj) {
   // an iterator or generator (itertools.count, a generator expression) is read lazily, one item
   // per step, so an infinite one can be broken out of; dicts and sets are snapshotted below
   if (obj && typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') return obj;
+  if (obj && typeof obj._maybeNext === 'function') return _maybeIterSync(obj);
   // Async iterables can't be materialised synchronously — return a Promise
   // and let the call site `await` it. Returning a sync iterable on the
   // common path keeps that fast path free of microtasks.
@@ -10649,19 +10835,36 @@ function _iterArray(obj) {
   if (isUserIterable(obj)) return _userIterSync(obj);
   return [...pyIter(obj)];
 }
+// a maybe-async iterator (map / filter over synchronous sources) read synchronously: lazily while
+// its steps are synchronous; when the first one waits, a Promise of the collected items
+function _maybeIterSync(obj) {
+  const first = obj._maybeNext();
+  if (first !== null && typeof first === 'object' && typeof first.then === 'function') {
+    return first.then(async (r0) => { const out = []; for (let r = r0; !r.done; r = await obj._maybeNext()) out.push(r.value); return out; });
+  }
+  return (function* () {
+    for (let r = first; ; r = obj._maybeNext()) {
+      if (r !== null && typeof r === 'object' && typeof r.then === 'function') throw new AdderError('TypeError', `'${obj.__adderClass__}' object must be collected asynchronously here (list(...) it first)`);
+      if (r.done) return;
+      yield r.value;
+    }
+  })();
+}
 // a user __iter__ / __next__ (or __getitem__) object read synchronously where it can be: stepped
 // lazily (an endless iterator can still be broken out of); an async (tree-walked) dunder makes it
 // a Promise of the collected items instead, as for the async sources above
 function _userIterSync(obj) {
   if (typeof obj.__iter__ !== 'function' && typeof obj.__next__ !== 'function') return pyCollectMaybe(obj);
-  const it = typeof obj.__iter__ === 'function' ? obj.__iter__() : obj;
+  // (read synchronously: through their sync twins when they have them)
+  const it = typeof obj.__iter__ === 'function' ? syncOf(obj.__iter__).call(obj) : obj;
   if (it !== null && typeof it === 'object' && typeof it.then === 'function') return it.then((x) => pyCollect(x));
   if (Array.isArray(it) || typeof it === 'string') return it;
   if (it !== null && typeof it === 'object' && typeof it.__next__ === 'function' && typeof it[Symbol.iterator] !== 'function') {
     // the first step tells: an async __next__ (a compiled one with an await in it is async on
     // every call) → collect behind a Promise; else step lazily
+    const next = syncOf(it.__next__);
     let first;
-    try { first = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return []; throw e; }
+    try { first = next.call(it); } catch (e) { if (e && e.pyType === 'StopIteration') return []; throw e; }
     if (first !== null && typeof first === 'object' && typeof first.then === 'function') {
       return first.then(async (v0) => {
         const out = [v0];
@@ -10674,7 +10877,7 @@ function _userIterSync(obj) {
       yield first;
       for (;;) {
         let v;
-        try { v = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+        try { v = next.call(it); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
         yield v;
       }
     })();
@@ -10786,7 +10989,7 @@ const _py = {
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
   noAwait: _noAwait,
-  lam: (f) => { f._pyDef = true; return f; },
+  lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
   mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
@@ -10814,6 +11017,17 @@ const _py = {
   // class
   createClass: _createClass,
   fnOf: asCallable,
+  fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
+  // a sync-mode dunder / property: its sync version, falling back to its async one when it gives up
+  bailable: (s, a) => {
+    const f = function (...args) {
+      try { return s.apply(this, args); } catch (e) { if (e === NEEDS_ASYNC) return a.apply(this, args); throw e; }
+    };
+    Object.defineProperty(f, 'name', { value: s.name, configurable: true });
+    return f;
+  },
+  // a twin's await point: the value, or — when it is a Promise — give up (syncOf falls back)
+  needSync: (v) => { if (v !== null && v !== undefined && typeof v.then === "function") throw NEEDS_ASYNC; return v; },
   aw: awaitTarget,
   // a def's metadata (both engines record the same: the tree-walker in eval.js _attachSignature)
   defSig: (fn, shape, defaults, mod = null) => {
@@ -20467,7 +20681,8 @@ class AdderLowerCtx extends BaseLowerCtx {
       args = [`__cb_${args[0]}`, ...args.slice(1)];
     }
     // sync mode (see AWAITED_DUNDERS): no await — the value is taken as it is
-    if (op === 'await' && this._syncMode) return emitPyCall(this, 'noAwait', [{ id: args[0] }], loc, type);
+    // (in a twin: _py.needSync, which gives the twin up at a real Promise — see builtins syncOf)
+    if (op === 'await' && this._syncMode) return emitPyCall(this, this._twinMode ? 'needSync' : 'noAwait', [{ id: args[0] }], loc, type);
     const pyName = (op === 'store' && typeof args[0] === 'string') ? args[0] : null;
     if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && _JS_RESERVED.has(args[0])) args = [jsSafeName(args[0]), ...args.slice(1)];
     // module mode: a module-level binding (at top level, or from a function declaring it
@@ -20805,7 +21020,11 @@ function analyseSyncFunctions(moduleStmts) {
 // callsite ergonomics while sharing the AIR-shape implementation with
 // soft (and any future frontend with a namespaced runtime).
 
+// in sync mode (a sync-context dunder / property, or a sync twin) a call goes to the callee's
+// sync twin when it has one: method calls, and calls of a value that may be any callable
+const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync' };
 function emitPyCall(ctx, method, args, loc, type) {
+  if (ctx._syncMode && Object.hasOwn(_SYNC_CALLS, method)) method = _SYNC_CALLS[method];
   return ctx.emitNamespacedCall('_py', method, args, loc, type);
 }
 
@@ -21429,9 +21648,17 @@ function _lowerSliceElt(ctx, elt, l) {
 function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
-  // eval / exec run source against the caller's live scope, which only the tree-walker has
+  // eval / exec without namespaces run against the caller's live scope, which only the
+  // tree-walker has; given a globals dict (positionally or by keyword) they're ordinary calls
   if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec') && !ctx.symbols.has(node.func.id)) {
-    throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
+    const hasGlobals = node.args.length >= 2 || (node.keywords || []).some((k) => (k.name || k.arg) === 'globals');
+    // without them, CPython runs it in globals() and locals() — so this does too (the source can
+    // read the module's and the function's names; what it binds lands in those dicts)
+    if (!hasGlobals) {
+      if (node.args.length !== 1 || (node.keywords || []).some((k) => (k.name || k.arg) === 'locals')) throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
+      const scopeCall = (id) => ({ type: 'Call', func: { type: 'Name', id, line: node.line }, args: [], keywords: [], line: node.line });
+      return lowerCall_ad(ctx, { ...node, args: [node.args[0], scopeCall('globals'), scopeCall('locals')] });
+    }
   }
   // globals(): the module's live namespace. locals(): at module level the same; in a function a
   // snapshot of its bound locals; in a class body (rare) the tree-walker's
@@ -21527,6 +21754,8 @@ function lowerCall_ad(ctx, node) {
     (ctx.knownCallables && ctx.knownCallables.has(id)) ||                            // a module-level (undecorated) def / class
     (KNOWN_SYNC_BUILTINS.has(id) && !ctx.symbols.has(id) && !ctx.defines.has(id)));   // an unshadowed builtin
   if (!knownFn) fn = emitPyCall(ctx, 'fnOf', [fn], l);
+  // a module-level def / class called from sync mode: its twin / a synchronous construction
+  else if (ctx._syncMode && !isSyncCallee && ctx.knownCallables && ctx.knownCallables.has(id)) fn = emitPyCall(ctx, 'syncOf', [fn], l);
   const finalArgs = kwObjId ? [...argIds, kwObjId] : argIds;
   return emitAwaitedCall_ad(ctx, fn.id, finalArgs, l, undefined, { sync: isSyncCallee });
 }
@@ -22611,7 +22840,7 @@ function _rewritesFunctionInternals(node) {
 function _callsScopeBuiltin(node) {
   if (!node || typeof node !== 'object') return false;
   if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
-  if (node.type === 'Call' && node.func && node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals')) return true;
+  if (node.type === 'Call' && node.func && node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals' || node.func.id === 'exec' || node.func.id === 'eval')) return true;
   for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _callsScopeBuiltin(node[k])) return true;
   return false;
 }
@@ -22668,7 +22897,17 @@ function lowerFuncDef(ctx, node) {
   const l = ctx.loc(node);
   const name = node.name;
   const isGenerator = _containsYield(node.body);
-  const syncMode = !!_syncContextName(node, !!ctx._classBodyOf);
+  // sync mode: a dunder / property Python calls implicitly; or a def nested in sync-mode code (a
+  // twin or such a dunder) — what code that can't wait defines and calls can't wait either
+  // (jinja2's Lexer.__init__ compiles its rules through a local `def c(x): return re.compile(x)`)
+  const ownSync = !!_syncContextName(node, !!ctx._classBodyOf);
+  const syncMode = ownSync ||
+    (!!ctx._syncMode && !!ctx._fnDepth && node.type !== 'AsyncFunctionDef' && !node.isAsync);
+  // A dunder / property in sync mode is compiled the other way round from a twinned function:
+  // the sync version IS the method, and gives up at a value it would have to wait for (as a twin
+  // does), falling back to an async version of itself — whose Promise its caller may well
+  // await (the import machinery awaits a lazy module's __getattr__). _py.bailable joins them.
+  const bailable = ownSync && !isGenerator && !ctx._fnDepth && !ctx.noTwins;
 
   // Lower decorators (evaluated at def time, applied bottom-up after def). Each is bound to a
   // temp HERE: left as an expression it was inlined at the apply site, after the def had
@@ -22686,60 +22925,78 @@ function lowerFuncDef(ctx, node) {
   ctx._excName = null;
   // zero-argument super() in a method: the enclosing class and the method's first parameter
   const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf;
-  if (ctx._classBodyOf && (node.params || []).length) ctx._superCtx = { cls: ctx._classBodyOf, self: node.params[0].name };
-  ctx._classBodyOf = null;
+  const superCtx = ctx._classBodyOf && (node.params || []).length ? { cls: ctx._classBodyOf, self: node.params[0].name } : ctx._superCtx;
+  // A SYNC TWIN: a function AIR can't prove synchronous is compiled async — it awaits whatever
+  // it calls. Code Python calls implicitly (a property, __len__, __eq__, a hash) can't wait, so
+  // such a function is also compiled in sync mode as `fn._pySync`, and sync-mode code calls the
+  // twins (see emitPyCall's _SYNC_CALLS, _py.syncOf / fnOfSync / callMethodSync). Only module
+  // functions and methods get one (not functions nested in a function: each nesting level would
+  // double the code); `async def` never does. A generator's twin is a synchronous generator: an
+  // async one (its body awaits) can't be read by a loop that can't wait.
+  const twinned = !syncMode && node.type !== 'AsyncFunctionDef' && !node.isAsync &&
+    !ctx.syncFunctions.has(name) && !ctx._fnDepth && !ctx.noTwins;
 
-  // Lower body in nested scope. The save-and-Map-clone idiom we used to
-  // run is replaced by ScopeChain push/pop now that ctx.symbols extends
-  // BaseLowerCtx — same semantics, less ceremony.
-  const savedTopLevel = ctx.topLevel;
-  ctx.topLevel = false;
-  ctx.symbols = ctx.symbols.push();
-  const savedSyncMode = ctx._syncMode;
-  ctx._syncMode = syncMode;
-  const savedFnLocals = ctx._fnLocalNames;
-  ctx._fnLocalNames = _functionLocalNames(node);
-  // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
-  // method, not a generator, not one analyseSyncFunctions proved sync
-  const savedLoopAwait = ctx._loopMayAwait;
-  // (a generator or method too: the source may be an async generator — most compiled functions
-  // that call methods are async — and a plain for-of can't wait for it; not in sync mode)
-  ctx._loopMayAwait = !ctx.syncFunctions.has(node.name) && !syncMode;
-  const savedFnGlobals = ctx._fnGlobals;
-  ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
+  // Lower the body in a nested scope — once as the function; once more, in sync mode, as its twin.
+  const lowerBody = (mode, twinPass = false) => {
+    const savedTwinMode = ctx._twinMode;
+    ctx._twinMode = twinPass || (!!ctx._twinMode && !!mode);
+    ctx._superCtx = superCtx;
+    ctx._classBodyOf = null;
+    const savedTopLevel = ctx.topLevel;
+    ctx.topLevel = false;
+    ctx._fnDepth = (ctx._fnDepth || 0) + 1;
+    ctx.symbols = ctx.symbols.push();
+    const savedSyncMode = ctx._syncMode;
+    ctx._syncMode = mode;
+    const savedFnLocals = ctx._fnLocalNames;
+    ctx._fnLocalNames = _functionLocalNames(node);
+    // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
+    // method, not a generator, not one analyseSyncFunctions proved sync
+    const savedLoopAwait = ctx._loopMayAwait;
+    // (a generator or method too: the source may be an async generator — most compiled functions
+    // that call methods are async — and a plain for-of can't wait for it; not in sync mode)
+    ctx._loopMayAwait = !ctx.syncFunctions.has(node.name) && !mode;
+    const savedFnGlobals = ctx._fnGlobals;
+    ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
+    ctx._paramDefaults = defaultRefs;
+    ctx._excName = null;
 
-  let params = null;
-  let isSimple = null;
-  let needsArgs = false;
-  const body = captureOps(ctx, () => {
-    // Build parameter binding (prologue + JS params)
-    const r = _buildParamBinding(ctx, node, l);
-    params = r.params; isSimple = r.isSimple; needsArgs = !!r.needsArguments;
+    const out = { params: null, isSimple: null, needsArgs: false, body: null };
+    out.body = captureOps(ctx, () => {
+      // Build parameter binding (prologue + JS params)
+      const r = _buildParamBinding(ctx, node, l);
+      out.params = r.params; out.isSimple = r.isSimple; out.needsArgs = !!r.needsArguments;
 
-    // Emit prologue ops
-    for (const op of r.prologueOps) ctx.ops.push(op);
-    _declareFunctionLocals(ctx, node);
+      // Emit prologue ops
+      for (const op of r.prologueOps) ctx.ops.push(op);
+      _declareFunctionLocals(ctx, node);
 
-    // Docstring skip (first string expression)
-    let startIdx = 0;
-    if (node.body.length > 0 && node.body[0].type === 'Expr' &&
-        node.body[0].value.type === 'Constant' &&
-        typeof node.body[0].value.value === 'string') {
-      startIdx = 1;
-    }
-    for (let i = startIdx; i < node.body.length; i++) lowerStmt_ad(ctx, node.body[i]);
-  });
+      // Docstring skip (first string expression)
+      let startIdx = 0;
+      if (node.body.length > 0 && node.body[0].type === 'Expr' &&
+          node.body[0].value.type === 'Constant' &&
+          typeof node.body[0].value.value === 'string') {
+        startIdx = 1;
+      }
+      for (let i = startIdx; i < node.body.length; i++) lowerStmt_ad(ctx, node.body[i]);
+    });
 
-  ctx.topLevel = savedTopLevel;
-  ctx._syncMode = savedSyncMode;
-  ctx._fnLocalNames = savedFnLocals;
-  ctx._loopMayAwait = savedLoopAwait;
-  ctx._fnGlobals = savedFnGlobals;
-  ctx.symbols = ctx.symbols.pop();
-  ctx._paramDefaults = savedDefaults;
-  ctx._excName = savedExcName;
-  ctx._superCtx = savedSuper;
-  ctx._classBodyOf = savedClassBody;
+    ctx.topLevel = savedTopLevel;
+    ctx._fnDepth -= 1;
+    ctx._syncMode = savedSyncMode;
+    ctx._fnLocalNames = savedFnLocals;
+    ctx._loopMayAwait = savedLoopAwait;
+    ctx._fnGlobals = savedFnGlobals;
+    ctx.symbols = ctx.symbols.pop();
+    ctx._paramDefaults = savedDefaults;
+    ctx._excName = savedExcName;
+    ctx._superCtx = savedSuper;
+    ctx._classBodyOf = savedClassBody;
+    ctx._twinMode = savedTwinMode;
+    return out;
+  };
+  const main = lowerBody(syncMode, bailable);
+  const params = main.params, body = main.body, needsArgs = main.needsArgs;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;
@@ -22778,11 +23035,34 @@ function lowerFuncDef(ctx, node) {
     typeof node.body[0].value.value === 'string' ? node.body[0].value.value : null;
   // (in a class body the function is bound as `__cb_<name>` — see lowerClassDef)
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
+  // its generator objects show the function's name (`<generator object g at ...>`)
+  if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
+  if (bailable) {
+    const asy = lowerBody(null);
+    const asyOp = ctx.emit('func_region', [null], fType, l, {
+      name: null, params: asy.params, body: asy.body, ret_type: retType,
+      is_async: false, is_generator: false, needs_arguments: asy.needsArgs, in_class: false,
+    });
+    const asyTmp = ctx.makeTempName('async');
+    ctx.emit('store', [asyTmp, asyOp.id], VOID, l);
+    emitRaw(ctx, `${refName} = _py.bailable(${refName}, ${asyTmp});`);
+  }
   if (doc !== null) emitRaw(ctx, `${refName}.__doc__ = ${JSON.stringify(doc)};`);
   // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
   emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}}${ctx.moduleMirror ? ', __adder_module__' : ''});`);
-  // its generator objects show the function's name (`<generator object g at ...>`)
-  if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
+  if (twinned) {
+    const tw = lowerBody(`${name} (sync twin)`, true);
+    // anonymous: the twin is reached only through fn._pySync (a module-level `function name`
+    // declaration would collide with the function itself)
+    const twinOp = ctx.emit('func_region', [null], fType, l, {
+      name: null, params: tw.params, body: tw.body, ret_type: retType,
+      is_async: false, is_generator: isGenerator, needs_arguments: tw.needsArgs, in_class: false,
+    });
+    const twinTmp = ctx.makeTempName('twin');
+    ctx.emit('store', [twinTmp, twinOp.id], VOID, l);
+    if (isGenerator) emitRaw(ctx, `${twinTmp}.prototype._genName = ${JSON.stringify(name)};`);
+    emitRaw(ctx, `Object.defineProperty(${refName}, '_pySync', { value: ${twinTmp}, configurable: true, writable: true });`);
+  }
 
   // Apply decorators bottom-up: name = decorator(name)
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -22810,43 +23090,61 @@ function lowerLambda(ctx, node) {
   // defaults: once, here in the enclosing scope (so `lambda i=i:` captures each i)
   const savedDefaults = ctx._paramDefaults;
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
-  const savedTopLevel = ctx.topLevel;
-  ctx.topLevel = false;
-  ctx.symbols = ctx.symbols.push();
+  const defaultRefs = ctx._paramDefaults;
+  // lowered as the lambda; and, like a def (lowerFuncDef), once more in sync mode as its twin —
+  // a lambda that calls anything compiles async, and code that can't wait calls it (`c =
+  // lambda x: re.compile(x)` in a jinja2 __init__ reached from a property). Not for a lambda in
+  // a lambda (each level would double).
+  const lowerLamBody = (mode, twinPass = false) => {
+    const savedTwinMode = ctx._twinMode;
+    ctx._twinMode = twinPass || (!!ctx._twinMode && !!mode);
+    const savedTopLevel = ctx.topLevel;
+    ctx.topLevel = false;
+    ctx.symbols = ctx.symbols.push();
+    ctx._lamDepth = (ctx._lamDepth || 0) + 1;
+    const out = { params: null, needsArgs: false, body: null };
+    const savedSyncMode = ctx._syncMode;
+    ctx._syncMode = mode;
+    const savedFnLocals = ctx._fnLocalNames;
+    ctx._fnLocalNames = (node.params || []).map((p) => p.name);
+    ctx._paramDefaults = defaultRefs;
+    out.body = captureOps(ctx, () => {
+      // Reuse the function param binding logic
+      const r = _buildParamBinding(ctx, node, l);
+      out.params = r.params; out.needsArgs = !!r.needsArguments;
+      for (const op of r.prologueOps) ctx.ops.push(op);
 
-  let params = null;
-  let needsArgs = false;
-  const savedSyncMode = ctx._syncMode;
-  ctx._syncMode = null;
-  const savedFnLocals = ctx._fnLocalNames;
-  ctx._fnLocalNames = (node.params || []).map((p) => p.name);
-  const body = captureOps(ctx, () => {
-    // Reuse the function param binding logic
-    const r = _buildParamBinding(ctx, node, l);
-    params = r.params; needsArgs = !!r.needsArguments;
-    for (const op of r.prologueOps) ctx.ops.push(op);
+      const val = lowerExpr_ad(ctx, node.body);
+      ctx.emit('return', [val.id], VOID, l);
+    });
 
-    const val = lowerExpr_ad(ctx, node.body);
-    ctx.emit('return', [val.id], VOID, l);
-  });
-
-  ctx.topLevel = savedTopLevel;
-  ctx._syncMode = savedSyncMode;
-  ctx._fnLocalNames = savedFnLocals;
-  ctx.symbols = ctx.symbols.pop();
-  ctx._paramDefaults = savedDefaults;
+    ctx.topLevel = savedTopLevel;
+    ctx._lamDepth -= 1;
+    ctx._syncMode = savedSyncMode;
+    ctx._fnLocalNames = savedFnLocals;
+    ctx.symbols = ctx.symbols.pop();
+    ctx._paramDefaults = savedDefaults;
+    ctx._twinMode = savedTwinMode;
+    return out;
+  };
+  // in sync-mode code a lambda is sync mode itself (no twin needed)
+  const inSync = ctx._syncMode;
+  const twinned = !inSync && !ctx._lamDepth && !ctx.noTwins;
+  const main = lowerLamBody(inSync || null);
 
   // marked a Python function (_py.lam): a lambda in a class body is a method, a builtin isn't
-  const lam = ctx.emit('func_region', [null], DYNAMIC, l, {
-    name: null, params, body, ret_type: DYNAMIC, needs_arguments: needsArgs,
-    // Lambdas are never async-defs (Python has no `async lambda`). emit-js's
-    // emitFunc promotes to async iff the body actually awaits (_bodyHasAwait), so a
-    // sync lambda — the common map/filter/sort/Series.apply callback — emits a plain
-    // `function`, callable synchronously by JS consumers. (Was hardcoded `true`,
-    // which forced an async wrapper, so JS callers got a Promise instead of a value.)
+  // Lambdas are never async-defs (Python has no `async lambda`). emit-js's emitFunc promotes to
+  // async iff the body actually awaits (_bodyHasAwait), so a sync lambda — the common
+  // map/filter/sort/Series.apply callback — emits a plain `function`, callable synchronously by
+  // JS consumers.
+  const mkLam = (b) => ctx.emit('func_region', [null], DYNAMIC, l, {
+    name: null, params: b.params, body: b.body, ret_type: DYNAMIC, needs_arguments: b.needsArgs,
     is_async: false, is_generator: false,
   });
-  return emitPyCall(ctx, 'lam', [lam], l);
+  const lam = mkLam(main);
+  if (!twinned) return emitPyCall(ctx, 'lam', [lam], l);
+  const twin = mkLam(lowerLamBody('lambda (sync twin)', true));
+  return emitPyCall(ctx, 'lam', [lam, twin], l);
 }
 
 // ── List comprehension ──

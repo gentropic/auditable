@@ -7,7 +7,7 @@ import {
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
@@ -386,6 +386,37 @@ function _callMethod(obj, name, siteId, ...args) {
   return result;
 }
 
+// a method call from code that can't wait (sync mode): the method's sync twin when it has one —
+// the same lookup and inline cache as _callMethod
+function _callMethodSync(obj, name, siteId, ...args) {
+  const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
+  const cache = _PIC[siteId];
+  if (cache && t !== undefined && cache.name === name) {
+    const types = cache.types;
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === t) return syncOf(cache.methods[i]).call(obj, ...args);
+    }
+  }
+  const result = _fnOfSync(adderGetAttr(obj, name))(...args);
+  if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
+    let c = cache;
+    if (!c) { c = { types: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
+    if (c.types.length < _PIC_SIZE) { c.types.push(t); c.methods.push(t.prototype[name]); }
+    else { const idx = c.next; c.types[idx] = t; c.methods[idx] = t.prototype[name]; c.next = (idx + 1) % _PIC_SIZE; }
+  }
+  return result;
+}
+// a value called from sync mode: a function's twin, a class's synchronous construction, an
+// object's __call__ twin
+function _fnOfSync(x) {
+  if (typeof x === 'function') return syncOf(x);
+  if (x !== null && typeof x === 'object') {
+    const c = x.__call__;
+    if (typeof c === 'function' && c._pySync) { const s = syncOf(c); return (...a) => s.call(x, ...a); }
+  }
+  return asCallable(x);
+}
+
 // ── Context manager __exit__ ──
 
 // Called by `with` lowering. When the body completes normally, `exc` is
@@ -552,6 +583,7 @@ function _iterArray(obj) {
   // an iterator or generator (itertools.count, a generator expression) is read lazily, one item
   // per step, so an infinite one can be broken out of; dicts and sets are snapshotted below
   if (obj && typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') return obj;
+  if (obj && typeof obj._maybeNext === 'function') return _maybeIterSync(obj);
   // Async iterables can't be materialised synchronously — return a Promise
   // and let the call site `await` it. Returning a sync iterable on the
   // common path keeps that fast path free of microtasks.
@@ -565,19 +597,36 @@ function _iterArray(obj) {
   if (isUserIterable(obj)) return _userIterSync(obj);
   return [...pyIter(obj)];
 }
+// a maybe-async iterator (map / filter over synchronous sources) read synchronously: lazily while
+// its steps are synchronous; when the first one waits, a Promise of the collected items
+function _maybeIterSync(obj) {
+  const first = obj._maybeNext();
+  if (first !== null && typeof first === 'object' && typeof first.then === 'function') {
+    return first.then(async (r0) => { const out = []; for (let r = r0; !r.done; r = await obj._maybeNext()) out.push(r.value); return out; });
+  }
+  return (function* () {
+    for (let r = first; ; r = obj._maybeNext()) {
+      if (r !== null && typeof r === 'object' && typeof r.then === 'function') throw new AdderError('TypeError', `'${obj.__adderClass__}' object must be collected asynchronously here (list(...) it first)`);
+      if (r.done) return;
+      yield r.value;
+    }
+  })();
+}
 // a user __iter__ / __next__ (or __getitem__) object read synchronously where it can be: stepped
 // lazily (an endless iterator can still be broken out of); an async (tree-walked) dunder makes it
 // a Promise of the collected items instead, as for the async sources above
 function _userIterSync(obj) {
   if (typeof obj.__iter__ !== 'function' && typeof obj.__next__ !== 'function') return pyCollectMaybe(obj);
-  const it = typeof obj.__iter__ === 'function' ? obj.__iter__() : obj;
+  // (read synchronously: through their sync twins when they have them)
+  const it = typeof obj.__iter__ === 'function' ? syncOf(obj.__iter__).call(obj) : obj;
   if (it !== null && typeof it === 'object' && typeof it.then === 'function') return it.then((x) => pyCollect(x));
   if (Array.isArray(it) || typeof it === 'string') return it;
   if (it !== null && typeof it === 'object' && typeof it.__next__ === 'function' && typeof it[Symbol.iterator] !== 'function') {
     // the first step tells: an async __next__ (a compiled one with an await in it is async on
     // every call) → collect behind a Promise; else step lazily
+    const next = syncOf(it.__next__);
     let first;
-    try { first = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return []; throw e; }
+    try { first = next.call(it); } catch (e) { if (e && e.pyType === 'StopIteration') return []; throw e; }
     if (first !== null && typeof first === 'object' && typeof first.then === 'function') {
       return first.then(async (v0) => {
         const out = [v0];
@@ -590,7 +639,7 @@ function _userIterSync(obj) {
       yield first;
       for (;;) {
         let v;
-        try { v = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+        try { v = next.call(it); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
         yield v;
       }
     })();
@@ -702,7 +751,7 @@ export const _py = {
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
   noAwait: _noAwait,
-  lam: (f) => { f._pyDef = true; return f; },
+  lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
   mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
@@ -730,6 +779,17 @@ export const _py = {
   // class
   createClass: _createClass,
   fnOf: asCallable,
+  fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
+  // a sync-mode dunder / property: its sync version, falling back to its async one when it gives up
+  bailable: (s, a) => {
+    const f = function (...args) {
+      try { return s.apply(this, args); } catch (e) { if (e === NEEDS_ASYNC) return a.apply(this, args); throw e; }
+    };
+    Object.defineProperty(f, 'name', { value: s.name, configurable: true });
+    return f;
+  },
+  // a twin's await point: the value, or — when it is a Promise — give up (syncOf falls back)
+  needSync: (v) => { if (v !== null && v !== undefined && typeof v.then === "function") throw NEEDS_ASYNC; return v; },
   aw: awaitTarget,
   // a def's metadata (both engines record the same: the tree-walker in eval.js _attachSignature)
   defSig: (fn, shape, defaults, mod = null) => {

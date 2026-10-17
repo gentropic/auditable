@@ -3296,3 +3296,131 @@ def f(x):
 class C:
     pass
 print(f(3), C()[0])
+### sync/twins-from-sync-contexts
+from functools import cached_property
+# a helper that compiles async (it calls an unknown callable)
+def helper(xs, f):
+    return [f(x) for x in xs]
+def escape(s):
+    return "".join(helper(s, lambda c: "&lt;" if c == "<" else c))
+class Markup(str):
+    def __mod__(self, arg):
+        return Markup(str.__mod__(self, escape(arg)))
+print(Markup("<b>%s</b>") % "<i>")
+
+# a property building an object whose __init__ calls a method (networkx's G.degree)
+class View:
+    def __init__(self, g):
+        self.nodes = list(g.iter_nodes())
+    def __len__(self):
+        return len(self.nodes)
+class G:
+    def __init__(self):
+        self.n = {1: 1, 2: 2}
+    def iter_nodes(self):
+        return iter(self.n)
+    @cached_property
+    def degree(self):
+        return View(self)
+    @property
+    def size(self):
+        return len(self.degree) + self.count()
+    def count(self):
+        total = 0
+        for k in self.n:
+            total += self.n[k]
+        return total
+g = G()
+print(len(g.degree), g.size, type(g.degree).__name__)
+# __bool__ / __iter__ / __len__ through helpers; a sync context calling a callable instance
+class Adder:
+    def __init__(self, k):
+        self.k = k
+    def __call__(self, x):
+        return helper([x], lambda y: y + self.k)[0]
+class Box:
+    def __init__(self, xs):
+        self.xs = xs
+        self.add = Adder(10)
+    def __bool__(self):
+        return bool(helper(self.xs, lambda x: x))
+    def __len__(self):
+        return self.add(len(self.xs))
+print(bool(Box([])), bool(Box([1])), len(Box([1, 2])))
+
+# __new__ calling a helper
+class Single:
+    _inst = None
+    def __new__(cls, *a):
+        if cls._inst is None:
+            cls._inst = super().__new__(cls)
+            cls._inst.made = helper([1], lambda x: x)
+        return cls._inst
+print(Single() is Single(), Single().made)
+### sync/twin-hash-eq
+def helper(xs, f):
+    return [f(x) for x in xs]
+# __eq__ / __hash__ calling helpers, a classmethod and a staticmethod
+class P:
+    def __init__(self, v):
+        self.v = v
+    @classmethod
+    def norm(cls, v):
+        return abs(v)
+    @staticmethod
+    def key(v):
+        return helper([v], lambda x: x * 2)[0]
+    def __eq__(self, o):
+        return self.norm(self.v) == P.norm(o.v)
+    def __hash__(self):
+        return hash(P.key(self.v))
+print(P(-1) == P(1), len({P(2), P(2)}), {P(3): "x"}[P(3)])
+### sync/exec-namespaces
+g = {}
+exec("def f(x):\n    return x + 1", g)
+print(g["f"](1), eval("y * 2", {"y": 4}))
+e = exec
+e("z = 3", g)
+print(g["z"])
+K = 10
+exec("M = K * 2")
+print(M)
+def fn(a):
+    b = a + 1
+    print(eval("a + b + K"))
+    ns = {}
+    ns = dict(locals())
+    exec("c = b * 2", globals(), ns)
+    return ns["c"]
+print(fn(1))
+print(eval("[i for i in range(3)]"))
+### builtin/map-filter-sync
+class V:
+    def __init__(self, r):
+        self.r = r
+    @property
+    def release(self):
+        return self.r
+    def __str__(self):
+        return ".".join(map(str, self.release))
+    def tag(self, x):
+        return "<" + str(x) + ">"
+v = V((1, 2))
+print(str(v), f"{v}", list(map(v.tag, [1, 2])), list(filter(None, [0, 1, 2])), "-".join(filter(lambda s: s != "b", "abc")))
+m = map(lambda x: x * 2, [1, 2, 3])
+print(next(m), list(m))
+for x in map(str, range(3)):
+    print(x, end=" ")
+print(sorted(map(abs, [-3, 1, -2])), sum(map(len, ["ab", "c"])), tuple(filter(str.isdigit, "a1b2")))
+import itertools
+print(list(map(lambda x: x, itertools.islice(itertools.count(), 3))))
+def first():
+    for x in map(lambda y: y + 1, itertools.count()):
+        return x
+print(first())
+### builtin/type-dunders
+print(str.__add__("a", "b"), int.__mul__(3, 4), list.__len__([1, 2]), str.__len__("abc"), str.__contains__("abc", "b"), str.__getitem__("abc", 1), int.__lt__(1, 2), tuple.__eq__((1,), (1,)), str.__str__("q"))
+class M(str):
+    def __mod__(self, a):
+        return M(str.__mod__(self, a))
+print(M('%s!') % 'x', type(M('%s') % 1).__name__)

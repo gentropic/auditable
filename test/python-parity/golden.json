@@ -1048,6 +1048,26 @@
   "func/instance-decorator": {
    "out": "(1, 6) 2\n",
    "error": null
+  },
+  "sync/twins-from-sync-contexts": {
+   "out": "<b>&lt;i></b>\n2 5 View\nFalse True 12\nTrue [1]\n",
+   "error": null
+  },
+  "sync/twin-hash-eq": {
+   "out": "True 1 x\n",
+   "error": null
+  },
+  "sync/exec-namespaces": {
+   "out": "2 8\n3\n20\n13\n4\n[0, 1, 2]\n",
+   "error": null
+  },
+  "builtin/map-filter-sync": {
+   "out": "1.2 1.2 ['<1>', '<2>'] [1, 2] a-c\n2 [4, 6]\n0 1 2 [1, 2, 3] 3 ('1', '2')\n[0, 1, 2]\n1\n",
+   "error": null
+  },
+  "builtin/type-dunders": {
+   "out": "ab 12 2 3 True b True True q\nx! M\n",
+   "error": null
   }
  }
 }
