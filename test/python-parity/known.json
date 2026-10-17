@@ -29,6 +29,7 @@
   "builtin/sum-start": "output",
   "class/str-subclass": "error AttributeError vs CPython null",
   "exc/traceback-objects": "output",
-  "class/generic-alias-base": "output"
+  "class/generic-alias-base": "output",
+  "gen/close-and-finalize": "error AttributeError vs CPython null"
  }
 }

@@ -3,11 +3,11 @@
 
 import {
   AdderError, AdderRange, Complex,
-  pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
+  pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyCollectMaybe, pyFormatValue,
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
@@ -427,8 +427,7 @@ function _setattr(obj, name, value) {
   // `Strength.REQUIRED = Strength(0)` deltablue uses for module-level
   // singletons set after the class body has evaluated).
   if (obj !== null && (typeof obj === 'object' || typeof obj === 'function')) {
-    guardSetAttr(obj, name);
-    obj[name] = value;
+    storeAttr(obj, name, value);
   }
 }
 
@@ -455,25 +454,8 @@ function _localsOf(names, values) {
   return o;
 }
 
-function _delitem(obj, key) {
-  if (obj instanceof Map) { obj.delete(key); return; }
-  if (Array.isArray(obj)) {
-    const idx = key < 0 ? obj.length + key : key;
-    obj.splice(idx, 1);
-    return;
-  }
-  if (obj instanceof Set) { obj.delete(key); return; }
-  if (obj !== null && typeof obj === 'object') {
-    if (typeof obj.__delitem__ === 'function') { obj.__delitem__(key); return; }
-    delete obj[key];
-    return;
-  }
-  throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item deletion`);
-}
-
-function _delattr(obj, name) {
-  if (obj !== null && typeof obj === 'object') delete obj[name];
-}
+const _delitem = pyDelItem;
+const _delattr = pyDelAttr;
 
 function _makeDict(keys, values) {
   const m = new PyDict();
@@ -580,7 +562,40 @@ function _iterArray(obj) {
       return out;
     })();
   }
+  if (isUserIterable(obj)) return _userIterSync(obj);
   return [...pyIter(obj)];
+}
+// a user __iter__ / __next__ (or __getitem__) object read synchronously where it can be: stepped
+// lazily (an endless iterator can still be broken out of); an async (tree-walked) dunder makes it
+// a Promise of the collected items instead, as for the async sources above
+function _userIterSync(obj) {
+  if (typeof obj.__iter__ !== 'function' && typeof obj.__next__ !== 'function') return pyCollectMaybe(obj);
+  const it = typeof obj.__iter__ === 'function' ? obj.__iter__() : obj;
+  if (it !== null && typeof it === 'object' && typeof it.then === 'function') return it.then((x) => pyCollect(x));
+  if (Array.isArray(it) || typeof it === 'string') return it;
+  if (it !== null && typeof it === 'object' && typeof it.__next__ === 'function' && typeof it[Symbol.iterator] !== 'function') {
+    // the first step tells: an async __next__ (a compiled one with an await in it is async on
+    // every call) → collect behind a Promise; else step lazily
+    let first;
+    try { first = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return []; throw e; }
+    if (first !== null && typeof first === 'object' && typeof first.then === 'function') {
+      return first.then(async (v0) => {
+        const out = [v0];
+        for (;;) {
+          try { out.push(await it.__next__()); } catch (e) { if (e && e.pyType === 'StopIteration') return out; throw e; }
+        }
+      }, (e) => { if (e && e.pyType === 'StopIteration') return []; throw e; });
+    }
+    return (function* () {
+      yield first;
+      for (;;) {
+        let v;
+        try { v = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+        yield v;
+      }
+    })();
+  }
+  return _iterArray(it);
 }
 
 // ── Exceptions ──
@@ -721,6 +736,7 @@ export const _py = {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
     fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    if (mod) Object.defineProperty(fn, '_pyGlobals', { value: _globalsOf(mod), configurable: true });
     const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
     fn.__defaults__ = pos.length ? mkTuple(pos) : null;
     const kwd = shape.kwonly.filter((p) => p.hasDefault);

@@ -24,12 +24,17 @@ export const corpus = parseCorpus(readFileSync(new URL('corpus.txt', HERE), 'utf
 
 const A = await import('../../ext/adder/src/index.js');
 A.attachAir(await import('../../ext/air/index.js'));
+const { adderModules } = await import('../../ext/adder/src/builtins.js');
 
 export async function runEngine(engine) {
   const res = {};
   for (const c of corpus) {
     const want = golden.cases[c.name];
     if (!want) { res[c.name] = { status: 'nogolden' }; continue; }
+    // each case starts as a fresh CPython process would: no module instantiated from source by an
+    // earlier case (or by the other engine) is still in sys.modules
+    const mods = adderModules.sys.modules;
+    for (const k of Object.keys(mods)) if (adderModules[k] !== mods[k]) delete mods[k];
     const out = [];
     let err = null, used = null;
     try {

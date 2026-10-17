@@ -557,6 +557,21 @@ function emitPyIter(ctx, src, loc, type) {
   if (src && (src.op === 'await' || src._mayBeAsyncIter)) {
     return ctx.emit('await', [call.id], type || DYNAMIC, loc);
   }
+  // in a function that may await anyway, any source may be async underneath (a user __iter__ /
+  // __next__ that is itself async — `self.i += 1` in __next__ makes it so): guard the result as
+  // `+=` does, `t = _py.iter(src); if (_py.isThen(t)) t = await t` — free there, and kept out
+  // of sync functions, whose comprehensions take the synchronous reading only
+  if (ctx._loopMayAwait) {
+    const tmp = ctx.makeTempName('itr');
+    ctx.emit('store', [tmp, call.id], VOID, loc);
+    const isThen = emitPyCall(ctx, 'isThen', [ctx.emit('load', [tmp], DYNAMIC, loc)], loc, BOOL);
+    const thenBody = captureOps(ctx, () => {
+      const awaited = ctx.emit('await', [ctx.emit('load', [tmp], DYNAMIC, loc).id], DYNAMIC, loc);
+      ctx.emit('store', [tmp, awaited.id], VOID, loc);
+    });
+    ctx.emit('if_region', [isThen.id], VOID, loc, { then_body: thenBody, else_body: [], phis: [] });
+    return ctx.emit('load', [tmp], type || DYNAMIC, loc);
+  }
   return call;
 }
 
@@ -590,6 +605,9 @@ export function lowerAdder(ast, source, opts) {
   }
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
+  // compiled functions bind their defaults as constants and can't take another body: a module
+  // that rewrites a function's __code__ / __defaults__ / __kwdefaults__ runs on the tree-walker
+  if (_rewritesFunctionInternals(ast)) throw new AirLowerError('rewriting __code__ / __defaults__ / __kwdefaults__ needs the tree-walker');
 
   // globals() / locals(): the module's namespace as a live dict over the module object (a
   // compiled module mirrors every module-level binding onto it). The main program gets such an
@@ -1746,7 +1764,7 @@ function lowerClassDef(ctx, node) {
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
     const d = decorators[i];
-    const call = ctx.emit('call', [d.id, classOp.id], DYNAMIC, l);
+    const call = ctx.emit('call', [emitPyCall(ctx, 'fnOf', [d], l).id, classOp.id], DYNAMIC, l);
     classOp = ctx.emit('await', [call.id], DYNAMIC, l);
   }
 
@@ -2303,6 +2321,20 @@ function _refExpr(ctx, ssaId) {
 // would a coroutine.) Not in sync mode: the dunders whose call sites DO await — construction,
 // __call__, the in-place operators (guarded), `with`, iteration — and class-creation hooks.
 // does the program call globals() / locals() anywhere?
+const _FN_INTERNALS = new Set(['__code__', '__defaults__', '__kwdefaults__']);
+const _isFnInternal = (n) => n && n.type === 'Attribute' && _FN_INTERNALS.has(n.attr);
+function _rewritesFunctionInternals(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(_rewritesFunctionInternals);
+  const stores = (t) => t && (_isFnInternal(t) || (t.type === 'Subscript' && _isFnInternal(t.value)) ||
+    ((t.type === 'Tuple' || t.type === 'List') && t.elts.some(stores)));
+  if ((node.type === 'Assign' && node.targets.some(stores)) || ((node.type === 'AugAssign' || node.type === 'AnnAssign') && stores(node.target))) return true;
+  // f.__kwdefaults__.update(...) / .pop / .setdefault / .clear
+  if (node.type === 'Call' && node.func && node.func.type === 'Attribute' && _isFnInternal(node.func.value) &&
+    ['update', 'pop', 'popitem', 'setdefault', 'clear', '__setitem__', '__delitem__'].includes(node.func.attr)) return true;
+  for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _rewritesFunctionInternals(node[k])) return true;
+  return false;
+}
 function _callsScopeBuiltin(node) {
   if (!node || typeof node !== 'object') return false;
   if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
@@ -2341,7 +2373,7 @@ function _functionLocalNames(node) {
 }
 // (__new__ is NOT here: it's construction plumbing — `self.__class__(…)` in a sync-mode
 // __add__ must get an instance, not a Promise — and I/O in __new__ is rare; __init__ may do I/O)
-const AWAITED_DUNDERS = new Set(['__init__', '__call__', '__post_init__', '__del__',
+const AWAITED_DUNDERS = new Set(['__init__', '__new__', '__call__', '__post_init__', '__del__',
   '__enter__', '__exit__', '__aenter__', '__aexit__', '__iter__', '__next__', '__aiter__', '__anext__', '__await__',
   '__iadd__', '__isub__', '__imul__', '__imatmul__', '__itruediv__', '__ifloordiv__', '__imod__', '__ipow__',
   '__ilshift__', '__irshift__', '__iand__', '__ixor__', '__ior__',
@@ -2483,7 +2515,9 @@ function lowerFuncDef(ctx, node) {
   for (let i = decorators.length - 1; i >= 0; i--) {
     const dec = decorators[i];
     const loadFn = ctx.emit('load', [name], DYNAMIC, l);
-    const call = ctx.emit('call', [dec.id, loadFn.id], DYNAMIC, l);
+    // a decorator may be any callable — an instance with __call__ (networkx's argmap) too
+    const callee = emitPyCall(ctx, 'fnOf', [dec], l);
+    const call = ctx.emit('call', [callee.id, loadFn.id], DYNAMIC, l);
     const awaited = ctx.emit('await', [call.id], DYNAMIC, l);
     ctx.emit('store', [name, awaited.id], VOID, l);
     ctx.symbols.set(name, awaited.id);

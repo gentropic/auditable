@@ -318,7 +318,54 @@ export function adderTokenize(code) {
 // ── parser ──
 
 export function adderParse(code) {
-  return new _Parser(adderTokenize(code)).parseModule();
+  return _manglePrivate(new _Parser(adderTokenize(code)).parseModule(), null);
+}
+
+// Private name mangling, as CPython's compiler does it: inside a class body (its methods and the
+// functions nested in them included), an identifier `__x` that doesn't end in `__` is
+// `_Class__x` — names, attributes, parameters, keyword arguments, global / nonlocal lists. The
+// class's name loses its leading underscores first; a class of only underscores mangles nothing.
+// Strings are left alone (getattr(self, "__x") is not mangled, as in Python).
+function _mangle(n, cls) {
+  return cls && typeof n === 'string' && n.length > 2 && n.startsWith('__') && !n.endsWith('__') ? `_${cls}${n}` : n;
+}
+function _manglePrivate(node, cls) {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) { for (const x of node) _manglePrivate(x, cls); return node; }
+  const walkKeys = (keys) => { for (const k of keys) if (node[k] && typeof node[k] === 'object') _manglePrivate(node[k], cls); };
+  switch (node.type) {
+    case 'ClassDef': {
+      const own = node.name;
+      if (cls) node.name = _mangle(node.name, cls);
+      walkKeys(['bases', 'keywords', 'decorators']);
+      const inner = String(own).replace(/^_+/, '') || null;
+      _manglePrivate(node.body, inner);
+      return node;
+    }
+    case 'Name': if (cls) node.id = _mangle(node.id, cls); return node;
+    case 'Attribute': if (cls) node.attr = _mangle(node.attr, cls); _manglePrivate(node.value, cls); return node;
+    case 'Global': case 'Nonlocal': if (cls) node.names = node.names.map((n) => _mangle(n, cls)); return node;
+    case 'FunctionDef': case 'AsyncFunctionDef': case 'Lambda':
+      if (cls) {
+        if (node.name) node.name = _mangle(node.name, cls);
+        for (const p of [...(node.params || []), ...(node.kwonly || [])]) if (p && p.name) p.name = _mangle(p.name, cls);
+        for (const k of ['vararg', 'kwarg']) {
+          if (typeof node[k] === 'string') node[k] = _mangle(node[k], cls);
+          else if (node[k] && node[k].name) node[k].name = _mangle(node[k].name, cls);
+        }
+      }
+      break;
+    case 'ExceptHandler': if (cls && node.name) node.name = _mangle(node.name, cls); break;
+    default: break;
+  }
+  // keyword arguments of a call: `f(__wrapper=x)` in a class body is `f(_C__wrapper=x)`
+  if (cls && Array.isArray(node.keywords)) for (const kw of node.keywords) { if (kw && typeof kw.name === 'string') kw.name = _mangle(kw.name, cls); if (kw && typeof kw.arg === 'string') kw.arg = _mangle(kw.arg, cls); }
+  for (const k of Object.keys(node)) {
+    if (k === 'type' || k === 'line' || k === 'col') continue;
+    const v = node[k];
+    if (v && typeof v === 'object') _manglePrivate(v, cls);
+  }
+  return node;
 }
 
 export function _adderParseExpr(code) {

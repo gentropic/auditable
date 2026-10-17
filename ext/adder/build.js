@@ -9,6 +9,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const srcDir = path.join(__dirname, 'src');
+
+// the Python-source stdlib (pylib/) → src/stdlib-py.js, before the bundle reads it
+await import('./gen-pylib.js');
 const mainPath = path.join(srcDir, 'main.js');
 const mainSrc = fs.readFileSync(mainPath, 'utf8');
 

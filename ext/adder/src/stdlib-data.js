@@ -396,7 +396,8 @@ adderModules.struct = {
 // ── hashlib / hmac ──
 // md5, sha1, sha224, sha256, sha384, sha512 (+ new, pbkdf2_hmac), synchronous pure JS; the SHA-2
 // round constants are derived exactly (integer roots of the primes), not typed in. hmac.new /
-// digest / compare_digest. Not here: blake2, sha3, shake.
+// digest / compare_digest; blake2b / blake2s (RFC 7693, with digest_size, key, salt, person and
+// the tree parameters). Not here: sha3, shake.
 const _dtPrimes = (n) => { const ps = []; for (let k = 2; ps.length < n; k++) if (ps.every((p) => k % p)) ps.push(k); return ps; };
 const _dtIroot = (n, k) => {
   // floor(n ** (1/k)) for BigInt n, by Newton from above
@@ -531,6 +532,84 @@ function _dtMd5(msg) {
   [a0, b0, c0, d0].forEach((v, i) => odv.setInt32(4 * i, v, true));
   return out;
 }
+// BLAKE2 (RFC 7693), both widths on BigInt words: b = 64-bit words, 12 rounds, the SHA-512 IV;
+// s = 32-bit words, 10 rounds, the SHA-256 IV. The parameter block is XORed into the IV.
+const _DT_SIGMA = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+  [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4], [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+  [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13], [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+  [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11], [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+  [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5], [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+];
+const _DT_BLAKE = {
+  blake2b: { w: 64, rounds: 12, rot: [32n, 24n, 16n, 63n], block: 128, out: 64, salt: 16, person: 16, iv: () => _DT_H512.slice() },
+  blake2s: { w: 32, rounds: 10, rot: [16n, 12n, 8n, 7n], block: 64, out: 32, salt: 8, person: 8, iv: () => [..._DT_H256].map(BigInt) },
+};
+function _dtBlake2(variant, msg, p) {
+  const V = _DT_BLAKE[variant], W = BigInt(V.w), MASK = (1n << W) - 1n, wb = V.w / 8;
+  const rotr = (x, n) => ((x >> n) | (x << (W - n))) & MASK;
+  const word = (bytes, off) => { let x = 0n; for (let i = wb - 1; i >= 0; i--) x = (x << 8n) | BigInt(bytes[off + i]); return x; };
+  // the parameter block: digest length, key length, fanout, depth, leaf length, node offset,
+  // node depth, inner length, then salt and personalization in the last two quarters
+  const pb = new Uint8Array(wb * 8);
+  pb[0] = p.digest_size; pb[1] = p.key.length; pb[2] = p.fanout; pb[3] = p.depth;
+  new DataView(pb.buffer).setUint32(4, p.leaf_size, true);
+  let no = BigInt(p.node_offset);
+  for (let i = 0; i < (V.w === 64 ? 8 : 6); i++) { pb[8 + i] = Number(no & 0xffn); no >>= 8n; }
+  pb[V.w === 64 ? 16 : 14] = p.node_depth; pb[V.w === 64 ? 17 : 15] = p.inner_size;
+  pb.set(p.salt, wb * 4); pb.set(p.person, wb * 4 + V.salt);
+  const iv = V.iv();
+  const h = iv.map((x, i) => x ^ word(pb, i * wb));
+  let data = msg;
+  if (p.key.length) { const kb = new Uint8Array(V.block + msg.length); kb.set(p.key); kb.set(msg, V.block); data = kb; }
+  const nblocks = Math.max(1, Math.ceil(data.length / V.block));
+  let t = 0n;
+  const m = new Array(16), v = new Array(16);
+  const G = (a, b, c, d, x, y) => {
+    v[a] = (v[a] + v[b] + x) & MASK; v[d] = rotr(v[d] ^ v[a], V.rot[0]);
+    v[c] = (v[c] + v[d]) & MASK; v[b] = rotr(v[b] ^ v[c], V.rot[1]);
+    v[a] = (v[a] + v[b] + y) & MASK; v[d] = rotr(v[d] ^ v[a], V.rot[2]);
+    v[c] = (v[c] + v[d]) & MASK; v[b] = rotr(v[b] ^ v[c], V.rot[3]);
+  };
+  for (let bi = 0; bi < nblocks; bi++) {
+    const chunk = data.subarray(bi * V.block, (bi + 1) * V.block);
+    const blk = new Uint8Array(V.block); blk.set(chunk);
+    t += BigInt(chunk.length);
+    const last = bi === nblocks - 1;
+    for (let i = 0; i < 16; i++) m[i] = word(blk, i * wb);
+    for (let i = 0; i < 8; i++) { v[i] = h[i]; v[i + 8] = iv[i]; }
+    v[12] ^= t & MASK; v[13] ^= (t >> W) & MASK;
+    if (last) { v[14] ^= MASK; if (p.last_node) v[15] ^= MASK; }
+    for (let r = 0; r < V.rounds; r++) {
+      const sg = _DT_SIGMA[r % 10];
+      G(0, 4, 8, 12, m[sg[0]], m[sg[1]]); G(1, 5, 9, 13, m[sg[2]], m[sg[3]]);
+      G(2, 6, 10, 14, m[sg[4]], m[sg[5]]); G(3, 7, 11, 15, m[sg[6]], m[sg[7]]);
+      G(0, 5, 10, 15, m[sg[8]], m[sg[9]]); G(1, 6, 11, 12, m[sg[10]], m[sg[11]]);
+      G(2, 7, 8, 13, m[sg[12]], m[sg[13]]); G(3, 4, 9, 14, m[sg[14]], m[sg[15]]);
+    }
+    for (let i = 0; i < 8; i++) h[i] ^= v[i] ^ v[i + 8];
+  }
+  const out = new Uint8Array(p.digest_size);
+  for (let i = 0; i < p.digest_size; i++) out[i] = Number((h[Math.floor(i / wb)] >> BigInt(8 * (i % wb))) & 0xffn);
+  return out;
+}
+const _dtBlakeDefaults = (variant) => ({ digest_size: _DT_BLAKE[variant].out, key: new Uint8Array(0), salt: new Uint8Array(0), person: new Uint8Array(0),
+  fanout: 1, depth: 1, leaf_size: 0, node_offset: 0, node_depth: 0, inner_size: 0, last_node: false });
+function _dtBlakeParams(variant, kw) {
+  const V = _DT_BLAKE[variant], p = _dtBlakeDefaults(variant);
+  if (kw) for (const k of Object.keys(kw)) {
+    if (k === '_kw' || k === 'usedforsecurity' || k === 'string' || k === 'data') continue;
+    if (!(k in p)) throw new AdderError('TypeError', `'${k}' is an invalid keyword argument for ${variant}()`);
+    p[k] = ['key', 'salt', 'person'].includes(k) ? _dtHashInput(kw[k]) : kw[k];
+  }
+  if (!(p.digest_size >= 1 && p.digest_size <= V.out)) throw new AdderError('ValueError', `digest_size must be between 1 and ${V.out} bytes`);
+  if (p.key.length > V.out) throw new AdderError('ValueError', `maximum key length is ${V.out} bytes`);
+  if (p.salt.length > V.salt) throw new AdderError('ValueError', `maximum salt length is ${V.salt} bytes`);
+  if (p.person.length > V.person) throw new AdderError('ValueError', `maximum person length is ${V.person} bytes`);
+  p.last_node = !!p.last_node;
+  return p;
+}
+const _dtBlakeAlg = (variant, p) => ({ fn: (m) => _dtBlake2(variant, m, p), size: p.digest_size, block: _DT_BLAKE[variant].block });
 const _DT_HASHES = {
   md5: { fn: _dtMd5, size: 16, block: 64 },
   sha1: { fn: _dtSha1, size: 20, block: 64 },
@@ -538,6 +617,8 @@ const _DT_HASHES = {
   sha256: { fn: (m) => _dtSha256(m, _DT_H256, 8), size: 32, block: 64 },
   sha384: { fn: (m) => _dtSha512(m, _DT_H384, 48), size: 48, block: 128 },
   sha512: { fn: (m) => _dtSha512(m, _DT_H512, 64), size: 64, block: 128 },
+  blake2b: _dtBlakeAlg('blake2b', _dtBlakeDefaults('blake2b')),
+  blake2s: _dtBlakeAlg('blake2s', _dtBlakeDefaults('blake2s')),
 };
 const _dtHashInput = (data) => {
   if (typeof data === 'string') throw new AdderError('TypeError', 'Strings must be encoded before hashing');
@@ -545,11 +626,11 @@ const _dtHashInput = (data) => {
 };
 const _dtHexOf = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 class _DtHash {
-  constructor(name, data) { this.name = name; this._alg = _DT_HASHES[name]; this._parts = []; this.digest_size = this._alg.size; this.block_size = this._alg.block; if (data !== undefined && data !== null) this.update(data); }
+  constructor(name, data, alg) { this.name = name; this._alg = alg || _DT_HASHES[name]; this._parts = []; this.digest_size = this._alg.size; this.block_size = this._alg.block; if (data !== undefined && data !== null) this.update(data); }
   update(data) { this._parts.push(Uint8Array.from(_dtHashInput(data))); return null; }
   digest() { return this._alg.fn(_dtConcat(this._parts)); }
   hexdigest() { return _dtHexOf(this.digest()); }
-  copy() { const h = new _DtHash(this.name); h._parts = [...this._parts]; return h; }
+  copy() { const h = new _DtHash(this.name, undefined, this._alg); h._parts = [...this._parts]; return h; }
   __repr__() { return `<${this.name} _hashlib.HASH object>`; }
 }
 _DtHash.prototype.__adderClass__ = 'HASH';
@@ -583,8 +664,22 @@ class _DtHmac {
 }
 _DtHmac.prototype.__adderClass__ = 'HMAC';
 const _dtHmacNew = (key, ...a) => { const { args } = _dtArgs(a, ['msg', 'digestmod'], { msg: null, digestmod: null }); return new _DtHmac(key, args.msg, args.digestmod); };
+// blake2b(data=b'', *, digest_size, key, salt, person, fanout, depth, leaf_size, node_offset,
+// node_depth, inner_size, last_node, usedforsecurity)
+const _dtBlakeCtor = (variant) => {
+  const V = _DT_BLAKE[variant];
+  const f = (...a) => {
+    const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : null;
+    const data = a.length ? a[0] : kw && (kw.data ?? kw.string);
+    return new _DtHash(variant, data ?? undefined, _dtBlakeAlg(variant, _dtBlakeParams(variant, kw)));
+  };
+  f._pyName = variant; f.__name__ = variant;
+  Object.assign(f, { SALT_SIZE: V.salt, PERSON_SIZE: V.person, MAX_KEY_SIZE: V.out, MAX_DIGEST_SIZE: V.out });
+  return f;
+};
 adderModules.hashlib = {
   ...Object.fromEntries(Object.keys(_DT_HASHES).map((n) => [n, _dtHashCtor(n)])),
+  blake2b: _dtBlakeCtor('blake2b'), blake2s: _dtBlakeCtor('blake2s'),
   new: (name, data) => { const n = _dtHashName(name); return new _DtHash(n, data && data._kw ? data.data : data); },
   algorithms_guaranteed: new Set(Object.keys(_DT_HASHES)),
   algorithms_available: new Set(Object.keys(_DT_HASHES)),

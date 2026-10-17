@@ -1047,7 +1047,13 @@ function emitFunc(ctx, op) {
       ? '\n' + bodyLines.join('\n') + '\n' + '  '.repeat(ctx.indent)
       : '';
 
-    if (name || op.is_generator || op.needs_arguments) {
+    if (name && op.in_class) {
+      // a method: its name is not in scope inside its body (a method `iter` calling the builtin
+      // `iter`), so no named function expression — the property-definition form still gives
+      // the function its .name
+      const key = JSON.stringify(name);
+      register(ctx, op, `({ ${key}: ${asyncPrefix}function${star} (${params}) {${bodyStr}} })[${key}]`);
+    } else if (name || op.is_generator || op.needs_arguments) {
       register(ctx, op, `${asyncPrefix}function${star}${name ? ' ' + name : ''}(${params}) {${bodyStr}}`);
     } else {
       register(ctx, op, `${asyncPrefix}(${params}) => {${bodyStr}}`);

@@ -971,7 +971,54 @@ function adderTokenize(code) {
 // ── parser ──
 
 function adderParse(code) {
-  return new _Parser(adderTokenize(code)).parseModule();
+  return _manglePrivate(new _Parser(adderTokenize(code)).parseModule(), null);
+}
+
+// Private name mangling, as CPython's compiler does it: inside a class body (its methods and the
+// functions nested in them included), an identifier `__x` that doesn't end in `__` is
+// `_Class__x` — names, attributes, parameters, keyword arguments, global / nonlocal lists. The
+// class's name loses its leading underscores first; a class of only underscores mangles nothing.
+// Strings are left alone (getattr(self, "__x") is not mangled, as in Python).
+function _mangle(n, cls) {
+  return cls && typeof n === 'string' && n.length > 2 && n.startsWith('__') && !n.endsWith('__') ? `_${cls}${n}` : n;
+}
+function _manglePrivate(node, cls) {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) { for (const x of node) _manglePrivate(x, cls); return node; }
+  const walkKeys = (keys) => { for (const k of keys) if (node[k] && typeof node[k] === 'object') _manglePrivate(node[k], cls); };
+  switch (node.type) {
+    case 'ClassDef': {
+      const own = node.name;
+      if (cls) node.name = _mangle(node.name, cls);
+      walkKeys(['bases', 'keywords', 'decorators']);
+      const inner = String(own).replace(/^_+/, '') || null;
+      _manglePrivate(node.body, inner);
+      return node;
+    }
+    case 'Name': if (cls) node.id = _mangle(node.id, cls); return node;
+    case 'Attribute': if (cls) node.attr = _mangle(node.attr, cls); _manglePrivate(node.value, cls); return node;
+    case 'Global': case 'Nonlocal': if (cls) node.names = node.names.map((n) => _mangle(n, cls)); return node;
+    case 'FunctionDef': case 'AsyncFunctionDef': case 'Lambda':
+      if (cls) {
+        if (node.name) node.name = _mangle(node.name, cls);
+        for (const p of [...(node.params || []), ...(node.kwonly || [])]) if (p && p.name) p.name = _mangle(p.name, cls);
+        for (const k of ['vararg', 'kwarg']) {
+          if (typeof node[k] === 'string') node[k] = _mangle(node[k], cls);
+          else if (node[k] && node[k].name) node[k].name = _mangle(node[k].name, cls);
+        }
+      }
+      break;
+    case 'ExceptHandler': if (cls && node.name) node.name = _mangle(node.name, cls); break;
+    default: break;
+  }
+  // keyword arguments of a call: `f(__wrapper=x)` in a class body is `f(_C__wrapper=x)`
+  if (cls && Array.isArray(node.keywords)) for (const kw of node.keywords) { if (kw && typeof kw.name === 'string') kw.name = _mangle(kw.name, cls); if (kw && typeof kw.arg === 'string') kw.arg = _mangle(kw.arg, cls); }
+  for (const k of Object.keys(node)) {
+    if (k === 'type' || k === 'line' || k === 'col') continue;
+    const v = node[k];
+    if (v && typeof v === 'object') _manglePrivate(v, cls);
+  }
+  return node;
 }
 
 function _adderParseExpr(code) {
@@ -2359,13 +2406,30 @@ class PyDict extends Map {
 // engines' own markers on the object are not attributes.
 const _ENGINE_KEYS = new Set(['__adderClass__', '__adderType__', '__adderModule__', '__adderMeta__', '_isExcClass', '_jsClass', '_genName', '_frozen', '_isGenerator', '_sentinel']);
 const _attrHidden = (k) => _ENGINE_KEYS.has(k) || k.startsWith('_py');
+const _FN_SLOTS = new Set(['__defaults__', '__kwdefaults__', '__name__', '__qualname__', '__module__', '__doc__', '__annotations__',
+  '__code__', '__globals__', '__closure__', '__type_params__']);
+// stdlib modules written in Python (name → { pkg, source }; filled by stdlib-py.js, generated from
+// ext/adder/pylib/). The import system instantiates them like a .py file on sys.path.
+const frozenPyModules = {};
+
 class AttrDict extends PyDict {
-  constructor(target) { super(); Object.defineProperty(this, '_t', { value: target }); }
-  _keys() { return Object.keys(this._t).filter((k) => !_attrHidden(k)); }
+  // (`hide`: more names that live on the object but aren't in its __dict__ — a function's
+  // __defaults__ / __kwdefaults__ / __name__ … are slots in CPython)
+  constructor(target, hide = null) { super(); Object.defineProperty(this, '_t', { value: target }); Object.defineProperty(this, '_h', { value: hide }); }
+  _hidden(k) { return _attrHidden(k) || (this._h !== null && this._h.has(k)); }
+  _keys() { return Object.keys(this._t).filter((k) => !this._hidden(k)); }
   get size() { return this._keys().length; }
-  get(k) { return typeof k === 'string' && !_attrHidden(k) && Object.hasOwn(this._t, k) ? this._t[k] : undefined; }
-  has(k) { return typeof k === 'string' && !_attrHidden(k) && Object.hasOwn(this._t, k); }
-  set(k, v) { this._t[k] = v; return this; }
+  get(k) { return typeof k === 'string' && !this._hidden(k) && Object.hasOwn(this._t, k) ? this._t[k] : undefined; }
+  has(k) { return typeof k === 'string' && !this._hidden(k) && Object.hasOwn(this._t, k); }
+  set(k, v) {
+    const t = this._t;
+    // a function's slots (__defaults__, __kwdefaults__, __code__, …) aren't its __dict__: a key of
+    // that name there doesn't change the function (networkx copies a whole __dict__ over one)
+    if (this._h !== null && this._h.has(k)) return this;
+    if (typeof t === 'function' && (k === 'name' || k === 'length')) { storeAttr(t, k, v); return this; }
+    Object.defineProperty(t, k, { value: v, writable: true, enumerable: true, configurable: true });
+    return this;
+  }
   delete(k) { if (!this.has(k)) return false; delete this._t[k]; return true; }
   clear() { for (const k of this._keys()) delete this._t[k]; }
   keys() { return this._keys()[Symbol.iterator](); }
@@ -3155,7 +3219,7 @@ function adderGetAttr(obj, attr) {
   }
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
-    if (attr === '__dict__') return obj._pyClass ? _classDict(obj) : new AttrDict(obj);
+    if (attr === '__dict__') return obj._pyClass ? _classDict(obj) : new AttrDict(obj, _FN_SLOTS);
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
     if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
@@ -3169,6 +3233,9 @@ function adderGetAttr(obj, attr) {
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__code__' && obj._pySig && !obj._pyClass) return _codeObject(obj);
+    // the module namespace it was defined in (its globals()); no closure cells are kept
+    if (attr === '__globals__' && obj._pyDef && !obj._pyClass && obj._pyGlobals) return obj._pyGlobals;
+    if (attr === '__closure__' && obj._pyDef && !obj._pyClass) return null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
     // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
     // looks class attributes up. A function's JS properties (name, length) don't count as the
@@ -3345,6 +3412,9 @@ function adderGetAttr(obj, attr) {
       // a Python function on a class (`Cls.method`) is the function itself — binding made a
       // propertyless copy per access (no signature, no name, `Cls.f is Cls.f` False)
       if (val._pyDef && typeof obj === 'function' && obj._pyClass) return val;
+      // a function's own attribute that is a function (`wrapper.__wrapped__ = f`, `f.helper = g`)
+      // is just that function: only a function found on an instance's class binds
+      if (typeof obj === 'function' && (val._pyDef || val._pyFunc) && Object.hasOwn(obj, attr)) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
       return val.bind(obj);
     }
@@ -3873,6 +3943,24 @@ function _bytesMethod(b, attr) {
       return pyDecode(b, a[0] ?? kw.encoding ?? 'utf-8', a[1] ?? kw.errors ?? 'strict');
     },
     hex: (sep) => [...b].map((c) => c.toString(16).padStart(2, '0')).join(sep || ''),
+    // sep.join(iterable of bytes-likes): bytes, bytearray, memoryview items; a generator too
+    join: (iterable) => {
+      const finish = (items) => {
+        const parts = items.map((x, i) => {
+          if (x instanceof Uint8Array) return x;
+          if (x instanceof PyByteArray) return Uint8Array.from(x);
+          if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
+          throw new AdderError('TypeError', `sequence item ${i}: expected a bytes-like object, ${pyTypeName(x)} found`);
+        });
+        const total = parts.reduce((n, p) => n + p.length, 0) + Math.max(0, parts.length - 1) * b.length;
+        const r = new Uint8Array(total);
+        let o = 0;
+        parts.forEach((p, i) => { if (i) { r.set(b, o); o += b.length; } r.set(p, o); o += p.length; });
+        return r;
+      };
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      return finish([...pyIter(iterable)]);
+    },
   };
   if (attr in m) return m[attr];
   const STR_LIKE = ['startswith', 'endswith', 'find', 'rfind', 'index', 'rindex', 'count', 'replace', 'split', 'rsplit',
@@ -4071,13 +4159,13 @@ function _listMethod(arr, attr) {
 
 function _mapMethod(map, attr) {
   const m = {
-    keys: () => [...map.keys()],
+    keys: () => _dictView([...map.keys()], 'keys'),
     values: () => [...map.values()],
-    items: () => [...map.entries()].map(mkTuple),
+    items: () => _dictView([...map.entries()].map(mkTuple), 'items'),
     get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
     pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
-    update: (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) map.set(k, v); } else if (Array.isArray(other)) { for (const [k, v] of other) map.set(k, v); } else if (typeof other === 'object' && other !== null) { for (const k of Object.keys(other)) if (k !== '_kw') map.set(k, other[k]); } } return null; },
+    update: (...args) => _dictUpdate((k, v) => map.set(k, v), args),
     popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return mkTuple([k, v]); },
     clear: () => { map.clear(); return null; },
     copy: () => new PyDict(map),
@@ -4087,15 +4175,37 @@ function _mapMethod(map, attr) {
   throw new AdderError('AttributeError', `'dict' object has no attribute '${attr}'`);
 }
 
+// dict.update(other=(), **kw): a mapping (a Map, a plain dict, anything with keys() and
+// __getitem__), or an iterable of key / value pairs (a generator too) — then the keywords
+const _dictUpdate = maybeSync(function* (set, args) {
+  for (const other of args) {
+    if (other === null || other === undefined) continue;
+    if (other._kw) { for (const k of Object.keys(other)) if (k !== '_kw') set(k, other[k]); continue; }
+    if (other instanceof Map) { for (const [k, v] of other) set(k, v); continue; }
+    if (isPlainDict(other)) { for (const k of Object.keys(other)) set(k, other[k]); continue; }
+    if (typeof other === 'object' && typeof other.keys === 'function' && typeof other.__getitem__ === 'function') {
+      for (const k of yield* _gCollect(yield other.keys())) set(k, yield other.__getitem__(k));
+      continue;
+    }
+    const pairs = yield* _gCollect(other);
+    for (let i = 0; i < pairs.length; i++) {
+      const p = pairs[i];
+      const a = Array.isArray(p) ? p : typeof p === 'string' ? [...p] : yield* _gCollect(p);
+      if (a.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${a.length}; 2 is required`);
+      set(a[0], a[1]);
+    }
+  }
+  return null;
+});
 const _objDictMethods = {
-  keys: (obj) => { const fn = () => Object.keys(obj); fn._pyName = 'dict.keys'; return fn; },
+  keys: (obj) => { const fn = () => _dictView(Object.keys(obj), 'keys'); fn._pyName = 'dict.keys'; return fn; },
   values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
-  items: (obj) => { const fn = () => Object.entries(obj).map(mkTuple); fn._pyName = 'dict.items'; return fn; },
+  items: (obj) => { const fn = () => _dictView(Object.entries(obj).map(mkTuple), 'items'); fn._pyName = 'dict.items'; return fn; },
   get: (obj) => { const fn = (k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null)); fn._pyName = 'dict.get'; return fn; },
   pop: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
   popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }; fn._pyName = 'dict.popitem'; return fn; },
   setdefault: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
-  update: (obj) => { const fn = (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) obj[k] = v; } else if (other && other._kw) { for (const k of Object.keys(other)) if (k !== '_kw') obj[k] = other[k]; } else if (Array.isArray(other)) { for (const [k, v] of other) obj[k] = v; } else if (typeof other === 'object' && other !== null) Object.assign(obj, other); } return null; }; fn._pyName = 'dict.update'; return fn; },
+  update: (obj) => { const fn = (...args) => _dictUpdate((k, v) => { obj[k] = v; }, args); fn._pyName = 'dict.update'; return fn; },
   clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
   copy: (obj) => { const fn = () => ({ ...obj }); fn._pyName = 'dict.copy'; return fn; },
 };
@@ -4213,6 +4323,7 @@ function pySub(a, b) {
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);
   if (a instanceof Set && b instanceof Set) return _setLike(a, [...a].filter((x) => !b.has(x)));
+  const vo = _dictViewOperands(a, b); if (vo) return pySub(vo[0], vo[1]);
   throw _binErr('-', a, b);
 }
 function _repeat(seq, n) {
@@ -4274,6 +4385,17 @@ function pyPow(a, b, mod) {
   }
   throw _binErr('**', a, b);
 }
+// dict.keys() / dict.items() are snapshot lists here, tagged as views so they are also sets:
+// `d.keys() - other.keys()`, `d.items() & s`, `d.keys() == {…}` work as in Python
+function _dictView(arr, kind) { Object.defineProperty(arr, '_pyView', { value: kind }); return arr; }
+const _isDictView = (x) => Array.isArray(x) && x._pyView !== undefined;
+// for a set operator with a view on one side: both operands as sets (any iterable is
+// accepted opposite a view, as CPython's dict_keys operators do) — or null when neither is a view
+function _dictViewOperands(a, b) {
+  if (!_isDictView(a) && !_isDictView(b)) return null;
+  const asSet = (x) => (x instanceof Set ? x : new PySet(_isDictView(x) || Array.isArray(x) ? x : [...pyIter(x)]));
+  return [asSet(a), asSet(b)];
+}
 function _setLike(proto, items) {
   const s = new PySet(items);
   if (proto && proto._frozen) s._frozen = true;
@@ -4285,6 +4407,7 @@ function _bitwise(sym, a, b, d, rd) {
     return sym === '&' ? a && b : sym === '|' ? a || b : a !== b;   // bool & bool is a bool
   }
   if (_isIntish(a) && _isIntish(b)) return _bitOp(sym, a, b);
+  { const vo = _dictViewOperands(a, b); if (vo) { a = vo[0]; b = vo[1]; } }
   if (a instanceof Set && b instanceof Set) {
     if (sym === '|') return _setLike(a, [...a, ...b]);
     if (sym === '&') return _setLike(a, [...a].filter((x) => b.has(x)));
@@ -4567,6 +4690,7 @@ function pyEq(a, b) {
     return r2 && typeof r2.then === 'function' ? r2.then(last) : last(r2);
   }
   if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
+  if (_isDictView(a) && (b instanceof Set || _isDictView(b)) || _isDictView(b) && a instanceof Set) { const [sa, sb] = _dictViewOperands(a, b); return pyEq(sa, sb); }
   if (Array.isArray(a) && Array.isArray(b)) {
     if ((a instanceof PyTuple) !== (b instanceof PyTuple)) return false;
     if (a.length !== b.length) return false;
@@ -4879,8 +5003,13 @@ function _aiter(obj) {
 }
 
 const _itertoolsModule = {
-  chain: (...iterables) => _lazyIter('chain', async function*() {
+  chain: Object.assign((...iterables) => _lazyIter('chain', async function*() {
         for (const it of iterables) for await (const v of _aiter(it)) yield v;
+  }), {
+    // chain.from_iterable(its): chain(*its), with the outer iterable read lazily too
+    from_iterable: (iterables) => _lazyIter('chain', async function*() {
+      for await (const it of _aiter(iterables)) for await (const v of _aiter(it)) yield v;
+    }),
   }),
   product: (...iterables) => _lazyIter('product', async function*() {
         // product(*its, repeat=n): the keyword bag is not an iterable
@@ -4946,16 +5075,20 @@ const _itertoolsModule = {
   starmap: (func, iterable) => _lazyIter('starmap', async function*() {
         for await (const args of _aiter(iterable)) yield await func(...args);
   }),
+  // islice(it, stop) / (it, start, stop[, step]): reads exactly as far as it must — the source
+  // is stepped by hand and never closed, so islice(it, 3) twice takes two chunks of one iterator
   islice: (iterable, ...args) => _lazyIter('islice', async function*() {
-        let start = 0, stop, step = 1;
+        let start = 0, stop = null, step = 1;
         if (args.length === 1) { stop = args[0]; }
         else if (args.length === 2) { start = args[0]; stop = args[1]; }
-        else { start = args[0]; stop = args[1]; step = args[2] || 1; }
-        let i = 0;
-        for await (const v of _aiter(iterable)) {
-          if (stop !== undefined && i >= stop) break;
-          if (i >= start && (i - start) % step === 0) yield v;
-          i++;
+        else { start = args[0]; stop = args[1]; step = args[2]; }
+        start = start ?? 0; step = step ?? 1; stop = stop ?? null;
+        const src = _aiter(iterable);
+        const it = src[Symbol.asyncIterator] ? src[Symbol.asyncIterator]() : src[Symbol.iterator]();
+        for (let i = 0; stop === null || i < stop; i++) {
+          const r = await it.next();
+          if (r.done) return;
+          if (i >= start && (i - start) % step === 0) yield r.value;
         }
   }),
   zip_longest: (...args) => {
@@ -5081,7 +5214,11 @@ class AdderCounter extends PyDict {
     return n == null ? e : e.slice(0, n);
   }
   elements() { const out = []; for (const [k, v] of this) for (let i = 0; i < v; i++) out.push(k); return out; }
-  update(iterable) { if (iterable != null) _counterAdd(this, iterable); return null; }
+  update(iterable) {
+    if (_needsCollect(iterable)) { const r = pyCollectMaybe(iterable); if (r && typeof r.then === 'function') return r.then((items) => this.update(items)); iterable = r; }
+    if (iterable != null) _counterAdd(this, iterable);
+    return null;
+  }
   subtract(iterable) { const tmp = new AdderCounter(iterable); for (const [k, v] of tmp) this.set(k, (this.get(k) || 0) - v); return null; }
   total() { let t = 0; for (const v of this.values()) t += v; return t; }
   __repr__() { return this.size ? `Counter({${this.most_common().map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'Counter()'; }
@@ -5089,7 +5226,7 @@ class AdderCounter extends PyDict {
 AdderCounter.prototype.__adderClass__ = 'Counter';
 
 class AdderDefaultDict extends PyDict {
-  constructor(factory, items) { super(); this.default_factory = factory ?? null; if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items))) this.set(k, v); }
+  constructor(factory, ...items) { super(); this.default_factory = factory ?? null; if (items.length) _dictUpdate((k, v) => this.set(k, v), items); }
   __missing__(key) {
     if (this.default_factory == null) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     const v = this.default_factory();
@@ -5102,7 +5239,7 @@ class AdderDefaultDict extends PyDict {
 AdderDefaultDict.prototype.__adderClass__ = 'defaultdict';
 
 class AdderOrderedDict extends PyDict {
-  constructor(items) { super(); if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items).filter(([k]) => k !== '_kw'))) this.set(k, v); }
+  constructor(...items) { super(); if (items.length) _dictUpdate((k, v) => this.set(k, v), items); }
   move_to_end(key, last = true) {
     if (last && last._kw) last = last.last;
     if (!this.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
@@ -5188,10 +5325,21 @@ function _namedtuple(name, fields, opts) {
   return cls;
 }
 
-const _ctor = (C, name) => Object.assign((...a) => new C(...a), { _pyName: name, _pyClass: true });
+// an iterable argument that can't be read synchronously (a tree-walked generator, a user
+// __iter__) is collected first — the call is then a Promise of the new object
+const _needsCollect = (src) => src != null && typeof src === 'object' && !src._kw && !(src instanceof Map) && !Array.isArray(src) &&
+  typeof src.keys !== 'function' && (_isAsyncOnly(src) || isUserIterable(src));
+const _ctor = (C, name, at = 0) => Object.assign((...a) => {
+  if (_needsCollect(a[at])) {
+    const r = pyCollectMaybe(a[at]);
+    if (r && typeof r.then === 'function') return r.then((items) => { a[at] = items; return new C(...a); });
+    a[at] = r;
+  }
+  return new C(...a);
+}, { _pyName: name, _pyClass: true });
 const _collectionsModule = {
   Counter: _ctor(AdderCounter, 'Counter'),
-  defaultdict: _ctor(AdderDefaultDict, 'defaultdict'),
+  defaultdict: _ctor(AdderDefaultDict, 'defaultdict', 1),
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
   deque: _ctor(AdderDeque, 'deque'),
   namedtuple: _namedtuple,
@@ -5785,6 +5933,131 @@ function setClassAttr(cls, k, v) {
   (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
 }
 // obj.name = value, from either engine: a frozen dataclass instance refuses every assignment
+// A tree-walked function's defaults live in one object its calls bind from (eval.js
+// _bindParams): __kwdefaults__ is a dict over it, and assigning __defaults__ / __kwdefaults__
+// rewrites it — so a call made afterwards sees the change, as in CPython (networkx's argmap
+// sets its wrapper's own default to the wrapper: `func.__kwdefaults__["_argmap__wrapper"] = func`).
+// NO_DEFAULT marks a parameter whose default was taken away.
+const NO_DEFAULT = Symbol('no default');
+class LiveDefaults extends PyDict {
+  constructor(defaults, entries) {
+    super();
+    for (const [k, v] of entries) super.set(k, v);
+    Object.defineProperty(this, '_d', { value: defaults });
+  }
+  set(k, v) { super.set(k, v); if (this._d && typeof k === 'string') this._d[k] = v; return this; }
+  delete(k) { const r = super.delete(k); if (this._d && typeof k === 'string') this._d[k] = NO_DEFAULT; return r; }
+  clear() { for (const k of [...this.keys()]) this.delete(k); }
+}
+// eval.js: (fn) → the function running fn's replaced __code__ with fn's own defaults
+let _redirectBuilder = null;
+function setRedirectBuilder(f) { _redirectBuilder = f; }
+function _setFunctionInternal(fn, name, value) {
+  const sig = fn._pySig, d = sig.defaults;
+  if (name === '__code__') {
+    const target = value && value._pyFn;
+    if (typeof target !== 'function') throw new AdderError('TypeError', '__code__ must be set to a code object');
+    // only a tree-walked function checks for a replacement body when called
+    if (!fn._pyRedirectable) throw new AdderError('NotImplementedError', `assigning __code__ to a compiled function ('${fn._pyName || fn.name}'): run this code on the tree-walker`);
+    Object.defineProperty(fn, '_pyRedirectCode', { value: target === fn ? null : value, writable: true, configurable: true });
+    _codeObjects.set(fn, value);
+    _redirectBuilder(fn);
+    return;
+  }
+  if (!fn._pyRedirectable && d) {
+    throw new AdderError('NotImplementedError', `assigning ${name} to a compiled function ('${fn._pyName || fn.name}'): run this code on the tree-walker`);
+  }
+  if (name === '__defaults__') {
+    const vals = value === null || value === undefined ? [] : [...pyIter(value)];
+    const params = sig.params || [];
+    const first = params.length - vals.length;
+    params.forEach((p, i) => { if (i >= first) d[p.name] = vals[i - first]; else if (Object.hasOwn(d, p.name)) d[p.name] = NO_DEFAULT; });
+    fn.__defaults__ = vals.length ? mkTuple(vals) : null;
+    if (fn._pyRedirectCode) _redirectBuilder(fn);
+    return;
+  }
+  // __kwdefaults__
+  for (const p of sig.kwonly || []) if (Object.hasOwn(d, p.name)) d[p.name] = NO_DEFAULT;
+  const entries = value === null || value === undefined ? [] : value instanceof Map ? [...value] : Object.entries(value).filter(([k]) => k !== '_kw');
+  for (const [k, v] of entries) d[k] = v;
+  fn.__kwdefaults__ = entries.length ? new LiveDefaults(d, entries) : null;
+  if (fn._pyRedirectCode) _redirectBuilder(fn);
+}
+
+// obj.name = value, as Python does it. A function's JS `name` / `length` are read-only own
+// properties, so a Python attribute of that name (networkx's `_dispatchable.name` copied over by
+// `func.__dict__.update(...)`) is defined over them — keeping __name__ what it was.
+function storeAttr(obj, name, value) {
+  guardSetAttr(obj, name);
+  if (typeof obj === 'function' && obj._pyDef && obj._pySig && (name === '__code__' || name === '__defaults__' || name === '__kwdefaults__')) {
+    _setFunctionInternal(obj, name, value);
+    return;
+  }
+  if (obj !== null && typeof obj === 'object' && obj._pyHasDataDesc) {
+    for (let p = Object.getPrototypeOf(obj); p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, name);
+      if (!d) continue;
+      if (d.set && d.set._pyFset) { d.set._pyFset(obj, value); return; }
+      break;
+    }
+  }
+  if (typeof obj === 'function' && (name === 'name' || name === 'length')) {
+    if (name === 'name' && obj._pyName === undefined) Object.defineProperty(obj, '_pyName', { value: obj.name, writable: true, configurable: true });
+    Object.defineProperty(obj, name, { value, writable: true, configurable: true, enumerable: true });
+    return;
+  }
+  obj[name] = value;
+}
+// del obj[key], for both engines: a subclass's or class's __delitem__ first (its result may be a
+// Promise — a tree-walked method), then the built-in containers with CPython's errors
+function pyDelItem(obj, key) {
+  { const f = subclassDunder(obj, '__delitem__'); if (f) return f.call(obj, key); }
+  if (obj instanceof Map) {
+    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+    obj.delete(key); return null;
+  }
+  if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object doesn't support item deletion`);
+  if (Array.isArray(obj)) {
+    if (!_isIntish(key)) throw new AdderError('TypeError', `list indices must be integers or slices, not ${pyTypeName(key)}`);
+    let i = Number(_asInt(key));
+    if (i < 0) i += obj.length;
+    if (i < 0 || i >= obj.length) throw new AdderError('IndexError', 'list assignment index out of range');
+    obj.splice(i, 1); return null;
+  }
+  if (obj instanceof Set) { obj.delete(key); return null; }
+  if (obj !== null && typeof obj === 'object') {
+    if (typeof obj.__delitem__ === 'function') return obj.__delitem__(key);
+    if (isPlainDict(obj)) {
+      if (typeof key !== 'string' || !Object.hasOwn(obj, key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+      delete obj[key]; return null;
+    }
+  }
+  throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item deletion`);
+}
+// del obj.name, for both engines: a class's __delattr__ (object's own is a plain delete), a data
+// descriptor's __delete__, else the attribute itself — missing is an AttributeError
+function pyDelAttr(obj, name) {
+  if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
+    throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+  }
+  if (typeof obj === 'object' && typeof obj.__delattr__ === 'function') return obj.__delattr__(name);
+  guardSetAttr(obj, name);
+  if (!Object.hasOwn(obj, name)) {
+    for (let p = Object.getPrototypeOf(obj); p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, name);
+      if (!d) continue;
+      const desc = d.set && d.set._pyDescriptor;
+      if (desc) {
+        if (typeof desc.__delete__ !== 'function') throw new AdderError('AttributeError', `__delete__`);
+        return desc.__delete__(obj);
+      }
+      break;
+    }
+    if (!(name in obj)) throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+  }
+  delete obj[name];
+  return null;
+}
 function guardSetAttr(obj, name) {
   if (obj !== null && typeof obj === 'object' && obj.__dataclass_frozen__ === true) {
     throw new AdderError('FrozenInstanceError', `cannot assign to field '${name}'`);
@@ -6585,7 +6858,9 @@ function _findNew(cls) {
 function typeCall(cls, args) {
   const finish = (inst) => {
     if (!_isInstanceOfClass(inst, cls)) return inst;
-    const init = cls.prototype.__init__;
+    // read with the instance as the receiver: an __init__ that is a descriptor (a
+    // functools.partialmethod — tqdm's envwrap) binds to it, not to the prototype
+    const init = Reflect.get(cls.prototype, '__init__', inst);
     if (typeof init === 'function') {
       const r = init.call(inst, ...args);
       if (r && typeof r.then === 'function') return r.then(() => inst);
@@ -6681,12 +6956,16 @@ function buildClass(name, bases, members, annotations, opts = {}) {
       // the tree-walker's assignment calls this itself, so an async __set__ is awaited (a JS setter's
       // return value is dropped) — the same hook @property setters use
       dataSet._pyFset = (o, v) => dataSet.call(o, v);
+      dataSet._pyDescriptor = d;   // del instance.name finds __delete__ here (pyDelAttr)
       Object.defineProperty(cls.prototype, mName, {
-        get() { return d.__get__(this, typeOf(this)); },
+        get() { return typeof d.__get__ === 'function' ? d.__get__(this, typeOf(this)) : d; },
         set: data ? dataSet : shadow,
         configurable: true, enumerable: false,
       });
-      Object.defineProperty(cls, mName, { get() { return d.__get__(null, this); }, set: shadow, configurable: true, enumerable: true });
+      Object.defineProperty(cls, mName, { get() { return typeof d.__get__ === 'function' ? d.__get__(null, this) : d; }, set: shadow, configurable: true, enumerable: true });
+      // a store to this name goes through __set__ even when the instance has the attribute in
+      // its __dict__ (storeAttr checks this flag before a plain assignment)
+      if (data) Object.defineProperty(cls.prototype, '_pyHasDataDesc', { value: true, configurable: true, writable: true });
       (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
     } else if (value && value.__property__) {
       const fget = value.fget;
@@ -6792,7 +7071,7 @@ function mainClassLookup(name) { return _mainClasses.get(name); }
 // a Python descriptor: an instance (of a Python class, or a JS-built one marked _pyDescriptor)
 // with __get__ — not a function, container or the engine's own property / method wrappers
 function _isDescriptor(v) {
-  return v !== null && typeof v === 'object' && typeof v.__get__ === 'function' && !Array.isArray(v) &&
+  return v !== null && typeof v === 'object' && (typeof v.__get__ === 'function' || typeof v.__set__ === 'function' || typeof v.__delete__ === 'function') && !Array.isArray(v) &&
     !(v instanceof Map) && !(v instanceof Set) && !v.__property__ && (!!v.__adderType__ || v._pyDescriptor === true);
 }
 
@@ -6997,8 +7276,30 @@ function _codeObject(fn) {
     co_freevars: mkTuple([]), co_cellvars: mkTuple([]), co_stacksize: 0, co_lnotab: new Uint8Array(0),
     __repr__() { return `<code object ${name} at 0x${(0x7f0000000000 + (_pyHash(this) & 0xffffff)).toString(16)}, file "${this.co_filename}", line ${this.co_firstlineno}>`; },
   };
+  Object.defineProperty(c, '_pyFn', { value: fn });
   _codeObjects.set(fn, c);
   return c;
+}
+// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None): a
+// new function object running that code — here, a function delegating to the one the code came
+// from, with its own name, defaults and attribute dict. (A different `globals` mapping is not
+// honoured: the body keeps reading its own module's names.)
+function makeFunctionFromCode(code, globals, name, argdefs, closure, kwdefaults) {
+  const orig = code && code._pyFn;
+  if (typeof orig !== 'function') throw new AdderError('TypeError', `function() argument 'code' must be code, not ${pyTypeName(code)}`);
+  const f = function (...a) { return orig.apply(this, a); };
+  for (const k of Object.getOwnPropertyNames(orig)) {
+    if (k.startsWith('_py') || k.startsWith('_is') || k === '__module__' || k === '__doc__' || k === '__annotations__') {
+      try { Object.defineProperty(f, k, Object.getOwnPropertyDescriptor(orig, k)); } catch {}
+    }
+  }
+  const nm = typeof name === 'string' ? name : orig._pyName || orig.__name__ || orig.name;
+  f._pyName = nm; f.__name__ = nm; f.__qualname__ = nm;
+  f.__defaults__ = argdefs === undefined || argdefs === null ? orig.__defaults__ ?? null : argdefs;
+  f.__kwdefaults__ = kwdefaults === undefined || kwdefaults === null ? orig.__kwdefaults__ ?? null : kwdefaults;
+  if (globals !== undefined && globals !== null) Object.defineProperty(f, '_pyGlobals', { value: globals, configurable: true });
+  _codeObjects.set(f, code);
+  return f;
 }
 
 // e.__traceback__: a chain of traceback objects (outermost first, tb_next going in), one per
@@ -7406,8 +7707,8 @@ function adderBuiltins(printFn) {
     type: pyTypeObj,
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
     getattr: (obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } },
-    setattr: (obj, name, value) => { guardSetAttr(obj, name); obj[name] = value; return null; },
-    delattr: (obj, name) => { delete obj[name]; return null; },
+    setattr: (obj, name, value) => { storeAttr(obj, name, value); return null; },
+    delattr: (obj, name) => pyDelAttr(obj, name),
     property: (fget) => {
       const prop = { __property__: true, fget, fset: null };
       prop.setter = (fset) => { prop.fset = fset; return prop; };
@@ -7446,6 +7747,11 @@ function adderBuiltins(printFn) {
     iter: (obj) => {
       if (obj !== null && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function' && (typeof obj.__next__ === 'function' || typeof obj.next === 'function')) return obj;
       if (isUserIterable(obj) && typeof obj.__iter__ === 'function') return obj.__iter__();
+      // iter() itself raises for a non-iterable (`try: iter(x) except TypeError:` is the idiom);
+      // pyIter is a generator, so its own check would only fire at the first next()
+      if (obj === null || obj === undefined || (typeof obj !== 'object' && typeof obj !== 'string' && !(typeof obj === 'function' && _metaIter(obj)))) {
+        throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
+      }
       return pyIter(obj);
     },
     next: (iter, def) => {
@@ -7726,6 +8032,7 @@ _reModule.PatternError = _reModule.error;
 
 
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
+
 
 
 
@@ -8164,8 +8471,7 @@ async function _assignTarget(target, value, scope) {
         if (d?.set?._pyFset) { await d.set._pyFset(obj, value); return null; }
         if (d) break;
       }
-      guardSetAttr(obj, target.attr);
-      obj[target.attr] = value;
+      storeAttr(obj, target.attr, value);
       break;
     }
     case 'Subscript': {
@@ -8282,7 +8588,7 @@ async function _evalTarget(target, scope) {
 
 async function _deleteTarget(target, scope) {
   if (target.type === 'Name') { scope.delete(target.id); return; }
-  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); delete obj[target.attr]; return; }
+  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); await pyDelAttr(obj, target.attr); return; }
   if (target.type === 'Subscript') {
     const obj = await adderEval(target.value, scope);
     if (target.slice.type === 'Slice') {
@@ -8296,13 +8602,8 @@ async function _deleteTarget(target, scope) {
       }
       return;
     }
-    const key = await adderEval(target.slice, scope);
-    if (obj instanceof Map) obj.delete(key);
-    else if (Array.isArray(obj)) {
-      const idx = key < 0 ? obj.length + key : key;
-      obj.splice(idx, 1);
-    }
-    else delete obj[key];
+    const key = target.slice.type === 'Tuple' ? mkTuple(await Promise.all(target.slice.elts.map((e) => adderEval(e, scope)))) : await adderEval(target.slice, scope);
+    await pyDelItem(obj, key);
     return;
   }
 }
@@ -8697,12 +8998,35 @@ function _attachSignature(fn, node, defaults, scope = null) {
   let root = scope; while (root && root.parent) root = root.parent;
   fn._pySig.line = node.line || 0;
   fn._pySig.file = root && root.vars.has('__file__') ? root.vars.get('__file__') : '<string>';
+  if (root) Object.defineProperty(fn, '_pyGlobals', { value: root.vars, configurable: true });
   const posDefaults = pos.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
   fn.__defaults__ = posDefaults.length ? mkTuple(posDefaults) : null;
   const kwd = kwonly.filter((p) => p.hasDefault);
-  fn.__kwdefaults__ = kwd.length ? new PyDict(kwd.map((p) => [p.name, defaults[p.name]])) : null;
+  fn.__kwdefaults__ = kwd.length ? new LiveDefaults(defaults, kwd.map((p) => [p.name, defaults[p.name]])) : null;
+  fn._pyRedirectable = true;   // its defaults are live and its __code__ can be replaced
+  Object.defineProperty(fn, '_pyNode', { value: node, configurable: true });
+  Object.defineProperty(fn, '_pyScope', { value: scope, configurable: true });
   return fn;
 }
+// func.__code__ = other.__code__: func now runs other's body, in other's scope, with FUNC's
+// defaults — __defaults__ aligned to the new code's trailing positional parameters,
+// __kwdefaults__ by name — as CPython runs a replaced code object (networkx's argmap compiles a
+// signature without defaults and relies on this). Rebuilt when func's defaults change.
+setRedirectBuilder((fn) => {
+  const code = fn._pyRedirectCode;
+  if (!code) { fn._pyRedirect = null; return; }
+  const target = code._pyFn;
+  if (!target._pyNode) throw new AdderError('NotImplementedError', `this code object comes from a compiled function ('${target._pyName || target.name}'): run it on the tree-walker`);
+  const node = target._pyNode;
+  const d = {};
+  const params = node.params || [];
+  const defs = fn.__defaults__ ? [...fn.__defaults__] : [];
+  const first = params.length - defs.length;
+  params.forEach((p, i) => { d[p.name] = i >= first ? defs[i - first] : NO_DEFAULT; });
+  for (const p of node.kwonly || []) d[p.name] = NO_DEFAULT;
+  if (fn.__kwdefaults__) for (const [k, v] of fn.__kwdefaults__) d[k] = v;
+  Object.defineProperty(fn, '_pyRedirect', { value: _makeFunction(node, target._pyScope, d), writable: true, configurable: true });
+});
 
 function _docstringOf(node) {
   const s = node.body && node.body[0];
@@ -8716,6 +9040,7 @@ function _makeFunction(node, scope, defaults = {}) {
   if (isGenerator) return _makeGeneratorFunction(node, scope, defaults);
 
   const fn = async function (...callArgs) {
+    if (fn._pyRedirect) return fn._pyRedirect.apply(this, callArgs);   // its __code__ was replaced
     const localScope = new AdderScope(scope);
     // bind parameters
     await _bindParams(node, callArgs, localScope, defaults);
@@ -8739,10 +9064,24 @@ function _makeFunction(node, scope, defaults = {}) {
   return _attachSignature(fn, node, defaults, scope);
 }
 
+// generator.close(): GeneratorExit raised at the paused yield, so its except / finally run (a
+// generator that never started, or has finished, just ends); yielding again is a RuntimeError
+async function _closeGen(gen) {
+  try {
+    const r = await gen.throw(new AdderError('GeneratorExit', '', undefined, []));
+    if (!r.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit');
+  } catch (e) {
+    if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null;
+    throw e;
+  }
+  return null;
+}
+
 function _makeGeneratorFunction(node, scope, defaults = {}) {
   // Generator functions use a _YieldSignal to communicate yield values
   // back to the async-generator wrapper.
   const fn = function (...callArgs) {
+    if (fn._pyRedirect) return fn._pyRedirect.apply(this, callArgs);   // its __code__ was replaced
     // Return an object that implements both sync and async iteration.
     // We use an async generator internally, exposed via Symbol.asyncIterator.
     // For sync consumers (for..of), we also provide Symbol.iterator
@@ -8757,7 +9096,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
       [Symbol.asyncIterator]() { return run(); },
       next(v) { return run().next(v); },
       send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
-      close() { return run().return(undefined).then(() => null); },
+      close() { return gen ? _closeGen(gen) : Promise.resolve(null); },
       // g.throw(exc): raise exc at the paused yield; the next value it yields, or StopIteration
       throw(t, v) {
         let exc = v ?? t;
@@ -8798,6 +9137,19 @@ async function* _runGenerator(node, scope, callArgs, defaults = {}) {
   }
 }
 
+// a generator's except-handler body: `raised` is the active exception while the body runs, and
+// not while the generator is suspended at a yield in it (CPython swaps a generator's exception
+// state in and out as it resumes) — an abandoned generator leaves nothing on the stack
+async function* _inExcContext(inner, raised) {
+  let method = 'next', arg;
+  for (;;) {
+    let r;
+    _excStack.push(raised);
+    try { r = await inner[method](arg); } finally { const i = _excStack.lastIndexOf(raised); if (i >= 0) _excStack.splice(i, 1); }
+    if (r.done) return r.value;
+    try { arg = yield r.value; method = 'next'; } catch (e) { method = 'throw'; arg = e; }
+  }
+}
 async function* _evalGenStmt(node, scope) {
   // Like adderEval but yields instead of throwing for Yield nodes
   switch (node.type) {
@@ -8858,26 +9210,33 @@ async function* _evalGenStmt(node, scope) {
       if (c) for (const stmt of c.body) yield* await _evalGenStmt(stmt, scope);
       return;
     }
+    // the same shape as _evalTry, with yields allowed anywhere: else runs when nothing was raised,
+    // a handler's exception is the active one (a bare `raise` in it — `except GeneratorExit:
+    // raise`), and finally runs on every way out, a handler that raises included
     case 'Try': {
       try {
-        for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
-      } catch (e) {
-        if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
-        let handled = false;
-        for (const handler of node.handlers) {
-          let excTypeVal = null;
-          if (handler.excType) try { excTypeVal = await adderEval(handler.excType, scope); } catch {}
-          if (!handler.excType || _matchException(e, excTypeVal)) {
-            if (handler.name) scope.set(handler.name, e);
-            handled = true;
-            for (const stmt of handler.body) yield* await _evalGenStmt(stmt, scope);
-            break;
-          }
+        let raised = null;
+        try {
+          for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
+        } catch (e) {
+          if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
+          raised = e;
         }
-        if (!handled) { for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope); throw e; }
+        if (raised === null) {
+          for (const stmt of node.orelse || []) yield* await _evalGenStmt(stmt, scope);
+          return;
+        }
+        for (const handler of node.handlers) {
+          const excTypeVal = handler.excType ? await adderEval(handler.excType, scope) : null;
+          if (!excMatches(raised, excTypeVal)) continue;
+          if (handler.name) scope.set(handler.name, excValue(raised));
+          for (const stmt of handler.body) yield* _inExcContext(_evalGenStmt(stmt, scope), raised);
+          return;
+        }
+        throw raised;
+      } finally {
+        for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope);
       }
-      for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope);
-      return;
     }
     // with … : yield inside (a @contextmanager method's `with self as rv: yield rv`)
     case 'With': {
@@ -8947,8 +9306,8 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
       localScope.set(p.name, callArgs[positionalIdx++]);
     } else if (kwObj && Object.hasOwn(kwObj, p.name)) {
       localScope.set(p.name, kwObj[p.name]);
-    } else if (p.default) {
-      localScope.set(p.name, p.name in defaults ? defaults[p.name] : await adderEval(p.default, localScope));
+    } else if (Object.hasOwn(defaults, p.name) ? defaults[p.name] !== NO_DEFAULT : p.default) {
+      localScope.set(p.name, Object.hasOwn(defaults, p.name) ? defaults[p.name] : await adderEval(p.default, localScope));
     } else {
       throw new AdderError('TypeError', `${fname}() missing 1 required positional argument: '${p.name}'`);
     }
@@ -8964,8 +9323,8 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   for (const p of kwonly) {
     if (kwObj && Object.hasOwn(kwObj, p.name)) {
       localScope.set(p.name, kwObj[p.name]);
-    } else if (p.default) {
-      localScope.set(p.name, p.name in defaults ? defaults[p.name] : await adderEval(p.default, localScope));
+    } else if (Object.hasOwn(defaults, p.name) ? defaults[p.name] !== NO_DEFAULT : p.default) {
+      localScope.set(p.name, Object.hasOwn(defaults, p.name) ? defaults[p.name] : await adderEval(p.default, localScope));
     } else {
       throw new AdderError('TypeError', `${fname}() missing 1 required keyword-only argument: '${p.name}'`);
     }
@@ -9048,16 +9407,31 @@ async function _evalFor(node, scope) {
   let broke = false;
   // for-await handles both sync iterables and async generators
   const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  // stepped by hand, not for-await, which closes the iterator on any early exit. Python's
+  // reference counting decides that instead: an iterator something still refers to stays open
+  // (`for x in it: break` then `list(it)` goes on where the loop stopped); a temporary one — the
+  // loop's `for x in gen():` — is finalized as the loop lets go of it (its `finally` runs).
+  const it = iter[Symbol.asyncIterator] ? iter[Symbol.asyncIterator]() : iter[Symbol.iterator]();
+  const owned = !(node.iter.type === 'Name' || node.iter.type === 'Attribute' || node.iter.type === 'Subscript');
+  const release = async () => {
+    if (!owned) return;
+    if (iterable && iterable.__adderClass__ === 'generator' && typeof iterable.close === 'function') await iterable.close();
+    else if (typeof it.return === 'function') await it.return(undefined);
+  };
   let _loopCount = 0;
-  for await (const value of iter) {
+  for (;;) {
+    const step = await it.next();
+    if (step.done) break;
+    const value = step.value;
     // yield to event loop periodically to prevent page lockup
     if (++_loopCount % 1000 === 0) await new Promise(r => setTimeout(r, 0));
-    await _assignTarget(node.target, value, scope);
     try {
+      await _assignTarget(node.target, value, scope);
       for (const stmt of node.body) await adderEval(stmt, scope);
     } catch (e) {
-      if (e instanceof _BreakSignal) { broke = true; break; }
+      if (e instanceof _BreakSignal) { broke = true; await release(); break; }
       if (e instanceof _ContinueSignal) continue;
+      await release();
       throw e;
     }
   }
@@ -9254,7 +9628,7 @@ function _evalGenExpr(node, scope) {
     __adderClass__: 'generator',
     [Symbol.asyncIterator]() { return run(); },
     next(v) { return run().next(v); },
-    close() { return run().return(undefined).then(() => null); },
+    close() { return gen ? _closeGen(gen) : Promise.resolve(null); },
     _jsThrow(err) { return run().throw(err); },
   };
 }
@@ -9466,6 +9840,15 @@ async function findModule(name) {
     // `__import__(name); return sys.modules[name]`)
     if (name !== 'js' && adderModules[name] === known && known.__adderModule__) cache[name] = known;
     return known;
+  }
+  if (Object.hasOwn(frozenPyModules, name)) {       // a stdlib module written in Python
+    const fz = frozenPyModules[name];
+    const dot = name.lastIndexOf('.');
+    const parent = dot > 0 ? await findModule(name.slice(0, dot)) : null;
+    if (cache[name]) return cache[name];
+    const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [] } : {});
+    if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
+    return mod;
   }
   const dot = name.lastIndexOf('.');
   if (dot > 0) {
@@ -10129,8 +10512,7 @@ function _setattr(obj, name, value) {
   // `Strength.REQUIRED = Strength(0)` deltablue uses for module-level
   // singletons set after the class body has evaluated).
   if (obj !== null && (typeof obj === 'object' || typeof obj === 'function')) {
-    guardSetAttr(obj, name);
-    obj[name] = value;
+    storeAttr(obj, name, value);
   }
 }
 
@@ -10157,25 +10539,8 @@ function _localsOf(names, values) {
   return o;
 }
 
-function _delitem(obj, key) {
-  if (obj instanceof Map) { obj.delete(key); return; }
-  if (Array.isArray(obj)) {
-    const idx = key < 0 ? obj.length + key : key;
-    obj.splice(idx, 1);
-    return;
-  }
-  if (obj instanceof Set) { obj.delete(key); return; }
-  if (obj !== null && typeof obj === 'object') {
-    if (typeof obj.__delitem__ === 'function') { obj.__delitem__(key); return; }
-    delete obj[key];
-    return;
-  }
-  throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item deletion`);
-}
-
-function _delattr(obj, name) {
-  if (obj !== null && typeof obj === 'object') delete obj[name];
-}
+const _delitem = pyDelItem;
+const _delattr = pyDelAttr;
 
 function _makeDict(keys, values) {
   const m = new PyDict();
@@ -10281,7 +10646,40 @@ function _iterArray(obj) {
       return out;
     })();
   }
+  if (isUserIterable(obj)) return _userIterSync(obj);
   return [...pyIter(obj)];
+}
+// a user __iter__ / __next__ (or __getitem__) object read synchronously where it can be: stepped
+// lazily (an endless iterator can still be broken out of); an async (tree-walked) dunder makes it
+// a Promise of the collected items instead, as for the async sources above
+function _userIterSync(obj) {
+  if (typeof obj.__iter__ !== 'function' && typeof obj.__next__ !== 'function') return pyCollectMaybe(obj);
+  const it = typeof obj.__iter__ === 'function' ? obj.__iter__() : obj;
+  if (it !== null && typeof it === 'object' && typeof it.then === 'function') return it.then((x) => pyCollect(x));
+  if (Array.isArray(it) || typeof it === 'string') return it;
+  if (it !== null && typeof it === 'object' && typeof it.__next__ === 'function' && typeof it[Symbol.iterator] !== 'function') {
+    // the first step tells: an async __next__ (a compiled one with an await in it is async on
+    // every call) → collect behind a Promise; else step lazily
+    let first;
+    try { first = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return []; throw e; }
+    if (first !== null && typeof first === 'object' && typeof first.then === 'function') {
+      return first.then(async (v0) => {
+        const out = [v0];
+        for (;;) {
+          try { out.push(await it.__next__()); } catch (e) { if (e && e.pyType === 'StopIteration') return out; throw e; }
+        }
+      }, (e) => { if (e && e.pyType === 'StopIteration') return []; throw e; });
+    }
+    return (function* () {
+      yield first;
+      for (;;) {
+        let v;
+        try { v = it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+        yield v;
+      }
+    })();
+  }
+  return _iterArray(it);
 }
 
 // ── Exceptions ──
@@ -10422,6 +10820,7 @@ const _py = {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
     fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    if (mod) Object.defineProperty(fn, '_pyGlobals', { value: _globalsOf(mod), configurable: true });
     const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
     fn.__defaults__ = pos.length ? mkTuple(pos) : null;
     const kwd = shape.kwonly.filter((p) => p.hasDefault);
@@ -11029,6 +11428,22 @@ adderModules.html = {
     return Object.hasOwn(_SL_ENT, name) ? _SL_ENT[name] : m;
   }),
 };
+
+// html.entities: the tables over the same entity set as unescape (CPython's are the full
+// HTML 4 list in name2codepoint and the HTML5 list in html5)
+{
+  const n2c = [], c2n = [], defs = [], h5 = [];
+  for (const [name, ch] of Object.entries(_SL_ENT)) {
+    const cp = ch.codePointAt(0);
+    if (name !== 'apos') { n2c.push([name, cp]); if (!c2n.some((e) => e[0] === cp)) c2n.push([cp, name]); defs.push([name, cp < 256 ? ch : `&#${cp};`]); }
+    h5.push([name + ';', ch]);
+    if (cp < 256) h5.push([name, ch]);
+  }
+  const entities = { __adderModule__: true, __name__: 'html.entities',
+    name2codepoint: new PyDict(n2c), codepoint2name: new PyDict(c2n), entitydefs: new PyDict(defs), html5: new PyDict(h5) };
+  adderModules.html.entities = entities;
+  adderModules['html.entities'] = entities;
+}
 
 // ── textwrap ──
 // CPython's TextWrapper algorithm: the same chunking regex (word / hyphen / em-dash
@@ -14509,7 +14924,8 @@ adderModules.struct = {
 // ── hashlib / hmac ──
 // md5, sha1, sha224, sha256, sha384, sha512 (+ new, pbkdf2_hmac), synchronous pure JS; the SHA-2
 // round constants are derived exactly (integer roots of the primes), not typed in. hmac.new /
-// digest / compare_digest. Not here: blake2, sha3, shake.
+// digest / compare_digest; blake2b / blake2s (RFC 7693, with digest_size, key, salt, person and
+// the tree parameters). Not here: sha3, shake.
 const _dtPrimes = (n) => { const ps = []; for (let k = 2; ps.length < n; k++) if (ps.every((p) => k % p)) ps.push(k); return ps; };
 const _dtIroot = (n, k) => {
   // floor(n ** (1/k)) for BigInt n, by Newton from above
@@ -14644,6 +15060,84 @@ function _dtMd5(msg) {
   [a0, b0, c0, d0].forEach((v, i) => odv.setInt32(4 * i, v, true));
   return out;
 }
+// BLAKE2 (RFC 7693), both widths on BigInt words: b = 64-bit words, 12 rounds, the SHA-512 IV;
+// s = 32-bit words, 10 rounds, the SHA-256 IV. The parameter block is XORed into the IV.
+const _DT_SIGMA = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+  [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4], [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+  [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13], [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+  [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11], [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+  [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5], [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+];
+const _DT_BLAKE = {
+  blake2b: { w: 64, rounds: 12, rot: [32n, 24n, 16n, 63n], block: 128, out: 64, salt: 16, person: 16, iv: () => _DT_H512.slice() },
+  blake2s: { w: 32, rounds: 10, rot: [16n, 12n, 8n, 7n], block: 64, out: 32, salt: 8, person: 8, iv: () => [..._DT_H256].map(BigInt) },
+};
+function _dtBlake2(variant, msg, p) {
+  const V = _DT_BLAKE[variant], W = BigInt(V.w), MASK = (1n << W) - 1n, wb = V.w / 8;
+  const rotr = (x, n) => ((x >> n) | (x << (W - n))) & MASK;
+  const word = (bytes, off) => { let x = 0n; for (let i = wb - 1; i >= 0; i--) x = (x << 8n) | BigInt(bytes[off + i]); return x; };
+  // the parameter block: digest length, key length, fanout, depth, leaf length, node offset,
+  // node depth, inner length, then salt and personalization in the last two quarters
+  const pb = new Uint8Array(wb * 8);
+  pb[0] = p.digest_size; pb[1] = p.key.length; pb[2] = p.fanout; pb[3] = p.depth;
+  new DataView(pb.buffer).setUint32(4, p.leaf_size, true);
+  let no = BigInt(p.node_offset);
+  for (let i = 0; i < (V.w === 64 ? 8 : 6); i++) { pb[8 + i] = Number(no & 0xffn); no >>= 8n; }
+  pb[V.w === 64 ? 16 : 14] = p.node_depth; pb[V.w === 64 ? 17 : 15] = p.inner_size;
+  pb.set(p.salt, wb * 4); pb.set(p.person, wb * 4 + V.salt);
+  const iv = V.iv();
+  const h = iv.map((x, i) => x ^ word(pb, i * wb));
+  let data = msg;
+  if (p.key.length) { const kb = new Uint8Array(V.block + msg.length); kb.set(p.key); kb.set(msg, V.block); data = kb; }
+  const nblocks = Math.max(1, Math.ceil(data.length / V.block));
+  let t = 0n;
+  const m = new Array(16), v = new Array(16);
+  const G = (a, b, c, d, x, y) => {
+    v[a] = (v[a] + v[b] + x) & MASK; v[d] = rotr(v[d] ^ v[a], V.rot[0]);
+    v[c] = (v[c] + v[d]) & MASK; v[b] = rotr(v[b] ^ v[c], V.rot[1]);
+    v[a] = (v[a] + v[b] + y) & MASK; v[d] = rotr(v[d] ^ v[a], V.rot[2]);
+    v[c] = (v[c] + v[d]) & MASK; v[b] = rotr(v[b] ^ v[c], V.rot[3]);
+  };
+  for (let bi = 0; bi < nblocks; bi++) {
+    const chunk = data.subarray(bi * V.block, (bi + 1) * V.block);
+    const blk = new Uint8Array(V.block); blk.set(chunk);
+    t += BigInt(chunk.length);
+    const last = bi === nblocks - 1;
+    for (let i = 0; i < 16; i++) m[i] = word(blk, i * wb);
+    for (let i = 0; i < 8; i++) { v[i] = h[i]; v[i + 8] = iv[i]; }
+    v[12] ^= t & MASK; v[13] ^= (t >> W) & MASK;
+    if (last) { v[14] ^= MASK; if (p.last_node) v[15] ^= MASK; }
+    for (let r = 0; r < V.rounds; r++) {
+      const sg = _DT_SIGMA[r % 10];
+      G(0, 4, 8, 12, m[sg[0]], m[sg[1]]); G(1, 5, 9, 13, m[sg[2]], m[sg[3]]);
+      G(2, 6, 10, 14, m[sg[4]], m[sg[5]]); G(3, 7, 11, 15, m[sg[6]], m[sg[7]]);
+      G(0, 5, 10, 15, m[sg[8]], m[sg[9]]); G(1, 6, 11, 12, m[sg[10]], m[sg[11]]);
+      G(2, 7, 8, 13, m[sg[12]], m[sg[13]]); G(3, 4, 9, 14, m[sg[14]], m[sg[15]]);
+    }
+    for (let i = 0; i < 8; i++) h[i] ^= v[i] ^ v[i + 8];
+  }
+  const out = new Uint8Array(p.digest_size);
+  for (let i = 0; i < p.digest_size; i++) out[i] = Number((h[Math.floor(i / wb)] >> BigInt(8 * (i % wb))) & 0xffn);
+  return out;
+}
+const _dtBlakeDefaults = (variant) => ({ digest_size: _DT_BLAKE[variant].out, key: new Uint8Array(0), salt: new Uint8Array(0), person: new Uint8Array(0),
+  fanout: 1, depth: 1, leaf_size: 0, node_offset: 0, node_depth: 0, inner_size: 0, last_node: false });
+function _dtBlakeParams(variant, kw) {
+  const V = _DT_BLAKE[variant], p = _dtBlakeDefaults(variant);
+  if (kw) for (const k of Object.keys(kw)) {
+    if (k === '_kw' || k === 'usedforsecurity' || k === 'string' || k === 'data') continue;
+    if (!(k in p)) throw new AdderError('TypeError', `'${k}' is an invalid keyword argument for ${variant}()`);
+    p[k] = ['key', 'salt', 'person'].includes(k) ? _dtHashInput(kw[k]) : kw[k];
+  }
+  if (!(p.digest_size >= 1 && p.digest_size <= V.out)) throw new AdderError('ValueError', `digest_size must be between 1 and ${V.out} bytes`);
+  if (p.key.length > V.out) throw new AdderError('ValueError', `maximum key length is ${V.out} bytes`);
+  if (p.salt.length > V.salt) throw new AdderError('ValueError', `maximum salt length is ${V.salt} bytes`);
+  if (p.person.length > V.person) throw new AdderError('ValueError', `maximum person length is ${V.person} bytes`);
+  p.last_node = !!p.last_node;
+  return p;
+}
+const _dtBlakeAlg = (variant, p) => ({ fn: (m) => _dtBlake2(variant, m, p), size: p.digest_size, block: _DT_BLAKE[variant].block });
 const _DT_HASHES = {
   md5: { fn: _dtMd5, size: 16, block: 64 },
   sha1: { fn: _dtSha1, size: 20, block: 64 },
@@ -14651,6 +15145,8 @@ const _DT_HASHES = {
   sha256: { fn: (m) => _dtSha256(m, _DT_H256, 8), size: 32, block: 64 },
   sha384: { fn: (m) => _dtSha512(m, _DT_H384, 48), size: 48, block: 128 },
   sha512: { fn: (m) => _dtSha512(m, _DT_H512, 64), size: 64, block: 128 },
+  blake2b: _dtBlakeAlg('blake2b', _dtBlakeDefaults('blake2b')),
+  blake2s: _dtBlakeAlg('blake2s', _dtBlakeDefaults('blake2s')),
 };
 const _dtHashInput = (data) => {
   if (typeof data === 'string') throw new AdderError('TypeError', 'Strings must be encoded before hashing');
@@ -14658,11 +15154,11 @@ const _dtHashInput = (data) => {
 };
 const _dtHexOf = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 class _DtHash {
-  constructor(name, data) { this.name = name; this._alg = _DT_HASHES[name]; this._parts = []; this.digest_size = this._alg.size; this.block_size = this._alg.block; if (data !== undefined && data !== null) this.update(data); }
+  constructor(name, data, alg) { this.name = name; this._alg = alg || _DT_HASHES[name]; this._parts = []; this.digest_size = this._alg.size; this.block_size = this._alg.block; if (data !== undefined && data !== null) this.update(data); }
   update(data) { this._parts.push(Uint8Array.from(_dtHashInput(data))); return null; }
   digest() { return this._alg.fn(_dtConcat(this._parts)); }
   hexdigest() { return _dtHexOf(this.digest()); }
-  copy() { const h = new _DtHash(this.name); h._parts = [...this._parts]; return h; }
+  copy() { const h = new _DtHash(this.name, undefined, this._alg); h._parts = [...this._parts]; return h; }
   __repr__() { return `<${this.name} _hashlib.HASH object>`; }
 }
 _DtHash.prototype.__adderClass__ = 'HASH';
@@ -14696,8 +15192,22 @@ class _DtHmac {
 }
 _DtHmac.prototype.__adderClass__ = 'HMAC';
 const _dtHmacNew = (key, ...a) => { const { args } = _dtArgs(a, ['msg', 'digestmod'], { msg: null, digestmod: null }); return new _DtHmac(key, args.msg, args.digestmod); };
+// blake2b(data=b'', *, digest_size, key, salt, person, fanout, depth, leaf_size, node_offset,
+// node_depth, inner_size, last_node, usedforsecurity)
+const _dtBlakeCtor = (variant) => {
+  const V = _DT_BLAKE[variant];
+  const f = (...a) => {
+    const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : null;
+    const data = a.length ? a[0] : kw && (kw.data ?? kw.string);
+    return new _DtHash(variant, data ?? undefined, _dtBlakeAlg(variant, _dtBlakeParams(variant, kw)));
+  };
+  f._pyName = variant; f.__name__ = variant;
+  Object.assign(f, { SALT_SIZE: V.salt, PERSON_SIZE: V.person, MAX_KEY_SIZE: V.out, MAX_DIGEST_SIZE: V.out });
+  return f;
+};
 adderModules.hashlib = {
   ...Object.fromEntries(Object.keys(_DT_HASHES).map((n) => [n, _dtHashCtor(n)])),
+  blake2b: _dtBlakeCtor('blake2b'), blake2s: _dtBlakeCtor('blake2s'),
   new: (name, data) => { const n = _dtHashName(name); return new _DtHash(n, data && data._kw ? data.data : data); },
   algorithms_guaranteed: new Set(Object.keys(_DT_HASHES)),
   algorithms_available: new Set(Object.keys(_DT_HASHES)),
@@ -15869,6 +16379,16 @@ const _syMappingProxy = (m) => {
   d.__adderClass__ = 'mappingproxy';
   return d;
 };
+// the function type constructs: FunctionType(code, globals, name, argdefs, closure, kwdefaults)
+if (!_typeObjects.function) {
+  const t = (...a) => {
+    const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+    const at = (i, k) => (i < a.length ? a[i] : kw[k]);
+    return makeFunctionFromCode(at(0, 'code'), at(1, 'globals'), at(2, 'name'), at(3, 'argdefs'), at(4, 'closure'), at(5, 'kwdefaults'));
+  };
+  t._pyName = 'function'; t._pyClass = true; t.__name__ = 'function';
+  _typeObjects.function = t;
+}
 adderModules.types = _syModule('types', {
   FunctionType: _syTypeNamed('function'), LambdaType: _syTypeNamed('function'),
   BuiltinFunctionType: _syTypeNamed('builtin_function_or_method'), BuiltinMethodType: _syTypeNamed('builtin_function_or_method'),
@@ -19227,6 +19747,21 @@ adderModules.selectors = _ntModule('selectors', {
   BaseSelector: _ntClass('BaseSelector', [], {}, 'selectors'),
 });
 
+// -- stdlib-py.js --
+
+// GENERATED by ext/adder/gen-pylib.js from ext/adder/pylib/ — do not edit; edit the .py files.
+// adder stdlib modules written in Python (frozen modules): _markupbase, html.parser, xml, xml.etree.ElementTree, xml.etree
+// (html.parser and _markupbase are CPython's own, PSF License 2.0 — see pylib/README.md and pylib/LICENSE-PSF.txt)
+
+
+Object.assign(frozenPyModules, {
+  "_markupbase": { pkg: false, source: "\"\"\"Shared support for scanning document type declarations in HTML and XHTML.\n\nThis module is used as a foundation for the html.parser module.  It has no\ndocumented public API and should not be used directly.\n\n\"\"\"\n\nimport re\n\n_declname_match = re.compile(r'[a-zA-Z][-_.a-zA-Z0-9]*\\s*').match\n_declstringlit_match = re.compile(r'(\\'[^\\']*\\'|\"[^\"]*\")\\s*').match\n_commentclose = re.compile(r'--\\s*>')\n_markedsectionclose = re.compile(r']\\s*]\\s*>')\n\n# An analysis of the MS-Word extensions is available at\n# http://www.planetpublish.com/xmlarena/xap/Thursday/WordtoXML.pdf\n\n_msmarkedsectionclose = re.compile(r']\\s*>')\n\ndel re\n\n\nclass ParserBase:\n    \"\"\"Parser base class which provides some common support methods used\n    by the SGML/HTML and XHTML parsers.\"\"\"\n\n    def __init__(self):\n        if self.__class__ is ParserBase:\n            raise RuntimeError(\n                \"_markupbase.ParserBase must be subclassed\")\n\n    def reset(self):\n        self.lineno = 1\n        self.offset = 0\n\n    def getpos(self):\n        \"\"\"Return current line number and offset.\"\"\"\n        return self.lineno, self.offset\n\n    # Internal -- update line number and offset.  This should be\n    # called for each piece of data exactly once, in order -- in other\n    # words the concatenation of all the input strings to this\n    # function should be exactly the entire input.\n    def updatepos(self, i, j):\n        if i >= j:\n            return j\n        rawdata = self.rawdata\n        nlines = rawdata.count(\"\\n\", i, j)\n        if nlines:\n            self.lineno = self.lineno + nlines\n            pos = rawdata.rindex(\"\\n\", i, j) # Should not fail\n            self.offset = j-(pos+1)\n        else:\n            self.offset = self.offset + j-i\n        return j\n\n    _decl_otherchars = ''\n\n    # Internal -- parse declaration (for use by subclasses).\n    def parse_declaration(self, i):\n        # This is some sort of declaration; in \"HTML as\n        # deployed,\" this should only be the document type\n        # declaration (\"<!DOCTYPE html...>\").\n        # ISO 8879:1986, however, has more complex\n        # declaration syntax for elements in <!...>, including:\n        # --comment--\n        # [marked section]\n        # name in the following list: ENTITY, DOCTYPE, ELEMENT,\n        # ATTLIST, NOTATION, SHORTREF, USEMAP,\n        # LINKTYPE, LINK, IDLINK, USELINK, SYSTEM\n        rawdata = self.rawdata\n        j = i + 2\n        assert rawdata[i:j] == \"<!\", \"unexpected call to parse_declaration\"\n        if rawdata[j:j+1] == \">\":\n            # the empty comment <!>\n            return j + 1\n        if rawdata[j:j+1] in (\"-\", \"\"):\n            # Start of comment followed by buffer boundary,\n            # or just a buffer boundary.\n            return -1\n        # A simple, practical version could look like: ((name|stringlit) S*) + '>'\n        n = len(rawdata)\n        if rawdata[j:j+2] == '--': #comment\n            # Locate --.*-- as the body of the comment\n            return self.parse_comment(i)\n        elif rawdata[j] == '[': #marked section\n            # Locate [statusWord [...arbitrary SGML...]] as the body of the marked section\n            # Where statusWord is one of TEMP, CDATA, IGNORE, INCLUDE, RCDATA\n            # Note that this is extended by Microsoft Office \"Save as Web\" function\n            # to include [if...] and [endif].\n            return self.parse_marked_section(i)\n        else: #all other declaration elements\n            decltype, j = self._scan_name(j, i)\n        if j < 0:\n            return j\n        if decltype == \"doctype\":\n            self._decl_otherchars = ''\n        while j < n:\n            c = rawdata[j]\n            if c == \">\":\n                # end of declaration syntax\n                data = rawdata[i+2:j]\n                if decltype == \"doctype\":\n                    self.handle_decl(data)\n                else:\n                    # According to the HTML5 specs sections \"8.2.4.44 Bogus\n                    # comment state\" and \"8.2.4.45 Markup declaration open\n                    # state\", a comment token should be emitted.\n                    # Calling unknown_decl provides more flexibility though.\n                    self.unknown_decl(data)\n                return j + 1\n            if c in \"\\\"'\":\n                m = _declstringlit_match(rawdata, j)\n                if not m:\n                    return -1 # incomplete\n                j = m.end()\n            elif c in \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\":\n                name, j = self._scan_name(j, i)\n            elif c in self._decl_otherchars:\n                j = j + 1\n            elif c == \"[\":\n                # this could be handled in a separate doctype parser\n                if decltype == \"doctype\":\n                    j = self._parse_doctype_subset(j + 1, i)\n                elif decltype in {\"attlist\", \"linktype\", \"link\", \"element\"}:\n                    # must tolerate []'d groups in a content model in an element declaration\n                    # also in data attribute specifications of attlist declaration\n                    # also link type declaration subsets in linktype declarations\n                    # also link attribute specification lists in link declarations\n                    raise AssertionError(\"unsupported '[' char in %s declaration\" % decltype)\n                else:\n                    raise AssertionError(\"unexpected '[' char in declaration\")\n            else:\n                raise AssertionError(\"unexpected %r char in declaration\" % rawdata[j])\n            if j < 0:\n                return j\n        return -1 # incomplete\n\n    # Internal -- parse a marked section\n    # Override this to handle MS-word extension syntax <![if word]>content<![endif]>\n    def parse_marked_section(self, i, report=1):\n        rawdata= self.rawdata\n        assert rawdata[i:i+3] == '<![', \"unexpected call to parse_marked_section()\"\n        sectName, j = self._scan_name( i+3, i )\n        if j < 0:\n            return j\n        if sectName in {\"temp\", \"cdata\", \"ignore\", \"include\", \"rcdata\"}:\n            # look for standard ]]> ending\n            match= _markedsectionclose.search(rawdata, i+3)\n        elif sectName in {\"if\", \"else\", \"endif\"}:\n            # look for MS Office ]> ending\n            match= _msmarkedsectionclose.search(rawdata, i+3)\n        else:\n            raise AssertionError(\n                'unknown status keyword %r in marked section' % rawdata[i+3:j]\n            )\n        if not match:\n            return -1\n        if report:\n            j = match.start(0)\n            self.unknown_decl(rawdata[i+3: j])\n        return match.end(0)\n\n    # Internal -- parse comment, return length or -1 if not terminated\n    def parse_comment(self, i, report=1):\n        rawdata = self.rawdata\n        if rawdata[i:i+4] != '<!--':\n            raise AssertionError('unexpected call to parse_comment()')\n        match = _commentclose.search(rawdata, i+4)\n        if not match:\n            return -1\n        if report:\n            j = match.start(0)\n            self.handle_comment(rawdata[i+4: j])\n        return match.end(0)\n\n    # Internal -- scan past the internal subset in a <!DOCTYPE declaration,\n    # returning the index just past any whitespace following the trailing ']'.\n    def _parse_doctype_subset(self, i, declstartpos):\n        rawdata = self.rawdata\n        n = len(rawdata)\n        j = i\n        while j < n:\n            c = rawdata[j]\n            if c == \"<\":\n                s = rawdata[j:j+2]\n                if s == \"<\":\n                    # end of buffer; incomplete\n                    return -1\n                if s != \"<!\":\n                    self.updatepos(declstartpos, j + 1)\n                    raise AssertionError(\n                        \"unexpected char in internal subset (in %r)\" % s\n                    )\n                if (j + 2) == n:\n                    # end of buffer; incomplete\n                    return -1\n                if (j + 4) > n:\n                    # end of buffer; incomplete\n                    return -1\n                if rawdata[j:j+4] == \"<!--\":\n                    j = self.parse_comment(j, report=0)\n                    if j < 0:\n                        return j\n                    continue\n                name, j = self._scan_name(j + 2, declstartpos)\n                if j == -1:\n                    return -1\n                if name not in {\"attlist\", \"element\", \"entity\", \"notation\"}:\n                    self.updatepos(declstartpos, j + 2)\n                    raise AssertionError(\n                        \"unknown declaration %r in internal subset\" % name\n                    )\n                # handle the individual names\n                meth = getattr(self, \"_parse_doctype_\" + name)\n                j = meth(j, declstartpos)\n                if j < 0:\n                    return j\n            elif c == \"%\":\n                # parameter entity reference\n                if (j + 1) == n:\n                    # end of buffer; incomplete\n                    return -1\n                s, j = self._scan_name(j + 1, declstartpos)\n                if j < 0:\n                    return j\n                if rawdata[j] == \";\":\n                    j = j + 1\n            elif c == \"]\":\n                j = j + 1\n                while j < n and rawdata[j].isspace():\n                    j = j + 1\n                if j < n:\n                    if rawdata[j] == \">\":\n                        return j\n                    self.updatepos(declstartpos, j)\n                    raise AssertionError(\"unexpected char after internal subset\")\n                else:\n                    return -1\n            elif c.isspace():\n                j = j + 1\n            else:\n                self.updatepos(declstartpos, j)\n                raise AssertionError(\"unexpected char %r in internal subset\" % c)\n        # end of buffer reached\n        return -1\n\n    # Internal -- scan past <!ELEMENT declarations\n    def _parse_doctype_element(self, i, declstartpos):\n        name, j = self._scan_name(i, declstartpos)\n        if j == -1:\n            return -1\n        # style content model; just skip until '>'\n        rawdata = self.rawdata\n        if '>' in rawdata[j:]:\n            return rawdata.find(\">\", j) + 1\n        return -1\n\n    # Internal -- scan past <!ATTLIST declarations\n    def _parse_doctype_attlist(self, i, declstartpos):\n        rawdata = self.rawdata\n        name, j = self._scan_name(i, declstartpos)\n        c = rawdata[j:j+1]\n        if c == \"\":\n            return -1\n        if c == \">\":\n            return j + 1\n        while 1:\n            # scan a series of attribute descriptions; simplified:\n            #   name type [value] [#constraint]\n            name, j = self._scan_name(j, declstartpos)\n            if j < 0:\n                return j\n            c = rawdata[j:j+1]\n            if c == \"\":\n                return -1\n            if c == \"(\":\n                # an enumerated type; look for ')'\n                if \")\" in rawdata[j:]:\n                    j = rawdata.find(\")\", j) + 1\n                else:\n                    return -1\n                while rawdata[j:j+1].isspace():\n                    j = j + 1\n                if not rawdata[j:]:\n                    # end of buffer, incomplete\n                    return -1\n            else:\n                name, j = self._scan_name(j, declstartpos)\n            c = rawdata[j:j+1]\n            if not c:\n                return -1\n            if c in \"'\\\"\":\n                m = _declstringlit_match(rawdata, j)\n                if m:\n                    j = m.end()\n                else:\n                    return -1\n                c = rawdata[j:j+1]\n                if not c:\n                    return -1\n            if c == \"#\":\n                if rawdata[j:] == \"#\":\n                    # end of buffer\n                    return -1\n                name, j = self._scan_name(j + 1, declstartpos)\n                if j < 0:\n                    return j\n                c = rawdata[j:j+1]\n                if not c:\n                    return -1\n            if c == '>':\n                # all done\n                return j + 1\n\n    # Internal -- scan past <!NOTATION declarations\n    def _parse_doctype_notation(self, i, declstartpos):\n        name, j = self._scan_name(i, declstartpos)\n        if j < 0:\n            return j\n        rawdata = self.rawdata\n        while 1:\n            c = rawdata[j:j+1]\n            if not c:\n                # end of buffer; incomplete\n                return -1\n            if c == '>':\n                return j + 1\n            if c in \"'\\\"\":\n                m = _declstringlit_match(rawdata, j)\n                if not m:\n                    return -1\n                j = m.end()\n            else:\n                name, j = self._scan_name(j, declstartpos)\n                if j < 0:\n                    return j\n\n    # Internal -- scan past <!ENTITY declarations\n    def _parse_doctype_entity(self, i, declstartpos):\n        rawdata = self.rawdata\n        if rawdata[i:i+1] == \"%\":\n            j = i + 1\n            while 1:\n                c = rawdata[j:j+1]\n                if not c:\n                    return -1\n                if c.isspace():\n                    j = j + 1\n                else:\n                    break\n        else:\n            j = i\n        name, j = self._scan_name(j, declstartpos)\n        if j < 0:\n            return j\n        while 1:\n            c = self.rawdata[j:j+1]\n            if not c:\n                return -1\n            if c in \"'\\\"\":\n                m = _declstringlit_match(rawdata, j)\n                if m:\n                    j = m.end()\n                else:\n                    return -1    # incomplete\n            elif c == \">\":\n                return j + 1\n            else:\n                name, j = self._scan_name(j, declstartpos)\n                if j < 0:\n                    return j\n\n    # Internal -- scan a name token and the new position and the token, or\n    # return -1 if we've reached the end of the buffer.\n    def _scan_name(self, i, declstartpos):\n        rawdata = self.rawdata\n        n = len(rawdata)\n        if i == n:\n            return None, -1\n        m = _declname_match(rawdata, i)\n        if m:\n            s = m.group()\n            name = s.strip()\n            if (i + len(s)) == n:\n                return None, -1  # end of buffer\n            return name.lower(), m.end()\n        else:\n            self.updatepos(declstartpos, i)\n            raise AssertionError(\n                \"expected name token at %r\" % rawdata[declstartpos:declstartpos+20]\n            )\n\n    # To be overridden -- handlers for unknown objects\n    def unknown_decl(self, data):\n        pass\n" },
+  "html.parser": { pkg: false, source: "\"\"\"A parser for HTML and XHTML.\"\"\"\n\n# This file is based on sgmllib.py, but the API is slightly different.\n\n# XXX There should be a way to distinguish between PCDATA (parsed\n# character data -- the normal case), RCDATA (replaceable character\n# data -- only char and entity references and end tags are special)\n# and CDATA (character data -- only end tags are special).\n\n\nimport re\nimport _markupbase\n\nfrom html import unescape\nfrom html.entities import html5 as html5_entities\n\n\n__all__ = ['HTMLParser']\n\n# Regular expressions used for parsing\n\ninteresting_normal = re.compile('[&<]')\nincomplete = re.compile('&[a-zA-Z#]')\n\nentityref = re.compile('&([a-zA-Z][-.a-zA-Z0-9]*)[^a-zA-Z0-9]')\ncharref = re.compile('&#(?:[0-9]+|[xX][0-9a-fA-F]+)[^0-9a-fA-F]')\nincomplete_charref = re.compile('&#(?:[0-9]|[xX][0-9a-fA-F])')\nattr_charref = re.compile(r'&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*)[;=]?')\n\nstarttagopen = re.compile('<[a-zA-Z]')\nendtagopen = re.compile('</[a-zA-Z]')\npiclose = re.compile('>')\ncommentclose = re.compile(r'--!?>')\ncommentabruptclose = re.compile(r'-?>')\n# Note:\n#  1) if you change tagfind/attrfind remember to update locatetagend too;\n#  2) if you change tagfind/attrfind and/or locatetagend the parser will\n#     explode, so don't do it.\n# see the HTML5 specs section \"13.2.5.6 Tag open state\",\n# \"13.2.5.8 Tag name state\" and \"13.2.5.33 Attribute name state\".\n# https://html.spec.whatwg.org/multipage/parsing.html#tag-open-state\n# https://html.spec.whatwg.org/multipage/parsing.html#tag-name-state\n# https://html.spec.whatwg.org/multipage/parsing.html#attribute-name-state\ntagfind_tolerant = re.compile(r'([a-zA-Z][^\\t\\n\\r\\f />]*)(?:[\\t\\n\\r\\f ]|/(?!>))*')\nattrfind_tolerant = re.compile(r\"\"\"\n  (\n    (?<=['\"\\t\\n\\r\\f /])[^\\t\\n\\r\\f />][^\\t\\n\\r\\f /=>]*  # attribute name\n   )\n  ([\\t\\n\\r\\f ]*=[\\t\\n\\r\\f ]*        # value indicator\n    ('[^']*'                        # LITA-enclosed value\n    |\"[^\"]*\"                        # LIT-enclosed value\n    |(?!['\"])[^>\\t\\n\\r\\f ]*         # bare value\n    )\n   )?\n  (?:[\\t\\n\\r\\f ]|/(?!>))*           # possibly followed by a space\n\"\"\", re.VERBOSE)\nlocatetagend = re.compile(r\"\"\"\n  [a-zA-Z][^\\t\\n\\r\\f />]*           # tag name\n  [\\t\\n\\r\\f /]*                     # optional whitespace before attribute name\n  (?:(?<=['\"\\t\\n\\r\\f /])[^\\t\\n\\r\\f />][^\\t\\n\\r\\f /=>]*  # attribute name\n    (?:[\\t\\n\\r\\f ]*=[\\t\\n\\r\\f ]*    # value indicator\n      (?:'[^']*'                    # LITA-enclosed value\n        |\"[^\"]*\"                    # LIT-enclosed value\n        |(?!['\"])[^>\\t\\n\\r\\f ]*     # bare value\n       )\n     )?\n    [\\t\\n\\r\\f /]*                   # possibly followed by a space\n   )*\n   >?\n\"\"\", re.VERBOSE)\n# The following variables are not used, but are temporarily left for\n# backward compatibility.\nlocatestarttagend_tolerant = re.compile(r\"\"\"\n  <[a-zA-Z][^\\t\\n\\r\\f />\\x00]*       # tag name\n  (?:[\\s/]*                          # optional whitespace before attribute name\n    (?:(?<=['\"\\s/])[^\\s/>][^\\s/=>]*  # attribute name\n      (?:\\s*=+\\s*                    # value indicator\n        (?:'[^']*'                   # LITA-enclosed value\n          |\"[^\"]*\"                   # LIT-enclosed value\n          |(?!['\"])[^>\\s]*           # bare value\n         )\n        \\s*                          # possibly followed by a space\n       )?(?:\\s|/(?!>))*\n     )*\n   )?\n  \\s*                                # trailing whitespace\n\"\"\", re.VERBOSE)\nendendtag = re.compile('>')\nendtagfind = re.compile(r'</\\s*([a-zA-Z][-.a-zA-Z0-9:_]*)\\s*>')\n\n# Character reference processing logic specific to attribute values\n# See: https://html.spec.whatwg.org/multipage/parsing.html#named-character-reference-state\ndef _replace_attr_charref(match):\n    ref = match.group(0)\n    # Numeric / hex char refs must always be unescaped\n    if ref.startswith('&#'):\n        return unescape(ref)\n    # Named character / entity references must only be unescaped\n    # if they are an exact match, and they are not followed by an equals sign\n    if not ref.endswith('=') and ref[1:] in html5_entities:\n        return unescape(ref)\n    # Otherwise do not unescape\n    return ref\n\ndef _unescape_attrvalue(s):\n    return attr_charref.sub(_replace_attr_charref, s)\n\n\nclass HTMLParser(_markupbase.ParserBase):\n    \"\"\"Find tags and other markup and call handler functions.\n\n    Usage:\n        p = HTMLParser()\n        p.feed(data)\n        ...\n        p.close()\n\n    Start tags are handled by calling self.handle_starttag() or\n    self.handle_startendtag(); end tags by self.handle_endtag().  The\n    data between tags is passed from the parser to the derived class\n    by calling self.handle_data() with the data as argument (the data\n    may be split up in arbitrary chunks).  If convert_charrefs is\n    True the character references are converted automatically to the\n    corresponding Unicode character (and self.handle_data() is no\n    longer split in chunks), otherwise they are passed by calling\n    self.handle_entityref() or self.handle_charref() with the string\n    containing respectively the named or numeric reference as the\n    argument.\n    \"\"\"\n\n    # See the HTML5 specs section \"13.4 Parsing HTML fragments\".\n    # https://html.spec.whatwg.org/multipage/parsing.html#parsing-html-fragments\n    # CDATA_CONTENT_ELEMENTS are parsed in RAWTEXT mode\n    CDATA_CONTENT_ELEMENTS = (\"script\", \"style\", \"xmp\", \"iframe\", \"noembed\", \"noframes\")\n    RCDATA_CONTENT_ELEMENTS = (\"textarea\", \"title\")\n\n    def __init__(self, *, convert_charrefs=True, scripting=False):\n        \"\"\"Initialize and reset this instance.\n\n        If convert_charrefs is true (the default), all character references\n        are automatically converted to the corresponding Unicode characters.\n\n        If *scripting* is false (the default), the content of the\n        ``noscript`` element is parsed normally; if it's true,\n        it's returned as is without being parsed.\n        \"\"\"\n        super().__init__()\n        self.convert_charrefs = convert_charrefs\n        self.scripting = scripting\n        self.reset()\n\n    def reset(self):\n        \"\"\"Reset this instance.  Loses all unprocessed data.\"\"\"\n        self.rawdata = ''\n        self.lasttag = '???'\n        self.interesting = interesting_normal\n        self.cdata_elem = None\n        self._support_cdata = True\n        self._escapable = True\n        super().reset()\n\n    def feed(self, data):\n        r\"\"\"Feed data to the parser.\n\n        Call this as often as you want, with as little or as much text\n        as you want (may include '\\n').\n        \"\"\"\n        self.rawdata = self.rawdata + data\n        self.goahead(0)\n\n    def close(self):\n        \"\"\"Handle any buffered data.\"\"\"\n        self.goahead(1)\n\n    __starttag_text = None\n\n    def get_starttag_text(self):\n        \"\"\"Return full source of start tag: '<...>'.\"\"\"\n        return self.__starttag_text\n\n    def set_cdata_mode(self, elem, *, escapable=False):\n        self.cdata_elem = elem.lower()\n        self._escapable = escapable\n        if self.cdata_elem == 'plaintext':\n            self.interesting = re.compile(r'\\Z')\n        elif escapable and not self.convert_charrefs:\n            self.interesting = re.compile(r'&|</%s(?=[\\t\\n\\r\\f />])' % self.cdata_elem,\n                                          re.IGNORECASE|re.ASCII)\n        else:\n            self.interesting = re.compile(r'</%s(?=[\\t\\n\\r\\f />])' % self.cdata_elem,\n                                          re.IGNORECASE|re.ASCII)\n\n    def clear_cdata_mode(self):\n        self.interesting = interesting_normal\n        self.cdata_elem = None\n        self._escapable = True\n\n    def _set_support_cdata(self, flag=True):\n        \"\"\"Enable or disable support of the CDATA sections.\n        If enabled, \"<[CDATA[\" starts a CDATA section which ends with \"]]>\".\n        If disabled, \"<[CDATA[\" starts a bogus comments which ends with \">\".\n\n        This method is not called by default. Its purpose is to be called\n        in custom handle_starttag() and handle_endtag() methods, with\n        value that depends on the adjusted current node.\n        See https://html.spec.whatwg.org/multipage/parsing.html#markup-declaration-open-state\n        for details.\n        \"\"\"\n        self._support_cdata = flag\n\n    # Internal -- handle data as far as reasonable.  May leave state\n    # and data to be processed by a subsequent call.  If 'end' is\n    # true, force handling all data as if followed by EOF marker.\n    def goahead(self, end):\n        rawdata = self.rawdata\n        i = 0\n        n = len(rawdata)\n        while i < n:\n            if self.convert_charrefs and not self.cdata_elem:\n                j = rawdata.find('<', i)\n                if j < 0:\n                    # if we can't find the next <, either we are at the end\n                    # or there's more text incoming.  If the latter is True,\n                    # we can't pass the text to handle_data in case we have\n                    # a charref cut in half at end.  Try to determine if\n                    # this is the case before proceeding by looking for an\n                    # & near the end and see if it's followed by a space or ;.\n                    amppos = rawdata.rfind('&', max(i, n-34))\n                    if (amppos >= 0 and\n                        not re.compile(r'[\\t\\n\\r\\f ;]').search(rawdata, amppos)):\n                        break  # wait till we get all the text\n                    j = n\n            else:\n                match = self.interesting.search(rawdata, i)  # < or &\n                if match:\n                    j = match.start()\n                else:\n                    if self.cdata_elem:\n                        break\n                    j = n\n            if i < j:\n                if self.convert_charrefs and self._escapable:\n                    self.handle_data(unescape(rawdata[i:j]))\n                else:\n                    self.handle_data(rawdata[i:j])\n            i = self.updatepos(i, j)\n            if i == n: break\n            startswith = rawdata.startswith\n            if startswith('<', i):\n                if starttagopen.match(rawdata, i): # < + letter\n                    k = self.parse_starttag(i)\n                elif startswith(\"</\", i):\n                    k = self.parse_endtag(i)\n                elif startswith(\"<!--\", i):\n                    k = self.parse_comment(i)\n                elif startswith(\"<?\", i):\n                    k = self.parse_pi(i)\n                elif startswith(\"<!\", i):\n                    k = self.parse_html_declaration(i)\n                elif (i + 1) < n or end:\n                    self.handle_data(\"<\")\n                    k = i + 1\n                else:\n                    break\n                if k < 0:\n                    if not end:\n                        break\n                    if starttagopen.match(rawdata, i):  # < + letter\n                        pass\n                    elif startswith(\"</\", i):\n                        if i + 2 == n:\n                            self.handle_data(\"</\")\n                        elif endtagopen.match(rawdata, i):  # </ + letter\n                            pass\n                        else:\n                            # bogus comment\n                            self.handle_comment(rawdata[i+2:])\n                    elif startswith(\"<!--\", i):\n                        j = n\n                        for suffix in (\"--!\", \"--\", \"-\"):\n                            if rawdata.endswith(suffix, i+4):\n                                j -= len(suffix)\n                                break\n                        self.handle_comment(rawdata[i+4:j])\n                    elif startswith(\"<![CDATA[\", i) and self._support_cdata:\n                        self.unknown_decl(rawdata[i+3:])\n                    elif rawdata[i:i+9].lower() == '<!doctype':\n                        self.handle_decl(rawdata[i+2:])\n                    elif startswith(\"<!\", i):\n                        # bogus comment\n                        self.handle_comment(rawdata[i+2:])\n                    elif startswith(\"<?\", i):\n                        self.handle_pi(rawdata[i+2:])\n                    else:\n                        raise AssertionError(\"we should not get here!\")\n                    k = n\n                i = self.updatepos(i, k)\n            elif startswith(\"&#\", i):\n                match = charref.match(rawdata, i)\n                if match:\n                    name = match.group()[2:-1]\n                    self.handle_charref(name)\n                    k = match.end()\n                    if not startswith(';', k-1):\n                        k = k - 1\n                    i = self.updatepos(i, k)\n                    continue\n                match = incomplete_charref.match(rawdata, i)\n                if match:\n                    if end:\n                        self.handle_charref(rawdata[i+2:])\n                        i = self.updatepos(i, n)\n                        break\n                    # incomplete\n                    break\n                elif i + 3 < n:  # larger than \"&#x\"\n                    # not the end of the buffer, and can't be confused\n                    # with some other construct\n                    self.handle_data(\"&#\")\n                    i = self.updatepos(i, i + 2)\n                else:\n                    break\n            elif startswith('&', i):\n                match = entityref.match(rawdata, i)\n                if match:\n                    name = match.group(1)\n                    self.handle_entityref(name)\n                    k = match.end()\n                    if not startswith(';', k-1):\n                        k = k - 1\n                    i = self.updatepos(i, k)\n                    continue\n                match = incomplete.match(rawdata, i)\n                if match:\n                    if end:\n                        self.handle_entityref(rawdata[i+1:])\n                        i = self.updatepos(i, n)\n                        break\n                    # incomplete\n                    break\n                elif i + 1 < n:\n                    # not the end of the buffer, and can't be confused\n                    # with some other construct\n                    self.handle_data(\"&\")\n                    i = self.updatepos(i, i + 1)\n                else:\n                    break\n            else:\n                assert 0, \"interesting.search() lied\"\n        # end while\n        if end and i < n:\n            if self.convert_charrefs and self._escapable:\n                self.handle_data(unescape(rawdata[i:n]))\n            else:\n                self.handle_data(rawdata[i:n])\n            i = self.updatepos(i, n)\n        self.rawdata = rawdata[i:]\n\n    # Internal -- parse html declarations, return length or -1 if not terminated\n    # See w3.org/TR/html5/tokenization.html#markup-declaration-open-state\n    # See also parse_declaration in _markupbase\n    def parse_html_declaration(self, i):\n        rawdata = self.rawdata\n        assert rawdata[i:i+2] == '<!', ('unexpected call to '\n                                        'parse_html_declaration()')\n        if rawdata[i:i+4] == '<!--':\n            # this case is actually already handled in goahead()\n            return self.parse_comment(i)\n        elif rawdata[i:i+9] == '<![CDATA[' and self._support_cdata:\n            j = rawdata.find(']]>', i+9)\n            if j < 0:\n                return -1\n            self.unknown_decl(rawdata[i+3: j])\n            return j + 3\n        elif rawdata[i:i+9].lower() == '<!doctype':\n            # find the closing >\n            gtpos = rawdata.find('>', i+9)\n            if gtpos == -1:\n                return -1\n            self.handle_decl(rawdata[i+2:gtpos])\n            return gtpos+1\n        else:\n            return self.parse_bogus_comment(i)\n\n    # Internal -- parse comment, return length or -1 if not terminated\n    # see https://html.spec.whatwg.org/multipage/parsing.html#comment-start-state\n    def parse_comment(self, i, report=True):\n        rawdata = self.rawdata\n        assert rawdata.startswith('<!--', i), 'unexpected call to parse_comment()'\n        match = commentclose.search(rawdata, i+4)\n        if not match:\n            match = commentabruptclose.match(rawdata, i+4)\n            if not match:\n                return -1\n        if report:\n            j = match.start()\n            self.handle_comment(rawdata[i+4: j])\n        return match.end()\n\n    # Internal -- parse bogus comment, return length or -1 if not terminated\n    # see https://html.spec.whatwg.org/multipage/parsing.html#bogus-comment-state\n    def parse_bogus_comment(self, i, report=1):\n        rawdata = self.rawdata\n        assert rawdata[i:i+2] in ('<!', '</'), ('unexpected call to '\n                                                'parse_bogus_comment()')\n        pos = rawdata.find('>', i+2)\n        if pos == -1:\n            return -1\n        if report:\n            self.handle_comment(rawdata[i+2:pos])\n        return pos + 1\n\n    # Internal -- parse processing instr, return end or -1 if not terminated\n    def parse_pi(self, i):\n        rawdata = self.rawdata\n        assert rawdata[i:i+2] == '<?', 'unexpected call to parse_pi()'\n        match = piclose.search(rawdata, i+2) # >\n        if not match:\n            return -1\n        j = match.start()\n        self.handle_pi(rawdata[i+2: j])\n        j = match.end()\n        return j\n\n    # Internal -- handle starttag, return end or -1 if not terminated\n    def parse_starttag(self, i):\n        # See the HTML5 specs section \"13.2.5.8 Tag name state\"\n        # https://html.spec.whatwg.org/multipage/parsing.html#tag-name-state\n        self.__starttag_text = None\n        endpos = self.check_for_whole_start_tag(i)\n        if endpos < 0:\n            return endpos\n        rawdata = self.rawdata\n        self.__starttag_text = rawdata[i:endpos]\n\n        # Now parse the data between i+1 and j into a tag and attrs\n        attrs = []\n        match = tagfind_tolerant.match(rawdata, i+1)\n        assert match, 'unexpected call to parse_starttag()'\n        k = match.end()\n        self.lasttag = tag = match.group(1).lower()\n        while k < endpos:\n            m = attrfind_tolerant.match(rawdata, k)\n            if not m:\n                break\n            attrname, rest, attrvalue = m.group(1, 2, 3)\n            if not rest:\n                attrvalue = None\n            elif attrvalue[:1] == '\\'' == attrvalue[-1:] or \\\n                 attrvalue[:1] == '\"' == attrvalue[-1:]:\n                attrvalue = attrvalue[1:-1]\n            if attrvalue:\n                attrvalue = _unescape_attrvalue(attrvalue)\n            attrs.append((attrname.lower(), attrvalue))\n            k = m.end()\n\n        end = rawdata[k:endpos].strip()\n        if end not in (\">\", \"/>\"):\n            self.handle_data(rawdata[i:endpos])\n            return endpos\n        if end.endswith('/>'):\n            # XHTML-style empty tag: <span attr=\"value\" />\n            self.handle_startendtag(tag, attrs)\n        else:\n            self.handle_starttag(tag, attrs)\n            if (tag in self.CDATA_CONTENT_ELEMENTS or\n                (self.scripting and tag == \"noscript\") or\n                tag == \"plaintext\"):\n                self.set_cdata_mode(tag, escapable=False)\n            elif tag in self.RCDATA_CONTENT_ELEMENTS:\n                self.set_cdata_mode(tag, escapable=True)\n        return endpos\n\n    # Internal -- check to see if we have a complete starttag; return end\n    # or -1 if incomplete.\n    def check_for_whole_start_tag(self, i):\n        rawdata = self.rawdata\n        match = locatetagend.match(rawdata, i+1)\n        assert match\n        j = match.end()\n        if rawdata[j-1] != \">\":\n            return -1\n        return j\n\n    # Internal -- parse endtag, return end or -1 if incomplete\n    def parse_endtag(self, i):\n        # See the HTML5 specs section \"13.2.5.7 End tag open state\"\n        # https://html.spec.whatwg.org/multipage/parsing.html#end-tag-open-state\n        rawdata = self.rawdata\n        assert rawdata[i:i+2] == \"</\", \"unexpected call to parse_endtag\"\n        if rawdata.find('>', i+2) < 0:  # fast check\n            return -1\n        if not endtagopen.match(rawdata, i):  # </ + letter\n            if rawdata[i+2:i+3] == '>':  # </> is ignored\n                # \"missing-end-tag-name\" parser error\n                return i+3\n            else:\n                return self.parse_bogus_comment(i)\n\n        match = locatetagend.match(rawdata, i+2)\n        assert match\n        j = match.end()\n        if rawdata[j-1] != \">\":\n            return -1\n\n        # find the name: \"13.2.5.8 Tag name state\"\n        # https://html.spec.whatwg.org/multipage/parsing.html#tag-name-state\n        match = tagfind_tolerant.match(rawdata, i+2)\n        assert match\n        tag = match.group(1).lower()\n        self.handle_endtag(tag)\n        self.clear_cdata_mode()\n        return j\n\n    # Overridable -- finish processing of start+end tag: <tag.../>\n    def handle_startendtag(self, tag, attrs):\n        self.handle_starttag(tag, attrs)\n        self.handle_endtag(tag)\n\n    # Overridable -- handle start tag\n    def handle_starttag(self, tag, attrs):\n        pass\n\n    # Overridable -- handle end tag\n    def handle_endtag(self, tag):\n        pass\n\n    # Overridable -- handle character reference\n    def handle_charref(self, name):\n        pass\n\n    # Overridable -- handle entity reference\n    def handle_entityref(self, name):\n        pass\n\n    # Overridable -- handle data\n    def handle_data(self, data):\n        pass\n\n    # Overridable -- handle comment\n    def handle_comment(self, data):\n        pass\n\n    # Overridable -- handle declaration\n    def handle_decl(self, decl):\n        pass\n\n    # Overridable -- handle processing instruction\n    def handle_pi(self, data):\n        pass\n\n    def unknown_decl(self, data):\n        pass\n" },
+  "xml": { pkg: true, source: "\"\"\"Core XML support for Python (adder: xml.etree.ElementTree; xml.dom / xml.sax are not provided).\"\"\"\n" },
+  "xml.etree.ElementTree": { pkg: false, source: "\"\"\"Lightweight XML support: the ElementTree API (adder's own implementation).\n\nElement / SubElement / ElementTree, parsing (fromstring, XML, parse, XMLParser, TreeBuilder,\nXMLPullParser, iterparse) with namespaces expanded to {uri}local as expat does, serialization\n(tostring, write, register_namespace, indent) and the ElementPath subset of find / findall.\n\"\"\"\n\nimport re\nimport io\n\n__all__ = [\n    \"Comment\", \"dump\", \"Element\", \"ElementTree\", \"fromstring\", \"fromstringlist\", \"indent\",\n    \"iselement\", \"iterparse\", \"parse\", \"ParseError\", \"PI\", \"ProcessingInstruction\", \"QName\",\n    \"SubElement\", \"tostring\", \"tostringlist\", \"TreeBuilder\", \"VERSION\", \"XML\", \"XMLID\",\n    \"XMLParser\", \"XMLPullParser\", \"register_namespace\", \"canonicalize\",\n]\n\nVERSION = \"1.3.0\"\n\n\nclass ParseError(SyntaxError):\n    pass\n\n\ndef iselement(element):\n    return hasattr(element, \"tag\")\n\n\nclass Element:\n    tag = None\n    attrib = None\n    text = None\n    tail = None\n\n    def __init__(self, tag, attrib={}, **extra):\n        if not isinstance(attrib, dict):\n            raise TypeError(\"attrib must be dict, not %s\" % (attrib.__class__.__name__,))\n        self.tag = tag\n        self.attrib = {**attrib, **extra}\n        self._children = []\n\n    def __repr__(self):\n        return \"<%s %r at %#x>\" % (self.__class__.__name__, self.tag, id(self))\n\n    def makeelement(self, tag, attrib):\n        return self.__class__(tag, attrib)\n\n    def __copy__(self):\n        elem = self.makeelement(self.tag, self.attrib)\n        elem.text = self.text\n        elem.tail = self.tail\n        elem[:] = self\n        return elem\n\n    def copy(self):\n        return self.__copy__()\n\n    def __len__(self):\n        return len(self._children)\n\n    def __bool__(self):\n        return len(self._children) != 0\n\n    def __getitem__(self, index):\n        return self._children[index]\n\n    def __setitem__(self, index, element):\n        if isinstance(index, slice):\n            element = list(element)\n            for elt in element:\n                self._assert_is_element(elt)\n        else:\n            self._assert_is_element(element)\n        self._children[index] = element\n\n    def __delitem__(self, index):\n        del self._children[index]\n\n    def __iter__(self):\n        return iter(self._children)\n\n    def append(self, subelement):\n        self._assert_is_element(subelement)\n        self._children.append(subelement)\n\n    def extend(self, elements):\n        for element in elements:\n            self._assert_is_element(element)\n            self._children.append(element)\n\n    def insert(self, index, subelement):\n        self._assert_is_element(subelement)\n        self._children.insert(index, subelement)\n\n    def _assert_is_element(self, e):\n        if not isinstance(e, Element):\n            raise TypeError(\"expected an Element, not %s\" % type(e).__name__)\n\n    def remove(self, subelement):\n        for i, child in enumerate(self._children):\n            if child is subelement:\n                del self._children[i]\n                return\n        raise ValueError(\"list.remove(x): x not in list\")\n\n    def find(self, path, namespaces=None):\n        found = _iterfind(self, path, namespaces)\n        return found[0] if found else None\n\n    def findtext(self, path, default=None, namespaces=None):\n        e = self.find(path, namespaces)\n        if e is None:\n            return default\n        return e.text or \"\"\n\n    def findall(self, path, namespaces=None):\n        return _iterfind(self, path, namespaces)\n\n    def iterfind(self, path, namespaces=None):\n        return iter(_iterfind(self, path, namespaces))\n\n    def clear(self):\n        self.attrib.clear()\n        self._children = []\n        self.text = self.tail = None\n\n    def get(self, key, default=None):\n        return self.attrib.get(key, default)\n\n    def set(self, key, value):\n        self.attrib[key] = value\n\n    def keys(self):\n        return list(self.attrib.keys())\n\n    def items(self):\n        return list(self.attrib.items())\n\n    def iter(self, tag=None):\n        if tag == \"*\":\n            tag = None\n        out = []\n        stack = [self]\n        while stack:\n            e = stack.pop()\n            if tag is None or e.tag == tag:\n                out.append(e)\n            stack.extend(reversed(e._children))\n        return iter(out)\n\n    def itertext(self):\n        out = []\n\n        def walk(e):\n            tag = e.tag\n            if not isinstance(tag, str) and tag is not None:\n                return\n            if e.text:\n                out.append(e.text)\n            for c in e._children:\n                walk(c)\n                if c.tail:\n                    out.append(c.tail)\n\n        walk(self)\n        return iter(out)\n\n\ndef SubElement(parent, tag, attrib={}, **extra):\n    attrib = {**attrib, **extra}\n    element = parent.makeelement(tag, attrib)\n    parent.append(element)\n    return element\n\n\ndef Comment(text=None):\n    element = Element(Comment)\n    element.text = text\n    return element\n\n\ndef ProcessingInstruction(target, text=None):\n    element = Element(ProcessingInstruction)\n    element.text = target\n    if text:\n        element.text = element.text + \" \" + text\n    return element\n\n\nPI = ProcessingInstruction\n\n\nclass QName:\n    def __init__(self, text_or_uri, tag=None):\n        if tag:\n            text_or_uri = \"{%s}%s\" % (text_or_uri, tag)\n        self.text = text_or_uri\n\n    def __str__(self):\n        return self.text\n\n    def __repr__(self):\n        return \"<%s %r>\" % (self.__class__.__name__, self.text)\n\n    def __hash__(self):\n        return hash(self.text)\n\n    def __eq__(self, other):\n        if isinstance(other, QName):\n            return self.text == other.text\n        return self.text == other\n\n    def __lt__(self, other):\n        if isinstance(other, QName):\n            return self.text < other.text\n        return self.text < other\n\n\n# ── ElementPath: the subset CPython documents — tag, *, ., .., //, [@a], [@a='v'], [tag],\n# [tag='text'], [.='text'], [n], [last()], {ns}tag, and prefix:tag with a namespaces mapping ──\n\n_path_tokenizer = re.compile(\n    r\"('[^']*'|\\\"[^\\\"]*\\\"|::|//?|\\.\\.|\\(\\)|!=|[/.*:\\[\\]\\(\\)@=])|\"\n    r\"((?:\\{[^}]+\\})?[^/\\[\\]\\(\\)@!=\\s]+)|\"\n    r\"\\s+\"\n)\n\n\ndef _tokens(path, namespaces):\n    default_ns = namespaces.get(\"\") if namespaces else None\n    out = []\n    pos = 0\n    while pos < len(path):\n        m = _path_tokenizer.match(path, pos)\n        if not m or m.end() == pos:\n            raise SyntaxError(\"invalid path\")\n        pos = m.end()\n        op, tag = m.group(1), m.group(2)\n        if op is None and tag is None:\n            continue\n        if tag and tag[0] != \"{\":\n            if \":\" in tag:\n                prefix, uri = tag.split(\":\", 1)\n                if not namespaces or prefix not in namespaces:\n                    raise SyntaxError(\"prefix %r not found in prefix map\" % prefix)\n                tag = \"{%s}%s\" % (namespaces[prefix], uri)\n            elif default_ns and (not out or out[-1][0] != \"@\"):\n                tag = \"{%s}%s\" % (default_ns, tag)\n        out.append((op or \"\", tag or \"\"))\n    return out\n\n\ndef _children_tagged(elems, tag):\n    out = []\n    for e in elems:\n        for c in e._children:\n            if (tag == \"*\" and isinstance(c.tag, str)) or c.tag == tag:\n                out.append(c)\n    return out\n\n\ndef _descendants(elems, tag):\n    out = []\n    seen = set()\n    for e in elems:\n        for d in e.iter():\n            if d is e:\n                continue\n            if (tag == \"*\" and isinstance(d.tag, str)) or d.tag == tag:\n                if id(d) not in seen:\n                    seen.add(id(d))\n                    out.append(d)\n    return out\n\n\ndef _parent_map(root):\n    pm = {}\n    for p in root.iter():\n        for c in p._children:\n            pm[id(c)] = p\n    return pm\n\n\ndef _iterfind(elem, path, namespaces=None):\n    if path[-1:] == \"/\":\n        path = path + \"*\"\n    if path[:1] == \"/\":\n        raise SyntaxError(\"cannot use absolute path on element\")\n    toks = _tokens(path, namespaces)\n    i = 0\n    current = [elem]\n    pm = None\n    while i < len(toks):\n        op, tag = toks[i]\n        if tag:\n            current = _children_tagged(current, tag)\n            i += 1\n        elif op == \"*\":\n            current = _children_tagged(current, \"*\")\n            i += 1\n        elif op == \".\":\n            i += 1\n        elif op == \"..\":\n            if pm is None:\n                pm = _parent_map(elem)\n            nxt = []\n            for e in current:\n                p = pm.get(id(e))\n                if p is not None and not any(p is x for x in nxt):\n                    nxt.append(p)\n            current = nxt\n            i += 1\n        elif op == \"//\":\n            i += 1\n            if i >= len(toks):\n                raise SyntaxError(\"invalid descendant\")\n            op2, tag2 = toks[i]\n            if op2 == \".\":\n                current = current + _descendants(current, \"*\")\n            else:\n                current = _descendants(current, tag2 or op2)\n            i += 1\n        elif op == \"/\":\n            i += 1\n        elif op == \"[\":\n            j = i + 1\n            sig = []\n            while j < len(toks) and toks[j][0] != \"]\":\n                sig.append(toks[j])\n                j += 1\n            current = _predicate(current, sig, elem)\n            i = j + 1\n        else:\n            raise SyntaxError(\"invalid path\")\n    return current\n\n\ndef _unquote(s):\n    return s[1:-1]\n\n\ndef _text_of(e):\n    return \"\".join(e.itertext())\n\n\ndef _predicate(elems, sig, root):\n    if len(sig) == 2 and sig[0][0] == \"@\":\n        key = sig[1][1]\n        return [e for e in elems if e.get(key) is not None]\n    if len(sig) == 4 and sig[0][0] == \"@\" and sig[2][0] in (\"=\", \"!=\"):\n        key = sig[1][1]\n        value = _unquote(sig[3][0])\n        if sig[2][0] == \"=\":\n            return [e for e in elems if e.get(key) == value]\n        return [e for e in elems if e.get(key) is not None and e.get(key) != value]\n    if len(sig) == 3 and sig[1][0] in (\"=\", \"!=\"):\n        value = _unquote(sig[2][0])\n        want = sig[1][0] == \"=\"\n        if sig[0][0] == \".\":\n            return [e for e in elems if (_text_of(e) == value) == want]\n        tag = sig[0][1]\n        return [e for e in elems if any((_text_of(c) == value) == want for c in e.findall(tag))]\n    if len(sig) == 1 and sig[0][1] and not sig[0][1].isdigit():\n        tag = sig[0][1]\n        return [e for e in elems if e.find(tag) is not None]\n    if (len(sig) == 1 and sig[0][1].isdigit()) or (sig and sig[0][1] == \"last\"):\n        if sig[0][1] == \"last\":\n            index = -1\n            if len(sig) > 2:\n                index -= int(sig[-1][1])\n        else:\n            index = int(sig[0][1]) - 1\n            if index < 0:\n                raise SyntaxError(\"XPath position >= 1 expected\")\n        pm = _parent_map(root)\n        out = []\n        for e in elems:\n            p = pm.get(id(e))\n            if p is None:\n                continue\n            sibs = [c for c in p._children if c.tag == e.tag]\n            try:\n                if sibs[index] is e:\n                    out.append(e)\n            except IndexError:\n                pass\n        return out\n    raise SyntaxError(\"invalid predicate\")\n\n\n# ── serialization ──\n\n_namespace_map = {\n    \"http://www.w3.org/XML/1998/namespace\": \"xml\",\n    \"http://www.w3.org/1999/xhtml\": \"html\",\n    \"http://www.w3.org/1999/02/22-rdf-syntax-ns#\": \"rdf\",\n    \"http://schemas.xmlsoap.org/wsdl/\": \"wsdl\",\n    \"http://www.w3.org/2001/XMLSchema\": \"xs\",\n    \"http://www.w3.org/2001/XMLSchema-instance\": \"xsi\",\n    \"http://purl.org/dc/elements/1.1/\": \"dc\",\n}\n\n\ndef register_namespace(prefix, uri):\n    if re.match(r\"ns\\d+$\", prefix):\n        raise ValueError(\"Prefix format reserved for internal use\")\n    for k, v in list(_namespace_map.items()):\n        if k == uri or v == prefix:\n            del _namespace_map[k]\n    _namespace_map[uri] = prefix\n\n\ndef _escape_cdata(text):\n    return text.replace(\"&\", \"&amp;\").replace(\"<\", \"&lt;\").replace(\">\", \"&gt;\")\n\n\ndef _escape_attrib(text):\n    text = text.replace(\"&\", \"&amp;\").replace(\"<\", \"&lt;\").replace(\">\", \"&gt;\").replace('\"', \"&quot;\")\n    return text.replace(\"\\r\", \"&#13;\").replace(\"\\n\", \"&#10;\").replace(\"\\t\", \"&#09;\")\n\n\ndef _escape_attrib_html(text):\n    return text.replace(\"&\", \"&amp;\").replace(\">\", \"&gt;\").replace('\"', \"&quot;\")\n\n\ndef _namespaces(elem, default_namespace=None):\n    qnames = {None: None}\n    namespaces = {}\n    if default_namespace:\n        namespaces[default_namespace] = \"\"\n\n    def add_qname(qname):\n        if not isinstance(qname, str):\n            raise TypeError(\"cannot serialize %r (type %s)\" % (qname, type(qname).__name__))\n        if qname[:1] == \"{\":\n            uri, tag = qname[1:].rsplit(\"}\", 1)\n            prefix = namespaces.get(uri)\n            if prefix is None:\n                prefix = _namespace_map.get(uri)\n                if prefix is None:\n                    prefix = \"ns%d\" % len(namespaces)\n                if prefix != \"xml\":\n                    namespaces[uri] = prefix\n            if prefix:\n                qnames[qname] = \"%s:%s\" % (prefix, tag)\n            else:\n                qnames[qname] = tag\n        else:\n            if default_namespace:\n                raise ValueError(\"cannot use non-qualified names with default_namespace option\")\n            qnames[qname] = qname\n\n    for e in elem.iter():\n        tag = e.tag\n        if isinstance(tag, QName):\n            if tag.text not in qnames:\n                add_qname(tag.text)\n        elif isinstance(tag, str):\n            if tag not in qnames:\n                add_qname(tag)\n        elif tag is not None and tag is not Comment and tag is not ProcessingInstruction:\n            raise TypeError(\"cannot serialize %r (type %s)\" % (tag, type(tag).__name__))\n        for key, value in e.items():\n            if isinstance(key, QName):\n                key = key.text\n            if key not in qnames:\n                add_qname(key)\n            if isinstance(value, QName) and value.text not in qnames:\n                add_qname(value.text)\n        text = e.text\n        if isinstance(text, QName) and text.text not in qnames:\n            add_qname(text.text)\n    return qnames, namespaces\n\n\ndef _write_open(write, elem, tag, qnames, namespaces, escape):\n    write(\"<\" + tag)\n    items = list(elem.items())\n    if namespaces:\n        for v, k in sorted(namespaces.items(), key=lambda x: x[1]):\n            if k:\n                k = \":\" + k\n            write(' xmlns%s=\"%s\"' % (k, _escape_attrib(v)))\n    for k, v in items:\n        if isinstance(k, QName):\n            k = k.text\n        if isinstance(v, QName):\n            v = qnames[v.text]\n        else:\n            v = escape(v)\n        write(' %s=\"%s\"' % (qnames[k], v))\n\n\ndef _serialize_xml(write, elem, qnames, namespaces, short_empty_elements):\n    tag = elem.tag\n    text = elem.text\n    if tag is Comment:\n        write(\"<!--%s-->\" % text)\n    elif tag is ProcessingInstruction:\n        write(\"<?%s?>\" % text)\n    else:\n        tag = qnames[tag.text if isinstance(tag, QName) else tag]\n        if tag is None:\n            if text:\n                write(_escape_cdata(text))\n            for e in elem:\n                _serialize_xml(write, e, qnames, None, short_empty_elements)\n        else:\n            _write_open(write, elem, tag, qnames, namespaces, _escape_attrib)\n            if text or len(elem) or not short_empty_elements:\n                write(\">\")\n                if text:\n                    write(_escape_cdata(text))\n                for e in elem:\n                    _serialize_xml(write, e, qnames, None, short_empty_elements)\n                write(\"</\" + tag + \">\")\n            else:\n                write(\" />\")\n    if elem.tail:\n        write(_escape_cdata(elem.tail))\n\n\nHTML_EMPTY = {\"area\", \"base\", \"basefont\", \"br\", \"col\", \"embed\", \"frame\", \"hr\", \"img\", \"input\",\n              \"isindex\", \"link\", \"meta\", \"param\", \"source\", \"track\", \"wbr\"}\n\n\ndef _serialize_html(write, elem, qnames, namespaces):\n    tag = elem.tag\n    text = elem.text\n    if tag is Comment:\n        write(\"<!--%s-->\" % _escape_cdata(text))\n    elif tag is ProcessingInstruction:\n        write(\"<?%s?>\" % _escape_cdata(text))\n    else:\n        tag = qnames[tag.text if isinstance(tag, QName) else tag]\n        if tag is None:\n            if text:\n                write(_escape_cdata(text))\n            for e in elem:\n                _serialize_html(write, e, qnames, None)\n        else:\n            _write_open(write, elem, tag, qnames, namespaces, _escape_attrib_html)\n            write(\">\")\n            ltag = tag.lower()\n            if text:\n                if ltag == \"script\" or ltag == \"style\":\n                    write(text)\n                else:\n                    write(_escape_cdata(text))\n            for e in elem:\n                _serialize_html(write, e, qnames, None)\n            if ltag not in HTML_EMPTY:\n                write(\"</\" + tag + \">\")\n    if elem.tail:\n        write(_escape_cdata(elem.tail))\n\n\ndef _read_all(source):\n    if hasattr(source, \"read\"):\n        return source.read()\n    with open(source, \"rb\") as f:\n        return f.read()\n\n\nclass ElementTree:\n    def __init__(self, element=None, file=None):\n        self._root = element\n        if file:\n            self.parse(file)\n\n    def getroot(self):\n        return self._root\n\n    def _setroot(self, element):\n        self._root = element\n\n    def parse(self, source, parser=None):\n        data = _read_all(source)\n        if parser is None:\n            parser = XMLParser()\n        parser.feed(data)\n        self._root = parser.close()\n        return self._root\n\n    def iter(self, tag=None):\n        return self._root.iter(tag)\n\n    def find(self, path, namespaces=None):\n        if path[:1] == \"/\":\n            path = \".\" + path\n        return self._root.find(path, namespaces)\n\n    def findtext(self, path, default=None, namespaces=None):\n        if path[:1] == \"/\":\n            path = \".\" + path\n        return self._root.findtext(path, default, namespaces)\n\n    def findall(self, path, namespaces=None):\n        if path[:1] == \"/\":\n            path = \".\" + path\n        return self._root.findall(path, namespaces)\n\n    def iterfind(self, path, namespaces=None):\n        if path[:1] == \"/\":\n            path = \".\" + path\n        return self._root.iterfind(path, namespaces)\n\n    def write(self, file_or_filename, encoding=None, xml_declaration=None, default_namespace=None,\n              method=None, *, short_empty_elements=True):\n        if not method:\n            method = \"xml\"\n        elif method not in (\"xml\", \"html\", \"text\", \"c14n\"):\n            raise ValueError(\"unknown method %r\" % method)\n        if not encoding:\n            encoding = \"utf-8\" if method == \"c14n\" else \"us-ascii\"\n        parts = []\n        write = parts.append\n        low = encoding.lower()\n        if method == \"xml\" and (xml_declaration or (xml_declaration is None and low != \"unicode\"\n                                                    and low not in (\"utf-8\", \"us-ascii\"))):\n            write(\"<?xml version='1.0' encoding='%s'?>\\n\" % (\"utf-8\" if low == \"unicode\" else encoding,))\n        if method == \"text\":\n            for part in self._root.itertext():\n                write(part)\n            if self._root.tail:\n                write(self._root.tail)\n        else:\n            qnames, namespaces = _namespaces(self._root, default_namespace)\n            if method == \"html\":\n                _serialize_html(write, self._root, qnames, namespaces)\n            else:\n                _serialize_xml(write, self._root, qnames, namespaces, short_empty_elements)\n        text = \"\".join(parts)\n        data = text if low == \"unicode\" else text.encode(encoding, \"xmlcharrefreplace\")\n        if hasattr(file_or_filename, \"write\"):\n            file_or_filename.write(data)\n        else:\n            with open(file_or_filename, \"w\" if isinstance(data, str) else \"wb\") as f:\n                f.write(data)\n\n    def write_c14n(self, file):\n        return self.write(file, method=\"c14n\")\n\n\ndef tostring(element, encoding=None, method=None, *, xml_declaration=None, default_namespace=None,\n             short_empty_elements=True):\n    stream = io.StringIO() if encoding == \"unicode\" else io.BytesIO()\n    ElementTree(element).write(stream, encoding, xml_declaration=xml_declaration,\n                               default_namespace=default_namespace, method=method,\n                               short_empty_elements=short_empty_elements)\n    return stream.getvalue()\n\n\ndef tostringlist(element, encoding=None, method=None, *, xml_declaration=None, default_namespace=None,\n                 short_empty_elements=True):\n    return [tostring(element, encoding, method, xml_declaration=xml_declaration,\n                     default_namespace=default_namespace, short_empty_elements=short_empty_elements)]\n\n\ndef dump(elem):\n    import sys\n    if not isinstance(elem, ElementTree):\n        elem = ElementTree(elem)\n    elem.write(sys.stdout, encoding=\"unicode\")\n    tail = elem.getroot().tail\n    if not tail or tail[-1] != \"\\n\":\n        sys.stdout.write(\"\\n\")\n\n\ndef indent(tree, space=\"  \", level=0):\n    if isinstance(tree, ElementTree):\n        tree = tree.getroot()\n    if level < 0:\n        raise ValueError(\"Initial indentation level must be >= 0, got %s\" % level)\n    if not len(tree):\n        return\n    indentations = [\"\\n\" + level * space]\n\n    def _indent_children(elem, level):\n        child_level = level + 1\n        try:\n            child_indentation = indentations[child_level]\n        except IndexError:\n            child_indentation = indentations[level] + space\n            indentations.append(child_indentation)\n        if not elem.text or not elem.text.strip():\n            elem.text = child_indentation\n        child = None\n        for child in elem:\n            if len(child):\n                _indent_children(child, child_level)\n            if not child.tail or not child.tail.strip():\n                child.tail = child_indentation\n        if not child.tail.strip():\n            child.tail = indentations[level]\n\n    _indent_children(tree, 0)\n\n\n# ── parsing ──\n\nclass TreeBuilder:\n    def __init__(self, element_factory=None, *, comment_factory=None, pi_factory=None,\n                 insert_comments=False, insert_pis=False):\n        self._data = []\n        self._elem = []\n        self._last = None\n        self._root = None\n        self._tail = None\n        self._comment_factory = comment_factory if comment_factory is not None else Comment\n        self._pi_factory = pi_factory if pi_factory is not None else ProcessingInstruction\n        self.insert_comments = insert_comments\n        self.insert_pis = insert_pis\n        self._factory = element_factory if element_factory is not None else Element\n\n    def close(self):\n        if self._root is None:\n            raise AssertionError(\"missing toplevel element\")\n        return self._root\n\n    def _flush(self):\n        if self._data:\n            if self._last is not None:\n                text = \"\".join(self._data)\n                if self._tail:\n                    self._last.tail = text\n                else:\n                    self._last.text = text\n            self._data = []\n\n    def data(self, data):\n        self._data.append(data)\n\n    def start(self, tag, attrs):\n        self._flush()\n        self._last = elem = self._factory(tag, attrs)\n        if self._elem:\n            self._elem[-1].append(elem)\n        elif self._root is None:\n            self._root = elem\n        self._elem.append(elem)\n        self._tail = 0\n        return elem\n\n    def end(self, tag):\n        self._flush()\n        self._last = self._elem.pop()\n        self._tail = 1\n        return self._last\n\n    def comment(self, text):\n        return self._handle_single(self._comment_factory, self.insert_comments, text)\n\n    def pi(self, target, text=None):\n        return self._handle_single(self._pi_factory, self.insert_pis, target, text)\n\n    def _handle_single(self, factory, insert, *args):\n        elem = factory(*args)\n        if insert:\n            self._flush()\n            self._last = elem\n            if self._elem:\n                self._elem[-1].append(elem)\n            self._tail = 1\n        return elem\n\n\n_XML_ENT = {\"lt\": \"<\", \"gt\": \">\", \"amp\": \"&\", \"quot\": '\"', \"apos\": \"'\"}\n_name_re = re.compile(r\"[^\\s/>=<\\\"'!?]+\")\n_attr_re = re.compile(r\"\\s+([^\\s/>=<\\\"']+)\\s*=\\s*(\\\"[^\\\"]*\\\"|'[^']*')\")\n_ref_re = re.compile(r\"&(#[0-9]+|#x[0-9a-fA-F]+|[^;&\\s]+);\")\n_decl_enc_re = re.compile(r\"\"\"^<\\?xml[^>]*encoding\\s*=\\s*[\"']([A-Za-z0-9._-]+)[\"']\"\"\")\n\n\nclass XMLParser:\n    def __init__(self, *, target=None, encoding=None):\n        self.target = target if target is not None else TreeBuilder()\n        self._encoding = encoding\n        self._buf = []\n        self.version = \"Expat 2.6.0\"\n        self.entity = {}\n        self._events = None     # (kinds, list) while an XMLPullParser drives it\n\n    def feed(self, data):\n        self._buf.append(data)\n\n    def flush(self):\n        pass\n\n    def _text(self):\n        if not self._buf:\n            self._error(\"no element found\", \"\", 0, 3)\n        if isinstance(self._buf[0], (bytes, bytearray)):\n            raw = b\"\".join(bytes(b) for b in self._buf)\n            if raw[:3] == b\"\\xef\\xbb\\xbf\":\n                raw = raw[3:]\n            enc = self._encoding\n            if enc is None:\n                m = _decl_enc_re.match(raw[:200].decode(\"latin-1\"))\n                enc = m.group(1) if m else \"utf-8\"\n            return raw.decode(enc)\n        return \"\".join(self._buf)\n\n    def _error(self, msg, src, pos, code=None):\n        line = src.count(\"\\n\", 0, pos) + 1\n        col = pos - (src.rfind(\"\\n\", 0, pos) + 1)\n        err = ParseError(\"%s: line %d, column %d\" % (msg, line, col))\n        err.code = code\n        err.position = (line, col)\n        raise err\n\n    def _refs(self, s, src, pos):\n        if \"&\" not in s:\n            return s\n        out = []\n        last = 0\n        for m in _ref_re.finditer(s):\n            out.append(s[last:m.start()])\n            name = m.group(1)\n            if name[0] == \"#\":\n                out.append(chr(int(name[2:], 16) if name[1] == \"x\" else int(name[1:])))\n            elif name in _XML_ENT:\n                out.append(_XML_ENT[name])\n            elif name in self.entity:\n                out.append(self.entity[name])\n            else:\n                self._error(\"undefined entity\", src, pos + m.start(), 11)\n            last = m.end()\n        out.append(s[last:])\n        return \"\".join(out)\n\n    def close(self):\n        self._run(self._text())\n        close = getattr(self.target, \"close\", None)\n        return close() if close is not None else None\n\n    def _expand(self, name, nsmap, src, pos, is_attr=False):\n        if \":\" in name:\n            prefix, local = name.split(\":\", 1)\n            if prefix == \"xml\":\n                return \"{http://www.w3.org/XML/1998/namespace}\" + local\n            uri = nsmap.get(prefix)\n            if uri is None:\n                self._error(\"unbound prefix\", src, pos, 27)\n            return \"{%s}%s\" % (uri, local)\n        if is_attr:\n            return name\n        uri = nsmap.get(\"\")\n        return \"{%s}%s\" % (uri, name) if uri else name\n\n    def _event(self, kind, value):\n        if self._events is not None and kind in self._events[0]:\n            self._events[1].append((kind, value))\n\n    def _run(self, src):\n        target = self.target\n        t_start = getattr(target, \"start\", None)\n        t_end = getattr(target, \"end\", None)\n        t_data = getattr(target, \"data\", None)\n        t_comment = getattr(target, \"comment\", None)\n        t_pi = getattr(target, \"pi\", None)\n        t_start_ns = getattr(target, \"start_ns\", None)\n        t_end_ns = getattr(target, \"end_ns\", None)\n        stack = []            # (raw name, the nsmap outside it, prefixes it declared)\n        nsmap = {}\n        pos = 0\n        n = len(src)\n        seen_root = False\n        while pos < n:\n            lt = src.find(\"<\", pos)\n            if lt < 0:\n                lt = n\n            if lt > pos:\n                chunk = src[pos:lt]\n                if stack:\n                    if t_data is not None:\n                        t_data(self._refs(chunk.replace(\"\\r\\n\", \"\\n\"), src, pos))\n                elif chunk.strip():\n                    if seen_root:\n                        self._error(\"junk after document element\", src, pos, 9)\n                    self._error(\"syntax error\", src, pos, 2)\n                pos = lt\n                if pos >= n:\n                    break\n            if src.startswith(\"<!--\", pos):\n                end = src.find(\"-->\", pos + 4)\n                if end < 0:\n                    self._error(\"unclosed token\", src, pos, 5)\n                if t_comment is not None:\n                    r = t_comment(src[pos + 4:end])\n                    self._event(\"comment\", r)\n                pos = end + 3\n            elif src.startswith(\"<![CDATA[\", pos):\n                end = src.find(\"]]>\", pos + 9)\n                if end < 0:\n                    self._error(\"unclosed CDATA section\", src, pos, 20)\n                if stack and t_data is not None:\n                    t_data(src[pos + 9:end])\n                pos = end + 3\n            elif src.startswith(\"<?\", pos):\n                end = src.find(\"?>\", pos + 2)\n                if end < 0:\n                    self._error(\"unclosed token\", src, pos, 5)\n                parts = src[pos + 2:end].split(None, 1)\n                if parts and parts[0].lower() != \"xml\" and t_pi is not None:\n                    r = t_pi(parts[0], parts[1].strip() if len(parts) > 1 else \"\")\n                    self._event(\"pi\", r)\n                pos = end + 2\n            elif src.startswith(\"<!\", pos):\n                depth = 0\n                i = pos + 2\n                while i < n:\n                    c = src[i]\n                    if c == \"[\":\n                        depth += 1\n                    elif c == \"]\":\n                        depth -= 1\n                    elif c == \">\" and depth <= 0:\n                        break\n                    i += 1\n                pos = i + 1\n            elif src.startswith(\"</\", pos):\n                m = _name_re.match(src, pos + 2)\n                if not m:\n                    self._error(\"not well-formed (invalid token)\", src, pos, 4)\n                name = m.group(0)\n                end = src.find(\">\", m.end())\n                if end < 0 or src[m.end():end].strip():\n                    self._error(\"not well-formed (invalid token)\", src, pos, 4)\n                if not stack or stack[-1][0] != name:\n                    self._error(\"mismatched tag\", src, pos + 2, 7)\n                raw, outer, declared = stack.pop()\n                last = t_end(self._expand(name, nsmap, src, pos)) if t_end is not None else None\n                self._event(\"end\", last)\n                for prefix in declared:\n                    if t_end_ns is not None:\n                        t_end_ns(prefix)\n                    self._event(\"end-ns\", None)\n                nsmap = outer\n                pos = end + 1\n            else:\n                m = _name_re.match(src, pos + 1)\n                if not m:\n                    self._error(\"not well-formed (invalid token)\", src, pos, 4)\n                if seen_root and not stack:\n                    self._error(\"junk after document element\", src, pos, 9)\n                name = m.group(0)\n                i = m.end()\n                raw_attrs = []\n                while True:\n                    am = _attr_re.match(src, i)\n                    if not am:\n                        break\n                    raw_attrs.append((am.group(1), am.group(2)[1:-1], am.start(1)))\n                    i = am.end()\n                while i < n and src[i] in \" \\t\\r\\n\":\n                    i += 1\n                empty = False\n                if src.startswith(\"/>\", i):\n                    empty = True\n                    i += 2\n                elif i < n and src[i] == \">\":\n                    i += 1\n                else:\n                    self._error(\"not well-formed (invalid token)\", src, i, 4)\n                outer = nsmap\n                declared = []\n                attrs = {}\n                for an, av, apos in raw_attrs:\n                    if an == \"xmlns\" or an.startswith(\"xmlns:\"):\n                        value = self._refs(av, src, apos)\n                        if nsmap is outer:\n                            nsmap = dict(outer)\n                        prefix = an[6:]\n                        nsmap[prefix] = value\n                        declared.append(prefix)\n                        if t_start_ns is not None:\n                            t_start_ns(prefix, value)\n                        self._event(\"start-ns\", (prefix, value))\n                for an, av, apos in raw_attrs:\n                    if an == \"xmlns\" or an.startswith(\"xmlns:\"):\n                        continue\n                    value = self._refs(av, src, apos)\n                    value = value.replace(\"\\t\", \" \").replace(\"\\n\", \" \").replace(\"\\r\", \" \")\n                    key = self._expand(an, nsmap, src, apos, True)\n                    if key in attrs:\n                        self._error(\"duplicate attribute\", src, apos, 8)\n                    attrs[key] = value\n                tag = self._expand(name, nsmap, src, pos)\n                seen_root = True\n                elem = t_start(tag, attrs) if t_start is not None else None\n                self._event(\"start\", elem)\n                if empty:\n                    last = t_end(tag) if t_end is not None else None\n                    self._event(\"end\", last)\n                    for prefix in declared:\n                        if t_end_ns is not None:\n                            t_end_ns(prefix)\n                        self._event(\"end-ns\", None)\n                    nsmap = outer\n                else:\n                    stack.append((name, outer, declared))\n                pos = i\n        if stack or not seen_root:\n            self._error(\"no element found\", src, n, 3)\n\n\nclass XMLPullParser:\n    def __init__(self, events=None, *, _parser=None):\n        self._queue = []\n        self._parser = _parser or XMLParser(target=TreeBuilder())\n        self._parser._events = (tuple(events) if events else (\"end\",), self._queue)\n        self.root = None\n\n    def feed(self, data):\n        self._parser.feed(data)\n\n    def flush(self):\n        pass\n\n    def close(self):\n        self.root = self._parser.close()\n\n    def read_events(self):\n        queue = self._queue\n        while queue:\n            yield queue.pop(0)\n\n\nclass _IterParseIterator:\n    def __init__(self, events, root):\n        self._events = events\n        self.root = root\n\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        if not self._events:\n            raise StopIteration\n        return self._events.pop(0)\n\n\ndef iterparse(source, events=None, parser=None):\n    # the whole document is read and parsed first, then its events are handed out\n    pull = XMLPullParser(events=events, _parser=parser)\n    pull.feed(_read_all(source))\n    pull.close()\n    return _IterParseIterator(list(pull.read_events()), pull.root)\n\n\ndef XML(text, parser=None):\n    if not parser:\n        parser = XMLParser(target=TreeBuilder())\n    parser.feed(text)\n    return parser.close()\n\n\nfromstring = XML\n\n\ndef XMLID(text, parser=None):\n    tree = XML(text, parser)\n    ids = {}\n    for elem in tree.iter():\n        id_ = elem.get(\"id\")\n        if id_:\n            ids[id_] = elem\n    return tree, ids\n\n\ndef fromstringlist(sequence, parser=None):\n    if not parser:\n        parser = XMLParser(target=TreeBuilder())\n    for text in sequence:\n        parser.feed(text)\n    return parser.close()\n\n\ndef parse(source, parser=None):\n    tree = ElementTree()\n    tree.parse(source, parser)\n    return tree\n\n\ndef canonicalize(xml_data=None, *, out=None, from_file=None, **options):\n    root = parse(from_file).getroot() if xml_data is None else XML(xml_data)\n    text = tostring(root, encoding=\"unicode\", short_empty_elements=False)\n    if out is not None:\n        out.write(text)\n        return None\n    return text\n" },
+  "xml.etree": { pkg: true, source: "\"\"\"The ElementTree XML API (adder ships ElementTree itself; cElementTree is gone in Python 3.9+).\"\"\"\n" },
+});
+
 // -- runner.js --
 
 // @gcu/adder — high-level runtime API (tree-walker path).
@@ -20295,6 +20830,21 @@ function emitPyIter(ctx, src, loc, type) {
   if (src && (src.op === 'await' || src._mayBeAsyncIter)) {
     return ctx.emit('await', [call.id], type || DYNAMIC, loc);
   }
+  // in a function that may await anyway, any source may be async underneath (a user __iter__ /
+  // __next__ that is itself async — `self.i += 1` in __next__ makes it so): guard the result as
+  // `+=` does, `t = _py.iter(src); if (_py.isThen(t)) t = await t` — free there, and kept out
+  // of sync functions, whose comprehensions take the synchronous reading only
+  if (ctx._loopMayAwait) {
+    const tmp = ctx.makeTempName('itr');
+    ctx.emit('store', [tmp, call.id], VOID, loc);
+    const isThen = emitPyCall(ctx, 'isThen', [ctx.emit('load', [tmp], DYNAMIC, loc)], loc, BOOL);
+    const thenBody = captureOps(ctx, () => {
+      const awaited = ctx.emit('await', [ctx.emit('load', [tmp], DYNAMIC, loc).id], DYNAMIC, loc);
+      ctx.emit('store', [tmp, awaited.id], VOID, loc);
+    });
+    ctx.emit('if_region', [isThen.id], VOID, loc, { then_body: thenBody, else_body: [], phis: [] });
+    return ctx.emit('load', [tmp], type || DYNAMIC, loc);
+  }
   return call;
 }
 
@@ -20328,6 +20878,9 @@ function lowerAdder(ast, source, opts) {
   }
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
+  // compiled functions bind their defaults as constants and can't take another body: a module
+  // that rewrites a function's __code__ / __defaults__ / __kwdefaults__ runs on the tree-walker
+  if (_rewritesFunctionInternals(ast)) throw new AirLowerError('rewriting __code__ / __defaults__ / __kwdefaults__ needs the tree-walker');
 
   // globals() / locals(): the module's namespace as a live dict over the module object (a
   // compiled module mirrors every module-level binding onto it). The main program gets such an
@@ -21484,7 +22037,7 @@ function lowerClassDef(ctx, node) {
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
     const d = decorators[i];
-    const call = ctx.emit('call', [d.id, classOp.id], DYNAMIC, l);
+    const call = ctx.emit('call', [emitPyCall(ctx, 'fnOf', [d], l).id, classOp.id], DYNAMIC, l);
     classOp = ctx.emit('await', [call.id], DYNAMIC, l);
   }
 
@@ -22041,6 +22594,20 @@ function _refExpr(ctx, ssaId) {
 // would a coroutine.) Not in sync mode: the dunders whose call sites DO await — construction,
 // __call__, the in-place operators (guarded), `with`, iteration — and class-creation hooks.
 // does the program call globals() / locals() anywhere?
+const _FN_INTERNALS = new Set(['__code__', '__defaults__', '__kwdefaults__']);
+const _isFnInternal = (n) => n && n.type === 'Attribute' && _FN_INTERNALS.has(n.attr);
+function _rewritesFunctionInternals(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(_rewritesFunctionInternals);
+  const stores = (t) => t && (_isFnInternal(t) || (t.type === 'Subscript' && _isFnInternal(t.value)) ||
+    ((t.type === 'Tuple' || t.type === 'List') && t.elts.some(stores)));
+  if ((node.type === 'Assign' && node.targets.some(stores)) || ((node.type === 'AugAssign' || node.type === 'AnnAssign') && stores(node.target))) return true;
+  // f.__kwdefaults__.update(...) / .pop / .setdefault / .clear
+  if (node.type === 'Call' && node.func && node.func.type === 'Attribute' && _isFnInternal(node.func.value) &&
+    ['update', 'pop', 'popitem', 'setdefault', 'clear', '__setitem__', '__delitem__'].includes(node.func.attr)) return true;
+  for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _rewritesFunctionInternals(node[k])) return true;
+  return false;
+}
 function _callsScopeBuiltin(node) {
   if (!node || typeof node !== 'object') return false;
   if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
@@ -22079,7 +22646,7 @@ function _functionLocalNames(node) {
 }
 // (__new__ is NOT here: it's construction plumbing — `self.__class__(…)` in a sync-mode
 // __add__ must get an instance, not a Promise — and I/O in __new__ is rare; __init__ may do I/O)
-const AWAITED_DUNDERS = new Set(['__init__', '__call__', '__post_init__', '__del__',
+const AWAITED_DUNDERS = new Set(['__init__', '__new__', '__call__', '__post_init__', '__del__',
   '__enter__', '__exit__', '__aenter__', '__aexit__', '__iter__', '__next__', '__aiter__', '__anext__', '__await__',
   '__iadd__', '__isub__', '__imul__', '__imatmul__', '__itruediv__', '__ifloordiv__', '__imod__', '__ipow__',
   '__ilshift__', '__irshift__', '__iand__', '__ixor__', '__ior__',
@@ -22221,7 +22788,9 @@ function lowerFuncDef(ctx, node) {
   for (let i = decorators.length - 1; i >= 0; i--) {
     const dec = decorators[i];
     const loadFn = ctx.emit('load', [name], DYNAMIC, l);
-    const call = ctx.emit('call', [dec.id, loadFn.id], DYNAMIC, l);
+    // a decorator may be any callable — an instance with __call__ (networkx's argmap) too
+    const callee = emitPyCall(ctx, 'fnOf', [dec], l);
+    const call = ctx.emit('call', [callee.id, loadFn.id], DYNAMIC, l);
     const awaited = ctx.emit('await', [call.id], DYNAMIC, l);
     ctx.emit('store', [name, awaited.id], VOID, l);
     ctx.symbols.set(name, awaited.id);

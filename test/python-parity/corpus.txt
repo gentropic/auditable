@@ -2892,3 +2892,407 @@ class S(metaclass=Meta):
 for k in S:
     print(k)
 print(list(S), len(S), "a" in list(S))
+### class/private-mangling
+class Base:
+    def __init__(self):
+        self.__secret = 1
+        self.__dunder__ = "d"
+    def get(self):
+        return self.__secret
+class Sub(Base):
+    def __init__(self):
+        super().__init__()
+        self.__secret = 2
+    def mine(self):
+        return self.__secret
+s = Sub()
+print(s.get(), s.mine(), sorted(k for k in vars(s)), hasattr(s, "__secret"))
+class argmap:
+    def make(self):
+        def func(*args, __wrapper=None, **kwargs):
+            return __wrapper
+        return func
+f = argmap().make()
+print(f.__kwdefaults__, f(_argmap__wrapper=5))
+class _Priv:
+    __x = 3
+    def get(self):
+        return self.__x
+print(_Priv().get(), _Priv._Priv__x)
+### func/dict-and-slots
+def f(a, b=2, *, c=3):
+    pass
+f.tag = 1
+f.name = "n"
+print(sorted(f.__dict__), f.__kwdefaults__, f.__defaults__, f.__name__, f.name)
+def g():
+    pass
+g.helper = f
+print(g.helper is f, g.__closure__, g.__globals__ is globals())
+g.__dict__.update({"__defaults__": (1,), "extra": 2})
+print(g.__defaults__, g.extra)
+### func/live-defaults
+def f(a, b=2, *, c=3, w=None):
+    return (a, b, c, w)
+f.__kwdefaults__["w"] = "self"
+print(f(1))
+f.__kwdefaults__.update({"c": 30})
+print(f(1))
+f.__defaults__ = (20,)
+print(f(1))
+f.__defaults__ = None
+try:
+    f(1)
+except TypeError as e:
+    print("TE", e)
+f.__defaults__ = (5, 6)
+print(f())
+### func/code-swap
+import types
+def f(a, b=2, *, c=3):
+    return ("f", a, b, c)
+def g(a, b=9, *, c=4):
+    return ("g", a, b, c)
+f.__kwdefaults__["c"] = 30
+f.__code__ = g.__code__
+print(f(1), g(1), f.__code__ is g.__code__)
+X = 10
+def h(a, b=2):
+    """doc"""
+    return a + b + X
+k = types.FunctionType(h.__code__, h.__globals__, "k", h.__defaults__, h.__closure__)
+print(k(1), k.__name__, h.__name__, k is h, type(k) is types.FunctionType, k.__doc__)
+### builtin/dict-views-as-sets
+a = {1: 2, 3: 4, (5, 6): 7}
+b = {3: 0}
+print(sorted(map(str, a.keys() - b.keys())), a.keys() & b.keys(), sorted(map(str, a.keys() | [9])))
+print(a.keys() ^ {1}, a.keys() == {1, 3, (5, 6)}, b.items() == {(3, 0)}, a.items() - {(1, 2)} == {(3, 4), ((5, 6), 7)})
+d = {}
+d.update((k, k * 2) for k in "ab")
+d.update([("c", 3)], e=5)
+print(sorted(d.items()))
+try:
+    d.update([(1, 2, 3)])
+except ValueError as e:
+    print(e)
+### builtin/del-semantics
+class C:
+    def __init__(self):
+        self.c = [1, 2, 3]
+        self.a = 1
+    def __delitem__(self, i):
+        del self.c[i]
+x = C()
+del x[0]
+print(x.c)
+class D:
+    def __delattr__(self, n):
+        print("delattr", n)
+del D().zap
+del x.a
+for f in (lambda: x.a, lambda: delattr(x, "nope")):
+    try:
+        f()
+    except AttributeError as e:
+        print("AE", e)
+dd = {"k": 1, (1, 2): 3}
+del dd[1, 2]
+del dd["k"]
+try:
+    del dd["q"]
+except KeyError as e:
+    print("KE", e)
+l = [1, 2, 3]
+del l[-1]
+try:
+    del l[5]
+except IndexError as e:
+    print("IE", e)
+try:
+    del (1, 2)[0]
+except TypeError as e:
+    print("TE", e)
+class Desc:
+    def __get__(self, o, t): return 5
+    def __set__(self, o, v): pass
+    def __delete__(self, o): print("desc delete")
+class W:
+    p = Desc()
+del W().p
+print(dd, l)
+### class/set-only-descriptor
+class Sync:
+    def __set__(self, obj, value):
+        od = obj.__dict__
+        od["_a"] = value
+        od["_b"] = value
+        print("set")
+class G:
+    _a = Sync()
+    _b = Sync()
+    def __init__(self):
+        self._a = {}
+g = G()
+print(g._a is g._b, type(g._a).__name__)
+g._b = [1]
+print(g._a, g._b, sorted(vars(g)))
+### builtin/iter-protocols
+class I:
+    def __iter__(self):
+        return iter([1, 2])
+class N:
+    def __init__(self):
+        self.i = 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        self.i += 1
+        if self.i > 3:
+            raise StopIteration
+        return self.i
+class Gi:
+    def __getitem__(self, i):
+        if i > 2:
+            raise IndexError
+        return i * 10
+class Inf:
+    def __iter__(self):
+        return self
+    def __next__(self):
+        return 7
+def first():
+    for x in Inf():
+        return x
+print([c for c in I()], [c for c in N()], [c for c in Gi()], {c for c in N()}, first(), sum(x for x in N()))
+for x in (5, None, len, "ab", [1]):
+    try:
+        print(next(iter(x)))
+    except TypeError as e:
+        print(e)
+from itertools import chain
+print(list(chain.from_iterable([[1], (2, 3), "ab"])), list(chain.from_iterable(x for x in [[4], [5]])))
+class M:
+    def iter(self, x):
+        return iter(x)
+    def len(self):
+        return len([1, 2])
+print(next(M().iter([5])), M().len(), M.iter.__name__)
+### builtin/bytes-join
+buf = [b"ab", bytearray(b"c")]
+print(b"".join(bytes(b) for b in buf), b"-".join(buf), b"".join([b"x"]))
+try:
+    b"".join(["s"])
+except TypeError as e:
+    print(e)
+### mod/collections-sources
+from collections import Counter, deque, OrderedDict, defaultdict
+def g():
+    yield from "abca"
+c = Counter(x for x in "abca")
+c.update(x for x in "aa")
+print(c, deque(g(), 2), OrderedDict((k, 1) for k in "xy"), Counter(g()).most_common(1))
+print(OrderedDict(a=1), defaultdict(list, [(1, 2)], z=3), OrderedDict([("a", 1)], b=2))
+### mod/hashlib-blake2
+import hashlib, hmac
+for n in ("blake2b", "blake2s"):
+    H = getattr(hashlib, n)
+    print(n, H().hexdigest())
+    print(H(b"abc").hexdigest())
+    print(H(b"x" * 300, digest_size=16).hexdigest())
+    print(H(b"msg", key=b"secret").hexdigest())
+    print(H(b"m", salt=b"s1", person=b"p2", digest_size=20).hexdigest())
+    print(H(b"tree", fanout=2, depth=3, leaf_size=5, node_offset=7, node_depth=1, inner_size=8, last_node=True).hexdigest())
+    h = H(digest_size=8); h.update(b"a" * 200); c = h.copy(); c.update(b"b")
+    print(h.hexdigest(), c.hexdigest(), h.digest_size, h.block_size, h.name)
+    print(hashlib.new(n, b"q").hexdigest(), hmac.new(b"k", b"m", n).hexdigest())
+### mod/html-entities
+import html.entities as h
+from html import entities
+print(h.name2codepoint["eacute"], h.codepoint2name[233], h.entitydefs["amp"], h.html5["amp;"], entities is h)
+### mod/elementtree
+import io
+import xml.etree.ElementTree as ET
+doc = """<?xml version="1.0"?>
+<!DOCTYPE note [<!ELEMENT note ANY>]>
+<root xmlns="urn:a" xmlns:b="urn:b" version="1.0">
+  <!-- a comment -->
+  <item id="1" b:kind="x">one &amp; <![CDATA[<raw>]]> &#233;</item>
+  <item id="2">two<sub>s</sub>tail</item>
+  <b:other attr='q"uote'/>
+</root>"""
+root = ET.fromstring(doc)
+print(root.tag, root.attrib, len(root))
+for c in root:
+    print(repr(c.tag), sorted(c.attrib.items()), repr(c.text), repr(c.tail))
+ns = {"a": "urn:a", "b": "urn:b"}
+print([e.get("id") for e in root.findall("a:item", ns)], root.find("a:item[@id='2']/a:sub", ns).text)
+print(ET.tostring(root, encoding="unicode"))
+r = ET.Element("graph", {"edgedefault": "undirected"})
+n = ET.SubElement(r, "node", id="n0")
+n.text = "a < b & c"
+ET.SubElement(n, "data", key="d0").text = "x\ny"
+ET.SubElement(r, "edge", source="n0", target="n1")
+print(ET.tostring(r))
+ET.indent(r)
+print(ET.tostring(r, encoding="unicode"))
+buf = io.BytesIO()
+ET.ElementTree(r).write(buf, encoding="utf-8", xml_declaration=True)
+back = ET.parse(io.BytesIO(buf.getvalue())).getroot()
+print(back.tag, [c.tag for c in back], back.find("node/data").text)
+print([(ev, el.tag) for ev, el in ET.iterparse(io.BytesIO(b"<a><b/><c>t</c></a>"), events=("start", "end"))])
+for bad in ["<a><b></a>", "<a>&nope;</a>", "<a/><b/>"]:
+    try:
+        ET.fromstring(bad)
+    except ET.ParseError as e:
+        print("ParseError", e, e.position)
+print([x.tag for x in ET.fromstring("<r><a><b/></a><c><b/></c></r>").findall("*/b/..")])
+print(ET.fromstring("<r><a>1</a><a>2</a></r>").find("a[last()]").text)
+### mod/html-parser
+from html.parser import HTMLParser
+class P(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.out = []
+    def handle_starttag(self, tag, attrs):
+        self.out.append(("start", tag, attrs))
+    def handle_endtag(self, tag):
+        self.out.append(("end", tag))
+    def handle_startendtag(self, tag, attrs):
+        self.out.append(("startend", tag, attrs))
+    def handle_data(self, data):
+        self.out.append(("data", data))
+    def handle_comment(self, data):
+        self.out.append(("comment", data))
+    def handle_decl(self, decl):
+        self.out.append(("decl", decl))
+p = P()
+p.feed('<!DOCTYPE html><html><head><title>T &amp; t</title><script>if (a < b) x();</script></head>')
+p.feed('<body class="x" data-v=\'1\' checked><p>Hi<br/>there &eacute; &#65;</p><!-- c -->')
+p.feed('<img src=a.png alt="q&quot;"/></body></html>')
+p.close()
+for e in p.out:
+    print(e)
+print(p.getpos())
+### builtin/shared-iterators
+import itertools
+it = iter(range(7))
+print(list(itertools.islice(it, 3)), list(itertools.islice(it, 3)), list(it))
+it2 = iter([1, 2, 3, 4])
+for x in it2:
+    break
+print(list(it2))
+z = iter("abcd")
+print(list(zip(z, "x")), list(z))
+print(list(itertools.islice("abcdef", None)), list(itertools.islice("abcdef", 1, None, 2)), list(itertools.islice(itertools.count(), 2, 5)))
+### gen/try-else-finally
+def g():
+    try:
+        yield 1
+    except ValueError as e:
+        yield "caught " + str(e)
+    else:
+        yield "else"
+    finally:
+        yield "fin"
+print(list(g()))
+def h():
+    try:
+        yield 1
+        raise ValueError("v")
+    except ValueError as e:
+        yield ("h", type(e).__name__, str(e))
+        try:
+            raise
+        except ValueError:
+            yield "reraised"
+    finally:
+        print("hfin")
+print(list(h()))
+def k():
+    try:
+        try:
+            yield 1
+            raise KeyError("x")
+        except KeyError:
+            raise TypeError("t")
+        finally:
+            yield "inner fin"
+    except TypeError as e:
+        yield "outer " + str(e)
+print(list(k()))
+### gen/close-and-finalize
+def g():
+    try:
+        yield 1
+        yield 2
+    finally:
+        print("cleanup")
+for x in g():
+    break
+print("after")
+h = g()
+for x in h:
+    break
+print("kept", list(h))
+def f():
+    for x in g():
+        return x
+print(f())
+def k():
+    try:
+        yield 1
+    except GeneratorExit:
+        print("got exit")
+        raise
+gg = k()
+next(gg)
+gg.close()
+print(gg.close())
+def bad():
+    try:
+        yield 1
+    except GeneratorExit:
+        yield 2
+b = bad()
+next(b)
+try:
+    b.close()
+except RuntimeError as e:
+    print("RE", e)
+### class/init-descriptor-with-new
+from functools import partialmethod
+class T:
+    def __new__(cls, *_, **__):
+        return object.__new__(cls)
+    def _init(self, it=None, disable=False):
+        print(type(self).__name__, it, disable)
+    __init__ = partialmethod(_init)
+T(range(2), disable=True)
+class L:
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+class U:
+    def __new__(cls, *a):
+        inst = object.__new__(cls)
+        with cls.get_lock():
+            inst.made = True
+        return inst
+    @classmethod
+    def get_lock(cls):
+        if not hasattr(cls, "_lock"):
+            cls._lock = L()
+        return cls._lock
+print(U().made)
+### func/instance-decorator
+class Deco:
+    def __init__(self, k):
+        self.k = k
+    def __call__(self, f):
+        return lambda *a: (self.k, f(*a))
+@Deco(1)
+def f(x):
+    return x * 2
+@Deco(2)
+class C:
+    pass
+print(f(3), C()[0])

@@ -972,6 +972,82 @@
   "class/metaclass-iter": {
    "out": "a\nb\n['a', 'b'] 2 True\n",
    "error": null
+  },
+  "class/private-mangling": {
+   "out": "1 2 ['_Base__secret', '_Sub__secret', '__dunder__'] False\n{'_argmap__wrapper': None} 5\n3 3\n",
+   "error": null
+  },
+  "func/dict-and-slots": {
+   "out": "['name', 'tag'] {'c': 3} (2,) f n\nTrue None True\nNone 2\n",
+   "error": null
+  },
+  "func/live-defaults": {
+   "out": "(1, 2, 3, 'self')\n(1, 2, 30, 'self')\n(1, 20, 30, 'self')\nTE f() missing 1 required positional argument: 'b'\n(5, 6, 30, 'self')\n",
+   "error": null
+  },
+  "func/code-swap": {
+   "out": "('g', 1, 2, 30) ('g', 1, 9, 4) True\n13 k h False True doc\n",
+   "error": null
+  },
+  "builtin/dict-views-as-sets": {
+   "out": "['(5, 6)', '1'] {3} ['(5, 6)', '1', '3', '9']\n{3, (5, 6)} True True True\n[('a', 'aa'), ('b', 'bb'), ('c', 3), ('e', 5)]\ndictionary update sequence element #0 has length 3; 2 is required\n",
+   "error": null
+  },
+  "builtin/del-semantics": {
+   "out": "[2, 3]\ndelattr zap\nAE 'C' object has no attribute 'a'\nAE 'C' object has no attribute 'nope'\nKE 'q'\nIE list assignment index out of range\nTE 'tuple' object doesn't support item deletion\ndesc delete\n{} [1, 2]\n",
+   "error": null
+  },
+  "class/set-only-descriptor": {
+   "out": "set\nTrue dict\nset\n[1] [1] ['_a', '_b']\n",
+   "error": null
+  },
+  "builtin/iter-protocols": {
+   "out": "[1, 2] [1, 2, 3] [0, 10, 20] {1, 2, 3} 7 6\n'int' object is not iterable\n'NoneType' object is not iterable\n'builtin_function_or_method' object is not iterable\na\n1\n[1, 2, 3, 'a', 'b'] [4, 5]\n5 2 iter\n",
+   "error": null
+  },
+  "builtin/bytes-join": {
+   "out": "b'abc' b'ab-c' b'x'\nsequence item 0: expected a bytes-like object, str found\n",
+   "error": null
+  },
+  "mod/collections-sources": {
+   "out": "Counter({'a': 4, 'b': 1, 'c': 1}) deque(['c', 'a'], maxlen=2) OrderedDict({'x': 1, 'y': 1}) [('a', 2)]\nOrderedDict({'a': 1}) defaultdict(<class 'list'>, {1: 2, 'z': 3}) OrderedDict({'a': 1, 'b': 2})\n",
+   "error": null
+  },
+  "mod/hashlib-blake2": {
+   "out": "blake2b 786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce\nba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923\nc2f093e41879e412280bfcc0ed6533e4\n150f58e6352bc8d47876df3128b2bc75800b471fa57aa0d26c4764429d0c8bc34fa03a1a8620ff77cddb1eaa034392dbf598eafe51f16d5810026734a539ed62\nf36447de1f24d1e23ee87273f746cbf7216e4203\n00d8e4a6a1e897235aab06baa701699a8d8f108baec1e27d1a8c8a348109506fb3a28ece332af5884be7c7d6881ba67e133d9dd031af0c63cffef60dc5a664ba\nb40af6d2f2f34472 f5e7fe1e5b375a31 8 128 blake2b\nd6764cd7f36006d17c9c0de176f578d8ac764c5381daf01d2f8bf23527bcf12d3efb2431f65589f3493ccdd31b4b1467b50559293e2f27d9f0974abd793bee71 cfb0a92a74f0b600e6364e352260f30542c6756729d397019f405ff4b128e0fcb1eb82f06c5939f207c87651772e60558be5cf77f1326bb566eb5fb5c1cc45f9\nblake2s 69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9\n508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982\n96d0bae3db55678f8d35f9cb55c5b62c\n9bc11fb7d725ae6afa83cc58fde48279353d6455d29df0f42a9cafa8ecbaa413\nb4bfc1ac3ee912357418fdd8abdcb89a3a470720\n13d6b89cca64245cb181a3d120f3080b087a2f52c904a3ffddf419c542b7436c\n24613488bf24d758 d95be4136647d7ac 8 64 blake2s\nae3b60e36575f4b166ba8737078140a43a64e58905d9a502ec2f2587a7079307 998d5d39acad301fad7d906adb391c363c726fd6eec3a7f25627ed04d66aff37\n",
+   "error": null
+  },
+  "mod/html-entities": {
+   "out": "233 eacute & & True\n",
+   "error": null
+  },
+  "mod/elementtree": {
+   "out": "{urn:a}root {'version': '1.0'} 3\n'{urn:a}item' [('id', '1'), ('{urn:b}kind', 'x')] 'one & <raw> é' '\\n  '\n'{urn:a}item' [('id', '2')] 'two' '\\n  '\n'{urn:b}other' [('attr', 'q\"uote')] None '\\n'\n['1', '2'] s\n<ns0:root xmlns:ns0=\"urn:a\" xmlns:ns1=\"urn:b\" version=\"1.0\">\n  \n  <ns0:item id=\"1\" ns1:kind=\"x\">one &amp; &lt;raw&gt; é</ns0:item>\n  <ns0:item id=\"2\">two<ns0:sub>s</ns0:sub>tail</ns0:item>\n  <ns1:other attr=\"q&quot;uote\" />\n</ns0:root>\nb'<graph edgedefault=\"undirected\"><node id=\"n0\">a &lt; b &amp; c<data key=\"d0\">x\\ny</data></node><edge source=\"n0\" target=\"n1\" /></graph>'\n<graph edgedefault=\"undirected\">\n  <node id=\"n0\">a &lt; b &amp; c<data key=\"d0\">x\ny</data>\n  </node>\n  <edge source=\"n0\" target=\"n1\" />\n</graph>\ngraph ['node', 'edge'] x\ny\n[('start', 'a'), ('start', 'b'), ('end', 'b'), ('start', 'c'), ('end', 'c'), ('end', 'a')]\nParseError mismatched tag: line 1, column 8 (1, 8)\nParseError undefined entity: line 1, column 3 (1, 3)\nParseError junk after document element: line 1, column 4 (1, 4)\n['a', 'c']\n2\n",
+   "error": null
+  },
+  "mod/html-parser": {
+   "out": "('decl', 'DOCTYPE html')\n('start', 'html', [])\n('start', 'head', [])\n('start', 'title', [])\n('data', 'T & t')\n('end', 'title')\n('start', 'script', [])\n('data', 'if (a < b) x();')\n('end', 'script')\n('end', 'head')\n('start', 'body', [('class', 'x'), ('data-v', '1'), ('checked', None)])\n('start', 'p', [])\n('data', 'Hi')\n('startend', 'br', [])\n('data', 'there é A')\n('end', 'p')\n('comment', ' c ')\n('startend', 'img', [('src', 'a.png'), ('alt', 'q\"')])\n('end', 'body')\n('end', 'html')\n(1, 213)\n",
+   "error": null
+  },
+  "builtin/shared-iterators": {
+   "out": "[0, 1, 2] [3, 4, 5] [6]\n[2, 3, 4]\n[('a', 'x')] ['c', 'd']\n['a', 'b', 'c', 'd', 'e', 'f'] ['b', 'd', 'f'] [2, 3, 4]\n",
+   "error": null
+  },
+  "gen/try-else-finally": {
+   "out": "[1, 'else', 'fin']\nhfin\n[1, ('h', 'ValueError', 'v'), 'reraised']\n[1, 'inner fin', 'outer t']\n",
+   "error": null
+  },
+  "gen/close-and-finalize": {
+   "out": "cleanup\nafter\ncleanup\nkept [2]\ncleanup\n1\ngot exit\nNone\nRE generator ignored GeneratorExit\n",
+   "error": null
+  },
+  "class/init-descriptor-with-new": {
+   "out": "T range(0, 2) True\nTrue\n",
+   "error": null
+  },
+  "func/instance-decorator": {
+   "out": "(1, 6) 2\n",
+   "error": null
   }
  }
 }

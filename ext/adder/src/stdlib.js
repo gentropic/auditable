@@ -536,6 +536,22 @@ adderModules.html = {
   }),
 };
 
+// html.entities: the tables over the same entity set as unescape (CPython's are the full
+// HTML 4 list in name2codepoint and the HTML5 list in html5)
+{
+  const n2c = [], c2n = [], defs = [], h5 = [];
+  for (const [name, ch] of Object.entries(_SL_ENT)) {
+    const cp = ch.codePointAt(0);
+    if (name !== 'apos') { n2c.push([name, cp]); if (!c2n.some((e) => e[0] === cp)) c2n.push([cp, name]); defs.push([name, cp < 256 ? ch : `&#${cp};`]); }
+    h5.push([name + ';', ch]);
+    if (cp < 256) h5.push([name, ch]);
+  }
+  const entities = { __adderModule__: true, __name__: 'html.entities',
+    name2codepoint: new PyDict(n2c), codepoint2name: new PyDict(c2n), entitydefs: new PyDict(defs), html5: new PyDict(h5) };
+  adderModules.html.entities = entities;
+  adderModules['html.entities'] = entities;
+}
+
 // ── textwrap ──
 // CPython's TextWrapper algorithm: the same chunking regex (word / hyphen / em-dash
 // boundaries), the same line filling and placeholder truncation, so wrap() splits where

@@ -11,6 +11,7 @@ import './stdlib-data.js';
 import './stdlib-sys.js';
 import './stdlib-pickle.js';
 import './stdlib-net.js';
+import './stdlib-py.js';
 import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
   pyBool, pyBoolMaybe, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
@@ -19,7 +20,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
+  _registerImportMachinery, stdoutWrite, frozenPyModules, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -451,8 +452,7 @@ async function _assignTarget(target, value, scope) {
         if (d?.set?._pyFset) { await d.set._pyFset(obj, value); return null; }
         if (d) break;
       }
-      guardSetAttr(obj, target.attr);
-      obj[target.attr] = value;
+      storeAttr(obj, target.attr, value);
       break;
     }
     case 'Subscript': {
@@ -569,7 +569,7 @@ async function _evalTarget(target, scope) {
 
 async function _deleteTarget(target, scope) {
   if (target.type === 'Name') { scope.delete(target.id); return; }
-  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); delete obj[target.attr]; return; }
+  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); await pyDelAttr(obj, target.attr); return; }
   if (target.type === 'Subscript') {
     const obj = await adderEval(target.value, scope);
     if (target.slice.type === 'Slice') {
@@ -583,13 +583,8 @@ async function _deleteTarget(target, scope) {
       }
       return;
     }
-    const key = await adderEval(target.slice, scope);
-    if (obj instanceof Map) obj.delete(key);
-    else if (Array.isArray(obj)) {
-      const idx = key < 0 ? obj.length + key : key;
-      obj.splice(idx, 1);
-    }
-    else delete obj[key];
+    const key = target.slice.type === 'Tuple' ? mkTuple(await Promise.all(target.slice.elts.map((e) => adderEval(e, scope)))) : await adderEval(target.slice, scope);
+    await pyDelItem(obj, key);
     return;
   }
 }
@@ -984,12 +979,35 @@ function _attachSignature(fn, node, defaults, scope = null) {
   let root = scope; while (root && root.parent) root = root.parent;
   fn._pySig.line = node.line || 0;
   fn._pySig.file = root && root.vars.has('__file__') ? root.vars.get('__file__') : '<string>';
+  if (root) Object.defineProperty(fn, '_pyGlobals', { value: root.vars, configurable: true });
   const posDefaults = pos.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
   fn.__defaults__ = posDefaults.length ? mkTuple(posDefaults) : null;
   const kwd = kwonly.filter((p) => p.hasDefault);
-  fn.__kwdefaults__ = kwd.length ? new PyDict(kwd.map((p) => [p.name, defaults[p.name]])) : null;
+  fn.__kwdefaults__ = kwd.length ? new LiveDefaults(defaults, kwd.map((p) => [p.name, defaults[p.name]])) : null;
+  fn._pyRedirectable = true;   // its defaults are live and its __code__ can be replaced
+  Object.defineProperty(fn, '_pyNode', { value: node, configurable: true });
+  Object.defineProperty(fn, '_pyScope', { value: scope, configurable: true });
   return fn;
 }
+// func.__code__ = other.__code__: func now runs other's body, in other's scope, with FUNC's
+// defaults — __defaults__ aligned to the new code's trailing positional parameters,
+// __kwdefaults__ by name — as CPython runs a replaced code object (networkx's argmap compiles a
+// signature without defaults and relies on this). Rebuilt when func's defaults change.
+setRedirectBuilder((fn) => {
+  const code = fn._pyRedirectCode;
+  if (!code) { fn._pyRedirect = null; return; }
+  const target = code._pyFn;
+  if (!target._pyNode) throw new AdderError('NotImplementedError', `this code object comes from a compiled function ('${target._pyName || target.name}'): run it on the tree-walker`);
+  const node = target._pyNode;
+  const d = {};
+  const params = node.params || [];
+  const defs = fn.__defaults__ ? [...fn.__defaults__] : [];
+  const first = params.length - defs.length;
+  params.forEach((p, i) => { d[p.name] = i >= first ? defs[i - first] : NO_DEFAULT; });
+  for (const p of node.kwonly || []) d[p.name] = NO_DEFAULT;
+  if (fn.__kwdefaults__) for (const [k, v] of fn.__kwdefaults__) d[k] = v;
+  Object.defineProperty(fn, '_pyRedirect', { value: _makeFunction(node, target._pyScope, d), writable: true, configurable: true });
+});
 
 function _docstringOf(node) {
   const s = node.body && node.body[0];
@@ -1003,6 +1021,7 @@ function _makeFunction(node, scope, defaults = {}) {
   if (isGenerator) return _makeGeneratorFunction(node, scope, defaults);
 
   const fn = async function (...callArgs) {
+    if (fn._pyRedirect) return fn._pyRedirect.apply(this, callArgs);   // its __code__ was replaced
     const localScope = new AdderScope(scope);
     // bind parameters
     await _bindParams(node, callArgs, localScope, defaults);
@@ -1026,10 +1045,24 @@ function _makeFunction(node, scope, defaults = {}) {
   return _attachSignature(fn, node, defaults, scope);
 }
 
+// generator.close(): GeneratorExit raised at the paused yield, so its except / finally run (a
+// generator that never started, or has finished, just ends); yielding again is a RuntimeError
+async function _closeGen(gen) {
+  try {
+    const r = await gen.throw(new AdderError('GeneratorExit', '', undefined, []));
+    if (!r.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit');
+  } catch (e) {
+    if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null;
+    throw e;
+  }
+  return null;
+}
+
 function _makeGeneratorFunction(node, scope, defaults = {}) {
   // Generator functions use a _YieldSignal to communicate yield values
   // back to the async-generator wrapper.
   const fn = function (...callArgs) {
+    if (fn._pyRedirect) return fn._pyRedirect.apply(this, callArgs);   // its __code__ was replaced
     // Return an object that implements both sync and async iteration.
     // We use an async generator internally, exposed via Symbol.asyncIterator.
     // For sync consumers (for..of), we also provide Symbol.iterator
@@ -1044,7 +1077,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
       [Symbol.asyncIterator]() { return run(); },
       next(v) { return run().next(v); },
       send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
-      close() { return run().return(undefined).then(() => null); },
+      close() { return gen ? _closeGen(gen) : Promise.resolve(null); },
       // g.throw(exc): raise exc at the paused yield; the next value it yields, or StopIteration
       throw(t, v) {
         let exc = v ?? t;
@@ -1085,6 +1118,19 @@ async function* _runGenerator(node, scope, callArgs, defaults = {}) {
   }
 }
 
+// a generator's except-handler body: `raised` is the active exception while the body runs, and
+// not while the generator is suspended at a yield in it (CPython swaps a generator's exception
+// state in and out as it resumes) — an abandoned generator leaves nothing on the stack
+async function* _inExcContext(inner, raised) {
+  let method = 'next', arg;
+  for (;;) {
+    let r;
+    _excStack.push(raised);
+    try { r = await inner[method](arg); } finally { const i = _excStack.lastIndexOf(raised); if (i >= 0) _excStack.splice(i, 1); }
+    if (r.done) return r.value;
+    try { arg = yield r.value; method = 'next'; } catch (e) { method = 'throw'; arg = e; }
+  }
+}
 async function* _evalGenStmt(node, scope) {
   // Like adderEval but yields instead of throwing for Yield nodes
   switch (node.type) {
@@ -1145,26 +1191,33 @@ async function* _evalGenStmt(node, scope) {
       if (c) for (const stmt of c.body) yield* await _evalGenStmt(stmt, scope);
       return;
     }
+    // the same shape as _evalTry, with yields allowed anywhere: else runs when nothing was raised,
+    // a handler's exception is the active one (a bare `raise` in it — `except GeneratorExit:
+    // raise`), and finally runs on every way out, a handler that raises included
     case 'Try': {
       try {
-        for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
-      } catch (e) {
-        if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
-        let handled = false;
-        for (const handler of node.handlers) {
-          let excTypeVal = null;
-          if (handler.excType) try { excTypeVal = await adderEval(handler.excType, scope); } catch {}
-          if (!handler.excType || _matchException(e, excTypeVal)) {
-            if (handler.name) scope.set(handler.name, e);
-            handled = true;
-            for (const stmt of handler.body) yield* await _evalGenStmt(stmt, scope);
-            break;
-          }
+        let raised = null;
+        try {
+          for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
+        } catch (e) {
+          if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
+          raised = e;
         }
-        if (!handled) { for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope); throw e; }
+        if (raised === null) {
+          for (const stmt of node.orelse || []) yield* await _evalGenStmt(stmt, scope);
+          return;
+        }
+        for (const handler of node.handlers) {
+          const excTypeVal = handler.excType ? await adderEval(handler.excType, scope) : null;
+          if (!excMatches(raised, excTypeVal)) continue;
+          if (handler.name) scope.set(handler.name, excValue(raised));
+          for (const stmt of handler.body) yield* _inExcContext(_evalGenStmt(stmt, scope), raised);
+          return;
+        }
+        throw raised;
+      } finally {
+        for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope);
       }
-      for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope);
-      return;
     }
     // with … : yield inside (a @contextmanager method's `with self as rv: yield rv`)
     case 'With': {
@@ -1234,8 +1287,8 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
       localScope.set(p.name, callArgs[positionalIdx++]);
     } else if (kwObj && Object.hasOwn(kwObj, p.name)) {
       localScope.set(p.name, kwObj[p.name]);
-    } else if (p.default) {
-      localScope.set(p.name, p.name in defaults ? defaults[p.name] : await adderEval(p.default, localScope));
+    } else if (Object.hasOwn(defaults, p.name) ? defaults[p.name] !== NO_DEFAULT : p.default) {
+      localScope.set(p.name, Object.hasOwn(defaults, p.name) ? defaults[p.name] : await adderEval(p.default, localScope));
     } else {
       throw new AdderError('TypeError', `${fname}() missing 1 required positional argument: '${p.name}'`);
     }
@@ -1251,8 +1304,8 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   for (const p of kwonly) {
     if (kwObj && Object.hasOwn(kwObj, p.name)) {
       localScope.set(p.name, kwObj[p.name]);
-    } else if (p.default) {
-      localScope.set(p.name, p.name in defaults ? defaults[p.name] : await adderEval(p.default, localScope));
+    } else if (Object.hasOwn(defaults, p.name) ? defaults[p.name] !== NO_DEFAULT : p.default) {
+      localScope.set(p.name, Object.hasOwn(defaults, p.name) ? defaults[p.name] : await adderEval(p.default, localScope));
     } else {
       throw new AdderError('TypeError', `${fname}() missing 1 required keyword-only argument: '${p.name}'`);
     }
@@ -1335,16 +1388,31 @@ async function _evalFor(node, scope) {
   let broke = false;
   // for-await handles both sync iterables and async generators
   const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  // stepped by hand, not for-await, which closes the iterator on any early exit. Python's
+  // reference counting decides that instead: an iterator something still refers to stays open
+  // (`for x in it: break` then `list(it)` goes on where the loop stopped); a temporary one — the
+  // loop's `for x in gen():` — is finalized as the loop lets go of it (its `finally` runs).
+  const it = iter[Symbol.asyncIterator] ? iter[Symbol.asyncIterator]() : iter[Symbol.iterator]();
+  const owned = !(node.iter.type === 'Name' || node.iter.type === 'Attribute' || node.iter.type === 'Subscript');
+  const release = async () => {
+    if (!owned) return;
+    if (iterable && iterable.__adderClass__ === 'generator' && typeof iterable.close === 'function') await iterable.close();
+    else if (typeof it.return === 'function') await it.return(undefined);
+  };
   let _loopCount = 0;
-  for await (const value of iter) {
+  for (;;) {
+    const step = await it.next();
+    if (step.done) break;
+    const value = step.value;
     // yield to event loop periodically to prevent page lockup
     if (++_loopCount % 1000 === 0) await new Promise(r => setTimeout(r, 0));
-    await _assignTarget(node.target, value, scope);
     try {
+      await _assignTarget(node.target, value, scope);
       for (const stmt of node.body) await adderEval(stmt, scope);
     } catch (e) {
-      if (e instanceof _BreakSignal) { broke = true; break; }
+      if (e instanceof _BreakSignal) { broke = true; await release(); break; }
       if (e instanceof _ContinueSignal) continue;
+      await release();
       throw e;
     }
   }
@@ -1541,7 +1609,7 @@ function _evalGenExpr(node, scope) {
     __adderClass__: 'generator',
     [Symbol.asyncIterator]() { return run(); },
     next(v) { return run().next(v); },
-    close() { return run().return(undefined).then(() => null); },
+    close() { return gen ? _closeGen(gen) : Promise.resolve(null); },
     _jsThrow(err) { return run().throw(err); },
   };
 }
@@ -1753,6 +1821,15 @@ export async function findModule(name) {
     // `__import__(name); return sys.modules[name]`)
     if (name !== 'js' && adderModules[name] === known && known.__adderModule__) cache[name] = known;
     return known;
+  }
+  if (Object.hasOwn(frozenPyModules, name)) {       // a stdlib module written in Python
+    const fz = frozenPyModules[name];
+    const dot = name.lastIndexOf('.');
+    const parent = dot > 0 ? await findModule(name.slice(0, dot)) : null;
+    if (cache[name]) return cache[name];
+    const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [] } : {});
+    if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
+    return mod;
   }
   const dot = name.lastIndexOf('.');
   if (dot > 0) {

@@ -284,13 +284,30 @@ export class PyDict extends Map {
 // engines' own markers on the object are not attributes.
 const _ENGINE_KEYS = new Set(['__adderClass__', '__adderType__', '__adderModule__', '__adderMeta__', '_isExcClass', '_jsClass', '_genName', '_frozen', '_isGenerator', '_sentinel']);
 const _attrHidden = (k) => _ENGINE_KEYS.has(k) || k.startsWith('_py');
+const _FN_SLOTS = new Set(['__defaults__', '__kwdefaults__', '__name__', '__qualname__', '__module__', '__doc__', '__annotations__',
+  '__code__', '__globals__', '__closure__', '__type_params__']);
+// stdlib modules written in Python (name → { pkg, source }; filled by stdlib-py.js, generated from
+// ext/adder/pylib/). The import system instantiates them like a .py file on sys.path.
+export const frozenPyModules = {};
+
 export class AttrDict extends PyDict {
-  constructor(target) { super(); Object.defineProperty(this, '_t', { value: target }); }
-  _keys() { return Object.keys(this._t).filter((k) => !_attrHidden(k)); }
+  // (`hide`: more names that live on the object but aren't in its __dict__ — a function's
+  // __defaults__ / __kwdefaults__ / __name__ … are slots in CPython)
+  constructor(target, hide = null) { super(); Object.defineProperty(this, '_t', { value: target }); Object.defineProperty(this, '_h', { value: hide }); }
+  _hidden(k) { return _attrHidden(k) || (this._h !== null && this._h.has(k)); }
+  _keys() { return Object.keys(this._t).filter((k) => !this._hidden(k)); }
   get size() { return this._keys().length; }
-  get(k) { return typeof k === 'string' && !_attrHidden(k) && Object.hasOwn(this._t, k) ? this._t[k] : undefined; }
-  has(k) { return typeof k === 'string' && !_attrHidden(k) && Object.hasOwn(this._t, k); }
-  set(k, v) { this._t[k] = v; return this; }
+  get(k) { return typeof k === 'string' && !this._hidden(k) && Object.hasOwn(this._t, k) ? this._t[k] : undefined; }
+  has(k) { return typeof k === 'string' && !this._hidden(k) && Object.hasOwn(this._t, k); }
+  set(k, v) {
+    const t = this._t;
+    // a function's slots (__defaults__, __kwdefaults__, __code__, …) aren't its __dict__: a key of
+    // that name there doesn't change the function (networkx copies a whole __dict__ over one)
+    if (this._h !== null && this._h.has(k)) return this;
+    if (typeof t === 'function' && (k === 'name' || k === 'length')) { storeAttr(t, k, v); return this; }
+    Object.defineProperty(t, k, { value: v, writable: true, enumerable: true, configurable: true });
+    return this;
+  }
   delete(k) { if (!this.has(k)) return false; delete this._t[k]; return true; }
   clear() { for (const k of this._keys()) delete this._t[k]; }
   keys() { return this._keys()[Symbol.iterator](); }
@@ -1080,7 +1097,7 @@ export function adderGetAttr(obj, attr) {
   }
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
-    if (attr === '__dict__') return obj._pyClass ? _classDict(obj) : new AttrDict(obj);
+    if (attr === '__dict__') return obj._pyClass ? _classDict(obj) : new AttrDict(obj, _FN_SLOTS);
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
     if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
@@ -1094,6 +1111,9 @@ export function adderGetAttr(obj, attr) {
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__code__' && obj._pySig && !obj._pyClass) return _codeObject(obj);
+    // the module namespace it was defined in (its globals()); no closure cells are kept
+    if (attr === '__globals__' && obj._pyDef && !obj._pyClass && obj._pyGlobals) return obj._pyGlobals;
+    if (attr === '__closure__' && obj._pyDef && !obj._pyClass) return null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
     // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
     // looks class attributes up. A function's JS properties (name, length) don't count as the
@@ -1270,6 +1290,9 @@ export function adderGetAttr(obj, attr) {
       // a Python function on a class (`Cls.method`) is the function itself — binding made a
       // propertyless copy per access (no signature, no name, `Cls.f is Cls.f` False)
       if (val._pyDef && typeof obj === 'function' && obj._pyClass) return val;
+      // a function's own attribute that is a function (`wrapper.__wrapped__ = f`, `f.helper = g`)
+      // is just that function: only a function found on an instance's class binds
+      if (typeof obj === 'function' && (val._pyDef || val._pyFunc) && Object.hasOwn(obj, attr)) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
       return val.bind(obj);
     }
@@ -1798,6 +1821,24 @@ function _bytesMethod(b, attr) {
       return pyDecode(b, a[0] ?? kw.encoding ?? 'utf-8', a[1] ?? kw.errors ?? 'strict');
     },
     hex: (sep) => [...b].map((c) => c.toString(16).padStart(2, '0')).join(sep || ''),
+    // sep.join(iterable of bytes-likes): bytes, bytearray, memoryview items; a generator too
+    join: (iterable) => {
+      const finish = (items) => {
+        const parts = items.map((x, i) => {
+          if (x instanceof Uint8Array) return x;
+          if (x instanceof PyByteArray) return Uint8Array.from(x);
+          if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
+          throw new AdderError('TypeError', `sequence item ${i}: expected a bytes-like object, ${pyTypeName(x)} found`);
+        });
+        const total = parts.reduce((n, p) => n + p.length, 0) + Math.max(0, parts.length - 1) * b.length;
+        const r = new Uint8Array(total);
+        let o = 0;
+        parts.forEach((p, i) => { if (i) { r.set(b, o); o += b.length; } r.set(p, o); o += p.length; });
+        return r;
+      };
+      if (_isAsyncOnly(iterable) || isUserIterable(iterable)) return pyCollect(iterable).then(finish);
+      return finish([...pyIter(iterable)]);
+    },
   };
   if (attr in m) return m[attr];
   const STR_LIKE = ['startswith', 'endswith', 'find', 'rfind', 'index', 'rindex', 'count', 'replace', 'split', 'rsplit',
@@ -1996,13 +2037,13 @@ function _listMethod(arr, attr) {
 
 function _mapMethod(map, attr) {
   const m = {
-    keys: () => [...map.keys()],
+    keys: () => _dictView([...map.keys()], 'keys'),
     values: () => [...map.values()],
-    items: () => [...map.entries()].map(mkTuple),
+    items: () => _dictView([...map.entries()].map(mkTuple), 'items'),
     get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
     pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
-    update: (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) map.set(k, v); } else if (Array.isArray(other)) { for (const [k, v] of other) map.set(k, v); } else if (typeof other === 'object' && other !== null) { for (const k of Object.keys(other)) if (k !== '_kw') map.set(k, other[k]); } } return null; },
+    update: (...args) => _dictUpdate((k, v) => map.set(k, v), args),
     popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return mkTuple([k, v]); },
     clear: () => { map.clear(); return null; },
     copy: () => new PyDict(map),
@@ -2012,15 +2053,37 @@ function _mapMethod(map, attr) {
   throw new AdderError('AttributeError', `'dict' object has no attribute '${attr}'`);
 }
 
+// dict.update(other=(), **kw): a mapping (a Map, a plain dict, anything with keys() and
+// __getitem__), or an iterable of key / value pairs (a generator too) — then the keywords
+const _dictUpdate = maybeSync(function* (set, args) {
+  for (const other of args) {
+    if (other === null || other === undefined) continue;
+    if (other._kw) { for (const k of Object.keys(other)) if (k !== '_kw') set(k, other[k]); continue; }
+    if (other instanceof Map) { for (const [k, v] of other) set(k, v); continue; }
+    if (isPlainDict(other)) { for (const k of Object.keys(other)) set(k, other[k]); continue; }
+    if (typeof other === 'object' && typeof other.keys === 'function' && typeof other.__getitem__ === 'function') {
+      for (const k of yield* _gCollect(yield other.keys())) set(k, yield other.__getitem__(k));
+      continue;
+    }
+    const pairs = yield* _gCollect(other);
+    for (let i = 0; i < pairs.length; i++) {
+      const p = pairs[i];
+      const a = Array.isArray(p) ? p : typeof p === 'string' ? [...p] : yield* _gCollect(p);
+      if (a.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${a.length}; 2 is required`);
+      set(a[0], a[1]);
+    }
+  }
+  return null;
+});
 const _objDictMethods = {
-  keys: (obj) => { const fn = () => Object.keys(obj); fn._pyName = 'dict.keys'; return fn; },
+  keys: (obj) => { const fn = () => _dictView(Object.keys(obj), 'keys'); fn._pyName = 'dict.keys'; return fn; },
   values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
-  items: (obj) => { const fn = () => Object.entries(obj).map(mkTuple); fn._pyName = 'dict.items'; return fn; },
+  items: (obj) => { const fn = () => _dictView(Object.entries(obj).map(mkTuple), 'items'); fn._pyName = 'dict.items'; return fn; },
   get: (obj) => { const fn = (k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null)); fn._pyName = 'dict.get'; return fn; },
   pop: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
   popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }; fn._pyName = 'dict.popitem'; return fn; },
   setdefault: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
-  update: (obj) => { const fn = (...args) => { for (const other of args) { if (other instanceof Map) { for (const [k, v] of other) obj[k] = v; } else if (other && other._kw) { for (const k of Object.keys(other)) if (k !== '_kw') obj[k] = other[k]; } else if (Array.isArray(other)) { for (const [k, v] of other) obj[k] = v; } else if (typeof other === 'object' && other !== null) Object.assign(obj, other); } return null; }; fn._pyName = 'dict.update'; return fn; },
+  update: (obj) => { const fn = (...args) => _dictUpdate((k, v) => { obj[k] = v; }, args); fn._pyName = 'dict.update'; return fn; },
   clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
   copy: (obj) => { const fn = () => ({ ...obj }); fn._pyName = 'dict.copy'; return fn; },
 };
@@ -2138,6 +2201,7 @@ export function pySub(a, b) {
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);
   if (a instanceof Set && b instanceof Set) return _setLike(a, [...a].filter((x) => !b.has(x)));
+  const vo = _dictViewOperands(a, b); if (vo) return pySub(vo[0], vo[1]);
   throw _binErr('-', a, b);
 }
 function _repeat(seq, n) {
@@ -2199,6 +2263,17 @@ export function pyPow(a, b, mod) {
   }
   throw _binErr('**', a, b);
 }
+// dict.keys() / dict.items() are snapshot lists here, tagged as views so they are also sets:
+// `d.keys() - other.keys()`, `d.items() & s`, `d.keys() == {…}` work as in Python
+function _dictView(arr, kind) { Object.defineProperty(arr, '_pyView', { value: kind }); return arr; }
+const _isDictView = (x) => Array.isArray(x) && x._pyView !== undefined;
+// for a set operator with a view on one side: both operands as sets (any iterable is
+// accepted opposite a view, as CPython's dict_keys operators do) — or null when neither is a view
+function _dictViewOperands(a, b) {
+  if (!_isDictView(a) && !_isDictView(b)) return null;
+  const asSet = (x) => (x instanceof Set ? x : new PySet(_isDictView(x) || Array.isArray(x) ? x : [...pyIter(x)]));
+  return [asSet(a), asSet(b)];
+}
 function _setLike(proto, items) {
   const s = new PySet(items);
   if (proto && proto._frozen) s._frozen = true;
@@ -2210,6 +2285,7 @@ function _bitwise(sym, a, b, d, rd) {
     return sym === '&' ? a && b : sym === '|' ? a || b : a !== b;   // bool & bool is a bool
   }
   if (_isIntish(a) && _isIntish(b)) return _bitOp(sym, a, b);
+  { const vo = _dictViewOperands(a, b); if (vo) { a = vo[0]; b = vo[1]; } }
   if (a instanceof Set && b instanceof Set) {
     if (sym === '|') return _setLike(a, [...a, ...b]);
     if (sym === '&') return _setLike(a, [...a].filter((x) => b.has(x)));
@@ -2492,6 +2568,7 @@ export function pyEq(a, b) {
     return r2 && typeof r2.then === 'function' ? r2.then(last) : last(r2);
   }
   if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
+  if (_isDictView(a) && (b instanceof Set || _isDictView(b)) || _isDictView(b) && a instanceof Set) { const [sa, sb] = _dictViewOperands(a, b); return pyEq(sa, sb); }
   if (Array.isArray(a) && Array.isArray(b)) {
     if ((a instanceof PyTuple) !== (b instanceof PyTuple)) return false;
     if (a.length !== b.length) return false;
@@ -2804,8 +2881,13 @@ function _aiter(obj) {
 }
 
 const _itertoolsModule = {
-  chain: (...iterables) => _lazyIter('chain', async function*() {
+  chain: Object.assign((...iterables) => _lazyIter('chain', async function*() {
         for (const it of iterables) for await (const v of _aiter(it)) yield v;
+  }), {
+    // chain.from_iterable(its): chain(*its), with the outer iterable read lazily too
+    from_iterable: (iterables) => _lazyIter('chain', async function*() {
+      for await (const it of _aiter(iterables)) for await (const v of _aiter(it)) yield v;
+    }),
   }),
   product: (...iterables) => _lazyIter('product', async function*() {
         // product(*its, repeat=n): the keyword bag is not an iterable
@@ -2871,16 +2953,20 @@ const _itertoolsModule = {
   starmap: (func, iterable) => _lazyIter('starmap', async function*() {
         for await (const args of _aiter(iterable)) yield await func(...args);
   }),
+  // islice(it, stop) / (it, start, stop[, step]): reads exactly as far as it must — the source
+  // is stepped by hand and never closed, so islice(it, 3) twice takes two chunks of one iterator
   islice: (iterable, ...args) => _lazyIter('islice', async function*() {
-        let start = 0, stop, step = 1;
+        let start = 0, stop = null, step = 1;
         if (args.length === 1) { stop = args[0]; }
         else if (args.length === 2) { start = args[0]; stop = args[1]; }
-        else { start = args[0]; stop = args[1]; step = args[2] || 1; }
-        let i = 0;
-        for await (const v of _aiter(iterable)) {
-          if (stop !== undefined && i >= stop) break;
-          if (i >= start && (i - start) % step === 0) yield v;
-          i++;
+        else { start = args[0]; stop = args[1]; step = args[2]; }
+        start = start ?? 0; step = step ?? 1; stop = stop ?? null;
+        const src = _aiter(iterable);
+        const it = src[Symbol.asyncIterator] ? src[Symbol.asyncIterator]() : src[Symbol.iterator]();
+        for (let i = 0; stop === null || i < stop; i++) {
+          const r = await it.next();
+          if (r.done) return;
+          if (i >= start && (i - start) % step === 0) yield r.value;
         }
   }),
   zip_longest: (...args) => {
@@ -3006,7 +3092,11 @@ class AdderCounter extends PyDict {
     return n == null ? e : e.slice(0, n);
   }
   elements() { const out = []; for (const [k, v] of this) for (let i = 0; i < v; i++) out.push(k); return out; }
-  update(iterable) { if (iterable != null) _counterAdd(this, iterable); return null; }
+  update(iterable) {
+    if (_needsCollect(iterable)) { const r = pyCollectMaybe(iterable); if (r && typeof r.then === 'function') return r.then((items) => this.update(items)); iterable = r; }
+    if (iterable != null) _counterAdd(this, iterable);
+    return null;
+  }
   subtract(iterable) { const tmp = new AdderCounter(iterable); for (const [k, v] of tmp) this.set(k, (this.get(k) || 0) - v); return null; }
   total() { let t = 0; for (const v of this.values()) t += v; return t; }
   __repr__() { return this.size ? `Counter({${this.most_common().map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'Counter()'; }
@@ -3014,7 +3104,7 @@ class AdderCounter extends PyDict {
 AdderCounter.prototype.__adderClass__ = 'Counter';
 
 class AdderDefaultDict extends PyDict {
-  constructor(factory, items) { super(); this.default_factory = factory ?? null; if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items))) this.set(k, v); }
+  constructor(factory, ...items) { super(); this.default_factory = factory ?? null; if (items.length) _dictUpdate((k, v) => this.set(k, v), items); }
   __missing__(key) {
     if (this.default_factory == null) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     const v = this.default_factory();
@@ -3027,7 +3117,7 @@ class AdderDefaultDict extends PyDict {
 AdderDefaultDict.prototype.__adderClass__ = 'defaultdict';
 
 class AdderOrderedDict extends PyDict {
-  constructor(items) { super(); if (items) for (const [k, v] of (items instanceof Map ? items : Array.isArray(items) ? items : Object.entries(items).filter(([k]) => k !== '_kw'))) this.set(k, v); }
+  constructor(...items) { super(); if (items.length) _dictUpdate((k, v) => this.set(k, v), items); }
   move_to_end(key, last = true) {
     if (last && last._kw) last = last.last;
     if (!this.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
@@ -3113,10 +3203,21 @@ export function _namedtuple(name, fields, opts) {
   return cls;
 }
 
-const _ctor = (C, name) => Object.assign((...a) => new C(...a), { _pyName: name, _pyClass: true });
+// an iterable argument that can't be read synchronously (a tree-walked generator, a user
+// __iter__) is collected first — the call is then a Promise of the new object
+const _needsCollect = (src) => src != null && typeof src === 'object' && !src._kw && !(src instanceof Map) && !Array.isArray(src) &&
+  typeof src.keys !== 'function' && (_isAsyncOnly(src) || isUserIterable(src));
+const _ctor = (C, name, at = 0) => Object.assign((...a) => {
+  if (_needsCollect(a[at])) {
+    const r = pyCollectMaybe(a[at]);
+    if (r && typeof r.then === 'function') return r.then((items) => { a[at] = items; return new C(...a); });
+    a[at] = r;
+  }
+  return new C(...a);
+}, { _pyName: name, _pyClass: true });
 const _collectionsModule = {
   Counter: _ctor(AdderCounter, 'Counter'),
-  defaultdict: _ctor(AdderDefaultDict, 'defaultdict'),
+  defaultdict: _ctor(AdderDefaultDict, 'defaultdict', 1),
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
   deque: _ctor(AdderDeque, 'deque'),
   namedtuple: _namedtuple,
@@ -3710,6 +3811,131 @@ export function setClassAttr(cls, k, v) {
   (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
 }
 // obj.name = value, from either engine: a frozen dataclass instance refuses every assignment
+// A tree-walked function's defaults live in one object its calls bind from (eval.js
+// _bindParams): __kwdefaults__ is a dict over it, and assigning __defaults__ / __kwdefaults__
+// rewrites it — so a call made afterwards sees the change, as in CPython (networkx's argmap
+// sets its wrapper's own default to the wrapper: `func.__kwdefaults__["_argmap__wrapper"] = func`).
+// NO_DEFAULT marks a parameter whose default was taken away.
+export const NO_DEFAULT = Symbol('no default');
+export class LiveDefaults extends PyDict {
+  constructor(defaults, entries) {
+    super();
+    for (const [k, v] of entries) super.set(k, v);
+    Object.defineProperty(this, '_d', { value: defaults });
+  }
+  set(k, v) { super.set(k, v); if (this._d && typeof k === 'string') this._d[k] = v; return this; }
+  delete(k) { const r = super.delete(k); if (this._d && typeof k === 'string') this._d[k] = NO_DEFAULT; return r; }
+  clear() { for (const k of [...this.keys()]) this.delete(k); }
+}
+// eval.js: (fn) → the function running fn's replaced __code__ with fn's own defaults
+let _redirectBuilder = null;
+export function setRedirectBuilder(f) { _redirectBuilder = f; }
+function _setFunctionInternal(fn, name, value) {
+  const sig = fn._pySig, d = sig.defaults;
+  if (name === '__code__') {
+    const target = value && value._pyFn;
+    if (typeof target !== 'function') throw new AdderError('TypeError', '__code__ must be set to a code object');
+    // only a tree-walked function checks for a replacement body when called
+    if (!fn._pyRedirectable) throw new AdderError('NotImplementedError', `assigning __code__ to a compiled function ('${fn._pyName || fn.name}'): run this code on the tree-walker`);
+    Object.defineProperty(fn, '_pyRedirectCode', { value: target === fn ? null : value, writable: true, configurable: true });
+    _codeObjects.set(fn, value);
+    _redirectBuilder(fn);
+    return;
+  }
+  if (!fn._pyRedirectable && d) {
+    throw new AdderError('NotImplementedError', `assigning ${name} to a compiled function ('${fn._pyName || fn.name}'): run this code on the tree-walker`);
+  }
+  if (name === '__defaults__') {
+    const vals = value === null || value === undefined ? [] : [...pyIter(value)];
+    const params = sig.params || [];
+    const first = params.length - vals.length;
+    params.forEach((p, i) => { if (i >= first) d[p.name] = vals[i - first]; else if (Object.hasOwn(d, p.name)) d[p.name] = NO_DEFAULT; });
+    fn.__defaults__ = vals.length ? mkTuple(vals) : null;
+    if (fn._pyRedirectCode) _redirectBuilder(fn);
+    return;
+  }
+  // __kwdefaults__
+  for (const p of sig.kwonly || []) if (Object.hasOwn(d, p.name)) d[p.name] = NO_DEFAULT;
+  const entries = value === null || value === undefined ? [] : value instanceof Map ? [...value] : Object.entries(value).filter(([k]) => k !== '_kw');
+  for (const [k, v] of entries) d[k] = v;
+  fn.__kwdefaults__ = entries.length ? new LiveDefaults(d, entries) : null;
+  if (fn._pyRedirectCode) _redirectBuilder(fn);
+}
+
+// obj.name = value, as Python does it. A function's JS `name` / `length` are read-only own
+// properties, so a Python attribute of that name (networkx's `_dispatchable.name` copied over by
+// `func.__dict__.update(...)`) is defined over them — keeping __name__ what it was.
+export function storeAttr(obj, name, value) {
+  guardSetAttr(obj, name);
+  if (typeof obj === 'function' && obj._pyDef && obj._pySig && (name === '__code__' || name === '__defaults__' || name === '__kwdefaults__')) {
+    _setFunctionInternal(obj, name, value);
+    return;
+  }
+  if (obj !== null && typeof obj === 'object' && obj._pyHasDataDesc) {
+    for (let p = Object.getPrototypeOf(obj); p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, name);
+      if (!d) continue;
+      if (d.set && d.set._pyFset) { d.set._pyFset(obj, value); return; }
+      break;
+    }
+  }
+  if (typeof obj === 'function' && (name === 'name' || name === 'length')) {
+    if (name === 'name' && obj._pyName === undefined) Object.defineProperty(obj, '_pyName', { value: obj.name, writable: true, configurable: true });
+    Object.defineProperty(obj, name, { value, writable: true, configurable: true, enumerable: true });
+    return;
+  }
+  obj[name] = value;
+}
+// del obj[key], for both engines: a subclass's or class's __delitem__ first (its result may be a
+// Promise — a tree-walked method), then the built-in containers with CPython's errors
+export function pyDelItem(obj, key) {
+  { const f = subclassDunder(obj, '__delitem__'); if (f) return f.call(obj, key); }
+  if (obj instanceof Map) {
+    if (!obj.has(key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+    obj.delete(key); return null;
+  }
+  if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object doesn't support item deletion`);
+  if (Array.isArray(obj)) {
+    if (!_isIntish(key)) throw new AdderError('TypeError', `list indices must be integers or slices, not ${pyTypeName(key)}`);
+    let i = Number(_asInt(key));
+    if (i < 0) i += obj.length;
+    if (i < 0 || i >= obj.length) throw new AdderError('IndexError', 'list assignment index out of range');
+    obj.splice(i, 1); return null;
+  }
+  if (obj instanceof Set) { obj.delete(key); return null; }
+  if (obj !== null && typeof obj === 'object') {
+    if (typeof obj.__delitem__ === 'function') return obj.__delitem__(key);
+    if (isPlainDict(obj)) {
+      if (typeof key !== 'string' || !Object.hasOwn(obj, key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
+      delete obj[key]; return null;
+    }
+  }
+  throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item deletion`);
+}
+// del obj.name, for both engines: a class's __delattr__ (object's own is a plain delete), a data
+// descriptor's __delete__, else the attribute itself — missing is an AttributeError
+export function pyDelAttr(obj, name) {
+  if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
+    throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+  }
+  if (typeof obj === 'object' && typeof obj.__delattr__ === 'function') return obj.__delattr__(name);
+  guardSetAttr(obj, name);
+  if (!Object.hasOwn(obj, name)) {
+    for (let p = Object.getPrototypeOf(obj); p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, name);
+      if (!d) continue;
+      const desc = d.set && d.set._pyDescriptor;
+      if (desc) {
+        if (typeof desc.__delete__ !== 'function') throw new AdderError('AttributeError', `__delete__`);
+        return desc.__delete__(obj);
+      }
+      break;
+    }
+    if (!(name in obj)) throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+  }
+  delete obj[name];
+  return null;
+}
 export function guardSetAttr(obj, name) {
   if (obj !== null && typeof obj === 'object' && obj.__dataclass_frozen__ === true) {
     throw new AdderError('FrozenInstanceError', `cannot assign to field '${name}'`);
@@ -4510,7 +4736,9 @@ function _findNew(cls) {
 export function typeCall(cls, args) {
   const finish = (inst) => {
     if (!_isInstanceOfClass(inst, cls)) return inst;
-    const init = cls.prototype.__init__;
+    // read with the instance as the receiver: an __init__ that is a descriptor (a
+    // functools.partialmethod — tqdm's envwrap) binds to it, not to the prototype
+    const init = Reflect.get(cls.prototype, '__init__', inst);
     if (typeof init === 'function') {
       const r = init.call(inst, ...args);
       if (r && typeof r.then === 'function') return r.then(() => inst);
@@ -4606,12 +4834,16 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
       // the tree-walker's assignment calls this itself, so an async __set__ is awaited (a JS setter's
       // return value is dropped) — the same hook @property setters use
       dataSet._pyFset = (o, v) => dataSet.call(o, v);
+      dataSet._pyDescriptor = d;   // del instance.name finds __delete__ here (pyDelAttr)
       Object.defineProperty(cls.prototype, mName, {
-        get() { return d.__get__(this, typeOf(this)); },
+        get() { return typeof d.__get__ === 'function' ? d.__get__(this, typeOf(this)) : d; },
         set: data ? dataSet : shadow,
         configurable: true, enumerable: false,
       });
-      Object.defineProperty(cls, mName, { get() { return d.__get__(null, this); }, set: shadow, configurable: true, enumerable: true });
+      Object.defineProperty(cls, mName, { get() { return typeof d.__get__ === 'function' ? d.__get__(null, this) : d; }, set: shadow, configurable: true, enumerable: true });
+      // a store to this name goes through __set__ even when the instance has the attribute in
+      // its __dict__ (storeAttr checks this flag before a plain assignment)
+      if (data) Object.defineProperty(cls.prototype, '_pyHasDataDesc', { value: true, configurable: true, writable: true });
       (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
     } else if (value && value.__property__) {
       const fget = value.fget;
@@ -4717,7 +4949,7 @@ export function mainClassLookup(name) { return _mainClasses.get(name); }
 // a Python descriptor: an instance (of a Python class, or a JS-built one marked _pyDescriptor)
 // with __get__ — not a function, container or the engine's own property / method wrappers
 function _isDescriptor(v) {
-  return v !== null && typeof v === 'object' && typeof v.__get__ === 'function' && !Array.isArray(v) &&
+  return v !== null && typeof v === 'object' && (typeof v.__get__ === 'function' || typeof v.__set__ === 'function' || typeof v.__delete__ === 'function') && !Array.isArray(v) &&
     !(v instanceof Map) && !(v instanceof Set) && !v.__property__ && (!!v.__adderType__ || v._pyDescriptor === true);
 }
 
@@ -4922,8 +5154,30 @@ function _codeObject(fn) {
     co_freevars: mkTuple([]), co_cellvars: mkTuple([]), co_stacksize: 0, co_lnotab: new Uint8Array(0),
     __repr__() { return `<code object ${name} at 0x${(0x7f0000000000 + (_pyHash(this) & 0xffffff)).toString(16)}, file "${this.co_filename}", line ${this.co_firstlineno}>`; },
   };
+  Object.defineProperty(c, '_pyFn', { value: fn });
   _codeObjects.set(fn, c);
   return c;
+}
+// types.FunctionType(code, globals, name=None, argdefs=None, closure=None, kwdefaults=None): a
+// new function object running that code — here, a function delegating to the one the code came
+// from, with its own name, defaults and attribute dict. (A different `globals` mapping is not
+// honoured: the body keeps reading its own module's names.)
+export function makeFunctionFromCode(code, globals, name, argdefs, closure, kwdefaults) {
+  const orig = code && code._pyFn;
+  if (typeof orig !== 'function') throw new AdderError('TypeError', `function() argument 'code' must be code, not ${pyTypeName(code)}`);
+  const f = function (...a) { return orig.apply(this, a); };
+  for (const k of Object.getOwnPropertyNames(orig)) {
+    if (k.startsWith('_py') || k.startsWith('_is') || k === '__module__' || k === '__doc__' || k === '__annotations__') {
+      try { Object.defineProperty(f, k, Object.getOwnPropertyDescriptor(orig, k)); } catch {}
+    }
+  }
+  const nm = typeof name === 'string' ? name : orig._pyName || orig.__name__ || orig.name;
+  f._pyName = nm; f.__name__ = nm; f.__qualname__ = nm;
+  f.__defaults__ = argdefs === undefined || argdefs === null ? orig.__defaults__ ?? null : argdefs;
+  f.__kwdefaults__ = kwdefaults === undefined || kwdefaults === null ? orig.__kwdefaults__ ?? null : kwdefaults;
+  if (globals !== undefined && globals !== null) Object.defineProperty(f, '_pyGlobals', { value: globals, configurable: true });
+  _codeObjects.set(f, code);
+  return f;
 }
 
 // e.__traceback__: a chain of traceback objects (outermost first, tb_next going in), one per
@@ -5331,8 +5585,8 @@ export function adderBuiltins(printFn) {
     type: pyTypeObj,
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
     getattr: (obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } },
-    setattr: (obj, name, value) => { guardSetAttr(obj, name); obj[name] = value; return null; },
-    delattr: (obj, name) => { delete obj[name]; return null; },
+    setattr: (obj, name, value) => { storeAttr(obj, name, value); return null; },
+    delattr: (obj, name) => pyDelAttr(obj, name),
     property: (fget) => {
       const prop = { __property__: true, fget, fset: null };
       prop.setter = (fset) => { prop.fset = fset; return prop; };
@@ -5371,6 +5625,11 @@ export function adderBuiltins(printFn) {
     iter: (obj) => {
       if (obj !== null && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function' && (typeof obj.__next__ === 'function' || typeof obj.next === 'function')) return obj;
       if (isUserIterable(obj) && typeof obj.__iter__ === 'function') return obj.__iter__();
+      // iter() itself raises for a non-iterable (`try: iter(x) except TypeError:` is the idiom);
+      // pyIter is a generator, so its own check would only fire at the first next()
+      if (obj === null || obj === undefined || (typeof obj !== 'object' && typeof obj !== 'string' && !(typeof obj === 'function' && _metaIter(obj)))) {
+        throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
+      }
       return pyIter(obj);
     },
     next: (iter, def) => {

@@ -12,7 +12,7 @@
 
 import {
   AdderError, adderModules, makeExcType, buildClass, mkTuple, PyTuple, PyDict, PySet, pyRepr, pyStr,
-  pyTypeName, pyIter, pyCollect, pyTypeObj, pyObjectObj, typeOf, _typeObjects, asCallable, excStack,
+  pyTypeName, pyIter, pyCollect, pyTypeObj, pyObjectObj, typeOf, _typeObjects, asCallable, excStack, makeFunctionFromCode,
   excTypeOf, excValue, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
   classStatement, GenericAlias, setOsExtrasHook, pyBool, NotImplemented, pyGetItem, _pyHash, _lazyIter, _pyEach,
   registerCodec, adderBuiltins, isMultibyteCodec,
@@ -127,6 +127,16 @@ const _syMappingProxy = (m) => {
   d.__adderClass__ = 'mappingproxy';
   return d;
 };
+// the function type constructs: FunctionType(code, globals, name, argdefs, closure, kwdefaults)
+if (!_typeObjects.function) {
+  const t = (...a) => {
+    const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+    const at = (i, k) => (i < a.length ? a[i] : kw[k]);
+    return makeFunctionFromCode(at(0, 'code'), at(1, 'globals'), at(2, 'name'), at(3, 'argdefs'), at(4, 'closure'), at(5, 'kwdefaults'));
+  };
+  t._pyName = 'function'; t._pyClass = true; t.__name__ = 'function';
+  _typeObjects.function = t;
+}
 adderModules.types = _syModule('types', {
   FunctionType: _syTypeNamed('function'), LambdaType: _syTypeNamed('function'),
   BuiltinFunctionType: _syTypeNamed('builtin_function_or_method'), BuiltinMethodType: _syTypeNamed('builtin_function_or_method'),
