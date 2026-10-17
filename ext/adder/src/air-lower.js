@@ -13,7 +13,7 @@ import {
   lowerIfRegion, lowerLoopRegion,
 } from '../../air/src/lower/base.js';
 import { registerSpecializations } from '../../air/src/passes.js';
-import { classAnnotations } from './builtins.js';
+import { classAnnotations, plainObjectKey } from './builtins.js';
 import { collectWalrusTargets, matchPatternNames, compileMatchPattern } from './parse.js';
 
 // Re-export AirLowerError from @gcu/air. Lifted to ext/air/src/lower/base.js
@@ -812,7 +812,7 @@ function lowerExpr_ad(ctx, node) {
       // Plain object if all keys are string constants (JS cells read d.a); otherwise, and
       // for an empty literal, a PyDict via _py.makeDict (see eval.js)
       const allStringKeys = node.keys.length > 0 && node.keys.every(k =>
-        k && k.type === 'Constant' && typeof k.value === 'string');
+        k && k.type === 'Constant' && plainObjectKey(k.value));
       if (allStringKeys) {
         const pairs = [];
         for (let i = 0; i < node.keys.length; i++) {
@@ -835,11 +835,7 @@ function lowerExpr_ad(ctx, node) {
       return emitPyCall(ctx, 'makeDict', [keysArr, valsArr], l);
     }
 
-    case 'Set': {
-      const elts = node.elts.map(e => lowerExpr_ad(ctx, e).id);
-      const arr = ctx.emit('array_new', elts, DYNAMIC, l);
-      return emitPyCall(ctx, 'makeSet', [arr], l);
-    }
+    case 'Set': return emitPyCall(ctx, 'makeSet', [lowerListOrTuple(ctx, node)], l);   // starred items spread, as in a list
 
     case 'SetComp':
     case 'DictComp':

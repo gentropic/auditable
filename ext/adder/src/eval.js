@@ -16,7 +16,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
+  _registerImportMachinery, stdoutWrite, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -319,7 +319,7 @@ export async function adderEval(node, scope) {
       // A literal whose keys are all string constants is a plain object, so JS cells read it
       // as d.a. An EMPTY literal is a PyDict: it is filled with data keys later, and a plain
       // object would turn d[5] into d['5'] and order integer-like keys first.
-      const allStringKeys = node.keys.length > 0 && node.keys.every(k => k && (k.type === 'Constant' && typeof k.value === 'string') || k === null);
+      const allStringKeys = node.keys.length > 0 && node.keys.every(k => k && (k.type === 'Constant' && plainObjectKey(k.value)) || k === null);
       if (allStringKeys) {
         const obj = {};
         for (let i = 0; i < node.keys.length; i++) {
@@ -350,7 +350,10 @@ export async function adderEval(node, scope) {
     }
     case 'Set': {
       const s = new PySet();
-      for (const e of node.elts) s.add(await adderEval(e, scope));
+      for (const e of node.elts) {
+        if (e.type === 'Starred') { for (const v of await pyCollect(await adderEval(e.value, scope))) s.add(v); }
+        else s.add(await adderEval(e, scope));
+      }
       return s;
     }
 
@@ -374,7 +377,9 @@ export async function adderEval(node, scope) {
       let val = await adderEval(node.value, scope);
       if (node.conversion === 'r') val = await pyReprMaybe(val);
       else if (node.conversion === 's') val = await pyStrMaybe(val);
-      return node.formatSpec ? pyFormatValue(val, node.formatSpec) : await pyStrMaybe(val);
+      // a nested spec (`{x:>{w}}`) is itself an f-string, evaluated first
+      const spec = node.formatSpec && typeof node.formatSpec === 'object' ? await adderEval(node.formatSpec, scope) : node.formatSpec;
+      return spec ? pyFormatValue(val, spec) : await pyStrMaybe(val);
     }
 
     // ── await ──
@@ -1648,59 +1653,161 @@ export async function _loadAuditableModule(name) {
   try { return await window._auditableResolveModule(name); } catch { return null; }
 }
 
+// A module's namespace: every binding the module's code makes lands on its module object as it
+// is made — so a circular import (pkg/__init__ imports .a, and a imports pkg) sees the names
+// bound so far, as in CPython, instead of an empty placeholder. `global x` writes in functions
+// go through the same map, so they are seen too.
+class _ModuleVars extends PyDict {
+  set(k, v) { const r = super.set(k, v); if (this._mod && typeof k === 'string') { try { this._mod[k] = v; } catch {} } return r; }
+  delete(k) { const r = super.delete(k); if (this._mod && typeof k === 'string') delete this._mod[k]; return r; }
+}
+
 // Parse + evaluate source as a fresh module, cache it under cacheKey.
-// Shared by _loadVfsModule, _loadHttpModule, _loadDirectModule.
-async function _instantiateModule(cacheKey, displayName, source, filePath) {
+// Shared by the VFS, HTTP and direct-path loaders.
+//   info.package — the module's __package__ (the package itself, for a package's __init__)
+//   info.path    — for a package: its __path__ (the directories its submodules are found in)
+async function _instantiateModule(cacheKey, displayName, source, filePath, info = {}) {
   const cache = adderModules.sys.modules;
   const ast = adderParse(source);
   const modScope = new AdderScope();
-  const builtins = adderBuiltins(() => {});
+  const builtins = adderBuiltins(stdoutWrite);
   const builtinNames = new PySet(Object.keys(builtins));
-  for (const [k, v] of Object.entries(builtins)) modScope.set(k, v);
-  modScope.set('__name__', displayName);
-  modScope.set('__file__', filePath);
+  modScope.vars = new _ModuleVars();
+  for (const [k, v] of Object.entries(builtins)) modScope.vars.set(k, v);
 
-  // placeholder in cache (handles circular imports)
+  // the module object, in the cache before its code runs (circular imports find it)
   const mod = { __adderModule__: true };
   cache[cacheKey] = mod;
+  modScope.vars._mod = mod;
 
-  await adderEval(ast, modScope);
+  const pkg = info.package !== undefined ? info.package : (displayName.includes('.') ? displayName.slice(0, displayName.lastIndexOf('.')) : '');
+  modScope.set('__name__', displayName);
+  modScope.set('__file__', filePath);
+  modScope.set('__package__', pkg);
+  modScope.set('__doc__', ast.body && ast.body[0] && ast.body[0].type === 'Expr' && ast.body[0].value.type === 'Constant' && typeof ast.body[0].value.value === 'string' ? ast.body[0].value.value : null);
+  if (info.path) modScope.set('__path__', info.path);
+  modScope.set('__spec__', { __adderClass__: 'ModuleSpec', name: displayName, origin: filePath, parent: pkg,
+    submodule_search_locations: info.path || null, has_location: !!filePath, loader: null });
+  modScope.set('__loader__', null);
 
-  for (const [k, v] of modScope.vars) {
-    if (!builtinNames.has(k) && k !== '__name__' && k !== '__file__') mod[k] = v;
+  try {
+    await adderEval(ast, modScope);
+  } catch (e) {
+    delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
+    throw e;
   }
-  mod.__name__ = displayName;
-  mod.__file__ = filePath;
-
   return mod;
 }
 
+// Find a top-level name on sys.path: <dir>/<name>.py, or a package <dir>/<name>/__init__.py.
 export async function _loadVfsModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
+  return _loadFromDirs(name, name, adderModules.sys.path);
+}
 
+// Look for `leaf` (a module or a package) in each directory of `dirs`, instantiating it as
+// `fullName`. sys.path for a top-level name; a package's __path__ for its submodules.
+async function _loadFromDirs(fullName, leaf, dirs) {
   const vfs = getAdderVFS();
   if (!vfs) return null;
   const pth = _getVfsPath();
   if (!pth) return null;
-
-  // search sys.path for name.py or name/__init__.py
-  let source = null, filePath = null;
   const cwd = adderModules.os?.getcwd?.() || '/';
-  for (let dir of adderModules.sys.path) {
+  for (let dir of dirs || []) {
     if (typeof dir !== 'string') continue;
-    // skip URL-like entries — those are for _loadHttpModule
-    if (/^https?:\/\//.test(dir)) continue;
-    // resolve relative entries (e.g. '.') against os.getcwd()
+    if (/^https?:\/\//.test(dir)) continue;          // URL entries are _loadHttpModule's
     if (!pth.isAbsolute(dir)) dir = pth.join(cwd, dir);
-    const fp = pth.join(dir, name + '.py');
-    try { source = await vfs.readFile(fp); filePath = fp; break; } catch {}
-    const ip = pth.join(dir, name, '__init__.py');
-    try { source = await vfs.readFile(ip); filePath = ip; break; } catch {}
+    // only the READ is tried: a module that is found but fails (a syntax error, an exception in
+    // its own code) propagates, never falling through to another directory
+    const fp = pth.join(dir, leaf + '.py');
+    const src = await _readOrNull(vfs, fp);
+    if (src !== null) return _instantiateModule(fullName, fullName, src, fp);
+    const pkgDir = pth.join(dir, leaf), ip = pth.join(pkgDir, '__init__.py');
+    const isrc = await _readOrNull(vfs, ip);
+    if (isrc !== null) return _instantiateModule(fullName, fullName, isrc, ip, { package: fullName, path: [pkgDir] });
   }
-  if (source === null) return null;
+  return null;
+}
+async function _readOrNull(vfs, p) { try { return await vfs.readFile(p); } catch { return null; } }
 
-  return _instantiateModule(name, name, source, filePath);
+// The import algorithm, shared by both engines. `name` is absolute and may be dotted:
+// the parent package is imported first (running its __init__), then the submodule is looked
+// up in the parent's __path__, and bound as an attribute of the parent. Returns null when
+// nothing provides the name.
+export async function findModule(name) {
+  const cache = adderModules.sys.modules;
+  if (cache[name]) return cache[name];
+  const known = _resolveModule(name);
+  if (known) return known;
+  const dot = name.lastIndexOf('.');
+  if (dot > 0) {
+    const parent = await findModule(name.slice(0, dot));
+    if (!parent) return null;
+    if (cache[name]) return cache[name];            // the parent's __init__ imported it
+    const leaf = name.slice(dot + 1);
+    let mod = null;
+    if (Array.isArray(parent.__path__)) mod = await _loadFromDirs(name, leaf, parent.__path__);
+    if (!mod) {                                      // a namespace object's attribute (extensions, os.path)
+      const attr = parent[leaf];
+      if (attr && (typeof attr === 'object' || typeof attr === 'function')) return attr;
+      mod = await _loadAuditableModule(name) || await _loadHttpModule(name);
+    }
+    if (mod) { try { parent[leaf] = mod; } catch {} }
+    return mod;
+  }
+  return await _loadVfsModule(name) || await _loadAuditableModule(name) || await _loadHttpModule(name);
+}
+
+// findModule, raising ModuleNotFoundError (with `name` set, as CPython's has)
+export async function importModule(name, line) {
+  const mod = await findModule(name);
+  if (mod) return mod;
+  // CPython names the first component that's missing: `import nope.deeper` → 'nope'
+  const parts = name.split('.');
+  let missing = name;
+  for (let i = 1; i < parts.length; i++) {
+    const prefix = parts.slice(0, i).join('.');
+    if (!(await findModule(prefix))) { missing = prefix; break; }
+  }
+  const e = new AdderError('ModuleNotFoundError', `No module named '${missing}'${_remoteNote(missing)}`, line);
+  e.name = missing;
+  throw e;
+}
+
+// `from ..pkg import x` → the absolute module name, relative to the importing module's package
+export function resolveRelativeImport(module, pkg, line) {
+  const m = /^(\.+)(.*)$/.exec(module);
+  if (!m) return module;
+  if (!pkg) throw new AdderError('ImportError', 'attempted relative import with no known parent package', line);
+  const parts = pkg.split('.');
+  const up = m[1].length - 1;
+  if (up >= parts.length) throw new AdderError('ImportError', 'attempted relative import beyond top-level package', line);
+  const base = parts.slice(0, parts.length - up).join('.');
+  return m[2] ? `${base}.${m[2]}` : base;
+}
+
+// `from M import a, b`: an attribute of M, or else its submodule M.a (imported on demand) —
+// `from pkg import submodule` and `from . import sibling` work that way
+export async function importNames(mod, modName, names, line) {
+  const out = [];
+  for (const { name, alias } of names) {
+    if (name === '*') {
+      const all = Array.isArray(mod.__all__) ? mod.__all__ : Object.keys(mod).filter((k) => !k.startsWith('_'));
+      for (const k of all) out.push([k, mod[k]]);
+      continue;
+    }
+    let v;
+    if (name in mod) v = mod[name];
+    else if (modName) v = await findModule(`${modName}.${name}`);
+    if (v === undefined || v === null && !(name in mod)) {
+      const e = new AdderError('ImportError', `cannot import name '${name}' from '${modName}'`, line);
+      e.name = modName;
+      throw e;
+    }
+    out.push([alias || name, v]);
+  }
+  return out;
 }
 
 // Join a base URL with a relative path component. Ensures exactly one '/' between.
@@ -1733,7 +1840,8 @@ export async function _loadHttpModule(name) {
     }
     if (!base) continue;
 
-    for (const candidate of [_urlJoin(base, name + '.py'), _urlJoin(base, name + '/__init__.py')]) {
+    const rel = name.replace(/\./g, '/');            // a.b → a/b.py, a/b/__init__.py
+    for (const candidate of [_urlJoin(base, rel + '.py'), _urlJoin(base, rel + '/__init__.py')]) {
       try {
         const resp = await fetch(candidate);
         if (resp.ok) { source = await resp.text(); fetchedUrl = candidate; break; }
@@ -1742,8 +1850,8 @@ export async function _loadHttpModule(name) {
     if (source !== null) break;
   }
   if (source === null) return null;
-
-  return _instantiateModule(name, name, source, fetchedUrl);
+  const isPkg = fetchedUrl.endsWith('/__init__.py');
+  return _instantiateModule(name, name, source, fetchedUrl, isPkg ? { package: name, path: [] } : {});
 }
 
 // Direct import from an explicit path/URL: `import "./foo.py" as foo`.
@@ -1803,23 +1911,31 @@ function _remoteNote(nameOrPath) {
   return Array.isArray(sp) && sp.some(urlish) ? ' (remote imports are off)' : '';
 }
 
-// `import a.b.c` binds `a`, with b and c reachable as attributes (the module objects are
-// linked up, a namespace object standing in for a parent that is not a module of its own)
+// `import a.b.c` binds `a`, with b and c reachable as attributes. findModule links a VFS
+// package's submodules up as it loads them; for anything else (a built-in namespace, an
+// extension) the chain is linked here, a namespace object standing in for a parent that is
+// not a module of its own.
 export async function _importRoot(module, sub) {
   const parts = module.split('.');
-  let root = _resolveModule(parts[0]) || await _loadVfsModule(parts[0]);
+  let root = await findModule(parts[0]);
   if (!root || (typeof root !== 'object' && typeof root !== 'function')) root = { __adderModule__: true, __name__: parts[0] };
   let cur = root;
   for (let i = 1; i < parts.length; i++) {
     const name = parts.slice(0, i + 1).join('.');
     let next = cur[parts[i]];
     if (next === null || next === undefined || (typeof next !== 'object' && typeof next !== 'function')) {
-      next = i === parts.length - 1 ? sub : (_resolveModule(name) || { __adderModule__: true, __name__: name });
+      next = i === parts.length - 1 ? sub : (await findModule(name) || { __adderModule__: true, __name__: name });
       try { cur[parts[i]] = next; } catch { /* a frozen module: reachable already or not at all */ }
     }
     cur = next;
   }
   return root;
+}
+
+// the importing code's package, for relative imports: a module's own __package__ (a cell has none)
+function _scopePackage(scope) {
+  let s = scope; while (s.parent) s = s.parent;
+  return s.vars.has('__package__') ? s.vars.get('__package__') : null;
 }
 
 async function _evalImport(node, scope) {
@@ -1830,48 +1946,31 @@ async function _evalImport(node, scope) {
       scope.set(alias, mod);
       continue;
     }
-    let mod = _resolveModule(module);
-    const bind = async (m) => scope.set(alias || module.split('.')[0], !alias && module.includes('.') ? await _importRoot(module, m) : m);
-    if (mod) {
-      await bind(mod);
-      // import this — print the zen (side effect, like CPython)
-      if (module === 'this' && mod.s) { const printFn = scope.has('print') ? scope.get('print') : null; if (printFn) await printFn(mod.s); }
-      continue;
-    }
-    mod = await _loadVfsModule(module);
-    if (mod) { await bind(mod); continue; }
-    mod = await _loadAuditableModule(module);
-    if (mod) { await bind(mod); continue; }
-    mod = await _loadHttpModule(module);
-    if (mod) { await bind(mod); continue; }
-    throw new AdderError('ModuleNotFoundError', `No module named '${module}'${_remoteNote(module)}`, node.line);
+    const mod = await importModule(module, node.line);
+    // `import a.b` binds a (the root, b reachable on it); `import a.b as c` binds c to a.b itself
+    scope.set(alias || module.split('.')[0], !alias && module.includes('.') ? await _importRoot(module, mod) : mod);
+    // import this — print the zen (side effect, like CPython)
+    if (module === 'this' && mod.s) { const printFn = scope.has('print') ? scope.get('print') : null; if (printFn) await printFn(mod.s); }
   }
   return null;
 }
 
 async function _evalImportFrom(node, scope) {
-  let mod;
-  let displayModule;
+  let mod, name;
   if (node.path) {
     mod = await _loadDirectModule(node.path);
-    displayModule = node.path;
+    name = null;
+    if (!mod) throw new AdderError('ModuleNotFoundError', `cannot load module from '${node.path}'${_remoteNote(node.path)}`, node.line);
   } else {
-    mod = _resolveModule(node.module);
-    if (!mod) mod = await _loadVfsModule(node.module);
-    if (!mod) mod = await _loadAuditableModule(node.module);
-    if (!mod) mod = await _loadHttpModule(node.module);
-    displayModule = node.module;
+    name = resolveRelativeImport(node.module, _scopePackage(scope), node.line);
+    mod = await importModule(name, node.line);
   }
-  if (!mod) throw new AdderError('ModuleNotFoundError', `No module named '${displayModule}'${_remoteNote(node.path || displayModule)}`, node.line);
-  for (const { name, alias } of node.names) {
-    if (name === '*') { for (const k of Object.keys(mod)) scope.set(k, mod[k]); }
-    else {
-      if (!(name in mod)) throw new AdderError('ImportError', `cannot import name '${name}' from '${displayModule}'`, node.line);
-      scope.set(alias || name, mod[name]);
-    }
-  }
+  for (const [k, v] of await importNames(mod, name || node.path, node.names, node.line)) scope.set(k, v);
   return null;
 }
+
+// importlib and __import__ (builtins.js) use this same machinery
+_registerImportMachinery({ find: findModule, importModule, resolveRelative: resolveRelativeImport });
 
 // re-export for cell.js
 export { AdderError, adderParse };

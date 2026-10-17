@@ -9,7 +9,7 @@ import {
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
 } from './builtins.js';
-import { _resolveModule, _loadVfsModule, _loadHttpModule, _loadDirectModule, _loadAuditableModule, _tickLine, _importRoot } from './eval.js';
+import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
 // ── Arithmetic (preserve Python semantics) ──
 
@@ -459,16 +459,10 @@ function _makeSet(arr) {
 
 // ── Imports ──
 
+// the same import algorithm as the tree-walker (eval.js): dotted names load their parents,
+// packages search their __path__, `from M import sub` falls back to the submodule M.sub
 async function _import(name) {
-  let mod = _resolveModule(name);
-  if (mod) return mod;
-  mod = await _loadVfsModule(name);
-  if (mod) return mod;
-  mod = await _loadAuditableModule(name);
-  if (mod) return mod;
-  mod = await _loadHttpModule(name);
-  if (mod) return mod;
-  throw new AdderError('ModuleNotFoundError', `No module named '${name}'`);
+  return importModule(name);
 }
 
 async function _importPath(path) {
@@ -477,35 +471,18 @@ async function _importPath(path) {
   throw new AdderError('ModuleNotFoundError', `cannot load module from '${path}'`);
 }
 
+// names: array of { name, alias } (or "*"); → { boundName: value }
 async function _importFrom(moduleName, names) {
-  // names: array of { name, alias } (or special "*" to expose all)
-  let mod = _resolveModule(moduleName);
-  if (!mod) mod = await _loadVfsModule(moduleName);
-  if (!mod) mod = await _loadAuditableModule(moduleName);
-  if (!mod) mod = await _loadHttpModule(moduleName);
-  if (!mod) throw new AdderError('ModuleNotFoundError', `No module named '${moduleName}'`);
-  return _extractFromImport(mod, names, moduleName);
+  // a cell is not in a package: a relative import there raises, as at CPython's top level
+  const abs = resolveRelativeImport(moduleName, null);
+  const mod = await importModule(abs);
+  return Object.fromEntries(await importNames(mod, abs, names));
 }
 
 async function _importFromPath(path, names) {
   const mod = await _loadDirectModule(path);
   if (!mod) throw new AdderError('ModuleNotFoundError', `cannot load module from '${path}'`);
-  return _extractFromImport(mod, names, path);
-}
-
-function _extractFromImport(mod, names, displayName) {
-  const result = {};
-  for (const { name, alias } of names) {
-    if (name === '*') {
-      for (const k of Object.keys(mod)) result[k] = mod[k];
-    } else {
-      if (!(name in mod)) {
-        throw new AdderError('ImportError', `cannot import name '${name}' from '${displayName}'`);
-      }
-      result[alias || name] = mod[name];
-    }
-  }
-  return result;
+  return Object.fromEntries(await importNames(mod, path, names));
 }
 
 // ── Class creation ──

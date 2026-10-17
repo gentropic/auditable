@@ -549,11 +549,20 @@ function emitArrayNew(ctx, op) {
   register(ctx, op, `[${elements.join(', ')}]`);
 }
 
+// A property key as JS source. `key` is the property NAME (a string): an identifier stays bare,
+// anything else — `a:b`, `my key`, `1x`, `` — is quoted. `__proto__` must be computed: written
+// bare or quoted in a literal it sets the prototype instead of making a key.
+function objectKey(key) {
+  const k = String(key);
+  if (k === '__proto__') return '["__proto__"]';
+  return /^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k);
+}
+
 function emitObjectNew(ctx, op) {
   const pairs = op.args; // array of { key, id } or { spread, id }
   const parts = pairs.map(p => {
     if (p.spread) return `...${ctx.ref(p.id)}`;
-    return `${p.key}: ${ctx.ref(p.id)}`;
+    return `${objectKey(p.key)}: ${ctx.ref(p.id)}`;
   });
   register(ctx, op, `{ ${parts.join(', ')} }`);
 }

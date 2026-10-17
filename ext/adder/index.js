@@ -668,7 +668,6 @@ function _processEscapes(raw) {
       case '\\': out += '\\'; break;
       case "'": out += "'"; break;
       case '"': out += '"'; break;
-      case '0': out += '\0'; break;
       case 'a': out += '\x07'; break;
       case 'b': out += '\b'; break;
       case 'f': out += '\f'; break;
@@ -797,14 +796,32 @@ function adderTokenize(code) {
             if (code[pos + 1] === '{') { textBuf += '{'; pos += 2; col += 2; continue; }
             if (textBuf) { parts.push(textBuf); textBuf = ''; }
             pos++; col++; // skip {
-            let depth = 1, expr = '', spec = null, conv = null;
+            // the replacement field's expression: `:` starts the format spec and `!` the conversion
+            // only at the field's own level — not inside brackets (`{v[:n]}`, `{f(a, b=1)}`), nor
+            // inside a string in the expression (`{d['a:b']}`, `{'}'}`)
+            let depth = 1, nest = 0, expr = '', spec = null, conv = null, q = null;
             while (pos < len && depth > 0) {
-              if (code[pos] === '{') { depth++; expr += code[pos]; }
-              else if (code[pos] === '}') { depth--; if (depth > 0) expr += code[pos]; }
-              else if (code[pos] === '!' && depth === 1 && 'sra'.includes(code[pos + 1]) && (code[pos + 2] === ':' || code[pos + 2] === '}')) {
+              const c = code[pos];
+              if (q) {                                          // inside a string in the expression
+                expr += c;
+                if (c === '\\') { expr += code[pos + 1] || ''; pos += 2; col += 2; continue; }
+                if (c === '\n') { line++; col = 0; pos++; continue; }
+                if (code.startsWith(q, pos)) { expr += q.slice(1); pos += q.length; col += q.length; q = null; continue; }
+                pos++; col++; continue;
+              }
+              if (c === '"' || c === "'") {
+                q = code.startsWith(c + c + c, pos) ? c + c + c : c;
+                expr += q; pos += q.length; col += q.length; continue;
+              }
+              if (c === '(' || c === '[') { nest++; expr += c; }
+              else if ((c === ')' || c === ']') && nest > 0) { nest--; expr += c; }
+              else if (c === '\n') { expr += c; line++; col = -1; }
+              else if (c === '{') { depth++; expr += c; }
+              else if (c === '}') { depth--; if (depth > 0) expr += c; }
+              else if (c === '!' && depth === 1 && nest === 0 && 'sra'.includes(code[pos + 1]) && (code[pos + 2] === ':' || code[pos + 2] === '}')) {
                 conv = code[pos + 1]; pos += 2; col += 2; continue;
               }
-              else if (code[pos] === ':' && depth === 1 && spec === null) {
+              else if (c === ':' && depth === 1 && nest === 0 && spec === null) {
                 spec = ''; pos++; col++;
                 while (pos < len && !(code[pos] === '}' && depth === 1)) {
                   if (code[pos] === '{') depth++;
@@ -829,9 +846,13 @@ function adderTokenize(code) {
           if (code[pos] === '}') {
             if (code[pos + 1] === '}') { textBuf += '}'; pos += 2; col += 2; continue; }
           }
-          if (code[pos] === '\\' && !isRaw) {
-            textBuf += code[pos] + (code[pos + 1] || '');
-            pos += 2; col += 2;
+          if (code[pos] === '\\' && code[pos + 1] !== '{' && code[pos + 1] !== '}') {
+            // a backslash takes the next character with it — in a raw string too, where both are
+            // kept (rf'\'' is backslash-quote, not the end) — except a brace: `\{{` is a backslash
+            // then a literal brace, and `\{x}` a backslash then a field
+            const nx = code[pos + 1] || '';
+            textBuf += '\\' + nx; pos += 2;
+            if (nx === '\n') { line++; col = 0; } else col += 2;
           } else {
             textBuf += code[pos]; pos++; col++;
           }
@@ -849,9 +870,12 @@ function adderTokenize(code) {
             break;
           }
           if (code[pos] === '\n') { if (!triple) break; raw += '\n'; pos++; line++; col = 0; continue; }
-          if (code[pos] === '\\' && !isRaw) {
-            raw += code[pos] + (code[pos + 1] || '');
-            pos += 2; col += 2;
+          if (code[pos] === '\\') {
+            // a backslash always takes the next character with it — in a raw string too, where
+            // both are kept (r'\'' is backslash-quote, not the end of the string)
+            const nx = code[pos + 1] || '';
+            raw += '\\' + nx; pos += 2;
+            if (nx === '\n') { line++; col = 0; } else col += 2;
           } else {
             raw += code[pos]; pos++; col++;
           }
@@ -1355,6 +1379,7 @@ class _Parser {
       const names = [];
       const paren = this.eat('OP', '(');
       do {
+        if (paren && this.at('OP', ')')) break;   // trailing comma: from x import (a, b,)
         const name = this.expect('NAME').value;
         const alias = this.eat('NAME', 'as') ? this.expect('NAME').value : null;
         names.push({ name, alias });
@@ -1375,6 +1400,7 @@ class _Parser {
     const names = [];
     const paren = this.eat('OP', '(');
     do {
+      if (paren && this.at('OP', ')')) break;     // trailing comma: from x import (a, b,)
       const name = this.expect('NAME').value;
       const alias = this.eat('NAME', 'as') ? this.expect('NAME').value : null;
       names.push({ name, alias });
@@ -1508,15 +1534,27 @@ class _Parser {
 
   _parseFuncParams() {
     const params = [], kwonly = [];
-    let vararg = null, kwarg = null, seenStar = false;
+    let vararg = null, kwarg = null, seenStar = false, posonly = 0;
+    let varargAnnotation = null, kwargAnnotation = null;
     while (!this.at('OP', ')')) {
-      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; break; }
+      if (this.eat('OP', '**')) {
+        kwarg = this.expect('NAME').value;
+        if (this.eat('OP', ':')) kwargAnnotation = this.parseExpr();   // **kwargs: Any
+        this.eat('OP', ',');                                             // trailing comma
+        break;
+      }
       if (this.eat('OP', '*')) {
         seenStar = true;
-        if (this.at('NAME')) vararg = this.advance().value;
+        if (this.at('NAME')) {
+          vararg = this.advance().value;
+          if (this.eat('OP', ':')) varargAnnotation = this.parseExpr();  // *args: int
+        }
         this.eat('OP', ',');
         continue;
       }
+      // `/`: the parameters before it are positional-only (PEP 570). Recorded; not yet
+      // enforced (passing one by keyword binds it, where CPython raises TypeError).
+      if (this.eat('OP', '/')) { posonly = params.length; this.eat('OP', ','); continue; }
       const pName = this.expect('NAME').value;
       let annotation = null;
       if (this.eat('OP', ':')) annotation = this.parseExpr();
@@ -1525,23 +1563,30 @@ class _Parser {
       (seenStar ? kwonly : params).push({ name: pName, default: def, annotation });
       if (!this.eat('OP', ',')) break;
     }
-    return { params, vararg, kwonly, kwarg };
+    return { params, vararg, kwonly, kwarg, posonly, varargAnnotation, kwargAnnotation };
   }
 
   parseClass(decorators = []) {
     const t = this.advance(); // 'class'
     const name = this.expect('NAME').value;
     let bases = [];
+    const keywords = [];   // class X(Base, metaclass=M, flag=True): metaclass + __init_subclass__ kwargs
     if (this.eat('OP', '(')) {
       while (!this.at('OP', ')')) {
-        bases.push(this.parseExpr());
+        const nx = this.tokens[this.pos + 1];
+        if (this.at('NAME') && nx && nx.type === 'OP' && nx.value === '=') {
+          const arg = this.advance().value; this.advance();
+          keywords.push({ arg, value: this.parseExpr() });
+        } else if (this.eat('OP', '**')) keywords.push({ arg: null, value: this.parseExpr() });
+        else if (this.at('OP', '*')) { this.advance(); bases.push({ type: 'Starred', value: this.parseExpr(), line: t.line, col: t.col }); }
+        else bases.push(this.parseExpr());
         this.eat('OP', ',');
       }
       this.expect('OP', ')');
     }
     this.expect('OP', ':');
     const body = this.parseBlock();
-    return { type: 'ClassDef', name, bases, body, decorators, line: t.line, col: t.col };
+    return { type: 'ClassDef', name, bases, keywords, body, decorators, line: t.line, col: t.col };
   }
 
   parseTry() {
@@ -1753,7 +1798,7 @@ class _Parser {
         args.push({ type: 'Starred', value: this.parseExpr(), line: this.peek().line, col: this.peek().col });
       } else if (this.peek().type === 'NAME' && this.tokens[this.pos + 1]?.value === '=' && this.tokens[this.pos + 1]?.type === 'OP') {
         // keyword argument — but check it's not ==
-        if (this.tokens[this.pos + 1]?.value === '=' && this.tokens[this.pos + 2]?.value !== '=') {
+        if (!(this.tokens[this.pos + 2]?.type === 'OP' && this.tokens[this.pos + 2]?.value === '=')) {   // a STRING '=' is a value
           const name = this.advance().value;
           this.advance(); // =
           keywords.push({ name, value: this.parseExpr() });
@@ -1763,7 +1808,7 @@ class _Parser {
       } else {
         const expr = this.parseExpr();
         // generator expression: sum(x for x in items)
-        if (this.at('NAME', 'for')) {
+        if (this._atCompFor()) {
           const generators = this._parseCompIter();
           args.push({ type: 'GeneratorExp', elt: expr, generators, line: expr.line, col: expr.col });
         } else {
@@ -1828,12 +1873,15 @@ class _Parser {
     // number
     if (t.type === 'NUMBER') { this.advance(); return { type: 'Constant', value: t.value, line: t.line, col: t.col }; }
 
-    // string (with concatenation of adjacent strings)
-    if (t.type === 'STRING') {
-      this.advance();
-      let value = t.value;
-      while (this.peek().type === 'STRING') value += this.advance().value;
-      return { type: 'Constant', value, line: t.line, col: t.col };
+    // strings: adjacent literals concatenate, plain and f-strings mixed ("a" f"{b}" "c"); an
+    // all-plain run is a constant, any f-string makes the whole run one f-string
+    if (t.type === 'STRING' || t.type === 'FSTRING') {
+      const run = [];
+      while (this.peek().type === 'STRING' || this.peek().type === 'FSTRING') run.push(this.advance());
+      if (run.every((x) => x.type === 'STRING')) return { type: 'Constant', value: run.map((x) => x.value).join(''), line: t.line, col: t.col };
+      const parts = [];
+      for (const x of run) { if (x.type === 'STRING') parts.push(x.value); else parts.push(...x.value); }
+      return this._parseFstring({ ...t, value: parts });
     }
 
     // bytes literal b'...' (adjacent ones concatenate): its value as a latin-1 string
@@ -1844,8 +1892,6 @@ class _Parser {
       return { type: 'Bytes', value, line: t.line, col: t.col };
     }
 
-    // f-string
-    if (t.type === 'FSTRING') { this.advance(); return this._parseFstring(t); }
 
     // ellipsis
     // `...` is the Ellipsis singleton (a builtin name, so both engines resolve it like any other)
@@ -1856,7 +1902,7 @@ class _Parser {
       this.advance();
       if (this.eat('OP', ')')) return { type: 'Tuple', elts: [], line: t.line, col: t.col };
       const first = this.parseStarExpr();
-      if (this.at('NAME', 'for')) {
+      if (this._atCompFor()) {
         const generators = this._parseCompIter();
         this.expect('OP', ')');
         return { type: 'GeneratorExp', elt: first, generators, line: t.line, col: t.col };
@@ -1879,7 +1925,7 @@ class _Parser {
       this.advance();
       if (this.eat('OP', ']')) return { type: 'List', elts: [], line: t.line, col: t.col };
       const first = this.parseStarExpr();
-      if (this.at('NAME', 'for')) {
+      if (this._atCompFor()) {
         const generators = this._parseCompIter();
         this.expect('OP', ']');
         return { type: 'ListComp', elt: first, generators, line: t.line, col: t.col };
@@ -1901,11 +1947,11 @@ class _Parser {
       if (this.eat('OP', '**')) {
         return this._parseDictBody(t, [null], [this.parseExpr()]);
       }
-      const first = this.parseExpr();
-      if (this.eat('OP', ':')) {
+      const first = this.parseStarExpr();            // `{*a, b}` — a starred item makes it a set
+      if (first.type !== 'Starred' && this.eat('OP', ':')) {
         // dict
         const firstVal = this.parseExpr();
-        if (this.at('NAME', 'for')) {
+        if (this._atCompFor()) {
           const generators = this._parseCompIter();
           this.expect('OP', '}');
           return { type: 'DictComp', key: first, value: firstVal, generators, line: t.line, col: t.col };
@@ -1913,7 +1959,7 @@ class _Parser {
         return this._parseDictBody(t, [first], [firstVal]);
       }
       // set
-      if (this.at('NAME', 'for')) {
+      if (this._atCompFor()) {
         const generators = this._parseCompIter();
         this.expect('OP', '}');
         return { type: 'SetComp', elt: first, generators, line: t.line, col: t.col };
@@ -1921,7 +1967,7 @@ class _Parser {
       const elts = [first];
       while (this.eat('OP', ',')) {
         if (this.at('OP', '}')) break;
-        elts.push(this.parseExpr());
+        elts.push(this.parseStarExpr());
       }
       this.expect('OP', '}');
       return { type: 'Set', elts, line: t.line, col: t.col };
@@ -1946,6 +1992,13 @@ class _Parser {
     return { type: 'Dict', keys, values, line: startTok.line, col: startTok.col };
   }
 
+  // a comprehension clause starts here: `for …`, or `async for …`
+  _atCompFor() {
+    if (this.at('NAME', 'for')) return true;
+    const nx = this.tokens[this.pos + 1];
+    return this.at('NAME', 'async') && !!nx && nx.type === 'NAME' && nx.value === 'for';
+  }
+
   _parseCompIter() {
     const generators = [];
     while (this.at('NAME', 'for') || this.at('NAME', 'async')) {
@@ -1961,6 +2014,27 @@ class _Parser {
     return generators;
   }
 
+  // A format spec with replacement fields (`>{w}`, `{fill}^{width}.{prec}f`) is itself an f-string:
+  // a JoinedStr the engines evaluate first. A plain spec stays a string.
+  _parseFormatSpec(spec, tok) {
+    if (!spec) return null;
+    if (!spec.includes('{')) return spec;
+    const parts = [];
+    let text = '';
+    for (let i = 0; i < spec.length; i++) {
+      if (spec[i] !== '{') { text += spec[i]; continue; }
+      let depth = 1, j = i + 1;
+      while (j < spec.length && depth) { if (spec[j] === '{') depth++; else if (spec[j] === '}') depth--; j++; }
+      if (text) { parts.push(text); text = ''; }
+      let expr = spec.slice(i + 1, j - 1), conv = null;
+      const m = /!([sra])$/.exec(expr); if (m) { conv = m[1]; expr = expr.slice(0, -2); }
+      parts.push({ expr: expr.trim(), spec: null, conv });
+      i = j - 1;
+    }
+    if (text) parts.push(text);
+    return this._parseFstring({ ...tok, value: parts });
+  }
+
   _parseFstring(tok) {
     const values = [];
     for (const part of tok.value) {
@@ -1971,7 +2045,7 @@ class _Parser {
         values.push({
           type: 'FormattedValue', value: exprNode,
           conversion: part.conv || null,
-          formatSpec: part.spec || null,
+          formatSpec: this._parseFormatSpec(part.spec, tok),
           line: tok.line, col: tok.col,
         });
       }
@@ -1985,7 +2059,8 @@ class _Parser {
     let vararg = null, kwarg = null;
     while (!this.at('OP', ':')) {
       if (this.eat('OP', '*')) { if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
-      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; break; }
+      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; this.eat('OP', ','); break; }
+      if (this.eat('OP', '/')) { this.eat('OP', ','); continue; }      // positional-only marker
       const name = this.expect('NAME').value;
       const def = this.eat('OP', '=') ? this.parseExpr() : null;
       params.push({ name, default: def });
@@ -2776,6 +2851,9 @@ function adderGetAttr(obj, attr) {
     // check for adder class method on prototype
     if (typeof obj[attr] === 'function') {
       if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
+      // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
+      // import f` is the same object (binding made a fresh copy per access)
+      if (obj.__adderModule__ && obj[attr]._pyFunc) return obj[attr];
       // adder functions expect self as first arg — inject it (skip for modules)
       if (obj[attr]._pyFunc && !obj.__adderModule__) {
         const originalFn = obj[attr];
@@ -2991,6 +3069,12 @@ function _strMaketrans(x, y, z) {
 
 // a dict display with **unpacking: entries in order, later keys win; a plain object when every
 // key is a string (as a literal would be), else a Map
+// Can a dict literal with this string key be a plain JS object (the JS-interop form, read as
+// d.a from JS cells)? Not for keys a JS object treats specially: `__proto__` (assigning it sets
+// the prototype) and array-index-like ones ("0", "10"), which a JS object orders before every
+// other key — Python keeps insertion order. A literal with such a key is a PyDict.
+const plainObjectKey = (k) => typeof k === 'string' && k !== '__proto__' && !/^(0|[1-9]\d*)$/.test(k);
+
 function dictLiteral(keys, values, spreads) {
   const entries = [];
   for (let i = 0; i < keys.length; i++) {
@@ -5226,6 +5310,8 @@ const _stdio = { out: null, err: null, redirect: null };
 // the exceptions being handled, innermost last: both engines push on entering an except body and
 // pop on leaving it (a bare `raise`, sys.exc_info(), sys.exception(), logging.exception read it)
 const excStack = [];
+// an imported module's print writes where the running program's does (it used to be dropped)
+const stdoutWrite = (s) => _stdioWrite('out', s);
 function _stdioWrite(which, s) {
   const w = _stdio[which];
   if (w) { w(s); return; }
@@ -5439,6 +5525,74 @@ function finishClass(cls, annotations) {
 }
 
 // ── builtins ──
+
+// ── importlib / __import__ ──
+// The import machinery lives in eval.js (it runs module code); it registers itself here at init,
+// so `importlib.import_module`, `__import__` and the import statement share one algorithm.
+const _imp = { find: null, importModule: null, resolveRelative: null };
+function _registerImportMachinery(m) { Object.assign(_imp, m); }
+const _kwOf = (args) => (args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.pop() : {});
+const _PackageNotFoundError = makeExcType('PackageNotFoundError', 'ModuleNotFoundError');
+// importlib.resources.files(pkg): the package's directory, as a VFS-backed pathlib.Path
+async function _resourceFiles(anchor) {
+  const mod = typeof anchor === 'string' ? await _imp.importModule(anchor) : anchor;
+  const file = mod && mod.__file__;
+  if (!file || !_vfsPath) throw new AdderError('TypeError', `cannot locate resources for ${pyRepr(anchor)}`);
+  return adderModules.pathlib.Path(_vfsPath.dirname(file));
+}
+adderModules.importlib = {
+  __adderModule__: true, __name__: 'importlib',
+  // import_module(name, package=None): the module itself (the leaf of a dotted name)
+  import_module: async (name, ...args) => {
+    const kw = _kwOf(args);
+    const pkg = args.length ? args[0] : kw.package;
+    return _imp.importModule(String(name).startsWith('.') ? _imp.resolveRelative(name, pkg || null) : name);
+  },
+  reload: async (mod) => {
+    const name = mod && mod.__name__;
+    if (!name) throw new AdderError('TypeError', 'reload() argument must be a module');
+    delete adderModules.sys.modules[name];
+    return _imp.importModule(name);
+  },
+  invalidate_caches: () => null,
+  util: {
+    __adderModule__: true, __name__: 'importlib.util',
+    // a spec when the module can be found, else None (it is imported to find out)
+    find_spec: async (name) => {
+      try { const m = await _imp.find(name); return m ? (m.__spec__ || { __adderClass__: 'ModuleSpec', name, origin: m.__file__ || null }) : null; }
+      catch (e) { if (e && e.pyType === 'ModuleNotFoundError') return null; throw e; }
+    },
+    resolve_name: (name, pkg) => _imp.resolveRelative(name, pkg),
+  },
+  metadata: {
+    __adderModule__: true, __name__: 'importlib.metadata',
+    // no installed-distribution metadata in the VFS: every lookup says so, as for an uninstalled package
+    version: (dist) => { throw new AdderError('PackageNotFoundError', `No package metadata was found for ${dist}`); },
+    metadata: (dist) => { throw new AdderError('PackageNotFoundError', `No package metadata was found for ${dist}`); },
+    PackageNotFoundError: _PackageNotFoundError,
+    entry_points: () => [],
+  },
+  resources: {
+    __adderModule__: true, __name__: 'importlib.resources',
+    files: _resourceFiles,
+    read_text: async (pkg, resource) => (await _resourceFiles(pkg)).joinpath(resource).read_text(),
+    read_binary: async (pkg, resource) => (await _resourceFiles(pkg)).joinpath(resource).read_bytes(),
+  },
+};
+// __import__(name, globals=None, locals=None, fromlist=(), level=0): the top-level package,
+// unless a fromlist is given — then the module named
+async function _builtinImport(name, ...args) {
+  const kw = _kwOf(args);
+  const [globals = kw.globals, , fromlist = kw.fromlist, level = kw.level || 0] = args;
+  let abs = name;
+  if (level > 0) {
+    const pkg = globals && (globals instanceof Map ? globals.get('__package__') : globals.__package__);
+    abs = _imp.resolveRelative('.'.repeat(level) + name, pkg || null);
+  }
+  const mod = await _imp.importModule(abs);
+  if (fromlist && fromlist.length) return mod;
+  return abs.includes('.') ? _imp.importModule(abs.split('.')[0]) : mod;
+}
 
 function adderBuiltins(printFn) {
   const builtins = {
@@ -5722,6 +5876,7 @@ function adderBuiltins(printFn) {
       const p = _resolvePath(raw, _vfsPath);
       return _createAdderFile(_adderVFS, p, mode || 'r');
     },
+    __import__: _builtinImport,
     eval: _builtinEval,
     exec: _builtinExec,
     super: _builtinSuper,
@@ -6155,7 +6310,7 @@ async function adderEval(node, scope) {
       // A literal whose keys are all string constants is a plain object, so JS cells read it
       // as d.a. An EMPTY literal is a PyDict: it is filled with data keys later, and a plain
       // object would turn d[5] into d['5'] and order integer-like keys first.
-      const allStringKeys = node.keys.length > 0 && node.keys.every(k => k && (k.type === 'Constant' && typeof k.value === 'string') || k === null);
+      const allStringKeys = node.keys.length > 0 && node.keys.every(k => k && (k.type === 'Constant' && plainObjectKey(k.value)) || k === null);
       if (allStringKeys) {
         const obj = {};
         for (let i = 0; i < node.keys.length; i++) {
@@ -6186,7 +6341,10 @@ async function adderEval(node, scope) {
     }
     case 'Set': {
       const s = new PySet();
-      for (const e of node.elts) s.add(await adderEval(e, scope));
+      for (const e of node.elts) {
+        if (e.type === 'Starred') { for (const v of await pyCollect(await adderEval(e.value, scope))) s.add(v); }
+        else s.add(await adderEval(e, scope));
+      }
       return s;
     }
 
@@ -6210,7 +6368,9 @@ async function adderEval(node, scope) {
       let val = await adderEval(node.value, scope);
       if (node.conversion === 'r') val = await pyReprMaybe(val);
       else if (node.conversion === 's') val = await pyStrMaybe(val);
-      return node.formatSpec ? pyFormatValue(val, node.formatSpec) : await pyStrMaybe(val);
+      // a nested spec (`{x:>{w}}`) is itself an f-string, evaluated first
+      const spec = node.formatSpec && typeof node.formatSpec === 'object' ? await adderEval(node.formatSpec, scope) : node.formatSpec;
+      return spec ? pyFormatValue(val, spec) : await pyStrMaybe(val);
     }
 
     // ── await ──
@@ -7484,59 +7644,161 @@ async function _loadAuditableModule(name) {
   try { return await window._auditableResolveModule(name); } catch { return null; }
 }
 
+// A module's namespace: every binding the module's code makes lands on its module object as it
+// is made — so a circular import (pkg/__init__ imports .a, and a imports pkg) sees the names
+// bound so far, as in CPython, instead of an empty placeholder. `global x` writes in functions
+// go through the same map, so they are seen too.
+class _ModuleVars extends PyDict {
+  set(k, v) { const r = super.set(k, v); if (this._mod && typeof k === 'string') { try { this._mod[k] = v; } catch {} } return r; }
+  delete(k) { const r = super.delete(k); if (this._mod && typeof k === 'string') delete this._mod[k]; return r; }
+}
+
 // Parse + evaluate source as a fresh module, cache it under cacheKey.
-// Shared by _loadVfsModule, _loadHttpModule, _loadDirectModule.
-async function _instantiateModule(cacheKey, displayName, source, filePath) {
+// Shared by the VFS, HTTP and direct-path loaders.
+//   info.package — the module's __package__ (the package itself, for a package's __init__)
+//   info.path    — for a package: its __path__ (the directories its submodules are found in)
+async function _instantiateModule(cacheKey, displayName, source, filePath, info = {}) {
   const cache = adderModules.sys.modules;
   const ast = adderParse(source);
   const modScope = new AdderScope();
-  const builtins = adderBuiltins(() => {});
+  const builtins = adderBuiltins(stdoutWrite);
   const builtinNames = new PySet(Object.keys(builtins));
-  for (const [k, v] of Object.entries(builtins)) modScope.set(k, v);
-  modScope.set('__name__', displayName);
-  modScope.set('__file__', filePath);
+  modScope.vars = new _ModuleVars();
+  for (const [k, v] of Object.entries(builtins)) modScope.vars.set(k, v);
 
-  // placeholder in cache (handles circular imports)
+  // the module object, in the cache before its code runs (circular imports find it)
   const mod = { __adderModule__: true };
   cache[cacheKey] = mod;
+  modScope.vars._mod = mod;
 
-  await adderEval(ast, modScope);
+  const pkg = info.package !== undefined ? info.package : (displayName.includes('.') ? displayName.slice(0, displayName.lastIndexOf('.')) : '');
+  modScope.set('__name__', displayName);
+  modScope.set('__file__', filePath);
+  modScope.set('__package__', pkg);
+  modScope.set('__doc__', ast.body && ast.body[0] && ast.body[0].type === 'Expr' && ast.body[0].value.type === 'Constant' && typeof ast.body[0].value.value === 'string' ? ast.body[0].value.value : null);
+  if (info.path) modScope.set('__path__', info.path);
+  modScope.set('__spec__', { __adderClass__: 'ModuleSpec', name: displayName, origin: filePath, parent: pkg,
+    submodule_search_locations: info.path || null, has_location: !!filePath, loader: null });
+  modScope.set('__loader__', null);
 
-  for (const [k, v] of modScope.vars) {
-    if (!builtinNames.has(k) && k !== '__name__' && k !== '__file__') mod[k] = v;
+  try {
+    await adderEval(ast, modScope);
+  } catch (e) {
+    delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
+    throw e;
   }
-  mod.__name__ = displayName;
-  mod.__file__ = filePath;
-
   return mod;
 }
 
+// Find a top-level name on sys.path: <dir>/<name>.py, or a package <dir>/<name>/__init__.py.
 async function _loadVfsModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
+  return _loadFromDirs(name, name, adderModules.sys.path);
+}
 
+// Look for `leaf` (a module or a package) in each directory of `dirs`, instantiating it as
+// `fullName`. sys.path for a top-level name; a package's __path__ for its submodules.
+async function _loadFromDirs(fullName, leaf, dirs) {
   const vfs = getAdderVFS();
   if (!vfs) return null;
   const pth = _getVfsPath();
   if (!pth) return null;
-
-  // search sys.path for name.py or name/__init__.py
-  let source = null, filePath = null;
   const cwd = adderModules.os?.getcwd?.() || '/';
-  for (let dir of adderModules.sys.path) {
+  for (let dir of dirs || []) {
     if (typeof dir !== 'string') continue;
-    // skip URL-like entries — those are for _loadHttpModule
-    if (/^https?:\/\//.test(dir)) continue;
-    // resolve relative entries (e.g. '.') against os.getcwd()
+    if (/^https?:\/\//.test(dir)) continue;          // URL entries are _loadHttpModule's
     if (!pth.isAbsolute(dir)) dir = pth.join(cwd, dir);
-    const fp = pth.join(dir, name + '.py');
-    try { source = await vfs.readFile(fp); filePath = fp; break; } catch {}
-    const ip = pth.join(dir, name, '__init__.py');
-    try { source = await vfs.readFile(ip); filePath = ip; break; } catch {}
+    // only the READ is tried: a module that is found but fails (a syntax error, an exception in
+    // its own code) propagates, never falling through to another directory
+    const fp = pth.join(dir, leaf + '.py');
+    const src = await _readOrNull(vfs, fp);
+    if (src !== null) return _instantiateModule(fullName, fullName, src, fp);
+    const pkgDir = pth.join(dir, leaf), ip = pth.join(pkgDir, '__init__.py');
+    const isrc = await _readOrNull(vfs, ip);
+    if (isrc !== null) return _instantiateModule(fullName, fullName, isrc, ip, { package: fullName, path: [pkgDir] });
   }
-  if (source === null) return null;
+  return null;
+}
+async function _readOrNull(vfs, p) { try { return await vfs.readFile(p); } catch { return null; } }
 
-  return _instantiateModule(name, name, source, filePath);
+// The import algorithm, shared by both engines. `name` is absolute and may be dotted:
+// the parent package is imported first (running its __init__), then the submodule is looked
+// up in the parent's __path__, and bound as an attribute of the parent. Returns null when
+// nothing provides the name.
+async function findModule(name) {
+  const cache = adderModules.sys.modules;
+  if (cache[name]) return cache[name];
+  const known = _resolveModule(name);
+  if (known) return known;
+  const dot = name.lastIndexOf('.');
+  if (dot > 0) {
+    const parent = await findModule(name.slice(0, dot));
+    if (!parent) return null;
+    if (cache[name]) return cache[name];            // the parent's __init__ imported it
+    const leaf = name.slice(dot + 1);
+    let mod = null;
+    if (Array.isArray(parent.__path__)) mod = await _loadFromDirs(name, leaf, parent.__path__);
+    if (!mod) {                                      // a namespace object's attribute (extensions, os.path)
+      const attr = parent[leaf];
+      if (attr && (typeof attr === 'object' || typeof attr === 'function')) return attr;
+      mod = await _loadAuditableModule(name) || await _loadHttpModule(name);
+    }
+    if (mod) { try { parent[leaf] = mod; } catch {} }
+    return mod;
+  }
+  return await _loadVfsModule(name) || await _loadAuditableModule(name) || await _loadHttpModule(name);
+}
+
+// findModule, raising ModuleNotFoundError (with `name` set, as CPython's has)
+async function importModule(name, line) {
+  const mod = await findModule(name);
+  if (mod) return mod;
+  // CPython names the first component that's missing: `import nope.deeper` → 'nope'
+  const parts = name.split('.');
+  let missing = name;
+  for (let i = 1; i < parts.length; i++) {
+    const prefix = parts.slice(0, i).join('.');
+    if (!(await findModule(prefix))) { missing = prefix; break; }
+  }
+  const e = new AdderError('ModuleNotFoundError', `No module named '${missing}'${_remoteNote(missing)}`, line);
+  e.name = missing;
+  throw e;
+}
+
+// `from ..pkg import x` → the absolute module name, relative to the importing module's package
+function resolveRelativeImport(module, pkg, line) {
+  const m = /^(\.+)(.*)$/.exec(module);
+  if (!m) return module;
+  if (!pkg) throw new AdderError('ImportError', 'attempted relative import with no known parent package', line);
+  const parts = pkg.split('.');
+  const up = m[1].length - 1;
+  if (up >= parts.length) throw new AdderError('ImportError', 'attempted relative import beyond top-level package', line);
+  const base = parts.slice(0, parts.length - up).join('.');
+  return m[2] ? `${base}.${m[2]}` : base;
+}
+
+// `from M import a, b`: an attribute of M, or else its submodule M.a (imported on demand) —
+// `from pkg import submodule` and `from . import sibling` work that way
+async function importNames(mod, modName, names, line) {
+  const out = [];
+  for (const { name, alias } of names) {
+    if (name === '*') {
+      const all = Array.isArray(mod.__all__) ? mod.__all__ : Object.keys(mod).filter((k) => !k.startsWith('_'));
+      for (const k of all) out.push([k, mod[k]]);
+      continue;
+    }
+    let v;
+    if (name in mod) v = mod[name];
+    else if (modName) v = await findModule(`${modName}.${name}`);
+    if (v === undefined || v === null && !(name in mod)) {
+      const e = new AdderError('ImportError', `cannot import name '${name}' from '${modName}'`, line);
+      e.name = modName;
+      throw e;
+    }
+    out.push([alias || name, v]);
+  }
+  return out;
 }
 
 // Join a base URL with a relative path component. Ensures exactly one '/' between.
@@ -7569,7 +7831,8 @@ async function _loadHttpModule(name) {
     }
     if (!base) continue;
 
-    for (const candidate of [_urlJoin(base, name + '.py'), _urlJoin(base, name + '/__init__.py')]) {
+    const rel = name.replace(/\./g, '/');            // a.b → a/b.py, a/b/__init__.py
+    for (const candidate of [_urlJoin(base, rel + '.py'), _urlJoin(base, rel + '/__init__.py')]) {
       try {
         const resp = await fetch(candidate);
         if (resp.ok) { source = await resp.text(); fetchedUrl = candidate; break; }
@@ -7578,8 +7841,8 @@ async function _loadHttpModule(name) {
     if (source !== null) break;
   }
   if (source === null) return null;
-
-  return _instantiateModule(name, name, source, fetchedUrl);
+  const isPkg = fetchedUrl.endsWith('/__init__.py');
+  return _instantiateModule(name, name, source, fetchedUrl, isPkg ? { package: name, path: [] } : {});
 }
 
 // Direct import from an explicit path/URL: `import "./foo.py" as foo`.
@@ -7639,23 +7902,31 @@ function _remoteNote(nameOrPath) {
   return Array.isArray(sp) && sp.some(urlish) ? ' (remote imports are off)' : '';
 }
 
-// `import a.b.c` binds `a`, with b and c reachable as attributes (the module objects are
-// linked up, a namespace object standing in for a parent that is not a module of its own)
+// `import a.b.c` binds `a`, with b and c reachable as attributes. findModule links a VFS
+// package's submodules up as it loads them; for anything else (a built-in namespace, an
+// extension) the chain is linked here, a namespace object standing in for a parent that is
+// not a module of its own.
 async function _importRoot(module, sub) {
   const parts = module.split('.');
-  let root = _resolveModule(parts[0]) || await _loadVfsModule(parts[0]);
+  let root = await findModule(parts[0]);
   if (!root || (typeof root !== 'object' && typeof root !== 'function')) root = { __adderModule__: true, __name__: parts[0] };
   let cur = root;
   for (let i = 1; i < parts.length; i++) {
     const name = parts.slice(0, i + 1).join('.');
     let next = cur[parts[i]];
     if (next === null || next === undefined || (typeof next !== 'object' && typeof next !== 'function')) {
-      next = i === parts.length - 1 ? sub : (_resolveModule(name) || { __adderModule__: true, __name__: name });
+      next = i === parts.length - 1 ? sub : (await findModule(name) || { __adderModule__: true, __name__: name });
       try { cur[parts[i]] = next; } catch { /* a frozen module: reachable already or not at all */ }
     }
     cur = next;
   }
   return root;
+}
+
+// the importing code's package, for relative imports: a module's own __package__ (a cell has none)
+function _scopePackage(scope) {
+  let s = scope; while (s.parent) s = s.parent;
+  return s.vars.has('__package__') ? s.vars.get('__package__') : null;
 }
 
 async function _evalImport(node, scope) {
@@ -7666,48 +7937,31 @@ async function _evalImport(node, scope) {
       scope.set(alias, mod);
       continue;
     }
-    let mod = _resolveModule(module);
-    const bind = async (m) => scope.set(alias || module.split('.')[0], !alias && module.includes('.') ? await _importRoot(module, m) : m);
-    if (mod) {
-      await bind(mod);
-      // import this — print the zen (side effect, like CPython)
-      if (module === 'this' && mod.s) { const printFn = scope.has('print') ? scope.get('print') : null; if (printFn) await printFn(mod.s); }
-      continue;
-    }
-    mod = await _loadVfsModule(module);
-    if (mod) { await bind(mod); continue; }
-    mod = await _loadAuditableModule(module);
-    if (mod) { await bind(mod); continue; }
-    mod = await _loadHttpModule(module);
-    if (mod) { await bind(mod); continue; }
-    throw new AdderError('ModuleNotFoundError', `No module named '${module}'${_remoteNote(module)}`, node.line);
+    const mod = await importModule(module, node.line);
+    // `import a.b` binds a (the root, b reachable on it); `import a.b as c` binds c to a.b itself
+    scope.set(alias || module.split('.')[0], !alias && module.includes('.') ? await _importRoot(module, mod) : mod);
+    // import this — print the zen (side effect, like CPython)
+    if (module === 'this' && mod.s) { const printFn = scope.has('print') ? scope.get('print') : null; if (printFn) await printFn(mod.s); }
   }
   return null;
 }
 
 async function _evalImportFrom(node, scope) {
-  let mod;
-  let displayModule;
+  let mod, name;
   if (node.path) {
     mod = await _loadDirectModule(node.path);
-    displayModule = node.path;
+    name = null;
+    if (!mod) throw new AdderError('ModuleNotFoundError', `cannot load module from '${node.path}'${_remoteNote(node.path)}`, node.line);
   } else {
-    mod = _resolveModule(node.module);
-    if (!mod) mod = await _loadVfsModule(node.module);
-    if (!mod) mod = await _loadAuditableModule(node.module);
-    if (!mod) mod = await _loadHttpModule(node.module);
-    displayModule = node.module;
+    name = resolveRelativeImport(node.module, _scopePackage(scope), node.line);
+    mod = await importModule(name, node.line);
   }
-  if (!mod) throw new AdderError('ModuleNotFoundError', `No module named '${displayModule}'${_remoteNote(node.path || displayModule)}`, node.line);
-  for (const { name, alias } of node.names) {
-    if (name === '*') { for (const k of Object.keys(mod)) scope.set(k, mod[k]); }
-    else {
-      if (!(name in mod)) throw new AdderError('ImportError', `cannot import name '${name}' from '${displayModule}'`, node.line);
-      scope.set(alias || name, mod[name]);
-    }
-  }
+  for (const [k, v] of await importNames(mod, name || node.path, node.names, node.line)) scope.set(k, v);
   return null;
 }
+
+// importlib and __import__ (builtins.js) use this same machinery
+_registerImportMachinery({ find: findModule, importModule, resolveRelative: resolveRelativeImport });
 
 // re-export for cell.js
 
@@ -8165,16 +8419,10 @@ function _makeSet(arr) {
 
 // ── Imports ──
 
+// the same import algorithm as the tree-walker (eval.js): dotted names load their parents,
+// packages search their __path__, `from M import sub` falls back to the submodule M.sub
 async function _import(name) {
-  let mod = _resolveModule(name);
-  if (mod) return mod;
-  mod = await _loadVfsModule(name);
-  if (mod) return mod;
-  mod = await _loadAuditableModule(name);
-  if (mod) return mod;
-  mod = await _loadHttpModule(name);
-  if (mod) return mod;
-  throw new AdderError('ModuleNotFoundError', `No module named '${name}'`);
+  return importModule(name);
 }
 
 async function _importPath(path) {
@@ -8183,35 +8431,18 @@ async function _importPath(path) {
   throw new AdderError('ModuleNotFoundError', `cannot load module from '${path}'`);
 }
 
+// names: array of { name, alias } (or "*"); → { boundName: value }
 async function _importFrom(moduleName, names) {
-  // names: array of { name, alias } (or special "*" to expose all)
-  let mod = _resolveModule(moduleName);
-  if (!mod) mod = await _loadVfsModule(moduleName);
-  if (!mod) mod = await _loadAuditableModule(moduleName);
-  if (!mod) mod = await _loadHttpModule(moduleName);
-  if (!mod) throw new AdderError('ModuleNotFoundError', `No module named '${moduleName}'`);
-  return _extractFromImport(mod, names, moduleName);
+  // a cell is not in a package: a relative import there raises, as at CPython's top level
+  const abs = resolveRelativeImport(moduleName, null);
+  const mod = await importModule(abs);
+  return Object.fromEntries(await importNames(mod, abs, names));
 }
 
 async function _importFromPath(path, names) {
   const mod = await _loadDirectModule(path);
   if (!mod) throw new AdderError('ModuleNotFoundError', `cannot load module from '${path}'`);
-  return _extractFromImport(mod, names, path);
-}
-
-function _extractFromImport(mod, names, displayName) {
-  const result = {};
-  for (const { name, alias } of names) {
-    if (name === '*') {
-      for (const k of Object.keys(mod)) result[k] = mod[k];
-    } else {
-      if (!(name in mod)) {
-        throw new AdderError('ImportError', `cannot import name '${name}' from '${displayName}'`);
-      }
-      result[alias || name] = mod[name];
-    }
-  }
-  return result;
+  return Object.fromEntries(await importNames(mod, path, names));
 }
 
 // ── Class creation ──
@@ -15019,7 +15250,7 @@ function lowerExpr_ad(ctx, node) {
       // Plain object if all keys are string constants (JS cells read d.a); otherwise, and
       // for an empty literal, a PyDict via _py.makeDict (see eval.js)
       const allStringKeys = node.keys.length > 0 && node.keys.every(k =>
-        k && k.type === 'Constant' && typeof k.value === 'string');
+        k && k.type === 'Constant' && plainObjectKey(k.value));
       if (allStringKeys) {
         const pairs = [];
         for (let i = 0; i < node.keys.length; i++) {
@@ -15042,11 +15273,7 @@ function lowerExpr_ad(ctx, node) {
       return emitPyCall(ctx, 'makeDict', [keysArr, valsArr], l);
     }
 
-    case 'Set': {
-      const elts = node.elts.map(e => lowerExpr_ad(ctx, e).id);
-      const arr = ctx.emit('array_new', elts, DYNAMIC, l);
-      return emitPyCall(ctx, 'makeSet', [arr], l);
-    }
+    case 'Set': return emitPyCall(ctx, 'makeSet', [lowerListOrTuple(ctx, node)], l);   // starred items spread, as in a list
 
     case 'SetComp':
     case 'DictComp':

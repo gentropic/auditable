@@ -776,6 +776,9 @@ export function adderGetAttr(obj, attr) {
     // check for adder class method on prototype
     if (typeof obj[attr] === 'function') {
       if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
+      // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
+      // import f` is the same object (binding made a fresh copy per access)
+      if (obj.__adderModule__ && obj[attr]._pyFunc) return obj[attr];
       // adder functions expect self as first arg — inject it (skip for modules)
       if (obj[attr]._pyFunc && !obj.__adderModule__) {
         const originalFn = obj[attr];
@@ -991,6 +994,12 @@ function _strMaketrans(x, y, z) {
 
 // a dict display with **unpacking: entries in order, later keys win; a plain object when every
 // key is a string (as a literal would be), else a Map
+// Can a dict literal with this string key be a plain JS object (the JS-interop form, read as
+// d.a from JS cells)? Not for keys a JS object treats specially: `__proto__` (assigning it sets
+// the prototype) and array-index-like ones ("0", "10"), which a JS object orders before every
+// other key — Python keeps insertion order. A literal with such a key is a PyDict.
+export const plainObjectKey = (k) => typeof k === 'string' && k !== '__proto__' && !/^(0|[1-9]\d*)$/.test(k);
+
 export function dictLiteral(keys, values, spreads) {
   const entries = [];
   for (let i = 0; i < keys.length; i++) {
@@ -3226,6 +3235,8 @@ export const _stdio = { out: null, err: null, redirect: null };
 // the exceptions being handled, innermost last: both engines push on entering an except body and
 // pop on leaving it (a bare `raise`, sys.exc_info(), sys.exception(), logging.exception read it)
 export const excStack = [];
+// an imported module's print writes where the running program's does (it used to be dropped)
+export const stdoutWrite = (s) => _stdioWrite('out', s);
 function _stdioWrite(which, s) {
   const w = _stdio[which];
   if (w) { w(s); return; }
@@ -3439,6 +3450,74 @@ export function finishClass(cls, annotations) {
 }
 
 // ── builtins ──
+
+// ── importlib / __import__ ──
+// The import machinery lives in eval.js (it runs module code); it registers itself here at init,
+// so `importlib.import_module`, `__import__` and the import statement share one algorithm.
+const _imp = { find: null, importModule: null, resolveRelative: null };
+export function _registerImportMachinery(m) { Object.assign(_imp, m); }
+const _kwOf = (args) => (args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.pop() : {});
+const _PackageNotFoundError = makeExcType('PackageNotFoundError', 'ModuleNotFoundError');
+// importlib.resources.files(pkg): the package's directory, as a VFS-backed pathlib.Path
+async function _resourceFiles(anchor) {
+  const mod = typeof anchor === 'string' ? await _imp.importModule(anchor) : anchor;
+  const file = mod && mod.__file__;
+  if (!file || !_vfsPath) throw new AdderError('TypeError', `cannot locate resources for ${pyRepr(anchor)}`);
+  return adderModules.pathlib.Path(_vfsPath.dirname(file));
+}
+adderModules.importlib = {
+  __adderModule__: true, __name__: 'importlib',
+  // import_module(name, package=None): the module itself (the leaf of a dotted name)
+  import_module: async (name, ...args) => {
+    const kw = _kwOf(args);
+    const pkg = args.length ? args[0] : kw.package;
+    return _imp.importModule(String(name).startsWith('.') ? _imp.resolveRelative(name, pkg || null) : name);
+  },
+  reload: async (mod) => {
+    const name = mod && mod.__name__;
+    if (!name) throw new AdderError('TypeError', 'reload() argument must be a module');
+    delete adderModules.sys.modules[name];
+    return _imp.importModule(name);
+  },
+  invalidate_caches: () => null,
+  util: {
+    __adderModule__: true, __name__: 'importlib.util',
+    // a spec when the module can be found, else None (it is imported to find out)
+    find_spec: async (name) => {
+      try { const m = await _imp.find(name); return m ? (m.__spec__ || { __adderClass__: 'ModuleSpec', name, origin: m.__file__ || null }) : null; }
+      catch (e) { if (e && e.pyType === 'ModuleNotFoundError') return null; throw e; }
+    },
+    resolve_name: (name, pkg) => _imp.resolveRelative(name, pkg),
+  },
+  metadata: {
+    __adderModule__: true, __name__: 'importlib.metadata',
+    // no installed-distribution metadata in the VFS: every lookup says so, as for an uninstalled package
+    version: (dist) => { throw new AdderError('PackageNotFoundError', `No package metadata was found for ${dist}`); },
+    metadata: (dist) => { throw new AdderError('PackageNotFoundError', `No package metadata was found for ${dist}`); },
+    PackageNotFoundError: _PackageNotFoundError,
+    entry_points: () => [],
+  },
+  resources: {
+    __adderModule__: true, __name__: 'importlib.resources',
+    files: _resourceFiles,
+    read_text: async (pkg, resource) => (await _resourceFiles(pkg)).joinpath(resource).read_text(),
+    read_binary: async (pkg, resource) => (await _resourceFiles(pkg)).joinpath(resource).read_bytes(),
+  },
+};
+// __import__(name, globals=None, locals=None, fromlist=(), level=0): the top-level package,
+// unless a fromlist is given — then the module named
+async function _builtinImport(name, ...args) {
+  const kw = _kwOf(args);
+  const [globals = kw.globals, , fromlist = kw.fromlist, level = kw.level || 0] = args;
+  let abs = name;
+  if (level > 0) {
+    const pkg = globals && (globals instanceof Map ? globals.get('__package__') : globals.__package__);
+    abs = _imp.resolveRelative('.'.repeat(level) + name, pkg || null);
+  }
+  const mod = await _imp.importModule(abs);
+  if (fromlist && fromlist.length) return mod;
+  return abs.includes('.') ? _imp.importModule(abs.split('.')[0]) : mod;
+}
 
 export function adderBuiltins(printFn) {
   const builtins = {
@@ -3722,6 +3801,7 @@ export function adderBuiltins(printFn) {
       const p = _resolvePath(raw, _vfsPath);
       return _createAdderFile(_adderVFS, p, mode || 'r');
     },
+    __import__: _builtinImport,
     eval: _builtinEval,
     exec: _builtinExec,
     super: _builtinSuper,

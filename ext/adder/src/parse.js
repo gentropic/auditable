@@ -15,7 +15,6 @@ function _processEscapes(raw) {
       case '\\': out += '\\'; break;
       case "'": out += "'"; break;
       case '"': out += '"'; break;
-      case '0': out += '\0'; break;
       case 'a': out += '\x07'; break;
       case 'b': out += '\b'; break;
       case 'f': out += '\f'; break;
@@ -144,14 +143,32 @@ export function adderTokenize(code) {
             if (code[pos + 1] === '{') { textBuf += '{'; pos += 2; col += 2; continue; }
             if (textBuf) { parts.push(textBuf); textBuf = ''; }
             pos++; col++; // skip {
-            let depth = 1, expr = '', spec = null, conv = null;
+            // the replacement field's expression: `:` starts the format spec and `!` the conversion
+            // only at the field's own level — not inside brackets (`{v[:n]}`, `{f(a, b=1)}`), nor
+            // inside a string in the expression (`{d['a:b']}`, `{'}'}`)
+            let depth = 1, nest = 0, expr = '', spec = null, conv = null, q = null;
             while (pos < len && depth > 0) {
-              if (code[pos] === '{') { depth++; expr += code[pos]; }
-              else if (code[pos] === '}') { depth--; if (depth > 0) expr += code[pos]; }
-              else if (code[pos] === '!' && depth === 1 && 'sra'.includes(code[pos + 1]) && (code[pos + 2] === ':' || code[pos + 2] === '}')) {
+              const c = code[pos];
+              if (q) {                                          // inside a string in the expression
+                expr += c;
+                if (c === '\\') { expr += code[pos + 1] || ''; pos += 2; col += 2; continue; }
+                if (c === '\n') { line++; col = 0; pos++; continue; }
+                if (code.startsWith(q, pos)) { expr += q.slice(1); pos += q.length; col += q.length; q = null; continue; }
+                pos++; col++; continue;
+              }
+              if (c === '"' || c === "'") {
+                q = code.startsWith(c + c + c, pos) ? c + c + c : c;
+                expr += q; pos += q.length; col += q.length; continue;
+              }
+              if (c === '(' || c === '[') { nest++; expr += c; }
+              else if ((c === ')' || c === ']') && nest > 0) { nest--; expr += c; }
+              else if (c === '\n') { expr += c; line++; col = -1; }
+              else if (c === '{') { depth++; expr += c; }
+              else if (c === '}') { depth--; if (depth > 0) expr += c; }
+              else if (c === '!' && depth === 1 && nest === 0 && 'sra'.includes(code[pos + 1]) && (code[pos + 2] === ':' || code[pos + 2] === '}')) {
                 conv = code[pos + 1]; pos += 2; col += 2; continue;
               }
-              else if (code[pos] === ':' && depth === 1 && spec === null) {
+              else if (c === ':' && depth === 1 && nest === 0 && spec === null) {
                 spec = ''; pos++; col++;
                 while (pos < len && !(code[pos] === '}' && depth === 1)) {
                   if (code[pos] === '{') depth++;
@@ -176,9 +193,13 @@ export function adderTokenize(code) {
           if (code[pos] === '}') {
             if (code[pos + 1] === '}') { textBuf += '}'; pos += 2; col += 2; continue; }
           }
-          if (code[pos] === '\\' && !isRaw) {
-            textBuf += code[pos] + (code[pos + 1] || '');
-            pos += 2; col += 2;
+          if (code[pos] === '\\' && code[pos + 1] !== '{' && code[pos + 1] !== '}') {
+            // a backslash takes the next character with it — in a raw string too, where both are
+            // kept (rf'\'' is backslash-quote, not the end) — except a brace: `\{{` is a backslash
+            // then a literal brace, and `\{x}` a backslash then a field
+            const nx = code[pos + 1] || '';
+            textBuf += '\\' + nx; pos += 2;
+            if (nx === '\n') { line++; col = 0; } else col += 2;
           } else {
             textBuf += code[pos]; pos++; col++;
           }
@@ -196,9 +217,12 @@ export function adderTokenize(code) {
             break;
           }
           if (code[pos] === '\n') { if (!triple) break; raw += '\n'; pos++; line++; col = 0; continue; }
-          if (code[pos] === '\\' && !isRaw) {
-            raw += code[pos] + (code[pos + 1] || '');
-            pos += 2; col += 2;
+          if (code[pos] === '\\') {
+            // a backslash always takes the next character with it — in a raw string too, where
+            // both are kept (r'\'' is backslash-quote, not the end of the string)
+            const nx = code[pos + 1] || '';
+            raw += '\\' + nx; pos += 2;
+            if (nx === '\n') { line++; col = 0; } else col += 2;
           } else {
             raw += code[pos]; pos++; col++;
           }
@@ -702,6 +726,7 @@ class _Parser {
       const names = [];
       const paren = this.eat('OP', '(');
       do {
+        if (paren && this.at('OP', ')')) break;   // trailing comma: from x import (a, b,)
         const name = this.expect('NAME').value;
         const alias = this.eat('NAME', 'as') ? this.expect('NAME').value : null;
         names.push({ name, alias });
@@ -722,6 +747,7 @@ class _Parser {
     const names = [];
     const paren = this.eat('OP', '(');
     do {
+      if (paren && this.at('OP', ')')) break;     // trailing comma: from x import (a, b,)
       const name = this.expect('NAME').value;
       const alias = this.eat('NAME', 'as') ? this.expect('NAME').value : null;
       names.push({ name, alias });
@@ -855,15 +881,27 @@ class _Parser {
 
   _parseFuncParams() {
     const params = [], kwonly = [];
-    let vararg = null, kwarg = null, seenStar = false;
+    let vararg = null, kwarg = null, seenStar = false, posonly = 0;
+    let varargAnnotation = null, kwargAnnotation = null;
     while (!this.at('OP', ')')) {
-      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; break; }
+      if (this.eat('OP', '**')) {
+        kwarg = this.expect('NAME').value;
+        if (this.eat('OP', ':')) kwargAnnotation = this.parseExpr();   // **kwargs: Any
+        this.eat('OP', ',');                                             // trailing comma
+        break;
+      }
       if (this.eat('OP', '*')) {
         seenStar = true;
-        if (this.at('NAME')) vararg = this.advance().value;
+        if (this.at('NAME')) {
+          vararg = this.advance().value;
+          if (this.eat('OP', ':')) varargAnnotation = this.parseExpr();  // *args: int
+        }
         this.eat('OP', ',');
         continue;
       }
+      // `/`: the parameters before it are positional-only (PEP 570). Recorded; not yet
+      // enforced (passing one by keyword binds it, where CPython raises TypeError).
+      if (this.eat('OP', '/')) { posonly = params.length; this.eat('OP', ','); continue; }
       const pName = this.expect('NAME').value;
       let annotation = null;
       if (this.eat('OP', ':')) annotation = this.parseExpr();
@@ -872,23 +910,30 @@ class _Parser {
       (seenStar ? kwonly : params).push({ name: pName, default: def, annotation });
       if (!this.eat('OP', ',')) break;
     }
-    return { params, vararg, kwonly, kwarg };
+    return { params, vararg, kwonly, kwarg, posonly, varargAnnotation, kwargAnnotation };
   }
 
   parseClass(decorators = []) {
     const t = this.advance(); // 'class'
     const name = this.expect('NAME').value;
     let bases = [];
+    const keywords = [];   // class X(Base, metaclass=M, flag=True): metaclass + __init_subclass__ kwargs
     if (this.eat('OP', '(')) {
       while (!this.at('OP', ')')) {
-        bases.push(this.parseExpr());
+        const nx = this.tokens[this.pos + 1];
+        if (this.at('NAME') && nx && nx.type === 'OP' && nx.value === '=') {
+          const arg = this.advance().value; this.advance();
+          keywords.push({ arg, value: this.parseExpr() });
+        } else if (this.eat('OP', '**')) keywords.push({ arg: null, value: this.parseExpr() });
+        else if (this.at('OP', '*')) { this.advance(); bases.push({ type: 'Starred', value: this.parseExpr(), line: t.line, col: t.col }); }
+        else bases.push(this.parseExpr());
         this.eat('OP', ',');
       }
       this.expect('OP', ')');
     }
     this.expect('OP', ':');
     const body = this.parseBlock();
-    return { type: 'ClassDef', name, bases, body, decorators, line: t.line, col: t.col };
+    return { type: 'ClassDef', name, bases, keywords, body, decorators, line: t.line, col: t.col };
   }
 
   parseTry() {
@@ -1100,7 +1145,7 @@ class _Parser {
         args.push({ type: 'Starred', value: this.parseExpr(), line: this.peek().line, col: this.peek().col });
       } else if (this.peek().type === 'NAME' && this.tokens[this.pos + 1]?.value === '=' && this.tokens[this.pos + 1]?.type === 'OP') {
         // keyword argument — but check it's not ==
-        if (this.tokens[this.pos + 1]?.value === '=' && this.tokens[this.pos + 2]?.value !== '=') {
+        if (!(this.tokens[this.pos + 2]?.type === 'OP' && this.tokens[this.pos + 2]?.value === '=')) {   // a STRING '=' is a value
           const name = this.advance().value;
           this.advance(); // =
           keywords.push({ name, value: this.parseExpr() });
@@ -1110,7 +1155,7 @@ class _Parser {
       } else {
         const expr = this.parseExpr();
         // generator expression: sum(x for x in items)
-        if (this.at('NAME', 'for')) {
+        if (this._atCompFor()) {
           const generators = this._parseCompIter();
           args.push({ type: 'GeneratorExp', elt: expr, generators, line: expr.line, col: expr.col });
         } else {
@@ -1175,12 +1220,15 @@ class _Parser {
     // number
     if (t.type === 'NUMBER') { this.advance(); return { type: 'Constant', value: t.value, line: t.line, col: t.col }; }
 
-    // string (with concatenation of adjacent strings)
-    if (t.type === 'STRING') {
-      this.advance();
-      let value = t.value;
-      while (this.peek().type === 'STRING') value += this.advance().value;
-      return { type: 'Constant', value, line: t.line, col: t.col };
+    // strings: adjacent literals concatenate, plain and f-strings mixed ("a" f"{b}" "c"); an
+    // all-plain run is a constant, any f-string makes the whole run one f-string
+    if (t.type === 'STRING' || t.type === 'FSTRING') {
+      const run = [];
+      while (this.peek().type === 'STRING' || this.peek().type === 'FSTRING') run.push(this.advance());
+      if (run.every((x) => x.type === 'STRING')) return { type: 'Constant', value: run.map((x) => x.value).join(''), line: t.line, col: t.col };
+      const parts = [];
+      for (const x of run) { if (x.type === 'STRING') parts.push(x.value); else parts.push(...x.value); }
+      return this._parseFstring({ ...t, value: parts });
     }
 
     // bytes literal b'...' (adjacent ones concatenate): its value as a latin-1 string
@@ -1191,8 +1239,6 @@ class _Parser {
       return { type: 'Bytes', value, line: t.line, col: t.col };
     }
 
-    // f-string
-    if (t.type === 'FSTRING') { this.advance(); return this._parseFstring(t); }
 
     // ellipsis
     // `...` is the Ellipsis singleton (a builtin name, so both engines resolve it like any other)
@@ -1203,7 +1249,7 @@ class _Parser {
       this.advance();
       if (this.eat('OP', ')')) return { type: 'Tuple', elts: [], line: t.line, col: t.col };
       const first = this.parseStarExpr();
-      if (this.at('NAME', 'for')) {
+      if (this._atCompFor()) {
         const generators = this._parseCompIter();
         this.expect('OP', ')');
         return { type: 'GeneratorExp', elt: first, generators, line: t.line, col: t.col };
@@ -1226,7 +1272,7 @@ class _Parser {
       this.advance();
       if (this.eat('OP', ']')) return { type: 'List', elts: [], line: t.line, col: t.col };
       const first = this.parseStarExpr();
-      if (this.at('NAME', 'for')) {
+      if (this._atCompFor()) {
         const generators = this._parseCompIter();
         this.expect('OP', ']');
         return { type: 'ListComp', elt: first, generators, line: t.line, col: t.col };
@@ -1248,11 +1294,11 @@ class _Parser {
       if (this.eat('OP', '**')) {
         return this._parseDictBody(t, [null], [this.parseExpr()]);
       }
-      const first = this.parseExpr();
-      if (this.eat('OP', ':')) {
+      const first = this.parseStarExpr();            // `{*a, b}` — a starred item makes it a set
+      if (first.type !== 'Starred' && this.eat('OP', ':')) {
         // dict
         const firstVal = this.parseExpr();
-        if (this.at('NAME', 'for')) {
+        if (this._atCompFor()) {
           const generators = this._parseCompIter();
           this.expect('OP', '}');
           return { type: 'DictComp', key: first, value: firstVal, generators, line: t.line, col: t.col };
@@ -1260,7 +1306,7 @@ class _Parser {
         return this._parseDictBody(t, [first], [firstVal]);
       }
       // set
-      if (this.at('NAME', 'for')) {
+      if (this._atCompFor()) {
         const generators = this._parseCompIter();
         this.expect('OP', '}');
         return { type: 'SetComp', elt: first, generators, line: t.line, col: t.col };
@@ -1268,7 +1314,7 @@ class _Parser {
       const elts = [first];
       while (this.eat('OP', ',')) {
         if (this.at('OP', '}')) break;
-        elts.push(this.parseExpr());
+        elts.push(this.parseStarExpr());
       }
       this.expect('OP', '}');
       return { type: 'Set', elts, line: t.line, col: t.col };
@@ -1293,6 +1339,13 @@ class _Parser {
     return { type: 'Dict', keys, values, line: startTok.line, col: startTok.col };
   }
 
+  // a comprehension clause starts here: `for …`, or `async for …`
+  _atCompFor() {
+    if (this.at('NAME', 'for')) return true;
+    const nx = this.tokens[this.pos + 1];
+    return this.at('NAME', 'async') && !!nx && nx.type === 'NAME' && nx.value === 'for';
+  }
+
   _parseCompIter() {
     const generators = [];
     while (this.at('NAME', 'for') || this.at('NAME', 'async')) {
@@ -1308,6 +1361,27 @@ class _Parser {
     return generators;
   }
 
+  // A format spec with replacement fields (`>{w}`, `{fill}^{width}.{prec}f`) is itself an f-string:
+  // a JoinedStr the engines evaluate first. A plain spec stays a string.
+  _parseFormatSpec(spec, tok) {
+    if (!spec) return null;
+    if (!spec.includes('{')) return spec;
+    const parts = [];
+    let text = '';
+    for (let i = 0; i < spec.length; i++) {
+      if (spec[i] !== '{') { text += spec[i]; continue; }
+      let depth = 1, j = i + 1;
+      while (j < spec.length && depth) { if (spec[j] === '{') depth++; else if (spec[j] === '}') depth--; j++; }
+      if (text) { parts.push(text); text = ''; }
+      let expr = spec.slice(i + 1, j - 1), conv = null;
+      const m = /!([sra])$/.exec(expr); if (m) { conv = m[1]; expr = expr.slice(0, -2); }
+      parts.push({ expr: expr.trim(), spec: null, conv });
+      i = j - 1;
+    }
+    if (text) parts.push(text);
+    return this._parseFstring({ ...tok, value: parts });
+  }
+
   _parseFstring(tok) {
     const values = [];
     for (const part of tok.value) {
@@ -1318,7 +1392,7 @@ class _Parser {
         values.push({
           type: 'FormattedValue', value: exprNode,
           conversion: part.conv || null,
-          formatSpec: part.spec || null,
+          formatSpec: this._parseFormatSpec(part.spec, tok),
           line: tok.line, col: tok.col,
         });
       }
@@ -1332,7 +1406,8 @@ class _Parser {
     let vararg = null, kwarg = null;
     while (!this.at('OP', ':')) {
       if (this.eat('OP', '*')) { if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
-      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; break; }
+      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; this.eat('OP', ','); break; }
+      if (this.eat('OP', '/')) { this.eat('OP', ','); continue; }      // positional-only marker
       const name = this.expect('NAME').value;
       const def = this.eat('OP', '=') ? this.parseExpr() : null;
       params.push({ name, default: def });

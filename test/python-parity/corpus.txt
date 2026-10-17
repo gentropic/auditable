@@ -1859,3 +1859,33 @@ except IndexError as e:
     print("IndexError", e)
 print(3 < 4.5, 2 <= 2, 5 > 9, 1.0 == 1, 0.1 + 0.2 == 0.3, 2 - 0.5, 3 * 1.5)
 print("a" < "b", [1, 2] < [1, 3], "ab" + "c", [1] * 3, "x" * 2)
+
+### syntax/library-forms
+from collections import (
+    OrderedDict,
+    defaultdict,
+)
+def f(a, b, /, c=3, *args: int, d=4, **kwargs: str) -> str:
+    return f"{a}{b}{c}{args}{d}{sorted(kwargs.items())}"
+print(f(1, 2), f(1, 2, 5, 6, 7, d=8, z="q"))
+g = lambda x, /, y=2: x + y
+print(g(1), g(1, 5))
+v = "abcdefgh"
+n = 3
+d = {"a:b": 1, "k": "v", "my key": 2, "1x": 3, "": 5, "10": 6, "__proto__": 7}
+print(f"{v[:n]}|{v[n:]}|{d['a:b']}|{'}'}|{d['k']!r}|{d['__proto__']}", list(d))
+w = 8
+print(f"[{3.14159:>{w}.{n}f}]", "x" f"{n:03d}" 'y', f"a" "b")
+print(r'\'', len(r'\''), r'a\b', '\012' == '\n', rf"\d+{n}", rf"a\{{b\}}")
+s = {*[3, 1], 2, *range(2)}
+print(sorted(s), dict(s="="), "=".join(["a", "b"]))
+
+### class/metaclass-basic
+class Meta(type):
+    pass
+class Base(metaclass=Meta):
+    pass
+print(type(Base).__name__, isinstance(Base, Meta))
+class Sub(Base):
+    pass
+print(type(Sub).__name__)
