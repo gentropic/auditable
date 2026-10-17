@@ -9,6 +9,8 @@ import './stdlib-num.js';
 import './stdlib-time.js';
 import './stdlib-data.js';
 import './stdlib-sys.js';
+import './stdlib-pickle.js';
+import './stdlib-net.js';
 import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
@@ -1250,8 +1252,12 @@ async function _evalClass(node, scope) {
     else kw[k.arg] = v;
   }
 
-  // evaluate class body in a class scope
+  // evaluate class body in a class scope; as in CPython it starts with __module__ (the defining
+  // module's __name__) and __qualname__
   const classScope = new AdderScope(scope);
+  let root = scope; while (root.parent) root = root.parent;
+  classScope.set('__module__', root.vars.has('__name__') ? root.vars.get('__name__') : '__main__');
+  classScope.set('__qualname__', node.name);
   for (const stmt of node.body) await adderEval(stmt, classScope);
 
   // build class (the factory both engines share); `__class__` is bound before

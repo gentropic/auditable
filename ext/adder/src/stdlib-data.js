@@ -668,6 +668,98 @@ adderModules.gzip = {
   },
   BadGzipFile: _dtBadGzip,
 };
+// GzipFile: a gzip stream over a file object (or a path) — read mode decompresses on first read,
+// write mode collects and compresses on close (the platform's CompressionStream is one-shot)
+class _DtGzipFile {
+  constructor(...a) {
+    const { args } = _dtArgs(a, ['filename', 'mode', 'compresslevel', 'fileobj', 'mtime'], { filename: null, mode: null, compresslevel: 9, fileobj: null, mtime: null });
+    this._mode = String(args.mode || (args.fileobj && args.fileobj.mode) || 'rb');
+    this.mode = this._mode.startsWith('r') ? 1 : 2;   // READ / WRITE, as CPython's GzipFile.mode
+    this.fileobj = args.fileobj;
+    this.name = args.filename !== null ? String(args.filename) : (args.fileobj && typeof args.fileobj.name === 'string' ? args.fileobj.name : '');
+    this._path = args.fileobj ? null : args.filename;
+    this._buf = null; this._pos = 0; this._out = []; this.closed = false;
+  }
+  async _src() {
+    if (!this.fileobj) this.fileobj = await adderModules.builtins.open(this._path, this._mode.replace('t', '').replace(/b?$/, 'b'));
+    return this.fileobj;
+  }
+  async _load() {
+    if (this._buf) return;
+    const f = await this._src();
+    const raw = _dtBytes(await adderGetAttr(f, 'read')());
+    this._buf = raw.length ? await adderModules.gzip.decompress(raw) : new Uint8Array(0);
+  }
+  async read(size = -1) {
+    if (this.mode !== 1) throw new AdderError('OSError', 'read() on write-only GzipFile object');
+    await this._load();
+    const end = size === null || size < 0 ? this._buf.length : Math.min(this._buf.length, this._pos + size);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = end;
+    return r;
+  }
+  async read1(size = -1) { return this.read(size); }
+  async peek(n = 1) { await this._load(); return this._buf.slice(this._pos, this._pos + Math.max(1, n)); }
+  async readline(size = -1) {
+    await this._load();
+    let end = this._buf.indexOf(0x0a, this._pos);
+    end = end < 0 ? this._buf.length : end + 1;
+    if (size !== null && size >= 0) end = Math.min(end, this._pos + size);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = end;
+    return r;
+  }
+  async readlines() { const out = []; for (;;) { const l = await this.readline(); if (!l.length) return out; out.push(l); } }
+  write(data) {
+    if (this.mode !== 2) throw new AdderError('OSError', 'write() on read-only GzipFile object');
+    const b = _dtBytes(data);
+    this._out.push(b);
+    return b.length;
+  }
+  seek(offset, whence = 0) { this._pos = whence === 0 ? offset : whence === 1 ? this._pos + offset : (this._buf ? this._buf.length : 0) + offset; return this._pos; }
+  tell() { return this._pos; }
+  readable() { return this.mode === 1; } writable() { return this.mode === 2; } seekable() { return true; }
+  flush() { return null; }
+  async close() {
+    if (this.closed) return null;
+    this.closed = true;
+    if (this.mode === 2) {
+      let n = 0; for (const b of this._out) n += b.length;
+      const all = new Uint8Array(n); let p = 0; for (const b of this._out) { all.set(b, p); p += b.length; }
+      const f = await this._src();
+      await adderGetAttr(f, 'write')(await adderModules.gzip.compress(all));
+      if (this._path !== null) await adderGetAttr(f, 'close')();
+    } else if (this._path !== null && this.fileobj) await adderGetAttr(this.fileobj, 'close')();
+    return null;
+  }
+  __enter__() { return this; }
+  async __exit__() { await this.close(); return false; }
+  async __iter__() { return (await this.readlines())[Symbol.iterator](); }
+}
+adderModules.gzip.GzipFile = _dtType('GzipFile', _DtGzipFile, 'gzip');
+adderModules.gzip.READ = 1; adderModules.gzip.WRITE = 2;
+// gzip.open: binary → GzipFile; text ('rt' / 'wt') → a TextIOWrapper around it
+adderModules.gzip.open = (filename, mode = 'rb', ...a) => {
+  const { args } = _dtArgs(a, ['compresslevel', 'encoding', 'errors', 'newline'], { compresslevel: 9, encoding: null, errors: null, newline: null });
+  const binMode = String(mode).replace('t', '');
+  const isObj = filename && typeof filename === 'object';
+  const g = adderModules.gzip.GzipFile(isObj ? null : filename, binMode, args.compresslevel, isObj ? filename : null);
+  return String(mode).includes('t') ? adderModules.io.TextIOWrapper(g, { _kw: true, encoding: args.encoding || 'utf-8', errors: args.errors || 'strict' }) : g;
+};
+
+// bz2 / lzma: no bzip2 or xz codec in the platform — the modules are there (libraries import
+// them to offer .bz2 / .xz files as an option), and using one says so
+{
+  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no bzip2 / xz codec in the browser)`); };
+  const cls = (name, what, module) => { const c = no(what); c._pyName = name; c.__name__ = name; c._pyClass = true; c.__module__ = module; return c; };
+  adderModules.bz2 = { __adderModule__: true, __name__: 'bz2', compress: no('bz2'), decompress: no('bz2'), open: no('bz2'),
+    BZ2File: cls('BZ2File', 'bz2', 'bz2'), BZ2Compressor: cls('BZ2Compressor', 'bz2', 'bz2'), BZ2Decompressor: cls('BZ2Decompressor', 'bz2', 'bz2') };
+  const LZMAError = makeExcType('LZMAError', 'Exception');
+  adderModules.lzma = { __adderModule__: true, __name__: 'lzma', compress: no('xz'), decompress: no('xz'), open: no('xz'), is_check_supported: () => false,
+    LZMAFile: cls('LZMAFile', 'xz', 'lzma'), LZMACompressor: cls('LZMACompressor', 'xz', 'lzma'), LZMADecompressor: cls('LZMADecompressor', 'xz', 'lzma'), LZMAError,
+    FORMAT_AUTO: 0, FORMAT_XZ: 1, FORMAT_ALONE: 2, FORMAT_RAW: 3, CHECK_NONE: 0, CHECK_CRC32: 1, CHECK_CRC64: 4, CHECK_SHA256: 10, CHECK_ID_MAX: 15, CHECK_UNKNOWN: 16,
+    FILTER_LZMA1: 0x4000000000000001, FILTER_LZMA2: 0x21, FILTER_DELTA: 3, FILTER_X86: 4, PRESET_DEFAULT: 6, PRESET_EXTREME: 0x80000000, MODE_FAST: 1, MODE_NORMAL: 2 };
+}
 
 // ── zipfile ──
 // ZipFile over a VFS path or a file object (BytesIO): read ('r'), write ('w', 'x') and append

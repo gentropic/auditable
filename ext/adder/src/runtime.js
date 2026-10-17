@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget, PyByteArray,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -428,6 +428,29 @@ function _setattr(obj, name, value) {
   }
 }
 
+// sync mode (air-lower AWAITED_DUNDERS): where Python calls code implicitly — a property, a
+// descriptor, len(), hash() — nothing can wait, so a possibly-async value is taken as it is.
+// A Promise passes through, the way CPython hands back a coroutine object from a property that
+// calls an `async def` (`await obj.prop` then works); it is not awaited here.
+function _noAwait(v) { return v; }
+
+// globals() / locals() in compiled code (air-lower: _callsScopeBuiltin)
+function _mainModule() { return { __adderModule__: true, __name__: '__main__' }; }
+const _globalsViews = new WeakMap();
+function _globalsOf(mod) {   // one live view per module: globals() is globals()
+  let d = _globalsViews.get(mod);
+  if (!d) { d = new AttrDict(mod); _globalsViews.set(mod, d); }
+  return d;
+}
+// a module-level name, read through the module object: what globals() set wins over the
+// compiled binding (and a builtin is the binding when the module has no such name)
+function _globalLoad(mod, name, v) { return Object.hasOwn(mod, name) && mod[name] !== undefined ? mod[name] : v; }
+function _localsOf(names, values) {
+  const o = {};
+  for (let i = 0; i < names.length; i++) if (values[i] !== undefined) o[names[i]] = values[i];
+  return o;
+}
+
 function _delitem(obj, key) {
   if (obj instanceof Map) { obj.delete(key); return; }
   if (Array.isArray(obj)) {
@@ -490,7 +513,10 @@ async function _importFromPath(path, names) {
 // Mirrors _evalClass in eval.js, but takes pre-evaluated bases and members.
 
 // annotations arrive flattened from the lowerer: [name, text, name, text, …]
-function _createClass(name, bases, members, annotations, kw) {
+function _createClass(name, bases, members, annotations, kw, moduleName) {
+  // __module__ / __qualname__, as CPython's class namespace starts with them (unless the body set them)
+  if (moduleName !== undefined && !Object.hasOwn(members, '__module__')) members.__module__ = moduleName;
+  if (!Object.hasOwn(members, '__qualname__')) members.__qualname__ = name;
   const ann = [];
   for (let k = 0; annotations && k < annotations.length; k += 2) ann.push([annotations[k], annotations[k + 1]]);
   return classStatement(name, bases, members, ann, kw);
@@ -656,6 +682,8 @@ export const _py = {
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
+  noAwait: _noAwait,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,

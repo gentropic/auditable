@@ -11,7 +11,8 @@
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output"
+  "builtin/sum-start": "output",
+  "class/sync-contexts": "error KeyError vs CPython null"
  },
  "auto": {
   "num/int-float-print": "output",
@@ -24,8 +25,6 @@
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output",
-  "class/descriptor-nondata": "output",
-  "mod/functools-cached-property": "output"
+  "builtin/sum-start": "output"
  }
 }

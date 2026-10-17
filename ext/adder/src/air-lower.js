@@ -184,6 +184,8 @@ class AdderLowerCtx extends BaseLowerCtx {
   nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
+    // sync mode (see AWAITED_DUNDERS): no await — the value is taken as it is
+    if (op === 'await' && this._syncMode) return emitPyCall(this, 'noAwait', [{ id: args[0] }], loc, type);
     const pyName = (op === 'store' && typeof args[0] === 'string') ? args[0] : null;
     if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && _JS_RESERVED.has(args[0])) args = [jsSafeName(args[0]), ...args.slice(1)];
     // module mode: a module-level binding (at top level, or from a function declaring it
@@ -580,6 +582,21 @@ export function lowerAdder(ast, source, opts) {
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
 
+  // globals() / locals(): the module's namespace as a live dict over the module object (a
+  // compiled module mirrors every module-level binding onto it). The main program gets such an
+  // object too — only when it calls them — and so does its mirroring. In such a program a
+  // module-level name is read through the object first (_py.globalLoad), so a name created by
+  // `globals()['x'] = …` is visible; programs that don't call them compile as before.
+  if (_callsScopeBuiltin(ast)) {
+    ctx.usesGlobals = true;
+    if (!ctx.moduleMirror) {
+      const m = emitPyCall(ctx, 'mainModule', [], null);
+      ctx.emit('store', ['__adder_module__', m.id], VOID, null);
+      ctx.symbols.set('__adder_module__', m.id);
+      ctx.moduleMirror = true;
+    }
+  }
+
   // Collect all module-scope defines up front (Python module-scope semantics)
   collectDefines_ad(ast.body, ctx.defines);
   // ... and the names functions declare `global`: assigned from a function, they are module
@@ -813,7 +830,11 @@ function lowerExpr_ad(ctx, node) {
       //     upstream (covers `df = df.rename(...)` re-bind pattern)
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       if (!ctx.symbols.has(name) && !isForwardRef) ctx.imports.add(name);
-      return ctx.emit('load', [name], DYNAMIC, l);
+      const raw = ctx.emit('load', [name], DYNAMIC, l);
+      if (ctx.usesGlobals && name !== '__adder_module__' && _resolvesToModule(ctx, name)) {
+        return emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
+      }
+      return raw;
     }
 
     case 'BinOp': return lowerBinOp_ad(ctx, node);
@@ -1105,8 +1126,21 @@ function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
   // eval / exec run source against the caller's live scope, which only the tree-walker has
-  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec' || node.func.id === 'globals' || node.func.id === 'locals') && !ctx.symbols.has(node.func.id)) {
+  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec') && !ctx.symbols.has(node.func.id)) {
     throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
+  }
+  // globals(): the module's live namespace. locals(): at module level the same; in a function a
+  // snapshot of its bound locals; in a class body (rare) the tree-walker's
+  if (node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals') && !ctx.symbols.has(node.func.id) && !node.args.length) {
+    const atModule = !ctx._fnLocalNames;
+    if (node.func.id === 'locals' && !atModule) {
+      const names = ctx._fnLocalNames.filter((n) => ctx.symbols.has(n));
+      return emitPyCall(ctx, 'localsOf', [
+        ctx.emit('array_new', names.map((n) => ctx.emit('const', [n], STRING, l).id), DYNAMIC, l),
+        ctx.emit('array_new', names.map((n) => ctx.emit('load', [n], DYNAMIC, l).id), DYNAMIC, l)], l);
+    }
+    if (node.func.id === 'locals' && ctx._classBodyOf) throw new AirLowerError('locals() in a class body needs the tree-walker');
+    return emitPyCall(ctx, 'globalsOf', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l)], l);
   }
 
   // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
@@ -1678,7 +1712,11 @@ function lowerClassDef(ctx, node) {
   for (const [k, t] of classAnnotations(node.body)) annIds.push(ctx.emit('const', [k], STRING, l).id, ctx.emit('const', [t], STRING, l).id);
   const annArr = ctx.emit('array_new', annIds, DYNAMIC, l);
   // createClass may return a promise (a base's __init_subclass__ written in Python)
-  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj], l).id], DYNAMIC, l);
+  // the defining module's __name__ (a module's own; the main program's '__main__')
+  const modName = ctx.moduleMirror && ctx.imports.has('__adder_module__')
+    ? emitPyCall(ctx, 'getattr', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', ['__name__'], STRING, l)], l)
+    : ctx.emit('const', ['__main__'], STRING, l);
+  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj, modName], l).id], DYNAMIC, l);
 
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -2228,10 +2266,76 @@ function _refExpr(ctx, ssaId) {
   return name;
 }
 
+// Code Python only ever calls implicitly, where compiled code can't wait for a Promise: a
+// property's getter / setter / deleter, a cached_property, and the dunders whose call sites AIR
+// emits as plain helper calls (`a == b` is `_py.eq(a, b)`, `a[i]` `_py.getitem(a, i)`, len(),
+// str(), hash(), a descriptor's __get__ …). CPython can't await there either, so these bodies
+// compile in SYNC MODE: their possible awaits (a call to a function the lowerer can't prove
+// sync, a guarded `+=`) become `_py.noAwait(v)` — the value as it is. Without this, one
+// maybe-async call made the whole method async and every `==` / read of the property a Promise.
+// (A callee that really is async — an `async def` — still hands back its Promise, as CPython's
+// would a coroutine.) Not in sync mode: the dunders whose call sites DO await — construction,
+// __call__, the in-place operators (guarded), `with`, iteration — and class-creation hooks.
+// does the program call globals() / locals() anywhere?
+function _callsScopeBuiltin(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
+  if (node.type === 'Call' && node.func && node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals')) return true;
+  for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _callsScopeBuiltin(node[k])) return true;
+  return false;
+}
+// does `name`, read here, mean the module-level binding (or a builtin)? — not a function's
+// own local, a parameter, or a class body's name
+function _resolvesToModule(ctx, name) {
+  let f = ctx.symbols;
+  while (f && !f.bindings.has(name)) f = f.parent;
+  return !f || f.parent === null;
+}
+// a function's local names (CPython's locals()): its parameters and what its body binds, less
+// what it declares global / nonlocal
+function _functionLocalNames(node) {
+  const assigned = new Set();
+  collectDefines_ad(node.body, assigned);
+  const out = [...(node.params || []).map((p) => p.name), ...(node.kwonly || []).map((p) => p.name)];
+  if (node.vararg) out.push(node.vararg.name || node.vararg);
+  if (node.kwarg) out.push(node.kwarg.name || node.kwarg);
+  const outer = new Set();
+  (function walk(stmts) {
+    for (const s of stmts || []) {
+      if (!s) continue;
+      if (s.type === 'Global' || s.type === 'Nonlocal') for (const n of s.names) outer.add(n);
+      if (s.type === 'FunctionDef' || s.type === 'AsyncFunctionDef' || s.type === 'ClassDef') { assigned.add(s.name); continue; }
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(s[k])) walk(s[k]);
+      if (Array.isArray(s.handlers)) for (const h of s.handlers) walk(h.body);
+      if (Array.isArray(s.cases)) for (const c of s.cases) walk(c.body);
+    }
+  })(node.body);
+  for (const n of assigned) if (typeof n === 'string' && !out.includes(n)) out.push(n);
+  return out.filter((n) => typeof n === 'string' && !outer.has(n));
+}
+const AWAITED_DUNDERS = new Set(['__init__', '__new__', '__call__', '__post_init__', '__del__',
+  '__enter__', '__exit__', '__aenter__', '__aexit__', '__iter__', '__next__', '__aiter__', '__anext__', '__await__',
+  '__iadd__', '__isub__', '__imul__', '__imatmul__', '__itruediv__', '__ifloordiv__', '__imod__', '__ipow__',
+  '__ilshift__', '__irshift__', '__iand__', '__ixor__', '__ior__',
+  '__init_subclass__', '__set_name__', '__class_getitem__', '__prepare__', '__instancecheck__', '__subclasscheck__',
+  '__reduce__', '__reduce_ex__', '__getstate__', '__setstate__', '__copy__', '__deepcopy__']);
+const _SYNC_DECORATORS = new Set(['property', 'cached_property', 'setter', 'getter', 'deleter']);
+const _isDunder = (n) => n.length > 4 && n.startsWith('__') && n.endsWith('__');
+function _syncContextName(node, inClassBody) {
+  if (node.type === 'AsyncFunctionDef' || node.isAsync || node.is_async || _containsYield(node.body)) return null;
+  for (const d of node.decorators || []) {
+    const n = d.type === 'Name' ? d.id : d.type === 'Attribute' ? d.attr : null;
+    if (n && _SYNC_DECORATORS.has(n)) return `${n === 'setter' || n === 'deleter' || n === 'getter' ? 'property ' + n : n} '${node.name}'`;
+  }
+  if (inClassBody && _isDunder(node.name) && !AWAITED_DUNDERS.has(node.name)) return node.name;
+  return null;
+}
+
 function lowerFuncDef(ctx, node) {
   const l = ctx.loc(node);
   const name = node.name;
   const isGenerator = _containsYield(node.body);
+  const syncMode = !!_syncContextName(node, !!ctx._classBodyOf);
 
   // Lower decorators (evaluated at def time, applied bottom-up after def). Each is bound to a
   // temp HERE: left as an expression it was inlined at the apply site, after the def had
@@ -2258,10 +2362,14 @@ function lowerFuncDef(ctx, node) {
   const savedTopLevel = ctx.topLevel;
   ctx.topLevel = false;
   ctx.symbols = ctx.symbols.push();
+  const savedSyncMode = ctx._syncMode;
+  ctx._syncMode = syncMode;
+  const savedFnLocals = ctx._fnLocalNames;
+  ctx._fnLocalNames = _functionLocalNames(node);
   // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
   // method, not a generator, not one analyseSyncFunctions proved sync
   const savedLoopAwait = ctx._loopMayAwait;
-  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name);
+  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name) && !syncMode;
   const savedFnGlobals = ctx._fnGlobals;
   ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
 
@@ -2288,6 +2396,8 @@ function lowerFuncDef(ctx, node) {
   });
 
   ctx.topLevel = savedTopLevel;
+  ctx._syncMode = savedSyncMode;
+  ctx._fnLocalNames = savedFnLocals;
   ctx._loopMayAwait = savedLoopAwait;
   ctx._fnGlobals = savedFnGlobals;
   ctx.symbols = ctx.symbols.pop();
@@ -2366,6 +2476,10 @@ function lowerLambda(ctx, node) {
 
   let params = null;
   let needsArgs = false;
+  const savedSyncMode = ctx._syncMode;
+  ctx._syncMode = null;
+  const savedFnLocals = ctx._fnLocalNames;
+  ctx._fnLocalNames = (node.params || []).map((p) => p.name);
   const body = captureOps(ctx, () => {
     // Reuse the function param binding logic
     const r = _buildParamBinding(ctx, node, l);
@@ -2377,6 +2491,8 @@ function lowerLambda(ctx, node) {
   });
 
   ctx.topLevel = savedTopLevel;
+  ctx._syncMode = savedSyncMode;
+  ctx._fnLocalNames = savedFnLocals;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
 

@@ -55,6 +55,57 @@ const _toBA = (items) => { const b = new PyByteArray(); for (const x of items) b
 const _byteCheck = (v) => { if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'byte must be in range(0, 256)'); return v; };
 const _isBytesLike = (v) => v instanceof Uint8Array || v instanceof PyByteArray;
 const _asU8 = (v) => (v instanceof Uint8Array ? v : Uint8Array.from(v));
+// memoryview: a view of a bytes / bytearray object's bytes (format 'B', one dimension) —
+// len, indexing, slicing (another view), tobytes / tolist / hex, iteration, equality
+export class PyMemoryView {
+  constructor(obj, start = 0, end = null) {
+    if (!(obj instanceof Uint8Array || obj instanceof PyByteArray || obj instanceof PyMemoryView)) throw new AdderError('TypeError', `memoryview: a bytes-like object is required, not '${pyTypeName(obj)}'`);
+    this.obj = obj instanceof PyMemoryView ? obj.obj : obj;
+    const base = obj instanceof PyMemoryView ? obj._start : 0;
+    this._start = base + start;
+    this._end = end === null ? (obj instanceof PyMemoryView ? obj._end : obj.length) : base + end;
+    this.readonly = this.obj instanceof Uint8Array;
+    this.format = 'B'; this.itemsize = 1; this.ndim = 1; this.released = false;
+  }
+  get nbytes() { return this._end - this._start; }
+  get shape() { return mkTuple([this.nbytes]); }
+  get strides() { return mkTuple([1]); }
+  _bytes() { return Uint8Array.from(Array.prototype.slice.call(this.obj, this._start, this._end)); }
+  __len__() { return this.nbytes; }
+  __getitem__(i) {
+    if (i && i._slice) {
+      const n = this.nbytes;
+      const st = i.step ?? 1;
+      if (st !== 1) { const all = [...this._bytes()], out = []; const s0 = i.lower ?? (st > 0 ? 0 : n - 1), s1 = i.upper ?? (st > 0 ? n : -n - 1); for (let k = s0 < 0 ? n + s0 : s0; st > 0 ? k < (s1 < 0 ? n + s1 : Math.min(s1, n)) : k > (s1 < 0 ? n + s1 : s1); k += st) if (k >= 0 && k < n) out.push(all[k]); return new PyMemoryView(Uint8Array.from(out)); }
+      let a = i.lower ?? 0, b = i.upper ?? n;
+      if (a < 0) a = Math.max(0, n + a); if (b < 0) b = Math.max(0, n + b);
+      a = Math.min(a, n); b = Math.min(Math.max(b, a), n);
+      return new PyMemoryView(this, a, b);
+    }
+    const k = i < 0 ? this.nbytes + i : i;
+    if (k < 0 || k >= this.nbytes) throw new AdderError('IndexError', 'index out of bounds on dimension 1');
+    return this.obj[this._start + k];
+  }
+  __setitem__(i, v) {
+    if (this.readonly) throw new AdderError('TypeError', 'cannot modify read-only memory');
+    const k = i < 0 ? this.nbytes + i : i;
+    this.obj[this._start + k] = v;
+    return null;
+  }
+  __iter__() { return [...this._bytes()][Symbol.iterator](); }
+  __eq__(o) { const a = this._bytes(), b = o instanceof PyMemoryView ? o._bytes() : o instanceof Uint8Array || o instanceof PyByteArray ? o : null; if (!b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+  __bytes__() { return this._bytes(); }
+  tobytes() { return this._bytes(); }
+  tolist() { return [...this._bytes()]; }
+  hex(sep) { return [...this._bytes()].map((x) => x.toString(16).padStart(2, '0')).join(typeof sep === 'string' ? sep : ''); }
+  toreadonly() { const m = new PyMemoryView(this); m.readonly = true; return m; }
+  cast(fmt) { if (fmt !== 'B' && fmt !== 'b' && fmt !== 'c') throw new AdderError('NotImplementedError', `memoryview.cast('${fmt}') is not supported here`); return new PyMemoryView(this); }
+  release() { this.released = true; return null; }
+  __enter__() { return this; }
+  __exit__() { this.released = true; return false; }
+  __repr__() { return `<memory at 0x${(0x7f0000000000 + (this._start | 0)).toString(16)}>`; }
+}
+PyMemoryView.prototype.__adderClass__ = 'memoryview';
 export class PyTuple extends Array {
   static get [Symbol.species]() { return Array; }
 }
@@ -666,6 +717,64 @@ export async function* pyIterAsync(obj) {
   }
 }
 
+// ── sync unless something actually is async ──
+// A builtin that MIGHT meet an async value (a tree-walked __iter__, an async iterable, an async
+// key function) was an `async` function, so it always returned a Promise — and AIR code that
+// can't await (a property getter) couldn't call it. maybeSync(genFn) runs a generator whose
+// `yield`s mark the possible await points: synchronously while every yielded value is plain,
+// switching to a Promise only at the first yielded Promise (and resuming the same generator).
+export function maybeSync(genFn) {
+  return function (...a) { return _drive(genFn.apply(this, a), undefined, false); };
+}
+function _drive(g, val, isErr) {
+  for (;;) {
+    const r = isErr ? g.throw(val) : g.next(val);
+    if (r.done) return r.value;
+    if (_isThenable(r.value)) return r.value.then((x) => _drive(g, x, false), (e) => _drive(g, e, true));
+    val = r.value; isErr = false;
+  }
+}
+// visit each item of anything adder iterates (fn returns true to stop early), one step at a
+// time: a user __iter__ / __next__ or __getitem__, an async iterator, or a plain JS iterable
+function* _gForEach(obj, fn) {
+  const viaAsync = function* (ai) { for (;;) { const r = yield ai.next(); if (r.done || fn(r.value)) return; } };
+  if (isUserIterable(obj)) {
+    if (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+      const it = typeof obj.__iter__ === 'function' ? yield obj.__iter__() : obj;
+      if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* viaAsync(it[Symbol.asyncIterator]()); return; }
+      if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { for (const v of pyIter(it)) if (fn(v)) return; return; }
+      if (!it || typeof it.__next__ !== 'function') throw new AdderError('TypeError', `iter() returned non-iterator of type '${pyTypeName(it)}'`);
+      for (;;) {
+        let v;
+        try { v = yield it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+        if (fn(v)) return;
+      }
+    }
+    for (let i = 0; ; i++) {
+      let v;
+      try { v = yield obj.__getitem__(i); } catch (e) { if (e && (e.pyType === 'IndexError' || e.pyType === 'StopIteration')) return; throw e; }
+      if (fn(v)) return;
+    }
+  }
+  if (obj && typeof obj[Symbol.asyncIterator] === 'function') { yield* viaAsync(obj[Symbol.asyncIterator]()); return; }
+  for (const v of pyIter(obj)) if (fn(v)) return;
+}
+function* _gCollect(obj) {
+  if (Array.isArray(obj)) return obj.slice();
+  if (obj instanceof AdderRange) {
+    const out = new Array(obj.length);
+    for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
+    return out;
+  }
+  const arr = [];
+  yield* _gForEach(obj, (v) => { arr.push(v); });
+  return arr;
+}
+// pyCollect, sync when the source is
+export const pyCollectMaybe = maybeSync(_gCollect);
+// f(v), now or when v resolves
+const _thenMaybe = (v, f) => (_isThenable(v) ? v.then(f) : f(v));
+
 export async function pyCollect(obj) {
   // the common sources, without a generator step per item: a list or tuple copies (a fresh
   // plain list — PyTuple's species is Array), a range fills by counting
@@ -796,6 +905,7 @@ function _isNativeClass(fn) {
   try { return /^class[\s{]/.test(Function.prototype.toString.call(fn)); } catch { return false; }
 }
 
+const _moduleBound = new WeakMap();   // module object → attr → [function, its bound copy]
 export function adderGetAttr(obj, attr) {
   if (obj instanceof AdderError) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
@@ -918,6 +1028,15 @@ export function adderGetAttr(obj, attr) {
         fn._pyName = `${attr}`;
         return fn;
       }
+      // a module's function is one object (`os.path.join is os.path.join`, a pickle naming
+      // builtins.len): its bound copy is kept, made again only if the attribute changes
+      if (obj._pyRawFns) return v;   // a module whose functions don't use `this` (builtins): as they are
+      if (obj.__adderModule__) {
+        let m = _moduleBound.get(obj);
+        if (!m) { m = new Map(); _moduleBound.set(obj, m); }
+        const c = m.get(attr);
+        if (c && c[0] === v) return c[1];
+      }
       const fn = v.bind(obj);
       // Function.prototype.bind drops custom properties off the original
       // (`t.cdf`, `t.pdf` etc. — scipy-style "callable namespace" pattern).
@@ -927,6 +1046,7 @@ export function adderGetAttr(obj, attr) {
         try { fn[k] = v[k]; } catch {}
       }
       fn._pyName = attr;
+      if (obj.__adderModule__) _moduleBound.get(obj).set(attr, [v, fn]);
       return fn;
     }
     // regular property access (before dict-like methods, so getters/own props take priority)
@@ -940,6 +1060,7 @@ export function adderGetAttr(obj, attr) {
     if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
     // what every instance inherits from object (dir() lists them, so getattr must find them)
     if (ot && _OBJECT_DUNDER_SET.has(attr)) { const d = _objectDunder(obj, attr); if (d !== undefined) return d; }
+    if (ot && attr === '__weakref__') return null;
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
   }
   // generic
@@ -1188,7 +1309,102 @@ export function registerCodec(name, impl, aliases = []) {
 // the canonical name of an encoding (CPython's normalisation: case, '_' / ' ' as '-'), or null
 export function codecName(encoding) {
   const k = String(encoding).trim().toLowerCase().replace(/[_ ]/g, '-');
-  return _codecByAlias.get(k) || null;
+  return _codecByAlias.get(k) || _webCodec(k);
+}
+
+// ── the platform's legacy encodings (TextDecoder): big5, gbk, gb18030, shift_jis, euc-jp,
+// iso-2022-jp, euc-kr, koi8-r/u, ibm866, macintosh, windows-125x, iso-8859-x … ──
+// Python's names map onto the WHATWG labels; a single-byte encoding gets an exact table both
+// ways (precise errors, and it encodes); a multi-byte one decodes (TextDecoder) and refuses to
+// encode (TextEncoder is UTF-8 only).
+const _PY_TO_WEB = {
+  'cp932': 'shift_jis', 'ms932': 'shift_jis', 'mskanji': 'shift_jis', 'ms-kanji': 'shift_jis', 'sjis': 'shift_jis', 's-jis': 'shift_jis', 'shift-jis': 'shift_jis', 'shift-jis-2004': 'shift_jis', 'shift-jisx0213': 'shift_jis',
+  'eucjp': 'euc-jp', 'ujis': 'euc-jp', 'euc-jis-2004': 'euc-jp', 'euc-jisx0213': 'euc-jp', 'iso2022-jp': 'iso-2022-jp', 'csiso2022jp': 'iso-2022-jp',
+  'big5-tw': 'big5', 'csbig5': 'big5', 'cp950': 'big5', 'big5hkscs': 'big5',
+  'gb2312': 'gbk', 'cp936': 'gbk', 'ms936': 'gbk', 'euc-cn': 'gbk', 'euccn': 'gbk', 'gb18030-2000': 'gb18030',
+  'euckr': 'euc-kr', 'cp949': 'euc-kr', 'uhc': 'euc-kr', 'ks-c-5601': 'euc-kr', 'ksc5601': 'euc-kr', 'ks-c-5601-1987': 'euc-kr',
+  'cp866': 'ibm866', 'mac-roman': 'macintosh', 'macroman': 'macintosh', 'mac-cyrillic': 'x-mac-cyrillic', 'maccyrillic': 'x-mac-cyrillic',
+  'tis-620': 'windows-874', 'tis620': 'windows-874', 'cp874': 'windows-874',
+  'latin2': 'iso-8859-2', 'latin3': 'iso-8859-3', 'latin4': 'iso-8859-4', 'latin5': 'iso-8859-9', 'latin6': 'iso-8859-10',
+  'latin7': 'iso-8859-13', 'latin8': 'iso-8859-14', 'latin9': 'iso-8859-15', 'latin10': 'iso-8859-16', 'l2': 'iso-8859-2', 'cyrillic': 'iso-8859-5',
+  'arabic': 'iso-8859-6', 'greek': 'iso-8859-7', 'hebrew': 'iso-8859-8', 'koi8-ru': 'koi8-u',
+};
+const _webCodecCache = new Map();
+function _webCodec(k) {
+  if (_webCodecCache.has(k)) return _webCodecCache.get(k);
+  let label = _PY_TO_WEB[k] || k;
+  let m;
+  if ((m = /^cp(125\d)$/.exec(label))) label = `windows-${m[1]}`;
+  else if ((m = /^iso-?8859-?(\d+)$/.exec(label))) label = `iso-8859-${m[1]}`;
+  let web = null;
+  if (typeof TextDecoder === 'function') { try { web = new TextDecoder(label).encoding; } catch { web = null; } }
+  // utf-8 / utf-16 are adder's own; a label that resolves to them is an alias we don't claim
+  if (!web || web === 'utf-8' || web.startsWith('utf-16') || web === 'replacement') { _webCodecCache.set(k, null); return null; }
+  const name = k.replace(/-/g, '_');
+  const decodeErr = (b, start, end, why) => _decodeError(name, b, start, end, why);
+  const single = /^(ibm866|iso-8859-\d+|koi8-[ru]|macintosh|windows-\d+|x-mac-cyrillic)$/.test(web);
+  let impl;
+  if (single) {
+    const td = new TextDecoder(web);
+    const table = [];   // byte → code point (-1: unmapped)
+    // (WHATWG fills a windows-125x code page's undefined bytes with the C1 control of the same
+    // number; CPython's tables leave them undefined, and so do these)
+    const win = web.startsWith('windows-');
+    for (let i = 0; i < 256; i++) {
+      const ch = td.decode(new Uint8Array([i]));
+      const cp = ch.codePointAt(0);
+      table.push((ch === '\ufffd' && i >= 0x80) || (win && i >= 0x80 && i <= 0x9f && cp === i) ? -1 : cp);
+    }
+    const rev = new Map(); table.forEach((cp, i) => { if (cp >= 0 && !rev.has(cp)) rev.set(cp, i); });
+    impl = {
+      decode(b, errors) {
+        let t = '';
+        for (let i = 0; i < b.length; i++) {
+          const cp = table[b[i]];
+          if (cp >= 0) t += String.fromCodePoint(cp);
+          else t += _decodeFallback('charmap', b, i, i + 1, 'character maps to <undefined>', errors || 'strict');
+        }
+        return t;
+      },
+      encode(str, errors) {
+        str = String(str);
+        const out = [];
+        for (let i = 0; i < str.length; i++) {
+          const cp = str.codePointAt(i), len = cp > 0xffff ? 2 : 1;
+          const byte = rev.get(cp);
+          if (byte !== undefined) out.push(byte);
+          else if ((errors || 'strict') === 'surrogateescape' && cp >= 0xdc80 && cp <= 0xdcff) out.push(cp - 0xdc00);
+          else _encodeFallback('charmap', str, i, cp, len, errors || 'strict', (t) => { for (const c of t) out.push(rev.get(c.codePointAt(0)) ?? 0x3f); });
+          i += len - 1;
+        }
+        return new Uint8Array(out);
+      },
+    };
+  } else {
+    impl = {
+      decode(b, errors) {
+        errors = errors || 'strict';
+        if (errors === 'strict') {
+          try { return new TextDecoder(web, { fatal: true }).decode(b); }
+          catch { throw decodeErr(b, 0, b.length, 'illegal multibyte sequence'); }
+        }
+        const t = new TextDecoder(web).decode(b);
+        return errors === 'ignore' ? t.replace(/\ufffd/g, '') : t;
+      },
+      encode(str) {
+        throw _encodeError(name, String(str), 0, Math.max(1, String(str).length), `encoding to ${name} is not available here (the browser decodes it only)`);
+      },
+      _multibyte: true,
+    };
+  }
+  registerCodec(name, impl, [k]);
+  _webCodecCache.set(k, name);
+  return name;
+}
+// is this one of the platform's multi-byte encodings? (charset detection asks)
+export function isMultibyteCodec(encoding) {
+  const n = codecName(encoding);
+  return !!n && _extraCodecs.has(n) && !!_extraCodecs.get(n)._multibyte;
 }
 // CPython's display name for an encoding in error messages ('utf-8' → 'utf-8', 'latin-1' → 'latin-1')
 const _codecDisplay = (c) => (c === 'latin-1' ? 'latin-1' : c);
@@ -2129,66 +2345,63 @@ export function pyGe(a, b) {
 // Python's sort: stable, only `<`, reverse=True keeps equal items in their original order.
 // Keys are computed once (a tree-walked key function is async); comparisons that return a
 // Promise (an async __lt__) switch to an awaited merge sort.
-async function _sortKeys(arr, key) {
+function* _gSortKeys(arr, key) {
   if (!key) return arr.slice();
   const keys = new Array(arr.length);
-  for (let i = 0; i < arr.length; i++) {
-    const k = key(arr[i]);
-    keys[i] = k && typeof k.then === 'function' ? await k : k;
-  }
+  for (let i = 0; i < arr.length; i++) keys[i] = yield key(arr[i]);
   return keys;
 }
-export async function pySorted(arr, key, reverse) {
-  const keys = await _sortKeys(arr, key);
+function* _gSorted(arr, key, reverse) {
+  const keys = yield* _gSortKeys(arr, key);
   const order = arr.map((_, i) => i);
   const less = (i, j) => (reverse ? pyLt(keys[j], keys[i]) : pyLt(keys[i], keys[j]));
   let pending = false;
   order.sort((i, j) => {
     if (pending) return 0;
     const lt = less(i, j);
-    if (lt && typeof lt.then === 'function') { pending = true; return 0; }
+    if (_isThenable(lt)) { pending = true; return 0; }
     if (lt) return -1;
     const gt = less(j, i);
-    if (gt && typeof gt.then === 'function') { pending = true; return 0; }
+    if (_isThenable(gt)) { pending = true; return 0; }
     return gt ? 1 : 0;
   });
   if (!pending) return order.map((i) => arr[i]);
-  // async comparisons: stable merge sort, awaiting each `<`
-  const ms = async (idx) => {
+  // async comparisons: stable merge sort, waiting on each `<`
+  const ms = function* (idx) {
     if (idx.length < 2) return idx;
     const mid = idx.length >> 1;
-    const l = await ms(idx.slice(0, mid)), r = await ms(idx.slice(mid));
+    const l = yield* ms(idx.slice(0, mid)), r = yield* ms(idx.slice(mid));
     const out = [];
     let i = 0, j = 0;
     while (i < l.length && j < r.length) {
-      if (await less(r[j], l[i])) out.push(r[j++]); else out.push(l[i++]);
+      if (yield less(r[j], l[i])) out.push(r[j++]); else out.push(l[i++]);
     }
     return out.concat(l.slice(i), r.slice(j));
   };
-  return (await ms(arr.map((_, i) => i))).map((i) => arr[i]);
+  return (yield* ms(arr.map((_, i) => i))).map((i) => arr[i]);
 }
+export const pySorted = maybeSync(_gSorted);
 // min / max: the first extreme item, by key, through `<`
-export async function pyExtreme(which, args) {
+export const pyExtreme = maybeSync(function* (which, args) {
   let key = null, dflt, hasDefault = false;
   if (args.length > 0 && args[args.length - 1]?._kw) {
     const kw = args.pop();
     key = kw.key || null;
     if ('default' in kw) { dflt = kw.default; hasDefault = true; }
   }
-  const items = args.length === 1 ? await pyCollect(args[0]) : args;
+  const items = args.length === 1 ? yield* _gCollect(args[0]) : args;
   if (items.length === 0) {
     if (hasDefault) return dflt;
     throw new AdderError('ValueError', `${which}() iterable argument is empty`);
   }
-  const keys = await _sortKeys(items, key);
+  const keys = yield* _gSortKeys(items, key);
   let best = 0;
   for (let i = 1; i < items.length; i++) {
-    let better = which === 'max' ? pyLt(keys[best], keys[i]) : pyLt(keys[i], keys[best]);
-    if (better && typeof better.then === 'function') better = await better;
+    const better = yield (which === 'max' ? pyLt(keys[best], keys[i]) : pyLt(keys[i], keys[best]));
     if (better) best = i;
   }
   return items[best];
-}
+});
 
 // ── modules ──
 
@@ -2873,6 +3086,7 @@ function _reToJs(p, f) {
       out += '\\{'; i++; lastAtom = true; continue;  // not a quantifier: a literal brace
     }
     if (c === '}') { out += '\\}'; i++; lastAtom = true; continue; }
+    if (c === ']') { out += '\\]'; i++; lastAtom = true; continue; }   // outside a class: a literal (JS's u-mode refuses it bare)
     if (c === '*' || c === '+' || c === '?') {
       out += c; i++;
       if (p[i] === '+') i++;                         // possessive → greedy
@@ -3728,7 +3942,7 @@ export function _ensureFsModules(pathUtils) {
 }
 
 // dict(mapping | pairs, **kw)
-async function _dictFrom(args) {
+const _dictFrom = maybeSync(function* (args) {
   const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
   if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
   const entries = [];
@@ -3739,9 +3953,9 @@ async function _dictFrom(args) {
   else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
   else if (typeof x.keys === 'function' && typeof x.__getitem__ === 'function') {
     // a mapping (anything with keys() and __getitem__), as CPython's dict() reads it
-    for (const k of await pyCollect(await x.keys())) entries.push([k, await x.__getitem__(k)]);
+    for (const k of yield* _gCollect(yield x.keys())) entries.push([k, yield x.__getitem__(k)]);
   } else {
-    const items = Array.isArray(x) ? x : await pyCollect(x);
+    const items = Array.isArray(x) ? x : yield* _gCollect(x);
     items.forEach((it, i) => {
       const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
       if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
@@ -3756,7 +3970,7 @@ async function _dictFrom(args) {
     return o;
   }
   return new PyDict(entries);
-}
+});
 
 // ── stdout / stderr ──
 // The host's writers for the program running now: run() sets them from its options, a notebook
@@ -4212,8 +4426,13 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
     }
   }
   const finish = () => finishClass(cls, annotations || [], opts.kw);
+  // the main program's classes, by name: how pickle (and anything else that names a class by
+  // module + qualname) finds one defined in '__main__', which has no module object to import
+  if (members.__module__ === '__main__') _mainClasses.set(String(members.__qualname__ || name), cls);
   return named.length ? Promise.all(named).then(finish) : finish();
 }
+const _mainClasses = new Map();
+export function mainClassLookup(name) { return _mainClasses.get(name); }
 // a Python descriptor: an instance (of a Python class, or a JS-built one marked _pyDescriptor)
 // with __get__ — not a function, container or the engine's own property / method wrappers
 function _isDescriptor(v) {
@@ -4556,15 +4775,23 @@ export function adderBuiltins(printFn) {
       }
       return pyStrMaybe(x);
     },
-    bool: (x) => x === undefined ? false : pyBool(x),
+    // (a tree-walked __bool__ / __len__ answers with a Promise: judge what it resolves to)
+    bool: (x) => {
+      if (x === undefined) return false;
+      if (x !== null && typeof x === 'object') {
+        if (typeof x.__bool__ === 'function') return _thenMaybe(x.__bool__(), (v) => !!v);
+        if (typeof x.__len__ === 'function') return _thenMaybe(x.__len__(), (v) => v !== 0);
+      }
+      return pyBool(x);
+    },
     list: Object.assign(
-      (x) => x === undefined ? [] : pyCollect(x),
+      (x) => x === undefined ? [] : pyCollectMaybe(x),
       { _pyContainerType: 'list' },
     ),
     // a call with no argument answers synchronously, so defaultdict(list) & co. store a value
-    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : pyCollect(x).then(mkTuple)),
+    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : _thenMaybe(pyCollectMaybe(x), mkTuple)),
     dict: (...args) => (args.length === 0 ? new PyDict() : _dictFrom(args)),
-    set: (x) => x === undefined ? new PySet() : pyCollect(x).then((xs) => new PySet(xs)),
+    set: (x) => x === undefined ? new PySet() : _thenMaybe(pyCollectMaybe(x), (xs) => new PySet(xs)),
     // bytes(): b'', bytes(n) zeros, bytes(ints), bytes(str, encoding)
     bytes: (x, encoding) => {
       if (x === undefined) return new Uint8Array(0);
@@ -4575,10 +4802,13 @@ export function adderBuiltins(printFn) {
         return pyEncode(x, encoding);
       }
       if (x instanceof Uint8Array) return new Uint8Array(x);
+      if (x instanceof PyMemoryView) return x.tobytes();
+      if (x !== null && typeof x === 'object' && typeof x.__bytes__ === 'function') return x.__bytes__();
       const items = [...pyIter(x)];   // sync: AIR calls bytes() without an await
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
+    memoryview: Object.assign((obj) => new PyMemoryView(obj), { _pyName: 'memoryview', __name__: 'memoryview', _pyClass: true }),
     // bytearray(), bytearray(n) zeros, bytearray(ints / bytes), bytearray(str, encoding[, errors])
     bytearray: Object.assign((x, ...a) => {
       const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
@@ -4592,16 +4822,16 @@ export function adderBuiltins(printFn) {
       if (x instanceof Uint8Array) return _toBA(x);
       return _toBA([...pyIter(x)].map(_byteCheck));
     }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
-    frozenset: async (x) => { const s = x === undefined ? new PySet() : new PySet(await pyCollect(x)); s._frozen = true; return s; },
+    frozenset: maybeSync(function* (x) { const s = x === undefined ? new PySet() : new PySet(yield* _gCollect(x)); s._frozen = true; return s; }),
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
-    max: async (...args) => pyExtreme('max', args),
-    min: async (...args) => pyExtreme('min', args),
+    max: (...args) => pyExtreme('max', args),
+    min: (...args) => pyExtreme('min', args),
     // sum: numbers with compensated (Neumaier) summation, as CPython 3.12+ does for floats;
     // lists concatenate; anything else through its __add__; strings are refused, as in Python
-    sum: async (iterable, start) => {
+    sum: maybeSync(function* (iterable, start) {
       if (start && start._kw) start = start.start;
-      const items = Array.isArray(iterable) ? iterable : await pyCollect(iterable);   // read, never kept: no copy
+      const items = Array.isArray(iterable) ? iterable : yield* _gCollect(iterable);   // read, never kept: no copy
       let s = start !== undefined ? start : 0;
       if (typeof s === 'string') throw new AdderError('TypeError', "sum() can't sum strings [use ''.join(seq) instead]");
       if (_numLike(s)) {
@@ -4620,19 +4850,19 @@ export function adderBuiltins(printFn) {
       }
       for (const v of items) {
         if (Array.isArray(s) && Array.isArray(v)) s = s.concat(v);
-        else if (_hasDunder(s, '__add__')) { const r = s.__add__(v); s = r && typeof r.then === 'function' ? await r : r; }
-        else if (_hasDunder(v, '__radd__')) { const r = v.__radd__(s); s = r && typeof r.then === 'function' ? await r : r; }
+        else if (_hasDunder(s, '__add__')) s = yield s.__add__(v);
+        else if (_hasDunder(v, '__radd__')) s = yield v.__radd__(s);
         else if (_numLike(s) && _numLike(v)) s = s + v;
         else throw new AdderError('TypeError', `unsupported operand type(s) for +: '${pyTypeName(s)}' and '${pyTypeName(v)}'`);
       }
       return s;
-    },
-    sorted: async (iterable, key, reverse) => {
+    }),
+    sorted: maybeSync(function* (iterable, key, reverse) {
       if (key?._kw) { reverse = key.reverse; key = key.key; }
       else if (reverse?._kw) reverse = reverse.reverse;
-      return pySorted(await pyCollect(iterable), key || null, !!reverse);
-    },
-    reversed: async (iterable) => { const arr = await pyCollect(iterable); arr.reverse(); return arr; },
+      return yield* _gSorted(yield* _gCollect(iterable), key || null, !!reverse);
+    }),
+    reversed: maybeSync(function* (iterable) { const arr = yield* _gCollect(iterable); arr.reverse(); return arr; }),
     // lazy iterators, as in Python 3 (zip(count(), xs) works); synchronous when every input is
     enumerate: (iterable, start) => {
       if (start && start._kw) start = start.start;
@@ -4696,8 +4926,8 @@ export function adderBuiltins(printFn) {
       for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
     }),
     // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
-    any: async (iterable) => { for await (const v of _pyEach(iterable)) if (pyBool(v)) return true; return false; },
-    all: async (iterable) => { for await (const v of _pyEach(iterable)) if (!pyBool(v)) return false; return true; },
+    any: maybeSync(function* (iterable) { let r = false; yield* _gForEach(iterable, (v) => (r = pyBool(v))); return r; }),
+    all: maybeSync(function* (iterable) { let r = true; yield* _gForEach(iterable, (v) => !(r = pyBool(v))); return r; }),
     isinstance: (obj, typeOrTuple) => _pyIsInstance(obj, typeOrTuple),
     type: pyTypeObj,
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
@@ -4810,8 +5040,13 @@ export function adderBuiltins(printFn) {
     builtins[name] = ctor;
     _typeObjects[name] = _stableTypes[name] = ctor;
   }
+  // and the builtin functions too: `len` is one object everywhere (a module's table, the builtins
+  // module, a pickle naming builtins.len). Only print is per table — it writes to its run's output.
+  if (!_stableBuiltins) _stableBuiltins = { ...builtins };
+  else for (const k of Object.keys(builtins)) if (k !== 'print' && Object.hasOwn(_stableBuiltins, k)) builtins[k] = _stableBuiltins[k];
   return builtins;
 }
+let _stableBuiltins = null;
 
 // super(): the next class after `cls` in self's MRO, as a proxy whose attributes are bound to
 // self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR

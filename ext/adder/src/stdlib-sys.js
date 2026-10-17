@@ -15,7 +15,7 @@ import {
   pyTypeName, pyIter, pyCollect, pyTypeObj, pyObjectObj, typeOf, _typeObjects, asCallable, excStack,
   excTypeOf, excValue, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
   classStatement, GenericAlias, setOsExtrasHook, pyBool, NotImplemented, pyGetItem, _pyHash, _lazyIter, _pyEach,
-  registerCodec, adderBuiltins,
+  registerCodec, adderBuiltins, isMultibyteCodec,
 } from './builtins.js';
 import { _adderParseExpr } from './parse.js';
 
@@ -2113,6 +2113,22 @@ adderModules.marshal = _syModule('marshal', {
     encode: (s) => pyEncode(encode(s), 'ascii'),
     decode: (b) => decode(pyDecodePartial(b, 'ascii', 'strict', true).text),
   });
+  // idna (RFC 3490): host names — a non-ASCII label is punycoded behind 'xn--' (nameprep reduced
+  // to lowercasing); ASCII labels pass through
+  const labelErr = (why) => new AdderError('UnicodeError', `encoding with 'idna' codec failed (UnicodeError: ${why})`);
+  registerCodec('idna', {
+    encode: (s) => {
+      const labels = String(s).split(/[.\u3002\uff0e\uff61]/);
+      const out = labels.map((l, i) => {
+        if (!l) { if (i === labels.length - 1 && i > 0) return ''; throw labelErr('label empty or too long'); }
+        const a = /^[\x00-\x7f]*$/.test(l) ? l : 'xn--' + encode(l.toLowerCase());
+        if (a.length > 63) throw labelErr('label empty or too long');
+        return a;
+      });
+      return pyEncode(out.join('.'), 'ascii');
+    },
+    decode: (b) => pyDecodePartial(b, 'ascii', 'strict', true).text.split('.').map((l) => (l.toLowerCase().startsWith('xn--') ? decode(l.slice(4)) : l.toLowerCase())).join('.'),
+  }, ['idna']);
 }
 
 // ── random.Random: a generator with its own state (the module functions share one) ──
@@ -2219,8 +2235,63 @@ for (const [k, m] of Object.entries(adderModules)) {
   Object.defineProperty(adderModules, 'builtins', {
     configurable: true, enumerable: false,
     get() {
-      if (!mod) mod = Object.assign(adderBuiltins(stdoutWrite), { __adderModule__: true, __name__: 'builtins', __doc__: 'Built-in functions, types, exceptions, and other objects.' });
+      if (!mod) mod = Object.assign(adderBuiltins(stdoutWrite), { __adderModule__: true, _pyRawFns: true, __name__: 'builtins', __doc__: 'Built-in functions, types, exceptions, and other objects.' });
       return mod;
+    },
+  });
+}
+
+// _multibytecodec + encodings.<name>: a codec's module, made when imported (charset detection
+// asks `issubclass(encodings.big5.IncrementalDecoder, MultibyteIncrementalDecoder)`; requests
+// imports encodings.idna) — any encoding codecs knows, including the platform's legacy ones
+{
+  const decodeWith = (n) => function (self, input, final = false) {
+    if (final && final._kw) final = final.final;
+    const b = input instanceof Uint8Array ? input : new Uint8Array([...pyIter(input || [])]);
+    return pyDecodePartial(b, n, self.errors, true).text;
+  };
+  const MBD = _syClass('MultibyteIncrementalDecoder', [], {
+    __init__(self, errors = 'strict') { self.errors = errors; return null; },
+    decode(self, input, final = false) { return decodeWith(self.codec_name || 'utf-8')(self, input, final); },
+    reset() { return null; }, getstate() { return mkTuple([new Uint8Array(0), 0]); }, setstate() { return null; },
+  }, '_multibytecodec');
+  const MBE = _syClass('MultibyteIncrementalEncoder', [], {
+    __init__(self, errors = 'strict') { self.errors = errors; return null; },
+    encode(self, input, final = false) { return pyEncode(input, self.codec_name || 'utf-8', self.errors); },
+    reset() { return null; }, getstate() { return 0; }, setstate() { return null; },
+  }, '_multibytecodec');
+  adderModules._multibytecodec = _syModule('_multibytecodec', {
+    MultibyteIncrementalDecoder: MBD, MultibyteIncrementalEncoder: MBE,
+    MultibyteStreamReader: _syClass('MultibyteStreamReader', [], {}, '_multibytecodec'),
+    MultibyteStreamWriter: _syClass('MultibyteStreamWriter', [], {}, '_multibytecodec'),
+    MultibyteCodec: _syClass('MultibyteCodec', [], {}, '_multibytecodec'),
+    __create_codec: () => { throw new AdderError('LookupError', 'no multibyte codec tables here'); },
+  });
+  const made = new Map();
+  const codecModule = (leaf) => {
+    let n;
+    try { n = codecName(leaf); } catch { n = null; }
+    if (!n) return undefined;
+    if (made.has(leaf)) return made.get(leaf);
+    const multi = isMultibyteCodec(n);
+    const C = adderModules.codecs;
+    const mod = `encodings.${leaf}`;
+    const IncrementalDecoder = multi ? _syClass('IncrementalDecoder', [MBD], { codec_name: n, decode: decodeWith(n) }, mod) : C.getincrementaldecoder(n);
+    const IncrementalEncoder = multi ? _syClass('IncrementalEncoder', [MBE], { codec_name: n }, mod) : C.getincrementalencoder(n);
+    const Codec = _syClass('Codec', [], {
+      encode(self, input, errors = 'strict') { return mkTuple([pyEncode(input, n, errors), String(input).length]); },
+      decode(self, input, errors = 'strict') { return mkTuple([pyDecodePartial(input, n, errors, true).text, input.length]); },
+    }, mod);
+    const m = _syModule(mod, { Codec, IncrementalDecoder, IncrementalEncoder, getregentry: () => C.lookup(n),
+      StreamReader: _syClass('StreamReader', [Codec], {}, mod), StreamWriter: _syClass('StreamWriter', [Codec], {}, mod) });
+    made.set(leaf, m);
+    return m;
+  };
+  const base = adderModules.encodings;
+  adderModules.encodings = new Proxy(base, {
+    get(t, k, r) {
+      if (typeof k !== 'string' || k in t || k.startsWith('_') || k === 'then') return Reflect.get(t, k, r);
+      return codecModule(k);
     },
   });
 }

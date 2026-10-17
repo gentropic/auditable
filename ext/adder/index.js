@@ -2130,6 +2130,57 @@ const _toBA = (items) => { const b = new PyByteArray(); for (const x of items) b
 const _byteCheck = (v) => { if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'byte must be in range(0, 256)'); return v; };
 const _isBytesLike = (v) => v instanceof Uint8Array || v instanceof PyByteArray;
 const _asU8 = (v) => (v instanceof Uint8Array ? v : Uint8Array.from(v));
+// memoryview: a view of a bytes / bytearray object's bytes (format 'B', one dimension) —
+// len, indexing, slicing (another view), tobytes / tolist / hex, iteration, equality
+class PyMemoryView {
+  constructor(obj, start = 0, end = null) {
+    if (!(obj instanceof Uint8Array || obj instanceof PyByteArray || obj instanceof PyMemoryView)) throw new AdderError('TypeError', `memoryview: a bytes-like object is required, not '${pyTypeName(obj)}'`);
+    this.obj = obj instanceof PyMemoryView ? obj.obj : obj;
+    const base = obj instanceof PyMemoryView ? obj._start : 0;
+    this._start = base + start;
+    this._end = end === null ? (obj instanceof PyMemoryView ? obj._end : obj.length) : base + end;
+    this.readonly = this.obj instanceof Uint8Array;
+    this.format = 'B'; this.itemsize = 1; this.ndim = 1; this.released = false;
+  }
+  get nbytes() { return this._end - this._start; }
+  get shape() { return mkTuple([this.nbytes]); }
+  get strides() { return mkTuple([1]); }
+  _bytes() { return Uint8Array.from(Array.prototype.slice.call(this.obj, this._start, this._end)); }
+  __len__() { return this.nbytes; }
+  __getitem__(i) {
+    if (i && i._slice) {
+      const n = this.nbytes;
+      const st = i.step ?? 1;
+      if (st !== 1) { const all = [...this._bytes()], out = []; const s0 = i.lower ?? (st > 0 ? 0 : n - 1), s1 = i.upper ?? (st > 0 ? n : -n - 1); for (let k = s0 < 0 ? n + s0 : s0; st > 0 ? k < (s1 < 0 ? n + s1 : Math.min(s1, n)) : k > (s1 < 0 ? n + s1 : s1); k += st) if (k >= 0 && k < n) out.push(all[k]); return new PyMemoryView(Uint8Array.from(out)); }
+      let a = i.lower ?? 0, b = i.upper ?? n;
+      if (a < 0) a = Math.max(0, n + a); if (b < 0) b = Math.max(0, n + b);
+      a = Math.min(a, n); b = Math.min(Math.max(b, a), n);
+      return new PyMemoryView(this, a, b);
+    }
+    const k = i < 0 ? this.nbytes + i : i;
+    if (k < 0 || k >= this.nbytes) throw new AdderError('IndexError', 'index out of bounds on dimension 1');
+    return this.obj[this._start + k];
+  }
+  __setitem__(i, v) {
+    if (this.readonly) throw new AdderError('TypeError', 'cannot modify read-only memory');
+    const k = i < 0 ? this.nbytes + i : i;
+    this.obj[this._start + k] = v;
+    return null;
+  }
+  __iter__() { return [...this._bytes()][Symbol.iterator](); }
+  __eq__(o) { const a = this._bytes(), b = o instanceof PyMemoryView ? o._bytes() : o instanceof Uint8Array || o instanceof PyByteArray ? o : null; if (!b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+  __bytes__() { return this._bytes(); }
+  tobytes() { return this._bytes(); }
+  tolist() { return [...this._bytes()]; }
+  hex(sep) { return [...this._bytes()].map((x) => x.toString(16).padStart(2, '0')).join(typeof sep === 'string' ? sep : ''); }
+  toreadonly() { const m = new PyMemoryView(this); m.readonly = true; return m; }
+  cast(fmt) { if (fmt !== 'B' && fmt !== 'b' && fmt !== 'c') throw new AdderError('NotImplementedError', `memoryview.cast('${fmt}') is not supported here`); return new PyMemoryView(this); }
+  release() { this.released = true; return null; }
+  __enter__() { return this; }
+  __exit__() { this.released = true; return false; }
+  __repr__() { return `<memory at 0x${(0x7f0000000000 + (this._start | 0)).toString(16)}>`; }
+}
+PyMemoryView.prototype.__adderClass__ = 'memoryview';
 class PyTuple extends Array {
   static get [Symbol.species]() { return Array; }
 }
@@ -2741,6 +2792,64 @@ async function* pyIterAsync(obj) {
   }
 }
 
+// ── sync unless something actually is async ──
+// A builtin that MIGHT meet an async value (a tree-walked __iter__, an async iterable, an async
+// key function) was an `async` function, so it always returned a Promise — and AIR code that
+// can't await (a property getter) couldn't call it. maybeSync(genFn) runs a generator whose
+// `yield`s mark the possible await points: synchronously while every yielded value is plain,
+// switching to a Promise only at the first yielded Promise (and resuming the same generator).
+function maybeSync(genFn) {
+  return function (...a) { return _drive(genFn.apply(this, a), undefined, false); };
+}
+function _drive(g, val, isErr) {
+  for (;;) {
+    const r = isErr ? g.throw(val) : g.next(val);
+    if (r.done) return r.value;
+    if (_isThenable(r.value)) return r.value.then((x) => _drive(g, x, false), (e) => _drive(g, e, true));
+    val = r.value; isErr = false;
+  }
+}
+// visit each item of anything adder iterates (fn returns true to stop early), one step at a
+// time: a user __iter__ / __next__ or __getitem__, an async iterator, or a plain JS iterable
+function* _gForEach(obj, fn) {
+  const viaAsync = function* (ai) { for (;;) { const r = yield ai.next(); if (r.done || fn(r.value)) return; } };
+  if (isUserIterable(obj)) {
+    if (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+      const it = typeof obj.__iter__ === 'function' ? yield obj.__iter__() : obj;
+      if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* viaAsync(it[Symbol.asyncIterator]()); return; }
+      if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { for (const v of pyIter(it)) if (fn(v)) return; return; }
+      if (!it || typeof it.__next__ !== 'function') throw new AdderError('TypeError', `iter() returned non-iterator of type '${pyTypeName(it)}'`);
+      for (;;) {
+        let v;
+        try { v = yield it.__next__(); } catch (e) { if (e && e.pyType === 'StopIteration') return; throw e; }
+        if (fn(v)) return;
+      }
+    }
+    for (let i = 0; ; i++) {
+      let v;
+      try { v = yield obj.__getitem__(i); } catch (e) { if (e && (e.pyType === 'IndexError' || e.pyType === 'StopIteration')) return; throw e; }
+      if (fn(v)) return;
+    }
+  }
+  if (obj && typeof obj[Symbol.asyncIterator] === 'function') { yield* viaAsync(obj[Symbol.asyncIterator]()); return; }
+  for (const v of pyIter(obj)) if (fn(v)) return;
+}
+function* _gCollect(obj) {
+  if (Array.isArray(obj)) return obj.slice();
+  if (obj instanceof AdderRange) {
+    const out = new Array(obj.length);
+    for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
+    return out;
+  }
+  const arr = [];
+  yield* _gForEach(obj, (v) => { arr.push(v); });
+  return arr;
+}
+// pyCollect, sync when the source is
+const pyCollectMaybe = maybeSync(_gCollect);
+// f(v), now or when v resolves
+const _thenMaybe = (v, f) => (_isThenable(v) ? v.then(f) : f(v));
+
 async function pyCollect(obj) {
   // the common sources, without a generator step per item: a list or tuple copies (a fresh
   // plain list — PyTuple's species is Array), a range fills by counting
@@ -2871,6 +2980,7 @@ function _isNativeClass(fn) {
   try { return /^class[\s{]/.test(Function.prototype.toString.call(fn)); } catch { return false; }
 }
 
+const _moduleBound = new WeakMap();   // module object → attr → [function, its bound copy]
 function adderGetAttr(obj, attr) {
   if (obj instanceof AdderError) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
@@ -2993,6 +3103,15 @@ function adderGetAttr(obj, attr) {
         fn._pyName = `${attr}`;
         return fn;
       }
+      // a module's function is one object (`os.path.join is os.path.join`, a pickle naming
+      // builtins.len): its bound copy is kept, made again only if the attribute changes
+      if (obj._pyRawFns) return v;   // a module whose functions don't use `this` (builtins): as they are
+      if (obj.__adderModule__) {
+        let m = _moduleBound.get(obj);
+        if (!m) { m = new Map(); _moduleBound.set(obj, m); }
+        const c = m.get(attr);
+        if (c && c[0] === v) return c[1];
+      }
       const fn = v.bind(obj);
       // Function.prototype.bind drops custom properties off the original
       // (`t.cdf`, `t.pdf` etc. — scipy-style "callable namespace" pattern).
@@ -3002,6 +3121,7 @@ function adderGetAttr(obj, attr) {
         try { fn[k] = v[k]; } catch {}
       }
       fn._pyName = attr;
+      if (obj.__adderModule__) _moduleBound.get(obj).set(attr, [v, fn]);
       return fn;
     }
     // regular property access (before dict-like methods, so getters/own props take priority)
@@ -3015,6 +3135,7 @@ function adderGetAttr(obj, attr) {
     if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
     // what every instance inherits from object (dir() lists them, so getattr must find them)
     if (ot && _OBJECT_DUNDER_SET.has(attr)) { const d = _objectDunder(obj, attr); if (d !== undefined) return d; }
+    if (ot && attr === '__weakref__') return null;
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
   }
   // generic
@@ -3263,7 +3384,102 @@ function registerCodec(name, impl, aliases = []) {
 // the canonical name of an encoding (CPython's normalisation: case, '_' / ' ' as '-'), or null
 function codecName(encoding) {
   const k = String(encoding).trim().toLowerCase().replace(/[_ ]/g, '-');
-  return _codecByAlias.get(k) || null;
+  return _codecByAlias.get(k) || _webCodec(k);
+}
+
+// ── the platform's legacy encodings (TextDecoder): big5, gbk, gb18030, shift_jis, euc-jp,
+// iso-2022-jp, euc-kr, koi8-r/u, ibm866, macintosh, windows-125x, iso-8859-x … ──
+// Python's names map onto the WHATWG labels; a single-byte encoding gets an exact table both
+// ways (precise errors, and it encodes); a multi-byte one decodes (TextDecoder) and refuses to
+// encode (TextEncoder is UTF-8 only).
+const _PY_TO_WEB = {
+  'cp932': 'shift_jis', 'ms932': 'shift_jis', 'mskanji': 'shift_jis', 'ms-kanji': 'shift_jis', 'sjis': 'shift_jis', 's-jis': 'shift_jis', 'shift-jis': 'shift_jis', 'shift-jis-2004': 'shift_jis', 'shift-jisx0213': 'shift_jis',
+  'eucjp': 'euc-jp', 'ujis': 'euc-jp', 'euc-jis-2004': 'euc-jp', 'euc-jisx0213': 'euc-jp', 'iso2022-jp': 'iso-2022-jp', 'csiso2022jp': 'iso-2022-jp',
+  'big5-tw': 'big5', 'csbig5': 'big5', 'cp950': 'big5', 'big5hkscs': 'big5',
+  'gb2312': 'gbk', 'cp936': 'gbk', 'ms936': 'gbk', 'euc-cn': 'gbk', 'euccn': 'gbk', 'gb18030-2000': 'gb18030',
+  'euckr': 'euc-kr', 'cp949': 'euc-kr', 'uhc': 'euc-kr', 'ks-c-5601': 'euc-kr', 'ksc5601': 'euc-kr', 'ks-c-5601-1987': 'euc-kr',
+  'cp866': 'ibm866', 'mac-roman': 'macintosh', 'macroman': 'macintosh', 'mac-cyrillic': 'x-mac-cyrillic', 'maccyrillic': 'x-mac-cyrillic',
+  'tis-620': 'windows-874', 'tis620': 'windows-874', 'cp874': 'windows-874',
+  'latin2': 'iso-8859-2', 'latin3': 'iso-8859-3', 'latin4': 'iso-8859-4', 'latin5': 'iso-8859-9', 'latin6': 'iso-8859-10',
+  'latin7': 'iso-8859-13', 'latin8': 'iso-8859-14', 'latin9': 'iso-8859-15', 'latin10': 'iso-8859-16', 'l2': 'iso-8859-2', 'cyrillic': 'iso-8859-5',
+  'arabic': 'iso-8859-6', 'greek': 'iso-8859-7', 'hebrew': 'iso-8859-8', 'koi8-ru': 'koi8-u',
+};
+const _webCodecCache = new Map();
+function _webCodec(k) {
+  if (_webCodecCache.has(k)) return _webCodecCache.get(k);
+  let label = _PY_TO_WEB[k] || k;
+  let m;
+  if ((m = /^cp(125\d)$/.exec(label))) label = `windows-${m[1]}`;
+  else if ((m = /^iso-?8859-?(\d+)$/.exec(label))) label = `iso-8859-${m[1]}`;
+  let web = null;
+  if (typeof TextDecoder === 'function') { try { web = new TextDecoder(label).encoding; } catch { web = null; } }
+  // utf-8 / utf-16 are adder's own; a label that resolves to them is an alias we don't claim
+  if (!web || web === 'utf-8' || web.startsWith('utf-16') || web === 'replacement') { _webCodecCache.set(k, null); return null; }
+  const name = k.replace(/-/g, '_');
+  const decodeErr = (b, start, end, why) => _decodeError(name, b, start, end, why);
+  const single = /^(ibm866|iso-8859-\d+|koi8-[ru]|macintosh|windows-\d+|x-mac-cyrillic)$/.test(web);
+  let impl;
+  if (single) {
+    const td = new TextDecoder(web);
+    const table = [];   // byte → code point (-1: unmapped)
+    // (WHATWG fills a windows-125x code page's undefined bytes with the C1 control of the same
+    // number; CPython's tables leave them undefined, and so do these)
+    const win = web.startsWith('windows-');
+    for (let i = 0; i < 256; i++) {
+      const ch = td.decode(new Uint8Array([i]));
+      const cp = ch.codePointAt(0);
+      table.push((ch === '\ufffd' && i >= 0x80) || (win && i >= 0x80 && i <= 0x9f && cp === i) ? -1 : cp);
+    }
+    const rev = new Map(); table.forEach((cp, i) => { if (cp >= 0 && !rev.has(cp)) rev.set(cp, i); });
+    impl = {
+      decode(b, errors) {
+        let t = '';
+        for (let i = 0; i < b.length; i++) {
+          const cp = table[b[i]];
+          if (cp >= 0) t += String.fromCodePoint(cp);
+          else t += _decodeFallback('charmap', b, i, i + 1, 'character maps to <undefined>', errors || 'strict');
+        }
+        return t;
+      },
+      encode(str, errors) {
+        str = String(str);
+        const out = [];
+        for (let i = 0; i < str.length; i++) {
+          const cp = str.codePointAt(i), len = cp > 0xffff ? 2 : 1;
+          const byte = rev.get(cp);
+          if (byte !== undefined) out.push(byte);
+          else if ((errors || 'strict') === 'surrogateescape' && cp >= 0xdc80 && cp <= 0xdcff) out.push(cp - 0xdc00);
+          else _encodeFallback('charmap', str, i, cp, len, errors || 'strict', (t) => { for (const c of t) out.push(rev.get(c.codePointAt(0)) ?? 0x3f); });
+          i += len - 1;
+        }
+        return new Uint8Array(out);
+      },
+    };
+  } else {
+    impl = {
+      decode(b, errors) {
+        errors = errors || 'strict';
+        if (errors === 'strict') {
+          try { return new TextDecoder(web, { fatal: true }).decode(b); }
+          catch { throw decodeErr(b, 0, b.length, 'illegal multibyte sequence'); }
+        }
+        const t = new TextDecoder(web).decode(b);
+        return errors === 'ignore' ? t.replace(/\ufffd/g, '') : t;
+      },
+      encode(str) {
+        throw _encodeError(name, String(str), 0, Math.max(1, String(str).length), `encoding to ${name} is not available here (the browser decodes it only)`);
+      },
+      _multibyte: true,
+    };
+  }
+  registerCodec(name, impl, [k]);
+  _webCodecCache.set(k, name);
+  return name;
+}
+// is this one of the platform's multi-byte encodings? (charset detection asks)
+function isMultibyteCodec(encoding) {
+  const n = codecName(encoding);
+  return !!n && _extraCodecs.has(n) && !!_extraCodecs.get(n)._multibyte;
 }
 // CPython's display name for an encoding in error messages ('utf-8' → 'utf-8', 'latin-1' → 'latin-1')
 const _codecDisplay = (c) => (c === 'latin-1' ? 'latin-1' : c);
@@ -4204,66 +4420,63 @@ function pyGe(a, b) {
 // Python's sort: stable, only `<`, reverse=True keeps equal items in their original order.
 // Keys are computed once (a tree-walked key function is async); comparisons that return a
 // Promise (an async __lt__) switch to an awaited merge sort.
-async function _sortKeys(arr, key) {
+function* _gSortKeys(arr, key) {
   if (!key) return arr.slice();
   const keys = new Array(arr.length);
-  for (let i = 0; i < arr.length; i++) {
-    const k = key(arr[i]);
-    keys[i] = k && typeof k.then === 'function' ? await k : k;
-  }
+  for (let i = 0; i < arr.length; i++) keys[i] = yield key(arr[i]);
   return keys;
 }
-async function pySorted(arr, key, reverse) {
-  const keys = await _sortKeys(arr, key);
+function* _gSorted(arr, key, reverse) {
+  const keys = yield* _gSortKeys(arr, key);
   const order = arr.map((_, i) => i);
   const less = (i, j) => (reverse ? pyLt(keys[j], keys[i]) : pyLt(keys[i], keys[j]));
   let pending = false;
   order.sort((i, j) => {
     if (pending) return 0;
     const lt = less(i, j);
-    if (lt && typeof lt.then === 'function') { pending = true; return 0; }
+    if (_isThenable(lt)) { pending = true; return 0; }
     if (lt) return -1;
     const gt = less(j, i);
-    if (gt && typeof gt.then === 'function') { pending = true; return 0; }
+    if (_isThenable(gt)) { pending = true; return 0; }
     return gt ? 1 : 0;
   });
   if (!pending) return order.map((i) => arr[i]);
-  // async comparisons: stable merge sort, awaiting each `<`
-  const ms = async (idx) => {
+  // async comparisons: stable merge sort, waiting on each `<`
+  const ms = function* (idx) {
     if (idx.length < 2) return idx;
     const mid = idx.length >> 1;
-    const l = await ms(idx.slice(0, mid)), r = await ms(idx.slice(mid));
+    const l = yield* ms(idx.slice(0, mid)), r = yield* ms(idx.slice(mid));
     const out = [];
     let i = 0, j = 0;
     while (i < l.length && j < r.length) {
-      if (await less(r[j], l[i])) out.push(r[j++]); else out.push(l[i++]);
+      if (yield less(r[j], l[i])) out.push(r[j++]); else out.push(l[i++]);
     }
     return out.concat(l.slice(i), r.slice(j));
   };
-  return (await ms(arr.map((_, i) => i))).map((i) => arr[i]);
+  return (yield* ms(arr.map((_, i) => i))).map((i) => arr[i]);
 }
+const pySorted = maybeSync(_gSorted);
 // min / max: the first extreme item, by key, through `<`
-async function pyExtreme(which, args) {
+const pyExtreme = maybeSync(function* (which, args) {
   let key = null, dflt, hasDefault = false;
   if (args.length > 0 && args[args.length - 1]?._kw) {
     const kw = args.pop();
     key = kw.key || null;
     if ('default' in kw) { dflt = kw.default; hasDefault = true; }
   }
-  const items = args.length === 1 ? await pyCollect(args[0]) : args;
+  const items = args.length === 1 ? yield* _gCollect(args[0]) : args;
   if (items.length === 0) {
     if (hasDefault) return dflt;
     throw new AdderError('ValueError', `${which}() iterable argument is empty`);
   }
-  const keys = await _sortKeys(items, key);
+  const keys = yield* _gSortKeys(items, key);
   let best = 0;
   for (let i = 1; i < items.length; i++) {
-    let better = which === 'max' ? pyLt(keys[best], keys[i]) : pyLt(keys[i], keys[best]);
-    if (better && typeof better.then === 'function') better = await better;
+    const better = yield (which === 'max' ? pyLt(keys[best], keys[i]) : pyLt(keys[i], keys[best]));
     if (better) best = i;
   }
   return items[best];
-}
+});
 
 // ── modules ──
 
@@ -4948,6 +5161,7 @@ function _reToJs(p, f) {
       out += '\\{'; i++; lastAtom = true; continue;  // not a quantifier: a literal brace
     }
     if (c === '}') { out += '\\}'; i++; lastAtom = true; continue; }
+    if (c === ']') { out += '\\]'; i++; lastAtom = true; continue; }   // outside a class: a literal (JS's u-mode refuses it bare)
     if (c === '*' || c === '+' || c === '?') {
       out += c; i++;
       if (p[i] === '+') i++;                         // possessive → greedy
@@ -5803,7 +6017,7 @@ function _ensureFsModules(pathUtils) {
 }
 
 // dict(mapping | pairs, **kw)
-async function _dictFrom(args) {
+const _dictFrom = maybeSync(function* (args) {
   const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
   if (args.length > 1) throw new AdderError('TypeError', `dict expected at most 1 argument, got ${args.length}`);
   const entries = [];
@@ -5814,9 +6028,9 @@ async function _dictFrom(args) {
   else if (isPlainDict(x)) for (const k of Object.keys(x)) entries.push([k, x[k]]);
   else if (typeof x.keys === 'function' && typeof x.__getitem__ === 'function') {
     // a mapping (anything with keys() and __getitem__), as CPython's dict() reads it
-    for (const k of await pyCollect(await x.keys())) entries.push([k, await x.__getitem__(k)]);
+    for (const k of yield* _gCollect(yield x.keys())) entries.push([k, yield x.__getitem__(k)]);
   } else {
-    const items = Array.isArray(x) ? x : await pyCollect(x);
+    const items = Array.isArray(x) ? x : yield* _gCollect(x);
     items.forEach((it, i) => {
       const pair = Array.isArray(it) ? it : typeof it === 'string' ? [...it] : null;
       if (!pair || pair.length !== 2) throw new AdderError('ValueError', `dictionary update sequence element #${i} has length ${pair ? pair.length : 1}; 2 is required`);
@@ -5831,7 +6045,7 @@ async function _dictFrom(args) {
     return o;
   }
   return new PyDict(entries);
-}
+});
 
 // ── stdout / stderr ──
 // The host's writers for the program running now: run() sets them from its options, a notebook
@@ -6287,8 +6501,13 @@ function buildClass(name, bases, members, annotations, opts = {}) {
     }
   }
   const finish = () => finishClass(cls, annotations || [], opts.kw);
+  // the main program's classes, by name: how pickle (and anything else that names a class by
+  // module + qualname) finds one defined in '__main__', which has no module object to import
+  if (members.__module__ === '__main__') _mainClasses.set(String(members.__qualname__ || name), cls);
   return named.length ? Promise.all(named).then(finish) : finish();
 }
+const _mainClasses = new Map();
+function mainClassLookup(name) { return _mainClasses.get(name); }
 // a Python descriptor: an instance (of a Python class, or a JS-built one marked _pyDescriptor)
 // with __get__ — not a function, container or the engine's own property / method wrappers
 function _isDescriptor(v) {
@@ -6631,15 +6850,23 @@ function adderBuiltins(printFn) {
       }
       return pyStrMaybe(x);
     },
-    bool: (x) => x === undefined ? false : pyBool(x),
+    // (a tree-walked __bool__ / __len__ answers with a Promise: judge what it resolves to)
+    bool: (x) => {
+      if (x === undefined) return false;
+      if (x !== null && typeof x === 'object') {
+        if (typeof x.__bool__ === 'function') return _thenMaybe(x.__bool__(), (v) => !!v);
+        if (typeof x.__len__ === 'function') return _thenMaybe(x.__len__(), (v) => v !== 0);
+      }
+      return pyBool(x);
+    },
     list: Object.assign(
-      (x) => x === undefined ? [] : pyCollect(x),
+      (x) => x === undefined ? [] : pyCollectMaybe(x),
       { _pyContainerType: 'list' },
     ),
     // a call with no argument answers synchronously, so defaultdict(list) & co. store a value
-    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : pyCollect(x).then(mkTuple)),
+    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : _thenMaybe(pyCollectMaybe(x), mkTuple)),
     dict: (...args) => (args.length === 0 ? new PyDict() : _dictFrom(args)),
-    set: (x) => x === undefined ? new PySet() : pyCollect(x).then((xs) => new PySet(xs)),
+    set: (x) => x === undefined ? new PySet() : _thenMaybe(pyCollectMaybe(x), (xs) => new PySet(xs)),
     // bytes(): b'', bytes(n) zeros, bytes(ints), bytes(str, encoding)
     bytes: (x, encoding) => {
       if (x === undefined) return new Uint8Array(0);
@@ -6650,10 +6877,13 @@ function adderBuiltins(printFn) {
         return pyEncode(x, encoding);
       }
       if (x instanceof Uint8Array) return new Uint8Array(x);
+      if (x instanceof PyMemoryView) return x.tobytes();
+      if (x !== null && typeof x === 'object' && typeof x.__bytes__ === 'function') return x.__bytes__();
       const items = [...pyIter(x)];   // sync: AIR calls bytes() without an await
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
+    memoryview: Object.assign((obj) => new PyMemoryView(obj), { _pyName: 'memoryview', __name__: 'memoryview', _pyClass: true }),
     // bytearray(), bytearray(n) zeros, bytearray(ints / bytes), bytearray(str, encoding[, errors])
     bytearray: Object.assign((x, ...a) => {
       const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
@@ -6667,16 +6897,16 @@ function adderBuiltins(printFn) {
       if (x instanceof Uint8Array) return _toBA(x);
       return _toBA([...pyIter(x)].map(_byteCheck));
     }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
-    frozenset: async (x) => { const s = x === undefined ? new PySet() : new PySet(await pyCollect(x)); s._frozen = true; return s; },
+    frozenset: maybeSync(function* (x) { const s = x === undefined ? new PySet() : new PySet(yield* _gCollect(x)); s._frozen = true; return s; }),
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
-    max: async (...args) => pyExtreme('max', args),
-    min: async (...args) => pyExtreme('min', args),
+    max: (...args) => pyExtreme('max', args),
+    min: (...args) => pyExtreme('min', args),
     // sum: numbers with compensated (Neumaier) summation, as CPython 3.12+ does for floats;
     // lists concatenate; anything else through its __add__; strings are refused, as in Python
-    sum: async (iterable, start) => {
+    sum: maybeSync(function* (iterable, start) {
       if (start && start._kw) start = start.start;
-      const items = Array.isArray(iterable) ? iterable : await pyCollect(iterable);   // read, never kept: no copy
+      const items = Array.isArray(iterable) ? iterable : yield* _gCollect(iterable);   // read, never kept: no copy
       let s = start !== undefined ? start : 0;
       if (typeof s === 'string') throw new AdderError('TypeError', "sum() can't sum strings [use ''.join(seq) instead]");
       if (_numLike(s)) {
@@ -6695,19 +6925,19 @@ function adderBuiltins(printFn) {
       }
       for (const v of items) {
         if (Array.isArray(s) && Array.isArray(v)) s = s.concat(v);
-        else if (_hasDunder(s, '__add__')) { const r = s.__add__(v); s = r && typeof r.then === 'function' ? await r : r; }
-        else if (_hasDunder(v, '__radd__')) { const r = v.__radd__(s); s = r && typeof r.then === 'function' ? await r : r; }
+        else if (_hasDunder(s, '__add__')) s = yield s.__add__(v);
+        else if (_hasDunder(v, '__radd__')) s = yield v.__radd__(s);
         else if (_numLike(s) && _numLike(v)) s = s + v;
         else throw new AdderError('TypeError', `unsupported operand type(s) for +: '${pyTypeName(s)}' and '${pyTypeName(v)}'`);
       }
       return s;
-    },
-    sorted: async (iterable, key, reverse) => {
+    }),
+    sorted: maybeSync(function* (iterable, key, reverse) {
       if (key?._kw) { reverse = key.reverse; key = key.key; }
       else if (reverse?._kw) reverse = reverse.reverse;
-      return pySorted(await pyCollect(iterable), key || null, !!reverse);
-    },
-    reversed: async (iterable) => { const arr = await pyCollect(iterable); arr.reverse(); return arr; },
+      return yield* _gSorted(yield* _gCollect(iterable), key || null, !!reverse);
+    }),
+    reversed: maybeSync(function* (iterable) { const arr = yield* _gCollect(iterable); arr.reverse(); return arr; }),
     // lazy iterators, as in Python 3 (zip(count(), xs) works); synchronous when every input is
     enumerate: (iterable, start) => {
       if (start && start._kw) start = start.start;
@@ -6771,8 +7001,8 @@ function adderBuiltins(printFn) {
       for await (const v of _pyEach(iterable)) if (fn ? pyBool(await fn(v)) : pyBool(v)) yield v;
     }),
     // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
-    any: async (iterable) => { for await (const v of _pyEach(iterable)) if (pyBool(v)) return true; return false; },
-    all: async (iterable) => { for await (const v of _pyEach(iterable)) if (!pyBool(v)) return false; return true; },
+    any: maybeSync(function* (iterable) { let r = false; yield* _gForEach(iterable, (v) => (r = pyBool(v))); return r; }),
+    all: maybeSync(function* (iterable) { let r = true; yield* _gForEach(iterable, (v) => !(r = pyBool(v))); return r; }),
     isinstance: (obj, typeOrTuple) => _pyIsInstance(obj, typeOrTuple),
     type: pyTypeObj,
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
@@ -6885,8 +7115,13 @@ function adderBuiltins(printFn) {
     builtins[name] = ctor;
     _typeObjects[name] = _stableTypes[name] = ctor;
   }
+  // and the builtin functions too: `len` is one object everywhere (a module's table, the builtins
+  // module, a pickle naming builtins.len). Only print is per table — it writes to its run's output.
+  if (!_stableBuiltins) _stableBuiltins = { ...builtins };
+  else for (const k of Object.keys(builtins)) if (k !== 'print' && Object.hasOwn(_stableBuiltins, k)) builtins[k] = _stableBuiltins[k];
   return builtins;
 }
+let _stableBuiltins = null;
 
 // super(): the next class after `cls` in self's MRO, as a proxy whose attributes are bound to
 // self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR
@@ -7032,6 +7267,8 @@ _reModule.PatternError = _reModule.error;
 
 
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
+
+
 
 
 
@@ -8269,8 +8506,12 @@ async function _evalClass(node, scope) {
     else kw[k.arg] = v;
   }
 
-  // evaluate class body in a class scope
+  // evaluate class body in a class scope; as in CPython it starts with __module__ (the defining
+  // module's __name__) and __qualname__
   const classScope = new AdderScope(scope);
+  let root = scope; while (root.parent) root = root.parent;
+  classScope.set('__module__', root.vars.has('__name__') ? root.vars.get('__name__') : '__main__');
+  classScope.set('__qualname__', node.name);
   for (const stmt of node.body) await adderEval(stmt, classScope);
 
   // build class (the factory both engines share); `__class__` is bound before
@@ -9340,6 +9581,29 @@ function _setattr(obj, name, value) {
   }
 }
 
+// sync mode (air-lower AWAITED_DUNDERS): where Python calls code implicitly — a property, a
+// descriptor, len(), hash() — nothing can wait, so a possibly-async value is taken as it is.
+// A Promise passes through, the way CPython hands back a coroutine object from a property that
+// calls an `async def` (`await obj.prop` then works); it is not awaited here.
+function _noAwait(v) { return v; }
+
+// globals() / locals() in compiled code (air-lower: _callsScopeBuiltin)
+function _mainModule() { return { __adderModule__: true, __name__: '__main__' }; }
+const _globalsViews = new WeakMap();
+function _globalsOf(mod) {   // one live view per module: globals() is globals()
+  let d = _globalsViews.get(mod);
+  if (!d) { d = new AttrDict(mod); _globalsViews.set(mod, d); }
+  return d;
+}
+// a module-level name, read through the module object: what globals() set wins over the
+// compiled binding (and a builtin is the binding when the module has no such name)
+function _globalLoad(mod, name, v) { return Object.hasOwn(mod, name) && mod[name] !== undefined ? mod[name] : v; }
+function _localsOf(names, values) {
+  const o = {};
+  for (let i = 0; i < names.length; i++) if (values[i] !== undefined) o[names[i]] = values[i];
+  return o;
+}
+
 function _delitem(obj, key) {
   if (obj instanceof Map) { obj.delete(key); return; }
   if (Array.isArray(obj)) {
@@ -9402,7 +9666,10 @@ async function _importFromPath(path, names) {
 // Mirrors _evalClass in eval.js, but takes pre-evaluated bases and members.
 
 // annotations arrive flattened from the lowerer: [name, text, name, text, …]
-function _createClass(name, bases, members, annotations, kw) {
+function _createClass(name, bases, members, annotations, kw, moduleName) {
+  // __module__ / __qualname__, as CPython's class namespace starts with them (unless the body set them)
+  if (moduleName !== undefined && !Object.hasOwn(members, '__module__')) members.__module__ = moduleName;
+  if (!Object.hasOwn(members, '__qualname__')) members.__qualname__ = name;
   const ann = [];
   for (let k = 0; annotations && k < annotations.length; k += 2) ann.push([annotations[k], annotations[k + 1]]);
   return classStatement(name, bases, members, ann, kw);
@@ -9567,6 +9834,8 @@ const _py = {
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
+  noAwait: _noAwait,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,
@@ -13927,6 +14196,98 @@ adderModules.gzip = {
   },
   BadGzipFile: _dtBadGzip,
 };
+// GzipFile: a gzip stream over a file object (or a path) — read mode decompresses on first read,
+// write mode collects and compresses on close (the platform's CompressionStream is one-shot)
+class _DtGzipFile {
+  constructor(...a) {
+    const { args } = _dtArgs(a, ['filename', 'mode', 'compresslevel', 'fileobj', 'mtime'], { filename: null, mode: null, compresslevel: 9, fileobj: null, mtime: null });
+    this._mode = String(args.mode || (args.fileobj && args.fileobj.mode) || 'rb');
+    this.mode = this._mode.startsWith('r') ? 1 : 2;   // READ / WRITE, as CPython's GzipFile.mode
+    this.fileobj = args.fileobj;
+    this.name = args.filename !== null ? String(args.filename) : (args.fileobj && typeof args.fileobj.name === 'string' ? args.fileobj.name : '');
+    this._path = args.fileobj ? null : args.filename;
+    this._buf = null; this._pos = 0; this._out = []; this.closed = false;
+  }
+  async _src() {
+    if (!this.fileobj) this.fileobj = await adderModules.builtins.open(this._path, this._mode.replace('t', '').replace(/b?$/, 'b'));
+    return this.fileobj;
+  }
+  async _load() {
+    if (this._buf) return;
+    const f = await this._src();
+    const raw = _dtBytes(await adderGetAttr(f, 'read')());
+    this._buf = raw.length ? await adderModules.gzip.decompress(raw) : new Uint8Array(0);
+  }
+  async read(size = -1) {
+    if (this.mode !== 1) throw new AdderError('OSError', 'read() on write-only GzipFile object');
+    await this._load();
+    const end = size === null || size < 0 ? this._buf.length : Math.min(this._buf.length, this._pos + size);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = end;
+    return r;
+  }
+  async read1(size = -1) { return this.read(size); }
+  async peek(n = 1) { await this._load(); return this._buf.slice(this._pos, this._pos + Math.max(1, n)); }
+  async readline(size = -1) {
+    await this._load();
+    let end = this._buf.indexOf(0x0a, this._pos);
+    end = end < 0 ? this._buf.length : end + 1;
+    if (size !== null && size >= 0) end = Math.min(end, this._pos + size);
+    const r = this._buf.slice(this._pos, end);
+    this._pos = end;
+    return r;
+  }
+  async readlines() { const out = []; for (;;) { const l = await this.readline(); if (!l.length) return out; out.push(l); } }
+  write(data) {
+    if (this.mode !== 2) throw new AdderError('OSError', 'write() on read-only GzipFile object');
+    const b = _dtBytes(data);
+    this._out.push(b);
+    return b.length;
+  }
+  seek(offset, whence = 0) { this._pos = whence === 0 ? offset : whence === 1 ? this._pos + offset : (this._buf ? this._buf.length : 0) + offset; return this._pos; }
+  tell() { return this._pos; }
+  readable() { return this.mode === 1; } writable() { return this.mode === 2; } seekable() { return true; }
+  flush() { return null; }
+  async close() {
+    if (this.closed) return null;
+    this.closed = true;
+    if (this.mode === 2) {
+      let n = 0; for (const b of this._out) n += b.length;
+      const all = new Uint8Array(n); let p = 0; for (const b of this._out) { all.set(b, p); p += b.length; }
+      const f = await this._src();
+      await adderGetAttr(f, 'write')(await adderModules.gzip.compress(all));
+      if (this._path !== null) await adderGetAttr(f, 'close')();
+    } else if (this._path !== null && this.fileobj) await adderGetAttr(this.fileobj, 'close')();
+    return null;
+  }
+  __enter__() { return this; }
+  async __exit__() { await this.close(); return false; }
+  async __iter__() { return (await this.readlines())[Symbol.iterator](); }
+}
+adderModules.gzip.GzipFile = _dtType('GzipFile', _DtGzipFile, 'gzip');
+adderModules.gzip.READ = 1; adderModules.gzip.WRITE = 2;
+// gzip.open: binary → GzipFile; text ('rt' / 'wt') → a TextIOWrapper around it
+adderModules.gzip.open = (filename, mode = 'rb', ...a) => {
+  const { args } = _dtArgs(a, ['compresslevel', 'encoding', 'errors', 'newline'], { compresslevel: 9, encoding: null, errors: null, newline: null });
+  const binMode = String(mode).replace('t', '');
+  const isObj = filename && typeof filename === 'object';
+  const g = adderModules.gzip.GzipFile(isObj ? null : filename, binMode, args.compresslevel, isObj ? filename : null);
+  return String(mode).includes('t') ? adderModules.io.TextIOWrapper(g, { _kw: true, encoding: args.encoding || 'utf-8', errors: args.errors || 'strict' }) : g;
+};
+
+// bz2 / lzma: no bzip2 or xz codec in the platform — the modules are there (libraries import
+// them to offer .bz2 / .xz files as an option), and using one says so
+{
+  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no bzip2 / xz codec in the browser)`); };
+  const cls = (name, what, module) => { const c = no(what); c._pyName = name; c.__name__ = name; c._pyClass = true; c.__module__ = module; return c; };
+  adderModules.bz2 = { __adderModule__: true, __name__: 'bz2', compress: no('bz2'), decompress: no('bz2'), open: no('bz2'),
+    BZ2File: cls('BZ2File', 'bz2', 'bz2'), BZ2Compressor: cls('BZ2Compressor', 'bz2', 'bz2'), BZ2Decompressor: cls('BZ2Decompressor', 'bz2', 'bz2') };
+  const LZMAError = makeExcType('LZMAError', 'Exception');
+  adderModules.lzma = { __adderModule__: true, __name__: 'lzma', compress: no('xz'), decompress: no('xz'), open: no('xz'), is_check_supported: () => false,
+    LZMAFile: cls('LZMAFile', 'xz', 'lzma'), LZMACompressor: cls('LZMACompressor', 'xz', 'lzma'), LZMADecompressor: cls('LZMADecompressor', 'xz', 'lzma'), LZMAError,
+    FORMAT_AUTO: 0, FORMAT_XZ: 1, FORMAT_ALONE: 2, FORMAT_RAW: 3, CHECK_NONE: 0, CHECK_CRC32: 1, CHECK_CRC64: 4, CHECK_SHA256: 10, CHECK_ID_MAX: 15, CHECK_UNKNOWN: 16,
+    FILTER_LZMA1: 0x4000000000000001, FILTER_LZMA2: 0x21, FILTER_DELTA: 3, FILTER_X86: 4, PRESET_DEFAULT: 6, PRESET_EXTREME: 0x80000000, MODE_FAST: 1, MODE_NORMAL: 2 };
+}
 
 // ── zipfile ──
 // ZipFile over a VFS path or a file object (BytesIO): read ('r'), write ('w', 'x') and append
@@ -16909,6 +17270,22 @@ adderModules.marshal = _syModule('marshal', {
     encode: (s) => pyEncode(encode(s), 'ascii'),
     decode: (b) => decode(pyDecodePartial(b, 'ascii', 'strict', true).text),
   });
+  // idna (RFC 3490): host names — a non-ASCII label is punycoded behind 'xn--' (nameprep reduced
+  // to lowercasing); ASCII labels pass through
+  const labelErr = (why) => new AdderError('UnicodeError', `encoding with 'idna' codec failed (UnicodeError: ${why})`);
+  registerCodec('idna', {
+    encode: (s) => {
+      const labels = String(s).split(/[.\u3002\uff0e\uff61]/);
+      const out = labels.map((l, i) => {
+        if (!l) { if (i === labels.length - 1 && i > 0) return ''; throw labelErr('label empty or too long'); }
+        const a = /^[\x00-\x7f]*$/.test(l) ? l : 'xn--' + encode(l.toLowerCase());
+        if (a.length > 63) throw labelErr('label empty or too long');
+        return a;
+      });
+      return pyEncode(out.join('.'), 'ascii');
+    },
+    decode: (b) => pyDecodePartial(b, 'ascii', 'strict', true).text.split('.').map((l) => (l.toLowerCase().startsWith('xn--') ? decode(l.slice(4)) : l.toLowerCase())).join('.'),
+  }, ['idna']);
 }
 
 // ── random.Random: a generator with its own state (the module functions share one) ──
@@ -17015,11 +17392,1245 @@ for (const [k, m] of Object.entries(adderModules)) {
   Object.defineProperty(adderModules, 'builtins', {
     configurable: true, enumerable: false,
     get() {
-      if (!mod) mod = Object.assign(adderBuiltins(stdoutWrite), { __adderModule__: true, __name__: 'builtins', __doc__: 'Built-in functions, types, exceptions, and other objects.' });
+      if (!mod) mod = Object.assign(adderBuiltins(stdoutWrite), { __adderModule__: true, _pyRawFns: true, __name__: 'builtins', __doc__: 'Built-in functions, types, exceptions, and other objects.' });
       return mod;
     },
   });
 }
+
+// _multibytecodec + encodings.<name>: a codec's module, made when imported (charset detection
+// asks `issubclass(encodings.big5.IncrementalDecoder, MultibyteIncrementalDecoder)`; requests
+// imports encodings.idna) — any encoding codecs knows, including the platform's legacy ones
+{
+  const decodeWith = (n) => function (self, input, final = false) {
+    if (final && final._kw) final = final.final;
+    const b = input instanceof Uint8Array ? input : new Uint8Array([...pyIter(input || [])]);
+    return pyDecodePartial(b, n, self.errors, true).text;
+  };
+  const MBD = _syClass('MultibyteIncrementalDecoder', [], {
+    __init__(self, errors = 'strict') { self.errors = errors; return null; },
+    decode(self, input, final = false) { return decodeWith(self.codec_name || 'utf-8')(self, input, final); },
+    reset() { return null; }, getstate() { return mkTuple([new Uint8Array(0), 0]); }, setstate() { return null; },
+  }, '_multibytecodec');
+  const MBE = _syClass('MultibyteIncrementalEncoder', [], {
+    __init__(self, errors = 'strict') { self.errors = errors; return null; },
+    encode(self, input, final = false) { return pyEncode(input, self.codec_name || 'utf-8', self.errors); },
+    reset() { return null; }, getstate() { return 0; }, setstate() { return null; },
+  }, '_multibytecodec');
+  adderModules._multibytecodec = _syModule('_multibytecodec', {
+    MultibyteIncrementalDecoder: MBD, MultibyteIncrementalEncoder: MBE,
+    MultibyteStreamReader: _syClass('MultibyteStreamReader', [], {}, '_multibytecodec'),
+    MultibyteStreamWriter: _syClass('MultibyteStreamWriter', [], {}, '_multibytecodec'),
+    MultibyteCodec: _syClass('MultibyteCodec', [], {}, '_multibytecodec'),
+    __create_codec: () => { throw new AdderError('LookupError', 'no multibyte codec tables here'); },
+  });
+  const made = new Map();
+  const codecModule = (leaf) => {
+    let n;
+    try { n = codecName(leaf); } catch { n = null; }
+    if (!n) return undefined;
+    if (made.has(leaf)) return made.get(leaf);
+    const multi = isMultibyteCodec(n);
+    const C = adderModules.codecs;
+    const mod = `encodings.${leaf}`;
+    const IncrementalDecoder = multi ? _syClass('IncrementalDecoder', [MBD], { codec_name: n, decode: decodeWith(n) }, mod) : C.getincrementaldecoder(n);
+    const IncrementalEncoder = multi ? _syClass('IncrementalEncoder', [MBE], { codec_name: n }, mod) : C.getincrementalencoder(n);
+    const Codec = _syClass('Codec', [], {
+      encode(self, input, errors = 'strict') { return mkTuple([pyEncode(input, n, errors), String(input).length]); },
+      decode(self, input, errors = 'strict') { return mkTuple([pyDecodePartial(input, n, errors, true).text, input.length]); },
+    }, mod);
+    const m = _syModule(mod, { Codec, IncrementalDecoder, IncrementalEncoder, getregentry: () => C.lookup(n),
+      StreamReader: _syClass('StreamReader', [Codec], {}, mod), StreamWriter: _syClass('StreamWriter', [Codec], {}, mod) });
+    made.set(leaf, m);
+    return m;
+  };
+  const base = adderModules.encodings;
+  adderModules.encodings = new Proxy(base, {
+    get(t, k, r) {
+      if (typeof k !== 'string' || k in t || k.startsWith('_') || k === 'then') return Reflect.get(t, k, r);
+      return codecModule(k);
+    },
+  });
+}
+
+// -- stdlib-pickle.js --
+
+// adder stdlib — pickle: CPython's pickle format, both ways. Reads every protocol (0–5); writes
+// protocols 0–5 (default 4, as CPython 3.8–3.13), with CPython's opcode choices, memo and
+// framing, so plain data round-trips byte for byte with CPython where adder's values allow (an
+// integral float is an int here, so 3.0 pickles as 3; ints past 2**53 lose precision).
+//
+// Values: None, bool, int, float, str, bytes, bytearray, tuple, list, dict, set, frozenset,
+// range, complex, and classes / functions by reference (module + qualified name). Instances of
+// user classes go through the reduce protocol: __reduce_ex__ / __reduce__, copyreg's
+// dispatch_table, __getnewargs__(_ex__), __getstate__ / __setstate__, slots state; the default
+// is CPython's (copyreg.__newobj__ + the instance __dict__). Unpickling finds classes by
+// importing their module (Unpickler.find_class, overridable — the usual way to restrict what a
+// pickle may construct; as in CPython, loads() runs whatever callables the pickle names).
+//
+// Everything that can call Python code (a reduce method, a constructor, find_class's import)
+// may be async in the tree-walker: dumps / loads are generators run through maybeSync, so they
+// are synchronous unless one of those really is.
+//
+// Concat-bundled with the rest of adder: top-level names carry a `_pk` prefix.
+
+
+const _pkPickleError = makeExcType('PickleError', 'Exception');
+const _pkPicklingError = makeExcType('PicklingError', 'PickleError');
+const _pkUnpicklingError = makeExcType('UnpicklingError', 'PickleError');
+const _pkHIGHEST = 5, _pkDEFAULT = 4;
+const _pkFRAME_TARGET = 64 * 1024;
+const _pkIsThen = (v) => v !== null && (typeof v === 'object' || typeof v === 'function') && typeof v.then === 'function';
+const _pkKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : {});
+const _pkLatin = (s) => { const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff; return b; };
+const _pkUtf8 = (s) => pyEncode(s, 'utf-8', 'surrogatepass');
+const _pkOwnFn = (o, k) => { if (o === null || typeof o !== 'object') return null; const v = o[k]; return typeof v === 'function' ? v : null; };
+
+// ── output: a growable byte buffer, cut into FRAMEs at opcode boundaries (protocol 4+) ──
+class _PkOut {
+  constructor(proto) { this.proto = proto; this.b = new Uint8Array(256); this.n = 0; this.frames = []; this.frameStart = 0; }
+  _room(k) { if (this.n + k > this.b.length) { let m = this.b.length * 2; while (m < this.n + k) m *= 2; const nb = new Uint8Array(m); nb.set(this.b.subarray(0, this.n)); this.b = nb; } }
+  op(code) { this._room(1); this.b[this.n++] = code; }
+  u8(x) { this._room(1); this.b[this.n++] = x & 0xff; }
+  u16(x) { this._room(2); this.b[this.n++] = x & 0xff; this.b[this.n++] = (x >>> 8) & 0xff; }
+  u32(x) { this._room(4); for (let i = 0; i < 4; i++) this.b[this.n++] = (x >>> (8 * i)) & 0xff; }
+  i32(x) { this.u32(x >>> 0); }
+  u64(x) { this._room(8); let v = BigInt(x); for (let i = 0; i < 8; i++) { this.b[this.n++] = Number(v & 0xffn); v >>= 8n; } }
+  bytes(arr) { this._room(arr.length); this.b.set(arr, this.n); this.n += arr.length; }
+  ascii(s) { this.bytes(_pkLatin(s)); }
+  f64be(x) { const dv = new DataView(new ArrayBuffer(8)); dv.setFloat64(0, x, false); this.bytes(new Uint8Array(dv.buffer)); }
+  // an opcode is complete: start a new frame once this one is big enough
+  boundary() { if (this.proto >= 4 && this.n - this.frameStart >= _PK_FRAME_TARGET_) this._commit(); }
+  _commit() { if (this.n > this.frameStart) this.frames.push([this.frameStart, this.n]); this.frameStart = this.n; }
+  result() {
+    const head = this.proto >= 2 ? [0x80, this.proto] : [];
+    if (this.proto < 4) { const r = new Uint8Array(head.length + this.n); r.set(head); r.set(this.b.subarray(0, this.n), head.length); return r; }
+    this._commit();
+    let total = head.length;
+    for (const [s, e] of this.frames) total += (e - s >= 4 ? 9 : 0) + (e - s);
+    const r = new Uint8Array(total);
+    r.set(head);
+    let p = head.length;
+    for (const [s, e] of this.frames) {
+      const len = e - s;
+      if (len >= 4) { r[p++] = 0x95; let v = BigInt(len); for (let i = 0; i < 8; i++) { r[p++] = Number(v & 0xffn); v >>= 8n; } }
+      r.set(this.b.subarray(s, e), p); p += len;
+    }
+    return r;
+  }
+}
+const _PK_FRAME_TARGET_ = _pkFRAME_TARGET;
+
+// ── the pickler ──
+// state: { out, proto, memo: Map(obj → index), self (a Pickler instance or null), fixImports }
+function _pkModuleOf(obj) {
+  if (typeof obj === 'function') {
+    const bn = obj._pyName || obj.__name__;
+    if (bn && adderModules.builtins[bn] === obj) return 'builtins';   // object, type, len, …
+    if (obj._pyClass && !obj._pyMRO) return 'builtins';            // int, ValueError, …
+    if (obj.__module__ !== undefined && obj.__module__ !== null) return obj.__module__;
+    if (obj._pyFunc || obj._pyDef || obj._pyClass) return '__main__';
+    return 'builtins';
+  }
+  const m = obj && obj.__module__;
+  return m === undefined || m === null ? '__main__' : m;
+}
+const _pkNameOf = (obj) => (obj && (obj.__qualname__ || obj._pyName || obj.__name__ || obj.name)) || null;
+
+function _pkMemoize(st, obj) {
+  const idx = st.memo.size;
+  st.memo.set(obj, idx);
+  const o = st.out;
+  if (st.proto >= 4) o.op(0x94);
+  else if (st.proto >= 1) { if (idx < 256) { o.op(0x71); o.u8(idx); } else { o.op(0x72); o.u32(idx); } }
+  else { o.op(0x70); o.ascii(`${idx}\n`); }
+  o.boundary();
+}
+function _pkGet(st, idx) {
+  const o = st.out;
+  if (st.proto >= 1) { if (idx < 256) { o.op(0x68); o.u8(idx); } else { o.op(0x6a); o.u32(idx); } }
+  else { o.op(0x67); o.ascii(`${idx}\n`); }
+  o.boundary();
+}
+
+function _pkSaveInt(st, n) {
+  const o = st.out;
+  if (st.proto >= 1) {
+    if (n >= 0 && n <= 0xff) { o.op(0x4b); o.u8(n); return o.boundary(); }
+    if (n >= 0 && n <= 0xffff) { o.op(0x4d); o.u16(n); return o.boundary(); }
+    if (n >= -0x80000000 && n <= 0x7fffffff) { o.op(0x4a); o.i32(n); return o.boundary(); }
+  }
+  if (st.proto >= 2) {
+    // LONG1 / LONG4: little-endian two's complement, as few bytes as hold it
+    let v = BigInt(n);
+    const bytes = [];
+    if (v !== 0n) {
+      for (;;) {
+        bytes.push(Number(v & 0xffn));
+        v >>= 8n;
+        if ((v === 0n && !(bytes[bytes.length - 1] & 0x80)) || (v === -1n && (bytes[bytes.length - 1] & 0x80))) break;
+      }
+    }
+    if (bytes.length < 256) { o.op(0x8a); o.u8(bytes.length); } else { o.op(0x8b); o.i32(bytes.length); }
+    o.bytes(bytes);
+    return o.boundary();
+  }
+  if (n >= -0x80000000 && n <= 0x7fffffff) o.ascii(`I${n}\n`);
+  else o.ascii(`L${BigInt(n)}L\n`);
+  o.boundary();
+}
+function _pkFloatRepr(x) {
+  if (x !== x) return 'nan';
+  if (x === Infinity) return 'inf';
+  if (x === -Infinity) return '-inf';
+  if (Object.is(x, -0)) return '-0.0';
+  return pyRepr(x);
+}
+function _pkSaveFloat(st, x) {
+  const o = st.out;
+  if (st.proto >= 1) { o.op(0x47); o.f64be(x); }
+  else o.ascii(`F${_pkFloatRepr(x)}\n`);
+  o.boundary();
+}
+function _pkSaveStr(st, s) {
+  const o = st.out;
+  if (st.proto >= 1) {
+    const b = _pkUtf8(s);
+    if (b.length < 256 && st.proto >= 4) { o.op(0x8c); o.u8(b.length); }
+    else if (b.length > 0xffffffff && st.proto >= 4) { o.op(0x8d); o.u64(b.length); }
+    else { o.op(0x58); o.u32(b.length); }
+    o.bytes(b);
+  } else {
+    // raw-unicode-escape of the text, with the characters a line-based opcode can't hold escaped
+    let t = '';
+    for (const ch of s.replace(/\\/g, '\\u005c').replace(/\0/g, '\\u0000').replace(/\n/g, '\\u000a').replace(/\r/g, '\\u000d').replace(/\x1a/g, '\\u001a')) {
+      const cp = ch.codePointAt(0);
+      t += cp < 0x100 ? ch : cp < 0x10000 ? '\\u' + cp.toString(16).padStart(4, '0') : '\\U' + cp.toString(16).padStart(8, '0');
+    }
+    o.op(0x56); o.ascii(t + '\n');
+  }
+  o.boundary();
+  _pkMemoize(st, s);
+}
+
+function* _pkSave(st, obj, saveAsRef = true) {
+  const o = st.out;
+  // persistent ids: a Pickler subclass's persistent_id(obj), when it returns something
+  if (st.persistentId) {
+    const pid = yield st.persistentId(obj);
+    if (pid !== null && pid !== undefined) {
+      if (st.proto >= 1) { yield* _pkSave(st, pid); o.op(0x51); }
+      else { o.op(0x50); o.ascii(`${typeof pid === 'string' ? pid : String(pid)}\n`); }
+      return o.boundary();
+    }
+  }
+  if (obj === null || obj === undefined) { o.op(0x4e); return o.boundary(); }
+  if (obj === true || obj === false) {
+    if (st.proto >= 2) o.op(obj ? 0x88 : 0x89); else o.ascii(obj ? 'I01\n' : 'I00\n');
+    return o.boundary();
+  }
+  if (typeof obj === 'number') {
+    if (Number.isInteger(obj) && !Object.is(obj, -0) && Math.abs(obj) <= Number.MAX_SAFE_INTEGER) return _pkSaveInt(st, obj);
+    return _pkSaveFloat(st, obj);
+  }
+  if (typeof obj === 'bigint') return _pkSaveInt(st, obj);
+  // memoised: the second reference to anything is a GET
+  if (st.memo.has(obj)) return _pkGet(st, st.memo.get(obj));
+  if (typeof obj === 'string') return _pkSaveStr(st, obj);
+  if (obj instanceof Uint8Array) return yield* _pkSaveBytes(st, obj);
+  if (obj instanceof PyByteArray) {
+    if (st.proto >= 5) { o.op(0x96); o.u64(obj.length); o.bytes(obj); o.boundary(); return _pkMemoize(st, obj); }
+    const b = Uint8Array.from(obj);
+    return yield* _pkSaveReduce(st, adderModules.builtins.bytearray, mkTuple([b]), { obj });
+  }
+  if (obj instanceof PyTuple && !obj.__adderType__) return yield* _pkSaveTuple(st, obj);
+  if (Array.isArray(obj) && !obj.__adderType__) {
+    if (st.proto >= 1) o.op(0x5d); else o.ascii('(l');
+    o.boundary();
+    _pkMemoize(st, obj);
+    return yield* _pkBatchAppends(st, obj);
+  }
+  if ((obj instanceof Map && !obj.__adderType__ && !obj.__adderClass__) || isPlainDict(obj)) {
+    if (st.proto >= 1) o.op(0x7d); else o.ascii('(d');
+    o.boundary();
+    _pkMemoize(st, obj);
+    return yield* _pkBatchSetitems(st, obj instanceof Map ? [...obj.entries()] : Object.entries(obj));
+  }
+  if (obj instanceof Set && !obj.__adderType__) {
+    const items = [...obj];
+    if (st.proto < 4) return yield* _pkSaveReduce(st, obj._frozen ? adderModules.builtins.frozenset : adderModules.builtins.set, mkTuple([items]), { obj });
+    if (obj._frozen) {
+      o.op(0x28); o.boundary();
+      for (const x of items) yield* _pkSave(st, x);
+      if (st.memo.has(obj)) { o.op(0x31); o.boundary(); return _pkGet(st, st.memo.get(obj)); }
+      o.op(0x91); o.boundary();
+      return _pkMemoize(st, obj);
+    }
+    o.op(0x8f); o.boundary();
+    _pkMemoize(st, obj);
+    for (let i = 0; i < items.length; i += 1000) {
+      o.op(0x28); o.boundary();
+      for (const x of items.slice(i, i + 1000)) yield* _pkSave(st, x);
+      o.op(0x90); o.boundary();
+    }
+    return;
+  }
+  if (obj instanceof AdderRange) return yield* _pkSaveReduce(st, adderModules.builtins.range, mkTuple([obj.start, obj.stop, obj.step]), { obj });
+  if (obj instanceof Complex) return yield* _pkSaveReduce(st, adderModules.builtins.complex, mkTuple([obj.real, obj.imag]), { obj });
+  // classes and functions: by reference
+  if (typeof obj === 'function') return _pkSaveGlobal(st, obj);
+  // collections' dict types (OrderedDict, Counter, defaultdict): their class + the items
+  if (obj instanceof Map && obj.__adderClass__ && !obj.__adderType__) {
+    const cls = adderModules.collections && adderModules.collections[obj.__adderClass__];
+    if (!cls) throw new AdderError('PicklingError', `Can't pickle '${obj.__adderClass__}' object`);
+    const factory = obj.__adderClass__ === 'defaultdict' ? (obj.default_factory ?? null) : undefined;
+    return yield* _pkSaveReduce(st, cls, mkTuple(factory === undefined ? [] : [factory]), { dictitems: [...obj.entries()].map((e) => mkTuple(e)), obj });
+  }
+  // everything else: the reduce protocol
+  const rv = yield* _pkReduceValue(st, obj);
+  if (typeof rv === 'string') return _pkSaveGlobal(st, obj, rv);
+  if (!(rv instanceof PyTuple) || rv.length < 2 || rv.length > 6) throw new AdderError('PicklingError', `${pyTypeName(obj)}.__reduce__ must return a string or a tuple of 2 to 6 items`);
+  return yield* _pkSaveReduce(st, rv[0], rv[1], { state: rv[2], listitems: rv[3], dictitems: rv[4], stateSetter: rv[5], obj });
+}
+
+function* _pkSaveBytes(st, b) {
+  const o = st.out;
+  if (st.proto < 3) {
+    if (!b.length) return yield* _pkSaveReduce(st, adderModules.builtins.bytes, mkTuple([]), { obj: b });
+    return yield* _pkSaveReduce(st, _pkCodecsEncode, mkTuple([pyDecodePartial(b, 'latin-1', 'strict', true).text, 'latin1']), { obj: b });
+  }
+  if (b.length < 256) { o.op(0x43); o.u8(b.length); }
+  else if (b.length > 0xffffffff && st.proto >= 4) { o.op(0x8e); o.u64(b.length); }
+  else { o.op(0x42); o.u32(b.length); }
+  o.bytes(b);
+  o.boundary();
+  _pkMemoize(st, b);
+}
+
+function* _pkSaveTuple(st, t) {
+  const o = st.out;
+  const n = t.length;
+  if (n === 0) { if (st.proto >= 1) o.op(0x29); else o.ascii('(t'); return o.boundary(); }
+  if (n <= 3 && st.proto >= 2) {
+    for (const x of t) yield* _pkSave(st, x);
+    if (st.memo.has(t)) { for (let i = 0; i < n; i++) o.op(0x30); o.boundary(); return _pkGet(st, st.memo.get(t)); }
+    o.op([0x85, 0x86, 0x87][n - 1]); o.boundary();
+    return _pkMemoize(st, t);
+  }
+  o.op(0x28); o.boundary();
+  for (const x of t) yield* _pkSave(st, x);
+  if (st.memo.has(t)) {
+    if (st.proto >= 1) { o.op(0x31); o.boundary(); } else { for (let i = 0; i <= n; i++) o.op(0x30); o.boundary(); }
+    return _pkGet(st, st.memo.get(t));
+  }
+  o.op(0x74); o.boundary();
+  _pkMemoize(st, t);
+}
+
+function* _pkBatchAppends(st, items) {
+  const o = st.out;
+  const arr = Array.isArray(items) ? items : [...pyIter(items)];
+  if (st.proto < 1) { for (const x of arr) { yield* _pkSave(st, x); o.op(0x61); o.boundary(); } return; }
+  for (let i = 0; i < arr.length; i += 1000) {
+    const chunk = arr.slice(i, i + 1000);
+    if (chunk.length > 1) { o.op(0x28); o.boundary(); for (const x of chunk) yield* _pkSave(st, x); o.op(0x65); }
+    else { yield* _pkSave(st, chunk[0]); o.op(0x61); }
+    o.boundary();
+  }
+}
+function* _pkBatchSetitems(st, entries) {
+  const o = st.out;
+  if (st.proto < 1) { for (const [k, v] of entries) { yield* _pkSave(st, k); yield* _pkSave(st, v); o.op(0x73); o.boundary(); } return; }
+  for (let i = 0; i < entries.length; i += 1000) {
+    const chunk = entries.slice(i, i + 1000);
+    if (chunk.length > 1) { o.op(0x28); o.boundary(); for (const [k, v] of chunk) { yield* _pkSave(st, k); yield* _pkSave(st, v); } o.op(0x75); }
+    else { yield* _pkSave(st, chunk[0][0]); yield* _pkSave(st, chunk[0][1]); o.op(0x73); }
+    o.boundary();
+  }
+}
+
+function _pkSaveGlobal(st, obj, name = null) {
+  const o = st.out;
+  let module = _pkModuleOf(obj);
+  name = name || _pkNameOf(obj);
+  if (!name) throw new AdderError('PicklingError', `Can't pickle ${pyRepr(obj)}: it has no name`);
+  if (st.proto >= 4) {
+    _pkSaveStr(st, module); _pkSaveStr(st, name);
+    o.op(0x93); o.boundary();
+  } else {
+    if (st.proto < 3 && st.fixImports && module === 'builtins') module = '__builtin__';
+    if (st.proto < 3 && st.fixImports && module === 'copyreg') module = 'copy_reg';
+    o.op(0x63); o.bytes(_pkUtf8(`${module}\n${name}\n`)); o.boundary();
+  }
+  _pkMemoize(st, obj);
+}
+
+// the object's reduce value: copyreg's dispatch_table, then __reduce_ex__ / __reduce__ the class
+// defines, then object's own (the default below)
+function* _pkReduceValue(st, obj) {
+  const t = typeOf(obj);
+  const dt = st.dispatchTable || adderModules.copyreg.dispatch_table;
+  if (dt && dt.has && dt.has(t)) return yield dt.get(t)(obj);
+  const rex = _pkOwnFn(obj, '__reduce_ex__');
+  if (rex) return yield rex.call(obj, st.proto);
+  const r = _pkOwnFn(obj, '__reduce__');
+  if (r) return yield r.call(obj);
+  return yield* _pkObjectReduceEx(st, obj, t);
+}
+// object.__reduce_ex__(protocol), as copyreg writes it
+function* _pkObjectReduceEx(st, obj, cls) {
+  if (typeof obj === 'function' || !obj || !obj.__adderType__) throw new AdderError('TypeError', `cannot pickle '${pyTypeName(obj)}' object`);
+  const state = yield* _pkGetState(obj);
+  if (st.proto < 2) return mkTuple([adderModules.copyreg._reconstructor, mkTuple([cls, pyObjectObj, null]), state]);
+  let args = mkTuple([]), kwargs = null;
+  const gnx = _pkOwnFn(obj, '__getnewargs_ex__');
+  if (gnx) { const r = yield gnx.call(obj); args = r[0]; kwargs = r[1]; }
+  else { const gn = _pkOwnFn(obj, '__getnewargs__'); if (gn) args = yield gn.call(obj); }
+  const listitems = Array.isArray(obj) ? obj.slice() : null;
+  const dictitems = obj instanceof Map ? [...obj.entries()].map((e) => mkTuple(e)) : null;
+  if (kwargs && (kwargs instanceof Map ? kwargs.size : Object.keys(kwargs).length)) {
+    return mkTuple([adderModules.copyreg.__newobj_ex__, mkTuple([cls, args, kwargs]), state, listitems, dictitems]);
+  }
+  return mkTuple([adderModules.copyreg.__newobj__, mkTuple([cls, ...args]), state, listitems, dictitems]);
+}
+// __getstate__, or the instance's attributes (None when it has none)
+function* _pkGetState(obj) {
+  const gs = _pkOwnFn(obj, '__getstate__');
+  if (gs) return yield gs.call(obj);
+  const keys = Object.keys(obj).filter((k) => !k.startsWith('_py') && !['__adderClass__', '__adderType__', '__adderModule__', '__id__'].includes(k));
+  if (!keys.length) return null;
+  const d = new PyDict();
+  for (const k of keys) d.set(k, obj[k]);
+  return d;
+}
+
+function* _pkSaveReduce(st, func, args, { state = null, listitems = null, dictitems = null, stateSetter = null, obj = null } = {}) {
+  const o = st.out;
+  if (!(args instanceof PyTuple)) args = mkTuple([...pyIter(args)]);
+  const fname = func && (func.__name__ || func._pyName);
+  if (st.proto >= 2 && fname === '__newobj_ex__') {
+    const [cls, a, kw] = args;
+    yield* _pkSave(st, cls); yield* _pkSave(st, a); yield* _pkSave(st, kw);
+    o.op(0x92); o.boundary();
+  } else if (st.proto >= 2 && fname === '__newobj__') {
+    const cls = args[0];
+    yield* _pkSave(st, cls);
+    yield* _pkSave(st, mkTuple(args.slice(1)));
+    o.op(0x81); o.boundary();
+  } else {
+    yield* _pkSave(st, func);
+    yield* _pkSave(st, args);
+    o.op(0x52); o.boundary();
+  }
+  if (obj !== null) {
+    if (st.memo.has(obj)) { o.op(0x30); o.boundary(); _pkGet(st, st.memo.get(obj)); }
+    else _pkMemoize(st, obj);
+  }
+  if (listitems !== null && listitems !== undefined) yield* _pkBatchAppends(st, listitems);
+  if (dictitems !== null && dictitems !== undefined) yield* _pkBatchSetitems(st, [...pyIter(dictitems)].map((p) => [p[0], p[1]]));
+  if (state !== null && state !== undefined) {
+    if (stateSetter === null || stateSetter === undefined) { yield* _pkSave(st, state); o.op(0x62); }
+    else { yield* _pkSave(st, stateSetter); yield* _pkSave(st, obj); yield* _pkSave(st, state); o.op(0x86); o.op(0x52); o.op(0x30); }
+    o.boundary();
+  }
+}
+
+// the pickling engine: one dump (a Pickler's memo carries over to its next dump)
+function* _pkDump(st, obj) {
+  yield* _pkSave(st, obj);
+  st.out.op(0x2e);
+  st.out.boundary();
+}
+function _pkState(proto, opts = {}) {
+  if (proto === null || proto === undefined) proto = _pkDEFAULT;
+  if (proto < 0) proto = _pkHIGHEST;
+  if (proto > _pkHIGHEST) throw new AdderError('ValueError', `pickle protocol must be <= ${_pkHIGHEST}`);
+  return { out: new _PkOut(proto), proto, memo: opts.memo || new Map(), fixImports: opts.fixImports !== false, persistentId: opts.persistentId || null, dispatchTable: opts.dispatchTable || null };
+}
+
+// ── the unpickler ──
+const _PK_FIX_MODULES = { __builtin__: 'builtins', copy_reg: 'copyreg', Queue: 'queue', SocketServer: 'socketserver', ConfigParser: 'configparser', repr: 'reprlib', _winreg: 'winreg', thread: '_thread', dummy_thread: '_dummy_thread', UserDict: 'collections', UserList: 'collections', UserString: 'collections', urlparse: 'urllib.parse', cPickle: 'pickle', StringIO: 'io', cStringIO: 'io' };
+const _PK_FIX_NAMES = { 'builtins.xrange': ['builtins', 'range'], 'builtins.unicode': ['builtins', 'str'], 'builtins.basestring': ['builtins', 'str'], 'builtins.long': ['builtins', 'int'], 'builtins.reduce': ['functools', 'reduce'], 'builtins.intern': ['sys', 'intern'], 'builtins.unichr': ['builtins', 'chr'], 'itertools.izip': ['builtins', 'zip'], 'itertools.imap': ['builtins', 'map'], 'itertools.ifilter': ['builtins', 'filter'], 'collections.UserDict': ['collections', 'UserDict'] };
+
+// the default find_class: import the module, walk the qualified name
+function* _pkFindClass(st, module, name) {
+  if (st.proto < 3 && st.fixImports) {
+    const fixed = _PK_FIX_NAMES[`${_PK_FIX_MODULES[module] || module}.${name}`];
+    if (fixed) [module, name] = fixed;
+    else if (_PK_FIX_MODULES[module]) module = _PK_FIX_MODULES[module];
+  }
+  let obj;
+  if (module === '__main__') {
+    const first = name.split('.')[0];
+    obj = mainClassLookup(first);
+    if (obj === undefined) throw new AdderError('AttributeError', `Can't get attribute '${name}' on <module '__main__'>`);
+    for (const part of name.split('.').slice(1)) obj = adderGetAttr(obj, part);
+    return obj;
+  }
+  obj = module === 'builtins' ? adderModules.builtins : yield adderModules.importlib.import_module(module);
+  for (const part of name.split('.')) {
+    try { obj = adderGetAttr(obj, part); }
+    catch (e) { throw new AdderError('AttributeError', `Can't get attribute '${name}' on <module '${module}'>`); }
+  }
+  return obj;
+}
+
+const _pkMark = Symbol('mark');
+function* _pkLoad(st) {
+  const data = st.data;
+  let pos = st.pos;
+  let stack = [];
+  const meta = [];
+  const memo = st.memo;
+  const need = (k) => { if (pos + k > data.length) throw new AdderError('UnpicklingError', 'pickle data was truncated'); };
+  const u8 = () => { need(1); return data[pos++]; };
+  const u16 = () => { need(2); const v = data[pos] | (data[pos + 1] << 8); pos += 2; return v; };
+  const u32 = () => { need(4); const v = (data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16)) + data[pos + 3] * 0x1000000; pos += 4; return v; };
+  const i32 = () => { const v = u32(); return v > 0x7fffffff ? v - 0x100000000 : v; };
+  const u64 = () => { need(8); let v = 0; for (let i = 7; i >= 0; i--) v = v * 256 + data[pos + i]; pos += 8; return v; };
+  const take = (n) => { need(n); const b = data.slice(pos, pos + n); pos += n; return b; };
+  const line = () => { const i = data.indexOf(0x0a, pos); if (i < 0) throw new AdderError('UnpicklingError', 'pickle exhausted before end of frame'); const s = pyDecodePartial(data.subarray(pos, i), 'latin-1', 'strict', true).text; pos = i + 1; return s; };
+  const utf8 = (b) => pyDecodePartial(b, 'utf-8', 'surrogatepass', true).text;
+  const popMark = () => { const items = stack; stack = meta.pop(); if (!stack) throw new AdderError('UnpicklingError', 'could not find MARK'); return items; };
+  const top = () => { if (!stack.length) throw new AdderError('UnpicklingError', 'unpickling stack underflow'); return stack[stack.length - 1]; };
+  const pop = () => { if (!stack.length) throw new AdderError('UnpicklingError', 'unpickling stack underflow'); return stack.pop(); };
+  // a py2 str (STRING / BINSTRING): text in `encoding`, or bytes when encoding is 'bytes'
+  const py2str = (b) => (st.encoding === 'bytes' ? b : pyDecodePartial(b, st.encoding, st.errors, true).text);
+  const intLong = (b) => { if (!b.length) return 0; let v = 0n; for (let i = b.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(b[i]); if (b[b.length - 1] & 0x80) v -= 1n << BigInt(8 * b.length); return Number(v); };
+  const newobj = function* (cls, args, kw) { const nw = adderGetAttr(cls, '__new__'); return yield (kw ? nw(cls, ...args, { _kw: true, ...kw }) : nw(cls, ...args)); };
+  const findClass = (module, name) => (st.findClass ? st.findClass(module, name) : _pkFindClass(st, module, name));
+
+  for (;;) {
+    const op = u8();
+    switch (op) {
+      case 0x28: meta.push(stack); stack = []; break;                                   // MARK
+      case 0x2e: st.pos = pos; return pop();                                            // STOP
+      case 0x30: if (stack.length) stack.pop(); else popMark(); break;                  // POP
+      case 0x31: popMark(); break;                                                      // POP_MARK
+      case 0x32: stack.push(top()); break;                                              // DUP
+      case 0x46: { const s = line(); stack.push(s === 'nan' ? NaN : s === 'inf' ? Infinity : s === '-inf' ? -Infinity : parseFloat(s)); break; }   // FLOAT
+      case 0x49: { const s = line(); stack.push(s === '00' ? false : s === '01' ? true : parseInt(s, 10)); break; }   // INT
+      case 0x4a: stack.push(i32()); break;                                              // BININT
+      case 0x4b: stack.push(u8()); break;                                               // BININT1
+      case 0x4d: stack.push(u16()); break;                                              // BININT2
+      case 0x4c: { const s = line().replace(/L$/, ''); stack.push(Number(BigInt(s))); break; }   // LONG
+      case 0x50: { const pid = line(); stack.push(yield st.persistentLoad(pid)); break; }        // PERSID
+      case 0x51: { const pid = pop(); stack.push(yield st.persistentLoad(pid)); break; }         // BINPERSID
+      case 0x52: { const args = pop(); const fn = pop(); stack.push(yield fn(...args)); break; } // REDUCE
+      case 0x53: {                                                                       // STRING
+        const s = line();
+        const q = s[0];
+        if (s.length < 2 || (q !== '"' && q !== "'") || s[s.length - 1] !== q) throw new AdderError('UnpicklingError', 'the STRING opcode argument must be quoted');
+        const raw = s.slice(1, -1).replace(/\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|.)/g, (m, e) => (e[0] === 'x' ? String.fromCharCode(parseInt(e.slice(1), 16)) : /^[0-7]/.test(e) ? String.fromCharCode(parseInt(e, 8)) : ({ n: '\n', r: '\r', t: '\t', '\\': '\\', "'": "'", '"': '"', a: '\x07', b: '\b', f: '\f', v: '\v' })[e] ?? '\\' + e));
+        stack.push(py2str(_pkLatin(raw)));
+        break;
+      }
+      case 0x54: { const n = i32(); if (n < 0) throw new AdderError('UnpicklingError', 'BINSTRING pickle has negative byte count'); stack.push(py2str(take(n))); break; }
+      case 0x55: stack.push(py2str(take(u8()))); break;                                 // SHORT_BINSTRING
+      case 0x56: {                                                                      // UNICODE (raw-unicode-escape)
+        stack.push(line().replace(/\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})/g, (m, a, b) => String.fromCodePoint(parseInt(a || b, 16))));
+        break;
+      }
+      case 0x58: stack.push(utf8(take(u32()))); break;                                  // BINUNICODE
+      case 0x8c: stack.push(utf8(take(u8()))); break;                                   // SHORT_BINUNICODE
+      case 0x8d: stack.push(utf8(take(u64()))); break;                                  // BINUNICODE8
+      case 0x43: stack.push(take(u8())); break;                                         // SHORT_BINBYTES
+      case 0x42: stack.push(take(u32())); break;                                        // BINBYTES
+      case 0x8e: stack.push(take(u64())); break;                                        // BINBYTES8
+      case 0x96: { const b = take(u64()); const ba = new PyByteArray(); for (const x of b) ba.push(x); stack.push(ba); break; }   // BYTEARRAY8
+      case 0x97: {                                                                      // NEXT_BUFFER
+        const it = st.buffers;
+        if (!it) throw new AdderError('UnpicklingError', 'pickle stream refers to out-of-band data but no *buffers* argument was given');
+        const r = it.next(); if (r.done) throw new AdderError('UnpicklingError', 'not enough out-of-band buffers');
+        stack.push(r.value); break;
+      }
+      case 0x98: break;                                                                 // READONLY_BUFFER
+      case 0x47: { need(8); const dv = new DataView(data.buffer, data.byteOffset + pos, 8); stack.push(dv.getFloat64(0, false)); pos += 8; break; }   // BINFLOAT
+      case 0x4e: stack.push(null); break;                                               // NONE
+      case 0x88: stack.push(true); break;
+      case 0x89: stack.push(false); break;
+      case 0x8a: stack.push(intLong(take(u8()))); break;                                // LONG1
+      case 0x8b: { const n = i32(); if (n < 0) throw new AdderError('UnpicklingError', 'LONG pickle has negative byte count'); stack.push(intLong(take(n))); break; }
+      case 0x29: stack.push(mkTuple([])); break;                                        // EMPTY_TUPLE
+      case 0x74: { const items = popMark(); stack.push(mkTuple(items)); break; }        // TUPLE
+      case 0x85: stack.push(mkTuple([pop()])); break;                                   // TUPLE1
+      case 0x86: { const b = pop(), a = pop(); stack.push(mkTuple([a, b])); break; }    // TUPLE2
+      case 0x87: { const c = pop(), b = pop(), a = pop(); stack.push(mkTuple([a, b, c])); break; }
+      case 0x5d: stack.push([]); break;                                                 // EMPTY_LIST
+      case 0x6c: { const items = popMark(); stack.push(items); break; }                 // LIST
+      case 0x7d: stack.push(new PyDict()); break;                                       // EMPTY_DICT
+      case 0x64: { const items = popMark(); const d = new PyDict(); for (let i = 0; i < items.length; i += 2) d.set(items[i], items[i + 1]); stack.push(d); break; }   // DICT
+      case 0x8f: stack.push(new PySet()); break;                                        // EMPTY_SET
+      case 0x91: { const s = new PySet(popMark()); s._frozen = true; stack.push(s); break; }   // FROZENSET
+      case 0x61: { const v = pop(); const l = top(); if (Array.isArray(l)) l.push(v); else yield adderGetAttr(l, 'append')(v); break; }   // APPEND
+      case 0x65: {                                                                      // APPENDS
+        const items = popMark(); const l = top();
+        if (Array.isArray(l) && !l.__adderType__) l.push(...items);
+        else { const ext = (() => { try { return adderGetAttr(l, 'extend'); } catch { return null; } })(); if (ext) yield ext(items); else for (const v of items) yield adderGetAttr(l, 'append')(v); }
+        break;
+      }
+      case 0x73: { const v = pop(), k = pop(); yield _pkSetItem(top(), k, v); break; }    // SETITEM
+      case 0x75: { const items = popMark(); const d = top(); for (let i = 0; i < items.length; i += 2) yield _pkSetItem(d, items[i], items[i + 1]); break; }   // SETITEMS
+      case 0x90: { const items = popMark(); const s = top(); if (s instanceof Set) for (const x of items) s.add(x); else for (const x of items) yield adderGetAttr(s, 'add')(x); break; }   // ADDITEMS
+      case 0x62: { const state = pop(); yield* _pkBuild(top(), state); break; }       // BUILD
+      case 0x63: { const module = line(), name = line(); stack.push(yield* findClass(module, name)); break; }   // GLOBAL
+      case 0x93: { const name = pop(), module = pop(); stack.push(yield* findClass(module, name)); break; }    // STACK_GLOBAL
+      case 0x69: {                                                                      // INST
+        const module = line(), name = line();
+        const args = popMark();
+        const cls = yield* findClass(module, name);
+        stack.push(yield* _pkInstantiate(cls, args));
+        break;
+      }
+      case 0x6f: { const args = popMark(); const cls = args.shift(); stack.push(yield* _pkInstantiate(cls, args)); break; }   // OBJ
+      case 0x81: { const args = pop(); const cls = pop(); stack.push(yield* newobj(cls, [...args], null)); break; }   // NEWOBJ
+      case 0x92: {                                                                      // NEWOBJ_EX
+        const kw = pop(), args = pop(), cls = pop();
+        stack.push(yield* newobj(cls, [...args], kw instanceof Map ? Object.fromEntries(kw) : kw)); break;
+      }
+      case 0x82: case 0x83: case 0x84: throw new AdderError('ValueError', 'unregistered extension code (copyreg extensions are not supported)');
+      case 0x67: { const k = parseInt(line(), 10); if (!memo.has(k)) throw new AdderError('UnpicklingError', `Memo value not found at index ${k}`); stack.push(memo.get(k)); break; }   // GET
+      case 0x68: { const k = u8(); if (!memo.has(k)) throw new AdderError('UnpicklingError', `Memo value not found at index ${k}`); stack.push(memo.get(k)); break; }   // BINGET
+      case 0x6a: { const k = u32(); if (!memo.has(k)) throw new AdderError('UnpicklingError', `Memo value not found at index ${k}`); stack.push(memo.get(k)); break; }  // LONG_BINGET
+      case 0x70: { const k = parseInt(line(), 10); if (k < 0) throw new AdderError('ValueError', 'negative PUT argument'); memo.set(k, top()); break; }   // PUT
+      case 0x71: memo.set(u8(), top()); break;                                          // BINPUT
+      case 0x72: memo.set(u32(), top()); break;                                         // LONG_BINPUT
+      case 0x94: memo.set(memo.size, top()); break;                                     // MEMOIZE
+      case 0x80: { const p = u8(); if (p > _pkHIGHEST) throw new AdderError('ValueError', `unsupported pickle protocol: ${p}`); st.proto = p; break; }   // PROTO
+      case 0x95: u64(); break;                                                          // FRAME (transparent here)
+      default: throw new AdderError('UnpicklingError', `invalid load key, ${pyRepr(String.fromCharCode(op))}.`);
+    }
+  }
+}
+function _pkSetItem(d, k, v) {
+  if (d instanceof Map && !d.__adderType__) { d.set(k, v); return null; }
+  if (isPlainDict(d)) { if (typeof k === 'string') d[k] = v; return null; }
+  return adderGetAttr(d, '__setitem__')(k, v);
+}
+function* _pkInstantiate(cls, args) {
+  if (args.length || _pkOwnFn(cls.prototype || {}, '__getinitargs__')) return yield cls(...args);
+  return yield adderGetAttr(cls, '__new__')(cls);
+}
+// BUILD: __setstate__(state), or the state into the instance's attributes (a (dict, slots) pair too)
+function* _pkBuild(inst, state) {
+  const ss = _pkOwnFn(inst, '__setstate__');
+  if (ss) { yield ss.call(inst, state); return; }
+  let slots = null;
+  if (state instanceof PyTuple && state.length === 2) { slots = state[1]; state = state[0]; }
+  const each = (m, f) => { if (!m) return; if (m instanceof Map) for (const [k, v] of m) f(k, v); else for (const [k, v] of Object.entries(m)) f(k, v); };
+  each(state, (k, v) => { inst[k] = v; });
+  each(slots, (k, v) => { inst[k] = v; });
+}
+
+// ── module API ──
+const _pkCodecsEncode = Object.assign((s, enc = 'utf-8', errors = 'strict') => pyEncode(s, enc, errors), { __name__: 'encode', _pyName: 'encode', __module__: '_codecs' });
+if (!adderModules._codecs) adderModules._codecs = { __adderModule__: true, __name__: '_codecs', encode: _pkCodecsEncode, decode: (b, enc = 'utf-8', errors = 'strict') => pyDecodePartial(b, enc, errors, true).text };
+
+const _pkToBytes = (data) => {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof PyByteArray || Array.isArray(data)) return Uint8Array.from(data);
+  if (typeof data === 'string') throw new AdderError('TypeError', "a bytes-like object is required, not 'str'");
+  throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(data)}'`);
+};
+
+const _pkDumps = maybeSync(function* (obj, ...a) {
+  const kw = _pkKw(a);
+  const st = _pkState(a.length ? a[0] : kw.protocol, { fixImports: kw.fix_imports });
+  yield* _pkDump(st, obj);
+  return st.out.result();
+});
+// loads from bytes at `pos`; returns [value, end]
+function* _pkLoadsAt(data, pos, opts = {}) {
+  const st = { data, pos, memo: new Map(), proto: 0, encoding: opts.encoding || 'ASCII', errors: opts.errors || 'strict', fixImports: opts.fix_imports !== false,
+    buffers: opts.buffers ? pyIter(opts.buffers)[Symbol.iterator]() : null, findClass: opts.findClass || null,
+    persistentLoad: opts.persistentLoad || (() => { throw new AdderError('UnpicklingError', 'A load persistent id instruction was encountered, but no persistent_load function was specified.'); }) };
+  const v = yield* _pkLoad(st);
+  return [v, st.pos];
+}
+const _pkLoads = maybeSync(function* (data, ...a) {
+  const kw = _pkKw(a);
+  const [v] = yield* _pkLoadsAt(_pkToBytes(data), 0, kw);
+  return v;
+});
+// a file: read it all, unpickle the first pickle, and leave the file just after it (so dump /
+// dump / load / load works) when it can seek
+function* _pkLoadFile(file, opts, findClass, persistentLoad) {
+  const tell = (() => { try { return adderGetAttr(file, 'tell'); } catch { return null; } })();
+  const start = tell ? yield tell() : 0;
+  const data = _pkToBytes(yield adderGetAttr(file, 'read')());
+  if (!data.length) throw new AdderError('EOFError', 'Ran out of input');
+  const [v, end] = yield* _pkLoadsAt(data, 0, { ...opts, findClass, persistentLoad });
+  if (end < data.length) { try { yield adderGetAttr(file, 'seek')(start + end); } catch { /* not seekable: the rest is consumed */ } }
+  return v;
+}
+
+// a method a Python subclass defines (find_class, persistent_id, …) — found in its MRO before the
+// pickle class itself: bound, else null
+function _pkOverride(self, name, baseCls) {
+  for (const c of (typeOf(self)._pyMRO || [])) {
+    if (c === baseCls) return null;
+    if (c.prototype && Object.hasOwn(c.prototype, name)) return adderGetAttr(self, name);
+  }
+  return null;
+}
+
+const _pkPicklerMembers = {
+  __init__(self, file, ...a) {
+    const kw = _pkKw(a);
+    self._file = file;
+    self._protocol = a.length ? a[0] : kw.protocol ?? null;
+    self._fix = kw.fix_imports !== false;
+    self._memo = new Map();
+    self.bin = (self._protocol === null ? _pkDEFAULT : self._protocol) >= 1;
+    self.fast = 0;
+    return null;
+  },
+  dump: maybeSync(function* (self, obj) {
+    const pid = _pkOverride(self, 'persistent_id', _pkPickler);
+    const dt = (() => { try { const v = adderGetAttr(self, 'dispatch_table'); return v instanceof Map ? v : null; } catch { return null; } })();
+    const st = _pkState(self._protocol, { memo: self._memo, fixImports: self._fix, persistentId: pid, dispatchTable: dt });
+    yield* _pkDump(st, obj);
+    yield adderGetAttr(self._file, 'write')(st.out.result());
+    return null;
+  }),
+  clear_memo(self) { self._memo = new Map(); return null; },
+};
+const _pkUnpicklerMembers = {
+  __init__(self, file, ...a) {
+    const kw = _pkKw(a);
+    self._file = file;
+    self._opts = { encoding: kw.encoding || 'ASCII', errors: kw.errors || 'strict', fix_imports: kw.fix_imports !== false, buffers: kw.buffers };
+    return null;
+  },
+  load: maybeSync(function* (self) {
+    const fc = _pkOverride(self, 'find_class', _pkUnpickler);
+    const pl = _pkOverride(self, 'persistent_load', _pkUnpickler);
+    return yield* _pkLoadFile(self._file, self._opts, fc ? function* (m, n) { return yield fc(m, n); } : null, pl);
+  }),
+  find_class: maybeSync(function* (self, module, name) { return yield* _pkFindClass({ proto: 4, fixImports: true }, module, name); }),
+  persistent_load(self, pid) { throw new AdderError('UnpicklingError', 'A load persistent id instruction was encountered, but no persistent_load function was specified.'); },
+};
+const _pkPickler = buildClass('Pickler', [], _pkPicklerMembers, []);
+const _pkUnpickler = buildClass('Unpickler', [], _pkUnpicklerMembers, []);
+_pkPickler.__module__ = 'pickle'; _pkUnpickler.__module__ = 'pickle';
+
+adderModules.pickle = {
+  __adderModule__: true, __name__: 'pickle',
+  HIGHEST_PROTOCOL: _pkHIGHEST, DEFAULT_PROTOCOL: _pkDEFAULT, format_version: '5.0',
+  compatible_formats: ['1.0', '1.1', '1.2', '1.3', '2.0', '3.0', '4.0', '5.0'],
+  PickleError: _pkPickleError, PicklingError: _pkPicklingError, UnpicklingError: _pkUnpicklingError,
+  dumps: _pkDumps, loads: _pkLoads,
+  dump: maybeSync(function* (obj, file, ...a) {
+    const kw = _pkKw(a);
+    const st = _pkState(a.length ? a[0] : kw.protocol, { fixImports: kw.fix_imports });
+    yield* _pkDump(st, obj);
+    yield adderGetAttr(file, 'write')(st.out.result());
+    return null;
+  }),
+  load: maybeSync(function* (file, ...a) { return yield* _pkLoadFile(file, _pkKw(a), null, null); }),
+  Pickler: _pkPickler, Unpickler: _pkUnpickler,
+  PickleBuffer: Object.assign((b) => b, { _pyName: 'PickleBuffer', __name__: 'PickleBuffer' }),
+};
+// cPickle is pickle (py2 code imports it), and _pickle the accelerator CPython would have
+adderModules._pickle = adderModules.pickle;
+
+// copyreg's half of the protocol: what default reduce values name
+{
+  const cr = adderModules.copyreg;
+  const nw = (cls, ...a) => adderGetAttr(cls, '__new__')(cls, ...a);
+  cr.__newobj__ = Object.assign(nw, { __name__: '__newobj__', _pyName: '__newobj__', __module__: 'copyreg' });
+  cr.__newobj_ex__ = Object.assign((cls, args, kw) => adderGetAttr(cls, '__new__')(cls, ...pyIter(args), { _kw: true, ...(kw instanceof Map ? Object.fromEntries(kw) : kw || {}) }), { __name__: '__newobj_ex__', _pyName: '__newobj_ex__', __module__: 'copyreg' });
+  cr._reconstructor = Object.assign((cls, base, state) => {
+    if (base === pyObjectObj || base === null || base === undefined) return objectNew(cls);
+    return adderGetAttr(base, '__new__')(cls, state);
+  }, { __name__: '_reconstructor', _pyName: '_reconstructor', __module__: 'copyreg' });
+  cr.__reduce_ex__ = (self, proto) => maybeSync(_pkObjectReduceEx)({ proto }, self, typeOf(self));
+}
+
+// -- stdlib-net.js --
+
+// adder stdlib — the network-facing modules libraries import at the top of their files: http
+// (HTTPStatus, client, cookiejar, cookies), urllib.request / urllib.error, ssl. adder has no
+// sockets (a browser has fetch, not TCP), so the parts that would talk to a server raise a clear
+// OSError; the data parts — status codes, header parsing, cookie jars and morsels, proxy-list
+// parsing, Request objects — work, so code that builds requests or handles responses runs.
+//
+// Concat-bundled with the rest of adder: top-level names carry an `_nt` prefix.
+
+
+const _ntKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : {});
+const _ntModule = (name, members) => Object.assign({ __adderModule__: true, __name__: name }, members);
+const _ntClass = (name, bases, members, module) => { const c = buildClass(name, bases, members, []); c.__module__ = module; return c; };
+const _ntNoNet = (what) => new AdderError('OSError', `${what}: no network sockets here (adder runs in a browser; use fetch)`);
+
+// ── http: HTTPStatus ──
+const _NT_STATUS = [
+  [100, 'CONTINUE', 'Continue', 'Request received, please continue'],
+  [101, 'SWITCHING_PROTOCOLS', 'Switching Protocols', 'Switching to new protocol; obey Upgrade header'],
+  [102, 'PROCESSING', 'Processing', ''], [103, 'EARLY_HINTS', 'Early Hints', ''],
+  [200, 'OK', 'OK', 'Request fulfilled, document follows'], [201, 'CREATED', 'Created', 'Document created, URL follows'],
+  [202, 'ACCEPTED', 'Accepted', 'Request accepted, processing continues off-line'],
+  [203, 'NON_AUTHORITATIVE_INFORMATION', 'Non-Authoritative Information', 'Request fulfilled from cache'],
+  [204, 'NO_CONTENT', 'No Content', 'Request fulfilled, nothing follows'], [205, 'RESET_CONTENT', 'Reset Content', 'Clear input form for further input'],
+  [206, 'PARTIAL_CONTENT', 'Partial Content', 'Partial content follows'], [207, 'MULTI_STATUS', 'Multi-Status', ''],
+  [208, 'ALREADY_REPORTED', 'Already Reported', ''], [226, 'IM_USED', 'IM Used', ''],
+  [300, 'MULTIPLE_CHOICES', 'Multiple Choices', 'Object has several resources -- see URI list'],
+  [301, 'MOVED_PERMANENTLY', 'Moved Permanently', 'Object moved permanently -- see URI list'],
+  [302, 'FOUND', 'Found', 'Object moved temporarily -- see URI list'], [303, 'SEE_OTHER', 'See Other', 'Object moved -- see Method and URL list'],
+  [304, 'NOT_MODIFIED', 'Not Modified', 'Document has not changed since given time'],
+  [305, 'USE_PROXY', 'Use Proxy', 'You must use proxy specified in Location to access this resource'],
+  [307, 'TEMPORARY_REDIRECT', 'Temporary Redirect', 'Object moved temporarily -- see URI list'],
+  [308, 'PERMANENT_REDIRECT', 'Permanent Redirect', 'Object moved permanently -- see URI list'],
+  [400, 'BAD_REQUEST', 'Bad Request', 'Bad request syntax or unsupported method'],
+  [401, 'UNAUTHORIZED', 'Unauthorized', 'No permission -- see authorization schemes'],
+  [402, 'PAYMENT_REQUIRED', 'Payment Required', 'No payment -- see charging schemes'],
+  [403, 'FORBIDDEN', 'Forbidden', 'Request forbidden -- authorization will not help'],
+  [404, 'NOT_FOUND', 'Not Found', 'Nothing matches the given URI'],
+  [405, 'METHOD_NOT_ALLOWED', 'Method Not Allowed', 'Specified method is invalid for this resource'],
+  [406, 'NOT_ACCEPTABLE', 'Not Acceptable', 'URI not available in preferred format'],
+  [407, 'PROXY_AUTHENTICATION_REQUIRED', 'Proxy Authentication Required', 'You must authenticate with this proxy before proceeding'],
+  [408, 'REQUEST_TIMEOUT', 'Request Timeout', 'Request timed out; try again later'], [409, 'CONFLICT', 'Conflict', 'Request conflict'],
+  [410, 'GONE', 'Gone', 'URI no longer exists and has been permanently removed'],
+  [411, 'LENGTH_REQUIRED', 'Length Required', 'Client must specify Content-Length'],
+  [412, 'PRECONDITION_FAILED', 'Precondition Failed', 'Precondition in headers is false'],
+  [413, 'CONTENT_TOO_LARGE', 'Content Too Large', 'Content is too large'], [414, 'URI_TOO_LONG', 'URI Too Long', 'URI is too long'],
+  [415, 'UNSUPPORTED_MEDIA_TYPE', 'Unsupported Media Type', 'Entity body in unsupported format'],
+  [416, 'RANGE_NOT_SATISFIABLE', 'Range Not Satisfiable', 'Cannot satisfy request range'],
+  [417, 'EXPECTATION_FAILED', 'Expectation Failed', 'Expect condition could not be satisfied'],
+  [418, 'IM_A_TEAPOT', "I'm a Teapot", 'Server refuses to brew coffee because it is a teapot.'],
+  [421, 'MISDIRECTED_REQUEST', 'Misdirected Request', 'Server is not able to produce a response'],
+  [422, 'UNPROCESSABLE_CONTENT', 'Unprocessable Content', ''], [423, 'LOCKED', 'Locked', ''],
+  [424, 'FAILED_DEPENDENCY', 'Failed Dependency', ''], [425, 'TOO_EARLY', 'Too Early', ''],
+  [426, 'UPGRADE_REQUIRED', 'Upgrade Required', ''],
+  [428, 'PRECONDITION_REQUIRED', 'Precondition Required', 'The origin server requires the request to be conditional'],
+  [429, 'TOO_MANY_REQUESTS', 'Too Many Requests', 'The user has sent too many requests in a given amount of time ("rate limiting")'],
+  [431, 'REQUEST_HEADER_FIELDS_TOO_LARGE', 'Request Header Fields Too Large', 'The server is unwilling to process the request because its header fields are too large'],
+  [451, 'UNAVAILABLE_FOR_LEGAL_REASONS', 'Unavailable For Legal Reasons', 'The server is denying access to the resource as a consequence of a legal demand'],
+  [500, 'INTERNAL_SERVER_ERROR', 'Internal Server Error', 'Server got itself in trouble'],
+  [501, 'NOT_IMPLEMENTED', 'Not Implemented', 'Server does not support this operation'],
+  [502, 'BAD_GATEWAY', 'Bad Gateway', 'Invalid responses from another server/proxy'],
+  [503, 'SERVICE_UNAVAILABLE', 'Service Unavailable', 'The server cannot process the request due to a high load'],
+  [504, 'GATEWAY_TIMEOUT', 'Gateway Timeout', 'The gateway server did not receive a timely response'],
+  [505, 'HTTP_VERSION_NOT_SUPPORTED', 'HTTP Version Not Supported', 'Cannot fulfill request'],
+  [506, 'VARIANT_ALSO_NEGOTIATES', 'Variant Also Negotiates', ''], [507, 'INSUFFICIENT_STORAGE', 'Insufficient Storage', ''],
+  [508, 'LOOP_DETECTED', 'Loop Detected', ''], [510, 'NOT_EXTENDED', 'Not Extended', ''],
+  [511, 'NETWORK_AUTHENTICATION_REQUIRED', 'Network Authentication Required', 'The client needs to authenticate to gain network access'],
+];
+// the deprecated aliases CPython keeps
+const _NT_STATUS_ALIASES = { REQUEST_ENTITY_TOO_LARGE: 413, REQUEST_URI_TOO_LONG: 414, REQUESTED_RANGE_NOT_SATISFIABLE: 416, UNPROCESSABLE_ENTITY: 422 };
+
+// built on first import: it's an IntEnum (enum must exist by then)
+let _ntHttp = null;
+function _ntBuildHttp() {
+  if (_ntHttp) return _ntHttp;
+  const HTTPStatus = adderModules.enum.IntEnum('HTTPStatus', _NT_STATUS.map(([v, n]) => mkTuple([n, v])));
+  HTTPStatus.__module__ = 'http';
+  for (const [v, n, phrase, description] of _NT_STATUS) {
+    const m = HTTPStatus[n];
+    Object.assign(m, { phrase, description, is_informational: v < 200, is_success: v >= 200 && v < 300, is_redirection: v >= 300 && v < 400, is_client_error: v >= 400 && v < 500, is_server_error: v >= 500 });
+  }
+  for (const [alias, v] of Object.entries(_NT_STATUS_ALIASES)) HTTPStatus[alias] = HTTPStatus[_NT_STATUS.find((s) => s[0] === v)[1]];
+  const HTTPMethod = adderModules.enum.Enum('HTTPMethod', ['CONNECT', 'DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT', 'TRACE'].map((m) => mkTuple([m, m])));
+  HTTPMethod.__module__ = 'http';
+
+  // ── http.client ──
+  const HTTPException = makeExcType('http.client.HTTPException', 'Exception');
+  const exc = (name, parent = 'http.client.HTTPException') => makeExcType(name, parent);
+  const excs = {
+    HTTPException, NotConnected: exc('NotConnected'), InvalidURL: exc('InvalidURL'), UnknownProtocol: exc('UnknownProtocol'),
+    UnknownTransferEncoding: exc('UnknownTransferEncoding'), UnimplementedFileMode: exc('UnimplementedFileMode'),
+    IncompleteRead: exc('IncompleteRead'), ImproperConnectionState: exc('ImproperConnectionState'),
+    CannotSendRequest: exc('CannotSendRequest', 'ImproperConnectionState'), CannotSendHeader: exc('CannotSendHeader', 'ImproperConnectionState'),
+    ResponseNotReady: exc('ResponseNotReady', 'ImproperConnectionState'), BadStatusLine: exc('BadStatusLine'),
+    LineTooLong: exc('LineTooLong'),
+  };
+  excs.RemoteDisconnected = makeExcType('RemoteDisconnected', 'ConnectionResetError', 'BadStatusLine');
+  const email = adderModules.email;
+  const HTTPMessage = _ntClass('HTTPMessage', [email.message.Message], {
+    getallmatchingheaders(self, name) { return (adderGetAttr(self, 'get_all')(name) || []).map((v) => `${name}: ${v}`); },
+  }, 'http.client');
+  const parse_headers = (fp, ...a) => {
+    const kw = _ntKw(a);
+    const cls = a[0] || kw._class || HTTPMessage;
+    const lines = [];
+    const readline = adderGetAttr(fp, 'readline');
+    const step = (line) => {
+      const t = line instanceof Uint8Array ? adderModules._codecs.decode(line, 'iso-8859-1') : String(line);
+      if (t === '' || t === '\r\n' || t === '\n') return email.parser.Parser({ _kw: true, _class: cls }).parsestr(lines.join(''));
+      lines.push(t);
+      const r = readline(65537);
+      return r && typeof r.then === 'function' ? r.then(step) : step(r);
+    };
+    const r = readline(65537);
+    return r && typeof r.then === 'function' ? r.then(step) : step(r);
+  };
+  const HTTPConnection = _ntClass('HTTPConnection', [], {
+    default_port: 80, auto_open: 1, debuglevel: 0, response_class: null,
+    __init__(self, host, ...a) {
+      const kw = _ntKw(a);
+      let port = a.length ? a[0] : kw.port ?? null;
+      host = String(host);
+      if (port === null && /:\d+$/.test(host)) { port = Number(host.slice(host.lastIndexOf(':') + 1)); host = host.slice(0, host.lastIndexOf(':')); }
+      Object.assign(self, { host, port: port ?? self.default_port, timeout: a[1] ?? kw.timeout ?? null, source_address: kw.source_address ?? null, blocksize: kw.blocksize ?? 8192, sock: null, _tunnel_host: null });
+      return null;
+    },
+    set_debuglevel(self, level) { self.debuglevel = level; return null; },
+    set_tunnel(self, host, port = null, headers = null) { self._tunnel_host = host; self._tunnel_port = port; self._tunnel_headers = headers; return null; },
+    connect(self) { throw _ntNoNet(`connecting to ${self.host}:${self.port}`); },
+    close(self) { self.sock = null; return null; },
+    request(self, method, url) { throw _ntNoNet(`${method} ${url}`); },
+    putrequest(self, method, url) { throw _ntNoNet(`${method} ${url}`); },
+    putheader() { throw _ntNoNet('putheader'); }, endheaders() { throw _ntNoNet('endheaders'); },
+    send() { throw _ntNoNet('send'); }, getresponse() { throw new AdderError('ResponseNotReady', 'Idle'); },
+  }, 'http.client');
+  const HTTPSConnection = _ntClass('HTTPSConnection', [HTTPConnection], { default_port: 443 }, 'http.client');
+  const HTTPResponse = _ntClass('HTTPResponse', [adderModules.io.BufferedIOBase], {
+    __init__(self, sock, ...a) {
+      const kw = _ntKw(a);
+      Object.assign(self, { fp: null, debuglevel: a[0] ?? kw.debuglevel ?? 0, _method: kw.method ?? null, headers: null, msg: null,
+        version: 11, status: null, reason: null, chunked: false, chunk_left: null, length: null, will_close: true });
+      return null;
+    },
+    begin() { throw _ntNoNet('reading a response'); },
+    read() { throw _ntNoNet('reading a response'); },
+    getheader(self, name, dflt = null) { return self.headers ? adderGetAttr(self.headers, 'get')(name, dflt) : dflt; },
+    getheaders(self) { return self.headers ? adderGetAttr(self.headers, 'items')() : []; },
+    isclosed(self) { return self.fp === null; }, readable() { return true; },
+  }, 'http.client');
+  const client = _ntModule('http.client', {
+    ...excs, HTTPMessage, HTTPConnection, HTTPSConnection, HTTPResponse, parse_headers,
+    HTTP_PORT: 80, HTTPS_PORT: 443, _MAXLINE: 65536, _MAXHEADERS: 100,
+    responses: new PyDict(_NT_STATUS.map(([v, , phrase]) => [v, phrase])),
+    error: HTTPException,
+  });
+  for (const [v, n] of _NT_STATUS) client[n] = HTTPStatus[n];
+
+  // ── http.cookiejar ──
+  const Cookie = _ntClass('Cookie', [], {
+    __init__(self, version, name, value, port, port_specified, domain, domain_specified, domain_initial_dot, path, path_specified, secure, expires, discard, comment, comment_url, rest, rfc2109 = false) {
+      Object.assign(self, { version, name, value, port, port_specified, domain: String(domain).toLowerCase(), domain_specified, domain_initial_dot,
+        path, path_specified, secure, expires: expires === null || expires === undefined ? null : Math.trunc(expires), discard, comment, comment_url, rfc2109,
+        _rest: rest instanceof Map ? new PyDict(rest) : new PyDict(Object.entries(rest || {})) });
+      return null;
+    },
+    has_nonstandard_attr(self, name) { return self._rest.has(name); },
+    get_nonstandard_attr(self, name, dflt = null) { return self._rest.has(name) ? self._rest.get(name) : dflt; },
+    set_nonstandard_attr(self, name, value) { self._rest.set(name, value); return null; },
+    is_expired(self, now = null) { if (now === null) now = Date.now() / 1000; return self.expires !== null && self.expires <= now; },
+    __repr__(self) { return `Cookie(version=${pyRepr(self.version)}, name=${pyRepr(self.name)}, value=${pyRepr(self.value)}, domain=${pyRepr(self.domain)}, path=${pyRepr(self.path)})`; },
+    __str__(self) { return `<Cookie ${self.name}=${self.value} for ${self.domain}${self.path}>`; },
+  }, 'http.cookiejar');
+  const CookiePolicy = _ntClass('CookiePolicy', [], {
+    set_ok() { return true; }, return_ok() { return true; }, domain_return_ok() { return true; }, path_return_ok() { return true; },
+  }, 'http.cookiejar');
+  const DefaultCookiePolicy = _ntClass('DefaultCookiePolicy', [CookiePolicy], {
+    DomainStrictNoDots: 1, DomainStrictNonDomain: 2, DomainRFC2965Match: 4, DomainLiberal: 0, DomainStrict: 3,
+    __init__(self, ...a) {
+      const kw = _ntKw(a);
+      Object.assign(self, { netscape: kw.netscape ?? true, rfc2965: kw.rfc2965 ?? false, rfc2109_as_netscape: kw.rfc2109_as_netscape ?? null,
+        hide_cookie2: kw.hide_cookie2 ?? false, strict_domain: kw.strict_domain ?? false, strict_rfc2965_unverifiable: true,
+        strict_ns_unverifiable: false, strict_ns_domain: 0, strict_ns_set_initial_dollar: false, strict_ns_set_path: false, secure_protocols: mkTuple(['https', 'wss']),
+        _blocked_domains: mkTuple([...pyIter(kw.blocked_domains || [])]), _allowed_domains: kw.allowed_domains ? mkTuple([...pyIter(kw.allowed_domains)]) : null });
+      return null;
+    },
+    blocked_domains(self) { return self._blocked_domains; }, set_blocked_domains(self, d) { self._blocked_domains = mkTuple([...pyIter(d)]); return null; },
+    allowed_domains(self) { return self._allowed_domains; }, set_allowed_domains(self, d) { self._allowed_domains = d === null ? null : mkTuple([...pyIter(d)]); return null; },
+    is_blocked(self, domain) { return self._blocked_domains.some((b) => domain === b || (b.startsWith('.') && domain.endsWith(b))); },
+    is_not_allowed(self, domain) { return self._allowed_domains !== null && !self._allowed_domains.some((b) => domain === b || (b.startsWith('.') && domain.endsWith(b))); },
+  }, 'http.cookiejar');
+  // the jar: _cookies[domain][path][name] → Cookie, as CPython keeps it (requests reaches in)
+  const each = (self) => { const out = []; for (const paths of self._cookies.values()) for (const names of paths.values()) for (const c of names.values()) out.push(c); return out; };
+  const CookieJar = _ntClass('CookieJar', [], {
+    __init__(self, policy = null) {
+      self._policy = policy === null ? DefaultCookiePolicy() : policy;
+      self._cookies_lock = adderModules.threading.RLock();
+      self._cookies = new PyDict();
+      return null;
+    },
+    set_policy(self, policy) { self._policy = policy; return null; },
+    set_cookie(self, c) {
+      if (!self._cookies.has(c.domain)) self._cookies.set(c.domain, new PyDict());
+      const paths = self._cookies.get(c.domain);
+      if (!paths.has(c.path)) paths.set(c.path, new PyDict());
+      paths.get(c.path).set(c.name, c);
+      return null;
+    },
+    set_cookie_if_ok(self, c, request) { return adderGetAttr(self, 'set_cookie')(c); },
+    clear(self, domain = null, path = null, name = null) {
+      if (name !== null) {
+        if (domain === null || path === null) throw new AdderError('ValueError', 'domain and path must be given to remove a cookie by name');
+        const n = self._cookies.get(domain)?.get(path);
+        if (!n || !n.has(name)) throw new AdderError('KeyError', pyRepr(name));
+        n.delete(name);
+      } else if (path !== null) {
+        if (domain === null) throw new AdderError('ValueError', 'domain must be given to remove cookies by path');
+        if (!self._cookies.get(domain)?.delete(path)) throw new AdderError('KeyError', pyRepr(path));
+      } else if (domain !== null) {
+        if (!self._cookies.delete(domain)) throw new AdderError('KeyError', pyRepr(domain));
+      } else self._cookies = new PyDict();
+      return null;
+    },
+    clear_session_cookies(self) { for (const c of each(self)) if (c.discard) adderGetAttr(self, 'clear')(c.domain, c.path, c.name); return null; },
+    clear_expired_cookies(self) { const now = Date.now() / 1000; for (const c of each(self)) if (c.expires !== null && c.expires <= now) adderGetAttr(self, 'clear')(c.domain, c.path, c.name); return null; },
+    // no network: there are no responses to take cookies from, and a request's Cookie header
+    // is the cookies that match it
+    extract_cookies() { return null; },
+    make_cookies() { return []; },
+    add_cookie_header(self, request) {
+      const cookies = each(self).filter((c) => !c.is_expired || !adderGetAttr(c, 'is_expired')());
+      if (!cookies.length) return null;
+      adderGetAttr(request, 'add_unredirected_header')('Cookie', cookies.map((c) => `${c.name}=${c.value}`).join('; '));
+      return null;
+    },
+    __iter__(self) { return each(self)[Symbol.iterator](); },
+    __len__(self) { return each(self).length; },
+    __repr__(self) { return `<${self.__adderClass__ || 'CookieJar'}[${each(self).map((c) => pyRepr(c)).join(', ')}]>`; },
+    __str__(self) { return `<${self.__adderClass__ || 'CookieJar'}[${each(self).map((c) => adderGetAttr(c, '__str__')()).join(', ')}]>`; },
+  }, 'http.cookiejar');
+  const LoadError = makeExcType('LoadError', 'OSError');
+  const FileCookieJar = _ntClass('FileCookieJar', [CookieJar], {
+    __init__(self, filename = null, delayload = false, policy = null) { CookieJar.prototype.__init__.call(self, policy); self.filename = filename; self.delayload = delayload; return null; },
+    save() { throw new AdderError('NotImplementedError', 'cookie files are not supported here'); },
+    load() { throw new AdderError('NotImplementedError', 'cookie files are not supported here'); },
+    revert() { throw new AdderError('NotImplementedError', 'cookie files are not supported here'); },
+  }, 'http.cookiejar');
+  const cookiejar = _ntModule('http.cookiejar', {
+    Cookie, CookieJar, CookiePolicy, DefaultCookiePolicy, FileCookieJar, LoadError,
+    MozillaCookieJar: _ntClass('MozillaCookieJar', [FileCookieJar], {}, 'http.cookiejar'),
+    LWPCookieJar: _ntClass('LWPCookieJar', [FileCookieJar], {}, 'http.cookiejar'),
+  });
+
+  // ── http.cookies ──
+  const CookieError = makeExcType('CookieError', 'Exception');
+  const RESERVED = { expires: 'expires', path: 'Path', comment: 'Comment', domain: 'Domain', 'max-age': 'Max-Age', secure: 'Secure', httponly: 'HttpOnly', version: 'Version', samesite: 'SameSite', partitioned: 'Partitioned' };
+  const FLAGS = new Set(['secure', 'httponly', 'partitioned']);
+  const Morsel = _ntClass('Morsel', [], {
+    _reserved: new PyDict(Object.entries(RESERVED)), _flags: new PySetLike(FLAGS),
+    __init__(self) { self._key = null; self._value = null; self._coded_value = null; self._attrs = new PyDict(Object.keys(RESERVED).map((k) => [k, ''])); return null; },
+    key: { __property__: true, fget: (self) => self._key, fset: null },
+    value: { __property__: true, fget: (self) => self._value, fset: null },
+    coded_value: { __property__: true, fget: (self) => self._coded_value, fset: null },
+    set(self, key, val, coded) { if (Object.hasOwn(RESERVED, String(key).toLowerCase())) throw new AdderError('CookieError', `Attempt to set a reserved key ${pyRepr(key)}`); self._key = key; self._value = val; self._coded_value = coded; return null; },
+    __getitem__(self, k) { const kk = String(k).toLowerCase(); if (!self._attrs.has(kk)) throw new AdderError('KeyError', pyRepr(k)); return self._attrs.get(kk); },
+    __setitem__(self, k, v) { const kk = String(k).toLowerCase(); if (!Object.hasOwn(RESERVED, kk)) throw new AdderError('CookieError', `Invalid attribute ${pyRepr(k)}`); self._attrs.set(kk, v); return null; },
+    __contains__(self, k) { return self._attrs.has(String(k).toLowerCase()); },
+    __iter__(self) { return [...self._attrs.keys()][Symbol.iterator](); },
+    __len__(self) { return self._attrs.size; },
+    keys(self) { return [...self._attrs.keys()]; }, values(self) { return [...self._attrs.values()]; },
+    items(self) { return [...self._attrs.entries()].map((e) => mkTuple(e)); },
+    get(self, k, d = null) { const kk = String(k).toLowerCase(); return self._attrs.has(kk) ? self._attrs.get(kk) : d; },
+    setdefault(self, k, d = null) { const kk = String(k).toLowerCase(); if (!self._attrs.get(kk)) adderGetAttr(self, '__setitem__')(k, d); return self._attrs.get(kk); },
+    update(self, values) { for (const [k, v] of (values instanceof Map ? values : Object.entries(values))) adderGetAttr(self, '__setitem__')(k, v); return null; },
+    isReservedKey(self, k) { return Object.hasOwn(RESERVED, String(k).toLowerCase()); },
+    OutputString(self, attrs = null) {
+      const parts = [`${self._key}=${self._coded_value}`];
+      for (const [k, v] of [...self._attrs].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))) {
+        if (v === '' || v === null || v === false || (attrs !== null && ![...pyIter(attrs)].includes(k))) continue;
+        if (FLAGS.has(k)) { if (v) parts.push(RESERVED[k]); }
+        else parts.push(`${RESERVED[k]}=${v}`);
+      }
+      return parts.join('; ');
+    },
+    output(self, attrs = null, header = 'Set-Cookie:') { return `${header} ${adderGetAttr(self, 'OutputString')(attrs)}`; },
+    __str__(self) { return adderGetAttr(self, 'output')(); },
+    __repr__(self) { return `<Morsel: ${adderGetAttr(self, 'OutputString')()}>`; },
+  }, 'http.cookies');
+  const BaseCookie = _ntClass('BaseCookie', [], {
+    __init__(self, input = null) { self._m = new PyDict(); if (input !== null) adderGetAttr(self, 'load')(input); return null; },
+    value_decode(self, val) { return mkTuple([val, val]); }, value_encode(self, val) { const s = String(val); return mkTuple([s, s]); },
+    __getitem__(self, k) { if (!self._m.has(k)) throw new AdderError('KeyError', pyRepr(k)); return self._m.get(k); },
+    __setitem__(self, k, v) {
+      if (v && v.__adderType__ === Morsel) { self._m.set(k, v); return null; }
+      const [rv, cv] = adderGetAttr(self, 'value_encode')(v);
+      const m = self._m.get(k) || Morsel();
+      adderGetAttr(m, 'set')(k, rv, cv);
+      self._m.set(k, m);
+      return null;
+    },
+    __contains__(self, k) { return self._m.has(k); }, __len__(self) { return self._m.size; },
+    __iter__(self) { return [...self._m.keys()][Symbol.iterator](); },
+    keys(self) { return [...self._m.keys()]; }, values(self) { return [...self._m.values()]; },
+    items(self) { return [...self._m.entries()].map((e) => mkTuple(e)); },
+    get(self, k, d = null) { return self._m.has(k) ? self._m.get(k) : d; },
+    load(self, rawdata) {
+      if (typeof rawdata !== 'string') { for (const [k, v] of (rawdata instanceof Map ? rawdata : Object.entries(rawdata))) adderGetAttr(self, '__setitem__')(k, v); return null; }
+      let cur = null;
+      for (const part of rawdata.split(';')) {
+        const p = part.trim(); if (!p) continue;
+        const eq = p.indexOf('=');
+        const k = eq < 0 ? p : p.slice(0, eq).trim();
+        let v = eq < 0 ? true : p.slice(eq + 1).trim();
+        if (typeof v === 'string' && v.length >= 2 && v[0] === '"' && v[v.length - 1] === '"') v = v.slice(1, -1);
+        if (Object.hasOwn(RESERVED, k.toLowerCase())) { if (cur) cur._attrs.set(k.toLowerCase(), v); continue; }
+        const [rv, cv] = adderGetAttr(self, 'value_decode')(v);
+        cur = Morsel(); adderGetAttr(cur, 'set')(k, rv, cv); self._m.set(k, cur);
+      }
+      return null;
+    },
+    output(self, attrs = null, header = 'Set-Cookie:', sep = '\r\n') { return [...self._m.values()].map((m) => adderGetAttr(m, 'output')(attrs, header)).join(sep); },
+    __str__(self) { return adderGetAttr(self, 'output')(); },
+    __repr__(self) { return `<${self.__adderClass__}: ${[...self._m.entries()].map(([k, m]) => `${k}=${pyRepr(m._value)}`).join(' ')}>`; },
+  }, 'http.cookies');
+  const SimpleCookie = _ntClass('SimpleCookie', [BaseCookie], {}, 'http.cookies');
+  const cookies = _ntModule('http.cookies', { CookieError, Morsel, BaseCookie, SimpleCookie });
+
+  const server = _ntModule('http.server', {
+    HTTPServer: _ntClass('HTTPServer', [], { __init__() { throw _ntNoNet('serving HTTP'); } }, 'http.server'),
+    BaseHTTPRequestHandler: _ntClass('BaseHTTPRequestHandler', [], {}, 'http.server'),
+    SimpleHTTPRequestHandler: _ntClass('SimpleHTTPRequestHandler', [], {}, 'http.server'),
+  });
+  _ntHttp = _ntModule('http', { HTTPStatus, HTTPMethod, client, cookiejar, cookies, server });
+  for (const k of ['client', 'cookiejar', 'cookies', 'server']) adderModules[`http.${k}`] = _ntHttp[k];
+  return _ntHttp;
+}
+// a set-like for Morsel._flags (membership only)
+function PySetLike(s) { return { __adderClass__: 'set', __contains__: (k) => s.has(k), __iter__: () => s[Symbol.iterator](), __len__: () => s.size }; }
+
+for (const name of ['http', 'http.client', 'http.cookiejar', 'http.cookies', 'http.server']) {
+  Object.defineProperty(adderModules, name, {
+    configurable: true, enumerable: false,
+    get() { const h = _ntBuildHttp(); return name === 'http' ? h : h[name.slice(5)]; },
+    set(v) { Object.defineProperty(adderModules, name, { value: v, writable: true, configurable: true, enumerable: false }); },
+  });
+}
+
+// ── urllib.error / urllib.request ──
+{
+  const URLError = makeExcType('URLError', 'OSError');
+  const HTTPError = makeExcType('HTTPError', 'URLError');
+  const ContentTooShortError = makeExcType('ContentTooShortError', 'URLError');
+  const error = _ntModule('urllib.error', { URLError, HTTPError, ContentTooShortError });
+  // CPython's parse_http_list: split on commas outside quoted strings
+  const parse_http_list = (s) => {
+    const res = []; let part = '', esc = false, quote = false;
+    for (const ch of String(s)) {
+      if (esc) { part += ch; esc = false; continue; }
+      if (quote) { if (ch === '\\') { esc = true; continue; } if (ch === '"') quote = false; part += ch; continue; }
+      if (ch === ',') { res.push(part); part = ''; continue; }
+      if (ch === '"') quote = true;
+      part += ch;
+    }
+    if (part) res.push(part);
+    return res.map((p) => p.trim());
+  };
+  const Request = _ntClass('Request', [], {
+    __init__(self, url, ...a) {
+      const kw = _ntKw(a);
+      self.full_url = String(url);
+      self.data = a[0] ?? kw.data ?? null;
+      self.headers = new PyDict();
+      self.unredirected_hdrs = new PyDict();
+      self.origin_req_host = a[2] ?? kw.origin_req_host ?? null;
+      self.unverifiable = a[3] ?? kw.unverifiable ?? false;
+      self.method = a[4] ?? kw.method ?? null;
+      const headers = a[1] ?? kw.headers ?? null;
+      if (headers) for (const [k, v] of (headers instanceof Map ? headers : Object.entries(headers))) adderGetAttr(self, 'add_header')(k, v);
+      const p = adderModules['urllib.parse'].urlparse(self.full_url);
+      self.type = p[0]; self.host = p[1]; self.selector = p[2] + (p[4] ? '?' + p[4] : '');
+      return null;
+    },
+    get_full_url(self) { return self.full_url; },
+    get_method(self) { return self.method || (self.data !== null ? 'POST' : 'GET'); },
+    add_header(self, k, v) { self.headers.set(String(k).charAt(0).toUpperCase() + String(k).slice(1).toLowerCase(), v); return null; },
+    add_unredirected_header(self, k, v) { self.unredirected_hdrs.set(String(k).charAt(0).toUpperCase() + String(k).slice(1).toLowerCase(), v); return null; },
+    has_header(self, k) { return self.headers.has(k) || self.unredirected_hdrs.has(k); },
+    get_header(self, k, d = null) { return self.headers.has(k) ? self.headers.get(k) : self.unredirected_hdrs.has(k) ? self.unredirected_hdrs.get(k) : d; },
+    remove_header(self, k) { self.headers.delete(k); self.unredirected_hdrs.delete(k); return null; },
+    header_items(self) { return [...new PyDict([...self.unredirected_hdrs, ...self.headers]).entries()].map((e) => mkTuple(e)); },
+    set_proxy(self, host, type) { self.host = host; self.type = type; return null; },
+    has_proxy() { return false; },
+  }, 'urllib.request');
+  const request = _ntModule('urllib.request', {
+    Request, parse_http_list,
+    parse_keqv_list: (l) => { const d = new PyDict(); for (const elt of pyIter(l)) { const i = elt.indexOf('='); let v = elt.slice(i + 1); if (v[0] === '"' && v[v.length - 1] === '"') v = v.slice(1, -1); d.set(elt.slice(0, i), v); } return d; },
+    // no environment to read proxies from: none, and nothing bypasses them
+    getproxies: () => new PyDict(), getproxies_environment: () => new PyDict(),
+    proxy_bypass: () => false, proxy_bypass_environment: () => false,
+    urlopen: (url) => { throw new AdderError('URLError', `<urlopen error ${typeof url === 'string' ? url : 'request'}: no network sockets here (use fetch)>`); },
+    urlretrieve: (url) => { throw new AdderError('URLError', `<urlopen error ${url}: no network sockets here (use fetch)>`); },
+    build_opener: () => { throw new AdderError('URLError', '<urlopen error: no network sockets here (use fetch)>'); },
+    install_opener: () => null,
+    pathname2url: (p) => adderModules['urllib.parse'].quote(p),
+    url2pathname: (p) => adderModules['urllib.parse'].unquote(p),
+    BaseHandler: _ntClass('BaseHandler', [], {}, 'urllib.request'),
+    HTTPHandler: _ntClass('HTTPHandler', [], {}, 'urllib.request'),
+    HTTPSHandler: _ntClass('HTTPSHandler', [], {}, 'urllib.request'),
+    OpenerDirector: _ntClass('OpenerDirector', [], {}, 'urllib.request'),
+  });
+  adderModules['urllib.error'] = error;
+  adderModules['urllib.request'] = request;
+  adderModules.urllib = Object.assign(adderModules.urllib || { __adderModule__: true, __name__: 'urllib' }, { error, request });
+}
+
+// ── ssl: TLS is the browser's job; the constants and the context class exist ──
+{
+  const SSLError = makeExcType('SSLError', 'OSError');
+  const noTls = (what) => new AdderError('SSLError', `${what}: TLS sockets are not available here (adder runs in a browser; use fetch)`);
+  const SSLContext = _ntClass('SSLContext', [], {
+    __init__(self, protocol = 16) {
+      Object.assign(self, { protocol, verify_mode: 2, check_hostname: protocol === 16, options: 0x82420054, minimum_version: -2, maximum_version: -1,
+        verify_flags: 0, post_handshake_auth: null, keylog_filename: null, sni_callback: null, hostname_checks_common_name: false, security_level: 2 });
+      return null;
+    },
+    load_verify_locations() { return null; }, load_cert_chain() { return null; }, load_default_certs() { return null; },
+    set_default_verify_paths() { return null; }, set_ciphers() { return null; }, set_alpn_protocols() { return null; },
+    set_ecdh_curve() { return null; }, get_ca_certs() { return []; }, get_ciphers() { return []; }, cert_store_stats() { return new PyDict(); },
+    wrap_socket() { throw noTls('wrap_socket'); }, wrap_bio() { throw noTls('wrap_bio'); },
+  }, 'ssl');
+  const ints = (pairs) => Object.fromEntries(pairs);
+  const consts = ints([['PROTOCOL_TLS', 2], ['PROTOCOL_SSLv23', 2], ['PROTOCOL_TLS_CLIENT', 16], ['PROTOCOL_TLS_SERVER', 17],
+    ['CERT_NONE', 0], ['CERT_OPTIONAL', 1], ['CERT_REQUIRED', 2],
+    ['OP_ALL', 0x80000054], ['OP_NO_SSLv2', 0], ['OP_NO_SSLv3', 0x2000000], ['OP_NO_TLSv1', 0x4000000], ['OP_NO_TLSv1_1', 0x10000000],
+    ['OP_NO_TLSv1_2', 0x8000000], ['OP_NO_TLSv1_3', 0x20000000], ['OP_NO_COMPRESSION', 0x20000], ['OP_NO_TICKET', 0x4000],
+    ['OP_NO_RENEGOTIATION', 0x40000000], ['OP_CIPHER_SERVER_PREFERENCE', 0x400000], ['OP_SINGLE_DH_USE', 0], ['OP_SINGLE_ECDH_USE', 0],
+    ['OP_ENABLE_MIDDLEBOX_COMPAT', 0x100000], ['OP_IGNORE_UNEXPECTED_EOF', 0x80],
+    ['VERIFY_DEFAULT', 0], ['VERIFY_CRL_CHECK_LEAF', 4], ['VERIFY_CRL_CHECK_CHAIN', 12], ['VERIFY_X509_STRICT', 32], ['VERIFY_X509_PARTIAL_CHAIN', 0x80000],
+    ['VERIFY_X509_TRUSTED_FIRST', 0x8000], ['OPENSSL_VERSION_NUMBER', 0x30000000]]);
+  adderModules.ssl = _ntModule('ssl', {
+    ...consts, SSLContext, SSLError,
+    SSLZeroReturnError: makeExcType('SSLZeroReturnError', 'SSLError'), SSLWantReadError: makeExcType('SSLWantReadError', 'SSLError'),
+    SSLWantWriteError: makeExcType('SSLWantWriteError', 'SSLError'), SSLSyscallError: makeExcType('SSLSyscallError', 'SSLError'),
+    SSLEOFError: makeExcType('SSLEOFError', 'SSLError'), SSLCertVerificationError: makeExcType('SSLCertVerificationError', 'SSLError', 'ValueError'),
+    CertificateError: makeExcType('CertificateError', 'SSLError', 'ValueError'),
+    SSLSocket: _ntClass('SSLSocket', [], {}, 'ssl'), SSLObject: _ntClass('SSLObject', [], {}, 'ssl'),
+    create_default_context: (...a) => SSLContext(16), _create_default_https_context: (...a) => SSLContext(16),
+    _create_unverified_context: (...a) => { const c = SSLContext(16); c.check_hostname = false; c.verify_mode = 0; return c; },
+    match_hostname: () => null, get_default_verify_paths: () => mkTuple([null, null, null, null, null, null]),
+    DER_cert_to_PEM_cert: () => { throw noTls('DER_cert_to_PEM_cert'); }, PEM_cert_to_DER_cert: () => { throw noTls('PEM_cert_to_DER_cert'); },
+    HAS_SNI: true, HAS_ALPN: true, HAS_ECDH: true, HAS_NPN: false, HAS_NEVER_CHECK_COMMON_NAME: true,
+    HAS_TLSv1: false, HAS_TLSv1_1: false, HAS_TLSv1_2: true, HAS_TLSv1_3: true, HAS_SSLv2: false, HAS_SSLv3: false,
+    OPENSSL_VERSION: 'none (adder: TLS is the browser’s)', OPENSSL_VERSION_INFO: mkTuple([3, 0, 0, 0, 0]), CHANNEL_BINDING_TYPES: ['tls-unique'],
+  });
+  // the enums CPython's ssl defines, built on first use of ssl (enum must exist by then)
+  let enums = null;
+  const buildEnums = () => {
+    if (enums) return enums;
+    const E = adderModules.enum;
+    enums = {
+      TLSVersion: E.IntEnum('TLSVersion', [['MINIMUM_SUPPORTED', -2], ['SSLv3', 768], ['TLSv1', 769], ['TLSv1_1', 770], ['TLSv1_2', 771], ['TLSv1_3', 772], ['MAXIMUM_SUPPORTED', -1]].map((p) => mkTuple(p))),
+      VerifyMode: E.IntEnum('VerifyMode', [['CERT_NONE', 0], ['CERT_OPTIONAL', 1], ['CERT_REQUIRED', 2]].map((p) => mkTuple(p))),
+      Options: E.IntFlag ? E.IntFlag('Options', [['OP_ALL', 0x80000054]].map((p) => mkTuple(p))) : null,
+      Purpose: E.Enum('Purpose', [['SERVER_AUTH', '1.3.6.1.5.5.7.3.1'], ['CLIENT_AUTH', '1.3.6.1.5.5.7.3.2']].map((p) => mkTuple(p))),
+    };
+    return enums;
+  };
+  for (const k of ['TLSVersion', 'VerifyMode', 'Options', 'Purpose']) {
+    Object.defineProperty(adderModules.ssl, k, { configurable: true, enumerable: true, get() { return buildEnums()[k]; } });
+  }
+}
+
+// ── select / selectors: no sockets to wait on — the modules exist (and have no poll / epoll,
+// which is how libraries pick a strategy); waiting raises ──
+adderModules.select = _ntModule('select', {
+  select: () => { throw _ntNoNet('select()'); },
+  error: adderModules.builtins.OSError,
+});
+adderModules.selectors = _ntModule('selectors', {
+  EVENT_READ: 1, EVENT_WRITE: 2,
+  DefaultSelector: _ntClass('DefaultSelector', [], { __init__() { throw _ntNoNet('a selector'); } }, 'selectors'),
+  SelectSelector: _ntClass('SelectSelector', [], { __init__() { throw _ntNoNet('a selector'); } }, 'selectors'),
+  BaseSelector: _ntClass('BaseSelector', [], {}, 'selectors'),
+});
 
 // -- runner.js --
 
@@ -17713,6 +19324,8 @@ class AdderLowerCtx extends BaseLowerCtx {
   nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
+    // sync mode (see AWAITED_DUNDERS): no await — the value is taken as it is
+    if (op === 'await' && this._syncMode) return emitPyCall(this, 'noAwait', [{ id: args[0] }], loc, type);
     const pyName = (op === 'store' && typeof args[0] === 'string') ? args[0] : null;
     if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && _JS_RESERVED.has(args[0])) args = [jsSafeName(args[0]), ...args.slice(1)];
     // module mode: a module-level binding (at top level, or from a function declaring it
@@ -18109,6 +19722,21 @@ function lowerAdder(ast, source, opts) {
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
 
+  // globals() / locals(): the module's namespace as a live dict over the module object (a
+  // compiled module mirrors every module-level binding onto it). The main program gets such an
+  // object too — only when it calls them — and so does its mirroring. In such a program a
+  // module-level name is read through the object first (_py.globalLoad), so a name created by
+  // `globals()['x'] = …` is visible; programs that don't call them compile as before.
+  if (_callsScopeBuiltin(ast)) {
+    ctx.usesGlobals = true;
+    if (!ctx.moduleMirror) {
+      const m = emitPyCall(ctx, 'mainModule', [], null);
+      ctx.emit('store', ['__adder_module__', m.id], VOID, null);
+      ctx.symbols.set('__adder_module__', m.id);
+      ctx.moduleMirror = true;
+    }
+  }
+
   // Collect all module-scope defines up front (Python module-scope semantics)
   collectDefines_ad(ast.body, ctx.defines);
   // ... and the names functions declare `global`: assigned from a function, they are module
@@ -18342,7 +19970,11 @@ function lowerExpr_ad(ctx, node) {
       //     upstream (covers `df = df.rename(...)` re-bind pattern)
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       if (!ctx.symbols.has(name) && !isForwardRef) ctx.imports.add(name);
-      return ctx.emit('load', [name], DYNAMIC, l);
+      const raw = ctx.emit('load', [name], DYNAMIC, l);
+      if (ctx.usesGlobals && name !== '__adder_module__' && _resolvesToModule(ctx, name)) {
+        return emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
+      }
+      return raw;
     }
 
     case 'BinOp': return lowerBinOp_ad(ctx, node);
@@ -18634,8 +20266,21 @@ function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
   // eval / exec run source against the caller's live scope, which only the tree-walker has
-  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec' || node.func.id === 'globals' || node.func.id === 'locals') && !ctx.symbols.has(node.func.id)) {
+  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec') && !ctx.symbols.has(node.func.id)) {
     throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
+  }
+  // globals(): the module's live namespace. locals(): at module level the same; in a function a
+  // snapshot of its bound locals; in a class body (rare) the tree-walker's
+  if (node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals') && !ctx.symbols.has(node.func.id) && !node.args.length) {
+    const atModule = !ctx._fnLocalNames;
+    if (node.func.id === 'locals' && !atModule) {
+      const names = ctx._fnLocalNames.filter((n) => ctx.symbols.has(n));
+      return emitPyCall(ctx, 'localsOf', [
+        ctx.emit('array_new', names.map((n) => ctx.emit('const', [n], STRING, l).id), DYNAMIC, l),
+        ctx.emit('array_new', names.map((n) => ctx.emit('load', [n], DYNAMIC, l).id), DYNAMIC, l)], l);
+    }
+    if (node.func.id === 'locals' && ctx._classBodyOf) throw new AirLowerError('locals() in a class body needs the tree-walker');
+    return emitPyCall(ctx, 'globalsOf', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l)], l);
   }
 
   // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
@@ -19207,7 +20852,11 @@ function lowerClassDef(ctx, node) {
   for (const [k, t] of classAnnotations(node.body)) annIds.push(ctx.emit('const', [k], STRING, l).id, ctx.emit('const', [t], STRING, l).id);
   const annArr = ctx.emit('array_new', annIds, DYNAMIC, l);
   // createClass may return a promise (a base's __init_subclass__ written in Python)
-  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj], l).id], DYNAMIC, l);
+  // the defining module's __name__ (a module's own; the main program's '__main__')
+  const modName = ctx.moduleMirror && ctx.imports.has('__adder_module__')
+    ? emitPyCall(ctx, 'getattr', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', ['__name__'], STRING, l)], l)
+    : ctx.emit('const', ['__main__'], STRING, l);
+  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj, modName], l).id], DYNAMIC, l);
 
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -19757,10 +21406,76 @@ function _refExpr(ctx, ssaId) {
   return name;
 }
 
+// Code Python only ever calls implicitly, where compiled code can't wait for a Promise: a
+// property's getter / setter / deleter, a cached_property, and the dunders whose call sites AIR
+// emits as plain helper calls (`a == b` is `_py.eq(a, b)`, `a[i]` `_py.getitem(a, i)`, len(),
+// str(), hash(), a descriptor's __get__ …). CPython can't await there either, so these bodies
+// compile in SYNC MODE: their possible awaits (a call to a function the lowerer can't prove
+// sync, a guarded `+=`) become `_py.noAwait(v)` — the value as it is. Without this, one
+// maybe-async call made the whole method async and every `==` / read of the property a Promise.
+// (A callee that really is async — an `async def` — still hands back its Promise, as CPython's
+// would a coroutine.) Not in sync mode: the dunders whose call sites DO await — construction,
+// __call__, the in-place operators (guarded), `with`, iteration — and class-creation hooks.
+// does the program call globals() / locals() anywhere?
+function _callsScopeBuiltin(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
+  if (node.type === 'Call' && node.func && node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals')) return true;
+  for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _callsScopeBuiltin(node[k])) return true;
+  return false;
+}
+// does `name`, read here, mean the module-level binding (or a builtin)? — not a function's
+// own local, a parameter, or a class body's name
+function _resolvesToModule(ctx, name) {
+  let f = ctx.symbols;
+  while (f && !f.bindings.has(name)) f = f.parent;
+  return !f || f.parent === null;
+}
+// a function's local names (CPython's locals()): its parameters and what its body binds, less
+// what it declares global / nonlocal
+function _functionLocalNames(node) {
+  const assigned = new Set();
+  collectDefines_ad(node.body, assigned);
+  const out = [...(node.params || []).map((p) => p.name), ...(node.kwonly || []).map((p) => p.name)];
+  if (node.vararg) out.push(node.vararg.name || node.vararg);
+  if (node.kwarg) out.push(node.kwarg.name || node.kwarg);
+  const outer = new Set();
+  (function walk(stmts) {
+    for (const s of stmts || []) {
+      if (!s) continue;
+      if (s.type === 'Global' || s.type === 'Nonlocal') for (const n of s.names) outer.add(n);
+      if (s.type === 'FunctionDef' || s.type === 'AsyncFunctionDef' || s.type === 'ClassDef') { assigned.add(s.name); continue; }
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(s[k])) walk(s[k]);
+      if (Array.isArray(s.handlers)) for (const h of s.handlers) walk(h.body);
+      if (Array.isArray(s.cases)) for (const c of s.cases) walk(c.body);
+    }
+  })(node.body);
+  for (const n of assigned) if (typeof n === 'string' && !out.includes(n)) out.push(n);
+  return out.filter((n) => typeof n === 'string' && !outer.has(n));
+}
+const AWAITED_DUNDERS = new Set(['__init__', '__new__', '__call__', '__post_init__', '__del__',
+  '__enter__', '__exit__', '__aenter__', '__aexit__', '__iter__', '__next__', '__aiter__', '__anext__', '__await__',
+  '__iadd__', '__isub__', '__imul__', '__imatmul__', '__itruediv__', '__ifloordiv__', '__imod__', '__ipow__',
+  '__ilshift__', '__irshift__', '__iand__', '__ixor__', '__ior__',
+  '__init_subclass__', '__set_name__', '__class_getitem__', '__prepare__', '__instancecheck__', '__subclasscheck__',
+  '__reduce__', '__reduce_ex__', '__getstate__', '__setstate__', '__copy__', '__deepcopy__']);
+const _SYNC_DECORATORS = new Set(['property', 'cached_property', 'setter', 'getter', 'deleter']);
+const _isDunder = (n) => n.length > 4 && n.startsWith('__') && n.endsWith('__');
+function _syncContextName(node, inClassBody) {
+  if (node.type === 'AsyncFunctionDef' || node.isAsync || node.is_async || _containsYield(node.body)) return null;
+  for (const d of node.decorators || []) {
+    const n = d.type === 'Name' ? d.id : d.type === 'Attribute' ? d.attr : null;
+    if (n && _SYNC_DECORATORS.has(n)) return `${n === 'setter' || n === 'deleter' || n === 'getter' ? 'property ' + n : n} '${node.name}'`;
+  }
+  if (inClassBody && _isDunder(node.name) && !AWAITED_DUNDERS.has(node.name)) return node.name;
+  return null;
+}
+
 function lowerFuncDef(ctx, node) {
   const l = ctx.loc(node);
   const name = node.name;
   const isGenerator = _containsYield(node.body);
+  const syncMode = !!_syncContextName(node, !!ctx._classBodyOf);
 
   // Lower decorators (evaluated at def time, applied bottom-up after def). Each is bound to a
   // temp HERE: left as an expression it was inlined at the apply site, after the def had
@@ -19787,10 +21502,14 @@ function lowerFuncDef(ctx, node) {
   const savedTopLevel = ctx.topLevel;
   ctx.topLevel = false;
   ctx.symbols = ctx.symbols.push();
+  const savedSyncMode = ctx._syncMode;
+  ctx._syncMode = syncMode;
+  const savedFnLocals = ctx._fnLocalNames;
+  ctx._fnLocalNames = _functionLocalNames(node);
   // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
   // method, not a generator, not one analyseSyncFunctions proved sync
   const savedLoopAwait = ctx._loopMayAwait;
-  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name);
+  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name) && !syncMode;
   const savedFnGlobals = ctx._fnGlobals;
   ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
 
@@ -19817,6 +21536,8 @@ function lowerFuncDef(ctx, node) {
   });
 
   ctx.topLevel = savedTopLevel;
+  ctx._syncMode = savedSyncMode;
+  ctx._fnLocalNames = savedFnLocals;
   ctx._loopMayAwait = savedLoopAwait;
   ctx._fnGlobals = savedFnGlobals;
   ctx.symbols = ctx.symbols.pop();
@@ -19895,6 +21616,10 @@ function lowerLambda(ctx, node) {
 
   let params = null;
   let needsArgs = false;
+  const savedSyncMode = ctx._syncMode;
+  ctx._syncMode = null;
+  const savedFnLocals = ctx._fnLocalNames;
+  ctx._fnLocalNames = (node.params || []).map((p) => p.name);
   const body = captureOps(ctx, () => {
     // Reuse the function param binding logic
     const r = _buildParamBinding(ctx, node, l);
@@ -19906,6 +21631,8 @@ function lowerLambda(ctx, node) {
   });
 
   ctx.topLevel = savedTopLevel;
+  ctx._syncMode = savedSyncMode;
+  ctx._fnLocalNames = savedFnLocals;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
 

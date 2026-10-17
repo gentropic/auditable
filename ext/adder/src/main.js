@@ -9,6 +9,8 @@ import './stdlib-num.js';
 import './stdlib-time.js';
 import './stdlib-data.js';
 import './stdlib-sys.js';
+import './stdlib-pickle.js';
+import './stdlib-net.js';
 import './runner.js';   // run / evalExpr / compile / isIncomplete — the library API, sandbox options included
 import './highlight.js';
 import './air-lower.js';

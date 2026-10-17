@@ -2429,3 +2429,95 @@ out = []
 t = threading.Thread(target=lambda: out.append(1))
 t.start(); t.join()
 print(out)
+### class/sync-contexts
+def helper(xs):
+    return [x * 2 for x in xs]
+class Bag:
+    def __init__(self, xs):
+        self.xs = xs
+        self.reads = 0
+    @property
+    def total(self):
+        self.reads += 1
+        return sum(helper(self.xs))
+    @property
+    def top(self):
+        return sorted(self.xs, key=lambda v: -v)[:2]
+    @top.setter
+    def top(self, v):
+        self.xs = list(v) + self.xs
+    def __len__(self):
+        return len(helper(self.xs))
+    def __bool__(self):
+        return any(x > 2 for x in self.xs)
+    def __hash__(self):
+        return hash(tuple(sorted(self.xs)))
+    def __eq__(self, o):
+        return sorted(self.xs) == sorted(o.xs)
+    def __getattr__(self, name):
+        if name == "biggest":
+            return max(self.xs)
+        raise AttributeError(name)
+b = Bag([3, 1, 2])
+print(b.total, b.total, b.reads, b.top, len(b), bool(b), bool(Bag([1])), b.biggest)
+b.top = [9]
+print(b.xs, b.top, {b: 1}[Bag([1, 2, 3, 9])], min(b.xs), all(x > 0 for x in b.xs))
+### builtin/globals-dynamic
+def make(n):
+    globals()["dyn_" + str(n)] = n * 10
+make(3)
+print(dyn_3, sorted(k for k in globals() if k.startswith("dyn")))
+def g(a):
+    b = a + 1
+    return globals() is globals(), "make" in globals(), "b" in globals(), sorted(locals())
+print(g(1))
+### mod/pickle
+import pickle
+
+def hx(b):
+    return b.hex()
+
+data = [None, True, False, 0, 1, 255, 256, 65535, 65536, -1, -2**31, 2**31, 2**40, -2**40, 1.5, -0.25,
+        "", "a", "héllo ✓", "x" * 300, b"", b"\x00\x01", b"y" * 300, (), (1,), (1, 2), (1, 2, 3), (1, 2, 3, 4),
+        [], [1], [1, 2], {}, {"a": 1}, {"a": 1, "b": [2, 3]}, {1: "one", (1, 2): "t"},
+        {1, 2, 3}, frozenset([4]), bytearray(b"ab")]
+for proto in range(0, 6):
+    for d in data:
+        if isinstance(d, (set, frozenset)) and proto < 4:
+            continue
+        p = pickle.dumps(d, protocol=proto)
+        back = pickle.loads(p)
+        print(proto, repr(d)[:40], hx(p), back == d, type(back).__name__)
+
+shared = [1, 2]
+outer = [shared, shared, "s", "s"]
+p = pickle.dumps(outer)
+back = pickle.loads(p)
+print(hx(p), back[0] is back[1], back)
+
+import io
+f = io.BytesIO()
+pickle.dump({"k": 1}, f)
+pickle.dump([2], f)
+f.seek(0)
+print(pickle.load(f), pickle.load(f))
+
+class Restricted(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "builtins" and name in ("range",):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(f"forbidden {module}.{name}")
+print(Restricted(io.BytesIO(pickle.dumps(range(3)))).load())
+try:
+    Restricted(io.BytesIO(pickle.dumps(len))).load()
+except pickle.UnpicklingError as e:
+    print("UnpicklingError", e)
+print(pickle.loads(pickle.dumps(len)) is len, pickle.loads(pickle.dumps(int)) is int, pickle.dumps(len, 2).hex())
+try:
+    pickle.loads(b"garbage")
+except pickle.UnpicklingError as e:
+    print("UnpicklingError")
+print(pickle.HIGHEST_PROTOCOL, pickle.DEFAULT_PROTOCOL)
+### mod/identity-of-module-functions
+import builtins, collections
+print(builtins.len is len, builtins.len is builtins.len, collections.namedtuple is collections.namedtuple)
