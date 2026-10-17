@@ -4,7 +4,7 @@
 
 import { adderParse, _adderParseExpr } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule, setModuleCompiler } from './eval.js';
-import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio } from './builtins.js';
+import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio, adderModules } from './builtins.js';
 import { _py } from './runtime.js';
 import { lowerAdder, PY_SPECIALIZATIONS, pyNameOf } from './air-lower.js';
 
@@ -242,6 +242,9 @@ function _scopeToObject(scope, bindings) {
 export async function run(code, opts = {}) {
   const src = _dedent(code);
   const ast = adderParse(src);
+  // the program is __main__ (sys.modules['__main__']: click and argparse read it)
+  const mods = adderModules.sys && adderModules.sys.modules;
+  if (mods && !mods.__main__) mods.__main__ = { __adderModule__: true, __name__: '__main__', __package__: null, __spec__: null, __loader__: null, __doc__: null };
   const bindings = _makeBindings(opts);
   let pick = _pickEngine(opts);
   if (pick.engine !== 'tree') {

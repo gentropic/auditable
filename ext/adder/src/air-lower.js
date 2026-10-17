@@ -644,10 +644,14 @@ export function lowerAdder(ast, source, opts) {
   // those don't need (and can't have) a `let` pre-declaration.
   const funcOrClassNames = new Set();
   ctx.funcOrClassNames = funcOrClassNames;   // module-level def/class names: provably callable
+  // (provably a plain function or class, called directly: only an undecorated one — a decorator
+  // may rebind the name to any callable, `@click.command()` to a Command with __call__)
+  ctx.knownCallables = new Set();
   for (const stmt of ast.body) {
     if ((stmt.type === 'FunctionDef' || stmt.type === 'AsyncFunctionDef' ||
          stmt.type === 'ClassDef') && stmt.name) {
       funcOrClassNames.add(stmt.name);
+      if (!(stmt.decorators && stmt.decorators.length)) ctx.knownCallables.add(stmt.name);
     }
   }
 
@@ -1229,7 +1233,7 @@ function lowerCall_ad(ctx, node) {
   let fn = lowerExpr_ad(ctx, node.func);
   const id = node.func.type === 'Name' ? node.func.id : null;
   const knownFn = id !== null && (
-    (ctx.funcOrClassNames && ctx.funcOrClassNames.has(id)) ||                        // a module-level def / class
+    (ctx.knownCallables && ctx.knownCallables.has(id)) ||                            // a module-level (undecorated) def / class
     (KNOWN_SYNC_BUILTINS.has(id) && !ctx.symbols.has(id) && !ctx.defines.has(id)));   // an unshadowed builtin
   if (!knownFn) fn = emitPyCall(ctx, 'fnOf', [fn], l);
   const finalArgs = kwObjId ? [...argIds, kwObjId] : argIds;
@@ -2456,6 +2460,7 @@ function lowerFuncDef(ctx, node) {
     is_async: false,
     is_generator: isGenerator,
     needs_arguments: needsArgs,
+    in_class: !!ctx._classBodyOf,   // a method: never the module's function of the same name (emit-js)
   });
 
   // Always emit a store so the function name is visible in the enclosing scope.

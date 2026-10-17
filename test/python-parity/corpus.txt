@@ -2821,3 +2821,74 @@ print(dep("b"), C.x)
 d = {"a": 1}
 x = id(d)
 print(list(d), id(d) == x, id(1) == id(1), id(1) == id(2), id([]) != id([]) or True)
+### class/generic-alias-base
+import typing as t
+T = t.TypeVar("T")
+class P(t.Generic[T]):
+    tag = "p"
+    def get(self): return self.tag
+class S(P[str]):
+    pass
+class L(list[int]):
+    pass
+print(S().get(), [c.__name__ for c in S.__mro__], issubclass(S, P), isinstance(L([1]), list))
+### class/method-named-like-module-function
+def isatty(s):
+    return "module:" + s
+class W:
+    def isatty(self):
+        return "method"
+print(isatty("x"), W().isatty(), W.isatty.__name__)
+### fn/yield-inside-with
+from contextlib import contextmanager
+class Ctx:
+    def __enter__(self):
+        print("enter"); return self
+    def __exit__(self, *a):
+        print("exit"); return False
+    @contextmanager
+    def scope(self):
+        with self as rv:
+            yield rv
+c = Ctx()
+with c.scope() as s:
+    print("body", s is c)
+def g():
+    with Ctx():
+        yield 1
+        yield 2
+print(list(g()))
+### builtin/stdout-is-text
+import sys
+try:
+    sys.stdout.write(b"x")
+except TypeError as e:
+    print("TypeError", e)
+sys.stdout.buffer.write("héllo
+".encode())
+print(__debug__)
+### class/tuple-subclass-getattr
+class Tok(tuple):
+    parent = None
+    def split(self):
+        return list(self)
+    def __getattr__(self, name):
+        new = Tok(self + (name,))
+        setattr(self, name, new)
+        new.parent = self
+        return new
+    def __repr__(self):
+        return "Token" + (self and "." or "") + ".".join(self)
+T = Tok()
+print(T.Name.Builtin, T.Name.Builtin.parent, T.Name.Builtin.split(), T.Name in {T.Name: 1}, isinstance(T, tuple), len(T.Name.Builtin), T.Name < T.Name.Builtin)
+### class/metaclass-iter
+class Meta(type):
+    def __iter__(cls):
+        return iter(sorted(cls.items))
+    def __len__(cls):
+        return len(cls.items)
+class S(metaclass=Meta):
+    items = {"b": 2, "a": 1}
+for k in S:
+    print(k)
+print(list(S), len(S), "a" in list(S))

@@ -2794,6 +2794,7 @@ function _parseIntStrict(str, base) {
 
 function* pyIter(obj) {
   if (obj === null || obj === undefined) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
+  { const mi = _metaIter(obj); if (mi) { const it = mi(); if (it && typeof it.then === 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object must be collected asynchronously here (list(...) it first)`); yield* pyIter(it); return; } }
   if (Array.isArray(obj) || typeof obj === 'string' || obj instanceof Uint8Array) { for (let i = 0; i < obj.length; i++) yield obj[i]; return; }
   if (obj instanceof Map) { for (const k of obj.keys()) yield k; return; }
   if (obj instanceof Set || obj instanceof AdderRange) { yield* obj; return; }
@@ -2846,15 +2847,23 @@ function _pyEach(obj) {
 // with __next__, or any JS iterable), or the old __getitem__ protocol (0, 1, 2, … until
 // IndexError). Tree-walked dunders are async, so this is an async generator; for-loops and
 // list() / sorted() / … go through it.
+// a class whose metaclass defines __iter__ (pygments' StyleMeta): iterating the class calls it
+function _metaIter(obj) {
+  if (typeof obj !== 'function' || !obj._pyClass || !obj.__adderMeta__) return null;
+  const f = metaAttr(obj, '__iter__');
+  return typeof f === 'function' ? f : null;
+}
 function isUserIterable(obj) {
+  if (typeof obj === 'function' && _metaIter(obj)) return true;
   return obj !== null && typeof obj === 'object' && !Array.isArray(obj) && !(obj instanceof Map) &&
     !(obj instanceof Set) && typeof obj[Symbol.iterator] !== 'function' && typeof obj[Symbol.asyncIterator] !== 'function' &&
     (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function' || typeof obj.__getitem__ === 'function');
 }
 const _awaitIf = async (v) => (v && typeof v.then === 'function' ? await v : v);
 async function* pyIterAsync(obj) {
-  if (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
-    const it = typeof obj.__iter__ === 'function' ? await _awaitIf(obj.__iter__()) : obj;
+  const mi = _metaIter(obj);
+  if (mi || typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+    const it = mi ? await _awaitIf(mi()) : typeof obj.__iter__ === 'function' ? await _awaitIf(obj.__iter__()) : obj;
     if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* it; return; }
     if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { yield* pyIter(it); return; }
     if (!it || typeof it.__next__ !== 'function') throw new AdderError('TypeError', `iter() returned non-iterator of type '${pyTypeName(it)}'`);
@@ -2893,8 +2902,9 @@ function _drive(g, val, isErr) {
 function* _gForEach(obj, fn) {
   const viaAsync = function* (ai) { for (;;) { const r = yield ai.next(); if (r.done || fn(r.value)) return; } };
   if (isUserIterable(obj)) {
-    if (typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
-      const it = typeof obj.__iter__ === 'function' ? yield obj.__iter__() : obj;
+    const mi = _metaIter(obj);
+    if (mi || typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+      const it = mi ? yield mi() : typeof obj.__iter__ === 'function' ? yield obj.__iter__() : obj;
       if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* viaAsync(it[Symbol.asyncIterator]()); return; }
       if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { for (const v of pyIter(it)) if (fn(v)) return; return; }
       if (!it || typeof it.__next__ !== 'function') throw new AdderError('TypeError', `iter() returned non-iterator of type '${pyTypeName(it)}'`);
@@ -3189,9 +3199,16 @@ function adderGetAttr(obj, attr) {
   // tuple methods (count, index) — a tuple has none of list's mutators
   // (a namedtuple class adds its fields and _asdict / _replace / _fields on its own prototype)
   if (obj instanceof PyTuple) {
-    // a tuple subclass's own members (made by tuple.__new__(cls, …)): its class's, bound
+    // a tuple subclass: its instance attributes, its class's members (bound), its class variables
     const tt = obj.__adderType__;
-    if (tt && tt.prototype && !(attr in obj) && attr in tt.prototype) {
+    if (tt && tt._pyMRO) {
+      if (Object.hasOwn(obj, attr) && attr !== 'length' && !/^\d+$/.test(attr)) return obj[attr];
+      if (tt.prototype && Object.hasOwn(tt.prototype, attr)) {
+        const v = Reflect.get(tt.prototype, attr, obj);
+        return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+      }
+      for (const c of tt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, tt) : cv; }
+    } else if (tt && tt.prototype && !(attr in obj) && attr in tt.prototype) {
       const v = Reflect.get(tt.prototype, attr, obj);
       return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
     }
@@ -3200,6 +3217,7 @@ function adderGetAttr(obj, attr) {
       const v = obj[attr];
       return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
     }
+    if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
   }
   // bytearray: bytes' methods (results as bytearray), and the list's mutators with byte checks
@@ -5687,8 +5705,8 @@ const _sysModule = {
   exc_info: () => (excStack.length ? mkTuple([excTypeOf(excStack[excStack.length - 1]), excValue(excStack[excStack.length - 1]), _tracebackOf(excStack[excStack.length - 1])]) : mkTuple([null, null, null])),
   exception: () => (excStack.length ? excValue(excStack[excStack.length - 1]) : null),
   // write to the running program's stdout / stderr (run()'s opts, or the notebook cell)
-  stdout: { write(s) { s = String(s); _stdioWrite('out', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
-  stderr: { write(s) { s = String(s); _stdioWrite('err', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
+  stdout: _stdStream('out'),
+  stderr: _stdStream('err'),
   getsizeof: () => 0,
   getrecursionlimit: () => 1000,
   setrecursionlimit: () => null,
@@ -6204,6 +6222,7 @@ function setAdderVFS(vfsInstance, pathUtils) {
   // reset cwd and module cache for the new VFS
   _cwd.value = _HOME;
   for (const k of Object.keys(_sysModule.modules)) delete _sysModule.modules[k];
+  _sysModule.modules.__main__ = { __adderModule__: true, __name__: '__main__', __package__: null, __spec__: null, __loader__: null, __doc__: null };   // the program
   // re-register modules if path available (allows calling setAdderVFS after initial load)
   if (_vfsPath) {
     delete adderModules.os;
@@ -6520,7 +6539,17 @@ function _isInstanceOfClass(x, cls) {
 const _isSubclass = (a, b) => a === b || ((a && a._pyMRO) || []).includes(b);
 
 // object.__new__(cls): a bare instance of cls
+// an instance of a tuple subclass: a PyTuple array with the class's prototype (attributes may be
+// set on it, as on CPython's — it has a __dict__)
+function _tupleSubInstance(cls, items) {
+  const t = Object.setPrototypeOf([], cls.prototype);
+  for (const x of items) t.push(x);
+  t.__adderClass__ = cls._pyName;
+  t.__adderType__ = cls;
+  return t;
+}
 function objectNew(cls, args = []) {
+  if (cls._pyTupleBase) return _tupleSubInstance(cls, args.length > 0 && !(args[0] && args[0]._kw) ? pyIter(args[0]) : []);
   if (cls._pyStrBase) {
     // str(object='') / str(bytes, encoding[, errors]): the string the box holds
     const a = args.filter((x) => !(x && x._kw));
@@ -6612,6 +6641,9 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   // a list subclass's instances are arrays with the class's prototype (over Array's): its own
   // __getitem__ / __len__ / methods are what the generic paths find
   if (cls._pyListBase) Object.setPrototypeOf(cls.prototype, Array.prototype);
+  // and a tuple subclass's are tuples (PyTuple arrays) with its prototype over PyTuple's
+  cls._pyTupleBase = !cls._pyListBase && (bases || []).some(b => b && (b === _stableTypes.tuple || b._pyTupleBase));
+  if (cls._pyTupleBase) Object.setPrototypeOf(cls.prototype, PyTuple.prototype);
   if (opts.meta) cls.__adderMeta__ = opts.meta;
 
   const mro = computeMRO(cls);
@@ -6771,7 +6803,21 @@ let _pendingClassCell = null;
 // `class Name(*bases, **kw): body` — both engines. Picks the metaclass (an explicit
 // metaclass=, else the most derived of the bases' — CPython's rule), and either builds the class
 // directly (plain `type`) or calls Meta(name, bases, namespace, **kw).
+// class bases as Python resolves them: an object with __mro_entries__ gives its replacements, and a
+// parameterized generic (`ParamType[str]`, `list[int]`) stands for its origin class (CPython's
+// GenericAlias.__mro_entries__) — a typing form's alias (Generic[T]) has no class to stand for
+function _resolveBases(bases) {
+  if (!bases || !bases.some((b) => b instanceof GenericAlias || (b && typeof b === 'object' && typeof b.__mro_entries__ === 'function'))) return bases;
+  const out = [];
+  for (const b of bases) {
+    if (b instanceof GenericAlias) { const o = b.__origin__; if (o && o._pyClass && !out.includes(o)) out.push(o); continue; }
+    if (b && typeof b === 'object' && typeof b.__mro_entries__ === 'function') { for (const x of pyIter(b.__mro_entries__(mkTuple(bases)))) if (!out.includes(x)) out.push(x); continue; }
+    out.push(b);
+  }
+  return out;
+}
 function classStatement(name, bases, members, annotations, kwObj, opts = {}) {
+  bases = _resolveBases(bases);
   const kw = {};
   let explicit = null;
   if (kwObj) for (const [k, v] of Object.entries(kwObj)) { if (k === '_kw') continue; if (k === 'metaclass') explicit = v; else kw[k] = v; }
@@ -6872,6 +6918,9 @@ pyTypeObj._pyMRO = [pyTypeObj];
 pyTypeObj._pyOwnMembers = new PySet();
 pyTypeObj._pyNewFn = typeNew;
 pyTypeObj.__new__ = typeNew;
+// type.__call__(cls, *args) / type.__init__ — what a metaclass's own __call__ / __init__ defer to
+pyTypeObj.__call__ = (cls, ...args) => typeCall(cls, args);
+pyTypeObj.__init__ = () => null;
 _typeObjects.type = pyTypeObj;
 
 // X.__new__ when X's MRO defines none. A user class gets object.__new__ (a bare instance; a
@@ -6887,12 +6936,12 @@ function _inheritedNew(T) {
   const f = (c, ...a) => {
     if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
     if (T === _stableTypes.str && c && c !== T && c._pyStrBase) return objectNew(c, a);
-    if (T._pyName === 'tuple' && c && c !== T) {
+    if (T._pyName === 'tuple' && c && c !== T) return c._pyTupleBase ? _tupleSubInstance(c, a.length ? pyIter(a[0]) : []) : (() => {
       const t = new PyTuple();
       for (const x of a.length ? pyIter(a[0]) : []) t.push(x);
       t.__adderType__ = c; t.__adderClass__ = c._pyName;
       return t;
-    }
+    })();
     return T(...a);
   };
   f._pyName = '__new__';
@@ -6972,6 +7021,27 @@ function _tracebackOf(e) {
   }
   Object.defineProperty(e, '_pyTb', { value: next, writable: true, configurable: true, enumerable: false });
   return next;
+}
+
+// sys.stdout / sys.stderr: text streams to the running program's output, with a binary .buffer
+// beneath (click writes UTF-8 bytes there)
+function _stdStream(which) {
+  const buffer = {
+    __adderClass__: 'BufferedWriter', name: which === 'out' ? '<stdout>' : '<stderr>', mode: 'wb', closed: false,
+    write(b) { const bytes = b instanceof Uint8Array ? b : Uint8Array.from(b); _stdioWrite(which, pyDecodePartial(bytes, 'utf-8', 'replace', true).text); return bytes.length; },
+    flush() { return null; }, isatty: () => false, writable: () => true, readable: () => false, seekable: () => false,
+  };
+  return {
+    __adderClass__: 'TextIOWrapper', name: buffer.name, mode: 'w', encoding: 'utf-8', errors: 'strict', closed: false, line_buffering: false, buffer,
+    write(s) {
+      const t = strValue(s);
+      if (t === null) throw new AdderError('TypeError', `write() argument must be str, not ${pyTypeName(s)}`);
+      _stdioWrite(which, t); return t.length;
+    },
+    writelines(lines) { for (const l of pyIter(lines)) _stdioWrite(which, String(l)); return null; },
+    flush() { return null; }, isatty: () => false, writable: () => true, readable: () => false, seekable: () => false,
+    fileno() { throw new AdderError('io.UnsupportedOperation', 'fileno'); },
+  };
 }
 
 // type(x)
@@ -7446,6 +7516,7 @@ function adderBuiltins(printFn) {
     },
     __import__: _builtinImport,
     // compile(source, filename, mode): a code object exec() / eval() run (parsed when they do)
+    __debug__: true,
     compile: (source, filename = '<string>', mode = 'exec', ...a) => {
       if (filename && filename._kw) { const kw = filename; filename = kw.filename ?? '<string>'; mode = kw.mode ?? mode; }
       if (!['exec', 'eval', 'single'].includes(mode)) throw new AdderError('ValueError', "compile() mode must be 'exec', 'eval' or 'single'");
@@ -8808,6 +8879,37 @@ async function* _evalGenStmt(node, scope) {
       for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope);
       return;
     }
+    // with … : yield inside (a @contextmanager method's `with self as rv: yield rv`)
+    case 'With': {
+      if (!_hasYield({ type: 'Block', body: node.body })) { await adderEval(node, scope); return; }
+      const managers = [];
+      for (const item of node.items) {
+        const mgr = await adderEval(item.contextExpr, scope);
+        const enter = mgr.__enter__ || mgr.enter;
+        const exit = mgr.__exit__ || mgr.exit;
+        if (typeof enter !== 'function' || typeof exit !== 'function') {
+          throw new AdderError('AttributeError', `'${pyTypeName(mgr)}' does not support the context manager protocol`);
+        }
+        const value = await enter.call(mgr);
+        if (item.optionalVar) await _assignTarget(item.optionalVar, value, scope);
+        managers.push({ mgr, exit });
+      }
+      try {
+        for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
+      } catch (e) {
+        if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) {
+          for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
+          throw e;
+        }
+        for (const { mgr, exit } of managers.reverse()) {
+          const suppress = await exit.call(mgr, excTypeOf(e), excValue(e), null);
+          if (!suppress) throw e;
+        }
+        return;
+      }
+      for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
+      return;
+    }
     default:
       // non-yielding statements — just eval normally
       await adderEval(node, scope);
@@ -9310,7 +9412,9 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
     delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
     throw e;
   }
-  return mod;
+  // what the import gives is sys.modules[name] after the code ran: a module may replace itself
+  // there (pygments.lexers swaps in a lazy-loading module subclass)
+  return cache[cacheKey] || mod;
 }
 // the compiler for imported modules (runner.js registers AIR's; none: always tree-walked)
 let _moduleCompiler = null;
@@ -19368,6 +19472,9 @@ function _scopeToObject(scope, bindings) {
 async function run(code, opts = {}) {
   const src = _dedent(code);
   const ast = adderParse(src);
+  // the program is __main__ (sys.modules['__main__']: click and argparse read it)
+  const mods = adderModules.sys && adderModules.sys.modules;
+  if (mods && !mods.__main__) mods.__main__ = { __adderModule__: true, __name__: '__main__', __package__: null, __spec__: null, __loader__: null, __doc__: null };
   const bindings = _makeBindings(opts);
   let pick = _pickEngine(opts);
   if (pick.engine !== 'tree') {
@@ -20275,10 +20382,14 @@ function lowerAdder(ast, source, opts) {
   // those don't need (and can't have) a `let` pre-declaration.
   const funcOrClassNames = new Set();
   ctx.funcOrClassNames = funcOrClassNames;   // module-level def/class names: provably callable
+  // (provably a plain function or class, called directly: only an undecorated one — a decorator
+  // may rebind the name to any callable, `@click.command()` to a Command with __call__)
+  ctx.knownCallables = new Set();
   for (const stmt of ast.body) {
     if ((stmt.type === 'FunctionDef' || stmt.type === 'AsyncFunctionDef' ||
          stmt.type === 'ClassDef') && stmt.name) {
       funcOrClassNames.add(stmt.name);
+      if (!(stmt.decorators && stmt.decorators.length)) ctx.knownCallables.add(stmt.name);
     }
   }
 
@@ -20860,7 +20971,7 @@ function lowerCall_ad(ctx, node) {
   let fn = lowerExpr_ad(ctx, node.func);
   const id = node.func.type === 'Name' ? node.func.id : null;
   const knownFn = id !== null && (
-    (ctx.funcOrClassNames && ctx.funcOrClassNames.has(id)) ||                        // a module-level def / class
+    (ctx.knownCallables && ctx.knownCallables.has(id)) ||                            // a module-level (undecorated) def / class
     (KNOWN_SYNC_BUILTINS.has(id) && !ctx.symbols.has(id) && !ctx.defines.has(id)));   // an unshadowed builtin
   if (!knownFn) fn = emitPyCall(ctx, 'fnOf', [fn], l);
   const finalArgs = kwObjId ? [...argIds, kwObjId] : argIds;
@@ -22087,6 +22198,7 @@ function lowerFuncDef(ctx, node) {
     is_async: false,
     is_generator: isGenerator,
     needs_arguments: needsArgs,
+    in_class: !!ctx._classBodyOf,   // a method: never the module's function of the same name (emit-js)
   });
 
   // Always emit a store so the function name is visible in the enclosing scope.

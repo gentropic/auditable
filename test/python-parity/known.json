@@ -12,7 +12,8 @@
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
   "builtin/sum-start": "output",
-  "class/sync-contexts": "error KeyError vs CPython null"
+  "class/sync-contexts": "error KeyError vs CPython null",
+  "class/generic-alias-base": "output"
  },
  "auto": {
   "num/int-float-print": "output",
@@ -27,6 +28,7 @@
   "builtin/isinstance-types": "output",
   "builtin/sum-start": "output",
   "class/str-subclass": "error AttributeError vs CPython null",
-  "exc/traceback-objects": "output"
+  "exc/traceback-objects": "output",
+  "class/generic-alias-base": "output"
  }
 }

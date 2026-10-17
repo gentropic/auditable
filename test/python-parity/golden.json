@@ -948,6 +948,30 @@
   "builtin/id-is-not-a-key": {
    "out": "['a'] True True False True\n",
    "error": null
+  },
+  "class/generic-alias-base": {
+   "out": "p ['S', 'P', 'Generic', 'object'] True True\n",
+   "error": null
+  },
+  "class/method-named-like-module-function": {
+   "out": "module:x method isatty\n",
+   "error": null
+  },
+  "fn/yield-inside-with": {
+   "out": "enter\nbody True\nexit\nenter\nexit\n[1, 2]\n",
+   "error": null
+  },
+  "builtin/stdout-is-text": {
+   "out": "",
+   "error": "SyntaxError"
+  },
+  "class/tuple-subclass-getattr": {
+   "out": "Token.Name.Builtin Token.Name ['Name', 'Builtin'] True True 2 True\n",
+   "error": null
+  },
+  "class/metaclass-iter": {
+   "out": "a\nb\n['a', 'b'] 2 True\n",
+   "error": null
   }
  }
 }

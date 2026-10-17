@@ -5686,7 +5686,7 @@ function emitFunc(ctx, op) {
   // enclosing block in JS, and callers reference the name directly.
   // Cell-export functions (top-level FunctionDeclarations) were always
   // handled this way; this branch now also covers nested function decls.
-  const emitAsDecl = name && (ctx.module.defines.has(name) || op.is_decl);
+  const emitAsDecl = name && !op.in_class && (ctx.module.defines.has(name) || op.is_decl);
   // A Python `def` that rebinds a name already bound in this same scope (two `@register
   // def _(...)`, a redefinition after `a = h`) is an assignment at that point: as a second
   // hoisted declaration, the last body would win for every earlier binding. JS sources keep

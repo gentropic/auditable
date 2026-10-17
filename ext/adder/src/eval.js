@@ -1166,6 +1166,37 @@ async function* _evalGenStmt(node, scope) {
       for (const stmt of node.finalbody) yield* await _evalGenStmt(stmt, scope);
       return;
     }
+    // with … : yield inside (a @contextmanager method's `with self as rv: yield rv`)
+    case 'With': {
+      if (!_hasYield({ type: 'Block', body: node.body })) { await adderEval(node, scope); return; }
+      const managers = [];
+      for (const item of node.items) {
+        const mgr = await adderEval(item.contextExpr, scope);
+        const enter = mgr.__enter__ || mgr.enter;
+        const exit = mgr.__exit__ || mgr.exit;
+        if (typeof enter !== 'function' || typeof exit !== 'function') {
+          throw new AdderError('AttributeError', `'${pyTypeName(mgr)}' does not support the context manager protocol`);
+        }
+        const value = await enter.call(mgr);
+        if (item.optionalVar) await _assignTarget(item.optionalVar, value, scope);
+        managers.push({ mgr, exit });
+      }
+      try {
+        for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
+      } catch (e) {
+        if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) {
+          for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
+          throw e;
+        }
+        for (const { mgr, exit } of managers.reverse()) {
+          const suppress = await exit.call(mgr, excTypeOf(e), excValue(e), null);
+          if (!suppress) throw e;
+        }
+        return;
+      }
+      for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
+      return;
+    }
     default:
       // non-yielding statements — just eval normally
       await adderEval(node, scope);
@@ -1668,7 +1699,9 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
     delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
     throw e;
   }
-  return mod;
+  // what the import gives is sys.modules[name] after the code ran: a module may replace itself
+  // there (pygments.lexers swaps in a lazy-loading module subclass)
+  return cache[cacheKey] || mod;
 }
 // the compiler for imported modules (runner.js registers AIR's; none: always tree-walked)
 let _moduleCompiler = null;
