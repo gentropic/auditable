@@ -900,6 +900,10 @@
   "fn/code-object": {
    "out": "f 2 ('a', 'b', 'c', 'args', 'kw') 1 12 4 32 True\n",
    "error": null
+  },
+  "class/getattribute": {
+   "out": "Null True\n10 fallback:secret fallback:other\n",
+   "error": null
   }
  }
 }

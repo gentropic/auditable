@@ -798,6 +798,15 @@ adderModules.copyreg = _syModule('copyreg', {
   add_extension: () => null, remove_extension: () => null, clear_extension_cache: () => null,
 });
 
+// ── zipimport: importing from zip archives — the module (and its zipimporter class) exist;
+// there are no zip archives on the import path here ──
+adderModules.zipimport = _syModule('zipimport', {
+  ZipImportError: makeExcType('ZipImportError', 'ImportError'),
+  zipimporter: _syClass('zipimporter', [], {
+    __init__(self, path) { throw new AdderError('ZipImportError', `not a Zip file: ${pyRepr(path)}`); },
+  }, 'zipimport'),
+});
+
 // ── subprocess: no processes in a browser — every way of running one raises ──
 {
   const SubprocessError = makeExcType('SubprocessError', 'Exception');
@@ -1402,6 +1411,7 @@ function _syOsExtras(os) {
     const cwd = () => (os.getcwd ? os.getcwd() : '/');
     const home = () => os.environ.get('HOME') || '/';
     Object.assign(P, { __adderModule__: true, __name__: 'posixpath' });
+    adderModules.posixpath = P;   // os.path IS posixpath (jinja2 imports it by that name)
     const add = (k, v) => { if (!P[k]) P[k] = v; };
     add('pathsep', ':'); add('curdir', '.'); add('pardir', '..'); add('extsep', '.'); add('altsep', null); add('devnull', '/dev/null');
     add('abspath', (p) => P.normpath(P.isabs(p) ? p : P.join(cwd(), p)));

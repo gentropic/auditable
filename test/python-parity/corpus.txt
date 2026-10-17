@@ -2623,3 +2623,22 @@ def f(a, b=1, *args, c, **kw):
 def g():
     yield 1
 print(f.__code__.co_name, f.__code__.co_argcount, f.__code__.co_varnames, f.__code__.co_firstlineno, f.__code__.co_flags & 0x2c, g.__code__.co_firstlineno, g.__code__.co_flags & 0x20, f.__code__ is f.__code__)
+### class/getattribute
+class Null:
+    def __getattribute__(self, name):
+        return self
+    def __call__(self, *a, **k):
+        return self
+n = Null()
+print(type(n.info("x")).__name__, n.anything.deeper is n)
+class Logged:
+    def __init__(self):
+        self.x = 1
+    def __getattribute__(self, name):
+        if name == "secret":
+            raise AttributeError(name)
+        return object.__getattribute__(self, name) if name != "x" else super().__getattribute__(name) * 10
+    def __getattr__(self, name):
+        return f"fallback:{name}"
+l = Logged()
+print(l.x, l.secret, l.other)

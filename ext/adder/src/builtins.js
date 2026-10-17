@@ -975,6 +975,8 @@ function _isNativeClass(fn) {
 }
 
 const _moduleBound = new WeakMap();   // module object → attr → [function, its bound copy]
+let _gaBypass = null;                 // the instance object.__getattribute__ is reading plainly
+function _plainGetAttr(o, k) { _gaBypass = o; try { return adderGetAttr(o, k); } finally { if (_gaBypass === o) _gaBypass = null; } }
 export function adderGetAttr(obj, attr) {
   if (obj instanceof AdderError) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
@@ -1081,6 +1083,15 @@ export function adderGetAttr(obj, attr) {
   }
   // plain object (dict with string keys)
   if (obj !== null && typeof obj === 'object' && !(obj instanceof Array) && !(obj instanceof Map) && !(obj instanceof Set)) {
+    // a class's own __getattribute__ sees every attribute read (object.__getattribute__ inside
+    // it reads plainly: _gaBypass); its AttributeError falls to __getattr__, as in Python
+    if (_gaBypass === obj) _gaBypass = null;
+    else if (obj.__adderType__ && attr !== '__getattribute__' && typeof obj.__getattribute__ === 'function' && !Object.hasOwn(obj, '__getattribute__')) {
+      const fallback = (e) => { if (e && e.pyType === 'AttributeError' && typeof obj.__getattr__ === 'function') return obj.__getattr__(attr); throw e; };
+      let r;
+      try { r = obj.__getattribute__(attr); } catch (e) { return fallback(e); }
+      return r && typeof r.then === 'function' ? r.then(null, fallback) : r;   // (a tree-walked one is async)
+    }
     // read the attribute ONCE: a getter (a @property, a descriptor) runs its body on every read
     const has = attr in obj;
     const v = has ? obj[attr] : undefined;
@@ -4681,7 +4692,7 @@ function _objectDunder(o, attr) {
     case '__new__': return (c) => objectNew(c);
     case '__setattr__': return (k, v) => { o[k] = v; return null; };   // object's: a plain store (it bypasses a frozen dataclass's guard, as in CPython)
     case '__delattr__': return (k) => { if (!(k in o)) throw new AdderError('AttributeError', `'${pyTypeName(o)}' object has no attribute '${k}'`); delete o[k]; return null; };
-    case '__getattribute__': return (k) => adderGetAttr(o, k);
+    case '__getattribute__': return (k) => _plainGetAttr(o, k);
     case '__eq__': return (x) => (x === o ? true : NotImplemented);
     case '__ne__': return (x) => (x === o ? false : NotImplemented);
     case '__lt__': case '__le__': case '__gt__': case '__ge__': return () => NotImplemented;
@@ -5256,6 +5267,8 @@ export function pySuper(cls, self) {
         if (kw && Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'object.__init_subclass__() takes no keyword arguments');
         return null;
       };
+      // the rest of object's (super().__getattribute__(name), super().__setattr__(k, v) …)
+      if (_OBJECT_DUNDER_SET.has(name) && self && typeof self === 'object') return _objectDunder(self, name);
       return undefined;
     },
     has(_, name) { return this.get(_, name) !== undefined; },
