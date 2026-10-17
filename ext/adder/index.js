@@ -2225,6 +2225,47 @@ class PyDict extends Map {
   has(k) { return super.has(hkLookup(k)); }
   delete(k) { return super.delete(hkLookup(k)); }
 }
+// obj.__dict__ / vars(obj): a LIVE dict over an object's attributes — reads and writes go to the
+// object (self.__dict__.update(kw), self.__dict__[k] = v), as CPython's instance dict does. The
+// engines' own markers on the object are not attributes.
+const _attrHidden = (k) => k === '__adderClass__' || k === '__adderType__' || k === '__adderModule__' || k.startsWith('_py');
+class AttrDict extends PyDict {
+  constructor(target) { super(); Object.defineProperty(this, '_t', { value: target }); }
+  _keys() { return Object.keys(this._t).filter((k) => !_attrHidden(k)); }
+  get size() { return this._keys().length; }
+  get(k) { return typeof k === 'string' && !_attrHidden(k) && Object.hasOwn(this._t, k) ? this._t[k] : undefined; }
+  has(k) { return typeof k === 'string' && !_attrHidden(k) && Object.hasOwn(this._t, k); }
+  set(k, v) { this._t[k] = v; return this; }
+  delete(k) { if (!this.has(k)) return false; delete this._t[k]; return true; }
+  clear() { for (const k of this._keys()) delete this._t[k]; }
+  keys() { return this._keys()[Symbol.iterator](); }
+  values() { return this._keys().map((k) => this._t[k])[Symbol.iterator](); }
+  entries() { return this._keys().map((k) => [k, this._t[k]])[Symbol.iterator](); }
+  [Symbol.iterator]() { return this.entries(); }
+  forEach(fn) { for (const [k, v] of this.entries()) fn(v, k, this); }
+}
+// Cls.__dict__: the class's own namespace (a read-only snapshot, as CPython's mappingproxy is
+// read-only): its methods (the defs), class variables, and its own __module__ / __doc__
+function _classDict(cls) {
+  const d = new PyDict();
+  if (cls.__module__ !== undefined) d.set('__module__', cls.__module__);
+  for (const k of Object.getOwnPropertyNames(cls.prototype || {})) {
+    if (_attrHidden(k) || k === 'constructor' || !(cls._pyOwnMembers && cls._pyOwnMembers.has(k))) continue;
+    const desc = Object.getOwnPropertyDescriptor(cls.prototype, k);
+    d.set(k, desc.value && desc.value.__func__ ? desc.value.__func__ : desc.value !== undefined ? desc.value : desc.get);
+  }
+  for (const k of Object.keys(cls)) {
+    if (_attrHidden(k) || k === 'prototype' || d.has(k)) continue;
+    if (typeof cls[k] === 'function' && !(cls._pyOwnMembers && cls._pyOwnMembers.has(k)) && !cls[k]._pyClass) continue;   // inherited copies
+    d.set(k, cls[k]);
+  }
+  d.set('__doc__', cls.__doc__ ?? null);
+  const ro = () => { throw new AdderError('TypeError', "'mappingproxy' object does not support item assignment"); };
+  d.set = ro; d.delete = ro; d.clear = ro;
+  d.__adderClass__ = 'mappingproxy';
+  return d;
+}
+
 class PySet extends Set {
   add(v) { return super.add(hk(v)); }
   has(v) { return super.has(hkLookup(v)); }
@@ -2795,8 +2836,15 @@ function adderGetAttr(obj, attr) {
     if (attr === '__traceback__') return null;
     if (attr === '__class__') return excTypeOf(obj);
   }
+  // every value has a __class__ (its type) — unless it defines the attribute itself
+  if (attr === '__class__' && obj !== null && obj !== undefined && !(typeof obj === 'object' && Object.hasOwn(obj, '__class__'))) return typeOf(obj);
+  // an instance's (or module's) attribute dict, live
+  if (attr === '__dict__' && obj !== null && typeof obj === 'object' && !Array.isArray(obj) && !(obj instanceof Map) && !(obj instanceof Set) && !(obj instanceof Uint8Array)) {
+    return Object.hasOwn(obj, '__dict__') ? obj.__dict__ : new AttrDict(obj);
+  }
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
+    if (attr === '__dict__') return obj._pyClass ? _classDict(obj) : new AttrDict(obj);
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
     if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
@@ -2886,6 +2934,9 @@ function adderGetAttr(obj, attr) {
     }
     // regular property access (before dict-like methods, so getters/own props take priority)
     if (attr in obj) return obj[attr];
+    // an instance attribute it doesn't have: the class's (and its bases'), as Python looks them up
+    const ot = obj.__adderType__;
+    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (Object.hasOwn(c, attr)) return c[attr];
     // dict-like attribute access — keys, values, items, get, etc.
     if (_objDictMethods[attr]) return _objDictMethods[attr](obj);
     // __getattr__ dunder
@@ -4687,18 +4738,151 @@ function _reVerbose(p) {
   }
   return out;
 }
+// Python regex syntax → a JS RegExp source meaning the same, in one pass over the pattern
+// (escapes and character classes need context a chain of replaces can't see):
+//   \A \Z → start / end of input; $ (no MULTILINE) also matches before a final newline;
+//   . (no DOTALL) excludes only \n (JS's also excludes \r and the line separators);
+//   \d \w \b are Unicode in Python str patterns (JS's are ASCII even with the u flag);
+//   (?P<n>…) (?P=n) named groups; (?#…) comments; a lone { or } is a literal; {,n} is {0,n};
+//   []…] has a literal ] first; escapes JS's unicode mode rejects (\: \- \' …) are characters;
+//   \uXXXX \UXXXXXXXX \xXX and octal escapes; possessive quantifiers (*+ ++ ?+ {m,n}+) and
+//   atomic groups (?>…) become their plain forms (JS has neither: only which patterns FAIL to
+//   match after backtracking can differ).
+function _reError(msg, pos) { return new AdderError('re.error', pos === undefined ? msg : `${msg} at position ${pos}`); }
+function _reToJs(p, f) {
+  const ascii = !!(f & 256), dotall = !!(f & 16), multiline = !!(f & 8);
+  const W = ascii ? 'A-Za-z0-9_' : '\\p{L}\\p{N}\\p{Mn}\\p{Pc}';
+  let out = '', i = 0, inClass = false, lastClassEscape = false, lastAtom = false;
+  const n = p.length;
+  const hex = (k, what) => {
+    const h = p.slice(i, i + k);
+    if (h.length !== k || !/^[0-9a-fA-F]+$/.test(h)) throw _reError(`incomplete escape \\${what}${h}`, i - 2);
+    i += k;
+    return h;
+  };
+  while (i < n) {
+    const c = p[i];
+    if (c === '\\') {
+      const e = p[i + 1];
+      if (e === undefined) throw _reError('bad escape (end of pattern)', i);
+      const at = i;
+      i += 2;
+      lastClassEscape = false; lastAtom = true;
+      if (e === 'A') { out += inClass ? (() => { throw _reError('bad escape \\A', at); })() : '(?<![\\s\\S])'; continue; }
+      if (e === 'Z') { if (inClass) throw _reError('bad escape \\Z', at); out += '(?![\\s\\S])'; continue; }
+      if (e === 'd') { out += ascii ? '\\d' : (inClass ? '\\p{Nd}' : '\\p{Nd}'); lastClassEscape = true; continue; }
+      if (e === 'D') { out += ascii ? '\\D' : (inClass ? '\\P{Nd}' : '\\P{Nd}'); lastClassEscape = true; continue; }
+      if (e === 'w') { out += ascii ? '\\w' : (inClass ? W : `[${W}]`); lastClassEscape = true; continue; }
+      if (e === 'W') { out += ascii ? '\\W' : (inClass ? '\\W' : `[^${W}]`); lastClassEscape = true; continue; }
+      if (e === 's' || e === 'S') { out += '\\' + e; lastClassEscape = true; continue; }
+      if (e === 'b') {
+        if (inClass) { out += '\\x08'; continue; }
+        out += ascii ? '\\b' : `(?:(?<=[${W}])(?![${W}])|(?<![${W}])(?=[${W}]))`; lastAtom = false; continue;
+      }
+      if (e === 'B') { if (inClass) throw _reError('bad escape \\B', at); out += ascii ? '\\B' : `(?:(?<=[${W}])(?=[${W}])|(?<![${W}])(?![${W}]))`; lastAtom = false; continue; }
+      if ('nrtfv'.includes(e)) { out += '\\' + e; continue; }
+      if (e === 'a') { out += '\\x07'; continue; }
+      if (e === 'x') { out += '\\x' + hex(2, 'x'); continue; }
+      if (e === 'u') { out += '\\u' + hex(4, 'u'); continue; }
+      if (e === 'U') { const h = hex(8, 'U'); if (parseInt(h, 16) > 0x10ffff) throw _reError(`bad escape \\U${h}`, at); out += `\\u{${h}}`; continue; }
+      if (e === 'N') throw _reError('\\N{...} character names are not supported (no Unicode name database)', at);
+      if (e === '0' || (inClass && /[1-7]/.test(e))) {
+        let oct = e;
+        while (oct.length < 3 && /[0-7]/.test(p[i] || '')) oct += p[i++];
+        out += '\\x' + parseInt(oct, 8).toString(16).padStart(2, '0');
+        continue;
+      }
+      if (/[1-9]/.test(e)) {
+        // a 3-digit octal escape, else a backreference (1-99)
+        if (/[0-7]/.test(e) && /[0-7]/.test(p[i] || '') && /[0-7]/.test(p[i + 1] || '')) {
+          const oct = e + p[i] + p[i + 1]; i += 2;
+          out += '\\x' + (parseInt(oct, 8) & 0xff).toString(16).padStart(2, '0');
+          continue;
+        }
+        let num = e;
+        if (/\d/.test(p[i] || '')) num += p[i++];
+        out += `(?:\\${num})`;
+        continue;
+      }
+      if (/[A-Za-z]/.test(e)) throw _reError(`bad escape \\${e}`, at);
+      // any other escaped character is that character (JS's unicode mode only lets syntax be escaped)
+      const syntax = inClass ? /[\^\\\]\[\-]/ : /[\^$\\.*+?()[\]{}|\/]/;
+      out += syntax.test(e) ? '\\' + e : e;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') { out += ']'; inClass = false; i++; lastAtom = true; continue; }
+      if (c === '[') { out += '\\['; i++; lastClassEscape = false; continue; }
+      // a '-' right after a class escape (\w-.) is a literal, as in Python
+      if (c === '-' && lastClassEscape) { out += '\\-'; i++; lastClassEscape = false; continue; }
+      lastClassEscape = false;
+      out += c; i++;
+      continue;
+    }
+    if (c === '[') {
+      inClass = true; lastClassEscape = false; out += '['; i++;
+      if (p[i] === '^') { out += '^'; i++; }
+      if (p[i] === ']') { out += '\\]'; i++; }      // a ] first is a literal in Python
+      continue;
+    }
+    if (c === '(') {
+      if (p.startsWith('(?#', i)) {                  // a comment
+        const j = p.indexOf(')', i);
+        if (j < 0) throw _reError('missing ), unterminated comment', i);
+        i = j + 1; continue;
+      }
+      if (p.startsWith('(?P<', i)) { out += '(?<'; i += 4; lastAtom = false; continue; }
+      if (p.startsWith('(?P=', i)) {
+        const j = p.indexOf(')', i);
+        out += `\\k<${p.slice(i + 4, j)}>`; i = j + 1; lastAtom = true; continue;
+      }
+      if (p.startsWith('(?>', i)) { out += '(?:'; i += 3; lastAtom = false; continue; }   // atomic → plain group
+      if (p.startsWith('(?(', i)) throw _reError('conditional groups (?(…)…) are not supported', i);
+      const g = /^\(\?([aiLmsux]+)\)/.exec(p.slice(i));
+      if (g) throw _reError('global flags not at the start of the expression', i);
+      out += c; i++; lastAtom = false; continue;
+    }
+    if (c === ')') { out += c; i++; lastAtom = true; continue; }
+    if (c === '{') {
+      const q = /^\{(\d*)(,(\d*))?\}/.exec(p.slice(i));
+      if (q && lastAtom && (q[1] !== '' || (q[2] && q[3] !== ''))) {
+        out += `{${q[1] === '' ? '0' : q[1]}${q[2] !== undefined ? ',' + (q[3] || '') : ''}}`;
+        i += q[0].length;
+        if (p[i] === '+') i++;                       // possessive {m,n}+ → greedy
+        lastAtom = false;
+        continue;
+      }
+      out += '\\{'; i++; lastAtom = true; continue;  // not a quantifier: a literal brace
+    }
+    if (c === '}') { out += '\\}'; i++; lastAtom = true; continue; }
+    if (c === '*' || c === '+' || c === '?') {
+      out += c; i++;
+      if (p[i] === '+') i++;                         // possessive → greedy
+      else if (p[i] === '?') { out += '?'; i++; }    // lazy
+      lastAtom = false;
+      continue;
+    }
+    if (c === '.') { out += dotall ? '.' : '[^\\n]'; i++; lastAtom = true; continue; }
+    if (c === '$') { out += multiline ? '$' : '(?=\\n?(?![\\s\\S]))'; i++; lastAtom = false; continue; }
+    if (c === '|' || c === '^') { out += c; i++; lastAtom = false; continue; }
+    out += c; i++; lastAtom = true;
+  }
+  if (inClass) throw _reError('unterminated character set', p.lastIndexOf('['));
+  return out;
+}
+
 // Python pattern + flags → { source, flags } for RegExp
 function _reTranslate(pattern, flags) {
   let p = pattern instanceof Uint8Array ? String.fromCharCode(...pattern) : String(pattern);
   let f = flags | 0;
+  if (pattern instanceof Uint8Array) f |= 256;      // a bytes pattern has ASCII semantics
   const lead = /^\(\?([aiLmsux]+)\)/.exec(p);
   if (lead) {
     for (const ch of lead[1]) f |= { a: 256, i: 2, L: 4, m: 8, s: 16, u: 32, x: 64 }[ch];
     p = p.slice(lead[0].length);
   }
   if (f & 64) p = _reVerbose(p);
-  p = p.replace(/\(\?P<([^>]+)>/g, '(?<$1>').replace(/\(\?P=([A-Za-z_]\w*)\)/g, '\\k<$1>')
-    .replace(/(^|[^\\])\\A/g, '$1(?<![\\s\\S])').replace(/(^|[^\\])\\Z/g, '$1(?![\\s\\S])');
+  p = _reToJs(p, f);
   let js = '';
   if (f & 2) js += 'i';
   if (f & 8) js += 'm';
@@ -4723,6 +4907,7 @@ function _reGroupNames(source) {
 
 function _reMatchObject(m, pattern, string, pos, endpos) {
   const groupIndex = pattern.groupindex;
+  const B = string instanceof Uint8Array;            // a bytes subject: groups come back as bytes
   const resolve = (g) => {
     if (g === undefined) return 0;
     if (typeof g === 'string') {
@@ -4732,7 +4917,7 @@ function _reMatchObject(m, pattern, string, pos, endpos) {
     if (typeof g !== 'number' || g < 0 || g > pattern.groups) throw new AdderError('IndexError', 'no such group');
     return g;
   };
-  const val = (i) => (m[i] === undefined ? null : m[i]);
+  const val = (i) => (m[i] === undefined ? null : B ? _s2b(m[i]) : m[i]);
   const span = (g) => { const i = resolve(g); const ix = m.indices && m.indices[i]; return mkTuple(ix ? [ix[0], ix[1]] : [-1, -1]); };
   let lastindex = null;
   for (let i = 1; i <= pattern.groups; i++) if (m[i] !== undefined) lastindex = i;
@@ -4741,15 +4926,15 @@ function _reMatchObject(m, pattern, string, pos, endpos) {
     string, re: pattern, pos, endpos, lastindex,
     lastgroup: lastindex === null ? null : (Object.keys(groupIndex).find((k) => groupIndex[k] === lastindex) || null),
     group: (...gs) => (gs.length <= 1 ? val(resolve(gs[0])) : mkTuple(gs.map((g) => val(resolve(g))))),
-    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]); return mkTuple(out); },
-    groupdict: (dflt) => { const o = {}; for (const [k, i] of Object.entries(groupIndex)) o[k] = m[i] === undefined ? (dflt === undefined ? null : dflt) : m[i]; return o; },
+    groups: (dflt) => { const out = []; for (let i = 1; i <= pattern.groups; i++) out.push(m[i] === undefined ? (dflt === undefined ? null : dflt) : val(i)); return mkTuple(out); },
+    groupdict: (dflt) => { const o = {}; for (const [k, i] of Object.entries(groupIndex)) o[k] = m[i] === undefined ? (dflt === undefined ? null : dflt) : val(i); return o; },
     start: (g) => span(g)[0],
     end: (g) => span(g)[1],
     span,
     expand: (template) => _reExpand(template, (i) => val(resolve(i))),
     __getitem__: (g) => val(resolve(g)),
     __bool__: () => true,
-    __repr__: () => `<re.Match object; span=(${span(0).join(', ')}), match=${pyRepr(m[0])}>`,
+    __repr__: () => `<re.Match object; span=(${span(0).join(', ')}), match=${pyRepr(val(0))}>`,
   };
   return obj;
 }
@@ -4792,55 +4977,76 @@ function _reCompile(pattern, flags) {
     pattern, flags: t.pyFlags, groups: count, groupindex: names,
     __repr__: () => `re.compile(${pyRepr(pattern)})`,
   };
-  const at = (s, pos, endpos, sticky) => {
+  // a bytes subject is matched as its latin-1 string (each byte one char), results go back to bytes
+  const isB = pattern instanceof Uint8Array;
+  const str = (s) => {
+    if (s instanceof Uint8Array) { if (!isB) throw new AdderError('TypeError', 'cannot use a string pattern on a bytes-like object'); return _b2s(s); }
+    if (isB && typeof s === 'string') throw new AdderError('TypeError', 'cannot use a bytes pattern on a string-like object');
+    return String(s);
+  };
+  const back = (x) => (isB && typeof x === 'string' ? _s2b(x) : x);
+  const at = (s0, pos, endpos, sticky) => {
+    const s = str(s0);
     const end = endpos == null ? s.length : Math.min(endpos, s.length);
     const re = make(sticky ? 'y' : 'g');
     re.lastIndex = pos || 0;
     const m = re.exec(s.slice(0, end));
-    return m ? _reMatchObject(m, P, s, pos || 0, end) : null;
+    return m ? _reMatchObject(m, P, s0, pos || 0, end) : null;
   };
   P.search = (s, pos, endpos) => at(s, pos, endpos, false);
   P.match = (s, pos, endpos) => at(s, pos, endpos, true);
-  P.fullmatch = (s, pos, endpos) => {
+  P.fullmatch = (s0, pos, endpos) => {
+    const s = str(s0);
     const end = endpos == null ? s.length : Math.min(endpos, s.length);
     const re = new RegExp(`(?:${t.source})(?![\\s\\S])`, t.flags + 'dy');
     re.lastIndex = pos || 0;
     const m = re.exec(s.slice(0, end));
-    return m ? _reMatchObject(m, P, s, pos || 0, end) : null;
+    return m ? _reMatchObject(m, P, s0, pos || 0, end) : null;
   };
   const allMatches = (s) => {
+    s = str(s);
     const re = make('g');
     const out = [];
     let m;
     while ((m = re.exec(s))) { out.push(m); if (m[0] === '') re.lastIndex++; }
     return out;
   };
-  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? m[0] : count === 1 ? (m[1] ?? '') : mkTuple(m.slice(1).map((g) => g ?? ''))));
+  P.findall = (s) => allMatches(s).map((m) => (count === 0 ? back(m[0]) : count === 1 ? back(m[1] ?? '') : mkTuple(m.slice(1).map((g) => back(g ?? '')))));
   P.finditer = (s) => allMatches(s).map((m) => _reMatchObject(m, P, s, 0, s.length));
-  P.split = (s, maxsplit) => {
+  P.split = (s0, maxsplit) => {
+    const s = str(s0);
     if (maxsplit && maxsplit._kw) maxsplit = maxsplit.maxsplit;
     const out = [];
     let last = 0, n = 0;
     for (const m of allMatches(s)) {
       if (maxsplit && n >= maxsplit) break;
-      out.push(s.slice(last, m.index), ...m.slice(1).map((g) => (g === undefined ? null : g)));
+      out.push(back(s.slice(last, m.index)), ...m.slice(1).map((g) => (g === undefined ? null : back(g))));
       last = m.index + m[0].length;
       n++;
     }
-    out.push(s.slice(last));
+    out.push(back(s.slice(last)));
     return out;
   };
-  P.subn = (repl, s, count = 0) => {
+  P.subn = (repl, s0, count = 0) => {
     if (count && count._kw) count = count.count;
+    const s = str(s0);
     const ms = allMatches(s).slice(0, count > 0 ? count : undefined);
+    // a template's group reference: \1 / \g<1> by number, \g<name> through the group index
+    const groupOf = (m) => (g) => {
+      const i = typeof g === 'number' ? g : names[g];
+      if (i === undefined) throw new AdderError('IndexError', `unknown group name '${g}'`);
+      return m[i] === undefined ? '' : m[i];
+    };
+    const unB = (x) => (x instanceof Uint8Array ? _b2s(x) : x);
+    const tmpl = unB(repl);
     const pieces = ms.map((m) => {
-      if (typeof repl === 'function') return repl(_reMatchObject(m, P, s, 0, s.length));
-      return _reExpand(String(repl), (i) => (m[i] === undefined ? '' : m[i]));
+      if (typeof repl === 'function') { const r = repl(_reMatchObject(m, P, s0, 0, s.length)); return r && typeof r.then === 'function' ? r.then(unB) : unB(r); }
+      return _reExpand(String(tmpl), groupOf(m));
     });
     const build = (ps) => {
       let out = '', last = 0;
       ms.forEach((m, i) => { out += s.slice(last, m.index) + (ps[i] ?? ''); last = m.index + m[0].length; });
-      return mkTuple([out + s.slice(last), ms.length]);
+      return mkTuple([back(out + s.slice(last)), ms.length]);
     };
     return pieces.some((x) => x && typeof x.then === 'function') ? Promise.all(pieces).then(build) : build(pieces);
   };
@@ -4872,7 +5078,7 @@ const _reModule = {
     return _reCompile(pattern, flags).subn(repl, string, count || 0);
   },
   escape: (s) => String(s).replace(/[()[\]{}?*+\-|^$\\.&~# \t\n\r\v\f]/g, '\\$&'),
-  error: Object.assign((msg) => new AdderError('re.error', msg), { _pyName: 'error', _pyClass: true }),
+  // error / PatternError: set below, once the exception tables exist
 };
 
 
@@ -5010,6 +5216,7 @@ const _excParents = {
 const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
 // A module's own exception type (dataclasses.FrozenInstanceError, statistics.StatisticsError,
 // binascii.Error, ...): a builtin-style type under `parent`, raised and caught like ValueError.
+// (re.error is assigned after this function's tables are initialised — see the end of the file)
 function makeExcType(name, parent, ...moreParents) {
   if (!_excParents[name]) { _excParents[name] = parent; _EXC_NAMES.push(name); }
   if (moreParents.length) _excExtraParents[name] = moreParents;
@@ -5791,7 +5998,6 @@ function objectNew(cls, args = []) {
     instance.__adderClass__ = cls._pyName;
     instance.__adderType__ = cls;
   }
-  if (cls._pyInstanceDefaults) for (const [k, v] of cls._pyInstanceDefaults) instance[k] = v;
   initExceptionInstance(cls, instance, args);
   return instance;
 }
@@ -5893,7 +6099,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
       cm._pyName = qual;
       cls.prototype[mName] = cm;
       Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
-    } else if (typeof value === 'function') {
+    } else if (typeof value === 'function' && !value._pyClass) {
       const originalFn = value;
       cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
       cls.prototype[mName]._pyName = `${name}.${mName}`;
@@ -5909,13 +6115,12 @@ function buildClass(name, bases, members, annotations, opts = {}) {
     }
   }
 
-  // class variables, and the per-instance copies objectNew makes of them
-  cls._pyInstanceDefaults = [];
+  // class variables (instances read them through the class: no per-instance copies); a class
+  // nested in the body is a class variable too, not a method
   for (const [k, v] of Object.entries(members)) {
     if (k === '__new__') continue;
-    if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
+    if ((typeof v !== 'function' || v._pyClass) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
       setClassAttr(cls, k, v);
-      cls._pyInstanceDefaults.push([k, v]);
     }
   }
 
@@ -5935,7 +6140,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyOwnMembers = new PySet();
   for (const [mName, value] of Object.entries(members)) {
     if (mName === '__new__') continue;
-    if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
+    if ((typeof value === 'function' && !value._pyClass) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
       cls._pyOwnMembers.add(mName);
     }
   }
@@ -6416,7 +6621,7 @@ function adderBuiltins(printFn) {
       if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
       return false;
     },
-    vars: (obj) => obj ? { ...obj } : {},
+    vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),
     dir: (obj) => obj ? Object.keys(obj).sort() : [],
     object: pyObjectObj,
     super: () => { throw new AdderError('RuntimeError', 'super() is handled by the evaluator'); },
@@ -6600,6 +6805,10 @@ function _modPow(base, exp, mod) {
 }
 
 let _idCounter = 0;
+
+// re.error: an exception type, so `except re.error` catches what compile() raises (3.13: PatternError)
+_reModule.error = makeExcType('re.error', 'Exception');
+_reModule.PatternError = _reModule.error;
 
 // -- eval.js --
 
@@ -7142,7 +7351,8 @@ async function _assignTarget(target, value, scope) {
 
 async function _evalTarget(target, scope) {
   if (target.type === 'Name') return scope.get(target.id);
-  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); return obj[target.attr]; }
+  // the attribute as Python reads it (a class variable, a property, __getattr__), for `x.a += 1`
+  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); return adderGetAttr(obj, target.attr); }
   if (target.type === 'Subscript') { return _evalSubscript(target, scope); }
   throw new AdderError('RuntimeError', `Cannot read target ${target.type}`);
 }

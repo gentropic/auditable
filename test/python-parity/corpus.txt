@@ -2143,3 +2143,77 @@ print(pprint.pformat(data, width=40))
 pprint.pp({"b": 1, "a": 2})
 print(pprint.pformat(list(range(40)), compact=True, width=30))
 print(calendar.monthrange(2024, 2), calendar.weekday(2024, 3, 5), calendar.MONDAY == 0, int(calendar.SUNDAY))
+
+### mod/re-dialect
+import re
+pats = [
+    (r"\s*v?+(?:(?:(?P<epoch>[0-9]+)!)?+(?P<release>[0-9]+(?:\.[0-9]+)*+))", "v1.2.3"),
+    (r"(?:encoding|charset)(?:[\:= ]{1,10})(?:[\"\']?)([a-zA-Z0-9\-_]+)", "charset=utf-8"),
+    (r"\w+", "café naïve"), (r"\d+", "١٢٣ 45"), (r"\bcafé\b", "un café noir"),
+    (r"a$", "a\n"), (r"a\Z", "a\n"), (r"^b", "a\nb"), (r"(?m)^b", "a\nb"),
+    (r"a.c", "a\rc"), (r"x{2}", "xxx"), (r"x{,2}y", "xxy"), (r"a{b", "a{b"), (r"}", "}"),
+    (r"[]a]+", "]a]"), (r"[^]a]", "b"), (r"[\w-]+", "ab-cd e"), (r"(?P<a>x)(?P=a)", "xx"),
+    (r"a(?#comment)b", "ab"), (r"(?>ab|a)c", "abc"), (r"\x41B\U00000043", "ABC"), (r"\0\101", "\x00A"),
+    (r"(a)(b)\2\1", "abba"), (r"[\d.]+", "3.14x"), (r"\:\-\'", ":-'"), (r"(?i:A)b", "ab"), (r"\$\.\*", "$.*"),
+]
+for p, s in pats:
+    m = re.search(p, s)
+    print(repr(p), m.group(0) if m else None, m.span() if m else None)
+print(re.findall(r"\b\w", "héllo wörld"), re.sub(r"(?P<w>\w+)", r"<\g<w>>", "a bc"), re.split(r"\s*,\s*", "a , b,c"))
+print(re.fullmatch(rb"\w+", b"abc") is not None, re.findall(rb"[\x80-\xff]", b"a\xe9b"))
+for bad in [r"\q", r"(?(1)a|b)", r"[a", r"a)"]:
+    try:
+        re.compile(bad)
+        print("compiled", bad)
+    except re.error as e:
+        print("re.error", bad)
+print(re.sub(r"(?P<w>[a-z]+)", r"<\g<w>>", "a bc"), re.sub(r"([a-z]+)", r"<\1>", "a bc"), re.sub(r"(?P<w>x)", r"[\g<1>]", "x"))
+print(re.fullmatch(rb"[a-z]+", b"abc") is not None, re.findall(rb"[\x80-\xff]", b"a\xe9b"), re.search(rb"b", b"abc") is not None)
+
+### class/attribute-model
+class P:
+    kind = "point"
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+    def norm(self):
+        return abs(self.x) + abs(self.y)
+p = P(1, -2)
+print(p.__class__ is P, p.__class__.__name__, (3).__class__ is int, "s".__class__.__name__, P.__class__ is type)
+print(p.__dict__, vars(p) == {"x": 1, "y": -2}, sorted(vars(p)))
+p.__dict__["z"] = 5
+p.__dict__.update(w=7)
+print(p.z, p.w, "z" in p.__dict__, len(p.__dict__))
+del p.__dict__["w"]
+print(hasattr(p, "w"), sorted(p.__dict__.keys()))
+print("norm" in P.__dict__, "kind" in P.__dict__, P.__dict__["kind"], "x" in P.__dict__)
+class Q(P):
+    pass
+print("norm" in Q.__dict__, "kind" in Q.__dict__)
+try:
+    P.__dict__["kind"] = 1
+except TypeError:
+    print("read-only")
+class S:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+s = S(a=1, b=2)
+print(s.a, s.b, vars(s))
+class Outer:
+    class Inner:
+        v = 3
+    n = 0
+o = Outer()
+print(Outer.Inner.v, o.Inner is Outer.Inner, isinstance(Outer.Inner(), Outer.Inner))
+Outer.n = 9
+o2 = Outer()
+print(o.n, o2.n, "n" in o.__dict__)
+o.n += 1
+print(o.n, Outer.n, o.__dict__)
+class Cnt:
+    items = []
+    def add(self, x):
+        self.items.append(x)
+a, b = Cnt(), Cnt()
+a.add(1); b.add(2)
+print(Cnt.items, a.items is b.items)

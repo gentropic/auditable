@@ -547,7 +547,8 @@ async function _assignTarget(target, value, scope) {
 
 async function _evalTarget(target, scope) {
   if (target.type === 'Name') return scope.get(target.id);
-  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); return obj[target.attr]; }
+  // the attribute as Python reads it (a class variable, a property, __getattr__), for `x.a += 1`
+  if (target.type === 'Attribute') { const obj = await adderEval(target.value, scope); return adderGetAttr(obj, target.attr); }
   if (target.type === 'Subscript') { return _evalSubscript(target, scope); }
   throw new AdderError('RuntimeError', `Cannot read target ${target.type}`);
 }
