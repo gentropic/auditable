@@ -106,7 +106,7 @@
       "spdx": "PSF-2.0",
       "version": "3.13",
       "homepage": "https://www.python.org/",
-      "description": "CPython standard-library modules carried verbatim as adder frozen modules (ext/adder/pylib/: html/parser.py, _markupbase.py), embedded into the adder bundle by ext/adder/gen-pylib.js.",
+      "description": "CPython standard-library modules carried verbatim as adder frozen modules (ext/adder/pylib/: unittest (incl. unittest.mock), html/parser.py, _markupbase.py, doctest.py, difflib.py, argparse.py, getopt.py, glob.py, shutil.py, pkgutil.py, _colorize.py), embedded gzip-compressed into the adder bundle by ext/adder/gen-pylib.js.",
       "licenseFile": "ext/adder/pylib/LICENSE-PSF.txt"
     }
   }

@@ -780,6 +780,7 @@ export const _py = {
   createClass: _createClass,
   fnOf: asCallable,
   fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
+  isNone: (v) => v === null || v === undefined,
   // a sync-mode dunder / property: its sync version, falling back to its async one when it gives up
   bailable: (s, a) => {
     const f = function (...args) {

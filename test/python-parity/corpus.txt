@@ -3424,3 +3424,181 @@ class M(str):
     def __mod__(self, a):
         return M(str.__mod__(self, a))
 print(M('%s!') % 'x', type(M('%s') % 1).__name__)
+### builtin/str-format
+class P:
+    x = 5
+    def __format__(self, spec):
+        return "P<" + spec + ">"
+from collections import defaultdict
+print("{}={!r}".format("i", "two"), "{0}{1}{0}".format("a", "b"), "{n:>{w}}|".format(n=7, w=4))
+print("{{x}} {0.x} {1[k]} {2[0]}".format(P(), {"k": "v"}, [9]), "{:x}".format(P()), "{!a}".format("é"))
+print("{a} {b}".format_map(defaultdict(lambda: "?", a=1)), "{:.2f} {:,}".format(3.14159, 1234567))
+for bad in ["{} {0}", "{0} {}", "{", "}", "{!x}", "{5}"]:
+    try:
+        print(bad.format(1))
+    except (ValueError, IndexError) as e:
+        print(type(e).__name__, e)
+try:
+    "{nope}".format()
+except KeyError as e:
+    print("KE", e)
+### class/property-type
+class C:
+    def __init__(self):
+        self._x = 1
+    @property
+    def x(self):
+        "the x"
+        return self._x
+    @x.setter
+    def x(self, v):
+        self._x = v
+    @x.deleter
+    def x(self):
+        print("deleting")
+        del self._x
+    y = property(lambda self: 42, doc="why")
+    z = property()
+c = C()
+c.x = 5
+print(c.x, C.x.__doc__, C.y.__doc__, c.y, isinstance(C.x, property), type(C.x).__name__)
+del c.x
+print(hasattr(c, "_x"))
+for f in (lambda: setattr(c, "y", 1), lambda: c.z, lambda: delattr(c, "y")):
+    try:
+        f()
+    except AttributeError as e:
+        print("AE", e)
+class Loud(property):
+    def __get__(self, obj, typ=None):
+        return ("loud", super().__get__(obj, typ))
+class D:
+    @Loud
+    def v(self):
+        return 7
+print(D().v, isinstance(D.__dict__["v"], property))
+p = property(lambda s: 1)
+q = p.setter(lambda s, v: None)
+print(p is q, q.fset is not None, p.fset)
+### class/dict-list-subclass
+class B(dict):
+    pass
+b = B(a=1)
+b["c"] = 2
+print(b, b["a"], len(b), list(b), isinstance(b, dict), type(b).__name__, dict(b))
+class C(dict):
+    def __missing__(self, k):
+        return k * 2
+print(C()["x"], C(z=1).get("z"))
+class N(dict):
+    def __init__(self, name, **kw):
+        super().__init__(**kw)
+        self.name = name
+n = N("nm", q=1)
+print(n, n.name, n["q"])
+class Stack(list):
+    def __init__(self, maxsize):
+        super().__init__()
+        self.maxsize = maxsize
+st = Stack(10); st.append(1)
+print(st, st.maxsize, len(st))
+class Sub(N):
+    def __getitem__(self, k):
+        return "sub:" + str(dict.__getitem__(self, k))
+print(Sub("a", z=3)["z"], repr(B(x=1)), B(x=1) == {"x": 1}, {**B(y=2)})
+### syntax/pep695-generics
+def first[T](xs: list[T]) -> T:
+    return xs[0]
+class Box[T, *Ts, **P]:
+    def __init__(self, v: T):
+        self.v = v
+    def get[U](self, other: U) -> tuple[T, U]:
+        return (self.v, other)
+type Pair[K] = tuple[K, K]
+type Num = int | float
+print(first([3, 4]), first.__type_params__, Box.__type_params__, Box(1).get("x"))
+print(Pair, Pair.__type_params__, Pair.__value__, Num.__value__, Box.__mro__[1:2] != (), "__generic_parameters_of_first" in globals())
+def bounded[T: (int, str), S: float = float](a: T, b: S) -> T:
+    return a
+print(bounded.__type_params__[0].__constraints__, bounded.__type_params__[1].__bound__)
+### syntax/parenthesized-with
+from contextlib import contextmanager
+@contextmanager
+def cm(n):
+    print("enter", n)
+    yield n
+    print("exit", n)
+with (
+    cm(1) as a,
+    cm(2) as b,
+):
+    print(a, b)
+with (cm(3)) as c:
+    print(c)
+with (cm(4), cm(5)):
+    pass
+### mod/chainmap
+from collections import ChainMap
+a, b = {"x": 1}, {"x": 2, "y": 3}
+c = ChainMap(a, b)
+print(c["x"], c["y"], len(c), list(c), sorted(c.items()), c.get("z", 9), "y" in c)
+c["z"] = 4
+print(a, c.parents, c.new_child({"q": 0})["q"], dict(c))
+class O(ChainMap):
+    def __iter__(self):
+        d = {}
+        for m in reversed(self.maps):
+            for k in m:
+                d[k] = None
+        return iter(d.keys())
+o = O({"i": 2}, {})
+print(", ".join(f"{k}={v!r}" for k, v in o.items()), repr(c))
+try:
+    c["nope"]
+except KeyError as e:
+    print("KE", e)
+from collections import ChainMap
+def f(**params):
+    return ChainMap(params, {})
+c = f(i=2)
+print(c["i"], list(c.items()))
+class O(ChainMap):
+    def __iter__(self):
+        seen = set()
+        for mapping in self.maps:
+            for k in mapping:
+                if k not in seen:
+                    seen.add(k)
+                    yield k
+o = O({"i": 2}, O({}))
+print(list(o.items()), o["i"])
+### builtin/numeric-hash
+import sys
+print(hash(2**61), hash(-1), hash(float('inf')), hash(1.5), hash(-2.25), hash(1e300), hash(2.0) == hash(2), hash(10**20), sys.hash_info.modulus, hash(0.1))
+### class/class-equality
+class A:
+    def __eq__(self, o):
+        return True
+    __hash__ = object.__hash__
+class B(A): pass
+class M(type):
+    def __eq__(cls, o):
+        return "meta"
+class C(metaclass=M): pass
+print(A == B, A == A, B in (A,), A() == 1, C == 1, [A] == [A], {A: 1}.get(B))
+### func/kwargs-named-like-varargs
+def f(*a, **k):
+    return a, k
+print(f(1, a=2))
+class B(dict):
+    def __init__(self, *a, **k):
+        print("k=", k, "a=", a, type(self).__name__)
+        dict.__init__(self, *a, **k)
+        print("after", dict(self))
+B(a=1)
+class P:
+    def __init__(self, *a, **k):
+        print("P k=", k)
+P(z=3)
+### builtin/none-class
+print(None.__class__, type(None) is None.__class__, None.__class__.__name__)

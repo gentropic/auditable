@@ -225,3 +225,8 @@ ext/dispatch/bench/playground.html
 
 # scratch written by test/condenser-widget.mjs
 /tmp/
+
+# CPython test-suite yardstick: fetched tests, staging, results
+test/cpython-suite/cpython/
+test/cpython-suite/stage/
+test/cpython-suite/results/

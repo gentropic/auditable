@@ -13,11 +13,11 @@
 import {
   AdderError, adderModules, makeExcType, buildClass, mkTuple, PyTuple, PyDict, PySet, pyRepr, pyStr,
   pyTypeName, pyIter, pyCollect, pyTypeObj, pyObjectObj, typeOf, _typeObjects, asCallable, excStack, makeFunctionFromCode,
-  excTypeOf, excValue, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
+  excTypeOf, excValue, excToThrowable, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
   classStatement, GenericAlias, setOsExtrasHook, pyBool, NotImplemented, pyGetItem, _pyHash, _lazyIter, _pyEach,
-  registerCodec, adderBuiltins, isMultibyteCodec,
+  registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe,
 } from './builtins.js';
-import { _adderParseExpr } from './parse.js';
+import { _adderParseExpr, adderParse } from './parse.js';
 
 const _syIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
 const _syKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : null);
@@ -58,6 +58,8 @@ const _syTypeNamed = (name) => {
   sys.byteorder = 'little';
   sys.maxunicode = 0x10ffff;
   sys.float_info = { __adderClass__: 'sys.float_info', max: Number.MAX_VALUE, min: 2.2250738585072014e-308, epsilon: Number.EPSILON, dig: 15, mant_dig: 53, max_exp: 1024, min_exp: -1021, max_10_exp: 308, min_10_exp: -307, radix: 2, rounds: 1 };
+  sys.hash_info = { __adderClass__: 'sys.hash_info', width: 64, modulus: 2305843009213693951n, inf: 314159, nan: 0, imag: 1000003,
+    algorithm: 'siphash13', hash_bits: 64, seed_bits: 128, cutoff: 0 };
   sys.int_info = { __adderClass__: 'sys.int_info', bits_per_digit: 30, sizeof_digit: 4, default_max_str_digits: 4300, str_digits_check_threshold: 640 };
   sys.flags = { __adderClass__: 'sys.flags', debug: 0, inspect: 0, interactive: 0, optimize: 0, dont_write_bytecode: 1, no_user_site: 1, no_site: 0, ignore_environment: 1, verbose: 0, bytes_warning: 0, quiet: 0, hash_randomization: 0, isolated: 0, dev_mode: false, utf8_mode: 1, warn_default_encoding: 0, safe_path: false, int_max_str_digits: 4300 };
   sys.dont_write_bytecode = true;
@@ -1606,6 +1608,66 @@ const _syTruthy = (v) => pyBool(v);
 // ── contextlib: the abstract bases, asynccontextmanager, ContextDecorator, chdir, aclosing ──
 {
   const cl = adderModules.contextlib;
+  // contextlib._GeneratorContextManager: a real class (test code subclasses it), as CPython's —
+  // __init__(func, args, kwds) makes the generator, __enter__ / __exit__ drive it, and calling the
+  // object decorates a function: each call runs inside a fresh manager (_recreate_cm)
+  const isThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+  const stepGen = (gen) => { const r = gen.next(); return isThen(r) ? r : r; };
+  const splitKw = (a) => (a.length && a[a.length - 1] && a[a.length - 1]._kw === true ? [a.slice(0, -1), a[a.length - 1]] : [a, null]);
+  const GCM = _syClass('_GeneratorContextManager', [], {
+    __init__(self, func, args, kwds) {
+      const pos = args ? [...pyIter(args)] : [];
+      const kw = kwds && (kwds instanceof Map ? kwds.size : Object.keys(kwds).length) ? Object.assign({ _kw: true }, kwds instanceof Map ? Object.fromEntries(kwds) : kwds) : null;
+      const gen = kw ? func(...pos, kw) : func(...pos);
+      const set = (g) => { self.gen = g; self.func = func; self.args = mkTuple(pos); self.kwds = kwds || new PyDict(); self.__doc__ = func && func.__doc__ !== undefined ? func.__doc__ : null; return null; };
+      return isThen(gen) ? gen.then(set) : set(gen);
+    },
+    _recreate_cm(self) { return typeOf(self)(self.func, self.args, self.kwds); },
+    __enter__(self) {
+      const done = (r) => { if (r.done) throw new AdderError('RuntimeError', "generator didn't yield"); return r.value; };
+      const r = stepGen(self.gen);
+      return isThen(r) ? r.then(done) : done(r);
+    },
+    __exit__(self, typ, value) {
+      if (typ === null || typ === undefined) {
+        const fin = (r) => { if (!r.done) throw new AdderError('RuntimeError', "generator didn't stop"); return false; };
+        const r = stepGen(self.gen);
+        return isThen(r) ? r.then(fin) : fin(r);
+      }
+      const fail = (e) => {
+        if (excValue(e) === value) return false;   // re-raised: the with statement raises the original
+        if (e && e.pyType === 'StopIteration') return true;
+        throw e;
+      };
+      const after = (r) => { if (!r.done) throw new AdderError('RuntimeError', "generator didn't stop after throw()"); return true; };
+      let r;
+      try { r = self.gen._jsThrow ? self.gen._jsThrow(excToThrowable(value)) : self.gen.throw(excToThrowable(value)); } catch (e) { return fail(e); }
+      return isThen(r) ? r.then(after, fail) : after(r);
+    },
+    __call__(self, func) {
+      const inner = async (...a) => {
+        const cm = await adderGetAttr(self, '_recreate_cm')();
+        await adderGetAttr(cm, '__enter__')();
+        let res;
+        try { res = await func(...a); } catch (e) {
+          if (!(await adderGetAttr(cm, '__exit__')(excTypeOf(e), excValue(e), null))) throw e;
+          return null;
+        }
+        await adderGetAttr(cm, '__exit__')(null, null, null);
+        return res;
+      };
+      inner._pyName = func && func._pyName; inner.__name__ = func && (func.__name__ ?? func._pyName); inner.__wrapped__ = func;
+      inner.__doc__ = func && func.__doc__ !== undefined ? func.__doc__ : null;
+      return inner;
+    },
+  }, 'contextlib');
+  cl._GeneratorContextManager = GCM;
+  cl.contextmanager = (fn) => {
+    const helper = (...a) => { const [pos, kw] = splitKw(a); return GCM(fn, mkTuple(pos), kw ? new PyDict(Object.entries(kw).filter(([k]) => k !== '_kw')) : new PyDict()); };
+    helper._pyName = fn._pyName || fn.name; helper.__name__ = helper._pyName; helper.__wrapped__ = fn;
+    helper.__doc__ = fn.__doc__ !== undefined ? fn.__doc__ : null; helper.__qualname__ = fn.__qualname__ ?? helper._pyName;
+    return helper;
+  };
   const hasAll = (o, names) => o !== null && o !== undefined && names.every((n) => { try { return typeof adderGetAttr(o, n) === 'function'; } catch { return false; } });
   const ACM = _syABCMeta('AbstractContextManager', mkTuple([]), new PyDict([['__enter__', (self) => self]]));
   ACM.__instancecheck__ = (o) => hasAll(o, ['__enter__', '__exit__']);
@@ -1692,9 +1754,84 @@ const _syTruthy = (v) => pyBool(v);
   });
 }
 
-// ── collections: UserDict, UserList, UserString (wrappers subclasses build on) ──
+// ── collections: UserDict, UserList, UserString (wrappers subclasses build on), ChainMap ──
 {
   const c = adderModules.collections;
+  // ChainMap: a class (subclassable — unittest's _OrderedChainMap overrides __iter__), over any
+  // mappings, with CPython's semantics: lookups search maps in order, writes go to maps[0]
+  const isDictLike = (m) => m instanceof Map || (m !== null && typeof m === 'object' && !Array.isArray(m) && Object.getPrototypeOf(m) === Object.prototype);
+  // (a map that is itself a ChainMap / user mapping iterates through its own __iter__ — a
+  // tree-walked one asynchronously, so these are synchronous only when they can be)
+  const then = (v, f) => (v !== null && typeof v === 'object' && typeof v.then === 'function' ? v.then(f) : f(v));
+  const keysOf = (m) => (isDictLike(m) ? [...pyIter(m)] : pyCollectMaybe(m));
+  const lookup = (m, k) => { try { return { v: pyGetItem(m, k) }; } catch (e) { if (e && e.pyType === 'KeyError') return null; throw e; } };
+  const cmKeys = (self) => {
+    const maps = [...self.maps].reverse(), seen = new PyDict();
+    const step = (i) => {
+      for (; i < maps.length; i++) {
+        const ks = keysOf(maps[i]);
+        if (ks !== null && typeof ks === 'object' && typeof ks.then === 'function') return ks.then((arr) => { for (const k of arr) seen.set(k, null); return step(i + 1); });
+        for (const k of ks) seen.set(k, null);
+      }
+      return [...seen.keys()];
+    };
+    return step(0);
+  };
+  const viaIter = (self, f) => then(pyCollectMaybe(self), f);   // the keys as the instance's own __iter__ gives them
+  c.ChainMap = _syClass('ChainMap', [], {
+    __init__(self, ...maps) { self.maps = maps.length ? maps : [new PyDict()]; return null; },
+    __missing__(self, k) { throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
+    __getitem__(self, k) {
+      for (const m of self.maps) { const r = lookup(m, k); if (r) return r.v; }
+      return adderGetAttr(self, '__missing__')(k);
+    },
+    get(self, k, dflt = null) { return adderGetAttr(self, '__contains__')(k) ? adderGetAttr(self, '__getitem__')(k) : dflt; },
+    __contains__(self, k) { return self.maps.some((m) => lookup(m, k) !== null); },
+    __len__(self) { return then(cmKeys(self), (ks) => ks.length); },
+    __iter__(self) { return then(cmKeys(self), (ks) => ks[Symbol.iterator]()); },
+    __bool__(self) { return self.maps.some((m) => pyBool(m)); },
+    keys(self) { return viaIter(self, (ks) => ks); },
+    values(self) { return viaIter(self, (ks) => ks.map((k) => adderGetAttr(self, '__getitem__')(k))); },
+    items(self) { return viaIter(self, (ks) => ks.map((k) => mkTuple([k, adderGetAttr(self, '__getitem__')(k)]))); },
+    __setitem__(self, k, v) { const m = self.maps[0]; if (m instanceof Map) m.set(k, v); else adderGetAttr(m, '__setitem__')(k, v); return null; },
+    __delitem__(self, k) {
+      const m = self.maps[0];
+      if (!lookup(m, k)) throw new AdderError('KeyError', `'Key not found in the first mapping: ${pyRepr(k)}'`, undefined, [k]);
+      if (m instanceof Map) m.delete(k); else adderGetAttr(m, '__delitem__')(k);
+      return null;
+    },
+    pop(self, k, ...a) {
+      const m = self.maps[0], r = lookup(m, k);
+      if (!r) { if (a.length) return a[0]; throw new AdderError('KeyError', `'Key not found in the first mapping: ${pyRepr(k)}'`, undefined, [k]); }
+      if (m instanceof Map) m.delete(k); else adderGetAttr(m, '__delitem__')(k);
+      return r.v;
+    },
+    popitem(self) {
+      const m = self.maps[0], ks = isDictLike(m) ? [...pyIter(m)] : [...pyIter(adderGetAttr(m, 'keys')())];
+      if (!ks.length) throw new AdderError('KeyError', 'No keys found in the first mapping.');
+      const k = ks[ks.length - 1], v = pyGetItem(m, k);
+      if (m instanceof Map) m.delete(k); else adderGetAttr(m, '__delitem__')(k);
+      return mkTuple([k, v]);
+    },
+    clear(self) { const m = self.maps[0]; if (m instanceof Map) m.clear(); else adderGetAttr(m, 'clear')(); return null; },
+    copy(self) { const first = self.maps[0]; const cp = first instanceof Map ? new PyDict(first) : adderGetAttr(first, 'copy')(); return typeOf(self)(cp, ...self.maps.slice(1)); },
+    __copy__(self) { return adderGetAttr(self, 'copy')(); },
+    new_child(self, m = null, ...a) {
+      const kw = _syKw(a) || (m && m._kw ? m : null);
+      if (m && m._kw) m = null;
+      if (m === null || m === undefined) m = new PyDict();
+      if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') m.set ? m.set(k, kw[k]) : (m[k] = kw[k]);
+      return typeOf(self)(m, ...self.maps);
+    },
+    __repr__(self) { return `${pyTypeName(self)}(${self.maps.map(pyRepr).join(', ')})`; },
+    __eq__(self, other) {
+      const o = other && other.maps ? other : null;
+      const mine = new PyDict(adderGetAttr(self, 'items')().map((t) => [t[0], t[1]]));
+      if (o) return pyEq(mine, new PyDict(adderGetAttr(o, 'items')().map((t) => [t[0], t[1]])));
+      return pyEq(mine, other);
+    },
+  }, 'collections');
+  Object.defineProperty(c.ChainMap.prototype, 'parents', { get() { return typeOf(this)(...this.maps.slice(1)); }, configurable: true });
   const d = (self) => self.data;
   c.UserDict = _syClass('UserDict', [], {
     __init__(self, ...a) { const kw = _syKw(a); const init = a.length ? a[0] : null; self.data = new PyDict(); if (init !== null && init !== undefined) adderGetAttr(self, 'update')(init); if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') adderGetAttr(self, '__setitem__')(k, v); return null; },
@@ -2313,5 +2450,210 @@ for (const [k, m] of Object.entries(adderModules)) {
       if (typeof k !== 'string' || k in t || k.startsWith('_') || k === 'then') return Reflect.get(t, k, r);
       return codecModule(k);
     },
+  });
+}
+
+// ── gc, signal, faulthandler, tracemalloc, contextvars: the interpreter-level modules code
+// imports to probe or configure the runtime. The engine's memory is the JS heap: gc reports
+// nothing to collect; there are no OS signals (handlers are recorded, never called);
+// faulthandler / tracemalloc are off. contextvars is real: one context (no threads or task
+// switches to separate), with tokens and copy_context().run. ──
+{
+  let gcEnabled = true;
+  let threshold = mkTuple([2000, 10, 10]);
+  adderModules.gc = _syModule('gc', {
+    enable: () => { gcEnabled = true; return null; },
+    disable: () => { gcEnabled = false; return null; },
+    isenabled: () => gcEnabled,
+    collect: () => 0,
+    get_count: () => mkTuple([0, 0, 0]),
+    get_threshold: () => threshold,
+    set_threshold: (...a) => { threshold = mkTuple(a.slice(0, 3)); return null; },
+    get_objects: () => [], get_referrers: () => [], get_referents: () => [],
+    is_tracked: () => false, is_finalized: () => false,
+    freeze: () => null, unfreeze: () => null, get_freeze_count: () => 0,
+    get_stats: () => [], set_debug: () => null, get_debug: () => 0,
+    garbage: [], callbacks: [],
+    DEBUG_STATS: 1, DEBUG_COLLECTABLE: 2, DEBUG_UNCOLLECTABLE: 4, DEBUG_SAVEALL: 32, DEBUG_LEAK: 38,
+  });
+
+  const SIG = { SIGABRT: 22, SIGFPE: 8, SIGILL: 4, SIGINT: 2, SIGSEGV: 11, SIGTERM: 15, SIGBREAK: 21 };
+  const handlers = new Map();
+  const defaultIntHandler = Object.assign(() => { throw new AdderError('KeyboardInterrupt', ''); }, { _pyName: 'default_int_handler' });
+  const sigCheck = (n) => { if (!Object.values(SIG).includes(n)) throw new AdderError('ValueError', 'invalid signal value'); };
+  adderModules.signal = _syModule('signal', {
+    ...SIG, SIG_DFL: 0, SIG_IGN: 1, NSIG: 23,
+    default_int_handler: defaultIntHandler,
+    signal: (n, h) => { sigCheck(n); const prev = handlers.has(n) ? handlers.get(n) : n === SIG.SIGINT ? defaultIntHandler : 0; handlers.set(n, h); return prev; },
+    getsignal: (n) => { sigCheck(n); return handlers.has(n) ? handlers.get(n) : n === SIG.SIGINT ? defaultIntHandler : 0; },
+    raise_signal: (n) => { sigCheck(n); const h = handlers.has(n) ? handlers.get(n) : n === SIG.SIGINT ? defaultIntHandler : 0; if (typeof h === 'function') return h(n, null); return null; },
+    valid_signals: () => new PySet(Object.values(SIG)),
+    strsignal: (n) => ({ 2: 'Interrupt', 15: 'Terminated', 22: 'Aborted', 8: 'Floating-point exception', 4: 'Illegal instruction', 11: 'Segmentation fault', 21: 'Break' })[n] ?? null,
+    set_wakeup_fd: () => -1,
+  });
+
+  let fhEnabled = false;
+  adderModules.faulthandler = _syModule('faulthandler', {
+    enable: () => { fhEnabled = true; return null; },
+    disable: () => { fhEnabled = false; return null; },
+    is_enabled: () => fhEnabled,
+    dump_traceback: () => null, dump_traceback_later: () => null, cancel_dump_traceback_later: () => null,
+    register: () => null, unregister: () => false, dump_c_stack: () => null,
+  });
+
+  let tmTracing = false;
+  adderModules.tracemalloc = _syModule('tracemalloc', {
+    is_tracing: () => tmTracing,
+    start: () => { tmTracing = true; return null; },
+    stop: () => { tmTracing = false; return null; },
+    clear_traces: () => null,
+    get_traced_memory: () => mkTuple([0, 0]), reset_peak: () => null,
+    get_traceback_limit: () => 1, get_tracemalloc_memory: () => 0, get_object_traceback: () => null,
+    take_snapshot: () => { throw new AdderError('RuntimeError', 'the tracemalloc module must be tracing memory allocations to take a snapshot'); },
+  });
+
+  // contextvars
+  const MISSING = { __adderClass__: 'Token.MISSING', __repr__: () => '<Token.MISSING>' };
+  let current = new Map();   // ContextVar → value
+  const kwOf = (a) => (a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {});
+  const Token = _syClass('Token', [], {
+    __init__: (self, ctx, v, old) => { self._ctx = ctx; self.var = v; self.old_value = old; self._used = false; return null; },
+    __repr__: (self) => `<Token${self._used ? ' used' : ''} var=${pyRepr(self.var)} at 0x${(0x7f0000000000 + (_pyHash(self) & 0xffffff)).toString(16)}>`,
+  }, 'contextvars');
+  Token.MISSING = MISSING;
+  const ContextVar = _syClass('ContextVar', [], {
+    __init__: (self, name, ...a) => {
+      const kw = kwOf(a);
+      self.name = name;
+      self._default = a.length ? a[0] : Object.hasOwn(kw, 'default') ? kw.default : MISSING;
+      return null;
+    },
+    get: (self, ...a) => {
+      if (current.has(self)) return current.get(self);
+      if (a.length) return a[0];
+      if (self._default !== MISSING) return self._default;
+      throw new AdderError('LookupError', pyRepr(self), undefined, [self]);
+    },
+    set: (self, value) => {
+      const old = current.has(self) ? current.get(self) : MISSING;
+      current = new Map(current); current.set(self, value);
+      return Token(current, self, old);
+    },
+    reset: (self, token) => {
+      if (token._used) throw new AdderError('RuntimeError', 'Token has already been used once');
+      if (token.var !== self) throw new AdderError('ValueError', 'Token was created by a different ContextVar');
+      current = new Map(current);
+      if (token.old_value === MISSING) current.delete(self); else current.set(self, token.old_value);
+      token._used = true;
+      return null;
+    },
+    __repr__: (self) => `<ContextVar name=${pyRepr(self.name)}${self._default !== MISSING ? ` default=${pyRepr(self._default)}` : ''} at 0x${(0x7f0000000000 + (_pyHash(self) & 0xffffff)).toString(16)}>`,
+  }, 'contextvars');
+  // a Context: a snapshot mapping; run(fn) makes it current for the call, then restores
+  const Context = _syClass('Context', [], {
+    __init__: (self) => { self._vars = new Map(); return null; },
+    run: (self, fn, ...args) => {
+      const saved = current;
+      current = self._vars;
+      const done = () => { self._vars = current; current = saved; };
+      let r;
+      try { r = fn(...args); } catch (e) { done(); throw e; }
+      if (r && typeof r.then === 'function') return r.then((v) => { done(); return v; }, (e) => { done(); throw e; });
+      done();
+      return r;
+    },
+    copy: (self) => { const c = Context(); c._vars = new Map(self._vars); return c; },
+    get: (self, v, d = null) => (self._vars.has(v) ? self._vars.get(v) : d),
+    keys: (self) => [...self._vars.keys()], values: (self) => [...self._vars.values()],
+    items: (self) => [...self._vars.entries()].map(mkTuple),
+    __getitem__: (self, v) => { if (!self._vars.has(v)) throw new AdderError('KeyError', pyRepr(v), undefined, [v]); return self._vars.get(v); },
+    __contains__: (self, v) => self._vars.has(v),
+    __len__: (self) => self._vars.size,
+    __iter__: (self) => [...self._vars.keys()][Symbol.iterator](),
+  }, 'contextvars');
+  // _imp: the import machinery's internals — no C extensions, no frozen modules in CPython's
+  // sense (adder's own stdlib is built in), one interpreter, so no import lock to speak of
+  let impLock = 0;
+  adderModules._imp = _syModule('_imp', {
+    extension_suffixes: () => [],
+    is_builtin: (name) => (adderModules[name] && adderModules[name].__adderModule__ ? 1 : 0),
+    is_frozen: () => false, is_frozen_package: () => false, find_frozen: () => null,
+    acquire_lock: () => { impLock++; return null; }, release_lock: () => { if (!impLock) throw new AdderError('RuntimeError', 'not holding the import lock'); impLock--; return null; },
+    lock_held: () => impLock > 0,
+    _fix_co_filename: () => null, check_hash_based_pycs: 'default', pyc_magic_number_token: 3571,
+    source_hash: () => new Uint8Array(8),
+    create_builtin: (spec) => { const m = adderModules[spec && spec.name]; if (!m) throw new AdderError('ImportError', `no built-in module named ${spec && spec.name}`); return m; },
+    exec_builtin: () => 0, exec_dynamic: () => 0, _override_multi_interp_extensions_check: () => -1,
+    _override_frozen_modules_for_tests: () => null, _frozen_module_names: () => mkTuple([]),
+  });
+  // py_compile: there is no bytecode to write; compile() checks the source parses (what callers
+  // use it for) and answers with the would-be .pyc path; PyCompileError for a syntax error
+  const PyCompileError = makeExcType('py_compile.PyCompileError', 'Exception');
+  adderModules.py_compile = _syModule('py_compile', {
+    PyCompileError,
+    PycInvalidationMode: _syModule('PycInvalidationMode', { TIMESTAMP: 1, CHECKED_HASH: 2, UNCHECKED_HASH: 3 }),
+    compile: async (file, ...a) => {
+      const kw = _syKw(a) || {};
+      const cfile = a.length > 0 ? a[0] : kw.cfile ?? null;
+      const doraise = a.length > 2 ? a[2] : !!kw.doraise;
+      const src = await adderGetAttr(adderGetAttr(adderModules.io, 'open')(file, 'r'), 'read')();
+      try { adderParse(String(src)); } catch (e) {
+        const err = PyCompileError(`Sorry: ${e.message}`);
+        if (doraise) throw err;
+        stdoutWrite(String(err.pyMessage || e.message) + String.fromCharCode(10));
+        return null;
+      }
+      return cfile ?? String(file).replace(/[.]py$/, '') + '.cpython-313.pyc';
+    },
+    main: () => 0,
+  });
+  // _io: io's C half — the same objects here
+  if (adderModules.io) adderModules._io = adderModules.io;
+  // pdb: there is no interactive debugger (no frames to stop in, no terminal to read); the module
+  // and its Pdb class exist for code that imports them — doctest subclasses Pdb at import time
+  const noDebugger = () => { throw new AdderError('RuntimeError', 'pdb: adder has no interactive debugger'); };
+  const Pdb = _syClass('Pdb', [], {
+    __init__(self, ...a) { self.args = a; return null; },
+    set_trace: noDebugger, set_continue: () => null, set_step: noDebugger, run: noDebugger, runcall: noDebugger,
+  }, 'pdb');
+  adderModules.pdb = _syModule('pdb', {
+    Pdb, set_trace: noDebugger, post_mortem: noDebugger, pm: noDebugger, run: noDebugger, runeval: noDebugger, runcall: noDebugger,
+    Restart: makeExcType('pdb.Restart', 'Exception'),
+  });
+  // typing.TypeAliasType — what `type X[T] = value` makes (PEP 695): its value is evaluated on
+  // first use (__value__), so an alias can refer to names defined after it
+  {
+    const ty = adderModules.typing;
+    const TAT = _syClass('TypeAliasType', [], {
+      __init__(self, name, value, ...a) {
+        const kw = _syKw(a) || {};
+        self.__name__ = name; self.__qualname__ = name;
+        self._value = value; self._thunk = null;
+        self.__type_params__ = kw.type_params !== undefined ? kw.type_params : mkTuple([]);
+        return null;
+      },
+      __repr__(self) { return self.__name__; },
+      __getitem__(self, params) { return new GenericAlias(self, Array.isArray(params) ? [...params] : [params]); },
+      __or__(self, other) { return adderGetAttr(ty, 'Union')[Symbol.for('getitem')] ? null : pyGetItem(ty.Union, mkTuple([self, other])); },
+    }, 'typing');
+    Object.defineProperty(TAT.prototype, '__value__', {
+      get() { if (this._thunk) { const t = this._thunk; this._thunk = null; this._value = t(); } return this._value; },
+      configurable: true,
+    });
+    ty.TypeAliasType = TAT;
+    ty._lazy_alias = (name, thunk, params) => { const a = TAT(name, null, { _kw: true, type_params: params }); a._thunk = thunk; return a; };
+  }
+  // _opcode: there is no bytecode here, so no specializing interpreter and no opcodes
+  adderModules._opcode = _syModule('_opcode', {
+    ENABLE_SPECIALIZATION: false, ENABLE_SPECIALIZATION_FT: false,
+    stack_effect: () => { throw new AdderError('ValueError', 'adder has no bytecode'); },
+    has_arg: () => false, has_const: () => false, has_name: () => false, has_jump: () => false,
+    has_free: () => false, has_local: () => false, has_exc: () => false,
+    get_intrinsic1_descs: () => [], get_intrinsic2_descs: () => [], get_specialization_stats: () => null,
+    get_nb_ops: () => [], get_executor: () => { throw new AdderError('ValueError', 'no executor'); },
+  });
+  adderModules.contextvars = _syModule('contextvars', {
+    ContextVar, Token, Context,
+    copy_context: () => { const c = Context(); c._vars = new Map(current); return c; },
   });
 }

@@ -1068,6 +1068,46 @@
   "builtin/type-dunders": {
    "out": "ab 12 2 3 True b True True q\nx! M\n",
    "error": null
+  },
+  "builtin/str-format": {
+   "out": "i='two' aba    7|\n{x} 5 v 9 P<x> '\\xe9'\n1 ? 3.14 1,234,567\nValueError cannot switch from automatic field numbering to manual field specification\nValueError cannot switch from manual field specification to automatic field numbering\nValueError Single '{' encountered in format string\nValueError Single '}' encountered in format string\nValueError Unknown conversion specifier x\nIndexError Replacement index 5 out of range for positional args tuple\nKE 'nope'\n",
+   "error": null
+  },
+  "class/property-type": {
+   "out": "5 the x why 42 True property\ndeleting\nFalse\nAE property 'y' of 'C' object has no setter\nAE property 'z' of 'C' object has no getter\nAE property 'y' of 'C' object has no deleter\n('loud', 7) True\nFalse True None\n",
+   "error": null
+  },
+  "class/dict-list-subclass": {
+   "out": "{'a': 1, 'c': 2} 1 2 ['a', 'c'] True B {'a': 1, 'c': 2}\nxx 1\n{'q': 1} nm 1\n[1] 10 1\nsub:3 {'x': 1} True {'y': 2}\n",
+   "error": null
+  },
+  "syntax/pep695-generics": {
+   "out": "3 (T,) (T, Ts, P) (1, 'x')\nPair (K,) tuple[K, K] int | float True False\n(<class 'int'>, <class 'str'>) <class 'float'>\n",
+   "error": null
+  },
+  "syntax/parenthesized-with": {
+   "out": "enter 1\nenter 2\n1 2\nexit 2\nexit 1\nenter 3\n3\nexit 3\nenter 4\nenter 5\nexit 5\nexit 4\n",
+   "error": null
+  },
+  "mod/chainmap": {
+   "out": "1 3 2 ['x', 'y'] [('x', 1), ('y', 3)] 9 True\n{'x': 1, 'z': 4} ChainMap({'x': 2, 'y': 3}) 0 {'x': 1, 'y': 3, 'z': 4}\ni=2 ChainMap({'x': 1, 'z': 4}, {'x': 2, 'y': 3})\nKE 'nope'\n2 [('i', 2)]\n[('i', 2)] 2\n",
+   "error": null
+  },
+  "builtin/numeric-hash": {
+   "out": "1 -2 314159 1152921504606846977 -576460752303423490 1224995262755759164 True 848750603811160107 2305843009213693951 230584300921369408\n",
+   "error": null
+  },
+  "class/class-equality": {
+   "out": "False True False True meta True None\n",
+   "error": null
+  },
+  "func/kwargs-named-like-varargs": {
+   "out": "((1,), {'a': 2})\nk= {'a': 1} a= () B\nafter {'a': 1}\nP k= {'z': 3}\n",
+   "error": null
+  },
+  "builtin/none-class": {
+   "out": "<class 'NoneType'> True NoneType\n",
+   "error": null
   }
  }
 }

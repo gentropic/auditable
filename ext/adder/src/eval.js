@@ -692,6 +692,11 @@ async function _evalSubscript(node, scope) {
       return obj.__getitem__({ _slice: true, lower, upper, step });
     return _applySlice(obj, lower, upper, step);
   }
+  // x[*a, b]: the key is that tuple, starred items spliced in
+  if (node.slice.type === 'Tuple' && node.slice.elts.some((e) => e.type === 'Starred')) {
+    const key = await adderEval(node.slice, scope);
+    return _withLine(() => pyGetItem(obj, key), node.line);
+  }
   // Tuple subscript — numpy / pandas multi-dim access. `arr[i, j]` is
   // sugar for `arr[(i, j)]`; pass the array of evaluated items to
   // __getitem__ and let the target (ndarray, DataFrame, etc.) handle.
@@ -1740,7 +1745,15 @@ class _ModuleVars extends PyDict {
 //   info.path    — for a package: its __path__ (the directories its submodules are found in)
 async function _instantiateModule(cacheKey, displayName, source, filePath, info = {}) {
   const cache = adderModules.sys.modules;
-  const ast = adderParse(source);
+  // a module that doesn't parse raises SyntaxError at its import, naming the file
+  let ast;
+  try { ast = adderParse(source); } catch (e) {
+    if (e instanceof AdderError) throw e;
+    const m = /\(line (\d+)\)/.exec(String(e && e.message));
+    const err = new AdderError('SyntaxError', `${String(e && e.message).replace(/\s*\(line \d+\)$/, '')} (${filePath}${m ? `, line ${m[1]}` : ''})`);
+    err.filename = filePath; err.lineno = m ? Number(m[1]) : null;
+    throw err;
+  }
   const modScope = new AdderScope();
   const builtins = adderBuiltins(stdoutWrite);
   const builtinNames = new PySet(Object.keys(builtins));
@@ -1848,6 +1861,8 @@ export async function findModule(name) {
     const dot = name.lastIndexOf('.');
     const parent = dot > 0 ? await findModule(name.slice(0, dot)) : null;
     if (cache[name]) return cache[name];
+    if (fz.source === undefined) fz.source = await _gunzipBase64(fz.gz);
+    if (cache[name]) return cache[name];
     const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [] } : {});
     if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
     return mod;
@@ -1871,6 +1886,14 @@ export async function findModule(name) {
   return await _loadVfsModule(name) || await _loadAuditableModule(name) || await _loadHttpModule(name);
 }
 
+// a frozen module's source (stdlib-py.js keeps them gzip-compressed, base64)
+async function _gunzipBase64(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
+}
 // findModule, raising ModuleNotFoundError (with `name` set, as CPython's has)
 export async function importModule(name, line) {
   const mod = await findModule(name);

@@ -91,8 +91,11 @@ class _SlTypeVar {
     this.__bound__ = _slOpt(kw, 'bound', null);
     this.__covariant__ = !!_slOpt(kw, 'covariant', false);
     this.__contravariant__ = !!_slOpt(kw, 'contravariant', false);
+    // (a PEP 695 type parameter infers its variance: no +/-/~ in its repr)
+    this.__infer_variance__ = !!_slOpt(kw, 'infer_variance', false);
+    this.__default__ = _slOpt(kw, 'default', null);
   }
-  __repr__() { return (this.__covariant__ ? '+' : this.__contravariant__ ? '-' : '~') + this.__name__; }
+  __repr__() { return (this.__infer_variance__ ? '' : this.__covariant__ ? '+' : this.__contravariant__ ? '-' : '~') + this.__name__; }
   __or__(o) { return makeUnion(this, o); }
   __ror__(o) { return makeUnion(o, this); }
 }
@@ -154,7 +157,13 @@ adderModules.typing = {
   Required: _slForm('Required'), NotRequired: _slForm('NotRequired'), Unpack: _slForm('Unpack'),
   SupportsInt: _slForm('SupportsInt'), SupportsFloat: _slForm('SupportsFloat'), SupportsIndex: _slForm('SupportsIndex'),
   SupportsAbs: _slForm('SupportsAbs'), Text: _typeObjects.str || _slForm('Text'), AnyStr: new _SlTypeVar('AnyStr'),
-  TypeVar: _slTypeVar, ParamSpec: _slTypeVar, TypeVarTuple: _slTypeVar,
+  TypeVar: _slTypeVar, ParamSpec: _slType('ParamSpec', class extends _SlTypeVar {}, 'typing'),
+  // *Ts (in Generic[*Ts], tuple[int, *Ts]) iterates it: one Unpack[Ts], as CPython's does
+  TypeVarTuple: _slType('TypeVarTuple', class extends _SlTypeVar {
+    __repr__() { return this.__name__; }
+    *[Symbol.iterator]() { const U = adderModules.typing.Unpack; yield U && typeof U.__getitem__ === "function" ? U.__getitem__(this) : this; }
+    __iter__() { return this[Symbol.iterator](); }
+  }, 'typing'),
   NamedTuple: _slNamedTupleBase, TypedDict: _slTypedDictBase,
   TYPE_CHECKING: false,
   cast: (_t, v) => v,

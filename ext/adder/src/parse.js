@@ -318,7 +318,73 @@ export function adderTokenize(code) {
 // ── parser ──
 
 export function adderParse(code) {
-  return _manglePrivate(new _Parser(adderTokenize(code)).parseModule(), null);
+  return _manglePrivate(_desugarTypeParams(new _Parser(adderTokenize(code)).parseModule()), null);
+}
+
+// PEP 695, as CPython compiles it: a generic def / class / type alias is built inside an
+// "annotation scope" — a hidden function that makes the type parameters (TypeVar, TypeVarTuple,
+// ParamSpec, with their bounds, constraints and defaults), defines the object (a generic class
+// gets Generic[...] as a base, as CPython adds it), records __type_params__ and returns it:
+//   def f[T](x: T): …      →   def __generic_parameters_of_f():
+//                                   T = typing.TypeVar('T'); def f(x: T): …; f.__type_params__ = (T,); return f
+//                               f = __generic_parameters_of_f(); del __generic_parameters_of_f
+// `type X[T] = v` is a TypeAliasType whose value is evaluated lazily. Both engines then run the
+// plain statements.
+function _desugarTypeParams(node) {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) {
+    if (!node.some((n) => n && typeof n === 'object' && (n.typeParams || n.type === 'TypeAlias'))) { for (const n of node) _desugarTypeParams(n); return node; }
+    const out = [];
+    for (const n of node) {
+      if (n && typeof n === 'object' && (n.typeParams || n.type === 'TypeAlias')) out.push(..._genericStatements(n));
+      else { _desugarTypeParams(n); out.push(n); }
+    }
+    node.length = 0; node.push(...out);
+    return node;
+  }
+  for (const k of Object.keys(node)) if (k !== 'line' && k !== 'col' && node[k] && typeof node[k] === 'object') _desugarTypeParams(node[k]);
+  return node;
+}
+function _genericStatements(n) {
+  const L = { line: n.line, col: n.col };
+  const name = (id) => ({ type: 'Name', id, ...L });
+  const str = (v) => ({ type: 'Constant', value: v, ...L });
+  const typing = (attr) => ({ type: 'Attribute', value: { type: 'Call', func: name('__import__'), args: [str('typing')], keywords: [], ...L }, attr, ...L });
+  const params = n.typeParams || [];
+  const helper = `__generic_parameters_of_${n.name}`;
+  const body = [];
+  for (const tp of params) {
+    const args = [str(tp.name)], keywords = [];
+    if (tp.bound) {
+      if (tp.bound.type === 'Tuple') args.push(...tp.bound.elts);   // T: (int, str) — constraints
+      else keywords.push({ name: 'bound', arg: 'bound', value: tp.bound });
+    }
+    if (tp.default) keywords.push({ name: 'default', arg: 'default', value: tp.default });
+    if (tp.kind !== 'TypeVarTuple') keywords.push({ name: 'infer_variance', arg: 'infer_variance', value: { type: 'Constant', value: true, ...L } });
+    body.push({ type: 'Assign', targets: [name(tp.name)], value: { type: 'Call', func: typing(tp.kind), args, keywords, ...L }, ...L });
+  }
+  const paramTuple = { type: 'Tuple', elts: params.map((tp) => name(tp.name)), ...L };
+  if (n.type === 'TypeAlias') {
+    const lazy = { type: 'Lambda', params: [], kwonly: [], vararg: null, kwarg: null, body: n.value, ...L };
+    body.push({ type: 'Return', value: { type: 'Call', func: typing('_lazy_alias'), args: [str(n.name), lazy, paramTuple], keywords: [], ...L }, ...L });
+  } else {
+    const def = { ...n, typeParams: null };
+    _desugarTypeParams(def.body);
+    if (n.type === 'ClassDef' && params.length) {
+      // Generic[T, *Ts, P] as the last base, unless one already is (class C[T](Generic[T]))
+      const elts = params.map((tp) => (tp.kind === 'TypeVarTuple' ? { type: 'Starred', value: name(tp.name), ...L } : name(tp.name)));
+      def.bases = [...def.bases, { type: 'Subscript', value: typing('Generic'), slice: elts.length === 1 ? elts[0] : { type: 'Tuple', elts, ...L }, ...L }];
+    }
+    body.push(def);
+    body.push({ type: 'Assign', targets: [{ type: 'Attribute', value: name(n.name), attr: '__type_params__', ...L }], value: paramTuple, ...L });
+    body.push({ type: 'Return', value: name(n.name), ...L });
+  }
+  const fn = { type: 'FunctionDef', name: helper, params: [], kwonly: [], vararg: null, kwarg: null, posonly: 0, body, decorators: [], returns: null, typeParams: null, ...L };
+  return [
+    fn,
+    { type: 'Assign', targets: [name(n.name)], value: { type: 'Call', func: name(helper), args: [], keywords: [], ...L }, ...L },
+    { type: 'Delete', targets: [name(helper)], ...L },
+  ];
 }
 
 // Private name mangling, as CPython's compiler does it: inside a class body (its methods and the
@@ -503,6 +569,19 @@ class _Parser {
       // `match` is a soft keyword: a match statement only when `match <subject>:` opens a block
       // of cases; otherwise (`match = ...`, `match.group()`) it is an ordinary name
       if (t.value === 'match') { const m = this._tryParseMatch(); if (m) return [m]; }
+      // `type` is a soft keyword: `type Name[params] = value` declares an alias (PEP 695)
+      if (t.value === 'type') {
+        const n1 = this.tokens[this.pos + 1], n2 = this.tokens[this.pos + 2];
+        if (n1 && n1.type === 'NAME' && n2 && n2.type === 'OP' && (n2.value === '=' || n2.value === '[')) {
+          this.advance();
+          const name = this.advance().value;
+          const typeParams = this.at('OP', '[') ? this._parseTypeParams() : null;
+          this.expect('OP', '=');
+          const value = this.parseExpr();
+          this.eat('NEWLINE');
+          return [{ type: 'TypeAlias', name, typeParams, value, line: t.line, col: t.col }];
+        }
+      }
     }
     return this.parseSimpleList();
   }
@@ -916,6 +995,7 @@ class _Parser {
   parseDef(isAsync = false, decorators = []) {
     const t = this.advance(); // 'def'
     const name = this.expect('NAME').value;
+    const typeParams = this.at('OP', '[') ? this._parseTypeParams() : null;
     this.expect('OP', '(');
     const params = this._parseFuncParams();
     this.expect('OP', ')');
@@ -923,7 +1003,26 @@ class _Parser {
     if (this.eat('OP', '->')) returns = this.parseExpr();
     this.expect('OP', ':');
     const body = this.parseBlock();
-    return { type: isAsync ? 'AsyncFunctionDef' : 'FunctionDef', name, ...params, body, decorators, returns, line: t.line, col: t.col };
+    return { type: isAsync ? 'AsyncFunctionDef' : 'FunctionDef', name, ...params, body, decorators, returns, typeParams, line: t.line, col: t.col };
+  }
+
+  // PEP 695 type parameters: [T, T: bound, T: (c1, c2), T = default, *Ts, **P]
+  _parseTypeParams() {
+    this.expect('OP', '[');
+    const out = [];
+    while (!this.at('OP', ']')) {
+      let kind = 'TypeVar';
+      if (this.eat('OP', '**')) kind = 'ParamSpec';
+      else if (this.eat('OP', '*')) kind = 'TypeVarTuple';
+      const nt = this.expect('NAME');
+      let bound = null, dflt = null;
+      if (kind === 'TypeVar' && this.eat('OP', ':')) bound = this.parseExpr();
+      if (this.eat('OP', '=')) dflt = this.parseExpr();
+      out.push({ kind, name: nt.value, bound, default: dflt, line: nt.line, col: nt.col });
+      if (!this.eat('OP', ',')) break;
+    }
+    this.expect('OP', ']');
+    return out;
   }
 
   _parseFuncParams() {
@@ -963,6 +1062,7 @@ class _Parser {
   parseClass(decorators = []) {
     const t = this.advance(); // 'class'
     const name = this.expect('NAME').value;
+    const typeParams = this.at('OP', '[') ? this._parseTypeParams() : null;
     let bases = [];
     const keywords = [];   // class X(Base, metaclass=M, flag=True): metaclass + __init_subclass__ kwargs
     if (this.eat('OP', '(')) {
@@ -980,7 +1080,7 @@ class _Parser {
     }
     this.expect('OP', ':');
     const body = this.parseBlock();
-    return { type: 'ClassDef', name, bases, keywords, body, decorators, line: t.line, col: t.col };
+    return { type: 'ClassDef', name, bases, keywords, body, decorators, typeParams, line: t.line, col: t.col };
   }
 
   parseTry() {
@@ -1007,6 +1107,27 @@ class _Parser {
 
   parseWith(isAsync = false) {
     const t = this.advance();
+    // `with (a() as x, b() as y,):` (3.10): parenthesized items — tried first, else the `(` opens
+    // an ordinary expression (`with (yield x):`, `with (a, b):` is a tuple as the manager)
+    if (this.at('OP', '(')) {
+      const start = this.pos;
+      try {
+        this.advance();
+        const items = [];
+        while (!this.at('OP', ')')) {
+          const contextExpr = this.parseExpr();
+          const optionalVar = this.eat('NAME', 'as') ? this._asTarget(this.parseExpr()) : null;
+          items.push({ contextExpr, optionalVar });
+          if (!this.eat('OP', ',')) break;
+        }
+        this.expect('OP', ')');
+        if (items.length && this.at('OP', ':') && (items.length > 1 || items[0].optionalVar)) {
+          this.advance();
+          return { type: 'With', items, body: this.parseBlock(), isAsync, line: t.line, col: t.col };
+        }
+      } catch (e) { /* not the parenthesized form */ }
+      this.pos = start;
+    }
     const items = [];
     do {
       const contextExpr = this.parseExpr();
@@ -1222,7 +1343,8 @@ class _Parser {
     // __getitem__/__setitem__ which the target object (DataFrame, nd-
     // array, etc.) interprets as multi-dim access.
     const first = this._parseSliceItem();
-    if (!this.at('OP', ',')) return first;
+    // x[*a] (3.11) is x[(*a,)]
+    if (!this.at('OP', ',')) return first && first.type === 'Starred' ? { type: 'Tuple', elts: [first], line: first.line, col: first.col } : first;
     const elts = [first];
     while (this.eat('OP', ',')) {
       // Trailing comma allowed (`arr[i,]`) — just stop before the `]`.
@@ -1233,6 +1355,7 @@ class _Parser {
   }
 
   _parseSliceItem() {
+    if (this.at('OP', '*')) { const t = this.advance(); return { type: 'Starred', value: this.parseExpr(), line: t.line, col: t.col }; }
     let lower = null;
     if (!this.at('OP', ':') && !this.at('OP', ']') && !this.at('OP', ',')) lower = this.parseExpr();
     if (this.eat('OP', ':')) {

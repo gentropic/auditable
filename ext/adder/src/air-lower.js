@@ -1103,6 +1103,11 @@ function lowerCompare_ad(ctx, node) {
     } else if (op === 'not in') {
       const c = emitPyCall(ctx, 'contains', [right, left], l, BOOL);
       cmp = ctx.emit('logical_not', [c.id], BOOL, l);
+    } else if ((op === 'is' || op === 'is not') && (_isNoneLit(node.comparators[i]) || _isNoneLit(i === 0 ? node.left : node.comparators[i - 1]))) {
+      // `x is None`: JS undefined (a function that fell off its end, a missing slot) is None too
+      const other = _isNoneLit(node.comparators[i]) ? left : right;
+      cmp = emitPyCall(ctx, 'isNone', [other], l, BOOL);
+      if (op === 'is not') cmp = ctx.emit('logical_not', [cmp.id], BOOL, l);
     } else if (op === 'is') {
       cmp = ctx.emit('eq', [left.id, right.id], BOOL, l);
     } else if (op === 'is not') {
@@ -1130,6 +1135,10 @@ function lowerSubscript(ctx, node) {
     const step = node.slice.step ? lowerExpr_ad(ctx, node.slice.step) : ctx.emit('const', [null], VOID, l);
     return emitPyCall(ctx, 'slice', [obj, lower, upper, step], l);
   }
+  if (node.slice.type === 'Tuple' && node.slice.elts.some((e) => e.type === 'Starred') && !node.slice.elts.some((e) => e.type === 'Slice')) {
+    // x[*a, b] (3.11): the key is the tuple display, starred items spliced in
+    return emitPyCall(ctx, 'getitem', [obj, lowerExpr_ad(ctx, node.slice)], l);
+  }
   if (node.slice.type === 'Tuple') {
     // numpy / pandas multi-dim subscript — build an array of evaluated
     // items (Slice elements become `_py.makeSlice(lo, hi, step)` marker
@@ -1155,6 +1164,8 @@ function _lowerSliceElt(ctx, elt, l) {
   }
   return lowerExpr_ad(ctx, elt);
 }
+
+const _isNoneLit = (n) => !!n && n.type === 'Constant' && n.value === null;
 
 // ── Call ──
 
@@ -1888,6 +1899,10 @@ function lowerDelete(ctx, node) {
       const undef = ctx.emit('const', [undefined], VOID, l);
       ctx.emit('store', [target.id, undef.id], VOID, l);
       ctx.symbols.set(target.id, undef.id);
+      // a module-level name: gone from the module object too (globals(), mod.name)
+      if ((ctx.moduleMirror || ctx.usesGlobals) && (ctx.topLevel || (ctx._fnGlobals && ctx._fnGlobals.has(target.id)))) {
+        emitRaw(ctx, `delete __adder_module__[${JSON.stringify(target.id)}];`);
+      }
     } else if (target.type === 'Subscript') {
       const obj = lowerExpr_ad(ctx, target.value);
       if (target.slice.type === 'Slice') {
@@ -2059,6 +2074,10 @@ function _preDeclareTargetNames(ctx, target, l) {
       const undef = ctx.emit('const', [undefined], VOID, l);
       ctx.emit('store', [target.id, undef.id], VOID, l);
       ctx.symbols.set(target.id, undef.id);
+      // a module-level name: gone from the module object too (globals(), mod.name)
+      if ((ctx.moduleMirror || ctx.usesGlobals) && (ctx.topLevel || (ctx._fnGlobals && ctx._fnGlobals.has(target.id)))) {
+        emitRaw(ctx, `delete __adder_module__[${JSON.stringify(target.id)}];`);
+      }
       if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(target.id);
     }
     return;
@@ -2254,7 +2273,7 @@ function _buildParamBinding(ctx, node, l) {
   if (vararg) {
     emitRaw(ctx, `let ${jsSafeName(vararg)} = _py.tuple(__args.slice(${positionalParams.length}));`, vararg);
     ctx.symbols.set(vararg, null);
-    usedNames.push(vararg);
+    // (not usedNames: a keyword argument named like *args is still a keyword — **kwargs gets it)
   }
 
   // Keyword-only params
