@@ -2782,3 +2782,42 @@ def get_thing(n):
     return t
 
 print(type(get_thing(1)).__name__, get_thing(1).n, cache.d[1] is get_thing(1))
+### class/tuple-compare-custom-order
+class InfinityType:
+    def __repr__(self): return "Infinity"
+    def __hash__(self): return hash(repr(self))
+    def __lt__(self, other): return False
+    def __le__(self, other): return False
+    def __eq__(self, other): return isinstance(other, self.__class__)
+    def __gt__(self, other): return True
+    def __ge__(self, other): return True
+    def __neg__(self): return NegativeInfinity
+Infinity = InfinityType()
+class NegativeInfinityType:
+    def __repr__(self): return "-Infinity"
+    def __hash__(self): return hash(repr(self))
+    def __lt__(self, other): return True
+    def __le__(self, other): return True
+    def __eq__(self, other): return isinstance(other, self.__class__)
+    def __gt__(self, other): return False
+    def __ge__(self, other): return False
+    def __neg__(self): return Infinity
+NegativeInfinity = NegativeInfinityType()
+a = (1, (1, 2, 3), ("rc", 1), NegativeInfinity, Infinity, Infinity)
+b = (1, (1, 2, 3), Infinity, NegativeInfinity, Infinity, Infinity)
+print(a < b, b < a, ("rc", 1) < Infinity, Infinity > ("rc", 1), (5, Infinity) < (5, ("a", 1)), -Infinity < 3)
+### fn/def-in-module-branch
+import sys
+if sys.version_info >= (9, 0):
+    def dep(m):
+        return "new"
+else:
+    def dep(m):
+        return "old:" + m
+class C:
+    x = dep("a")
+print(dep("b"), C.x)
+### builtin/id-is-not-a-key
+d = {"a": 1}
+x = id(d)
+print(list(d), id(d) == x, id(1) == id(1), id(1) == id(2), id([]) != id([]) or True)

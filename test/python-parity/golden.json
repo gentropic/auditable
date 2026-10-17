@@ -936,6 +936,18 @@
   "class/with-in-dunder": {
    "out": "Thing 1 True\n",
    "error": null
+  },
+  "class/tuple-compare-custom-order": {
+   "out": "True False True True False True\n",
+   "error": null
+  },
+  "fn/def-in-module-branch": {
+   "out": "old:b old:a\n",
+   "error": null
+  },
+  "builtin/id-is-not-a-key": {
+   "out": "['a'] True True False True\n",
+   "error": null
   }
  }
 }

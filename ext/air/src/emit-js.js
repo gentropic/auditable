@@ -1009,7 +1009,9 @@ function emitFunc(ctx, op) {
   // def _(...)`, a redefinition after `a = h`) is an assignment at that point: as a second
   // hoisted declaration, the last body would win for every earlier binding. JS sources keep
   // JS's hoisting (`is_decl`).
-  const rebind = emitAsDecl && !op.is_decl && ctx.scope._chain.bindings.has(name);
+  // (Also inside a block — `if …: def f` at module level: a strict-mode block function declaration
+  // is block-scoped, so the module's own binding would stay unset.)
+  const rebind = emitAsDecl && !op.is_decl && (ctx.scope._chain.bindings.has(name) || ctx.scope.parent !== null);
   if (emitAsDecl) {
     ctx.line(rebind ? `${name} = ${asyncPrefix}function${star} ${name}(${params}) {` : `${asyncPrefix}function${star} ${name}(${params}) {`);
     ctx.push();

@@ -4576,18 +4576,22 @@ function _orderError(op, a, b) {
   return new AdderError('TypeError', `'${op}' not supported between instances of '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
 }
 // the built-in ordering (no dunders): strict less-than
+// sequences compare item by item: the first unequal pair decides (its == and < may be
+// tree-walked dunders, i.e. Promises: then so is the answer)
+const _seqLt = maybeSync(function* (a, b) {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const e = yield pyEq(a[i], b[i]);
+    if (!e) return !!(yield pyLt(a[i], b[i]));
+  }
+  return a.length < b.length;
+});
+const _orEq = (r, a, b) => (r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then((v) => v || pyEq(a, b)) : r || pyEq(a, b));
 function _ltPlain(op, a, b) {
   if (_numLike(a) && _numLike(b)) return a < b;
   if (typeof a === 'string' && typeof b === 'string') return a < b;
   if (a instanceof Uint8Array && b instanceof Uint8Array) return _ltPlain(op, [...a], [...b]);
-  if (Array.isArray(a) && Array.isArray(b) && (a instanceof PyTuple) === (b instanceof PyTuple)) {
-    const n = Math.min(a.length, b.length);
-    for (let i = 0; i < n; i++) {
-      const e = pyEq(a[i], b[i]);
-      if (!e) return pyLt(a[i], b[i]);
-    }
-    return a.length < b.length;
-  }
+  if (Array.isArray(a) && Array.isArray(b) && (a instanceof PyTuple) === (b instanceof PyTuple)) return _seqLt(a, b);
   if (a instanceof Set && b instanceof Set) {
     if (a.size >= b.size) return false;
     for (const v of a) if (!b.has(v)) return false;
@@ -4617,7 +4621,7 @@ function pyLe(a, b) {
   if (_numLike(a) && _numLike(b)) return a <= b;
   if (typeof a === 'string' && typeof b === 'string') return a <= b;
   if (a instanceof Set && b instanceof Set) { for (const v of a) if (!b.has(v)) return false; return true; }
-  return _ltPlain('<=', a, b) || pyEq(a, b);
+  return _orEq(_ltPlain('<=', a, b), a, b);
 }
 function pyGe(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a >= b;
@@ -4626,7 +4630,7 @@ function pyGe(a, b) {
   if (_numLike(a) && _numLike(b)) return a >= b;
   if (typeof a === 'string' && typeof b === 'string') return a >= b;
   if (a instanceof Set && b instanceof Set) return pyLe(b, a);
-  return _ltPlain('>=', b, a) || pyEq(a, b);
+  return _orEq(_ltPlain('>=', b, a), a, b);
 }
 
 // Python's sort: stable, only `<`, reverse=True keeps equal items in their original order.
@@ -7353,7 +7357,19 @@ function adderBuiltins(printFn) {
     format: (value, spec) => pyFormatValue(value, spec || ''),
     pow: (x, y, mod) => mod !== undefined ? _modPow(x, y, mod) : Math.pow(x, y),
     divmod: (a, b) => mkTuple([pyFloorDiv(a, b), pyMod(a, b)]),
-    id: (obj) => { if (typeof obj === 'object' && obj !== null) { if (!obj.__id__) obj.__id__ = ++_idCounter; return obj.__id__; } return 0; },
+    // id(x): an object's is held aside (a property on it showed as a dict key); equal immutable
+    // values share one, as interned ones do in CPython
+    id: (obj) => {
+      if ((typeof obj === 'object' && obj !== null) || typeof obj === 'function') {
+        let i = _idOf.get(obj);
+        if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOf.set(obj, i); }
+        return i;
+      }
+      const k = `${typeof obj}:${String(obj)}`;
+      let i = _idOfValue.get(k);
+      if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOfValue.set(k, i); }
+      return i;
+    },
     hash: (obj) => _pyHash(obj),
     // iter(x): an iterator is its own (a generator — the tree-walker's are async — map, filter …);
     // an object with __iter__ gives what that returns; the rest iterate as JS sequences
@@ -7471,6 +7487,7 @@ function adderBuiltins(printFn) {
   return builtins;
 }
 let _stableBuiltins = null;
+const _idOf = new WeakMap(), _idOfValue = new Map();
 
 // super(): the next class after `cls` in self's MRO, as a proxy whose attributes are bound to
 // self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR
