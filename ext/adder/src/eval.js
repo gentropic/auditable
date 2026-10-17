@@ -38,8 +38,17 @@ export class AdderScope {
     if (this.globals.has(name)) return this._getGlobal(name);
     if (this.nonlocals.has(name)) return this._getEnclosing(name);
     if (this.vars.has(name)) return this.vars.get(name);
-    if (this.parent) return this.parent.get(name);
+    const p = this._outer(name);
+    if (p) return p.get(name);
     throw new AdderError('NameError', `name '${name}' is not defined`);
+  }
+  // the enclosing scope a name is looked up in next: a class body's names are not visible to
+  // the functions (and comprehensions) inside it — only to the body itself — except
+  // __class__, which zero-argument super() reads
+  _outer(name) {
+    let p = this.parent;
+    if (name !== '__class__') while (p && p._isClass) p = p.parent;
+    return p;
   }
   set(name, value) {
     if (this.globals.has(name)) { this._setGlobal(name, value); return; }
@@ -48,7 +57,8 @@ export class AdderScope {
   }
   has(name) {
     if (this.vars.has(name)) return true;
-    if (this.parent) return this.parent.has(name);
+    const p = this._outer(name);
+    if (p) return p.has(name);
     return false;
   }
   delete(name) { this.vars.delete(name); }
@@ -60,12 +70,12 @@ export class AdderScope {
   _setGlobal(name, value) { let s = this; while (s.parent) s = s.parent; s.vars.set(name, value); }
   _getEnclosing(name) {
     let s = this.parent;
-    while (s) { if (s.vars.has(name)) return s.vars.get(name); s = s.parent; }
+    while (s) { if (!s._isClass && s.vars.has(name)) return s.vars.get(name); s = s.parent; }
     throw new AdderError('NameError', `name '${name}' is not defined`);
   }
   _setEnclosing(name, value) {
     let s = this.parent;
-    while (s) { if (s.vars.has(name)) { s.vars.set(name, value); return; } s = s.parent; }
+    while (s) { if (!s._isClass && s.vars.has(name)) { s.vars.set(name, value); return; } s = s.parent; }
     throw new AdderError('NameError', `name '${name}' is not defined`);
   }
 }
@@ -1255,6 +1265,7 @@ async function _evalClass(node, scope) {
   // evaluate class body in a class scope; as in CPython it starts with __module__ (the defining
   // module's __name__) and __qualname__
   const classScope = new AdderScope(scope);
+  classScope._isClass = true;
   let root = scope; while (root.parent) root = root.parent;
   classScope.set('__module__', root.vars.has('__name__') ? root.vars.get('__name__') : '__main__');
   classScope.set('__qualname__', node.name);

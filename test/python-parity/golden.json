@@ -888,6 +888,10 @@
   "class/str-enums": {
    "out": "<Color.RED: 'red'> Color.RED Color.RED RED red! 1\n<S.A: 'a'> a A a! a\n",
    "error": null
+  },
+  "class/body-scope": {
+   "out": "class module ['module'] module!\n",
+   "error": null
   }
  }
 }

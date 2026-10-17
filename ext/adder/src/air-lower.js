@@ -184,6 +184,12 @@ class AdderLowerCtx extends BaseLowerCtx {
   nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
+    // in a class body, a name the body binds is `__cb_<name>`: the methods compiled inside it
+    // (JS closures) must not see the class's names — Python's don't — so their `x` reaches the
+    // module's x. The members object maps each name back (lowerClassDef).
+    if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._classBodyOf && this._classNames && this._classNames.has(args[0])) {
+      args = [`__cb_${args[0]}`, ...args.slice(1)];
+    }
     // sync mode (see AWAITED_DUNDERS): no await — the value is taken as it is
     if (op === 'await' && this._syncMode) return emitPyCall(this, 'noAwait', [{ id: args[0] }], loc, type);
     const pyName = (op === 'store' && typeof args[0] === 'string') ? args[0] : null;
@@ -1658,31 +1664,43 @@ function lowerClassDef(ctx, node) {
   ctx.symbols = ctx.symbols.push();
   const savedClass = ctx._classBodyOf;
   ctx._classBodyOf = name;
+  // the names the class body binds (assignments, defs, nested classes): mangled in the body
+  const savedClassNames = ctx._classNames;
+  const classNames = new Set();
+  collectDefines_ad(node.body, classNames);
+  (function defs(stmts) {
+    for (const st of stmts || []) {
+      if (!st) continue;
+      if (st.type === 'FunctionDef' || st.type === 'AsyncFunctionDef' || st.type === 'ClassDef') { classNames.add(st.name); continue; }
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(st[k])) defs(st[k]);
+      if (Array.isArray(st.handlers)) for (const h of st.handlers) defs(h.body);
+    }
+  })(node.body);
+  ctx._classNames = classNames;
 
   const body = captureOps(ctx, () => {
     // Run class body — method defs become locals, assignments become locals
-    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; }
+    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; }
 
     // Build the class members dict from the locals
     // We need to track which names were defined in the class body.
     // Use a synthetic approach: collect names via post-analysis of the ops.
+    // the members: the body's bindings (mangled `__cb_<name>`), keyed by their names
     const classMemberNames = [];
+    const binding = (n) => (n.startsWith('__cb_') ? n : classNames.has(n) ? `__cb_${n}` : n);
     for (const op of ctx.ops) {
       // the lowerer's temporaries (`__rep_42`) are not members; dunders (`__match_args__`,
       // `__slots__`, `__hash__ = None`) are
-      const isTemp = (n) => n.startsWith('__') && !n.endsWith('__');
-      if (op.op === 'store' && typeof op.args[0] === 'string' &&
-          !isTemp(op.args[0]) && !classMemberNames.includes(op.args[0])) {
-        classMemberNames.push(op.args[0]);
-      }
+      const isTemp = (n) => n.startsWith('__') && !n.endsWith('__') && !n.startsWith('__cb_');
+      let n = null;
+      if (op.op === 'store' && typeof op.args[0] === 'string' && !isTemp(op.args[0])) n = binding(op.args[0]);
       // Also catch func_region direct defines
-      if (op.op === 'func_region' && op.name && !classMemberNames.includes(op.name)) {
-        classMemberNames.push(op.name);
-      }
+      else if (op.op === 'func_region' && op.name) n = binding(pyNameOf(op.name));
+      if (n !== null && !classMemberNames.includes(n)) classMemberNames.push(n);
     }
     // Append object literal containing all member names
     const pairs = classMemberNames.map(n => ({
-      key: pyNameOf(n),
+      key: pyNameOf(n.startsWith('__cb_') ? n.slice(5) : n),
       id: ctx.emit('load', [n], DYNAMIC, l).id,
     }));
     const membersObj = ctx.emit('object_new', pairs, DYNAMIC, l);
@@ -2442,11 +2460,13 @@ function lowerFuncDef(ctx, node) {
   let finalId = op.id;
   const doc = node.body.length > 0 && node.body[0].type === 'Expr' && node.body[0].value.type === 'Constant' &&
     typeof node.body[0].value.value === 'string' ? node.body[0].value.value : null;
-  if (doc !== null) emitRaw(ctx, `${jsSafeName(name)}.__doc__ = ${JSON.stringify(doc)};`);
+  // (in a class body the function is bound as `__cb_<name>` — see lowerClassDef)
+  const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
+  if (doc !== null) emitRaw(ctx, `${refName}.__doc__ = ${JSON.stringify(doc)};`);
   // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
-  emitRaw(ctx, `_py.defSig(${jsSafeName(name)}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}});`);
+  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}});`);
   // its generator objects show the function's name (`<generator object g at ...>`)
-  if (isGenerator) emitRaw(ctx, `${jsSafeName(name)}.prototype._genName = ${JSON.stringify(name)};`);
+  if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
 
   // Apply decorators bottom-up: name = decorator(name)
   for (let i = decorators.length - 1; i >= 0; i--) {

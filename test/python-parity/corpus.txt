@@ -2590,3 +2590,16 @@ print(repr(Color.RED), str(Color.RED), f"{Color.RED}", Color.RED.upper(), Color.
 class S(enum.StrEnum):
     A = "a"
 print(repr(S.A), str(S.A), S.A.upper(), S.A + "!", f"{S.A}")
+### class/body-scope
+x = "module"
+class C:
+    x = "class"
+    y = x
+    def m(self):
+        return x
+    def n(self):
+        return [x for _ in range(1)]
+class D(C):
+    def m(self):
+        return super().m() + "!"
+print(C.y, C().m(), C().n(), D().m())
