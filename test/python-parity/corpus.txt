@@ -2717,3 +2717,68 @@ while s:
     out.append(s.current)
     next(s)
 print(out)
+### class/list-subclass
+class Ymd(list):
+    flag = "cls"
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.century = False
+    def first(self):
+        return self[0] if self else None
+    @property
+    def size(self):
+        return len(self)
+y = Ymd([3, 1])
+y.append(5)
+print(y, y.first(), y.size, y.century, y.flag, isinstance(y, list), sorted(y), len(y))
+class Y2(list):
+    def append(self, v):
+        super(self.__class__, self).append(int(v))
+    def __getitem__(self, i):
+        return super().__getitem__(i) * 10
+y2 = Y2()
+y2.append("7"); y2.append(3.0)
+print(y2, y2[0], len(y2))
+class Z(list):
+    def __len__(self):
+        return 99
+    def __contains__(self, x):
+        return x == "magic"
+    def __repr__(self):
+        return "Z!"
+z = Z([1, 2])
+print(len(z), "magic" in z, 1 in z, z, [z], z[1], z + [3], type(z + [3]).__name__)
+### mod/datetime-is-a-date
+import datetime
+d = datetime.datetime(2024, 3, 5)
+print(isinstance(d, datetime.date), issubclass(datetime.datetime, datetime.date), [c.__name__ for c in datetime.datetime.__mro__])
+### builtin/value-dunders
+print(hasattr("x", "__len__"), "abc".__len__(), [1, 2].__getitem__(1), {"a": 1}.__contains__("a"), hasattr(5, "__len__"), (1, 2).__hash__() == hash((1, 2)), [].__hash__)
+### class/with-in-dunder
+from threading import Lock
+
+class Cache:
+    def __init__(self):
+        self.d = {}
+        self._wlock = Lock()
+    def get(self, k, default=None):
+        try:
+            return self.d[k]
+        except KeyError:
+            return default
+    def __setitem__(self, k, v):
+        with self._wlock:
+            self.d[k] = v
+
+class Thing:
+    def __init__(self, n):
+        self.n = n
+
+cache = Cache()
+def get_thing(n):
+    t = cache.get(n)
+    if t is None:
+        cache[n] = t = Thing(n)
+    return t
+
+print(type(get_thing(1)).__name__, get_thing(1).n, cache.d[1] is get_thing(1))

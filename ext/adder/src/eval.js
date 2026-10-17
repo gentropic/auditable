@@ -19,7 +19,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch, AttrDict,
+  _registerImportMachinery, stdoutWrite, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -655,6 +655,7 @@ function _pyEq(a, b) {
 }
 function _pyIn(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
+  { const f = subclassDunder(container, '__contains__'); if (f) return f.call(container, value); }
   if (Array.isArray(container)) return container.some(v => _pyEq(v, value));
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
@@ -1779,7 +1780,14 @@ export async function importNames(mod, modName, names, line) {
     }
     let v;
     if (name in mod && mod[name] !== undefined) v = mod[name];
-    else if (modName) v = await findModule(`${modName}.${name}`);
+    else {
+      // an attribute the module answers for itself: a module subclass's class-level (lazy)
+      // attributes (six.moves), a module __getattr__ (PEP 562)
+      if (mod.__adderType__ || typeof mod.__getattr__ === 'function') {
+        try { v = await adderGetAttr(mod, name); } catch (e) { if (!(e && e.pyType === 'AttributeError')) throw e; v = undefined; }
+      }
+      if (v === undefined && modName) v = await findModule(`${modName}.${name}`);
+    }
     if (v === undefined || v === null && !(name in mod)) {
       const e = new AdderError('ImportError', `cannot import name '${name}' from '${modName}'`, line);
       e.name = modName;

@@ -169,6 +169,7 @@ function resolveAdderAnnotation(node) {
 // loc() reads adder-AST nodes' `node.line` / `node.col` (different
 // shape from ESTree's `node.loc.start`).
 
+let _nextGlobalSiteId = 0;
 class AdderLowerCtx extends BaseLowerCtx {
   constructor() {
     super();
@@ -181,7 +182,9 @@ class AdderLowerCtx extends BaseLowerCtx {
     // identities don't survive a re-lower anyway).
     this._callSiteId = 0;
   }
-  nextCallSiteId() { return this._callSiteId++; }
+  // (unique across every compilation: a program's modules all compile, and two sharing a site
+  // number shared its cache — `self.close()` in one got `skip_if` from another)
+  nextCallSiteId() { this._callSiteId++; return _nextGlobalSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
     // in a class body, a name the body binds is `__cb_<name>`: the methods compiled inside it
@@ -2390,7 +2393,9 @@ function lowerFuncDef(ctx, node) {
   // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
   // method, not a generator, not one analyseSyncFunctions proved sync
   const savedLoopAwait = ctx._loopMayAwait;
-  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name) && !syncMode;
+  // (a generator or method too: the source may be an async generator — most compiled functions
+  // that call methods are async — and a plain for-of can't wait for it; not in sync mode)
+  ctx._loopMayAwait = !ctx.syncFunctions.has(node.name) && !syncMode;
   const savedFnGlobals = ctx._fnGlobals;
   ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
 

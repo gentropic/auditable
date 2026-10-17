@@ -3063,9 +3063,73 @@ function _isNativeClass(fn) {
 }
 
 const _moduleBound = new WeakMap();   // module object → attr → [function, its bound copy]
+// list[a:b:c] from a slice object (super().__getitem__(slice) in a list subclass)
+function _applySliceRaw(o, k) {
+  const n = o.length, step = k.step ?? 1;
+  if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const out = [];
+  if (step > 0) {
+    const a = k.lower == null ? 0 : k.lower < 0 ? clamp(n + k.lower, 0, n) : clamp(k.lower, 0, n);
+    const b = k.upper == null ? n : k.upper < 0 ? clamp(n + k.upper, 0, n) : clamp(k.upper, 0, n);
+    for (let i = a; i < b; i += step) out.push(o[i]);
+  } else {
+    const a = k.lower == null ? n - 1 : k.lower < 0 ? clamp(n + k.lower, -1, n - 1) : clamp(k.lower, -1, n - 1);
+    const b = k.upper == null ? -1 : k.upper < 0 ? clamp(n + k.upper, -1, n - 1) : clamp(k.upper, -1, n - 1);
+    for (let i = a; i > b; i += step) out.push(o[i]);
+  }
+  return o instanceof PyTuple ? mkTuple(out) : out;
+}
+// a builtin value's dunders as attributes ('abc'.__len__(), [].__getitem__, hasattr(x, '__len__')
+// — duck typing reads them): the operation itself, bound to the value
+const _VALUE_DUNDERS = new Set(['__len__', '__iter__', '__contains__', '__getitem__', '__setitem__', '__delitem__',
+  '__eq__', '__ne__', '__lt__', '__le__', '__gt__', '__ge__', '__hash__', '__str__', '__repr__', '__format__',
+  '__add__', '__mul__', '__rmul__', '__mod__', '__iadd__', '__reversed__', '__sizeof__']);
+function _valueDunder(o, attr) {
+  const isStr = typeof o === 'string', isSeq = isStr || Array.isArray(o) || o instanceof Uint8Array;
+  const isPlain = !isSeq && isPlainDict(o);
+  const isMap = o instanceof Map || isPlain, isSet = o instanceof Set;
+  const mutable = (Array.isArray(o) && !(o instanceof PyTuple)) || isMap;
+  const has = (k) => (isPlain ? typeof k === 'string' && Object.hasOwn(o, k) : o.has(k));
+  const f = (() => {
+    switch (attr) {
+      case '__len__': return () => (isStr ? [...o].length : isPlain ? Object.keys(o).length : isMap || isSet ? o.size : o.length);
+      case '__iter__': return () => pyIter(o);
+      case '__contains__': return (x) => (isStr ? o.includes(strValue(x) ?? String(x)) : isMap || isSet ? has(x) : [...o].some((v) => pyEq(v, x) === true));
+      case '__getitem__': return isSet ? null : (k) => (k !== null && typeof k === 'object' && k._slice && Array.isArray(o) ? _applySliceRaw(o, k) : pyGetItem(o, k, true));
+      case '__setitem__': return mutable ? (k, v) => { if (isPlain) o[k] = v; else if (isMap) o.set(k, v); else o[k < 0 ? o.length + k : k] = v; return null; } : null;
+      case '__delitem__': return mutable ? (k) => { if (isMap) { if (!has(k)) throw new AdderError('KeyError', pyRepr(k)); if (isPlain) delete o[k]; else o.delete(k); } else o.splice(k < 0 ? o.length + k : k, 1); return null; } : null;
+      case '__eq__': return (x) => pyEq(o, x);
+      case '__ne__': return (x) => !pyEq(o, x);
+      case '__lt__': return (x) => pyLt(o, x);
+      case '__gt__': return (x) => pyLt(x, o);
+      case '__le__': return (x) => pyEq(o, x) === true || pyLt(o, x);
+      case '__ge__': return (x) => pyEq(o, x) === true || pyLt(x, o);
+      case '__hash__': return mutable || isSet && !o._frozen ? null : () => _pyHash(o);
+      case '__str__': return () => pyStr(o);
+      case '__repr__': return () => pyRepr(o);
+      case '__format__': return (spec) => pyFormatValue(o, spec || '');
+      case '__add__': return isSeq ? (x) => pyAdd(o, x) : null;
+      case '__mul__': case '__rmul__': return isSeq ? (n) => pyMul(o, n) : null;
+      case '__mod__': return isStr ? (a) => pyMod(o, a) : null;
+      case '__reversed__': return isSeq || isMap ? () => [...pyIter(o)].reverse()[Symbol.iterator]() : null;
+      case '__sizeof__': return () => 64;
+      default: return null;
+    }
+  })();
+  if (f) f._pyName = attr;
+  return f;
+}
 let _gaBypass = null;                 // the instance object.__getattribute__ is reading plainly
 function _plainGetAttr(o, k) { _gaBypass = o; try { return adderGetAttr(o, k); } finally { if (_gaBypass === o) _gaBypass = null; } }
 function adderGetAttr(obj, attr) {
+  if (_VALUE_DUNDERS.has(attr) && obj !== null && obj !== undefined && !obj.__adderType__ &&
+      (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Map || obj instanceof Set || obj instanceof Uint8Array || isPlainDict(obj))) {
+    const d = _valueDunder(obj, attr);
+    if (d) return d;
+    // an unhashable container's __hash__ is None
+    if (attr === '__hash__' && (Array.isArray(obj) && !(obj instanceof PyTuple) || obj instanceof Map || isPlainDict(obj) || (obj instanceof Set && !obj._frozen))) return null;
+  }
   if (obj instanceof AdderError) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
     if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
@@ -3108,7 +3172,14 @@ function adderGetAttr(obj, attr) {
     if (attr === '__mro__' && obj._pyClass && obj._pyMRO) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : [...obj._pyMRO, pyObjectObj]);
     if (attr === '__bases__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [] : obj._pyBases && obj._pyBases.length ? obj._pyBases : [pyObjectObj]);
     // a builtin type's (int, str, dict …): itself and object (bool is an int)
-    if (attr === '__mro__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : tn === 'bool' ? [obj, _typeObjects.int, pyObjectObj] : [obj, pyObjectObj]);
+    if (attr === '__mro__' && obj._pyClass) {
+      if (obj._jsClass) {   // a JS-backed type: its JS class chain, each link's type
+        const chain = [obj];
+        for (let p = Object.getPrototypeOf(obj._jsClass.prototype); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) if (Object.hasOwn(p, '__adderType__') && !chain.includes(p.__adderType__)) chain.push(p.__adderType__);
+        return mkTuple([...chain, pyObjectObj]);
+      }
+      return mkTuple(obj === pyObjectObj ? [pyObjectObj] : tn === 'bool' ? [obj, _typeObjects.int, pyObjectObj] : [obj, pyObjectObj]);
+    }
     // Cls.__new__ where nothing in the class defines one: object's, or the builtin type's
     if (attr === '__new__' && obj._pyClass && !(attr in obj)) return _inheritedNew(obj);
   }
@@ -3143,8 +3214,20 @@ function adderGetAttr(obj, attr) {
     if (typeof m !== 'function') return m;
     return (...a) => { const r = m(...a.map((x) => (x instanceof PyByteArray ? Uint8Array.from(x) : x))); return r instanceof Uint8Array ? _toBA(r) : r; };
   }
-  // list methods
-  if (Array.isArray(obj)) return _listMethod(obj, attr);
+  // list methods — after a list subclass's own: its instance attributes, its methods and
+  // properties, its class variables
+  if (Array.isArray(obj)) {
+    const lt = obj.__adderType__;
+    if (lt && lt._pyMRO) {
+      if (Object.hasOwn(obj, attr) && attr !== 'length' && !/^\d+$/.test(attr)) return obj[attr];
+      if (lt.prototype && Object.hasOwn(lt.prototype, attr)) {
+        const v = Reflect.get(lt.prototype, attr, obj);
+        return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+      }
+      for (const c of lt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, lt) : cv; }
+    }
+    return _listMethod(obj, attr);
+  }
   // dict (Map) methods — a Map subclass (Counter, defaultdict, OrderedDict) answers with its own first
   if (obj instanceof Map) {
     if (Object.getPrototypeOf(obj) !== Map.prototype && Object.getPrototypeOf(obj) !== PyDict.prototype && attr in obj && !(attr in Map.prototype)) {
@@ -3223,7 +3306,8 @@ function adderGetAttr(obj, attr) {
     if (has) return v;
     // an instance attribute it doesn't have: the class's (and its bases'), as Python looks them up
     const ot = obj.__adderType__;
-    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (_ownPyClassAttr(c, attr)) return c[attr];
+    // (a descriptor set on the class after it was made — six's lazy attributes — goes through __get__)
+    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, ot) : cv; }
     // a boxed string (a str subclass instance): str's methods, on its value
     if (typeof obj._pyStrValue === 'string') { try { return _boxStrMethod(obj, attr); } catch (e) { if (!(e && e.pyType === 'AttributeError')) throw e; } }
     // dict-like attribute access — keys, values, items, get, etc.
@@ -4334,8 +4418,17 @@ function _fmtGeneral(x, prec, upper, alt) {
 // integers (bools count) with negative indexing and IndexError; dicts raise KeyError (a plain
 // object dict only has its own string keys — never its prototype's); __getitem__ wins otherwise.
 const _SEQ_NAMES = (obj) => (typeof obj === 'string' ? 'string' : obj instanceof AdderRange ? 'range object' : pyTypeName(obj));
-function pyGetItem(obj, key) {
+// a list / dict / set subclass's own dunder, if it defines one (the builtin's paths below are the
+// raw operation, which super().__getitem__ & co. read)
+function subclassDunder(obj, name) {
+  const t = obj !== null && typeof obj === 'object' ? obj.__adderType__ : undefined;
+  if (!t || !t._pyMRO || !t.prototype || !(Array.isArray(obj) || obj instanceof Map || obj instanceof Set)) return null;
+  const f = t.prototype[name];
+  return typeof f === 'function' && t._pyMRO.some((c) => c._pyOwnMembers && c._pyOwnMembers.has(name)) ? f : null;
+}
+function pyGetItem(obj, key, raw = false) {
   if (obj === null || obj === undefined) throw new AdderError('TypeError', `'NoneType' object is not subscriptable`);
+  if (!raw) { const f = subclassDunder(obj, '__getitem__'); if (f) return f.call(obj, key); }
   if (obj instanceof Map) {
     if (!obj.has(key)) {
       if (typeof obj.__missing__ === 'function') return obj.__missing__(key);
@@ -6439,7 +6532,7 @@ function objectNew(cls, args = []) {
     return box;
   }
   const instance = cls._pyListBase
-    ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: cls._pyName, __adderType__: cls })
+    ? Object.assign(Object.setPrototypeOf(args.length > 0 && !(args[0] && args[0]._kw) ? [...pyIter(args[0])] : [], cls.prototype), { __adderClass__: cls._pyName, __adderType__: cls })
     : Object.create(cls.prototype);
   if (!cls._pyListBase) {
     instance.__adderClass__ = cls._pyName;
@@ -6512,6 +6605,9 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   // `class X(str): …` — instances are boxed strings (see _StrBoxProto)
   cls._pyStrBase = (bases || []).some(b => b && (b === _stableTypes.str || b._pyStrBase));
   if (cls._pyStrBase) Object.setPrototypeOf(cls.prototype, _StrBoxRoot);
+  // a list subclass's instances are arrays with the class's prototype (over Array's): its own
+  // __getitem__ / __len__ / methods are what the generic paths find
+  if (cls._pyListBase) Object.setPrototypeOf(cls.prototype, Array.prototype);
   if (opts.meta) cls.__adderMeta__ = opts.meta;
 
   const mro = computeMRO(cls);
@@ -6940,10 +7036,11 @@ async function _resourceFiles(anchor) {
 adderModules.importlib = {
   __adderModule__: true, __name__: 'importlib',
   // import_module(name, package=None): the module itself (the leaf of a dotted name)
-  import_module: async (name, ...args) => {
+  import_module: (name, ...args) => {
     const kw = _kwOf(args);
     const pkg = args.length ? args[0] : kw.package;
-    return _imp.importModule(String(name).startsWith('.') ? _imp.resolveRelative(name, pkg || null) : name);
+    const abs = String(name).startsWith('.') ? _imp.resolveRelative(name, pkg || null) : name;
+    return _loadedModule(abs) || _imp.importModule(abs);
   },
   reload: async (mod) => {
     const name = mod && mod.__name__;
@@ -6978,7 +7075,17 @@ adderModules.importlib = {
 };
 // __import__(name, globals=None, locals=None, fromlist=(), level=0): the top-level package,
 // unless a fromlist is given — then the module named
-async function _builtinImport(name, ...args) {
+// a module already loaded (sys.modules, or one of adder's own): importing it needs no wait, so
+// __import__ / import_module answer synchronously — code that can't wait (a lazy descriptor's
+// __get__, six.moves) imports what's there
+function _loadedModule(n) {
+  const m = _sysModule.modules[n];
+  if (m) return m;
+  const a = adderModules[n];
+  if (a && typeof a === 'object' && a.__adderModule__ && n !== 'js') { _sysModule.modules[n] = a; return a; }   // in sys.modules once imported, as findModule does
+  return undefined;
+}
+function _builtinImport(name, ...args) {
   const kw = _kwOf(args);
   const [globals = kw.globals, , fromlist = kw.fromlist, level = kw.level || 0] = args;
   let abs = name;
@@ -6986,9 +7093,17 @@ async function _builtinImport(name, ...args) {
     const pkg = globals && (globals instanceof Map ? globals.get('__package__') : globals.__package__);
     abs = _imp.resolveRelative('.'.repeat(level) + name, pkg || null);
   }
-  const mod = await _imp.importModule(abs);
-  if (fromlist && fromlist.length) return mod;
-  return abs.includes('.') ? _imp.importModule(abs.split('.')[0]) : mod;
+  const have = _loadedModule(abs);
+  if (have) {
+    if ((fromlist && fromlist.length) || !abs.includes('.')) return have;
+    const top = _loadedModule(abs.split('.')[0]);
+    if (top) return top;
+  }
+  return (async () => {
+    const mod = await _imp.importModule(abs);
+    if (fromlist && fromlist.length) return mod;
+    return abs.includes('.') ? _imp.importModule(abs.split('.')[0]) : mod;
+  })();
 }
 
 function adderBuiltins(printFn) {
@@ -7011,6 +7126,7 @@ function adderBuiltins(printFn) {
       return _isThenable(r) ? r.then(() => null) : null;
     },
     len: (obj) => {
+      { const f = subclassDunder(obj, '__len__'); if (f) return f.call(obj); }
       if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) return obj.length;
       if (obj instanceof Map || obj instanceof Set) return obj.size;
       if (obj instanceof AdderRange) return obj.length;
@@ -7268,6 +7384,7 @@ function adderBuiltins(printFn) {
       if (cn === 'bool' && tn === 'int') return true;
       if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
       if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
+      if (c._jsClass && t && t._jsClass && c._jsClass.prototype instanceof t._jsClass) return true;   // JS-backed types (datetime ⊂ date)
       // an ABC's own say (a registered virtual subclass, a __subclasshook__)
       if (t && t._pyClass && t._pyMRO) {
         let sc = null;
@@ -7395,6 +7512,17 @@ function pySuper(cls, self) {
         if (!base) continue;
         // a builtin base (str, tuple …): its __new__ makes the subclass's instance
         if (name === '__new__' && base._pyClass && !base._pyMRO && base !== pyObjectObj && base !== pyTypeObj && !isBuiltinExcType(base)) return _inheritedNew(base);
+        // list / tuple / dict / set under a subclass: the builtin's methods and dunders, on self
+        if (base._pyClass && !base._pyMRO && self && (Array.isArray(self) || self instanceof Map || self instanceof Set) && ['list', 'tuple', 'dict', 'set', 'frozenset'].includes(base._pyName)) {
+          if (name === '__init__') return (...a) => {
+            if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+            if (Array.isArray(self) && a.length) { self.length = 0; for (const v of pyIter(a[0])) self.push(v); }
+            return null;
+          };
+          const d = _VALUE_DUNDERS.has(name) ? _valueDunder(self, name) : null;
+          if (d) return d;
+          try { return Array.isArray(self) ? _listMethod(self, name) : self instanceof Map ? _mapMethod(self, name) : _setMethod(self, name); } catch { continue; }
+        }
         // str under a str subclass: its dunders and methods, on the box's value
         if (base === _stableTypes.str && self && typeof self._pyStrValue === 'string') {
           if (Object.hasOwn(_StrBoxProto, name)) return _StrBoxProto[name].bind(self);
@@ -7463,6 +7591,8 @@ function _pyIsInstance(obj, typeOrTuple) {
         }
         // walk exception parent chain
         if (obj instanceof AdderError && _excChain(obj.pyType).includes(t._pyName)) return true;
+        // a JS-backed type (datetime is a date): its JS class's inheritance
+        if (t._jsClass && obj !== null && typeof obj === 'object' && obj instanceof t._jsClass) return true;
       } else {
         try { if (obj instanceof t) return true; } catch { /* arrow fn without prototype */ }
       }
@@ -8150,6 +8280,7 @@ function _pyEq(a, b) {
 }
 function _pyIn(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
+  { const f = subclassDunder(container, '__contains__'); if (f) return f.call(container, value); }
   if (Array.isArray(container)) return container.some(v => _pyEq(v, value));
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
@@ -9274,7 +9405,14 @@ async function importNames(mod, modName, names, line) {
     }
     let v;
     if (name in mod && mod[name] !== undefined) v = mod[name];
-    else if (modName) v = await findModule(`${modName}.${name}`);
+    else {
+      // an attribute the module answers for itself: a module subclass's class-level (lazy)
+      // attributes (six.moves), a module __getattr__ (PEP 562)
+      if (mod.__adderType__ || typeof mod.__getattr__ === 'function') {
+        try { v = await adderGetAttr(mod, name); } catch (e) { if (!(e && e.pyType === 'AttributeError')) throw e; v = undefined; }
+      }
+      if (v === undefined && modName) v = await findModule(`${modName}.${name}`);
+    }
     if (v === undefined || v === null && !(name in mod)) {
       const e = new AdderError('ImportError', `cannot import name '${name}' from '${modName}'`, line);
       e.name = modName;
@@ -9474,6 +9612,7 @@ function _iadd(a, b) {
 
 function _contains(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
+  { const f = subclassDunder(container, '__contains__'); if (f) return f.call(container, value); }
   if (Array.isArray(container)) return container.some(v => _eq(v, value));
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
@@ -9574,6 +9713,7 @@ function _getitem(obj, key) {
 
 function _setitem(obj, key, value) {
   if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`);
+  { const f = subclassDunder(obj, '__setitem__'); if (f) { f.call(obj, key, value); return; } }
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
     const idx = key < 0 ? obj.length + key : key;
@@ -9791,7 +9931,7 @@ function _callMethod(obj, name, siteId, ...args) {
   // Fast path: scan the cache for a matching __adderType__.
   const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
   const cache = _PIC[siteId];
-  if (cache && t !== undefined) {
+  if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t) return cache.methods[i].call(obj, ...args);
@@ -9809,7 +9949,7 @@ function _callMethod(obj, name, siteId, ...args) {
   if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
     let c = cache;
     if (!c) {
-      c = { types: [], methods: [], next: 0 };
+      c = { types: [], methods: [], next: 0, name };
       _PIC[siteId] = c;
     }
     if (c.types.length < _PIC_SIZE) {
@@ -9837,21 +9977,23 @@ function _callMethod(obj, name, siteId, ...args) {
 // falsy). __exit__ may be async — we must AWAIT it so the lowered call
 // site's `await _py.exitWith(...)` actually waits for side effects
 // (e.g. a file open(..., "w") that flushes to the VFS on close).
-async function _exitWith(mgr, exc) {
+// Synchronous when __exit__ is; a Promise only when __exit__ returns one (a file closing a write
+// handle awaits the VFS) — the lowered call site awaits it, except in sync mode, where a Promise
+// suppression flag would be truthy and swallow the exception.
+function _exitWith(mgr, exc) {
   if (mgr === null || mgr === undefined || typeof mgr.__exit__ !== 'function') {
     throw new AdderError(
       'AttributeError',
       `'${pyTypeName(mgr)}' object has no attribute '__exit__'`,
     );
   }
-  if (exc === null || exc === undefined) {
+  const then = (r, f) => (r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(f) : f(r));
+  if (exc === null || exc === undefined || (exc && exc.pyType === 'BudgetExceeded')) {
     // Normal-exit path: discard return; CPython does likewise here.
-    await mgr.__exit__(null, null, null);
-    return false;
+    return then(mgr.__exit__(null, null, null), () => false);
   }
   // Exception path: pass (type, value, None) and return suppression flag.
-  if (exc && exc.pyType === 'BudgetExceeded') { await mgr.__exit__(null, null, null); return false; }
-  return await mgr.__exit__(excTypeOf(exc), excValue(exc), null);
+  return mgr.__exit__(excTypeOf(exc), excValue(exc), null);
 }
 
 // ── Attribute access ──
@@ -19641,6 +19783,7 @@ function resolveAdderAnnotation(node) {
 // loc() reads adder-AST nodes' `node.line` / `node.col` (different
 // shape from ESTree's `node.loc.start`).
 
+let _nextGlobalSiteId = 0;
 class AdderLowerCtx extends BaseLowerCtx {
   constructor() {
     super();
@@ -19653,7 +19796,9 @@ class AdderLowerCtx extends BaseLowerCtx {
     // identities don't survive a re-lower anyway).
     this._callSiteId = 0;
   }
-  nextCallSiteId() { return this._callSiteId++; }
+  // (unique across every compilation: a program's modules all compile, and two sharing a site
+  // number shared its cache — `self.close()` in one got `skip_if` from another)
+  nextCallSiteId() { this._callSiteId++; return _nextGlobalSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
     // in a class body, a name the body binds is `__cb_<name>`: the methods compiled inside it
@@ -21862,7 +22007,9 @@ function lowerFuncDef(ctx, node) {
   // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
   // method, not a generator, not one analyseSyncFunctions proved sync
   const savedLoopAwait = ctx._loopMayAwait;
-  ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name) && !syncMode;
+  // (a generator or method too: the source may be an async generator — most compiled functions
+  // that call methods are async — and a plain for-of can't wait for it; not in sync mode)
+  ctx._loopMayAwait = !ctx.syncFunctions.has(node.name) && !syncMode;
   const savedFnGlobals = ctx._fnGlobals;
   ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
 

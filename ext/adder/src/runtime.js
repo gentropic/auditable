@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -31,6 +31,7 @@ function _iadd(a, b) {
 
 function _contains(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
+  { const f = subclassDunder(container, '__contains__'); if (f) return f.call(container, value); }
   if (Array.isArray(container)) return container.some(v => _eq(v, value));
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
@@ -131,6 +132,7 @@ function _getitem(obj, key) {
 
 function _setitem(obj, key, value) {
   if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`);
+  { const f = subclassDunder(obj, '__setitem__'); if (f) { f.call(obj, key, value); return; } }
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
     const idx = key < 0 ? obj.length + key : key;
@@ -348,7 +350,7 @@ function _callMethod(obj, name, siteId, ...args) {
   // Fast path: scan the cache for a matching __adderType__.
   const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
   const cache = _PIC[siteId];
-  if (cache && t !== undefined) {
+  if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t) return cache.methods[i].call(obj, ...args);
@@ -366,7 +368,7 @@ function _callMethod(obj, name, siteId, ...args) {
   if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
     let c = cache;
     if (!c) {
-      c = { types: [], methods: [], next: 0 };
+      c = { types: [], methods: [], next: 0, name };
       _PIC[siteId] = c;
     }
     if (c.types.length < _PIC_SIZE) {
@@ -394,21 +396,23 @@ function _callMethod(obj, name, siteId, ...args) {
 // falsy). __exit__ may be async — we must AWAIT it so the lowered call
 // site's `await _py.exitWith(...)` actually waits for side effects
 // (e.g. a file open(..., "w") that flushes to the VFS on close).
-async function _exitWith(mgr, exc) {
+// Synchronous when __exit__ is; a Promise only when __exit__ returns one (a file closing a write
+// handle awaits the VFS) — the lowered call site awaits it, except in sync mode, where a Promise
+// suppression flag would be truthy and swallow the exception.
+function _exitWith(mgr, exc) {
   if (mgr === null || mgr === undefined || typeof mgr.__exit__ !== 'function') {
     throw new AdderError(
       'AttributeError',
       `'${pyTypeName(mgr)}' object has no attribute '__exit__'`,
     );
   }
-  if (exc === null || exc === undefined) {
+  const then = (r, f) => (r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(f) : f(r));
+  if (exc === null || exc === undefined || (exc && exc.pyType === 'BudgetExceeded')) {
     // Normal-exit path: discard return; CPython does likewise here.
-    await mgr.__exit__(null, null, null);
-    return false;
+    return then(mgr.__exit__(null, null, null), () => false);
   }
   // Exception path: pass (type, value, None) and return suppression flag.
-  if (exc && exc.pyType === 'BudgetExceeded') { await mgr.__exit__(null, null, null); return false; }
-  return await mgr.__exit__(excTypeOf(exc), excValue(exc), null);
+  return mgr.__exit__(excTypeOf(exc), excValue(exc), null);
 }
 
 // ── Attribute access ──
