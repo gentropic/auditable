@@ -13,13 +13,13 @@ import './stdlib-pickle.js';
 import './stdlib-net.js';
 import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
-  pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
+  pyBool, pyBoolMaybe, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper, _builtinGlobals, _builtinLocals,
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
+  _registerImportMachinery, stdoutWrite, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch, AttrDict,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -40,6 +40,7 @@ export class AdderScope {
     if (this.vars.has(name)) return this.vars.get(name);
     const p = this._outer(name);
     if (p) return p.get(name);
+    if (this._builtins && Object.hasOwn(this._builtins, name)) return this._builtins[name];
     throw new AdderError('NameError', `name '${name}' is not defined`);
   }
   // the enclosing scope a name is looked up in next: a class body's names are not visible to
@@ -59,12 +60,13 @@ export class AdderScope {
     if (this.vars.has(name)) return true;
     const p = this._outer(name);
     if (p) return p.has(name);
-    return false;
+    return !!(this._builtins && Object.hasOwn(this._builtins, name));
   }
   delete(name) { this.vars.delete(name); }
   _getGlobal(name) {
     let s = this; while (s.parent) s = s.parent;
     if (s.vars.has(name)) return s.vars.get(name);
+    if (s._builtins && Object.hasOwn(s._builtins, name)) return s._builtins[name];
     throw new AdderError('NameError', `name '${name}' is not defined`);
   }
   _setGlobal(name, value) { let s = this; while (s.parent) s = s.parent; s.vars.set(name, value); }
@@ -215,7 +217,7 @@ export async function adderEval(node, scope) {
     // ── control flow ──
     case 'If': {
       const test = await adderEval(node.test, scope);
-      if (pyBool(test)) { for (const s of node.body) await adderEval(s, scope); }
+      if (await pyBoolMaybe(test)) { for (const s of node.body) await adderEval(s, scope); }
       else { for (const s of node.orelse) await adderEval(s, scope); }
       return null;
     }
@@ -255,7 +257,7 @@ export async function adderEval(node, scope) {
     }
     case 'Assert': {
       const test = await adderEval(node.test, scope);
-      if (!pyBool(test)) {
+      if (!await pyBoolMaybe(test)) {
         const msg = node.msg ? await pyStrMaybe(await adderEval(node.msg, scope)) : '';
         throw new AdderError('AssertionError', msg, node.line);
       }
@@ -282,17 +284,17 @@ export async function adderEval(node, scope) {
       if (node.op === '-') return _withLine(() => pyNeg(operand), node.line);
       if (node.op === '+') return _withLine(() => pyPos(operand), node.line);
       if (node.op === '~') return _withLine(() => pyInvert(operand), node.line);
-      if (node.op === 'not') return !pyBool(operand);
+      if (node.op === 'not') return !await pyBoolMaybe(operand);
       throw new AdderError('TypeError', `unsupported unary op: ${node.op}`, node.line);
     }
     case 'BoolOp': {
       if (node.op === 'or') {
         let result;
-        for (const v of node.values) { result = await adderEval(v, scope); if (pyBool(result)) return result; }
+        for (const v of node.values) { result = await adderEval(v, scope); if (await pyBoolMaybe(result)) return result; }
         return result;
       }
       let result;
-      for (const v of node.values) { result = await adderEval(v, scope); if (!pyBool(result)) return result; }
+      for (const v of node.values) { result = await adderEval(v, scope); if (!await pyBoolMaybe(result)) return result; }
       return result;
     }
     case 'Compare': {
@@ -312,7 +314,7 @@ export async function adderEval(node, scope) {
     }
     case 'IfExp': {
       const test = await adderEval(node.test, scope);
-      return pyBool(test) ? adderEval(node.body, scope) : adderEval(node.orelse, scope);
+      return await pyBoolMaybe(test) ? adderEval(node.body, scope) : adderEval(node.orelse, scope);
     }
 
     // ── calls ──
@@ -1052,6 +1054,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
         });
       },
       _jsThrow(err) { return run().throw(err); },   // the JS protocol ({value, done}), for contextlib
+      _asyncGen: true,   // (async-only: helpers that can wait collect it instead of iterating it now)
       // sync iteration needs the values now; generators here are async (for await / list())
       [Symbol.iterator]() {
         throw new AdderError('TypeError', 'Use "for await" or list() with generators');
@@ -1117,7 +1120,7 @@ async function* _evalGenStmt(node, scope) {
     }
     case 'While': {
       let broke = false, iterations = 0;
-      while (pyBool(await adderEval(node.test, scope))) {
+      while (await pyBoolMaybe(await adderEval(node.test, scope))) {
         if (++iterations > 1000000) throw new AdderError('RuntimeError', 'maximum loop iterations exceeded');
         try {
           for (const stmt of node.body) yield* await _evalGenStmt(stmt, scope);
@@ -1132,7 +1135,7 @@ async function* _evalGenStmt(node, scope) {
     }
     case 'If': {
       const test = await adderEval(node.test, scope);
-      const branch = pyBool(test) ? node.body : node.orelse;
+      const branch = await pyBoolMaybe(test) ? node.body : node.orelse;
       for (const stmt of branch) yield* await _evalGenStmt(stmt, scope);
       return;
     }
@@ -1325,7 +1328,7 @@ async function _evalWhile(node, scope) {
   let broke = false;
   let iterations = 0;
   const limit = scope.has('__loop_limit__') ? scope.get('__loop_limit__') : 1000000;
-  while (pyBool(await adderEval(node.test, scope))) {
+  while (await pyBoolMaybe(await adderEval(node.test, scope))) {
     if (limit > 0 && ++iterations > limit) throw new AdderError('RuntimeError', `maximum loop iterations exceeded (${limit})`);
     if (iterations % 1000 === 0) await new Promise(r => setTimeout(r, 0));
     try {
@@ -1381,7 +1384,7 @@ async function _matchCase(node, scope) {
     const binds = new Map();
     if (!(await pyMatch(subject, c._desc, values, binds))) continue;
     for (const [k, v] of binds) scope.set(k, v);
-    if (c.guard && !pyBool(await adderEval(c.guard, scope))) continue;
+    if (c.guard && !await pyBoolMaybe(await adderEval(c.guard, scope))) continue;
     return c;
   }
   return null;
@@ -1439,10 +1442,11 @@ function _evalSuperCall(args, scope, line) {
 }
 
 async function _evalBuiltinEval(args, scope, line) {
-  const code = String(args[0]);
+  const code = _sourceOf(args[0]).trim();
+  const target = _execScope(args, scope);
   try {
     const exprAst = _adderParseExpr(code);
-    return await adderEval(exprAst, scope);
+    return await adderEval(exprAst, target);
   } catch (e) {
     if (e instanceof AdderError) throw e;
     throw new AdderError('SyntaxError', e.message || String(e), line);
@@ -1450,15 +1454,45 @@ async function _evalBuiltinEval(args, scope, line) {
 }
 
 async function _evalBuiltinExec(args, scope, line) {
-  const code = String(args[0]);
+  const code = _sourceOf(args[0]);
+  const target = _execScope(args, scope);
   try {
     const ast = adderParse(code);
-    await adderEval(ast, scope);
+    await adderEval(ast, target);
   } catch (e) {
     if (e instanceof AdderError) throw e;
     throw new AdderError('SyntaxError', e.message || String(e), line);
   }
   return null;
+}
+// exec / eval's source: a string, bytes, or a code object from compile()
+function _sourceOf(x) {
+  if (x !== null && typeof x === 'object' && typeof x._pySource === 'string') return x._pySource;
+  if (x instanceof Uint8Array) return new TextDecoder().decode(x);
+  return String(x);
+}
+// exec(code, globals, locals) / eval(...): with a globals dict the code runs in a scope whose
+// variables ARE that dict (what it defines lands there), builtins behind it; with locals as well,
+// those are an inner scope. Without them, the caller's scope.
+function _dictVars(d) {
+  if (d instanceof Map) return d;
+  if (d !== null && typeof d === 'object') return new AttrDict(d);
+  throw new AdderError('TypeError', `globals must be a dict, not ${pyTypeName(d)}`);
+}
+function _execScope(args, scope) {
+  const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args[args.length - 1] : {};
+  const g = args.length > 1 && !(args[1] && args[1]._kw) ? args[1] : kw.globals;
+  const l = args.length > 2 && !(args[2] && args[2]._kw) ? args[2] : kw.locals;
+  if (g === undefined || g === null) {
+    if (l === undefined || l === null) return scope;
+    const s = new AdderScope(scope); s.vars = _dictVars(l); return s;
+  }
+  const root = new AdderScope(null);
+  root.vars = _dictVars(g);
+  root._builtins = adderModules.builtins;
+  if (!root.vars.has('__builtins__')) root.vars.set('__builtins__', adderModules.builtins);
+  if (l === undefined || l === null || l === g) return root;
+  const s = new AdderScope(root); s.vars = _dictVars(l); return s;
 }
 
 // ── comprehensions ──
@@ -1488,7 +1522,7 @@ async function* _genExprIter(node, scope, genIdx) {
     await _assignTarget(gen.target, value, scope);
     let pass = true;
     for (const ifNode of gen.ifs) {
-      if (!pyBool(await adderEval(ifNode, scope))) { pass = false; break; }
+      if (!await pyBoolMaybe(await adderEval(ifNode, scope))) { pass = false; break; }
     }
     if (!pass) continue;
     if (genIdx + 1 < node.generators.length) {
@@ -1518,7 +1552,7 @@ async function _evalCompIter(node, scope, result, kind, genIdx) {
     // check if filters
     let pass = true;
     for (const ifNode of gen.ifs) {
-      if (!pyBool(await adderEval(ifNode, scope))) { pass = false; break; }
+      if (!await pyBoolMaybe(await adderEval(ifNode, scope))) { pass = false; break; }
     }
     if (!pass) continue;
     if (genIdx + 1 < node.generators.length) {

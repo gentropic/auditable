@@ -683,6 +683,7 @@ export const _py = {
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
   noAwait: _noAwait,
+  lam: (f) => { f._pyDef = true; return f; },
   mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction

@@ -2642,3 +2642,78 @@ class Logged:
         return f"fallback:{name}"
 l = Logged()
 print(l.x, l.secret, l.other)
+### builtin/exec-compile-namespaces
+ns = {"base": 10}
+code = compile("def f(x):\n    return x + base\nr = f(5)\n", "<gen>", "exec")
+exec(code, ns)
+print(ns["r"], sorted(k for k in ns if k != "__builtins__"), code.co_filename)
+print(eval("base * 2", ns), eval(compile("len(s)", "<e>", "eval"), {"s": "abc"}))
+loc = {}
+exec("y = 3", {}, loc)
+print(loc)
+s = {1, 2, 3}
+s.difference_update({1}); s.intersection_update([2, 9]); s.symmetric_difference_update({7})
+print(sorted(s), {1, 2}.isdisjoint({3}), {1}.issubset([1, 2]), {1, 2}.issuperset({2}))
+### class/builtin-attrs-not-methods
+import functools, operator
+class E:
+    concat = "".join
+    p = functools.partial(max, 0)
+    g = operator.itemgetter(0)
+    f = lambda self, x: x * 2
+    def m(self):
+        return self.concat(["a", "b"]) + str(self.p(-5)) + str(self.g([7])) + str(self.f(3))
+print(E().m(), E.f(None, 4))
+### exc/traceback-objects
+import sys
+def inner():
+    raise ValueError("boom")
+def outer():
+    inner()
+try:
+    outer()
+except ValueError as e:
+    tb = e.__traceback__
+    names = []
+    while tb is not None:
+        names.append(tb.tb_frame.f_code.co_name)
+        tb = tb.tb_next
+    print(names[-2:], sys.exc_info()[2] is not None, e.with_traceback(None) is e)
+def kw(**k):
+    k.pop("a", None)
+    return bool(k), bool({}), bool({"x": 1})
+print(kw(a=1), kw(a=1, b=2))
+### class/iterator-stream-bool
+from collections import deque
+
+def gen():
+    yield "a"
+    yield "b"
+
+class Stream:
+    def __init__(self, g):
+        self._iter = iter(g)
+        self._pushed = deque()
+        self.current = "init"
+        self.closed = False
+        next(self)
+    def __bool__(self):
+        return bool(self._pushed) or self.current != "EOF"
+    def __next__(self):
+        rv = self.current
+        if self._pushed:
+            self.current = self._pushed.popleft()
+        elif self.current != "EOF":
+            try:
+                self.current = next(self._iter)
+            except StopIteration:
+                self.current = "EOF"
+                self._iter = iter(())
+        return rv
+
+s = Stream(gen())
+out = []
+while s:
+    out.append(s.current)
+    next(s)
+print(out)

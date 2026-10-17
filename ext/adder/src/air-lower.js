@@ -2519,7 +2519,8 @@ function lowerLambda(ctx, node) {
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
 
-  return ctx.emit('func_region', [null], DYNAMIC, l, {
+  // marked a Python function (_py.lam): a lambda in a class body is a method, a builtin isn't
+  const lam = ctx.emit('func_region', [null], DYNAMIC, l, {
     name: null, params, body, ret_type: DYNAMIC, needs_arguments: needsArgs,
     // Lambdas are never async-defs (Python has no `async lambda`). emit-js's
     // emitFunc promotes to async iff the body actually awaits (_bodyHasAwait), so a
@@ -2528,6 +2529,7 @@ function lowerLambda(ctx, node) {
     // which forced an async wrapper, so JS callers got a Promise instead of a value.)
     is_async: false, is_generator: false,
   });
+  return emitPyCall(ctx, 'lam', [lam], l);
 }
 
 // ── List comprehension ──

@@ -26,6 +26,7 @@
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
   "builtin/sum-start": "output",
-  "class/str-subclass": "error AttributeError vs CPython null"
+  "class/str-subclass": "error AttributeError vs CPython null",
+  "exc/traceback-objects": "output"
  }
 }

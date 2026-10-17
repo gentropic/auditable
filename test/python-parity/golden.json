@@ -904,6 +904,22 @@
   "class/getattribute": {
    "out": "Null True\n10 fallback:secret fallback:other\n",
    "error": null
+  },
+  "builtin/exec-compile-namespaces": {
+   "out": "15 ['base', 'f', 'r'] <gen>\n20 3\n{'y': 3}\n[2, 7] True True True\n",
+   "error": null
+  },
+  "class/builtin-attrs-not-methods": {
+   "out": "ab076 8\n",
+   "error": null
+  },
+  "exc/traceback-objects": {
+   "out": "['outer', 'inner'] True True\n(False, False, True) (True, False, True)\n",
+   "error": null
+  },
+  "class/iterator-stream-bool": {
+   "out": "['a', 'b']\n",
+   "error": null
   }
  }
 }

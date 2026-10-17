@@ -476,11 +476,21 @@ export function pyTypeName(v) {
   return 'object';
 }
 
+// truth, when __bool__ / __len__ may be tree-walked (async): a bool, or a Promise of one
+export function pyBoolMaybe(v) {
+  if (v !== null && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Map) && !(v instanceof Set)) {
+    if (typeof v.__bool__ === 'function') { const r = v.__bool__(); return r && typeof r.then === 'function' ? r.then((x) => !!x) : !!r; }
+    if (typeof v.__len__ === 'function') { const r = v.__len__(); return r && typeof r.then === 'function' ? r.then((x) => x !== 0) : r !== 0; }
+  }
+  return pyBool(v);
+}
 export function pyBool(v) {
   if (v === false || v === null || v === undefined || v === 0 || v === '' || v !== v) return false;
   if (Array.isArray(v)) return v.length > 0;
   if (v instanceof Map || v instanceof Set) return v.size > 0;
   if (v instanceof AdderRange) return v.length > 0;
+  // a plain-object dict (string keys, **kwargs): empty is false
+  if (typeof v === 'object' && isPlainDict(v)) return Object.keys(v).length > 0;
   // check __bool__ dunder
   if (typeof v === 'object' && typeof v.__bool__ === 'function') return !!v.__bool__();
   if (typeof v === 'object' && typeof v.__len__ === 'function') return v.__len__() !== 0;
@@ -748,7 +758,7 @@ function _lazySyncIter(name, genFn) {
 // not a user class's __iter__ or a tree-walked generator, which are async)
 const _isSyncSource = (v) => v !== null && v !== undefined && !isUserIterable(v) &&
   (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function');
-const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && typeof v[Symbol.iterator] !== 'function';
+const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && (typeof v[Symbol.iterator] !== 'function' || v._asyncGen === true);   // (a tree-walked generator's Symbol.iterator only refuses)
 // iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
 export function _pyEach(obj) {
   if (isUserIterable(obj)) return pyIterAsync(obj);
@@ -843,6 +853,9 @@ function* _gCollect(obj) {
 export const pyCollectMaybe = maybeSync(_gCollect);
 // f(v), now or when v resolves
 const _thenMaybe = (v, f) => (_isThenable(v) ? v.then(f) : f(v));
+// fn(item) for each item of anything iterable — synchronously unless the source is async (a
+// tree-walked generator or __iter__): then a Promise. → None (or a Promise of it)
+const _eachMaybe = maybeSync(function* (obj, fn) { yield* _gForEach(obj, (v) => { fn(v); }); return null; });
 
 export async function pyCollect(obj) {
   // the common sources, without a generator step per item: a list or tuple copies (a fresh
@@ -981,7 +994,8 @@ export function adderGetAttr(obj, attr) {
   if (obj instanceof AdderError) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
     if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
-    if (attr === '__traceback__') return null;
+    if (attr === '__traceback__') return _tracebackOf(obj);
+    if (attr === 'with_traceback') return (tb) => { obj._pyTb = tb; return obj; };
     if (attr === '__class__') return excTypeOf(obj);
   }
   // every value has a __class__ (its type) — unless it defines the attribute itself
@@ -1045,7 +1059,7 @@ export function adderGetAttr(obj, attr) {
   // bytearray: bytes' methods (results as bytearray), and the list's mutators with byte checks
   if (obj instanceof PyByteArray) {
     if (attr === 'append') return (x) => { obj.push(_byteCheck(x)); return null; };
-    if (attr === 'extend') return (it) => { for (const x of (it instanceof Uint8Array ? it : pyIter(it))) obj.push(_byteCheck(x)); return null; };
+    if (attr === 'extend') return (it) => (it instanceof Uint8Array ? (it.forEach((x) => obj.push(x)), null) : _eachMaybe(it, (x) => obj.push(_byteCheck(x))));
     if (attr === 'insert') return (i, x) => { _byteCheck(x); return _listMethod(obj, 'insert')(i, x); };
     if (attr === 'copy') return () => _toBA(obj);
     if (attr === 'decode' || attr === 'hex') return _bytesMethod(Uint8Array.from(obj), attr);
@@ -1863,7 +1877,7 @@ function _ndarrayToList(arr) {
 function _listMethod(arr, attr) {
   const m = {
     append: (v) => { arr.push(v); return null; },
-    extend: (iterable) => { for (const v of pyIter(iterable)) arr.push(v); return null; },
+    extend: (iterable) => (Array.isArray(iterable) ? (arr.push(...(iterable === arr ? iterable.slice() : iterable)), null) : _eachMaybe(iterable, (v) => arr.push(v))),
     insert: (i, v) => { arr.splice(i < 0 ? Math.max(0, arr.length + i) : i, 0, v); return null; },
     remove: (v) => { const i = arr.indexOf(v); if (i < 0) throw new AdderError('ValueError', 'list.remove(x): x not in list'); arr.splice(i, 1); return null; },
     pop: (i) => { if (arr.length === 0) throw new AdderError('IndexError', 'pop from empty list'); return i === undefined ? arr.pop() : arr.splice(i < 0 ? arr.length + i : i, 1)[0]; },
@@ -1920,10 +1934,18 @@ function _setMethod(set, attr) {
     intersection: (...others) => { const r = new PySet(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new PySet(pyIter(o)); return s.has(v); })) r.add(v); } return r; },
     difference: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; },
     symmetric_difference: (other) => { const r = new PySet(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; },
-    update: (...others) => { for (const o of others) for (const v of pyIter(o)) set.add(v); return null; },
+    update: maybeSync(function* (...others) { for (const o of others) yield _eachMaybe(o, (v) => set.add(v)); return null; }),
     issubset: (other) => { const o = other instanceof Set ? other : new PySet(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; },
     issuperset: (other) => { for (const v of pyIter(other)) if (!set.has(v)) return false; return true; },
-    copy: () => new PySet(set),
+    isdisjoint: (other) => { for (const v of pyIter(other)) if (set.has(v)) return false; return true; },
+    difference_update: (...others) => { for (const o of others) for (const v of [...pyIter(o)]) set.delete(v); return null; },
+    intersection_update: (...others) => {
+      const keep = others.map((o) => (o instanceof Set ? o : new PySet(pyIter(o))));
+      for (const v of [...set]) if (!keep.every((s) => s.has(v))) set.delete(v);
+      return null;
+    },
+    symmetric_difference_update: (other) => { for (const v of new PySet(pyIter(other))) { if (set.has(v)) set.delete(v); else set.add(v); } return null; },
+    copy: () => { const c = new PySet(set); if (set._frozen) c._frozen = true; return c; },
   };
   if (attr in m) { const fn = m[attr]; fn._pyName = `set.${attr}`; return fn; }
   throw new AdderError('AttributeError', `'set' object has no attribute '${attr}'`);
@@ -2923,8 +2945,8 @@ class AdderDeque {
   appendleft(x) { this._a.unshift(x); this._trim(false); return null; }
   pop() { if (!this._a.length) throw new AdderError('IndexError', 'pop from an empty deque'); return this._a.pop(); }
   popleft() { if (!this._a.length) throw new AdderError('IndexError', 'pop from an empty deque'); return this._a.shift(); }
-  extend(it) { for (const x of pyIter(it)) this.append(x); return null; }
-  extendleft(it) { for (const x of pyIter(it)) this.appendleft(x); return null; }
+  extend(it) { return _eachMaybe(it, (x) => this.append(x)); }
+  extendleft(it) { return _eachMaybe(it, (x) => this.appendleft(x)); }
   rotate(n = 1) { const len = this._a.length; if (!len) return null; n = ((n % len) + len) % len; if (n) this._a.unshift(...this._a.splice(len - n, n)); return null; }
   clear() { this._a.length = 0; return null; }
   count(x) { return this._a.filter((v) => pyEq(v, x)).length; }
@@ -3490,7 +3512,7 @@ const _sysModule = {
   modules: {},
   argv: [''],
   exit: (code) => { throw new AdderError('SystemExit', String(code ?? 0)); },
-  exc_info: () => (excStack.length ? mkTuple([excTypeOf(excStack[excStack.length - 1]), excValue(excStack[excStack.length - 1]), null]) : mkTuple([null, null, null])),
+  exc_info: () => (excStack.length ? mkTuple([excTypeOf(excStack[excStack.length - 1]), excValue(excStack[excStack.length - 1]), _tracebackOf(excStack[excStack.length - 1])]) : mkTuple([null, null, null])),
   exception: () => (excStack.length ? excValue(excStack[excStack.length - 1]) : null),
   // write to the running program's stdout / stderr (run()'s opts, or the notebook cell)
   stdout: { write(s) { s = String(s); _stdioWrite('out', s); return s.length; }, flush() { return null; }, encoding: 'utf-8', isatty: () => false, __adderClass__: 'TextIOWrapper' },
@@ -4390,6 +4412,13 @@ function _classMethodDescriptor(fn, qual) {
 //   opts.kw           — class keywords other than metaclass=, passed to __init_subclass__
 //   opts.beforeFinish — runs before __init_subclass__ fires (the tree-walker binds the class's
 //                       `__class__` cell there, so super() works in a hook that calls a method)
+// a class-body function that becomes a method (bound to the instance). In a class written in
+// Python (opts.pyBody), only Python functions are: a builtin stored on a class (`concat =
+// "".join`, a functools.partial) is a plain attribute, as in CPython. Classes adder builds in JS
+// pass their methods as JS functions taking self, and all of those bind.
+function _isMethodFn(v, opts) {
+  return typeof v === 'function' && !v._pyClass && (!opts.pyBody || !!v._pyDef || !!v._pyFunc || v.__wrapped__ !== undefined);   // (a decorator's wrapper of a Python function — contextmanager, lru_cache — is one)
+}
 export function buildClass(name, bases, members, annotations, opts = {}) {
   const cls = function (...args) {
     if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
@@ -4475,7 +4504,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
       cm._pyName = qual;
       cls.prototype[mName] = cm;
       Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
-    } else if (typeof value === 'function' && !value._pyClass) {
+    } else if (_isMethodFn(value, opts)) {
       const originalFn = value;
       cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
       cls.prototype[mName]._pyName = `${name}.${mName}`;
@@ -4495,7 +4524,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   // nested in the body is a class variable too, not a method
   for (const [k, v] of Object.entries(members)) {
     if (k === '__new__') continue;
-    if ((typeof v !== 'function' || v._pyClass) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__)) && !_isDescriptor(v)) {
+    if (!_isMethodFn(v, opts) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__)) && !_isDescriptor(v)) {
       setClassAttr(cls, k, v);
     }
   }
@@ -4516,7 +4545,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyOwnMembers = new PySet();
   for (const [mName, value] of Object.entries(members)) {
     if (mName === '__new__') continue;
-    if ((typeof value === 'function' && !value._pyClass) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__)) || _isDescriptor(value)) {
+    if (_isMethodFn(value, opts) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__)) || _isDescriptor(value)) {
       cls._pyOwnMembers.add(mName);
     }
   }
@@ -4575,17 +4604,26 @@ export function classStatement(name, bases, members, annotations, kwObj, opts = 
   // a metaclass that's a plain callable (not a class) is just called
   if (explicit && !(explicit._pyClass)) {
     const ns = new PyDict(Object.entries(members));
+    Object.defineProperty(ns, '_pyBody', { value: true });
     if (annotations && annotations.length) ns.set('__annotations__', new PyDict(annotations));
     return explicit(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
   }
   const meta = _winningMeta(explicit || pyTypeObj, bases);
-  if (meta === pyTypeObj) return buildClass(name, bases, members, annotations, { ...opts, kw: kwOrNull });
+  if (meta === pyTypeObj) return buildClass(name, bases, members, annotations, { ...opts, kw: kwOrNull, pyBody: true });
   const ns = new PyDict(Object.entries(members));
+  Object.defineProperty(ns, '_pyBody', { value: true });   // a Python class body: only its Python functions are methods
   if (annotations && annotations.length) ns.set('__annotations__', new PyDict(annotations));
-  _pendingClassCell = opts.beforeFinish ? { name, fn: opts.beforeFinish } : null;
+  // `__class__` (zero-argument super()) is bound when the metaclass builds the class — or, if the
+  // metaclass is async (tree-walked) and the build happens after this returns, once it arrives
+  const bind = opts.beforeFinish;
+  let bound = false;
+  _pendingClassCell = bind ? { name, fn: (c) => { bound = true; bind(c); } } : null;
+  let r;
   try {
-    return meta(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
+    r = meta(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
   } finally { _pendingClassCell = null; }
+  if (bind && !bound) return _thenMaybe(r, (c) => { if (!bound && c && c._pyClass) bind(c); return c; });
+  return r;
 }
 
 // the metaclass a class gets: the most derived of `start` and its bases' metaclasses (CPython's rule)
@@ -4608,6 +4646,7 @@ export function typeNew(mcs, name, bases, ns, ...rest) {
   if (members.__annotations__ instanceof Map) { ann = [...members.__annotations__]; delete members.__annotations__; }
   const bl = bases === undefined || bases === null ? [] : [...pyIter(bases)];
   return buildClass(String(name), bl, members, ann, {
+    pyBody: !!(ns && ns._pyBody),
     meta: mcs && mcs !== pyTypeObj ? mcs : null,
     kw: kw && Object.keys(kw).length ? kw : null,
   });
@@ -4736,6 +4775,28 @@ function _codeObject(fn) {
   };
   _codeObjects.set(fn, c);
   return c;
+}
+
+// e.__traceback__: a chain of traceback objects (outermost first, tb_next going in), one per
+// Python frame the error passed through — from the call stack the engine recorded when it was
+// raised (name and line; no live frames: f_globals / f_locals are empty). Built once per error;
+// with_traceback(tb) replaces it.
+export function _tracebackOf(e) {
+  if (e === null || typeof e !== 'object') return null;
+  if (e._pyTb !== undefined) return e._pyTb;
+  const frames = e._traceback && e._traceback.length ? e._traceback : [{ name: '<module>', line: e.adderLine || 0 }];
+  let next = null, inner = null;
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const f = frames[i];
+    const line = f.line || 0;
+    const code = { __adderClass__: 'code', co_name: f.name || '<module>', co_qualname: f.name || '<module>', co_filename: f.file || '<string>', co_firstlineno: line };
+    const frame = { __adderClass__: 'frame', f_code: code, f_lineno: line, f_lasti: 0, f_globals: new PyDict(), f_locals: new PyDict(), f_builtins: new PyDict(), f_back: null, clear() { return null; } };
+    if (inner) inner.f_back = frame;
+    inner = frame;
+    next = { __adderClass__: 'traceback', tb_frame: frame, tb_lineno: line, tb_lasti: 0, tb_next: next };
+  }
+  Object.defineProperty(e, '_pyTb', { value: next, writable: true, configurable: true, enumerable: false });
+  return next;
 }
 
 // type(x)
@@ -5103,7 +5164,13 @@ export function adderBuiltins(printFn) {
     divmod: (a, b) => mkTuple([pyFloorDiv(a, b), pyMod(a, b)]),
     id: (obj) => { if (typeof obj === 'object' && obj !== null) { if (!obj.__id__) obj.__id__ = ++_idCounter; return obj.__id__; } return 0; },
     hash: (obj) => _pyHash(obj),
-    iter: (obj) => pyIter(obj),
+    // iter(x): an iterator is its own (a generator — the tree-walker's are async — map, filter …);
+    // an object with __iter__ gives what that returns; the rest iterate as JS sequences
+    iter: (obj) => {
+      if (obj !== null && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function' && (typeof obj.__next__ === 'function' || typeof obj.next === 'function')) return obj;
+      if (isUserIterable(obj) && typeof obj.__iter__ === 'function') return obj.__iter__();
+      return pyIter(obj);
+    },
     next: (iter, def) => {
       const done = () => { if (def !== undefined) return def; throw new AdderError('StopIteration', '', undefined, []); };
       if (iter && typeof iter.__next__ === 'function') {
@@ -5170,6 +5237,16 @@ export function adderBuiltins(printFn) {
       return _createAdderFile(_adderVFS, p, mode || 'r');
     },
     __import__: _builtinImport,
+    // compile(source, filename, mode): a code object exec() / eval() run (parsed when they do)
+    compile: (source, filename = '<string>', mode = 'exec', ...a) => {
+      if (filename && filename._kw) { const kw = filename; filename = kw.filename ?? '<string>'; mode = kw.mode ?? mode; }
+      if (!['exec', 'eval', 'single'].includes(mode)) throw new AdderError('ValueError', "compile() mode must be 'exec', 'eval' or 'single'");
+      const src = source instanceof Uint8Array ? new TextDecoder().decode(source) : source && typeof source._pySource === 'string' ? source._pySource : String(source);
+      return { __adderClass__: 'code', _pySource: src, _pyMode: mode, co_filename: String(filename), co_name: '<module>', co_qualname: '<module>',
+        co_firstlineno: 1, co_argcount: 0, co_posonlyargcount: 0, co_kwonlyargcount: 0, co_flags: 0, co_varnames: mkTuple([]), co_names: mkTuple([]),
+        co_consts: mkTuple([]), co_code: new Uint8Array(0),
+        __repr__() { return `<code object <module> at 0x7f00000000, file "${this.co_filename}", line 1>`; } };
+    },
     eval: _builtinEval,
     exec: _builtinExec,
     super: _builtinSuper,
