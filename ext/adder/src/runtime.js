@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -223,7 +223,7 @@ function _slice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
+      return obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj instanceof PyByteArray ? PyByteArray.from(obj.slice(l, u)) : obj.slice(l, u);
     }
     const positive = step > 0;
     let l = lower == null ? (positive ? 0 : len - 1) : lower < 0 ? Math.max(positive ? 0 : -1, len + lower) : Math.min(lower, positive ? len : len - 1);
@@ -232,7 +232,7 @@ function _slice(obj, lower, upper, step) {
     if (positive) { for (let i = l; i < u; i += step) result.push(obj[i]); }
     else { for (let i = l; i > u; i += step) result.push(obj[i]); }
     return typeof obj === 'string' ? result.join('') : obj instanceof PyTuple ? mkTuple(result)
-      : obj instanceof Uint8Array ? Uint8Array.from(result) : result;
+      : obj instanceof Uint8Array ? Uint8Array.from(result) : obj instanceof PyByteArray ? PyByteArray.from(result) : result;
   }
   if (typeof obj?.__getitem__ === 'function') {
     return obj.__getitem__({ _slice: true, lower, upper, step });

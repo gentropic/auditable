@@ -792,6 +792,78 @@
   "class/attribute-model": {
    "out": "True P True str True\n{'x': 1, 'y': -2} True ['x', 'y']\n5 7 True 4\nFalse ['x', 'y', 'z']\nTrue True point False\nFalse False\nread-only\n1 2 {'a': 1, 'b': 2}\n3 True True\n9 9 False\n10 9 {'n': 10}\n[1, 2] True\n",
    "error": null
+  },
+  "builtin/bytearray": {
+   "out": "bytearray(b'Abcdef') 6 True b'Abcdef' Abcdef bytearray(b'ABCDEF') True bytearray\nbytearray(b'\\x00\\x00\\x00') bytearray(b'\\xc3\\xa9') bytearray(b'\\x01\\x02\\x03') b'xy' 416263646566 bytearray(b'bc')\nValueError byte must be in range(0, 256)\nbytearray(b'Abcde') bytearray(b'Abcdef') [65, 98]\n",
+   "error": null
+  },
+  "class/classvar-inheritance": {
+   "out": "{'a': 1} {'a': 1, 'b': 2} base base\n5 False\n",
+   "error": null
+  },
+  "class/descriptor-data": {
+   "out": "4 _x P True\nTypeError x must be int\n",
+   "error": null
+  },
+  "class/descriptor-nondata": {
+   "out": "computing\n40 40 True\n",
+   "error": null
+  },
+  "func/redefinition": {
+   "out": "['one', 'two']\n1 2\n",
+   "error": null
+  },
+  "expr/evaluation-order": {
+   "out": "True True 1\n['a', 'b', 'c', 'd', 'e', 'g', 'h', 'i']\n",
+   "error": null
+  },
+  "mod/itertools-more": {
+   "out": "[0, 2, 4, 6]\n[1, 2] [5, 1]\n['A', 'C', 'E', 'F']\n[('A', 'B', 'C'), ('D', 'E', 'F'), ('G',)]\n[('A', 'A'), ('A', 'B'), ('A', 'C'), ('B', 'B'), ('B', 'C'), ('C', 'C')]\n[1, 2, 3] [1, 2, 3]\n",
+   "error": null
+  },
+  "mod/functools-more": {
+   "out": "True True False\nint str obj\n",
+   "error": null
+  },
+  "mod/functools-cached-property": {
+   "out": "10 10 1\n",
+   "error": null
+  },
+  "mod/contextlib-io-collections": {
+   "out": "Cm True\n'héllo\\n' 'world\\n'\n['a', 'b'] 2 True\n[3, 1, 2] 3\n",
+   "error": null
+  },
+  "mod/ast-literal-eval": {
+   "out": "{'a': [1, 2, (3, -4)], 'b': None, 'c': b'x'}\nValueError\n",
+   "error": null
+  },
+  "mod/configparser": {
+   "out": "['app'] /srv/app True 8080\n8080 fb\n",
+   "error": null
+  },
+  "mod/email-punycode": {
+   "out": "b'bcher-kva' bücher b'mnchen-3ya'\ntext/plain; charset=\"utf-8\" text/plain utf-8 body\n('Bob', 'bob@x.org') Thu, 01 Jan 1970 00:00:00 GMT\n",
+   "error": null
+  },
+  "mod/random-instance": {
+   "out": "True True 4 module\n",
+   "error": null
+  },
+  "class/builtin-type-mro-new": {
+   "out": "int ['int', 'object'] True\nstr ['str', 'object'] True\ndict ['dict', 'object'] True\nlist ['list', 'object'] True\ntuple ['tuple', 'object'] True\nbool ['bool', 'int', 'object'] True\nobject ['object'] True\nfloat ['float', 'object'] True\nbytes ['bytes', 'object'] True\nset ['set', 'object'] True\nfrozenset ['frozenset', 'object'] True\n5 x\n(1, 2) T 1 3 True True\nM ['__delattr__', '__setattr__'] True\n4\n",
+   "error": null
+  },
+  "mod/builtins-module": {
+   "out": "True True\nTrue True True 2 module\nTrue\n",
+   "error": null
+  },
+  "builtin/globals-locals": {
+   "out": "2 1 True\n[('a', 1), ('b', 3), ('c', 4)]\n",
+   "error": null
+  },
+  "mod/threading-daemon": {
+   "out": "[1]\n",
+   "error": null
   }
  }
 }

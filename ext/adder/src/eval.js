@@ -13,11 +13,11 @@ import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
-  _builtinEval, _builtinExec, _builtinSuper,
+  _builtinEval, _builtinExec, _builtinSuper, _builtinGlobals, _builtinLocals,
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, awaitTarget, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
+  _registerImportMachinery, stdoutWrite, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -756,7 +756,7 @@ function _applySlice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return typeof obj === 'string' ? obj.slice(l, u) : obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
+      return typeof obj === 'string' ? obj.slice(l, u) : obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj instanceof PyByteArray ? PyByteArray.from(obj.slice(l, u)) : obj.slice(l, u);
     }
     // general step
     let start, stop;
@@ -874,6 +874,10 @@ async function _evalCall(node, scope) {
   if (func._sentinel === 'super') return _evalSuperCall(args, scope, node.line);
   if (func._sentinel === 'eval') return _evalBuiltinEval(args, scope, node.line);
   if (func._sentinel === 'exec') return _evalBuiltinExec(args, scope, node.line);
+  // globals(): the module's namespace itself (writes define names); locals(): a snapshot of
+  // the current scope's names
+  if (func._sentinel === 'globals') { let s = scope; while (s.parent) s = s.parent; return s.vars; }
+  if (func._sentinel === 'locals') { if (!scope.parent) return scope.vars; return new PyDict(scope.vars); }
   return _callValue(func, args, kwArgs, node.line);
 }
 
@@ -1655,7 +1659,12 @@ export async function findModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
   const known = _resolveModule(name);
-  if (known) return known;
+  if (known) {
+    // a stdlib module, once imported, is in sys.modules as CPython's are (six's
+    // `__import__(name); return sys.modules[name]`)
+    if (name !== 'js' && adderModules[name] === known && known.__adderModule__) cache[name] = known;
+    return known;
+  }
   const dot = name.lastIndexOf('.');
   if (dot > 0) {
     const parent = await findModule(name.slice(0, dot));

@@ -122,9 +122,39 @@ class EmitCtx {
     // case in emitOps.
     this.loopStack = [];
     this._forLabelCount = 0;
+
+    // Evaluation order. A single-use value is inlined where it's consumed, which can be after
+    // a later statement: `f(a(), (b() < c))` lowered with `b()` multi-use (a chained
+    // comparison) emitted `let _1 = b();` and then `f(a(), …)` — b ran before a. So
+    // single-use values whose expression has an effect (a call, an await, a store …, or an
+    // inlined value that had one) are `pending` until consumed; before any statement is
+    // emitted, the pending ones registered in the current frame are materialised as `let`s,
+    // in order. `effectful` marks such ids; `_consumedEffect` carries "an argument just
+    // inlined had an effect" from ref() to the consumer's register().
+    this.pending = [];
+    this.effectful = new Set();
+    this._consumedEffect = false;
+    this._flushing = false;
   }
 
-  line(s) { this.lines.push('  '.repeat(this.indent) + s); }
+  line(s) {
+    if (this.pending.length && !this._flushing) this._flushPending();
+    this.lines.push('  '.repeat(this.indent) + s);
+  }
+  _flushPending() {
+    this._flushing = true;
+    const keep = [];
+    for (const id of this.pending) {
+      if (this.exprs.bindings.has(id)) {
+        const expr = this.exprs.bindings.get(id);
+        this.exprs.bindings.delete(id);
+        this.lines.push('  '.repeat(this.indent) + `let ${this.varName(id)} = ${expr};`);
+        this.emitted.add(id);
+      } else if (this.exprs.has(id)) keep.push(id);   // an enclosing frame's: not ours to move
+    }
+    this.pending = keep;
+    this._flushing = false;
+  }
   push() { this.indent++; }
   pop() { this.indent--; }
 
@@ -184,6 +214,7 @@ class EmitCtx {
         // wherever the binding was registered).
         const expr = this.exprs.get(id);
         this.exprs.delete(id);
+        if (this.effectful.has(id)) this._consumedEffect = true;
         return expr;
       }
     }
@@ -260,6 +291,7 @@ function emitOps(ctx, ops) {
 }
 
 function emitOp(ctx, op) {
+  ctx._consumedEffect = false;
   switch (op.op) {
     case 'const': return emitConst(ctx, op);
     case 'null': return emitInline(ctx, op, 'null');
@@ -349,6 +381,8 @@ const SIDE_EFFECTING = new Set([
 function register(ctx, op, expr) {
   const uses = ctx.useCounts.get(op.id) || 0;
   ctx.types.set(op.id, op.type);
+  const effect = SIDE_EFFECTING.has(op.op) || ctx._consumedEffect;
+  ctx._consumedEffect = false;
 
   if (uses === 0) {
     if (SIDE_EFFECTING.has(op.op)) {
@@ -363,6 +397,7 @@ function register(ctx, op, expr) {
   if (uses === 1) {
     // Single use: inline — defer to ref() call
     ctx.exprs.set(op.id, expr);
+    if (effect) { ctx.effectful.add(op.id); ctx.pending.push(op.id); }
     return;
   }
 
@@ -970,8 +1005,13 @@ function emitFunc(ctx, op) {
   // Cell-export functions (top-level FunctionDeclarations) were always
   // handled this way; this branch now also covers nested function decls.
   const emitAsDecl = name && (ctx.module.defines.has(name) || op.is_decl);
+  // A Python `def` that rebinds a name already bound in this same scope (two `@register
+  // def _(...)`, a redefinition after `a = h`) is an assignment at that point: as a second
+  // hoisted declaration, the last body would win for every earlier binding. JS sources keep
+  // JS's hoisting (`is_decl`).
+  const rebind = emitAsDecl && !op.is_decl && ctx.scope._chain.bindings.has(name);
   if (emitAsDecl) {
-    ctx.line(`${asyncPrefix}function${star} ${name}(${params}) {`);
+    ctx.line(rebind ? `${name} = ${asyncPrefix}function${star} ${name}(${params}) {` : `${asyncPrefix}function${star} ${name}(${params}) {`);
     ctx.push();
     // Function body is its own scope; pre-declare params so a `let p = …`
     // inside the body emits as `p = …` rather than re-declaring.
@@ -981,7 +1021,7 @@ function emitFunc(ctx, op) {
     if (op.body) emitOps(ctx, op.body);
     ctx.popScope();
     ctx.pop();
-    ctx.line('}');
+    ctx.line(rebind ? '};' : '}');
     // Register the function name in the enclosing scope so subsequent
     // stores don't re-declare it.
     ctx.scope.declare(name);

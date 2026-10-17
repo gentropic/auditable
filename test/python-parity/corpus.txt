@@ -2217,3 +2217,215 @@ class Cnt:
 a, b = Cnt(), Cnt()
 a.add(1); b.add(2)
 print(Cnt.items, a.items is b.items)
+### builtin/bytearray
+b = bytearray(b"ab")
+b.append(99)
+b.extend(b"de")
+b += b"f"
+b[0] = 65
+print(b, len(b), b == b"Abcdef", bytes(b), b.decode(), b.upper(), isinstance(b, bytearray), type(b).__name__)
+print(bytearray(3), bytearray("é", "utf-8"), bytearray([1, 2]) + b"\x03", b"x" + bytearray(b"y"), b.hex(), b[1:3])
+try:
+    b.append(300)
+except ValueError as e:
+    print("ValueError", e)
+b2 = b.copy(); b2.pop(); print(b2, b, list(b2[:2]))
+### class/classvar-inheritance
+class Base:
+    registry = {}
+    name = "base"
+    @classmethod
+    def add(cls, k, v):
+        if "registry" not in cls.__dict__:
+            cls.registry = cls.registry.copy()
+        cls.registry[k] = v
+class Sub(Base):
+    pass
+Base.add("a", 1)
+Sub.add("b", 2)
+print(Base.registry, Sub.registry, Sub.name, Base.name)
+Base.extra = 5
+print(Sub.extra, hasattr(Sub, "nothing"))
+### class/descriptor-data
+class Typed:
+    def __set_name__(self, owner, name):
+        self.name = "_" + name
+        self.owner = owner.__name__
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return getattr(obj, self.name, None)
+    def __set__(self, obj, value):
+        if not isinstance(value, int):
+            raise TypeError(f"{self.name[1:]} must be int")
+        setattr(obj, self.name, value)
+class P:
+    x = Typed()
+    def __init__(self, x):
+        self.x = x
+p = P(4)
+print(p.x, P.x.name, P.x.owner, isinstance(P.x, Typed))
+try:
+    p.x = "no"
+except TypeError as e:
+    print("TypeError", e)
+### class/descriptor-nondata
+class Lazy:
+    def __init__(self, f):
+        self.f = f
+    def __set_name__(self, owner, name):
+        self.n = name
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        v = self.f(obj)
+        setattr(obj, self.n, v)
+        return v
+class P:
+    def __init__(self, x):
+        self.x = x
+    @Lazy
+    def heavy(self):
+        print("computing")
+        return self.x * 10
+p = P(4)
+print(p.heavy, p.heavy, "heavy" in p.__dict__)
+### func/redefinition
+reg = []
+def deco(fn):
+    reg.append(fn)
+    return fn
+@deco
+def _(x): return "one"
+@deco
+def _(x): return "two"
+print([g(0) for g in reg])
+def h(): return 1
+a = h
+def h(): return 2
+print(a(), h())
+### expr/evaluation-order
+log = []
+def f(tag, v):
+    log.append(tag)
+    return v
+print(f("a", 1) == f("b", 1), f("c", 0) <= f("d", 5) < f("e", 9), [f("g", 1), f("h", 2)][f("i", 0)])
+print(log)
+### mod/itertools-more
+import itertools
+print(list(itertools.filterfalse(lambda x: x % 2, range(8))))
+print(list(itertools.takewhile(lambda x: x < 3, [1, 2, 5, 1])), list(itertools.dropwhile(lambda x: x < 3, [1, 2, 5, 1])))
+print(list(itertools.compress("ABCDEF", [1, 0, 1, 0, 1, 1])))
+print(list(itertools.batched("ABCDEFG", 3)))
+print(list(itertools.combinations_with_replacement("ABC", 2)))
+a, b = itertools.tee(iter([1, 2, 3]))
+print(list(a), list(b))
+### mod/functools-more
+import functools
+@functools.total_ordering
+class V:
+    def __init__(self, x): self.x = x
+    def __eq__(self, o): return self.x == o.x
+    def __lt__(self, o): return self.x < o.x
+print(V(1) <= V(2), V(3) >= V(2), V(1) > V(2))
+@functools.singledispatch
+def f(x): return "obj"
+@f.register(int)
+def _(x): return "int"
+@f.register(str)
+def _(x): return "str"
+print(f(1), f("a"), f(1.5))
+### mod/functools-cached-property
+import functools
+class C:
+    def __init__(self): self.n = 0
+    @functools.cached_property
+    def v(self):
+        self.n += 1
+        return self.n * 10
+c = C()
+print(c.v, c.v, c.n)
+### mod/contextlib-io-collections
+import contextlib, io, collections
+class Cm(contextlib.AbstractContextManager):
+    def __exit__(self, *a): return None
+with Cm() as m:
+    print(type(m).__name__, isinstance(m, contextlib.AbstractContextManager))
+w = io.TextIOWrapper(io.BytesIO("héllo\nworld\n".encode("utf-8")), encoding="utf-8")
+print(repr(w.readline()), repr(w.readline()))
+class D(collections.UserDict):
+    pass
+d = D(a=1)
+d["b"] = 2
+print(sorted(d.keys()), len(d), "a" in d)
+l = collections.UserList([3, 1])
+l.append(2)
+print(l.data, len(l))
+### mod/ast-literal-eval
+import ast
+print(ast.literal_eval("{'a': [1, 2, (3, -4)], 'b': None, 'c': b'x'}"))
+try:
+    ast.literal_eval("__import__('os')")
+except ValueError:
+    print("ValueError")
+### mod/configparser
+import configparser
+cp = configparser.ConfigParser()
+cp.read_string("""
+[DEFAULT]
+base = /srv
+
+[app]
+path = %(base)s/app
+debug = yes
+port = 8080
+""")
+print(cp.sections(), cp.get("app", "path"), cp.getboolean("app", "debug"), cp.getint("app", "port"))
+print(cp["app"]["port"], cp.get("app", "nope", fallback="fb"))
+### mod/email-punycode
+import codecs, email
+from email.utils import formatdate, parseaddr
+print("bücher".encode("punycode"), b"bcher-kva".decode("punycode"), codecs.encode("münchen", "punycode"))
+msg = email.message_from_string('Content-Type: text/plain; charset="utf-8"\nX-A: 1\n\nbody\n')
+print(msg["content-type"], msg.get_content_type(), msg.get_content_charset(), msg.get_payload().strip())
+print(parseaddr("Bob <bob@x.org>"), formatdate(0, usegmt=True))
+### mod/random-instance
+import random
+r, r2 = random.Random(5), random.Random(5)
+print(r.random() == r2.random(), 0 <= r.randrange(10) < 10, len(r.choices("abc", k=4)), type(random).__name__)
+### class/builtin-type-mro-new
+for t in (int, str, dict, list, tuple, bool, object, float, bytes, set, frozenset):
+    print(t.__name__, [c.__name__ for c in t.__mro__], t.__new__ is not None)
+class T(tuple):
+    def __new__(cls, a, b):
+        return tuple.__new__(cls, (a, b))
+    def total(self): return self[0] + self[1]
+print(int.__new__(int, 5), str.__new__(str, "x"))
+t = T(1, 2)
+print(t, type(t).__name__, t[0], t.total(), isinstance(t, tuple), t == (1, 2))
+class M:
+    pass
+m = M.__new__(M)
+print(type(m).__name__, [n for n in dir(m) if n in ("__delattr__", "__setattr__")], callable(getattr(m, "__delattr__")))
+object.__setattr__(m, "k", 4)
+print(m.k)
+### mod/builtins-module
+print(type(1) is int, type("") is str)
+import builtins
+print(type(1) is int, type([]) is list, builtins.int is int, builtins.len([1, 2]), type(builtins).__name__)
+import sys
+print(sys.modules["builtins"] is builtins)
+### builtin/globals-locals
+x = 1
+globals()["y"] = 2
+print(y, globals().get("x"), "x" in globals())
+def f(a, b=3):
+    c = a + b
+    return sorted(locals().items())
+print(f(1))
+### mod/threading-daemon
+import threading
+out = []
+t = threading.Thread(target=lambda: out.append(1))
+t.start(); t.join()
+print(out)

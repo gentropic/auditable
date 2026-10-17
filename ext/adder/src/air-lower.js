@@ -1105,7 +1105,7 @@ function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
   // eval / exec run source against the caller's live scope, which only the tree-walker has
-  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec') && !ctx.symbols.has(node.func.id)) {
+  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec' || node.func.id === 'globals' || node.func.id === 'locals') && !ctx.symbols.has(node.func.id)) {
     throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
   }
 

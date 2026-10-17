@@ -24,6 +24,8 @@
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output"
+  "builtin/sum-start": "output",
+  "class/descriptor-nondata": "output",
+  "mod/functools-cached-property": "output"
  }
 }

@@ -2121,6 +2121,15 @@ class AdderRange {
 // A Python tuple is a frozen PyTuple: an Array (so JS code, unpacking, indexing, numpy-style
 // arr[i, j] keys and Array.isArray all keep working) that prints (1, 2), refuses mutation, and
 // whose derived arrays (map, filter, slice, concat) are plain lists, never tuples by accident.
+// bytearray: a mutable sequence of byte values — an Array of ints 0..255 (append, extend, item and
+// slice assignment are the list's), with bytes' methods, repr and equality
+class PyByteArray extends Array {
+  static get [Symbol.species]() { return Array; }
+}
+const _toBA = (items) => { const b = new PyByteArray(); for (const x of items) b.push(x); return b; };
+const _byteCheck = (v) => { if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'byte must be in range(0, 256)'); return v; };
+const _isBytesLike = (v) => v instanceof Uint8Array || v instanceof PyByteArray;
+const _asU8 = (v) => (v instanceof Uint8Array ? v : Uint8Array.from(v));
 class PyTuple extends Array {
   static get [Symbol.species]() { return Array; }
 }
@@ -2388,6 +2397,8 @@ class Complex {
 
 // type object registry — populated by adderBuiltins()
 const _typeObjects = {};
+// the builtin type objects adderBuiltins made first: every later table reuses them
+const _stableTypes = {};
 
 // adder has two dict representations: a Map (any keys), and a plain JS object for a dict whose
 // keys are all strings (a {"a": 1} literal — kept as an object for JS interop). A plain dict is
@@ -2405,6 +2416,7 @@ function pyTypeName(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'str';
   if (v instanceof PyTuple) return v.__adderClass__ || 'tuple';
+  if (v instanceof PyByteArray) return 'bytearray';
   if (Array.isArray(v)) return 'list';
   if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
@@ -2414,6 +2426,7 @@ function pyTypeName(v) {
   if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
   if (v instanceof AdderError) return v.pyType;
+  if (v.__adderModule__) return 'module';
   if (isPlainDict(v)) return 'dict';
   return 'object';
 }
@@ -2501,6 +2514,7 @@ function pyRepr(v) {
   if (typeof v === 'number') return _numRepr(v);
   if (Array.isArray(v) && typeof v.__repr__ === 'function') return v.__repr__();   // namedtuple & co.
   if (v instanceof PyTuple) return v.length === 1 ? `(${pyRepr(v[0])},)` : `(${v.map(pyRepr).join(', ')})`;
+  if (v instanceof PyByteArray) return `bytearray(${_bytesRepr(Uint8Array.from(v))})`;
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -2560,6 +2574,7 @@ function pyReprMaybe(v) {
   { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
   if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
+  if (v instanceof PyByteArray) return pyRepr(v);
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
@@ -2885,11 +2900,21 @@ function adderGetAttr(obj, attr) {
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
+    // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
+    // looks class attributes up. A function's JS properties (name, length) don't count as the
+    // class's own unless the class body set them.
+    if (obj._pyClass && obj._pyMRO && obj._pyMRO.length > 1 && !_ownPyClassAttr(obj, attr)) {
+      for (let i = 1; i < obj._pyMRO.length; i++) { const c = obj._pyMRO[i]; if (_ownPyClassAttr(c, attr)) return c[attr]; }
+    }
     // a member of the class's metaclass (Meta.describe, a property on Meta) — the class's own first
     if (obj._pyClass && obj.__adderMeta__ && !(attr in obj)) { const v = metaAttr(obj, attr); if (v !== undefined) return v; }
     if (attr === '__class__' && obj._pyClass) return obj.__adderMeta__ || pyTypeObj;
     if (attr === '__mro__' && obj._pyClass && obj._pyMRO) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : [...obj._pyMRO, pyObjectObj]);
     if (attr === '__bases__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [] : obj._pyBases && obj._pyBases.length ? obj._pyBases : [pyObjectObj]);
+    // a builtin type's (int, str, dict …): itself and object (bool is an int)
+    if (attr === '__mro__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : tn === 'bool' ? [obj, _typeObjects.int, pyObjectObj] : [obj, pyObjectObj]);
+    // Cls.__new__ where nothing in the class defines one: object's, or the builtin type's
+    if (attr === '__new__' && obj._pyClass && !(attr in obj)) return _inheritedNew(obj);
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
@@ -2897,12 +2922,30 @@ function adderGetAttr(obj, attr) {
   // tuple methods (count, index) — a tuple has none of list's mutators
   // (a namedtuple class adds its fields and _asdict / _replace / _fields on its own prototype)
   if (obj instanceof PyTuple) {
+    // a tuple subclass's own members (made by tuple.__new__(cls, …)): its class's, bound
+    const tt = obj.__adderType__;
+    if (tt && tt.prototype && !(attr in obj) && attr in tt.prototype) {
+      const v = Reflect.get(tt.prototype, attr, obj);
+      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+    }
     if (attr === 'count' || attr === 'index') return _listMethod(obj, attr);
     if (attr in obj && !(attr in Array.prototype)) {
       const v = obj[attr];
       return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
     }
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
+  }
+  // bytearray: bytes' methods (results as bytearray), and the list's mutators with byte checks
+  if (obj instanceof PyByteArray) {
+    if (attr === 'append') return (x) => { obj.push(_byteCheck(x)); return null; };
+    if (attr === 'extend') return (it) => { for (const x of (it instanceof Uint8Array ? it : pyIter(it))) obj.push(_byteCheck(x)); return null; };
+    if (attr === 'insert') return (i, x) => { _byteCheck(x); return _listMethod(obj, 'insert')(i, x); };
+    if (attr === 'copy') return () => _toBA(obj);
+    if (attr === 'decode' || attr === 'hex') return _bytesMethod(Uint8Array.from(obj), attr);
+    if (['pop', 'remove', 'clear', 'reverse', 'count', 'index'].includes(attr)) return _listMethod(obj, attr);
+    const m = _bytesMethod(Uint8Array.from(obj), attr);
+    if (typeof m !== 'function') return m;
+    return (...a) => { const r = m(...a.map((x) => (x instanceof PyByteArray ? Uint8Array.from(x) : x))); return r instanceof Uint8Array ? _toBA(r) : r; };
   }
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
@@ -2933,41 +2976,45 @@ function adderGetAttr(obj, attr) {
   }
   // plain object (dict with string keys)
   if (obj !== null && typeof obj === 'object' && !(obj instanceof Array) && !(obj instanceof Map) && !(obj instanceof Set)) {
-    // check for adder class method on prototype
-    if (typeof obj[attr] === 'function') {
-      if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
+    // read the attribute ONCE: a getter (a @property, a descriptor) runs its body on every read
+    const has = attr in obj;
+    const v = has ? obj[attr] : undefined;
+    if (typeof v === 'function') {
+      if (_isNativeClass(v) || v._pyClass) return v;   // a class (binascii.Error, enum.Enum): never bound
       // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
       // import f` is the same object (binding made a fresh copy per access)
-      if (obj.__adderModule__ && (obj[attr]._pyFunc || obj[attr]._pyDef)) return obj[attr];
-      // adder functions expect self as first arg — inject it (skip for modules)
-      if (obj[attr]._pyFunc && !obj.__adderModule__) {
-        const originalFn = obj[attr];
-        const fn = (...args) => originalFn(obj, ...args);
+      if (obj.__adderModule__ && (v._pyFunc || v._pyDef)) return v;
+      // a function stored ON a Python instance is an attribute, not a method: as it is
+      if (obj.__adderType__ && Object.hasOwn(obj, attr)) return v;
+      // adder functions expect self as first arg — inject it (plain JS objects used as namespaces)
+      if (v._pyFunc && !obj.__adderModule__ && !obj.__adderType__) {
+        const fn = (...args) => v(obj, ...args);
         fn._pyFunc = true;
         fn._pyName = `${attr}`;
         return fn;
       }
-      const original = obj[attr];
-      const fn = original.bind(obj);
+      const fn = v.bind(obj);
       // Function.prototype.bind drops custom properties off the original
       // (`t.cdf`, `t.pdf` etc. — scipy-style "callable namespace" pattern).
       // Copy them over so dotted access (`stats.t.cdf`) still resolves.
-      for (const k of Object.getOwnPropertyNames(original)) {
+      for (const k of Object.getOwnPropertyNames(v)) {
         if (k === 'length' || k === 'name' || k === 'prototype') continue;
-        try { fn[k] = original[k]; } catch {}
+        try { fn[k] = v[k]; } catch {}
       }
       fn._pyName = attr;
       return fn;
     }
     // regular property access (before dict-like methods, so getters/own props take priority)
-    if (attr in obj) return obj[attr];
+    if (has) return v;
     // an instance attribute it doesn't have: the class's (and its bases'), as Python looks them up
     const ot = obj.__adderType__;
-    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (Object.hasOwn(c, attr)) return c[attr];
+    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (_ownPyClassAttr(c, attr)) return c[attr];
     // dict-like attribute access — keys, values, items, get, etc.
     if (_objDictMethods[attr]) return _objDictMethods[attr](obj);
     // __getattr__ dunder
     if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
+    // what every instance inherits from object (dir() lists them, so getattr must find them)
+    if (ot && _OBJECT_DUNDER_SET.has(attr)) { const d = _objectDunder(obj, attr); if (d !== undefined) return d; }
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
   }
   // generic
@@ -3207,6 +3254,12 @@ const _CODEC_ALIASES = {
 };
 const _codecByAlias = new Map();
 for (const [canon, names] of Object.entries(_CODEC_ALIASES)) for (const n of names) _codecByAlias.set(n, canon);
+// codecs written elsewhere (punycode, in stdlib-sys): { encode(str, errors) → bytes, decode(bytes, errors) → str }
+const _extraCodecs = new Map();
+function registerCodec(name, impl, aliases = []) {
+  _extraCodecs.set(name, impl);
+  for (const n of [name, ...aliases]) _codecByAlias.set(n, name);
+}
 // the canonical name of an encoding (CPython's normalisation: case, '_' / ' ' as '-'), or null
 function codecName(encoding) {
   const k = String(encoding).trim().toLowerCase().replace(/[_ ]/g, '-');
@@ -3254,6 +3307,7 @@ function pyEncode(s, encoding, errors) {
   s = String(s);
   errors = errors || 'strict';
   const codec = _lookupCodec(encoding);
+  if (_extraCodecs.has(codec)) return _extraCodecs.get(codec).encode(s, errors);
   const out = [];
   const pushStr = (t) => { for (const c of t) out.push(c.charCodeAt(0)); };   // handler output is ASCII
   if (codec === 'utf-16' || codec === 'utf-16-le' || codec === 'utf-16-be' || codec === 'utf-32' || codec === 'utf-32-le' || codec === 'utf-32-be') {
@@ -3322,6 +3376,7 @@ function _decodeFallback(codec, b, start, end, reason, errors) {
 function pyDecodePartial(b, encoding, errors, final = true) {
   errors = errors || 'strict';
   const codec = _lookupCodec(encoding);
+  if (_extraCodecs.has(codec)) return { text: _extraCodecs.get(codec).decode(b, errors), consumed: b.length };
   let i = 0, text = '';
   const n = b.length;
   if (codec === 'latin-1') { for (; i < n; i++) text += String.fromCharCode(b[i]); return { text, consumed: n }; }
@@ -3700,6 +3755,11 @@ function _bitOp(op, a, b) {
 
 function pyAdd(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a + b;   // the hot case, first
+  // bytes + bytearray: the left operand's type
+  if ((a instanceof PyByteArray || b instanceof PyByteArray) && _isBytesLike(a) && _isBytesLike(b)) {
+    const r = new Uint8Array(a.length + b.length); r.set(_asU8(a)); r.set(_asU8(b), a.length);
+    return a instanceof PyByteArray ? _toBA(r) : r;
+  }
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
@@ -4043,6 +4103,12 @@ function _dictSize(d) { return d instanceof Map ? d.size : Object.keys(d).length
 
 function pyEq(a, b) {
   if (a === b) return true;
+  // bytes and bytearray compare by content, either way round
+  if ((a instanceof PyByteArray || b instanceof PyByteArray) && _isBytesLike(a) && _isBytesLike(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
   if (_hasDunder(a, '__eq__') || _hasDunder(b, '__eq__')) {
     // a's __eq__, then b's (reflected) when a's says NotImplemented, then identity
     const refl = () => (_hasDunder(b, '__eq__') && b.__eq__ !== a.__eq__ ? b.__eq__(a) : false);
@@ -5259,6 +5325,12 @@ function makeExcType(name, parent, ...moreParents) {
 // A class-body attribute onto the class object (a JS function): defined, not assigned, so
 // `name` / `length` (read-only on functions) work; recorded in _pyAttrs, which is how
 // dataclasses and enum tell the body's attributes from the function's own properties.
+const _JS_FN_PROPS = new Set(['name', 'length', 'prototype', 'caller', 'arguments']);
+// does class c itself hold attribute k (a class variable, a method, or one set on it later)?
+function _ownPyClassAttr(c, k) {
+  if (!Object.hasOwn(c, k)) return false;
+  return !_JS_FN_PROPS.has(k) || !!(c._pyAttrs && c._pyAttrs.has(k));
+}
 function setClassAttr(cls, k, v) {
   Object.defineProperty(cls, k, { value: v, writable: true, enumerable: true, configurable: true });
   (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
@@ -6103,6 +6175,24 @@ function buildClass(name, bases, members, annotations, opts = {}) {
       const fn = value.__staticmethod__ ? value.fn : value;
       cls._pyNewFn = fn;
       cls.__new__ = fn;
+    } else if (_isDescriptor(value)) {
+      // the descriptor protocol: reads go through __get__(instance, owner) (owner-level reads
+      // through __get__(None, owner)); with __set__ / __delete__ it's a data descriptor and writes
+      // go through it, else an instance attribute of the same name shadows it, as in Python
+      const d = value;
+      const data = typeof d.__set__ === 'function' || typeof d.__delete__ === 'function';
+      const shadow = function (v) { Object.defineProperty(this, mName, { value: v, writable: true, enumerable: true, configurable: true }); };
+      const dataSet = function (v) { if (typeof d.__set__ !== 'function') throw new AdderError('AttributeError', `can't set attribute '${mName}'`); return d.__set__(this, v); };
+      // the tree-walker's assignment calls this itself, so an async __set__ is awaited (a JS setter's
+      // return value is dropped) — the same hook @property setters use
+      dataSet._pyFset = (o, v) => dataSet.call(o, v);
+      Object.defineProperty(cls.prototype, mName, {
+        get() { return d.__get__(this, typeOf(this)); },
+        set: data ? dataSet : shadow,
+        configurable: true, enumerable: false,
+      });
+      Object.defineProperty(cls, mName, { get() { return d.__get__(null, this); }, set: shadow, configurable: true, enumerable: true });
+      (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
     } else if (value && value.__property__) {
       const fget = value.fget;
       const fset = value.fset;
@@ -6146,7 +6236,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   // nested in the body is a class variable too, not a method
   for (const [k, v] of Object.entries(members)) {
     if (k === '__new__') continue;
-    if ((typeof v !== 'function' || v._pyClass) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
+    if ((typeof v !== 'function' || v._pyClass) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__)) && !_isDescriptor(v)) {
       setClassAttr(cls, k, v);
     }
   }
@@ -6167,7 +6257,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyOwnMembers = new PySet();
   for (const [mName, value] of Object.entries(members)) {
     if (mName === '__new__') continue;
-    if ((typeof value === 'function' && !value._pyClass) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
+    if ((typeof value === 'function' && !value._pyClass) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__)) || _isDescriptor(value)) {
       cls._pyOwnMembers.add(mName);
     }
   }
@@ -6187,7 +6277,23 @@ function buildClass(name, bases, members, annotations, opts = {}) {
 
   if (opts.beforeFinish) opts.beforeFinish(cls);
   if (_pendingClassCell && _pendingClassCell.name === name) { const p = _pendingClassCell; _pendingClassCell = null; p.fn(cls); }
-  return finishClass(cls, annotations || [], opts.kw);
+  // __set_name__(owner, name) on each member that has one (descriptors learn their attribute
+  // name), before __init_subclass__ — CPython's order
+  const named = [];
+  for (const [k, v] of Object.entries(members)) {
+    if (v !== null && typeof v === 'object' && typeof v.__set_name__ === 'function') {
+      const r = v.__set_name__(cls, k);
+      if (r && typeof r.then === 'function') named.push(r);
+    }
+  }
+  const finish = () => finishClass(cls, annotations || [], opts.kw);
+  return named.length ? Promise.all(named).then(finish) : finish();
+}
+// a Python descriptor: an instance (of a Python class, or a JS-built one marked _pyDescriptor)
+// with __get__ — not a function, container or the engine's own property / method wrappers
+function _isDescriptor(v) {
+  return v !== null && typeof v === 'object' && typeof v.__get__ === 'function' && !Array.isArray(v) &&
+    !(v instanceof Map) && !(v instanceof Set) && !v.__property__ && (!!v.__adderType__ || v._pyDescriptor === true);
 }
 
 // A class statement whose metaclass is not `type` hands the namespace to the metaclass; the
@@ -6270,6 +6376,14 @@ pyObjectObj.prototype = {};
 pyObjectObj._pyMRO = [pyObjectObj];
 pyObjectObj._pyOwnMembers = new PySet();
 _typeObjects.object = pyObjectObj;
+for (const k of ['__init__', '__setattr__', '__delattr__', '__getattribute__', '__eq__', '__ne__', '__hash__', '__repr__', '__str__', '__format__', '__dir__', '__sizeof__', '__reduce__', '__reduce_ex__', '__getstate__']) {
+  const f = (self, ...a) => _objectDunder(self, k)(...a);
+  f._pyName = k;
+  pyObjectObj[k] = f;
+}
+pyObjectObj.__new__ = (c, ...a) => objectNew(c);
+pyObjectObj.__init_subclass__ = () => null;
+pyObjectObj.__subclasshook__ = () => NotImplemented;
 
 pyTypeObj._pyName = 'type'; pyTypeObj.__name__ = 'type'; pyTypeObj._pyClass = true;
 pyTypeObj.prototype = {
@@ -6281,6 +6395,56 @@ pyTypeObj._pyOwnMembers = new PySet();
 pyTypeObj._pyNewFn = typeNew;
 pyTypeObj.__new__ = typeNew;
 _typeObjects.type = pyTypeObj;
+
+// X.__new__ when X's MRO defines none. A user class gets object.__new__ (a bare instance; a
+// list-based class a list). A builtin type gives a plain value for itself; for a subclass, a
+// tuple is made as the subclass (namedtuple-style `tuple.__new__(cls, items)`), the others
+// stay plain values until subclassed builtins are boxed (see the str-subclass design note).
+function _inheritedNew(T) {
+  if (T._pyMRO || T === pyObjectObj) {
+    const f = (c, ...a) => objectNew(c);
+    f._pyName = '__new__';
+    return f;
+  }
+  const f = (c, ...a) => {
+    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+    if (T._pyName === 'tuple' && c && c !== T) {
+      const t = new PyTuple();
+      for (const x of a.length ? pyIter(a[0]) : []) t.push(x);
+      t.__adderType__ = c; t.__adderClass__ = c._pyName;
+      return t;
+    }
+    return T(...a);
+  };
+  f._pyName = '__new__';
+  return f;
+}
+const _OBJECT_DUNDER_SET = new Set(_OBJECT_DUNDERS);
+// object's own methods, bound to a Python instance
+function _objectDunder(o, attr) {
+  switch (attr) {
+    case '__init__': return () => null;
+    case '__new__': return (c) => objectNew(c);
+    case '__setattr__': return (k, v) => { o[k] = v; return null; };   // object's: a plain store (it bypasses a frozen dataclass's guard, as in CPython)
+    case '__delattr__': return (k) => { if (!(k in o)) throw new AdderError('AttributeError', `'${pyTypeName(o)}' object has no attribute '${k}'`); delete o[k]; return null; };
+    case '__getattribute__': return (k) => adderGetAttr(o, k);
+    case '__eq__': return (x) => (x === o ? true : NotImplemented);
+    case '__ne__': return (x) => (x === o ? false : NotImplemented);
+    case '__lt__': case '__le__': case '__gt__': case '__ge__': return () => NotImplemented;
+    case '__hash__': return () => _pyHash(o);
+    case '__repr__': return () => pyRepr(o);
+    case '__str__': return () => pyStr(o);
+    case '__format__': return (spec) => { if (spec) throw new AdderError('TypeError', `unsupported format string passed to ${pyTypeName(o)}.__format__`); return pyStr(o); };
+    case '__dir__': return () => _pyDir(o);
+    case '__sizeof__': return () => 32;
+    case '__init_subclass__': return () => null;
+    case '__subclasshook__': return () => NotImplemented;
+    case '__getstate__': return () => null;
+    case '__reduce__': case '__reduce_ex__': return () => { throw new AdderError('TypeError', `cannot pickle '${pyTypeName(o)}' object`); };
+    case '__doc__': return null;
+    default: return undefined;
+  }
+}
 
 // type(x)
 function typeOf(obj) {
@@ -6490,6 +6654,19 @@ function adderBuiltins(printFn) {
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
+    // bytearray(), bytearray(n) zeros, bytearray(ints / bytes), bytearray(str, encoding[, errors])
+    bytearray: Object.assign((x, ...a) => {
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+      if (x === undefined) return new PyByteArray();
+      if (typeof x === 'number') { if (x < 0) throw new AdderError('ValueError', 'negative count'); return _toBA(new Uint8Array(x)); }
+      if (typeof x === 'string') {
+        const enc = a[0] ?? kw.encoding;
+        if (enc === undefined) throw new AdderError('TypeError', 'string argument without an encoding');
+        return _toBA(pyEncode(x, enc, a[1] ?? kw.errors ?? 'strict'));
+      }
+      if (x instanceof Uint8Array) return _toBA(x);
+      return _toBA([...pyIter(x)].map(_byteCheck));
+    }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
     frozenset: async (x) => { const s = x === undefined ? new PySet() : new PySet(await pyCollect(x)); s._frozen = true; return s; },
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
@@ -6687,19 +6864,26 @@ function adderBuiltins(printFn) {
     eval: _builtinEval,
     exec: _builtinExec,
     super: _builtinSuper,
+    globals: _builtinGlobals,
+    locals: _builtinLocals,
   };
   // Mark conversion builtins as type objects for isinstance()/type()
-  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex']) {
-    if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = builtins[name]; }
+  // ONE object per type for the whole program: every module gets its own builtins table, and a
+  // fresh `int` per table made `type(1) is int` false in a module once another had been imported
+  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray']) {
+    if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
+    if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
   }
   for (const name of _EXC_NAMES) {
+    if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
+    if (_typeObjects[name] && _typeObjects[name]._pyClass) { builtins[name] = _stableTypes[name] = _typeObjects[name]; continue; }
     const ctor = (...a) => {
       if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
       return new AdderError(name, _argsStr(name, a), undefined, a);
     };
     ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
     builtins[name] = ctor;
-    _typeObjects[name] = ctor;
+    _typeObjects[name] = _stableTypes[name] = ctor;
   }
   return builtins;
 }
@@ -6771,6 +6955,10 @@ function pySuper(cls, self) {
 const _builtinEval = Object.assign(() => {}, { _pyName: 'eval', _sentinel: 'eval' });
 const _builtinExec = Object.assign(() => {}, { _pyName: 'exec', _sentinel: 'exec' });
 const _builtinSuper = Object.assign(() => {}, { _pyName: 'super', _sentinel: 'super' });
+// globals() / locals(): the caller's namespaces, which only the tree-walker has (AIR lowering
+// refuses them, so the module falls back)
+const _builtinGlobals = Object.assign(() => {}, { _pyName: 'globals', _sentinel: 'globals' });
+const _builtinLocals = Object.assign(() => {}, { _pyName: 'locals', _sentinel: 'locals' });
 
 function _pyIsInstance(obj, typeOrTuple) {
   const types = Array.isArray(typeOrTuple) ? typeOrTuple : [typeOrTuple];
@@ -7587,7 +7775,7 @@ function _applySlice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return typeof obj === 'string' ? obj.slice(l, u) : obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
+      return typeof obj === 'string' ? obj.slice(l, u) : obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj instanceof PyByteArray ? PyByteArray.from(obj.slice(l, u)) : obj.slice(l, u);
     }
     // general step
     let start, stop;
@@ -7705,6 +7893,10 @@ async function _evalCall(node, scope) {
   if (func._sentinel === 'super') return _evalSuperCall(args, scope, node.line);
   if (func._sentinel === 'eval') return _evalBuiltinEval(args, scope, node.line);
   if (func._sentinel === 'exec') return _evalBuiltinExec(args, scope, node.line);
+  // globals(): the module's namespace itself (writes define names); locals(): a snapshot of
+  // the current scope's names
+  if (func._sentinel === 'globals') { let s = scope; while (s.parent) s = s.parent; return s.vars; }
+  if (func._sentinel === 'locals') { if (!scope.parent) return scope.vars; return new PyDict(scope.vars); }
   return _callValue(func, args, kwArgs, node.line);
 }
 
@@ -8486,7 +8678,12 @@ async function findModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
   const known = _resolveModule(name);
-  if (known) return known;
+  if (known) {
+    // a stdlib module, once imported, is in sys.modules as CPython's are (six's
+    // `__import__(name); return sys.modules[name]`)
+    if (name !== 'js' && adderModules[name] === known && known.__adderModule__) cache[name] = known;
+    return known;
+  }
   const dot = name.lastIndexOf('.');
   if (dot > 0) {
     const parent = await findModule(name.slice(0, dot));
@@ -8938,7 +9135,7 @@ function _slice(obj, lower, upper, step) {
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
       const u = upper == null ? len : upper < 0 ? Math.max(0, len + upper) : Math.min(upper, len);
-      return obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj.slice(l, u);
+      return obj instanceof PyTuple ? mkTuple(obj.slice(l, u)) : obj instanceof PyByteArray ? PyByteArray.from(obj.slice(l, u)) : obj.slice(l, u);
     }
     const positive = step > 0;
     let l = lower == null ? (positive ? 0 : len - 1) : lower < 0 ? Math.max(positive ? 0 : -1, len + lower) : Math.min(lower, positive ? len : len - 1);
@@ -8947,7 +9144,7 @@ function _slice(obj, lower, upper, step) {
     if (positive) { for (let i = l; i < u; i += step) result.push(obj[i]); }
     else { for (let i = l; i > u; i += step) result.push(obj[i]); }
     return typeof obj === 'string' ? result.join('') : obj instanceof PyTuple ? mkTuple(result)
-      : obj instanceof Uint8Array ? Uint8Array.from(result) : result;
+      : obj instanceof Uint8Array ? Uint8Array.from(result) : obj instanceof PyByteArray ? PyByteArray.from(result) : result;
   }
   if (typeof obj?.__getitem__ === 'function') {
     return obj.__getitem__({ _slice: true, lower, upper, step });
@@ -15208,9 +15405,13 @@ adderModules.locale = _syModule('locale', {
       self._target = target; self._args = args; self._kwargs = kwargs; self.name = name || `Thread-${ident}`; self.daemon = !!daemon;
       self.ident = null; self._started = false; self._alive = false; return null;
     },
-    // the target runs now: one thread, so start() is the run (join() then has nothing to wait for)
+    // the target runs now: one thread, so start() is the run (join() then has nothing to wait for).
+    // Not a daemon: a daemon thread is a background service (a monitor's `while True`) that run
+    // inline would never return — it can't start, as in Pyodide, and libraries catch that
+    // (tqdm turns its monitor off)
     start(self) {
       if (self._started) throw new AdderError('RuntimeError', 'threads can only be started once');
+      if (self.daemon) throw new AdderError('RuntimeError', "can't start new thread");
       self._started = true; self._alive = true; self.ident = ++ident; self.native_id = self.ident;
       const r = self.run();
       const done = () => { self._alive = false; return null; };
@@ -15980,9 +16181,845 @@ function _syOsExtras(os) {
   if (!os.name) os.name = 'posix';
   if (!os.linesep) os.linesep = '\n';
   if (!os.devnull) os.devnull = '/dev/null';
+  if (!os.__adderModule__) { os.__adderModule__ = true; os.__name__ = 'os'; }
+  if (!os.pathsep) Object.assign(os, { pathsep: ':', curdir: '.', pardir: '..', extsep: '.', altsep: null, defpath: '/bin:/usr/bin', SEEK_SET: 0, SEEK_CUR: 1, SEEK_END: 2 });
+  // the environment: a mapping a program may read and change (there is no process to inherit one from)
+  if (!os.environ) {
+    os.environ = new PyDict([['HOME', os.getcwd ? os.getcwd() : '/'], ['PATH', '/usr/bin:/bin'], ['USER', 'user'], ['LANG', 'C.UTF-8'], ['TERM', 'dumb']]);
+    os.environ.__adderClass__ = 'os._Environ';
+  }
+  if (!os.getenv) os.getenv = (k, d = null) => (os.environ.has(k) ? os.environ.get(k) : d);
+  if (!os.putenv) os.putenv = (k, v) => { os.environ.set(k, v); return null; };
+  if (!os.unsetenv) os.unsetenv = (k) => { os.environ.delete(k); return null; };
+  if (!os.environb) os.environb = new PyDict();
+  if (!os.get_exec_path) os.get_exec_path = () => os.environ.get('PATH').split(':');
+  const P = os.path;
+  if (P && !P.__adderModule__) {
+    const cwd = () => (os.getcwd ? os.getcwd() : '/');
+    const home = () => os.environ.get('HOME') || '/';
+    Object.assign(P, { __adderModule__: true, __name__: 'posixpath' });
+    const add = (k, v) => { if (!P[k]) P[k] = v; };
+    add('pathsep', ':'); add('curdir', '.'); add('pardir', '..'); add('extsep', '.'); add('altsep', null); add('devnull', '/dev/null');
+    add('abspath', (p) => P.normpath(P.isabs(p) ? p : P.join(cwd(), p)));
+    add('realpath', (p, ...a) => P.abspath(p));
+    add('expanduser', (p) => (p === '~' ? home() : String(p).startsWith('~/') ? home() + String(p).slice(1) : p));
+    add('expandvars', (p) => String(p).replace(/\$(\w+)|\$\{(\w+)\}/g, (m, a, b) => (os.environ.has(a || b) ? os.environ.get(a || b) : m)));
+    add('split', (p) => { const i = String(p).lastIndexOf('/') + 1; let head = String(p).slice(0, i); const tail = String(p).slice(i); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return mkTuple([head, tail]); });
+    add('splitdrive', (p) => mkTuple(['', p]));
+    add('normcase', (p) => p);
+    add('islink', () => false); add('ismount', (p) => p === '/');
+    add('lexists', P.exists);
+    add('commonprefix', (ps) => { const a = [...pyIter(ps)]; if (!a.length) return ''; let s = a[0]; for (const x of a) while (!String(x).startsWith(s)) s = s.slice(0, -1); return s; });
+    add('commonpath', (ps) => { const parts = [...pyIter(ps)].map((x) => String(x).split('/')); if (!parts.length) throw new AdderError('ValueError', 'commonpath() arg is an empty sequence'); const out = []; for (let i = 0; parts.every((q) => i < q.length && q[i] === parts[0][i]); i++) out.push(parts[0][i]); return out.join('/') || (parts[0][0] === '' ? '/' : ''); });
+    add('samefile', (a, b) => P.abspath(a) === P.abspath(b));
+  }
+  // one process, one user: fixed ids (libraries key caches and temp names on them)
+  const fixed = { getpid: 1, getppid: 0, getuid: 1000, geteuid: 1000, getgid: 1000, getegid: 1000, getpgrp: 1 };
+  for (const [k, v] of Object.entries(fixed)) if (!os[k]) os[k] = () => v;
+  if (!os.cpu_count) os.cpu_count = () => (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1;
+  if (!os.process_cpu_count) os.process_cpu_count = os.cpu_count;
+  if (!os.urandom) os.urandom = (n) => { const b = new Uint8Array(n); globalThis.crypto.getRandomValues(b); return b; };
+  if (!os.getlogin) os.getlogin = () => 'user';
+  if (!os.umask) os.umask = () => 0o022;
+  if (!os.get_terminal_size) os.get_terminal_size = () => Object.assign(mkTuple([80, 24]), { columns: 80, lines: 24 });
+  if (!os.isatty) os.isatty = () => false;
+  if (!os.supports_fd) os.supports_fd = new PySet();
+  if (!os.supports_follow_symlinks) os.supports_follow_symlinks = new PySet();
+  if (!os.supports_dir_fd) os.supports_dir_fd = new PySet();
   return os;
 }
 setOsExtrasHook(_syOsExtras);
+
+// ── itertools: the rest of the module ──
+{
+  const it = adderModules.itertools;
+  // an iterator object, sync or async (a predicate written in Python may return a Promise)
+  const lazy = (name, gen) => _lazyIter(name, gen);
+  const each = (x) => _pyEach(x);
+  it.filterfalse = (pred, src) => lazy('filterfalse', async function* () { for await (const v of each(src)) { const r = pred === null ? v : await pred(v); if (!_syTruthy(r)) yield v; } });
+  it.takewhile = (pred, src) => lazy('takewhile', async function* () { for await (const v of each(src)) { if (!_syTruthy(await pred(v))) return; yield v; } });
+  it.dropwhile = (pred, src) => lazy('dropwhile', async function* () { let dropping = true; for await (const v of each(src)) { if (dropping && _syTruthy(await pred(v))) continue; dropping = false; yield v; } });
+  it.compress = (data, sel) => lazy('compress', async function* () { const s = [...pyIter(sel)]; let i = 0; for await (const v of each(data)) { if (i >= s.length) return; if (_syTruthy(s[i++])) yield v; } });
+  it.batched = (src, n, ...a) => {
+    if (!(n >= 1)) throw new AdderError('ValueError', 'n must be at least one');
+    return lazy('batched', async function* () { let b = []; for await (const v of each(src)) { b.push(v); if (b.length === n) { yield mkTuple(b); b = []; } } if (b.length) yield mkTuple(b); });
+  };
+  it.combinations_with_replacement = (src, r) => lazy('combinations_with_replacement', async function* () {
+    const pool = [...pyIter(src)]; const n = pool.length;
+    if (!n && r) return;
+    const idx = new Array(r).fill(0);
+    yield mkTuple(idx.map((i) => pool[i]));
+    for (;;) {
+      let i = r - 1;
+      while (i >= 0 && idx[i] === n - 1) i--;
+      if (i < 0) return;
+      const v = idx[i] + 1;
+      for (let j = i; j < r; j++) idx[j] = v;
+      yield mkTuple(idx.map((k) => pool[k]));
+    }
+  });
+  // tee(it, n=2): n independent iterators over one source, sharing a buffer of what's been read
+  it.tee = (src, n = 2) => {
+    const source = each(src);
+    const iter = source[Symbol.asyncIterator] ? source[Symbol.asyncIterator]() : source[Symbol.iterator] ? source[Symbol.iterator]() : source;
+    const buf = [];
+    let done = false, base = 0;
+    const pos = new Array(n).fill(0);
+    const make = (k) => lazy('_tee', async function* () {
+      for (;;) {
+        if (pos[k] - base >= buf.length) {
+          if (done) return;
+          const r = await iter.next();
+          if (r.done) { done = true; return; }
+          buf.push(r.value);
+        }
+        const v = buf[pos[k] - base];
+        pos[k]++;
+        const min = Math.min(...pos);
+        while (base < min) { buf.shift(); base++; }
+        yield v;
+      }
+    });
+    return mkTuple(Array.from({ length: n }, (_, k) => make(k)));
+  };
+}
+const _syTruthy = (v) => pyBool(v);
+
+// ── functools: cached_property, total_ordering, singledispatch, partialmethod, update_wrapper ──
+{
+  const ft = adderModules.functools;
+  const WRAPPER_ASSIGNMENTS = mkTuple(['__module__', '__name__', '__qualname__', '__doc__', '__dict__']);
+  const WRAPPER_UPDATES = mkTuple(['__dict__']);
+  ft.WRAPPER_ASSIGNMENTS = WRAPPER_ASSIGNMENTS; ft.WRAPPER_UPDATES = WRAPPER_UPDATES;
+  ft.update_wrapper = (wrapper, wrapped, ...a) => {
+    for (const k of ['__module__', '__doc__', '__qualname__']) if (wrapped && wrapped[k] !== undefined) { try { wrapper[k] = wrapped[k]; } catch {} }
+    if (wrapped) { wrapper._pyName = wrapped._pyName || wrapped.__name__; wrapper.__name__ = wrapper._pyName; wrapper.__wrapped__ = wrapped; if (wrapped._pySig) wrapper._pySig = wrapped._pySig; }
+    return wrapper;
+  };
+  // @cached_property: computed on first read, then stored on the instance (it shadows the descriptor)
+  ft.cached_property = Object.assign((fn) => {
+    const d = {
+      _pyDescriptor: true, __adderClass__: 'functools.cached_property', func: fn, attrname: null, __doc__: fn && fn.__doc__,
+      __set_name__(owner, name) { if (this.attrname === null) this.attrname = name; else if (this.attrname !== name) throw new AdderError('TypeError', `Cannot assign the same cached_property to two different names ('${this.attrname}' and '${name}').`); return null; },
+      __get__(obj) {
+        if (obj === null || obj === undefined) return d;
+        const name = d.attrname;
+        const store = (v) => { Object.defineProperty(obj, name, { value: v, writable: true, enumerable: true, configurable: true }); return v; };
+        const v = fn(obj);
+        return _syIsThen(v) ? v.then(store) : store(v);
+      },
+    };
+    return d;
+  }, { _pyName: 'cached_property', __name__: 'cached_property', _pyClass: true });
+  // @total_ordering: from __eq__ and one of __lt__ / __le__ / __gt__ / __ge__, the other three
+  const call = (o, m, x) => adderGetAttr(o, m)(x);
+  const not = (r) => (_syIsThen(r) ? r.then((v) => (v === NotImplemented ? v : !_syTruthy(v))) : !_syTruthy(r));
+  const and = (a, b) => (_syIsThen(a) ? a.then((x) => (_syTruthy(x) ? b() : x)) : _syTruthy(a) ? b() : a);
+  const or = (a, b) => (_syIsThen(a) ? a.then((x) => (_syTruthy(x) ? x : b())) : _syTruthy(a) ? a : b());
+  ft.total_ordering = (cls) => {
+    const own = (m) => cls.prototype && typeof cls.prototype[m] === 'function' && (cls._pyOwnMembers?.has(m) || (cls._pyMRO || []).slice(1).some((c) => c._pyOwnMembers?.has(m)));
+    const root = ['__lt__', '__le__', '__gt__', '__ge__'].find(own);
+    if (!root) throw new AdderError('ValueError', 'must define at least one ordering operation: < > <= >=');
+    const derive = {
+      __lt__: { __gt__: (s, o) => and(not(call(s, '__lt__', o)), () => not(call(s, '__eq__', o))), __le__: (s, o) => or(call(s, '__lt__', o), () => call(s, '__eq__', o)), __ge__: (s, o) => not(call(s, '__lt__', o)) },
+      __le__: { __ge__: (s, o) => or(not(call(s, '__le__', o)), () => call(s, '__eq__', o)), __lt__: (s, o) => and(call(s, '__le__', o), () => not(call(s, '__eq__', o))), __gt__: (s, o) => not(call(s, '__le__', o)) },
+      __gt__: { __lt__: (s, o) => and(not(call(s, '__gt__', o)), () => not(call(s, '__eq__', o))), __ge__: (s, o) => or(call(s, '__gt__', o), () => call(s, '__eq__', o)), __le__: (s, o) => not(call(s, '__gt__', o)) },
+      __ge__: { __le__: (s, o) => or(not(call(s, '__ge__', o)), () => call(s, '__eq__', o)), __gt__: (s, o) => and(call(s, '__ge__', o), () => not(call(s, '__eq__', o))), __lt__: (s, o) => not(call(s, '__ge__', o)) },
+    }[root];
+    for (const [m, f] of Object.entries(derive)) {
+      if (own(m)) continue;
+      cls.prototype[m] = function (o) { return f(this, o); };
+      cls[m] = (s, o) => f(s, o);
+      cls._pyOwnMembers.add(m);
+    }
+    return cls;
+  };
+  // @singledispatch: dispatch on the first argument's type (its MRO, then builtin names)
+  const dispatchOn = (registry, dflt) => (x) => {
+    const t = typeOf(x);
+    for (const c of (t && t._pyMRO) || [t]) if (registry.has(c)) return registry.get(c);
+    const name = pyTypeName(x);
+    for (const [k, f] of registry) if (k && k._pyName === name) return f;
+    if (typeof x === 'boolean') for (const [k, f] of registry) if (k && k._pyName === 'int') return f;
+    if (typeof x === 'number' || typeof x === 'boolean') for (const [k, f] of registry) if (k && (k._pyName === 'Number' || k._pyName === 'Real' || (k._pyName === 'Integral' && Number.isInteger(x)))) return f;
+    return dflt;
+  };
+  const registerOn = (registry) => (cls, func) => {
+    if (typeof cls === 'function' && !cls._pyClass && func === undefined) throw new AdderError('TypeError', 'register(func) with an annotation is not supported here: use register(cls)');
+    if (func === undefined || func === null) return (f) => { registry.set(cls, f); return f; };
+    registry.set(cls, func);
+    return func;
+  };
+  ft.singledispatch = (func) => {
+    const registry = new Map([[pyObjectObj, func]]);
+    const find = dispatchOn(registry, func);
+    const w = (...a) => { if (!a.length) throw new AdderError('TypeError', `${func._pyName || 'singledispatch function'} requires at least 1 positional argument`); return find(a[0])(...a); };
+    ft.update_wrapper(w, func);
+    w.register = registerOn(registry); w.dispatch = (cls) => { for (const c of cls._pyMRO || [cls]) if (registry.has(c)) return registry.get(c); return func; };
+    w.registry = registry; w._pyFunc = true;
+    return w;
+  };
+  ft.singledispatchmethod = (func) => {
+    const registry = new Map([[pyObjectObj, func]]);
+    const find = dispatchOn(registry, func);
+    const d = {
+      _pyDescriptor: true, __adderClass__: 'functools.singledispatchmethod', func,
+      register: registerOn(registry),
+      __get__(obj, cls) { const f = (...a) => find(a[0])(obj, ...a); f._pyName = func._pyName; return f; },
+    };
+    return d;
+  };
+  // partialmethod(func, *args, **kw): a method with leading arguments filled in
+  ft.partialmethod = (func, ...a) => {
+    const kw = _syKw(a);
+    return {
+      _pyDescriptor: true, __adderClass__: 'functools.partialmethod', func, args: mkTuple(a),
+      __get__(obj) { const f = (...b) => { const k = _syKw(b); const all = kw || k ? { _kw: true, ...(kw || {}), ...(k || {}) } : null; return all ? func(obj, ...a, ...b, all) : func(obj, ...a, ...b); }; f._pyName = func._pyName; return f; },
+    };
+  };
+}
+
+// ── contextlib: the abstract bases, asynccontextmanager, ContextDecorator, chdir, aclosing ──
+{
+  const cl = adderModules.contextlib;
+  const hasAll = (o, names) => o !== null && o !== undefined && names.every((n) => { try { return typeof adderGetAttr(o, n) === 'function'; } catch { return false; } });
+  const ACM = _syABCMeta('AbstractContextManager', mkTuple([]), new PyDict([['__enter__', (self) => self]]));
+  ACM.__instancecheck__ = (o) => hasAll(o, ['__enter__', '__exit__']);
+  const AACM = _syABCMeta('AbstractAsyncContextManager', mkTuple([]), new PyDict([['__aenter__', (self) => Promise.resolve(self)]]));
+  AACM.__instancecheck__ = (o) => hasAll(o, ['__aenter__', '__aexit__']);
+  cl.AbstractContextManager = ACM; cl.AbstractAsyncContextManager = AACM;
+  // @asynccontextmanager: the generator-based context manager, entered with `async with`
+  cl.asynccontextmanager = (fn) => {
+    const sync = cl.contextmanager(fn);
+    const w = (...a) => {
+      const wrap = (cm) => ({ __adderClass__: '_AsyncGeneratorContextManager',
+        __aenter__: () => Promise.resolve(cm.__enter__()), __aexit__: (...x) => Promise.resolve(cm.__exit__(...x)) });
+      const r = sync(...a);
+      return _syIsThen(r) ? r.then(wrap) : wrap(r);
+    };
+    w._pyName = fn._pyName; w.__wrapped__ = fn;
+    return w;
+  };
+  cl.aclosing = (thing) => ({ __adderClass__: 'aclosing', __aenter__: () => Promise.resolve(thing), __aexit__: () => Promise.resolve(adderGetAttr(thing, 'aclose')()).then(() => false) });
+  // ContextDecorator: a context manager usable as a decorator (__call__ wraps a function in `with self`)
+  cl.ContextDecorator = _syClass('ContextDecorator', [], {
+    _recreate_cm(self) { return self; },
+    __call__(self, func) {
+      const w = async (...a) => {
+        const cm = adderGetAttr(self, '_recreate_cm')();
+        await adderGetAttr(cm, '__enter__')();
+        try { const r = await func(...a); await adderGetAttr(cm, '__exit__')(null, null, null); return r; }
+        catch (e) { const sup = await adderGetAttr(cm, '__exit__')(excTypeOf(e), excValue(e), null); if (!_syTruthy(sup)) throw e; return null; }
+      };
+      w._pyName = func._pyName; w.__wrapped__ = func;
+      return w;
+    },
+  }, 'contextlib');
+  cl.AsyncContextDecorator = cl.ContextDecorator;
+  cl.chdir = (path) => {
+    let prev = null;
+    return { __adderClass__: 'chdir', __enter__: () => { prev = adderModules.os.getcwd(); adderModules.os.chdir(path); return null; }, __exit__: () => { adderModules.os.chdir(prev); return false; } };
+  };
+  cl.AsyncExitStack = cl.ExitStack;
+}
+
+// ── io: the class hierarchy (isinstance checks and subclassing), open, text_encoding ──
+{
+  const io = adderModules.io;
+  const IOBase = _syClass('IOBase', [], {
+    __enter__(self) { return self; }, __exit__(self) { const c = adderGetAttr(self, 'close'); const r = c(); return _syIsThen(r) ? r.then(() => false) : false; },
+    close(self) { self.closed = true; return null; }, flush() { return null; },
+    readable() { return false; }, writable() { return false; }, seekable() { return false; }, isatty() { return false; },
+    fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); },
+    readline(self) { throw new AdderError('UnsupportedOperation', 'readline'); },
+    readlines(self, hint = -1) { const out = []; for (;;) { const l = adderGetAttr(self, 'readline')(); if (!l || !l.length) return out; out.push(l); } },
+    writelines(self, lines) { for (const l of pyIter(lines)) adderGetAttr(self, 'write')(l); return null; },
+  }, 'io');
+  const RawIOBase = _syClass('RawIOBase', [IOBase], {}, 'io');
+  const BufferedIOBase = _syClass('BufferedIOBase', [IOBase], {}, 'io');
+  const TextIOBase = _syClass('TextIOBase', [IOBase], { encoding: 'utf-8' }, 'io');
+  // TextIOWrapper(buffer, encoding): text over a binary stream with read() / write()
+  const TextIOWrapper = _syClass('TextIOWrapper', [TextIOBase], {
+    __init__(self, buffer, ...a) {
+      const { encoding, errors, newline } = _syArgs(a, ['encoding', 'errors', 'newline', 'line_buffering', 'write_through'], { encoding: 'utf-8', errors: 'strict', newline: null });
+      self.buffer = buffer; self.encoding = encoding || 'utf-8'; self.errors = errors || 'strict'; self.closed = false; self._pending = '';
+      return null;
+    },
+    read(self, n = -1) { const b = adderGetAttr(self.buffer, 'read')(); const t = (x) => pyDecodePartial(x instanceof Uint8Array ? x : new Uint8Array(0), self.encoding, self.errors, true).text; const all = _syIsThen(b) ? b.then(t) : t(b); return all; },
+    readline(self) {
+      const fill = (txt) => { self._pending += txt; const i = self._pending.indexOf('\n'); if (i < 0) { const r = self._pending; self._pending = ''; return r; } const r = self._pending.slice(0, i + 1); self._pending = self._pending.slice(i + 1); return r; };
+      if (self._pending.includes('\n')) return fill('');
+      const t = adderGetAttr(self, 'read')(); return _syIsThen(t) ? t.then(fill) : fill(t);
+    },
+    write(self, s) { const r = adderGetAttr(self.buffer, 'write')(pyEncode(s, self.encoding, self.errors)); return _syIsThen(r) ? r.then(() => String(s).length) : String(s).length; },
+    readable(self) { return true; }, writable(self) { return true; },
+    detach(self) { const b = self.buffer; self.buffer = null; return b; },
+    flush(self) { const f = self.buffer && adderGetAttr(self.buffer, 'flush'); return f ? f() : null; },
+  }, 'io');
+  Object.assign(io, {
+    IOBase, RawIOBase, BufferedIOBase, TextIOBase, TextIOWrapper,
+    BufferedReader: _syClass('BufferedReader', [BufferedIOBase], { __init__(self, raw) { self.raw = raw; return null; }, read(self, ...a) { return adderGetAttr(self.raw, 'read')(...a); }, readable() { return true; } }, 'io'),
+    BufferedWriter: _syClass('BufferedWriter', [BufferedIOBase], { __init__(self, raw) { self.raw = raw; return null; }, write(self, b) { return adderGetAttr(self.raw, 'write')(b); }, writable() { return true; } }, 'io'),
+    BufferedRandom: _syClass('BufferedRandom', [BufferedIOBase], {}, 'io'),
+    BufferedRWPair: _syClass('BufferedRWPair', [BufferedIOBase], {}, 'io'),
+    FileIO: _syClass('FileIO', [RawIOBase], {}, 'io'),
+    text_encoding: (enc, stacklevel = 2) => enc ?? 'utf-8',
+    IncrementalNewlineDecoder: _syClass('IncrementalNewlineDecoder', [], { __init__(self, decoder, translate) { self.decoder = decoder; self.translate = translate; return null; }, decode(self, input, final = false) { const t = self.decoder ? self.decoder.decode(input, final) : String(input); return self.translate ? t.replace(/\r\n?/g, '\n') : t; } }, 'io'),
+  });
+}
+
+// ── collections: UserDict, UserList, UserString (wrappers subclasses build on) ──
+{
+  const c = adderModules.collections;
+  const d = (self) => self.data;
+  c.UserDict = _syClass('UserDict', [], {
+    __init__(self, ...a) { const kw = _syKw(a); const init = a.length ? a[0] : null; self.data = new PyDict(); if (init !== null && init !== undefined) adderGetAttr(self, 'update')(init); if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') adderGetAttr(self, '__setitem__')(k, v); return null; },
+    __len__(self) { return d(self).size; },
+    __getitem__(self, k) { if (d(self).has(k)) return d(self).get(k); const m = self.__missing__; if (typeof m === 'function') return m.call(self, k); throw new AdderError('KeyError', pyRepr(k)); },
+    __setitem__(self, k, v) { d(self).set(k, v); return null; },
+    __delitem__(self, k) { if (!d(self).delete(k)) throw new AdderError('KeyError', pyRepr(k)); return null; },
+    __iter__(self) { return [...d(self).keys()][Symbol.iterator](); },
+    __contains__(self, k) { return d(self).has(k); },
+    __repr__(self) { return pyRepr(d(self)); },
+    __eq__(self, o) { return pyEq(d(self), o && o.data instanceof Map ? o.data : o); },
+    keys(self) { return [...d(self).keys()]; }, values(self) { return [...d(self).values()]; }, items(self) { return [...d(self).entries()].map((e) => mkTuple(e)); },
+    get(self, k, dflt = null) { return d(self).has(k) ? d(self).get(k) : dflt; },
+    pop(self, k, ...dflt) { if (d(self).has(k)) { const v = d(self).get(k); d(self).delete(k); return v; } if (dflt.length) return dflt[0]; throw new AdderError('KeyError', pyRepr(k)); },
+    setdefault(self, k, dflt = null) { if (!d(self).has(k)) adderGetAttr(self, '__setitem__')(k, dflt); return d(self).get(k); },
+    update(self, other = null, ...a) {
+      const kw = _syKw(a); const set = adderGetAttr(self, '__setitem__');
+      if (other !== null && other !== undefined) {
+        const src = other && other.data instanceof Map ? other.data : other;
+        const entries = src instanceof Map ? [...src] : (Array.isArray(src) ? src.map((p) => [p[0], p[1]]) : Object.entries(src));
+        for (const [k, v] of entries) set(k, v);
+      }
+      if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') set(k, v);
+      return null;
+    },
+    clear(self) { d(self).clear(); return null; },
+    copy(self) { const n = typeOf(self)(); n.data = new PyDict(d(self)); return n; },
+  }, 'collections');
+  c.UserList = _syClass('UserList', [], {
+    __init__(self, init = null) { self.data = init === null || init === undefined ? [] : [...pyIter(init && init.data ? init.data : init)]; return null; },
+    __len__(self) { return self.data.length; }, __getitem__(self, i) { return pyGetItem(self.data, i); },
+    __setitem__(self, i, v) { self.data[i < 0 ? self.data.length + i : i] = v; return null; },
+    __delitem__(self, i) { self.data.splice(i < 0 ? self.data.length + i : i, 1); return null; },
+    __iter__(self) { return self.data[Symbol.iterator](); }, __contains__(self, v) { return self.data.some((x) => pyEq(x, v) === true); },
+    __repr__(self) { return pyRepr(self.data); }, __eq__(self, o) { return pyEq(self.data, o && Array.isArray(o.data) ? o.data : o); },
+    __add__(self, o) { const n = typeOf(self)(); n.data = [...self.data, ...pyIter(o && o.data ? o.data : o)]; return n; },
+    append(self, v) { self.data.push(v); return null; }, extend(self, it) { for (const v of pyIter(it && it.data ? it.data : it)) self.data.push(v); return null; },
+    insert(self, i, v) { self.data.splice(i, 0, v); return null; }, pop(self, i = -1) { const k = i < 0 ? self.data.length + i : i; if (k < 0 || k >= self.data.length) throw new AdderError('IndexError', 'pop index out of range'); return self.data.splice(k, 1)[0]; },
+    remove(self, v) { const i = self.data.findIndex((x) => pyEq(x, v) === true); if (i < 0) throw new AdderError('ValueError', 'list.remove(x): x not in list'); self.data.splice(i, 1); return null; },
+    index(self, v) { const i = self.data.findIndex((x) => pyEq(x, v) === true); if (i < 0) throw new AdderError('ValueError', `${pyRepr(v)} is not in list`); return i; },
+    count(self, v) { return self.data.filter((x) => pyEq(x, v) === true).length; },
+    reverse(self) { self.data.reverse(); return null; }, clear(self) { self.data.length = 0; return null; },
+    copy(self) { const n = typeOf(self)(); n.data = [...self.data]; return n; },
+    sort(self, ...a) { return adderGetAttr(self.data, 'sort')(...a); },
+  }, 'collections');
+  c.UserString = _syClass('UserString', [], {
+    __init__(self, seq) { self.data = typeof seq === 'string' ? seq : seq && typeof seq.data === 'string' ? seq.data : pyStr(seq); return null; },
+    __str__(self) { return self.data; }, __repr__(self) { return pyRepr(self.data); }, __len__(self) { return self.data.length; },
+    __eq__(self, o) { return self.data === (o && typeof o.data === 'string' ? o.data : o); }, __contains__(self, s) { return self.data.includes(s && s.data ? s.data : s); },
+    __add__(self, o) { return typeOf(self)(self.data + (o && typeof o.data === 'string' ? o.data : String(o))); },
+    __getitem__(self, i) { return typeOf(self)(self.data[i < 0 ? self.data.length + i : i]); },
+    __iter__(self) { return self.data[Symbol.iterator](); }, __hash__(self) { return _pyHash(self.data); },
+  }, 'collections');
+  // a str method a UserString doesn't define: the data's, wrapped back when it returns a str
+  c.UserString.prototype.__getattr__ = function (name) { const m = adderGetAttr(this.data, name); return typeof m === 'function' ? (...a) => { const r = m(...a); return typeof r === 'string' ? typeOf(this)(r) : r; } : m; };
+}
+
+// ── importlib: specs, loaders, machinery ──
+{
+  const il = adderModules.importlib;
+  const ModuleSpec = _syClass('ModuleSpec', [], {
+    __init__(self, name, loader, ...a) {
+      const { origin, loader_state, is_package } = _syArgs(a, ['origin', 'loader_state', 'is_package'], { origin: null, loader_state: null, is_package: null });
+      Object.assign(self, { name, loader, origin, loader_state, submodule_search_locations: is_package ? [] : null, cached: null, has_location: !!origin });
+      self.parent = is_package ? name : String(name).includes('.') ? String(name).slice(0, String(name).lastIndexOf('.')) : '';
+      return null;
+    },
+    __repr__(self) { return `ModuleSpec(name=${pyRepr(self.name)}, loader=${pyRepr(self.loader)}, origin=${pyRepr(self.origin)})`; },
+  }, 'importlib.machinery');
+  const Loader = _syClass('Loader', [], {
+    create_module(self, spec) { return null; },
+    exec_module(self, module) { throw new AdderError('ImportError', 'exec_module() not implemented'); },
+    load_module(self, fullname) { throw new AdderError('ImportError', 'load_module() not implemented'); },
+  }, 'importlib.abc');
+  const Finder = _syClass('MetaPathFinder', [], { find_spec() { return null; }, invalidate_caches() { return null; } }, 'importlib.abc');
+  const SourceFileLoader = _syClass('SourceFileLoader', [Loader], {
+    __init__(self, fullname, path) { self.name = fullname; self.path = path; return null; },
+    get_filename(self) { return self.path; },
+  }, 'importlib.machinery');
+  Object.assign(il.util, {
+    spec_from_loader: (name, loader, ...a) => { const { origin, is_package } = _syArgs(a, ['origin', 'is_package'], { origin: null, is_package: null }); return ModuleSpec(name, loader, { _kw: true, origin, is_package }); },
+    spec_from_file_location: (name, location = null, ...a) => ModuleSpec(name, SourceFileLoader(name, location), { _kw: true, origin: location }),
+    // module_from_spec: a fresh module object for the spec (its loader may build one itself)
+    module_from_spec: (spec) => {
+      const made = spec.loader && typeof adderGetAttr(spec.loader, 'create_module') === 'function' ? adderGetAttr(spec.loader, 'create_module')(spec) : null;
+      const finish = (m) => { m = m || { __adderModule__: true }; Object.assign(m, { __name__: spec.name, __spec__: spec, __loader__: spec.loader, __package__: spec.parent, __file__: spec.origin }); return m; };
+      return _syIsThen(made) ? made.then(finish) : finish(made);
+    },
+    LazyLoader: _syClass('LazyLoader', [Loader], { __init__(self, loader) { self.loader = loader; return null; } }, 'importlib.util'),
+    MAGIC_NUMBER: new Uint8Array([0xcb, 0x0d, 0x0d, 0x0a]),
+    cache_from_source: (p) => String(p) + 'c', source_from_cache: (p) => String(p).replace(/c$/, ''),
+  });
+  il.machinery = _syModule('importlib.machinery', {
+    ModuleSpec, SourceFileLoader, SourcelessFileLoader: SourceFileLoader, ExtensionFileLoader: SourceFileLoader,
+    FileFinder: Finder, PathFinder: Finder, BuiltinImporter: Finder, FrozenImporter: Finder,
+    SOURCE_SUFFIXES: ['.py'], BYTECODE_SUFFIXES: ['.pyc'], EXTENSION_SUFFIXES: [], all_suffixes: () => ['.py'],
+  });
+  il.abc = _syModule('importlib.abc', { Loader, MetaPathFinder: Finder, PathEntryFinder: Finder, Finder, ResourceReader: _syClass('ResourceReader', [], {}, 'importlib.abc'), Traversable: _syClass('Traversable', [], {}, 'importlib.abc'), InspectLoader: Loader, ExecutionLoader: Loader, FileLoader: SourceFileLoader, SourceLoader: SourceFileLoader });
+  adderModules['importlib.machinery'] = il.machinery;
+  adderModules['importlib.abc'] = il.abc;
+  adderModules['importlib.util'] = il.util;
+  adderModules['importlib.resources'] = il.resources;
+  adderModules['importlib.metadata'] = il.metadata;
+}
+
+// ── sysconfig, marshal ──
+adderModules.sysconfig = _syModule('sysconfig', {
+  get_config_var: (n) => ({ EXT_SUFFIX: '.so', SOABI: null, Py_GIL_DISABLED: 0, Py_DEBUG: 0, SIZEOF_VOID_P: 8, py_version_nodot: '312', VERSION: '3.12', prefix: '/usr', exec_prefix: '/usr', LIBDIR: '/usr/lib' })[n] ?? null,
+  get_config_vars: (...n) => (n.length ? n.map((k) => adderModules.sysconfig.get_config_var(k)) : new PyDict([['VERSION', '3.12'], ['EXT_SUFFIX', '.so']])),
+  get_platform: () => 'auditable', get_python_version: () => '3.12', get_default_scheme: () => 'posix_prefix', get_scheme_names: () => mkTuple(['posix_prefix']),
+  get_path: (n) => ({ stdlib: '/usr/lib/python', purelib: '/lib', platlib: '/lib', scripts: '/usr/bin', data: '/usr' })[n] ?? null,
+  get_paths: () => new PyDict([['stdlib', '/usr/lib/python'], ['purelib', '/lib'], ['platlib', '/lib'], ['scripts', '/usr/bin'], ['data', '/usr']]),
+  is_python_build: () => false,
+});
+// marshal: there's no bytecode here to serialise — the module exists (jinja2's bytecode cache
+// imports it); using it raises
+adderModules.marshal = _syModule('marshal', {
+  version: 4,
+  dumps: () => { throw new AdderError('ValueError', 'marshal is not supported (no bytecode here)'); },
+  loads: () => { throw new AdderError('ValueError', 'marshal is not supported (no bytecode here)'); },
+  dump: () => { throw new AdderError('ValueError', 'marshal is not supported (no bytecode here)'); },
+  load: () => { throw new AdderError('ValueError', 'marshal is not supported (no bytecode here)'); },
+});
+
+// ── ast: literal_eval (a safe evaluator for Python literals over adder's own parser) ──
+{
+  // the literal forms ast.literal_eval accepts — strings, bytes, numbers, tuples, lists, dicts,
+  // sets, booleans, None, and unary +/- on numbers / a complex sum — evaluated from the parse tree
+  const parseExpr = _adderParseExpr;
+  const bad = () => new AdderError('ValueError', 'malformed node or string');
+  const lit = (n) => {
+    switch (n && n.type) {
+      case 'Constant': return n.value;
+      case 'Bytes': { const b = new Uint8Array(n.value.length); for (let i = 0; i < n.value.length; i++) b[i] = n.value.charCodeAt(i); return b; }
+      case 'Name': if (n.id === 'True') return true; if (n.id === 'False') return false; if (n.id === 'None') return null; if (n.id === 'Ellipsis') throw bad(); throw bad();
+      case 'Tuple': return mkTuple(n.elts.map(lit));
+      case 'List': return n.elts.map(lit);
+      case 'Set': return new PySet(n.elts.map(lit));
+      case 'Dict': { const d = new PyDict(); n.keys.forEach((k, i) => { if (k === null) throw bad(); d.set(lit(k), lit(n.values[i])); }); return d; }
+      case 'UnaryOp': { const v = lit(n.operand); if (typeof v !== 'number') throw bad(); if (n.op === '-' || n.op === 'USub') return -v; if (n.op === '+' || n.op === 'UAdd') return v; throw bad(); }
+      case 'Call': if (n.func && n.func.type === 'Name' && n.func.id === 'set' && !n.args.length) return new PySet(); throw bad();
+      default: throw bad();
+    }
+  };
+  adderModules.ast = _syModule('ast', {
+    literal_eval: (node) => {
+      if (typeof node === 'string') {
+        let tree;
+        try { tree = parseExpr(node.trim()); } catch (e) { throw new AdderError('SyntaxError', String(e && e.message || e)); }
+        return lit(tree);
+      }
+      return lit(node);
+    },
+    parse: () => { throw new AdderError('NotImplementedError', 'ast.parse: adder does not expose CPython AST nodes'); },
+    PyCF_ONLY_AST: 1024, PyCF_TYPE_COMMENTS: 4096,
+  });
+}
+
+// ── configparser ──
+{
+  const Error_ = makeExcType('configparser.Error', 'Exception');
+  for (const n of ['NoSectionError', 'NoOptionError', 'DuplicateSectionError', 'ParsingError', 'InterpolationError']) makeExcType(n, 'configparser.Error');
+  makeExcType('MissingSectionHeaderError', 'ParsingError');
+  const BOOL = { '1': true, yes: true, true: true, on: true, '0': false, no: false, false: false, off: false };
+  const interp = (self, sec, val, depth = 0) => {
+    if (self._interp === false || typeof val !== 'string' || depth > 10) return val;
+    return val.replace(/%\((\w+)\)s|%%/g, (m, k) => (m === '%%' ? '%' : interp(self, sec, self._get(sec, k.toLowerCase()), depth + 1)));
+  };
+  const ConfigParser = _syClass('ConfigParser', [], {
+    __init__(self, ...a) {
+      const { defaults, interpolation } = _syArgs(a, ['defaults', 'dict_type', 'allow_no_value'], { defaults: null });
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a[a.length - 1] : {};
+      self._sections = new Map(); self._defaults = new Map();
+      self._interp = kw.interpolation === null ? false : true;
+      if (defaults) for (const [k, v] of (defaults instanceof Map ? defaults : Object.entries(defaults))) self._defaults.set(String(k).toLowerCase(), v);
+      return null;
+    },
+    _get(self, sec, opt) { const s = self._sections.get(sec); if (s && s.has(opt)) return s.get(opt); if (self._defaults.has(opt)) return self._defaults.get(opt); throw new AdderError('NoOptionError', `No option ${pyRepr(opt)} in section: ${pyRepr(sec)}`); },
+    read_string(self, text, source = '<string>') {
+      let sec = null, last = null;
+      for (const raw of String(text).split(/\r?\n/)) {
+        if (/^\s*([#;].*)?$/.test(raw)) continue;
+        if (/^\s/.test(raw) && last) { const s = sec === 'DEFAULT' ? self._defaults : self._sections.get(sec); s.set(last, s.get(last) + '\n' + raw.trim()); continue; }
+        const h = /^\[([^\]]+)\]\s*$/.exec(raw);
+        if (h) { sec = h[1]; if (sec !== 'DEFAULT' && !self._sections.has(sec)) self._sections.set(sec, new Map()); last = null; continue; }
+        if (sec === null) throw new AdderError('MissingSectionHeaderError', `File contains no section headers.\nfile: ${pyRepr(source)}, line: 1\n${pyRepr(raw)}`);
+        const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(raw);
+        if (!m) continue;
+        const key = m[1].toLowerCase();
+        (sec === 'DEFAULT' ? self._defaults : self._sections.get(sec)).set(key, m[2].trim());
+        last = key;
+      }
+      return null;
+    },
+    read(self, filenames) { return [...(typeof filenames === 'string' ? [filenames] : pyIter(filenames))].filter(() => false); },
+    read_dict(self, d) { for (const [s, opts] of (d instanceof Map ? d : Object.entries(d))) { if (!self._sections.has(s)) self._sections.set(s, new Map()); for (const [k, v] of (opts instanceof Map ? opts : Object.entries(opts))) self._sections.get(s).set(String(k).toLowerCase(), String(v)); } return null; },
+    sections(self) { return [...self._sections.keys()]; },
+    has_section(self, s) { return self._sections.has(s); },
+    add_section(self, s) { if (self._sections.has(s)) throw new AdderError('DuplicateSectionError', `Section ${pyRepr(s)} already exists`); self._sections.set(s, new Map()); return null; },
+    has_option(self, s, o) { const sec = self._sections.get(s); return !!(sec && sec.has(String(o).toLowerCase())) || self._defaults.has(String(o).toLowerCase()); },
+    options(self, s) { const sec = self._sections.get(s); if (!sec) throw new AdderError('NoSectionError', `No section: ${pyRepr(s)}`); return [...new Set([...sec.keys(), ...self._defaults.keys()])]; },
+    get(self, s, o, ...a) {
+      const kw = _syKw(a) || {};
+      const opt = String(o).toLowerCase();
+      if (!self._sections.has(s) && s !== 'DEFAULT') { if (Object.hasOwn(kw, 'fallback')) return kw.fallback; throw new AdderError('NoSectionError', `No section: ${pyRepr(s)}`); }
+      try { const v = self._get(s, opt); return kw.raw ? v : interp(self, s, v); } catch (e) { if (Object.hasOwn(kw, 'fallback')) return kw.fallback; throw e; }
+    },
+    getint(self, s, o, ...a) { const v = adderGetAttr(self, 'get')(s, o, ...a); return v === null || v === undefined || typeof v === 'number' ? v : parseInt(v, 10); },
+    getfloat(self, s, o, ...a) { const v = adderGetAttr(self, 'get')(s, o, ...a); return v === null || v === undefined || typeof v === 'number' ? v : parseFloat(v); },
+    getboolean(self, s, o, ...a) { const v = adderGetAttr(self, 'get')(s, o, ...a); if (typeof v === 'boolean' || v === null || v === undefined) return v; const b = BOOL[String(v).toLowerCase()]; if (b === undefined) throw new AdderError('ValueError', `Not a boolean: ${v}`); return b; },
+    set(self, s, o, v = null) { const sec = s === 'DEFAULT' ? self._defaults : self._sections.get(s); if (!sec) throw new AdderError('NoSectionError', `No section: ${pyRepr(s)}`); sec.set(String(o).toLowerCase(), v); return null; },
+    remove_option(self, s, o) { const sec = self._sections.get(s); return !!(sec && sec.delete(String(o).toLowerCase())); },
+    remove_section(self, s) { return self._sections.delete(s); },
+    items(self, s = undefined) {
+      if (s === undefined) return [...self._sections.keys()].map((k) => mkTuple([k, k]));
+      const sec = self._sections.get(s); if (!sec) throw new AdderError('NoSectionError', `No section: ${pyRepr(s)}`);
+      return [...new Map([...self._defaults, ...sec])].map(([k]) => mkTuple([k, adderGetAttr(self, 'get')(s, k)]));
+    },
+    defaults(self) { return new PyDict(self._defaults); },
+    __contains__(self, s) { return s === 'DEFAULT' || self._sections.has(s); },
+    __getitem__(self, s) {
+      if (s !== 'DEFAULT' && !self._sections.has(s)) throw new AdderError('KeyError', pyRepr(s));
+      const cp = self;
+      return { __adderClass__: 'SectionProxy', name: s,
+        __getitem__: (k) => { try { return adderGetAttr(cp, 'get')(s, k); } catch { throw new AdderError('KeyError', pyRepr(k)); } },
+        __setitem__: (k, v) => adderGetAttr(cp, 'set')(s, k, v), __contains__: (k) => adderGetAttr(cp, 'has_option')(s, k),
+        get: (k, fb = null) => adderGetAttr(cp, 'get')(s, k, { _kw: true, fallback: fb }),
+        getint: (k, fb = null) => adderGetAttr(cp, 'getint')(s, k, { _kw: true, fallback: fb }),
+        getboolean: (k, fb = null) => adderGetAttr(cp, 'getboolean')(s, k, { _kw: true, fallback: fb }),
+        keys: () => adderGetAttr(cp, 'options')(s), __iter__: () => adderGetAttr(cp, 'options')(s)[Symbol.iterator]() };
+    },
+    write(self, fp) {
+      let out = '';
+      if (self._defaults.size) { out += '[DEFAULT]\n'; for (const [k, v] of self._defaults) out += `${k} = ${v}\n`; out += '\n'; }
+      for (const [s, sec] of self._sections) { out += `[${s}]\n`; for (const [k, v] of sec) out += v === null ? `${k}\n` : `${k} = ${String(v).replace(/\n/g, '\n\t')}\n`; out += '\n'; }
+      return adderGetAttr(fp, 'write')(out);
+    },
+  }, 'configparser');
+  adderModules.configparser = _syModule('configparser', {
+    ConfigParser, RawConfigParser: ConfigParser, SafeConfigParser: ConfigParser,
+    Error: Error_, NoSectionError: _typeObjects.NoSectionError, NoOptionError: _typeObjects.NoOptionError,
+    DuplicateSectionError: _typeObjects.DuplicateSectionError, ParsingError: _typeObjects.ParsingError,
+    MissingSectionHeaderError: _typeObjects.MissingSectionHeaderError, InterpolationError: _typeObjects.InterpolationError,
+    BasicInterpolation: () => ({}), ExtendedInterpolation: () => ({}), Interpolation: () => ({}),
+    DEFAULTSECT: 'DEFAULT', MAX_INTERPOLATION_DEPTH: 10,
+  });
+}
+
+// ── email: errors, utils, message, parser — what HTTP and packaging metadata code uses ──
+{
+  const errNames = [['MessageError', 'Exception'], ['MessageParseError', 'MessageError'], ['HeaderParseError', 'MessageParseError'],
+    ['BoundaryError', 'MessageParseError'], ['MultipartConversionError', 'MessageError'], ['CharsetError', 'MessageError'],
+    ['MessageDefect', 'ValueError'], ['NoBoundaryInMultipartDefect', 'MessageDefect'], ['StartBoundaryNotFoundDefect', 'MessageDefect'],
+    ['CloseBoundaryNotFoundDefect', 'MessageDefect'], ['FirstHeaderLineIsContinuationDefect', 'MessageDefect'],
+    ['MisplacedEnvelopeHeaderDefect', 'MessageDefect'], ['MissingHeaderBodySeparatorDefect', 'MessageDefect'],
+    ['MultipartInvariantViolationDefect', 'MessageDefect'], ['InvalidMultipartContentTransferEncodingDefect', 'MessageDefect'],
+    ['UndecodableBytesDefect', 'MessageDefect'], ['InvalidBase64PaddingDefect', 'MessageDefect'],
+    ['InvalidBase64CharactersDefect', 'MessageDefect'], ['HeaderDefect', 'MessageDefect'], ['InvalidHeaderDefect', 'HeaderDefect'],
+    ['HeaderMissingRequiredValue', 'HeaderDefect'], ['NonPrintableDefect', 'HeaderDefect'], ['ObsoleteHeaderDefect', 'HeaderDefect'],
+    ['NonASCIILocalPartDefect', 'HeaderDefect']];
+  const errors = _syModule('email.errors', {});
+  for (const [n, p] of errNames) errors[n] = makeExcType(n, p);
+  const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const formatdate = (...a) => {
+    const { timeval, usegmt } = _syArgs(a, ['timeval', 'localtime', 'usegmt'], { timeval: null, localtime: false, usegmt: false });
+    const d = new Date(timeval === null ? Date.now() : timeval * 1000);
+    const p2 = (x) => String(x).padStart(2, '0');
+    return `${DAYS[(d.getUTCDay() + 6) % 7]}, ${p2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())} ${usegmt ? 'GMT' : '-0000'}`;
+  };
+  const parsedateTz = (s) => {
+    const m = /(\d{1,2})\s+(\w{3})\s+(\d{2,4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([+-]\d{4}|GMT|UT|UTC|Z)?/i.exec(String(s));
+    if (!m) return null;
+    let y = +m[3]; if (y < 100) y += y < 50 ? 2000 : 1900;
+    const mon = MONTHS.findIndex((x) => x.toLowerCase() === m[2].toLowerCase()) + 1;
+    if (!mon) return null;
+    const tz = !m[7] || /^(GMT|UT|UTC|Z)$/i.test(m[7]) ? 0 : (m[7][0] === '-' ? -1 : 1) * (parseInt(m[7].slice(1, 3), 10) * 3600 + parseInt(m[7].slice(3), 10) * 60);
+    return mkTuple([y, mon, +m[1], +m[4], +m[5], +(m[6] || 0), 0, 1, -1, tz]);
+  };
+  const utils = _syModule('email.utils', {
+    formatdate, format_datetime: (dt) => formatdate(adderGetAttr(dt, 'timestamp')(), false, true),
+    parsedate_tz: parsedateTz, parsedate: (s) => { const t = parsedateTz(s); return t ? mkTuple(t.slice(0, 9)) : null; },
+    mktime_tz: (t) => Date.UTC(t[0], t[1] - 1, t[2], t[3], t[4], t[5]) / 1000 - (t[9] || 0),
+    parseaddr: (a) => { const m = /^\s*(?:"?([^"<]*?)"?\s*<([^>]+)>|(\S+@\S+))\s*$/.exec(String(a)); return m ? mkTuple([m[1] ? m[1].trim() : '', m[2] || m[3]]) : mkTuple(['', '']); },
+    formataddr: (pair) => { const [name, addr] = [...pyIter(pair)]; return name ? `${/[(),.:;<>@[\]"]/.test(name) ? `"${name}"` : name} <${addr}>` : addr; },
+    quote: (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"'), unquote: (s) => (/^".*"$/.test(s) || /^<.*>$/.test(s) ? s.slice(1, -1).replace(/\\(.)/g, '$1') : s),
+    make_msgid: () => `<${Date.now()}.${Math.random().toString(36).slice(2)}@localhost>`,
+    getaddresses: (vals) => [...pyIter(vals)].flatMap((v) => String(v).split(',')).map((x) => utils.parseaddr(x)),
+    collapse_rfc2231_value: (v) => (Array.isArray(v) ? v[2] : v), decode_rfc2231: (s) => mkTuple([null, null, s]), encode_rfc2231: (s) => s,
+  });
+  // Message: case-insensitive, ordered, repeatable headers + a payload
+  const Message = _syClass('Message', [], {
+    __init__(self, policy = null) { self._headers = []; self._payload = null; self.policy = policy; self.defects = []; self.preamble = null; self.epilogue = null; self._unixfrom = null; return null; },
+    __getitem__(self, k) { const h = self._headers.find(([n]) => n.toLowerCase() === String(k).toLowerCase()); return h ? h[1] : null; },
+    __setitem__(self, k, v) { self._headers.push([String(k), v]); return null; },
+    __delitem__(self, k) { self._headers = self._headers.filter(([n]) => n.toLowerCase() !== String(k).toLowerCase()); return null; },
+    __contains__(self, k) { return self._headers.some(([n]) => n.toLowerCase() === String(k).toLowerCase()); },
+    __len__(self) { return self._headers.length; },
+    __iter__(self) { return self._headers.map(([n]) => n)[Symbol.iterator](); },
+    __str__(self) { return adderGetAttr(self, 'as_string')(); },
+    keys(self) { return self._headers.map(([n]) => n); }, values(self) { return self._headers.map(([, v]) => v); },
+    items(self) { return self._headers.map(([n, v]) => mkTuple([n, v])); },
+    get(self, k, failobj = null) { const v = adderGetAttr(self, '__getitem__')(k); return v === null ? failobj : v; },
+    get_all(self, k, failobj = null) { const vs = self._headers.filter(([n]) => n.toLowerCase() === String(k).toLowerCase()).map(([, v]) => v); return vs.length ? vs : failobj; },
+    add_header(self, name, value, ...a) { const kw = _syKw(a) || {}; const params = Object.entries(kw).filter(([k]) => k !== '_kw').map(([k, v]) => `; ${k.replace(/_/g, '-')}="${v}"`).join(''); self._headers.push([name, value + params]); return null; },
+    replace_header(self, name, value) { const i = self._headers.findIndex(([n]) => n.toLowerCase() === String(name).toLowerCase()); if (i < 0) throw new AdderError('KeyError', pyRepr(name)); self._headers[i] = [self._headers[i][0], value]; return null; },
+    get_payload(self, i = null, decode = false) { return self._payload; },
+    set_payload(self, p, charset = null) { self._payload = p; return null; },
+    is_multipart(self) { return Array.isArray(self._payload); },
+    get_content_type(self) { const v = adderGetAttr(self, 'get')('content-type'); return v ? String(v).split(';')[0].trim().toLowerCase() : 'text/plain'; },
+    get_content_maintype(self) { return adderGetAttr(self, 'get_content_type')().split('/')[0]; },
+    get_content_subtype(self) { return adderGetAttr(self, 'get_content_type')().split('/')[1]; },
+    get_param(self, param, failobj = null, header = 'content-type') {
+      const v = adderGetAttr(self, 'get')(header); if (!v) return failobj;
+      for (const part of String(v).split(';').slice(1)) { const m = /^\s*([^=\s]+)\s*=\s*"?([^"]*)"?\s*$/.exec(part); if (m && m[1].toLowerCase() === String(param).toLowerCase()) return m[2]; }
+      return failobj;
+    },
+    get_params(self, failobj = null, header = 'content-type') { const v = adderGetAttr(self, 'get')(header); if (!v) return failobj; return String(v).split(';').map((p, i) => { const m = /^\s*([^=]+?)\s*(?:=\s*"?([^"]*)"?)?\s*$/.exec(p); return mkTuple([m ? m[1] : p, i === 0 ? '' : (m && m[2]) || '']); }); },
+    get_content_charset(self, failobj = null) { const c = adderGetAttr(self, 'get_param')('charset'); return c ? String(c).toLowerCase() : failobj; },
+    get_filename(self, failobj = null) { return adderGetAttr(self, 'get_param')('filename', failobj, 'content-disposition'); },
+    get_boundary(self, failobj = null) { return adderGetAttr(self, 'get_param')('boundary', failobj); },
+    walk: function* (self) { yield self; if (Array.isArray(self._payload)) for (const p of self._payload) yield* adderGetAttr(p, 'walk')(); },
+    as_string(self) { return self._headers.map(([n, v]) => `${n}: ${v}`).join('\n') + '\n\n' + (typeof self._payload === 'string' ? self._payload : ''); },
+    get_unixfrom(self) { return self._unixfrom; }, set_unixfrom(self, u) { self._unixfrom = u; return null; },
+  }, 'email.message');
+  const parseHeaders = (text, msg) => {
+    const lines = String(text).split(/\r?\n/);
+    let i = 0;
+    for (; i < lines.length; i++) {
+      const l = lines[i];
+      if (l === '') { i++; break; }
+      if (/^[ \t]/.test(l) && msg._headers.length) { const last = msg._headers[msg._headers.length - 1]; last[1] += ' ' + l.trim(); continue; }
+      const m = /^([^:\s][^:]*):\s?(.*)$/.exec(l);
+      if (m) msg._headers.push([m[1], m[2]]);
+      else { i++; break; }
+    }
+    return lines.slice(i).join('\n');
+  };
+  const Parser = _syClass('Parser', [], {
+    __init__(self, _class = null, ...a) { self._class = _class || Message; return null; },
+    parsestr(self, text, headersonly = false) { const msg = self._class(); const body = parseHeaders(text, msg); msg._payload = headersonly ? null : body; return msg; },
+    parse(self, fp, headersonly = false) { const t = adderGetAttr(fp, 'read')(); return _syIsThen(t) ? t.then((x) => adderGetAttr(self, 'parsestr')(x, headersonly)) : adderGetAttr(self, 'parsestr')(t, headersonly); },
+  }, 'email.parser');
+  const BytesParser = _syClass('BytesParser', [Parser], { parsebytes(self, b, headersonly = false) { return adderGetAttr(self, 'parsestr')(pyDecodePartial(b, 'latin-1', 'strict', true).text, headersonly); } }, 'email.parser');
+  const FeedParser = _syClass('FeedParser', [], {
+    __init__(self, _factory = null, ...a) { self._buf = ''; self._factory = _factory || Message; return null; },
+    feed(self, data) { self._buf += String(data); return null; },
+    close(self) { return Parser(self._factory).parsestr(self._buf); },
+  }, 'email.feedparser');
+  const policyObj = (name) => ({ __adderClass__: 'Policy', name, max_line_length: 78, linesep: '\n', raise_on_defect: false, clone: function (...a) { const kw = _syKw(a) || {}; return Object.assign({ ...this }, Object.fromEntries(Object.entries(kw).filter(([k]) => k !== '_kw'))); } });
+  const policy = _syModule('email.policy', { default: policyObj('default'), compat32: policyObj('compat32'), SMTP: policyObj('SMTP'), SMTPUTF8: policyObj('SMTPUTF8'), HTTP: policyObj('HTTP'), strict: policyObj('strict'), Policy: Object, EmailPolicy: Object, Compat32: Object });
+  const Header = _syClass('Header', [], {
+    __init__(self, s = null, charset = null) { self._chunks = s === null ? [] : [[s, charset]]; return null; },
+    append(self, s, charset = null) { self._chunks.push([s, charset]); return null; },
+    encode(self) { return self._chunks.map(([s]) => s).join(' '); }, __str__(self) { return adderGetAttr(self, 'encode')(); },
+  }, 'email.header');
+  const decode_header = (h) => {
+    const out = [];
+    const re = /=\?([^?]+)\?([bBqQ])\?([^?]*)\?=/g;
+    let last = 0, m, plain = true;
+    while ((m = re.exec(h))) {
+      plain = false;
+      if (m.index > last && h.slice(last, m.index).trim()) out.push(mkTuple([pyEncode(h.slice(last, m.index), 'latin-1'), null]));
+      let bytes;
+      if (m[2].toLowerCase() === 'b') { const bin = atob(m[3]); bytes = new Uint8Array([...bin].map((c) => c.charCodeAt(0))); }
+      else { const t = m[3].replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (x, hx) => String.fromCharCode(parseInt(hx, 16))); bytes = pyEncode(t, 'latin-1'); }
+      out.push(mkTuple([bytes, m[1].toLowerCase()]));
+      last = re.lastIndex;
+    }
+    if (plain) return [mkTuple([h, null])];
+    if (h.slice(last).trim()) out.push(mkTuple([pyEncode(h.slice(last), 'latin-1'), null]));
+    return out;
+  };
+  const header = _syModule('email.header', { Header, decode_header, make_header: (parts) => { const h = Header(); for (const [b, cs] of pyIter(parts)) adderGetAttr(h, 'append')(b instanceof Uint8Array ? pyDecodePartial(b, cs || 'latin-1', 'replace', true).text : b, cs); return h; } });
+  const email = _syModule('email', {
+    errors, utils, message: _syModule('email.message', { Message, EmailMessage: Message }),
+    parser: _syModule('email.parser', { Parser, BytesParser, HeaderParser: Parser, BytesHeaderParser: BytesParser }),
+    feedparser: _syModule('email.feedparser', { FeedParser, BytesFeedParser: FeedParser }), policy, header,
+    message_from_string: (s, ...a) => Parser().parsestr(s), message_from_bytes: (b, ...a) => BytesParser().parsebytes(b),
+    charset: _syModule('email.charset', { Charset: (name = 'us-ascii') => ({ __adderClass__: 'Charset', input_charset: name, output_charset: name, __str__: () => name }) }),
+  });
+  adderModules.email = email;
+  for (const k of ['errors', 'utils', 'message', 'parser', 'feedparser', 'policy', 'header', 'charset']) adderModules[`email.${k}`] = email[k];
+}
+
+// ── punycode (RFC 3492): the codec idna uses for xn-- labels ──
+{
+  const base = 36, tmin = 1, tmax = 26, skew = 38, damp = 700, initialBias = 72, initialN = 128;
+  const adapt = (delta, numPoints, first) => { delta = first ? Math.floor(delta / damp) : delta >> 1; delta += Math.floor(delta / numPoints); let k = 0; while (delta > ((base - tmin) * tmax) >> 1) { delta = Math.floor(delta / (base - tmin)); k += base; } return k + Math.floor(((base - tmin + 1) * delta) / (delta + skew)); };
+  const digit = (d) => String.fromCharCode(d + 22 + 75 * (d < 26));
+  const encode = (input) => {
+    const cps = [...String(input)].map((c) => c.codePointAt(0));
+    let out = cps.filter((c) => c < 0x80).map((c) => String.fromCharCode(c)).join('');
+    const b = out.length; let h = b;
+    if (b) out += '-';
+    let n = initialN, delta = 0, bias = initialBias;
+    while (h < cps.length) {
+      const m = Math.min(...cps.filter((c) => c >= n));
+      delta += (m - n) * (h + 1); n = m;
+      for (const c of cps) {
+        if (c < n) delta++;
+        if (c === n) {
+          let q = delta;
+          for (let k = base; ; k += base) { const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias; if (q < t) break; out += digit(t + ((q - t) % (base - t))); q = Math.floor((q - t) / (base - t)); }
+          out += digit(q); bias = adapt(delta, h + 1, h === b); delta = 0; h++;
+        }
+      }
+      delta++; n++;
+    }
+    return out;
+  };
+  const decode = (input) => {
+    input = String(input);
+    const out = [];
+    const bpos = input.lastIndexOf('-');
+    for (let j = 0; j < (bpos > 0 ? bpos : 0); j++) out.push(input.charCodeAt(j));
+    let n = initialN, bias = initialBias, i = 0;
+    for (let idx = bpos > 0 ? bpos + 1 : 0; idx < input.length;) {
+      const oldi = i; let w = 1;
+      for (let k = base; ; k += base) {
+        if (idx >= input.length) throw new AdderError('UnicodeDecodeError', 'punycode: truncated input');
+        const c = input.charCodeAt(idx++);
+        const dg = c - 48 < 10 ? c - 22 : c - 65 < 26 ? c - 65 : c - 97 < 26 ? c - 97 : base;
+        if (dg >= base) throw new AdderError('UnicodeDecodeError', 'punycode: invalid input');
+        i += dg * w;
+        const t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
+        if (dg < t) break;
+        w *= base - t;
+      }
+      bias = adapt(i - oldi, out.length + 1, oldi === 0);
+      n += Math.floor(i / (out.length + 1)); i %= out.length + 1;
+      out.splice(i++, 0, n);
+    }
+    return String.fromCodePoint(...out);
+  };
+  registerCodec('punycode', {
+    encode: (s) => pyEncode(encode(s), 'ascii'),
+    decode: (b) => decode(pyDecodePartial(b, 'ascii', 'strict', true).text),
+  });
+}
+
+// ── random.Random: a generator with its own state (the module functions share one) ──
+{
+  const rmod = adderModules.random;
+  const seedState = (n) => {
+    if (n === null || n === undefined) n = Math.floor(Math.random() * 4294967296);
+    else if (typeof n === 'string') { let h = 0; for (let i = 0; i < n.length; i++) h = (Math.imul(h, 31) + n.charCodeAt(i)) >>> 0; n = h; }
+    n = Number(n) >>> 0;
+    return [n, n ^ 0x12345678, n ^ 0x9ABCDEF0, n ^ 0xFEDCBA98];
+  };
+  const next = (s) => {
+    const result = (s[0] + s[3]) >>> 0;
+    const t = (s[1] << 9) >>> 0;
+    s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3];
+    s[2] ^= t; s[3] = (s[3] << 11) | (s[3] >>> 21);
+    return result / 4294967296;
+  };
+  const r = (self) => next(self._state);
+  const seq = (x) => (Array.isArray(x) ? x : typeof x === 'string' ? [...x] : [...pyIter(x)]);
+  const randrange = (self, start, stop, step = 1) => {
+    if (stop === undefined || stop === null) { stop = start; start = 0; }
+    const n = Math.ceil((stop - start) / step);
+    if (n <= 0) throw new AdderError('ValueError', `empty range in randrange(${start}, ${stop})`);
+    return start + step * Math.floor(r(self) * n);
+  };
+  const Random = _syClass('Random', [], {
+    VERSION: 3,
+    __init__(self, x = null) { self._state = seedState(x); self._gaussNext = null; return null; },
+    seed(self, a = null) { self._state = seedState(a); self._gaussNext = null; return null; },
+    getstate(self) { return mkTuple([3, mkTuple([...self._state]), self._gaussNext]); },
+    setstate(self, st) { self._state = [...st[1]]; self._gaussNext = st[2]; return null; },
+    random(self) { return r(self); },
+    getrandbits(self, k) { let v = 0; for (let i = 0; i < k; i++) v = v * 2 + (r(self) < 0.5 ? 1 : 0); return v; },
+    randrange(self, start, stop = null, step = 1) { return randrange(self, start, stop, step); },
+    randint(self, a, b) { return a + Math.floor(r(self) * (b - a + 1)); },
+    uniform(self, a, b) { return a + r(self) * (b - a); },
+    triangular(self, low = 0, high = 1, mode = null) {
+      const u = r(self); const c = mode === null ? 0.5 : (mode - low) / (high - low);
+      return u > c ? high + (low - high) * Math.sqrt((1 - u) * (1 - c)) : low + (high - low) * Math.sqrt(u * c);
+    },
+    choice(self, s) { const a = seq(s); if (!a.length) throw new AdderError('IndexError', 'Cannot choose from an empty sequence'); return a[Math.floor(r(self) * a.length)]; },
+    choices(self, population, ...a) {
+      const kw = _syKw(a) || {};
+      const pop = seq(population), n = kw.k ?? 1;
+      let cum = kw.cum_weights ? seq(kw.cum_weights) : null;
+      const w = a.length ? a[0] : kw.weights ?? null;
+      if (!cum && w) { let t = 0; cum = seq(w).map((x) => (t += x)); }
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        if (!cum) { out.push(pop[Math.floor(r(self) * pop.length)]); continue; }
+        const x = r(self) * cum[cum.length - 1];
+        let lo = 0, hi = cum.length - 1;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (x < cum[m]) hi = m; else lo = m + 1; }
+        out.push(pop[lo]);
+      }
+      return out;
+    },
+    shuffle(self, lst) { for (let i = lst.length - 1; i > 0; i--) { const j = Math.floor(r(self) * (i + 1)); [lst[i], lst[j]] = [lst[j], lst[i]]; } return null; },
+    sample(self, population, k) {
+      const arr = [...seq(population)];
+      if (k > arr.length || k < 0) throw new AdderError('ValueError', 'Sample larger than population or is negative');
+      const out = [];
+      for (let i = 0; i < k; i++) out.push(arr.splice(Math.floor(r(self) * arr.length), 1)[0]);
+      return out;
+    },
+    gauss(self, mu = 0, sigma = 1) {
+      let u, v, s;
+      do { u = 2 * r(self) - 1; v = 2 * r(self) - 1; s = u * u + v * v; } while (s >= 1 || s === 0);
+      return mu + sigma * u * Math.sqrt(-2 * Math.log(s) / s);
+    },
+    normalvariate(self, mu = 0, sigma = 1) { return adderGetAttr(self, 'gauss')(mu, sigma); },
+    expovariate(self, lambd = 1) { return -Math.log(1 - r(self)) / lambd; },
+    lognormvariate(self, mu, sigma) { return Math.exp(adderGetAttr(self, 'gauss')(mu, sigma)); },
+    betavariate(self, alpha, beta) {
+      const g = (a) => { let x = 0; for (let i = 0; i < Math.max(1, Math.round(a)); i++) x -= Math.log(1 - r(self)); return x; };
+      const y = g(alpha); return y / (y + g(beta));
+    },
+    paretovariate(self, alpha) { return 1 / (1 - r(self)) ** (1 / alpha); },
+    weibullvariate(self, alpha, beta) { return alpha * (-Math.log(1 - r(self))) ** (1 / beta); },
+    randbytes(self, n) { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = Math.floor(r(self) * 256); return b; },
+  }, 'random');
+  rmod.Random = Random;
+  rmod.SystemRandom = _syClass('SystemRandom', [Random], { __init__(self, x = null) { self._state = seedState(null); return null; }, seed() { return null; } }, 'random');
+  // the module-level functions a library reaches for that the module didn't have
+  const shared = Random();
+  for (const k of ['randrange', 'getrandbits', 'triangular', 'choices', 'expovariate', 'normalvariate', 'lognormvariate', 'betavariate', 'paretovariate', 'weibullvariate', 'randbytes', 'getstate', 'setstate']) {
+    if (!rmod[k]) rmod[k] = adderGetAttr(shared, k);
+  }
+}
+
+// every module in the registry is a module: type(m) is module, inspect.ismodule(m), and its
+// functions are its attributes as they are (the last stdlib file, so all are registered)
+for (const [k, m] of Object.entries(adderModules)) {
+  if (k === 'js' || !m || typeof m !== 'object' || m.__adderModule__) continue;
+  m.__adderModule__ = true;
+  if (!m.__name__) m.__name__ = k;
+}
+
+// builtins: the builtin namespace as a module (`import builtins`, `builtins.open`, six's
+// `builtins.exec`). Made on first import — one table, shared by every importer.
+{
+  let mod = null;
+  Object.defineProperty(adderModules, 'builtins', {
+    configurable: true, enumerable: false,
+    get() {
+      if (!mod) mod = Object.assign(adderBuiltins(stdoutWrite), { __adderModule__: true, __name__: 'builtins', __doc__: 'Built-in functions, types, exceptions, and other objects.' });
+      return mod;
+    },
+  });
+}
 
 // -- runner.js --
 
@@ -17597,7 +18634,7 @@ function lowerCall_ad(ctx, node) {
   const l = ctx.loc(node);
 
   // eval / exec run source against the caller's live scope, which only the tree-walker has
-  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec') && !ctx.symbols.has(node.func.id)) {
+  if (node.func.type === 'Name' && (node.func.id === 'eval' || node.func.id === 'exec' || node.func.id === 'globals' || node.func.id === 'locals') && !ctx.symbols.has(node.func.id)) {
     throw new AirLowerError(`${node.func.id}() needs the tree-walker`);
   }
 

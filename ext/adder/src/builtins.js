@@ -46,6 +46,15 @@ export class AdderRange {
 // A Python tuple is a frozen PyTuple: an Array (so JS code, unpacking, indexing, numpy-style
 // arr[i, j] keys and Array.isArray all keep working) that prints (1, 2), refuses mutation, and
 // whose derived arrays (map, filter, slice, concat) are plain lists, never tuples by accident.
+// bytearray: a mutable sequence of byte values — an Array of ints 0..255 (append, extend, item and
+// slice assignment are the list's), with bytes' methods, repr and equality
+export class PyByteArray extends Array {
+  static get [Symbol.species]() { return Array; }
+}
+const _toBA = (items) => { const b = new PyByteArray(); for (const x of items) b.push(x); return b; };
+const _byteCheck = (v) => { if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'byte must be in range(0, 256)'); return v; };
+const _isBytesLike = (v) => v instanceof Uint8Array || v instanceof PyByteArray;
+const _asU8 = (v) => (v instanceof Uint8Array ? v : Uint8Array.from(v));
 export class PyTuple extends Array {
   static get [Symbol.species]() { return Array; }
 }
@@ -313,6 +322,8 @@ export class Complex {
 
 // type object registry — populated by adderBuiltins()
 export const _typeObjects = {};
+// the builtin type objects adderBuiltins made first: every later table reuses them
+const _stableTypes = {};
 
 // adder has two dict representations: a Map (any keys), and a plain JS object for a dict whose
 // keys are all strings (a {"a": 1} literal — kept as an object for JS interop). A plain dict is
@@ -330,6 +341,7 @@ export function pyTypeName(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'str';
   if (v instanceof PyTuple) return v.__adderClass__ || 'tuple';
+  if (v instanceof PyByteArray) return 'bytearray';
   if (Array.isArray(v)) return 'list';
   if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
@@ -339,6 +351,7 @@ export function pyTypeName(v) {
   if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
   if (v instanceof AdderError) return v.pyType;
+  if (v.__adderModule__) return 'module';
   if (isPlainDict(v)) return 'dict';
   return 'object';
 }
@@ -426,6 +439,7 @@ export function pyRepr(v) {
   if (typeof v === 'number') return _numRepr(v);
   if (Array.isArray(v) && typeof v.__repr__ === 'function') return v.__repr__();   // namedtuple & co.
   if (v instanceof PyTuple) return v.length === 1 ? `(${pyRepr(v[0])},)` : `(${v.map(pyRepr).join(', ')})`;
+  if (v instanceof PyByteArray) return `bytearray(${_bytesRepr(Uint8Array.from(v))})`;
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -485,6 +499,7 @@ export function pyReprMaybe(v) {
   { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
   if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
+  if (v instanceof PyByteArray) return pyRepr(v);
   if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
@@ -588,7 +603,7 @@ export function* pyIter(obj) {
 }
 
 // a lazy iterator object (map, filter): iterates once, next() works, Python names its type
-function _lazyIter(name, genFn) {
+export function _lazyIter(name, genFn) {
   let gen = null;
   const run = () => gen || (gen = genFn());
   return {
@@ -810,11 +825,21 @@ export function adderGetAttr(obj, attr) {
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
+    // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
+    // looks class attributes up. A function's JS properties (name, length) don't count as the
+    // class's own unless the class body set them.
+    if (obj._pyClass && obj._pyMRO && obj._pyMRO.length > 1 && !_ownPyClassAttr(obj, attr)) {
+      for (let i = 1; i < obj._pyMRO.length; i++) { const c = obj._pyMRO[i]; if (_ownPyClassAttr(c, attr)) return c[attr]; }
+    }
     // a member of the class's metaclass (Meta.describe, a property on Meta) — the class's own first
     if (obj._pyClass && obj.__adderMeta__ && !(attr in obj)) { const v = metaAttr(obj, attr); if (v !== undefined) return v; }
     if (attr === '__class__' && obj._pyClass) return obj.__adderMeta__ || pyTypeObj;
     if (attr === '__mro__' && obj._pyClass && obj._pyMRO) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : [...obj._pyMRO, pyObjectObj]);
     if (attr === '__bases__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [] : obj._pyBases && obj._pyBases.length ? obj._pyBases : [pyObjectObj]);
+    // a builtin type's (int, str, dict …): itself and object (bool is an int)
+    if (attr === '__mro__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : tn === 'bool' ? [obj, _typeObjects.int, pyObjectObj] : [obj, pyObjectObj]);
+    // Cls.__new__ where nothing in the class defines one: object's, or the builtin type's
+    if (attr === '__new__' && obj._pyClass && !(attr in obj)) return _inheritedNew(obj);
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
@@ -822,12 +847,30 @@ export function adderGetAttr(obj, attr) {
   // tuple methods (count, index) — a tuple has none of list's mutators
   // (a namedtuple class adds its fields and _asdict / _replace / _fields on its own prototype)
   if (obj instanceof PyTuple) {
+    // a tuple subclass's own members (made by tuple.__new__(cls, …)): its class's, bound
+    const tt = obj.__adderType__;
+    if (tt && tt.prototype && !(attr in obj) && attr in tt.prototype) {
+      const v = Reflect.get(tt.prototype, attr, obj);
+      return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
+    }
     if (attr === 'count' || attr === 'index') return _listMethod(obj, attr);
     if (attr in obj && !(attr in Array.prototype)) {
       const v = obj[attr];
       return typeof v === 'function' && !v._pyClass ? v.bind(obj) : v;
     }
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
+  }
+  // bytearray: bytes' methods (results as bytearray), and the list's mutators with byte checks
+  if (obj instanceof PyByteArray) {
+    if (attr === 'append') return (x) => { obj.push(_byteCheck(x)); return null; };
+    if (attr === 'extend') return (it) => { for (const x of (it instanceof Uint8Array ? it : pyIter(it))) obj.push(_byteCheck(x)); return null; };
+    if (attr === 'insert') return (i, x) => { _byteCheck(x); return _listMethod(obj, 'insert')(i, x); };
+    if (attr === 'copy') return () => _toBA(obj);
+    if (attr === 'decode' || attr === 'hex') return _bytesMethod(Uint8Array.from(obj), attr);
+    if (['pop', 'remove', 'clear', 'reverse', 'count', 'index'].includes(attr)) return _listMethod(obj, attr);
+    const m = _bytesMethod(Uint8Array.from(obj), attr);
+    if (typeof m !== 'function') return m;
+    return (...a) => { const r = m(...a.map((x) => (x instanceof PyByteArray ? Uint8Array.from(x) : x))); return r instanceof Uint8Array ? _toBA(r) : r; };
   }
   // list methods
   if (Array.isArray(obj)) return _listMethod(obj, attr);
@@ -858,41 +901,45 @@ export function adderGetAttr(obj, attr) {
   }
   // plain object (dict with string keys)
   if (obj !== null && typeof obj === 'object' && !(obj instanceof Array) && !(obj instanceof Map) && !(obj instanceof Set)) {
-    // check for adder class method on prototype
-    if (typeof obj[attr] === 'function') {
-      if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
+    // read the attribute ONCE: a getter (a @property, a descriptor) runs its body on every read
+    const has = attr in obj;
+    const v = has ? obj[attr] : undefined;
+    if (typeof v === 'function') {
+      if (_isNativeClass(v) || v._pyClass) return v;   // a class (binascii.Error, enum.Enum): never bound
       // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
       // import f` is the same object (binding made a fresh copy per access)
-      if (obj.__adderModule__ && (obj[attr]._pyFunc || obj[attr]._pyDef)) return obj[attr];
-      // adder functions expect self as first arg — inject it (skip for modules)
-      if (obj[attr]._pyFunc && !obj.__adderModule__) {
-        const originalFn = obj[attr];
-        const fn = (...args) => originalFn(obj, ...args);
+      if (obj.__adderModule__ && (v._pyFunc || v._pyDef)) return v;
+      // a function stored ON a Python instance is an attribute, not a method: as it is
+      if (obj.__adderType__ && Object.hasOwn(obj, attr)) return v;
+      // adder functions expect self as first arg — inject it (plain JS objects used as namespaces)
+      if (v._pyFunc && !obj.__adderModule__ && !obj.__adderType__) {
+        const fn = (...args) => v(obj, ...args);
         fn._pyFunc = true;
         fn._pyName = `${attr}`;
         return fn;
       }
-      const original = obj[attr];
-      const fn = original.bind(obj);
+      const fn = v.bind(obj);
       // Function.prototype.bind drops custom properties off the original
       // (`t.cdf`, `t.pdf` etc. — scipy-style "callable namespace" pattern).
       // Copy them over so dotted access (`stats.t.cdf`) still resolves.
-      for (const k of Object.getOwnPropertyNames(original)) {
+      for (const k of Object.getOwnPropertyNames(v)) {
         if (k === 'length' || k === 'name' || k === 'prototype') continue;
-        try { fn[k] = original[k]; } catch {}
+        try { fn[k] = v[k]; } catch {}
       }
       fn._pyName = attr;
       return fn;
     }
     // regular property access (before dict-like methods, so getters/own props take priority)
-    if (attr in obj) return obj[attr];
+    if (has) return v;
     // an instance attribute it doesn't have: the class's (and its bases'), as Python looks them up
     const ot = obj.__adderType__;
-    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (Object.hasOwn(c, attr)) return c[attr];
+    if (ot && ot._pyMRO) for (const c of ot._pyMRO) if (_ownPyClassAttr(c, attr)) return c[attr];
     // dict-like attribute access — keys, values, items, get, etc.
     if (_objDictMethods[attr]) return _objDictMethods[attr](obj);
     // __getattr__ dunder
     if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
+    // what every instance inherits from object (dir() lists them, so getattr must find them)
+    if (ot && _OBJECT_DUNDER_SET.has(attr)) { const d = _objectDunder(obj, attr); if (d !== undefined) return d; }
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
   }
   // generic
@@ -1132,6 +1179,12 @@ const _CODEC_ALIASES = {
 };
 const _codecByAlias = new Map();
 for (const [canon, names] of Object.entries(_CODEC_ALIASES)) for (const n of names) _codecByAlias.set(n, canon);
+// codecs written elsewhere (punycode, in stdlib-sys): { encode(str, errors) → bytes, decode(bytes, errors) → str }
+const _extraCodecs = new Map();
+export function registerCodec(name, impl, aliases = []) {
+  _extraCodecs.set(name, impl);
+  for (const n of [name, ...aliases]) _codecByAlias.set(n, name);
+}
 // the canonical name of an encoding (CPython's normalisation: case, '_' / ' ' as '-'), or null
 export function codecName(encoding) {
   const k = String(encoding).trim().toLowerCase().replace(/[_ ]/g, '-');
@@ -1179,6 +1232,7 @@ export function pyEncode(s, encoding, errors) {
   s = String(s);
   errors = errors || 'strict';
   const codec = _lookupCodec(encoding);
+  if (_extraCodecs.has(codec)) return _extraCodecs.get(codec).encode(s, errors);
   const out = [];
   const pushStr = (t) => { for (const c of t) out.push(c.charCodeAt(0)); };   // handler output is ASCII
   if (codec === 'utf-16' || codec === 'utf-16-le' || codec === 'utf-16-be' || codec === 'utf-32' || codec === 'utf-32-le' || codec === 'utf-32-be') {
@@ -1247,6 +1301,7 @@ function _decodeFallback(codec, b, start, end, reason, errors) {
 export function pyDecodePartial(b, encoding, errors, final = true) {
   errors = errors || 'strict';
   const codec = _lookupCodec(encoding);
+  if (_extraCodecs.has(codec)) return { text: _extraCodecs.get(codec).decode(b, errors), consumed: b.length };
   let i = 0, text = '';
   const n = b.length;
   if (codec === 'latin-1') { for (; i < n; i++) text += String.fromCharCode(b[i]); return { text, consumed: n }; }
@@ -1625,6 +1680,11 @@ function _bitOp(op, a, b) {
 
 export function pyAdd(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a + b;   // the hot case, first
+  // bytes + bytearray: the left operand's type
+  if ((a instanceof PyByteArray || b instanceof PyByteArray) && _isBytesLike(a) && _isBytesLike(b)) {
+    const r = new Uint8Array(a.length + b.length); r.set(_asU8(a)); r.set(_asU8(b), a.length);
+    return a instanceof PyByteArray ? _toBA(r) : r;
+  }
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
@@ -1968,6 +2028,12 @@ function _dictSize(d) { return d instanceof Map ? d.size : Object.keys(d).length
 
 export function pyEq(a, b) {
   if (a === b) return true;
+  // bytes and bytearray compare by content, either way round
+  if ((a instanceof PyByteArray || b instanceof PyByteArray) && _isBytesLike(a) && _isBytesLike(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
   if (_hasDunder(a, '__eq__') || _hasDunder(b, '__eq__')) {
     // a's __eq__, then b's (reflected) when a's says NotImplemented, then identity
     const refl = () => (_hasDunder(b, '__eq__') && b.__eq__ !== a.__eq__ ? b.__eq__(a) : false);
@@ -3184,6 +3250,12 @@ export function makeExcType(name, parent, ...moreParents) {
 // A class-body attribute onto the class object (a JS function): defined, not assigned, so
 // `name` / `length` (read-only on functions) work; recorded in _pyAttrs, which is how
 // dataclasses and enum tell the body's attributes from the function's own properties.
+const _JS_FN_PROPS = new Set(['name', 'length', 'prototype', 'caller', 'arguments']);
+// does class c itself hold attribute k (a class variable, a method, or one set on it later)?
+function _ownPyClassAttr(c, k) {
+  if (!Object.hasOwn(c, k)) return false;
+  return !_JS_FN_PROPS.has(k) || !!(c._pyAttrs && c._pyAttrs.has(k));
+}
 export function setClassAttr(cls, k, v) {
   Object.defineProperty(cls, k, { value: v, writable: true, enumerable: true, configurable: true });
   (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
@@ -4028,6 +4100,24 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
       const fn = value.__staticmethod__ ? value.fn : value;
       cls._pyNewFn = fn;
       cls.__new__ = fn;
+    } else if (_isDescriptor(value)) {
+      // the descriptor protocol: reads go through __get__(instance, owner) (owner-level reads
+      // through __get__(None, owner)); with __set__ / __delete__ it's a data descriptor and writes
+      // go through it, else an instance attribute of the same name shadows it, as in Python
+      const d = value;
+      const data = typeof d.__set__ === 'function' || typeof d.__delete__ === 'function';
+      const shadow = function (v) { Object.defineProperty(this, mName, { value: v, writable: true, enumerable: true, configurable: true }); };
+      const dataSet = function (v) { if (typeof d.__set__ !== 'function') throw new AdderError('AttributeError', `can't set attribute '${mName}'`); return d.__set__(this, v); };
+      // the tree-walker's assignment calls this itself, so an async __set__ is awaited (a JS setter's
+      // return value is dropped) — the same hook @property setters use
+      dataSet._pyFset = (o, v) => dataSet.call(o, v);
+      Object.defineProperty(cls.prototype, mName, {
+        get() { return d.__get__(this, typeOf(this)); },
+        set: data ? dataSet : shadow,
+        configurable: true, enumerable: false,
+      });
+      Object.defineProperty(cls, mName, { get() { return d.__get__(null, this); }, set: shadow, configurable: true, enumerable: true });
+      (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
     } else if (value && value.__property__) {
       const fget = value.fget;
       const fset = value.fset;
@@ -4071,7 +4161,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   // nested in the body is a class variable too, not a method
   for (const [k, v] of Object.entries(members)) {
     if (k === '__new__') continue;
-    if ((typeof v !== 'function' || v._pyClass) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
+    if ((typeof v !== 'function' || v._pyClass) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__)) && !_isDescriptor(v)) {
       setClassAttr(cls, k, v);
     }
   }
@@ -4092,7 +4182,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyOwnMembers = new PySet();
   for (const [mName, value] of Object.entries(members)) {
     if (mName === '__new__') continue;
-    if ((typeof value === 'function' && !value._pyClass) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
+    if ((typeof value === 'function' && !value._pyClass) || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__)) || _isDescriptor(value)) {
       cls._pyOwnMembers.add(mName);
     }
   }
@@ -4112,7 +4202,23 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
 
   if (opts.beforeFinish) opts.beforeFinish(cls);
   if (_pendingClassCell && _pendingClassCell.name === name) { const p = _pendingClassCell; _pendingClassCell = null; p.fn(cls); }
-  return finishClass(cls, annotations || [], opts.kw);
+  // __set_name__(owner, name) on each member that has one (descriptors learn their attribute
+  // name), before __init_subclass__ — CPython's order
+  const named = [];
+  for (const [k, v] of Object.entries(members)) {
+    if (v !== null && typeof v === 'object' && typeof v.__set_name__ === 'function') {
+      const r = v.__set_name__(cls, k);
+      if (r && typeof r.then === 'function') named.push(r);
+    }
+  }
+  const finish = () => finishClass(cls, annotations || [], opts.kw);
+  return named.length ? Promise.all(named).then(finish) : finish();
+}
+// a Python descriptor: an instance (of a Python class, or a JS-built one marked _pyDescriptor)
+// with __get__ — not a function, container or the engine's own property / method wrappers
+function _isDescriptor(v) {
+  return v !== null && typeof v === 'object' && typeof v.__get__ === 'function' && !Array.isArray(v) &&
+    !(v instanceof Map) && !(v instanceof Set) && !v.__property__ && (!!v.__adderType__ || v._pyDescriptor === true);
 }
 
 // A class statement whose metaclass is not `type` hands the namespace to the metaclass; the
@@ -4195,6 +4301,14 @@ pyObjectObj.prototype = {};
 pyObjectObj._pyMRO = [pyObjectObj];
 pyObjectObj._pyOwnMembers = new PySet();
 _typeObjects.object = pyObjectObj;
+for (const k of ['__init__', '__setattr__', '__delattr__', '__getattribute__', '__eq__', '__ne__', '__hash__', '__repr__', '__str__', '__format__', '__dir__', '__sizeof__', '__reduce__', '__reduce_ex__', '__getstate__']) {
+  const f = (self, ...a) => _objectDunder(self, k)(...a);
+  f._pyName = k;
+  pyObjectObj[k] = f;
+}
+pyObjectObj.__new__ = (c, ...a) => objectNew(c);
+pyObjectObj.__init_subclass__ = () => null;
+pyObjectObj.__subclasshook__ = () => NotImplemented;
 
 pyTypeObj._pyName = 'type'; pyTypeObj.__name__ = 'type'; pyTypeObj._pyClass = true;
 pyTypeObj.prototype = {
@@ -4206,6 +4320,56 @@ pyTypeObj._pyOwnMembers = new PySet();
 pyTypeObj._pyNewFn = typeNew;
 pyTypeObj.__new__ = typeNew;
 _typeObjects.type = pyTypeObj;
+
+// X.__new__ when X's MRO defines none. A user class gets object.__new__ (a bare instance; a
+// list-based class a list). A builtin type gives a plain value for itself; for a subclass, a
+// tuple is made as the subclass (namedtuple-style `tuple.__new__(cls, items)`), the others
+// stay plain values until subclassed builtins are boxed (see the str-subclass design note).
+function _inheritedNew(T) {
+  if (T._pyMRO || T === pyObjectObj) {
+    const f = (c, ...a) => objectNew(c);
+    f._pyName = '__new__';
+    return f;
+  }
+  const f = (c, ...a) => {
+    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+    if (T._pyName === 'tuple' && c && c !== T) {
+      const t = new PyTuple();
+      for (const x of a.length ? pyIter(a[0]) : []) t.push(x);
+      t.__adderType__ = c; t.__adderClass__ = c._pyName;
+      return t;
+    }
+    return T(...a);
+  };
+  f._pyName = '__new__';
+  return f;
+}
+const _OBJECT_DUNDER_SET = new Set(_OBJECT_DUNDERS);
+// object's own methods, bound to a Python instance
+function _objectDunder(o, attr) {
+  switch (attr) {
+    case '__init__': return () => null;
+    case '__new__': return (c) => objectNew(c);
+    case '__setattr__': return (k, v) => { o[k] = v; return null; };   // object's: a plain store (it bypasses a frozen dataclass's guard, as in CPython)
+    case '__delattr__': return (k) => { if (!(k in o)) throw new AdderError('AttributeError', `'${pyTypeName(o)}' object has no attribute '${k}'`); delete o[k]; return null; };
+    case '__getattribute__': return (k) => adderGetAttr(o, k);
+    case '__eq__': return (x) => (x === o ? true : NotImplemented);
+    case '__ne__': return (x) => (x === o ? false : NotImplemented);
+    case '__lt__': case '__le__': case '__gt__': case '__ge__': return () => NotImplemented;
+    case '__hash__': return () => _pyHash(o);
+    case '__repr__': return () => pyRepr(o);
+    case '__str__': return () => pyStr(o);
+    case '__format__': return (spec) => { if (spec) throw new AdderError('TypeError', `unsupported format string passed to ${pyTypeName(o)}.__format__`); return pyStr(o); };
+    case '__dir__': return () => _pyDir(o);
+    case '__sizeof__': return () => 32;
+    case '__init_subclass__': return () => null;
+    case '__subclasshook__': return () => NotImplemented;
+    case '__getstate__': return () => null;
+    case '__reduce__': case '__reduce_ex__': return () => { throw new AdderError('TypeError', `cannot pickle '${pyTypeName(o)}' object`); };
+    case '__doc__': return null;
+    default: return undefined;
+  }
+}
 
 // type(x)
 export function typeOf(obj) {
@@ -4415,6 +4579,19 @@ export function adderBuiltins(printFn) {
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
+    // bytearray(), bytearray(n) zeros, bytearray(ints / bytes), bytearray(str, encoding[, errors])
+    bytearray: Object.assign((x, ...a) => {
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+      if (x === undefined) return new PyByteArray();
+      if (typeof x === 'number') { if (x < 0) throw new AdderError('ValueError', 'negative count'); return _toBA(new Uint8Array(x)); }
+      if (typeof x === 'string') {
+        const enc = a[0] ?? kw.encoding;
+        if (enc === undefined) throw new AdderError('TypeError', 'string argument without an encoding');
+        return _toBA(pyEncode(x, enc, a[1] ?? kw.errors ?? 'strict'));
+      }
+      if (x instanceof Uint8Array) return _toBA(x);
+      return _toBA([...pyIter(x)].map(_byteCheck));
+    }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
     frozenset: async (x) => { const s = x === undefined ? new PySet() : new PySet(await pyCollect(x)); s._frozen = true; return s; },
     abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
     round: (x, n) => pyRound(x, n),
@@ -4612,19 +4789,26 @@ export function adderBuiltins(printFn) {
     eval: _builtinEval,
     exec: _builtinExec,
     super: _builtinSuper,
+    globals: _builtinGlobals,
+    locals: _builtinLocals,
   };
   // Mark conversion builtins as type objects for isinstance()/type()
-  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex']) {
-    if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = builtins[name]; }
+  // ONE object per type for the whole program: every module gets its own builtins table, and a
+  // fresh `int` per table made `type(1) is int` false in a module once another had been imported
+  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray']) {
+    if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
+    if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
   }
   for (const name of _EXC_NAMES) {
+    if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
+    if (_typeObjects[name] && _typeObjects[name]._pyClass) { builtins[name] = _stableTypes[name] = _typeObjects[name]; continue; }
     const ctor = (...a) => {
       if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
       return new AdderError(name, _argsStr(name, a), undefined, a);
     };
     ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
     builtins[name] = ctor;
-    _typeObjects[name] = ctor;
+    _typeObjects[name] = _stableTypes[name] = ctor;
   }
   return builtins;
 }
@@ -4696,6 +4880,10 @@ export function pySuper(cls, self) {
 export const _builtinEval = Object.assign(() => {}, { _pyName: 'eval', _sentinel: 'eval' });
 export const _builtinExec = Object.assign(() => {}, { _pyName: 'exec', _sentinel: 'exec' });
 export const _builtinSuper = Object.assign(() => {}, { _pyName: 'super', _sentinel: 'super' });
+// globals() / locals(): the caller's namespaces, which only the tree-walker has (AIR lowering
+// refuses them, so the module falls back)
+export const _builtinGlobals = Object.assign(() => {}, { _pyName: 'globals', _sentinel: 'globals' });
+export const _builtinLocals = Object.assign(() => {}, { _pyName: 'locals', _sentinel: 'locals' });
 
 function _pyIsInstance(obj, typeOrTuple) {
   const types = Array.isArray(typeOrTuple) ? typeOrTuple : [typeOrTuple];
