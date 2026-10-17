@@ -184,7 +184,17 @@ class AdderLowerCtx extends BaseLowerCtx {
   nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
+    const pyName = (op === 'store' && typeof args[0] === 'string') ? args[0] : null;
     if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && _JS_RESERVED.has(args[0])) args = [jsSafeName(args[0]), ...args.slice(1)];
+    // module mode: a module-level binding (at top level, or from a function declaring it
+    // `global`) is mirrored onto the live module object right after the store, so a circular
+    // import — and anyone holding the module — sees names as they are bound
+    if (pyName !== null && this.moduleMirror && ((this.topLevel && this.defines.has(pyName)) || (this._fnGlobals && this._fnGlobals.has(pyName)))) {
+      const r = super.emit(op, args, type, loc, extra);
+      // (not the `undefined` a name is pre-declared with: unbound is not an attribute; None is null)
+      super.emit('opaque', [`if (${jsSafeName(pyName)} !== undefined) __adder_module__[${JSON.stringify(pyName)}] = ${jsSafeName(pyName)};`], VOID, null);
+      return r;
+    }
     else if (op === 'func_region' && extra) {
       if (typeof args[0] === 'string') args = [jsSafeName(args[0]), ...args.slice(1)];
       extra = { ...extra, name: extra.name ? jsSafeName(extra.name) : extra.name,
@@ -560,11 +570,30 @@ export function lowerAdder(ast, source, opts) {
   const ctx = new AdderLowerCtx();
   ctx.source = source || null;
   ctx.ticks = !!(opts && opts.ticks);
+  // opts.module = { package }: an imported module (not a cell). Relative imports resolve against
+  // its package at compile time; its bindings are mirrored onto `__adder_module__`.
+  if (opts && opts.module) {
+    ctx.modulePackage = opts.module.package || '';
+    ctx.moduleMirror = true;
+    ctx.imports.add('__adder_module__');
+  }
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
 
   // Collect all module-scope defines up front (Python module-scope semantics)
   collectDefines_ad(ast.body, ctx.defines);
+  // ... and the names functions declare `global`: assigned from a function, they are module
+  // variables even if the top level never assigns them (`global done; done = True`)
+  (function globalsIn(stmts, inFn) {
+    for (const st of stmts || []) {
+      if (!st || typeof st !== 'object') continue;
+      if (st.type === 'Global' && inFn) for (const n of st.names) ctx.defines.add(n);
+      const fn = st.type === 'FunctionDef' || st.type === 'AsyncFunctionDef';
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(st[k])) globalsIn(st[k], inFn || fn || st.type === 'ClassDef');
+      if (Array.isArray(st.handlers)) for (const h of st.handlers) globalsIn(h.body, inFn);
+      if (Array.isArray(st.cases)) for (const c of st.cases) globalsIn(c.body, inFn);
+    }
+  })(ast.body, false);
 
   // Pre-analyse top-level FunctionDefs to determine which are sync — done
   // before any body is lowered, so recursive call sites and forward
@@ -732,6 +761,7 @@ function lowerStmt_ad(ctx, node) {
 
     case 'Global':
     case 'Nonlocal':
+      if (node.type === 'Global' && ctx._fnGlobals) for (const n of node.names) ctx._fnGlobals.add(n);
       // Declaration-only; mark names as already declared so stores don't re-declare.
       // With per-function scope tracking in the emitter, a bare `x = ...` inside
       // the function reassigns the outer binding (global/nonlocal semantics).
@@ -1696,8 +1726,22 @@ function lowerImport(ctx, node) {
   return null;
 }
 
+// CPython's rule for a relative module name (the same as eval.js resolveRelativeImport)
+function _resolveRelative(module, pkg) {
+  const m = /^(\.+)(.*)$/.exec(module);
+  if (!pkg) throw new AirLowerError('relative import with no known parent package');
+  const parts = pkg.split('.');
+  const up = m[1].length - 1;
+  if (up >= parts.length) throw new AirLowerError('relative import beyond top-level package');
+  const base = parts.slice(0, parts.length - up).join('.');
+  return m[2] ? `${base}.${m[2]}` : base;
+}
+
 function lowerImportFrom(ctx, node) {
   const l = ctx.loc(node);
+  // `from m import *` binds names known only at run time — the tree-walker's job (AIR binds every
+  // name as a JS variable at compile time; it used to bind nothing here, silently)
+  if (node.names.some((n) => n.name === '*')) throw new AirLowerError('from … import * needs the tree-walker');
   // Build names array: [{name, alias}, ...]
   const pairs = node.names.map(({ name, alias }) => {
     const p = [];
@@ -1714,7 +1758,11 @@ function lowerImportFrom(ctx, node) {
     const pathConst = ctx.emit('const', [node.path], STRING, l);
     importCall = emitPyCall(ctx, 'importFromPath', [pathConst, namesArr], l);
   } else {
-    const moduleName = ctx.emit('const', [node.module], STRING, l);
+    // `from .x import y` in a module: against its package, known now (a cell has none, and the
+    // runtime raises as CPython does at top level)
+    let modName = node.module;
+    if (/^\./.test(modName) && ctx.modulePackage !== undefined) modName = _resolveRelative(modName, ctx.modulePackage);
+    const moduleName = ctx.emit('const', [modName], STRING, l);
     importCall = emitPyCall(ctx, 'importFrom', [moduleName, namesArr], l);
   }
   const result = ctx.emit('await', [importCall.id], DYNAMIC, l);
@@ -2214,6 +2262,8 @@ function lowerFuncDef(ctx, node) {
   // method, not a generator, not one analyseSyncFunctions proved sync
   const savedLoopAwait = ctx._loopMayAwait;
   ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name);
+  const savedFnGlobals = ctx._fnGlobals;
+  ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
 
   let params = null;
   let isSimple = null;
@@ -2239,6 +2289,7 @@ function lowerFuncDef(ctx, node) {
 
   ctx.topLevel = savedTopLevel;
   ctx._loopMayAwait = savedLoopAwait;
+  ctx._fnGlobals = savedFnGlobals;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
   ctx._excName = savedExcName;

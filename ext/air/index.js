@@ -4099,8 +4099,8 @@ function foldConstants(module) {
       // Fold binary ops on constants
       if ((op.op === 'add' || op.op === 'sub' || op.op === 'mul' ||
            op.op === 'div' || op.op === 'mod') && op.args.length === 2) {
-        const lhsOp = findOpById(module.ops, op.args[0]);
-        const rhsOp = findOpById(module.ops, op.args[1]);
+        const lhsOp = findOpAnywhere(module.ops, op.args[0]);
+        const rhsOp = findOpAnywhere(module.ops, op.args[1]);
         if (lhsOp?.op === 'const' && rhsOp?.op === 'const' &&
             typeof lhsOp.args[0] === 'number' && typeof rhsOp.args[0] === 'number') {
           let val;
@@ -4122,7 +4122,7 @@ function foldConstants(module) {
 
       // Fold negation of constant
       if (op.op === 'neg' && op.args.length === 1) {
-        const argOp = findOpById(module.ops, op.args[0]);
+        const argOp = findOpAnywhere(module.ops, op.args[0]);
         if (argOp?.op === 'const' && typeof argOp.args[0] === 'number') {
           op.op = 'const';
           op.args = [-argOp.args[0]];
@@ -4539,7 +4539,30 @@ function specializeRuntimeHelpers(module, types) {
 // missed switch cases; findOpAnywhere missed class members) — the
 // schema-derived version is a superset of both and they now collapse
 // to one implementation.
-const findOpAnywhere = findOpById;
+// An SSA id → op lookup over a module's op tree, indexed once and cached per tree (the passes look
+// ops up by id per op; a full-tree search each time made compiling a 3,500-line module take
+// seconds). Ops are rewritten in place keeping their ids, and moved ones stay the same objects,
+// so the index stays right; an op added since (a pass's synthetic one) is found by a full search
+// once and then cached.
+const _opIndexes = new WeakMap();
+function findOpAnywhere(ops, id) {
+  let idx = _opIndexes.get(ops);
+  if (!idx) {
+    idx = new Map();
+    (function index(list) {
+      for (const op of list) {
+        if (op.id) idx.set(op.id, op);
+        forEachRegion(op, (_name, rops) => index(rops));
+      }
+    })(ops);
+    _opIndexes.set(ops, idx);
+  }
+  const hit = idx.get(id);
+  if (hit) return hit;
+  const found = findOpById(ops, id);
+  if (found) idx.set(id, found);
+  return found;
+}
 
 // =============================================================================
 // Combined pass runner (v0.3 §3.5)
@@ -4628,7 +4651,7 @@ function pruneConstBranches(module) {
       const op = ops[i];
       forEachRegion(op, (_name, rops) => prune(rops));
       if (op.op !== 'if_region' || (op.phis && op.phis.length)) continue;
-      const test = findOpById(module.ops, op.args[0]);
+      const test = findOpAnywhere(module.ops, op.args[0]);
       if (!test || test.op !== 'const' || typeof test.args[0] !== 'boolean') continue;
       const kept = (test.args[0] ? op.then_body : op.else_body) || [];
       ops.splice(i, 1, ...kept);

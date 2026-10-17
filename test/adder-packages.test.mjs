@@ -51,6 +51,30 @@ const FILES = {
   ].join('\n'),
   '/site/broken.py': 'x = 1\nraise ValueError("boom")\n',
   '/site/data_pkg/__init__.py': '',
+  // a library class with a property, dunders and methods (AIR-compiled on import under AIR)
+  '/site/money.py': [
+    'class M:',
+    '    def __init__(self, c):',
+    '        self.c = c',
+    '    @property',
+    '    def dollars(self):',
+    '        return self.c / 100',
+    '    def __add__(self, o):',
+    '        return M(self.c + o.c)',
+    '    def __eq__(self, o):',
+    '        return isinstance(o, M) and self.c == o.c',
+    '    def __repr__(self):',
+    '        return f"M({self.c})"',
+    '    def __len__(self):',
+    '        return self.c',
+    'done = None',
+    'def finish():',
+    '    global done, later',
+    '    done = True',
+    '    later = "set"',
+  ].join('\n'),
+  // a re-export module: `import *` (the tree-walker's: AIR declines it)
+  '/site/reexport.py': 'from money import *\nfrom pkg.core import *\n',
   '/site/data_pkg/table.txt': 'hello resources',
 };
 
@@ -72,6 +96,23 @@ async function runBoth(code) {
 }
 
 describe('adder packages over a VFS', () => {
+  it('a library used from a cell: properties, dunders, module globals set from functions', async () => {
+    const out = await runBoth([
+      'import money',
+      'from money import M',
+      'a = M(150)',
+      'print(a.dollars, a + M(50), a == M(150), len(a), repr(a), a.dollars + 1)',
+      'def f(x):',
+      '    return x.dollars * 2',
+      'print(f(a), money.done)',
+      'money.finish()',
+      'print(money.done, money.later)',
+      'import reexport',
+      'print(reexport.M(1), reexport.add(2, 2))',
+    ].join('\n'));
+    assert.equal(out, ['1.5 M(200) True 150 M(150) 2.5', '3 None', 'True set', 'M(1) 4', ''].join('\n'));
+  });
+
   it('packages, submodules, relative imports, module attributes', async () => {
     const out = await runBoth([
       'import pkg',

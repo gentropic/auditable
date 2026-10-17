@@ -2228,7 +2228,8 @@ class PyDict extends Map {
 // obj.__dict__ / vars(obj): a LIVE dict over an object's attributes — reads and writes go to the
 // object (self.__dict__.update(kw), self.__dict__[k] = v), as CPython's instance dict does. The
 // engines' own markers on the object are not attributes.
-const _attrHidden = (k) => k === '__adderClass__' || k === '__adderType__' || k === '__adderModule__' || k.startsWith('_py');
+const _ENGINE_KEYS = new Set(['__adderClass__', '__adderType__', '__adderModule__', '__adderMeta__', '_isExcClass', '_jsClass', '_genName', '_frozen', '_isGenerator', '_sentinel']);
+const _attrHidden = (k) => _ENGINE_KEYS.has(k) || k.startsWith('_py');
 class AttrDict extends PyDict {
   constructor(target) { super(); Object.defineProperty(this, '_t', { value: target }); }
   _keys() { return Object.keys(this._t).filter((k) => !_attrHidden(k)); }
@@ -2264,6 +2265,32 @@ function _classDict(cls) {
   d.set = ro; d.delete = ro; d.clear = ro;
   d.__adderClass__ = 'mappingproxy';
   return d;
+}
+
+// dir(x) as CPython lists it: the object's attributes, its class's and every base's (members and
+// class variables), and object's dunders; a user __dir__ decides for itself
+const _OBJECT_DUNDERS = ['__class__', '__delattr__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__',
+  '__getattribute__', '__getstate__', '__gt__', '__hash__', '__init__', '__init_subclass__', '__le__', '__lt__',
+  '__ne__', '__new__', '__reduce__', '__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__'];
+function _pyDir(obj) {
+  if (obj === undefined || obj === null) return [];
+  if (typeof obj === 'object' && typeof obj.__dir__ === 'function' && !obj.__adderModule__) {
+    const r = obj.__dir__();
+    return r && typeof r.then === 'function' ? r.then((v) => [...pyIter(v)].sort()) : [...pyIter(r)].sort();
+  }
+  const names = new Set();
+  const addOwn = (o) => { for (const k of Object.keys(o)) if (!_attrHidden(k) && k !== 'prototype') names.add(k); };
+  const addClass = (c) => {
+    addOwn(c);
+    if (c._pyOwnMembers) for (const k of c._pyOwnMembers) names.add(k);
+  };
+  if (obj.__adderModule__ || (typeof obj === 'object' && !obj.__adderType__)) { addOwn(obj); return [...names].sort(); }
+  const cls = typeof obj === 'function' && obj._pyClass ? obj : obj.__adderType__;
+  if (typeof obj === 'object') { addOwn(obj); names.add('__dict__'); }
+  if (cls && cls._pyMRO) for (const c of cls._pyMRO) addClass(c);
+  else if (typeof obj === 'function') addOwn(obj);
+  if (cls) { names.add('__module__'); names.add('__dict__'); names.add('__weakref__'); for (const d of _OBJECT_DUNDERS) names.add(d); }
+  return [...names].sort();
 }
 
 class PySet extends Set {
@@ -2911,7 +2938,7 @@ function adderGetAttr(obj, attr) {
       if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
       // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
       // import f` is the same object (binding made a fresh copy per access)
-      if (obj.__adderModule__ && obj[attr]._pyFunc) return obj[attr];
+      if (obj.__adderModule__ && (obj[attr]._pyFunc || obj[attr]._pyDef)) return obj[attr];
       // adder functions expect self as first arg — inject it (skip for modules)
       if (obj[attr]._pyFunc && !obj.__adderModule__) {
         const originalFn = obj[attr];
@@ -6622,7 +6649,7 @@ function adderBuiltins(printFn) {
       return false;
     },
     vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),
-    dir: (obj) => obj ? Object.keys(obj).sort() : [],
+    dir: (obj) => _pyDir(obj),
     object: pyObjectObj,
     super: () => { throw new AdderError('RuntimeError', 'super() is handled by the evaluator'); },
     ValueError: (msg) => new AdderError('ValueError', msg),
@@ -8392,14 +8419,32 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
     submodule_search_locations: info.path || null, has_location: !!filePath, loader: null });
   modScope.set('__loader__', null);
 
+  // AIR-compile the module when the importing program runs on AIR (the cell and its libraries on
+  // one engine); a module AIR can't lower is tree-walked instead
+  let compiled = null;
+  if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
+    try { compiled = _moduleCompiler(ast, source, { name: displayName, package: pkg }); } catch { compiled = null; }
+  }
   try {
-    await adderEval(ast, modScope);
+    if (compiled) {
+      const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
+      const scope = await compiled.run(lookup, mod);
+      if (scope && typeof scope === 'object') {
+        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
+      }
+    } else {
+      await adderEval(ast, modScope);
+    }
   } catch (e) {
     delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
     throw e;
   }
   return mod;
 }
+// the compiler for imported modules (runner.js registers AIR's; none: always tree-walked)
+let _moduleCompiler = null;
+function setModuleCompiler(fn) { _moduleCompiler = fn; }
+const pyNameOfJs = (k) => (k.endsWith('$') ? k.slice(0, -1) : k);
 
 // Find a top-level name on sys.path: <dir>/<name>.py, or a package <dir>/<name>/__init__.py.
 async function _loadVfsModule(name) {
@@ -8500,7 +8545,7 @@ async function importNames(mod, modName, names, line) {
       continue;
     }
     let v;
-    if (name in mod) v = mod[name];
+    if (name in mod && mod[name] !== undefined) v = mod[name];
     else if (modName) v = await findModule(`${modName}.${name}`);
     if (v === undefined || v === null && !(name in mod)) {
       const e = new AdderError('ImportError', `cannot import name '${name}' from '${modName}'`, line);
@@ -16035,7 +16080,8 @@ function _withVfs(opts, fn) {
 // duration of ONE call, restored on exit like the VFS — so a notebook cell and
 // a worker host can share the interpreter without seeing each other's rules
 async function _withSandbox(opts, fn) {
-  const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false });
+  // engine 'tree' keeps imported modules on the tree-walker too (else they are AIR-compiled)
+  const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false, moduleEngine: opts.engine === 'tree' ? 'tree' : 'auto' });
   const prevBudget = _setBudget(_makeBudget(opts.budget));
   const prevOut = _stdio.out, prevErr = _stdio.err;
   _stdio.out = opts.stdout || _defaultStdout;
@@ -16095,6 +16141,32 @@ function _airCompile(ast, src, ticks) {
   const Ctor = _airLib.needsAsync(mod) ? _AsyncFunction : Function;
   return { air: mod, imports, fn: new Ctor(...scopeKeys, body) };
 }
+
+// An imported module, AIR-compiled — the same engine as the cell importing it, so the module's
+// functions, properties and dunders are plain (mostly sync) JS functions there, not the
+// tree-walker's async ones (a cell reading a tree-walked @property got a Promise). Returns null
+// when no AIR is reachable; throws when the module can't be lowered (eval.js then tree-walks it).
+// Works with AIR attached (attachAir) or through the browser hooks auditable installs.
+function _airCompileModule(ast, src, info) {
+  const w = typeof window !== 'undefined' ? window : null;
+  const runPasses = _airLib ? _airLib.runPasses : (w && w._airRePropagate ? (m) => w._airRePropagate(m) : null);
+  const emitJS = _airLib ? _airLib.emitJS : (w && w._airEmit) || null;
+  const needsAsync = _airLib ? _airLib.needsAsync : (w && w._airNeedsAsync) || null;
+  if (!runPasses || !emitJS || !needsAsync) return null;
+  const mod = lowerAdder(ast, src, { module: { package: info.package } });
+  runPasses(mod);
+  const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
+  const scopeKeys = ['_py', ...imports];
+  const body = emitJS(mod, scopeKeys, [], { hinted: false });
+  const Ctor = needsAsync(mod) ? _AsyncFunction : Function;
+  const fn = new Ctor(...scopeKeys, body);
+  // run(lookup): lookup(pythonName) gives each free name's value (builtins, module globals);
+  // `__adder_module__` is the live module object the bindings are mirrored onto
+  return {
+    run: (lookup, moduleObj) => fn(_py, ...imports.map((n) => (n === '__adder_module__' ? moduleObj : lookup(pyNameOf(n))))),
+  };
+}
+setModuleCompiler(_airCompileModule);
 
 async function _airCall(compiled, opts, bindings) {
   const args = [_py, ...compiled.imports.map((name) => bindings[pyNameOf(name)])];
@@ -16604,7 +16676,17 @@ class AdderLowerCtx extends BaseLowerCtx {
   nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
+    const pyName = (op === 'store' && typeof args[0] === 'string') ? args[0] : null;
     if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && _JS_RESERVED.has(args[0])) args = [jsSafeName(args[0]), ...args.slice(1)];
+    // module mode: a module-level binding (at top level, or from a function declaring it
+    // `global`) is mirrored onto the live module object right after the store, so a circular
+    // import — and anyone holding the module — sees names as they are bound
+    if (pyName !== null && this.moduleMirror && ((this.topLevel && this.defines.has(pyName)) || (this._fnGlobals && this._fnGlobals.has(pyName)))) {
+      const r = super.emit(op, args, type, loc, extra);
+      // (not the `undefined` a name is pre-declared with: unbound is not an attribute; None is null)
+      super.emit('opaque', [`if (${jsSafeName(pyName)} !== undefined) __adder_module__[${JSON.stringify(pyName)}] = ${jsSafeName(pyName)};`], VOID, null);
+      return r;
+    }
     else if (op === 'func_region' && extra) {
       if (typeof args[0] === 'string') args = [jsSafeName(args[0]), ...args.slice(1)];
       extra = { ...extra, name: extra.name ? jsSafeName(extra.name) : extra.name,
@@ -16980,11 +17062,30 @@ function lowerAdder(ast, source, opts) {
   const ctx = new AdderLowerCtx();
   ctx.source = source || null;
   ctx.ticks = !!(opts && opts.ticks);
+  // opts.module = { package }: an imported module (not a cell). Relative imports resolve against
+  // its package at compile time; its bindings are mirrored onto `__adder_module__`.
+  if (opts && opts.module) {
+    ctx.modulePackage = opts.module.package || '';
+    ctx.moduleMirror = true;
+    ctx.imports.add('__adder_module__');
+  }
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
 
   // Collect all module-scope defines up front (Python module-scope semantics)
   collectDefines_ad(ast.body, ctx.defines);
+  // ... and the names functions declare `global`: assigned from a function, they are module
+  // variables even if the top level never assigns them (`global done; done = True`)
+  (function globalsIn(stmts, inFn) {
+    for (const st of stmts || []) {
+      if (!st || typeof st !== 'object') continue;
+      if (st.type === 'Global' && inFn) for (const n of st.names) ctx.defines.add(n);
+      const fn = st.type === 'FunctionDef' || st.type === 'AsyncFunctionDef';
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(st[k])) globalsIn(st[k], inFn || fn || st.type === 'ClassDef');
+      if (Array.isArray(st.handlers)) for (const h of st.handlers) globalsIn(h.body, inFn);
+      if (Array.isArray(st.cases)) for (const c of st.cases) globalsIn(c.body, inFn);
+    }
+  })(ast.body, false);
 
   // Pre-analyse top-level FunctionDefs to determine which are sync — done
   // before any body is lowered, so recursive call sites and forward
@@ -17152,6 +17253,7 @@ function lowerStmt_ad(ctx, node) {
 
     case 'Global':
     case 'Nonlocal':
+      if (node.type === 'Global' && ctx._fnGlobals) for (const n of node.names) ctx._fnGlobals.add(n);
       // Declaration-only; mark names as already declared so stores don't re-declare.
       // With per-function scope tracking in the emitter, a bare `x = ...` inside
       // the function reassigns the outer binding (global/nonlocal semantics).
@@ -18116,8 +18218,22 @@ function lowerImport(ctx, node) {
   return null;
 }
 
+// CPython's rule for a relative module name (the same as eval.js resolveRelativeImport)
+function _resolveRelative(module, pkg) {
+  const m = /^(\.+)(.*)$/.exec(module);
+  if (!pkg) throw new AirLowerError('relative import with no known parent package');
+  const parts = pkg.split('.');
+  const up = m[1].length - 1;
+  if (up >= parts.length) throw new AirLowerError('relative import beyond top-level package');
+  const base = parts.slice(0, parts.length - up).join('.');
+  return m[2] ? `${base}.${m[2]}` : base;
+}
+
 function lowerImportFrom(ctx, node) {
   const l = ctx.loc(node);
+  // `from m import *` binds names known only at run time — the tree-walker's job (AIR binds every
+  // name as a JS variable at compile time; it used to bind nothing here, silently)
+  if (node.names.some((n) => n.name === '*')) throw new AirLowerError('from … import * needs the tree-walker');
   // Build names array: [{name, alias}, ...]
   const pairs = node.names.map(({ name, alias }) => {
     const p = [];
@@ -18134,7 +18250,11 @@ function lowerImportFrom(ctx, node) {
     const pathConst = ctx.emit('const', [node.path], STRING, l);
     importCall = emitPyCall(ctx, 'importFromPath', [pathConst, namesArr], l);
   } else {
-    const moduleName = ctx.emit('const', [node.module], STRING, l);
+    // `from .x import y` in a module: against its package, known now (a cell has none, and the
+    // runtime raises as CPython does at top level)
+    let modName = node.module;
+    if (/^\./.test(modName) && ctx.modulePackage !== undefined) modName = _resolveRelative(modName, ctx.modulePackage);
+    const moduleName = ctx.emit('const', [modName], STRING, l);
     importCall = emitPyCall(ctx, 'importFrom', [moduleName, namesArr], l);
   }
   const result = ctx.emit('await', [importCall.id], DYNAMIC, l);
@@ -18634,6 +18754,8 @@ function lowerFuncDef(ctx, node) {
   // method, not a generator, not one analyseSyncFunctions proved sync
   const savedLoopAwait = ctx._loopMayAwait;
   ctx._loopMayAwait = savedTopLevel && !savedClassBody && !_containsYield(node.body) && !ctx.syncFunctions.has(node.name);
+  const savedFnGlobals = ctx._fnGlobals;
+  ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
 
   let params = null;
   let isSimple = null;
@@ -18659,6 +18781,7 @@ function lowerFuncDef(ctx, node) {
 
   ctx.topLevel = savedTopLevel;
   ctx._loopMayAwait = savedLoopAwait;
+  ctx._fnGlobals = savedFnGlobals;
   ctx.symbols = ctx.symbols.pop();
   ctx._paramDefaults = savedDefaults;
   ctx._excName = savedExcName;

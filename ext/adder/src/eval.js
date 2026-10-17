@@ -1588,14 +1588,32 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
     submodule_search_locations: info.path || null, has_location: !!filePath, loader: null });
   modScope.set('__loader__', null);
 
+  // AIR-compile the module when the importing program runs on AIR (the cell and its libraries on
+  // one engine); a module AIR can't lower is tree-walked instead
+  let compiled = null;
+  if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
+    try { compiled = _moduleCompiler(ast, source, { name: displayName, package: pkg }); } catch { compiled = null; }
+  }
   try {
-    await adderEval(ast, modScope);
+    if (compiled) {
+      const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
+      const scope = await compiled.run(lookup, mod);
+      if (scope && typeof scope === 'object') {
+        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
+      }
+    } else {
+      await adderEval(ast, modScope);
+    }
   } catch (e) {
     delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
     throw e;
   }
   return mod;
 }
+// the compiler for imported modules (runner.js registers AIR's; none: always tree-walked)
+let _moduleCompiler = null;
+export function setModuleCompiler(fn) { _moduleCompiler = fn; }
+const pyNameOfJs = (k) => (k.endsWith('$') ? k.slice(0, -1) : k);
 
 // Find a top-level name on sys.path: <dir>/<name>.py, or a package <dir>/<name>/__init__.py.
 export async function _loadVfsModule(name) {
@@ -1696,7 +1714,7 @@ export async function importNames(mod, modName, names, line) {
       continue;
     }
     let v;
-    if (name in mod) v = mod[name];
+    if (name in mod && mod[name] !== undefined) v = mod[name];
     else if (modName) v = await findModule(`${modName}.${name}`);
     if (v === undefined || v === null && !(name in mod)) {
       const e = new AdderError('ImportError', `cannot import name '${name}' from '${modName}'`, line);

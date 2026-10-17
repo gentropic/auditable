@@ -3,7 +3,7 @@
 // (15-300x faster), at the cost of requiring @gcu/air as a peer dep.
 
 import { adderParse, _adderParseExpr } from './parse.js';
-import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule } from './eval.js';
+import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule, setModuleCompiler } from './eval.js';
 import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio } from './builtins.js';
 import { _py } from './runtime.js';
 import { lowerAdder, PY_SPECIALIZATIONS, pyNameOf } from './air-lower.js';
@@ -93,7 +93,8 @@ function _withVfs(opts, fn) {
 // duration of ONE call, restored on exit like the VFS — so a notebook cell and
 // a worker host can share the interpreter without seeing each other's rules
 export async function _withSandbox(opts, fn) {
-  const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false });
+  // engine 'tree' keeps imported modules on the tree-walker too (else they are AIR-compiled)
+  const prevOpts = _setRunOptions({ host: opts.host !== false, remote: opts.remote !== false, moduleEngine: opts.engine === 'tree' ? 'tree' : 'auto' });
   const prevBudget = _setBudget(_makeBudget(opts.budget));
   const prevOut = _stdio.out, prevErr = _stdio.err;
   _stdio.out = opts.stdout || _defaultStdout;
@@ -153,6 +154,32 @@ export function _airCompile(ast, src, ticks) {
   const Ctor = _airLib.needsAsync(mod) ? _AsyncFunction : Function;
   return { air: mod, imports, fn: new Ctor(...scopeKeys, body) };
 }
+
+// An imported module, AIR-compiled — the same engine as the cell importing it, so the module's
+// functions, properties and dunders are plain (mostly sync) JS functions there, not the
+// tree-walker's async ones (a cell reading a tree-walked @property got a Promise). Returns null
+// when no AIR is reachable; throws when the module can't be lowered (eval.js then tree-walks it).
+// Works with AIR attached (attachAir) or through the browser hooks auditable installs.
+function _airCompileModule(ast, src, info) {
+  const w = typeof window !== 'undefined' ? window : null;
+  const runPasses = _airLib ? _airLib.runPasses : (w && w._airRePropagate ? (m) => w._airRePropagate(m) : null);
+  const emitJS = _airLib ? _airLib.emitJS : (w && w._airEmit) || null;
+  const needsAsync = _airLib ? _airLib.needsAsync : (w && w._airNeedsAsync) || null;
+  if (!runPasses || !emitJS || !needsAsync) return null;
+  const mod = lowerAdder(ast, src, { module: { package: info.package } });
+  runPasses(mod);
+  const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
+  const scopeKeys = ['_py', ...imports];
+  const body = emitJS(mod, scopeKeys, [], { hinted: false });
+  const Ctor = needsAsync(mod) ? _AsyncFunction : Function;
+  const fn = new Ctor(...scopeKeys, body);
+  // run(lookup): lookup(pythonName) gives each free name's value (builtins, module globals);
+  // `__adder_module__` is the live module object the bindings are mirrored onto
+  return {
+    run: (lookup, moduleObj) => fn(_py, ...imports.map((n) => (n === '__adder_module__' ? moduleObj : lookup(pyNameOf(n))))),
+  };
+}
+setModuleCompiler(_airCompileModule);
 
 export async function _airCall(compiled, opts, bindings) {
   const args = [_py, ...compiled.imports.map((name) => bindings[pyNameOf(name)])];

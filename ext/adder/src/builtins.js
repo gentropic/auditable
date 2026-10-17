@@ -153,7 +153,8 @@ export class PyDict extends Map {
 // obj.__dict__ / vars(obj): a LIVE dict over an object's attributes — reads and writes go to the
 // object (self.__dict__.update(kw), self.__dict__[k] = v), as CPython's instance dict does. The
 // engines' own markers on the object are not attributes.
-const _attrHidden = (k) => k === '__adderClass__' || k === '__adderType__' || k === '__adderModule__' || k.startsWith('_py');
+const _ENGINE_KEYS = new Set(['__adderClass__', '__adderType__', '__adderModule__', '__adderMeta__', '_isExcClass', '_jsClass', '_genName', '_frozen', '_isGenerator', '_sentinel']);
+const _attrHidden = (k) => _ENGINE_KEYS.has(k) || k.startsWith('_py');
 export class AttrDict extends PyDict {
   constructor(target) { super(); Object.defineProperty(this, '_t', { value: target }); }
   _keys() { return Object.keys(this._t).filter((k) => !_attrHidden(k)); }
@@ -189,6 +190,32 @@ function _classDict(cls) {
   d.set = ro; d.delete = ro; d.clear = ro;
   d.__adderClass__ = 'mappingproxy';
   return d;
+}
+
+// dir(x) as CPython lists it: the object's attributes, its class's and every base's (members and
+// class variables), and object's dunders; a user __dir__ decides for itself
+const _OBJECT_DUNDERS = ['__class__', '__delattr__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__',
+  '__getattribute__', '__getstate__', '__gt__', '__hash__', '__init__', '__init_subclass__', '__le__', '__lt__',
+  '__ne__', '__new__', '__reduce__', '__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__'];
+function _pyDir(obj) {
+  if (obj === undefined || obj === null) return [];
+  if (typeof obj === 'object' && typeof obj.__dir__ === 'function' && !obj.__adderModule__) {
+    const r = obj.__dir__();
+    return r && typeof r.then === 'function' ? r.then((v) => [...pyIter(v)].sort()) : [...pyIter(r)].sort();
+  }
+  const names = new Set();
+  const addOwn = (o) => { for (const k of Object.keys(o)) if (!_attrHidden(k) && k !== 'prototype') names.add(k); };
+  const addClass = (c) => {
+    addOwn(c);
+    if (c._pyOwnMembers) for (const k of c._pyOwnMembers) names.add(k);
+  };
+  if (obj.__adderModule__ || (typeof obj === 'object' && !obj.__adderType__)) { addOwn(obj); return [...names].sort(); }
+  const cls = typeof obj === 'function' && obj._pyClass ? obj : obj.__adderType__;
+  if (typeof obj === 'object') { addOwn(obj); names.add('__dict__'); }
+  if (cls && cls._pyMRO) for (const c of cls._pyMRO) addClass(c);
+  else if (typeof obj === 'function') addOwn(obj);
+  if (cls) { names.add('__module__'); names.add('__dict__'); names.add('__weakref__'); for (const d of _OBJECT_DUNDERS) names.add(d); }
+  return [...names].sort();
 }
 
 export class PySet extends Set {
@@ -836,7 +863,7 @@ export function adderGetAttr(obj, attr) {
       if (_isNativeClass(obj[attr]) || obj[attr]._pyClass) return obj[attr];   // a class (binascii.Error, enum.Enum): never bound
       // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
       // import f` is the same object (binding made a fresh copy per access)
-      if (obj.__adderModule__ && obj[attr]._pyFunc) return obj[attr];
+      if (obj.__adderModule__ && (obj[attr]._pyFunc || obj[attr]._pyDef)) return obj[attr];
       // adder functions expect self as first arg — inject it (skip for modules)
       if (obj[attr]._pyFunc && !obj.__adderModule__) {
         const originalFn = obj[attr];
@@ -4547,7 +4574,7 @@ export function adderBuiltins(printFn) {
       return false;
     },
     vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),
-    dir: (obj) => obj ? Object.keys(obj).sort() : [],
+    dir: (obj) => _pyDir(obj),
     object: pyObjectObj,
     super: () => { throw new AdderError('RuntimeError', 'super() is handled by the evaluator'); },
     ValueError: (msg) => new AdderError('ValueError', msg),
