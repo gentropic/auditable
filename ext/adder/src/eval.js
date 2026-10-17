@@ -8,6 +8,7 @@ import './stdlib-types.js';
 import './stdlib-num.js';
 import './stdlib-time.js';
 import './stdlib-data.js';
+import './stdlib-sys.js';
 import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
@@ -16,7 +17,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
+  _registerImportMachinery, stdoutWrite, awaitTarget, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, setClassAttr, excStack, pyMatch,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -383,7 +384,7 @@ export async function adderEval(node, scope) {
     }
 
     // ── await ──
-    case 'Await': return await (await adderEval(node.value, scope));
+    case 'Await': return await awaitTarget(await adderEval(node.value, scope));
     case 'Yield': throw new AdderError('SyntaxError', 'yield outside function', node.line);
     case 'YieldFrom': throw new AdderError('SyntaxError', 'yield outside function', node.line);
     case 'NamedExpr': {
@@ -950,6 +951,22 @@ async function _evalDefaults(node, scope) {
   return d;
 }
 
+// What inspect / __defaults__ read off a `def` or lambda: its parameters as written, with the
+// defaults evaluated at definition time. `_pyDef` marks a Python function (type 'function'),
+// separately from `_pyFunc` (which also decides self-binding on plain objects).
+function _attachSignature(fn, node, defaults) {
+  const posonly = node.posonly || 0;
+  const pos = (node.params || []).map((p, i) => ({ name: p.name, kind: i < posonly ? 'POSITIONAL_ONLY' : 'POSITIONAL_OR_KEYWORD', hasDefault: Object.hasOwn(defaults, p.name) }));
+  const kwonly = (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: Object.hasOwn(defaults, p.name) }));
+  fn._pyDef = true;
+  fn._pySig = { params: pos, vararg: node.vararg || null, kwonly, kwarg: node.kwarg || null, defaults, isAsync: node.type === 'AsyncFunctionDef' };
+  const posDefaults = pos.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
+  fn.__defaults__ = posDefaults.length ? mkTuple(posDefaults) : null;
+  const kwd = kwonly.filter((p) => p.hasDefault);
+  fn.__kwdefaults__ = kwd.length ? new PyDict(kwd.map((p) => [p.name, defaults[p.name]])) : null;
+  return fn;
+}
+
 function _docstringOf(node) {
   const s = node.body && node.body[0];
   return s && s.type === 'Expr' && s.value && s.value.type === 'Constant' && typeof s.value.value === 'string' ? s.value.value : null;
@@ -982,7 +999,7 @@ function _makeFunction(node, scope, defaults = {}) {
   fn._pyFunc = true;
   fn._pyName = node.name;
   fn.__doc__ = _docstringOf(node);
-  return fn;
+  return _attachSignature(fn, node, defaults);
 }
 
 function _makeGeneratorFunction(node, scope, defaults = {}) {
@@ -1025,7 +1042,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
   fn._pyName = node.name;
   fn._isGenerator = true;
   fn.__doc__ = _docstringOf(node);
-  return fn;
+  return _attachSignature(fn, node, defaults);
 }
 
 async function* _runGenerator(node, scope, callArgs, defaults = {}) {
@@ -1136,6 +1153,8 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
   const fname = node.name || '<lambda>';
   let positionalIdx = 0;
   let kwObj = null;
+  // zero-argument super() uses the method's FIRST argument, whatever it is called (self, cls, mcs)
+  localScope._firstParam = params.length ? params[0].name : (vararg || null);
 
   // check if last arg is keyword bag
   if (callArgs.length > 0 && callArgs[callArgs.length - 1]?._kw) {
@@ -1204,166 +1223,38 @@ function _makeLambda(node, scope, defaults = {}) {
   };
   fn._pyFunc = true;
   fn._pyName = '<lambda>';
-  return fn;
+  return _attachSignature(fn, node, defaults);
 }
 
 // ── class ──
 
 // ── C3 linearization (MRO) ──
 
-function _computeMRO(cls) {
-  if (!cls._pyBases || cls._pyBases.length === 0) return [cls];
-  const baseMROs = cls._pyBases.map(b => [..._computeMRO(b)]);
-  const result = [cls];
-  const lists = [...baseMROs, [...cls._pyBases]];
-  while (lists.some(l => l.length > 0)) {
-    let head = null;
-    for (const list of lists) {
-      if (list.length === 0) continue;
-      const candidate = list[0];
-      if (lists.every(l => { const idx = l.indexOf(candidate); return idx <= 0; })) { head = candidate; break; }
-    }
-    if (!head) throw new AdderError('TypeError', 'Cannot create a consistent method resolution order');
-    result.push(head);
-    for (const list of lists) { const idx = list.indexOf(head); if (idx !== -1) list.splice(idx, 1); }
-  }
-  return result;
-}
-
 async function _evalClass(node, scope) {
   const bases = [];
-  for (const b of node.bases) bases.push(await adderEval(b, scope));
+  for (const b of node.bases) {
+    if (b.type === 'Starred') bases.push(...await pyCollect(await adderEval(b.value, scope)));
+    else bases.push(await adderEval(b, scope));
+  }
+  // class keywords: metaclass=, and the rest for __init_subclass__
+  let kw = null;
+  for (const k of node.keywords || []) {
+    kw = kw || {};
+    const v = await adderEval(k.value, scope);
+    if (k.arg === null) { for (const [kk, vv] of (v instanceof Map ? v : Object.entries(v))) kw[kk] = vv; }
+    else kw[k.arg] = v;
+  }
 
   // evaluate class body in a class scope
   const classScope = new AdderScope(scope);
   for (const stmt of node.body) await adderEval(stmt, classScope);
 
-  // build class
+  // build class (the factory both engines share); `__class__` is bound before
+  // __init_subclass__ fires, so super() works in a hook that calls a method
   const classVars = Object.fromEntries(classScope.vars);
-
-  // Detect `class X(list): …` — adder represents Python list/tuple as
-  // JS Array, and instances need to BE an Array for native list methods
-  // (`append`/`pop`/indexing) to dispatch via adderGetAttr's Array branch.
-  // `_pyContainerType` is set on the builtin `list` factory so a base
-  // class comparison stays internal (no name-string matching).
-  const listBase = bases.find(b => b && b._pyContainerType === 'list');
-
-  // constructor function
-  const cls = function (...args) {
-    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
-    const instance = listBase
-      ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: node.name, __adderType__: cls })
-      : Object.create(cls.prototype);
-    if (!listBase) {
-      instance.__adderClass__ = node.name;
-      instance.__adderType__ = cls;
-    }
-    // copy class variables (non-function, non-property)
-    for (const [k, v] of Object.entries(classVars)) {
-      if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) instance[k] = v;
-    }
-    initExceptionInstance(cls, instance, args);
-    // call __init__ if present
-    if (typeof cls.prototype.__init__ === 'function') {
-      const result = cls.prototype.__init__.call(instance, ...args);
-      if (result instanceof Promise) return result.then(() => instance);
-    }
-    return instance;
-  };
-
-  cls.prototype = {};
-  cls._pyName = node.name;
-  cls._pyClass = true;
-  cls._pyBases = bases.filter(b => b?._pyClass);
-
-  // MRO: compute and apply
-  const mro = _computeMRO(cls);
-  cls._pyMRO = mro;
-
-  // copy ONLY own methods from bases in MRO order (reverse = most base first, overridden by closer)
-  for (let i = mro.length - 1; i >= 1; i--) {
-    const base = mro[i];
-    if (!base.prototype || !base._pyOwnMembers) continue;
-    for (const key of base._pyOwnMembers) {
-      const desc = Object.getOwnPropertyDescriptor(base.prototype, key);
-      if (desc) Object.defineProperty(cls.prototype, key, desc);
-    }
-  }
-
-  // track own members for this class
-  for (const [name, value] of Object.entries(classVars)) {
-    if (value && value.__property__) {
-      const fget = value.fget;
-      const fset = value.fset;
-      const desc = { get() { return fget(this); }, configurable: true, enumerable: true };
-      if (fset) {
-        const setFn = function(v) { fset(this, v); };
-        setFn._pyFset = fset;
-        desc.set = setFn;
-      }
-      Object.defineProperty(cls.prototype, name, desc);
-    } else if (value && value.__staticmethod__) {
-      // @staticmethod — no self injection; wrap to strip _pyFunc flag
-      const rawFn = value.fn;
-      const sm = (...args) => rawFn(...args);
-      sm._pyName = `${node.name}.${name}`;
-      cls.prototype[name] = sm;
-      cls[name] = sm; // accessible as ClassName.method()
-    } else if (value && value.__classmethod__) {
-      // @classmethod — inject cls as first arg instead of self
-      const originalFn = value.fn;
-      const cm = function (...args) { return originalFn(cls, ...args); };
-      cm._pyName = `${node.name}.${name}`;
-      cls.prototype[name] = cm;
-      cls[name] = cm; // accessible as ClassName.method()
-    } else if (typeof value === 'function') {
-      const originalFn = value;
-      cls.prototype[name] = function (...args) { return originalFn(this, ...args); };
-      cls.prototype[name]._pyName = `${node.name}.${name}`;
-      // Python unbound-method access: `ClassName.method(instance, ...args)`
-      // should forward to originalFn(instance, ...args). Arrow form is
-      // intentional — adderGetAttr's `.bind(obj)` on a regular fn would
-      // pin `this` to the class; an arrow ignores `.bind`, so call
-      // semantics stay (instance, ...args). Inherited methods still
-      // resolve via the prototype chain on instance access; explicit
-      // unbound access uses the own-class binding above.
-      cls[name] = (...args) => originalFn(...args);
-    }
-  }
-
-  // copy class variables to constructor (for @classmethod access via cls.attr)
-  for (const [k, v] of Object.entries(classVars)) {
-    if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-      setClassAttr(cls, k, v);
-    }
-  }
-
-  // inherit static/class methods (and unbound regular methods) from base
-  // constructors. Walk MRO furthest-first so closer bases override deeper
-  // ones, and skip any key this class already owns — own definitions in
-  // classVars were assigned to `cls[key]` above; overwriting them here
-  // would silently route `Subclass.method` to the parent's implementation.
-  for (let i = mro.length - 1; i >= 1; i--) {
-    const base = mro[i];
-    if (!base._pyOwnMembers) continue;
-    for (const key of base._pyOwnMembers) {
-      if (Object.prototype.hasOwnProperty.call(cls, key)) continue;
-      if (key in base && typeof base[key] === 'function') cls[key] = base[key];
-    }
-  }
-  // own static/class methods override inherited (already set above, but re-apply to be safe)
-  for (const [name, value] of Object.entries(classVars)) {
-    if (value && (value.__staticmethod__ || value.__classmethod__) && cls[name]) { /* already set */ }
-  }
-
-  cls._pyOwnMembers = new PySet();
-  for (const [name, value] of Object.entries(classVars)) {
-    if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) cls._pyOwnMembers.add(name);
-  }
-
-  // set __class__ in class scope so super() works inside methods
-  classScope.set('__class__', cls);
-  await finishClass(cls, classAnnotations(node.body));
+  const cls = await classStatement(node.name, bases, classVars, classAnnotations(node.body), kw, {
+    beforeFinish: (c) => classScope.set('__class__', c),
+  });
 
   // handle decorators
   let result = cls;
@@ -1510,8 +1401,14 @@ function _evalSuperCall(args, scope, line) {
   if (args.length >= 2) return pySuper(args[0], args[1]);
   let cls;
   try { cls = scope.get('__class__'); } catch { throw new AdderError('RuntimeError', 'super(): __class__ not found', line); }
-  let self;
-  try { self = scope.get('self'); } catch { throw new AdderError('RuntimeError', 'super(): self not found', line); }
+  // the nearest enclosing function's first argument (CPython: the first local of the frame)
+  let s = scope;
+  while (s && s._firstParam === undefined) s = s.parent;
+  const first = s && s._firstParam;
+  if (!first) throw new AdderError('RuntimeError', 'super(): no arguments', line);
+  let self = s.vars.get(first);
+  if (s.vars.has(first) && Array.isArray(self) && first === (s._varargName || null)) self = self[0];
+  if (self === undefined) throw new AdderError('RuntimeError', 'super(): no arguments', line);
   return pySuper(cls, self);
 }
 

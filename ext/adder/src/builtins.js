@@ -268,7 +268,7 @@ export function pyTypeName(v) {
   if (v instanceof AdderRange) return 'range';
   if (v instanceof Complex) return 'complex';
   if (v instanceof Uint8Array) return 'bytes';
-  if (typeof v === 'function') return v._pyClass ? 'type' : v._pyFunc ? 'function' : 'builtin_function_or_method';
+  if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
   if (v instanceof AdderError) return v.pyType;
   if (isPlainDict(v)) return 'dict';
@@ -463,11 +463,16 @@ function _strRepr(s) {
     else if (ch === '\n') out += '\\n';
     else if (ch === '\r') out += '\\r';
     else if (ch === '\t') out += '\\t';
-    else if (c < 0x20 || c === 0x7f) out += '\\x' + c.toString(16).padStart(2, '0');
+    else if (_unprintable(ch)) out += _escapeCodePoint(c);
     else out += ch;
   }
   return out + q;
 }
+// Python's str.isprintable() is false for these: control, format, surrogate, private-use,
+// unassigned, and separators other than the space — repr() escapes them
+const _UNPRINTABLE = /^[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]$/u;
+const _unprintable = (ch) => ch !== ' ' && _UNPRINTABLE.test(ch);
+const _escapeCodePoint = (c) => (c < 0x100 ? '\\x' + c.toString(16).padStart(2, '0') : c < 0x10000 ? '\\u' + c.toString(16).padStart(4, '0') : '\\U' + c.toString(16).padStart(8, '0'));
 
 // int(str, base): Python's whole-string rule (JS parseInt stops at the first bad digit and
 // accepts "12abc"): optional sign, a 0x/0o/0b prefix (required to match a 16/8/2 base, or
@@ -730,6 +735,11 @@ export function adderGetAttr(obj, attr) {
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
     if (attr === '__doc__') return obj.__doc__ ?? null;
     if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
+    // a member of the class's metaclass (Meta.describe, a property on Meta) — the class's own first
+    if (obj._pyClass && obj.__adderMeta__ && !(attr in obj)) { const v = metaAttr(obj, attr); if (v !== undefined) return v; }
+    if (attr === '__class__' && obj._pyClass) return obj.__adderMeta__ || pyTypeObj;
+    if (attr === '__mro__' && obj._pyClass && obj._pyMRO) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : [...obj._pyMRO, pyObjectObj]);
+    if (attr === '__bases__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [] : obj._pyBases && obj._pyBases.length ? obj._pyBases : [pyObjectObj]);
   }
   // string methods
   if (typeof obj === 'string') return _strMethod(obj, attr);
@@ -812,6 +822,9 @@ export function adderGetAttr(obj, attr) {
     const val = obj[attr];
     if (typeof val === 'function') {
       if (_isNativeClass(val) || val._pyClass) return val;
+      // a Python function on a class (`Cls.method`) is the function itself — binding made a
+      // propertyless copy per access (no signature, no name, `Cls.f is Cls.f` False)
+      if (val._pyDef && typeof obj === 'function' && obj._pyClass) return val;
       if (val._pyFunc) { const fn = (...args) => val(obj, ...args); fn._pyFunc = true; fn._pyName = attr; return fn; }
       return val.bind(obj);
     }
@@ -912,7 +925,10 @@ function _strMethod(s, attr) {
     endswith: (suffix, start, end) => { const [a, b] = _bounds(s.length, start, end); const t = s.slice(a, b); return (Array.isArray(suffix) ? suffix : [suffix]).some((p) => t.endsWith(p)); },
     format: (...args) => _strFormat(s, args),
     format_map: (mapping) => _strFormat(s, [Object.assign({ _kw: true }, mapping instanceof Map ? Object.fromEntries(mapping) : mapping)]),
-    encode: () => new TextEncoder().encode(s),
+    encode: (...a) => {
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+      return pyEncode(s, a[0] ?? kw.encoding ?? 'utf-8', a[1] ?? kw.errors ?? 'strict');
+    },
     capitalize: () => (s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : s),
     title: () => s.toLowerCase().replace(/(^|[^\p{L}])(\p{L})/gu, (_, pre, ch) => pre + ch.toUpperCase()),
     swapcase: () => [...s].map((c) => (c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())).join(''),
@@ -926,7 +942,7 @@ function _strMethod(s, attr) {
     islower: () => /\p{Ll}/u.test(s) && !/\p{Lu}/u.test(s),
     istitle: () => /\p{L}/u.test(s) && s === m.title(),
     isidentifier: () => /^[\p{L}_][\p{L}\p{N}_]*$/u.test(s),
-    isprintable: () => !/[\x00-\x1f\x7f-\x9f]/.test(s),
+    isprintable: () => { for (const ch of s) if (_unprintable(ch)) return false; return true; },   // the rule repr() escapes by
     isascii: () => /^[\x00-\x7f]*$/.test(s),
     zfill: (width) => { const sg = s[0] === '-' || s[0] === '+' ? s[0] : ''; const body = sg ? s.slice(1) : s; return sg + body.padStart(width - sg.length, '0'); },
     ljust: (width, fill) => s.padEnd(width, fill || ' '),
@@ -1017,18 +1033,221 @@ export function dictLiteral(keys, values, spreads) {
 }
 
 // bytes methods: through the latin-1 string view, results back to bytes where Python gives bytes
+// ── codecs: text ↔ bytes, as CPython's codecs do ──
+// One core for str.encode, bytes.decode, bytes(str, enc), str(b, enc) and the codecs module.
+// Encodings: utf-8 (+ utf-8-sig), latin-1, ascii, utf-16 / utf-32 (BOM, -le, -be), cp1252.
+// Error handlers: strict, ignore, replace, backslashreplace, xmlcharrefreplace (encode),
+// surrogateescape, surrogatepass. Errors raise UnicodeEncodeError / UnicodeDecodeError with
+// CPython's messages.
+const _CODEC_ALIASES = {
+  'utf-8': ['utf8', 'u8', 'utf', 'cp65001', 'utf-8'],
+  'utf-8-sig': ['utf-8-sig', 'utf8-sig'],
+  'latin-1': ['latin-1', 'latin1', 'latin', 'l1', 'iso-8859-1', 'iso8859-1', '8859', 'cp819', 'iso-ir-100', 'iso-8859-1'],
+  'ascii': ['ascii', 'us-ascii', '646', 'us'],
+  'utf-16': ['utf-16', 'utf16', 'u16'],
+  'utf-16-le': ['utf-16-le', 'utf-16le', 'utf16le'],
+  'utf-16-be': ['utf-16-be', 'utf-16be', 'utf16be'],
+  'utf-32': ['utf-32', 'utf32', 'u32'],
+  'utf-32-le': ['utf-32-le', 'utf-32le', 'utf32le'],
+  'utf-32-be': ['utf-32-be', 'utf-32be', 'utf32be'],
+  'cp1252': ['cp1252', 'windows-1252', '1252'],
+};
+const _codecByAlias = new Map();
+for (const [canon, names] of Object.entries(_CODEC_ALIASES)) for (const n of names) _codecByAlias.set(n, canon);
+// the canonical name of an encoding (CPython's normalisation: case, '_' / ' ' as '-'), or null
+export function codecName(encoding) {
+  const k = String(encoding).trim().toLowerCase().replace(/[_ ]/g, '-');
+  return _codecByAlias.get(k) || null;
+}
+// CPython's display name for an encoding in error messages ('utf-8' → 'utf-8', 'latin-1' → 'latin-1')
+const _codecDisplay = (c) => (c === 'latin-1' ? 'latin-1' : c);
+function _lookupCodec(encoding) {
+  const c = codecName(encoding === undefined || encoding === null ? 'utf-8' : encoding);
+  if (!c) throw new AdderError('LookupError', `unknown encoding: ${encoding}`);
+  return c;
+}
+const _CP1252_HI = [0x20AC, -1, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, -1, 0x017D, -1,
+  -1, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, -1, 0x017E, 0x0178];
+const _cp1252Enc = new Map(_CP1252_HI.map((u, i) => [u, 0x80 + i]).filter(([u]) => u >= 0));
+
+function _encodeError(codec, s, start, end, reason) {
+  // CPython names the character escaped ('\xe9'), whatever its printability
+  const what = end - start > 1 ? `characters in position ${start}-${end - 1}` : `character '${_escapeCodePoint(s.codePointAt(start))}' in position ${start}`;
+  const e = new AdderError('UnicodeEncodeError', `'${_codecDisplay(codec)}' codec can't encode ${what}: ${reason}`);
+  e.encoding = codec; e.object = s; e.start = start; e.end = end; e.reason = reason;
+  return e;
+}
+function _decodeError(codec, b, start, end, reason) {
+  const what = end - start > 1 ? `bytes in position ${start}-${end - 1}` : `byte 0x${b[start].toString(16).padStart(2, '0')} in position ${start}`;
+  const e = new AdderError('UnicodeDecodeError', `'${_codecDisplay(codec)}' codec can't decode ${what}: ${reason}`);
+  e.encoding = codec; e.object = b; e.start = start; e.end = end; e.reason = reason;
+  return e;
+}
+
+// encode one code point that the codec can't represent, per the error handler → bytes to emit
+function _encodeFallback(codec, s, i, cp, len, errors, emitStr) {
+  switch (errors) {
+    case 'strict': throw _encodeError(codec, s, i, i + len, codec === 'ascii' ? 'ordinal not in range(128)' : codec === 'latin-1' ? 'ordinal not in range(256)' : codec === 'utf-8' ? 'surrogates not allowed' : 'character maps to <undefined>');
+    case 'ignore': return;
+    case 'replace': emitStr('?'); return;
+    case 'backslashreplace': emitStr(cp <= 0xff ? '\\x' + cp.toString(16).padStart(2, '0') : cp <= 0xffff ? '\\u' + cp.toString(16).padStart(4, '0') : '\\U' + cp.toString(16).padStart(8, '0')); return;
+    case 'xmlcharrefreplace': emitStr(`&#${cp};`); return;
+    case 'namereplace': emitStr('\\N{' + cp.toString(16).toUpperCase() + '}'); return;
+    default: throw new AdderError('LookupError', `unknown error handler name '${errors}'`);
+  }
+}
+
+export function pyEncode(s, encoding, errors) {
+  s = String(s);
+  errors = errors || 'strict';
+  const codec = _lookupCodec(encoding);
+  const out = [];
+  const pushStr = (t) => { for (const c of t) out.push(c.charCodeAt(0)); };   // handler output is ASCII
+  if (codec === 'utf-16' || codec === 'utf-16-le' || codec === 'utf-16-be' || codec === 'utf-32' || codec === 'utf-32-le' || codec === 'utf-32-be') {
+    const is32 = codec.startsWith('utf-32'), be = codec.endsWith('-be');
+    const put = (u, n) => { const bytes = []; for (let k = 0; k < n; k++) bytes.push((u >>> (8 * k)) & 0xff); if (be) bytes.reverse(); out.push(...bytes); };
+    if (codec === 'utf-16') put(0xfeff, 2);
+    if (codec === 'utf-32') put(0xfeff, 4);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && s.charCodeAt(i + 1) >= 0xdc00 && s.charCodeAt(i + 1) <= 0xdfff) {
+        if (is32) { put(((c - 0xd800) << 10) + (s.charCodeAt(i + 1) - 0xdc00) + 0x10000, 4); }
+        else { put(c, 2); put(s.charCodeAt(i + 1), 2); }
+        i++;
+      } else if (c >= 0xd800 && c <= 0xdfff && errors !== 'surrogatepass') {
+        _encodeFallback(codec, s, i, c, 1, errors, (t) => { for (const ch of t) put(ch.charCodeAt(0), is32 ? 4 : 2); });
+      } else put(c, is32 ? 4 : 2);
+    }
+    return new Uint8Array(out);
+  }
+  if (codec === 'utf-8-sig') out.push(0xef, 0xbb, 0xbf);
+  for (let i = 0; i < s.length; i++) {
+    let cp = s.charCodeAt(i), len = 1;
+    if (cp >= 0xd800 && cp <= 0xdbff && i + 1 < s.length) {
+      const lo = s.charCodeAt(i + 1);
+      if (lo >= 0xdc00 && lo <= 0xdfff) { cp = ((cp - 0xd800) << 10) + (lo - 0xdc00) + 0x10000; len = 2; }
+    }
+    if (codec === 'utf-8' || codec === 'utf-8-sig') {
+      if (cp >= 0xd800 && cp <= 0xdfff) {
+        if (errors === 'surrogateescape' && cp >= 0xdc80 && cp <= 0xdcff) { out.push(cp - 0xdc00); continue; }
+        if (errors === 'surrogatepass') { out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)); continue; }
+        _encodeFallback('utf-8', s, i, cp, 1, errors, pushStr);
+        continue;
+      }
+      if (cp < 0x80) out.push(cp);
+      else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+      else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+      else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      const limit = codec === 'ascii' ? 0x80 : 0x100;
+      let byte = -1;
+      if (codec === 'cp1252') byte = cp < 0x80 || (cp >= 0xa0 && cp <= 0xff) ? cp : (_cp1252Enc.get(cp) ?? -1);
+      else if (cp < limit) byte = cp;
+      if (byte < 0 && errors === 'surrogateescape' && cp >= 0xdc80 && cp <= 0xdcff) byte = cp - 0xdc00;
+      if (byte >= 0) out.push(byte);
+      else _encodeFallback(codec, s, i, cp, len, errors, pushStr);
+    }
+    i += len - 1;
+  }
+  return new Uint8Array(out);
+}
+
+// decode one undecodable byte run per the error handler → text to emit
+function _decodeFallback(codec, b, start, end, reason, errors) {
+  switch (errors) {
+    case 'strict': throw _decodeError(codec, b, start, end, reason);
+    case 'ignore': return '';
+    case 'replace': return '�';
+    case 'backslashreplace': { let t = ''; for (let k = start; k < end; k++) t += '\\x' + b[k].toString(16).padStart(2, '0'); return t; }
+    case 'surrogateescape': { let t = ''; for (let k = start; k < end; k++) t += String.fromCharCode(0xdc00 + b[k]); return t; }
+    default: throw new AdderError('LookupError', `unknown error handler name '${errors}'`);
+  }
+}
+
+// decode bytes. `final` false (an incremental decoder) leaves an incomplete trailing sequence
+// undecoded: → { text, consumed }
+export function pyDecodePartial(b, encoding, errors, final = true) {
+  errors = errors || 'strict';
+  const codec = _lookupCodec(encoding);
+  let i = 0, text = '';
+  const n = b.length;
+  if (codec === 'latin-1') { for (; i < n; i++) text += String.fromCharCode(b[i]); return { text, consumed: n }; }
+  if (codec === 'ascii' || codec === 'cp1252') {
+    for (; i < n; i++) {
+      const x = b[i];
+      if (x < 0x80) text += String.fromCharCode(x);
+      else if (codec === 'cp1252' && (x >= 0xa0 || _CP1252_HI[x - 0x80] >= 0)) text += String.fromCharCode(x >= 0xa0 ? x : _CP1252_HI[x - 0x80]);
+      else text += _decodeFallback(codec, b, i, i + 1, codec === 'ascii' ? 'ordinal not in range(128)' : 'character maps to <undefined>', errors);
+    }
+    return { text, consumed: n };
+  }
+  if (codec.startsWith('utf-16') || codec.startsWith('utf-32')) {
+    const w = codec.startsWith('utf-32') ? 4 : 2;
+    let be = codec.endsWith('-be');
+    if (codec === 'utf-16' || codec === 'utf-32') {
+      if (w === 2 && n >= 2 && b[0] === 0xfe && b[1] === 0xff) { be = true; i = 2; }
+      else if (w === 2 && n >= 2 && b[0] === 0xff && b[1] === 0xfe) i = 2;
+      else if (w === 4 && n >= 4 && b[0] === 0 && b[1] === 0 && b[2] === 0xfe && b[3] === 0xff) { be = true; i = 4; }
+      else if (w === 4 && n >= 4 && b[0] === 0xff && b[1] === 0xfe && b[2] === 0 && b[3] === 0) i = 4;
+    }
+    const unit = (k) => { let u = 0; for (let q = 0; q < w; q++) u |= b[k + q] << (8 * (be ? w - 1 - q : q)); return u >>> 0; };
+    while (i + w <= n) {
+      const u = unit(i);
+      if (w === 4) {
+        if (u > 0x10ffff || (u >= 0xd800 && u <= 0xdfff && errors !== 'surrogatepass')) text += _decodeFallback(codec, b, i, i + 4, 'code point not in range(0x110000)', errors);
+        else text += String.fromCodePoint(u);
+        i += 4; continue;
+      }
+      if (u >= 0xd800 && u <= 0xdbff) {
+        if (i + 4 > n) { if (!final) break; text += _decodeFallback(codec, b, i, n, 'unexpected end of data', errors); i = n; break; }
+        const lo = unit(i + 2);
+        if (lo >= 0xdc00 && lo <= 0xdfff) { text += String.fromCharCode(u, lo); i += 4; continue; }
+        text += _decodeFallback(codec, b, i, i + 2, 'illegal UTF-16 surrogate', errors); i += 2; continue;
+      }
+      if (u >= 0xdc00 && u <= 0xdfff) { text += _decodeFallback(codec, b, i, i + 2, 'illegal encoding', errors); i += 2; continue; }
+      text += String.fromCharCode(u); i += 2;
+    }
+    if (i < n && final) { text += _decodeFallback(codec, b, i, n, 'truncated data', errors); i = n; }
+    return { text, consumed: i };
+  }
+  // utf-8 (and utf-8-sig: a leading BOM is dropped)
+  if (codec === 'utf-8-sig' && n >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) i = 3;
+  while (i < n) {
+    const x = b[i];
+    if (x < 0x80) { text += String.fromCharCode(x); i++; continue; }
+    let need, cp, lo = 0x80, hi = 0xbf;
+    if (x >= 0xc2 && x <= 0xdf) { need = 1; cp = x & 0x1f; }
+    else if (x >= 0xe0 && x <= 0xef) { need = 2; cp = x & 0x0f; if (x === 0xe0) lo = 0xa0; if (x === 0xed && errors !== 'surrogatepass') hi = 0x9f; }
+    else if (x >= 0xf0 && x <= 0xf4) { need = 3; cp = x & 0x07; if (x === 0xf0) lo = 0x90; if (x === 0xf4) hi = 0x8f; }
+    else { text += _decodeFallback('utf-8', b, i, i + 1, 'invalid start byte', errors); i++; continue; }
+    let k = 1, ok = true;
+    for (; k <= need; k++) {
+      if (i + k >= n) break;
+      const y = b[i + k];
+      if (y < (k === 1 ? lo : 0x80) || y > (k === 1 ? hi : 0xbf)) { ok = false; break; }
+      cp = (cp << 6) | (y & 0x3f);
+    }
+    if (ok && k > need) { text += String.fromCodePoint(cp); i += need + 1; continue; }
+    if (ok && i + k >= n) {                                // ran out of input mid-sequence
+      if (!final) break;
+      text += _decodeFallback('utf-8', b, i, n, 'unexpected end of data', errors); i = n; break;
+    }
+    text += _decodeFallback('utf-8', b, i, i + k, k === 1 ? 'invalid continuation byte' : 'invalid continuation byte', errors);
+    i += k;
+  }
+  return { text, consumed: i };
+}
+export const pyDecode = (b, encoding, errors) => pyDecodePartial(b, encoding, errors, true).text;
+
 const _b2s = (b) => { let s = ''; for (const c of b) s += String.fromCharCode(c); return s; };
 const _s2b = (s) => bytesLit(s);
 function _bytesMethod(b, attr) {
   const bytesArg = (x) => (x instanceof Uint8Array ? _b2s(x) : Array.isArray(x) ? x.map(bytesArg) : x);
   const back = (r) => (typeof r === 'string' ? _s2b(r) : Array.isArray(r) ? r.map(back) : r);
   const m = {
-    decode: (encoding, errors) => {
-      if (encoding && encoding._kw) encoding = encoding.encoding;
-      const enc = (encoding || 'utf-8').toLowerCase().replace('_', '-');
-      if (enc === 'latin-1' || enc === 'latin1' || enc === 'iso-8859-1' || enc === 'ascii') return _b2s(b);
-      try { return new TextDecoder(enc, { fatal: errors !== 'replace' && errors !== 'ignore' }).decode(b); }
-      catch { throw new AdderError('UnicodeDecodeError', `'${enc}' codec can't decode bytes`); }
+    decode: (...a) => {
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+      return pyDecode(b, a[0] ?? kw.encoding ?? 'utf-8', a[1] ?? kw.errors ?? 'strict');
     },
     hex: (sep) => [...b].map((c) => c.toString(16).padStart(2, '0')).join(sep || ''),
   };
@@ -3163,6 +3382,10 @@ let _vfsPath = null;
 export function getAdderVFS() { return _adderVFS; }
 export function _getVfsPath() { return _vfsPath; }
 
+// os additions defined elsewhere (stdlib-sys.js: PathLike, fspath) — applied to each os module made
+let _osExtrasHook = null;
+export function setOsExtrasHook(fn) { _osExtrasHook = fn; if (adderModules.os) fn(adderModules.os); }
+
 export function setAdderVFS(vfsInstance, pathUtils) {
   _adderVFS = vfsInstance;
   if (pathUtils) _vfsPath = pathUtils;
@@ -3191,6 +3414,7 @@ export function _ensureFsModules(pathUtils) {
   };
 
   adderModules.os = _createOsModule(getVfs, pth);
+  if (_osExtrasHook) _osExtrasHook(adderModules.os);
   adderModules['os.path'] = adderModules.os.path;
   adderModules.pathlib = { Path: _createPathClass(getVfs, pth) };
   adderModules.shutil = _createShutilModule(getVfs);
@@ -3432,7 +3656,355 @@ export function classAnnotations(body) {
 // The last step of building a class, after its members and MRO and before its decorators:
 // record __annotations__, then run the nearest base's __init_subclass__ (Python calls it
 // implicitly as a classmethod; enum.Enum is built on it). May return a promise.
-export function finishClass(cls, annotations) {
+export function computeMRO(cls) {
+  if (!cls._pyBases || cls._pyBases.length === 0) return [cls];
+  const baseMROs = cls._pyBases.map(b => [...computeMRO(b)]);
+  const result = [cls];
+  const lists = [...baseMROs, [...cls._pyBases]];
+  while (lists.some(l => l.length > 0)) {
+    let head = null;
+    for (const list of lists) {
+      if (list.length === 0) continue;
+      const candidate = list[0];
+      if (lists.every(l => { const idx = l.indexOf(candidate); return idx <= 0; })) { head = candidate; break; }
+    }
+    if (!head) throw new AdderError('TypeError', 'Cannot create a consistent method resolution order');
+    result.push(head);
+    for (const list of lists) { const idx = list.indexOf(head); if (idx !== -1) list.splice(idx, 1); }
+  }
+  return result;
+}
+
+// f as a JS function to call: a function as is; an object with __call__ (a callable instance) its
+// bound __call__; anything else is not callable, as CPython says
+// what `await x` waits on: x's __await__() when it has one (an asyncio Task / Future, a user
+// awaitable) — such objects are not JS thenables, so returning one from a call doesn't await it
+export function awaitTarget(x) {
+  if (x !== null && x !== undefined && typeof x === 'object' && typeof x.then !== 'function' && typeof x.__await__ === 'function') return x.__await__();
+  return x;
+}
+
+export function asCallable(f) {
+  if (typeof f === 'function') return f;
+  if (f !== null && typeof f === 'object' && typeof f.__call__ === 'function') return (...a) => f.__call__(...a);
+  throw new AdderError('TypeError', `'${pyTypeName(f)}' object is not callable`);
+}
+
+// ── the object model: classes, __new__, type, metaclasses ──
+//
+// A class is a JS function (calling it makes an instance) with _pyName / _pyMRO / prototype /
+// _pyOwnMembers. Both engines build them here: buildClass is type.__new__'s work, typeCall is
+// type.__call__'s (run __new__, then __init__ when __new__ returned an instance of the class).
+// A metaclass is a class whose MRO contains `type` (pyTypeObj below); a class it builds carries it
+// as __adderMeta__, which type(), isinstance(), attribute lookup and calling the class consult.
+
+// is `x` an instance of class `cls`? (an instance through its __adderType__; a class through its metaclass)
+function _isInstanceOfClass(x, cls) {
+  if (x === null || x === undefined) return false;
+  const t = x.__adderType__ || (typeof x === 'function' && x._pyClass ? (x.__adderMeta__ || pyTypeObj) : null);
+  if (!t) return false;
+  return t === cls || (t._pyMRO || [t]).includes(cls);
+}
+const _isSubclass = (a, b) => a === b || ((a && a._pyMRO) || []).includes(b);
+
+// object.__new__(cls): a bare instance of cls
+export function objectNew(cls, args = []) {
+  const instance = cls._pyListBase
+    ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: cls._pyName, __adderType__: cls })
+    : Object.create(cls.prototype);
+  if (!cls._pyListBase) {
+    instance.__adderClass__ = cls._pyName;
+    instance.__adderType__ = cls;
+  }
+  if (cls._pyInstanceDefaults) for (const [k, v] of cls._pyInstanceDefaults) instance[k] = v;
+  initExceptionInstance(cls, instance, args);
+  return instance;
+}
+
+// the class's __new__: the nearest one in its MRO (a user `def __new__`, or type's for a metaclass)
+function _findNew(cls) {
+  for (const c of cls._pyMRO || [cls]) if (Object.hasOwn(c, '_pyNewFn')) return c._pyNewFn;
+  return null;
+}
+
+// type.__call__(cls, *args): __new__, then __init__ when __new__ gave back an instance of cls
+export function typeCall(cls, args) {
+  const finish = (inst) => {
+    if (!_isInstanceOfClass(inst, cls)) return inst;
+    const init = cls.prototype.__init__;
+    if (typeof init === 'function') {
+      const r = init.call(inst, ...args);
+      if (r && typeof r.then === 'function') return r.then(() => inst);
+    }
+    return inst;
+  };
+  const nf = _findNew(cls);
+  if (!nf) return finish(objectNew(cls, args));       // the common case: no __new__ anywhere
+  const inst = nf(cls, ...args);
+  return inst && typeof inst.then === 'function' ? inst.then(finish) : finish(inst);
+}
+
+// a classmethod, as a class attribute: bound to the class it's looked up on (a subclass too)
+function _classMethodDescriptor(fn, qual) {
+  return {
+    get() { const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; return m; },
+    configurable: true, enumerable: true,
+  };
+}
+
+// The class factory both engines use (the tree-walker's ClassDef, AIR's _py.createClass, and
+// type(name, bases, ns)): `members` the class body's namespace (an object), `annotations`
+// [[name, text], …].
+//   opts.meta         — the metaclass building it (absent for plain `type`)
+//   opts.kw           — class keywords other than metaclass=, passed to __init_subclass__
+//   opts.beforeFinish — runs before __init_subclass__ fires (the tree-walker binds the class's
+//                       `__class__` cell there, so super() works in a hook that calls a method)
+export function buildClass(name, bases, members, annotations, opts = {}) {
+  const cls = function (...args) {
+    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
+    // a metaclass with its own __call__ decides what calling the class does
+    const meta = cls.__adderMeta__;
+    if (meta) { const call = meta.prototype.__call__; if (typeof call === 'function') return call.call(cls, ...args); }
+    return typeCall(cls, args);
+  };
+
+  cls.prototype = {};
+  cls._pyName = name;
+  cls._pyClass = true;
+  cls._pyBases = (bases || []).filter(b => b?._pyClass && b !== pyObjectObj);   // object is every class's implicit root
+  // `class X(list): …` — instances must BE Arrays so native list methods dispatch
+  cls._pyListBase = (bases || []).some(b => b && (b._pyContainerType === 'list' || b._pyListBase));
+  if (opts.meta) cls.__adderMeta__ = opts.meta;
+
+  const mro = computeMRO(cls);
+  cls._pyMRO = mro;
+
+  // Inherit methods from MRO
+  for (let i = mro.length - 1; i >= 1; i--) {
+    const base = mro[i];
+    if (!base.prototype || !base._pyOwnMembers) continue;
+    for (const key of base._pyOwnMembers) {
+      const desc = Object.getOwnPropertyDescriptor(base.prototype, key);
+      if (desc) Object.defineProperty(cls.prototype, key, desc);
+    }
+  }
+
+  for (const [mName, value] of Object.entries(members)) {
+    if (mName === '__new__' && typeof (value && value.__staticmethod__ ? value.fn : value) === 'function') {
+      // __new__ is implicitly static: called as __new__(cls, *args)
+      const fn = value.__staticmethod__ ? value.fn : value;
+      cls._pyNewFn = fn;
+      cls.__new__ = fn;
+    } else if (value && value.__property__) {
+      const fget = value.fget;
+      const fset = value.fset;
+      const desc = { get() { return fget(this); }, configurable: true, enumerable: true };
+      if (fset) {
+        const setFn = function(v) { fset(this, v); };
+        setFn._pyFset = fset;
+        desc.set = setFn;
+      }
+      Object.defineProperty(cls.prototype, mName, desc);
+    } else if (value && value.__staticmethod__) {
+      const rawFn = value.fn;
+      const sm = (...args) => rawFn(...args);
+      sm._pyName = `${name}.${mName}`;
+      cls.prototype[mName] = sm;
+      cls[mName] = sm;
+    } else if (value && value.__classmethod__) {
+      // bound to the class it's called on: an instance's own class, a subclass when inherited
+      const fn = value.fn, qual = `${name}.${mName}`;
+      const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
+      cm._pyName = qual;
+      cls.prototype[mName] = cm;
+      Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
+    } else if (typeof value === 'function') {
+      const originalFn = value;
+      cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
+      cls.prototype[mName]._pyName = `${name}.${mName}`;
+      cls.prototype[mName].__func__ = originalFn;          // the def itself (inspect, abstract methods)
+      if (originalFn.__isabstractmethod__) cls.prototype[mName].__isabstractmethod__ = true;
+      // Python unbound-method access (`ClassName.method(instance, ...)`).
+      // Arrow form so adderGetAttr's `.bind(obj)` doesn't pin `this` to
+      // the class.
+      cls[mName] = (...args) => originalFn(...args);
+      // `Cls.method` is the plain function: its name, signature, docstring, abstractness
+      Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+      if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
+    }
+  }
+
+  // class variables, and the per-instance copies objectNew makes of them
+  cls._pyInstanceDefaults = [];
+  for (const [k, v] of Object.entries(members)) {
+    if (k === '__new__') continue;
+    if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
+      setClassAttr(cls, k, v);
+      cls._pyInstanceDefaults.push([k, v]);
+    }
+  }
+
+  // Inherit class-level members from MRO bases (as descriptors: an inherited classmethod binds
+  // to this class). Furthest first so closer bases win; keys this class owns are kept.
+  for (let i = mro.length - 1; i >= 1; i--) {
+    const base = mro[i];
+    if (!base._pyOwnMembers) continue;
+    for (const key of base._pyOwnMembers) {
+      // the class body's own members win; a closer base overrides a farther one (furthest first)
+      if (Object.hasOwn(members, key)) continue;
+      const d = Object.getOwnPropertyDescriptor(base, key);
+      if (d && (d.get || typeof d.value === 'function')) Object.defineProperty(cls, key, d);
+    }
+  }
+
+  cls._pyOwnMembers = new PySet();
+  for (const [mName, value] of Object.entries(members)) {
+    if (mName === '__new__') continue;
+    if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
+      cls._pyOwnMembers.add(mName);
+    }
+  }
+
+  // a metaclass's dunders answer for the class itself (len(Cls), iter(Cls), Cls[k], …) where the
+  // class doesn't define the name for its instances
+  if (opts.meta) {
+    for (const m of opts.meta._pyMRO || [opts.meta]) {
+      if (m === pyTypeObj || !m.prototype) continue;
+      for (const key of Object.getOwnPropertyNames(m.prototype)) {
+        if (!/^__\w+__$/.test(key) || key === '__init__' || key === '__call__' || key === '__new__' || key in cls) continue;
+        const d = Object.getOwnPropertyDescriptor(m.prototype, key);
+        if (typeof d.value === 'function') { const f = d.value; cls[key] = (...a) => f.call(cls, ...a); }
+      }
+    }
+  }
+
+  if (opts.beforeFinish) opts.beforeFinish(cls);
+  if (_pendingClassCell && _pendingClassCell.name === name) { const p = _pendingClassCell; _pendingClassCell = null; p.fn(cls); }
+  return finishClass(cls, annotations || [], opts.kw);
+}
+
+// A class statement whose metaclass is not `type` hands the namespace to the metaclass; the
+// statement's `__class__` cell binder rides here until type.__new__ builds the class.
+let _pendingClassCell = null;
+
+// `class Name(*bases, **kw): body` — both engines. Picks the metaclass (an explicit
+// metaclass=, else the most derived of the bases' — CPython's rule), and either builds the class
+// directly (plain `type`) or calls Meta(name, bases, namespace, **kw).
+export function classStatement(name, bases, members, annotations, kwObj, opts = {}) {
+  const kw = {};
+  let explicit = null;
+  if (kwObj) for (const [k, v] of Object.entries(kwObj)) { if (k === '_kw') continue; if (k === 'metaclass') explicit = v; else kw[k] = v; }
+  const kwOrNull = Object.keys(kw).length ? kw : null;
+  // a metaclass that's a plain callable (not a class) is just called
+  if (explicit && !(explicit._pyClass)) {
+    const ns = new PyDict(Object.entries(members));
+    if (annotations && annotations.length) ns.set('__annotations__', new PyDict(annotations));
+    return explicit(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
+  }
+  const meta = _winningMeta(explicit || pyTypeObj, bases);
+  if (meta === pyTypeObj) return buildClass(name, bases, members, annotations, { ...opts, kw: kwOrNull });
+  const ns = new PyDict(Object.entries(members));
+  if (annotations && annotations.length) ns.set('__annotations__', new PyDict(annotations));
+  _pendingClassCell = opts.beforeFinish ? { name, fn: opts.beforeFinish } : null;
+  try {
+    return meta(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
+  } finally { _pendingClassCell = null; }
+}
+
+// the metaclass a class gets: the most derived of `start` and its bases' metaclasses (CPython's rule)
+function _winningMeta(start, bases) {
+  let meta = start;
+  for (const b of bases) {
+    if (typeof b !== 'function' || !b._pyClass) continue;
+    const bm = b.__adderMeta__ || pyTypeObj;
+    if (_isSubclass(bm, meta)) meta = bm;
+    else if (!_isSubclass(meta, bm)) throw new AdderError('TypeError', 'metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases');
+  }
+  return meta;
+}
+
+// type.__new__(mcs, name, bases, namespace, **kw)
+export function typeNew(mcs, name, bases, ns, ...rest) {
+  const kw = rest.length && rest[rest.length - 1] && rest[rest.length - 1]._kw ? (({ _kw, ...o }) => o)(rest.pop()) : null;
+  const members = ns instanceof Map ? Object.fromEntries(ns) : { ...(ns || {}) };
+  let ann = [];
+  if (members.__annotations__ instanceof Map) { ann = [...members.__annotations__]; delete members.__annotations__; }
+  const bl = bases === undefined || bases === null ? [] : [...pyIter(bases)];
+  return buildClass(String(name), bl, members, ann, {
+    meta: mcs && mcs !== pyTypeObj ? mcs : null,
+    kw: kw && Object.keys(kw).length ? kw : null,
+  });
+}
+
+// `type`: the class of classes. type(x) is x's class; type(name, bases, ns) makes a class;
+// `class Meta(type)` makes a metaclass. One object for the whole program (it used to be made
+// afresh per builtins table, so `type(x) is type` failed across modules).
+export const pyTypeObj = function (...args) {   // (no JS name: `type` trips the TS-aware parser @gcu/build uses)
+  const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.pop() : null;
+  if (args.length === 1 && !kw) return typeOf(args[0]);
+  if (args.length === 3) {
+    // type(name, bases, ns) with a base whose metaclass is more derived: that metaclass builds it
+    const meta = _winningMeta(pyTypeObj, [...pyIter(args[1])]);
+    if (meta !== pyTypeObj) return meta(...args, ...(kw ? [kw] : []));
+    return typeNew(pyTypeObj, ...args, ...(kw ? [kw] : []));
+  }
+  throw new AdderError('TypeError', 'type() takes 1 or 3 arguments');
+};
+// `object`: the root class. object() is a bare instance (a sentinel: `_MISSING = object()`); it is
+// every class's implicit base, so it is never stored in _pyBases — __mro__ / __bases__ show it.
+export const pyObjectObj = function object() {
+  const o = Object.create(pyObjectObj.prototype);
+  o.__adderClass__ = 'object';
+  o.__adderType__ = pyObjectObj;
+  return o;
+};
+pyObjectObj._pyName = 'object'; pyObjectObj.__name__ = 'object'; pyObjectObj._pyClass = true;
+pyObjectObj.prototype = {};
+pyObjectObj._pyMRO = [pyObjectObj];
+pyObjectObj._pyOwnMembers = new PySet();
+_typeObjects.object = pyObjectObj;
+
+pyTypeObj._pyName = 'type'; pyTypeObj.__name__ = 'type'; pyTypeObj._pyClass = true;
+pyTypeObj.prototype = {
+  __init__() { return null; },
+  __call__(...a) { return typeCall(this, a); },
+};
+pyTypeObj._pyMRO = [pyTypeObj];
+pyTypeObj._pyOwnMembers = new PySet();
+pyTypeObj._pyNewFn = typeNew;
+pyTypeObj.__new__ = typeNew;
+_typeObjects.type = pyTypeObj;
+
+// type(x)
+export function typeOf(obj) {
+  if (obj !== null && obj !== undefined && obj.__adderType__) return obj.__adderType__;
+  if (typeof obj === 'function' && obj._pyClass) return obj.__adderMeta__ || pyTypeObj;
+  const name = pyTypeName(obj);
+  if (!_typeObjects[name]) {
+    const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
+    t._pyName = name; t._pyClass = true; t.__name__ = name;
+    _typeObjects[name] = t;
+  }
+  return _typeObjects[name];
+}
+
+// a metaclass's members, looked up on a class it built (after the class's own): methods bind to
+// the class, properties read with it
+export function metaAttr(cls, attr) {
+  const meta = cls.__adderMeta__;
+  if (!meta) return undefined;
+  for (const m of meta._pyMRO || [meta]) {
+    if (m === pyTypeObj || !m.prototype) continue;
+    const d = Object.getOwnPropertyDescriptor(m.prototype, attr);
+    if (!d) continue;
+    if (d.get) return d.get.call(cls);
+    if (typeof d.value === 'function') return (...a) => d.value.call(cls, ...a);
+    return d.value;
+  }
+  return undefined;
+}
+
+export function finishClass(cls, annotations, kw) {
   if (annotations && annotations.length) {
     const d = new PyDict();
     for (const [k, t] of annotations) d.set(k, t);
@@ -3442,10 +4014,11 @@ export function finishClass(cls, annotations) {
   for (let i = 1; i < mro.length; i++) {
     const hook = mro[i].__init_subclass__;
     if (typeof hook === 'function') {
-      const r = hook(cls);
+      const r = kw ? hook(cls, { _kw: true, ...kw }) : hook(cls);
       return r && typeof r.then === 'function' ? r.then(() => cls) : cls;
     }
   }
+  if (kw) throw new AdderError('TypeError', `${cls._pyName}.__init_subclass__() takes no keyword arguments`);
   return cls;
 }
 
@@ -3576,7 +4149,17 @@ export function adderBuiltins(printFn) {
       throw new AdderError('TypeError', `int() argument must be a string, a bytes-like object or a real number, not '${pyTypeName(x)}'`);
     },
     float: (x) => { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; } return Number(x); },
-    str: (x) => x === undefined ? '' : pyStrMaybe(x),
+    // str(x); str(b, encoding[, errors]) decodes bytes
+    str: (x, ...a) => {
+      if (x === undefined) return '';
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
+      const enc = a[0] ?? kw.encoding, errors = a[1] ?? kw.errors;
+      if (enc !== undefined || errors !== undefined) {
+        if (!(x instanceof Uint8Array)) throw new AdderError('TypeError', 'decoding str is not supported');
+        return pyDecode(x, enc ?? 'utf-8', errors ?? 'strict');
+      }
+      return pyStrMaybe(x);
+    },
     bool: (x) => x === undefined ? false : pyBool(x),
     list: Object.assign(
       (x) => x === undefined ? [] : pyCollect(x),
@@ -3591,8 +4174,9 @@ export function adderBuiltins(printFn) {
       if (x === undefined) return new Uint8Array(0);
       if (typeof x === 'number') return new Uint8Array(x);
       if (typeof x === 'string') {
+        if (encoding && encoding._kw) encoding = encoding.encoding;
         if (encoding === undefined) throw new AdderError('TypeError', 'string argument without an encoding');
-        return _strMethod(x, 'encode')(encoding);
+        return pyEncode(x, encoding);
       }
       if (x instanceof Uint8Array) return new Uint8Array(x);
       const items = [...pyIter(x)];   // sync: AIR calls bytes() without an await
@@ -3706,16 +4290,7 @@ export function adderBuiltins(printFn) {
     any: async (iterable) => { for await (const v of _pyEach(iterable)) if (pyBool(v)) return true; return false; },
     all: async (iterable) => { for await (const v of _pyEach(iterable)) if (!pyBool(v)) return false; return true; },
     isinstance: (obj, typeOrTuple) => _pyIsInstance(obj, typeOrTuple),
-    type: (obj) => {
-      if (obj !== null && obj !== undefined && obj.__adderType__) return obj.__adderType__;
-      const name = pyTypeName(obj);
-      if (!_typeObjects[name]) {
-        const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
-        t._pyName = name; t._pyClass = true; t.__name__ = name;
-        _typeObjects[name] = t;
-      }
-      return _typeObjects[name];
-    },
+    type: pyTypeObj,
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
     getattr: (obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } },
     setattr: (obj, name, value) => { guardSetAttr(obj, name); obj[name] = value; return null; },
@@ -3728,7 +4303,7 @@ export function adderBuiltins(printFn) {
     staticmethod: (fn) => ({ __staticmethod__: true, fn }),
     classmethod: (fn) => ({ __classmethod__: true, fn }),
     complex: (real, imag) => new Complex(real ?? 0, imag ?? 0),
-    callable: (obj) => typeof obj === 'function',
+    callable: (obj) => typeof obj === 'function' || (obj !== null && typeof obj === 'object' && typeof obj.__call__ === 'function'),
     chr: (n) => String.fromCodePoint(n),
     ord: (c) => { if (typeof c !== 'string' || c.length !== 1) throw new AdderError('TypeError', 'ord() expected a character'); return c.codePointAt(0); },
     hex: (n) => { const v = Math.trunc(n); return v < 0 ? '-0x' + (-v).toString(16) : '0x' + v.toString(16); },
@@ -3768,7 +4343,7 @@ export function adderBuiltins(printFn) {
     },
     vars: (obj) => obj ? { ...obj } : {},
     dir: (obj) => obj ? Object.keys(obj).sort() : [],
-    object: () => ({}),
+    object: pyObjectObj,
     super: () => { throw new AdderError('RuntimeError', 'super() is handled by the evaluator'); },
     ValueError: (msg) => new AdderError('ValueError', msg),
     TypeError: (msg) => new AdderError('TypeError', msg),
@@ -3826,9 +4401,25 @@ export function adderBuiltins(printFn) {
 // self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR
 // passes them). A builtin exception base supplies __init__ (it keeps the args, as
 // BaseException does) and __str__; `object` supplies a no-op __init__.
+// super() — `cls` the class whose method is running (its __class__ cell), `self` the method's first
+// argument. As in CPython the search runs along the MRO of self's type (not cls's own MRO — in a
+// diamond, B's super() from a D instance is C, not A), starting after cls:
+//   self a class that is a subclass of cls (a classmethod, __new__, __init_subclass__): its own MRO,
+//     class-level members bound to self;
+//   self an instance — of a class, or a class that is an instance of a metaclass: its type's MRO,
+//     prototype members bound to self.
 export function pySuper(cls, self) {
-  const mro = (cls && cls._pyMRO) || [cls];
+  const isClass = typeof self === 'function' && self._pyClass;
+  const viaClass = isClass && self._pyMRO && self._pyMRO.includes(cls);
+  const owner = viaClass ? self : isClass ? (self.__adderMeta__ || pyTypeObj) : (self && self.__adderType__);
+  let mro = owner && owner._pyMRO;
+  if (!mro || !mro.includes(cls)) mro = (cls && cls._pyMRO) || [cls];
   const start = mro.indexOf(cls) + 1;
+  const bindProto = (d) => {
+    if (d.get) return d.get.call(self);
+    if (typeof d.value === 'function') return (...a) => d.value.call(self, ...a);
+    return d.value;
+  };
   return new Proxy({}, {
     get(_, name) {
       if (typeof name !== 'string') return undefined;
@@ -3843,15 +4434,26 @@ export function pySuper(cls, self) {
           if (name === '__str__') return () => _argsStr(base._pyName, self.args);
           continue;
         }
-        if (!base || !base.prototype) continue;
-        const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
-        if (desc) {
-          if (desc.get) return desc.get.call(self);
-          if (typeof desc.value === 'function') return (...a) => desc.value.call(self, ...a);
-          return desc.value;
+        if (!base) continue;
+        // __new__ is static: the function itself, called with the class explicitly
+        if (name === '__new__') { if (Object.hasOwn(base, '_pyNewFn')) return base._pyNewFn; continue; }
+        if (viaClass) {
+          const sd = Object.getOwnPropertyDescriptor(base, name);
+          if (sd && sd.get) return sd.get.call(self);                 // a classmethod, bound to self
+          if (sd && typeof sd.value === 'function' && base._pyOwnMembers && base._pyOwnMembers.has(name)) return sd.value;
         }
+        if (!base.prototype) continue;
+        const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
+        if (desc && (!viaClass || base === pyTypeObj)) return bindProto(desc);
       }
-      if (name === '__init__') return () => null;   // object.__init__
+      // object's defaults
+      if (name === '__init__') return () => null;
+      if (name === '__new__') return (c, ...a) => objectNew(c);
+      if (name === '__init_subclass__') return (...a) => {
+        const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : null;
+        if (kw && Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'object.__init_subclass__() takes no keyword arguments');
+        return null;
+      };
       return undefined;
     },
     has(_, name) { return this.get(_, name) !== undefined; },
@@ -3879,6 +4481,8 @@ function _pyIsInstance(obj, typeOrTuple) {
         if (t._pyName === 'object') return true;
         if (t._pyName === 'dict' && (obj instanceof Map || isPlainDict(obj))) return true;
         if (t._pyName === 'int' && typeof obj === 'boolean') return true;
+        // a class is an instance of its metaclass (and of everything in the metaclass's MRO)
+        if (typeof obj === 'function' && obj._pyClass && obj.__adderMeta__ && _isSubclass(obj.__adderMeta__, t)) return true;
         // walk MRO of the object's adder type
         const objType = obj?.__adderType__;
         if (objType?._pyMRO) {

@@ -11,8 +11,7 @@
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output",
-  "class/metaclass-basic": "output"
+  "builtin/sum-start": "output"
  },
  "auto": {
   "num/int-float-print": "output",
@@ -25,7 +24,6 @@
   "mod/math": "output",
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
-  "builtin/sum-start": "output",
-  "class/metaclass-basic": "output"
+  "builtin/sum-start": "output"
  }
 }

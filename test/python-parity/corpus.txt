@@ -1889,3 +1889,257 @@ print(type(Base).__name__, isinstance(Base, Meta))
 class Sub(Base):
     pass
 print(type(Sub).__name__)
+
+### class/object-model
+class Singleton:
+    _inst = None
+    def __new__(cls, *a):
+        if cls._inst is None:
+            cls._inst = super().__new__(cls)
+        return cls._inst
+    def __init__(self, v):
+        self.v = v
+a = Singleton(1)
+b = Singleton(2)
+print(a is b, a.v)
+class Neg:
+    def __new__(cls, x):
+        if x < 0:
+            return "negative"
+        return super().__new__(cls)
+    def __init__(self, x):
+        self.x = x
+print(Neg(-1), Neg(3).x)
+class Meta(type):
+    registry = []
+    def __new__(mcs, name, bases, ns, **kw):
+        ns["tag"] = name.lower()
+        cls = super().__new__(mcs, name, bases, ns)
+        mcs.registry.append(name)
+        return cls
+    def __init__(cls, name, bases, ns, **kw):
+        super().__init__(name, bases, ns)
+        cls.kw = kw
+    def describe(cls):
+        return f"<{cls.__name__} via {type(cls).__name__}>"
+    def __call__(cls, *a, **k):
+        obj = super().__call__(*a, **k)
+        obj.made_by = "Meta"
+        return obj
+class Base(metaclass=Meta, flavor="x"):
+    def __init__(self, v=0):
+        self.v = v
+class Child(Base):
+    pass
+print(Meta.registry, Base.tag, Child.tag, Base.kw, Child.kw)
+print(type(Base).__name__, type(Child) is Meta, isinstance(Child, Meta), isinstance(Child, type))
+print(Base.describe(), Child.describe())
+c = Child(5)
+print(c.v, c.made_by, hasattr(c, "describe"))
+T = type("T", (Base,), {"x": 1, "f": lambda self: self.x + 1})
+print(T.__name__, T().f(), type(T).__name__, T.tag)
+P = type("P", (), {"n": 2})
+print(P.__name__, P.n, P().n, type(P) is type)
+print(type(int) is type, type(type) is type, isinstance(3, type), isinstance(int, type), callable(c), callable(Child))
+class Callme:
+    def __call__(self):
+        return 42
+print(callable(Callme()), Callme()(), callable(3))
+class Reg:
+    subs = []
+    def __init_subclass__(cls, /, key=None, **kw):
+        super().__init_subclass__(**kw)
+        Reg.subs.append((cls.__name__, key))
+class R1(Reg, key="one"):
+    pass
+class R2(Reg):
+    pass
+print(Reg.subs)
+class M2(type):
+    def __len__(cls):
+        return 7
+    @property
+    def label(cls):
+        return "L:" + cls.__name__
+class Q(metaclass=M2):
+    pass
+print(len(Q), Q.label)
+
+### class/super-diamond-classmethods
+class A:
+    def who(self):
+        return ["A"]
+    @classmethod
+    def make(cls):
+        return cls.__name__
+class B(A):
+    def who(self):
+        return ["B"] + super().who()
+class C(A):
+    def who(self):
+        return ["C"] + super().who()
+class D(B, C):
+    def who(self):
+        return ["D"] + super().who()
+print(D().who(), [k.__name__ for k in D.__mro__])
+print(A.make(), D.make(), D().make(), B.make())
+class E(A):
+    @classmethod
+    def make(cls):
+        return "E:" + super().make()
+class F(E):
+    pass
+print(E.make(), F.make())
+class Base:
+    def __init_subclass__(cls, **kw):
+        cls.marked = kw.get("mark", "none")
+class K1(Base, mark="yes"):
+    pass
+print(K1.marked, type(K1) is type, K1.__class__ is type, K1.__bases__ == (Base,))
+try:
+    class Bad(A, mark=1):
+        pass
+except TypeError as e:
+    print("TypeError")
+try:
+    3()
+except TypeError as e:
+    print(e)
+
+### str/codecs
+s = "héllo €𝄞"
+for enc in ["utf-8", "utf_8", "UTF8", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-8-sig"]:
+    b = s.encode(enc)
+    print(enc, b, b.decode(enc) == s)
+print("é".encode("latin-1"), "€".encode("cp1252"), b"\x80\xe9".decode("cp1252"))
+for errors in ["ignore", "replace", "backslashreplace", "xmlcharrefreplace"]:
+    print(errors, "a€b𝄞".encode("ascii", errors), "a€b".encode("latin-1", errors))
+for errors in ["ignore", "replace", "backslashreplace", "surrogateescape"]:
+    print(errors, repr(b"a\xff\xe2\x82b\xe2\x82".decode("utf-8", errors)))
+print(b"\xff\xfeh\x00".decode("utf-16"), str(b"caf\xc3\xa9", "utf-8"), str(b"caf\xe9", encoding="latin-1"))
+print(bytes("x€", "utf-8"), "abc".encode(), b"abc".decode())
+tests = [lambda: "é".encode("ascii"), lambda: b"\xff".decode("utf-8"), lambda: b"\xe2\x82".decode("utf-8"),
+         lambda: b"\xe0A".decode(), lambda: "x".encode("nope"), lambda: b"\x80".decode("ascii"), lambda: "a€b".encode("latin-1")]
+for t in tests:
+    try:
+        t()
+    except (UnicodeError, LookupError) as e:
+        print(type(e).__name__, e)
+print("\udcff".encode("utf-8", "surrogateescape"), b"\xc3\xa9".decode("latin-1"))
+print(repr("\x00\x7f\u200b\u2028 \xa0\ud800"), "\xa0é".isprintable(), "ab".isprintable())
+
+### mod/plumbing-modules
+import sys, types, abc, numbers, errno, atexit, codecs, keyword, calendar, unicodedata, stat, fnmatch, shlex, threading, queue, reprlib, weakref, gettext, string, copyreg, locale
+print(sys.version_info >= (3, 8), sys.version_info[:2] >= (3, 10), sys.version_info.major, type(sys.version_info).__name__ != "", sys.byteorder)
+ns = types.SimpleNamespace(a=1, b="x")
+ns.c = 3
+print(ns, ns == types.SimpleNamespace(a=1, b="x", c=3), isinstance(len, types.BuiltinFunctionType))
+def f(): pass
+print(isinstance(f, types.FunctionType), isinstance(f, types.BuiltinFunctionType), types.ModuleType("m").__name__)
+class Shape(abc.ABC):
+    @abc.abstractmethod
+    def area(self): ...
+    def describe(self):
+        return "area=" + str(self.area())
+class Sq(Shape):
+    def __init__(self, s): self.s = s
+    def area(self): return self.s * self.s
+try:
+    Shape()
+except TypeError as e:
+    print("TypeError", e)
+print(Sq(3).describe(), isinstance(Sq(2), Shape), sorted(Shape.__abstractmethods__), sorted(Sq.__abstractmethods__))
+class Reg(abc.ABC): pass
+Reg.register(int)
+print(isinstance(3, Reg), isinstance("x", Reg), issubclass(Sq, Shape))
+print(isinstance(3, numbers.Integral), isinstance(3.5, numbers.Integral), isinstance(3.5, numbers.Real), isinstance(True, numbers.Number), isinstance("3", numbers.Number))
+print(errno.ENOENT, errno.errorcode[2], errno.EEXIST)
+print(codecs.lookup("UTF8").name, codecs.encode("é", "latin-1"), codecs.decode(b"\xc3\xa9", "utf-8"), codecs.BOM_UTF8)
+d = codecs.getincrementaldecoder("utf-8")()
+print(repr(d.decode(b"\xe2\x82")), repr(d.decode(b"\xac!")), repr(d.decode(b"", True)))
+print(keyword.iskeyword("lambda"), keyword.iskeyword("match"), keyword.issoftkeyword("match"), len(keyword.kwlist))
+print(calendar.isleap(2024), calendar.monthrange(2024, 2), calendar.weekday(2024, 3, 5), calendar.month_name[3], calendar.day_abbr[0], calendar.timegm((2024, 1, 1, 0, 0, 0)))
+print(unicodedata.normalize("NFD", "é") == "é", unicodedata.category("A"), unicodedata.category("é"), unicodedata.category("1"), unicodedata.category(" "), unicodedata.category("́"))
+print(unicodedata.decimal("٣"), unicodedata.digit("7"), unicodedata.combining("́") > 0, unicodedata.combining("a"), unicodedata.east_asian_width("中"), unicodedata.east_asian_width("a"))
+print(unicodedata.bidirectional("a"), unicodedata.bidirectional("א"), unicodedata.bidirectional("1"), unicodedata.bidirectional("ب"), unicodedata.bidirectional(" "))
+print(stat.S_ISDIR(0o40755), stat.S_ISREG(0o100644), stat.filemode(0o100644), stat.filemode(0o40755))
+print(fnmatch.fnmatch("data.csv", "*.csv"), fnmatch.fnmatch("a.txt", "*.csv"), fnmatch.filter(["a.py", "b.txt", "c.py"], "*.py"), fnmatch.translate("*.py"), fnmatch.fnmatchcase("x1", "x[0-9]"))
+print(shlex.split('ls -l "my file" \'a b\' x\\ y'), shlex.quote("it's"), shlex.join(["a", "b c"]))
+lock = threading.Lock()
+with lock:
+    print("locked", lock.locked())
+print(lock.locked(), threading.current_thread().name)
+out = []
+t = threading.Thread(target=lambda x: out.append(x * 2), args=(21,))
+t.start(); t.join()
+print(out, t.is_alive())
+q = queue.Queue()
+q.put(1); q.put(2)
+pq = queue.PriorityQueue()
+for x in [5, 1, 3]: pq.put(x)
+print(q.get(), q.qsize(), [pq.get() for _ in range(3)])
+try:
+    queue.Queue().get_nowait()
+except queue.Empty:
+    print("empty")
+print(reprlib.repr("x" * 50), weakref.ref(Sq(1))() is not None or True)
+class P:
+    def __init__(self): self.children = [self]
+    @reprlib.recursive_repr()
+    def __repr__(self): return f"P({self.children})"
+print(repr(P()))
+print(gettext.gettext("hello"), gettext.ngettext("a", "as", 2))
+class Up(string.Formatter):
+    def format_field(self, value, spec):
+        return str(value).upper()
+print(string.Formatter().format("{0}-{x}-{1:>4}", "a", 7, x="y"), Up().format("{} and {name}", "x", name="bob"))
+print(list(string.Formatter().parse("a{0!r:>3}b")))
+print(locale.localeconv()["decimal_point"])
+
+### mod/inspect-asyncio-pprint
+import inspect, asyncio, pprint, functools, calendar
+def f(a, b=2, *args, c, d=4, **kw):
+    """Doc
+    more."""
+    return a
+print(inspect.signature(f), list(inspect.signature(f).parameters), f.__defaults__, f.__kwdefaults__)
+p = inspect.signature(f).parameters["b"]
+print(p.name, p.default, p.kind, p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.signature(f).parameters["c"].default is inspect.Parameter.empty)
+class K:
+    def __init__(self, x, y=1): pass
+    def m(self, z): return z
+print(inspect.signature(K), inspect.signature(K(1).m), inspect.signature(K.m))
+def deco(fn):
+    @functools.wraps(fn)
+    def w(*a, **k): return fn(*a, **k)
+    return w
+@deco
+def g(p, q=3): pass
+print(inspect.signature(g), g.__name__, inspect.getdoc(f))
+ba = inspect.signature(f).bind(1, c=3)
+ba.apply_defaults()
+print(dict(ba.arguments))
+async def co(): return 1
+print(inspect.isfunction(f), inspect.isclass(K), inspect.ismethod(K(1).m), inspect.iscoroutinefunction(co), inspect.iscoroutinefunction(f), inspect.isbuiltin(len))
+print([n for n, _ in inspect.getmembers(K, inspect.isfunction)])
+async def main():
+    async def work(n):
+        await asyncio.sleep(0.001)
+        return n * 2
+    r = await asyncio.gather(work(1), work(2), work(3))
+    t = asyncio.create_task(work(5))
+    v = await t
+    q = asyncio.Queue()
+    await q.put("a")
+    got = await q.get()
+    ev = asyncio.Event()
+    ev.set()
+    await ev.wait()
+    return r, v, got, t.done(), ev.is_set()
+print(asyncio.run(main()))
+data = {"zeta": list(range(12)), "alpha": {"nested": ["x" * 20, "y" * 20, "z" * 20], "n": 1}, "beta": (1, 2)}
+pprint.pprint(data)
+print(pprint.pformat(data, width=40))
+pprint.pp({"b": 1, "a": 2})
+print(pprint.pformat(list(range(40)), compact=True, width=30))
+print(calendar.monthrange(2024, 2), calendar.weekday(2024, 3, 5), calendar.MONDAY == 0, int(calendar.SUNDAY))

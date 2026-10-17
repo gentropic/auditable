@@ -345,6 +345,9 @@ function _astHasAwaitOrYield(node) {
   return false;
 }
 
+// `type(...)` with other than one argument builds a class — possibly through a metaclass
+const _isTypeConstruction = (call) => call.func.type === 'Name' && call.func.id === 'type' && ((call.args || []).length !== 1 || (call.keywords || []).length > 0);
+
 function _collectNameCallees(node, out, disqualifyRef) {
   if (!node || typeof node !== 'object') return;
   if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' ||
@@ -353,6 +356,8 @@ function _collectNameCallees(node, out, disqualifyRef) {
   }
   if (node.type === 'Call') {
     if (node.func && node.func.type === 'Name') {
+      // type(name, bases, ns) may run a metaclass written in Python (async): not a sync call
+      if (_isTypeConstruction(node)) disqualifyRef.value = true;
       out.push(node.func.id);
     } else {
       // Non-Name callee (attribute, subscript, dynamic) — disqualifies the
@@ -452,7 +457,9 @@ function analyseSyncFunctions(moduleStmts) {
       for (const b of nameBases) callees.push(b.id);
       funcs.push({
         name: stmt.name,
+        // a __new__ decides construction itself (and is lowered async): not provably sync
         disqualified: asyncInit || hasAwait || disqualifyRef.value ||
+          (stmt.body || []).some((m) => (m.type === 'FunctionDef' || m.type === 'AsyncFunctionDef') && m.name === '__new__') ||
           !!(stmt.decorators && stmt.decorators.length) || (stmt.keywords && stmt.keywords.length > 0) ||
           nameBases.length !== bases.filter((b) => !(b && b.type === 'Name' && b.id === 'object')).length,
         callees,
@@ -581,6 +588,7 @@ export function lowerAdder(ast, source, opts) {
   // Identify names that will be declared by `function`/`class` syntax —
   // those don't need (and can't have) a `let` pre-declaration.
   const funcOrClassNames = new Set();
+  ctx.funcOrClassNames = funcOrClassNames;   // module-level def/class names: provably callable
   for (const stmt of ast.body) {
     if ((stmt.type === 'FunctionDef' || stmt.type === 'AsyncFunctionDef' ||
          stmt.type === 'ClassDef') && stmt.name) {
@@ -888,7 +896,8 @@ function lowerExpr_ad(ctx, node) {
     case 'ListComp': return lowerComprehension(ctx, node);
 
     case 'Await': {
-      const val = lowerExpr_ad(ctx, node.value);
+      // through _py.aw: an object with __await__ (an asyncio Task) is awaited via it
+      const val = emitPyCall(ctx, 'aw', [lowerExpr_ad(ctx, node.value)], l);
       return ctx.emit('await', [val.id], DYNAMIC, l);
     }
 
@@ -1140,9 +1149,16 @@ function lowerCall_ad(ctx, node) {
   const isSyncCallee =
     node.func.type === 'Name' &&
     !hasStarred && !hasKwargs &&
-    ctx.syncFunctions.has(node.func.id);
+    ctx.syncFunctions.has(node.func.id) && !_isTypeConstruction(node);
 
-  const fn = lowerExpr_ad(ctx, node.func);
+  // a callee that isn't provably a function (a variable, a call's result, a subscript) may be an
+  // object with __call__: _py.fnOf gives its bound __call__ (a function passes through as is)
+  let fn = lowerExpr_ad(ctx, node.func);
+  const id = node.func.type === 'Name' ? node.func.id : null;
+  const knownFn = id !== null && (
+    (ctx.funcOrClassNames && ctx.funcOrClassNames.has(id)) ||                        // a module-level def / class
+    (KNOWN_SYNC_BUILTINS.has(id) && !ctx.symbols.has(id) && !ctx.defines.has(id)));   // an unshadowed builtin
+  if (!knownFn) fn = emitPyCall(ctx, 'fnOf', [fn], l);
   const finalArgs = kwObjId ? [...argIds, kwObjId] : argIds;
   return emitAwaitedCall_ad(ctx, fn.id, finalArgs, l, undefined, { sync: isSyncCallee });
 }
@@ -1562,9 +1578,13 @@ function lowerClassDef(ctx, node) {
   const l = ctx.loc(node);
   const name = node.name;
 
-  // Evaluate bases
-  const bases = (node.bases || []).map(b => lowerExpr_ad(ctx, b));
-  const basesArr = ctx.emit('array_new', bases.map(b => b.id), DYNAMIC, l);
+  // Evaluate bases (`*bases` spread, as in a list display) and the class keywords
+  // (metaclass=, and the rest for __init_subclass__)
+  const basesArr = lowerListOrTuple(ctx, { type: 'List', elts: node.bases || [], line: node.line, col: node.col });
+  const kwPairs = (node.keywords || []).map((k) => (k.arg === null
+    ? { spread: true, id: lowerExpr_ad(ctx, k.value).id }
+    : { key: k.arg, id: lowerExpr_ad(ctx, k.value).id }));
+  const kwObj = kwPairs.length ? ctx.emit('object_new', kwPairs, DYNAMIC, l) : ctx.emit('const', [null], VOID, l);
 
   // Lower class body as a function that receives an empty object and populates it.
   // The class body is a sequence of statements (method defs, assignments, etc.)
@@ -1628,7 +1648,7 @@ function lowerClassDef(ctx, node) {
   for (const [k, t] of classAnnotations(node.body)) annIds.push(ctx.emit('const', [k], STRING, l).id, ctx.emit('const', [t], STRING, l).id);
   const annArr = ctx.emit('array_new', annIds, DYNAMIC, l);
   // createClass may return a promise (a base's __init_subclass__ written in Python)
-  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr], l).id], DYNAMIC, l);
+  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj], l).id], DYNAMIC, l);
 
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -2132,6 +2152,18 @@ function emitRaw(ctx, jsLine, declaredName = null) {
 // Approach: emit a store to a synthetic name, then use that name in the raw line.
 // Evaluate a def's / lambda's parameter defaults in the enclosing scope, each into a named
 // temp the parameter binding then reads: once per definition, as Python does.
+// a def's parameters as inspect describes them (names and kinds; default VALUES ride separately)
+function _sigShape(node) {
+  const posonly = node.posonly || 0;
+  return {
+    params: (node.params || []).map((p, i) => ({ name: p.name, kind: i < posonly ? 'POSITIONAL_ONLY' : 'POSITIONAL_OR_KEYWORD', hasDefault: !!p.default })),
+    vararg: node.vararg ? (node.vararg.name || node.vararg) : null,
+    kwonly: (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: !!p.default })),
+    kwarg: node.kwarg ? (node.kwarg.name || node.kwarg) : null,
+    isAsync: node.type === 'AsyncFunctionDef',
+  };
+}
+
 function _lowerParamDefaults(ctx, node) {
   const out = {};
   for (const p of [...(node.params || []), ...(node.kwonly || [])]) {
@@ -2164,6 +2196,7 @@ function lowerFuncDef(ctx, node) {
   // then the defaults, once, here in the enclosing scope (Python semantics)
   const savedDefaults = ctx._paramDefaults;
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
+  const defaultRefs = ctx._paramDefaults;            // their temps, for the signature below
   const savedExcName = ctx._excName;
   ctx._excName = null;
   // zero-argument super() in a method: the enclosing class and the method's first parameter
@@ -2247,6 +2280,8 @@ function lowerFuncDef(ctx, node) {
   const doc = node.body.length > 0 && node.body[0].type === 'Expr' && node.body[0].value.type === 'Constant' &&
     typeof node.body[0].value.value === 'string' ? node.body[0].value.value : null;
   if (doc !== null) emitRaw(ctx, `${jsSafeName(name)}.__doc__ = ${JSON.stringify(doc)};`);
+  // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
+  emitRaw(ctx, `_py.defSig(${jsSafeName(name)}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}});`);
   // its generator objects show the function's name (`<generator object g at ...>`)
   if (isGenerator) emitRaw(ctx, `${jsSafeName(name)}.prototype._genName = ${JSON.stringify(name)};`);
 

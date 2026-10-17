@@ -8,6 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, guardSetAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
+  buildClass, classStatement, asCallable, awaitTarget,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -354,7 +355,7 @@ function _callMethod(obj, name, siteId, ...args) {
     }
   }
   // Slow path: full adderGetAttr lookup + call.
-  const fn = adderGetAttr(obj, name);
+  const fn = asCallable(adderGetAttr(obj, name));
   const result = fn(...args);
 
   // Populate the cache for class-instance receivers. We cache the
@@ -488,134 +489,11 @@ async function _importFromPath(path, names) {
 // ── Class creation ──
 // Mirrors _evalClass in eval.js, but takes pre-evaluated bases and members.
 
-function _rtComputeMRO(cls) {
-  if (!cls._pyBases || cls._pyBases.length === 0) return [cls];
-  const baseMROs = cls._pyBases.map(b => [..._rtComputeMRO(b)]);
-  const result = [cls];
-  const lists = [...baseMROs, [...cls._pyBases]];
-  while (lists.some(l => l.length > 0)) {
-    let head = null;
-    for (const list of lists) {
-      if (list.length === 0) continue;
-      const candidate = list[0];
-      if (lists.every(l => { const idx = l.indexOf(candidate); return idx <= 0; })) { head = candidate; break; }
-    }
-    if (!head) throw new AdderError('TypeError', 'Cannot create a consistent method resolution order');
-    result.push(head);
-    for (const list of lists) { const idx = list.indexOf(head); if (idx !== -1) list.splice(idx, 1); }
-  }
-  return result;
-}
-
-function _createClass(name, bases, members, annotations) {
-  // `class X(list): …` — instance must BE an Array so native list methods
-  // (append/pop/indexing) dispatch via adderGetAttr's Array branch. See
-  // _evalClass for the mirror-image logic on the tree-walker side.
-  const listBase = (bases || []).find(b => b && b._pyContainerType === 'list');
-  const cls = function (...args) {
-    if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
-    const instance = listBase
-      ? Object.assign(args.length > 0 ? [...pyIter(args[0])] : [], { __adderClass__: name, __adderType__: cls })
-      : Object.create(cls.prototype);
-    if (!listBase) {
-      instance.__adderClass__ = name;
-      instance.__adderType__ = cls;
-    }
-    for (const [k, v] of Object.entries(members)) {
-      if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-        instance[k] = v;
-      }
-    }
-    initExceptionInstance(cls, instance, args);
-    if (typeof cls.prototype.__init__ === 'function') {
-      const result = cls.prototype.__init__.call(instance, ...args);
-      if (result instanceof Promise) return result.then(() => instance);
-    }
-    return instance;
-  };
-
-  cls.prototype = {};
-  cls._pyName = name;
-  cls._pyClass = true;
-  cls._pyBases = (bases || []).filter(b => b?._pyClass);
-
-  const mro = _rtComputeMRO(cls);
-  cls._pyMRO = mro;
-
-  // Inherit methods from MRO
-  for (let i = mro.length - 1; i >= 1; i--) {
-    const base = mro[i];
-    if (!base.prototype || !base._pyOwnMembers) continue;
-    for (const key of base._pyOwnMembers) {
-      const desc = Object.getOwnPropertyDescriptor(base.prototype, key);
-      if (desc) Object.defineProperty(cls.prototype, key, desc);
-    }
-  }
-
-  for (const [mName, value] of Object.entries(members)) {
-    if (value && value.__property__) {
-      const fget = value.fget;
-      const fset = value.fset;
-      const desc = { get() { return fget(this); }, configurable: true, enumerable: true };
-      if (fset) {
-        const setFn = function(v) { fset(this, v); };
-        setFn._pyFset = fset;
-        desc.set = setFn;
-      }
-      Object.defineProperty(cls.prototype, mName, desc);
-    } else if (value && value.__staticmethod__) {
-      const rawFn = value.fn;
-      const sm = (...args) => rawFn(...args);
-      sm._pyName = `${name}.${mName}`;
-      cls.prototype[mName] = sm;
-      cls[mName] = sm;
-    } else if (value && value.__classmethod__) {
-      const originalFn = value.fn;
-      const cm = function (...args) { return originalFn(cls, ...args); };
-      cm._pyName = `${name}.${mName}`;
-      cls.prototype[mName] = cm;
-      cls[mName] = cm;
-    } else if (typeof value === 'function') {
-      const originalFn = value;
-      cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
-      cls.prototype[mName]._pyName = `${name}.${mName}`;
-      // Python unbound-method access (`ClassName.method(instance, ...)`).
-      // Arrow form so adderGetAttr's `.bind(obj)` doesn't pin `this` to
-      // the class. Mirror of the tree-walker's _evalClass branch.
-      cls[mName] = (...args) => originalFn(...args);
-    }
-  }
-
-  for (const [k, v] of Object.entries(members)) {
-    if (typeof v !== 'function' && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__))) {
-      setClassAttr(cls, k, v);
-    }
-  }
-
-  // Inherit class-level method bindings from MRO bases. Walk furthest-
-  // first so closer bases win, and skip keys this class already owns —
-  // without the hasOwnProperty guard the parent's binding would silently
-  // overwrite the child's own definition.
-  for (let i = mro.length - 1; i >= 1; i--) {
-    const base = mro[i];
-    if (!base._pyOwnMembers) continue;
-    for (const key of base._pyOwnMembers) {
-      if (Object.prototype.hasOwnProperty.call(cls, key)) continue;
-      if (key in base && typeof base[key] === 'function') cls[key] = base[key];
-    }
-  }
-
-  cls._pyOwnMembers = new PySet();
-  for (const [mName, value] of Object.entries(members)) {
-    if (typeof value === 'function' || (value && (value.__property__ || value.__staticmethod__ || value.__classmethod__))) {
-      cls._pyOwnMembers.add(mName);
-    }
-  }
-
-  // annotations arrive flattened: [name, text, name, text, …]
+// annotations arrive flattened from the lowerer: [name, text, name, text, …]
+function _createClass(name, bases, members, annotations, kw) {
   const ann = [];
   for (let k = 0; annotations && k < annotations.length; k += 2) ann.push([annotations[k], annotations[k + 1]]);
-  return finishClass(cls, ann);
+  return classStatement(name, bases, members, ann, kw);
 }
 
 // ── Exception matching (for try/except) ──
@@ -803,6 +681,19 @@ export const _py = {
   importFromPath: _importFromPath,
   // class
   createClass: _createClass,
+  fnOf: asCallable,
+  aw: awaitTarget,
+  // a def's metadata (both engines record the same: the tree-walker in eval.js _attachSignature)
+  defSig: (fn, shape, defaults) => {
+    if (typeof fn !== 'function') return null;
+    fn._pyDef = true;
+    fn._pySig = { ...shape, defaults };
+    const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
+    fn.__defaults__ = pos.length ? mkTuple(pos) : null;
+    const kwd = shape.kwonly.filter((p) => p.hasDefault);
+    fn.__kwdefaults__ = kwd.length ? new PyDict(kwd.map((p) => [p.name, defaults[p.name]])) : null;
+    return null;
+  },
   // the run budget (emitted only when lowering with ticks: true)
   tick: _tickLine,
   // argument binding
