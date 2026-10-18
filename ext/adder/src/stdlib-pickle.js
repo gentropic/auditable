@@ -75,8 +75,8 @@ function _pkModuleOf(obj) {
   if (typeof obj === 'function') {
     const bn = obj._pyName || obj.__name__;
     if (bn && adderModules.builtins[bn] === obj) return 'builtins';   // object, type, len, …
+    if (obj.__module__ !== undefined && obj.__module__ !== null) return obj.__module__;   // array.array, fractions.Fraction, …
     if (obj._pyClass && !obj._pyMRO) return 'builtins';            // int, ValueError, …
-    if (obj.__module__ !== undefined && obj.__module__ !== null) return obj.__module__;
     if (obj._pyFunc || obj._pyDef || obj._pyClass) return '__main__';
     return 'builtins';
   }
@@ -86,7 +86,10 @@ function _pkModuleOf(obj) {
 const _pkNameOf = (obj) => (obj && (obj.__qualname__ || obj._pyName || obj.__name__ || obj.name)) || null;
 
 function _pkMemoize(st, obj) {
-  const idx = st.memo.size;
+  // the next index, counted (not the map's size: a str memoised again — a global's module and
+  // name both 'array' — replaces its entry, while the unpickler's MEMOIZE counts both)
+  const idx = st.memo._pkNext ?? st.memo.size;
+  Object.defineProperty(st.memo, '_pkNext', { value: idx + 1, writable: true, configurable: true });
   st.memo.set(obj, idx);
   const o = st.out;
   if (st.proto >= 4) o.op(0x94);

@@ -126,6 +126,16 @@ function _boxStrMethod(box, attr) {
 // len, indexing, slicing (another view), tobytes / tolist / hex, iteration, equality
 export class PyMemoryView {
   constructor(obj, start = 0, end = null) {
+    // an object exporting a buffer (array.array): a view of its bytes, writable and live — the
+    // exporter refuses to resize while the view is held (BufferError), until release()
+    if (obj !== null && typeof obj === 'object' && typeof obj._pyBufferExport === 'function') {
+      this._exporter = obj;
+      obj = obj._pyBufferExport();
+      this.obj = obj; this._start = 0; this._end = obj.length;
+      this.readonly = false;
+      this.format = 'B'; this.itemsize = 1; this.ndim = 1; this.released = false;
+      return;
+    }
     if (!(obj instanceof Uint8Array || obj instanceof PyByteArray || obj instanceof PyMemoryView)) throw new AdderError('TypeError', `memoryview: a bytes-like object is required, not '${pyTypeName(obj)}'`);
     this.obj = obj instanceof PyMemoryView ? obj.obj : obj;
     const base = obj instanceof PyMemoryView ? obj._start : 0;
@@ -167,12 +177,118 @@ export class PyMemoryView {
   hex(sep) { return [...this._bytes()].map((x) => x.toString(16).padStart(2, '0')).join(typeof sep === 'string' ? sep : ''); }
   toreadonly() { const m = new PyMemoryView(this); m.readonly = true; return m; }
   cast(fmt) { if (fmt !== 'B' && fmt !== 'b' && fmt !== 'c') throw new AdderError('NotImplementedError', `memoryview.cast('${fmt}') is not supported here`); return new PyMemoryView(this); }
-  release() { this.released = true; return null; }
+  release() { this._release(); return null; }
+  _release() {
+    if (!this.released && this._exporter) this._exporter._pyBufferRelease();
+    this.released = true;
+  }
   __enter__() { return this; }
-  __exit__() { this.released = true; return false; }
+  __exit__() { this._release(); return false; }
   __repr__() { return `<memory at 0x${(0x7f0000000000 + (this._start | 0)).toString(16)}>`; }
 }
 PyMemoryView.prototype.__adderClass__ = 'memoryview';
+
+// slice(start, stop, step): what a[i:j:k] passes to __getitem__ / __setitem__ / __delitem__. The
+// engines read .lower / .upper / .step (and test ._slice); Python reads start / stop / step.
+export class PySlice {
+  constructor(lower = null, upper = null, step = null) {
+    this.lower = lower === undefined ? null : lower;
+    this.upper = upper === undefined ? null : upper;
+    this.step = step === undefined ? null : step;
+  }
+  get _slice() { return true; }
+  get start() { return this.lower; }
+  get stop() { return this.upper; }
+  // indices(length): (start, stop, step) fitted to a sequence of that length, as
+  // PySlice_GetIndicesEx — ints, possibly past the ends where the step runs off them
+  indices(length) {
+    const n = _sliceIdx(length, true);
+    if (n < 0) throw new AdderError('ValueError', 'length should not be negative');
+    const step = this.step === null ? 1 : _sliceIdx(this.step);
+    if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
+    const lo = step < 0 ? -1 : 0, hi = step < 0 ? n - 1 : n;
+    const fit = (v, d) => {
+      if (v === null) return d;
+      let x = _sliceIdx(v);
+      if (x < 0) { x += n; if (x < lo) x = lo; } else if (x > hi) x = hi;
+      return x;
+    };
+    return mkTuple([fit(this.lower, step < 0 ? hi : lo), fit(this.upper, step < 0 ? lo : hi), step]);
+  }
+  _key() { return mkTuple([this.lower, this.upper, this.step]); }
+  __repr__() { return `slice(${pyRepr(this.lower)}, ${pyRepr(this.upper)}, ${pyRepr(this.step)})`; }
+  __eq__(o) { return o instanceof PySlice ? pyEq(this._key(), o._key()) : NotImplemented; }
+  __ne__(o) { return o instanceof PySlice ? !pyEq(this._key(), o._key()) : NotImplemented; }
+  __lt__(o) { return o instanceof PySlice ? pyLt(this._key(), o._key()) : NotImplemented; }
+  __le__(o) { return o instanceof PySlice ? !pyLt(o._key(), this._key()) : NotImplemented; }
+  __gt__(o) { return o instanceof PySlice ? pyLt(o._key(), this._key()) : NotImplemented; }
+  __ge__(o) { return o instanceof PySlice ? !pyLt(this._key(), o._key()) : NotImplemented; }
+  __hash__() { return _pyHash(this._key()); }
+  __reduce__() { return mkTuple([_typeObjects.slice, this._key()]); }
+}
+PySlice.prototype.__adderClass__ = 'slice';
+export const mkSlice = (lower, upper, step) => new PySlice(lower, upper, step);
+// what reversed() hands back for a sequence: an iterator over its items, last first
+class _PyRevIter {
+  constructor(items, name) { this._a = items; this._i = 0; Object.defineProperty(this, '__adderClass__', { value: name, writable: true, configurable: true }); }
+  next() { return this._i < this._a.length ? { value: this._a[this._i++], done: false } : { value: undefined, done: true }; }
+  __next__() { if (this._i < this._a.length) return this._a[this._i++]; throw new AdderError('StopIteration', ''); }
+  __iter__() { return this; }
+  [Symbol.iterator]() { return this; }
+  __length_hint__() { return this._a.length - this._i; }
+}
+// the positions a slice picks out of a sequence of length n
+function _sliceRange(k, n) {
+  const [start, stop, step] = k.indices(n);
+  const out = [];
+  if (step > 0) for (let i = start; i < stop; i += step) out.push(i);
+  else for (let i = start; i > stop; i += step) out.push(i);
+  return [out, start, stop, step];
+}
+// seq[slice(…)] for a str, list, tuple, bytes, bytearray or range
+export function seqSliceGet(obj, k) {
+  if (obj instanceof AdderRange) {
+    const [, start, stop, step] = _sliceRange(k, obj.length);
+    return new AdderRange(obj.start + start * obj.step, obj.start + stop * obj.step, obj.step * step);
+  }
+  const [idx] = _sliceRange(k, obj.length);
+  const items = idx.map((i) => obj[i]);
+  return typeof obj === 'string' ? items.join('') : obj instanceof PyTuple ? mkTuple(items)
+    : obj instanceof PyByteArray ? PyByteArray.from(items) : obj instanceof Uint8Array ? Uint8Array.from(items) : items;
+}
+// list[slice(…)] = iterable
+export function seqSliceSet(obj, k, value) {
+  const rhs = [...pyIter(value)];
+  const [idx, start, stop, step] = _sliceRange(k, obj.length);
+  if (step === 1) { obj.splice(start, Math.max(0, stop - start), ...rhs); return null; }
+  if (rhs.length !== idx.length) throw new AdderError('ValueError', `attempt to assign sequence of size ${rhs.length} to extended slice of size ${idx.length}`);
+  for (let j = 0; j < idx.length; j++) obj[idx[j]] = rhs[j];
+  return null;
+}
+// del list[slice(…)]
+export function seqSliceDel(obj, k) {
+  const [idx] = _sliceRange(k, obj.length);
+  for (const i of idx.sort((a, b) => b - a)) obj.splice(i, 1);
+  return null;
+}
+// a slice bound as an int: an int, a bool, or __index__ (a BigInt saturates — the bound is past any end)
+function _sliceIdx(v, isLength = false) {
+  if (typeof v === 'number' && Number.isInteger(v)) return v;
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'bigint') return v > 0n ? Number.MAX_SAFE_INTEGER : -Number.MAX_SAFE_INTEGER;
+  if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return _sliceIdx(syncOf(v.__index__).call(v), isLength);
+  throw new AdderError('TypeError', isLength ? `'${pyTypeName(v)}' object cannot be interpreted as an integer` : 'slice indices must be integers or None or have an __index__ method');
+}
+// slice(stop) / slice(start, stop[, step])
+export function _sliceNew(...a) {
+  if (a.length && a[a.length - 1] && a[a.length - 1]._kw === true) {
+    const kw = a.pop();
+    if (Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'slice() takes no keyword arguments');
+  }
+  if (a.length === 0) throw new AdderError('TypeError', 'slice expected at least 1 argument, got 0');
+  if (a.length > 3) throw new AdderError('TypeError', `slice expected at most 3 arguments, got ${a.length}`);
+  return a.length === 1 ? new PySlice(null, a[0], null) : new PySlice(a[0], a[1], a.length > 2 ? a[2] : null);
+}
 export class PyTuple extends Array {
   static get [Symbol.species]() { return Array; }
 }
@@ -3289,6 +3405,46 @@ export const pyBinOps = {
   '+': pyAdd, '-': pySub, '*': pyMul, '/': pyTrueDiv, '//': pyFloorDiv, '%': pyMod, '**': pyPow,
   '&': pyAnd, '|': pyOr, '^': pyXor, '<<': pyLshift, '>>': pyRshift, '@': pyMatmul,
 };
+const _IDUNDERS = {
+  '+': '__iadd__', '-': '__isub__', '*': '__imul__', '/': '__itruediv__', '//': '__ifloordiv__', '%': '__imod__',
+  '**': '__ipow__', '&': '__iand__', '|': '__ior__', '^': '__ixor__', '<<': '__ilshift__', '>>': '__irshift__', '@': '__imatmul__',
+};
+// a op= b, as CPython's in-place operators: a's __iop__ (NotImplemented falls back to the binary
+// operator); the builtin mutables change in place — list += / *=, set |= &= -= ^= (with a set),
+// dict |= — so other names for the object see it; everything else is `a op b`, rebound. `sync`:
+// a compiled caller, which reaches a method through its sync twin.
+export function pyInplace(op, a, b, sync = false) {
+  if (typeof a === 'number' && typeof b === 'number') return pyBinOps[op](a, b);
+  const d = _IDUNDERS[op];
+  if (a !== null && typeof a === 'object' && typeof a[d] === 'function') {
+    const r = (sync ? syncOf(a[d]) : a[d]).call(a, b);
+    if (_isThenable(r)) return r.then((v) => (v === NotImplemented ? pyBinOps[op](a, b) : v));
+    return r === NotImplemented ? pyBinOps[op](a, b) : r;
+  }
+  if (Array.isArray(a) && !(a instanceof PyTuple)) {
+    if (op === '+') return pyIAddBuiltin(a, b);
+    if (op === '*' && (typeof b === 'number' || typeof b === 'boolean' || typeof b === 'bigint' || (b !== null && typeof b === 'object' && typeof b.__index__ === 'function'))) {
+      const n = typeof b === 'object' ? Number(syncOf(b.__index__).call(b)) : Number(b);
+      const src = a.slice();
+      a.length = 0;
+      for (let i = 0; i < n; i++) for (const x of src) a.push(x);
+      return a;
+    }
+  }
+  if (a instanceof Set && !a._frozen && b instanceof Set && (op === '|' || op === '&' || op === '-' || op === '^')) {
+    const other = b === a ? new Set(b) : b;
+    if (op === '|') for (const x of other) a.add(x);
+    else if (op === '&') { for (const x of [...a]) if (!other.has(x)) a.delete(x); }
+    else if (op === '-') for (const x of other) a.delete(x);
+    else for (const x of other) { if (a.has(x)) a.delete(x); else a.add(x); }
+    return a;
+  }
+  if (op === '|' && (a instanceof Map || isPlainDict(a)) && !_isDictView(a)) {
+    const r = _dictUpdate(a instanceof Map ? (k, v) => a.set(k, v) : (k, v) => { a[k] = v; }, [b]);
+    return _isThenable(r) ? r.then(() => a) : a;
+  }
+  return pyBinOps[op](a, b);
+}
 
 // ── printf-style formatting: str % args ──
 // %[(key)][flags][width][.precision][length]type, flags - + space 0 #, * for width/precision
@@ -3412,6 +3568,7 @@ export function pyGetItem(obj, key, raw = false) {
   const isSeq = typeof obj === 'string' || Array.isArray(obj) || obj instanceof AdderRange ||
     (ArrayBuffer.isView(obj) && !(obj instanceof DataView));
   if (isSeq) {
+    if (key instanceof PySlice && !(ArrayBuffer.isView(obj) && !(obj instanceof Uint8Array))) return seqSliceGet(obj, key);
     if (typeof key === 'boolean') key = +key;
     if (typeof key !== 'number' || !Number.isInteger(key)) {
       if (_obj(key) && typeof key.__index__ === 'function') key = key.__index__();
@@ -4334,6 +4491,16 @@ const _ctor = (C, name, at = 0) => Object.assign((...a) => {
   return new C(...a);
 }, { _pyName: name, _pyClass: true });
 const _collectionsModule = {
+  // _count_elements(mapping, iterable): the C helper under Counter.update — mapping[x] =
+  // mapping.get(x, 0) + 1 for each x, through the mapping's own get / __setitem__
+  _count_elements(mapping, iterable) {
+    const get = adderGetAttr(mapping, 'get');
+    const set = mapping instanceof Map && !mapping.__adderType__ ? (k, v) => mapping.set(k, v) : adderGetAttr(mapping, '__setitem__');
+    return _eachMaybe(iterable, (x) => {
+      const n = get(x, 0);
+      return set(x, pyAdd(n, 1));
+    });
+  },
   Counter: _ctor(AdderCounter, 'Counter'),
   defaultdict: _ctor(AdderDefaultDict, 'defaultdict', 1),
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
@@ -5043,6 +5210,7 @@ export function pyDelItem(obj, key) {
   }
   if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object doesn't support item deletion`);
   if (Array.isArray(obj)) {
+    if (key instanceof PySlice) return seqSliceDel(obj, key);
     if (!_isIntish(key)) throw new AdderError('TypeError', `list indices must be integers or slices, not ${pyTypeName(key)}`);
     let i = Number(_asInt(key));
     if (i < 0) i += obj.length;
@@ -5321,7 +5489,11 @@ export async function _createAdderFile(vfs, filePath, mode) {
       if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
       if (isRead) throw new AdderError('IOError', 'not writable');
       if (isBinary) {
-        const chunk = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
+        const chunk = data instanceof Uint8Array ? data.slice()
+          : data instanceof PyByteArray ? Uint8Array.from(data)
+            : data instanceof PyMemoryView ? data.tobytes()
+              : data !== null && typeof data === 'object' && typeof data._pyBuffer === 'function' ? data._pyBuffer().slice()
+                : new TextEncoder().encode(String(data));
         _buffer.push(chunk);
         return chunk.byteLength;
       }
@@ -6898,12 +7070,14 @@ export function adderBuiltins(printFn) {
       }
       if (x instanceof Uint8Array) return new Uint8Array(x);
       if (x instanceof PyMemoryView) return x.tobytes();
+      if (x !== null && typeof x === 'object' && typeof x._pyBuffer === 'function') return x._pyBuffer().slice();
       if (x !== null && typeof x === 'object' && typeof x.__bytes__ === 'function') return x.__bytes__();
       const items = [...pyIter(x)];   // sync: AIR calls bytes() without an await
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
     memoryview: Object.assign((obj) => new PyMemoryView(obj), { _pyName: 'memoryview', __name__: 'memoryview', _pyClass: true }),
+    slice: _sliceNew,
     // bytearray(), bytearray(n) zeros, bytearray(ints / bytes), bytearray(str, encoding[, errors])
     bytearray: Object.assign((x, ...a) => {
       const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
@@ -6915,6 +7089,8 @@ export function adderBuiltins(printFn) {
         return _toBA(pyEncode(x, enc, a[1] ?? kw.errors ?? 'strict'));
       }
       if (x instanceof Uint8Array) return _toBA(x);
+      if (x instanceof PyMemoryView) return _toBA(x.tobytes());
+      if (x !== null && typeof x === 'object' && typeof x._pyBuffer === 'function') return _toBA(x._pyBuffer().slice());
       return _toBA([...pyIter(x)].map(_byteCheck));
     }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
     frozenset: maybeSync(function* (x) { const s = x === undefined ? new PySet() : new PySet(yield* _gCollect(x)); s._frozen = true; return s; }),
@@ -6957,7 +7133,18 @@ export function adderBuiltins(printFn) {
       else if (reverse?._kw) reverse = reverse.reverse;
       return yield* _gSorted(yield* _gCollect(iterable), key || null, !!reverse);
     }),
-    reversed: maybeSync(function* (iterable) { const arr = yield* _gCollect(iterable); arr.reverse(); return arr; }),
+    // reversed(seq): the object's __reversed__, else an iterator from its last item down (a sequence,
+    // a dict's keys); a set, a generator — anything with no order to reverse — is a TypeError
+    reversed: maybeSync(function* (seq) {
+      if (seq !== null && typeof seq === 'object' && !Array.isArray(seq) && typeof seq.__reversed__ === 'function') return yield seq.__reversed__();
+      const ordered = typeof seq === 'string' || Array.isArray(seq) || seq instanceof Uint8Array || seq instanceof AdderRange ||
+        seq instanceof Map || isPlainDict(seq) || _isDictView(seq) ||
+        (seq !== null && typeof seq === 'object' && typeof seq.__len__ === 'function' && typeof seq.__getitem__ === 'function');
+      if (!ordered) throw new AdderError('TypeError', `'${pyTypeName(seq)}' object is not reversible`);
+      const arr = yield* _gCollect(seq);
+      arr.reverse();
+      return new _PyRevIter(arr, Array.isArray(seq) && !(seq instanceof PyTuple) ? 'list_reverseiterator' : seq instanceof AdderRange ? 'range_iterator' : 'reversed');
+    }),
     // lazy iterators, as in Python 3 (zip(count(), xs) works); synchronous when every input is
     enumerate: (iterable, start) => {
       if (start && start._kw) start = start.start;
@@ -7123,6 +7310,10 @@ export function adderBuiltins(printFn) {
       return pyIter(obj);
     },
     next: (iter, def) => {
+      if (def !== null && typeof def === 'object' && def._kw === true) {
+        if (Object.keys(def).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'next() takes no keyword arguments');
+        def = undefined;
+      }
       const done = (v) => { if (def !== undefined) return def; throw stopIteration(v); };
       if (iter && typeof iter.__next__ === 'function') {
         if (def === undefined) return iter.__next__();
@@ -7212,7 +7403,7 @@ export function adderBuiltins(printFn) {
   // Mark conversion builtins as type objects for isinstance()/type()
   // ONE object per type for the whole program: every module gets its own builtins table, and a
   // fresh `int` per table made `type(1) is int` false in a module once another had been imported
-  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray']) {
+  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray', 'slice']) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
     if (name === 'str' && builtins.str) { builtins.str.prototype = _StrBoxProto; builtins.str._pyOwnMembers = new PySet(Object.keys(_StrBoxProto)); }
@@ -7235,8 +7426,14 @@ export function adderBuiltins(printFn) {
   }
   // and the builtin functions too: `len` is one object everywhere (a module's table, the builtins
   // module, a pickle naming builtins.len). Only print is per table — it writes to its run's output.
-  if (!_stableBuiltins) _stableBuiltins = { ...builtins };
-  else for (const k of Object.keys(builtins)) if (k !== 'print' && Object.hasOwn(_stableBuiltins, k)) builtins[k] = _stableBuiltins[k];
+  if (!_stableBuiltins) {
+    // each builtin function knows its name (pickle refers to builtins.reversed by it; a wrapper
+    // made by maybeSync is otherwise anonymous)
+    for (const [k, v] of Object.entries(builtins)) {
+      if (typeof v === 'function' && !v._pyName && !v._pyClass && Object.isExtensible(v)) v._pyName = k;
+    }
+    _stableBuiltins = { ...builtins };
+  } else for (const k of Object.keys(builtins)) if (k !== 'print' && Object.hasOwn(_stableBuiltins, k)) builtins[k] = _stableBuiltins[k];
   return builtins;
 }
 let _stableBuiltins = null;

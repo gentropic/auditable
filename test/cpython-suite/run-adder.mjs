@@ -16,6 +16,8 @@ const [file, engine = 'auto', ...sites] = process.argv.slice(2);
 const vfs = await VFS.create();
 await vfs.mkdir('/site', { recursive: true });
 await vfs.mkdir('/tmp', { recursive: true });
+// the working directory (os.getcwd()): where a test's TESTFN files are made
+await vfs.mkdir('/projects/self', { recursive: true });
 async function copy(src, dst) {
   if (statSync(src).isDirectory()) {
     await vfs.mkdir(dst, { recursive: true });

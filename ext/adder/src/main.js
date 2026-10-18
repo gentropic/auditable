@@ -7,6 +7,7 @@ import './stdlib.js';
 import './stdlib-types.js';
 import './stdlib-num.js';
 import './stdlib-cmath.js';
+import './stdlib-array.js';
 import './stdlib-time.js';
 import './stdlib-data.js';
 import './stdlib-sys.js';

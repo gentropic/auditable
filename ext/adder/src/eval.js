@@ -7,6 +7,7 @@ import './stdlib.js';
 import './stdlib-types.js';
 import './stdlib-num.js';
 import './stdlib-cmath.js';
+import './stdlib-array.js';
 import './stdlib-time.js';
 import './stdlib-data.js';
 import './stdlib-sys.js';
@@ -14,7 +15,7 @@ import './stdlib-pickle.js';
 import './stdlib-net.js';
 import './stdlib-py.js';
 import {
-  AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr,
+  AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr, mkSlice, PySlice, seqSliceSet, pyInplace,
   pyBool, pyBoolMaybe, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper, _builtinGlobals, _builtinLocals,
@@ -225,15 +226,8 @@ export async function adderEval(node, scope) {
     case 'AugAssign': {
       const current = await _evalTarget(node.target, scope);
       const value = await adderEval(node.value, scope);
-      const iDunder = _iDunders[node.op];
-      let result;
-      if (iDunder && current !== null && typeof current === 'object' && typeof current[iDunder] === 'function') {
-        result = current[iDunder](value);
-      } else if (node.op === '+' && Array.isArray(current) && !(current instanceof PyTuple)) {
-        result = pyIAddBuiltin(current, value);   // list += iterable extends in place
-      } else {
-        result = _binOp(node.op, current, value, node.line);
-      }
+      // CPython's in-place operators: __iop__, the builtin mutables in place, else `a op b`
+      const result = await (_iDunders[node.op] ? _withLine(() => pyInplace(node.op, current, value), node.line) : _binOp(node.op, current, value, node.line));
       await _assignTarget(node.target, result, scope);
       return null;
     }
@@ -446,7 +440,7 @@ export async function adderEval(node, scope) {
     case 'Starred': return await adderEval(node.value, scope);
 
     // ── slice (standalone) ──
-    case 'Slice': return { _slice: true, lower: node.lower ? await adderEval(node.lower, scope) : null, upper: node.upper ? await adderEval(node.upper, scope) : null, step: node.step ? await adderEval(node.step, scope) : null };
+    case 'Slice': return mkSlice(node.lower ? await adderEval(node.lower, scope) : null, node.upper ? await adderEval(node.upper, scope) : null, node.step ? await adderEval(node.step, scope) : null);
 
     default:
       throw new AdderError('RuntimeError', `Unknown AST node type: ${node.type}`, node.line);
@@ -493,7 +487,7 @@ async function _assignTarget(target, value, scope) {
         const upper = target.slice.upper ? await adderEval(target.slice.upper, scope) : null;
         const step = target.slice.step ? await adderEval(target.slice.step, scope) : null;
         if (typeof obj?.__setitem__ === 'function') {
-          await obj.__setitem__({ _slice: true, lower, upper, step }, value);
+          await obj.__setitem__(mkSlice(lower, upper, step), value);
         } else {
           _applySliceAssign(obj, lower, upper, step, value, target.line);
         }
@@ -557,6 +551,7 @@ async function _assignTarget(target, value, scope) {
       const key = await adderEval(target.slice, scope);
       if (obj instanceof Map) obj.set(key, value);
       else if (typeof obj?.__setitem__ === 'function') await obj.__setitem__(key, value);
+      else if (Array.isArray(obj) && key instanceof PySlice) seqSliceSet(obj, key, value);
       else if (Array.isArray(obj) || obj instanceof Uint8Array) {
         // Python-style indexing on write: arr[-1] is the last element (JS would store a '-1'
         // property), a position past the end is an IndexError
@@ -604,7 +599,7 @@ async function _deleteTarget(target, scope) {
       const upper = target.slice.upper ? await adderEval(target.slice.upper, scope) : null;
       const step = target.slice.step ? await adderEval(target.slice.step, scope) : null;
       if (typeof obj?.__delitem__ === 'function') {
-        await obj.__delitem__({ _slice: true, lower, upper, step });
+        await obj.__delitem__(mkSlice(lower, upper, step));
       } else {
         _applySliceDelete(obj, lower, upper, step, target.line);
       }
@@ -693,12 +688,11 @@ function _pyIn(container, value) {
 // as a normal expression. Used by both the read and write paths.
 async function _evalSliceElt(elt, scope) {
   if (elt && elt.type === 'Slice') {
-    return {
-      _slice: true,
-      lower: elt.lower ? await adderEval(elt.lower, scope) : null,
-      upper: elt.upper ? await adderEval(elt.upper, scope) : null,
-      step: elt.step ? await adderEval(elt.step, scope) : null,
-    };
+    return mkSlice(
+      elt.lower ? await adderEval(elt.lower, scope) : null,
+      elt.upper ? await adderEval(elt.upper, scope) : null,
+      elt.step ? await adderEval(elt.step, scope) : null,
+    );
   }
   return await adderEval(elt, scope);
 }
@@ -712,7 +706,7 @@ async function _evalSubscript(node, scope) {
     if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array)
       return _applySlice(obj, lower, upper, step);
     if (typeof obj?.__getitem__ === 'function')
-      return obj.__getitem__({ _slice: true, lower, upper, step });
+      return obj.__getitem__(mkSlice(lower, upper, step));
     return _applySlice(obj, lower, upper, step);
   }
   // x[*a, b]: the key is that tuple, starred items spliced in

@@ -9,7 +9,7 @@
 import {
   AdderError, PyTuple, PyDict, PySet, mkTuple, isPlainDict, pyTypeName, pyRepr, pyStr, pyReprMaybe,
   pyIter, pyCollect, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv,
-  pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem,
+  pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem, pyInplace, pyDelItem, PySlice, seqSliceSet,
   pySorted, adderGetAttr, adderModules, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
   GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj,
 } from './builtins.js';
@@ -287,11 +287,14 @@ adderModules.operator = {
   contains: _slContains, countOf: (a, b) => [...pyIter(a)].filter((v) => pyEq(v, b) === true).length,
   indexOf: (a, b) => { let i = 0; for (const v of pyIter(a)) { if (pyEq(v, b) === true) return i; i++; } throw new AdderError('ValueError', 'sequence.index(x): x not in sequence'); },
   getitem: pyGetItem,
-  setitem: (o, k, v) => { if (o instanceof Map) o.set(k, v); else if (typeof o.__setitem__ === 'function') return _slThen(o.__setitem__(k, v), () => null); else o[Array.isArray(o) && k < 0 ? o.length + k : k] = v; return null; },
-  delitem: (o, k) => { if (o instanceof Map) o.delete(k); else if (Array.isArray(o)) o.splice(k < 0 ? o.length + k : k, 1); else delete o[k]; return null; },
+  setitem: (o, k, v) => { if (o instanceof Map) o.set(k, v); else if (typeof o.__setitem__ === 'function') return _slThen(o.__setitem__(k, v), () => null); else if (Array.isArray(o) && k instanceof PySlice) seqSliceSet(o, k, v); else o[Array.isArray(o) && k < 0 ? o.length + k : k] = v; return null; },
+  delitem: (o, k) => _slThen(pyDelItem(o, k), () => null),
   concat: (a, b) => pyAdd(a, b), index: (a) => (typeof a === 'number' && Number.isInteger(a) ? a : a && typeof a.__index__ === 'function' ? a.__index__() : (() => { throw new AdderError('TypeError', `'${pyTypeName(a)}' object cannot be interpreted as an integer`); })()),
-  iadd: pyAdd, isub: pySub, imul: pyMul, itruediv: pyTrueDiv, ifloordiv: pyFloorDiv, imod: pyMod, ipow: pyPow,
-  iand: pyAnd, ior: pyOr, ixor: pyXor, ilshift: pyLshift, irshift: pyRshift, iconcat: pyAdd,
+  iadd: (a, b) => pyInplace('+', a, b), isub: (a, b) => pyInplace('-', a, b), imul: (a, b) => pyInplace('*', a, b),
+  itruediv: (a, b) => pyInplace('/', a, b), ifloordiv: (a, b) => pyInplace('//', a, b), imod: (a, b) => pyInplace('%', a, b),
+  ipow: (a, b) => pyInplace('**', a, b), imatmul: (a, b) => pyInplace('@', a, b),
+  iand: (a, b) => pyInplace('&', a, b), ior: (a, b) => pyInplace('|', a, b), ixor: (a, b) => pyInplace('^', a, b),
+  ilshift: (a, b) => pyInplace('<<', a, b), irshift: (a, b) => pyInplace('>>', a, b),
   length_hint: (o, d = 0) => { try { return o.length ?? o.size ?? d; } catch { return d; } },
   call: (f, ...a) => f(...a),
   itemgetter: _slItemgetter, attrgetter: _slAttrgetter, methodcaller: _slMethodcaller,
@@ -301,7 +304,7 @@ const _slSeq = (a) => typeof a === 'string' || Array.isArray(a) || a instanceof 
   || (a !== null && typeof a === 'object' && !(a instanceof Map) && !(a instanceof Set) && typeof a.__getitem__ === 'function');
 const _slConcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyAdd(a, b); };
 adderModules.operator.concat = _slConcat;
-adderModules.operator.iconcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyAdd(a, b); };
+adderModules.operator.iconcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyInplace('+', a, b); };
 // the operator functions take their arguments by position, exactly so many (operator.add(1) is a
 // TypeError, as CPython's C functions are)
 {
@@ -1143,6 +1146,14 @@ const _slMutableMapping = _slAbc('MutableMapping', [_slMapping], _slIsMapLike, {
 const _slSetAbc = _slAbc('Set', [_slCollection], (x) => x instanceof Set);
 const _slMutableSet = _slAbc('MutableSet', [_slSetAbc], (x) => x instanceof Set && !x._frozen);
 const _slAwaitable = _slAbc('Awaitable', [], (x) => x !== null && x !== undefined && typeof x.then === 'function');
+// the async protocols, by Python's methods (__aiter__ / __anext__, an async generator's asend /
+// athrow / aclose) — or a JS async iterable, which `async for` takes too
+const _slHasAttr = (x, n) => { if (x === null || x === undefined) return false; try { return typeof adderGetAttr(x, n) === 'function'; } catch { return false; } };
+const _slAsyncIterable = _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && (typeof x[Symbol.asyncIterator] === 'function' || _slHasAttr(x, '__aiter__')));
+const _slAsyncIterator = _slAbc('AsyncIterator', [_slAsyncIterable], (x) => x !== null && x !== undefined &&
+  ((typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function') || (_slHasAttr(x, '__aiter__') && _slHasAttr(x, '__anext__'))));
+const _slAsyncGenerator = _slAbc('AsyncGenerator', [_slAsyncIterator], (x) => x !== null && x !== undefined &&
+  (x._pyAsyncGen === true || ['__aiter__', '__anext__', 'asend', 'athrow', 'aclose'].every((n) => _slHasAttr(x, n))));
 // MappingView and its three: concrete, as CPython's — View(mapping) wraps the mapping (a subclass
 // in Python inherits __init__), and len / iter / in / repr read through it; KeysView and ItemsView
 // are Sets (==, <=, &, |, -, ^ by contents)
@@ -1190,8 +1201,7 @@ const _slAbcModule = {
   Container: _slContainer, Collection: _slCollection, Hashable: _slHashable, Callable: _slCallable,
   Sequence: _slSequence, MutableSequence: _slMutableSequence, Mapping: _slMapping, MutableMapping: _slMutableMapping,
   Set: _slSetAbc, MutableSet: _slMutableSet, Awaitable: _slAwaitable, Coroutine: _slAwaitable,
-  AsyncIterable: _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function'),
-  AsyncIterator: _slAbc('AsyncIterator', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function'),
+  AsyncIterable: _slAsyncIterable, AsyncIterator: _slAsyncIterator, AsyncGenerator: _slAsyncGenerator,
   ByteString: _slAbc('ByteString', [_slSequence], (x) => x instanceof Uint8Array), Buffer: _slAbc('Buffer', [], (x) => ArrayBuffer.isView(x)),
   MappingView: _slMappingView, KeysView: _slView('KeysView', [_slMappingView, _slSetAbc]), ItemsView: _slView('ItemsView', [_slMappingView, _slSetAbc]), ValuesView: _slView('ValuesView', [_slMappingView, _slCollection]),
 };

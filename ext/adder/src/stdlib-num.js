@@ -287,6 +287,7 @@ class _NmFraction {
   get numerator() { return _nmInt(this._n); }
   get denominator() { return _nmInt(this._d); }
   __repr__() { return `Fraction(${this._n}, ${this._d})`; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([this.numerator, this.denominator])]); }
   __str__() { return this._d === 1n ? String(this._n) : `${this._n}/${this._d}`; }
   __format__(spec) { return spec ? pyFormatValue(this.valueOf(), spec) : this.__str__(); }
   valueOf() { return _nmToFloat(this._n, this._d); }
@@ -507,6 +508,7 @@ class _NmDecimal {
     return sign + intpart + fracpart + e;
   }
   __repr__() { return `Decimal('${this.__str__()}')`; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([_NmDecimal.prototype.__str__.call(this)])]); }
   __format__(spec) { return _nmDecFormat(this, spec || ''); }
   valueOf() { return this._special === 'F' ? (this._sign ? -Infinity : Infinity) : this._special ? NaN : Number(this.__str__()); }
   __float__() { return this.valueOf(); }

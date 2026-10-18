@@ -2,10 +2,10 @@
 // Small monomorphic functions that V8 inlines. Reuses builtins.js internals.
 
 import {
-  AdderError, adderModules, AdderRange, Complex,
+  AdderError, adderModules, AdderRange, Complex, mkSlice, PySlice, seqSliceSet, pyInplace,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyCollectMaybe, pyFormatValue,
   adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, PyCell, ctxEnter, ctxExit, pyAIter, excToThrowable,
-  pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
+  pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
@@ -135,6 +135,7 @@ function _setitem(obj, key, value) {
   { const f = subclassDunder(obj, '__setitem__'); if (f) { f.call(obj, key, value); return; } }
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
+    if (key instanceof PySlice) { seqSliceSet(obj, key, value); return; }
     obj[(typeof key === 'number' && key >= 0 && key < obj.length && (key | 0) === key) ? key : seqStoreIndex(obj, key)] = value;
     return;
   }
@@ -217,6 +218,7 @@ function _ndarrayTupleSet(obj, key, value) {
 
 function _slice(obj, lower, upper, step) {
   if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
+  const rawStep = step;   // (a __getitem__ is handed the slice as written: step None when omitted)
   step = step ?? 1;
   if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -236,7 +238,7 @@ function _slice(obj, lower, upper, step) {
       : obj instanceof Uint8Array ? Uint8Array.from(result) : obj instanceof PyByteArray ? PyByteArray.from(result) : result;
   }
   if (typeof obj?.__getitem__ === 'function') {
-    return obj.__getitem__({ _slice: true, lower, upper, step });
+    return obj.__getitem__(mkSlice(lower, upper, rawStep));
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
 }
@@ -264,7 +266,7 @@ function _setslice(obj, lower, upper, step, value) {
     throw new AdderError('TypeError', "'bytes' object does not support item assignment");
   }
   if (typeof obj?.__setitem__ === 'function') {
-    obj.__setitem__({ _slice: true, lower, upper, step }, value);
+    obj.__setitem__(mkSlice(lower, upper, step), value);
     return;
   }
   if (!Array.isArray(obj)) {
@@ -299,7 +301,7 @@ function _delslice(obj, lower, upper, step) {
     throw new AdderError('TypeError', "'bytes' object doesn't support item deletion");
   }
   if (typeof obj?.__delitem__ === 'function') {
-    obj.__delitem__({ _slice: true, lower, upper, step });
+    obj.__delitem__(mkSlice(lower, upper, step));
     return;
   }
   if (!Array.isArray(obj)) {
@@ -766,6 +768,12 @@ const _sub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b :
 const _mul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyMul(a, b));
 const _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
 const _and_ = pyAnd, _or_ = pyOr, _xor = pyXor, _neg = pyNeg, _pos = pyPos, _invert = pyInvert;
+// the in-place operators but +=: two numbers as the plain operator does them (tiny, as above, so
+// `t -= x` inlines); anything else CPython's way — __iop__, the builtin mutables in place
+const _objOp = (a) => a !== null && typeof a === 'object';
+const _isub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pyInplace('-', a, b, true));
+const _imul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyInplace('*', a, b, true));
+const _iop = (op, bin) => (a, b) => (_objOp(a) ? pyInplace(op, a, b, true) : bin(a, b));
 
 // comparisons: the shared rules (builtins.js), so both engines compare alike
 const _eq = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : pyEq(a, b));
@@ -781,8 +789,13 @@ export const _py = {
   // arithmetic
   add: _add, sub: _sub, mul: _mul, div: _div,
   floordiv: _floordiv, mod: _mod, pow: _pow,
-  // in-place: __iadd__ dispatch + list extend semantics for `+=`
+  // in-place: __iadd__ dispatch + list extend semantics for `+=` (async-aware: an __iadd__ may
+  // be tree-walked); the other in-place operators through the method's sync twin
   iadd: _iadd,
+  isub: _isub, imul: _imul,
+  itruediv: _iop('/', pyTrueDiv), ifloordiv: _iop('//', pyFloorDiv), imod: _iop('%', pyMod), ipow: _iop('**', pyPow),
+  iand: _iop('&', pyAnd), ior: _iop('|', pyOr), ixor: _iop('^', pyXor), ilshift: _iop('<<', pyLshift),
+  irshift: _iop('>>', pyRshift), imatmul: _iop('@', pyMatmul),
   // bitwise (with dunder fallback for masks/sets/etc.)
   and_: _and_, or_: _or_, xor: _xor, lshift: pyLshift, rshift: pyRshift,
   // unary
@@ -796,7 +809,7 @@ export const _py = {
   // Marker object for slice elements inside a tuple subscript
   // (`arr[i:j, k]` lowers to `getitem(obj, [makeSlice(i,j,null), k])`
   // — the consumer's __getitem__ destructures via `_slice` flag).
-  makeSlice: (lower, upper, step) => ({ _slice: true, lower, upper, step }),
+  makeSlice: mkSlice,
   // context manager __exit__ (with statement)
   exitWith: _exitWith,
   enterWith: ctxEnter,

@@ -57,6 +57,8 @@ const PY_SPECIALIZATIONS = {
   },
   sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
   mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
+  isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
+  imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
   // Stay in helpers, because JS differs from Python on values the types can't rule out:
   //   div/mod/floordiv — Python raises ZeroDivisionError, JS returns Infinity/NaN;
   //   pow — `0 ** -1` raises in Python, is Infinity in JS;
@@ -1434,6 +1436,12 @@ function lowerAssignTarget(ctx, target, value, l) {
 const IBINOP_HELPER = {
   '+': 'iadd',
 };
+// the other in-place operators: CPython's __iop__ / builtin-mutable semantics, synchronously (a
+// method through its sync twin) — so a function with `x -= 1` stays a known-sync function
+const SYNC_IOP_HELPER = {
+  '-': 'isub', '*': 'imul', '/': 'itruediv', '//': 'ifloordiv', '%': 'imod', '**': 'ipow',
+  '&': 'iand', '|': 'ior', '^': 'ixor', '<<': 'ilshift', '>>': 'irshift', '@': 'imatmul',
+};
 
 function lowerAugAssign(ctx, node) {
   // x op= y → x = _py.iop(x, y) for ops with in-place semantics (just `+`
@@ -1470,7 +1478,7 @@ function lowerAugAssign(ctx, node) {
   let result;
   {
     const inPlace = IBINOP_HELPER[op];
-    const helper = inPlace || BINOP_HELPER[op];
+    const helper = inPlace || SYNC_IOP_HELPER[op] || BINOP_HELPER[op];
     if (!helper) throw new AirLowerError(`unsupported augassign op: ${op}`);
     const call = emitPyCall(ctx, helper, [current, rhs], l);
     // In-place helpers (`_py.iadd`) dispatch to `__iadd__`, which can be an async adder-class

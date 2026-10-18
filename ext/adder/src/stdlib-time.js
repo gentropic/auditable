@@ -132,6 +132,7 @@ class _TmTimedelta {
   get days() { return this._days; }
   get seconds() { return this._seconds; }
   get microseconds() { return this._us; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([this._days, this._seconds, this._us])]); }
   total_seconds() { return Number(this._total()) / 1e6; }
   __repr__() {
     const parts = [];
@@ -228,6 +229,7 @@ class _TmTimezone {
     this._offset = offset; this._name = name;
   }
   utcoffset() { return this._offset; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple(this._name === null ? [this._offset] : [this._offset, this._name])]); }
   dst() { return null; }
   tzname() { return this._name !== null ? this._name : _tmOffsetName(this._offset); }
   fromutc(dt) { return dt.__add__(this._offset); }
@@ -290,6 +292,10 @@ class _TmDate {
   get year() { return this._y; }
   get month() { return this._m; }
   get day() { return this._d; }
+  __reduce__() {
+    const args = this instanceof _TmDatetime ? [this._y, this._m, this._d, this._h, this._mi, this._s, this._us, this._tz] : [this._y, this._m, this._d];
+    return mkTuple([this.__adderType__, mkTuple(args)]);
+  }
   toordinal() { return _tmYmd2ord(this._y, this._m, this._d); }
   weekday() { return (this.toordinal() + 6) % 7; }
   isoweekday() { return this.weekday() + 1; }
@@ -358,6 +364,7 @@ class _TmTime {
   get microsecond() { return this._us; }
   get tzinfo() { return this._tz; }
   get fold() { return 0; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([this._h, this._mi, this._s, this._us, this._tz])]); }
   utcoffset() { return _tmTzOffset(this._tz, null); }
   tzname() { return this._tz ? this._tz.tzname(null) : null; }
   isoformat(...a) {

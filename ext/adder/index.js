@@ -2520,6 +2520,16 @@ function _boxStrMethod(box, attr) {
 // len, indexing, slicing (another view), tobytes / tolist / hex, iteration, equality
 class PyMemoryView {
   constructor(obj, start = 0, end = null) {
+    // an object exporting a buffer (array.array): a view of its bytes, writable and live — the
+    // exporter refuses to resize while the view is held (BufferError), until release()
+    if (obj !== null && typeof obj === 'object' && typeof obj._pyBufferExport === 'function') {
+      this._exporter = obj;
+      obj = obj._pyBufferExport();
+      this.obj = obj; this._start = 0; this._end = obj.length;
+      this.readonly = false;
+      this.format = 'B'; this.itemsize = 1; this.ndim = 1; this.released = false;
+      return;
+    }
     if (!(obj instanceof Uint8Array || obj instanceof PyByteArray || obj instanceof PyMemoryView)) throw new AdderError('TypeError', `memoryview: a bytes-like object is required, not '${pyTypeName(obj)}'`);
     this.obj = obj instanceof PyMemoryView ? obj.obj : obj;
     const base = obj instanceof PyMemoryView ? obj._start : 0;
@@ -2561,12 +2571,118 @@ class PyMemoryView {
   hex(sep) { return [...this._bytes()].map((x) => x.toString(16).padStart(2, '0')).join(typeof sep === 'string' ? sep : ''); }
   toreadonly() { const m = new PyMemoryView(this); m.readonly = true; return m; }
   cast(fmt) { if (fmt !== 'B' && fmt !== 'b' && fmt !== 'c') throw new AdderError('NotImplementedError', `memoryview.cast('${fmt}') is not supported here`); return new PyMemoryView(this); }
-  release() { this.released = true; return null; }
+  release() { this._release(); return null; }
+  _release() {
+    if (!this.released && this._exporter) this._exporter._pyBufferRelease();
+    this.released = true;
+  }
   __enter__() { return this; }
-  __exit__() { this.released = true; return false; }
+  __exit__() { this._release(); return false; }
   __repr__() { return `<memory at 0x${(0x7f0000000000 + (this._start | 0)).toString(16)}>`; }
 }
 PyMemoryView.prototype.__adderClass__ = 'memoryview';
+
+// slice(start, stop, step): what a[i:j:k] passes to __getitem__ / __setitem__ / __delitem__. The
+// engines read .lower / .upper / .step (and test ._slice); Python reads start / stop / step.
+class PySlice {
+  constructor(lower = null, upper = null, step = null) {
+    this.lower = lower === undefined ? null : lower;
+    this.upper = upper === undefined ? null : upper;
+    this.step = step === undefined ? null : step;
+  }
+  get _slice() { return true; }
+  get start() { return this.lower; }
+  get stop() { return this.upper; }
+  // indices(length): (start, stop, step) fitted to a sequence of that length, as
+  // PySlice_GetIndicesEx — ints, possibly past the ends where the step runs off them
+  indices(length) {
+    const n = _sliceIdx(length, true);
+    if (n < 0) throw new AdderError('ValueError', 'length should not be negative');
+    const step = this.step === null ? 1 : _sliceIdx(this.step);
+    if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
+    const lo = step < 0 ? -1 : 0, hi = step < 0 ? n - 1 : n;
+    const fit = (v, d) => {
+      if (v === null) return d;
+      let x = _sliceIdx(v);
+      if (x < 0) { x += n; if (x < lo) x = lo; } else if (x > hi) x = hi;
+      return x;
+    };
+    return mkTuple([fit(this.lower, step < 0 ? hi : lo), fit(this.upper, step < 0 ? lo : hi), step]);
+  }
+  _key() { return mkTuple([this.lower, this.upper, this.step]); }
+  __repr__() { return `slice(${pyRepr(this.lower)}, ${pyRepr(this.upper)}, ${pyRepr(this.step)})`; }
+  __eq__(o) { return o instanceof PySlice ? pyEq(this._key(), o._key()) : NotImplemented; }
+  __ne__(o) { return o instanceof PySlice ? !pyEq(this._key(), o._key()) : NotImplemented; }
+  __lt__(o) { return o instanceof PySlice ? pyLt(this._key(), o._key()) : NotImplemented; }
+  __le__(o) { return o instanceof PySlice ? !pyLt(o._key(), this._key()) : NotImplemented; }
+  __gt__(o) { return o instanceof PySlice ? pyLt(o._key(), this._key()) : NotImplemented; }
+  __ge__(o) { return o instanceof PySlice ? !pyLt(this._key(), o._key()) : NotImplemented; }
+  __hash__() { return _pyHash(this._key()); }
+  __reduce__() { return mkTuple([_typeObjects.slice, this._key()]); }
+}
+PySlice.prototype.__adderClass__ = 'slice';
+const mkSlice = (lower, upper, step) => new PySlice(lower, upper, step);
+// what reversed() hands back for a sequence: an iterator over its items, last first
+class _PyRevIter {
+  constructor(items, name) { this._a = items; this._i = 0; Object.defineProperty(this, '__adderClass__', { value: name, writable: true, configurable: true }); }
+  next() { return this._i < this._a.length ? { value: this._a[this._i++], done: false } : { value: undefined, done: true }; }
+  __next__() { if (this._i < this._a.length) return this._a[this._i++]; throw new AdderError('StopIteration', ''); }
+  __iter__() { return this; }
+  [Symbol.iterator]() { return this; }
+  __length_hint__() { return this._a.length - this._i; }
+}
+// the positions a slice picks out of a sequence of length n
+function _sliceRange(k, n) {
+  const [start, stop, step] = k.indices(n);
+  const out = [];
+  if (step > 0) for (let i = start; i < stop; i += step) out.push(i);
+  else for (let i = start; i > stop; i += step) out.push(i);
+  return [out, start, stop, step];
+}
+// seq[slice(…)] for a str, list, tuple, bytes, bytearray or range
+function seqSliceGet(obj, k) {
+  if (obj instanceof AdderRange) {
+    const [, start, stop, step] = _sliceRange(k, obj.length);
+    return new AdderRange(obj.start + start * obj.step, obj.start + stop * obj.step, obj.step * step);
+  }
+  const [idx] = _sliceRange(k, obj.length);
+  const items = idx.map((i) => obj[i]);
+  return typeof obj === 'string' ? items.join('') : obj instanceof PyTuple ? mkTuple(items)
+    : obj instanceof PyByteArray ? PyByteArray.from(items) : obj instanceof Uint8Array ? Uint8Array.from(items) : items;
+}
+// list[slice(…)] = iterable
+function seqSliceSet(obj, k, value) {
+  const rhs = [...pyIter(value)];
+  const [idx, start, stop, step] = _sliceRange(k, obj.length);
+  if (step === 1) { obj.splice(start, Math.max(0, stop - start), ...rhs); return null; }
+  if (rhs.length !== idx.length) throw new AdderError('ValueError', `attempt to assign sequence of size ${rhs.length} to extended slice of size ${idx.length}`);
+  for (let j = 0; j < idx.length; j++) obj[idx[j]] = rhs[j];
+  return null;
+}
+// del list[slice(…)]
+function seqSliceDel(obj, k) {
+  const [idx] = _sliceRange(k, obj.length);
+  for (const i of idx.sort((a, b) => b - a)) obj.splice(i, 1);
+  return null;
+}
+// a slice bound as an int: an int, a bool, or __index__ (a BigInt saturates — the bound is past any end)
+function _sliceIdx(v, isLength = false) {
+  if (typeof v === 'number' && Number.isInteger(v)) return v;
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'bigint') return v > 0n ? Number.MAX_SAFE_INTEGER : -Number.MAX_SAFE_INTEGER;
+  if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return _sliceIdx(syncOf(v.__index__).call(v), isLength);
+  throw new AdderError('TypeError', isLength ? `'${pyTypeName(v)}' object cannot be interpreted as an integer` : 'slice indices must be integers or None or have an __index__ method');
+}
+// slice(stop) / slice(start, stop[, step])
+function _sliceNew(...a) {
+  if (a.length && a[a.length - 1] && a[a.length - 1]._kw === true) {
+    const kw = a.pop();
+    if (Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'slice() takes no keyword arguments');
+  }
+  if (a.length === 0) throw new AdderError('TypeError', 'slice expected at least 1 argument, got 0');
+  if (a.length > 3) throw new AdderError('TypeError', `slice expected at most 3 arguments, got ${a.length}`);
+  return a.length === 1 ? new PySlice(null, a[0], null) : new PySlice(a[0], a[1], a.length > 2 ? a[2] : null);
+}
 class PyTuple extends Array {
   static get [Symbol.species]() { return Array; }
 }
@@ -5683,6 +5799,46 @@ const pyBinOps = {
   '+': pyAdd, '-': pySub, '*': pyMul, '/': pyTrueDiv, '//': pyFloorDiv, '%': pyMod, '**': pyPow,
   '&': pyAnd, '|': pyOr, '^': pyXor, '<<': pyLshift, '>>': pyRshift, '@': pyMatmul,
 };
+const _IDUNDERS = {
+  '+': '__iadd__', '-': '__isub__', '*': '__imul__', '/': '__itruediv__', '//': '__ifloordiv__', '%': '__imod__',
+  '**': '__ipow__', '&': '__iand__', '|': '__ior__', '^': '__ixor__', '<<': '__ilshift__', '>>': '__irshift__', '@': '__imatmul__',
+};
+// a op= b, as CPython's in-place operators: a's __iop__ (NotImplemented falls back to the binary
+// operator); the builtin mutables change in place — list += / *=, set |= &= -= ^= (with a set),
+// dict |= — so other names for the object see it; everything else is `a op b`, rebound. `sync`:
+// a compiled caller, which reaches a method through its sync twin.
+function pyInplace(op, a, b, sync = false) {
+  if (typeof a === 'number' && typeof b === 'number') return pyBinOps[op](a, b);
+  const d = _IDUNDERS[op];
+  if (a !== null && typeof a === 'object' && typeof a[d] === 'function') {
+    const r = (sync ? syncOf(a[d]) : a[d]).call(a, b);
+    if (_isThenable(r)) return r.then((v) => (v === NotImplemented ? pyBinOps[op](a, b) : v));
+    return r === NotImplemented ? pyBinOps[op](a, b) : r;
+  }
+  if (Array.isArray(a) && !(a instanceof PyTuple)) {
+    if (op === '+') return pyIAddBuiltin(a, b);
+    if (op === '*' && (typeof b === 'number' || typeof b === 'boolean' || typeof b === 'bigint' || (b !== null && typeof b === 'object' && typeof b.__index__ === 'function'))) {
+      const n = typeof b === 'object' ? Number(syncOf(b.__index__).call(b)) : Number(b);
+      const src = a.slice();
+      a.length = 0;
+      for (let i = 0; i < n; i++) for (const x of src) a.push(x);
+      return a;
+    }
+  }
+  if (a instanceof Set && !a._frozen && b instanceof Set && (op === '|' || op === '&' || op === '-' || op === '^')) {
+    const other = b === a ? new Set(b) : b;
+    if (op === '|') for (const x of other) a.add(x);
+    else if (op === '&') { for (const x of [...a]) if (!other.has(x)) a.delete(x); }
+    else if (op === '-') for (const x of other) a.delete(x);
+    else for (const x of other) { if (a.has(x)) a.delete(x); else a.add(x); }
+    return a;
+  }
+  if (op === '|' && (a instanceof Map || isPlainDict(a)) && !_isDictView(a)) {
+    const r = _dictUpdate(a instanceof Map ? (k, v) => a.set(k, v) : (k, v) => { a[k] = v; }, [b]);
+    return _isThenable(r) ? r.then(() => a) : a;
+  }
+  return pyBinOps[op](a, b);
+}
 
 // ── printf-style formatting: str % args ──
 // %[(key)][flags][width][.precision][length]type, flags - + space 0 #, * for width/precision
@@ -5806,6 +5962,7 @@ function pyGetItem(obj, key, raw = false) {
   const isSeq = typeof obj === 'string' || Array.isArray(obj) || obj instanceof AdderRange ||
     (ArrayBuffer.isView(obj) && !(obj instanceof DataView));
   if (isSeq) {
+    if (key instanceof PySlice && !(ArrayBuffer.isView(obj) && !(obj instanceof Uint8Array))) return seqSliceGet(obj, key);
     if (typeof key === 'boolean') key = +key;
     if (typeof key !== 'number' || !Number.isInteger(key)) {
       if (_obj(key) && typeof key.__index__ === 'function') key = key.__index__();
@@ -6728,6 +6885,16 @@ const _ctor = (C, name, at = 0) => Object.assign((...a) => {
   return new C(...a);
 }, { _pyName: name, _pyClass: true });
 const _collectionsModule = {
+  // _count_elements(mapping, iterable): the C helper under Counter.update — mapping[x] =
+  // mapping.get(x, 0) + 1 for each x, through the mapping's own get / __setitem__
+  _count_elements(mapping, iterable) {
+    const get = adderGetAttr(mapping, 'get');
+    const set = mapping instanceof Map && !mapping.__adderType__ ? (k, v) => mapping.set(k, v) : adderGetAttr(mapping, '__setitem__');
+    return _eachMaybe(iterable, (x) => {
+      const n = get(x, 0);
+      return set(x, pyAdd(n, 1));
+    });
+  },
   Counter: _ctor(AdderCounter, 'Counter'),
   defaultdict: _ctor(AdderDefaultDict, 'defaultdict', 1),
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
@@ -7437,6 +7604,7 @@ function pyDelItem(obj, key) {
   }
   if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object doesn't support item deletion`);
   if (Array.isArray(obj)) {
+    if (key instanceof PySlice) return seqSliceDel(obj, key);
     if (!_isIntish(key)) throw new AdderError('TypeError', `list indices must be integers or slices, not ${pyTypeName(key)}`);
     let i = Number(_asInt(key));
     if (i < 0) i += obj.length;
@@ -7715,7 +7883,11 @@ async function _createAdderFile(vfs, filePath, mode) {
       if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
       if (isRead) throw new AdderError('IOError', 'not writable');
       if (isBinary) {
-        const chunk = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
+        const chunk = data instanceof Uint8Array ? data.slice()
+          : data instanceof PyByteArray ? Uint8Array.from(data)
+            : data instanceof PyMemoryView ? data.tobytes()
+              : data !== null && typeof data === 'object' && typeof data._pyBuffer === 'function' ? data._pyBuffer().slice()
+                : new TextEncoder().encode(String(data));
         _buffer.push(chunk);
         return chunk.byteLength;
       }
@@ -9292,12 +9464,14 @@ function adderBuiltins(printFn) {
       }
       if (x instanceof Uint8Array) return new Uint8Array(x);
       if (x instanceof PyMemoryView) return x.tobytes();
+      if (x !== null && typeof x === 'object' && typeof x._pyBuffer === 'function') return x._pyBuffer().slice();
       if (x !== null && typeof x === 'object' && typeof x.__bytes__ === 'function') return x.__bytes__();
       const items = [...pyIter(x)];   // sync: AIR calls bytes() without an await
       for (const v of items) if (!Number.isInteger(v) || v < 0 || v > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
       return Uint8Array.from(items);
     },
     memoryview: Object.assign((obj) => new PyMemoryView(obj), { _pyName: 'memoryview', __name__: 'memoryview', _pyClass: true }),
+    slice: _sliceNew,
     // bytearray(), bytearray(n) zeros, bytearray(ints / bytes), bytearray(str, encoding[, errors])
     bytearray: Object.assign((x, ...a) => {
       const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw ? a.pop() : {};
@@ -9309,6 +9483,8 @@ function adderBuiltins(printFn) {
         return _toBA(pyEncode(x, enc, a[1] ?? kw.errors ?? 'strict'));
       }
       if (x instanceof Uint8Array) return _toBA(x);
+      if (x instanceof PyMemoryView) return _toBA(x.tobytes());
+      if (x !== null && typeof x === 'object' && typeof x._pyBuffer === 'function') return _toBA(x._pyBuffer().slice());
       return _toBA([...pyIter(x)].map(_byteCheck));
     }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
     frozenset: maybeSync(function* (x) { const s = x === undefined ? new PySet() : new PySet(yield* _gCollect(x)); s._frozen = true; return s; }),
@@ -9351,7 +9527,18 @@ function adderBuiltins(printFn) {
       else if (reverse?._kw) reverse = reverse.reverse;
       return yield* _gSorted(yield* _gCollect(iterable), key || null, !!reverse);
     }),
-    reversed: maybeSync(function* (iterable) { const arr = yield* _gCollect(iterable); arr.reverse(); return arr; }),
+    // reversed(seq): the object's __reversed__, else an iterator from its last item down (a sequence,
+    // a dict's keys); a set, a generator — anything with no order to reverse — is a TypeError
+    reversed: maybeSync(function* (seq) {
+      if (seq !== null && typeof seq === 'object' && !Array.isArray(seq) && typeof seq.__reversed__ === 'function') return yield seq.__reversed__();
+      const ordered = typeof seq === 'string' || Array.isArray(seq) || seq instanceof Uint8Array || seq instanceof AdderRange ||
+        seq instanceof Map || isPlainDict(seq) || _isDictView(seq) ||
+        (seq !== null && typeof seq === 'object' && typeof seq.__len__ === 'function' && typeof seq.__getitem__ === 'function');
+      if (!ordered) throw new AdderError('TypeError', `'${pyTypeName(seq)}' object is not reversible`);
+      const arr = yield* _gCollect(seq);
+      arr.reverse();
+      return new _PyRevIter(arr, Array.isArray(seq) && !(seq instanceof PyTuple) ? 'list_reverseiterator' : seq instanceof AdderRange ? 'range_iterator' : 'reversed');
+    }),
     // lazy iterators, as in Python 3 (zip(count(), xs) works); synchronous when every input is
     enumerate: (iterable, start) => {
       if (start && start._kw) start = start.start;
@@ -9517,6 +9704,10 @@ function adderBuiltins(printFn) {
       return pyIter(obj);
     },
     next: (iter, def) => {
+      if (def !== null && typeof def === 'object' && def._kw === true) {
+        if (Object.keys(def).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'next() takes no keyword arguments');
+        def = undefined;
+      }
       const done = (v) => { if (def !== undefined) return def; throw stopIteration(v); };
       if (iter && typeof iter.__next__ === 'function') {
         if (def === undefined) return iter.__next__();
@@ -9606,7 +9797,7 @@ function adderBuiltins(printFn) {
   // Mark conversion builtins as type objects for isinstance()/type()
   // ONE object per type for the whole program: every module gets its own builtins table, and a
   // fresh `int` per table made `type(1) is int` false in a module once another had been imported
-  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray']) {
+  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray', 'slice']) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
     if (name === 'str' && builtins.str) { builtins.str.prototype = _StrBoxProto; builtins.str._pyOwnMembers = new PySet(Object.keys(_StrBoxProto)); }
@@ -9629,8 +9820,14 @@ function adderBuiltins(printFn) {
   }
   // and the builtin functions too: `len` is one object everywhere (a module's table, the builtins
   // module, a pickle naming builtins.len). Only print is per table — it writes to its run's output.
-  if (!_stableBuiltins) _stableBuiltins = { ...builtins };
-  else for (const k of Object.keys(builtins)) if (k !== 'print' && Object.hasOwn(_stableBuiltins, k)) builtins[k] = _stableBuiltins[k];
+  if (!_stableBuiltins) {
+    // each builtin function knows its name (pickle refers to builtins.reversed by it; a wrapper
+    // made by maybeSync is otherwise anonymous)
+    for (const [k, v] of Object.entries(builtins)) {
+      if (typeof v === 'function' && !v._pyName && !v._pyClass && Object.isExtensible(v)) v._pyName = k;
+    }
+    _stableBuiltins = { ...builtins };
+  } else for (const k of Object.keys(builtins)) if (k !== 'print' && Object.hasOwn(_stableBuiltins, k)) builtins[k] = _stableBuiltins[k];
   return builtins;
 }
 let _stableBuiltins = null;
@@ -9856,6 +10053,7 @@ _reModule.PatternError = _reModule.error;
 
 
 
+
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
 const _excStack = excStack;   // shared with the AIR runtime (builtins.js)
 
@@ -10057,15 +10255,8 @@ async function adderEval(node, scope) {
     case 'AugAssign': {
       const current = await _evalTarget(node.target, scope);
       const value = await adderEval(node.value, scope);
-      const iDunder = _iDunders[node.op];
-      let result;
-      if (iDunder && current !== null && typeof current === 'object' && typeof current[iDunder] === 'function') {
-        result = current[iDunder](value);
-      } else if (node.op === '+' && Array.isArray(current) && !(current instanceof PyTuple)) {
-        result = pyIAddBuiltin(current, value);   // list += iterable extends in place
-      } else {
-        result = _binOp(node.op, current, value, node.line);
-      }
+      // CPython's in-place operators: __iop__, the builtin mutables in place, else `a op b`
+      const result = await (_iDunders[node.op] ? _withLine(() => pyInplace(node.op, current, value), node.line) : _binOp(node.op, current, value, node.line));
       await _assignTarget(node.target, result, scope);
       return null;
     }
@@ -10278,7 +10469,7 @@ async function adderEval(node, scope) {
     case 'Starred': return await adderEval(node.value, scope);
 
     // ── slice (standalone) ──
-    case 'Slice': return { _slice: true, lower: node.lower ? await adderEval(node.lower, scope) : null, upper: node.upper ? await adderEval(node.upper, scope) : null, step: node.step ? await adderEval(node.step, scope) : null };
+    case 'Slice': return mkSlice(node.lower ? await adderEval(node.lower, scope) : null, node.upper ? await adderEval(node.upper, scope) : null, node.step ? await adderEval(node.step, scope) : null);
 
     default:
       throw new AdderError('RuntimeError', `Unknown AST node type: ${node.type}`, node.line);
@@ -10325,7 +10516,7 @@ async function _assignTarget(target, value, scope) {
         const upper = target.slice.upper ? await adderEval(target.slice.upper, scope) : null;
         const step = target.slice.step ? await adderEval(target.slice.step, scope) : null;
         if (typeof obj?.__setitem__ === 'function') {
-          await obj.__setitem__({ _slice: true, lower, upper, step }, value);
+          await obj.__setitem__(mkSlice(lower, upper, step), value);
         } else {
           _applySliceAssign(obj, lower, upper, step, value, target.line);
         }
@@ -10389,6 +10580,7 @@ async function _assignTarget(target, value, scope) {
       const key = await adderEval(target.slice, scope);
       if (obj instanceof Map) obj.set(key, value);
       else if (typeof obj?.__setitem__ === 'function') await obj.__setitem__(key, value);
+      else if (Array.isArray(obj) && key instanceof PySlice) seqSliceSet(obj, key, value);
       else if (Array.isArray(obj) || obj instanceof Uint8Array) {
         // Python-style indexing on write: arr[-1] is the last element (JS would store a '-1'
         // property), a position past the end is an IndexError
@@ -10436,7 +10628,7 @@ async function _deleteTarget(target, scope) {
       const upper = target.slice.upper ? await adderEval(target.slice.upper, scope) : null;
       const step = target.slice.step ? await adderEval(target.slice.step, scope) : null;
       if (typeof obj?.__delitem__ === 'function') {
-        await obj.__delitem__({ _slice: true, lower, upper, step });
+        await obj.__delitem__(mkSlice(lower, upper, step));
       } else {
         _applySliceDelete(obj, lower, upper, step, target.line);
       }
@@ -10525,12 +10717,11 @@ function _pyIn(container, value) {
 // as a normal expression. Used by both the read and write paths.
 async function _evalSliceElt(elt, scope) {
   if (elt && elt.type === 'Slice') {
-    return {
-      _slice: true,
-      lower: elt.lower ? await adderEval(elt.lower, scope) : null,
-      upper: elt.upper ? await adderEval(elt.upper, scope) : null,
-      step: elt.step ? await adderEval(elt.step, scope) : null,
-    };
+    return mkSlice(
+      elt.lower ? await adderEval(elt.lower, scope) : null,
+      elt.upper ? await adderEval(elt.upper, scope) : null,
+      elt.step ? await adderEval(elt.step, scope) : null,
+    );
   }
   return await adderEval(elt, scope);
 }
@@ -10544,7 +10735,7 @@ async function _evalSubscript(node, scope) {
     if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array)
       return _applySlice(obj, lower, upper, step);
     if (typeof obj?.__getitem__ === 'function')
-      return obj.__getitem__({ _slice: true, lower, upper, step });
+      return obj.__getitem__(mkSlice(lower, upper, step));
     return _applySlice(obj, lower, upper, step);
   }
   // x[*a, b]: the key is that tuple, starred items spliced in
@@ -12271,6 +12462,7 @@ function _setitem(obj, key, value) {
   { const f = subclassDunder(obj, '__setitem__'); if (f) { f.call(obj, key, value); return; } }
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
+    if (key instanceof PySlice) { seqSliceSet(obj, key, value); return; }
     obj[(typeof key === 'number' && key >= 0 && key < obj.length && (key | 0) === key) ? key : seqStoreIndex(obj, key)] = value;
     return;
   }
@@ -12353,6 +12545,7 @@ function _ndarrayTupleSet(obj, key, value) {
 
 function _slice(obj, lower, upper, step) {
   if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
+  const rawStep = step;   // (a __getitem__ is handed the slice as written: step None when omitted)
   step = step ?? 1;
   if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -12372,7 +12565,7 @@ function _slice(obj, lower, upper, step) {
       : obj instanceof Uint8Array ? Uint8Array.from(result) : obj instanceof PyByteArray ? PyByteArray.from(result) : result;
   }
   if (typeof obj?.__getitem__ === 'function') {
-    return obj.__getitem__({ _slice: true, lower, upper, step });
+    return obj.__getitem__(mkSlice(lower, upper, rawStep));
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
 }
@@ -12400,7 +12593,7 @@ function _setslice(obj, lower, upper, step, value) {
     throw new AdderError('TypeError', "'bytes' object does not support item assignment");
   }
   if (typeof obj?.__setitem__ === 'function') {
-    obj.__setitem__({ _slice: true, lower, upper, step }, value);
+    obj.__setitem__(mkSlice(lower, upper, step), value);
     return;
   }
   if (!Array.isArray(obj)) {
@@ -12435,7 +12628,7 @@ function _delslice(obj, lower, upper, step) {
     throw new AdderError('TypeError', "'bytes' object doesn't support item deletion");
   }
   if (typeof obj?.__delitem__ === 'function') {
-    obj.__delitem__({ _slice: true, lower, upper, step });
+    obj.__delitem__(mkSlice(lower, upper, step));
     return;
   }
   if (!Array.isArray(obj)) {
@@ -12901,6 +13094,12 @@ const _sub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b :
 const _mul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyMul(a, b));
 const _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
 const _and_ = pyAnd, _or_ = pyOr, _xor = pyXor, _neg = pyNeg, _pos = pyPos, _invert = pyInvert;
+// the in-place operators but +=: two numbers as the plain operator does them (tiny, as above, so
+// `t -= x` inlines); anything else CPython's way — __iop__, the builtin mutables in place
+const _objOp = (a) => a !== null && typeof a === 'object';
+const _isub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pyInplace('-', a, b, true));
+const _imul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyInplace('*', a, b, true));
+const _iop = (op, bin) => (a, b) => (_objOp(a) ? pyInplace(op, a, b, true) : bin(a, b));
 
 // comparisons: the shared rules (builtins.js), so both engines compare alike
 const _eq = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a === b : pyEq(a, b));
@@ -12916,8 +13115,13 @@ const _py = {
   // arithmetic
   add: _add, sub: _sub, mul: _mul, div: _div,
   floordiv: _floordiv, mod: _mod, pow: _pow,
-  // in-place: __iadd__ dispatch + list extend semantics for `+=`
+  // in-place: __iadd__ dispatch + list extend semantics for `+=` (async-aware: an __iadd__ may
+  // be tree-walked); the other in-place operators through the method's sync twin
   iadd: _iadd,
+  isub: _isub, imul: _imul,
+  itruediv: _iop('/', pyTrueDiv), ifloordiv: _iop('//', pyFloorDiv), imod: _iop('%', pyMod), ipow: _iop('**', pyPow),
+  iand: _iop('&', pyAnd), ior: _iop('|', pyOr), ixor: _iop('^', pyXor), ilshift: _iop('<<', pyLshift),
+  irshift: _iop('>>', pyRshift), imatmul: _iop('@', pyMatmul),
   // bitwise (with dunder fallback for masks/sets/etc.)
   and_: _and_, or_: _or_, xor: _xor, lshift: pyLshift, rshift: pyRshift,
   // unary
@@ -12931,7 +13135,7 @@ const _py = {
   // Marker object for slice elements inside a tuple subscript
   // (`arr[i:j, k]` lowers to `getitem(obj, [makeSlice(i,j,null), k])`
   // — the consumer's __getitem__ destructures via `_slice` flag).
-  makeSlice: (lower, upper, step) => ({ _slice: true, lower, upper, step }),
+  makeSlice: mkSlice,
   // context manager __exit__ (with statement)
   exitWith: _exitWith,
   enterWith: ctxEnter,
@@ -13384,11 +13588,14 @@ adderModules.operator = {
   contains: _slContains, countOf: (a, b) => [...pyIter(a)].filter((v) => pyEq(v, b) === true).length,
   indexOf: (a, b) => { let i = 0; for (const v of pyIter(a)) { if (pyEq(v, b) === true) return i; i++; } throw new AdderError('ValueError', 'sequence.index(x): x not in sequence'); },
   getitem: pyGetItem,
-  setitem: (o, k, v) => { if (o instanceof Map) o.set(k, v); else if (typeof o.__setitem__ === 'function') return _slThen(o.__setitem__(k, v), () => null); else o[Array.isArray(o) && k < 0 ? o.length + k : k] = v; return null; },
-  delitem: (o, k) => { if (o instanceof Map) o.delete(k); else if (Array.isArray(o)) o.splice(k < 0 ? o.length + k : k, 1); else delete o[k]; return null; },
+  setitem: (o, k, v) => { if (o instanceof Map) o.set(k, v); else if (typeof o.__setitem__ === 'function') return _slThen(o.__setitem__(k, v), () => null); else if (Array.isArray(o) && k instanceof PySlice) seqSliceSet(o, k, v); else o[Array.isArray(o) && k < 0 ? o.length + k : k] = v; return null; },
+  delitem: (o, k) => _slThen(pyDelItem(o, k), () => null),
   concat: (a, b) => pyAdd(a, b), index: (a) => (typeof a === 'number' && Number.isInteger(a) ? a : a && typeof a.__index__ === 'function' ? a.__index__() : (() => { throw new AdderError('TypeError', `'${pyTypeName(a)}' object cannot be interpreted as an integer`); })()),
-  iadd: pyAdd, isub: pySub, imul: pyMul, itruediv: pyTrueDiv, ifloordiv: pyFloorDiv, imod: pyMod, ipow: pyPow,
-  iand: pyAnd, ior: pyOr, ixor: pyXor, ilshift: pyLshift, irshift: pyRshift, iconcat: pyAdd,
+  iadd: (a, b) => pyInplace('+', a, b), isub: (a, b) => pyInplace('-', a, b), imul: (a, b) => pyInplace('*', a, b),
+  itruediv: (a, b) => pyInplace('/', a, b), ifloordiv: (a, b) => pyInplace('//', a, b), imod: (a, b) => pyInplace('%', a, b),
+  ipow: (a, b) => pyInplace('**', a, b), imatmul: (a, b) => pyInplace('@', a, b),
+  iand: (a, b) => pyInplace('&', a, b), ior: (a, b) => pyInplace('|', a, b), ixor: (a, b) => pyInplace('^', a, b),
+  ilshift: (a, b) => pyInplace('<<', a, b), irshift: (a, b) => pyInplace('>>', a, b),
   length_hint: (o, d = 0) => { try { return o.length ?? o.size ?? d; } catch { return d; } },
   call: (f, ...a) => f(...a),
   itemgetter: _slItemgetter, attrgetter: _slAttrgetter, methodcaller: _slMethodcaller,
@@ -13398,7 +13605,7 @@ const _slSeq = (a) => typeof a === 'string' || Array.isArray(a) || a instanceof 
   || (a !== null && typeof a === 'object' && !(a instanceof Map) && !(a instanceof Set) && typeof a.__getitem__ === 'function');
 const _slConcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyAdd(a, b); };
 adderModules.operator.concat = _slConcat;
-adderModules.operator.iconcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyAdd(a, b); };
+adderModules.operator.iconcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyInplace('+', a, b); };
 // the operator functions take their arguments by position, exactly so many (operator.add(1) is a
 // TypeError, as CPython's C functions are)
 {
@@ -14240,6 +14447,14 @@ const _slMutableMapping = _slAbc('MutableMapping', [_slMapping], _slIsMapLike, {
 const _slSetAbc = _slAbc('Set', [_slCollection], (x) => x instanceof Set);
 const _slMutableSet = _slAbc('MutableSet', [_slSetAbc], (x) => x instanceof Set && !x._frozen);
 const _slAwaitable = _slAbc('Awaitable', [], (x) => x !== null && x !== undefined && typeof x.then === 'function');
+// the async protocols, by Python's methods (__aiter__ / __anext__, an async generator's asend /
+// athrow / aclose) — or a JS async iterable, which `async for` takes too
+const _slHasAttr = (x, n) => { if (x === null || x === undefined) return false; try { return typeof adderGetAttr(x, n) === 'function'; } catch { return false; } };
+const _slAsyncIterable = _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && (typeof x[Symbol.asyncIterator] === 'function' || _slHasAttr(x, '__aiter__')));
+const _slAsyncIterator = _slAbc('AsyncIterator', [_slAsyncIterable], (x) => x !== null && x !== undefined &&
+  ((typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function') || (_slHasAttr(x, '__aiter__') && _slHasAttr(x, '__anext__'))));
+const _slAsyncGenerator = _slAbc('AsyncGenerator', [_slAsyncIterator], (x) => x !== null && x !== undefined &&
+  (x._pyAsyncGen === true || ['__aiter__', '__anext__', 'asend', 'athrow', 'aclose'].every((n) => _slHasAttr(x, n))));
 // MappingView and its three: concrete, as CPython's — View(mapping) wraps the mapping (a subclass
 // in Python inherits __init__), and len / iter / in / repr read through it; KeysView and ItemsView
 // are Sets (==, <=, &, |, -, ^ by contents)
@@ -14287,8 +14502,7 @@ const _slAbcModule = {
   Container: _slContainer, Collection: _slCollection, Hashable: _slHashable, Callable: _slCallable,
   Sequence: _slSequence, MutableSequence: _slMutableSequence, Mapping: _slMapping, MutableMapping: _slMutableMapping,
   Set: _slSetAbc, MutableSet: _slMutableSet, Awaitable: _slAwaitable, Coroutine: _slAwaitable,
-  AsyncIterable: _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function'),
-  AsyncIterator: _slAbc('AsyncIterator', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function'),
+  AsyncIterable: _slAsyncIterable, AsyncIterator: _slAsyncIterator, AsyncGenerator: _slAsyncGenerator,
   ByteString: _slAbc('ByteString', [_slSequence], (x) => x instanceof Uint8Array), Buffer: _slAbc('Buffer', [], (x) => ArrayBuffer.isView(x)),
   MappingView: _slMappingView, KeysView: _slView('KeysView', [_slMappingView, _slSetAbc]), ItemsView: _slView('ItemsView', [_slMappingView, _slSetAbc]), ValuesView: _slView('ValuesView', [_slMappingView, _slCollection]),
 };
@@ -14877,6 +15091,7 @@ class _NmFraction {
   get numerator() { return _nmInt(this._n); }
   get denominator() { return _nmInt(this._d); }
   __repr__() { return `Fraction(${this._n}, ${this._d})`; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([this.numerator, this.denominator])]); }
   __str__() { return this._d === 1n ? String(this._n) : `${this._n}/${this._d}`; }
   __format__(spec) { return spec ? pyFormatValue(this.valueOf(), spec) : this.__str__(); }
   valueOf() { return _nmToFloat(this._n, this._d); }
@@ -15097,6 +15312,7 @@ class _NmDecimal {
     return sign + intpart + fracpart + e;
   }
   __repr__() { return `Decimal('${this.__str__()}')`; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([_NmDecimal.prototype.__str__.call(this)])]); }
   __format__(spec) { return _nmDecFormat(this, spec || ''); }
   valueOf() { return this._special === 'F' ? (this._sign ? -Infinity : Infinity) : this._special ? NaN : Number(this.__str__()); }
   __float__() { return this.valueOf(); }
@@ -16358,6 +16574,677 @@ const _cmModule = {
 for (const [k, v] of Object.entries(_cmModule)) if (typeof v === 'function' && !v._pyName) { Object.defineProperty(v, 'name', { value: k }); v._pyName = k; }
 adderModules.cmath = _cmModule;
 
+// -- stdlib-array.js --
+
+// adder stdlib — array: CPython's Modules/arraymodule.c. An array is a typed buffer that grows (a JS
+// ArrayBuffer, capacity doubling): what memoryview(a), bytes(a) and a file's write(a) see, and while
+// a buffer is exported (an unreleased memoryview) resizing the array is a BufferError, as CPython's.
+// The item sizes are an LP64 machine's: 'l' / 'L' are 8 bytes; 'u' and 'w' are 4 (UCS-4).
+//
+// Concat-bundled with the rest of adder: top-level names carry an `_ar` prefix.
+
+
+// typecode → item size, typed array, range and the name CPython's overflow message uses
+const _AR_CODES = {
+  b: { size: 1, T: Int8Array, min: -128, max: 127, name: 'signed char' },
+  B: { size: 1, T: Uint8Array, min: 0, max: 255, name: 'unsigned byte integer' },
+  u: { size: 4, T: Uint32Array, uni: true },
+  w: { size: 4, T: Uint32Array, uni: true },
+  h: { size: 2, T: Int16Array, min: -32768, max: 32767, name: 'signed short integer' },
+  H: { size: 2, T: Uint16Array, min: 0, max: 65535, name: 'unsigned short' },
+  i: { size: 4, T: Int32Array, min: -2147483648, max: 2147483647, name: 'signed integer' },
+  I: { size: 4, T: Uint32Array, min: 0, max: 4294967295, name: 'unsigned int' },
+  l: { size: 8, T: BigInt64Array, big: true, min: -(2n ** 63n), max: 2n ** 63n - 1n, name: 'signed long' },
+  L: { size: 8, T: BigUint64Array, big: true, min: 0n, max: 2n ** 64n - 1n, name: 'unsigned long' },
+  q: { size: 8, T: BigInt64Array, big: true, min: -(2n ** 63n), max: 2n ** 63n - 1n, name: 'signed long long' },
+  Q: { size: 8, T: BigUint64Array, big: true, min: 0n, max: 2n ** 64n - 1n, name: 'unsigned long long' },
+  f: { size: 4, T: Float32Array, flt: true },
+  d: { size: 8, T: Float64Array, flt: true },
+};
+const _AR_TYPECODES = 'bBuwhHiIlLqQfd';
+const _AR_BAD_TYPECODE = 'bad typecode (must be b, B, u, w, h, H, i, I, l, L, q, Q, f or d)';
+const _arIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _arBigOut = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
+const _arKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : null);
+function _arArgs(name, a, min, max) {
+  const kw = _arKw(a);
+  if (kw && Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', `array.${name}() takes no keyword arguments`);
+  if (a.length < min || a.length > max) {
+    if (max === 0) throw new AdderError('TypeError', `array.${name}() takes no arguments (${a.length} given)`);
+    if (min === max) throw new AdderError('TypeError', `array.${name}() takes exactly one argument (${a.length} given)`);
+    throw new AdderError('TypeError', `${name} expected at ${a.length < min ? 'least' : 'most'} ${a.length < min ? min : max} argument${(a.length < min ? min : max) > 1 ? 's' : ''}, got ${a.length}`);
+  }
+}
+// an index: an int, or __index__
+function _arIndex(v, what = 'array indices must be integers') {
+  if (typeof v === 'number' && Number.isInteger(v)) return v;
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'bigint') return Number(v);
+  if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') {
+    const r = syncOf(v.__index__).call(v);
+    if (typeof r === 'number' || typeof r === 'bigint' || typeof r === 'boolean') return Number(r);
+    throw new AdderError('TypeError', `__index__ returned non-int (type ${pyTypeName(r)})`);
+  }
+  throw new AdderError('TypeError', what === null ? `'${pyTypeName(v)}' object cannot be interpreted as an integer` : what);
+}
+// a slice against a length: [start, stop, step, count], as PySlice_AdjustIndices
+function _arSlice(k, n) {
+  const big = (v) => (typeof v === 'bigint' ? (v > 0n ? Infinity : -Infinity) : v);
+  let step = k.step === null || k.step === undefined ? 1 : big(_arIdxBig(k.step));
+  if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
+  const def = (v, d) => (v === null || v === undefined ? d : big(_arIdxBig(v)));
+  let start = def(k.lower, step < 0 ? Infinity : 0), stop = def(k.upper, step < 0 ? -Infinity : Infinity);
+  const adj = (x) => {
+    if (x < 0) { x += n; if (x < 0) x = step < 0 ? -1 : 0; }
+    else if (x >= n) x = step < 0 ? n - 1 : n;
+    return x;
+  };
+  start = adj(start); stop = adj(stop);
+  let count = 0;
+  if (step < 0) { if (stop < start) count = Math.floor((start - stop - 1) / -step) + 1; }
+  else if (start < stop) count = Math.floor((stop - start - 1) / step) + 1;
+  if (!Number.isFinite(step)) step = step > 0 ? n + 1 : -(n + 1);
+  return [start, stop, step, count];
+}
+// a slice bound may be a big int (1 << 333): kept as a BigInt, the slice code saturates it
+function _arIdxBig(v) {
+  if (typeof v === 'bigint') return v;
+  return _arIndex(v, 'slice indices must be integers or None or have an __index__ method');
+}
+
+// a value for an item of `code` (as the typed array stores it), or a CPython error
+function _arItem(code, v) {
+  const c = _AR_CODES[code];
+  if (c.uni) {
+    if (typeof v !== 'string' && !(v !== null && typeof v === 'object' && typeof v._pyStrValue === 'string')) throw new AdderError('TypeError', `array item must be a unicode character, not ${pyTypeName(v)}`);
+    const s = typeof v === 'string' ? v : v._pyStrValue;
+    const cp = s.codePointAt(0);
+    if (s.length === 0 || [...s].length !== 1) throw new AdderError('TypeError', `array item must be a unicode character, not a string of length ${[...s].length}`);
+    return cp;
+  }
+  if (c.flt) {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'boolean') return +v;
+    if (typeof v === 'bigint') { const n = Number(v); if (!Number.isFinite(n)) throw new AdderError('OverflowError', 'int too large to convert to float'); return n; }
+    if (v !== null && typeof v === 'object') {
+      for (const m of ['__float__', '__index__']) if (typeof v[m] === 'function') return Number(syncOf(v[m]).call(v));
+    }
+    throw new AdderError('TypeError', `must be real number, not ${pyTypeName(v)}`);
+  }
+  let n;
+  if (typeof v === 'number') {
+    if (!Number.isInteger(v)) throw new AdderError('TypeError', `'float' object cannot be interpreted as an integer`);
+    n = v;
+  } else if (typeof v === 'boolean') n = +v;
+  else if (typeof v === 'bigint') n = v;
+  else if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') n = _arIndexBig(v);
+  else throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+  if (c.big) {
+    const b = BigInt(n);
+    if (b < c.min || b > c.max) throw _arOverflow(c, b < c.min);
+    return b;
+  }
+  if (typeof n === 'bigint') { if (n < BigInt(c.min) || n > BigInt(c.max)) throw _arOverflow(c, n < BigInt(c.min)); return Number(n); }
+  if (n < c.min || n > c.max) throw _arOverflow(c, n < c.min);
+  return n;
+}
+function _arIndexBig(v) {
+  const r = syncOf(v.__index__).call(v);
+  if (typeof r === 'number' || typeof r === 'bigint' || typeof r === 'boolean') return typeof r === 'boolean' ? +r : r;
+  throw new AdderError('TypeError', `__index__ returned non-int (type ${pyTypeName(r)})`);
+}
+const _arOverflow = (c, low) => new AdderError('OverflowError', c.big
+  ? (low && c.min === 0n ? `can't convert negative int to unsigned` : `Python int too large to convert to C ${c.name.replace(/^signed /, '')}`)
+  : `${c.name} is ${low ? 'less than minimum' : 'greater than maximum'}`);
+// a stored item as a Python value
+const _arOut = (code, x) => (_AR_CODES[code].uni ? String.fromCodePoint(x) : _AR_CODES[code].big ? _arBigOut(x) : x);
+// the bytes of a bytes-like object (bytes, bytearray, memoryview, an array), or null
+function _arBytesOf(x) {
+  if (x instanceof Uint8Array) return x;
+  if (x instanceof PyByteArray) return Uint8Array.from(x);
+  if (x instanceof PyMemoryView) return x.tobytes();
+  if (x instanceof _ArArray) return x._bytes().slice();
+  return null;
+}
+
+class _ArArray {
+  constructor(...a) {
+    _arKw(a);   // (a subclass's keyword arguments are its own __init__'s; array() itself refuses them)
+    if (a.length < 1) throw new AdderError('TypeError', "array() missing required argument 'typecode' (pos 1)");
+    if (a.length > 2) throw new AdderError('TypeError', `array() takes at most 2 arguments (${a.length} given)`);
+    let [code, init] = a;
+    if (code !== null && typeof code === 'object' && typeof code._pyStrValue === 'string') code = code._pyStrValue;
+    if (typeof code !== 'string' || [...code].length !== 1) {
+      throw new AdderError('TypeError', typeof code === 'string' ? `array() argument 1 must be a unicode character, not a string of length ${[...code].length}` : `array() argument 1 must be a unicode character, not ${pyTypeName(code)}`);
+    }
+    if (!Object.hasOwn(_AR_CODES, code)) throw new AdderError('ValueError', _AR_BAD_TYPECODE);
+    const c = _AR_CODES[code];
+    Object.defineProperty(this, '_code', { value: code, enumerable: false });
+    Object.defineProperty(this, '_c', { value: c, enumerable: false });
+    Object.defineProperty(this, '_n', { value: 0, writable: true, enumerable: false });
+    Object.defineProperty(this, '_exports', { value: 0, writable: true, enumerable: false });
+    Object.defineProperty(this, '_v', { value: new c.T(0), writable: true, enumerable: false });
+    if (init === undefined) return;
+    if (typeof init === 'string' || (init !== null && typeof init === 'object' && typeof init._pyStrValue === 'string')) {
+      if (!c.uni) throw new AdderError('TypeError', `cannot use a str to initialize an array with typecode '${code}'`);
+      this._fromUnicode(typeof init === 'string' ? init : init._pyStrValue);
+      return;
+    }
+    if (init instanceof _ArArray && init._c.uni && !c.uni) throw new AdderError('TypeError', `cannot use a unicode array to initialize an array with typecode '${code}'`);
+    if (init instanceof Uint8Array || init instanceof PyByteArray) { this._fromBytes(Uint8Array.from(init)); return; }
+    if (init instanceof _ArArray) { this._appendValues(init.tolist()); return; }
+    if (!Array.isArray(init)) throw new AdderError('TypeError', `'${pyTypeName(init)}' object is not iterable`);
+    this._appendValues(init);
+  }
+  get typecode() { return this._code; }
+  get itemsize() { return this._c.size; }
+  // the live elements
+  _arr() { return this._v.subarray(0, this._n); }
+  _bytes() { return new Uint8Array(this._v.buffer, 0, this._n * this._c.size); }
+  _resizeCheck() { if (this._exports > 0) throw new AdderError('BufferError', 'cannot resize an array that is exporting buffers'); }
+  // room for `n` items (capacity grows by doubling)
+  _reserve(n) {
+    if (n <= this._v.length) return;
+    if (n * this._c.size > 2 ** 31) throw new AdderError('MemoryError', '');
+    const nv = new this._c.T(Math.max(n, this._v.length * 2, 4));
+    nv.set(this._arr());
+    this._v = nv;
+  }
+  _setLen(n) {
+    if (n === this._n) return;
+    this._resizeCheck();
+    this._reserve(n);
+    if (n < this._n) this._v.fill(this._c.big ? 0n : 0, n, this._n);
+    this._n = n;
+  }
+  // append converted values, all or nothing
+  _appendValues(vals) {
+    const conv = vals.map((v) => _arItem(this._code, v));
+    if (!conv.length) return;
+    const n = this._n;
+    this._setLen(n + conv.length);
+    this._v.set(conv, n);
+  }
+  _fromBytes(b) {
+    const sz = this._c.size;
+    if (b.length % sz) throw new AdderError('ValueError', 'bytes length not a multiple of item size');
+    if (!b.length) return;
+    const n = this._n, k = b.length / sz;
+    this._setLen(n + k);
+    new Uint8Array(this._v.buffer, n * sz, b.length).set(b);
+  }
+  _fromUnicode(s) {
+    const cps = [...s].map((ch) => ch.codePointAt(0));
+    if (!cps.length) return;
+    const n = this._n;
+    this._setLen(n + cps.length);
+    this._v.set(cps, n);
+  }
+  _new(vals) { const r = new _ArArray(this._code); r._appendValues(vals); return r; }
+  _newRaw(arr) {
+    const r = new _ArArray(this._code);
+    r._setLen(arr.length);
+    r._v.set(arr);
+    return r;
+  }
+  // a buffer export: memoryview(a) — the array's bytes, live, until released
+  _pyBufferExport() { this._exports++; return this._bytes(); }
+  _pyBufferRelease() { if (this._exports > 0) this._exports--; }
+  _pyBuffer() { return this._bytes(); }
+
+  // ── the sequence ──
+  __len__() { return this._n; }
+  __getitem__(k) {
+    if (k !== null && typeof k === 'object' && k._slice) {
+      const [start, , step, count] = _arSlice(k, this._n);
+      if (step === 1) return this._newRaw(this._arr().slice(start, start + count));
+      const out = new this._c.T(count);
+      for (let i = 0, j = start; i < count; i++, j += step) out[i] = this._v[j];
+      return this._newRaw(out);
+    }
+    let i = _arIndex(k);
+    if (i < 0) i += this._n;
+    if (i < 0 || i >= this._n) throw new AdderError('IndexError', 'array index out of range');
+    return _arOut(this._code, this._v[i]);
+  }
+  __setitem__(k, v) {
+    if (k !== null && typeof k === 'object' && k._slice) {
+      if (!(v instanceof _ArArray)) throw new AdderError('TypeError', `can only assign array (not "${pyTypeName(v)}") to array slice`);
+      if (v._code !== this._code) throw new AdderError('TypeError', 'bad argument type for built-in operation');
+      const src = v._arr().slice();
+      const [start, stop, step, count] = _arSlice(k, this._n);
+      if (step === 1) {
+        const hi = Math.max(start, stop);
+        const tail = this._arr().slice(hi);
+        if (src.length !== hi - start) this._resizeCheck();
+        this._setLen(start + src.length + tail.length);
+        this._v.set(src, start);
+        this._v.set(tail, start + src.length);
+        return null;
+      }
+      if (src.length !== count) throw new AdderError('ValueError', `attempt to assign array of size ${src.length} to extended slice of size ${count}`);
+      for (let i = 0, j = start; i < count; i++, j += step) this._v[j] = src[i];
+      return null;
+    }
+    let i = _arIndex(k);
+    const x = _arItem(this._code, v);
+    if (i < 0) i += this._n;
+    if (i < 0 || i >= this._n) throw new AdderError('IndexError', 'array assignment index out of range');
+    this._v[i] = x;
+    return null;
+  }
+  __delitem__(k) {
+    if (k !== null && typeof k === 'object' && k._slice) {
+      const [start, , step, count] = _arSlice(k, this._n);
+      if (!count) return null;
+      this._resizeCheck();
+      const drop = new Set();
+      for (let i = 0, j = start; i < count; i++, j += step) drop.add(j);
+      const keep = this._arr().filter((_, i) => !drop.has(i));
+      this._setLen(keep.length);
+      this._v.set(keep);
+      return null;
+    }
+    let i = _arIndex(k);
+    if (i < 0) i += this._n;
+    if (i < 0 || i >= this._n) throw new AdderError('IndexError', 'array assignment index out of range');
+    this._resizeCheck();
+    this._v.copyWithin(i, i + 1, this._n);
+    this._setLen(this._n - 1);
+    return null;
+  }
+  __contains__(x) { for (let i = 0; i < this._n; i++) if (pyEq(_arOut(this._code, this._v[i]), x) === true) return true; return false; }
+  __iter__() { return new _ArIter(this); }
+  __reversed__() { return new _ArRevIter(this); }
+  __add__(o) {
+    if (!(o instanceof _ArArray)) throw new AdderError('TypeError', `can only append array (not "${pyTypeName(o)}") to array`);
+    if (o._code !== this._code) throw new AdderError('TypeError', 'bad argument type for built-in operation');
+    const out = new this._c.T(this._n + o._n);
+    out.set(this._arr()); out.set(o._arr(), this._n);
+    return this._newRaw(out);
+  }
+  __iadd__(o) {
+    if (!(o instanceof _ArArray)) throw new AdderError('TypeError', `can only extend array with array (not "${pyTypeName(o)}")`);
+    if (o._code !== this._code) throw new AdderError('TypeError', 'can only extend with array of same kind');
+    const src = o._arr().slice(), n = this._n;
+    this._setLen(n + src.length);
+    this._v.set(src, n);
+    return this;
+  }
+  __mul__(k) {
+    if (!(typeof k === 'number' || typeof k === 'bigint' || typeof k === 'boolean' || (k !== null && typeof k === 'object' && typeof k.__index__ === 'function'))) {
+      throw new AdderError('TypeError', `can't multiply sequence by non-int of type '${pyTypeName(k)}'`);
+    }
+    const t = Math.max(0, _arIndex(k, null));
+    if (this._n && t * this._n * this._c.size > 2 ** 31) throw new AdderError('MemoryError', '');
+    const src = this._arr(), out = new this._c.T(src.length * t);
+    for (let i = 0; i < t; i++) out.set(src, i * src.length);
+    return this._newRaw(out);
+  }
+  __rmul__(k) { return this.__mul__(k); }
+  __imul__(k) {
+    if (!(typeof k === 'number' || typeof k === 'bigint' || typeof k === 'boolean' || (k !== null && typeof k === 'object' && typeof k.__index__ === 'function'))) {
+      throw new AdderError('TypeError', `can't multiply sequence by non-int of type '${pyTypeName(k)}'`);
+    }
+    const t = Math.max(0, _arIndex(k, null));
+    if (this._n && t * this._n * this._c.size > 2 ** 31) throw new AdderError('MemoryError', '');
+    const src = this._arr().slice(), n = src.length;
+    this._setLen(n * t);
+    for (let i = 1; i < t; i++) this._v.set(src, i * n);
+    return this;
+  }
+  // rich comparison: the first differing item decides; then the lengths
+  _cmp(o, op) {
+    if (!(o instanceof _ArArray)) return _arNotImpl();
+    if ((op === 'eq' || op === 'ne') && this._n !== o._n) return op === 'ne';
+    const n = Math.min(this._n, o._n);
+    let i = 0;
+    for (; i < n; i++) if (pyEq(_arOut(this._code, this._v[i]), _arOut(o._code, o._v[i])) !== true) break;
+    if (i >= n) {
+      const a = this._n, b = o._n;
+      return op === 'eq' ? a === b : op === 'ne' ? a !== b : op === 'lt' ? a < b : op === 'le' ? a <= b : op === 'gt' ? a > b : a >= b;
+    }
+    if (op === 'eq') return false;
+    if (op === 'ne') return true;
+    const x = _arOut(this._code, this._v[i]), y = _arOut(o._code, o._v[i]);
+    return op === 'lt' ? pyLt(x, y) : op === 'le' ? !pyLt(y, x) && (pyLt(x, y) || pyEq(x, y) === true) : op === 'gt' ? pyLt(y, x) : !pyLt(x, y) && (pyLt(y, x) || pyEq(x, y) === true);
+  }
+  __eq__(o) { return this._cmp(o, 'eq'); }
+  __ne__(o) { return this._cmp(o, 'ne'); }
+  __lt__(o) { return this._cmp(o, 'lt'); }
+  __le__(o) { return this._cmp(o, 'le'); }
+  __gt__(o) { return this._cmp(o, 'gt'); }
+  __ge__(o) { return this._cmp(o, 'ge'); }
+  __repr__() {
+    const name = this.__adderClass__ && this.__adderClass__ !== 'array' ? this.__adderClass__ : 'array';
+    if (!this._n) return `${name}('${this._code}')`;
+    if (this._c.uni) return `${name}('${this._code}', ${pyRepr(this.tounicode())})`;
+    return `${name}('${this._code}', ${pyRepr(this.tolist())})`;
+  }
+  __str__() { return this.__repr__(); }
+  __copy__() { return this._newRaw(this._arr().slice()); }
+  __deepcopy__(memo) { return this._newRaw(this._arr().slice()); }
+  // pickling: (type, (typecode, list), state) under protocol 3, else the reconstructor and the bytes
+  // in their machine format
+  __reduce_ex__(protocol = 0) {
+    const t = this.__adderType__ || _arArrayType;
+    const st = this.__dict__ !== undefined ? this.__dict__ : _arInstanceDict(this);
+    if (_arIndex(protocol, null) < 3) return mkTuple([t, mkTuple([this._code, this._c.uni ? this.tounicode() : this.tolist()]), st]);
+    return mkTuple([adderGetAttr(adderModules.array, '_array_reconstructor'), mkTuple([t, this._code, _AR_NATIVE[this._code], this._bytes().slice()]), st]);
+  }
+  __reduce__() { return this.__reduce_ex__(0); }
+  __class_getitem__(x) { return _arArrayType; }
+
+  // ── methods ──
+  append(...a) { _arArgs('append', a, 1, 1); this._appendValues([a[0]]); return null; }
+  extend(...a) {
+    _arArgs('extend', a, 1, 1);
+    const it = a[0];
+    if (it instanceof _ArArray) {
+      if (it._code !== this._code) throw new AdderError('TypeError', 'can only extend with array of same kind');
+      const src = it._arr().slice(), n = this._n;
+      this._setLen(n + src.length);
+      this._v.set(src, n);
+      return null;
+    }
+    const items = pyCollectMaybe(it);
+    if (_arIsThen(items)) return items.then((l) => { this._appendValues(l); return null; });
+    this._appendValues(items);
+    return null;
+  }
+  insert(...a) {
+    _arArgs('insert', a, 2, 2);
+    let i = _arIndex(a[0], null);
+    const v = _arItem(this._code, a[1]);
+    const n = this._n;
+    if (i < 0) { i += n; if (i < 0) i = 0; }
+    if (i > n) i = n;
+    this._setLen(n + 1);
+    this._v.copyWithin(i + 1, i, n);
+    this._v[i] = v;
+    return null;
+  }
+  pop(...a) {
+    _arArgs('pop', a, 0, 1);
+    let i = a.length ? _arIndex(a[0], null) : -1;
+    if (!this._n) throw new AdderError('IndexError', 'pop from empty array');
+    if (i < 0) i += this._n;
+    if (i < 0 || i >= this._n) throw new AdderError('IndexError', 'pop index out of range');
+    const v = _arOut(this._code, this._v[i]);
+    this._resizeCheck();
+    this._v.copyWithin(i, i + 1, this._n);
+    this._setLen(this._n - 1);
+    return v;
+  }
+  remove(...a) {
+    _arArgs('remove', a, 1, 1);
+    for (let i = 0; i < this._n; i++) {
+      if (pyEq(_arOut(this._code, this._v[i]), a[0]) === true) {
+        this._resizeCheck();
+        this._v.copyWithin(i, i + 1, this._n);
+        this._setLen(this._n - 1);
+        return null;
+      }
+    }
+    throw new AdderError('ValueError', 'array.remove(x): x not in array');
+  }
+  index(...a) {
+    _arArgs('index', a, 1, 3);
+    const n = this._n;
+    const norm = (v, d) => { if (v === undefined) return d; let x = typeof v === 'bigint' ? (v > 0n ? n : -n - 1) : _arIndex(v, null); if (x < 0) { x += n; if (x < 0) x = 0; } return Math.min(x, n); };
+    const start = norm(a[1], 0), stop = norm(a[2], n);
+    for (let i = start; i < stop; i++) if (pyEq(_arOut(this._code, this._v[i]), a[0]) === true) return i;
+    throw new AdderError('ValueError', 'array.index(x): x not in array');
+  }
+  count(...a) {
+    _arArgs('count', a, 1, 1);
+    let c = 0;
+    for (let i = 0; i < this._n; i++) if (pyEq(_arOut(this._code, this._v[i]), a[0]) === true) c++;
+    return c;
+  }
+  reverse(...a) { _arArgs('reverse', a, 0, 0); this._arr().reverse(); return null; }
+  clear(...a) { _arArgs('clear', a, 0, 0); this._setLen(0); return null; }
+  buffer_info(...a) { _arArgs('buffer_info', a, 0, 0); return mkTuple([_arAddress(this), this._n]); }
+  byteswap(...a) {
+    _arArgs('byteswap', a, 0, 0);
+    const sz = this._c.size, b = this._bytes();
+    if (sz > 1) for (let i = 0; i < b.length; i += sz) b.subarray(i, i + sz).reverse();
+    return null;
+  }
+  tobytes(...a) { _arArgs('tobytes', a, 0, 0); return this._bytes().slice(); }
+  frombytes(...a) {
+    _arArgs('frombytes', a, 1, 1);
+    const b = _arBytesOf(a[0]);
+    if (!b) throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(a[0])}'`);
+    this._fromBytes(b instanceof Uint8Array && b.buffer === this._v.buffer ? b.slice() : b);
+    return null;
+  }
+  tolist(...a) {
+    _arArgs('tolist', a, 0, 0);
+    const out = new Array(this._n);
+    for (let i = 0; i < this._n; i++) out[i] = _arOut(this._code, this._v[i]);
+    return out;
+  }
+  fromlist(...a) {
+    _arArgs('fromlist', a, 1, 1);
+    if (!Array.isArray(a[0]) || a[0] instanceof PyTuple) throw new AdderError('TypeError', 'arg must be list');
+    this._appendValues([...a[0]]);
+    return null;
+  }
+  tounicode(...a) {
+    _arArgs('tounicode', a, 0, 0);
+    if (!this._c.uni) throw new AdderError('ValueError', 'tounicode() may only be called on unicode type arrays');
+    let s = '';
+    for (let i = 0; i < this._n; i++) {
+      const cp = this._v[i];
+      if (cp > 0x10ffff) throw new AdderError('ValueError', `character U+${cp.toString(16)} is not in range [U+0000; U+10ffff]`);
+      s += String.fromCodePoint(cp);
+    }
+    return s;
+  }
+  fromunicode(...a) {
+    _arArgs('fromunicode', a, 1, 1);
+    const s = a[0];
+    if (typeof s !== 'string' && !(s !== null && typeof s === 'object' && typeof s._pyStrValue === 'string')) throw new AdderError('TypeError', `fromunicode() argument must be str, not ${pyTypeName(s)}`);
+    if (!this._c.uni) throw new AdderError('ValueError', 'fromunicode() may only be called on unicode type arrays');
+    this._fromUnicode(typeof s === 'string' ? s : s._pyStrValue);
+    return null;
+  }
+  tofile(...a) {
+    _arArgs('tofile', a, 1, 1);
+    const f = a[0];
+    const r = syncOf(_arMethod(f, 'write'))(this._bytes().slice());
+    return _arIsThen(r) ? r.then(() => null) : null;
+  }
+  fromfile(...a) {
+    _arArgs('fromfile', a, 2, 2);
+    const [f, nArg] = a;
+    const n = _arIndex(nArg, null);
+    if (n < 0) throw new AdderError('ValueError', 'negative count');
+    const nbytes = n * this._c.size;
+    const done = (b) => {
+      if (!(b instanceof Uint8Array)) throw new AdderError('TypeError', 'read() didn\'t return bytes');
+      const whole = b.length - (b.length % this._c.size);
+      this._fromBytes(b.subarray(0, whole));
+      if (b.length !== nbytes) throw new AdderError('EOFError', 'read() didn\'t return enough bytes');
+      return null;
+    };
+    const r = syncOf(_arMethod(f, 'read'))(nbytes);
+    return _arIsThen(r) ? r.then(done) : done(r);
+  }
+}
+const _arNotImpl = () => adderModules.builtins.NotImplemented;
+// the instance's attribute dict for pickling (a subclass instance's attributes), or None
+function _arInstanceDict(a) {
+  const keys = Object.keys(a).filter((k) => k !== '__adderClass__' && k !== '__adderType__');
+  if (!keys.length) return null;
+  const d = new Map();
+  for (const k of keys) d.set(k, a[k]);
+  return d;
+}
+const _arIds = new WeakMap();
+let _arNextId = 0x10000;
+function _arAddress(a) { let id = _arIds.get(a); if (!id) { id = _arNextId += 0x1000; _arIds.set(a, id); } return id; }
+function _arMethod(obj, name) {
+  const m = adderModules.builtins.getattr(obj, name);
+  if (typeof m !== 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+  return m;
+}
+
+// the array's iterator: live (it sees items appended while it runs) until it is exhausted, then
+// exhausted for good; picklable as (iter, (array,)) plus its position
+class _ArIter {
+  constructor(a) { this._a = a; this._i = 0; }
+  __iter__() { return this; }
+  __next__() {
+    if (this._a && this._i < this._a._n) return _arOut(this._a._code, this._a._v[this._i++]);
+    this._a = null;
+    throw new AdderError('StopIteration', '');
+  }
+  next() {
+    if (this._a && this._i < this._a._n) return { value: _arOut(this._a._code, this._a._v[this._i++]), done: false };
+    this._a = null;
+    return { value: undefined, done: true };
+  }
+  [Symbol.iterator]() { return this; }
+  __reduce__() {
+    const it = adderModules.builtins.iter;
+    if (!this._a) return mkTuple([it, mkTuple([mkTuple([])])]);
+    return mkTuple([it, mkTuple([this._a]), this._i]);
+  }
+  __setstate__(i) { const n = _arIndex(i, null); this._i = Math.max(0, this._a ? Math.min(n, this._a._n) : n); return null; }
+  __length_hint__() { return this._a ? Math.max(0, this._a._n - this._i) : 0; }
+}
+_ArIter.prototype.__adderClass__ = 'arrayiterator';
+// reversed(array): from the last item down; an item inserted before its position isn't seen, and
+// once exhausted it stays so. Picklable as (reversed, (array,)) plus its position.
+class _ArRevIter {
+  constructor(a) { this._a = a; this._i = a._n - 1; }
+  __iter__() { return this; }
+  __next__() {
+    if (this._a && this._i >= 0 && this._i < this._a._n) return _arOut(this._a._code, this._a._v[this._i--]);
+    this._a = null;
+    throw new AdderError('StopIteration', '');
+  }
+  next() {
+    if (this._a && this._i >= 0 && this._i < this._a._n) return { value: _arOut(this._a._code, this._a._v[this._i--]), done: false };
+    this._a = null;
+    return { value: undefined, done: true };
+  }
+  [Symbol.iterator]() { return this; }
+  __reduce__() {
+    if (!this._a) return mkTuple([adderModules.builtins.iter, mkTuple([mkTuple([])])]);
+    return mkTuple([adderModules.builtins.reversed, mkTuple([this._a]), this._i]);
+  }
+  __setstate__(i) { const n = _arIndex(i, null); if (this._a) this._i = n < -1 ? -1 : Math.min(n, this._a._n - 1); return null; }
+  __length_hint__() { return this._a ? Math.max(0, this._i + 1) : 0; }
+}
+_ArRevIter.prototype.__adderClass__ = 'reversed';
+
+// array(typecode[, initializer]): the type — keyword arguments are refused (a subclass's go to
+// its __init__)
+const _arArrayType = function (...a) {
+  const kw = a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a[a.length - 1] : null;
+  if (kw && Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'array.array() takes no keyword arguments');
+  return _arMake(a);
+};
+// array(typecode, initializer): the initializer, unless it is a str / bytes-like / array / list,
+// collected first (a Promise when the iterable is async); then the constructor
+function _arMake(args) {
+  const a = args.slice();
+  _arKw(a);
+  const init = a[1];
+  if (a.length >= 1 && typeof a[0] === 'string' && a[0] === 'u') {
+    const w = adderModules.warnings && adderModules.warnings.warn;
+    if (w) w("The 'u' type code is deprecated and will be removed in Python 3.16", adderModules.builtins.DeprecationWarning, 2);
+  }
+  if (a.length < 2 || init === undefined || typeof init === 'string' || Array.isArray(init) || init instanceof Uint8Array ||
+      init instanceof _ArArray || (init !== null && typeof init === 'object' && typeof init._pyStrValue === 'string')) {
+    return new _ArArray(...a);
+  }
+  if (a.length >= 1) new _ArArray(a[0]);   // the typecode's errors come first
+  if (init === null || (typeof init !== 'object' && typeof init !== 'function')) throw new AdderError('TypeError', `'${pyTypeName(init)}' object is not iterable`);
+  const items = pyCollectMaybe(init);
+  return _arIsThen(items) ? items.then((l) => new _ArArray(a[0], l)) : new _ArArray(a[0], items);
+}
+Object.assign(_arArrayType, { _pyName: 'array', __name__: 'array', __qualname__: 'array', _pyClass: true, __module__: 'array', _jsClass: _ArArray, _pyMake: _arMake });
+_ArArray.prototype.__adderClass__ = 'array';
+_ArArray.prototype.__adderType__ = _arArrayType;
+_ArArray.prototype.__hash__ = null;
+// array.__new__(cls, typecode, init): a subclass's instance; array.__init__ is object's
+_arArrayType.__new__ = (cls, ...a) => (cls === _arArrayType ? new _ArArray(...a) : objectNew(cls, a));
+_arArrayType.__init__ = () => null;
+for (const name of Object.getOwnPropertyNames(_ArArray.prototype)) {
+  if (name === 'constructor' || name.startsWith('_') && !/^__\w+__$/.test(name) || Object.hasOwn(_arArrayType, name)) continue;
+  const d = Object.getOwnPropertyDescriptor(_ArArray.prototype, name);
+  if (typeof d.value !== 'function') continue;
+  // array.append(a, x), array.__getitem__(a, i): unbound
+  const fn = (self, ...rest) => {
+    if (!(self instanceof _ArArray)) throw new AdderError('TypeError', `descriptor '${name}' for 'array.array' objects doesn't apply to a '${pyTypeName(self)}' object`);
+    return d.value.apply(self, rest);
+  };
+  fn._pyName = `array.${name}`;
+  _arArrayType[name] = fn;
+}
+
+// the machine format codes (arraymodule.c's enum machine_format_code) and each typecode's own
+const _AR_MFORMATS = [
+  [1, false, false, 'int'], [1, true, false, 'int'],    // UNSIGNED_INT8, SIGNED_INT8
+  [2, false, false, 'int'], [2, false, true, 'int'], [2, true, false, 'int'], [2, true, true, 'int'],
+  [4, false, false, 'int'], [4, false, true, 'int'], [4, true, false, 'int'], [4, true, true, 'int'],
+  [8, false, false, 'int'], [8, false, true, 'int'], [8, true, false, 'int'], [8, true, true, 'int'],
+  [4, true, false, 'float'], [4, true, true, 'float'], [8, true, false, 'float'], [8, true, true, 'float'],
+  [2, false, false, 'utf-16-le'], [2, false, true, 'utf-16-be'], [4, false, false, 'utf-32-le'], [4, false, true, 'utf-32-be'],
+];
+const _AR_NATIVE = { b: 1, B: 0, u: 20, w: 20, h: 4, H: 2, i: 8, I: 6, l: 12, L: 10, q: 12, Q: 10, f: 14, d: 16 };
+// array._array_reconstructor(arraytype, typecode, mformat_code, items): unpickling
+function _arReconstructor(...a) {
+  _arKw(a);
+  if (a.length !== 4) throw new AdderError('TypeError', `_array_reconstructor expected 4 arguments, got ${a.length}`);
+  const [t, code, mfmt, items] = a;
+  if (typeof t !== 'function' || !t._pyClass) throw new AdderError('TypeError', `first argument must be a type object, not ${pyTypeName(t)}`);
+  if (t !== _arArrayType && !(t._pyMRO || []).includes(_arArrayType)) throw new AdderError('TypeError', `${t._pyName} is not a subtype of array.array`);
+  if (typeof code !== 'string' || [...code].length !== 1) throw new AdderError('TypeError', `_array_reconstructor() argument 2 must be a unicode character, not ${pyTypeName(code)}`);
+  if (typeof mfmt !== 'number' && typeof mfmt !== 'bigint' && typeof mfmt !== 'boolean') throw new AdderError('TypeError', `'${pyTypeName(mfmt)}' object cannot be interpreted as an integer`);
+  if (!(items instanceof Uint8Array)) throw new AdderError('TypeError', `fourth argument should be bytes, not ${pyTypeName(items)}`);
+  if (!Object.hasOwn(_AR_CODES, code)) throw new AdderError('ValueError', 'second argument must be a valid type code');
+  const m = Number(mfmt);
+  if (!Number.isInteger(m) || m < 0 || m >= _AR_MFORMATS.length) throw new AdderError('ValueError', 'third argument must be a valid machine format code.');
+  const make = (init) => (t === _arArrayType ? new _ArArray(code, init) : objectNew(t, [code, init]));
+  if (m === _AR_NATIVE[code]) return make(items.slice());
+  const [size, signed, be, kind] = _AR_MFORMATS[m];
+  if (items.length % size) throw new AdderError('ValueError', 'string length not a multiple of item size');
+  if (kind.startsWith('utf')) {
+    const s = adderModules.builtins.str(items, kind);
+    return make(s);
+  }
+  const dv = new DataView(items.buffer, items.byteOffset, items.length);
+  const vals = [];
+  for (let o = 0; o < items.length; o += size) {
+    if (kind === 'float') vals.push(size === 4 ? dv.getFloat32(o, !be) : dv.getFloat64(o, !be));
+    else if (size === 1) vals.push(signed ? dv.getInt8(o) : dv.getUint8(o));
+    else if (size === 2) vals.push(signed ? dv.getInt16(o, !be) : dv.getUint16(o, !be));
+    else if (size === 4) vals.push(signed ? dv.getInt32(o, !be) : dv.getUint32(o, !be));
+    else vals.push(_arBigOut(signed ? dv.getBigInt64(o, !be) : dv.getBigUint64(o, !be)));
+  }
+  return make(vals);
+}
+_arReconstructor._pyName = '_array_reconstructor';
+_arReconstructor.__module__ = 'array';
+
+adderModules.array = {
+  __name__: 'array',
+  array: _arArrayType,
+  ArrayType: _arArrayType,
+  typecodes: _AR_TYPECODES,
+  _array_reconstructor: _arReconstructor,
+};
+// an array is a MutableSequence (arraymodule.c registers it)
+{
+  const abc = adderModules['collections.abc'] || (adderModules.collections && adderModules.collections.abc);
+  if (abc && abc.MutableSequence && typeof abc.MutableSequence.register === 'function') abc.MutableSequence.register(_arArrayType);
+}
+
 // -- stdlib-time.js --
 
 // adder stdlib — time and datetime. datetime follows CPython's pure-Python datetime.py: dates
@@ -16491,6 +17378,7 @@ class _TmTimedelta {
   get days() { return this._days; }
   get seconds() { return this._seconds; }
   get microseconds() { return this._us; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([this._days, this._seconds, this._us])]); }
   total_seconds() { return Number(this._total()) / 1e6; }
   __repr__() {
     const parts = [];
@@ -16587,6 +17475,7 @@ class _TmTimezone {
     this._offset = offset; this._name = name;
   }
   utcoffset() { return this._offset; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple(this._name === null ? [this._offset] : [this._offset, this._name])]); }
   dst() { return null; }
   tzname() { return this._name !== null ? this._name : _tmOffsetName(this._offset); }
   fromutc(dt) { return dt.__add__(this._offset); }
@@ -16649,6 +17538,10 @@ class _TmDate {
   get year() { return this._y; }
   get month() { return this._m; }
   get day() { return this._d; }
+  __reduce__() {
+    const args = this instanceof _TmDatetime ? [this._y, this._m, this._d, this._h, this._mi, this._s, this._us, this._tz] : [this._y, this._m, this._d];
+    return mkTuple([this.__adderType__, mkTuple(args)]);
+  }
   toordinal() { return _tmYmd2ord(this._y, this._m, this._d); }
   weekday() { return (this.toordinal() + 6) % 7; }
   isoweekday() { return this.weekday() + 1; }
@@ -16717,6 +17610,7 @@ class _TmTime {
   get microsecond() { return this._us; }
   get tzinfo() { return this._tz; }
   get fold() { return 0; }
+  __reduce__() { return mkTuple([this.__adderType__, mkTuple([this._h, this._mi, this._s, this._us, this._tz])]); }
   utcoffset() { return _tmTzOffset(this._tz, null); }
   tzname() { return this._tz ? this._tz.tzname(null) : null; }
   isoformat(...a) {
@@ -21587,8 +22481,8 @@ function _pkModuleOf(obj) {
   if (typeof obj === 'function') {
     const bn = obj._pyName || obj.__name__;
     if (bn && adderModules.builtins[bn] === obj) return 'builtins';   // object, type, len, …
+    if (obj.__module__ !== undefined && obj.__module__ !== null) return obj.__module__;   // array.array, fractions.Fraction, …
     if (obj._pyClass && !obj._pyMRO) return 'builtins';            // int, ValueError, …
-    if (obj.__module__ !== undefined && obj.__module__ !== null) return obj.__module__;
     if (obj._pyFunc || obj._pyDef || obj._pyClass) return '__main__';
     return 'builtins';
   }
@@ -21598,7 +22492,10 @@ function _pkModuleOf(obj) {
 const _pkNameOf = (obj) => (obj && (obj.__qualname__ || obj._pyName || obj.__name__ || obj.name)) || null;
 
 function _pkMemoize(st, obj) {
-  const idx = st.memo.size;
+  // the next index, counted (not the map's size: a str memoised again — a global's module and
+  // name both 'array' — replaces its entry, while the unpickler's MEMOIZE counts both)
+  const idx = st.memo._pkNext ?? st.memo.size;
+  Object.defineProperty(st.memo, '_pkNext', { value: idx + 1, writable: true, configurable: true });
   st.memo.set(obj, idx);
   const o = st.out;
   if (st.proto >= 4) o.op(0x94);
@@ -23299,6 +24196,8 @@ const PY_SPECIALIZATIONS = {
   },
   sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
   mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
+  isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
+  imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
   // Stay in helpers, because JS differs from Python on values the types can't rule out:
   //   div/mod/floordiv — Python raises ZeroDivisionError, JS returns Infinity/NaN;
   //   pow — `0 ** -1` raises in Python, is Infinity in JS;
@@ -24676,6 +25575,12 @@ function lowerAssignTarget(ctx, target, value, l) {
 const IBINOP_HELPER = {
   '+': 'iadd',
 };
+// the other in-place operators: CPython's __iop__ / builtin-mutable semantics, synchronously (a
+// method through its sync twin) — so a function with `x -= 1` stays a known-sync function
+const SYNC_IOP_HELPER = {
+  '-': 'isub', '*': 'imul', '/': 'itruediv', '//': 'ifloordiv', '%': 'imod', '**': 'ipow',
+  '&': 'iand', '|': 'ior', '^': 'ixor', '<<': 'ilshift', '>>': 'irshift', '@': 'imatmul',
+};
 
 function lowerAugAssign(ctx, node) {
   // x op= y → x = _py.iop(x, y) for ops with in-place semantics (just `+`
@@ -24712,7 +25617,7 @@ function lowerAugAssign(ctx, node) {
   let result;
   {
     const inPlace = IBINOP_HELPER[op];
-    const helper = inPlace || BINOP_HELPER[op];
+    const helper = inPlace || SYNC_IOP_HELPER[op] || BINOP_HELPER[op];
     if (!helper) throw new AirLowerError(`unsupported augassign op: ${op}`);
     const call = emitPyCall(ctx, helper, [current, rhs], l);
     // In-place helpers (`_py.iadd`) dispatch to `__iadd__`, which can be an async adder-class
