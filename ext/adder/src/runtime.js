@@ -2,12 +2,12 @@
 // Small monomorphic functions that V8 inlines. Reuses builtins.js internals.
 
 import {
-  AdderError, AdderRange, Complex,
+  AdderError, adderModules, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyCollectMaybe, pyFormatValue,
   adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
@@ -417,6 +417,67 @@ function _fnOfSync(x) {
   return asCallable(x);
 }
 
+// yield from x (PEP 380) in compiled code: delegation through x's Python methods — next() while
+// None is sent, send() otherwise, throw() for a thrown exception, close() on GeneratorExit — and
+// the result is its StopIteration's value. A compiled generator, a list or a string is handed to
+// JS yield* as it is (native delegation is exactly this for them); anything else gets both a
+// sync and an async reading, and yield* takes the one its generator can use.
+const _isJsGen = (v) => { const t = Object.prototype.toString.call(v); return t === '[object Generator]' || t === '[object AsyncGenerator]'; };
+const _stopVal = (e) => (e.value !== undefined ? e.value : e.args && e.args.length ? e.args[0] : null);
+const _isGenExit = (e) => !!e && (e.pyType === 'GeneratorExit' || (excValue(e) && excValue(e).pyType === 'GeneratorExit'));
+function* _pep380Sync(x) {
+  const B = adderModules.builtins;
+  const it = B.iter(x);
+  // (read synchronously: a compiled iterator's methods through their sync twins)
+  const method = (n) => { try { return syncOf(adderGetAttr(it, n)); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
+  const nextOf = () => { const nx = it !== null && typeof it === 'object' && typeof it.__next__ === 'function' ? method('__next__') : null; return nx ? nx() : B.next(it); };
+  let y;
+  try { y = nextOf(); } catch (e) { if (e && e.pyType === 'StopIteration') return _stopVal(e); throw e; }
+  for (;;) {
+    let sent, thrown = null;
+    try { sent = yield y; } catch (e) { thrown = e; }
+    try {
+      if (thrown !== null) {
+        if (_isGenExit(thrown)) { const c = method('close'); if (typeof c === 'function') c(); throw thrown; }
+        const th = method('throw');
+        if (typeof th !== 'function') throw thrown;
+        y = th(excValue(thrown));
+      } else if (sent === null || sent === undefined) y = nextOf();
+      else { const sd = method('send'); if (typeof sd !== 'function') throw new AdderError('AttributeError', `'${pyTypeName(it)}' object has no attribute 'send'`); y = sd(sent); }
+    } catch (e) {
+      if (e && e.pyType === 'StopIteration' && e !== thrown) return _stopVal(e);
+      throw e;
+    }
+  }
+}
+async function* _pep380Async(x) {
+  const B = adderModules.builtins;
+  const it = await B.iter(x);
+  const method = (n) => { try { return adderGetAttr(it, n); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
+  let y;
+  try { y = await B.next(it); } catch (e) { if (e && e.pyType === 'StopIteration') return _stopVal(e); throw e; }
+  for (;;) {
+    let sent, thrown = null;
+    try { sent = yield y; } catch (e) { thrown = e; }
+    try {
+      if (thrown !== null) {
+        if (_isGenExit(thrown)) { const c = method('close'); if (typeof c === 'function') await c(); throw thrown; }
+        const th = method('throw');
+        if (typeof th !== 'function') throw thrown;
+        y = await th(excValue(thrown));
+      } else if (sent === null || sent === undefined) y = await B.next(it);
+      else { const sd = method('send'); if (typeof sd !== 'function') throw new AdderError('AttributeError', `'${pyTypeName(it)}' object has no attribute 'send'`); y = await sd(sent); }
+    } catch (e) {
+      if (e && e.pyType === 'StopIteration' && e !== thrown) return _stopVal(e);
+      throw e;
+    }
+  }
+}
+function _yieldFromOf(x) {
+  if (Array.isArray(x) || typeof x === 'string' || _isJsGen(x)) return x;
+  return { [Symbol.iterator]: () => _pep380Sync(x), [Symbol.asyncIterator]: () => _pep380Async(x) };
+}
+
 // ── Context manager __exit__ ──
 
 // Called by `with` lowering. When the body completes normally, `exc` is
@@ -781,6 +842,15 @@ export const _py = {
   fnOf: asCallable,
   fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
   isNone: (v) => v === null || v === undefined,
+  yieldFrom: _yieldFromOf,
+  genProto,
+  // a loop's own iterator, left before it ran out (emit-js release_temp): a generator is closed —
+  // GeneratorExit at its yield, so its finally runs now, as when CPython drops the last reference
+  releaseIter: (src, it) => {
+    if (src !== null && typeof src === 'object' && src.__adderClass__ === 'generator' && typeof src.close === 'function') return src.close();
+    if (it !== null && typeof it === 'object' && (Object.prototype.toString.call(it) === '[object Generator]' || Object.prototype.toString.call(it) === '[object AsyncGenerator]')) return closeJsGenerator(it);
+    return null;
+  },
   // a sync-mode dunder / property: its sync version, falling back to its async one when it gives up
   bailable: (s, a) => {
     const f = function (...args) {

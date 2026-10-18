@@ -410,6 +410,14 @@ export class PySet extends Set {
 
 // ── AdderError ──
 
+// StopIteration carrying a generator's return value (`return x` → StopIteration(x).value is x)
+export function stopIteration(value) {
+  const v = value === undefined ? null : value;
+  const e = new AdderError('StopIteration', v === null ? '' : pyStr(v), undefined, v === null ? [] : [v]);
+  e.value = v;
+  return e;
+}
+
 export class AdderError extends Error {
   // args: the Python exception's constructor arguments, when known (str/repr use them)
   constructor(pyType, message, adderLine, args) {
@@ -1129,7 +1137,90 @@ function _valueDunder(o, attr) {
 }
 let _gaBypass = null;                 // the instance object.__getattribute__ is reading plainly
 function _plainGetAttr(o, k) { _gaBypass = o; try { return adderGetAttr(o, k); } finally { if (_gaBypass === o) _gaBypass = null; } }
+// A compiled generator is a JS generator object: Python's generator protocol on it. send(v) is
+// next(v); throw() raises at the paused yield; close() raises GeneratorExit there (its except /
+// finally run; yielding again is a RuntimeError); a return value arrives as StopIteration.value.
+// (Not enforced: "can't send non-None to a just-started generator" — a native for loop starts a
+// generator without passing through here, so the rule couldn't be told reliably.)
+// a compiled generator function's generators (_py.genProto): their objects show its name, and
+// record when they first run, for send()'s just-started rule
+const _genStarted = new WeakSet(), _genRunning = new WeakSet(), _genFinished = new WeakSet();
+export function genProto(fn, name) {
+  const p = fn.prototype;
+  if (!p) return null;
+  p._genName = name;
+  const base = Object.getPrototypeOf(p);
+  // resuming one while it runs: CPython's ValueError (a JS async generator would queue the call
+  // and wait on itself forever; a sync one throws a TypeError of its own)
+  const guarded = (meth) => function (v) {
+    if (_genRunning.has(this)) {
+      const err = new AdderError('ValueError', 'generator already executing');
+      if (Object.prototype.toString.call(this) === '[object AsyncGenerator]') return Promise.reject(err);
+      throw err;
+    }
+    _genStarted.add(this);
+    _genRunning.add(this);
+    let r;
+    const end = (x) => { _genRunning.delete(this); if (x && x.done) _genFinished.add(this); return x; };
+    const fail = (e) => {
+      _genRunning.delete(this); _genFinished.add(this);
+      // PEP 479: StopIteration out of a generator's body is a RuntimeError (from it)
+      if (e && e.pyType === 'StopIteration') {
+        const err = new AdderError('RuntimeError', 'generator raised StopIteration');
+        err.__cause__ = excValue(e); err.__context__ = excValue(e);
+        throw err;
+      }
+      throw e;
+    };
+    try { r = base[meth].call(this, v); } catch (e) { return fail(e); }
+    if (r !== null && typeof r === 'object' && typeof r.then === 'function') return r.then(end, fail);
+    return end(r);
+  };
+  Object.defineProperty(p, 'next', { value: guarded('next'), writable: true, configurable: true });
+  Object.defineProperty(p, 'throw', { value: guarded('throw'), writable: true, configurable: true });
+  Object.defineProperty(p, '_pyTracksStart', { value: true, configurable: true });
+  return null;
+}
+const _jsGenTag = (v) => { const t = Object.prototype.toString.call(v); return t === '[object Generator]' || t === '[object AsyncGenerator]'; };
+const _genResult = (r) => {
+  const one = (x) => { if (x.done) throw stopIteration(x.value); return x.value; };
+  return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(one) : one(r);
+};
+export function closeJsGenerator(g) {
+  const exit = new AdderError('GeneratorExit', '', undefined, []);
+  const ok = (e) => { if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null; throw e; };
+  const after = (x) => { if (!x.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit'); return x.value === undefined ? null : x.value; };
+  let r;
+  try { r = g.throw(exit); } catch (e) { return ok(e); }
+  return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(after, ok) : after(r);
+}
+function _jsGenAttr(g, attr) {
+  switch (attr) {
+    case 'send': return (v) => {
+      if (v !== null && v !== undefined && g._pyTracksStart && !_genStarted.has(g)) throw new AdderError('TypeError', "can't send non-None value to a just-started generator");
+      return _genResult(g.next(v === undefined ? null : v));
+    };
+    case '__next__': return () => _genResult(g.next(null));
+    case '__iter__': return () => g;
+    case 'throw': return (t, v) => {
+      let exc = v !== undefined && v !== null ? v : t;
+      if (typeof exc === 'function' && exc._pyClass) exc = exc();
+      const go = (x) => _genResult(g.throw(excToThrowable(x)));
+      return exc !== null && typeof exc === 'object' && typeof exc.then === 'function' ? exc.then(go) : go(exc);
+    };
+    case 'close': return () => closeJsGenerator(g);
+    case 'gi_running': return _genRunning.has(g);
+    case 'gi_yieldfrom': return null;
+    case 'gi_frame': return _genFinished.has(g) ? null : { __adderClass__: 'frame', f_lineno: 0, f_locals: new PyDict(), f_globals: new PyDict() };
+    case '__name__': case '__qualname__': return g._genName || '<genexpr>';
+    default: return undefined;
+  }
+}
 export function adderGetAttr(obj, attr) {
+  if (obj !== null && typeof obj === 'object' && obj.__adderClass__ === undefined && _jsGenTag(obj)) {
+    const m = _jsGenAttr(obj, attr);
+    if (m !== undefined) return m;
+  }
   if (_VALUE_DUNDERS.has(attr) && obj !== null && obj !== undefined && !obj.__adderType__ &&
       (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Map || obj instanceof Set || obj instanceof Uint8Array || isPlainDict(obj))) {
     const d = _valueDunder(obj, attr);
@@ -1141,6 +1232,8 @@ export function adderGetAttr(obj, attr) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
     if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
     if (attr === '__traceback__') return _tracebackOf(obj);
+    // StopIteration.value: the generator's return value (its first argument, as CPython sets it)
+    if (attr === 'value' && obj.pyType === 'StopIteration') return obj.value !== undefined ? obj.value : obj.args && obj.args.length ? obj.args[0] : null;
     if (attr === 'with_traceback') return (tb) => { obj._pyTb = tb; return obj; };
     if (attr === '__class__') return excTypeOf(obj);
   }
@@ -4158,6 +4251,10 @@ export function guardSetAttr(obj, name) {
 }
 // JS errors surfacing through compiled code or a JS library
 const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
+// the Python exception a JS error stands for: a blown stack is RecursionError; resuming a running
+// (compiled) generator is CPython's ValueError ("generator already executing")
+const _jsExcName = (err) => (/call stack/i.test(err.message || '') ? 'RecursionError'
+  : /generator is already running/i.test(err.message || '') ? 'ValueError' : (_JS_EXC[err.name] || 'Exception'));
 
 function _excChain(name) {
   if (name === 'BudgetExceeded') return [name];
@@ -4225,7 +4322,7 @@ function _excNames(err) {
     return names;
   }
   if (err instanceof AdderError) return _excChain(err.pyType);
-  if (err instanceof Error) return _excChain(/call stack/i.test(err.message || '') ? 'RecursionError' : (_JS_EXC[err.name] || 'Exception'));
+  if (err instanceof Error) return _excChain(_jsExcName(err));
   return [];
 }
 export function excMatches(err, t) {
@@ -4244,7 +4341,7 @@ export function excMatches(err, t) {
 export function excTypeOf(err) {
   if (err && err.pyClass) return err.pyClass;
   if (err instanceof AdderError) return _typeObjects[err.pyType] || null;
-  if (err instanceof Error) return _typeObjects[_JS_EXC[err.name] || 'Exception'] || null;
+  if (err instanceof Error) return _typeObjects[_jsExcName(err)] || null;
   return null;
 }
 
@@ -5993,7 +6090,7 @@ export function adderBuiltins(printFn) {
       return pyIter(obj);
     },
     next: (iter, def) => {
-      const done = () => { if (def !== undefined) return def; throw new AdderError('StopIteration', '', undefined, []); };
+      const done = (v) => { if (def !== undefined) return def; throw stopIteration(v); };
       if (iter && typeof iter.__next__ === 'function') {
         if (def === undefined) return iter.__next__();
         try { const v = iter.__next__(); return v && typeof v.then === 'function' ? v.catch((e) => { if (e && e.pyType === 'StopIteration') return def; throw e; }) : v; }
@@ -6001,8 +6098,8 @@ export function adderBuiltins(printFn) {
       }
       if (!iter || typeof iter.next !== 'function') throw new AdderError('TypeError', `'${pyTypeName(iter)}' object is not an iterator`);
       const r = iter.next();
-      if (r && typeof r.then === 'function') return r.then((x) => (x.done ? done() : x.value));
-      return r.done ? done() : r.value;
+      if (r && typeof r.then === 'function') return r.then((x) => (x.done ? done(x.value) : x.value));
+      return r.done ? done(r.value) : r.value;
     },
     input: () => { throw new AdderError('NotImplementedError', 'input() is not supported in the browser'); },
     issubclass: (c, t) => {

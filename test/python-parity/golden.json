@@ -1108,6 +1108,18 @@
   "builtin/none-class": {
    "out": "<class 'NoneType'> True NoneType\n",
    "error": null
+  },
+  "gen/send-throw-return": {
+   "out": "1 10 20\nstop 7\ncaught boom 3\nfin ran\nFalse\na hi!\ncreated\nstarted\n[1]\n1 v\n0 [1, 4] generator\nret done\nTE can't send non-None value to a just-started generator\n1\n5 (5,)\n",
+   "error": null
+  },
+  "gen/yield-from-pep380-479": {
+   "out": "sent hello\n1 2 ('ret', 99)\nRE generator raised StopIteration StopIteration\nclose -> 0\ninner closed\nkept\n",
+   "error": null
+  },
+  "gen/already-executing": {
+   "out": "VE generator already executing\nTrue False\nNone\n",
+   "error": null
   }
  }
 }

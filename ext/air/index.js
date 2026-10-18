@@ -5546,6 +5546,11 @@ function emitForOfHybrid(ctx, op, syncOnly) {
     ctx.line(`const ${Y} = !${A} && typeof ${S}[Symbol.iterator] === 'function';`);
     ctx.line(`const ${I} = ${A} ? null : ${Y} ? ${S}[Symbol.iterator]() : ${S}[Symbol.asyncIterator]();`);
   }
+  // op.release_temp: the loop owns its iterator (a frontend's flag — Python's `for x in f():`):
+  // left early (break, return, an exception) it is finalized through _py.releaseIter
+  const D = `__hd${n}`, owns = !!op.release_temp;
+  if (owns) { ctx.line(`let ${D} = false;`); ctx.line('try {'); ctx.push(); }
+  const exhausted = owns ? `{ ${D} = true; break; }` : 'break;';
   ctx.pushScope();
   try {
     let assign;
@@ -5554,9 +5559,9 @@ function emitForOfHybrid(ctx, op, syncOnly) {
     ctx.line(`for (let ${K} = 0; ; ) {`);
     ctx.push();
     if (assign === null) ctx.line(`let ${target};`);
-    ctx.line(`if (${A}) { if (${K} >= ${A}.length) break; ${target} = ${A}[${K}++]; }`);
-    ctx.line(syncOnly ? `else { const ${R} = ${I}.next(); if (${R}.done) break; ${target} = ${R}.value; }`
-      : `else { const ${R} = ${Y} ? ${I}.next() : await ${I}.next(); if (${R}.done) break; ${target} = ${R}.value; }`);
+    ctx.line(`if (${A}) { if (${K} >= ${A}.length) ${exhausted} ${target} = ${A}[${K}++]; }`);
+    ctx.line(syncOnly ? `else { const ${R} = ${I}.next(); if (${R}.done) ${exhausted} ${target} = ${R}.value; }`
+      : `else { const ${R} = ${Y} ? ${I}.next() : await ${I}.next(); if (${R}.done) ${exhausted} ${target} = ${R}.value; }`);
     ctx.pushLoop(null);
     if (op.body) emitOps(ctx, op.body);
     ctx.popLoop();
@@ -5564,6 +5569,10 @@ function emitForOfHybrid(ctx, op, syncOnly) {
     ctx.line('}');
   } finally {
     ctx.popScope();
+  }
+  if (owns) {
+    ctx.pop();
+    ctx.line(`} finally { if (!${D}) ${syncOnly ? '' : 'await '}_py.releaseIter(${S}, ${I}); }`);
   }
 }
 

@@ -971,7 +971,77 @@ function adderTokenize(code) {
 // ── parser ──
 
 function adderParse(code) {
-  return _manglePrivate(_desugarTypeParams(new _Parser(adderTokenize(code)).parseModule()), null);
+  return _manglePrivate(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule())), null);
+}
+
+// A yield inside an expression — `f((yield x))`, `return (yield)`, `y = 1 + (yield)` — is
+// evaluated just before its statement and the statement uses the result: `__yN = yield x` then
+// `f(__yN)`. Both engines then only meet yield as a statement or as an assignment's whole
+// right-hand side (`v = yield x`, which they implement directly). Python evaluates operands left
+// to right, so operands before the yield now run after it: only side effects there can tell.
+// Not hoisted: a yield in a loop's test (it must run each time round) — rare enough to leave.
+function _isYieldNode(n) { return n && (n.type === 'Yield' || n.type === 'YieldFrom'); }
+let _yieldTmp = 0;
+function _hoistIn(expr, pre) {
+  if (!expr || typeof expr !== 'object') return expr;
+  if (Array.isArray(expr)) { for (let i = 0; i < expr.length; i++) expr[i] = _hoistIn(expr[i], pre); return expr; }
+  // don't cross into nested scopes: their yields are theirs
+  if (expr.type === 'Lambda' || expr.type === 'FunctionDef' || expr.type === 'AsyncFunctionDef' || expr.type === 'ClassDef' ||
+      expr.type === 'ListComp' || expr.type === 'SetComp' || expr.type === 'DictComp' || expr.type === 'GeneratorExp') return expr;
+  for (const k of Object.keys(expr)) {
+    if (k === 'line' || k === 'col' || k === 'type') continue;
+    const v = expr[k];
+    if (v && typeof v === 'object') expr[k] = _hoistIn(v, pre);
+  }
+  if (_isYieldNode(expr)) {
+    const name = `__y${++_yieldTmp}`;
+    pre.push({ type: 'Assign', targets: [{ type: 'Name', id: name, line: expr.line, col: expr.col }], value: expr, line: expr.line, col: expr.col });
+    return { type: 'Name', id: name, line: expr.line, col: expr.col };
+  }
+  return expr;
+}
+// a statement's expressions, with the yields that are not its whole value hoisted in front
+function _hoistStmt(st) {
+  const pre = [];
+  const keep = (v) => (_isYieldNode(v) ? _hoistChildren(v, pre) : _hoistIn(v, pre));
+  switch (st.type) {
+    case 'Expr': st.value = keep(st.value); break;
+    case 'Assign': st.value = keep(st.value); st.targets = _hoistIn(st.targets, pre); break;
+    case 'AugAssign': case 'AnnAssign': if (st.value) st.value = keep(st.value); break;
+    case 'Return': if (st.value) st.value = _hoistIn(st.value, pre); break;
+    case 'If': st.test = _hoistIn(st.test, pre); break;
+    case 'Raise': if (st.exc) st.exc = _hoistIn(st.exc, pre); if (st.cause) st.cause = _hoistIn(st.cause, pre); break;
+    case 'Assert': st.test = _hoistIn(st.test, pre); if (st.msg) st.msg = _hoistIn(st.msg, pre); break;
+    case 'For': st.iter = _hoistIn(st.iter, pre); break;
+    case 'With': for (const it of st.items) it.contextExpr = _hoistIn(it.contextExpr, pre); break;
+    default: break;
+  }
+  return pre;
+}
+// a yield that is the statement's own value keeps its place; yields inside its operand are hoisted
+function _hoistChildren(y, pre) { if (y.value) y.value = _hoistIn(y.value, pre); return y; }
+function _hoistBlock(stmts) {
+  if (!Array.isArray(stmts)) return;
+  for (let i = 0; i < stmts.length; i++) {
+    const st = stmts[i];
+    if (!st || typeof st !== 'object') continue;
+    for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(st[k])) _hoistBlock(st[k]);
+    if (Array.isArray(st.handlers)) for (const h of st.handlers) _hoistBlock(h.body);
+    if (Array.isArray(st.cases)) for (const c of st.cases) _hoistBlock(c.body);
+    const pre = _hoistStmt(st);
+    if (pre.length) { stmts.splice(i, 0, ...pre); i += pre.length; }
+  }
+}
+function _hoistYields(mod) {
+  // every function body (generators are functions whose body has a yield)
+  const visit = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    if ((n.type === 'FunctionDef' || n.type === 'AsyncFunctionDef') && Array.isArray(n.body)) _hoistBlock(n.body);
+    for (const k of Object.keys(n)) if (k !== 'line' && k !== 'col' && n[k] && typeof n[k] === 'object') visit(n[k]);
+  };
+  visit(mod);
+  return mod;
 }
 
 // PEP 695, as CPython compiles it: a generic def / class / type alias is built inside an
@@ -1444,16 +1514,24 @@ class _Parser {
   }
 
   parseYield() {
+    // a yield statement — or the right-hand side's start: `yield x` then `= …` is not valid, but
+    // the statement may be just the expression, so parse it as one and wrap it
+    const y = this._parseYieldExpr();
+    return { type: 'Expr', value: y, line: y.line, col: y.col };
+  }
+
+  // a yield expression: `yield`, `yield v`, `yield a, b` (a tuple), `yield from it` — what an
+  // assignment's right-hand side or a parenthesized expression may be
+  _parseYieldExpr() {
     const t = this.advance(); // 'yield'
-    if (this.eat('NAME', 'from')) {
-      return { type: 'Expr', value: { type: 'YieldFrom', value: this.parseExpr(), line: t.line, col: t.col }, line: t.line, col: t.col };
-    }
+    if (this.eat('NAME', 'from')) return { type: 'YieldFrom', value: this.parseExpr(), line: t.line, col: t.col };
     let value = null;
-    if (!this.at('NEWLINE') && !this.at('OP', ';') && !this.at('EOF') && !this.at('OP', ')') && !this.at('OP', ']')) {
+    if (!this.at('NEWLINE') && !this.at('OP', ';') && !this.at('EOF') && !this.at('OP', ')') && !this.at('OP', ']') && !this.at('OP', '}') && !this.at('OP', '=')) {
       value = this.parseExprOrStars();
     }
-    return { type: 'Expr', value: { type: 'Yield', value, line: t.line, col: t.col }, line: t.line, col: t.col };
+    return { type: 'Yield', value, line: t.line, col: t.col };
   }
+  _parseRhs() { return this.at('NAME', 'yield') ? this._parseYieldExpr() : this.parseExprOrStars(); }
 
   parseRaise() {
     const t = this.advance();
@@ -1554,21 +1632,21 @@ class _Parser {
     // augmented assignment
     if (this.at('OP') && _AUGASSIGN.has(this.peek().value)) {
       const op = this.advance().value.slice(0, -1);
-      return { type: 'AugAssign', target: this._asTarget(expr), op, value: this.parseExprOrStars(), line: expr.line, col: expr.col };
+      return { type: 'AugAssign', target: this._asTarget(expr), op, value: this._parseRhs(), line: expr.line, col: expr.col };
     }
     // annotation
     if (this.eat('OP', ':')) {
       const annotation = this.parseExpr();
-      const value = this.eat('OP', '=') ? this.parseExprOrStars() : null;
+      const value = this.eat('OP', '=') ? this._parseRhs() : null;
       return { type: 'AnnAssign', target: this._asTarget(expr), annotation, value, line: expr.line, col: expr.col };
     }
     // assignment (possibly chained: a = b = val)
     if (this.eat('OP', '=')) {
       const targets = [this._asTarget(expr)];
-      let value = this.parseExprOrStars();
+      let value = this._parseRhs();
       while (this.eat('OP', '=')) {
         targets.push(this._asTarget(value));
-        value = this.parseExprOrStars();
+        value = this._parseRhs();
       }
       return { type: 'Assign', targets, value, line: expr.line, col: expr.col };
     }
@@ -2071,6 +2149,8 @@ class _Parser {
     if (t.type === 'OP' && t.value === '(') {
       this.advance();
       if (this.eat('OP', ')')) return { type: 'Tuple', elts: [], line: t.line, col: t.col };
+      // (yield …): a yield expression anywhere an expression goes
+      if (this.at('NAME', 'yield')) { const y = this._parseYieldExpr(); this.expect('OP', ')'); return y; }
       const first = this.parseStarExpr();
       if (this._atCompFor()) {
         const generators = this._parseCompIter();
@@ -2654,6 +2734,14 @@ class PySet extends Set {
 }
 
 // ── AdderError ──
+
+// StopIteration carrying a generator's return value (`return x` → StopIteration(x).value is x)
+function stopIteration(value) {
+  const v = value === undefined ? null : value;
+  const e = new AdderError('StopIteration', v === null ? '' : pyStr(v), undefined, v === null ? [] : [v]);
+  e.value = v;
+  return e;
+}
 
 class AdderError extends Error {
   // args: the Python exception's constructor arguments, when known (str/repr use them)
@@ -3374,7 +3462,90 @@ function _valueDunder(o, attr) {
 }
 let _gaBypass = null;                 // the instance object.__getattribute__ is reading plainly
 function _plainGetAttr(o, k) { _gaBypass = o; try { return adderGetAttr(o, k); } finally { if (_gaBypass === o) _gaBypass = null; } }
+// A compiled generator is a JS generator object: Python's generator protocol on it. send(v) is
+// next(v); throw() raises at the paused yield; close() raises GeneratorExit there (its except /
+// finally run; yielding again is a RuntimeError); a return value arrives as StopIteration.value.
+// (Not enforced: "can't send non-None to a just-started generator" — a native for loop starts a
+// generator without passing through here, so the rule couldn't be told reliably.)
+// a compiled generator function's generators (_py.genProto): their objects show its name, and
+// record when they first run, for send()'s just-started rule
+const _genStarted = new WeakSet(), _genRunning = new WeakSet(), _genFinished = new WeakSet();
+function genProto(fn, name) {
+  const p = fn.prototype;
+  if (!p) return null;
+  p._genName = name;
+  const base = Object.getPrototypeOf(p);
+  // resuming one while it runs: CPython's ValueError (a JS async generator would queue the call
+  // and wait on itself forever; a sync one throws a TypeError of its own)
+  const guarded = (meth) => function (v) {
+    if (_genRunning.has(this)) {
+      const err = new AdderError('ValueError', 'generator already executing');
+      if (Object.prototype.toString.call(this) === '[object AsyncGenerator]') return Promise.reject(err);
+      throw err;
+    }
+    _genStarted.add(this);
+    _genRunning.add(this);
+    let r;
+    const end = (x) => { _genRunning.delete(this); if (x && x.done) _genFinished.add(this); return x; };
+    const fail = (e) => {
+      _genRunning.delete(this); _genFinished.add(this);
+      // PEP 479: StopIteration out of a generator's body is a RuntimeError (from it)
+      if (e && e.pyType === 'StopIteration') {
+        const err = new AdderError('RuntimeError', 'generator raised StopIteration');
+        err.__cause__ = excValue(e); err.__context__ = excValue(e);
+        throw err;
+      }
+      throw e;
+    };
+    try { r = base[meth].call(this, v); } catch (e) { return fail(e); }
+    if (r !== null && typeof r === 'object' && typeof r.then === 'function') return r.then(end, fail);
+    return end(r);
+  };
+  Object.defineProperty(p, 'next', { value: guarded('next'), writable: true, configurable: true });
+  Object.defineProperty(p, 'throw', { value: guarded('throw'), writable: true, configurable: true });
+  Object.defineProperty(p, '_pyTracksStart', { value: true, configurable: true });
+  return null;
+}
+const _jsGenTag = (v) => { const t = Object.prototype.toString.call(v); return t === '[object Generator]' || t === '[object AsyncGenerator]'; };
+const _genResult = (r) => {
+  const one = (x) => { if (x.done) throw stopIteration(x.value); return x.value; };
+  return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(one) : one(r);
+};
+function closeJsGenerator(g) {
+  const exit = new AdderError('GeneratorExit', '', undefined, []);
+  const ok = (e) => { if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null; throw e; };
+  const after = (x) => { if (!x.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit'); return x.value === undefined ? null : x.value; };
+  let r;
+  try { r = g.throw(exit); } catch (e) { return ok(e); }
+  return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(after, ok) : after(r);
+}
+function _jsGenAttr(g, attr) {
+  switch (attr) {
+    case 'send': return (v) => {
+      if (v !== null && v !== undefined && g._pyTracksStart && !_genStarted.has(g)) throw new AdderError('TypeError', "can't send non-None value to a just-started generator");
+      return _genResult(g.next(v === undefined ? null : v));
+    };
+    case '__next__': return () => _genResult(g.next(null));
+    case '__iter__': return () => g;
+    case 'throw': return (t, v) => {
+      let exc = v !== undefined && v !== null ? v : t;
+      if (typeof exc === 'function' && exc._pyClass) exc = exc();
+      const go = (x) => _genResult(g.throw(excToThrowable(x)));
+      return exc !== null && typeof exc === 'object' && typeof exc.then === 'function' ? exc.then(go) : go(exc);
+    };
+    case 'close': return () => closeJsGenerator(g);
+    case 'gi_running': return _genRunning.has(g);
+    case 'gi_yieldfrom': return null;
+    case 'gi_frame': return _genFinished.has(g) ? null : { __adderClass__: 'frame', f_lineno: 0, f_locals: new PyDict(), f_globals: new PyDict() };
+    case '__name__': case '__qualname__': return g._genName || '<genexpr>';
+    default: return undefined;
+  }
+}
 function adderGetAttr(obj, attr) {
+  if (obj !== null && typeof obj === 'object' && obj.__adderClass__ === undefined && _jsGenTag(obj)) {
+    const m = _jsGenAttr(obj, attr);
+    if (m !== undefined) return m;
+  }
   if (_VALUE_DUNDERS.has(attr) && obj !== null && obj !== undefined && !obj.__adderType__ &&
       (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Map || obj instanceof Set || obj instanceof Uint8Array || isPlainDict(obj))) {
     const d = _valueDunder(obj, attr);
@@ -3386,6 +3557,8 @@ function adderGetAttr(obj, attr) {
     if (attr === 'args') return obj.args || mkTuple(obj.pyMessage === '' || obj.pyMessage == null ? [] : [obj.pyMessage]);
     if (attr === '__cause__' || attr === '__context__') return obj[attr] ?? null;
     if (attr === '__traceback__') return _tracebackOf(obj);
+    // StopIteration.value: the generator's return value (its first argument, as CPython sets it)
+    if (attr === 'value' && obj.pyType === 'StopIteration') return obj.value !== undefined ? obj.value : obj.args && obj.args.length ? obj.args[0] : null;
     if (attr === 'with_traceback') return (tb) => { obj._pyTb = tb; return obj; };
     if (attr === '__class__') return excTypeOf(obj);
   }
@@ -6403,6 +6576,10 @@ function guardSetAttr(obj, name) {
 }
 // JS errors surfacing through compiled code or a JS library
 const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
+// the Python exception a JS error stands for: a blown stack is RecursionError; resuming a running
+// (compiled) generator is CPython's ValueError ("generator already executing")
+const _jsExcName = (err) => (/call stack/i.test(err.message || '') ? 'RecursionError'
+  : /generator is already running/i.test(err.message || '') ? 'ValueError' : (_JS_EXC[err.name] || 'Exception'));
 
 function _excChain(name) {
   if (name === 'BudgetExceeded') return [name];
@@ -6470,7 +6647,7 @@ function _excNames(err) {
     return names;
   }
   if (err instanceof AdderError) return _excChain(err.pyType);
-  if (err instanceof Error) return _excChain(/call stack/i.test(err.message || '') ? 'RecursionError' : (_JS_EXC[err.name] || 'Exception'));
+  if (err instanceof Error) return _excChain(_jsExcName(err));
   return [];
 }
 function excMatches(err, t) {
@@ -6489,7 +6666,7 @@ function excMatches(err, t) {
 function excTypeOf(err) {
   if (err && err.pyClass) return err.pyClass;
   if (err instanceof AdderError) return _typeObjects[err.pyType] || null;
-  if (err instanceof Error) return _typeObjects[_JS_EXC[err.name] || 'Exception'] || null;
+  if (err instanceof Error) return _typeObjects[_jsExcName(err)] || null;
   return null;
 }
 
@@ -8238,7 +8415,7 @@ function adderBuiltins(printFn) {
       return pyIter(obj);
     },
     next: (iter, def) => {
-      const done = () => { if (def !== undefined) return def; throw new AdderError('StopIteration', '', undefined, []); };
+      const done = (v) => { if (def !== undefined) return def; throw stopIteration(v); };
       if (iter && typeof iter.__next__ === 'function') {
         if (def === undefined) return iter.__next__();
         try { const v = iter.__next__(); return v && typeof v.then === 'function' ? v.catch((e) => { if (e && e.pyType === 'StopIteration') return def; throw e; }) : v; }
@@ -8246,8 +8423,8 @@ function adderBuiltins(printFn) {
       }
       if (!iter || typeof iter.next !== 'function') throw new AdderError('TypeError', `'${pyTypeName(iter)}' object is not an iterator`);
       const r = iter.next();
-      if (r && typeof r.then === 'function') return r.then((x) => (x.done ? done() : x.value));
-      return r.done ? done() : r.value;
+      if (r && typeof r.then === 'function') return r.then((x) => (x.done ? done(x.value) : x.value));
+      return r.done ? done(r.value) : r.value;
     },
     input: () => { throw new AdderError('NotImplementedError', 'input() is not supported in the browser'); },
     issubclass: (c, t) => {
@@ -9563,14 +9740,15 @@ function _makeFunction(node, scope, defaults = {}) {
 // generator.close(): GeneratorExit raised at the paused yield, so its except / finally run (a
 // generator that never started, or has finished, just ends); yielding again is a RuntimeError
 async function _closeGen(gen) {
+  let r;
   try {
-    const r = await gen.throw(new AdderError('GeneratorExit', '', undefined, []));
-    if (!r.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit');
+    r = await gen.throw(new AdderError('GeneratorExit', '', undefined, []));
   } catch (e) {
     if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null;
     throw e;
   }
-  return null;
+  if (!r.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit');
+  return r.value === undefined ? null : r.value;   // it returned a value on GeneratorExit (3.13)
 }
 
 function _makeGeneratorFunction(node, scope, defaults = {}) {
@@ -9586,23 +9764,47 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
     // where next left off (each for-await used to restart the body)
     let gen = null;
     const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults));
+    // resuming a generator while it runs is an error (CPython's ValueError) — the async
+    // generator underneath would quietly queue the call and wait on itself forever
+    let running = false, finished = false;
+    const step = (f) => {
+      if (running) return Promise.reject(new AdderError('ValueError', 'generator already executing'));
+      running = true;
+      let p;
+      try { p = f(); } catch (e) { running = false; finished = true; throw e; }
+      return Promise.resolve(p).then((r) => { running = false; if (r && r.done) finished = true; return r; }, (e) => { running = false; finished = true; throw e; });
+    };
+    // (loops and yield from step it through these too, so they see the guard)
+    const jsIter = {
+      next: (v) => step(() => run().next(v)),
+      throw: (e) => step(() => run().throw(e)),
+      return: (v) => (gen ? gen.return(v) : Promise.resolve({ done: true, value: v })),
+      [Symbol.asyncIterator]() { return jsIter; },
+    };
     const genObj = {
       __adderClass__: 'generator',
       _genName: node.name,
-      [Symbol.asyncIterator]() { return run(); },
-      next(v) { return run().next(v); },
-      send(v) { return run().next(v).then((r) => { if (r.done) throw new AdderError('StopIteration', '', undefined, []); return r.value; }); },
-      close() { return gen ? _closeGen(gen) : Promise.resolve(null); },
+      get gi_running() { return running; },
+      // (a frame while it can still run — not started, suspended or running — None once finished)
+      get gi_frame() { return finished ? null : { __adderClass__: 'frame', f_lineno: node.line || 0, f_locals: new PyDict(), f_code: { co_name: node.name } }; },
+      [Symbol.asyncIterator]() { return jsIter; },
+      next(v) { return jsIter.next(v); },
+      send(v) {
+        // a generator that hasn't started takes only None (CPython's rule)
+        if (!gen && v !== null && v !== undefined) return Promise.reject(new AdderError('TypeError', "can't send non-None value to a just-started generator"));
+        return jsIter.next(v).then((r) => { if (r.done) throw stopIteration(r.value); return r.value; });
+      },
+      close() { const done = (v) => { finished = true; return v; }; return gen ? _closeGen(gen).then(done) : Promise.resolve(done(null)); },
       // g.throw(exc): raise exc at the paused yield; the next value it yields, or StopIteration
       throw(t, v) {
         let exc = v ?? t;
         if (typeof exc === 'function' && exc._pyClass) exc = exc();
-        return Promise.resolve(exc).then((x) => run().throw(excToThrowable(x))).then((r) => {
-          if (r.done) throw new AdderError('StopIteration', '', undefined, []);
+        return Promise.resolve(exc).then((x) => jsIter.throw(excToThrowable(x))).then((r) => {
+          if (r.done) throw stopIteration(r.value);
           return r.value;
         });
       },
-      _jsThrow(err) { return run().throw(err); },   // the JS protocol ({value, done}), for contextlib
+      _jsThrow(err) { return jsIter.throw(err); },   // the JS protocol ({value, done}), for contextlib
       _asyncGen: true,   // (async-only: helpers that can wait collect it instead of iterating it now)
       // sync iteration needs the values now; generators here are async (for await / list())
       [Symbol.iterator]() {
@@ -9628,9 +9830,16 @@ async function* _runGenerator(node, scope, callArgs, defaults = {}) {
       yield* await _evalGenStmt(stmt, localScope);
     }
   } catch (e) {
-    if (e instanceof _ReturnSignal) return;
+    if (e instanceof _ReturnSignal) return e.value;   // `return x`: StopIteration(x).value, yield from's result
+    // PEP 479: StopIteration raised in a generator's body is a RuntimeError (from it)
+    if (e && e.pyType === 'StopIteration') {
+      const err = new AdderError('RuntimeError', 'generator raised StopIteration');
+      err.__cause__ = excValue(e); err.__context__ = excValue(e);
+      throw err;
+    }
     throw e;
   }
+  return null;
 }
 
 // a generator's except-handler body: `raised` is the active exception while the body runs, and
@@ -9646,6 +9855,42 @@ async function* _inExcContext(inner, raised) {
     try { arg = yield r.value; method = 'next'; } catch (e) { method = 'throw'; arg = e; }
   }
 }
+// yield from EXPR, as PEP 380 spells it, through the iterator's Python methods — any iterator,
+// not only generators: next() while None is sent, its send() otherwise; a thrown exception goes
+// to its throw() if it has one; GeneratorExit closes it (its close(), if any) and propagates; the
+// result is its StopIteration's value
+const _stopValue = (e) => (e.value !== undefined ? e.value : e.args && e.args.length ? e.args[0] : null);
+async function* _yieldFrom(iterable) {
+  const B = adderModules.builtins;
+  const it = await B.iter(iterable);
+  const method = (name) => { try { return adderGetAttr(it, name); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
+  let y;
+  try { y = await B.next(it); } catch (e) { if (e && e.pyType === 'StopIteration') return _stopValue(e); throw e; }
+  for (;;) {
+    let sent, thrown = null;
+    try { sent = yield y; } catch (e) { thrown = e; }
+    try {
+      if (thrown !== null) {
+        if (thrown && (thrown.pyType === 'GeneratorExit' || excValue(thrown) && excValue(thrown).pyType === 'GeneratorExit')) {
+          const close = method('close');
+          if (typeof close === 'function') await close();
+          throw thrown;
+        }
+        const th = method('throw');
+        if (typeof th !== 'function') throw thrown;
+        y = await th(excValue(thrown));
+      } else if (sent === null || sent === undefined) y = await B.next(it);
+      else {
+        const send = method('send');
+        if (typeof send !== 'function') throw new AdderError('AttributeError', `'${pyTypeName(it)}' object has no attribute 'send'`);
+        y = await send(sent);
+      }
+    } catch (e) {
+      if (e && e.pyType === 'StopIteration' && e !== thrown) return _stopValue(e);
+      throw e;
+    }
+  }
+}
 async function* _evalGenStmt(node, scope) {
   // Like adderEval but yields instead of throwing for Yield nodes
   switch (node.type) {
@@ -9655,14 +9900,26 @@ async function* _evalGenStmt(node, scope) {
         return;
       }
       if (node.value.type === 'YieldFrom') {
-        const iterable = await adderEval(node.value.value, scope);
-        if (isUserIterable(iterable)) { for await (const v of pyIterAsync(iterable)) yield v; }
-        else if (iterable[Symbol.asyncIterator]) { for await (const v of iterable) yield v; }
-        else { for (const v of pyIter(iterable)) yield v; }
+        yield* _yieldFrom(await adderEval(node.value.value, scope));
         return;
       }
       await adderEval(node, scope);
       return;
+    // `v = yield x` / `v = yield from g` / `v += yield x`: the value sent in (or the subgenerator's
+    // return value) is what's assigned — the parser hoists every other placement of a yield
+    case 'Assign': case 'AugAssign': case 'AnnAssign': {
+      const y = node.value;
+      if (!y || (y.type !== 'Yield' && y.type !== 'YieldFrom')) { await adderEval(node, scope); return; }
+      const got = y.type === 'Yield'
+        ? yield (y.value ? await adderEval(y.value, scope) : null)
+        : yield* _yieldFrom(await adderEval(y.value, scope));
+      const sent = got === undefined ? null : got;
+      if (node.type === 'Assign') { for (const t of node.targets) await _assignTarget(t, sent, scope); return; }
+      if (node.type === 'AnnAssign') { await _assignTarget(node.target, sent, scope); return; }
+      const cur = await adderEval(node.target, scope);
+      await _assignTarget(node.target, await _binOp(node.op, cur, sent, node.line), scope);
+      return;
+    }
     case 'For': {
       const iterable = await adderEval(node.iter, scope);
       let broke = false;
@@ -11037,6 +11294,67 @@ function _fnOfSync(x) {
   return asCallable(x);
 }
 
+// yield from x (PEP 380) in compiled code: delegation through x's Python methods — next() while
+// None is sent, send() otherwise, throw() for a thrown exception, close() on GeneratorExit — and
+// the result is its StopIteration's value. A compiled generator, a list or a string is handed to
+// JS yield* as it is (native delegation is exactly this for them); anything else gets both a
+// sync and an async reading, and yield* takes the one its generator can use.
+const _isJsGen = (v) => { const t = Object.prototype.toString.call(v); return t === '[object Generator]' || t === '[object AsyncGenerator]'; };
+const _stopVal = (e) => (e.value !== undefined ? e.value : e.args && e.args.length ? e.args[0] : null);
+const _isGenExit = (e) => !!e && (e.pyType === 'GeneratorExit' || (excValue(e) && excValue(e).pyType === 'GeneratorExit'));
+function* _pep380Sync(x) {
+  const B = adderModules.builtins;
+  const it = B.iter(x);
+  // (read synchronously: a compiled iterator's methods through their sync twins)
+  const method = (n) => { try { return syncOf(adderGetAttr(it, n)); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
+  const nextOf = () => { const nx = it !== null && typeof it === 'object' && typeof it.__next__ === 'function' ? method('__next__') : null; return nx ? nx() : B.next(it); };
+  let y;
+  try { y = nextOf(); } catch (e) { if (e && e.pyType === 'StopIteration') return _stopVal(e); throw e; }
+  for (;;) {
+    let sent, thrown = null;
+    try { sent = yield y; } catch (e) { thrown = e; }
+    try {
+      if (thrown !== null) {
+        if (_isGenExit(thrown)) { const c = method('close'); if (typeof c === 'function') c(); throw thrown; }
+        const th = method('throw');
+        if (typeof th !== 'function') throw thrown;
+        y = th(excValue(thrown));
+      } else if (sent === null || sent === undefined) y = nextOf();
+      else { const sd = method('send'); if (typeof sd !== 'function') throw new AdderError('AttributeError', `'${pyTypeName(it)}' object has no attribute 'send'`); y = sd(sent); }
+    } catch (e) {
+      if (e && e.pyType === 'StopIteration' && e !== thrown) return _stopVal(e);
+      throw e;
+    }
+  }
+}
+async function* _pep380Async(x) {
+  const B = adderModules.builtins;
+  const it = await B.iter(x);
+  const method = (n) => { try { return adderGetAttr(it, n); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
+  let y;
+  try { y = await B.next(it); } catch (e) { if (e && e.pyType === 'StopIteration') return _stopVal(e); throw e; }
+  for (;;) {
+    let sent, thrown = null;
+    try { sent = yield y; } catch (e) { thrown = e; }
+    try {
+      if (thrown !== null) {
+        if (_isGenExit(thrown)) { const c = method('close'); if (typeof c === 'function') await c(); throw thrown; }
+        const th = method('throw');
+        if (typeof th !== 'function') throw thrown;
+        y = await th(excValue(thrown));
+      } else if (sent === null || sent === undefined) y = await B.next(it);
+      else { const sd = method('send'); if (typeof sd !== 'function') throw new AdderError('AttributeError', `'${pyTypeName(it)}' object has no attribute 'send'`); y = await sd(sent); }
+    } catch (e) {
+      if (e && e.pyType === 'StopIteration' && e !== thrown) return _stopVal(e);
+      throw e;
+    }
+  }
+}
+function _yieldFromOf(x) {
+  if (Array.isArray(x) || typeof x === 'string' || _isJsGen(x)) return x;
+  return { [Symbol.iterator]: () => _pep380Sync(x), [Symbol.asyncIterator]: () => _pep380Async(x) };
+}
+
 // ── Context manager __exit__ ──
 
 // Called by `with` lowering. When the body completes normally, `exc` is
@@ -11400,6 +11718,15 @@ const _py = {
   fnOf: asCallable,
   fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
   isNone: (v) => v === null || v === undefined,
+  yieldFrom: _yieldFromOf,
+  genProto,
+  // a loop's own iterator, left before it ran out (emit-js release_temp): a generator is closed —
+  // GeneratorExit at its yield, so its finally runs now, as when CPython drops the last reference
+  releaseIter: (src, it) => {
+    if (src !== null && typeof src === 'object' && src.__adderClass__ === 'generator' && typeof src.close === 'function') return src.close();
+    if (it !== null && typeof it === 'object' && (Object.prototype.toString.call(it) === '[object Generator]' || Object.prototype.toString.call(it) === '[object AsyncGenerator]')) return closeJsGenerator(it);
+    return null;
+  },
   // a sync-mode dunder / property: its sync version, falling back to its async one when it gives up
   bailable: (s, a) => {
     const f = function (...args) {
@@ -18494,6 +18821,9 @@ const _syTruthy = (v) => pyBool(v);
       const fail = (e) => {
         if (excValue(e) === value) return false;   // re-raised: the with statement raises the original
         if (e && e.pyType === 'StopIteration') return true;
+        // a StopIteration thrown in comes back wrapped in RuntimeError (PEP 479): that is the
+        // original propagating, not something to raise in its place (CPython's issue 29692)
+        if (e && e.pyType === 'RuntimeError' && e.__cause__ !== undefined && e.__cause__ === value) return false;
         throw e;
       };
       const after = (r) => { if (!r.done) throw new AdderError('RuntimeError', "generator didn't stop after throw()"); return true; };
@@ -22247,8 +22577,9 @@ function lowerExpr_ad(ctx, node) {
       return ctx.emit('yield', val ? [val.id] : [], DYNAMIC, l);
     }
     case 'YieldFrom': {
+      // (through _py.yieldFrom: PEP 380 for any iterator — JS yield* alone speaks only JS's)
       const val = lowerExpr_ad(ctx, node.value);
-      return ctx.emit('yield_delegate', [val.id], DYNAMIC, l);
+      return ctx.emit('yield_delegate', [emitPyCall(ctx, 'yieldFrom', [val], l).id], DYNAMIC, l);
     }
 
     default:
@@ -23269,6 +23600,9 @@ function _lowerForLoopBody(ctx, node, l) {
   const isRange = node.iter.type === 'Call' && node.iter.func.type === 'Name' && node.iter.func.id === 'range' && !ctx.symbols.has('range');
   const hybrid = !!ctx._loopMayAwait && !isRange;
   const iterArr = hybrid ? emitPyCall(ctx, 'iterLazy', [iter], l) : emitPyIter(ctx, iter, l);
+  // `for x in gen():` — nothing else holds the iterator, so (as CPython's reference counting does)
+  // the loop finalizes it when it exits early: a break, a return, an exception (release_temp)
+  const ownsIter = node.iter.type === 'Call' && !isRange;
 
   // Simple case: target is an Identifier
   if (node.target.type === 'Name') {
@@ -23279,7 +23613,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: loopVar, hybrid, indexed: !hybrid,
+      body, phis: [], target_name: loopVar, hybrid, indexed: !hybrid, release_temp: ownsIter,
     });
   }
 
@@ -23301,7 +23635,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: tempName, hybrid, indexed: !hybrid,
+      body, phis: [], target_name: tempName, hybrid, indexed: !hybrid, release_temp: ownsIter,
     });
   }
 
@@ -23809,7 +24143,7 @@ function lowerFuncDef(ctx, node) {
   // (in a class body the function is bound as `__cb_<name>` — see lowerClassDef)
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   // its generator objects show the function's name (`<generator object g at ...>`)
-  if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
+  if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)});`);
   if (bailable) {
     const asy = lowerBody(null);
     const asyOp = ctx.emit('func_region', [null], fType, l, {
@@ -23833,7 +24167,7 @@ function lowerFuncDef(ctx, node) {
     });
     const twinTmp = ctx.makeTempName('twin');
     ctx.emit('store', [twinTmp, twinOp.id], VOID, l);
-    if (isGenerator) emitRaw(ctx, `${twinTmp}.prototype._genName = ${JSON.stringify(name)};`);
+    if (isGenerator) emitRaw(ctx, `_py.genProto(${twinTmp}, ${JSON.stringify(name)});`);
     emitRaw(ctx, `Object.defineProperty(${refName}, '_pySync', { value: ${twinTmp}, configurable: true, writable: true });`);
   }
 

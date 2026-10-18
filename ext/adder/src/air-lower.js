@@ -1006,8 +1006,9 @@ function lowerExpr_ad(ctx, node) {
       return ctx.emit('yield', val ? [val.id] : [], DYNAMIC, l);
     }
     case 'YieldFrom': {
+      // (through _py.yieldFrom: PEP 380 for any iterator — JS yield* alone speaks only JS's)
       const val = lowerExpr_ad(ctx, node.value);
-      return ctx.emit('yield_delegate', [val.id], DYNAMIC, l);
+      return ctx.emit('yield_delegate', [emitPyCall(ctx, 'yieldFrom', [val], l).id], DYNAMIC, l);
     }
 
     default:
@@ -2028,6 +2029,9 @@ function _lowerForLoopBody(ctx, node, l) {
   const isRange = node.iter.type === 'Call' && node.iter.func.type === 'Name' && node.iter.func.id === 'range' && !ctx.symbols.has('range');
   const hybrid = !!ctx._loopMayAwait && !isRange;
   const iterArr = hybrid ? emitPyCall(ctx, 'iterLazy', [iter], l) : emitPyIter(ctx, iter, l);
+  // `for x in gen():` — nothing else holds the iterator, so (as CPython's reference counting does)
+  // the loop finalizes it when it exits early: a break, a return, an exception (release_temp)
+  const ownsIter = node.iter.type === 'Call' && !isRange;
 
   // Simple case: target is an Identifier
   if (node.target.type === 'Name') {
@@ -2038,7 +2042,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: loopVar, hybrid, indexed: !hybrid,
+      body, phis: [], target_name: loopVar, hybrid, indexed: !hybrid, release_temp: ownsIter,
     });
   }
 
@@ -2060,7 +2064,7 @@ function _lowerForLoopBody(ctx, node, l) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
     });
     return ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-      body, phis: [], target_name: tempName, hybrid, indexed: !hybrid,
+      body, phis: [], target_name: tempName, hybrid, indexed: !hybrid, release_temp: ownsIter,
     });
   }
 
@@ -2568,7 +2572,7 @@ function lowerFuncDef(ctx, node) {
   // (in a class body the function is bound as `__cb_<name>` — see lowerClassDef)
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   // its generator objects show the function's name (`<generator object g at ...>`)
-  if (isGenerator) emitRaw(ctx, `${refName}.prototype._genName = ${JSON.stringify(name)};`);
+  if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)});`);
   if (bailable) {
     const asy = lowerBody(null);
     const asyOp = ctx.emit('func_region', [null], fType, l, {
@@ -2592,7 +2596,7 @@ function lowerFuncDef(ctx, node) {
     });
     const twinTmp = ctx.makeTempName('twin');
     ctx.emit('store', [twinTmp, twinOp.id], VOID, l);
-    if (isGenerator) emitRaw(ctx, `${twinTmp}.prototype._genName = ${JSON.stringify(name)};`);
+    if (isGenerator) emitRaw(ctx, `_py.genProto(${twinTmp}, ${JSON.stringify(name)});`);
     emitRaw(ctx, `Object.defineProperty(${refName}, '_pySync', { value: ${twinTmp}, configurable: true, writable: true });`);
   }
 

@@ -318,7 +318,77 @@ export function adderTokenize(code) {
 // ── parser ──
 
 export function adderParse(code) {
-  return _manglePrivate(_desugarTypeParams(new _Parser(adderTokenize(code)).parseModule()), null);
+  return _manglePrivate(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule())), null);
+}
+
+// A yield inside an expression — `f((yield x))`, `return (yield)`, `y = 1 + (yield)` — is
+// evaluated just before its statement and the statement uses the result: `__yN = yield x` then
+// `f(__yN)`. Both engines then only meet yield as a statement or as an assignment's whole
+// right-hand side (`v = yield x`, which they implement directly). Python evaluates operands left
+// to right, so operands before the yield now run after it: only side effects there can tell.
+// Not hoisted: a yield in a loop's test (it must run each time round) — rare enough to leave.
+function _isYieldNode(n) { return n && (n.type === 'Yield' || n.type === 'YieldFrom'); }
+let _yieldTmp = 0;
+function _hoistIn(expr, pre) {
+  if (!expr || typeof expr !== 'object') return expr;
+  if (Array.isArray(expr)) { for (let i = 0; i < expr.length; i++) expr[i] = _hoistIn(expr[i], pre); return expr; }
+  // don't cross into nested scopes: their yields are theirs
+  if (expr.type === 'Lambda' || expr.type === 'FunctionDef' || expr.type === 'AsyncFunctionDef' || expr.type === 'ClassDef' ||
+      expr.type === 'ListComp' || expr.type === 'SetComp' || expr.type === 'DictComp' || expr.type === 'GeneratorExp') return expr;
+  for (const k of Object.keys(expr)) {
+    if (k === 'line' || k === 'col' || k === 'type') continue;
+    const v = expr[k];
+    if (v && typeof v === 'object') expr[k] = _hoistIn(v, pre);
+  }
+  if (_isYieldNode(expr)) {
+    const name = `__y${++_yieldTmp}`;
+    pre.push({ type: 'Assign', targets: [{ type: 'Name', id: name, line: expr.line, col: expr.col }], value: expr, line: expr.line, col: expr.col });
+    return { type: 'Name', id: name, line: expr.line, col: expr.col };
+  }
+  return expr;
+}
+// a statement's expressions, with the yields that are not its whole value hoisted in front
+function _hoistStmt(st) {
+  const pre = [];
+  const keep = (v) => (_isYieldNode(v) ? _hoistChildren(v, pre) : _hoistIn(v, pre));
+  switch (st.type) {
+    case 'Expr': st.value = keep(st.value); break;
+    case 'Assign': st.value = keep(st.value); st.targets = _hoistIn(st.targets, pre); break;
+    case 'AugAssign': case 'AnnAssign': if (st.value) st.value = keep(st.value); break;
+    case 'Return': if (st.value) st.value = _hoistIn(st.value, pre); break;
+    case 'If': st.test = _hoistIn(st.test, pre); break;
+    case 'Raise': if (st.exc) st.exc = _hoistIn(st.exc, pre); if (st.cause) st.cause = _hoistIn(st.cause, pre); break;
+    case 'Assert': st.test = _hoistIn(st.test, pre); if (st.msg) st.msg = _hoistIn(st.msg, pre); break;
+    case 'For': st.iter = _hoistIn(st.iter, pre); break;
+    case 'With': for (const it of st.items) it.contextExpr = _hoistIn(it.contextExpr, pre); break;
+    default: break;
+  }
+  return pre;
+}
+// a yield that is the statement's own value keeps its place; yields inside its operand are hoisted
+function _hoistChildren(y, pre) { if (y.value) y.value = _hoistIn(y.value, pre); return y; }
+function _hoistBlock(stmts) {
+  if (!Array.isArray(stmts)) return;
+  for (let i = 0; i < stmts.length; i++) {
+    const st = stmts[i];
+    if (!st || typeof st !== 'object') continue;
+    for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(st[k])) _hoistBlock(st[k]);
+    if (Array.isArray(st.handlers)) for (const h of st.handlers) _hoistBlock(h.body);
+    if (Array.isArray(st.cases)) for (const c of st.cases) _hoistBlock(c.body);
+    const pre = _hoistStmt(st);
+    if (pre.length) { stmts.splice(i, 0, ...pre); i += pre.length; }
+  }
+}
+function _hoistYields(mod) {
+  // every function body (generators are functions whose body has a yield)
+  const visit = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    if ((n.type === 'FunctionDef' || n.type === 'AsyncFunctionDef') && Array.isArray(n.body)) _hoistBlock(n.body);
+    for (const k of Object.keys(n)) if (k !== 'line' && k !== 'col' && n[k] && typeof n[k] === 'object') visit(n[k]);
+  };
+  visit(mod);
+  return mod;
 }
 
 // PEP 695, as CPython compiles it: a generic def / class / type alias is built inside an
@@ -791,16 +861,24 @@ class _Parser {
   }
 
   parseYield() {
+    // a yield statement — or the right-hand side's start: `yield x` then `= …` is not valid, but
+    // the statement may be just the expression, so parse it as one and wrap it
+    const y = this._parseYieldExpr();
+    return { type: 'Expr', value: y, line: y.line, col: y.col };
+  }
+
+  // a yield expression: `yield`, `yield v`, `yield a, b` (a tuple), `yield from it` — what an
+  // assignment's right-hand side or a parenthesized expression may be
+  _parseYieldExpr() {
     const t = this.advance(); // 'yield'
-    if (this.eat('NAME', 'from')) {
-      return { type: 'Expr', value: { type: 'YieldFrom', value: this.parseExpr(), line: t.line, col: t.col }, line: t.line, col: t.col };
-    }
+    if (this.eat('NAME', 'from')) return { type: 'YieldFrom', value: this.parseExpr(), line: t.line, col: t.col };
     let value = null;
-    if (!this.at('NEWLINE') && !this.at('OP', ';') && !this.at('EOF') && !this.at('OP', ')') && !this.at('OP', ']')) {
+    if (!this.at('NEWLINE') && !this.at('OP', ';') && !this.at('EOF') && !this.at('OP', ')') && !this.at('OP', ']') && !this.at('OP', '}') && !this.at('OP', '=')) {
       value = this.parseExprOrStars();
     }
-    return { type: 'Expr', value: { type: 'Yield', value, line: t.line, col: t.col }, line: t.line, col: t.col };
+    return { type: 'Yield', value, line: t.line, col: t.col };
   }
+  _parseRhs() { return this.at('NAME', 'yield') ? this._parseYieldExpr() : this.parseExprOrStars(); }
 
   parseRaise() {
     const t = this.advance();
@@ -901,21 +979,21 @@ class _Parser {
     // augmented assignment
     if (this.at('OP') && _AUGASSIGN.has(this.peek().value)) {
       const op = this.advance().value.slice(0, -1);
-      return { type: 'AugAssign', target: this._asTarget(expr), op, value: this.parseExprOrStars(), line: expr.line, col: expr.col };
+      return { type: 'AugAssign', target: this._asTarget(expr), op, value: this._parseRhs(), line: expr.line, col: expr.col };
     }
     // annotation
     if (this.eat('OP', ':')) {
       const annotation = this.parseExpr();
-      const value = this.eat('OP', '=') ? this.parseExprOrStars() : null;
+      const value = this.eat('OP', '=') ? this._parseRhs() : null;
       return { type: 'AnnAssign', target: this._asTarget(expr), annotation, value, line: expr.line, col: expr.col };
     }
     // assignment (possibly chained: a = b = val)
     if (this.eat('OP', '=')) {
       const targets = [this._asTarget(expr)];
-      let value = this.parseExprOrStars();
+      let value = this._parseRhs();
       while (this.eat('OP', '=')) {
         targets.push(this._asTarget(value));
-        value = this.parseExprOrStars();
+        value = this._parseRhs();
       }
       return { type: 'Assign', targets, value, line: expr.line, col: expr.col };
     }
@@ -1418,6 +1496,8 @@ class _Parser {
     if (t.type === 'OP' && t.value === '(') {
       this.advance();
       if (this.eat('OP', ')')) return { type: 'Tuple', elts: [], line: t.line, col: t.col };
+      // (yield …): a yield expression anywhere an expression goes
+      if (this.at('NAME', 'yield')) { const y = this._parseYieldExpr(); this.expect('OP', ')'); return y; }
       const first = this.parseStarExpr();
       if (this._atCompFor()) {
         const generators = this._parseCompIter();

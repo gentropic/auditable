@@ -3602,3 +3602,146 @@ class P:
 P(z=3)
 ### builtin/none-class
 print(None.__class__, type(None) is None.__class__, None.__class__.__name__)
+### gen/send-throw-return
+def echo():
+    x = yield 1
+    while True:
+        x = yield x * 2
+g = echo()
+print(next(g), g.send(5), g.send(10))
+
+def acc():
+    total = 0
+    while True:
+        v = yield total
+        if v is None:
+            break
+        total += v
+    return total
+a = acc(); next(a); a.send(3); a.send(4)
+try:
+    a.send(None)
+except StopIteration as e:
+    print("stop", e.value)
+
+def thrower():
+    try:
+        yield 1
+    except ValueError as e:
+        yield "caught " + str(e)
+    yield 3
+t = thrower(); next(t)
+print(t.throw(ValueError("boom")), next(t))
+
+def fin():
+    try:
+        yield 1
+        yield 2
+    finally:
+        print("fin ran")
+f = fin(); next(f); f.close()
+print(f.gi_running if hasattr(f, "gi_running") else "-")
+
+def inner():
+    x = yield "a"
+    return x + "!"
+def outer():
+    r = yield from inner()
+    yield r
+o = outer()
+print(next(o), o.send("hi"))
+
+def lazy():
+    print("started")
+    yield 1
+L = lazy()
+print("created")
+print(list(L))
+
+def gx():
+    yield (yield 1)
+G = gx(); print(next(G), G.send("v"))
+s = (x * x for x in range(3))
+print(next(s), list(s), s.__class__.__name__)
+def stopper():
+    yield 1
+    return "done"
+it = stopper(); next(it)
+try:
+    next(it)
+except StopIteration as e:
+    print("ret", e.value)
+def unstarted():
+    yield 1
+u = unstarted()
+try:
+    u.send(1)
+except TypeError as e:
+    print("TE", e)
+print(next(u))
+try:
+    raise StopIteration(5)
+except StopIteration as e:
+    print(e.value, e.args)
+### gen/yield-from-pep380-479
+class It:
+    def __init__(self):
+        self.i = 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        self.i += 1
+        if self.i > 2:
+            raise StopIteration(99)
+        return self.i
+    def send(self, v):
+        print("sent", v)
+        return self.__next__()
+def g():
+    r = yield from It()
+    yield ("ret", r)
+x = g()
+print(next(x), x.send("hello"), next(x))
+def bad():
+    yield 1
+    raise StopIteration
+try:
+    list(bad())
+except RuntimeError as e:
+    print("RE", e, type(e.__cause__).__name__)
+def cr():
+    try:
+        yield 1
+    except GeneratorExit:
+        return 0
+c = cr(); next(c); print("close ->", c.close())
+def inner():
+    try:
+        yield 1
+    finally:
+        print("inner closed")
+def outer():
+    yield from inner()
+o = outer(); next(o); o.close()
+def th():
+    try:
+        yield 1
+    except KeyError:
+        yield "kept"
+def deleg():
+    yield from th()
+d = deleg(); next(d); print(d.throw(KeyError("k")))
+### gen/already-executing
+def g():
+    yield next(it)
+it = g()
+try:
+    next(it)
+except ValueError as e:
+    print("VE", e)
+def h():
+    yield 1
+x = h()
+print(x.gi_frame is not None, x.gi_running)
+list(x)
+print(x.gi_frame)

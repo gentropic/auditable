@@ -29,7 +29,6 @@
   "builtin/isinstance-types": "output",
   "builtin/sum-start": "output",
   "exc/traceback-objects": "output",
-  "class/generic-alias-base": "output",
-  "gen/close-and-finalize": "error AttributeError vs CPython null"
+  "class/generic-alias-base": "output"
  }
 }

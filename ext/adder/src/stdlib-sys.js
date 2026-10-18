@@ -1637,6 +1637,9 @@ const _syTruthy = (v) => pyBool(v);
       const fail = (e) => {
         if (excValue(e) === value) return false;   // re-raised: the with statement raises the original
         if (e && e.pyType === 'StopIteration') return true;
+        // a StopIteration thrown in comes back wrapped in RuntimeError (PEP 479): that is the
+        // original propagating, not something to raise in its place (CPython's issue 29692)
+        if (e && e.pyType === 'RuntimeError' && e.__cause__ !== undefined && e.__cause__ === value) return false;
         throw e;
       };
       const after = (r) => { if (!r.done) throw new AdderError('RuntimeError', "generator didn't stop after throw()"); return true; };
