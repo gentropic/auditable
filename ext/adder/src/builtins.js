@@ -1097,6 +1097,7 @@ function _iterObjRepr(v) {
 export function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
   { const ir = _iterObjRepr(v); if (ir) return ir; }
+  if (v instanceof PyCoroutine) return v.__repr__();
   if (v instanceof AdderError) {
     if (v.args) return `${v.pyType}(${v.args.map(pyRepr).join(', ')})`;
     return `${v.pyType}(${v.pyMessage === '' || v.pyMessage == null ? '' : pyRepr(String(v.pyMessage))})`;
@@ -1441,6 +1442,39 @@ function* _gCollect(obj) {
 export const pyCollectMaybe = maybeSync(_gCollect);
 // f(v), now or when v resolves
 const _thenMaybe = (v, f) => (_isThenable(v) ? v.then(f) : f(v));
+
+// `a, b = v` / `a, *rest, z = v` (both engines): v's items as an array — or a Promise of them when
+// v is an async source (a map over a tree-walked function) — with CPython's count check. `n` is
+// the number of targets, `star` whether one of them is starred. An iterator is read only as far
+// as the check needs (n + 1 items), so an endless one still raises "too many values".
+function _unpackCheck(items, n, star, known) {
+  const k = items.length;
+  if (star) { if (k < n - 1) throw new AdderError('ValueError', `not enough values to unpack (expected at least ${n - 1}, got ${k})`); }
+  else if (k > n) throw new AdderError('ValueError', `too many values to unpack (expected ${n})`);   // (3.13's wording: 3.14 adds the count for a sequence)
+  else if (k < n) throw new AdderError('ValueError', `not enough values to unpack (expected ${n}, got ${k})`);
+  return items;
+}
+export function pyUnpack(v, n, star = false) {
+  if (Array.isArray(v)) return v.length === n && !star ? v : _unpackCheck(v, n, star, true);
+  if (typeof v === 'string' || v instanceof Uint8Array || v instanceof Map || v instanceof Set) return _unpackCheck(Array.isArray(v) ? v : [...pyIter(v)], n, star, true);
+  if (!star && v !== null && typeof v === 'object' && typeof v.next === 'function' && typeof v[Symbol.iterator] === 'function' && !v._pyAsyncGen && !v._maybeNext) {
+    const out = [];
+    for (let i = 0; i <= n; i++) {
+      const r = v.next();
+      // an iterator whose steps wait (a tree-walked generator): the rest of the reading waits too
+      if (_isThenable(r)) return r.then(async (r0) => { for (let x = r0; !x.done && out.length <= n; x = await v.next()) out.push(x.value); return _unpackCheck(out, n, false, false); });
+      if (r.done) break;
+      out.push(r.value);
+    }
+    return _unpackCheck(out, n, false, false);
+  }
+  let r;
+  try { r = pyCollectMaybe(v); } catch (e) {
+    if (e && e.pyType === 'TypeError' && /is not iterable$/.test(e.pyMessage || e.message || '')) throw new AdderError('TypeError', `cannot unpack non-iterable ${pyTypeName(v)} object`);
+    throw e;
+  }
+  return _thenMaybe(r, (items) => _unpackCheck(items, n, star, false));
+}
 // fn(item) for each item of anything iterable — synchronously unless the source is async (a
 // tree-walked generator or __iter__): then a Promise. → None (or a Promise of it)
 const _eachMaybe = maybeSync(function* (obj, fn) { yield* _gForEach(obj, (v) => { fn(v); }); return null; });
@@ -6067,6 +6101,70 @@ export function asCallable(f) {
   throw new AdderError('TypeError', `'${pyTypeName(f)}' object is not callable`);
 }
 
+// ── coroutines ──
+//
+// Calling an `async def` from Python makes a coroutine object, as in CPython: none of its body runs
+// until something awaits it or hands it to asyncio — so gather(a(), b()) runs a and b together.
+// JS calling the same function gets what JS expects, a Promise already running: the CALL SITE
+// decides, not the function. Python's call sites (compiled _py.fnOf / callMethod, the tree-walker's
+// _callValue) make a PyCoroutine for a function marked _pyCoro; it is not a thenable, so the await
+// those call sites put on every call passes it through unchanged. Python's own `await` (through
+// awaitTarget → __await__) and asyncio start it.
+const _coroNeverAwaited = typeof FinalizationRegistry === 'function'
+  ? new FinalizationRegistry((name) => { try { console.warn(`RuntimeWarning: coroutine '${name}' was never awaited`); } catch {} })
+  : null;
+export class PyCoroutine {
+  constructor(fn, self, args) {
+    this._fn = fn; this._self = self; this._args = args; this._p = null; this._closed = false;
+    _coroNeverAwaited?.register(this, fn._pyName || fn.name || '?', this);
+  }
+  get __adderClass__() { return 'coroutine'; }
+  get __name__() { return this._fn._pyName || this._fn.name || '<coroutine>'; }
+  get __qualname__() { return this._fn.__qualname__ || this.__name__; }
+  get cr_running() { return false; }
+  get cr_suspended() { return false; }
+  get cr_await() { return null; }
+  get cr_frame() { return this._p || this._closed ? null : { __adderClass__: 'frame', f_locals: new PyDict(), f_lineno: (this._fn._pySig && this._fn._pySig.line) || 0 }; }
+  get cr_code() { return this._fn._pySig ? _codeObject(this._fn) : null; }
+  get cr_origin() { return null; }
+  // running: its body, as JS calls it (an eager Promise), once
+  _promise() {
+    if (!this._p) {
+      if (this._closed) return Promise.reject(new AdderError('RuntimeError', 'cannot reuse already awaited coroutine'));
+      _coroNeverAwaited?.unregister(this);
+      const fn = this._fn, self = this._self, args = this._args;
+      this._args = null;
+      try { this._p = Promise.resolve(fn.apply(self, args)); } catch (e) { this._p = Promise.reject(e); }
+    }
+    return this._p;
+  }
+  // `await coro`: start it — a coroutine is awaited once
+  __await__() {
+    if (this._p || this._closed) throw new AdderError('RuntimeError', 'cannot reuse already awaited coroutine');
+    return this._promise();
+  }
+  close() { if (!this._p) { this._closed = true; this._args = null; _coroNeverAwaited?.unregister(this); } return null; }
+  send(v) {
+    if (v !== null && v !== undefined && !this._p) throw new AdderError('TypeError', "can't send non-None value to a just-started coroutine");
+    throw new AdderError('RuntimeError', 'adder runs a coroutine on the JS event loop: await it (or hand it to asyncio) rather than stepping it with send()');
+  }
+  throw(e) { if (!this._p) { this.close(); throw (e && e.prototype && e._pyClass ? new e() : e); } return this.send(null); }
+  __repr__() { return `<coroutine object ${this.__qualname__} at ${_objAddr(this)}>`; }
+}
+// a Python call site's callee: a marked `async def` → a function making its coroutine object
+export function pyCallable(f) {
+  if (typeof f === 'function') return f._pyCoro === true ? lazyCoro(f) : f;
+  return asCallable(f);
+}
+export function lazyCoro(f) {
+  if (Object.hasOwn(f, '_pyLazy')) return f._pyLazy;
+  const lazy = function (...a) { return new PyCoroutine(f, this, a); };
+  Object.defineProperty(f, '_pyLazy', { value: lazy, configurable: true, writable: true });
+  return lazy;
+}
+// a wrapper of an `async def` (a bound / static / class method) is one too
+export const markCoro = (dst, src) => { if (src && src._pyCoro === true && typeof dst === 'function') dst._pyCoro = true; return dst; };
+
 // ── the object model: classes, __new__, type, metaclasses ──
 //
 // A class is a JS function (calling it makes an instance) with _pyName / _pyMRO / prototype /
@@ -6160,7 +6258,7 @@ export function syncOf(f) {
 }
 const _defTwin = (fn, twin) => Object.defineProperty(fn, '_pySync', { value: twin, configurable: true, writable: true });
 // fn.bind(obj), keeping the twin (bound the same way)
-const _bindTwin = (f, obj) => { const b = f.bind(obj); if (f._pySync) _defTwin(b, f._pySync.bind(obj)); return b; };
+const _bindTwin = (f, obj) => { const b = f.bind(obj); if (f._pySync) _defTwin(b, f._pySync.bind(obj)); if (f._pyCoro === true) b._pyCoro = true; return b; };
 
 // the class's __new__: the nearest one in its MRO (a user `def __new__`, or type's for a metaclass)
 function _findNew(cls) {
@@ -6201,7 +6299,7 @@ export function typeCall(cls, args, sync = false) {
 function _classMethodDescriptor(fn, qual) {
   return {
     get() {
-      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn;
+      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; markCoro(m, fn);
       if (fn._pySync) { const tw = fn._pySync; _defTwin(m, (...a) => tw(c, ...a)); }
       return m;
     },
@@ -6299,6 +6397,7 @@ function _installMember(cls, name, mName, value, opts) {
     }
     const sm = (...args) => rawFn(...args);
     if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
+    markCoro(sm, rawFn);
     sm._pyName = `${name}.${mName}`;
     cls.prototype[mName] = sm;
     cls[mName] = sm;
@@ -6307,6 +6406,7 @@ function _installMember(cls, name, mName, value, opts) {
     const fn = value.fn, qual = `${name}.${mName}`;
     const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
     cm._pyName = qual;
+    markCoro(cm, fn);
     if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
     cls.prototype[mName] = cm;
     Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
@@ -6315,6 +6415,7 @@ function _installMember(cls, name, mName, value, opts) {
     cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
     cls.prototype[mName]._pyName = `${name}.${mName}`;
     cls.prototype[mName].__func__ = originalFn;          // the def itself (inspect, abstract methods)
+    markCoro(cls.prototype[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls.prototype[mName].__isabstractmethod__ = true;
     // Python unbound-method access (`ClassName.method(instance, ...)`).
     // Arrow form so adderGetAttr's `.bind(obj)` doesn't pin `this` to
@@ -6322,6 +6423,7 @@ function _installMember(cls, name, mName, value, opts) {
     cls[mName] = (...args) => originalFn(...args);
     // `Cls.method` is the plain function: its name, signature, docstring, abstractness
     Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+    markCoro(cls[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
     if (originalFn._pySync) {
       const tw = originalFn._pySync;
@@ -7251,7 +7353,18 @@ export function adderBuiltins(printFn) {
     getattr: function (obj, name, def) {
       if (arguments.length < 2 || arguments.length > 3) throw new AdderError('TypeError', `getattr expected ${arguments.length < 2 ? 'at least 2' : 'at most 3'} arguments, got ${arguments.length}`);
       if (typeof name !== 'string' && strValue(name) === null) throw new AdderError('TypeError', `attribute name must be string, not '${pyTypeName(name)}'`);
-      return ((obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } })(obj, strValue(name) ?? name, def);
+      // the default stands in for an AttributeError only (any other exception propagates, as in
+      // CPython) — also one an async __getattr__ (a tree-walked one) raises, as a rejection
+      name = strValue(name) ?? name;
+      const missing = (e) => {
+        const isAttr = !(e instanceof AdderError) || excMatches(e, 'AttributeError');
+        if (isAttr && def !== undefined) return def;
+        if (e instanceof AdderError) throw e;
+        throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+      };
+      let v;
+      try { v = adderGetAttr(obj, name); } catch (e) { return missing(e); }
+      return def !== undefined && _isThenable(v) ? v.then(undefined, missing) : v;
     },
     setattr: (obj, name, value) => { const r = storeAttr(obj, name, value); return _isThenable(r) ? r.then(() => null) : null; },
     delattr: (obj, name) => pyDelAttr(obj, name),

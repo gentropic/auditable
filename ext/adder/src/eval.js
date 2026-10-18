@@ -23,7 +23,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
+  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -562,8 +562,8 @@ async function _assignTarget(target, value, scope) {
       break;
     }
     case 'Tuple': case 'List': {
-      const items = [...pyIter(value)];
       const starIdx = target.elts.findIndex(e => e.type === 'Starred');
+      const items = await _withLine(() => pyUnpack(value, target.elts.length, starIdx >= 0), target.line);
       if (starIdx >= 0) {
         // starred unpacking
         const before = target.elts.slice(0, starIdx);
@@ -911,6 +911,11 @@ async function _evalCall(node, scope) {
   // the current scope's names
   if (func._sentinel === 'globals') { let s = scope; while (s.parent) s = s.parent; return s.vars; }
   if (func._sentinel === 'locals') { if (!scope.parent) return scope.vars; return new PyDict(scope.vars); }
+  // an `async def` called from Python: its coroutine object, not yet running
+  if (typeof func === 'function' && func._pyCoro === true) {
+    if (kwArgs.length > 0) args.push({ _kw: true, ...Object.fromEntries(kwArgs) });
+    return new PyCoroutine(func, undefined, args);
+  }
   return _callValue(func, args, kwArgs, node.line);
 }
 
@@ -1065,6 +1070,7 @@ function _makeFunction(node, scope, defaults = {}) {
   fn._pyFunc = true;
   fn._pyName = node.name;
   fn.__doc__ = _docstringOf(node);
+  if (isAsync) fn._pyCoro = true;
   return _attachSignature(fn, node, defaults, scope);
 }
 
@@ -1767,7 +1773,7 @@ function _execCompiled(args) {
   });
   const finish = (scope) => {
     if (scope && typeof scope === 'object') {
-      for (const k of Object.keys(scope)) if (k !== '__lastExpr__') vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
+      for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined) vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
     }
     return null;
   };
@@ -1980,7 +1986,7 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
       const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
       const scope = await compiled.run(lookup, mod);
       if (scope && typeof scope === 'object') {
-        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
+        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
       }
     } else {
       await adderEval(ast, modScope);

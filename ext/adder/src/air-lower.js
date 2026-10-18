@@ -569,8 +569,8 @@ function emitPyCall(ctx, method, args, loc, type) {
 // safe side: if we miss an async-yielding case (e.g. value flowed through
 // a Name binding), `for of` on the result iterates to zero items rather
 // than crashing — debuggable but not catastrophic.
-function emitPyIter(ctx, src, loc, type) {
-  const call = emitPyCall(ctx, 'iter', [src], loc, type);
+function emitPyIter(ctx, src, loc, type, helper = 'iter', extra = []) {
+  const call = emitPyCall(ctx, helper, [src, ...extra], loc, type);
   // an awaited value, or a generator expression (its async variant), may be an async iterable,
   // which _py.iter collects behind a promise
   if (src && (src.op === 'await' || src._mayBeAsyncIter)) {
@@ -695,7 +695,7 @@ export function lowerAdder(ast, source, opts) {
     if ((stmt.type === 'FunctionDef' || stmt.type === 'AsyncFunctionDef' ||
          stmt.type === 'ClassDef') && stmt.name) {
       funcOrClassNames.add(stmt.name);
-      if (!(stmt.decorators && stmt.decorators.length)) ctx.knownCallables.add(stmt.name);
+      if (!(stmt.decorators && stmt.decorators.length) && stmt.type !== 'AsyncFunctionDef') ctx.knownCallables.add(stmt.name);
     }
   }
 
@@ -1350,8 +1350,6 @@ function lowerAssignTarget(ctx, target, value, l) {
   }
   if (target.type === 'Tuple' || target.type === 'List') {
     // Tuple/list unpacking: a, b = value, or a, *rest = value
-    // First ensure value is an array-like via _py.iter
-    const iterArr = emitPyIter(ctx, value, l);
     // Find starred index (if any) — only one allowed
     let starredIdx = -1;
     for (let i = 0; i < target.elts.length; i++) {
@@ -1360,6 +1358,9 @@ function lowerAssignTarget(ctx, target, value, l) {
         starredIdx = i;
       }
     }
+    // value's items as an array, count-checked (_py.unpack; awaited where the source may be async)
+    const iterArr = emitPyIter(ctx, value, l, undefined, 'unpack', [
+      ctx.emit('const', [target.elts.length], I32, l), ctx.emit('const', [starredIdx !== -1], BOOL, l)]);
 
     if (starredIdx === -1) {
       // Simple: index each

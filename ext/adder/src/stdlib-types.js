@@ -167,7 +167,10 @@ function _stEnumHook(cls) {
     const m = _stMember(cls, name, value);
     if (ownInit) inits.push(() => cls.prototype.__init__.call(m, ...(value instanceof PyTuple ? value : [value])));
     setClassAttr(cls, name, m);
-    cls._member_names_.push(name);
+    // a Flag's canonical members are its single bits: a 0 or multi-bit value is a member (in
+    // __members__, by value) but not iterated or counted, as CPython 3.11+
+    const bits = kind.flag && typeof value === 'number' && Number.isInteger(value) && value >= 0;
+    if (!bits || (value !== 0 && (value & (value - 1)) === 0)) cls._member_names_.push(name);
     cls._member_map_.set(name, m);
     cls._value2member_.push([value, m]);
   }

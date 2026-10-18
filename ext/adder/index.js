@@ -3491,6 +3491,7 @@ function _iterObjRepr(v) {
 function pyRepr(v) {
   if (v === null || v === undefined) return 'None';
   { const ir = _iterObjRepr(v); if (ir) return ir; }
+  if (v instanceof PyCoroutine) return v.__repr__();
   if (v instanceof AdderError) {
     if (v.args) return `${v.pyType}(${v.args.map(pyRepr).join(', ')})`;
     return `${v.pyType}(${v.pyMessage === '' || v.pyMessage == null ? '' : pyRepr(String(v.pyMessage))})`;
@@ -3835,6 +3836,39 @@ function* _gCollect(obj) {
 const pyCollectMaybe = maybeSync(_gCollect);
 // f(v), now or when v resolves
 const _thenMaybe = (v, f) => (_isThenable(v) ? v.then(f) : f(v));
+
+// `a, b = v` / `a, *rest, z = v` (both engines): v's items as an array — or a Promise of them when
+// v is an async source (a map over a tree-walked function) — with CPython's count check. `n` is
+// the number of targets, `star` whether one of them is starred. An iterator is read only as far
+// as the check needs (n + 1 items), so an endless one still raises "too many values".
+function _unpackCheck(items, n, star, known) {
+  const k = items.length;
+  if (star) { if (k < n - 1) throw new AdderError('ValueError', `not enough values to unpack (expected at least ${n - 1}, got ${k})`); }
+  else if (k > n) throw new AdderError('ValueError', `too many values to unpack (expected ${n})`);   // (3.13's wording: 3.14 adds the count for a sequence)
+  else if (k < n) throw new AdderError('ValueError', `not enough values to unpack (expected ${n}, got ${k})`);
+  return items;
+}
+function pyUnpack(v, n, star = false) {
+  if (Array.isArray(v)) return v.length === n && !star ? v : _unpackCheck(v, n, star, true);
+  if (typeof v === 'string' || v instanceof Uint8Array || v instanceof Map || v instanceof Set) return _unpackCheck(Array.isArray(v) ? v : [...pyIter(v)], n, star, true);
+  if (!star && v !== null && typeof v === 'object' && typeof v.next === 'function' && typeof v[Symbol.iterator] === 'function' && !v._pyAsyncGen && !v._maybeNext) {
+    const out = [];
+    for (let i = 0; i <= n; i++) {
+      const r = v.next();
+      // an iterator whose steps wait (a tree-walked generator): the rest of the reading waits too
+      if (_isThenable(r)) return r.then(async (r0) => { for (let x = r0; !x.done && out.length <= n; x = await v.next()) out.push(x.value); return _unpackCheck(out, n, false, false); });
+      if (r.done) break;
+      out.push(r.value);
+    }
+    return _unpackCheck(out, n, false, false);
+  }
+  let r;
+  try { r = pyCollectMaybe(v); } catch (e) {
+    if (e && e.pyType === 'TypeError' && /is not iterable$/.test(e.pyMessage || e.message || '')) throw new AdderError('TypeError', `cannot unpack non-iterable ${pyTypeName(v)} object`);
+    throw e;
+  }
+  return _thenMaybe(r, (items) => _unpackCheck(items, n, star, false));
+}
 // fn(item) for each item of anything iterable — synchronously unless the source is async (a
 // tree-walked generator or __iter__): then a Promise. → None (or a Promise of it)
 const _eachMaybe = maybeSync(function* (obj, fn) { yield* _gForEach(obj, (v) => { fn(v); }); return null; });
@@ -8461,6 +8495,70 @@ function asCallable(f) {
   throw new AdderError('TypeError', `'${pyTypeName(f)}' object is not callable`);
 }
 
+// ── coroutines ──
+//
+// Calling an `async def` from Python makes a coroutine object, as in CPython: none of its body runs
+// until something awaits it or hands it to asyncio — so gather(a(), b()) runs a and b together.
+// JS calling the same function gets what JS expects, a Promise already running: the CALL SITE
+// decides, not the function. Python's call sites (compiled _py.fnOf / callMethod, the tree-walker's
+// _callValue) make a PyCoroutine for a function marked _pyCoro; it is not a thenable, so the await
+// those call sites put on every call passes it through unchanged. Python's own `await` (through
+// awaitTarget → __await__) and asyncio start it.
+const _coroNeverAwaited = typeof FinalizationRegistry === 'function'
+  ? new FinalizationRegistry((name) => { try { console.warn(`RuntimeWarning: coroutine '${name}' was never awaited`); } catch {} })
+  : null;
+class PyCoroutine {
+  constructor(fn, self, args) {
+    this._fn = fn; this._self = self; this._args = args; this._p = null; this._closed = false;
+    _coroNeverAwaited?.register(this, fn._pyName || fn.name || '?', this);
+  }
+  get __adderClass__() { return 'coroutine'; }
+  get __name__() { return this._fn._pyName || this._fn.name || '<coroutine>'; }
+  get __qualname__() { return this._fn.__qualname__ || this.__name__; }
+  get cr_running() { return false; }
+  get cr_suspended() { return false; }
+  get cr_await() { return null; }
+  get cr_frame() { return this._p || this._closed ? null : { __adderClass__: 'frame', f_locals: new PyDict(), f_lineno: (this._fn._pySig && this._fn._pySig.line) || 0 }; }
+  get cr_code() { return this._fn._pySig ? _codeObject(this._fn) : null; }
+  get cr_origin() { return null; }
+  // running: its body, as JS calls it (an eager Promise), once
+  _promise() {
+    if (!this._p) {
+      if (this._closed) return Promise.reject(new AdderError('RuntimeError', 'cannot reuse already awaited coroutine'));
+      _coroNeverAwaited?.unregister(this);
+      const fn = this._fn, self = this._self, args = this._args;
+      this._args = null;
+      try { this._p = Promise.resolve(fn.apply(self, args)); } catch (e) { this._p = Promise.reject(e); }
+    }
+    return this._p;
+  }
+  // `await coro`: start it — a coroutine is awaited once
+  __await__() {
+    if (this._p || this._closed) throw new AdderError('RuntimeError', 'cannot reuse already awaited coroutine');
+    return this._promise();
+  }
+  close() { if (!this._p) { this._closed = true; this._args = null; _coroNeverAwaited?.unregister(this); } return null; }
+  send(v) {
+    if (v !== null && v !== undefined && !this._p) throw new AdderError('TypeError', "can't send non-None value to a just-started coroutine");
+    throw new AdderError('RuntimeError', 'adder runs a coroutine on the JS event loop: await it (or hand it to asyncio) rather than stepping it with send()');
+  }
+  throw(e) { if (!this._p) { this.close(); throw (e && e.prototype && e._pyClass ? new e() : e); } return this.send(null); }
+  __repr__() { return `<coroutine object ${this.__qualname__} at ${_objAddr(this)}>`; }
+}
+// a Python call site's callee: a marked `async def` → a function making its coroutine object
+function pyCallable(f) {
+  if (typeof f === 'function') return f._pyCoro === true ? lazyCoro(f) : f;
+  return asCallable(f);
+}
+function lazyCoro(f) {
+  if (Object.hasOwn(f, '_pyLazy')) return f._pyLazy;
+  const lazy = function (...a) { return new PyCoroutine(f, this, a); };
+  Object.defineProperty(f, '_pyLazy', { value: lazy, configurable: true, writable: true });
+  return lazy;
+}
+// a wrapper of an `async def` (a bound / static / class method) is one too
+const markCoro = (dst, src) => { if (src && src._pyCoro === true && typeof dst === 'function') dst._pyCoro = true; return dst; };
+
 // ── the object model: classes, __new__, type, metaclasses ──
 //
 // A class is a JS function (calling it makes an instance) with _pyName / _pyMRO / prototype /
@@ -8554,7 +8652,7 @@ function syncOf(f) {
 }
 const _defTwin = (fn, twin) => Object.defineProperty(fn, '_pySync', { value: twin, configurable: true, writable: true });
 // fn.bind(obj), keeping the twin (bound the same way)
-const _bindTwin = (f, obj) => { const b = f.bind(obj); if (f._pySync) _defTwin(b, f._pySync.bind(obj)); return b; };
+const _bindTwin = (f, obj) => { const b = f.bind(obj); if (f._pySync) _defTwin(b, f._pySync.bind(obj)); if (f._pyCoro === true) b._pyCoro = true; return b; };
 
 // the class's __new__: the nearest one in its MRO (a user `def __new__`, or type's for a metaclass)
 function _findNew(cls) {
@@ -8595,7 +8693,7 @@ function typeCall(cls, args, sync = false) {
 function _classMethodDescriptor(fn, qual) {
   return {
     get() {
-      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn;
+      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; markCoro(m, fn);
       if (fn._pySync) { const tw = fn._pySync; _defTwin(m, (...a) => tw(c, ...a)); }
       return m;
     },
@@ -8693,6 +8791,7 @@ function _installMember(cls, name, mName, value, opts) {
     }
     const sm = (...args) => rawFn(...args);
     if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
+    markCoro(sm, rawFn);
     sm._pyName = `${name}.${mName}`;
     cls.prototype[mName] = sm;
     cls[mName] = sm;
@@ -8701,6 +8800,7 @@ function _installMember(cls, name, mName, value, opts) {
     const fn = value.fn, qual = `${name}.${mName}`;
     const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
     cm._pyName = qual;
+    markCoro(cm, fn);
     if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
     cls.prototype[mName] = cm;
     Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
@@ -8709,6 +8809,7 @@ function _installMember(cls, name, mName, value, opts) {
     cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
     cls.prototype[mName]._pyName = `${name}.${mName}`;
     cls.prototype[mName].__func__ = originalFn;          // the def itself (inspect, abstract methods)
+    markCoro(cls.prototype[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls.prototype[mName].__isabstractmethod__ = true;
     // Python unbound-method access (`ClassName.method(instance, ...)`).
     // Arrow form so adderGetAttr's `.bind(obj)` doesn't pin `this` to
@@ -8716,6 +8817,7 @@ function _installMember(cls, name, mName, value, opts) {
     cls[mName] = (...args) => originalFn(...args);
     // `Cls.method` is the plain function: its name, signature, docstring, abstractness
     Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+    markCoro(cls[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
     if (originalFn._pySync) {
       const tw = originalFn._pySync;
@@ -9645,7 +9747,18 @@ function adderBuiltins(printFn) {
     getattr: function (obj, name, def) {
       if (arguments.length < 2 || arguments.length > 3) throw new AdderError('TypeError', `getattr expected ${arguments.length < 2 ? 'at least 2' : 'at most 3'} arguments, got ${arguments.length}`);
       if (typeof name !== 'string' && strValue(name) === null) throw new AdderError('TypeError', `attribute name must be string, not '${pyTypeName(name)}'`);
-      return ((obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } })(obj, strValue(name) ?? name, def);
+      // the default stands in for an AttributeError only (any other exception propagates, as in
+      // CPython) — also one an async __getattr__ (a tree-walked one) raises, as a rejection
+      name = strValue(name) ?? name;
+      const missing = (e) => {
+        const isAttr = !(e instanceof AdderError) || excMatches(e, 'AttributeError');
+        if (isAttr && def !== undefined) return def;
+        if (e instanceof AdderError) throw e;
+        throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
+      };
+      let v;
+      try { v = adderGetAttr(obj, name); } catch (e) { return missing(e); }
+      return def !== undefined && _isThenable(v) ? v.then(undefined, missing) : v;
     },
     setattr: (obj, name, value) => { const r = storeAttr(obj, name, value); return _isThenable(r) ? r.then(() => null) : null; },
     delattr: (obj, name) => pyDelAttr(obj, name),
@@ -10624,8 +10737,8 @@ async function _assignTarget(target, value, scope) {
       break;
     }
     case 'Tuple': case 'List': {
-      const items = [...pyIter(value)];
       const starIdx = target.elts.findIndex(e => e.type === 'Starred');
+      const items = await _withLine(() => pyUnpack(value, target.elts.length, starIdx >= 0), target.line);
       if (starIdx >= 0) {
         // starred unpacking
         const before = target.elts.slice(0, starIdx);
@@ -10973,6 +11086,11 @@ async function _evalCall(node, scope) {
   // the current scope's names
   if (func._sentinel === 'globals') { let s = scope; while (s.parent) s = s.parent; return s.vars; }
   if (func._sentinel === 'locals') { if (!scope.parent) return scope.vars; return new PyDict(scope.vars); }
+  // an `async def` called from Python: its coroutine object, not yet running
+  if (typeof func === 'function' && func._pyCoro === true) {
+    if (kwArgs.length > 0) args.push({ _kw: true, ...Object.fromEntries(kwArgs) });
+    return new PyCoroutine(func, undefined, args);
+  }
   return _callValue(func, args, kwArgs, node.line);
 }
 
@@ -11127,6 +11245,7 @@ function _makeFunction(node, scope, defaults = {}) {
   fn._pyFunc = true;
   fn._pyName = node.name;
   fn.__doc__ = _docstringOf(node);
+  if (isAsync) fn._pyCoro = true;
   return _attachSignature(fn, node, defaults, scope);
 }
 
@@ -11829,7 +11948,7 @@ function _execCompiled(args) {
   });
   const finish = (scope) => {
     if (scope && typeof scope === 'object') {
-      for (const k of Object.keys(scope)) if (k !== '__lastExpr__') vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
+      for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined) vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
     }
     return null;
   };
@@ -12042,7 +12161,7 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
       const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
       const scope = await compiled.run(lookup, mod);
       if (scope && typeof scope === 'object') {
-        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
+        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
       }
     } else {
       await adderEval(ast, modScope);
@@ -12724,11 +12843,11 @@ function _callMethod(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) return cache.methods[i].call(obj, ...args);
+      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
     }
   }
   // Slow path: full adderGetAttr lookup + call.
-  const fn = asCallable(adderGetAttr(obj, name));
+  const fn = pyCallable(adderGetAttr(obj, name));
   const result = fn(...args);
 
   // Populate the cache for class-instance receivers. We cache the
@@ -12765,7 +12884,7 @@ function _callMethodSync(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) return syncOf(cache.methods[i]).call(obj, ...args);
+      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
@@ -12780,7 +12899,7 @@ function _callMethodSync(obj, name, siteId, ...args) {
 // a value called from sync mode: a function's twin, a class's synchronous construction, an
 // object's __call__ twin
 function _fnOfSync(x) {
-  if (typeof x === 'function') return syncOf(x);
+  if (typeof x === 'function') return x._pyCoro === true ? lazyCoro(x) : syncOf(x);
   if (x !== null && typeof x === 'object') {
     const c = x.__call__;
     if (typeof c === 'function' && c._pySync) { const s = syncOf(c); return (...a) => s.call(x, ...a); }
@@ -12992,6 +13111,7 @@ function _call(fn, args, kwargs) {
     }
     throw new AdderError('TypeError', `'${pyTypeName(fn)}' object is not callable`);
   }
+  if (fn._pyCoro === true) fn = lazyCoro(fn);
   if (kwargs) {
     const kw = { _kw: true, ...kwargs };
     return fn(...(args || []), kw);
@@ -13208,6 +13328,7 @@ const _py = {
   call: _call,
   // iteration
   iter: _iterArray,
+  unpack: pyUnpack,
   // truthiness
   truthy: pyBool,
   // string formatting
@@ -13226,7 +13347,7 @@ const _py = {
   importFromPath: _importFromPath,
   // class
   createClass: _createClass,
-  fnOf: asCallable,
+  fnOf: pyCallable,
   fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
   isNone: (v) => v === null || v === undefined,
   yieldFrom: _yieldFromOf,
@@ -13257,6 +13378,7 @@ const _py = {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
     fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    if (shape.isAsync && !fn._isGenerator && !/GeneratorFunction$/.test((fn.constructor && fn.constructor.name) || '')) fn._pyCoro = true;   // (not an async generator)
     if (mod) Object.defineProperty(fn, '_pyGlobals', { value: _globalsOf(mod), configurable: true });
     const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
     fn.__defaults__ = pos.length ? mkTuple(pos) : null;
@@ -14719,7 +14841,10 @@ function _stEnumHook(cls) {
     const m = _stMember(cls, name, value);
     if (ownInit) inits.push(() => cls.prototype.__init__.call(m, ...(value instanceof PyTuple ? value : [value])));
     setClassAttr(cls, name, m);
-    cls._member_names_.push(name);
+    // a Flag's canonical members are its single bits: a 0 or multi-bit value is a member (in
+    // __members__, by value) but not iterated or counted, as CPython 3.11+
+    const bits = kind.flag && typeof value === 'number' && Number.isInteger(value) && value >= 0;
+    if (!bits || (value !== 0 && (value & (value - 1)) === 0)) cls._member_names_.push(name);
     cls._member_map_.set(name, m);
     cls._value2member_.push([value, m]);
   }
@@ -20283,6 +20408,7 @@ adderModules.tempfile = {
 
 
 const _syIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _syIsCoro = (v) => _syIsThen(v) || (v !== null && typeof v === 'object' && v.__adderClass__ === 'coroutine');
 const _syKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : null);
 const _syHas = (kw, k) => !!kw && Object.hasOwn(kw, k) && k !== '_kw';
 // positional-or-keyword args: names[i] from a[i], else the keyword, else the default
@@ -20299,6 +20425,14 @@ const _syClass = (name, bases, members, module) => {
   return c;
 };
 // a type object named like CPython's (for isinstance against names the engines report)
+const _CODE_ATTRS = ['co_argcount', 'co_cellvars', 'co_code', 'co_consts', 'co_exceptiontable', 'co_filename', 'co_firstlineno', 'co_flags',
+  'co_freevars', 'co_kwonlyargcount', 'co_lines', 'co_linetable', 'co_lnotab', 'co_name', 'co_names', 'co_nlocals', 'co_positions',
+  'co_posonlyargcount', 'co_qualname', 'co_stacksize', 'co_varnames', 'replace'];
+const _syCodeType = () => {
+  const t = _syTypeNamed('code');
+  for (const k of _CODE_ATTRS) if (!Object.hasOwn(t, k)) t[k] = { __property__: true, fget: (self) => self[k], fset: null, __doc__: null };
+  return t;
+};
 const _syTypeNamed = (name) => {
   if (!_typeObjects[name]) {
     const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
@@ -20411,7 +20545,7 @@ adderModules.types = _syModule('types', {
   GetSetDescriptorType: _syTypeNamed('getset_descriptor'), MemberDescriptorType: _syTypeNamed('member_descriptor'),
   ModuleType: _syModuleType, SimpleNamespace: _sySimpleNamespace, MappingProxyType: Object.assign(_syMappingProxy, { _pyName: 'mappingproxy', _pyClass: true, __name__: 'mappingproxy' }),
   GeneratorType: _syTypeNamed('generator'), CoroutineType: _syTypeNamed('coroutine'), AsyncGeneratorType: _syTypeNamed('async_generator'),
-  CodeType: _syTypeNamed('code'), FrameType: _syTypeNamed('frame'), TracebackType: _syTypeNamed('traceback'), CellType: _syTypeNamed('cell'),
+  CodeType: _syCodeType(), FrameType: _syTypeNamed('frame'), TracebackType: _syTypeNamed('traceback'), CellType: _syTypeNamed('cell'),
   NoneType: _syTypeNamed('NoneType'), EllipsisType: _syTypeNamed('ellipsis'), NotImplementedType: _syTypeNamed('NotImplementedType'),
   GenericAlias, UnionType: _syTypeNamed('types.UnionType'),
   DynamicClassAttribute: (f) => ({ __property__: true, fget: f, fset: null }),
@@ -21244,7 +21378,7 @@ adderModules.zipimport = _syModule('zipimport', {
   const isClass = (o) => typeof o === 'function' && !!o._pyClass;
   const isPyFunction = (o) => typeof o === 'function' && !o._pyClass && !!(o._pyDef || o._pyFunc);
   const isMethod = (o) => typeof o === 'function' && !!o.__func__ && !o._pyClass;
-  const isAsyncFn = (f) => typeof f === 'function' && ((f._pySig && f._pySig.isAsync) || (f.constructor && f.constructor.name === 'AsyncFunction' && !f._pySig) || f._isCoroutineFunction === true);
+  const isAsyncFn = (f) => typeof f === 'function' && (f._pyCoro === true || (f._pySig && f._pySig.isAsync && !f._isGenerator && !/GeneratorFunction$/.test(f.constructor.name)) || (f.constructor && f.constructor.name === 'AsyncFunction' && !f._pySig) || f._isCoroutineFunction === true);
   const empty = Object.freeze({ __adderClass__: 'inspect._empty', __repr__: () => "<class 'inspect._empty'>" });
   const KINDS = { POSITIONAL_ONLY: 0, POSITIONAL_OR_KEYWORD: 1, VAR_POSITIONAL: 2, KEYWORD_ONLY: 3, VAR_KEYWORD: 4 };
   const kindObj = Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, Object.assign(Object.create(null), { __adderClass__: '_ParameterKind', name: k, value: v, __repr__: () => `<_ParameterKind.${k}: ${v}>`, __str__: () => k, __eq__: (o) => o && o.value === v })]));
@@ -21395,8 +21529,9 @@ adderModules.zipimport = _syModule('zipimport', {
     markcoroutinefunction: (f) => { f._isCoroutineFunction = true; return f; },
     isgenerator: (o) => !!o && typeof o.next === 'function' && typeof o.throw === 'function' && !o[Symbol.asyncIterator],
     isasyncgen: (o) => !!o && typeof o[Symbol.asyncIterator] === 'function' && typeof o.next === 'function',
-    iscoroutine: (o) => _syIsThen(o),
+    iscoroutine: (o) => _syIsCoro(o),
     isawaitable: (o) => _syIsThen(o) || (!!o && typeof o.__await__ === 'function'),
+    getcoroutinestate: (o) => (o._p ? 'CORO_CLOSED' : o._closed ? 'CORO_CLOSED' : 'CORO_CREATED'),
     isabstract: (o) => isClass(o) && !!(o.__abstractmethods__ && o.__abstractmethods__.size),
     isdatadescriptor: (o) => !!(o && o.__property__), ismethoddescriptor: () => false, isgetsetdescriptor: () => false, ismemberdescriptor: () => false,
     isframe: () => false, iscode: () => false, istraceback: () => false, ismethodwrapper: () => false,
@@ -21449,7 +21584,7 @@ adderModules.zipimport = _syModule('zipimport', {
       add_done_callback: (cb) => { if (done) cb(fut); else callbacks.push(cb); return null; },
       remove_done_callback: (cb) => { const i = callbacks.indexOf(cb); if (i >= 0) callbacks.splice(i, 1); return i >= 0 ? 1 : 0; },
       get_name: () => fut._name || 'Task-1', set_name: (n) => { fut._name = n; return null; },
-      get_coro: () => promise || null,
+      get_coro: () => fut._coro || promise || null,
       __await__: () => p,
     };
     p.then((v) => { if (!done) { done = true; result = v; } for (const cb of callbacks.splice(0)) cb(fut); },
@@ -21459,7 +21594,19 @@ adderModules.zipimport = _syModule('zipimport', {
   };
   // anything awaitable as a promise: a Task / Future through its __await__
   const asP = (x) => Promise.resolve(x !== null && typeof x === 'object' && typeof x.__await__ === 'function' && typeof x.then !== 'function' ? x.__await__() : x);
-  const create_task = (coro, ...a) => { const kw = _syKw(a); const t = mkFuture(asP(coro)); if (kw && kw.name) t._name = kw.name; return t; };
+  // a Task: its coroutine starts on the loop's next step, not inside create_task — when the task
+  // that made it next really waits (a macrotask: every adder call is awaited, so a microtask would
+  // run it at the very next statement)
+  const nextStep = typeof setImmediate === 'function' ? (f) => setImmediate(f)
+    : typeof MessageChannel === 'function' ? (() => { const q = []; const ch = new MessageChannel(); ch.port1.onmessage = () => q.shift()(); return (f) => { q.push(f); ch.port2.postMessage(0); }; })()
+      : (f) => setTimeout(f, 0);
+  const create_task = (coro, ...a) => {
+    const kw = _syKw(a);
+    const t = mkFuture(new Promise((res) => nextStep(res)).then(() => (t.cancelled() && coro && typeof coro.close === "function" ? coro.close() : asP(coro))));
+    t._coro = coro;
+    if (kw && kw.name) t._name = kw.name;
+    return t;
+  };
   const gather = (...a) => {
     const kw = _syKw(a) || {};
     const ps = a.map(asP);
@@ -21528,12 +21675,28 @@ adderModules.zipimport = _syModule('zipimport', {
     __aexit__(t, v) { if (delay !== null && delay !== undefined && (performance.now() - this._t0) / 1000 > delay) return Promise.reject(new AdderError('TimeoutError', '')); return Promise.resolve(false); },
     reschedule(d) { delay = d; return null; }, expired() { return false; },
   });
+  // asyncio.Runner: run() is asyncio.run on the page's one loop (a Promise the calling code awaits)
+  const Runner = _syClass('Runner', [], {
+    __init__(self, ...a) { _syArgs(a, ['debug', 'loop_factory'], { debug: null, loop_factory: null }); self._closed = false; return null; },
+    run(self, coro, ...a) {
+      _syKw(a);
+      if (self._closed) throw new AdderError('RuntimeError', 'Runner is closed');
+      if (coro === null || typeof coro !== 'object' || !(_syIsCoro(coro) || typeof coro.__await__ === 'function')) throw new AdderError('ValueError', `a coroutine was expected, got ${pyRepr(coro)}`);
+      return asP(coro);
+    },
+    get_loop(self) { return loop; },
+    close(self) { self._closed = true; return null; },
+    __enter__(self) { return self; },
+    __exit__(self) { self._closed = true; return false; },
+  }, 'asyncio');
+  const isCoroMark = pyObjectObj();
+  const iscoroutinefunction = (f) => adderModules.inspect.iscoroutinefunction(f) || (f !== null && f !== undefined && (() => { try { return adderGetAttr(f, '_is_coroutine') === isCoroMark; } catch { return false; } })());
   adderModules.asyncio = _syModule('asyncio', {
-    run: (coro, ...a) => { _syKw(a); return asP(coro); },
+    run: (coro, ...a) => { _syKw(a); return asP(coro); }, Runner,
     sleep, gather, wait_for, create_task, ensure_future: create_task, shield: (aw) => aw, timeout,
     wait: (aws, ...a) => { const { timeout: to } = _syArgs(a, ['timeout', 'return_when'], { timeout: null }); const fs = [...pyIter(aws)].map((x) => (x && x.done ? x : create_task(x))); return wait_for(Promise.allSettled(fs.map(asP)), to).then(() => mkTuple([new PySet(fs), new PySet()])); },
     as_completed: (aws) => { const ps = [...pyIter(aws)].map(asP); const order = []; const waiters = ps.map(() => { let r, j; const p = new Promise((a, b) => { r = a; j = b; }); return { p, r, j }; }); let k = 0; ps.forEach((p) => p.then((v) => waiters[k++].r(v), (e) => waiters[k++].j(e))); return waiters.map((w) => w.p); },
-    iscoroutine: (o) => _syIsThen(o), iscoroutinefunction: adderModules.inspect.iscoroutinefunction, isfuture: (o) => !!(o && o.__adderClass__ && (o.__adderClass__ === 'Future' || o.__adderClass__ === 'Task')),
+    iscoroutine: (o) => _syIsCoro(o), iscoroutinefunction, isfuture: (o) => !!(o && o.__adderClass__ && (o.__adderClass__ === 'Future' || o.__adderClass__ === 'Task')),
     get_event_loop: () => loop, get_running_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null,
     get_event_loop_policy: () => ({ get_event_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null }), set_event_loop_policy: () => null,
     AbstractEventLoop: Loop, BaseEventLoop: Loop,
@@ -21545,7 +21708,7 @@ adderModules.zipimport = _syModule('zipimport', {
     Condition: _syClass('Condition', [], { __init__(self) { self._ev = Event(); return null; }, wait(self) { return self._ev.wait(); }, notify(self) { self._ev.set(); self._ev.clear(); return null; }, notify_all(self) { self._ev.set(); self._ev.clear(); return null; }, __aenter__(self) { return Promise.resolve(null); }, __aexit__(self) { return Promise.resolve(false); } }, 'asyncio'),
     CancelledError, InvalidStateError, TimeoutError: TimeoutErr, IncompleteReadError: makeExcType('IncompleteReadError', 'EOFError'),
     FIRST_COMPLETED: 'FIRST_COMPLETED', FIRST_EXCEPTION: 'FIRST_EXCEPTION', ALL_COMPLETED: 'ALL_COMPLETED',
-    coroutines: _syModule('asyncio.coroutines', { iscoroutine: (o) => _syIsThen(o) }),
+    coroutines: _syModule('asyncio.coroutines', { iscoroutine: (o) => _syIsCoro(o), iscoroutinefunction, _is_coroutine: isCoroMark }),
   });
 }
 
@@ -25239,8 +25402,8 @@ function emitPyCall(ctx, method, args, loc, type) {
 // safe side: if we miss an async-yielding case (e.g. value flowed through
 // a Name binding), `for of` on the result iterates to zero items rather
 // than crashing — debuggable but not catastrophic.
-function emitPyIter(ctx, src, loc, type) {
-  const call = emitPyCall(ctx, 'iter', [src], loc, type);
+function emitPyIter(ctx, src, loc, type, helper = 'iter', extra = []) {
+  const call = emitPyCall(ctx, helper, [src, ...extra], loc, type);
   // an awaited value, or a generator expression (its async variant), may be an async iterable,
   // which _py.iter collects behind a promise
   if (src && (src.op === 'await' || src._mayBeAsyncIter)) {
@@ -25365,7 +25528,7 @@ function lowerAdder(ast, source, opts) {
     if ((stmt.type === 'FunctionDef' || stmt.type === 'AsyncFunctionDef' ||
          stmt.type === 'ClassDef') && stmt.name) {
       funcOrClassNames.add(stmt.name);
-      if (!(stmt.decorators && stmt.decorators.length)) ctx.knownCallables.add(stmt.name);
+      if (!(stmt.decorators && stmt.decorators.length) && stmt.type !== 'AsyncFunctionDef') ctx.knownCallables.add(stmt.name);
     }
   }
 
@@ -26020,8 +26183,6 @@ function lowerAssignTarget(ctx, target, value, l) {
   }
   if (target.type === 'Tuple' || target.type === 'List') {
     // Tuple/list unpacking: a, b = value, or a, *rest = value
-    // First ensure value is an array-like via _py.iter
-    const iterArr = emitPyIter(ctx, value, l);
     // Find starred index (if any) — only one allowed
     let starredIdx = -1;
     for (let i = 0; i < target.elts.length; i++) {
@@ -26030,6 +26191,9 @@ function lowerAssignTarget(ctx, target, value, l) {
         starredIdx = i;
       }
     }
+    // value's items as an array, count-checked (_py.unpack; awaited where the source may be async)
+    const iterArr = emitPyIter(ctx, value, l, undefined, 'unpack', [
+      ctx.emit('const', [target.elts.length], I32, l), ctx.emit('const', [starredIdx !== -1], BOOL, l)]);
 
     if (starredIdx === -1) {
       // Simple: index each

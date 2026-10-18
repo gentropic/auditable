@@ -20,6 +20,7 @@ import {
 import { _adderParseExpr, adderParse } from './parse.js';
 
 const _syIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
+const _syIsCoro = (v) => _syIsThen(v) || (v !== null && typeof v === 'object' && v.__adderClass__ === 'coroutine');
 const _syKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : null);
 const _syHas = (kw, k) => !!kw && Object.hasOwn(kw, k) && k !== '_kw';
 // positional-or-keyword args: names[i] from a[i], else the keyword, else the default
@@ -36,6 +37,14 @@ const _syClass = (name, bases, members, module) => {
   return c;
 };
 // a type object named like CPython's (for isinstance against names the engines report)
+const _CODE_ATTRS = ['co_argcount', 'co_cellvars', 'co_code', 'co_consts', 'co_exceptiontable', 'co_filename', 'co_firstlineno', 'co_flags',
+  'co_freevars', 'co_kwonlyargcount', 'co_lines', 'co_linetable', 'co_lnotab', 'co_name', 'co_names', 'co_nlocals', 'co_positions',
+  'co_posonlyargcount', 'co_qualname', 'co_stacksize', 'co_varnames', 'replace'];
+const _syCodeType = () => {
+  const t = _syTypeNamed('code');
+  for (const k of _CODE_ATTRS) if (!Object.hasOwn(t, k)) t[k] = { __property__: true, fget: (self) => self[k], fset: null, __doc__: null };
+  return t;
+};
 const _syTypeNamed = (name) => {
   if (!_typeObjects[name]) {
     const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
@@ -148,7 +157,7 @@ adderModules.types = _syModule('types', {
   GetSetDescriptorType: _syTypeNamed('getset_descriptor'), MemberDescriptorType: _syTypeNamed('member_descriptor'),
   ModuleType: _syModuleType, SimpleNamespace: _sySimpleNamespace, MappingProxyType: Object.assign(_syMappingProxy, { _pyName: 'mappingproxy', _pyClass: true, __name__: 'mappingproxy' }),
   GeneratorType: _syTypeNamed('generator'), CoroutineType: _syTypeNamed('coroutine'), AsyncGeneratorType: _syTypeNamed('async_generator'),
-  CodeType: _syTypeNamed('code'), FrameType: _syTypeNamed('frame'), TracebackType: _syTypeNamed('traceback'), CellType: _syTypeNamed('cell'),
+  CodeType: _syCodeType(), FrameType: _syTypeNamed('frame'), TracebackType: _syTypeNamed('traceback'), CellType: _syTypeNamed('cell'),
   NoneType: _syTypeNamed('NoneType'), EllipsisType: _syTypeNamed('ellipsis'), NotImplementedType: _syTypeNamed('NotImplementedType'),
   GenericAlias, UnionType: _syTypeNamed('types.UnionType'),
   DynamicClassAttribute: (f) => ({ __property__: true, fget: f, fset: null }),
@@ -981,7 +990,7 @@ adderModules.zipimport = _syModule('zipimport', {
   const isClass = (o) => typeof o === 'function' && !!o._pyClass;
   const isPyFunction = (o) => typeof o === 'function' && !o._pyClass && !!(o._pyDef || o._pyFunc);
   const isMethod = (o) => typeof o === 'function' && !!o.__func__ && !o._pyClass;
-  const isAsyncFn = (f) => typeof f === 'function' && ((f._pySig && f._pySig.isAsync) || (f.constructor && f.constructor.name === 'AsyncFunction' && !f._pySig) || f._isCoroutineFunction === true);
+  const isAsyncFn = (f) => typeof f === 'function' && (f._pyCoro === true || (f._pySig && f._pySig.isAsync && !f._isGenerator && !/GeneratorFunction$/.test(f.constructor.name)) || (f.constructor && f.constructor.name === 'AsyncFunction' && !f._pySig) || f._isCoroutineFunction === true);
   const empty = Object.freeze({ __adderClass__: 'inspect._empty', __repr__: () => "<class 'inspect._empty'>" });
   const KINDS = { POSITIONAL_ONLY: 0, POSITIONAL_OR_KEYWORD: 1, VAR_POSITIONAL: 2, KEYWORD_ONLY: 3, VAR_KEYWORD: 4 };
   const kindObj = Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, Object.assign(Object.create(null), { __adderClass__: '_ParameterKind', name: k, value: v, __repr__: () => `<_ParameterKind.${k}: ${v}>`, __str__: () => k, __eq__: (o) => o && o.value === v })]));
@@ -1132,8 +1141,9 @@ adderModules.zipimport = _syModule('zipimport', {
     markcoroutinefunction: (f) => { f._isCoroutineFunction = true; return f; },
     isgenerator: (o) => !!o && typeof o.next === 'function' && typeof o.throw === 'function' && !o[Symbol.asyncIterator],
     isasyncgen: (o) => !!o && typeof o[Symbol.asyncIterator] === 'function' && typeof o.next === 'function',
-    iscoroutine: (o) => _syIsThen(o),
+    iscoroutine: (o) => _syIsCoro(o),
     isawaitable: (o) => _syIsThen(o) || (!!o && typeof o.__await__ === 'function'),
+    getcoroutinestate: (o) => (o._p ? 'CORO_CLOSED' : o._closed ? 'CORO_CLOSED' : 'CORO_CREATED'),
     isabstract: (o) => isClass(o) && !!(o.__abstractmethods__ && o.__abstractmethods__.size),
     isdatadescriptor: (o) => !!(o && o.__property__), ismethoddescriptor: () => false, isgetsetdescriptor: () => false, ismemberdescriptor: () => false,
     isframe: () => false, iscode: () => false, istraceback: () => false, ismethodwrapper: () => false,
@@ -1186,7 +1196,7 @@ adderModules.zipimport = _syModule('zipimport', {
       add_done_callback: (cb) => { if (done) cb(fut); else callbacks.push(cb); return null; },
       remove_done_callback: (cb) => { const i = callbacks.indexOf(cb); if (i >= 0) callbacks.splice(i, 1); return i >= 0 ? 1 : 0; },
       get_name: () => fut._name || 'Task-1', set_name: (n) => { fut._name = n; return null; },
-      get_coro: () => promise || null,
+      get_coro: () => fut._coro || promise || null,
       __await__: () => p,
     };
     p.then((v) => { if (!done) { done = true; result = v; } for (const cb of callbacks.splice(0)) cb(fut); },
@@ -1196,7 +1206,19 @@ adderModules.zipimport = _syModule('zipimport', {
   };
   // anything awaitable as a promise: a Task / Future through its __await__
   const asP = (x) => Promise.resolve(x !== null && typeof x === 'object' && typeof x.__await__ === 'function' && typeof x.then !== 'function' ? x.__await__() : x);
-  const create_task = (coro, ...a) => { const kw = _syKw(a); const t = mkFuture(asP(coro)); if (kw && kw.name) t._name = kw.name; return t; };
+  // a Task: its coroutine starts on the loop's next step, not inside create_task — when the task
+  // that made it next really waits (a macrotask: every adder call is awaited, so a microtask would
+  // run it at the very next statement)
+  const nextStep = typeof setImmediate === 'function' ? (f) => setImmediate(f)
+    : typeof MessageChannel === 'function' ? (() => { const q = []; const ch = new MessageChannel(); ch.port1.onmessage = () => q.shift()(); return (f) => { q.push(f); ch.port2.postMessage(0); }; })()
+      : (f) => setTimeout(f, 0);
+  const create_task = (coro, ...a) => {
+    const kw = _syKw(a);
+    const t = mkFuture(new Promise((res) => nextStep(res)).then(() => (t.cancelled() && coro && typeof coro.close === "function" ? coro.close() : asP(coro))));
+    t._coro = coro;
+    if (kw && kw.name) t._name = kw.name;
+    return t;
+  };
   const gather = (...a) => {
     const kw = _syKw(a) || {};
     const ps = a.map(asP);
@@ -1265,12 +1287,28 @@ adderModules.zipimport = _syModule('zipimport', {
     __aexit__(t, v) { if (delay !== null && delay !== undefined && (performance.now() - this._t0) / 1000 > delay) return Promise.reject(new AdderError('TimeoutError', '')); return Promise.resolve(false); },
     reschedule(d) { delay = d; return null; }, expired() { return false; },
   });
+  // asyncio.Runner: run() is asyncio.run on the page's one loop (a Promise the calling code awaits)
+  const Runner = _syClass('Runner', [], {
+    __init__(self, ...a) { _syArgs(a, ['debug', 'loop_factory'], { debug: null, loop_factory: null }); self._closed = false; return null; },
+    run(self, coro, ...a) {
+      _syKw(a);
+      if (self._closed) throw new AdderError('RuntimeError', 'Runner is closed');
+      if (coro === null || typeof coro !== 'object' || !(_syIsCoro(coro) || typeof coro.__await__ === 'function')) throw new AdderError('ValueError', `a coroutine was expected, got ${pyRepr(coro)}`);
+      return asP(coro);
+    },
+    get_loop(self) { return loop; },
+    close(self) { self._closed = true; return null; },
+    __enter__(self) { return self; },
+    __exit__(self) { self._closed = true; return false; },
+  }, 'asyncio');
+  const isCoroMark = pyObjectObj();
+  const iscoroutinefunction = (f) => adderModules.inspect.iscoroutinefunction(f) || (f !== null && f !== undefined && (() => { try { return adderGetAttr(f, '_is_coroutine') === isCoroMark; } catch { return false; } })());
   adderModules.asyncio = _syModule('asyncio', {
-    run: (coro, ...a) => { _syKw(a); return asP(coro); },
+    run: (coro, ...a) => { _syKw(a); return asP(coro); }, Runner,
     sleep, gather, wait_for, create_task, ensure_future: create_task, shield: (aw) => aw, timeout,
     wait: (aws, ...a) => { const { timeout: to } = _syArgs(a, ['timeout', 'return_when'], { timeout: null }); const fs = [...pyIter(aws)].map((x) => (x && x.done ? x : create_task(x))); return wait_for(Promise.allSettled(fs.map(asP)), to).then(() => mkTuple([new PySet(fs), new PySet()])); },
     as_completed: (aws) => { const ps = [...pyIter(aws)].map(asP); const order = []; const waiters = ps.map(() => { let r, j; const p = new Promise((a, b) => { r = a; j = b; }); return { p, r, j }; }); let k = 0; ps.forEach((p) => p.then((v) => waiters[k++].r(v), (e) => waiters[k++].j(e))); return waiters.map((w) => w.p); },
-    iscoroutine: (o) => _syIsThen(o), iscoroutinefunction: adderModules.inspect.iscoroutinefunction, isfuture: (o) => !!(o && o.__adderClass__ && (o.__adderClass__ === 'Future' || o.__adderClass__ === 'Task')),
+    iscoroutine: (o) => _syIsCoro(o), iscoroutinefunction, isfuture: (o) => !!(o && o.__adderClass__ && (o.__adderClass__ === 'Future' || o.__adderClass__ === 'Task')),
     get_event_loop: () => loop, get_running_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null,
     get_event_loop_policy: () => ({ get_event_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null }), set_event_loop_policy: () => null,
     AbstractEventLoop: Loop, BaseEventLoop: Loop,
@@ -1282,7 +1320,7 @@ adderModules.zipimport = _syModule('zipimport', {
     Condition: _syClass('Condition', [], { __init__(self) { self._ev = Event(); return null; }, wait(self) { return self._ev.wait(); }, notify(self) { self._ev.set(); self._ev.clear(); return null; }, notify_all(self) { self._ev.set(); self._ev.clear(); return null; }, __aenter__(self) { return Promise.resolve(null); }, __aexit__(self) { return Promise.resolve(false); } }, 'asyncio'),
     CancelledError, InvalidStateError, TimeoutError: TimeoutErr, IncompleteReadError: makeExcType('IncompleteReadError', 'EOFError'),
     FIRST_COMPLETED: 'FIRST_COMPLETED', FIRST_EXCEPTION: 'FIRST_EXCEPTION', ALL_COMPLETED: 'ALL_COMPLETED',
-    coroutines: _syModule('asyncio.coroutines', { iscoroutine: (o) => _syIsThen(o) }),
+    coroutines: _syModule('asyncio.coroutines', { iscoroutine: (o) => _syIsCoro(o), iscoroutinefunction, _is_coroutine: isCoroMark }),
   });
 }
 

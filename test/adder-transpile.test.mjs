@@ -579,15 +579,32 @@ describe('adder transpile — sync-builtin shadowing (audit 2026-06-01)', () => 
     // The seed now skips names the user shadowed (in ctx.defines), so the
     // shadow stays async and the call awaits. NB the shadow must really await —
     // a no-await `async def` is correctly downgraded to a sync fn either way.
+    // (Since coroutines are lazy, `abs(5)` alone is a coroutine object, as in CPython: the
+    // program awaits it.)
     const r = await runTranspile(
       'async def helper():\n'
       + '    return 100\n'
       + 'async def abs(x):\n'
       + '    h = await helper()\n'
       + '    return x + h\n'
-      + 'r = abs(5)\n'
+      + 'r = await abs(5)\n'
       + 'print(r + 1)\n');
     assert.equal(r.output, '106');
+  });
+  it('calling an async def makes a coroutine object; gather runs coroutines together', async () => {
+    const r = await runTranspile(
+      'import asyncio\n'
+      + 'log = []\n'
+      + 'async def w(n, d):\n'
+      + '    log.append("start " + n)\n'
+      + '    await asyncio.sleep(d)\n'
+      + '    log.append("end " + n)\n'
+      + '    return n\n'
+      + 'c = w("x", 0)\n'
+      + 'print(type(c).__name__, log)\n'
+      + 'c.close()\n'
+      + 'print(await asyncio.gather(w("a", 0.04), w("b", 0.01)), log)\n');
+    assert.equal(r.output, "coroutine []\n['a', 'b'] ['start a', 'start b', 'end b', 'end a']");
   });
   it('an unshadowed known-sync builtin still skips the await (fast path intact)', async () => {
     const r = await runTranspile('print(len([1, 2, 3, 4]))');

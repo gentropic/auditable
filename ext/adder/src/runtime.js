@@ -354,11 +354,11 @@ function _callMethod(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) return cache.methods[i].call(obj, ...args);
+      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
     }
   }
   // Slow path: full adderGetAttr lookup + call.
-  const fn = asCallable(adderGetAttr(obj, name));
+  const fn = pyCallable(adderGetAttr(obj, name));
   const result = fn(...args);
 
   // Populate the cache for class-instance receivers. We cache the
@@ -395,7 +395,7 @@ function _callMethodSync(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) return syncOf(cache.methods[i]).call(obj, ...args);
+      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
@@ -410,7 +410,7 @@ function _callMethodSync(obj, name, siteId, ...args) {
 // a value called from sync mode: a function's twin, a class's synchronous construction, an
 // object's __call__ twin
 function _fnOfSync(x) {
-  if (typeof x === 'function') return syncOf(x);
+  if (typeof x === 'function') return x._pyCoro === true ? lazyCoro(x) : syncOf(x);
   if (x !== null && typeof x === 'object') {
     const c = x.__call__;
     if (typeof c === 'function' && c._pySync) { const s = syncOf(c); return (...a) => s.call(x, ...a); }
@@ -600,7 +600,7 @@ function _createClass(name, bases, members, annotations, kw, moduleName) {
 // ── Exception matching (for try/except) ──
 
 // _excParents comes from builtins.js
-import { _excParents, seqStoreIndex } from './builtins.js';
+import { _excParents, seqStoreIndex, PyCoroutine, pyCallable, lazyCoro, pyUnpack } from "./builtins.js";
 
 function _rtMatchException(error, excTypeVal) {
   return excMatches(error, excTypeVal);
@@ -623,6 +623,7 @@ function _call(fn, args, kwargs) {
     }
     throw new AdderError('TypeError', `'${pyTypeName(fn)}' object is not callable`);
   }
+  if (fn._pyCoro === true) fn = lazyCoro(fn);
   if (kwargs) {
     const kw = { _kw: true, ...kwargs };
     return fn(...(args || []), kw);
@@ -839,6 +840,7 @@ export const _py = {
   call: _call,
   // iteration
   iter: _iterArray,
+  unpack: pyUnpack,
   // truthiness
   truthy: pyBool,
   // string formatting
@@ -857,7 +859,7 @@ export const _py = {
   importFromPath: _importFromPath,
   // class
   createClass: _createClass,
-  fnOf: asCallable,
+  fnOf: pyCallable,
   fnOfSync: _fnOfSync, callMethodSync: _callMethodSync, syncOf,
   isNone: (v) => v === null || v === undefined,
   yieldFrom: _yieldFromOf,
@@ -888,6 +890,7 @@ export const _py = {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
     fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    if (shape.isAsync && !fn._isGenerator && !/GeneratorFunction$/.test((fn.constructor && fn.constructor.name) || '')) fn._pyCoro = true;   // (not an async generator)
     if (mod) Object.defineProperty(fn, '_pyGlobals', { value: _globalsOf(mod), configurable: true });
     const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
     fn.__defaults__ = pos.length ? mkTuple(pos) : null;
