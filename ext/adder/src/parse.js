@@ -321,7 +321,7 @@ export function adderTokenize(code) {
 // ── parser ──
 
 export function adderParse(code) {
-  return _manglePrivate(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule())), null);
+  return _manglePrivate(_classAnnotations(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule()))), null);
 }
 
 // A yield inside an expression — `f((yield x))`, `return (yield)`, `y = 1 + (yield)` — is
@@ -382,6 +382,47 @@ function _hoistBlock(stmts) {
     if (pre.length) { stmts.splice(i, 0, ...pre); i += pre.length; }
   }
 }
+// A class body's annotations are evaluated, as CPython 3.13 does: the body's namespace gets an
+// __annotations__ dict, and each `x: T [= v]` stores T's value there —
+//   class C:              class C:
+//     x: int = 1    →       __annotations__ = {}
+//                           x: int = 1
+//                           __annotations__['x'] = __adder_annotation__(lambda: int)
+// (dataclasses tells a ClassVar[int] field from an int one by the value). An annotation that
+// can't be evaluated — a forward reference, an AIR type hint like `f64` — keeps its source text
+// (the class factory puts it back), which is what __annotations__ held before. Under `from __future__ import annotations` they all
+// stay text (PEP 563).
+function _classAnnotations(mod) {
+  const future = (mod.body || []).some((s) => s.type === 'ImportFrom' && s.module === '__future__' && (s.names || []).some((n) => n.name === 'annotations'));
+  if (future) return mod;
+  const visit = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    for (const k of Object.keys(n)) if (k !== 'line' && k !== 'col' && n[k] && typeof n[k] === 'object') visit(n[k]);
+    if (n.type === 'ClassDef' && Array.isArray(n.body) && n.body.some((s) => s.type === 'AnnAssign' && s.target && s.target.type === 'Name')) {
+      const out = [];
+      const L = { line: n.line, col: n.col };
+      const ann = (l) => ({ type: 'Name', id: '__annotations__', ...l });
+      let i = 0;
+      // after the docstring, which must stay the body's first statement
+      if (n.body[0] && n.body[0].type === 'Expr' && n.body[0].value && n.body[0].value.type === 'Constant' && typeof n.body[0].value.value === 'string') out.push(n.body[i++]);
+      out.push({ type: 'Assign', targets: [ann(L)], value: { type: 'Dict', keys: [], values: [], ...L }, ...L });
+      for (; i < n.body.length; i++) {
+        const s = n.body[i];
+        out.push(s);
+        if (s.type !== 'AnnAssign' || !s.target || s.target.type !== 'Name') continue;
+        const l = { line: s.line, col: s.col };
+        const thunk = { type: 'Lambda', params: [], kwonly: [], vararg: null, kwarg: null, body: s.annotation, ...l };
+        const call = { type: 'Call', func: { type: 'Name', id: '__adder_annotation__', ...l }, args: [thunk], keywords: [], ...l };
+        out.push({ type: 'Assign', targets: [{ type: 'Subscript', value: ann(l), slice: { type: 'Constant', value: s.target.id, ...l }, ...l }], value: call, ...l });
+      }
+      n.body = out;
+    }
+  };
+  visit(mod);
+  return mod;
+}
+
 function _hoistYields(mod) {
   // every function body (generators are functions whose body has a yield)
   const visit = (n) => {

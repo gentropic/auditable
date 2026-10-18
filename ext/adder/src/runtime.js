@@ -4,10 +4,10 @@
 import {
   AdderError, adderModules, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyCollectMaybe, pyFormatValue,
-  adderGetAttr, pyEq, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
+  adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
@@ -512,13 +512,23 @@ function _getattr(obj, name) {
   return adderGetAttr(obj, name);
 }
 
+// obj.name = value from sync mode: a class's own __setattr__ through its twin; one that would have
+// to wait gives up (the call falls back to the async function)
+function _setattrSync(obj, name, value) {
+  if (obj !== null && typeof obj === 'object' && obj.__adderType__ !== undefined && typeof obj.__setattr__ === 'function' && !Object.hasOwn(obj, '__setattr__')) {
+    const r = syncOf(obj.__setattr__).call(obj, name, value);
+    if (r !== null && r !== undefined && typeof r.then === 'function') throw NEEDS_ASYNC;
+    return r;
+  }
+  return _setattr(obj, name, value);
+}
 function _setattr(obj, name, value) {
   // typeof check accepts both 'object' (instances) and 'function' (adder
   // classes — class-attribute assignment patterns like
   // `Strength.REQUIRED = Strength(0)` deltablue uses for module-level
   // singletons set after the class body has evaluated).
   if (obj !== null && (typeof obj === 'object' || typeof obj === 'function')) {
-    storeAttr(obj, name, value);
+    return storeAttr(obj, name, value);
   }
 }
 
@@ -777,11 +787,7 @@ const _lt = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a < b : 
 const _lte = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a <= b : pyLe(a, b));
 const _gt = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a > b : pyGt(a, b));
 const _gte = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a >= b : pyGe(a, b));
-function _neq(a, b) {
-  if (a !== null && typeof a === 'object' && typeof a.__ne__ === 'function') return a.__ne__(b);
-  const r = pyEq(a, b);
-  return r && typeof r.then === 'function' ? r.then((x) => !x) : !r;
-}
+const _neq = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a !== b : pyNe(a, b));
 
 // ── Export as single namespace ──
 
@@ -859,6 +865,9 @@ export const _py = {
     return f;
   },
   // a twin's await point: the value, or — when it is a Promise — give up (syncOf falls back)
+  setattrSync: _setattrSync,
+  // **kwargs: the keyword bag's entries no named parameter took
+  kwRest: (kw, used) => { const out = {}; if (kw) for (const k in kw) if (!used.includes(k)) out[k] = kw[k]; return out; },
   needSync: (v) => { if (v !== null && v !== undefined && typeof v.then === "function") throw NEEDS_ASYNC; return v; },
   aw: awaitTarget,
   // a def's metadata (both engines record the same: the tree-walker in eval.js _attachSignature)

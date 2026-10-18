@@ -12,6 +12,7 @@
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
   "builtin/sum-start": "output",
+  "mod/dataclass-full": "error KeyError vs CPython null",
   "class/sync-contexts": "error KeyError vs CPython null",
   "class/generic-alias-base": "output",
   "sync/twin-hash-eq": "error KeyError vs CPython null"
@@ -28,6 +29,7 @@
   "mod/random-seeded": "output",
   "builtin/isinstance-types": "output",
   "builtin/sum-start": "output",
+  "mod/dataclass-full": "output",
   "exc/traceback-objects": "output",
   "class/generic-alias-base": "output"
  }

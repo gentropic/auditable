@@ -11,7 +11,7 @@ import {
   pyIter, pyCollect, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv,
   pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem,
   pySorted, adderGetAttr, adderModules, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
-  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty,
+  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj,
 } from './builtins.js';
 
 // ── shared helpers ──
@@ -74,8 +74,8 @@ class _SlTypingForm {
   constructor(name, origin) { this._name = name; this.__origin__ = origin || null; }
   __getitem__(k) {
     const args = k instanceof PyTuple ? [...k] : [k];
-    if (this._name === 'typing.Optional') return new GenericAlias(this.__origin__, args, this._name);
-    return new GenericAlias(this.__origin__, args, this._name);
+    // ClassVar[int].__origin__ is ClassVar (a form with no class behind it is its own origin)
+    return new GenericAlias(this.__origin__ || this, args, this._name);
   }
   __repr__() { return this._name; }
   __or__(o) { return makeUnion(this, o); }
@@ -140,6 +140,8 @@ const _slTypedDictBase = _slHookBase('TypedDict', (cls) => {
   cls._pyMRO = [cls, _typeObjects.dict].filter(Boolean);
 }, (name) => { throw new AdderError('TypeError', `TypedDict('${name}', …) is not supported; use the class form`); });
 adderModules.typing = {
+  // the type of a subscripted typing form (typing.List[int], ClassVar[int]): dataclasses tests with it
+  get _GenericAlias() { return pyTypeObj(new GenericAlias(null, [])); },
   Any: _slForm('Any'), Optional: _slForm('Optional'), Union: _slForm('Union'), Callable: _slForm('Callable'),
   List: _slForm('List'), Dict: _slForm('Dict'), Tuple: _slForm('Tuple'), Set: _slForm('Set'), FrozenSet: _slForm('FrozenSet'),
   Type: _slForm('Type'), Iterable: _slForm('Iterable'), Iterator: _slForm('Iterator'), Generator: _slForm('Generator'),
@@ -1067,6 +1069,11 @@ function _slSeqMap(arr, fn) {
 }
 // the elements of a user collection: its __iter__, else the __getitem__ / __len__ protocol
 function _slElems(obj) {
+  // the builtins answer at once (a dict's keys, a list's items): `in` / `==` don't wait
+  if (obj instanceof Map && typeof obj.__iter__ !== 'function') return [...obj.keys()];
+  if (isPlainDict(obj)) return Object.keys(obj);
+  if ((Array.isArray(obj) || typeof obj === 'string') && typeof obj.__iter__ !== 'function') return [...obj];
+  if (obj instanceof Set && typeof obj.__iter__ !== 'function') return [...obj];
   if (typeof obj.__iter__ === 'function') {
     return _slThen(obj.__iter__(), (it) => (it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function' ? [...pyIter(it)] : pyCollect(it)));
   }
@@ -1151,7 +1158,48 @@ const _slMutableMapping = _slAbc('MutableMapping', [_slMapping], _slIsMapLike, {
 const _slSetAbc = _slAbc('Set', [_slCollection], (x) => x instanceof Set);
 const _slMutableSet = _slAbc('MutableSet', [_slSetAbc], (x) => x instanceof Set && !x._frozen);
 const _slAwaitable = _slAbc('Awaitable', [], (x) => x !== null && x !== undefined && typeof x.then === 'function');
-const _slView = (name) => _slAbc(name, [_slSized, _slIterable], () => false);
+// MappingView and its three: concrete, as CPython's — View(mapping) wraps the mapping (a subclass
+// in Python inherits __init__), and len / iter / in / repr read through it; KeysView and ItemsView
+// are Sets (==, <=, &, |, -, ^ by contents)
+const _slViewItems = {
+  MappingView: (m) => _slElems(m),
+  KeysView: (m) => _slElems(m),
+  ValuesView: (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slGetItem(m, k))),
+  ItemsView: (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slThen(_slGetItem(m, k), (v) => mkTuple([k, v])))),
+};
+const _slGetItem = (m, k) => (m instanceof Map ? m.get(k) : isPlainDict(m) ? m[k] : m.__getitem__(k));
+function _slView(name, bases = [_slSized, _slIterable]) {
+  const items = (self) => _slViewItems[name](self._mapping);
+  const cls = _slAbc(name, bases, (x) => !!x && x.__adderClass__ === name, {
+    __init__(mapping) { this._mapping = mapping; return null; },
+    __len__() { const m = this._mapping; return m instanceof Map ? m.size : isPlainDict(m) ? Object.keys(m).length : m.__len__(); },
+    __iter__() { return _slThen(items(this), (xs) => xs[Symbol.iterator]()); },
+    __contains__(x) {
+      if (name === 'KeysView') { const m = this._mapping; return m instanceof Map ? m.has(x) : isPlainDict(m) ? typeof x === 'string' && Object.hasOwn(m, x) : m.__contains__(x); }
+      return _slThen(items(this), (xs) => xs.some((v) => pyEq(v, x) === true));
+    },
+    __repr__() { return _slThen(pyReprMaybe(this._mapping), (r) => `${this.__adderClass__}(${r})`); },
+    ...(name === 'KeysView' || name === 'ItemsView' ? {
+      __eq__(o) { return _slThen(items(this), (xs) => _slThen(o && o.__adderClass__ && typeof o.__iter__ === 'function' ? _slThen(o.__iter__(), (it) => [...it]) : [...pyIter(o)], (ys) => pyEq(new PySet(xs), new PySet(ys)))); },
+    } : {}),
+  });
+  // View(mapping) constructs, as a class call does (a Python subclass goes through typeCall)
+  const made = function (mapping) {
+    const v = Object.create(cls.prototype);
+    v.__adderClass__ = name; v.__adderType__ = made;
+    v._mapping = mapping;
+    return v;
+  };
+  Object.assign(made, cls);
+  for (const k of Object.getOwnPropertyNames(cls)) if (!['length', 'name', 'prototype', 'arguments', 'caller'].includes(k)) made[k] = cls[k];
+  made.prototype = cls.prototype;
+  made._pyMRO = [made, ...cls._pyMRO.slice(1)];
+  const i = _slAllAbcs.indexOf(cls); if (i >= 0) _slAllAbcs[i] = made;
+  made.__instancecheck__ = (x) => !!x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(made);
+  made.__subclasscheck__ = (sub) => !!sub && !!sub._pyMRO && sub._pyMRO.includes(made);
+  return made;
+}
+const _slMappingView = _slView('MappingView', [_slSized]);
 const _slAbcModule = {
   Iterable: _slIterable, Iterator: _slIterator, Reversible: _slReversible, Generator: _slGenerator, Sized: _slSized,
   Container: _slContainer, Collection: _slCollection, Hashable: _slHashable, Callable: _slCallable,
@@ -1160,7 +1208,7 @@ const _slAbcModule = {
   AsyncIterable: _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function'),
   AsyncIterator: _slAbc('AsyncIterator', [], (x) => x !== null && x !== undefined && typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function'),
   ByteString: _slAbc('ByteString', [_slSequence], (x) => x instanceof Uint8Array), Buffer: _slAbc('Buffer', [], (x) => ArrayBuffer.isView(x)),
-  MappingView: _slView('MappingView'), KeysView: _slView('KeysView'), ItemsView: _slView('ItemsView'), ValuesView: _slView('ValuesView'),
+  MappingView: _slMappingView, KeysView: _slView('KeysView', [_slMappingView, _slSetAbc]), ItemsView: _slView('ItemsView', [_slMappingView, _slSetAbc]), ValuesView: _slView('ValuesView', [_slMappingView, _slCollection]),
 };
 adderModules['collections.abc'] = _slAbcModule;
 adderModules.collections.abc = _slAbcModule;

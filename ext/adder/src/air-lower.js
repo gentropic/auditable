@@ -235,7 +235,9 @@ class AdderLowerCtx extends BaseLowerCtx {
 const _JS_RESERVED = new Set(['break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
   'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'new', 'null',
   'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'let', 'static',
-  'implements', 'interface', 'package', 'private', 'protected', 'public', 'await', 'arguments', 'eval']);
+  'implements', 'interface', 'package', 'private', 'protected', 'public', 'await', 'arguments', 'eval',
+  // not keywords, but emitted code relies on them meaning what JS means (jinja2's templates have a local `undefined`)
+  'undefined']);
 export function jsSafeName(n) { return typeof n === 'string' && _JS_RESERVED.has(n) ? `${n}$` : n; }
 export function pyNameOf(n) { return typeof n === 'string' && n.endsWith('$') && _JS_RESERVED.has(n.slice(0, -1)) ? n.slice(0, -1) : n; }
 
@@ -535,7 +537,7 @@ function analyseSyncFunctions(moduleStmts) {
 
 // in sync mode (a sync-context dunder / property, or a sync twin) a call goes to the callee's
 // sync twin when it has one: method calls, and calls of a value that may be any callable
-const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync' };
+const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync', setattr: 'setattrSync' };
 function emitPyCall(ctx, method, args, loc, type) {
   if (ctx._syncMode && Object.hasOwn(_SYNC_CALLS, method)) method = _SYNC_CALLS[method];
   return ctx.emitNamespacedCall('_py', method, args, loc, type);
@@ -2295,7 +2297,8 @@ function _buildParamBinding(ctx, node, l) {
   // **kwargs — collect remaining
   if (kwarg) {
     const excludeList = [...usedNames, '_kw'].map(n => `'${n}'`).join(',');
-    emitRaw(ctx, `let ${jsSafeName(kwarg)} = {}; if (__kw) { const __used = new Set([${excludeList}]); for (const __k in __kw) if (!__used.has(__k)) ${jsSafeName(kwarg)}[__k] = __kw[__k]; }`, kwarg);
+    // (through _py: emitted code mustn't name a JS global a Python module may rebind — `Set` from collections.abc)
+    emitRaw(ctx, `let ${jsSafeName(kwarg)} = _py.kwRest(__kw, [${excludeList}]);`, kwarg);
     ctx.symbols.set(kwarg, null);
   }
   });
@@ -2465,12 +2468,15 @@ function lowerFuncDef(ctx, node) {
   // A SYNC TWIN: a function AIR can't prove synchronous is compiled async — it awaits whatever
   // it calls. Code Python calls implicitly (a property, __len__, __eq__, a hash) can't wait, so
   // such a function is also compiled in sync mode as `fn._pySync`, and sync-mode code calls the
-  // twins (see emitPyCall's _SYNC_CALLS, _py.syncOf / fnOfSync / callMethodSync). Only module
-  // functions and methods get one (not functions nested in a function: each nesting level would
-  // double the code); `async def` never does. A generator's twin is a synchronous generator: an
-  // async one (its body awaits) can't be read by a loop that can't wait.
+  // twins (see emitPyCall's _SYNC_CALLS, _py.syncOf / fnOfSync / callMethodSync). Module
+  // functions and methods get one, and so does a def directly inside one — a factory's product:
+  // dataclasses' __create_fn__ returns the __init__ / __setattr__ it builds, a decorator returns
+  // its wrapper — but not deeper nestings: each level would double the code again (a depth-1 def
+  // is lowered three times: twinned in its parent's async pass, sync in the parent's twin).
+  // `async def` never does. A generator's twin is a synchronous generator: an async one (its body
+  // awaits) can't be read by a loop that can't wait.
   const twinned = !syncMode && node.type !== 'AsyncFunctionDef' && !node.isAsync &&
-    !ctx.syncFunctions.has(name) && !ctx._fnDepth && !ctx.noTwins;
+    !ctx.syncFunctions.has(name) && (!ctx._fnDepth || (ctx._fnDepth === 1 && !ctx._syncMode)) && !ctx.noTwins;
 
   // Lower the body in a nested scope — once as the function; once more, in sync mode, as its twin.
   const lowerBody = (mode, twinPass = false) => {

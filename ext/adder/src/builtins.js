@@ -369,6 +369,9 @@ function _classDict(cls) {
     if (typeof cls[k] === 'function' && !(cls._pyOwnMembers && cls._pyOwnMembers.has(k)) && !cls[k]._pyClass) continue;   // inherited copies
     d.set(k, cls[k]);
   }
+  // the class's own __new__ (implicitly static): a staticmethod in its __dict__, as CPython keeps
+  // it — so type(name, bases, dict(cls.__dict__)) (dataclasses' slots=True) rebuilds it with it
+  if (Object.hasOwn(cls, '_pyNewFn') && typeof cls._pyNewFn === 'function') d.set('__new__', { __staticmethod__: true, fn: cls._pyNewFn, __adderClass__: 'staticmethod', __func__: cls._pyNewFn });
   d.set('__doc__', cls.__doc__ ?? null);
   const ro = () => { throw new AdderError('TypeError', "'mappingproxy' object does not support item assignment"); };
   d.set = ro; d.delete = ro; d.clear = ro;
@@ -679,11 +682,33 @@ export function pyStr(v) {
 // print, str(), repr() and the tree-walker's f-strings use these; compiled (AIR) methods
 // are sync, so they get plain strings and print stays synchronous.
 const _isThenable = (x) => x != null && typeof x.then === 'function';
-function _joinMaybe(parts, open, sep, close) {
-  return parts.some(_isThenable)
-    ? Promise.all(parts).then((ps) => open + ps.join(sep) + close)
-    : open + parts.join(sep) + close;
+// f over items, one after another, as CPython evaluates them: synchronously while each answer is a
+// value; from the first Promise on (a tree-walked __repr__), each waits for the one before — so
+// two reprs of one object never overlap (reprlib.recursive_repr would take the second for a cycle)
+function _seqMap(items, f) {
+  const out = new Array(items.length);
+  for (let i = 0; i < items.length; i++) {
+    const r = f(items[i]);
+    if (_isThenable(r)) {
+      return (async () => {
+        out[i] = await r;
+        for (let j = i + 1; j < items.length; j++) out[j] = await f(items[j]);
+        return out;
+      })();
+    }
+    out[i] = r;
+  }
+  return out;
 }
+const _joinSeq = (items, f, open, sep, close) => {
+  const ps = _seqMap(items, f);
+  return _isThenable(ps) ? ps.then((xs) => open + xs.join(sep) + close) : open + ps.join(sep) + close;
+};
+const _pairRepr = (k, val, kr) => {
+  const a = kr ? kr(k) : pyReprMaybe(k);
+  const fin = (x) => { const b = pyReprMaybe(val); return _isThenable(b) ? b.then((y) => `${x}: ${y}`) : `${x}: ${b}`; };
+  return _isThenable(a) ? a.then(fin) : fin(a);
+};
 function _hasUserDunder(v, name) {
   return v !== null && typeof v === 'object' && typeof v[name] === 'function'
     && !(v instanceof Complex) && !ArrayBuffer.isView(v);
@@ -691,28 +716,20 @@ function _hasUserDunder(v, name) {
 export function pyReprMaybe(v) {
   { const ir = _iterObjRepr(v); if (ir) return ir; }
   if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
-  if (v instanceof PyTuple) return _joinMaybe(v.map(pyReprMaybe), '(', ', ', v.length === 1 ? ',)' : ')');
+  if (v instanceof PyTuple) return _joinSeq(v, pyReprMaybe, '(', ', ', v.length === 1 ? ',)' : ')');
   if (v instanceof PyByteArray) return pyRepr(v);
-  if (Array.isArray(v)) return _joinMaybe(v.map(pyReprMaybe), '[', ', ', ']');
+  if (Array.isArray(v)) return _joinSeq(v, pyReprMaybe, '[', ', ', ']');
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
     if (v.size === 0) return '{}';
-    const parts = [...v.entries()].map(([k, val]) => {
-      const a = pyReprMaybe(k), b = pyReprMaybe(val);
-      return _isThenable(a) || _isThenable(b) ? Promise.all([a, b]).then(([x, y]) => `${x}: ${y}`) : `${a}: ${b}`;
-    });
-    return _joinMaybe(parts, '{', ', ', '}');
+    return _joinSeq([...v.entries()], ([k, val]) => _pairRepr(k, val), '{', ', ', '}');
   }
   if (_hasUserDunder(v, '__repr__')) {
     const r = v.__repr__();
     return _isThenable(r) ? r.then(String) : String(r);
   }
   if (isPlainDict(v)) {
-    const parts = Object.keys(v).map((k) => {
-      const b = pyReprMaybe(v[k]);
-      return _isThenable(b) ? b.then((y) => `${pyRepr(k)}: ${y}`) : `${pyRepr(k)}: ${b}`;
-    });
-    return _joinMaybe(parts, '{', ', ', '}');
+    return _joinSeq(Object.keys(v), (k) => _pairRepr(k, v[k], pyRepr), '{', ', ', '}');
   }
   return pyRepr(v);
 }
@@ -1216,6 +1233,15 @@ function _jsGenAttr(g, attr) {
     default: return undefined;
   }
 }
+// a function's / class's `name` or `length` that Python code set (a class attribute anywhere in
+// its MRO, an assignment to a function) — the JS-native ones are read-only
+function _pySetNative(obj, attr) {
+  for (const c of (obj._pyClass && obj._pyMRO) || [obj]) {
+    const d = Object.getOwnPropertyDescriptor(c, attr);
+    if (d && (d.writable || d.get)) return true;
+  }
+  return false;
+}
 export function adderGetAttr(obj, attr) {
   if (obj !== null && typeof obj === 'object' && obj.__adderClass__ === undefined && _jsGenTag(obj)) {
     const m = _jsGenAttr(obj, attr);
@@ -1245,9 +1271,16 @@ export function adderGetAttr(obj, attr) {
   }
   // functions, classes and builtin type objects (all JS functions here)
   if (typeof obj === 'function') {
+    // JS's own Function.name / .length are not Python attributes (dataclasses' getattr(cls, 'name',
+    // MISSING) read the class factory's JS name as a field default) — unless Python code set them
+    if ((attr === 'name' || attr === 'length') && (obj._pyClass || obj._pyDef || obj._pyFunc) && !_pySetNative(obj, attr)) {
+      throw new AdderError('AttributeError', obj._pyClass ? `type object '${obj._pyName}' has no attribute '${attr}'` : `'function' object has no attribute '${attr}'`);
+    }
     if (attr === '__dict__') return obj._pyClass ? _classDict(obj) : new AttrDict(obj, _FN_SLOTS);
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
-    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => typeof k === 'string') ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
+    // the unhashable builtin types: __hash__ is None (dataclasses refuses a mutable default by it)
+    if (attr === '__hash__' && (tn === 'list' || tn === 'dict' || tn === 'set' || tn === 'bytearray')) return null;
+    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => plainObjectKey(k)) ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
     // float.__getformat__('double' | 'float'): how the machine stores it (JS doubles are IEEE, and
     // every JS engine runs little-endian typed arrays here)
@@ -1673,7 +1706,10 @@ function _strMaketrans(x, y, z) {
 // d.a from JS cells)? Not for keys a JS object treats specially: `__proto__` (assigning it sets
 // the prototype) and array-index-like ones ("0", "10"), which a JS object orders before every
 // other key — Python keeps insertion order. A literal with such a key is a PyDict.
-export const plainObjectKey = (k) => typeof k === 'string' && k !== '__proto__' && !/^(0|[1-9]\d*)$/.test(k);
+// a key a plain-object dict can hold: not '__proto__', not an integer-like string (JS would reorder
+// it), and not a dunder name — a plain dict's own key must never stand in for its methods (dict(cls.__dict__)
+// of a class defining __setitem__ would answer d[k] = v with the class's __setitem__): those dicts are PyDicts
+export const plainObjectKey = (k) => typeof k === 'string' && k !== '__proto__' && !/^(0|[1-9]\d*)$/.test(k) && !(k.startsWith('__') && k.endsWith('__') && k.length > 4);
 
 export function dictLiteral(keys, values, spreads) {
   const entries = [];
@@ -2948,10 +2984,40 @@ export function pyEq(a, b) {
   return false;
 }
 
+// a != b, as CPython's rich comparison: a.__ne__(b) — a class without one inherits object's, which
+// is `not a.__eq__(b)` (NotImplemented passes through) — then the reflected b.__ne__(a), then the
+// built-in inequality. An operand whose type is a proper subclass of the other's, overriding it,
+// goes first. A tree-walked dunder answers with a Promise.
+function _neOf(v) {
+  if (v === null || typeof v !== 'object') return null;
+  if (typeof v.__ne__ === 'function') return (o) => v.__ne__(o);
+  if (typeof v.__eq__ === 'function') return (o) => { const r = v.__eq__(o); return _isThenable(r) ? r.then(_notNI) : _notNI(r); };
+  return null;
+}
+const _notNI = (r) => (r === NotImplemented ? r : !pyBool(r));
+const _isProperSubInstance = (b, a) => b !== null && typeof b === 'object' && a !== null && typeof a === 'object' && b.__adderType__ && a.__adderType__ &&
+  b.__adderType__ !== a.__adderType__ && b.__adderType__._pyMRO && b.__adderType__._pyMRO.includes(a.__adderType__);
+export function pyNe(a, b) {
+  const na = _neOf(a), nb = _neOf(b);
+  if (!na && !nb) { const r = pyEq(a, b); return _isThenable(r) ? r.then((x) => !x) : !r; }
+  const first = nb && _isProperSubInstance(b, a) ? [nb, a, na, b] : [na, b, nb, a];
+  const fallback = () => a !== b;
+  const second = () => {
+    if (!first[2]) return fallback();
+    const r = first[2](first[3]);
+    const fin = (v) => (v === NotImplemented ? fallback() : v);
+    return _isThenable(r) ? r.then(fin) : fin(r);
+  };
+  if (!first[0]) return second();
+  const r = first[0](first[1]);
+  if (_isThenable(r)) return r.then((v) => (v === NotImplemented ? second() : v));
+  return r === NotImplemented ? second() : r;
+}
 function _orderError(op, a, b) {
   return new AdderError('TypeError', `'${op}' not supported between instances of '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
 }
-// the built-in ordering (no dunders): strict less-than
+// the built-in ordering (no dunders): strict less-than. `op`, `ea`, `eb` are what an error names
+// (`a > b` asks _ltPlain(b, a), and its error still says '>' between a and b).
 // sequences compare item by item: the first unequal pair decides (its == and < may be
 // tree-walked dunders, i.e. Promises: then so is the answer)
 const _seqLt = maybeSync(function* (a, b) {
@@ -2963,7 +3029,7 @@ const _seqLt = maybeSync(function* (a, b) {
   return a.length < b.length;
 });
 const _orEq = (r, a, b) => (r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then((v) => v || pyEq(a, b)) : r || pyEq(a, b));
-function _ltPlain(op, a, b) {
+function _ltPlain(op, a, b, ea = a, eb = b) {
   if (_numLike(a) && _numLike(b)) return a < b;
   if (typeof a === 'string' && typeof b === 'string') return a < b;
   if (a instanceof Uint8Array && b instanceof Uint8Array) return _ltPlain(op, [...a], [...b]);
@@ -2973,40 +3039,68 @@ function _ltPlain(op, a, b) {
     for (const v of a) if (!b.has(v)) return false;
     return true;
   }
-  // two JS objects of the same class (Date, …) keep JS's ordering
+  // two JS objects of one JS class that order as a primitive (Date, …) keep JS's ordering — not
+  // Python instances, dicts or complex numbers, which have no order of their own
   if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object' &&
-      Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && !isPlainDict(a) && !Array.isArray(a)) return a < b;
-  throw _orderError(op, a, b);
+      Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && !isPlainDict(a) && !Array.isArray(a) &&
+      !(a instanceof Map) && !(a instanceof Complex) && a.__adderType__ === undefined && a.__adderClass__ === undefined) {
+    const pa = a.valueOf(), pb = b.valueOf();
+    if ((typeof pa === 'number' || typeof pa === 'string') && typeof pb === typeof pa) return pa < pb;
+  }
+  throw _orderError(op, ea, eb);
+}
+// a value's ordering dunder: an object's own method; for a class, its metaclass's (a class's
+// `__lt__` attribute is the method its instances compare with)
+function _ordOf(v, name) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'object') { const f = v[name]; return typeof f === 'function' ? (o) => f.call(v, o) : null; }
+  if (typeof v === 'function' && v._pyClass) {
+    if (!v.__adderMeta__) return null;
+    const m = metaAttr(v, name);
+    return typeof m === 'function' ? m : null;
+  }
+  return null;
+}
+// a < b and the rest, as CPython's rich comparison: a's dunder, then b's reflected one when a's
+// says NotImplemented (or a has none), then the built-in ordering when neither is defined at all;
+// both NotImplemented is a TypeError. A tree-walked dunder answers with a Promise.
+function _richOrder(op, a, b, d, rd, plain) {
+  const fa = _ordOf(a, d), fb = _ordOf(b, rd);
+  if (!fa && !fb) return plain();
+  const last = (r) => { if (r === NotImplemented) throw _orderError(op, a, b); return r; };
+  const refl = () => { if (!fb) throw _orderError(op, a, b); const r = fb(a); return _isThenable(r) ? r.then(last) : last(r); };
+  if (!fa) return refl();
+  const r = fa(b);
+  if (_isThenable(r)) return r.then((v) => (v === NotImplemented ? refl() : v));
+  return r === NotImplemented ? refl() : r;
 }
 export function pyLt(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a < b;
-  if (_hasDunder(a, '__lt__')) return a.__lt__(b);
-  if (_hasDunder(b, '__gt__')) return b.__gt__(a);
-  return _ltPlain('<', a, b);
+  if (typeof a === 'string' && typeof b === 'string') return a < b;
+  return _richOrder('<', a, b, '__lt__', '__gt__', () => _ltPlain('<', a, b));
 }
 export function pyGt(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a > b;
-  if (_hasDunder(a, '__gt__')) return a.__gt__(b);
-  if (_hasDunder(b, '__lt__')) return b.__lt__(a);
-  return _ltPlain('>', b, a);
+  if (typeof a === 'string' && typeof b === 'string') return a > b;
+  return _richOrder('>', a, b, '__gt__', '__lt__', () => _ltPlain('>', b, a, a, b));
 }
 export function pyLe(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a <= b;
-  if (_hasDunder(a, '__le__')) return a.__le__(b);
-  if (_hasDunder(b, '__ge__')) return b.__ge__(a);
-  if (_numLike(a) && _numLike(b)) return a <= b;
   if (typeof a === 'string' && typeof b === 'string') return a <= b;
-  if (a instanceof Set && b instanceof Set) { for (const v of a) if (!b.has(v)) return false; return true; }
-  return _orEq(_ltPlain('<=', a, b), a, b);
+  return _richOrder('<=', a, b, '__le__', '__ge__', () => {
+    if (_numLike(a) && _numLike(b)) return a <= b;
+    if (a instanceof Set && b instanceof Set) { for (const v of a) if (!b.has(v)) return false; return true; }
+    return _orEq(_ltPlain('<=', a, b), a, b);
+  });
 }
 export function pyGe(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a >= b;
-  if (_hasDunder(a, '__ge__')) return a.__ge__(b);
-  if (_hasDunder(b, '__le__')) return b.__le__(a);
-  if (_numLike(a) && _numLike(b)) return a >= b;
   if (typeof a === 'string' && typeof b === 'string') return a >= b;
-  if (a instanceof Set && b instanceof Set) return pyLe(b, a);
-  return _orEq(_ltPlain('>=', b, a), a, b);
+  return _richOrder('>=', a, b, '__ge__', '__le__', () => {
+    if (_numLike(a) && _numLike(b)) return a >= b;
+    if (a instanceof Set && b instanceof Set) return pyLe(b, a);
+    return _orEq(_ltPlain('>=', b, a, a, b), a, b);
+  });
 }
 
 // Python's sort: stable, only `<`, reverse=True keeps equal items in their original order.
@@ -4312,7 +4406,13 @@ function _setFunctionInternal(fn, name, value) {
 // properties, so a Python attribute of that name (networkx's `_dispatchable.name` copied over by
 // `func.__dict__.update(...)`) is defined over them — keeping __name__ what it was.
 export function storeAttr(obj, name, value) {
-  guardSetAttr(obj, name);
+  // obj.name = value is type(obj).__setattr__(obj, name, value): a class's own __setattr__ (a
+  // frozen dataclass's, a proxy's) decides; object's is the plain store below. Through its sync
+  // twin when it has one (compiled code doesn't wait on a store); a tree-walked one answers with a
+  // Promise, which the tree-walker awaits.
+  if (obj !== null && typeof obj === 'object' && obj.__adderType__ !== undefined && typeof obj.__setattr__ === 'function' && !Object.hasOwn(obj, '__setattr__')) {
+    return syncOf(obj.__setattr__).call(obj, name, value);
+  }
   if (typeof obj === 'function' && obj._pyDef && obj._pySig && (name === '__code__' || name === '__defaults__' || name === '__kwdefaults__')) {
     _setFunctionInternal(obj, name, value);
     return;
@@ -4330,8 +4430,18 @@ export function storeAttr(obj, name, value) {
     Object.defineProperty(obj, name, { value, writable: true, configurable: true, enumerable: true });
     return;
   }
+  if (typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && _isClassMember(value)) {
+    _installMember(obj, obj._pyName, name, value, { pyBody: true });
+    obj._pyOwnMembers.add(name);
+    return;
+  }
+  // cls.__hash__ = None (an eq dataclass), cls.__iter__ = None: instances see the None too
+  if (value === null && typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && name.startsWith('__') && name.endsWith('__')) {
+    obj.prototype[name] = null;
+  }
   obj[name] = value;
 }
+const _isClassMember = (v) => _isMethodFn(v, { pyBody: true }) || (v !== null && typeof v === 'object' && (v.__property__ || v.__staticmethod__ || v.__classmethod__ || _isDescriptor(v)));
 // obj[key] = v on a list / bytearray: the position written, or CPython's errors (an index past
 // the end is an IndexError, not a list grown with holes)
 export function seqStoreIndex(obj, key) {
@@ -4377,8 +4487,7 @@ export function pyDelAttr(obj, name) {
   if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
   }
-  if (typeof obj === 'object' && typeof obj.__delattr__ === 'function') return obj.__delattr__(name);
-  guardSetAttr(obj, name);
+  if (typeof obj === 'object' && typeof obj.__delattr__ === 'function') return syncOf(obj.__delattr__).call(obj, name);
   if (!Object.hasOwn(obj, name)) {
     for (let p = Object.getPrototypeOf(obj); p; p = Object.getPrototypeOf(p)) {
       const d = Object.getOwnPropertyDescriptor(p, name);
@@ -4399,11 +4508,6 @@ export function pyDelAttr(obj, name) {
   }
   delete obj[name];
   return null;
-}
-export function guardSetAttr(obj, name) {
-  if (obj !== null && typeof obj === 'object' && obj.__dataclass_frozen__ === true) {
-    throw new AdderError('FrozenInstanceError', `cannot assign to field '${name}'`);
-  }
 }
 // JS errors surfacing through compiled code or a JS library
 const _JS_EXC = { TypeError: 'TypeError', RangeError: 'ValueError', ReferenceError: 'NameError', SyntaxError: 'SyntaxError', URIError: 'ValueError' };
@@ -4894,7 +4998,7 @@ const _dictFrom = maybeSync(function* (args) {
   }
   if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') entries.push([k, kw[k]]);
   // string keys only → a plain object (JS cells read d.a), as a literal; empty → PyDict
-  if (entries.length && entries.every(([k]) => typeof k === 'string')) {
+  if (entries.length && entries.every(([k]) => plainObjectKey(k))) {
     const o = {};
     for (const [k, v] of entries) o[k] = v;
     return o;
@@ -5292,6 +5396,97 @@ const _ListBaseProto = Object.create(Array.prototype, {
 const _DictBaseProto = Object.create(PyDict.prototype, {
   __init__: { value: function (...a) { return _dictUpdate((k, v) => this.set(k, v), a); }, writable: true, configurable: true },
 });
+// one member of a class body onto the class: __new__, a descriptor, a property, a static / class
+// method, or a method (bound to the instance). The class factory runs it for each member, and an
+// assignment to a class attribute afterwards (C.__init__ = f, setattr(cls, '__eq__', f) — what
+// dataclasses and functools.total_ordering do) runs it too, so instances see the new method.
+function _installMember(cls, name, mName, value, opts) {
+  // __class_getitem__ (like __init_subclass__) is implicitly a classmethod
+  if (mName === '__class_getitem__' && _isMethodFn(value, opts)) value = { __classmethod__: true, fn: value };
+  if (mName === '__new__' && typeof (value && value.__staticmethod__ ? value.fn : value) === 'function') {
+    // __new__ is implicitly static: called as __new__(cls, *args)
+    const fn = value.__staticmethod__ ? value.fn : value;
+    cls._pyNewFn = fn;
+    cls.__new__ = fn;
+  } else if (_isDescriptor(value)) {
+    // the descriptor protocol: reads go through __get__(instance, owner) (owner-level reads
+    // through __get__(None, owner)); with __set__ / __delete__ it's a data descriptor and writes
+    // go through it, else an instance attribute of the same name shadows it, as in Python
+    const d = value;
+    const data = typeof d.__set__ === 'function' || typeof d.__delete__ === 'function';
+    const shadow = function (v) { Object.defineProperty(this, mName, { value: v, writable: true, enumerable: true, configurable: true }); };
+    const dataSet = function (v) { if (typeof d.__set__ !== 'function') throw new AdderError('AttributeError', `can't set attribute '${mName}'`); return d.__set__(this, v); };
+    // the tree-walker's assignment calls this itself, so an async __set__ is awaited (a JS setter's
+    // return value is dropped) — the same hook @property setters use
+    dataSet._pyFset = (o, v) => dataSet.call(o, v);
+    dataSet._pyDescriptor = d;   // del instance.name finds __delete__ here (pyDelAttr)
+    const descGet = function () { return typeof d.__get__ === 'function' ? d.__get__(this, typeOf(this)) : d; };
+    descGet._pyRaw = d;
+    Object.defineProperty(cls.prototype, mName, {
+      get: descGet,
+      set: data ? dataSet : shadow,
+      configurable: true, enumerable: false,
+    });
+    Object.defineProperty(cls, mName, { get() { return typeof d.__get__ === 'function' ? d.__get__(null, this) : d; }, set: shadow, configurable: true, enumerable: true });
+    // a store to this name goes through __set__ even when the instance has the attribute in
+    // its __dict__ (storeAttr checks this flag before a plain assignment)
+    if (data) Object.defineProperty(cls.prototype, '_pyHasDataDesc', { value: true, configurable: true, writable: true });
+    (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
+  } else if (value && value.__property__) {
+    const fget = value.fget;
+    const fset = value.fset;
+    const missing = (what) => new AdderError('AttributeError', `property '${mName}' of '${name}' object has no ${what}`);
+    const getFn = function () { if (!fget) throw missing('getter'); return fget(this); };
+    getFn._pyProperty = value;   // del instance.name finds fdel here (pyDelAttr)
+    const desc = { get: getFn, configurable: true, enumerable: true };
+    const setFn = function (v) { if (!value.fset) throw missing('setter'); return value.fset(this, v); };
+    setFn._pyFset = (o, v) => setFn.call(o, v);
+    // (a JS-built property record without a setter keeps the old shape: no setter at all)
+    if (fset || value.__adderType__) desc.set = setFn;
+    Object.defineProperty(cls.prototype, mName, desc);
+    // on the class itself: the property object (C.x, C.__dict__['x']); assigning replaces it
+    Object.defineProperty(cls, mName, {
+      get() { return value; },
+      set(v) { Object.defineProperty(cls, mName, { value: v, writable: true, enumerable: true, configurable: true }); },
+      configurable: true, enumerable: true,
+    });
+    (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
+    if (value.__adderType__ && typeof value.__set_name__ === 'function') value._pyName = value._pyName || mName;
+  } else if (value && value.__staticmethod__) {
+    const rawFn = value.fn;
+    const sm = (...args) => rawFn(...args);
+    if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
+    sm._pyName = `${name}.${mName}`;
+    cls.prototype[mName] = sm;
+    cls[mName] = sm;
+  } else if (value && value.__classmethod__) {
+    // bound to the class it's called on: an instance's own class, a subclass when inherited
+    const fn = value.fn, qual = `${name}.${mName}`;
+    const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
+    cm._pyName = qual;
+    if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
+    cls.prototype[mName] = cm;
+    Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
+  } else if (_isMethodFn(value, opts)) {
+    const originalFn = value;
+    cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
+    cls.prototype[mName]._pyName = `${name}.${mName}`;
+    cls.prototype[mName].__func__ = originalFn;          // the def itself (inspect, abstract methods)
+    if (originalFn.__isabstractmethod__) cls.prototype[mName].__isabstractmethod__ = true;
+    // Python unbound-method access (`ClassName.method(instance, ...)`).
+    // Arrow form so adderGetAttr's `.bind(obj)` doesn't pin `this` to
+    // the class.
+    cls[mName] = (...args) => originalFn(...args);
+    // `Cls.method` is the plain function: its name, signature, docstring, abstractness
+    Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+    if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
+    if (originalFn._pySync) {
+      const tw = originalFn._pySync;
+      _defTwin(cls.prototype[mName], function (...args) { return tw(this, ...args); });
+      _defTwin(cls[mName], tw);
+    }
+  }
+}
 export function buildClass(name, bases, members, annotations, opts = {}) {
   const cls = function (...args) {
     if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
@@ -5347,91 +5542,13 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
     }
   }
 
-  for (const [mName, value] of Object.entries(members)) {
-    if (mName === '__new__' && typeof (value && value.__staticmethod__ ? value.fn : value) === 'function') {
-      // __new__ is implicitly static: called as __new__(cls, *args)
-      const fn = value.__staticmethod__ ? value.fn : value;
-      cls._pyNewFn = fn;
-      cls.__new__ = fn;
-    } else if (_isDescriptor(value)) {
-      // the descriptor protocol: reads go through __get__(instance, owner) (owner-level reads
-      // through __get__(None, owner)); with __set__ / __delete__ it's a data descriptor and writes
-      // go through it, else an instance attribute of the same name shadows it, as in Python
-      const d = value;
-      const data = typeof d.__set__ === 'function' || typeof d.__delete__ === 'function';
-      const shadow = function (v) { Object.defineProperty(this, mName, { value: v, writable: true, enumerable: true, configurable: true }); };
-      const dataSet = function (v) { if (typeof d.__set__ !== 'function') throw new AdderError('AttributeError', `can't set attribute '${mName}'`); return d.__set__(this, v); };
-      // the tree-walker's assignment calls this itself, so an async __set__ is awaited (a JS setter's
-      // return value is dropped) — the same hook @property setters use
-      dataSet._pyFset = (o, v) => dataSet.call(o, v);
-      dataSet._pyDescriptor = d;   // del instance.name finds __delete__ here (pyDelAttr)
-      const descGet = function () { return typeof d.__get__ === 'function' ? d.__get__(this, typeOf(this)) : d; };
-      descGet._pyRaw = d;
-      Object.defineProperty(cls.prototype, mName, {
-        get: descGet,
-        set: data ? dataSet : shadow,
-        configurable: true, enumerable: false,
-      });
-      Object.defineProperty(cls, mName, { get() { return typeof d.__get__ === 'function' ? d.__get__(null, this) : d; }, set: shadow, configurable: true, enumerable: true });
-      // a store to this name goes through __set__ even when the instance has the attribute in
-      // its __dict__ (storeAttr checks this flag before a plain assignment)
-      if (data) Object.defineProperty(cls.prototype, '_pyHasDataDesc', { value: true, configurable: true, writable: true });
-      (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
-    } else if (value && value.__property__) {
-      const fget = value.fget;
-      const fset = value.fset;
-      const missing = (what) => new AdderError('AttributeError', `property '${mName}' of '${name}' object has no ${what}`);
-      const getFn = function () { if (!fget) throw missing('getter'); return fget(this); };
-      getFn._pyProperty = value;   // del instance.name finds fdel here (pyDelAttr)
-      const desc = { get: getFn, configurable: true, enumerable: true };
-      const setFn = function (v) { if (!value.fset) throw missing('setter'); return value.fset(this, v); };
-      setFn._pyFset = (o, v) => setFn.call(o, v);
-      // (a JS-built property record without a setter keeps the old shape: no setter at all)
-      if (fset || value.__adderType__) desc.set = setFn;
-      Object.defineProperty(cls.prototype, mName, desc);
-      // on the class itself: the property object (C.x, C.__dict__['x']); assigning replaces it
-      Object.defineProperty(cls, mName, {
-        get() { return value; },
-        set(v) { Object.defineProperty(cls, mName, { value: v, writable: true, enumerable: true, configurable: true }); },
-        configurable: true, enumerable: true,
-      });
-      (cls._pyAttrs || (cls._pyAttrs = new Set())).add(mName);
-      if (value.__adderType__ && typeof value.__set_name__ === 'function') value._pyName = value._pyName || mName;
-    } else if (value && value.__staticmethod__) {
-      const rawFn = value.fn;
-      const sm = (...args) => rawFn(...args);
-      if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
-      sm._pyName = `${name}.${mName}`;
-      cls.prototype[mName] = sm;
-      cls[mName] = sm;
-    } else if (value && value.__classmethod__) {
-      // bound to the class it's called on: an instance's own class, a subclass when inherited
-      const fn = value.fn, qual = `${name}.${mName}`;
-      const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
-      cm._pyName = qual;
-      if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
-      cls.prototype[mName] = cm;
-      Object.defineProperty(cls, mName, _classMethodDescriptor(fn, qual));
-    } else if (_isMethodFn(value, opts)) {
-      const originalFn = value;
-      cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
-      cls.prototype[mName]._pyName = `${name}.${mName}`;
-      cls.prototype[mName].__func__ = originalFn;          // the def itself (inspect, abstract methods)
-      if (originalFn.__isabstractmethod__) cls.prototype[mName].__isabstractmethod__ = true;
-      // Python unbound-method access (`ClassName.method(instance, ...)`).
-      // Arrow form so adderGetAttr's `.bind(obj)` doesn't pin `this` to
-      // the class.
-      cls[mName] = (...args) => originalFn(...args);
-      // `Cls.method` is the plain function: its name, signature, docstring, abstractness
-      Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
-      if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
-      if (originalFn._pySync) {
-        const tw = originalFn._pySync;
-        _defTwin(cls.prototype[mName], function (...args) { return tw(this, ...args); });
-        _defTwin(cls[mName], tw);
-      }
-    }
+  // a class written in Python that defines __eq__ but not __hash__ is unhashable: __hash__ = None
+  // (hash(x) is a TypeError; the identity hash it would otherwise keep breaks dicts of equal keys)
+  if (opts.pyBody && Object.hasOwn(members, '__eq__') && !Object.hasOwn(members, '__hash__')) {
+    members.__hash__ = null;
+    cls.prototype.__hash__ = null;
   }
+  for (const [mName, value] of Object.entries(members)) _installMember(cls, name, mName, value, opts);
 
   // class variables (instances read them through the class: no per-instance copies); a class
   // nested in the body is a class variable too, not a method
@@ -5569,7 +5686,27 @@ function _resolveBases(bases) {
   }
   return out;
 }
+// __adder_annotation__(lambda: T): a class-body annotation's value (parse.js _classAnnotations),
+// or ANN_UNEVALUATED when it can't be evaluated — the factory then keeps its source text
+const _ANN_UNEVALUATED = Object.freeze({ __adderClass__: '_AnnotationText' });
+export const adderAnnotation = (thunk) => {
+  try {
+    const v = thunk();
+    return _isThenable(v) ? v.then((x) => x, () => _ANN_UNEVALUATED) : v;
+  } catch { return _ANN_UNEVALUATED; }
+};
+// a class body's own __annotations__ dict (evaluated) over the source texts the lowering collected
+function _mergeAnnotations(members, annotations) {
+  const d = members && members.__annotations__;
+  if (!(d instanceof Map)) return annotations;
+  delete members.__annotations__;
+  const text = new Map(annotations || []);
+  const out = [];
+  for (const [k, v] of d) out.push([k, v === _ANN_UNEVALUATED ? (text.has(k) ? text.get(k) : '...') : v]);
+  return out;
+}
 export function classStatement(name, bases, members, annotations, kwObj, opts = {}) {
+  annotations = _mergeAnnotations(members, annotations);
   bases = _resolveBases(bases);
   const kw = {};
   let explicit = null;
@@ -5982,8 +6119,8 @@ export function adderBuiltins(printFn) {
       }
       if (!file && _stdio.redirect) file = _stdio.redirect;   // contextlib.redirect_stdout
       const out = file ? (t) => printToFile(file, t) : printFn;
-      const parts = args.map(pyStrMaybe);
-      if (parts.some(_isThenable)) return Promise.all(parts).then((ps) => out(ps.join(sep) + end)).then(() => null);
+      const parts = _seqMap(args, pyStrMaybe);
+      if (_isThenable(parts)) return parts.then((ps) => out(ps.join(sep) + end)).then(() => null);
       const r = out(parts.join(sep) + end);
       return _isThenable(r) ? r.then(() => null) : null;
     },
@@ -6234,7 +6371,7 @@ export function adderBuiltins(printFn) {
       if (typeof name !== 'string' && strValue(name) === null) throw new AdderError('TypeError', `attribute name must be string, not '${pyTypeName(name)}'`);
       return ((obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } })(obj, strValue(name) ?? name, def);
     },
-    setattr: (obj, name, value) => { storeAttr(obj, name, value); return null; },
+    setattr: (obj, name, value) => { const r = storeAttr(obj, name, value); return _isThenable(r) ? r.then(() => null) : null; },
     delattr: (obj, name) => pyDelAttr(obj, name),
     property: _propertyType(),
     staticmethod: (fn) => ({ __staticmethod__: true, fn }),
@@ -6364,6 +6501,7 @@ export function adderBuiltins(printFn) {
     },
     eval: _builtinEval,
     exec: _builtinExec,
+    __adder_annotation__: adderAnnotation,
     super: _builtinSuper,
     globals: _builtinGlobals,
     locals: _builtinLocals,

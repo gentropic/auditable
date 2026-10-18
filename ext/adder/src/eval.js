@@ -17,10 +17,10 @@ import {
   pyBool, pyBoolMaybe, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper, _builtinGlobals, _builtinLocals,
-  pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
+  pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
+  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -452,7 +452,7 @@ async function _assignTarget(target, value, scope) {
         if (d?.set?._pyFset) { await d.set._pyFset(obj, value); return null; }
         if (d) break;
       }
-      storeAttr(obj, target.attr, value);
+      await storeAttr(obj, target.attr, value);
       break;
     }
     case 'Subscript': {
@@ -625,11 +625,7 @@ const _iDunders = {
 function _compareOp(op, left, right) {
   switch (op) {
     case '==': return pyEq(left, right);
-    case '!=': {
-      if (typeof left?.__ne__ === 'function') return left.__ne__(right);
-      const r = pyEq(left, right);
-      return r && typeof r.then === 'function' ? r.then((x) => !x) : !r;
-    }
+    case '!=': return pyNe(left, right);
     case '<': return pyLt(left, right);
     case '<=': return pyLe(left, right);
     case '>': return pyGt(left, right);
@@ -1660,8 +1656,51 @@ setScopeExec((kind, args) => {
   if (g === undefined || g === null) {
     throw new AdderError('RuntimeError', `${kind}() without a globals dict needs the caller's scope: run this code on the tree-walker`);
   }
+  if (kind === 'exec' && _moduleCompiler && _runOpts.moduleEngine !== 'tree') {
+    const r = _execCompiled(args);
+    if (r) return r;
+  }
   return kind === 'exec' ? _evalBuiltinExec(args, null) : _evalBuiltinEval(args, null);
 });
+// exec(code, globals[, locals]) from compiled code runs compiled too — the program and what it
+// generates on one engine (dataclasses / namedtuple-style code generation: the __init__ / __repr__
+// it builds are then compiled functions, synchronous where they can be, not tree-walked coroutines
+// handed to code that doesn't wait). The namespaces stay live: the compiled body reads its free
+// names from them (then builtins) and its top-level bindings land in them. Code AIR can't lower
+// returns null: the tree-walker runs it, as before.
+function _execCompiled(args) {
+  let ast, code;
+  try { code = _sourceOf(args[0]); ast = adderParse(code); } catch { return null; }
+  const target = _execScope(args, null);
+  let compiled = null;
+  let modName = '__main__';
+  for (let s = target; s; s = s.parent) if (s.vars && s.vars.has('__name__')) { modName = s.vars.get('__name__'); break; }
+  try { compiled = _moduleCompiler(ast, code, { name: typeof modName === 'string' ? modName : '__main__', package: '' }); } catch { compiled = null; }
+  if (!compiled) return null;
+  const vars = target.vars;
+  const builtins = adderModules.builtins;
+  const lookup = (n) => {
+    for (let s = target; s; s = s.parent) if (s.vars && s.vars.has(n)) return s.vars.get(n);
+    return builtins && n in builtins ? builtins[n] : undefined;
+  };
+  // the module object compiled code mirrors its bindings onto: the namespace itself
+  const mod = new Proxy({}, {
+    get: (_, k) => (typeof k === 'string' && vars.has(k) ? vars.get(k) : undefined),
+    set: (_, k, v) => { vars.set(k, v); return true; },
+    has: (_, k) => typeof k === 'string' && vars.has(k),
+    deleteProperty: (_, k) => { vars.delete(k); return true; },
+    ownKeys: () => [...vars.keys()].filter((k) => typeof k === 'string'),
+    getOwnPropertyDescriptor: (_, k) => (typeof k === 'string' && vars.has(k) ? { value: vars.get(k), writable: true, enumerable: true, configurable: true } : undefined),
+  });
+  const finish = (scope) => {
+    if (scope && typeof scope === 'object') {
+      for (const k of Object.keys(scope)) if (k !== '__lastExpr__') vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
+    }
+    return null;
+  };
+  const r = compiled.run(lookup, mod);
+  return r && typeof r.then === 'function' ? r.then(finish) : Promise.resolve(finish(r));
+}
 // exec / eval's source: a string, bytes, or a code object from compile()
 function _sourceOf(x) {
   if (x !== null && typeof x === 'object' && typeof x._pySource === 'string') return x._pySource;
