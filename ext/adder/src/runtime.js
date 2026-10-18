@@ -4,7 +4,7 @@
 import {
   AdderError, adderModules, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyCollectMaybe, pyFormatValue,
-  adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, PyCell, excToThrowable,
+  adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, PyCell, ctxEnter, ctxExit, pyAIter, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
@@ -490,21 +490,7 @@ function _yieldFromOf(x) {
 // Synchronous when __exit__ is; a Promise only when __exit__ returns one (a file closing a write
 // handle awaits the VFS) — the lowered call site awaits it, except in sync mode, where a Promise
 // suppression flag would be truthy and swallow the exception.
-function _exitWith(mgr, exc) {
-  if (mgr === null || mgr === undefined || typeof mgr.__exit__ !== 'function') {
-    throw new AdderError(
-      'AttributeError',
-      `'${pyTypeName(mgr)}' object has no attribute '__exit__'`,
-    );
-  }
-  const then = (r, f) => (r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(f) : f(r));
-  if (exc === null || exc === undefined || (exc && exc.pyType === 'BudgetExceeded')) {
-    // Normal-exit path: discard return; CPython does likewise here.
-    return then(mgr.__exit__(null, null, null), () => false);
-  }
-  // Exception path: pass (type, value, None) and return suppression flag.
-  return mgr.__exit__(excTypeOf(exc), excValue(exc), null);
-}
+function _exitWith(mgr, exc, isAsync) { return ctxExit(mgr, exc, !!isAsync); }
 
 // ── Attribute access ──
 
@@ -813,6 +799,8 @@ export const _py = {
   makeSlice: (lower, upper, step) => ({ _slice: true, lower, upper, step }),
   // context manager __exit__ (with statement)
   exitWith: _exitWith,
+  enterWith: ctxEnter,
+  aiter: pyAIter,
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,

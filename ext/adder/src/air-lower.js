@@ -1628,25 +1628,25 @@ function lowerTry_ad(ctx, node) {
 }
 
 function lowerWith(ctx, node) {
-  // `with mgr as x: body` lowers to (matching CPython's PEP 343 expansion):
+  // `with mgr as x: body` lowers to CPython's PEP 343 expansion:
   //     __mgr = mgr
-  //     x = await __mgr.__enter__()
+  //     __enter = _py.enterWith(__mgr)        # the bound __enter__, once __exit__ is known too
+  //     __ok = True
   //     try:
+  //         x = await __enter()
   //         body
-  //         await _py.exitWith(__mgr, None)  # normal-exit: returns ignored
   //     except BaseException as __e:
-  //         if not (await _py.exitWith(__mgr, __e)):
-  //             raise
-  //
-  // For multiple managers `with a, b: body`, each manager wraps the next
-  // in its own try (equivalent to nested `with` statements). Built
-  // recursively so an inner manager's __exit__ suppression propagates
-  // correctly — outer managers see no exception if an inner one suppressed.
-  // _py.exitWith returns the (possibly awaited) suppression flag from
-  // __exit__; the catch checks it and only re-raises on falsy.
+  //         __ok = False
+  //         if not (await _py.exitWith(__mgr, __e)): raise
+  //     finally:
+  //         if __ok: await _py.exitWith(__mgr, None)
+  // The normal exit is in the finally so return / break / continue out of the body run it too
+  // (they're JS's own here, not exceptions), and outside the except so an exit that raises isn't
+  // called again. `with a, b:` is `with a: with b:` — an exception the inner one suppressed is gone
+  // for the outer. `async with` calls __aenter__ / __aexit__.
   const l = ctx.loc(node);
+  const isAsync = ctx.emit('const', [!!node.isAsync], BOOL, l);
 
-  // Recursive lower: items[idx..] wrapping `body`.
   const lowerOne = (idx) => {
     if (idx >= node.items.length) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
@@ -1654,54 +1654,55 @@ function lowerWith(ctx, node) {
     }
     const item = node.items[idx];
 
-    // __mgr = <expr>;  x = await __mgr.__enter__()
     const mgr = lowerExpr_ad(ctx, item.contextExpr);
     const mgrName = ctx.makeTempName('with_mgr');
     ctx.emit('store', [mgrName, mgr.id], VOID, l);
     ctx.symbols.set(mgrName, mgr.id);
-    const mgrLoad = ctx.emit('load', [mgrName], DYNAMIC, l);
-    const enterName = ctx.emit('const', ['__enter__'], STRING, l);
-    const enterFn = emitPyCall(ctx, 'getattr', [mgrLoad, enterName], l);
-    const enterCall = emitAwaitedCall_ad(ctx, enterFn.id, [], l);
-    if (item.optionalVar) {
-      lowerAssignTarget(ctx, item.optionalVar, enterCall, l);
-    }
+    const enterFn = emitPyCall(ctx, 'enterWith', [ctx.emit('load', [mgrName], DYNAMIC, l), isAsync], l);
+    // (the value is stored here, before the try, so the call can't be inlined into it)
+    const entered = emitAwaitedCall_ad(ctx, enterFn.id, [], l);
+    const valName = ctx.makeTempName('with_val');
+    ctx.emit('store', [valName, entered.id], VOID, l);
+    ctx.symbols.set(valName, entered.id);
+    const okName = ctx.makeTempName('with_ok');
+    const t = ctx.emit('const', [true], BOOL, l);
+    ctx.emit('store', [okName, t.id], VOID, l);
+    ctx.symbols.set(okName, t.id);
 
-    // try-body: recurse for next manager (or emit body), then call
-    // _py.exitWith(__mgr, null) for the normal-exit path. exitWith may be
-    // async (user __exit__ is async-wrapped); await the result.
     const tryBody = captureOps(ctx, () => {
+      if (item.optionalVar) lowerAssignTarget(ctx, item.optionalVar, ctx.emit('load', [valName], DYNAMIC, l), l);
       lowerOne(idx + 1);
-      const mgrLoadEx = ctx.emit('load', [mgrName], DYNAMIC, l);
-      const noneVal = ctx.emit('const', [null], VOID, l);
-      const exitCall = emitPyCall(ctx, 'exitWith', [mgrLoadEx, noneVal], l);
-      ctx.emit('await', [exitCall.id], DYNAMIC, l);
     });
 
-    // catch: call exitWith(__mgr, e); await; if not truthy, re-raise.
     const catchParam = ctx.makeTempName('with_exc');
     const catchBody = captureOps(ctx, () => {
-      const mgrLoadEx = ctx.emit('load', [mgrName], DYNAMIC, l);
-      const eLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-      const exitCall = emitPyCall(ctx, 'exitWith', [mgrLoadEx, eLoad], l);
+      const f = ctx.emit('const', [false], BOOL, l);
+      ctx.emit('store', [okName, f.id], VOID, l);
+      const exitCall = emitPyCall(ctx, 'exitWith', [ctx.emit('load', [mgrName], DYNAMIC, l), ctx.emit('load', [catchParam], DYNAMIC, l), isAsync], l);
       const suppress = ctx.emit('await', [exitCall.id], DYNAMIC, l);
       const truthy = emitPyCall(ctx, 'truthy', [suppress], l, BOOL);
       const negated = ctx.emit('logical_not', [truthy.id], BOOL, l);
       const raiseBody = captureOps(ctx, () => {
-        const eLoad2 = ctx.emit('load', [catchParam], DYNAMIC, l);
-        emitPyCall(ctx, 'raise', [eLoad2], l, VOID);
+        emitPyCall(ctx, 'raise', [ctx.emit('load', [catchParam], DYNAMIC, l)], l, VOID);
       });
-      ctx.emit('if_region', [negated.id], VOID, l, {
-        then_body: raiseBody,
-        else_body: [],
+      ctx.emit('if_region', [negated.id], VOID, l, { then_body: raiseBody, else_body: [] });
+    });
+
+    const finallyBody = captureOps(ctx, () => {
+      const ok = ctx.emit('load', [okName], BOOL, l);
+      const exitBody = captureOps(ctx, () => {
+        const noneVal = ctx.emit('const', [null], VOID, l);
+        const exitCall = emitPyCall(ctx, 'exitWith', [ctx.emit('load', [mgrName], DYNAMIC, l), noneVal, isAsync], l);
+        ctx.emit('await', [exitCall.id], DYNAMIC, l);
       });
+      ctx.emit('if_region', [ok.id], VOID, l, { then_body: exitBody, else_body: [] });
     });
 
     ctx.emit('try_region', [], VOID, l, {
       try_body: tryBody,
       catch_param: catchParam,
       catch_body: catchBody,
-      finally_body: [],
+      finally_body: finallyBody,
     });
   };
 
@@ -2063,6 +2064,7 @@ function _lowerRangeLoop(ctx, node, l) {
 }
 
 function _lowerForLoopBody(ctx, node, l) {
+  if (node.isAsync) return _lowerAsyncFor(ctx, node, l);
   if (node.target.type === 'Name' && _isPlainRangeCall(ctx, node.iter)) return _lowerRangeLoop(ctx, node, l);
   const iter = lowerExpr_ad(ctx, node.iter);
   // Where the code is async anyway (cell level, a top-level function that isn't sync), the loop
@@ -2111,6 +2113,20 @@ function _lowerForLoopBody(ctx, node, l) {
   }
 
   throw new AirLowerError(`unsupported for-loop target: ${node.target.type}`);
+}
+
+// `async for target in src:` — a for-await over _py.aiter(src), which reads it by __aiter__ /
+// __anext__ (an async generator, a class with the protocol) until StopAsyncIteration
+function _lowerAsyncFor(ctx, node, l) {
+  const src = emitPyCall(ctx, 'aiter', [lowerExpr_ad(ctx, node.iter)], l);
+  _preDeclareTargetNames(ctx, node.target, l);
+  const simple = node.target.type === 'Name';
+  const targetName = simple ? node.target.id : ctx.makeTempName('forv');
+  const body = captureOps(ctx, () => {
+    if (!simple) lowerAssignTarget(ctx, node.target, ctx.emit('load', [targetName], DYNAMIC, l), l);
+    for (const s of node.body) lowerStmt_ad(ctx, s);
+  });
+  return ctx.emit('for_of_region', [src.id], VOID, l, { body, phis: [], target_name: targetName, is_await: true, indexed: false });
 }
 
 function _preDeclareTargetNames(ctx, target, l) {
@@ -2622,7 +2638,7 @@ function lowerFuncDef(ctx, node) {
   // (in a class body the function is bound as `__cb_<name>` — see lowerClassDef)
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   // its generator objects show the function's name (`<generator object g at ...>`)
-  if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)});`);
+  if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)}${node.type === 'AsyncFunctionDef' ? ', true' : ''});`);
   if (bailable) {
     const asy = lowerBody(null);
     const asyOp = ctx.emit('func_region', [null], fType, l, {
@@ -2828,6 +2844,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   const l = ctx.loc(node);
   if (genIdx >= node.generators.length) { opts.innermost(); return; }
   const gen = node.generators[genIdx];
+  const asyncClause = !!gen.isAsync;   // `async for` in a comprehension: read by __aiter__ / __anext__
 
   // this clause's filters as nested ifs, then the next clause (or the innermost body)
   const withFilters = (filterIdx) => {
@@ -2842,7 +2859,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   // iterator). The variable is declared afresh in the body: the comprehension's own, like the
   // for-of target below. Not for a clause whose source was already evaluated (a generator
   // expression's first, which Python evaluates eagerly, outside).
-  if (gen.target.type === 'Name' && opts.countedRange && opts.countedRange(genIdx) && _isPlainRangeCall(ctx, gen.iter)) {
+  if (!asyncClause && gen.target.type === 'Name' && opts.countedRange && opts.countedRange(genIdx) && _isPlainRangeCall(ctx, gen.iter)) {
     const name = gen.target.id;
     _emitCountedRange(ctx, gen.iter, l, {
       bindTarget: (cur) => {
@@ -2855,7 +2872,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
     return;
   }
 
-  const iterArr = opts.iterOf(gen, genIdx);
+  const iterArr = asyncClause ? emitPyCall(ctx, 'aiter', [lowerExpr_ad(ctx, gen.iter)], l) : opts.iterOf(gen, genIdx);
   let targetName;
   const body = captureOps(ctx, () => {
     if (gen.target.type === 'Name') {
@@ -2881,7 +2898,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   });
 
   ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait, indexed: !opts.isAwait,
+    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait || asyncClause, indexed: !opts.isAwait && !asyncClause,
   });
 }
 
@@ -2907,6 +2924,8 @@ function _opsAwait(ops) {
 //           generator, itertools, map) or a body that awaits.
 function lowerGeneratorExp(ctx, node) {
   const l = ctx.loc(node);
+  // (an async generator expression — `async for` in it — is the tree-walker's)
+  if (node.generators.some((g) => g.isAsync)) throw new AirLowerError('an async generator expression needs the tree-walker');
   const src = lowerExpr_ad(ctx, node.generators[0].iter);
   const SRC = '__gsrc';
   const build = (isAwait) => {

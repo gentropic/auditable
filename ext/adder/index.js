@@ -2939,6 +2939,8 @@ function pyTypeName(v) {
   if (v instanceof Uint8Array) return 'bytes';
   if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
+  // a compiled generator: a JS generator object
+  { const tag = v[Symbol.toStringTag]; if (tag === 'Generator' || tag === 'AsyncGenerator') return v._pyAsyncGen ? 'async_generator' : 'generator'; }
   if (v instanceof AdderError) return v.pyType;
   if (v.__adderModule__) return 'module';
   if (isPlainDict(v)) return 'dict';
@@ -3015,8 +3017,8 @@ const _objAddr = (v) => `0x${(_pyHash(v) >>> 0).toString(16).toUpperCase().padSt
 function _iterObjRepr(v) {
   if (v === null || typeof v !== 'object') return null;
   const tag = Object.prototype.toString.call(v);
-  if (v.__adderClass__ === 'generator' || tag === '[object Generator]' || tag === '[object AsyncGenerator]') {
-    return `<${tag === '[object AsyncGenerator]' && !v.__adderClass__ ? 'async_generator' : 'generator'} object ${v._genName || '<genexpr>'} at ${_objAddr(v)}>`;
+  if (v.__adderClass__ === 'generator' || v.__adderClass__ === 'async_generator' || tag === '[object Generator]' || tag === '[object AsyncGenerator]') {
+    return `<${v._pyAsyncGen ? 'async_generator' : 'generator'} object ${v._genName || '<genexpr>'} at ${_objAddr(v)}>`;
   }
   return null;
 }
@@ -3200,8 +3202,10 @@ function _parseIntStrict(str, base) {
 
 // ── iteration helper ──
 
+// an async generator (`async def` with a yield) is not iterable — only `async for` reads it
+const isAsyncGen = (o) => o !== null && typeof o === 'object' && o._pyAsyncGen === true;
 function* pyIter(obj) {
-  if (obj === null || obj === undefined) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
+  if (obj === null || obj === undefined || isAsyncGen(obj)) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
   { const mi = _metaIter(obj); if (mi) { const it = mi(); if (it && typeof it.then === 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object must be collected asynchronously here (list(...) it first)`); yield* pyIter(it); return; } }
   if (Array.isArray(obj) || typeof obj === 'string' || obj instanceof Uint8Array) { for (let i = 0; i < obj.length; i++) yield obj[i]; return; }
   if (obj instanceof Map) { for (const k of obj.keys()) yield k; return; }
@@ -3285,6 +3289,7 @@ function isUserIterable(obj) {
 }
 const _awaitIf = async (v) => (v && typeof v.then === 'function' ? await v : v);
 async function* pyIterAsync(obj) {
+  if (isAsyncGen(obj)) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
   const mi = _metaIter(obj);
   if (mi || typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
     const it = mi ? await _awaitIf(mi()) : typeof obj.__iter__ === 'function' ? await _awaitIf(obj.__iter__()) : obj;
@@ -3371,6 +3376,7 @@ async function pyCollect(obj) {
   // the common sources, without a generator step per item: a list or tuple copies (a fresh
   // plain list — PyTuple's species is Array), a range fills by counting
   if (Array.isArray(obj)) return obj.slice();
+  if (isAsyncGen(obj)) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
   if (obj instanceof AdderRange) {
     const out = new Array(obj.length);
     for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
@@ -3565,10 +3571,18 @@ function _plainGetAttr(o, k) { _gaBypass = o; try { return adderGetAttr(o, k); }
 // a compiled generator function's generators (_py.genProto): their objects show its name, and
 // record when they first run, for send()'s just-started rule
 const _genStarted = new WeakSet(), _genRunning = new WeakSet(), _genFinished = new WeakSet();
-function genProto(fn, name) {
+function genProto(fn, name, isAsyncGen) {
   const p = fn.prototype;
   if (!p) return null;
   p._genName = name;
+  // an `async def` generator: Python's async-generator protocol (__anext__, asend, athrow, aclose)
+  // through adderGetAttr, and nothing that iterates it synchronously — not JS's for-await either:
+  // `async for` reads it by __anext__ (pyAIter)
+  if (isAsyncGen) {
+    Object.defineProperty(p, '_pyAsyncGen', { value: true, configurable: true });
+    Object.defineProperty(p, Symbol.asyncIterator, { value: undefined, configurable: true });
+    Object.defineProperty(p, Symbol.iterator, { value: undefined, configurable: true });   // (one that never awaits compiles to a sync JS generator)
+  }
   const base = Object.getPrototypeOf(p);
   // resuming one while it runs: CPython's ValueError (a JS async generator would queue the call
   // and wait on itself forever; a sync one throws a TypeError of its own)
@@ -3584,9 +3598,10 @@ function genProto(fn, name) {
     const end = (x) => { _genRunning.delete(this); if (x && x.done) _genFinished.add(this); return x; };
     const fail = (e) => {
       _genRunning.delete(this); _genFinished.add(this);
-      // PEP 479: StopIteration out of a generator's body is a RuntimeError (from it)
-      if (e && e.pyType === 'StopIteration') {
-        const err = new AdderError('RuntimeError', 'generator raised StopIteration');
+      // PEP 479: StopIteration out of a generator's body is a RuntimeError (from it); an async
+      // generator's StopAsyncIteration too
+      if (e && (e.pyType === 'StopIteration' || (isAsyncGen && e.pyType === 'StopAsyncIteration'))) {
+        const err = new AdderError('RuntimeError', `${isAsyncGen ? 'async generator' : 'generator'} raised ${e.pyType}`);
         err.__cause__ = excValue(e); err.__context__ = excValue(e);
         throw err;
       }
@@ -3608,13 +3623,38 @@ const _genResult = (r) => {
 };
 function closeJsGenerator(g) {
   const exit = new AdderError('GeneratorExit', '', undefined, []);
-  const ok = (e) => { if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null; throw e; };
-  const after = (x) => { if (!x.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit'); return x.value === undefined ? null : x.value; };
+  const ok = (e) => { if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration' || e.pyType === 'StopAsyncIteration')) return null; throw e; };
+  const after = (x) => { if (!x.done) throw new AdderError('RuntimeError', `${g._pyAsyncGen ? 'async generator' : 'generator'} ignored GeneratorExit`); return x.value === undefined ? null : x.value; };
   let r;
   try { r = g.throw(exit); } catch (e) { return ok(e); }
   return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(after, ok) : after(r);
 }
+// an async generator's step: the value, or StopAsyncIteration once it's done (a Promise either way)
+const _agenStep = (r) => Promise.resolve(r).then((x) => { if (x.done) throw new AdderError('StopAsyncIteration', '', undefined, []); return x.value; });
+const stopAsyncIteration = () => new AdderError('StopAsyncIteration', '', undefined, []);
+function _jsAgenAttr(g, attr) {
+  switch (attr) {
+    case '__aiter__': return () => g;
+    case '__anext__': return () => _agenStep(g.next(null));
+    case 'asend': return (v) => {
+      if (v !== null && v !== undefined && !_genStarted.has(g)) return Promise.reject(new AdderError('TypeError', "can't send non-None value to a just-started async generator"));
+      return _agenStep(g.next(v === undefined ? null : v));
+    };
+    case 'athrow': return (t, v) => {
+      let exc = v !== undefined && v !== null ? v : t;
+      if (typeof exc === 'function' && exc._pyClass) exc = exc();
+      return Promise.resolve(exc).then((x) => _agenStep(g.throw(excToThrowable(x))));
+    };
+    case 'aclose': return () => Promise.resolve().then(() => closeJsGenerator(g)).then(() => null);
+    case 'ag_running': return _genRunning.has(g);
+    case 'ag_await': return null;
+    case 'ag_frame': return _genFinished.has(g) ? null : { __adderClass__: 'frame', f_lineno: 0, f_locals: new PyDict(), f_globals: new PyDict() };
+    case '__name__': case '__qualname__': return g._genName || '<genexpr>';
+    default: return undefined;
+  }
+}
 function _jsGenAttr(g, attr) {
+  if (g._pyAsyncGen) return _jsAgenAttr(g, attr);
   switch (attr) {
     case 'send': return (v) => {
       if (v !== null && v !== undefined && g._pyTracksStart && !_genStarted.has(g)) throw new AdderError('TypeError', "can't send non-None value to a just-started generator");
@@ -6966,6 +7006,70 @@ function _argsStr(name, args) {
 }
 // what a raise throws, for whatever was raised (an AdderError, a JS Error, a builtin or user
 // exception class or instance); may be a Promise when constructing a class is async
+// `async for x in obj`: a JS async iterator over obj by Python's protocol — __aiter__() once, then
+// __anext__() awaited until StopAsyncIteration. An async generator (tree-walked or compiled) is
+// one; so is a JS async iterable (a stream) that isn't a Python object. Anything else — a list, a
+// plain generator — is CPython's TypeError.
+function pyAIter(obj) {
+  if (obj !== null && typeof obj === 'object' && obj._pyAsyncGen && _jsGenTag(obj)) {
+    return { next: () => Promise.resolve(obj.next(null)), [Symbol.asyncIterator]() { return this; } };
+  }
+  if (obj !== null && obj !== undefined && typeof obj.__aiter__ === 'function') {
+    let itP = null;
+    const iter = {
+      async next() {
+        const it = await (itP || (itP = Promise.resolve(obj.__aiter__())));
+        const anext = it !== null && it !== undefined && (typeof it.__anext__ === 'function' ? it.__anext__ : _jsGenTag(it) ? adderGetAttr(it, '__anext__') : undefined);
+        if (typeof anext !== 'function') throw new AdderError('TypeError', `'async for' received an object from __aiter__ that does not implement __anext__: ${pyTypeName(it)}`);
+        try {
+          return { done: false, value: await anext.call(it) };
+        } catch (e) {
+          if (e && _excNames(e).includes('StopAsyncIteration')) return { done: true, value: undefined };
+          throw e;
+        }
+      },
+      [Symbol.asyncIterator]() { return iter; },
+    };
+    return iter;
+  }
+  if (obj !== null && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function' && !obj.__adderClass__ && !_jsGenTag(obj)) return obj[Symbol.asyncIterator]();
+  throw new AdderError('TypeError', `'async for' requires an object with __aiter__ method, got ${pyTypeName(obj)}`);
+}
+// aiter(x) / anext(it[, default]) — the builtins
+function _pyAiterBuiltin(obj) {
+  if (obj !== null && typeof obj === 'object' && obj._pyAsyncGen && _jsGenTag(obj)) return obj;
+  if (obj === null || obj === undefined || typeof obj.__aiter__ !== 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not an async iterable`);
+  return obj.__aiter__();
+}
+function _pyAnextBuiltin(it, ...rest) {
+  const anext = it !== null && it !== undefined && (typeof it.__anext__ === 'function' ? it.__anext__ : _jsGenTag(it) && it._pyAsyncGen ? adderGetAttr(it, '__anext__') : undefined);
+  if (typeof anext !== 'function') throw new AdderError('TypeError', `'${pyTypeName(it)}' object is not an async iterator`);
+  const r = Promise.resolve(anext.call(it));
+  if (!rest.length) return r;
+  return r.catch((e) => { if (e && _excNames(e).includes('StopAsyncIteration')) return rest[0]; throw e; });
+}
+// `with` / `async with`: the manager's __enter__ / __aenter__, bound, once it's known to have the
+// matching exit too — CPython's errors otherwise (a TypeError since 3.11)
+function ctxEnter(mgr, isAsync) {
+  const [en, ex] = isAsync ? ['__aenter__', '__aexit__'] : ['__enter__', '__exit__'];
+  const kind = isAsync ? 'asynchronous context manager' : 'context manager';
+  const has = (k) => mgr !== null && mgr !== undefined && typeof mgr[k] === 'function';
+  if (!has(en) && !(!isAsync && has('enter') && has('exit'))) throw new AdderError('TypeError', `'${pyTypeName(mgr)}' object does not support the ${kind} protocol`);
+  if (!has(ex) && !(!isAsync && has('exit'))) throw new AdderError('TypeError', `'${pyTypeName(mgr)}' object does not support the ${kind} protocol (missed ${ex} method)`);
+  return has(en) ? adderGetAttr(mgr, en) : mgr.enter.bind(mgr);
+}
+// ... and its exit: (None, None, None) when the body finished — its result ignored — or the
+// exception's (type, value, traceback), its result whether to suppress it. A Promise when the exit
+// is async (a file flushing to the VFS, any __aexit__); the caller waits.
+function ctxExit(mgr, exc, isAsync) {
+  const ex = isAsync ? '__aexit__' : '__exit__';
+  const f = typeof mgr[ex] === 'function' ? mgr[ex] : mgr.exit;
+  if (exc === null || exc === undefined || exc.pyType === 'BudgetExceeded') {
+    const r = f.call(mgr, null, null, null);
+    return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(() => false) : false;
+  }
+  return f.call(mgr, excTypeOf(exc), excValue(exc), _tracebackOf(exc));
+}
 // BaseException's attributes and methods every exception instance has (see adderGetAttr)
 const _EXC_INSTANCE_ATTRS = new Set(['with_traceback', '__traceback__', '__cause__', '__context__', '__suppress_context__', 'add_note']);
 const _hide = (o, k, v) => Object.defineProperty(o, k, { value: v, writable: true, configurable: true, enumerable: false });
@@ -8939,6 +9043,8 @@ function adderBuiltins(printFn) {
     exec: _builtinExec,
     __adder_annotation__: adderAnnotation,
     super: _builtinSuper,
+    aiter: _pyAiterBuiltin,
+    anext: _pyAnextBuiltin,
     globals: _builtinGlobals,
     locals: _builtinLocals,
   };
@@ -10236,15 +10342,15 @@ function _makeFunction(node, scope, defaults = {}) {
 
 // generator.close(): GeneratorExit raised at the paused yield, so its except / finally run (a
 // generator that never started, or has finished, just ends); yielding again is a RuntimeError
-async function _closeGen(gen) {
+async function _closeGen(gen, what = 'generator') {
   let r;
   try {
     r = await gen.throw(new AdderError('GeneratorExit', '', undefined, []));
   } catch (e) {
-    if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration')) return null;
+    if (e && (e.pyType === 'GeneratorExit' || e.pyType === 'StopIteration' || e.pyType === 'StopAsyncIteration')) return null;
     throw e;
   }
-  if (!r.done) throw new AdderError('RuntimeError', 'generator ignored GeneratorExit');
+  if (!r.done) throw new AdderError('RuntimeError', `${what} ignored GeneratorExit`);
   return r.value === undefined ? null : r.value;   // it returned a value on GeneratorExit (3.13)
 }
 
@@ -10260,7 +10366,8 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
     // ONE underlying generator per call, as in Python: next(g) then list(g) continues
     // where next left off (each for-await used to restart the body)
     let gen = null;
-    const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults));
+    const isAsyncGen = node.type === 'AsyncFunctionDef';
+    const run = () => gen || (gen = _runGenerator(node, scope, callArgs, defaults, isAsyncGen));
     // resuming a generator while it runs is an error (CPython's ValueError) — the async
     // generator underneath would quietly queue the call and wait on itself forever
     let running = false, finished = false;
@@ -10278,6 +10385,32 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
       return: (v) => (gen ? gen.return(v) : Promise.resolve({ done: true, value: v })),
       [Symbol.asyncIterator]() { return jsIter; },
     };
+    // an `async def` with a yield: an async generator — __anext__ / asend / athrow / aclose, each an
+    // awaitable (a Promise here); not iterable, `async for` reads it
+    if (isAsyncGen) {
+      const step = (r) => r.then((x) => { if (x.done) throw new AdderError('StopAsyncIteration', '', undefined, []); return x.value; });
+      const agen = {
+        __adderClass__: 'async_generator',
+        _genName: node.name,
+        _pyAsyncGen: true,
+        get ag_running() { return running; },
+        get ag_frame() { return finished ? null : { __adderClass__: 'frame', f_lineno: node.line || 0, f_locals: new PyDict(), f_code: { co_name: node.name } }; },
+        ag_await: null,
+        __aiter__() { return agen; },
+        __anext__() { return step(jsIter.next(null)); },
+        asend(v) {
+          if (!gen && v !== null && v !== undefined) return Promise.reject(new AdderError('TypeError', "can't send non-None value to a just-started async generator"));
+          return step(jsIter.next(v));
+        },
+        athrow(t, v) {
+          let exc = v ?? t;
+          if (typeof exc === 'function' && exc._pyClass) exc = exc();
+          return Promise.resolve(exc).then((x) => step(jsIter.throw(excToThrowable(x))));
+        },
+        aclose() { const done = (v) => { finished = true; return null; }; return gen ? _closeGen(gen, 'async generator').then(done) : Promise.resolve(done(null)); },
+      };
+      return agen;
+    }
     const genObj = {
       __adderClass__: 'generator',
       _genName: node.name,
@@ -10317,7 +10450,7 @@ function _makeGeneratorFunction(node, scope, defaults = {}) {
   return _attachSignature(fn, node, defaults, scope);
 }
 
-async function* _runGenerator(node, scope, callArgs, defaults = {}) {
+async function* _runGenerator(node, scope, callArgs, defaults = {}, isAsyncGen = false) {
   const localScope = new AdderScope(scope);
   await _bindParams(node, callArgs, localScope, defaults);
   try {
@@ -10328,9 +10461,10 @@ async function* _runGenerator(node, scope, callArgs, defaults = {}) {
     }
   } catch (e) {
     if (e instanceof _ReturnSignal) return e.value;   // `return x`: StopIteration(x).value, yield from's result
-    // PEP 479: StopIteration raised in a generator's body is a RuntimeError (from it)
-    if (e && e.pyType === 'StopIteration') {
-      const err = new AdderError('RuntimeError', 'generator raised StopIteration');
+    // PEP 479: StopIteration raised in a generator's body is a RuntimeError (from it); an async
+    // generator's StopAsyncIteration too
+    if (e && (e.pyType === 'StopIteration' || (isAsyncGen && e.pyType === 'StopAsyncIteration'))) {
+      const err = new AdderError('RuntimeError', `${isAsyncGen ? 'async generator' : 'generator'} raised ${e.pyType}`);
       err.__cause__ = excValue(e); err.__context__ = excValue(e);
       throw err;
     }
@@ -10660,8 +10794,9 @@ async function _evalClass(node, scope) {
 async function _evalFor(node, scope) {
   const iterable = await adderEval(node.iter, scope);
   let broke = false;
-  // for-await handles both sync iterables and async generators
-  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  // for-await handles both sync iterables and async generators; `async for`, the async protocol
+  // (__aiter__ / __anext__)
+  const iter = node.isAsync ? pyAIter(iterable) : isUserIterable(iterable) ? pyIterAsync(iterable) : iterable && iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
   // stepped by hand, not for-await, which closes the iterator on any early exit. Python's
   // reference counting decides that instead: an iterator something still refers to stays open
   // (`for x in it: break` then `list(it)` goes on where the loop stopped); a temporary one — the
@@ -10670,6 +10805,7 @@ async function _evalFor(node, scope) {
   const owned = !(node.iter.type === 'Name' || node.iter.type === 'Attribute' || node.iter.type === 'Subscript');
   const release = async () => {
     if (!owned) return;
+    if (node.isAsync) return;   // (CPython doesn't aclose an async iterator a loop leaves)
     if (iterable && iterable.__adderClass__ === 'generator' && typeof iterable.close === 'function') await iterable.close();
     else if (typeof it.return === 'function') await it.return(undefined);
   };
@@ -10721,27 +10857,26 @@ async function _evalWhile(node, scope) {
 
 // ── with statement ──
 
-async function _evalWith(node, scope) {
-  const managers = [];
-  for (const item of node.items) {
-    const mgr = await adderEval(item.contextExpr, scope);
-    const enter = mgr.__enter__ || mgr.enter;
-    const exit = mgr.__exit__ || mgr.exit;
-    if (typeof enter !== 'function' || typeof exit !== 'function') {
-      throw new AdderError('AttributeError', `'${pyTypeName(mgr)}' does not support the context manager protocol`);
-    }
-    const value = await enter.call(mgr);
-    if (item.optionalVar) await _assignTarget(item.optionalVar, value, scope);
-    managers.push({ mgr, exit });
-  }
+// `with a, b: body` is `with a: with b: body` (PEP 343): each manager's exit sees what the inner
+// ones let through — an exception one suppressed is gone for the rest. The exit runs on every way
+// out: falling off the end, an exception, return / break / continue.
+function _evalWith(node, scope) { return _withFrom(node, scope, 0); }
+async function _withFrom(node, scope, i) {
+  if (i === node.items.length) { for (const stmt of node.body) await adderEval(stmt, scope); return null; }
+  const item = node.items[i];
+  const mgr = await adderEval(item.contextExpr, scope);
+  const isAsync = !!node.isAsync;
+  const value = await ctxEnter(mgr, isAsync)();
+  let clean = true;
   try {
-    for (const stmt of node.body) await adderEval(stmt, scope);
-    for (const { mgr, exit } of managers.reverse()) await exit.call(mgr, null, null, null);
+    if (item.optionalVar) await _assignTarget(item.optionalVar, value, scope);
+    await _withFrom(node, scope, i + 1);
   } catch (e) {
-    for (const { mgr, exit } of managers.reverse()) {
-      const suppress = await exit.call(mgr, excTypeOf(e), excValue(e), null);
-      if (!suppress) throw e;
-    }
+    if (e instanceof _BreakSignal || e instanceof _ContinueSignal || e instanceof _ReturnSignal) throw e;
+    clean = false;
+    if (!await pyBoolMaybe(await ctxExit(mgr, e, isAsync))) throw e;
+  } finally {
+    if (clean) await ctxExit(mgr, null, isAsync);
   }
   return null;
 }
@@ -10982,8 +11117,9 @@ async function _evalComp(node, scope, kind) {
 async function _evalCompIter(node, scope, result, kind, genIdx) {
   const gen = node.generators[genIdx];
   const iterable = await adderEval(gen.iter, scope);
-  // the same iteration as a for loop: user iterables and async ones (generators, itertools)
-  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable && iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  // the same iteration as a for loop: user iterables and async ones (generators, itertools); an
+  // `async for` clause by the async protocol
+  const iter = gen.isAsync ? pyAIter(iterable) : isUserIterable(iterable) ? pyIterAsync(iterable) : iterable && iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
   for await (const value of iter) {
     await _assignTarget(gen.target, value, scope);
     // check if filters
@@ -11919,21 +12055,7 @@ function _yieldFromOf(x) {
 // Synchronous when __exit__ is; a Promise only when __exit__ returns one (a file closing a write
 // handle awaits the VFS) — the lowered call site awaits it, except in sync mode, where a Promise
 // suppression flag would be truthy and swallow the exception.
-function _exitWith(mgr, exc) {
-  if (mgr === null || mgr === undefined || typeof mgr.__exit__ !== 'function') {
-    throw new AdderError(
-      'AttributeError',
-      `'${pyTypeName(mgr)}' object has no attribute '__exit__'`,
-    );
-  }
-  const then = (r, f) => (r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then(f) : f(r));
-  if (exc === null || exc === undefined || (exc && exc.pyType === 'BudgetExceeded')) {
-    // Normal-exit path: discard return; CPython does likewise here.
-    return then(mgr.__exit__(null, null, null), () => false);
-  }
-  // Exception path: pass (type, value, None) and return suppression flag.
-  return mgr.__exit__(excTypeOf(exc), excValue(exc), null);
-}
+function _exitWith(mgr, exc, isAsync) { return ctxExit(mgr, exc, !!isAsync); }
 
 // ── Attribute access ──
 
@@ -12241,6 +12363,8 @@ const _py = {
   makeSlice: (lower, upper, step) => ({ _slice: true, lower, upper, step }),
   // context manager __exit__ (with statement)
   exitWith: _exitWith,
+  enterWith: ctxEnter,
+  aiter: pyAIter,
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
@@ -23618,25 +23742,25 @@ function lowerTry_ad(ctx, node) {
 }
 
 function lowerWith(ctx, node) {
-  // `with mgr as x: body` lowers to (matching CPython's PEP 343 expansion):
+  // `with mgr as x: body` lowers to CPython's PEP 343 expansion:
   //     __mgr = mgr
-  //     x = await __mgr.__enter__()
+  //     __enter = _py.enterWith(__mgr)        # the bound __enter__, once __exit__ is known too
+  //     __ok = True
   //     try:
+  //         x = await __enter()
   //         body
-  //         await _py.exitWith(__mgr, None)  # normal-exit: returns ignored
   //     except BaseException as __e:
-  //         if not (await _py.exitWith(__mgr, __e)):
-  //             raise
-  //
-  // For multiple managers `with a, b: body`, each manager wraps the next
-  // in its own try (equivalent to nested `with` statements). Built
-  // recursively so an inner manager's __exit__ suppression propagates
-  // correctly — outer managers see no exception if an inner one suppressed.
-  // _py.exitWith returns the (possibly awaited) suppression flag from
-  // __exit__; the catch checks it and only re-raises on falsy.
+  //         __ok = False
+  //         if not (await _py.exitWith(__mgr, __e)): raise
+  //     finally:
+  //         if __ok: await _py.exitWith(__mgr, None)
+  // The normal exit is in the finally so return / break / continue out of the body run it too
+  // (they're JS's own here, not exceptions), and outside the except so an exit that raises isn't
+  // called again. `with a, b:` is `with a: with b:` — an exception the inner one suppressed is gone
+  // for the outer. `async with` calls __aenter__ / __aexit__.
   const l = ctx.loc(node);
+  const isAsync = ctx.emit('const', [!!node.isAsync], BOOL, l);
 
-  // Recursive lower: items[idx..] wrapping `body`.
   const lowerOne = (idx) => {
     if (idx >= node.items.length) {
       for (const s of node.body) lowerStmt_ad(ctx, s);
@@ -23644,54 +23768,55 @@ function lowerWith(ctx, node) {
     }
     const item = node.items[idx];
 
-    // __mgr = <expr>;  x = await __mgr.__enter__()
     const mgr = lowerExpr_ad(ctx, item.contextExpr);
     const mgrName = ctx.makeTempName('with_mgr');
     ctx.emit('store', [mgrName, mgr.id], VOID, l);
     ctx.symbols.set(mgrName, mgr.id);
-    const mgrLoad = ctx.emit('load', [mgrName], DYNAMIC, l);
-    const enterName = ctx.emit('const', ['__enter__'], STRING, l);
-    const enterFn = emitPyCall(ctx, 'getattr', [mgrLoad, enterName], l);
-    const enterCall = emitAwaitedCall_ad(ctx, enterFn.id, [], l);
-    if (item.optionalVar) {
-      lowerAssignTarget(ctx, item.optionalVar, enterCall, l);
-    }
+    const enterFn = emitPyCall(ctx, 'enterWith', [ctx.emit('load', [mgrName], DYNAMIC, l), isAsync], l);
+    // (the value is stored here, before the try, so the call can't be inlined into it)
+    const entered = emitAwaitedCall_ad(ctx, enterFn.id, [], l);
+    const valName = ctx.makeTempName('with_val');
+    ctx.emit('store', [valName, entered.id], VOID, l);
+    ctx.symbols.set(valName, entered.id);
+    const okName = ctx.makeTempName('with_ok');
+    const t = ctx.emit('const', [true], BOOL, l);
+    ctx.emit('store', [okName, t.id], VOID, l);
+    ctx.symbols.set(okName, t.id);
 
-    // try-body: recurse for next manager (or emit body), then call
-    // _py.exitWith(__mgr, null) for the normal-exit path. exitWith may be
-    // async (user __exit__ is async-wrapped); await the result.
     const tryBody = captureOps(ctx, () => {
+      if (item.optionalVar) lowerAssignTarget(ctx, item.optionalVar, ctx.emit('load', [valName], DYNAMIC, l), l);
       lowerOne(idx + 1);
-      const mgrLoadEx = ctx.emit('load', [mgrName], DYNAMIC, l);
-      const noneVal = ctx.emit('const', [null], VOID, l);
-      const exitCall = emitPyCall(ctx, 'exitWith', [mgrLoadEx, noneVal], l);
-      ctx.emit('await', [exitCall.id], DYNAMIC, l);
     });
 
-    // catch: call exitWith(__mgr, e); await; if not truthy, re-raise.
     const catchParam = ctx.makeTempName('with_exc');
     const catchBody = captureOps(ctx, () => {
-      const mgrLoadEx = ctx.emit('load', [mgrName], DYNAMIC, l);
-      const eLoad = ctx.emit('load', [catchParam], DYNAMIC, l);
-      const exitCall = emitPyCall(ctx, 'exitWith', [mgrLoadEx, eLoad], l);
+      const f = ctx.emit('const', [false], BOOL, l);
+      ctx.emit('store', [okName, f.id], VOID, l);
+      const exitCall = emitPyCall(ctx, 'exitWith', [ctx.emit('load', [mgrName], DYNAMIC, l), ctx.emit('load', [catchParam], DYNAMIC, l), isAsync], l);
       const suppress = ctx.emit('await', [exitCall.id], DYNAMIC, l);
       const truthy = emitPyCall(ctx, 'truthy', [suppress], l, BOOL);
       const negated = ctx.emit('logical_not', [truthy.id], BOOL, l);
       const raiseBody = captureOps(ctx, () => {
-        const eLoad2 = ctx.emit('load', [catchParam], DYNAMIC, l);
-        emitPyCall(ctx, 'raise', [eLoad2], l, VOID);
+        emitPyCall(ctx, 'raise', [ctx.emit('load', [catchParam], DYNAMIC, l)], l, VOID);
       });
-      ctx.emit('if_region', [negated.id], VOID, l, {
-        then_body: raiseBody,
-        else_body: [],
+      ctx.emit('if_region', [negated.id], VOID, l, { then_body: raiseBody, else_body: [] });
+    });
+
+    const finallyBody = captureOps(ctx, () => {
+      const ok = ctx.emit('load', [okName], BOOL, l);
+      const exitBody = captureOps(ctx, () => {
+        const noneVal = ctx.emit('const', [null], VOID, l);
+        const exitCall = emitPyCall(ctx, 'exitWith', [ctx.emit('load', [mgrName], DYNAMIC, l), noneVal, isAsync], l);
+        ctx.emit('await', [exitCall.id], DYNAMIC, l);
       });
+      ctx.emit('if_region', [ok.id], VOID, l, { then_body: exitBody, else_body: [] });
     });
 
     ctx.emit('try_region', [], VOID, l, {
       try_body: tryBody,
       catch_param: catchParam,
       catch_body: catchBody,
-      finally_body: [],
+      finally_body: finallyBody,
     });
   };
 
@@ -24053,6 +24178,7 @@ function _lowerRangeLoop(ctx, node, l) {
 }
 
 function _lowerForLoopBody(ctx, node, l) {
+  if (node.isAsync) return _lowerAsyncFor(ctx, node, l);
   if (node.target.type === 'Name' && _isPlainRangeCall(ctx, node.iter)) return _lowerRangeLoop(ctx, node, l);
   const iter = lowerExpr_ad(ctx, node.iter);
   // Where the code is async anyway (cell level, a top-level function that isn't sync), the loop
@@ -24101,6 +24227,20 @@ function _lowerForLoopBody(ctx, node, l) {
   }
 
   throw new AirLowerError(`unsupported for-loop target: ${node.target.type}`);
+}
+
+// `async for target in src:` — a for-await over _py.aiter(src), which reads it by __aiter__ /
+// __anext__ (an async generator, a class with the protocol) until StopAsyncIteration
+function _lowerAsyncFor(ctx, node, l) {
+  const src = emitPyCall(ctx, 'aiter', [lowerExpr_ad(ctx, node.iter)], l);
+  _preDeclareTargetNames(ctx, node.target, l);
+  const simple = node.target.type === 'Name';
+  const targetName = simple ? node.target.id : ctx.makeTempName('forv');
+  const body = captureOps(ctx, () => {
+    if (!simple) lowerAssignTarget(ctx, node.target, ctx.emit('load', [targetName], DYNAMIC, l), l);
+    for (const s of node.body) lowerStmt_ad(ctx, s);
+  });
+  return ctx.emit('for_of_region', [src.id], VOID, l, { body, phis: [], target_name: targetName, is_await: true, indexed: false });
 }
 
 function _preDeclareTargetNames(ctx, target, l) {
@@ -24612,7 +24752,7 @@ function lowerFuncDef(ctx, node) {
   // (in a class body the function is bound as `__cb_<name>` — see lowerClassDef)
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   // its generator objects show the function's name (`<generator object g at ...>`)
-  if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)});`);
+  if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)}${node.type === 'AsyncFunctionDef' ? ', true' : ''});`);
   if (bailable) {
     const asy = lowerBody(null);
     const asyOp = ctx.emit('func_region', [null], fType, l, {
@@ -24818,6 +24958,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   const l = ctx.loc(node);
   if (genIdx >= node.generators.length) { opts.innermost(); return; }
   const gen = node.generators[genIdx];
+  const asyncClause = !!gen.isAsync;   // `async for` in a comprehension: read by __aiter__ / __anext__
 
   // this clause's filters as nested ifs, then the next clause (or the innermost body)
   const withFilters = (filterIdx) => {
@@ -24832,7 +24973,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   // iterator). The variable is declared afresh in the body: the comprehension's own, like the
   // for-of target below. Not for a clause whose source was already evaluated (a generator
   // expression's first, which Python evaluates eagerly, outside).
-  if (gen.target.type === 'Name' && opts.countedRange && opts.countedRange(genIdx) && _isPlainRangeCall(ctx, gen.iter)) {
+  if (!asyncClause && gen.target.type === 'Name' && opts.countedRange && opts.countedRange(genIdx) && _isPlainRangeCall(ctx, gen.iter)) {
     const name = gen.target.id;
     _emitCountedRange(ctx, gen.iter, l, {
       bindTarget: (cur) => {
@@ -24845,7 +24986,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
     return;
   }
 
-  const iterArr = opts.iterOf(gen, genIdx);
+  const iterArr = asyncClause ? emitPyCall(ctx, 'aiter', [lowerExpr_ad(ctx, gen.iter)], l) : opts.iterOf(gen, genIdx);
   let targetName;
   const body = captureOps(ctx, () => {
     if (gen.target.type === 'Name') {
@@ -24871,7 +25012,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   });
 
   ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait, indexed: !opts.isAwait,
+    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait || asyncClause, indexed: !opts.isAwait && !asyncClause,
   });
 }
 
@@ -24897,6 +25038,8 @@ function _opsAwait(ops) {
 //           generator, itertools, map) or a body that awaits.
 function lowerGeneratorExp(ctx, node) {
   const l = ctx.loc(node);
+  // (an async generator expression — `async for` in it — is the tree-walker's)
+  if (node.generators.some((g) => g.isAsync)) throw new AirLowerError('an async generator expression needs the tree-walker');
   const src = lowerExpr_ad(ctx, node.generators[0].iter);
   const SRC = '__gsrc';
   const build = (isAwait) => {
