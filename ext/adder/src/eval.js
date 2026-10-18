@@ -2111,16 +2111,22 @@ export function resolveRelativeImport(module, pkg, line) {
 
 // `from M import a, b`: an attribute of M, or else its submodule M.a (imported on demand) —
 // `from pkg import submodule` and `from . import sibling` work that way
+// a module's attribute as `mod.name` gives it: a JS module's function is the bound copy attribute
+// access hands out (`from m import f` then `f is m.f`)
+const _modAttr = (mod, k) => {
+  const v = mod[k];
+  return typeof v === 'function' && mod.__adderModule__ && !v._pyClass && !v._pyFunc && !v._pyDef ? adderGetAttr(mod, k) : v;
+};
 export async function importNames(mod, modName, names, line) {
   const out = [];
   for (const { name, alias } of names) {
     if (name === '*') {
       const all = Array.isArray(mod.__all__) ? mod.__all__ : Object.keys(mod).filter((k) => !k.startsWith('_'));
-      for (const k of all) out.push([k, mod[k]]);
+      for (const k of all) out.push([k, _modAttr(mod, k)]);
       continue;
     }
     let v;
-    if (name in mod && mod[name] !== undefined) v = mod[name];
+    if (name in mod && mod[name] !== undefined) v = _modAttr(mod, name);
     else {
       // an attribute the module answers for itself: a module subclass's class-level (lazy)
       // attributes (six.moves), a module __getattr__ (PEP 562)

@@ -268,7 +268,7 @@ function collectDefines_ad(stmts, defines) {
         for (const alias of node.names) defines.add(alias.alias || alias.module.split('.')[0]);   // import a.b binds a
         break;
       case 'ImportFrom':
-        for (const alias of node.names) defines.add(alias.alias || alias.name);
+        for (const alias of node.names) if (alias.name !== '*') defines.add(alias.alias || alias.name);
         break;
       case 'For': case 'AsyncFor':
         collectTargetNames(node.target, defines);
@@ -631,7 +631,11 @@ export function lowerAdder(ast, source, opts) {
   // object too — only when it calls them — and so does its mirroring. In such a program a
   // module-level name is read through the object first (_py.globalLoad), so a name created by
   // `globals()['x'] = …` is visible; programs that don't call them compile as before.
-  if (_callsScopeBuiltin(ast)) {
+  // A module-level `from m import *` binds names known only at run time: the same — they land on
+  // the module object (_py.starInto), and module-level names are read through it — so a name the
+  // module defines and the star import replaces (bisect.py's `from _bisect import *` over its own
+  // defs) reads as the import's.
+  if (_callsScopeBuiltin(ast) || ast.body.some((st) => st && st.type === 'ImportFrom' && st.names.some((n) => n.name === '*'))) {
     ctx.usesGlobals = true;
     if (!ctx.moduleMirror) {
       const m = emitPyCall(ctx, 'mainModule', [], null);
@@ -659,7 +663,10 @@ export function lowerAdder(ast, source, opts) {
   // Pre-analyse top-level FunctionDefs to determine which are sync — done
   // before any body is lowered, so recursive call sites and forward
   // references inside other functions can take the no-await fast path.
-  for (const name of analyseSyncFunctions(ast.body)) {
+  // (not in a module with a star import: any of its names — its own defs, a builtin — may be
+  // replaced by what the import brings, a function that isn't sync)
+  const hasStar = ast.body.some((st) => st && st.type === 'ImportFrom' && st.names.some((n) => n.name === '*'));
+  if (!hasStar) for (const name of analyseSyncFunctions(ast.body)) {
     ctx.syncFunctions.add(name);
   }
   // Seed known-sync builtins (range, len, int, abs, …) into the same set so
@@ -672,7 +679,7 @@ export function lowerAdder(ast, source, opts) {
     // comes from analyseSyncFunctions above (or stays conservatively async →
     // awaited). Seeding it sync unconditionally would skip the await on an
     // async shadow → a Promise leaks through as the value.
-    if (!ctx.defines.has(name)) ctx.syncFunctions.add(name);
+    if (!ctx.defines.has(name) && !hasStar) ctx.syncFunctions.add(name);
   }
 
   // Identify names that will be declared by `function`/`class` syntax —
@@ -1895,9 +1902,11 @@ function _resolveRelative(module, pkg) {
 
 function lowerImportFrom(ctx, node) {
   const l = ctx.loc(node);
-  // `from m import *` binds names known only at run time — the tree-walker's job (AIR binds every
-  // name as a JS variable at compile time; it used to bind nothing here, silently)
-  if (node.names.some((n) => n.name === '*')) throw new AirLowerError('from … import * needs the tree-walker');
+  // `from m import *` binds names known only at run time: at a module's top level, onto the module
+  // object, which the module then reads its names through (see lowerAdder); elsewhere (a class
+  // body, a nested block) the tree-walker's
+  const star = node.names.some((n) => n.name === '*');
+  if (star && !(ctx.topLevel && ctx.usesGlobals && !ctx._classBodyOf)) throw new AirLowerError('from … import * needs the tree-walker');
   // Build names array: [{name, alias}, ...]
   const pairs = node.names.map(({ name, alias }) => {
     const p = [];
@@ -1922,6 +1931,7 @@ function lowerImportFrom(ctx, node) {
     importCall = emitPyCall(ctx, 'importFrom', [moduleName, namesArr], l);
   }
   const result = ctx.emit('await', [importCall.id], DYNAMIC, l);
+  if (star) emitPyCall(ctx, 'starInto', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), result], l, VOID);
   // Destructure result into scope: for each name, bind (alias || name) to result[name]
   for (const { name, alias } of node.names) {
     if (name === '*') continue; // wildcard — would need runtime enumeration

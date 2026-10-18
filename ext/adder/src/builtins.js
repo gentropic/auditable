@@ -1294,6 +1294,7 @@ function _pySetNative(obj, attr) {
 export function adderGetAttr(obj, attr) {
   if (obj !== null && typeof obj === 'object' && obj.__adderClass__ === undefined && _jsGenTag(obj)) {
     const m = _jsGenAttr(obj, attr);
+    if (typeof m === 'function') m.__self__ = obj;   // a bound method's (heapq.merge reads next.__self__)
     if (m !== undefined) return m;
   }
   if (_VALUE_DUNDERS.has(attr) && obj !== null && obj !== undefined && !obj.__adderType__ &&
@@ -1517,7 +1518,7 @@ export function adderGetAttr(obj, attr) {
       if (_isNativeClass(v) || v._pyClass) return v;   // a class (binascii.Error, enum.Enum): never bound
       // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
       // import f` is the same object (binding made a fresh copy per access)
-      if (obj.__adderModule__ && (v._pyFunc || v._pyDef)) return v;
+      if (obj.__adderModule__ && (v._pyFunc || v._pyDef || v._pyModBound)) return v;   // (or one already bound: `bisect = bisect_right`)
       // a function stored ON a Python instance is an attribute, not a method: as it is
       if (obj.__adderType__ && Object.hasOwn(obj, attr)) return v;
       // adder functions expect self as first arg — inject it (plain JS objects used as namespaces)
@@ -1546,7 +1547,7 @@ export function adderGetAttr(obj, attr) {
       }
       if (v._pySync) _defTwin(fn, v._pySync.bind(obj));
       fn._pyName = attr;
-      if (obj.__adderModule__) _moduleBound.get(obj).set(attr, [v, fn]);
+      if (obj.__adderModule__) { _moduleBound.get(obj).set(attr, [v, fn]); Object.defineProperty(fn, '_pyModBound', { value: true }); }
       return fn;
     }
     // regular property access (before dict-like methods, so getters/own props take priority)

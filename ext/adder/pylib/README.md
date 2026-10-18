@@ -11,7 +11,7 @@ extend a JS-provided module as a submodule (`html/parser.py` under adder's own `
 | module | origin |
 |---|---|
 | `xml`, `xml.etree`, `xml.etree.ElementTree` | adder's own (MIT, as the rest of adder) |
-| `unittest` (+ `unittest.mock`), `doctest`, `difflib`, `argparse`, `dataclasses`, `getopt`, `glob`, `shutil`, `pkgutil`, `html.parser`, `_markupbase`, `_colorize` | CPython 3.13 standard library, verbatim — PSF License 2.0, see `LICENSE-PSF.txt` |
+| `unittest` (+ `unittest.mock`), `doctest`, `difflib`, `argparse`, `bisect`, `dataclasses`, `heapq`, `getopt`, `glob`, `shutil`, `pkgutil`, `html.parser`, `_markupbase`, `_colorize` | CPython 3.13 standard library, verbatim — PSF License 2.0, see `LICENSE-PSF.txt` |
 
 Vendored CPython files are kept unmodified; when one needs a change for adder, fix adder
 instead (the engines are meant to run CPython's own source).

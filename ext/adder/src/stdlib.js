@@ -365,7 +365,9 @@ async function _slSiftup(heap, pos) {
   await _slSiftdown(heap, startpos, pos);
 }
 const _slHeapList = (h) => { if (!Array.isArray(h) || h instanceof PyTuple) throw new AdderError('TypeError', 'heap argument must be a list'); return h; };
-adderModules.heapq = {
+// _heapq: the accelerator CPython's heapq.py imports over its own (pylib/heapq.py) — the C
+// module's functions; merge / nlargest / nsmallest are heapq.py's
+adderModules._heapq = {
   heappush: async (heap, item) => { _slHeapList(heap).push(item); await _slSiftdown(heap, 0, heap.length - 1); return null; },
   heappop: async (heap) => {
     if (!_slHeapList(heap).length) throw new AdderError('IndexError', 'index out of range');
@@ -382,24 +384,6 @@ adderModules.heapq = {
     return item;
   },
   heapify: async (x) => { _slHeapList(x); for (let i = (x.length >> 1) - 1; i >= 0; i--) await _slSiftup(x, i); return null; },
-  nlargest: async (n, iterable, ...a) => {
-    const kw = _slKw(a);
-    const s = await pySorted(await pyCollect(iterable), _slOpt(kw, 'key', a[0] ?? null), true);
-    return s.slice(0, Math.max(0, n));
-  },
-  nsmallest: async (n, iterable, ...a) => {
-    const kw = _slKw(a);
-    const s = await pySorted(await pyCollect(iterable), _slOpt(kw, 'key', a[0] ?? null), false);
-    return s.slice(0, Math.max(0, n));
-  },
-  // the inputs are sorted, so a stable sort of their concatenation is the merge (ties keep
-  // the earlier input first, as heapq.merge does)
-  merge: async (...its) => {
-    const kw = _slKw(its);
-    const all = [];
-    for (const it of its) all.push(...(await pyCollect(it)));
-    return (await pySorted(all, _slOpt(kw, 'key', null), !!_slOpt(kw, 'reverse', false)))[Symbol.iterator]();
-  },
 };
 
 // ── bisect ──
@@ -411,7 +395,7 @@ async function _slBisect(right, a, x, args) {
   if (lo < 0) throw new AdderError('ValueError', 'lo must be non-negative');
   if (hi === null) hi = a.length;
   while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
+    const mid = lo + Math.floor((hi - lo) / 2);   // (not (lo + hi) / 2: past 2**52 the sum rounds, and mid can land on hi)
     let v = pyGetItem(a, mid);
     if (key !== null) v = await key(v);
     if (right ? await _slTruthy(pyLt(x, v)) : !(await _slTruthy(pyLt(v, x)))) hi = mid; else lo = mid + 1;
@@ -425,14 +409,15 @@ async function _slInsort(right, a, x, args) {
   a.splice(i, 0, x);
   return null;
 }
-adderModules.bisect = {
+// _bisect: the accelerator CPython's bisect.py imports (pylib/bisect.py makes the aliases)
+adderModules._bisect = {
   bisect_left: (a, x, ...r) => _slBisect(false, a, x, r),
   bisect_right: (a, x, ...r) => _slBisect(true, a, x, r),
-  bisect: (a, x, ...r) => _slBisect(true, a, x, r),
   insort_left: (a, x, ...r) => _slInsort(false, a, x, r),
   insort_right: (a, x, ...r) => _slInsort(true, a, x, r),
-  insort: (a, x, ...r) => _slInsort(true, a, x, r),
 };
+
+for (const m of ['_heapq', '_bisect']) for (const f of Object.values(adderModules[m])) f.__module__ = m;
 
 // ── base64 / binascii ──
 // base64, urlsafe, base32, base16 and encodebytes; binascii's hexlify / crc32. Not here: a85,

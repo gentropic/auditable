@@ -801,6 +801,8 @@ export const _py = {
   exitWith: _exitWith,
   enterWith: ctxEnter,
   aiter: pyAIter,
+  // `from m import *` at a module's top level: its names onto the module object
+  starInto: (mod, names) => { for (const k of Object.keys(names)) mod[k] = names[k]; return null; },
   // the defining module's __name__, for a class's __module__ — absent from exec(code, {})'s globals
   moduleName: (m) => {
     if (m === null || m === undefined) return undefined;
