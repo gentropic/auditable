@@ -56,6 +56,7 @@ function parse({ out, timedOut }) {
 
 // a package `test` with what a module needs: test/__init__, test/support, the helper modules
 // tests import (list_tests, seq_tests, …), and the module (or package) itself
+const STAGE_WITH = { test_cmath: ['test_math'] };
 function stage(mod) {
   const root = join(HERE, 'stage', mod), dir = join(root, 'test');
   if (existsSync(root)) rmSync(root, { recursive: true, force: true });
@@ -63,6 +64,9 @@ function stage(mod) {
   cpSync(join(LIB, 'test', '__init__.py'), join(dir, '__init__.py'));
   cpSync(join(LIB, 'test', 'support'), join(dir, 'support'), { recursive: true });
   for (const f of readdirSync(join(LIB, 'test'))) if (f.endsWith('.py') && !f.startsWith('test_')) cpSync(join(LIB, 'test', f), join(dir, f));
+  cpSync(join(LIB, 'test', 'mathdata'), join(dir, 'mathdata'), { recursive: true });
+  // test modules another one imports helpers from
+  for (const extra of STAGE_WITH[mod] || []) cpSync(join(LIB, 'test', extra + '.py'), join(dir, extra + '.py'));
   const f = join(LIB, 'test', mod + '.py'), d = join(LIB, 'test', mod);
   if (existsSync(f)) cpSync(f, join(dir, mod + '.py'));
   else if (existsSync(d) && statSync(d).isDirectory()) cpSync(d, join(dir, mod), { recursive: true });

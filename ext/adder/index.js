@@ -2827,75 +2827,404 @@ class AdderError extends Error {
 }
 
 // ── Complex number ──
+// CPython 3.13's complexobject.c: the arithmetic converts a real operand to complex(x, 0.0) first
+// (so complex(inf, 0) * 2 is (inf+nanj), as there); division is Smith's algorithm; ** with a small
+// integral exponent multiplies by squaring (c_powi), any other by polar form (_Py_c_pow); errno
+// is _cErr.no — EDOM a division by zero, ERANGE an overflow.
+
+const _cErr = { no: 0 };
+const _C_EDOM = 1, _C_ERANGE = 2;
+// copysign, NaN's sign bit included (JS comparisons can't see it)
+const _cF64 = new Float64Array(1), _cU8 = new Uint8Array(_cF64.buffer);
+function _signBit(x) { _cF64[0] = x; return (_cU8[7] & 0x80) !== 0; }
+const _copysign = (x, y) => (_signBit(y) ? -Math.abs(x) : Math.abs(x));
+// CPython's _Py_c_quot
+function _cQuot(ar, ai, br, bi) {
+  const abr = Math.abs(br), abi = Math.abs(bi);
+  if (abr >= abi) {
+    if (abr === 0) { _cErr.no = _C_EDOM; return [0, 0]; }
+    const ratio = bi / br, denom = br + bi * ratio;
+    return [(ar + ai * ratio) / denom, (ai - ar * ratio) / denom];
+  }
+  if (abi >= abr) {
+    const ratio = br / bi, denom = br * ratio + bi;
+    return [(ar * ratio + ai) / denom, (ai * ratio - ar) / denom];
+  }
+  return [NaN, NaN];   // at least one of b's parts is a NaN
+}
+// CPython's _Py_c_abs: an infinite part makes it infinite, even beside a NaN
+function _cAbs(re, im) {
+  if (!Number.isFinite(re) || !Number.isFinite(im)) {
+    _cErr.no = 0;
+    if (re === Infinity || re === -Infinity) return Math.abs(re);
+    if (im === Infinity || im === -Infinity) return Math.abs(im);
+    return NaN;
+  }
+  const r = Math.hypot(re, im);
+  _cErr.no = Number.isFinite(r) ? 0 : _C_ERANGE;
+  return r;
+}
+const _cProd = (a, b) => [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]];
+// _Py_c_pow
+function _cPow(a, b) {
+  if (b[0] === 0 && b[1] === 0) return [1, 0];
+  if (a[0] === 0 && a[1] === 0) {
+    if (b[1] !== 0 || b[0] < 0) _cErr.no = _C_EDOM;
+    return [0, 0];
+  }
+  const vabs = Math.hypot(a[0], a[1]);
+  let len = Math.pow(vabs, b[0]);
+  const at = Math.atan2(a[1], a[0]);
+  let phase = at * b[0];
+  if (b[1] !== 0) { len /= Math.exp(at * b[1]); phase += b[1] * Math.log(vabs); }
+  return [len * Math.cos(phase), len * Math.sin(phase)];
+}
+// c_powu / c_powi: x**n by squaring
+function _cPowu(x, n) {
+  let r = [1, 0], p = x;
+  for (let mask = 1; mask > 0 && n >= mask; mask *= 2) {
+    if (n & mask) r = _cProd(r, p);
+    p = _cProd(p, p);
+  }
+  return r;
+}
+const _cPowi = (x, n) => (n > 0 ? _cPowu(x, n) : _cQuot(1, 0, ..._cPowu(x, -n)));
+// a real operand as complex parts; null when it isn't a number (NotImplemented)
+function _cOf(v) {
+  if (v instanceof Complex) return [v.real, v.imag];
+  if (typeof v === 'number') return [v, 0];
+  if (typeof v === 'boolean') return [+v, 0];
+  if (typeof v === 'bigint') {
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new AdderError('OverflowError', 'int too large to convert to float');
+    return [n, 0];
+  }
+  return null;
+}
+// a float's repr without the '.0' (format code 'r', how complex prints its parts); `sign`: always
+// a sign, as the imaginary part has one
+function _floatR(x, sign = false) {
+  let s;
+  if (x !== x) s = 'nan';
+  else if (x === Infinity || x === -Infinity) s = x > 0 ? 'inf' : '-inf';
+  else if (x === 0) s = Object.is(x, -0) ? '-0' : '0';
+  else {
+    const [mant, e] = x.toExponential().split('e');
+    const exp = +e;
+    s = exp >= -4 && exp < 16 ? String(x) : `${mant}e${exp < 0 ? '-' : '+'}${String(Math.abs(exp)).padStart(2, '0')}`;
+  }
+  return sign && s[0] !== '-' ? '+' + s : s;
+}
 
 class Complex {
   constructor(real, imag = 0) {
     this.real = typeof real === 'number' ? real : Number(real);
     this.imag = typeof imag === 'number' ? imag : Number(imag);
   }
-  __add__(other) {
-    if (other instanceof Complex) return new Complex(this.real + other.real, this.imag + other.imag);
-    if (typeof other === 'number') return new Complex(this.real + other, this.imag);
+  __add__(other) { const b = _cOf(other); return b ? new Complex(this.real + b[0], this.imag + b[1]) : NotImplemented; }
+  __radd__(other) { const a = _cOf(other); return a ? new Complex(a[0] + this.real, a[1] + this.imag) : NotImplemented; }
+  __sub__(other) { const b = _cOf(other); return b ? new Complex(this.real - b[0], this.imag - b[1]) : NotImplemented; }
+  __rsub__(other) { const a = _cOf(other); return a ? new Complex(a[0] - this.real, a[1] - this.imag) : NotImplemented; }
+  __mul__(other) { const b = _cOf(other); return b ? new Complex(..._cProd([this.real, this.imag], b)) : NotImplemented; }
+  __rmul__(other) { const a = _cOf(other); return a ? new Complex(..._cProd(a, [this.real, this.imag])) : NotImplemented; }
+  __truediv__(other) { const b = _cOf(other); return b ? Complex._div([this.real, this.imag], b) : NotImplemented; }
+  __rtruediv__(other) { const a = _cOf(other); return a ? Complex._div(a, [this.real, this.imag]) : NotImplemented; }
+  static _div(a, b) {
+    _cErr.no = 0;
+    const q = _cQuot(a[0], a[1], b[0], b[1]);
+    if (_cErr.no === _C_EDOM) { _cErr.no = 0; throw new AdderError('ZeroDivisionError', 'complex division by zero'); }
+    return new Complex(q[0], q[1]);
   }
-  __radd__(left) {
-    if (typeof left === 'number') return new Complex(this.real + left, this.imag);
+  __pow__(other, mod) {
+    const b = _cOf(other);
+    return b ? Complex._pow([this.real, this.imag], b, mod) : NotImplemented;
   }
-  __sub__(other) {
-    if (other instanceof Complex) return new Complex(this.real - other.real, this.imag - other.imag);
-    if (typeof other === 'number') return new Complex(this.real - other, this.imag);
+  __rpow__(other, mod) {
+    const a = _cOf(other);
+    return a ? Complex._pow(a, [this.real, this.imag], mod) : NotImplemented;
   }
-  __rsub__(left) {
-    if (typeof left === 'number') return new Complex(left - this.real, -this.imag);
-  }
-  __mul__(other) {
-    if (other instanceof Complex) return new Complex(this.real * other.real - this.imag * other.imag, this.real * other.imag + this.imag * other.real);
-    if (typeof other === 'number') return new Complex(this.real * other, this.imag * other);
-  }
-  __rmul__(left) {
-    if (typeof left === 'number') return new Complex(this.real * left, this.imag * left);
-  }
-  __truediv__(other) {
-    let or, oi;
-    if (other instanceof Complex) { or = other.real; oi = other.imag; }
-    else if (typeof other === 'number') { or = other; oi = 0; }
-    else return;
-    const denom = or * or + oi * oi;
-    if (denom === 0) throw new AdderError('ZeroDivisionError', 'complex division by zero');
-    return new Complex((this.real * or + this.imag * oi) / denom, (this.imag * or - this.real * oi) / denom);
-  }
-  __rtruediv__(left) {
-    if (typeof left === 'number') return new Complex(left, 0).__truediv__(this);
-  }
-  __pow__(other) {
-    const r = Math.sqrt(this.real * this.real + this.imag * this.imag);
-    const theta = Math.atan2(this.imag, this.real);
-    if (typeof other === 'number') {
-      const newR = Math.pow(r, other);
-      const newTheta = other * theta;
-      return new Complex(newR * Math.cos(newTheta), newR * Math.sin(newTheta));
-    }
-    if (other instanceof Complex) {
-      const logR = Math.log(r), a = other.real, b = other.imag;
-      const newR = Math.exp(a * logR - b * theta);
-      const newTheta = b * logR + a * theta;
-      return new Complex(newR * Math.cos(newTheta), newR * Math.sin(newTheta));
-    }
+  static _pow(a, b, mod) {
+    if (mod !== undefined && mod !== null) throw new AdderError('ValueError', 'complex modulo');
+    _cErr.no = 0;
+    // a small integral exponent: multiply by squaring, faster and more accurate
+    let p = b[1] === 0 && b[0] === Math.floor(b[0]) && Math.abs(b[0]) <= 100 ? _cPowi(a, b[0]) : _cPow(a, b);
+    // _Py_ADJUST_ERANGE2
+    if (Math.abs(p[0]) === Infinity || Math.abs(p[1]) === Infinity) { if (_cErr.no === 0) _cErr.no = _C_ERANGE; }
+    else if (_cErr.no === _C_ERANGE) _cErr.no = 0;
+    const err = _cErr.no;
+    _cErr.no = 0;
+    if (err === _C_EDOM) throw new AdderError('ZeroDivisionError', '0.0 to a negative or complex power');
+    if (err === _C_ERANGE) throw new AdderError('OverflowError', 'complex exponentiation');
+    return new Complex(p[0], p[1]);
   }
   __neg__() { return new Complex(-this.real, -this.imag); }
-  __abs__() { return Math.sqrt(this.real * this.real + this.imag * this.imag); }
-  __eq__(other) {
-    if (other instanceof Complex) return this.real === other.real && this.imag === other.imag;
-    if (typeof other === 'number') return this.imag === 0 && this.real === other;
-    return false;
+  __pos__() { return new Complex(this.real, this.imag); }
+  __abs__() {
+    const r = _cAbs(this.real, this.imag);
+    if (_cErr.no) { _cErr.no = 0; throw new AdderError('OverflowError', 'absolute value too large'); }
+    return r;
   }
   __bool__() { return this.real !== 0 || this.imag !== 0; }
+  __complex__() { return new Complex(this.real, this.imag); }
+  __getnewargs__() { return mkTuple([this.real, this.imag]); }
+  conjugate() { return new Complex(this.real, -this.imag); }
+  // equal to an int exactly (an int past 2**53 isn't rounded to compare), to a float, to a complex
+  __eq__(other) {
+    if (other instanceof Complex) return this.real === other.real && this.imag === other.imag;
+    if (typeof other === 'number' || typeof other === 'boolean') return this.imag === 0 && this.real === +other;
+    if (typeof other === 'bigint') return this.imag === 0 && Number.isInteger(this.real) && BigInt(this.real) === other;
+    return NotImplemented;
+  }
+  __ne__(other) { const r = this.__eq__(other); return r === NotImplemented ? r : !r; }
+  // complex numbers have no order
+  __lt__() { return NotImplemented; }
+  __le__() { return NotImplemented; }
+  __gt__() { return NotImplemented; }
+  __ge__() { return NotImplemented; }
+  // hash(real) + 1000003 * hash(imag), in a wrapping 64-bit Py_hash_t — so hash(x) == hash(complex(x))
+  __hash__() {
+    const hr = BigInt(_pyHash(this.real)), hi = BigInt(_pyHash(this.imag));
+    let h = BigInt.asIntN(64, hr + 1000003n * hi);
+    if (h === -1n) h = -2n;
+    return h >= -9007199254740991n && h <= 9007199254740991n ? Number(h) : h;
+  }
   __repr__() {
-    if (this.real === 0) return `${this.imag}j`;
-    const sign = this.imag >= 0 ? '+' : '';
-    return `(${this.real}${sign}${this.imag}j)`;
+    // a real part of +0 is left out, and so are the parentheses
+    if (this.real === 0 && !Object.is(this.real, -0)) return `${_floatR(this.imag)}j`;
+    return `(${_floatR(this.real)}${_floatR(this.imag, true)}j)`;
   }
   __str__() { return this.__repr__(); }
-  get conjugate() { return () => new Complex(this.real, -this.imag); }
+  // format_complex_internal: each part formatted as a float, the imaginary one always signed unless
+  // the real part is left out; then padded as a whole. No '=' alignment, no zero padding.
+  __format__(spec) {
+    spec = String(spec ?? '');
+    const m = /^(?:([\s\S])?([<>=^]))?([+\- ])?(z)?(#)?(0)?(\d+)?([,_])?(?:\.(\d+))?([\s\S])?$/.exec(spec);
+    if (!m) throw new AdderError('ValueError', 'Invalid format specifier');
+    const [, fill = ' ', align, sign, noNeg0, alt, zero, width, group, precS] = m;
+    let type = m[10] || '';
+    if (align === '=') throw new AdderError('ValueError', "'=' alignment flag is not allowed in complex format specifier");
+    if (zero) throw new AdderError('ValueError', 'Zero padding is not allowed in complex format specifier');
+    if (type && !'eEfFgGn'.includes(type)) throw new AdderError('ValueError', `Unknown format code '${type}' for object of type 'complex'`);
+    let re = this.real, im = this.imag, skipRe = false, parens = false, defPrec = 6;
+    if (!type) {
+      // like str(self)
+      type = 'r'; defPrec = 0;
+      if (re === 0 && !Object.is(re, -0)) skipRe = true; else parens = true;
+    }
+    if (type === 'n') type = 'g';
+    let prec = precS === undefined ? -1 : +precS;
+    if (prec < 0) prec = defPrec;
+    else if (type === 'r') type = 'g';
+    const part = (x, sgn) => {
+      let body = type === 'r' ? _floatR(Math.abs(x)) : _fmtFloatExact(Math.abs(x), type, prec, !!alt);
+      if (group && Number.isFinite(x)) {
+        const cut = body.search(/[.eE]/), ip = cut < 0 ? body : body.slice(0, cut);
+        body = ip.replace(/\B(?=(\d{3})+(?!\d))/g, group) + (cut < 0 ? '' : body.slice(cut));
+      }
+      let neg = x === x && _signBit(x);
+      if (neg && noNeg0 && !/[1-9]/.test(body.replace(/e.*$/i, ''))) neg = false;
+      return (neg ? '-' : sgn === '+' ? '+' : sgn === ' ' ? ' ' : '') + body;
+    };
+    let out = (skipRe ? '' : part(re, sign)) + part(im, skipRe ? sign : '+') + 'j';
+    if (parens) out = `(${out})`;
+    const w = width ? +width : 0;
+    if (out.length < w) {
+      const pad = w - out.length, a = align || '>';
+      out = a === '<' ? out + fill.repeat(pad) : a === '^' ? fill.repeat(pad >> 1) + out + fill.repeat(pad - (pad >> 1)) : fill.repeat(pad) + out;
+    }
+    return out;
+  }
+}
+// A non-negative double formatted 'e' / 'f' / 'g' (or upper case) from its EXACT value, rounded half
+// to even as CPython's dtoa does (JS's toFixed / toExponential round half up, and toFixed turns to
+// exponent notation from 1e21)
+function _f64Parts(x) {
+  _cF64[0] = x;
+  const bits = new BigUint64Array(_cF64.buffer)[0];
+  const eb = Number((bits >> 52n) & 0x7ffn), frac = bits & ((1n << 52n) - 1n);
+  return eb === 0 ? [frac, -1074] : [frac | (1n << 52n), eb - 1075];
+}
+// round(x * 10**k), half even
+function _scaledRound(x, k) {
+  const [m, e] = _f64Parts(x);
+  let num = m, den = 1n;
+  if (k >= 0) num *= 10n ** BigInt(k); else den *= 10n ** BigInt(-k);
+  if (e >= 0) num <<= BigInt(e); else den <<= BigInt(-e);
+  let q = num / den;
+  const r2 = 2n * (num - q * den);
+  if (r2 > den || (r2 === den && (q & 1n))) q += 1n;
+  return q;
+}
+function _exactFixed(x, frac) {
+  const s = _scaledRound(x, frac).toString().padStart(frac + 1, '0');
+  return frac ? `${s.slice(0, -frac)}.${s.slice(-frac)}` : s;
+}
+// [the prec+1 significant digits, the decimal exponent]
+function _exactSig(x, prec) {
+  if (x === 0) return ['0'.repeat(prec + 1), 0];
+  let exp = +x.toExponential().split('e')[1];
+  const lo = 10n ** BigInt(prec), hi = lo * 10n;
+  for (let i = 0; i < 3; i++) {
+    const q = _scaledRound(x, prec - exp);
+    if (q >= hi) exp += 1;
+    else if (q < lo) exp -= 1;
+    else return [q.toString(), exp];
+  }
+  return [_scaledRound(x, prec - exp).toString().slice(0, prec + 1), exp];
+}
+function _fmtFloatExact(x, type, prec, alt) {
+  const upper = type === 'E' || type === 'F' || type === 'G';
+  if (!Number.isFinite(x)) { const s = x !== x ? 'nan' : 'inf'; return upper ? s.toUpperCase() : s; }
+  const t = type.toLowerCase();
+  const expStr = (n) => `e${n < 0 ? '-' : '+'}${String(Math.abs(n)).padStart(2, '0')}`;
+  let s;
+  if (t === 'f') {
+    s = _exactFixed(x, prec);
+    if (alt && prec === 0) s += '.';
+  } else if (t === 'e') {
+    const [d, exp] = _exactSig(x, prec);
+    s = d[0] + (prec || alt ? '.' : '') + d.slice(1) + expStr(exp);
+  } else {
+    const p = prec === 0 ? 1 : prec;
+    const [d, exp] = _exactSig(x, p - 1);
+    if (exp >= -4 && exp < p) {
+      s = _exactFixed(x, p - 1 - exp);
+      if (alt) { if (!s.includes('.')) s += '.'; }
+      else if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
+    } else {
+      let mant = d[0] + (p > 1 || alt ? '.' : '') + d.slice(1);
+      if (!alt && mant.includes('.')) mant = mant.replace(/0+$/, '').replace(/\.$/, '');
+      s = mant + expStr(exp);
+    }
+  }
+  return upper ? s.toUpperCase() : s;
+}
+
+// complex(real=0, imag=0), as complex_new: a string parses (alone); a first argument's __complex__ is
+// asked first; otherwise each argument is a number (a complex, a float, __float__, __index__), and a
+// complex argument contributes its imaginary part: complex(a, b) is a + b*1j.
+function _complexNew(...args) {
+  const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw === true ? args.pop() : null;
+  if (args.length > 2) throw new AdderError('TypeError', `complex() takes at most 2 arguments (${args.length} given)`);
+  let real = args[0], imag = args[1];
+  if (kw) {
+    for (const k of Object.keys(kw)) {
+      if (k === '_kw') continue;
+      if (k !== 'real' && k !== 'imag') throw new AdderError('TypeError', `complex() got an unexpected keyword argument '${k}'`);
+      if ((k === 'real' && args.length >= 1) || (k === 'imag' && args.length >= 2)) throw new AdderError('TypeError', `argument for complex() given by name ('${k}') and position (${k === 'real' ? 1 : 2})`);
+      if (k === 'real') real = kw.real; else imag = kw.imag;
+    }
+  }
+  if (real === undefined) real = 0;
+  if (real instanceof Complex && imag === undefined) return real;
+  const rs = strValue(real);
+  if (rs !== null) {
+    if (imag !== undefined) throw new AdderError('TypeError', "complex() can't take second arg if first is a string");
+    return _complexFromString(rs);
+  }
+  if (imag !== undefined && strValue(imag) !== null) throw new AdderError('TypeError', "complex() second arg can't be a string");
+  const isNumberish = (v) => v instanceof Complex || typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint' ||
+    (v !== null && typeof v === 'object' && (typeof v.__float__ === 'function' || typeof v.__index__ === 'function'));
+  const finish = (crC) => {
+    if (!crC && !isNumberish(real)) throw new AdderError('TypeError', `complex() first argument must be a string or a number, not '${pyTypeName(real)}'`);
+    if (imag !== undefined && !isNumberish(imag)) throw new AdderError('TypeError', `complex() second argument must be a number, not '${pyTypeName(imag)}'`);
+    const crIsComplex = !!crC || real instanceof Complex;
+    const crv = crC ? [crC.real, crC.imag] : real instanceof Complex ? [real.real, real.imag] : _floatArg(real);
+    const civ = imag === undefined ? null : imag instanceof Complex ? [imag.real, imag.imag] : _floatArg(imag);
+    return _thenAll([crv, civ], ([cr, ci]) => {
+      if (cr.length === 1) cr = [cr[0], 0];
+      let ciReal;
+      if (ci === null) ciReal = cr[1];
+      else {
+        ciReal = ci[0];
+        if (imag instanceof Complex) cr = [cr[0] - ci[1], cr[1]];
+        if (crIsComplex) ciReal += cr[1];
+      }
+      return new Complex(cr[0], ciReal);
+    });
+  };
+  if (real !== null && typeof real === 'object' && !(real instanceof Complex) && typeof real.__complex__ === 'function') {
+    const chk = (v) => {
+      if (!(v instanceof Complex)) throw new AdderError('TypeError', `__complex__ returned non-complex (type ${pyTypeName(v)})`);
+      return finish(v);
+    };
+    const r = syncOf(real.__complex__).call(real);
+    return _isThenable(r) ? r.then(chk) : chk(r);
+  }
+  return finish(null);
+}
+// PyNumber_Float for complex(): [x] (or a Promise of it)
+function _floatArg(v) {
+  if (typeof v === 'number') return [v];
+  const c = _cOf(v);
+  if (c) return [c[0]];
+  for (const m of ['__float__', '__index__']) {
+    if (v !== null && typeof v === 'object' && typeof v[m] === 'function') {
+      const chk = (r) => {
+        if (m === '__float__' ? typeof r !== 'number' : !(typeof r === 'number' && Number.isInteger(r)) && typeof r !== 'bigint' && typeof r !== 'boolean') {
+          throw new AdderError('TypeError', `${pyTypeName(v)}.${m} returned non-${m === '__float__' ? 'float' : 'int'} (type ${pyTypeName(r)})`);
+        }
+        return [_cOf(r)[0]];
+      };
+      const r = syncOf(v[m]).call(v);
+      return _isThenable(r) ? r.then(chk) : chk(r);
+    }
+  }
+  throw new AdderError('TypeError', `must be real number, not ${pyTypeName(v)}`);
+}
+const _thenAll = (vs, f) => (vs.some(_isThenable) ? Promise.all(vs).then(f) : f(vs));
+// a float literal at the front of a string, as PyOS_string_to_double reads one
+const _C_FLOAT_RE = /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|inf(?:inity)?|nan)/i;
+function _cParseFloat(t) {
+  const low = t.toLowerCase(), neg = low[0] === '-';
+  if (low.endsWith('nan')) return neg ? -NaN : NaN;
+  if (low.endsWith('inf') || low.endsWith('infinity')) return neg ? -Infinity : Infinity;
+  return Number(t);
+}
+const _cIsSpace = (c) => c !== undefined && c !== '﻿' && /\s/.test(c);
+// complex_from_string_inner: <float>, <float>j, <float><signed-float>j, and <float><sign>j, <sign>j,
+// j — optionally in parentheses, whitespace around; underscores only between digits
+function _complexFromString(str) {
+  let s = str;
+  if (s.includes('_')) {
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '_' && !(/[0-9]/.test(s[i - 1] ?? '') && /[0-9]/.test(s[i + 1] ?? ''))) {
+        throw new AdderError('ValueError', `could not convert string to complex: ${pyRepr(str)}`);
+      }
+    }
+    s = s.replace(/_/g, '');
+  }
+  const bad = () => new AdderError('ValueError', 'complex() arg is a malformed string');
+  const n = s.length;
+  let i = 0, x = 0, y = 0, bracket = false;
+  while (i < n && _cIsSpace(s[i])) i++;
+  if (s[i] === '(') { bracket = true; i++; while (i < n && _cIsSpace(s[i])) i++; }
+  const num = (at) => { const mm = _C_FLOAT_RE.exec(s.slice(at)); return mm ? [mm[0].length, _cParseFloat(mm[0])] : null; };
+  const isJ = (c) => c === 'j' || c === 'J';
+  const a = num(i);
+  if (a) {
+    i += a[0];
+    if (s[i] === '+' || s[i] === '-') {
+      x = a[1];
+      const b = num(i);
+      if (b) { y = b[1]; i += b[0]; } else { y = s[i] === '+' ? 1 : -1; i++; }
+      if (!isJ(s[i])) throw bad();
+      i++;
+    } else if (isJ(s[i])) { i++; y = a[1]; }
+    else x = a[1];
+  } else {
+    if (s[i] === '+' || s[i] === '-') { y = s[i] === '+' ? 1 : -1; i++; } else y = 1;
+    if (!isJ(s[i])) throw bad();
+    i++;
+  }
+  while (i < n && _cIsSpace(s[i])) i++;
+  if (bracket) {
+    if (s[i] !== ')') throw bad();
+    i++;
+    while (i < n && _cIsSpace(s[i])) i++;
+  }
+  if (i !== n) throw bad();
+  return new Complex(x, y);
 }
 
 // ── type helpers ──
@@ -3685,6 +4014,150 @@ function _pySetNative(obj, attr) {
   }
   return false;
 }
+// ── int and float attributes ──
+// A number is an int when it is integral (adder can't tell 2 from 2.0): it gets int's methods, and
+// float's too (hex, is_integer, as_integer_ratio) — what a float-shaped caller asks for still works.
+const _bigOut = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
+const _isIntVal = (x) => typeof x === 'bigint' || typeof x === 'boolean' || Number.isInteger(x);
+const _bitLen = (b) => (b === 0n ? 0 : (b < 0n ? -b : b).toString(2).length);
+function _numKw(name, a, names) {
+  const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw === true ? a.pop() : null;
+  const out = {};
+  if (kw) for (const k of Object.keys(kw)) {
+    if (k === '_kw') continue;
+    if (!names.includes(k)) throw new AdderError('TypeError', `${name}() got an unexpected keyword argument '${k}'`);
+    out[k] = kw[k];
+  }
+  return out;
+}
+// int.to_bytes(length=1, byteorder='big', *, signed=False)
+function _intToBytes(x, ...a) {
+  const kw = _numKw('to_bytes', a, ['length', 'byteorder', 'signed']);
+  const length = Number(a[0] ?? kw.length ?? 1), order = a[1] ?? kw.byteorder ?? 'big', signed = !!(kw.signed ?? false);
+  if (a.length > 2) throw new AdderError('TypeError', `to_bytes() takes at most 2 positional arguments (${a.length} given)`);
+  if (order !== 'big' && order !== 'little') throw new AdderError('ValueError', "byteorder must be either 'little' or 'big'");
+  if (length < 0) throw new AdderError('ValueError', 'length argument must be non-negative');
+  let b = BigInt(_asInt(x));
+  if (b < 0n && !signed) throw new AdderError('OverflowError', "can't convert negative int to unsigned");
+  const bits = BigInt(length * 8);
+  const lim = signed ? 1n << (bits > 0n ? bits - 1n : 0n) : 1n << bits;
+  if (signed ? (length === 0 ? b !== 0n : b < -lim || b >= lim) : b >= lim) throw new AdderError('OverflowError', 'int too big to convert');
+  if (b < 0n) b += 1n << bits;
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++) { out[order === 'big' ? length - 1 - i : i] = Number(b & 0xffn); b >>= 8n; }
+  return out;
+}
+// int.from_bytes(bytes, byteorder='big', *, signed=False)
+function _intFromBytes(...a) {
+  const kw = _numKw('from_bytes', a, ['bytes', 'byteorder', 'signed']);
+  const src = a[0] ?? kw.bytes, order = a[1] ?? kw.byteorder ?? 'big', signed = !!(kw.signed ?? false);
+  if (src === undefined) throw new AdderError('TypeError', "from_bytes() missing required argument 'bytes' (pos 1)");
+  if (order !== 'big' && order !== 'little') throw new AdderError('ValueError', "byteorder must be either 'little' or 'big'");
+  if (typeof src === 'string') throw new AdderError('TypeError', 'cannot convert \'str\' object to bytes');
+  const bytes = src instanceof Uint8Array ? src : ArrayBuffer.isView(src) ? new Uint8Array(src.buffer, src.byteOffset, src.byteLength) : Uint8Array.from([...pyIter(src)].map((v) => {
+    const n = _asInt(v);
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
+    return n;
+  }));
+  let b = 0n;
+  const n = bytes.length;
+  for (let i = 0; i < n; i++) b = (b << 8n) | BigInt(bytes[order === 'big' ? i : n - 1 - i]);
+  if (signed && n && (bytes[order === 'big' ? 0 : n - 1] & 0x80)) b -= 1n << BigInt(n * 8);
+  return _bigOut(b);
+}
+// float.as_integer_ratio: the exact value, lowest terms
+function _floatRatio(x) {
+  if (x !== x) throw new AdderError('ValueError', 'cannot convert NaN to integer ratio');
+  if (!Number.isFinite(x)) throw new AdderError('OverflowError', 'cannot convert Infinity to integer ratio');
+  const [m0, e] = _f64Parts(Math.abs(x));
+  let m = m0, d = 1n;
+  if (e >= 0) m <<= BigInt(e);
+  else {
+    let k = -e;
+    while (k > 0 && m && !(m & 1n)) { m >>= 1n; k--; }
+    d <<= BigInt(k);
+  }
+  if (m === 0n) d = 1n;
+  return mkTuple([_bigOut(x < 0 ? -m : m), _bigOut(d)]);
+}
+// float.hex: [-]0x1.<13 hex digits>p<exp> (0x0. for a subnormal)
+function _floatHex(x) {
+  if (x !== x) return 'nan';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  const sign = _signBit(x) ? '-' : '';
+  if (x === 0) return `${sign}0x0.0p+0`;
+  _cF64[0] = Math.abs(x);
+  const bits = new BigUint64Array(_cF64.buffer)[0];
+  const eb = Number(bits >> 52n), frac = (bits & ((1n << 52n) - 1n)).toString(16).padStart(13, '0');
+  const exp = eb === 0 ? -1022 : eb - 1023;
+  return `${sign}0x${eb === 0 ? 0 : 1}.${frac}p${exp < 0 ? '-' : '+'}${Math.abs(exp)}`;
+}
+// float.fromhex, correctly rounded (half even)
+function _floatFromHex(str) {
+  const s = String(str).trim();
+  const bad = () => new AdderError('ValueError', 'invalid hexadecimal floating-point string');
+  const sp = /^([+-]?)(?:(inf(?:inity)?)|(nan)|(?:0x)?([0-9a-f]*)(?:\.([0-9a-f]*))?(?:p([+-]?\d+))?)$/i.exec(s);
+  if (!sp) throw bad();
+  const neg = sp[1] === '-';
+  if (sp[2]) return neg ? -Infinity : Infinity;
+  if (sp[3]) return NaN;
+  const ip = sp[4] || '', fp = sp[5] || '';
+  if (!ip && !fp) throw bad();
+  let m = BigInt('0x' + ((ip + fp).replace(/^0+/, '') || '0'));
+  if (m === 0n) return neg ? -0 : 0;
+  const e = Number(sp[6] || 0) - 4 * fp.length;
+  const bl = m.toString(2).length;
+  if (bl - 1 + e >= 1024) throw new AdderError('OverflowError', 'hexadecimal value too large to represent as a float');
+  const lsb = Math.max(bl - 1 + e - 52, -1074);
+  const shift = lsb - e;
+  if (shift > 0) {
+    const S = BigInt(shift), q = m >> S, r = m - (q << S), half = 1n << (S - 1n);
+    m = r > half || (r === half && (q & 1n)) ? q + 1n : q;
+  } else m <<= BigInt(-shift);
+  const v = Number(m) * 2 ** lsb;
+  if (!Number.isFinite(v)) throw new AdderError('OverflowError', 'hexadecimal value too large to represent as a float');
+  return neg ? -v : v;
+}
+const _numOps = ['__add__', '__sub__', '__mul__', '__truediv__', '__floordiv__', '__mod__', '__pow__', '__and__', '__or__', '__xor__',
+  '__lshift__', '__rshift__', '__radd__', '__rsub__', '__rmul__', '__rtruediv__', '__rfloordiv__', '__rmod__', '__rpow__', '__rand__',
+  '__ror__', '__rxor__', '__eq__', '__ne__', '__lt__', '__le__', '__gt__', '__ge__', '__neg__', '__str__', '__repr__', '__hash__'];
+// x.<attr> for a number (an int, a float, a bool), or undefined
+function _numAttr(x, attr) {
+  const isInt = _isIntVal(x);
+  const v = typeof x === 'boolean' ? +x : x;
+  switch (attr) {
+    case 'real': return v;
+    case 'imag': return 0;
+    case 'conjugate': return () => v;
+    case 'is_integer': return () => isInt;
+    case 'as_integer_ratio': return () => (isInt ? mkTuple([v, 1]) : _floatRatio(v));
+    case 'hex': return typeof v === 'number' ? () => _floatHex(v) : undefined;
+    case '__float__': return () => { const n = Number(v); if (!Number.isFinite(n) && typeof v === 'bigint') throw new AdderError('OverflowError', 'int too large to convert to float'); return n; };
+    case '__int__': case '__trunc__': return () => _builtinInt(v);
+    case '__floor__': return () => (isInt ? v : _builtinInt(Math.floor(v)));
+    case '__ceil__': return () => (isInt ? v : _builtinInt(Math.ceil(v)));
+    case '__round__': return (n) => adderModules.builtins.round(v, n);
+    case '__abs__': return () => (typeof v === 'bigint' ? (v < 0n ? -v : v) : Math.abs(v));
+    case '__pos__': return () => v;
+    case '__bool__': return () => (typeof v === 'bigint' ? v !== 0n : v !== 0);
+    case '__format__': return (spec) => pyFormatValue(x, spec);
+  }
+  if (isInt) {
+    switch (attr) {
+      case 'numerator': return v;
+      case 'denominator': return 1;
+      case '__index__': return () => v;
+      case 'bit_length': return () => _bitLen(BigInt(v));
+      case 'bit_count': return () => { let b = BigInt(v); if (b < 0n) b = -b; let c = 0; while (b) { c += Number(b & 1n); b >>= 1n; } return c; };
+      case 'to_bytes': return (...a) => _intToBytes(v, ...a);
+      case '__invert__': return () => pyInvert(v);
+    }
+  }
+  if (_numOps.includes(attr)) { const f = _TYPE_DUNDERS[attr]; return (...a) => f(x, ...a); }
+  return undefined;
+}
+const _builtinInt = (v) => adderModules.builtins.int(v);
+
 function adderGetAttr(obj, attr) {
   if (obj !== null && typeof obj === 'object' && obj.__adderClass__ === undefined && _jsGenTag(obj)) {
     const m = _jsGenAttr(obj, attr);
@@ -3722,6 +4195,11 @@ function adderGetAttr(obj, attr) {
   }
   // every value has a __class__ (its type) — unless it defines the attribute itself
   if (attr === '__class__' && (obj === null || obj === undefined || !(typeof obj === 'object' && Object.hasOwn(obj, '__class__')))) return typeOf(obj ?? null);
+  if (typeof obj === 'number' || typeof obj === 'bigint' || typeof obj === 'boolean') {
+    const r = _numAttr(obj, attr);
+    if (r !== undefined) return r;
+    throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
+  }
   // an instance's (or module's) attribute dict, live
   if (attr === '__dict__' && obj !== null && typeof obj === 'object' && !Array.isArray(obj) && !(obj instanceof Map) && !(obj instanceof Set) && !(obj instanceof Uint8Array)) {
     return Object.hasOwn(obj, '__dict__') ? obj.__dict__ : new AttrDict(obj);
@@ -3773,6 +4251,25 @@ function adderGetAttr(obj, attr) {
     }
     // a builtin type's operator dunders, unbound (`str.__mod__(fmt, args)`, `int.__add__(1, 2)`,
     // `list.__len__(xs)` — markupsafe calls str's): the operators themselves
+    if (tn === 'int' && attr === 'from_bytes') return _intFromBytes;
+    if (tn === 'float' && attr === 'fromhex') return _floatFromHex;
+    if ((tn === 'int' || tn === 'float' || tn === 'bool') && !Object.hasOwn(_TYPE_DUNDERS, attr) &&
+        _numAttr(tn === 'float' ? 0.5 : 1, attr) !== undefined && attr !== 'real' && attr !== 'imag' && attr !== 'numerator' && attr !== 'denominator') {
+      const fn = (self, ...a) => {
+        if (typeof self !== 'number' && typeof self !== 'bigint' && typeof self !== 'boolean') throw new AdderError('TypeError', `descriptor '${attr}' for '${tn}' objects doesn't apply to a '${pyTypeName(self)}' object`);
+        return _numAttr(self, attr)(...a);
+      };
+      fn._pyName = `${tn}.${attr}`;
+      return fn;
+    }
+    if (tn === 'complex' && typeof Complex.prototype[attr] === 'function' && attr !== 'constructor') {
+      const fn = (self, ...a) => {
+        if (!(self instanceof Complex)) throw new AdderError('TypeError', `descriptor '${attr}' for 'complex' objects doesn't apply to a '${pyTypeName(self)}' object`);
+        return Complex.prototype[attr].apply(self, a);
+      };
+      fn._pyName = `complex.${attr}`;
+      return fn;
+    }
     if (tn && _TYPE_DUNDER_TYPES.has(tn) && Object.hasOwn(_TYPE_DUNDERS, attr)) {
       const f = _TYPE_DUNDERS[attr];
       const fn = (self, ...a) => f(_baseValue(self), ...a);
@@ -5059,15 +5556,15 @@ function pyMod(a, b) {
   throw _binErr('%', a, b);
 }
 function pyPow(a, b, mod) {
-  if (mod !== undefined && mod !== null) return _modPow(a, b, mod);
+  if (mod !== undefined && mod !== null) {
+    if (a instanceof Complex || b instanceof Complex || mod instanceof Complex) throw new AdderError('ValueError', 'complex modulo');
+    return _modPow(a, b, mod);
+  }
   const d = _viaDunder(a, b, '__pow__', '__rpow__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) {
     a = Number(_asInt(a)); b = Number(_asInt(b));
     if (a === 0 && b < 0) throw new AdderError('ZeroDivisionError', '0.0 cannot be raised to a negative power');
-    if (a < 0 && !Number.isInteger(b)) {   // complex, as Python: polar form
-      const r = Math.pow(-a, b), th = Math.PI * b;
-      return new Complex(r * Math.cos(th), r * Math.sin(th));
-    }
+    if (a < 0 && !Number.isInteger(b) && Number.isFinite(b)) return Complex._pow([a, 0], [b, 0]);   // complex, as float_pow defers
     return Math.pow(a, b);
   }
   throw _binErr('**', a, b);
@@ -5437,7 +5934,10 @@ function pyEq(a, b) {
   }
   if (a instanceof AdderRange && b instanceof AdderRange) return pyEq([...a], [...b]);
   if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i]);
-  if (a instanceof Complex || b instanceof Complex) return typeof a?.__eq__ === 'function' ? a.__eq__(b) : false;
+  if (a instanceof Complex || b instanceof Complex) {
+    const r = a instanceof Complex ? a.__eq__(b) : b.__eq__(a);
+    return r === NotImplemented ? a === b : r;
+  }
   return false;
 }
 
@@ -5640,7 +6140,7 @@ const _mathModule = {
   asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
   sqrt: Math.sqrt, exp: Math.exp, log: Math.log, log2: Math.log2, log10: Math.log10,
   pow: Math.pow, floor: Math.floor, ceil: Math.ceil, trunc: Math.trunc,
-  fabs: Math.abs, copysign: (x, y) => Math.sign(y) * Math.abs(x),
+  fabs: Math.abs, copysign: _copysign,
   isnan: Number.isNaN, isinf: (x) => !isFinite(x) && !isNaN(x), isfinite: Number.isFinite,
   radians: (d) => d * Math.PI / 180, degrees: (r) => r * 180 / Math.PI,
   factorial: (n) => { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; },
@@ -8917,7 +9417,7 @@ function adderBuiltins(printFn) {
     property: _propertyType(),
     staticmethod: (fn) => ({ __staticmethod__: true, fn }),
     classmethod: (fn) => ({ __classmethod__: true, fn }),
-    complex: (real, imag) => new Complex(real ?? 0, imag ?? 0),
+    complex: _complexNew,
     callable: (obj) => typeof obj === 'function' || (obj !== null && typeof obj === 'object' && typeof obj.__call__ === 'function'),
     chr: (n) => { n = _idxArg(n); if (n < 0 || n > 0x10ffff) throw new AdderError('ValueError', 'chr() arg not in range(0x110000)'); return String.fromCodePoint(n); },
     ord: (c) => {
@@ -8934,8 +9434,21 @@ function adderBuiltins(printFn) {
     repr: pyReprMaybe,
     Ellipsis, NotImplemented,
     format: (value, spec) => pyFormatValue(value, spec || ''),
-    pow: (x, y, mod) => mod !== undefined ? _modPow(x, y, mod) : Math.pow(x, y),
-    divmod: (a, b) => mkTuple([pyFloorDiv(a, b), pyMod(a, b)]),
+    pow: (...a) => {
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw === true ? a.pop() : null;
+      let [base, exp, mod] = a;
+      if (kw) for (const k of Object.keys(kw)) {
+        if (k === '_kw') continue;
+        if (k === 'base') base = kw.base; else if (k === 'exp') exp = kw.exp; else if (k === 'mod') mod = kw.mod;
+        else throw new AdderError('TypeError', `pow() got an unexpected keyword argument '${k}'`);
+      }
+      if (base === undefined || exp === undefined) throw new AdderError('TypeError', `pow() missing required argument '${base === undefined ? 'base' : 'exp'}' (pos ${base === undefined ? 1 : 2})`);
+      return pyPow(base, exp, mod === null ? undefined : mod);
+    },
+    divmod: (a, b) => {
+      if (a instanceof Complex || b instanceof Complex) throw new AdderError('TypeError', `unsupported operand type(s) for divmod(): '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+      return mkTuple([pyFloorDiv(a, b), pyMod(a, b)]);
+    },
     // id(x): an object's is held aside (a property on it showed as a dict key); equal immutable
     // values share one, as interned ones do in CPython
     id: (obj) => {
@@ -9282,6 +9795,7 @@ _reModule.PatternError = _reModule.error;
 
 
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
+
 
 
 
@@ -12375,6 +12889,8 @@ const _py = {
   // `from m import *` at a module's top level: its names onto the module object
   starInto: (mod, names) => { for (const k of Object.keys(names)) mod[k] = names[k]; return null; },
   // the defining module's __name__, for a class's __module__ — absent from exec(code, {})'s globals
+  // an imaginary literal: 2j
+  imag: (y) => new Complex(0, y),
   moduleName: (m) => {
     if (m === null || m === undefined) return undefined;
     if (m instanceof Map) return m.has('__name__') ? m.get('__name__') : undefined;
@@ -15231,6 +15747,566 @@ adderModules.statistics = {
     return _nmLinReg(slope, ybar - slope * xbar);
   },
 };
+
+// -- stdlib-cmath.js --
+
+// adder stdlib — cmath: CPython's Modules/cmathmodule.c, function by function. The same
+// algorithms (the large-argument and subnormal rescalings, the log1p path near |z| = 1, the
+// branch-cut continuity through signed zeros) and C99 Annex G's special values, as CPython's
+// 7×7 tables indexed by the kind of the real and imaginary parts. errno is a module variable:
+// EDOM is "math domain error" (ValueError), ERANGE "math range error" (OverflowError).
+//
+// Concat-bundled with the rest of adder: top-level names carry a `_cm` prefix.
+
+
+const _CM_DBL_MAX = Number.MAX_VALUE, _CM_DBL_MIN = 2.2250738585072014e-308, _CM_MANT_DIG = 53;
+const _CM_LARGE_DOUBLE = _CM_DBL_MAX / 4;
+const _CM_SQRT_LARGE_DOUBLE = Math.sqrt(_CM_LARGE_DOUBLE);
+const _CM_LOG_LARGE_DOUBLE = Math.log(_CM_LARGE_DOUBLE);
+const _CM_SQRT_DBL_MIN = Math.sqrt(_CM_DBL_MIN);
+const _CM_SCALE_UP = 2 * Math.floor(_CM_MANT_DIG / 2) + 1;   // 53
+const _CM_SCALE_DOWN = -Math.floor((_CM_SCALE_UP + 1) / 2);   // -27
+const _CM_LN2 = Math.LN2, _CM_LN10 = Math.LN10, _CM_PI = Math.PI, _CM_E = Math.E;
+const _CM_EDOM = 1, _CM_ERANGE = 2;
+let _cmErrno = 0;
+
+const _cmCopysign = _copysign;
+const _cmLdexp = (x, n) => x * 2 ** n;
+const _cmFinite = Number.isFinite, _cmIsNaN = Number.isNaN;
+const _cmIsInf = (x) => x === Infinity || x === -Infinity;
+
+// the kind of a double, the special-value tables' index
+function _cmST(d) {
+  if (_cmFinite(d)) {
+    if (d !== 0) return _cmCopysign(1, d) === 1 ? 4 : 1;   // ST_POS / ST_NEG
+    return _cmCopysign(1, d) === 1 ? 3 : 2;   // ST_PZERO / ST_NZERO
+  }
+  if (_cmIsNaN(d)) return 6;   // ST_NAN
+  return _cmCopysign(1, d) === 1 ? 5 : 0;   // ST_PINF / ST_NINF
+}
+
+// The tables, rows by the real part's kind (−inf, −x, −0, +0, +x, +inf, nan), columns by the
+// imaginary part's. U: a cell no argument reaches (both parts finite, or a case the function
+// computes itself).
+const _CM_TOK = {
+  N: NaN, I: Infinity, '-I': -Infinity, P: _CM_PI, '-P': -_CM_PI, P12: _CM_PI / 2, '-P12': -_CM_PI / 2,
+  P14: _CM_PI / 4, '-P14': -_CM_PI / 4, P34: 3 * _CM_PI / 4, '-P34': -3 * _CM_PI / 4, 0: 0, '-0': -0, 1: 1, '-1': -1, U: NaN,
+};
+function _cmTable(rows) {
+  return rows.map((row) => row.trim().split(/\s+/).map((cell) => {
+    const [a, b] = cell === 'U' ? ['U', 'U'] : cell.split(',');
+    return [_CM_TOK[a], _CM_TOK[b]];
+  }));
+}
+const _CM_ACOS = _cmTable([
+  'P34,I P,I P,I P,-I P,-I P34,-I N,I',
+  'P12,I U U U U P12,-I N,N',
+  'P12,I U U U U P12,-I P12,N',
+  'P12,I U U U U P12,-I P12,N',
+  'P12,I U U U U P12,-I N,N',
+  'P14,I 0,I 0,I 0,-I 0,-I P14,-I N,I',
+  'N,I N,N N,N N,N N,N N,-I N,N']);
+const _CM_ACOSH = _cmTable([
+  'I,-P34 I,-P I,-P I,P I,P I,P34 I,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P14 I,-0 I,-0 I,0 I,0 I,P14 I,N',
+  'I,N N,N N,N N,N N,N I,N N,N']);
+const _CM_ASINH = _cmTable([
+  '-I,-P14 -I,-0 -I,-0 -I,0 -I,0 -I,P14 -I,N',
+  '-I,-P12 U U U U -I,P12 N,N',
+  '-I,-P12 U U U U -I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P14 I,-0 I,-0 I,0 I,0 I,P14 I,N',
+  'I,N N,N N,-0 N,0 N,N I,N N,N']);
+const _CM_ATANH = _cmTable([
+  '-0,-P12 -0,-P12 -0,-P12 -0,P12 -0,P12 -0,P12 -0,N',
+  '-0,-P12 U U U U -0,P12 N,N',
+  '-0,-P12 U U U U -0,P12 -0,N',
+  '0,-P12 U U U U 0,P12 0,N',
+  '0,-P12 U U U U 0,P12 N,N',
+  '0,-P12 0,-P12 0,-P12 0,P12 0,P12 0,P12 0,N',
+  '0,-P12 N,N N,N N,N N,N 0,P12 N,N']);
+const _CM_COSH = _cmTable([
+  'I,N U I,0 I,-0 U I,N I,N',
+  'N,N U U U U N,N N,N',
+  'N,0 U U U U N,0 N,0',
+  'N,0 U U U U N,0 N,0',
+  'N,N U U U U N,N N,N',
+  'I,N U I,-0 I,0 U I,N I,N',
+  'N,N N,N N,0 N,0 N,N N,N N,N']);
+const _CM_EXP = _cmTable([
+  '0,0 U 0,-0 0,0 U 0,0 0,0',
+  'N,N U U U U N,N N,N',
+  'N,N U U U U N,N N,N',
+  'N,N U U U U N,N N,N',
+  'N,N U U U U N,N N,N',
+  'I,N U I,-0 I,0 U I,N I,N',
+  'N,N N,N N,-0 N,0 N,N N,N N,N']);
+const _CM_LOG = _cmTable([
+  'I,-P34 I,-P I,-P I,P I,P I,P34 I,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P12 U U U U I,P12 N,N',
+  'I,-P14 I,-0 I,-0 I,0 I,0 I,P14 I,N',
+  'I,N N,N N,N N,N N,N I,N N,N']);
+const _CM_SINH = _cmTable([
+  'I,N U -I,-0 -I,0 U I,N I,N',
+  'N,N U U U U N,N N,N',
+  '0,N U U U U 0,N 0,N',
+  '0,N U U U U 0,N 0,N',
+  'N,N U U U U N,N N,N',
+  'I,N U I,-0 I,0 U I,N I,N',
+  'N,N N,N N,-0 N,0 N,N N,N N,N']);
+const _CM_SQRT = _cmTable([
+  'I,-I 0,-I 0,-I 0,I 0,I I,I N,I',
+  'I,-I U U U U I,I N,N',
+  'I,-I U U U U I,I N,N',
+  'I,-I U U U U I,I N,N',
+  'I,-I U U U U I,I N,N',
+  'I,-I I,-0 I,-0 I,0 I,0 I,I I,N',
+  'I,-I N,N N,N N,N N,N I,I N,N']);
+const _CM_TANH = _cmTable([
+  '-1,0 U -1,-0 -1,0 U -1,0 -1,0',
+  'N,N U U U U N,N N,N',
+  'N,N U U U U N,N N,N',
+  'N,N U U U U N,N N,N',
+  'N,N U U U U N,N N,N',
+  '1,0 U 1,-0 1,0 U 1,0 1,0',
+  'N,N N,N N,-0 N,0 N,N N,N N,N']);
+const _CM_RECT = _cmTable([
+  'I,N U -I,0 -I,-0 U I,N I,N',
+  'N,N U U U U N,N N,N',
+  '0,0 U U U U 0,0 0,0',
+  '0,0 U U U U 0,0 0,0',
+  'N,N U U U U N,N N,N',
+  'I,N U I,-0 I,0 U I,N I,N',
+  'N,N N,N N,0 N,0 N,N N,N N,N']);
+const _cmSpecial = (re, im) => !_cmFinite(re) || !_cmFinite(im);
+const _cmLookup = (table, re, im) => { const v = table[_cmST(re)][_cmST(im)]; return [v[0], v[1]]; };
+
+function _cmSqrt(re, im) {
+  if (_cmSpecial(re, im)) { _cmErrno = 0; return _cmLookup(_CM_SQRT, re, im); }
+  if (re === 0 && im === 0) return [0, im];
+  let ax = Math.abs(re), ay = Math.abs(im), s;
+  if (ax < _CM_DBL_MIN && ay < _CM_DBL_MIN) {
+    // hypot(ax, ay) may be subnormal: rescale
+    ax = _cmLdexp(ax, _CM_SCALE_UP);
+    s = _cmLdexp(Math.sqrt(ax + Math.hypot(ax, _cmLdexp(ay, _CM_SCALE_UP))), _CM_SCALE_DOWN);
+  } else {
+    ax /= 8;
+    s = 2 * Math.sqrt(ax + Math.hypot(ax, ay / 8));
+  }
+  const d = ay / (2 * s);
+  _cmErrno = 0;
+  return re >= 0 ? [s, _cmCopysign(d, im)] : [d, _cmCopysign(s, im)];
+}
+
+function _cmAcos(re, im) {
+  if (_cmSpecial(re, im)) { _cmErrno = 0; return _cmLookup(_CM_ACOS, re, im); }
+  let rr, ri;
+  if (Math.abs(re) > _CM_LARGE_DOUBLE || Math.abs(im) > _CM_LARGE_DOUBLE) {
+    // avoid unnecessary overflow for large arguments
+    rr = Math.atan2(Math.abs(im), re);
+    // split into cases for the branch cut's continuity with unsigned zeros
+    if (re < 0) ri = -_cmCopysign(Math.log(Math.hypot(re / 2, im / 2)) + _CM_LN2 * 2, im);
+    else ri = _cmCopysign(Math.log(Math.hypot(re / 2, im / 2)) + _CM_LN2 * 2, -im);
+  } else {
+    const s1 = _cmSqrt(1 - re, -im), s2 = _cmSqrt(1 + re, im);
+    rr = 2 * Math.atan2(s1[0], s2[0]);
+    ri = Math.asinh(s2[0] * s1[1] - s2[1] * s1[0]);
+  }
+  _cmErrno = 0;
+  return [rr, ri];
+}
+
+function _cmAcosh(re, im) {
+  if (_cmSpecial(re, im)) { _cmErrno = 0; return _cmLookup(_CM_ACOSH, re, im); }
+  let rr, ri;
+  if (Math.abs(re) > _CM_LARGE_DOUBLE || Math.abs(im) > _CM_LARGE_DOUBLE) {
+    rr = Math.log(Math.hypot(re / 2, im / 2)) + _CM_LN2 * 2;
+    ri = Math.atan2(im, re);
+  } else {
+    const s1 = _cmSqrt(re - 1, im), s2 = _cmSqrt(re + 1, im);
+    rr = Math.asinh(s1[0] * s2[0] + s1[1] * s2[1]);
+    ri = 2 * Math.atan2(s1[1], s2[0]);
+  }
+  _cmErrno = 0;
+  return [rr, ri];
+}
+
+function _cmAsinh(re, im) {
+  if (_cmSpecial(re, im)) { _cmErrno = 0; return _cmLookup(_CM_ASINH, re, im); }
+  let rr, ri;
+  if (Math.abs(re) > _CM_LARGE_DOUBLE || Math.abs(im) > _CM_LARGE_DOUBLE) {
+    if (im >= 0) rr = _cmCopysign(Math.log(Math.hypot(re / 2, im / 2)) + _CM_LN2 * 2, re);
+    else rr = -_cmCopysign(Math.log(Math.hypot(re / 2, im / 2)) + _CM_LN2 * 2, -re);
+    ri = Math.atan2(im, Math.abs(re));
+  } else {
+    const s1 = _cmSqrt(1 + im, -re), s2 = _cmSqrt(1 - im, re);
+    rr = Math.asinh(s1[0] * s2[1] - s2[0] * s1[1]);
+    ri = Math.atan2(im, s1[0] * s2[0] - s1[1] * s2[1]);
+  }
+  _cmErrno = 0;
+  return [rr, ri];
+}
+
+// asin(z) = -i asinh(iz)
+function _cmAsin(re, im) { const s = _cmAsinh(-im, re); return [s[1], -s[0]]; }
+
+function _cmAtanh(re, im) {
+  if (_cmSpecial(re, im)) { _cmErrno = 0; return _cmLookup(_CM_ATANH, re, im); }
+  // reduce to re >= 0: atanh(z) = -atanh(-z)
+  if (re < 0) { const r = _cmAtanh(-re, -im); return [-r[0], -r[1]]; }
+  const ay = Math.abs(im);
+  let rr, ri;
+  if (re > _CM_SQRT_LARGE_DOUBLE || ay > _CM_SQRT_LARGE_DOUBLE) {
+    // |z| large: atanh(z) ~ 1/z ± i·pi/2
+    const h = Math.hypot(re / 2, im / 2);   // safe from overflow
+    rr = re / 4 / h / h;
+    ri = -_cmCopysign(_CM_PI / 2, -im);
+    _cmErrno = 0;
+  } else if (re === 1 && ay < _CM_SQRT_DBL_MIN) {
+    // C99: atanh(1 ± 0i) is inf ± 0i
+    if (ay === 0) { rr = Infinity; ri = im; _cmErrno = _CM_EDOM; }
+    else {
+      rr = -Math.log(Math.sqrt(ay) / Math.sqrt(Math.hypot(ay, 2)));
+      ri = _cmCopysign(Math.atan2(2, -ay) / 2, im);
+      _cmErrno = 0;
+    }
+  } else {
+    rr = Math.log1p(4 * re / ((1 - re) * (1 - re) + ay * ay)) / 4;
+    ri = -Math.atan2(-2 * im, (1 - re) * (1 + re) - ay * ay) / 2;
+    _cmErrno = 0;
+  }
+  return [rr, ri];
+}
+
+// atan(z) = -i atanh(iz)
+function _cmAtan(re, im) { const s = _cmAtanh(-im, re); return [s[1], -s[0]]; }
+
+function _cmCosh(re, im) {
+  let rr, ri;
+  if (_cmSpecial(re, im)) {
+    if (_cmIsInf(re) && _cmFinite(im) && im !== 0) {
+      rr = _cmCopysign(Infinity, Math.cos(im));
+      ri = re > 0 ? _cmCopysign(Infinity, Math.sin(im)) : -_cmCopysign(Infinity, Math.sin(im));
+    } else [rr, ri] = _cmLookup(_CM_COSH, re, im);
+    // EDOM when y is ±inf and x is not a NaN
+    _cmErrno = _cmIsInf(im) && !_cmIsNaN(re) ? _CM_EDOM : 0;
+    return [rr, ri];
+  }
+  if (Math.abs(re) > _CM_LOG_LARGE_DOUBLE) {
+    // cosh(x) overflows where cosh(z) doesn't
+    const x1 = re - _cmCopysign(1, re);
+    rr = Math.cos(im) * Math.cosh(x1) * _CM_E;
+    ri = Math.sin(im) * Math.sinh(x1) * _CM_E;
+  } else {
+    rr = Math.cos(im) * Math.cosh(re);
+    ri = Math.sin(im) * Math.sinh(re);
+  }
+  _cmErrno = _cmIsInf(rr) || _cmIsInf(ri) ? _CM_ERANGE : 0;
+  return [rr, ri];
+}
+
+// cos(z) = cosh(iz)
+function _cmCos(re, im) { return _cmCosh(-im, re); }
+
+function _cmExp(re, im) {
+  let rr, ri;
+  if (_cmSpecial(re, im)) {
+    if (_cmIsInf(re) && _cmFinite(im) && im !== 0) {
+      if (re > 0) { rr = _cmCopysign(Infinity, Math.cos(im)); ri = _cmCopysign(Infinity, Math.sin(im)); }
+      else { rr = _cmCopysign(0, Math.cos(im)); ri = _cmCopysign(0, Math.sin(im)); }
+    } else [rr, ri] = _cmLookup(_CM_EXP, re, im);
+    // EDOM when y is ±inf and x is neither a NaN nor -inf
+    _cmErrno = _cmIsInf(im) && (_cmFinite(re) || re === Infinity) ? _CM_EDOM : 0;
+    return [rr, ri];
+  }
+  if (re > _CM_LOG_LARGE_DOUBLE) {
+    const l = Math.exp(re - 1);
+    rr = l * Math.cos(im) * _CM_E;
+    ri = l * Math.sin(im) * _CM_E;
+  } else {
+    const l = Math.exp(re);
+    rr = l * Math.cos(im);
+    ri = l * Math.sin(im);
+  }
+  _cmErrno = _cmIsInf(rr) || _cmIsInf(ri) ? _CM_ERANGE : 0;
+  return [rr, ri];
+}
+
+function _cmLog(re, im) {
+  if (_cmSpecial(re, im)) { _cmErrno = 0; return _cmLookup(_CM_LOG, re, im); }
+  const ax = Math.abs(re), ay = Math.abs(im);
+  let rr;
+  if (ax > _CM_LARGE_DOUBLE || ay > _CM_LARGE_DOUBLE) {
+    rr = Math.log(Math.hypot(ax / 2, ay / 2)) + _CM_LN2;
+  } else if (ax < _CM_DBL_MIN && ay < _CM_DBL_MIN) {
+    if (ax > 0 || ay > 0) {
+      // hypot(ax, ay) is subnormal: rescale
+      rr = Math.log(Math.hypot(_cmLdexp(ax, _CM_MANT_DIG), _cmLdexp(ay, _CM_MANT_DIG))) - _CM_MANT_DIG * _CM_LN2;
+    } else {
+      // log(±0 ± 0i)
+      _cmErrno = _CM_EDOM;
+      return [-Infinity, Math.atan2(im, re)];
+    }
+  } else {
+    const h = Math.hypot(ax, ay);
+    if (h >= 0.71 && h <= 1.73) {
+      const am = ax > ay ? ax : ay, an = ax > ay ? ay : ax;
+      rr = Math.log1p((am - 1) * (am + 1) + an * an) / 2;
+    } else rr = Math.log(h);
+  }
+  _cmErrno = 0;
+  return [rr, Math.atan2(im, re)];
+}
+
+function _cmLog10(re, im) {
+  const r = _cmLog(re, im);
+  return [r[0] / _CM_LN10, r[1] / _CM_LN10];
+}
+
+function _cmSinh(re, im) {
+  let rr, ri;
+  if (_cmSpecial(re, im)) {
+    if (_cmIsInf(re) && _cmFinite(im) && im !== 0) {
+      rr = re > 0 ? _cmCopysign(Infinity, Math.cos(im)) : -_cmCopysign(Infinity, Math.cos(im));
+      ri = _cmCopysign(Infinity, Math.sin(im));
+    } else [rr, ri] = _cmLookup(_CM_SINH, re, im);
+    _cmErrno = _cmIsInf(im) && !_cmIsNaN(re) ? _CM_EDOM : 0;
+    return [rr, ri];
+  }
+  if (Math.abs(re) > _CM_LOG_LARGE_DOUBLE) {
+    const x1 = re - _cmCopysign(1, re);
+    rr = Math.cos(im) * Math.sinh(x1) * _CM_E;
+    ri = Math.sin(im) * Math.cosh(x1) * _CM_E;
+  } else {
+    rr = Math.cos(im) * Math.sinh(re);
+    ri = Math.sin(im) * Math.cosh(re);
+  }
+  _cmErrno = _cmIsInf(rr) || _cmIsInf(ri) ? _CM_ERANGE : 0;
+  return [rr, ri];
+}
+
+// sin(z) = -i sinh(iz)
+function _cmSin(re, im) { const s = _cmSinh(-im, re); return [s[1], -s[0]]; }
+
+function _cmTanh(re, im) {
+  let rr, ri;
+  if (_cmSpecial(re, im)) {
+    if (_cmIsInf(re) && _cmFinite(im) && im !== 0) {
+      rr = re > 0 ? 1 : -1;
+      ri = _cmCopysign(0, 2 * Math.sin(im) * Math.cos(im));
+    } else [rr, ri] = _cmLookup(_CM_TANH, re, im);
+    // EDOM when y is ±inf and x is finite
+    _cmErrno = _cmIsInf(im) && _cmFinite(re) ? _CM_EDOM : 0;
+    return [rr, ri];
+  }
+  if (Math.abs(re) > _CM_LOG_LARGE_DOUBLE) {
+    // 1 - tanh(x)**2 as 4·exp(-2|x|), where cosh(x) would overflow
+    rr = _cmCopysign(1, re);
+    ri = 4 * Math.sin(im) * Math.cos(im) * Math.exp(-2 * Math.abs(re));
+  } else {
+    const tx = Math.tanh(re), ty = Math.tan(im), cx = 1 / Math.cosh(re);
+    const txty = tx * ty, denom = 1 + txty * txty;
+    rr = tx * (1 + ty * ty) / denom;
+    ri = ((ty / denom) * cx) * cx;
+  }
+  _cmErrno = 0;
+  return [rr, ri];
+}
+
+// tan(z) = -i tanh(iz)
+function _cmTan(re, im) { const s = _cmTanh(-im, re); return [s[1], -s[0]]; }
+
+// atan2 with C99's answers where platforms disagree
+function _cmAtan2(re, im) {
+  if (_cmIsNaN(re) || _cmIsNaN(im)) return NaN;
+  if (_cmIsInf(im)) {
+    if (_cmIsInf(re)) return _cmCopysign(1, re) === 1 ? _cmCopysign(0.25 * _CM_PI, im) : _cmCopysign(0.75 * _CM_PI, im);
+    return _cmCopysign(0.5 * _CM_PI, im);
+  }
+  if (_cmIsInf(re) || im === 0) return _cmCopysign(1, re) === 1 ? _cmCopysign(0, im) : _cmCopysign(_CM_PI, im);
+  return Math.atan2(im, re);
+}
+
+// |z| and z / w are complex's own (_Py_c_abs, _Py_c_quot); their errno lands in this module's
+function _cmAbs(re, im) {
+  const r = _cAbs(re, im);
+  _cmErrno = _cErr.no; _cErr.no = 0;
+  return r;
+}
+function _cmQuot(ar, ai, br, bi) {
+  _cErr.no = 0;
+  const q = _cQuot(ar, ai, br, bi);
+  if (_cErr.no) _cmErrno = _cErr.no;
+  _cErr.no = 0;
+  return q;
+}
+
+// PyComplex_AsCComplex: a complex, a real (an int, a bool, __float__, __index__), or __complex__;
+// [re, im], or a Promise of it when a tree-walked dunder answered
+function _cmArg(x) {
+  if (typeof x === 'number') return [x, 0];
+  if (x instanceof Complex) return [x.real, x.imag];
+  if (typeof x === 'boolean') return [+x, 0];
+  if (typeof x === 'bigint') { const n = Number(x); if (!_cmFinite(n)) throw new AdderError('OverflowError', 'int too large to convert to float'); return [n, 0]; }
+  if (x !== null && typeof x === 'object' && !x._kw && typeof x !== 'string') {
+    if (typeof x.__complex__ === 'function') {
+      const chk = (v) => {
+        if (v instanceof Complex) return [v.real, v.imag];
+        throw new AdderError('TypeError', `__complex__ returned non-complex (type ${pyTypeName(v)})`);
+      };
+      const r = syncOf(x.__complex__).call(x);
+      return r && typeof r.then === 'function' ? r.then(chk) : chk(r);
+    }
+    for (const m of ['__float__', '__index__']) {
+      if (typeof x[m] === 'function') {
+        const chk = (v) => {
+          if (typeof v === 'number' || typeof v === 'bigint') return [Number(v), 0];
+          throw new AdderError('TypeError', `${pyTypeName(x)}.${m} returned non-${m === '__float__' ? 'float' : 'int'} (type ${pyTypeName(v)})`);
+        };
+        const r = syncOf(x[m]).call(x);
+        return r && typeof r.then === 'function' ? r.then(chk) : chk(r);
+      }
+    }
+  }
+  throw new AdderError('TypeError', `must be real number, not ${pyTypeName(x)}`);
+}
+// a float argument (rect, isclose's tolerances): what math takes
+function _cmReal(x) {
+  if (typeof x === 'number') return x;
+  if (x instanceof Complex) throw new AdderError('TypeError', 'must be real number, not complex');
+  const r = _cmArg(x);
+  return r && typeof r.then === 'function' ? r.then((v) => v[0]) : r[0];
+}
+const _cmThen = (v, f) => (v && typeof v.then === 'function' ? v.then(f) : f(v));
+const _cmAll = (vs, f) => (vs.some((v) => v && typeof v.then === 'function') ? Promise.all(vs).then(f) : f(vs));
+
+function _cmRaise() {
+  const e = _cmErrno;
+  _cmErrno = 0;
+  if (e === _CM_EDOM) throw new AdderError('ValueError', 'math domain error');
+  if (e === _CM_ERANGE) throw new AdderError('OverflowError', 'math range error');
+}
+function _cmCount(name, args, min, max) {
+  if (args.length && args[args.length - 1] && args[args.length - 1]._kw === true) {
+    const kw = args[args.length - 1];
+    if (Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', `${name}() takes no keyword arguments`);
+    args.pop();
+  }
+  const n = args.length;
+  if (n < min || n > max) {
+    if (min === max) throw new AdderError('TypeError', `${name}() takes exactly one argument (${n} given)`);
+    throw new AdderError('TypeError', `${name} expected at ${n < min ? 'least' : 'most'} ${n < min ? min : max} argument${(n < min ? min : max) > 1 ? 's' : ''}, got ${n}`);
+  }
+}
+// cmath.<name>(z), as the clinic wrapper: errno cleared, the C function, errno checked
+function _cmFunc(name, f) {
+  const w = function (...args) {
+    _cmCount(name, args, 1, 1);
+    return _cmThen(_cmArg(args[0]), ([re, im]) => {
+      _cmErrno = 0;
+      const r = f(re, im);
+      _cmRaise();
+      return new Complex(r[0], r[1]);
+    });
+  };
+  Object.defineProperty(w, 'name', { value: name });
+  w._pyName = name;
+  return w;
+}
+
+const _cmModule = {
+  __name__: 'cmath',
+  pi: _CM_PI, e: _CM_E, tau: 2 * _CM_PI,
+  inf: Infinity, infj: new Complex(0, Infinity), nan: NaN, nanj: new Complex(0, NaN),
+  acos: _cmFunc('acos', _cmAcos), acosh: _cmFunc('acosh', _cmAcosh),
+  asin: _cmFunc('asin', _cmAsin), asinh: _cmFunc('asinh', _cmAsinh),
+  atan: _cmFunc('atan', _cmAtan), atanh: _cmFunc('atanh', _cmAtanh),
+  cos: _cmFunc('cos', _cmCos), cosh: _cmFunc('cosh', _cmCosh),
+  exp: _cmFunc('exp', _cmExp),
+  log10: _cmFunc('log10', _cmLog10),
+  sin: _cmFunc('sin', _cmSin), sinh: _cmFunc('sinh', _cmSinh),
+  sqrt: _cmFunc('sqrt', _cmSqrt),
+  tan: _cmFunc('tan', _cmTan), tanh: _cmFunc('tanh', _cmTanh),
+  log(...args) {
+    _cmCount('log', args, 1, 2);
+    return _cmAll(args.map(_cmArg), ([x, y]) => {
+      _cmErrno = 0;
+      let r = _cmLog(x[0], x[1]);
+      if (y) {
+        // (as CPython: log(y) sets errno afresh, the division may set EDOM)
+        const ly = _cmLog(y[0], y[1]);
+        r = _cmQuot(r[0], r[1], ly[0], ly[1]);
+      }
+      _cmRaise();
+      return new Complex(r[0], r[1]);
+    });
+  },
+  phase(...args) {
+    _cmCount('phase', args, 1, 1);
+    return _cmThen(_cmArg(args[0]), ([re, im]) => _cmAtan2(re, im));
+  },
+  polar(...args) {
+    _cmCount('polar', args, 1, 1);
+    return _cmThen(_cmArg(args[0]), ([re, im]) => {
+      const phi = _cmAtan2(re, im);
+      _cmErrno = 0;
+      const r = _cmAbs(re, im);
+      _cmRaise();
+      return mkTuple([r, phi]);
+    });
+  },
+  rect(...args) {
+    _cmCount('rect', args, 2, 2);
+    return _cmAll(args.map(_cmReal), ([r, phi]) => {
+      let re, im;
+      _cmErrno = 0;
+      if (!_cmFinite(r) || !_cmFinite(phi)) {
+        // r = ±inf, phi finite and nonzero: ±inf ±inf i, the signs from cos and sin
+        if (_cmIsInf(r) && _cmFinite(phi) && phi !== 0) {
+          if (r > 0) { re = _cmCopysign(Infinity, Math.cos(phi)); im = _cmCopysign(Infinity, Math.sin(phi)); }
+          else { re = -_cmCopysign(Infinity, Math.cos(phi)); im = -_cmCopysign(Infinity, Math.sin(phi)); }
+        } else [re, im] = _cmLookup(_CM_RECT, r, phi);
+        // EDOM when r is a nonzero number and phi infinite
+        if (r !== 0 && !_cmIsNaN(r) && _cmIsInf(phi)) _cmErrno = _CM_EDOM;
+      } else if (phi === 0) {
+        re = r; im = r * phi;
+      } else {
+        re = r * Math.cos(phi); im = r * Math.sin(phi);
+      }
+      _cmRaise();
+      return new Complex(re, im);
+    });
+  },
+  isfinite(...args) { _cmCount('isfinite', args, 1, 1); return _cmThen(_cmArg(args[0]), ([re, im]) => _cmFinite(re) && _cmFinite(im)); },
+  isnan(...args) { _cmCount('isnan', args, 1, 1); return _cmThen(_cmArg(args[0]), ([re, im]) => _cmIsNaN(re) || _cmIsNaN(im)); },
+  isinf(...args) { _cmCount('isinf', args, 1, 1); return _cmThen(_cmArg(args[0]), ([re, im]) => _cmIsInf(re) || _cmIsInf(im)); },
+  isclose(...args) {
+    const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw === true ? args.pop() : null;
+    if (args.length !== 2) throw new AdderError('TypeError', `isclose() takes exactly 2 positional arguments (${args.length} given)`);
+    if (kw) for (const k of Object.keys(kw)) if (k !== '_kw' && k !== 'rel_tol' && k !== 'abs_tol') throw new AdderError('TypeError', `isclose() got an unexpected keyword argument '${k}'`);
+    const relTol = kw && 'rel_tol' in kw ? _cmReal(kw.rel_tol) : 1e-9;
+    const absTol = kw && 'abs_tol' in kw ? _cmReal(kw.abs_tol) : 0;
+    return _cmAll([_cmArg(args[0]), _cmArg(args[1]), relTol, absTol], ([a, b, rel, abs]) => {
+      if (rel < 0 || abs < 0) throw new AdderError('ValueError', 'tolerances must be non-negative');
+      // identical: even two infinities
+      if (a[0] === b[0] && a[1] === b[1]) return true;
+      // an infinity is close only to itself
+      if (_cmIsInf(a[0]) || _cmIsInf(a[1]) || _cmIsInf(b[0]) || _cmIsInf(b[1])) return false;
+      const diff = _cmAbs(a[0] - b[0], a[1] - b[1]);
+      return diff <= rel * _cmAbs(b[0], b[1]) || diff <= rel * _cmAbs(a[0], a[1]) || diff <= abs;
+    });
+  },
+};
+for (const [k, v] of Object.entries(_cmModule)) if (typeof v === 'function' && !v._pyName) { Object.defineProperty(v, 'name', { value: k }); v._pyName = k; }
+adderModules.cmath = _cmModule;
 
 // -- stdlib-time.js --
 
@@ -22982,9 +24058,8 @@ function lowerExpr_ad(ctx, node) {
         return ctx.emit('const', [v], isInt ? I32 : F64, l);
       }
       if (typeof v === 'string') return ctx.emit('const', [v], STRING, l);
-      if (v && typeof v === 'object' && v._complex) {
-        throw new AirLowerError('complex literal not supported in transpile');
-      }
+      // an imaginary literal (2j): a complex made at run time
+      if (v && typeof v === 'object' && v._complex) return emitPyCall(ctx, 'imag', [ctx.emit('const', [v.imag], F64, l)], l);
       return ctx.emit('const', [v], DYNAMIC, l);
     }
 

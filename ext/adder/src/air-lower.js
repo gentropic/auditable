@@ -866,9 +866,8 @@ function lowerExpr_ad(ctx, node) {
         return ctx.emit('const', [v], isInt ? I32 : F64, l);
       }
       if (typeof v === 'string') return ctx.emit('const', [v], STRING, l);
-      if (v && typeof v === 'object' && v._complex) {
-        throw new AirLowerError('complex literal not supported in transpile');
-      }
+      // an imaginary literal (2j): a complex made at run time
+      if (v && typeof v === 'object' && v._complex) return emitPyCall(ctx, 'imag', [ctx.emit('const', [v.imag], F64, l)], l);
       return ctx.emit('const', [v], DYNAMIC, l);
     }
 

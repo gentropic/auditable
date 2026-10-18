@@ -433,75 +433,404 @@ export class AdderError extends Error {
 }
 
 // ── Complex number ──
+// CPython 3.13's complexobject.c: the arithmetic converts a real operand to complex(x, 0.0) first
+// (so complex(inf, 0) * 2 is (inf+nanj), as there); division is Smith's algorithm; ** with a small
+// integral exponent multiplies by squaring (c_powi), any other by polar form (_Py_c_pow); errno
+// is _cErr.no — EDOM a division by zero, ERANGE an overflow.
+
+export const _cErr = { no: 0 };
+const _C_EDOM = 1, _C_ERANGE = 2;
+// copysign, NaN's sign bit included (JS comparisons can't see it)
+const _cF64 = new Float64Array(1), _cU8 = new Uint8Array(_cF64.buffer);
+export function _signBit(x) { _cF64[0] = x; return (_cU8[7] & 0x80) !== 0; }
+export const _copysign = (x, y) => (_signBit(y) ? -Math.abs(x) : Math.abs(x));
+// CPython's _Py_c_quot
+export function _cQuot(ar, ai, br, bi) {
+  const abr = Math.abs(br), abi = Math.abs(bi);
+  if (abr >= abi) {
+    if (abr === 0) { _cErr.no = _C_EDOM; return [0, 0]; }
+    const ratio = bi / br, denom = br + bi * ratio;
+    return [(ar + ai * ratio) / denom, (ai - ar * ratio) / denom];
+  }
+  if (abi >= abr) {
+    const ratio = br / bi, denom = br * ratio + bi;
+    return [(ar * ratio + ai) / denom, (ai * ratio - ar) / denom];
+  }
+  return [NaN, NaN];   // at least one of b's parts is a NaN
+}
+// CPython's _Py_c_abs: an infinite part makes it infinite, even beside a NaN
+export function _cAbs(re, im) {
+  if (!Number.isFinite(re) || !Number.isFinite(im)) {
+    _cErr.no = 0;
+    if (re === Infinity || re === -Infinity) return Math.abs(re);
+    if (im === Infinity || im === -Infinity) return Math.abs(im);
+    return NaN;
+  }
+  const r = Math.hypot(re, im);
+  _cErr.no = Number.isFinite(r) ? 0 : _C_ERANGE;
+  return r;
+}
+const _cProd = (a, b) => [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]];
+// _Py_c_pow
+function _cPow(a, b) {
+  if (b[0] === 0 && b[1] === 0) return [1, 0];
+  if (a[0] === 0 && a[1] === 0) {
+    if (b[1] !== 0 || b[0] < 0) _cErr.no = _C_EDOM;
+    return [0, 0];
+  }
+  const vabs = Math.hypot(a[0], a[1]);
+  let len = Math.pow(vabs, b[0]);
+  const at = Math.atan2(a[1], a[0]);
+  let phase = at * b[0];
+  if (b[1] !== 0) { len /= Math.exp(at * b[1]); phase += b[1] * Math.log(vabs); }
+  return [len * Math.cos(phase), len * Math.sin(phase)];
+}
+// c_powu / c_powi: x**n by squaring
+function _cPowu(x, n) {
+  let r = [1, 0], p = x;
+  for (let mask = 1; mask > 0 && n >= mask; mask *= 2) {
+    if (n & mask) r = _cProd(r, p);
+    p = _cProd(p, p);
+  }
+  return r;
+}
+const _cPowi = (x, n) => (n > 0 ? _cPowu(x, n) : _cQuot(1, 0, ..._cPowu(x, -n)));
+// a real operand as complex parts; null when it isn't a number (NotImplemented)
+function _cOf(v) {
+  if (v instanceof Complex) return [v.real, v.imag];
+  if (typeof v === 'number') return [v, 0];
+  if (typeof v === 'boolean') return [+v, 0];
+  if (typeof v === 'bigint') {
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new AdderError('OverflowError', 'int too large to convert to float');
+    return [n, 0];
+  }
+  return null;
+}
+// a float's repr without the '.0' (format code 'r', how complex prints its parts); `sign`: always
+// a sign, as the imaginary part has one
+export function _floatR(x, sign = false) {
+  let s;
+  if (x !== x) s = 'nan';
+  else if (x === Infinity || x === -Infinity) s = x > 0 ? 'inf' : '-inf';
+  else if (x === 0) s = Object.is(x, -0) ? '-0' : '0';
+  else {
+    const [mant, e] = x.toExponential().split('e');
+    const exp = +e;
+    s = exp >= -4 && exp < 16 ? String(x) : `${mant}e${exp < 0 ? '-' : '+'}${String(Math.abs(exp)).padStart(2, '0')}`;
+  }
+  return sign && s[0] !== '-' ? '+' + s : s;
+}
 
 export class Complex {
   constructor(real, imag = 0) {
     this.real = typeof real === 'number' ? real : Number(real);
     this.imag = typeof imag === 'number' ? imag : Number(imag);
   }
-  __add__(other) {
-    if (other instanceof Complex) return new Complex(this.real + other.real, this.imag + other.imag);
-    if (typeof other === 'number') return new Complex(this.real + other, this.imag);
+  __add__(other) { const b = _cOf(other); return b ? new Complex(this.real + b[0], this.imag + b[1]) : NotImplemented; }
+  __radd__(other) { const a = _cOf(other); return a ? new Complex(a[0] + this.real, a[1] + this.imag) : NotImplemented; }
+  __sub__(other) { const b = _cOf(other); return b ? new Complex(this.real - b[0], this.imag - b[1]) : NotImplemented; }
+  __rsub__(other) { const a = _cOf(other); return a ? new Complex(a[0] - this.real, a[1] - this.imag) : NotImplemented; }
+  __mul__(other) { const b = _cOf(other); return b ? new Complex(..._cProd([this.real, this.imag], b)) : NotImplemented; }
+  __rmul__(other) { const a = _cOf(other); return a ? new Complex(..._cProd(a, [this.real, this.imag])) : NotImplemented; }
+  __truediv__(other) { const b = _cOf(other); return b ? Complex._div([this.real, this.imag], b) : NotImplemented; }
+  __rtruediv__(other) { const a = _cOf(other); return a ? Complex._div(a, [this.real, this.imag]) : NotImplemented; }
+  static _div(a, b) {
+    _cErr.no = 0;
+    const q = _cQuot(a[0], a[1], b[0], b[1]);
+    if (_cErr.no === _C_EDOM) { _cErr.no = 0; throw new AdderError('ZeroDivisionError', 'complex division by zero'); }
+    return new Complex(q[0], q[1]);
   }
-  __radd__(left) {
-    if (typeof left === 'number') return new Complex(this.real + left, this.imag);
+  __pow__(other, mod) {
+    const b = _cOf(other);
+    return b ? Complex._pow([this.real, this.imag], b, mod) : NotImplemented;
   }
-  __sub__(other) {
-    if (other instanceof Complex) return new Complex(this.real - other.real, this.imag - other.imag);
-    if (typeof other === 'number') return new Complex(this.real - other, this.imag);
+  __rpow__(other, mod) {
+    const a = _cOf(other);
+    return a ? Complex._pow(a, [this.real, this.imag], mod) : NotImplemented;
   }
-  __rsub__(left) {
-    if (typeof left === 'number') return new Complex(left - this.real, -this.imag);
-  }
-  __mul__(other) {
-    if (other instanceof Complex) return new Complex(this.real * other.real - this.imag * other.imag, this.real * other.imag + this.imag * other.real);
-    if (typeof other === 'number') return new Complex(this.real * other, this.imag * other);
-  }
-  __rmul__(left) {
-    if (typeof left === 'number') return new Complex(this.real * left, this.imag * left);
-  }
-  __truediv__(other) {
-    let or, oi;
-    if (other instanceof Complex) { or = other.real; oi = other.imag; }
-    else if (typeof other === 'number') { or = other; oi = 0; }
-    else return;
-    const denom = or * or + oi * oi;
-    if (denom === 0) throw new AdderError('ZeroDivisionError', 'complex division by zero');
-    return new Complex((this.real * or + this.imag * oi) / denom, (this.imag * or - this.real * oi) / denom);
-  }
-  __rtruediv__(left) {
-    if (typeof left === 'number') return new Complex(left, 0).__truediv__(this);
-  }
-  __pow__(other) {
-    const r = Math.sqrt(this.real * this.real + this.imag * this.imag);
-    const theta = Math.atan2(this.imag, this.real);
-    if (typeof other === 'number') {
-      const newR = Math.pow(r, other);
-      const newTheta = other * theta;
-      return new Complex(newR * Math.cos(newTheta), newR * Math.sin(newTheta));
-    }
-    if (other instanceof Complex) {
-      const logR = Math.log(r), a = other.real, b = other.imag;
-      const newR = Math.exp(a * logR - b * theta);
-      const newTheta = b * logR + a * theta;
-      return new Complex(newR * Math.cos(newTheta), newR * Math.sin(newTheta));
-    }
+  static _pow(a, b, mod) {
+    if (mod !== undefined && mod !== null) throw new AdderError('ValueError', 'complex modulo');
+    _cErr.no = 0;
+    // a small integral exponent: multiply by squaring, faster and more accurate
+    let p = b[1] === 0 && b[0] === Math.floor(b[0]) && Math.abs(b[0]) <= 100 ? _cPowi(a, b[0]) : _cPow(a, b);
+    // _Py_ADJUST_ERANGE2
+    if (Math.abs(p[0]) === Infinity || Math.abs(p[1]) === Infinity) { if (_cErr.no === 0) _cErr.no = _C_ERANGE; }
+    else if (_cErr.no === _C_ERANGE) _cErr.no = 0;
+    const err = _cErr.no;
+    _cErr.no = 0;
+    if (err === _C_EDOM) throw new AdderError('ZeroDivisionError', '0.0 to a negative or complex power');
+    if (err === _C_ERANGE) throw new AdderError('OverflowError', 'complex exponentiation');
+    return new Complex(p[0], p[1]);
   }
   __neg__() { return new Complex(-this.real, -this.imag); }
-  __abs__() { return Math.sqrt(this.real * this.real + this.imag * this.imag); }
-  __eq__(other) {
-    if (other instanceof Complex) return this.real === other.real && this.imag === other.imag;
-    if (typeof other === 'number') return this.imag === 0 && this.real === other;
-    return false;
+  __pos__() { return new Complex(this.real, this.imag); }
+  __abs__() {
+    const r = _cAbs(this.real, this.imag);
+    if (_cErr.no) { _cErr.no = 0; throw new AdderError('OverflowError', 'absolute value too large'); }
+    return r;
   }
   __bool__() { return this.real !== 0 || this.imag !== 0; }
+  __complex__() { return new Complex(this.real, this.imag); }
+  __getnewargs__() { return mkTuple([this.real, this.imag]); }
+  conjugate() { return new Complex(this.real, -this.imag); }
+  // equal to an int exactly (an int past 2**53 isn't rounded to compare), to a float, to a complex
+  __eq__(other) {
+    if (other instanceof Complex) return this.real === other.real && this.imag === other.imag;
+    if (typeof other === 'number' || typeof other === 'boolean') return this.imag === 0 && this.real === +other;
+    if (typeof other === 'bigint') return this.imag === 0 && Number.isInteger(this.real) && BigInt(this.real) === other;
+    return NotImplemented;
+  }
+  __ne__(other) { const r = this.__eq__(other); return r === NotImplemented ? r : !r; }
+  // complex numbers have no order
+  __lt__() { return NotImplemented; }
+  __le__() { return NotImplemented; }
+  __gt__() { return NotImplemented; }
+  __ge__() { return NotImplemented; }
+  // hash(real) + 1000003 * hash(imag), in a wrapping 64-bit Py_hash_t — so hash(x) == hash(complex(x))
+  __hash__() {
+    const hr = BigInt(_pyHash(this.real)), hi = BigInt(_pyHash(this.imag));
+    let h = BigInt.asIntN(64, hr + 1000003n * hi);
+    if (h === -1n) h = -2n;
+    return h >= -9007199254740991n && h <= 9007199254740991n ? Number(h) : h;
+  }
   __repr__() {
-    if (this.real === 0) return `${this.imag}j`;
-    const sign = this.imag >= 0 ? '+' : '';
-    return `(${this.real}${sign}${this.imag}j)`;
+    // a real part of +0 is left out, and so are the parentheses
+    if (this.real === 0 && !Object.is(this.real, -0)) return `${_floatR(this.imag)}j`;
+    return `(${_floatR(this.real)}${_floatR(this.imag, true)}j)`;
   }
   __str__() { return this.__repr__(); }
-  get conjugate() { return () => new Complex(this.real, -this.imag); }
+  // format_complex_internal: each part formatted as a float, the imaginary one always signed unless
+  // the real part is left out; then padded as a whole. No '=' alignment, no zero padding.
+  __format__(spec) {
+    spec = String(spec ?? '');
+    const m = /^(?:([\s\S])?([<>=^]))?([+\- ])?(z)?(#)?(0)?(\d+)?([,_])?(?:\.(\d+))?([\s\S])?$/.exec(spec);
+    if (!m) throw new AdderError('ValueError', 'Invalid format specifier');
+    const [, fill = ' ', align, sign, noNeg0, alt, zero, width, group, precS] = m;
+    let type = m[10] || '';
+    if (align === '=') throw new AdderError('ValueError', "'=' alignment flag is not allowed in complex format specifier");
+    if (zero) throw new AdderError('ValueError', 'Zero padding is not allowed in complex format specifier');
+    if (type && !'eEfFgGn'.includes(type)) throw new AdderError('ValueError', `Unknown format code '${type}' for object of type 'complex'`);
+    let re = this.real, im = this.imag, skipRe = false, parens = false, defPrec = 6;
+    if (!type) {
+      // like str(self)
+      type = 'r'; defPrec = 0;
+      if (re === 0 && !Object.is(re, -0)) skipRe = true; else parens = true;
+    }
+    if (type === 'n') type = 'g';
+    let prec = precS === undefined ? -1 : +precS;
+    if (prec < 0) prec = defPrec;
+    else if (type === 'r') type = 'g';
+    const part = (x, sgn) => {
+      let body = type === 'r' ? _floatR(Math.abs(x)) : _fmtFloatExact(Math.abs(x), type, prec, !!alt);
+      if (group && Number.isFinite(x)) {
+        const cut = body.search(/[.eE]/), ip = cut < 0 ? body : body.slice(0, cut);
+        body = ip.replace(/\B(?=(\d{3})+(?!\d))/g, group) + (cut < 0 ? '' : body.slice(cut));
+      }
+      let neg = x === x && _signBit(x);
+      if (neg && noNeg0 && !/[1-9]/.test(body.replace(/e.*$/i, ''))) neg = false;
+      return (neg ? '-' : sgn === '+' ? '+' : sgn === ' ' ? ' ' : '') + body;
+    };
+    let out = (skipRe ? '' : part(re, sign)) + part(im, skipRe ? sign : '+') + 'j';
+    if (parens) out = `(${out})`;
+    const w = width ? +width : 0;
+    if (out.length < w) {
+      const pad = w - out.length, a = align || '>';
+      out = a === '<' ? out + fill.repeat(pad) : a === '^' ? fill.repeat(pad >> 1) + out + fill.repeat(pad - (pad >> 1)) : fill.repeat(pad) + out;
+    }
+    return out;
+  }
+}
+// A non-negative double formatted 'e' / 'f' / 'g' (or upper case) from its EXACT value, rounded half
+// to even as CPython's dtoa does (JS's toFixed / toExponential round half up, and toFixed turns to
+// exponent notation from 1e21)
+function _f64Parts(x) {
+  _cF64[0] = x;
+  const bits = new BigUint64Array(_cF64.buffer)[0];
+  const eb = Number((bits >> 52n) & 0x7ffn), frac = bits & ((1n << 52n) - 1n);
+  return eb === 0 ? [frac, -1074] : [frac | (1n << 52n), eb - 1075];
+}
+// round(x * 10**k), half even
+function _scaledRound(x, k) {
+  const [m, e] = _f64Parts(x);
+  let num = m, den = 1n;
+  if (k >= 0) num *= 10n ** BigInt(k); else den *= 10n ** BigInt(-k);
+  if (e >= 0) num <<= BigInt(e); else den <<= BigInt(-e);
+  let q = num / den;
+  const r2 = 2n * (num - q * den);
+  if (r2 > den || (r2 === den && (q & 1n))) q += 1n;
+  return q;
+}
+function _exactFixed(x, frac) {
+  const s = _scaledRound(x, frac).toString().padStart(frac + 1, '0');
+  return frac ? `${s.slice(0, -frac)}.${s.slice(-frac)}` : s;
+}
+// [the prec+1 significant digits, the decimal exponent]
+function _exactSig(x, prec) {
+  if (x === 0) return ['0'.repeat(prec + 1), 0];
+  let exp = +x.toExponential().split('e')[1];
+  const lo = 10n ** BigInt(prec), hi = lo * 10n;
+  for (let i = 0; i < 3; i++) {
+    const q = _scaledRound(x, prec - exp);
+    if (q >= hi) exp += 1;
+    else if (q < lo) exp -= 1;
+    else return [q.toString(), exp];
+  }
+  return [_scaledRound(x, prec - exp).toString().slice(0, prec + 1), exp];
+}
+function _fmtFloatExact(x, type, prec, alt) {
+  const upper = type === 'E' || type === 'F' || type === 'G';
+  if (!Number.isFinite(x)) { const s = x !== x ? 'nan' : 'inf'; return upper ? s.toUpperCase() : s; }
+  const t = type.toLowerCase();
+  const expStr = (n) => `e${n < 0 ? '-' : '+'}${String(Math.abs(n)).padStart(2, '0')}`;
+  let s;
+  if (t === 'f') {
+    s = _exactFixed(x, prec);
+    if (alt && prec === 0) s += '.';
+  } else if (t === 'e') {
+    const [d, exp] = _exactSig(x, prec);
+    s = d[0] + (prec || alt ? '.' : '') + d.slice(1) + expStr(exp);
+  } else {
+    const p = prec === 0 ? 1 : prec;
+    const [d, exp] = _exactSig(x, p - 1);
+    if (exp >= -4 && exp < p) {
+      s = _exactFixed(x, p - 1 - exp);
+      if (alt) { if (!s.includes('.')) s += '.'; }
+      else if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
+    } else {
+      let mant = d[0] + (p > 1 || alt ? '.' : '') + d.slice(1);
+      if (!alt && mant.includes('.')) mant = mant.replace(/0+$/, '').replace(/\.$/, '');
+      s = mant + expStr(exp);
+    }
+  }
+  return upper ? s.toUpperCase() : s;
+}
+
+// complex(real=0, imag=0), as complex_new: a string parses (alone); a first argument's __complex__ is
+// asked first; otherwise each argument is a number (a complex, a float, __float__, __index__), and a
+// complex argument contributes its imaginary part: complex(a, b) is a + b*1j.
+export function _complexNew(...args) {
+  const kw = args.length && args[args.length - 1] && args[args.length - 1]._kw === true ? args.pop() : null;
+  if (args.length > 2) throw new AdderError('TypeError', `complex() takes at most 2 arguments (${args.length} given)`);
+  let real = args[0], imag = args[1];
+  if (kw) {
+    for (const k of Object.keys(kw)) {
+      if (k === '_kw') continue;
+      if (k !== 'real' && k !== 'imag') throw new AdderError('TypeError', `complex() got an unexpected keyword argument '${k}'`);
+      if ((k === 'real' && args.length >= 1) || (k === 'imag' && args.length >= 2)) throw new AdderError('TypeError', `argument for complex() given by name ('${k}') and position (${k === 'real' ? 1 : 2})`);
+      if (k === 'real') real = kw.real; else imag = kw.imag;
+    }
+  }
+  if (real === undefined) real = 0;
+  if (real instanceof Complex && imag === undefined) return real;
+  const rs = strValue(real);
+  if (rs !== null) {
+    if (imag !== undefined) throw new AdderError('TypeError', "complex() can't take second arg if first is a string");
+    return _complexFromString(rs);
+  }
+  if (imag !== undefined && strValue(imag) !== null) throw new AdderError('TypeError', "complex() second arg can't be a string");
+  const isNumberish = (v) => v instanceof Complex || typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint' ||
+    (v !== null && typeof v === 'object' && (typeof v.__float__ === 'function' || typeof v.__index__ === 'function'));
+  const finish = (crC) => {
+    if (!crC && !isNumberish(real)) throw new AdderError('TypeError', `complex() first argument must be a string or a number, not '${pyTypeName(real)}'`);
+    if (imag !== undefined && !isNumberish(imag)) throw new AdderError('TypeError', `complex() second argument must be a number, not '${pyTypeName(imag)}'`);
+    const crIsComplex = !!crC || real instanceof Complex;
+    const crv = crC ? [crC.real, crC.imag] : real instanceof Complex ? [real.real, real.imag] : _floatArg(real);
+    const civ = imag === undefined ? null : imag instanceof Complex ? [imag.real, imag.imag] : _floatArg(imag);
+    return _thenAll([crv, civ], ([cr, ci]) => {
+      if (cr.length === 1) cr = [cr[0], 0];
+      let ciReal;
+      if (ci === null) ciReal = cr[1];
+      else {
+        ciReal = ci[0];
+        if (imag instanceof Complex) cr = [cr[0] - ci[1], cr[1]];
+        if (crIsComplex) ciReal += cr[1];
+      }
+      return new Complex(cr[0], ciReal);
+    });
+  };
+  if (real !== null && typeof real === 'object' && !(real instanceof Complex) && typeof real.__complex__ === 'function') {
+    const chk = (v) => {
+      if (!(v instanceof Complex)) throw new AdderError('TypeError', `__complex__ returned non-complex (type ${pyTypeName(v)})`);
+      return finish(v);
+    };
+    const r = syncOf(real.__complex__).call(real);
+    return _isThenable(r) ? r.then(chk) : chk(r);
+  }
+  return finish(null);
+}
+// PyNumber_Float for complex(): [x] (or a Promise of it)
+function _floatArg(v) {
+  if (typeof v === 'number') return [v];
+  const c = _cOf(v);
+  if (c) return [c[0]];
+  for (const m of ['__float__', '__index__']) {
+    if (v !== null && typeof v === 'object' && typeof v[m] === 'function') {
+      const chk = (r) => {
+        if (m === '__float__' ? typeof r !== 'number' : !(typeof r === 'number' && Number.isInteger(r)) && typeof r !== 'bigint' && typeof r !== 'boolean') {
+          throw new AdderError('TypeError', `${pyTypeName(v)}.${m} returned non-${m === '__float__' ? 'float' : 'int'} (type ${pyTypeName(r)})`);
+        }
+        return [_cOf(r)[0]];
+      };
+      const r = syncOf(v[m]).call(v);
+      return _isThenable(r) ? r.then(chk) : chk(r);
+    }
+  }
+  throw new AdderError('TypeError', `must be real number, not ${pyTypeName(v)}`);
+}
+const _thenAll = (vs, f) => (vs.some(_isThenable) ? Promise.all(vs).then(f) : f(vs));
+// a float literal at the front of a string, as PyOS_string_to_double reads one
+const _C_FLOAT_RE = /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|inf(?:inity)?|nan)/i;
+function _cParseFloat(t) {
+  const low = t.toLowerCase(), neg = low[0] === '-';
+  if (low.endsWith('nan')) return neg ? -NaN : NaN;
+  if (low.endsWith('inf') || low.endsWith('infinity')) return neg ? -Infinity : Infinity;
+  return Number(t);
+}
+const _cIsSpace = (c) => c !== undefined && c !== '﻿' && /\s/.test(c);
+// complex_from_string_inner: <float>, <float>j, <float><signed-float>j, and <float><sign>j, <sign>j,
+// j — optionally in parentheses, whitespace around; underscores only between digits
+function _complexFromString(str) {
+  let s = str;
+  if (s.includes('_')) {
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '_' && !(/[0-9]/.test(s[i - 1] ?? '') && /[0-9]/.test(s[i + 1] ?? ''))) {
+        throw new AdderError('ValueError', `could not convert string to complex: ${pyRepr(str)}`);
+      }
+    }
+    s = s.replace(/_/g, '');
+  }
+  const bad = () => new AdderError('ValueError', 'complex() arg is a malformed string');
+  const n = s.length;
+  let i = 0, x = 0, y = 0, bracket = false;
+  while (i < n && _cIsSpace(s[i])) i++;
+  if (s[i] === '(') { bracket = true; i++; while (i < n && _cIsSpace(s[i])) i++; }
+  const num = (at) => { const mm = _C_FLOAT_RE.exec(s.slice(at)); return mm ? [mm[0].length, _cParseFloat(mm[0])] : null; };
+  const isJ = (c) => c === 'j' || c === 'J';
+  const a = num(i);
+  if (a) {
+    i += a[0];
+    if (s[i] === '+' || s[i] === '-') {
+      x = a[1];
+      const b = num(i);
+      if (b) { y = b[1]; i += b[0]; } else { y = s[i] === '+' ? 1 : -1; i++; }
+      if (!isJ(s[i])) throw bad();
+      i++;
+    } else if (isJ(s[i])) { i++; y = a[1]; }
+    else x = a[1];
+  } else {
+    if (s[i] === '+' || s[i] === '-') { y = s[i] === '+' ? 1 : -1; i++; } else y = 1;
+    if (!isJ(s[i])) throw bad();
+    i++;
+  }
+  while (i < n && _cIsSpace(s[i])) i++;
+  if (bracket) {
+    if (s[i] !== ')') throw bad();
+    i++;
+    while (i < n && _cIsSpace(s[i])) i++;
+  }
+  if (i !== n) throw bad();
+  return new Complex(x, y);
 }
 
 // ── type helpers ──
@@ -1291,6 +1620,150 @@ function _pySetNative(obj, attr) {
   }
   return false;
 }
+// ── int and float attributes ──
+// A number is an int when it is integral (adder can't tell 2 from 2.0): it gets int's methods, and
+// float's too (hex, is_integer, as_integer_ratio) — what a float-shaped caller asks for still works.
+const _bigOut = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
+const _isIntVal = (x) => typeof x === 'bigint' || typeof x === 'boolean' || Number.isInteger(x);
+const _bitLen = (b) => (b === 0n ? 0 : (b < 0n ? -b : b).toString(2).length);
+function _numKw(name, a, names) {
+  const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw === true ? a.pop() : null;
+  const out = {};
+  if (kw) for (const k of Object.keys(kw)) {
+    if (k === '_kw') continue;
+    if (!names.includes(k)) throw new AdderError('TypeError', `${name}() got an unexpected keyword argument '${k}'`);
+    out[k] = kw[k];
+  }
+  return out;
+}
+// int.to_bytes(length=1, byteorder='big', *, signed=False)
+function _intToBytes(x, ...a) {
+  const kw = _numKw('to_bytes', a, ['length', 'byteorder', 'signed']);
+  const length = Number(a[0] ?? kw.length ?? 1), order = a[1] ?? kw.byteorder ?? 'big', signed = !!(kw.signed ?? false);
+  if (a.length > 2) throw new AdderError('TypeError', `to_bytes() takes at most 2 positional arguments (${a.length} given)`);
+  if (order !== 'big' && order !== 'little') throw new AdderError('ValueError', "byteorder must be either 'little' or 'big'");
+  if (length < 0) throw new AdderError('ValueError', 'length argument must be non-negative');
+  let b = BigInt(_asInt(x));
+  if (b < 0n && !signed) throw new AdderError('OverflowError', "can't convert negative int to unsigned");
+  const bits = BigInt(length * 8);
+  const lim = signed ? 1n << (bits > 0n ? bits - 1n : 0n) : 1n << bits;
+  if (signed ? (length === 0 ? b !== 0n : b < -lim || b >= lim) : b >= lim) throw new AdderError('OverflowError', 'int too big to convert');
+  if (b < 0n) b += 1n << bits;
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++) { out[order === 'big' ? length - 1 - i : i] = Number(b & 0xffn); b >>= 8n; }
+  return out;
+}
+// int.from_bytes(bytes, byteorder='big', *, signed=False)
+function _intFromBytes(...a) {
+  const kw = _numKw('from_bytes', a, ['bytes', 'byteorder', 'signed']);
+  const src = a[0] ?? kw.bytes, order = a[1] ?? kw.byteorder ?? 'big', signed = !!(kw.signed ?? false);
+  if (src === undefined) throw new AdderError('TypeError', "from_bytes() missing required argument 'bytes' (pos 1)");
+  if (order !== 'big' && order !== 'little') throw new AdderError('ValueError', "byteorder must be either 'little' or 'big'");
+  if (typeof src === 'string') throw new AdderError('TypeError', 'cannot convert \'str\' object to bytes');
+  const bytes = src instanceof Uint8Array ? src : ArrayBuffer.isView(src) ? new Uint8Array(src.buffer, src.byteOffset, src.byteLength) : Uint8Array.from([...pyIter(src)].map((v) => {
+    const n = _asInt(v);
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
+    return n;
+  }));
+  let b = 0n;
+  const n = bytes.length;
+  for (let i = 0; i < n; i++) b = (b << 8n) | BigInt(bytes[order === 'big' ? i : n - 1 - i]);
+  if (signed && n && (bytes[order === 'big' ? 0 : n - 1] & 0x80)) b -= 1n << BigInt(n * 8);
+  return _bigOut(b);
+}
+// float.as_integer_ratio: the exact value, lowest terms
+function _floatRatio(x) {
+  if (x !== x) throw new AdderError('ValueError', 'cannot convert NaN to integer ratio');
+  if (!Number.isFinite(x)) throw new AdderError('OverflowError', 'cannot convert Infinity to integer ratio');
+  const [m0, e] = _f64Parts(Math.abs(x));
+  let m = m0, d = 1n;
+  if (e >= 0) m <<= BigInt(e);
+  else {
+    let k = -e;
+    while (k > 0 && m && !(m & 1n)) { m >>= 1n; k--; }
+    d <<= BigInt(k);
+  }
+  if (m === 0n) d = 1n;
+  return mkTuple([_bigOut(x < 0 ? -m : m), _bigOut(d)]);
+}
+// float.hex: [-]0x1.<13 hex digits>p<exp> (0x0. for a subnormal)
+function _floatHex(x) {
+  if (x !== x) return 'nan';
+  if (!Number.isFinite(x)) return x > 0 ? 'inf' : '-inf';
+  const sign = _signBit(x) ? '-' : '';
+  if (x === 0) return `${sign}0x0.0p+0`;
+  _cF64[0] = Math.abs(x);
+  const bits = new BigUint64Array(_cF64.buffer)[0];
+  const eb = Number(bits >> 52n), frac = (bits & ((1n << 52n) - 1n)).toString(16).padStart(13, '0');
+  const exp = eb === 0 ? -1022 : eb - 1023;
+  return `${sign}0x${eb === 0 ? 0 : 1}.${frac}p${exp < 0 ? '-' : '+'}${Math.abs(exp)}`;
+}
+// float.fromhex, correctly rounded (half even)
+function _floatFromHex(str) {
+  const s = String(str).trim();
+  const bad = () => new AdderError('ValueError', 'invalid hexadecimal floating-point string');
+  const sp = /^([+-]?)(?:(inf(?:inity)?)|(nan)|(?:0x)?([0-9a-f]*)(?:\.([0-9a-f]*))?(?:p([+-]?\d+))?)$/i.exec(s);
+  if (!sp) throw bad();
+  const neg = sp[1] === '-';
+  if (sp[2]) return neg ? -Infinity : Infinity;
+  if (sp[3]) return NaN;
+  const ip = sp[4] || '', fp = sp[5] || '';
+  if (!ip && !fp) throw bad();
+  let m = BigInt('0x' + ((ip + fp).replace(/^0+/, '') || '0'));
+  if (m === 0n) return neg ? -0 : 0;
+  const e = Number(sp[6] || 0) - 4 * fp.length;
+  const bl = m.toString(2).length;
+  if (bl - 1 + e >= 1024) throw new AdderError('OverflowError', 'hexadecimal value too large to represent as a float');
+  const lsb = Math.max(bl - 1 + e - 52, -1074);
+  const shift = lsb - e;
+  if (shift > 0) {
+    const S = BigInt(shift), q = m >> S, r = m - (q << S), half = 1n << (S - 1n);
+    m = r > half || (r === half && (q & 1n)) ? q + 1n : q;
+  } else m <<= BigInt(-shift);
+  const v = Number(m) * 2 ** lsb;
+  if (!Number.isFinite(v)) throw new AdderError('OverflowError', 'hexadecimal value too large to represent as a float');
+  return neg ? -v : v;
+}
+const _numOps = ['__add__', '__sub__', '__mul__', '__truediv__', '__floordiv__', '__mod__', '__pow__', '__and__', '__or__', '__xor__',
+  '__lshift__', '__rshift__', '__radd__', '__rsub__', '__rmul__', '__rtruediv__', '__rfloordiv__', '__rmod__', '__rpow__', '__rand__',
+  '__ror__', '__rxor__', '__eq__', '__ne__', '__lt__', '__le__', '__gt__', '__ge__', '__neg__', '__str__', '__repr__', '__hash__'];
+// x.<attr> for a number (an int, a float, a bool), or undefined
+function _numAttr(x, attr) {
+  const isInt = _isIntVal(x);
+  const v = typeof x === 'boolean' ? +x : x;
+  switch (attr) {
+    case 'real': return v;
+    case 'imag': return 0;
+    case 'conjugate': return () => v;
+    case 'is_integer': return () => isInt;
+    case 'as_integer_ratio': return () => (isInt ? mkTuple([v, 1]) : _floatRatio(v));
+    case 'hex': return typeof v === 'number' ? () => _floatHex(v) : undefined;
+    case '__float__': return () => { const n = Number(v); if (!Number.isFinite(n) && typeof v === 'bigint') throw new AdderError('OverflowError', 'int too large to convert to float'); return n; };
+    case '__int__': case '__trunc__': return () => _builtinInt(v);
+    case '__floor__': return () => (isInt ? v : _builtinInt(Math.floor(v)));
+    case '__ceil__': return () => (isInt ? v : _builtinInt(Math.ceil(v)));
+    case '__round__': return (n) => adderModules.builtins.round(v, n);
+    case '__abs__': return () => (typeof v === 'bigint' ? (v < 0n ? -v : v) : Math.abs(v));
+    case '__pos__': return () => v;
+    case '__bool__': return () => (typeof v === 'bigint' ? v !== 0n : v !== 0);
+    case '__format__': return (spec) => pyFormatValue(x, spec);
+  }
+  if (isInt) {
+    switch (attr) {
+      case 'numerator': return v;
+      case 'denominator': return 1;
+      case '__index__': return () => v;
+      case 'bit_length': return () => _bitLen(BigInt(v));
+      case 'bit_count': return () => { let b = BigInt(v); if (b < 0n) b = -b; let c = 0; while (b) { c += Number(b & 1n); b >>= 1n; } return c; };
+      case 'to_bytes': return (...a) => _intToBytes(v, ...a);
+      case '__invert__': return () => pyInvert(v);
+    }
+  }
+  if (_numOps.includes(attr)) { const f = _TYPE_DUNDERS[attr]; return (...a) => f(x, ...a); }
+  return undefined;
+}
+const _builtinInt = (v) => adderModules.builtins.int(v);
+
 export function adderGetAttr(obj, attr) {
   if (obj !== null && typeof obj === 'object' && obj.__adderClass__ === undefined && _jsGenTag(obj)) {
     const m = _jsGenAttr(obj, attr);
@@ -1328,6 +1801,11 @@ export function adderGetAttr(obj, attr) {
   }
   // every value has a __class__ (its type) — unless it defines the attribute itself
   if (attr === '__class__' && (obj === null || obj === undefined || !(typeof obj === 'object' && Object.hasOwn(obj, '__class__')))) return typeOf(obj ?? null);
+  if (typeof obj === 'number' || typeof obj === 'bigint' || typeof obj === 'boolean') {
+    const r = _numAttr(obj, attr);
+    if (r !== undefined) return r;
+    throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
+  }
   // an instance's (or module's) attribute dict, live
   if (attr === '__dict__' && obj !== null && typeof obj === 'object' && !Array.isArray(obj) && !(obj instanceof Map) && !(obj instanceof Set) && !(obj instanceof Uint8Array)) {
     return Object.hasOwn(obj, '__dict__') ? obj.__dict__ : new AttrDict(obj);
@@ -1379,6 +1857,25 @@ export function adderGetAttr(obj, attr) {
     }
     // a builtin type's operator dunders, unbound (`str.__mod__(fmt, args)`, `int.__add__(1, 2)`,
     // `list.__len__(xs)` — markupsafe calls str's): the operators themselves
+    if (tn === 'int' && attr === 'from_bytes') return _intFromBytes;
+    if (tn === 'float' && attr === 'fromhex') return _floatFromHex;
+    if ((tn === 'int' || tn === 'float' || tn === 'bool') && !Object.hasOwn(_TYPE_DUNDERS, attr) &&
+        _numAttr(tn === 'float' ? 0.5 : 1, attr) !== undefined && attr !== 'real' && attr !== 'imag' && attr !== 'numerator' && attr !== 'denominator') {
+      const fn = (self, ...a) => {
+        if (typeof self !== 'number' && typeof self !== 'bigint' && typeof self !== 'boolean') throw new AdderError('TypeError', `descriptor '${attr}' for '${tn}' objects doesn't apply to a '${pyTypeName(self)}' object`);
+        return _numAttr(self, attr)(...a);
+      };
+      fn._pyName = `${tn}.${attr}`;
+      return fn;
+    }
+    if (tn === 'complex' && typeof Complex.prototype[attr] === 'function' && attr !== 'constructor') {
+      const fn = (self, ...a) => {
+        if (!(self instanceof Complex)) throw new AdderError('TypeError', `descriptor '${attr}' for 'complex' objects doesn't apply to a '${pyTypeName(self)}' object`);
+        return Complex.prototype[attr].apply(self, a);
+      };
+      fn._pyName = `complex.${attr}`;
+      return fn;
+    }
     if (tn && _TYPE_DUNDER_TYPES.has(tn) && Object.hasOwn(_TYPE_DUNDERS, attr)) {
       const f = _TYPE_DUNDERS[attr];
       const fn = (self, ...a) => f(_baseValue(self), ...a);
@@ -2665,15 +3162,15 @@ export function pyMod(a, b) {
   throw _binErr('%', a, b);
 }
 export function pyPow(a, b, mod) {
-  if (mod !== undefined && mod !== null) return _modPow(a, b, mod);
+  if (mod !== undefined && mod !== null) {
+    if (a instanceof Complex || b instanceof Complex || mod instanceof Complex) throw new AdderError('ValueError', 'complex modulo');
+    return _modPow(a, b, mod);
+  }
   const d = _viaDunder(a, b, '__pow__', '__rpow__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) {
     a = Number(_asInt(a)); b = Number(_asInt(b));
     if (a === 0 && b < 0) throw new AdderError('ZeroDivisionError', '0.0 cannot be raised to a negative power');
-    if (a < 0 && !Number.isInteger(b)) {   // complex, as Python: polar form
-      const r = Math.pow(-a, b), th = Math.PI * b;
-      return new Complex(r * Math.cos(th), r * Math.sin(th));
-    }
+    if (a < 0 && !Number.isInteger(b) && Number.isFinite(b)) return Complex._pow([a, 0], [b, 0]);   // complex, as float_pow defers
     return Math.pow(a, b);
   }
   throw _binErr('**', a, b);
@@ -3043,7 +3540,10 @@ export function pyEq(a, b) {
   }
   if (a instanceof AdderRange && b instanceof AdderRange) return pyEq([...a], [...b]);
   if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i]);
-  if (a instanceof Complex || b instanceof Complex) return typeof a?.__eq__ === 'function' ? a.__eq__(b) : false;
+  if (a instanceof Complex || b instanceof Complex) {
+    const r = a instanceof Complex ? a.__eq__(b) : b.__eq__(a);
+    return r === NotImplemented ? a === b : r;
+  }
   return false;
 }
 
@@ -3246,7 +3746,7 @@ const _mathModule = {
   asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
   sqrt: Math.sqrt, exp: Math.exp, log: Math.log, log2: Math.log2, log10: Math.log10,
   pow: Math.pow, floor: Math.floor, ceil: Math.ceil, trunc: Math.trunc,
-  fabs: Math.abs, copysign: (x, y) => Math.sign(y) * Math.abs(x),
+  fabs: Math.abs, copysign: _copysign,
   isnan: Number.isNaN, isinf: (x) => !isFinite(x) && !isNaN(x), isfinite: Number.isFinite,
   radians: (d) => d * Math.PI / 180, degrees: (r) => r * 180 / Math.PI,
   factorial: (n) => { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; },
@@ -6523,7 +7023,7 @@ export function adderBuiltins(printFn) {
     property: _propertyType(),
     staticmethod: (fn) => ({ __staticmethod__: true, fn }),
     classmethod: (fn) => ({ __classmethod__: true, fn }),
-    complex: (real, imag) => new Complex(real ?? 0, imag ?? 0),
+    complex: _complexNew,
     callable: (obj) => typeof obj === 'function' || (obj !== null && typeof obj === 'object' && typeof obj.__call__ === 'function'),
     chr: (n) => { n = _idxArg(n); if (n < 0 || n > 0x10ffff) throw new AdderError('ValueError', 'chr() arg not in range(0x110000)'); return String.fromCodePoint(n); },
     ord: (c) => {
@@ -6540,8 +7040,21 @@ export function adderBuiltins(printFn) {
     repr: pyReprMaybe,
     Ellipsis, NotImplemented,
     format: (value, spec) => pyFormatValue(value, spec || ''),
-    pow: (x, y, mod) => mod !== undefined ? _modPow(x, y, mod) : Math.pow(x, y),
-    divmod: (a, b) => mkTuple([pyFloorDiv(a, b), pyMod(a, b)]),
+    pow: (...a) => {
+      const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw === true ? a.pop() : null;
+      let [base, exp, mod] = a;
+      if (kw) for (const k of Object.keys(kw)) {
+        if (k === '_kw') continue;
+        if (k === 'base') base = kw.base; else if (k === 'exp') exp = kw.exp; else if (k === 'mod') mod = kw.mod;
+        else throw new AdderError('TypeError', `pow() got an unexpected keyword argument '${k}'`);
+      }
+      if (base === undefined || exp === undefined) throw new AdderError('TypeError', `pow() missing required argument '${base === undefined ? 'base' : 'exp'}' (pos ${base === undefined ? 1 : 2})`);
+      return pyPow(base, exp, mod === null ? undefined : mod);
+    },
+    divmod: (a, b) => {
+      if (a instanceof Complex || b instanceof Complex) throw new AdderError('TypeError', `unsupported operand type(s) for divmod(): '${pyTypeName(a)}' and '${pyTypeName(b)}'`);
+      return mkTuple([pyFloorDiv(a, b), pyMod(a, b)]);
+    },
     // id(x): an object's is held aside (a property on it showed as a dict key); equal immutable
     // values share one, as interned ones do in CPython
     id: (obj) => {

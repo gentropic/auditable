@@ -804,6 +804,8 @@ export const _py = {
   // `from m import *` at a module's top level: its names onto the module object
   starInto: (mod, names) => { for (const k of Object.keys(names)) mod[k] = names[k]; return null; },
   // the defining module's __name__, for a class's __module__ — absent from exec(code, {})'s globals
+  // an imaginary literal: 2j
+  imag: (y) => new Complex(0, y),
   moduleName: (m) => {
     if (m === null || m === undefined) return undefined;
     if (m instanceof Map) return m.has('__name__') ? m.get('__name__') : undefined;
