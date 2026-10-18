@@ -10,8 +10,9 @@ extend a JS-provided module as a submodule (`html/parser.py` under adder's own `
 
 | module | origin |
 |---|---|
-| `xml`, `xml.etree`, `xml.etree.ElementTree` | adder's own (MIT, as the rest of adder) |
-| `unittest` (+ `unittest.mock`), `doctest`, `difflib`, `argparse`, `bisect`, `dataclasses`, `heapq`, `getopt`, `glob`, `shutil`, `pkgutil`, `html.parser`, `_markupbase`, `_colorize`, `json` (over adder's JS `_json`, as CPython's over its C one) | CPython 3.13 standard library, verbatim — PSF License 2.0, see `LICENSE-PSF.txt` |
+| `xml`, `xml.etree`, `xml.etree.ElementTree`; `importlib._bootstrap`, `importlib._bootstrap_external` (the few names tools reach for, over adder's own import system) | adder's own (MIT, as the rest of adder) |
+| `unittest` (+ `unittest.mock`), `doctest`, `difflib`, `argparse`, `bisect`, `dataclasses`, `heapq`, `getopt`, `glob`, `shutil`, `pkgutil`, `html.parser`, `_markupbase`, `_colorize`, `json` (over adder's JS `_json`, as CPython's over its C one), `pydoc`, `token`, `tokenize`, `__future__`, `_pyrepl` (`__init__`, `pager`) | CPython 3.13 standard library, verbatim — PSF License 2.0, see `LICENSE-PSF.txt` (`_pyrepl/__init__.py` carries its own permissive notice) |
+| `_tokenize` | adapted from CPython 3.11's pure-Python tokenizer loop (PSF License 2.0): the `TokenizerIter` 3.13's `tokenize.py` drives, where CPython has a C tokenizer |
 
 Vendored CPython files are kept unmodified; when one needs a change for adder, fix adder
 instead (the engines are meant to run CPython's own source).

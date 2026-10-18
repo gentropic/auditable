@@ -59,12 +59,6 @@ const _slBytesLike = (b, fn) => {
 const _slUtf8 = new TextEncoder();
 const _slUtf8d = new TextDecoder();
 
-// ── __future__ ──
-// Every feature is already on; the names exist so `from __future__ import annotations` imports.
-const _slFeature = (name) => ({ __adderClass__: '_Feature', __repr__: () => `_Feature((3, 0), (3, 0), 0)`, compiler_flag: 0, _name: name });
-adderModules.__future__ = Object.fromEntries(['nested_scopes', 'generators', 'division', 'absolute_import', 'with_statement',
-  'print_function', 'unicode_literals', 'barry_as_FLUFL', 'generator_stop', 'annotations'].map((n) => [n, _slFeature(n)]));
-
 // ── typing ──
 // The runtime objects of annotations: List[int], Optional[str], Union[...], Callable[...],
 // TypeVar, Generic, Protocol, cast, overload — subscriptable, printable, and ignored by

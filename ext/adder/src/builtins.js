@@ -2213,6 +2213,12 @@ export function adderGetAttr(obj, attr) {
     // what every instance inherits from object (dir() lists them, so getattr must find them)
     if (ot && _OBJECT_DUNDER_SET.has(attr)) { const d = _objectDunder(obj, attr); if (d !== undefined) return d; }
     if (ot && attr === '__weakref__') return null;
+    // a JS iterator adder hands out (itertools.chain, map, zip, …) speaks Python's protocol too:
+    // it.__next__() (StopIteration at the end) and it.__iter__() (itself)
+    if (!ot && typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') {
+      if (attr === '__next__') return () => { const r = obj.next(); if (r.done) throw stopIteration(r.value); return r.value; };
+      if (attr === '__iter__') return () => obj;
+    }
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${attr}'`);
   }
   // generic
@@ -4185,9 +4191,13 @@ function _aiter(obj) {
 }
 
 const _itertoolsModule = {
-  chain: Object.assign((...iterables) => _lazyIter('chain', async function*() {
+  // (a plain JS iterator when every source reads synchronously — what compiled code, and
+  // it.__next__(), can step; else async)
+  chain: Object.assign((...iterables) => (iterables.every(_isSyncSource)
+    ? _lazySyncIter('chain', function* () { for (const it of iterables) yield* pyIter(it); })
+    : _lazyIter('chain', async function*() {
         for (const it of iterables) for await (const v of _aiter(it)) yield v;
-  }), {
+      })), {
     // chain.from_iterable(its): chain(*its), with the outer iterable read lazily too
     from_iterable: (iterables) => _lazyIter('chain', async function*() {
       for await (const it of _aiter(iterables)) for await (const v of _aiter(it)) yield v;
@@ -4479,7 +4489,10 @@ export function _namedtuple(name, fields, opts) {
   if (opts && opts._kw && opts.defaults) defaults = [...pyIter(opts.defaults)];
   const names = typeof fields === 'string' ? fields.replace(/,/g, ' ').split(/\s+/).filter(Boolean) : [...pyIter(fields)];
   class NT extends PyTuple {}
-  const cls = function (...args) {
+  // the tuple of the arguments' values (a subclass's instance is made from this, unfrozen: it
+  // has attributes, as a CPython namedtuple subclass's instance has a __dict__)
+  const make = (args) => {
+    args = args.slice();
     const kw = args.length && args[args.length - 1]?._kw ? args.pop() : null;
     const vals = names.map((f, i) => {
       if (i < args.length) return args[i];
@@ -4490,20 +4503,35 @@ export function _namedtuple(name, fields, opts) {
     });
     const t = new NT();
     for (const v of vals) t.push(v);
-    return Object.freeze(t);
+    return t;
   };
+  const cls = function (...args) { return Object.freeze(make(args)); };
   cls._pyName = name; cls._pyClass = true; cls._fields = mkTuple(names);
   cls._pyMRO = [cls, _typeObjects.tuple].filter(Boolean);
+  cls._pyBases = [_typeObjects.tuple].filter(Boolean);   // (a subclass's MRO runs through tuple)
+  // a Python class over it (`class P(namedtuple('P', 'x y')): …`) is a JS-backed subclass
+  cls._jsClass = NT;
+  cls._pyMake = make;
+  cls._field_defaults = Object.fromEntries(names.slice(names.length - defaults.length).map((f, i) => [f, defaults[i]]));
   NT.prototype.__adderClass__ = name;
   NT.prototype.__adderType__ = cls;
   NT.prototype._fields = cls._fields;
   cls.__match_args__ = cls._fields;
   cls._ntProto = NT.prototype;   // typing.NamedTuple re-homes it onto the user's class
   names.forEach((f, i) => Object.defineProperty(NT.prototype, f, { get() { return this[i]; }, configurable: true }));
-  NT.prototype.__repr__ = function () { return `${name}(${names.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
+  // (the class's own name: a subclass's, as CPython's self.__class__.__name__)
+  NT.prototype.__repr__ = function () { return `${this.__adderClass__ || name}(${names.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
   NT.prototype._asdict = function () { const o = {}; names.forEach((f, i) => { o[f] = this[i]; }); return o; };
-  NT.prototype._replace = function (kw) { return cls(...names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this[i]))); };
-  cls._make = (it) => cls(...pyIter(it));
+  // a new instance of the instance's own class
+  NT.prototype._replace = function (kw) {
+    if (kw) for (const k of Object.keys(kw)) if (k !== '_kw' && !names.includes(k)) throw new AdderError('ValueError', `Got unexpected field names: [${pyRepr(k)}]`);
+    return (this.__adderType__ || cls)(...names.map((f, i) => (kw && Object.hasOwn(kw, f) ? kw[f] : this[i])));
+  };
+  // _make: a classmethod (P._make on a subclass makes a P)
+  const mk = (c, it) => c(...pyIter(it));
+  mk._pyName = `${name}._make`;
+  Object.defineProperty(cls, '_make', _classMethodDescriptor(mk, `${name}._make`));
+  cls._pyOwnMembers = new PySet(['_make']);
   return cls;
 }
 
@@ -6654,7 +6682,8 @@ _typeObjects.type = pyTypeObj;
 // stay plain values until subclassed builtins are boxed (see the str-subclass design note).
 function _inheritedNew(T) {
   if (T._pyMRO || T === pyObjectObj) {
-    const f = (c, ...a) => objectNew(c);
+    // a JS-backed one (a namedtuple class): its constructor makes the subclass's instance
+    const f = (c, ...a) => (c && c !== T && c._pyJsBase && T._jsClass ? objectNew(c, a) : T._jsClass && T._pyMake && c === T ? T(...a) : objectNew(c));
     f._pyName = '__new__';
     return f;
   }
@@ -7277,7 +7306,26 @@ export function adderBuiltins(printFn) {
     hash: (obj) => _pyHash(obj),
     // iter(x): an iterator is its own (a generator — the tree-walker's are async — map, filter …);
     // an object with __iter__ gives what that returns; the rest iterate as JS sequences
-    iter: (obj) => {
+    iter: (obj, ...rest) => {
+      // iter(callable, sentinel): call it until it returns the sentinel (a callable_iterator)
+      if (rest.length && !(rest[rest.length - 1] && rest[rest.length - 1]._kw === true)) {
+        if (rest.length > 1) throw new AdderError('TypeError', `iter expected at most 2 arguments, got ${rest.length + 1}`);
+        const f = asCallable(obj), sentinel = rest[0];
+        let done = false;
+        const step = () => {
+          if (done) throw new AdderError('StopIteration', '');
+          const v = syncOf(f)();
+          const check = (x) => { if (pyEq(x, sentinel) === true) { done = true; throw new AdderError('StopIteration', ''); } return x; };
+          return _isThenable(v) ? v.then(check) : check(v);
+        };
+        const it = {
+          __next__: step, __iter__() { return it; },
+          next() { try { return { value: step(), done: false }; } catch (e) { if (e && e.pyType === 'StopIteration') return { value: undefined, done: true }; throw e; } },
+          [Symbol.iterator]() { return it; },
+        };
+        Object.defineProperty(it, '__adderClass__', { value: 'callable_iterator' });
+        return it;
+      }
       if (obj !== null && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function' && (typeof obj.__next__ === 'function' || typeof obj.next === 'function')) return obj;
       if (isUserIterable(obj) && typeof obj.__iter__ === 'function') return obj.__iter__();
       // an iterator (one of adder's own iterator objects too): iter(it) is it
@@ -7475,8 +7523,9 @@ export function pySuper(cls, self, ...extra) {
           continue;
         }
         if (!base) continue;
-        // a builtin base (str, tuple …): its __new__ makes the subclass's instance
-        if (name === '__new__' && base._pyClass && !base._pyMRO && base !== pyObjectObj && base !== pyTypeObj && !isBuiltinExcType(base)) return _inheritedNew(base);
+        // a builtin base (str, tuple …), or a JS-backed one (a namedtuple class): its __new__
+        // makes the subclass's instance
+        if (name === '__new__' && base._pyClass && (!base._pyMRO || (base._jsClass && base._pyMake)) && base !== pyObjectObj && base !== pyTypeObj && !isBuiltinExcType(base)) return _inheritedNew(base);
         // list / tuple / dict / set under a subclass: the builtin's methods and dunders, on self
         if (base._pyClass && !base._pyMRO && self && (Array.isArray(self) || self instanceof Map || self instanceof Set) && ['list', 'tuple', 'dict', 'set', 'frozenset'].includes(base._pyName)) {
           // super().__init__(…) under a container subclass: the container's own __init__

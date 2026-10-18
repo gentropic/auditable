@@ -5,7 +5,7 @@
 // Concat-bundled with the rest of adder: top-level names carry an `_st` prefix.
 
 import {
-  AdderError, PyTuple, PyDict, PySet, mkTuple, isPlainDict, pyTypeName, pyRepr, pyStr, pyReprMaybe,
+  AdderError, PyTuple, PyDict, PySet, mkTuple, isPlainDict, adderGetAttr, pyTypeName, pyRepr, pyStr, pyReprMaybe,
   pyIter, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow,
   pyFormatValue, adderModules, makeExcType, finishClass, _typeObjects, _pyHash, setClassAttr,
 } from './builtins.js';
@@ -129,7 +129,23 @@ function _stEnumHook(cls) {
     if (k.startsWith('_')) continue;
     const v = cls[k];
     if (typeof v === 'function') continue;
+    if (v !== null && typeof v === 'object' && (v.__property__ || typeof v.__get__ === 'function' || typeof v.__set__ === 'function' || typeof v.__delete__ === 'function')) continue;
     candidates.push([k, v]);
+  }
+  // the members' data type (CPython's _member_type_): the mixin — int for IntEnum / IntFlag, str for
+  // StrEnum, a builtin or JS-backed base (`class C(float, Enum)`, `(date, Enum)`) — else object
+  {
+    const T = _typeObjects;
+    const enumish = (b) => b && (b._stEnumBase || b._member_names_ !== undefined || b === _stEnum || b === _stFlag || b === _stReprEnum);
+    let mt = kind.int ? T.int : kind.str ? T.str : null;
+    if (!mt) {
+      for (const b of cls._pyMRO.slice(1)) {
+        if (!b || enumish(b) || b === T.object) continue;
+        if (b._jsClass || ['int', 'float', 'str', 'bytes', 'complex', 'tuple', 'list', 'dict', 'set', 'frozenset', 'bool'].includes(b._pyName) && !b._pyMRO) { mt = b; break; }
+        if (b._pyJsBase) { mt = b._pyJsBase; break; }
+      }
+    }
+    cls._member_type_ = mt || T.object;
   }
   cls._member_names_ = [];
   cls._member_map_ = new PyDict();
@@ -166,7 +182,7 @@ function _stEnumHook(cls) {
   cls.__members__ = cls._member_map_;
   cls._pyNew = (...a) => {
     const kw = _stKw(a);
-    if (a.length >= 2 || (kw && _stHas(kw, 'names'))) return _stFunctional(cls, a, kw);
+    if (a.length >= 2 || (kw && ['names', 'type', 'module', 'qualname', 'start', 'boundary'].some((k) => _stHas(kw, k)))) return _stFunctional(cls, a, kw);
     return _stLookup(cls, a[0]);
   };
   let r;
@@ -176,9 +192,10 @@ function _stEnumHook(cls) {
 // Enum('Color', 'RED GREEN') / Enum('Color', ['RED', 'GREEN']) / (('RED', 1), …) / {'RED': 1}
 function _stFunctional(base, a, kw) {
   const name = a[0];
-  let names = a.length > 1 ? a[1] : kw.names;
+  let names = a.length > 1 ? a[1] : kw && _stHas(kw, 'names') ? kw.names : null;
   const start = kw && _stHas(kw, 'start') ? kw.start : 1;
   let entries;
+  if (names === null || names === undefined) names = [];
   if (typeof names === 'string') names = names.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
   if (names instanceof Map) entries = [...names];
   else if (isPlainDict(names)) entries = Object.entries(names);
@@ -269,6 +286,12 @@ const _stStrEnum = _stBaseClass('StrEnum', [_stReprEnum], {
 }, { _stEnumBase: true });
 const _stFlag = _stBaseClass('Flag', [_stEnum], _stFlagProto, { _stEnumBase: true });
 const _stIntFlag = _stBaseClass('IntFlag', [_stFlag, _stReprEnum], _stIntProtoAll, { _stEnumBase: true });
+// the bases' own member types and (empty) member tables, as CPython's
+for (const [c, t] of [[_stEnum, 'object'], [_stReprEnum, 'object'], [_stFlag, 'object'], [_stIntEnum, 'int'], [_stIntFlag, 'int'], [_stStrEnum, 'str']]) {
+  Object.defineProperty(c, '_member_type_', { get: () => _typeObjects[t], configurable: true });
+  if (c._member_names_ === undefined) c._member_names_ = [];
+  if (c._member_map_ === undefined) c._member_map_ = new PyDict();
+}
 // int / str as bases too, once the builtins exist (isinstance(Color.RED, int) for an IntEnum)
 // (the engines build a subclass's MRO from _pyBases, so the builtin type goes there, first, as
 // in CPython's `class IntEnum(int, ReprEnum)`)
@@ -288,5 +311,34 @@ adderModules.enum = {
   Enum: _stEnum, IntEnum: _stIntEnum, StrEnum: _stStrEnum, Flag: _stFlag, IntFlag: _stIntFlag, ReprEnum: _stReprEnum,
   auto: _stAuto, unique: _stUnique, EnumMeta: _typeObjects.type || null, EnumType: _typeObjects.type || null,
   member: (v) => v, nonmember: (v) => v,
-  global_enum: (cls) => cls, verify: () => (cls) => cls, property: (f) => ({ __property__: true, fget: f, fset: null }),
+  global_enum: (cls) => cls, verify: () => (cls) => cls,
+  property: (...a) => adderModules.builtins.property(...a),
 };
+// the rest of CPython's enum surface, as names: FlagBoundary / EnumCheck and their members, the
+// global_* helpers, the pickle helpers, EnumDict, and the private hooks the stdlib uses
+{
+  const E = adderModules.enum;
+  E.FlagBoundary = _stStrEnum('FlagBoundary', [['STRICT', 'strict'], ['CONFORM', 'conform'], ['EJECT', 'eject'], ['KEEP', 'keep']].map((p) => mkTuple(p)));
+  for (const n of ['STRICT', 'CONFORM', 'EJECT', 'KEEP']) E[n] = adderGetAttr(E.FlagBoundary, n);
+  E.EnumCheck = _stStrEnum('EnumCheck', [['CONTINUOUS', 'no skipped integer values'], ['NAMED_FLAGS', 'multi-flag aliases may not contain unnamed flags'], ['UNIQUE', 'one name per value']].map((p) => mkTuple(p)));
+  for (const n of ['CONTINUOUS', 'NAMED_FLAGS', 'UNIQUE']) E[n] = adderGetAttr(E.EnumCheck, n);
+  // global_enum's reprs: module.NAME for a member, as CPython's global_enum installs
+  E.global_enum_repr = (self) => `${self.__module__ || adderGetAttr(adderGetAttr(self, '__class__'), '__module__')}.${adderGetAttr(self, '_name_')}`;
+  E.global_flag_repr = E.global_enum_repr;
+  E.global_str = (self) => String(adderGetAttr(self, '_name_'));
+  E.pickle_by_global_name = (self, proto) => adderGetAttr(self, '_name_');
+  E.pickle_by_enum_name = (self, proto) => mkTuple([adderModules.builtins.getattr, mkTuple([adderGetAttr(self, '__class__'), adderGetAttr(self, '_name_')])]);
+  E.EnumDict = _typeObjects.dict || null;
+  // _iter_bits_lsb(num): each set bit's value, lowest first
+  E._iter_bits_lsb = function* (num) {
+    const original = num;
+    if (num !== null && typeof num === 'object' && num._value_ !== undefined) num = num._value_;
+    if (num < 0) throw new AdderError('ValueError', `${pyRepr(original)} is not a positive integer`);
+    let n = BigInt(num);
+    while (n) { const b = n & -n; yield n <= 9007199254740991n ? Number(b) : b; n ^= b; }
+  };
+  // the stdlib's private enum-conversion hooks: not adder's (its enums are JS-built); a class
+  // decorated with one is the class as written
+  E._simple_enum = () => (cls) => cls;
+  E._test_simple_enum = () => { throw new AdderError('NotImplementedError', 'enum._test_simple_enum is not available in adder'); };
+}
