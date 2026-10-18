@@ -534,9 +534,9 @@ describe('adderEval — builtins', () => {
     assert.deepStrictEqual(defines.x, [3, 4]);
   });
 
-  it('isinstance (string)', async () => {
-    const { output } = await pyEval('isinstance(42, "int")');
-    assert.strictEqual(output, 'True');
+  it('isinstance (a string is not a class: TypeError, as CPython)', async () => {
+    const { output } = await pyEval('try:\n    isinstance(42, "int")\n    r = "no raise"\nexcept TypeError:\n    r = "TypeError"\nr');
+    assert.strictEqual(output, "'TypeError'");
   });
 
   it('isinstance (type object)', async () => {

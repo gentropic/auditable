@@ -20,7 +20,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
+  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, guardSetAttr, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -526,14 +526,11 @@ async function _assignTarget(target, value, scope) {
       }
       const key = await adderEval(target.slice, scope);
       if (obj instanceof Map) obj.set(key, value);
-      else if (typeof obj?.__setitem__ === 'function') obj.__setitem__(key, value);
+      else if (typeof obj?.__setitem__ === 'function') await obj.__setitem__(key, value);
       else if (Array.isArray(obj) || obj instanceof Uint8Array) {
-        // Python-style negative indexing on write: arr[-1] is the last
-        // element. Without the translation JS just stores a string-keyed
-        // '-1' property and the positional slot is left untouched —
-        // silently breaks `arr[i], arr[-j] = arr[-j], arr[i]` swaps.
-        const idx = key < 0 ? obj.length + key : key;
-        obj[idx] = value;
+        // Python-style indexing on write: arr[-1] is the last element (JS would store a '-1'
+        // property), a position past the end is an IndexError
+        obj[_withLine(() => seqStoreIndex(obj, key), target.line)] = value;
       }
       else obj[key] = value;
       break;
@@ -1929,6 +1926,8 @@ async function _readOrNull(vfs, p) { try { return await vfs.readFile(p); } catch
 export async function findModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
+  // None in sys.modules blocks the import (test.support's import_fresh_module, "no C accelerator")
+  if (cache[name] === null && Object.hasOwn(cache, name)) throw new AdderError('ImportError', `import of ${name} halted; None in sys.modules`);
   const known = _resolveModule(name);
   if (known) {
     // a stdlib module, once imported, is in sys.modules as CPython's are (six's

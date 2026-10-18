@@ -44,6 +44,9 @@ const _TWO_OP = new Set(['**', '//', '<<', '>>', '<=', '>=', '==', '!=', '->', '
 const _THREE_OP = new Set(['**=', '//=', '<<=', '>>=']);
 
 export function adderTokenize(code) {
+  // universal newlines, as CPython's tokenizer reads source: \r\n and a lone \r are \n (a
+  // triple-quoted string in a CRLF file holds \n; the escape \r stays — it is not a CR here)
+  if (code.indexOf('\r') !== -1) code = code.replace(/\r\n?/g, '\n');
   const tokens = [];
   const indentStack = [0];
   let pos = 0, line = 1, col = 0;

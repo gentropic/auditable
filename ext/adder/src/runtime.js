@@ -135,8 +135,7 @@ function _setitem(obj, key, value) {
   { const f = subclassDunder(obj, '__setitem__'); if (f) { f.call(obj, key, value); return; } }
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
-    const idx = key < 0 ? obj.length + key : key;
-    obj[idx] = value;
+    obj[(typeof key === 'number' && key >= 0 && key < obj.length && (key | 0) === key) ? key : seqStoreIndex(obj, key)] = value;
     return;
   }
   // 2D ndarray with tuple key (`x_trans[:, 1] = 0.0`). Mirrors the
@@ -603,7 +602,7 @@ function _createClass(name, bases, members, annotations, kw, moduleName) {
 // ── Exception matching (for try/except) ──
 
 // _excParents comes from builtins.js
-import { _excParents } from './builtins.js';
+import { _excParents, seqStoreIndex } from './builtins.js';
 
 function _rtMatchException(error, excTypeVal) {
   return excMatches(error, excTypeVal);

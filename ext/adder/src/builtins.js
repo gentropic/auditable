@@ -2280,38 +2280,89 @@ function _ndarrayToList(arr) {
   return out;
 }
 
-function _listMethod(arr, attr) {
-  const m = {
-    append: (v) => { arr.push(v); return null; },
-    extend: (iterable) => (Array.isArray(iterable) ? (arr.push(...(iterable === arr ? iterable.slice() : iterable)), null) : _eachMaybe(iterable, (v) => arr.push(v))),
-    insert: (i, v) => { arr.splice(i < 0 ? Math.max(0, arr.length + i) : i, 0, v); return null; },
-    remove: (v) => { const i = arr.indexOf(v); if (i < 0) throw new AdderError('ValueError', 'list.remove(x): x not in list'); arr.splice(i, 1); return null; },
-    pop: (i) => { if (arr.length === 0) throw new AdderError('IndexError', 'pop from empty list'); return i === undefined ? arr.pop() : arr.splice(i < 0 ? arr.length + i : i, 1)[0]; },
-    clear: () => { arr.length = 0; return null; },
-    index: (v, start, end) => { const i = arr.indexOf(v, start || 0); if (i < 0 || (end !== undefined && i >= end)) throw new AdderError('ValueError', `${pyRepr(v)} is not in list`); return i; },
-    count: (v) => arr.filter(x => x === v).length,
-    sort: async (key, reverse) => { if (key && key._kw) { reverse = key.reverse; key = key.key; } else if (reverse && reverse._kw) reverse = reverse.reverse; const sorted = await pySorted(arr, key || null, !!reverse); arr.length = 0; arr.push(...sorted); return null; },
-    reverse: () => { arr.reverse(); return null; },
-    copy: () => [...arr],
+// The methods of the builtin containers, as tables of (self, ...args) implementations with the
+// argument counts CPython's take: an attribute read binds one — one closure, its count checked
+// (`d.clear(None)`, `l.append()` are TypeErrors, as in CPython).  [min, max, impl, keywords?]
+const _INF = Infinity;
+export function _arityErr(qual, lo, hi, n) {
+  const short = qual.slice(qual.indexOf('.') + 1);
+  if (lo === hi && lo === 0) return new AdderError('TypeError', `${qual}() takes no arguments (${n} given)`);
+  if (lo === hi && lo === 1) return new AdderError('TypeError', `${qual}() takes exactly one argument (${n} given)`);
+  const want = n < lo ? lo : hi;
+  return new AdderError('TypeError', `${short} expected ${lo === hi ? '' : n < lo ? 'at least ' : 'at most '}${want} argument${want === 1 ? '' : 's'}, got ${n}`);
+}
+export const _kwBagEmpty = (b) => { for (const k in b) if (k !== '_kw') return false; return true; };
+function _bindBuiltin(qual, spec, self) {
+  const lo = spec[0], hi = spec[1], impl = spec[2], kw = spec[3];
+  const fn = function (...a) {
+    let n = a.length;
+    const last = n ? a[n - 1] : undefined;
+    if (!kw && last !== null && typeof last === 'object' && last._kw === true) {
+      // f(**{}) passes an empty keyword bag: no keywords at all
+      if (_kwBagEmpty(last)) { a.pop(); n--; } else throw new AdderError('TypeError', `${qual}() takes no keyword arguments`);
+    }
+    if (n < lo || n > hi) throw _arityErr(qual, lo, hi, n);
+    return impl(self, ...a);
   };
-  if (attr in m) { const fn = m[attr]; fn._pyName = `list.${attr}`; return fn; }
+  fn._pyName = qual;
+  return fn;
+}
+const _idxArg = (i) => {
+  if (typeof i === 'boolean') return +i;
+  if (typeof i === 'number' && Number.isInteger(i)) return i;
+  if (typeof i === 'bigint') return Number(i);
+  if (i !== null && typeof i === 'object' && typeof i.__index__ === 'function') return i.__index__();
+  throw new AdderError('TypeError', `'${pyTypeName(i)}' object cannot be interpreted as an integer`);
+};
+const _LIST_METHODS = {
+  append: [1, 1, (arr, v) => { arr.push(v); return null; }],
+  extend: [1, 1, (arr, iterable) => (Array.isArray(iterable) ? (arr.push(...(iterable === arr ? iterable.slice() : iterable)), null) : _eachMaybe(iterable, (v) => arr.push(v)))],
+  insert: [2, 2, (arr, i, v) => { i = _idxArg(i); arr.splice(i < 0 ? Math.max(0, arr.length + i) : i, 0, v); return null; }],
+  remove: [1, 1, (arr, v) => { const i = arr.indexOf(v); if (i < 0) throw new AdderError('ValueError', 'list.remove(x): x not in list'); arr.splice(i, 1); return null; }],
+  pop: [0, 1, (arr, i) => {
+    if (i !== undefined) i = _idxArg(i);
+    if (arr.length === 0) throw new AdderError('IndexError', 'pop from empty list');
+    if (i === undefined) return arr.pop();
+    const j = i < 0 ? arr.length + i : i;
+    if (j < 0 || j >= arr.length) throw new AdderError('IndexError', 'pop index out of range');
+    return arr.splice(j, 1)[0];
+  }],
+  clear: [0, 0, (arr) => { arr.length = 0; return null; }],
+  index: [1, 3, (arr, v, start, end) => { const i = arr.indexOf(v, start || 0); if (i < 0 || (end !== undefined && i >= end)) throw new AdderError('ValueError', `${pyRepr(v)} is not in list`); return i; }],
+  count: [1, 1, (arr, v) => arr.filter(x => x === v).length],
+  sort: [0, 1, async (arr, kw) => {
+    if (kw !== undefined && !(kw && kw._kw)) throw new AdderError('TypeError', 'sort() takes no positional arguments');
+    const key = kw ? kw.key : null, reverse = kw ? kw.reverse : false;
+    const sorted = await pySorted(arr, key || null, !!reverse); arr.length = 0; arr.push(...sorted); return null;
+  }, true],
+  reverse: [0, 0, (arr) => { arr.reverse(); return null; }],
+  copy: [0, 0, (arr) => [...arr]],
+};
+function _listMethod(arr, attr) {
+  if (Object.hasOwn(_LIST_METHODS, attr)) return _bindBuiltin(`list.${attr}`, _LIST_METHODS[attr], arr);
   throw new AdderError('AttributeError', `'list' object has no attribute '${attr}'`);
 }
 
+// dict.update(other=(), /, **kw): at most one positional argument, then keywords
+const _updArgs = (args) => {
+  const pos = args.length && args[args.length - 1] && args[args.length - 1]._kw === true ? args.length - 1 : args.length;
+  if (pos > 1) throw new AdderError('TypeError', `update expected at most 1 argument, got ${pos}`);
+  return args;
+};
+const _MAP_METHODS = {
+  keys: [0, 0, (map) => _dictView([...map.keys()], 'keys')],
+  values: [0, 0, (map) => [...map.values()]],
+  items: [0, 0, (map) => _dictView([...map.entries()].map(mkTuple), 'items')],
+  get: [1, 2, (map, k, def) => (map.has(k) ? map.get(k) : (def !== undefined ? def : null))],
+  pop: [1, 2, (map, k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }],
+  setdefault: [1, 2, (map, k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; }],
+  update: [0, 2, (map, ...args) => _dictUpdate((k, v) => map.set(k, v), _updArgs(args)), true],
+  popitem: [0, 0, (map) => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return mkTuple([k, v]); }],
+  clear: [0, 0, (map) => { map.clear(); return null; }],
+  copy: [0, 0, (map) => new PyDict(map)],
+};
 function _mapMethod(map, attr) {
-  const m = {
-    keys: () => _dictView([...map.keys()], 'keys'),
-    values: () => [...map.values()],
-    items: () => _dictView([...map.entries()].map(mkTuple), 'items'),
-    get: (k, def) => map.has(k) ? map.get(k) : (def !== undefined ? def : null),
-    pop: (k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
-    setdefault: (k, def) => { if (map.has(k)) return map.get(k); const v = def !== undefined ? def : null; map.set(k, v); return v; },
-    update: (...args) => _dictUpdate((k, v) => map.set(k, v), args),
-    popitem: () => { if (!map.size) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = [...map.keys()].pop(), v = map.get(k); map.delete(k); return mkTuple([k, v]); },
-    clear: () => { map.clear(); return null; },
-    copy: () => new PyDict(map),
-  };
-  if (attr in m) { const fn = m[attr]; fn._pyName = `dict.${attr}`; return fn; }
+  if (Object.hasOwn(_MAP_METHODS, attr)) return _bindBuiltin(`dict.${attr}`, _MAP_METHODS[attr], map);
   if (attr === 'size') return map.size;
   throw new AdderError('AttributeError', `'dict' object has no attribute '${attr}'`);
 }
@@ -2338,44 +2389,46 @@ const _dictUpdate = maybeSync(function* (set, args) {
   }
   return null;
 });
-const _objDictMethods = {
-  keys: (obj) => { const fn = () => _dictView(Object.keys(obj), 'keys'); fn._pyName = 'dict.keys'; return fn; },
-  values: (obj) => { const fn = () => Object.values(obj); fn._pyName = 'dict.values'; return fn; },
-  items: (obj) => { const fn = () => _dictView(Object.entries(obj).map(mkTuple), 'items'); fn._pyName = 'dict.items'; return fn; },
-  get: (obj) => { const fn = (k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null)); fn._pyName = 'dict.get'; return fn; },
-  pop: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }; fn._pyName = 'dict.pop'; return fn; },
-  popitem: (obj) => { const fn = () => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }; fn._pyName = 'dict.popitem'; return fn; },
-  setdefault: (obj) => { const fn = (k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }; fn._pyName = 'dict.setdefault'; return fn; },
-  update: (obj) => { const fn = (...args) => _dictUpdate((k, v) => { obj[k] = v; }, args); fn._pyName = 'dict.update'; return fn; },
-  clear: (obj) => { const fn = () => { for (const k of Object.keys(obj)) delete obj[k]; return null; }; fn._pyName = 'dict.clear'; return fn; },
-  copy: (obj) => { const fn = () => ({ ...obj }); fn._pyName = 'dict.copy'; return fn; },
+const _OBJ_DICT_METHODS = {
+  keys: [0, 0, (obj) => _dictView(Object.keys(obj), 'keys')],
+  values: [0, 0, (obj) => Object.values(obj)],
+  items: [0, 0, (obj) => _dictView(Object.entries(obj).map(mkTuple), 'items')],
+  get: [1, 2, (obj, k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null))],
+  pop: [1, 2, (obj, k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }],
+  popitem: [0, 0, (obj) => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }],
+  setdefault: [1, 2, (obj, k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }],
+  update: [0, 2, (obj, ...args) => _dictUpdate((k, v) => { obj[k] = v; }, _updArgs(args)), true],
+  clear: [0, 0, (obj) => { for (const k of Object.keys(obj)) delete obj[k]; return null; }],
+  copy: [0, 0, (obj) => ({ ...obj })],
 };
+const _objDictMethods = {};
+for (const k of Object.keys(_OBJ_DICT_METHODS)) _objDictMethods[k] = (obj) => _bindBuiltin(`dict.${k}`, _OBJ_DICT_METHODS[k], obj);
 
+const _SET_METHODS = {
+  add: [1, 1, (set, v) => { set.add(v); return null; }],
+  remove: [1, 1, (set, v) => { if (!set.has(v)) throw new AdderError('KeyError', pyRepr(v)); set.delete(v); return null; }],
+  discard: [1, 1, (set, v) => { set.delete(v); return null; }],
+  pop: [0, 0, (set) => { if (set.size === 0) throw new AdderError('KeyError', 'pop from an empty set'); const v = set.values().next().value; set.delete(v); return v; }],
+  clear: [0, 0, (set) => { set.clear(); return null; }],
+  union: [0, _INF, (set, ...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.add(v); return r; }],
+  intersection: [0, _INF, (set, ...others) => { const r = new PySet(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new PySet(pyIter(o)); return s.has(v); })) r.add(v); } return r; }],
+  difference: [0, _INF, (set, ...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; }],
+  symmetric_difference: [1, 1, (set, other) => { const r = new PySet(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; }],
+  update: [0, _INF, maybeSync(function* (set, ...others) { for (const o of others) yield _eachMaybe(o, (v) => set.add(v)); return null; })],
+  issubset: [1, 1, (set, other) => { const o = other instanceof Set ? other : new PySet(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; }],
+  issuperset: [1, 1, (set, other) => { for (const v of pyIter(other)) if (!set.has(v)) return false; return true; }],
+  isdisjoint: [1, 1, (set, other) => { for (const v of pyIter(other)) if (set.has(v)) return false; return true; }],
+  difference_update: [0, _INF, (set, ...others) => { for (const o of others) for (const v of [...pyIter(o)]) set.delete(v); return null; }],
+  intersection_update: [0, _INF, (set, ...others) => {
+    const keep = others.map((o) => (o instanceof Set ? o : new PySet(pyIter(o))));
+    for (const v of [...set]) if (!keep.every((s) => s.has(v))) set.delete(v);
+    return null;
+  }],
+  symmetric_difference_update: [1, 1, (set, other) => { for (const v of new PySet(pyIter(other))) { if (set.has(v)) set.delete(v); else set.add(v); } return null; }],
+  copy: [0, 0, (set) => { const c = new PySet(set); if (set._frozen) c._frozen = true; return c; }],
+};
 function _setMethod(set, attr) {
-  const m = {
-    add: (v) => { set.add(v); return null; },
-    remove: (v) => { if (!set.has(v)) throw new AdderError('KeyError', pyRepr(v)); set.delete(v); return null; },
-    discard: (v) => { set.delete(v); return null; },
-    pop: () => { if (set.size === 0) throw new AdderError('KeyError', 'pop from an empty set'); const v = set.values().next().value; set.delete(v); return v; },
-    clear: () => { set.clear(); return null; },
-    union: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.add(v); return r; },
-    intersection: (...others) => { const r = new PySet(); for (const v of set) { if (others.every(o => { const s = o instanceof Set ? o : new PySet(pyIter(o)); return s.has(v); })) r.add(v); } return r; },
-    difference: (...others) => { const r = new PySet(set); for (const o of others) for (const v of pyIter(o)) r.delete(v); return r; },
-    symmetric_difference: (other) => { const r = new PySet(set); for (const v of pyIter(other)) { if (r.has(v)) r.delete(v); else r.add(v); } return r; },
-    update: maybeSync(function* (...others) { for (const o of others) yield _eachMaybe(o, (v) => set.add(v)); return null; }),
-    issubset: (other) => { const o = other instanceof Set ? other : new PySet(pyIter(other)); for (const v of set) if (!o.has(v)) return false; return true; },
-    issuperset: (other) => { for (const v of pyIter(other)) if (!set.has(v)) return false; return true; },
-    isdisjoint: (other) => { for (const v of pyIter(other)) if (set.has(v)) return false; return true; },
-    difference_update: (...others) => { for (const o of others) for (const v of [...pyIter(o)]) set.delete(v); return null; },
-    intersection_update: (...others) => {
-      const keep = others.map((o) => (o instanceof Set ? o : new PySet(pyIter(o))));
-      for (const v of [...set]) if (!keep.every((s) => s.has(v))) set.delete(v);
-      return null;
-    },
-    symmetric_difference_update: (other) => { for (const v of new PySet(pyIter(other))) { if (set.has(v)) set.delete(v); else set.add(v); } return null; },
-    copy: () => { const c = new PySet(set); if (set._frozen) c._frozen = true; return c; },
-  };
-  if (attr in m) { const fn = m[attr]; fn._pyName = `set.${attr}`; return fn; }
+  if (Object.hasOwn(_SET_METHODS, attr)) return _bindBuiltin(`${set._frozen ? 'frozenset' : 'set'}.${attr}`, _SET_METHODS[attr], set);
   throw new AdderError('AttributeError', `'set' object has no attribute '${attr}'`);
 }
 
@@ -3017,6 +3070,15 @@ export const pyExtreme = maybeSync(function* (which, args) {
   return items[best];
 });
 
+// abs(x): a number's magnitude, or the object's __abs__; anything else is a TypeError
+export function pyAbs(x) {
+  if (typeof x === 'number') return Math.abs(x);
+  if (typeof x === 'boolean') return +x;
+  if (typeof x === 'bigint') return x < 0n ? -x : x;
+  if (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') return x.__abs__();
+  throw new AdderError('TypeError', `bad operand type for abs(): '${pyTypeName(x)}'`);
+}
+
 // ── modules ──
 
 const _mathModule = {
@@ -3140,6 +3202,87 @@ Object.assign(_mathModule, {
 });
 
 
+
+// math's float functions take real numbers, as CPython's do: an int, a bool, an object with
+// __float__ (or __index__); anything else is a TypeError, a wrong count too. A NaN out of a
+// non-NaN argument is a domain error (ValueError), an infinity out of a finite one a range error.
+// The fast path — one number, one argument — is a typeof and a length.
+function _mReal(name, x) {
+  if (typeof x === 'number') return x;
+  if (typeof x === 'boolean') return +x;
+  if (typeof x === 'bigint') { const n = Number(x); if (!Number.isFinite(n)) throw new AdderError('OverflowError', 'int too large to convert to float'); return n; }
+  if (x !== null && typeof x === 'object' && !x._kw) {
+    for (const m of ['__float__', '__index__']) {
+      if (typeof x[m] === 'function') {
+        const r = syncOf(x[m]).call(x);
+        const chk = (v) => { if (typeof v === 'number' || typeof v === 'bigint') return Number(v); throw new AdderError('TypeError', `${pyTypeName(x)}.${m} returned non-${m === '__float__' ? 'float' : 'int'} (type ${pyTypeName(v)})`); };
+        return _isThenable(r) ? r.then(chk) : chk(r);
+      }
+    }
+  }
+  throw new AdderError('TypeError', `must be real number, not ${pyTypeName(x)}`);
+}
+const _NUM_WORDS = ['no', 'one', 'two', 'three'];
+function _mArgs(name, args, min, max) {
+  if (args.length && args[args.length - 1] && args[args.length - 1]._kw === true && _kwBagEmpty(args[args.length - 1])) args.pop();
+  const n = args.length;
+  if (n && args[n - 1] && args[n - 1]._kw) throw new AdderError('TypeError', `math.${name}() takes no keyword arguments`);
+  if (n < min || n > max) {
+    if (min === max) throw new AdderError('TypeError', min === 1 ? `math.${name}() takes exactly one argument (${n} given)` : `${name} expected ${min} arguments, got ${n}`);
+    throw new AdderError('TypeError', `${name} expected at ${n < min ? 'least' : 'most'} ${n < min ? min : max} argument${(n < min ? min : max) > 1 ? 's' : ''}, got ${n}`);
+  }
+}
+// the result checks: NaN out of no NaN → ValueError; ±inf out of finite arguments → `inf`'s error
+function _mCheck(r, xs, inf) {
+  if (typeof r === 'number') {
+    if (Number.isNaN(r)) { if (!xs.some(Number.isNaN)) throw new AdderError('ValueError', 'math domain error'); }
+    else if (inf && !Number.isFinite(r) && xs.every(Number.isFinite)) throw new AdderError(inf, inf === 'OverflowError' ? 'math range error' : 'math domain error');
+  }
+  return r;
+}
+// wrap math.<name> taking `min`..`max` real arguments. `inf`: the error for an infinite result
+// from finite arguments (null: an infinity is a value). `raw` names the arguments left as given.
+function _mWrap(name, min, max, inf, check = true, coerce = null) {
+  const f = _mathModule[name];
+  if (typeof f !== 'function') return;
+  const slow = (args) => {
+    _mArgs(name, args, min, max);
+    const vs = args.map((v, i) => (coerce && coerce[i] === false ? v : _mReal(name, v)));
+    const go = (xs) => (check ? _mCheck(f(...xs), xs.filter((v) => typeof v === 'number'), inf) : f(...xs));
+    return vs.some(_isThenable) ? Promise.all(vs).then(go) : go(vs);
+  };
+  const w = min === 1 && max === 1
+    ? function (x) { if (typeof x === 'number' && arguments.length === 1) { const r = f(x); return (r === r && (!inf || r - r === 0 || x - x !== 0)) || !check ? r : _mCheck(r, [x], inf); } return slow([...arguments]); }
+    : function (...a) { if (a.length >= min && a.length <= max && a.every((v) => typeof v === 'number')) return check ? _mCheck(f(...a), a, inf) : f(...a); return slow(a); };
+  Object.defineProperty(w, 'name', { value: name });
+  w._pyName = name;
+  _mathModule[name] = w;
+}
+for (const n of ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'tanh', 'asinh', 'sqrt', 'cbrt', 'fabs', 'radians', 'degrees']) _mWrap(n, 1, 1, null);
+for (const n of ['exp', 'exp2', 'expm1', 'sinh', 'cosh']) _mWrap(n, 1, 1, 'OverflowError');
+for (const n of ['acosh', 'atanh', 'log2', 'log10', 'log1p']) _mWrap(n, 1, 1, 'ValueError');
+for (const n of ['isnan', 'isinf', 'isfinite', 'frexp', 'modf']) _mWrap(n, 1, 1, null, false);
+for (const n of ['atan2', 'copysign', 'remainder', 'nextafter']) _mWrap(n, 2, 2, null);
+_mWrap('fmod', 2, 2, null);
+_mWrap('pow', 2, 2, 'OverflowError');
+_mWrap('log', 1, 2, 'ValueError');
+_mWrap('ldexp', 2, 2, 'OverflowError', true, [true, false]);
+// floor / ceil / trunc: the object's own __floor__ / __ceil__ / __trunc__ first, as CPython's
+for (const [n, dunder] of [['floor', '__floor__'], ['ceil', '__ceil__'], ['trunc', '__trunc__']]) {
+  const f = _mathModule[n];
+  const w = function (x) {
+    if (typeof x === 'number' && arguments.length === 1) { const r = f(x); if (r - r === 0) return r; }
+    _mArgs(n, [...arguments], 1, 1);
+    if (x !== null && typeof x === 'object' && typeof x[dunder] === 'function') return syncOf(x[dunder]).call(x);
+    if (typeof x === 'bigint' || typeof x === 'boolean') return typeof x === 'boolean' ? +x : x;
+    if (n === 'trunc') throw new AdderError('TypeError', `type ${pyTypeName(x)} doesn't define __trunc__ method`);
+    const v = _mReal(n, x);
+    const fin = (y) => { if (!Number.isFinite(y)) throw new AdderError(Number.isNaN(y) ? 'ValueError' : 'OverflowError', Number.isNaN(y) ? 'cannot convert float NaN to integer' : 'cannot convert float infinity to integer'); return f(y); };
+    return _isThenable(v) ? v.then(fin) : fin(v);
+  };
+  Object.defineProperty(w, 'name', { value: n }); w._pyName = n;
+  _mathModule[n] = w;
+}
 
 const _jsModule = new Proxy({}, {
   get(_, prop) { return typeof globalThis !== 'undefined' ? globalThis[prop] : undefined; },
@@ -4189,6 +4332,19 @@ export function storeAttr(obj, name, value) {
   }
   obj[name] = value;
 }
+// obj[key] = v on a list / bytearray: the position written, or CPython's errors (an index past
+// the end is an IndexError, not a list grown with holes)
+export function seqStoreIndex(obj, key) {
+  if (typeof key !== 'number' || !Number.isInteger(key)) {
+    if (typeof key === 'boolean') key = +key;
+    else if (typeof key === 'bigint') key = Number(key);
+    else if (key !== null && typeof key === 'object' && typeof key.__index__ === 'function') key = key.__index__();
+    else throw new AdderError('TypeError', `${obj instanceof Uint8Array ? 'bytearray' : pyTypeName(obj)} indices must be integers or slices, not ${pyTypeName(key)}`);
+  }
+  const i = key < 0 ? obj.length + key : key;
+  if (i < 0 || i >= obj.length) throw new AdderError('IndexError', `${obj instanceof Uint8Array ? 'bytearray' : 'list'} assignment index out of range`);
+  return i;
+}
 // del obj[key], for both engines: a subclass's or class's __delitem__ first (its result may be a
 // Promise — a tree-walked method), then the built-in containers with CPython's errors
 export function pyDelItem(obj, key) {
@@ -5090,7 +5246,14 @@ export function typeCall(cls, args, sync = false) {
   };
   let nf = _findNew(cls);
   if (sync) nf = syncOf(nf);
-  if (!nf) return finish(objectNew(cls, args));       // the common case: no __new__ anywhere
+  if (!nf) {                                         // the common case: no __new__ anywhere
+    // object() takes no arguments: a class with neither __new__ nor __init__ refuses them
+    if (args.length && typeof cls.prototype.__init__ !== 'function' && !(args.length === 1 && args[0] && args[0]._kw === true && Object.keys(args[0]).length === 1)
+        && !cls._pyListBase && !cls._pyDictBase && !cls._pyStrBase && !cls._pyTupleBase && !isExceptionClass(cls)) {
+      throw new AdderError('TypeError', `${cls._pyName || 'object'}() takes no arguments`);
+    }
+    return finish(objectNew(cls, args));
+  }
   const inst = nf(cls, ...args);
   return inst && typeof inst.then === 'function' ? inst.then(finish) : finish(inst);
 }
@@ -5792,6 +5955,19 @@ function _builtinImport(name, ...args) {
   })();
 }
 
+// a builtin type's constructor that takes its arguments by position only, at most `max`
+// (list(sequence=[]) and list(1, 2) are TypeErrors, as CPython's)
+function _posOnly(name, args, max) {
+  const n = args.length;
+  if (!n) return;
+  const last = args[n - 1];
+  if (last !== null && typeof last === 'object' && last._kw === true) {
+    if (Object.keys(last).length > 1) throw new AdderError('TypeError', `${name}() takes no keyword arguments`);
+    if (n - 1 > max) throw new AdderError('TypeError', `${name} expected at most ${max} argument${max === 1 ? '' : 's'}, got ${n - 1}`);
+    return;
+  }
+  if (n > max) throw new AdderError('TypeError', `${name} expected at most ${max} argument${max === 1 ? '' : 's'}, got ${n}`);
+}
 export function adderBuiltins(printFn) {
   const builtins = {
     print: (...args) => {
@@ -5849,7 +6025,14 @@ export function adderBuiltins(printFn) {
       if (x && typeof x.__index__ === 'function') return x.__index__();
       throw new AdderError('TypeError', `int() argument must be a string, a bytes-like object or a real number, not '${pyTypeName(x)}'`);
     },
-    float: (x) => { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; } return Number(x); },
+    float: function _floatOf(x) { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; }
+      if (typeof x === 'number' || typeof x === 'boolean' || typeof x === 'bigint') return Number(x);
+      if (x instanceof Uint8Array) return _floatOf(pyDecodePartial(x, 'latin-1', 'strict', true).text);
+      if (x !== null && typeof x === 'object' && strValue(x) !== null) return _floatOf(strValue(x));
+      if (x !== null && typeof x === 'object' && (typeof x.__float__ === 'function' || typeof x.__index__ === 'function')) return _mReal('float', x);
+      if (x !== null && typeof x === 'object' && typeof x.valueOf === 'function' && typeof x.valueOf() === 'number') return x.valueOf();
+      throw new AdderError('TypeError', `float() argument must be a string or a real number, not '${pyTypeName(x)}'`);
+    },
     // str(x); str(b, encoding[, errors]) decodes bytes
     str: (x, ...a) => {
       if (x === undefined) return '';
@@ -5862,7 +6045,8 @@ export function adderBuiltins(printFn) {
       return pyStrMaybe(x);
     },
     // (a tree-walked __bool__ / __len__ answers with a Promise: judge what it resolves to)
-    bool: (x) => {
+    bool: function (x) {
+      _posOnly('bool', arguments, 1);
       if (x === undefined) return false;
       if (x !== null && typeof x === 'object') {
         if (typeof x.__bool__ === 'function') return _thenMaybe(x.__bool__(), (v) => !!v);
@@ -5871,13 +6055,13 @@ export function adderBuiltins(printFn) {
       return pyBool(x);
     },
     list: Object.assign(
-      (x) => x === undefined ? [] : pyCollectMaybe(x),
+      function (x) { _posOnly('list', arguments, 1); return x === undefined ? [] : pyCollectMaybe(x); },
       { _pyContainerType: 'list' },
     ),
     // a call with no argument answers synchronously, so defaultdict(list) & co. store a value
-    tuple: (x) => (x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : _thenMaybe(pyCollectMaybe(x), mkTuple)),
+    tuple: function (x) { _posOnly('tuple', arguments, 1); return x === undefined ? mkTuple([]) : x instanceof PyTuple ? x : _thenMaybe(pyCollectMaybe(x), mkTuple); },
     dict: (...args) => (args.length === 0 ? new PyDict() : _dictFrom(args)),
-    set: (x) => x === undefined ? new PySet() : _thenMaybe(pyCollectMaybe(x), (xs) => new PySet(xs)),
+    set: function (x) { _posOnly('set', arguments, 1); return x === undefined ? new PySet() : _thenMaybe(pyCollectMaybe(x), (xs) => new PySet(xs)); },
     // bytes(): b'', bytes(n) zeros, bytes(ints), bytes(str, encoding)
     bytes: (x, encoding) => {
       if (x === undefined) return new Uint8Array(0);
@@ -5909,10 +6093,10 @@ export function adderBuiltins(printFn) {
       return _toBA([...pyIter(x)].map(_byteCheck));
     }, { _pyName: 'bytearray', __name__: 'bytearray', _pyClass: true }),
     frozenset: maybeSync(function* (x) { const s = x === undefined ? new PySet() : new PySet(yield* _gCollect(x)); s._frozen = true; return s; }),
-    abs: (x) => (typeof x === 'object' && x !== null && typeof x.__abs__ === 'function') ? x.__abs__() : Math.abs(x),
+    abs: (x) => pyAbs(x),
     round: (x, n) => pyRound(x, n),
-    max: (...args) => pyExtreme('max', args),
-    min: (...args) => pyExtreme('min', args),
+    max: (...args) => { if (!args.length || (args.length === 1 && args[0] && args[0]._kw === true)) throw new AdderError('TypeError', 'max expected at least 1 argument, got 0'); return pyExtreme('max', args); },
+    min: (...args) => { if (!args.length || (args.length === 1 && args[0] && args[0]._kw === true)) throw new AdderError('TypeError', 'min expected at least 1 argument, got 0'); return pyExtreme('min', args); },
     // sum: numbers with compensated (Neumaier) summation, as CPython 3.12+ does for floats;
     // lists concatenate; anything else through its __add__; strings are refused, as in Python
     sum: maybeSync(function* (iterable, start) {
@@ -6042,10 +6226,14 @@ export function adderBuiltins(printFn) {
     // lazy, as in CPython: they stop at the first deciding item (a generator is not drained)
     any: maybeSync(function* (iterable) { let r = false; yield* _gForEach(iterable, (v) => (r = pyBool(v))); return r; }),
     all: maybeSync(function* (iterable) { let r = true; yield* _gForEach(iterable, (v) => !(r = pyBool(v))); return r; }),
-    isinstance: (obj, typeOrTuple) => _pyIsInstance(obj, typeOrTuple),
+    isinstance: function (obj, typeOrTuple) { if (arguments.length !== 2) throw new AdderError('TypeError', `isinstance expected 2 arguments, got ${arguments.length}`); _checkClassInfo('isinstance', typeOrTuple); return _pyIsInstance(obj, typeOrTuple); },
     type: pyTypeObj,
     hasattr: (obj, name) => { try { adderGetAttr(obj, name); return true; } catch { return false; } },
-    getattr: (obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } },
+    getattr: function (obj, name, def) {
+      if (arguments.length < 2 || arguments.length > 3) throw new AdderError('TypeError', `getattr expected ${arguments.length < 2 ? 'at least 2' : 'at most 3'} arguments, got ${arguments.length}`);
+      if (typeof name !== 'string' && strValue(name) === null) throw new AdderError('TypeError', `attribute name must be string, not '${pyTypeName(name)}'`);
+      return ((obj, name, def) => { try { return adderGetAttr(obj, name); } catch { if (def !== undefined) return def; throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`); } })(obj, strValue(name) ?? name, def);
+    },
     setattr: (obj, name, value) => { storeAttr(obj, name, value); return null; },
     delattr: (obj, name) => pyDelAttr(obj, name),
     property: _propertyType(),
@@ -6053,8 +6241,15 @@ export function adderBuiltins(printFn) {
     classmethod: (fn) => ({ __classmethod__: true, fn }),
     complex: (real, imag) => new Complex(real ?? 0, imag ?? 0),
     callable: (obj) => typeof obj === 'function' || (obj !== null && typeof obj === 'object' && typeof obj.__call__ === 'function'),
-    chr: (n) => String.fromCodePoint(n),
-    ord: (c) => { if (typeof c !== 'string' || c.length !== 1) throw new AdderError('TypeError', 'ord() expected a character'); return c.codePointAt(0); },
+    chr: (n) => { n = _idxArg(n); if (n < 0 || n > 0x10ffff) throw new AdderError('ValueError', 'chr() arg not in range(0x110000)'); return String.fromCodePoint(n); },
+    ord: (c) => {
+      if (c instanceof Uint8Array) { if (c.length !== 1) throw new AdderError('TypeError', `ord() expected a character, but string of length ${c.length} found`); return c[0]; }
+      const sv = typeof c === 'string' ? c : strValue(c);
+      if (sv == null) throw new AdderError('TypeError', `ord() expected string of length 1, but ${pyTypeName(c)} found`);
+      const n = sv.length === 2 && sv.codePointAt(0) > 0xffff ? 1 : sv.length;
+      if (n !== 1) throw new AdderError('TypeError', `ord() expected a character, but string of length ${n} found`);
+      return sv.codePointAt(0);
+    },
     hex: (n) => { const v = Math.trunc(n); return v < 0 ? '-0x' + (-v).toString(16) : '0x' + v.toString(16); },
     oct: (n) => { const v = Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
     bin: (n) => { const v = Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
@@ -6301,6 +6496,14 @@ export const _builtinSuper = Object.assign(() => {}, { _pyName: 'super', _sentin
 export const _builtinGlobals = Object.assign(() => {}, { _pyName: 'globals', _sentinel: 'globals' });
 export const _builtinLocals = Object.assign(() => {}, { _pyName: 'locals', _sentinel: 'locals' });
 
+// isinstance / issubclass's second argument: a class, a tuple of them (nested too), a union
+function _checkClassInfo(who, t) {
+  if (Array.isArray(t)) { for (const x of t) _checkClassInfo(who, x); return; }
+  if (t instanceof UnionType || typeof t === 'function' || t === null) return;
+  if (t !== null && typeof t === 'object' && !(t instanceof GenericAlias) && (typeof t.__instancecheck__ === 'function' || typeof t.__subclasscheck__ === 'function' || t._pyClass)) return;
+  if (t instanceof GenericAlias) throw new AdderError('TypeError', `${who}() argument 2 cannot be a parameterized generic`);
+  throw new AdderError('TypeError', `${who}() arg 2 must be a type, a tuple of types, or a union`);
+}
 function _pyIsInstance(obj, typeOrTuple) {
   const types = Array.isArray(typeOrTuple) ? typeOrTuple : [typeOrTuple];
   const name = pyTypeName(obj);

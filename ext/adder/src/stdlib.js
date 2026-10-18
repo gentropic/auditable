@@ -11,7 +11,7 @@ import {
   pyIter, pyCollect, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv,
   pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem,
   pySorted, adderGetAttr, adderModules, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
-  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync,
+  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty,
 } from './builtins.js';
 
 // ── shared helpers ──
@@ -277,7 +277,7 @@ const _slContains = (a, b) => {
 };
 adderModules.operator = {
   add: pyAdd, sub: pySub, mul: pyMul, truediv: pyTrueDiv, floordiv: pyFloorDiv, mod: pyMod, pow: pyPow,
-  matmul: pyMatmul, neg: pyNeg, pos: pyPos, invert: pyInvert, inv: pyInvert, abs: (a) => (a && typeof a.__abs__ === 'function' ? a.__abs__() : Math.abs(a)),
+  matmul: pyMatmul, neg: pyNeg, pos: pyPos, invert: pyInvert, inv: pyInvert, abs: (a) => pyAbs(a),
   and_: pyAnd, or_: pyOr, xor: pyXor, lshift: pyLshift, rshift: pyRshift,
   eq: pyEq, ne: (a, b) => _slThen(pyEq(a, b), (r) => !r), lt: pyLt, le: pyLe, gt: pyGt, ge: pyGe,
   not_: (a) => !pyBool(a), truth: (a) => pyBool(a), is_: (a, b) => a === b, is_not: (a, b) => a !== b,
@@ -294,6 +294,44 @@ adderModules.operator = {
   call: (f, ...a) => f(...a),
   itemgetter: _slItemgetter, attrgetter: _slAttrgetter, methodcaller: _slMethodcaller,
 };
+// concat / iconcat: sequences only (CPython's "'int' object can't be concatenated")
+const _slSeq = (a) => typeof a === 'string' || Array.isArray(a) || a instanceof Uint8Array
+  || (a !== null && typeof a === 'object' && !(a instanceof Map) && !(a instanceof Set) && typeof a.__getitem__ === 'function');
+const _slConcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyAdd(a, b); };
+adderModules.operator.concat = _slConcat;
+adderModules.operator.iconcat = (a, b) => { if (!_slSeq(a)) throw new AdderError('TypeError', `'${pyTypeName(a)}' object can't be concatenated`); return pyAdd(a, b); };
+// the operator functions take their arguments by position, exactly so many (operator.add(1) is a
+// TypeError, as CPython's C functions are)
+{
+  const op = adderModules.operator;
+  const counts = {
+    1: ['neg', 'pos', 'invert', 'inv', 'abs', 'not_', 'truth', 'is_none', 'is_not_none', 'index'],
+    2: ['add', 'sub', 'mul', 'truediv', 'floordiv', 'mod', 'pow', 'matmul', 'and_', 'or_', 'xor', 'lshift', 'rshift',
+      'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'is_', 'is_not', 'contains', 'countOf', 'indexOf', 'getitem', 'concat',
+      'iadd', 'isub', 'imul', 'itruediv', 'ifloordiv', 'imod', 'ipow', 'imatmul', 'iand', 'ior', 'ixor', 'ilshift', 'irshift', 'iconcat', 'delitem'],
+    3: ['setitem'],
+  };
+  for (const [k, names] of Object.entries(counts)) {
+    const n = +k;
+    for (const name of names) {
+      const f = op[name];
+      if (typeof f !== 'function') continue;
+      const w = function (...a) {
+        const last = a.length ? a[a.length - 1] : undefined;
+        if (last !== null && typeof last === 'object' && last._kw === true) {
+          if (_kwBagEmpty(last)) a.pop(); else throw new AdderError('TypeError', `${name}() takes no keyword arguments`);
+        }
+        if (a.length !== n) throw _arityErr(name, n, n, a.length);
+        return f(...a);
+      };
+      Object.defineProperty(w, 'name', { value: name });
+      w._pyName = name;
+      op[name] = w;
+    }
+  }
+  const lh = op.length_hint;
+  op.length_hint = function (...a) { if (a.length < 1 || a.length > 2) throw _arityErr('length_hint', 1, 2, a.length); return lh(...a); };
+}
 for (const n of ['add', 'sub', 'mul', 'truediv', 'floordiv', 'mod', 'pow', 'neg', 'pos', 'abs', 'and_', 'or_', 'xor',
   'invert', 'lshift', 'rshift', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'not_', 'truth', 'contains', 'getitem', 'index']) {
   adderModules.operator[`__${n.replace(/_$/, '')}__`] = adderModules.operator[n];
