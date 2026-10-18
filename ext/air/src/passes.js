@@ -847,7 +847,9 @@ export function specializeRuntimeHelpers(module, types) {
           // adderGetAttr's _objDictMethods dispatch kicks in.
           // Typed/plain array .length → direct (very common)
           const isPlainObject = objOp && objOp.op === 'object_new';
-          const isDictMethodName = isPlainObject && _DICT_PROTOCOL_NAMES.has(attrName);
+          // (and a dunder: d.__getitem__, d.__len__ are the dict's methods, which adderGetAttr
+          // makes — a raw property read gave undefined, i.e. None)
+          const isDictMethodName = isPlainObject && (_DICT_PROTOCOL_NAMES.has(attrName) || /^__\w+__$/.test(attrName));
           const isArrayLength = (objOp?.op === 'array_new' || objOp?.op === 'ta_new') && attrName === 'length';
           if ((isPlainObject && !isDictMethodName) || isArrayLength) {
             op.op = 'object_get';

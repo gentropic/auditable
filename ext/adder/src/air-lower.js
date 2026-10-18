@@ -1801,16 +1801,25 @@ function lowerClassDef(ctx, node) {
     // the members: the body's bindings (mangled `__cb_<name>`), keyed by their names
     const classMemberNames = [];
     const binding = (n) => (n.startsWith('__cb_') ? n : classNames.has(n) ? `__cb_${n}` : n);
-    for (const op of ctx.ops) {
-      // the lowerer's temporaries (`__rep_42`) are not members; dunders (`__match_args__`,
-      // `__slots__`, `__hash__ = None`) are
-      const isTemp = (n) => n.startsWith('__') && !n.endsWith('__') && !n.startsWith('__cb_');
-      let n = null;
-      if (op.op === 'store' && typeof op.args[0] === 'string' && !isTemp(op.args[0])) n = binding(op.args[0]);
-      // Also catch func_region direct defines
-      else if (op.op === 'func_region' && op.name) n = binding(pyNameOf(op.name));
-      if (n !== null && !classMemberNames.includes(n)) classMemberNames.push(n);
-    }
+    // the lowerer's temporaries (`__rep_42`) are not members; dunders (`__match_args__`,
+    // `__slots__`, `__hash__ = None`) are
+    const isTemp = (n) => n.startsWith('__') && !n.endsWith('__') && !n.startsWith('__cb_');
+    // every store in the body, in order — inside if / for / while / try / with blocks too (a name
+    // bound in a branch that didn't run is unbound: undefined, which createClass leaves out). Not
+    // into a function's own body: its names are its own.
+    const scan = (ops) => {
+      for (const op of ops) {
+        let n = null;
+        if (op.op === 'store' && typeof op.args[0] === 'string' && !isTemp(op.args[0])) n = binding(op.args[0]);
+        else if (op.op === 'func_region' && op.name) n = binding(pyNameOf(op.name));
+        if (n !== null && !classMemberNames.includes(n)) classMemberNames.push(n);
+        if (op.op === 'func_region') continue;
+        for (const v of Object.values(op)) {
+          if (Array.isArray(v) && v.length && v[0] && typeof v[0] === 'object' && typeof v[0].op === 'string') scan(v);
+        }
+      }
+    };
+    scan(ctx.ops);
     // Append object literal containing all member names
     const pairs = classMemberNames.map(n => ({
       key: pyNameOf(n.startsWith('__cb_') ? n.slice(5) : n),

@@ -4538,66 +4538,6 @@ const _collectionsModule = {
   ChainMap: (...maps) => { const m = new PyDict(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
 };
 
-// ── json ──
-// Python's json.dumps: separators (', ', ': ') — (',', ': ') with indent —, ensure_ascii,
-// sort_keys, NaN / Infinity, default=; loads returns dicts (plain objects) and lists.
-function _jsonEsc(s, ascii) {
-  let out = '"';
-  for (const ch of s) {
-    const c = ch.codePointAt(0);
-    if (ch === '"') out += '\\"';
-    else if (ch === '\\') out += '\\\\';
-    else if (ch === '\n') out += '\\n';
-    else if (ch === '\r') out += '\\r';
-    else if (ch === '\t') out += '\\t';
-    else if (ch === '\b') out += '\\b';
-    else if (ch === '\f') out += '\\f';
-    else if (c < 0x20 || (ascii && c > 0x7e)) {
-      if (c > 0xffff) { const h = Math.floor((c - 0x10000) / 0x400) + 0xd800, l = ((c - 0x10000) % 0x400) + 0xdc00; out += `\\u${h.toString(16).padStart(4, '0')}\\u${l.toString(16).padStart(4, '0')}`; }
-      else out += `\\u${c.toString(16).padStart(4, '0')}`;
-    } else out += ch;
-  }
-  return out + '"';
-}
-function _jsonDumps(obj, opts) {
-  const indent = opts.indent == null ? null : typeof opts.indent === 'number' ? ' '.repeat(opts.indent) : String(opts.indent);
-  const [itemSep, keySep] = opts.separators ? [...opts.separators] : indent === null ? [', ', ': '] : [',', ': '];
-  const ascii = opts.ensure_ascii !== false;
-  const enc = (v, depth) => {
-    if (v === null || v === undefined) return 'null';
-    if (v !== null && typeof v === 'object' && typeof v._pyStrValue === 'string') v = v._pyStrValue;   // a str subclass is a str
-    if (v === true) return 'true';
-    if (v === false) return 'false';
-    if (typeof v === 'number') return Number.isNaN(v) ? 'NaN' : v === Infinity ? 'Infinity' : v === -Infinity ? '-Infinity' : String(v);
-    if (typeof v === 'string') return _jsonEsc(v, ascii);
-    const nl = indent === null ? '' : '\n' + indent.repeat(depth + 1), end = indent === null ? '' : '\n' + indent.repeat(depth);
-    if (Array.isArray(v)) return v.length ? `[${nl}${v.map((x) => enc(x, depth + 1)).join(itemSep + nl)}${end}]` : '[]';
-    if (v instanceof Map || isPlainDict(v)) {
-      let entries = v instanceof Map ? [...v.entries()] : Object.entries(v);
-      entries = entries.map(([k, x]) => [typeof k === 'string' ? k : typeof k === 'number' ? String(k) : k === true ? 'true' : k === false ? 'false' : k === null ? 'null' : (() => { throw new AdderError('TypeError', `keys must be str, int, float, bool or None, not ${pyTypeName(k)}`); })(), x]);
-      if (opts.sort_keys) entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-      return entries.length ? `{${nl}${entries.map(([k, x]) => _jsonEsc(k, ascii) + keySep + enc(x, depth + 1)).join(itemSep + nl)}${end}}` : '{}';
-    }
-    if (v instanceof Set || v instanceof AdderDeque) { if (opts.default) return enc(opts.default(v), depth); throw new AdderError('TypeError', `Object of type ${pyTypeName(v)} is not JSON serializable`); }
-    if (opts.default) return enc(opts.default(v), depth);
-    throw new AdderError('TypeError', `Object of type ${pyTypeName(v)} is not JSON serializable`);
-  };
-  return enc(obj, 0);
-}
-const _jsonModule = {
-  dumps: (obj, ...rest) => {
-    const kw = rest.length && rest[rest.length - 1]?._kw ? rest.pop() : {};
-    return _jsonDumps(obj, kw);
-  },
-  loads: (s) => {
-    if (s instanceof Uint8Array) s = new TextDecoder().decode(s);
-    try { return JSON.parse(String(s)); } catch (e0) {
-      try { return JSON.parse(String(s).replace(/(?<=[:\[,]\s*)(-?)Infinity|(?<=[:\[,]\s*)NaN/g, (m) => `"__py_${m}__"`), (k, v) => (v === '__py_Infinity__' ? Infinity : v === '__py_-Infinity__' ? -Infinity : v === '__py_NaN__' ? NaN : v)); }
-      catch (e) { throw new AdderError('JSONDecodeError', String(e0.message || e0)); }
-    }
-  },
-};
-
 // ── re (regex) ──
 // Python's re over JS RegExp. Patterns are translated ((?P<n>…), (?P=n), \A, \Z, leading inline
 // flags, verbose mode); Pattern and Match objects follow Python's API (group/groups/groupdict/
@@ -5057,7 +4997,7 @@ const _sysModule = {
 };
 
 export const adderModules = {
-  math: _mathModule, json: _jsonModule, js: _jsModule, random: _randomModule,
+  math: _mathModule, js: _jsModule, random: _randomModule,
   itertools: _itertoolsModule, functools: _functoolsModule,
   collections: _collectionsModule, re: _reModule, string: _stringModule,
   this: _thisModule, sys: _sysModule,
@@ -6322,6 +6262,13 @@ function _installMember(cls, name, mName, value, opts) {
     if (value.__adderType__ && typeof value.__set_name__ === 'function') value._pyName = value._pyName || mName;
   } else if (value && value.__staticmethod__) {
     const rawFn = value.fn;
+    // a class (or any other non-function) as a static method is itself, through the class and an
+    // instance alike: `JSONDecodeError = staticmethod(json.JSONDecodeError)`, then self.JSONDecodeError
+    if (typeof rawFn !== 'function' || rawFn._pyClass) {
+      cls.prototype[mName] = rawFn;
+      cls[mName] = rawFn;
+      return;
+    }
     const sm = (...args) => rawFn(...args);
     if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
     sm._pyName = `${name}.${mName}`;
@@ -6356,6 +6303,8 @@ function _installMember(cls, name, mName, value, opts) {
   }
 }
 export function buildClass(name, bases, members, annotations, opts = {}) {
+  // (compiled class bodies list every name they may bind; one a branch never bound is undefined)
+  if (members) for (const k of Object.keys(members)) if (members[k] === undefined) delete members[k];
   // the class statement's __class__ cell: not an attribute; filled with the class, below
   let classCell = null;
   if (members && Object.hasOwn(members, '__classcell__')) {
