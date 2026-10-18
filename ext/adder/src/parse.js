@@ -320,6 +320,31 @@ export function adderTokenize(code) {
 
 // ── parser ──
 
+// does a class need a __class__ cell: does a function in its body (at any depth, but not inside
+// a nested class) name `__class__` or `super`?
+export function classNeedsCell(node) {
+  if (node._needsCell !== undefined) return node._needsCell;
+  const scan = (n, inFn) => {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) return n.some((x) => scan(x, inFn));
+    if (n.type === 'ClassDef') return false;
+    if (inFn && n.type === 'Name' && (n.id === '__class__' || n.id === 'super')) return true;
+    const fn = inFn || n.type === 'FunctionDef' || n.type === 'AsyncFunctionDef' || n.type === 'Lambda';
+    for (const k in n) if (k !== 'type' && k !== 'line' && k !== 'col' && typeof n[k] === 'object' && scan(n[k], fn)) return true;
+    return false;
+  };
+  const body = node.body || [];
+  let r = false;
+  for (const st of body) {
+    if (!st) continue;
+    // a nested class's own methods have their own cell; its decorators / bases are in the body
+    if (st.type === 'ClassDef') { if (scan([st.bases, st.keywords, st.decorators], false)) { r = true; break; } continue; }
+    if (scan(st, false)) { r = true; break; }
+  }
+  node._needsCell = r;
+  return r;
+}
+
 export function adderParse(code) {
   return _manglePrivate(_classAnnotations(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule()))), null);
 }

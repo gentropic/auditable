@@ -1,7 +1,7 @@
 // adder v2 — tree-walking evaluator
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
-import { adderParse, _adderParseExpr, compileMatchPattern } from './parse.js';
+import { adderParse, _adderParseExpr, compileMatchPattern, classNeedsCell } from './parse.js';
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
 import './stdlib.js';
 import './stdlib-types.js';
@@ -20,7 +20,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder,
+  _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -37,6 +37,10 @@ export class AdderScope {
   }
   get(name) {
     if (this.globals.has(name)) return this._getGlobal(name);
+    if (name === '__class__' && (this.nonlocals.has(name) || !this.vars.has(name))) {
+      const c = this._classCellOf();
+      if (c) return c.get();
+    }
     if (this.nonlocals.has(name)) return this._getEnclosing(name);
     if (this.vars.has(name)) return this.vars.get(name);
     const p = this._outer(name);
@@ -45,15 +49,37 @@ export class AdderScope {
     throw new AdderError('NameError', `name '${name}' is not defined`);
   }
   // the enclosing scope a name is looked up in next: a class body's names are not visible to
-  // the functions (and comprehensions) inside it — only to the body itself — except
-  // __class__, which zero-argument super() reads
+  // the functions (and comprehensions) inside it — only to the body itself
   _outer(name) {
     let p = this.parent;
-    if (name !== '__class__') while (p && p._isClass) p = p.parent;
+    while (p && p._isClass) p = p.parent;
     return p;
+  }
+  // `__class__` from here (not bound in this scope): the nearest enclosing class's cell, or an
+  // enclosing function's own `__class__` — as { get, set, del }; null when there's neither
+  _classCellOf() {
+    for (let p = this.parent; p; p = p.parent) {
+      if (p._isClass) {
+        const cell = p._classCell;
+        if (!cell) continue;
+        return {
+          get: () => {
+            if (cell._v === undefined) throw new AdderError('NameError', "cannot access free variable '__class__' where it is not associated with a value in enclosing scope");
+            return cell._v;
+          },
+          set: (v) => { cell._v = v; },
+          del: () => { cell._v = undefined; },
+          cell,
+        };
+      }
+      if (p.globals.has('__class__')) return null;
+      if (p.vars.has('__class__')) return { get: () => p.vars.get('__class__'), set: (v) => p.vars.set('__class__', v), del: () => p.vars.delete('__class__') };
+    }
+    return null;
   }
   set(name, value) {
     if (this.globals.has(name)) { this._setGlobal(name, value); return; }
+    if (name === '__class__' && this.nonlocals.has(name)) { const c = this._classCellOf(); if (c) { c.set(value); return; } }
     if (this.nonlocals.has(name)) { this._setEnclosing(name, value); return; }
     this.vars.set(name, value);
   }
@@ -63,7 +89,10 @@ export class AdderScope {
     if (p) return p.has(name);
     return !!(this._builtins && Object.hasOwn(this._builtins, name));
   }
-  delete(name) { this.vars.delete(name); }
+  delete(name) {
+    if (name === '__class__' && this.nonlocals.has(name)) { const c = this._classCellOf(); if (c) { c.del(); return; } }
+    this.vars.delete(name);
+  }
   _getGlobal(name) {
     let s = this; while (s.parent) s = s.parent;
     if (s.vars.has(name)) return s.vars.get(name);
@@ -1436,17 +1465,22 @@ async function _evalClass(node, scope) {
   // module's __name__) and __qualname__
   const classScope = new AdderScope(scope);
   classScope._isClass = true;
+  // its methods' `__class__` (what zero-argument super() reads): a cell the class factory fills
+  classScope._classCell = new PyCell();
   let root = scope; while (root.parent) root = root.parent;
   classScope.set('__module__', root.vars.has('__name__') ? root.vars.get('__name__') : '__main__');
   classScope.set('__qualname__', node.name);
   for (const stmt of node.body) await adderEval(stmt, classScope);
 
-  // build class (the factory both engines share); `__class__` is bound before
-  // __init_subclass__ fires, so super() works in a hook that calls a method
+  // build class (the factory both engines share). A method that names `__class__` or `super`
+  // gets the cell into the namespace (__classcell__), and type.__new__ fills it — before
+  // __init_subclass__ fires, so super() works in a hook that calls a method; otherwise (an exec'd
+  // super()) it's filled here, after
   const classVars = Object.fromEntries(classScope.vars);
-  const cls = await classStatement(node.name, bases, classVars, classAnnotations(node.body), kw, {
-    beforeFinish: (c) => classScope.set('__class__', c),
-  });
+  const needsCell = classNeedsCell(node);
+  if (needsCell) classVars.__classcell__ = classScope._classCell;
+  const cls = await classStatement(node.name, bases, classVars, classAnnotations(node.body), kw);
+  if (!needsCell && cls && cls._pyClass && classScope._classCell._v === undefined) classScope._classCell._v = cls;
 
   // handle decorators
   let result = cls;
@@ -1605,17 +1639,22 @@ function _matchException(error, excTypeVal) {
 // ── super() / eval() / exec() builtins ──
 
 function _evalSuperCall(args, scope, line) {
-  if (args.length >= 2) return pySuper(args[0], args[1]);
-  let cls;
-  try { cls = scope.get('__class__'); } catch { throw new AdderError('RuntimeError', 'super(): __class__ not found', line); }
+  if (args.length) return pySuper(...args);
   // the nearest enclosing function's first argument (CPython: the first local of the frame)
   let s = scope;
   while (s && s._firstParam === undefined) s = s.parent;
   const first = s && s._firstParam;
   if (!first) throw new AdderError('RuntimeError', 'super(): no arguments', line);
+  if (!s.vars.has(first)) throw new AdderError('RuntimeError', 'super(): arg[0] deleted', line);
   let self = s.vars.get(first);
-  if (s.vars.has(first) && Array.isArray(self) && first === (s._varargName || null)) self = self[0];
+  if (Array.isArray(self) && first === (s._varargName || null)) self = self[0];
   if (self === undefined) throw new AdderError('RuntimeError', 'super(): no arguments', line);
+  // its `__class__`: the cell of the class the function is defined in
+  const c = scope._classCellOf();
+  if (!c) throw new AdderError('RuntimeError', 'super(): __class__ cell not found', line);
+  if (c.cell && c.cell._v === undefined) throw new AdderError('RuntimeError', 'super(): empty __class__ cell', line);
+  const cls = c.get();
+  if (!(typeof cls === 'function' && cls._pyClass)) throw new AdderError('RuntimeError', `super(): __class__ is not a type (${pyTypeName(cls)})`, line);
   return pySuper(cls, self);
 }
 

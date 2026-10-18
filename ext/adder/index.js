@@ -973,6 +973,31 @@ function adderTokenize(code) {
 
 // ── parser ──
 
+// does a class need a __class__ cell: does a function in its body (at any depth, but not inside
+// a nested class) name `__class__` or `super`?
+function classNeedsCell(node) {
+  if (node._needsCell !== undefined) return node._needsCell;
+  const scan = (n, inFn) => {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) return n.some((x) => scan(x, inFn));
+    if (n.type === 'ClassDef') return false;
+    if (inFn && n.type === 'Name' && (n.id === '__class__' || n.id === 'super')) return true;
+    const fn = inFn || n.type === 'FunctionDef' || n.type === 'AsyncFunctionDef' || n.type === 'Lambda';
+    for (const k in n) if (k !== 'type' && k !== 'line' && k !== 'col' && typeof n[k] === 'object' && scan(n[k], fn)) return true;
+    return false;
+  };
+  const body = node.body || [];
+  let r = false;
+  for (const st of body) {
+    if (!st) continue;
+    // a nested class's own methods have their own cell; its decorators / bases are in the body
+    if (st.type === 'ClassDef') { if (scan([st.bases, st.keywords, st.decorators], false)) { r = true; break; } continue; }
+    if (scan(st, false)) { r = true; break; }
+  }
+  node._needsCell = r;
+  return r;
+}
+
 function adderParse(code) {
   return _manglePrivate(_classAnnotations(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule()))), null);
 }
@@ -2890,8 +2915,17 @@ function isPlainDict(v) {
   return (p === Object.prototype || p === null) && !v._kw && !('__adderType__' in v) && !('__adderClass__' in v);
 }
 
+// A closure cell: what `__class__` is in a method — the class statement makes one, hands it to the
+// class factory in the namespace as __classcell__ (when a method needs it), and type.__new__
+// fills it with the class it builds
+class PyCell {
+  constructor(v) { this._v = v; }
+  get cell_contents() { if (this._v === undefined) throw new AdderError('ValueError', 'Cell is empty'); return this._v; }
+  set cell_contents(v) { this._v = v; }
+}
 function pyTypeName(v) {
   if (v === null || v === undefined) return 'NoneType';
+  if (v instanceof PyCell) return 'cell';
   if (typeof v === 'boolean') return 'bool';
   if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
   if (typeof v === 'string') return 'str';
@@ -3631,6 +3665,19 @@ function adderGetAttr(obj, attr) {
     if (attr === 'value' && obj.pyType === 'StopIteration') return obj.value !== undefined ? obj.value : obj.args && obj.args.length ? obj.args[0] : null;
     if (attr === 'with_traceback') return (tb) => { obj._pyTb = tb; return obj; };
     if (attr === '__class__') return excTypeOf(obj);
+    if (attr === '__suppress_context__') return obj.__suppress_context__ ?? false;
+    if (attr === 'add_note') return _addNote(obj);
+  }
+  // an instance of an exception class written in Python: BaseException's own attributes, unless
+  // the class (or the instance) has its own
+  if (obj !== null && typeof obj === 'object' && obj.__adderType__ && _EXC_INSTANCE_ATTRS.has(attr) && !(attr in obj) && isExceptionClass(obj.__adderType__)) {
+    switch (attr) {
+      case 'with_traceback': return (tb) => { _hide(obj, '_pyTb', tb); return obj; };
+      case '__traceback__': return obj._pyTb !== undefined ? obj._pyTb : obj._pyErr ? _tracebackOf(obj._pyErr) : null;
+      case '__cause__': case '__context__': return null;
+      case '__suppress_context__': return false;
+      case 'add_note': return _addNote(obj);
+    }
   }
   // every value has a __class__ (its type) — unless it defines the attribute itself
   if (attr === '__class__' && (obj === null || obj === undefined || !(typeof obj === 'object' && Object.hasOwn(obj, '__class__')))) return typeOf(obj ?? null);
@@ -6919,6 +6966,17 @@ function _argsStr(name, args) {
 }
 // what a raise throws, for whatever was raised (an AdderError, a JS Error, a builtin or user
 // exception class or instance); may be a Promise when constructing a class is async
+// BaseException's attributes and methods every exception instance has (see adderGetAttr)
+const _EXC_INSTANCE_ATTRS = new Set(['with_traceback', '__traceback__', '__cause__', '__context__', '__suppress_context__', 'add_note']);
+const _hide = (o, k, v) => Object.defineProperty(o, k, { value: v, writable: true, configurable: true, enumerable: false });
+// e.add_note(s): onto e.__notes__ (a list in its __dict__, made on the first)
+const _addNote = (obj) => (note) => {
+  if (typeof note !== 'string') throw new AdderError('TypeError', `note must be a str, not '${pyTypeName(note)}'`);
+  if (obj.__notes__ === undefined) obj.__notes__ = [];
+  else if (!Array.isArray(obj.__notes__)) throw new AdderError('TypeError', 'Cannot add note: __notes__ is not a list');
+  obj.__notes__.push(note);
+  return null;
+};
 function excToThrowable(exc, line) {
   if (exc instanceof AdderError || exc instanceof Error) return exc;
   if (typeof exc === 'function' && (isBuiltinExcType(exc) || isExceptionClass(exc))) {
@@ -6932,6 +6990,7 @@ function excToThrowable(exc, line) {
     const err = new AdderError(cls._pyName, msg, line, exc.args || []);
     err.pyValue = exc;
     err.pyClass = cls;
+    _hide(exc, '_pyErr', err);   // its __traceback__ is the raise's
     return err;
   }
   return new AdderError('TypeError', 'exceptions must derive from BaseException', line);
@@ -7748,8 +7807,9 @@ function _classMethodDescriptor(fn, qual) {
 // [[name, text], …].
 //   opts.meta         — the metaclass building it (absent for plain `type`)
 //   opts.kw           — class keywords other than metaclass=, passed to __init_subclass__
-//   opts.beforeFinish — runs before __init_subclass__ fires (the tree-walker binds the class's
-//                       `__class__` cell there, so super() works in a hook that calls a method)
+//   opts.beforeFinish — runs before __init_subclass__ fires
+//   members.__classcell__ — the class statement's `__class__` cell: filled with the class before
+//                       __init_subclass__ fires, so super() works in a hook that calls a method
 // a class-body function that becomes a method (bound to the instance). In a class written in
 // Python (opts.pyBody), only Python functions are: a builtin stored on a class (`concat =
 // "".join`, a functools.partial) is a plain attribute, as in CPython. Classes adder builds in JS
@@ -7857,6 +7917,13 @@ function _installMember(cls, name, mName, value, opts) {
   }
 }
 function buildClass(name, bases, members, annotations, opts = {}) {
+  // the class statement's __class__ cell: not an attribute; filled with the class, below
+  let classCell = null;
+  if (members && Object.hasOwn(members, '__classcell__')) {
+    classCell = members.__classcell__;
+    delete members.__classcell__;
+    if (!(classCell instanceof PyCell)) throw new AdderError('TypeError', `__classcell__ must be a nonlocal cell, not <class '${pyTypeName(classCell)}'>`);
+  }
   const cls = function (...args) {
     if (cls._pyNew) return cls._pyNew(...args);   // a class that answers calls itself (enum lookup)
     // a metaclass with its own __call__ decides what calling the class does
@@ -7962,8 +8029,8 @@ function buildClass(name, bases, members, annotations, opts = {}) {
     }
   }
 
+  if (classCell) classCell._v = cls;
   if (opts.beforeFinish) opts.beforeFinish(cls);
-  if (_pendingClassCell && _pendingClassCell.name === name) { const p = _pendingClassCell; _pendingClassCell = null; p.fn(cls); }
   // __set_name__(owner, name) on each member that has one (descriptors learn their attribute
   // name), before __init_subclass__ — CPython's order
   const named = [];
@@ -8035,10 +8102,6 @@ function _isDescriptor(v) {
     !(v instanceof Map) && !(v instanceof Set) && (!v.__property__ || _propOverridden(v)) && (!!v.__adderType__ || v._pyDescriptor === true);
 }
 
-// A class statement whose metaclass is not `type` hands the namespace to the metaclass; the
-// statement's `__class__` cell binder rides here until type.__new__ builds the class.
-let _pendingClassCell = null;
-
 // `class Name(*bases, **kw): body` — both engines. Picks the metaclass (an explicit
 // metaclass=, else the most derived of the bases' — CPython's rule), and either builds the class
 // directly (plain `type`) or calls Meta(name, bases, namespace, **kw).
@@ -8075,6 +8138,20 @@ function _mergeAnnotations(members, annotations) {
   return out;
 }
 function classStatement(name, bases, members, annotations, kwObj, opts = {}) {
+  // the statement's __class__ cell (in the namespace when a method needs it): whatever the
+  // metaclass returns, a class must be the one type.__new__ filled the cell with
+  const cell = members && members.__classcell__ instanceof PyCell ? members.__classcell__ : null;
+  if (!cell) return _classStatement(name, bases, members, annotations, kwObj, opts);
+  return _thenMaybe(_classStatement(name, bases, members, annotations, kwObj, opts), (c) => {
+    if (cell._v === undefined) {
+      if (c && c._pyClass) throw new AdderError('RuntimeError', `__class__ not set defining '${name}' as <class '${c._pyName}'>. Was __classcell__ propagated to type.__new__?`);
+    } else if (cell._v !== c && c && c._pyClass) {
+      throw new AdderError('TypeError', `__class__ set to <class '${cell._v && cell._v._pyName}'> defining '${name}' as <class '${c._pyName}'>`);
+    }
+    return c;
+  });
+}
+function _classStatement(name, bases, members, annotations, kwObj, opts) {
   annotations = _mergeAnnotations(members, annotations);
   bases = _resolveBases(bases);
   const kw = {};
@@ -8093,17 +8170,7 @@ function classStatement(name, bases, members, annotations, kwObj, opts = {}) {
   const ns = new PyDict(Object.entries(members));
   Object.defineProperty(ns, '_pyBody', { value: true });   // a Python class body: only its Python functions are methods
   if (annotations && annotations.length) ns.set('__annotations__', new PyDict(annotations));
-  // `__class__` (zero-argument super()) is bound when the metaclass builds the class — or, if the
-  // metaclass is async (tree-walked) and the build happens after this returns, once it arrives
-  const bind = opts.beforeFinish;
-  let bound = false;
-  _pendingClassCell = bind ? { name, fn: (c) => { bound = true; bind(c); } } : null;
-  let r;
-  try {
-    r = meta(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
-  } finally { _pendingClassCell = null; }
-  if (bind && !bound) return _thenMaybe(r, (c) => { if (!bound && c && c._pyClass) bind(c); return c; });
-  return r;
+  return meta(name, mkTuple(bases), ns, ...(kwOrNull ? [{ _kw: true, ...kwOrNull }] : []));
 }
 
 // the metaclass a class gets: the most derived of `start` and its bases' metaclasses (CPython's rule)
@@ -8914,7 +8981,15 @@ const _idOf = new WeakMap(), _idOfValue = new Map();
 //     class-level members bound to self;
 //   self an instance — of a class, or a class that is an instance of a metaclass: its type's MRO,
 //     prototype members bound to self.
-function pySuper(cls, self) {
+function pySuper(cls, self, ...extra) {
+  if (extra.length && extra[extra.length - 1] && extra[extra.length - 1]._kw) throw new AdderError('TypeError', 'super() takes no keyword arguments');
+  if (extra.length) throw new AdderError('TypeError', `super() expected at most 2 arguments, got ${2 + extra.length}`);
+  if (!(typeof cls === 'function' && cls._pyClass)) throw new AdderError('TypeError', `super() argument 1 must be a type, not ${pyTypeName(cls)}`);
+  // super(type, obj): obj an instance of type, or a subclass of it
+  if (self !== undefined && typeof self !== 'number' && !(typeof self === 'function' && self._pyClass && _isSubclass(self, cls)) && !_pyIsInstance(self, cls)) {
+    const what = typeof self === 'function' && self._pyClass ? `type ${self._pyName}` : `instance of ${pyTypeName(self)}`;
+    throw new AdderError('TypeError', `super(type, obj): obj (${what}) is not an instance or subtype of type (${cls._pyName}).`);
+  }
   const isClass = typeof self === 'function' && self._pyClass;
   const viaClass = isClass && self._pyMRO && self._pyMRO.includes(cls);
   const owner = viaClass ? self : isClass ? (self.__adderMeta__ || pyTypeObj) : (self && self.__adderType__);
@@ -8929,6 +9004,12 @@ function pySuper(cls, self) {
   return new Proxy({}, {
     get(_, name) {
       if (typeof name !== 'string') return undefined;
+      // the super object's own: its type, and what it was made of
+      if (name === '__adderClass__') return 'super';
+      if (name === '__class__') return _builtinSuper;
+      if (name === '__thisclass__') return cls;
+      if (name === '__self__') return self === undefined ? null : self;
+      if (name === '__self_class__') return self === undefined ? null : owner;
       for (let i = start; i < mro.length; i++) {
         const base = mro[i];
         if (isBuiltinExcType(base)) {
@@ -8982,6 +9063,9 @@ function pySuper(cls, self) {
       };
       // the rest of object's (super().__getattribute__(name), super().__setattr__(k, v) …)
       if (_OBJECT_DUNDER_SET.has(name) && self && typeof self === 'object') return _objectDunder(self, name);
+      // super(T, cls).__setattr__ …: through a class, object's (and type's) are unbound — the
+      // object comes first
+      if (_OBJECT_DUNDER_SET.has(name) && viaClass) return (o, ...a) => (typeof o === 'function' && o._pyClass && name === '__setattr__' ? storeAttr(o, a[0], a[1]) : _objectDunder(o, name)(...a));
       return undefined;
     },
     has(_, name) { return this.get(_, name) !== undefined; },
@@ -8997,7 +9081,13 @@ let _scopeExec = null;
 function setScopeExec(f) { _scopeExec = f; }
 const _builtinEval = Object.assign((...a) => _scopeExec('eval', a), { _pyName: 'eval', _sentinel: 'eval' });
 const _builtinExec = Object.assign((...a) => _scopeExec('exec', a), { _pyName: 'exec', _sentinel: 'exec' });
-const _builtinSuper = Object.assign(() => {}, { _pyName: 'super', _sentinel: 'super' });
+// super is a type: what super().__class__ is; called as a value (getattr(builtins, 'super')), it
+// needs its arguments — zero-argument super() is the evaluator's
+const _builtinSuper = Object.assign((...a) => {
+  if (!a.length) throw new AdderError('RuntimeError', 'super(): no arguments');
+  return pySuper(...a);
+}, { _pyName: 'super', _sentinel: 'super', _pyClass: true, __name__: 'super' });
+_typeObjects.super = _builtinSuper;
 // globals() / locals(): the caller's namespaces, which only the tree-walker has (AIR lowering
 // refuses them, so the module falls back)
 const _builtinGlobals = Object.assign(() => {}, { _pyName: 'globals', _sentinel: 'globals' });
@@ -9109,6 +9199,10 @@ class AdderScope {
   }
   get(name) {
     if (this.globals.has(name)) return this._getGlobal(name);
+    if (name === '__class__' && (this.nonlocals.has(name) || !this.vars.has(name))) {
+      const c = this._classCellOf();
+      if (c) return c.get();
+    }
     if (this.nonlocals.has(name)) return this._getEnclosing(name);
     if (this.vars.has(name)) return this.vars.get(name);
     const p = this._outer(name);
@@ -9117,15 +9211,37 @@ class AdderScope {
     throw new AdderError('NameError', `name '${name}' is not defined`);
   }
   // the enclosing scope a name is looked up in next: a class body's names are not visible to
-  // the functions (and comprehensions) inside it — only to the body itself — except
-  // __class__, which zero-argument super() reads
+  // the functions (and comprehensions) inside it — only to the body itself
   _outer(name) {
     let p = this.parent;
-    if (name !== '__class__') while (p && p._isClass) p = p.parent;
+    while (p && p._isClass) p = p.parent;
     return p;
+  }
+  // `__class__` from here (not bound in this scope): the nearest enclosing class's cell, or an
+  // enclosing function's own `__class__` — as { get, set, del }; null when there's neither
+  _classCellOf() {
+    for (let p = this.parent; p; p = p.parent) {
+      if (p._isClass) {
+        const cell = p._classCell;
+        if (!cell) continue;
+        return {
+          get: () => {
+            if (cell._v === undefined) throw new AdderError('NameError', "cannot access free variable '__class__' where it is not associated with a value in enclosing scope");
+            return cell._v;
+          },
+          set: (v) => { cell._v = v; },
+          del: () => { cell._v = undefined; },
+          cell,
+        };
+      }
+      if (p.globals.has('__class__')) return null;
+      if (p.vars.has('__class__')) return { get: () => p.vars.get('__class__'), set: (v) => p.vars.set('__class__', v), del: () => p.vars.delete('__class__') };
+    }
+    return null;
   }
   set(name, value) {
     if (this.globals.has(name)) { this._setGlobal(name, value); return; }
+    if (name === '__class__' && this.nonlocals.has(name)) { const c = this._classCellOf(); if (c) { c.set(value); return; } }
     if (this.nonlocals.has(name)) { this._setEnclosing(name, value); return; }
     this.vars.set(name, value);
   }
@@ -9135,7 +9251,10 @@ class AdderScope {
     if (p) return p.has(name);
     return !!(this._builtins && Object.hasOwn(this._builtins, name));
   }
-  delete(name) { this.vars.delete(name); }
+  delete(name) {
+    if (name === '__class__' && this.nonlocals.has(name)) { const c = this._classCellOf(); if (c) { c.del(); return; } }
+    this.vars.delete(name);
+  }
   _getGlobal(name) {
     let s = this; while (s.parent) s = s.parent;
     if (s.vars.has(name)) return s.vars.get(name);
@@ -10508,17 +10627,22 @@ async function _evalClass(node, scope) {
   // module's __name__) and __qualname__
   const classScope = new AdderScope(scope);
   classScope._isClass = true;
+  // its methods' `__class__` (what zero-argument super() reads): a cell the class factory fills
+  classScope._classCell = new PyCell();
   let root = scope; while (root.parent) root = root.parent;
   classScope.set('__module__', root.vars.has('__name__') ? root.vars.get('__name__') : '__main__');
   classScope.set('__qualname__', node.name);
   for (const stmt of node.body) await adderEval(stmt, classScope);
 
-  // build class (the factory both engines share); `__class__` is bound before
-  // __init_subclass__ fires, so super() works in a hook that calls a method
+  // build class (the factory both engines share). A method that names `__class__` or `super`
+  // gets the cell into the namespace (__classcell__), and type.__new__ fills it — before
+  // __init_subclass__ fires, so super() works in a hook that calls a method; otherwise (an exec'd
+  // super()) it's filled here, after
   const classVars = Object.fromEntries(classScope.vars);
-  const cls = await classStatement(node.name, bases, classVars, classAnnotations(node.body), kw, {
-    beforeFinish: (c) => classScope.set('__class__', c),
-  });
+  const needsCell = classNeedsCell(node);
+  if (needsCell) classVars.__classcell__ = classScope._classCell;
+  const cls = await classStatement(node.name, bases, classVars, classAnnotations(node.body), kw);
+  if (!needsCell && cls && cls._pyClass && classScope._classCell._v === undefined) classScope._classCell._v = cls;
 
   // handle decorators
   let result = cls;
@@ -10677,17 +10801,22 @@ function _matchException(error, excTypeVal) {
 // ── super() / eval() / exec() builtins ──
 
 function _evalSuperCall(args, scope, line) {
-  if (args.length >= 2) return pySuper(args[0], args[1]);
-  let cls;
-  try { cls = scope.get('__class__'); } catch { throw new AdderError('RuntimeError', 'super(): __class__ not found', line); }
+  if (args.length) return pySuper(...args);
   // the nearest enclosing function's first argument (CPython: the first local of the frame)
   let s = scope;
   while (s && s._firstParam === undefined) s = s.parent;
   const first = s && s._firstParam;
   if (!first) throw new AdderError('RuntimeError', 'super(): no arguments', line);
+  if (!s.vars.has(first)) throw new AdderError('RuntimeError', 'super(): arg[0] deleted', line);
   let self = s.vars.get(first);
-  if (s.vars.has(first) && Array.isArray(self) && first === (s._varargName || null)) self = self[0];
+  if (Array.isArray(self) && first === (s._varargName || null)) self = self[0];
   if (self === undefined) throw new AdderError('RuntimeError', 'super(): no arguments', line);
+  // its `__class__`: the cell of the class the function is defined in
+  const c = scope._classCellOf();
+  if (!c) throw new AdderError('RuntimeError', 'super(): __class__ cell not found', line);
+  if (c.cell && c.cell._v === undefined) throw new AdderError('RuntimeError', 'super(): empty __class__ cell', line);
+  const cls = c.get();
+  if (!(typeof cls === 'function' && cls._pyClass)) throw new AdderError('RuntimeError', `super(): __class__ is not a type (${pyTypeName(cls)})`, line);
   return pySuper(cls, self);
 }
 
@@ -12187,6 +12316,22 @@ const _py = {
   bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
   super: pySuper,
+  // a class statement's `__class__` cell (see lowerClassDef)
+  newCell: () => new PyCell(),
+  raiseRuntime: (msg) => { throw new AdderError('RuntimeError', msg); },
+  cellGet: (c) => {
+    if (c._v === undefined) throw new AdderError('NameError', "cannot access free variable '__class__' where it is not associated with a value in enclosing scope");
+    return c._v;
+  },
+  cellSet: (c, v) => { c._v = v; return null; },
+  // zero-argument super(): the method's class, from its cell, and its first argument
+  superCell: (c, self) => {
+    if (self === undefined) throw new AdderError('RuntimeError', 'super(): arg[0] deleted');
+    if (!c) throw new AdderError('RuntimeError', 'super(): __class__ cell not found');
+    if (c._v === undefined) throw new AdderError('RuntimeError', 'super(): empty __class__ cell');
+    if (!(typeof c._v === 'function' && c._v._pyClass)) throw new AdderError('RuntimeError', `super(): __class__ is not a type (${pyTypeName(c._v)})`);
+    return pySuper(c._v, self);
+  },
   bytesLit, dictLiteral,
   tuple: mkTuple,
   isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',
@@ -22711,6 +22856,10 @@ function lowerExpr_ad(ctx, node) {
       //     later at module level (forward ref) → load via closure, no import
       //   - at module level and not yet assigned                → import from
       //     upstream (covers `df = df.rename(...)` re-bind pattern)
+      if (name === '__class__') {
+        const cell = _classCellRef(ctx);
+        if (cell) return emitPyCall(ctx, 'cellGet', [ctx.emit('load', [cell], DYNAMIC, l)], l);
+      }
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       if (!ctx.symbols.has(name) && !isForwardRef) ctx.imports.add(name);
       const raw = ctx.emit('load', [name], DYNAMIC, l);
@@ -23049,12 +23198,15 @@ function lowerCall_ad(ctx, node) {
   // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
   if (node.func.type === 'Name' && node.func.id === 'super' && !ctx.symbols.has('super') && !(node.keywords || []).length) {
     if (node.args.length === 0) {
-      if (!ctx._superCtx) throw new AirLowerError('super() outside a method');
-      const cls = ctx.emit('load', [ctx._superCtx.cls], DYNAMIC, l);
+      // CPython's: the function's first argument, and the `__class__` cell it sees
+      const sc = ctx._superCtx;
+      if (sc && sc.varargSelf) throw new AirLowerError('super() with *args self needs the tree-walker');
+      if (!sc || sc.noArgs) return emitPyCall(ctx, 'raiseRuntime', [ctx.emit('const', ['super(): no arguments'], STRING, l)], l);
+      const cell = sc.cell ? ctx.emit('load', [sc.cell], DYNAMIC, l) : ctx.emit('const', [null], VOID, l);
       const self = ctx.emit('load', [ctx._superCtx.self], DYNAMIC, l);
-      return emitPyCall(ctx, 'super', [cls, self], l);
+      return emitPyCall(ctx, 'superCell', [cell, self], l);
     }
-    if (node.args.length === 2) return emitPyCall(ctx, 'super', node.args.map((a) => lowerExpr_ad(ctx, a)), l);
+    if (!node.args.some((a) => a.type === 'Starred')) return emitPyCall(ctx, 'super', node.args.map((a) => lowerExpr_ad(ctx, a)), l);
   }
 
   const hasStarred = node.args.some(a => a.type === 'Starred');
@@ -23158,6 +23310,11 @@ function lowerAssign(ctx, node) {
 function lowerAssignTarget(ctx, target, value, l) {
   if (target.type === 'Name') {
     const name = target.id;
+    // `nonlocal __class__; __class__ = X` in a method rebinds the class's cell
+    if (name === '__class__' && !ctx._classBodyOf) {
+      const cell = _classCellRef(ctx);
+      if (cell) { emitPyCall(ctx, 'cellSet', [ctx.emit('load', [cell], DYNAMIC, l), value], l); return; }
+    }
     ctx.emit('store', [name, value.id], VOID, l);
     ctx.symbols.set(name, value.id);
     if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(name);
@@ -23542,6 +23699,16 @@ function lowerWith(ctx, node) {
   return null;
 }
 
+// what the Name `__class__` is here: the class cell it reads (a temp's name), or null when it's an
+// ordinary name — bound by this function or class body, declared global, or with no class around
+function _classCellRef(ctx) {
+  if (ctx._classBodyOf) return ctx._classNames && ctx._classNames.has('__class__') ? null : ctx._classCell || null;
+  if (!ctx._classCell) return null;
+  if (ctx._fnGlobals && ctx._fnGlobals.has('__class__')) return null;
+  if (ctx._fnLocalNames && ctx._fnLocalNames.includes('__class__')) return null;
+  return ctx._classCell;
+}
+
 function lowerClassDef(ctx, node) {
   // Lower class via a _py.createClass runtime helper that mirrors the tree-walker.
   const l = ctx.loc(node);
@@ -23554,6 +23721,18 @@ function lowerClassDef(ctx, node) {
     ? { spread: true, id: lowerExpr_ad(ctx, k.value).id }
     : { key: k.arg, id: lowerExpr_ad(ctx, k.value).id }));
   const kwObj = kwPairs.length ? ctx.emit('object_new', kwPairs, DYNAMIC, l) : ctx.emit('const', [null], VOID, l);
+
+  // its methods' `__class__` (zero-argument super() reads it): a cell, made here when a method
+  // names it, handed to the class factory in the namespace (__classcell__) for type.__new__ to fill
+  let cellName = null;
+  if (classNeedsCell(node)) {
+    cellName = ctx.makeTempName('ccell');
+    const c = emitPyCall(ctx, 'newCell', [], l);
+    ctx.emit('store', [cellName, c.id], VOID, l);
+    ctx.symbols.set(cellName, c.id);
+  }
+  const savedBodyCell = ctx._bodyCell;
+  ctx._bodyCell = cellName;
 
   // Lower class body as a function that receives an empty object and populates it.
   // The class body is a sequence of statements (method defs, assignments, etc.)
@@ -23579,7 +23758,7 @@ function lowerClassDef(ctx, node) {
 
   const body = captureOps(ctx, () => {
     // Run class body — method defs become locals, assignments become locals
-    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; }
+    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; ctx._bodyCell = savedBodyCell; }
 
     // Build the class members dict from the locals
     // We need to track which names were defined in the class body.
@@ -23602,6 +23781,7 @@ function lowerClassDef(ctx, node) {
       key: pyNameOf(n.startsWith('__cb_') ? n.slice(5) : n),
       id: ctx.emit('load', [n], DYNAMIC, l).id,
     }));
+    if (cellName) pairs.push({ key: '__classcell__', id: ctx.emit('load', [cellName], DYNAMIC, l).id });
     const membersObj = ctx.emit('object_new', pairs, DYNAMIC, l);
     ctx.emit('return', [membersObj.id], VOID, l);
   });
@@ -23737,6 +23917,11 @@ function lowerImportFrom(ctx, node) {
 function lowerDelete(ctx, node) {
   const l = ctx.loc(node);
   for (const target of node.targets) {
+    // `nonlocal __class__; del __class__` empties the class's cell
+    if (target.type === 'Name' && target.id === '__class__' && !ctx._classBodyOf && _classCellRef(ctx)) {
+      emitPyCall(ctx, 'cellSet', [ctx.emit('load', [_classCellRef(ctx)], DYNAMIC, l), ctx.emit('const', [undefined], VOID, l)], l);
+      continue;
+    }
     if (target.type === 'Name') {
       // Intentional limitation: `del <bare-name>` sets the binding to undefined
       // rather than truly unbinding it (transpiled JS has no `delete localVar`,
@@ -24308,8 +24493,10 @@ function lowerFuncDef(ctx, node) {
   const savedExcName = ctx._excName;
   ctx._excName = null;
   // zero-argument super() in a method: the enclosing class and the method's first parameter
-  const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf;
-  const superCtx = ctx._classBodyOf && (node.params || []).length ? { cls: ctx._classBodyOf, self: node.params[0].name } : ctx._superCtx;
+  const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf, savedCell = ctx._classCell;
+  // the `__class__` cell it sees: its class's, for a method; a nested function's enclosing one's
+  const fnCell = ctx._classBodyOf ? ctx._bodyCell || null : ctx._classCell || null;
+  const superCtx = (node.params || []).length ? { cell: fnCell, self: node.params[0].name } : node.vararg ? { varargSelf: true } : { noArgs: true };
   // A SYNC TWIN: a function AIR can't prove synchronous is compiled async — it awaits whatever
   // it calls. Code Python calls implicitly (a property, __len__, __eq__, a hash) can't wait, so
   // such a function is also compiled in sync mode as `fn._pySync`, and sync-mode code calls the
@@ -24328,6 +24515,7 @@ function lowerFuncDef(ctx, node) {
     const savedTwinMode = ctx._twinMode;
     ctx._twinMode = twinPass || (!!ctx._twinMode && !!mode);
     ctx._superCtx = superCtx;
+    ctx._classCell = fnCell;
     ctx._classBodyOf = null;
     const savedTopLevel = ctx.topLevel;
     ctx.topLevel = false;
@@ -24378,6 +24566,7 @@ function lowerFuncDef(ctx, node) {
     ctx._paramDefaults = savedDefaults;
     ctx._excName = savedExcName;
     ctx._superCtx = savedSuper;
+    ctx._classCell = savedCell;
     ctx._classBodyOf = savedClassBody;
     ctx._twinMode = savedTwinMode;
     return out;

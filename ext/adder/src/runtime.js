@@ -4,7 +4,7 @@
 import {
   AdderError, adderModules, AdderRange, Complex,
   pyBool, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyCollectMaybe, pyFormatValue,
-  adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, excToThrowable,
+  adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, PyCell, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
@@ -888,6 +888,22 @@ export const _py = {
   bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
   super: pySuper,
+  // a class statement's `__class__` cell (see lowerClassDef)
+  newCell: () => new PyCell(),
+  raiseRuntime: (msg) => { throw new AdderError('RuntimeError', msg); },
+  cellGet: (c) => {
+    if (c._v === undefined) throw new AdderError('NameError', "cannot access free variable '__class__' where it is not associated with a value in enclosing scope");
+    return c._v;
+  },
+  cellSet: (c, v) => { c._v = v; return null; },
+  // zero-argument super(): the method's class, from its cell, and its first argument
+  superCell: (c, self) => {
+    if (self === undefined) throw new AdderError('RuntimeError', 'super(): arg[0] deleted');
+    if (!c) throw new AdderError('RuntimeError', 'super(): __class__ cell not found');
+    if (c._v === undefined) throw new AdderError('RuntimeError', 'super(): empty __class__ cell');
+    if (!(typeof c._v === 'function' && c._v._pyClass)) throw new AdderError('RuntimeError', `super(): __class__ is not a type (${pyTypeName(c._v)})`);
+    return pySuper(c._v, self);
+  },
   bytesLit, dictLiteral,
   tuple: mkTuple,
   isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',

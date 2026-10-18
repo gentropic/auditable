@@ -14,7 +14,7 @@ import {
 } from '../../air/src/lower/base.js';
 import { registerSpecializations } from '../../air/src/passes.js';
 import { classAnnotations, plainObjectKey } from './builtins.js';
-import { collectWalrusTargets, matchPatternNames, compileMatchPattern } from './parse.js';
+import { collectWalrusTargets, matchPatternNames, compileMatchPattern, classNeedsCell } from './parse.js';
 
 // Re-export AirLowerError from @gcu/air. Lifted to ext/air/src/lower/base.js
 // so all frontends share one definition; the marker `_airFallback: true`
@@ -866,6 +866,10 @@ function lowerExpr_ad(ctx, node) {
       //     later at module level (forward ref) → load via closure, no import
       //   - at module level and not yet assigned                → import from
       //     upstream (covers `df = df.rename(...)` re-bind pattern)
+      if (name === '__class__') {
+        const cell = _classCellRef(ctx);
+        if (cell) return emitPyCall(ctx, 'cellGet', [ctx.emit('load', [cell], DYNAMIC, l)], l);
+      }
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       if (!ctx.symbols.has(name) && !isForwardRef) ctx.imports.add(name);
       const raw = ctx.emit('load', [name], DYNAMIC, l);
@@ -1204,12 +1208,15 @@ function lowerCall_ad(ctx, node) {
   // super() / super(Class, obj): `super` is reserved in JS, so it never becomes a free name
   if (node.func.type === 'Name' && node.func.id === 'super' && !ctx.symbols.has('super') && !(node.keywords || []).length) {
     if (node.args.length === 0) {
-      if (!ctx._superCtx) throw new AirLowerError('super() outside a method');
-      const cls = ctx.emit('load', [ctx._superCtx.cls], DYNAMIC, l);
+      // CPython's: the function's first argument, and the `__class__` cell it sees
+      const sc = ctx._superCtx;
+      if (sc && sc.varargSelf) throw new AirLowerError('super() with *args self needs the tree-walker');
+      if (!sc || sc.noArgs) return emitPyCall(ctx, 'raiseRuntime', [ctx.emit('const', ['super(): no arguments'], STRING, l)], l);
+      const cell = sc.cell ? ctx.emit('load', [sc.cell], DYNAMIC, l) : ctx.emit('const', [null], VOID, l);
       const self = ctx.emit('load', [ctx._superCtx.self], DYNAMIC, l);
-      return emitPyCall(ctx, 'super', [cls, self], l);
+      return emitPyCall(ctx, 'superCell', [cell, self], l);
     }
-    if (node.args.length === 2) return emitPyCall(ctx, 'super', node.args.map((a) => lowerExpr_ad(ctx, a)), l);
+    if (!node.args.some((a) => a.type === 'Starred')) return emitPyCall(ctx, 'super', node.args.map((a) => lowerExpr_ad(ctx, a)), l);
   }
 
   const hasStarred = node.args.some(a => a.type === 'Starred');
@@ -1313,6 +1320,11 @@ function lowerAssign(ctx, node) {
 function lowerAssignTarget(ctx, target, value, l) {
   if (target.type === 'Name') {
     const name = target.id;
+    // `nonlocal __class__; __class__ = X` in a method rebinds the class's cell
+    if (name === '__class__' && !ctx._classBodyOf) {
+      const cell = _classCellRef(ctx);
+      if (cell) { emitPyCall(ctx, 'cellSet', [ctx.emit('load', [cell], DYNAMIC, l), value], l); return; }
+    }
     ctx.emit('store', [name, value.id], VOID, l);
     ctx.symbols.set(name, value.id);
     if (ctx.topLevel && !ctx._compDepth) ctx.defines.add(name);
@@ -1697,6 +1709,16 @@ function lowerWith(ctx, node) {
   return null;
 }
 
+// what the Name `__class__` is here: the class cell it reads (a temp's name), or null when it's an
+// ordinary name — bound by this function or class body, declared global, or with no class around
+function _classCellRef(ctx) {
+  if (ctx._classBodyOf) return ctx._classNames && ctx._classNames.has('__class__') ? null : ctx._classCell || null;
+  if (!ctx._classCell) return null;
+  if (ctx._fnGlobals && ctx._fnGlobals.has('__class__')) return null;
+  if (ctx._fnLocalNames && ctx._fnLocalNames.includes('__class__')) return null;
+  return ctx._classCell;
+}
+
 function lowerClassDef(ctx, node) {
   // Lower class via a _py.createClass runtime helper that mirrors the tree-walker.
   const l = ctx.loc(node);
@@ -1709,6 +1731,18 @@ function lowerClassDef(ctx, node) {
     ? { spread: true, id: lowerExpr_ad(ctx, k.value).id }
     : { key: k.arg, id: lowerExpr_ad(ctx, k.value).id }));
   const kwObj = kwPairs.length ? ctx.emit('object_new', kwPairs, DYNAMIC, l) : ctx.emit('const', [null], VOID, l);
+
+  // its methods' `__class__` (zero-argument super() reads it): a cell, made here when a method
+  // names it, handed to the class factory in the namespace (__classcell__) for type.__new__ to fill
+  let cellName = null;
+  if (classNeedsCell(node)) {
+    cellName = ctx.makeTempName('ccell');
+    const c = emitPyCall(ctx, 'newCell', [], l);
+    ctx.emit('store', [cellName, c.id], VOID, l);
+    ctx.symbols.set(cellName, c.id);
+  }
+  const savedBodyCell = ctx._bodyCell;
+  ctx._bodyCell = cellName;
 
   // Lower class body as a function that receives an empty object and populates it.
   // The class body is a sequence of statements (method defs, assignments, etc.)
@@ -1734,7 +1768,7 @@ function lowerClassDef(ctx, node) {
 
   const body = captureOps(ctx, () => {
     // Run class body — method defs become locals, assignments become locals
-    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; }
+    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; ctx._bodyCell = savedBodyCell; }
 
     // Build the class members dict from the locals
     // We need to track which names were defined in the class body.
@@ -1757,6 +1791,7 @@ function lowerClassDef(ctx, node) {
       key: pyNameOf(n.startsWith('__cb_') ? n.slice(5) : n),
       id: ctx.emit('load', [n], DYNAMIC, l).id,
     }));
+    if (cellName) pairs.push({ key: '__classcell__', id: ctx.emit('load', [cellName], DYNAMIC, l).id });
     const membersObj = ctx.emit('object_new', pairs, DYNAMIC, l);
     ctx.emit('return', [membersObj.id], VOID, l);
   });
@@ -1892,6 +1927,11 @@ function lowerImportFrom(ctx, node) {
 function lowerDelete(ctx, node) {
   const l = ctx.loc(node);
   for (const target of node.targets) {
+    // `nonlocal __class__; del __class__` empties the class's cell
+    if (target.type === 'Name' && target.id === '__class__' && !ctx._classBodyOf && _classCellRef(ctx)) {
+      emitPyCall(ctx, 'cellSet', [ctx.emit('load', [_classCellRef(ctx)], DYNAMIC, l), ctx.emit('const', [undefined], VOID, l)], l);
+      continue;
+    }
     if (target.type === 'Name') {
       // Intentional limitation: `del <bare-name>` sets the binding to undefined
       // rather than truly unbinding it (transpiled JS has no `delete localVar`,
@@ -2463,8 +2503,10 @@ function lowerFuncDef(ctx, node) {
   const savedExcName = ctx._excName;
   ctx._excName = null;
   // zero-argument super() in a method: the enclosing class and the method's first parameter
-  const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf;
-  const superCtx = ctx._classBodyOf && (node.params || []).length ? { cls: ctx._classBodyOf, self: node.params[0].name } : ctx._superCtx;
+  const savedSuper = ctx._superCtx, savedClassBody = ctx._classBodyOf, savedCell = ctx._classCell;
+  // the `__class__` cell it sees: its class's, for a method; a nested function's enclosing one's
+  const fnCell = ctx._classBodyOf ? ctx._bodyCell || null : ctx._classCell || null;
+  const superCtx = (node.params || []).length ? { cell: fnCell, self: node.params[0].name } : node.vararg ? { varargSelf: true } : { noArgs: true };
   // A SYNC TWIN: a function AIR can't prove synchronous is compiled async — it awaits whatever
   // it calls. Code Python calls implicitly (a property, __len__, __eq__, a hash) can't wait, so
   // such a function is also compiled in sync mode as `fn._pySync`, and sync-mode code calls the
@@ -2483,6 +2525,7 @@ function lowerFuncDef(ctx, node) {
     const savedTwinMode = ctx._twinMode;
     ctx._twinMode = twinPass || (!!ctx._twinMode && !!mode);
     ctx._superCtx = superCtx;
+    ctx._classCell = fnCell;
     ctx._classBodyOf = null;
     const savedTopLevel = ctx.topLevel;
     ctx.topLevel = false;
@@ -2533,6 +2576,7 @@ function lowerFuncDef(ctx, node) {
     ctx._paramDefaults = savedDefaults;
     ctx._excName = savedExcName;
     ctx._superCtx = savedSuper;
+    ctx._classCell = savedCell;
     ctx._classBodyOf = savedClassBody;
     ctx._twinMode = savedTwinMode;
     return out;
