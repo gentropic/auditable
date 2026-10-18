@@ -180,7 +180,9 @@ function _stEnumHook(cls) {
   cls[Symbol.iterator] = function* () { yield* members(); };
   cls.__len__ = () => cls._member_names_.length;
   cls.__contains__ = (x) => (x && x.__adderType__ === cls) || cls._value2member_.some(([v]) => v === x || pyEq(v, x) === true);
-  cls.__getitem__ = (k) => { if (cls._member_map_.has(k)) return cls._member_map_.get(k); throw new AdderError('KeyError', pyRepr(k), undefined, [k]); };
+  // (EnumType.__getitem__: the class's own subscript, Color['RED'] — marked so, as a str-based
+  // enum's prototype has str's __getitem__ too)
+  cls.__getitem__ = Object.assign((k) => { if (cls._member_map_.has(k)) return cls._member_map_.get(k); throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }, { _pyMetaItem: true });
   cls.__reversed__ = () => members().reverse()[Symbol.iterator]();
   cls.__members__ = cls._member_map_;
   cls._pyNew = (...a) => {

@@ -11,7 +11,7 @@ import {
   pyIter, pyCollect, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv,
   pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem, pyInplace, pyDelItem, PySlice, seqSliceSet,
   pySorted, adderGetAttr, adderModules, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
-  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj,
+  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj, frozenModuleHooks,
 } from './builtins.js';
 
 // ── shared helpers ──
@@ -968,241 +968,30 @@ adderModules.io = {
 };
 
 // ── collections.abc ──
-// The abstract collection types: isinstance() recognises builtins and JS values structurally
-// (a dict is a Mapping, a tuple a Sequence, a generator an Iterator), and a class deriving from
-// one inherits its mixin methods, written from CPython's _collections_abc (Mapping gives get /
-// keys / items / values / __contains__ / __eq__ from __getitem__ / __iter__ / __len__, and so
-// on). Not here: Set's operator mixins, register().
-const _slIsMapLike = (x) => x instanceof Map || isPlainDict(x);
-const _slIsGen = (x) => x !== null && typeof x === 'object' && (x.__adderClass__ === 'generator' || Object.prototype.toString.call(x) === '[object Generator]' || Object.prototype.toString.call(x) === '[object AsyncGenerator]');
-const _slHasIter = (x) => x !== null && x !== undefined && (typeof x === 'string' || typeof x[Symbol.iterator] === 'function' || typeof x[Symbol.asyncIterator] === 'function' || (typeof x === 'object' && typeof x.__iter__ === 'function'));
-const _slIsSeq = (x) => typeof x === 'string' || Array.isArray(x) || x instanceof Uint8Array || (x !== null && typeof x === 'object' && x.constructor && x.constructor.name === 'AdderRange');
-const _slUnhashable = (x) => x !== null && typeof x === 'object' && ((Array.isArray(x) && !(x instanceof PyTuple)) || x instanceof Map || (x instanceof Set && !x._frozen) || isPlainDict(x) || x.__hash__ === null);
-function _slAbc(name, bases, check, mixins = {}) {
-  const cls = function () { throw new AdderError('TypeError', `Can't instantiate abstract class ${name}`); };
-  cls._pyName = name; cls._pyClass = true; cls.__name__ = name; cls.__module__ = 'collections.abc';
-  cls._pyBases = bases;
-  cls._pyMRO = [cls];
-  for (const b of bases) for (const c of b._pyMRO) if (!cls._pyMRO.includes(c)) cls._pyMRO.push(c);
-  cls.prototype = {};
-  cls._pyOwnMembers = new PySet();
-  for (const b of [...bases].reverse()) for (const k of b._pyOwnMembers) { cls.prototype[k] = b.prototype[k]; cls._pyOwnMembers.add(k); }
-  for (const [k, fn] of Object.entries(mixins)) { cls.prototype[k] = fn; cls._pyOwnMembers.add(k); }
-  // register(sub): a virtual subclass — of this ABC and of the ABCs it derives from (a class
-  // registered as a MutableMapping is a Mapping too)
-  cls._pyAbcRegistry = new Set();
-  cls.register = (sub) => { cls._pyAbcRegistry.add(sub); return sub; };
-  const registered = (t) => {
-    if (!t) return false;
-    const mro = t._pyMRO || [t];
-    for (const a of _slAllAbcs) if (a._pyMRO.includes(cls) && a._pyAbcRegistry.size) for (const r of a._pyAbcRegistry) if (mro.includes(r)) return true;
-    return false;
-  };
-  cls.__instancecheck__ = (x) => {
-    if (x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(cls)) return true;
-    if (registered(x && x.__adderType__)) return true;
-    return !!check(x);
-  };
-  // a builtin type (list, dict, str …) has no MRO here: it's judged by an empty value of it
-  cls.__subclasscheck__ = (sub) => {
-    if (!sub) return false;
-    if ((sub._pyMRO && sub._pyMRO.includes(cls)) || registered(sub)) return true;
-    const sample = !sub._pyMRO && _slSampleOf(sub._pyName);
-    return sample !== undefined && sample !== false ? !!check(sample) : false;
-  };
-  cls.__class_getitem__ = (k) => new GenericAlias(cls, k instanceof PyTuple ? [...k] : [k]);
-  _slAllAbcs.push(cls);
-  return cls;
-}
-const _slAllAbcs = [];
-function _slSampleOf(name) {
-  switch (name) {
-    case 'list': return []; case 'tuple': return mkTuple([]); case 'str': return ''; case 'bytes': return new Uint8Array(0);
-    case 'dict': return new PyDict(); case 'set': return new PySet();
-    case 'frozenset': { const s = new PySet(); s._frozen = true; return s; }
-    case 'int': return 0; case 'float': return 0.5; case 'bool': return false;
-    default: return undefined;
+// CPython's own _collections_abc.py (frozen, vendored verbatim), over adder's ABCMeta: loaded when
+// a program imports it — collections.abc is that same module, as in CPython. Then what CPython's C
+// types and collections/__init__.py register, adder's JS types register (a deque is a
+// MutableSequence), and typing's aliases point at the real classes (typing.Mapping[str, int]'s
+// origin). It isn't loaded by `import collections` / `import typing`: compiling it costs a first
+// import ~0.1 s, which a program that never asks for an ABC shouldn't pay.
+frozenModuleHooks._collections_abc = async (abc) => {
+  const c = adderModules.collections;
+  try { c.abc = abc; } catch { /* a read-only namespace */ }
+  const arr = adderModules.array;
+  const registrations = [
+    ['MutableSequence', [c.deque, c.UserList, arr && arr.array]],
+    ['MutableMapping', [c.OrderedDict, c.defaultdict, c.Counter, c.ChainMap, c.UserDict]],
+    ['Sequence', [c.UserString]],
+  ];
+  for (const [name, types] of registrations) {
+    for (const t of types) if (typeof t === 'function' && t._pyClass) await adderGetAttr(abc[name], 'register')(t);
   }
-}
-const _slIsKeyError = (e) => !!e && excMatches(e, 'KeyError');
-const _slIsIndexError = (e) => !!e && excMatches(e, 'IndexError');
-const _slIterable = _slAbc('Iterable', [], _slHasIter);
-const _slSized = _slAbc('Sized', [], (x) => x !== null && x !== undefined && (typeof x === 'string' || typeof x.length === 'number' || typeof x.size === 'number' || typeof x.__len__ === 'function'));
-const _slContainer = _slAbc('Container', [], (x) => _slIsSeq(x) || x instanceof Map || x instanceof Set || isPlainDict(x) || (x !== null && typeof x === 'object' && typeof x.__contains__ === 'function'));
-const _slHashable = _slAbc('Hashable', [], (x) => !_slUnhashable(x));
-const _slCallable = _slAbc('Callable', [], (x) => typeof x === 'function' || (x !== null && typeof x === 'object' && typeof x.__call__ === 'function'));
-const _slIterator = _slAbc('Iterator', [_slIterable], (x) => _slIsGen(x) || (x !== null && typeof x === 'object' && (typeof x.__next__ === 'function' || (typeof x.next === 'function' && typeof x[Symbol.iterator] === 'function' && !Array.isArray(x)))));
-const _slReversible = _slAbc('Reversible', [_slIterable], (x) => _slIsSeq(x) || x instanceof Map || isPlainDict(x) || (x !== null && typeof x === 'object' && typeof x.__reversed__ === 'function'));
-const _slGenerator = _slAbc('Generator', [_slIterator], _slIsGen);
-const _slCollection = _slAbc('Collection', [_slSized, _slIterable, _slContainer], (x) => _slIsSeq(x) || x instanceof Map || x instanceof Set || isPlainDict(x));
-// `in` and `==` call __contains__ / __eq__ without awaiting (in compiled code), so those two stay
-// synchronous while the class's own methods are: these helpers only turn into promises when a
-// step does (a tree-walked method)
-function _slSeqMap(arr, fn) {
-  const out = [];
-  for (let i = 0; i < arr.length; i++) {
-    const r = fn(arr[i], i);
-    if (_slIsThen(r)) {
-      return (async () => { out.push(await r); for (let j = i + 1; j < arr.length; j++) out.push(await fn(arr[j], j)); return out; })();
-    }
-    out.push(r);
+  const forms = { AbstractSet: 'Set' };
+  for (const k of ['Iterable', 'Iterator', 'Reversible', 'Generator', 'Sequence', 'MutableSequence', 'Mapping', 'MutableMapping',
+    'Collection', 'Container', 'Hashable', 'Sized', 'Callable', 'Awaitable', 'Coroutine', 'AsyncIterator', 'AsyncIterable',
+    'AsyncGenerator', 'MutableSet', 'MappingView', 'KeysView', 'ItemsView', 'ValuesView', 'ByteString']) forms[k] = k;
+  for (const [k, a] of Object.entries(forms)) {
+    const form = adderModules.typing[k];
+    if (form && abc[a]) form.__origin__ = abc[a];
   }
-  return out;
-}
-// the elements of a user collection: its __iter__, else the __getitem__ / __len__ protocol
-function _slElems(obj) {
-  // the builtins answer at once (a dict's keys, a list's items): `in` / `==` don't wait
-  if (obj instanceof Map && typeof obj.__iter__ !== 'function') return [...obj.keys()];
-  if (isPlainDict(obj)) return Object.keys(obj);
-  if ((Array.isArray(obj) || typeof obj === 'string') && typeof obj.__iter__ !== 'function') return [...obj];
-  if (obj instanceof Set && typeof obj.__iter__ !== 'function') return [...obj];
-  if (typeof obj.__iter__ === 'function') {
-    return _slThen(obj.__iter__(), (it) => (it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function' ? [...pyIter(it)] : pyCollect(it)));
-  }
-  if (typeof obj.__getitem__ === 'function' && typeof obj.__len__ === 'function') {
-    return _slThen(obj.__len__(), (n) => _slSeqMap(Array.from({ length: n }, (_, i) => i), (i) => obj.__getitem__(i)));
-  }
-  return pyCollect(obj);
-}
-const _slAnyEq = (xs, v) => _slThen(_slSeqMap(xs, (x) => (x === v ? true : pyEq(x, v))), (rs) => rs.some((r) => r === true));
-const _slSeqMixins = {
-  __contains__(v) { return _slThen(_slElems(this), (xs) => _slAnyEq(xs, v)); },
-  async index(v, start = 0, stop = null) {
-    const n = await this.__len__();
-    if (start < 0) start = Math.max(n + start, 0);
-    if (stop !== null && stop < 0) stop += n;
-    for (let i = start; stop === null || i < stop; i++) {
-      let x;
-      try { x = await this.__getitem__(i); } catch (e) { if (_slIsIndexError(e)) break; throw e; }
-      if (x === v || await pyEq(x, v)) return i;
-    }
-    throw new AdderError('ValueError', 'sequence.index(x): x not in sequence');
-  },
-  async count(v) { let n = 0; for (const x of await pyCollect(this)) if (x === v || await pyEq(x, v)) n++; return n; },
-  async __reversed__() { const xs = await pyCollect(this); return xs.reverse()[Symbol.iterator](); },
 };
-const _slSequence = _slAbc('Sequence', [_slReversible, _slCollection], _slIsSeq, _slSeqMixins);
-const _slMutableSequence = _slAbc('MutableSequence', [_slSequence], (x) => Array.isArray(x) && !(x instanceof PyTuple), {
-  async append(v) { return this.insert(await this.__len__(), v); },
-  async extend(vs) { for (const v of await pyCollect(vs)) await this.append(v); return null; },
-  async pop(i = -1) { const v = await this.__getitem__(i); await this.__delitem__(i); return v; },
-  async remove(v) { await this.__delitem__(await this.index(v)); return null; },
-  async reverse() { const n = await this.__len__(); for (let i = 0; i < Math.floor(n / 2); i++) { const a = await this.__getitem__(i), b = await this.__getitem__(n - i - 1); await this.__setitem__(i, b); await this.__setitem__(n - i - 1, a); } return null; },
-  async clear() { for (;;) { try { await this.pop(); } catch (e) { if (_slIsIndexError(e)) return null; throw e; } } },
-  async __iadd__(vs) { await this.extend(vs); return this; },
-});
-const _slMapMixins = {
-  async get(k, d = null) { try { return await this.__getitem__(k); } catch (e) { if (_slIsKeyError(e)) return d; throw e; } },
-  __contains__(k) {
-    let r;
-    try { r = this.__getitem__(k); } catch (e) { if (_slIsKeyError(e)) return false; throw e; }
-    return _slIsThen(r) ? r.then(() => true, (e) => { if (_slIsKeyError(e)) return false; throw e; }) : true;
-  },
-  async keys() { return await pyCollect(this); },
-  async items() { const out = []; for (const k of await pyCollect(this)) out.push(mkTuple([k, await this.__getitem__(k)])); return out; },
-  async values() { const out = []; for (const k of await pyCollect(this)) out.push(await this.__getitem__(k)); return out; },
-  __eq__(o) {
-    if (!(o instanceof Map || isPlainDict(o) || (o && o.__adderType__ && _slMapping.__instancecheck__(o)))) return false;
-    const pairs = (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slThen(m.__getitem__(k), (v) => [k, v])));
-    const other = o instanceof Map ? o : isPlainDict(o) ? new PyDict(Object.entries(o)) : _slThen(pairs(o), (ps) => new PyDict(ps));
-    return _slThen(pairs(this), (ps) => _slThen(other, (b) => pyEq(new PyDict(ps), b)));
-  },
-};
-const _slMapping = _slAbc('Mapping', [_slCollection], _slIsMapLike, _slMapMixins);
-const _slMutableMapping = _slAbc('MutableMapping', [_slMapping], _slIsMapLike, {
-  async pop(k, ...d) {
-    let v;
-    try { v = await this.__getitem__(k); } catch (e) { if (_slIsKeyError(e) && d.length) return d[0]; throw e; }
-    await this.__delitem__(k);
-    return v;
-  },
-  async popitem() {
-    const ks = await pyCollect(this);
-    if (!ks.length) throw new AdderError('KeyError', '', undefined, []);
-    const k = ks[0], v = await this.__getitem__(k);
-    await this.__delitem__(k);
-    return mkTuple([k, v]);
-  },
-  async clear() { for (const k of await pyCollect(this)) await this.__delitem__(k); return null; },
-  async update(other = null, ...rest) {
-    const kw = _slKw(rest);
-    if (other !== null && other !== undefined && !other._kw) {
-      if (other instanceof Map) for (const [k, v] of other) await this.__setitem__(k, v);
-      else if (isPlainDict(other)) for (const k of Object.keys(other)) await this.__setitem__(k, other[k]);
-      else if (typeof other.keys === 'function') for (const k of await pyCollect(await other.keys())) await this.__setitem__(k, await adderGetAttr(other, '__getitem__')(k));
-      else for (const pair of await pyCollect(other)) { const [k, v] = pair; await this.__setitem__(k, v); }
-    } else if (other && other._kw) for (const k of Object.keys(other)) if (k !== '_kw') await this.__setitem__(k, other[k]);
-    if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') await this.__setitem__(k, kw[k]);
-    return null;
-  },
-  async setdefault(k, d = null) { try { return await this.__getitem__(k); } catch (e) { if (!_slIsKeyError(e)) throw e; await this.__setitem__(k, d); return d; } },
-});
-const _slSetAbc = _slAbc('Set', [_slCollection], (x) => x instanceof Set);
-const _slMutableSet = _slAbc('MutableSet', [_slSetAbc], (x) => x instanceof Set && !x._frozen);
-const _slAwaitable = _slAbc('Awaitable', [], (x) => x !== null && x !== undefined && typeof x.then === 'function');
-// the async protocols, by Python's methods (__aiter__ / __anext__, an async generator's asend /
-// athrow / aclose) — or a JS async iterable, which `async for` takes too
-const _slHasAttr = (x, n) => { if (x === null || x === undefined) return false; try { return typeof adderGetAttr(x, n) === 'function'; } catch { return false; } };
-const _slAsyncIterable = _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && (typeof x[Symbol.asyncIterator] === 'function' || _slHasAttr(x, '__aiter__')));
-const _slAsyncIterator = _slAbc('AsyncIterator', [_slAsyncIterable], (x) => x !== null && x !== undefined &&
-  ((typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function') || (_slHasAttr(x, '__aiter__') && _slHasAttr(x, '__anext__'))));
-const _slAsyncGenerator = _slAbc('AsyncGenerator', [_slAsyncIterator], (x) => x !== null && x !== undefined &&
-  (x._pyAsyncGen === true || ['__aiter__', '__anext__', 'asend', 'athrow', 'aclose'].every((n) => _slHasAttr(x, n))));
-// MappingView and its three: concrete, as CPython's — View(mapping) wraps the mapping (a subclass
-// in Python inherits __init__), and len / iter / in / repr read through it; KeysView and ItemsView
-// are Sets (==, <=, &, |, -, ^ by contents)
-const _slViewItems = {
-  MappingView: (m) => _slElems(m),
-  KeysView: (m) => _slElems(m),
-  ValuesView: (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slGetItem(m, k))),
-  ItemsView: (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slThen(_slGetItem(m, k), (v) => mkTuple([k, v])))),
-};
-const _slGetItem = (m, k) => (m instanceof Map ? m.get(k) : isPlainDict(m) ? m[k] : m.__getitem__(k));
-function _slView(name, bases = [_slSized, _slIterable]) {
-  const items = (self) => _slViewItems[name](self._mapping);
-  const cls = _slAbc(name, bases, (x) => !!x && x.__adderClass__ === name, {
-    __init__(mapping) { this._mapping = mapping; return null; },
-    __len__() { const m = this._mapping; return m instanceof Map ? m.size : isPlainDict(m) ? Object.keys(m).length : m.__len__(); },
-    __iter__() { return _slThen(items(this), (xs) => xs[Symbol.iterator]()); },
-    __contains__(x) {
-      if (name === 'KeysView') { const m = this._mapping; return m instanceof Map ? m.has(x) : isPlainDict(m) ? typeof x === 'string' && Object.hasOwn(m, x) : m.__contains__(x); }
-      return _slThen(items(this), (xs) => xs.some((v) => pyEq(v, x) === true));
-    },
-    __repr__() { return _slThen(pyReprMaybe(this._mapping), (r) => `${this.__adderClass__}(${r})`); },
-    ...(name === 'KeysView' || name === 'ItemsView' ? {
-      __eq__(o) { return _slThen(items(this), (xs) => _slThen(o && o.__adderClass__ && typeof o.__iter__ === 'function' ? _slThen(o.__iter__(), (it) => [...it]) : [...pyIter(o)], (ys) => pyEq(new PySet(xs), new PySet(ys)))); },
-    } : {}),
-  });
-  // View(mapping) constructs, as a class call does (a Python subclass goes through typeCall)
-  const made = function (mapping) {
-    const v = Object.create(cls.prototype);
-    v.__adderClass__ = name; v.__adderType__ = made;
-    v._mapping = mapping;
-    return v;
-  };
-  Object.assign(made, cls);
-  for (const k of Object.getOwnPropertyNames(cls)) if (!['length', 'name', 'prototype', 'arguments', 'caller'].includes(k)) made[k] = cls[k];
-  made.prototype = cls.prototype;
-  made._pyMRO = [made, ...cls._pyMRO.slice(1)];
-  const i = _slAllAbcs.indexOf(cls); if (i >= 0) _slAllAbcs[i] = made;
-  made.__instancecheck__ = (x) => !!x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(made);
-  made.__subclasscheck__ = (sub) => !!sub && !!sub._pyMRO && sub._pyMRO.includes(made);
-  return made;
-}
-const _slMappingView = _slView('MappingView', [_slSized]);
-const _slAbcModule = {
-  Iterable: _slIterable, Iterator: _slIterator, Reversible: _slReversible, Generator: _slGenerator, Sized: _slSized,
-  Container: _slContainer, Collection: _slCollection, Hashable: _slHashable, Callable: _slCallable,
-  Sequence: _slSequence, MutableSequence: _slMutableSequence, Mapping: _slMapping, MutableMapping: _slMutableMapping,
-  Set: _slSetAbc, MutableSet: _slMutableSet, Awaitable: _slAwaitable, Coroutine: _slAwaitable,
-  AsyncIterable: _slAsyncIterable, AsyncIterator: _slAsyncIterator, AsyncGenerator: _slAsyncGenerator,
-  ByteString: _slAbc('ByteString', [_slSequence], (x) => x instanceof Uint8Array), Buffer: _slAbc('Buffer', [], (x) => ArrayBuffer.isView(x)),
-  MappingView: _slMappingView, KeysView: _slView('KeysView', [_slMappingView, _slSetAbc]), ItemsView: _slView('ItemsView', [_slMappingView, _slSetAbc]), ValuesView: _slView('ValuesView', [_slMappingView, _slCollection]),
-};
-adderModules['collections.abc'] = _slAbcModule;
-adderModules.collections.abc = _slAbcModule;
-// typing's aliases of the abstract types check like them
-for (const k of ['Iterable', 'Iterator', 'Sequence', 'MutableSequence', 'Mapping', 'MutableMapping', 'Collection', 'Container', 'Hashable', 'Sized', 'Callable', 'Generator', 'Awaitable', 'Coroutine', 'AsyncIterator', 'AsyncIterable']) {
-  const form = adderModules.typing[k];
-  if (form && _slAbcModule[k]) form.__origin__ = _slAbcModule[k];
-}

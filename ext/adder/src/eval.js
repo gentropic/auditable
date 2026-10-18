@@ -23,7 +23,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
+  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenModuleHooks, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -726,7 +726,7 @@ async function _evalSubscript(node, scope) {
       raw.push(await _evalSliceElt(elt, scope));
     }
     const key = mkTuple(raw);
-    if (obj && typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
+    if (obj && typeof obj.__getitem__ === 'function' && !(typeof obj === 'function' && obj._pyClass)) return obj.__getitem__(key);
     if (obj instanceof Map || isPlainDict(obj)) return _withLine(() => pyGetItem(obj, key), node.line);
     // Generic 2D-ndarray-shape tuple subscript — accepts either a
     // wrapper `{data: Float64Array, shape}` or a bare Float64Array
@@ -2042,11 +2042,18 @@ async function _readOrNull(vfs, p) { try { return await vfs.readFile(p); } catch
 // the parent package is imported first (running its __init__), then the submodule is looked
 // up in the parent's __path__, and bound as an attribute of the parent. Returns null when
 // nothing provides the name.
+const _MODULE_ALIASES = { 'collections.abc': '_collections_abc' };
 export async function findModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
   // None in sys.modules blocks the import (test.support's import_fresh_module, "no C accelerator")
   if (cache[name] === null && Object.hasOwn(cache, name)) throw new AdderError('ImportError', `import of ${name} halted; None in sys.modules`);
+  // collections.abc IS _collections_abc (collections/__init__.py puts it in sys.modules so)
+  if (Object.hasOwn(_MODULE_ALIASES, name)) {
+    const mod = await findModule(_MODULE_ALIASES[name]);
+    if (mod) cache[name] = mod;
+    return mod;
+  }
   const known = _resolveModule(name);
   if (known) {
     // a stdlib module, once imported, is in sys.modules as CPython's are (six's
@@ -2063,6 +2070,7 @@ export async function findModule(name) {
     if (cache[name]) return cache[name];
     const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [] } : {});
     if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
+    if (Object.hasOwn(frozenModuleHooks, name)) await frozenModuleHooks[name](mod);
     return mod;
   }
   const dot = name.lastIndexOf('.');

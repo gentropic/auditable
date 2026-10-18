@@ -15,7 +15,7 @@ import {
   pyTypeName, pyIter, pyCollect, pyTypeObj, pyObjectObj, typeOf, _typeObjects, asCallable, excStack, makeFunctionFromCode,
   excTypeOf, excValue, excToThrowable, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
   classStatement, GenericAlias, setOsExtrasHook, pyBool, NotImplemented, pyGetItem, _pyHash, _lazyIter, _pyEach,
-  registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe,
+  registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe, pyIsSubclass, pySubclasses, syncOf, pyGenericAliasType,
 } from './builtins.js';
 import { _adderParseExpr, adderParse } from './parse.js';
 
@@ -159,7 +159,7 @@ adderModules.types = _syModule('types', {
   GeneratorType: _syTypeNamed('generator'), CoroutineType: _syTypeNamed('coroutine'), AsyncGeneratorType: _syTypeNamed('async_generator'),
   CodeType: _syCodeType(), FrameType: _syTypeNamed('frame'), TracebackType: _syTypeNamed('traceback'), CellType: _syTypeNamed('cell'),
   NoneType: _syTypeNamed('NoneType'), EllipsisType: _syTypeNamed('ellipsis'), NotImplementedType: _syTypeNamed('NotImplementedType'),
-  GenericAlias, UnionType: _syTypeNamed('types.UnionType'),
+  GenericAlias: pyGenericAliasType, UnionType: _syTypeNamed('types.UnionType'),
   DynamicClassAttribute: (f) => ({ __property__: true, fget: f, fset: null }),
   coroutine: (f) => f,
   // new_class(name, bases=(), kwds=None, exec_body=None): class creation as the statement does it
@@ -197,32 +197,121 @@ function _syComputeAbstract(cls) {
   }
   return abstract;
 }
+// ABCMeta's subclass test is CPython's (_py_abc / _abc.c): a positive and a negative cache per
+// class (the negative one dropped whenever anything is registered anywhere), then the class's
+// __subclasshook__, its MRO, its registry (virtual subclasses) and — recursively — its own
+// subclasses. collections.abc is built on exactly this: list is a Sequence because it's
+// registered on MutableSequence, a subclass of Sequence. A __subclasshook__ is Python and may be
+// tree-walked, so each step can be a promise; compiled hooks are called through their sync twins.
+let _syAbcInvalidation = 0;
+const _syThen = (v, f) => (_syIsThen(v) ? v.then(f) : f(v));
+// the first item for which test(item) is true (a promise when a test is)
+function _syAnyMaybe(items, test, i = 0) {
+  for (; i < items.length; i++) {
+    const r = test(items[i]);
+    if (_syIsThen(r)) return r.then((v) => (v === true || pyBool(v) ? true : _syAnyMaybe(items, test, i + 1)));
+    if (r === true) return true;
+  }
+  return false;
+}
+function _syAbcState(cls) {
+  if (!Object.hasOwn(cls, '_pyAbcCache')) {
+    for (const [k, v] of [['_pyAbcCache', new WeakSet()], ['_pyAbcNeg', new WeakSet()], ['_pyAbcNegVer', _syAbcInvalidation]]) {
+      Object.defineProperty(cls, k, { value: v, writable: true, configurable: true });
+    }
+  }
+  if (!Object.hasOwn(cls, '_pyAbcRegistry')) Object.defineProperty(cls, '_pyAbcRegistry', { value: new Set(), writable: true, configurable: true });
+  return cls;
+}
+const _syIsClass = (c) => typeof c === 'function' && c._pyClass === true;
+const _syIssub = (c, t) => pyIsSubclass(c, t);
+function _syAbcSubclassCheck(cls, sub) {
+  if (!_syIsClass(sub)) throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
+  const st = _syAbcState(cls);
+  if (st._pyAbcCache.has(sub)) return true;
+  if (st._pyAbcNegVer < _syAbcInvalidation) { st._pyAbcNeg = new WeakSet(); st._pyAbcNegVer = _syAbcInvalidation; }
+  else if (st._pyAbcNeg.has(sub)) return false;
+  const yes = () => { st._pyAbcCache.add(sub); return true; };
+  const hook = adderGetAttr(cls, '__subclasshook__');
+  return _syThen(syncOf(hook)(sub), (ok) => {
+    if (ok !== NotImplemented) {
+      if (typeof ok !== 'boolean') throw new AdderError('AssertionError', '__subclasshook__ must return either False, True, or NotImplemented');
+      if (ok) st._pyAbcCache.add(sub); else st._pyAbcNeg.add(sub);
+      return ok;
+    }
+    // a real base: its MRO says so (a builtin type's MRO is itself and object)
+    if (sub._pyMRO && sub._pyMRO.includes(cls)) return yes();
+    return _syThen(_syAnyMaybe([...st._pyAbcRegistry], (r) => _syIssub(sub, r)), (inReg) => {
+      if (inReg === true) return yes();
+      return _syThen(_syAnyMaybe(pySubclasses(cls), (s) => _syIssub(sub, s)), (inSubs) => {
+        if (inSubs === true) return yes();
+        st._pyAbcNeg.add(sub);
+        return false;
+      });
+    });
+  });
+}
+function _syAbcInstanceCheck(cls, inst) {
+  const subtype = typeOf(inst);
+  // __class__ may differ from type() (a proxy saying what it stands for): both are asked
+  let subclass = subtype;
+  if (inst !== null && typeof inst === 'object' && inst.__adderType__) {
+    try { const c = adderGetAttr(inst, '__class__'); if (_syIsClass(c)) subclass = c; } catch { /* no __class__ */ }
+  }
+  const st = _syAbcState(cls);
+  if (st._pyAbcCache.has(subclass)) return true;
+  if (subtype === subclass) {
+    if (st._pyAbcNegVer === _syAbcInvalidation && st._pyAbcNeg.has(subclass)) return false;
+    return _syAbcSubclassCheck(cls, subclass);
+  }
+  return _syAnyMaybe([subclass, subtype], (c) => _syAbcSubclassCheck(cls, c));
+}
+function _syAbcRegister(cls, sub) {
+  if (!_syIsClass(sub)) throw new AdderError('TypeError', 'Can only register classes');
+  return _syThen(_syIssub(sub, cls), (already) => {
+    if (already === true) return sub;   // already a subclass
+    return _syThen(_syIssub(cls, sub), (cycle) => {
+      if (cycle === true) throw new AdderError('RuntimeError', 'Refusing to create an inheritance cycle');
+      _syAbcState(cls)._pyAbcRegistry.add(sub);
+      _syAbcInvalidation++;   // invalidate the negative caches
+      return sub;
+    });
+  });
+}
+function _syAbcRefuseAbstract(cls) {
+  const abs = cls.__abstractmethods__;
+  if (abs && abs.size) {
+    const names = [...abs].sort();
+    throw new AdderError('TypeError', `Can't instantiate abstract class ${cls._pyName} without an implementation for abstract method${names.length > 1 ? 's' : ''} ${names.map((n) => `'${n}'`).join(', ')}`);
+  }
+}
 const _syABCMeta = _syClass('ABCMeta', [pyTypeObj], {
   __init__(cls, name, bases, ns) {
     cls._pyAbcNamespace = ns instanceof Map ? Object.fromEntries(ns) : (ns || {});
     cls.__abstractmethods__ = new PySet(_syComputeAbstract(cls));
-    cls._pyAbcRegistry = new Set();
+    _syAbcState(cls);
     return null;
   },
-  __call__(cls, ...args) {
-    const abs = cls.__abstractmethods__;
-    if (abs && abs.size) {
-      const names = [...abs].sort();
-      throw new AdderError('TypeError', `Can't instantiate abstract class ${cls._pyName} without an implementation for abstract method${names.length > 1 ? 's' : ''} ${names.map((n) => `'${n}'`).join(', ')}`);
-    }
-    return pyTypeObj.prototype.__call__.call(cls, ...args);
+  __call__(cls, ...args) { _syAbcRefuseAbstract(cls); return pyTypeObj.prototype.__call__.call(cls, ...args); },
+  register(cls, sub) { return _syAbcRegister(cls, sub); },
+  __instancecheck__(cls, obj) { return _syAbcInstanceCheck(cls, obj); },
+  __subclasscheck__(cls, sub) { return _syAbcSubclassCheck(cls, sub); },
+  _dump_registry(cls, file = null) {
+    const st = _syAbcState(cls);
+    const w = (s) => (file ? adderGetAttr(file, 'write')(s + '\n') : stdoutWrite(s + '\n'));
+    w(`Class: ${cls.__module__}.${cls.__qualname__ || cls._pyName}`);
+    w(`Inv. counter: ${_syAbcInvalidation}`);
+    w(`_abc_registry: ${pyRepr(new PySet(st._pyAbcRegistry))}`);
+    return null;
   },
-  register(cls, sub) { cls._pyAbcRegistry.add(sub); return sub; },
-  __instancecheck__(cls, obj) {
-    const t = typeOf(obj);
-    return [...cls._pyAbcRegistry].some((r) => r === t || ((t && t._pyMRO) || []).includes(r)) ||
-      (typeof cls.__subclasshook__ === 'function' && t && cls.__subclasshook__(t) === true);
-  },
-  __subclasscheck__(cls, sub) {
-    if (sub === cls || ((sub && sub._pyMRO) || []).includes(cls)) return true;
-    return [...cls._pyAbcRegistry].some((r) => r === sub || ((sub && sub._pyMRO) || []).includes(r));
-  },
+  _abc_registry_clear(cls) { _syAbcState(cls)._pyAbcRegistry.clear(); return null; },
+  _abc_caches_clear(cls) { const st = _syAbcState(cls); st._pyAbcCache = new WeakSet(); st._pyAbcNeg = new WeakSet(); return null; },
 }, 'abc');
+// constructing from code that can't wait (Set._from_iterable inside an operator): type's sync path
+Object.defineProperty(_syABCMeta.prototype.__call__, '_pySync', {
+  value: function (...args) { _syAbcRefuseAbstract(this); return syncOf(pyTypeObj.prototype.__call__).call(this, ...args); },
+  configurable: true, writable: true,
+});
 const _syAbstract = (f) => { if (f && typeof f === 'object' && f.fn) f.fn.__isabstractmethod__ = true; else if (f) f.__isabstractmethod__ = true; return f; };
 adderModules.abc = _syModule('abc', {
   ABCMeta: _syABCMeta,
@@ -230,7 +319,7 @@ adderModules.abc = _syModule('abc', {
   abstractclassmethod: (f) => ({ __classmethod__: true, fn: _syAbstract(f) }),
   abstractstaticmethod: (f) => ({ __staticmethod__: true, fn: _syAbstract(f) }),
   abstractproperty: (f) => ({ __property__: true, fget: _syAbstract(f), fset: null }),
-  get_cache_token: () => 0,
+  get_cache_token: () => _syAbcInvalidation,
   update_abstractmethods: (cls) => { cls.__abstractmethods__ = new PySet(_syComputeAbstract(cls)); return cls; },
 });
 // ABC: a class whose metaclass is ABCMeta (what `class ABC(metaclass=ABCMeta)` makes)
@@ -1820,6 +1909,7 @@ const _syTruthy = (v) => pyBool(v);
   };
   const viaIter = (self, f) => then(pyCollectMaybe(self), f);   // the keys as the instance's own __iter__ gives them
   c.ChainMap = _syClass('ChainMap', [], {
+    __hash__: null,   // (a mutable mapping: unhashable, as CPython's — Hashable says no)
     __init__(self, ...maps) { self.maps = maps.length ? maps : [new PyDict()]; return null; },
     __missing__(self, k) { throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     __getitem__(self, k) {
@@ -1875,6 +1965,7 @@ const _syTruthy = (v) => pyBool(v);
   Object.defineProperty(c.ChainMap.prototype, 'parents', { get() { return typeOf(this)(...this.maps.slice(1)); }, configurable: true });
   const d = (self) => self.data;
   c.UserDict = _syClass('UserDict', [], {
+    __hash__: null,
     __init__(self, ...a) { const kw = _syKw(a); const init = a.length ? a[0] : null; self.data = new PyDict(); if (init !== null && init !== undefined) adderGetAttr(self, 'update')(init); if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') adderGetAttr(self, '__setitem__')(k, v); return null; },
     __len__(self) { return d(self).size; },
     __getitem__(self, k) { if (d(self).has(k)) return d(self).get(k); const m = self.__missing__; if (typeof m === 'function') return m.call(self, k); throw new AdderError('KeyError', pyRepr(k)); },
@@ -1902,6 +1993,7 @@ const _syTruthy = (v) => pyBool(v);
     copy(self) { const n = typeOf(self)(); n.data = new PyDict(d(self)); return n; },
   }, 'collections');
   c.UserList = _syClass('UserList', [], {
+    __hash__: null,
     __init__(self, init = null) { self.data = init === null || init === undefined ? [] : [...pyIter(init && init.data ? init.data : init)]; return null; },
     __len__(self) { return self.data.length; }, __getitem__(self, i) { return pyGetItem(self.data, i); },
     __setitem__(self, i, v) { self.data[i < 0 ? self.data.length + i : i] = v; return null; },

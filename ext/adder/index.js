@@ -2855,6 +2855,9 @@ const _FN_SLOTS = new Set(['__defaults__', '__kwdefaults__', '__name__', '__qual
 // stdlib modules written in Python (name → { pkg, source }; filled by stdlib-py.js, generated from
 // ext/adder/pylib/). The import system instantiates them like a .py file on sys.path.
 const frozenPyModules = {};
+// what runs once a frozen module has loaded (name → fn(module), may be async): the JS types
+// that join what it defines (collections.abc's registrations)
+const frozenModuleHooks = {};
 
 class AttrDict extends PyDict {
   // (`hide`: more names that live on the object but aren't in its __dict__ — a function's
@@ -2884,6 +2887,78 @@ class AttrDict extends PyDict {
 }
 // Cls.__dict__: the class's own namespace (a read-only snapshot, as CPython's mappingproxy is
 // read-only): its methods (the defs), class variables, and its own __module__ / __doc__
+// a builtin type's __dict__ names, as CPython 3.13 lists them (its dunders and the generator /
+// coroutine protocol methods; a trailing ! is a None entry — list.__hash__). What
+// collections.abc's _check_methods walks the MRO looking for. Generated from CPython.
+const _BUILTIN_TYPE_DICT = {
+  object: '__repr__ __hash__ __str__ __getattribute__ __setattr__ __delattr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __init__ __reduce_ex__ __reduce__ __getstate__ __subclasshook__ __init_subclass__ __format__ __sizeof__ __dir__ __class__',
+  type: '__repr__ __call__ __getattribute__ __setattr__ __delattr__ __init__ __or__ __ror__ __subclasses__ __prepare__ __instancecheck__ __subclasscheck__ __dir__ __sizeof__ __basicsize__ __itemsize__ __flags__ __weakrefoffset__ __base__ __dictoffset__ __bases__ __mro__ __abstractmethods__ __dict__ __annotations__ __type_params__',
+  int: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __add__ __radd__ __sub__ __rsub__ __mul__ __rmul__ __mod__ __rmod__ __divmod__ __rdivmod__ __pow__ __rpow__ __neg__ __pos__ __abs__ __bool__ __invert__ __lshift__ __rlshift__ __rshift__ __rrshift__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __int__ __float__ __floordiv__ __rfloordiv__ __truediv__ __rtruediv__ __index__ __trunc__ __floor__ __ceil__ __round__ __getnewargs__ __format__ __sizeof__',
+  float: '__repr__ __hash__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __add__ __radd__ __sub__ __rsub__ __mul__ __rmul__ __mod__ __rmod__ __divmod__ __rdivmod__ __pow__ __rpow__ __neg__ __pos__ __abs__ __bool__ __int__ __float__ __floordiv__ __rfloordiv__ __truediv__ __rtruediv__ __trunc__ __floor__ __ceil__ __round__ __getnewargs__ __getformat__ __format__',
+  complex: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __add__ __radd__ __sub__ __rsub__ __mul__ __rmul__ __pow__ __rpow__ __neg__ __pos__ __abs__ __bool__ __truediv__ __rtruediv__ __complex__ __getnewargs__ __format__',
+  bool: '__repr__ __invert__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__',
+  str: '__repr__ __hash__ __str__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __mod__ __rmod__ __len__ __getitem__ __add__ __mul__ __rmul__ __contains__ __format__ __sizeof__ __getnewargs__',
+  bytes: '__repr__ __hash__ __str__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __buffer__ __mod__ __rmod__ __len__ __getitem__ __add__ __mul__ __rmul__ __contains__ __getnewargs__ __bytes__',
+  bytearray: '__repr__ __str__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __buffer__ __release_buffer__ __mod__ __rmod__ __len__ __getitem__ __setitem__ __delitem__ __add__ __mul__ __rmul__ __contains__ __iadd__ __imul__ __alloc__ __reduce__ __reduce_ex__ __sizeof__ __hash__!',
+  list: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __len__ __getitem__ __setitem__ __delitem__ __add__ __mul__ __rmul__ __contains__ __iadd__ __imul__ __reversed__ __sizeof__ __class_getitem__',
+  tuple: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __len__ __getitem__ __add__ __mul__ __rmul__ __contains__ __getnewargs__ __class_getitem__',
+  dict: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __or__ __ror__ __ior__ __len__ __getitem__ __setitem__ __delitem__ __contains__ __sizeof__ __reversed__ __class_getitem__',
+  set: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __isub__ __iand__ __ixor__ __ior__ __len__ __contains__ __reduce__ __sizeof__ __class_getitem__',
+  frozenset: '__repr__ __hash__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __len__ __contains__ __reduce__ __sizeof__ __class_getitem__',
+  range: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __bool__ __len__ __getitem__ __contains__ __reversed__ __reduce__',
+  slice: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __reduce__',
+  memoryview: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __buffer__ __release_buffer__ __len__ __getitem__ __setitem__ __delitem__ __enter__ __exit__',
+  NoneType: '__repr__ __hash__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __bool__',
+  function: '__repr__ __call__ __get__ __closure__ __globals__ __builtins__ __code__ __defaults__ __kwdefaults__ __annotations__ __dict__ __type_params__',
+  generator: '__repr__ __iter__ __next__ __del__ send throw close __sizeof__ __class_getitem__',
+  coroutine: '__repr__ __del__ __await__ send throw close __sizeof__ __class_getitem__',
+  async_generator: '__repr__ __del__ __aiter__ __anext__ asend athrow aclose __sizeof__ __class_getitem__',
+  builtin_function_or_method: '__repr__ __hash__ __call__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __reduce__ __self__',
+  method: '__repr__ __hash__ __call__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __get__ __reduce__ __func__ __self__',
+  mappingproxy: '__repr__ __hash__ __str__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __or__ __ror__ __ior__ __len__ __getitem__ __contains__ __class_getitem__ __reversed__',
+  dict_keys: '__repr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __len__ __contains__ __reversed__ __hash__!',
+  dict_values: '__repr__ __iter__ __len__ __reversed__',
+  dict_items: '__repr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __len__ __contains__ __reversed__ __hash__!',
+  list_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  tuple_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  range_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  set_iterator: '__iter__ __next__ __length_hint__ __reduce__',
+  str_ascii_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  str_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  bytes_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  bytearray_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  dict_keyiterator: '__iter__ __next__ __length_hint__ __reduce__',
+  dict_valueiterator: '__iter__ __next__ __length_hint__ __reduce__',
+  dict_itemiterator: '__iter__ __next__ __length_hint__ __reduce__',
+  list_reverseiterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  map: '__getattribute__ __iter__ __next__ __reduce__',
+  filter: '__getattribute__ __iter__ __next__ __reduce__',
+  zip: '__getattribute__ __iter__ __next__ __reduce__ __setstate__',
+  enumerate: '__getattribute__ __iter__ __next__ __reduce__ __class_getitem__',
+  reversed: '__getattribute__ __iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  property: '__getattribute__ __get__ __set__ __delete__ __init__ __set_name__ __isabstractmethod__',
+  staticmethod: '__repr__ __call__ __get__ __init__ __func__ __wrapped__ __isabstractmethod__ __dict__',
+  classmethod: '__repr__ __get__ __init__ __func__ __wrapped__ __isabstractmethod__ __dict__',
+  // (and the JS-implemented types of other modules, over their whole CPython MRO)
+  deque: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __len__ __add__ __mul__ __rmul__ __getitem__ __setitem__ __delitem__ __contains__ __iadd__ __imul__ __copy__ __reduce__ __reversed__ __sizeof__ __class_getitem__',
+  OrderedDict: '__repr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __or__ __ror__ __ior__ __setitem__ __delitem__ __sizeof__ __reduce__ __reversed__ __hash__! __getattribute__ __len__ __getitem__ __contains__ __class_getitem__',
+  defaultdict: '__repr__ __getattribute__ __init__ __or__ __ror__ __missing__ __copy__ __reduce__ __class_getitem__ __hash__! __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __ior__ __len__ __getitem__ __setitem__ __delitem__ __contains__ __sizeof__ __reversed__',
+  Counter: '__firstlineno__ __init__ __missing__ __reduce__ __delitem__ __repr__ __eq__ __ne__ __le__ __lt__ __ge__ __gt__ __add__ __sub__ __or__ __and__ __pos__ __neg__ __iadd__ __isub__ __ior__ __iand__ __static_attributes__ __hash__! __getattribute__ __iter__ __ror__ __len__ __getitem__ __setitem__ __contains__ __sizeof__ __reversed__ __class_getitem__',
+  array: '__repr__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __buffer__ __release_buffer__ __len__ __getitem__ __setitem__ __delitem__ __add__ __mul__ __rmul__ __contains__ __iadd__ __imul__ __copy__ __deepcopy__ __reduce_ex__ __sizeof__ __class_getitem__ __hash__!',
+};
+function _builtinTypeDict(cls, d) {
+  const names = Object.hasOwn(_BUILTIN_TYPE_DICT, cls._pyName) && _typeObjects[cls._pyName] === cls ? _BUILTIN_TYPE_DICT[cls._pyName] : cls._pyInstanceDunders || null;
+  if (!names) return;
+  for (const n of names.split(' ')) {
+    const none = n.endsWith('!'), k = none ? n.slice(0, -1) : n;
+    if (d.has(k)) continue;
+    if (none) { d.set(k, null); continue; }
+    // the type's own method, unbound: called with the instance first
+    const f = function (self, ...a) { return adderGetAttr(self, k)(...a); };
+    f._pyName = k; f.__qualname__ = `${cls._pyName}.${k}`;
+    d.set(k, f);
+  }
+}
 function _classDict(cls) {
   const d = new PyDict();
   if (cls.__module__ !== undefined) d.set('__module__', cls.__module__);
@@ -2902,6 +2977,7 @@ function _classDict(cls) {
   // the class's own __new__ (implicitly static): a staticmethod in its __dict__, as CPython keeps
   // it — so type(name, bases, dict(cls.__dict__)) (dataclasses' slots=True) rebuilds it with it
   if (Object.hasOwn(cls, '_pyNewFn') && typeof cls._pyNewFn === 'function') d.set('__new__', { __staticmethod__: true, fn: cls._pyNewFn, __adderClass__: 'staticmethod', __func__: cls._pyNewFn });
+  _builtinTypeDict(cls, d);
   d.set('__doc__', cls.__doc__ ?? null);
   const ro = () => { throw new AdderError('TypeError', "'mappingproxy' object does not support item assignment"); };
   d.set = ro; d.delete = ro; d.clear = ro;
@@ -3478,6 +3554,12 @@ function _typedRepr(v) {
 
 // <generator object g at 0x...>: a generator / iterator object as CPython shows it (the address
 // is a per-object id, as CPython's is its memory address)
+// a class as CPython names it in a repr: module.qualname, the module left out for builtins
+function pyClassFullName(c) {
+  const name = (typeof c.__qualname__ === 'string' && c.__qualname__) || c._pyName || c.name;
+  const mod = Object.hasOwn(c, '__module__') ? c.__module__ : undefined;
+  return typeof mod === 'string' && mod !== 'builtins' && !name.startsWith(mod + '.') ? `${mod}.${name}` : name;
+}
 const _objAddr = (v) => `0x${(_pyHash(v) >>> 0).toString(16).toUpperCase().padStart(16, '0')}`;
 function _iterObjRepr(v) {
   if (v === null || typeof v !== 'object') return null;
@@ -3527,12 +3609,15 @@ function pyRepr(v) {
   }
   if (v instanceof Complex) return v.__repr__();
   if (typeof v === 'function') {
-    if (v._pyClass) return `<class '${v._pyName || v.name}'>`;
+    if (v._pyClass) return `<class '${pyClassFullName(v)}'>`;
     return `<function ${v._pyName || _jsFnName(v) || '<lambda>'}>`;
   }
   if (typeof v === 'object' && typeof v.__repr__ === 'function') return v.__repr__();
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
   if (isPlainDict(v)) return `{${Object.keys(v).map((k) => `${pyRepr(k)}: ${pyRepr(v[k])}`).join(', ')}}`;
+  // object.__repr__: an instance of a Python class with no __repr__ of its own
+  // (at its id(), not its hash: an instance of a class with __eq__ and no __hash__ has none)
+  if (typeof v === 'object' && v.__adderType__ && v.__adderType__._pyClass) return `<${pyClassFullName(v.__adderType__)} object at 0x${_stableBuiltinId(v).toString(16).toUpperCase().padStart(16, '0')}>`;
   try { return JSON.stringify(v); } catch { return String(v); }
 }
 
@@ -3544,7 +3629,7 @@ function pyStr(v) {
   if (v === false) return 'False';
   if (typeof v === 'string') return v;
   if (v instanceof Complex) return v.__str__();
-  if (typeof v === 'function' && v._pyClass) return `<class '${v._pyName || v.name}'>`;
+  if (typeof v === 'function' && v._pyClass) return `<class '${pyClassFullName(v)}'>`;
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
   return pyRepr(v);
 }
@@ -3801,6 +3886,21 @@ function* _gForEach(obj, fn) {
   if (isUserIterable(obj)) {
     const mi = _metaIter(obj);
     if (mi || typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+      // a compiled __iter__ generator (async, as it isn't provably sync) read through its sync
+      // twin, so list(x) / dict(x) answer at once in code that can't wait. A twin that has to wait
+      // before its first item falls back to the async one; later, the bail-out propagates (the
+      // calling twin re-runs async, as sync twins do).
+      if (!mi && typeof obj.__iter__ === 'function' && obj.__iter__._pySync) {
+        const tw = obj.__iter__._pySync.call(obj);
+        if (tw && typeof tw[Symbol.iterator] === 'function' && typeof tw.next === 'function') {
+          let r;
+          try { r = tw.next(); } catch (e) { if (e !== NEEDS_ASYNC) throw e; r = null; }
+          if (r) {
+            for (; !r.done; r = tw.next()) if (fn(r.value)) { tw.return(); return; }
+            return;
+          }
+        }
+      }
       const it = mi ? yield mi() : typeof obj.__iter__ === 'function' ? yield obj.__iter__() : obj;
       if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* viaAsync(it[Symbol.asyncIterator]()); return; }
       if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { for (const v of pyIter(it)) if (fn(v)) return; return; }
@@ -4474,7 +4574,7 @@ function adderGetAttr(obj, attr) {
     // the module namespace it was defined in (its globals()); no closure cells are kept
     if (attr === '__globals__' && obj._pyDef && !obj._pyClass && obj._pyGlobals) return obj._pyGlobals;
     if (attr === '__closure__' && obj._pyDef && !obj._pyClass) return null;
-    if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
+    if (attr === '__module__') return obj.__module__ ?? (obj._pyClass ? (_typeObjects[obj._pyName] === obj ? 'builtins' : '__main__') : obj._pyFunc ? '__main__' : 'builtins');
     // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
     // looks class attributes up. A function's JS properties (name, length) don't count as the
     // class's own unless the class body set them.
@@ -4485,6 +4585,7 @@ function adderGetAttr(obj, attr) {
     if (obj._pyClass && obj.__adderMeta__ && !(attr in obj)) { const v = metaAttr(obj, attr); if (v !== undefined) return v; }
     if (attr === '__class__' && obj._pyClass) return obj.__adderMeta__ || pyTypeObj;
     if (attr === '__mro__' && obj._pyClass && obj._pyMRO) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : [...obj._pyMRO, pyObjectObj]);
+    if (attr === '__subclasses__' && obj._pyClass) return () => pySubclasses(obj);
     if (attr === '__bases__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [] : obj._pyBases && obj._pyBases.length ? obj._pyBases : [pyObjectObj]);
     // a builtin type's (int, str, dict …): itself and object (bool is an int)
     if (attr === '__mro__' && obj._pyClass) {
@@ -6041,6 +6142,16 @@ function pyGetItem(obj, key, raw = false) {
     return obj instanceof AdderRange ? obj.start + i * obj.step : obj[i];
   }
   if (typeof obj === 'object' || typeof obj === 'function') {
+    // Cls[k]: the metaclass's __getitem__, else __class_getitem__ — never the class's own
+    // __getitem__, which is its instances' (Mapping[str, int] with an abstract __getitem__)
+    if (typeof obj === 'function' && obj._pyClass) {
+      const mg = obj.__adderMeta__ ? metaAttr(obj, '__getitem__') : undefined;
+      if (typeof mg === 'function') return syncOf(mg)(key);
+      if (typeof obj.__getitem__ === 'function' && (obj.__getitem__._pyMetaItem || !(obj.prototype && typeof obj.prototype.__getitem__ === 'function'))) return obj.__getitem__(key);
+      // (through the sync twin: compiled code reads Cls[k] without waiting — Callable[[int], str])
+      if (typeof obj.__class_getitem__ === 'function') return syncOf(obj.__class_getitem__)(key);
+      return new GenericAlias(obj, key instanceof PyTuple ? [...key] : [key]);
+    }
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
     if (typeof obj === 'function' && obj._pyClass) {
       if (typeof obj.__class_getitem__ === 'function') return obj.__class_getitem__(key);
@@ -6993,6 +7104,12 @@ const _collectionsModule = {
   namedtuple: _namedtuple,
   ChainMap: (...maps) => { const m = new PyDict(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
 };
+// type(deque()) is deque (and so for the others): the module's type is what type() answers
+for (const n of ['Counter', 'defaultdict', 'OrderedDict', 'deque']) {
+  const t = _collectionsModule[n];
+  t.__name__ = n; t.__qualname__ = n; t.__module__ = 'collections';
+  _typeObjects[n] = t;
+}
 
 // ── re (regex) ──
 // Python's re over JS RegExp. Patterns are translated ((?P<n>…), (?P=n), \A, \Z, leading inline
@@ -8290,7 +8407,7 @@ const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __r
 function _typeArgText(t) {
   if (t === Ellipsis) return '...';
   if (t === null || t === undefined) return 'None';
-  if (typeof t === 'function') return t._pyName || t.name || '?';
+  if (typeof t === 'function') return t._pyClass ? pyClassFullName(t) : t._pyName || t.name || '?';
   if (typeof t === 'string') return pyRepr(t);
   if (Array.isArray(t) && !(t instanceof PyTuple)) return `[${t.map(_typeArgText).join(', ')}]`;
   return pyRepr(t);
@@ -8309,6 +8426,20 @@ class GenericAlias {
   __ror__(o) { return makeUnion(o, this); }
 }
 GenericAlias.prototype.__adderClass__ = 'GenericAlias';
+// type(list[int]): types.GenericAlias, a type — GenericAlias(origin, args) constructs one, and a
+// Python subclass (collections.abc's _CallableGenericAlias) builds on it through super().__new__
+const pyGenericAliasType = (() => {
+  const make = (a) => {
+    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a = a.slice(0, -1);
+    if (a.length !== 2) throw new AdderError('TypeError', `GenericAlias expected 2 arguments, got ${a.length}`);
+    return new GenericAlias(a[0], a[1] instanceof PyTuple ? [...a[1]] : [a[1]]);
+  };
+  const t = function (...a) { return make(a); };
+  t._pyName = 'GenericAlias'; t.__name__ = 'GenericAlias'; t.__qualname__ = 'GenericAlias'; t.__module__ = 'types'; t._pyClass = true;
+  t._jsClass = GenericAlias; t._pyMake = make;
+  GenericAlias.prototype.__adderType__ = t;
+  return t;
+})();
 class UnionType {
   constructor(args) { this.__args__ = mkTuple(args); }
   __repr__() { return this.__args__.map(_typeArgText).join(' | '); }
@@ -8641,6 +8772,29 @@ function objectNew(cls, args = []) {
 // Promise it awaits). What the twin did before giving up runs again in the fallback: in practice
 // lookups and pure computation, which is what precedes such a wait.
 const NEEDS_ASYNC = Object.assign(new AdderError('RuntimeError', 'a value that has to be waited for, in code that cannot wait (run this on the tree-walker)'), { _needsAsync: true });
+// cls.__subclasses__(): each class's direct subclasses, held weakly (a class nothing else
+// references can go), in creation order
+const _subclassRefs = new WeakMap();
+function _noteSubclass(cls) {
+  for (const b of cls._pyBases.length ? cls._pyBases : [pyObjectObj]) {
+    let refs = _subclassRefs.get(b);
+    if (!refs) _subclassRefs.set(b, refs = []);
+    refs.push(new WeakRef(cls));
+  }
+}
+function pySubclasses(cls) {
+  const refs = _subclassRefs.get(cls);
+  if (!refs) return [];
+  const out = [];
+  for (let i = 0; i < refs.length; i++) {
+    const c = refs[i].deref();
+    // (a class whose bases were reassigned since isn't one any more)
+    if (c && (c._pyBases.length ? c._pyBases.includes(cls) : cls === pyObjectObj)) out.push(c);
+    else { refs.splice(i, 1); i--; }
+  }
+  return out;
+}
+
 function syncOf(f) {
   if (typeof f !== 'function' || !f._pySync) return f;
   if (Object.hasOwn(f, '_pySyncCall')) return f._pySyncCall;
@@ -8855,6 +9009,7 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyName = name;
   cls._pyClass = true;
   cls._pyBases = (bases || []).filter(b => b?._pyClass && b !== pyObjectObj);   // object is every class's implicit root
+  _noteSubclass(cls);
   // `class X(list): …` — instances must BE Arrays so native list methods dispatch
   cls._pyListBase = (bases || []).some(b => b && (b._pyContainerType === 'list' || b._pyListBase));
   // `class X(str): …` — instances are boxed strings (see _StrBoxProto)
@@ -9170,6 +9325,10 @@ pyTypeObj.__new__ = typeNew;
 // type.__call__(cls, *args) / type.__init__ — what a metaclass's own __call__ / __init__ defer to
 pyTypeObj.__call__ = (cls, ...args) => typeCall(cls, args);
 pyTypeObj.__init__ = () => null;
+// (and from code that can't wait: through the class's sync twins — a metaclass that defers to
+// type.__call__, ABCMeta's, constructs synchronously)
+_defTwin(pyTypeObj.prototype.__call__, function (...a) { return typeCall(this, a, true); });
+_defTwin(pyTypeObj.__call__, (cls, ...args) => typeCall(cls, args, true));
 _typeObjects.type = pyTypeObj;
 
 // X.__new__ when X's MRO defines none. A user class gets object.__new__ (a bare instance; a
@@ -9327,10 +9486,19 @@ function typeOf(obj) {
   if (!_typeObjects[name]) {
     const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
     t._pyName = name; t._pyClass = true; t.__name__ = name;
+    // a type adder has no table for (itertools.count's): its __dict__ names the protocol methods
+    // its first value has, so collections.abc's checks recognise it (an Iterator)
+    if (obj !== null && typeof obj === 'object') {
+      const ds = _PROTOCOL_DUNDERS.filter((k) => typeof obj[k] === 'function');
+      if (typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') for (const k of ['__iter__', '__next__']) if (!ds.includes(k)) ds.push(k);
+      if (ds.length) Object.defineProperty(t, '_pyInstanceDunders', { value: ds.join(' '), configurable: true });
+    }
     _typeObjects[name] = t;
   }
   return _typeObjects[name];
 }
+const _PROTOCOL_DUNDERS = ['__iter__', '__next__', '__len__', '__contains__', '__getitem__', '__reversed__', '__call__',
+  '__await__', '__aiter__', '__anext__', 'send', 'throw', 'close', 'asend', 'athrow', 'aclose'];
 
 // a metaclass's members, looked up on a class it built (after the class's own): methods bind to
 // the class, properties read with it
@@ -9800,11 +9968,7 @@ function adderBuiltins(printFn) {
     // id(x): an object's is held aside (a property on it showed as a dict key); equal immutable
     // values share one, as interned ones do in CPython
     id: (obj) => {
-      if ((typeof obj === 'object' && obj !== null) || typeof obj === 'function') {
-        let i = _idOf.get(obj);
-        if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOf.set(obj, i); }
-        return i;
-      }
+      if ((typeof obj === 'object' && obj !== null) || typeof obj === 'function') return _stableBuiltinId(obj);
       const k = `${typeof obj}:${String(obj)}`;
       let i = _idOfValue.get(k);
       if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOfValue.set(k, i); }
@@ -9865,24 +10029,7 @@ function adderBuiltins(printFn) {
       return r.done ? done(r.value) : r.value;
     },
     input: () => { throw new AdderError('NotImplementedError', 'input() is not supported in the browser'); },
-    issubclass: (c, t) => {
-      if (Array.isArray(t)) return t.some((x) => builtins.issubclass(c, x));
-      if (typeof c !== 'function') throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
-      if (c === t || (t && t._pyName === 'object')) return true;
-      if (c._pyMRO && c._pyMRO.includes(t)) return true;
-      const cn = c._pyName, tn = t && t._pyName;
-      if (cn === 'bool' && tn === 'int') return true;
-      if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
-      if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
-      if (c._jsClass && t && t._jsClass && c._jsClass.prototype instanceof t._jsClass) return true;   // JS-backed types (datetime ⊂ date)
-      // an ABC's own say (a registered virtual subclass, a __subclasshook__)
-      if (t && t._pyClass && t._pyMRO) {
-        let sc = null;
-        try { sc = adderGetAttr(t, '__subclasscheck__'); } catch { sc = null; }
-        if (typeof sc === 'function') { const r = sc(c); if (r === true) return true; }
-      }
-      return false;
-    },
+    issubclass: (c, t) => pyIsSubclass(c, t),
     vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),
     dir: (obj) => _pyDir(obj),
     object: pyObjectObj,
@@ -9942,7 +10089,7 @@ function adderBuiltins(printFn) {
   // Mark conversion builtins as type objects for isinstance()/type()
   // ONE object per type for the whole program: every module gets its own builtins table, and a
   // fresh `int` per table made `type(1) is int` false in a module once another had been imported
-  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray', 'slice']) {
+  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray', 'slice', 'memoryview']) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
     if (name === 'str' && builtins.str) { builtins.str.prototype = _StrBoxProto; builtins.str._pyOwnMembers = new PySet(Object.keys(_StrBoxProto)); }
@@ -9977,6 +10124,12 @@ function adderBuiltins(printFn) {
 }
 let _stableBuiltins = null;
 const _idOf = new WeakMap(), _idOfValue = new Map();
+// id(obj) for an object (what a default repr shows)
+function _stableBuiltinId(obj) {
+  let i = _idOf.get(obj);
+  if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOf.set(obj, i); }
+  return i;
+}
 
 // super(): the next class after `cls` in self's MRO, as a proxy whose attributes are bound to
 // self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR
@@ -10106,6 +10259,25 @@ _typeObjects.super = _builtinSuper;
 const _builtinGlobals = Object.assign(() => {}, { _pyName: 'globals', _sentinel: 'globals' });
 const _builtinLocals = Object.assign(() => {}, { _pyName: 'locals', _sentinel: 'locals' });
 
+function pyIsSubclass(c, t) {
+  if (Array.isArray(t)) return t.some((x) => pyIsSubclass(c, x));
+  if (typeof c !== 'function') throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
+  if (c === t || (t && t._pyName === 'object')) return true;
+  if (c._pyMRO && c._pyMRO.includes(t)) return true;
+  const cn = c._pyName, tn = t && t._pyName;
+  if (cn === 'bool' && tn === 'int') return true;
+  if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
+  if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
+  if (c._jsClass && t && t._jsClass && c._jsClass.prototype instanceof t._jsClass) return true;   // JS-backed types (datetime ⊂ date)
+  // an ABC's own say (a registered virtual subclass, a __subclasshook__)
+  if (t && t._pyClass && t._pyMRO) {
+    let sc = null;
+    try { sc = adderGetAttr(t, '__subclasscheck__'); } catch { sc = null; }
+    if (typeof sc === 'function') { const r = sc(c); if (r === true || _isThenable(r)) return r; }
+  }
+  return false;
+}
+
 // isinstance / issubclass's second argument: a class, a tuple of them (nested too), a union
 function _checkClassInfo(who, t) {
   if (Array.isArray(t)) { for (const x of t) _checkClassInfo(who, x); return; }
@@ -10120,7 +10292,11 @@ function _pyIsInstance(obj, typeOrTuple) {
   for (const t of types) {
     if (t instanceof UnionType) { if (_pyIsInstance(obj, [...t.__args__])) return true; continue; }
     // an abstract type that recognises its instances structurally (collections.abc.Mapping, ...)
-    if (typeof t === 'function' && typeof t.__instancecheck__ === 'function' && t.__instancecheck__(obj)) return true;
+    if (typeof t === 'function' && typeof t.__instancecheck__ === 'function') {
+      const r = t.__instancecheck__(obj);
+      if (_isThenable(r)) { const rest = types.slice(types.indexOf(t) + 1); return r.then((v) => (pyBool(v) ? true : _pyIsInstance(obj, rest))); }
+      if (r === true || (r !== false && r != null && pyBool(r) === true)) return true;
+    }
     if (typeof t === 'string') {
       if (name === t) return true;
     } else if (typeof t === 'function') {
@@ -10901,7 +11077,7 @@ async function _evalSubscript(node, scope) {
       raw.push(await _evalSliceElt(elt, scope));
     }
     const key = mkTuple(raw);
-    if (obj && typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
+    if (obj && typeof obj.__getitem__ === 'function' && !(typeof obj === 'function' && obj._pyClass)) return obj.__getitem__(key);
     if (obj instanceof Map || isPlainDict(obj)) return _withLine(() => pyGetItem(obj, key), node.line);
     // Generic 2D-ndarray-shape tuple subscript — accepts either a
     // wrapper `{data: Float64Array, shape}` or a bare Float64Array
@@ -12217,11 +12393,18 @@ async function _readOrNull(vfs, p) { try { return await vfs.readFile(p); } catch
 // the parent package is imported first (running its __init__), then the submodule is looked
 // up in the parent's __path__, and bound as an attribute of the parent. Returns null when
 // nothing provides the name.
+const _MODULE_ALIASES = { 'collections.abc': '_collections_abc' };
 async function findModule(name) {
   const cache = adderModules.sys.modules;
   if (cache[name]) return cache[name];
   // None in sys.modules blocks the import (test.support's import_fresh_module, "no C accelerator")
   if (cache[name] === null && Object.hasOwn(cache, name)) throw new AdderError('ImportError', `import of ${name} halted; None in sys.modules`);
+  // collections.abc IS _collections_abc (collections/__init__.py puts it in sys.modules so)
+  if (Object.hasOwn(_MODULE_ALIASES, name)) {
+    const mod = await findModule(_MODULE_ALIASES[name]);
+    if (mod) cache[name] = mod;
+    return mod;
+  }
   const known = _resolveModule(name);
   if (known) {
     // a stdlib module, once imported, is in sys.modules as CPython's are (six's
@@ -12238,6 +12421,7 @@ async function findModule(name) {
     if (cache[name]) return cache[name];
     const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [] } : {});
     if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
+    if (Object.hasOwn(frozenModuleHooks, name)) await frozenModuleHooks[name](mod);
     return mod;
   }
   const dot = name.lastIndexOf('.');
@@ -13425,6 +13609,20 @@ const _py = {
     g.__adderClass__ = 'generator';
     return g;
   },
+  // the same from code that can't wait (a sync twin, a sync dunder): a user iterable's source is
+  // read through its __iter__'s sync twin (Set.__and__'s `(v for v in other if v in self)` over
+  // a user Set), where genExpr would take the async variant
+  genExprSync: (src, syncGen, asyncGen) => {
+    if (syncGen && src !== null && src !== undefined && isUserIterable(src)) {
+      const it = _iterArray(src);
+      if (it !== null && typeof it === 'object' && typeof it.then !== 'function' && typeof it[Symbol.asyncIterator] !== 'function') {
+        const g = syncGen(it);
+        g.__adderClass__ = 'generator';
+        return g;
+      }
+    }
+    return _py.genExpr(src, syncGen, asyncGen);
+  },
   each: (src) => _pyEach(src),
   // the source of a hybrid for loop (emitForOfHybrid): arrays and typed arrays as they are
   // (indexed, live), dicts / sets / plain dicts snapshotted as a list (as before), and anything
@@ -14436,244 +14634,33 @@ adderModules.io = {
 };
 
 // ── collections.abc ──
-// The abstract collection types: isinstance() recognises builtins and JS values structurally
-// (a dict is a Mapping, a tuple a Sequence, a generator an Iterator), and a class deriving from
-// one inherits its mixin methods, written from CPython's _collections_abc (Mapping gives get /
-// keys / items / values / __contains__ / __eq__ from __getitem__ / __iter__ / __len__, and so
-// on). Not here: Set's operator mixins, register().
-const _slIsMapLike = (x) => x instanceof Map || isPlainDict(x);
-const _slIsGen = (x) => x !== null && typeof x === 'object' && (x.__adderClass__ === 'generator' || Object.prototype.toString.call(x) === '[object Generator]' || Object.prototype.toString.call(x) === '[object AsyncGenerator]');
-const _slHasIter = (x) => x !== null && x !== undefined && (typeof x === 'string' || typeof x[Symbol.iterator] === 'function' || typeof x[Symbol.asyncIterator] === 'function' || (typeof x === 'object' && typeof x.__iter__ === 'function'));
-const _slIsSeq = (x) => typeof x === 'string' || Array.isArray(x) || x instanceof Uint8Array || (x !== null && typeof x === 'object' && x.constructor && x.constructor.name === 'AdderRange');
-const _slUnhashable = (x) => x !== null && typeof x === 'object' && ((Array.isArray(x) && !(x instanceof PyTuple)) || x instanceof Map || (x instanceof Set && !x._frozen) || isPlainDict(x) || x.__hash__ === null);
-function _slAbc(name, bases, check, mixins = {}) {
-  const cls = function () { throw new AdderError('TypeError', `Can't instantiate abstract class ${name}`); };
-  cls._pyName = name; cls._pyClass = true; cls.__name__ = name; cls.__module__ = 'collections.abc';
-  cls._pyBases = bases;
-  cls._pyMRO = [cls];
-  for (const b of bases) for (const c of b._pyMRO) if (!cls._pyMRO.includes(c)) cls._pyMRO.push(c);
-  cls.prototype = {};
-  cls._pyOwnMembers = new PySet();
-  for (const b of [...bases].reverse()) for (const k of b._pyOwnMembers) { cls.prototype[k] = b.prototype[k]; cls._pyOwnMembers.add(k); }
-  for (const [k, fn] of Object.entries(mixins)) { cls.prototype[k] = fn; cls._pyOwnMembers.add(k); }
-  // register(sub): a virtual subclass — of this ABC and of the ABCs it derives from (a class
-  // registered as a MutableMapping is a Mapping too)
-  cls._pyAbcRegistry = new Set();
-  cls.register = (sub) => { cls._pyAbcRegistry.add(sub); return sub; };
-  const registered = (t) => {
-    if (!t) return false;
-    const mro = t._pyMRO || [t];
-    for (const a of _slAllAbcs) if (a._pyMRO.includes(cls) && a._pyAbcRegistry.size) for (const r of a._pyAbcRegistry) if (mro.includes(r)) return true;
-    return false;
-  };
-  cls.__instancecheck__ = (x) => {
-    if (x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(cls)) return true;
-    if (registered(x && x.__adderType__)) return true;
-    return !!check(x);
-  };
-  // a builtin type (list, dict, str …) has no MRO here: it's judged by an empty value of it
-  cls.__subclasscheck__ = (sub) => {
-    if (!sub) return false;
-    if ((sub._pyMRO && sub._pyMRO.includes(cls)) || registered(sub)) return true;
-    const sample = !sub._pyMRO && _slSampleOf(sub._pyName);
-    return sample !== undefined && sample !== false ? !!check(sample) : false;
-  };
-  cls.__class_getitem__ = (k) => new GenericAlias(cls, k instanceof PyTuple ? [...k] : [k]);
-  _slAllAbcs.push(cls);
-  return cls;
-}
-const _slAllAbcs = [];
-function _slSampleOf(name) {
-  switch (name) {
-    case 'list': return []; case 'tuple': return mkTuple([]); case 'str': return ''; case 'bytes': return new Uint8Array(0);
-    case 'dict': return new PyDict(); case 'set': return new PySet();
-    case 'frozenset': { const s = new PySet(); s._frozen = true; return s; }
-    case 'int': return 0; case 'float': return 0.5; case 'bool': return false;
-    default: return undefined;
+// CPython's own _collections_abc.py (frozen, vendored verbatim), over adder's ABCMeta: loaded when
+// a program imports it — collections.abc is that same module, as in CPython. Then what CPython's C
+// types and collections/__init__.py register, adder's JS types register (a deque is a
+// MutableSequence), and typing's aliases point at the real classes (typing.Mapping[str, int]'s
+// origin). It isn't loaded by `import collections` / `import typing`: compiling it costs a first
+// import ~0.1 s, which a program that never asks for an ABC shouldn't pay.
+frozenModuleHooks._collections_abc = async (abc) => {
+  const c = adderModules.collections;
+  try { c.abc = abc; } catch { /* a read-only namespace */ }
+  const arr = adderModules.array;
+  const registrations = [
+    ['MutableSequence', [c.deque, c.UserList, arr && arr.array]],
+    ['MutableMapping', [c.OrderedDict, c.defaultdict, c.Counter, c.ChainMap, c.UserDict]],
+    ['Sequence', [c.UserString]],
+  ];
+  for (const [name, types] of registrations) {
+    for (const t of types) if (typeof t === 'function' && t._pyClass) await adderGetAttr(abc[name], 'register')(t);
   }
-}
-const _slIsKeyError = (e) => !!e && excMatches(e, 'KeyError');
-const _slIsIndexError = (e) => !!e && excMatches(e, 'IndexError');
-const _slIterable = _slAbc('Iterable', [], _slHasIter);
-const _slSized = _slAbc('Sized', [], (x) => x !== null && x !== undefined && (typeof x === 'string' || typeof x.length === 'number' || typeof x.size === 'number' || typeof x.__len__ === 'function'));
-const _slContainer = _slAbc('Container', [], (x) => _slIsSeq(x) || x instanceof Map || x instanceof Set || isPlainDict(x) || (x !== null && typeof x === 'object' && typeof x.__contains__ === 'function'));
-const _slHashable = _slAbc('Hashable', [], (x) => !_slUnhashable(x));
-const _slCallable = _slAbc('Callable', [], (x) => typeof x === 'function' || (x !== null && typeof x === 'object' && typeof x.__call__ === 'function'));
-const _slIterator = _slAbc('Iterator', [_slIterable], (x) => _slIsGen(x) || (x !== null && typeof x === 'object' && (typeof x.__next__ === 'function' || (typeof x.next === 'function' && typeof x[Symbol.iterator] === 'function' && !Array.isArray(x)))));
-const _slReversible = _slAbc('Reversible', [_slIterable], (x) => _slIsSeq(x) || x instanceof Map || isPlainDict(x) || (x !== null && typeof x === 'object' && typeof x.__reversed__ === 'function'));
-const _slGenerator = _slAbc('Generator', [_slIterator], _slIsGen);
-const _slCollection = _slAbc('Collection', [_slSized, _slIterable, _slContainer], (x) => _slIsSeq(x) || x instanceof Map || x instanceof Set || isPlainDict(x));
-// `in` and `==` call __contains__ / __eq__ without awaiting (in compiled code), so those two stay
-// synchronous while the class's own methods are: these helpers only turn into promises when a
-// step does (a tree-walked method)
-function _slSeqMap(arr, fn) {
-  const out = [];
-  for (let i = 0; i < arr.length; i++) {
-    const r = fn(arr[i], i);
-    if (_slIsThen(r)) {
-      return (async () => { out.push(await r); for (let j = i + 1; j < arr.length; j++) out.push(await fn(arr[j], j)); return out; })();
-    }
-    out.push(r);
+  const forms = { AbstractSet: 'Set' };
+  for (const k of ['Iterable', 'Iterator', 'Reversible', 'Generator', 'Sequence', 'MutableSequence', 'Mapping', 'MutableMapping',
+    'Collection', 'Container', 'Hashable', 'Sized', 'Callable', 'Awaitable', 'Coroutine', 'AsyncIterator', 'AsyncIterable',
+    'AsyncGenerator', 'MutableSet', 'MappingView', 'KeysView', 'ItemsView', 'ValuesView', 'ByteString']) forms[k] = k;
+  for (const [k, a] of Object.entries(forms)) {
+    const form = adderModules.typing[k];
+    if (form && abc[a]) form.__origin__ = abc[a];
   }
-  return out;
-}
-// the elements of a user collection: its __iter__, else the __getitem__ / __len__ protocol
-function _slElems(obj) {
-  // the builtins answer at once (a dict's keys, a list's items): `in` / `==` don't wait
-  if (obj instanceof Map && typeof obj.__iter__ !== 'function') return [...obj.keys()];
-  if (isPlainDict(obj)) return Object.keys(obj);
-  if ((Array.isArray(obj) || typeof obj === 'string') && typeof obj.__iter__ !== 'function') return [...obj];
-  if (obj instanceof Set && typeof obj.__iter__ !== 'function') return [...obj];
-  if (typeof obj.__iter__ === 'function') {
-    return _slThen(obj.__iter__(), (it) => (it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function' ? [...pyIter(it)] : pyCollect(it)));
-  }
-  if (typeof obj.__getitem__ === 'function' && typeof obj.__len__ === 'function') {
-    return _slThen(obj.__len__(), (n) => _slSeqMap(Array.from({ length: n }, (_, i) => i), (i) => obj.__getitem__(i)));
-  }
-  return pyCollect(obj);
-}
-const _slAnyEq = (xs, v) => _slThen(_slSeqMap(xs, (x) => (x === v ? true : pyEq(x, v))), (rs) => rs.some((r) => r === true));
-const _slSeqMixins = {
-  __contains__(v) { return _slThen(_slElems(this), (xs) => _slAnyEq(xs, v)); },
-  async index(v, start = 0, stop = null) {
-    const n = await this.__len__();
-    if (start < 0) start = Math.max(n + start, 0);
-    if (stop !== null && stop < 0) stop += n;
-    for (let i = start; stop === null || i < stop; i++) {
-      let x;
-      try { x = await this.__getitem__(i); } catch (e) { if (_slIsIndexError(e)) break; throw e; }
-      if (x === v || await pyEq(x, v)) return i;
-    }
-    throw new AdderError('ValueError', 'sequence.index(x): x not in sequence');
-  },
-  async count(v) { let n = 0; for (const x of await pyCollect(this)) if (x === v || await pyEq(x, v)) n++; return n; },
-  async __reversed__() { const xs = await pyCollect(this); return xs.reverse()[Symbol.iterator](); },
 };
-const _slSequence = _slAbc('Sequence', [_slReversible, _slCollection], _slIsSeq, _slSeqMixins);
-const _slMutableSequence = _slAbc('MutableSequence', [_slSequence], (x) => Array.isArray(x) && !(x instanceof PyTuple), {
-  async append(v) { return this.insert(await this.__len__(), v); },
-  async extend(vs) { for (const v of await pyCollect(vs)) await this.append(v); return null; },
-  async pop(i = -1) { const v = await this.__getitem__(i); await this.__delitem__(i); return v; },
-  async remove(v) { await this.__delitem__(await this.index(v)); return null; },
-  async reverse() { const n = await this.__len__(); for (let i = 0; i < Math.floor(n / 2); i++) { const a = await this.__getitem__(i), b = await this.__getitem__(n - i - 1); await this.__setitem__(i, b); await this.__setitem__(n - i - 1, a); } return null; },
-  async clear() { for (;;) { try { await this.pop(); } catch (e) { if (_slIsIndexError(e)) return null; throw e; } } },
-  async __iadd__(vs) { await this.extend(vs); return this; },
-});
-const _slMapMixins = {
-  async get(k, d = null) { try { return await this.__getitem__(k); } catch (e) { if (_slIsKeyError(e)) return d; throw e; } },
-  __contains__(k) {
-    let r;
-    try { r = this.__getitem__(k); } catch (e) { if (_slIsKeyError(e)) return false; throw e; }
-    return _slIsThen(r) ? r.then(() => true, (e) => { if (_slIsKeyError(e)) return false; throw e; }) : true;
-  },
-  async keys() { return await pyCollect(this); },
-  async items() { const out = []; for (const k of await pyCollect(this)) out.push(mkTuple([k, await this.__getitem__(k)])); return out; },
-  async values() { const out = []; for (const k of await pyCollect(this)) out.push(await this.__getitem__(k)); return out; },
-  __eq__(o) {
-    if (!(o instanceof Map || isPlainDict(o) || (o && o.__adderType__ && _slMapping.__instancecheck__(o)))) return false;
-    const pairs = (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slThen(m.__getitem__(k), (v) => [k, v])));
-    const other = o instanceof Map ? o : isPlainDict(o) ? new PyDict(Object.entries(o)) : _slThen(pairs(o), (ps) => new PyDict(ps));
-    return _slThen(pairs(this), (ps) => _slThen(other, (b) => pyEq(new PyDict(ps), b)));
-  },
-};
-const _slMapping = _slAbc('Mapping', [_slCollection], _slIsMapLike, _slMapMixins);
-const _slMutableMapping = _slAbc('MutableMapping', [_slMapping], _slIsMapLike, {
-  async pop(k, ...d) {
-    let v;
-    try { v = await this.__getitem__(k); } catch (e) { if (_slIsKeyError(e) && d.length) return d[0]; throw e; }
-    await this.__delitem__(k);
-    return v;
-  },
-  async popitem() {
-    const ks = await pyCollect(this);
-    if (!ks.length) throw new AdderError('KeyError', '', undefined, []);
-    const k = ks[0], v = await this.__getitem__(k);
-    await this.__delitem__(k);
-    return mkTuple([k, v]);
-  },
-  async clear() { for (const k of await pyCollect(this)) await this.__delitem__(k); return null; },
-  async update(other = null, ...rest) {
-    const kw = _slKw(rest);
-    if (other !== null && other !== undefined && !other._kw) {
-      if (other instanceof Map) for (const [k, v] of other) await this.__setitem__(k, v);
-      else if (isPlainDict(other)) for (const k of Object.keys(other)) await this.__setitem__(k, other[k]);
-      else if (typeof other.keys === 'function') for (const k of await pyCollect(await other.keys())) await this.__setitem__(k, await adderGetAttr(other, '__getitem__')(k));
-      else for (const pair of await pyCollect(other)) { const [k, v] = pair; await this.__setitem__(k, v); }
-    } else if (other && other._kw) for (const k of Object.keys(other)) if (k !== '_kw') await this.__setitem__(k, other[k]);
-    if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') await this.__setitem__(k, kw[k]);
-    return null;
-  },
-  async setdefault(k, d = null) { try { return await this.__getitem__(k); } catch (e) { if (!_slIsKeyError(e)) throw e; await this.__setitem__(k, d); return d; } },
-});
-const _slSetAbc = _slAbc('Set', [_slCollection], (x) => x instanceof Set);
-const _slMutableSet = _slAbc('MutableSet', [_slSetAbc], (x) => x instanceof Set && !x._frozen);
-const _slAwaitable = _slAbc('Awaitable', [], (x) => x !== null && x !== undefined && typeof x.then === 'function');
-// the async protocols, by Python's methods (__aiter__ / __anext__, an async generator's asend /
-// athrow / aclose) — or a JS async iterable, which `async for` takes too
-const _slHasAttr = (x, n) => { if (x === null || x === undefined) return false; try { return typeof adderGetAttr(x, n) === 'function'; } catch { return false; } };
-const _slAsyncIterable = _slAbc('AsyncIterable', [], (x) => x !== null && x !== undefined && (typeof x[Symbol.asyncIterator] === 'function' || _slHasAttr(x, '__aiter__')));
-const _slAsyncIterator = _slAbc('AsyncIterator', [_slAsyncIterable], (x) => x !== null && x !== undefined &&
-  ((typeof x[Symbol.asyncIterator] === 'function' && typeof x.next === 'function') || (_slHasAttr(x, '__aiter__') && _slHasAttr(x, '__anext__'))));
-const _slAsyncGenerator = _slAbc('AsyncGenerator', [_slAsyncIterator], (x) => x !== null && x !== undefined &&
-  (x._pyAsyncGen === true || ['__aiter__', '__anext__', 'asend', 'athrow', 'aclose'].every((n) => _slHasAttr(x, n))));
-// MappingView and its three: concrete, as CPython's — View(mapping) wraps the mapping (a subclass
-// in Python inherits __init__), and len / iter / in / repr read through it; KeysView and ItemsView
-// are Sets (==, <=, &, |, -, ^ by contents)
-const _slViewItems = {
-  MappingView: (m) => _slElems(m),
-  KeysView: (m) => _slElems(m),
-  ValuesView: (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slGetItem(m, k))),
-  ItemsView: (m) => _slThen(_slElems(m), (ks) => _slSeqMap(ks, (k) => _slThen(_slGetItem(m, k), (v) => mkTuple([k, v])))),
-};
-const _slGetItem = (m, k) => (m instanceof Map ? m.get(k) : isPlainDict(m) ? m[k] : m.__getitem__(k));
-function _slView(name, bases = [_slSized, _slIterable]) {
-  const items = (self) => _slViewItems[name](self._mapping);
-  const cls = _slAbc(name, bases, (x) => !!x && x.__adderClass__ === name, {
-    __init__(mapping) { this._mapping = mapping; return null; },
-    __len__() { const m = this._mapping; return m instanceof Map ? m.size : isPlainDict(m) ? Object.keys(m).length : m.__len__(); },
-    __iter__() { return _slThen(items(this), (xs) => xs[Symbol.iterator]()); },
-    __contains__(x) {
-      if (name === 'KeysView') { const m = this._mapping; return m instanceof Map ? m.has(x) : isPlainDict(m) ? typeof x === 'string' && Object.hasOwn(m, x) : m.__contains__(x); }
-      return _slThen(items(this), (xs) => xs.some((v) => pyEq(v, x) === true));
-    },
-    __repr__() { return _slThen(pyReprMaybe(this._mapping), (r) => `${this.__adderClass__}(${r})`); },
-    ...(name === 'KeysView' || name === 'ItemsView' ? {
-      __eq__(o) { return _slThen(items(this), (xs) => _slThen(o && o.__adderClass__ && typeof o.__iter__ === 'function' ? _slThen(o.__iter__(), (it) => [...it]) : [...pyIter(o)], (ys) => pyEq(new PySet(xs), new PySet(ys)))); },
-    } : {}),
-  });
-  // View(mapping) constructs, as a class call does (a Python subclass goes through typeCall)
-  const made = function (mapping) {
-    const v = Object.create(cls.prototype);
-    v.__adderClass__ = name; v.__adderType__ = made;
-    v._mapping = mapping;
-    return v;
-  };
-  Object.assign(made, cls);
-  for (const k of Object.getOwnPropertyNames(cls)) if (!['length', 'name', 'prototype', 'arguments', 'caller'].includes(k)) made[k] = cls[k];
-  made.prototype = cls.prototype;
-  made._pyMRO = [made, ...cls._pyMRO.slice(1)];
-  const i = _slAllAbcs.indexOf(cls); if (i >= 0) _slAllAbcs[i] = made;
-  made.__instancecheck__ = (x) => !!x && x.__adderType__ && x.__adderType__._pyMRO && x.__adderType__._pyMRO.includes(made);
-  made.__subclasscheck__ = (sub) => !!sub && !!sub._pyMRO && sub._pyMRO.includes(made);
-  return made;
-}
-const _slMappingView = _slView('MappingView', [_slSized]);
-const _slAbcModule = {
-  Iterable: _slIterable, Iterator: _slIterator, Reversible: _slReversible, Generator: _slGenerator, Sized: _slSized,
-  Container: _slContainer, Collection: _slCollection, Hashable: _slHashable, Callable: _slCallable,
-  Sequence: _slSequence, MutableSequence: _slMutableSequence, Mapping: _slMapping, MutableMapping: _slMutableMapping,
-  Set: _slSetAbc, MutableSet: _slMutableSet, Awaitable: _slAwaitable, Coroutine: _slAwaitable,
-  AsyncIterable: _slAsyncIterable, AsyncIterator: _slAsyncIterator, AsyncGenerator: _slAsyncGenerator,
-  ByteString: _slAbc('ByteString', [_slSequence], (x) => x instanceof Uint8Array), Buffer: _slAbc('Buffer', [], (x) => ArrayBuffer.isView(x)),
-  MappingView: _slMappingView, KeysView: _slView('KeysView', [_slMappingView, _slSetAbc]), ItemsView: _slView('ItemsView', [_slMappingView, _slSetAbc]), ValuesView: _slView('ValuesView', [_slMappingView, _slCollection]),
-};
-adderModules['collections.abc'] = _slAbcModule;
-adderModules.collections.abc = _slAbcModule;
-// typing's aliases of the abstract types check like them
-for (const k of ['Iterable', 'Iterator', 'Sequence', 'MutableSequence', 'Mapping', 'MutableMapping', 'Collection', 'Container', 'Hashable', 'Sized', 'Callable', 'Generator', 'Awaitable', 'Coroutine', 'AsyncIterator', 'AsyncIterable']) {
-  const form = adderModules.typing[k];
-  if (form && _slAbcModule[k]) form.__origin__ = _slAbcModule[k];
-}
 
 // -- stdlib-types.js --
 
@@ -14854,7 +14841,9 @@ function _stEnumHook(cls) {
   cls[Symbol.iterator] = function* () { yield* members(); };
   cls.__len__ = () => cls._member_names_.length;
   cls.__contains__ = (x) => (x && x.__adderType__ === cls) || cls._value2member_.some(([v]) => v === x || pyEq(v, x) === true);
-  cls.__getitem__ = (k) => { if (cls._member_map_.has(k)) return cls._member_map_.get(k); throw new AdderError('KeyError', pyRepr(k), undefined, [k]); };
+  // (EnumType.__getitem__: the class's own subscript, Color['RED'] — marked so, as a str-based
+  // enum's prototype has str's __getitem__ too)
+  cls.__getitem__ = Object.assign((k) => { if (cls._member_map_.has(k)) return cls._member_map_.get(k); throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }, { _pyMetaItem: true });
   cls.__reversed__ = () => members().reverse()[Symbol.iterator]();
   cls.__members__ = cls._member_map_;
   cls._pyNew = (...a) => {
@@ -17384,6 +17373,7 @@ function _arMake(args) {
   return _arIsThen(items) ? items.then((l) => new _ArArray(a[0], l)) : new _ArArray(a[0], items);
 }
 Object.assign(_arArrayType, { _pyName: 'array', __name__: 'array', __qualname__: 'array', _pyClass: true, __module__: 'array', _jsClass: _ArArray, _pyMake: _arMake });
+_typeObjects.array = _arArrayType;   // (its __dict__ is CPython's: see builtins' _BUILTIN_TYPE_DICT)
 _ArArray.prototype.__adderClass__ = 'array';
 _ArArray.prototype.__adderType__ = _arArrayType;
 _ArArray.prototype.__hash__ = null;
@@ -17455,11 +17445,7 @@ adderModules.array = {
   typecodes: _AR_TYPECODES,
   _array_reconstructor: _arReconstructor,
 };
-// an array is a MutableSequence (arraymodule.c registers it)
-{
-  const abc = adderModules['collections.abc'] || (adderModules.collections && adderModules.collections.abc);
-  if (abc && abc.MutableSequence && typeof abc.MutableSequence.register === 'function') abc.MutableSequence.register(_arArrayType);
-}
+// (an array is a MutableSequence: collections.abc registers it when it loads)
 
 // -- stdlib-json.js --
 
@@ -20547,7 +20533,7 @@ adderModules.types = _syModule('types', {
   GeneratorType: _syTypeNamed('generator'), CoroutineType: _syTypeNamed('coroutine'), AsyncGeneratorType: _syTypeNamed('async_generator'),
   CodeType: _syCodeType(), FrameType: _syTypeNamed('frame'), TracebackType: _syTypeNamed('traceback'), CellType: _syTypeNamed('cell'),
   NoneType: _syTypeNamed('NoneType'), EllipsisType: _syTypeNamed('ellipsis'), NotImplementedType: _syTypeNamed('NotImplementedType'),
-  GenericAlias, UnionType: _syTypeNamed('types.UnionType'),
+  GenericAlias: pyGenericAliasType, UnionType: _syTypeNamed('types.UnionType'),
   DynamicClassAttribute: (f) => ({ __property__: true, fget: f, fset: null }),
   coroutine: (f) => f,
   // new_class(name, bases=(), kwds=None, exec_body=None): class creation as the statement does it
@@ -20585,32 +20571,121 @@ function _syComputeAbstract(cls) {
   }
   return abstract;
 }
+// ABCMeta's subclass test is CPython's (_py_abc / _abc.c): a positive and a negative cache per
+// class (the negative one dropped whenever anything is registered anywhere), then the class's
+// __subclasshook__, its MRO, its registry (virtual subclasses) and — recursively — its own
+// subclasses. collections.abc is built on exactly this: list is a Sequence because it's
+// registered on MutableSequence, a subclass of Sequence. A __subclasshook__ is Python and may be
+// tree-walked, so each step can be a promise; compiled hooks are called through their sync twins.
+let _syAbcInvalidation = 0;
+const _syThen = (v, f) => (_syIsThen(v) ? v.then(f) : f(v));
+// the first item for which test(item) is true (a promise when a test is)
+function _syAnyMaybe(items, test, i = 0) {
+  for (; i < items.length; i++) {
+    const r = test(items[i]);
+    if (_syIsThen(r)) return r.then((v) => (v === true || pyBool(v) ? true : _syAnyMaybe(items, test, i + 1)));
+    if (r === true) return true;
+  }
+  return false;
+}
+function _syAbcState(cls) {
+  if (!Object.hasOwn(cls, '_pyAbcCache')) {
+    for (const [k, v] of [['_pyAbcCache', new WeakSet()], ['_pyAbcNeg', new WeakSet()], ['_pyAbcNegVer', _syAbcInvalidation]]) {
+      Object.defineProperty(cls, k, { value: v, writable: true, configurable: true });
+    }
+  }
+  if (!Object.hasOwn(cls, '_pyAbcRegistry')) Object.defineProperty(cls, '_pyAbcRegistry', { value: new Set(), writable: true, configurable: true });
+  return cls;
+}
+const _syIsClass = (c) => typeof c === 'function' && c._pyClass === true;
+const _syIssub = (c, t) => pyIsSubclass(c, t);
+function _syAbcSubclassCheck(cls, sub) {
+  if (!_syIsClass(sub)) throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
+  const st = _syAbcState(cls);
+  if (st._pyAbcCache.has(sub)) return true;
+  if (st._pyAbcNegVer < _syAbcInvalidation) { st._pyAbcNeg = new WeakSet(); st._pyAbcNegVer = _syAbcInvalidation; }
+  else if (st._pyAbcNeg.has(sub)) return false;
+  const yes = () => { st._pyAbcCache.add(sub); return true; };
+  const hook = adderGetAttr(cls, '__subclasshook__');
+  return _syThen(syncOf(hook)(sub), (ok) => {
+    if (ok !== NotImplemented) {
+      if (typeof ok !== 'boolean') throw new AdderError('AssertionError', '__subclasshook__ must return either False, True, or NotImplemented');
+      if (ok) st._pyAbcCache.add(sub); else st._pyAbcNeg.add(sub);
+      return ok;
+    }
+    // a real base: its MRO says so (a builtin type's MRO is itself and object)
+    if (sub._pyMRO && sub._pyMRO.includes(cls)) return yes();
+    return _syThen(_syAnyMaybe([...st._pyAbcRegistry], (r) => _syIssub(sub, r)), (inReg) => {
+      if (inReg === true) return yes();
+      return _syThen(_syAnyMaybe(pySubclasses(cls), (s) => _syIssub(sub, s)), (inSubs) => {
+        if (inSubs === true) return yes();
+        st._pyAbcNeg.add(sub);
+        return false;
+      });
+    });
+  });
+}
+function _syAbcInstanceCheck(cls, inst) {
+  const subtype = typeOf(inst);
+  // __class__ may differ from type() (a proxy saying what it stands for): both are asked
+  let subclass = subtype;
+  if (inst !== null && typeof inst === 'object' && inst.__adderType__) {
+    try { const c = adderGetAttr(inst, '__class__'); if (_syIsClass(c)) subclass = c; } catch { /* no __class__ */ }
+  }
+  const st = _syAbcState(cls);
+  if (st._pyAbcCache.has(subclass)) return true;
+  if (subtype === subclass) {
+    if (st._pyAbcNegVer === _syAbcInvalidation && st._pyAbcNeg.has(subclass)) return false;
+    return _syAbcSubclassCheck(cls, subclass);
+  }
+  return _syAnyMaybe([subclass, subtype], (c) => _syAbcSubclassCheck(cls, c));
+}
+function _syAbcRegister(cls, sub) {
+  if (!_syIsClass(sub)) throw new AdderError('TypeError', 'Can only register classes');
+  return _syThen(_syIssub(sub, cls), (already) => {
+    if (already === true) return sub;   // already a subclass
+    return _syThen(_syIssub(cls, sub), (cycle) => {
+      if (cycle === true) throw new AdderError('RuntimeError', 'Refusing to create an inheritance cycle');
+      _syAbcState(cls)._pyAbcRegistry.add(sub);
+      _syAbcInvalidation++;   // invalidate the negative caches
+      return sub;
+    });
+  });
+}
+function _syAbcRefuseAbstract(cls) {
+  const abs = cls.__abstractmethods__;
+  if (abs && abs.size) {
+    const names = [...abs].sort();
+    throw new AdderError('TypeError', `Can't instantiate abstract class ${cls._pyName} without an implementation for abstract method${names.length > 1 ? 's' : ''} ${names.map((n) => `'${n}'`).join(', ')}`);
+  }
+}
 const _syABCMeta = _syClass('ABCMeta', [pyTypeObj], {
   __init__(cls, name, bases, ns) {
     cls._pyAbcNamespace = ns instanceof Map ? Object.fromEntries(ns) : (ns || {});
     cls.__abstractmethods__ = new PySet(_syComputeAbstract(cls));
-    cls._pyAbcRegistry = new Set();
+    _syAbcState(cls);
     return null;
   },
-  __call__(cls, ...args) {
-    const abs = cls.__abstractmethods__;
-    if (abs && abs.size) {
-      const names = [...abs].sort();
-      throw new AdderError('TypeError', `Can't instantiate abstract class ${cls._pyName} without an implementation for abstract method${names.length > 1 ? 's' : ''} ${names.map((n) => `'${n}'`).join(', ')}`);
-    }
-    return pyTypeObj.prototype.__call__.call(cls, ...args);
+  __call__(cls, ...args) { _syAbcRefuseAbstract(cls); return pyTypeObj.prototype.__call__.call(cls, ...args); },
+  register(cls, sub) { return _syAbcRegister(cls, sub); },
+  __instancecheck__(cls, obj) { return _syAbcInstanceCheck(cls, obj); },
+  __subclasscheck__(cls, sub) { return _syAbcSubclassCheck(cls, sub); },
+  _dump_registry(cls, file = null) {
+    const st = _syAbcState(cls);
+    const w = (s) => (file ? adderGetAttr(file, 'write')(s + '\n') : stdoutWrite(s + '\n'));
+    w(`Class: ${cls.__module__}.${cls.__qualname__ || cls._pyName}`);
+    w(`Inv. counter: ${_syAbcInvalidation}`);
+    w(`_abc_registry: ${pyRepr(new PySet(st._pyAbcRegistry))}`);
+    return null;
   },
-  register(cls, sub) { cls._pyAbcRegistry.add(sub); return sub; },
-  __instancecheck__(cls, obj) {
-    const t = typeOf(obj);
-    return [...cls._pyAbcRegistry].some((r) => r === t || ((t && t._pyMRO) || []).includes(r)) ||
-      (typeof cls.__subclasshook__ === 'function' && t && cls.__subclasshook__(t) === true);
-  },
-  __subclasscheck__(cls, sub) {
-    if (sub === cls || ((sub && sub._pyMRO) || []).includes(cls)) return true;
-    return [...cls._pyAbcRegistry].some((r) => r === sub || ((sub && sub._pyMRO) || []).includes(r));
-  },
+  _abc_registry_clear(cls) { _syAbcState(cls)._pyAbcRegistry.clear(); return null; },
+  _abc_caches_clear(cls) { const st = _syAbcState(cls); st._pyAbcCache = new WeakSet(); st._pyAbcNeg = new WeakSet(); return null; },
 }, 'abc');
+// constructing from code that can't wait (Set._from_iterable inside an operator): type's sync path
+Object.defineProperty(_syABCMeta.prototype.__call__, '_pySync', {
+  value: function (...args) { _syAbcRefuseAbstract(this); return syncOf(pyTypeObj.prototype.__call__).call(this, ...args); },
+  configurable: true, writable: true,
+});
 const _syAbstract = (f) => { if (f && typeof f === 'object' && f.fn) f.fn.__isabstractmethod__ = true; else if (f) f.__isabstractmethod__ = true; return f; };
 adderModules.abc = _syModule('abc', {
   ABCMeta: _syABCMeta,
@@ -20618,7 +20693,7 @@ adderModules.abc = _syModule('abc', {
   abstractclassmethod: (f) => ({ __classmethod__: true, fn: _syAbstract(f) }),
   abstractstaticmethod: (f) => ({ __staticmethod__: true, fn: _syAbstract(f) }),
   abstractproperty: (f) => ({ __property__: true, fget: _syAbstract(f), fset: null }),
-  get_cache_token: () => 0,
+  get_cache_token: () => _syAbcInvalidation,
   update_abstractmethods: (cls) => { cls.__abstractmethods__ = new PySet(_syComputeAbstract(cls)); return cls; },
 });
 // ABC: a class whose metaclass is ABCMeta (what `class ABC(metaclass=ABCMeta)` makes)
@@ -22208,6 +22283,7 @@ const _syTruthy = (v) => pyBool(v);
   };
   const viaIter = (self, f) => then(pyCollectMaybe(self), f);   // the keys as the instance's own __iter__ gives them
   c.ChainMap = _syClass('ChainMap', [], {
+    __hash__: null,   // (a mutable mapping: unhashable, as CPython's — Hashable says no)
     __init__(self, ...maps) { self.maps = maps.length ? maps : [new PyDict()]; return null; },
     __missing__(self, k) { throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
     __getitem__(self, k) {
@@ -22263,6 +22339,7 @@ const _syTruthy = (v) => pyBool(v);
   Object.defineProperty(c.ChainMap.prototype, 'parents', { get() { return typeOf(this)(...this.maps.slice(1)); }, configurable: true });
   const d = (self) => self.data;
   c.UserDict = _syClass('UserDict', [], {
+    __hash__: null,
     __init__(self, ...a) { const kw = _syKw(a); const init = a.length ? a[0] : null; self.data = new PyDict(); if (init !== null && init !== undefined) adderGetAttr(self, 'update')(init); if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') adderGetAttr(self, '__setitem__')(k, v); return null; },
     __len__(self) { return d(self).size; },
     __getitem__(self, k) { if (d(self).has(k)) return d(self).get(k); const m = self.__missing__; if (typeof m === 'function') return m.call(self, k); throw new AdderError('KeyError', pyRepr(k)); },
@@ -22290,6 +22367,7 @@ const _syTruthy = (v) => pyBool(v);
     copy(self) { const n = typeOf(self)(); n.data = new PyDict(d(self)); return n; },
   }, 'collections');
   c.UserList = _syClass('UserList', [], {
+    __hash__: null,
     __init__(self, init = null) { self.data = init === null || init === undefined ? [] : [...pyIter(init && init.data ? init.data : init)]; return null; },
     __len__(self) { return self.data.length; }, __getitem__(self, i) { return pyGetItem(self.data, i); },
     __setitem__(self, i, v) { self.data[i < 0 ? self.data.length + i : i] = v; return null; },
@@ -24272,12 +24350,13 @@ adderModules.selectors = _ntModule('selectors', {
 // -- stdlib-py.js --
 
 // GENERATED by ext/adder/gen-pylib.js from ext/adder/pylib/ — do not edit; edit the .py files.
-// adder stdlib modules written in Python (frozen modules): __future__, _colorize, _markupbase, _pyrepl, _pyrepl.pager, _tokenize, argparse, bisect, dataclasses, difflib, doctest, getopt, glob, heapq, html.parser, importlib._bootstrap, importlib._bootstrap_external, json, json.decoder, json.encoder, json.scanner, json.tool, pkgutil, pydoc, shutil, token, tokenize, unittest, unittest.__main__, unittest._log, unittest.async_case, unittest.case, unittest.loader, unittest.main, unittest.mock, unittest.result, unittest.runner, unittest.signals, unittest.suite, unittest.util, xml, xml.etree.ElementTree, xml.etree
+// adder stdlib modules written in Python (frozen modules): __future__, _collections_abc, _colorize, _markupbase, _pyrepl, _pyrepl.pager, _tokenize, argparse, bisect, dataclasses, difflib, doctest, getopt, glob, heapq, html.parser, importlib._bootstrap, importlib._bootstrap_external, json, json.decoder, json.encoder, json.scanner, json.tool, pkgutil, pydoc, shutil, token, tokenize, unittest, unittest.__main__, unittest._log, unittest.async_case, unittest.case, unittest.loader, unittest.main, unittest.mock, unittest.result, unittest.runner, unittest.signals, unittest.suite, unittest.util, xml, xml.etree.ElementTree, xml.etree
 // (all but xml.* are CPython's own, verbatim — PSF License 2.0: see pylib/README.md and pylib/LICENSE-PSF.txt)
 
 
 Object.assign(frozenPyModules, {
   "__future__": { pkg: false, gz: "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" },
+  "_collections_abc": { pkg: false, gz: "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" },
   "_colorize": { pkg: false, gz: "H4sIAAAAAAACCpVWXW/iOBR996+4cl/IiiJCUzoUsRJLMy0qQ0bAaNSdXUUBHGo12Mh2OsNof/zKzndCRrt9KMm9x8f3HF87DgU/gu+HsYoF8X2gxxMXCgLGuAoU5UyiNMTzJ3mWCM28hbea/+nCBDYiJghdgTqfiEQ0hI9BJMk9AgAINb86nyg7ZNxzDyG0iwIpYbpcz2c84kIm6JW7djcwAfzXD3v7rX/EyIT/WExnz3n4RseT8Be3iDppdPYyXRbRYRp9XLluKTxIw5+mj+5yMy0St2li5T4UQTsNfn2ab0oz3h0xwBUcuSAQ0TcCi/nj0wYeV9MXA39xFwvva4G/yfV4iwe/Ksoea1ma7mG6ei44UmhJqD3OpZpkRa89zhWbZFW2Pc6Fm2xdvT3O9Zt82QR7nNtgclUv7HHmRrBTcRAlVhXomhX2uDDjCihThEkCk8TFLY/2sI0VfKfqlccKtkR3jw6bAfPlxl2u3ZqBo6wrinTJtJFTy1ZcGw1r2apto0EtXfdtdFsDlI0b2bVk1bnRXS1ds2pUdM109vy48r4s673j5BuijCipd5wmoGKAM2wCqh44gyaiboNz28SUnXDsZr5qhnPXRNT8cHI/8oVu88XuN3qixSC777QjqxusP2xH1nZbf9AObWy9/m07uLIP+3Y7sLYp+3ft0PqO7Btf0ZIn5zFMSodzx0Io5AICpQRQBnsqOhnQSk5uGgLjyiB6UgVCSb17O9j3cYrQf5IojcgHd82ALmBsIYT2JIQDUf4umdSMMs/0J7mHLecRTJJvSxd+60JII3IPc++bVOJv+Ec/bc+KSP285EyfJ/oHWXD9e+NLQ8OcGriAXcD87L2jiSf6X6lyQVQsWNUTHSf5l66EyuSlmirk/71wU7dWfZ/0u6byZRAS/0AUYe+dt3uQ2r0wiKJtsEteL3AU0aJSjLH7Y0dO+hN/rUmBsHcqODsSprQOQcl7EPVgTQgcXq/twYfhzbCHMc4plDgXfCX1XPZSrt6BqM5bUaCVw4mZG/ISLhJlw1C2Yto4oLImxUQn+lbSk2rPY4XKHanDYRQcZI8eGBfEL+ksOGjNWvz5ZfPkLX1zy1ljCyYTwH18sUzTkf+Pyb7MZC5SF0mWXkKAmy1ZTJ8qzm5mv0ZW+T96q5nbOkV7XRt39SnVtI+PW9wyZ7m810CaM0AvWxew/mG8VVc2Ui/jKQpUyMXRTPedsptBab5GN6a3TZa2Q2l9dBVM9XwZnzRE+u9U6EuLr4g4UhZEHatK1brYaRt35mYuVwguujBVStBtrIh5t37RM6hReLGFqHbpbFzqJR51rPTISSb11oa/Mbbmb8KDLQjY3myVjNlC/wIpxmCt/AsAAA==" },
   "_markupbase": { pkg: false, gz: "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" },
   "_pyrepl": { pkg: true, gz: "H4sIAAAAAAACCnWRzW6jMBSF9zzFkdjSKupqFqPRuGCCJbAztmnUJQlOsEQwApMqbz8y6Wja+fHK1r3nu+cexwBSN94me+48njabzcPTZvMFlT12jelRLO3shofM3XqDrxd7bDrTfz9fGts/Ht3lWxTj34dMFztA2rOL4v82gfR96On8DGlmM11NG9qjGDszXew8WzfAOyyzSXB04y3BxbX2dEvQDC1aO/vJHhZv4Ds7Y3Yn/9ZMJhSjGNbPaN1xuZjBNz6gTm5CM9wwLtPoZgM7ozOTOdxwnprBmxZv1ndu8TgZk0QxxsldbWta+K7x8J1Bc3BXs3q5ZzY4b48GzTiaZoId0PR9KFszv9tYpQfnu/vtb+nQ3u2Pv3f+kxrFmJdxdJO3w/nzUo9rXrqgILUuhETF0oLQEkWdKcGRMZWWhFUKpCyxJ1ISrhlV2DNdQNItkRm0WBlMQYlc74mkCRhPyzpjfLsKWbUrGc0+AkSOisq0IFyTZ1Yy/RrFIDxDzjSnSgUEuAB9oVxDFQHzweczRcnIc0mRCwnCX6F2NGWkDMEznjFJUw0hkQqu6I+acs1IiYxUZBum3zW/nvuCaCXoC5VRDElVXepgPZeiQinU6rZWNEFGNAninRQ50yrBvqC6oDKYJRwk1UxwiDyKw2AtSaoTcLot2ZbylAapWPu1kJqJWr1LEhDJVJgpah2miYC8Uzi9U9fIQwS1WkE7KnMhK7Jy888f8Bj9BKBSeomdAwAA" },
@@ -25382,7 +25461,7 @@ function analyseSyncFunctions(moduleStmts) {
 
 // in sync mode (a sync-context dunder / property, or a sync twin) a call goes to the callee's
 // sync twin when it has one: method calls, and calls of a value that may be any callable
-const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync', setattr: 'setattrSync' };
+const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync', setattr: 'setattrSync', genExpr: 'genExprSync' };
 function emitPyCall(ctx, method, args, loc, type) {
   if (ctx._syncMode && Object.hasOwn(_SYNC_CALLS, method)) method = _SYNC_CALLS[method];
   return ctx.emitNamespacedCall('_py', method, args, loc, type);
@@ -27854,7 +27933,9 @@ function lowerGeneratorExp(ctx, node) {
     name: null, params: [{ name: SRC, type: DYNAMIC }], body, ret_type: DYNAMIC, is_async: isAsync, is_generator: true,
   });
   let syncFn;
-  if (node.generators.length === 1) {
+  // (with nested sources, only in code that can't wait: there an inner source that turns out to
+  // be async bails out, where elsewhere the sync body would iterate a Promise)
+  if (node.generators.length === 1 || ctx._syncMode) {
     const syncBody = build(false);
     syncFn = _opsAwait(syncBody) ? null : genFn(syncBody, false);
   }

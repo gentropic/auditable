@@ -7,7 +7,7 @@
 
 import {
   AdderError, PyByteArray, PyMemoryView, PyTuple, adderGetAttr, adderModules, mkTuple, objectNew, pyCollectMaybe, pyEq,
-  pyLt, pyRepr, pyTypeName, syncOf,
+  pyLt, pyRepr, pyTypeName, syncOf, _typeObjects,
 } from './builtins.js';
 
 // typecode → item size, typed array, range and the name CPython's overflow message uses
@@ -594,6 +594,7 @@ function _arMake(args) {
   return _arIsThen(items) ? items.then((l) => new _ArArray(a[0], l)) : new _ArArray(a[0], items);
 }
 Object.assign(_arArrayType, { _pyName: 'array', __name__: 'array', __qualname__: 'array', _pyClass: true, __module__: 'array', _jsClass: _ArArray, _pyMake: _arMake });
+_typeObjects.array = _arArrayType;   // (its __dict__ is CPython's: see builtins' _BUILTIN_TYPE_DICT)
 _ArArray.prototype.__adderClass__ = 'array';
 _ArArray.prototype.__adderType__ = _arArrayType;
 _ArArray.prototype.__hash__ = null;
@@ -665,8 +666,4 @@ adderModules.array = {
   typecodes: _AR_TYPECODES,
   _array_reconstructor: _arReconstructor,
 };
-// an array is a MutableSequence (arraymodule.c registers it)
-{
-  const abc = adderModules['collections.abc'] || (adderModules.collections && adderModules.collections.abc);
-  if (abc && abc.MutableSequence && typeof abc.MutableSequence.register === 'function') abc.MutableSequence.register(_arArrayType);
-}
+// (an array is a MutableSequence: collections.abc registers it when it loads)

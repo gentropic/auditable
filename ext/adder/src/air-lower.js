@@ -549,7 +549,7 @@ function analyseSyncFunctions(moduleStmts) {
 
 // in sync mode (a sync-context dunder / property, or a sync twin) a call goes to the callee's
 // sync twin when it has one: method calls, and calls of a value that may be any callable
-const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync', setattr: 'setattrSync' };
+const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync', setattr: 'setattrSync', genExpr: 'genExprSync' };
 function emitPyCall(ctx, method, args, loc, type) {
   if (ctx._syncMode && Object.hasOwn(_SYNC_CALLS, method)) method = _SYNC_CALLS[method];
   return ctx.emitNamespacedCall('_py', method, args, loc, type);
@@ -3021,7 +3021,9 @@ function lowerGeneratorExp(ctx, node) {
     name: null, params: [{ name: SRC, type: DYNAMIC }], body, ret_type: DYNAMIC, is_async: isAsync, is_generator: true,
   });
   let syncFn;
-  if (node.generators.length === 1) {
+  // (with nested sources, only in code that can't wait: there an inner source that turns out to
+  // be async bails out, where elsewhere the sync body would iterate a Promise)
+  if (node.generators.length === 1 || ctx._syncMode) {
     const syncBody = build(false);
     syncFn = _opsAwait(syncBody) ? null : genFn(syncBody, false);
   }

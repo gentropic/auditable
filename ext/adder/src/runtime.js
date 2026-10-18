@@ -937,6 +937,20 @@ export const _py = {
     g.__adderClass__ = 'generator';
     return g;
   },
+  // the same from code that can't wait (a sync twin, a sync dunder): a user iterable's source is
+  // read through its __iter__'s sync twin (Set.__and__'s `(v for v in other if v in self)` over
+  // a user Set), where genExpr would take the async variant
+  genExprSync: (src, syncGen, asyncGen) => {
+    if (syncGen && src !== null && src !== undefined && isUserIterable(src)) {
+      const it = _iterArray(src);
+      if (it !== null && typeof it === 'object' && typeof it.then !== 'function' && typeof it[Symbol.asyncIterator] !== 'function') {
+        const g = syncGen(it);
+        g.__adderClass__ = 'generator';
+        return g;
+      }
+    }
+    return _py.genExpr(src, syncGen, asyncGen);
+  },
   each: (src) => _pyEach(src),
   // the source of a hybrid for loop (emitForOfHybrid): arrays and typed arrays as they are
   // (indexed, live), dicts / sets / plain dicts snapshotted as a list (as before), and anything

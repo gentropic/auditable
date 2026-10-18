@@ -461,6 +461,9 @@ const _FN_SLOTS = new Set(['__defaults__', '__kwdefaults__', '__name__', '__qual
 // stdlib modules written in Python (name → { pkg, source }; filled by stdlib-py.js, generated from
 // ext/adder/pylib/). The import system instantiates them like a .py file on sys.path.
 export const frozenPyModules = {};
+// what runs once a frozen module has loaded (name → fn(module), may be async): the JS types
+// that join what it defines (collections.abc's registrations)
+export const frozenModuleHooks = {};
 
 export class AttrDict extends PyDict {
   // (`hide`: more names that live on the object but aren't in its __dict__ — a function's
@@ -490,6 +493,78 @@ export class AttrDict extends PyDict {
 }
 // Cls.__dict__: the class's own namespace (a read-only snapshot, as CPython's mappingproxy is
 // read-only): its methods (the defs), class variables, and its own __module__ / __doc__
+// a builtin type's __dict__ names, as CPython 3.13 lists them (its dunders and the generator /
+// coroutine protocol methods; a trailing ! is a None entry — list.__hash__). What
+// collections.abc's _check_methods walks the MRO looking for. Generated from CPython.
+const _BUILTIN_TYPE_DICT = {
+  object: '__repr__ __hash__ __str__ __getattribute__ __setattr__ __delattr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __init__ __reduce_ex__ __reduce__ __getstate__ __subclasshook__ __init_subclass__ __format__ __sizeof__ __dir__ __class__',
+  type: '__repr__ __call__ __getattribute__ __setattr__ __delattr__ __init__ __or__ __ror__ __subclasses__ __prepare__ __instancecheck__ __subclasscheck__ __dir__ __sizeof__ __basicsize__ __itemsize__ __flags__ __weakrefoffset__ __base__ __dictoffset__ __bases__ __mro__ __abstractmethods__ __dict__ __annotations__ __type_params__',
+  int: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __add__ __radd__ __sub__ __rsub__ __mul__ __rmul__ __mod__ __rmod__ __divmod__ __rdivmod__ __pow__ __rpow__ __neg__ __pos__ __abs__ __bool__ __invert__ __lshift__ __rlshift__ __rshift__ __rrshift__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __int__ __float__ __floordiv__ __rfloordiv__ __truediv__ __rtruediv__ __index__ __trunc__ __floor__ __ceil__ __round__ __getnewargs__ __format__ __sizeof__',
+  float: '__repr__ __hash__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __add__ __radd__ __sub__ __rsub__ __mul__ __rmul__ __mod__ __rmod__ __divmod__ __rdivmod__ __pow__ __rpow__ __neg__ __pos__ __abs__ __bool__ __int__ __float__ __floordiv__ __rfloordiv__ __truediv__ __rtruediv__ __trunc__ __floor__ __ceil__ __round__ __getnewargs__ __getformat__ __format__',
+  complex: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __add__ __radd__ __sub__ __rsub__ __mul__ __rmul__ __pow__ __rpow__ __neg__ __pos__ __abs__ __bool__ __truediv__ __rtruediv__ __complex__ __getnewargs__ __format__',
+  bool: '__repr__ __invert__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__',
+  str: '__repr__ __hash__ __str__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __mod__ __rmod__ __len__ __getitem__ __add__ __mul__ __rmul__ __contains__ __format__ __sizeof__ __getnewargs__',
+  bytes: '__repr__ __hash__ __str__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __buffer__ __mod__ __rmod__ __len__ __getitem__ __add__ __mul__ __rmul__ __contains__ __getnewargs__ __bytes__',
+  bytearray: '__repr__ __str__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __buffer__ __release_buffer__ __mod__ __rmod__ __len__ __getitem__ __setitem__ __delitem__ __add__ __mul__ __rmul__ __contains__ __iadd__ __imul__ __alloc__ __reduce__ __reduce_ex__ __sizeof__ __hash__!',
+  list: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __len__ __getitem__ __setitem__ __delitem__ __add__ __mul__ __rmul__ __contains__ __iadd__ __imul__ __reversed__ __sizeof__ __class_getitem__',
+  tuple: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __len__ __getitem__ __add__ __mul__ __rmul__ __contains__ __getnewargs__ __class_getitem__',
+  dict: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __or__ __ror__ __ior__ __len__ __getitem__ __setitem__ __delitem__ __contains__ __sizeof__ __reversed__ __class_getitem__',
+  set: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __isub__ __iand__ __ixor__ __ior__ __len__ __contains__ __reduce__ __sizeof__ __class_getitem__',
+  frozenset: '__repr__ __hash__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __len__ __contains__ __reduce__ __sizeof__ __class_getitem__',
+  range: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __bool__ __len__ __getitem__ __contains__ __reversed__ __reduce__',
+  slice: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __reduce__',
+  memoryview: '__repr__ __hash__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __buffer__ __release_buffer__ __len__ __getitem__ __setitem__ __delitem__ __enter__ __exit__',
+  NoneType: '__repr__ __hash__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __bool__',
+  function: '__repr__ __call__ __get__ __closure__ __globals__ __builtins__ __code__ __defaults__ __kwdefaults__ __annotations__ __dict__ __type_params__',
+  generator: '__repr__ __iter__ __next__ __del__ send throw close __sizeof__ __class_getitem__',
+  coroutine: '__repr__ __del__ __await__ send throw close __sizeof__ __class_getitem__',
+  async_generator: '__repr__ __del__ __aiter__ __anext__ asend athrow aclose __sizeof__ __class_getitem__',
+  builtin_function_or_method: '__repr__ __hash__ __call__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __reduce__ __self__',
+  method: '__repr__ __hash__ __call__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __get__ __reduce__ __func__ __self__',
+  mappingproxy: '__repr__ __hash__ __str__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __or__ __ror__ __ior__ __len__ __getitem__ __contains__ __class_getitem__ __reversed__',
+  dict_keys: '__repr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __len__ __contains__ __reversed__ __hash__!',
+  dict_values: '__repr__ __iter__ __len__ __reversed__',
+  dict_items: '__repr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __sub__ __rsub__ __and__ __rand__ __xor__ __rxor__ __or__ __ror__ __len__ __contains__ __reversed__ __hash__!',
+  list_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  tuple_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  range_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  set_iterator: '__iter__ __next__ __length_hint__ __reduce__',
+  str_ascii_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  str_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  bytes_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  bytearray_iterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  dict_keyiterator: '__iter__ __next__ __length_hint__ __reduce__',
+  dict_valueiterator: '__iter__ __next__ __length_hint__ __reduce__',
+  dict_itemiterator: '__iter__ __next__ __length_hint__ __reduce__',
+  list_reverseiterator: '__iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  map: '__getattribute__ __iter__ __next__ __reduce__',
+  filter: '__getattribute__ __iter__ __next__ __reduce__',
+  zip: '__getattribute__ __iter__ __next__ __reduce__ __setstate__',
+  enumerate: '__getattribute__ __iter__ __next__ __reduce__ __class_getitem__',
+  reversed: '__getattribute__ __iter__ __next__ __length_hint__ __reduce__ __setstate__',
+  property: '__getattribute__ __get__ __set__ __delete__ __init__ __set_name__ __isabstractmethod__',
+  staticmethod: '__repr__ __call__ __get__ __init__ __func__ __wrapped__ __isabstractmethod__ __dict__',
+  classmethod: '__repr__ __get__ __init__ __func__ __wrapped__ __isabstractmethod__ __dict__',
+  // (and the JS-implemented types of other modules, over their whole CPython MRO)
+  deque: '__repr__ __hash__! __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __len__ __add__ __mul__ __rmul__ __getitem__ __setitem__ __delitem__ __contains__ __iadd__ __imul__ __copy__ __reduce__ __reversed__ __sizeof__ __class_getitem__',
+  OrderedDict: '__repr__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __init__ __or__ __ror__ __ior__ __setitem__ __delitem__ __sizeof__ __reduce__ __reversed__ __hash__! __getattribute__ __len__ __getitem__ __contains__ __class_getitem__',
+  defaultdict: '__repr__ __getattribute__ __init__ __or__ __ror__ __missing__ __copy__ __reduce__ __class_getitem__ __hash__! __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __ior__ __len__ __getitem__ __setitem__ __delitem__ __contains__ __sizeof__ __reversed__',
+  Counter: '__firstlineno__ __init__ __missing__ __reduce__ __delitem__ __repr__ __eq__ __ne__ __le__ __lt__ __ge__ __gt__ __add__ __sub__ __or__ __and__ __pos__ __neg__ __iadd__ __isub__ __ior__ __iand__ __static_attributes__ __hash__! __getattribute__ __iter__ __ror__ __len__ __getitem__ __setitem__ __contains__ __sizeof__ __reversed__ __class_getitem__',
+  array: '__repr__ __getattribute__ __lt__ __le__ __eq__ __ne__ __gt__ __ge__ __iter__ __buffer__ __release_buffer__ __len__ __getitem__ __setitem__ __delitem__ __add__ __mul__ __rmul__ __contains__ __iadd__ __imul__ __copy__ __deepcopy__ __reduce_ex__ __sizeof__ __class_getitem__ __hash__!',
+};
+function _builtinTypeDict(cls, d) {
+  const names = Object.hasOwn(_BUILTIN_TYPE_DICT, cls._pyName) && _typeObjects[cls._pyName] === cls ? _BUILTIN_TYPE_DICT[cls._pyName] : cls._pyInstanceDunders || null;
+  if (!names) return;
+  for (const n of names.split(' ')) {
+    const none = n.endsWith('!'), k = none ? n.slice(0, -1) : n;
+    if (d.has(k)) continue;
+    if (none) { d.set(k, null); continue; }
+    // the type's own method, unbound: called with the instance first
+    const f = function (self, ...a) { return adderGetAttr(self, k)(...a); };
+    f._pyName = k; f.__qualname__ = `${cls._pyName}.${k}`;
+    d.set(k, f);
+  }
+}
 function _classDict(cls) {
   const d = new PyDict();
   if (cls.__module__ !== undefined) d.set('__module__', cls.__module__);
@@ -508,6 +583,7 @@ function _classDict(cls) {
   // the class's own __new__ (implicitly static): a staticmethod in its __dict__, as CPython keeps
   // it — so type(name, bases, dict(cls.__dict__)) (dataclasses' slots=True) rebuilds it with it
   if (Object.hasOwn(cls, '_pyNewFn') && typeof cls._pyNewFn === 'function') d.set('__new__', { __staticmethod__: true, fn: cls._pyNewFn, __adderClass__: 'staticmethod', __func__: cls._pyNewFn });
+  _builtinTypeDict(cls, d);
   d.set('__doc__', cls.__doc__ ?? null);
   const ro = () => { throw new AdderError('TypeError', "'mappingproxy' object does not support item assignment"); };
   d.set = ro; d.delete = ro; d.clear = ro;
@@ -1084,6 +1160,12 @@ function _typedRepr(v) {
 
 // <generator object g at 0x...>: a generator / iterator object as CPython shows it (the address
 // is a per-object id, as CPython's is its memory address)
+// a class as CPython names it in a repr: module.qualname, the module left out for builtins
+export function pyClassFullName(c) {
+  const name = (typeof c.__qualname__ === 'string' && c.__qualname__) || c._pyName || c.name;
+  const mod = Object.hasOwn(c, '__module__') ? c.__module__ : undefined;
+  return typeof mod === 'string' && mod !== 'builtins' && !name.startsWith(mod + '.') ? `${mod}.${name}` : name;
+}
 const _objAddr = (v) => `0x${(_pyHash(v) >>> 0).toString(16).toUpperCase().padStart(16, '0')}`;
 function _iterObjRepr(v) {
   if (v === null || typeof v !== 'object') return null;
@@ -1133,12 +1215,15 @@ export function pyRepr(v) {
   }
   if (v instanceof Complex) return v.__repr__();
   if (typeof v === 'function') {
-    if (v._pyClass) return `<class '${v._pyName || v.name}'>`;
+    if (v._pyClass) return `<class '${pyClassFullName(v)}'>`;
     return `<function ${v._pyName || _jsFnName(v) || '<lambda>'}>`;
   }
   if (typeof v === 'object' && typeof v.__repr__ === 'function') return v.__repr__();
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
   if (isPlainDict(v)) return `{${Object.keys(v).map((k) => `${pyRepr(k)}: ${pyRepr(v[k])}`).join(', ')}}`;
+  // object.__repr__: an instance of a Python class with no __repr__ of its own
+  // (at its id(), not its hash: an instance of a class with __eq__ and no __hash__ has none)
+  if (typeof v === 'object' && v.__adderType__ && v.__adderType__._pyClass) return `<${pyClassFullName(v.__adderType__)} object at 0x${_stableBuiltinId(v).toString(16).toUpperCase().padStart(16, '0')}>`;
   try { return JSON.stringify(v); } catch { return String(v); }
 }
 
@@ -1150,7 +1235,7 @@ export function pyStr(v) {
   if (v === false) return 'False';
   if (typeof v === 'string') return v;
   if (v instanceof Complex) return v.__str__();
-  if (typeof v === 'function' && v._pyClass) return `<class '${v._pyName || v.name}'>`;
+  if (typeof v === 'function' && v._pyClass) return `<class '${pyClassFullName(v)}'>`;
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
   return pyRepr(v);
 }
@@ -1407,6 +1492,21 @@ function* _gForEach(obj, fn) {
   if (isUserIterable(obj)) {
     const mi = _metaIter(obj);
     if (mi || typeof obj.__iter__ === 'function' || typeof obj.__next__ === 'function') {
+      // a compiled __iter__ generator (async, as it isn't provably sync) read through its sync
+      // twin, so list(x) / dict(x) answer at once in code that can't wait. A twin that has to wait
+      // before its first item falls back to the async one; later, the bail-out propagates (the
+      // calling twin re-runs async, as sync twins do).
+      if (!mi && typeof obj.__iter__ === 'function' && obj.__iter__._pySync) {
+        const tw = obj.__iter__._pySync.call(obj);
+        if (tw && typeof tw[Symbol.iterator] === 'function' && typeof tw.next === 'function') {
+          let r;
+          try { r = tw.next(); } catch (e) { if (e !== NEEDS_ASYNC) throw e; r = null; }
+          if (r) {
+            for (; !r.done; r = tw.next()) if (fn(r.value)) { tw.return(); return; }
+            return;
+          }
+        }
+      }
       const it = mi ? yield mi() : typeof obj.__iter__ === 'function' ? yield obj.__iter__() : obj;
       if (it !== obj && it && typeof it[Symbol.asyncIterator] === 'function') { yield* viaAsync(it[Symbol.asyncIterator]()); return; }
       if (it !== obj && it && typeof it[Symbol.iterator] === 'function' && typeof it.__next__ !== 'function') { for (const v of pyIter(it)) if (fn(v)) return; return; }
@@ -2080,7 +2180,7 @@ export function adderGetAttr(obj, attr) {
     // the module namespace it was defined in (its globals()); no closure cells are kept
     if (attr === '__globals__' && obj._pyDef && !obj._pyClass && obj._pyGlobals) return obj._pyGlobals;
     if (attr === '__closure__' && obj._pyDef && !obj._pyClass) return null;
-    if (attr === '__module__') return obj.__module__ ?? (obj._pyClass || obj._pyFunc ? '__main__' : 'builtins');
+    if (attr === '__module__') return obj.__module__ ?? (obj._pyClass ? (_typeObjects[obj._pyName] === obj ? 'builtins' : '__main__') : obj._pyFunc ? '__main__' : 'builtins');
     // a class variable a base defines (Sub.registry where Base has it): along the MRO, as Python
     // looks class attributes up. A function's JS properties (name, length) don't count as the
     // class's own unless the class body set them.
@@ -2091,6 +2191,7 @@ export function adderGetAttr(obj, attr) {
     if (obj._pyClass && obj.__adderMeta__ && !(attr in obj)) { const v = metaAttr(obj, attr); if (v !== undefined) return v; }
     if (attr === '__class__' && obj._pyClass) return obj.__adderMeta__ || pyTypeObj;
     if (attr === '__mro__' && obj._pyClass && obj._pyMRO) return mkTuple(obj === pyObjectObj ? [pyObjectObj] : [...obj._pyMRO, pyObjectObj]);
+    if (attr === '__subclasses__' && obj._pyClass) return () => pySubclasses(obj);
     if (attr === '__bases__' && obj._pyClass) return mkTuple(obj === pyObjectObj ? [] : obj._pyBases && obj._pyBases.length ? obj._pyBases : [pyObjectObj]);
     // a builtin type's (int, str, dict …): itself and object (bool is an int)
     if (attr === '__mro__' && obj._pyClass) {
@@ -3647,6 +3748,16 @@ export function pyGetItem(obj, key, raw = false) {
     return obj instanceof AdderRange ? obj.start + i * obj.step : obj[i];
   }
   if (typeof obj === 'object' || typeof obj === 'function') {
+    // Cls[k]: the metaclass's __getitem__, else __class_getitem__ — never the class's own
+    // __getitem__, which is its instances' (Mapping[str, int] with an abstract __getitem__)
+    if (typeof obj === 'function' && obj._pyClass) {
+      const mg = obj.__adderMeta__ ? metaAttr(obj, '__getitem__') : undefined;
+      if (typeof mg === 'function') return syncOf(mg)(key);
+      if (typeof obj.__getitem__ === 'function' && (obj.__getitem__._pyMetaItem || !(obj.prototype && typeof obj.prototype.__getitem__ === 'function'))) return obj.__getitem__(key);
+      // (through the sync twin: compiled code reads Cls[k] without waiting — Callable[[int], str])
+      if (typeof obj.__class_getitem__ === 'function') return syncOf(obj.__class_getitem__)(key);
+      return new GenericAlias(obj, key instanceof PyTuple ? [...key] : [key]);
+    }
     if (typeof obj.__getitem__ === 'function') return obj.__getitem__(key);
     if (typeof obj === 'function' && obj._pyClass) {
       if (typeof obj.__class_getitem__ === 'function') return obj.__class_getitem__(key);
@@ -4599,6 +4710,12 @@ const _collectionsModule = {
   namedtuple: _namedtuple,
   ChainMap: (...maps) => { const m = new PyDict(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
 };
+// type(deque()) is deque (and so for the others): the module's type is what type() answers
+for (const n of ['Counter', 'defaultdict', 'OrderedDict', 'deque']) {
+  const t = _collectionsModule[n];
+  t.__name__ = n; t.__qualname__ = n; t.__module__ = 'collections';
+  _typeObjects[n] = t;
+}
 
 // ── re (regex) ──
 // Python's re over JS RegExp. Patterns are translated ((?P<n>…), (?P=n), \A, \Z, leading inline
@@ -5896,7 +6013,7 @@ export const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedTyp
 function _typeArgText(t) {
   if (t === Ellipsis) return '...';
   if (t === null || t === undefined) return 'None';
-  if (typeof t === 'function') return t._pyName || t.name || '?';
+  if (typeof t === 'function') return t._pyClass ? pyClassFullName(t) : t._pyName || t.name || '?';
   if (typeof t === 'string') return pyRepr(t);
   if (Array.isArray(t) && !(t instanceof PyTuple)) return `[${t.map(_typeArgText).join(', ')}]`;
   return pyRepr(t);
@@ -5915,6 +6032,20 @@ export class GenericAlias {
   __ror__(o) { return makeUnion(o, this); }
 }
 GenericAlias.prototype.__adderClass__ = 'GenericAlias';
+// type(list[int]): types.GenericAlias, a type — GenericAlias(origin, args) constructs one, and a
+// Python subclass (collections.abc's _CallableGenericAlias) builds on it through super().__new__
+export const pyGenericAliasType = (() => {
+  const make = (a) => {
+    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a = a.slice(0, -1);
+    if (a.length !== 2) throw new AdderError('TypeError', `GenericAlias expected 2 arguments, got ${a.length}`);
+    return new GenericAlias(a[0], a[1] instanceof PyTuple ? [...a[1]] : [a[1]]);
+  };
+  const t = function (...a) { return make(a); };
+  t._pyName = 'GenericAlias'; t.__name__ = 'GenericAlias'; t.__qualname__ = 'GenericAlias'; t.__module__ = 'types'; t._pyClass = true;
+  t._jsClass = GenericAlias; t._pyMake = make;
+  GenericAlias.prototype.__adderType__ = t;
+  return t;
+})();
 export class UnionType {
   constructor(args) { this.__args__ = mkTuple(args); }
   __repr__() { return this.__args__.map(_typeArgText).join(' | '); }
@@ -6247,6 +6378,29 @@ export function objectNew(cls, args = []) {
 // Promise it awaits). What the twin did before giving up runs again in the fallback: in practice
 // lookups and pure computation, which is what precedes such a wait.
 export const NEEDS_ASYNC = Object.assign(new AdderError('RuntimeError', 'a value that has to be waited for, in code that cannot wait (run this on the tree-walker)'), { _needsAsync: true });
+// cls.__subclasses__(): each class's direct subclasses, held weakly (a class nothing else
+// references can go), in creation order
+const _subclassRefs = new WeakMap();
+function _noteSubclass(cls) {
+  for (const b of cls._pyBases.length ? cls._pyBases : [pyObjectObj]) {
+    let refs = _subclassRefs.get(b);
+    if (!refs) _subclassRefs.set(b, refs = []);
+    refs.push(new WeakRef(cls));
+  }
+}
+export function pySubclasses(cls) {
+  const refs = _subclassRefs.get(cls);
+  if (!refs) return [];
+  const out = [];
+  for (let i = 0; i < refs.length; i++) {
+    const c = refs[i].deref();
+    // (a class whose bases were reassigned since isn't one any more)
+    if (c && (c._pyBases.length ? c._pyBases.includes(cls) : cls === pyObjectObj)) out.push(c);
+    else { refs.splice(i, 1); i--; }
+  }
+  return out;
+}
+
 export function syncOf(f) {
   if (typeof f !== 'function' || !f._pySync) return f;
   if (Object.hasOwn(f, '_pySyncCall')) return f._pySyncCall;
@@ -6461,6 +6615,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   cls._pyName = name;
   cls._pyClass = true;
   cls._pyBases = (bases || []).filter(b => b?._pyClass && b !== pyObjectObj);   // object is every class's implicit root
+  _noteSubclass(cls);
   // `class X(list): …` — instances must BE Arrays so native list methods dispatch
   cls._pyListBase = (bases || []).some(b => b && (b._pyContainerType === 'list' || b._pyListBase));
   // `class X(str): …` — instances are boxed strings (see _StrBoxProto)
@@ -6776,6 +6931,10 @@ pyTypeObj.__new__ = typeNew;
 // type.__call__(cls, *args) / type.__init__ — what a metaclass's own __call__ / __init__ defer to
 pyTypeObj.__call__ = (cls, ...args) => typeCall(cls, args);
 pyTypeObj.__init__ = () => null;
+// (and from code that can't wait: through the class's sync twins — a metaclass that defers to
+// type.__call__, ABCMeta's, constructs synchronously)
+_defTwin(pyTypeObj.prototype.__call__, function (...a) { return typeCall(this, a, true); });
+_defTwin(pyTypeObj.__call__, (cls, ...args) => typeCall(cls, args, true));
 _typeObjects.type = pyTypeObj;
 
 // X.__new__ when X's MRO defines none. A user class gets object.__new__ (a bare instance; a
@@ -6933,10 +7092,19 @@ export function typeOf(obj) {
   if (!_typeObjects[name]) {
     const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
     t._pyName = name; t._pyClass = true; t.__name__ = name;
+    // a type adder has no table for (itertools.count's): its __dict__ names the protocol methods
+    // its first value has, so collections.abc's checks recognise it (an Iterator)
+    if (obj !== null && typeof obj === 'object') {
+      const ds = _PROTOCOL_DUNDERS.filter((k) => typeof obj[k] === 'function');
+      if (typeof obj.next === 'function' && typeof obj[Symbol.iterator] === 'function') for (const k of ['__iter__', '__next__']) if (!ds.includes(k)) ds.push(k);
+      if (ds.length) Object.defineProperty(t, '_pyInstanceDunders', { value: ds.join(' '), configurable: true });
+    }
     _typeObjects[name] = t;
   }
   return _typeObjects[name];
 }
+const _PROTOCOL_DUNDERS = ['__iter__', '__next__', '__len__', '__contains__', '__getitem__', '__reversed__', '__call__',
+  '__await__', '__aiter__', '__anext__', 'send', 'throw', 'close', 'asend', 'athrow', 'aclose'];
 
 // a metaclass's members, looked up on a class it built (after the class's own): methods bind to
 // the class, properties read with it
@@ -7406,11 +7574,7 @@ export function adderBuiltins(printFn) {
     // id(x): an object's is held aside (a property on it showed as a dict key); equal immutable
     // values share one, as interned ones do in CPython
     id: (obj) => {
-      if ((typeof obj === 'object' && obj !== null) || typeof obj === 'function') {
-        let i = _idOf.get(obj);
-        if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOf.set(obj, i); }
-        return i;
-      }
+      if ((typeof obj === 'object' && obj !== null) || typeof obj === 'function') return _stableBuiltinId(obj);
       const k = `${typeof obj}:${String(obj)}`;
       let i = _idOfValue.get(k);
       if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOfValue.set(k, i); }
@@ -7471,24 +7635,7 @@ export function adderBuiltins(printFn) {
       return r.done ? done(r.value) : r.value;
     },
     input: () => { throw new AdderError('NotImplementedError', 'input() is not supported in the browser'); },
-    issubclass: (c, t) => {
-      if (Array.isArray(t)) return t.some((x) => builtins.issubclass(c, x));
-      if (typeof c !== 'function') throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
-      if (c === t || (t && t._pyName === 'object')) return true;
-      if (c._pyMRO && c._pyMRO.includes(t)) return true;
-      const cn = c._pyName, tn = t && t._pyName;
-      if (cn === 'bool' && tn === 'int') return true;
-      if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
-      if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
-      if (c._jsClass && t && t._jsClass && c._jsClass.prototype instanceof t._jsClass) return true;   // JS-backed types (datetime ⊂ date)
-      // an ABC's own say (a registered virtual subclass, a __subclasshook__)
-      if (t && t._pyClass && t._pyMRO) {
-        let sc = null;
-        try { sc = adderGetAttr(t, '__subclasscheck__'); } catch { sc = null; }
-        if (typeof sc === 'function') { const r = sc(c); if (r === true) return true; }
-      }
-      return false;
-    },
+    issubclass: (c, t) => pyIsSubclass(c, t),
     vars: (obj) => (obj === undefined ? new PyDict() : adderGetAttr(obj, '__dict__')),
     dir: (obj) => _pyDir(obj),
     object: pyObjectObj,
@@ -7548,7 +7695,7 @@ export function adderBuiltins(printFn) {
   // Mark conversion builtins as type objects for isinstance()/type()
   // ONE object per type for the whole program: every module gets its own builtins table, and a
   // fresh `int` per table made `type(1) is int` false in a module once another had been imported
-  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray', 'slice']) {
+  for (const name of ['int', 'float', 'str', 'bool', 'list', 'tuple', 'dict', 'set', 'range', 'object', 'complex', 'bytes', 'frozenset', 'bytearray', 'slice', 'memoryview']) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
     if (name === 'str' && builtins.str) { builtins.str.prototype = _StrBoxProto; builtins.str._pyOwnMembers = new PySet(Object.keys(_StrBoxProto)); }
@@ -7583,6 +7730,12 @@ export function adderBuiltins(printFn) {
 }
 let _stableBuiltins = null;
 const _idOf = new WeakMap(), _idOfValue = new Map();
+// id(obj) for an object (what a default repr shows)
+function _stableBuiltinId(obj) {
+  let i = _idOf.get(obj);
+  if (!i) { i = 0x7f3a00000000 + (++_idCounter) * 16; _idOf.set(obj, i); }
+  return i;
+}
 
 // super(): the next class after `cls` in self's MRO, as a proxy whose attributes are bound to
 // self. Both engines use it (the tree-walker finds cls and self in the method's scope; AIR
@@ -7712,6 +7865,25 @@ _typeObjects.super = _builtinSuper;
 export const _builtinGlobals = Object.assign(() => {}, { _pyName: 'globals', _sentinel: 'globals' });
 export const _builtinLocals = Object.assign(() => {}, { _pyName: 'locals', _sentinel: 'locals' });
 
+export function pyIsSubclass(c, t) {
+  if (Array.isArray(t)) return t.some((x) => pyIsSubclass(c, x));
+  if (typeof c !== 'function') throw new AdderError('TypeError', 'issubclass() arg 1 must be a class');
+  if (c === t || (t && t._pyName === 'object')) return true;
+  if (c._pyMRO && c._pyMRO.includes(t)) return true;
+  const cn = c._pyName, tn = t && t._pyName;
+  if (cn === 'bool' && tn === 'int') return true;
+  if (cn && tn && _EXC_NAMES.includes(cn)) return _excChain(cn).includes(tn);
+  if (c._pyMRO && tn) for (const b of c._pyMRO) if (isBuiltinExcType(b) && _excChain(b._pyName).includes(tn)) return true;
+  if (c._jsClass && t && t._jsClass && c._jsClass.prototype instanceof t._jsClass) return true;   // JS-backed types (datetime ⊂ date)
+  // an ABC's own say (a registered virtual subclass, a __subclasshook__)
+  if (t && t._pyClass && t._pyMRO) {
+    let sc = null;
+    try { sc = adderGetAttr(t, '__subclasscheck__'); } catch { sc = null; }
+    if (typeof sc === 'function') { const r = sc(c); if (r === true || _isThenable(r)) return r; }
+  }
+  return false;
+}
+
 // isinstance / issubclass's second argument: a class, a tuple of them (nested too), a union
 function _checkClassInfo(who, t) {
   if (Array.isArray(t)) { for (const x of t) _checkClassInfo(who, x); return; }
@@ -7726,7 +7898,11 @@ function _pyIsInstance(obj, typeOrTuple) {
   for (const t of types) {
     if (t instanceof UnionType) { if (_pyIsInstance(obj, [...t.__args__])) return true; continue; }
     // an abstract type that recognises its instances structurally (collections.abc.Mapping, ...)
-    if (typeof t === 'function' && typeof t.__instancecheck__ === 'function' && t.__instancecheck__(obj)) return true;
+    if (typeof t === 'function' && typeof t.__instancecheck__ === 'function') {
+      const r = t.__instancecheck__(obj);
+      if (_isThenable(r)) { const rest = types.slice(types.indexOf(t) + 1); return r.then((v) => (pyBool(v) ? true : _pyIsInstance(obj, rest))); }
+      if (r === true || (r !== false && r != null && pyBool(r) === true)) return true;
+    }
     if (typeof t === 'string') {
       if (name === t) return true;
     } else if (typeof t === 'function') {
