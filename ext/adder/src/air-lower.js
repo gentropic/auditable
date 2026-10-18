@@ -190,7 +190,10 @@ class AdderLowerCtx extends BaseLowerCtx {
     // in a class body, a name the body binds is `__cb_<name>`: the methods compiled inside it
     // (JS closures) must not see the class's names — Python's don't — so their `x` reaches the
     // module's x. The members object maps each name back (lowerClassDef).
-    if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._classBodyOf && this._classNames && this._classNames.has(args[0])) {
+    // a comprehension's variable is one binding for the whole comprehension (_lowerCompLoops)
+    if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._compRename && this._compRename.has(args[0])) {
+      args = [this._compRename.get(args[0]), ...args.slice(1)];
+    } else if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._classBodyOf && this._classNames && this._classNames.has(args[0])) {
       args = [`__cb_${args[0]}`, ...args.slice(1)];
     }
     // sync mode (see AWAITED_DUNDERS): no await — the value is taken as it is
@@ -305,6 +308,13 @@ function collectDefines_ad(stmts, defines) {
   }
 }
 
+// a comprehension's renames, less the names a function inside it binds itself
+function _unshadowed(rename, names) {
+  if (!rename || !rename.size) return rename;
+  const out = new Map(rename);
+  for (const n of names) if (n) out.delete(n);
+  return out;
+}
 function collectTargetNames(target, defines) {
   if (!target) return;
   if (target.type === 'Name') { defines.add(target.id); return; }
@@ -1822,7 +1832,7 @@ function lowerClassDef(ctx, node) {
   // createClass may return a promise (a base's __init_subclass__ written in Python)
   // the defining module's __name__ (a module's own; the main program's '__main__')
   const modName = ctx.moduleMirror && ctx.imports.has('__adder_module__')
-    ? emitPyCall(ctx, 'getattr', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', ['__name__'], STRING, l)], l)
+    ? emitPyCall(ctx, 'moduleName', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l)], l)
     : ctx.emit('const', ['__main__'], STRING, l);
   let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj, modName], l).id], DYNAMIC, l);
 
@@ -2551,6 +2561,8 @@ function lowerFuncDef(ctx, node) {
     ctx._syncMode = mode;
     const savedFnLocals = ctx._fnLocalNames;
     ctx._fnLocalNames = _functionLocalNames(node);
+    const savedRename = ctx._compRename;
+    ctx._compRename = _unshadowed(savedRename, ctx._fnLocalNames);
     // its `for` loops may await (hybrid) only if the function is async anyway: top-level, not a
     // method, not a generator, not one analyseSyncFunctions proved sync
     const savedLoopAwait = ctx._loopMayAwait;
@@ -2586,6 +2598,7 @@ function lowerFuncDef(ctx, node) {
     ctx._fnDepth -= 1;
     ctx._syncMode = savedSyncMode;
     ctx._fnLocalNames = savedFnLocals;
+    ctx._compRename = savedRename;
     ctx._loopMayAwait = savedLoopAwait;
     ctx._fnGlobals = savedFnGlobals;
     ctx.symbols = ctx.symbols.pop();
@@ -2709,6 +2722,8 @@ function lowerLambda(ctx, node) {
     ctx._syncMode = mode;
     const savedFnLocals = ctx._fnLocalNames;
     ctx._fnLocalNames = (node.params || []).map((p) => p.name);
+    const savedRename = ctx._compRename;
+    ctx._compRename = _unshadowed(savedRename, [...ctx._fnLocalNames, ...(node.kwonly || []).map((p) => p.name), node.vararg && (node.vararg.name || node.vararg), node.kwarg && (node.kwarg.name || node.kwarg)]);
     ctx._paramDefaults = defaultRefs;
     out.body = captureOps(ctx, () => {
       // Reuse the function param binding logic
@@ -2724,6 +2739,7 @@ function lowerLambda(ctx, node) {
     ctx._lamDepth -= 1;
     ctx._syncMode = savedSyncMode;
     ctx._fnLocalNames = savedFnLocals;
+    ctx._compRename = savedRename;
     ctx.symbols = ctx.symbols.pop();
     ctx._paramDefaults = savedDefaults;
     ctx._twinMode = savedTwinMode;
@@ -2845,6 +2861,26 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   if (genIdx >= node.generators.length) { opts.innermost(); return; }
   const gen = node.generators[genIdx];
   const asyncClause = !!gen.isAsync;   // `async for` in a comprehension: read by __aiter__ / __anext__
+  // Its variables are the comprehension's own (Python 3) and ONE binding each for the whole loop,
+  // as in CPython — a closure made in it sees the last value (`[lambda: i for i in r]`), not the
+  // value of its iteration, which a JS `for (let …)` would give. So each is a temp declared here,
+  // once, and the Python name maps to it while the comprehension's inner part is lowered.
+  const names = new Set();
+  collectTargetNames(gen.target, names);
+  const savedRename = ctx._compRename;
+  const rename = new Map(savedRename || []);
+  for (const n of names) {
+    const t = ctx.makeTempName('cv');
+    emitRaw(ctx, `let ${t};`, t);
+    ctx.symbols.set(t, null);
+    rename.set(n, t);
+  }
+  try {
+    _lowerCompClause(ctx, node, genIdx, opts, gen, asyncClause, rename);
+  } finally { ctx._compRename = savedRename; }
+}
+function _lowerCompClause(ctx, node, genIdx, opts, gen, asyncClause, rename) {
+  const l = ctx.loc(node);
 
   // this clause's filters as nested ifs, then the next clause (or the innermost body)
   const withFilters = (filterIdx) => {
@@ -2863,7 +2899,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
     const name = gen.target.id;
     _emitCountedRange(ctx, gen.iter, l, {
       bindTarget: (cur) => {
-        emitRaw(ctx, `let ${jsSafeName(name)};`, name);
+        ctx._compRename = rename;
         ctx.symbols.set(name, null);
         ctx.emit('store', [name, cur], VOID, l);
       },
@@ -2873,17 +2909,19 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   }
 
   const iterArr = asyncClause ? emitPyCall(ctx, 'aiter', [lowerExpr_ad(ctx, gen.iter)], l) : opts.iterOf(gen, genIdx);
-  let targetName;
+  // (the source is the enclosing scope's — or the outer clauses' — the variables from here on)
+  ctx._compRename = rename;
+  let targetName, fresh = false;
   const body = captureOps(ctx, () => {
     if (gen.target.type === 'Name') {
-      targetName = gen.target.id;
-      ctx.symbols.set(targetName, null);
+      targetName = rename.get(gen.target.id);
+      ctx.symbols.set(gen.target.id, null);
     } else if (gen.target.type === 'Tuple' || gen.target.type === 'List') {
       targetName = ctx.makeTempName('gen');
-      // the unpacked names are this loop's own, declared afresh in its body
+      fresh = true;
       const names = new Set();
       collectTargetNames(gen.target, names);
-      for (const n of names) { emitRaw(ctx, `let ${jsSafeName(n)};`, n); ctx.symbols.set(n, null); }
+      for (const n of names) ctx.symbols.set(n, null);
       const tempLoad = ctx.emit('load', [targetName], DYNAMIC, l);
       for (let i = 0; i < gen.target.elts.length; i++) {
         const elt = gen.target.elts[i];
@@ -2898,7 +2936,7 @@ function _lowerCompLoops(ctx, node, genIdx, opts) {
   });
 
   ctx.emit('for_of_region', [iterArr.id], VOID, l, {
-    body, phis: [], target_name: targetName, fresh_target: true, is_await: !!opts.isAwait || asyncClause, indexed: !opts.isAwait && !asyncClause,
+    body, phis: [], target_name: targetName, fresh_target: fresh, is_await: !!opts.isAwait || asyncClause, indexed: !opts.isAwait && !asyncClause,
   });
 }
 

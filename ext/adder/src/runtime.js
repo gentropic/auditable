@@ -801,6 +801,12 @@ export const _py = {
   exitWith: _exitWith,
   enterWith: ctxEnter,
   aiter: pyAIter,
+  // the defining module's __name__, for a class's __module__ — absent from exec(code, {})'s globals
+  moduleName: (m) => {
+    if (m === null || m === undefined) return undefined;
+    if (m instanceof Map) return m.has('__name__') ? m.get('__name__') : undefined;
+    try { return m.__name__; } catch { return undefined; }
+  },
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
