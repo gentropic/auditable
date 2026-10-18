@@ -3879,7 +3879,7 @@ function pyFormatValue(value, spec) {
     result = Math.trunc(Number(value)).toString();
     if (sign === '+' && !result.startsWith('-')) result = '+' + result;
   } else if (ftype === 'f' || ftype === 'F') {
-    result = Number(value).toFixed(precision >= 0 ? precision : 6);
+    result = _fmtFixed(Number(value), precision >= 0 ? precision : 6);
     if (sign === '+' && !result.startsWith('-')) result = '+' + result;
   } else if (ftype === 'e' || ftype === 'E') {
     const x = Number(value);
@@ -3890,7 +3890,7 @@ function pyFormatValue(value, spec) {
     result = (x < 0 || Object.is(x, -0) ? '-' : '') + _fmtGeneral(Math.abs(x), precision >= 0 ? precision : 6, ftype === 'G', false);
     if (sign === '+' && !result.startsWith('-')) result = '+' + result;
   } else if (ftype === '%') {
-    result = (Number(value) * 100).toFixed(precision >= 0 ? precision : 6) + '%';
+    result = _fmtFixed(Number(value) * 100, precision >= 0 ? precision : 6) + '%';
     if (sign === '+' && !result.startsWith('-')) result = '+' + result;
   } else if (ftype === 'b') {
     result = Math.trunc(Number(value)).toString(2);
@@ -3902,7 +3902,7 @@ function pyFormatValue(value, spec) {
     if (Number(value) < 0) result = '-' + result;
   } else if (ftype === 'c') {
     result = String.fromCodePoint(Number(value));
-  } else if (ftype === 's' || ftype === '') {
+  } else if (ftype === 's' || (ftype === '' && typeof value !== 'number')) {
     result = typeof value === 'string' ? value : pyStr(value);
     if (precision >= 0) result = result.slice(0, precision);
   } else if (ftype === 'n') {
@@ -3910,7 +3910,8 @@ function pyFormatValue(value, spec) {
   } else {
     // auto: number vs string
     if (typeof value === 'number') {
-      result = precision >= 0 ? value.toFixed(precision) : _numRepr(value);
+      if (precision >= 0 && Number.isFinite(value)) result = _signed(value, (a) => _fmtNoType(a, precision));
+      else result = _numRepr(value);
       if (sign === '+' && !result.startsWith('-')) result = '+' + result;
     } else {
       result = pyStr(value);
@@ -5882,7 +5883,7 @@ function pyPercentFormat(fmt, args, pre = null) {
         case 'x': body = Math.trunc(num()).toString(16); if (alt) body = '0x' + body; break;
         case 'X': body = Math.trunc(num()).toString(16).toUpperCase(); if (alt) body = '0X' + body; break;
         case 'e': case 'E': body = _fmtExp(num(), p ?? 6, type === 'E', alt); break;
-        case 'f': case 'F': { const x = num(); body = Number.isFinite(x) ? x.toFixed(p ?? 6) : (Number.isNaN(x) ? 'nan' : 'inf'); if (type === 'F') body = body.toUpperCase(); break; }
+        case 'f': case 'F': { const x = num(); body = Number.isFinite(x) ? _fmtFixed(x, p ?? 6, alt) : (Number.isNaN(x) ? 'nan' : x < 0 ? '-inf' : 'inf'); if (type === 'F') body = body.toUpperCase(); break; }
         case 'g': case 'G': body = _fmtGeneral(num(), p ?? 6, type === 'G', alt); break;
         case 'c': numeric = false; body = typeof v === 'string' ? v : String.fromCodePoint(Number(v)); break;
         case 'r': case 'a': case 's': {
@@ -5910,30 +5911,35 @@ function pyPercentFormat(fmt, args, pre = null) {
   return out;
 }
 
+// The float presentation types from the EXACT value of the double, rounded half to even — as
+// CPython's dtoa (JS's toFixed / toExponential round a tie up: '%.1f' % 2.25 was '2.3', CPython
+// gives '2.2'; and toFixed turns to exponent notation from 1e21). A negative x gets its '-'.
+const _signed = (x, f) => (x < 0 || Object.is(x, -0) ? '-' : '') + f(Math.abs(x));
 // exponent notation as Python writes it: at least two exponent digits (1.5e+06)
 function _fmtExp(x, prec, upper, alt) {
-  if (!Number.isFinite(x)) { const s = Number.isNaN(x) ? 'nan' : 'inf'; return upper ? s.toUpperCase() : s; }
-  let [m, e] = x.toExponential(prec).split('e');
-  if (alt && prec === 0) m += '.';
-  const n = +e;
-  const s = `${m}e${n < 0 ? '-' : '+'}${String(Math.abs(n)).padStart(2, '0')}`;
-  return upper ? s.toUpperCase() : s;
+  if (Number.isNaN(x)) return upper ? 'NAN' : 'nan';
+  return _signed(x, (a) => _fmtFloatExact(a, upper ? 'E' : 'e', prec, !!alt));
 }
 // the 'g' format: precision significant digits, fixed or exponent by the exponent, zeros trimmed
 function _fmtGeneral(x, prec, upper, alt) {
-  if (!Number.isFinite(x)) { const s = Number.isNaN(x) ? 'nan' : 'inf'; return upper ? s.toUpperCase() : s; }
+  if (Number.isNaN(x)) return upper ? 'NAN' : 'nan';
+  return _signed(x, (a) => _fmtFloatExact(a, upper ? 'G' : 'g', prec, !!alt));
+}
+// a precision and no presentation type: 'g', but exponent notation from one digit sooner and a
+// '.0' kept on a whole fixed result — CPython's repr style (format(123.456, '.3') is '1.23e+02',
+// format(2.0, '.3') is '2.0')
+function _fmtNoType(a, prec) {
   const p = prec === 0 ? 1 : prec;
-  if (x === 0) return alt ? (0).toFixed(p - 1) : '0';
-  const exp = +x.toExponential(p - 1).split('e')[1];
-  let s;
-  if (exp >= -4 && exp < p) {
-    s = x.toFixed(p - 1 - exp);
-    if (!alt && s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
-  } else {
-    s = _fmtExp(x, p - 1, false, alt);
-    if (!alt) s = s.replace(/\.?0+e/, 'e');
-  }
-  return upper ? s.toUpperCase() : s;
+  const [, exp] = _exactSig(a, p - 1);
+  if (exp < -4 || exp >= p - 1) return _fmtFloatExact(a, 'e', p - 1, false).replace(/(\.\d*?)0+e/, '$1e').replace('.e', 'e');
+  let s = _fmtFloatExact(a, 'f', p - 1 - exp, false);
+  if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\.$/, '');
+  return s.includes('.') ? s : s + '.0';
+}
+// 'f': fixed point, `prec` digits
+function _fmtFixed(x, prec, alt = false) {
+  if (Number.isNaN(x)) return 'nan';
+  return _signed(x, (a) => _fmtFloatExact(a, 'f', prec, alt));
 }
 
 // ── indexing: one set of rules for both engines ──
