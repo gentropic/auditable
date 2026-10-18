@@ -2762,9 +2762,11 @@ function lowerLambda(ctx, node) {
     ctx._twinMode = savedTwinMode;
     return out;
   };
+  // `lambda: (yield)` is a generator function (its expression is the generator's return value)
+  const isGen = _containsYield([{ type: 'Expr', value: node.body }]);
   // in sync-mode code a lambda is sync mode itself (no twin needed)
   const inSync = ctx._syncMode;
-  const twinned = !inSync && !ctx._lamDepth && !ctx.noTwins;
+  const twinned = !inSync && !ctx._lamDepth && !ctx.noTwins && !isGen;
   const main = lowerLamBody(inSync || null);
 
   // marked a Python function (_py.lam): a lambda in a class body is a method, a builtin isn't
@@ -2774,9 +2776,10 @@ function lowerLambda(ctx, node) {
   // JS consumers.
   const mkLam = (b) => ctx.emit('func_region', [null], DYNAMIC, l, {
     name: null, params: b.params, body: b.body, ret_type: DYNAMIC, needs_arguments: b.needsArgs,
-    is_async: false, is_generator: false,
+    is_async: false, is_generator: isGen,
   });
   const lam = mkLam(main);
+  if (isGen) return emitPyCall(ctx, 'lam', [emitPyCall(ctx, 'genLambda', [lam], l)], l);
   if (!twinned) return emitPyCall(ctx, 'lam', [lam], l);
   const twin = mkLam(lowerLamBody('lambda (sync twin)', true));
   return emitPyCall(ctx, 'lam', [lam, twin], l);

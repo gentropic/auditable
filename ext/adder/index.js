@@ -2420,11 +2420,13 @@ class AdderRange {
     if (this.step === 0) throw new AdderError('ValueError', 'range() arg 3 must not be zero');
     this.length = Math.max(0, Math.ceil((this.stop - this.start) / this.step));
   }
+  // (counted, not stepped to `stop`: past 2**53 adding the step to a float may not move it, and a
+  // range near sys.maxsize iterated forever)
   [Symbol.iterator]() {
-    let i = this.start;
-    const stop = this.stop, step = this.step;
+    let k = 0;
+    const n = this.length, start = this.start, step = this.step;
     return { next() {
-      if (step > 0 ? i < stop : i > stop) { const v = i; i += step; return { value: v, done: false }; }
+      if (k < n) { const v = start + k * step; k++; return { value: v, done: false }; }
       return { done: true };
     }};
   }
@@ -2622,6 +2624,21 @@ class PySlice {
 }
 PySlice.prototype.__adderClass__ = 'slice';
 const mkSlice = (lower, upper, step) => new PySlice(lower, upper, step);
+// the type name of iter(x) for a builtin x
+function _builtinIterName(x) {
+  if (typeof x === 'string') return /^[\x00-\x7f]*$/.test(x) ? 'str_ascii_iterator' : 'str_iterator';
+  if (x instanceof PyByteArray) return 'bytearray_iterator';
+  if (x instanceof Uint8Array) return 'bytes_iterator';
+  if (x instanceof PyTuple) return x.__adderType__ ? null : 'tuple_iterator';
+  if (Array.isArray(x)) {
+    if (x._pyView) return x._pyView === 'keys' ? 'dict_keyiterator' : x._pyView === 'values' ? 'dict_valueiterator' : 'dict_itemiterator';
+    return x.__adderType__ ? null : 'list_iterator';
+  }
+  if (x instanceof AdderRange) return 'range_iterator';
+  if (x instanceof Set) return 'set_iterator';
+  if ((x instanceof Map && !x.__adderType__) || isPlainDict(x)) return 'dict_keyiterator';
+  return null;
+}
 // what reversed() hands back for a sequence: an iterator over its items, last first
 class _PyRevIter {
   constructor(items, name) { this._a = items; this._i = 0; Object.defineProperty(this, '__adderClass__', { value: name, writable: true, configurable: true }); }
@@ -3379,7 +3396,7 @@ function pyTypeName(v) {
   if (typeof v === 'string') return 'str';
   if (v instanceof PyTuple) return v.__adderClass__ || 'tuple';
   if (v instanceof PyByteArray) return 'bytearray';
-  if (Array.isArray(v)) return 'list';
+  if (Array.isArray(v)) return v._pyView ? `dict_${v._pyView}` : 'list';
   if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
   if (v instanceof AdderRange) return 'range';
@@ -3388,7 +3405,7 @@ function pyTypeName(v) {
   if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
   // a compiled generator: a JS generator object
-  { const tag = v[Symbol.toStringTag]; if (tag === 'Generator' || tag === 'AsyncGenerator') return v._pyAsyncGen ? 'async_generator' : 'generator'; }
+  { const tag = v[Symbol.toStringTag]; if (tag === 'Generator' || tag === 'AsyncGenerator') return v._pyIterName || (v._pyAsyncGen ? 'async_generator' : 'generator'); }
   if (v instanceof AdderError) return v.pyType;
   if (v.__adderModule__) return 'module';
   if (isPlainDict(v)) return 'dict';
@@ -3489,6 +3506,7 @@ function pyRepr(v) {
   if (Array.isArray(v) && typeof v.__repr__ === 'function') return v.__repr__();   // namedtuple & co.
   if (v instanceof PyTuple) return v.length === 1 ? `(${pyRepr(v[0])},)` : `(${v.map(pyRepr).join(', ')})`;
   if (v instanceof PyByteArray) return `bytearray(${_bytesRepr(Uint8Array.from(v))})`;
+  if (Array.isArray(v) && v._pyView) return `dict_${v._pyView}([${v.map(pyRepr).join(', ')}])`;
   if (Array.isArray(v)) return `[${v.map(pyRepr).join(', ')}]`;
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (_isListLikeTyped(v)) return _typedRepr(v);
@@ -3571,6 +3589,7 @@ function pyReprMaybe(v) {
   if (Array.isArray(v) && typeof v.__repr__ === 'function') { const r = v.__repr__(); return _isThenable(r) ? r.then(String) : String(r); }
   if (v instanceof PyTuple) return _joinSeq(v, pyReprMaybe, '(', ', ', v.length === 1 ? ',)' : ')');
   if (v instanceof PyByteArray) return pyRepr(v);
+  if (Array.isArray(v) && v._pyView) return _joinSeq(v, pyReprMaybe, `dict_${v._pyView}([`, ', ', '])');
   if (Array.isArray(v)) return _joinSeq(v, pyReprMaybe, '[', ', ', ']');
   if (v instanceof Map && typeof v.__repr__ === 'function') return v.__repr__();
   if (v instanceof Map) {
@@ -5473,7 +5492,7 @@ const _updArgs = (args) => {
 };
 const _MAP_METHODS = {
   keys: [0, 0, (map) => _dictView([...map.keys()], 'keys')],
-  values: [0, 0, (map) => [...map.values()]],
+  values: [0, 0, (map) => _dictView([...map.values()], 'values')],
   items: [0, 0, (map) => _dictView([...map.entries()].map(mkTuple), 'items')],
   get: [1, 2, (map, k, def) => (map.has(k) ? map.get(k) : (def !== undefined ? def : null))],
   pop: [1, 2, (map, k, def) => { if (map.has(k)) { const v = map.get(k); map.delete(k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }],
@@ -5513,7 +5532,7 @@ const _dictUpdate = maybeSync(function* (set, args) {
 });
 const _OBJ_DICT_METHODS = {
   keys: [0, 0, (obj) => _dictView(Object.keys(obj), 'keys')],
-  values: [0, 0, (obj) => Object.values(obj)],
+  values: [0, 0, (obj) => _dictView(Object.values(obj), 'values')],
   items: [0, 0, (obj) => _dictView(Object.entries(obj).map(mkTuple), 'items')],
   get: [1, 2, (obj, k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null))],
   pop: [1, 2, (obj, k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }],
@@ -5703,8 +5722,10 @@ function pyPow(a, b, mod) {
 }
 // dict.keys() / dict.items() are snapshot lists here, tagged as views so they are also sets:
 // `d.keys() - other.keys()`, `d.items() & s`, `d.keys() == {…}` work as in Python
+// (each is its own type — dict_keys, dict_values, dict_items — not a list: type(), isinstance(),
+// repr say so; keys and items are also sets, values compare by identity, as CPython's)
 function _dictView(arr, kind) { Object.defineProperty(arr, '_pyView', { value: kind }); return arr; }
-const _isDictView = (x) => Array.isArray(x) && x._pyView !== undefined;
+const _isDictView = (x) => Array.isArray(x) && (x._pyView === 'keys' || x._pyView === 'items');
 // for a set operator with a view on one side: both operands as sets (any iterable is
 // accepted opposite a view, as CPython's dict_keys operators do) — or null when neither is a view
 function _dictViewOperands(a, b) {
@@ -6092,6 +6113,8 @@ function pyEq(a, b) {
     return r2 && typeof r2.then === 'function' ? r2.then(last) : last(r2);
   }
   if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
+  // a dict's values view equals only itself (it is neither a sequence nor a set)
+  if ((Array.isArray(a) && a._pyView === 'values') || (Array.isArray(b) && b._pyView === 'values')) return a === b;
   if (_isDictView(a) && (b instanceof Set || _isDictView(b)) || _isDictView(b) && a instanceof Set) { const [sa, sb] = _dictViewOperands(a, b); return pyEq(sa, sb); }
   if (Array.isArray(a) && Array.isArray(b)) {
     if ((a instanceof PyTuple) !== (b instanceof PyTuple)) return false;
@@ -9702,12 +9725,18 @@ function adderBuiltins(printFn) {
     iter: (obj) => {
       if (obj !== null && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function' && (typeof obj.__next__ === 'function' || typeof obj.next === 'function')) return obj;
       if (isUserIterable(obj) && typeof obj.__iter__ === 'function') return obj.__iter__();
+      // an iterator (one of adder's own iterator objects too): iter(it) is it
+      if (obj !== null && typeof obj === 'object' && typeof obj.__next__ === 'function' && typeof obj.__iter__ === 'function') return obj.__iter__();
       // iter() itself raises for a non-iterable (`try: iter(x) except TypeError:` is the idiom);
       // pyIter is a generator, so its own check would only fire at the first next()
       if (obj === null || obj === undefined || (typeof obj !== 'object' && typeof obj !== 'string' && !(typeof obj === 'function' && _metaIter(obj)))) {
         throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
       }
-      return pyIter(obj);
+      const it = pyIter(obj);
+      // the iterator's type, as CPython names it (type(iter([])) is list_iterator)
+      const name = _builtinIterName(obj);
+      if (name && it && typeof it === 'object' && Object.isExtensible(it)) Object.defineProperty(it, '_pyIterName', { value: name, configurable: true });
+      return it;
     },
     next: (iter, def) => {
       if (def !== null && typeof def === 'object' && def._kw === true) {
@@ -11490,6 +11519,15 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
 }
 
 function _makeLambda(node, scope, defaults = {}) {
+  // `lambda: (yield)` is a generator function: a def whose body returns the expression
+  if (_hasYield(node.body)) {
+    // (a bare `(yield)` / `(yield from …)` as a statement: the tree-walker takes yield there only)
+    const bare = node.body.type === 'Yield' || node.body.type === 'YieldFrom';
+    const def = { ...node, type: 'FunctionDef', name: '<lambda>', decorators: [], body: [{ type: bare ? 'Expr' : 'Return', value: node.body, line: node.line, col: node.col }] };
+    const gen = _makeGeneratorFunction(def, scope, defaults);
+    gen._pyName = '<lambda>';
+    return gen;
+  }
   const fn = async function (...callArgs) {
     const localScope = new AdderScope(scope);
     await _bindParams(node, callArgs, localScope, defaults);
@@ -13149,6 +13187,8 @@ const _py = {
   // `from m import *` at a module's top level: its names onto the module object
   starInto: (mod, names) => { for (const k of Object.keys(names)) mod[k] = names[k]; return null; },
   // the defining module's __name__, for a class's __module__ — absent from exec(code, {})'s globals
+  // a generator lambda: its generator objects carry the name <lambda>
+  genLambda: (f) => { genProto(f, '<lambda>'); return f; },
   // an imaginary literal: 2j
   imag: (y) => new Complex(0, y),
   moduleName: (m) => {
@@ -26907,9 +26947,11 @@ function lowerLambda(ctx, node) {
     ctx._twinMode = savedTwinMode;
     return out;
   };
+  // `lambda: (yield)` is a generator function (its expression is the generator's return value)
+  const isGen = _containsYield([{ type: 'Expr', value: node.body }]);
   // in sync-mode code a lambda is sync mode itself (no twin needed)
   const inSync = ctx._syncMode;
-  const twinned = !inSync && !ctx._lamDepth && !ctx.noTwins;
+  const twinned = !inSync && !ctx._lamDepth && !ctx.noTwins && !isGen;
   const main = lowerLamBody(inSync || null);
 
   // marked a Python function (_py.lam): a lambda in a class body is a method, a builtin isn't
@@ -26919,9 +26961,10 @@ function lowerLambda(ctx, node) {
   // JS consumers.
   const mkLam = (b) => ctx.emit('func_region', [null], DYNAMIC, l, {
     name: null, params: b.params, body: b.body, ret_type: DYNAMIC, needs_arguments: b.needsArgs,
-    is_async: false, is_generator: false,
+    is_async: false, is_generator: isGen,
   });
   const lam = mkLam(main);
+  if (isGen) return emitPyCall(ctx, 'lam', [emitPyCall(ctx, 'genLambda', [lam], l)], l);
   if (!twinned) return emitPyCall(ctx, 'lam', [lam], l);
   const twin = mkLam(lowerLamBody('lambda (sync twin)', true));
   return emitPyCall(ctx, 'lam', [lam, twin], l);

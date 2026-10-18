@@ -817,6 +817,8 @@ export const _py = {
   // `from m import *` at a module's top level: its names onto the module object
   starInto: (mod, names) => { for (const k of Object.keys(names)) mod[k] = names[k]; return null; },
   // the defining module's __name__, for a class's __module__ — absent from exec(code, {})'s globals
+  // a generator lambda: its generator objects carry the name <lambda>
+  genLambda: (f) => { genProto(f, '<lambda>'); return f; },
   // an imaginary literal: 2j
   imag: (y) => new Complex(0, y),
   moduleName: (m) => {

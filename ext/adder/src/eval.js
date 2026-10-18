@@ -1455,6 +1455,15 @@ async function _bindParams(node, callArgs, localScope, defaults = {}) {
 }
 
 function _makeLambda(node, scope, defaults = {}) {
+  // `lambda: (yield)` is a generator function: a def whose body returns the expression
+  if (_hasYield(node.body)) {
+    // (a bare `(yield)` / `(yield from …)` as a statement: the tree-walker takes yield there only)
+    const bare = node.body.type === 'Yield' || node.body.type === 'YieldFrom';
+    const def = { ...node, type: 'FunctionDef', name: '<lambda>', decorators: [], body: [{ type: bare ? 'Expr' : 'Return', value: node.body, line: node.line, col: node.col }] };
+    const gen = _makeGeneratorFunction(def, scope, defaults);
+    gen._pyName = '<lambda>';
+    return gen;
+  }
   const fn = async function (...callArgs) {
     const localScope = new AdderScope(scope);
     await _bindParams(node, callArgs, localScope, defaults);
