@@ -2712,6 +2712,9 @@ class PyDict extends Map {
 // obj.__dict__ / vars(obj): a LIVE dict over an object's attributes — reads and writes go to the
 // object (self.__dict__.update(kw), self.__dict__[k] = v), as CPython's instance dict does. The
 // engines' own markers on the object are not attributes.
+// a name Python code can see on a JS class: a dunder, or a public name — not the engine's own
+// bookkeeping (__adderType__, _jsClass, a JS class's _private fields, its constructor)
+const _pyVisibleName = (n) => n !== 'constructor' && !_ENGINE_KEYS.has(n) && (!n.startsWith('_') || /^__\w+__$/.test(n));
 const _ENGINE_KEYS = new Set(['__adderClass__', '__adderType__', '__adderModule__', '__adderMeta__', '_isExcClass', '_jsClass', '_genName', '_frozen', '_isGenerator', '_sentinel']);
 const _attrHidden = (k) => _ENGINE_KEYS.has(k) || k.startsWith('_py');
 const _FN_SLOTS = new Set(['__defaults__', '__kwdefaults__', '__name__', '__qualname__', '__module__', '__doc__', '__annotations__',
@@ -3116,7 +3119,7 @@ function _complexNew(...args) {
     }
   }
   if (real === undefined) real = 0;
-  if (real instanceof Complex && imag === undefined) return real;
+  if (real instanceof Complex && imag === undefined && Object.getPrototypeOf(real) === Complex.prototype) return real;
   const rs = strValue(real);
   if (rs !== null) {
     if (imag !== undefined) throw new AdderError('TypeError', "complex() can't take second arg if first is a string");
@@ -3143,7 +3146,7 @@ function _complexNew(...args) {
       return new Complex(cr[0], ciReal);
     });
   };
-  if (real !== null && typeof real === 'object' && !(real instanceof Complex) && typeof real.__complex__ === 'function') {
+  if (real !== null && typeof real === 'object' && Object.getPrototypeOf(real) !== Complex.prototype && typeof real.__complex__ === 'function') {
     const chk = (v) => {
       if (!(v instanceof Complex)) throw new AdderError('TypeError', `__complex__ returned non-complex (type ${pyTypeName(v)})`);
       return finish(v);
@@ -3264,7 +3267,7 @@ function pyTypeName(v) {
   if (v instanceof Map) return v.__adderClass__ || 'dict';
   if (v instanceof Set) return v._frozen ? 'frozenset' : 'set';
   if (v instanceof AdderRange) return 'range';
-  if (v instanceof Complex) return 'complex';
+  if (v instanceof Complex) return v.__adderClass__ || 'complex';
   if (v instanceof Uint8Array) return 'bytes';
   if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
@@ -4261,6 +4264,18 @@ function adderGetAttr(obj, attr) {
       };
       fn._pyName = `${tn}.${attr}`;
       return fn;
+    }
+    if (obj._jsClass && obj._jsClass !== Complex && !(attr in obj) && _pyVisibleName(attr) && attr in obj._jsClass.prototype) {
+      const d = Object.getOwnPropertyDescriptor(obj._jsClass.prototype, attr);
+      if (d && typeof d.value === 'function') {
+        const Cls = obj._jsClass;
+        const fn = (self, ...a) => {
+          if (!(self instanceof Cls)) throw new AdderError('TypeError', `descriptor '${attr}' for '${obj._pyName}' objects doesn't apply to a '${pyTypeName(self)}' object`);
+          return d.value.apply(self, a);
+        };
+        fn._pyName = `${obj._pyName}.${attr}`;
+        return fn;
+      }
     }
     if (tn === 'complex' && typeof Complex.prototype[attr] === 'function' && attr !== 'constructor') {
       const fn = (self, ...a) => {
@@ -8320,6 +8335,17 @@ function objectNew(cls, args = []) {
     Object.defineProperty(box, '_pyStrValue', { value: String(v), enumerable: false, writable: false, configurable: false });
     return box;
   }
+  if (cls._pyJsBase) {
+    const jb = cls._pyJsBase;
+    const place = (o) => {
+      Object.setPrototypeOf(o, cls.prototype);
+      Object.defineProperty(o, '__adderClass__', { value: cls._pyName, writable: true, configurable: true });
+      Object.defineProperty(o, '__adderType__', { value: cls, writable: true, configurable: true });
+      return o;
+    };
+    const made = jb._pyMake ? jb._pyMake(args) : new jb._jsClass(...args);
+    return _isThenable(made) ? made.then(place) : place(made);
+  }
   let instance;
   if (cls._pyListBase) instance = Object.assign(Object.setPrototypeOf([], cls.prototype), { __adderClass__: cls._pyName, __adderType__: cls });
   else if (cls._pyDictBase) {
@@ -8386,10 +8412,11 @@ function typeCall(cls, args, sync = false) {
   if (!nf) {                                         // the common case: no __new__ anywhere
     // object() takes no arguments: a class with neither __new__ nor __init__ refuses them
     if (args.length && typeof cls.prototype.__init__ !== 'function' && !(args.length === 1 && args[0] && args[0]._kw === true && Object.keys(args[0]).length === 1)
-        && !cls._pyListBase && !cls._pyDictBase && !cls._pyStrBase && !cls._pyTupleBase && !isExceptionClass(cls)) {
+        && !cls._pyListBase && !cls._pyDictBase && !cls._pyStrBase && !cls._pyTupleBase && !cls._pyJsBase && !isExceptionClass(cls)) {
       throw new AdderError('TypeError', `${cls._pyName || 'object'}() takes no arguments`);
     }
-    return finish(objectNew(cls, args));
+    const o = objectNew(cls, args);
+    return _isThenable(o) ? o.then(finish) : finish(o);
   }
   const inst = nf(cls, ...args);
   return inst && typeof inst.then === 'function' ? inst.then(finish) : finish(inst);
@@ -8563,6 +8590,17 @@ function buildClass(name, bases, members, annotations, opts = {}) {
   // and a tuple subclass's are tuples (PyTuple arrays) with its prototype over PyTuple's
   cls._pyTupleBase = !cls._pyListBase && (bases || []).some(b => b && (b === _stableTypes.tuple || b._pyTupleBase));
   if (cls._pyTupleBase) Object.setPrototypeOf(cls.prototype, PyTuple.prototype);
+  // `class F(Fraction)`, `class C(complex)`, `class A(array.array)`: a type adder implements as a JS
+  // class. Instances ARE instances of the JS class — its constructor makes them (objectNew) — with
+  // this class's prototype over the JS one's, so its methods, and every `instanceof` test, find them.
+  // What the JS methods return is the base type, as a builtin's are in CPython.
+  if (!cls._pyListBase && !cls._pyDictBase && !cls._pyStrBase && !cls._pyTupleBase) {
+    const jsBase = (bases || []).find((b) => b && (b._pyJsBase || b._jsClass));
+    if (jsBase) {
+      cls._pyJsBase = jsBase._pyJsBase || jsBase;
+      Object.setPrototypeOf(cls.prototype, cls._pyJsBase._jsClass.prototype);
+    }
+  }
   if (opts.meta) cls.__adderMeta__ = opts.meta;
 
   const mro = computeMRO(cls);
@@ -8865,6 +8903,9 @@ function _inheritedNew(T) {
     return f;
   }
   const f = (c, ...a) => {
+    // a JS-backed type (Fraction, datetime, complex): its constructor makes the subclass's instance,
+    // keyword arguments and all
+    if (c && c !== T && c._pyJsBase && (T._jsClass || T._pyJsBase)) return objectNew(c, a);
     if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
     if (T === _stableTypes.str && c && c !== T && c._pyStrBase) return objectNew(c, a);
     if (T._pyName === 'tuple' && c && c !== T) return c._pyTupleBase ? _tupleSubInstance(c, a.length ? pyIter(a[0]) : []) : (() => {
@@ -9570,6 +9611,11 @@ function adderBuiltins(printFn) {
     if (builtins[name]) { builtins[name]._pyName = name; builtins[name]._pyClass = true; builtins[name].__name__ = name; _typeObjects[name] = _stableTypes[name] = builtins[name]; }
     if (name === 'str' && builtins.str) { builtins.str.prototype = _StrBoxProto; builtins.str._pyOwnMembers = new PySet(Object.keys(_StrBoxProto)); }
   }
+  if (_stableTypes.complex && !_stableTypes.complex._jsClass) {
+    _stableTypes.complex._jsClass = Complex;
+    // a fresh Complex for a subclass's instance (complex(c) hands back c itself)
+    _stableTypes.complex._pyMake = (args) => { const c = _complexNew(...args); return _isThenable(c) ? c.then((v) => new Complex(v.real, v.imag)) : new Complex(c.real, c.imag); };
+  }
   for (const name of _EXC_NAMES) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (_typeObjects[name] && _typeObjects[name]._pyClass) { builtins[name] = _stableTypes[name] = _typeObjects[name]; continue; }
@@ -9668,6 +9714,10 @@ function pySuper(cls, self, ...extra) {
           const sd = Object.getOwnPropertyDescriptor(base, name);
           if (sd && sd.get) return sd.get.call(self);                 // a classmethod, bound to self
           if (sd && typeof sd.value === 'function' && base._pyOwnMembers && base._pyOwnMembers.has(name)) return sd.value;
+        }
+        if (base._jsClass && self && typeof self === 'object' && _pyVisibleName(name) && name in base._jsClass.prototype) {
+          const v = Reflect.get(base._jsClass.prototype, name, self);
+          return typeof v === 'function' && !v._pyClass ? _bindTwin(v, self) : v;
         }
         if (!base.prototype) continue;
         const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
