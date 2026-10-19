@@ -15,6 +15,7 @@ import './stdlib-sys.js';
 import './stdlib-pickle.js';
 import './stdlib-net.js';
 import './stdlib-py.js';
+import './stdlib-pyair.js';
 import {
   AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr, mkSlice, PySlice, seqSliceSet, pyInplace,
   pyBool, pyBoolMaybe, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
@@ -23,7 +24,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenModuleHooks, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
+  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -1969,7 +1970,7 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   // one engine); a module AIR can't lower is tree-walked instead
   let compiled = null;
   if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
-    try { compiled = _moduleCompiler(source, { kind: 'module', package: pkg }, parse); } catch (e) {
+    try { compiled = _moduleCompiler(source, { kind: 'module', package: pkg, artifact: info.artifact || null }, parse); } catch (e) {
       if (e instanceof AdderError && e.pyType === 'SyntaxError') throw e;
       compiled = null;
     }
@@ -2086,7 +2087,9 @@ export async function findModule(name) {
     if (cache[name]) return cache[name];
     if (fz.source === undefined) fz.source = await _gunzipBase64(fz.gz);
     if (cache[name]) return cache[name];
-    const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [] } : {});
+    // (on AIR, a module of the precompiled hot set runs its build-time compiled form: stdlib-pyair.js)
+    const artifact = Object.hasOwn(frozenPyCompiled, name) ? frozenPyCompiled[name] : null;
+    const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [], artifact } : { artifact });
     if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
     if (Object.hasOwn(frozenModuleHooks, name)) await frozenModuleHooks[name](mod);
     return mod;

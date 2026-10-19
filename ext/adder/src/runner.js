@@ -160,28 +160,26 @@ export function _airCompile(ast, src, ticks) {
 // tree-walker's async ones (a cell reading a tree-walked @property got a Promise). Returns null
 // when no AIR is reachable; throws when the module can't be lowered (eval.js then tree-walks it).
 // Works with AIR attached (attachAir) or through the browser hooks auditable installs.
-//   src: the source; info: { package, kind: 'module' | 'exec' | 'eval' }; parse(): its AST, called
-//   only when the module isn't in the compile cache (a cached module is never parsed again)
+//   src: the source; info: { package, kind: 'module' | 'exec' | 'eval', artifact? }; parse(): its
+//   AST, called only when the module isn't in the compile cache (a cached module is never parsed
+//   again). info.artifact: the module precompiled at build time (stdlib-pyair.js) — used as is.
 // Gives { run(lookup, moduleObj), doc } — doc the module's docstring.
 function _airCompileModule(src, info, parse) {
-  const w = typeof window !== 'undefined' ? window : null;
-  const runPasses = _airLib ? _airLib.runPasses : (w && w._airRePropagate ? (m) => w._airRePropagate(m) : null);
-  const emitJS = _airLib ? _airLib.emitJS : (w && w._airEmit) || null;
-  const needsAsync = _airLib ? _airLib.needsAsync : (w && w._airNeedsAsync) || null;
-  if (!runPasses || !emitJS || !needsAsync) return null;
+  if (!_airReachable()) return null;
+  let c;
+  if (info.artifact) {
+    // (made into a function once, on its first import)
+    c = info.artifact._made || (info.artifact._made = { imports: info.artifact.imports, doc: info.artifact.doc, fn: new Function(`return ${info.artifact.code}`)() });
+    return _compiledModule(c);
+  }
   const key = `${info.kind || 'module'}\0${info.package || ''}\0${src}`;
-  let c = _compiled.get(key);
+  c = _compiled.get(key);
   if (c !== undefined) { _compiled.delete(key); _compiled.set(key, c); }   // most recently used last
   else {
     const ast = parse();     // a SyntaxError propagates: the caller reports it
     try {
-      const mod = lowerAdder(ast, src, { module: { package: info.package, isBuiltin: _isBuiltinName } });
-      runPasses(mod);
-      const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
-      const scopeKeys = ['_py', ...imports];
-      const body = emitJS(mod, scopeKeys, [], { hinted: false });
-      const Ctor = needsAsync(mod) ? _AsyncFunction : Function;
-      c = { imports, fn: new Ctor(...scopeKeys, body), doc: _docOf(ast), size: src.length + body.length };
+      const m = compileModuleSource(src, info, ast);
+      c = { imports: m.imports, fn: new (m.async ? _AsyncFunction : Function)('_py', ...m.imports, m.body), doc: m.doc, size: src.length + m.body.length };
     } catch (e) {
       c = { error: e, size: src.length };   // remembered too: a module AIR can't lower isn't lowered again
     }
@@ -193,15 +191,36 @@ function _airCompileModule(src, info, parse) {
     }
   }
   if (c.error) throw c.error;
-  const { imports, fn } = c;
-  // run(lookup): lookup(pythonName) gives each free name's value (builtins, module globals);
-  // `__adder_module__` is the live module object the bindings are mirrored onto
-  return {
-    doc: c.doc,
-    run: (lookup, moduleObj) => fn(_py, ...imports.map((n) => (n === '__adder_module__' ? moduleObj : lookup(pyNameOf(n))))),
-  };
+  return _compiledModule(c);
 }
 setModuleCompiler(_airCompileModule);
+// run(lookup): lookup(pythonName) gives each free name's value (builtins, module globals);
+// `__adder_module__` is the live module object the bindings are mirrored onto
+function _compiledModule({ imports, fn, doc }) {
+  return { doc, run: (lookup, moduleObj) => fn(_py, ...imports.map((n) => (n === '__adder_module__' ? moduleObj : lookup(pyNameOf(n))))) };
+}
+// AIR as this host has it: attached (attachAir), or the browser hooks auditable installs
+function _airHooks() {
+  if (_airLib) return _airLib;
+  const w = typeof window !== 'undefined' ? window : null;
+  if (!w || !w._airRePropagate || !w._airEmit || !w._airNeedsAsync) return null;
+  return { runPasses: (m) => w._airRePropagate(m), emitJS: w._airEmit, needsAsync: w._airNeedsAsync };
+}
+const _airReachable = () => _airHooks() !== null;
+// Compile a module's source with AIR, exactly as an import does: { imports (its free names, the
+// function's parameters after _py, in order), async, body (the function body's JS), doc }. Shared
+// with gen-pyair.js, which precompiles the frozen hot set with it — so a build-time artifact is
+// what the import would have compiled. ast: the source's, when the caller has it.
+export function compileModuleSource(src, info = {}, ast = null) {
+  const air = _airHooks();
+  if (!air) throw new AdderRuntimeError('compiling a module needs @gcu/air: call attachAir(air) first');
+  if (!ast) ast = adderParse(src);
+  const mod = lowerAdder(ast, src, { module: { package: info.package || '', isBuiltin: _isBuiltinName } });
+  air.runPasses(mod);
+  const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
+  const body = air.emitJS(mod, ['_py', ...imports], [], { hinted: false });
+  return { imports, async: !!air.needsAsync(mod), body, doc: _docOf(ast) };
+}
 // The compile cache: what compiling a source gave (its function — a factory: each run makes the
 // module's objects afresh — or the error that sent it to the tree-walker), by kind, package and
 // source text, least recently used dropped past _COMPILED_MAX characters of source + JS. Reused by

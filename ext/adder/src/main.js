@@ -15,6 +15,7 @@ import './stdlib-sys.js';
 import './stdlib-pickle.js';
 import './stdlib-net.js';
 import './stdlib-py.js';   // GENERATED from pylib/ by gen-pylib.js
+import './stdlib-pyair.js';   // GENERATED (the precompiled hot set) by gen-pyair.js
 import './runner.js';   // run / evalExpr / compile / isIncomplete — the library API, sandbox options included
 import './highlight.js';
 import './air-lower.js';

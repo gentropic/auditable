@@ -12,6 +12,8 @@ const srcDir = path.join(__dirname, 'src');
 
 // the Python-source stdlib (pylib/) → src/stdlib-py.js, before the bundle reads it
 await import('./gen-pylib.js');
+// ...and its hot set precompiled for AIR → src/stdlib-pyair.js (unchanged modules skip terser)
+await import('./gen-pyair.js');
 const mainPath = path.join(srcDir, 'main.js');
 const mainSrc = fs.readFileSync(mainPath, 'utf8');
 
