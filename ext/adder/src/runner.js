@@ -166,7 +166,7 @@ function _airCompileModule(ast, src, info) {
   const emitJS = _airLib ? _airLib.emitJS : (w && w._airEmit) || null;
   const needsAsync = _airLib ? _airLib.needsAsync : (w && w._airNeedsAsync) || null;
   if (!runPasses || !emitJS || !needsAsync) return null;
-  const mod = lowerAdder(ast, src, { module: { package: info.package } });
+  const mod = lowerAdder(ast, src, { module: { package: info.package, isBuiltin: _isBuiltinName } });
   runPasses(mod);
   const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
   const scopeKeys = ['_py', ...imports];
@@ -180,6 +180,8 @@ function _airCompileModule(ast, src, info) {
   };
 }
 setModuleCompiler(_airCompileModule);
+// the builtin namespace's names: what an imported module may read without defining
+function _isBuiltinName(n) { return n in adderModules.builtins; }
 
 export async function _airCall(compiled, opts, bindings) {
   const args = [_py, ...compiled.imports.map((name) => bindings[pyNameOf(name)])];

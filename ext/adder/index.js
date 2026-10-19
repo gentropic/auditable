@@ -13360,6 +13360,13 @@ function _globalsOf(mod) {   // one live view per module: globals() is globals()
 // a module-level name, read through the module object: what globals() set wins over the
 // compiled binding (and a builtin is the binding when the module has no such name)
 function _globalLoad(mod, name, v) { return Object.hasOwn(mod, name) && mod[name] !== undefined ? mod[name] : v; }
+// a free name an imported module reads that is no builtin: bound by the importing machinery only
+// when something supplies it (a module dunder, a star import, globals()) — otherwise NameError,
+// where compiled code would see undefined
+function _freeName(v, name) {
+  if (v === undefined) throw new AdderError('NameError', `name '${name}' is not defined`);
+  return v;
+}
 function _localsOf(names, values) {
   const o = {};
   for (let i = 0; i < names.length; i++) if (values[i] !== undefined) o[names[i]] = values[i];
@@ -13661,7 +13668,7 @@ const _py = {
   callMethod: _callMethod,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
-  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, freeName: _freeName, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,
@@ -24747,7 +24754,7 @@ function _airCompileModule(ast, src, info) {
   const emitJS = _airLib ? _airLib.emitJS : (w && w._airEmit) || null;
   const needsAsync = _airLib ? _airLib.needsAsync : (w && w._airNeedsAsync) || null;
   if (!runPasses || !emitJS || !needsAsync) return null;
-  const mod = lowerAdder(ast, src, { module: { package: info.package } });
+  const mod = lowerAdder(ast, src, { module: { package: info.package, isBuiltin: _isBuiltinName } });
   runPasses(mod);
   const imports = [...(mod.imports || [])].filter((n) => !_JS_INTRINSICS.has(n));
   const scopeKeys = ['_py', ...imports];
@@ -24761,6 +24768,8 @@ function _airCompileModule(ast, src, info) {
   };
 }
 setModuleCompiler(_airCompileModule);
+// the builtin namespace's names: what an imported module may read without defining
+function _isBuiltinName(n) { return n in adderModules.builtins; }
 
 async function _airCall(compiled, opts, bindings) {
   const args = [_py, ...compiled.imports.map((name) => bindings[pyNameOf(name)])];
@@ -25708,6 +25717,9 @@ function lowerAdder(ast, source, opts) {
   // its package at compile time; its bindings are mirrored onto `__adder_module__`.
   if (opts && opts.module) {
     ctx.modulePackage = opts.module.package || '';
+    // opts.module.isBuiltin(name): a free name that is no builtin is read checked (NameError when
+    // nothing binds it); without the predicate every free name is taken as bound
+    ctx.isBuiltin = opts.module.isBuiltin || null;
     ctx.moduleMirror = true;
     ctx.imports.add('__adder_module__');
   }
@@ -25978,10 +25990,14 @@ function lowerExpr_ad(ctx, node) {
         if (cell) return emitPyCall(ctx, 'cellGet', [ctx.emit('load', [cell], DYNAMIC, l)], l);
       }
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
-      if (!ctx.symbols.has(name) && !isForwardRef) ctx.imports.add(name);
-      const raw = ctx.emit('load', [name], DYNAMIC, l);
+      const free = !ctx.symbols.has(name) && !isForwardRef;
+      if (free) ctx.imports.add(name);
+      let raw = ctx.emit('load', [name], DYNAMIC, l);
       if (ctx.usesGlobals && name !== '__adder_module__' && _resolvesToModule(ctx, name)) {
-        return emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
+        raw = emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
+      }
+      if (free && ctx.isBuiltin && name !== '__adder_module__' && !ctx.defines.has(name) && !ctx.isBuiltin(name)) {
+        raw = emitPyCall(ctx, 'freeName', [raw, ctx.emit('const', [name], STRING, l)], l);
       }
       return raw;
     }

@@ -76,6 +76,22 @@ const FILES = {
   // a re-export module: `import *` (the tree-walker's: AIR declines it)
   '/site/reexport.py': 'from money import *\nfrom pkg.core import *\n',
   '/site/data_pkg/table.txt': 'hello resources',
+  // a free name nothing binds: NameError when read, not None — at module level, in a function, in
+  // a default; a builtin and a module dunder still read
+  '/site/freenames.py': [
+    'out = []',
+    'try:',
+    '    out.append(not_defined)',
+    'except NameError as e:',
+    '    out.append(str(e))',
+    'def f():',
+    '    return also_not_defined',
+    'def g():',
+    '    def h(v=1, x=nor_this):',
+    '        pass',
+    'def ok():',
+    '    return len("ab"), __name__',
+  ].join('\n'),
 };
 
 async function runBoth(code) {
@@ -168,6 +184,19 @@ describe('adder packages over a VFS', () => {
       'VE boom False',
       '',
     ].join('\n'));
+  });
+
+  it('a module reading a name nothing defines raises NameError', async () => {
+    const out = await runBoth([
+      'import freenames',
+      'print(freenames.out, freenames.ok())',
+      'for fn in (freenames.f, freenames.g):',
+      '    try:',
+      '        fn()',
+      '    except NameError as e:',
+      '        print(e)',
+    ].join('\n'));
+    assert.equal(out, ["[\"name 'not_defined' is not defined\"] (2, 'freenames')", "name 'also_not_defined' is not defined", "name 'nor_this' is not defined", ''].join('\n'));
   });
 
   it('importlib and __import__', async () => {

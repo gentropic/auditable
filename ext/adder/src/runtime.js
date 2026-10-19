@@ -535,6 +535,13 @@ function _globalsOf(mod) {   // one live view per module: globals() is globals()
 // a module-level name, read through the module object: what globals() set wins over the
 // compiled binding (and a builtin is the binding when the module has no such name)
 function _globalLoad(mod, name, v) { return Object.hasOwn(mod, name) && mod[name] !== undefined ? mod[name] : v; }
+// a free name an imported module reads that is no builtin: bound by the importing machinery only
+// when something supplies it (a module dunder, a star import, globals()) — otherwise NameError,
+// where compiled code would see undefined
+function _freeName(v, name) {
+  if (v === undefined) throw new AdderError('NameError', `name '${name}' is not defined`);
+  return v;
+}
 function _localsOf(names, values) {
   const o = {};
   for (let i = 0; i < names.length; i++) if (values[i] !== undefined) o[names[i]] = values[i];
@@ -837,7 +844,7 @@ export const _py = {
   callMethod: _callMethod,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
-  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, localsOf: _localsOf,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, freeName: _freeName, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,

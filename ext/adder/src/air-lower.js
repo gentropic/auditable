@@ -619,6 +619,9 @@ export function lowerAdder(ast, source, opts) {
   // its package at compile time; its bindings are mirrored onto `__adder_module__`.
   if (opts && opts.module) {
     ctx.modulePackage = opts.module.package || '';
+    // opts.module.isBuiltin(name): a free name that is no builtin is read checked (NameError when
+    // nothing binds it); without the predicate every free name is taken as bound
+    ctx.isBuiltin = opts.module.isBuiltin || null;
     ctx.moduleMirror = true;
     ctx.imports.add('__adder_module__');
   }
@@ -889,10 +892,14 @@ function lowerExpr_ad(ctx, node) {
         if (cell) return emitPyCall(ctx, 'cellGet', [ctx.emit('load', [cell], DYNAMIC, l)], l);
       }
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
-      if (!ctx.symbols.has(name) && !isForwardRef) ctx.imports.add(name);
-      const raw = ctx.emit('load', [name], DYNAMIC, l);
+      const free = !ctx.symbols.has(name) && !isForwardRef;
+      if (free) ctx.imports.add(name);
+      let raw = ctx.emit('load', [name], DYNAMIC, l);
       if (ctx.usesGlobals && name !== '__adder_module__' && _resolvesToModule(ctx, name)) {
-        return emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
+        raw = emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
+      }
+      if (free && ctx.isBuiltin && name !== '__adder_module__' && !ctx.defines.has(name) && !ctx.isBuiltin(name)) {
+        raw = emitPyCall(ctx, 'freeName', [raw, ctx.emit('const', [name], STRING, l)], l);
       }
       return raw;
     }
