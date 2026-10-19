@@ -1411,4 +1411,14 @@ P.m.__defaults__ = (42,)
 result = repr((P().m(), P().m(7), P.m.__defaults__))`);
     assert.strictEqual(defines.result, '(42, 7, (42,))');
   });
+  it('dict.fromkeys iterates an instance through __iter__; classmethod has __func__', async () => {
+    const { defines } = await pyEval(`
+class KV:
+    def __init__(self): self._m = ['a', 'b']
+    def __iter__(self):
+        yield from self._m
+cm = classmethod(len)
+result = repr((dict.fromkeys(KV()), cm.__func__ is len))`);
+    assert.strictEqual(defines.result, "({'a': None, 'b': None}, True)");
+  });
 });

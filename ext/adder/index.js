@@ -3933,8 +3933,14 @@ function* _gCollect(obj) {
   yield* _gForEach(obj, (v) => { arr.push(v); });
   return arr;
 }
-// pyCollect, sync when the source is
-const pyCollectMaybe = maybeSync(_gCollect);
+// pyCollect, sync when the source is (an array without the generator: a tuple subclass's
+// construction collects one per instance — namedtuple's `_tuple_new(_cls, (x, y))`)
+const _collectGenMaybe = maybeSync(_gCollect);
+// (copied by a loop: slice() on a PyTuple — an Array subclass with its own species — is V8's slow path)
+const _copyArray = (a) => { const n = a.length, out = new Array(n); for (let i = 0; i < n; i++) out[i] = a[i]; return out; };
+const pyCollectMaybe = (obj) => (Array.isArray(obj) ? _copyArray(obj) : _collectGenMaybe(obj));
+// the items to build a tuple from: an array as it is (the tuple copies them), else collected
+const _tupleItemsMaybe = (obj) => (Array.isArray(obj) ? obj : _collectGenMaybe(obj));
 // f(v), now or when v resolves
 const _thenMaybe = (v, f) => (_isThenable(v) ? v.then(f) : f(v));
 
@@ -4489,7 +4495,9 @@ function adderGetAttr(obj, attr) {
     const tn = obj._pyClass && !obj._pyMRO ? obj._pyName : null;
     // the unhashable builtin types: __hash__ is None (dataclasses refuses a mutable default by it)
     if (attr === '__hash__' && (tn === 'list' || tn === 'dict' || tn === 'set' || tn === 'bytearray')) return null;
-    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => { const ks = [...pyIter(keys)]; return ks.every((k) => plainObjectKey(k)) ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value])); };
+    // (the keys as dict() / tuple() collect them: an instance through its __iter__, an async source
+    // as a Promise of the dict)
+    if (tn === 'dict' && attr === 'fromkeys') return (keys, value = null) => _thenMaybe(pyCollectMaybe(keys), (ks) => (ks.every((k) => plainObjectKey(k)) ? Object.fromEntries(ks.map((k) => [k, value])) : new PyDict(ks.map((k) => [k, value]))));
     if (tn === 'str' && attr === 'maketrans') return _strMaketrans;
     // float.__getformat__('double' | 'float'): how the machine stores it (JS doubles are IEEE, and
     // every JS engine runs little-endian typed arrays here)
@@ -4702,6 +4710,8 @@ function adderGetAttr(obj, attr) {
     const v = has ? obj[attr] : undefined;
     if (typeof v === 'function') {
       if (_isNativeClass(v) || v._pyClass) return v;   // a class (binascii.Error, enum.Enum): never bound
+      // a classmethod / staticmethod object's function: the function itself (`cm.__func__ is f`)
+      if ((attr === '__func__' || attr === '__wrapped__') && (obj.__classmethod__ || obj.__staticmethod__)) return v;
       // a module's functions are its attributes as they are: `mod.f is mod.f`, and `from mod
       // import f` is the same object (binding made a fresh copy per access)
       if (obj.__adderModule__ && (v._pyFunc || v._pyDef || v._pyModBound)) return v;   // (or one already bound: `bisect = bisect_right`)
@@ -8773,15 +8783,25 @@ const _isSubclass = (a, b) => a === b || ((a && a._pyMRO) || []).includes(b);
 // object.__new__(cls): a bare instance of cls
 // an instance of a tuple subclass: a PyTuple array with the class's prototype (attributes may be
 // set on it, as on CPython's — it has a __dict__)
+// (made with the class's prototype from the start, through a constructor cached on the class:
+// setPrototypeOf per instance was the cost of every namedtuple made)
 function _tupleSubInstance(cls, items) {
-  const t = Object.setPrototypeOf([], cls.prototype);
-  for (const x of items) t.push(x);
+  let F = Object.hasOwn(cls, '_pyTupleCtor') ? cls._pyTupleCtor : null;
+  if (!F || F.prototype !== cls.prototype) {
+    F = function () {};
+    F.prototype = cls.prototype;
+    Object.defineProperty(cls, '_pyTupleCtor', { value: F, writable: true, configurable: true });
+  }
+  const t = Reflect.construct(Array, [], F);
+  const n = items.length;
+  if (n !== undefined) for (let i = 0; i < n; i++) t.push(items[i]);
+  else for (const x of items) t.push(x);
   t.__adderClass__ = cls._pyName;
   t.__adderType__ = cls;
   return t;
 }
 function objectNew(cls, args = []) {
-  if (cls._pyTupleBase) return _tupleSubInstance(cls, args.length > 0 && !(args[0] && args[0]._kw) ? pyIter(args[0]) : []);
+  if (cls._pyTupleBase) return _thenMaybe(args.length > 0 && !(args[0] && args[0]._kw) ? _tupleItemsMaybe(args[0]) : [], (xs) => _tupleSubInstance(cls, xs));
   if (cls._pyStrBase) {
     // str(object='') / str(bytes, encoding[, errors]): the string the box holds
     const a = args.filter((x) => !(x && x._kw));
@@ -8891,8 +8911,10 @@ function typeCall(cls, args, sync = false) {
     }
     return inst;
   };
-  let nf = _findNew(cls);
-  if (sync) nf = syncOf(nf);
+  // __new__ through its sync twin even here (giving up to the async one when the twin must wait):
+  // construction plumbing is rarely I/O, and a Promise per instance — awaited by the caller — was
+  // most of what a namedtuple cost (its __new__ is an eval'd lambda, compiled async)
+  const nf = syncOf(_findNew(cls));
   if (!nf) {                                         // the common case: no __new__ anywhere
     // object() takes no arguments: a class with neither __new__ nor __init__ refuses them
     if (args.length && typeof cls.prototype.__init__ !== 'function' && !(args.length === 1 && args[0] && args[0]._kw === true && Object.keys(args[0]).length === 1)
@@ -9465,12 +9487,14 @@ function _inheritedNew(T) {
     if (c && c !== T && c._pyJsBase && (T._jsClass || T._pyJsBase)) return objectNew(c, a);
     if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
     if (T === _stableTypes.str && c && c !== T && c._pyStrBase) return objectNew(c, a);
-    if (T._pyName === 'tuple' && c && c !== T) return c._pyTupleBase ? _tupleSubInstance(c, a.length ? pyIter(a[0]) : []) : (() => {
+    // (the items as tuple() collects them: an async source — map(), a tree-walked generator —
+    // gives a Promise of the instance; namedtuple's _replace is tuple.__new__(cls, map(…)))
+    if (T._pyName === 'tuple' && c && c !== T) return c._pyTupleBase ? _thenMaybe(a.length ? _tupleItemsMaybe(a[0]) : [], (xs) => _tupleSubInstance(c, xs)) : _thenMaybe(a.length ? _tupleItemsMaybe(a[0]) : [], (xs) => {
       const t = new PyTuple();
-      for (const x of a.length ? pyIter(a[0]) : []) t.push(x);
+      for (const x of xs) t.push(x);
       t.__adderType__ = c; t.__adderClass__ = c._pyName;
       return t;
-    })();
+    });
     return T(...a);
   };
   f._pyName = '__new__';
@@ -10048,8 +10072,9 @@ function adderBuiltins(printFn) {
     setattr: (obj, name, value) => { const r = storeAttr(obj, name, value); return _isThenable(r) ? r.then(() => null) : null; },
     delattr: (obj, name) => pyDelAttr(obj, name),
     property: _propertyType(),
-    staticmethod: (fn) => ({ __staticmethod__: true, fn }),
-    classmethod: (fn) => ({ __classmethod__: true, fn }),
+    // (__func__ / __wrapped__: the function inside — namedtuple sets `_make.__func__.__doc__`)
+    staticmethod: (fn) => ({ __staticmethod__: true, fn, __adderClass__: 'staticmethod', __func__: fn, __wrapped__: fn }),
+    classmethod: (fn) => ({ __classmethod__: true, fn, __adderClass__: 'classmethod', __func__: fn, __wrapped__: fn }),
     complex: _complexNew,
     callable: (obj) => typeof obj === 'function' || (obj !== null && typeof obj === 'object' && typeof obj.__call__ === 'function'),
     chr: (n) => { n = _idxArg(n); if (n < 0 || n > 0x10ffff) throw new AdderError('ValueError', 'chr() arg not in range(0x110000)'); return String.fromCodePoint(n); },
@@ -12203,8 +12228,8 @@ setScopeExec((kind, args) => {
   if (g === undefined || g === null) {
     throw new AdderError('RuntimeError', `${kind}() without a globals dict needs the caller's scope: run this code on the tree-walker`);
   }
-  if (kind === 'exec' && _moduleCompiler && _runOpts.moduleEngine !== 'tree') {
-    const r = _execCompiled(args);
+  if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
+    const r = _execCompiled(args, kind === 'eval');
     if (r) return r;
   }
   return kind === 'exec' ? _evalBuiltinExec(args, null) : _evalBuiltinEval(args, null);
@@ -12215,9 +12240,19 @@ setScopeExec((kind, args) => {
 // handed to code that doesn't wait). The namespaces stay live: the compiled body reads its free
 // names from them (then builtins) and its top-level bindings land in them. Code AIR can't lower
 // returns null: the tree-walker runs it, as before.
-function _execCompiled(args) {
+// eval(expr, globals) the same way, as a module of the one expression: its value is the
+// __lastExpr__ the compiled module hands back (namedtuple's __new__ is an eval'd lambda — tree-
+// walked, every namedtuple construction was an interpreted, async call)
+function _execCompiled(args, isEval = false) {
   let ast, code;
-  try { code = _sourceOf(args[0]); ast = adderParse(code); } catch { return null; }
+  try {
+    code = _sourceOf(args[0]);
+    if (isEval) {
+      code = code.trim();
+      const expr = _adderParseExpr(code);
+      ast = { type: 'Module', body: [{ type: 'Expr', value: expr, line: expr.line || 1, col: 0 }] };
+    } else ast = adderParse(code);
+  } catch { return null; }
   const target = _execScope(args, null);
   let compiled = null;
   let modName = '__main__';
@@ -12243,7 +12278,7 @@ function _execCompiled(args) {
     if (scope && typeof scope === 'object') {
       for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined) vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
     }
-    return null;
+    return isEval ? (scope && scope.__lastExpr__ !== undefined ? scope.__lastExpr__ : null) : null;
   };
   const r = compiled.run(lookup, mod);
   return r && typeof r.then === 'function' ? r.then(finish) : Promise.resolve(finish(r));
@@ -13212,7 +13247,11 @@ const _stopVal = (e) => (e.value !== undefined ? e.value : e.args && e.args.leng
 const _isGenExit = (e) => !!e && (e.pyType === 'GeneratorExit' || (excValue(e) && excValue(e).pyType === 'GeneratorExit'));
 function* _pep380Sync(x) {
   const B = adderModules.builtins;
-  const it = B.iter(x);
+  // (an instance's __iter__ through its sync twin: the compiled one may be async — ChainMap's,
+  // read by _collections_abc's KeysView.__iter__ `yield from self._mapping`)
+  let it = x !== null && typeof x === 'object' && x.__adderType__ !== undefined && typeof x.__iter__ === 'function'
+    ? syncOf(x.__iter__).call(x) : B.iter(x);
+  if (it !== null && typeof it === 'object' && typeof it.then === 'function') throw NEEDS_ASYNC;
   // (read synchronously: a compiled iterator's methods through their sync twins)
   const method = (n) => { try { return syncOf(adderGetAttr(it, n)); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
   const nextOf = () => { const nx = it !== null && typeof it === 'object' && typeof it.__next__ === 'function' ? method('__next__') : null; return nx ? nx() : B.next(it); };

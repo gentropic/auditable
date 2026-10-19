@@ -1735,8 +1735,8 @@ setScopeExec((kind, args) => {
   if (g === undefined || g === null) {
     throw new AdderError('RuntimeError', `${kind}() without a globals dict needs the caller's scope: run this code on the tree-walker`);
   }
-  if (kind === 'exec' && _moduleCompiler && _runOpts.moduleEngine !== 'tree') {
-    const r = _execCompiled(args);
+  if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
+    const r = _execCompiled(args, kind === 'eval');
     if (r) return r;
   }
   return kind === 'exec' ? _evalBuiltinExec(args, null) : _evalBuiltinEval(args, null);
@@ -1747,9 +1747,19 @@ setScopeExec((kind, args) => {
 // handed to code that doesn't wait). The namespaces stay live: the compiled body reads its free
 // names from them (then builtins) and its top-level bindings land in them. Code AIR can't lower
 // returns null: the tree-walker runs it, as before.
-function _execCompiled(args) {
+// eval(expr, globals) the same way, as a module of the one expression: its value is the
+// __lastExpr__ the compiled module hands back (namedtuple's __new__ is an eval'd lambda — tree-
+// walked, every namedtuple construction was an interpreted, async call)
+function _execCompiled(args, isEval = false) {
   let ast, code;
-  try { code = _sourceOf(args[0]); ast = adderParse(code); } catch { return null; }
+  try {
+    code = _sourceOf(args[0]);
+    if (isEval) {
+      code = code.trim();
+      const expr = _adderParseExpr(code);
+      ast = { type: 'Module', body: [{ type: 'Expr', value: expr, line: expr.line || 1, col: 0 }] };
+    } else ast = adderParse(code);
+  } catch { return null; }
   const target = _execScope(args, null);
   let compiled = null;
   let modName = '__main__';
@@ -1775,7 +1785,7 @@ function _execCompiled(args) {
     if (scope && typeof scope === 'object') {
       for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined) vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
     }
-    return null;
+    return isEval ? (scope && scope.__lastExpr__ !== undefined ? scope.__lastExpr__ : null) : null;
   };
   const r = compiled.run(lookup, mod);
   return r && typeof r.then === 'function' ? r.then(finish) : Promise.resolve(finish(r));

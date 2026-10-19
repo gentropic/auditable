@@ -422,7 +422,11 @@ const _stopVal = (e) => (e.value !== undefined ? e.value : e.args && e.args.leng
 const _isGenExit = (e) => !!e && (e.pyType === 'GeneratorExit' || (excValue(e) && excValue(e).pyType === 'GeneratorExit'));
 function* _pep380Sync(x) {
   const B = adderModules.builtins;
-  const it = B.iter(x);
+  // (an instance's __iter__ through its sync twin: the compiled one may be async — ChainMap's,
+  // read by _collections_abc's KeysView.__iter__ `yield from self._mapping`)
+  let it = x !== null && typeof x === 'object' && x.__adderType__ !== undefined && typeof x.__iter__ === 'function'
+    ? syncOf(x.__iter__).call(x) : B.iter(x);
+  if (it !== null && typeof it === 'object' && typeof it.then === 'function') throw NEEDS_ASYNC;
   // (read synchronously: a compiled iterator's methods through their sync twins)
   const method = (n) => { try { return syncOf(adderGetAttr(it, n)); } catch (e) { if (e && e.pyType === 'AttributeError') return null; throw e; } };
   const nextOf = () => { const nx = it !== null && typeof it === 'object' && typeof it.__next__ === 'function' ? method('__next__') : null; return nx ? nx() : B.next(it); };

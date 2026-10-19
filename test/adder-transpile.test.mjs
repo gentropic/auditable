@@ -618,6 +618,10 @@ describe('adder transpile — sync-builtin shadowing (audit 2026-06-01)', () => 
     const r = await runTranspile("f = lambda x, y=2, *, z=3: (x, y, z)\nnew = lambda _cls, x, y: (_cls, x, y)\nnew.__defaults__ = (0,)\nprint(f.__defaults__, f.__kwdefaults__, f(1, z=4), new('C', 1))");
     assert.equal(r.output, "(2,) {'z': 3} (1, 2, 4) ('C', 1, 0)");
   });
+  it('yield from a user iterable in a sync twin; dict.fromkeys / tuple.__new__ over user and async sources; classmethod.__func__', async () => {
+    const r = await runTranspile("class M:\n    def __iter__(self):\n        d = {}\n        for m in map(dict.fromkeys, [['a'], ['b']]):\n            d |= m\n        return iter(d)\nclass KV:\n    def __init__(self, m): self._m = m\n    def __iter__(self):\n        yield from self._m\nclass T(tuple):\n    pass\ncm = classmethod(len)\nprint(list(KV(M())), dict.fromkeys(KV(M())), tuple.__new__(T, map(str, [1, 2])), type(tuple.__new__(T, (1,))).__name__, cm.__func__ is len)");
+    assert.equal(r.output, "['a', 'b'] {'a': None, 'b': None} ('1', '2') T True");
+  });
   it('an unshadowed known-sync builtin still skips the await (fast path intact)', async () => {
     const r = await runTranspile('print(len([1, 2, 3, 4]))');
     assert.equal(r.output, '4');
