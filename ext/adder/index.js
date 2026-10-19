@@ -4555,6 +4555,10 @@ function adderGetAttr(obj, attr) {
       fn._pyName = `complex.${attr}`;
       return fn;
     }
+    if ((tn === 'dict' || tn === 'list') && Object.hasOwn(_BASE_STORE_DUNDERS, attr)) {
+      const fn = _BASE_STORE_DUNDERS[attr];
+      return Object.assign((...a) => fn(...a), { _pyName: `${tn}.${attr}` });
+    }
     if (tn && _TYPE_DUNDER_TYPES.has(tn) && Object.hasOwn(_TYPE_DUNDERS, attr)) {
       const f = _TYPE_DUNDERS[attr];
       const fn = (self, ...a) => f(_baseValue(self), ...a);
@@ -4649,6 +4653,8 @@ function adderGetAttr(obj, attr) {
         return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
       }
       for (const c of lt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, lt) : cv; }
+      // the list's own dunders, bound (a subclass not overriding __setitem__ still has it)
+      if (_VALUE_DUNDERS.has(attr)) { const d = _valueDunder(obj, attr); if (d) return d; }
     }
     return _listMethod(obj, attr);
   }
@@ -4658,6 +4664,8 @@ function adderGetAttr(obj, attr) {
       const v = obj[attr];
       return typeof v === 'function' ? _bindTwin(v, obj) : v;
     }
+    // the dict's own dunders, bound, for a subclass that doesn't define them (Counter's __setitem__)
+    if (_VALUE_DUNDERS.has(attr)) { const d = _valueDunder(obj, attr); if (d) return d; }
     return _mapMethod(obj, attr);
   }
   // set methods
@@ -5958,6 +5966,30 @@ const _TYPE_DUNDERS = {
   __contains__: (a, x) => (typeof a === 'string' ? a.includes(x) : a instanceof Map || a instanceof Set ? a.has(x) : isPlainDict(a) ? Object.hasOwn(a, x) : [...pyIter(a)].some((v) => pyEq(v, x))),
   __str__: (a) => pyStr(a), __repr__: (a) => pyRepr(a), __hash__: (a) => _pyHash(a),
 };
+// dict.__setitem__ / __delitem__ (and list's), unbound: the built-in store itself, on the instance
+// — never a subclass's override, which is what calls it (OrderedDict's dict_setitem)
+const _BASE_STORE_DUNDERS = {
+  __setitem__(a, k, v) {
+    if (a instanceof PyDict) PyDict.prototype.set.call(a, k, v);
+    else if (a instanceof Map) Map.prototype.set.call(a, k, v);
+    else if (Array.isArray(a) && !(a instanceof PyTuple)) { if (k instanceof PySlice) seqSliceSet(a, k, v); else a[seqStoreIndex(a, k)] = v; }
+    else if (isPlainDict(a)) a[k] = v;
+    else throw new AdderError('TypeError', `descriptor '__setitem__' doesn't apply to a '${pyTypeName(a)}' object`);
+    return null;
+  },
+  __delitem__(a, k) {
+    if (a instanceof Map) {
+      if (!(a instanceof PyDict ? PyDict.prototype.has.call(a, k) : Map.prototype.has.call(a, k))) throw new AdderError('KeyError', pyRepr(k), undefined, [k]);
+      if (a instanceof PyDict) PyDict.prototype.delete.call(a, k); else Map.prototype.delete.call(a, k);
+    } else if (Array.isArray(a) && !(a instanceof PyTuple)) {
+      if (k instanceof PySlice) seqSliceDel(a, k); else a.splice(seqStoreIndex(a, k), 1);
+    } else if (isPlainDict(a)) {
+      if (!Object.hasOwn(a, k)) throw new AdderError('KeyError', pyRepr(k), undefined, [k]);
+      delete a[k];
+    } else throw new AdderError('TypeError', `descriptor '__delitem__' doesn't apply to a '${pyTypeName(a)}' object`);
+    return null;
+  },
+};
 const pyBinOps = {
   '+': pyAdd, '-': pySub, '*': pyMul, '/': pyTrueDiv, '//': pyFloorDiv, '%': pyMod, '**': pyPow,
   '&': pyAnd, '|': pyOr, '^': pyXor, '<<': pyLshift, '>>': pyRshift, '@': pyMatmul,
@@ -6122,7 +6154,8 @@ function pyGetItem(obj, key, raw = false) {
   if (!raw) { const f = subclassDunder(obj, '__getitem__'); if (f) return f.call(obj, key); }
   if (obj instanceof Map) {
     if (!obj.has(key)) {
-      if (typeof obj.__missing__ === 'function') return obj.__missing__(key);
+      // (through its sync twin: a compiled subscript doesn't wait — Counter's c[k] += 1)
+      if (typeof obj.__missing__ === 'function') return syncOf(obj.__missing__).call(obj, key);
       throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     }
     return obj.get(key);
@@ -21244,6 +21277,12 @@ adderModules.locale = _syModule('locale', {
     getweakrefcount: () => 0, getweakrefs: () => [],
   });
   adderModules._weakrefset = _syModule('_weakrefset', { WeakSet: adderModules.weakref.WeakSet });
+  // _weakref: the C primitives weakref.py builds on (collections' OrderedDict links take proxy)
+  const w = adderModules.weakref;
+  adderModules._weakref = _syModule('_weakref', {
+    ref: w.ref, ReferenceType: w.ReferenceType, proxy: w.proxy, ProxyType: w.ProxyType, CallableProxyType: w.CallableProxyType,
+    getweakrefcount: w.getweakrefcount, getweakrefs: w.getweakrefs,
+  });
 }
 
 // ── gettext: no catalogs — messages come back untranslated ──
@@ -22255,6 +22294,15 @@ const _syTruthy = (v) => pyBool(v);
     FileIO: _syClass('FileIO', [RawIOBase], {}, 'io'),
     text_encoding: (enc, stacklevel = 2) => enc ?? 'utf-8',
     IncrementalNewlineDecoder: _syClass('IncrementalNewlineDecoder', [], { __init__(self, decoder, translate) { self.decoder = decoder; self.translate = translate; return null; }, decode(self, input, final = false) { const t = self.decoder ? self.decoder.decode(input, final) : String(input); return self.translate ? t.replace(/\r\n?/g, '\n') : t; } }, 'io'),
+  });
+}
+
+// ── _collections: the C half of CPython's collections — deque, defaultdict, OrderedDict and the
+// _count_elements helper, adder's JS ones ──
+{
+  const c = adderModules.collections;
+  adderModules._collections = _syModule('_collections', {
+    deque: c.deque, defaultdict: c.defaultdict, OrderedDict: c.OrderedDict, _count_elements: c._count_elements,
   });
 }
 

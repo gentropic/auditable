@@ -870,6 +870,12 @@ adderModules.locale = _syModule('locale', {
     getweakrefcount: () => 0, getweakrefs: () => [],
   });
   adderModules._weakrefset = _syModule('_weakrefset', { WeakSet: adderModules.weakref.WeakSet });
+  // _weakref: the C primitives weakref.py builds on (collections' OrderedDict links take proxy)
+  const w = adderModules.weakref;
+  adderModules._weakref = _syModule('_weakref', {
+    ref: w.ref, ReferenceType: w.ReferenceType, proxy: w.proxy, ProxyType: w.ProxyType, CallableProxyType: w.CallableProxyType,
+    getweakrefcount: w.getweakrefcount, getweakrefs: w.getweakrefs,
+  });
 }
 
 // ── gettext: no catalogs — messages come back untranslated ──
@@ -1881,6 +1887,15 @@ const _syTruthy = (v) => pyBool(v);
     FileIO: _syClass('FileIO', [RawIOBase], {}, 'io'),
     text_encoding: (enc, stacklevel = 2) => enc ?? 'utf-8',
     IncrementalNewlineDecoder: _syClass('IncrementalNewlineDecoder', [], { __init__(self, decoder, translate) { self.decoder = decoder; self.translate = translate; return null; }, decode(self, input, final = false) { const t = self.decoder ? self.decoder.decode(input, final) : String(input); return self.translate ? t.replace(/\r\n?/g, '\n') : t; } }, 'io'),
+  });
+}
+
+// ── _collections: the C half of CPython's collections — deque, defaultdict, OrderedDict and the
+// _count_elements helper, adder's JS ones ──
+{
+  const c = adderModules.collections;
+  adderModules._collections = _syModule('_collections', {
+    deque: c.deque, defaultdict: c.defaultdict, OrderedDict: c.OrderedDict, _count_elements: c._count_elements,
   });
 }
 
