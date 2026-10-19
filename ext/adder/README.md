@@ -280,6 +280,16 @@ Available via `import` inside adder code:
 
 When `opts.vfs` is set, additional filesystem modules are available: `os`, `os.path`, `pathlib`, `shutil`, `glob`. The built-in `open()` also works with `with` context managers.
 
+Some stdlib modules are CPython's own Python source (`dataclasses`, `json`, `argparse`, `unittest`,
+`doctest`, `difflib`, `pydoc`, `xml.etree`, …). With `@gcu/air` attached, the ones most programs
+import ship precompiled; the rest compile on their first import (`unittest` ≈ 0.7 s). To skip that,
+hand adder the rest precompiled, too — `@gcu/adder/batteries` (≈ 380 KB gzipped):
+
+```js
+import batteries from '@gcu/adder/batteries';
+addPrecompiled(batteries);   // → how many modules it took; 0 from another @gcu/adder version
+```
+
 ## Importing from paths and URLs
 
 In addition to built-in and VFS modules, adder supports loading modules directly by path or URL. Two forms:

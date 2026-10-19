@@ -26,6 +26,7 @@
     "./highlight": "./src/highlight.js",
     "./register": "./src/register.js",
     "./bundled": "./index.js",
+    "./batteries": "./batteries.js",
     "./package.json": "./package.json"
   },
   "types": "./src/index.d.ts",
@@ -33,6 +34,7 @@
     "src",
     "pylib",
     "index.js",
+    "batteries.js",
     "LICENSE",
     "README.md",
     "SPEC.md"

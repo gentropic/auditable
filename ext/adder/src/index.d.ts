@@ -56,6 +56,8 @@ export function unregisterModule(name: string): boolean;
 /** Hand adder @gcu/air (its module namespace or bundle) so run(code, { engine: 'air' | 'auto' }) can compile. Process-wide. */
 export function attachAir(air: object): object;
 export function airAttached(): boolean;
+/** Take precompiled stdlib modules — `@gcu/adder/batteries` (its default export) — so importing one on AIR skips compiling it. Only from the adder build that made them; returns how many were added (0 from another build). Process-wide. */
+export function addPrecompiled(data: { build: string; modules: Record<string, object> }): number;
 export function run(code: string, opts?: RunOpts): Promise<Record<string, unknown>>;
 
 /** Evaluate a single adder expression and return its value. */

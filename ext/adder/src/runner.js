@@ -4,7 +4,7 @@
 
 import { adderParse, _adderParseExpr } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule, setModuleCompiler } from './eval.js';
-import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio, adderModules } from './builtins.js';
+import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio, adderModules, frozenPyModules, frozenPyCompiled, frozenPyBuild } from './builtins.js';
 import { _py } from './runtime.js';
 import { lowerAdder, PY_SPECIALIZATIONS, pyNameOf } from './air-lower.js';
 
@@ -207,6 +207,19 @@ function _airHooks() {
   return { runPasses: (m) => w._airRePropagate(m), emitJS: w._airEmit, needsAsync: w._airNeedsAsync };
 }
 const _airReachable = () => _airHooks() !== null;
+// Precompiled frozen modules beyond the bundled hot set — @gcu/adder/batteries (gen-pyair.js), a
+// plain { build, modules } — so an import of one on AIR skips compiling it. Taken only from the
+// adder build that made it (the same compiler output for every module); from any other, nothing
+// is (those modules compile on import, as without it). Gives how many modules it added. Process-wide.
+export function addPrecompiled(data) {
+  if (!data || !data.modules || data.build !== frozenPyBuild.id) return 0;
+  let n = 0;
+  for (const [name, art] of Object.entries(data.modules)) {
+    if (!Object.hasOwn(frozenPyModules, name) || Object.hasOwn(frozenPyCompiled, name)) continue;
+    frozenPyCompiled[name] = art; n++;
+  }
+  return n;
+}
 // Compile a module's source with AIR, exactly as an import does: { imports (its free names, the
 // function's parameters after _py, in order), async, body (the function body's JS), doc }. Shared
 // with gen-pyair.js, which precompiles the frozen hot set with it — so a build-time artifact is

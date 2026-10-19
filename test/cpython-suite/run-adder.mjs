@@ -8,6 +8,8 @@ import { join, basename } from 'node:path';
 const ROOT = new URL('../../', import.meta.url);
 const A = await import(new URL('ext/adder/src/index.js', ROOT));
 A.attachAir(await import(new URL('ext/air/index.js', ROOT)));
+// unittest and the rest of the stdlib precompiled — a stale batteries.js is refused (compiled on import)
+A.addPrecompiled((await import(new URL('ext/adder/batteries.js', ROOT))).default);
 const B = await import(new URL('ext/adder/src/builtins.js', ROOT));
 const { VFS } = await import(new URL('ext/vfs/src/vfs.js', ROOT));
 const { path: vfsPath } = await import(new URL('ext/vfs/src/path.js', ROOT));
