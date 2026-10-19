@@ -181,6 +181,7 @@ class AdderLowerCtx extends BaseLowerCtx {
     // (`const $pic = _py.pics(n)`, see lowerAdder) — so the emitted code doesn't depend on what
     // compiled before it, and two units never share a slot
     this._callSiteId = 0;
+    this._modeDependent = 0;
   }
   nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
@@ -194,6 +195,11 @@ class AdderLowerCtx extends BaseLowerCtx {
     } else if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._classBodyOf && this._classNames && this._classNames.has(args[0])) {
       args = [`__cb_${args[0]}`, ...args.slice(1)];
     }
+    // what lowering in sync mode would do differently (lowerFuncDef: a body with none of it
+    // needs no second, sync-mode copy — it would be the same code)
+    // (a hybrid or `async for` loop awaits too: emit-js writes its awaits)
+    if (op === 'await' || op === 'func_region' || op === 'class_region' ||
+        (op === 'for_of_region' && extra && (extra.hybrid || extra.is_await))) this._modeDependent++;
     // sync mode (see AWAITED_DUNDERS): no await — the value is taken as it is
     // (in a twin: _py.needSync, which gives the twin up at a real Promise — see builtins syncOf)
     if (op === 'await' && this._syncMode) return emitPyCall(this, this._twinMode ? 'needSync' : 'noAwait', [{ id: args[0] }], loc, type);
@@ -547,7 +553,7 @@ function analyseSyncFunctions(moduleStmts) {
 // sync twin when it has one: method calls, and calls of a value that may be any callable
 const _SYNC_CALLS = { callMethod: 'callMethodSync', fnOf: 'fnOfSync', setattr: 'setattrSync', genExpr: 'genExprSync' };
 function emitPyCall(ctx, method, args, loc, type) {
-  if (ctx._syncMode && Object.hasOwn(_SYNC_CALLS, method)) method = _SYNC_CALLS[method];
+  if (Object.hasOwn(_SYNC_CALLS, method)) { ctx._modeDependent++; if (ctx._syncMode) method = _SYNC_CALLS[method]; }
   return ctx.emitNamespacedCall('_py', method, args, loc, type);
 }
 
@@ -2671,8 +2677,14 @@ function lowerFuncDef(ctx, node) {
     ctx._twinMode = savedTwinMode;
     return out;
   };
+  const dep0 = ctx._modeDependent;
   const main = lowerBody(syncMode, bailable);
   const params = main.params, body = main.body, needsArgs = main.needsArgs;
+  // a body that awaits nothing, calls no helper with a sync form and defines nothing (a def, a
+  // lambda, a class: lowered differently in sync mode) is the same code in either mode: then the
+  // function is its own sync version — no twin, no async fallback to bail to. (Generators keep
+  // theirs: a twin is a different kind of generator.)
+  const sameInBothModes = ctx._modeDependent === dep0 && !isGenerator;
 
   // Return type from `-> Type` annotation, if present.
   const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;
@@ -2713,7 +2725,7 @@ function lowerFuncDef(ctx, node) {
   const refName = ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) ? `__cb_${name}` : jsSafeName(name);
   // its generator objects show the function's name (`<generator object g at ...>`)
   if (isGenerator) emitRaw(ctx, `_py.genProto(${refName}, ${JSON.stringify(name)}${node.type === 'AsyncFunctionDef' ? ', true' : ''});`);
-  if (bailable) {
+  if (bailable && !sameInBothModes) {
     const asy = lowerBody(null);
     const asyOp = ctx.emit('func_region', [null], fType, l, {
       name: null, params: asy.params, body: asy.body, ret_type: retType,
@@ -2726,7 +2738,7 @@ function lowerFuncDef(ctx, node) {
   if (doc !== null) emitRaw(ctx, `${refName}.__doc__ = ${JSON.stringify(doc)};`);
   // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
   emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, ${defsObj}${ctx.moduleMirror ? ', __adder_module__' : ''});`);
-  if (twinned) {
+  if (twinned && !sameInBothModes) {
     const tw = lowerBody(`${name} (sync twin)`, true);
     // anonymous: the twin is reached only through fn._pySync (a module-level `function name`
     // declaration would collide with the function itself)

@@ -705,6 +705,22 @@ describe('adder transpile — deterministic output', () => {
     assert.equal(a, b);
     assert.match(a, /\$pic = \(_py\.pics\)\(\d+\)/);
   });
+  it('a method whose only wait is its for loop keeps its sync twin (Set._hash from a hash)', async () => {
+    // _collections_abc's Set._hash: its one async-capable part is `for x in self` (a hybrid loop,
+    // whose awaits emit-js writes) — without a twin, __hash__'s sync call got a Promise
+    const r = await airRun([
+      'from collections.abc import Set',
+      'class S(Set):',
+      '    def __init__(self): self.c = [1, 2, 3]',
+      '    def __contains__(self, x): return x in self.c',
+      '    def __len__(self): return len(self.c)',
+      '    def __iter__(self): return iter(self.c)',
+      '    def __hash__(self): return self._hash()',
+      'h1, h2 = hash(S()), hash(S())',
+    ].join('\n'));
+    assert.equal(typeof r.h1, 'number');
+    assert.equal(r.h1, r.h2);
+  });
   it('two units do not share call-site slots', async () => {
     const r = await runTranspile([
       'class A:',
