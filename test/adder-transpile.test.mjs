@@ -606,6 +606,10 @@ describe('adder transpile — sync-builtin shadowing (audit 2026-06-01)', () => 
       + 'print(await asyncio.gather(w("a", 0.04), w("b", 0.01)), log)\n');
     assert.equal(r.output, "coroutine []\n['a', 'b'] ['start a', 'start b', 'end b', 'end a']");
   });
+  it('a method call site sees methods patched / deleted after its first call (type versions)', async () => {
+    const r = await runTranspile("class A:\n    def m(self): return 'A'\nclass B(A):\n    pass\nclass C(A):\n    def m(self): return 'C'\nclass Mixin:\n    def m(self): return 'Mixin'\ndef call(o): return o.m()\na, b, c = A(), B(), C()\nlog = []\ndef snap(): log.append(','.join(call(x) for x in (a, b, c)))\nsnap()\nA.m = lambda self: 'A2'\nsnap()\nB.m = lambda self: 'B'\nsnap()\ndel B.m\nsnap()\ndel C.m\nsnap()\nB.__bases__ = (Mixin, A)\nsnap()\na.m = lambda: 'own'\nsnap()\nprint(log)");
+    assert.equal(r.output, "['A,A,C', 'A2,A2,C', 'A2,B,C', 'A2,A2,C', 'A2,A2,A2', 'A2,Mixin,A2', 'own,Mixin,A2']");
+  });
   it('an unshadowed known-sync builtin still skips the await (fast path intact)', async () => {
     const r = await runTranspile('print(len([1, 2, 3, 4]))');
     assert.equal(r.output, '4');

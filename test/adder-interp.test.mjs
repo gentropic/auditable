@@ -1369,3 +1369,38 @@ c()`);
     }
   });
 });
+
+// a class changed after it was made: patched / deleted methods and a new __bases__ reach the
+// subclasses (which hold copies of what they inherit), and an instance attribute shadows a method
+describe('adderEval — classes changed after creation', () => {
+  it('method patch, delete and __bases__ propagate to subclasses', async () => {
+    const { defines } = await pyEval(`
+class A:
+    def m(self): return 'A'
+class B(A):
+    pass
+class C(A):
+    def m(self): return 'C'
+class Mixin:
+    def m(self): return 'Mixin'
+def call(o): return o.m()
+a, b, c = A(), B(), C()
+log = []
+def snap(): log.append(','.join(call(x) for x in (a, b, c)))
+snap()
+A.m = lambda self: 'A2'
+snap()
+B.m = lambda self: 'B'
+snap()
+del B.m
+snap()
+del C.m
+snap()
+B.__bases__ = (Mixin, A)
+snap()
+a.m = lambda: 'own'
+snap()
+result = repr(log)`);
+    assert.strictEqual(defines.result, "['A,A,C', 'A2,A2,C', 'A2,B,C', 'A2,A2,C', 'A2,A2,A2', 'A2,Mixin,A2', 'own,Mixin,A2']");
+  });
+});

@@ -7750,14 +7750,31 @@ function storeAttr(obj, name, value) {
     Object.defineProperty(obj, name, { value, writable: true, configurable: true, enumerable: true });
     return;
   }
+  if (typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && name === '__bases__') {
+    _setBases(obj, value);
+    return;
+  }
   if (typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && _isClassMember(value)) {
     _installMember(obj, obj._pyName, name, value, { pyBody: true });
     obj._pyOwnMembers.add(name);
+    classMemberChanged(obj, name);
     return;
   }
   // cls.__hash__ = None (an eq dataclass), cls.__iter__ = None: instances see the None too
   if (value === null && typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && name.startsWith('__') && name.endsWith('__')) {
     obj.prototype[name] = null;
+    obj._pyOwnMembers.add(name);
+    obj[name] = value;
+    classMemberChanged(obj, name);
+    return;
+  }
+  // a plain value over a method (A.m = 5): instances read the class variable, not the old method
+  if (typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && Object.hasOwn(obj.prototype, name)) {
+    delete obj.prototype[name];
+    obj._pyOwnMembers.delete(name);
+    obj[name] = value;
+    classMemberChanged(obj, name);
+    return;
   }
   obj[name] = value;
 }
@@ -7809,6 +7826,17 @@ function pyDelAttr(obj, name) {
     throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
   }
   if (typeof obj === 'object' && typeof obj.__delattr__ === 'function') return syncOf(obj.__delattr__).call(obj, name);
+  // del Cls.m: the class stops owning it; it, and its subclasses, inherit the name again
+  if (typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && (obj._pyOwnMembers.has(name) || Object.hasOwn(obj, name))) {
+    if (!Object.hasOwn(obj, name) && !Object.hasOwn(obj.prototype, name)) throw new AdderError('AttributeError', `type object '${obj._pyName}' has no attribute '${name}'`);
+    obj._pyOwnMembers.delete(name);
+    if (obj._pyAttrs) obj._pyAttrs.delete(name);
+    if (Object.hasOwn(obj.prototype, name)) delete obj.prototype[name];
+    if (Object.hasOwn(obj, name)) delete obj[name];
+    _resolveInherited(obj, name);
+    classMemberChanged(obj, name);
+    return null;
+  }
   if (!Object.hasOwn(obj, name)) {
     for (let p = Object.getPrototypeOf(obj); p; p = Object.getPrototypeOf(p)) {
       const d = Object.getOwnPropertyDescriptor(p, name);
@@ -8915,6 +8943,55 @@ const _DictBaseProto = Object.create(PyDict.prototype, {
 // method, or a method (bound to the instance). The class factory runs it for each member, and an
 // assignment to a class attribute afterwards (C.__init__ = f, setattr(cls, '__eq__', f) — what
 // dataclasses and functools.total_ordering do) runs it too, so instances see the new method.
+// ── a class changed after it was made ──
+// A class's inherited members are copies of its bases' (taken when it was created), so a change to
+// a class — a member set or deleted (patching a method, mock.patch.object), __bases__ reassigned —
+// re-resolves the name along the MRO of every subclass, and bumps the version of each class it
+// touched. The call-site caches (runtime.js _PIC) check that version: PyPy's type version tags.
+const _bumpVersion = (c) => { c._pyVer = (c._pyVer || 0) + 1; };
+function _descendants(cls) {
+  const out = [], seen = new Set([cls]), q = [cls];
+  while (q.length) {
+    const c = q.shift();
+    out.push(c);
+    for (const sc of pySubclasses(c)) if (!seen.has(sc)) { seen.add(sc); q.push(sc); }
+  }
+  return out;
+}
+// c's copy of an inherited `key`: the nearest base along its MRO that owns it, else none
+function _resolveInherited(c, key) {
+  if (!c.prototype || (c._pyOwnMembers && c._pyOwnMembers.has(key))) return;
+  for (let i = 1; i < (c._pyMRO || []).length; i++) {
+    const b = c._pyMRO[i];
+    if (!b.prototype || !b._pyOwnMembers || !b._pyOwnMembers.has(key)) continue;
+    if (b === _stableTypes.str && !c._pyStrBase) continue;
+    const desc = Object.getOwnPropertyDescriptor(b.prototype, key);
+    if (desc) { Object.defineProperty(c.prototype, key, desc); return; }
+  }
+  if (Object.hasOwn(c.prototype, key)) delete c.prototype[key];
+}
+function classMemberChanged(cls, key) {
+  for (const c of _descendants(cls)) {
+    if (c !== cls) _resolveInherited(c, key);
+    _bumpVersion(c);
+  }
+}
+// Cls.__bases__ = (...): a new MRO for it and its subclasses, and every name re-resolved along it
+function _setBases(cls, value) {
+  const bases = [...pyIter(value)];
+  if (!bases.length) throw new AdderError('TypeError', `can only assign non-empty tuple to ${cls._pyName}.__bases__, not ()`);
+  for (const b of bases) if (typeof b !== 'function' || !b._pyClass) throw new AdderError('TypeError', `${cls._pyName}.__bases__ must be tuple of classes, not '${pyTypeName(b)}'`);
+  if (bases.some((b) => b === cls || (b._pyMRO || []).includes(cls))) throw new AdderError('TypeError', 'a __bases__ item causes an inheritance cycle');
+  const affected = _descendants(cls);
+  const keys = new Set();
+  const collect = (c) => { for (const b of c._pyMRO || []) if (b !== c && b._pyOwnMembers) for (const k of b._pyOwnMembers) keys.add(k); };
+  for (const c of affected) collect(c);
+  cls._pyBases = bases.filter((b) => b !== pyObjectObj);
+  _noteSubclass(cls);
+  for (const c of affected) c._pyMRO = computeMRO(c);
+  for (const c of affected) collect(c);
+  for (const c of affected) { for (const k of keys) _resolveInherited(c, k); _bumpVersion(c); }
+}
 function _installMember(cls, name, mName, value, opts) {
   // __class_getitem__ (like __init_subclass__) is implicitly a classmethod
   if (mName === '__class_getitem__' && _isMethodFn(value, opts)) value = { __classmethod__: true, fn: value };
@@ -13035,7 +13112,7 @@ function _delslice(obj, lower, upper, step) {
 // off siteId. On hit, skip adderGetAttr's type-dispatch chain entirely
 // and skip the bound-method closure allocation.
 //
-// Layout: _PIC[siteId] = { types, methods, next } — arrays of length
+// Layout: _PIC[siteId] = { types, vers, methods, next } — arrays of length
 // 0..PIC_SIZE. FIFO eviction once full so a 5-way polymorphic site
 // (e.g. richards' task-table) cycles instead of going megamorphic.
 //
@@ -13044,9 +13121,25 @@ function _delslice(obj, lower, upper, step) {
 // tables (`_strMethod`, `_listMethod`, etc.) build a fresh closure per
 // call — caching one would alias the receiver across instances. The
 // adderGetAttr slow path already returns the right closure for these.
+//
+// An entry holds while its type's version (_pyVer, bumped whenever the class or a base changes —
+// a method patched, deleted, __bases__ reassigned: builtins.js classMemberChanged) is the one it
+// was cached at, and the instance doesn't shadow the name with its own attribute.
 
 const _PIC_SIZE = 4;
 const _PIC = [];
+// record t → its method for the site (a type seen again — its version moved on — is updated in place)
+function _picStore(cache, siteId, t, obj, name) {
+  if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
+  let c = cache;
+  if (!c) { c = { types: [], vers: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
+  let idx = c.types.indexOf(t);
+  if (idx < 0) {
+    if (c.types.length < _PIC_SIZE) idx = c.types.length;
+    else { idx = c.next; c.next = (idx + 1) % _PIC_SIZE; }   // FIFO: a 5-way polymorphic site cycles
+  }
+  c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = t.prototype[name];
+}
 
 // Sync function — the underlying method may be sync OR async, and JS
 // `return` preserves that polarity. Wrapping this helper in `async`
@@ -13060,7 +13153,7 @@ function _callMethod(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
+      if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
     }
   }
   // Slow path: full adderGetAttr lookup + call.
@@ -13072,24 +13165,7 @@ function _callMethod(obj, name, siteId, ...args) {
   // gets bound to the receiver at call time via `.call(obj, ...)`).
   // Skip caching for primitives / dicts / modules — adderGetAttr there
   // returns receiver-bound closures whose identity changes per call.
-  if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
-    let c = cache;
-    if (!c) {
-      c = { types: [], methods: [], next: 0, name };
-      _PIC[siteId] = c;
-    }
-    if (c.types.length < _PIC_SIZE) {
-      c.types.push(t);
-      c.methods.push(t.prototype[name]);
-    } else {
-      // FIFO eviction so a 5-way polymorphic site cycles instead of
-      // pinning to the first 4 types it ever saw.
-      const idx = c.next;
-      c.types[idx] = t;
-      c.methods[idx] = t.prototype[name];
-      c.next = (idx + 1) % _PIC_SIZE;
-    }
-  }
+  _picStore(cache, siteId, t, obj, name);
   return result;
 }
 
@@ -13101,16 +13177,11 @@ function _callMethodSync(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
+      if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
-  if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
-    let c = cache;
-    if (!c) { c = { types: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
-    if (c.types.length < _PIC_SIZE) { c.types.push(t); c.methods.push(t.prototype[name]); }
-    else { const idx = c.next; c.types[idx] = t; c.methods[idx] = t.prototype[name]; c.next = (idx + 1) % _PIC_SIZE; }
-  }
+  _picStore(cache, siteId, t, obj, name);
   return result;
 }
 // a value called from sync mode: a function's twin, a class's synchronous construction, an

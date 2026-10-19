@@ -329,7 +329,7 @@ function _delslice(obj, lower, upper, step) {
 // off siteId. On hit, skip adderGetAttr's type-dispatch chain entirely
 // and skip the bound-method closure allocation.
 //
-// Layout: _PIC[siteId] = { types, methods, next } — arrays of length
+// Layout: _PIC[siteId] = { types, vers, methods, next } — arrays of length
 // 0..PIC_SIZE. FIFO eviction once full so a 5-way polymorphic site
 // (e.g. richards' task-table) cycles instead of going megamorphic.
 //
@@ -338,9 +338,25 @@ function _delslice(obj, lower, upper, step) {
 // tables (`_strMethod`, `_listMethod`, etc.) build a fresh closure per
 // call — caching one would alias the receiver across instances. The
 // adderGetAttr slow path already returns the right closure for these.
+//
+// An entry holds while its type's version (_pyVer, bumped whenever the class or a base changes —
+// a method patched, deleted, __bases__ reassigned: builtins.js classMemberChanged) is the one it
+// was cached at, and the instance doesn't shadow the name with its own attribute.
 
 const _PIC_SIZE = 4;
 const _PIC = [];
+// record t → its method for the site (a type seen again — its version moved on — is updated in place)
+function _picStore(cache, siteId, t, obj, name) {
+  if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
+  let c = cache;
+  if (!c) { c = { types: [], vers: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
+  let idx = c.types.indexOf(t);
+  if (idx < 0) {
+    if (c.types.length < _PIC_SIZE) idx = c.types.length;
+    else { idx = c.next; c.next = (idx + 1) % _PIC_SIZE; }   // FIFO: a 5-way polymorphic site cycles
+  }
+  c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = t.prototype[name];
+}
 
 // Sync function — the underlying method may be sync OR async, and JS
 // `return` preserves that polarity. Wrapping this helper in `async`
@@ -354,7 +370,7 @@ function _callMethod(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
+      if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
     }
   }
   // Slow path: full adderGetAttr lookup + call.
@@ -366,24 +382,7 @@ function _callMethod(obj, name, siteId, ...args) {
   // gets bound to the receiver at call time via `.call(obj, ...)`).
   // Skip caching for primitives / dicts / modules — adderGetAttr there
   // returns receiver-bound closures whose identity changes per call.
-  if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
-    let c = cache;
-    if (!c) {
-      c = { types: [], methods: [], next: 0, name };
-      _PIC[siteId] = c;
-    }
-    if (c.types.length < _PIC_SIZE) {
-      c.types.push(t);
-      c.methods.push(t.prototype[name]);
-    } else {
-      // FIFO eviction so a 5-way polymorphic site cycles instead of
-      // pinning to the first 4 types it ever saw.
-      const idx = c.next;
-      c.types[idx] = t;
-      c.methods[idx] = t.prototype[name];
-      c.next = (idx + 1) % _PIC_SIZE;
-    }
-  }
+  _picStore(cache, siteId, t, obj, name);
   return result;
 }
 
@@ -395,16 +394,11 @@ function _callMethodSync(obj, name, siteId, ...args) {
   if (cache && t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
-      if (types[i] === t) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
+      if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
-  if (t !== undefined && t.prototype && typeof t.prototype[name] === 'function') {
-    let c = cache;
-    if (!c) { c = { types: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
-    if (c.types.length < _PIC_SIZE) { c.types.push(t); c.methods.push(t.prototype[name]); }
-    else { const idx = c.next; c.types[idx] = t; c.methods[idx] = t.prototype[name]; c.next = (idx + 1) % _PIC_SIZE; }
-  }
+  _picStore(cache, siteId, t, obj, name);
   return result;
 }
 // a value called from sync mode: a function's twin, a class's synchronous construction, an
