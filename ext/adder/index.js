@@ -13149,12 +13149,16 @@ function _delslice(obj, lower, upper, step) {
 // ── Method-call PIC (polymorphic inline cache) ──
 //
 // `obj.method(args)` in adder lowers to `await _py.callMethod(obj, name,
-// siteId, ...args)`. Each call site has a unique siteId allocated by the
-// lowerer; the helper keeps a tiny (type → unbound_method) cache keyed
-// off siteId. On hit, skip adderGetAttr's type-dispatch chain entirely
-// and skip the bound-method closure allocation.
+// $pic[k], ...args)`: the k-th call site of the compiled unit (a module, a
+// cell, an exec'd string) passes its own slot from the table the unit makes
+// when it runs (`const $pic = _py.pics(n)`). The helper keeps a tiny
+// (type → unbound_method) cache in the slot. On hit, skip adderGetAttr's
+// type-dispatch chain entirely and skip the bound-method closure allocation.
+// Slots numbered per unit keep the emitted code independent of what was
+// compiled before it (a compiled module can be cached and reused), and a
+// unit's slots go when it does.
 //
-// Layout: _PIC[siteId] = { types, vers, methods, next } — arrays of length
+// Slot layout: { name, types, vers, methods, next } — arrays of length
 // 0..PIC_SIZE. FIFO eviction once full so a 5-way polymorphic site
 // (e.g. richards' task-table) cycles instead of going megamorphic.
 //
@@ -13169,12 +13173,16 @@ function _delslice(obj, lower, upper, step) {
 // was cached at, and the instance doesn't shadow the name with its own attribute.
 
 const _PIC_SIZE = 4;
-const _PIC = [];
+// a compiled unit's call-site slots
+function _pics(n) {
+  const a = new Array(n);
+  for (let i = 0; i < n; i++) a[i] = { name: null, types: [], vers: [], methods: [], next: 0 };
+  return a;
+}
 // record t → its method for the site (a type seen again — its version moved on — is updated in place)
-function _picStore(cache, siteId, t, obj, name) {
+function _picStore(c, t, obj, name) {
   if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
-  let c = cache;
-  if (!c) { c = { types: [], vers: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
+  if (c.name !== name) { c.name = name; c.types.length = 0; c.vers.length = 0; c.methods.length = 0; c.next = 0; }
   let idx = c.types.indexOf(t);
   if (idx < 0) {
     if (c.types.length < _PIC_SIZE) idx = c.types.length;
@@ -13188,11 +13196,10 @@ function _picStore(cache, siteId, t, obj, name) {
 // would wrap every return in `Promise.resolve()` even when the method
 // is sync, paying the Promise allocation on every method call.
 // The caller's `await _py.callMethod(...)` handles both shapes.
-function _callMethod(obj, name, siteId, ...args) {
+function _callMethod(obj, name, cache, ...args) {
   // Fast path: scan the cache for a matching __adderType__.
   const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
-  const cache = _PIC[siteId];
-  if (cache && t !== undefined && cache.name === name) {
+  if (t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
@@ -13207,23 +13214,22 @@ function _callMethod(obj, name, siteId, ...args) {
   // gets bound to the receiver at call time via `.call(obj, ...)`).
   // Skip caching for primitives / dicts / modules — adderGetAttr there
   // returns receiver-bound closures whose identity changes per call.
-  _picStore(cache, siteId, t, obj, name);
+  _picStore(cache, t, obj, name);
   return result;
 }
 
 // a method call from code that can't wait (sync mode): the method's sync twin when it has one —
 // the same lookup and inline cache as _callMethod
-function _callMethodSync(obj, name, siteId, ...args) {
+function _callMethodSync(obj, name, cache, ...args) {
   const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
-  const cache = _PIC[siteId];
-  if (cache && t !== undefined && cache.name === name) {
+  if (t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
-  _picStore(cache, siteId, t, obj, name);
+  _picStore(cache, t, obj, name);
   return result;
 }
 // a value called from sync mode: a function's twin, a class's synchronous construction, an
@@ -13666,6 +13672,7 @@ const _py = {
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
+  pics: _pics,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
   mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, freeName: _freeName, localsOf: _localsOf,
@@ -25269,22 +25276,18 @@ function resolveAdderAnnotation(node) {
 // loc() reads adder-AST nodes' `node.line` / `node.col` (different
 // shape from ESTree's `node.loc.start`).
 
-let _nextGlobalSiteId = 0;
 class AdderLowerCtx extends BaseLowerCtx {
   constructor() {
     super();
     this.declared = new Set();
     this.syncFunctions = new Set();
-    // Per-cell counter for `_py.callMethod` polymorphic-inline-cache site IDs.
-    // Each `obj.method(...)` call site gets a distinct ID; the runtime helper
-    // keys its small (type → method) cache off it. Counter is per-cell, not
-    // global, so cache rebuilds when the cell re-runs (intentional — class
-    // identities don't survive a re-lower anyway).
+    // Counter for `_py.callMethod` polymorphic-inline-cache sites, per compiled unit: the k-th
+    // `obj.method(...)` site passes slot k of the table the unit makes when it runs
+    // (`const $pic = _py.pics(n)`, see lowerAdder) — so the emitted code doesn't depend on what
+    // compiled before it, and two units never share a slot
     this._callSiteId = 0;
   }
-  // (unique across every compilation: a program's modules all compile, and two sharing a site
-  // number shared its cache — `self.close()` in one got `skip_if` from another)
-  nextCallSiteId() { this._callSiteId++; return _nextGlobalSiteId++; }
+  nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
     // in a class body, a name the body binds is `__cb_<name>`: the methods compiled inside it
@@ -25818,6 +25821,15 @@ function lowerAdder(ast, source, opts) {
   for (const stmt of ast.body) {
     const result = lowerStmt_ad(ctx, stmt);
     lastExpr = stmt.type === 'Expr' && result ? result.id : null;
+  }
+
+  // the unit's call-site slot table, made first thing when it runs (its size known only now)
+  if (ctx._callSiteId) {
+    const at = ctx.ops.length;
+    const n = ctx.emit('const', [ctx._callSiteId], I32, null);
+    const t = emitPyCall(ctx, 'pics', [n], null);
+    ctx.emit('store', ['$pic', t.id], VOID, null);
+    ctx.ops.unshift(...ctx.ops.splice(at));
   }
 
   // If there's a trailing Expr, store it as __lastExpr__ so the caller can read it
@@ -26390,8 +26402,8 @@ function lowerCall_ad(ctx, node) {
     // monomorphic for sites that always see the same receiver type.
     const obj = lowerExpr_ad(ctx, node.func.value);
     const nameOp = ctx.emit('const', [node.func.attr], STRING, l);
-    const siteIdOp = ctx.emit('const', [ctx.nextCallSiteId()], I32, l);
-    const callArgs = [obj, nameOp, siteIdOp];
+    const siteOp = ctx.emit('array_get', [ctx.emit('load', ['$pic'], DYNAMIC, l).id, ctx.emit('const', [ctx.nextCallSiteId()], I32, l).id], DYNAMIC, l);
+    const callArgs = [obj, nameOp, siteOp];
     for (const id of argIds) callArgs.push({ id });
     if (kwObjId) callArgs.push({ id: kwObjId });
     const call = emitPyCall(ctx, 'callMethod', callArgs, l);

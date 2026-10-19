@@ -171,22 +171,18 @@ function resolveAdderAnnotation(node) {
 // loc() reads adder-AST nodes' `node.line` / `node.col` (different
 // shape from ESTree's `node.loc.start`).
 
-let _nextGlobalSiteId = 0;
 class AdderLowerCtx extends BaseLowerCtx {
   constructor() {
     super();
     this.declared = new Set();
     this.syncFunctions = new Set();
-    // Per-cell counter for `_py.callMethod` polymorphic-inline-cache site IDs.
-    // Each `obj.method(...)` call site gets a distinct ID; the runtime helper
-    // keys its small (type → method) cache off it. Counter is per-cell, not
-    // global, so cache rebuilds when the cell re-runs (intentional — class
-    // identities don't survive a re-lower anyway).
+    // Counter for `_py.callMethod` polymorphic-inline-cache sites, per compiled unit: the k-th
+    // `obj.method(...)` site passes slot k of the table the unit makes when it runs
+    // (`const $pic = _py.pics(n)`, see lowerAdder) — so the emitted code doesn't depend on what
+    // compiled before it, and two units never share a slot
     this._callSiteId = 0;
   }
-  // (unique across every compilation: a program's modules all compile, and two sharing a site
-  // number shared its cache — `self.close()` in one got `skip_if` from another)
-  nextCallSiteId() { this._callSiteId++; return _nextGlobalSiteId++; }
+  nextCallSiteId() { return this._callSiteId++; }
   // the ops that put a Python name into the JS as a binding (see jsSafeName)
   emit(op, args, type, loc, extra) {
     // in a class body, a name the body binds is `__cb_<name>`: the methods compiled inside it
@@ -720,6 +716,15 @@ export function lowerAdder(ast, source, opts) {
   for (const stmt of ast.body) {
     const result = lowerStmt_ad(ctx, stmt);
     lastExpr = stmt.type === 'Expr' && result ? result.id : null;
+  }
+
+  // the unit's call-site slot table, made first thing when it runs (its size known only now)
+  if (ctx._callSiteId) {
+    const at = ctx.ops.length;
+    const n = ctx.emit('const', [ctx._callSiteId], I32, null);
+    const t = emitPyCall(ctx, 'pics', [n], null);
+    ctx.emit('store', ['$pic', t.id], VOID, null);
+    ctx.ops.unshift(...ctx.ops.splice(at));
   }
 
   // If there's a trailing Expr, store it as __lastExpr__ so the caller can read it
@@ -1292,8 +1297,8 @@ function lowerCall_ad(ctx, node) {
     // monomorphic for sites that always see the same receiver type.
     const obj = lowerExpr_ad(ctx, node.func.value);
     const nameOp = ctx.emit('const', [node.func.attr], STRING, l);
-    const siteIdOp = ctx.emit('const', [ctx.nextCallSiteId()], I32, l);
-    const callArgs = [obj, nameOp, siteIdOp];
+    const siteOp = ctx.emit('array_get', [ctx.emit('load', ['$pic'], DYNAMIC, l).id, ctx.emit('const', [ctx.nextCallSiteId()], I32, l).id], DYNAMIC, l);
+    const callArgs = [obj, nameOp, siteOp];
     for (const id of argIds) callArgs.push({ id });
     if (kwObjId) callArgs.push({ id: kwObjId });
     const call = emitPyCall(ctx, 'callMethod', callArgs, l);

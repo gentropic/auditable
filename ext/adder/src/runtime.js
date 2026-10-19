@@ -324,12 +324,16 @@ function _delslice(obj, lower, upper, step) {
 // ── Method-call PIC (polymorphic inline cache) ──
 //
 // `obj.method(args)` in adder lowers to `await _py.callMethod(obj, name,
-// siteId, ...args)`. Each call site has a unique siteId allocated by the
-// lowerer; the helper keeps a tiny (type → unbound_method) cache keyed
-// off siteId. On hit, skip adderGetAttr's type-dispatch chain entirely
-// and skip the bound-method closure allocation.
+// $pic[k], ...args)`: the k-th call site of the compiled unit (a module, a
+// cell, an exec'd string) passes its own slot from the table the unit makes
+// when it runs (`const $pic = _py.pics(n)`). The helper keeps a tiny
+// (type → unbound_method) cache in the slot. On hit, skip adderGetAttr's
+// type-dispatch chain entirely and skip the bound-method closure allocation.
+// Slots numbered per unit keep the emitted code independent of what was
+// compiled before it (a compiled module can be cached and reused), and a
+// unit's slots go when it does.
 //
-// Layout: _PIC[siteId] = { types, vers, methods, next } — arrays of length
+// Slot layout: { name, types, vers, methods, next } — arrays of length
 // 0..PIC_SIZE. FIFO eviction once full so a 5-way polymorphic site
 // (e.g. richards' task-table) cycles instead of going megamorphic.
 //
@@ -344,12 +348,16 @@ function _delslice(obj, lower, upper, step) {
 // was cached at, and the instance doesn't shadow the name with its own attribute.
 
 const _PIC_SIZE = 4;
-const _PIC = [];
+// a compiled unit's call-site slots
+function _pics(n) {
+  const a = new Array(n);
+  for (let i = 0; i < n; i++) a[i] = { name: null, types: [], vers: [], methods: [], next: 0 };
+  return a;
+}
 // record t → its method for the site (a type seen again — its version moved on — is updated in place)
-function _picStore(cache, siteId, t, obj, name) {
+function _picStore(c, t, obj, name) {
   if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
-  let c = cache;
-  if (!c) { c = { types: [], vers: [], methods: [], next: 0, name }; _PIC[siteId] = c; }
+  if (c.name !== name) { c.name = name; c.types.length = 0; c.vers.length = 0; c.methods.length = 0; c.next = 0; }
   let idx = c.types.indexOf(t);
   if (idx < 0) {
     if (c.types.length < _PIC_SIZE) idx = c.types.length;
@@ -363,11 +371,10 @@ function _picStore(cache, siteId, t, obj, name) {
 // would wrap every return in `Promise.resolve()` even when the method
 // is sync, paying the Promise allocation on every method call.
 // The caller's `await _py.callMethod(...)` handles both shapes.
-function _callMethod(obj, name, siteId, ...args) {
+function _callMethod(obj, name, cache, ...args) {
   // Fast path: scan the cache for a matching __adderType__.
   const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
-  const cache = _PIC[siteId];
-  if (cache && t !== undefined && cache.name === name) {
+  if (t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
@@ -382,23 +389,22 @@ function _callMethod(obj, name, siteId, ...args) {
   // gets bound to the receiver at call time via `.call(obj, ...)`).
   // Skip caching for primitives / dicts / modules — adderGetAttr there
   // returns receiver-bound closures whose identity changes per call.
-  _picStore(cache, siteId, t, obj, name);
+  _picStore(cache, t, obj, name);
   return result;
 }
 
 // a method call from code that can't wait (sync mode): the method's sync twin when it has one —
 // the same lookup and inline cache as _callMethod
-function _callMethodSync(obj, name, siteId, ...args) {
+function _callMethodSync(obj, name, cache, ...args) {
   const t = (obj !== null && obj !== undefined) ? obj.__adderType__ : undefined;
-  const cache = _PIC[siteId];
-  if (cache && t !== undefined && cache.name === name) {
+  if (t !== undefined && cache.name === name) {
     const types = cache.types;
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
-  _picStore(cache, siteId, t, obj, name);
+  _picStore(cache, t, obj, name);
   return result;
 }
 // a value called from sync mode: a function's twin, a class's synchronous construction, an
@@ -842,6 +848,7 @@ export const _py = {
   // attribute
   getattr: _getattr, setattr: _setattr,
   callMethod: _callMethod,
+  pics: _pics,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
   mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, freeName: _freeName, localsOf: _localsOf,

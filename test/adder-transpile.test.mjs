@@ -687,3 +687,33 @@ describe('adder import lazy-loads installed extensions via the resolver hook', (
     }
   });
 });
+
+// A compiled unit's JS depends only on its source and options — not on what compiled before it
+// (each unit numbers its method-call cache slots from 0 in its own table): the property that lets
+// a compiled module be cached and reused
+describe('adder transpile — deterministic output', () => {
+  const emit = (src, opts) => {
+    const air = lowerAdder(adderParse(src), src, opts);
+    runPasses(air);
+    return emitJS(air, ['_py', ...air.imports], [], { hinted: false });
+  };
+  it('compiling the same source twice gives the same JS, with other compiles between', () => {
+    const src = 'class C:\n    def f(self, x):\n        return x.g(1) + self.h()\n    def h(self):\n        return [].copy()\n';
+    const a = emit(src, { module: { package: '' } });
+    emit('y = [].append(1)\nz = "a".upper()\n');
+    const b = emit(src, { module: { package: '' } });
+    assert.equal(a, b);
+    assert.match(a, /\$pic = \(_py\.pics\)\(\d+\)/);
+  });
+  it('two units do not share call-site slots', async () => {
+    const r = await runTranspile([
+      'class A:',
+      '    def m(self): return "A"',
+      'class B:',
+      '    def m(self): return "B"',
+      'def f(o): return o.m()',
+      'print(f(A()), f(B()), f(A()))',
+    ].join('\n'));
+    assert.equal(r.output, 'A B A');
+  });
+});
