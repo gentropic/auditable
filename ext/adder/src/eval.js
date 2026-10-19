@@ -1751,21 +1751,20 @@ setScopeExec((kind, args) => {
 // __lastExpr__ the compiled module hands back (namedtuple's __new__ is an eval'd lambda — tree-
 // walked, every namedtuple construction was an interpreted, async call)
 function _execCompiled(args, isEval = false) {
-  let ast, code;
-  try {
-    code = _sourceOf(args[0]);
-    if (isEval) {
-      code = code.trim();
-      const expr = _adderParseExpr(code);
-      ast = { type: 'Module', body: [{ type: 'Expr', value: expr, line: expr.line || 1, col: 0 }] };
-    } else ast = adderParse(code);
-  } catch { return null; }
-  const target = _execScope(args, null);
+  let code;
+  try { code = _sourceOf(args[0]); } catch { return null; }
+  if (isEval) code = code.trim();
+  // parsed only when the compile cache doesn't have it (the same string exec'd again isn't)
+  const parse = () => {
+    if (!isEval) return adderParse(code);
+    const expr = _adderParseExpr(code);
+    return { type: 'Module', body: [{ type: 'Expr', value: expr, line: expr.line || 1, col: 0 }] };
+  };
   let compiled = null;
-  let modName = '__main__';
-  for (let s = target; s; s = s.parent) if (s.vars && s.vars.has('__name__')) { modName = s.vars.get('__name__'); break; }
-  try { compiled = _moduleCompiler(ast, code, { name: typeof modName === 'string' ? modName : '__main__', package: '' }); } catch { compiled = null; }
+  // (a source that doesn't parse or lower: null, and the tree-walker runs it — and reports it)
+  try { compiled = _moduleCompiler(code, { kind: isEval ? 'eval' : 'exec', package: '' }, parse); } catch { compiled = null; }
   if (!compiled) return null;
+  const target = _execScope(args, null);
   const vars = target.vars;
   const builtins = adderModules.builtins;
   const lookup = (n) => {
@@ -1951,15 +1950,31 @@ class _ModuleVars extends PyDict {
 //   info.path    — for a package: its __path__ (the directories its submodules are found in)
 async function _instantiateModule(cacheKey, displayName, source, filePath, info = {}) {
   const cache = adderModules.sys.modules;
-  // a module that doesn't parse raises SyntaxError at its import, naming the file
-  let ast;
-  try { ast = adderParse(source); } catch (e) {
-    if (e instanceof AdderError) throw e;
-    const m = /\(line (\d+)\)/.exec(String(e && e.message));
-    const err = new AdderError('SyntaxError', `${String(e && e.message).replace(/\s*\(line \d+\)$/, '')} (${filePath}${m ? `, line ${m[1]}` : ''})`);
-    err.filename = filePath; err.lineno = m ? Number(m[1]) : null;
-    throw err;
+  // a module that doesn't parse raises SyntaxError at its import, naming the file. Parsed only
+  // when needed: a module the compile cache has is not parsed again
+  let ast = null;
+  const parse = () => {
+    if (ast) return ast;
+    try { return (ast = adderParse(source)); } catch (e) {
+      if (e instanceof AdderError) throw e;
+      const m = /\(line (\d+)\)/.exec(String(e && e.message));
+      const err = new AdderError('SyntaxError', `${String(e && e.message).replace(/\s*\(line \d+\)$/, '')} (${filePath}${m ? `, line ${m[1]}` : ''})`);
+      err.filename = filePath; err.lineno = m ? Number(m[1]) : null;
+      throw err;
+    }
+  };
+  const pkg = info.package !== undefined ? info.package : (displayName.includes('.') ? displayName.slice(0, displayName.lastIndexOf('.')) : '');
+
+  // AIR-compile the module when the importing program runs on AIR (the cell and its libraries on
+  // one engine); a module AIR can't lower is tree-walked instead
+  let compiled = null;
+  if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
+    try { compiled = _moduleCompiler(source, { kind: 'module', package: pkg }, parse); } catch (e) {
+      if (e instanceof AdderError && e.pyType === 'SyntaxError') throw e;
+      compiled = null;
+    }
   }
+  if (!compiled) parse();
   const modScope = new AdderScope();
   const builtins = adderBuiltins(stdoutWrite);
   const builtinNames = new PySet(Object.keys(builtins));
@@ -1971,22 +1986,15 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   cache[cacheKey] = mod;
   modScope.vars._mod = mod;
 
-  const pkg = info.package !== undefined ? info.package : (displayName.includes('.') ? displayName.slice(0, displayName.lastIndexOf('.')) : '');
   modScope.set('__name__', displayName);
   modScope.set('__file__', filePath);
   modScope.set('__package__', pkg);
-  modScope.set('__doc__', ast.body && ast.body[0] && ast.body[0].type === 'Expr' && ast.body[0].value.type === 'Constant' && typeof ast.body[0].value.value === 'string' ? ast.body[0].value.value : null);
+  modScope.set('__doc__', compiled ? compiled.doc : (ast.body && ast.body[0] && ast.body[0].type === 'Expr' && ast.body[0].value.type === 'Constant' && typeof ast.body[0].value.value === 'string' ? ast.body[0].value.value : null));
   if (info.path) modScope.set('__path__', info.path);
   modScope.set('__spec__', { __adderClass__: 'ModuleSpec', name: displayName, origin: filePath, parent: pkg,
     submodule_search_locations: info.path || null, has_location: !!filePath, loader: null });
   modScope.set('__loader__', null);
 
-  // AIR-compile the module when the importing program runs on AIR (the cell and its libraries on
-  // one engine); a module AIR can't lower is tree-walked instead
-  let compiled = null;
-  if (_moduleCompiler && _runOpts.moduleEngine !== 'tree') {
-    try { compiled = _moduleCompiler(ast, source, { name: displayName, package: pkg }); } catch { compiled = null; }
-  }
   // the namespace of the module whose top level is running: an exec() reached without namespaces
   // from compiled code (six's `exec_ = getattr(builtins, "exec")`) runs in it, as CPython's does
   // in the calling module's

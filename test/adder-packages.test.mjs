@@ -76,6 +76,7 @@ const FILES = {
   // a re-export module: `import *` (the tree-walker's: AIR declines it)
   '/site/reexport.py': 'from money import *\nfrom pkg.core import *\n',
   '/site/data_pkg/table.txt': 'hello resources',
+  '/site/badsyntax.py': 'x = (1,\n',
   // a free name nothing binds: NameError when read, not None — at module level, in a function, in
   // a default; a builtin and a module dunder still read
   '/site/freenames.py': [
@@ -197,6 +198,27 @@ describe('adder packages over a VFS', () => {
       '        print(e)',
     ].join('\n'));
     assert.equal(out, ["[\"name 'not_defined' is not defined\"] (2, 'freenames')", "name 'also_not_defined' is not defined", "name 'nor_this' is not defined", ''].join('\n'));
+  });
+
+  it('a module or exec string compiled before: reused, each run its own objects', async () => {
+    const out = await runBoth([
+      'import money',
+      'doc1 = money.__doc__',
+      'C1 = money.M',
+      'del sys.modules["money"]',
+      'import money',
+      'print(money.M is C1, money.__doc__ == doc1, money.M(5) + money.M(1))',
+      'ns1, ns2 = {"k": 1}, {"k": 3}',
+      'exec("def g(x):\\n    return x * k", ns1)',
+      'exec("def g(x):\\n    return x * k", ns2)',
+      'print(ns1["g"](10), ns2["g"](10), ns1["g"] is ns2["g"])',
+      'for _ in range(2):',
+      '    try:',
+      '        import badsyntax',
+      '    except SyntaxError as e:',
+      '        print("SyntaxError")',
+    ].join('\n'));
+    assert.equal(out, ['False True M(6)', '10 30 False', 'SyntaxError', 'SyntaxError', ''].join('\n'));
   });
 
   it('importlib and __import__', async () => {
