@@ -1721,18 +1721,19 @@ class _Parser {
 
   parseLambda() {
     const t = this.advance(); // 'lambda'
-    const params = [];
-    let vararg = null, kwarg = null;
+    const params = [], kwonly = [];
+    let vararg = null, kwarg = null, seenStar = false, posonly = 0;
     while (!this.at('OP', ':')) {
-      if (this.eat('OP', '*')) { if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
+      // (after `*` / `*args` the parameters are keyword-only, as in a def)
+      if (this.eat('OP', '*')) { seenStar = true; if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
       if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; this.eat('OP', ','); break; }
-      if (this.eat('OP', '/')) { this.eat('OP', ','); continue; }      // positional-only marker
+      if (this.eat('OP', '/')) { posonly = params.length; this.eat('OP', ','); continue; }      // positional-only marker
       const name = this.expect('NAME').value;
       const def = this.eat('OP', '=') ? this.parseExpr() : null;
-      params.push({ name, default: def });
+      (seenStar ? kwonly : params).push({ name, default: def });
       this.eat('OP', ',');
     }
     this.expect('OP', ':');
-    return { type: 'Lambda', params, vararg, kwarg, body: this.parseExpr(), line: t.line, col: t.col };
+    return { type: 'Lambda', params, kwonly, vararg, kwarg, posonly, body: this.parseExpr(), line: t.line, col: t.col };
   }
 }

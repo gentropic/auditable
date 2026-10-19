@@ -594,7 +594,7 @@ function _createClass(name, bases, members, annotations, kw, moduleName) {
 // ── Exception matching (for try/except) ──
 
 // _excParents comes from builtins.js
-import { _excParents, seqStoreIndex, PyCoroutine, pyCallable, lazyCoro, pyUnpack } from "./builtins.js";
+import { _excParents, seqStoreIndex, PyCoroutine, pyCallable, lazyCoro, pyUnpack, NO_DEFAULT, LiveDefaults } from "./builtins.js";
 
 function _rtMatchException(error, excTypeVal) {
   return excMatches(error, excTypeVal);
@@ -733,7 +733,8 @@ function _checkKw(fname, names, nPositional, kw, allowExtra) {
   }
 }
 
-function _bindArgs(fname, names, args) {
+// (defs: the def's live defaults — a parameter given one by `f.__defaults__ = …` after the def)
+function _bindArgs(fname, names, args, defs) {
   const a = Array.prototype.slice.call(args);
   while (a.length && a[a.length - 1] === undefined) a.pop();
   const kw = a.length && _isKwBag(a[a.length - 1]) ? a.pop() : null;
@@ -743,9 +744,15 @@ function _bindArgs(fname, names, args) {
   if (kw) _checkKw(fname, names, a.length, kw, false);
   for (let i = a.length; i < names.length; i++) {
     if (kw && Object.hasOwn(kw, names[i])) a.push(kw[names[i]]);
-    else _argError(`${fname}() missing 1 required positional argument: '${names[i]}'`);
+    else a.push(_dflt(defs, names[i], fname, false));
   }
   return a;
+}
+// a parameter no argument filled: its default, read from the def's defaults object at call time
+// (so `f.__defaults__ = …` / `f.__kwdefaults__[k] = …` made after the def reach the next call)
+function _dflt(defs, k, fname, kwonly) {
+  if (defs && Object.hasOwn(defs, k)) { const v = defs[k]; if (v !== NO_DEFAULT) return v; }
+  return _argError(`${fname}() missing 1 required ${kwonly ? 'keyword-only' : 'positional'} argument: '${k}'`);
 }
 
 // assert test, msg → AssertionError (an empty message when there is none, as Python)
@@ -883,19 +890,24 @@ export const _py = {
   defSig: (fn, shape, defaults, mod = null) => {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
-    fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    // (defaults: the object the def's calls bind from — assigning __defaults__ rewrites it. One
+    // fixed shape, not a spread: a lambda made in a loop pays this per iteration)
+    fn._pySig = { params: shape.params, vararg: shape.vararg, kwonly: shape.kwonly, kwarg: shape.kwarg, isAsync: shape.isAsync, line: shape.line,
+      defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    fn._pyLiveDefaults = true;
     if (shape.isAsync && !fn._isGenerator && !/GeneratorFunction$/.test((fn.constructor && fn.constructor.name) || '')) fn._pyCoro = true;   // (not an async generator)
     if (mod) Object.defineProperty(fn, '_pyGlobals', { value: _globalsOf(mod), configurable: true });
-    const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
-    fn.__defaults__ = pos.length ? mkTuple(pos) : null;
-    const kwd = shape.kwonly.filter((p) => p.hasDefault);
-    fn.__kwdefaults__ = kwd.length ? new PyDict(kwd.map((p) => [p.name, defaults[p.name]])) : null;
+    let pos = null, kwd = null;
+    for (const p of shape.params) if (p.hasDefault) (pos || (pos = [])).push(defaults[p.name]);
+    for (const p of shape.kwonly) if (p.hasDefault) (kwd || (kwd = [])).push([p.name, defaults[p.name]]);
+    fn.__defaults__ = pos ? mkTuple(pos) : null;
+    fn.__kwdefaults__ = kwd ? new LiveDefaults(defaults, kwd) : null;
     return null;
   },
   // the run budget (emitted only when lowering with ticks: true)
   tick: _tickLine,
   // argument binding
-  bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
+  bindArgs: _bindArgs, dflt: _dflt, NO_DEFAULT, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
   super: pySuper,
   // a class statement's `__class__` cell (see lowerClassDef)

@@ -2374,19 +2374,20 @@ class _Parser {
 
   parseLambda() {
     const t = this.advance(); // 'lambda'
-    const params = [];
-    let vararg = null, kwarg = null;
+    const params = [], kwonly = [];
+    let vararg = null, kwarg = null, seenStar = false, posonly = 0;
     while (!this.at('OP', ':')) {
-      if (this.eat('OP', '*')) { if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
+      // (after `*` / `*args` the parameters are keyword-only, as in a def)
+      if (this.eat('OP', '*')) { seenStar = true; if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
       if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; this.eat('OP', ','); break; }
-      if (this.eat('OP', '/')) { this.eat('OP', ','); continue; }      // positional-only marker
+      if (this.eat('OP', '/')) { posonly = params.length; this.eat('OP', ','); continue; }      // positional-only marker
       const name = this.expect('NAME').value;
       const def = this.eat('OP', '=') ? this.parseExpr() : null;
-      params.push({ name, default: def });
+      (seenStar ? kwonly : params).push({ name, default: def });
       this.eat('OP', ',');
     }
     this.expect('OP', ':');
-    return { type: 'Lambda', params, vararg, kwarg, body: this.parseExpr(), line: t.line, col: t.col };
+    return { type: 'Lambda', params, kwonly, vararg, kwarg, posonly, body: this.parseExpr(), line: t.line, col: t.col };
   }
 }
 
@@ -7671,8 +7672,8 @@ function setClassAttr(cls, k, v) {
   (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
 }
 // obj.name = value, from either engine: a frozen dataclass instance refuses every assignment
-// A tree-walked function's defaults live in one object its calls bind from (eval.js
-// _bindParams): __kwdefaults__ is a dict over it, and assigning __defaults__ / __kwdefaults__
+// A function's defaults live in one object its calls bind from (eval.js _bindParams; a compiled
+// def's prologue, via _py.dflt / _py.bindArgs): __kwdefaults__ is a dict over it, and assigning __defaults__ / __kwdefaults__
 // rewrites it — so a call made afterwards sees the change, as in CPython (networkx's argmap
 // sets its wrapper's own default to the wrapper: `func.__kwdefaults__["_argmap__wrapper"] = func`).
 // NO_DEFAULT marks a parameter whose default was taken away.
@@ -7702,7 +7703,8 @@ function _setFunctionInternal(fn, name, value) {
     _redirectBuilder(fn);
     return;
   }
-  if (!fn._pyRedirectable && d) {
+  // (a compiled def binds from its defaults object too — _py.defSig marks it _pyLiveDefaults)
+  if (!fn._pyRedirectable && !fn._pyLiveDefaults && d) {
     throw new AdderError('NotImplementedError', `assigning ${name} to a compiled function ('${fn._pyName || fn.name}'): run this code on the tree-walker`);
   }
   if (name === '__defaults__') {
@@ -7734,7 +7736,7 @@ function storeAttr(obj, name, value) {
     return syncOf(obj.__setattr__).call(obj, name, value);
   }
   if (typeof obj === 'function' && obj._pyDef && obj._pySig && (name === '__code__' || name === '__defaults__' || name === '__kwdefaults__')) {
-    _setFunctionInternal(obj, name, value);
+    _setFunctionInternal(obj._pyDefOf || obj, name, value);
     return;
   }
   if (obj !== null && typeof obj === 'object' && obj._pyHasDataDesc) {
@@ -9081,6 +9083,11 @@ function _installMember(cls, name, mName, value, opts) {
     cls[mName] = (...args) => originalFn(...args);
     // `Cls.method` is the plain function: its name, signature, docstring, abstractness
     Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+    // ...and its defaults are the def's: `Cls.m.__defaults__ = …` rewrites what calls bind from
+    Object.defineProperty(cls[mName], '_pyDefOf', { value: originalFn, configurable: true });
+    for (const k of ['__defaults__', '__kwdefaults__']) {
+      Object.defineProperty(cls[mName], k, { get: () => originalFn[k] ?? null, set: (v) => { originalFn[k] = v; }, configurable: true });
+    }
     markCoro(cls[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
     if (originalFn._pySync) {
@@ -13515,7 +13522,8 @@ function _checkKw(fname, names, nPositional, kw, allowExtra) {
   }
 }
 
-function _bindArgs(fname, names, args) {
+// (defs: the def's live defaults — a parameter given one by `f.__defaults__ = …` after the def)
+function _bindArgs(fname, names, args, defs) {
   const a = Array.prototype.slice.call(args);
   while (a.length && a[a.length - 1] === undefined) a.pop();
   const kw = a.length && _isKwBag(a[a.length - 1]) ? a.pop() : null;
@@ -13525,9 +13533,15 @@ function _bindArgs(fname, names, args) {
   if (kw) _checkKw(fname, names, a.length, kw, false);
   for (let i = a.length; i < names.length; i++) {
     if (kw && Object.hasOwn(kw, names[i])) a.push(kw[names[i]]);
-    else _argError(`${fname}() missing 1 required positional argument: '${names[i]}'`);
+    else a.push(_dflt(defs, names[i], fname, false));
   }
   return a;
+}
+// a parameter no argument filled: its default, read from the def's defaults object at call time
+// (so `f.__defaults__ = …` / `f.__kwdefaults__[k] = …` made after the def reach the next call)
+function _dflt(defs, k, fname, kwonly) {
+  if (defs && Object.hasOwn(defs, k)) { const v = defs[k]; if (v !== NO_DEFAULT) return v; }
+  return _argError(`${fname}() missing 1 required ${kwonly ? 'keyword-only' : 'positional'} argument: '${k}'`);
 }
 
 // assert test, msg → AssertionError (an empty message when there is none, as Python)
@@ -13665,19 +13679,24 @@ const _py = {
   defSig: (fn, shape, defaults, mod = null) => {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
-    fn._pySig = { ...shape, defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    // (defaults: the object the def's calls bind from — assigning __defaults__ rewrites it. One
+    // fixed shape, not a spread: a lambda made in a loop pays this per iteration)
+    fn._pySig = { params: shape.params, vararg: shape.vararg, kwonly: shape.kwonly, kwarg: shape.kwarg, isAsync: shape.isAsync, line: shape.line,
+      defaults, file: mod && typeof mod.__file__ === 'string' ? mod.__file__ : '<string>' };
+    fn._pyLiveDefaults = true;
     if (shape.isAsync && !fn._isGenerator && !/GeneratorFunction$/.test((fn.constructor && fn.constructor.name) || '')) fn._pyCoro = true;   // (not an async generator)
     if (mod) Object.defineProperty(fn, '_pyGlobals', { value: _globalsOf(mod), configurable: true });
-    const pos = shape.params.filter((p) => p.hasDefault).map((p) => defaults[p.name]);
-    fn.__defaults__ = pos.length ? mkTuple(pos) : null;
-    const kwd = shape.kwonly.filter((p) => p.hasDefault);
-    fn.__kwdefaults__ = kwd.length ? new PyDict(kwd.map((p) => [p.name, defaults[p.name]])) : null;
+    let pos = null, kwd = null;
+    for (const p of shape.params) if (p.hasDefault) (pos || (pos = [])).push(defaults[p.name]);
+    for (const p of shape.kwonly) if (p.hasDefault) (kwd || (kwd = [])).push([p.name, defaults[p.name]]);
+    fn.__defaults__ = pos ? mkTuple(pos) : null;
+    fn.__kwdefaults__ = kwd ? new LiveDefaults(defaults, kwd) : null;
     return null;
   },
   // the run budget (emitted only when lowering with ticks: true)
   tick: _tickLine,
   // argument binding
-  bindArgs: _bindArgs, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
+  bindArgs: _bindArgs, dflt: _dflt, NO_DEFAULT, checkKw: _checkKw, argError: _argError, isKwBag: _isKwBag,
   assertFail: _assertFail,
   super: pySuper,
   // a class statement's `__class__` cell (see lowerClassDef)
@@ -25655,9 +25674,9 @@ function lowerAdder(ast, source, opts) {
   }
 
   if (ast.type !== 'Module') throw new AirLowerError('Expected Module node');
-  // compiled functions bind their defaults as constants and can't take another body: a module
-  // that rewrites a function's __code__ / __defaults__ / __kwdefaults__ runs on the tree-walker
-  if (_rewritesFunctionInternals(ast)) throw new AirLowerError('rewriting __code__ / __defaults__ / __kwdefaults__ needs the tree-walker');
+  // a compiled function can't take another body: a module that rewrites a function's __code__
+  // runs on the tree-walker (its defaults it can: a def binds from a live defaults object)
+  if (_rewritesFunctionInternals(ast)) throw new AirLowerError('rewriting __code__ needs the tree-walker');
 
   // globals() / locals(): the module's namespace as a live dict over the module object (a
   // compiled module mirrors every module-level binding onto it). The main program gets such an
@@ -27358,7 +27377,9 @@ function _buildParamBinding(ctx, node, l) {
       if (names.length === 0) {
         emitRaw(ctx, `if (arguments.length && ${bag}) _py.bindArgs(${fname}, [], arguments);`);
       } else {
-        emitRaw(ctx, `if (arguments.length < ${names.length} || ${bag}) [${names.map(jsSafeName).join(', ')}] = _py.bindArgs(${fname}, ${JSON.stringify(names)}, arguments);`);
+        // (a def's defaults object: a missing argument may have been given a default since)
+        const defs = ctx._defsObj ? `, ${ctx._defsObj}` : '';
+        emitRaw(ctx, `if (arguments.length < ${names.length} || ${bag}) [${names.map(jsSafeName).join(', ')}] = _py.bindArgs(${fname}, ${JSON.stringify(names)}, arguments${defs});`);
       }
     });
     // the params are locals of the body, as the general path below records them: without
@@ -27377,7 +27398,14 @@ function _buildParamBinding(ctx, node, l) {
   const fname = JSON.stringify(node.name || '<lambda>');
   const allNames = JSON.stringify([...positionalParams.map(p => p.name), ...kwonly.map(p => p.name)]);
   const defaults = ctx._paramDefaults || {};
+  // a def reads every parameter no argument filled from its defaults object, at call time — the
+  // object __defaults__ / __kwdefaults__ rewrite (a lambda keeps its evaluated defaults)
+  const D = ctx._defsObj;
+  // (read inline — a parameter without one reads undefined, one taken away NO_DEFAULT: the helper
+  // then raises the missing-argument error)
+  const missing = (p, kwonly) => `((__dv = ${D}[${JSON.stringify(p.name)}]) !== undefined && __dv !== _py.NO_DEFAULT ? __dv : _py.dflt(${D}, '${p.name}', ${fname}, ${kwonly}))`;
   emitRaw(ctx, `let __kw = null;`, '__kw');
+  if (D) emitRaw(ctx, `let __dv;`, '__dv');
   emitRaw(ctx, `if (__args.length > 0 && __args[__args.length-1] && __args[__args.length-1]._kw) __kw = __args.pop();`);
   // only the positional parameters can be filled twice (a keyword-only one after *args cannot)
   emitRaw(ctx, `if (__kw) _py.checkKw(${fname}, ${allNames}, Math.min(__args.length, ${positionalParams.length}), __kw, ${kwarg ? 'true' : 'false'});`);
@@ -27389,7 +27417,9 @@ function _buildParamBinding(ctx, node, l) {
   for (let i = 0; i < positionalParams.length; i++) {
     const p = positionalParams[i];
     usedNames.push(p.name);
-    if (p.default) {
+    if (D) {
+      emitRaw(ctx, `let ${jsSafeName(p.name)} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : ${missing(p, false)});`, p.name);
+    } else if (p.default) {
       // the default was evaluated once, at definition (lowerFuncDef / lowerLambda)
       const def = defaults[p.name] || _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
       emitRaw(ctx, `let ${jsSafeName(p.name)} = (__args.length > ${i}) ? __args[${i}] : (__kw && Object.hasOwn(__kw, '${p.name}') ? __kw['${p.name}'] : ${def});`, p.name);
@@ -27409,7 +27439,9 @@ function _buildParamBinding(ctx, node, l) {
   // Keyword-only params
   for (const p of kwonly) {
     usedNames.push(p.name);
-    if (p.default) {
+    if (D) {
+      emitRaw(ctx, `let ${jsSafeName(p.name)} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : ${missing(p, true)};`, p.name);
+    } else if (p.default) {
       const def = defaults[p.name] || _refExpr(ctx, lowerExpr_ad(ctx, p.default).id);
       emitRaw(ctx, `let ${jsSafeName(p.name)} = (__kw && Object.hasOwn(__kw, '${p.name}')) ? __kw['${p.name}'] : ${def};`, p.name);
     } else {
@@ -27486,7 +27518,8 @@ function _refExpr(ctx, ssaId) {
 // would a coroutine.) Not in sync mode: the dunders whose call sites DO await — construction,
 // __call__, the in-place operators (guarded), `with`, iteration — and class-creation hooks.
 // does the program call globals() / locals() anywhere?
-const _FN_INTERNALS = new Set(['__code__', '__defaults__', '__kwdefaults__']);
+// (__defaults__ / __kwdefaults__ are a compiled def's live defaults object — see lowerFuncDef)
+const _FN_INTERNALS = new Set(['__code__']);
 const _isFnInternal = (n) => n && n.type === 'Attribute' && _FN_INTERNALS.has(n.attr);
 function _rewritesFunctionInternals(node) {
   if (!node || typeof node !== 'object') return false;
@@ -27584,6 +27617,12 @@ function lowerFuncDef(ctx, node) {
   const savedDefaults = ctx._paramDefaults;
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
   const defaultRefs = ctx._paramDefaults;            // their temps, for the signature below
+  // ...gathered in one object: the def's calls bind a missing argument from it, and it is the one
+  // __defaults__ / __kwdefaults__ rewrite (_py.defSig, builtins _setFunctionInternal) — so
+  // `f.__defaults__ = (…)` after the def reaches compiled calls, as namedtuple's __new__ needs
+  const defsObj = ctx.makeTempName('defs');
+  emitRaw(ctx, `const ${defsObj} = {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}};`, defsObj);
+  const savedDefsObj = ctx._defsObj;
   const savedExcName = ctx._excName;
   ctx._excName = null;
   // zero-argument super() in a method: the enclosing class and the method's first parameter
@@ -27630,12 +27669,14 @@ function lowerFuncDef(ctx, node) {
     const savedFnGlobals = ctx._fnGlobals;
     ctx._fnGlobals = new Set();   // the names this function declares `global` (module mirror)
     ctx._paramDefaults = defaultRefs;
+    ctx._defsObj = defsObj;
     ctx._excName = null;
 
     const out = { params: null, isSimple: null, needsArgs: false, body: null };
     out.body = captureOps(ctx, () => {
       // Build parameter binding (prologue + JS params)
       const r = _buildParamBinding(ctx, node, l);
+      ctx._defsObj = savedDefsObj;   // (not the body's own defs and lambdas)
       out.params = r.params; out.isSimple = r.isSimple; out.needsArgs = !!r.needsArguments;
 
       // Emit prologue ops
@@ -27722,7 +27763,7 @@ function lowerFuncDef(ctx, node) {
   }
   if (doc !== null) emitRaw(ctx, `${refName}.__doc__ = ${JSON.stringify(doc)};`);
   // a Python function: its signature as written, its defaults as evaluated (inspect, __defaults__)
-  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}}${ctx.moduleMirror ? ', __adder_module__' : ''});`);
+  emitRaw(ctx, `_py.defSig(${refName}, ${JSON.stringify(_sigShape(node))}, ${defsObj}${ctx.moduleMirror ? ', __adder_module__' : ''});`);
   if (twinned) {
     const tw = lowerBody(`${name} (sync twin)`, true);
     // anonymous: the twin is reached only through fn._pySync (a module-level `function name`
@@ -27764,6 +27805,10 @@ function lowerLambda(ctx, node) {
   const savedDefaults = ctx._paramDefaults;
   ctx._paramDefaults = _lowerParamDefaults(ctx, node);
   const defaultRefs = ctx._paramDefaults;
+  // ...in one object its calls bind from, which __defaults__ rewrites — as a def's (lowerFuncDef):
+  // namedtuple builds __new__ as an eval'd lambda, then assigns its __defaults__
+  const defsObj = ctx.makeTempName('defs');
+  emitRaw(ctx, `const ${defsObj} = {${Object.entries(defaultRefs).map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join(', ')}};`, defsObj);
   // lowered as the lambda; and, like a def (lowerFuncDef), once more in sync mode as its twin —
   // a lambda that calls anything compiles async, and code that can't wait calls it (`c =
   // lambda x: re.compile(x)` in a jinja2 __init__ reached from a property). Not for a lambda in
@@ -27785,7 +27830,10 @@ function lowerLambda(ctx, node) {
     ctx._paramDefaults = defaultRefs;
     out.body = captureOps(ctx, () => {
       // Reuse the function param binding logic
+      const savedDefsObj = ctx._defsObj;
+      ctx._defsObj = defsObj;
       const r = _buildParamBinding(ctx, node, l);
+      ctx._defsObj = savedDefsObj;
       out.params = r.params; out.needsArgs = !!r.needsArguments;
       for (const op of r.prologueOps) ctx.ops.push(op);
 
@@ -27820,10 +27868,14 @@ function lowerLambda(ctx, node) {
     is_async: false, is_generator: isGen,
   });
   const lam = mkLam(main);
-  if (isGen) return emitPyCall(ctx, 'lam', [emitPyCall(ctx, 'genLambda', [lam], l)], l);
-  if (!twinned) return emitPyCall(ctx, 'lam', [lam], l);
-  const twin = mkLam(lowerLamBody('lambda (sync twin)', true));
-  return emitPyCall(ctx, 'lam', [lam, twin], l);
+  const made = isGen ? emitPyCall(ctx, 'lam', [emitPyCall(ctx, 'genLambda', [lam], l)], l)
+    : !twinned ? emitPyCall(ctx, 'lam', [lam], l)
+    : emitPyCall(ctx, 'lam', [lam, mkLam(lowerLamBody('lambda (sync twin)', true))], l);
+  // its signature and live defaults (inspect, __defaults__), as a def's (not its __globals__: a
+  // lambda made in a loop would pay for it each time)
+  const ref = _refExpr(ctx, made.id);
+  emitRaw(ctx, `_py.defSig(${ref}, ${JSON.stringify(_sigShape(node))}, ${defsObj});`);
+  return ctx.emit('load', [ref], DYNAMIC, l);
 }
 
 // ── List comprehension ──

@@ -1403,4 +1403,12 @@ snap()
 result = repr(log)`);
     assert.strictEqual(defines.result, "['A,A,C', 'A2,A2,C', 'A2,B,C', 'A2,A2,C', 'A2,A2,A2', 'A2,Mixin,A2', 'own,Mixin,A2']");
   });
+  it('a method\'s __defaults__ assigned through the class reach its calls', async () => {
+    const { defines } = await pyEval(`
+class P:
+    def m(self, k=1): return k
+P.m.__defaults__ = (42,)
+result = repr((P().m(), P().m(7), P.m.__defaults__))`);
+    assert.strictEqual(defines.result, '(42, 7, (42,))');
+  });
 });

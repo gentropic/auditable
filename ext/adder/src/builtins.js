@@ -5277,8 +5277,8 @@ export function setClassAttr(cls, k, v) {
   (cls._pyAttrs || (cls._pyAttrs = new Set())).add(k);
 }
 // obj.name = value, from either engine: a frozen dataclass instance refuses every assignment
-// A tree-walked function's defaults live in one object its calls bind from (eval.js
-// _bindParams): __kwdefaults__ is a dict over it, and assigning __defaults__ / __kwdefaults__
+// A function's defaults live in one object its calls bind from (eval.js _bindParams; a compiled
+// def's prologue, via _py.dflt / _py.bindArgs): __kwdefaults__ is a dict over it, and assigning __defaults__ / __kwdefaults__
 // rewrites it — so a call made afterwards sees the change, as in CPython (networkx's argmap
 // sets its wrapper's own default to the wrapper: `func.__kwdefaults__["_argmap__wrapper"] = func`).
 // NO_DEFAULT marks a parameter whose default was taken away.
@@ -5308,7 +5308,8 @@ function _setFunctionInternal(fn, name, value) {
     _redirectBuilder(fn);
     return;
   }
-  if (!fn._pyRedirectable && d) {
+  // (a compiled def binds from its defaults object too — _py.defSig marks it _pyLiveDefaults)
+  if (!fn._pyRedirectable && !fn._pyLiveDefaults && d) {
     throw new AdderError('NotImplementedError', `assigning ${name} to a compiled function ('${fn._pyName || fn.name}'): run this code on the tree-walker`);
   }
   if (name === '__defaults__') {
@@ -5340,7 +5341,7 @@ export function storeAttr(obj, name, value) {
     return syncOf(obj.__setattr__).call(obj, name, value);
   }
   if (typeof obj === 'function' && obj._pyDef && obj._pySig && (name === '__code__' || name === '__defaults__' || name === '__kwdefaults__')) {
-    _setFunctionInternal(obj, name, value);
+    _setFunctionInternal(obj._pyDefOf || obj, name, value);
     return;
   }
   if (obj !== null && typeof obj === 'object' && obj._pyHasDataDesc) {
@@ -6687,6 +6688,11 @@ function _installMember(cls, name, mName, value, opts) {
     cls[mName] = (...args) => originalFn(...args);
     // `Cls.method` is the plain function: its name, signature, docstring, abstractness
     Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+    // ...and its defaults are the def's: `Cls.m.__defaults__ = …` rewrites what calls bind from
+    Object.defineProperty(cls[mName], '_pyDefOf', { value: originalFn, configurable: true });
+    for (const k of ['__defaults__', '__kwdefaults__']) {
+      Object.defineProperty(cls[mName], k, { get: () => originalFn[k] ?? null, set: (v) => { originalFn[k] = v; }, configurable: true });
+    }
     markCoro(cls[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls[mName].__isabstractmethod__ = true;
     if (originalFn._pySync) {

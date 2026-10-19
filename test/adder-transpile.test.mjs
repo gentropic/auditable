@@ -610,6 +610,14 @@ describe('adder transpile — sync-builtin shadowing (audit 2026-06-01)', () => 
     const r = await runTranspile("class A:\n    def m(self): return 'A'\nclass B(A):\n    pass\nclass C(A):\n    def m(self): return 'C'\nclass Mixin:\n    def m(self): return 'Mixin'\ndef call(o): return o.m()\na, b, c = A(), B(), C()\nlog = []\ndef snap(): log.append(','.join(call(x) for x in (a, b, c)))\nsnap()\nA.m = lambda self: 'A2'\nsnap()\nB.m = lambda self: 'B'\nsnap()\ndel B.m\nsnap()\ndel C.m\nsnap()\nB.__bases__ = (Mixin, A)\nsnap()\na.m = lambda: 'own'\nsnap()\nprint(log)");
     assert.equal(r.output, "['A,A,C', 'A2,A2,C', 'A2,B,C', 'A2,A2,C', 'A2,A2,A2', 'A2,Mixin,A2', 'own,Mixin,A2']");
   });
+  it('assigning __defaults__ / __kwdefaults__ reaches the compiled function\'s calls', async () => {
+    const r = await runTranspile("def f(a, b=2, *, c=3): return (a, b, c)\nlog = [f(1)]\nf.__defaults__ = (20,)\nf.__kwdefaults__ = {'c': 30}\nlog.append(f(1))\nf.__defaults__ = (10, 20)\nlog.append(f())\nf.__kwdefaults__['c'] = 99\nlog.append(f())\ndel f.__kwdefaults__['c']\ntry:\n    f()\nexcept TypeError as e:\n    log.append(str(e))\ndef g(x, y): return x + y\ng.__defaults__ = (100,)\nlog.append(g(1))\nclass P:\n    def m(self, k=1): return k\nP.m.__defaults__ = (42,)\nlog.append(P().m())\nprint(log)");
+    assert.equal(r.output, "[(1, 2, 3), (1, 20, 30), (10, 20, 30), (10, 20, 99), \"f() missing 1 required keyword-only argument: 'c'\", 101, 42]");
+  });
+  it('a compiled lambda has live defaults and keyword-only parameters (namedtuple\'s __new__)', async () => {
+    const r = await runTranspile("f = lambda x, y=2, *, z=3: (x, y, z)\nnew = lambda _cls, x, y: (_cls, x, y)\nnew.__defaults__ = (0,)\nprint(f.__defaults__, f.__kwdefaults__, f(1, z=4), new('C', 1))");
+    assert.equal(r.output, "(2,) {'z': 3} (1, 2, 4) ('C', 1, 0)");
+  });
   it('an unshadowed known-sync builtin still skips the await (fast path intact)', async () => {
     const r = await runTranspile('print(len([1, 2, 3, 4]))');
     assert.equal(r.output, '4');
