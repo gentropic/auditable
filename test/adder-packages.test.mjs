@@ -63,6 +63,9 @@ const FILES = {
     'def uses_extra(): return extra',
     'class Thing:',
     '    def go(self): return helper(1) + str(k)',
+    'class Shadow:',
+    '    k = k + 10',
+    '    def outer_k(self): return k',
   ].join('\n'),
   '/site/reloadme.py': [
     'try:',
@@ -288,9 +291,17 @@ describe('adder packages over a VFS', () => {
       '    pm.uses_extra()',
       'except NameError:',
       '    print("NameError")',
+      'print(pm.Shadow.k, pm.Shadow().outer_k())',
+      'del pm.k',
+      'for f in (pm.getk, pm.Shadow().outer_k):',
+      '    try:',
+      '        f()',
+      '    except NameError as e:',
+      '        print(e)',
     ].join('\n'));
     // (CPython 3.13 prints exactly this)
-    assert.equal(out, ['mocked mocked1 (1,)', 'orig2', 'lam11', 'orig11', '99', '3 False', '7', '8 8', 'made', 'NameError', ''].join('\n'));
+    assert.equal(out, ['mocked mocked1 (1,)', 'orig2', 'lam11', 'orig11', '99', '3 False', '7', '8 8', 'made', 'NameError',
+      '11 8', "name 'k' is not defined", "name 'k' is not defined", ''].join('\n'));
   });
 
   // importlib.reload runs the module's code again in the module object everyone holds

@@ -709,6 +709,10 @@ export function insertHints(module, typeMap) {
 //   check(...)  — predicate over operand types, returns true if specialization fires
 //   resultType  — function or value: result type of the rewritten op
 //   passthrough — when true, the op is replaced by its sole arg (e.g. _py.truthy(bool) → bool)
+//   typeOnly    — when true, the call is kept and only its result is typed (a check that hands
+//                 its argument back: _py.freeName(v, name) is v's type)
+//   guard       — with typeOnly: the helper does anything only when its first argument is
+//                 undefined; emit-js writes `(v !== undefined ? v : helper(v, …))`
 //   customEmit  — when true, specializeRuntimeHelpers does op-specific
 //                 rewriting (e.g. between → (v >= lo) && (v <= hi))
 const _specsByNamespace = new Map();
@@ -943,6 +947,11 @@ export function specializeRuntimeHelpers(module, types) {
         changed = true;
         continue;
       }
+
+      // Type only: the call stays (it checks something), its result typed (helperResultType).
+      // A guard (the helper acts only on an undefined first argument) is tested inline by
+      // emit-js, the call made only when the test fails
+      if (spec.typeOnly) { if (spec.guard) op.guardUndefined = true; continue; }
 
       // Passthrough: replace the call result with the single arg
       if (spec.passthrough) {

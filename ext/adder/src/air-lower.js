@@ -85,6 +85,8 @@ const PY_SPECIALIZATIONS = {
     check: (t) => isNumeric(t),
     resultType: (t) => t,
   },
+  // `_py.freeName(v, "name")` (NameError when v is unbound) gives v back: v's type
+  freeName: { op: null, check: () => true, resultType: (t) => t, typeOnly: true, guard: true },
   truthy: {
     // _py.truthy(true) → just the value (already bool)
     // _py.truthy(x) where x is numeric → x !== 0 (handled via coerce)
@@ -931,6 +933,17 @@ function lowerExpr_ad(ctx, node) {
         const cell = _classCellRef(ctx);
         if (cell) return emitPyCall(ctx, 'cellGet', [ctx.emit('load', [cell], DYNAMIC, l)], l);
       }
+      // a class body reading a name it binds, before it has: the enclosing scope's (CPython looks
+      // in the class namespace, then the globals) — `class C: x = x`
+      if (ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) && !ctx._classLoopNames.has(name)) {
+        let f = ctx.symbols, bound = false;
+        for (;;) { if (f.bindings.has(name)) { bound = true; break; } if (f === ctx._classFrame || !f.parent) break; f = f.parent; }
+        if (!bound) {
+          const saved = ctx._classNames;
+          ctx._classNames = null;
+          try { return lowerExpr_ad(ctx, node); } finally { ctx._classNames = saved; }
+        }
+      }
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       const free = !ctx.symbols.has(name) && !isForwardRef;
       if (free) ctx.imports.add(name);
@@ -943,6 +956,11 @@ function lowerExpr_ad(ctx, node) {
         raw = emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
       }
       if (free && ctx.isBuiltin && name !== '__adder_module__' && !ctx.defines.has(name) && !ctx.isBuiltin(name)) {
+        raw = emitPyCall(ctx, 'freeName', [raw, ctx.emit('const', [name], STRING, l)], l);
+      } else if (ctx.moduleMirror && !ctx.topLevel && ctx.defines.has(name) && !ctx.funcOrClassNames.has(name) && _resolvesToModule(ctx, name)) {
+        // a module's own global read from a function or class body: unbound (not bound yet,
+        // or deleted — `del mod.k` reaches it through the write-back) is NameError, not None.
+        // (Its defs and classes are left alone: deleted, the write-back puts a thrower there)
         raw = emitPyCall(ctx, 'freeName', [raw, ctx.emit('const', [name], STRING, l)], l);
       }
       return raw;
@@ -1834,6 +1852,12 @@ function lowerClassDef(ctx, node) {
   ctx.symbols = ctx.symbols.push();
   const savedClass = ctx._classBodyOf;
   ctx._classBodyOf = name;
+  // (its frame, and the names its loops mention: a read before the body binds the name reads
+  // the enclosing scope's — `class C: x = x` — see lowerExpr_ad's Name)
+  const savedClassFrame = ctx._classFrame, savedClassLoopNames = ctx._classLoopNames;
+  ctx._classFrame = ctx.symbols;
+  ctx.symbols._isClassBody = true;
+  ctx._classLoopNames = _namesInTopLoops(node.body);
   // the names the class body binds (assignments, defs, nested classes): mangled in the body
   const savedClassNames = ctx._classNames;
   const classNames = new Set();
@@ -1850,7 +1874,7 @@ function lowerClassDef(ctx, node) {
 
   const body = captureOps(ctx, () => {
     // Run class body — method defs become locals, assignments become locals
-    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; ctx._bodyCell = savedBodyCell; }
+    try { for (const stmt of node.body) lowerStmt_ad(ctx, stmt); } finally { ctx._classBodyOf = savedClass; ctx._classNames = savedClassNames; ctx._bodyCell = savedBodyCell; ctx._classFrame = savedClassFrame; ctx._classLoopNames = savedClassLoopNames; }
 
     // Build the class members dict from the locals
     // We need to track which names were defined in the class body.
@@ -2579,7 +2603,8 @@ function _moduleStarImport(node) {
 // own local, a parameter, or a class body's name
 function _resolvesToModule(ctx, name) {
   let f = ctx.symbols;
-  while (f && !f.bindings.has(name)) f = f.parent;
+  // (a class body's names are seen from the body itself, not from the functions in it)
+  while (f && (!f.bindings.has(name) || (f._isClassBody && !(ctx._classBodyOf && f === ctx._classFrame)))) f = f.parent;
   return !f || f.parent === null;
 }
 // a function's local names (CPython's locals()): its parameters and what its body binds, less
