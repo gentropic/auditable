@@ -230,9 +230,9 @@ function* _pkSave(st, obj, saveAsRef = true) {
   if (obj instanceof Complex) return yield* _pkSaveReduce(st, adderModules.builtins.complex, mkTuple([obj.real, obj.imag]), { obj });
   // classes and functions: by reference
   if (typeof obj === 'function') return _pkSaveGlobal(st, obj);
-  // collections' dict types (OrderedDict, Counter, defaultdict): their class + the items
+  // _collections' dict types (OrderedDict, defaultdict): their class + the items
   if (obj instanceof Map && obj.__adderClass__ && !obj.__adderType__) {
-    const cls = adderModules.collections && adderModules.collections[obj.__adderClass__];
+    const cls = adderModules._collections && adderModules._collections[obj.__adderClass__];
     if (!cls) throw new AdderError('PicklingError', `Can't pickle '${obj.__adderClass__}' object`);
     const factory = obj.__adderClass__ === 'defaultdict' ? (obj.default_factory ?? null) : undefined;
     return yield* _pkSaveReduce(st, cls, mkTuple(factory === undefined ? [] : [factory]), { dictitems: [...obj.entries()].map((e) => mkTuple(e)), obj });

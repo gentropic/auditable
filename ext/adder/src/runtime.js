@@ -354,9 +354,13 @@ function _pics(n) {
   for (let i = 0; i < n; i++) a[i] = { name: null, types: [], vers: [], methods: [], next: 0 };
   return a;
 }
-// record t → its method for the site (a type seen again — its version moved on — is updated in place)
+// record t → its method for the site (a type seen again — its version moved on — is updated in place).
+// Only a method a Python class in t's MRO defines: on a dict / list / set subclass, one it inherits
+// from the builtin is the JS base's prototype method (Map's get, Array's pop) — not dict.get's or
+// list.pop's Python semantics, which the slow path's lookup gives
 function _picStore(c, t, obj, name) {
   if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
+  if (!t._pyMRO || !t._pyMRO.some((k) => k._pyOwnMembers && k._pyOwnMembers.has(name))) return;
   if (c.name !== name) { c.name = name; c.types.length = 0; c.vers.length = 0; c.methods.length = 0; c.next = 0; }
   let idx = c.types.indexOf(t);
   if (idx < 0) {

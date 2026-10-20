@@ -642,7 +642,7 @@ export function lowerAdder(ast, source, opts) {
   // the module object (_py.starInto), and module-level names are read through it — so a name the
   // module defines and the star import replaces (bisect.py's `from _bisect import *` over its own
   // defs) reads as the import's.
-  if (_callsScopeBuiltin(ast) || ast.body.some((st) => st && st.type === 'ImportFrom' && st.names.some((n) => n.name === '*'))) {
+  if (_callsScopeBuiltin(ast) || _moduleStarImport(ast.body)) {
     ctx.usesGlobals = true;
     if (!ctx.moduleMirror) {
       const m = emitPyCall(ctx, 'mainModule', [], null);
@@ -2506,6 +2506,17 @@ function _callsScopeBuiltin(node) {
   if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
   if (node.type === 'Call' && node.func && node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals' || node.func.id === 'exec' || node.func.id === 'eval')) return true;
   for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _callsScopeBuiltin(node[k])) return true;
+  return false;
+}
+// a `from m import *` at module scope — a top-level statement, or one nested in a module-level
+// try / if / with / loop (heapq.py's and bisect.py's `try: from _heapq import *`), not in a def
+// or class body
+function _moduleStarImport(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(_moduleStarImport);
+  if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' || node.type === 'ClassDef') return false;
+  if (node.type === 'ImportFrom') return node.names.some((n) => n.name === '*');
+  for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _moduleStarImport(node[k])) return true;
   return false;
 }
 // does `name`, read here, mean the module-level binding (or a builtin)? — not a function's

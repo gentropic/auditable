@@ -180,10 +180,28 @@ adderModules.typing = {
 // copy / deepcopy, honouring __copy__ / __deepcopy__(memo). Containers keep their type
 // (tuple, set, dict and its subclasses); other objects get a fresh instance of the same class
 // with their attributes copied.
+// a Python subclass of list / dict / set: the copy r (its items) made an instance of x's class with
+// x's instance attributes (each through `each`) — object.__reduce_ex__'s shape, which is what
+// CPython's copy uses for a class that doesn't define its own (Counter → a Counter, not a dict)
+const _SL_ENGINE_KEYS = new Set(['__adderType__', '__adderClass__']);
+function _slAsSubclass(x, r, each = (v) => v) {
+  Object.setPrototypeOf(r, Object.getPrototypeOf(x));
+  for (const k of Object.getOwnPropertyNames(x)) {
+    if (Array.isArray(x) && (k === 'length' || /^\d+$/.test(k))) continue;
+    const d = Object.getOwnPropertyDescriptor(x, k);
+    if ('value' in d && !_SL_ENGINE_KEYS.has(k)) d.value = each(d.value);
+    Object.defineProperty(r, k, d);
+  }
+  return r;
+}
+const _slPySub = (x) => x.__adderType__ !== undefined && x.__adderType__._pyMRO !== undefined && Object.getPrototypeOf(x) === x.__adderType__.prototype;
 function _slShallow(x) {
   if (x === null || typeof x !== 'object') return x;
   if (typeof x.__copy__ === 'function') return x.__copy__();
   if (x instanceof PyTuple) return x;
+  if ((Array.isArray(x) || x instanceof PyDict || x instanceof Set) && _slPySub(x)) {
+    return _slAsSubclass(x, Array.isArray(x) ? [...x] : x instanceof PyDict ? new PyDict(x) : new PySet(x));
+  }
   if (Array.isArray(x)) return Array.prototype.slice.call(x);
   if (x instanceof Uint8Array) return x;
   if (ArrayBuffer.isView(x)) return x.slice();
@@ -205,6 +223,18 @@ function _slDeep(x, memo) {
     const items = x.map((v) => _slDeep(v, memo));
     const r = items.every((v, i) => v === x[i]) ? x : (x.constructor !== PyTuple && x._replace ? Object.freeze(Object.setPrototypeOf(Object.assign([], items), Object.getPrototypeOf(x))) : mkTuple(items));
     memo.set(x, r);
+    return r;
+  }
+  if ((Array.isArray(x) || x instanceof PyDict || x instanceof Set) && _slPySub(x)) {
+    const r = _slAsSubclass(x, Array.isArray(x) ? [] : x instanceof PyDict ? new PyDict() : new PySet());
+    memo.set(x, r);
+    for (const k of Object.getOwnPropertyNames(r)) {
+      const d = Object.getOwnPropertyDescriptor(r, k);
+      if ('value' in d && d.writable && !_SL_ENGINE_KEYS.has(k)) r[k] = _slDeep(d.value, memo);
+    }
+    if (Array.isArray(x)) for (const v of x) r.push(_slDeep(v, memo));
+    else if (x instanceof PyDict) for (const [k, v] of x) r.set(_slDeep(k, memo), _slDeep(v, memo));
+    else for (const v of x) r.add(_slDeep(v, memo));
     return r;
   }
   if (Array.isArray(x)) { const r = []; memo.set(x, r); for (const v of x) r.push(_slDeep(v, memo)); return r; }
@@ -975,13 +1005,11 @@ adderModules.io = {
 // origin). It isn't loaded by `import collections` / `import typing`: compiling it costs a first
 // import ~0.1 s, which a program that never asks for an ABC shouldn't pay.
 frozenModuleHooks._collections_abc = async (abc) => {
-  const c = adderModules.collections;
-  try { c.abc = abc; } catch { /* a read-only namespace */ }
+  const c = adderModules._collections;
   const arr = adderModules.array;
   const registrations = [
-    ['MutableSequence', [c.deque, c.UserList, arr && arr.array]],
-    ['MutableMapping', [c.OrderedDict, c.defaultdict, c.Counter, c.ChainMap, c.UserDict]],
-    ['Sequence', [c.UserString]],
+    ['MutableSequence', [c.deque, arr && arr.array]],
+    ['MutableMapping', [c.OrderedDict, c.defaultdict]],
   ];
   for (const [name, types] of registrations) {
     for (const t of types) if (typeof t === 'function' && t._pyClass) await adderGetAttr(abc[name], 'register')(t);

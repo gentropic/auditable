@@ -28,7 +28,7 @@ const outBatteries = path.join(here, 'batteries.js');
 
 // the bundled set: what a typical program pulls in
 export const HOT = [
-  '__future__', '_collections_abc', 'dataclasses',
+  '__future__', '_collections_abc', 'collections', 'dataclasses', 'heapq', 'bisect',
   'json', 'json.decoder', 'json.encoder', 'json.scanner',
   'argparse', 'glob', 'shutil',
   'importlib._bootstrap', 'importlib._bootstrap_external',

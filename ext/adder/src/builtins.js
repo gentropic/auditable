@@ -2280,6 +2280,17 @@ export function adderGetAttr(obj, attr) {
   }
   // dict (Map) methods — a Map subclass (Counter, defaultdict, OrderedDict) answers with its own first
   if (obj instanceof Map) {
+    // a Python subclass's own first, as for a list — also a name Map's prototype has too (get, keys,
+    // values, clear: a class's `def get` was answered with dict.get)
+    const mt = obj.__adderType__;
+    if (mt && mt._pyMRO) {
+      if (Object.hasOwn(obj, attr)) return obj[attr];
+      if (mt.prototype && Object.hasOwn(mt.prototype, attr)) {
+        const v = Reflect.get(mt.prototype, attr, obj);
+        return typeof v === 'function' && !v._pyClass ? _bindTwin(v, obj) : v;
+      }
+      for (const c of mt._pyMRO) if (_ownPyClassAttr(c, attr)) { const cv = c[attr]; return _isDescriptor(cv) ? cv.__get__(obj, mt) : cv; }
+    }
     if (Object.getPrototypeOf(obj) !== Map.prototype && Object.getPrototypeOf(obj) !== PyDict.prototype && attr in obj && !(attr in Map.prototype)) {
       const v = obj[attr];
       return typeof v === 'function' ? _bindTwin(v, obj) : v;
@@ -3908,9 +3919,11 @@ export function pyEq(a, b) {
   }
   const ea = _eqOf(a), eb = _eqOf(b);
   if (ea || eb) {
-    // a's __eq__, then b's (reflected) when a's says NotImplemented, then identity
-    const refl = () => (eb && eb.fn !== (ea && ea.fn) ? eb.call(a) : false);
-    const last = (v) => (v === NotImplemented ? false : v);
+    // a's __eq__, then b's (reflected) when a's says NotImplemented; when both decline, the
+    // builtin comparison of a side whose type doesn't define one (dict == Counter: dict's, by
+    // content — Counter.__eq__ answers NotImplemented for a non-Counter), else identity
+    const last = (v) => (v === NotImplemented ? (ea && eb ? false : _eqBuiltin(a, b)) : v);
+    const refl = () => (eb && eb.fn !== (ea && ea.fn) ? eb.call(a) : NotImplemented);
     if (!ea) { const r = eb.call(a); return r && typeof r.then === 'function' ? r.then(last) : last(r); }
     const r = ea.call(b);
     if (r && typeof r.then === 'function') return r.then((v) => (v === NotImplemented ? Promise.resolve(refl()).then(last) : v));
@@ -3918,6 +3931,11 @@ export function pyEq(a, b) {
     const r2 = refl();
     return r2 && typeof r2.then === 'function' ? r2.then(last) : last(r2);
   }
+  return _eqBuiltin(a, b);
+}
+// == by the builtin types' rules (no dunder involved)
+function _eqBuiltin(a, b) {
+  if (a === b) return true;
   if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
   // a dict's values view equals only itself (it is neither a sequence nor a set)
   if ((Array.isArray(a) && a._pyView === 'values') || (Array.isArray(b) && b._pyView === 'values')) return a === b;
@@ -3965,7 +3983,8 @@ export function pyNe(a, b) {
   const na = _neOf(a), nb = _neOf(b);
   if (!na && !nb) { const r = pyEq(a, b); return _isThenable(r) ? r.then((x) => !x) : !r; }
   const first = nb && _isProperSubInstance(b, a) ? [nb, a, na, b] : [na, b, nb, a];
-  const fallback = () => a !== b;
+  // (both declined: as for ==, the builtin comparison of a side that has none of its own)
+  const fallback = () => (na && nb ? a !== b : !_eqBuiltin(a, b));
   const second = () => {
     if (!first[2]) return fallback();
     const r = first[2](first[3]);
@@ -4582,34 +4601,10 @@ const _functoolsModule = {
   }),
 };
 
-// ── collections ──
-// Counter / defaultdict / OrderedDict are Maps (dict-shaped everywhere: printing, indexing,
-// iteration, len, in) with their extra behaviour; deque is a list-backed class; namedtuple
-// makes classes whose instances index, unpack and print like Python's.
-
-function _counterAdd(map, iterable) {
-  if (iterable instanceof Map) { for (const [k, v] of iterable) map.set(k, (map.get(k) || 0) + v); return; }
-  if (isPlainDict(iterable)) { for (const k of Object.keys(iterable)) map.set(k, (map.get(k) || 0) + iterable[k]); return; }
-  for (const v of pyIter(iterable)) map.set(v, (map.get(v) || 0) + 1);
-}
-class AdderCounter extends PyDict {
-  constructor(iterable) { super(); if (iterable != null && !iterable._kw) _counterAdd(this, iterable); if (iterable && iterable._kw) for (const k of Object.keys(iterable)) if (k !== '_kw') this.set(k, iterable[k]); }
-  __missing__() { return 0; }
-  most_common(n) {
-    const e = [...this.entries()].sort((a, b) => b[1] - a[1]).map(mkTuple);   // stable: ties keep insertion order
-    return n == null ? e : e.slice(0, n);
-  }
-  elements() { const out = []; for (const [k, v] of this) for (let i = 0; i < v; i++) out.push(k); return out; }
-  update(iterable) {
-    if (_needsCollect(iterable)) { const r = pyCollectMaybe(iterable); if (r && typeof r.then === 'function') return r.then((items) => this.update(items)); iterable = r; }
-    if (iterable != null) _counterAdd(this, iterable);
-    return null;
-  }
-  subtract(iterable) { const tmp = new AdderCounter(iterable); for (const [k, v] of tmp) this.set(k, (this.get(k) || 0) - v); return null; }
-  total() { let t = 0; for (const v of this.values()) t += v; return t; }
-  __repr__() { return this.size ? `Counter({${this.most_common().map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v)}`).join(', ')}})` : 'Counter()'; }
-}
-AdderCounter.prototype.__adderClass__ = 'Counter';
+// ── _collections: the C half of CPython's collections (collections/__init__.py, frozen, is
+// CPython's own) — defaultdict / OrderedDict are Maps (dict-shaped everywhere: printing, indexing,
+// iteration, len, in) with their extra behaviour; deque is a list-backed class. _namedtuple makes
+// the JS-side named tuples (struct_time, typing.NamedTuple); collections.namedtuple is CPython's.
 
 class AdderDefaultDict extends PyDict {
   constructor(factory, ...items) { super(); this.default_factory = factory ?? null; if (items.length) _dictUpdate((k, v) => this.set(k, v), items); }
@@ -4741,26 +4736,27 @@ const _ctor = (C, name, at = 0) => Object.assign((...a) => {
   }
   return new C(...a);
 }, { _pyName: name, _pyClass: true });
-const _collectionsModule = {
+export const _collectionsModule = {
   // _count_elements(mapping, iterable): the C helper under Counter.update — mapping[x] =
   // mapping.get(x, 0) + 1 for each x, through the mapping's own get / __setitem__
   _count_elements(mapping, iterable) {
-    const get = adderGetAttr(mapping, 'get');
+    // (a dict whose type keeps dict's get and __setitem__ — Counter: straight into it, as C does)
+    if (mapping instanceof PyDict && !subclassDunder(mapping, 'get') && !subclassDunder(mapping, '__setitem__')) {
+      return _eachMaybe(iterable, (x) => { const n = mapping.get(x); mapping.set(x, n === undefined ? 1 : pyAdd(n, 1)); });
+    }
+    const get =adderGetAttr(mapping, 'get');
     const set = mapping instanceof Map && !mapping.__adderType__ ? (k, v) => mapping.set(k, v) : adderGetAttr(mapping, '__setitem__');
     return _eachMaybe(iterable, (x) => {
       const n = get(x, 0);
       return set(x, pyAdd(n, 1));
     });
   },
-  Counter: _ctor(AdderCounter, 'Counter'),
   defaultdict: _ctor(AdderDefaultDict, 'defaultdict', 1),
   OrderedDict: _ctor(AdderOrderedDict, 'OrderedDict'),
   deque: _ctor(AdderDeque, 'deque'),
-  namedtuple: _namedtuple,
-  ChainMap: (...maps) => { const m = new PyDict(); for (const src of maps.slice().reverse()) for (const [k, v] of (src instanceof Map ? src : Object.entries(src))) m.set(k, v); return m; },
 };
 // type(deque()) is deque (and so for the others): the module's type is what type() answers
-for (const n of ['Counter', 'defaultdict', 'OrderedDict', 'deque']) {
+for (const n of ['defaultdict', 'OrderedDict', 'deque']) {
   const t = _collectionsModule[n];
   t.__name__ = n; t.__qualname__ = n; t.__module__ = 'collections';
   _typeObjects[n] = t;
@@ -5227,7 +5223,7 @@ const _sysModule = {
 export const adderModules = {
   math: _mathModule, js: _jsModule, random: _randomModule,
   itertools: _itertoolsModule, functools: _functoolsModule,
-  collections: _collectionsModule, re: _reModule, string: _stringModule,
+  re: _reModule, string: _stringModule,
   this: _thisModule, sys: _sysModule,
 };
 

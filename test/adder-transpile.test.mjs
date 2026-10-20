@@ -732,4 +732,19 @@ describe('adder transpile — deterministic output', () => {
     ].join('\n'));
     assert.equal(r.output, 'A B A');
   });
+
+  it('a call site\'s cache never holds the JS base\'s method for a builtin subclass (Map get, Array pop)', async () => {
+    // the second call through a site took the cached Map.prototype.get (no default) /
+    // Array.prototype.pop (no index); a subclass's own get is still its own
+    const r = await runTranspile([
+      'class C(dict): pass',
+      'c = C(a=1)',
+      'class L(list): pass',
+      'l = L([1, 2, 3, 4])',
+      'class D(dict):',
+      '    def get(self, k, d=None): return "own"',
+      'print([c.get(k, 0) for k in ["a", "b"]], [l.pop(0) for _ in range(2)], list(l), [D().get(i, 0) for i in range(2)])',
+    ].join('\n'));
+    assert.equal(r.output, "[1, 0] [1, 2] [3, 4] ['own', 'own']");
+  });
 });

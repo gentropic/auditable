@@ -1421,4 +1421,31 @@ cm = classmethod(len)
 result = repr((dict.fromkeys(KV()), cm.__func__ is len))`);
     assert.strictEqual(defines.result, "({'a': None, 'b': None}, True)");
   });
+
+  it('a dict subclass\'s own get / keys / clear win over dict\'s (names Map has too)', async () => {
+    const { defines } = await pyEval(`
+class D(dict):
+    def get(self, k, d=None): return 'own'
+    def keys(self): return ['k']
+    def clear(self): return 'cleared'
+d = D(a=1)
+result = repr((d.get('a', 0), d.keys(), d.clear(), len(d)))`);
+    assert.strictEqual(defines.result, "('own', ['k'], 'cleared', 1)");
+  });
+
+  it('copy keeps a list / dict subclass and its attributes; dict == a subclass whose __eq__ declines', async () => {
+    const { defines } = await pyEval(`
+import copy
+class C(dict):
+    def __eq__(self, other):
+        if not isinstance(other, C): return NotImplemented
+        return dict(self) == dict(other)
+class L(list): pass
+c = C(a=[1]); c.tag = 't'
+l = L([1, [2]]); l.tag = 'u'
+cc, dc, dl = copy.copy(c), copy.deepcopy(c), copy.deepcopy(l)
+result = repr((type(cc).__name__, cc.tag, cc == c, type(dc).__name__, dc['a'] is c['a'], type(dl).__name__, dl.tag, dl == [1, [2]], dl[1] is l[1],
+               {'a': [1]} == c, c == {'a': [1]}, {'a': [1]} != c, {'a': 2} != c))`);
+    assert.strictEqual(defines.result, "('C', 't', True, 'C', False, 'L', 'u', True, False, True, True, False, True)");
+  });
 });

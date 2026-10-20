@@ -15,7 +15,7 @@ import {
   pyTypeName, pyIter, pyCollect, pyTypeObj, pyObjectObj, typeOf, _typeObjects, asCallable, excStack, makeFunctionFromCode,
   excTypeOf, excValue, excToThrowable, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
   classStatement, GenericAlias, setOsExtrasHook, pyBool, NotImplemented, pyGetItem, _pyHash, _lazyIter, _pyEach,
-  registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe, pyIsSubclass, pySubclasses, syncOf, pyGenericAliasType,
+  registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe, pyIsSubclass, pySubclasses, syncOf, pyGenericAliasType, _collectionsModule,
 } from './builtins.js';
 import { _adderParseExpr, adderParse } from './parse.js';
 
@@ -1891,150 +1891,12 @@ const _syTruthy = (v) => pyBool(v);
 }
 
 // ── _collections: the C half of CPython's collections — deque, defaultdict, OrderedDict and the
-// _count_elements helper, adder's JS ones ──
+// _count_elements helper, adder's JS ones (builtins.js) ──
 {
-  const c = adderModules.collections;
+  const c = _collectionsModule;
   adderModules._collections = _syModule('_collections', {
     deque: c.deque, defaultdict: c.defaultdict, OrderedDict: c.OrderedDict, _count_elements: c._count_elements,
   });
-}
-
-// ── collections: UserDict, UserList, UserString (wrappers subclasses build on), ChainMap ──
-{
-  const c = adderModules.collections;
-  // ChainMap: a class (subclassable — unittest's _OrderedChainMap overrides __iter__), over any
-  // mappings, with CPython's semantics: lookups search maps in order, writes go to maps[0]
-  const isDictLike = (m) => m instanceof Map || (m !== null && typeof m === 'object' && !Array.isArray(m) && Object.getPrototypeOf(m) === Object.prototype);
-  // (a map that is itself a ChainMap / user mapping iterates through its own __iter__ — a
-  // tree-walked one asynchronously, so these are synchronous only when they can be)
-  const then = (v, f) => (v !== null && typeof v === 'object' && typeof v.then === 'function' ? v.then(f) : f(v));
-  const keysOf = (m) => (isDictLike(m) ? [...pyIter(m)] : pyCollectMaybe(m));
-  const lookup = (m, k) => { try { return { v: pyGetItem(m, k) }; } catch (e) { if (e && e.pyType === 'KeyError') return null; throw e; } };
-  const cmKeys = (self) => {
-    const maps = [...self.maps].reverse(), seen = new PyDict();
-    const step = (i) => {
-      for (; i < maps.length; i++) {
-        const ks = keysOf(maps[i]);
-        if (ks !== null && typeof ks === 'object' && typeof ks.then === 'function') return ks.then((arr) => { for (const k of arr) seen.set(k, null); return step(i + 1); });
-        for (const k of ks) seen.set(k, null);
-      }
-      return [...seen.keys()];
-    };
-    return step(0);
-  };
-  const viaIter = (self, f) => then(pyCollectMaybe(self), f);   // the keys as the instance's own __iter__ gives them
-  c.ChainMap = _syClass('ChainMap', [], {
-    __hash__: null,   // (a mutable mapping: unhashable, as CPython's — Hashable says no)
-    __init__(self, ...maps) { self.maps = maps.length ? maps : [new PyDict()]; return null; },
-    __missing__(self, k) { throw new AdderError('KeyError', pyRepr(k), undefined, [k]); },
-    __getitem__(self, k) {
-      for (const m of self.maps) { const r = lookup(m, k); if (r) return r.v; }
-      return adderGetAttr(self, '__missing__')(k);
-    },
-    get(self, k, dflt = null) { return adderGetAttr(self, '__contains__')(k) ? adderGetAttr(self, '__getitem__')(k) : dflt; },
-    __contains__(self, k) { return self.maps.some((m) => lookup(m, k) !== null); },
-    __len__(self) { return then(cmKeys(self), (ks) => ks.length); },
-    __iter__(self) { return then(cmKeys(self), (ks) => ks[Symbol.iterator]()); },
-    __bool__(self) { return self.maps.some((m) => pyBool(m)); },
-    keys(self) { return viaIter(self, (ks) => ks); },
-    values(self) { return viaIter(self, (ks) => ks.map((k) => adderGetAttr(self, '__getitem__')(k))); },
-    items(self) { return viaIter(self, (ks) => ks.map((k) => mkTuple([k, adderGetAttr(self, '__getitem__')(k)]))); },
-    __setitem__(self, k, v) { const m = self.maps[0]; if (m instanceof Map) m.set(k, v); else adderGetAttr(m, '__setitem__')(k, v); return null; },
-    __delitem__(self, k) {
-      const m = self.maps[0];
-      if (!lookup(m, k)) throw new AdderError('KeyError', `'Key not found in the first mapping: ${pyRepr(k)}'`, undefined, [k]);
-      if (m instanceof Map) m.delete(k); else adderGetAttr(m, '__delitem__')(k);
-      return null;
-    },
-    pop(self, k, ...a) {
-      const m = self.maps[0], r = lookup(m, k);
-      if (!r) { if (a.length) return a[0]; throw new AdderError('KeyError', `'Key not found in the first mapping: ${pyRepr(k)}'`, undefined, [k]); }
-      if (m instanceof Map) m.delete(k); else adderGetAttr(m, '__delitem__')(k);
-      return r.v;
-    },
-    popitem(self) {
-      const m = self.maps[0], ks = isDictLike(m) ? [...pyIter(m)] : [...pyIter(adderGetAttr(m, 'keys')())];
-      if (!ks.length) throw new AdderError('KeyError', 'No keys found in the first mapping.');
-      const k = ks[ks.length - 1], v = pyGetItem(m, k);
-      if (m instanceof Map) m.delete(k); else adderGetAttr(m, '__delitem__')(k);
-      return mkTuple([k, v]);
-    },
-    clear(self) { const m = self.maps[0]; if (m instanceof Map) m.clear(); else adderGetAttr(m, 'clear')(); return null; },
-    copy(self) { const first = self.maps[0]; const cp = first instanceof Map ? new PyDict(first) : adderGetAttr(first, 'copy')(); return typeOf(self)(cp, ...self.maps.slice(1)); },
-    __copy__(self) { return adderGetAttr(self, 'copy')(); },
-    new_child(self, m = null, ...a) {
-      const kw = _syKw(a) || (m && m._kw ? m : null);
-      if (m && m._kw) m = null;
-      if (m === null || m === undefined) m = new PyDict();
-      if (kw) for (const k of Object.keys(kw)) if (k !== '_kw') m.set ? m.set(k, kw[k]) : (m[k] = kw[k]);
-      return typeOf(self)(m, ...self.maps);
-    },
-    __repr__(self) { return `${pyTypeName(self)}(${self.maps.map(pyRepr).join(', ')})`; },
-    __eq__(self, other) {
-      const o = other && other.maps ? other : null;
-      const mine = new PyDict(adderGetAttr(self, 'items')().map((t) => [t[0], t[1]]));
-      if (o) return pyEq(mine, new PyDict(adderGetAttr(o, 'items')().map((t) => [t[0], t[1]])));
-      return pyEq(mine, other);
-    },
-  }, 'collections');
-  Object.defineProperty(c.ChainMap.prototype, 'parents', { get() { return typeOf(this)(...this.maps.slice(1)); }, configurable: true });
-  const d = (self) => self.data;
-  c.UserDict = _syClass('UserDict', [], {
-    __hash__: null,
-    __init__(self, ...a) { const kw = _syKw(a); const init = a.length ? a[0] : null; self.data = new PyDict(); if (init !== null && init !== undefined) adderGetAttr(self, 'update')(init); if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') adderGetAttr(self, '__setitem__')(k, v); return null; },
-    __len__(self) { return d(self).size; },
-    __getitem__(self, k) { if (d(self).has(k)) return d(self).get(k); const m = self.__missing__; if (typeof m === 'function') return m.call(self, k); throw new AdderError('KeyError', pyRepr(k)); },
-    __setitem__(self, k, v) { d(self).set(k, v); return null; },
-    __delitem__(self, k) { if (!d(self).delete(k)) throw new AdderError('KeyError', pyRepr(k)); return null; },
-    __iter__(self) { return [...d(self).keys()][Symbol.iterator](); },
-    __contains__(self, k) { return d(self).has(k); },
-    __repr__(self) { return pyRepr(d(self)); },
-    __eq__(self, o) { return pyEq(d(self), o && o.data instanceof Map ? o.data : o); },
-    keys(self) { return [...d(self).keys()]; }, values(self) { return [...d(self).values()]; }, items(self) { return [...d(self).entries()].map((e) => mkTuple(e)); },
-    get(self, k, dflt = null) { return d(self).has(k) ? d(self).get(k) : dflt; },
-    pop(self, k, ...dflt) { if (d(self).has(k)) { const v = d(self).get(k); d(self).delete(k); return v; } if (dflt.length) return dflt[0]; throw new AdderError('KeyError', pyRepr(k)); },
-    setdefault(self, k, dflt = null) { if (!d(self).has(k)) adderGetAttr(self, '__setitem__')(k, dflt); return d(self).get(k); },
-    update(self, other = null, ...a) {
-      const kw = _syKw(a); const set = adderGetAttr(self, '__setitem__');
-      if (other !== null && other !== undefined) {
-        const src = other && other.data instanceof Map ? other.data : other;
-        const entries = src instanceof Map ? [...src] : (Array.isArray(src) ? src.map((p) => [p[0], p[1]]) : Object.entries(src));
-        for (const [k, v] of entries) set(k, v);
-      }
-      if (kw) for (const [k, v] of Object.entries(kw)) if (k !== '_kw') set(k, v);
-      return null;
-    },
-    clear(self) { d(self).clear(); return null; },
-    copy(self) { const n = typeOf(self)(); n.data = new PyDict(d(self)); return n; },
-  }, 'collections');
-  c.UserList = _syClass('UserList', [], {
-    __hash__: null,
-    __init__(self, init = null) { self.data = init === null || init === undefined ? [] : [...pyIter(init && init.data ? init.data : init)]; return null; },
-    __len__(self) { return self.data.length; }, __getitem__(self, i) { return pyGetItem(self.data, i); },
-    __setitem__(self, i, v) { self.data[i < 0 ? self.data.length + i : i] = v; return null; },
-    __delitem__(self, i) { self.data.splice(i < 0 ? self.data.length + i : i, 1); return null; },
-    __iter__(self) { return self.data[Symbol.iterator](); }, __contains__(self, v) { return self.data.some((x) => pyEq(x, v) === true); },
-    __repr__(self) { return pyRepr(self.data); }, __eq__(self, o) { return pyEq(self.data, o && Array.isArray(o.data) ? o.data : o); },
-    __add__(self, o) { const n = typeOf(self)(); n.data = [...self.data, ...pyIter(o && o.data ? o.data : o)]; return n; },
-    append(self, v) { self.data.push(v); return null; }, extend(self, it) { for (const v of pyIter(it && it.data ? it.data : it)) self.data.push(v); return null; },
-    insert(self, i, v) { self.data.splice(i, 0, v); return null; }, pop(self, i = -1) { const k = i < 0 ? self.data.length + i : i; if (k < 0 || k >= self.data.length) throw new AdderError('IndexError', 'pop index out of range'); return self.data.splice(k, 1)[0]; },
-    remove(self, v) { const i = self.data.findIndex((x) => pyEq(x, v) === true); if (i < 0) throw new AdderError('ValueError', 'list.remove(x): x not in list'); self.data.splice(i, 1); return null; },
-    index(self, v) { const i = self.data.findIndex((x) => pyEq(x, v) === true); if (i < 0) throw new AdderError('ValueError', `${pyRepr(v)} is not in list`); return i; },
-    count(self, v) { return self.data.filter((x) => pyEq(x, v) === true).length; },
-    reverse(self) { self.data.reverse(); return null; }, clear(self) { self.data.length = 0; return null; },
-    copy(self) { const n = typeOf(self)(); n.data = [...self.data]; return n; },
-    sort(self, ...a) { return adderGetAttr(self.data, 'sort')(...a); },
-  }, 'collections');
-  c.UserString = _syClass('UserString', [], {
-    __init__(self, seq) { self.data = typeof seq === 'string' ? seq : seq && typeof seq.data === 'string' ? seq.data : pyStr(seq); return null; },
-    __str__(self) { return self.data; }, __repr__(self) { return pyRepr(self.data); }, __len__(self) { return self.data.length; },
-    __eq__(self, o) { return self.data === (o && typeof o.data === 'string' ? o.data : o); }, __contains__(self, s) { return self.data.includes(s && s.data ? s.data : s); },
-    __add__(self, o) { return typeOf(self)(self.data + (o && typeof o.data === 'string' ? o.data : String(o))); },
-    __getitem__(self, i) { return typeOf(self)(self.data[i < 0 ? self.data.length + i : i]); },
-    __iter__(self) { return self.data[Symbol.iterator](); }, __hash__(self) { return _pyHash(self.data); },
-  }, 'collections');
-  // a str method a UserString doesn't define: the data's, wrapped back when it returns a str
-  c.UserString.prototype.__getattr__ = function (name) { const m = adderGetAttr(this.data, name); return typeof m === 'function' ? (...a) => { const r = m(...a); return typeof r === 'string' ? typeOf(this)(r) : r; } : m; };
 }
 
 // ── importlib: specs, loaders, machinery ──
