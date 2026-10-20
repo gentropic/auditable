@@ -10,6 +10,9 @@ const A = await import(new URL('ext/adder/src/index.js', ROOT));
 A.attachAir(await import(new URL('ext/air/index.js', ROOT)));
 // unittest and the rest of the stdlib precompiled — a stale batteries.js is refused (compiled on import)
 A.addPrecompiled((await import(new URL('ext/adder/batteries.js', ROOT))).default);
+// the compile cache on disk: modules and exec strings compiled by an earlier run aren't compiled
+// again (ADDER_NO_CACHE=1 to run without it)
+if (!process.env.ADDER_NO_CACHE) A.setCompileStore((await import(new URL('ext/adder/src/node-cache.js', ROOT))).nodeCompileStore());
 const B = await import(new URL('ext/adder/src/builtins.js', ROOT));
 const { VFS } = await import(new URL('ext/vfs/src/vfs.js', ROOT));
 const { path: vfsPath } = await import(new URL('ext/vfs/src/path.js', ROOT));

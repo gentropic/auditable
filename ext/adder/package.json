@@ -27,6 +27,10 @@
     "./register": "./src/register.js",
     "./bundled": "./index.js",
     "./batteries": "./batteries.js",
+    "./node-cache": {
+      "types": "./src/node-cache.d.ts",
+      "default": "./src/node-cache.js"
+    },
     "./package.json": "./package.json"
   },
   "types": "./src/index.d.ts",

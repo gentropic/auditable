@@ -58,6 +58,8 @@ export function attachAir(air: object): object;
 export function airAttached(): boolean;
 /** Take precompiled stdlib modules — `@gcu/adder/batteries` (its default export) — so importing one on AIR skips compiling it. Only from the adder build that made them; returns how many were added (0 from another build). Process-wide. */
 export function addPrecompiled(data: { build: string; modules: Record<string, object> }): number;
+/** A store the compile cache persists to, so what AIR made of a module or exec / eval string outlives the process (Node: `nodeCompileStore()` from `@gcu/adder/node-cache`). `get`/`set` are sync; the store keys by `key` plus its compiler's identity. `null` removes it. None by default. Process-wide. */
+export function setCompileStore(store: { get(key: string): string | undefined; set(key: string, value: string): void } | null): void;
 export function run(code: string, opts?: RunOpts): Promise<Record<string, unknown>>;
 
 /** Evaluate a single adder expression and return its value. */

@@ -176,13 +176,21 @@ function _airCompileModule(src, info, parse) {
   c = _compiled.get(key);
   if (c !== undefined) { _compiled.delete(key); _compiled.set(key, c); }   // most recently used last
   else {
-    const ast = parse();     // a SyntaxError propagates: the caller reports it
-    try {
-      const m = compileModuleSource(src, info, ast);
-      c = { imports: m.imports, fn: new (m.async ? _AsyncFunction : Function)('_py', ...m.imports, m.body), doc: m.doc, size: src.length + m.body.length };
-    } catch (e) {
-      c = { error: e, size: src.length };   // remembered too: a module AIR can't lower isn't lowered again
+    let rec = _fromStore(key);
+    if (!rec) {
+      const ast = parse();     // a SyntaxError propagates: the caller reports it
+      try {
+        const m = compileModuleSource(src, info, ast);
+        rec = { imports: m.imports, async: m.async, body: m.body, doc: m.doc };
+        _toStore(key, rec);
+      } catch (e) {
+        rec = { error: e };     // remembered too: a module AIR can't lower isn't lowered again
+        // (a SyntaxError found while lowering isn't stored: revived, it would be a plain Error)
+        if (!(e && e.pyType)) _toStore(key, { fail: String(e && e.message) });
+      }
     }
+    c = rec.error ? { error: rec.error, size: src.length }
+      : { imports: rec.imports, fn: new (rec.async ? _AsyncFunction : Function)('_py', ...rec.imports, rec.body), doc: rec.doc, size: src.length + rec.body.length };
     _compiled.set(key, c);
     _compiledSize += c.size;
     for (const [k, v] of _compiled) {
@@ -242,6 +250,32 @@ export function compileModuleSource(src, info = {}, ast = null) {
 const _compiled = new Map();
 let _compiledSize = 0;
 const _COMPILED_MAX = 64 * 1024 * 1024;
+// A persistent layer under it (setCompileStore): asked on a miss here, given each compile, so what
+// AIR made of a source outlives the process. None by default: adder writes nowhere unless asked.
+// A store is { get(key) → string | undefined, set(key, string) }, both sync; it keys by key plus
+// its compiler's identity (@gcu/adder/node-cache: the files on disk, in Node). Process-wide.
+let _compileStore = null;
+export function setCompileStore(store) {
+  if (store != null && (typeof store.get !== 'function' || typeof store.set !== 'function')) {
+    throw new TypeError('setCompileStore: expected { get(key), set(key, value) } or null');
+  }
+  _compileStore = store || null;
+}
+// a stored entry, as the compile above would have made it ({ error } for a source AIR can't lower);
+// anything unreadable is a miss
+function _fromStore(key) {
+  if (!_compileStore) return null;
+  try {
+    const s = _compileStore.get(key);
+    if (typeof s !== 'string') return null;
+    const r = JSON.parse(s);
+    if (typeof r.fail === 'string') return { error: new Error(r.fail) };
+    return Array.isArray(r.imports) && typeof r.body === 'string' ? r : null;
+  } catch { return null; }
+}
+function _toStore(key, rec) {
+  if (_compileStore) { try { _compileStore.set(key, JSON.stringify(rec)); } catch {} }
+}
 // a module's docstring: its first statement, when that is a string literal
 function _docOf(ast) {
   const s = ast && ast.body && ast.body[0];

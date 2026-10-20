@@ -8,7 +8,7 @@ import { tokenizePython, pythonCompletions } from './highlight.js';
 import { adderTag, mpy } from './tag.js';
 import { adderParse } from './parse.js';
 import { registerModule, unregisterModule } from './eval.js';
-import { run, evalExpr, compile, isIncomplete, AdderRuntimeError, attachAir, airAttached, addPrecompiled } from './runner.js';
+import { run, evalExpr, compile, isIncomplete, AdderRuntimeError, attachAir, airAttached, addPrecompiled, setCompileStore } from './runner.js';
 import { lowerAdder } from './air-lower.js';
 
 const ADDER_VERSION = '0.3.0';
@@ -86,4 +86,6 @@ export const adder = {
   run, evalExpr, compile, isIncomplete, AdderRuntimeError, attachAir, airAttached,
   // @gcu/adder/batteries: the rest of the stdlib precompiled — addPrecompiled(batteries)
   addPrecompiled,
+  // a persistent compile cache (Node: @gcu/adder/node-cache) — setCompileStore(nodeCompileStore())
+  setCompileStore,
 };

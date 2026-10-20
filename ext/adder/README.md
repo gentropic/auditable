@@ -290,6 +290,20 @@ import batteries from '@gcu/adder/batteries';
 addPrecompiled(batteries);   // → how many modules it took; 0 from another @gcu/adder version
 ```
 
+Your own modules and installed libraries compile from source on their first import in each
+process. In Node, the compile cache can persist to disk, so later processes skip parsing and
+lowering them (and the `exec` strings libraries generate, such as namedtuple's and dataclasses'):
+
+```js
+import { setCompileStore } from '@gcu/adder';
+import { nodeCompileStore } from '@gcu/adder/node-cache';
+setCompileStore(nodeCompileStore());   // ~/.cache/gcu-adder (or { dir }), capped at 256 MB
+```
+
+It's opt-in: adder writes nothing to disk unless asked. Entries are keyed by the source and by the
+compiler (adder's and `@gcu/air`'s files, hashed), so upgrading either never serves a stale entry.
+They are JS that adder runs, so the directory is created readable by its owner only.
+
 ## Importing from paths and URLs
 
 In addition to built-in and VFS modules, adder supports loading modules directly by path or URL. Two forms:
