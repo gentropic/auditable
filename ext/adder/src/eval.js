@@ -1975,7 +1975,14 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
       compiled = null;
     }
   }
-  if (!compiled) parse();
+  if (!compiled) {
+    // (source may be a thunk: a frozen module's, decompressed only when it must be tree-walked)
+    if (typeof source === 'function') {
+      source = await source();
+      if (cache[cacheKey]) return cache[cacheKey];
+    }
+    parse();
+  }
   const modScope = new AdderScope();
   const builtins = adderBuiltins(stdoutWrite);
   const builtinNames = new PySet(Object.keys(builtins));
@@ -2085,11 +2092,15 @@ export async function findModule(name) {
     const dot = name.lastIndexOf('.');
     const parent = dot > 0 ? await findModule(name.slice(0, dot)) : null;
     if (cache[name]) return cache[name];
-    if (fz.source === undefined) fz.source = await _gunzipBase64(fz.gz);
-    if (cache[name]) return cache[name];
     // (on AIR, a module of the precompiled hot set runs its build-time compiled form: stdlib-pyair.js)
     const artifact = Object.hasOwn(frozenPyCompiled, name) ? frozenPyCompiled[name] : null;
-    const mod = await _instantiateModule(name, name, fz.source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [], artifact } : { artifact });
+    // a module run from its artifact never reads its source, so it isn't decompressed (in Node the
+    // first decompression also loads the whole fetch stack: ~25 ms); a thunk in case AIR turns out
+    // unreachable and the tree-walker needs it after all
+    if (fz.source === undefined && !(artifact && _moduleCompiler && _runOpts.moduleEngine !== 'tree')) fz.source = await _gunzipBase64(fz.gz);
+    if (cache[name]) return cache[name];
+    const source = fz.source !== undefined ? fz.source : async () => (fz.source !== undefined ? fz.source : (fz.source = await _gunzipBase64(fz.gz)));
+    const mod = await _instantiateModule(name, name, source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [], artifact } : { artifact });
     if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
     if (Object.hasOwn(frozenModuleHooks, name)) await frozenModuleHooks[name](mod);
     return mod;
