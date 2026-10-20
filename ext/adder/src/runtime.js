@@ -545,14 +545,17 @@ function _globalsOf(mod) {   // one live view per module: globals() is globals()
 // a module-level name, read through the module object: what globals() set wins over the
 // compiled binding (and a builtin is the binding when the module has no such name)
 // a compiled module installs its write-back (builtins.js MODULE_REBIND) on its module object
-function _moduleRebind(mod, fn) { Object.defineProperty(mod, MODULE_REBIND, { value: fn, configurable: true }); }
+// (names: the ones it rebinds — an exec namespace that is a plain object watches those)
+function _moduleRebind(mod, fn, names) { fn._pyNames = names; Object.defineProperty(mod, MODULE_REBIND, { value: fn, configurable: true }); }
 // a value written over a name the module's code calls directly (a module-level def, an unshadowed
 // builtin): it must be a function there — mock.patch's MagicMock is an object with __call__ —
 // answering synchronously when it can (its twin). sync: some call site of the name doesn't wait
 // (compiled when the name was a provably sync def): a value that can only answer later (an async
 // function with no twin — a tree-walked one) raises there instead of handing it a Promise
-function _rebindCallable(v, sync) {
-  if (v === undefined || v === null) return v;
+function _rebindCallable(v, name, sync) {
+  // (deleted: a call raises NameError, as reading the name does in CPython)
+  if (v === undefined) return () => { throw new AdderError('NameError', `name '${name}' is not defined`); };
+  if (v === null) return v;
   const f = _fnOfSync(v);
   if (!sync || f[Symbol.toStringTag] !== 'AsyncFunction') return f;
   return function (...a) { return _py.needSync(f.apply(this, a)); };

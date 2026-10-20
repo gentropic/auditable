@@ -735,14 +735,14 @@ export function lowerAdder(ast, source, opts) {
     const own = [...ctx.defines].filter((n) => n !== '__lastExpr__');
     const free = [...ctx.imports].filter((n) => n !== '__adder_module__' && !n.startsWith('$') && !ctx.defines.has(n));
     const direct = (n) => ctx.knownCallables.has(n) || ctx.syncFunctions.has(n);
-    const value = (n) => (ctx.syncCalled && ctx.syncCalled.has(n) ? '_py.rebindCallable(v, true)' : direct(n) ? '_py.rebindCallable(v)' : 'v');
+    const value = (n) => (ctx.syncCalled && ctx.syncCalled.has(n) ? `_py.rebindCallable(v, ${JSON.stringify(n)}, true)` : direct(n) ? `_py.rebindCallable(v, ${JSON.stringify(n)})` : 'v');
     const cases = [
       ...own.map((n) => `case ${JSON.stringify(n)}: ${jsSafeName(n)} = ${value(n)}; return;`),
       ...free.map((n) => `case ${JSON.stringify(n)}: ${jsSafeName(n)} = v === undefined ? __b[${JSON.stringify(n)}] : ${value(n)}; return;`),
     ];
     if (cases.length) {
       emitRaw(ctx, `{ const __b = { ${free.map((n) => `${JSON.stringify(n)}: ${jsSafeName(n)}`).join(', ')} };
-_py.moduleRebind(__adder_module__, (n, v) => { switch (n) { ${cases.join(' ')} } }); }`);
+_py.moduleRebind(__adder_module__, (n, v) => { switch (n) { ${cases.join(' ')} } }, ${JSON.stringify([...own, ...free])}); }`);
       ctx.ops.unshift(...ctx.ops.splice(at));
     }
   }

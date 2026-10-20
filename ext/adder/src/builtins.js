@@ -1759,7 +1759,7 @@ function _valueDunder(o, attr) {
       case '__contains__': return (x) => (isStr ? o.includes(strValue(x) ?? String(x)) : isMap || isSet ? has(x) : [...o].some((v) => pyEq(v, x) === true));
       case '__getitem__': return isSet ? null : (k) => (k !== null && typeof k === 'object' && k._slice && Array.isArray(o) ? _applySliceRaw(o, k) : pyGetItem(o, k, true));
       case '__setitem__': return mutable ? (k, v) => { if (isPlain) o[k] = v; else if (isMap) o.set(k, v); else o[k < 0 ? o.length + k : k] = v; return null; } : null;
-      case '__delitem__': return mutable ? (k) => { if (isMap) { if (!has(k)) throw new AdderError('KeyError', pyRepr(k)); if (isPlain) delete o[k]; else o.delete(k); } else o.splice(k < 0 ? o.length + k : k, 1); return null; } : null;
+      case '__delitem__': return mutable ? (k) => { if (isMap) { if (!has(k)) throw new AdderError('KeyError', pyRepr(k)); if (isPlain) plainDelete(o, k); else o.delete(k); } else o.splice(k < 0 ? o.length + k : k, 1); return null; } : null;
       case '__eq__': return (x) => pyEq(o, x);
       case '__ne__': return (x) => !pyEq(o, x);
       case '__lt__': return (x) => pyLt(o, x);
@@ -3317,11 +3317,11 @@ const _OBJ_DICT_METHODS = {
   values: [0, 0, (obj) => _dictView(Object.values(obj), 'values')],
   items: [0, 0, (obj) => _dictView(Object.entries(obj).map(mkTuple), 'items')],
   get: [1, 2, (obj, k, def) => (Object.hasOwn(obj, k) ? obj[k] : (def !== undefined ? def : null))],
-  pop: [1, 2, (obj, k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; delete obj[k]; return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }],
-  popitem: [0, 0, (obj) => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; delete obj[k]; return mkTuple([k, v]); }],
+  pop: [1, 2, (obj, k, def) => { if (Object.hasOwn(obj, k)) { const v = obj[k]; plainDelete(obj, k); return v; } if (def !== undefined) return def; throw new AdderError('KeyError', pyRepr(k), undefined, [k]); }],
+  popitem: [0, 0, (obj) => { const ks = Object.keys(obj); if (!ks.length) throw new AdderError('KeyError', "'popitem(): dictionary is empty'"); const k = ks[ks.length - 1], v = obj[k]; plainDelete(obj, k); return mkTuple([k, v]); }],
   setdefault: [1, 2, (obj, k, def) => { if (Object.hasOwn(obj, k)) return obj[k]; obj[k] = def !== undefined ? def : null; return obj[k]; }],
   update: [0, 2, (obj, ...args) => _dictUpdate((k, v) => { obj[k] = v; }, _updArgs(args)), true],
-  clear: [0, 0, (obj) => { for (const k of Object.keys(obj)) delete obj[k]; return null; }],
+  clear: [0, 0, (obj) => { for (const k of Object.keys(obj)) plainDelete(obj, k); return null; }],
   copy: [0, 0, (obj) => ({ ...obj })],
 };
 const _objDictMethods = {};
@@ -3603,7 +3603,7 @@ const _TYPE_DUNDERS = {
 // — never a subclass's override, which is what calls it (OrderedDict's dict_setitem)
 const _BASE_STORE_DUNDERS = {
   __setitem__(a, k, v) {
-    if (a instanceof PyDict) PyDict.prototype.set.call(a, k, v);
+    if (a instanceof PyDict) { PyDict.prototype.set.call(a, k, v); if (a instanceof NamespaceDict) _nsNotify(a, k, v); }
     else if (a instanceof Map) Map.prototype.set.call(a, k, v);
     else if (Array.isArray(a) && !(a instanceof PyTuple)) { if (k instanceof PySlice) seqSliceSet(a, k, v); else a[seqStoreIndex(a, k)] = v; }
     else if (isPlainDict(a)) a[k] = v;
@@ -3613,12 +3613,12 @@ const _BASE_STORE_DUNDERS = {
   __delitem__(a, k) {
     if (a instanceof Map) {
       if (!(a instanceof PyDict ? PyDict.prototype.has.call(a, k) : Map.prototype.has.call(a, k))) throw new AdderError('KeyError', pyRepr(k), undefined, [k]);
-      if (a instanceof PyDict) PyDict.prototype.delete.call(a, k); else Map.prototype.delete.call(a, k);
+      if (a instanceof PyDict) { PyDict.prototype.delete.call(a, k); if (a instanceof NamespaceDict) _nsNotify(a, k, undefined); } else Map.prototype.delete.call(a, k);
     } else if (Array.isArray(a) && !(a instanceof PyTuple)) {
       if (k instanceof PySlice) seqSliceDel(a, k); else a.splice(seqStoreIndex(a, k), 1);
     } else if (isPlainDict(a)) {
       if (!Object.hasOwn(a, k)) throw new AdderError('KeyError', pyRepr(k), undefined, [k]);
-      delete a[k];
+      plainDelete(a, k);
     } else throw new AdderError('TypeError', `descriptor '__delitem__' doesn't apply to a '${pyTypeName(a)}' object`);
     return null;
   },
@@ -5350,6 +5350,63 @@ function _setFunctionInternal(fn, name, value) {
 // attribute written from outside (mod.k = 3, setattr, mock.patch('mod.f')) was never what they
 // saw. CPython's module __dict__ IS their globals.
 export const MODULE_REBIND = Symbol('adder.moduleRebind');
+// The same for a dict that compiled exec code ran in as its globals (exec(src, ns)): its functions
+// read their own variables, so a later ns['k'] = 5 must reach them, as it does on the tree-walker
+// (the dict is its scope). That dict alone becomes a NamespaceDict, its writes calling the
+// write-back of each compiled unit run in it; every other dict stays as it is.
+export class NamespaceDict extends PyDict {
+  set(k, v) { const r = super.set(k, v); _nsNotify(this, k, v); return r; }
+  delete(k) { const r = super.delete(k); if (r) _nsNotify(this, k, undefined); return r; }
+  clear() { const ks = [...this.keys()]; super.clear(); for (const k of ks) _nsNotify(this, k, undefined); }
+}
+function _nsNotify(d, k, v) { if (typeof k === 'string') for (const h of d._nsHooks) h(k, v); }
+// A dict that's a plain object (a literal with string keys: namedtuple's namespace) can't change
+// class: each name the code knows that the dict has becomes an accessor calling the write-backs,
+// and its deletions (plainDelete) call them too. (A name it gains later — a builtin shadowed after
+// the fact — isn't seen: a plain object can't present a key it doesn't have.)
+const NS_STATE = Symbol('adder.namespace');
+// delete obj[k] on a plain-object dict, telling the code that ran in it (if any)
+export function plainDelete(obj, k) {
+  delete obj[k];
+  const st = obj[NS_STATE];
+  if (st !== undefined && typeof k === 'string' && Object.hasOwn(st.vals, k)) { delete st.vals[k]; for (const h of st.hooks) h(k, undefined); }
+}
+// d: the globals dict (or a view over a plain object); hook: the unit's write-back. Only a plain
+// dict is switched (a subclass keeps its own methods; a module's __dict__ view writes the module
+// object, which has its own write-back)
+export function bindNamespace(d, hook) {
+  if (d instanceof AttrDict) {
+    const o = d._t;
+    if (isPlainDict(o) && !o.__adderModule__) _bindPlainNamespace(o, hook);
+    return;
+  }
+  if (!(d instanceof NamespaceDict)) {
+    if (!(d instanceof PyDict) || Object.getPrototypeOf(d) !== PyDict.prototype) return;
+    Object.setPrototypeOf(d, NamespaceDict.prototype);
+    Object.defineProperty(d, '_nsHooks', { value: [] });
+  }
+  // (what this unit just defined there — a def replacing another unit's — reaches the units that
+  // ran there before it)
+  for (const n of hook._pyNames || []) if (d.has(n)) { const v = d.get(n); for (const h of d._nsHooks) h(n, v); }
+  d._nsHooks.push(hook);
+}
+function _bindPlainNamespace(o, hook) {
+  let st = o[NS_STATE];
+  if (st === undefined) { st = { hooks: [], vals: Object.create(null) }; Object.defineProperty(o, NS_STATE, { value: st }); }
+  for (const n of hook._pyNames || []) if (Object.hasOwn(o, n)) { const v = o[n]; for (const h of st.hooks) h(n, v); }
+  st.hooks.push(hook);
+  for (const n of hook._pyNames || []) {
+    if (Object.hasOwn(st.vals, n) || !Object.hasOwn(o, n)) continue;
+    const desc = Object.getOwnPropertyDescriptor(o, n);
+    if (!desc.configurable || !('value' in desc)) continue;
+    st.vals[n] = desc.value;
+    Object.defineProperty(o, n, {
+      get() { return st.vals[n]; },
+      set(v) { st.vals[n] = v; for (const h of st.hooks) h(n, v); },
+      enumerable: desc.enumerable, configurable: true,
+    });
+  }
+}
 export function storeAttr(obj, name, value) {
   if (obj !== null && typeof obj === 'object' && obj.__adderModule__ === true && obj[MODULE_REBIND] !== undefined && typeof name === 'string') obj[MODULE_REBIND](name, value);
   // obj.name = value is type(obj).__setattr__(obj, name, value): a class's own __setattr__ (a
@@ -5440,7 +5497,7 @@ export function pyDelItem(obj, key) {
     if (typeof obj.__delitem__ === 'function') return obj.__delitem__(key);
     if (isPlainDict(obj)) {
       if (typeof key !== 'string' || !Object.hasOwn(obj, key)) throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
-      delete obj[key]; return null;
+      plainDelete(obj, key); return null;
     }
   }
   throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item deletion`);

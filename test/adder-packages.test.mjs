@@ -283,4 +283,48 @@ describe('adder packages over a VFS', () => {
     // (CPython 3.13 prints exactly this)
     assert.equal(out, ['mocked mocked1 (1,)', 'orig2', 'lam11', 'orig11', '99', '3 False', '7', '8 8', 'made', 'NameError', ''].join('\n'));
   });
+
+  // a function exec defines reads its globals dict as it is when called, not as it was then — a
+  // dict with a non-string key (a PyDict: every write seen) and a literal (a plain object: the
+  // names it had when the code ran)
+  it('exec namespaces: later writes reach the functions defined there', async () => {
+    const out = await runBoth([
+      'def probe(ns):',
+      '    out = []',
+      '    exec("def f(x): return x * k\\ndef g(): return f(2)", ns)',
+      '    ns["k"] = 5',
+      '    out.append(ns["f"](2))',
+      '    ns.update(k=6)',
+      '    out.append(ns["g"]())',
+      '    ns["f"] = lambda x: "replaced"',
+      '    out.append(ns["g"]())',
+      '    del ns["f"]',
+      '    try:',
+      '        ns["g"]()',
+      '    except NameError:',
+      '        out.append("NameError")',
+      '    exec("def f(x): return x + k", ns)',
+      '    out.append(ns["g"]())',
+      '    return out',
+      'print(probe({0: None, "k": 1}))',
+      'print(probe({"k": 1}))',
+      'ns = {0: None, "k": 1}',
+      'exec("def f(x): return x + k\\ndef n(s): return len(s)", ns)',
+      'ns.pop("k")',
+      'ns.setdefault("k", 100)',
+      'r = [ns["f"](1)]',
+      'dict.__setitem__(ns, "k", 200)',
+      'r.append(ns["f"](1))',
+      'ns["len"] = lambda s: -1',
+      'r.append(ns["n"]("abc"))',
+      'del ns["len"]',
+      'r.append(ns["n"]("abc"))',
+      'g, l = {0: None, "k": 1}, {}',
+      'exec("def h(): return k", g, l)',
+      'g["k"] = 9',
+      'print(r, l["h"](), type(ns).__name__, ns == dict(ns))',
+    ].join('\n'));
+    // (CPython 3.13 prints exactly this)
+    assert.equal(out, ["[10, 12, 'replaced', 'NameError', 8]", "[10, 12, 'replaced', 'NameError', 8]", '[101, 201, -1, 3] 9 dict True', ''].join('\n'));
+  });
 });

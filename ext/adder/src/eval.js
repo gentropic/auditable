@@ -24,7 +24,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, MODULE_REBIND, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
+  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, MODULE_REBIND, NamespaceDict, bindNamespace, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -1772,23 +1772,37 @@ function _execCompiled(args, isEval = false) {
     for (let s = target; s; s = s.parent) if (s.vars && s.vars.has(n)) return s.vars.get(n);
     return builtins && n in builtins ? builtins[n] : undefined;
   };
-  // the module object compiled code mirrors its bindings onto: the namespace itself
-  const mod = new Proxy({}, {
+  // the module object compiled code mirrors its bindings onto: the namespace itself. (Its own
+  // mirroring writes a NamespaceDict's storage directly: they aren't writes from outside, and its
+  // write-back would hand them back to it.)
+  // (a plain dict too: it may become one as the code runs, below)
+  const raw = vars instanceof NamespaceDict || Object.getPrototypeOf(vars) === PyDict.prototype;
+  const store = raw ? (k, v) => PyDict.prototype.set.call(vars, k, v) : (k, v) => vars.set(k, v);
+  const drop = raw ? (k) => PyDict.prototype.delete.call(vars, k) : (k) => vars.delete(k);
+  const tgt = {};
+  const mod = new Proxy(tgt, {
     get: (_, k) => (typeof k === 'string' && vars.has(k) ? vars.get(k) : undefined),
-    set: (_, k, v) => { vars.set(k, v); return true; },
+    set: (_, k, v) => { store(k, v); return true; },
     has: (_, k) => typeof k === 'string' && vars.has(k),
-    deleteProperty: (_, k) => { vars.delete(k); return true; },
+    deleteProperty: (_, k) => { drop(k); return true; },
     ownKeys: () => [...vars.keys()].filter((k) => typeof k === 'string'),
     getOwnPropertyDescriptor: (_, k) => (typeof k === 'string' && vars.has(k) ? { value: vars.get(k), writable: true, enumerable: true, configurable: true } : undefined),
   });
   const finish = (scope) => {
     if (scope && typeof scope === 'object') {
-      for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined) vars.set(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
+      for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined) store(k.endsWith('$') ? k.slice(0, -1) : k, scope[k]);
     }
     return isEval ? (scope && scope.__lastExpr__ !== undefined ? scope.__lastExpr__ : null) : null;
   };
+  // its write-back (MODULE_REBIND, made first thing as it ran): when the code ran in a globals
+  // dict it was given, that dict's later writes reach the code's variables — its functions see
+  // ns['k'] = 5 afterwards. Bound once it has run (what it defines is in the dict by then, and
+  // isn't a write from outside). Not the caller's own scope: exec without globals.
+  let root = target;
+  while (root.parent) root = root.parent;
+  const bind = () => { if (root._builtins && tgt[MODULE_REBIND]) bindNamespace(root.vars, tgt[MODULE_REBIND]); };
   const r = compiled.run(lookup, mod);
-  return r && typeof r.then === 'function' ? r.then(finish) : Promise.resolve(finish(r));
+  return r && typeof r.then === 'function' ? r.then((s) => { const v = finish(s); bind(); return v; }) : Promise.resolve((() => { const v = finish(r); bind(); return v; })());
 }
 // exec / eval's source: a string, bytes, or a code object from compile()
 function _sourceOf(x) {
