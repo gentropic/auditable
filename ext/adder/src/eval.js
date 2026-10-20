@@ -1,7 +1,7 @@
 // adder v2 — tree-walking evaluator
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
-import { adderParse, _adderParseExpr, compileMatchPattern, classNeedsCell } from './parse.js';
+import { adderParse, _adderParseExpr, compileMatchPattern, classNeedsCell, isIntFloatLit, FLOAT_LIT_OPS } from './parse.js';
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
 import './stdlib.js';
 import './stdlib-types.js';
@@ -25,6 +25,7 @@ import {
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
   PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, MODULE_REBIND, NamespaceDict, bindNamespace, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
+  sliceBound, pyFloatBin,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -304,6 +305,7 @@ export async function adderEval(node, scope) {
     case 'BinOp': {
       const left = await adderEval(node.left, scope);
       const right = await adderEval(node.right, scope);
+      if ((isIntFloatLit(node.left) || isIntFloatLit(node.right)) && FLOAT_LIT_OPS.has(node.op)) return _withLine(() => pyFloatBin(node.op, left, right), node.line);
       return _binOp(node.op, left, right, node.line);
     }
     case 'UnaryOp': {
@@ -782,6 +784,7 @@ async function _evalSubscript(node, scope) {
 }
 
 function _applySlice(obj, lower, upper, step) {
+  lower = sliceBound(lower); upper = sliceBound(upper); step = sliceBound(step);   // (an int past 2**53: past any end)
   if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
     const len = obj.length;
@@ -829,6 +832,7 @@ function _sliceIndices(len, lower, upper, step) {
 }
 
 function _applySliceAssign(obj, lower, upper, step, value, line) {
+  lower = sliceBound(lower); upper = sliceBound(upper); step = sliceBound(step);   // (an int past 2**53: past any end)
   if (typeof obj === 'string') {
     throw new AdderError('TypeError', "'str' object does not support item assignment", line);
   }
@@ -862,6 +866,7 @@ function _applySliceAssign(obj, lower, upper, step, value, line) {
 }
 
 function _applySliceDelete(obj, lower, upper, step, line) {
+  lower = sliceBound(lower); upper = sliceBound(upper); step = sliceBound(step);   // (an int past 2**53: past any end)
   if (typeof obj === 'string') {
     throw new AdderError('TypeError', "'str' object doesn't support item deletion", line);
   }

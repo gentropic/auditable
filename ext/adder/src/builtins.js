@@ -288,6 +288,9 @@ export function seqSliceDel(obj, k) {
   for (const i of idx.sort((a, b) => b - a)) obj.splice(i, 1);
   return null;
 }
+// a slice bound or step as the engines' fast slicing paths take it: a BigInt (an int past 2**53)
+// saturates — no sequence is that long, so it is past any end either way
+export const sliceBound = (v) => (typeof v === 'bigint' ? (v > 0n ? Number.MAX_SAFE_INTEGER : -Number.MAX_SAFE_INTEGER) : v);
 // a slice bound as an int: an int, a bool, or __index__ (a BigInt saturates — the bound is past any end)
 function _sliceIdx(v, isLength = false) {
   if (typeof v === 'number' && Number.isInteger(v)) return v;
@@ -1080,7 +1083,8 @@ export function pyTypeName(v) {
   if (v === null || v === undefined) return 'NoneType';
   if (v instanceof PyCell) return 'cell';
   if (typeof v === 'boolean') return 'bool';
-  if (typeof v === 'number') return Number.isInteger(v) ? 'int' : 'float';
+  if (typeof v === 'number') return isIntNum(v) ? 'int' : 'float';
+  if (typeof v === 'bigint') return 'int';
   if (typeof v === 'string') return 'str';
   if (v instanceof PyTuple) return v.__adderClass__ || 'tuple';
   if (v instanceof PyByteArray) return 'bytearray';
@@ -1122,11 +1126,19 @@ export function pyBool(v) {
 }
 
 // Python spells the non-finite floats inf / -inf / nan, never JS's Infinity / NaN
+// A float is CPython's repr: the shortest round-tripping digits, in exponent form below 1e-4 and
+// from 1e16 up, an integral one with '.0' (an integral float below 2**53 is the same JS number
+// as the int, and prints as the int)
 function _numRepr(v) {
   if (v !== v) return 'nan';
   if (v === Infinity) return 'inf';
   if (v === -Infinity) return '-inf';
-  return String(v);
+  if (isIntNum(v)) return String(v);
+  const [mant, e] = v.toExponential().split('e');
+  const exp = +e;
+  if (exp < -4 || exp >= 16) return `${mant}e${exp < 0 ? '-' : '+'}${String(Math.abs(exp)).padStart(2, '0')}`;
+  const s = String(v);
+  return s.includes('.') ? s : `${s}.0`;
 }
 
 // A typed array prints as the Python list of its elements (learn and friends hand them
@@ -1351,18 +1363,20 @@ function _parseIntStrict(str, base) {
   if (base === 0) {
     b = pbase || 10;
     if (!pbase && /^0+[1-9]/.test(m[3])) throw bad();   // base 0 refuses leading zeros
-  } else if (pbase && pbase !== base) {
-    throw bad();
   }
-  const digits = m[3].replace(/_/g, '').toLowerCase();
+  // a prefix of another base is no prefix: its characters are digits, if they are digits in this
+  // base ('0b5d' in base 16) — and the digit loop refuses them otherwise
+  const digits = ((pbase && base !== 0 && pbase !== base ? m[2] : '') + m[3]).replace(/_/g, '').toLowerCase();
   let n = 0n;
   for (const ch of digits) {
     const d = parseInt(ch, 36);
     if (Number.isNaN(d) || d >= b) throw bad();
-    n = n * BigInt(b) + BigInt(d);
+    if (b !== 10 && b !== 16 && b !== 8 && b !== 2) n = n * BigInt(b) + BigInt(d);
   }
+  // (the bases BigInt reads itself: in one go, not digit by digit)
+  if (b === 10 || b === 16 || b === 8 || b === 2) n = BigInt((b === 10 ? '' : b === 16 ? '0x' : b === 8 ? '0o' : '0b') + digits);
   if (m[1] === '-') n = -n;
-  return Number(n);
+  return intNorm(n);
 }
 
 // ── iteration helper ──
@@ -1640,7 +1654,18 @@ export function pyFormatValue(value, spec) {
   if (i < spec.length) ftype = spec[i];
 
   let result;
-  if (typeof value === 'number' && !Number.isFinite(value) && 'fFeEgG%n'.includes(ftype || 'f')) {
+  // an int past 2**53 is a BigInt: the integer types print it exactly, the float types as a float
+  if (typeof value === 'bigint') {
+    if ('fFeEgG%'.includes(ftype) && ftype) value = intToFloat(value);
+    else if ('dboxXcn'.includes(ftype) && ftype) {
+      const neg = value < 0n, mag = neg ? -value : value;
+      result = ftype === 'b' ? mag.toString(2) : ftype === 'o' ? mag.toString(8) : ftype === 'x' ? mag.toString(16) : ftype === 'X' ? mag.toString(16).toUpperCase() : mag.toString();
+      if (ftype === 'c') throw new AdderError('OverflowError', '%c arg not in range(0x110000)');
+      result = (neg ? '-' : sign === '+' ? '+' : '') + result;
+    }
+  }
+  if (result !== undefined) { /* formatted above */ }
+  else if (typeof value === 'number' && !Number.isFinite(value) && 'fFeEgG%n'.includes(ftype || 'f')) {
     result = value !== value ? 'nan' : 'inf';
     if ('FEG'.includes(ftype) && ftype) result = result.toUpperCase();
     if (value === -Infinity) result = '-' + result;
@@ -1909,7 +1934,7 @@ function _pySetNative(obj, attr) {
 // A number is an int when it is integral (adder can't tell 2 from 2.0): it gets int's methods, and
 // float's too (hex, is_integer, as_integer_ratio) — what a float-shaped caller asks for still works.
 const _bigOut = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
-const _isIntVal = (x) => typeof x === 'bigint' || typeof x === 'boolean' || Number.isInteger(x);
+const _isIntVal = (x) => typeof x === 'bigint' || typeof x === 'boolean' || isIntNum(x);   // (a number past 2**53 is a float)
 const _bitLen = (b) => (b === 0n ? 0 : (b < 0n ? -b : b).toString(2).length);
 function _numKw(name, a, names) {
   const kw = a.length && a[a.length - 1] && a[a.length - 1]._kw === true ? a.pop() : null;
@@ -2020,7 +2045,7 @@ function _numAttr(x, attr) {
     case 'real': return v;
     case 'imag': return 0;
     case 'conjugate': return () => v;
-    case 'is_integer': return () => isInt;
+    case 'is_integer': return () => isInt || Number.isInteger(v);
     case 'as_integer_ratio': return () => (isInt ? mkTuple([v, 1]) : _floatRatio(v));
     case 'hex': return typeof v === 'number' ? () => _floatHex(v) : undefined;
     case '__float__': return () => { const n = Number(v); if (!Number.isFinite(n) && typeof v === 'bigint') throw new AdderError('OverflowError', 'int too large to convert to float'); return n; };
@@ -3388,7 +3413,7 @@ function _viaDunder(a, b, d, rd) {
 }
 const _DUNDER_SYM = { __add__: '+', __sub__: '-', __mul__: '*', __truediv__: '/', __floordiv__: '//', __mod__: '%', __pow__: '** or pow()',
   __matmul__: '@', __and__: '&', __or__: '|', __xor__: '^', __lshift__: '<<', __rshift__: '>>' };
-const _isIntish = (v) => (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'boolean' || typeof v === 'bigint';
+const _isIntish = (v) => (typeof v === 'number' && isIntNum(v)) || typeof v === 'boolean' || typeof v === 'bigint';
 const _isNum = (v) => typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint';
 const _dictLike = (v) => v instanceof Map || isPlainDict(v);
 // exact integer bit operations (BigInt only when a value leaves the 32-bit range)
@@ -3400,18 +3425,97 @@ function _bitOp(op, a, b) {
   }
   const A = BigInt(a), B = BigInt(b);
   const r = op === '&' ? A & B : op === '|' ? A | B : op === '^' ? A ^ B : op === '<<' ? A << B : A >> B;
-  return Number(r);
+  return intNorm(r);
+}
+
+// ── ints past 2**53 (ROADMAP "Overflow-checked ints → BigInt") ──
+// The canonical rule: an int in the safe range is always a JS number, an int beyond it always a
+// BigInt. So a JS number beyond 2**53 is a float (6.02e23 * 2 stays one), and 1 and 1n never
+// both stand for one value. An int op on two ints whose result leaves the range goes exact;
+// a float on either side makes it a float op.
+const _SAFE = 9007199254740991;
+const _SAFE_N = 9007199254740991n;
+// a BigInt int result, canonical (back to a number when it fits)
+export function intNorm(r) { return r <= _SAFE_N && r >= -_SAFE_N ? Number(r) : r; }
+// is this JS number an int — integer-valued and in the safe range — rather than a float?
+export const isIntNum = (x) => Number.isInteger(x) && x <= _SAFE && x >= -_SAFE;
+// an int operand: a bool, an int number, a BigInt
+const _intOperand = (v) => typeof v === 'bigint' || typeof v === 'boolean' || (typeof v === 'number' && isIntNum(v));
+// an int as a float (CPython: OverflowError past the float range)
+export function intToFloat(v) {
+  if (typeof v !== 'bigint') return +v;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new AdderError('OverflowError', 'int too large to convert to float');
+  return n;
+}
+// + - * of two numeric operands (numbers, bools, BigInts)
+function _numArith(op, a, b) {
+  if (typeof a !== 'bigint' && typeof b !== 'bigint') {
+    const x = +a, y = +b;
+    const r = op === '+' ? x + y : op === '-' ? x - y : x * y;
+    if ((r <= _SAFE && r >= -_SAFE) || !isIntNum(x) || !isIntNum(y)) return r;
+  } else if (!_intOperand(a) || !_intOperand(b)) {
+    const x = intToFloat(a), y = intToFloat(b);
+    return op === '+' ? x + y : op === '-' ? x - y : x * y;
+  }
+  const A = typeof a === 'bigint' ? a : BigInt(+a), B = typeof b === 'bigint' ? b : BigInt(+b);
+  return intNorm(op === '+' ? A + B : op === '-' ? A - B : A * B);
+}
+// x · 2**e without overflowing the intermediate power
+function _ldexp(x, e) {
+  while (e > 1000) { x *= 2 ** 1000; e -= 1000; }
+  while (e < -1000) { x *= 2 ** -1000; e += 1000; }
+  return x * 2 ** e;
+}
+// int / int, correctly rounded (as CPython's long_true_divide): the quotient scaled to 55+
+// significant bits, a sticky bit for any remainder, so Number() rounds it once
+function _intTrueDiv(a, b) {
+  let A = typeof a === 'bigint' ? a : BigInt(+a), B = typeof b === 'bigint' ? b : BigInt(+b);
+  const neg = (A < 0n) !== (B < 0n);
+  if (A < 0n) A = -A;
+  if (B < 0n) B = -B;
+  if (A === 0n) return neg ? -0 : 0;
+  const shift = 55 - (_bitLen(A) - _bitLen(B));
+  let q, r;
+  if (shift >= 0) { const n = A << BigInt(shift); q = n / B; r = n % B; }
+  else { const d = B << BigInt(-shift); q = A / d; r = A % d; }
+  if (r !== 0n) q |= 1n;
+  const x = _ldexp(Number(q), -shift);
+  if (!Number.isFinite(x)) throw new AdderError('OverflowError', 'integer division result too large for a float');
+  return neg ? -x : x;
+}
+
+// `a op b` where an operand is an integer-valued float LITERAL (2.0 ** 1000, 3.0 * 2**60): a
+// float op, as in CPython — its result never an exact int past 2**53. (Both engines call this
+// for + - * ** // % with such a literal; numbers only — anything else is the plain operator.)
+export function pyFloatBin(op, a, b) {
+  if (!_isNum(a) || !_isNum(b)) return pyBinOps[op](a, b);
+  const x = intToFloat(_asInt(a)), y = intToFloat(_asInt(b));
+  switch (op) {
+    case '+': return x + y;
+    case '-': return x - y;
+    case '*': return x * y;
+    case '**':
+      if ((x === 0 && y < 0) || (x < 0 && !Number.isInteger(y) && Number.isFinite(y))) return pyPow(x, y);   // (its errors, its complex)
+      return Math.pow(x, y);
+    case '//': return y === 0 ? pyFloorDiv(x, y) : Math.floor(x / y);
+    case '%': return pyMod(x, y);
+  }
+  return pyBinOps[op](a, b);
 }
 
 export function pyAdd(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a + b;   // the hot case, first
+  if (typeof a === 'number' && typeof b === 'number') {   // the hot case, first
+    const r = a + b;
+    return (r <= _SAFE && r >= -_SAFE) || !isIntNum(a) || !isIntNum(b) ? r : _numArith('+', a, b);
+  }
   // bytes + bytearray: the left operand's type
   if ((a instanceof PyByteArray || b instanceof PyByteArray) && _isBytesLike(a) && _isBytesLike(b)) {
     const r = new Uint8Array(a.length + b.length); r.set(_asU8(a)); r.set(_asU8(b), a.length);
     return a instanceof PyByteArray ? _toBA(r) : r;
   }
   const d = _viaDunder(a, b, '__add__', '__radd__'); if (d) return d.r;
-  if (_isNum(a) && _isNum(b)) return _asInt(a) + _asInt(b);
+  if (_isNum(a) && _isNum(b)) return _numArith('+', a, b);
   if (typeof a === 'string' && typeof b === 'string') return a + b;
   // a boxed str (a StrEnum member, a str subclass without __add__) is a str
   { const sa = strValue(a), sb = strValue(b); if (sa !== null && sb !== null) return sa + sb; }
@@ -3436,9 +3540,12 @@ export function pyIAddBuiltin(a, b) {
   return pyAdd(a, b);
 }
 export function pySub(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'number' && typeof b === 'number') {
+    const r = a - b;
+    return (r <= _SAFE && r >= -_SAFE) || !isIntNum(a) || !isIntNum(b) ? r : _numArith('-', a, b);
+  }
   const d = _viaDunder(a, b, '__sub__', '__rsub__'); if (d) return d.r;
-  if (_isNum(a) && _isNum(b)) return _asInt(a) - _asInt(b);
+  if (_isNum(a) && _isNum(b)) return _numArith('-', a, b);
   if (a instanceof Set && b instanceof Set) return _setLike(a, [...a].filter((x) => !b.has(x)));
   const vo = _dictViewOperands(a, b); if (vo) return pySub(vo[0], vo[1]);
   throw _binErr('-', a, b);
@@ -3453,9 +3560,12 @@ function _repeat(seq, n) {
   return seq instanceof PyTuple ? mkTuple(r) : r;
 }
 export function pyMul(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a * b;
+  if (typeof a === 'number' && typeof b === 'number') {
+    const r = a * b;
+    return (r <= _SAFE && r >= -_SAFE) || !isIntNum(a) || !isIntNum(b) ? r : _numArith('*', a, b);
+  }
   const d = _viaDunder(a, b, '__mul__', '__rmul__'); if (d) return d.r;
-  if (_isNum(a) && _isNum(b)) return _asInt(a) * _asInt(b);
+  if (_isNum(a) && _isNum(b)) return _numArith('*', a, b);
   if (typeof a === 'string' || Array.isArray(a) || a instanceof Uint8Array) { const r = _repeat(a, b); if (r !== null) return r; }
   if (typeof b === 'string' || Array.isArray(b) || b instanceof Uint8Array) { const r = _repeat(b, a); if (r !== null) return r; }
   throw _binErr('*', a, b);
@@ -3463,15 +3573,24 @@ export function pyMul(a, b) {
 export function pyTrueDiv(a, b) {
   const d = _viaDunder(a, b, '__truediv__', '__rtruediv__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) {
-    if (Number(b) === 0) throw new AdderError('ZeroDivisionError', 'division by zero');
-    return Number(_asInt(a)) / Number(_asInt(b));
+    if (b == 0) throw new AdderError('ZeroDivisionError', 'division by zero'); // eslint-disable-line eqeqeq
+    // (an int past 2**53 on either side: exact, then rounded once)
+    if ((typeof a === 'bigint' || typeof b === 'bigint') && _intOperand(a) && _intOperand(b)) return _intTrueDiv(a, b);
+    return intToFloat(_asInt(a)) / intToFloat(_asInt(b));
   }
   throw _binErr('/', a, b);
 }
 export function pyFloorDiv(a, b) {
   const d = _viaDunder(a, b, '__floordiv__', '__rfloordiv__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) {
-    if (Number(b) === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero');
+    if (b == 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero'); // eslint-disable-line eqeqeq
+    if (typeof a === 'bigint' || typeof b === 'bigint') {
+      if (!_intOperand(a) || !_intOperand(b)) return Math.floor(intToFloat(a) / intToFloat(b));
+      const A = typeof a === 'bigint' ? a : BigInt(+a), B = typeof b === 'bigint' ? b : BigInt(+b);
+      let q = A / B;
+      if (A % B !== 0n && (A < 0n) !== (B < 0n)) q -= 1n;   // toward -inf, not 0
+      return intNorm(q);
+    }
     return Math.floor(_asInt(a) / _asInt(b));
   }
   throw _binErr('//', a, b);
@@ -3481,7 +3600,16 @@ export function pyMod(a, b) {
   const d = _viaDunder(a, b, '__mod__', '__rmod__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) {
     a = _asInt(a); b = _asInt(b);
-    if (Number(b) === 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero');
+    if (b == 0) throw new AdderError('ZeroDivisionError', 'integer division or modulo by zero'); // eslint-disable-line eqeqeq
+    if (typeof a === 'bigint' || typeof b === 'bigint') {
+      if (!_intOperand(a) || !_intOperand(b)) { a = intToFloat(a); b = intToFloat(b); }
+      else {
+        const A = BigInt(a), B = BigInt(b);
+        let r = A % B;
+        if (r !== 0n && (r < 0n) !== (B < 0n)) r += B;
+        return intNorm(r);
+      }
+    }
     let r = a % b;
     if (r !== 0 && (r < 0) !== (b < 0)) r += b;   // the result takes the divisor's sign
     return r;
@@ -3495,7 +3623,20 @@ export function pyPow(a, b, mod) {
   }
   const d = _viaDunder(a, b, '__pow__', '__rpow__'); if (d) return d.r;
   if (_isNum(a) && _isNum(b)) {
-    a = Number(_asInt(a)); b = Number(_asInt(b));
+    a = _asInt(a); b = _asInt(b);
+    // int ** non-negative int: an int, exact. Math.pow when the result is surely exact
+    // (below 2**52), else BigInt
+    if (_intOperand(a) && _intOperand(b) && b >= 0) {
+      if (typeof a === 'number' && typeof b === 'number') {
+        const r = Math.pow(a, b);
+        if (r < 4503599627370496 && r > -4503599627370496) return r;
+      }
+      const A = BigInt(a), B = BigInt(b);
+      if (A === 0n || A === 1n) return Number(A);
+      if (A === -1n) return B % 2n === 0n ? 1 : -1;
+      try { return intNorm(A ** B); } catch { throw new AdderError('MemoryError', ''); }
+    }
+    a = intToFloat(a); b = intToFloat(b);
     if (a === 0 && b < 0) throw new AdderError('ZeroDivisionError', '0.0 cannot be raised to a negative power');
     if (a < 0 && !Number.isInteger(b) && Number.isFinite(b)) return Complex._pow([a, 0], [b, 0]);   // complex, as float_pow defers
     return Math.pow(a, b);
@@ -3557,7 +3698,7 @@ export function pyMatmul(a, b) {
   throw _binErr('@', a, b);
 }
 export function pyNeg(a) {
-  if (_isNum(a)) return -_asInt(a);
+  if (_isNum(a)) { const r = -_asInt(a); return typeof r === 'bigint' ? intNorm(r) : r; }
   if (_obj(a) && typeof a.__neg__ === 'function') return a.__neg__();
   throw new AdderError('TypeError', `bad operand type for unary -: '${pyTypeName(a)}'`);
 }
@@ -3567,7 +3708,11 @@ export function pyPos(a) {
   throw new AdderError('TypeError', `bad operand type for unary +: '${pyTypeName(a)}'`);
 }
 export function pyInvert(a) {
-  if (_isIntish(a)) return -_asInt(a) - 1;
+  if (_isIntish(a)) {
+    a = _asInt(a);
+    if (typeof a === 'bigint') return intNorm(-a - 1n);
+    return a < _SAFE ? -a - 1 : -BigInt(a) - 1n;   // ~(2**53 - 1) is -(2**53): past the range
+  }
   if (_obj(a) && typeof a.__invert__ === 'function') return a.__invert__();
   throw new AdderError('TypeError', `bad operand type for unary ~: '${pyTypeName(a)}'`);
 }
@@ -3702,13 +3847,23 @@ export function pyPercentFormat(fmt, args, pre = null) {
         const n = _asInt(v);
         if (!_isNum(n)) throw new AdderError('TypeError', `%${type} format: a real number is required, not ${pyTypeName(v)}`);
         neg = n < 0 || Object.is(n, -0);
-        return Math.abs(Number(n));
+        return Math.abs(intToFloat(n));
+      };
+      // the integer types: the magnitude exactly (a BigInt past 2**53; a float, truncated)
+      const inum = () => {
+        const n = _asInt(v);
+        if (!_isNum(n)) throw new AdderError('TypeError', `%${type} format: a real number is required, not ${pyTypeName(v)}`);
+        neg = n < 0;
+        if (typeof n === 'bigint') return neg ? -n : n;
+        const t = Math.trunc(Math.abs(n));
+        if (!Number.isFinite(t)) throw new AdderError(t !== t ? 'ValueError' : 'OverflowError', `cannot convert float ${t !== t ? 'NaN' : 'infinity'} to integer`);
+        return isIntNum(t) ? t : BigInt(t);
       };
       switch (type) {
-        case 'd': case 'i': case 'u': body = String(Math.trunc(num())); break;
-        case 'o': body = Math.trunc(num()).toString(8); if (alt) body = '0o' + body; break;
-        case 'x': body = Math.trunc(num()).toString(16); if (alt) body = '0x' + body; break;
-        case 'X': body = Math.trunc(num()).toString(16).toUpperCase(); if (alt) body = '0X' + body; break;
+        case 'd': case 'i': case 'u': body = String(inum()); break;
+        case 'o': body = inum().toString(8); if (alt) body = '0o' + body; break;
+        case 'x': body = inum().toString(16); if (alt) body = '0x' + body; break;
+        case 'X': body = inum().toString(16).toUpperCase(); if (alt) body = '0X' + body; break;
         case 'e': case 'E': body = _fmtExp(num(), p ?? 6, type === 'E', alt); break;
         case 'f': case 'F': { const x = num(); body = Number.isFinite(x) ? _fmtFixed(x, p ?? 6, alt) : (Number.isNaN(x) ? 'nan' : x < 0 ? '-inf' : 'inf'); if (type === 'F') body = body.toUpperCase(); break; }
         case 'g': case 'G': body = _fmtGeneral(num(), p ?? 6, type === 'G', alt); break;
@@ -3798,6 +3953,7 @@ export function pyGetItem(obj, key, raw = false) {
   if (isSeq) {
     if (key instanceof PySlice && !(ArrayBuffer.isView(obj) && !(obj instanceof Uint8Array))) return seqSliceGet(obj, key);
     if (typeof key === 'boolean') key = +key;
+    if (typeof key === 'bigint') throw new AdderError('IndexError', "cannot fit 'int' into an index-sized integer");   // (an int past 2**53)
     if (typeof key !== 'number' || !Number.isInteger(key)) {
       if (_obj(key) && typeof key.__index__ === 'function') key = key.__index__();
       else throw new AdderError('TypeError', `${pyTypeName(obj)} indices must be integers or slices, not ${pyTypeName(key)}`);
@@ -3857,7 +4013,16 @@ export function pyRound(x, nd) {
   if (nd && nd._kw) nd = nd.ndigits;
   if (_obj(x) && typeof x.__round__ === 'function') return nd == null ? x.__round__() : x.__round__(nd);
   x = _asInt(x);
+  if (typeof x === 'bigint') {
+    if (nd == null || nd >= 0) return x;
+    // round(int, -k): to a multiple of 10**k, half to even
+    const p = 10n ** BigInt(-nd), r = ((x % p) + p) % p, f = x - r;
+    const up = 2n * r > p || (2n * r === p && (f / p) % 2n !== 0n);
+    return intNorm(up ? f + p : f);
+  }
   if (typeof x !== 'number') throw new AdderError('TypeError', `type ${pyTypeName(x)} doesn't define __round__ method`);
+  // a float past 2**53 is integral: round() of it is that int, exactly
+  if (nd == null && Number.isFinite(x) && Number.isInteger(x) && !isIntNum(x)) return intNorm(BigInt(x));
   if (!Number.isFinite(x)) {
     if (nd == null) throw new AdderError(Number.isNaN(x) ? 'ValueError' : 'OverflowError', Number.isNaN(x) ? 'cannot convert float NaN to integer' : 'cannot convert float infinity to integer');
     return x;
@@ -3936,7 +4101,8 @@ export function pyEq(a, b) {
 // == by the builtin types' rules (no dunder involved)
 function _eqBuiltin(a, b) {
   if (a === b) return true;
-  if (_numLike(a) && _numLike(b)) return Number(a) === Number(b) || (typeof a === 'bigint' || typeof b === 'bigint') && a == b; // eslint-disable-line eqeqeq
+  // (a BigInt against a number: JS's == compares the two values exactly)
+  if (_numLike(a) && _numLike(b)) return typeof a === 'bigint' || typeof b === 'bigint' ? a == b : Number(a) === Number(b); // eslint-disable-line eqeqeq
   // a dict's values view equals only itself (it is neither a sequence nor a set)
   if ((Array.isArray(a) && a._pyView === 'values') || (Array.isArray(b) && b._pyView === 'values')) return a === b;
   if (_isDictView(a) && (b instanceof Set || _isDictView(b)) || _isDictView(b) && a instanceof Set) { const [sa, sb] = _dictViewOperands(a, b); return pyEq(sa, sb); }
@@ -4184,17 +4350,23 @@ const _mathModule = {
 };
 
 // math: CPython's integer functions are exact (BigInt where the result can leave 2**53)
-const _bigToNum = (b) => Number(b);
+const _bigToNum = (b) => intNorm(b);
+const _toBig = (v) => (typeof v === 'bigint' ? v : BigInt(+v));
 const _isqrtBig = (n) => {
   if (n < 0n) throw new AdderError('ValueError', 'isqrt() argument must be nonnegative');
   if (n < 2n) return n;
-  let x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  let x;
+  if (n < 2n ** 1000n) x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  else {   // past the float range: Newton from above
+    x = 1n << BigInt(Math.ceil(_bitLen(n) / 2));
+    for (;;) { const y = (x + n / x) >> 1n; if (y >= x) break; x = y; }
+  }
   while (x * x > n) x--;
   while ((x + 1n) * (x + 1n) <= n) x++;
   return x;
 };
 const _needInt = (name, ...vs) => {
-  for (const v of vs) if (!(typeof v === 'boolean' || (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'bigint')) {
+  for (const v of vs) if (!(typeof v === 'boolean' || (typeof v === 'number' && isIntNum(v)) || typeof v === 'bigint')) {
     throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
   }
 };
@@ -4207,32 +4379,32 @@ Object.assign(_mathModule, {
     const d = Math.abs(a - b);
     return d <= Math.abs(rel * b) || d <= Math.abs(rel * a) || d <= abs;
   },
-  isqrt: (n) => { _needInt('isqrt', n); return _bigToNum(_isqrtBig(BigInt(Number(n)))); },
+  isqrt: (n) => { _needInt('isqrt', n); return _bigToNum(_isqrtBig(_toBig(n))); },
   factorial: (n) => {
     _needInt('factorial', n);
     if (n < 0) throw new AdderError('ValueError', 'factorial() not defined for negative values');
-    let r = 1n; for (let i = 2n; i <= BigInt(n); i++) r *= i; return _bigToNum(r);
+    let r = 1n; for (let i = 2n; i <= _toBig(n); i++) r *= i; return _bigToNum(r);
   },
   comb: (n, k) => {
     _needInt('comb', n, k);
     if (n < 0 || k < 0) throw new AdderError('ValueError', 'n must be a non-negative integer');
     if (k > n) return 0;
-    k = Math.min(k, n - k);
-    let r = 1n; for (let i = 0n; i < BigInt(k); i++) r = (r * (BigInt(n) - i)) / (i + 1n); return _bigToNum(r);
+    if (typeof k !== 'bigint' && typeof n !== 'bigint') k = Math.min(k, n - k);
+    let r = 1n; for (let i = 0n; i < _toBig(k); i++) r = (r * (_toBig(n) - i)) / (i + 1n); return _bigToNum(r);
   },
   perm: (n, k) => {
     if (k === undefined || k === null) k = n;
     _needInt('perm', n, k);
     if (n < 0 || k < 0) throw new AdderError('ValueError', 'n must be a non-negative integer');
     if (k > n) return 0;
-    let r = 1n; for (let i = 0n; i < BigInt(k); i++) r *= BigInt(n) - i; return _bigToNum(r);
+    let r = 1n; for (let i = 0n; i < _toBig(k); i++) r *= _toBig(n) - i; return _bigToNum(r);
   },
-  gcd: (...xs) => { _needInt('gcd', ...xs); let g = 0n; for (const x of xs) { let a = BigInt(Math.abs(Number(x))), b = g; while (b) [a, b] = [b, a % b]; g = a; } return _bigToNum(g); },
+  gcd: (...xs) => { _needInt('gcd', ...xs); let g = 0n; for (const x of xs) { let a = _toBig(x), b = g; if (a < 0n) a = -a; while (b) [a, b] = [b, a % b]; g = a; } return _bigToNum(g); },
   lcm: (...xs) => {
     _needInt('lcm', ...xs);
     let l = 1n;
     for (const x of xs) {
-      const v = BigInt(Math.abs(Number(x)));
+      let v = _toBig(x); if (v < 0n) v = -v;
       if (v === 0n) return 0;
       let a = l, b = v; while (b) [a, b] = [b, a % b];
       l = (l / a) * v;
@@ -5467,7 +5639,7 @@ const _isClassMember = (v) => _isMethodFn(v, { pyBody: true }) || (v !== null &&
 export function seqStoreIndex(obj, key) {
   if (typeof key !== 'number' || !Number.isInteger(key)) {
     if (typeof key === 'boolean') key = +key;
-    else if (typeof key === 'bigint') key = Number(key);
+    else if (typeof key === 'bigint') throw new AdderError('IndexError', "cannot fit 'int' into an index-sized integer");
     else if (key !== null && typeof key === 'object' && typeof key.__index__ === 'function') key = key.__index__();
     else throw new AdderError('TypeError', `${obj instanceof Uint8Array ? 'bytearray' : pyTypeName(obj)} indices must be integers or slices, not ${pyTypeName(key)}`);
   }
@@ -5487,6 +5659,7 @@ export function pyDelItem(obj, key) {
   if (Array.isArray(obj)) {
     if (key instanceof PySlice) return seqSliceDel(obj, key);
     if (!_isIntish(key)) throw new AdderError('TypeError', `list indices must be integers or slices, not ${pyTypeName(key)}`);
+    if (typeof key === 'bigint') throw new AdderError('IndexError', "cannot fit 'int' into an index-sized integer");
     let i = Number(_asInt(key));
     if (i < 0) i += obj.length;
     if (i < 0 || i >= obj.length) throw new AdderError('IndexError', 'list assignment index out of range');
@@ -7500,7 +7673,8 @@ export function adderBuiltins(printFn) {
       if (typeof x === 'number') {
         if (Number.isNaN(x)) throw new AdderError('ValueError', 'cannot convert float NaN to integer');
         if (!Number.isFinite(x)) throw new AdderError('OverflowError', 'cannot convert float infinity to integer');
-        return Math.trunc(x) || 0;
+        const t = Math.trunc(x) || 0;
+        return isIntNum(t) ? t : intNorm(BigInt(t));   // a float past 2**53 is an int exactly
       }
       if (typeof x === 'bigint') return x;
       if (x && typeof x.__int__ === 'function') return x.__int__();
@@ -7508,7 +7682,7 @@ export function adderBuiltins(printFn) {
       throw new AdderError('TypeError', `int() argument must be a string, a bytes-like object or a real number, not '${pyTypeName(x)}'`);
     },
     float: function _floatOf(x) { if (x === undefined) return 0.0; if (typeof x === 'string') { const s = x.trim().toLowerCase(); if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity; if (s === '-inf' || s === '-infinity') return -Infinity; if (s === 'nan') return NaN; if (s === '') throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); const n = Number(x); if (isNaN(n)) throw new AdderError('ValueError', `could not convert string to float: ${pyRepr(x)}`); return n; }
-      if (typeof x === 'number' || typeof x === 'boolean' || typeof x === 'bigint') return Number(x);
+      if (typeof x === 'number' || typeof x === 'boolean' || typeof x === 'bigint') return intToFloat(x);
       if (x instanceof Uint8Array) return _floatOf(pyDecodePartial(x, 'latin-1', 'strict', true).text);
       if (x !== null && typeof x === 'object' && strValue(x) !== null) return _floatOf(strValue(x));
       if (x !== null && typeof x === 'object' && (typeof x.__float__ === 'function' || typeof x.__index__ === 'function')) return _mReal('float', x);
@@ -7591,12 +7765,26 @@ export function adderBuiltins(printFn) {
       let s = start !== undefined ? start : 0;
       if (typeof s === 'string') throw new AdderError('TypeError', "sum() can't sum strings [use ''.join(seq) instead]");
       if (_numLike(s)) {
-        // one pass; the first non-number abandons it for the general path below, from the start
-        let total = Number(s), c = 0, i = 0;
+        // one pass; the first non-number abandons it for the general path below, from the start.
+        // As CPython's: ints first, exactly (a number while it fits, then a BigInt); from the first
+        // float on, floats
         const n = items.length;
+        let i = 0, it = typeof s === 'boolean' ? +s : s;
+        if (typeof it !== 'number' || isIntNum(it)) {
+          for (; i < n; i++) {
+            const v = items[i];
+            if (typeof v === 'number' && isIntNum(v)) {
+              if (typeof it === 'number') { const t = it + v; if (t <= _SAFE && t >= -_SAFE) { it = t; continue; } }
+              it = _numArith('+', it, v);
+            } else if (typeof v === 'bigint' || typeof v === 'boolean') it = _numArith('+', it, v);
+            else break;
+          }
+          if (i === n) return it;
+        }
+        let total = intToFloat(it), c = 0;
         for (; i < n; i++) {
           const v = items[i];
-          const x = typeof v === 'number' ? v : _numLike(v) ? Number(v) : NaN;
+          const x = typeof v === 'number' ? v : _numLike(v) ? intToFloat(v) : NaN;
           if (x !== x && !(typeof v === 'number')) break;
           const t = total + x;
           c += Math.abs(total) >= Math.abs(x) ? (total - t) + x : (x - t) + total;
@@ -7608,7 +7796,7 @@ export function adderBuiltins(printFn) {
         if (Array.isArray(s) && Array.isArray(v)) s = s.concat(v);
         else if (_hasDunder(s, '__add__')) s = yield s.__add__(v);
         else if (_hasDunder(v, '__radd__')) s = yield v.__radd__(s);
-        else if (_numLike(s) && _numLike(v)) s = s + v;
+        else if (_numLike(s) && _numLike(v)) s = _numArith('+', s, v);
         else throw new AdderError('TypeError', `unsupported operand type(s) for +: '${pyTypeName(s)}' and '${pyTypeName(v)}'`);
       }
       return s;
@@ -7759,9 +7947,10 @@ export function adderBuiltins(printFn) {
       if (n !== 1) throw new AdderError('TypeError', `ord() expected a character, but string of length ${n} found`);
       return sv.codePointAt(0);
     },
-    hex: (n) => { const v = Math.trunc(n); return v < 0 ? '-0x' + (-v).toString(16) : '0x' + v.toString(16); },
-    oct: (n) => { const v = Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
-    bin: (n) => { const v = Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
+    // (a BigInt — an int past 2**53 — prints in any base itself)
+    hex: (n) => { const v = typeof n === 'bigint' ? n : Math.trunc(n); return v < 0 ? '-0x' + (-v).toString(16) : '0x' + v.toString(16); },
+    oct: (n) => { const v = typeof n === 'bigint' ? n : Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
+    bin: (n) => { const v = typeof n === 'bigint' ? n : Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
     repr: pyReprMaybe,
     Ellipsis, NotImplemented,
     format: (value, spec) => pyFormatValue(value, spec || ''),
@@ -8163,7 +8352,7 @@ function _modPow(base, exp, mod) {
     e >>= 1n;
     b = (b * b) % m;
   }
-  return Number(norm(result));
+  return intNorm(norm(result));
 }
 
 let _idCounter = 0;

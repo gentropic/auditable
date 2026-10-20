@@ -268,13 +268,15 @@ export function adderTokenize(code) {
         col += pos - start;
         tokens.push(tok('NUMBER', { _complex: true, imag: coeff }));
       } else {
-        const value = isFloat ? parseFloat(raw)
-          : (raw.startsWith('0x') || raw.startsWith('0X')) ? parseInt(raw.slice(2), 16)
-          : (raw.startsWith('0o') || raw.startsWith('0O')) ? parseInt(raw.slice(2), 8)
-          : (raw.startsWith('0b') || raw.startsWith('0B')) ? parseInt(raw.slice(2), 2)
-          : parseInt(raw, 10);
+        // an int literal past 2**53 is a BigInt (builtins.js intNorm: the canonical rule)
+        let value = isFloat ? parseFloat(raw) : BigInt(/^0[0-9]+$/.test(raw) ? raw.replace(/^0+/, '') || '0' : raw.toLowerCase());
+        if (typeof value === 'bigint' && value <= 9007199254740991n) value = Number(value);
         col += pos - start;
-        tokens.push(tok('NUMBER', value));
+        // (an integer-valued float literal — 2.0, 1e3 — is the same JS number as the int: marked,
+        // so the operation it is an operand of is a float one, never an exact int past 2**53)
+        const nt = tok('NUMBER', value);
+        if (isFloat && Number.isInteger(value)) nt.intFloat = true;
+        tokens.push(nt);
       }
       continue;
     }
@@ -322,6 +324,13 @@ export function adderTokenize(code) {
 
 // does a class need a __class__ cell: does a function in its body (at any depth, but not inside
 // a nested class) name `__class__` or `super`?
+// is this expression an integer-valued float literal (2.0, -1e3)? — what makes a + - * ** // %
+// a float op even when the other side is an int (builtins.js pyFloatBin)
+export function isIntFloatLit(n) {
+  return !!n && ((n.type === 'Constant' && n.intFloat === true) || (n.type === 'UnaryOp' && (n.op === '-' || n.op === '+') && isIntFloatLit(n.operand)));
+}
+export const FLOAT_LIT_OPS = new Set(['+', '-', '*', '**', '//', '%']);
+
 export function classNeedsCell(node) {
   if (node._needsCell !== undefined) return node._needsCell;
   const scan = (n, inFn) => {
@@ -1535,7 +1544,7 @@ class _Parser {
     }
 
     // number
-    if (t.type === 'NUMBER') { this.advance(); return { type: 'Constant', value: t.value, line: t.line, col: t.col }; }
+    if (t.type === 'NUMBER') { this.advance(); return t.intFloat ? { type: 'Constant', value: t.value, intFloat: true, line: t.line, col: t.col } : { type: 'Constant', value: t.value, line: t.line, col: t.col }; }
 
     // strings: adjacent literals concatenate, plain and f-strings mixed ("a" f"{b}" "c"); an
     // all-plain run is a constant, any f-string makes the whole run one f-string

@@ -439,6 +439,7 @@ function emitConst(ctx, op) {
   else if (v === null) expr = 'null';
   else if (typeof v === 'string') expr = JSON.stringify(v);
   else if (typeof v === 'boolean') expr = String(v);
+  else if (typeof v === 'bigint') expr = `${v}n`;
   else if (typeof v === 'number') {
     // V8 initialization discipline:
     // f64 zero → 0.0 (starts as Double, avoids Smi→Double transition)

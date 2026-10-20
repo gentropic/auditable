@@ -8,6 +8,7 @@
 import {
   AdderError, PyTuple, PyDict, mkTuple, pyTypeName, pyRepr, pyStr, pyIter, pyCollect, pyBool, pyEq, pyLt,
   pyAdd, pySub, pyMul, pyTrueDiv, pySorted, pyFormatValue, adderModules, makeExcType, _pyHash, _namedtuple, NotImplemented,
+  isIntNum,
 } from './builtins.js';
 
 const _nmIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
@@ -25,7 +26,7 @@ const _nmType = (name, Cls, module) => {
 };
 // an int as a Python value: a Number while it is exact, a BigInt beyond 2**53
 const _nmInt = (b) => (b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : b);
-const _nmIsInt = (v) => (typeof v === 'number' && Number.isInteger(v)) || typeof v === 'bigint' || typeof v === 'boolean';
+const _nmIsInt = (v) => (typeof v === 'number' && isIntNum(v)) || typeof v === 'bigint' || typeof v === 'boolean';
 const _nmBig = (v) => (typeof v === 'bigint' ? v : BigInt(typeof v === 'boolean' ? +v : v));
 // a float repr that keeps the '.0' (NormalDist's and the statistics reprs print floats)
 const _nmFloatRepr = (x) => (Number.isInteger(x) && Math.abs(x) < 1e16 ? `${x}.0` : pyRepr(x));
@@ -821,7 +822,7 @@ const _nmStatFail = (msg) => new AdderError('statistics.StatisticsError', msg);
 function _nmKind(values) {
   let k = 'int';
   for (const v of values) {
-    const t = v instanceof _NmFraction ? 'Fraction' : v instanceof _NmDecimal ? 'Decimal' : (typeof v === 'number' && !Number.isInteger(v)) ? 'float' : _nmIsInt(v) ? 'int' : null;
+    const t = v instanceof _NmFraction ? 'Fraction' : v instanceof _NmDecimal ? 'Decimal' : (typeof v === 'number' && !isIntNum(v)) ? 'float' : _nmIsInt(v) ? 'int' : null;
     if (t === null) throw new AdderError('TypeError', `can't convert type '${pyTypeName(v)}' to numerator/denominator`);
     if (t === 'int') continue;
     if (k === 'int') k = t;

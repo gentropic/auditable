@@ -16,6 +16,7 @@ import {
   excTypeOf, excValue, excToThrowable, adderGetAttr, pyEq, pyLt, pyMod, pyFormatValue, pyEncode, pyDecodePartial, codecName, stdoutWrite, _stdio,
   classStatement, GenericAlias, setOsExtrasHook, pyBool, NotImplemented, pyGetItem, _pyHash, _lazyIter, _pyEach,
   registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe, pyIsSubclass, pySubclasses, syncOf, pyGenericAliasType, _collectionsModule,
+  isIntNum,
 } from './builtins.js';
 import { _adderParseExpr, adderParse } from './parse.js';
 
@@ -333,8 +334,8 @@ adderModules.abc.ABC.__module__ = 'abc';
     ['Number', null, (o) => isNum(o) || pyTypeName(o) === 'complex' || pyTypeName(o) === 'Decimal' || pyTypeName(o) === 'Fraction'],
     ['Complex', 'Number', (o) => isNum(o) || pyTypeName(o) === 'complex' || pyTypeName(o) === 'Fraction'],
     ['Real', 'Complex', (o) => isNum(o) || pyTypeName(o) === 'Fraction'],
-    ['Rational', 'Real', (o) => (typeof o === 'number' && Number.isInteger(o)) || typeof o === 'boolean' || typeof o === 'bigint' || pyTypeName(o) === 'Fraction'],
-    ['Integral', 'Rational', (o) => (typeof o === 'number' && Number.isInteger(o)) || typeof o === 'boolean' || typeof o === 'bigint'],
+    ['Rational', 'Real', (o) => (typeof o === 'number' && isIntNum(o)) || typeof o === 'boolean' || typeof o === 'bigint' || pyTypeName(o) === 'Fraction'],
+    ['Integral', 'Rational', (o) => (typeof o === 'number' && isIntNum(o)) || typeof o === 'boolean' || typeof o === 'bigint'],
   ];
   const m = _syModule('numbers', {});
   for (const [name, parent, test] of tower) {
@@ -1700,7 +1701,7 @@ const _syTruthy = (v) => pyBool(v);
     const name = pyTypeName(x);
     for (const [k, f] of registry) if (k && k._pyName === name) return f;
     if (typeof x === 'boolean') for (const [k, f] of registry) if (k && k._pyName === 'int') return f;
-    if (typeof x === 'number' || typeof x === 'boolean') for (const [k, f] of registry) if (k && (k._pyName === 'Number' || k._pyName === 'Real' || (k._pyName === 'Integral' && Number.isInteger(x)))) return f;
+    if (typeof x === 'number' || typeof x === 'boolean') for (const [k, f] of registry) if (k && (k._pyName === 'Number' || k._pyName === 'Real' || (k._pyName === 'Integral' && isIntNum(x)))) return f;
     return dflt;
   };
   const registerOn = (registry) => (cls, func) => {

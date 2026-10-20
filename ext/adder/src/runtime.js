@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -19,7 +19,7 @@ import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, r
 // fall through to _add (creates a new value, caller rebinds via the
 // surrounding assignment). Always returns the value to rebind.
 function _iadd(a, b) {
-  if (typeof a === 'number' && typeof b === 'number') return a + b;
+  if (typeof a === 'number' && typeof b === 'number') { const r = a + b; if (r <= 9007199254740991 && r >= -9007199254740991) return r; return pyAdd(a, b); }
   if (a !== null && typeof a === 'object' && typeof a.__iadd__ === 'function') {
     return a.__iadd__(b);
   }
@@ -217,11 +217,12 @@ function _ndarrayTupleSet(obj, key, value) {
 }
 
 function _slice(obj, lower, upper, step) {
-  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, sliceBound(lower), sliceBound(upper), sliceBound(step));
   const rawStep = step;   // (a __getitem__ is handed the slice as written: step None when omitted)
   step = step ?? 1;
-  if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
+  if (step == 0) throw new AdderError('ValueError', 'slice step cannot be zero'); // eslint-disable-line eqeqeq
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
+    lower = sliceBound(lower); upper = sliceBound(upper); step = sliceBound(step);
     const len = obj.length;
     if (step === 1) {
       const l = lower == null ? 0 : lower < 0 ? Math.max(0, len + lower) : Math.min(lower, len);
@@ -273,7 +274,8 @@ function _setslice(obj, lower, upper, step, value) {
     throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support slice assignment`);
   }
   const rhs = [...pyIter(value)];
-  const effectiveStep = step ?? 1;
+  lower = sliceBound(lower); upper = sliceBound(upper);
+  const effectiveStep = sliceBound(step ?? 1);
   if (effectiveStep === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
   if (effectiveStep === 1) {
     const len = obj.length;
@@ -307,7 +309,8 @@ function _delslice(obj, lower, upper, step) {
   if (!Array.isArray(obj)) {
     throw new AdderError('TypeError', `'${pyTypeName(obj)}' object doesn't support slice deletion`);
   }
-  const effectiveStep = step ?? 1;
+  lower = sliceBound(lower); upper = sliceBound(upper);
+  const effectiveStep = sliceBound(step ?? 1);
   if (effectiveStep === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
   if (effectiveStep === 1) {
     const len = obj.length;
@@ -809,16 +812,23 @@ function _assertFail(msg) {
 // else the full helper. Kept tiny on purpose, so V8 inlines them into the loop — the full helpers
 // (dunders, sequences, bytes, errors) are too big to inline, and a call per `s = s + x` costs
 // more than the addition (measured: 11 ms → 4 ms over a million items).
-const _add = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a + b : pyAdd(a, b));
-const _sub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pySub(a, b));
-const _mul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyMul(a, b));
+// A result past 2**53 takes the full helper too: two ints there are a BigInt (builtins.js intNorm)
+const _S = 9007199254740991;
+const _add = (a, b) => { if (typeof a === 'number' && typeof b === 'number') { const r = a + b; if (r <= _S && r >= -_S) return r; } return pyAdd(a, b); };
+const _sub = (a, b) => { if (typeof a === 'number' && typeof b === 'number') { const r = a - b; if (r <= _S && r >= -_S) return r; } return pySub(a, b); };
+const _mul = (a, b) => { if (typeof a === 'number' && typeof b === 'number') { const r = a * b; if (r <= _S && r >= -_S) return r; } return pyMul(a, b); };
 const _div = pyTrueDiv, _floordiv = pyFloorDiv, _mod = pyMod, _pow = pyPow;
+// an operator with an integer-valued float literal operand: a float op (two numbers: the JS one)
+const _fadd = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a + b : pyFloatBin('+', a, b));
+const _fsub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pyFloatBin('-', a, b));
+const _fmul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyFloatBin('*', a, b));
+const _fpow = (a, b) => pyFloatBin('**', a, b), _ffloordiv = (a, b) => pyFloatBin('//', a, b), _fmod = (a, b) => pyFloatBin('%', a, b);
 const _and_ = pyAnd, _or_ = pyOr, _xor = pyXor, _neg = pyNeg, _pos = pyPos, _invert = pyInvert;
 // the in-place operators but +=: two numbers as the plain operator does them (tiny, as above, so
 // `t -= x` inlines); anything else CPython's way — __iop__, the builtin mutables in place
 const _objOp = (a) => a !== null && typeof a === 'object';
-const _isub = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a - b : pyInplace('-', a, b, true));
-const _imul = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a * b : pyInplace('*', a, b, true));
+const _isub = (a, b) => { if (typeof a === 'number' && typeof b === 'number') { const r = a - b; if (r <= _S && r >= -_S) return r; } return pyInplace('-', a, b, true); };
+const _imul = (a, b) => { if (typeof a === 'number' && typeof b === 'number') { const r = a * b; if (r <= _S && r >= -_S) return r; } return pyInplace('*', a, b, true); };
 const _iop = (op, bin) => (a, b) => (_objOp(a) ? pyInplace(op, a, b, true) : bin(a, b));
 
 // comparisons: the shared rules (builtins.js), so both engines compare alike
@@ -834,6 +844,7 @@ const _neq = (a, b) => (typeof a === 'number' && typeof b === 'number' ? a !== b
 export const _py = {
   // arithmetic
   add: _add, sub: _sub, mul: _mul, div: _div,
+  fadd: _fadd, fsub: _fsub, fmul: _fmul, fpow: _fpow, ffloordiv: _ffloordiv, fmod: _fmod,
   floordiv: _floordiv, mod: _mod, pow: _pow,
   // in-place: __iadd__ dispatch + list extend semantics for `+=` (async-aware: an __iadd__ may
   // be tree-walked); the other in-place operators through the method's sync twin

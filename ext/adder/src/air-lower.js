@@ -14,7 +14,7 @@ import {
 } from '../../air/src/lower/base.js';
 import { registerSpecializations } from '../../air/src/passes.js';
 import { classAnnotations, plainObjectKey } from './builtins.js';
-import { collectWalrusTargets, matchPatternNames, compileMatchPattern, classNeedsCell } from './parse.js';
+import { collectWalrusTargets, matchPatternNames, compileMatchPattern, classNeedsCell, isIntFloatLit, FLOAT_LIT_OPS } from './parse.js';
 
 // Re-export AirLowerError from @gcu/air. Lifted to ext/air/src/lower/base.js
 // so all frontends share one definition; the marker `_airFallback: true`
@@ -57,6 +57,10 @@ const PY_SPECIALIZATIONS = {
   },
   sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
   mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
+  // with an integer-valued float literal operand (pyFloatBin): two numbers are the JS operator
+  fadd: { op: 'add', check: _bothNumeric, resultType: arithmeticResult },
+  fsub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
+  fmul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
   isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
   imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
   // Stay in helpers, because JS differs from Python on values the types can't rule out:
@@ -1133,6 +1137,9 @@ function lowerBinOp_ad(ctx, node) {
 
   const helper = BINOP_HELPER[op];
   if (!helper) throw new AirLowerError(`unsupported binop: ${op}`);
+  // an integer-valued float literal on either side (2.0 ** 1000): a float op (builtins.js
+  // pyFloatBin) — fadd / fsub / fmul still raw on typed numbers
+  if (FLOAT_LIT_OPS.has(op) && (isIntFloatLit(node.left) || isIntFloatLit(node.right))) return emitPyCall(ctx, 'f' + helper, [lhs, rhs], l);
   return emitPyCall(ctx, helper, [lhs, rhs], l);
 }
 

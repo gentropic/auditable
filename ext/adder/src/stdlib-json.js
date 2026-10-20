@@ -8,6 +8,7 @@
 import {
   AdderError, PyDict, PyTuple, adderGetAttr, adderModules, asCallable, excToThrowable, isPlainDict, maybeSync, mkTuple, plainObjectKey,
   pyRepr, pySorted, pyTypeName, stopIteration, syncOf,
+  isIntNum,
 } from './builtins.js';
 
 // A decoding error is thrown as this, and made the Python exception — json.decoder.JSONDecodeError
@@ -335,7 +336,7 @@ function make_encoder(markers, dflt, encoder, indent, keySep, itemSep, sortKeys,
     const str = (t) => (encSync ? _jnEncode(t, ascii) : hook('str', encoder, t));
     const value = (v, lvl) => {
       if (typeof v === 'string') { out += str(v); return; }
-      if (typeof v === 'number') { out += Number.isInteger(v) ? String(v) : floatStr(v); return; }
+      if (typeof v === 'number') { out += isIntNum(v) ? String(v) : floatStr(v); return; }
       if (v === null || v === undefined) { out += 'null'; return; }
       if (v === true) { out += 'true'; return; }
       if (v === false) { out += 'false'; return; }
@@ -386,7 +387,7 @@ function make_encoder(markers, dflt, encoder, indent, keySep, itemSep, sortKeys,
         let k = k0;
         const ks = _jnStr(k);
         if (ks !== null) k = ks;
-        else if (typeof k === 'number' && !Number.isInteger(k)) k = floatStr(k);
+        else if (typeof k === 'number' && !isIntNum(k)) k = floatStr(k);
         else if (k === true) k = 'true';
         else if (k === false) k = 'false';
         else if (k === null || k === undefined) k = 'null';
