@@ -5344,7 +5344,14 @@ function _setFunctionInternal(fn, name, value) {
 // obj.name = value, as Python does it. A function's JS `name` / `length` are read-only own
 // properties, so a Python attribute of that name (networkx's `_dispatchable.name` copied over by
 // `func.__dict__.update(...)`) is defined over them — keeping __name__ what it was.
+// A Python module's write-back, installed by its code (compiled: the module's own variables;
+// tree-walked: its namespace): fn(name, value), value undefined for a deletion. A module object
+// mirrors the module's bindings, but its functions read the bindings — so without this, an
+// attribute written from outside (mod.k = 3, setattr, mock.patch('mod.f')) was never what they
+// saw. CPython's module __dict__ IS their globals.
+export const MODULE_REBIND = Symbol('adder.moduleRebind');
 export function storeAttr(obj, name, value) {
+  if (obj !== null && typeof obj === 'object' && obj.__adderModule__ === true && obj[MODULE_REBIND] !== undefined && typeof name === 'string') obj[MODULE_REBIND](name, value);
   // obj.name = value is type(obj).__setattr__(obj, name, value): a class's own __setattr__ (a
   // frozen dataclass's, a proxy's) decides; object's is the plain store below. Through its sync
   // twin when it has one (compiled code doesn't wait on a store); a tree-walked one answers with a
@@ -5474,6 +5481,7 @@ export function pyDelAttr(obj, name) {
     }
     if (!(name in obj)) throw new AdderError('AttributeError', `'${pyTypeName(obj)}' object has no attribute '${name}'`);
   }
+  if (obj.__adderModule__ === true && obj[MODULE_REBIND] !== undefined && typeof name === 'string') obj[MODULE_REBIND](name, undefined);
   delete obj[name];
   return null;
 }
@@ -6659,7 +6667,9 @@ function _installMember(cls, name, mName, value, opts) {
     const fget = value.fget;
     const fset = value.fset;
     const missing = (what) => new AdderError('AttributeError', `property '${mName}' of '${name}' object has no ${what}`);
-    const getFn = function () { if (!fget) throw missing('getter'); return fget(this); };
+    // (through the getter's sync twin when it has one: a read from compiled sync code — a method's
+    // twin — must get the value, not a Promise; the twin falls back to the getter when it can't)
+    const getFn = function () { if (!fget) throw missing('getter'); return syncOf(fget).call(this, this); };
     getFn._pyProperty = value;   // del instance.name finds fdel here (pyDelAttr)
     const desc = { get: getFn, configurable: true, enumerable: true };
     const setFn = function (v) { if (!value.fset) throw missing('setter'); return value.fset(this, v); };

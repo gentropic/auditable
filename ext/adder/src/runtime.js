@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -544,6 +544,19 @@ function _globalsOf(mod) {   // one live view per module: globals() is globals()
 }
 // a module-level name, read through the module object: what globals() set wins over the
 // compiled binding (and a builtin is the binding when the module has no such name)
+// a compiled module installs its write-back (builtins.js MODULE_REBIND) on its module object
+function _moduleRebind(mod, fn) { Object.defineProperty(mod, MODULE_REBIND, { value: fn, configurable: true }); }
+// a value written over a name the module's code calls directly (a module-level def, an unshadowed
+// builtin): it must be a function there — mock.patch's MagicMock is an object with __call__ —
+// answering synchronously when it can (its twin). sync: some call site of the name doesn't wait
+// (compiled when the name was a provably sync def): a value that can only answer later (an async
+// function with no twin — a tree-walked one) raises there instead of handing it a Promise
+function _rebindCallable(v, sync) {
+  if (v === undefined || v === null) return v;
+  const f = _fnOfSync(v);
+  if (!sync || f[Symbol.toStringTag] !== 'AsyncFunction') return f;
+  return function (...a) { return _py.needSync(f.apply(this, a)); };
+}
 function _globalLoad(mod, name, v) { return Object.hasOwn(mod, name) && mod[name] !== undefined ? mod[name] : v; }
 // a free name an imported module reads that is no builtin: bound by the importing machinery only
 // when something supplies it (a module dunder, a star import, globals()) — otherwise NameError,
@@ -855,7 +868,7 @@ export const _py = {
   pics: _pics,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
-  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, freeName: _freeName, localsOf: _localsOf,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,

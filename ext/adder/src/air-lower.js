@@ -724,6 +724,29 @@ export function lowerAdder(ast, source, opts) {
     lastExpr = stmt.type === 'Expr' && result ? result.id : null;
   }
 
+  // the module's write-back (builtins.js MODULE_REBIND), made first thing when it runs (the names
+  // known only now): an attribute written on the module object from outside — mod.k = 3,
+  // setattr, mock.patch — reassigns the variable its functions read. Its own names and the
+  // builtins it reads (parameters here; a deletion gives the builtin back). A name its code calls
+  // directly (a module-level def, an unshadowed builtin) takes a function: _py.rebindCallable
+  // (an imported module only: its module object is a parameter, there from the first statement)
+  if (ctx.moduleMirror && opts && opts.module) {
+    const at = ctx.ops.length;
+    const own = [...ctx.defines].filter((n) => n !== '__lastExpr__');
+    const free = [...ctx.imports].filter((n) => n !== '__adder_module__' && !n.startsWith('$') && !ctx.defines.has(n));
+    const direct = (n) => ctx.knownCallables.has(n) || ctx.syncFunctions.has(n);
+    const value = (n) => (ctx.syncCalled && ctx.syncCalled.has(n) ? '_py.rebindCallable(v, true)' : direct(n) ? '_py.rebindCallable(v)' : 'v');
+    const cases = [
+      ...own.map((n) => `case ${JSON.stringify(n)}: ${jsSafeName(n)} = ${value(n)}; return;`),
+      ...free.map((n) => `case ${JSON.stringify(n)}: ${jsSafeName(n)} = v === undefined ? __b[${JSON.stringify(n)}] : ${value(n)}; return;`),
+    ];
+    if (cases.length) {
+      emitRaw(ctx, `{ const __b = { ${free.map((n) => `${JSON.stringify(n)}: ${jsSafeName(n)}`).join(', ')} };
+_py.moduleRebind(__adder_module__, (n, v) => { switch (n) { ${cases.join(' ')} } }); }`);
+      ctx.ops.unshift(...ctx.ops.splice(at));
+    }
+  }
+
   // the unit's call-site slot table, made first thing when it runs (its size known only now)
   if (ctx._callSiteId) {
     const at = ctx.ops.length;
@@ -1315,6 +1338,8 @@ function lowerCall_ad(ctx, node) {
     node.func.type === 'Name' &&
     !hasStarred && !hasKwargs &&
     ctx.syncFunctions.has(node.func.id) && !_isTypeConstruction(node);
+  // (a name called without waiting: a value written over it from outside must answer synchronously)
+  if (isSyncCallee) (ctx.syncCalled || (ctx.syncCalled = new Set())).add(node.func.id);
 
   // a callee that isn't provably a function (a variable, a call's result, a subscript) may be an
   // object with __call__: _py.fnOf gives its bound __call__ (a function passes through as is)

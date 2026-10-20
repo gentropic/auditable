@@ -24,7 +24,7 @@ import {
   pyStrMaybe, pyReprMaybe, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe,
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
-  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
+  PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, MODULE_REBIND, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -1993,6 +1993,16 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   const mod = { __adderModule__: true };
   cache[cacheKey] = mod;
   modScope.vars._mod = mod;
+  // its write-back (MODULE_REBIND): an attribute written from outside lands in the namespace its
+  // functions read (not mirrored back: it's on the object already); a deleted builtin's name reads
+  // the builtin again. (A compiled module installs its own.)
+  if (!compiled) {
+    Object.defineProperty(mod, MODULE_REBIND, { configurable: true, value: (n, v) => {
+      if (v !== undefined) PyDict.prototype.set.call(modScope.vars, n, v);
+      else if (Object.hasOwn(builtins, n)) PyDict.prototype.set.call(modScope.vars, n, builtins[n]);
+      else PyDict.prototype.delete.call(modScope.vars, n);
+    } });
+  }
 
   modScope.set('__name__', displayName);
   modScope.set('__file__', filePath);

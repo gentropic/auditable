@@ -50,6 +50,20 @@ const FILES = {
     'seen_early = a.early',
   ].join('\n'),
   '/site/broken.py': 'x = 1\nraise ValueError("boom")\n',
+  // a module whose functions read its globals, a def it calls, a builtin it calls
+  '/site/patchme.py': [
+    'k = 1',
+    'def helper(x): return "orig%d" % x',
+    'def h(x): return helper(x)',
+    'def n(s): return len(s)',
+    'def getk(): return k',
+    'def setk(v):',
+    '    global k',
+    '    k = v',
+    'def uses_extra(): return extra',
+    'class Thing:',
+    '    def go(self): return helper(1) + str(k)',
+  ].join('\n'),
   '/site/data_pkg/__init__.py': '',
   // a library class with a property, dunders and methods (AIR-compiled on import under AIR)
   '/site/money.py': [
@@ -236,5 +250,37 @@ describe('adder packages over a VFS', () => {
       '    print("no metadata")',
     ].join('\n'));
     assert.equal(out, ['3 (1, 2)', 'pkg pkg.sub.deep', 'pkg None', 'hello resources', 'no metadata', ''].join('\n'));
+  });
+
+  // a module attribute written from outside is what the module's functions see (CPython: the
+  // module __dict__ is their globals) — mock.patch, setattr, a builtin patched per module
+  it('monkeypatching a module reaches its functions', async () => {
+    const out = await runBoth([
+      'import patchme as pm',
+      'from unittest import mock',
+      'with mock.patch("patchme.helper") as m:',
+      '    m.return_value = "mocked"',
+      '    print(pm.h(2), pm.Thing().go(), m.call_args.args)',
+      'print(pm.h(2))',
+      'with mock.patch.object(pm, "helper", lambda x: "lam%d" % x):',
+      '    print(pm.Thing().go())',
+      'print(pm.Thing().go())',
+      'with mock.patch("patchme.len", create=True, return_value=99):',
+      '    print(pm.n("abc"))',
+      'print(pm.n("abc"), hasattr(pm, "len"))',
+      'setattr(pm, "k", 7)',
+      'print(pm.getk())',
+      'pm.setk(8)',
+      'print(pm.k, pm.getk())',
+      'pm.extra = "made"',
+      'print(pm.uses_extra())',
+      'del pm.extra',
+      'try:',
+      '    pm.uses_extra()',
+      'except NameError:',
+      '    print("NameError")',
+    ].join('\n'));
+    // (CPython 3.13 prints exactly this)
+    assert.equal(out, ['mocked mocked1 (1,)', 'orig2', 'lam11', 'orig11', '99', '3 False', '7', '8 8', 'made', 'NameError', ''].join('\n'));
   });
 });
