@@ -64,6 +64,15 @@ const FILES = {
     'class Thing:',
     '    def go(self): return helper(1) + str(k)',
   ].join('\n'),
+  '/site/reloadme.py': [
+    'try:',
+    '    count += 1',
+    'except NameError:',
+    '    count = 1',
+    'k = 1',
+    'def f(): return "old" + str(k)',
+    'def gone(): return "gone" + str(k)',
+  ].join('\n'),
   '/site/data_pkg/__init__.py': '',
   // a library class with a property, dunders and methods (AIR-compiled on import under AIR)
   '/site/money.py': [
@@ -282,6 +291,38 @@ describe('adder packages over a VFS', () => {
     ].join('\n'));
     // (CPython 3.13 prints exactly this)
     assert.equal(out, ['mocked mocked1 (1,)', 'orig2', 'lam11', 'orig11', '99', '3 False', '7', '8 8', 'made', 'NameError', ''].join('\n'));
+  });
+
+  // importlib.reload runs the module's code again in the module object everyone holds
+  it('reload re-runs a module in the same module object', async () => {
+    const out = await runBoth([
+      'import importlib, sys',
+      'import reloadme as r0',
+      'f0, g0 = r0.f, r0.gone',
+      'def put(src):',
+      '    with open(r0.__file__, "w") as fh:',
+      '        fh.write(src)',
+      'put("try:\\n    count += 1\\nexcept NameError:\\n    count = 1\\nk = 2\\ndef f(): return \'new\' + str(k)\\n")',
+      'r1 = importlib.reload(r0)',
+      'print(r1 is r0, sys.modules["reloadme"] is r0, r0.count)',
+      'print(r0.f(), f0(), r0.gone(), g0 is r0.gone)',
+      'r0.k = 9',
+      'print(r0.f(), f0(), g0())',
+      'put("k = 3\\nraise ValueError(\'half\')\\n")',
+      'try:',
+      '    importlib.reload(r0)',
+      'except ValueError as e:',
+      '    print("ValueError", e)',
+      'print(sys.modules["reloadme"] is r0, r0.k, r0.f(), f0())',
+      'del sys.modules["reloadme"]',
+      'try:',
+      '    importlib.reload(r0)',
+      'except ImportError as e:',
+      '    print(type(e).__name__, e)',
+    ].join('\n'));
+    // (CPython 3.13 prints exactly this)
+    assert.equal(out, ['True True 2', 'new2 old2 gone2 True', 'new9 old9 gone9', 'ValueError half', 'True 3 new3 old3',
+      'ImportError module reloadme not in sys.modules', ''].join('\n'));
   });
 
   // a function exec defines reads its globals dict as it is when called, not as it was then — a

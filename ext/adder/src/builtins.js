@@ -7354,7 +7354,7 @@ export function finishClass(cls, annotations, kw) {
 // ── importlib / __import__ ──
 // The import machinery lives in eval.js (it runs module code); it registers itself here at init,
 // so `importlib.import_module`, `__import__` and the import statement share one algorithm.
-const _imp = { find: null, importModule: null, resolveRelative: null };
+const _imp = { find: null, importModule: null, resolveRelative: null, reload: null };
 export function _registerImportMachinery(m) { Object.assign(_imp, m); }
 const _kwOf = (args) => (args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.pop() : {});
 const _PackageNotFoundError = makeExcType('PackageNotFoundError', 'ModuleNotFoundError');
@@ -7377,8 +7377,7 @@ adderModules.importlib = {
   reload: async (mod) => {
     const name = mod && mod.__name__;
     if (!name) throw new AdderError('TypeError', 'reload() argument must be a module');
-    delete adderModules.sys.modules[name];
-    return _imp.importModule(name);
+    return _imp.reload(mod, name);
   },
   invalidate_caches: () => null,
   util: {

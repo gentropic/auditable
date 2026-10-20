@@ -2003,9 +2003,16 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   modScope.vars = new _ModuleVars();
   for (const [k, v] of Object.entries(builtins)) modScope.vars.set(k, v);
 
-  // the module object, in the cache before its code runs (circular imports find it)
-  const mod = { __adderModule__: true };
+  // the module object, in the cache before its code runs (circular imports find it). A reload runs
+  // the code again in the module it was given: its globals are what the module holds (a name the
+  // new code no longer defines stays), and the write-back its earlier functions read through
+  // (oldRebind) is handed every binding once the code has run
+  const re = _reloading && _reloading.name === cacheKey ? _reloading : null;
+  if (re) _reloading = null;
+  const mod = re ? re.mod : { __adderModule__: true };
+  const oldRebind = re ? mod[MODULE_REBIND] : undefined;
   cache[cacheKey] = mod;
+  if (re) for (const k of Object.keys(mod)) modScope.vars.set(k, mod[k]);
   modScope.vars._mod = mod;
   // its write-back (MODULE_REBIND): an attribute written from outside lands in the namespace its
   // functions read (not mirrored back: it's on the object already); a deleted builtin's name reads
@@ -2042,11 +2049,15 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
       await adderEval(ast, modScope);
     }
   } catch (e) {
-    delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
+    // a failed import leaves no half-module behind (CPython does the same); a failed reload leaves
+    // the module, as far as its code got
+    if (re) { cache[cacheKey] = mod; _chainRebind(mod, oldRebind); }
+    else delete cache[cacheKey];
     throw e;
   } finally {
     _runningModules.pop();
   }
+  if (re) _chainRebind(mod, oldRebind);
   // what the import gives is sys.modules[name] after the code ran: a module may replace itself
   // there (pygments.lexers swaps in a lazy-loading module subclass)
   return cache[cacheKey] || mod;
@@ -2055,6 +2066,34 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
 let _moduleCompiler = null;
 export function setModuleCompiler(fn) { _moduleCompiler = fn; }
 const pyNameOfJs = (k) => (k.endsWith('$') ? k.slice(0, -1) : k);
+
+// importlib.reload(mod): mod's code again, in mod (CPython re-executes a module in the module
+// object everyone already holds). _instantiateModule takes the module from _reloading
+let _reloading = null;
+async function reloadModule(mod, name) {
+  const cache = adderModules.sys.modules;
+  if (cache[name] !== mod) { const e = new AdderError('ImportError', `module ${name} not in sys.modules`); e.name = name; throw e; }
+  const prev = _reloading;
+  _reloading = { name, mod };
+  delete cache[name];
+  try { return await importModule(name); }
+  finally {
+    _reloading = prev;
+    if (!cache[name]) cache[name] = mod;    // not found again: the module stays where it was
+  }
+}
+// after a reload: functions from before it read the module through the write-back they were
+// built with — hand it every binding now, and keep it on for later writes alongside the new one
+function _chainRebind(mod, old) {
+  if (typeof old !== 'function') return;
+  const names = old._pyNames;
+  for (const k of Object.keys(mod)) if (!names || names.includes(k)) old(k, mod[k]);
+  const cur = mod[MODULE_REBIND];
+  if (cur === old) return;
+  const both = cur ? (n, v) => { cur(n, v); old(n, v); } : old;
+  if (cur && cur._pyNames) both._pyNames = cur._pyNames;
+  Object.defineProperty(mod, MODULE_REBIND, { configurable: true, value: both });
+}
 
 // Find a top-level name on sys.path: <dir>/<name>.py, or a package <dir>/<name>/__init__.py.
 export async function _loadVfsModule(name) {
@@ -2380,7 +2419,7 @@ async function _evalImportFrom(node, scope) {
 }
 
 // importlib and __import__ (builtins.js) use this same machinery
-_registerImportMachinery({ find: findModule, importModule, resolveRelative: resolveRelativeImport });
+_registerImportMachinery({ find: findModule, importModule, resolveRelative: resolveRelativeImport, reload: reloadModule });
 
 // re-export for cell.js
 export { AdderError, adderParse };

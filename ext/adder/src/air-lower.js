@@ -706,12 +706,18 @@ export function lowerAdder(ast, source, opts) {
 
   // Pre-declare every module-level define with `let name;` at the top.
   // This ensures variables defined in nested blocks are visible at module scope.
+  // (a module remembers these: a top-level read still seeing one is checked — _py.unboundGlobal.
+  // Not a name a top-level loop mentions: a loop's later turn reads what an earlier one bound,
+  // and its symbols don't say so)
+  ctx._unboundIds = ctx.moduleMirror ? new Set() : null;
+  const inLoops = ctx._unboundIds ? _namesInTopLoops(ast.body) : null;
   for (const name of ctx.defines) {
     if (name === '__lastExpr__') continue;
     if (funcOrClassNames.has(name)) continue; // declared by function/class syntax
     const undef = ctx.emit('const', [undefined], VOID, null);
     ctx.emit('store', [name, undef.id], VOID, null);
     ctx.symbols.set(name, undef.id);
+    if (ctx._unboundIds && !inLoops.has(name)) ctx._unboundIds.add(undef.id);
   }
 
   ctx._loopMayAwait = true;   // cell-level code is async
@@ -928,6 +934,10 @@ function lowerExpr_ad(ctx, node) {
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       const free = !ctx.symbols.has(name) && !isForwardRef;
       if (free) ctx.imports.add(name);
+      // a module's top-level read of its own name before any store of it reached here
+      if (ctx._unboundIds && ctx.topLevel && !ctx.usesGlobals && ctx._unboundIds.has(ctx.symbols.get(name))) {
+        return emitPyCall(ctx, 'unboundGlobal', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l)], l);
+      }
       let raw = ctx.emit('load', [name], DYNAMIC, l);
       if (ctx.usesGlobals && name !== '__adder_module__' && _resolvesToModule(ctx, name)) {
         raw = emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
@@ -1497,7 +1507,10 @@ function lowerAugAssign(ctx, node) {
   // Load current value
   let current;
   if (node.target.type === 'Name') {
-    current = ctx.emit('load', [node.target.id], DYNAMIC, l);
+    // (a module's own name not bound yet: the checked read lowerExpr_ad gives it)
+    current = ctx._unboundIds && ctx.topLevel && !ctx.usesGlobals && ctx._unboundIds.has(ctx.symbols.get(node.target.id))
+      ? lowerExpr_ad(ctx, node.target)
+      : ctx.emit('load', [node.target.id], DYNAMIC, l);
   } else if (node.target.type === 'Attribute') {
     const obj = lowerExpr_ad(ctx, node.target.value);
     const name = ctx.emit('const', [node.target.attr], STRING, l);
@@ -2207,6 +2220,24 @@ function _lowerAsyncFor(ctx, node, l) {
     for (const s of node.body) lowerStmt_ad(ctx, s);
   });
   return ctx.emit('for_of_region', [src.id], VOID, l, { body, phis: [], target_name: targetName, is_await: true, indexed: false });
+}
+
+// every name a module's top-level loops (a comprehension's too) mention, outside the functions
+// and classes they define
+function _namesInTopLoops(body) {
+  const out = new Set();
+  const LOOPS = new Set(['For', 'While', 'ListComp', 'SetComp', 'DictComp', 'GeneratorExp']);
+  const SCOPES = new Set(['FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Lambda']);
+  const walk = (n, inLoop) => {
+    if (Array.isArray(n)) { for (const c of n) walk(c, inLoop); return; }
+    if (!n || typeof n !== 'object') return;
+    if (SCOPES.has(n.type)) return;
+    if (n.type === 'Name' && inLoop) out.add(n.id);
+    const loop = inLoop || LOOPS.has(n.type);
+    for (const k in n) if (k !== 'type') walk(n[k], loop);
+  };
+  walk(body, false);
+  return out;
 }
 
 function _preDeclareTargetNames(ctx, target, l) {

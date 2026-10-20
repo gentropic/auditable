@@ -9749,7 +9749,7 @@ function finishClass(cls, annotations, kw) {
 // ── importlib / __import__ ──
 // The import machinery lives in eval.js (it runs module code); it registers itself here at init,
 // so `importlib.import_module`, `__import__` and the import statement share one algorithm.
-const _imp = { find: null, importModule: null, resolveRelative: null };
+const _imp = { find: null, importModule: null, resolveRelative: null, reload: null };
 function _registerImportMachinery(m) { Object.assign(_imp, m); }
 const _kwOf = (args) => (args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.pop() : {});
 const _PackageNotFoundError = makeExcType('PackageNotFoundError', 'ModuleNotFoundError');
@@ -9772,8 +9772,7 @@ adderModules.importlib = {
   reload: async (mod) => {
     const name = mod && mod.__name__;
     if (!name) throw new AdderError('TypeError', 'reload() argument must be a module');
-    delete adderModules.sys.modules[name];
-    return _imp.importModule(name);
+    return _imp.reload(mod, name);
   },
   invalidate_caches: () => null,
   util: {
@@ -12565,9 +12564,16 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   modScope.vars = new _ModuleVars();
   for (const [k, v] of Object.entries(builtins)) modScope.vars.set(k, v);
 
-  // the module object, in the cache before its code runs (circular imports find it)
-  const mod = { __adderModule__: true };
+  // the module object, in the cache before its code runs (circular imports find it). A reload runs
+  // the code again in the module it was given: its globals are what the module holds (a name the
+  // new code no longer defines stays), and the write-back its earlier functions read through
+  // (oldRebind) is handed every binding once the code has run
+  const re = _reloading && _reloading.name === cacheKey ? _reloading : null;
+  if (re) _reloading = null;
+  const mod = re ? re.mod : { __adderModule__: true };
+  const oldRebind = re ? mod[MODULE_REBIND] : undefined;
   cache[cacheKey] = mod;
+  if (re) for (const k of Object.keys(mod)) modScope.vars.set(k, mod[k]);
   modScope.vars._mod = mod;
   // its write-back (MODULE_REBIND): an attribute written from outside lands in the namespace its
   // functions read (not mirrored back: it's on the object already); a deleted builtin's name reads
@@ -12604,11 +12610,15 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
       await adderEval(ast, modScope);
     }
   } catch (e) {
-    delete cache[cacheKey];          // a failed import leaves no half-module behind (CPython does the same)
+    // a failed import leaves no half-module behind (CPython does the same); a failed reload leaves
+    // the module, as far as its code got
+    if (re) { cache[cacheKey] = mod; _chainRebind(mod, oldRebind); }
+    else delete cache[cacheKey];
     throw e;
   } finally {
     _runningModules.pop();
   }
+  if (re) _chainRebind(mod, oldRebind);
   // what the import gives is sys.modules[name] after the code ran: a module may replace itself
   // there (pygments.lexers swaps in a lazy-loading module subclass)
   return cache[cacheKey] || mod;
@@ -12617,6 +12627,34 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
 let _moduleCompiler = null;
 function setModuleCompiler(fn) { _moduleCompiler = fn; }
 const pyNameOfJs = (k) => (k.endsWith('$') ? k.slice(0, -1) : k);
+
+// importlib.reload(mod): mod's code again, in mod (CPython re-executes a module in the module
+// object everyone already holds). _instantiateModule takes the module from _reloading
+let _reloading = null;
+async function reloadModule(mod, name) {
+  const cache = adderModules.sys.modules;
+  if (cache[name] !== mod) { const e = new AdderError('ImportError', `module ${name} not in sys.modules`); e.name = name; throw e; }
+  const prev = _reloading;
+  _reloading = { name, mod };
+  delete cache[name];
+  try { return await importModule(name); }
+  finally {
+    _reloading = prev;
+    if (!cache[name]) cache[name] = mod;    // not found again: the module stays where it was
+  }
+}
+// after a reload: functions from before it read the module through the write-back they were
+// built with — hand it every binding now, and keep it on for later writes alongside the new one
+function _chainRebind(mod, old) {
+  if (typeof old !== 'function') return;
+  const names = old._pyNames;
+  for (const k of Object.keys(mod)) if (!names || names.includes(k)) old(k, mod[k]);
+  const cur = mod[MODULE_REBIND];
+  if (cur === old) return;
+  const both = cur ? (n, v) => { cur(n, v); old(n, v); } : old;
+  if (cur && cur._pyNames) both._pyNames = cur._pyNames;
+  Object.defineProperty(mod, MODULE_REBIND, { configurable: true, value: both });
+}
 
 // Find a top-level name on sys.path: <dir>/<name>.py, or a package <dir>/<name>/__init__.py.
 async function _loadVfsModule(name) {
@@ -12942,7 +12980,7 @@ async function _evalImportFrom(node, scope) {
 }
 
 // importlib and __import__ (builtins.js) use this same machinery
-_registerImportMachinery({ find: findModule, importModule, resolveRelative: resolveRelativeImport });
+_registerImportMachinery({ find: findModule, importModule, resolveRelative: resolveRelativeImport, reload: reloadModule });
 
 // re-export for cell.js
 
@@ -13508,6 +13546,13 @@ function _freeName(v, name) {
   if (v === undefined) throw new AdderError('NameError', `name '${name}' is not defined`);
   return v;
 }
+// a module-level name read where the module's code can't have bound it yet: the module's own
+// attribute (a reload runs the code again in the module — `try: count += 1 except NameError:`),
+// else NameError
+function _unboundGlobal(mod, name) {
+  if (Object.hasOwn(mod, name)) return mod[name];
+  throw new AdderError('NameError', `name '${name}' is not defined`);
+}
 function _localsOf(names, values) {
   const o = {};
   for (let i = 0; i < names.length; i++) if (values[i] !== undefined) o[names[i]] = values[i];
@@ -13810,7 +13855,7 @@ const _py = {
   pics: _pics,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
-  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, localsOf: _localsOf,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, unboundGlobal: _unboundGlobal, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,
@@ -25967,12 +26012,18 @@ function lowerAdder(ast, source, opts) {
 
   // Pre-declare every module-level define with `let name;` at the top.
   // This ensures variables defined in nested blocks are visible at module scope.
+  // (a module remembers these: a top-level read still seeing one is checked — _py.unboundGlobal.
+  // Not a name a top-level loop mentions: a loop's later turn reads what an earlier one bound,
+  // and its symbols don't say so)
+  ctx._unboundIds = ctx.moduleMirror ? new Set() : null;
+  const inLoops = ctx._unboundIds ? _namesInTopLoops(ast.body) : null;
   for (const name of ctx.defines) {
     if (name === '__lastExpr__') continue;
     if (funcOrClassNames.has(name)) continue; // declared by function/class syntax
     const undef = ctx.emit('const', [undefined], VOID, null);
     ctx.emit('store', [name, undef.id], VOID, null);
     ctx.symbols.set(name, undef.id);
+    if (ctx._unboundIds && !inLoops.has(name)) ctx._unboundIds.add(undef.id);
   }
 
   ctx._loopMayAwait = true;   // cell-level code is async
@@ -26189,6 +26240,10 @@ function lowerExpr_ad(ctx, node) {
       const isForwardRef = !ctx.topLevel && ctx.defines.has(name);
       const free = !ctx.symbols.has(name) && !isForwardRef;
       if (free) ctx.imports.add(name);
+      // a module's top-level read of its own name before any store of it reached here
+      if (ctx._unboundIds && ctx.topLevel && !ctx.usesGlobals && ctx._unboundIds.has(ctx.symbols.get(name))) {
+        return emitPyCall(ctx, 'unboundGlobal', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l)], l);
+      }
       let raw = ctx.emit('load', [name], DYNAMIC, l);
       if (ctx.usesGlobals && name !== '__adder_module__' && _resolvesToModule(ctx, name)) {
         raw = emitPyCall(ctx, 'globalLoad', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), ctx.emit('const', [name], STRING, l), raw], l);
@@ -26758,7 +26813,10 @@ function lowerAugAssign(ctx, node) {
   // Load current value
   let current;
   if (node.target.type === 'Name') {
-    current = ctx.emit('load', [node.target.id], DYNAMIC, l);
+    // (a module's own name not bound yet: the checked read lowerExpr_ad gives it)
+    current = ctx._unboundIds && ctx.topLevel && !ctx.usesGlobals && ctx._unboundIds.has(ctx.symbols.get(node.target.id))
+      ? lowerExpr_ad(ctx, node.target)
+      : ctx.emit('load', [node.target.id], DYNAMIC, l);
   } else if (node.target.type === 'Attribute') {
     const obj = lowerExpr_ad(ctx, node.target.value);
     const name = ctx.emit('const', [node.target.attr], STRING, l);
@@ -27468,6 +27526,24 @@ function _lowerAsyncFor(ctx, node, l) {
     for (const s of node.body) lowerStmt_ad(ctx, s);
   });
   return ctx.emit('for_of_region', [src.id], VOID, l, { body, phis: [], target_name: targetName, is_await: true, indexed: false });
+}
+
+// every name a module's top-level loops (a comprehension's too) mention, outside the functions
+// and classes they define
+function _namesInTopLoops(body) {
+  const out = new Set();
+  const LOOPS = new Set(['For', 'While', 'ListComp', 'SetComp', 'DictComp', 'GeneratorExp']);
+  const SCOPES = new Set(['FunctionDef', 'AsyncFunctionDef', 'ClassDef', 'Lambda']);
+  const walk = (n, inLoop) => {
+    if (Array.isArray(n)) { for (const c of n) walk(c, inLoop); return; }
+    if (!n || typeof n !== 'object') return;
+    if (SCOPES.has(n.type)) return;
+    if (n.type === 'Name' && inLoop) out.add(n.id);
+    const loop = inLoop || LOOPS.has(n.type);
+    for (const k in n) if (k !== 'type') walk(n[k], loop);
+  };
+  walk(body, false);
+  return out;
 }
 
 function _preDeclareTargetNames(ctx, target, l) {

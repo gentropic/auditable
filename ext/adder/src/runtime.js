@@ -568,6 +568,13 @@ function _freeName(v, name) {
   if (v === undefined) throw new AdderError('NameError', `name '${name}' is not defined`);
   return v;
 }
+// a module-level name read where the module's code can't have bound it yet: the module's own
+// attribute (a reload runs the code again in the module — `try: count += 1 except NameError:`),
+// else NameError
+function _unboundGlobal(mod, name) {
+  if (Object.hasOwn(mod, name)) return mod[name];
+  throw new AdderError('NameError', `name '${name}' is not defined`);
+}
 function _localsOf(names, values) {
   const o = {};
   for (let i = 0; i < names.length; i++) if (values[i] !== undefined) o[names[i]] = values[i];
@@ -871,7 +878,7 @@ export const _py = {
   pics: _pics,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
-  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, localsOf: _localsOf,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, unboundGlobal: _unboundGlobal, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,
