@@ -17,7 +17,7 @@ import './stdlib-net.js';
 import './stdlib-py.js';
 import './stdlib-pyair.js';
 import {
-  AdderError, AdderRange, Complex, adderBuiltins, adderModules, adderGetAttr, mkSlice, PySlice, seqSliceSet, pyInplace,
+  AdderError, AdderRange, Complex, adderBuiltins, _ensureFsModules, adderModules, adderGetAttr, mkSlice, PySlice, seqSliceSet, pyInplace,
   pyBool, pyBoolMaybe, pyTypeName, pyStr, pyRepr, pyIter, pyCollect, pyFormatValue,
   _excParents, getAdderVFS, _getVfsPath,
   _builtinEval, _builtinExec, _builtinSuper, _builtinGlobals, _builtinLocals,
@@ -1922,6 +1922,9 @@ export function _resolveModule(name) {
   if (_registered.has(name)) return _registered.get(name);
   if (_registered.size) { const m = _walkDotted((r) => _registered.get(r), name); if (m) return m; }
   if (name === 'js' && _runOpts.host === false) return null;   // host access off: `import js` is simply not found
+  // os always exists, as CPython's (random imports it): made on first import when no VFS made it
+  // already — its path operations POSIX, its filesystem calls raising until a VFS is set
+  if ((name === 'os' || name === 'os.path' || name === 'pathlib') && !adderModules.os) _ensureFsModules();
   if (adderModules[name]) return adderModules[name];
   if (typeof window !== 'undefined') {
     if (window._auditableExtensions?.[name]) return window._auditableExtensions[name];

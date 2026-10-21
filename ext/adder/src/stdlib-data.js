@@ -9,6 +9,7 @@ import {
   AdderError, PyTuple, PyDict, mkTuple, isPlainDict, pyTypeName, pyRepr, pyStr, pyIter, pyCollect, pyStrMaybe,
   pyPercentFormat, adderGetAttr, adderModules, makeExcType, _pyHash, _namedtuple, _stdio, excTypeOf, excValue,
   getAdderVFS, _getVfsPath, _resolvePath, _createAdderFile, _mapVFSError, _typeObjects, pyFormatValue, excStack,
+  PyByteArray,
 } from './builtins.js';
 
 const _dtIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
@@ -34,6 +35,7 @@ const _dtBytes = (b, what = 'a bytes-like object') => {
   if (b instanceof Uint8Array) return b;
   if (b instanceof ArrayBuffer) return new Uint8Array(b);
   if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  if (b instanceof PyByteArray) return Uint8Array.from(b);   // (a bytearray is an Array of its bytes)
   throw new AdderError('TypeError', `${what} is required, not '${pyTypeName(b)}'`);
 };
 const _dtEnc = new TextEncoder();

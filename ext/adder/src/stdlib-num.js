@@ -8,7 +8,7 @@
 import {
   AdderError, PyTuple, PyDict, mkTuple, pyTypeName, pyRepr, pyStr, pyIter, pyCollect, pyBool, pyEq, pyLt,
   pyAdd, pySub, pyMul, pyTrueDiv, pySorted, pyFormatValue, adderModules, makeExcType, _pyHash, _namedtuple, NotImplemented,
-  isIntNum, intToFloat,
+  isIntNum, intToFloat, adderGetAttr,
 } from './builtins.js';
 
 const _nmIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
@@ -1012,7 +1012,11 @@ class _NmNormalDist {
   samples(n, ...a) {
     const kw = _nmKw(a);
     const seed = kw && _nmHas(kw, 'seed') ? kw.seed : a[0] ?? null;
-    const rnd = seed === null ? Math.random : adderModules.random && adderModules.random.Random ? (() => { const g = adderModules.random.Random(seed); return () => g.random(); })() : Math.random;
+    // (as CPython's: the shared random.random, or a Random(seed)'s — for an int seed, _random's is
+    // the same generator; a str seed random.py would hash first: here it goes by _random's hash)
+    const shared = adderModules.sys.modules.random;
+    const rnd = seed === null ? (shared ? adderGetAttr(shared, 'random') : Math.random)
+      : adderGetAttr(adderModules._random.Random(seed), 'random');
     return Array.from({ length: n }, () => this.inv_cdf(rnd() || Number.MIN_VALUE));
   }
   __add__(o) { return o instanceof _NmNormalDist ? new _NmNormalDist(this._mu + o._mu, Math.hypot(this._sigma, o._sigma)) : new _NmNormalDist(this._mu + o, this._sigma); }

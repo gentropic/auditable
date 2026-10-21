@@ -2299,93 +2299,158 @@ adderModules.marshal = _syModule('marshal', {
   }, ['idna']);
 }
 
-// ── random.Random: a generator with its own state (the module functions share one) ──
+// ── _random: CPython's Mersenne Twister (Modules/_randommodule.c), exactly ──
+// `random` is CPython's own random.py (pylib), which builds every distribution — randrange,
+// shuffle, sample, choices, gauss, seeding a str by SHA-512 — over this base class, as CPython's
+// does over the C one: so a seed gives CPython's sequence, value for value. The state (624 words
+// and an index) lives under symbols, out of Python's sight as the C struct's is.
 {
-  const rmod = adderModules.random;
-  const seedState = (n) => {
-    if (n === null || n === undefined) n = Math.floor(Math.random() * 4294967296);
-    else if (typeof n === 'string') { let h = 0; for (let i = 0; i < n.length; i++) h = (Math.imul(h, 31) + n.charCodeAt(i)) >>> 0; n = h; }
-    n = Number(n) >>> 0;
-    return [n, n ^ 0x12345678, n ^ 0x9ABCDEF0, n ^ 0xFEDCBA98];
+  const N = 624, M = 397, MT = Symbol('mt'), MTI = Symbol('mti');
+  // a C method's argument count, CPython's messages (keywords: none taken)
+  // (an empty keyword bag — f(*args, **{}) — is no keywords: unittest's assertRaises calls so)
+  const arity = (name, a, lo, hi) => {
+    const last = a.length ? a[a.length - 1] : null;
+    if (last !== null && typeof last === 'object' && last._kw) {
+      if (Object.keys(last).some((k) => k !== '_kw')) throw new AdderError('TypeError', `${name}() takes no keyword arguments`);
+      a.pop();
+    }
+    if (a.length >= lo && a.length <= hi) return;
+    throw new AdderError('TypeError', hi === 0 ? `${name}() takes no arguments (${a.length} given)`
+      : lo === hi ? `${name}() takes exactly one argument (${a.length} given)`
+      : `${name} expected at most ${hi} argument${hi > 1 ? 's' : ''}, got ${a.length}`);
   };
-  const next = (s) => {
-    const result = (s[0] + s[3]) >>> 0;
-    const t = (s[1] << 9) >>> 0;
-    s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3];
-    s[2] ^= t; s[3] = (s[3] << 11) | (s[3] >>> 21);
-    return result / 4294967296;
+  const initGenrand = (mt, s) => {
+    mt[0] = s >>> 0;
+    for (let i = 1; i < N; i++) mt[i] = (Math.imul(1812433253, mt[i - 1] ^ (mt[i - 1] >>> 30)) + i) >>> 0;
   };
-  const r = (self) => next(self._state);
-  const seq = (x) => (Array.isArray(x) ? x : typeof x === 'string' ? [...x] : [...pyIter(x)]);
-  const randrange = (self, start, stop, step = 1) => {
-    if (stop === undefined || stop === null) { stop = start; start = 0; }
-    const n = Math.ceil((stop - start) / step);
-    if (n <= 0) throw new AdderError('ValueError', `empty range in randrange(${start}, ${stop})`);
-    return start + step * Math.floor(r(self) * n);
+  // init_by_array: (x ^ y) is an int32 and the sums stay below 2**53, so `>>> 0` is the C
+  // uint32 wrap-around
+  const initByArray = (self, key) => {
+    const mt = new Uint32Array(N);
+    initGenrand(mt, 19650218);
+    let i = 1, j = 0;
+    for (let k = Math.max(N, key.length); k; k--) {
+      mt[i] = ((mt[i] ^ Math.imul(mt[i - 1] ^ (mt[i - 1] >>> 30), 1664525)) + key[j] + j) >>> 0;
+      i++; j++;
+      if (i >= N) { mt[0] = mt[N - 1]; i = 1; }
+      if (j >= key.length) j = 0;
+    }
+    for (let k = N - 1; k; k--) {
+      mt[i] = ((mt[i] ^ Math.imul(mt[i - 1] ^ (mt[i - 1] >>> 30), 1566083941)) - i) >>> 0;
+      i++;
+      if (i >= N) { mt[0] = mt[N - 1]; i = 1; }
+    }
+    mt[0] = 0x80000000;
+    self[MT] = mt;
+    self[MTI] = N;
+  };
+  // random_seed: None from the OS's entropy; an int by its absolute value (a bool as one); anything
+  // else by its hash, as an unsigned 64-bit number — split into 32-bit words, least significant first
+  const seed = (self, arg) => {
+    if (arg === null || arg === undefined) {
+      const key = new Uint32Array(N);
+      globalThis.crypto.getRandomValues(key);
+      return initByArray(self, key);
+    }
+    let n;
+    if (typeof arg === 'boolean') n = BigInt(+arg);
+    else if (typeof arg === 'bigint' || (typeof arg === 'number' && isIntNum(arg))) n = BigInt(arg);
+    else { const h = _pyHash(arg); n = BigInt.asUintN(64, BigInt(h)); }
+    if (n < 0n) n = -n;
+    const key = [];
+    if (n === 0n) key.push(0);
+    for (; n > 0n; n >>= 32n) key.push(Number(n & 0xffffffffn));
+    initByArray(self, key);
+  };
+  const genrand = (self) => {
+    if (!self[MT]) seed(self, null);
+    const mt = self[MT];
+    if (self[MTI] >= N) {
+      let kk = 0, y;
+      for (; kk < N - M; kk++) {
+        y = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7fffffff);
+        mt[kk] = mt[kk + M] ^ (y >>> 1) ^ (y & 1 ? 0x9908b0df : 0);
+      }
+      for (; kk < N - 1; kk++) {
+        y = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7fffffff);
+        mt[kk] = mt[kk + (M - N)] ^ (y >>> 1) ^ (y & 1 ? 0x9908b0df : 0);
+      }
+      y = (mt[N - 1] & 0x80000000) | (mt[0] & 0x7fffffff);
+      mt[N - 1] = mt[M - 1] ^ (y >>> 1) ^ (y & 1 ? 0x9908b0df : 0);
+      self[MTI] = 0;
+    }
+    let y = mt[self[MTI]++];
+    y ^= y >>> 11;
+    y ^= (y << 7) & 0x9d2c5680;
+    y ^= (y << 15) & 0xefc60000;
+    y ^= y >>> 18;
+    return y >>> 0;
   };
   const Random = _syClass('Random', [], {
-    VERSION: 3,
-    __init__(self, x = null) { self._state = seedState(x); self._gaussNext = null; return null; },
-    seed(self, a = null) { self._state = seedState(a); self._gaussNext = null; return null; },
-    getstate(self) { return mkTuple([3, mkTuple([...self._state]), self._gaussNext]); },
-    setstate(self, st) { self._state = [...st[1]]; self._gaussNext = st[2]; return null; },
-    random(self) { return r(self); },
-    getrandbits(self, k) { let v = 0; for (let i = 0; i < k; i++) v = v * 2 + (r(self) < 0.5 ? 1 : 0); return v; },
-    randrange(self, start, stop = null, step = 1) { return randrange(self, start, stop, step); },
-    randint(self, a, b) { return a + Math.floor(r(self) * (b - a + 1)); },
-    uniform(self, a, b) { return a + r(self) * (b - a); },
-    triangular(self, low = 0, high = 1, mode = null) {
-      const u = r(self); const c = mode === null ? 0.5 : (mode - low) / (high - low);
-      return u > c ? high + (low - high) * Math.sqrt((1 - u) * (1 - c)) : low + (high - low) * Math.sqrt(u * c);
+    // (random_new: a Random made directly is seeded from its argument; random.py's subclass
+    // seeds through its own __init__ → seed() → super().seed())
+    __init__(self, ...a) { arity('Random', a, 0, 1); seed(self, a[0] ?? null); return null; },
+    seed(self, ...a) {
+      if (a.length > 1) throw new AdderError('TypeError', `seed expected at most 1 argument, got ${a.length}`);
+      seed(self, a[0] ?? null);
+      return null;
     },
-    choice(self, s) { const a = seq(s); if (!a.length) throw new AdderError('IndexError', 'Cannot choose from an empty sequence'); return a[Math.floor(r(self) * a.length)]; },
-    choices(self, population, ...a) {
-      const kw = _syKw(a) || {};
-      const pop = seq(population), n = kw.k ?? 1;
-      let cum = kw.cum_weights ? seq(kw.cum_weights) : null;
-      const w = a.length ? a[0] : kw.weights ?? null;
-      if (!cum && w) { let t = 0; cum = seq(w).map((x) => (t += x)); }
-      const out = [];
-      for (let i = 0; i < n; i++) {
-        if (!cum) { out.push(pop[Math.floor(r(self) * pop.length)]); continue; }
-        const x = r(self) * cum[cum.length - 1];
-        let lo = 0, hi = cum.length - 1;
-        while (lo < hi) { const m = (lo + hi) >> 1; if (x < cum[m]) hi = m; else lo = m + 1; }
-        out.push(pop[lo]);
+    // genrand_res53: 27 + 26 bits into a double in [0, 1)
+    random(self, ...a) {
+      arity('Random.random', a, 0, 0);
+      const x = genrand(self) >>> 5, y = genrand(self) >>> 6;
+      return (x * 67108864 + y) * (1 / 9007199254740992);
+    },
+    // k random bits as an int, filled 32-bit word by word from the least significant, the last
+    // word's high bits dropped
+    getrandbits(self, ...a) {
+      arity('Random.getrandbits', a, 1, 1);
+      let k = a[0];
+      if (typeof k === 'boolean') k = +k;
+      else if (k !== null && typeof k === 'object' && typeof k.__index__ === 'function') k = k.__index__();
+      if (typeof k !== 'bigint' && !(typeof k === 'number' && isIntNum(k))) throw new AdderError('TypeError', `'${pyTypeName(k)}' object cannot be interpreted as an integer`);
+      if (k < 0) throw new AdderError('ValueError', 'number of bits must be non-negative');
+      // (k is a Py_ssize_t: past it CPython's OverflowError; V8's BigInts stop at 2**30 bits, and
+      // past that a MemoryError — not a long hang first)
+      if (BigInt(k) > 9223372036854775807n) throw new AdderError('OverflowError', 'Python int too large to convert to C ssize_t');
+      if (k > 2 ** 30) throw new AdderError('MemoryError', '');
+      k = Number(k);
+      if (k === 0) return 0;
+      if (k <= 32) return genrand(self) >>> (32 - k);
+      // words from the least significant up, as CPython's; joined as hex, most significant first
+      const words = Math.ceil(k / 32), hex = new Array(words);
+      for (let i = 0; i < words; i++, k -= 32) {
+        let w = genrand(self);
+        if (k < 32) w >>>= 32 - k;
+        hex[words - 1 - i] = w.toString(16).padStart(8, '0');
       }
-      return out;
+      const r = BigInt('0x' + hex.join(''));
+      return r <= 9007199254740991n ? Number(r) : r;
     },
-    shuffle(self, lst) { for (let i = lst.length - 1; i > 0; i--) { const j = Math.floor(r(self) * (i + 1)); [lst[i], lst[j]] = [lst[j], lst[i]]; } return null; },
-    sample(self, population, k) {
-      const arr = [...seq(population)];
-      if (k > arr.length || k < 0) throw new AdderError('ValueError', 'Sample larger than population or is negative');
-      const out = [];
-      for (let i = 0; i < k; i++) out.push(arr.splice(Math.floor(r(self) * arr.length), 1)[0]);
-      return out;
+    getstate(self, ...a) {
+      arity('Random.getstate', a, 0, 0);
+      if (!self[MT]) seed(self, null);
+      return mkTuple([...self[MT], self[MTI]]);
     },
-    gauss(self, mu = 0, sigma = 1) {
-      let u, v, s;
-      do { u = 2 * r(self) - 1; v = 2 * r(self) - 1; s = u * u + v * v; } while (s >= 1 || s === 0);
-      return mu + sigma * u * Math.sqrt(-2 * Math.log(s) / s);
+    setstate(self, ...a) {
+      arity('Random.setstate', a, 1, 1);
+      const state = a[0];
+      if (!(state instanceof PyTuple)) throw new AdderError('TypeError', 'state vector must be a tuple');
+      if (state.length !== N + 1) throw new AdderError('ValueError', 'state vector is the wrong size');
+      const mt = new Uint32Array(N);
+      for (let i = 0; i < N; i++) {
+        const v = state[i];
+        if (typeof v === 'bigint' || v < 0 || v > 0xffffffff) throw new AdderError('OverflowError', 'Python int too large to convert to C unsigned long');
+        mt[i] = v;
+      }
+      const index = state[N];
+      if (index < 0 || index > N) throw new AdderError('ValueError', 'invalid state');
+      self[MT] = mt;
+      self[MTI] = Number(index);
+      return null;
     },
-    normalvariate(self, mu = 0, sigma = 1) { return adderGetAttr(self, 'gauss')(mu, sigma); },
-    expovariate(self, lambd = 1) { return -Math.log(1 - r(self)) / lambd; },
-    lognormvariate(self, mu, sigma) { return Math.exp(adderGetAttr(self, 'gauss')(mu, sigma)); },
-    betavariate(self, alpha, beta) {
-      const g = (a) => { let x = 0; for (let i = 0; i < Math.max(1, Math.round(a)); i++) x -= Math.log(1 - r(self)); return x; };
-      const y = g(alpha); return y / (y + g(beta));
-    },
-    paretovariate(self, alpha) { return 1 / (1 - r(self)) ** (1 / alpha); },
-    weibullvariate(self, alpha, beta) { return alpha * (-Math.log(1 - r(self))) ** (1 / beta); },
-    randbytes(self, n) { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = Math.floor(r(self) * 256); return b; },
-  }, 'random');
-  rmod.Random = Random;
-  rmod.SystemRandom = _syClass('SystemRandom', [Random], { __init__(self, x = null) { self._state = seedState(null); return null; }, seed() { return null; } }, 'random');
-  // the module-level functions a library reaches for that the module didn't have
-  const shared = Random();
-  for (const k of ['randrange', 'getrandbits', 'triangular', 'choices', 'expovariate', 'normalvariate', 'lognormvariate', 'betavariate', 'paretovariate', 'weibullvariate', 'randbytes', 'getstate', 'setstate']) {
-    if (!rmod[k]) rmod[k] = adderGetAttr(shared, k);
-  }
+  }, '_random');
+  adderModules._random = _syModule('_random', { Random });
 }
 
 // every module in the registry is a module: type(m) is module, inspect.ismodule(m), and its

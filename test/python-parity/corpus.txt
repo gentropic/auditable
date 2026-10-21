@@ -2458,6 +2458,23 @@ print("bücher".encode("punycode"), b"bcher-kva".decode("punycode"), codecs.enco
 msg = email.message_from_string('Content-Type: text/plain; charset="utf-8"\nX-A: 1\n\nbody\n')
 print(msg["content-type"], msg.get_content_type(), msg.get_content_charset(), msg.get_payload().strip())
 print(parseaddr("Bob <bob@x.org>"), formatdate(0, usegmt=True))
+### mod/random-exact
+import random
+random.seed(42)
+print([random.random() for _ in range(3)], [random.randint(1, 100) for _ in range(5)], random.randrange(0, 1000, 7))
+print(random.choice("abcdefg"), random.choices(range(10), k=4), random.choices("abc", weights=[1, 5, 10], k=5))
+xs = list(range(10)); random.shuffle(xs); print(xs, random.sample(range(100), 5))
+print(random.uniform(1, 2), random.triangular(0, 10, 3), random.gauss(0, 1), random.normalvariate(0, 1))
+print(random.expovariate(2), random.betavariate(2, 3), random.gammavariate(0.5, 1), random.vonmisesvariate(1, 2))
+print(random.binomialvariate(1000, 0.5), random.getrandbits(100), random.randbytes(5), random.randint(0, 10 ** 30))
+for s in ("hello", b"bytes", 2 ** 100 + 7, -5, 0, True):
+    random.seed(s)
+    print(repr(s), random.random())
+r = random.Random(123)
+st = r.getstate()
+a = [r.random() for _ in range(3)]
+r.setstate(st)
+print(a == [r.random() for _ in range(3)], len(st[1]), random.Random(7).sample(range(10 ** 15), 3))
 ### mod/random-instance
 import random
 r, r2 = random.Random(5), random.Random(5)

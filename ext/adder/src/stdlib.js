@@ -313,7 +313,7 @@ adderModules.operator = {
   getitem: pyGetItem,
   setitem: (o, k, v) => { if (o instanceof Map) o.set(k, v); else if (typeof o.__setitem__ === 'function') return _slThen(o.__setitem__(k, v), () => null); else if (Array.isArray(o) && k instanceof PySlice) seqSliceSet(o, k, v); else o[Array.isArray(o) && k < 0 ? o.length + k : k] = v; return null; },
   delitem: (o, k) => _slThen(pyDelItem(o, k), () => null),
-  concat: (a, b) => pyAdd(a, b), index: (a) => (typeof a === 'number' && Number.isInteger(a) ? a : a && typeof a.__index__ === 'function' ? a.__index__() : (() => { throw new AdderError('TypeError', `'${pyTypeName(a)}' object cannot be interpreted as an integer`); })()),
+  concat: (a, b) => pyAdd(a, b), index: (a) => (typeof a === 'number' && Number.isInteger(a) ? a : typeof a === 'bigint' ? a : typeof a === 'boolean' ? +a : a && typeof a.__index__ === 'function' ? a.__index__() : (() => { throw new AdderError('TypeError', `'${pyTypeName(a)}' object cannot be interpreted as an integer`); })()),
   iadd: (a, b) => pyInplace('+', a, b), isub: (a, b) => pyInplace('-', a, b), imul: (a, b) => pyInplace('*', a, b),
   itruediv: (a, b) => pyInplace('/', a, b), ifloordiv: (a, b) => pyInplace('//', a, b), imod: (a, b) => pyInplace('%', a, b),
   ipow: (a, b) => pyInplace('**', a, b), imatmul: (a, b) => pyInplace('@', a, b),

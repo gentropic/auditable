@@ -28,6 +28,7 @@ test_math
 test_operator
 test_property
 test_raise
+test_random
 test_scope
 test_set
 test_slice

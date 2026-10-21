@@ -4036,6 +4036,8 @@ export function pyGetItem(obj, key, raw = false) {
     }
     return obj.get(key);
   }
+  // a set (frozenset) has no order to index: CPython's TypeError, not a KeyError
+  if (obj instanceof Set) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
   const isSeq = typeof obj === 'string' || Array.isArray(obj) || obj instanceof AdderRange ||
     (ArrayBuffer.isView(obj) && !(obj instanceof DataView));
   if (isSeq) {
@@ -4648,35 +4650,7 @@ const _jsModule = new Proxy({}, {
   has(_, prop) { return typeof globalThis !== 'undefined' && prop in globalThis; },
 });
 
-const _randomState = { s: [1, 2, 3, 4] };
-function _xoshiro128() {
-  const s = _randomState.s;
-  const result = (s[0] + s[3]) >>> 0;
-  const t = (s[1] << 9) >>> 0;
-  s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3];
-  s[2] ^= t; s[3] = (s[3] << 11) | (s[3] >>> 21);
-  return result / 4294967296;
-}
-
-const _randomModule = {
-  random: () => _xoshiro128(),
-  seed: (n) => { n = n >>> 0; _randomState.s = [n, n ^ 0x12345678, n ^ 0x9ABCDEF0, n ^ 0xFEDCBA98]; },
-  randint: (a, b) => a + Math.floor(_xoshiro128() * (b - a + 1)),
-  uniform: (a, b) => a + _xoshiro128() * (b - a),
-  choice: (seq) => { const arr = Array.isArray(seq) ? seq : [...pyIter(seq)]; return arr[Math.floor(_xoshiro128() * arr.length)]; },
-  shuffle: (lst) => { for (let i = lst.length - 1; i > 0; i--) { const j = Math.floor(_xoshiro128() * (i + 1)); [lst[i], lst[j]] = [lst[j], lst[i]]; } return null; },
-  gauss: (mu, sigma) => {
-    let u, v, s;
-    do { u = 2 * _xoshiro128() - 1; v = 2 * _xoshiro128() - 1; s = u * u + v * v; } while (s >= 1 || s === 0);
-    return mu + sigma * u * Math.sqrt(-2 * Math.log(s) / s);
-  },
-  sample: (population, k) => {
-    const arr = Array.isArray(population) ? [...population] : [...pyIter(population)];
-    const result = [];
-    for (let i = 0; i < k; i++) { const j = Math.floor(_xoshiro128() * arr.length); result.push(arr.splice(j, 1)[0]); }
-    return result;
-  },
-};
+// (random is CPython's random.py — pylib — over _random, CPython's Mersenne Twister: stdlib-sys.js)
 
 // ── itertools (lazy async iterables) ──
 
@@ -4748,15 +4722,21 @@ const _itertoolsModule = {
           if (!found) break;
         }
   }),
-  repeat: (value, times) => _lazySyncIter('repeat', function*() {
+  repeat: (value, times) => {
+    // (times an int, as CPython's: repeat(x, 2.5) is a TypeError — random.choices(k=2.5) relies on it)
+    if (times !== null && typeof times === 'object' && times._kw) times = times.times;   // repeat(x, times=3)
+    if (times !== undefined) times = _idxArg(times);
+    return _lazySyncIter('repeat', function*() {
         if (times === undefined) { while (true) yield value; }
         else { for (let i = 0; i < times; i++) yield value; }
-  }),
+    });
+  },
+  // the running total by Python's +, not JS's (None + None is a TypeError, not 0)
   accumulate: (iterable, func) => _lazyIter('accumulate', async function*() {
         let acc, first = true;
         for await (const v of _aiter(iterable)) {
-          if (first) { acc = v; first = true; yield acc; first = false; }
-          else { acc = func ? func(acc, v) : acc + v; yield acc; }
+          if (first) { acc = v; first = false; yield acc; }
+          else { acc = await (func ? func(acc, v) : pyAdd(acc, v)); yield acc; }
         }
   }),
   starmap: (func, iterable) => _lazyIter('starmap', async function*() {
@@ -5503,7 +5483,7 @@ const _sysModule = {
 };
 
 export const adderModules = {
-  math: _mathModule, js: _jsModule, random: _randomModule,
+  math: _mathModule, js: _jsModule,
   itertools: _itertoolsModule, functools: _functoolsModule,
   re: _reModule, string: _stringModule,
   this: _thisModule, sys: _sysModule,
@@ -6349,13 +6329,50 @@ export function setAdderVFS(vfsInstance, pathUtils) {
   }
 }
 
+// The POSIX path operations os / pathlib use, for when no VFS brought its own (headless adder):
+// os exists then as CPython's always does — `random` imports it — and its filesystem calls raise
+// until a VFS is set (setAdderVFS)
+const _posixPath = {
+  normalize(p) {
+    if (!p) return '.';
+    const abs = p.startsWith('/'), out = [];
+    for (const s of p.split('/')) {
+      if (!s || s === '.') continue;
+      if (s === '..') { if (out.length && out[out.length - 1] !== '..') out.pop(); else if (!abs) out.push('..'); }
+      else out.push(s);
+    }
+    const r = (abs ? '/' : '') + out.join('/');
+    return r || (abs ? '/' : '.');
+  },
+  join(...parts) { const p = parts.filter((x) => x !== '').join('/'); return p ? _posixPath.normalize(p) : '.'; },
+  isAbsolute: (p) => p.startsWith('/'),
+  dirname(p) {
+    const s = p.replace(/\/+$/, ''), i = s.lastIndexOf('/');
+    return i < 0 ? '.' : i === 0 ? '/' : s.slice(0, i);
+  },
+  basename(p, ext) {
+    const s = p.replace(/\/+$/, ''), b = s.slice(s.lastIndexOf('/') + 1);
+    return ext && b.endsWith(ext) && b !== ext ? b.slice(0, -ext.length) : b;
+  },
+  extname(p) {
+    const b = _posixPath.basename(p), i = b.lastIndexOf('.');
+    return i <= 0 ? '' : b.slice(i);
+  },
+  relative(from, to) {
+    const a = _posixPath.normalize(from).split('/').filter(Boolean), b = _posixPath.normalize(to).split('/').filter(Boolean);
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    return [...a.slice(i).map(() => '..'), ...b.slice(i)].join('/');
+  },
+};
+
 export function _ensureFsModules(pathUtils) {
   if (adderModules.os) return;
   if (pathUtils) _vfsPath = pathUtils;
   if (!_vfsPath) {
     try { if (typeof path !== 'undefined' && path.join) _vfsPath = path; } catch {}
   }
-  if (!_vfsPath) return;
+  if (!_vfsPath) _vfsPath = _posixPath;
 
   const pth = _vfsPath;
   const getVfs = () => {
