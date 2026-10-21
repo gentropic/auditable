@@ -447,6 +447,12 @@ class Interpreter {
         }
       }
 
+      // speculate-and-restart is an optimization: the generic body is the region's meaning
+      case 'spec_region': {
+        if (op.generic) await this.execOps(op.generic);
+        return undefined;
+      }
+
       case 'try_region': {
         let caughtError = null;
         let caught = false;

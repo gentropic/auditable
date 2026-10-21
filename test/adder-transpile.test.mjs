@@ -707,18 +707,20 @@ describe('adder transpile — annotations and __adder__ flags', () => {
     }
     assert.match(emit(fib), /_py\.sub\)\(n, 1\)/);
   });
-  it('trust_annotations types int as a number: raw ops, exact past 2**31', async () => {
+  // (raw int arithmetic is a speculative region's fast body, each result range-checked: past
+  // 2**53 the region runs its exact body — see the speculate-and-restart tests)
+  it('trust_annotations types int as an int: raw checked ops, exact past 2**53', async () => {
     const src = 'from __adder__ import trust_annotations\n' + fib;
     const js = emit(src);
-    assert.match(js, /fib\(\(n - 1\)\) \+ fib\(\(n - 2\)\)/);
+    assert.match(js, /let _\d+ = \(n - 1\);/);
     assert.doesNotMatch(js, /\| 0/);
-    const dbl = 'from __adder__ import trust_annotations\ndef dbl(n: int) -> int:\n    return n + n\nr = dbl(2**40), dbl(-3)\n';
-    assert.doesNotMatch(emit(dbl), /_py\.add/);
-    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(dbl)).r], [2 ** 41, -6]);
+    const dbl = 'from __adder__ import trust_annotations\ndef dbl(n: int) -> int:\n    return n + n\nr = dbl(2**40), dbl(-3), dbl(2**60), dbl(5)\n';
+    assert.match(emit(dbl), /let _\d+ = \(n \+ n\);/);
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(dbl)).r], [2 ** 41, -6, 2n ** 61n, 10]);
   });
   it('AIR hint names are types without the flag (integer-valued: no | 0 in adder)', () => {
     const js = emit(fib.replace(/int/g, 'i32'));
-    assert.match(js, /fib\(\(n - 1\)\) \+ fib\(\(n - 2\)\)/);
+    assert.match(js, /let _\d+ = \(n - 1\);/);
     assert.doesNotMatch(js, /\| 0/);
   });
   it('the flag goes after the docstring and __future__ imports; later is a SyntaxError', async () => {
@@ -730,6 +732,49 @@ describe('adder transpile — annotations and __adder__ flags', () => {
     }
     assert.throws(() => adderParse('x = 1\nfrom __adder__ import trust_annotations\n'), /must occur at the beginning of the file \(line 2\)/);
     assert.equal(adderParse('x = 1\nfrom __adder__ import i32\n').adderFlags, undefined);
+  });
+});
+
+// Speculate and restart (AIR spec_region): a pure function body or loop runs FAST — int arithmetic
+// raw, each result range-checked by a labeled break — and on a bail its names are restored and
+// the GENERIC (exact) body runs instead, and keeps running for later calls
+describe('adder transpile — speculate and restart', () => {
+  const emit = (src) => {
+    const air = lowerAdder(adderParse(src), src);
+    runPasses(air);
+    return emitJS(air, ['_py', ...air.imports], [], { hinted: false });
+  };
+  const fact = 'def fact(n):\n    acc = 1\n    for i in range(1, n + 1):\n        acc *= i\n    return acc\n';
+  it('a pure loop past 2**53 bails to the exact body; the next call is exact too', async () => {
+    const src = fact + 'r = fact(10), fact(30), fact(5), fact(25)\n';
+    for (const run of [airRun, twRun]) {
+      const r = (await run(src)).r;
+      assert.deepEqual([...r], [3628800, 265252859812191058636308480000000n, 120, 15511210043330985984000000n]);
+    }
+  });
+  it('the fast body: raw checked ops, a labeled break — no try, no call on the check path', () => {
+    const js = emit(fact);
+    assert.match(js, /let _\d+ = \(acc \* i\);\n\s*if \(!\(_\d+ <= 9007199254740991 && _\d+ >= -9007199254740991\)\) break __bail\d+;/);
+    assert.doesNotMatch(js, /\btry\b/);
+    assert.match(js, /_py\.imul\)\(acc, i\)/);   // the generic body
+  });
+  it('a top-level loop, a range past 2**53, a BigInt argument, int literals past 2**31', async () => {
+    const src = [
+      't = 1', 'for i in range(1, 31):', '    t *= i',
+      'def big(n):', '    t = 0', '    for i in range(n, n + 3):', '        t += i * 2', '    return t',
+      'def sq(x: i32):', '    return x * x',
+      'k = 3000000000', 'kk = k * k * k',
+      'r = t, big(5), big(2 ** 64), big(2 ** 53 - 2), sq(3), sq(2 ** 40), kk',
+    ].join('\n');
+    for (const run of [airRun, twRun]) {
+      const r = (await run(src)).r;
+      assert.deepEqual([...r], [265252859812191058636308480000000n, 36, 110680464442257309702n, 54043195528445946n, 9, 1208925819614629174706176n, 27000000000000000000000000000n]);
+    }
+  });
+  it('code with effects is not speculated: its int arithmetic stays exact helpers', () => {
+    const js = emit('def f(n):\n    t = 0\n    for i in range(n):\n        print(i)\n        t += i\n    return t\n');
+    assert.doesNotMatch(js, /__bail/);
+    assert.match(js, /_py\.iadd\)\(t, i\)/);
   });
 });
 

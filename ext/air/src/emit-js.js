@@ -135,6 +135,11 @@ class EmitCtx {
     this.effectful = new Set();
     this._consumedEffect = false;
     this._flushing = false;
+
+    // spec_region: the bail expression of the fast body being emitted (null outside one), and the
+    // module-level flags that remember a region has bailed (declared after "use strict")
+    this.bail = null;
+    this.specFlags = [];
   }
 
   line(s) {
@@ -264,6 +269,9 @@ export function emitJS(module, scopeKeys, injectedNames, options = {}) {
   ctx.line('"use strict";');
 
   emitOps(ctx, module.ops);
+  // (each spec_region's "has bailed" flag lives as long as the module: once a region has met a
+  // value its fast body can't take, later runs go straight to its generic body)
+  if (ctx.specFlags.length) ctx.lines.splice(1, 0, `let ${ctx.specFlags.map((f) => `${f} = 0`).join(', ')};`);
 
   // Return exports
   const exports = [...module.defines].sort();
@@ -347,6 +355,7 @@ function emitOp(ctx, op) {
     case 'loop_region': return emitLoop(ctx, op);
     case 'switch_region': return emitSwitch(ctx, op);
     case 'try_region': return emitTry(ctx, op);
+    case 'spec_region': return emitSpec(ctx, op);
     case 'labeled': return emitLabeled(ctx, op);
     case 'func_region': return emitFunc(ctx, op);
     case 'class_region': return emitClass(ctx, op);
@@ -518,6 +527,28 @@ function emitBinary(ctx, op) {
     expr = ctx.hintExpr(expr, op.type);
   }
 
+  // a checked integer op in a fast body (passes.js speculation): each operand that isn't a number
+  // literal tested to be a number (a BigInt may arrive — an argument, a call's result — and the
+  // raw operator would throw at it), then the result named and tested to be in range; a failure
+  // bails the region (`break` to its label: jumps and typeof tests cost a hot loop next to
+  // nothing in V8, where a never-taken call or a try around it costs ~4x)
+  if (op.intCheck && ctx.bail) {
+    const n = op.intCheck, operand = (s) => {
+      if (/^-?\d+(\.\d+)?$/.test(s)) return s;
+      let name = s;
+      if (!/^[$_a-zA-Z][\w$]*$/.test(s)) { name = `${ctx.varName(op.id)}_${operand.k = (operand.k || 0) + 1}`; ctx.line(`let ${name} = ${s};`); }
+      ctx.line(`if (typeof ${name} !== 'number') break ${ctx.bail};`);
+      return name;
+    };
+    const a = operand(lhs), b = operand(rhs);
+    const v = ctx.varName(op.id);
+    ctx.line(`let ${v} = (${a} ${jsOp} ${b});`);
+    ctx.line(`if (!(${v} <= ${n} && ${v} >= -${n})) break ${ctx.bail};`);
+    ctx.emitted.add(op.id);
+    ctx.types.set(op.id, op.type);
+    return;
+  }
+
   register(ctx, op, expr);
 }
 
@@ -613,7 +644,14 @@ function emitCall(ctx, op) {
   const args = op.args.slice(1).map(a => ctx.ref(a));
   const paren = op.optional ? '?.(' : '(';
   // a guard (passes.js spec.guard): the call only when the guard's condition on the first argument
-  // fails. Inline only when that argument is a plain name (it is written more than once)
+  // fails. Inline only when that argument is a plain name (it is written more than once). In a
+  // fast body the failure bails instead (a statement and a throw: no call in the hot path) —
+  // the generic body makes the call
+  if (op.guard && ctx.bail && !op.optional && /^[$_a-zA-Z][\w$]*$/.test(args[0] || '')) {
+    ctx.line(`if (!(${op.guard.replaceAll('%v', args[0])})) break ${ctx.bail};`);
+    register(ctx, { ...op, op: 'load' }, args[0]);
+    return;
+  }
   if (op.guard && !op.optional && /^[$_a-zA-Z][\w$]*$/.test(args[0] || '')) {
     register(ctx, op, `(${op.guard.replaceAll('%v', args[0])} ? ${args[0]} : ${fn}(${args.join(', ')}))`);
     return;
@@ -1113,6 +1151,74 @@ function emitSwitch(ctx, op) {
   }
   ctx.pop();
   ctx.line('}');
+}
+
+// spec_region (schema.js): the fast body in a labeled block its checks break out of, its saves
+// snapshotted; a bail restores them and falls to the generic body, and sets the module-level flag
+// so later runs skip the attempt:
+//   let __spb = __sp;
+//   if (!__spb) {
+//     const __sv_x = x;
+//     __ok: { __bail: { FAST; break __ok; }   // a check that fails: `break __bail;`
+//             __sp = 1; __spb = 1; x = __sv_x; }
+//   }
+//   if (__spb) { GENERIC }
+// A labeled break, not a throw: a try around a hot loop costs it ~4x in V8, and so does any call
+// on a never-taken path; a break is a jump. (`__spb` is per run: a fast body that completes —
+// returns, or falls out — never runs the generic one, though a recursive run may have set the
+// flag meanwhile.) A fast body without one check or guard can't bail: then it is emitted alone.
+function emitSpec(ctx, op) {
+  if (!_canBail(op.fast)) {
+    ctx.pushScope();
+    emitOps(ctx, op.fast);
+    ctx.popScope();
+    return;
+  }
+  const n = op.id.slice(1);
+  const flag = `__sp${n}`, mine = `__spb${n}`, ok = `__ok${n}`, bail = `__bail${n}`;
+  ctx.specFlags.push(flag);
+  const saves = op.saves || [];
+  ctx.line(`let ${mine} = ${flag};`);
+  ctx.line(`if (!${mine}) {`);
+  ctx.push();
+  for (const s of saves) ctx.line(`const __sv${n}_${s} = ${s};`);
+  ctx.line(`${ok}: {`);
+  ctx.push();
+  ctx.line(`${bail}: {`);
+  ctx.push();
+  ctx.pushScope();
+  const savedBail = ctx.bail;
+  ctx.bail = bail;
+  emitOps(ctx, op.fast);
+  ctx.bail = savedBail;
+  ctx.popScope();
+  ctx.line(`break ${ok};`);
+  ctx.pop();
+  ctx.line('}');
+  ctx.line(`${flag} = 1; ${mine} = 1;`);
+  for (const s of saves) ctx.line(`${s} = __sv${n}_${s};`);
+  ctx.pop();
+  ctx.line('}');
+  ctx.pop();
+  ctx.line('}');
+  ctx.line(`if (${mine}) {`);
+  ctx.push();
+  ctx.pushScope();
+  emitOps(ctx, op.generic);
+  ctx.popScope();
+  ctx.pop();
+  ctx.line('}');
+}
+// does a fast body hold anything that can bail: a checked op or a guard
+function _canBail(ops) {
+  for (const op of ops || []) {
+    if (op.intCheck || op.guard) return true;
+    if (op.op === 'func_region' || op.op === 'class_region') continue;
+    let found = false;
+    forEachRegion(op, (_n, rops) => { if (!found && _canBail(rops)) found = true; });
+    if (found) return true;
+  }
+  return false;
 }
 
 function emitTry(ctx, op) {

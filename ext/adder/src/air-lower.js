@@ -33,6 +33,9 @@ export { AirLowerError, PY_SPECIALIZATIONS };
 // place. Same pattern soft uses for _soft.
 
 const _bothNumeric = (lt, rt) => isNumeric(lt) && isNumeric(rt);
+// an int's safe range: past it an adder int is a BigInt, so raw arithmetic on an int is exact only
+// inside it — done raw only in a speculative region, its result checked (AIR passes: speculative)
+const _INT_RANGE = 9007199254740991;
 
 const PY_SPECIALIZATIONS = {
   add: {
@@ -47,6 +50,7 @@ const PY_SPECIALIZATIONS = {
       if (isNumeric(lt) && isNumeric(rt)) return arithmeticResult(lt, rt);
       return STRING;
     },
+    speculative: _INT_RANGE,
   },
   // `x += y` on numbers or strings is plain `+`: neither is mutable, so there is no __iadd__
   // and no list-extend to dispatch to.
@@ -54,15 +58,16 @@ const PY_SPECIALIZATIONS = {
     op: 'add',
     check: (lt, rt) => (isNumeric(lt) && isNumeric(rt)) || (lt.kind === 'string' && rt.kind === 'string'),
     resultType: (lt, rt) => (isNumeric(lt) ? arithmeticResult(lt, rt) : STRING),
+    speculative: _INT_RANGE,
   },
-  sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
-  mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
+  sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
   // with an integer-valued float literal operand (pyFloatBin): two numbers are the JS operator
-  fadd: { op: 'add', check: _bothNumeric, resultType: arithmeticResult },
-  fsub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
-  fmul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
-  isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult },
-  imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult },
+  fadd: { op: 'add', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  fsub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  fmul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
   // Stay in helpers, because JS differs from Python on values the types can't rule out:
   //   div/mod/floordiv — Python raises ZeroDivisionError, JS returns Infinity/NaN;
   //   pow — `0 ** -1` raises in Python, is Infinity in JS;
@@ -91,6 +96,13 @@ const PY_SPECIALIZATIONS = {
   },
   // `_py.freeName(v, "name")` (NameError when v is unbound) gives v back: v's type
   freeName: { op: null, check: () => true, resultType: (t) => t, typeOnly: true, guard: '%v !== undefined' },
+  // `_py.rangeVar(k)`: a counted range loop's counter as the loop variable, canonical (a BigInt
+  // counter of a range past 2**53 — see rangeArgs). Outside a fast body only: the guard is a typeof,
+  // but its call is a never-taken call in the loop, which costs a call-free loop ~4x in V8
+  rangeVar: { op: null, arity: 1, check: () => true, resultType: (t) => t, typeOnly: true, guard: "typeof %v !== 'bigint'" },
+  // `_py.okRange(rng)`: in a fast body, rangeArgsFast's result is null for a range past 2**53 — the
+  // guard bails the region there (emitted only in fast bodies, where a guard is a bail)
+  okRange: { op: null, arity: 1, check: () => true, resultType: (t) => t, typeOnly: true, guard: '%v !== null' },
   truthy: {
     // _py.truthy(true) → just the value (already bool)
     // _py.truthy(x) where x is numeric → x !== 0 (handled via coerce)
@@ -129,11 +141,11 @@ if (_doRegisterPy) _doRegisterPy('_py', PY_SPECIALIZATIONS);
 // Returns DYNAMIC for anything we don't recognise — including subscripts
 // (`list[int]`, `dict[str, int]`), unions, generic tuples — so the rest of
 // the pipeline keeps working unchanged.
-// A trusted `int` types as f64: adder emits unhinted (an integer type means "integer-valued",
-// never `| 0`), so i32 and f64 give the same code here, and f64 — exact to 2**53, the range
-// adder's ints keep as numbers — is the honest name for what a Python int is.
+// A trusted `int` is an integer type (i32: adder emits unhinted, so an integer type means
+// "integer-valued", never `| 0`) — its arithmetic is then range-checked in a speculative region,
+// where an f64 type would let it run past 2**53 as a float.
 const _PY_NAME_TO_TYPE = {
-  'int': F64, 'float': F64, 'bool': BOOL, 'str': STRING,
+  'int': I32, 'float': F64, 'bool': BOOL, 'str': STRING,
   'None': VOID, 'NoneType': VOID,
 };
 const _ADDER_NAME_TO_TYPE = {
@@ -233,7 +245,11 @@ class AdderLowerCtx extends BaseLowerCtx {
         params: extra.params ? extra.params.map((p) => (p && typeof p.name === 'string' && _JS_RESERVED.has(p.name) ? { ...p, name: jsSafeName(p.name) } : p)) : extra.params };
     } else if (op === 'for_of_region' && extra && _JS_RESERVED.has(extra.target_name)) extra = { ...extra, target_name: jsSafeName(extra.target_name) };
     else if (op === 'opaque' && extra && _JS_RESERVED.has(extra._markDeclared)) extra = { ...extra, _markDeclared: jsSafeName(extra._markDeclared) };
-    return super.emit(op, args, type, loc, extra);
+    const r = super.emit(op, args, type, loc, extra);
+    // a call in a speculative region's fast body: its integer arithmetic may go raw, checked
+    // (AIR passes, spec.speculative) — see _lowerSpecRegion
+    if (op === 'call' && this._specMode === 'fast') r.spec = true;
+    return r;
   }
   loc(node) {
     return node?.line != null ? { line: node.line, col: node.col || 0 } : null;
@@ -839,8 +855,17 @@ function lowerStmt_ad(ctx, node) {
     }
 
     case 'If': return lowerIf_ad(ctx, node);
-    case 'For': return lowerFor_ad(ctx, node);
-    case 'While': return lowerWhile_ad(ctx, node);
+    case 'For': case 'While': {
+      // a pure loop: a speculative region (see _lowerSpecRegion); its names declared before it,
+      // where both of its bodies and the code after it see them
+      if (_specLoopEligible(ctx, node)) {
+        const l = ctx.loc(node);
+        const names = _specWritten([node]);
+        for (const n of names) _preDeclareTargetNames(ctx, { type: 'Name', id: n }, l);
+        return _lowerSpecRegion(ctx, [node], names, l);
+      }
+      return node.type === 'For' ? lowerFor_ad(ctx, node) : lowerWhile_ad(ctx, node);
+    }
 
     case 'FunctionDef':
     case 'AsyncFunctionDef':
@@ -922,8 +947,10 @@ function lowerExpr_ad(ctx, node) {
       if (v === null) return ctx.emit('const', [null], DYNAMIC, l);
       if (typeof v === 'boolean') return ctx.emit('const', [v], BOOL, l);
       if (typeof v === 'number') {
-        const isInt = Number.isInteger(v) && v >= -2147483648 && v <= 2147483647;
-        return ctx.emit('const', [v], isInt ? I32 : F64, l);
+        // an int literal is an int whatever its size (i32 means "integer-valued" in adder's
+        // unhinted emission — no `| 0`): its arithmetic is then range-checked, where an f64 type
+        // would let `x * x` past 2**53 go by as a float. A float literal is a float, 2.0 included.
+        return ctx.emit('const', [v], Number.isInteger(v) && !node.intFloat ? I32 : F64, l);
       }
       if (typeof v === 'string') return ctx.emit('const', [v], STRING, l);
       // an imaginary literal (2j): a complex made at run time
@@ -2147,9 +2174,12 @@ function _isPlainRangeCall(ctx, n) {
 // iteration; `lowerBody()` lowers the rest of the body.
 function _emitCountedRange(ctx, rangeCall, l, { prepare, bindTarget, lowerBody }) {
   const argOps = rangeCall.args.map((a) => lowerExpr_ad(ctx, a));
-  const rng = emitPyCall(ctx, 'rangeArgs', [ctx.emit('array_new', argOps.map((o) => o.id), DYNAMIC, l)], l);
+  // in a fast body the counter is a number or the region bails (a range past 2**53), before the loop
+  const fast = ctx._specMode === 'fast';
+  const rng = emitPyCall(ctx, fast ? 'rangeArgsFast' : 'rangeArgs', [ctx.emit('array_new', argOps.map((o) => o.id), DYNAMIC, l)], l);
   const rngName = ctx.makeTempName('rng');
   ctx.emit('store', [rngName, rng.id], VOID, l);
+  if (fast) emitPyCall(ctx, 'okRange', [ctx.emit('load', [rngName], DYNAMIC, l)], l);
   const part = (i) => {
     const v = emitPyCall(ctx, 'getitem', [ctx.emit('load', [rngName], DYNAMIC, l), ctx.emit('const', [i], I32, l)], l);
     const name = ctx.makeTempName(['k', 'stop', 'step', 'dir'][i]);
@@ -2178,8 +2208,11 @@ function _emitCountedRange(ctx, rangeCall, l, { prepare, bindTarget, lowerBody }
     ctx.emit('store', [K, next.id], VOID, l);
   });
   const bodyOps = captureOps(ctx, () => {
-    // the loop variable: an integer (as the `_py.iter(range(...))` typing gave it)
-    bindTarget(ctx.emit('load', [K], I32, l).id);
+    // the loop variable: an integer (as the `_py.iter(range(...))` typing gave it) — the counter
+    // itself in a fast body (a number there); elsewhere canonical (rangeVar: a BigInt counter's
+    // value inside ±2**53 is a number)
+    const k = ctx.emit('load', [K], I32, l);
+    bindTarget(fast ? k.id : emitPyCall(ctx, 'rangeVar', [k], l).id);
     lowerBody();
   });
   return ctx.emit('for_region', [], VOID, l, {
@@ -2278,6 +2311,101 @@ function _namesInTopLoops(body) {
   };
   walk(body, false);
   return out;
+}
+
+// ── Speculate and restart (big ints step 3; AIR spec_region) ──
+// An int is a JS number up to 2**53 and a BigInt past it, so raw JS arithmetic on ints is exact
+// only while they stay small — and checking each result with a helper to call on the rare path
+// costs a call-free loop ~4x in V8 (a never-taken call), where a check that only throws costs
+// ~1.4x. So a region whose effects stay in its own names (a pure function body; a pure loop) is
+// compiled twice: FAST, its int arithmetic raw, each result checked by a throw (and a global's
+// unbound test, and a range past 2**53, likewise bail); GENERIC, nothing assumed, exact. A bail
+// puts the names back and runs GENERIC — from the region's start, which nobody can tell from
+// running once because the region touched nothing else — and the region stays GENERIC after.
+// Outside such regions int arithmetic is never raw (AIR passes: spec.speculative).
+//
+// Pure: assignments to plain local names, if / while / `for x in range(…)`, return / break /
+// continue / pass; expressions of names, constants, operators, subscripts, tuples, and calls to
+// abs / min / max / len and to the function itself. A dunder of a value the region reads (a
+// user __add__, __getitem__ …) runs again on a bail — a region with such values has no raw int
+// arithmetic to check and so never bails, unless it mixes them with checked ints: an accepted
+// corner.
+const _SPEC_PURE_BUILTINS = new Set(['abs', 'min', 'max', 'len']);
+function _specPure(ctx, stmts, env) {
+  const target = (t) => (t.type === 'Name' ? !env.globals.has(t.id)
+    : (t.type === 'Tuple' || t.type === 'List') && t.elts.every((e) => e.type === 'Name' && !env.globals.has(e.id)));
+  const expr = (e) => {
+    if (!e) return true;
+    switch (e.type) {
+      case 'Constant': case 'Name': return true;
+      case 'BinOp': return expr(e.left) && expr(e.right);
+      case 'UnaryOp': return expr(e.operand);
+      case 'BoolOp': return e.values.every(expr);
+      case 'Compare': return expr(e.left) && e.comparators.every(expr);
+      case 'IfExp': return expr(e.test) && expr(e.body) && expr(e.orelse);
+      case 'Subscript': return expr(e.value) && expr(e.slice);
+      case 'Slice': return expr(e.lower) && expr(e.upper) && expr(e.step);
+      case 'Tuple': return e.elts.every((x) => x.type !== 'Starred' && expr(x));
+      case 'Call': {
+        if (e.func.type !== 'Name' || (e.keywords && e.keywords.length) || e.args.some((a) => a.type === 'Starred')) return false;
+        const id = e.func.id;
+        const builtin = _SPEC_PURE_BUILTINS.has(id) && !ctx.symbols.has(id) && !ctx.defines.has(id);
+        return (builtin || (env.self && id === env.self)) && e.args.every(expr);
+      }
+      default: return false;
+    }
+  };
+  const stmt = (s) => {
+    switch (s.type) {
+      case 'Assign': return s.targets.every(target) && expr(s.value);
+      case 'AugAssign': return s.target.type === 'Name' && !env.globals.has(s.target.id) && expr(s.value);
+      case 'AnnAssign': return s.target.type === 'Name' && !env.globals.has(s.target.id) && expr(s.value);
+      case 'If': return expr(s.test) && body(s.body) && body(s.orelse);
+      case 'While': return expr(s.test) && body(s.body) && body(s.orelse);
+      case 'For': return !s.isAsync && s.target.type === 'Name' && !env.globals.has(s.target.id) &&
+        _isPlainRangeCall(ctx, s.iter) && s.iter.args.every(expr) && body(s.body) && body(s.orelse);
+      case 'Return': return env.inFunction && expr(s.value);
+      case 'Break': case 'Continue': case 'Pass': return true;
+      case 'Expr': return s.value.type === 'Constant';
+      default: return false;
+    }
+  };
+  const body = (b) => !b || b.every(stmt);
+  return body(stmts);
+}
+// the names a statement list binds (its assignment and loop targets)
+function _specWritten(stmts, out = new Set()) {
+  const t = (x) => { if (x.type === 'Name') out.add(x.id); else if (x.elts) x.elts.forEach(t); };
+  for (const s of stmts || []) {
+    if (s.type === 'Assign') s.targets.forEach(t);
+    else if (s.type === 'AugAssign' || s.type === 'AnnAssign' || s.type === 'For') t(s.target);
+    for (const k of ['body', 'orelse']) if (Array.isArray(s[k])) _specWritten(s[k], out);
+  }
+  return out;
+}
+// a loop statement at a place a region can go: not in one already, not where its names are a
+// module's attributes (an imported module's top level mirrors each store onto the module)
+function _specLoopEligible(ctx, node) {
+  if (ctx._specMode || ctx._classBodyOf || ctx._compDepth) return false;
+  if (ctx.topLevel && (ctx.moduleMirror || ctx.usesGlobals)) return false;
+  return _specPure(ctx, [node], { globals: ctx._fnGlobals || new Set(), self: null, inFunction: !ctx.topLevel });
+}
+// lower `stmts` as a spec_region: FAST, then GENERIC from the same symbol state; `saves` the
+// (Python) names the region writes
+function _lowerSpecRegion(ctx, stmts, saves, l) {
+  const frame = ctx.symbols.bindings;
+  const entry = new Map(frame);
+  const lowerAll = (mode) => {
+    frame.clear();
+    for (const [k, v] of entry) frame.set(k, v);
+    const saved = ctx._specMode;
+    ctx._specMode = mode;
+    try { return captureOps(ctx, () => { for (const s of stmts) lowerStmt_ad(ctx, s); }); }
+    finally { ctx._specMode = saved; }
+  };
+  const fast = lowerAll('fast');
+  const generic = lowerAll('generic');
+  return ctx.emit('spec_region', [], VOID, l, { fast, generic, saves: [...saves].map(jsSafeName) });
 }
 
 function _preDeclareTargetNames(ctx, target, l) {
@@ -2766,7 +2894,16 @@ function lowerFuncDef(ctx, node) {
           typeof node.body[0].value.value === 'string') {
         startIdx = 1;
       }
-      for (let i = startIdx; i < node.body.length; i++) lowerStmt_ad(ctx, node.body[i]);
+      // a pure body: a speculative region (see _lowerSpecRegion) — not a generator's (a bail
+      // can't take back what it yielded), not inside a region already
+      const stmts = node.body.slice(startIdx);
+      const env = { globals: ctx._fnGlobals, self: name, inFunction: true };
+      if (!isGenerator && !ctx._specMode && _specPure(ctx, stmts, env)) {
+        const saves = new Set([...(node.params || []).map((p) => p.name), ..._specWritten(stmts)]);
+        _lowerSpecRegion(ctx, stmts, saves, l);
+      } else {
+        for (const s of stmts) lowerStmt_ad(ctx, s);
+      }
     });
 
     ctx.topLevel = savedTopLevel;

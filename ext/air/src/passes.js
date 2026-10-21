@@ -450,6 +450,29 @@ export function propagateTypes(module, opts = {}) {
           break;
         }
 
+        case 'spec_region': {
+          // the two bodies are alternatives from the same entry state, as an if's branches
+          const saved = new Map(nameTypes);
+          if (op.fast) propagate(op.fast);
+          const afterFast = new Map(nameTypes);
+          nameTypes.clear();
+          for (const [k, v] of saved) nameTypes.set(k, v);
+          if (op.generic) propagate(op.generic);
+          const afterGeneric = new Map(nameTypes);
+          nameTypes.clear();
+          for (const [k, v] of saved) nameTypes.set(k, v);
+          const written = new Set();
+          collectWrittenNames(op.fast || [], written);
+          collectWrittenNames(op.generic || [], written);
+          for (const name of written) {
+            const t1 = afterFast.has(name) ? afterFast.get(name) : saved.get(name);
+            const t2 = afterGeneric.has(name) ? afterGeneric.get(name) : saved.get(name);
+            nameTypes.set(name, unionType(t1, t2));
+          }
+          types.set(op.id, VOID);
+          break;
+        }
+
         case 'for_region': {
           if (op.init) propagate(op.init);
           // Type-fixed-point for loop variables (see loopFixpoint): a variable declared
@@ -582,10 +605,15 @@ export function foldConstants(module) {
             case 'div': val = lhsOp.args[0] / rhsOp.args[0]; break;
             case 'mod': val = lhsOp.args[0] % rhsOp.args[0]; break;
           }
+          // (a checked integer op folds only to a result inside its range — else the check at run
+          // time decides — and stays integer-typed whatever its size)
+          if (op.intCheck && !(Number.isInteger(val) && Math.abs(val) <= op.intCheck)) val = undefined;
           if (val !== undefined && isFinite(val)) {
+            const t = op.intCheck ? op.type : Number.isInteger(val) && val >= -2147483648 && val <= 2147483647 ? I32 : F64;
             op.op = 'const';
             op.args = [val];
-            op.type = Number.isInteger(val) && val >= -2147483648 && val <= 2147483647 ? I32 : F64;
+            op.type = t;
+            delete op.intCheck;
             changed = true;
           }
         }
@@ -715,6 +743,8 @@ export function insertHints(module, typeMap) {
 //                 under which the helper would hand that argument back unchanged; emit-js tests
 //                 it inline, `(cond ? v : helper(v, …))`, so the common case makes no call
 //                 (adder: freeName's `%v !== undefined`, the range counter's `typeof %v !== 'bigint'`)
+//   speculative — a number N: with an integer-typed operand, rewrite only inside a spec_region's
+//                 fast body, the integer result checked to stay within ±N (see the gate below)
 //   customEmit  — when true, specializeRuntimeHelpers does op-specific
 //                 rewriting (e.g. between → (v >= lo) && (v <= hi))
 const _specsByNamespace = new Map();
@@ -939,6 +969,17 @@ export function specializeRuntimeHelpers(module, types) {
 
       // Determine result type
       const resT = spec.resultType(...argTypes);
+
+      // Speculation (spec.speculative: the range an integer result must stay in, e.g. 2**53-1):
+      // the raw operator is exact on numbers only, and an integer-typed operand may hold a value
+      // past the range (adder: a BigInt). With one, the op goes raw only inside a spec_region's
+      // fast body (the lowerer marks those calls `spec`), an integer result checked against the
+      // range there (intCheck: emit-js bails the region when it leaves it; a BigInt operand
+      // throws a TypeError the region takes as a bail too). Elsewhere the helper stays.
+      if (spec.speculative && argTypes.some(isInteger)) {
+        if (!op.spec) continue;
+        if (isInteger(resT)) op.intCheck = spec.speculative;
+      }
 
       // Constant: the result is known from the operand types alone (`_py.isThen(number)` → false)
       if ('constValue' in spec) {

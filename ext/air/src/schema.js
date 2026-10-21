@@ -293,6 +293,24 @@ export const OP_SCHEMA = {
     },
     introduces_scope: true,
   },
+  // spec_region — speculate and restart. `fast` runs first, its integer arithmetic raw, each
+  // result range-checked and each operand tested to be a number (ops marked intCheck), its guards
+  // written as checks: one that fails bails. Then the names in `saves` get their entry values
+  // back and `generic` — the same code with nothing assumed — runs instead, and from then on
+  // every run of the region goes straight to it (a flag the emitter keeps at module level).
+  // Sound only for a region without effects outside those names: the frontend decides that.
+  spec_region: {
+    arity: 'fixed', args: [],
+    result: 'void', side_effecting: true, can_be_async: false,
+    regions: {
+      fast: { scope: 'block' },
+      generic: { scope: 'block' },
+    },
+    extras: {
+      saves: 'names',     // the names the region writes (restored on a bail)
+    },
+    introduces_scope: true,
+  },
   labeled: {
     arity: 'fixed', args: [LABEL],
     result: 'void', side_effecting: true, can_be_async: false,

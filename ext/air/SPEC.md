@@ -701,6 +701,37 @@ A subgraph is WASM-eligible if:
 WASM-eligible functions are flagged for the atra emitter. The JS emitter
 produces a thin wrapper that calls into the WASM module.
 
+### 8.7 Speculate and Restart (`spec_region`)
+
+A frontend whose integers outgrow JS numbers (adder: an int past 2**53 is a BigInt) can't let
+raw JS arithmetic run on integer-typed values unchecked, and checking each result with a helper
+call on the rare path costs a call-free hot loop ~4x in V8 — a never-taken call, or a `try`
+around the loop, keeps it from being optimized as a plain numeric loop; a jump does not. So:
+
+- A **specialization** may declare `speculative: N` (§8, the runtime-helper registry). With an
+  integer-typed operand, such a helper becomes the raw operator only inside a `spec_region`'s
+  `fast` body (the frontend marks those calls `spec`), its integer result marked `intCheck: N`;
+  everywhere else the helper call stays. A `guard` specialization inside `fast` becomes a bail
+  check too.
+- **`spec_region { fast, generic, saves }`**: the frontend lowers one statement list twice —
+  `fast` assuming its integers stay within ±N, `generic` assuming nothing — and lists the names
+  it writes. emit-js writes
+  ```js
+  let __spb = __sp;                        // __sp: module-level "this region has bailed"
+  if (!__spb) {
+    const __sv_x = x;                      // saves
+    __ok: { __bail: { FAST; break __ok; }  // each check: if (!(…)) break __bail;
+            __sp = 1; __spb = 1; x = __sv_x; }
+  }
+  if (__spb) { GENERIC }
+  ```
+  where each `intCheck` op tests its operands to be numbers and its result to be in range. A
+  region that bails runs `generic` from its start, and every later run goes straight there.
+- **Soundness is the frontend's:** restarting is invisible only if the region has no effects
+  beyond its `saves` (adder speculates on pure function bodies and pure loops, by a syntactic
+  test). A `fast` body with nothing that can bail is emitted alone. The interpreter runs
+  `generic` (it is the region's meaning).
+
 ## 9. JS Emitter
 
 ### 9.1 Normal Mode
@@ -1438,7 +1469,7 @@ loop transforms), a relooper could recover structure. Deferred.
 
 Auto-generated from `ext/air/src/schema.js#OP_SCHEMA`. Run `node ext/air/gen-ops-doc.js` to regenerate.
 
-Total: 69 op types.
+Total: 70 op types.
 
 ### Constants & loads
 
@@ -1565,6 +1596,7 @@ Total: 69 op types.
 | `if_region` | fixed `[ssa]` | `value` | yes | — | then_body: block, else_body?: block | _then_val, else_val, phis_ |
 | `labeled` | fixed `[label]` | `void` | yes | — | body: block | _is_block_ |
 | `loop_region` | fixed `[]` | `void` | yes | — | test?: loop, body: loop, update?: loop | _test_val, phis, kind_ |
+| `spec_region` | fixed `[]` | `void` | yes | — | fast: block, generic: block | **saves** |
 | `switch_region` | fixed `[ssa]` | `void` | yes | — | — | **cases** |
 | `try_region` | fixed `[]` | `void` | yes | — | try_body: block, catch_body?: block, finally_body?: block | _catch_param_ |
 

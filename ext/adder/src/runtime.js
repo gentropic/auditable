@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin, intNorm,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
 
@@ -987,15 +987,21 @@ export const _py = {
   isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',
   // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range()
   // does. A range whose values or counter run past 2**53 counts in BigInts (the loop's raw `<`, `+`
-  // and `(k - stop) * dir < 0` hold for them too). OPEN (ROADMAP big ints step 3): the loop
-  // variable is typed int and bound raw, so in such a range a value inside ±2**53 is a BigInt
-  // (not canonical) and typed arithmetic on one throws — a per-iteration normalization costs 4x
-  // on every range loop in V8, so it waits for step 3's answer to "a typed int that may be big".
+  // and `(k - stop) * dir < 0` hold for them too); rangeVar hands each value to the loop variable
+  // canonical. In a speculative region's fast body (air-lower _lowerSpecRegion) the loop variable
+  // is a number, its arithmetic raw: there rangeArgsFast gives null for such a range, which the
+  // body's okRange guard bails at, before the loop.
   rangeArgs: (args) => {
     const r = new AdderRange(...args);   // the same validation as range()
     if (r.big) { const [s, e, t] = r.big; return [s, e, t, t > 0n ? 1n : -1n]; }
     return [r.start, r.stop, r.step, r.step > 0 ? 1 : -1];
   },
+  rangeArgsFast: (args) => {
+    const r = new AdderRange(...args);
+    return r.big ? null : [r.start, r.stop, r.step, r.step > 0 ? 1 : -1];
+  },
+  okRange: (rng) => rng,   // (only ever reached as its guard: see air-lower's okRange spec)
+  rangeVar: (k) => (typeof k === 'bigint' ? intNorm(k) : k),
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
   // when there is one, else the async variant
   genExpr: (src, syncGen, asyncGen) => {
