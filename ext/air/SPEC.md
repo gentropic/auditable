@@ -400,7 +400,7 @@ Every operation is a plain JS object:
 |-----------------|-----------------|---------|------------------------------|
 | `call`          | fn, ...args     | T       | Function call                |
 | `call_method`   | obj, method, ...args | T  | obj.method(args)             |
-| `await`         | value           | T       | Await promise (marks cell async) |
+| `await`         | value           | T       | Await promise (marks cell async); `maybe: true` waits only for a thenable, `weak: true` only in a function already async (§9.1) |
 | `return`        | value           | void    | Function return              |
 
 #### Control Flow (Regions)
@@ -807,6 +807,32 @@ expressions. If none are present, the cell is emitted as a plain `Function`
 instead of `AsyncFunction`, avoiding promise/microtask overhead. The
 `executeDAG` loop already handles both — sync functions return immediately,
 async functions are awaited.
+
+**`maybe` awaits.** `await v` costs a turn of the microtask queue (~130 ns in
+V8) even when `v` is not a thenable. A frontend whose calls *may* be async but
+usually aren't (adder: every Python call site whose callee AIR can't prove
+synchronous — `math.sqrt(x)`, a method) marks the op `maybe: true`, emitted as
+
+```js
+let _7_a;                                   // a bare declaration: no flush of pending values
+... ((_7_a = CALL)?.then ? await _7_a : _7_a) ...
+```
+
+A non-thenable passes through in the same turn; a truthy `then` that isn't a
+function goes to the `await`, which hands the value back unchanged — the same
+value in every case, minus the yield. The temp is declared bare and assigned
+inline because a full `let t = CALL;` statement would first materialise the
+pending single-use values ahead of it (a spread argument among them, which
+can't stand alone).
+
+**`weak` awaits** (`maybe` + `weak`) never make a function async: `needsAsync`
+and the per-function check skip them, and the emitter, which tracks whether the
+function it is writing is async (`ctx.fnAsync`: the module from `needsAsync`,
+each `func_region` from its prefix, each class member from `is_async`), writes a
+weak await in a synchronous function as its bare value. adder puts one on every
+store that can run Python code (`obj.x = v` → a `__setattr__`, `obj[k] = v`,
+`del …`): an async `__setattr__` is waited for where waiting is possible anyway,
+and a method that only sets attributes — a constructor — stays a plain function.
 
 ### 9.2 Hinted Mode (V8 Optimization Patterns)
 
@@ -1576,7 +1602,7 @@ Total: 70 op types.
 
 | op | arity / args | result | side fx | async | regions | extras (**req** · _opt_) |
 | --- | --- | --- | --- | --- | --- | --- |
-| `await` | fixed `[ssa]` | `value` | yes | yes | — | — |
+| `await` | fixed `[ssa]` | `value` | yes | yes | — | _maybe, weak_ |
 | `call` | variadic `ssa_list` | `value` | yes | yes | — | — |
 | `call_method` | variadic `method_call` | `value` | yes | yes | — | — |
 | `import` | fixed `[ssa]` | `value` | yes | yes | — | — |

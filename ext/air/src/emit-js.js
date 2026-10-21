@@ -20,6 +20,7 @@ export function needsAsync(module) {
   // install/fetch and want awaiting.
   function check(ops) {
     for (const op of ops) {
+      if (op.op === 'await' && op.weak) continue;   // (waits only where something else made it async)
       if (canBeAsync(op)) return true;
       if (op.op === 'for_of_region' && (op.is_await || op.hybrid)) return true;
       let found = false;
@@ -268,6 +269,9 @@ export function emitJS(module, scopeKeys, injectedNames, options = {}) {
 
   ctx.line('"use strict";');
 
+  // (is the function being emitted async? a weak await waits only there — the module's body is
+  // run as an AsyncFunction exactly when needsAsync says so)
+  ctx.fnAsync = needsAsync(module);
   emitOps(ctx, module.ops);
   // (each spec_region's "has bailed" flag lives as long as the module: once a region has met a
   // value its fast body can't take, later runs go straight to its generic body)
@@ -675,6 +679,21 @@ function emitCallMethod(ctx, op) {
 
 function emitAwait(ctx, op) {
   const arg = ctx.ref(op.args[0]);
+  // weak: in a function nothing else made async, no wait at all — the value as it is
+  if (op.weak && !ctx.fnAsync) { register(ctx, op, arg); return; }
+  // maybe: only a thenable is waited for. `await v` on any other value still costs a turn of the
+  // microtask queue (~130 ns), which a loop of usually-synchronous calls pays every iteration
+  // (the temp is declared bare and assigned inline: a statement here would first materialise the
+  // pending inlined values — a spread argument `f(*a, x.m())` among them, which can't stand alone)
+  if (op.maybe) {
+    const t = `${ctx.varName(op.id)}_a`;
+    ctx.lines.push('  '.repeat(ctx.indent) + `let ${t};`);
+    // (`?.then` reads undefined off null / undefined and off a primitive's prototype — as fast as
+    // an object check first, and shorter at every call site. A truthy `then` that isn't a function
+    // — a dict with a "then" key — goes to the await, which gives the value back as it is)
+    register(ctx, op, `((${t} = ${arg})?.then ? await ${t} : ${t})`);
+    return;
+  }
   // Parenthesize so member access on the result works correctly:
   // (await expr).prop, not await expr.prop
   register(ctx, op, `(await ${arg})`);
@@ -989,7 +1008,7 @@ function emitLoop(ctx, op) {
 function _bodyHasAwait(body) {
   if (!body || !body.length) return false;
   for (const op of body) {
-    if (op.op === 'await' || (op.op === 'for_of_region' && (op.is_await || op.hybrid))) return true;
+    if ((op.op === 'await' && !op.weak) || (op.op === 'for_of_region' && (op.is_await || op.hybrid))) return true;
     if (op.op === 'func_region' || op.op === 'class_region') continue;
     let found = false;
     forEachRegion(op, (_n, rops) => { if (!found && _bodyHasAwait(rops)) found = true; });
@@ -1079,7 +1098,10 @@ function emitFunc(ctx, op) {
     ctx.pushScope();
     for (const p of (op.params || [])) ctx.scope.declare(p.name);
     _hoistFunctionLocals(ctx, op.body);
+    const savedAsync = ctx.fnAsync;
+    ctx.fnAsync = !!asyncPrefix;
     if (op.body) emitOps(ctx, op.body);
+    ctx.fnAsync = savedAsync;
     ctx.popScope();
     ctx.pop();
     ctx.line(rebind ? '};' : '}');
@@ -1096,7 +1118,10 @@ function emitFunc(ctx, op) {
     ctx.pushScope();
     for (const p of (op.params || [])) ctx.scope.declare(p.name);
     _hoistFunctionLocals(ctx, op.body);
+    const savedAsync = ctx.fnAsync;
+    ctx.fnAsync = !!asyncPrefix;
     if (op.body) emitOps(ctx, op.body);
+    ctx.fnAsync = savedAsync;
     ctx.popScope();
     ctx.pop();
     const bodyLines = ctx.lines;
@@ -1341,7 +1366,10 @@ function emitClassMember(ctx, m) {
 
   ctx.line(`${prefix}${asyncPrefix}${kindPrefix}${star}${keyStr}(${params}) {`);
   ctx.push();
+  const savedAsync = ctx.fnAsync;
+  ctx.fnAsync = !!asyncPrefix;
   if (fnOp?.body) emitOps(ctx, fnOp.body);
+  ctx.fnAsync = savedAsync;
   ctx.pop();
   ctx.line('}');
 }

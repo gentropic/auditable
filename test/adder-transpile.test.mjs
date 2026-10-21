@@ -826,6 +826,79 @@ describe('adder transpile — speculate and restart', () => {
 // A compiled unit's JS depends only on its source and options — not on what compiled before it
 // (each unit numbers its method-call cache slots from 0 in its own table): the property that lets
 // a compiled module be cached and reused
+describe('adder transpile — module-function calls and maybe-awaits', () => {
+  const emit = (src) => {
+    const air = lowerAdder(adderParse(src), src);
+    runPasses(air);
+    return emitJS(air, ['_py', ...air.imports], [], { hinted: false });
+  };
+  it('a call through a module: its function, a patched one, a callable instance, a class', async () => {
+    const src = [
+      'import math, fractions, collections',
+      'class Twice:', '    def __call__(self, x): return 2 * x',
+      'old = math.sqrt', 'a = math.sqrt(16)', 'math.sqrt = lambda x: -x', 'b = math.sqrt(4)', 'math.sqrt = old',
+      'math.twice = Twice()',
+      "r = a, b, math.sqrt(9), math.twice(21), str(fractions.Fraction(1, 3)), collections.Counter('aab')['a']",
+    ].join('\n');
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r], [4, -4, 3, 42, '1/3', 2]);
+  });
+  it('a call is awaited only when it gives a thenable', () => {
+    const js = emit('import math\ndef f(x):\n    return math.sqrt(x) + g(x)\n');
+    assert.match(js, /\(\(_\d+_a = \(_py\.callMethod\)\(math, "sqrt", [^)]*\)\)\?\.then \? await _\d+_a : _\d+_a\)/);
+    assert.match(js, /\(\(_\d+_a = \(_py\.fnOf\)\(g\)\(x\)\)\?\.then \? await _\d+_a : _\d+_a\)/);
+    assert.doesNotMatch(js, /\(await \(_py\.(callMethod|fnOf)\)/);
+  });
+  it('a value with a "then" key, an argument spread before the call, a coroutine object', async () => {
+    const src = [
+      'import asyncio',
+      'log = []',
+      'class C:', '    def get(self): return {"then": 5}', "    def m(self):", "        log.append('m')", '        return 3',
+      '    async def h(self): return 8',
+      "def a():", "    log.append('a')", '    return [1, 2]',
+      'def f(*xs): return xs',
+      'async def g(): return 7',
+      'async def main():', '    c = g()', '    d = C().h()', '    return type(c).__name__, await c, await d',
+      'r = C().get()["then"], f(*a(), C().m()), log, asyncio.run(main())',
+    ].join('\n');
+    for (const run of [airRun, twRun]) {
+      const r = (await run(src)).r;
+      assert.equal(r[0], 5);
+      assert.deepEqual([...r[1]], [1, 2, 3]);
+      assert.deepEqual(r[2], ['a', 'm']);
+      assert.deepEqual([...r[3]], ['coroutine', 7, 8]);
+    }
+  });
+  it('a store runs its __setattr__ / __setitem__ to the end — an import of a loaded module inside one', async () => {
+    // networkx's config: `self.x = v` runs a __setattr__ that does `from .backends import …`
+    const src = [
+      'import math',
+      'class Cfg:',
+      '    def __setattr__(self, k, v):',
+      '        from math import sqrt',
+      '        object.__setattr__(self, k, sqrt(v))',
+      'class Box:',
+      '    def __init__(self): self.d = {}',
+      '    def __getitem__(self, k): return self.d[k]',
+      '    def __setitem__(self, k, v):',
+      '        import math',
+      '        self.d[k] = math.floor(v)',
+      'def mk():',
+      '    c = Cfg()',
+      '    c.x = 16',
+      '    b = Box()',
+      '    b["y"] = 2.5',
+      '    return c.x, b["y"]',
+      'r = mk()',
+    ].join('\n');
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r], [4, 2]);
+  });
+  it('an attribute store keeps a method synchronous (a constructor stays a plain function)', () => {
+    const js = emit('class F:\n    def __init__(self, g):\n        self.g = g\n');
+    assert.match(js, /"__init__": function \(self, g\)/);
+    assert.doesNotMatch(js, /\bawait\b[^\n]*setattr/);
+  });
+});
+
 describe('adder transpile — deterministic output', () => {
   const emit = (src, opts) => {
     const air = lowerAdder(adderParse(src), src, opts);

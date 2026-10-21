@@ -2239,6 +2239,21 @@ const _modAttr = (mod, k) => {
   const v = mod[k];
   return typeof v === 'function' && mod.__adderModule__ && !v._pyClass && !v._pyFunc && !v._pyDef ? adderGetAttr(mod, k) : v;
 };
+// The same, answered now when it can be: the module already in sys.modules, every name one of its
+// attributes — { boundName: value }, else null (a module still to load, a submodule, a module
+// __getattr__, `*`: importNames). An import inside a function of a module loaded long ago is the
+// common case, and code that can't wait — a __setattr__ run by `obj.x = v`, a property — can then
+// import, as CPython's can.
+export function importNamesNow(modName, names) {
+  const mod = adderModules.sys.modules[modName];
+  if (!mod) return null;
+  const out = {};
+  for (const { name, alias } of names) {
+    if (name === '*' || !(name in mod) || mod[name] === undefined) return null;
+    out[alias || name] = _modAttr(mod, name);
+  }
+  return out;
+}
 export async function importNames(mod, modName, names, line) {
   const out = [];
   for (const { name, alias } of names) {

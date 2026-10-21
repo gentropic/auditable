@@ -163,6 +163,10 @@ export const OP_SCHEMA = {
   await: {
     arity: 'fixed', args: [SSA],
     result: 'value', side_effecting: true, can_be_async: true,
+    // maybe: wait only for a thenable — any other value passes through without a turn of the
+    // microtask queue (a call that is usually synchronous, in a loop). weak: wait only in a
+    // function that is async anyway — it never makes one async (in a sync one it is the value)
+    extras: { maybe: 'bool?', weak: 'bool?' },
   },
   spread: {
     arity: 'fixed', args: [SSA],

@@ -588,6 +588,18 @@ function emitPyCall(ctx, method, args, loc, type) {
   return ctx.emitNamespacedCall('_py', method, args, loc, type);
 }
 
+// A store or delete that can run Python code — `obj.x = v` (a __setattr__, a property's setter),
+// `obj[k] = v`, `del obj[k]`, `del obj.x` — gives that code's result, a Promise when it is async
+// (a __setattr__ that imports, as networkx's config does). It is waited for in a function that is
+// async anyway, as a `maybe weak` await: a store that finished synchronously costs no microtask,
+// and a store never makes a function async (a method only setting attributes stays a plain
+// function — a constructor's __init__ must). Where it can't wait (a function that isn't async,
+// sync mode), the helper's result is dropped, as before.
+function emitPyStore(ctx, method, args, loc) {
+  const call = emitPyCall(ctx, method, args, loc, DYNAMIC);
+  if (!ctx._syncMode) ctx.emit('await', [call.id], VOID, loc, { maybe: true, weak: true });
+}
+
 // Emit `_py.iter(src)`, with an `await` when the source value might be an
 // async iterable. _iterArray (the runtime helper) returns a Promise<Array>
 // for async iterables and a sync iterable otherwise; the await is correct
@@ -632,10 +644,14 @@ function emitPyIter(ctx, src, loc, type, helper = 'iter', extra = []) {
 // user FunctionDef that analyseSyncFunctions classified as sync); the await
 // wrapping is then skipped, which is the difference between fib being a
 // Promise-allocating loop and a tight sync recursion.
+// The await is a `maybe` one (so is a method call's): only a Promise is waited for. A synchronous
+// result goes on without a turn of the microtask queue, as a CPython call never yields to another
+// task — and a loop calling math.sqrt doesn't pay ~130 ns a call for it. (A coroutine object
+// isn't a thenable: it passes through either way.)
 function emitAwaitedCall_ad(ctx, fnId, argIds, loc, type, opts) {
   const call = ctx.emit('call', [fnId, ...argIds], type || DYNAMIC, loc);
   if (opts && opts.sync) return call;
-  return ctx.emit('await', [call.id], type || DYNAMIC, loc);
+  return ctx.emit('await', [call.id], type || DYNAMIC, loc, { maybe: true });
 }
 
 // ── Main entry ──
@@ -1411,7 +1427,7 @@ function lowerCall_ad(ctx, node) {
     for (const id of argIds) callArgs.push({ id });
     if (kwObjId) callArgs.push({ id: kwObjId });
     const call = emitPyCall(ctx, 'callMethod', callArgs, l);
-    return ctx.emit('await', [call.id], DYNAMIC, l);
+    return ctx.emit('await', [call.id], DYNAMIC, l, { maybe: true });
   }
 
   const isSyncCallee =
@@ -1526,7 +1542,7 @@ function lowerAssignTarget(ctx, target, value, l) {
   if (target.type === 'Attribute') {
     const obj = lowerExpr_ad(ctx, target.value);
     const name = ctx.emit('const', [target.attr], STRING, l);
-    emitPyCall(ctx, 'setattr', [obj, name, value], l, VOID);
+    emitPyStore(ctx, 'setattr', [obj, name, value], l);
     return;
   }
   if (target.type === 'Subscript') {
@@ -1535,18 +1551,18 @@ function lowerAssignTarget(ctx, target, value, l) {
       const lower = target.slice.lower ? lowerExpr_ad(ctx, target.slice.lower) : ctx.emit('const', [null], VOID, l);
       const upper = target.slice.upper ? lowerExpr_ad(ctx, target.slice.upper) : ctx.emit('const', [null], VOID, l);
       const step = target.slice.step ? lowerExpr_ad(ctx, target.slice.step) : ctx.emit('const', [null], VOID, l);
-      emitPyCall(ctx, 'setslice', [obj, lower, upper, step, value], l, VOID);
+      emitPyStore(ctx, 'setslice', [obj, lower, upper, step, value], l);
       return;
     }
     if (target.slice.type === 'Tuple') {
       const elts = target.slice.elts.map(elt => _lowerSliceElt(ctx, elt, l));
       const arr = ctx.emit('array_new', elts.map(e => e.id), DYNAMIC, l);
       const tupleKey = emitPyCall(ctx, 'tuple', [arr], l);
-      emitPyCall(ctx, 'setitem', [obj, tupleKey, value], l, VOID);
+      emitPyStore(ctx, 'setitem', [obj, tupleKey, value], l);
       return;
     }
     const key = lowerExpr_ad(ctx, target.slice);
-    emitPyCall(ctx, 'setitem', [obj, key, value], l, VOID);
+    emitPyStore(ctx, 'setitem', [obj, key, value], l);
     return;
   }
   throw new AirLowerError(`unsupported assign target: ${target.type}`);
@@ -2019,11 +2035,10 @@ function lowerImport(ctx, node) {
       bindName = alias;
     } else {
       const nameConst = ctx.emit('const', [module], STRING, l);
-      // _py.import is async (it may need to async-load a module from VFS), so
-      // the emitted call must be awaited. Unlike the sync `_py.*` helpers
-      // (add, sub, truthy, ...), the result is a Promise, not the module.
+      // _py.import may need to load a module (from the VFS, a frozen source): then it gives a
+      // Promise, which is awaited; a module already in sys.modules it gives as it is.
       const call = emitPyCall(ctx, 'import', [nameConst], l);
-      mod = ctx.emit('await', [call.id], DYNAMIC, l);
+      mod = ctx.emit('await', [call.id], DYNAMIC, l, { maybe: true });   // (a loaded module is answered now)
       // For dotted names like `a.b`, bind the top-level `a` (with `b` reachable on it) unless aliased.
       bindName = alias || module.split('.')[0];
       if (!alias && module.includes('.')) {
@@ -2079,7 +2094,7 @@ function lowerImportFrom(ctx, node) {
     const moduleName = ctx.emit('const', [modName], STRING, l);
     importCall = emitPyCall(ctx, 'importFrom', [moduleName, namesArr], l);
   }
-  const result = ctx.emit('await', [importCall.id], DYNAMIC, l);
+  const result = ctx.emit('await', [importCall.id], DYNAMIC, l, { maybe: true });   // (names of a loaded module: answered now)
   if (star) emitPyCall(ctx, 'starInto', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l), result], l, VOID);
   // Destructure result into scope: for each name, bind (alias || name) to result[name]
   for (const { name, alias } of node.names) {
@@ -2122,15 +2137,15 @@ function lowerDelete(ctx, node) {
         const lower = target.slice.lower ? lowerExpr_ad(ctx, target.slice.lower) : ctx.emit('const', [null], VOID, l);
         const upper = target.slice.upper ? lowerExpr_ad(ctx, target.slice.upper) : ctx.emit('const', [null], VOID, l);
         const step = target.slice.step ? lowerExpr_ad(ctx, target.slice.step) : ctx.emit('const', [null], VOID, l);
-        emitPyCall(ctx, 'delslice', [obj, lower, upper, step], l, VOID);
+        emitPyStore(ctx, 'delslice', [obj, lower, upper, step], l);
       } else {
         const key = lowerExpr_ad(ctx, target.slice);
-        emitPyCall(ctx, 'delitem', [obj, key], l, VOID);
+        emitPyStore(ctx, 'delitem', [obj, key], l);
       }
     } else if (target.type === 'Attribute') {
       const obj = lowerExpr_ad(ctx, target.value);
       const name = ctx.emit('const', [target.attr], STRING, l);
-      emitPyCall(ctx, 'delattr', [obj, name], l, VOID);
+      emitPyStore(ctx, 'delattr', [obj, name], l);
     } else {
       throw new AirLowerError(`unsupported del target: ${target.type}`);
     }

@@ -10,7 +10,7 @@ import {
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin, intNorm,
 } from './builtins.js';
-import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, resolveRelativeImport } from './eval.js';
+import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, importNamesNow, resolveRelativeImport } from './eval.js';
 
 // ── Arithmetic (preserve Python semantics) ──
 
@@ -132,7 +132,8 @@ function _getitem(obj, key) {
 
 function _setitem(obj, key, value) {
   if (obj instanceof PyTuple) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support item assignment`);
-  { const f = subclassDunder(obj, '__setitem__'); if (f) { f.call(obj, key, value); return; } }
+  // (a user __setitem__'s result is returned: a Promise when it is async, which the store waits for)
+  { const f = subclassDunder(obj, '__setitem__'); if (f) return f.call(obj, key, value); }
   if (obj instanceof Map) { obj.set(key, value); return; }
   if (Array.isArray(obj)) {
     if (key instanceof PySlice) { seqSliceSet(obj, key, value); return; }
@@ -148,7 +149,7 @@ function _setitem(obj, key, value) {
     return;
   }
   if (typeof obj === 'object' && obj !== null) {
-    if (typeof obj.__setitem__ === 'function') { obj.__setitem__(key, value); return; }
+    if (typeof obj.__setitem__ === 'function') return obj.__setitem__(key, value);
     obj[key] = value;
     return;
   }
@@ -267,8 +268,7 @@ function _setslice(obj, lower, upper, step, value) {
     throw new AdderError('TypeError', "'bytes' object does not support item assignment");
   }
   if (typeof obj?.__setitem__ === 'function') {
-    obj.__setitem__(mkSlice(lower, upper, step), value);
-    return;
+    return obj.__setitem__(mkSlice(lower, upper, step), value);
   }
   if (!Array.isArray(obj)) {
     throw new AdderError('TypeError', `'${pyTypeName(obj)}' object does not support slice assignment`);
@@ -303,8 +303,7 @@ function _delslice(obj, lower, upper, step) {
     throw new AdderError('TypeError', "'bytes' object doesn't support item deletion");
   }
   if (typeof obj?.__delitem__ === 'function') {
-    obj.__delitem__(mkSlice(lower, upper, step));
-    return;
+    return obj.__delitem__(mkSlice(lower, upper, step));
   }
   if (!Array.isArray(obj)) {
     throw new AdderError('TypeError', `'${pyTypeName(obj)}' object doesn't support slice deletion`);
@@ -373,6 +372,21 @@ function _picStore(c, t, obj, name) {
   c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = t.prototype[name];
 }
 
+// A module's own attribute called (`math.sqrt(x)`, `random.random()`): read straight off the
+// module. adderGetAttr ends at the same value for one, after a long dispatch on the receiver's
+// type that cost ~130 ns a call — most of a compiled loop's time when it calls a module function.
+// (__class__ and __dict__ are computed, not stored.)
+function _isModuleAttr(obj, name) {
+  return obj !== null && typeof obj === 'object' && obj.__adderModule__ === true &&
+    name !== '__class__' && name !== '__dict__' && Object.hasOwn(obj, name);
+}
+// a module function adderGetAttr hands out as it is (a Python def, a class, one already bound, a
+// module of `this`-free functions) — the rest it binds to the module, and a call through .call is
+// the same call
+function _modPlain(obj, v) {
+  return v._pyFunc || v._pyDef || v._pyModBound || v._pyClass || obj._pyRawFns;
+}
+
 // Sync function — the underlying method may be sync OR async, and JS
 // `return` preserves that polarity. Wrapping this helper in `async`
 // would wrap every return in `Promise.resolve()` even when the method
@@ -386,6 +400,12 @@ function _callMethod(obj, name, cache, ...args) {
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : m.call(obj, ...args); }
     }
+  }
+  if (t === undefined && _isModuleAttr(obj, name)) {
+    const v = obj[name];   // (read once: a getter runs on every read)
+    if (typeof v !== 'function') return pyCallable(v)(...args);
+    if (v._pyCoro === true) return new PyCoroutine(v, _modPlain(obj, v) ? undefined : obj, args);
+    return _modPlain(obj, v) ? v(...args) : v.call(obj, ...args);
   }
   // Slow path: full adderGetAttr lookup + call.
   const fn = pyCallable(adderGetAttr(obj, name));
@@ -409,6 +429,12 @@ function _callMethodSync(obj, name, cache, ...args) {
     for (let i = 0; i < types.length; i++) {
       if (types[i] === t && cache.vers[i] === t._pyVer && !Object.hasOwn(obj, name)) { const m = cache.methods[i]; return m._pyCoro === true ? new PyCoroutine(m, obj, args) : syncOf(m).call(obj, ...args); }
     }
+  }
+  if (t === undefined && _isModuleAttr(obj, name)) {
+    const v = obj[name];
+    if (typeof v !== 'function') return _fnOfSync(v)(...args);
+    if (v._pyCoro === true) return new PyCoroutine(v, _modPlain(obj, v) ? undefined : obj, args);
+    return _modPlain(obj, v) ? syncOf(v)(...args) : syncOf(v).call(obj, ...args);
   }
   const result = _fnOfSync(adderGetAttr(obj, name))(...args);
   _picStore(cache, t, obj, name);
@@ -601,8 +627,10 @@ function _makeSet(arr) {
 
 // the same import algorithm as the tree-walker (eval.js): dotted names load their parents,
 // packages search their __path__, `from M import sub` falls back to the submodule M.sub
-async function _import(name) {
-  return importModule(name);
+// (a module already in sys.modules is answered now — see eval.js importNamesNow; the lowered
+// `await` on these is a `maybe` one, so code that can't wait can import a loaded module)
+function _import(name) {
+  return adderModules.sys.modules[name] || importModule(name);
 }
 
 async function _importPath(path) {
@@ -612,9 +640,12 @@ async function _importPath(path) {
 }
 
 // names: array of { name, alias } (or "*"); → { boundName: value }
-async function _importFrom(moduleName, names) {
+function _importFrom(moduleName, names) {
   // a cell is not in a package: a relative import there raises, as at CPython's top level
   const abs = resolveRelativeImport(moduleName, null);
+  return importNamesNow(abs, names) || _importFromAsync(abs, names);
+}
+async function _importFromAsync(abs, names) {
   const mod = await importModule(abs);
   return Object.fromEntries(await importNames(mod, abs, names));
 }
