@@ -119,18 +119,23 @@ if (_doRegisterPy) _doRegisterPy('_py', PY_SPECIALIZATIONS);
 // means passes fall back to dataflow inference (current default).
 //
 // Supported names:
-//   - Python: int → i32, float → f64, bool → bool, str → string, None → void
-//   - Direct AIR: i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, string,
+//   - Direct AIR: i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, string,
 //                 void, dynamic
 //   - Typed arrays: Int32Array, Float64Array, ..., i32array, f64array, ...
+//   - Python (int, float, bool, str, None) only under `from __adder__ import
+//     trust_annotations`: CPython never enforces them, so by default `def g(s: int)`
+//     must still double "ab" — a Python annotation is a promise only when the module says so.
 //
 // Returns DYNAMIC for anything we don't recognise — including subscripts
 // (`list[int]`, `dict[str, int]`), unions, generic tuples — so the rest of
 // the pipeline keeps working unchanged.
-const _ADDER_NAME_TO_TYPE = {
-  // Python builtins
-  'int': I32, 'float': F64, 'bool': BOOL, 'str': STRING,
+// A trusted `int` is an f64, not an i32: i32 is a wrapping type (`(a + b) | 0`), and a Python
+// int doesn't wrap — f64 is exact to 2**53, the safe range adder's ints keep as numbers.
+const _PY_NAME_TO_TYPE = {
+  'int': F64, 'float': F64, 'bool': BOOL, 'str': STRING,
   'None': VOID, 'NoneType': VOID,
+};
+const _ADDER_NAME_TO_TYPE = {
   // Direct AIR primitive names — same set the JS lowerer recognises
   'i8': I8, 'u8': U8, 'i16': I16, 'u16': U16,
   'i32': I32, 'u32': U32, 'i64': I64, 'u64': U64,
@@ -150,14 +155,15 @@ const _ADDER_NAME_TO_TYPE = {
   'i64array': typedArray('i64'), 'u64array': typedArray('u64'),
 };
 
-function resolveAdderAnnotation(node) {
+function resolveAdderAnnotation(ctx, node) {
   if (!node) return DYNAMIC;
-  // Bare name: `int`, `float`, `i32`, `Int32Array`, `None`, …
+  const trust = !!ctx.adderFlags?.includes('trust_annotations');
+  // Bare name: `i32`, `Int32Array`, … (and `int`, `float`, `None`, … when trusted)
   if (node.type === 'Name' && typeof node.id === 'string') {
-    return _ADDER_NAME_TO_TYPE[node.id] ?? DYNAMIC;
+    return _ADDER_NAME_TO_TYPE[node.id] ?? (trust && _PY_NAME_TO_TYPE[node.id]) ?? DYNAMIC;
   }
   // `None` written as a literal constant in some annotation shapes.
-  if (node.type === 'Constant' && node.value === null) return VOID;
+  if (node.type === 'Constant' && node.value === null) return trust ? VOID : DYNAMIC;
   // Subscripts like `list[int]` aren't generic-aware in v1; keep dynamic so
   // the type system doesn't lie about element types.
   return DYNAMIC;
@@ -623,6 +629,8 @@ export function lowerAdder(ast, source, opts) {
   const ctx = new AdderLowerCtx();
   ctx.source = source || null;
   ctx.ticks = !!(opts && opts.ticks);
+  // the module's `from __adder__ import <flag>` promises (parse.js _adderFlags)
+  ctx.adderFlags = ast.adderFlags || null;
   // opts.module = { package }: an imported module (not a cell). Relative imports resolve against
   // its package at compile time; its bindings are mirrored onto `__adder_module__`.
   if (opts && opts.module) {
@@ -1592,7 +1600,7 @@ function lowerAnnAssign(ctx, node) {
   if (!node.value) return null;
   const l = ctx.loc(node);
   const value = lowerExpr_ad(ctx, node.value);
-  const ann = resolveAdderAnnotation(node.annotation);
+  const ann = resolveAdderAnnotation(ctx, node.annotation);
   if (!isDynamic(ann)) value.type = ann;
   lowerAssignTarget(ctx, node.target, value, l);
   return null;
@@ -2419,7 +2427,7 @@ function _buildParamBinding(ctx, node, l) {
     // can specialise arithmetic and helper calls inside the body.
     const params = positionalParams.map(p => ({
       name: p.name,
-      type: resolveAdderAnnotation(p.annotation),
+      type: resolveAdderAnnotation(ctx, p.annotation),
     }));
     // Prologue: a call that does not fit the native params (keywords, too few, too many)
     // goes through _py.bindArgs, which binds by name and raises Python's TypeErrors.
@@ -2786,7 +2794,7 @@ function lowerFuncDef(ctx, node) {
   const sameInBothModes = ctx._modeDependent === dep0 && !isGenerator;
 
   // Return type from `-> Type` annotation, if present.
-  const retType = node.returns ? resolveAdderAnnotation(node.returns) : DYNAMIC;
+  const retType = node.returns ? resolveAdderAnnotation(ctx, node.returns) : DYNAMIC;
 
   // Carry the function's signature as the op's own type so name-typing at
   // call sites can read off ret_type. Mirrors what the JS lowerer does.

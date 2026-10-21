@@ -144,7 +144,8 @@ fib_memo(30, {})
 `, 20, CPY.memo);
 
 // ──────────────────────────────────────────────────────────────────────
-// Annotated variants — same workloads with type hints. Lets AIR specialise
+// Annotated variants — same workloads with AIR type hints (i32; a Python `int`
+// annotation counts only under `from __adder__ import trust_annotations`). Lets AIR specialise
 // _py.add → raw +, _py.lt → raw <, etc. Only the cases where annotations
 // can actually help (numeric arithmetic) — list comp and string concat
 // don't change because their bottlenecks aren't typed binary ops.
@@ -153,13 +154,22 @@ fib_memo(30, {})
 console.log('\n--- annotated variants ---');
 
 await bench('sum 1..10000 [annotated]', `
-total: int = 0
+total: i32 = 0
 for i in range(10000):
     total = total + i
 total
 `, 20, CPY.sum);
 
 await bench('fib(25) [annotated]', `
+def fib(n: i32) -> i32:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+fib(25)
+`, 5, CPY.fib);
+
+await bench('fib(25) [trust_annotations]', `
+from __adder__ import trust_annotations
 def fib(n: int) -> int:
     if n < 2:
         return n
@@ -168,7 +178,7 @@ fib(25)
 `, 5, CPY.fib);
 
 await bench('nested loop 100x100 [annotated]', `
-total: int = 0
+total: i32 = 0
 for i in range(100):
     for j in range(100):
         total = total + i * j
@@ -176,7 +186,7 @@ total
 `, 10, CPY.nested);
 
 await bench('fibonacci via memo [annotated]', `
-def fib_memo(n: int, memo) -> int:
+def fib_memo(n: i32, memo) -> i32:
     if n < 2:
         return n
     if n not in memo:

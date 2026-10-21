@@ -355,7 +355,7 @@ export function classNeedsCell(node) {
 }
 
 export function adderParse(code) {
-  return _manglePrivate(_classAnnotations(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule()))), null);
+  return _manglePrivate(_adderFlags(_classAnnotations(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule())))), null);
 }
 
 // A yield inside an expression — `f((yield x))`, `return (yield)`, `y = 1 + (yield)` — is
@@ -415,6 +415,33 @@ function _hoistBlock(stmts) {
     const pre = _hoistStmt(st);
     if (pre.length) { stmts.splice(i, 0, ...pre); i += pre.length; }
   }
+}
+// `from __adder__ import trust_annotations` — a compile-time promise, as a `__future__` import is a
+// compile-time switch: the flags a module names in its prologue (after the docstring and any
+// __future__ imports) land on mod.adderFlags for the AIR lowerer. A flag may only let adder
+// ASSUME something (a program that keeps the promise runs the same everywhere), so the
+// tree-walker, correct either way, ignores them. Named later in the module, a flag is a
+// SyntaxError on both engines (as a late __future__ import is in CPython); the hint names
+// (`from __adder__ import i32`) may be imported anywhere. __adder__ is also a real module
+// (pylib/__adder__.py), so the import runs — and the same file runs on CPython beside it.
+const ADDER_FLAGS = new Set(['trust_annotations']);
+function _adderFlags(mod) {
+  const body = mod.body || [];
+  const flags = new Set();
+  let i = 0;
+  if (body[0] && body[0].type === 'Expr' && body[0].value && body[0].value.type === 'Constant' && typeof body[0].value.value === 'string') i++;
+  const isFrom = (s, m) => s.type === 'ImportFrom' && s.module === m;
+  for (; i < body.length && (isFrom(body[i], '__future__') || isFrom(body[i], '__adder__')); i++) {
+    if (body[i].module === '__adder__') for (const n of body[i].names) if (ADDER_FLAGS.has(n.name)) flags.add(n.name);
+  }
+  for (; i < body.length; i++) {
+    const s = body[i];
+    if (!isFrom(s, '__adder__')) continue;
+    const late = s.names.find((n) => ADDER_FLAGS.has(n.name));
+    if (late) throw new SyntaxError(`from __adder__ import ${late.name} must occur at the beginning of the file (line ${s.line})`);
+  }
+  if (flags.size) mod.adderFlags = [...flags];
+  return mod;
 }
 // A class body's annotations are evaluated, as CPython 3.13 does: the body's namespace gets an
 // __annotations__ dict, and each `x: T [= v]` stores T's value there —

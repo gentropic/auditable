@@ -688,6 +688,49 @@ describe('adder import lazy-loads installed extensions via the resolver hook', (
   });
 });
 
+// Python annotations are not types unless the module promises they are true
+// (`from __adder__ import trust_annotations`); AIR's own hint names (i32, f64, …) always are
+describe('adder transpile — annotations and __adder__ flags', () => {
+  const emit = (src) => {
+    const air = lowerAdder(adderParse(src), src);
+    runPasses(air);
+    return emitJS(air, ['_py', ...air.imports], [], { hinted: true });
+  };
+  const fib = 'def fib(n: int) -> int:\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\n';
+  it('a Python int annotation is not a type: s * 2 still doubles a str', async () => {
+    const src = 'def g(s: int):\n    return s * 2\nr = g("ab"), g(3), g(2**60)\n';
+    for (const run of [airRun, twRun]) {
+      const r = await run(src);
+      assert.equal(r.r[0], 'abab');
+      assert.equal(r.r[1], 6);
+      assert.equal(r.r[2], 2n ** 61n);
+    }
+    assert.match(emit(fib), /_py\.sub\)\(n, 1\)/);
+  });
+  it('trust_annotations types int as a non-wrapping number: raw ops, exact past 2**31', async () => {
+    const src = 'from __adder__ import trust_annotations\n' + fib;
+    const js = emit(src);
+    assert.match(js, /fib\(\(n - 1\)\) \+ fib\(\(n - 2\)\)/);
+    assert.doesNotMatch(js, /\| 0/);
+    const dbl = 'from __adder__ import trust_annotations\ndef dbl(n: int) -> int:\n    return n + n\nr = dbl(2**40), dbl(-3)\n';
+    assert.doesNotMatch(emit(dbl), /_py\.add/);
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(dbl)).r], [2 ** 41, -6]);
+  });
+  it('AIR hint names are types without the flag (i32 wraps, as declared)', () => {
+    assert.match(emit(fib.replace(/int/g, 'i32')), /\(\(\(fib\(\(\(\(n - 1\)\) \| 0\)\)/);
+  });
+  it('the flag goes after the docstring and __future__ imports; later is a SyntaxError', async () => {
+    const ok = '"""doc"""\nfrom __future__ import annotations\nfrom __adder__ import trust_annotations, i32, f64\nr = i32, f64, trust_annotations\n';
+    assert.deepEqual(adderParse(ok).adderFlags, ['trust_annotations']);
+    for (const run of [airRun, twRun]) {
+      const r = await run(ok);
+      assert.equal(r.r[2], true);
+    }
+    assert.throws(() => adderParse('x = 1\nfrom __adder__ import trust_annotations\n'), /must occur at the beginning of the file \(line 2\)/);
+    assert.equal(adderParse('x = 1\nfrom __adder__ import i32\n').adderFlags, undefined);
+  });
+});
+
 // A compiled unit's JS depends only on its source and options — not on what compiled before it
 // (each unit numbers its method-call cache slots from 0 in its own table): the property that lets
 // a compiled module be cached and reused
