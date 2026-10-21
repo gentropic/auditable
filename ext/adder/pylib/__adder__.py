@@ -8,6 +8,13 @@ bool / str / None annotations are true, so the compiled code may type values by 
 arithmetic, no helper calls). A flag only lets adder assume something; a program that keeps the
 promise runs the same on adder's interpreter, its compiler and CPython.
 
+    from __adder__ import machine_ints
+
+promises that no int in the module leaves ±2**53 - 1: its int arithmetic is then raw JavaScript,
+unchecked. (Without it, the compiler runs pure functions and loops raw with each result checked,
+and runs them again exactly when one leaves the range — about 1.3-1.5x in a tight int loop.) An
+int that does leave the range comes out a float: the promise was broken.
+
     from __adder__ import i32, f64
 
 names the compiler's own type hints (i8 … u64, f32, f64). They are always taken as types, with or
@@ -19,8 +26,9 @@ source runs on CPython, where the flags do nothing and the hints are int and flo
 """
 
 trust_annotations = True
+machine_ints = True
 
 i8 = i16 = i32 = i64 = u8 = u16 = u32 = u64 = int
 f32 = f64 = float
 
-__all__ = ['trust_annotations', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64']
+__all__ = ['trust_annotations', 'machine_ints', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64']

@@ -4292,6 +4292,8 @@ function insertHints(module, typeMap) {
 //                 (adder: freeName's `%v !== undefined`, the range counter's `typeof %v !== 'bigint'`)
 //   speculative — a number N: with an integer-typed operand, rewrite only inside a spec_region's
 //                 fast body, the integer result checked to stay within ±N (see the gate below)
+//   speculateDynamic — in a fast body, untyped operands may be taken as numbers, each tested
+//                 by emit-js (numGuard), the region bailing when one isn't
 //   customEmit  — when true, specializeRuntimeHelpers does op-specific
 //                 rewriting (e.g. between → (v >= lo) && (v <= hi))
 const _specsByNamespace = new Map();
@@ -4400,6 +4402,17 @@ function specializeRuntimeHelpers(module, types) {
       // — including class methods, where _py helper calls inside method
       // bodies were missed by the legacy walker.
       forEachRegion(op, (_name, rops) => specialize(rops));
+      // ...and the SSA refs a region keeps in its extras (a loop's test_val, a phi's values)
+      // follow the replacements its bodies made — a passthrough `truthy` as a while condition
+      // stayed a call every iteration otherwise
+      for (const k of ['test_val', 'then_val', 'else_val']) {
+        if (typeof op[k] === 'string' && replacements.has(op[k])) op[k] = replacements.get(op[k]);
+      }
+      if (Array.isArray(op.phis)) {
+        for (const p of op.phis) for (const k of ['then_val', 'else_val']) {
+          if (p && typeof p[k] === 'string' && replacements.has(p[k])) p[k] = replacements.get(p[k]);
+        }
+      }
 
       // Look for call to a runtime helper method
       if (op.op !== 'call') continue;
@@ -4511,11 +4524,27 @@ function specializeRuntimeHelpers(module, types) {
       const arity = spec.arity ?? 2;
       if (argIds.length !== arity) continue;
 
-      // Check if types qualify
-      if (!spec.check(...argTypes)) continue;
+      // Check if types qualify — or speculate: in a spec_region's fast body (calls marked `spec`),
+      // a spec.speculateDynamic helper whose operands are numbers or untyped takes the untyped
+      // ones as numbers: emit-js tests each (`typeof … === 'number'`) and the region bails when
+      // one isn't (a string, a list, an object with __add__ — the generic body handles it). The
+      // result is untyped (int or float, unknown) and range-checked, unless a float operand makes
+      // it a float; a comparison's is bool.
+      let dynSpec = false;
+      if (!spec.check(...argTypes)) {
+        // (spec === true: a body that can bail — not one compiled unchecked, `spec: 'unchecked'`)
+        if (!(op.spec === true && spec.speculateDynamic && argTypes.every((t) => isNumeric(t) || isDynamic(t)) && argTypes.some(isDynamic))) continue;
+        dynSpec = true;
+      }
 
       // Determine result type
-      const resT = spec.resultType(...argTypes);
+      let resT;
+      if (dynSpec) {
+        const probe = spec.resultType(...argTypes.map((t) => (isDynamic(t) ? I32 : t)));
+        resT = probe && probe.kind === 'bool' ? BOOL : argTypes.some(isFloat) ? F64 : DYNAMIC;
+        op.numGuard = true;
+        if (resT === DYNAMIC && spec.speculative) op.intCheck = spec.speculative;
+      } else resT = spec.resultType(...argTypes);
 
       // Speculation (spec.speculative: the range an integer result must stay in, e.g. 2**53-1):
       // the raw operator is exact on numbers only, and an integer-typed operand may hold a value
@@ -4546,6 +4575,9 @@ function specializeRuntimeHelpers(module, types) {
       // Passthrough: replace the call result with the single arg
       if (spec.passthrough) {
         replacements.set(op.id, argIds[0]);
+        // the call itself does nothing worth keeping: unused, emit-js drops it (a use the
+        // replacements missed still inlines it, correctly)
+        op.pure = true;
         // Also replace the outer await if it directly wraps this call
         const nextOp = ops[i + 1];
         if (nextOp && nextOp.op === 'await' && nextOp.args[0] === op.id) {
@@ -5144,11 +5176,13 @@ const SIDE_EFFECTING = new Set([
 function register(ctx, op, expr) {
   const uses = ctx.useCounts.get(op.id) || 0;
   ctx.types.set(op.id, op.type);
-  const effect = SIDE_EFFECTING.has(op.op) || ctx._consumedEffect;
+  // (op.pure: a call the passes know has no effect — a passthrough helper)
+  const sideEffecting = SIDE_EFFECTING.has(op.op) && !op.pure;
+  const effect = sideEffecting || ctx._consumedEffect;
   ctx._consumedEffect = false;
 
   if (uses === 0) {
-    if (SIDE_EFFECTING.has(op.op)) {
+    if (sideEffecting) {
       // Side-effecting with zero uses: emit as statement
       ctx.line(`${expr};`);
     }
@@ -5286,7 +5320,9 @@ function emitBinary(ctx, op) {
   // raw operator would throw at it), then the result named and tested to be in range; a failure
   // bails the region (`break` to its label: jumps and typeof tests cost a hot loop next to
   // nothing in V8, where a never-taken call or a try around it costs ~4x)
-  if (op.intCheck && ctx.bail) {
+  // (numGuard: an op on untyped operands speculated as numbers — the same operand tests; a
+  // comparison has no range test, its value inlined as usual)
+  if ((op.intCheck || op.numGuard) && ctx.bail) {
     const n = op.intCheck, operand = (s) => {
       if (/^-?\d+(\.\d+)?$/.test(s)) return s;
       let name = s;
@@ -5295,6 +5331,7 @@ function emitBinary(ctx, op) {
       return name;
     };
     const a = operand(lhs), b = operand(rhs);
+    if (!n) { register(ctx, op, `(${a} ${jsOp} ${b})`); return; }
     const v = ctx.varName(op.id);
     ctx.line(`let ${v} = (${a} ${jsOp} ${b});`);
     ctx.line(`if (!(${v} <= ${n} && ${v} >= -${n})) break ${ctx.bail};`);
@@ -5966,7 +6003,7 @@ function emitSpec(ctx, op) {
 // does a fast body hold anything that can bail: a checked op or a guard
 function _canBail(ops) {
   for (const op of ops || []) {
-    if (op.intCheck || op.guard) return true;
+    if (op.intCheck || op.numGuard || op.guard) return true;
     if (op.op === 'func_region' || op.op === 'class_region') continue;
     let found = false;
     forEachRegion(op, (_n, rops) => { if (!found && _canBail(rops)) found = true; });

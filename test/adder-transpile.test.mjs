@@ -771,6 +771,51 @@ describe('adder transpile — speculate and restart', () => {
       assert.deepEqual([...r], [265252859812191058636308480000000n, 36, 110680464442257309702n, 54043195528445946n, 9, 1208925819614629174706176n, 27000000000000000000000000000n]);
     }
   });
+  it('untyped operands are taken as numbers in a fast body — and anything else bails to the exact body', async () => {
+    const src = [
+      'def add(a, b):', '    return a + b',
+      'class V:', '    def __init__(self, v): self.v = v', '    def __add__(self, o): return V(self.v + o.v)',
+      'r = add(1, 2), add("x", "y"), add([1], [2]), add(1.5, 2), add(2 ** 60, 2 ** 60), add(True, 1), add(V(1), V(2)).v, add(3, 4)',
+    ].join('\n');
+    for (const run of [airRun, twRun]) {
+      const r = (await run(src)).r;
+      assert.deepEqual([r[0], r[1], [...r[2]], r[3], r[4], r[5], r[6], r[7]], [3, 'xy', [1, 2], 3.5, 2n ** 61n, 2, 3, 7]);
+    }
+    // an untyped `while i < n:` compiles raw: the comparison a typeof test and `<`, no helper call
+    const js = emit('def w(n):\n    i = 0\n    while i < n:\n        i += 1\n    return i\n');
+    assert.match(js, /if \(typeof n !== 'number'\) break __bail\d+;/);
+    const fast = js.slice(js.indexOf('__bail'), js.indexOf('break __ok'));
+    assert.match(fast, /\(i < n\)/);
+    assert.doesNotMatch(fast, /_py\.(lt|truthy)/);
+  });
+  it('a region may call the module\'s other pure functions', async () => {
+    const src = 'def sq(x):\n    return x * x\ndef sumsq(n):\n    t = 0\n    for i in range(n):\n        t += sq(i)\n    return t\n';
+    assert.match(emit(src).split('function sumsq')[1], /__bail\d+/);   // sumsq is a region despite the call
+    for (const run of [airRun, twRun]) {
+      const r = (await run(src + 'r = sumsq(10), sumsq(20000), sumsq(10)\n')).r;
+      assert.deepEqual([...r], [285, 2666466670000, 285]);
+    }
+    // a function the module rebinds is not pure: calling it keeps the caller out of a region
+    const rebound = src.replace('def sumsq', 'sq = sq\ndef sumsq');
+    assert.doesNotMatch(emit(rebound).split('function sumsq')[1], /__bail/);
+  });
+  it('machine_ints: raw unchecked int arithmetic, no regions', async () => {
+    const src = 'from __adder__ import machine_ints\ndef tri(n):\n    t = 0\n    for i in range(n):\n        t += i * i\n    return t\n';
+    const js = emit(src);
+    assert.doesNotMatch(js, /__bail|__sp\d/);
+    assert.match(js, /\(t \+ \(i \* i\)\)/);
+    for (const run of [airRun, twRun]) assert.equal((await run(src + 'r = tri(1000)\n')).r, 332833500);
+  });
+  it('a rich comparison keeps its truth test: the result\'s __bool__ may raise (test_bool)', async () => {
+    const src = [
+      'class B:', '    def __bool__(self): raise TypeError("no truth")',
+      'class S:', '    def __gt__(self, o): return B()',
+      'def t(x):', '    try:', '        if x > 0:', '            return "true"', '        return "false"',
+      '    except TypeError as e:', '        return str(e)',
+      'r = t(S()), t(5), t(-1)',
+    ].join('\n');
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r], ['no truth', 'true', 'false']);
+  });
   it('code with effects is not speculated: its int arithmetic stays exact helpers', () => {
     const js = emit('def f(n):\n    t = 0\n    for i in range(n):\n        print(i)\n        t += i\n    return t\n');
     assert.doesNotMatch(js, /__bail/);

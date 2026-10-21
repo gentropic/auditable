@@ -50,7 +50,7 @@ const PY_SPECIALIZATIONS = {
       if (isNumeric(lt) && isNumeric(rt)) return arithmeticResult(lt, rt);
       return STRING;
     },
-    speculative: _INT_RANGE,
+    speculative: _INT_RANGE, speculateDynamic: true,
   },
   // `x += y` on numbers or strings is plain `+`: neither is mutable, so there is no __iadd__
   // and no list-extend to dispatch to.
@@ -58,28 +58,28 @@ const PY_SPECIALIZATIONS = {
     op: 'add',
     check: (lt, rt) => (isNumeric(lt) && isNumeric(rt)) || (lt.kind === 'string' && rt.kind === 'string'),
     resultType: (lt, rt) => (isNumeric(lt) ? arithmeticResult(lt, rt) : STRING),
-    speculative: _INT_RANGE,
+    speculative: _INT_RANGE, speculateDynamic: true,
   },
-  sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
-  mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  sub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
+  mul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
   // with an integer-valued float literal operand (pyFloatBin): two numbers are the JS operator
-  fadd: { op: 'add', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
-  fsub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
-  fmul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
-  isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
-  imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE },
+  fadd: { op: 'add', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
+  fsub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
+  fmul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
+  isub: { op: 'sub', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
+  imul: { op: 'mul', check: _bothNumeric, resultType: arithmeticResult, speculative: _INT_RANGE, speculateDynamic: true },
   // Stay in helpers, because JS differs from Python on values the types can't rule out:
   //   div/mod/floordiv — Python raises ZeroDivisionError, JS returns Infinity/NaN;
   //   pow — `0 ** -1` raises in Python, is Infinity in JS;
   //   and_/or_/xor/rshift — JS bitwise ops truncate to 32 bits; Python ints don't
   //     (`(h * 31 + c) & 0xFFFFFFFF` must stay unsigned). An integer type says
   //     "integer-valued", not "fits in 32 bits": adder ints are unbounded doubles.
-  eq:  { op: 'eq',  check: _bothNumeric, resultType: () => BOOL },
-  neq: { op: 'neq', check: _bothNumeric, resultType: () => BOOL },
-  lt:  { op: 'lt',  check: _bothNumeric, resultType: () => BOOL },
-  lte: { op: 'lte', check: _bothNumeric, resultType: () => BOOL },
-  gt:  { op: 'gt',  check: _bothNumeric, resultType: () => BOOL },
-  gte: { op: 'gte', check: _bothNumeric, resultType: () => BOOL },
+  eq:  { op: 'eq',  check: _bothNumeric, resultType: () => BOOL, speculateDynamic: true },
+  neq: { op: 'neq', check: _bothNumeric, resultType: () => BOOL, speculateDynamic: true },
+  lt:  { op: 'lt',  check: _bothNumeric, resultType: () => BOOL, speculateDynamic: true },
+  lte: { op: 'lte', check: _bothNumeric, resultType: () => BOOL, speculateDynamic: true },
+  gt:  { op: 'gt',  check: _bothNumeric, resultType: () => BOOL, speculateDynamic: true },
+  gte: { op: 'gte', check: _bothNumeric, resultType: () => BOOL, speculateDynamic: true },
   // `_py.isThen(v)` (the `+=` await guard) is false for a value that is provably a number,
   // string or bool; the guarded `await` branch is then pruned.
   isThen: {
@@ -248,7 +248,9 @@ class AdderLowerCtx extends BaseLowerCtx {
     const r = super.emit(op, args, type, loc, extra);
     // a call in a speculative region's fast body: its integer arithmetic may go raw, checked
     // (AIR passes, spec.speculative) — see _lowerSpecRegion
+    // (machine_ints: 'unchecked' — raw too, with no checks, and no untyped operand taken as a number)
     if (op === 'call' && this._specMode === 'fast') r.spec = true;
+    else if (op === 'call' && this._specMode === 'unchecked') r.spec = 'unchecked';
     return r;
   }
   loc(node) {
@@ -648,6 +650,9 @@ export function lowerAdder(ast, source, opts) {
   ctx.ticks = !!(opts && opts.ticks);
   // the module's `from __adder__ import <flag>` promises (parse.js _adderFlags)
   ctx.adderFlags = ast.adderFlags || null;
+  // machine_ints: the module promises its ints stay within ±2**53 — its int arithmetic is raw
+  // everywhere, unchecked, and there are no speculative regions (nothing to fall back to)
+  if (ctx.adderFlags && ctx.adderFlags.includes('machine_ints')) ctx._specMode = 'unchecked';
   // opts.module = { package }: an imported module (not a cell). Relative imports resolve against
   // its package at compile time; its bindings are mirrored onto `__adder_module__`.
   if (opts && opts.module) {
@@ -707,6 +712,8 @@ export function lowerAdder(ast, source, opts) {
   if (!hasStar) for (const name of analyseSyncFunctions(ast.body)) {
     ctx.syncFunctions.add(name);
   }
+  // the module's pure functions, which a speculative region may call (see _specPure)
+  ctx._pureFns = hasStar || ctx.usesGlobals ? new Set() : _pureModuleFns(ctx, ast.body);
   // Seed known-sync builtins (range, len, int, abs, …) into the same set so
   // module-level loops like `for i in range(10000)` skip the await on
   // range itself. This is the difference between sum-1..10000 still
@@ -1252,10 +1259,12 @@ function lowerCompare_ad(ctx, node) {
     } else {
       const helper = CMP_HELPER[op];
       if (!helper) throw new AirLowerError(`unsupported compare: ${op}`);
-      cmp = emitPyCall(ctx, helper, [left, right], l, BOOL);
+      // untyped: a rich comparison returns what __lt__ & co return (an object whose __bool__ may
+      // raise — test_bool), so its truth test stays; the specializer types it bool for numbers
+      cmp = emitPyCall(ctx, helper, [left, right], l, DYNAMIC);
     }
 
-    result = result ? ctx.emit('logical_and', [result.id, cmp.id], BOOL, l) : cmp;
+    result = result ? ctx.emit('logical_and', [result.id, cmp.id], result.type === BOOL && cmp.type === BOOL ? BOOL : DYNAMIC, l) : cmp;
     left = right;
   }
   return result;
@@ -2212,7 +2221,7 @@ function _emitCountedRange(ctx, rangeCall, l, { prepare, bindTarget, lowerBody }
     // itself in a fast body (a number there); elsewhere canonical (rangeVar: a BigInt counter's
     // value inside ±2**53 is a number)
     const k = ctx.emit('load', [K], I32, l);
-    bindTarget(fast ? k.id : emitPyCall(ctx, 'rangeVar', [k], l).id);
+    bindTarget(fast || ctx._specMode === 'unchecked' ? k.id : emitPyCall(ctx, 'rangeVar', [k], l).id);
     lowerBody();
   });
   return ctx.emit('for_region', [], VOID, l, {
@@ -2349,8 +2358,13 @@ function _specPure(ctx, stmts, env) {
       case 'Call': {
         if (e.func.type !== 'Name' || (e.keywords && e.keywords.length) || e.args.some((a) => a.type === 'Starred')) return false;
         const id = e.func.id;
-        const builtin = _SPEC_PURE_BUILTINS.has(id) && !ctx.symbols.has(id) && !ctx.defines.has(id);
-        return (builtin || (env.self && id === env.self)) && e.args.every(expr);
+        // (a local of that name is not the builtin or the module's function; in the pre-pass
+        // (_pureModuleFns) the module's bindings and the function's locals come in env)
+        const local = env.locals ? env.locals.has(id) : !!(ctx._fnLocalNames && ctx._fnLocalNames.includes(id) && id !== env.self);
+        const builtin = _SPEC_PURE_BUILTINS.has(id) && !local &&
+          !(env.moduleBound ? env.moduleBound.has(id) : ctx.symbols.has(id) || ctx.defines.has(id));
+        const pureFn = !local && ((env.self && id === env.self) || (env.pureFns || ctx._pureFns || new Set()).has(id));
+        return (builtin || pureFn) && e.args.every(expr);
       }
       default: return false;
     }
@@ -2373,6 +2387,56 @@ function _specPure(ctx, stmts, env) {
   const body = (b) => !b || b.every(stmt);
   return body(stmts);
 }
+// The module-level defs a speculative region may call: each bound once at the top level (by its
+// def — no assignment, import, other def or `global` rebinds it) and pure by _specPure, calling
+// only builtins, itself and each other — found as a fixpoint (assume all, drop the impure until
+// none is). A call to one runs again when its caller's region bails, unseen as the region's own
+// code is; a callee replaced from outside (mock.patch of a module function) is the corner left.
+function _pureModuleFns(ctx, body) {
+  const count = new Map();
+  const bind = (n) => count.set(n, (count.get(n) || 0) + 1);
+  const target = (t) => { if (!t) return; if (t.type === 'Name') bind(t.id); else if (t.elts) t.elts.forEach(target); else if (t.type === 'Starred') target(t.value); };
+  const rebound = new Set();
+  (function walk(stmts, inFn) {
+    for (const s of stmts || []) {
+      if (!s || typeof s !== 'object') continue;
+      if (s.type === 'Global') s.names.forEach((n) => rebound.add(n));
+      if (!inFn) {
+        if (s.type === 'FunctionDef' || s.type === 'AsyncFunctionDef' || s.type === 'ClassDef') bind(s.name);
+        else if (s.type === 'Assign') s.targets.forEach(target);
+        else if (s.type === 'AugAssign' || s.type === 'AnnAssign' || s.type === 'For') target(s.target);
+        else if (s.type === 'Import' || s.type === 'ImportFrom') for (const n of s.names) bind(n.alias || (n.name || n.module || '').split('.')[0]);
+        else if (s.type === 'With') for (const it of s.items || []) target(it.optionalVar);
+        else if (s.type === 'Delete') for (const t of s.targets || []) target(t);
+      }
+      const fn = s.type === 'FunctionDef' || s.type === 'AsyncFunctionDef' || s.type === 'ClassDef';
+      for (const k of ['body', 'orelse', 'finalbody']) if (Array.isArray(s[k])) walk(s[k], inFn || fn);
+      if (Array.isArray(s.handlers)) for (const h of s.handlers) { if (!inFn && h.name) bind(h.name); walk(h.body, inFn); }
+      if (Array.isArray(s.cases)) for (const c of s.cases) walk(c.body, inFn);
+    }
+  })(body, false);
+  const defs = new Map();
+  for (const s of body) {
+    if (s.type !== 'FunctionDef' || (s.decorators && s.decorators.length) || _containsYield(s.body)) continue;
+    if (count.get(s.name) === 1 && !rebound.has(s.name)) defs.set(s.name, s);
+  }
+  const pure = new Set(defs.keys());
+  const moduleBound = new Set(count.keys());
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [name, s] of defs) {
+      if (!pure.has(name)) continue;
+      const stmts = s.body.length && s.body[0].type === 'Expr' && s.body[0].value.type === 'Constant' ? s.body.slice(1) : s.body;
+      const locals = new Set(_functionLocalNames(s));
+      if (!_specPure(ctx, stmts, { globals: new Set(), self: name, inFunction: true, pureFns: pure, locals, moduleBound })) {
+        pure.delete(name);
+        changed = true;
+      }
+    }
+  }
+  return pure;
+}
+
 // the names a statement list binds (its assignment and loop targets)
 function _specWritten(stmts, out = new Set()) {
   const t = (x) => { if (x.type === 'Name') out.add(x.id); else if (x.elts) x.elts.forEach(t); };

@@ -745,6 +745,8 @@ export function insertHints(module, typeMap) {
 //                 (adder: freeName's `%v !== undefined`, the range counter's `typeof %v !== 'bigint'`)
 //   speculative — a number N: with an integer-typed operand, rewrite only inside a spec_region's
 //                 fast body, the integer result checked to stay within ±N (see the gate below)
+//   speculateDynamic — in a fast body, untyped operands may be taken as numbers, each tested
+//                 by emit-js (numGuard), the region bailing when one isn't
 //   customEmit  — when true, specializeRuntimeHelpers does op-specific
 //                 rewriting (e.g. between → (v >= lo) && (v <= hi))
 const _specsByNamespace = new Map();
@@ -853,6 +855,17 @@ export function specializeRuntimeHelpers(module, types) {
       // — including class methods, where _py helper calls inside method
       // bodies were missed by the legacy walker.
       forEachRegion(op, (_name, rops) => specialize(rops));
+      // ...and the SSA refs a region keeps in its extras (a loop's test_val, a phi's values)
+      // follow the replacements its bodies made — a passthrough `truthy` as a while condition
+      // stayed a call every iteration otherwise
+      for (const k of ['test_val', 'then_val', 'else_val']) {
+        if (typeof op[k] === 'string' && replacements.has(op[k])) op[k] = replacements.get(op[k]);
+      }
+      if (Array.isArray(op.phis)) {
+        for (const p of op.phis) for (const k of ['then_val', 'else_val']) {
+          if (p && typeof p[k] === 'string' && replacements.has(p[k])) p[k] = replacements.get(p[k]);
+        }
+      }
 
       // Look for call to a runtime helper method
       if (op.op !== 'call') continue;
@@ -964,11 +977,27 @@ export function specializeRuntimeHelpers(module, types) {
       const arity = spec.arity ?? 2;
       if (argIds.length !== arity) continue;
 
-      // Check if types qualify
-      if (!spec.check(...argTypes)) continue;
+      // Check if types qualify — or speculate: in a spec_region's fast body (calls marked `spec`),
+      // a spec.speculateDynamic helper whose operands are numbers or untyped takes the untyped
+      // ones as numbers: emit-js tests each (`typeof … === 'number'`) and the region bails when
+      // one isn't (a string, a list, an object with __add__ — the generic body handles it). The
+      // result is untyped (int or float, unknown) and range-checked, unless a float operand makes
+      // it a float; a comparison's is bool.
+      let dynSpec = false;
+      if (!spec.check(...argTypes)) {
+        // (spec === true: a body that can bail — not one compiled unchecked, `spec: 'unchecked'`)
+        if (!(op.spec === true && spec.speculateDynamic && argTypes.every((t) => isNumeric(t) || isDynamic(t)) && argTypes.some(isDynamic))) continue;
+        dynSpec = true;
+      }
 
       // Determine result type
-      const resT = spec.resultType(...argTypes);
+      let resT;
+      if (dynSpec) {
+        const probe = spec.resultType(...argTypes.map((t) => (isDynamic(t) ? I32 : t)));
+        resT = probe && probe.kind === 'bool' ? BOOL : argTypes.some(isFloat) ? F64 : DYNAMIC;
+        op.numGuard = true;
+        if (resT === DYNAMIC && spec.speculative) op.intCheck = spec.speculative;
+      } else resT = spec.resultType(...argTypes);
 
       // Speculation (spec.speculative: the range an integer result must stay in, e.g. 2**53-1):
       // the raw operator is exact on numbers only, and an integer-typed operand may hold a value
@@ -999,6 +1028,9 @@ export function specializeRuntimeHelpers(module, types) {
       // Passthrough: replace the call result with the single arg
       if (spec.passthrough) {
         replacements.set(op.id, argIds[0]);
+        // the call itself does nothing worth keeping: unused, emit-js drops it (a use the
+        // replacements missed still inlines it, correctly)
+        op.pure = true;
         // Also replace the outer await if it directly wraps this call
         const nextOp = ops[i + 1];
         if (nextOp && nextOp.op === 'await' && nextOp.args[0] === op.id) {

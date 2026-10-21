@@ -390,11 +390,13 @@ const SIDE_EFFECTING = new Set([
 function register(ctx, op, expr) {
   const uses = ctx.useCounts.get(op.id) || 0;
   ctx.types.set(op.id, op.type);
-  const effect = SIDE_EFFECTING.has(op.op) || ctx._consumedEffect;
+  // (op.pure: a call the passes know has no effect — a passthrough helper)
+  const sideEffecting = SIDE_EFFECTING.has(op.op) && !op.pure;
+  const effect = sideEffecting || ctx._consumedEffect;
   ctx._consumedEffect = false;
 
   if (uses === 0) {
-    if (SIDE_EFFECTING.has(op.op)) {
+    if (sideEffecting) {
       // Side-effecting with zero uses: emit as statement
       ctx.line(`${expr};`);
     }
@@ -532,7 +534,9 @@ function emitBinary(ctx, op) {
   // raw operator would throw at it), then the result named and tested to be in range; a failure
   // bails the region (`break` to its label: jumps and typeof tests cost a hot loop next to
   // nothing in V8, where a never-taken call or a try around it costs ~4x)
-  if (op.intCheck && ctx.bail) {
+  // (numGuard: an op on untyped operands speculated as numbers — the same operand tests; a
+  // comparison has no range test, its value inlined as usual)
+  if ((op.intCheck || op.numGuard) && ctx.bail) {
     const n = op.intCheck, operand = (s) => {
       if (/^-?\d+(\.\d+)?$/.test(s)) return s;
       let name = s;
@@ -541,6 +545,7 @@ function emitBinary(ctx, op) {
       return name;
     };
     const a = operand(lhs), b = operand(rhs);
+    if (!n) { register(ctx, op, `(${a} ${jsOp} ${b})`); return; }
     const v = ctx.varName(op.id);
     ctx.line(`let ${v} = (${a} ${jsOp} ${b});`);
     ctx.line(`if (!(${v} <= ${n} && ${v} >= -${n})) break ${ctx.bail};`);
@@ -1212,7 +1217,7 @@ function emitSpec(ctx, op) {
 // does a fast body hold anything that can bail: a checked op or a guard
 function _canBail(ops) {
   for (const op of ops || []) {
-    if (op.intCheck || op.guard) return true;
+    if (op.intCheck || op.numGuard || op.guard) return true;
     if (op.op === 'func_region' || op.op === 'class_region') continue;
     let found = false;
     forEachRegion(op, (_n, rops) => { if (!found && _canBail(rops)) found = true; });

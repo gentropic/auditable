@@ -424,7 +424,7 @@ function _hoistBlock(stmts) {
 // SyntaxError on both engines (as a late __future__ import is in CPython); the hint names
 // (`from __adder__ import i32`) may be imported anywhere. __adder__ is also a real module
 // (pylib/__adder__.py), so the import runs — and the same file runs on CPython beside it.
-const ADDER_FLAGS = new Set(['trust_annotations']);
+const ADDER_FLAGS = new Set(['trust_annotations', 'machine_ints']);
 function _adderFlags(mod) {
   const body = mod.body || [];
   const flags = new Set();

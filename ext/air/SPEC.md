@@ -713,6 +713,16 @@ around the loop, keeps it from being optimized as a plain numeric loop; a jump d
   `fast` body (the frontend marks those calls `spec`), its integer result marked `intCheck: N`;
   everywhere else the helper call stays. A `guard` specialization inside `fast` becomes a bail
   check too.
+- A specialization may also declare `speculateDynamic`: inside `fast`, operands that are numbers
+  or untyped make it the raw operator, each untyped operand tested `typeof … === 'number'`
+  (`numGuard`) — a string, a list, an object with dunders bails to `generic`. The result is
+  untyped (int or float, unknown) and range-checked like an int's, unless a float-typed operand
+  makes it a float; a comparison's is bool. (Telling an int result from a float one on the rare
+  path — `Number.isInteger`, `x % 1` — measured ~4x itself: a big float result bails instead,
+  and runs as fast as the helpers would have.) Calls the frontend marks `spec: 'unchecked'` (a
+  promise that ints stay small) go raw with no checks and no untyped speculation.
+- A `passthrough` specialization marks its call `pure`: unused, emit-js drops it. And a region's
+  SSA refs kept in extras (`test_val`, phis) follow the specializer's replacements.
 - **`spec_region { fast, generic, saves }`**: the frontend lowers one statement list twice —
   `fast` assuming its integers stay within ±N, `generic` assuming nothing — and lists the names
   it writes. emit-js writes
