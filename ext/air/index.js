@@ -4240,8 +4240,10 @@ function insertHints(module, typeMap) {
 //   passthrough — when true, the op is replaced by its sole arg (e.g. _py.truthy(bool) → bool)
 //   typeOnly    — when true, the call is kept and only its result is typed (a check that hands
 //                 its argument back: _py.freeName(v, name) is v's type)
-//   guard       — with typeOnly: the helper does anything only when its first argument is
-//                 undefined; emit-js writes `(v !== undefined ? v : helper(v, …))`
+//   guard       — with typeOnly: a JS condition over the first argument, written with `%v`,
+//                 under which the helper would hand that argument back unchanged; emit-js tests
+//                 it inline, `(cond ? v : helper(v, …))`, so the common case makes no call
+//                 (adder: freeName's `%v !== undefined`, the range counter's `typeof %v !== 'bigint'`)
 //   customEmit  — when true, specializeRuntimeHelpers does op-specific
 //                 rewriting (e.g. between → (v >= lo) && (v <= hi))
 const _specsByNamespace = new Map();
@@ -4478,9 +4480,9 @@ function specializeRuntimeHelpers(module, types) {
       }
 
       // Type only: the call stays (it checks something), its result typed (helperResultType).
-      // A guard (the helper acts only on an undefined first argument) is tested inline by
-      // emit-js, the call made only when the test fails
-      if (spec.typeOnly) { if (spec.guard) op.guardUndefined = true; continue; }
+      // A guard (the condition under which the helper would hand its first argument back) is
+      // tested inline by emit-js, the call made only when the test fails
+      if (spec.typeOnly) { if (spec.guard) op.guard = spec.guard; continue; }
 
       // Passthrough: replace the call result with the single arg
       if (spec.passthrough) {
@@ -5305,10 +5307,10 @@ function emitCall(ctx, op) {
   }
   const args = op.args.slice(1).map(a => ctx.ref(a));
   const paren = op.optional ? '?.(' : '(';
-  // a guard (passes.js spec.guard): the call only when the value it guards is undefined. Inline
-  // only when that value is a plain name (it is written twice)
-  if (op.guardUndefined && !op.optional && /^[$_a-zA-Z][\w$]*$/.test(args[0] || '')) {
-    register(ctx, op, `(${args[0]} !== undefined ? ${args[0]} : ${fn}(${args.join(', ')}))`);
+  // a guard (passes.js spec.guard): the call only when the guard's condition on the first argument
+  // fails. Inline only when that argument is a plain name (it is written more than once)
+  if (op.guard && !op.optional && /^[$_a-zA-Z][\w$]*$/.test(args[0] || '')) {
+    register(ctx, op, `(${op.guard.replaceAll('%v', args[0])} ? ${args[0]} : ${fn}(${args.join(', ')}))`);
     return;
   }
   register(ctx, op, `${fn}${paren}${args.join(', ')})`);

@@ -217,7 +217,7 @@ function _ndarrayTupleSet(obj, key, value) {
 }
 
 function _slice(obj, lower, upper, step) {
-  if (obj instanceof AdderRange) return pyRangeSlice(obj, sliceBound(lower), sliceBound(upper), sliceBound(step));
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);   // (exact, any size)
   const rawStep = step;   // (a __getitem__ is handed the slice as written: step None when omitted)
   step = step ?? 1;
   if (step == 0) throw new AdderError('ValueError', 'slice step cannot be zero'); // eslint-disable-line eqeqeq
@@ -985,9 +985,15 @@ export const _py = {
   bytesLit, dictLiteral,
   tuple: mkTuple,
   isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',
-  // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range() does
+  // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range()
+  // does. A range whose values or counter run past 2**53 counts in BigInts (the loop's raw `<`, `+`
+  // and `(k - stop) * dir < 0` hold for them too). OPEN (ROADMAP big ints step 3): the loop
+  // variable is typed int and bound raw, so in such a range a value inside ±2**53 is a BigInt
+  // (not canonical) and typed arithmetic on one throws — a per-iteration normalization costs 4x
+  // on every range loop in V8, so it waits for step 3's answer to "a typed int that may be big".
   rangeArgs: (args) => {
     const r = new AdderRange(...args);   // the same validation as range()
+    if (r.big) { const [s, e, t] = r.big; return [s, e, t, t > 0n ? 1n : -1n]; }
     return [r.start, r.stop, r.step, r.step > 0 ? 1 : -1];
   },
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source

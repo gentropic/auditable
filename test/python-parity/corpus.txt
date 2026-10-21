@@ -48,6 +48,38 @@ fib = [0, 1]
 for _ in range(100):
     fib.append(fib[-1] + fib[-2])
 print(fib[100], fib[100] % 1000000007)
+
+### num/bigint-range
+B = 2 ** 64
+r = range(10 ** 20)
+print(repr(r), repr(r[::-1]), r[::-1][0], r[10 ** 19:10 ** 19 + 3], r[-3:], r[True], r[10 ** 19], 10 ** 19 in r, r[-1])
+print(len(range(B, B + 3)), list(range(B, B + 6, 2)), list(range(2 ** 53 - 1, 2 ** 53 + 2)), list(reversed(range(B, B + 3))), sum(range(2 ** 53, 2 ** 53 + 3)))
+print(r == range(0, 10 ** 20), range(B, B) == range(0), range(B, B + 1) == range(B, B + 1, 7), range(1, 2 ** 70, 2 ** 65) == range(1, 2 ** 70, 2 ** 65))
+print(hash(range(B, B + 3)) == hash(range(B, B + 3)), {range(1, 2 ** 70, 2 ** 65): 1}[range(1, 2 ** 70, 2 ** 65)], {range(B, B): 2}[range(0)])
+print(r.index(10 ** 19), r.count(10 ** 19 + 7), range(0, 10 ** 20, 7).index(7 * 10 ** 18), True in range(2), list(range(0, 10 ** 20, 3 * 10 ** 19)))
+print(range(0, 10, 3)[1:], range(10)[::-2], range(5)[-100:100], list(range(10, 0, -3)[::-1]), bool(range(B, B)), range(3).index(2))
+for i in range(B, B + 2):
+    print(i)
+for i in range(3, -2 ** 60, -2 ** 59):
+    print(i)
+for e, f in ((IndexError, lambda: r[10 ** 20]), (OverflowError, lambda: len(r)), (OverflowError, lambda: list(r)), (ValueError, lambda: range(5).index(9))):
+    try:
+        f()
+    except e as x:
+        print(type(x).__name__, x)
+
+### num/bigint-math
+import math
+B = 2 ** 64
+print("%.15g %.15g %.15g %.15g %.15g" % (math.log(B), math.log(10 ** 400), math.log2(2 ** 1000), math.log10(10 ** 500), math.log(10 ** 400, 10)))
+print("%.15g %.15g %.15g %.15g %.15g" % (math.sqrt(B), math.hypot(B, B), math.dist([B, 0], [0, 0]), math.ulp(B), math.lgamma(B)))
+print("%.17g %.17g %.17g %.17g" % (math.remainder(B, 3), math.remainder(1e300, 3), math.remainder(2.5, 1), math.remainder(-7.5, 5)))
+print(math.floor(B), math.ceil(B), math.trunc(B), math.isfinite(B), math.isclose(B, B + 1), math.prod([B, B]))
+for f, a in ((math.sqrt, 10 ** 400), (math.exp, 10 ** 400), (math.log, 0), (math.log, -B), (math.gamma, B), (math.erf, 10 ** 400)):
+    try:
+        print(f(a))
+    except (OverflowError, ValueError) as x:
+        print(type(x).__name__, x)
 ### num/round
 print(round(2.5), round(3.5), round(-0.5), round(0.125, 2), round(1234, -2), round(2.675, 2))
 ### num/int-parse

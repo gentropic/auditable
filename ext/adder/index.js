@@ -2448,18 +2448,75 @@ class AdderRange {
     if (args.length > 3) throw new AdderError('TypeError', `range expected at most 3 arguments, got ${args.length}`);
     const ints = args.map((v) => {
       if (typeof v === 'boolean') return +v;
-      if (typeof v === 'number' && Number.isInteger(v)) return v;
-      if (typeof v === 'bigint') return Number(v);
+      if (typeof v === 'bigint' || (typeof v === 'number' && isIntNum(v))) return v;
       if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return v.__index__();
       throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
     });
     [this.start, this.stop, this.step] = ints.length === 1 ? [0, ints[0], 1] : ints.length === 2 ? [ints[0], ints[1], 1] : ints;
-    if (this.step === 0) throw new AdderError('ValueError', 'range() arg 3 must not be zero');
-    this.length = Math.max(0, Math.ceil((this.stop - this.start) / this.step));
+    const { start, stop, step } = this;
+    if (step === 0) throw new AdderError('ValueError', 'range() arg 3 must not be zero');
+    // Every value it makes, and start + k*step on the way, exact in doubles: the fast path. Else
+    // (an int past 2**53 anywhere near it) `big` holds [start, stop, step] as BigInts and the
+    // arithmetic is exact; `length` is then canonical — a BigInt past sys.maxsize, which len()
+    // refuses as CPython does, while indexing, `in`, slicing and iteration still work.
+    if (typeof start === 'number' && typeof stop === 'number' && typeof step === 'number' &&
+        Math.abs(start) + Math.abs(stop) + Math.abs(step) <= _SAFE) {
+      this.big = null;
+      this.length = Math.max(0, Math.ceil((stop - start) / step));
+    } else {
+      const s = BigInt(start), e = BigInt(stop), t = BigInt(step);
+      this.big = [s, e, t];
+      const n = t > 0n ? (e > s ? (e - s + t - 1n) / t : 0n) : (s > e ? (s - e - t - 1n) / -t : 0n);
+      this.length = intNorm(n);
+    }
+  }
+  // the i-th value (0 <= i < length; i a number, or a BigInt for a range longer than 2**53)
+  at(i) {
+    if (!this.big) return this.start + i * this.step;
+    return intNorm(this.big[0] + BigInt(i) * this.big[2]);
+  }
+  // r[key]: an int key (negative from the end; a BigInt only reaches values of a range that long)
+  item(key) {
+    if (typeof key === 'boolean') key = +key;
+    else if (typeof key !== 'bigint' && !(typeof key === 'number' && Number.isInteger(key))) {
+      if (key !== null && typeof key === 'object' && typeof key.__index__ === 'function') key = key.__index__();
+      else throw new AdderError('TypeError', `range indices must be integers or slices, not ${pyTypeName(key)}`);
+    }
+    const n = this.length;
+    if (typeof key === 'number' && typeof n === 'number') {
+      const i = key < 0 ? n + key : key;
+      if (i < 0 || i >= n) throw new AdderError('IndexError', 'range object index out of range');
+      return this.at(i);
+    }
+    const N = BigInt(n), K = BigInt(key), i = K < 0n ? N + K : K;
+    if (i < 0n || i >= N) throw new AdderError('IndexError', 'range object index out of range');
+    return this.at(intNorm(i));
+  }
+  // r[lower:upper:step] — a range, as in Python (never materialised); the bounds as slice() keeps
+  // them (None, or ints of any size), resolved by slice.indices' rules in exact arithmetic
+  slice(lower, upper, step) {
+    const idx = (v) => (v == null ? null : typeof v === 'boolean' ? BigInt(+v) : typeof v === 'bigint' || typeof v === 'number' ? BigInt(v) : BigInt(v.__index__()));
+    const T = step == null ? 1n : idx(step);
+    if (T === 0n) throw new AdderError('ValueError', 'slice step cannot be zero');
+    const N = BigInt(this.length);
+    const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+    const bound = (v, dflt, lo, hi) => (v === null ? dflt : clamp(v < 0n ? N + v : v, lo, hi));
+    const [a, b] = T > 0n
+      ? [bound(idx(lower), 0n, 0n, N), bound(idx(upper), N, 0n, N)]
+      : [bound(idx(lower), N - 1n, -1n, N - 1n), bound(idx(upper), -1n, -1n, N - 1n)];
+    const [s, , t] = this.big || [BigInt(this.start), 0n, BigInt(this.step)];
+    return new AdderRange(intNorm(s + a * t), intNorm(s + b * t), intNorm(t * T));
   }
   // (counted, not stepped to `stop`: past 2**53 adding the step to a float may not move it, and a
   // range near sys.maxsize iterated forever)
   [Symbol.iterator]() {
+    if (this.big) {
+      let [v, , t] = this.big, k = BigInt(this.length);
+      return { next() {
+        if (k > 0n) { const out = intNorm(v); v += t; k--; return { value: out, done: false }; }
+        return { done: true };
+      }};
+    }
     let k = 0;
     const n = this.length, start = this.start, step = this.step;
     return { next() {
@@ -2468,10 +2525,33 @@ class AdderRange {
     }};
   }
   includes(v) {
-    if (typeof v !== 'number' || !Number.isInteger(v)) return false;
-    if (this.step > 0) { if (v < this.start || v >= this.stop) return false; }
-    else { if (v > this.start || v <= this.stop) return false; }
-    return (v - this.start) % this.step === 0;
+    if (typeof v === 'boolean') v = +v;
+    if (typeof v === 'number' ? !Number.isInteger(v) : typeof v !== 'bigint') return false;
+    if (!this.big && typeof v === 'number') {
+      if (this.step > 0) { if (v < this.start || v >= this.stop) return false; }
+      else { if (v > this.start || v <= this.stop) return false; }
+      return (v - this.start) % this.step === 0;
+    }
+    const [s, e, t] = this.big || [BigInt(this.start), BigInt(this.stop), BigInt(this.step)];
+    const x = BigInt(v);
+    if (t > 0n ? x < s || x >= e : x > s || x <= e) return false;
+    return (x - s) % t === 0n;
+  }
+  // r.index(v): where v is (ValueError when it isn't); r.count(v): 1 or 0
+  index(v) {
+    if (!this.includes(v)) throw new AdderError('ValueError', `${pyRepr(v)} is not in range`);
+    if (typeof v === 'boolean') v = +v;
+    if (!this.big && typeof v === 'number') return (v - this.start) / this.step;
+    const [s, , t] = this.big || [BigInt(this.start), 0n, BigInt(this.step)];
+    return intNorm((BigInt(v) - s) / t);
+  }
+  count(v) { return this.includes(v) ? 1 : 0; }
+  // range == range: the same sequence of values (CPython compares length, then start, then step)
+  sameAs(o) {
+    if (this.length !== o.length) return false;
+    if (this.length === 0) return true;
+    if (this.start !== o.start) return false;
+    return this.length === 1 || this.step === o.step;
   }
 }
 
@@ -2695,10 +2775,7 @@ function _sliceRange(k, n) {
 }
 // seq[slice(…)] for a str, list, tuple, bytes, bytearray or range
 function seqSliceGet(obj, k) {
-  if (obj instanceof AdderRange) {
-    const [, start, stop, step] = _sliceRange(k, obj.length);
-    return new AdderRange(obj.start + start * obj.step, obj.start + stop * obj.step, obj.step * step);
-  }
+  if (obj instanceof AdderRange) return obj.slice(k.lower, k.upper, k.step);
   const [idx] = _sliceRange(k, obj.length);
   const items = idx.map((i) => obj[i]);
   return typeof obj === 'string' ? items.join('') : obj instanceof PyTuple ? mkTuple(items)
@@ -2762,7 +2839,7 @@ const _objIds = new WeakMap();
 let _nextObjId = 1;
 function _unhashable(v) { return new AdderError('TypeError', `unhashable type: '${pyTypeName(v)}'`); }
 function _needsCanon(k) {
-  return k !== null && typeof k === 'object' && (k instanceof PyTuple || (k instanceof Set && k._frozen) ||
+  return k !== null && typeof k === 'object' && (k instanceof PyTuple || (k instanceof Set && k._frozen) || k instanceof AdderRange ||
     (typeof k.__hash__ === 'function' && !(k instanceof Map) && !Array.isArray(k)));
 }
 function _isUnhashable(k) {
@@ -2782,6 +2859,10 @@ function _sigOf(v) {
   }
   if (v instanceof PyTuple) return '(' + v.map(_sigOf).join(',') + ')';
   if (v instanceof Set && v._frozen) return 'f{' + [...v].map(_sigOf).sort().join(',') + '}';
+  if (v instanceof AdderRange) {   // equal ranges (the same values) are one key, as range == range
+    const n = v.length;
+    return 'r(' + (n === 0 ? '0' : n === 1 ? '1,' + _sigOf(v.start) : _sigOf(n) + ',' + _sigOf(v.start) + ',' + _sigOf(v.step)) + ')';
+  }
   if (_isUnhashable(v)) throw _unhashable(v);
   if (typeof v.__hash__ === 'function') {
     const h = v.__hash__();
@@ -2839,6 +2920,11 @@ function _pyHash(v) {
   if (_isUnhashable(v)) throw _unhashable(v);
   if (typeof v.__hash__ === 'function') return v.__hash__();
   if (v instanceof PyTuple) { let h = 0x345678; for (const x of v) { const xh = _pyHash(x); h = (Math.imul(h ^ (typeof xh === 'number' ? xh | 0 : 0), 1000003)) | 0; } return h; }
+  // a range hashes as CPython's: (len, start, step), with None for what == ignores
+  if (v instanceof AdderRange) {
+    const n = v.length;
+    return _pyHash(mkTuple(n === 0 ? [0, null, null] : n === 1 ? [1, v.start, null] : [n, v.start, v.step]));
+  }
   let id = _objIds.get(v);
   if (!id) { id = _nextObjId++; _objIds.set(v, id); }
   return id;
@@ -3978,13 +4064,18 @@ function* _gForEach(obj, fn) {
   if (obj && typeof obj[Symbol.asyncIterator] === 'function') { yield* viaAsync(obj[Symbol.asyncIterator]()); return; }
   for (const v of pyIter(obj)) if (fn(v)) return;
 }
+// a range's values as a list, filled by counting (a range longer than sys.maxsize: CPython's
+// OverflowError, where it can't size the list)
+function _rangeList(r) {
+  if (typeof r.length === 'bigint') throw new AdderError('OverflowError', 'Python int too large to convert to C ssize_t');
+  if (r.big) return [...r];
+  const out = new Array(r.length);
+  for (let i = 0, v = r.start; i < out.length; i++, v += r.step) out[i] = v;
+  return out;
+}
 function* _gCollect(obj) {
   if (Array.isArray(obj)) return obj.slice();
-  if (obj instanceof AdderRange) {
-    const out = new Array(obj.length);
-    for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
-    return out;
-  }
+  if (obj instanceof AdderRange) return _rangeList(obj);
   const arr = [];
   yield* _gForEach(obj, (v) => { arr.push(v); });
   return arr;
@@ -4041,11 +4132,7 @@ async function pyCollect(obj) {
   // plain list — PyTuple's species is Array), a range fills by counting
   if (Array.isArray(obj)) return obj.slice();
   if (isAsyncGen(obj)) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
-  if (obj instanceof AdderRange) {
-    const out = new Array(obj.length);
-    for (let i = 0, v = obj.start; i < out.length; i++, v += obj.step) out[i] = v;
-    return out;
-  }
+  if (obj instanceof AdderRange) return _rangeList(obj);
   if (isUserIterable(obj)) {
     const arr = [];
     for await (const v of pyIterAsync(obj)) arr.push(v);
@@ -4771,6 +4858,7 @@ function adderGetAttr(obj, attr) {
     if (attr === 'start') return obj.start;
     if (attr === 'stop') return obj.stop;
     if (attr === 'step') return obj.step;
+    if (attr === 'index' || attr === 'count') return (v) => obj[attr](v);
   }
   // plain object (dict with string keys)
   if (obj !== null && typeof obj === 'object' && !(obj instanceof Array) && !(obj instanceof Map) && !(obj instanceof Set)) {
@@ -6383,6 +6471,7 @@ function pyGetItem(obj, key, raw = false) {
     (ArrayBuffer.isView(obj) && !(obj instanceof DataView));
   if (isSeq) {
     if (key instanceof PySlice && !(ArrayBuffer.isView(obj) && !(obj instanceof Uint8Array))) return seqSliceGet(obj, key);
+    if (obj instanceof AdderRange) return obj.item(key);   // (any int index: a range may be that long)
     if (typeof key === 'boolean') key = +key;
     if (typeof key === 'bigint') throw new AdderError('IndexError', "cannot fit 'int' into an index-sized integer");   // (an int past 2**53)
     if (typeof key !== 'number' || !Number.isInteger(key)) {
@@ -6392,7 +6481,7 @@ function pyGetItem(obj, key, raw = false) {
     const n = obj.length;
     const i = key < 0 ? n + key : key;
     if (i < 0 || i >= n) throw new AdderError('IndexError', `${_SEQ_NAMES(obj)} index out of range`);
-    return obj instanceof AdderRange ? obj.start + i * obj.step : obj[i];
+    return obj[i];
   }
   if (typeof obj === 'object' || typeof obj === 'function') {
     // Cls[k]: the metaclass's __getitem__, else __class_getitem__ — never the class's own
@@ -6423,19 +6512,7 @@ function pyGetItem(obj, key, raw = false) {
 }
 // range(...)[a:b:c] is a range, as in Python (never materialised)
 function pyRangeSlice(r, lower, upper, step) {
-  step = step == null ? 1 : step;
-  if (step === 0) throw new AdderError('ValueError', 'slice step cannot be zero');
-  const n = r.length;
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  let start, stop;
-  if (step > 0) {
-    start = lower == null ? 0 : clamp(lower < 0 ? n + lower : lower, 0, n);
-    stop = upper == null ? n : clamp(upper < 0 ? n + upper : upper, 0, n);
-  } else {
-    start = lower == null ? n - 1 : clamp(lower < 0 ? n + lower : lower, -1, n - 1);
-    stop = upper == null ? -1 : clamp(upper < 0 ? n + upper : upper, -1, n - 1);
-  }
-  return new AdderRange(r.start + start * r.step, r.start + stop * r.step, r.step * step);
+  return r.slice(lower, upper, step);
 }
 
 // round(x[, ndigits]): half to even on the exact value of x (so round(2.5) == 2 and
@@ -6554,7 +6631,7 @@ function _eqBuiltin(a, b) {
     for (const v of a) if (!b.has(v)) return false;
     return true;
   }
-  if (a instanceof AdderRange && b instanceof AdderRange) return pyEq([...a], [...b]);
+  if (a instanceof AdderRange && b instanceof AdderRange) return a.sameAs(b);
   if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i]);
   if (a instanceof Complex || b instanceof Complex) {
     const r = a instanceof Complex ? a.__eq__(b) : b.__eq__(a);
@@ -6770,11 +6847,21 @@ const _mathModule = {
   gcd: (a, b) => { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a; },
   comb: (n, k) => { if (k < 0 || k > n) return 0; if (k === 0 || k === n) return 1; let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return Math.round(r); },
   perm: (n, k) => { if (k === undefined) k = n; let r = 1; for (let i = 0; i < k; i++) r *= (n - i); return r; },
-  hypot: Math.hypot,
+  hypot: (...a) => Math.hypot(...a.map((v) => (typeof v === 'number' ? v : _mReal('hypot', v)))),
   fsum: (iterable) => { let s = 0; for (const v of pyIter(iterable)) s += v; return s; },
   prod: (iterable, start) => { let r = start !== undefined ? start : 1; for (const v of pyIter(iterable)) r *= v; return r; },
   fmod: (x, y) => x % y,
-  remainder: (x, y) => x - Math.round(x / y) * y,
+  // IEEE remainder, exactly, as CPython's m_remainder (x - round(x/y)*y lost it once x/y passed
+  // 2**53): fmod is exact; then the nearer of m and m - |y|, a tie to the even quotient.
+  // inf or a zero y give NaN, which _mCheck turns into the domain error
+  remainder: (x, y) => {
+    if (Number.isNaN(x) || Number.isNaN(y)) return NaN;
+    if (!Number.isFinite(x) || y === 0) return NaN;
+    if (!Number.isFinite(y)) return x;
+    const absx = Math.abs(x), absy = Math.abs(y), m = absx % absy, c = absy - m;
+    const r = m < c ? m : m > c ? -c : m - 2 * ((0.5 * (absx - m)) % absy);
+    return x < 0 || Object.is(x, -0) ? -r : r;
+  },
   ldexp: (x, i) => x * Math.pow(2, i),
   frexp: (x) => { if (x === 0) return [0, 0]; const e = Math.ceil(Math.log2(Math.abs(x))); return [x / Math.pow(2, e), e]; },
   modf: (x) => { const i = Math.trunc(x); return mkTuple([x - i, i]); },
@@ -6805,6 +6892,9 @@ Object.assign(_mathModule, {
   isclose: (a, b, kw) => {
     const rel = kw && kw._kw && kw.rel_tol != null ? kw.rel_tol : 1e-9;
     const abs = kw && kw._kw && kw.abs_tol != null ? kw.abs_tol : 0;
+    // as floats, as CPython's (2**64 and 2**64 + 1 are the same float)
+    if (typeof a !== 'number') a = _mReal('isclose', a);
+    if (typeof b !== 'number') b = _mReal('isclose', b);
     if (a === b) return true;
     if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
     const d = Math.abs(a - b);
@@ -6842,7 +6932,7 @@ Object.assign(_mathModule, {
     }
     return _bigToNum(l);
   },
-  dist: (p, q) => { const a = [...pyIter(p)], b = [...pyIter(q)]; if (a.length !== b.length) throw new AdderError('ValueError', 'both points must have the same number of dimensions'); return Math.hypot(...a.map((x, i) => x - b[i])); },
+  dist: (p, q) => { const a = [...pyIter(p)], b = [...pyIter(q)]; if (a.length !== b.length) throw new AdderError('ValueError', 'both points must have the same number of dimensions'); return Math.hypot(...a.map((x, i) => _mReal('dist', x) - _mReal('dist', b[i]))); },
   log: (x, base) => {
     if (x <= 0) throw new AdderError('ValueError', 'math domain error');
     return base === undefined ? Math.log(x) : Math.log(x) / Math.log(base);
@@ -6941,12 +7031,32 @@ function _mWrap(name, min, max, inf, check = true, coerce = null) {
 for (const n of ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'tanh', 'asinh', 'sqrt', 'cbrt', 'fabs', 'radians', 'degrees']) _mWrap(n, 1, 1, null);
 for (const n of ['exp', 'exp2', 'expm1', 'sinh', 'cosh']) _mWrap(n, 1, 1, 'OverflowError');
 for (const n of ['acosh', 'atanh', 'log2', 'log10', 'log1p']) _mWrap(n, 1, 1, 'ValueError');
-for (const n of ['isnan', 'isinf', 'isfinite', 'frexp', 'modf']) _mWrap(n, 1, 1, null, false);
+for (const n of ['isnan', 'isinf', 'isfinite', 'frexp', 'modf', 'ulp']) _mWrap(n, 1, 1, null, false);
 for (const n of ['atan2', 'copysign', 'remainder', 'nextafter']) _mWrap(n, 2, 2, null);
 _mWrap('fmod', 2, 2, null);
 _mWrap('pow', 2, 2, 'OverflowError');
 _mWrap('log', 1, 2, 'ValueError');
 _mWrap('ldexp', 2, 2, 'OverflowError', true, [true, false]);
+// log / log2 / log10 of an int too large for a float, as CPython's loghelper: the int's leading
+// bits and its exponent, f(m) + f(2) * e — where every other float function overflows
+for (const [n, fn] of [['log', Math.log], ['log2', Math.log2], ['log10', Math.log10]]) {
+  const w = _mathModule[n];
+  const huge = (v) => typeof v === 'bigint' && !Number.isFinite(Number(v));
+  const bigLog = (f, v) => {
+    if (v <= 0n) throw new AdderError('ValueError', 'math domain error');
+    const e = _bitLen(v) - 64;
+    return f(Number(v >> BigInt(e))) + f(2) * e;
+  };
+  const lw = function (x, base) {
+    if (!huge(x) && !(n === 'log' && huge(base))) return w.apply(this, arguments);
+    const lx = huge(x) ? bigLog(fn, x) : w(x);
+    if (n !== 'log' || base === undefined) return lx;
+    return lx / (huge(base) ? bigLog(Math.log, base) : w(base));
+  };
+  Object.defineProperty(lw, 'name', { value: n });
+  lw._pyName = n;
+  _mathModule[n] = lw;
+}
 // floor / ceil / trunc: the object's own __floor__ / __ceil__ / __trunc__ first, as CPython's
 for (const [n, dunder] of [['floor', '__floor__'], ['ceil', '__ceil__'], ['trunc', '__trunc__']]) {
   const f = _mathModule[n];
@@ -8818,7 +8928,7 @@ const _mroNamed = (x, names) => !!(x && x.__adderType__ && x.__adderType__._pyMR
 // str / bytes, and not a dict
 function _matchSeqItems(x) {
   if (Array.isArray(x)) return x;
-  if (x instanceof AdderRange) return [...x];
+  if (x instanceof AdderRange) return _rangeList(x);
   if (x !== null && typeof x === 'object' && (x.__adderClass__ === 'deque' || _mroNamed(x, ['Sequence', 'MutableSequence']))) return null;   // collected below
   return undefined;
 }
@@ -10077,7 +10187,10 @@ function adderBuiltins(printFn) {
       { const f = subclassDunder(obj, '__len__'); if (f) return f.call(obj); }
       if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) return obj.length;
       if (obj instanceof Map || obj instanceof Set) return obj.size;
-      if (obj instanceof AdderRange) return obj.length;
+      if (obj instanceof AdderRange) {
+        if (typeof obj.length === 'bigint') throw new AdderError('OverflowError', 'Python int too large to convert to C ssize_t');
+        return obj.length;
+      }
       if (typeof obj === 'function' && typeof obj.__len__ === 'function') return obj.__len__();   // a class (an Enum)
       if (typeof obj === 'object' && obj !== null) {
         if (typeof obj.__len__ === 'function') return obj.__len__();
@@ -11569,8 +11682,8 @@ async function _evalSubscript(node, scope) {
 }
 
 function _applySlice(obj, lower, upper, step) {
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);   // (exact, any size)
   lower = sliceBound(lower); upper = sliceBound(upper); step = sliceBound(step);   // (an int past 2**53: past any end)
-  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
     const len = obj.length;
     step = step ?? 1;
@@ -13424,7 +13537,7 @@ function _ndarrayTupleSet(obj, key, value) {
 }
 
 function _slice(obj, lower, upper, step) {
-  if (obj instanceof AdderRange) return pyRangeSlice(obj, sliceBound(lower), sliceBound(upper), sliceBound(step));
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);   // (exact, any size)
   const rawStep = step;   // (a __getitem__ is handed the slice as written: step None when omitted)
   step = step ?? 1;
   if (step == 0) throw new AdderError('ValueError', 'slice step cannot be zero'); // eslint-disable-line eqeqeq
@@ -14191,9 +14304,15 @@ const _py = {
   bytesLit, dictLiteral,
   tuple: mkTuple,
   isThen: (v) => v !== null && v !== undefined && typeof v.then === 'function',
-  // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range() does
+  // range(...) arguments for a counted loop: [start, stop, step, sign(step)], validated as range()
+  // does. A range whose values or counter run past 2**53 counts in BigInts (the loop's raw `<`, `+`
+  // and `(k - stop) * dir < 0` hold for them too). OPEN (ROADMAP big ints step 3): the loop
+  // variable is typed int and bound raw, so in such a range a value inside ±2**53 is a BigInt
+  // (not canonical) and typed arithmetic on one throws — a per-iteration normalization costs 4x
+  // on every range loop in V8, so it waits for step 3's answer to "a typed int that may be big".
   rangeArgs: (args) => {
     const r = new AdderRange(...args);   // the same validation as range()
+    if (r.big) { const [s, e, t] = r.big; return [s, e, t, t > 0n ? 1n : -1n]; }
     return [r.start, r.stop, r.step, r.step > 0 ? 1 : -1];
   },
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
@@ -15887,8 +16006,10 @@ function _nmSumprod(p, q) {
   }
   return allInt ? _nmInt(acc[0]) : _nmToFloat(acc[0], acc[1]);
 }
+// an int or bool argument as the float CPython's math converts it to (OverflowError past the range)
+const _nmRealArg = (f) => { const w = (x) => f(typeof x === 'bigint' || typeof x === 'boolean' ? intToFloat(x) : x); w._pyName = f.name.replace(/^_nm/, '').toLowerCase(); return w; };
 Object.assign(adderModules.math, {
-  erf: _nmErf, erfc: _nmErfc, gamma: _nmGamma, lgamma: _nmLgamma, sumprod: _nmSumprod,
+  erf: _nmRealArg(_nmErf), erfc: _nmRealArg(_nmErfc), gamma: _nmRealArg(_nmGamma), lgamma: _nmRealArg(_nmLgamma), sumprod: _nmSumprod,
   fsum: (it) => { let acc = [0n, 1n]; const special = []; for (const v of pyIter(it)) { const x = Number(v); if (!Number.isFinite(x)) special.push(x); else acc = _nmRadd(acc, _nmFromFloat(x)); } if (special.length) return special.reduce((s, v) => s + v, 0); return _nmToFloat(acc[0], acc[1]); },
 });
 
@@ -25637,7 +25758,7 @@ const PY_SPECIALIZATIONS = {
     resultType: (t) => t,
   },
   // `_py.freeName(v, "name")` (NameError when v is unbound) gives v back: v's type
-  freeName: { op: null, check: () => true, resultType: (t) => t, typeOnly: true, guard: true },
+  freeName: { op: null, check: () => true, resultType: (t) => t, typeOnly: true, guard: '%v !== undefined' },
   truthy: {
     // _py.truthy(true) → just the value (already bool)
     // _py.truthy(x) where x is numeric → x !== 0 (handled via coerce)
@@ -25676,8 +25797,9 @@ if (_doRegisterPy) _doRegisterPy('_py', PY_SPECIALIZATIONS);
 // Returns DYNAMIC for anything we don't recognise — including subscripts
 // (`list[int]`, `dict[str, int]`), unions, generic tuples — so the rest of
 // the pipeline keeps working unchanged.
-// A trusted `int` is an f64, not an i32: i32 is a wrapping type (`(a + b) | 0`), and a Python
-// int doesn't wrap — f64 is exact to 2**53, the safe range adder's ints keep as numbers.
+// A trusted `int` types as f64: adder emits unhinted (an integer type means "integer-valued",
+// never `| 0`), so i32 and f64 give the same code here, and f64 — exact to 2**53, the range
+// adder's ints keep as numbers — is the honest name for what a Python int is.
 const _PY_NAME_TO_TYPE = {
   'int': F64, 'float': F64, 'bool': BOOL, 'str': STRING,
   'None': VOID, 'NoneType': VOID,

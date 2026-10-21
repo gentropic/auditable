@@ -966,13 +966,13 @@ Each backend is selected by a decorator: no decorator = eval/transpile, `@kernel
 
 Annotations are parsed and preserved even though the eval backend doesn't use them — they're the type information that compiled backends need. Adding a new backend is adding a new AST walker, not a new language.
 
-**Which annotations are types.** AIR's own hint names — `i8`…`u64`, `f32`, `f64`, the typed arrays (`Int32Array`, `f64array`, …) — always are: `def f(n: i32)` gets raw (and, being i32, wrapping) arithmetic. Python's `int` / `float` / `bool` / `str` / `None` are not, by default: CPython never enforces them, so `def g(s: int): return s * 2` must still give `"abab"` for `g("ab")`. A module that promises its annotations are true says so in its prologue (after the docstring and any `__future__` imports):
+**Which annotations are types.** AIR's own hint names — `i8`…`u64`, `f32`, `f64`, the typed arrays (`Int32Array`, `f64array`, …) — always are: `def f(n: i32)` gets raw arithmetic. (adder emits unhinted JS, so an integer hint means "integer-valued", not "wraps at 2**31": no `| 0`.) Python's `int` / `float` / `bool` / `str` / `None` are not, by default: CPython never enforces them, so `def g(s: int): return s * 2` must still give `"abab"` for `g("ab")`. A module that promises its annotations are true says so in its prologue (after the docstring and any `__future__` imports):
 
 ```python
 from __adder__ import trust_annotations, i32   # flags + hint names
 ```
 
-and its `int` is then typed as a non-wrapping number (f64: exact to 2**53), `float` as f64, and so on. A flag named later in the module is a SyntaxError, as a late `__future__` import is in CPython; hint names may be imported anywhere. `__adder__` flags follow one rule: a flag only lets adder *assume* something the programmer promises, so a program that keeps the promise runs the same on the interpreter (which ignores the flags), the compiler and CPython. `__adder__` is a real module (`pylib/__adder__.py`) that doubles as the CPython stub: next to a program, it makes the flags no-ops and the hint names `int` / `float` — which CPython before 3.14 needs to run `def f(n: i32)` at all.
+and its `int` is then typed as a number (f64: exact to 2**53), `float` as f64, and so on. A flag named later in the module is a SyntaxError, as a late `__future__` import is in CPython; hint names may be imported anywhere. `__adder__` flags follow one rule: a flag only lets adder *assume* something the programmer promises, so a program that keeps the promise runs the same on the interpreter (which ignores the flags), the compiler and CPython. `__adder__` is a real module (`pylib/__adder__.py`) that doubles as the CPython stub: next to a program, it makes the flags no-ops and the hint names `int` / `float` — which CPython before 3.14 needs to run `def f(n: i32)` at all.
 
 ### 12.1 Eval mode (shipped)
 

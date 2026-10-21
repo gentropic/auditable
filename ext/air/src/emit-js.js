@@ -612,10 +612,10 @@ function emitCall(ctx, op) {
   }
   const args = op.args.slice(1).map(a => ctx.ref(a));
   const paren = op.optional ? '?.(' : '(';
-  // a guard (passes.js spec.guard): the call only when the value it guards is undefined. Inline
-  // only when that value is a plain name (it is written twice)
-  if (op.guardUndefined && !op.optional && /^[$_a-zA-Z][\w$]*$/.test(args[0] || '')) {
-    register(ctx, op, `(${args[0]} !== undefined ? ${args[0]} : ${fn}(${args.join(', ')}))`);
+  // a guard (passes.js spec.guard): the call only when the guard's condition on the first argument
+  // fails. Inline only when that argument is a plain name (it is written more than once)
+  if (op.guard && !op.optional && /^[$_a-zA-Z][\w$]*$/.test(args[0] || '')) {
+    register(ctx, op, `(${op.guard.replaceAll('%v', args[0])} ? ${args[0]} : ${fn}(${args.join(', ')}))`);
     return;
   }
   register(ctx, op, `${fn}${paren}${args.join(', ')})`);

@@ -90,7 +90,7 @@ const PY_SPECIALIZATIONS = {
     resultType: (t) => t,
   },
   // `_py.freeName(v, "name")` (NameError when v is unbound) gives v back: v's type
-  freeName: { op: null, check: () => true, resultType: (t) => t, typeOnly: true, guard: true },
+  freeName: { op: null, check: () => true, resultType: (t) => t, typeOnly: true, guard: '%v !== undefined' },
   truthy: {
     // _py.truthy(true) → just the value (already bool)
     // _py.truthy(x) where x is numeric → x !== 0 (handled via coerce)
@@ -129,8 +129,9 @@ if (_doRegisterPy) _doRegisterPy('_py', PY_SPECIALIZATIONS);
 // Returns DYNAMIC for anything we don't recognise — including subscripts
 // (`list[int]`, `dict[str, int]`), unions, generic tuples — so the rest of
 // the pipeline keeps working unchanged.
-// A trusted `int` is an f64, not an i32: i32 is a wrapping type (`(a + b) | 0`), and a Python
-// int doesn't wrap — f64 is exact to 2**53, the safe range adder's ints keep as numbers.
+// A trusted `int` types as f64: adder emits unhinted (an integer type means "integer-valued",
+// never `| 0`), so i32 and f64 give the same code here, and f64 — exact to 2**53, the range
+// adder's ints keep as numbers — is the honest name for what a Python int is.
 const _PY_NAME_TO_TYPE = {
   'int': F64, 'float': F64, 'bool': BOOL, 'str': STRING,
   'None': VOID, 'NoneType': VOID,

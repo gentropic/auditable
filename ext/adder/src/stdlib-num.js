@@ -8,7 +8,7 @@
 import {
   AdderError, PyTuple, PyDict, mkTuple, pyTypeName, pyRepr, pyStr, pyIter, pyCollect, pyBool, pyEq, pyLt,
   pyAdd, pySub, pyMul, pyTrueDiv, pySorted, pyFormatValue, adderModules, makeExcType, _pyHash, _namedtuple, NotImplemented,
-  isIntNum,
+  isIntNum, intToFloat,
 } from './builtins.js';
 
 const _nmIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
@@ -255,8 +255,10 @@ function _nmSumprod(p, q) {
   }
   return allInt ? _nmInt(acc[0]) : _nmToFloat(acc[0], acc[1]);
 }
+// an int or bool argument as the float CPython's math converts it to (OverflowError past the range)
+const _nmRealArg = (f) => { const w = (x) => f(typeof x === 'bigint' || typeof x === 'boolean' ? intToFloat(x) : x); w._pyName = f.name.replace(/^_nm/, '').toLowerCase(); return w; };
 Object.assign(adderModules.math, {
-  erf: _nmErf, erfc: _nmErfc, gamma: _nmGamma, lgamma: _nmLgamma, sumprod: _nmSumprod,
+  erf: _nmRealArg(_nmErf), erfc: _nmRealArg(_nmErfc), gamma: _nmRealArg(_nmGamma), lgamma: _nmRealArg(_nmLgamma), sumprod: _nmSumprod,
   fsum: (it) => { let acc = [0n, 1n]; const special = []; for (const v of pyIter(it)) { const x = Number(v); if (!Number.isFinite(x)) special.push(x); else acc = _nmRadd(acc, _nmFromFloat(x)); } if (special.length) return special.reduce((s, v) => s + v, 0); return _nmToFloat(acc[0], acc[1]); },
 });
 

@@ -784,8 +784,8 @@ async function _evalSubscript(node, scope) {
 }
 
 function _applySlice(obj, lower, upper, step) {
+  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);   // (exact, any size)
   lower = sliceBound(lower); upper = sliceBound(upper); step = sliceBound(step);   // (an int past 2**53: past any end)
-  if (obj instanceof AdderRange) return pyRangeSlice(obj, lower, upper, step);
   if (typeof obj === 'string' || Array.isArray(obj) || obj instanceof Uint8Array) {
     const len = obj.length;
     step = step ?? 1;

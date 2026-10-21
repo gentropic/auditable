@@ -694,7 +694,7 @@ describe('adder transpile — annotations and __adder__ flags', () => {
   const emit = (src) => {
     const air = lowerAdder(adderParse(src), src);
     runPasses(air);
-    return emitJS(air, ['_py', ...air.imports], [], { hinted: true });
+    return emitJS(air, ['_py', ...air.imports], [], { hinted: false });   // adder's emission
   };
   const fib = 'def fib(n: int) -> int:\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\n';
   it('a Python int annotation is not a type: s * 2 still doubles a str', async () => {
@@ -707,7 +707,7 @@ describe('adder transpile — annotations and __adder__ flags', () => {
     }
     assert.match(emit(fib), /_py\.sub\)\(n, 1\)/);
   });
-  it('trust_annotations types int as a non-wrapping number: raw ops, exact past 2**31', async () => {
+  it('trust_annotations types int as a number: raw ops, exact past 2**31', async () => {
     const src = 'from __adder__ import trust_annotations\n' + fib;
     const js = emit(src);
     assert.match(js, /fib\(\(n - 1\)\) \+ fib\(\(n - 2\)\)/);
@@ -716,8 +716,10 @@ describe('adder transpile — annotations and __adder__ flags', () => {
     assert.doesNotMatch(emit(dbl), /_py\.add/);
     for (const run of [airRun, twRun]) assert.deepEqual([...(await run(dbl)).r], [2 ** 41, -6]);
   });
-  it('AIR hint names are types without the flag (i32 wraps, as declared)', () => {
-    assert.match(emit(fib.replace(/int/g, 'i32')), /\(\(\(fib\(\(\(\(n - 1\)\) \| 0\)\)/);
+  it('AIR hint names are types without the flag (integer-valued: no | 0 in adder)', () => {
+    const js = emit(fib.replace(/int/g, 'i32'));
+    assert.match(js, /fib\(\(n - 1\)\) \+ fib\(\(n - 2\)\)/);
+    assert.doesNotMatch(js, /\| 0/);
   });
   it('the flag goes after the docstring and __future__ imports; later is a SyntaxError', async () => {
     const ok = '"""doc"""\nfrom __future__ import annotations\nfrom __adder__ import trust_annotations, i32, f64\nr = i32, f64, trust_annotations\n';
