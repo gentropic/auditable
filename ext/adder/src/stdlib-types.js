@@ -7,7 +7,7 @@
 import {
   AdderError, PyTuple, PyDict, PySet, mkTuple, isPlainDict, adderGetAttr, pyTypeName, pyRepr, pyStr, pyReprMaybe,
   pyIter, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow,
-  pyFormatValue, adderModules, makeExcType, finishClass, _typeObjects, _pyHash, setClassAttr,
+  pyFormatValue, adderModules, makeExcType, finishClass, _typeObjects, _pyHash, setClassAttr, classOnlyAttr,
 } from './builtins.js';
 
 const _stIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
@@ -163,10 +163,11 @@ function _stEnumHook(cls) {
     if (kind.str && typeof value !== 'string') throw new AdderError('TypeError', `${pyRepr(value)} is not a string`);
     last = value;
     const canon = cls._value2member_.find(([v]) => v === value || pyEq(v, value) === true);
-    if (canon) { setClassAttr(cls, name, canon[1]); cls._member_map_.set(name, canon[1]); cls._stAliases.push([name, canon[1]._name_]); continue; }
+    if (canon) { setClassAttr(cls, name, canon[1]); classOnlyAttr(cls, name); cls._member_map_.set(name, canon[1]); cls._stAliases.push([name, canon[1]._name_]); continue; }
     const m = _stMember(cls, name, value);
     if (ownInit) inits.push(() => cls.prototype.__init__.call(m, ...(value instanceof PyTuple ? value : [value])));
     setClassAttr(cls, name, m);
+    classOnlyAttr(cls, name);   // (an instance reads a base property of the name, not the member)
     // a Flag's canonical members are its single bits: a 0 or multi-bit value is a member (in
     // __members__, by value) but not iterated or counted, as CPython 3.11+
     const bits = kind.flag && typeof value === 'number' && Number.isInteger(value) && value >= 0;

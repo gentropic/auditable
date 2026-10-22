@@ -8,7 +8,7 @@ import {
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
   PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
-  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin, intNorm,
+  buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin, intNorm, bytesContains,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, importNamesNow, resolveRelativeImport } from './eval.js';
 
@@ -29,18 +29,29 @@ function _iadd(a, b) {
 
 // ── Comparison ──
 
+// `value in container`: a bool, as CPython makes of __contains__'s result (a Python __contains__
+// runs through its sync twin; one that has to wait gives a Promise of the bool)
+const _asBool = (r) => (r !== null && r !== undefined && typeof r.then === 'function' ? r.then(_asBool) : typeof r === 'boolean' ? r : pyBool(r));
 function _contains(container, value) {
+  // (a plain dict / set first: the hot case, no subclass __contains__ to ask)
+  if ((container instanceof Map || container instanceof Set) && container.__adderType__ === undefined) return container.has(value);
   if (typeof container === 'string') return container.includes(String(value));
-  { const f = subclassDunder(container, '__contains__'); if (f) return f.call(container, value); }
+  { const f = subclassDunder(container, '__contains__'); if (f) return _asBool(syncOf(f).call(container, value)); }
+  if (container instanceof Uint8Array || container instanceof PyByteArray) return bytesContains(container, value);
   if (Array.isArray(container)) return container.some(v => _eq(v, value));
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
   if (container instanceof AdderRange) return container.includes(value);
   if (container !== null && (typeof container === 'object' || typeof container === 'function' && typeof container.__contains__ === 'function')) {
-    if (typeof container.__contains__ === 'function') return container.__contains__(value);
+    if (typeof container.__contains__ === 'function') return _asBool(syncOf(container.__contains__).call(container, value));
     return value in container;
   }
   throw new AdderError('TypeError', `argument of type '${pyTypeName(container)}' is not iterable`);
+}
+function _notContains(container, value) {
+  if ((container instanceof Map || container instanceof Set) && container.__adderType__ === undefined) return !container.has(value);
+  const r = _contains(container, value);
+  return r !== null && typeof r === 'object' && typeof r.then === 'function' ? r.then((b) => !b) : !r;
 }
 
 // ── Subscript ──
@@ -584,6 +595,14 @@ function _globalsOf(mod) {   // one live view per module: globals() is globals()
   if (!d) { d = new AttrDict(mod); _globalsViews.set(mod, d); }
   return d;
 }
+// `globals` as a value (timeit's `_globals = globals`, called later): the builtin, answering for
+// the module that read it — where such a call runs (one per module, so `_g is globals` holds)
+const _globalsFns = new WeakMap();
+function _globalsFnOf(mod) {
+  let f = _globalsFns.get(mod);
+  if (!f) { f = Object.assign(() => _globalsOf(mod), { _pyName: 'globals', __name__: 'globals', __qualname__: 'globals' }); _globalsFns.set(mod, f); }
+  return f;
+}
 // a module-level name, read through the module object: what globals() set wins over the
 // compiled binding (and a builtin is the binding when the module has no such name)
 // a compiled module installs its write-back (builtins.js MODULE_REBIND) on its module object
@@ -673,10 +692,10 @@ async function _importFromPath(path, names) {
 // Mirrors _evalClass in eval.js, but takes pre-evaluated bases and members.
 
 // annotations arrive flattened from the lowerer: [name, text, name, text, …]
-function _createClass(name, bases, members, annotations, kw, moduleName) {
+function _createClass(name, bases, members, annotations, kw, moduleName, qualname = name) {
   // __module__ / __qualname__, as CPython's class namespace starts with them (unless the body set them)
   if (moduleName !== undefined && !Object.hasOwn(members, '__module__')) members.__module__ = moduleName;
-  if (!Object.hasOwn(members, '__qualname__')) members.__qualname__ = name;
+  if (!Object.hasOwn(members, '__qualname__')) members.__qualname__ = qualname;
   const ann = [];
   for (let k = 0; annotations && k < annotations.length; k += 2) ann.push([annotations[k], annotations[k + 1]]);
   return classStatement(name, bases, members, ann, kw);
@@ -903,7 +922,7 @@ export const _py = {
   neg: _neg, pos: _pos, invert: _invert,
   // comparison
   eq: _eq, neq: _neq, lt: _lt, lte: _lte, gt: _gt, gte: _gte,
-  contains: _contains,
+  contains: _contains, notContains: _notContains,
   // subscript
   getitem: _getitem, setitem: _setitem, slice: _slice,
   setslice: _setslice, delslice: _delslice,
@@ -933,7 +952,7 @@ export const _py = {
   pics: _pics,
   noAwait: _noAwait,
   lam: (f, twin) => { f._pyDef = true; if (twin) Object.defineProperty(f, '_pySync', { value: twin, configurable: true, writable: true }); return f; },
-  mainModule: _mainModule, globalsOf: _globalsOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, unboundGlobal: _unboundGlobal, localsOf: _localsOf,
+  mainModule: _mainModule, globalsOf: _globalsOf, globalsFnOf: _globalsFnOf, globalLoad: _globalLoad, moduleRebind: _moduleRebind, rebindCallable: _rebindCallable, freeName: _freeName, unboundGlobal: _unboundGlobal, localsOf: _localsOf,
   delitem: _delitem, delattr: _delattr,
   // dict/set construction
   makeDict: _makeDict, makeSet: _makeSet,
@@ -990,6 +1009,7 @@ export const _py = {
   defSig: (fn, shape, defaults, mod = null) => {
     if (typeof fn !== 'function') return null;
     fn._pyDef = true;
+    if (shape.qualname) fn.__qualname__ = shape.qualname;
     // (defaults: the object the def's calls bind from — assigning __defaults__ rewrites it. One
     // fixed shape, not a spread: a lambda made in a loop pays this per iteration)
     fn._pySig = { params: shape.params, vararg: shape.vararg, kwonly: shape.kwonly, kwarg: shape.kwarg, isAsync: shape.isAsync, line: shape.line,

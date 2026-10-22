@@ -20,10 +20,32 @@
 import {
   AdderError, adderModules, makeExcType, mkTuple, PyTuple, PyDict, PySet, PyByteArray, AdderRange, Complex,
   pyTypeName, pyIter, pyRepr, adderGetAttr, typeOf, pyObjectObj, maybeSync, isPlainDict, pyEncode, pyDecodePartial,
-  buildClass, objectNew, mainClassLookup,
+  buildClass, objectNew, mainClassLookup, intNorm,
 } from './builtins.js';
 
 const _pkPickleError = makeExcType('PickleError', 'Exception');
+
+// an int as LONG1 / LONG4 store it — little-endian two's complement in as few bytes as hold it
+// (0 is none) — and back, exact past 2**53 (pickle.encode_long / decode_long)
+function _pkEncodeLong(n) {
+  let v = BigInt(n);
+  const bytes = [];
+  if (v !== 0n) {
+    for (;;) {
+      bytes.push(Number(v & 0xffn));
+      v >>= 8n;
+      if ((v === 0n && !(bytes[bytes.length - 1] & 0x80)) || (v === -1n && (bytes[bytes.length - 1] & 0x80))) break;
+    }
+  }
+  return bytes;
+}
+function _pkDecodeLong(b) {
+  if (!b.length) return 0;
+  let v = 0n;
+  for (let i = b.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(b[i]);
+  if (b[b.length - 1] & 0x80) v -= 1n << BigInt(8 * b.length);
+  return intNorm(v);
+}
 const _pkPicklingError = makeExcType('PicklingError', 'PickleError');
 const _pkUnpicklingError = makeExcType('UnpicklingError', 'PickleError');
 const _pkHIGHEST = 5, _pkDEFAULT = 4;
@@ -113,15 +135,7 @@ function _pkSaveInt(st, n) {
   }
   if (st.proto >= 2) {
     // LONG1 / LONG4: little-endian two's complement, as few bytes as hold it
-    let v = BigInt(n);
-    const bytes = [];
-    if (v !== 0n) {
-      for (;;) {
-        bytes.push(Number(v & 0xffn));
-        v >>= 8n;
-        if ((v === 0n && !(bytes[bytes.length - 1] & 0x80)) || (v === -1n && (bytes[bytes.length - 1] & 0x80))) break;
-      }
-    }
+    const bytes = _pkEncodeLong(n);
     if (bytes.length < 256) { o.op(0x8a); o.u8(bytes.length); } else { o.op(0x8b); o.i32(bytes.length); }
     o.bytes(bytes);
     return o.boundary();
@@ -447,7 +461,7 @@ function* _pkLoad(st) {
   const pop = () => { if (!stack.length) throw new AdderError('UnpicklingError', 'unpickling stack underflow'); return stack.pop(); };
   // a py2 str (STRING / BINSTRING): text in `encoding`, or bytes when encoding is 'bytes'
   const py2str = (b) => (st.encoding === 'bytes' ? b : pyDecodePartial(b, st.encoding, st.errors, true).text);
-  const intLong = (b) => { if (!b.length) return 0; let v = 0n; for (let i = b.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(b[i]); if (b[b.length - 1] & 0x80) v -= 1n << BigInt(8 * b.length); return Number(v); };
+  const intLong = (b) => _pkDecodeLong(b);
   const newobj = function* (cls, args, kw) { const nw = adderGetAttr(cls, '__new__'); return yield (kw ? nw(cls, ...args, { _kw: true, ...kw }) : nw(cls, ...args)); };
   const findClass = (module, name) => (st.findClass ? st.findClass(module, name) : _pkFindClass(st, module, name));
 
@@ -460,11 +474,11 @@ function* _pkLoad(st) {
       case 0x31: popMark(); break;                                                      // POP_MARK
       case 0x32: stack.push(top()); break;                                              // DUP
       case 0x46: { const s = line(); stack.push(s === 'nan' ? NaN : s === 'inf' ? Infinity : s === '-inf' ? -Infinity : parseFloat(s)); break; }   // FLOAT
-      case 0x49: { const s = line(); stack.push(s === '00' ? false : s === '01' ? true : parseInt(s, 10)); break; }   // INT
+      case 0x49: { const s = line(); stack.push(s === '00' ? false : s === '01' ? true : intNorm(BigInt(s.trim()))); break; }   // INT
       case 0x4a: stack.push(i32()); break;                                              // BININT
       case 0x4b: stack.push(u8()); break;                                               // BININT1
       case 0x4d: stack.push(u16()); break;                                              // BININT2
-      case 0x4c: { const s = line().replace(/L$/, ''); stack.push(Number(BigInt(s))); break; }   // LONG
+      case 0x4c: { const s = line().replace(/L$/, ''); stack.push(intNorm(BigInt(s.trim()))); break; }   // LONG
       case 0x50: { const pid = line(); stack.push(yield st.persistentLoad(pid)); break; }        // PERSID
       case 0x51: { const pid = pop(); stack.push(yield st.persistentLoad(pid)); break; }         // BINPERSID
       case 0x52: { const args = pop(); const fn = pop(); stack.push(yield fn(...args)); break; } // REDUCE
@@ -668,6 +682,9 @@ _pkPickler.__module__ = 'pickle'; _pkUnpickler.__module__ = 'pickle';
 adderModules.pickle = {
   __adderModule__: true, __name__: 'pickle',
   HIGHEST_PROTOCOL: _pkHIGHEST, DEFAULT_PROTOCOL: _pkDEFAULT, format_version: '5.0',
+  get bytes_types() { return mkTuple([adderModules.builtins.bytes, adderModules.builtins.bytearray]); },
+  encode_long: (x) => Uint8Array.from(_pkEncodeLong(x)),
+  decode_long: (data) => _pkDecodeLong(data),
   compatible_formats: ['1.0', '1.1', '1.2', '1.3', '2.0', '3.0', '4.0', '5.0'],
   PickleError: _pkPickleError, PicklingError: _pkPicklingError, UnpicklingError: _pkUnpicklingError,
   dumps: _pkDumps, loads: _pkLoads,
@@ -682,6 +699,22 @@ adderModules.pickle = {
   Pickler: _pkPickler, Unpickler: _pkUnpickler,
   PickleBuffer: Object.assign((b) => b, { _pyName: 'PickleBuffer', __name__: 'PickleBuffer' }),
 };
+// the opcodes, as pickle.py names them (pickletools checks its table against these at import)
+const _PK_OPCODES = {
+  ADDITEMS: 144, APPEND: 97, APPENDS: 101, BINBYTES: 66, BINBYTES8: 142, BINFLOAT: 71, BINGET: 104, BININT: 74, BININT1: 75,
+  BININT2: 77, BINPERSID: 81, BINPUT: 113, BINSTRING: 84, BINUNICODE: 88, BINUNICODE8: 141, BUILD: 98, BYTEARRAY8: 150, DICT: 100,
+  DUP: 50, EMPTY_DICT: 125, EMPTY_LIST: 93, EMPTY_SET: 143, EMPTY_TUPLE: 41, EXT1: 130, EXT2: 131, EXT4: 132, FLOAT: 70, FRAME: 149,
+  FROZENSET: 145, GET: 103, GLOBAL: 99, INST: 105, INT: 73, LIST: 108, LONG: 76, LONG1: 138, LONG4: 139, LONG_BINGET: 106,
+  LONG_BINPUT: 114, MARK: 40, MEMOIZE: 148, NEWFALSE: 137, NEWOBJ: 129, NEWOBJ_EX: 146, NEWTRUE: 136, NEXT_BUFFER: 151, NONE: 78,
+  OBJ: 111, PERSID: 80, POP: 48, POP_MARK: 49, PROTO: 128, PUT: 112, READONLY_BUFFER: 152, REDUCE: 82, SETITEM: 115, SETITEMS: 117,
+  SHORT_BINBYTES: 67, SHORT_BINSTRING: 85, SHORT_BINUNICODE: 140, STACK_GLOBAL: 147, STOP: 46, STRING: 83, TUPLE: 116, TUPLE1: 133,
+  TUPLE2: 134, TUPLE3: 135, UNICODE: 86,
+};
+for (const [k, v] of Object.entries(_PK_OPCODES)) adderModules.pickle[k] = Uint8Array.of(v);
+adderModules.pickle.TRUE = Uint8Array.of(73, 48, 49, 10);    // b'I01\n'
+adderModules.pickle.FALSE = Uint8Array.of(73, 48, 48, 10);   // b'I00\n'
+adderModules.pickle.__all__ = ['PickleError', 'PicklingError', 'UnpicklingError', 'Pickler', 'Unpickler', 'dump', 'dumps', 'load', 'loads', 'PickleBuffer',
+  ...[...Object.keys(_PK_OPCODES), 'TRUE', 'FALSE', 'DEFAULT_PROTOCOL', 'HIGHEST_PROTOCOL'].sort()];
 // cPickle is pickle (py2 code imports it), and _pickle the accelerator CPython would have
 adderModules._pickle = adderModules.pickle;
 

@@ -2,7 +2,7 @@
 // Companion: @gcu/adder/air exports the same API backed by AIR transpilation
 // (15-300x faster), at the cost of requiring @gcu/air as a peer dep.
 
-import { adderParse, _adderParseExpr } from './parse.js';
+import { adderParse, _adderParseExpr, parseErrorIsIncomplete } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule, setModuleCompiler } from './eval.js';
 import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio, adderModules, frozenPyModules, frozenPyCompiled, frozenPyBuild } from './builtins.js';
 import { _py } from './runtime.js';
@@ -426,13 +426,7 @@ export function isIncomplete(code) {
     adderParse(_dedent(code));
     return false;
   } catch (e) {
-    const msg = (e && e.message) || '';
-    // Parser error patterns indicating the parser ran out of input mid-construct:
-    //   "Expected INDENT, got '' [EOF]"          — block body missing
-    //   "Expected X, got '' [NEWLINE]" or [EOF]  — unclosed bracket, missing operand
-    //   "Unexpected token: NEWLINE ''"           — trailing comma in collection
-    //   "Unexpected end of file"                 — generic EOF
-    return /got '' \[|''\s*\(line|\bEOF\b|[Uu]nexpected end/.test(msg);
+    return parseErrorIsIncomplete(e);
   }
 }
 

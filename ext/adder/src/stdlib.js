@@ -898,13 +898,21 @@ class _SlExitStack {
 }
 class _SlRedirect {
   constructor(target, which) { this._target = target; this._which = which; this._prev = []; }
+  // (and sys.stdout / sys.stderr IS the target inside, as CPython's — code there that reads them
+  // writes to it too)
   __enter__() {
-    if (this._which === 'out') { this._prev.push(_stdio.redirect); _stdio.redirect = this._target; }
-    else { this._prev.push(_stdio.err); _stdio.err = (s) => { adderGetAttr(this._target, 'write')(s); }; }
+    const sys = adderModules.sys, key = this._which === 'out' ? 'stdout' : 'stderr';
+    this._prev.push([sys ? sys[key] : undefined, this._which === 'out' ? _stdio.redirect : _stdio.err]);
+    if (sys) sys[key] = this._target;
+    if (this._which === 'out') _stdio.redirect = this._target;
+    else _stdio.err = (s) => { adderGetAttr(this._target, 'write')(s); };
     return this._target;
   }
   __exit__() {
-    if (this._which === 'out') _stdio.redirect = this._prev.pop(); else _stdio.err = this._prev.pop();
+    const sys = adderModules.sys, key = this._which === 'out' ? 'stdout' : 'stderr';
+    const [stream, hook] = this._prev.pop();
+    if (sys) sys[key] = stream;
+    if (this._which === 'out') _stdio.redirect = hook; else _stdio.err = hook;
     return false;
   }
 }
@@ -1041,6 +1049,9 @@ adderModules.io = {
   BytesIO: _slType('BytesIO', _SlBytesIO, 'io'),
   SEEK_SET: 0, SEEK_CUR: 1, SEEK_END: 2, DEFAULT_BUFFER_SIZE: 8192,
   UnsupportedOperation: makeExcType('UnsupportedOperation', 'OSError'),
+  // io.open is the builtin open; open_code(path) opens a file of code to read, as bytes
+  open: (...a) => adderModules.builtins.open(...a),
+  open_code: (path) => adderModules.builtins.open(path, 'rb'),
 };
 
 // ── collections.abc ──

@@ -10,6 +10,7 @@ function _processEscapes(raw) {
     const c = raw[++i];
     switch (c) {
       case 'n': out += '\n'; break;
+      case '\n': break;   // a backslash-newline continues the literal onto the next line: neither is kept
       case 't': out += '\t'; break;
       case 'r': out += '\r'; break;
       case '\\': out += '\\'; break;
@@ -43,6 +44,8 @@ const _TWO_OP = new Set(['**', '//', '<<', '>>', '<=', '>=', '==', '!=', '->', '
   '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '@=']);
 const _THREE_OP = new Set(['**=', '//=', '<<=', '>>=']);
 
+const _ID_START = /^[\p{ID_Start}_]$/u;
+const _ID_CONTINUE = /^[\p{ID_Continue}]$/u;
 export function adderTokenize(code) {
   // universal newlines, as CPython's tokenizer reads source: \r\n and a lone \r are \n (a
   // triple-quoted string in a CRLF file holds \n; the escape \r stays — it is not a CR here)
@@ -51,6 +54,7 @@ export function adderTokenize(code) {
   const indentStack = [0];
   let pos = 0, line = 1, col = 0;
   let bracketDepth = 0, atBol = true;
+  const openers = [];
   const len = code.length;
 
   function tok(type, value) { return { type, value, line, col }; }
@@ -100,10 +104,14 @@ export function adderTokenize(code) {
     }
 
     // ── line continuation ──
+    // (one that ends the input continues onto a line that isn't there)
+    if (ch === '\\' && pos + 1 === len) throw new SyntaxError(`unexpected EOF while parsing (line ${line})`);
     if (ch === '\\' && pos + 1 < len && (code[pos + 1] === '\n' || code[pos + 1] === '\r')) {
       pos++;
       if (code[pos] === '\r' && pos + 1 < len && code[pos + 1] === '\n') pos++;
       pos++; line++; col = 0;
+      // (continued onto nothing: the input stopped mid-statement)
+      if (pos >= len) throw new SyntaxError(`unexpected EOF while parsing (line ${line - 1})`);
       continue;
     }
 
@@ -136,9 +144,12 @@ export function adderTokenize(code) {
         const parts = [];
         let textBuf = '';
         const endQuote = triple ? qch + qch + qch : qch;
+        let fclosed = false;
+        const fstartLine = line;
         while (pos < len) {
           if (triple ? (code[pos] === qch && code[pos + 1] === qch && code[pos + 2] === qch) : code[pos] === qch) {
             pos += triple ? 3 : 1; col += triple ? 3 : 1;
+            fclosed = true;
             break;
           }
           if (code[pos] === '\n') { if (!triple) break; textBuf += '\n'; pos++; line++; col = 0; continue; }
@@ -207,16 +218,19 @@ export function adderTokenize(code) {
             textBuf += code[pos]; pos++; col++;
           }
         }
+        if (!fclosed) throw new SyntaxError(`unterminated ${triple ? 'triple-quoted ' : ''}f-string literal (detected at line ${line}) (line ${fstartLine})`);
         if (textBuf) parts.push(textBuf);
         // process escape sequences in text parts
         const processedParts = parts.map(p => typeof p === 'string' ? (isRaw ? p : _processEscapes(p)) : p);
         tokens.push(tok('FSTRING', processedParts));
       } else {
         // regular string
-        let raw = '';
+        let raw = '', closed = false;
+        const startLine = line;
         while (pos < len) {
           if (triple ? (code[pos] === qch && code[pos + 1] === qch && code[pos + 2] === qch) : code[pos] === qch) {
             pos += triple ? 3 : 1; col += triple ? 3 : 1;
+            closed = true;
             break;
           }
           if (code[pos] === '\n') { if (!triple) break; raw += '\n'; pos++; line++; col = 0; continue; }
@@ -230,6 +244,8 @@ export function adderTokenize(code) {
             raw += code[pos]; pos++; col++;
           }
         }
+        // (a quote never closed: CPython's SyntaxError, not a string that ends at the line / file)
+        if (!closed) throw new SyntaxError(`unterminated ${triple ? 'triple-quoted ' : ''}string literal (detected at line ${line}) (line ${startLine})`);
         const val = isRaw ? raw : _processEscapes(raw);
         tokens.push(/[bB]/.test(prefix) ? tok('BYTES', val) : tok('STRING', val));
       }
@@ -282,11 +298,22 @@ export function adderTokenize(code) {
     }
 
     // ── identifiers ──
-    if (/[a-zA-Z_]/.test(ch)) {
+    // (PEP 3131: a letter of any script — größe, π — NFKC-normalised as CPython stores it)
+    if (/[a-zA-Z_]/.test(ch) || (ch > '\x7f' && _ID_START.test(String.fromCodePoint(code.codePointAt(pos))))) {
       const start = pos;
-      while (pos < len && /[a-zA-Z0-9_]/.test(code[pos])) pos++;
+      let ascii = true;
+      while (pos < len) {
+        const c = code[pos];
+        if (/[a-zA-Z0-9_]/.test(c)) { pos++; continue; }
+        if (c > '\x7f') {
+          const cp = String.fromCodePoint(code.codePointAt(pos));
+          if (_ID_CONTINUE.test(cp)) { pos += cp.length; ascii = false; continue; }
+        }
+        break;
+      }
       col += pos - start;
-      tokens.push(tok('NAME', code.slice(start, pos)));
+      const name = code.slice(start, pos);
+      tokens.push(tok('NAME', ascii && /^[\x00-\x7f]*$/.test(name) ? name : name.normalize('NFKC')));
       continue;
     }
 
@@ -305,13 +332,16 @@ export function adderTokenize(code) {
       const t2 = code.slice(pos, pos + 2);
       if (_TWO_OP.has(t2)) { tokens.push(tok('OP', t2)); pos += 2; col += 2; continue; }
     }
-    // brackets — track depth
-    if (ch === '(' || ch === '[' || ch === '{') bracketDepth++;
-    if (ch === ')' || ch === ']' || ch === '}') bracketDepth = Math.max(0, bracketDepth - 1);
+    // brackets — track depth (and where each open one began, for "'(' was never closed")
+    if (ch === '(' || ch === '[' || ch === '{') { bracketDepth++; openers.push([ch, line]); }
+    if (ch === ')' || ch === ']' || ch === '}') { bracketDepth = Math.max(0, bracketDepth - 1); openers.pop(); }
     tokens.push(tok('OP', ch)); pos++; col++;
   }
 
   // ── end of file ──
+  // (input ending inside a bracket: the parser reports CPython's "was never closed" — what the
+  // REPL waits on — when that is where it fails, not for an earlier error: `def f(:`)
+  if (openers.length) Object.defineProperty(tokens, 'unclosed', { value: openers[openers.length - 1] });
   if (tokens.length && tokens[tokens.length - 1].type !== 'NEWLINE') {
     tokens.push(tok('NEWLINE', ''));
   }
@@ -355,7 +385,72 @@ export function classNeedsCell(node) {
 }
 
 export function adderParse(code) {
-  return _manglePrivate(_adderFlags(_classAnnotations(_desugarTypeParams(_hoistYields(new _Parser(adderTokenize(code)).parseModule())))), null);
+  return _manglePrivate(_qualnames(_adderFlags(_classAnnotations(_desugarTypeParams(_hoistYields(_returnsInFunctions(_parseTokens(adderTokenize(code), (p) => p.parseModule())))))), ''), null);
+}
+// `return` belongs in a def (a class body or the module is no function): CPython's compile-time
+// SyntaxError, rather than the engines each doing something else at run time
+function _returnsInFunctions(mod) {
+  const visit = (n, inFn) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const x of n) visit(x, inFn); return; }
+    if (n.type === 'Return' && !inFn) throw new SyntaxError(`'return' outside function (line ${n.line})`);
+    const fn = n.type === 'FunctionDef' || n.type === 'AsyncFunctionDef' || n.type === 'Lambda';
+    for (const k of Object.keys(n)) {
+      if (k === 'line' || k === 'col' || !n[k] || typeof n[k] !== 'object') continue;
+      visit(n[k], fn ? k === 'body' || inFn : n.type === 'ClassDef' && k === 'body' ? false : inFn);
+    }
+  };
+  visit(mod.body, false);
+  return mod;
+}
+// run a parse; one that fails on the input's closing tokens while a bracket is still open failed
+// because the input stopped inside it
+function _parseTokens(tokens, fn) {
+  const p = new _Parser(tokens);
+  try { return fn(p); } catch (e) {
+    if (tokens.unclosed && e instanceof SyntaxError && tokens.slice(p.pos).every((t) => t.type === 'NEWLINE' || t.type === 'DEDENT' || t.type === 'EOF')) {
+      const [ch, at] = tokens.unclosed;
+      throw new SyntaxError(`'${ch}' was never closed (line ${at})`);
+    }
+    throw e;
+  }
+}
+
+// __qualname__, as CPython's compiler sets it: each def / class / lambda records `qualname` —
+// `C.m` in a class, `f.<locals>.g` in a function, the bare name for one its enclosing function
+// declares `global`. A def's decorators, defaults and annotations, and a class's bases, are
+// outside it. Names are the unmangled ones (C.__x), and a PEP 695 helper is transparent, as
+// CPython's annotation scope is. Comprehensions are inlined (3.12+); a genexpr is left transparent.
+const _GENERIC_HELPER = '__generic_parameters_of_';
+function _scopeGlobals(body) {
+  const out = new Set();
+  const visit = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    if (n.type === 'Global') { for (const g of n.names) out.add(g); return; }
+    if (n.type === 'FunctionDef' || n.type === 'AsyncFunctionDef' || n.type === 'ClassDef' || n.type === 'Lambda') return;
+    for (const k of Object.keys(n)) if (k !== 'line' && k !== 'col' && n[k] && typeof n[k] === 'object') visit(n[k]);
+  };
+  visit(body);
+  return out;
+}
+function _qualnames(node, prefix, globals = null) {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) { for (const x of node) _qualnames(x, prefix, globals); return node; }
+  const t = node.type;
+  if (t === 'FunctionDef' || t === 'AsyncFunctionDef' || t === 'ClassDef' || t === 'Lambda') {
+    const name = t === 'Lambda' ? '<lambda>' : node.name;
+    const helper = t === 'FunctionDef' && typeof name === 'string' && name.startsWith(_GENERIC_HELPER);
+    const qn = !prefix || (globals && globals.has(name)) ? name : `${prefix}.${name}`;
+    if (!helper) node.qualname = qn;
+    for (const k of Object.keys(node)) if (k !== 'body' && k !== 'line' && k !== 'col' && node[k] && typeof node[k] === 'object') _qualnames(node[k], prefix, globals);
+    if (helper) _qualnames(node.body, prefix, globals);
+    else if (t === 'ClassDef') _qualnames(node.body, qn, null);
+    else _qualnames(node.body, `${qn}.<locals>`, Array.isArray(node.body) ? _scopeGlobals(node.body) : null);
+    return node;
+  }
+  for (const k of Object.keys(node)) if (k !== 'line' && k !== 'col' && node[k] && typeof node[k] === 'object') _qualnames(node[k], prefix, globals);
+  return node;
 }
 
 // A yield inside an expression — `f((yield x))`, `return (yield)`, `y = 1 + (yield)` — is
@@ -609,8 +704,24 @@ function _manglePrivate(node, cls) {
   return node;
 }
 
+// a parse error that only says the input stopped mid-construct (more lines would finish it), as
+// CPython's REPL tells them: an open bracket ("'(' was never closed"), a block with no body yet
+// ("Expected INDENT, got '' [EOF]"), an unfinished triple-quoted string, a backslash continuing
+// past the end. A statement cut short outside brackets (`a = `) is an error, not incomplete.
+// (the REPL's isIncomplete, and compile()'s PyCF_ALLOW_INCOMPLETE_INPUT — codeop)
+export function parseErrorIsIncomplete(e) {
+  const msg = (e && e.message) || String(e || '');
+  return /got '' \[EOF\]|was never closed|unexpected EOF|[Uu]nexpected end of file|[Uu]nterminated triple-quoted/.test(msg);
+}
+
+// one expression — a bare tuple too (eval("1, 2"), f"{a, b}") — and nothing after it
 export function _adderParseExpr(code) {
-  return new _Parser(adderTokenize(code + '\n')).parseExpr();
+  return _parseTokens(adderTokenize(code + '\n'), (p) => {
+    const e = p.parseExprOrStars();
+    while (p.eat('NEWLINE')) { /* trailing newlines */ }
+    if (!p.at('EOF')) { const t = p.peek(); throw new SyntaxError(`invalid syntax: unexpected '${t.value}' [${t.type}] (line ${t.line})`); }
+    return e;
+  });
 }
 
 // the names a match pattern binds, in order of first appearance
@@ -722,7 +833,7 @@ class _Parser {
         return [s];
       }
       if (this.at('NAME', 'class')) return [this.parseClass(decorators)];
-      throw new SyntaxError(`Expected def or class after decorator (line ${this.peek().line})`);
+      { const p = this.peek(); throw new SyntaxError(`Expected def or class after decorator, got '${p.value}' [${p.type}] (line ${p.line})`); }
     }
     // async
     if (t.type === 'NAME' && t.value === 'async') {
@@ -931,7 +1042,11 @@ class _Parser {
       if (this.at('NEWLINE') || this.at('EOF')) break;
       stmts.push(this.parseSimple());
     }
-    this.eat('NEWLINE');
+    // a statement ends at its line's end: `a b` is two expressions with nothing between them
+    if (!this.eat('NEWLINE') && !this.at('EOF') && !this.at('DEDENT')) {
+      const t = this.peek();
+      throw new SyntaxError(`invalid syntax: unexpected '${t.value}' [${t.type}] (line ${t.line})`);
+    }
     return stmts;
   }
 
@@ -1076,6 +1191,12 @@ class _Parser {
     const t = this.advance();
     const targets = [this.parseExpr()];
     while (this.eat('OP', ',')) targets.push(this.parseExpr());
+    // (only a name, an attribute, a subscript — or a tuple / list of those — can be deleted)
+    const bad = (e) => (e.type === 'Tuple' || e.type === 'List' ? e.elts.find(bad) : e.type === 'Name' || e.type === 'Attribute' || e.type === 'Subscript' ? null : e);
+    for (const e of targets) {
+      const b = bad(e);
+      if (b) throw new SyntaxError(`cannot delete ${b.type === 'Constant' ? 'literal' : b.type === 'Call' ? 'function call' : 'expression'} (line ${b.line || t.line})`);
+    }
     return { type: 'Delete', targets, line: t.line, col: t.col };
   }
 

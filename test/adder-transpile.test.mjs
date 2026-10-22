@@ -949,6 +949,192 @@ describe('adder transpile — module-function calls and maybe-awaits', () => {
   });
 });
 
+// what vendoring CPython's mimetypes / ipaddress / tomllib / codeop / … surfaced: each a CPython
+// behaviour adder missed, checked on both engines against the value CPython gives
+describe('adder — CPython parity found by the stdlib sweep', () => {
+  const both = async (lines, want) => {
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(lines.join('\n'))).r], want, run === airRun ? 'AIR' : 'tree-walker');
+  };
+  it('bytes are dict keys by value, hash like the latin-1 str, and b"" is false', () => both([
+    'd = {b"k": 1}',
+    'r = [d[b"k"], b"k" in d, "k".encode() in d, hash(b"ab") == hash(b"ab") == hash("ab"), len({b"a", bytes([97])}), bool(b""), bool(b"x"[1:]), b"a" == "a"]',
+  ], [1, true, true, true, 1, false, false, false]));
+  it('in / not in make a bool of a Python __contains__', () => both([
+    'class S:',
+    '    def __contains__(self, x): return x == 1',
+    'class T:',
+    '    def __contains__(self, x): return 5',
+    's = S()',
+    'r = [1 in s, 2 in s, 1 not in s, 2 not in s, 3 in T(), 3 not in T(), all(2 not in s for _ in [0])]',
+  ], [true, false, false, true, true, false, true]));
+  it("a class variable closer in the MRO beats a base's property or method — later assignments too", () => both([
+    'class B:',
+    '    @property',
+    '    def k(self): return "prop"',
+    '    def m(self): return "meth"',
+    'class M: pass',
+    'class C(M, B): k = "attr"',
+    'class D(B):',
+    '    k = "attr"',
+    '    m = None',
+    'class E(D): pass',
+    'class F(E):',
+    '    @property',
+    '    def k(self): return "F"',
+    'r = [C().k, D().k, D().m, E().k, E().m, F().k]',
+    'D.k = "new"',
+    'r.append(E().k)',
+  ], ['attr', 'attr', null, 'attr', null, 'F', 'new']));
+  it('super() through two classes from a property', () => both([
+    'class A:',
+    '    @property',
+    '    def e(self): return self._x()',
+    '    def _x(self): return "A"',
+    'class B(A):',
+    '    def _x(self): return "B" + super()._x()',
+    'class C(B):',
+    '    def _x(self): return super()._x()',
+    'r = [C().e, C()._x(), B().e]',
+  ], ['BA', 'BA', 'BA']));
+  it('lru_cache keys by hash and == (not attributes), keeps keywords apart, refuses unhashables', () => both([
+    'import functools',
+    'n = [0]',
+    '@functools.lru_cache(maxsize=None)',
+    'def f(x, y=1):',
+    '    n[0] += 1',
+    '    return 0',
+    'class P:',
+    '    def __init__(s): s.v = 1',
+    'a, b = P(), P()',
+    'f(a); f(b); f(a); f(2); f(2, y=3); f(2, y=3); f(2**70); f(2**70)',
+    'try:',
+    '    f([1]); e = None',
+    'except TypeError as x:',
+    '    e = str(x)',
+    'r = [n[0], e]',
+  ], [5, "unhashable type: 'list'"]));
+  it('re: flags by keyword, CPython\'s .flags, one Pattern per pattern, re.Pattern / re.Match', () => both([
+    'import re',
+    'p = re.compile(r"[Tt ]x  # c", flags=re.VERBOSE)',
+    'r = [p.match(" x") is not None, p.flags, re.compile(b"a").flags, re.compile("a").flags, re.compile("a+") is re.compile("a+"),',
+    '     type(p) is re.Pattern, type(p.match(" x")).__name__, re.Pattern.__module__, re.search(pattern="b", string="ab").group()]',
+  ], [true, 96, 0, 32, true, true, 'Match', 're', 'b']));
+  it("functions and methods: CPython's __qualname__, reprs, method objects", () => both([
+    'import re',
+    'def outer():',
+    '    def inner(): pass',
+    '    return inner',
+    'class C:',
+    '    def m(self): pass',
+    '    @classmethod',
+    '    def k(cls): pass',
+    '    @staticmethod',
+    '    def s(): pass',
+    '    class N: pass',
+    'c = C()',
+    'a = lambda s: re.sub(r"0x[0-9A-F]+", "0x", s)',
+    'r = [outer().__qualname__, C.m.__qualname__, C.N.__qualname__, a(repr(C.m)), a(repr(c.m)), a(repr(C.k)), a(repr(C.s)),',
+    '     type(c.m).__name__, C.k.__func__.__qualname__, c.m.__self__ is c, repr(len)]',
+  ], ['outer.<locals>.inner', 'C.m', 'C.N', '<function C.m at 0x>', '<bound method C.m of <__main__.C object at 0x>>',
+    "<bound method C.k of <class '__main__.C'>>", '<function C.s at 0x>', 'method', 'C.k', true, '<built-in function len>']));
+  it('os.path is posixpath to the edge cases', () => both([
+    'import posixpath as P',
+    'r = [P.basename(""), P.dirname(""), P.basename("a/"), P.normpath(""), P.normpath("//a//b"), P.normpath("///a"), P.join("a", "/b", "c"),',
+    '     P.splitext(".bashrc")[1], P.splitext("x.tar.gz")[1], P.relpath("/a/b/c", "/a/x"), P.commonpath(["/a/b/c", "/a/bx"])]',
+  ], ['', '', '', '.', '//a/b', '/a', '/b/c', '', '.gz', '../b/c', '/a']));
+  it('a map over a Python function: int.from_bytes, *args, list displays', () => both([
+    'def g(x): return x + 1',
+    'def h(*a): return a',
+    'r = [int.from_bytes(map(g, [0, 1]), "big"), repr(h(*map(g, [1, 2]))), repr([*map(g, [5])])]',
+  ], [258, '(2, 3)', '[6]']));
+  it('iter(callable, sentinel) over a Python method', () => both([
+    'class R:',
+    '    def __init__(s): s.n = 0',
+    '    def rd(s):',
+    '        s.n += 1',
+    '        return s.n if s.n < 4 else 0',
+    'out = []',
+    'for x in iter(R().rd, 0): out.append(x)',
+    'r = [repr(out), sum(iter(R().rd, 0))]',
+  ], ['[1, 2, 3]', 6]));
+  it('pickle keeps an int past 2**53 exact; encode_long / decode_long', () => both([
+    'import pickle',
+    'x = 2**70 + 1',
+    'r = [all(pickle.loads(pickle.dumps(v, protocol=p)) == v for p in (0, 2, 5) for v in (x, -x)), repr(pickle.encode_long(-256)), pickle.decode_long(b"\\xff\\x00"), pickle.MARK]',
+  ], [true, "b'\\x00\\xff'", 255, Uint8Array.of(40)]));
+  it('compile() raises a SyntaxError now; codeop tells incomplete input from a bad one', () => both([
+    'import codeop',
+    'try:',
+    '    compile("x = 1)", "<s>", "exec"); e = None',
+    'except SyntaxError: e = "SyntaxError"',
+    'def cc(s):',
+    '    try: return "none" if codeop.compile_command(s) is None else "code"',
+    '    except SyntaxError: return "error"',
+    'r = [e] + [cc(s) for s in ["x = 1", "if x:", "if x:\\n  pass", "if x:\\n  pass\\n", "x = (1,", "x = 1)", "def f(:", "\'\'\'abc", "a = \\\\", "@dec", "for i in r: pass"]]',
+  ], ['SyntaxError', 'code', 'none', 'none', 'code', 'none', 'error', 'error', 'none', 'none', 'none', 'none']));
+  it('an unterminated string is a SyntaxError, not a string ending at the line', async () => {
+    for (const src of ["x = 'abc\ny = 1", 'x = """abc', "x = f'a{1}"]) {
+      for (const run of [airRun, twRun]) await assert.rejects(run(src), /unterminated/);
+    }
+  });
+  it('identifiers in any script; a backslash-newline inside a literal continues it', () => both([
+    'größe = 3',
+    'π = 2',
+    's = """\\',
+    'abc"""',
+    'r = [größe * π, s]',
+  ], [6, 'abc']));
+  it('bytes in bytes is a subsequence test; an int a byte value', () => both([
+    'r = [b" " in b" \\t", b"ab" in b"xaby", b"" in b"x", b"z" in b"xy", 97 in b"abc", b"b" in bytearray(b"abc")]',
+  ], [true, true, true, false, true, true]));
+  it('print writes to a replaced sys.stdout; redirect_stdout makes sys.stdout the target', () => both([
+    'import sys, io, contextlib',
+    'buf, old = io.StringIO(), sys.stdout',
+    'sys.stdout = buf',
+    'print("hi")',
+    'sys.stdout = old',
+    'b2 = io.StringIO()',
+    'with contextlib.redirect_stdout(b2):',
+    '    print("rd"); same = sys.stdout is b2',
+    'r = [buf.getvalue(), b2.getvalue(), same]',
+  ], ['hi\n', 'rd\n', true]));
+  it('bytes.fromhex, and hex / bin through __index__ only', () => both([
+    'class I:',
+    '    def __int__(self): return 5',
+    'class J:',
+    '    def __index__(self): return 6',
+    'try:',
+    '    hex(I()); e = None',
+    'except TypeError: e = "TypeError"',
+    'r = [repr(bytes.fromhex("0a ff")), repr(bytearray.fromhex("01")), hex(J()), bin(J()), e]',
+  ], ["b'\\n\\xff'", "bytearray(b'\\x01')", '0x6', '0b110', 'TypeError']));
+  it("the format-spec mini-language for numbers, as CPython's", () => both([
+    'r = [format(1234567, "_b"), format(255, "#_x"), format(255, "#010x"), format(1234, "010,"), format(-3, " d"), format(5, "+#o"),',
+    '     format(-0.0004, "z.2f"), format(1234.5678, "012,.2f"), format(0.5, "#.0f"), f"{65:c}", f"{1234.5:_.1f}"]',
+  ], ['1_0010_1101_0110_1000_0111', '0xff', '0x000000ff', '00,001,234', '-3', '+0o5', '0.00', '0,001,234.57', '0.', 'A', '1_234.5']));
+  it('*x in a list display or a call goes through iteration: a generator method, a dict', () => both([
+    'class T:',
+    '    def gen(self):',
+    '        yield 1',
+    '        yield 2',
+    'def f(*a): return list(a)',
+    'r = [repr([*T().gen()]), repr(f(*T().gen())), repr([*{"a": 1}])]',
+  ], ['[1, 2]', '[1, 2]', "['a']"]));
+  it("the parser refuses what CPython's does", async () => {
+    for (const src of ['a b', 'x = [1, 2', 'del 1', 'del (a, 2)', 'return 1', 'class C:\n    return 1']) {
+      for (const run of [airRun, twRun]) await assert.rejects(run(src), /syntax|never closed|cannot delete|outside function/i, src);
+    }
+  });
+  it('globals passed around and called later (timeit), and types.ModuleType is the type of a module', () => both([
+    'import sys, types',
+    'x = 5',
+    '_g = globals',
+    'def f(): return _g()["x"]',
+    'm = type(sys)("mm")',
+    'r = [f(), _g is globals, type(sys) is types.ModuleType, m.__name__, types.ModuleType.__name__]',
+  ], [5, true, true, 'mm', 'module']));
+});
+
 describe('adder transpile — deterministic output', () => {
   const emit = (src, opts) => {
     const air = lowerAdder(adderParse(src), src, opts);

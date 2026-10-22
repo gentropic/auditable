@@ -602,7 +602,7 @@ f2.close()
     await freshVFS();
     const r = await pyExec(`
 f = open('/data.bin', 'wb')
-f.write('HI')
+f.write(b'HI')
 f.close()
 f2 = open('/data.bin', 'rb')
 data = f2.read()

@@ -408,7 +408,7 @@ const _objIds = new WeakMap();
 let _nextObjId = 1;
 function _unhashable(v) { return new AdderError('TypeError', `unhashable type: '${pyTypeName(v)}'`); }
 function _needsCanon(k) {
-  return k !== null && typeof k === 'object' && (k instanceof PyTuple || (k instanceof Set && k._frozen) || k instanceof AdderRange ||
+  return k !== null && typeof k === 'object' && (k instanceof PyTuple || (k instanceof Set && k._frozen) || k instanceof AdderRange || k instanceof Uint8Array ||
     (typeof k.__hash__ === 'function' && !(k instanceof Map) && !Array.isArray(k)));
 }
 function _isUnhashable(k) {
@@ -427,13 +427,16 @@ function _sigOf(v) {
     default: break;
   }
   if (v instanceof PyTuple) return '(' + v.map(_sigOf).join(',') + ')';
+  // bytes: equal contents are one key (b'k' == b'k'), never a str's ('b' tag)
+  if (v instanceof Uint8Array) { let s = 'b' + v.length + ':'; for (let i = 0; i < v.length; i++) s += String.fromCharCode(v[i]); return s; }
   if (v instanceof Set && v._frozen) return 'f{' + [...v].map(_sigOf).sort().join(',') + '}';
   if (v instanceof AdderRange) {   // equal ranges (the same values) are one key, as range == range
     const n = v.length;
     return 'r(' + (n === 0 ? '0' : n === 1 ? '1,' + _sigOf(v.start) : _sigOf(n) + ',' + _sigOf(v.start) + ',' + _sigOf(v.step)) + ')';
   }
   if (_isUnhashable(v)) throw _unhashable(v);
-  if (typeof v.__hash__ === 'function') {
+  // (a class or function hashes by identity — a class's own __hash__ is its instances')
+  if (typeof v.__hash__ === 'function' && typeof v !== 'function') {
     const h = v.__hash__();
     if (h && typeof h.then === 'function') { h.catch(() => {}); let id = _objIds.get(v); if (!id) { id = _nextObjId++; _objIds.set(v, id); } return 'o' + id; }   // a tree-walked (async) __hash__: identity
     return 'h' + h;
@@ -448,6 +451,12 @@ function _sigOf(v) {
 // a float to the same for the rational it is exactly — so equal numbers of any type hash alike;
 // ±inf to ±314159; -1 is -2 (CPython reserves -1). Small results stay JS numbers.
 const _HASH_P = (1n << 61n) - 1n;
+// compile()'s syntax check — (src, mode, flags) → throws a SyntaxError, or the
+// _IncompleteInputError PyCF_ALLOW_INCOMPLETE_INPUT asks for. Set by eval.js, which has the parser.
+let _compileCheck = null;
+export function setCompileCheck(fn) { _compileCheck = fn; }
+// functools.lru_cache's key separator between positional and keyword arguments (_make_key's kwd_mark)
+const _LRU_KWMARK = Object.freeze({ __adderClass__: 'object' });
 function _hashFinish(h) {
   if (h === -1n) h = -2n;
   return h >= -9007199254740991n && h <= 9007199254740991n ? Number(h) : h;
@@ -486,6 +495,8 @@ export function _pyHash(v) {
   if (typeof v === 'number') return Number.isSafeInteger(v) ? (v === -1 ? -2 : v) : _hashFloat(v);   // (|v| < 2**53 < P: v mod P is v)
   if (typeof v === 'bigint') return _hashInt(v);
   if (typeof v === 'string') return _strHash(v);
+  // bytes: by contents — the hash of the latin-1 str over the same buffer, as CPython's
+  if (v instanceof Uint8Array) { let s = ''; for (let i = 0; i < v.length; i++) s += String.fromCharCode(v[i]); return _strHash(s); }
   if (_isUnhashable(v)) throw _unhashable(v);
   if (typeof v.__hash__ === 'function') return v.__hash__();
   if (v instanceof PyTuple) { let h = 0x345678; for (const x of v) { const xh = _pyHash(x); h = (Math.imul(h ^ (typeof xh === 'number' ? xh | 0 : 0), 1000003)) | 0; } return h; }
@@ -1180,7 +1191,7 @@ export function pyTypeName(v) {
   if (v instanceof AdderRange) return 'range';
   if (v instanceof Complex) return v.__adderClass__ || 'complex';
   if (v instanceof Uint8Array) return 'bytes';
-  if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
+  if (typeof v === 'function') return v._pyClass ? (v.__adderMeta__ ? v.__adderMeta__._pyName : 'type') : v._pyBound ? 'method' : v._pyFunc || v._pyDef ? 'function' : 'builtin_function_or_method';
   if (v?.__adderClass__) return v.__adderClass__;
   // a compiled generator: a JS generator object
   { const tag = v[Symbol.toStringTag]; if (tag === 'Generator' || tag === 'AsyncGenerator') return v._pyIterName || (v._pyAsyncGen ? 'async_generator' : 'generator'); }
@@ -1203,6 +1214,8 @@ export function pyBool(v) {
   if (Array.isArray(v)) return v.length > 0;
   if (v instanceof Map || v instanceof Set) return v.size > 0;
   if (v instanceof AdderRange) return v.length > 0;
+  // bytes (and memoryview / array buffers): empty is false
+  if (typeof v === 'object' && ArrayBuffer.isView(v) && !(v instanceof DataView) && typeof v.__bool__ !== 'function' && typeof v.__len__ !== 'function') return v.length > 0;
   // a plain-object dict (string keys, **kwargs): empty is false
   if (typeof v === 'object' && isPlainDict(v)) return Object.keys(v).length > 0;
   // check __bool__ dunder
@@ -1270,6 +1283,8 @@ export function pyClassFullName(c) {
   const mod = Object.hasOwn(c, '__module__') ? c.__module__ : undefined;
   return typeof mod === 'string' && mod !== 'builtins' && !name.startsWith(mod + '.') ? `${mod}.${name}` : name;
 }
+// a function's __qualname__ (C.m, f.<locals>.g), as its repr names it
+const _fnQualname = (f) => (typeof f.__qualname__ === 'string' && f.__qualname__) || (typeof f.__name__ === 'string' && f.__name__) || f._pyName || _jsFnName(f) || '<lambda>';
 const _objAddr = (v) => `0x${(_pyHash(v) >>> 0).toString(16).toUpperCase().padStart(16, '0')}`;
 function _iterObjRepr(v) {
   if (v === null || typeof v !== 'object') return null;
@@ -1320,7 +1335,12 @@ export function pyRepr(v) {
   if (v instanceof Complex) return v.__repr__();
   if (typeof v === 'function') {
     if (v._pyClass) return `<class '${pyClassFullName(v)}'>`;
-    return `<function ${v._pyName || _jsFnName(v) || '<lambda>'}>`;
+    // as CPython: a method bound to its instance / class, a Python function at its id(), a builtin
+    if (v._pyBound) return `<bound method ${_fnQualname(v.__func__ || v)} of ${pyRepr(v.__self__)}>`;
+    if (v._pyDef || v._pyFunc) return `<function ${_fnQualname(v)} at 0x${_stableBuiltinId(v).toString(16).toUpperCase().padStart(16, '0')}>`;
+    const bn = v._pyName || _jsFnName(v);
+    if (bn && !bn.includes('.') && !bn.includes(' ')) return `<built-in function ${bn}>`;
+    return `<function ${bn || '<lambda>'}>`;
   }
   if (typeof v === 'object' && typeof v.__repr__ === 'function') return v.__repr__();
   if (typeof v === 'object' && typeof v.__str__ === 'function') return v.__str__();
@@ -1722,15 +1742,17 @@ export function pyFormatValue(value, spec) {
   if (value !== null && typeof value === 'object' && typeof value.__format__ === 'function') return value.__format__(spec || '');
   if (!spec) return pyStr(value);
   // parse spec: [[fill]align][sign][z][#][0][width][grouping_option][.precision][type]
-  let fill = ' ', align = '', sign = '', width = 0, precision = -1, ftype = '', grouping = '';
+  let fill = ' ', align = '', sign = '', width = 0, precision = -1, ftype = '', grouping = '', zflag = false, alt = false, fillSet = false;
   let i = 0;
   // fill + align
-  if (i + 1 < spec.length && '<>^='.includes(spec[i + 1])) { fill = spec[i]; align = spec[i + 1]; i += 2; }
+  if (i + 1 < spec.length && '<>^='.includes(spec[i + 1])) { fill = spec[i]; align = spec[i + 1]; fillSet = true; i += 2; }
   else if (i < spec.length && '<>^='.includes(spec[i])) { align = spec[i]; i++; }
   // sign
-  if (i < spec.length && '+-'.includes(spec[i])) { sign = spec[i]; i++; }
+  if (i < spec.length && '+- '.includes(spec[i])) { sign = spec[i]; i++; }
+  if (i < spec.length && spec[i] === 'z') { zflag = true; i++; }
+  if (i < spec.length && spec[i] === '#') { alt = true; i++; }
   // zero pad
-  if (i < spec.length && spec[i] === '0') { if (!align) { fill = '0'; align = '='; } i++; }
+  if (i < spec.length && spec[i] === '0') { if (!fillSet) fill = '0'; if (!align) align = '='; i++; }
   // width
   while (i < spec.length && spec[i] >= '0' && spec[i] <= '9') { width = width * 10 + (+spec[i]); i++; }
   // grouping
@@ -1738,7 +1760,13 @@ export function pyFormatValue(value, spec) {
   // precision
   if (i < spec.length && spec[i] === '.') { i++; precision = 0; while (i < spec.length && spec[i] >= '0' && spec[i] <= '9') { precision = precision * 10 + (+spec[i]); i++; } }
   // type
-  if (i < spec.length) ftype = spec[i];
+  if (i < spec.length) ftype = spec[i++];
+  if (i < spec.length) throw new AdderError('ValueError', `Invalid format specifier '${spec}' for object of type '${pyTypeName(value)}'`);
+
+  // ints and floats: CPython's int / float __format__ (bool is an int unless no type is given)
+  if (typeof value === 'number' || typeof value === 'bigint' || (typeof value === 'boolean' && ftype)) {
+    return _fmtNumber(typeof value === 'boolean' ? +value : value, { fill, align, sign, zflag, alt, width, grouping, precision, ftype });
+  }
 
   let result;
   // an int past 2**53 is a BigInt: the integer types print it exactly, the float types as a float
@@ -2057,11 +2085,17 @@ function _intFromBytes(...a) {
   if (src === undefined) throw new AdderError('TypeError', "from_bytes() missing required argument 'bytes' (pos 1)");
   if (order !== 'big' && order !== 'little') throw new AdderError('ValueError', "byteorder must be either 'little' or 'big'");
   if (typeof src === 'string') throw new AdderError('TypeError', 'cannot convert \'str\' object to bytes');
-  const bytes = src instanceof Uint8Array ? src : ArrayBuffer.isView(src) ? new Uint8Array(src.buffer, src.byteOffset, src.byteLength) : Uint8Array.from([...pyIter(src)].map((v) => {
+  if (src instanceof Uint8Array) return _intOfBytes(src, order, signed);
+  if (ArrayBuffer.isView(src)) return _intOfBytes(new Uint8Array(src.buffer, src.byteOffset, src.byteLength), order, signed);
+  // any iterable of ints — a map over a tree-walked function too (then a Promise of the int)
+  const items = [];
+  return _thenMaybe(_eachMaybe(src, (v) => {
     const n = _asInt(v);
     if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 255) throw new AdderError('ValueError', 'bytes must be in range(0, 256)');
-    return n;
-  }));
+    items.push(n);
+  }), () => _intOfBytes(Uint8Array.from(items), order, signed));
+}
+function _intOfBytes(bytes, order, signed) {
   let b = 0n;
   const n = bytes.length;
   for (let i = 0; i < n; i++) b = (b << 8n) | BigInt(bytes[order === 'big' ? i : n - 1 - i]);
@@ -2094,6 +2128,45 @@ function _floatHex(x) {
   const eb = Number(bits >> 52n), frac = (bits & ((1n << 52n) - 1n)).toString(16).padStart(13, '0');
   const exp = eb === 0 ? -1022 : eb - 1023;
   return `${sign}0x${eb === 0 ? 0 : 1}.${frac}p${exp < 0 ? '-' : '+'}${Math.abs(exp)}`;
+}
+// `x in b` for bytes / bytearray: an int is a byte value (0..255), a bytes-like a subsequence
+// (b'' is in every one), anything else a TypeError — both engines' `in` come here
+export function bytesContains(hay, needle) {
+  const h = hay instanceof Uint8Array ? hay : Uint8Array.from(hay);
+  if (typeof needle === 'number' || typeof needle === 'boolean' || typeof needle === 'bigint') {
+    const n = Number(needle);
+    if (!Number.isInteger(n)) throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(needle)}'`);
+    if (n < 0 || n > 255) throw new AdderError('ValueError', 'byte must be in range(0, 256)');
+    return h.includes(n);
+  }
+  let n;
+  if (needle instanceof Uint8Array) n = needle;
+  else if (needle instanceof PyByteArray) n = Uint8Array.from(needle);
+  else if (needle instanceof PyMemoryView) n = needle.tobytes();
+  else if (needle !== null && typeof needle === 'object' && typeof needle.__index__ === 'function') return bytesContains(h, _indexOf(needle));
+  else throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(needle)}'`);
+  if (!n.length) return true;
+  outer: for (let i = 0; i + n.length <= h.length; i++) {
+    for (let j = 0; j < n.length; j++) if (h[i + j] !== n[j]) continue outer;
+    return true;
+  }
+  return false;
+}
+// bytes.fromhex(s): two hex digits a byte, ASCII whitespace allowed between bytes (not inside one)
+function _bytesFromHex(s) {
+  if (s instanceof Uint8Array) s = String.fromCharCode(...s);
+  if (typeof s !== 'string') throw new AdderError('TypeError', `fromhex() argument must be str, not ${pyTypeName(s)}`);
+  const out = [];
+  const ws = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\v' || c === '\f';
+  for (let i = 0; i < s.length;) {
+    if (ws(s[i])) { i++; continue; }
+    const hi = parseInt(s[i], 16);
+    if (!/[0-9a-fA-F]/.test(s[i])) throw new AdderError('ValueError', `non-hexadecimal number found in fromhex() arg at position ${i}`);
+    if (i + 1 >= s.length || !/[0-9a-fA-F]/.test(s[i + 1])) throw new AdderError('ValueError', `non-hexadecimal number found in fromhex() arg at position ${i + 1}`);
+    out.push(hi * 16 + parseInt(s[i + 1], 16));
+    i += 2;
+  }
+  return Uint8Array.from(out);
 }
 // float.fromhex, correctly rounded (half even)
 function _floatFromHex(str) {
@@ -2258,6 +2331,8 @@ export function adderGetAttr(obj, attr) {
     // `list.__len__(xs)` — markupsafe calls str's): the operators themselves
     if (tn === 'int' && attr === 'from_bytes') return _intFromBytes;
     if (tn === 'float' && attr === 'fromhex') return _floatFromHex;
+    if (tn === 'bytes' && attr === 'fromhex') return _bytesFromHex;
+    if (tn === 'bytearray' && attr === 'fromhex') return (s) => adderModules.builtins.bytearray(_bytesFromHex(s));
     if ((tn === 'int' || tn === 'float' || tn === 'bool') && !Object.hasOwn(_TYPE_DUNDERS, attr) &&
         _numAttr(tn === 'float' ? 0.5 : 1, attr) !== undefined && attr !== 'real' && attr !== 'imag' && attr !== 'numerator' && attr !== 'denominator') {
       const fn = (self, ...a) => {
@@ -2304,8 +2379,14 @@ export function adderGetAttr(obj, attr) {
       try { get(probe, attr); } catch { ok = false; }
       if (ok) { const fn = (self, ...a) => (tn === 'dict' && isPlainDict(self) && _objDictMethods[attr] ? _objDictMethods[attr](self) : get(self, attr))(...a); fn._pyName = `${tn}.${attr}`; return fn; }
     }
+    if (attr === '__qualname__' && typeof obj.__qualname__ === 'string' && obj.__qualname__) return obj.__qualname__;
     if (attr === '__name__' || attr === '__qualname__') return (typeof obj.__name__ === 'string' && obj.__name__) || obj._pyName || _jsFnName(obj) || '<function>';
-    if (attr === '__doc__') return obj.__doc__ ?? null;
+    // (a bound method's is its function's, as CPython's method forwards it)
+    if (attr === '__doc__') return obj.__doc__ ?? (obj.__func__ && obj.__func__ !== obj ? obj.__func__.__doc__ ?? null : null);
+    // a bound method answers for its function (m.__code__, m.__defaults__, m.__wrapped__ …), as
+    // CPython's method forwards what it doesn't have itself
+    if (obj._pyBound && typeof obj.__func__ === 'function' && obj.__func__ !== obj && attr !== '__self__' && attr !== '__func__' &&
+        (_FN_SLOTS.has(attr) || attr === '__wrapped__' || attr === '__dict__') && !Object.hasOwn(obj, attr)) return adderGetAttr(obj.__func__, attr);
     if (attr === '__code__' && obj._pySig && !obj._pyClass) return _codeObject(obj);
     // the module namespace it was defined in (its globals()); no closure cells are kept
     if (attr === '__globals__' && obj._pyDef && !obj._pyClass && obj._pyGlobals) return obj._pyGlobals;
@@ -2452,6 +2533,9 @@ export function adderGetAttr(obj, attr) {
       if (obj.__adderModule__ && (v._pyFunc || v._pyDef || v._pyModBound)) return v;   // (or one already bound: `bisect = bisect_right`)
       // a function stored ON a Python instance is an attribute, not a method: as it is
       if (obj.__adderType__ && Object.hasOwn(obj, attr)) return v;
+      if (v._pyStaticOf && obj.__adderType__) return v._pyStaticOf;   // a staticmethod: its function
+      // a classmethod through an instance: bound to the instance's class
+      if (v._pyClassMethodOf && obj.__adderType__ && obj.__adderType__._pyClass) return _classMethodDescriptor(v._pyClassMethodOf, v._pyName).get.call(obj.__adderType__);
       // adder functions expect self as first arg — inject it (plain JS objects used as namespaces)
       if (v._pyFunc && !obj.__adderModule__ && !obj.__adderType__) {
         const fn = (...args) => v(obj, ...args);
@@ -2478,6 +2562,8 @@ export function adderGetAttr(obj, attr) {
       }
       if (v._pySync) _defTwin(fn, v._pySync.bind(obj));
       fn._pyName = attr;
+      // a Python method bound to its instance: a `method` (__self__, __func__)
+      if (obj.__adderType__ && typeof v.__func__ === 'function') { fn.__self__ = obj; Object.defineProperty(fn, '_pyBound', { value: true, configurable: true }); }
       if (obj.__adderModule__) { _moduleBound.get(obj).set(attr, [v, fn]); Object.defineProperty(fn, '_pyModBound', { value: true }); }
       return fn;
     }
@@ -2509,6 +2595,9 @@ export function adderGetAttr(obj, attr) {
     const val = obj[attr];
     if (typeof val === 'function') {
       if (_isNativeClass(val) || val._pyClass) return val;
+      // a staticmethod is its function; a classmethod read off the class is already bound to it
+      if (val._pyStaticOf) return val._pyStaticOf;
+      if (val._pyBound) return val;
       // a Python function on a class (`Cls.method`) is the function itself — binding made a
       // propertyless copy per access (no signature, no name, `Cls.f is Cls.f` False)
       if (val._pyDef && typeof obj === 'function' && obj._pyClass) return val;
@@ -4007,6 +4096,82 @@ function _fmtNoType(a, prec) {
   return s.includes('.') ? s : s + '.0';
 }
 // 'f': fixed point, `prec` digits
+// A number by the format-spec mini-language, as CPython's int / float __format__: the sign ('+',
+// ' ', '-'), '#' (0b / 0o / 0x prefixes; a float keeps its point), 'z' (no negative zero),
+// grouping (',' / '_' in threes; '_' in fours for b / o / x), '=' padding between the sign /
+// prefix and the digits — zero fill is grouped too ('010,' → '00,001,234'). (An integral float
+// formats as an int where adder can't tell them apart, unless a precision asks for a float.)
+function _fmtNumber(value, o) {
+  const { fill, sign, zflag, alt, width, grouping, precision, ftype } = o;
+  let { align } = o;
+  const tname = pyTypeName(value);
+  const INT_T = 'bcdoxXn', FLOAT_T = 'eEfFgGn%';
+  if (ftype && !INT_T.includes(ftype) && !FLOAT_T.includes(ftype)) throw new AdderError('ValueError', `Unknown format code '${ftype}' for object of type '${tname}'`);
+  const integral = typeof value === 'bigint' || isIntNum(value);   // (-0 too: JS int arithmetic makes it — 0 * -1)
+  if (!integral && ftype && 'bcdoxX'.includes(ftype)) throw new AdderError('ValueError', `Unknown format code '${ftype}' for object of type '${tname}'`);
+  const asInt = integral && (('bcdoxX'.includes(ftype) && ftype) || (ftype === 'n' && typeof value === 'bigint') ||
+    ((ftype === '' || ftype === 'n') && (typeof value === 'bigint' || (precision < 0 && !zflag))));
+  if (asInt && precision >= 0) throw new AdderError('ValueError', 'Precision not allowed in integer format specifier');
+  if (asInt && zflag) throw new AdderError('ValueError', 'Negative zero coercion (z) not allowed in integer format specifier');
+  if (grouping === ',' && ftype && 'bcoxXn'.includes(ftype)) throw new AdderError('ValueError', `Cannot specify ',' with '${ftype}'.`);
+  if (grouping === '_' && (ftype === 'c' || ftype === 'n')) throw new AdderError('ValueError', `Cannot specify '_' with '${ftype}'.`);
+  let neg = false, prefix = '', body, every = 3, numeric = true;
+  if (asInt && ftype === 'c') {
+    if (sign) throw new AdderError('ValueError', "Sign not allowed with integer format specifier 'c'");
+    if (alt) throw new AdderError('ValueError', "Alternate form (#) not allowed with integer format specifier 'c'");
+    const n = Number(value);
+    if (n < 0 || n > 0x10ffff) throw new AdderError('OverflowError', '%c arg not in range(0x110000)');
+    body = String.fromCodePoint(n); numeric = false;
+  } else if (asInt) {
+    neg = value < 0;
+    const mag = neg ? -value : value;
+    const base = ftype === 'b' ? 2 : ftype === 'o' ? 8 : ftype === 'x' || ftype === 'X' ? 16 : 10;
+    body = mag.toString(base);
+    if (ftype === 'X') body = body.toUpperCase();
+    if (base !== 10) { every = 4; if (alt) prefix = '0' + ftype; }
+  } else {
+    const x = typeof value === 'bigint' ? intToFloat(value) : Number(value);
+    const t = ftype === 'n' ? 'g' : ftype;
+    const p = precision >= 0 ? precision : 6;
+    neg = x < 0 || Object.is(x, -0);
+    const a = Math.abs(x);
+    if (a !== a || a === Infinity) {
+      body = a !== a ? 'nan' : 'inf';
+      if (t && 'FEG'.includes(t)) body = body.toUpperCase();
+      if (t === '%') body += '%';
+      if (a !== a) neg = false;
+    } else if (t === 'f' || t === 'F') body = _fmtFloatExact(a, 'f', p, alt);
+    else if (t === 'e' || t === 'E' || t === 'g' || t === 'G') body = _fmtFloatExact(a, t, p, alt);
+    else if (t === '%') body = _fmtFloatExact(a * 100, 'f', p, alt) + '%';
+    else body = precision >= 0 ? _fmtNoType(a, precision) : _numRepr(a);
+    if (zflag && neg && Number.isFinite(a) && !/[1-9]/.test(body)) neg = false;
+  }
+  const signStr = neg ? '-' : !numeric ? '' : sign === '+' ? '+' : sign === ' ' ? ' ' : '';
+  // the run of digits grouping (and zero fill) applies to: an int's all; a float's before its point
+  const m = asInt ? [null, body, ''] : /^(\d*)([\s\S]*)$/.exec(body);
+  let digits = m[1];
+  const rest = m[2];
+  const group = (d) => {
+    if (!grouping || !numeric) return d;
+    let out = '';
+    for (let k = d.length; k > 0; k -= every) out = d.slice(Math.max(0, k - every), k) + (out ? grouping + out : '');
+    return out;
+  };
+  if (!align) align = '>';
+  if (fill === '0' && align === '=' && grouping && numeric && digits) {
+    while ((signStr + prefix + group(digits) + rest).length < width) digits = '0' + digits;
+  }
+  const core = group(digits) + rest;
+  let s = signStr + prefix + core;
+  if (width > s.length) {
+    const n = width - s.length;
+    if (align === '<') s += fill.repeat(n);
+    else if (align === '^') s = fill.repeat(Math.floor(n / 2)) + s + fill.repeat(n - Math.floor(n / 2));
+    else if (align === '=') s = signStr + prefix + fill.repeat(n) + core;
+    else s = fill.repeat(n) + s;
+  }
+  return s;
+}
 function _fmtFixed(x, prec, alt = false) {
   if (Number.isNaN(x)) return 'nan';
   return _signed(x, (a) => _fmtFloatExact(a, 'f', prec, alt));
@@ -4457,6 +4622,19 @@ const _isqrtBig = (n) => {
   while ((x + 1n) * (x + 1n) <= n) x++;
   return x;
 };
+// operator.index(v): an int (a bool is one), or what v.__index__() gives — not __int__, so a float
+// or an object with only __int__ is a TypeError (a Promise of the int when __index__ is tree-walked)
+function _indexOf(v) {
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'bigint' || (typeof v === 'number' && isIntNum(v))) return v;
+  if (v !== null && (typeof v === 'object' || typeof v === 'function') && typeof v.__index__ === 'function') return syncOf(v.__index__).call(v);
+  throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+}
+// hex / oct / bin: '0x' / '0o' / '0b' and the digits, the sign before the prefix
+const _radixStr = (prefix, base) => (n) => _thenMaybe(_indexOf(n), (v) => {
+  if (typeof v === 'boolean') v = +v;
+  return (v < 0 ? '-0' : '0') + prefix + (v < 0 ? -v : v).toString(base);
+});
 const _needInt = (name, ...vs) => {
   for (const v of vs) if (!(typeof v === 'boolean' || (typeof v === 'number' && isIntNum(v)) || typeof v === 'bigint')) {
     throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
@@ -4835,7 +5013,19 @@ const _functoolsModule = {
     const wrap = (fn, maxsize) => {
       const cache = new PyDict();
       let hits = 0, misses = 0;
-      const keyOf = (args) => JSON.stringify(args, (k, v) => (v instanceof Map ? [...v] : v instanceof Set ? [...v] : v));
+      // the key, as CPython's _make_key: a tuple of the arguments (keywords after a marker), so
+      // equal arguments hit — by hash and ==, not by their attributes — and unhashable ones raise
+      const keyOf = (args) => {
+        const parts = [];
+        for (let i = 0; i < args.length; i++) {
+          const a = args[i];
+          if (i === args.length - 1 && a !== null && typeof a === 'object' && a._kw === true) {
+            parts.push(_LRU_KWMARK);
+            for (const k of Object.keys(a)) if (k !== '_kw') parts.push(k, a[k]);
+          } else parts.push(a);
+        }
+        return mkTuple(parts);
+      };
       const wrapped = (...args) => {
         const key = keyOf(args);
         if (cache.has(key)) { hits++; const v = cache.get(key); cache.delete(key); cache.set(key, v); return v; }
@@ -5199,7 +5389,10 @@ function _reTranslate(pattern, flags) {
   if (f & 8) js += 'm';
   if (f & 16) js += 's';
   if (!(f & 256)) js += 'u';
-  return { source: p, flags: js, pyFlags: f };
+  // .flags as CPython reports them: a str pattern is UNICODE unless ASCII; a bytes pattern is
+  // neither (its ASCII semantics above are implied, not a flag)
+  const shown = pattern instanceof Uint8Array ? f & ~256 & ~32 | (flags | 0) & 256 : f & 256 ? f : f | 32;
+  return { source: p, flags: js, pyFlags: shown };
 }
 
 function _reGroupNames(source) {
@@ -5275,8 +5468,26 @@ function _reExpand(template, group) {
   return out;
 }
 
+// re's compile cache, as CPython's (re._cache, 512 entries, oldest dropped): the same pattern and
+// flags give the same Pattern object, and a module function given a string compiles it once
+const _reCache = new Map();
 function _reCompile(pattern, flags) {
-  if (pattern && pattern.__adderClass__ === 're.Pattern') return pattern;
+  if (pattern && pattern.__adderClass__ === 're.Pattern') {
+    if (flags) throw new AdderError('ValueError', 'cannot process flags argument with a compiled pattern');
+    return pattern;
+  }
+  const key = typeof pattern === 'string' ? `s${flags | 0}:${pattern}` : pattern instanceof Uint8Array ? `b${flags | 0}:${String.fromCharCode(...pattern)}` : null;
+  if (key !== null) {
+    const hit = _reCache.get(key);
+    if (hit !== undefined) return hit;
+    const P = _reCompileNew(pattern, flags);
+    if (_reCache.size >= 512) _reCache.delete(_reCache.keys().next().value);
+    _reCache.set(key, P);
+    return P;
+  }
+  return _reCompileNew(pattern, flags);
+}
+function _reCompileNew(pattern, flags) {
   const t = _reTranslate(pattern, flags);
   let probe;
   try { probe = new RegExp(t.source, t.flags); } catch (e) { throw new AdderError('re.error', String(e.message || e)); }
@@ -5368,14 +5579,29 @@ function _reCompile(pattern, flags) {
   return P;
 }
 
+// a re module function's arguments, positional or by keyword, in `names` order (flags default 0)
+function _reKw(fname, a, names) {
+  const kw = a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw === true ? a.pop() : null;
+  if (a.length > names.length) throw new AdderError('TypeError', `${fname}() takes from ${names.length - 1} to ${names.length} positional arguments but ${a.length} were given`);
+  const out = names.map((n, i) => a[i]);
+  if (kw) for (const k of Object.keys(kw)) {
+    if (k === '_kw') continue;
+    const i = names.indexOf(k);
+    if (i < 0) throw new AdderError('TypeError', `${fname}() got an unexpected keyword argument '${k}'`);
+    if (i < a.length) throw new AdderError('TypeError', `${fname}() got multiple values for argument '${k}'`);
+    out[i] = kw[k];
+  }
+  return out;
+}
 const _reModule = {
   ...RE_FLAGS,
-  compile: (pattern, flags) => _reCompile(pattern, flags),
-  search: (pattern, string, flags) => _reCompile(pattern, flags).search(string),
-  match: (pattern, string, flags) => _reCompile(pattern, flags).match(string),
-  fullmatch: (pattern, string, flags) => _reCompile(pattern, flags).fullmatch(string),
-  findall: (pattern, string, flags) => _reCompile(pattern, flags).findall(string),
-  finditer: (pattern, string, flags) => _reCompile(pattern, flags).finditer(string),
+  // (flags= by keyword too: re.compile(p, flags=re.VERBOSE), re.search(pattern=p, string=s))
+  compile: (...a) => { const [p, f] = _reKw('compile', a, ['pattern', 'flags']); return _reCompile(p, f); },
+  search: (...a) => { const [p, s, f] = _reKw('search', a, ['pattern', 'string', 'flags']); return _reCompile(p, f).search(s); },
+  match: (...a) => { const [p, s, f] = _reKw('match', a, ['pattern', 'string', 'flags']); return _reCompile(p, f).match(s); },
+  fullmatch: (...a) => { const [p, s, f] = _reKw('fullmatch', a, ['pattern', 'string', 'flags']); return _reCompile(p, f).fullmatch(s); },
+  findall: (...a) => { const [p, s, f] = _reKw('findall', a, ['pattern', 'string', 'flags']); return _reCompile(p, f).findall(s); },
+  finditer: (...a) => { const [p, s, f] = _reKw('finditer', a, ['pattern', 'string', 'flags']); return _reCompile(p, f).finditer(s); },
   split: (pattern, string, maxsplit, flags) => {
     if (maxsplit && maxsplit._kw) { flags = maxsplit.flags; maxsplit = maxsplit.maxsplit; }
     return _reCompile(pattern, flags).split(string, maxsplit);
@@ -5484,6 +5710,8 @@ const _sysModule = {
   exec_prefix: '/usr',
   get home() { return _HOME; },
 };
+// the stream sys.stdout starts as (the run's stdout): one put in its place takes print's output
+const _sysInitialStdout = _sysModule.stdout;
 
 export const adderModules = {
   math: _mathModule, js: _jsModule,
@@ -5514,7 +5742,7 @@ export const _excParents = {
   FloatingPointError: 'ArithmeticError', OverflowError: 'ArithmeticError', ZeroDivisionError: 'ArithmeticError',
   ModuleNotFoundError: 'ImportError', IndexError: 'LookupError', KeyError: 'LookupError',
   UnboundLocalError: 'NameError', NotImplementedError: 'RuntimeError', RecursionError: 'RuntimeError',
-  IndentationError: 'SyntaxError', TabError: 'IndentationError',
+  IndentationError: 'SyntaxError', TabError: 'IndentationError', _IncompleteInputError: 'SyntaxError',
   UnicodeError: 'ValueError', UnicodeDecodeError: 'UnicodeError', UnicodeEncodeError: 'UnicodeError',
   BlockingIOError: 'OSError', ChildProcessError: 'OSError', ConnectionError: 'OSError', FileExistsError: 'OSError',
   FileNotFoundError: 'OSError', InterruptedError: 'OSError', IsADirectoryError: 'OSError', NotADirectoryError: 'OSError',
@@ -5720,11 +5948,13 @@ export function storeAttr(obj, name, value) {
   if (typeof obj === 'function' && obj._pyClass && obj.prototype && obj._pyOwnMembers && typeof name === 'string' && Object.hasOwn(obj.prototype, name)) {
     delete obj.prototype[name];
     obj._pyOwnMembers.delete(name);
-    obj[name] = value;
+    setClassAttr(obj, name, value);
     classMemberChanged(obj, name);
     return;
   }
   obj[name] = value;
+  // (a class variable now: the MRO rule tells it from a member copied off a base)
+  if (typeof obj === 'function' && obj._pyClass && obj._pyOwnMembers && typeof name === 'string') (obj._pyAttrs || (obj._pyAttrs = new Set())).add(name);
 }
 const _isClassMember = (v) => _isMethodFn(v, { pyBody: true }) || (v !== null && typeof v === 'object' && (v.__property__ || v.__staticmethod__ || v.__classmethod__ || _isDescriptor(v)));
 // obj[key] = v on a list / bytearray: the position written, or CPython's errors (an index past
@@ -5986,73 +6216,142 @@ export function _mapVFSError(e) {
   return new AdderError(map[e?.code] || 'OSError', e?.message || String(e));
 }
 
+// os.stat(): CPython's fields from a VFS stat — st_mode carries the file-type bits (S_IFREG /
+// S_IFDIR / S_IFLNK) over the permission bits, as stat.S_ISREG & co read them
+function _statResult(info) {
+  const typeBits = info.type === 'directory' ? 0o040000 : info.type === 'symlink' ? 0o120000 : 0o100000;
+  const perm = info.mode ? info.mode & 0o7777 : info.type === 'directory' ? 0o755 : 0o644;
+  const m = info.modified ? info.modified.getTime() / 1000 : 0;
+  const c = info.created ? info.created.getTime() / 1000 : m;
+  return { st_mode: typeBits | perm, st_size: info.size || 0, st_mtime: m, st_atime: m, st_ctime: c,
+    st_mtime_ns: intNorm(BigInt(Math.round(m * 1e3)) * 1000000n), st_nlink: 1, st_ino: 0, st_dev: 0, st_uid: 0, st_gid: 0, st_type: info.type };
+}
+
 // ── file object ──
 
 export async function _createAdderFile(vfs, filePath, mode) {
+  // CPython's file model: one buffer, one position, read and written through. The mode is
+  // r / w / a / x (read; truncate; append — writes always at the end; create, failing if it
+  // exists), '+' adds the other direction, 'b' bytes. The VFS is written on close.
   const isBinary = mode.includes('b');
-  const isRead = mode[0] === 'r';
-  const isAppend = mode[0] === 'a';
+  const kind = mode.replace(/[bt+U]/g, '')[0] || 'r';
+  const plus = mode.includes('+');
+  const readable = kind === 'r' || plus;
+  const writable = kind !== 'r' || plus;
+  const empty = () => (isBinary ? new Uint8Array(0) : '');
+  const unsupported = (what) => new AdderError('UnsupportedOperation', what);
 
-  let _content = null, _buffer = isBinary ? [] : '', _pos = 0, _closed = false;
+  // the contents: a str, or bytes in a growable Uint8Array (_len of it used)
+  let _text = '', _bytes = new Uint8Array(0), _len = 0, _pos = 0, _closed = false, _dirty = false;
+  const setContent = (c) => { if (isBinary) { _bytes = Uint8Array.from(c); _len = _bytes.length; } else _text = String(c); };
+  const length = () => (isBinary ? _len : _text.length);
+  const slice = (a, b) => (isBinary ? _bytes.slice(a, Math.min(b, _len)) : _text.slice(a, b));
 
-  if (isRead || isAppend) {
-    try {
-      _content = await vfs.readFile(filePath, isBinary ? 'bytes' : undefined);
-      if (isAppend) _buffer = isBinary ? [_content] : _content;
-    } catch (e) {
-      if (isRead) throw _mapVFSError(e);
-      _content = isBinary ? new Uint8Array(0) : '';
+  if (kind === 'x') {
+    let exists = false;
+    try { await vfs.stat(filePath); exists = true; } catch { /* free */ }
+    if (exists) throw new AdderError('FileExistsError', `[Errno 17] File exists: '${filePath}'`);
+  }
+  if (kind === 'r' || kind === 'a') {
+    try { setContent(await vfs.readFile(filePath, isBinary ? 'bytes' : undefined)); } catch (e) {
+      if (kind === 'r') throw _mapVFSError(e);
+      setContent(empty());
     }
   }
+  if (kind === 'a') _pos = length();
+  const mustExist = kind !== 'r';   // w / a / x make the file, written or not
+
+  const checkOpen = () => { if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file'); };
+  const checkRead = () => { checkOpen(); if (!readable) throw unsupported('not readable'); };
 
   const f = {
     _path: filePath, _mode: mode,
     __adderClass__: isBinary ? 'BufferedIOBase' : 'TextIOWrapper',
 
+    // (read(), read(-1) and read(None) read to the end; a size reads at most that much)
     read(size) {
-      if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
-      if (!isRead) throw new AdderError('IOError', 'not readable');
-      if (size != null) { const chunk = _content.slice(_pos, _pos + size); _pos += size; return chunk; }
-      const rest = _content.slice(_pos);
-      _pos = typeof _content === 'string' ? _content.length : _content.byteLength;
-      return rest;
+      checkRead();
+      const len = length();
+      const end = size === null || size === undefined || size < 0 ? len : Math.min(len, _pos + Number(size));
+      const chunk = slice(Math.min(_pos, len), end);
+      _pos = Math.max(_pos, end);
+      return chunk;
     },
 
-    readline() {
-      if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
-      if (!isRead) throw new AdderError('IOError', 'not readable');
-      if (typeof _content !== 'string') throw new AdderError('IOError', 'readline on binary file');
-      const nl = _content.indexOf('\n', _pos);
-      if (nl === -1) { const line = _content.slice(_pos); _pos = _content.length; return line; }
-      const line = _content.slice(_pos, nl + 1);
-      _pos = nl + 1;
+    // one line, its newline kept — a str line of a text file, a bytes line of a binary one
+    // (b'\n' ends it); readline(size) stops after size characters / bytes. '' / b'' at the end.
+    readline(size = -1) {
+      checkRead();
+      const len = length();
+      let nl = isBinary ? _bytes.subarray(0, _len).indexOf(10, _pos) : _text.indexOf('\n', _pos);
+      let end = nl === -1 ? len : nl + 1;
+      if (size !== null && size !== undefined && size >= 0) end = Math.min(end, _pos + Number(size));
+      const line = slice(Math.min(_pos, len), end);
+      _pos = Math.max(_pos, end);
       return line;
     },
 
     readlines() {
-      if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
-      if (!isRead) throw new AdderError('IOError', 'not readable');
+      checkRead();
       const lines = [];
-      const len = typeof _content === 'string' ? _content.length : _content.byteLength;
-      while (_pos < len) lines.push(f.readline());
+      while (_pos < length()) lines.push(f.readline());
       return lines;
     },
 
+    // the position, as CPython's: whence 0 / 1 / 2 from the start / here / the end (a text file
+    // seeks only from the start, or by 0 from here / the end)
+    seek(offset, whence = 0) {
+      checkOpen();
+      offset = Number(offset);
+      if (!isBinary && whence !== 0 && offset !== 0) throw unsupported(whence === 1 ? "can't do nonzero cur-relative seeks" : "can't do nonzero end-relative seeks");
+      const base = whence === 0 ? 0 : whence === 1 ? _pos : length();
+      const p = base + offset;
+      if (p < 0) throw new AdderError('ValueError', `negative seek position ${p}`);
+      _pos = p;
+      return p;
+    },
+    tell() { checkOpen(); return _pos; },
+    // truncate(size=None): cut (or zero-extend bytes) to size, the position by default
+    truncate(size = null) {
+      checkOpen();
+      if (!writable) throw unsupported('File not open for writing');
+      const n = size === null || size === undefined ? _pos : Number(size);
+      if (isBinary) { if (n > _bytes.length) { const b = new Uint8Array(n); b.set(_bytes.subarray(0, _len)); _bytes = b; } else if (n > _len) _bytes.fill(0, _len, n); _len = n; }
+      else _text = _text.slice(0, n);
+      _dirty = true;
+      return n;
+    },
+    flush() { checkOpen(); return null; },
+    readable() { checkOpen(); return readable; },
+    writable() { checkOpen(); return writable; },
+    seekable() { checkOpen(); return true; },
+    isatty() { checkOpen(); return false; },
+    get mode() { return mode; },
+
+    // at the position (overwriting, then extending) — at the end in append mode
     write(data) {
-      if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
-      if (isRead) throw new AdderError('IOError', 'not writable');
+      checkOpen();
+      if (!writable) throw unsupported('not writable');
+      if (kind === 'a') _pos = length();
+      _dirty = true;
       if (isBinary) {
-        const chunk = data instanceof Uint8Array ? data.slice()
+        const chunk = data instanceof Uint8Array ? data
           : data instanceof PyByteArray ? Uint8Array.from(data)
             : data instanceof PyMemoryView ? data.tobytes()
-              : data !== null && typeof data === 'object' && typeof data._pyBuffer === 'function' ? data._pyBuffer().slice()
-                : new TextEncoder().encode(String(data));
-        _buffer.push(chunk);
+              : data !== null && typeof data === 'object' && typeof data._pyBuffer === 'function' ? data._pyBuffer()
+                : null;
+        if (chunk === null) throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(data)}'`);
+        const end = _pos + chunk.byteLength;
+        if (end > _bytes.length) { const b = new Uint8Array(Math.max(end, _bytes.length * 2, 64)); b.set(_bytes.subarray(0, _len)); _bytes = b; }
+        if (_pos > _len) _bytes.fill(0, _len, _pos);
+        _bytes.set(chunk, _pos);
+        _pos = end; _len = Math.max(_len, end);
         return chunk.byteLength;
       }
-      const s = String(data);
-      _buffer += s;
-      return s.length;
+      if (typeof data !== 'string') throw new AdderError('TypeError', `write() argument must be str, not ${pyTypeName(data)}`);
+      _text = _pos >= _text.length ? _text + data : _text.slice(0, _pos) + data + _text.slice(_pos + data.length);
+      _pos += data.length;
+      return data.length;
     },
 
     writelines(lines) { for (const line of pyIter(lines)) f.write(line); return null; },
@@ -6060,18 +6359,8 @@ export async function _createAdderFile(vfs, filePath, mode) {
     async close() {
       if (_closed) return;
       _closed = true;
-      if (!isRead) {
-        try {
-          if (isBinary) {
-            const total = _buffer.reduce((s, b) => s + b.byteLength, 0);
-            const result = new Uint8Array(total);
-            let off = 0;
-            for (const b of _buffer) { result.set(b, off); off += b.byteLength; }
-            await vfs.writeFile(filePath, result);
-          } else {
-            await vfs.writeFile(filePath, _buffer);
-          }
-        } catch (e) { throw _mapVFSError(e); }
+      if (_dirty || mustExist) {
+        try { await vfs.writeFile(filePath, isBinary ? _bytes.slice(0, _len) : _text); } catch (e) { throw _mapVFSError(e); }
       }
     },
 
@@ -6081,29 +6370,16 @@ export async function _createAdderFile(vfs, filePath, mode) {
     __str__() { return f.__repr__(); },
     __bool__() { return true; },
 
+    // lines, text or bytes, from the file's position — the same one readline() moves
     [Symbol.iterator]() {
-      if (!isRead) throw new AdderError('IOError', 'not readable');
-      let iterPos = _pos;
-      const content = _content;
+      checkRead();
       return {
         next() {
-          const len = typeof content === 'string' ? content.length : content.byteLength;
-          if (iterPos >= len) return { done: true };
-          if (typeof content !== 'string') {
-            const rest = content.slice(iterPos);
-            iterPos = content.byteLength;
-            return { value: rest, done: false };
-          }
-          const nl = content.indexOf('\n', iterPos);
-          if (nl === -1) {
-            const line = content.slice(iterPos);
-            iterPos = content.length;
-            return line ? { value: line, done: false } : { done: true };
-          }
-          const line = content.slice(iterPos, nl + 1);
-          iterPos = nl + 1;
-          return { value: line, done: false };
-        }
+          if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file');
+          const line = f.readline();
+          return line.length ? { value: line, done: false } : { value: undefined, done: true };
+        },
+        [Symbol.iterator]() { return this; },
       };
     },
 
@@ -6116,17 +6392,93 @@ export async function _createAdderFile(vfs, filePath, mode) {
 
 // ── os module ──
 
+// a path argument as a str: a str, or a path-like's __fspath__ (a pathlib path)
+function _fsp(p) {
+  if (typeof p === 'string') return p;
+  if (p !== null && typeof p === 'object') {
+    if (typeof p.__fspath__ === 'function') return p.__fspath__();
+    if (typeof p._path === 'string') return p._path;
+  }
+  throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`);
+}
+// posixpath.normpath: '.' for '', one or two leading slashes kept (three or more are one), '..'
+// past the root dropped on an absolute path and kept on a relative one
+function _posixNormpath(path) {
+  if (!path) return '.';
+  let initial = path.startsWith('/') ? 1 : 0;
+  if (initial && path.startsWith('//') && !path.startsWith('///')) initial = 2;
+  const out = [];
+  for (const c of path.split('/')) {
+    if (c === '' || c === '.') continue;
+    if (c !== '..' || (!initial && !out.length) || (out.length && out[out.length - 1] === '..')) out.push(c);
+    else if (out.length) out.pop();
+  }
+  return '/'.repeat(initial) + out.join('/') || '.';
+}
+
 function _createOsModule(getVfs, pth) {
   const _resolve = (p) => _resolvePath(p, pth);
 
+  // the string functions are CPython's posixpath, line for line (its edge cases: basename('a/')
+  // is '', dirname('') is '', normpath('') is '.', join restarts at an absolute part)
   const osPath = {
-    join: (...parts) => pth.join(...parts),
-    dirname: (p) => pth.dirname(p),
-    basename: (p) => pth.basename(p),
-    splitext: (p) => { const ext = pth.extname(p); return mkTuple(ext ? [p.slice(0, -ext.length), ext] : [p, '']); },
-    normpath: (p) => pth.normalize(p),
-    relpath: (p, start) => pth.relative(start || _cwd.value, p),
-    isabs: (p) => pth.isAbsolute(p),
+    join: (a, ...p) => {
+      let path = _fsp(a);
+      for (const x of p) {
+        const b = _fsp(x);
+        if (b.startsWith('/') || !path) path = b;
+        else if (path.endsWith('/')) path += b;
+        else path += '/' + b;
+      }
+      return path;
+    },
+    dirname: (p) => { p = _fsp(p); let head = p.slice(0, p.lastIndexOf('/') + 1); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return head; },
+    basename: (p) => { p = _fsp(p); return p.slice(p.lastIndexOf('/') + 1); },
+    split: (p) => { p = _fsp(p); const i = p.lastIndexOf('/') + 1; let head = p.slice(0, i); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return mkTuple([head, p.slice(i)]); },
+    splitext: (p) => {
+      p = _fsp(p);
+      const sepIndex = p.lastIndexOf('/'), dotIndex = p.lastIndexOf('.');
+      if (dotIndex > sepIndex) {
+        for (let f = sepIndex + 1; f < dotIndex; f++) if (p[f] !== '.') return mkTuple([p.slice(0, dotIndex), p.slice(dotIndex)]);
+      }
+      return mkTuple([p, '']);
+    },
+    normpath: (p) => _posixNormpath(_fsp(p)),
+    abspath: (p) => { p = _fsp(p); return _posixNormpath(p.startsWith('/') ? p : osPath.join(_cwd.value, p)); },
+    relpath: (p, start = null) => {
+      p = _fsp(p);
+      if (!p) throw new AdderError('ValueError', 'no path specified');
+      const st = osPath.abspath(start === null || start === undefined ? '.' : start).split('/').filter(Boolean);
+      const pl = osPath.abspath(p).split('/').filter(Boolean);
+      let i = 0;
+      while (i < st.length && i < pl.length && st[i] === pl[i]) i++;
+      const rel = [...Array(st.length - i).fill('..'), ...pl.slice(i)];
+      return rel.length ? osPath.join(...rel) : '.';
+    },
+    isabs: (p) => _fsp(p).startsWith('/'),
+    // the longest common leading run of min() and max() of the items (strings, or lists / tuples)
+    commonprefix: (m) => {
+      let a = [...pyIter(m)];
+      if (!a.length) return '';
+      if (!Array.isArray(a[0])) a = a.map(_fsp);
+      let s1 = a[0], s2 = a[0];
+      for (const x of a) { if (pyLt(x, s1)) s1 = x; if (pyLt(s2, x)) s2 = x; }
+      for (let i = 0; i < s1.length; i++) if (!pyEq(s1[i], s2[i])) return s1.slice(0, i);
+      return s1;
+    },
+    commonpath: (paths) => {
+      const ps = [...pyIter(paths)].map(_fsp);
+      if (!ps.length) throw new AdderError('ValueError', 'commonpath() arg is an empty sequence');
+      const abs = new Set(ps.map((p) => p.startsWith('/')));
+      if (abs.size > 1) throw new AdderError('ValueError', "Can't mix absolute and relative paths");
+      const split = ps.map((p) => p.split('/').filter((c) => c && c !== '.'));
+      const cmp = (x, y) => { for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1; return x.length - y.length; };
+      let s1 = split[0], s2 = split[0];
+      for (const s of split) { if (cmp(s, s1) < 0) s1 = s; if (cmp(s, s2) > 0) s2 = s; }
+      let common = s1;
+      for (let i = 0; i < s1.length; i++) if (s1[i] !== s2[i]) { common = s1.slice(0, i); break; }
+      return (abs.has(true) ? '/' : '') + common.join('/');
+    },
     exists: async (p) => { try { await getVfs().stat(_resolve(p)); return true; } catch { return false; } },
     isfile: async (p) => { try { return (await getVfs().stat(_resolve(p))).type === 'file'; } catch { return false; } },
     isdir: async (p) => { try { return (await getVfs().stat(_resolve(p))).type === 'directory'; } catch { return false; } },
@@ -6177,8 +6529,7 @@ function _createOsModule(getVfs, pth) {
     stat: async (p) => {
       try {
         const info = await getVfs().stat(_resolve(p));
-        return { st_size: info.size, st_mtime: info.modified?.getTime() / 1000 || 0,
-                 st_mode: info.mode || 0, st_type: info.type };
+        return _statResult(info);
       } catch (e) { throw _mapVFSError(e); }
     },
     getcwd: () => _cwd.value,
@@ -6262,15 +6613,20 @@ function _createPathClass(getVfs, pth) {
           return entries.map(name => _Path(pth.join(_p, name)));
         } catch (e) { throw _mapVFSError(e); }
       },
+      // paths under this one (self / the match, as pathlib's are), not VFS strings; rglob is
+      // glob under every subdirectory ('**/' + pattern)
       async glob(pattern) {
-        try { return await getVfs().glob(pth.join(_abs(), pattern)); }
-        catch (e) { throw _mapVFSError(e); }
+        const base = _abs();
+        let found;
+        try { found = await getVfs().glob(pth.join(base, String(pattern))); } catch (e) { throw _mapVFSError(e); }
+        return found.map((m) => { const s = String(m); return _Path(s.startsWith(base + '/') ? pth.join(_p, s.slice(base.length + 1)) : s); });
       },
+      async rglob(pattern) { return this.glob('**/' + String(pattern)); },
       async touch() { try { await getVfs().touch(_abs()); } catch (e) { throw _mapVFSError(e); } },
       async stat() {
         try {
           const info = await getVfs().stat(_abs());
-          return { st_size: info.size, st_mtime: info.modified?.getTime() / 1000 || 0, st_mode: info.mode || 0, st_type: info.type };
+          return _statResult(info);
         } catch (e) { throw _mapVFSError(e); }
       },
     };
@@ -6290,7 +6646,27 @@ function _createShutilModule(getVfs) {
     copy: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
     copy2: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
     copytree: async (src, dst) => { try { await getVfs().cp(r(src), r(dst), { recursive: true }); } catch (e) { throw _mapVFSError(e); } },
-    rmtree: async (p) => { try { await getVfs().rm(r(p), { recursive: true }); } catch (e) { throw _mapVFSError(e); } },
+    // rmtree(path, ignore_errors=False): with ignore_errors (positional or keyword) a missing tree is fine
+    rmtree: async (p, ignore = false) => {
+      if (ignore !== null && typeof ignore === 'object' && ignore._kw) ignore = !!ignore.ignore_errors;
+      try { await getVfs().rm(r(p), { recursive: true }); } catch (e) { if (!pyBool(ignore)) throw _mapVFSError(e); }
+      return null;
+    },
+    copyfile: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } return dst; },
+    // the VFS keeps no permission bits / times to carry over: copying them is a no-op, as on a
+    // filesystem without them (the source must still exist)
+    copystat: async (src, dst) => { try { await getVfs().stat(r(src)); } catch (e) { throw _mapVFSError(e); } return null; },
+    copymode: async (src, dst) => { try { await getVfs().stat(r(src)); } catch (e) { throw _mapVFSError(e); } return null; },
+    copyfileobj: async (fsrc, fdst, length = 0) => {
+      const read = adderGetAttr(fsrc, 'read'), write = adderGetAttr(fdst, 'write');
+      for (;;) {
+        let buf = read(length > 0 ? length : 65536);
+        if (_isThenable(buf)) buf = await buf;
+        if (!buf || !buf.length) return null;
+        const w = write(buf);
+        if (_isThenable(w)) await w;
+      }
+    },
     move: async (src, dst) => { try { await getVfs().rename(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
   };
 }
@@ -6907,7 +7283,8 @@ export function typeCall(cls, args, sync = false) {
 function _classMethodDescriptor(fn, qual) {
   return {
     get() {
-      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; markCoro(m, fn);
+      const c = this; const m = (...a) => fn(c, ...a); m._pyName = qual; m.__func__ = fn; m.__self__ = c; markCoro(m, fn);
+      Object.defineProperty(m, '_pyBound', { value: true, configurable: true });
       if (fn._pySync) { const tw = fn._pySync; _defTwin(m, (...a) => tw(c, ...a)); }
       return m;
     },
@@ -6958,11 +7335,46 @@ function _descendants(cls) {
   return out;
 }
 // c's copy of an inherited `key`: the nearest base along its MRO that owns it, else none
+// an instance read of `key` that a class variable of `owner` answers, over a member of the same
+// name a base has (its descriptor was copied onto the prototype): the owner's value, live
+function _classVarOnProto(proto, owner, key) {
+  Object.defineProperty(proto, key, {
+    get() { return owner[key]; },
+    set(v) { Object.defineProperty(this, key, { value: v, writable: true, enumerable: true, configurable: true }); },
+    configurable: true, enumerable: false,
+  });
+}
+// a class attribute its instances don't see: the class answers `key` itself, an instance with what
+// a base defines (an Enum member named like enum's `name` / `value` properties — CPython's
+// enum.property keeps such a member out of the class dict)
+export function classOnlyAttr(cls, key) {
+  if (!cls.prototype || !Object.hasOwn(cls.prototype, key)) return;
+  delete cls.prototype[key];
+  for (let i = 1; i < (cls._pyMRO || []).length; i++) {
+    const b = cls._pyMRO[i];
+    if (!b.prototype || !b._pyOwnMembers || !b._pyOwnMembers.has(key)) continue;
+    const d = Object.getOwnPropertyDescriptor(b.prototype, key);
+    if (d) { Object.defineProperty(cls.prototype, key, d); return; }
+  }
+}
+// a plain class variable that can stand on the prototype (a plain function would be bound by an
+// instance read: those are left to the class-attribute lookup)
+const _protoableVar = (v) => typeof v !== 'function' || !!v._pyClass;
+// `key` is a class variable of class b (the body's or assigned later) — not a member, and not a
+// base's member copied onto it
+const _isClassVar = (b, key) => Object.hasOwn(b, key) && !!(b._pyAttrs && b._pyAttrs.has(key)) && !(b._pyOwnMembers && b._pyOwnMembers.has(key));
 function _resolveInherited(c, key) {
   if (!c.prototype || (c._pyOwnMembers && c._pyOwnMembers.has(key))) return;
-  for (let i = 1; i < (c._pyMRO || []).length; i++) {
-    const b = c._pyMRO[i];
-    if (!b.prototype || !b._pyOwnMembers || !b._pyOwnMembers.has(key)) continue;
+  const mro = c._pyMRO || [c];
+  for (let i = 0; i < mro.length; i++) {
+    const b = mro[i];
+    // a class variable before any member of the name (the class's own included)
+    if (_isClassVar(b, key)) {
+      if (Object.hasOwn(c.prototype, key) && _protoableVar(b[key])) _classVarOnProto(c.prototype, b, key);
+      else if (Object.hasOwn(c.prototype, key)) delete c.prototype[key];
+      return;
+    }
+    if (i === 0 || !b.prototype || !b._pyOwnMembers || !b._pyOwnMembers.has(key)) continue;
     if (b === _stableTypes.str && !c._pyStrBase) continue;
     const desc = Object.getOwnPropertyDescriptor(b.prototype, key);
     if (desc) { Object.defineProperty(c.prototype, key, desc); return; }
@@ -7058,6 +7470,8 @@ function _installMember(cls, name, mName, value, opts) {
     if (rawFn._pySync) _defTwin(sm, rawFn._pySync);
     markCoro(sm, rawFn);
     sm._pyName = `${name}.${mName}`;
+    // read as an attribute (C.s, c.s) it is the function itself, as in CPython
+    Object.defineProperty(sm, '_pyStaticOf', { value: rawFn, configurable: true });
     cls.prototype[mName] = sm;
     cls[mName] = sm;
   } else if (value && value.__classmethod__) {
@@ -7065,6 +7479,7 @@ function _installMember(cls, name, mName, value, opts) {
     const fn = value.fn, qual = `${name}.${mName}`;
     const cm = function (...args) { return fn(this.__adderType__ || cls, ...args); };
     cm._pyName = qual;
+    Object.defineProperty(cm, '_pyClassMethodOf', { value: fn, configurable: true });
     markCoro(cm, fn);
     if (fn._pySync) { const tw = fn._pySync; _defTwin(cm, function (...args) { return tw(this.__adderType__ || cls, ...args); }); }
     cls.prototype[mName] = cm;
@@ -7074,6 +7489,7 @@ function _installMember(cls, name, mName, value, opts) {
     cls.prototype[mName] = function (...args) { return originalFn(this, ...args); };
     cls.prototype[mName]._pyName = `${name}.${mName}`;
     cls.prototype[mName].__func__ = originalFn;          // the def itself (inspect, abstract methods)
+    if (typeof originalFn.__qualname__ === 'string') cls.prototype[mName].__qualname__ = originalFn.__qualname__;
     markCoro(cls.prototype[mName], originalFn);
     if (originalFn.__isabstractmethod__) cls.prototype[mName].__isabstractmethod__ = true;
     // Python unbound-method access (`ClassName.method(instance, ...)`).
@@ -7082,6 +7498,7 @@ function _installMember(cls, name, mName, value, opts) {
     cls[mName] = (...args) => originalFn(...args);
     // `Cls.method` is the plain function: its name, signature, docstring, abstractness
     Object.assign(cls[mName], { _pyName: originalFn._pyName || mName, _pyDef: true, _pySig: originalFn._pySig, __doc__: originalFn.__doc__ ?? null });
+    if (typeof originalFn.__qualname__ === 'string') cls[mName].__qualname__ = originalFn.__qualname__;
     // ...and its defaults are the def's: `Cls.m.__defaults__ = …` rewrites what calls bind from
     Object.defineProperty(cls[mName], '_pyDefOf', { value: originalFn, configurable: true });
     for (const k of ['__defaults__', '__kwdefaults__']) {
@@ -7187,6 +7604,28 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
     if (!_isMethodFn(v, opts) && !(v && (v.__property__ || v.__staticmethod__ || v.__classmethod__)) && !_isDescriptor(v)) {
       setClassAttr(cls, k, v);
     }
+  }
+  // A base's members were copied onto the prototype, but a class variable lives on its class: one
+  // closer in the MRO than the member wins, as Python's lookup says (ipaddress: IPv4Network's
+  // `_address_class = IPv4Address` over _BaseNetwork's property; `m = None` over a method). The
+  // prototype then reads that class's attribute, live. (A plain function value is left alone: an
+  // instance read would bind it.)
+  for (const key of Object.getOwnPropertyNames(cls.prototype)) {
+    if (key === '__new__' || key === 'constructor') continue;
+    const d = Object.getOwnPropertyDescriptor(cls.prototype, key);
+    if (!d.get && typeof d.value !== 'function') continue;   // (only a copied member: __hash__ = None stays)
+    let owner = null;
+    for (const c of mro) {
+      if (c === cls) {
+        if (!Object.hasOwn(members, key)) continue;
+        const m = members[key];
+        if (!_isMethodFn(m, opts) && !(m && (m.__property__ || m.__staticmethod__ || m.__classmethod__)) && !_isDescriptor(m)) owner = cls;
+        break;
+      }
+      if (c._pyOwnMembers && c._pyOwnMembers.has(key)) break;
+      if (_isClassVar(c, key)) { owner = c; break; }
+    }
+    if (owner !== null && _protoableVar(owner[key])) _classVarOnProto(cls.prototype, owner, key);
   }
 
   // Inherit class-level members from MRO bases (as descriptors: an inherited classmethod binds
@@ -7592,7 +8031,7 @@ function _stdStream(which) {
     },
     writelines(lines) { for (const l of pyIter(lines)) _stdioWrite(which, String(l)); return null; },
     flush() { return null; }, isatty: () => false, writable: () => true, readable: () => false, seekable: () => false,
-    fileno() { throw new AdderError('io.UnsupportedOperation', 'fileno'); },
+    fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); },
   };
 }
 
@@ -7604,6 +8043,9 @@ export function typeOf(obj) {
   if (!_typeObjects[name]) {
     const t = () => { throw new AdderError('TypeError', `cannot create '${name}' instances`); };
     t._pyName = name; t._pyClass = true; t.__name__ = name;
+    // a module's type ('re.Pattern'): named Pattern, from module re, as CPython's
+    const dot = name.lastIndexOf('.');
+    if (dot > 0) { t.__name__ = t.__qualname__ = name.slice(dot + 1); t.__module__ = name.slice(0, dot); }
     // a type adder has no table for (itertools.count's): its __dict__ names the protocol methods
     // its first value has, so collections.abc's checks recognise it (an Iterator)
     if (obj !== null && typeof obj === 'object') {
@@ -7766,6 +8208,8 @@ export function adderBuiltins(printFn) {
         if (kw.file != null && kw.file !== _sysModule.stdout) file = kw.file;
       }
       if (!file && _stdio.redirect) file = _stdio.redirect;   // contextlib.redirect_stdout
+      // sys.stdout replaced (`sys.stdout = io.StringIO()`, test.support.captured_stdout): print goes there
+      if (!file && _sysModule.stdout !== _sysInitialStdout && _sysModule.stdout != null) file = _sysModule.stdout;
       const out = file ? (t) => printToFile(file, t) : printFn;
       const parts = _seqMap(args, pyStrMaybe);
       if (_isThenable(parts)) return parts.then((ps) => out(ps.join(sep) + end)).then(() => null);
@@ -8083,9 +8527,9 @@ export function adderBuiltins(printFn) {
       return sv.codePointAt(0);
     },
     // (a BigInt — an int past 2**53 — prints in any base itself)
-    hex: (n) => { const v = typeof n === 'bigint' ? n : Math.trunc(n); return v < 0 ? '-0x' + (-v).toString(16) : '0x' + v.toString(16); },
-    oct: (n) => { const v = typeof n === 'bigint' ? n : Math.trunc(n); return v < 0 ? '-0o' + (-v).toString(8) : '0o' + v.toString(8); },
-    bin: (n) => { const v = typeof n === 'bigint' ? n : Math.trunc(n); return v < 0 ? '-0b' + (-v).toString(2) : '0b' + v.toString(2); },
+    hex: _radixStr('x', 16),
+    oct: _radixStr('o', 8),
+    bin: _radixStr('b', 2),
     repr: pyReprMaybe,
     Ellipsis, NotImplemented,
     format: (value, spec) => pyFormatValue(value, spec || ''),
@@ -8133,6 +8577,12 @@ export function adderBuiltins(printFn) {
           next() { try { return { value: step(), done: false }; } catch (e) { if (e && e.pyType === 'StopIteration') return { value: undefined, done: true }; throw e; } },
           [Symbol.iterator]() { return it; },
         };
+        // a tree-walked callable answers with a Promise: iterated asynchronously (the tree-walker's
+        // loops prefer this; compiled code reads next() first), the sentinel — a rejected step —
+        // ends the loop rather than surfacing as StopIteration
+        it[Symbol.asyncIterator] = () => ({
+          next: async () => { try { return { value: await step(), done: false }; } catch (e) { if (e && e.pyType === 'StopIteration') return { value: undefined, done: true }; throw e; } },
+        });
         Object.defineProperty(it, '__adderClass__', { value: 'callable_iterator' });
         return it;
       }
@@ -8198,7 +8648,11 @@ export function adderBuiltins(printFn) {
       if (pathOrObj && pathOrObj._kw) { const k = pathOrObj; pathOrObj = k.file; if (k.mode !== undefined) rest[0] = k.mode; }
       let mode = rest[0] ?? (kw && kw.mode !== undefined ? kw.mode : 'r');
       if (typeof mode !== 'string') throw new AdderError('TypeError', `open() argument 'mode' must be str, not ${pyTypeName(mode)}`);
-      if (mode.includes('x')) mode = mode.replace('x', 'w');
+      // (as CPython checks it: one of r / w / a / x, at most one '+', not both 'b' and 't')
+      { const n = (c) => mode.split(c).length - 1;
+        if (!/^[rwaxbt+U]*$/.test(mode) || n('r') + n('w') + n('a') + n('x') !== 1 || n('+') > 1 || (n('b') && n('t')) || n('b') > 1 || n('t') > 1) {
+          throw new AdderError('ValueError', `invalid mode: '${mode}'`);
+        } }
       if (!_adderVFS) throw new AdderError('RuntimeError', 'filesystem not available — call adder.setVFS(vfsInstance, pathUtils) first');
       const raw = pathOrObj?._path ? pathOrObj._path : String(pathOrObj);
       const p = _resolvePath(raw, _vfsPath);
@@ -8208,9 +8662,16 @@ export function adderBuiltins(printFn) {
     // compile(source, filename, mode): a code object exec() / eval() run (parsed when they do)
     __debug__: true,
     compile: (source, filename = '<string>', mode = 'exec', ...a) => {
-      if (filename && filename._kw) { const kw = filename; filename = kw.filename ?? '<string>'; mode = kw.mode ?? mode; }
+      const kwBag = [filename, mode, ...a].find((x) => x !== null && typeof x === 'object' && x._kw === true) || null;
+      if (filename && filename._kw) { filename = kwBag.filename ?? '<string>'; mode = kwBag.mode ?? 'exec'; }
+      else if (mode && mode._kw) mode = kwBag.mode ?? 'exec';
+      let flags = typeof a[0] === 'number' ? a[0] : 0;
+      if (kwBag && typeof kwBag.flags === 'number') flags = kwBag.flags;
       if (!['exec', 'eval', 'single'].includes(mode)) throw new AdderError('ValueError', "compile() mode must be 'exec', 'eval' or 'single'");
       const src = source instanceof Uint8Array ? new TextDecoder().decode(source) : source && typeof source._pySource === 'string' ? source._pySource : String(source);
+      // parsed now, as CPython compiles now: a SyntaxError raises here (codeop, the code module
+      // and IDLE-alikes tell incomplete input from bad input by it)
+      if (_compileCheck && !(source && typeof source._pySource === 'string')) _compileCheck(src, mode, flags);
       return { __adderClass__: 'code', _pySource: src, _pyMode: mode, co_filename: String(filename), co_name: '<module>', co_qualname: '<module>',
         co_firstlineno: 1, co_argcount: 0, co_posonlyargcount: 0, co_kwonlyargcount: 0, co_flags: 0, co_varnames: mkTuple([]), co_names: mkTuple([]),
         co_consts: mkTuple([]), co_code: new Uint8Array(0),
@@ -8298,7 +8759,8 @@ export function pySuper(cls, self, ...extra) {
   const start = mro.indexOf(cls) + 1;
   const bindProto = (d) => {
     if (d.get) return d.get.call(self);
-    if (typeof d.value === 'function') return (...a) => d.value.call(self, ...a);
+    // (bound keeping its sync twin: a super() call from a twin must not get the async method)
+    if (typeof d.value === 'function') return d.value._pyClass ? d.value : _bindTwin(d.value, self);
     return d.value;
   };
   return new Proxy({}, {
@@ -8495,3 +8957,6 @@ let _idCounter = 0;
 // re.error: an exception type, so `except re.error` catches what compile() raises (3.13: PatternError)
 _reModule.error = makeExcType('re.error', 'Exception');
 _reModule.PatternError = _reModule.error;
+// re.Pattern / re.Match: the types of a compiled pattern and of a match (typing and isinstance)
+_reModule.Pattern = typeOf(_reCompile(''));
+_reModule.Match = typeOf(_reCompile('').match(''));

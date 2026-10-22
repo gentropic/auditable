@@ -96,6 +96,8 @@ const _syTypeNamed = (name) => {
   sys.__stdout__ = sys.stdout; sys.__stderr__ = sys.stderr; sys.__stdin__ = sys.stdin;
   sys.displayhook = (v) => { if (v !== null && v !== undefined) stdoutWrite(pyRepr(v) + '\n'); return null; };
   sys.excepthook = (t, v) => { if (_stdio.err) _stdio.err(`${t && t._pyName ? t._pyName : 'Exception'}: ${pyStr(v)}\n`); return null; };
+  // the originals, kept for restoring (code.InteractiveInterpreter compares against them)
+  sys.__excepthook__ = sys.excepthook; sys.__displayhook__ = sys.displayhook;
   sys.unraisablehook = () => null;
   sys.orig_argv = [];
   sys.meta_path = [];
@@ -127,10 +129,13 @@ const _sySimpleNamespace = _syClass('SimpleNamespace', [], {
   },
 }, 'types');
 _sySimpleNamespace.__hash__ = null;
-const _syModuleType = _syClass('ModuleType', [], {
+// types.ModuleType IS the type of every module (type(sys) is types.ModuleType; type(sys)('m')
+// makes one), named `module` as CPython's
+const _syModuleType = _syClass('module', [], {
   __init__(self, name, doc = null) { self.__name__ = name; self.__doc__ = doc; self.__adderModule__ = true; self.__package__ = null; self.__spec__ = null; self.__loader__ = null; return null; },
   __repr__(self) { return `<module ${pyRepr(self.__name__)}>`; },
-}, 'types');
+}, 'builtins');
+_typeObjects.module = _syModuleType;
 // a read-only view of a mapping
 const _syMappingProxy = (m) => {
   const d = new PyDict(m instanceof Map ? [...m] : Object.entries(m || {}));

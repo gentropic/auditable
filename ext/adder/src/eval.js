@@ -1,7 +1,7 @@
 // adder v2 — tree-walking evaluator
 // Evaluates AST nodes produced by the parser. All values are native JS values.
 
-import { adderParse, _adderParseExpr, compileMatchPattern, classNeedsCell, isIntFloatLit, FLOAT_LIT_OPS } from './parse.js';
+import { adderParse, _adderParseExpr, parseErrorIsIncomplete, compileMatchPattern, classNeedsCell, isIntFloatLit, FLOAT_LIT_OPS } from './parse.js';
 // the stdlib modules register themselves into adderModules (the concat build lists them in main.js)
 import './stdlib.js';
 import './stdlib-types.js';
@@ -25,7 +25,7 @@ import {
   excToThrowable, excValue, excMatches, excTypeOf, initExceptionInstance, pySuper,
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
   PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, MODULE_REBIND, NamespaceDict, bindNamespace, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
-  sliceBound, pyFloatBin,
+  sliceBound, pyFloatBin, setCompileCheck, bytesContains,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -357,8 +357,8 @@ export async function adderEval(node, scope) {
     case 'Subscript': return _evalSubscript(node, scope);
 
     // ── collections ──
-    case 'List': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return elts; }
-    case 'Tuple': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of pyIter(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return mkTuple(elts); }
+    case 'List': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of await pyCollect(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return elts; }
+    case 'Tuple': { const elts = []; for (const e of node.elts) { if (e.type === 'Starred') { for (const v of await pyCollect(await adderEval(e.value, scope))) elts.push(v); } else elts.push(await adderEval(e, scope)); } return mkTuple(elts); }
     case 'Dict': {
       // A literal whose keys are all string constants is a plain object, so JS cells read it
       // as d.a. An EMPTY literal is a PyDict: it is filled with data keys later, and a plain
@@ -663,8 +663,9 @@ function _compareOp(op, left, right) {
     case '<=': return pyLe(left, right);
     case '>': return pyGt(left, right);
     case '>=': return pyGe(left, right);
-    case 'in': return _pyIn(right, left);
-    case 'not in': return !_pyIn(right, left);
+    // (a bool, as CPython makes of __contains__'s result — a tree-walked one is a Promise first)
+    case 'in': return _thenBool(_pyIn(right, left), false);
+    case 'not in': return _thenBool(_pyIn(right, left), true);
     case 'is': return left === right;
     case 'is not': return left !== right;
     default: throw new AdderError('TypeError', `unsupported comparison: ${op}`);
@@ -674,9 +675,16 @@ function _compareOp(op, left, right) {
 function _pyEq(a, b) {
   return pyEq(a, b);
 }
+const _thenBool = (r, negate) => {
+  if (r !== null && r !== undefined && typeof r.then === 'function') return r.then((v) => _thenBool(v, negate));
+  const b = typeof r === 'boolean' ? r : pyBoolMaybe(r);
+  if (b !== null && typeof b === 'object' && typeof b.then === 'function') return b.then((x) => (negate ? !x : !!x));
+  return negate ? !b : b;
+};
 function _pyIn(container, value) {
   if (typeof container === 'string') return container.includes(String(value));
   { const f = subclassDunder(container, '__contains__'); if (f) return f.call(container, value); }
+  if (container instanceof Uint8Array || container instanceof PyByteArray) return bytesContains(container, value);
   if (Array.isArray(container)) return container.some(v => _pyEq(v, value));
   if (container instanceof Map) return container.has(value);
   if (container instanceof Set) return container.has(value);
@@ -900,7 +908,7 @@ async function _evalCall(node, scope) {
   const func = await adderEval(node.func, scope);
   const args = [];
   for (const a of node.args) {
-    if (a.type === 'Starred') { for (const v of pyIter(await adderEval(a.value, scope))) args.push(v); }
+    if (a.type === 'Starred') { for (const v of await pyCollect(await adderEval(a.value, scope))) args.push(v); }
     else args.push(await adderEval(a, scope));
   }
   const kwArgs = [];
@@ -1012,6 +1020,7 @@ function _attachSignature(fn, node, defaults, scope = null) {
   const pos = (node.params || []).map((p, i) => ({ name: p.name, kind: i < posonly ? 'POSITIONAL_ONLY' : 'POSITIONAL_OR_KEYWORD', hasDefault: Object.hasOwn(defaults, p.name) }));
   const kwonly = (node.kwonly || []).map((p) => ({ name: p.name, kind: 'KEYWORD_ONLY', hasDefault: Object.hasOwn(defaults, p.name) }));
   fn._pyDef = true;
+  if (node.qualname) fn.__qualname__ = node.qualname;
   fn._pySig = { params: pos, vararg: node.vararg || null, kwonly, kwarg: node.kwarg || null, defaults, isAsync: node.type === 'AsyncFunctionDef' };
   // where it's defined (its __code__'s co_firstlineno / co_filename)
   let root = scope; while (root && root.parent) root = root.parent;
@@ -1518,7 +1527,7 @@ async function _evalClass(node, scope) {
   classScope._classCell = new PyCell();
   let root = scope; while (root.parent) root = root.parent;
   classScope.set('__module__', root.vars.has('__name__') ? root.vars.get('__name__') : '__main__');
-  classScope.set('__qualname__', node.name);
+  classScope.set('__qualname__', node.qualname || node.name);
   for (const stmt of node.body) await adderEval(stmt, classScope);
 
   // build class (the factory both engines share). A method that names `__class__` or `super`
@@ -1732,6 +1741,22 @@ async function _evalBuiltinExec(args, scope, line) {
   }
   return null;
 }
+// compile(source, filename, mode, flags): parsed now, so bad source raises here. With
+// PyCF_ALLOW_INCOMPLETE_INPUT (0x4000, what codeop passes) source that only stopped early raises
+// _IncompleteInputError instead; with PyCF_DONT_IMPLY_DEDENT (0x200) too, a compound statement in
+// 'single' mode is unfinished until the newline after it ("for i in r: pass" waits for more)
+const _COMPOUND_STMTS = new Set(['If', 'For', 'While', 'With', 'Try', 'Match', 'FunctionDef', 'AsyncFunctionDef', 'ClassDef']);
+setCompileCheck((src, mode, flags) => {
+  const incompleteOk = (flags & 0x4000) !== 0;
+  let ast;
+  try { ast = mode === 'eval' ? _adderParseExpr(src.trim()) : adderParse(src); } catch (e) {
+    if (e instanceof AdderError) throw e;
+    if (incompleteOk && parseErrorIsIncomplete(e)) throw new AdderError('_IncompleteInputError', 'incomplete input');
+    throw new AdderError('SyntaxError', e.message || String(e));
+  }
+  if (incompleteOk && mode === 'single' && (flags & 0x200) && !src.endsWith('\n') && ast && Array.isArray(ast.body) && ast.body.length &&
+      _COMPOUND_STMTS.has(ast.body[ast.body.length - 1].type)) throw new AdderError('_IncompleteInputError', 'incomplete input');
+});
 // exec / eval called as a plain function (compiled code has no caller scope to hand over): only
 // with the namespaces given
 const _runningModules = [];
@@ -1928,7 +1953,7 @@ export function _resolveModule(name) {
   if (name === 'js' && _runOpts.host === false) return null;   // host access off: `import js` is simply not found
   // os always exists, as CPython's (random imports it): made on first import when no VFS made it
   // already — its path operations POSIX, its filesystem calls raising until a VFS is set
-  if ((name === 'os' || name === 'os.path' || name === 'pathlib') && !adderModules.os) _ensureFsModules();
+  if ((name === 'os' || name === 'os.path' || name === 'posixpath' || name === 'pathlib') && !adderModules.os) _ensureFsModules();
   if (adderModules[name]) return adderModules[name];
   if (typeof window !== 'undefined') {
     if (window._auditableExtensions?.[name]) return window._auditableExtensions[name];

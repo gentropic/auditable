@@ -86,4 +86,55 @@ logging.warning("again")
 `);
     assert.equal(await r.vfs.readFile('/tmp/app.log'), 'INFO to file\nWARNING again\n');
   });
+
+  it("files as CPython's: binary readline / iteration, seek / tell, read(-1); os.stat's file type", async () => {
+    const r = await runBoth(`
+import os, stat
+with open("/tmp/b.bin", "wb") as f:
+    f.write(b"ab\\ncd\\nef")
+    n = f.tell()
+with open("/tmp/b.bin", "rb") as f:
+    one = f.readline(); f.seek(-2, 2); end = f.read(-1); f.seek(0); lines = list(f)
+with open("/tmp/b.bin") as f:
+    first = f.readline(); rest = [l for l in f]
+print(n, one, end, lines, repr(first), rest)
+print(stat.S_ISREG(os.stat("/tmp/b.bin").st_mode), stat.S_ISDIR(os.stat("/tmp").st_mode))
+`);
+    assert.equal(r.text, "8 b'ab\\n' b'ef' [b'ab\\n', b'cd\\n', b'ef'] 'ab\\n' ['cd\\n', 'ef']\nTrue True\n");
+  });
+
+  it("open's update modes: r+ / w+ / a+ / x, writes at the position, truncate", async () => {
+    const r = await runBoth(`
+import io
+P = "/tmp/u.bin"
+with open(P, "wb") as f: f.write(b"hello world")
+with open(P, "r+b") as f:
+    c = bytearray(f.read(1)); c[0] += 1; f.seek(0); f.write(c); f.seek(6); f.write(b"W")
+with open(P, "ab") as f: f.write(b"!")
+with open(P, "a+b") as f: f.seek(0); f.write(b"?"); f.seek(0); a = f.read()
+with open(P, "w+b") as f: f.write(b"abcdef"); f.seek(2); f.write(b"Z"); f.truncate(4); f.seek(0); w = f.read()
+try:
+    open(P, "x"); x = None
+except FileExistsError: x = "exists"
+with open(P, "r") as f:
+    try: f.write("x"); u = None
+    except io.UnsupportedOperation: u = "unsupported"
+print(a, w, x, u)
+`);
+    assert.equal(r.text, "b'iello World!?' b'abZd' exists unsupported\n");
+  });
+
+  it('shutil: rmtree(path, True) ignores a missing tree; copyfile, copystat, copyfileobj', async () => {
+    const r = await runBoth(`
+import shutil, os, io
+shutil.rmtree("/tmp/none", True)
+with open("/tmp/a.txt", "w") as f: f.write("hi")
+shutil.copyfile("/tmp/a.txt", "/tmp/b.txt")
+shutil.copystat("/tmp/a.txt", "/tmp/b.txt")
+b = io.StringIO()
+shutil.copyfileobj(io.StringIO("abc"), b)
+print(open("/tmp/b.txt").read(), b.getvalue())
+`);
+    assert.equal(r.text, 'hi abc\n');
+  });
 });

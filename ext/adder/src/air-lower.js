@@ -996,6 +996,10 @@ function lowerExpr_ad(ctx, node) {
         const cell = _classCellRef(ctx);
         if (cell) return emitPyCall(ctx, 'cellGet', [ctx.emit('load', [cell], DYNAMIC, l)], l);
       }
+      // the builtin globals as a value (not called here): one that answers for this module
+      if (name === 'globals' && !ctx.symbols.has(name) && !ctx.defines.has(name)) {
+        return emitPyCall(ctx, 'globalsFnOf', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l)], l);
+      }
       // a class body reading a name it binds, before it has: the enclosing scope's (CPython looks
       // in the class namespace, then the globals) — `class C: x = x`
       if (ctx._classBodyOf && ctx._classNames && ctx._classNames.has(name) && !ctx._classLoopNames.has(name)) {
@@ -1261,8 +1265,7 @@ function lowerCompare_ad(ctx, node) {
     if (op === 'in') {
       cmp = emitPyCall(ctx, 'contains', [right, left], l, BOOL);
     } else if (op === 'not in') {
-      const c = emitPyCall(ctx, 'contains', [right, left], l, BOOL);
-      cmp = ctx.emit('logical_not', [c.id], BOOL, l);
+      cmp = emitPyCall(ctx, 'notContains', [right, left], l, BOOL);
     } else if ((op === 'is' || op === 'is not') && (_isNoneLit(node.comparators[i]) || _isNoneLit(i === 0 ? node.left : node.comparators[i - 1]))) {
       // `x is None`: JS undefined (a function that fell off its end, a missing slot) is None too
       const other = _isNoneLit(node.comparators[i]) ? left : right;
@@ -1383,8 +1386,9 @@ function lowerCall_ad(ctx, node) {
   for (const a of node.args) {
     if (a.type === 'Starred') {
       const inner = lowerExpr_ad(ctx, a.value);
-      // Emit spread on the iter-converted value so JS ...spread works
-      const arr = emitPyCall(ctx, 'iter', [inner], l);
+      // Emit spread on the iter-converted value so JS ...spread works (awaited when the
+      // source may be async: a generator method's result)
+      const arr = emitPyIter(ctx, inner, l);
       argIds.push(ctx.emit('spread', [arr.id], DYNAMIC, l).id);
     } else {
       argIds.push(lowerExpr_ad(ctx, a).id);
@@ -2006,7 +2010,9 @@ function lowerClassDef(ctx, node) {
   const modName = ctx.moduleMirror && ctx.imports.has('__adder_module__')
     ? emitPyCall(ctx, 'moduleName', [ctx.emit('load', ['__adder_module__'], DYNAMIC, l)], l)
     : ctx.emit('const', ['__main__'], STRING, l);
-  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', [nameConst, basesArr, membersAwaited, annArr, kwObj, modName], l).id], DYNAMIC, l);
+  const createArgs = [nameConst, basesArr, membersAwaited, annArr, kwObj, modName];
+  if (node.qualname && node.qualname !== name) createArgs.push(ctx.emit('const', [node.qualname], STRING, l));
+  let classOp = ctx.emit('await', [emitPyCall(ctx, 'createClass', createArgs, l).id], DYNAMIC, l);
 
   // Apply decorators bottom-up
   for (let i = decorators.length - 1; i >= 0; i--) {
@@ -2759,6 +2765,7 @@ function _sigShape(node) {
     kwarg: node.kwarg ? (node.kwarg.name || node.kwarg) : null,
     isAsync: node.type === 'AsyncFunctionDef',
     line: node.line || 0,
+    qualname: node.qualname || null,
   };
 }
 
@@ -2808,6 +2815,7 @@ function _callsScopeBuiltin(node) {
   if (!node || typeof node !== 'object') return false;
   if (Array.isArray(node)) return node.some(_callsScopeBuiltin);
   if (node.type === 'Call' && node.func && node.func.type === 'Name' && (node.func.id === 'globals' || node.func.id === 'locals' || node.func.id === 'exec' || node.func.id === 'eval')) return true;
+  if (node.type === 'Name' && node.id === 'globals') return true;   // (passed around, called later)
   for (const k in node) if (k !== 'line' && k !== 'col' && typeof node[k] === 'object' && _callsScopeBuiltin(node[k])) return true;
   return false;
 }
@@ -3190,7 +3198,9 @@ function lowerListOrTuple(ctx, node) {
   // With starred elements: build via _py.buildList which flattens starred iterables
   const parts = node.elts.map(e => {
     if (e.type === 'Starred') {
-      const inner = lowerExpr_ad(ctx, e.value);
+      // (through _py.iter, as a call's *args: a dict spreads its keys, a generator — async ones
+      // too — its items)
+      const inner = emitPyIter(ctx, lowerExpr_ad(ctx, e.value), l);
       return { spread: true, id: inner.id };
     }
     return { spread: false, id: lowerExpr_ad(ctx, e).id };
