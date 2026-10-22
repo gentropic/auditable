@@ -892,6 +892,56 @@ describe('adder transpile — module-function calls and maybe-awaits', () => {
     ].join('\n');
     for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r], [4, 2]);
   });
+  it('calling a cached_property value as a method caches it on the instance, not the class (networkx G.edges())', async () => {
+    const src = [
+      'from functools import cached_property',
+      'class View:',
+      '    def __init__(self, g): self.g = g',
+      '    def __call__(self): return self',
+      'class Graph:',
+      '    @cached_property',
+      '    def edges(self): return View(self)',
+      'a = Graph()',
+      'a.edges()',
+      'b = Graph()',
+      'r = [b.edges.g is b, b.edges().g is b, a.edges.g is a]',
+    ].join('\n');
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r], [true, true, true]);
+  });
+  it('asyncio.gather runs each coroutine as a task: one runs until it really waits (CPython order)', async () => {
+    const src = [
+      'import asyncio',
+      'log = []',
+      'class Box:',
+      '    def bump(self, name): log.append(name)',
+      'async def worker(name, box):',
+      '    for i in range(3): box.bump(name)',
+      '    await asyncio.sleep(0)',
+      '    for i in range(3): box.bump(name.upper())',
+      '    return name',
+      'async def main():',
+      '    b = Box()',
+      '    got = await asyncio.gather(worker("a", b), worker("b", b))',
+      '    done = [await t for t in asyncio.as_completed([worker("c", b), worker("d", b)])]',
+      '    return got, done',
+      'got, done = asyncio.run(main())',
+      'r = ["".join(log), list(got), sorted(done)]',
+    ].join('\n');
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r].map((v) => (Array.isArray(v) ? [...v] : v)), ['aaabbbAAABBBcccdddCCCDDD', ['a', 'b'], ['c', 'd']]);
+  });
+  it("a dict subclass's own __setitem__ runs for d[k] = v, a tuple key and d[k] += v", async () => {
+    const src = [
+      'class Box(dict):',
+      '    def __setitem__(self, k, v):',
+      '        dict.__setitem__(self, k, v * 10)',
+      'b = Box()',
+      'b["a"] = 1',
+      'b[1, 2] = 2',
+      'b["a"] += 3',
+      'r = [b["a"], b[1, 2]]',
+    ].join('\n');
+    for (const run of [airRun, twRun]) assert.deepEqual([...(await run(src)).r], [130, 20]);
+  });
   it('an attribute store keeps a method synchronous (a constructor stays a plain function)', () => {
     const js = emit('class F:\n    def __init__(self, g):\n        self.g = g\n');
     assert.match(js, /"__init__": function \(self, g\)/);

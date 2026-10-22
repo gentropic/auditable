@@ -360,8 +360,21 @@ function _pics(n) {
 // Only a method a Python class in t's MRO defines: on a dict / list / set subclass, one it inherits
 // from the builtin is the JS base's prototype method (Map's get, Array's pop) — not dict.get's or
 // list.pop's Python semantics, which the slow path's lookup gives
+// The method a class's prototype chain holds under `name` — a plain data property only. Reading
+// `proto[name]` would run an accessor (a property, a cached_property) with the PROTOTYPE as its
+// instance: networkx's cached `edges` then stored the prototype's view, and every later graph
+// inherited it.
+function _protoMethod(proto, name) {
+  for (let p = proto; p; p = Object.getPrototypeOf(p)) {
+    const d = Object.getOwnPropertyDescriptor(p, name);
+    if (d) return 'value' in d && typeof d.value === 'function' ? d.value : undefined;
+  }
+  return undefined;
+}
 function _picStore(c, t, obj, name) {
-  if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
+  if (t === undefined || !t.prototype || Object.hasOwn(obj, name)) return;
+  const m = _protoMethod(t.prototype, name);
+  if (m === undefined) return;
   if (!t._pyMRO || !t._pyMRO.some((k) => k._pyOwnMembers && k._pyOwnMembers.has(name))) return;
   if (c.name !== name) { c.name = name; c.types.length = 0; c.vers.length = 0; c.methods.length = 0; c.next = 0; }
   let idx = c.types.indexOf(t);
@@ -369,7 +382,7 @@ function _picStore(c, t, obj, name) {
     if (c.types.length < _PIC_SIZE) idx = c.types.length;
     else { idx = c.next; c.next = (idx + 1) % _PIC_SIZE; }   // FIFO: a 5-way polymorphic site cycles
   }
-  c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = t.prototype[name];
+  c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = m;
 }
 
 // A module's own attribute called (`math.sqrt(x)`, `random.random()`): read straight off the

@@ -6507,6 +6507,9 @@ function pyGetItem(obj, key, raw = false) {
       if (typeof key === 'number' && Object.hasOwn(obj, String(key))) return obj[key];
       throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     }
+    // (an instance of a Python class without __getitem__ isn't subscriptable; a JS object is read
+    // by key — interop)
+    if (obj.__adderType__ !== undefined && obj.__adderType__._pyMRO) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
     if (key in obj) return obj[key];
     throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
   }
@@ -10211,6 +10214,8 @@ function adderBuiltins(printFn) {
       if (typeof obj === 'function' && typeof obj.__len__ === 'function') return obj.__len__();   // a class (an Enum)
       if (typeof obj === 'object' && obj !== null) {
         if (typeof obj.__len__ === 'function') return obj.__len__();
+        // (an instance of a Python class without __len__ has no len(); a JS object counts its keys)
+        if (obj.__adderType__ !== undefined && obj.__adderType__._pyMRO) throw new AdderError('TypeError', `object of type '${pyTypeName(obj)}' has no len()`);
         if (typeof obj.length === 'number') return obj.length;
         return Object.keys(obj).length;
       }
@@ -11418,6 +11423,7 @@ async function _assignTarget(target, value, scope) {
           raw.push(await _evalSliceElt(elt, scope));
         }
         const key = mkTuple(raw);
+        { const f = subclassDunder(obj, '__setitem__'); if (f) { await f.call(obj, key, value); break; } }
         if (obj instanceof Map) { obj.set(key, value); break; }
         if (isPlainDict(obj)) { obj[key] = value; break; }
         if (obj && typeof obj.__setitem__ === 'function') {
@@ -11468,7 +11474,10 @@ async function _assignTarget(target, value, scope) {
           target.line);
       }
       const key = await adderEval(target.slice, scope);
-      if (obj instanceof Map) obj.set(key, value);
+      // (a dict/list/set subclass's own __setitem__ before the builtin store, as _py.setitem)
+      const subSet = subclassDunder(obj, '__setitem__');
+      if (subSet) await subSet.call(obj, key, value);
+      else if (obj instanceof Map) obj.set(key, value);
       else if (typeof obj?.__setitem__ === 'function') await obj.__setitem__(key, value);
       else if (Array.isArray(obj) && key instanceof PySlice) seqSliceSet(obj, key, value);
       else if (Array.isArray(obj) || obj instanceof Uint8Array) {
@@ -13715,8 +13724,21 @@ function _pics(n) {
 // Only a method a Python class in t's MRO defines: on a dict / list / set subclass, one it inherits
 // from the builtin is the JS base's prototype method (Map's get, Array's pop) — not dict.get's or
 // list.pop's Python semantics, which the slow path's lookup gives
+// The method a class's prototype chain holds under `name` — a plain data property only. Reading
+// `proto[name]` would run an accessor (a property, a cached_property) with the PROTOTYPE as its
+// instance: networkx's cached `edges` then stored the prototype's view, and every later graph
+// inherited it.
+function _protoMethod(proto, name) {
+  for (let p = proto; p; p = Object.getPrototypeOf(p)) {
+    const d = Object.getOwnPropertyDescriptor(p, name);
+    if (d) return 'value' in d && typeof d.value === 'function' ? d.value : undefined;
+  }
+  return undefined;
+}
 function _picStore(c, t, obj, name) {
-  if (t === undefined || !t.prototype || typeof t.prototype[name] !== 'function' || Object.hasOwn(obj, name)) return;
+  if (t === undefined || !t.prototype || Object.hasOwn(obj, name)) return;
+  const m = _protoMethod(t.prototype, name);
+  if (m === undefined) return;
   if (!t._pyMRO || !t._pyMRO.some((k) => k._pyOwnMembers && k._pyOwnMembers.has(name))) return;
   if (c.name !== name) { c.name = name; c.types.length = 0; c.vers.length = 0; c.methods.length = 0; c.next = 0; }
   let idx = c.types.indexOf(t);
@@ -13724,7 +13746,7 @@ function _picStore(c, t, obj, name) {
     if (c.types.length < _PIC_SIZE) idx = c.types.length;
     else { idx = c.next; c.next = (idx + 1) % _PIC_SIZE; }   // FIFO: a 5-way polymorphic site cycles
   }
-  c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = t.prototype[name];
+  c.types[idx] = t; c.vers[idx] = t._pyVer; c.methods[idx] = m;
 }
 
 // A module's own attribute called (`math.sqrt(x)`, `random.random()`): read straight off the
@@ -14867,34 +14889,80 @@ adderModules._heapq = {
 };
 
 // ── bisect ──
-async function _slBisect(right, a, x, args) {
-  const kw = _slKw(args);
-  let lo = _slOpt(kw, 'lo', args[0] ?? 0);
-  let hi = _slOpt(kw, 'hi', args[1] ?? null);
-  const key = _slOpt(kw, 'key', null);
+// _bisectmodule.c: (a, x, lo=0, hi=None, *, key=None) — a and x may come by keyword; lo and hi
+// are indexes (__index__); hi defaults to len(a); items read by a[mid]. Indexes past 2**53 (a
+// range of sys.maxsize) are BigInts, and the midpoint is computed exactly.
+async function _slIndexArg(v) {
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'bigint' || (typeof v === 'number' && Number.isInteger(v))) return v;
+  if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return _slIndexArg(await v.__index__());
+  throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+}
+function _slBisectArgs(name, raw) {
+  const args = [...raw];
+  const kw = _slKw(args) || {};
+  const names = ['a', 'x', 'lo', 'hi'];
+  const vals = [];
+  for (let i = 0; i < names.length; i++) {
+    const has = Object.hasOwn(kw, names[i]);
+    if (i < args.length && has) throw new AdderError('TypeError', `argument for ${name}() given by name ('${names[i]}') and position (${i + 1})`);
+    vals.push(i < args.length ? args[i] : has ? kw[names[i]] : undefined);
+  }
+  if (args.length > 4) throw new AdderError('TypeError', `${name}() takes at most 4 arguments (${args.length} given)`);
+  for (const k of Object.keys(kw)) {
+    if (k !== '_kw' && !names.includes(k) && k !== 'key') throw new AdderError('TypeError', `${name}() got an unexpected keyword argument '${k}'`);
+  }
+  if (vals[0] === undefined) throw new AdderError('TypeError', `${name}() missing required argument 'a' (pos 1)`);
+  if (vals[1] === undefined) throw new AdderError('TypeError', `${name}() missing required argument 'x' (pos 2)`);
+  // (a key that isn't callable fails where it's called, as in C — bisect of [] never calls it)
+  const k = kw.key ?? null;
+  return { a: vals[0], x: vals[1], lo: vals[2] ?? 0, hi: vals[3] ?? null, key: k === null ? null : (v) => asCallable(k)(v) };
+}
+async function _slBisect(right, name, raw, forInsort) {
+  const p = _slBisectArgs(name, raw);
+  const { a, key } = p;
+  let x = p.x;
+  if (forInsort && key !== null) x = await key(x);
+  let lo = await _slIndexArg(p.lo);
   if (lo < 0) throw new AdderError('ValueError', 'lo must be non-negative');
-  if (hi === null) hi = a.length;
+  let hi = p.hi === null ? adderModules.builtins.len(a) : await _slIndexArg(p.hi);
+  if (_slIsThen(hi)) hi = await hi;
+  if (typeof lo === 'bigint' || typeof hi === 'bigint') {
+    lo = BigInt(lo); hi = BigInt(hi);
+    while (lo < hi) {
+      const mid = lo + (hi - lo) / 2n;
+      let v = pyGetItem(a, intNorm(mid));
+      if (_slIsThen(v)) v = await v;
+      if (key !== null) v = await key(v);
+      if (right ? await _slTruthy(pyLt(x, v)) : !(await _slTruthy(pyLt(v, x)))) hi = mid; else lo = mid + 1n;
+    }
+    return { p, i: intNorm(lo) };
+  }
   while (lo < hi) {
     const mid = lo + Math.floor((hi - lo) / 2);   // (not (lo + hi) / 2: past 2**52 the sum rounds, and mid can land on hi)
     let v = pyGetItem(a, mid);
+    if (_slIsThen(v)) v = await v;
     if (key !== null) v = await key(v);
     if (right ? await _slTruthy(pyLt(x, v)) : !(await _slTruthy(pyLt(v, x)))) hi = mid; else lo = mid + 1;
   }
-  return lo;
+  return { p, i: lo };
 }
-async function _slInsort(right, a, x, args) {
-  const kw = _slKw(args);
-  const key = _slOpt(kw, 'key', null);
-  const i = await _slBisect(right, a, key === null ? x : await key(x), [...args, { ...(kw || {}), _kw: true }]);
-  a.splice(i, 0, x);
+// insort: the index of x's key, then a list (exactly) gets x spliced in; anything else — a list
+// subclass included — its own insert(i, x)
+async function _slInsort(right, name, raw) {
+  const { p, i } = await _slBisect(right, name, raw, true);
+  const a = p.a;
+  if (Array.isArray(a) && !(a instanceof PyTuple) && a.__adderType__ === undefined) { a.splice(i, 0, p.x); return null; }
+  const r = adderGetAttr(a, 'insert')(i, p.x);
+  if (_slIsThen(r)) await r;
   return null;
 }
 // _bisect: the accelerator CPython's bisect.py imports (pylib/bisect.py makes the aliases)
 adderModules._bisect = {
-  bisect_left: (a, x, ...r) => _slBisect(false, a, x, r),
-  bisect_right: (a, x, ...r) => _slBisect(true, a, x, r),
-  insort_left: (a, x, ...r) => _slInsort(false, a, x, r),
-  insort_right: (a, x, ...r) => _slInsort(true, a, x, r),
+  bisect_left: async (...r) => (await _slBisect(false, 'bisect_left', r, false)).i,
+  bisect_right: async (...r) => (await _slBisect(true, 'bisect_right', r, false)).i,
+  insort_left: (...r) => _slInsort(false, 'insort_left', r),
+  insort_right: (...r) => _slInsort(true, 'insort_right', r),
 };
 
 for (const m of ['_heapq', '_bisect']) for (const f of Object.values(adderModules[m])) f.__module__ = m;
@@ -22510,9 +22578,14 @@ adderModules.zipimport = _syModule('zipimport', {
     if (kw && kw.name) t._name = kw.name;
     return t;
   };
+  // a coroutine handed to gather / as_completed becomes a Task (ensure_future): started on a later
+  // step, it runs until it really waits — started here, every coroutine's await of a sync method
+  // call let the next one run (adder 'ababab' where CPython prints 'aaabbb')
+  const isFut = (x) => x !== null && typeof x === 'object' && typeof x.add_done_callback === 'function' && typeof x.__await__ === 'function';
+  const ensureFut = (x) => (isFut(x) ? x : create_task(x));
   const gather = (...a) => {
     const kw = _syKw(a) || {};
-    const ps = a.map(asP);
+    const ps = a.map((x) => asP(ensureFut(x)));
     if (kw.return_exceptions) return Promise.allSettled(ps).then((rs) => rs.map((r) => (r.status === 'fulfilled' ? r.value : excValue(r.reason))));
     return Promise.all(ps);
   };
@@ -22598,7 +22671,7 @@ adderModules.zipimport = _syModule('zipimport', {
     run: (coro, ...a) => { _syKw(a); return asP(coro); }, Runner,
     sleep, gather, wait_for, create_task, ensure_future: create_task, shield: (aw) => aw, timeout,
     wait: (aws, ...a) => { const { timeout: to } = _syArgs(a, ['timeout', 'return_when'], { timeout: null }); const fs = [...pyIter(aws)].map((x) => (x && x.done ? x : create_task(x))); return wait_for(Promise.allSettled(fs.map(asP)), to).then(() => mkTuple([new PySet(fs), new PySet()])); },
-    as_completed: (aws) => { const ps = [...pyIter(aws)].map(asP); const order = []; const waiters = ps.map(() => { let r, j; const p = new Promise((a, b) => { r = a; j = b; }); return { p, r, j }; }); let k = 0; ps.forEach((p) => p.then((v) => waiters[k++].r(v), (e) => waiters[k++].j(e))); return waiters.map((w) => w.p); },
+    as_completed: (aws) => { const ps = [...pyIter(aws)].map((x) => asP(ensureFut(x))); const order = []; const waiters = ps.map(() => { let r, j; const p = new Promise((a, b) => { r = a; j = b; }); return { p, r, j }; }); let k = 0; ps.forEach((p) => p.then((v) => waiters[k++].r(v), (e) => waiters[k++].j(e))); return waiters.map((w) => w.p); },
     iscoroutine: (o) => _syIsCoro(o), iscoroutinefunction, isfuture: (o) => !!(o && o.__adderClass__ && (o.__adderClass__ === 'Future' || o.__adderClass__ === 'Task')),
     get_event_loop: () => loop, get_running_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null,
     get_event_loop_policy: () => ({ get_event_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null }), set_event_loop_policy: () => null,

@@ -1315,9 +1315,14 @@ adderModules.zipimport = _syModule('zipimport', {
     if (kw && kw.name) t._name = kw.name;
     return t;
   };
+  // a coroutine handed to gather / as_completed becomes a Task (ensure_future): started on a later
+  // step, it runs until it really waits — started here, every coroutine's await of a sync method
+  // call let the next one run (adder 'ababab' where CPython prints 'aaabbb')
+  const isFut = (x) => x !== null && typeof x === 'object' && typeof x.add_done_callback === 'function' && typeof x.__await__ === 'function';
+  const ensureFut = (x) => (isFut(x) ? x : create_task(x));
   const gather = (...a) => {
     const kw = _syKw(a) || {};
-    const ps = a.map(asP);
+    const ps = a.map((x) => asP(ensureFut(x)));
     if (kw.return_exceptions) return Promise.allSettled(ps).then((rs) => rs.map((r) => (r.status === 'fulfilled' ? r.value : excValue(r.reason))));
     return Promise.all(ps);
   };
@@ -1403,7 +1408,7 @@ adderModules.zipimport = _syModule('zipimport', {
     run: (coro, ...a) => { _syKw(a); return asP(coro); }, Runner,
     sleep, gather, wait_for, create_task, ensure_future: create_task, shield: (aw) => aw, timeout,
     wait: (aws, ...a) => { const { timeout: to } = _syArgs(a, ['timeout', 'return_when'], { timeout: null }); const fs = [...pyIter(aws)].map((x) => (x && x.done ? x : create_task(x))); return wait_for(Promise.allSettled(fs.map(asP)), to).then(() => mkTuple([new PySet(fs), new PySet()])); },
-    as_completed: (aws) => { const ps = [...pyIter(aws)].map(asP); const order = []; const waiters = ps.map(() => { let r, j; const p = new Promise((a, b) => { r = a; j = b; }); return { p, r, j }; }); let k = 0; ps.forEach((p) => p.then((v) => waiters[k++].r(v), (e) => waiters[k++].j(e))); return waiters.map((w) => w.p); },
+    as_completed: (aws) => { const ps = [...pyIter(aws)].map((x) => asP(ensureFut(x))); const order = []; const waiters = ps.map(() => { let r, j; const p = new Promise((a, b) => { r = a; j = b; }); return { p, r, j }; }); let k = 0; ps.forEach((p) => p.then((v) => waiters[k++].r(v), (e) => waiters[k++].j(e))); return waiters.map((w) => w.p); },
     iscoroutine: (o) => _syIsCoro(o), iscoroutinefunction, isfuture: (o) => !!(o && o.__adderClass__ && (o.__adderClass__ === 'Future' || o.__adderClass__ === 'Task')),
     get_event_loop: () => loop, get_running_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null,
     get_event_loop_policy: () => ({ get_event_loop: () => loop, new_event_loop: () => Loop(), set_event_loop: () => null }), set_event_loop_policy: () => null,

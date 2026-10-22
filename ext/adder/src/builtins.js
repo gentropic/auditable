@@ -4076,6 +4076,9 @@ export function pyGetItem(obj, key, raw = false) {
       if (typeof key === 'number' && Object.hasOwn(obj, String(key))) return obj[key];
       throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
     }
+    // (an instance of a Python class without __getitem__ isn't subscriptable; a JS object is read
+    // by key — interop)
+    if (obj.__adderType__ !== undefined && obj.__adderType__._pyMRO) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not subscriptable`);
     if (key in obj) return obj[key];
     throw new AdderError('KeyError', pyRepr(key), undefined, [key]);
   }
@@ -7780,6 +7783,8 @@ export function adderBuiltins(printFn) {
       if (typeof obj === 'function' && typeof obj.__len__ === 'function') return obj.__len__();   // a class (an Enum)
       if (typeof obj === 'object' && obj !== null) {
         if (typeof obj.__len__ === 'function') return obj.__len__();
+        // (an instance of a Python class without __len__ has no len(); a JS object counts its keys)
+        if (obj.__adderType__ !== undefined && obj.__adderType__._pyMRO) throw new AdderError('TypeError', `object of type '${pyTypeName(obj)}' has no len()`);
         if (typeof obj.length === 'number') return obj.length;
         return Object.keys(obj).length;
       }

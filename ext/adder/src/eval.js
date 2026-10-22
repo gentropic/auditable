@@ -503,6 +503,7 @@ async function _assignTarget(target, value, scope) {
           raw.push(await _evalSliceElt(elt, scope));
         }
         const key = mkTuple(raw);
+        { const f = subclassDunder(obj, '__setitem__'); if (f) { await f.call(obj, key, value); break; } }
         if (obj instanceof Map) { obj.set(key, value); break; }
         if (isPlainDict(obj)) { obj[key] = value; break; }
         if (obj && typeof obj.__setitem__ === 'function') {
@@ -553,7 +554,10 @@ async function _assignTarget(target, value, scope) {
           target.line);
       }
       const key = await adderEval(target.slice, scope);
-      if (obj instanceof Map) obj.set(key, value);
+      // (a dict/list/set subclass's own __setitem__ before the builtin store, as _py.setitem)
+      const subSet = subclassDunder(obj, '__setitem__');
+      if (subSet) await subSet.call(obj, key, value);
+      else if (obj instanceof Map) obj.set(key, value);
       else if (typeof obj?.__setitem__ === 'function') await obj.__setitem__(key, value);
       else if (Array.isArray(obj) && key instanceof PySlice) seqSliceSet(obj, key, value);
       else if (Array.isArray(obj) || obj instanceof Uint8Array) {

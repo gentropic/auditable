@@ -11,7 +11,7 @@ import {
   pyIter, pyCollect, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv,
   pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem, pyInplace, pyDelItem, PySlice, seqSliceSet,
   pySorted, adderGetAttr, adderModules, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
-  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj, frozenModuleHooks,
+  GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj, frozenModuleHooks, intNorm, asCallable,
 } from './builtins.js';
 
 // ── shared helpers ──
@@ -414,34 +414,80 @@ adderModules._heapq = {
 };
 
 // ── bisect ──
-async function _slBisect(right, a, x, args) {
-  const kw = _slKw(args);
-  let lo = _slOpt(kw, 'lo', args[0] ?? 0);
-  let hi = _slOpt(kw, 'hi', args[1] ?? null);
-  const key = _slOpt(kw, 'key', null);
+// _bisectmodule.c: (a, x, lo=0, hi=None, *, key=None) — a and x may come by keyword; lo and hi
+// are indexes (__index__); hi defaults to len(a); items read by a[mid]. Indexes past 2**53 (a
+// range of sys.maxsize) are BigInts, and the midpoint is computed exactly.
+async function _slIndexArg(v) {
+  if (typeof v === 'boolean') return +v;
+  if (typeof v === 'bigint' || (typeof v === 'number' && Number.isInteger(v))) return v;
+  if (v !== null && typeof v === 'object' && typeof v.__index__ === 'function') return _slIndexArg(await v.__index__());
+  throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+}
+function _slBisectArgs(name, raw) {
+  const args = [...raw];
+  const kw = _slKw(args) || {};
+  const names = ['a', 'x', 'lo', 'hi'];
+  const vals = [];
+  for (let i = 0; i < names.length; i++) {
+    const has = Object.hasOwn(kw, names[i]);
+    if (i < args.length && has) throw new AdderError('TypeError', `argument for ${name}() given by name ('${names[i]}') and position (${i + 1})`);
+    vals.push(i < args.length ? args[i] : has ? kw[names[i]] : undefined);
+  }
+  if (args.length > 4) throw new AdderError('TypeError', `${name}() takes at most 4 arguments (${args.length} given)`);
+  for (const k of Object.keys(kw)) {
+    if (k !== '_kw' && !names.includes(k) && k !== 'key') throw new AdderError('TypeError', `${name}() got an unexpected keyword argument '${k}'`);
+  }
+  if (vals[0] === undefined) throw new AdderError('TypeError', `${name}() missing required argument 'a' (pos 1)`);
+  if (vals[1] === undefined) throw new AdderError('TypeError', `${name}() missing required argument 'x' (pos 2)`);
+  // (a key that isn't callable fails where it's called, as in C — bisect of [] never calls it)
+  const k = kw.key ?? null;
+  return { a: vals[0], x: vals[1], lo: vals[2] ?? 0, hi: vals[3] ?? null, key: k === null ? null : (v) => asCallable(k)(v) };
+}
+async function _slBisect(right, name, raw, forInsort) {
+  const p = _slBisectArgs(name, raw);
+  const { a, key } = p;
+  let x = p.x;
+  if (forInsort && key !== null) x = await key(x);
+  let lo = await _slIndexArg(p.lo);
   if (lo < 0) throw new AdderError('ValueError', 'lo must be non-negative');
-  if (hi === null) hi = a.length;
+  let hi = p.hi === null ? adderModules.builtins.len(a) : await _slIndexArg(p.hi);
+  if (_slIsThen(hi)) hi = await hi;
+  if (typeof lo === 'bigint' || typeof hi === 'bigint') {
+    lo = BigInt(lo); hi = BigInt(hi);
+    while (lo < hi) {
+      const mid = lo + (hi - lo) / 2n;
+      let v = pyGetItem(a, intNorm(mid));
+      if (_slIsThen(v)) v = await v;
+      if (key !== null) v = await key(v);
+      if (right ? await _slTruthy(pyLt(x, v)) : !(await _slTruthy(pyLt(v, x)))) hi = mid; else lo = mid + 1n;
+    }
+    return { p, i: intNorm(lo) };
+  }
   while (lo < hi) {
     const mid = lo + Math.floor((hi - lo) / 2);   // (not (lo + hi) / 2: past 2**52 the sum rounds, and mid can land on hi)
     let v = pyGetItem(a, mid);
+    if (_slIsThen(v)) v = await v;
     if (key !== null) v = await key(v);
     if (right ? await _slTruthy(pyLt(x, v)) : !(await _slTruthy(pyLt(v, x)))) hi = mid; else lo = mid + 1;
   }
-  return lo;
+  return { p, i: lo };
 }
-async function _slInsort(right, a, x, args) {
-  const kw = _slKw(args);
-  const key = _slOpt(kw, 'key', null);
-  const i = await _slBisect(right, a, key === null ? x : await key(x), [...args, { ...(kw || {}), _kw: true }]);
-  a.splice(i, 0, x);
+// insort: the index of x's key, then a list (exactly) gets x spliced in; anything else — a list
+// subclass included — its own insert(i, x)
+async function _slInsort(right, name, raw) {
+  const { p, i } = await _slBisect(right, name, raw, true);
+  const a = p.a;
+  if (Array.isArray(a) && !(a instanceof PyTuple) && a.__adderType__ === undefined) { a.splice(i, 0, p.x); return null; }
+  const r = adderGetAttr(a, 'insert')(i, p.x);
+  if (_slIsThen(r)) await r;
   return null;
 }
 // _bisect: the accelerator CPython's bisect.py imports (pylib/bisect.py makes the aliases)
 adderModules._bisect = {
-  bisect_left: (a, x, ...r) => _slBisect(false, a, x, r),
-  bisect_right: (a, x, ...r) => _slBisect(true, a, x, r),
-  insort_left: (a, x, ...r) => _slInsort(false, a, x, r),
-  insort_right: (a, x, ...r) => _slInsort(true, a, x, r),
+  bisect_left: async (...r) => (await _slBisect(false, 'bisect_left', r, false)).i,
+  bisect_right: async (...r) => (await _slBisect(true, 'bisect_right', r, false)).i,
+  insort_left: (...r) => _slInsort(false, 'insort_left', r),
+  insort_right: (...r) => _slInsort(true, 'insort_right', r),
 };
 
 for (const m of ['_heapq', '_bisect']) for (const f of Object.values(adderModules[m])) f.__module__ = m;
