@@ -68,6 +68,23 @@ test('collision: colliding top-level names rename per-module', async () => {
   assert.equal(r.meta.renames.length, 2);
 });
 
+// ── 3a. collision: a renamed binding used in PARAMETER DEFAULTS of every shape ──
+// `{ slab = SLAB } = {}` is an AssignmentPattern whose left side carries a default;
+// only `.right` used to be walked, so the reference stayed `SLAB` in the bundle —
+// an undefined name at call time, while the unbundled source worked (bit condenser).
+test('collision: renamed bindings inside parameter defaults (destructured, nested, rest-free) rename too', async () => {
+  const sources = {
+    'src/main.js': "export { fa } from './a.js';\nexport { fb } from './b.js';\n",
+    'src/a.js': "const SLAB = 8;\nexport function fa({ slab = SLAB } = {}, [x = SLAB] = [], y = SLAB, { deep: { z = SLAB } = {} } = {}) { return slab + x + y + z; }\n",
+    'src/b.js': "const SLAB = 100;\nexport const fb = ({ s = SLAB } = {}) => s;\n",
+  };
+  const r = bundleMemory(sources, { entry: 'src/main.js' });
+  const m = await importCode(r.code);
+  assert.equal(m.fa(), 32);                                  // every default resolved to a.js's SLAB
+  assert.equal(m.fb(), 100);
+  assert.ok(!/= SLAB(?![$\w])/.test(r.code), 'no unrenamed SLAB reference left in a default');
+});
+
 // ── 3b. collision between modules sharing a basename (two index.js) gets distinct names ──
 test('collision: same-basename modules rename to distinct names', async () => {
   const sources = {

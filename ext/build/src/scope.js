@@ -116,13 +116,12 @@ export function collectRenamePatches(ast, renameMap, topNames) {
       hoistFunctionScoped(node.body.body, fscope);
       hoistBlockScoped(node.body.body, fscope);
     }
-    // Param default expressions are references resolved in the function scope.
-    for (const p of node.params) {
-      if (p.type === 'AssignmentPattern') visit(p.right, inner);
-      else if (p.type === 'RestElement') { /* binding only */ }
-      // destructuring defaults inside ObjectPattern/ArrayPattern:
-      else if (p.type === 'ObjectPattern' || p.type === 'ArrayPattern') visitPatternDefaults(p, inner);
-    }
+    // Param default expressions are references resolved in the function scope —
+    // ALL of them: `{ slab = SLAB } = {}` is an AssignmentPattern whose LEFT holds a
+    // default too. Visiting only `.right` left such references unrenamed, so a
+    // collision-renamed module binding (SLAB → SLAB$mod) read as an undefined name
+    // in the bundle while the unbundled source worked.
+    for (const p of node.params) visitPatternDefaults(p, inner);
     if (node.body.type === 'BlockStatement') {
       for (const s of node.body.body) visit(s, inner);
     } else {
