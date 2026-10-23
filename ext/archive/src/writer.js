@@ -2,8 +2,8 @@
 // incrementally, then close() to flush. Memory benefit over archive.compress
 // is real for ZIP (fflate's Zip class compresses each entry as it's added)
 // and for tar (header + data + padding emit immediately, source bytes can
-// be released). tar.gz still buffers the tar stream and pipes it through
-// CompressionStream at close — true streaming gzip is a v0.2 enhancement.
+// be released). tar.gz / tar.xz / tar.bz2 still buffer the tar stream and
+// compress it at close — true streaming compression is a v0.2 enhancement.
 //
 // Sink semantics (single output file, not a directory):
 //   - { vfs, path }   final bytes written at close()
@@ -17,6 +17,8 @@
 import { Zip, ZipDeflate, ZipPassThrough } from '../vendor/fflate.module.mjs';
 import { writeTar } from './tar.js';
 import { gzipBytes } from './gz.js';
+import { xzBytes } from './xz.js';
+import { bz2Bytes } from './bz2.js';
 
 const _nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -174,18 +176,20 @@ class _TarWriter {
 // the output isn't true-streaming. A future enhancement can wire
 // CompressionStream incrementally for true streaming gzip.
 
-class _TarGzWriter {
-  constructor(sink) {
+// tar.gz / tar.xz / tar.bz2: the tar stream buffered, compressed whole at close().
+class _TarCompressedWriter {
+  constructor(sink, encode) {
     this._inner = new _TarWriter('memory');
     this._sink = sink;
+    this._encode = encode;
   }
   addFile(path, bytes)  { return this._inner.addFile(path, bytes); }
   addDirectory(path)    { return this._inner.addDirectory(path); }
   async close() {
     const tarBytes = await this._inner.close();   // Uint8Array
-    const gz = await gzipBytes(tarBytes);
+    const packed = await this._encode(tarBytes);
     const out = new _ChunkSink(this._sink);
-    await out.push(gz);
+    await out.push(packed);
     return out.finalize();
   }
 }
@@ -195,21 +199,18 @@ class _TarGzWriter {
 export function createWriter(sink, opts = {}) {
   if (!sink) throw new TypeError('createWriter: sink required');
   const format = opts.format;
-  if (!format) throw new TypeError('createWriter: opts.format required (zip | tar | tar.gz)');
-  if (format === 'zip')    return new _ZipWriter(sink, opts);
-  if (format === 'tar')    return new _TarWriter(sink);
-  if (format === 'tar.gz') return new _TarGzWriter(sink);
+  if (!format) throw new TypeError('createWriter: opts.format required (zip | tar | tar.gz | tar.xz | tar.bz2)');
+  if (format === 'zip')     return new _ZipWriter(sink, opts);
+  if (format === 'tar')     return new _TarWriter(sink);
+  if (format === 'tar.gz')  return new _TarCompressedWriter(sink, (b) => gzipBytes(b));
+  if (format === 'tar.xz')  return new _TarCompressedWriter(sink, (b) => xzBytes(b, opts));
+  if (format === 'tar.bz2') return new _TarCompressedWriter(sink, (b) => bz2Bytes(b, opts));
   if (format === 'tar.zst') {
     throw new Error('createWriter: tar.zst encode not available (fzstd is decode-only)');
   }
-  if (format === 'gz' || format === 'zst') {
-    throw new Error(`createWriter: ${format} is a single-stream format — use archive.${format === 'gz' ? 'gzip' : 'zstd'} for that`);
-  }
-  if (format === 'xz' || format === 'tar.xz') {
-    throw new Error(`createWriter: ${format} encode not available (xz-decompress is decode-only)`);
-  }
-  if (format === 'bz2' || format === 'tar.bz2') {
-    throw new Error(`createWriter: ${format} encode not available (seek-bzip is decode-only)`);
+  const single = { gz: 'gzip', zst: 'zstd', xz: 'xz', bz2: 'bzip2' }[format];
+  if (single) {
+    throw new Error(`createWriter: ${format} is a single-stream format — use archive.${single} for that`);
   }
   throw new Error(`createWriter: unsupported format '${format}'`);
 }

@@ -653,7 +653,7 @@ function lowerLoopRegion(ctx, condFn, bodyFn, loc, kind = 'while') {
 
 const _gcuBz2 = (() => {
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
-// @gcu/bz2 — bzip2 in plain JavaScript, both directions: a line-for-line port of libbzip2 1.0.8, so the streams it writes are byte-identical to bzip2's (and CPython's bz2) and it reads them as libbzip2 does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.
+// @gcu/bz2 — bzip2 in plain JavaScript, both directions: a line-for-line port of libbzip2 1.0.8, so the streams it writes are byte-identical to bzip2's (and CPython's bz2) and it reads them as libbzip2 does — streamed, with maxLength, needsInput and unusedData. No Wasm, no dependencies.
 
 // ── src/tables.js ──
 
@@ -2268,7 +2268,7 @@ return { Compressor, Decompressor, BzDataError, compress, decompress };
 
 const _gcuLzma = (() => {
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
-// @gcu/lzma — xz / LZMA in plain JavaScript, both directions: liblzma 5.8.1 ported, so what it writes is byte-identical to the xz tool's and CPython's lzma (every preset, the extreme ones, .xz / .lzma / raw, CRC32 / CRC64 / SHA-256, the delta and branch filters), and it reads them as liblzma does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.
+// @gcu/lzma — xz / LZMA in plain JavaScript, both directions: liblzma 5.8.1 ported, so what it writes is byte-identical to the xz tool's and CPython's lzma (every preset, the extreme ones, .xz / .lzma / raw, CRC32 / CRC64 / SHA-256, the delta and branch filters), and it reads them as liblzma does — streamed, with maxLength, needsInput and unusedData. No Wasm, no dependencies.
 
 // ── src/lzma-encoder.js ──
 

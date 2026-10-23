@@ -173,7 +173,7 @@ export const archive = {
 
   // Write side. Builds a ZIP / tar / tar.gz from a VFS directory (walked
   // recursively) or a flat `{ name: bytes }` entry map. Single-file gz /
-  // zst formats route through archive.gzip / archive.zstd respectively.
+  // zst / xz / bz2 formats route through archive.gzip / zstd / xz / bzip2.
   //
   // source:
   //   - { vfs, path: '/dir' }        — walk recursively, archive entries
@@ -191,7 +191,8 @@ export const archive = {
   //
   // opts.format: explicit format override; otherwise inferred from sink path.
   // opts.filter: predicate(entry) excluding paths during walk.
-  // opts.level: deflate level for ZIP (0-9). tar / gz / zst pick their own.
+  // opts.level: deflate level for ZIP (0-9), the preset for xz / tar.xz (0-9),
+  // the block size for bz2 / tar.bz2 (1-9); opts.extreme: xz's -e. tar / gz pick their own.
   async compress(source, sink, opts = {}) {
     const format = opts.format || _formatFromSinkPath(sink);
     if (!format) {
@@ -203,19 +204,13 @@ export const archive = {
     // Single-stream gz / zst paths: read source as bytes, compress one shot.
     if (format === 'gz') return this.gzip(source, sink);
     if (format === 'zst') return this.zstd(source, sink);
+    if (format === 'xz') return this.xz(source, sink, opts);
+    if (format === 'bz2') return this.bzip2(source, sink, opts);
 
-    // tar.zst / tar.xz / tar.bz2 / single-stream variants are decode-only
-    // by design (out-of-scope encode — modern toolchains produce tar.gz or
-    // tar.zst and zstd encoding is the only one we'd vendor if any). Be
-    // explicit so users don't think it silently no-op'd.
+    // tar.zst is decode-only (fzstd has no encoder). Be explicit so users
+    // don't think it silently no-op'd.
     if (format === 'tar.zst') {
       throw new Error('archive.compress: tar.zst encode not available (fzstd is decode-only)');
-    }
-    if (format === 'tar.xz' || format === 'xz') {
-      throw new Error('archive.compress: xz encode not available (xz-decompress is decode-only)');
-    }
-    if (format === 'tar.bz2' || format === 'bz2') {
-      throw new Error('archive.compress: bz2 encode not available (seek-bzip is decode-only)');
     }
 
     // Multi-entry formats. Gather entries, build the archive, write it out.
@@ -225,6 +220,8 @@ export const archive = {
     if (format === 'zip')         archiveBytes = zipSync(entryMap, _zipOptsFor(opts));
     else if (format === 'tar')    archiveBytes = writeTar(entryMap);
     else if (format === 'tar.gz') archiveBytes = await gzipBytes(writeTar(entryMap));
+    else if (format === 'tar.xz') archiveBytes = await xzBytes(writeTar(entryMap), opts);
+    else if (format === 'tar.bz2') archiveBytes = await bz2Bytes(writeTar(entryMap), opts);
     else throw new Error(_explainUnsupported(format));
 
     const fallbackName = _sinkBasename(sink) || ('archive.' + format);
@@ -263,6 +260,37 @@ export const archive = {
     const bytes = await src.bytes();
     const inner = await unzstdBytes(bytes);
     return _writeSingle(sink, inner, _zstInnerName(src.name));
+  },
+
+  // Single-file xz helpers. opts.level is the preset (0..9, default 6),
+  // opts.extreme is `xz -e`.
+  async xz(source, sink, opts = {}) {
+    const src = normalizeSource(source);
+    const bytes = await src.bytes();
+    const compressed = await xzBytes(bytes, opts);
+    return _writeSingle(sink, compressed, (src.name || 'data') + '.xz');
+  },
+
+  async unxz(source, sink) {
+    const src = normalizeSource(source);
+    const bytes = await src.bytes();
+    const inner = await unxzBytes(bytes);
+    return _writeSingle(sink, inner, _xzInnerName(src.name));
+  },
+
+  // Single-file bzip2 helpers. opts.level is the block size (1..9, default 9).
+  async bzip2(source, sink, opts = {}) {
+    const src = normalizeSource(source);
+    const bytes = await src.bytes();
+    const compressed = await bz2Bytes(bytes, opts);
+    return _writeSingle(sink, compressed, (src.name || 'data') + '.bz2');
+  },
+
+  async bunzip2(source, sink) {
+    const src = normalizeSource(source);
+    const bytes = await src.bytes();
+    const inner = await unbz2Bytes(bytes);
+    return _writeSingle(sink, inner, _bz2InnerName(src.name));
   },
 
   // Streaming writer — call addFile / addDirectory / close incrementally
@@ -315,7 +343,7 @@ function _zipOptsFor(opts) {
 // Build a `{ path: bytes }` entry map from one of the supported compress
 // source shapes. VFS-backed sources walk via walkVfsTree; plain objects
 // pass through after byte-coercing values; Uint8Array isn't accepted here
-// (single-file gz/zst takes a different path in compress() above).
+// (single-file gz/zst/xz/bz2 takes a different path in compress() above).
 async function _gatherEntries(source, filter) {
   // VFS source — directory or single file.
   if (source && typeof source === 'object' && source.vfs && typeof source.path === 'string') {
@@ -338,6 +366,6 @@ async function _gatherEntries(source, filter) {
   }
   throw new TypeError(
     'archive.compress: source must be { vfs, path } or a flat { path: bytes } object ' +
-    '(single-stream compress goes through archive.gzip / archive.zstd)');
+    '(single-stream compress goes through archive.gzip / zstd / xz / bzip2)');
 }
 

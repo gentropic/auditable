@@ -1,12 +1,11 @@
 {
   "name": "@gcu/archive",
   "version": "0.1.0",
-  "description": "Archive format handling for the GCU stack — ZIP, tar, tar.gz, tar.zst, gz, zst with optional lazy xz/bz2. Source-agnostic API (VFS, in-memory, streams) used by Auditable Works for native archive workflows and by @gcu/coreutils to back tar / gzip / unzip builtins.",
+  "description": "Archive format handling for the GCU stack — ZIP, tar, tar.gz, tar.xz, tar.bz2, gz, xz, bz2 read and write, tar.zst and zst read. Pure JavaScript (xz and bzip2 via @gcu/lzma and @gcu/bz2, inlined), no Wasm. Source-agnostic API (VFS, in-memory, streams) used by Auditable Works for native archive workflows and by @gcu/coreutils to back tar / gzip / unzip builtins.",
   "type": "module",
-  "main": "src/main.js",
+  "main": "index.js",
   "exports": {
-    ".": "./src/main.js",
-    "./bundled": "./index.js",
+    ".": "./index.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -18,7 +17,17 @@
   "scripts": {
     "build": "node build.js"
   },
-  "keywords": ["archive", "zip", "tar", "gzip", "zstd", "auditable", "gcu"],
+  "keywords": [
+    "archive",
+    "zip",
+    "tar",
+    "gzip",
+    "xz",
+    "bzip2",
+    "zstd",
+    "auditable",
+    "gcu"
+  ],
   "license": "MIT",
   "author": "Arthur Endlein Correia",
   "repository": {

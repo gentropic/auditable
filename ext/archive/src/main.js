@@ -11,8 +11,8 @@
 //   tar.js     — POSIX ustar reader/writer
 //   gz.js      — gzip helpers (native (De)CompressionStream)
 //   zst.js     — zstd helpers (fzstd wrapper)
-//   xz.js      — xz decoder (xz-decompress wrapper)
-//   bz2.js     — bzip2 decoder (seek-bzip wrapper)
+//   xz.js      — xz read/write (@gcu/lzma)
+//   bz2.js     — bzip2 read/write (@gcu/bz2)
 //   walk.js    — VFS directory walker for compress paths
 //   writer.js  — streaming archive writer (createWriter)
 //   api.js     — public surface

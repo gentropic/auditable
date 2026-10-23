@@ -1,7 +1,7 @@
 {
   "name": "@gcu/lzma",
   "version": "0.1.0",
-  "description": "xz / LZMA in plain JavaScript, both directions: liblzma 5.8.1 ported, so what it writes is byte-identical to the xz tool's and CPython's lzma (every preset, the extreme ones, .xz / .lzma / raw, CRC32 / CRC64 / SHA-256, the delta and branch filters), and it reads them as liblzma does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.",
+  "description": "xz / LZMA in plain JavaScript, both directions: liblzma 5.8.1 ported, so what it writes is byte-identical to the xz tool's and CPython's lzma (every preset, the extreme ones, .xz / .lzma / raw, CRC32 / CRC64 / SHA-256, the delta and branch filters), and it reads them as liblzma does — streamed, with maxLength, needsInput and unusedData. No Wasm, no dependencies.",
   "type": "module",
   "main": "./src/main.js",
   "exports": {

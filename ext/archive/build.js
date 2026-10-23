@@ -17,11 +17,9 @@ const vendorDir = path.join(__dirname, 'vendor');
 
 const files = ['detect.js', 'source.js', 'sink.js', 'zip.js', 'tar.js', 'gz.js', 'zst.js', 'xz.js', 'bz2.js', 'walk.js', 'writer.js', 'api.js'];
 
-// Two bundles from one source: the full index.js, and index.nowasm.js — the same
-// thing WITHOUT the xz-decompress vendor (the lone WebAssembly decoder). The wasm-free
-// variant lets a strict-CSP host (lamina: no 'wasm-unsafe-eval') bundle @gcu/archive
-// without carrying a WASM module it can't even instantiate; unxzBytes there throws a
-// clear "not in this build" error and the caller degrades gracefully.
+// One bundle, no Wasm: xz and bzip2 are @gcu/lzma and @gcu/bz2 (liblzma and
+// libbzip2 ported to JavaScript), so a strict-CSP host (lamina: no 'wasm-unsafe-eval')
+// carries the whole thing, .xz included.
 
 // ── Vendor: fflate + fzstd ────────────────────────────────────────────
 // Each vendored copy is the prebuilt ESM bundle from npm, wrapped in an
@@ -57,16 +55,33 @@ const VENDORED_EXPORTS = {
                   'Unzip', 'UnzipInflate', 'UnzipPassThrough',
                   'Zip', 'ZipDeflate', 'ZipPassThrough'],
   fzstd:         ['decompress', 'Decompress', 'ZstdErrorCode'],
-  xzDecompress:  ['XzReadableStream'],
-  seekBzip:      ['Bunzip'],
 };
 
 const VENDORS = [
   ['fflate',        'fflate.module.mjs'],
   ['fzstd',         'fzstd.module.mjs'],
-  ['xzDecompress',  'xz-decompress.module.mjs'],
-  ['seekBzip',      'seek-bzip.module.mjs'],
 ];
+
+// ── Inlined @gcu codecs ───────────────────────────────────────────────
+// The BUILT bundles of @gcu/bz2 and @gcu/lzma (rebuild those first), each wrapped
+// in an IIFE returning its export list — one name in the concat scope, the same
+// name src/bz2.js / src/xz.js import the namespace as at dev time.
+const GCU_INLINES = [
+  ['../bz2/index.js',  '_gcuBz2',  'bz2'],
+  ['../lzma/index.js', '_gcuLzma', 'lzma'],
+];
+
+function _inlineGcu(rel, name, pkg) {
+  let src = fs.readFileSync(path.join(__dirname, rel), 'utf8');
+  const m = src.match(/\nexport\s*\{([^}]*)\};?\s*$/);
+  if (!m) throw new Error(`archive build: ${rel} has no trailing export list`);
+  src = src.slice(0, m.index).replace(/^\n+/, '').replace(/\n+$/, '');
+  // `local as exported` (a renamed export) becomes `exported: local`
+  const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
+    .map((s) => { const r = s.split(/\s+as\s+/); return r.length === 2 ? `${r[1]}: ${r[0]}` : s; });
+  return `// -- @gcu/${pkg} (ext/${pkg}/index.js, inlined; see ext/${pkg}/LICENSE) --\n\n` +
+    `const ${name} = (() => {\n${src}\nreturn { ${names.join(', ')} };\n})();`;
+}
 
 const footer = `
 export {
@@ -84,11 +99,10 @@ export {
 };
 `;
 
-function buildOutput(noXz) {
+function buildOutput() {
   const chunks = [];
 
   for (const [vname, vfile] of VENDORS) {
-    if (noXz && vname === 'xzDecompress') continue;       // skip the lone WASM decoder
     const p = path.join(vendorDir, vfile);
     if (!fs.existsSync(p)) {
       console.warn(`archive: vendor/${vfile} not found — ${vname}-dependent formats won't work in the bundle`);
@@ -97,15 +111,12 @@ function buildOutput(noXz) {
     const stripped = _stripVendorExports(fs.readFileSync(p, 'utf8'));
     const exportList = VENDORED_EXPORTS[vname].join(', ');
     const wrapped = `const ${vname} = (() => {\n${stripped}\nreturn { ${exportList} };\n})();`;
-    const licName = vname === 'xzDecompress' ? 'xz-decompress' : vname === 'seekBzip' ? 'seek-bzip' : vname;
-    chunks.push(`// -- vendor/${vfile} (MIT, see ext/archive/vendor/LICENSE-${licName}) --\n\n${wrapped}`);
+    chunks.push(`// -- vendor/${vfile} (MIT, see ext/archive/vendor/LICENSE-${vname}) --\n\n${wrapped}`);
   }
 
-  // Alias bindings — let src/ code refer to the symbols it imported by name at dev
-  // time. In the no-xz build the xz vendor is gone AND xz.js is swapped for a stub
-  // (below), so there's no XzReadableStream reference at all — keeping the bundle
-  // free of the literal "WebAssembly" so a reviewer's grep stays clean.
-  const xzAlias = noXz ? '' : 'const XzReadableStream = xzDecompress.XzReadableStream;';
+  for (const [rel, name, pkg] of GCU_INLINES) chunks.push(_inlineGcu(rel, name, pkg));
+
+  // Alias bindings — let src/ code refer to the symbols it imported by name at dev time.
   chunks.push(`// -- vendor alias bindings (collision-safe namespacing) --
 
 const unzipSync = fflate.unzipSync;
@@ -121,20 +132,9 @@ const ZipPassThrough = fflate.ZipPassThrough;
 const fzstd_decompress = fzstd.decompress;
 const fzstd_Decompress = fzstd.Decompress;
 const fzstd_ZstdErrorCode = fzstd.ZstdErrorCode;
-${xzAlias}
-const Bunzip = seekBzip.Bunzip;
 `);
 
-  // In the wasm-free build, xz.js's WASM-backed decoder is replaced by a stub: the
-  // three functions it exports, throwing for decode (api.js degrades on the throw).
-  const XZ_STUB = `// -- xz.js (wasm-free stub — xz decode omitted) --
-
-async function unxzBytes() { throw new Error('archive: xz decode is not in this (wasm-free) build'); }
-async function xzBytes() { throw new Error('archive: xz encode is not available (decode-only, and omitted from this build)'); }
-function _xzInnerName(n) { if (!n) return 'data'; const l = n.toLowerCase(); if (l.endsWith('.txz')) return n.slice(0, -4) + '.tar'; if (l.endsWith('.xz')) return n.slice(0, -3); return n; }`;
-
   for (const file of files) {
-    if (noXz && file === 'xz.js') { chunks.push(XZ_STUB); continue; }
     let src = fs.readFileSync(path.join(srcDir, file), 'utf8');
     src = src.replace(/^import\s+.*['"].*['"];?\s*$/gm, '');
     src = src.replace(/^import\s*\{[^}]*\}\s*from\s*['"].*['"];?\s*$/gm, '');
@@ -149,16 +149,15 @@ function _xzInnerName(n) { if (!n) return 'data'; const l = n.toLowerCase(); if 
     chunks.push(`// -- ${file} --\n\n${src}`);
   }
 
-  const header = `// @gcu/archive${noXz ? ' (wasm-free — no xz)' : ''} — archive format handling for the GCU stack
-// Auto-generated from ext/archive/src/ + ext/archive/vendor/ — do not edit directly.
-// fflate (MIT) vendored at ext/archive/vendor/fflate.module.mjs.${noXz ? '\n// xz-decompress (WASM) omitted; unxzBytes throws "not in this build".' : ''}
+  const header = `// @gcu/archive — archive format handling for the GCU stack
+// Auto-generated from ext/archive/src/ + ext/archive/vendor/ + the built @gcu/bz2 and
+// @gcu/lzma bundles — do not edit directly. fflate and fzstd (MIT) vendored at
+// ext/archive/vendor/. No Wasm.
 `;
   return header + '\n' + chunks.join('\n\n') + footer;
 }
 
-for (const [noXz, name] of [[false, 'index.js'], [true, 'index.nowasm.js']]) {
-  const output = buildOutput(noXz);
-  const outPath = path.join(__dirname, name);
-  fs.writeFileSync(outPath, output);
-  console.log(`Built ${outPath} (${(output.length / 1024).toFixed(1)} KB)`);
-}
+const output = buildOutput();
+const outPath = path.join(__dirname, 'index.js');
+fs.writeFileSync(outPath, output);
+console.log(`Built ${outPath} (${(output.length / 1024).toFixed(1)} KB)`);

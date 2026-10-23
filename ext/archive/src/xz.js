@@ -1,53 +1,27 @@
-// XZ read via xz-decompress (vendored). Decode-only — xz encode is out
-// of scope (the LZMA2 encoder is large and not bundled). A user trying
-// to .compress to xz gets the "decode-only build" error from api.js.
+// xz via @gcu/lzma — liblzma 5.8.1 ported to JavaScript, both ways. What it writes
+// is byte-identical to xz's (and CPython's lzma) at the same preset, and it carries
+// no Wasm — so a strict-CSP host (no 'wasm-unsafe-eval') reads and writes .xz.
 //
-// At dev time the import below resolves through ESM directly. At build
-// time the import is stripped and `XzReadableStream` is provided by an
-// alias declared after the vendored IIFE (see ext/archive/build.js's
-// "vendor alias bindings" section).
+// At dev time the import below resolves through ESM directly. At build time the
+// import is stripped and `_gcuLzma` is the namespaced, inlined @gcu/lzma bundle (see
+// ext/archive/build.js's "inlined @gcu codecs" section).
 
-import { XzReadableStream } from '../vendor/xz-decompress.module.mjs';
+import * as _gcuLzma from '../../lzma/index.js';
 
-// Single-shot decompress. xz-decompress is stream-only — wrap the input
-// bytes in a one-chunk ReadableStream, drain through XzReadableStream,
-// concatenate output chunks. The decoder's WebAssembly module is
-// instantiated lazily on the first construct() — subsequent calls reuse
-// the cached instance, so back-to-back unxz operations only pay the
-// init cost once.
+// Single-shot decompress. Reads .xz (and legacy .lzma) as xz does: concatenated
+// streams decode to their concatenation, and every integrity check is verified.
 export async function unxzBytes(u8) {
   if (!(u8 instanceof Uint8Array)) throw new TypeError('unxzBytes: expected Uint8Array');
-
-  const input = new ReadableStream({
-    start(controller) {
-      controller.enqueue(u8);
-      controller.close();
-    },
-  });
-
-  const decoded = new XzReadableStream(input);
-  const reader = decoded.getReader();
-  const chunks = [];
-  let total = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    total += value.length;
-  }
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
-  return out;
+  return _gcuLzma.decompress(u8);
 }
 
-// Placeholder for the encoder. Throws a clear error pointing at why.
-export async function xzBytes(/* u8 */) {
-  throw new Error(
-    'archive: xz encode not available — xz-decompress is decode-only and ' +
-    'an LZMA2 encoder is not vendored. Use tar.gz or zip if you need a ' +
-    'writeable archive format right now.'
-  );
+// Single-shot compress to .xz with a CRC64 check, as `xz` writes. opts.level is the
+// preset, 0..9 (xz's default is 6); opts.extreme is `xz -e`.
+export async function xzBytes(u8, opts = {}) {
+  if (!(u8 instanceof Uint8Array)) throw new TypeError('xzBytes: expected Uint8Array');
+  let preset = typeof opts.level === 'number' ? Math.max(0, Math.min(9, opts.level | 0)) : 6;
+  if (opts.extreme) preset |= _gcuLzma.PRESET_EXTREME;
+  return _gcuLzma.compress(u8, { format: 'xz', preset });
 }
 
 // Derive an inner filename for single-file .xz archives — strip '.xz' (or

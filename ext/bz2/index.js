@@ -1,5 +1,5 @@
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
-// @gcu/bz2 — bzip2 in plain JavaScript, both directions: a line-for-line port of libbzip2 1.0.8, so the streams it writes are byte-identical to bzip2's (and CPython's bz2) and it reads them as libbzip2 does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.
+// @gcu/bz2 — bzip2 in plain JavaScript, both directions: a line-for-line port of libbzip2 1.0.8, so the streams it writes are byte-identical to bzip2's (and CPython's bz2) and it reads them as libbzip2 does — streamed, with maxLength, needsInput and unusedData. No Wasm, no dependencies.
 
 // ── src/tables.js ──
 

@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { archiveBuiltins } from '../ext/geas/src/builtins-archive.js';
-import { archive } from '../ext/archive/src/main.js';
+import { archive, detectFormat } from '../ext/archive/src/main.js';
 
 const enc = (s) => new TextEncoder().encode(s);
 const dec = (b) => new TextDecoder().decode(b);
@@ -108,6 +108,13 @@ const gzip   = builtins.gzip;
 const gunzip = builtins.gunzip;
 const zstd   = builtins.zstd;
 const unzstd = builtins.unzstd;
+const zcat   = builtins.zcat;
+const xz     = builtins.xz;
+const unxz   = builtins.unxz;
+const xzcat  = builtins.xzcat;
+const bzip2  = builtins.bzip2;
+const bunzip2 = builtins.bunzip2;
+const bzcat  = builtins.bzcat;
 const zip    = builtins.zip;
 const unzip  = builtins.unzip;
 
@@ -174,6 +181,34 @@ test('tar -czf creates a tar.gz from a directory (adds basename prefix)', async 
   const entries = await archive.list({ vfs, path: '/out.tar.gz' });
   const files = entries.filter((e) => e.type === 'file').map((e) => e.path).sort();
   assert.deepEqual(files, ['proj/README.md', 'proj/src/main.js']);
+});
+
+test('tar -cJf / -cjf create tar.xz / tar.bz2; the extension alone does too', async () => {
+  for (const [argv, out, magic] of [
+    [['tar', '-cJf', '/a.tar.xz', '/proj'], '/a.tar.xz', 'xz'],
+    [['tar', '-cjf', '/a.tar.bz2', '/proj'], '/a.tar.bz2', 'bz2'],
+    [['tar', '-cf', '/b.txz', '/proj'], '/b.txz', 'xz'],
+    [['tar', '-cf', '/b.tbz2', '/proj'], '/b.tbz2', 'bz2'],
+  ]) {
+    const vfs = makeVfs({ '/proj/README.md': enc('# hello'), '/proj/src/main.js': enc('export {}') });
+    const ctx = makeCtx(vfs);
+    assert.equal(await tar(argv, ctx), 0, ctx._getStderr());
+    const bytes = await vfs.readFile(out);
+    assert.equal(detectFormat(bytes), magic);
+    const files = (await archive.list(bytes)).filter((e) => e.type === 'file').map((e) => e.path).sort();
+    assert.deepEqual(files, ['proj/README.md', 'proj/src/main.js']);
+    // and tar reads back what it wrote
+    const ctx2 = makeCtx(vfs);
+    await tar(['tar', '-tf', out], ctx2);
+    assert.match(ctx2._getStdout(), /proj\/src\/main\.js/);
+  }
+});
+
+test('tar -c --zstd still refuses (fzstd is decode-only)', async () => {
+  const vfs = makeVfs({ '/proj/x': enc('x') });
+  const ctx = makeCtx(vfs);
+  assert.equal(await tar(['tar', '-c', '--zstd', '-f', '/a.tar.zst', '/proj'], ctx), 1);
+  assert.match(ctx._getStderr(), /decode-only/);
 });
 
 test('tar -cf creates a plain tar', async () => {
@@ -300,6 +335,64 @@ test('unzstd -k keeps the .zst', async () => {
   await unzstd(['unzstd', '-k', '/data.zst'], ctx);
   assert.ok(vfs._files.has('/data'));
   assert.ok(vfs._files.has('/data.zst'));
+});
+
+// ── xz / bzip2 / the *cat readers ───────────────────────────────────────
+
+test('xz then unxz round-trips, removing the input each way', async () => {
+  const vfs = makeVfs({ '/data.csv': enc('a,b\n1,2\n') });
+  assert.equal(await xz(['xz', '/data.csv'], makeCtx(vfs)), 0);
+  assert.ok(!vfs._files.has('/data.csv'));
+  assert.equal(detectFormat(vfs._files.get('/data.csv.xz')), 'xz');
+  assert.equal(await unxz(['unxz', '/data.csv.xz'], makeCtx(vfs)), 0);
+  assert.ok(!vfs._files.has('/data.csv.xz'));
+  assert.deepEqual(await vfs.readFile('/data.csv'), enc('a,b\n1,2\n'));
+});
+
+test('bzip2 -k then bunzip2 -k keep their inputs', async () => {
+  const vfs = makeVfs({ '/data.csv': enc('payload') });
+  await bzip2(['bzip2', '-k', '/data.csv'], makeCtx(vfs));
+  assert.ok(vfs._files.has('/data.csv'));
+  assert.equal(detectFormat(vfs._files.get('/data.csv.bz2')), 'bz2');
+  await vfs.unlink('/data.csv');
+  await bunzip2(['bunzip2', '-k', '/data.csv.bz2'], makeCtx(vfs));
+  assert.ok(vfs._files.has('/data.csv.bz2'));
+  assert.deepEqual(await vfs.readFile('/data.csv'), enc('payload'));
+});
+
+test('xz -N / -e and bzip2 -N reach the encoder', async () => {
+  const text = enc('geoscientific chaos '.repeat(5000));
+  const vfs = makeVfs({ '/a': text, '/b': text });
+  await bzip2(['bzip2', '-k', '-1', '/a'], makeCtx(vfs));
+  assert.equal(String.fromCharCode(...vfs._files.get('/a.bz2').subarray(0, 4)), 'BZh1');
+  await xz(['xz', '-k', '-0', '/b'], makeCtx(vfs));
+  const fast = vfs._files.get('/b.xz');
+  await vfs.unlink('/b.xz');
+  await xz(['xz', '-k', '-9e', '/b'], makeCtx(vfs));
+  assert.notDeepEqual(vfs._files.get('/b.xz'), fast);
+  const ctx = makeCtx(vfs);
+  await xzcat(['xzcat', '/b.xz'], ctx);
+  assert.equal(ctx._getStdout(), 'geoscientific chaos '.repeat(5000));
+});
+
+test('zcat / xzcat / bzcat print and leave the file alone', async () => {
+  const vfs = makeVfs({ '/t': enc('hello world') });
+  await archive.gzip({ vfs, path: '/t' }, { vfs, path: '/t.gz' });
+  await archive.xz({ vfs, path: '/t' }, { vfs, path: '/t.xz' });
+  await archive.bzip2({ vfs, path: '/t' }, { vfs, path: '/t.bz2' });
+  for (const [cmd, file] of [[zcat, '/t.gz'], [xzcat, '/t.xz'], [bzcat, '/t.bz2']]) {
+    const ctx = makeCtx(vfs);
+    assert.equal(await cmd(['cat', file], ctx), 0);
+    assert.equal(ctx._getStdout(), 'hello world');
+    assert.ok(vfs._files.has(file));
+  }
+});
+
+test('unxz refuses a file without the .xz suffix', async () => {
+  const vfs = makeVfs({ '/data.csv': enc('x') });
+  const ctx = makeCtx(vfs);
+  assert.equal(await unxz(['unxz', '/data.csv'], ctx), 1);
+  assert.match(ctx._getStderr(), /not a \.xz file/);
 });
 
 // ── zip / unzip ─────────────────────────────────────────────────────────

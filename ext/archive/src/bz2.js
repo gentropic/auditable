@@ -1,32 +1,25 @@
-// bzip2 read via seek-bzip (vendored). Decode-only — bz2 encode is out
-// of scope (modern toolchains produce .tar.gz or .tar.zst; bz2 is mostly
-// for reading older Debian sources / scientific datasets). A user trying
-// to .compress to bz2 gets the "decode-only build" error from api.js.
+// bzip2 via @gcu/bz2 — libbzip2 1.0.8 ported to JavaScript, both ways. Its output
+// is byte-identical to bzip2's (and CPython's bz2), and it carries no Wasm.
 //
-// At dev time the import below resolves through ESM directly. At build
-// time the import is stripped and `Bunzip` is provided by an alias
-// declared after the vendored IIFE (see ext/archive/build.js's "vendor
-// alias bindings" section).
+// At dev time the import below resolves through ESM directly. At build time the
+// import is stripped and `_gcuBz2` is the namespaced, inlined @gcu/bz2 bundle (see
+// ext/archive/build.js's "inlined @gcu codecs" section).
 
-import { Bunzip } from '../vendor/seek-bzip.module.mjs';
+import * as _gcuBz2 from '../../bz2/index.js';
 
-// Single-shot decompress. seek-bzip is sync — same shape as fzstd /
-// fflate — so we wrap in an async function to match the rest of the
-// archive helpers' Promise-returning shape.
+// Single-shot decompress. Concatenated streams (as `cat a.bz2 b.bz2` makes, and as
+// pbzip2 writes) decode to their concatenation, as bunzip2 does.
 export async function unbz2Bytes(u8) {
   if (!(u8 instanceof Uint8Array)) throw new TypeError('unbz2Bytes: expected Uint8Array');
-  // Bunzip.decode returns a Buffer-shaped result; coerce to Uint8Array.
-  const out = Bunzip.decode(u8);
-  return out instanceof Uint8Array ? out : new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
+  return _gcuBz2.decompress(u8);
 }
 
-// Placeholder for the encoder. Throws a clear error pointing at why.
-export async function bz2Bytes(/* u8 */) {
-  throw new Error(
-    'archive: bz2 encode not available — seek-bzip is decode-only and a ' +
-    'bzip2 encoder is not vendored. Use tar.gz or zip if you need a ' +
-    'writeable archive format right now.'
-  );
+// Single-shot compress. opts.level is bzip2's block size, 1..9 (×100 KB); 9 is
+// bzip2's default.
+export async function bz2Bytes(u8, opts = {}) {
+  if (!(u8 instanceof Uint8Array)) throw new TypeError('bz2Bytes: expected Uint8Array');
+  const level = typeof opts.level === 'number' ? Math.max(1, Math.min(9, opts.level | 0)) : 9;
+  return _gcuBz2.compress(u8, level);
 }
 
 // Derive an inner filename for single-file .bz2 archives — strip '.bz2'

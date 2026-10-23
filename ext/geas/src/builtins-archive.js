@@ -85,7 +85,7 @@ function _arBasename(p) {
 
 // Strip a recognized archive extension off a basename. Used by tar -x and
 // unzip when no -C / -d is given (extract here, sibling-named directory).
-const _ARCHIVE_EXT_RE = /\.(zip|tar|tar\.gz|tgz|tar\.zst|tzst|tar\.xz|txz|tar\.bz2|tbz2|gz|zst)$/i;
+const _ARCHIVE_EXT_RE = /\.(zip|tar|tar\.gz|tgz|tar\.zst|tzst|tar\.xz|txz|tar\.bz2|tbz2|tbz|gz|zst|xz|bz2)$/i;
 function _stripArchiveExt(name) {
   return name.replace(_ARCHIVE_EXT_RE, '');
 }
@@ -133,7 +133,7 @@ function _clusterToSet(s) {
 //
 // Recognized flags:
 //   -c create   -x extract   -t list
-//   -z gzip     -j bz2 (read-only)   -J xz (read-only)   --zstd zstd (read-only)
+//   -z gzip     -j bzip2     -J xz     --zstd zstd (read-only)
 //   -f FILE     -C DIR     -v verbose
 //
 // The first non-flag positional after the flag cluster is treated as the
@@ -198,9 +198,9 @@ async function _tar(argv, ctx) {
 
   const archive = await _requireArchive(ctx, 'tar'); if (!archive) return 127;
 
-  // Pre-flight: tar.xz / tar.bz2 / tar.zst writes aren't possible yet.
-  if (mode === 'c' && (useXz || useBz2 || useZst)) {
-    await ctx.stderr('tar: -j / -J / --zstd encode not available in this build\n');
+  // Pre-flight: tar.zst writes aren't possible (fzstd is decode-only).
+  if (mode === 'c' && useZst) {
+    await ctx.stderr('tar: --zstd encode not available in this build (fzstd is decode-only)\n');
     return 1;
   }
 
@@ -225,11 +225,16 @@ async function _tar(argv, ctx) {
       return 0;
     }
     if (mode === 'c') {
-      // Determine the compress format from the file extension. -z forces
-      // tar.gz regardless of name; otherwise we look at the path.
+      // Determine the compress format: -z / -j / -J force it regardless of
+      // name; otherwise the file extension decides.
       const lower = filePath.toLowerCase();
       let format = 'tar';
-      if (useGz || lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) format = 'tar.gz';
+      if (useGz) format = 'tar.gz';
+      else if (useBz2) format = 'tar.bz2';
+      else if (useXz) format = 'tar.xz';
+      else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) format = 'tar.gz';
+      else if (/\.(tar\.bz2|tbz2|tbz)$/.test(lower)) format = 'tar.bz2';
+      else if (lower.endsWith('.tar.xz') || lower.endsWith('.txz')) format = 'tar.xz';
       // Sources to include — one per positional. Each can be a file or a dir.
       const sources = positionals.length > 0 ? positionals : ['.'];
       // The archive lib's compress walks ONE source path. For multiple, we
@@ -303,20 +308,33 @@ async function _tarXkcd(ctx) {
   return 0;
 }
 
-// ── gzip / gunzip ───────────────────────────────────────────────────────
+// ── gzip / zstd / xz / bzip2 — the single-stream compressors ───────────
 //
-// gzip [-d -k -c -N] FILE...
+// gzip  [-d -k -c -1..-9] FILE...     gunzip = gzip -d    zcat  = gzip -dc
+// xz    [-d -k -c -e -0..-9] FILE...  unxz   = xz -d      xzcat = xz -dc
+// bzip2 [-d -k -c -1..-9] FILE...     bunzip2 = bzip2 -d  bzcat = bzip2 -dc
+// zstd  -d [-k -c] FILE...            unzstd = zstd -d   (decode-only: fzstd)
 //   -d  decompress    -k  keep input    -c  write to stdout
-//   -1..-9  compression level (forwarded to fflate; ignored on -d)
+//   -N  level: xz's preset, bzip2's block size; ignored for gzip (fflate's default)
+//   -e  xz's extreme preset
 //
-// gunzip = gzip -d (alias)
+// One implementation over a table — each tool differs only in its suffix, its
+// archive helpers and which flags mean anything to it.
 
-async function _gzipImpl(argv, ctx, defaultDecompress) {
+const _CODECS = {
+  gzip:  { ext: '.gz',  enc: 'gzip',  dec: 'gunzip',  levels: false },
+  zstd:  { ext: '.zst', enc: null,    dec: 'unzstd',  levels: false },
+  xz:    { ext: '.xz',  enc: 'xz',    dec: 'unxz',    levels: true, extreme: true },
+  bzip2: { ext: '.bz2', enc: 'bzip2', dec: 'bunzip2', levels: true },
+};
+
+async function _codecImpl(name, argv, ctx, defaultDecompress, defaultStdout = false) {
+  const codec = _CODECS[name];
   let decompress = defaultDecompress;
   let keep = false;
-  let toStdout = false;
-  // -1..-9 are ignored in v0 (fflate level handled by archive.gzip default);
-  // we still consume them so they don't get classified as filenames.
+  let toStdout = defaultStdout;
+  let level;
+  let extreme = false;
   let positionals = [];
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
@@ -326,18 +344,28 @@ async function _gzipImpl(argv, ctx, defaultDecompress) {
       if (ch === 'd') decompress = true;
       else if (ch === 'k') keep = true;
       else if (ch === 'c') toStdout = true;
-      else if (ch >= '0' && ch <= '9') { /* level ignored in v0 */ }
-      else { await ctx.stderr(`gzip: unknown option -${ch}\n`); return 2; }
+      else if (ch >= '0' && ch <= '9') level = ch.charCodeAt(0) - 48;
+      else if (ch === 'e' && codec.extreme) extreme = true;
+      else { await ctx.stderr(`${name}: unknown option -${ch}\n`); return 2; }
     }
   }
 
-  if (!ctx.vfs) { await ctx.stderr('gzip: no VFS configured\n'); return 1; }
+  if (!decompress && !codec.enc) {
+    await ctx.stderr(`${name}: encode not available in this build (fzstd is decode-only). `
+      + 'Use gzip / xz / bzip2 for compression.\n');
+    return 1;
+  }
+  if (!ctx.vfs) { await ctx.stderr(`${name}: no VFS configured\n`); return 1; }
   if (positionals.length === 0) {
-    await ctx.stderr('gzip: stdin/stdout mode not yet implemented; supply a FILE\n');
+    await ctx.stderr(`${name}: stdin/stdout mode not yet implemented; supply a FILE\n`);
     return 2;
   }
 
-  const archive = await _requireArchive(ctx, 'gzip'); if (!archive) return 127;
+  const archive = await _requireArchive(ctx, name); if (!archive) return 127;
+  const opts = {};
+  if (codec.levels && level !== undefined) opts.level = level;
+  if (extreme) opts.extreme = true;
+  const extRe = new RegExp(codec.ext.replace('.', '\\.') + '$', 'i');
 
   let anyError = 0;
   for (const f of positionals) {
@@ -345,119 +373,54 @@ async function _gzipImpl(argv, ctx, defaultDecompress) {
     try {
       if (decompress) {
         if (toStdout) {
-          // Pipe gunzipped bytes to stdout as text. Binary files printed to
-          // a terminal aren't useful — that's a shell concern, not ours.
-          const map = await archive.gunzip(
-            { vfs: ctx.vfs, path: src }, 'memory');
+          // Decoded bytes to stdout as text. Binary files printed to a
+          // terminal aren't useful — that's a shell concern, not ours.
+          const map = await archive[codec.dec]({ vfs: ctx.vfs, path: src }, 'memory');
           const [, bytes] = [...map.entries()][0];
           await ctx.stdout(new TextDecoder().decode(bytes));
         } else {
-          // Strip .gz to derive the output name.
-          const dst = src.replace(/\.gz$/i, '');
+          const dst = src.replace(extRe, '');
           if (dst === src) {
-            await ctx.stderr(`gzip: ${f}: not a .gz file\n`);
+            await ctx.stderr(`${name}: ${f}: not a ${codec.ext} file\n`);
             anyError = 1; continue;
           }
-          await archive.gunzip(
-            { vfs: ctx.vfs, path: src }, { vfs: ctx.vfs, path: dst });
+          await archive[codec.dec]({ vfs: ctx.vfs, path: src }, { vfs: ctx.vfs, path: dst });
           if (!keep) try { await ctx.vfs.unlink(src); } catch {}
         }
       } else {
         if (toStdout) {
-          // gzip the input bytes; ctx.stdout sinks strings, so this only
-          // really works downstream of a `> file` redirect. Worker stdouts
-          // may be type-coercing — for v0 we accept the limitation.
-          const map = await archive.gzip(
-            { vfs: ctx.vfs, path: src }, 'memory');
+          // ctx.stdout sinks strings, so this only really works downstream of
+          // a `> file` redirect: surface the bytes as a latin-1 string, which
+          // a file redirect writes back byte for byte.
+          const map = await archive[codec.enc]({ vfs: ctx.vfs, path: src }, 'memory', opts);
           const [, bytes] = [...map.entries()][0];
-          // Surface as latin-1 string to preserve binary bytes through
-          // string-typed stdout sinks. Caller redirecting to a file should
-          // get the right bytes back.
           let s = '';
           for (let k = 0; k < bytes.length; k++) s += String.fromCharCode(bytes[k]);
           await ctx.stdout(s);
         } else {
-          const dst = src + '.gz';
-          await archive.gzip(
-            { vfs: ctx.vfs, path: src }, { vfs: ctx.vfs, path: dst });
+          await archive[codec.enc]({ vfs: ctx.vfs, path: src }, { vfs: ctx.vfs, path: src + codec.ext }, opts);
           if (!keep) try { await ctx.vfs.unlink(src); } catch {}
         }
       }
     } catch (e) {
-      await ctx.stderr(`gzip: ${f}: ${e.message || e}\n`);
+      await ctx.stderr(`${name}: ${f}: ${e.message || e}\n`);
       anyError = 1;
     }
   }
   return anyError;
 }
 
-async function _gzip(argv, ctx)   { return _gzipImpl(argv, ctx, false); }
-async function _gunzip(argv, ctx) { return _gzipImpl(argv, ctx, true);  }
-
-// ── zstd / unzstd ───────────────────────────────────────────────────────
-// Same shape as gzip but compress isn't available (fzstd is decode-only).
-// In v0 zstd without -d returns a clear error pointing at the gap.
-
-async function _zstdImpl(argv, ctx, defaultDecompress) {
-  let decompress = defaultDecompress;
-  let keep = false;
-  let toStdout = false;
-  let positionals = [];
-  for (let i = 1; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--') { positionals.push(...argv.slice(i + 1)); break; }
-    if (a === '-' || !a.startsWith('-')) { positionals.push(a); continue; }
-    for (const ch of a.slice(1)) {
-      if (ch === 'd') decompress = true;
-      else if (ch === 'k') keep = true;
-      else if (ch === 'c') toStdout = true;
-      else if (ch >= '0' && ch <= '9') { /* level ignored */ }
-      else { await ctx.stderr(`zstd: unknown option -${ch}\n`); return 2; }
-    }
-  }
-
-  if (!decompress) {
-    await ctx.stderr('zstd: encode not available in this build (fzstd is decode-only). '
-      + 'Use gzip / tar.gz for compression for now.\n');
-    return 1;
-  }
-  if (!ctx.vfs) { await ctx.stderr('zstd: no VFS configured\n'); return 1; }
-  if (positionals.length === 0) {
-    await ctx.stderr('zstd: stdin/stdout mode not yet implemented; supply a FILE\n');
-    return 2;
-  }
-
-  const archive = await _requireArchive(ctx, 'zstd'); if (!archive) return 127;
-
-  let anyError = 0;
-  for (const f of positionals) {
-    const src = _arResolvePath(f, ctx);
-    try {
-      if (toStdout) {
-        const map = await archive.unzstd(
-          { vfs: ctx.vfs, path: src }, 'memory');
-        const [, bytes] = [...map.entries()][0];
-        await ctx.stdout(new TextDecoder().decode(bytes));
-      } else {
-        const dst = src.replace(/\.zst$/i, '');
-        if (dst === src) {
-          await ctx.stderr(`zstd: ${f}: not a .zst file\n`);
-          anyError = 1; continue;
-        }
-        await archive.unzstd(
-          { vfs: ctx.vfs, path: src }, { vfs: ctx.vfs, path: dst });
-        if (!keep) try { await ctx.vfs.unlink(src); } catch {}
-      }
-    } catch (e) {
-      await ctx.stderr(`zstd: ${f}: ${e.message || e}\n`);
-      anyError = 1;
-    }
-  }
-  return anyError;
-}
-
-async function _zstd(argv, ctx)   { return _zstdImpl(argv, ctx, false); }
-async function _unzstd(argv, ctx) { return _zstdImpl(argv, ctx, true);  }
+async function _gzip(argv, ctx)    { return _codecImpl('gzip', argv, ctx, false); }
+async function _gunzip(argv, ctx)  { return _codecImpl('gzip', argv, ctx, true);  }
+async function _zcat(argv, ctx)    { return _codecImpl('gzip', argv, ctx, true, true); }
+async function _zstd(argv, ctx)    { return _codecImpl('zstd', argv, ctx, false); }
+async function _unzstd(argv, ctx)  { return _codecImpl('zstd', argv, ctx, true);  }
+async function _xz(argv, ctx)      { return _codecImpl('xz', argv, ctx, false); }
+async function _unxz(argv, ctx)    { return _codecImpl('xz', argv, ctx, true);  }
+async function _xzcat(argv, ctx)   { return _codecImpl('xz', argv, ctx, true, true); }
+async function _bzip2(argv, ctx)   { return _codecImpl('bzip2', argv, ctx, false); }
+async function _bunzip2(argv, ctx) { return _codecImpl('bzip2', argv, ctx, true);  }
+async function _bzcat(argv, ctx)   { return _codecImpl('bzip2', argv, ctx, true, true); }
 
 // ── zip / unzip ─────────────────────────────────────────────────────────
 //
@@ -586,11 +549,18 @@ async function _unzip(argv, ctx) {
 
 export function archiveBuiltins() {
   return {
-    tar:    _tar,
-    gzip:   _gzip,
-    gunzip: _gunzip,
-    zstd:   _zstd,
-    unzstd: _unzstd,
+    tar:     _tar,
+    gzip:    _gzip,
+    gunzip:  _gunzip,
+    zcat:    _zcat,
+    zstd:    _zstd,
+    unzstd:  _unzstd,
+    xz:      _xz,
+    unxz:    _unxz,
+    xzcat:   _xzcat,
+    bzip2:   _bzip2,
+    bunzip2: _bunzip2,
+    bzcat:   _bzcat,
     zip:    _zip,
     unzip:  _unzip,
   };

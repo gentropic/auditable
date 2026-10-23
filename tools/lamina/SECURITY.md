@@ -19,9 +19,8 @@ for environments where the data is sensitive and must not leave the machine.
   what you can read.
 - **No code generation, no WebAssembly.** The CSP grants neither `'unsafe-eval'`
   *nor* `'wasm-unsafe-eval'` — lamina runs no `eval`/`new Function` and instantiates
-  no WASM module. (One consequence, by design: `.xz` archives need a WebAssembly
-  decoder, so they aren't supported — re-compress as `.gz`, `.zst`, or `.zip`. Every
-  other format works.)
+  no WASM module. Every archive format it opens — `.zip`, `.tar`, `.gz`, `.zst`,
+  `.bz2`, `.xz` — is decoded by plain JavaScript you can read in the file.
 - **No account, no server, no SaaS.** Nothing to log in to; no backend; no
   data-processing agreement. It reads only the local files you open.
 - **Read-only.** lamina never modifies the files it opens. (Export writes a *new*

@@ -2119,7 +2119,7 @@ if (target === 'lamina') {
     ['loom',    'ext/loom/index.js'],
     ['lamina',  'ext/lamina/index.js'],
     ['proc',    'ext/proc/index.js'],
-    ['archive', 'ext/archive/index.nowasm.js'],   // wasm-free — lamina's CSP has no 'wasm-unsafe-eval' (drops xz)
+    ['archive', 'ext/archive/index.js'],          // no Wasm (xz/bzip2 are @gcu/lzma + @gcu/bz2) — fits lamina's CSP (no 'wasm-unsafe-eval')
     ['sheet',   'ext/sheet/index.js'],            // @gcu/sheet — a worksheet as a typed table source (inflates via DecompressionStream: still WASM-free)
     ['dm',      'ext/dm/index.js'],
     ['expr',    'ext/expr/index.js'],
@@ -2181,17 +2181,19 @@ if (target === 'lamina') {
   html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\s*/, '');
   html = html.replace(/<script type="module" src="\.\/js\/app\.js"><\/script>/, () => `<script>\n${bootStamped}\n</script>`);
 
-  // Third-party notices — lamina is MIT, but bundles a few MIT-licensed archive
-  // decoders via @gcu/archive (fflate/fzstd/seek-bzip/xz-decompress), and some of
-  // those minified bundles dropped their copyright headers. Retain the full licenses
-  // here so the single-file artifact stays MIT-compliant + self-contained ("view
-  // source; that's the point"). lamina carries no @gcu/licenses surface.
-  const noticeLibs = ['fflate', 'fzstd', 'seek-bzip'];   // xz-decompress (WASM) is not in lamina's wasm-free archive build
-  const notices = noticeLibs.map((n) => {
-    const p = path.join(__dirname, 'ext/archive/vendor', 'LICENSE-' + n);
+  // Third-party notices — lamina is MIT, but bundles archive codecs via @gcu/archive:
+  // fflate/fzstd (MIT; their minified bundles dropped their copyright headers), @gcu/bz2
+  // (an altered libbzip2, under bzip2's license) and @gcu/lzma (MIT, ports 0BSD
+  // liblzma). Retain the full licenses here so the single-file artifact stays
+  // compliant + self-contained ("view source; that's the point"). lamina carries
+  // no @gcu/licenses surface.
+  const noticeLibs = [['fflate', 'ext/archive/vendor/LICENSE-fflate'], ['fzstd', 'ext/archive/vendor/LICENSE-fzstd'],
+    ['@gcu/bz2 (libbzip2)', 'ext/bz2/LICENSE'], ['@gcu/lzma (liblzma)', 'ext/lzma/LICENSE']];
+  const notices = noticeLibs.map(([n, rel]) => {
+    const p = path.join(__dirname, rel);
     return fs.existsSync(p) ? `\n===== ${n} =====\n${fs.readFileSync(p, 'utf8').trim()}\n` : `\n===== ${n} ===== (MIT — license file missing at build)\n`;
   }).join('');
-  const noticeBlock = `<!-- THIRD-PARTY NOTICES\nlamina is MIT (© Arthur Endlein Correia / Geoscientific Chaos Union, gentropic.org).\nIt bundles, via @gcu/archive, these MIT-licensed archive decoders:\n${notices}\n-->\n`
+  const noticeBlock = `<!-- THIRD-PARTY NOTICES\nlamina is MIT (© Arthur Endlein Correia / Geoscientific Chaos Union, gentropic.org).\nIt bundles, via @gcu/archive, these archive codecs:\n${notices}\n-->\n`
     .replace(/--+(?=[^>])/g, '-');   // no stray `--` runs inside an HTML comment
   html = html.replace('</head>', noticeBlock + '</head>');
 

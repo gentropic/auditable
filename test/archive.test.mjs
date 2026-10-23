@@ -644,13 +644,10 @@ test('unzstdBytes: rejects non-Uint8Array', async () => {
   await assert.rejects(() => unzstdBytes('hi'), /Uint8Array/);
 });
 
-// ── xz / bz2 decoding ───────────────────────────────────────────────────
-// Both formats are decode-only by design (see ext/archive/SPEC §8 / the
-// project-archive-shipped memory). Encoders would need separate ~500 KB
-// vendor packages for a use case .tar.gz already covers. Round-trip
-// fixtures here are pre-compressed with the system xz / bzip2 tools and
-// embedded as base64 — keeps the test self-contained without requiring
-// those tools to be installed.
+// ── xz / bz2 ────────────────────────────────────────────────────────────
+// Both ways, through @gcu/lzma and @gcu/bz2. The fixtures are pre-compressed
+// with the system xz / bzip2 tools and embedded as base64 — and since both
+// ports are byte-identical to those tools, the encoders must reproduce them.
 
 const _b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
@@ -670,8 +667,24 @@ test('unxzBytes: round-trips a known .xz fixture', async () => {
   assert.equal(new TextDecoder().decode(out), 'hello world');
 });
 
-test('xzBytes: throws the decode-only error', async () => {
-  await assert.rejects(() => xzBytes(enc('x')), /decode-only/);
+// The fixture above came from multi-threaded xz (5.4+'s default), whose block
+// headers also record the block's sizes; single-threaded liblzma (CPython's lzma,
+// `xz -T1`) leaves them out. Same payload — this is lzma.compress(b'hello world').
+test('xzBytes: writes what liblzma writes (CPython lzma.compress)', async () => {
+  const expected = Uint8Array.from(
+    'fd377a585a000004e6d6b4460200210116000000742fe5a301000a68656c6c6f20776f726c640000da5223efcd7e03530001230bc21bfd091fb6f37d010000000004595a'
+      .match(/../g), (h) => parseInt(h, 16));
+  assert.deepEqual(await xzBytes(enc('hello world')), expected);
+});
+
+test('xzBytes: levels and extreme round-trip', async () => {
+  const data = enc('the quick brown fox jumps over the lazy dog\n'.repeat(200));
+  for (const opts of [{ level: 0 }, { level: 9 }, { level: 3, extreme: true }]) {
+    const packed = await xzBytes(data, opts);
+    assert.equal(detectFormat(packed), 'xz');
+    assert.ok(packed.length < data.length);
+    assert.deepEqual(await unxzBytes(packed), data);
+  }
 });
 
 test('unxzBytes: rejects non-Uint8Array', async () => {
@@ -687,8 +700,28 @@ test('unbz2Bytes: round-trips a known .bz2 fixture', async () => {
   assert.equal(new TextDecoder().decode(out), 'hello world');
 });
 
-test('bz2Bytes: throws the decode-only error', async () => {
-  await assert.rejects(() => bz2Bytes(enc('x')), /decode-only/);
+test('bz2Bytes: writes what bzip2 -c writes', async () => {
+  assert.deepEqual(await bz2Bytes(enc('hello world')), _BZ2_FIXTURE_HELLO);
+});
+
+test('bz2Bytes: block size round-trips, and is in the header', async () => {
+  const data = enc('the quick brown fox jumps over the lazy dog\n'.repeat(200));
+  const packed = await bz2Bytes(data, { level: 1 });
+  assert.equal(String.fromCharCode(...packed.subarray(0, 4)), 'BZh1');
+  assert.deepEqual(await unbz2Bytes(packed), data);
+});
+
+test('unxzBytes / unbz2Bytes: concatenated streams decode to their concatenation', async () => {
+  const cat = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
+  assert.equal(new TextDecoder().decode(await unxzBytes(cat(_XZ_FIXTURE_HELLO, _XZ_FIXTURE_HELLO))), 'hello worldhello world');
+  assert.equal(new TextDecoder().decode(await unbz2Bytes(cat(_BZ2_FIXTURE_HELLO, _BZ2_FIXTURE_HELLO))), 'hello worldhello world');
+});
+
+test('unxzBytes / unbz2Bytes: a corrupted stream is an error, not data', async () => {
+  const badXz = _XZ_FIXTURE_HELLO.slice(); badXz[40] ^= 0xff;
+  await assert.rejects(() => unxzBytes(badXz));
+  const badBz2 = _BZ2_FIXTURE_HELLO.slice(); badBz2[20] ^= 0xff;
+  await assert.rejects(() => unbz2Bytes(badBz2));
 });
 
 test('unbz2Bytes: rejects non-Uint8Array', async () => {
@@ -1035,24 +1068,36 @@ test('archive.compress: tar.zst throws decode-only error', async () => {
   );
 });
 
-test('archive.compress: xz / bz2 still throw — decode-only by design', async () => {
-  const vfs = makeVfs({ '/p/x.txt': enc('hi') });
-  await assert.rejects(
-    () => archive.compress({ vfs, path: '/p' }, 'memory', { format: 'xz' }),
-    /xz-decompress is decode-only/
-  );
-  await assert.rejects(
-    () => archive.compress({ vfs, path: '/p' }, 'memory', { format: 'tar.xz' }),
-    /xz-decompress is decode-only/
-  );
-  await assert.rejects(
-    () => archive.compress({ vfs, path: '/p' }, 'memory', { format: 'bz2' }),
-    /seek-bzip is decode-only/
-  );
-  await assert.rejects(
-    () => archive.compress({ vfs, path: '/p' }, 'memory', { format: 'tar.bz2' }),
-    /seek-bzip is decode-only/
-  );
+test('archive.compress: tar.xz / tar.bz2 by sink extension round-trip', async () => {
+  const vfs = makeVfs({ '/p/x.txt': enc('hi'), '/p/sub/y.txt': enc('why') });
+  for (const out of ['/out.tar.xz', '/out.tar.bz2']) {
+    await archive.compress({ vfs, path: '/p' }, { vfs, path: out });
+    const bytes = vfs._files.get(out);
+    assert.equal(detectFormat(bytes), out.endsWith('.xz') ? 'xz' : 'bz2');
+    const files = (await archive.list(bytes)).filter((e) => e.type === 'file').map((e) => e.path).sort();
+    assert.deepEqual(files, ['sub/y.txt', 'x.txt']);
+    assert.deepEqual(await archive.read(bytes, 'sub/y.txt'), enc('why'));
+  }
+});
+
+test('archive.compress: xz / bz2 single-stream delegate to archive.xz / archive.bzip2', async () => {
+  const data = new Uint8Array([1, 2, 3, 4, 5]);
+  for (const [format, un] of [['xz', unxzBytes], ['bz2', unbz2Bytes]]) {
+    const result = await archive.compress(data, 'memory', { format });
+    const [key, bytes] = [...result.entries()][0];
+    assert.ok(key.endsWith('.' + format));
+    assert.deepEqual(await un(bytes), data);
+  }
+});
+
+test('archive.xz / unxz / bzip2 / bunzip2: single-file helpers through a VFS', async () => {
+  const vfs = makeVfs({ '/d.csv': enc('a,b\n1,2\n') });
+  await archive.xz({ vfs, path: '/d.csv' }, { vfs, path: '/d.csv.xz' }, { level: 1 });
+  await archive.bzip2({ vfs, path: '/d.csv' }, { vfs, path: '/d.csv.bz2' });
+  const fromXz = await archive.unxz({ vfs, path: '/d.csv.xz' }, 'memory');
+  const fromBz2 = await archive.bunzip2({ vfs, path: '/d.csv.bz2' }, 'memory');
+  assert.deepEqual([...fromXz.entries()][0], ['d.csv', enc('a,b\n1,2\n')]);
+  assert.deepEqual([...fromBz2.entries()][0], ['d.csv', enc('a,b\n1,2\n')]);
 });
 
 test('archive.compress: missing format + non-extension sink throws clear error', async () => {
@@ -1263,6 +1308,20 @@ test('createWriter: tar.gz → roundtrip extracts cleanly', async () => {
   assert.deepEqual(files, ['README.md', 'data.csv']);
 });
 
+test('createWriter: tar.xz / tar.bz2 → roundtrip extracts cleanly', async () => {
+  for (const format of ['tar.xz', 'tar.bz2']) {
+    const w = createWriter('memory', { format });
+    await w.addFile('README.md', enc('# streamed ' + format + '\n'));
+    await w.addDirectory('data');
+    await w.addFile('data/x.csv', enc('a,b\n1,2\n'));
+    const bytes = await w.close();
+    assert.equal(detectFormat(bytes), format.slice(4));
+    const files = (await archive.list(bytes)).filter((e) => e.type === 'file').map((e) => e.path).sort();
+    assert.deepEqual(files, ['README.md', 'data/x.csv']);
+    assert.deepEqual(await archive.read(bytes, 'data/x.csv'), enc('a,b\n1,2\n'));
+  }
+});
+
 test('createWriter: zip into VFS sink writes to the target path', async () => {
   const files = new Map();
   const vfs = {
@@ -1316,11 +1375,9 @@ test('createWriter: rejects unsupported formats with clear errors', () => {
   assert.throws(() => createWriter('memory', { format: 'zst' }), /single-stream/);
   // tar.zst — fzstd is decode-only.
   assert.throws(() => createWriter('memory', { format: 'tar.zst' }), /decode-only/);
-  // xz / bz2 — vendored decoders are decode-only by design.
-  assert.throws(() => createWriter('memory', { format: 'xz' }),     /xz-decompress is decode-only/);
-  assert.throws(() => createWriter('memory', { format: 'bz2' }),    /seek-bzip is decode-only/);
-  assert.throws(() => createWriter('memory', { format: 'tar.xz' }), /xz-decompress is decode-only/);
-  assert.throws(() => createWriter('memory', { format: 'tar.bz2' }), /seek-bzip is decode-only/);
+  // xz / bz2 — single streams have their own helpers, not a writer.
+  assert.throws(() => createWriter('memory', { format: 'xz' }),  /single-stream.*archive\.xz/);
+  assert.throws(() => createWriter('memory', { format: 'bz2' }), /single-stream.*archive\.bzip2/);
 });
 
 test('createWriter: rejects missing sink or format', () => {
