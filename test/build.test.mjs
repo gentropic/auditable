@@ -522,7 +522,7 @@ test('round-trip: bundled ext/adder (inline air) behaves like its source', async
   const dir = path.join(root, 'ext', 'adder');
   const r = bundle({
     dir, entry: 'src/main.js', write: false,
-    inline: ['../air/src/types.js', '../air/src/lower/base.js', '../air/src/passes.js'],
+    inline: ['../air/src/types.js', '../air/src/lower/base.js', '../air/src/passes.js', '../bz2/index.js'],
   });
   assert.ok(!/from '\.\.\/\.\.\/air/.test(r.code), 'air imports are inlined, not external');
 

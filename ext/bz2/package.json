@@ -1,0 +1,33 @@
+{
+  "name": "@gcu/bz2",
+  "version": "0.1.0",
+  "description": "bzip2 in plain JavaScript, both directions: a line-for-line port of libbzip2 1.0.8, so the streams it writes are byte-identical to bzip2's (and CPython's bz2) and it reads them as libbzip2 does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["bzip2", "bz2", "compression", "decompression", "burrows-wheeler", "auditable", "gcu"],
+  "license": "bzip2-1.0.6",
+  "author": "Arthur Endlein Correia (port); Julian Seward (bzip2/libbzip2)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/bz2"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/bz2",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}

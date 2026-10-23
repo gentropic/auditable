@@ -649,6 +649,1621 @@ function lowerLoopRegion(ctx, condFn, bodyFn, loc, kind = 'while') {
   });
 }
 
+// -- inlined: ../bz2/index.js (as _gcuBz2) --
+
+const _gcuBz2 = (() => {
+// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
+// @gcu/bz2 — bzip2 in plain JavaScript, both directions: a line-for-line port of libbzip2 1.0.8, so the streams it writes are byte-identical to bzip2's (and CPython's bz2) and it reads them as libbzip2 does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.
+
+// ── src/tables.js ──
+
+// bzip2's tables. BZ2_RNUMS is randtable.c's BZ2_rNums, copied — the randomisation of
+// blocks written by bzip2 before 0.9.5 (decoders still have to undo it). The CRC is bzip2's:
+// CRC-32 with the 0x04c11db7 polynomial, most significant bit first (crctable.c, computed here).
+
+const BZ2_RNUMS = new Int32Array([
+  619, 720, 127, 481, 931, 816, 813, 233, 566, 247, 985, 724, 205, 454, 863, 491,
+  741, 242, 949, 214, 733, 859, 335, 708, 621, 574, 73, 654, 730, 472, 419, 436,
+  278, 496, 867, 210, 399, 680, 480, 51, 878, 465, 811, 169, 869, 675, 611, 697,
+  867, 561, 862, 687, 507, 283, 482, 129, 807, 591, 733, 623, 150, 238, 59, 379,
+  684, 877, 625, 169, 643, 105, 170, 607, 520, 932, 727, 476, 693, 425, 174, 647,
+  73, 122, 335, 530, 442, 853, 695, 249, 445, 515, 909, 545, 703, 919, 874, 474,
+  882, 500, 594, 612, 641, 801, 220, 162, 819, 984, 589, 513, 495, 799, 161, 604,
+  958, 533, 221, 400, 386, 867, 600, 782, 382, 596, 414, 171, 516, 375, 682, 485,
+  911, 276, 98, 553, 163, 354, 666, 933, 424, 341, 533, 870, 227, 730, 475, 186,
+  263, 647, 537, 686, 600, 224, 469, 68, 770, 919, 190, 373, 294, 822, 808, 206,
+  184, 943, 795, 384, 383, 461, 404, 758, 839, 887, 715, 67, 618, 276, 204, 918,
+  873, 777, 604, 560, 951, 160, 578, 722, 79, 804, 96, 409, 713, 940, 652, 934,
+  970, 447, 318, 353, 859, 672, 112, 785, 645, 863, 803, 350, 139, 93, 354, 99,
+  820, 908, 609, 772, 154, 274, 580, 184, 79, 626, 630, 742, 653, 282, 762, 623,
+  680, 81, 927, 626, 789, 125, 411, 521, 938, 300, 821, 78, 343, 175, 128, 250,
+  170, 774, 972, 275, 999, 639, 495, 78, 352, 126, 857, 956, 358, 619, 580, 124,
+  737, 594, 701, 612, 669, 112, 134, 694, 363, 992, 809, 743, 168, 974, 944, 375,
+  748, 52, 600, 747, 642, 182, 862, 81, 344, 805, 988, 739, 511, 655, 814, 334,
+  249, 515, 897, 955, 664, 981, 649, 113, 974, 459, 893, 228, 433, 837, 553, 268,
+  926, 240, 102, 654, 459, 51, 686, 754, 806, 760, 493, 403, 415, 394, 687, 700,
+  946, 670, 656, 610, 738, 392, 760, 799, 887, 653, 978, 321, 576, 617, 626, 502,
+  894, 679, 243, 440, 680, 879, 194, 572, 640, 724, 926, 56, 204, 700, 707, 151,
+  457, 449, 797, 195, 791, 558, 945, 679, 297, 59, 87, 824, 713, 663, 412, 693,
+  342, 606, 134, 108, 571, 364, 631, 212, 174, 643, 304, 329, 343, 97, 430, 751,
+  497, 314, 983, 374, 822, 928, 140, 206, 73, 263, 980, 736, 876, 478, 430, 305,
+  170, 514, 364, 692, 829, 82, 855, 953, 676, 246, 369, 970, 294, 750, 807, 827,
+  150, 790, 288, 923, 804, 378, 215, 828, 592, 281, 565, 555, 710, 82, 896, 831,
+  547, 261, 524, 462, 293, 465, 502, 56, 661, 821, 976, 991, 658, 869, 905, 758,
+  745, 193, 768, 550, 608, 933, 378, 286, 215, 979, 792, 961, 61, 688, 793, 644,
+  986, 403, 106, 366, 905, 644, 372, 567, 466, 434, 645, 210, 389, 550, 919, 135,
+  780, 773, 635, 389, 707, 100, 626, 958, 165, 504, 920, 176, 193, 713, 857, 265,
+  203, 50, 668, 108, 645, 990, 626, 197, 510, 357, 358, 850, 858, 364, 936, 638,
+]);
+
+const BZ2_CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i << 24;
+    for (let k = 0; k < 8; k++) c = c & 0x80000000 ? (c << 1) ^ 0x04c11db7 : c << 1;
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+// ── src/blocksort.js ──
+
+// The Burrows–Wheeler sort: blocksort.c of bzip2 1.0.8, ported line for line. The order it
+// leaves equal rotations in decides origPtr, so a different (correct) sort would write a valid
+// but different stream; this one writes libbzip2's bytes. bzip2's arrays alias one another
+// (the block is the bytes of arr2, mtfv the halves of arr1); here each is its own array, which
+// the C's own access pattern makes equivalent.
+//
+// Ported from bzip2/libbzip2 1.0.8, Copyright (C) 1996-2019 Julian Seward — see LICENSE.
+
+const N_RADIX = 2, N_QSORT = 12, N_SHELL = 18;
+const N_OVERSHOOT = N_RADIX + N_QSORT + N_SHELL + 2;
+
+// ── fallback O(N log(N)^2) sort, for repetitive blocks ──
+
+function fallbackSimpleSort(fmap, eclass, lo, hi) {
+  let i, j, tmp, ecTmp;
+  if (lo === hi) return;
+  if (hi - lo > 3) {
+    for (i = hi - 4; i >= lo; i--) {
+      tmp = fmap[i];
+      ecTmp = eclass[tmp];
+      for (j = i + 4; j <= hi && ecTmp > eclass[fmap[j]]; j += 4) fmap[j - 4] = fmap[j];
+      fmap[j - 4] = tmp;
+    }
+  }
+  for (i = hi - 1; i >= lo; i--) {
+    tmp = fmap[i];
+    ecTmp = eclass[tmp];
+    for (j = i + 1; j <= hi && ecTmp > eclass[fmap[j]]; j++) fmap[j - 1] = fmap[j];
+    fmap[j - 1] = tmp;
+  }
+}
+
+const FALLBACK_QSORT_SMALL_THRESH = 10;
+const FALLBACK_QSORT_STACK_SIZE = 100;
+const fStackLo = new Int32Array(FALLBACK_QSORT_STACK_SIZE);
+const fStackHi = new Int32Array(FALLBACK_QSORT_STACK_SIZE);
+
+function fallbackQSort3(fmap, eclass, loSt, hiSt) {
+  let unLo, unHi, ltLo, gtHi, n, m, sp, lo, hi, med, r3, t;
+  let r = 0;
+  const stackLo = fStackLo, stackHi = fStackHi;
+  sp = 0;
+  stackLo[sp] = loSt; stackHi[sp] = hiSt; sp++;
+  while (sp > 0) {
+    if (!(sp < FALLBACK_QSORT_STACK_SIZE - 1)) throw new Error('bz2: internal error 1004');
+    sp--; lo = stackLo[sp]; hi = stackHi[sp];
+    if (hi - lo < FALLBACK_QSORT_SMALL_THRESH) {
+      fallbackSimpleSort(fmap, eclass, lo, hi);
+      continue;
+    }
+    // random partitioning (Sedgewick's 7621 / 32768)
+    r = ((r * 7621) + 1) % 32768;
+    r3 = r % 3;
+    if (r3 === 0) med = eclass[fmap[lo]];
+    else if (r3 === 1) med = eclass[fmap[(lo + hi) >> 1]];
+    else med = eclass[fmap[hi]];
+
+    unLo = ltLo = lo;
+    unHi = gtHi = hi;
+    while (true) {
+      while (true) {
+        if (unLo > unHi) break;
+        n = eclass[fmap[unLo]] - med;
+        if (n === 0) { t = fmap[unLo]; fmap[unLo] = fmap[ltLo]; fmap[ltLo] = t; ltLo++; unLo++; continue; }
+        if (n > 0) break;
+        unLo++;
+      }
+      while (true) {
+        if (unLo > unHi) break;
+        n = eclass[fmap[unHi]] - med;
+        if (n === 0) { t = fmap[unHi]; fmap[unHi] = fmap[gtHi]; fmap[gtHi] = t; gtHi--; unHi--; continue; }
+        if (n < 0) break;
+        unHi--;
+      }
+      if (unLo > unHi) break;
+      t = fmap[unLo]; fmap[unLo] = fmap[unHi]; fmap[unHi] = t; unLo++; unHi--;
+    }
+    if (gtHi < ltLo) continue;
+
+    n = Math.min(ltLo - lo, unLo - ltLo); vswap(fmap, lo, unLo - n, n);
+    m = Math.min(hi - gtHi, gtHi - unHi); vswap(fmap, unLo, hi - m + 1, m);
+    n = lo + unLo - ltLo - 1;
+    m = hi - (gtHi - unHi) + 1;
+    if (n - lo > hi - m) {
+      stackLo[sp] = lo; stackHi[sp] = n; sp++;
+      stackLo[sp] = m; stackHi[sp] = hi; sp++;
+    } else {
+      stackLo[sp] = m; stackHi[sp] = hi; sp++;
+      stackLo[sp] = lo; stackHi[sp] = n; sp++;
+    }
+  }
+}
+
+function vswap(a, p1, p2, n) {
+  while (n > 0) { const t = a[p1]; a[p1] = a[p2]; a[p2] = t; p1++; p2++; n--; }
+}
+
+// fmap gets the sorted order of block[0 .. nblock-1]; eclass and bhtab are scratch
+function fallbackSort(fmap, block, eclass, bhtab, nblock) {
+  const ftab = new Int32Array(257);
+  const ftabCopy = new Int32Array(256);
+  let H, i, j, k, l, r, cc, cc1, nNotDone, nBhtab;
+  const SET_BH = (zz) => { bhtab[zz >> 5] |= (1 << (zz & 31)); };
+  const CLEAR_BH = (zz) => { bhtab[zz >> 5] &= ~(1 << (zz & 31)); };
+  const ISSET_BH = (zz) => (bhtab[zz >> 5] & (1 << (zz & 31))) !== 0;
+
+  // initial 1-char radix sort: the initial fmap and BH bits
+  for (i = 0; i < nblock; i++) ftab[block[i]]++;
+  for (i = 0; i < 256; i++) ftabCopy[i] = ftab[i];
+  for (i = 1; i < 257; i++) ftab[i] += ftab[i - 1];
+  for (i = 0; i < nblock; i++) {
+    j = block[i];
+    k = ftab[j] - 1;
+    ftab[j] = k;
+    fmap[k] = i;
+  }
+  nBhtab = 2 + ((nblock / 32) | 0);
+  for (i = 0; i < nBhtab; i++) bhtab[i] = 0;
+  for (i = 0; i < 256; i++) SET_BH(ftab[i]);
+
+  // sentinel bits for block-end detection
+  for (i = 0; i < 32; i++) { SET_BH(nblock + 2 * i); CLEAR_BH(nblock + 2 * i + 1); }
+
+  // the log(N) loop: an "exponential radix sort" after Manber-Myers
+  H = 1;
+  while (true) {
+    j = 0;
+    for (i = 0; i < nblock; i++) {
+      if (ISSET_BH(i)) j = i;
+      k = fmap[i] - H; if (k < 0) k += nblock;
+      eclass[k] = j;
+    }
+    nNotDone = 0;
+    r = -1;
+    while (true) {
+      // the next non-singleton bucket
+      k = r + 1;
+      while (ISSET_BH(k) && (k & 0x1f)) k++;
+      if (ISSET_BH(k)) {
+        while (bhtab[k >> 5] === -1) k += 32;
+        while (ISSET_BH(k)) k++;
+      }
+      l = k - 1;
+      if (l >= nblock) break;
+      while (!ISSET_BH(k) && (k & 0x1f)) k++;
+      if (!ISSET_BH(k)) {
+        while (bhtab[k >> 5] === 0) k += 32;
+        while (!ISSET_BH(k)) k++;
+      }
+      r = k - 1;
+      if (r >= nblock) break;
+      // [l, r] bracket the current bucket
+      if (r > l) {
+        nNotDone += (r - l + 1);
+        fallbackQSort3(fmap, eclass, l, r);
+        // scan the bucket, generating header bits
+        cc = -1;
+        for (i = l; i <= r; i++) {
+          cc1 = eclass[fmap[i]];
+          if (cc !== cc1) { SET_BH(i); cc = cc1; }
+        }
+      }
+    }
+    H *= 2;
+    if (H > nblock || nNotDone === 0) break;
+  }
+  // (the C reconstructs the block here, which its eclass overwrote; ours is separate)
+}
+
+// ── the main O(N^2 log(N)) sort, faster for "normal" blocks ──
+
+// rotation i1 > rotation i2, as far as the block and the quadrant tell; budget[0] counts work
+function mainGtU(i1, i2, block, quadrant, nblock, budget) {
+  let k, c1, c2, s1, s2;
+  for (let n = 0; n < 12; n++) {
+    c1 = block[i1]; c2 = block[i2];
+    if (c1 !== c2) return c1 > c2;
+    i1++; i2++;
+  }
+  k = nblock + 8;
+  do {
+    for (let n = 0; n < 8; n++) {
+      c1 = block[i1]; c2 = block[i2];
+      if (c1 !== c2) return c1 > c2;
+      s1 = quadrant[i1]; s2 = quadrant[i2];
+      if (s1 !== s2) return s1 > s2;
+      i1++; i2++;
+    }
+    if (i1 >= nblock) i1 -= nblock;
+    if (i2 >= nblock) i2 -= nblock;
+    k -= 8;
+    budget[0]--;
+  } while (k >= 0);
+  return false;
+}
+
+// Knuth's increments
+const INCS = [1, 4, 13, 40, 121, 364, 1093, 3280, 9841, 29524, 88573, 265720, 797161, 2391484];
+
+function mainSimpleSort(ptr, block, quadrant, nblock, lo, hi, d, budget) {
+  let i, j, h, hp, v;
+  const bigN = hi - lo + 1;
+  if (bigN < 2) return;
+  hp = 0;
+  while (INCS[hp] < bigN) hp++;
+  hp--;
+  for (; hp >= 0; hp--) {
+    h = INCS[hp];
+    i = lo + h;
+    while (true) {
+      // (the C unrolls three copies of this; the budget is looked at after each third)
+      for (let c = 0; c < 3; c++) {
+        if (i > hi) break;
+        v = ptr[i];
+        j = i;
+        while (mainGtU(ptr[j - h] + d, v + d, block, quadrant, nblock, budget)) {
+          ptr[j] = ptr[j - h];
+          j = j - h;
+          if (j <= (lo + h - 1)) break;
+        }
+        ptr[j] = v;
+        i++;
+      }
+      if (i > hi) break;
+      if (budget[0] < 0) return;
+    }
+  }
+}
+
+function mmed3(a, b, c) {
+  let t;
+  if (a > b) { t = a; a = b; b = t; }
+  if (b > c) {
+    b = c;
+    if (a > b) b = a;
+  }
+  return b;
+}
+
+const MAIN_QSORT_SMALL_THRESH = 20;
+const MAIN_QSORT_DEPTH_THRESH = N_RADIX + N_QSORT;
+const MAIN_QSORT_STACK_SIZE = 100;
+const mStackLo = new Int32Array(MAIN_QSORT_STACK_SIZE);
+const mStackHi = new Int32Array(MAIN_QSORT_STACK_SIZE);
+const mStackD = new Int32Array(MAIN_QSORT_STACK_SIZE);
+
+// the 3-way string quicksort of Sedgewick and Bentley
+function mainQSort3(ptr, block, quadrant, nblock, loSt, hiSt, dSt, budget) {
+  let unLo, unHi, ltLo, gtHi, n, m, med, sp, lo, hi, d, t;
+  const stackLo = mStackLo, stackHi = mStackHi, stackD = mStackD;
+  const nextLo = [0, 0, 0], nextHi = [0, 0, 0], nextD = [0, 0, 0];
+  const size = (a) => nextHi[a] - nextLo[a];
+  const swapNext = (a, b) => {
+    let z = nextLo[a]; nextLo[a] = nextLo[b]; nextLo[b] = z;
+    z = nextHi[a]; nextHi[a] = nextHi[b]; nextHi[b] = z;
+    z = nextD[a]; nextD[a] = nextD[b]; nextD[b] = z;
+  };
+
+  sp = 0;
+  stackLo[sp] = loSt; stackHi[sp] = hiSt; stackD[sp] = dSt; sp++;
+  while (sp > 0) {
+    if (!(sp < MAIN_QSORT_STACK_SIZE - 2)) throw new Error('bz2: internal error 1001');
+    sp--; lo = stackLo[sp]; hi = stackHi[sp]; d = stackD[sp];
+    if (hi - lo < MAIN_QSORT_SMALL_THRESH || d > MAIN_QSORT_DEPTH_THRESH) {
+      mainSimpleSort(ptr, block, quadrant, nblock, lo, hi, d, budget);
+      if (budget[0] < 0) return;
+      continue;
+    }
+    med = mmed3(block[ptr[lo] + d], block[ptr[hi] + d], block[ptr[(lo + hi) >> 1] + d]);
+
+    unLo = ltLo = lo;
+    unHi = gtHi = hi;
+    while (true) {
+      while (true) {
+        if (unLo > unHi) break;
+        n = block[ptr[unLo] + d] - med;
+        if (n === 0) { t = ptr[unLo]; ptr[unLo] = ptr[ltLo]; ptr[ltLo] = t; ltLo++; unLo++; continue; }
+        if (n > 0) break;
+        unLo++;
+      }
+      while (true) {
+        if (unLo > unHi) break;
+        n = block[ptr[unHi] + d] - med;
+        if (n === 0) { t = ptr[unHi]; ptr[unHi] = ptr[gtHi]; ptr[gtHi] = t; gtHi--; unHi--; continue; }
+        if (n < 0) break;
+        unHi--;
+      }
+      if (unLo > unHi) break;
+      t = ptr[unLo]; ptr[unLo] = ptr[unHi]; ptr[unHi] = t; unLo++; unHi--;
+    }
+
+    if (gtHi < ltLo) {
+      stackLo[sp] = lo; stackHi[sp] = hi; stackD[sp] = d + 1; sp++;
+      continue;
+    }
+
+    n = Math.min(ltLo - lo, unLo - ltLo); vswap(ptr, lo, unLo - n, n);
+    m = Math.min(hi - gtHi, gtHi - unHi); vswap(ptr, unLo, hi - m + 1, m);
+    n = lo + unLo - ltLo - 1;
+    m = hi - (gtHi - unHi) + 1;
+
+    nextLo[0] = lo; nextHi[0] = n; nextD[0] = d;
+    nextLo[1] = m; nextHi[1] = hi; nextD[1] = d;
+    nextLo[2] = n + 1; nextHi[2] = m - 1; nextD[2] = d + 1;
+
+    if (size(0) < size(1)) swapNext(0, 1);
+    if (size(1) < size(2)) swapNext(1, 2);
+    if (size(0) < size(1)) swapNext(0, 1);
+
+    for (let q = 0; q < 3; q++) { stackLo[sp] = nextLo[q]; stackHi[sp] = nextHi[q]; stackD[sp] = nextD[q]; sp++; }
+  }
+}
+
+const SETMASK = 1 << 21;
+const CLEARMASK = ~SETMASK;
+
+// block holds nblock bytes plus N_OVERSHOOT of room; ptr gets the sorted order (or the sort is
+// abandoned: budget[0] < 0)
+function mainSort(ptr, block, quadrant, ftab, nblock, budget) {
+  let i, j, k, ss, sb, c1, numQSorted, s;
+  const runningOrder = new Int32Array(256);
+  const bigDone = new Uint8Array(256);
+  const copyStart = new Int32Array(256);
+  const copyEnd = new Int32Array(256);
+  const BIGFREQ = (b) => ftab[(b + 1) << 8] - ftab[b << 8];
+
+  // the 2-byte frequency table
+  for (i = 65536; i >= 0; i--) ftab[i] = 0;
+  j = block[0] << 8;
+  for (i = nblock - 1; i >= 0; i--) {
+    quadrant[i] = 0;
+    j = (j >> 8) | (block[i] << 8);
+    ftab[j]++;
+  }
+  for (i = 0; i < N_OVERSHOOT; i++) {
+    block[nblock + i] = block[i];
+    quadrant[nblock + i] = 0;
+  }
+
+  // complete the initial radix sort
+  for (i = 1; i <= 65536; i++) ftab[i] += ftab[i - 1];
+  s = block[0] << 8;
+  for (i = nblock - 1; i >= 0; i--) {
+    s = ((s >> 8) | (block[i] << 8)) & 0xffff;
+    j = ftab[s] - 1;
+    ftab[s] = j;
+    ptr[j] = i;
+  }
+
+  // the running order, from smallest to largest big bucket
+  for (i = 0; i <= 255; i++) { bigDone[i] = 0; runningOrder[i] = i; }
+  {
+    let vv, h = 1;
+    do h = 3 * h + 1; while (h <= 256);
+    do {
+      h = (h / 3) | 0;
+      for (i = h; i <= 255; i++) {
+        vv = runningOrder[i];
+        j = i;
+        while (BIGFREQ(runningOrder[j - h]) > BIGFREQ(vv)) {
+          runningOrder[j] = runningOrder[j - h];
+          j = j - h;
+          if (j <= (h - 1)) break;
+        }
+        runningOrder[j] = vv;
+      }
+    } while (h !== 1);
+  }
+
+  // the main sorting loop
+  numQSorted = 0;
+  for (i = 0; i <= 255; i++) {
+    ss = runningOrder[i];
+
+    // Step 1: complete the big bucket [ss] by quicksorting any unsorted small buckets [ss, j]
+    for (j = 0; j <= 255; j++) {
+      if (j !== ss) {
+        sb = (ss << 8) + j;
+        if (!(ftab[sb] & SETMASK)) {
+          const lo = ftab[sb] & CLEARMASK;
+          const hi = (ftab[sb + 1] & CLEARMASK) - 1;
+          if (hi > lo) {
+            mainQSort3(ptr, block, quadrant, nblock, lo, hi, N_RADIX, budget);
+            numQSorted += (hi - lo + 1);
+            if (budget[0] < 0) return;
+          }
+        }
+        ftab[sb] |= SETMASK;
+      }
+    }
+    if (bigDone[ss]) throw new Error('bz2: internal error 1006');
+
+    // Step 2: scan the big bucket [ss] to synthesise the order of the small buckets [t, ss]
+    for (j = 0; j <= 255; j++) {
+      copyStart[j] = ftab[(j << 8) + ss] & CLEARMASK;
+      copyEnd[j] = (ftab[(j << 8) + ss + 1] & CLEARMASK) - 1;
+    }
+    for (j = ftab[ss << 8] & CLEARMASK; j < copyStart[ss]; j++) {
+      k = ptr[j] - 1; if (k < 0) k += nblock;
+      c1 = block[k];
+      if (!bigDone[c1]) ptr[copyStart[c1]++] = k;
+    }
+    for (j = (ftab[(ss + 1) << 8] & CLEARMASK) - 1; j > copyEnd[ss]; j--) {
+      k = ptr[j] - 1; if (k < 0) k += nblock;
+      c1 = block[k];
+      if (!bigDone[c1]) ptr[copyEnd[c1]--] = k;
+    }
+    if (!((copyStart[ss] - 1 === copyEnd[ss]) || (copyStart[ss] === 0 && copyEnd[ss] === nblock - 1))) {
+      throw new Error('bz2: internal error 1007');
+    }
+    for (j = 0; j <= 255; j++) ftab[(j << 8) + ss] |= SETMASK;
+
+    // Step 3: [ss] is done; record that, and update the quadrant descriptors
+    bigDone[ss] = 1;
+    if (i < 255) {
+      const bbStart = ftab[ss << 8] & CLEARMASK;
+      const bbSize = (ftab[(ss + 1) << 8] & CLEARMASK) - bbStart;
+      let shifts = 0;
+      while ((bbSize >> shifts) > 65534) shifts++;
+      for (j = bbSize - 1; j >= 0; j--) {
+        const a2update = ptr[bbStart + j];
+        const qVal = (j >> shifts) & 0xffff;
+        quadrant[a2update] = qVal;
+        if (a2update < N_OVERSHOOT) quadrant[a2update + nblock] = qVal;
+      }
+      if (!(((bbSize - 1) >> shifts) <= 65535)) throw new Error('bz2: internal error 1002');
+    }
+  }
+}
+
+// BZ2_blockSort: s = { ptr, block, quadrant, ftab, eclass, nblock, workFactor } → origPtr
+function blockSort(s) {
+  const { ptr, block, quadrant, ftab, nblock } = s;
+  if (nblock < 10000) {
+    fallbackSort(ptr, block, s.eclass, ftab, nblock);
+  } else {
+    let wfact = s.workFactor;
+    if (wfact < 1) wfact = 1;
+    if (wfact > 100) wfact = 100;
+    const budget = [nblock * (((wfact - 1) / 3) | 0)];
+    mainSort(ptr, block, quadrant, ftab, nblock, budget);
+    if (budget[0] < 0) fallbackSort(ptr, block, s.eclass, ftab, nblock);
+  }
+  for (let i = 0; i < nblock; i++) if (ptr[i] === 0) return i;
+  throw new Error('bz2: internal error 1003');
+}
+
+// ── src/huffman.js ──
+
+// Huffman code lengths and canonical codes: huffman.c of bzip2 1.0.8, ported line for line
+// (the tie-breaking of its heap decides the lengths, hence the stream's bytes).
+//
+// Ported from bzip2/libbzip2 1.0.8, Copyright (C) 1996-2019 Julian Seward — see LICENSE.
+
+const MAX_ALPHA_SIZE = 258;
+const MAX_CODE_LEN = 23;
+
+const heap = new Int32Array(MAX_ALPHA_SIZE + 2);
+const weight = new Int32Array(MAX_ALPHA_SIZE * 2);
+const parent = new Int32Array(MAX_ALPHA_SIZE * 2);
+
+// len[0 .. alphaSize-1] ← code lengths for freq, none longer than maxLen
+function makeCodeLengths(len, freq, alphaSize, maxLen) {
+  let nNodes, nHeap, n1, n2, i, j, k, tooLong;
+  const upheap = (z) => {
+    let zz = z;
+    const tmp = heap[zz];
+    while (weight[tmp] < weight[heap[zz >> 1]]) {
+      heap[zz] = heap[zz >> 1];
+      zz >>= 1;
+    }
+    heap[zz] = tmp;
+  };
+  const downheap = (z) => {
+    let zz = z, yy;
+    const tmp = heap[zz];
+    while (true) {
+      yy = zz << 1;
+      if (yy > nHeap) break;
+      if (yy < nHeap && weight[heap[yy + 1]] < weight[heap[yy]]) yy++;
+      if (weight[tmp] < weight[heap[yy]]) break;
+      heap[zz] = heap[yy];
+      zz = yy;
+    }
+    heap[zz] = tmp;
+  };
+
+  for (i = 0; i < alphaSize; i++) weight[i + 1] = (freq[i] === 0 ? 1 : freq[i]) << 8;
+
+  while (true) {
+    nNodes = alphaSize;
+    nHeap = 0;
+    heap[0] = 0;
+    weight[0] = 0;
+    parent[0] = -2;
+    for (i = 1; i <= alphaSize; i++) {
+      parent[i] = -1;
+      nHeap++;
+      heap[nHeap] = i;
+      upheap(nHeap);
+    }
+    while (nHeap > 1) {
+      n1 = heap[1]; heap[1] = heap[nHeap]; nHeap--; downheap(1);
+      n2 = heap[1]; heap[1] = heap[nHeap]; nHeap--; downheap(1);
+      nNodes++;
+      parent[n1] = parent[n2] = nNodes;
+      // ADDWEIGHTS: the weights add, the depth is one more than the deeper's
+      const w1 = weight[n1], w2 = weight[n2];
+      weight[nNodes] = ((w1 & 0xffffff00) + (w2 & 0xffffff00)) | (1 + Math.max(w1 & 0xff, w2 & 0xff));
+      parent[nNodes] = -1;
+      nHeap++;
+      heap[nHeap] = nNodes;
+      upheap(nHeap);
+    }
+
+    tooLong = false;
+    for (i = 1; i <= alphaSize; i++) {
+      j = 0;
+      k = i;
+      while (parent[k] >= 0) { k = parent[k]; j++; }
+      len[i - 1] = j;
+      if (j > maxLen) tooLong = true;
+    }
+    if (!tooLong) break;
+
+    // too long: flatten the frequencies and go again
+    for (i = 1; i <= alphaSize; i++) {
+      j = weight[i] >> 8;
+      j = 1 + ((j / 2) | 0);
+      weight[i] = j << 8;
+    }
+  }
+}
+
+function assignCodes(code, length, minLen, maxLen, alphaSize) {
+  let vec = 0;
+  for (let n = minLen; n <= maxLen; n++) {
+    for (let i = 0; i < alphaSize; i++) if (length[i] === n) { code[i] = vec; vec++; }
+    vec <<= 1;
+  }
+}
+
+function createDecodeTables(limit, base, perm, length, minLen, maxLen, alphaSize) {
+  let pp = 0, i, j, vec;
+  for (i = minLen; i <= maxLen; i++) {
+    for (j = 0; j < alphaSize; j++) if (length[j] === i) { perm[pp] = j; pp++; }
+  }
+  for (i = 0; i < MAX_CODE_LEN; i++) base[i] = 0;
+  for (i = 0; i < alphaSize; i++) base[length[i] + 1]++;
+  for (i = 1; i < MAX_CODE_LEN; i++) base[i] += base[i - 1];
+  for (i = 0; i < MAX_CODE_LEN; i++) limit[i] = 0;
+  vec = 0;
+  for (i = minLen; i <= maxLen; i++) {
+    vec += (base[i + 1] - base[i]);
+    limit[i] = vec - 1;
+    vec <<= 1;
+  }
+  for (i = minLen + 1; i <= maxLen; i++) base[i] = ((limit[i - 1] + 1) << 1) - base[i];
+}
+
+// ── src/compress.js ──
+
+// The bzip2 compressor: bzlib.c's input side (the initial run-length coding into blocks) and
+// compress.c (MTF + run coding, Huffman table selection, the bit stream), bzip2 1.0.8 ported
+// line for line — so the bytes are libbzip2's, down to where a compress() call's output ends
+// (its bit writer empties only before a write, so up to three whole bytes wait for the next).
+//
+// Ported from bzip2/libbzip2 1.0.8, Copyright (C) 1996-2019 Julian Seward — see LICENSE.
+
+
+const RUNA$compress = 0, RUNB$compress = 1;
+const N_GROUPS$compress = 6, G_SIZE$compress = 50, N_ITERS = 4;
+const MAX_SELECTORS$compress = 2 + ((900000 / G_SIZE$compress) | 0);
+const LESSER_ICOST = 0, GREATER_ICOST = 15;
+
+class Compressor {
+  // blockSize100k 1..9 (the compresslevel); workFactor 0..250 (0 = the default, 30)
+  constructor(blockSize100k = 9, workFactor = 0) {
+    if (!(Number.isInteger(blockSize100k) && blockSize100k >= 1 && blockSize100k <= 9)) {
+      throw new RangeError('bz2: compresslevel must be between 1 and 9');
+    }
+    if (!(Number.isInteger(workFactor) && workFactor >= 0 && workFactor <= 250)) {
+      throw new RangeError('bz2: workFactor must be between 0 and 250');
+    }
+    const n = 100000 * blockSize100k;
+    this.blockSize100k = blockSize100k;
+    this.workFactor = workFactor === 0 ? 30 : workFactor;
+    this.nblockMAX = n - 19;
+    this.block = new Uint8Array(n + N_OVERSHOOT);
+    this.quadrant = new Uint16Array(n + N_OVERSHOOT);
+    this.ptr = new Int32Array(n);
+    this.eclass = new Int32Array(n);
+    this.ftab = new Int32Array(65537);
+    this.mtfv = new Uint16Array(n + 1);
+    this.inUse = new Uint8Array(256);
+    this.unseqToSeq = new Uint8Array(256);
+    this.mtfFreq = new Int32Array(MAX_ALPHA_SIZE);
+    this.len = Array.from({ length: N_GROUPS$compress }, () => new Uint8Array(MAX_ALPHA_SIZE));
+    this.code = Array.from({ length: N_GROUPS$compress }, () => new Int32Array(MAX_ALPHA_SIZE));
+    this.rfreq = Array.from({ length: N_GROUPS$compress }, () => new Int32Array(MAX_ALPHA_SIZE));
+    this.selector = new Uint8Array(MAX_SELECTORS$compress);
+    this.selectorMtf = new Uint8Array(MAX_SELECTORS$compress);
+    // the output: whole bytes, and the bits not yet a byte
+    this.out = new Uint8Array(1024);
+    this.numZ = 0;
+    this.bsBuff = 0;
+    this.bsLive = 0;
+    this.blockNo = 0;
+    this.combinedCRC = 0;
+    this.finished = false;
+    // the run being coded (init_RL): no char yet
+    this.stateInCh = 256;
+    this.stateInLen = 0;
+    this._prepareNewBlock();
+  }
+
+  // feed bytes (BZ_RUN); returns the stream bytes completed so far
+  compress(data) {
+    if (this.finished) throw new Error('bz2: compressor already finished');
+    for (let i = 0; i < data.length; i++) {
+      this._addChar(data[i]);
+      if (this.nblock >= this.nblockMAX) {
+        this._compressBlock(false);
+        this._prepareNewBlock();
+      }
+    }
+    return this._take();
+  }
+
+  // the end of the stream (BZ_FINISH): the last block, the trailer, the last bits
+  flush() {
+    if (this.finished) throw new Error('bz2: compressor already finished');
+    this.finished = true;
+    this._flushRL();
+    this._compressBlock(true);
+    return this._take();
+  }
+
+  _take() {
+    const r = this.out.slice(0, this.numZ);
+    this.numZ = 0;
+    return r;
+  }
+
+  _prepareNewBlock() {
+    this.nblock = 0;
+    this.blockCRC = 0xffffffff;
+    this.inUse.fill(0);
+    this.blockNo++;
+  }
+
+  // ADD_CHAR_TO_BLOCK
+  _addChar(ch) {
+    if (ch !== this.stateInCh && this.stateInLen === 1) {
+      const c = this.stateInCh;
+      this.blockCRC = ((this.blockCRC << 8) ^ BZ2_CRC32_TABLE[(this.blockCRC >>> 24) ^ c]) >>> 0;
+      this.inUse[c] = 1;
+      this.block[this.nblock++] = c;
+      this.stateInCh = ch;
+    } else if (ch !== this.stateInCh || this.stateInLen === 255) {
+      if (this.stateInCh < 256) this._addPairToBlock();
+      this.stateInCh = ch;
+      this.stateInLen = 1;
+    } else {
+      this.stateInLen++;
+    }
+  }
+
+  _addPairToBlock() {
+    const ch = this.stateInCh, n = this.stateInLen, block = this.block;
+    let crc = this.blockCRC;
+    for (let i = 0; i < n; i++) crc = ((crc << 8) ^ BZ2_CRC32_TABLE[(crc >>> 24) ^ ch]) >>> 0;
+    this.blockCRC = crc;
+    this.inUse[ch] = 1;
+    if (n <= 3) {
+      for (let i = 0; i < n; i++) block[this.nblock++] = ch;
+    } else {
+      this.inUse[n - 4] = 1;
+      for (let i = 0; i < 4; i++) block[this.nblock++] = ch;
+      block[this.nblock++] = n - 4;
+    }
+  }
+
+  _flushRL() {
+    if (this.stateInCh < 256) this._addPairToBlock();
+    this.stateInCh = 256;
+    this.stateInLen = 0;
+  }
+
+  // ── the bit stream (bsW: empty whole bytes first, then add n bits of v) ──
+
+  _bsW(n, v) {
+    while (this.bsLive >= 8) {
+      if (this.numZ === this.out.length) {
+        const o = new Uint8Array(this.out.length * 2);
+        o.set(this.out);
+        this.out = o;
+      }
+      this.out[this.numZ++] = this.bsBuff >>> 24;
+      this.bsBuff = (this.bsBuff << 8) >>> 0;
+      this.bsLive -= 8;
+    }
+    this.bsBuff = (this.bsBuff | (v << (32 - this.bsLive - n))) >>> 0;
+    this.bsLive += n;
+  }
+
+  _bsPutUInt32(u) {
+    this._bsW(8, (u >>> 24) & 0xff);
+    this._bsW(8, (u >>> 16) & 0xff);
+    this._bsW(8, (u >>> 8) & 0xff);
+    this._bsW(8, u & 0xff);
+  }
+
+  _bsFinishWrite() {
+    while (this.bsLive > 0) {
+      if (this.numZ === this.out.length) {
+        const o = new Uint8Array(this.out.length * 2);
+        o.set(this.out);
+        this.out = o;
+      }
+      this.out[this.numZ++] = this.bsBuff >>> 24;
+      this.bsBuff = (this.bsBuff << 8) >>> 0;
+      this.bsLive -= 8;
+    }
+  }
+
+  // BZ2_compressBlock
+  _compressBlock(isLastBlock) {
+    if (this.nblock > 0) {
+      this.blockCRC = (~this.blockCRC) >>> 0;
+      this.combinedCRC = (((this.combinedCRC << 1) | (this.combinedCRC >>> 31)) ^ this.blockCRC) >>> 0;
+      this.origPtr = blockSort(this);
+    }
+    if (this.blockNo === 1) {
+      this._bsW(8, 0x42); this._bsW(8, 0x5a); this._bsW(8, 0x68);   // 'BZh'
+      this._bsW(8, 0x30 + this.blockSize100k);
+    }
+    if (this.nblock > 0) {
+      this._bsW(8, 0x31); this._bsW(8, 0x41); this._bsW(8, 0x59);
+      this._bsW(8, 0x26); this._bsW(8, 0x53); this._bsW(8, 0x59);
+      this._bsPutUInt32(this.blockCRC);
+      this._bsW(1, 0);   // not randomised
+      this._bsW(24, this.origPtr);
+      this._generateMTFValues();
+      this._sendMTFValues();
+    }
+    if (isLastBlock) {
+      this._bsW(8, 0x17); this._bsW(8, 0x72); this._bsW(8, 0x45);
+      this._bsW(8, 0x38); this._bsW(8, 0x50); this._bsW(8, 0x90);
+      this._bsPutUInt32(this.combinedCRC);
+      this._bsFinishWrite();
+    }
+  }
+
+  _generateMTFValues() {
+    const yy = new Uint8Array(256);
+    const { ptr, block, mtfv, mtfFreq, unseqToSeq } = this;
+    const nblock = this.nblock;
+    let i, j, zPend, wr;
+
+    // makeMaps_e
+    let nInUse = 0;
+    for (i = 0; i < 256; i++) if (this.inUse[i]) unseqToSeq[i] = nInUse++;
+    this.nInUse = nInUse;
+    const EOB = nInUse + 1;
+    for (i = 0; i <= EOB; i++) mtfFreq[i] = 0;
+
+    wr = 0;
+    zPend = 0;
+    for (i = 0; i < nInUse; i++) yy[i] = i;
+
+    const putRun = () => {
+      zPend--;
+      while (true) {
+        if (zPend & 1) { mtfv[wr++] = RUNB$compress; mtfFreq[RUNB$compress]++; } else { mtfv[wr++] = RUNA$compress; mtfFreq[RUNA$compress]++; }
+        if (zPend < 2) break;
+        zPend = ((zPend - 2) / 2) | 0;
+      }
+      zPend = 0;
+    };
+
+    for (i = 0; i < nblock; i++) {
+      j = ptr[i] - 1; if (j < 0) j += nblock;
+      const llI = unseqToSeq[block[j]];
+      if (yy[0] === llI) {
+        zPend++;
+      } else {
+        if (zPend > 0) putRun();
+        // move llI to the front; j its old position
+        let rtmp = yy[1];
+        yy[1] = yy[0];
+        let p = 1;
+        while (llI !== rtmp) {
+          p++;
+          const rtmp2 = rtmp;
+          rtmp = yy[p];
+          yy[p] = rtmp2;
+        }
+        yy[0] = rtmp;
+        mtfv[wr++] = p + 1;
+        mtfFreq[p + 1]++;
+      }
+    }
+    if (zPend > 0) putRun();
+    mtfv[wr++] = EOB;
+    mtfFreq[EOB]++;
+    this.nMTF = wr;
+  }
+
+  _sendMTFValues() {
+    const { mtfv, len, code, rfreq, selector, selectorMtf } = this;
+    const nMTF = this.nMTF;
+    const alphaSize = this.nInUse + 2;
+    const cost = new Uint16Array(N_GROUPS$compress);
+    const fave = new Int32Array(N_GROUPS$compress);
+    let v, t, i, j, gs, ge, bt, bc, iter, nSelectors, nGroups, minLen, maxLen, selCtr;
+
+    for (t = 0; t < N_GROUPS$compress; t++) for (v = 0; v < alphaSize; v++) len[t][v] = GREATER_ICOST;
+
+    // how many coding tables
+    if (!(nMTF > 0)) throw new Error('bz2: internal error 3001');
+    if (nMTF < 200) nGroups = 2;
+    else if (nMTF < 600) nGroups = 3;
+    else if (nMTF < 1200) nGroups = 4;
+    else if (nMTF < 2400) nGroups = 5;
+    else nGroups = 6;
+
+    // an initial set of coding tables
+    {
+      let nPart = nGroups, remF = nMTF, tFreq, aFreq;
+      gs = 0;
+      while (nPart > 0) {
+        tFreq = (remF / nPart) | 0;
+        ge = gs - 1;
+        aFreq = 0;
+        while (aFreq < tFreq && ge < alphaSize - 1) {
+          ge++;
+          aFreq += this.mtfFreq[ge];
+        }
+        if (ge > gs && nPart !== nGroups && nPart !== 1 && ((nGroups - nPart) % 2 === 1)) {
+          aFreq -= this.mtfFreq[ge];
+          ge--;
+        }
+        for (v = 0; v < alphaSize; v++) len[nPart - 1][v] = (v >= gs && v <= ge) ? LESSER_ICOST : GREATER_ICOST;
+        nPart--;
+        gs = ge + 1;
+        remF -= aFreq;
+      }
+    }
+
+    // up to N_ITERS passes improving the tables
+    for (iter = 0; iter < N_ITERS; iter++) {
+      for (t = 0; t < nGroups; t++) fave[t] = 0;
+      for (t = 0; t < nGroups; t++) for (v = 0; v < alphaSize; v++) rfreq[t][v] = 0;
+      nSelectors = 0;
+      gs = 0;
+      while (true) {
+        if (gs >= nMTF) break;
+        ge = gs + G_SIZE$compress - 1;
+        if (ge >= nMTF) ge = nMTF - 1;
+        // this group's cost under each table (the C's 6-table fast path computes the same)
+        for (t = 0; t < nGroups; t++) cost[t] = 0;
+        for (i = gs; i <= ge; i++) {
+          const icv = mtfv[i];
+          for (t = 0; t < nGroups; t++) cost[t] += len[t][icv];
+        }
+        // the cheapest table: this group's selector
+        bc = 999999999; bt = -1;
+        for (t = 0; t < nGroups; t++) if (cost[t] < bc) { bc = cost[t]; bt = t; }
+        fave[bt]++;
+        selector[nSelectors++] = bt;
+        for (i = gs; i <= ge; i++) rfreq[bt][mtfv[i]]++;
+        gs = ge + 1;
+      }
+      // recompute the tables from what each was chosen for (maxLen 17, since bzip2 1.0.3)
+      for (t = 0; t < nGroups; t++) makeCodeLengths(len[t], rfreq[t], alphaSize, 17);
+    }
+    if (!(nSelectors < 32768 && nSelectors <= MAX_SELECTORS$compress)) throw new Error('bz2: internal error 3003');
+
+    // MTF values for the selectors
+    {
+      const pos = new Uint8Array(N_GROUPS$compress);
+      for (i = 0; i < nGroups; i++) pos[i] = i;
+      for (i = 0; i < nSelectors; i++) {
+        const llI = selector[i];
+        j = 0;
+        let tmp = pos[j];
+        while (llI !== tmp) {
+          j++;
+          const tmp2 = tmp;
+          tmp = pos[j];
+          pos[j] = tmp2;
+        }
+        pos[0] = tmp;
+        selectorMtf[i] = j;
+      }
+    }
+
+    // the actual codes
+    for (t = 0; t < nGroups; t++) {
+      minLen = 32;
+      maxLen = 0;
+      for (i = 0; i < alphaSize; i++) {
+        if (len[t][i] > maxLen) maxLen = len[t][i];
+        if (len[t][i] < minLen) minLen = len[t][i];
+      }
+      if (maxLen > 17 || minLen < 1) throw new Error('bz2: internal error 3004');
+      assignCodes(code[t], len[t], minLen, maxLen, alphaSize);
+    }
+
+    // the mapping table
+    {
+      const inUse16 = new Uint8Array(16);
+      for (i = 0; i < 16; i++) for (j = 0; j < 16; j++) if (this.inUse[i * 16 + j]) inUse16[i] = 1;
+      for (i = 0; i < 16; i++) this._bsW(1, inUse16[i]);
+      for (i = 0; i < 16; i++) {
+        if (inUse16[i]) for (j = 0; j < 16; j++) this._bsW(1, this.inUse[i * 16 + j]);
+      }
+    }
+
+    // the selectors
+    this._bsW(3, nGroups);
+    this._bsW(15, nSelectors);
+    for (i = 0; i < nSelectors; i++) {
+      for (j = 0; j < selectorMtf[i]; j++) this._bsW(1, 1);
+      this._bsW(1, 0);
+    }
+
+    // the coding tables, as deltas
+    for (t = 0; t < nGroups; t++) {
+      let curr = len[t][0];
+      this._bsW(5, curr);
+      for (i = 0; i < alphaSize; i++) {
+        while (curr < len[t][i]) { this._bsW(2, 2); curr++; }
+        while (curr > len[t][i]) { this._bsW(2, 3); curr--; }
+        this._bsW(1, 0);
+      }
+    }
+
+    // and the block data proper
+    selCtr = 0;
+    gs = 0;
+    while (true) {
+      if (gs >= nMTF) break;
+      ge = gs + G_SIZE$compress - 1;
+      if (ge >= nMTF) ge = nMTF - 1;
+      const sl = len[selector[selCtr]], sc = code[selector[selCtr]];
+      for (i = gs; i <= ge; i++) this._bsW(sl[mtfv[i]], sc[mtfv[i]]);
+      gs = ge + 1;
+      selCtr++;
+    }
+  }
+}
+
+// ── src/decompress.js ──
+
+// The bzip2 decompressor: decompress.c (one block's Huffman / MTF / run decoding, then the
+// inverse BWT) and bzlib.c's output side (the run-length decoding, CRCs), bzip2 1.0.8 ported.
+// Input is consumed as libbzip2 consumes it — a byte at a time, only when bits are needed — so
+// what's left over (unusedData) and when more input is wanted (needsInput) are libbzip2's, and
+// so CPython's. The block parser is a generator: it pauses wherever the input runs out, the
+// C's save-and-return-by-state machinery in another form.
+//
+// Ported from bzip2/libbzip2 1.0.8, Copyright (C) 1996-2019 Julian Seward — see LICENSE.
+
+
+const RUNA$decompress = 0, RUNB$decompress = 1;
+const N_GROUPS$decompress = 6, G_SIZE$decompress = 50;
+const MAX_SELECTORS$decompress = 2 + ((900000 / G_SIZE$decompress) | 0);
+
+// libbzip2's BZ_DATA_ERROR / BZ_DATA_ERROR_MAGIC
+class BzDataError extends Error {
+  constructor(magic = false) {
+    super(magic ? 'bz2: not a bzip2 stream' : 'bz2: invalid data stream');
+    this.name = 'BzDataError';
+    this.magic = magic;
+  }
+}
+
+const NEED_INPUT = 1, BLOCK_READY = 2, STREAM_END = 3;
+
+class Decompressor {
+  constructor() {
+    this.eof = false;
+    this.needsInput = true;
+    this.unusedData = new Uint8Array(0);
+    this._in = new Uint8Array(0);   // input not yet consumed
+    this._pos = 0;
+    this._parser = this._parse();
+    this._state = 'parse';          // 'parse' | 'output'
+    this._calculatedCombinedCRC = 0;
+    this._storedCombinedCRC = 0;
+    this._broken = null;
+  }
+
+  // CPython's BZ2Decompressor.decompress: everything the input decodes to, or at most maxLength
+  // bytes of it (maxLength < 0: no limit); input it hasn't reached yet is kept for later
+  decompress(data, maxLength = -1) {
+    if (this.eof) throw new Error('bz2: end of stream already reached');
+    if (this._broken) throw this._broken;
+    // the unconsumed input, then the new
+    if (this._pos < this._in.length) {
+      const rest = this._in.subarray(this._pos);
+      const b = new Uint8Array(rest.length + data.length);
+      b.set(rest); b.set(data, rest.length);
+      this._in = b;
+    } else {
+      this._in = data instanceof Uint8Array ? data : Uint8Array.from(data);
+    }
+    this._pos = 0;
+
+    const out = new _Out(maxLength);
+    try {
+      // BZ2_bzDecompress, called until the stream ends, the input is used up, or the output is full
+      while (true) {
+        if (this._state === 'output') {
+          if (this._unRLE(out)) throw new BzDataError();
+          if (this._nblockUsed === this._nblock + 1 && this._stateOutLen === 0) {
+            this._blockCRC = (~this._blockCRC) >>> 0;
+            if (this._blockCRC !== this._storedBlockCRC) throw new BzDataError();
+            this._calculatedCombinedCRC = (((this._calculatedCombinedCRC << 1) | (this._calculatedCombinedCRC >>> 31)) ^ this._blockCRC) >>> 0;
+            this._state = 'parse';
+          } else if (!out.full()) {
+            continue;   // (out grew: more room)
+          } else {
+            break;      // the output is at maxLength
+          }
+        }
+        const r = this._parser.next().value;
+        if (r === STREAM_END) {
+          if (this._calculatedCombinedCRC !== this._storedCombinedCRC) throw new BzDataError();
+          this.eof = true;
+          break;
+        }
+        if (r === NEED_INPUT) break;
+        this._state = 'output';   // BLOCK_READY
+      }
+    } catch (e) {
+      this._broken = e;
+      throw e;
+    }
+
+    const avail = this._in.length - this._pos;
+    if (this.eof) {
+      this.needsInput = false;
+      if (avail > 0) this.unusedData = this._in.slice(this._pos);
+    } else {
+      this.needsInput = avail === 0;
+    }
+    return out.result();
+  }
+
+  // ── the block parser (BZ2_decompress) ──
+  // yields NEED_INPUT when it runs out of bytes (resumed with more in this._in from _pos), and
+  // BLOCK_READY when a block is decoded into tt; returns STREAM_END after the trailer
+  *_parse() {
+    let bsBuff = 0, bsLive = 0;
+    let input = this._in, inPos = this._pos;
+    // GET_BITS, inline where it's hot; this is the general form
+    const self = this;
+    let v;
+
+    // (each `while (bsLive < n)` below is GET_BITS: pull bytes, pausing for more input)
+    // stream header
+    for (const want of [0x42, 0x5a, 0x68]) {
+      while (bsLive < 8) {
+        if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+        bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+      }
+      v = (bsBuff >>> (bsLive - 8)) & 0xff; bsLive -= 8;
+      if (v !== want) { self._pos = inPos; throw new BzDataError(true); }
+    }
+    while (bsLive < 8) {
+      if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+      bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+    }
+    let blockSize100k = (bsBuff >>> (bsLive - 8)) & 0xff; bsLive -= 8;
+    if (blockSize100k < 0x31 || blockSize100k > 0x39) { self._pos = inPos; throw new BzDataError(true); }
+    blockSize100k -= 0x30;
+    this._blockSize100k = blockSize100k;
+    const tt = new Uint32Array(blockSize100k * 100000);
+    this._tt = tt;
+
+    const inUse16 = new Uint8Array(16), inUse = new Uint8Array(256), seqToUnseq = new Uint8Array(256);
+    const selectorMtf = new Uint8Array(MAX_SELECTORS$decompress), selector = new Uint8Array(MAX_SELECTORS$decompress);
+    const len = Array.from({ length: N_GROUPS$decompress }, () => new Uint8Array(MAX_ALPHA_SIZE));
+    const limit = Array.from({ length: N_GROUPS$decompress }, () => new Int32Array(MAX_CODE_LEN));
+    const base = Array.from({ length: N_GROUPS$decompress }, () => new Int32Array(MAX_CODE_LEN));
+    const perm = Array.from({ length: N_GROUPS$decompress }, () => new Int32Array(MAX_ALPHA_SIZE));
+    const minLens = new Int32Array(N_GROUPS$decompress);
+    const unzftab = new Int32Array(256), cftab = new Int32Array(257);
+    const mtf = new Uint8Array(256);
+
+    while (true) {
+      // a block header (0x314159265359) or the stream trailer (0x177245385090)
+      const magic = [];
+      for (let b = 0; b < 6; b++) {
+        while (bsLive < 8) {
+          if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+          bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+        }
+        v = (bsBuff >>> (bsLive - 8)) & 0xff; bsLive -= 8;
+        magic.push(v);
+        const want = (b === 0 ? (v === 0x17 ? TRAILER : BLOCK) : magic[0] === 0x17 ? TRAILER : BLOCK)[b];
+        if (v !== want) { self._pos = inPos; throw new BzDataError(); }
+      }
+      // the CRC that follows either
+      let crc = 0;
+      for (let b = 0; b < 4; b++) {
+        while (bsLive < 8) {
+          if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+          bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+        }
+        crc = ((crc << 8) | ((bsBuff >>> (bsLive - 8)) & 0xff)) >>> 0; bsLive -= 8;
+      }
+      if (magic[0] === 0x17) {
+        this._storedCombinedCRC = crc;
+        self._pos = inPos;
+        return STREAM_END;
+      }
+      this._storedBlockCRC = crc;
+
+      // randomised?, origPtr
+      while (bsLive < 1) {
+        if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+        bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+      }
+      const blockRandomised = (bsBuff >>> (bsLive - 1)) & 1; bsLive -= 1;
+      let origPtr = 0;
+      for (let b = 0; b < 3; b++) {
+        while (bsLive < 8) {
+          if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+          bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+        }
+        origPtr = (origPtr << 8) | ((bsBuff >>> (bsLive - 8)) & 0xff); bsLive -= 8;
+      }
+      if (origPtr > 10 + 100000 * blockSize100k) { self._pos = inPos; throw new BzDataError(); }
+
+      // the mapping table
+      for (let i = 0; i < 16; i++) {
+        while (bsLive < 1) {
+          if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+          bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+        }
+        inUse16[i] = (bsBuff >>> (bsLive - 1)) & 1; bsLive -= 1;
+      }
+      inUse.fill(0);
+      for (let i = 0; i < 16; i++) {
+        if (!inUse16[i]) continue;
+        for (let j = 0; j < 16; j++) {
+          while (bsLive < 1) {
+            if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+            bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+          }
+          if ((bsBuff >>> (bsLive - 1)) & 1) inUse[i * 16 + j] = 1;
+          bsLive -= 1;
+        }
+      }
+      let nInUse = 0;
+      for (let i = 0; i < 256; i++) if (inUse[i]) seqToUnseq[nInUse++] = i;
+      if (nInUse === 0) { self._pos = inPos; throw new BzDataError(); }
+      const alphaSize = nInUse + 2;
+
+      // the selectors
+      while (bsLive < 3) {
+        if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+        bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+      }
+      const nGroups = (bsBuff >>> (bsLive - 3)) & 7; bsLive -= 3;
+      if (nGroups < 2 || nGroups > N_GROUPS$decompress) { self._pos = inPos; throw new BzDataError(); }
+      while (bsLive < 15) {
+        if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+        bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+      }
+      let nSelectors = (bsBuff >>> (bsLive - 15)) & 0x7fff; bsLive -= 15;
+      if (nSelectors < 1) { self._pos = inPos; throw new BzDataError(); }
+      for (let i = 0; i < nSelectors; i++) {
+        let j = 0;
+        while (true) {
+          while (bsLive < 1) {
+            if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+            bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+          }
+          const bit = (bsBuff >>> (bsLive - 1)) & 1; bsLive -= 1;
+          if (bit === 0) break;
+          j++;
+          if (j >= nGroups) { self._pos = inPos; throw new BzDataError(); }
+        }
+        // (more than MAX_SELECTORS can't be used, but some writers round up: ignore them)
+        if (i < MAX_SELECTORS$decompress) selectorMtf[i] = j;
+      }
+      if (nSelectors > MAX_SELECTORS$decompress) nSelectors = MAX_SELECTORS$decompress;
+      {
+        const pos = new Uint8Array(N_GROUPS$decompress);
+        for (let q = 0; q < nGroups; q++) pos[q] = q;
+        for (let i = 0; i < nSelectors; i++) {
+          let q = selectorMtf[i];
+          const tmp = pos[q];
+          while (q > 0) { pos[q] = pos[q - 1]; q--; }
+          pos[0] = tmp;
+          selector[i] = tmp;
+        }
+      }
+
+      // the coding tables
+      for (let t = 0; t < nGroups; t++) {
+        while (bsLive < 5) {
+          if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+          bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+        }
+        let curr = (bsBuff >>> (bsLive - 5)) & 0x1f; bsLive -= 5;
+        for (let i = 0; i < alphaSize; i++) {
+          while (true) {
+            if (curr < 1 || curr > 20) { self._pos = inPos; throw new BzDataError(); }
+            while (bsLive < 1) {
+              if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+              bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+            }
+            let bit = (bsBuff >>> (bsLive - 1)) & 1; bsLive -= 1;
+            if (bit === 0) break;
+            while (bsLive < 1) {
+              if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+              bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+            }
+            bit = (bsBuff >>> (bsLive - 1)) & 1; bsLive -= 1;
+            if (bit === 0) curr++; else curr--;
+          }
+          len[t][i] = curr;
+        }
+      }
+      for (let t = 0; t < nGroups; t++) {
+        let minLen = 32, maxLen = 0;
+        for (let i = 0; i < alphaSize; i++) {
+          if (len[t][i] > maxLen) maxLen = len[t][i];
+          if (len[t][i] < minLen) minLen = len[t][i];
+        }
+        createDecodeTables(limit[t], base[t], perm[t], len[t], minLen, maxLen, alphaSize);
+        minLens[t] = minLen;
+      }
+
+      // the MTF values
+      const EOB = nInUse + 1;
+      const nblockMAX = 100000 * blockSize100k;
+      let groupNo = -1, groupPos = 0;
+      let gSel = 0, gMinlen = 0, gLimit = null, gBase = null, gPerm = null;
+      unzftab.fill(0);
+      for (let i = 0; i < 256; i++) mtf[i] = i;
+      let nblock = 0;
+      let nextSym;
+
+      // GET_MTF_VAL, written out at its three uses
+      while (true) {
+        if (groupPos === 0) {
+          groupNo++;
+          if (groupNo >= nSelectors) { self._pos = inPos; throw new BzDataError(); }
+          groupPos = G_SIZE$decompress;
+          gSel = selector[groupNo];
+          gMinlen = minLens[gSel]; gLimit = limit[gSel]; gPerm = perm[gSel]; gBase = base[gSel];
+        }
+        groupPos--;
+        let zn = gMinlen;
+        while (bsLive < zn) {
+          if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+          bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+        }
+        let zvec = (bsBuff >>> (bsLive - zn)) & ((1 << zn) - 1); bsLive -= zn;
+        while (true) {
+          if (zn > 20) { self._pos = inPos; throw new BzDataError(); }
+          if (zvec <= gLimit[zn]) break;
+          zn++;
+          while (bsLive < 1) {
+            if (inPos >= input.length) { self._pos = inPos; yield NEED_INPUT; input = self._in; inPos = self._pos; continue; }
+            bsBuff = (bsBuff << 8) | input[inPos++]; bsLive += 8;
+          }
+          zvec = (zvec << 1) | ((bsBuff >>> (bsLive - 1)) & 1); bsLive -= 1;
+        }
+        if (zvec - gBase[zn] < 0 || zvec - gBase[zn] >= MAX_ALPHA_SIZE) { self._pos = inPos; throw new BzDataError(); }
+        nextSym = gPerm[zvec - gBase[zn]];
+
+        if (nextSym === EOB) break;
+        if (nextSym === RUNA$decompress || nextSym === RUNB$decompress) {
+          // a run of the front symbol: RUNA / RUNB digits, bijective base 2
+          if (this._runN === undefined) { this._runEs = -1; this._runN = 1; }
+          if (this._runN >= 2 * 1024 * 1024) { self._pos = inPos; throw new BzDataError(); }
+          this._runEs += (nextSym === RUNA$decompress ? 1 : 2) * this._runN;
+          this._runN *= 2;
+          continue;
+        }
+        if (this._runN !== undefined) {
+          nblock = this._flushRun(nblock, nblockMAX, seqToUnseq[mtf[0]], unzftab, tt, inPos);
+        }
+        if (nblock >= nblockMAX) { self._pos = inPos; throw new BzDataError(); }
+        // uc = MTF(nextSym - 1)
+        const nn = nextSym - 1;
+        const uc = mtf[nn];
+        mtf.copyWithin(1, 0, nn);
+        mtf[0] = uc;
+        const b = seqToUnseq[uc];
+        unzftab[b]++;
+        tt[nblock++] = b;
+      }
+      if (this._runN !== undefined) {
+        nblock = this._flushRun(nblock, nblockMAX, seqToUnseq[mtf[0]], unzftab, tt, inPos);
+      }
+
+      // now nblock is known: a better check of origPtr
+      if (origPtr < 0 || origPtr >= nblock) { self._pos = inPos; throw new BzDataError(); }
+      for (let i = 0; i <= 255; i++) {
+        if (unzftab[i] < 0 || unzftab[i] > nblock) { self._pos = inPos; throw new BzDataError(); }
+      }
+      cftab[0] = 0;
+      for (let i = 1; i <= 256; i++) cftab[i] = unzftab[i - 1];
+      for (let i = 1; i <= 256; i++) cftab[i] += cftab[i - 1];
+      for (let i = 0; i <= 256; i++) {
+        if (cftab[i] < 0 || cftab[i] > nblock) { self._pos = inPos; throw new BzDataError(); }
+      }
+      for (let i = 1; i <= 256; i++) {
+        if (cftab[i - 1] > cftab[i]) { self._pos = inPos; throw new BzDataError(); }
+      }
+
+      // T^(-1), in the high 24 bits of tt beside each byte
+      for (let i = 0; i < nblock; i++) {
+        const uc = tt[i] & 0xff;
+        tt[cftab[uc]] |= (i << 8);
+        cftab[uc]++;
+      }
+      this._stateOutLen = 0;
+      this._stateOutCh = 0;
+      this._blockCRC = 0xffffffff;
+      this._nblock = nblock;
+      this._tPos = tt[origPtr] >>> 8;
+      this._nblockUsed = 0;
+      this._randomised = blockRandomised;
+      if (blockRandomised) {
+        this._rNToGo = 0; this._rTPos = 0;
+        if (this._getFast()) { self._pos = inPos; throw new BzDataError(); }
+        this._k0 = this._got; this._nblockUsed++;
+        this._randUpd(); this._k0 ^= this._randMask();
+      } else {
+        if (this._getFast()) { self._pos = inPos; throw new BzDataError(); }
+        this._k0 = this._got; this._nblockUsed++;
+      }
+      self._pos = inPos;
+      yield BLOCK_READY;
+      input = self._in; inPos = self._pos;
+    }
+  }
+
+  // es copies of the run's byte into the block
+  _flushRun(nblock, nblockMAX, uc, unzftab, tt, inPos) {
+    let es = this._runEs + 1;
+    this._runN = undefined;
+    unzftab[uc] += es;
+    while (es > 0) {
+      if (nblock >= nblockMAX) { this._pos = inPos; throw new BzDataError(); }
+      tt[nblock++] = uc;
+      es--;
+    }
+    return nblock;
+  }
+
+  // BZ_GET_FAST: the next byte of the block into _got (true: corrupt)
+  _getFast() {
+    if (this._tPos >= 100000 * this._blockSize100k) return true;
+    this._tPos = this._tt[this._tPos];
+    this._got = this._tPos & 0xff;
+    this._tPos >>>= 8;
+    return false;
+  }
+  _randUpd() {
+    if (this._rNToGo === 0) {
+      this._rNToGo = BZ2_RNUMS[this._rTPos];
+      this._rTPos++;
+      if (this._rTPos === 512) this._rTPos = 0;
+    }
+    this._rNToGo--;
+  }
+  _randMask() { return this._rNToGo === 1 ? 1 : 0; }
+
+  // unRLE_obuf_to_output_FAST: the block's bytes, its 4-byte runs expanded, into out (true:
+  // corrupt). The structure — where it stops when out is full — is the C's.
+  _unRLE(out) {
+    const save1 = this._nblock + 1;
+    if (this._randomised) {
+      while (true) {
+        // finish the current run
+        while (true) {
+          if (out.full()) return false;
+          if (this._stateOutLen === 0) break;
+          out.push(this._stateOutCh);
+          this._blockCRC = ((this._blockCRC << 8) ^ BZ2_CRC32_TABLE[(this._blockCRC >>> 24) ^ this._stateOutCh]) >>> 0;
+          this._stateOutLen--;
+        }
+        if (this._nblockUsed === save1) return false;
+        if (this._nblockUsed > save1) return true;
+        this._stateOutLen = 1;
+        this._stateOutCh = this._k0;
+        let k1;
+        if (this._getFast()) return true; k1 = this._got; this._randUpd();
+        k1 ^= this._randMask(); this._nblockUsed++;
+        if (this._nblockUsed === save1) continue;
+        if (k1 !== this._k0) { this._k0 = k1; continue; }
+        this._stateOutLen = 2;
+        if (this._getFast()) return true; k1 = this._got; this._randUpd();
+        k1 ^= this._randMask(); this._nblockUsed++;
+        if (this._nblockUsed === save1) continue;
+        if (k1 !== this._k0) { this._k0 = k1; continue; }
+        this._stateOutLen = 3;
+        if (this._getFast()) return true; k1 = this._got; this._randUpd();
+        k1 ^= this._randMask(); this._nblockUsed++;
+        if (this._nblockUsed === save1) continue;
+        if (k1 !== this._k0) { this._k0 = k1; continue; }
+        if (this._getFast()) return true; k1 = this._got; this._randUpd();
+        k1 ^= this._randMask(); this._nblockUsed++;
+        this._stateOutLen = k1 + 4;
+        if (this._getFast()) return true; this._k0 = this._got; this._randUpd();
+        this._k0 ^= this._randMask(); this._nblockUsed++;
+      }
+    }
+
+    // the common case, with the state in locals (as the C keeps it in registers)
+    let crc = this._blockCRC, ch = this._stateOutCh, runLen = this._stateOutLen;
+    let used = this._nblockUsed, k0 = this._k0, tPos = this._tPos, k1;
+    const tt = this._tt, tLimit = 100000 * this._blockSize100k;
+    let corrupt = false;
+    const buf = out.buf;
+    let n = out.n;
+    const cap = out.cap;
+    outer: while (true) {
+      let eqOne = false;
+      if (runLen > 0) {
+        // the run's bytes but its last
+        while (true) {
+          if (n === cap) break outer;
+          if (runLen === 1) break;
+          buf[n++] = ch;
+          crc = ((crc << 8) ^ BZ2_CRC32_TABLE[(crc >>> 24) ^ ch]) >>> 0;
+          runLen--;
+        }
+        eqOne = true;
+      }
+      while (true) {
+        if (eqOne) {
+          // s_state_out_len_eq_one: the run's last byte
+          if (n === cap) { runLen = 1; break outer; }
+          buf[n++] = ch;
+          crc = ((crc << 8) ^ BZ2_CRC32_TABLE[(crc >>> 24) ^ ch]) >>> 0;
+          eqOne = false;
+        }
+        if (used > save1) { corrupt = true; break outer; }
+        if (used === save1) { runLen = 0; break outer; }
+        ch = k0;
+        if (tPos >= tLimit) { corrupt = true; break outer; }
+        tPos = tt[tPos]; k1 = tPos & 0xff; tPos >>>= 8; used++;
+        if (k1 !== k0) { k0 = k1; eqOne = true; continue; }
+        if (used === save1) { eqOne = true; continue; }
+        runLen = 2;
+        if (tPos >= tLimit) { corrupt = true; break outer; }
+        tPos = tt[tPos]; k1 = tPos & 0xff; tPos >>>= 8; used++;
+        if (used === save1) continue outer;
+        if (k1 !== k0) { k0 = k1; continue outer; }
+        runLen = 3;
+        if (tPos >= tLimit) { corrupt = true; break outer; }
+        tPos = tt[tPos]; k1 = tPos & 0xff; tPos >>>= 8; used++;
+        if (used === save1) continue outer;
+        if (k1 !== k0) { k0 = k1; continue outer; }
+        if (tPos >= tLimit) { corrupt = true; break outer; }
+        tPos = tt[tPos]; k1 = tPos & 0xff; tPos >>>= 8; used++;
+        runLen = k1 + 4;
+        if (tPos >= tLimit) { corrupt = true; break outer; }
+        tPos = tt[tPos]; k0 = tPos & 0xff; tPos >>>= 8; used++;
+        continue outer;
+      }
+    }
+    out.n = n;
+    this._blockCRC = crc; this._stateOutCh = ch; this._stateOutLen = runLen;
+    this._nblockUsed = used; this._k0 = k0; this._tPos = tPos;
+    return corrupt;
+  }
+}
+
+const BLOCK = [0x31, 0x41, 0x59, 0x26, 0x53, 0x59];
+const TRAILER = [0x17, 0x72, 0x45, 0x38, 0x50, 0x90];
+
+// the output: grows until max bytes (max < 0: without limit)
+class _Out {
+  constructor(max) {
+    this.max = max < 0 ? Infinity : max;
+    this.buf = new Uint8Array(Math.min(this.max, 1024));
+    this.n = 0;
+    this.cap = this.buf.length;
+  }
+  full() {
+    if (this.n < this.cap) return false;
+    if (this.cap >= this.max) return true;
+    this._grow();
+    return false;
+  }
+  push(b) { this.buf[this.n++] = b; }
+  _grow() {
+    const c = Math.min(this.max, Math.max(this.cap * 2, 1024));
+    const b = new Uint8Array(c);
+    b.set(this.buf.subarray(0, this.n));
+    this.buf = b;
+    this.cap = c;
+  }
+  result() { return this.buf.slice(0, this.n); }
+}
+
+// ── src/main.js ──
+
+// @gcu/bz2 — bzip2, both ways, in plain JavaScript: libbzip2 1.0.8 ported, so a stream it writes
+// is byte for byte the one libbzip2 (and CPython's bz2, and the bzip2 tool) writes, and what it
+// reads it reads as they do — streamed, a maxLength at a time, with libbzip2's unusedData.
+//
+//   compress(bytes, level = 9)       → a .bz2 stream
+//   decompress(bytes)                → the data of one or more concatenated streams
+//   new Compressor(level)            .compress(bytes) → bytes so far; .flush() → the rest
+//   new Decompressor()               .decompress(bytes, maxLength = -1); .eof, .needsInput,
+//                                    .unusedData (CPython's BZ2Decompressor, member for member)
+
+
+
+function compress(data, level = 9) {
+  const c = new Compressor(level);
+  const a = c.compress(data), b = c.flush();
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a); out.set(b, a.length);
+  return out;
+}
+
+// as CPython's bz2.decompress: stream after stream; trailing bytes that aren't one are ignored,
+// a stream cut short is an error
+function decompress(data) {
+  const parts = [];
+  let total = 0;
+  while (data.length) {
+    const d = new Decompressor();
+    let res;
+    try { res = d.decompress(data); } catch (e) {
+      if (parts.length && e instanceof BzDataError) break;
+      throw e;
+    }
+    parts.push(res); total += res.length;
+    if (!d.eof) throw new Error('bz2: compressed data ended before the end-of-stream marker was reached');
+    data = d.unusedData;
+  }
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+return { Compressor, Decompressor, BzDataError, compress, decompress };
+})();
+
 // -- parse.js --
 
 // adder v2 — tokenizer + recursive-descent parser
@@ -20251,6 +21866,8 @@ adderModules.time = {
 // Concat-bundled with the rest of adder: top-level names carry a `_dt` prefix.
 
 
+// @gcu/bz2 (_bz2's codec): adder's build.js inlines this bundle as the one name _gcuBz2
+
 const _dtIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
 const _dtKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
   args[args.length - 1]._kw === true ? args.pop() : null);
@@ -21083,13 +22700,51 @@ adderModules.gzip.open = (filename, mode = 'rb', ...a) => {
   return String(mode).includes('t') ? adderModules.io.TextIOWrapper(g, { _kw: true, encoding: args.encoding || 'utf-8', errors: args.errors || 'strict' }) : g;
 };
 
-// bz2 / lzma: no bzip2 or xz codec in the platform — the modules are there (libraries import
-// them to offer .bz2 / .xz files as an option), and using one says so
+// ── _bz2 ──
+// The C half of CPython's bz2 (bz2.py, vendored, is the rest): BZ2Compressor / BZ2Decompressor
+// over @gcu/bz2, libbzip2 1.0.8 ported — the same bytes out, the same unused_data / needs_input.
+class _DtBZ2Compressor {
+  constructor(compresslevel = 9) {
+    const level = Number(compresslevel);
+    if (!(level >= 1 && level <= 9)) throw new AdderError('ValueError', 'compresslevel must be between 1 and 9');
+    this._c = new _gcuBz2.Compressor(level);
+    this._flushed = false;
+  }
+  compress(data) {
+    if (this._flushed) throw new AdderError('ValueError', 'Compressor has been flushed');
+    return this._c.compress(_dtBytes(data));
+  }
+  flush() {
+    if (this._flushed) throw new AdderError('ValueError', 'Repeated call to flush()');
+    this._flushed = true;
+    return this._c.flush();
+  }
+}
+class _DtBZ2Decompressor {
+  constructor() { this._d = new _gcuBz2.Decompressor(); }
+  get eof() { return this._d.eof; }
+  get needs_input() { return this._d.needsInput; }
+  get unused_data() { return this._d.unusedData; }
+  decompress(data, ...a) {
+    const { args } = _dtArgs(a, ['max_length'], { max_length: -1 });
+    if (this._d.eof) throw new AdderError('EOFError', 'End of stream already reached');
+    try { return this._d.decompress(_dtBytes(data), Number(args.max_length)); } catch (e) {
+      if (e instanceof _gcuBz2.BzDataError) throw new AdderError('OSError', 'Invalid data stream');
+      throw e;
+    }
+  }
+}
+adderModules._bz2 = {
+  __adderModule__: true, __name__: '_bz2',
+  BZ2Compressor: _dtType('BZ2Compressor', _DtBZ2Compressor, '_bz2'),
+  BZ2Decompressor: _dtType('BZ2Decompressor', _DtBZ2Decompressor, '_bz2'),
+};
+
+// lzma: no xz codec yet — the module is there (libraries import it to offer .xz files as an
+// option), and using it says so
 {
-  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no bzip2 / xz codec in the browser)`); };
+  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no xz codec yet)`); };
   const cls = (name, what, module) => { const c = no(what); c._pyName = name; c.__name__ = name; c._pyClass = true; c.__module__ = module; return c; };
-  adderModules.bz2 = { __adderModule__: true, __name__: 'bz2', compress: no('bz2'), decompress: no('bz2'), open: no('bz2'),
-    BZ2File: cls('BZ2File', 'bz2', 'bz2'), BZ2Compressor: cls('BZ2Compressor', 'bz2', 'bz2'), BZ2Decompressor: cls('BZ2Decompressor', 'bz2', 'bz2') };
   const LZMAError = makeExcType('LZMAError', 'Exception');
   adderModules.lzma = { __adderModule__: true, __name__: 'lzma', compress: no('xz'), decompress: no('xz'), open: no('xz'), is_check_supported: () => false,
     LZMAFile: cls('LZMAFile', 'xz', 'lzma'), LZMACompressor: cls('LZMACompressor', 'xz', 'lzma'), LZMADecompressor: cls('LZMADecompressor', 'xz', 'lzma'), LZMAError,
@@ -23820,6 +25475,174 @@ const _syTruthy = (v) => pyBool(v);
   cl.AsyncExitStack = cl.ExitStack;
 }
 
+// io.BufferedReader(raw, buffer_size): a read-ahead buffer over a raw stream, as _pyio's — read,
+// read1, peek, readline, readinto, seek / tell through it. Async: the raw stream's methods may be
+// tree-walked Python (bz2.BZ2File's DecompressReader).
+function _syBufferedReader(BufferedIOBase) {
+  const call = async (obj, name, ...a) => adderGetAttr(obj, name)(...a);
+  const EMPTY = new Uint8Array(0);
+  const avail = (self) => self._rbuf.length - self._rpos;
+  const bytesOf = (b) => (b === null || b === undefined ? null : b instanceof Uint8Array ? b : Uint8Array.from(b));
+  const checkClosed = (self, what) => { if (self._closed) throw new AdderError('ValueError', `${what} of closed file`); };
+  // at most n bytes, reading the raw stream as needed (n < 0: all of it)
+  const readUnlocked = async (self, n) => {
+    if (n < 0) {
+      const parts = [self._rbuf.subarray(self._rpos)];
+      self._rbuf = EMPTY; self._rpos = 0;
+      let none = false;
+      for (;;) {
+        const chunk = bytesOf(await call(self.raw, 'read'));
+        if (chunk === null) { none = true; break; }
+        if (!chunk.length) break;
+        parts.push(chunk);
+      }
+      const out = _syConcat(parts);
+      return none && !out.length ? null : out;
+    }
+    if (n <= avail(self)) {
+      const out = self._rbuf.slice(self._rpos, self._rpos + n);
+      self._rpos += n;
+      return out;
+    }
+    const parts = [self._rbuf.subarray(self._rpos)];
+    let have = avail(self);
+    const wanted = Math.max(self.buffer_size, n);
+    let none = false;
+    while (have < n) {
+      const chunk = bytesOf(await call(self.raw, 'read', wanted));
+      if (chunk === null) { none = true; break; }
+      if (!chunk.length) break;
+      parts.push(chunk);
+      have += chunk.length;
+    }
+    const all = _syConcat(parts);
+    const out = all.slice(0, Math.min(n, all.length));
+    self._rbuf = all.subarray(out.length); self._rpos = 0;
+    return none && !out.length ? null : out;
+  };
+  // fill the buffer to want bytes (one raw read at most); its contents
+  const peekUnlocked = async (self, n = 0) => {
+    const want = Math.min(n, self.buffer_size);
+    const have = avail(self);
+    if (have < want || have <= 0) {
+      const current = bytesOf(await call(self.raw, 'read', self.buffer_size - have));
+      if (current && current.length) {
+        self._rbuf = _syConcat([self._rbuf.subarray(self._rpos), current]);
+        self._rpos = 0;
+      }
+    }
+    return self._rbuf.slice(self._rpos);
+  };
+  const sizeArg = (a, name = 'size') => { const v = _syArgs(a, [name], { [name]: -1 })[name]; return v === null || v === undefined ? -1 : Number(v); };
+  return _syClass('BufferedReader', [BufferedIOBase], {
+    __init__(self, raw, ...a) {
+      const { buffer_size } = _syArgs(a, ['buffer_size'], { buffer_size: 8192 });
+      if (Number(buffer_size) <= 0) throw new AdderError('ValueError', 'invalid buffer size');
+      self.raw = raw; self.buffer_size = Number(buffer_size);
+      self._rbuf = EMPTY; self._rpos = 0; self._closed = false;
+      return null;
+    },
+    closed: { __property__: true, fget: (self) => self._closed || !!(self.raw && self.raw.closed), fset: null, __doc__: null },
+    name: { __property__: true, fget: (self) => adderGetAttr(self.raw, 'name'), fset: null, __doc__: null },
+    mode: { __property__: true, fget: (self) => adderGetAttr(self.raw, 'mode'), fset: null, __doc__: null },
+    async read(self, ...a) {
+      const n = sizeArg(a);
+      if (n < -1) throw new AdderError('ValueError', 'read length must be non-negative or -1');
+      checkClosed(self, 'read');
+      return readUnlocked(self, n);
+    },
+    async read1(self, ...a) {
+      let n = sizeArg(a);
+      checkClosed(self, 'read');
+      if (n < 0) n = self.buffer_size;
+      if (n === 0) return EMPTY;
+      await peekUnlocked(self, 1);
+      return readUnlocked(self, Math.min(n, avail(self)));
+    },
+    async peek(self, size = 0) { checkClosed(self, 'peek'); return peekUnlocked(self, Number(size)); },
+    async readinto(self, b) {
+      const data = await adderGetAttr(self, 'read')(b.length ?? b.byteLength);
+      const d = data || EMPTY;
+      for (let i = 0; i < d.length; i++) b[i] = d[i];
+      return d.length;
+    },
+    async readinto1(self, b) {
+      const data = await adderGetAttr(self, 'read1')(b.length ?? b.byteLength);
+      for (let i = 0; i < data.length; i++) b[i] = data[i];
+      return data.length;
+    },
+    // IOBase.readline, over peek: one line, its newline kept; at most size bytes
+    async readline(self, ...a) {
+      const size = sizeArg(a);
+      checkClosed(self, 'readline');
+      const parts = [];
+      let len = 0;
+      while (size < 0 || len < size) {
+        const ahead = await peekUnlocked(self, 1);
+        let n = ahead.length ? (ahead.indexOf(10) + 1 || ahead.length) : 1;
+        if (size >= 0) n = Math.min(n, size - len);
+        const b = await readUnlocked(self, n);
+        if (!b || !b.length) break;
+        parts.push(b); len += b.length;
+        if (b[b.length - 1] === 10) break;
+      }
+      return _syConcat(parts);
+    },
+    async readlines(self, hint = -1) {
+      const out = [];
+      let total = 0;
+      for (;;) {
+        const l = await adderGetAttr(self, 'readline')();
+        if (!l.length) return out;
+        out.push(l); total += l.length;
+        if (hint !== null && hint > 0 && total >= hint) return out;
+      }
+    },
+    async seek(self, pos, whence = 0) {
+      if (![0, 1, 2].includes(Number(whence))) throw new AdderError('ValueError', 'invalid whence value');
+      checkClosed(self, 'seek');
+      let p = Number(pos);
+      if (Number(whence) === 1) p -= avail(self);
+      const r = await call(self.raw, 'seek', p, whence);
+      if (r < 0) throw new AdderError('OSError', 'seek() returned an invalid position');
+      self._rbuf = EMPTY; self._rpos = 0;
+      return r;
+    },
+    async tell(self) {
+      const p = (await call(self.raw, 'tell')) - avail(self);
+      return p < 0 ? 0 : p;
+    },
+    async close(self) {
+      if (self.raw && !self._closed) {
+        self._closed = true;
+        await call(self.raw, 'close');
+      }
+      return null;
+    },
+    detach(self) { const r = self.raw; self.raw = null; return r; },
+    readable(self) { return adderGetAttr(self.raw, 'readable')(); },
+    seekable(self) { return adderGetAttr(self.raw, 'seekable')(); },
+    writable() { return false; },
+    fileno(self) { return adderGetAttr(self.raw, 'fileno')(); },
+    isatty(self) { return adderGetAttr(self.raw, 'isatty')(); },
+    __iter__(self) { return self; },
+    async __next__(self) {
+      const l = await adderGetAttr(self, 'readline')();
+      if (!l.length) throw new AdderError('StopIteration', '');
+      return l;
+    },
+  }, 'io');
+}
+function _syConcat(parts) {
+  if (parts.length === 1) return parts[0].slice();
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
 // ── io: the class hierarchy (isinstance checks and subclassing), open, text_encoding ──
 {
   const io = adderModules.io;
@@ -23829,7 +25652,22 @@ const _syTruthy = (v) => pyBool(v);
     readable() { return false; }, writable() { return false; }, seekable() { return false; }, isatty() { return false; },
     fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); },
     readline(self) { throw new AdderError('UnsupportedOperation', 'readline'); },
-    readlines(self, hint = -1) { const out = []; for (;;) { const l = adderGetAttr(self, 'readline')(); if (!l || !l.length) return out; out.push(l); } },
+    // (sync while readline is; a readline that returns a promise — over an async buffer — waits)
+    readlines(self, hint = -1) {
+      const out = [];
+      let total = 0;
+      const rl = adderGetAttr(self, 'readline');
+      const step = (l) => {
+        for (;;) {
+          if (_syIsThen(l)) return l.then(step);
+          if (!l || !l.length) return out;
+          out.push(l); total += l.length;
+          if (hint !== null && hint > 0 && total >= hint) return out;
+          l = rl();
+        }
+      };
+      return step(rl());
+    },
     writelines(self, lines) { for (const l of pyIter(lines)) adderGetAttr(self, 'write')(l); return null; },
   }, 'io');
   const RawIOBase = _syClass('RawIOBase', [IOBase], {}, 'io');
@@ -23852,10 +25690,18 @@ const _syTruthy = (v) => pyBool(v);
     readable(self) { return true; }, writable(self) { return true; },
     detach(self) { const b = self.buffer; self.buffer = null; return b; },
     flush(self) { const f = self.buffer && adderGetAttr(self.buffer, 'flush'); return f ? f() : null; },
+    // flush, then close the stream under it (a BZ2File writes its last block on close)
+    close(self) {
+      if (self.closed || !self.buffer) { self.closed = true; return null; }
+      self.closed = true;
+      const after = () => adderGetAttr(self.buffer, 'close')();
+      const f = adderGetAttr(self, 'flush')();
+      return _syIsThen(f) ? f.then(after) : after();
+    },
   }, 'io');
   Object.assign(io, {
     IOBase, RawIOBase, BufferedIOBase, TextIOBase, TextIOWrapper,
-    BufferedReader: _syClass('BufferedReader', [BufferedIOBase], { __init__(self, raw) { self.raw = raw; return null; }, read(self, ...a) { return adderGetAttr(self.raw, 'read')(...a); }, readable() { return true; } }, 'io'),
+    BufferedReader: _syBufferedReader(BufferedIOBase),
     BufferedWriter: _syClass('BufferedWriter', [BufferedIOBase], { __init__(self, raw) { self.raw = raw; return null; }, write(self, b) { return adderGetAttr(self.raw, 'write')(b); }, writable() { return true; } }, 'io'),
     BufferedRandom: _syClass('BufferedRandom', [BufferedIOBase], {}, 'io'),
     BufferedRWPair: _syClass('BufferedRWPair', [BufferedIOBase], {}, 'io'),
@@ -25926,7 +27772,7 @@ adderModules.selectors = _ntModule('selectors', {
 // -- stdlib-py.js --
 
 // GENERATED by ext/adder/gen-pylib.js from ext/adder/pylib/ — do not edit; edit the .py files.
-// adder stdlib modules written in Python (frozen modules): __adder__, __future__, _collections_abc, _colorize, _markupbase, _pyrepl, _pyrepl.pager, _tokenize, argparse, bisect, cmd, code, codeop, collections, colorsys, dataclasses, difflib, doctest, filecmp, fileinput, getopt, glob, graphlib, heapq, html.parser, importlib._bootstrap, importlib._bootstrap_external, ipaddress, json, json.decoder, json.encoder, json.scanner, json.tool, mimetypes, netrc, optparse, pickletools, pkgutil, pydoc, quopri, random, runpy, sched, secrets, shelve, shutil, tabnanny, tarfile, timeit, token, tokenize, tomllib, tomllib._parser, tomllib._re, tomllib._types, unittest, unittest.__main__, unittest._log, unittest.async_case, unittest.case, unittest.loader, unittest.main, unittest.mock, unittest.result, unittest.runner, unittest.signals, unittest.suite, unittest.util, wave, xml, xml.etree.ElementTree, xml.etree
+// adder stdlib modules written in Python (frozen modules): __adder__, __future__, _collections_abc, _colorize, _compression, _markupbase, _pyrepl, _pyrepl.pager, _tokenize, argparse, bisect, bz2, cmd, code, codeop, collections, colorsys, dataclasses, difflib, doctest, filecmp, fileinput, getopt, glob, graphlib, heapq, html.parser, importlib._bootstrap, importlib._bootstrap_external, ipaddress, json, json.decoder, json.encoder, json.scanner, json.tool, mimetypes, netrc, optparse, pickletools, pkgutil, pydoc, quopri, random, runpy, sched, secrets, shelve, shutil, tabnanny, tarfile, timeit, token, tokenize, tomllib, tomllib._parser, tomllib._re, tomllib._types, unittest, unittest.__main__, unittest._log, unittest.async_case, unittest.case, unittest.loader, unittest.main, unittest.mock, unittest.result, unittest.runner, unittest.signals, unittest.suite, unittest.util, wave, xml, xml.etree.ElementTree, xml.etree
 // (all but xml.* are CPython's own, verbatim — PSF License 2.0: see pylib/README.md and pylib/LICENSE-PSF.txt)
 
 
@@ -25935,12 +27781,14 @@ Object.assign(frozenPyModules, {
   "__future__": { pkg: false, gz: "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" },
   "_collections_abc": { pkg: false, gz: "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" },
   "_colorize": { pkg: false, gz: "H4sIAAAAAAACCpVWXW/iOBR996+4cl/IiiJCUzoUsRJLMy0qQ0bAaNSdXUUBHGo12Mh2OsNof/zKzndCRrt9KMm9x8f3HF87DgU/gu+HsYoF8X2gxxMXCgLGuAoU5UyiNMTzJ3mWCM28hbea/+nCBDYiJghdgTqfiEQ0hI9BJMk9AgAINb86nyg7ZNxzDyG0iwIpYbpcz2c84kIm6JW7djcwAfzXD3v7rX/EyIT/WExnz3n4RseT8Be3iDppdPYyXRbRYRp9XLluKTxIw5+mj+5yMy0St2li5T4UQTsNfn2ab0oz3h0xwBUcuSAQ0TcCi/nj0wYeV9MXA39xFwvva4G/yfV4iwe/Ksoea1ma7mG6ei44UmhJqD3OpZpkRa89zhWbZFW2Pc6Fm2xdvT3O9Zt82QR7nNtgclUv7HHmRrBTcRAlVhXomhX2uDDjCihThEkCk8TFLY/2sI0VfKfqlccKtkR3jw6bAfPlxl2u3ZqBo6wrinTJtJFTy1ZcGw1r2apto0EtXfdtdFsDlI0b2bVk1bnRXS1ds2pUdM109vy48r4s673j5BuijCipd5wmoGKAM2wCqh44gyaiboNz28SUnXDsZr5qhnPXRNT8cHI/8oVu88XuN3qixSC777QjqxusP2xH1nZbf9AObWy9/m07uLIP+3Y7sLYp+3ft0PqO7Btf0ZIn5zFMSodzx0Io5AICpQRQBnsqOhnQSk5uGgLjyiB6UgVCSb17O9j3cYrQf5IojcgHd82ALmBsIYT2JIQDUf4umdSMMs/0J7mHLecRTJJvSxd+60JII3IPc++bVOJv+Ec/bc+KSP285EyfJ/oHWXD9e+NLQ8OcGriAXcD87L2jiSf6X6lyQVQsWNUTHSf5l66EyuSlmirk/71wU7dWfZ/0u6byZRAS/0AUYe+dt3uQ2r0wiKJtsEteL3AU0aJSjLH7Y0dO+hN/rUmBsHcqODsSprQOQcl7EPVgTQgcXq/twYfhzbCHMc4plDgXfCX1XPZSrt6BqM5bUaCVw4mZG/ISLhJlw1C2Yto4oLImxUQn+lbSk2rPY4XKHanDYRQcZI8eGBfEL+ksOGjNWvz5ZfPkLX1zy1ljCyYTwH18sUzTkf+Pyb7MZC5SF0mWXkKAmy1ZTJ8qzm5mv0ZW+T96q5nbOkV7XRt39SnVtI+PW9wyZ7m810CaM0AvWxew/mG8VVc2Ui/jKQpUyMXRTPedsptBab5GN6a3TZa2Q2l9dBVM9XwZnzRE+u9U6EuLr4g4UhZEHatK1brYaRt35mYuVwguujBVStBtrIh5t37RM6hReLGFqHbpbFzqJR51rPTISSb11oa/Mbbmb8KDLQjY3myVjNlC/wIpxmCt/AsAAA==" },
+  "_compression": { pkg: false, gz: "H4sIAAAAAAACCrVY3Y/bNhJ/918xUB4ip1417eO2PiDJeoHFXbPF7qYPLQpjJI1s1hQpkFQcp7j//TAUbVMyk6aHVA+LNTVfnI/fzCjLsjvlyCiUUEm0liz0lmooD+C2BJuPoluA/NgioKqh/Pg9tLruJdksy2Yz0XbaOBD6+J892Nns9bvb29XD+vHu1xUsQejiZnX76t1/ntbxC3gGb3TbGbKsrkaHYAhrqLa92oEVH2k2m3mT4DVaenSGsM2FLl73TUOG6rt7Pp9fzwAAsiz7Sdd0VW2p2gm1gS3Jjgw0vaqc0MoW3l4mramBtadbK+3WldSW6tySbIIsfkQDfFIMb8/n/BgUluAXlD2tjNEmz+6+vQfdkUFWBVrBwAaNkJTNL9RWqNZ814RSpd2gmN9jKSmfp5QLXbxTtu/Y51TfH1Xn2a2Q5IXojhQ02ninCrX5hBl7Ixx9zg4m+Cp2sKBP22GJdv+AOx6JfDYIC1rJA5xoIBuJ+fyTaeVDaVNeTVnLt/k/rH3aEvSqJiMPbDSrBF3+QZX7e+bWmuxgzKAE7OAG9n0oqRuqQvE9ENZkuLAecD+tqVc1ds56JKhPHNrAq5/vwGlAOPF4j5B/M6q0U+AmwTXkeqPgyfQUJcRaKOHWa0+8gKZbBLXrBiunzWEBzqCQQm3WxKW3zOcLePEiEKHZ2EiFD8W66WAJTTc5Jd3AEm5RWpq86bSFJbz0+NQbQ8qBbhpLDoSKnEA1WA9JsxP/M3gkx25h8ALdpKhBq4pAOM7IndJ7tfDp9Lha/Xu9enszscULWsLVdyMl+J4uIxIc5FEazaZvSTlbRGx3jWfySVVp5VAoC20vnej8ycRQuwDCahsJCBfYCylBEdWAYKlDg25iypCyBbwCRfvRq0hayGthAaXVXiDVsN+SAtF2kth+LgKEEqvdHk1tfRrn82LipHGGwHKSMmlqTpUzKf9K0oUbLZOq8hcvLmTO40itPlTU+ZYwFJ3TUKGrttAY3Y59ZsVGicaXvVDvUYo6knPM+aFLOg1io7SZJu64MmA5KZVzlfnmNK3H5K3fakXTirV9RyafD50xj9D8BHrpSj9WYwSOY5QQyulQ+GXEvhduCy212hzeC9rn5RzQAv+78H+LCq3Ls9eZPy8PjtZ8PAZe77jluZXkklR+op3PR8Sn89+umYx5579zsqDD6a1OBOO7hHtw/S6vvpvMFVzUP8LLSWuIvOQxU8o8SqZjd/HIYs4glhRSZud2EW7OkeRUuqEGe+lY3ur+lsuPVKV7HgEpTrkb6khxh+NphnFDqK53XtoCdG+gQik5FS+AqMUDmxrJClahOnj+Au5YpLBQoSVG9APgBoUCbBydWiug0m5LBkqpq9256PdbRjDuG+O7Hye2UQ4XFy4a2vDeC4Ul5AmeXvEEvPaeizAr9ZyS2gc9Gm8nKRWF8Kj8Oim4NIS7izc8KjMc9sQuV/TBBTQuZmmLvgS9kvqTkDYlcuaQtj4us7FPzz/yowOG8riUTh41k6CW1voMnkYAKax67gDBw+hlZ/shwCcIV3xhDEhauk4FNHFT7mR27cslbW6UfZ9OnyTnF2XQec5c3d+G/SRatHz/J8XNtqSG3cAV/MXjZUaqvtLNVRgGWjQ7MrBHy2VbbanOEgFNem/iihizvlo6icbLuFQ+DnHw6yVpPCv6SfXyZRjRTrPjX+Hxecj8Zhl1jwmHbzXjGVrKaWP1mzJPMb/9Ho9pB1u0+MHb1RKqYXpv8QNr27gtD6a6d4zmpd+kuQn0SopWOKoXsSRGd3Sef7/V8tgEAluFCkoaD7ncrAVvwBTJiaM1941jiuY+0Ndxf45uMdmhhlsX2HGDinvv2OHFH1qofCAOBM/ggfZC1ec5OPSvkjZCKd/shiHZ2xMjrF9OjOdOD05hrslfzv/uovFV587jHBbmj2FxWfixuqKl0IVfNB5XT9EF2C0VyqqXPMmHXQctoAIsrZa9C97qtBU8zRZx4QyiYem/8xyljyPWoT2XBckk05t3D2OmYMcyLphw+FeyVm9vxrJ4MRu+AxiS6MR7H3mef65gT8My47Tfx0658dx6PCnSM0Z6hjsn9DmR01+/5mk8HHkq4QWvNuGGKb4mvlANSwX3xJ6G7zHeb9fw53+zotGmRZcPR/PRDvMT7vy+egSD4y48wIrq25IMlw0PzX7DsTvRsQJe2UaZEjh/PEc0BbahyOafuV0QdBWj7iibsfZrcC1shSZ8W+yVE5Kj7ftUGFutMFQn8noIYtDzr2mYL5aJVqhPxPlYgvOLvpRuOOnx43zhybpxsV6dXMFA4OiyZ2RZ9jAwsAeq8IFjXN5Z1K4upP8PinDynjEWAAA=" },
   "_markupbase": { pkg: false, gz: "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" },
   "_pyrepl": { pkg: true, gz: "H4sIAAAAAAACCnWRzW6jMBSF9zzFkdjSKupqFqPRuGCCJbAztmnUJQlOsEQwApMqbz8y6Wja+fHK1r3nu+cexwBSN94me+48njabzcPTZvMFlT12jelRLO3shofM3XqDrxd7bDrTfz9fGts/Ht3lWxTj34dMFztA2rOL4v82gfR96On8DGlmM11NG9qjGDszXew8WzfAOyyzSXB04y3BxbX2dEvQDC1aO/vJHhZv4Ds7Y3Yn/9ZMJhSjGNbPaN1xuZjBNz6gTm5CM9wwLtPoZgM7ozOTOdxwnprBmxZv1ndu8TgZk0QxxsldbWta+K7x8J1Bc3BXs3q5ZzY4b48GzTiaZoId0PR9KFszv9tYpQfnu/vtb+nQ3u2Pv3f+kxrFmJdxdJO3w/nzUo9rXrqgILUuhETF0oLQEkWdKcGRMZWWhFUKpCyxJ1ISrhlV2DNdQNItkRm0WBlMQYlc74mkCRhPyzpjfLsKWbUrGc0+AkSOisq0IFyTZ1Yy/RrFIDxDzjSnSgUEuAB9oVxDFQHzweczRcnIc0mRCwnCX6F2NGWkDMEznjFJUw0hkQqu6I+acs1IiYxUZBum3zW/nvuCaCXoC5VRDElVXepgPZeiQinU6rZWNEFGNAninRQ50yrBvqC6oDKYJRwk1UxwiDyKw2AtSaoTcLot2ZbylAapWPu1kJqJWr1LEhDJVJgpah2miYC8Uzi9U9fIQwS1WkE7KnMhK7Jy888f8Bj9BKBSeomdAwAA" },
   "_pyrepl.pager": { pkg: false, gz: "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" },
   "_tokenize": { pkg: false, gz: "H4sIAAAAAAACCqVZ227jyBF951fUch5E7lAcy5PLhhktMDuWA2NteWAz2AdbMNpiSWqY7Ga6m75sECBfkw/LlwTdzatESpqJHiyTqipWVVedutB13XiDoPgTMvo7CihYgqK+DvO3AFZcAEkSFKHjfPn6pjacwcdwcvp+JNuE4D0jS7jABDYoEJ5RPBJFMx8SQZ9RgtogfGk9Sm0EL9Yb56EWEle/XSgUoX0obIgExrucHPA15xIDkBzUhkrIeFKkCLngzzRB6XREwQtVG2jpPhlJyAuB4/JWIzrlPAdPq7pGhoIo3vEGUCUxXTmCMCiYoqmR5gfAn41FCALXRUqEVlCglJSzrpekomkKCa4oQxk6zhldrVAgW6KEleDZtpsiWI2lEpStJSx5hsALBUQCZwi38c3F/G+WFrzSrhUXWQCMK0cf0kjCuSV7uI0/38Twob6+ujg7u5y1bszmZ34AhCWAQnAhgQgE48iZvoYPzgVLkCmiKC9vEWkcAIJQiYnWPQsd53NCcoWJtaftdrikjx86wfWF52+CrjcKvKUPJektX6kX/fBzXrDEPA68r7fnziVdIpMIp+FJABIRLi++zOa3s/HX2/NQvSo/dFzXdRxnmRIpoRMEkQMA4Lpu564nkCQpZRjAjwEgW/KEsvV0zvUdfFWC2PCU03OSSvQj8NRbrgPPnIn+JkIFRjayJAAtywdV5CnKEH7TgUdYLTiA6nmwNknx+KZQhkZpLSLBFTw8UEbVw4OnI01HeCGWR6tnpOgPXQGVlElF2BK9SohUokWjP1oXCVOg2hmWLJR5SpX5wXtCzJElchqLAn2/w2qpYQopyR4TEgHDV+UZvgBGo4ZYGxI+rJHBFOpsr3WqrPI7LlAoShe0FBaoCsGMvDaxfu4gsVGq1sB3HMcw1Wo0AVArYmXQLOdC1ZmoYz02P9h0CWB2c3N9E1//OpsH8OX66mo2jwOYXwZwMT8z/5/N9DdMIQ4rnjhsc8VhzReHmjMOK944tNzmifO/X/0yuwlgPvvt8mI+C2D++WoWwPXXAGbzs6vPN7/ObsxjKsI4rEnj0BLHoSaPw5rBSH5Y8iynKQbwVWKRcJMc2hVJTpQ0MhuSOOwQxWFJZiRJytYpPvyj4AqTAJSgefuSPEr6u5bR4IkWvsUVh1t8cdhwhg2vPf2UFRlMIScCWYrPMIUlZ4qyAhOYwomhYUW23BChTRmdTE4//uGPf/rzT38Zmd80tVQiAIaY6AtNNApKTn3DZOoUdL7ZmDAAqIXdnSys2UoYCGhTabcIvq5uOWU+VvEF0ym4hVqNfxpLunabiH0Hv1xfwYsuECTVcfkGG/KM8IjIDODkOSZhTd7IK8W51itEqodS8ZE1tHv1sqEpgk7oCA583tmCaKqbRQpqNEGS1Woo8bYFKS0F9NcO3sC0hkGvQQl8XWKu4FbxXCOzgf2oj3c0ctowV7uB6kZBGZ+bKtbCP5vgBmz9Xpn6K0xwyRP0GkCqiXSgvZ/CpL6TcxlARl51nAWQIjOP8DuKleEV7XdwE7K2pHS0oytjkpbdVdsAnC66rYTy3Nn1uT6grEgVHRvLrEw3qOO0C+HIkoyo5QamVdCG5rq0ZkuVinpXlZxLK8L+NVQaHbwTf4f2jWKagFchYukleG+svIuQJYtG3QA87XyDSH7Q5KSl3hW+P6W3KbfTu3ZLqh1fSdCxZHQbn0YL+GEKo/v7ezZq3f/Y3Bf3bBQN2dzG/q7dPRbXQdWye9DgJruPtbH6XcfelvGyJ9ia53QV3/fMrdMafrzTcXyD51M4MV7WOVDnSaSzhuGLbr0UZsjUYMrAo0Dy5HSfmRYZq8tD9bGYqMP4k07rqDdVMySyEAgpEgM4LxuqUOZkuWsaXdnQyLlcaDtG0BMVLX064NLxRlfMvdovZwqe/e/Dh7JwwnuY+D+WF0c9YnXoESc9YvpiRn92T6DCix2T9dFrHJmaE3D6JTmDXqYMRu9s/nVOTT7RXI9OmancXMBjStiTLWeHz+3doDOMQNtHlgVEc0WLUJhS7Y2MLn4vd4kHdffXkVYjQM6l377QeYTM6xBrdOhHhpafd7mcIYjSXWhjS78qbWQaRqVuZtc10cTQz1UndTeeLKKtelgwVTdaXECC5t/do7IkIcn1hFKG/WC5qfpqW2T08dbmnPhbZu7aZOGhVP5TR/m+ECoJNQ5RVlH3x5Et4tuDtecMNQxuwaw8SDjahsdWcMLe9G4ARfk8Ozan+IypGwyK89xP1YDzsxtA7YXSCf6Q1/XEWDohGk8Wg+Fkh5jA1OCBqK4d7nTQBOBwc9runQ7Vgu9sn0qxbitafKcv1O3I4QwVlA5PbsaoqvOqBiyvNV35rT7MemkHKhsZR7TxckmY2eTZdcGOM8rWw3ZwLdGhzAnzJrtxIE2QoPlru7/SP7bL3OrbkCV9eVJOTqZnHILZng7FTB0WKfWqhJK0AmAjsGwhmxs94UlX4FW8lDVTIhc9zuMioYyIN032iKJX0VqaLhqhbQ5tbfih90YYjnw/2lccqlm+tLTt8H7QNbW8ZdRooBmtAqhqs36Gk2gQIFpl4WhF9ncEbanVkmJQ9H4j9xVoIiUKZfLfSNfjiNSLYM+9Z+5xZfkb1bLHS1l3+dGvXrMjqNO/3KbcGTELf4hteGDrAYq+6W0vUJA0Bc7Merm3Z9+Z+PbOep1s7SapLsGH4qOaETvncKBUHxeArbVNB7e6/b4uBHmKA73i7mjUMm+xl3xoO3Kg37VqeaQc6yEXuKKvevFR5PqtiH53sKJCKvgIGs/IUqGQEYjHUQArN4D//vs/fy03dWCis0f8coPLJy1dv26QQFa6p7ARbXlqigDII38eQqI2vnbWfMCFsydM7qLTxbfzfNzl8Qehz/KMJ+XA050YjtvMHBNMgwzDyR+uUVWO84eNHpRaibAWThb/v4zThe8fCv3OuqWdBEHPVPt9eTCY4sf0iXUBP3CQ+2Dn6KoUUkl1Z0xXFIXnR3vaCZLh3g7ALO6/r/6bwL4fRce0zpna23vplnDyDSP/Vhfi3f1zNAzEdRfSuwHpbWv8xb+OETgeElh6V78OOcq3/Zb2rPTqzcHgrPN+Mliz6pWIYw/oc5LoN4c0y1O6pKp692Pga4NAWV7YGZCNlOnbqana1cuGZglv1pTVlQG9ci61/WG9YKtpQru/8EOTxGXP9M5twel2+1ZPdzCGSbkfqKT5/p7fzHKqeVmoB5Ryum3m5rtJtIh6IjjnOQjMCGVm+W/ZzLwrncNTaGvoP2lpUJ1q9ZLsEM//AGOxRAdBIQAA" },
   "argparse": { pkg: false, gz: "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" },
   "bisect": { pkg: false, gz: "H4sIAAAAAAACCu1XTY/bNhC961c8KIdIiepse1ysA7RBD3tJgLboZREYtDSypkuRKknZcn99MaQ/Vtt8bAAfEjS62CLn483MI5+d5/kv7KkObA2U3ljHoev9Is/zLMsaasHGWxdWjjddKFSFqYK2y6sKHS/fWkMVXlS4p318Ka8zAMjz/NZ4cgEcqMcENtDsA1QFZRrcEw3gAIlMDZT3Y89mAwX2h8VFFiPdtuLtobQj1ewlkKoEUwqOYBE6QkQH255feusDpkOUd4PUpzSU23hoi6KhVo064KqMgDo+L2kyhSpLrO1oGgkYQ3jNNUkGJTnXBE/K1d0J6M+oRx9sL61AO5rU0VqZaDsOg2ZqxDWZ8T8UsUqxsK4htzh2Ln5yGwOxh7Q1dVUebbHEOk7s0UhkIGW0I+0/53FP+2Iqj25pfve0T/5qkfpbyO5UHnjwwaSf58FvFEZnYq1sGpqw68iRNII/ypCP0+EPGW+KuFV6JHA0GesOoVMBSmtQJMndNb9Hp7YEws1S0Mqcj/upzju+Ptm8xrQAfrfS+elENzUMpJyXiFKBIKzO/WFpD3asdZpZKuivUcpoA7nHbDyFDdKDb5KbR3JqixtcnVnmFHvCnzKTX52zrniuLXrpxJpgrPnB0EYF3tLz8hii4//Su2MsD0XGtWd4awNVEU5t+0E59tZg9OSR3+SCuVchTp8ODquVDqtVUULbDddHXi2kmCI1lA06UsPfi0+etF3HmlKdHZ+X5em5wRKFtngphw6vXuGnmUHk0A3UXc/N+7nvqcqem9nG/NTOTq/ke4kfP3C4LwBSroIEtLws0sM51XYuJJrar1dHBNxRRuT7N6wiT5aR2UCeoiJHhy8TkQca8oUU+Cok5AkKsryshKyptY4eUfG7hPx/JCTdykK9J9y2n76cZ/f4RSXkgXxcHulDCXmGd1tyO8eBoNZ2S2ioZcNCRI8dhw4KrfIBb8D9oKknE5TsZsHtU6LW2R6rdAuJkbDzRUZTTUPAbXyP1EvWg/Je8r5xpCSpZuXJZwf3+Y/qLKkblrP/S9m/w4IjFV8NAAA=" },
+  "bz2": { pkg: false, gz: "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" },
   "cmd": { pkg: false, gz: "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" },
   "code": { pkg: false, gz: "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" },
   "codeop": { pkg: false, gz: "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" },
@@ -26032,7 +27880,7 @@ const _frozenPyairData =
 // END DATA
 ;
 Object.assign(frozenPyCompiled, _frozenPyairData);
-frozenPyBuild.id = "1892dff7abf4cc16f123";
+frozenPyBuild.id = "43a175750197641e8fb0";
 
 // -- runner.js --
 

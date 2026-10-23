@@ -70,6 +70,21 @@ for (const [rel, descr] of airInlines) {
   }
 }
 
+// Built @gcu/* bundles adder's sources `import * as <name>`: each inlined whole, inside an IIFE
+// that returns its export list — one name in the concat scope, so its own top-level names can't
+// collide with adder's.
+const nsInlines = [
+  ['../bz2/index.js', '_gcuBz2'],
+];
+for (const [rel, name] of nsInlines) {
+  let src = fs.readFileSync(path.join(__dirname, rel), 'utf8');
+  const m = src.match(/\nexport\s*\{([^}]*)\};?\s*$/);
+  if (!m) throw new Error(`adder build: ${rel} has no trailing export list`);
+  src = src.slice(0, m.index);
+  const names = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+  chunks.push(`// -- inlined: ${rel} (as ${name}) --\n\nconst ${name} = (() => {\n${src}\nreturn { ${names.join(', ')} };\n})();`);
+}
+
 for (const relPath of importPaths) {
   const filePath = path.join(srcDir, relPath);
   const src = stripModuleSyntax(fs.readFileSync(filePath, 'utf8'));

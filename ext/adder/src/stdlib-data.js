@@ -11,6 +11,8 @@ import {
   getAdderVFS, _getVfsPath, _resolvePath, _createAdderFile, _mapVFSError, _typeObjects, pyFormatValue, excStack,
   PyByteArray,
 } from './builtins.js';
+// @gcu/bz2 (_bz2's codec): adder's build.js inlines this bundle as the one name _gcuBz2
+import * as _gcuBz2 from '../../bz2/index.js';
 
 const _dtIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
 const _dtKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
@@ -844,13 +846,51 @@ adderModules.gzip.open = (filename, mode = 'rb', ...a) => {
   return String(mode).includes('t') ? adderModules.io.TextIOWrapper(g, { _kw: true, encoding: args.encoding || 'utf-8', errors: args.errors || 'strict' }) : g;
 };
 
-// bz2 / lzma: no bzip2 or xz codec in the platform — the modules are there (libraries import
-// them to offer .bz2 / .xz files as an option), and using one says so
+// ── _bz2 ──
+// The C half of CPython's bz2 (bz2.py, vendored, is the rest): BZ2Compressor / BZ2Decompressor
+// over @gcu/bz2, libbzip2 1.0.8 ported — the same bytes out, the same unused_data / needs_input.
+class _DtBZ2Compressor {
+  constructor(compresslevel = 9) {
+    const level = Number(compresslevel);
+    if (!(level >= 1 && level <= 9)) throw new AdderError('ValueError', 'compresslevel must be between 1 and 9');
+    this._c = new _gcuBz2.Compressor(level);
+    this._flushed = false;
+  }
+  compress(data) {
+    if (this._flushed) throw new AdderError('ValueError', 'Compressor has been flushed');
+    return this._c.compress(_dtBytes(data));
+  }
+  flush() {
+    if (this._flushed) throw new AdderError('ValueError', 'Repeated call to flush()');
+    this._flushed = true;
+    return this._c.flush();
+  }
+}
+class _DtBZ2Decompressor {
+  constructor() { this._d = new _gcuBz2.Decompressor(); }
+  get eof() { return this._d.eof; }
+  get needs_input() { return this._d.needsInput; }
+  get unused_data() { return this._d.unusedData; }
+  decompress(data, ...a) {
+    const { args } = _dtArgs(a, ['max_length'], { max_length: -1 });
+    if (this._d.eof) throw new AdderError('EOFError', 'End of stream already reached');
+    try { return this._d.decompress(_dtBytes(data), Number(args.max_length)); } catch (e) {
+      if (e instanceof _gcuBz2.BzDataError) throw new AdderError('OSError', 'Invalid data stream');
+      throw e;
+    }
+  }
+}
+adderModules._bz2 = {
+  __adderModule__: true, __name__: '_bz2',
+  BZ2Compressor: _dtType('BZ2Compressor', _DtBZ2Compressor, '_bz2'),
+  BZ2Decompressor: _dtType('BZ2Decompressor', _DtBZ2Decompressor, '_bz2'),
+};
+
+// lzma: no xz codec yet — the module is there (libraries import it to offer .xz files as an
+// option), and using it says so
 {
-  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no bzip2 / xz codec in the browser)`); };
+  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no xz codec yet)`); };
   const cls = (name, what, module) => { const c = no(what); c._pyName = name; c.__name__ = name; c._pyClass = true; c.__module__ = module; return c; };
-  adderModules.bz2 = { __adderModule__: true, __name__: 'bz2', compress: no('bz2'), decompress: no('bz2'), open: no('bz2'),
-    BZ2File: cls('BZ2File', 'bz2', 'bz2'), BZ2Compressor: cls('BZ2Compressor', 'bz2', 'bz2'), BZ2Decompressor: cls('BZ2Decompressor', 'bz2', 'bz2') };
   const LZMAError = makeExcType('LZMAError', 'Exception');
   adderModules.lzma = { __adderModule__: true, __name__: 'lzma', compress: no('xz'), decompress: no('xz'), open: no('xz'), is_check_supported: () => false,
     LZMAFile: cls('LZMAFile', 'xz', 'lzma'), LZMACompressor: cls('LZMACompressor', 'xz', 'lzma'), LZMADecompressor: cls('LZMADecompressor', 'xz', 'lzma'), LZMAError,

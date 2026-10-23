@@ -155,4 +155,38 @@ open("/tmp/c.txt", "w").write("left open")
     assert.equal(await r.vfs.readFile('/tmp/b.txt'), 'onetwo');
     assert.equal(await r.vfs.readFile('/tmp/c.txt'), 'left open');
   });
+
+  it("bz2: CPython's bz2.py over _bz2 (libbzip2's bytes); BZ2File on a path, text mode", async () => {
+    const r = await runBoth(`
+import bz2, hashlib
+data = b"bzip2 " * 2000 + bytes(range(256))
+z = bz2.compress(data)
+print(len(z), hashlib.sha256(z).hexdigest()[:16], bz2.decompress(z) == data)
+with bz2.open("/tmp/a.bz2", "wt") as f:
+    f.write("alpha\\nbeta\\ngamma\\n")
+with bz2.BZ2File("/tmp/a.bz2") as f:
+    print(f.readline(), f.peek(1)[:1], f.read())
+with bz2.open("/tmp/a.bz2", "rt") as f:
+    print(f.readlines())
+d = bz2.BZ2Decompressor()
+part = d.decompress(z + b"!!", max_length=10)
+print(len(part), d.needs_input, d.eof)
+rest = d.decompress(b"")
+print(len(part + rest), d.eof, d.unused_data)
+try:
+    bz2.BZ2Decompressor().decompress(b"BZh9" + bytes(20))
+except OSError as e:
+    print(e)
+`);
+    // (490 bytes and that hash are CPython 3.13's bz2.compress of the same data)
+    assert.equal(r.text, [
+      '490 c03114d1e8878a53 True',
+      "b'alpha\\n' b'b' b'beta\\ngamma\\n'",
+      "['alpha\\n', 'beta\\n', 'gamma\\n']",
+      '10 False False',
+      "12256 True b'!!'",
+      'Invalid data stream',
+      '',
+    ].join('\n'));
+  });
 });

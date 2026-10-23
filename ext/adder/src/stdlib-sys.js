@@ -1856,6 +1856,174 @@ const _syTruthy = (v) => pyBool(v);
   cl.AsyncExitStack = cl.ExitStack;
 }
 
+// io.BufferedReader(raw, buffer_size): a read-ahead buffer over a raw stream, as _pyio's — read,
+// read1, peek, readline, readinto, seek / tell through it. Async: the raw stream's methods may be
+// tree-walked Python (bz2.BZ2File's DecompressReader).
+function _syBufferedReader(BufferedIOBase) {
+  const call = async (obj, name, ...a) => adderGetAttr(obj, name)(...a);
+  const EMPTY = new Uint8Array(0);
+  const avail = (self) => self._rbuf.length - self._rpos;
+  const bytesOf = (b) => (b === null || b === undefined ? null : b instanceof Uint8Array ? b : Uint8Array.from(b));
+  const checkClosed = (self, what) => { if (self._closed) throw new AdderError('ValueError', `${what} of closed file`); };
+  // at most n bytes, reading the raw stream as needed (n < 0: all of it)
+  const readUnlocked = async (self, n) => {
+    if (n < 0) {
+      const parts = [self._rbuf.subarray(self._rpos)];
+      self._rbuf = EMPTY; self._rpos = 0;
+      let none = false;
+      for (;;) {
+        const chunk = bytesOf(await call(self.raw, 'read'));
+        if (chunk === null) { none = true; break; }
+        if (!chunk.length) break;
+        parts.push(chunk);
+      }
+      const out = _syConcat(parts);
+      return none && !out.length ? null : out;
+    }
+    if (n <= avail(self)) {
+      const out = self._rbuf.slice(self._rpos, self._rpos + n);
+      self._rpos += n;
+      return out;
+    }
+    const parts = [self._rbuf.subarray(self._rpos)];
+    let have = avail(self);
+    const wanted = Math.max(self.buffer_size, n);
+    let none = false;
+    while (have < n) {
+      const chunk = bytesOf(await call(self.raw, 'read', wanted));
+      if (chunk === null) { none = true; break; }
+      if (!chunk.length) break;
+      parts.push(chunk);
+      have += chunk.length;
+    }
+    const all = _syConcat(parts);
+    const out = all.slice(0, Math.min(n, all.length));
+    self._rbuf = all.subarray(out.length); self._rpos = 0;
+    return none && !out.length ? null : out;
+  };
+  // fill the buffer to want bytes (one raw read at most); its contents
+  const peekUnlocked = async (self, n = 0) => {
+    const want = Math.min(n, self.buffer_size);
+    const have = avail(self);
+    if (have < want || have <= 0) {
+      const current = bytesOf(await call(self.raw, 'read', self.buffer_size - have));
+      if (current && current.length) {
+        self._rbuf = _syConcat([self._rbuf.subarray(self._rpos), current]);
+        self._rpos = 0;
+      }
+    }
+    return self._rbuf.slice(self._rpos);
+  };
+  const sizeArg = (a, name = 'size') => { const v = _syArgs(a, [name], { [name]: -1 })[name]; return v === null || v === undefined ? -1 : Number(v); };
+  return _syClass('BufferedReader', [BufferedIOBase], {
+    __init__(self, raw, ...a) {
+      const { buffer_size } = _syArgs(a, ['buffer_size'], { buffer_size: 8192 });
+      if (Number(buffer_size) <= 0) throw new AdderError('ValueError', 'invalid buffer size');
+      self.raw = raw; self.buffer_size = Number(buffer_size);
+      self._rbuf = EMPTY; self._rpos = 0; self._closed = false;
+      return null;
+    },
+    closed: { __property__: true, fget: (self) => self._closed || !!(self.raw && self.raw.closed), fset: null, __doc__: null },
+    name: { __property__: true, fget: (self) => adderGetAttr(self.raw, 'name'), fset: null, __doc__: null },
+    mode: { __property__: true, fget: (self) => adderGetAttr(self.raw, 'mode'), fset: null, __doc__: null },
+    async read(self, ...a) {
+      const n = sizeArg(a);
+      if (n < -1) throw new AdderError('ValueError', 'read length must be non-negative or -1');
+      checkClosed(self, 'read');
+      return readUnlocked(self, n);
+    },
+    async read1(self, ...a) {
+      let n = sizeArg(a);
+      checkClosed(self, 'read');
+      if (n < 0) n = self.buffer_size;
+      if (n === 0) return EMPTY;
+      await peekUnlocked(self, 1);
+      return readUnlocked(self, Math.min(n, avail(self)));
+    },
+    async peek(self, size = 0) { checkClosed(self, 'peek'); return peekUnlocked(self, Number(size)); },
+    async readinto(self, b) {
+      const data = await adderGetAttr(self, 'read')(b.length ?? b.byteLength);
+      const d = data || EMPTY;
+      for (let i = 0; i < d.length; i++) b[i] = d[i];
+      return d.length;
+    },
+    async readinto1(self, b) {
+      const data = await adderGetAttr(self, 'read1')(b.length ?? b.byteLength);
+      for (let i = 0; i < data.length; i++) b[i] = data[i];
+      return data.length;
+    },
+    // IOBase.readline, over peek: one line, its newline kept; at most size bytes
+    async readline(self, ...a) {
+      const size = sizeArg(a);
+      checkClosed(self, 'readline');
+      const parts = [];
+      let len = 0;
+      while (size < 0 || len < size) {
+        const ahead = await peekUnlocked(self, 1);
+        let n = ahead.length ? (ahead.indexOf(10) + 1 || ahead.length) : 1;
+        if (size >= 0) n = Math.min(n, size - len);
+        const b = await readUnlocked(self, n);
+        if (!b || !b.length) break;
+        parts.push(b); len += b.length;
+        if (b[b.length - 1] === 10) break;
+      }
+      return _syConcat(parts);
+    },
+    async readlines(self, hint = -1) {
+      const out = [];
+      let total = 0;
+      for (;;) {
+        const l = await adderGetAttr(self, 'readline')();
+        if (!l.length) return out;
+        out.push(l); total += l.length;
+        if (hint !== null && hint > 0 && total >= hint) return out;
+      }
+    },
+    async seek(self, pos, whence = 0) {
+      if (![0, 1, 2].includes(Number(whence))) throw new AdderError('ValueError', 'invalid whence value');
+      checkClosed(self, 'seek');
+      let p = Number(pos);
+      if (Number(whence) === 1) p -= avail(self);
+      const r = await call(self.raw, 'seek', p, whence);
+      if (r < 0) throw new AdderError('OSError', 'seek() returned an invalid position');
+      self._rbuf = EMPTY; self._rpos = 0;
+      return r;
+    },
+    async tell(self) {
+      const p = (await call(self.raw, 'tell')) - avail(self);
+      return p < 0 ? 0 : p;
+    },
+    async close(self) {
+      if (self.raw && !self._closed) {
+        self._closed = true;
+        await call(self.raw, 'close');
+      }
+      return null;
+    },
+    detach(self) { const r = self.raw; self.raw = null; return r; },
+    readable(self) { return adderGetAttr(self.raw, 'readable')(); },
+    seekable(self) { return adderGetAttr(self.raw, 'seekable')(); },
+    writable() { return false; },
+    fileno(self) { return adderGetAttr(self.raw, 'fileno')(); },
+    isatty(self) { return adderGetAttr(self.raw, 'isatty')(); },
+    __iter__(self) { return self; },
+    async __next__(self) {
+      const l = await adderGetAttr(self, 'readline')();
+      if (!l.length) throw new AdderError('StopIteration', '');
+      return l;
+    },
+  }, 'io');
+}
+function _syConcat(parts) {
+  if (parts.length === 1) return parts[0].slice();
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
 // ── io: the class hierarchy (isinstance checks and subclassing), open, text_encoding ──
 {
   const io = adderModules.io;
@@ -1865,7 +2033,22 @@ const _syTruthy = (v) => pyBool(v);
     readable() { return false; }, writable() { return false; }, seekable() { return false; }, isatty() { return false; },
     fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); },
     readline(self) { throw new AdderError('UnsupportedOperation', 'readline'); },
-    readlines(self, hint = -1) { const out = []; for (;;) { const l = adderGetAttr(self, 'readline')(); if (!l || !l.length) return out; out.push(l); } },
+    // (sync while readline is; a readline that returns a promise — over an async buffer — waits)
+    readlines(self, hint = -1) {
+      const out = [];
+      let total = 0;
+      const rl = adderGetAttr(self, 'readline');
+      const step = (l) => {
+        for (;;) {
+          if (_syIsThen(l)) return l.then(step);
+          if (!l || !l.length) return out;
+          out.push(l); total += l.length;
+          if (hint !== null && hint > 0 && total >= hint) return out;
+          l = rl();
+        }
+      };
+      return step(rl());
+    },
     writelines(self, lines) { for (const l of pyIter(lines)) adderGetAttr(self, 'write')(l); return null; },
   }, 'io');
   const RawIOBase = _syClass('RawIOBase', [IOBase], {}, 'io');
@@ -1888,10 +2071,18 @@ const _syTruthy = (v) => pyBool(v);
     readable(self) { return true; }, writable(self) { return true; },
     detach(self) { const b = self.buffer; self.buffer = null; return b; },
     flush(self) { const f = self.buffer && adderGetAttr(self.buffer, 'flush'); return f ? f() : null; },
+    // flush, then close the stream under it (a BZ2File writes its last block on close)
+    close(self) {
+      if (self.closed || !self.buffer) { self.closed = true; return null; }
+      self.closed = true;
+      const after = () => adderGetAttr(self.buffer, 'close')();
+      const f = adderGetAttr(self, 'flush')();
+      return _syIsThen(f) ? f.then(after) : after();
+    },
   }, 'io');
   Object.assign(io, {
     IOBase, RawIOBase, BufferedIOBase, TextIOBase, TextIOWrapper,
-    BufferedReader: _syClass('BufferedReader', [BufferedIOBase], { __init__(self, raw) { self.raw = raw; return null; }, read(self, ...a) { return adderGetAttr(self.raw, 'read')(...a); }, readable() { return true; } }, 'io'),
+    BufferedReader: _syBufferedReader(BufferedIOBase),
     BufferedWriter: _syClass('BufferedWriter', [BufferedIOBase], { __init__(self, raw) { self.raw = raw; return null; }, write(self, b) { return adderGetAttr(self.raw, 'write')(b); }, writable() { return true; } }, 'io'),
     BufferedRandom: _syClass('BufferedRandom', [BufferedIOBase], {}, 'io'),
     BufferedRWPair: _syClass('BufferedRWPair', [BufferedIOBase], {}, 'io'),
