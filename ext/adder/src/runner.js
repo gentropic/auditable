@@ -4,7 +4,7 @@
 
 import { adderParse, _adderParseExpr, parseErrorIsIncomplete } from './parse.js';
 import { adderEval, AdderScope, _setRunOptions, _setBudget, _makeBudget, registerModule, unregisterModule, setModuleCompiler } from './eval.js';
-import { adderBuiltins, setAdderVFS, getAdderVFS, _stdio, adderModules, frozenPyModules, frozenPyCompiled, frozenPyBuild } from './builtins.js';
+import { adderBuiltins, setAdderVFS, getAdderVFS, flushOpenFiles, _stdio, adderModules, frozenPyModules, frozenPyCompiled, frozenPyBuild } from './builtins.js';
 import { _py } from './runtime.js';
 import { lowerAdder, PY_SPECIALIZATIONS, pyNameOf } from './air-lower.js';
 
@@ -81,12 +81,15 @@ function _makeBindings(opts) {
   };
 }
 
-function _withVfs(opts, fn) {
-  if (!opts.vfs) return fn();
-  const prev = getAdderVFS();
-  setAdderVFS(opts.vfs);
-  try { return fn(); }
-  finally { setAdderVFS(prev); }
+// opts.vfs for the whole (async) run; files the program left open are written out when it ends
+async function _withVfs(opts, fn) {
+  const prev = opts.vfs ? getAdderVFS() : null;
+  if (opts.vfs) setAdderVFS(opts.vfs);
+  try { return await fn(); }
+  finally {
+    await flushOpenFiles();
+    if (opts.vfs) setAdderVFS(prev);
+  }
 }
 
 // the sandbox options (host / remote / budget) are module-level state for the

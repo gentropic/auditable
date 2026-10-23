@@ -6260,6 +6260,10 @@ export async function _createAdderFile(vfs, filePath, mode) {
   }
   if (kind === 'a') _pos = length();
   const mustExist = kind !== 'r';   // w / a / x make the file, written or not
+  const rawVfs = vfs[_RAW_VFS] || vfs;
+  // data the VFS hasn't seen goes out at the next filesystem call or the end of the run
+  // (flushOpenFiles) — what CPython's close-when-dropped does for open(p, 'w').write(s)
+  const markDirty = () => { _dirty = true; _pendingFiles.add(f); };
 
   const checkOpen = () => { if (_closed) throw new AdderError('ValueError', 'I/O operation on closed file'); };
   const checkRead = () => { checkOpen(); if (!readable) throw unsupported('not readable'); };
@@ -6318,10 +6322,17 @@ export async function _createAdderFile(vfs, filePath, mode) {
       const n = size === null || size === undefined ? _pos : Number(size);
       if (isBinary) { if (n > _bytes.length) { const b = new Uint8Array(n); b.set(_bytes.subarray(0, _len)); _bytes = b; } else if (n > _len) _bytes.fill(0, _len, n); _len = n; }
       else _text = _text.slice(0, n);
-      _dirty = true;
+      markDirty();
       return n;
     },
-    flush() { checkOpen(); return null; },
+    // write the content out to the VFS now (the file stays open)
+    async flush() { checkOpen(); _pendingFiles.delete(f); await f._writeOut(); return null; },
+    async _writeOut() {
+      if (!_dirty) return;
+      _dirty = false;
+      // a failed write leaves the data unwritten: flush() / close() raise it
+      try { await rawVfs.writeFile(filePath, isBinary ? _bytes.slice(0, _len) : _text); } catch (e) { _dirty = true; throw _mapVFSError(e); }
+    },
     readable() { checkOpen(); return readable; },
     writable() { checkOpen(); return writable; },
     seekable() { checkOpen(); return true; },
@@ -6333,7 +6344,7 @@ export async function _createAdderFile(vfs, filePath, mode) {
       checkOpen();
       if (!writable) throw unsupported('not writable');
       if (kind === 'a') _pos = length();
-      _dirty = true;
+      markDirty();
       if (isBinary) {
         const chunk = data instanceof Uint8Array ? data
           : data instanceof PyByteArray ? Uint8Array.from(data)
@@ -6359,9 +6370,8 @@ export async function _createAdderFile(vfs, filePath, mode) {
     async close() {
       if (_closed) return;
       _closed = true;
-      if (_dirty || mustExist) {
-        try { await vfs.writeFile(filePath, isBinary ? _bytes.slice(0, _len) : _text); } catch (e) { throw _mapVFSError(e); }
-      }
+      _pendingFiles.delete(f);
+      await f._writeOut();
     },
 
     __enter__() { return f; },
@@ -6387,6 +6397,7 @@ export async function _createAdderFile(vfs, filePath, mode) {
     get closed() { return _closed; },
   };
 
+  if (mustExist) { _dirty = true; _pendingFiles.add(f); }   // w / a / x make the file at open
   return f;
 }
 
@@ -6687,6 +6698,53 @@ function _createGlobModule(getVfs) {
 let _adderVFS = null;
 let _vfsPath = null;
 
+// Open files with data the VFS hasn't seen. CPython closes a file the moment its last reference
+// goes (`open(p, 'w').write(s)` is on disk by the next line); adder can't see references, so a
+// file's data goes out at the next filesystem call instead — every VFS method adder calls first
+// writes these out — and at the end of a run (flushOpenFiles). A file stays open; only its
+// content is written.
+const _pendingFiles = new Set();
+let _flushing = null;
+export function flushOpenFiles() {
+  if (_flushing) return _flushing;
+  if (!_pendingFiles.size) return null;
+  _flushing = (async () => {
+    try {
+      while (_pendingFiles.size) {
+        const f = _pendingFiles.values().next().value;
+        _pendingFiles.delete(f);
+        // a file that can't be written raises at its own flush() / close(), not at whatever
+        // filesystem call happened to come next
+        try { await f._writeOut(); } catch { /* still dirty */ }
+      }
+    } finally { _flushing = null; }
+  })();
+  return _flushing;
+}
+// the VFS as adder sees it: its async methods wait for the pending files first
+const _VFS_ASYNC = new Set(['readFile', 'writeFile', 'mkdir', 'readdir', 'stat', 'lstat', 'unlink', 'rmdir', 'rm',
+  'rename', 'exists', 'touch', 'cp', 'symlink', 'readlink', 'chmod', 'chown', 'glob', 'du', 'export', 'import',
+  'toFile', 'resolveHandle', 'readRange', 'createWriter', 'writeFrom', 'writeFiles', 'deleteBatch', 'listTree']);
+const _RAW_VFS = Symbol('rawVFS');
+function _flushingVFS(vfs) {
+  if (!vfs || vfs[_RAW_VFS]) return vfs;
+  const wrapped = new Map();
+  return new Proxy(vfs, {
+    get(t, k) {
+      if (k === _RAW_VFS) return t;
+      const v = Reflect.get(t, k, t);
+      if (typeof v !== 'function') return v;
+      if (!_VFS_ASYNC.has(k)) return v.bind(t);
+      let w = wrapped.get(k);
+      if (!w) {
+        w = (...a) => { const p = flushOpenFiles(); return p ? p.then(() => v.apply(t, a)) : v.apply(t, a); };
+        wrapped.set(k, w);
+      }
+      return w;
+    },
+  });
+}
+
 export function getAdderVFS() { return _adderVFS; }
 export function _getVfsPath() { return _vfsPath; }
 
@@ -6695,7 +6753,7 @@ let _osExtrasHook = null;
 export function setOsExtrasHook(fn) { _osExtrasHook = fn; if (adderModules.os) fn(adderModules.os); }
 
 export function setAdderVFS(vfsInstance, pathUtils) {
-  _adderVFS = vfsInstance;
+  _adderVFS = _flushingVFS(vfsInstance && vfsInstance[_RAW_VFS] ? vfsInstance[_RAW_VFS] : vfsInstance);
   if (pathUtils) _vfsPath = pathUtils;
   // reset cwd and module cache for the new VFS
   _cwd.value = _HOME;

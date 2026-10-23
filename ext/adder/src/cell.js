@@ -3,7 +3,7 @@
 
 import { adderParse, collectWalrusTargets, matchPatternNames } from './parse.js';
 import { adderEval, AdderScope, AdderError } from './eval.js';
-import { adderBuiltins, pyStr, pyRepr, _ensureFsModules, getAdderVFS, setAdderVFS, _stdio, printToFile } from './builtins.js';
+import { adderBuiltins, pyStr, pyRepr, _ensureFsModules, getAdderVFS, setAdderVFS, _stdio, printToFile, flushOpenFiles } from './builtins.js';
 import { _py } from './runtime.js';
 import { pyNameOf } from './air-lower.js';
 
@@ -194,7 +194,12 @@ function _collectNames(node, allDefined, uses) {
 
 // ── execute: run Python cell code ──
 
+// files a cell left open have their data on the VFS when it ends, for the cells after it
 export async function pythonExecute(code, scopeIn, cell) {
+  try { return await _pythonExecute(code, scopeIn, cell); } finally { await flushOpenFiles(); }
+}
+
+async function _pythonExecute(code, scopeIn, cell) {
   // capture print output
   const outputParts = [];
   const printFn = (text) => outputParts.push(text);

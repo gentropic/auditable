@@ -137,4 +137,22 @@ print(open("/tmp/b.txt").read(), b.getvalue())
 `);
     assert.equal(r.text, 'hi abc\n');
   });
+
+  it('a file never closed is on the VFS by the next filesystem call, and when the run ends', async () => {
+    const r = await runBoth(`
+import os
+open("/tmp/a.txt", "w").write("dropped")
+print(open("/tmp/a.txt").read())
+f = open("/tmp/b.txt", "w")
+print(os.path.exists("/tmp/b.txt"))
+f.write("one")
+f.flush()
+print(os.path.getsize("/tmp/b.txt"))
+f.write("two")
+open("/tmp/c.txt", "w").write("left open")
+`);
+    assert.equal(r.text, 'dropped\nTrue\n3\n');
+    assert.equal(await r.vfs.readFile('/tmp/b.txt'), 'onetwo');
+    assert.equal(await r.vfs.readFile('/tmp/c.txt'), 'left open');
+  });
 });
