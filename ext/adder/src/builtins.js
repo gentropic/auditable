@@ -3,6 +3,8 @@
 // All functions are sync unless they need to call user-provided callables
 // (which are async since the evaluator is async).
 
+import { cpythonAstTree } from './ast-cpython.js';
+
 // ── PyRange — lazy range ──
 
 export class AdderRange {
@@ -456,6 +458,40 @@ const _HASH_P = (1n << 61n) - 1n;
 // _IncompleteInputError PyCF_ALLOW_INCOMPLETE_INPUT asks for. Set by eval.js, which has the parser.
 let _compileCheck = null;
 export function setCompileCheck(fn) { _compileCheck = fn; }
+// an ast node (an instance of one of pylib/_ast.py's classes)
+const _isAstNode = (x) => x !== null && typeof x === 'object' && !!x.__adderType__ && (x.__adderType__._pyMRO || []).some((c) => c._pyName === 'AST' && c.__module__ === 'ast');
+// PyCF_OPTIMIZED_AST (0x8400): the tree folded as CPython's compiler folds it (Python/ast_opt.c,
+// ported: pylib/_ast_opt.py) — optimize the level (-1: the interpreter's, 0)
+const _PYCF_OPTIMIZED_AST = 0x8400;
+async function _optimizeAst(tree, optimize, flags) {
+  const r = adderGetAttr(await _imp.importModule('_ast_opt'), 'optimize')(tree, optimize >= 0 ? optimize : 0, flags);
+  return _isThenable(r) ? await r : r;
+}
+// compile(tree, …): the code of the source the tree is (ast.unparse) — with PyCF_ONLY_AST, the tree
+// itself, as CPython hands it back (checked, and folded with PyCF_OPTIMIZED_AST — a new tree)
+async function _compileAst(node, filename, mode, flags, optimize = -1) {
+  if ((flags & _PYCF_OPTIMIZED_AST) === _PYCF_OPTIMIZED_AST) {
+    const v0 = adderGetAttr(await _imp.importModule('_ast_validate'), 'validate')(node);
+    if (_isThenable(v0)) await v0;
+    let copy = adderGetAttr(await _imp.importModule('copy'), 'deepcopy')(node);
+    if (_isThenable(copy)) copy = await copy;
+    return _optimizeAst(copy, optimize, flags);
+  }
+  if (flags & 0x400) return node;
+  const want = { exec: 'Module', eval: 'Expression', single: 'Interactive' }[mode];
+  const got = node.__adderType__._pyName;
+  if (got !== want) throw new AdderError('TypeError', `expected ${want} node, got ${got}`);
+  // checked as CPython checks a tree (Python/ast.c, ported: pylib/_ast_validate.py), then compiled
+  // from its source
+  const v = adderGetAttr(await _imp.importModule('_ast_validate'), 'validate')(node);
+  if (_isThenable(v)) await v;
+  const unparse = adderGetAttr(await _imp.importModule('ast'), 'unparse');
+  let src;
+  if (got === 'Module') src = await unparse(node);
+  else if (got === 'Expression') src = await unparse(adderGetAttr(node, 'body'));
+  else { const parts = []; for (const st of adderGetAttr(node, 'body')) parts.push(await unparse(st)); src = parts.join('\n'); }
+  return adderModules.builtins.compile(src, filename, mode, flags);
+}
 // functools.lru_cache's key separator between positional and keyword arguments (_make_key's kwd_mark)
 const _LRU_KWMARK = Object.freeze({ __adderClass__: 'object' });
 function _hashFinish(h) {
@@ -572,6 +608,9 @@ export const frozenPyBuild = { id: null };
 // that join what it defines (collections.abc's registrations)
 export const frozenModuleHooks = {};
 
+// the names a module's code deleted through globals() (ast.py's globals().pop('Num')): the import
+// machinery doesn't put a compiled module's binding of one back on the module after it runs
+export const MODULE_DELETED = Symbol('adder.moduleDeleted');
 export class AttrDict extends PyDict {
   // (`hide`: more names that live on the object but aren't in its __dict__ — a function's
   // __defaults__ / __kwdefaults__ / __name__ … are slots in CPython)
@@ -590,7 +629,15 @@ export class AttrDict extends PyDict {
     Object.defineProperty(t, k, { value: v, writable: true, enumerable: true, configurable: true });
     return this;
   }
-  delete(k) { if (!this.has(k)) return false; delete this._t[k]; return true; }
+  delete(k) {
+    if (!this.has(k)) return false;
+    delete this._t[k];
+    if (this._t && this._t.__adderModule__ === true && typeof k === 'string') {
+      if (!Object.hasOwn(this._t, MODULE_DELETED)) Object.defineProperty(this._t, MODULE_DELETED, { value: new Set(), configurable: true });
+      this._t[MODULE_DELETED].add(k);
+    }
+    return true;
+  }
   clear() { for (const k of this._keys()) delete this._t[k]; }
   keys() { return this._keys()[Symbol.iterator](); }
   values() { return this._keys().map((k) => this._t[k])[Symbol.iterator](); }
@@ -2528,7 +2575,7 @@ export function adderGetAttr(obj, attr) {
     // it reads plainly: _gaBypass); its AttributeError falls to __getattr__, as in Python
     if (_gaBypass === obj) _gaBypass = null;
     else if (obj.__adderType__ && attr !== '__getattribute__' && typeof obj.__getattribute__ === 'function' && !Object.hasOwn(obj, '__getattribute__')) {
-      const fallback = (e) => { if (e && e.pyType === 'AttributeError' && typeof obj.__getattr__ === 'function') return obj.__getattr__(attr); throw e; };
+      const fallback = (e) => { if (e && e.pyType === 'AttributeError' && typeof obj.__getattr__ === 'function') return syncOf(obj.__getattr__).call(obj, attr); throw e; };
       let r;
       try { r = obj.__getattribute__(attr); } catch (e) { return fallback(e); }
       return r && typeof r.then === 'function' ? r.then(null, fallback) : r;   // (a tree-walked one is async)
@@ -2590,7 +2637,7 @@ export function adderGetAttr(obj, attr) {
     // dict-like attribute access — keys, values, items, get, etc.
     if (_objDictMethods[attr]) return _objDictMethods[attr](obj);
     // __getattr__ dunder
-    if (typeof obj.__getattr__ === 'function') return obj.__getattr__(attr);
+    if (typeof obj.__getattr__ === 'function') return syncOf(obj.__getattr__).call(obj, attr);  // (synchronous where it can be: a lazy module attribute read in compiled code)
     // what every instance inherits from object (dir() lists them, so getattr must find them)
     if (ot && _OBJECT_DUNDER_SET.has(attr)) { const d = _objectDunder(obj, attr); if (d !== undefined) return d; }
     if (ot && attr === '__weakref__') return null;
@@ -7318,9 +7365,10 @@ export function printToFile(file, text) {
 // a compiled function's JS name, as Python names it: AIR emits a JS-reserved Python name with a
 // trailing `$` (function new$ for `def new`), and no Python identifier contains a `$`
 const _jsFnName = (f) => (typeof f.name === 'string' && f.name.endsWith('$') ? f.name.slice(0, -1) : f.name);
-export const Ellipsis = Object.freeze({ __adderClass__: 'ellipsis', __repr__: () => 'Ellipsis', __str__: () => 'Ellipsis' });
+// (pickled and copied as the builtin of their name: __reduce__ gives the name, as CPython's)
+export const Ellipsis = Object.freeze({ __adderClass__: 'ellipsis', __repr__: () => 'Ellipsis', __str__: () => 'Ellipsis', __reduce__: () => 'Ellipsis', __module__: 'builtins' });
 // a binary dunder's "not mine": Python then tries the reflected method (_viaDunder, pyEq)
-export const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __repr__: () => 'NotImplemented', __bool__: () => true });
+export const NotImplemented = Object.freeze({ __adderClass__: 'NotImplementedType', __repr__: () => 'NotImplemented', __bool__: () => true, __reduce__: () => 'NotImplemented', __module__: 'builtins' });
 function _typeArgText(t) {
   if (t === Ellipsis) return '...';
   if (t === null || t === undefined) return 'None';
@@ -7359,7 +7407,8 @@ export const pyGenericAliasType = (() => {
 })();
 export class UnionType {
   constructor(args) { this.__args__ = mkTuple(args); }
-  __repr__() { return this.__args__.map(_typeArgText).join(' | '); }
+  // (NoneType reads as None, as CPython writes it)
+  __repr__() { return this.__args__.map((a) => (a === typeOf(null) ? 'None' : _typeArgText(a))).join(' | '); }
   __eq__(o) { return o instanceof UnionType && this.__args__.length === o.__args__.length && this.__args__.every((a) => o.__args__.some((b) => a === b || pyEq(a, b) === true)); }
   __hash__() { return `ut:${this.__repr__()}`; }
   __or__(o) { return makeUnion(this, o); }
@@ -7369,10 +7418,13 @@ UnionType.prototype.__adderClass__ = 'UnionType';
 function _isTypeLike(t) {
   return t === null || (typeof t === 'function' && !!t._pyClass) || t instanceof GenericAlias || t instanceof UnionType;
 }
-// A | B: flattened, without repeats (int | int is int)
+// A | B: flattened, without repeats (int | int is int); None in it is NoneType (its __args__, as CPython's)
 export function makeUnion(a, b) {
   const out = [];
-  for (const t of [a, b]) for (const x of (t instanceof UnionType ? t.__args__ : [t])) if (!out.some((y) => y === x || (x instanceof GenericAlias && pyEq(x, y) === true))) out.push(x);
+  for (const t of [a, b]) for (let x of (t instanceof UnionType ? t.__args__ : [t])) {
+    x = x ?? typeOf(null);
+    if (!out.some((y) => y === x || (x instanceof GenericAlias && pyEq(x, y) === true))) out.push(x);
+  }
   return out.length === 1 ? out[0] : new UnionType(out);
 }
 
@@ -7724,11 +7776,25 @@ export function pySubclasses(cls) {
   return out;
 }
 
+//
+// A twin that gives up inside another twin (twinDepth.n > 1 while it runs) falls back on its own,
+// and the outer one then gives up and runs everything again — fine for lookups and computation.
+// A STRICT twin (the import entry points: an import started can't be taken back) passes its
+// give-up outward instead, so only the outermost call falls back and the work happens once.
+export const twinDepth = { n: 0 };
 export function syncOf(f) {
   if (typeof f !== 'function' || !f._pySync) return f;
   if (Object.hasOwn(f, '_pySyncCall')) return f._pySyncCall;
   const call = function (...a) {
-    try { return f._pySync.apply(this, a); } catch (e) { if (e === NEEDS_ASYNC) return f.apply(this, a); throw e; }
+    let r;
+    twinDepth.n++;
+    try { r = f._pySync.apply(this, a); } catch (e) {
+      twinDepth.n--;
+      if (e === NEEDS_ASYNC && !(f._pyStrictTwin && twinDepth.n > 0)) return f.apply(this, a);
+      throw e;
+    }
+    twinDepth.n--;
+    return r;
   };
   Object.defineProperty(f, '_pySyncCall', { value: call, configurable: true, writable: true });
   return call;
@@ -8654,7 +8720,8 @@ function _loadedModule(n) {
   if (a && typeof a === 'object' && a.__adderModule__ && n !== 'js') { _sysModule.modules[n] = a; return a; }   // in sys.modules once imported, as findModule does
   return undefined;
 }
-function _builtinImport(name, ...args) {
+// (what __import__ asks for: the absolute name, and the module it answers with when already loaded)
+function _importRequest(name, args) {
   const kw = _kwOf(args);
   const [globals = kw.globals, , fromlist = kw.fromlist, level = kw.level || 0] = args;
   let abs = name;
@@ -8662,18 +8729,33 @@ function _builtinImport(name, ...args) {
     const pkg = globals && (globals instanceof Map ? globals.get('__package__') : globals.__package__);
     abs = _imp.resolveRelative('.'.repeat(level) + name, pkg || null);
   }
+  let loaded;
   const have = _loadedModule(abs);
-  if (have) {
-    if ((fromlist && fromlist.length) || !abs.includes('.')) return have;
-    const top = _loadedModule(abs.split('.')[0]);
-    if (top) return top;
-  }
+  if (have) loaded = (fromlist && fromlist.length) || !abs.includes('.') ? have : _loadedModule(abs.split('.')[0]);
+  return { abs, fromlist, loaded };
+}
+function _builtinImport(name, ...args) {
+  const { abs, fromlist, loaded } = _importRequest(name, args);
+  if (loaded) return loaded;
   return (async () => {
     const mod = await _imp.importModule(abs);
     if (fromlist && fromlist.length) return mod;
     return abs.includes('.') ? _imp.importModule(abs.split('.')[0]) : mod;
   })();
 }
+// their twins (code that can't wait — a module's __getattr__ read in compiled code): a module
+// already loaded, or give up BEFORE the import starts — one begun and abandoned would leave its
+// module half-made in sys.modules for the fallback to find
+_builtinImport._pyStrictTwin = true;
+adderModules.importlib.import_module._pyStrictTwin = true;
+_defTwin(_builtinImport, (name, ...args) => { const { loaded } = _importRequest(name, args); if (!loaded) throw NEEDS_ASYNC; return loaded; });
+_defTwin(adderModules.importlib.import_module, (name, ...args) => {
+  const kw = _kwOf(args);
+  const pkg = args.length ? args[0] : kw.package;
+  const m = _loadedModule(String(name).startsWith('.') ? _imp.resolveRelative(name, pkg || null) : name);
+  if (!m) throw NEEDS_ASYNC;
+  return m;
+});
 
 // a builtin type's constructor that takes its arguments by position only, at most `max`
 // (list(sequence=[]) and list(1, 2) are TypeErrors, as CPython's)
@@ -9180,8 +9262,20 @@ export function adderBuiltins(printFn) {
       else if (mode && mode._kw) mode = kwBag.mode ?? 'exec';
       let flags = typeof a[0] === 'number' ? a[0] : 0;
       if (kwBag && typeof kwBag.flags === 'number') flags = kwBag.flags;
+      // compile(source, filename, mode, flags=0, dont_inherit=False, optimize=-1)
+      let optimize = typeof a[2] === 'number' ? a[2] : -1;
+      if (kwBag && typeof kwBag.optimize === 'number') optimize = kwBag.optimize;
       if (!['exec', 'eval', 'single'].includes(mode)) throw new AdderError('ValueError', "compile() mode must be 'exec', 'eval' or 'single'");
+      if (_isAstNode(source)) return _compileAst(source, filename, mode, flags, optimize);
       const src = source instanceof Uint8Array ? new TextDecoder().decode(source) : source && typeof source._pySource === 'string' ? source._pySource : String(source);
+      // PyCF_ONLY_AST: the tree, CPython's shape (ast.parse is this) — built by pylib/_ast.py; its
+      // parse is the syntax check (it reads what the engines don't run: except*, *args: *Ts)
+      if (flags & 0x400) {
+        let tree;
+        try { tree = cpythonAstTree(src, mode); } catch (e) { if (e instanceof AdderError) throw e; throw new AdderError(e.pyType || 'SyntaxError', e.message || String(e)); }
+        const built = _thenMaybe(_imp.importModule('_ast'), (m) => adderGetAttr(m, '_from_tree')(tree));
+        return (flags & _PYCF_OPTIMIZED_AST) === _PYCF_OPTIMIZED_AST ? _thenMaybe(built, (t) => _optimizeAst(t, optimize, flags)) : built;
+      }
       // parsed now, as CPython compiles now: a SyntaxError raises here (codeop, the code module
       // and IDLE-alikes tell incomplete input from bad input by it)
       if (_compileCheck && !(source && typeof source._pySource === 'string')) _compileCheck(src, mode, flags);

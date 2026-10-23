@@ -986,6 +986,7 @@ function lowerExpr_ad(ctx, node) {
 
     case 'Name': {
       const name = node.id;
+      if (node.ellipsis) return emitPyCall(ctx, 'ellipsis', [], l);   // `...`: a constant, not a name
       if (name === 'True') return ctx.emit('const', [true], BOOL, l);
       if (name === 'False') return ctx.emit('const', [false], BOOL, l);
       if (name === 'None') return ctx.emit('const', [null], DYNAMIC, l);

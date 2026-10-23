@@ -18,7 +18,7 @@ import {
   registerCodec, adderBuiltins, isMultibyteCodec, pyCollectMaybe, pyIsSubclass, pySubclasses, syncOf, pyGenericAliasType, _collectionsModule,
   isIntNum,
 } from './builtins.js';
-import { _adderParseExpr, adderParse } from './parse.js';
+import { adderParse } from './parse.js';
 
 const _syIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
 const _syIsCoro = (v) => _syIsThen(v) || (v !== null && typeof v === 'object' && v.__adderClass__ === 'coroutine');
@@ -2224,40 +2224,20 @@ adderModules.marshal = _syModule('marshal', {
   dump: () => { throw new AdderError('ValueError', 'marshal is not supported (no bytecode here)'); },
   load: () => { throw new AdderError('ValueError', 'marshal is not supported (no bytecode here)'); },
 });
-
-// ── ast: literal_eval (a safe evaluator for Python literals over adder's own parser) ──
+// dis: no bytecode to disassemble either — the module exists (test modules import it beside what
+// they test); disassembling raises
 {
-  // the literal forms ast.literal_eval accepts — strings, bytes, numbers, tuples, lists, dicts,
-  // sets, booleans, None, and unary +/- on numbers / a complex sum — evaluated from the parse tree
-  const parseExpr = _adderParseExpr;
-  const bad = () => new AdderError('ValueError', 'malformed node or string');
-  const lit = (n) => {
-    switch (n && n.type) {
-      case 'Constant': return n.value;
-      case 'Bytes': { const b = new Uint8Array(n.value.length); for (let i = 0; i < n.value.length; i++) b[i] = n.value.charCodeAt(i); return b; }
-      case 'Name': if (n.id === 'True') return true; if (n.id === 'False') return false; if (n.id === 'None') return null; if (n.id === 'Ellipsis') throw bad(); throw bad();
-      case 'Tuple': return mkTuple(n.elts.map(lit));
-      case 'List': return n.elts.map(lit);
-      case 'Set': return new PySet(n.elts.map(lit));
-      case 'Dict': { const d = new PyDict(); n.keys.forEach((k, i) => { if (k === null) throw bad(); d.set(lit(k), lit(n.values[i])); }); return d; }
-      case 'UnaryOp': { const v = lit(n.operand); if (typeof v !== 'number') throw bad(); if (n.op === '-' || n.op === 'USub') return -v; if (n.op === '+' || n.op === 'UAdd') return v; throw bad(); }
-      case 'Call': if (n.func && n.func.type === 'Name' && n.func.id === 'set' && !n.args.length) return new PySet(); throw bad();
-      default: throw bad();
-    }
-  };
-  adderModules.ast = _syModule('ast', {
-    literal_eval: (node) => {
-      if (typeof node === 'string') {
-        let tree;
-        try { tree = parseExpr(node.trim()); } catch (e) { throw new AdderError('SyntaxError', String(e && e.message || e)); }
-        return lit(tree);
-      }
-      return lit(node);
-    },
-    parse: () => { throw new AdderError('NotImplementedError', 'ast.parse: adder does not expose CPython AST nodes'); },
-    PyCF_ONLY_AST: 1024, PyCF_TYPE_COMMENTS: 4096,
+  const none = () => { throw new AdderError('NotImplementedError', 'dis: adder has no bytecode to disassemble'); };
+  adderModules.dis = _syModule('dis', {
+    dis: none, disassemble: none, distb: none, disco: none, get_instructions: none, code_info: none, show_code: none,
+    findlinestarts: none, findlabels: none, stack_effect: none,
+    Bytecode: _syClass('Bytecode', [], { __init__: none }, 'dis'),
+    Instruction: _syClass('Instruction', [], { __init__: none }, 'dis'),
+    opname: [], opmap: new PyDict(), cmp_op: mkTuple([]), hasarg: [], hasconst: [], hasname: [], hasjrel: [], hasjabs: [], haslocal: [], hascompare: [], hasfree: [], hasexc: [],
   });
 }
+
+// (ast is CPython's, pylib/ast.py, over pylib/_ast.py: compile(…, PyCF_ONLY_AST) builds its trees)
 
 // ── configparser ──
 {

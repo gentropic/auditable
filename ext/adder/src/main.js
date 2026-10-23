@@ -1,5 +1,6 @@
 // adder — ES module entry point (import order doubles as build manifest)
 import './parse.js';
+import './ast-cpython.js';   // CPython's ast trees from the parser (compile(…, PyCF_ONLY_AST))
 import './builtins.js';
 import './eval.js';
 import './runtime.js';

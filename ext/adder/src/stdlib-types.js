@@ -343,8 +343,17 @@ adderModules.enum = {
     let n = BigInt(num);
     while (n) { const b = n & -n; yield n <= 9007199254740991n ? Number(b) : b; n ^= b; }
   };
-  // the stdlib's private enum-conversion hooks: not adder's (its enums are JS-built); a class
-  // decorated with one is the class as written
-  E._simple_enum = () => (cls) => cls;
+  // _simple_enum(etype=Enum): the stdlib's decorator making a plain class an enum of etype (ast's
+  // _Precedence, re's flags) — here, the class made again with etype as its base, from its own
+  // namespace: members, methods and docstring (adder's enums are built as their class is)
+  E._simple_enum = (etype = _stEnum, ...rest) => (cls) => {
+    if (etype !== null && typeof etype === 'object' && etype._kw) etype = _stEnum;
+    const d = adderGetAttr(cls, '__dict__');
+    const ns = new PyDict();
+    for (const k of pyIter(d)) if (k !== '__dict__' && k !== '__weakref__') ns.set(k, adderGetAttr(d, '__getitem__')(k));
+    const doc = adderGetAttr(cls, '__doc__');
+    if (doc !== null && doc !== undefined) ns.set('__doc__', doc);
+    return adderModules.builtins.type(cls._pyName, mkTuple([etype]), ns);
+  };
   E._test_simple_enum = () => { throw new AdderError('NotImplementedError', 'enum._test_simple_enum is not available in adder'); };
 }

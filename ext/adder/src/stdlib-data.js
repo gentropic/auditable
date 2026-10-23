@@ -1669,6 +1669,20 @@ adderModules.warnings = {
   showwarning: (message, category, filename, lineno) => { const line = `${filename}:${lineno}: ${_dtCatName(category)}: ${pyStr(message)}\n`; if (_stdio.err) _stdio.err(line); return null; },
   formatwarning: (message, category, filename, lineno) => `${filename}:${lineno}: ${_dtCatName(category)}: ${pyStr(message)}\n`,
   get filters() { return _dtFilters.map((f) => mkTuple([f.action, f.message || null, f.category, null, 0])); },
+  // _deprecated(name, message=_DEPRECATED_MSG, *, remove): the stdlib's own deprecation helper (ast
+  // uses it) — a DeprecationWarning, or RuntimeError once the version it was to go in is reached
+  _DEPRECATED_MSG: '{name!r} is deprecated and slated for removal in Python {remove}',
+  _deprecated: (name, ...a) => {
+    const { args } = _dtArgs(a, ['message', 'remove', '_version'], { message: adderModules.warnings._DEPRECATED_MSG, remove: null, _version: null });
+    const ver = [...pyIter(args._version ?? adderModules.sys.version_info)];
+    const rem = [...pyIter(args.remove)];
+    const removeFormatted = `${rem[0]}.${rem[1]}`;
+    const past = ver[0] > rem[0] || (ver[0] === rem[0] && (ver[1] > rem[1] || (ver[1] === rem[1] && ver[3] !== 'alpha')));
+    if (past) throw new AdderError('RuntimeError', `${pyRepr(name)} was slated for removal after Python ${removeFormatted} alpha`);
+    const w = (msg) => _dtWarn(msg, { _kw: true, category: adderModules.builtins.DeprecationWarning, stacklevel: 3 });
+    const msg = adderGetAttr(args.message, 'format')({ _kw: true, name, remove: removeFormatted });
+    return msg !== null && typeof msg === 'object' && typeof msg.then === 'function' ? msg.then(w) : w(msg);
+  },
 };
 
 // ── logging ──

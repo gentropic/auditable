@@ -1238,6 +1238,36 @@ describe('adder — CPython parity found by the stdlib sweep', () => {
     'r = [out, b"abc".startswith(memoryview(b"ab")), int(b"0000644", 8), int(bytearray(b" 12 "))]',
   ], [['startswith first arg must be bytes or a tuple of bytes, not str', "a bytes-like object is required, not 'str'",
     "argument should be integer or bytes-like object, not 'str'", 'startswith first arg must be str or a tuple of str, not bytes'], true, 420, 12]));
+  it('a trailing comma makes a tuple; an f-string field runs over lines; a form feed restarts the indent', () => both([
+    'x = 1 ,',
+    'a, b = 2, 3',
+    's = f"""<{',
+    'a',
+    '+',
+    'b',
+    '}>"""',
+    'exec("if 1:\\n  \\f  y = 4\\n  \\f  z = 5")',
+    'r = [list(x), s, y, z]',
+  ], [[1], '<5>', 4, 5]));
+  it('X | None holds NoneType in its __args__, and prints as None', () => both([
+    'import typing',
+    't = str | None',
+    'r = [repr(t), t.__args__ == (str, type(None)), isinstance(None, t), typing.get_args(int | None)[1] is type(None)]',
+  ], ['str | None', true, true, true]));
+  it("ast is CPython's: parse with positions, dump, unparse, literal_eval, compile of a tree, ast.Num", () => both([
+    'import ast, warnings',
+    'tree = ast.parse("x = (1 +\\n  f(y)) * 2")',
+    'b = tree.body[0].value',
+    'pos = [b.lineno, b.col_offset, b.end_lineno, b.end_col_offset, b.left.end_col_offset]',
+    'ns = {"f": lambda v: v, "y": 3}',
+    'exec(compile(tree, "<t>", "exec"), ns)',
+    'with warnings.catch_warnings():',
+    '    warnings.simplefilter("ignore")',
+    '    n = ast.Num(5)',
+    'r = [ast.dump(ast.parse("a.b", mode="eval")), ast.unparse(tree), pos, ns["x"], repr(ast.literal_eval("[1, (2, -3.5), {\'k\': None}]")),',
+    '     type(n).__name__, ast.parse(\'u"s"\', mode="eval").body.kind, ast.dump(ast.parse("1 + 2", optimize=1))]',
+  ], ["Expression(body=Attribute(value=Name(id='a', ctx=Load()), attr='b', ctx=Load()))", 'x = (1 + f(y)) * 2', [1, 4, 2, 11, 6], 8,
+    "[1, (2, -3.5), {'k': None}]", 'Constant', 'u', 'Module(body=[Expr(value=Constant(value=3))])']));
 });
 
 describe('adder transpile — deterministic output', () => {

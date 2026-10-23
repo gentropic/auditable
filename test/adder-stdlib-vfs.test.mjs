@@ -294,6 +294,31 @@ except OSError as e:
     ].join('\n'));
   });
 
+  it("a package's lazy __getattr__ imports a submodule that imports another lazily — each module once (dateutil)", async () => {
+    const r = await runBoth(`
+import os, sys
+os.makedirs('/tmp/lz/pk', exist_ok=True)
+with open('/tmp/lz/pk/__init__.py', 'w') as f:
+    f.write('''
+__all__ = ['parser', 'tz']
+def __getattr__(name):
+    import importlib
+    if name in __all__:
+        return importlib.import_module("." + name, __name__)
+    raise AttributeError(name)
+''')
+with open('/tmp/lz/pk/parser.py', 'w') as f:
+    f.write('from . import tz\\nP = tz.X\\n')
+with open('/tmp/lz/pk/tz.py', 'w') as f:
+    f.write('from collections import OrderedDict\\nX = OrderedDict(a=1)\\nprint("tz loaded")\\n')
+sys.path.insert(0, '/tmp/lz')
+from pk import parser
+print(parser.P, parser.tz is sys.modules['pk.tz'])
+`);
+    assert.equal(r.used, 'air');
+    assert.equal(r.text, "tz loaded\nOrderedDict({'a': 1}) True\n");
+  });
+
   it("pathlib and shutil are CPython's, over os: paths, globs, stat_result, symlinks, walk, bytes paths", async () => {
     const r = await runBoth(`
 import os, shutil, stat

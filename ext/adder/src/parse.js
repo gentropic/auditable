@@ -46,25 +46,40 @@ const _THREE_OP = new Set(['**=', '//=', '<<=', '>>=']);
 
 const _ID_START = /^[\p{ID_Start}_]$/u;
 const _ID_CONTINUE = /^[\p{ID_Continue}]$/u;
-export function adderTokenize(code) {
+// inField: an f-string field's expression, which runs over lines as if in brackets (PEP 701)
+export function adderTokenize(code, inField = false) {
   // universal newlines, as CPython's tokenizer reads source: \r\n and a lone \r are \n (a
   // triple-quoted string in a CRLF file holds \n; the escape \r stays — it is not a CR here)
   if (code.indexOf('\r') !== -1) code = code.replace(/\r\n?/g, '\n');
   const tokens = [];
   const indentStack = [0];
   let pos = 0, line = 1, col = 0;
-  let bracketDepth = 0, atBol = true;
+  let bracketDepth = inField ? 1 : 0, atBol = !inField;
   const openers = [];
   const len = code.length;
 
   function tok(type, value) { return { type, value, line, col }; }
+  // each token's span, as CPython's AST positions need it: sl / sc where it starts, el / ec just
+  // past its end (lines from 1, columns in characters). A token is read in one turn of the loop:
+  // where the turn's token begins is its start, and where the next turn begins, its end. (line /
+  // col above are what the engines use, and stay as they were.)
+  let sLine = 1, sCol = 0, mark = 0;
+  const stamp = () => {
+    for (; mark < tokens.length; mark++) {
+      const t = tokens[mark];
+      if (t.sl === undefined) { t.sl = sLine; t.sc = sCol; }
+      t.el = line; t.ec = col;
+    }
+  };
 
   while (pos < len) {
+    stamp();
     // ── beginning of line: indentation ──
     if (atBol && bracketDepth === 0) {
       let indent = 0;
-      while (pos < len && (code[pos] === ' ' || code[pos] === '\t')) {
-        indent += code[pos] === '\t' ? (4 - indent % 4) : 1;
+      // (a form feed starts the count over, as CPython's tokenizer does)
+      while (pos < len && (code[pos] === ' ' || code[pos] === '\t' || code[pos] === '\f')) {
+        indent = code[pos] === '\f' ? 0 : indent + (code[pos] === '\t' ? (4 - indent % 4) : 1);
         pos++; col++;
       }
       // skip blank / comment-only lines
@@ -91,9 +106,10 @@ export function adderTokenize(code) {
     }
 
     const ch = code[pos];
+    sLine = line; sCol = col;
 
     // ── whitespace (non-BOL) ──
-    if (ch === ' ' || ch === '\t') { pos++; col++; continue; }
+    if (ch === ' ' || ch === '\t' || ch === '\f') { pos++; col++; continue; }
 
     // ── newline ──
     if (ch === '\n' || ch === '\r') {
@@ -142,12 +158,17 @@ export function adderTokenize(code) {
       if (isFstring) {
         // f-string: extract parts
         const parts = [];
-        let textBuf = '';
+        // (where each part is, for the ast module: a text's span; a field's — its braces — with
+        // where its expression and its format spec start. Read by ast mode only.)
+        const spans = [];
+        let textBuf = '', textAt = null;
         const endQuote = triple ? qch + qch + qch : qch;
         let fclosed = false;
         const fstartLine = line;
         while (pos < len) {
+          if (!textBuf) textAt = [line, col];
           if (triple ? (code[pos] === qch && code[pos + 1] === qch && code[pos + 2] === qch) : code[pos] === qch) {
+            if (textBuf) { parts.push(textBuf); spans.push([...textAt, line, col]); textBuf = ''; }
             pos += triple ? 3 : 1; col += triple ? 3 : 1;
             fclosed = true;
             break;
@@ -155,8 +176,11 @@ export function adderTokenize(code) {
           if (code[pos] === '\n') { if (!triple) break; textBuf += '\n'; pos++; line++; col = 0; continue; }
           if (code[pos] === '{') {
             if (code[pos + 1] === '{') { textBuf += '{'; pos += 2; col += 2; continue; }
-            if (textBuf) { parts.push(textBuf); textBuf = ''; }
+            if (textBuf) { parts.push(textBuf); spans.push([...textAt, line, col]); textBuf = ''; }
+            const braceAt = [line, col];
             pos++; col++; // skip {
+            const exprAt = [line, col];
+            let specAt = null;
             // the replacement field's expression: `:` starts the format spec and `!` the conversion
             // only at the field's own level — not inside brackets (`{v[:n]}`, `{f(a, b=1)}`), nor
             // inside a string in the expression (`{d['a:b']}`, `{'}'}`)
@@ -184,6 +208,7 @@ export function adderTokenize(code) {
               }
               else if (c === ':' && depth === 1 && nest === 0 && spec === null) {
                 spec = ''; pos++; col++;
+                specAt = [line, col];
                 while (pos < len && !(code[pos] === '}' && depth === 1)) {
                   if (code[pos] === '{') depth++;
                   if (code[pos] === '}') { depth--; if (depth === 0) break; }
@@ -196,12 +221,18 @@ export function adderTokenize(code) {
             }
             if (code[pos - 1] !== '}' && depth === 0) { /* closing } already consumed */ }
             const selfDoc = /=\s*$/.test(expr) && !/[=!<>]=\s*$/.test(expr);
+            // (the expression starts past its leading whitespace — newlines too: it is trimmed)
+            const exprStart = [exprAt[0], exprAt[1]];
+            for (const c of /^\s*/.exec(expr)[0]) { if (c === '\n') { exprStart[0]++; exprStart[1] = 0; } else exprStart[1]++; }
+            const field = { field: [...braceAt, line, col], expr: exprStart, spec: specAt };
             if (selfDoc) {
               parts.push(expr);   // the text as written, `=` and spaces included
+              spans.push([...exprAt, exprAt[0], exprAt[1] + expr.length]);
               parts.push({ expr: expr.replace(/=\s*$/, '').trim(), spec, conv: conv || (spec === null ? 'r' : null) });
             } else {
               parts.push({ expr: expr.trim(), spec, conv });
             }
+            spans.push(field);
             continue;
           }
           if (code[pos] === '}') {
@@ -219,10 +250,11 @@ export function adderTokenize(code) {
           }
         }
         if (!fclosed) throw new SyntaxError(`unterminated ${triple ? 'triple-quoted ' : ''}f-string literal (detected at line ${line}) (line ${fstartLine})`);
-        if (textBuf) parts.push(textBuf);
         // process escape sequences in text parts
         const processedParts = parts.map(p => typeof p === 'string' ? (isRaw ? p : _processEscapes(p)) : p);
-        tokens.push(tok('FSTRING', processedParts));
+        const ft = tok('FSTRING', processedParts);
+        if (spans.length === parts.length) ft.fsSpans = spans;
+        tokens.push(ft);
       } else {
         // regular string
         let raw = '', closed = false;
@@ -247,7 +279,7 @@ export function adderTokenize(code) {
         // (a quote never closed: CPython's SyntaxError, not a string that ends at the line / file)
         if (!closed) throw new SyntaxError(`unterminated ${triple ? 'triple-quoted ' : ''}string literal (detected at line ${line}) (line ${startLine})`);
         const val = isRaw ? raw : _processEscapes(raw);
-        tokens.push(/[bB]/.test(prefix) ? tok('BYTES', val) : tok('STRING', val));
+        tokens.push(/[bB]/.test(prefix) ? tok('BYTES', val) : /[uU]/.test(prefix) ? Object.assign(tok('STRING', val), { u: true }) : tok('STRING', val));
       }
       continue;
     }
@@ -341,6 +373,7 @@ export function adderTokenize(code) {
   // ── end of file ──
   // (input ending inside a bracket: the parser reports CPython's "was never closed" — what the
   // REPL waits on — when that is where it fails, not for an earlier error: `def f(:`)
+  stamp();
   if (openers.length) Object.defineProperty(tokens, 'unclosed', { value: openers[openers.length - 1] });
   if (tokens.length && tokens[tokens.length - 1].type !== 'NEWLINE') {
     tokens.push(tok('NEWLINE', ''));
@@ -384,6 +417,26 @@ export function classNeedsCell(node) {
   return r;
 }
 
+// The source as CPython's parser gives it to the ast module: the tree as written (none of the
+// rewrites adderParse makes for the engines), each node with its span. mode: 'exec' (a Module),
+// 'eval' (an Expression), 'single' (an Interactive).
+export function adderParseAst(code, mode = 'exec') {
+  const tokens = adderTokenize(code);
+  return _parseTokens(tokens, (p) => {
+    if (mode === 'eval') {
+      while (p.eat('NEWLINE')) { /* leading blank lines */ }
+      // (an expression indented: CPython's IndentationError — eval() and literal_eval strip the indent first)
+      if (p.at('INDENT')) { const e = new SyntaxError(`unexpected indent (line ${p.peek().line})`); e.pyType = 'IndentationError'; throw e; }
+      const body = p.parseExprOrStars();
+      while (p.eat('NEWLINE') || p.eat('DEDENT')) { /* trailing */ }
+      if (!p.at('EOF')) { const t = p.peek(); throw new SyntaxError(`invalid syntax: unexpected '${t.value}' [${t.type}] (line ${t.line})`); }
+      return { type: 'Expression', body };
+    }
+    const mod = p.parseModule();
+    return mode === 'single' ? { type: 'Interactive', body: mod.body } : mod;
+  }, _AstParser);
+}
+
 export function adderParse(code) {
   return _manglePrivate(_qualnames(_adderFlags(_classAnnotations(_desugarTypeParams(_hoistYields(_returnsInFunctions(_parseTokens(adderTokenize(code), (p) => p.parseModule())))))), ''), null);
 }
@@ -405,8 +458,8 @@ function _returnsInFunctions(mod) {
 }
 // run a parse; one that fails on the input's closing tokens while a bracket is still open failed
 // because the input stopped inside it
-function _parseTokens(tokens, fn) {
-  const p = new _Parser(tokens);
+function _parseTokens(tokens, fn, P = _Parser) {
+  const p = new P(tokens);
   try { return fn(p); } catch (e) {
     if (tokens.unclosed && e instanceof SyntaxError && tokens.slice(p.pos).every((t) => t.type === 'NEWLINE' || t.type === 'DEDENT' || t.type === 'EOF')) {
       const [ch, at] = tokens.unclosed;
@@ -715,8 +768,8 @@ export function parseErrorIsIncomplete(e) {
 }
 
 // one expression — a bare tuple too (eval("1, 2"), f"{a, b}") — and nothing after it
-export function _adderParseExpr(code) {
-  return _parseTokens(adderTokenize(code + '\n'), (p) => {
+export function _adderParseExpr(code, inField = false) {
+  return _parseTokens(adderTokenize(code + '\n', inField), (p) => {
     const e = p.parseExprOrStars();
     while (p.eat('NEWLINE')) { /* trailing newlines */ }
     if (!p.at('EOF')) { const t = p.peek(); throw new SyntaxError(`invalid syntax: unexpected '${t.value}' [${t.type}] (line ${t.line})`); }
@@ -781,7 +834,18 @@ export function collectWalrusTargets(node, defines) {
 const _AUGASSIGN = new Set(['+=', '-=', '*=', '/=', '//=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '@=']);
 
 class _Parser {
-  constructor(tokens) { this.tokens = tokens; this.pos = 0; }
+  constructor(tokens) { this.tokens = tokens; this.pos = 0; this.astMode = false; }
+  // (ast mode — adderParseAst — records where each node is: node._p = [line, col, end line, end
+  // col], columns in characters; a name the tree keeps as a string keeps its token, _tok)
+  _lastTok() {
+    for (let i = this.pos - 1; i >= 0; i--) { const t = this.tokens[i]; if (t.type !== 'NEWLINE' && t.type !== 'INDENT' && t.type !== 'DEDENT' && t.type !== 'EOF') return t; }
+    return null;
+  }
+  _span(node, startTok) {
+    const last = this._lastTok();
+    if (node && startTok && last) node._p = [startTok.sl, startTok.sc, last.el, last.ec];
+    return node;
+  }
   peek() { return this.tokens[this.pos] || { type: 'EOF', value: '', line: 0, col: 0 }; }
   advance() { return this.tokens[this.pos++]; }
   at(type, value) { const t = this.peek(); return t.type === type && (value === undefined || t.value === value); }
@@ -829,7 +893,9 @@ class _Parser {
         this.expect('NEWLINE');
       }
       if (this.at('NAME', 'def') || this.at('NAME', 'async')) {
+        const at = this.peek();
         const s = this.at('NAME', 'async') ? (this.advance(), this.parseDef(true, decorators)) : this.parseDef(false, decorators);
+        if (this.astMode && s._p && at.value === 'async') { s._p[0] = at.sl; s._p[1] = at.sc; }
         return [s];
       }
       if (this.at('NAME', 'class')) return [this.parseClass(decorators)];
@@ -838,9 +904,10 @@ class _Parser {
     // async
     if (t.type === 'NAME' && t.value === 'async') {
       this.advance();
-      if (this.at('NAME', 'def')) return [this.parseDef(true)];
-      if (this.at('NAME', 'for')) return [this.parseFor(true)];
-      if (this.at('NAME', 'with')) return [this.parseWith(true)];
+      const fromAsync = (n) => { if (this.astMode && n._p) { n._p[0] = t.sl; n._p[1] = t.sc; } return [n]; };
+      if (this.at('NAME', 'def')) return fromAsync(this.parseDef(true));
+      if (this.at('NAME', 'for')) return fromAsync(this.parseFor(true));
+      if (this.at('NAME', 'with')) return fromAsync(this.parseWith(true));
       throw new SyntaxError(`Expected def, for, or with after async (line ${t.line})`);
     }
     // compound statements
@@ -860,12 +927,15 @@ class _Parser {
         const n1 = this.tokens[this.pos + 1], n2 = this.tokens[this.pos + 2];
         if (n1 && n1.type === 'NAME' && n2 && n2.type === 'OP' && (n2.value === '=' || n2.value === '[')) {
           this.advance();
-          const name = this.advance().value;
+          const nameTok = this.advance();
+          const name = nameTok.value;
           const typeParams = this.at('OP', '[') ? this._parseTypeParams() : null;
           this.expect('OP', '=');
           const value = this.parseExpr();
+          const ta = { type: 'TypeAlias', name, typeParams, value, line: t.line, col: t.col };
+          if (this.astMode) { this._span(ta, t); ta._tok = nameTok; }
           this.eat('NEWLINE');
-          return [{ type: 'TypeAlias', name, typeParams, value, line: t.line, col: t.col }];
+          return [ta];
         }
       }
     }
@@ -961,11 +1031,11 @@ class _Parser {
         return { type: 'MatchSingleton', value: t.value === 'True' ? true : t.value === 'False' ? false : null, line: t.line, col: t.col };
       }
       this.advance();
-      let expr = { type: 'Name', id: t.value, line: t.line, col: t.col };
+      let expr = this._spanIf({ type: 'Name', id: t.value, line: t.line, col: t.col }, t);
       let dotted = false;
       while (this.at('OP', '.')) {
         this.advance();
-        expr = { type: 'Attribute', value: expr, attr: this.expect('NAME').value, line: t.line, col: t.col };
+        expr = this._spanIf({ type: 'Attribute', value: expr, attr: this.expect('NAME').value, line: t.line, col: t.col }, t);
         dotted = true;
       }
       if (this.at('OP', '(')) return this._parseClassPattern(expr, t);
@@ -1001,9 +1071,10 @@ class _Parser {
         if (kt.type === 'NAME' && !['True', 'False', 'None'].includes(kt.value)) {
           this.advance();
           key = { type: 'Name', id: kt.value, line: kt.line, col: kt.col };
-          while (this.eat('OP', '.')) key = { type: 'Attribute', value: key, attr: this.expect('NAME').value, line: kt.line, col: kt.col };
+          this._spanIf(key, kt);
+          while (this.eat('OP', '.')) key = this._spanIf({ type: 'Attribute', value: key, attr: this.expect('NAME').value, line: kt.line, col: kt.col }, kt);
           if (key.type === 'Name') throw new SyntaxError(`mapping pattern keys may only match literals and attribute lookups (line ${kt.line})`);
-        } else if (kt.type === 'NAME') { this.advance(); key = { type: 'Constant', value: kt.value === 'True' ? true : kt.value === 'False' ? false : null, line: kt.line, col: kt.col }; }
+        } else if (kt.type === 'NAME') { this.advance(); key = this._spanIf({ type: 'Constant', value: kt.value === 'True' ? true : kt.value === 'False' ? false : null, line: kt.line, col: kt.col }, kt); }
         else if (kt.type === 'NUMBER' || (kt.type === 'OP' && kt.value === '-')) key = this.parseArith();
         else key = this.parseAtom();
         this.expect('OP', ':');
@@ -1033,7 +1104,7 @@ class _Parser {
       if (!this.eat('OP', ',')) break;
     }
     this.expect('OP', ')');
-    return { type: 'MatchClass', cls, patterns, kwdAttrs, kwdPatterns, line: t.line, col: t.col };
+    return this._spanIf({ type: 'MatchClass', cls, patterns, kwdAttrs, kwdPatterns, line: t.line, col: t.col }, t);
   }
 
   parseSimpleList() {
@@ -1131,10 +1202,11 @@ class _Parser {
         const alias = this.expect('NAME').value;
         names.push({ path, alias });
       } else {
-        let module = this.expect('NAME').value;
+        const nt = this.expect('NAME');
+        let module = nt.value;
         while (this.eat('OP', '.')) module += '.' + this.expect('NAME').value;
         const alias = this.eat('NAME', 'as') ? this.expect('NAME').value : null;
-        names.push({ module, alias });
+        names.push(this.astMode ? { module, alias, _tok: nt, _end: this._lastTok() } : { module, alias });
       }
     } while (this.eat('OP', ','));
     return { type: 'Import', names, line: t.line, col: t.col };
@@ -1167,14 +1239,15 @@ class _Parser {
       while (this.eat('OP', '.')) module += '.' + this.expect('NAME').value;
     }
     this.expect('NAME', 'import');
-    if (this.eat('OP', '*')) return { type: 'ImportFrom', module, names: [{ name: '*', alias: null }], line: t.line, col: t.col };
+    { const st = this.peek(); if (this.eat('OP', '*')) return { type: 'ImportFrom', module, names: [this.astMode ? { name: '*', alias: null, _tok: st, _end: st } : { name: '*', alias: null }], line: t.line, col: t.col }; }
     const names = [];
     const paren = this.eat('OP', '(');
     do {
       if (paren && this.at('OP', ')')) break;     // trailing comma: from x import (a, b,)
-      const name = this.expect('NAME').value;
+      const nt = this.expect('NAME');
+      const name = nt.value;
       const alias = this.eat('NAME', 'as') ? this.expect('NAME').value : null;
-      names.push({ name, alias });
+      names.push(this.astMode ? { name, alias, _tok: nt, _end: this._lastTok() } : { name, alias });
     } while (this.eat('OP', ','));
     if (paren) this.expect('OP', ')');
     return { type: 'ImportFrom', module, names, line: t.line, col: t.col };
@@ -1243,12 +1316,14 @@ class _Parser {
       const t = this.advance();
       return { type: 'Starred', value: this._parseTargetAtom(), line: t.line, col: t.col };
     }
+    const s0 = this.peek();
     let expr = this.parseAtom();
     // allow postfix: .attr, [sub]
     while (true) {
       if (this.eat('OP', '.')) { expr = { type: 'Attribute', value: expr, attr: this.expect('NAME').value, line: expr.line, col: expr.col }; }
       else if (this.eat('OP', '[')) { const s = this._parseSlice(); this.expect('OP', ']'); expr = { type: 'Subscript', value: expr, slice: s, line: expr.line, col: expr.col }; }
       else break;
+      if (this.astMode) this._span(expr, s0);
     }
     return expr;
   }
@@ -1315,6 +1390,7 @@ class _Parser {
     this.expect('OP', '[');
     const out = [];
     while (!this.at('OP', ']')) {
+      const kt0 = this.peek();
       let kind = 'TypeVar';
       if (this.eat('OP', '**')) kind = 'ParamSpec';
       else if (this.eat('OP', '*')) kind = 'TypeVarTuple';
@@ -1322,7 +1398,7 @@ class _Parser {
       let bound = null, dflt = null;
       if (kind === 'TypeVar' && this.eat('OP', ':')) bound = this.parseExpr();
       if (this.eat('OP', '=')) dflt = this.parseExpr();
-      out.push({ kind, name: nt.value, bound, default: dflt, line: nt.line, col: nt.col });
+      out.push(this.astMode ? { kind, name: nt.value, bound, default: dflt, line: nt.line, col: nt.col, _tok: kt0, _end: this._lastTok() } : { kind, name: nt.value, bound, default: dflt, line: nt.line, col: nt.col });
       if (!this.eat('OP', ',')) break;
     }
     this.expect('OP', ']');
@@ -1332,10 +1408,11 @@ class _Parser {
   _parseFuncParams() {
     const params = [], kwonly = [];
     let vararg = null, kwarg = null, seenStar = false, posonly = 0;
-    let varargAnnotation = null, kwargAnnotation = null;
+    let varargAnnotation = null, kwargAnnotation = null, varargTok = null, kwargTok = null;
     while (!this.at('OP', ')')) {
       if (this.eat('OP', '**')) {
-        kwarg = this.expect('NAME').value;
+        kwargTok = this.expect('NAME');
+        kwarg = kwargTok.value;
         if (this.eat('OP', ':')) kwargAnnotation = this.parseExpr();   // **kwargs: Any
         this.eat('OP', ',');                                             // trailing comma
         break;
@@ -1343,8 +1420,9 @@ class _Parser {
       if (this.eat('OP', '*')) {
         seenStar = true;
         if (this.at('NAME')) {
-          vararg = this.advance().value;
-          if (this.eat('OP', ':')) varargAnnotation = this.parseExpr();  // *args: int
+          varargTok = this.advance();
+          vararg = varargTok.value;
+          if (this.eat('OP', ':')) varargAnnotation = this.astMode && this.at('OP', '*') ? this.parseStarExpr() : this.parseExpr();  // *args: int (*Ts: ast mode)
         }
         this.eat('OP', ',');
         continue;
@@ -1352,15 +1430,18 @@ class _Parser {
       // `/`: the parameters before it are positional-only (PEP 570). Recorded; not yet
       // enforced (passing one by keyword binds it, where CPython raises TypeError).
       if (this.eat('OP', '/')) { posonly = params.length; this.eat('OP', ','); continue; }
-      const pName = this.expect('NAME').value;
+      const pTok = this.expect('NAME');
+      const pName = pTok.value;
       let annotation = null;
       if (this.eat('OP', ':')) annotation = this.parseExpr();
       let def = null;
       if (this.eat('OP', '=')) def = this.parseExpr();
-      (seenStar ? kwonly : params).push({ name: pName, default: def, annotation });
+      (seenStar ? kwonly : params).push(this.astMode ? { name: pName, default: def, annotation, _tok: pTok } : { name: pName, default: def, annotation });
       if (!this.eat('OP', ',')) break;
     }
-    return { params, vararg, kwonly, kwarg, posonly, varargAnnotation, kwargAnnotation };
+    const r = { params, vararg, kwonly, kwarg, posonly, varargAnnotation, kwargAnnotation };
+    if (this.astMode) { r._varargTok = varargTok; r._kwargTok = kwargTok; }
+    return r;
   }
 
   parseClass(decorators = []) {
@@ -1372,11 +1453,12 @@ class _Parser {
     if (this.eat('OP', '(')) {
       while (!this.at('OP', ')')) {
         const nx = this.tokens[this.pos + 1];
+        const kt = this.peek();
         if (this.at('NAME') && nx && nx.type === 'OP' && nx.value === '=') {
           const arg = this.advance().value; this.advance();
-          keywords.push({ arg, value: this.parseExpr() });
-        } else if (this.eat('OP', '**')) keywords.push({ arg: null, value: this.parseExpr() });
-        else if (this.at('OP', '*')) { this.advance(); bases.push({ type: 'Starred', value: this.parseExpr(), line: t.line, col: t.col }); }
+          keywords.push(this.astMode ? { arg, value: this.parseExpr(), _tok: kt } : { arg, value: this.parseExpr() });
+        } else if (this.eat('OP', '**')) keywords.push(this.astMode ? { arg: null, value: this.parseExpr(), _tok: kt } : { arg: null, value: this.parseExpr() });
+        else if (this.at('OP', '*')) { this.advance(); bases.push(this._spanIf({ type: 'Starred', value: this.parseExpr(), line: t.line, col: t.col }, kt)); }
         else bases.push(this.parseExpr());
         this.eat('OP', ',');
       }
@@ -1392,21 +1474,25 @@ class _Parser {
     this.expect('OP', ':');
     const body = this.parseBlock();
     const handlers = [];
+    let star = false;
     while (this.at('NAME', 'except')) {
-      this.advance();
+      const et = this.advance();
+      if (this.astMode && this.eat('OP', '*')) star = true;
       let excType = null, excName = null;
       if (!this.at('OP', ':')) {
         excType = this.parseExpr();
         if (this.eat('NAME', 'as')) excName = this.expect('NAME').value;
       }
       this.expect('OP', ':');
-      handlers.push({ type: 'ExceptHandler', excType, name: excName, body: this.parseBlock(), line: t.line });
+      const h = { type: 'ExceptHandler', excType, name: excName, body: this.parseBlock(), line: t.line };
+      if (this.astMode) h._tok = et;
+      handlers.push(h);
     }
     let orelse = [];
     if (this.eat('NAME', 'else')) { this.expect('OP', ':'); orelse = this.parseBlock(); }
     let finalbody = [];
     if (this.eat('NAME', 'finally')) { this.expect('OP', ':'); finalbody = this.parseBlock(); }
-    return { type: 'Try', body, handlers, orelse, finalbody, line: t.line, col: t.col };
+    return star ? { type: 'Try', body, handlers, orelse, finalbody, star, line: t.line, col: t.col } : { type: 'Try', body, handlers, orelse, finalbody, line: t.line, col: t.col };
   }
 
   parseWith(isAsync = false) {
@@ -1455,7 +1541,7 @@ class _Parser {
           this.at('OP', '}') || this.at('OP', ';') || this.at('OP', '=') || this.at('OP', ':')) break;
       elts.push(this.parseStarExpr());
     }
-    if (elts.length === 1) return first;
+    // (a trailing comma alone makes the tuple: `x = 1,` is (1,))
     return { type: 'Tuple', elts, line: first.line, col: first.col };
   }
 
@@ -1481,7 +1567,7 @@ class _Parser {
     if (this.peek().type === 'NAME' && this.tokens[this.pos + 1]?.type === 'OP' && this.tokens[this.pos + 1]?.value === ':=') {
       const name = this.advance();
       this.advance(); // :=
-      return { type: 'NamedExpr', target: { type: 'Name', id: name.value, line: name.line, col: name.col }, value: this.parseExpr(), line: name.line, col: name.col };
+      return { type: 'NamedExpr', target: this._tokSpan({ type: 'Name', id: name.value, line: name.line, col: name.col }, name), value: this.parseExpr(), line: name.line, col: name.col };
     }
     return this.parseTernary();
   }
@@ -1548,10 +1634,12 @@ class _Parser {
   }
 
   _binLeft(sub, ...ops) {
+    const start = this.peek();
     let left = sub.call(this);
     while (this.at('OP') && ops.includes(this.peek().value)) {
       const op = this.advance().value;
-      left = { type: 'BinOp', left, op, right: sub.call(this), line: left.line, col: left.col };
+      // (ast mode: each BinOp of the chain spans its operands' parentheses too — `(a) + (b)`)
+      left = this._spanIf({ type: 'BinOp', left, op, right: sub.call(this), line: left.line, col: left.col }, start);
     }
     return left;
   }
@@ -1588,39 +1676,47 @@ class _Parser {
   }
 
   parsePostfix() {
+    const s0 = this.peek();
     let expr = this.parseAtom();
     while (true) {
+      let open = null;
       if (this.eat('OP', '.')) {
         const attr = this.expect('NAME').value;
         expr = { type: 'Attribute', value: expr, attr, line: expr.line, col: expr.col };
-      } else if (this.eat('OP', '(')) {
+      } else if ((open = this.eat('OP', '('))) {
         const { args, keywords } = this._parseCallArgs();
         this.expect('OP', ')');
         expr = { type: 'Call', func: expr, args, keywords, line: expr.line, col: expr.col };
+        if (this.astMode && args.length === 1 && !keywords.length && args[0].type === 'GeneratorExp' && args[0]._bare) this._span(args[0], open);
       } else if (this.eat('OP', '[')) {
         const slice = this._parseSlice();
         this.expect('OP', ']');
         expr = { type: 'Subscript', value: expr, slice, line: expr.line, col: expr.col };
       } else break;
+      if (this.astMode) this._span(expr, s0);
     }
     return expr;
   }
+  _spanIf(node, startTok) { return this.astMode ? this._span(node, startTok) : node; }
+  // (ast mode: the node is just this one token)
+  _tokSpan(node, t) { if (this.astMode) node._p = [t.sl, t.sc, t.el, t.ec]; return node; }
 
   _parseCallArgs() {
     const args = [], keywords = [];
     while (!this.at('OP', ')')) {
+      const kt = this.peek();
       if (this.at('OP', '**')) {
         this.advance();
-        keywords.push({ name: null, value: this.parseExpr() });
+        keywords.push(this._spanIf({ name: null, value: this.parseExpr() }, kt));
       } else if (this.at('OP', '*')) {
         this.advance();
-        args.push({ type: 'Starred', value: this.parseExpr(), line: this.peek().line, col: this.peek().col });
+        args.push(this._spanIf({ type: 'Starred', value: this.parseExpr(), line: this.peek().line, col: this.peek().col }, kt));
       } else if (this.peek().type === 'NAME' && this.tokens[this.pos + 1]?.value === '=' && this.tokens[this.pos + 1]?.type === 'OP') {
         // keyword argument — but check it's not ==
         if (!(this.tokens[this.pos + 2]?.type === 'OP' && this.tokens[this.pos + 2]?.value === '=')) {   // a STRING '=' is a value
           const name = this.advance().value;
           this.advance(); // =
-          keywords.push({ name, value: this.parseExpr() });
+          keywords.push(this._spanIf({ name, value: this.parseExpr() }, kt));
         } else {
           args.push(this.parseExpr());
         }
@@ -1629,7 +1725,7 @@ class _Parser {
         // generator expression: sum(x for x in items)
         if (this._atCompFor()) {
           const generators = this._parseCompIter();
-          args.push({ type: 'GeneratorExp', elt: expr, generators, line: expr.line, col: expr.col });
+          args.push(this._spanIf({ type: 'GeneratorExp', elt: expr, generators, line: expr.line, col: expr.col, _bare: true }, kt));
         } else {
           args.push(expr);
         }
@@ -1699,10 +1795,13 @@ class _Parser {
     if (t.type === 'STRING' || t.type === 'FSTRING') {
       const run = [];
       while (this.peek().type === 'STRING' || this.peek().type === 'FSTRING') run.push(this.advance());
-      if (run.every((x) => x.type === 'STRING')) return { type: 'Constant', value: run.map((x) => x.value).join(''), line: t.line, col: t.col };
-      const parts = [];
-      for (const x of run) { if (x.type === 'STRING') parts.push(x.value); else parts.push(...x.value); }
-      return this._parseFstring({ ...t, value: parts });
+      if (run.every((x) => x.type === 'STRING')) return { type: 'Constant', value: run.map((x) => x.value).join(''), line: t.line, col: t.col, ...(t.u && { _u: true }) };
+      const parts = [], spans = [];
+      for (const x of run) {
+        if (x.type === 'STRING') { parts.push(x.value); spans.push([x.sl, x.sc, x.el, x.ec]); }
+        else { parts.push(...x.value); spans.push(...(x.fsSpans || x.value.map(() => null))); }
+      }
+      return this._parseFstring({ ...t, value: parts, fsSpans: spans });
     }
 
     // bytes literal b'...' (adjacent ones concatenate): its value as a latin-1 string
@@ -1839,58 +1938,109 @@ class _Parser {
 
   // A format spec with replacement fields (`>{w}`, `{fill}^{width}.{prec}f`) is itself an f-string:
   // a JoinedStr the engines evaluate first. A plain spec stays a string.
-  _parseFormatSpec(spec, tok) {
+  _parseFormatSpec(spec, tok, at = null) {
     if (!spec) return null;
-    if (!spec.includes('{')) return spec;
-    const parts = [];
-    let text = '';
+    // (ast mode: a part's span, from where the spec starts — a spec is one line)
+    const sp = (a, b) => (at ? [at[0], at[1] + a, at[0], at[1] + b] : null);
+    if (!spec.includes('{')) {
+      if (!this.astMode || !at) return spec;
+      return { type: 'JoinedStr', values: [{ type: 'Constant', value: spec, line: tok.line, col: tok.col, _p: sp(0, spec.length) }], line: tok.line, col: tok.col, _p: sp(-1, spec.length) };
+    }
+    const parts = [], spans = [];
+    let text = '', textFrom = 0;
     for (let i = 0; i < spec.length; i++) {
-      if (spec[i] !== '{') { text += spec[i]; continue; }
+      if (spec[i] !== '{') { if (!text) textFrom = i; text += spec[i]; continue; }
       let depth = 1, j = i + 1;
       while (j < spec.length && depth) { if (spec[j] === '{') depth++; else if (spec[j] === '}') depth--; j++; }
-      if (text) { parts.push(text); text = ''; }
+      if (text) { parts.push(text); spans.push(sp(textFrom, i)); text = ''; }
       let expr = spec.slice(i + 1, j - 1), conv = null;
       const m = /!([sra])$/.exec(expr); if (m) { conv = m[1]; expr = expr.slice(0, -2); }
+      const lead = /^[ \t]*/.exec(expr)[0].length;
       parts.push({ expr: expr.trim(), spec: null, conv });
+      spans.push(at ? { field: sp(i, j), expr: [at[0], at[1] + i + 1 + lead], spec: null } : null);
       i = j - 1;
     }
-    if (text) parts.push(text);
-    return this._parseFstring({ ...tok, value: parts });
+    if (text) { parts.push(text); spans.push(sp(textFrom, spec.length)); }
+    const js = this._parseFstring({ ...tok, value: parts, fsSpans: spans });
+    if (this.astMode && at) js._p = sp(-1, spec.length);   // (from the colon, as CPython's)
+    return js;
+  }
+
+  // ast mode: an f-string field's expression, parsed with its spans where it sits in the source
+  _fieldExprAst(src, at) {
+    const p = new _AstParser(adderTokenize(src + '\n', true));
+    const e = p.parseExprOrStars();
+    const shift = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { n.forEach(shift); return; }
+      if (n._p) {
+        const [l, c, el, ec] = n._p;
+        n._p = [l + at[0] - 1, l === 1 ? c + at[1] : c, el + at[0] - 1, el === 1 ? ec + at[1] : ec];
+      }
+      for (const k of Object.keys(n)) if (k !== '_p' && k !== '_tok' && k !== '_end' && n[k] && typeof n[k] === 'object') shift(n[k]);
+    };
+    shift(e);
+    return e;
   }
 
   _parseFstring(tok) {
     const values = [];
-    for (const part of tok.value) {
+    const spans = this.astMode && tok.fsSpans && tok.fsSpans.length === tok.value.length ? tok.fsSpans : null;
+    tok.value.forEach((part, i) => {
+      const at = spans && spans[i];
       if (typeof part === 'string') {
-        if (part) values.push({ type: 'Constant', value: part, line: tok.line, col: tok.col });
+        if (part) { const c = { type: 'Constant', value: part, line: tok.line, col: tok.col }; if (at) c._p = at; values.push(c); }
       } else {
-        const exprNode = _adderParseExpr(part.expr);
-        values.push({
+        const exprNode = at && at.expr ? this._fieldExprAst(part.expr, at.expr) : _adderParseExpr(part.expr, true);
+        const fv = {
           type: 'FormattedValue', value: exprNode,
           conversion: part.conv || null,
-          formatSpec: this._parseFormatSpec(part.spec, tok),
+          formatSpec: this._parseFormatSpec(part.spec, tok, at ? at.spec : null),
           line: tok.line, col: tok.col,
-        });
+        };
+        if (at && at.field) fv._p = at.field;
+        values.push(fv);
       }
-    }
+    });
     return { type: 'JoinedStr', values, line: tok.line, col: tok.col };
   }
 
   parseLambda() {
     const t = this.advance(); // 'lambda'
     const params = [], kwonly = [];
-    let vararg = null, kwarg = null, seenStar = false, posonly = 0;
+    let vararg = null, kwarg = null, seenStar = false, posonly = 0, varargTok = null, kwargTok = null;
     while (!this.at('OP', ':')) {
       // (after `*` / `*args` the parameters are keyword-only, as in a def)
-      if (this.eat('OP', '*')) { seenStar = true; if (this.at('NAME')) vararg = this.advance().value; this.eat('OP', ','); continue; }
-      if (this.eat('OP', '**')) { kwarg = this.expect('NAME').value; this.eat('OP', ','); break; }
+      if (this.eat('OP', '*')) { seenStar = true; if (this.at('NAME')) { varargTok = this.advance(); vararg = varargTok.value; } this.eat('OP', ','); continue; }
+      if (this.eat('OP', '**')) { kwargTok = this.expect('NAME'); kwarg = kwargTok.value; this.eat('OP', ','); break; }
       if (this.eat('OP', '/')) { posonly = params.length; this.eat('OP', ','); continue; }      // positional-only marker
-      const name = this.expect('NAME').value;
+      const nt = this.expect('NAME');
+      const name = nt.value;
       const def = this.eat('OP', '=') ? this.parseExpr() : null;
-      (seenStar ? kwonly : params).push({ name, default: def });
+      (seenStar ? kwonly : params).push(this.astMode ? { name, default: def, _tok: nt } : { name, default: def });
       this.eat('OP', ',');
     }
     this.expect('OP', ':');
-    return { type: 'Lambda', params, kwonly, vararg, kwarg, posonly, body: this.parseExpr(), line: t.line, col: t.col };
+    const lam = { type: 'Lambda', params, kwonly, vararg, kwarg, posonly, body: this.parseExpr(), line: t.line, col: t.col };
+    if (this.astMode) { lam._varargTok = varargTok; lam._kwargTok = kwargTok; }
+    return lam;
   }
+}
+
+// The parser in ast mode: each parse method's node gets its span — from the token the method
+// started at to the last one it consumed (an inner method's own span stays). Not wrapped: the
+// methods handed a token they don't start at (f-strings, a dict's body).
+class _AstParser extends _Parser {
+  constructor(tokens) { super(tokens); this.astMode = true; }
+}
+for (const name of Object.getOwnPropertyNames(_Parser.prototype)) {
+  if (!/^_?(try)?[pP]arse/.test(name) || name === 'parseBlock' || name === 'parseModule' || name === '_parseFstring' || name === '_parseFormatSpec' || name === '_parseDictBody') continue;
+  const fn = _Parser.prototype[name];
+  if (typeof fn !== 'function') continue;
+  _AstParser.prototype[name] = function (...a) {
+    const start = this.peek();
+    const r = fn.apply(this, a);
+    if (r && typeof r === 'object' && !Array.isArray(r) && typeof r.type === 'string' && !r._p) this._span(r, start);
+    return r;
+  };
 }

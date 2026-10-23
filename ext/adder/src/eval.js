@@ -26,6 +26,8 @@ import {
   isUserIterable, pyIterAsync, pyBinOps, pyIAddBuiltin, pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit,
   PyCoroutine, pyUnpack, _registerImportMachinery, stdoutWrite, frozenPyModules, frozenPyCompiled, frozenModuleHooks, MODULE_REBIND, NamespaceDict, bindNamespace, stopIteration, setScopeExec, awaitTarget, PyByteArray, buildClass, classStatement, computeMRO, PyTuple, PyDict, PySet, mkTuple, isPlainDict, plainObjectKey, finishClass, classAnnotations, storeAttr, pyDelItem, pyDelAttr, seqStoreIndex, NO_DEFAULT, LiveDefaults, setRedirectBuilder, setClassAttr, excStack, pyMatch, AttrDict, subclassDunder, PyCell, ctxEnter, ctxExit, pyAIter,
   sliceBound, pyFloatBin, setCompileCheck, bytesContains,
+  Ellipsis,
+  MODULE_DELETED,
 } from './builtins.js';
 
 // the exceptions being handled (innermost last): a bare `raise` re-raises the top one
@@ -214,7 +216,8 @@ export async function adderEval(node, scope) {
       if (v && typeof v === 'object' && v._complex) return new Complex(0, v.imag);
       return v;
     }
-    case 'Name': return scope.get(node.id);
+    // (`...` is the Ellipsis itself, a constant — not a name: ast.py binds its own Ellipsis class)
+    case 'Name': return node.ellipsis ? Ellipsis : scope.get(node.id);
     case 'Pass': return null;
     case 'Break': throw new _BreakSignal();
     case 'Continue': throw new _ContinueSignal();
@@ -2000,9 +2003,17 @@ export async function _loadAuditableModule(name) {
 // is made — so a circular import (pkg/__init__ imports .a, and a imports pkg) sees the names
 // bound so far, as in CPython, instead of an empty placeholder. `global x` writes in functions
 // go through the same map, so they are seen too.
+// a module's namespace — its globals, with the builtins it reads among them. A global deleted that
+// shadowed a builtin (ast.py's own Ellipsis class, popped from globals()) reads the builtin again,
+// as CPython's lookup falls through to builtins
 class _ModuleVars extends PyDict {
   set(k, v) { const r = super.set(k, v); if (this._mod && typeof k === 'string') { try { this._mod[k] = v; } catch {} } return r; }
-  delete(k) { const r = super.delete(k); if (this._mod && typeof k === 'string') delete this._mod[k]; return r; }
+  delete(k) {
+    const r = super.delete(k);
+    if (this._mod && typeof k === 'string') delete this._mod[k];
+    if (r && this._builtins && typeof k === 'string' && Object.hasOwn(this._builtins, k)) PyDict.prototype.set.call(this, k, this._builtins[k]);
+    return r;
+  }
 }
 
 // Parse + evaluate source as a fresh module, cache it under cacheKey.
@@ -2048,6 +2059,7 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
   const builtinNames = new PySet(Object.keys(builtins));
   modScope.vars = new _ModuleVars();
   for (const [k, v] of Object.entries(builtins)) modScope.vars.set(k, v);
+  modScope.vars._builtins = builtins;
 
   // the module object, in the cache before its code runs (circular imports find it). A reload runs
   // the code again in the module it was given: its globals are what the module holds (a name the
@@ -2089,7 +2101,8 @@ async function _instantiateModule(cacheKey, displayName, source, filePath, info 
       const lookup = (n) => (modScope.vars.has(n) ? modScope.vars.get(n) : undefined);
       const scope = await compiled.run(lookup, mod);
       if (scope && typeof scope === 'object') {
-        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined && !(k in mod)) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
+        const gone = mod[MODULE_DELETED];
+        for (const k of Object.keys(scope)) if (k !== '__lastExpr__' && scope[k] !== undefined && !(k in mod) && !(gone && gone.has(pyNameOfJs(k)))) { try { mod[pyNameOfJs(k)] = scope[k]; } catch {} }
       }
     } else {
       await adderEval(ast, modScope);

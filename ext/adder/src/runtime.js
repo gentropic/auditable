@@ -7,8 +7,9 @@ import {
   adderGetAttr, pyEq, pyNe, pyLt, pyLe, pyGt, pyGe, pySuper, PyCell, ctxEnter, ctxExit, pyAIter, excToThrowable,
   pyAdd, pyIAddBuiltin, pySub, pyMul, pyTrueDiv, pyFloorDiv, pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul,
   pyNeg, pyPos, pyInvert, pyGetItem, pyRangeSlice, bytesLit, dictLiteral,
-  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
+  PyTuple, PyDict, PySet, mkTuple, isPlainDict, finishClass, syncOf, NEEDS_ASYNC, twinDepth, genProto, closeJsGenerator, storeAttr, pyDelItem, pyDelAttr, setClassAttr, excStack, pyMatch, _pyEach, isUserIterable, pyIterAsync, excValue, excMatches, excTypeOf, initExceptionInstance,
   buildClass, classStatement, asCallable, awaitTarget, PyByteArray, AttrDict, subclassDunder, MODULE_REBIND, sliceBound, pyFloatBin, intNorm, bytesContains,
+  Ellipsis,
 } from './builtins.js';
 import { _loadDirectModule, _tickLine, _importRoot, importModule, importNames, importNamesNow, resolveRelativeImport } from './eval.js';
 
@@ -975,6 +976,8 @@ export const _py = {
   // exception
   raise: _raise,
   reraise: _reraise,
+  // `...`: the Ellipsis, a constant (not the name Ellipsis, which a module may bind)
+  ellipsis: () => Ellipsis,
   excValue,
   matchException: _rtMatchException,
   // imports
@@ -999,7 +1002,11 @@ export const _py = {
   // a sync-mode dunder / property: its sync version, falling back to its async one when it gives up
   bailable: (s, a) => {
     const f = function (...args) {
-      try { return s.apply(this, args); } catch (e) { if (e === NEEDS_ASYNC) return a.apply(this, args); throw e; }
+      let r;
+      twinDepth.n++;
+      try { r = s.apply(this, args); } catch (e) { twinDepth.n--; if (e === NEEDS_ASYNC) return a.apply(this, args); throw e; }
+      twinDepth.n--;
+      return r;
     };
     Object.defineProperty(f, 'name', { value: s.name, configurable: true });
     return f;
