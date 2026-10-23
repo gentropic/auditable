@@ -413,7 +413,8 @@ function _needsCanon(k) {
 }
 function _isUnhashable(k) {
   if (k !== null && typeof k === 'object' && k.__hash__ === null) return true;   // __hash__ = None (an eq dataclass)
-  return k !== null && typeof k === 'object' && !(k instanceof PyTuple) &&
+  // (a module is a plain object here, but hashes by identity, as any object does)
+  return k !== null && typeof k === 'object' && !(k instanceof PyTuple) && k.__adderModule__ !== true &&
     (Array.isArray(k) || k instanceof Map || (k instanceof Set && !k._frozen) || isPlainDict(k)) &&
     typeof k.__hash__ !== 'function';
 }
@@ -1490,6 +1491,14 @@ function _parseIntStrict(str, base) {
 
 // an async generator (`async def` with a yield) is not iterable — only `async for` reads it
 export const isAsyncGen = (o) => o !== null && typeof o === 'object' && o._pyAsyncGen === true;
+// an instance of a Python class with neither __iter__ nor __getitem__ (nor a builtin base that
+// iterates): not iterable — a plain JS object's keys are no stand-in for one
+function _notIterableInstance(obj) {
+  return obj !== null && typeof obj === 'object' && obj.__adderType__ !== undefined && !!obj.__adderType__._pyMRO &&
+    !Array.isArray(obj) && !(obj instanceof Map) && !(obj instanceof Set) && !(obj instanceof Uint8Array) && typeof obj._pyStrValue !== 'string' &&
+    typeof obj.__iter__ !== 'function' && typeof obj.__getitem__ !== 'function' &&
+    typeof obj[Symbol.iterator] !== 'function' && typeof obj[Symbol.asyncIterator] !== 'function';
+}
 export function* pyIter(obj) {
   if (obj === null || obj === undefined || isAsyncGen(obj)) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
   { const mi = _metaIter(obj); if (mi) { const it = mi(); if (it && typeof it.then === 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object must be collected asynchronously here (list(...) it first)`); yield* pyIter(it); return; } }
@@ -1500,6 +1509,7 @@ export function* pyIter(obj) {
   // an async iterable (a tree-walked generator) can't be read synchronously: say so, rather
   // than falling through to the plain-object case and yielding nothing
   if (typeof obj[Symbol.asyncIterator] === 'function') throw new AdderError('TypeError', `'${pyTypeName(obj)}' object must be collected asynchronously here (list(...) it first)`);
+  if (_notIterableInstance(obj)) throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
   if (typeof obj === 'object' && typeof obj.length === 'number') { for (let i = 0; i < obj.length; i++) yield obj[i]; return; }
   // plain object — iterate keys
   if (typeof obj === 'object') { for (const k of Object.keys(obj)) yield k; return; }
@@ -2704,8 +2714,22 @@ function _strMethod(s, attr) {
       while ((i = t.indexOf(sub, i)) >= 0) { n++; i += sub.length; }
       return n;
     },
-    startswith: (prefix, start, end) => { const [a, b] = _bounds(s.length, start, end); const t = s.slice(a, b); return (Array.isArray(prefix) ? prefix : [prefix]).some((p) => t.startsWith(p)); },
-    endswith: (suffix, start, end) => { const [a, b] = _bounds(s.length, start, end); const t = s.slice(a, b); return (Array.isArray(suffix) ? suffix : [suffix]).some((p) => t.endsWith(p)); },
+    startswith: (prefix, start, end) => {
+      const [a, b] = _bounds(s.length, start, end); const t = s.slice(a, b);
+      return (Array.isArray(prefix) ? prefix : [prefix]).some((p) => {
+        const ps = strValue(p);
+        if (ps === null) throw new AdderError('TypeError', Array.isArray(prefix) ? `tuple for startswith must only contain str, not ${pyTypeName(p)}` : `startswith first arg must be str or a tuple of str, not ${pyTypeName(p)}`);
+        return t.startsWith(ps);
+      });
+    },
+    endswith: (suffix, start, end) => {
+      const [a, b] = _bounds(s.length, start, end); const t = s.slice(a, b);
+      return (Array.isArray(suffix) ? suffix : [suffix]).some((p) => {
+        const ps = strValue(p);
+        if (ps === null) throw new AdderError('TypeError', Array.isArray(suffix) ? `tuple for endswith must only contain str, not ${pyTypeName(p)}` : `endswith first arg must be str or a tuple of str, not ${pyTypeName(p)}`);
+        return t.endsWith(ps);
+      });
+    },
     format: (...args) => _strFormat(s, args),
     format_map: (mapping) => _strFormat(s, [], (k) => pyGetItem(mapping, k)),
     encode: (...a) => {
@@ -3130,8 +3154,34 @@ export const pyDecode = (b, encoding, errors) => pyDecodePartial(b, encoding, er
 
 const _b2s = (b) => { let s = ''; for (const c of b) s += String.fromCharCode(c); return s; };
 const _s2b = (s) => bytesLit(s);
+// a bytes-like object's bytes (bytes, bytearray, memoryview, array.array), or null
+export function _bytesLikeOf(x) {
+  if (x instanceof Uint8Array) return x;
+  if (x instanceof PyByteArray) return Uint8Array.from(x);
+  if (x instanceof PyMemoryView) return Uint8Array.from(x.obj.slice(x._start, x._end));
+  if (x !== null && typeof x === 'object' && typeof x._pyBufferExport === 'function') return Uint8Array.from(x._pyBufferExport());
+  return null;
+}
 function _bytesMethod(b, attr) {
-  const bytesArg = (x) => (x instanceof Uint8Array ? _b2s(x) : Array.isArray(x) ? x.map(bytesArg) : x);
+  // an argument as the latin-1 string the str methods work on: a bytes-like only — a str is a
+  // TypeError, with CPython's words for the method (a tuple of prefixes for startswith / endswith)
+  const refuse = (x) => {
+    const t = pyTypeName(x);
+    if (attr === 'startswith' || attr === 'endswith') return new AdderError('TypeError', `${attr} first arg must be bytes or a tuple of bytes, not ${t}`);
+    if (['find', 'rfind', 'index', 'rindex', 'count'].includes(attr)) return new AdderError('TypeError', `argument should be integer or bytes-like object, not '${t}'`);
+    return new AdderError('TypeError', `a bytes-like object is required, not '${t}'`);
+  };
+  const bytesArg = (x) => {
+    const bl = _bytesLikeOf(x);
+    if (bl) return _b2s(bl);
+    if (Array.isArray(x)) return x.map((y) => {   // (startswith / endswith's tuple)
+      const yb = _bytesLikeOf(y);
+      if (yb) return _b2s(yb);
+      throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(y)}'`);
+    });
+    if (typeof x === 'string' || strValue(x) !== null) throw refuse(x);
+    return x;
+  };
   const back = (r) => (typeof r === 'string' ? _s2b(r) : Array.isArray(r) ? r.map(back) : r);
   const m = {
     decode: (...a) => {
@@ -5596,7 +5646,7 @@ function _reKw(fname, a, names) {
   return out;
 }
 const _reModule = {
-  ...RE_FLAGS,
+  ...RE_FLAGS, NOFLAG: 0,
   // (flags= by keyword too: re.compile(p, flags=re.VERBOSE), re.search(pattern=p, string=s))
   compile: (...a) => { const [p, f] = _reKw('compile', a, ['pattern', 'flags']); return _reCompile(p, f); },
   search: (...a) => { const [p, s, f] = _reKw('search', a, ['pattern', 'string', 'flags']); return _reCompile(p, f).search(s); },
@@ -6255,6 +6305,7 @@ const _VFS_ERRNO = {
   EXDEV: ['OSError', 18, 'Invalid cross-device link'], EIO: ['OSError', 5, 'Input/output error'],
   ENOTSUP: ['OSError', 95, 'Operation not supported'], EBUSY: ['OSError', 16, 'Device or resource busy'],
   EBADF: ['OSError', 9, 'Bad file descriptor'], EINVAL: ['OSError', 22, 'Invalid argument'],
+  ELOOP: ['OSError', 40, 'Too many levels of symbolic links'],
 };
 export function _mapVFSError(e, filename) {
   if (e instanceof AdderError) return e;
@@ -6263,16 +6314,56 @@ export function _mapVFSError(e, filename) {
   return new AdderError('OSError', e?.message || String(e));
 }
 
+// A struct sequence (os.stat_result, os.terminal_size): a named tuple made from ONE sequence, as
+// CPython's are — os.terminal_size((80, 24)) — reprs as module.name(…)
+function _structseq(name, module, fields) {
+  const nt = _namedtuple(name, fields);
+  const cls = function (seq) {
+    const v = [...pyIter(seq)];
+    if (v.length < fields.length) throw new AdderError('TypeError', `${module}.${name}() takes an at least ${fields.length}-sequence (${v.length}-sequence given)`);
+    return nt(...v.slice(0, fields.length));
+  };
+  Object.assign(cls, nt);
+  cls._pyMRO = [cls, ...nt._pyMRO.slice(1)];
+  cls.__module__ = module; cls.__qualname__ = name;
+  nt._ntProto.__adderType__ = cls;
+  nt._ntProto.__repr__ = function () { return `${module}.${name}(${fields.map((f, i) => `${f}=${pyRepr(this[i])}`).join(', ')})`; };
+  return cls;
+}
+// (made on first use: tuple's type object has to exist first)
+let _statResultCls = null, _termSizeCls = null;
+const _statResultType = () => _statResultCls || (_statResultCls = _structseq('stat_result', 'os',
+  ['st_mode', 'st_ino', 'st_dev', 'st_nlink', 'st_uid', 'st_gid', 'st_size', 'st_atime', 'st_mtime', 'st_ctime']));
+const _termSizeType = () => _termSizeCls || (_termSizeCls = _structseq('terminal_size', 'os', ['columns', 'lines']));
+// An inode number for a file whose backend keeps none: one from its path. No VFS has hard links,
+// so a path is one file; only a file reached through a symlink, under another path, reads as a
+// second file. (A backend that does keep one — memory, node — gives it as info.ino.)
+function _pathIno(p) {
+  let h1 = 0x811c9dc5, h2 = 0x9747b28c;
+  for (let i = 0; i < p.length; i++) {
+    const c = p.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193);
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995); h2 ^= h2 >>> 15;
+  }
+  return (h1 >>> 0) * 0x200000 + ((h2 >>> 0) & 0x1fffff);   // < 2**53
+}
 // os.stat(): CPython's fields from a VFS stat — st_mode carries the file-type bits (S_IFREG /
-// S_IFDIR / S_IFLNK) over the permission bits, as stat.S_ISREG & co read them
-function _statResult(info) {
-  const typeBits = info.type === 'directory' ? 0o040000 : info.type === 'symlink' ? 0o120000 : 0o100000;
-  const perm = info.mode ? info.mode & 0o7777 : info.type === 'directory' ? 0o755 : 0o644;
+// S_IFDIR / S_IFLNK) over the permission bits, as stat.S_ISREG & co read them; the tuple holds the
+// times as whole seconds, the attributes as floats (and *_ns as ints). p: the path it is of.
+function _statResult(info, p) {
+  const typeBits = info.type === 'directory' ? 0o040000 : info.type === 'symlink' ? 0o120000 : info.type === 'chardev' ? 0o020000 : 0o100000;
+  const perm = info.mode ? info.mode & 0o7777 : info.type === 'directory' ? 0o755 : info.type === 'chardev' ? 0o620 : 0o644;
   const m = info.modified ? info.modified.getTime() / 1000 : 0;
   const c = info.created ? info.created.getTime() / 1000 : m;
   const at = info.accessed ? info.accessed.getTime() / 1000 : m;
-  return { st_mode: typeBits | perm, st_size: info.size || 0, st_mtime: m, st_atime: at, st_ctime: c,
-    st_mtime_ns: intNorm(BigInt(Math.round(m * 1e3)) * 1000000n), st_nlink: 1, st_ino: 0, st_dev: 0, st_uid: 0, st_gid: 0, st_type: info.type };
+  const size = info.size || 0;
+  const ino = info.ino ?? (p ? _pathIno(p) : 0);
+  const ns = (s) => intNorm(BigInt(Math.round(s * 1e3)) * 1000000n);
+  const t = _statResultType()._pyMake([typeBits | perm, ino, 0, 1, 0, 0, size, Math.trunc(at), Math.trunc(m), Math.trunc(c)]);
+  const extra = { st_atime: at, st_mtime: m, st_ctime: c, st_atime_ns: ns(at), st_mtime_ns: ns(m), st_ctime_ns: ns(c),
+    st_blksize: 4096, st_blocks: Math.ceil(size / 512), st_rdev: 0 };
+  for (const k of Object.keys(extra)) Object.defineProperty(t, k, { value: extra[k], enumerable: false });
+  return Object.freeze(t);
 }
 
 // readinto's target: a writable buffer — a bytearray, a memoryview (of one, or of an
@@ -6294,8 +6385,8 @@ function _writeInto(b, data) {
 
 // os.DirEntry: one entry of os.scandir — name, path, and its type as the listing found it
 class _OsDirEntry {
-  constructor(name, path, linkInfo, targetInfo) {
-    this.name = name; this.path = path; this._link = linkInfo; this._target = targetInfo;
+  constructor(name, path, linkInfo, targetInfo, full) {
+    this.name = name; this.path = path; this._link = linkInfo; this._target = targetInfo; this._full = full;
   }
   is_dir(...a) { const info = _osFollow(this, a); return !!info && info.type === 'directory'; }
   is_file(...a) { const info = _osFollow(this, a); return !!info && info.type === 'file'; }
@@ -6303,10 +6394,10 @@ class _OsDirEntry {
   is_junction() { return false; }
   stat(...a) {
     const info = _osFollow(this, a);
-    if (!info) throw new AdderError('FileNotFoundError', `[Errno 2] No such file or directory: '${this.path}'`);
-    return _statResult(info);
+    if (!info) throw _osError('FileNotFoundError', 2, 'No such file or directory', this.path);
+    return _statResult(info, this._full);
   }
-  inode() { return 0; }
+  inode() { return this._link ? this._link.ino ?? _pathIno(this._full) : 0; }
   __fspath__() { return this.path; }
   __repr__() { return `<DirEntry ${pyRepr(this.name)}>`; }
   __str__() { return this.__repr__(); }
@@ -6515,18 +6606,33 @@ export async function _createAdderFile(vfs, filePath, mode, opts = null) {
 
 // ── os module ──
 
-// a path argument as a str: a str, or a path-like's __fspath__ (a pathlib path)
-function _fsp(p) {
+// a path argument as a str: a str, or what a path-like's __fspath__ gives (a pathlib path's is a
+// Python method: on the tree-walker a Promise — callers take the result through _thenMaybe or
+// await it); bytes from __fspath__ decode, as os.fsdecode would
+export function _fsp(p) {
   if (typeof p === 'string') return p;
-  if (p !== null && typeof p === 'object') {
-    if (typeof p.__fspath__ === 'function') return p.__fspath__();
-    if (typeof p._path === 'string' && p.__adderClass__ === 'PosixPath') return p._path;
+  if (p instanceof Uint8Array) return _fsdecode(p);
+  if (p !== null && typeof p === 'object' && typeof p._pyStrValue === 'string') return p._pyStrValue;   // a str subclass's
+  if (p !== null && typeof p === 'object' && typeof p.__fspath__ === 'function') {
+    return _thenMaybe(syncOf(p.__fspath__).call(p), (s) => {
+      if (typeof s === 'string') return s;
+      if (s instanceof Uint8Array) return new TextDecoder().decode(s);
+      throw new AdderError('TypeError', `expected ${pyTypeName(p)}.__fspath__() to return str or bytes, not ${pyTypeName(s)}`);
+    });
   }
   throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`);
 }
+// os.fsdecode / os.fsencode: a bytes path is UTF-8, its undecodable bytes surrogate-escaped
+const _fsdecode = (b) => pyDecodePartial(b, 'utf-8', 'surrogateescape', true).text;
+const _fsencode = (s) => pyEncode(s, 'utf-8', 'surrogateescape');
+// a result of a function given bytes paths, as bytes: strs encoded, through tuples and lists
+const _fsencodeDeep = (r) => (typeof r === 'string' ? _fsencode(r) : r instanceof PyTuple ? mkTuple(r.map(_fsencodeDeep)) : Array.isArray(r) ? r.map(_fsencodeDeep) : r);
+// os.path.realpath's strict=ALLOW_MISSING, and os.walk's followlinks=os._walk_symlinks_as_files
+const _ALLOW_MISSING = { __adderClass__: 'ALLOW_MISSING', __repr__: () => 'os.path.ALLOW_MISSING', __bool__: () => true };
+const _WALK_SYMLINKS_AS_FILES = { __adderClass__: 'object', __repr__: () => '<object object>' };
 // posixpath.normpath: '.' for '', one or two leading slashes kept (three or more are one), '..'
 // past the root dropped on an absolute path and kept on a relative one
-function _posixNormpath(path) {
+export function _posixNormpath(path) {
   if (!path) return '.';
   let initial = path.startsWith('/') ? 1 : 0;
   if (initial && path.startsWith('//') && !path.startsWith('///')) initial = 2;
@@ -6540,68 +6646,81 @@ function _posixNormpath(path) {
 }
 
 function _createOsModule(getVfs, pth) {
-  const _resolve = (p) => _resolvePath(p, pth);
+  // a path argument (a str or a path-like) as the VFS path it names — a Promise when the
+  // path-like's __fspath__ is (callers await it)
+  const _resolve = (p) => (p === null || p === undefined || p === '' ? _cwd.value : _thenMaybe(_fsp(p), (s) => _resolvePath(s, pth)));
   // a trailing keyword bag; a path relative to dir_fd's directory when one is given
   const _osKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw ? a.pop() : null);
-  const _osAt = (p, kw) => {
-    const s = _fsp(p);
+  const _osAt = (p, kw) => _thenMaybe(_fsp(p), (s) => {
     if (kw && kw.dir_fd !== null && kw.dir_fd !== undefined && !s.startsWith('/')) {
       const d = _fdGet(kw.dir_fd);
       if (!d._isDir) throw new AdderError('NotADirectoryError', '[Errno 20] Not a directory');
-      return _resolve(d._path === '/' ? '/' + s : d._path + '/' + s);
+      return _resolvePath(d._path === '/' ? '/' + s : d._path + '/' + s, pth);
     }
-    return _resolve(s);
+    return _resolvePath(s, pth);
+  });
+  // os.path's string functions on path-likes: f gets the strs (a Promise only when a
+  // path-like's __fspath__ is one)
+  const _strs = (ps, f) => {
+    const isB = (p) => p instanceof Uint8Array || p instanceof PyByteArray;
+    const nb = ps.filter(isB).length;
+    if (nb && nb < ps.length) throw new AdderError('TypeError', "Can't mix strings and bytes in path components");
+    return _thenAll(ps.map((p) => (isB(p) ? _fsdecode(Uint8Array.from(p)) : _fsp(p))), (v) => (nb ? _fsencodeDeep(f(...v)) : f(...v)));
   };
+  const _isOSErr = (e) => excMatches(e, 'OSError');
 
   // the string functions are CPython's posixpath, line for line (its edge cases: basename('a/')
   // is '', dirname('') is '', normpath('') is '.', join restarts at an absolute part)
   const osPath = {
-    join: (a, ...p) => {
-      let path = _fsp(a);
-      for (const x of p) {
-        const b = _fsp(x);
+    join: (a, ...p) => _strs([a, ...p], (path, ...rest) => {
+      for (const b of rest) {
         if (b.startsWith('/') || !path) path = b;
         else if (path.endsWith('/')) path += b;
         else path += '/' + b;
       }
       return path;
-    },
-    dirname: (p) => { p = _fsp(p); let head = p.slice(0, p.lastIndexOf('/') + 1); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return head; },
-    basename: (p) => { p = _fsp(p); return p.slice(p.lastIndexOf('/') + 1); },
-    split: (p) => { p = _fsp(p); const i = p.lastIndexOf('/') + 1; let head = p.slice(0, i); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return mkTuple([head, p.slice(i)]); },
-    splitext: (p) => {
-      p = _fsp(p);
+    }),
+    dirname: (p) => _strs([p], (p) => { let head = p.slice(0, p.lastIndexOf('/') + 1); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return head; }),
+    basename: (p) => _strs([p], (p) => p.slice(p.lastIndexOf('/') + 1)),
+    split: (p) => _strs([p], (p) => { const i = p.lastIndexOf('/') + 1; let head = p.slice(0, i); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return mkTuple([head, p.slice(i)]); }),
+    splitext: (p) => _strs([p], (p) => {
       const sepIndex = p.lastIndexOf('/'), dotIndex = p.lastIndexOf('.');
       if (dotIndex > sepIndex) {
         for (let f = sepIndex + 1; f < dotIndex; f++) if (p[f] !== '.') return mkTuple([p.slice(0, dotIndex), p.slice(dotIndex)]);
       }
       return mkTuple([p, '']);
-    },
-    normpath: (p) => _posixNormpath(_fsp(p)),
-    abspath: (p) => { p = _fsp(p); return _posixNormpath(p.startsWith('/') ? p : osPath.join(_cwd.value, p)); },
-    relpath: (p, start = null) => {
-      p = _fsp(p);
+    }),
+    // ('', root, tail): a root of one slash, or of exactly two (POSIX leaves '//' to the system)
+    splitroot: (p) => _strs([p], (p) => {
+      if (p.slice(0, 1) !== '/') return mkTuple(['', '', p]);
+      if (p.slice(1, 2) !== '/' || p.slice(2, 3) === '/') return mkTuple(['', '/', p.slice(1)]);
+      return mkTuple(['', p.slice(0, 2), p.slice(2)]);
+    }),
+    normpath: (p) => _strs([p], _posixNormpath),
+    abspath: (p) => _strs([p], (p) => _posixNormpath(p.startsWith('/') ? p : osPath.join(_cwd.value, p))),
+    relpath: (p, start = null) => _strs([p, start === null || start === undefined ? (p instanceof Uint8Array ? _fsencode('.') : '.') : start], (p, start) => {
       if (!p) throw new AdderError('ValueError', 'no path specified');
-      const st = osPath.abspath(start === null || start === undefined ? '.' : start).split('/').filter(Boolean);
+      const st = osPath.abspath(start).split('/').filter(Boolean);
       const pl = osPath.abspath(p).split('/').filter(Boolean);
       let i = 0;
       while (i < st.length && i < pl.length && st[i] === pl[i]) i++;
       const rel = [...Array(st.length - i).fill('..'), ...pl.slice(i)];
       return rel.length ? osPath.join(...rel) : '.';
-    },
-    isabs: (p) => _fsp(p).startsWith('/'),
+    }),
+    isabs: (p) => _strs([p], (p) => p.startsWith('/')),
     // the longest common leading run of min() and max() of the items (strings, or lists / tuples)
     commonprefix: (m) => {
-      let a = [...pyIter(m)];
+      const a = [...pyIter(m)];
       if (!a.length) return '';
-      if (!Array.isArray(a[0])) a = a.map(_fsp);
-      let s1 = a[0], s2 = a[0];
-      for (const x of a) { if (pyLt(x, s1)) s1 = x; if (pyLt(s2, x)) s2 = x; }
-      for (let i = 0; i < s1.length; i++) if (!pyEq(s1[i], s2[i])) return s1.slice(0, i);
-      return s1;
+      const run = (a) => {
+        let s1 = a[0], s2 = a[0];
+        for (const x of a) { if (pyLt(x, s1)) s1 = x; if (pyLt(s2, x)) s2 = x; }
+        for (let i = 0; i < s1.length; i++) if (!pyEq(s1[i], s2[i])) return s1.slice(0, i);
+        return s1;
+      };
+      return Array.isArray(a[0]) ? run(a) : _strs(a, (...a) => run(a));
     },
-    commonpath: (paths) => {
-      const ps = [...pyIter(paths)].map(_fsp);
+    commonpath: (paths) => _strs([...pyIter(paths)], (...ps) => {
       if (!ps.length) throw new AdderError('ValueError', 'commonpath() arg is an empty sequence');
       const abs = new Set(ps.map((p) => p.startsWith('/')));
       if (abs.size > 1) throw new AdderError('ValueError', "Can't mix absolute and relative paths");
@@ -6612,11 +6731,73 @@ function _createOsModule(getVfs, pth) {
       let common = s1;
       for (let i = 0; i < s1.length; i++) if (s1[i] !== s2[i]) { common = s1.slice(0, i); break; }
       return (abs.has(true) ? '/' : '') + common.join('/');
+    }),
+    // (the filesystem ones: False on an OSError, as genericpath's are — a bad argument type still raises)
+    exists: async (p) => { const r = await _resolve(p); try { await getVfs().stat(r); return true; } catch { return false; } },
+    lexists: async (p) => { const r = await _resolve(p); try { await getVfs().lstat(r); return true; } catch { return false; } },
+    isfile: async (p) => { const r = await _resolve(p); try { return (await getVfs().stat(r)).type === 'file'; } catch { return false; } },
+    isdir: async (p) => { const r = await _resolve(p); try { return (await getVfs().stat(r)).type === 'directory'; } catch { return false; } },
+    islink: async (p) => { const r = await _resolve(p); try { return (await getVfs().lstat(r)).type === 'symlink'; } catch { return false; } },
+    isjunction: (p) => _strs([p], () => false),
+    getsize: async (p) => { const r = await _resolve(p); try { return (await getVfs().stat(r)).size; } catch (e) { throw _mapVFSError(e, await _fsp(p)); } },
+    samestat: (s1, s2) => pyEq(s1.st_ino, s2.st_ino) && pyEq(s1.st_dev, s2.st_dev),
+    samefile: async (f1, f2) => osPath.samestat(await os.stat(f1), await os.stat(f2)),
+    sameopenfile: async (fp1, fp2) => osPath.samestat(await os.fstat(fp1), await os.fstat(fp2)),
+    ALLOW_MISSING: _ALLOW_MISSING,
+    // realpath(path, *, strict=False): posixpath.realpath, line for line — symlinks resolved part
+    // by part (a loop left as it is, unless strict); strict=ALLOW_MISSING raises for all but a
+    // missing part
+    realpath: async (filename, ...a) => {
+      const kw = _osKw(a);
+      let strict = kw && kw.strict !== undefined ? kw.strict : false;
+      filename = await _fsp(filename);
+      let ignored;
+      if (strict === _ALLOW_MISSING) { ignored = (e) => excMatches(e, 'FileNotFoundError'); strict = true; }
+      else if (pyBool(strict)) { ignored = () => false; strict = true; }
+      else { ignored = _isOSErr; strict = false; }
+      const vfs = getVfs();
+      const rest = filename.split('/').reverse();
+      let partCount = rest.length;
+      let path = filename.startsWith('/') ? '/' : _cwd.value;
+      const seen = new Map();
+      while (partCount) {
+        const name = rest.pop();
+        if (name === null) { seen.set(rest.pop(), path); continue; }   // a symlink, resolved
+        partCount--;
+        if (!name || name === '.') continue;
+        if (name === '..') { path = path.slice(0, path.lastIndexOf('/')) || '/'; continue; }
+        const newpath = path === '/' ? path + name : path + '/' + name;
+        let target;
+        try {
+          let st;
+          try { st = await vfs.lstat(newpath); } catch (e) { throw _mapVFSError(e, newpath); }
+          if (st.type !== 'symlink') {
+            if (strict && partCount && st.type !== 'directory') throw _osError('NotADirectoryError', 20, 'Not a directory', newpath);
+            path = newpath;
+            continue;
+          }
+          if (seen.has(newpath)) {
+            path = seen.get(newpath);
+            if (path !== null) continue;                                    // resolved before
+            if (strict) { try { await vfs.stat(newpath); } catch (e) { throw _mapVFSError(e, newpath); } }   // a loop: ELOOP
+            path = newpath;
+            continue;
+          }
+          try { target = await vfs.readlink(newpath); } catch (e) { throw _mapVFSError(e, newpath); }
+        } catch (e) {
+          if (!ignored(e)) throw e;
+          path = newpath;                                                   // an error, ignored
+          continue;
+        }
+        if (target.startsWith('/')) path = '/';
+        seen.set(newpath, null);
+        rest.push(newpath, null);
+        const parts = target.split('/').reverse();
+        rest.push(...parts);
+        partCount += parts.length;
+      }
+      return path;
     },
-    exists: async (p) => { try { await getVfs().stat(_resolve(p)); return true; } catch { return false; } },
-    isfile: async (p) => { try { return (await getVfs().stat(_resolve(p))).type === 'file'; } catch { return false; } },
-    isdir: async (p) => { try { return (await getVfs().stat(_resolve(p))).type === 'directory'; } catch { return false; } },
-    getsize: async (p) => { try { return (await getVfs().stat(_resolve(p))).size; } catch (e) { throw _mapVFSError(e); } },
     sep: '/',
   };
 
@@ -6629,17 +6810,18 @@ function _createOsModule(getVfs, pth) {
     O_DIRECTORY: 0o200000, O_NOFOLLOW: 0o400000, O_CLOEXEC: 0o2000000,
 
     listdir: async (p) => {
-      const dir = typeof p === 'number' ? _fdGet(p)._path : _resolve(p || '.');
-      try { return await getVfs().readdir(dir); }
-      catch (e) { throw _mapVFSError(e); }
+      const dir = typeof p === 'number' ? _fdGet(p)._path : await _resolve(p || '.');
+      let names;
+      try { names = await getVfs().readdir(dir); } catch (e) { throw _mapVFSError(e, typeof p === 'number' ? null : await _fsp(p)); }
+      return p instanceof Uint8Array ? names.map(_fsencode) : names;   // (bytes in, bytes out)
     },
     mkdir: async (p) => {
-      try { await getVfs().mkdir(_resolve(p)); }
+      try { await getVfs().mkdir(await _resolve(p)); }
       catch (e) { throw _mapVFSError(e); }
     },
     makedirs: async (p, exist_ok) => {
       if (exist_ok != null && typeof exist_ok === 'object' && exist_ok._kw) exist_ok = exist_ok.exist_ok;
-      const resolved = _resolve(p);
+      const resolved = await _resolve(p);
       const vfs = getVfs();
       let exists = false;
       try { await vfs.stat(resolved); exists = true; } catch {}
@@ -6650,30 +6832,67 @@ function _createOsModule(getVfs, pth) {
       }
     },
     remove: async (p) => {
-      try { await getVfs().unlink(_resolve(p)); }
+      try { await getVfs().unlink(await _resolve(p)); }
       catch (e) { throw _mapVFSError(e); }
     },
     unlink: async (p) => {
-      try { await getVfs().unlink(_resolve(p)); }
+      try { await getVfs().unlink(await _resolve(p)); }
       catch (e) { throw _mapVFSError(e); }
     },
     rmdir: async (p) => {
-      try { await getVfs().rmdir(_resolve(p)); }
+      try { await getVfs().rmdir(await _resolve(p)); }
       catch (e) { throw _mapVFSError(e); }
     },
     rename: async (src, dst) => {
-      try { await getVfs().rename(_resolve(src), _resolve(dst)); }
+      try { await getVfs().rename(await _resolve(src), await _resolve(dst)); }
       catch (e) { throw _mapVFSError(e); }
     },
+    // (rename over an existing file replaces it — the VFS's rename already does)
+    replace: async (src, dst) => {
+      try { await getVfs().rename(await _resolve(src), await _resolve(dst)); }
+      catch (e) { throw _mapVFSError(e); }
+      return null;
+    },
+    // symlink(src, dst, target_is_directory=False, *, dir_fd=None): dst made a link to src, as given
+    symlink: async (src, dst, ...a) => {
+      const kw = _osKw(a);
+      const target = await _fsp(src), at = await _osAt(dst, kw);
+      try { await getVfs().symlink(target, at); } catch (e) { throw _mapVFSError(e, await _fsp(dst)); }
+      return null;
+    },
+    readlink: async (p, ...a) => {
+      const kw = _osKw(a);
+      let info;
+      try { info = await getVfs().lstat(await _osAt(p, kw)); } catch (e) { throw _mapVFSError(e, await _fsp(p)); }
+      if (info.type !== 'symlink') throw _osError('OSError', 22, 'Invalid argument', await _fsp(p));
+      const t = info.target ?? await getVfs().readlink(await _osAt(p, kw));
+      return p instanceof Uint8Array ? _fsencode(t) : t;
+    },
+    // access(path, mode, *, dir_fd=None, effective_ids=False, follow_symlinks=True): the owner's
+    // permission bits (adder's one user owns every file)
+    F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+    access: async (p, mode, ...a) => {
+      const kw = _osKw(a);
+      let info;
+      try { info = kw && kw.follow_symlinks === false ? await getVfs().lstat(await _osAt(p, kw)) : await getVfs().stat(await _osAt(p, kw)); } catch { return false; }
+      const perm = info.mode !== undefined && info.mode !== null ? info.mode : info.type === 'directory' ? 0o755 : 0o644;
+      mode = Number(mode);
+      return !((mode & 4 && !(perm & 0o400)) || (mode & 2 && !(perm & 0o200)) || (mode & 1 && !(perm & 0o100)));
+    },
+    getcwdb: () => new TextEncoder().encode(_cwd.value),
+    get stat_result() { return _statResultType(); },
+    get terminal_size() { return _termSizeType(); },
+    get_terminal_size: () => _termSizeType()([80, 24]),
+    _walk_symlinks_as_files: _WALK_SYMLINKS_AS_FILES,
     // stat(path, *, dir_fd=None, follow_symlinks=True); an fd is fstat
     stat: async (p, ...a) => {
       const kw = _osKw(a);
       if (typeof p === 'number') return os.fstat(p);
-      try {
-        const vfs = getVfs(), path = _osAt(p, kw);
-        const info = kw && kw.follow_symlinks === false ? await vfs.lstat(path) : await vfs.stat(path);
-        return _statResult(info);
-      } catch (e) { throw _mapVFSError(e); }
+      const path = await _osAt(p, kw);
+      let info;
+      try { info = kw && kw.follow_symlinks === false ? await getVfs().lstat(path) : await getVfs().stat(path); }
+      catch (e) { throw _mapVFSError(e, await _fsp(p)); }
+      return _statResult(info, path);
     },
     // utime(path, times=None, *, ns=None, dir_fd=None, follow_symlinks=True): times (atime,
     // mtime) in seconds, ns the same in nanoseconds, neither: now
@@ -6685,34 +6904,34 @@ function _createOsModule(getVfs, pth) {
       if (ns !== null) { at = Number(ns[0]) / 1e9; mt = Number(ns[1]) / 1e9; }
       else if (times === null || times === undefined) { at = mt = Date.now() / 1000; }
       else { if (!Array.isArray(times) || times.length !== 2) throw new AdderError('TypeError', "utime: 'times' must be either a tuple of two ints or None"); at = Number(times[0]); mt = Number(times[1]); }
-      const path = typeof p === 'number' ? _fdGet(p)._path : _osAt(p, kw);
-      try { await getVfs().utime(path, at, mt); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : _fsp(p)); }
+      const path = typeof p === 'number' ? _fdGet(p)._path : await _osAt(p, kw);
+      try { await getVfs().utime(path, at, mt); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : await _fsp(p)); }
       return null;
     },
     chmod: async (p, mode, ...a) => {
       const kw = _osKw(a);
-      const path = typeof p === 'number' ? _fdGet(p)._path : _osAt(p, kw);
-      try { await getVfs().chmod(path, Number(mode) & 0o7777); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : _fsp(p)); }
+      const path = typeof p === 'number' ? _fdGet(p)._path : await _osAt(p, kw);
+      try { await getVfs().chmod(path, Number(mode) & 0o7777); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : await _fsp(p)); }
       return null;
     },
     // (a symlink itself, not what it points at)
     lstat: async (p, ...a) => {
       const kw = _osKw(a);
-      try {
-        const info = await getVfs().lstat(_osAt(p, kw));
-        return _statResult(info);
-      } catch (e) { throw _mapVFSError(e); }
+      const path = await _osAt(p, kw);
+      let info;
+      try { info = await getVfs().lstat(path); } catch (e) { throw _mapVFSError(e, await _fsp(p)); }
+      return _statResult(info, path);
     },
     // the entries of a directory as DirEntry objects, their types read once (as CPython's are,
     // from the directory listing): an iterator that is also a context manager
     scandir: async (p = '.') => {
       // (of an fd: the directory it is open on, its entries' paths their bare names)
       const byFd = typeof p === 'number';
-      const given = byFd ? null : p === null || p === undefined ? '.' : _fsp(p);
-      const dir = byFd ? _fdGet(p)._path : _resolve(given);
+      const given = byFd ? null : p === null || p === undefined ? '.' : await _fsp(p);
+      const dir = byFd ? _fdGet(p)._path : await _resolve(given);
       const vfs = getVfs();
       let names;
-      try { names = await vfs.readdir(dir); } catch (e) { throw _mapVFSError(e); }
+      try { names = await vfs.readdir(dir); } catch (e) { throw _mapVFSError(e, byFd ? null : given); }
       const entries = [];
       for (const name of names) {
         const full = dir === '/' ? '/' + name : dir + '/' + name;
@@ -6720,7 +6939,7 @@ function _createOsModule(getVfs, pth) {
         try { link = await vfs.lstat(full); } catch { /* vanished */ }
         if (link && link.type === 'symlink') { try { target = await vfs.stat(full); } catch { /* dangling */ } } else target = link;
         const shown = byFd ? name : given.endsWith('/') ? given + name : given + '/' + name;   // os.path.join(path, name)
-        entries.push(new _OsDirEntry(name, shown, link, target));
+        entries.push(p instanceof Uint8Array ? new _OsDirEntry(_fsencode(name), _fsencode(shown), link, target, full) : new _OsDirEntry(name, shown, link, target, full));
       }
       let i = 0, closed = false;
       const it = {
@@ -6744,8 +6963,8 @@ function _createOsModule(getVfs, pth) {
     open: async (p, ...a) => {
       const kw = _osKw(a);
       const flags = Number(a[0] ?? (kw && kw.flags) ?? 0);
-      const path = _osAt(p, kw);
-      const shown = typeof p === 'string' ? p : _fsp(p);
+      const path = await _osAt(p, kw);
+      const shown = typeof p === 'string' ? p : await _fsp(p);
       const acc = flags & 3;
       const vfs = getVfs();
       let info = null;
@@ -6779,8 +6998,9 @@ function _createOsModule(getVfs, pth) {
     lseek: (fd, pos, how) => _fdGet(fd).seek(Number(pos), Number(how)),
     fstat: async (fd) => {
       const o = _fdGet(fd);
+      if (o._std) return _statResult({ type: 'chardev', size: 0, ino: 3 + Number(fd) });   // (a terminal-like device)
       if (!o._isDir && o._writeOut) await o._writeOut();
-      try { return _statResult(await getVfs().stat(o._path)); } catch (e) { throw _mapVFSError(e); }
+      try { return _statResult(await getVfs().stat(o._path), o._path); } catch (e) { throw _mapVFSError(e); }
     },
     // the file closes with its last fd (a dup keeps it open)
     close: async (fd) => {
@@ -6811,164 +7031,64 @@ function _createOsModule(getVfs, pth) {
     set_blocking: (fd) => { _fdGet(fd); return null; },
     device_encoding: () => null,
     getcwd: () => _cwd.value,
-    chdir: (p) => { _cwd.value = _resolve(p); },
+    chdir: async (p) => { _cwd.value = await _resolve(p); return null; },
 
-    walk: (top) => {
-      const resolved = _resolve(top || '.');
-      const vfs = getVfs();
-      async function* gen(dir) {
-        let entries;
-        try { entries = await vfs.readdir(dir); } catch { return; }
-        const dirs = [], files = [];
-        for (const name of entries) {
-          const full = dir === '/' ? '/' + name : dir + '/' + name;
-          try {
-            const info = await vfs.stat(full);
-            if (info.type === 'directory') dirs.push(name);
-            else files.push(name);
-          } catch { files.push(name); }
-        }
-        yield [dir, dirs, files];
-        for (const d of dirs) {
-          yield* gen(dir === '/' ? '/' + d : dir + '/' + d);
+    // walk(top, topdown=True, onerror=None, followlinks=False): CPython's os.walk — a stack, the
+    // directories from scandir; topdown lets the caller prune dirs in place; paths as given
+    // (relative stay relative); followlinks=os._walk_symlinks_as_files lists symlinks to
+    // directories among the files (shutil.rmtree)
+    walk: (top, ...a) => {
+      const kw = _osKw(a);
+      const arg = (i, k, d) => (a.length > i ? a[i] : kw && kw[k] !== undefined ? kw[k] : d);
+      const topdown = pyBool(arg(0, 'topdown', true)), onerror = arg(1, 'onerror', null), followlinks = arg(2, 'followlinks', false);
+      const report = async (e) => {
+        if (!_isOSErr(e)) throw e;
+        if (onerror === null || onerror === undefined) return;
+        // (called while the error is being handled, as CPython's walk calls it from its except block:
+        // a bare raise in it re-raises the error)
+        excStack.push(e);
+        try { const r = onerror(excValue(e)); if (_isThenable(r)) await r; } finally { excStack.pop(); }
+      };
+      async function* gen() {
+        const stack = [await _fsp(top)];
+        while (stack.length) {
+          const t = stack.pop();
+          if (t instanceof PyTuple) { yield t; continue; }
+          const dirs = [], nondirs = [], walkDirs = [];
+          let it;
+          try { it = await os.scandir(t); } catch (e) { await report(e); continue; }
+          for (const entry of it) {
+            const isDir = followlinks === _WALK_SYMLINKS_AS_FILES
+              ? entry.is_dir({ _kw: true, follow_symlinks: false }) && !entry.is_junction()
+              : entry.is_dir();
+            (isDir ? dirs : nondirs).push(entry.name);
+            if (!topdown && isDir && (pyBool(followlinks) || !entry.is_symlink())) walkDirs.push(entry.path);
+          }
+          if (topdown) {
+            yield mkTuple([t, dirs, nondirs]);
+            for (let i = dirs.length - 1; i >= 0; i--) {
+              const np = osPath.join(t, dirs[i]);
+              if (pyBool(followlinks) || !(await osPath.islink(np))) stack.push(np);
+            }
+          } else {
+            stack.push(mkTuple([t, dirs, nondirs]));
+            for (let i = walkDirs.length - 1; i >= 0; i--) stack.push(walkDirs[i]);
+          }
         }
       }
-      return { [Symbol.asyncIterator]() { return gen(resolved); } };
+      // (a generator, as CPython's walk is: an async one — the VFS waits — as a tree-walked
+      // generator is, not a plain object, which iteration would read as a dict)
+      const g = gen();
+      g.__adderClass__ = 'generator';
+      return g;
     },
   };
 
   return os;
 }
 
-// ── pathlib module ──
-
-function _createPathClass(getVfs, pth) {
-  function _Path(p) {
-    if (typeof p === 'object' && p?._path) return p;
-    let raw = String(p || '.');
-    // expand ~ but don't resolve relative paths (pathlib keeps them relative)
-    if (raw === '~') raw = _HOME;
-    else if (raw.startsWith('~/')) raw = _HOME + raw.slice(1);
-    const _p = pth.normalize(raw);
-    // resolve for I/O — relative paths against cwd
-    const _abs = () => pth.isAbsolute(_p) ? _p : pth.join(_cwd.value, _p);
-    return {
-      _path: _p,
-      __adderClass__: 'PosixPath',
-      get name() { return pth.basename(_p); },
-      get stem() { const b = pth.basename(_p); const ext = pth.extname(_p); return ext ? b.slice(0, -ext.length) : b; },
-      get suffix() { return pth.extname(_p); },
-      get parent() { return _Path(pth.dirname(_p)); },
-      get parts() { return _p === '/' ? ['/'] : ['/', ..._p.split('/').filter(Boolean)]; },
-
-      __truediv__(other) { return _Path(pth.join(_p, String(other?._path || other))); },
-      __str__() { return _p; },
-      __repr__() { return `PosixPath('${_p}')`; },
-      __eq__(other) { return _p === (other?._path || String(other)); },
-      __hash__() { let h = 0; for (let i = 0; i < _p.length; i++) h = (h * 31 + _p.charCodeAt(i)) | 0; return h; },
-
-      joinpath(...parts) { return _Path(pth.join(_p, ...parts.map(x => x?._path || String(x)))); },
-      with_suffix(s) { const ext = pth.extname(_p); const base = ext ? _p.slice(0, -ext.length) : _p; return _Path(base + s); },
-      with_name(n) { return _Path(pth.join(pth.dirname(_p), n)); },
-
-      async read_text() { try { return await getVfs().readFile(_abs()); } catch (e) { throw _mapVFSError(e); } },
-      async read_bytes() { try { return await getVfs().readFile(_abs(), 'bytes'); } catch (e) { throw _mapVFSError(e); } },
-      async write_text(data) { try { await getVfs().writeFile(_abs(), String(data)); } catch (e) { throw _mapVFSError(e); } },
-      async write_bytes(data) { try { await getVfs().writeFile(_abs(), data); } catch (e) { throw _mapVFSError(e); } },
-      async exists() { return getVfs().exists(_abs()); },
-      async is_file() { try { return (await getVfs().stat(_abs())).type === 'file'; } catch { return false; } },
-      async is_dir() { try { return (await getVfs().stat(_abs())).type === 'directory'; } catch { return false; } },
-      async mkdir(parents, exist_ok) {
-        if (parents != null && typeof parents === 'object' && parents._kw) { exist_ok = parents.exist_ok; parents = parents.parents; }
-        try { await getVfs().mkdir(_abs(), { recursive: !!parents }); }
-        catch (e) { if (exist_ok && e?.code === 'EEXIST') return; throw _mapVFSError(e); }
-      },
-      async unlink() { try { await getVfs().unlink(_abs()); } catch (e) { throw _mapVFSError(e); } },
-      async rename(target) { const t = target?._path || String(target); const ta = pth.isAbsolute(t) ? t : pth.join(_cwd.value, t); try { await getVfs().rename(_abs(), ta); return _Path(t); } catch (e) { throw _mapVFSError(e); } },
-      async iterdir() {
-        try {
-          const entries = await getVfs().readdir(_abs());
-          return entries.map(name => _Path(pth.join(_p, name)));
-        } catch (e) { throw _mapVFSError(e); }
-      },
-      // paths under this one (self / the match, as pathlib's are), not VFS strings; rglob is
-      // glob under every subdirectory ('**/' + pattern)
-      async glob(pattern) {
-        const base = _abs();
-        let found;
-        try { found = await getVfs().glob(pth.join(base, String(pattern))); } catch (e) { throw _mapVFSError(e); }
-        return found.map((m) => { const s = String(m); return _Path(s.startsWith(base + '/') ? pth.join(_p, s.slice(base.length + 1)) : s); });
-      },
-      async rglob(pattern) { return this.glob('**/' + String(pattern)); },
-      async touch() { try { await getVfs().touch(_abs()); } catch (e) { throw _mapVFSError(e); } },
-      async stat() {
-        try {
-          const info = await getVfs().stat(_abs());
-          return _statResult(info);
-        } catch (e) { throw _mapVFSError(e); }
-      },
-    };
-  }
-  return _Path;
-}
-
-// ── shutil module ──
-
-function _createShutilModule(getVfs) {
-  // Resolve user-facing paths (relative-to-cwd, ~ expansion) before
-  // passing to VFS — `os` and `os.path` already do this via _resolve;
-  // shutil/glob used to skip that step and the raw `data/foo.csv`
-  // hit `vfs.resolve` which has no mount for non-absolute paths.
-  const r = (p) => _resolvePath(p, _vfsPath);
-  // the times and the permission bits, where the backend keeps them (one that doesn't: a no-op)
-  const copyStat = async (src, dst, times = true) => {
-    const vfs = getVfs();
-    let info;
-    try { info = await vfs.stat(r(src)); } catch (e) { throw _mapVFSError(e, _fsp(src)); }
-    if (info.mode !== undefined) { try { await vfs.chmod(r(dst), info.mode & 0o7777); } catch (e) { if (e && e.code !== 'ENOTSUP') throw _mapVFSError(e, _fsp(dst)); } }
-    if (times && info.modified) {
-      const m = info.modified.getTime() / 1000, a = info.accessed ? info.accessed.getTime() / 1000 : m;
-      try { await vfs.utime(r(dst), a, m); } catch (e) { if (e && e.code !== 'ENOTSUP') throw _mapVFSError(e, _fsp(dst)); }
-    }
-  };
-  // copy / copy2 into a directory copy to dir/basename(src); they return the destination
-  const intoDir = async (src, dst) => {
-    const d = _fsp(dst);
-    try { if ((await getVfs().stat(r(d))).type === 'directory') return (d.endsWith('/') ? d : d + '/') + _fsp(src).split('/').pop(); } catch { /* not there: a file */ }
-    return d;
-  };
-  return {
-    copy: async (src, dst) => { const to = await intoDir(src, dst); try { await getVfs().cp(r(src), r(to)); } catch (e) { throw _mapVFSError(e); } await copyStat(src, to, false); return to; },
-    copy2: async (src, dst) => { const to = await intoDir(src, dst); try { await getVfs().cp(r(src), r(to)); } catch (e) { throw _mapVFSError(e); } await copyStat(src, to); return to; },
-    copytree: async (src, dst) => { try { await getVfs().cp(r(src), r(dst), { recursive: true }); } catch (e) { throw _mapVFSError(e); } },
-    // rmtree(path, ignore_errors=False): with ignore_errors (positional or keyword) a missing tree is fine
-    rmtree: async (p, ignore = false) => {
-      if (ignore !== null && typeof ignore === 'object' && ignore._kw) ignore = !!ignore.ignore_errors;
-      try { await getVfs().rm(r(p), { recursive: true }); } catch (e) { if (!pyBool(ignore)) throw _mapVFSError(e); }
-      return null;
-    },
-    copyfile: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } return dst; },
-    copystat: async (src, dst) => { await copyStat(src, dst); return null; },
-    copymode: async (src, dst) => { await copyStat(src, dst, false); return null; },
-    copyfileobj: async (fsrc, fdst, length = 0) => {
-      const read = adderGetAttr(fsrc, 'read'), write = adderGetAttr(fdst, 'write');
-      for (;;) {
-        let buf = read(length > 0 ? length : 65536);
-        if (_isThenable(buf)) buf = await buf;
-        if (!buf || !buf.length) return null;
-        const w = write(buf);
-        if (_isThenable(w)) await w;
-      }
-    },
-    // (no programs to find in the browser)
-    which: () => null,
-    move: async (src, dst) => { try { await getVfs().rename(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
-  };
-}
-
-// ── glob module ──
-
 // ── fs module registration ──
+// (pathlib, shutil and glob are CPython's, from pylib, over os)
 
 let _adderVFS = null;
 let _vfsPath = null;
@@ -7017,9 +7137,19 @@ function _fdRelease(file) {
   for (const [fd, o] of _fdTable) if (o === file) _fdTable.delete(fd);
 }
 export function _fdGet(fd) {
-  const o = typeof fd === 'number' || typeof fd === 'bigint' ? _fdTable.get(Number(fd)) : undefined;
+  let o = typeof fd === 'number' || typeof fd === 'bigint' ? _fdTable.get(Number(fd)) : undefined;
+  if (!o && (fd === 0 || fd === 1 || fd === 2)) _fdTable.set(fd, o = _stdFd(fd));   // (until closed)
   if (!o) throw _osError('OSError', 9, 'Bad file descriptor');
   return o;
+}
+// fds 0 / 1 / 2: stdin (empty) and the program's output — os.write(1, b'…') prints
+function _stdFd(fd) {
+  return {
+    _mode: fd === 0 ? 'rb' : 'wb', _path: null, _std: true,
+    write: (b) => { const bytes = b instanceof Uint8Array ? b : Uint8Array.from(b); _stdioWrite(fd === 1 ? 'out' : 'err', pyDecodePartial(bytes, 'utf-8', 'replace', true).text); return bytes.length; },
+    read: () => new Uint8Array(0),
+    close: () => null,
+  };
 }
 
 // the VFS as adder sees it: its async methods wait for the pending files first
@@ -7123,9 +7253,11 @@ export function _ensureFsModules(pathUtils) {
   adderModules.os = _createOsModule(getVfs, pth);
   if (_osExtrasHook) _osExtrasHook(adderModules.os);
   adderModules['os.path'] = adderModules.os.path;
-  adderModules.pathlib = { Path: _createPathClass(getVfs, pth) };
-  adderModules.shutil = _createShutilModule(getVfs);
-  // (glob is CPython's glob.py, over os.scandir)
+  // posix: what CPython's os is made over — here, the same functions (os.path aside)
+  const posix = Object.defineProperties({}, Object.getOwnPropertyDescriptors(adderModules.os));
+  delete posix.path;
+  Object.assign(posix, { __adderModule__: true, __name__: 'posix' });
+  adderModules.posix = posix;
 }
 
 // dict(mapping | pairs, **kw)
@@ -7536,7 +7668,9 @@ export function objectNew(cls, args = []) {
       Object.defineProperty(o, '__adderType__', { value: cls, writable: true, configurable: true });
       return o;
     };
-    const made = jb._pyMake ? jb._pyMake(args) : new jb._jsClass(...args);
+    // (a type CPython fills in __init__, not __new__ — StringIO, BytesIO — is made empty: the
+    // subclass's __init__ gets the arguments)
+    const made = jb._pyMake ? jb._pyMake(args) : jb._jsClass._pyInitArgs ? new jb._jsClass() : new jb._jsClass(...args);
     return _isThenable(made) ? made.then(place) : place(made);
   }
   let instance;
@@ -7718,9 +7852,6 @@ export function classOnlyAttr(cls, key) {
     if (d) { Object.defineProperty(cls.prototype, key, d); return; }
   }
 }
-// a plain class variable that can stand on the prototype (a plain function would be bound by an
-// instance read: those are left to the class-attribute lookup)
-const _protoableVar = (v) => typeof v !== 'function' || !!v._pyClass;
 // `key` is a class variable of class b (the body's or assigned later) — not a member, and not a
 // base's member copied onto it
 const _isClassVar = (b, key) => Object.hasOwn(b, key) && !!(b._pyAttrs && b._pyAttrs.has(key)) && !(b._pyOwnMembers && b._pyOwnMembers.has(key));
@@ -7731,8 +7862,7 @@ function _resolveInherited(c, key) {
     const b = mro[i];
     // a class variable before any member of the name (the class's own included)
     if (_isClassVar(b, key)) {
-      if (Object.hasOwn(c.prototype, key) && _protoableVar(b[key])) _classVarOnProto(c.prototype, b, key);
-      else if (Object.hasOwn(c.prototype, key)) delete c.prototype[key];
+      if (Object.hasOwn(c.prototype, key)) _classVarOnProto(c.prototype, b, key);
       return;
     }
     if (i === 0 || !b.prototype || !b._pyOwnMembers || !b._pyOwnMembers.has(key)) continue;
@@ -7969,8 +8099,9 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
   // A base's members were copied onto the prototype, but a class variable lives on its class: one
   // closer in the MRO than the member wins, as Python's lookup says (ipaddress: IPv4Network's
   // `_address_class = IPv4Address` over _BaseNetwork's property; `m = None` over a method). The
-  // prototype then reads that class's attribute, live. (A plain function value is left alone: an
-  // instance read would bind it.)
+  // prototype then reads that class's attribute, live — through a getter, which an instance read
+  // doesn't bind: a builtin function as a class variable (glob's _StringGlobber: concat_path =
+  // operator.add, over _Globber's method) comes back as it is, as CPython's has no __get__.
   for (const key of Object.getOwnPropertyNames(cls.prototype)) {
     if (key === '__new__' || key === 'constructor') continue;
     const d = Object.getOwnPropertyDescriptor(cls.prototype, key);
@@ -7986,7 +8117,7 @@ export function buildClass(name, bases, members, annotations, opts = {}) {
       if (c._pyOwnMembers && c._pyOwnMembers.has(key)) break;
       if (_isClassVar(c, key)) { owner = c; break; }
     }
-    if (owner !== null && _protoableVar(owner[key])) _classVarOnProto(cls.prototype, owner, key);
+    if (owner !== null) _classVarOnProto(cls.prototype, owner, key);
   }
 
   // Inherit class-level members from MRO bases (as descriptors: an inherited classmethod binds
@@ -8392,7 +8523,7 @@ function _stdStream(which) {
     },
     writelines(lines) { for (const l of pyIter(lines)) _stdioWrite(which, String(l)); return null; },
     flush() { return null; }, isatty: () => false, writable: () => true, readable: () => false, seekable: () => false,
-    fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); },
+    fileno: () => (which === 'out' ? 1 : 2),
   };
 }
 
@@ -8464,12 +8595,13 @@ const _imp = { find: null, importModule: null, resolveRelative: null, reload: nu
 export function _registerImportMachinery(m) { Object.assign(_imp, m); }
 const _kwOf = (args) => (args.length && args[args.length - 1] && args[args.length - 1]._kw ? args.pop() : {});
 const _PackageNotFoundError = makeExcType('PackageNotFoundError', 'ModuleNotFoundError');
-// importlib.resources.files(pkg): the package's directory, as a VFS-backed pathlib.Path
+// importlib.resources.files(pkg): the package's directory, as a pathlib.Path
 async function _resourceFiles(anchor) {
   const mod = typeof anchor === 'string' ? await _imp.importModule(anchor) : anchor;
   const file = mod && mod.__file__;
   if (!file || !_vfsPath) throw new AdderError('TypeError', `cannot locate resources for ${pyRepr(anchor)}`);
-  return adderModules.pathlib.Path(_vfsPath.dirname(file));
+  const pathlib = await _imp.importModule('pathlib');
+  return typeCall(pathlib.Path, [_vfsPath.dirname(file)]);
 }
 adderModules.importlib = {
   __adderModule__: true, __name__: 'importlib',
@@ -8604,6 +8736,9 @@ export function adderBuiltins(printFn) {
       if (base && base._kw) base = base.base;
       if (x && x._kw) { base = x.base; x = undefined; }
       if (x === undefined) return 0;
+      // bytes / bytearray are parsed as their ASCII text (tarfile: int(b'0000644', 8)); a str subclass as its str
+      if (x instanceof Uint8Array || x instanceof PyByteArray) x = pyDecodePartial(Uint8Array.from(x), 'latin-1', 'strict', true).text;
+      else if (x !== null && typeof x === 'object' && typeof x._pyStrValue === 'string') x = x._pyStrValue;
       if (base !== undefined && base !== null) {
         if (typeof x !== 'string') throw new AdderError('TypeError', "int() can't convert non-string with explicit base");
         return _parseIntStrict(x, base);
@@ -8953,7 +9088,7 @@ export function adderBuiltins(printFn) {
       if (obj !== null && typeof obj === 'object' && typeof obj.__next__ === 'function' && typeof obj.__iter__ === 'function') return obj.__iter__();
       // iter() itself raises for a non-iterable (`try: iter(x) except TypeError:` is the idiom);
       // pyIter is a generator, so its own check would only fire at the first next()
-      if (obj === null || obj === undefined || (typeof obj !== 'object' && typeof obj !== 'string' && !(typeof obj === 'function' && _metaIter(obj)))) {
+      if (obj === null || obj === undefined || (typeof obj !== 'object' && typeof obj !== 'string' && !(typeof obj === 'function' && _metaIter(obj))) || _notIterableInstance(obj)) {
         throw new AdderError('TypeError', `'${pyTypeName(obj)}' object is not iterable`);
       }
       const it = pyIter(obj);
@@ -9117,6 +9252,11 @@ function _stableBuiltinId(obj) {
 //     class-level members bound to self;
 //   self an instance — of a class, or a class that is an instance of a metaclass: its type's MRO,
 //     prototype members bound to self.
+// some class in mro[from:] defines `name` itself
+function _ownedAfter(mro, from, name) {
+  for (let j = from; j < mro.length; j++) if (mro[j] && mro[j]._pyOwnMembers && mro[j]._pyOwnMembers.has(name)) return true;
+  return false;
+}
 export function pySuper(cls, self, ...extra) {
   if (extra.length && extra[extra.length - 1] && extra[extra.length - 1]._kw) throw new AdderError('TypeError', 'super() takes no keyword arguments');
   if (extra.length) throw new AdderError('TypeError', `super() expected at most 2 arguments, got ${2 + extra.length}`);
@@ -9192,6 +9332,11 @@ export function pySuper(cls, self, ...extra) {
           return typeof v === 'function' && !v._pyClass ? _bindTwin(v, self) : v;
         }
         if (!base.prototype) continue;
+        // a class's prototype also carries what its bases define, copied down for its instances
+        // (one JS prototype, many bases): such a copy isn't this class's — the class that owns it
+        // comes later in the MRO, and in a diamond something may come before it (Path's
+        // super().__init__ is PurePath's, not the PurePathBase.__init__ copied onto PathBase)
+        if (base._pyOwnMembers && !base._pyOwnMembers.has(name) && !_isClassVar(base, name) && _ownedAfter(mro, i + 1, name)) continue;
         const desc = Object.getOwnPropertyDescriptor(base.prototype, name);
         if (desc && (!viaClass || base === pyTypeObj)) return bindProto(desc);
       }

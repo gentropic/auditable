@@ -8,7 +8,7 @@
 import {
   AdderError, PyTuple, PyDict, mkTuple, isPlainDict, pyTypeName, pyRepr, pyStr, pyIter, pyCollect, pyStrMaybe,
   pyPercentFormat, adderGetAttr, adderModules, makeExcType, _pyHash, _namedtuple, _stdio, excTypeOf, excValue,
-  getAdderVFS, _getVfsPath, _resolvePath, _createAdderFile, _mapVFSError, _typeObjects, pyFormatValue, excStack,
+  getAdderVFS, _getVfsPath, _resolvePath, _fsp, _posixNormpath as _dtNormpath, _createAdderFile, _mapVFSError, _typeObjects, pyFormatValue, excStack,
   PyByteArray, PyMemoryView, intNorm,
 } from './builtins.js';
 // @gcu/bz2 and @gcu/lzma (_bz2's and _lzma's codecs): adder's build.js inlines each bundle as one
@@ -1099,13 +1099,15 @@ const _dtNowTuple = () => { const t = new Date(); return mkTuple([t.getFullYear(
 async function _dtVfsRead(path) {
   const vfs = getAdderVFS();
   if (!vfs) throw new AdderError('RuntimeError', 'filesystem not available');
-  try { return await vfs.readFile(_resolvePath(String(path), _getVfsPath()), 'bytes'); }
+  if (typeof path !== 'string') path = await _fsp(path);
+  try { return await vfs.readFile(_resolvePath(path, _getVfsPath()), 'bytes'); }
   catch (e) { throw _mapVFSError(e); }
 }
 async function _dtVfsWrite(path, bytes) {
   const vfs = getAdderVFS();
   if (!vfs) throw new AdderError('RuntimeError', 'filesystem not available');
-  const p = _resolvePath(String(path), _getVfsPath());
+  if (typeof path !== 'string') path = await _fsp(path);
+  const p = _resolvePath(path, _getVfsPath());
   const dir = p.slice(0, p.lastIndexOf('/'));
   if (dir) { try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ } }
   try { await vfs.writeFile(p, bytes); } catch (e) { throw _mapVFSError(e); }
@@ -1115,12 +1117,13 @@ class _DtZipFile {
     if (!['r', 'w', 'x', 'a'].includes(mode)) throw new AdderError('ValueError', "ZipFile requires mode 'r', 'w', 'x', or 'a'");
     if (![0, 8].includes(compression)) throw new AdderError('NotImplementedError', 'That compression method is not supported');
     this.mode = mode; this.compression = compression; this.compresslevel = compresslevel;
+    if (file !== null && typeof file === 'object' && typeof file.__fspath__ === 'function') file = await _fsp(file);   // a path-like: its str
     this._file = file; this.filename = typeof file === 'string' ? file : (file && file.name) || null;
     this._entries = []; this._data = new Map(); this._closed = false; this.comment = new Uint8Array(0); this.debug = 0;
     if (mode === 'r' || mode === 'a') {
       let bytes;
-      if (typeof file === 'string' || (file && file._path && !file.read)) {
-        try { bytes = await _dtVfsRead(typeof file === 'string' ? file : file._path); }
+      if (typeof file === 'string') {
+        try { bytes = await _dtVfsRead(file); }
         catch (e) { if (mode === 'a' && e && e.pyType === 'FileNotFoundError') bytes = null; else throw e; }
       } else {
         const fseek = file.seek ? adderGetAttr(file, 'seek') : null;
@@ -1198,7 +1201,7 @@ class _DtZipFile {
     zi.file_size = bytes.length; zi.CRC = _dtCrc32(bytes);
     const raw = zi.compress_type === 8 ? await _dtStream(bytes, globalThis.CompressionStream, 'deflate-raw') : bytes;
     zi.compress_size = raw.length;
-    if (zi.filename.endsWith('/')) zi.external_attr = (0o40775 << 16) | 0x10;
+    if (!(zinfo instanceof _DtZipInfo) && zi.filename.endsWith('/')) zi.external_attr = (0o40775 << 16) | 0x10;
     this._entries.push(zi);
     this._data.set(zi, { raw, plain: bytes });
     return null;
@@ -1206,11 +1209,23 @@ class _DtZipFile {
   async write(filename, arcname = null, ...a) {
     const { args } = _dtArgs(a, ['compress_type', 'compresslevel'], { compress_type: null, compresslevel: null });
     if (arcname && arcname._kw) { args.compress_type = arcname.compress_type ?? null; arcname = arcname.arcname ?? null; }
-    const bytes = await _dtVfsRead(filename);
-    const name = String(arcname ?? filename).replace(/^\/+/, '');
-    const zi = new _DtZipInfo(name, _dtNowTuple());
+    // ZipInfo.from_file: the path's stat gives the entry's time and mode; a directory is a
+    // `name/` entry with no data; the name is normalized, its leading slashes dropped
+    const fp = typeof filename === 'string' ? filename : await _fsp(filename);
+    const vfs = getAdderVFS();
+    if (!vfs) throw new AdderError('RuntimeError', 'filesystem not available');
+    let info;
+    try { info = await vfs.stat(_resolvePath(fp, _getVfsPath())); } catch (e) { throw _mapVFSError(e, fp); }
+    const isDir = info.type === 'directory';
+    let name = _dtNormpath(String(arcname === null || arcname === undefined ? fp : typeof arcname === 'string' ? arcname : await _fsp(arcname))).replace(/^\/+/, '');
+    if (isDir) name += '/';
+    const t = info.modified instanceof Date ? info.modified : new Date();
+    const zi = new _DtZipInfo(name, mkTuple([Math.max(1980, t.getFullYear()), t.getMonth() + 1, t.getDate(), t.getHours(), t.getMinutes(), t.getSeconds()]));
+    const mode = (isDir ? 0o040000 : 0o100000) | (info.mode ?? (isDir ? 0o755 : 0o644));
+    zi.external_attr = ((mode & 0xFFFF) << 16) | (isDir ? 0x10 : 0);
+    if (isDir) { zi.file_size = 0; zi.compress_type = 0; return this.writestr(zi, new Uint8Array(0)); }
     zi.compress_type = args.compress_type ?? this.compression;
-    return this.writestr(zi, bytes);
+    return this.writestr(zi, await _dtVfsRead(fp));
   }
   async extract(member, path = null) {
     const zi = member instanceof _DtZipInfo ? member : this.getinfo(member);

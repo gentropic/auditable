@@ -77,9 +77,10 @@ print(f"cwd: {os.getcwd()}")
 files = os.listdir("data")
 print(f"data/ contains: {files}")
 
-# stat
+# stat — a struct: attributes, as CPython's (stat.filemode reads the mode bits)
+import stat
 info = os.stat("data/samples.csv")
-print(f"samples.csv: {info['st_size']} bytes, type={info['st_type']}")
+print(f"samples.csv: {info.st_size} bytes, mode={stat.filemode(info.st_mode)}")
 
 # make nested directories
 os.makedirs("output/reports/q1", exist_ok=True)
@@ -180,7 +181,7 @@ from pathlib import Path
 p = Path("data")
 for entry in p.iterdir():
     info = entry.stat()
-    print(f"  {entry.name}: {info['st_size']} bytes")
+    print(f"  {entry.name}: {info.st_size} bytes")
 
 # with_suffix / with_name
 csv = Path("data/samples.csv")

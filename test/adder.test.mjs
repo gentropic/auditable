@@ -843,12 +843,15 @@ new_exists = os.path.exists('/new.txt')
     await vfs.writeFile('/stat.txt', 'hello');
     const r = await pyExec(`
 import os
+import stat
 info = os.stat('/stat.txt')
-size = info['st_size']
-ftype = info['st_type']
+size = info.st_size
+indexed = info[stat.ST_SIZE]
+isreg = stat.S_ISREG(info.st_mode)
 `);
     assert.strictEqual(r.get('size'), 5);
-    assert.strictEqual(r.get('ftype'), 'file');
+    assert.strictEqual(r.get('indexed'), 5);
+    assert.strictEqual(r.get('isreg'), true);
   });
 
   it('getcwd and chdir', async () => {
@@ -980,7 +983,7 @@ parts = p.parts
     assert.strictEqual(r.get('s'), 'file');
     assert.strictEqual(r.get('x'), '.txt');
     assert.strictEqual(r.get('pr'), '/data');
-    assert.deepStrictEqual(r.get('parts'), ['/', 'data', 'file.txt']);
+    assert.deepStrictEqual([...r.get('parts')], ['/', 'data', 'file.txt']);   // a tuple
   });
 
   it('/ operator (truediv)', async () => {

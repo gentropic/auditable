@@ -1962,7 +1962,7 @@ export function _resolveModule(name) {
   if (name === 'js' && _runOpts.host === false) return null;   // host access off: `import js` is simply not found
   // os always exists, as CPython's (random imports it): made on first import when no VFS made it
   // already — its path operations POSIX, its filesystem calls raising until a VFS is set
-  if ((name === 'os' || name === 'os.path' || name === 'posixpath' || name === 'pathlib') && !adderModules.os) _ensureFsModules();
+  if ((name === 'os' || name === 'os.path' || name === 'posixpath' || name === 'posix') && !adderModules.os) _ensureFsModules();
   if (adderModules[name]) return adderModules[name];
   if (typeof window !== 'undefined') {
     if (window._auditableExtensions?.[name]) return window._auditableExtensions[name];
@@ -2210,7 +2210,7 @@ export async function findModule(name) {
     if (cache[name]) return cache[name];
     const source = fz.source !== undefined ? fz.source : async () => (fz.source !== undefined ? fz.source : (fz.source = await _gunzipBase64(fz.gz)));
     const mod = await _instantiateModule(name, name, source, `<frozen ${name}>`, fz.pkg ? { package: name, path: [], artifact } : { artifact });
-    if (parent) { try { parent[name.slice(dot + 1)] = mod; } catch {} }
+    if (parent) _bindSubmodule(parent, name.slice(dot + 1), mod);
     if (Object.hasOwn(frozenModuleHooks, name)) await frozenModuleHooks[name](mod);
     return mod;
   }
@@ -2227,10 +2227,19 @@ export async function findModule(name) {
       if (attr && (typeof attr === 'object' || typeof attr === 'function')) return attr;
       mod = await _loadAuditableModule(name) || await _loadHttpModule(name);
     }
-    if (mod) { try { parent[leaf] = mod; } catch {} }
+    if (mod) _bindSubmodule(parent, leaf, mod);
     return mod;
   }
   return await _loadVfsModule(name) || await _loadAuditableModule(name) || await _loadHttpModule(name);
+}
+
+// a submodule is an attribute of its package — and so, while the package's __init__ runs, one of
+// its globals (`from ._abc import *` binds `_abc` there too, as CPython's import does)
+function _bindSubmodule(parent, leaf, mod) {
+  try {
+    parent[leaf] = mod;
+    if (parent.__adderModule__ === true && parent[MODULE_REBIND] !== undefined) parent[MODULE_REBIND](leaf, mod);
+  } catch { /* a read-only namespace */ }
 }
 
 // a frozen module's source (stdlib-py.js keeps them gzip-compressed, base64)

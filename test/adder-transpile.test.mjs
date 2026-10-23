@@ -1165,6 +1165,79 @@ describe('adder — CPython parity found by the stdlib sweep', () => {
     '    yield 2',
     'r = list(itertools.chain((0,), g()))',
   ], [0, 1, 2]));
+  // ── found by CPython's pathlib / shutil ──
+  it("super() skips a base's copy of an inherited member: Path's super().__init__ is PurePath's", () => both([
+    'class PB:',
+    '    def __init__(self): self.who = "PB"',
+    'class P(PB):',
+    '    def __init__(self): self.who = "P"',
+    'class B(PB): pass',
+    'class Pa(B, P):',
+    '    def __init__(self): super().__init__()',
+    'r = [Pa().who, [c.__name__ for c in Pa.__mro__]]',
+  ], ['P', ['Pa', 'B', 'P', 'PB', 'object']]));
+  it('a builtin function as a class variable overrides a base method, unbound (glob._StringGlobber)', () => both([
+    'import operator',
+    'class A:',
+    '    def f(self, x): return "A.f"',
+    '    def g(self, x, y): return "A.g"',
+    'class B(A):',
+    '    f = len',
+    '    g = operator.add',
+    'class C(B): pass',
+    'r = [B().f("xy"), B().g("a", "b"), C().f("xyz")]',
+  ], [2, 'ab', 3]));
+  it('iter() of an instance with neither __iter__ nor __getitem__ is a TypeError (unittest tells a case from a suite so)', () => both([
+    'class A: pass',
+    'class S:',
+    '    def __getitem__(self, i):',
+    '        if i < 2: return i',
+    '        raise IndexError',
+    'out = []',
+    'for o in (A(), object()):',
+    '    try:',
+    '        iter(o)',
+    '        out.append("iterable")',
+    '    except TypeError as e:',
+    '        out.append(str(e))',
+    'r = [out, list(S())]',
+  ], [["'A' object is not iterable", "'object' object is not iterable"], [0, 1]]));
+  it('a bare raise in a function called from an except block re-raises the exception being handled', () => both([
+    'def onexc(*a):',
+    '    raise',
+    'got = None',
+    'try:',
+    '    try:',
+    '        {}["k"]',
+    '    except KeyError:',
+    '        onexc()',
+    'except KeyError as e:',
+    '    got = type(e).__name__',
+    'r = [got]',
+  ], ['KeyError']));
+  it('modules hash by identity; a BytesIO subclass gets its own __init__ arguments', () => both([
+    'import io, os, functools',
+    '@functools.cache',
+    'def sens(mod): return mod.normcase("Aa") == "Aa"',
+    'class D(io.BytesIO):',
+    '    def __init__(self, files, key):',
+    '        super().__init__()',
+    '        self.files, self.key = files, key',
+    'files = {}',
+    'd = D(files, "k")',
+    'd.write(b"hi")',
+    'r = [sens(os.path), hash(os) == hash(os), d.getvalue(), d.key]',
+  ], [true, true, new TextEncoder().encode('hi'), 'k']));
+  it("bytes methods take bytes-likes, not str; int() parses bytes (tarfile's int(b'0000644', 8))", () => both([
+    'out = []',
+    'for f in (lambda: b"abc".startswith("a"), lambda: b"a.b".split("."), lambda: b"abc".find("b"), lambda: "abc".startswith(b"a")):',
+    '    try:',
+    '        out.append(f())',
+    '    except TypeError as e:',
+    '        out.append(str(e))',
+    'r = [out, b"abc".startswith(memoryview(b"ab")), int(b"0000644", 8), int(bytearray(b" 12 "))]',
+  ], [['startswith first arg must be bytes or a tuple of bytes, not str', "a bytes-like object is required, not 'str'",
+    "argument should be integer or bytes-like object, not 'str'", 'startswith first arg must be str or a tuple of str, not bytes'], true, 420, 12]));
 });
 
 describe('adder transpile — deterministic output', () => {

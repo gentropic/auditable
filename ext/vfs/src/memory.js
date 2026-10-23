@@ -4,6 +4,16 @@ import { Backend } from './backend.js';
 
 const MAX_SYMLINK_DEPTH = 40;
 
+// A node's inode number (stat's ino): one per node, kept across renames — what tells two paths
+// to the same file (through a symlink) apart from two files.
+const _inos = new WeakMap();
+let _nextIno = 1;
+function _inoOf(node) {
+  let n = _inos.get(node);
+  if (n === undefined) _inos.set(node, n = _nextIno++);
+  return n;
+}
+
 function _makeNode(type, content) {
   const now = new Date();
   const node = {
@@ -45,56 +55,37 @@ class MemoryBackend extends Backend {
     return n.split('/').filter(Boolean);
   }
 
-  _resolve(p, followSymlinks = true) {
-    const segs = this._segments(p);
-    let node = this._root;
-    let depth = 0;
-
+  // Walk segs from the root: the node they name and its canonical path (no symlinks in it). A
+  // symlink on the way is followed — its target read from the directory holding it when relative,
+  // as POSIX resolves one — and so is the last one when followLast. depth: symlinks followed so far
+  // in the whole resolution (past MAX_SYMLINK_DEPTH it is a loop: ELOOP).
+  _walk(segs, followLast, p, depth = 0) {
+    let node = this._root, at = [];
     for (let i = 0; i < segs.length; i++) {
-      // Follow symlink if current node is a symlink
-      if (followSymlinks && node._meta.type === 'symlink') {
-        const target = node._target;
-        node = this._resolve(target, true);
-        depth++;
-        if (depth > MAX_SYMLINK_DEPTH) throw vfsError('ENOENT', p, 'too many symlinks');
-      }
-
-      if (node._meta.type !== 'directory') {
-        throw vfsError('ENOTDIR', p);
-      }
-
+      if (node._meta.type !== 'directory') throw vfsError('ENOTDIR', p);
       const child = node._children.get(segs[i]);
       if (!child) throw vfsError('ENOENT', p);
-      node = child;
+      if (child._meta.type === 'symlink' && (i < segs.length - 1 || followLast)) {
+        if (++depth > MAX_SYMLINK_DEPTH) throw vfsError('ELOOP', p);
+        const t = child._target;
+        const r = this._walk(this._segments(t.startsWith('/') ? t : '/' + [...at, t].join('/')), true, p, depth);
+        node = r.node; at = r.at; depth = r.depth;
+      } else {
+        node = child; at = [...at, segs[i]];
+      }
     }
+    return { node, at, depth };
+  }
 
-    // Follow final symlink
-    if (followSymlinks && node._meta.type === 'symlink') {
-      depth++;
-      if (depth > MAX_SYMLINK_DEPTH) throw vfsError('ENOENT', p, 'too many symlinks');
-      node = this._resolve(node._target, true);
-    }
-
-    return node;
+  _resolve(p, followSymlinks = true) {
+    return this._walk(this._segments(p), followSymlinks, p).node;
   }
 
   _resolveParent(p) {
     const segs = this._segments(p);
     if (segs.length === 0) throw vfsError('EEXIST', '/');
     const name = segs.pop();
-    let node = this._root;
-    for (const seg of segs) {
-      if (node._meta.type === 'symlink') {
-        node = this._resolve(node._target, true);
-      }
-      if (node._meta.type !== 'directory') throw vfsError('ENOTDIR', p);
-      const child = node._children.get(seg);
-      if (!child) throw vfsError('ENOENT', p);
-      node = child;
-    }
-    if (node._meta.type === 'symlink') {
-      node = this._resolve(node._target, true);
-    }
+    const node = this._walk(segs, true, p).node;
     if (node._meta.type !== 'directory') throw vfsError('ENOTDIR', p);
     return [node, name];
   }
@@ -179,6 +170,7 @@ class MemoryBackend extends Backend {
       mode: m.mode,
       owner: m.owner,
       group: m.group,
+      ino: _inoOf(node),
     };
   }
 
@@ -194,6 +186,7 @@ class MemoryBackend extends Backend {
       mode: m.mode,
       owner: m.owner,
       group: m.group,
+      ino: _inoOf(node),
     };
     if (m.type === 'symlink') result.target = node._target;
     return result;

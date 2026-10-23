@@ -90,7 +90,7 @@ class NodeBackend extends Backend {
   async stat(p) {
     try {
       const st = await fsp.stat(this._abs(p));
-      return { type: st.isDirectory() ? 'directory' : 'file', size: st.isDirectory() ? 0 : st.size, created: st.birthtime, modified: st.mtime, accessed: st.atime, mode: st.mode & 0o777 };
+      return { type: st.isDirectory() ? 'directory' : 'file', size: st.isDirectory() ? 0 : st.size, created: st.birthtime, modified: st.mtime, accessed: st.atime, mode: st.mode & 0o777, ino: Number(st.ino) };
     } catch (e) { throw this._map(e, p); }
   }
 
@@ -98,7 +98,7 @@ class NodeBackend extends Backend {
     try {
       const abs = this._abs(p);
       const st = await fsp.lstat(abs);
-      const r = { type: st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'directory' : 'file', size: st.isDirectory() ? 0 : st.size, created: st.birthtime, modified: st.mtime, mode: st.mode & 0o777 };
+      const r = { type: st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'directory' : 'file', size: st.isDirectory() ? 0 : st.size, created: st.birthtime, modified: st.mtime, accessed: st.atime, mode: st.mode & 0o777, ino: Number(st.ino) };
       if (st.isSymbolicLink()) r.target = await fsp.readlink(abs);
       return r;
     } catch (e) { throw this._map(e, p); }

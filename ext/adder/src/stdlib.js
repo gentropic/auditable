@@ -10,7 +10,7 @@ import {
   AdderError, PyTuple, PyDict, PySet, mkTuple, isPlainDict, pyTypeName, pyRepr, pyStr, pyReprMaybe,
   pyIter, pyCollect, pyBool, pyEq, pyLt, pyLe, pyGt, pyGe, pyAdd, pySub, pyMul, pyTrueDiv, pyFloorDiv,
   pyMod, pyPow, pyAnd, pyOr, pyXor, pyLshift, pyRshift, pyMatmul, pyNeg, pyPos, pyInvert, pyGetItem, pyInplace, pyDelItem, PySlice, seqSliceSet,
-  pySorted, adderGetAttr, adderModules, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
+  pySorted, adderGetAttr, adderModules, _bytesLikeOf, excValue, excToThrowable, excTypeOf, excMatches, makeExcType, finishClass,
   GenericAlias, UnionType, makeUnion, _namedtuple, _typeObjects, _stdio, isUserIterable, pyIterAsync, pyAbs, _arityErr, _kwBagEmpty, pyTypeObj, frozenModuleHooks, intNorm, asCallable,
 } from './builtins.js';
 
@@ -54,6 +54,8 @@ const _slBytesLike = (b, fn) => {
   if (b instanceof Uint8Array) return b;
   if (b instanceof ArrayBuffer) return new Uint8Array(b);
   if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  const bl = _bytesLikeOf(b);   // bytearray, memoryview, array.array
+  if (bl) return bl;
   throw new AdderError('TypeError', `a bytes-like object is required, not '${pyTypeName(b)}'`);
 };
 const _slUtf8 = new TextEncoder();
@@ -981,7 +983,8 @@ class _SlStringIO {
   readable() { return true; } writable() { return true; } seekable() { return true; } isatty() { return false; }
   fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); }
   __enter__() { return this; }
-  __exit__() { this.close(); return false; }
+  // (close() may be a subclass's, written in Python: waited for)
+  __exit__() { const r = this.close(); return r !== null && r !== undefined && typeof r.then === 'function' ? r.then(() => false) : false; }
   *[Symbol.iterator]() { for (let l = this.readline(); l; l = this.readline()) yield l; }
   __iter__() { return this[Symbol.iterator](); }
 }
@@ -1042,9 +1045,17 @@ class _SlBytesIO {
   readable() { return true; } writable() { return true; } seekable() { return true; } isatty() { return false; }
   fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); }
   __enter__() { return this; }
-  __exit__() { this.close(); return false; }
+  // (close() may be a subclass's, written in Python: waited for)
+  __exit__() { const r = this.close(); return r !== null && r !== undefined && typeof r.then === 'function' ? r.then(() => false) : false; }
   *[Symbol.iterator]() { for (let l = this.readline(); l.length; l = this.readline()) yield l; }
   __iter__() { return this[Symbol.iterator](); }
+}
+// CPython makes these empty (their __new__) and fills them in __init__: a subclass's own __init__
+// runs instead, and its super().__init__(…) does the filling — so a subclass's instance is made
+// without its arguments (builtins objectNew) and __init__ is the constructor run again
+for (const C of [_SlStringIO, _SlBytesIO]) {
+  C._pyInitArgs = true;
+  C.prototype.__init__ = function (...a) { Object.assign(this, new C(...a)); return null; };
 }
 adderModules.io = {
   StringIO: _slType('StringIO', _SlStringIO, 'io'),

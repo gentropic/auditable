@@ -10,6 +10,7 @@ const VFS_ERROR_MESSAGES = {
   ENOTSUP: 'operation not supported',
   EBUSY: 'resource busy or rate-limited',
   EIO: 'input/output error',
+  ELOOP: 'too many levels of symbolic links',
 };
 
 class VFSError extends Error {

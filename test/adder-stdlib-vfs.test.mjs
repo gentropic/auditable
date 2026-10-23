@@ -293,4 +293,48 @@ except OSError as e:
       '',
     ].join('\n'));
   });
+
+  it("pathlib and shutil are CPython's, over os: paths, globs, stat_result, symlinks, walk, bytes paths", async () => {
+    const r = await runBoth(`
+import os, shutil, stat
+from pathlib import Path, PurePosixPath
+p = Path("/tmp/a")
+p.mkdir(parents=True, exist_ok=True)
+(p / "x.txt").write_text("hello")
+(p / "sub").mkdir()
+(p / "sub" / "y.csv").write_text("a,b")
+print(type(p).__name__, repr(PurePosixPath("a/b/../c.tar.gz")), PurePosixPath("a/b.tar.gz").suffixes, Path("a/b").with_suffix(".txt").parts)
+print(sorted(str(q.relative_to(p)) for q in p.rglob("*")), sorted(q.name for q in p.glob("*/*.csv")))
+st = (p / "x.txt").stat()
+print(st.st_size, st[stat.ST_SIZE], stat.S_ISREG(st.st_mode), (p / "nope").exists(), p.is_dir())
+shutil.copytree("/tmp/a", "/tmp/b")
+shutil.copy2("/tmp/a/x.txt", "/tmp/a/z.txt")
+print(sorted(os.listdir("/tmp/b")), os.path.samefile("/tmp/a/x.txt", "/tmp/a/x.txt"), os.path.samefile("/tmp/a/x.txt", "/tmp/a/z.txt"))
+os.symlink("sub", "/tmp/a/link")
+print(os.path.islink("/tmp/a/link"), os.readlink("/tmp/a/link"), os.path.realpath("/tmp/a/link/y.csv"), (p / "link" / "y.csv").read_text())
+print([(d, sorted(ds), sorted(fs)) for d, ds, fs in os.walk("/tmp/a", topdown=False)])
+shutil.rmtree("/tmp/b")
+print(os.path.exists("/tmp/b"), os.listdir(b"/tmp/a/sub"), os.path.join(b"/q", b"r"), os.terminal_size((3, 4)))
+try:
+    os.path.join(b"/q", "r")
+except TypeError as e:
+    print(e)
+os.chdir("/tmp/a")
+print(Path("x.txt").resolve(), Path.cwd(), os.path.join(Path("/q"), "r"))
+`);
+    // a relative symlink resolves from its own directory; a bottom-up walk lists the symlinked
+    // directory among the dirs without going into it; samefile is by inode, not by path text
+    assert.equal(r.text, [
+      "PosixPath PurePosixPath('a/b/../c.tar.gz') ['.tar', '.gz'] ('a', 'b.txt')",
+      "['sub', 'sub/y.csv', 'x.txt'] ['y.csv']",
+      '5 5 True False True',
+      "['sub', 'x.txt'] True False",
+      'True sub /tmp/a/sub/y.csv a,b',
+      "[('/tmp/a/sub', [], ['y.csv']), ('/tmp/a', ['link', 'sub'], ['x.txt', 'z.txt'])]",
+      "False [b'y.csv'] b'/q/r' os.terminal_size(columns=3, lines=4)",
+      "Can't mix strings and bytes in path components",
+      '/tmp/a/x.txt /tmp/a /q/r',
+      '',
+    ].join('\n'));
+  });
 });

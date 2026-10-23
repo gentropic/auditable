@@ -30,7 +30,7 @@ const outBatteries = path.join(here, 'batteries.js');
 export const HOT = [
   '__future__', '_collections_abc', 'collections', 'dataclasses', 'heapq', 'bisect',
   'json', 'json.decoder', 'json.encoder', 'json.scanner',
-  'argparse', 'glob', 'shutil',
+  'argparse', 'glob', 'shutil', 'fnmatch', 'genericpath', 'ntpath', 'pathlib', 'pathlib._abc', 'pathlib._local',
   'importlib._bootstrap', 'importlib._bootstrap_external',
 ];
 

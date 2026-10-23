@@ -562,7 +562,12 @@ adderModules.abc.ABC.__module__ = 'abc';
     S_IRWXG: 0o70, S_IRGRP: 0o40, S_IWGRP: 0o20, S_IXGRP: 0o10, S_IRWXO: 0o7, S_IROTH: 0o4, S_IWOTH: 0o2, S_IXOTH: 0o1,
     S_IREAD: 0o400, S_IWRITE: 0o200, S_IEXEC: 0o100,
     ST_MODE: 0, ST_INO: 1, ST_DEV: 2, ST_NLINK: 3, ST_UID: 4, ST_GID: 5, ST_SIZE: 6, ST_ATIME: 7, ST_MTIME: 8, ST_CTIME: 9,
-    UF_HIDDEN: 0x8000, FILE_ATTRIBUTE_HIDDEN: 2, FILE_ATTRIBUTE_DIRECTORY: 16 };
+    // the BSD / macOS file flags (chflags), CPython's values
+    UF_SETTABLE: 0x0000ffff, UF_NODUMP: 0x1, UF_IMMUTABLE: 0x2, UF_APPEND: 0x4, UF_OPAQUE: 0x8, UF_NOUNLINK: 0x10,
+    UF_COMPRESSED: 0x20, UF_TRACKED: 0x40, UF_DATAVAULT: 0x80, UF_HIDDEN: 0x8000,
+    SF_SETTABLE: 0xffff0000, SF_ARCHIVED: 0x10000, SF_IMMUTABLE: 0x20000, SF_APPEND: 0x40000, SF_RESTRICTED: 0x80000,
+    SF_NOUNLINK: 0x100000, SF_SNAPSHOT: 0x200000, SF_FIRMLINK: 0x800000, SF_DATALESS: 0x40000000,
+    FILE_ATTRIBUTE_HIDDEN: 2, FILE_ATTRIBUTE_DIRECTORY: 16 };
   const is = (t) => (mode) => (mode & S_IFMT) === t;
   const filemode = (mode) => {
     const t = { 0o040000: 'd', 0o120000: 'l', 0o020000: 'c', 0o060000: 'b', 0o010000: 'p', 0o140000: 's' }[mode & S_IFMT] || '-';
@@ -1502,9 +1507,21 @@ function _syOsExtras(os) {
   const PathLike = _syABCMeta('PathLike', mkTuple([]), new PyDict());
   PathLike.__module__ = 'os';
   // (a path object — not a file, which carries its path too, but isn't one)
-  PathLike.__instancecheck__ = (o) => o !== null && o !== undefined && typeof o === 'object' && typeof o.__fspath__ === 'function' || (o && o.__adderClass__ === 'PosixPath');
+  PathLike.__instancecheck__ = (o) => o !== null && o !== undefined && typeof o === 'object' && typeof o.__fspath__ === 'function';
   os.PathLike = PathLike;
-  if (!os.fspath) os.fspath = (p) => { if (typeof p === 'string' || p instanceof Uint8Array) return p; if (p && typeof p.__fspath__ === 'function') return p.__fspath__(); if (p && typeof p._path === 'string' && p.__adderClass__ === 'PosixPath') return p._path; throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`); };
+  // fspath(path): a str or bytes as it is; a path-like's __fspath__(), which must give one
+  if (!os.fspath) os.fspath = (p) => {
+    if (typeof p === 'string' || p instanceof Uint8Array || (p !== null && typeof p === 'object' && typeof p._pyStrValue === 'string')) return p;   // (a str subclass: itself)
+    if (p !== null && p !== undefined && typeof p === 'object' && typeof p.__fspath__ === 'function') {
+      const check = (s) => {
+        if (typeof s === 'string' || s instanceof Uint8Array) return s;
+        throw new AdderError('TypeError', `expected ${pyTypeName(p)}.__fspath__() to return str or bytes, not ${pyTypeName(s)}`);
+      };
+      const r = p.__fspath__();
+      return r !== null && r !== undefined && typeof r.then === 'function' ? r.then(check) : check(r);
+    }
+    throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`);
+  };
   if (!os.fsencode) os.fsencode = (p) => pyEncode(os.fspath(p), 'utf-8', 'surrogateescape');
   if (!os.fsdecode) os.fsdecode = (p) => { p = os.fspath(p); return p instanceof Uint8Array ? pyDecodePartial(p, 'utf-8', 'surrogateescape', true).text : p; };
   if (!os.name) os.name = 'posix';
@@ -1531,17 +1548,14 @@ function _syOsExtras(os) {
     const add = (k, v) => { if (!P[k]) P[k] = v; };
     add('pathsep', ':'); add('curdir', '.'); add('pardir', '..'); add('extsep', '.'); add('altsep', null); add('devnull', '/dev/null');
     add('abspath', (p) => P.normpath(P.isabs(p) ? p : P.join(cwd(), p)));
-    add('realpath', (p, ...a) => P.abspath(p));
     add('expanduser', (p) => (p === '~' ? home() : String(p).startsWith('~/') ? home() + String(p).slice(1) : p));
     add('expandvars', (p) => String(p).replace(/\$(\w+)|\$\{(\w+)\}/g, (m, a, b) => (os.environ.has(a || b) ? os.environ.get(a || b) : m)));
     add('split', (p) => { const i = String(p).lastIndexOf('/') + 1; let head = String(p).slice(0, i); const tail = String(p).slice(i); if (head && head !== '/'.repeat(head.length)) head = head.replace(/\/+$/, ''); return mkTuple([head, tail]); });
     add('splitdrive', (p) => mkTuple(['', p]));
     add('normcase', (p) => p);
-    add('islink', () => false); add('ismount', (p) => p === '/');
-    add('lexists', P.exists);
+    add('ismount', (p) => p === '/');
     add('commonprefix', (ps) => { const a = [...pyIter(ps)]; if (!a.length) return ''; let s = a[0]; for (const x of a) while (!String(x).startsWith(s)) s = s.slice(0, -1); return s; });
     add('commonpath', (ps) => { const parts = [...pyIter(ps)].map((x) => String(x).split('/')); if (!parts.length) throw new AdderError('ValueError', 'commonpath() arg is an empty sequence'); const out = []; for (let i = 0; parts.every((q) => i < q.length && q[i] === parts[0][i]); i++) out.push(parts[0][i]); return out.join('/') || (parts[0][0] === '' ? '/' : ''); });
-    add('samefile', (a, b) => P.abspath(a) === P.abspath(b));
   }
   // one process, one user: fixed ids (libraries key caches and temp names on them)
   const fixed = { getpid: 1, getppid: 0, getuid: 1000, geteuid: 1000, getgid: 1000, getegid: 1000, getpgrp: 1 };
@@ -1551,10 +1565,12 @@ function _syOsExtras(os) {
   if (!os.urandom) os.urandom = (n) => { const b = new Uint8Array(n); globalThis.crypto.getRandomValues(b); return b; };
   if (!os.getlogin) os.getlogin = () => 'user';
   if (!os.umask) os.umask = () => 0o022;
-  if (!os.get_terminal_size) os.get_terminal_size = () => Object.assign(mkTuple([80, 24]), { columns: 80, lines: 24 });
   if (!os.isatty) os.isatty = () => false;
   if (!os.supports_fd) os.supports_fd = new PySet();
-  if (!os.supports_follow_symlinks) os.supports_follow_symlinks = new PySet();
+  // (the functions whose follow_symlinks=False is honoured: shutil.copystat asks)
+  // (as Python reads them off the module: an attribute read hands back a wrapper, and `fn in
+  // os.supports_follow_symlinks` compares identity)
+  if (!os.supports_follow_symlinks) os.supports_follow_symlinks = new PySet(['stat', 'access'].filter((n) => os[n]).map((n) => adderGetAttr(os, n)));
   if (!os.supports_dir_fd) os.supports_dir_fd = new PySet();
   return os;
 }

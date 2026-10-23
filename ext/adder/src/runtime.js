@@ -824,7 +824,12 @@ function _raise(exc, cause) {
   }
   throw err;
 }
-function _reraise() { throw new AdderError('RuntimeError', 'No active exception to reraise'); }
+// a bare `raise` outside its function's own except clauses: the exception being handled by a caller
+// (shutil.rmtree's `def onexc(*args): raise`, called from an except block), as CPython's is per thread
+function _reraise() {
+  if (excStack.length) throw excStack[excStack.length - 1];
+  throw new AdderError('RuntimeError', 'No active exception to reraise');
+}
 
 // ── Argument binding (compiled functions) ──
 // The simple path keeps native JS params and calls this only when a call does not fit them
