@@ -979,6 +979,7 @@ class _SlStringIO {
   close() { this.closed = true; return null; }
   flush() { return null; }
   readable() { return true; } writable() { return true; } seekable() { return true; } isatty() { return false; }
+  fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); }
   __enter__() { return this; }
   __exit__() { this.close(); return false; }
   *[Symbol.iterator]() { for (let l = this.readline(); l; l = this.readline()) yield l; }
@@ -1039,6 +1040,7 @@ class _SlBytesIO {
   close() { this.closed = true; return null; }
   flush() { return null; }
   readable() { return true; } writable() { return true; } seekable() { return true; } isatty() { return false; }
+  fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); }
   __enter__() { return this; }
   __exit__() { this.close(); return false; }
   *[Symbol.iterator]() { for (let l = this.readline(); l.length; l = this.readline()) yield l; }
@@ -1048,7 +1050,7 @@ adderModules.io = {
   StringIO: _slType('StringIO', _SlStringIO, 'io'),
   BytesIO: _slType('BytesIO', _SlBytesIO, 'io'),
   SEEK_SET: 0, SEEK_CUR: 1, SEEK_END: 2, DEFAULT_BUFFER_SIZE: 8192,
-  UnsupportedOperation: makeExcType('UnsupportedOperation', 'OSError'),
+  UnsupportedOperation: makeExcType('UnsupportedOperation', 'OSError', 'ValueError'),
   // io.open is the builtin open; open_code(path) opens a file of code to read, as bytes
   open: (...a) => adderModules.builtins.open(...a),
   open_code: (path) => adderModules.builtins.open(path, 'rb'),

@@ -43,6 +43,7 @@ export function renameCollisions(modules) {
     }
   });
 
+  const taken = new Set(byName.keys()); // every name already bound somewhere in the bundle
   const renames = new Map(); // module → Map(name → newName)
   const put = (module, name, newName) => {
     let mm = renames.get(module);
@@ -64,7 +65,13 @@ export function renameCollisions(modules) {
     }
     if (distinct.size <= 1) continue; // single symbol — no rename
     for (const { module } of group) {
-      put(module, name, `${name}$${sanitizeBasename(module.basename)}`);
+      // Two modules may share a basename (`bz2/index.js`, `lzma/index.js`): number the
+      // second and later so a rename never lands on a name already in the bundle.
+      const base = `${name}$${sanitizeBasename(module.basename)}`;
+      let newName = base;
+      for (let n = 2; taken.has(newName); n++) newName = `${base}${n}`;
+      taken.add(newName);
+      put(module, name, newName);
     }
   }
 

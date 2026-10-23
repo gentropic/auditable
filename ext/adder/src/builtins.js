@@ -6480,7 +6480,7 @@ export async function _createAdderFile(vfs, filePath, mode, opts = null) {
 
     __enter__() { return f; },
     async __exit__() { await f.close(); return false; },
-    __repr__() { return `<_io.${isBinary ? 'BufferedWriter' : 'TextIOWrapper'} name='${filePath}' mode='${mode}'>`; },
+    __repr__() { return `<_io.${isBinary ? 'BufferedWriter' : 'TextIOWrapper'} name=${pyRepr(f.name)} mode='${mode}'>`; },
     __str__() { return f.__repr__(); },
     __bool__() { return true; },
 
@@ -6497,7 +6497,7 @@ export async function _createAdderFile(vfs, filePath, mode, opts = null) {
       };
     },
 
-    get name() { return filePath; },
+    get name() { return opts && opts.name !== undefined ? opts.name : filePath; },
     get closed() { return _closed; },
   };
 
@@ -6520,7 +6520,7 @@ function _fsp(p) {
   if (typeof p === 'string') return p;
   if (p !== null && typeof p === 'object') {
     if (typeof p.__fspath__ === 'function') return p.__fspath__();
-    if (typeof p._path === 'string') return p._path;
+    if (typeof p._path === 'string' && p.__adderClass__ === 'PosixPath') return p._path;
   }
   throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`);
 }
@@ -6960,6 +6960,8 @@ function _createShutilModule(getVfs) {
         if (_isThenable(w)) await w;
       }
     },
+    // (no programs to find in the browser)
+    which: () => null,
     move: async (src, dst) => { try { await getVfs().rename(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
   };
 }
@@ -9027,9 +9029,12 @@ export function adderBuiltins(printFn) {
         }
         throw new AdderError('ValueError', 'binary mode over a text file descriptor is not supported here');
       }
-      const raw = pathOrObj?._path ? pathOrObj._path : String(pathOrObj);
+      // the file's name is what it was opened by — a str, or bytes (a path object: its str)
+      let given = pathOrObj instanceof Uint8Array ? pathOrObj : _fsp(pathOrObj);
+      if (_isThenable(given)) given = await given;
+      const raw = given instanceof Uint8Array ? new TextDecoder().decode(given) : given;
       const p = _resolvePath(raw, _vfsPath);
-      return _createAdderFile(_adderVFS, p, mode || 'r');
+      return _createAdderFile(_adderVFS, p, mode || 'r', { name: given });
     },
     __import__: _builtinImport,
     // compile(source, filename, mode): a code object exec() / eval() run (parsed when they do)

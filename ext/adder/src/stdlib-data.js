@@ -9,10 +9,12 @@ import {
   AdderError, PyTuple, PyDict, mkTuple, isPlainDict, pyTypeName, pyRepr, pyStr, pyIter, pyCollect, pyStrMaybe,
   pyPercentFormat, adderGetAttr, adderModules, makeExcType, _pyHash, _namedtuple, _stdio, excTypeOf, excValue,
   getAdderVFS, _getVfsPath, _resolvePath, _createAdderFile, _mapVFSError, _typeObjects, pyFormatValue, excStack,
-  PyByteArray,
+  PyByteArray, PyMemoryView, intNorm,
 } from './builtins.js';
-// @gcu/bz2 (_bz2's codec): adder's build.js inlines this bundle as the one name _gcuBz2
+// @gcu/bz2 and @gcu/lzma (_bz2's and _lzma's codecs): adder's build.js inlines each bundle as one
+// name, _gcuBz2 / _gcuLzma
 import * as _gcuBz2 from '../../bz2/index.js';
+import * as _gcuLzma from '../../lzma/index.js';
 
 const _dtIsThen = (v) => v !== null && v !== undefined && typeof v.then === 'function';
 const _dtKw = (args) => (args.length && args[args.length - 1] !== null && typeof args[args.length - 1] === 'object' &&
@@ -38,6 +40,8 @@ const _dtBytes = (b, what = 'a bytes-like object') => {
   if (b instanceof ArrayBuffer) return new Uint8Array(b);
   if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
   if (b instanceof PyByteArray) return Uint8Array.from(b);   // (a bytearray is an Array of its bytes)
+  if (b instanceof PyMemoryView) return b.tobytes();
+  if (b !== null && typeof b === 'object' && typeof b._pyBufferExport === 'function') return Uint8Array.from(b._pyBufferExport());   // (array.array)
   throw new AdderError('TypeError', `${what} is required, not '${pyTypeName(b)}'`);
 };
 const _dtEnc = new TextEncoder();
@@ -850,8 +854,9 @@ adderModules.gzip.open = (filename, mode = 'rb', ...a) => {
 // The C half of CPython's bz2 (bz2.py, vendored, is the rest): BZ2Compressor / BZ2Decompressor
 // over @gcu/bz2, libbzip2 1.0.8 ported — the same bytes out, the same unused_data / needs_input.
 class _DtBZ2Compressor {
-  constructor(compresslevel = 9) {
-    const level = Number(compresslevel);
+  constructor(compresslevel = 9, ...more) {
+    if (more.length) throw new AdderError('TypeError', `BZ2Compressor() takes at most 1 argument (${more.length + 1} given)`);
+    const level = _dtIntArg(compresslevel);
     if (!(level >= 1 && level <= 9)) throw new AdderError('ValueError', 'compresslevel must be between 1 and 9');
     this._c = new _gcuBz2.Compressor(level);
     this._flushed = false;
@@ -867,7 +872,13 @@ class _DtBZ2Compressor {
   }
 }
 class _DtBZ2Decompressor {
-  constructor() { this._d = new _gcuBz2.Decompressor(); }
+  constructor(...a) {
+    // (an empty keyword bag is no argument — `BZ2Decompressor(**{})`, as _compression passes it)
+    const kw = _dtKw(a);
+    if (kw && Object.keys(kw).some((k) => k !== '_kw')) throw new AdderError('TypeError', 'BZ2Decompressor() takes no keyword arguments');
+    if (a.length) throw new AdderError('TypeError', 'BZ2Decompressor() takes no arguments');
+    this._d = new _gcuBz2.Decompressor();
+  }
   get eof() { return this._d.eof; }
   get needs_input() { return this._d.needsInput; }
   get unused_data() { return this._d.unusedData; }
@@ -886,17 +897,166 @@ adderModules._bz2 = {
   BZ2Decompressor: _dtType('BZ2Decompressor', _DtBZ2Decompressor, '_bz2'),
 };
 
-// lzma: no xz codec yet — the module is there (libraries import it to offer .xz files as an
-// option), and using it says so
-{
-  const no = (what) => () => { throw new AdderError('NotImplementedError', `${what} compression is not available here (no xz codec yet)`); };
-  const cls = (name, what, module) => { const c = no(what); c._pyName = name; c.__name__ = name; c._pyClass = true; c.__module__ = module; return c; };
-  const LZMAError = makeExcType('LZMAError', 'Exception');
-  adderModules.lzma = { __adderModule__: true, __name__: 'lzma', compress: no('xz'), decompress: no('xz'), open: no('xz'), is_check_supported: () => false,
-    LZMAFile: cls('LZMAFile', 'xz', 'lzma'), LZMACompressor: cls('LZMACompressor', 'xz', 'lzma'), LZMADecompressor: cls('LZMADecompressor', 'xz', 'lzma'), LZMAError,
-    FORMAT_AUTO: 0, FORMAT_XZ: 1, FORMAT_ALONE: 2, FORMAT_RAW: 3, CHECK_NONE: 0, CHECK_CRC32: 1, CHECK_CRC64: 4, CHECK_SHA256: 10, CHECK_ID_MAX: 15, CHECK_UNKNOWN: 16,
-    FILTER_LZMA1: 0x4000000000000001, FILTER_LZMA2: 0x21, FILTER_DELTA: 3, FILTER_X86: 4, PRESET_DEFAULT: 6, PRESET_EXTREME: 0x80000000, MODE_FAST: 1, MODE_NORMAL: 2 };
+// ── _lzma ──
+// The C half of CPython's lzma (lzma.py, vendored, is the rest): LZMACompressor /
+// LZMADecompressor over @gcu/lzma, liblzma 5.8.1 ported — liblzma's bytes out, its unused_data /
+// needs_input / check — with _lzmamodule.c's filter-spec parsing, errors and constants (the
+// filters CPython 3.13 offers: not ARM64 or RISC-V, which it refuses as invalid IDs).
+const _dtLzmaErrorType = makeExcType('_lzma.LZMAError', 'Exception');
+const _DT_FILTER_LZMA1 = 0x4000000000000001n;
+const _DT_LZ_FILTERS = new Map([[0x21n, 'lzma'], [_DT_FILTER_LZMA1, 'lzma'], [0x03n, 'delta'], [0x04n, 'bcj'], [0x05n, 'bcj'], [0x06n, 'bcj'], [0x07n, 'bcj'], [0x08n, 'bcj'], [0x09n, 'bcj']]);
+const _dtLzmaErr = (e) => {
+  if (e instanceof _gcuLzma.LzmaError) return new AdderError('_lzma.LZMAError', e.message);
+  if (e && e.name === 'LzmaDataError') return new AdderError('_lzma.LZMAError', 'Corrupt input data');
+  if (e instanceof RangeError && /^lzma: /.test(e.message)) return new AdderError('_lzma.LZMAError', 'Invalid or unsupported options');
+  return e;
+};
+// an unsigned value of `bits` bits, as _lzmamodule.c's converters take one
+function _dtUnsigned(v, bits = 32) {
+  if (typeof v === 'boolean') v = v ? 1 : 0;
+  if (typeof v !== 'bigint' && !(typeof v === 'number' && Number.isInteger(v))) throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+  const b = BigInt(v);
+  if (b < 0n) throw new AdderError('OverflowError', "can't convert negative int to unsigned");
+  if (b >= (1n << BigInt(bits))) throw new AdderError('OverflowError', bits === 32 ? 'Value too large for uint32_t type' : 'int too big to convert');
+  return b;
 }
+// an int argument ('i' in _lzmamodule.c's argument parsing)
+function _dtIntArg(v) {
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v === 'bigint' || (typeof v === 'number' && Number.isInteger(v))) return Number(v);
+  throw new AdderError('TypeError', `'${pyTypeName(v)}' object cannot be interpreted as an integer`);
+}
+const _dtSpecGet = (spec, k) => (spec instanceof Map ? (spec.has(k) ? spec.get(k) : undefined) : spec && typeof spec === 'object' && Object.hasOwn(spec, k) ? spec[k] : undefined);
+const _dtSpecKeys = (spec) => (spec instanceof Map ? [...spec.keys()] : Object.keys(spec).filter((k) => k !== '_kw'));
+// a filter specifier (a dict) → @gcu/lzma's filter
+function _dtFilterSpec(spec) {
+  if (spec === null || typeof spec !== 'object' || Array.isArray(spec) || spec instanceof Uint8Array) throw new AdderError('TypeError', 'Filter specifier must be a dict or dict-like object');
+  const idv = _dtSpecGet(spec, 'id');
+  if (idv === undefined) throw new AdderError('ValueError', 'Filter specifier must have an "id" entry');
+  const id = _dtUnsigned(idv, 64);
+  const kind = _DT_LZ_FILTERS.get(id);
+  if (!kind) throw new AdderError('ValueError', `Invalid filter ID: ${id}`);
+  const keys = _dtSpecKeys(spec);
+  const allowed = kind === 'lzma' ? ['id', 'preset', 'dict_size', 'lc', 'lp', 'pb', 'mode', 'nice_len', 'mf', 'depth'] : kind === 'delta' ? ['id', 'dist'] : ['id', 'start_offset'];
+  if (keys.some((k) => !allowed.includes(k))) {
+    throw new AdderError('ValueError', `Invalid filter specifier for ${kind === 'lzma' ? 'LZMA' : kind === 'delta' ? 'delta' : 'BCJ'} filter`);
+  }
+  const u32 = (k) => { const v = _dtSpecGet(spec, k); return v === undefined ? undefined : Number(_dtUnsigned(v)); };
+  if (kind === 'lzma') {
+    const preset = u32('preset') ?? 6;
+    const f = { id: id === _DT_FILTER_LZMA1 ? _gcuLzma.FILTER_LZMA1 : Number(id), preset };
+    try { _gcuLzma.presetOptions(preset); } catch (e) { throw _dtLzmaErr(e); }   // 'Invalid compression preset: …'
+    const set = (k, name, map = (x) => x) => { const v = u32(k); if (v !== undefined) f[name] = map(v); };
+    set('dict_size', 'dictSize'); set('lc', 'lc'); set('lp', 'lp'); set('pb', 'pb');
+    set('mode', 'mode', (m) => (m === 1 ? 'fast' : m === 2 ? 'normal' : `mode ${m}`));
+    set('nice_len', 'niceLen'); set('mf', 'mf'); set('depth', 'depth');
+    return f;
+  }
+  if (kind === 'delta') return { id: Number(id), dist: u32('dist') ?? 1 };
+  return { id: Number(id), start_offset: u32('start_offset') ?? 0 };
+}
+function _dtFilterChain(specs) {
+  // (a sequence: PySequence_GetItem — a dict is no filter chain)
+  if (!Array.isArray(specs)) throw new AdderError('TypeError', `object of type '${pyTypeName(specs)}' has no len()`);
+  const list = [...specs];
+  if (list.length > 4) throw new AdderError('ValueError', 'Too many filters - liblzma supports a maximum of 4');
+  return list.map(_dtFilterSpec);
+}
+class _DtLZMACompressor {
+  constructor(...a) {
+    const { args } = _dtArgs(a, ['format', 'check', 'preset', 'filters'], { format: 1, check: -1, preset: null, filters: null });
+    const format = _dtIntArg(args.format), check = _dtIntArg(args.check);
+    if (format !== 1 && check !== -1 && check !== 0) throw new AdderError('ValueError', 'Integrity checks are only supported by FORMAT_XZ');
+    if (args.preset !== null && args.filters !== null) throw new AdderError('ValueError', 'Cannot specify both preset and filter chain');
+    const preset = args.preset === null ? 6 : Number(_dtUnsigned(args.preset));
+    const filters = args.filters === null ? null : _dtFilterChain(args.filters);
+    try {
+      if (format === 1) {
+        // (lzma_easy_encoder: a bad preset is liblzma's options error here)
+        if (filters === null) { try { _gcuLzma.presetOptions(preset); } catch { throw new _gcuLzma.LzmaError('Invalid or unsupported options'); } }
+        this._c = new _gcuLzma.Compressor({ format: 'xz', check: check === -1 ? 4 : check, preset, filters });
+      } else if (format === 2) {
+        if (filters !== null && (filters.length !== 1 || filters[0].id !== _gcuLzma.FILTER_LZMA1)) {
+          throw new AdderError('ValueError', 'Invalid filter chain for FORMAT_ALONE - must be a single LZMA1 filter');
+        }
+        if (filters === null) _gcuLzma.presetOptions(preset);   // 'Invalid compression preset: …'
+        this._c = new _gcuLzma.Compressor({ format: 'alone', preset, filters });
+      } else if (format === 3) {
+        if (filters === null) throw new AdderError('ValueError', 'Must specify filters for FORMAT_RAW');
+        this._c = new _gcuLzma.Compressor({ format: 'raw', filters });
+      } else {
+        throw new AdderError('ValueError', `Invalid container format: ${format}`);
+      }
+    } catch (e) { throw _dtLzmaErr(e); }
+    this._flushed = false;
+  }
+  compress(data) {
+    if (this._flushed) throw new AdderError('ValueError', 'Compressor has been flushed');
+    try { return this._c.compress(_dtBytes(data)); } catch (e) { throw _dtLzmaErr(e); }
+  }
+  flush() {
+    if (this._flushed) throw new AdderError('ValueError', 'Repeated call to flush()');
+    this._flushed = true;
+    try { return this._c.flush(); } catch (e) { throw _dtLzmaErr(e); }
+  }
+}
+class _DtLZMADecompressor {
+  constructor(...a) {
+    const { args } = _dtArgs(a, ['format', 'memlimit', 'filters'], { format: 0, memlimit: null, filters: null });
+    const format = _dtIntArg(args.format);
+    if (args.memlimit !== null && format === 3) throw new AdderError('ValueError', 'Cannot specify memory limit with FORMAT_RAW');
+    const memlimit = args.memlimit === null ? null : Number(_dtUnsigned(args.memlimit, 64));
+    if (format === 3 && args.filters === null) throw new AdderError('ValueError', 'Must specify filters for FORMAT_RAW');
+    if (format !== 3 && args.filters !== null) throw new AdderError('ValueError', 'Cannot specify filters except with FORMAT_RAW');
+    const name = ['auto', 'xz', 'alone', 'raw'][format];
+    if (!name) throw new AdderError('ValueError', `Invalid container format: ${format}`);
+    try { this._d = _gcuLzma.Decompressor({ format: name, memlimit, filters: format === 3 ? _dtFilterChain(args.filters) : null }); }
+    catch (e) { throw _dtLzmaErr(e); }
+  }
+  get eof() { return this._d.eof; }
+  get needs_input() { return this._d.needsInput; }
+  get unused_data() { return this._d.unusedData; }
+  get check() { return this._d.check; }
+  decompress(data, ...a) {
+    const { args } = _dtArgs(a, ['max_length'], { max_length: -1 });
+    if (this._d.eof) throw new AdderError('EOFError', 'Already at end of stream');
+    try { return this._d.decompress(_dtBytes(data), Number(args.max_length)); } catch (e) { throw _dtLzmaErr(e); }
+  }
+}
+adderModules._lzma = {
+  __adderModule__: true, __name__: '_lzma',
+  LZMACompressor: _dtType('LZMACompressor', _DtLZMACompressor, '_lzma'),
+  LZMADecompressor: _dtType('LZMADecompressor', _DtLZMADecompressor, '_lzma'),
+  LZMAError: _dtLzmaErrorType,
+  is_check_supported: (id) => { const n = Number(_dtUnsigned(id)); return n <= 15 && _gcuLzma.isCheckSupported(n); },
+  // the property bytes of a filter, and a filter (as a dict) from its ID and property bytes
+  _encode_filter_properties: (spec) => {
+    const f = _dtFilterSpec(spec);
+    try {
+      const lz = f.id === _gcuLzma.FILTER_LZMA1 || f.id === 0x21;
+      return _gcuLzma.filterProps(lz ? _gcuLzma.resolveLzmaOptions(f) : f);
+    } catch (e) { throw _dtLzmaErr(e); }
+  },
+  _decode_filter_properties: (filterId, props) => {
+    const id = _dtUnsigned(filterId, 64);
+    let f;
+    try { f = _gcuLzma.decodeFilterProps(id, _dtBytes(props)); } catch (e) { throw _dtLzmaErr(e); }
+    const d = new PyDict();
+    d.set('id', id === _DT_FILTER_LZMA1 ? intNorm(id) : Number(id));
+    if (f.id === _gcuLzma.FILTER_LZMA1) { d.set('lc', f.lc); d.set('lp', f.lp); d.set('pb', f.pb); d.set('dict_size', f.dictSize); }
+    else if (f.id === 0x21) d.set('dict_size', f.dictSize);
+    else if (f.id === 0x03) d.set('dist', f.dist);
+    else if (_DT_LZ_FILTERS.get(BigInt(f.id)) === 'bcj') { if (props && _dtBytes(props).length) d.set('start_offset', f.start_offset); }
+    else throw new AdderError('ValueError', `Invalid filter ID: ${id}`);
+    return d;
+  },
+  FORMAT_AUTO: 0, FORMAT_XZ: 1, FORMAT_ALONE: 2, FORMAT_RAW: 3,
+  CHECK_NONE: 0, CHECK_CRC32: 1, CHECK_CRC64: 4, CHECK_SHA256: 10, CHECK_ID_MAX: 15, CHECK_UNKNOWN: 16,
+  FILTER_LZMA1: intNorm(_DT_FILTER_LZMA1), FILTER_LZMA2: 0x21, FILTER_DELTA: 3, FILTER_X86: 4, FILTER_IA64: 6,
+  FILTER_ARM: 7, FILTER_ARMTHUMB: 8, FILTER_SPARC: 9, FILTER_POWERPC: 5,
+  MF_HC3: 0x03, MF_HC4: 0x04, MF_BT2: 0x12, MF_BT3: 0x13, MF_BT4: 0x14,
+  MODE_FAST: 1, MODE_NORMAL: 2, PRESET_DEFAULT: 6, PRESET_EXTREME: 0x80000000,
+};
 
 // ── zipfile ──
 // ZipFile over a VFS path or a file object (BytesIO): read ('r'), write ('w', 'x') and append

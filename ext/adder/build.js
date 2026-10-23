@@ -75,13 +75,16 @@ for (const [rel, descr] of airInlines) {
 // collide with adder's.
 const nsInlines = [
   ['../bz2/index.js', '_gcuBz2'],
+  ['../lzma/index.js', '_gcuLzma'],
 ];
 for (const [rel, name] of nsInlines) {
   let src = fs.readFileSync(path.join(__dirname, rel), 'utf8');
   const m = src.match(/\nexport\s*\{([^}]*)\};?\s*$/);
   if (!m) throw new Error(`adder build: ${rel} has no trailing export list`);
   src = src.slice(0, m.index);
-  const names = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+  // `local as exported` (a renamed export) becomes `exported: local` in the returned object
+  const names = m[1].split(',').map((s) => s.trim()).filter(Boolean)
+    .map((s) => { const r = s.split(/\s+as\s+/); return r.length === 2 ? `${r[1]}: ${r[0]}` : s; });
   chunks.push(`// -- inlined: ${rel} (as ${name}) --\n\nconst ${name} = (() => {\n${src}\nreturn { ${names.join(', ')} };\n})();`);
 }
 

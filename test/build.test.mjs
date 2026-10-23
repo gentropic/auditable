@@ -68,6 +68,21 @@ test('collision: colliding top-level names rename per-module', async () => {
   assert.equal(r.meta.renames.length, 2);
 });
 
+// ── 3b. collision between modules sharing a basename (two index.js) gets distinct names ──
+test('collision: same-basename modules rename to distinct names', async () => {
+  const sources = {
+    'src/main.js': "export { fromA } from './a/index.js';\nexport { fromB } from './b/index.js';\n",
+    'src/a/index.js': "const cmp = (x) => x + 1;\nexport function fromA(n){ return cmp(n); }\n",
+    'src/b/index.js': "const cmp = (x) => x * 10;\nexport function fromB(n){ return cmp(n); }\n",
+  };
+  const r = bundleMemory(sources, { entry: 'src/main.js' });
+  assert.ok(r.code.includes('cmp$index'));
+  assert.ok(r.code.includes('cmp$index2'));
+  const m = await importCode(r.code);
+  assert.equal(m.fromA(5), 6);
+  assert.equal(m.fromB(5), 50);
+});
+
 // ── 4. named import aliasing: refs to the alias rewrite to the target ──
 test('aliased import: `import { x as y }` references rewrite', async () => {
   const sources = {
@@ -522,7 +537,7 @@ test('round-trip: bundled ext/adder (inline air) behaves like its source', async
   const dir = path.join(root, 'ext', 'adder');
   const r = bundle({
     dir, entry: 'src/main.js', write: false,
-    inline: ['../air/src/types.js', '../air/src/lower/base.js', '../air/src/passes.js', '../bz2/index.js'],
+    inline: ['../air/src/types.js', '../air/src/lower/base.js', '../air/src/passes.js', '../bz2/index.js', '../lzma/index.js'],
   });
   assert.ok(!/from '\.\.\/\.\.\/air/.test(r.code), 'air imports are inlined, not external');
 

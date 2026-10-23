@@ -218,6 +218,48 @@ print(shutil.copy2("a.txt", "sub"), os.stat("sub/a.txt").st_mtime, oct(os.stat("
     ].join('\n'));
   });
 
+  it("lzma: CPython's lzma.py over _lzma (liblzma's bytes); LZMAFile on a path, text mode; filters, errors", async () => {
+    const r = await runBoth(`
+import lzma, hashlib
+data = b"xz in adder " * 3000 + bytes(range(256))
+z = lzma.compress(data)
+print(len(z), hashlib.sha256(z).hexdigest()[:16], lzma.decompress(z) == data)
+f = [{"id": lzma.FILTER_DELTA, "dist": 2}, {"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2, "preset": 3 | lzma.PRESET_EXTREME}]
+z3 = lzma.compress(data, filters=f, check=lzma.CHECK_SHA256)
+print(len(z3), hashlib.sha256(z3).hexdigest()[:16], lzma.decompress(z3) == data)
+with lzma.open("/tmp/t.xz", "wt") as fh:
+    fh.write("one\\ntwo\\n")
+with lzma.open("/tmp/t.xz", "rt") as fh:
+    print(fh.readlines())
+d = lzma.LZMADecompressor()
+part = d.decompress(z + b"??", max_length=100)
+rest = d.decompress(b"")
+print(len(part), d.check, len(part + rest), d.eof, d.unused_data)
+print(lzma._encode_filter_properties({"id": lzma.FILTER_LZMA2, "preset": 6}), sorted(lzma._decode_filter_properties(lzma.FILTER_DELTA, b"\\x03").items()))
+for bad in [dict(format=lzma.FORMAT_ALONE, check=lzma.CHECK_CRC32), dict(preset=6, filters=[])]:
+    try:
+        lzma.LZMACompressor(**bad)
+    except ValueError as e:
+        print(e)
+try:
+    lzma.compress(b"x", filters=[{"id": 99}])
+except ValueError as e:
+    print(e)
+`);
+    // (376 bytes and those hashes are CPython 3.13's lzma.compress of the same data)
+    assert.equal(r.text, [
+      '376 8044fc5cd11e8d0b True',
+      '184 d80087667a315262 True',
+      "['one\\n', 'two\\n']",
+      '100 4 36256 True b\'??\'',
+      "b'\\x16' [('dist', 4), ('id', 3)]",
+      'Integrity checks are only supported by FORMAT_XZ',
+      'Cannot specify both preset and filter chain',
+      'Invalid filter ID: 99',
+      '',
+    ].join('\n'));
+  });
+
   it("bz2: CPython's bz2.py over _bz2 (libbzip2's bytes); BZ2File on a path, text mode", async () => {
     const r = await runBoth(`
 import bz2, hashlib

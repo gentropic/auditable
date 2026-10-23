@@ -1501,9 +1501,10 @@ adderModules.zipimport = _syModule('zipimport', {
 function _syOsExtras(os) {
   const PathLike = _syABCMeta('PathLike', mkTuple([]), new PyDict());
   PathLike.__module__ = 'os';
-  PathLike.__instancecheck__ = (o) => o !== null && o !== undefined && typeof o === 'object' && typeof o.__fspath__ === 'function' || (o && o.__adderClass__ === 'PosixPath') || (o && typeof o._path === 'string');
+  // (a path object — not a file, which carries its path too, but isn't one)
+  PathLike.__instancecheck__ = (o) => o !== null && o !== undefined && typeof o === 'object' && typeof o.__fspath__ === 'function' || (o && o.__adderClass__ === 'PosixPath');
   os.PathLike = PathLike;
-  if (!os.fspath) os.fspath = (p) => { if (typeof p === 'string' || p instanceof Uint8Array) return p; if (p && typeof p.__fspath__ === 'function') return p.__fspath__(); if (p && typeof p._path === 'string') return p._path; throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`); };
+  if (!os.fspath) os.fspath = (p) => { if (typeof p === 'string' || p instanceof Uint8Array) return p; if (p && typeof p.__fspath__ === 'function') return p.__fspath__(); if (p && typeof p._path === 'string' && p.__adderClass__ === 'PosixPath') return p._path; throw new AdderError('TypeError', `expected str, bytes or os.PathLike object, not ${pyTypeName(p)}`); };
   if (!os.fsencode) os.fsencode = (p) => pyEncode(os.fspath(p), 'utf-8', 'surrogateescape');
   if (!os.fsdecode) os.fsdecode = (p) => { p = os.fspath(p); return p instanceof Uint8Array ? pyDecodePartial(p, 'utf-8', 'surrogateescape', true).text : p; };
   if (!os.name) os.name = 'posix';
@@ -1873,7 +1874,14 @@ function _syBufferedReader(BufferedIOBase) {
     }
     return self._rbuf.slice(self._rpos);
   };
-  const sizeArg = (a, name = 'size') => { const v = _syArgs(a, [name], { [name]: -1 })[name]; return v === null || v === undefined ? -1 : Number(v); };
+  // a size: an int, or None (all)
+  const sizeArg = (a, name = 'size') => {
+    const v = _syArgs(a, [name], { [name]: -1 })[name];
+    if (v === null || v === undefined) return -1;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (typeof v === 'bigint' || (typeof v === 'number' && Number.isInteger(v))) return Number(v);
+    throw new AdderError('TypeError', `argument should be integer or None, not '${pyTypeName(v)}'`);
+  };
   return _syClass('BufferedReader', [BufferedIOBase], {
     __init__(self, raw, ...a) {
       const { buffer_size } = _syArgs(a, ['buffer_size'], { buffer_size: 8192 });
@@ -1939,6 +1947,7 @@ function _syBufferedReader(BufferedIOBase) {
       }
     },
     async seek(self, pos, whence = 0) {
+      if (!(typeof pos === 'bigint' || (typeof pos === 'number' && Number.isInteger(pos)))) throw new AdderError('TypeError', `'${pyTypeName(pos)}' object cannot be interpreted as an integer`);
       if (![0, 1, 2].includes(Number(whence))) throw new AdderError('ValueError', 'invalid whence value');
       checkClosed(self, 'seek');
       let p = Number(pos);
@@ -1987,7 +1996,13 @@ function _syConcat(parts) {
 {
   const io = adderModules.io;
   const IOBase = _syClass('IOBase', [], {
-    __enter__(self) { return self; }, __exit__(self) { const c = adderGetAttr(self, 'close'); const r = c(); return _syIsThen(r) ? r.then(() => false) : false; },
+    // (a closed stream refuses to be entered, as CPython's _checkClosed)
+    __enter__(self) {
+      const c = adderGetAttr(self, 'closed');
+      const check = (v) => { if (v === true) throw new AdderError('ValueError', 'I/O operation on closed file.'); return self; };
+      return _syIsThen(c) ? c.then(check) : check(c);
+    },
+    __exit__(self) { const c = adderGetAttr(self, 'close'); const r = c(); return _syIsThen(r) ? r.then(() => false) : false; },
     close(self) { self.closed = true; return null; }, flush() { return null; },
     readable() { return false; }, writable() { return false; }, seekable() { return false; }, isatty() { return false; },
     fileno() { throw new AdderError('UnsupportedOperation', 'fileno'); },
@@ -2008,25 +2023,92 @@ function _syConcat(parts) {
       };
       return step(rl());
     },
-    writelines(self, lines) { for (const l of pyIter(lines)) adderGetAttr(self, 'write')(l); return null; },
+    // (each write waits for the one before — a write over an async stream returns a promise)
+    writelines(self, lines) {
+      const it = [...pyIter(lines)];
+      const w = adderGetAttr(self, 'write');
+      const step = (i) => {
+        for (; i < it.length; i++) {
+          const r = w(it[i]);
+          if (_syIsThen(r)) return r.then(() => step(i + 1));
+        }
+        return null;
+      };
+      return step(0);
+    },
+    // a stream iterates its lines (readline until it gives nothing)
+    __iter__(self) {
+      if (self.closed === true) throw new AdderError('ValueError', 'I/O operation on closed file.');
+      return self;
+    },
+    __next__(self) {
+      const done = (l) => { if (!l || !l.length) throw new AdderError('StopIteration', ''); return l; };
+      const l = adderGetAttr(self, 'readline')();
+      return _syIsThen(l) ? l.then(done) : done(l);
+    },
   }, 'io');
   const RawIOBase = _syClass('RawIOBase', [IOBase], {}, 'io');
   const BufferedIOBase = _syClass('BufferedIOBase', [IOBase], {}, 'io');
   const TextIOBase = _syClass('TextIOBase', [IOBase], { encoding: 'utf-8' }, 'io');
-  // TextIOWrapper(buffer, encoding): text over a binary stream with read() / write()
+  // TextIOWrapper(buffer, encoding, errors, newline): text over a binary stream. Reading decodes
+  // what the stream has, once, and goes by newline as CPython does: None translates \r\n and \r
+  // to \n; '' sees all three as line ends and translates nothing; '\n', '\r', '\r\n' end lines
+  // at that alone. Writing turns \n into a newline of '\r' or '\r\n'.
+  const _syLineEnd = (text, from, newline) => {
+    if (newline === null || newline === '\n') { const i = text.indexOf('\n', from); return i < 0 ? -1 : i + 1; }
+    if (newline === '') {
+      for (let i = from; i < text.length; i++) {
+        if (text[i] === '\n') return i + 1;
+        if (text[i] === '\r') return text[i + 1] === '\n' ? i + 2 : i + 1;
+      }
+      return -1;
+    }
+    const i = text.indexOf(newline, from);
+    return i < 0 ? -1 : i + newline.length;
+  };
+  const _syTextLoad = (self, then) => {
+    if (self._text !== undefined) return then(self._text);
+    const b = adderGetAttr(self.buffer, 'read')();
+    const got = (x) => {
+      let t = pyDecodePartial(x instanceof Uint8Array ? x : x ? Uint8Array.from(x) : new Uint8Array(0), self.encoding, self.errors, true).text;
+      if (self._newline === null) t = t.replace(/\r\n?/g, '\n');
+      self._text = t; self._tpos = 0;
+      return then(t);
+    };
+    return _syIsThen(b) ? b.then(got) : got(b);
+  };
   const TextIOWrapper = _syClass('TextIOWrapper', [TextIOBase], {
     __init__(self, buffer, ...a) {
       const { encoding, errors, newline } = _syArgs(a, ['encoding', 'errors', 'newline', 'line_buffering', 'write_through'], { encoding: 'utf-8', errors: 'strict', newline: null });
-      self.buffer = buffer; self.encoding = encoding || 'utf-8'; self.errors = errors || 'strict'; self.closed = false; self._pending = '';
+      if (newline !== null && newline !== undefined && !['', '\n', '\r', '\r\n'].includes(newline)) throw new AdderError('ValueError', `illegal newline value: ${pyRepr(newline)}`);
+      self.buffer = buffer; self.encoding = encoding || 'utf-8'; self.errors = errors || 'strict'; self.closed = false;
+      self._newline = newline === undefined ? null : newline;
       return null;
     },
-    read(self, n = -1) { const b = adderGetAttr(self.buffer, 'read')(); const t = (x) => pyDecodePartial(x instanceof Uint8Array ? x : new Uint8Array(0), self.encoding, self.errors, true).text; const all = _syIsThen(b) ? b.then(t) : t(b); return all; },
-    readline(self) {
-      const fill = (txt) => { self._pending += txt; const i = self._pending.indexOf('\n'); if (i < 0) { const r = self._pending; self._pending = ''; return r; } const r = self._pending.slice(0, i + 1); self._pending = self._pending.slice(i + 1); return r; };
-      if (self._pending.includes('\n')) return fill('');
-      const t = adderGetAttr(self, 'read')(); return _syIsThen(t) ? t.then(fill) : fill(t);
+    read(self, n = -1) {
+      return _syTextLoad(self, (t) => {
+        const end = n === null || n === undefined || n < 0 ? t.length : Math.min(t.length, self._tpos + Number(n));
+        const r = t.slice(self._tpos, end);
+        self._tpos = end;
+        return r;
+      });
     },
-    write(self, s) { const r = adderGetAttr(self.buffer, 'write')(pyEncode(s, self.encoding, self.errors)); return _syIsThen(r) ? r.then(() => String(s).length) : String(s).length; },
+    readline(self, size = -1) {
+      return _syTextLoad(self, (t) => {
+        let end = _syLineEnd(t, self._tpos, self._newline);
+        if (end < 0) end = t.length;
+        if (size !== null && size !== undefined && size >= 0) end = Math.min(end, self._tpos + Number(size));
+        const r = t.slice(self._tpos, end);
+        self._tpos = end;
+        return r;
+      });
+    },
+    write(self, s) {
+      let text = String(s);
+      if (self._newline === '\r' || self._newline === '\r\n') text = text.replace(/\n/g, self._newline);
+      const r = adderGetAttr(self.buffer, 'write')(pyEncode(text, self.encoding, self.errors));
+      return _syIsThen(r) ? r.then(() => String(s).length) : String(s).length;
+    },
     readable(self) { return true; }, writable(self) { return true; },
     detach(self) { const b = self.buffer; self.buffer = null; return b; },
     flush(self) { const f = self.buffer && adderGetAttr(self.buffer, 'flush'); return f ? f() : null; },

@@ -1,0 +1,33 @@
+{
+  "name": "@gcu/lzma",
+  "version": "0.1.0",
+  "description": "xz / LZMA in plain JavaScript, both directions: liblzma 5.8.1 ported, so what it writes is byte-identical to the xz tool's and CPython's lzma (every preset, the extreme ones, .xz / .lzma / raw, CRC32 / CRC64 / SHA-256, the delta and branch filters), and it reads them as liblzma does — streamed, with maxLength, needsInput and unusedData. No WebAssembly, no dependencies.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./bundled": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["xz", "lzma", "lzma2", "compression", "decompression", "bcj", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia (port); the XZ Utils authors (liblzma)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/lzma"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/lzma",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}
