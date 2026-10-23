@@ -1353,7 +1353,8 @@ export function pyRepr(v) {
 
 export function pyStr(v) {
   if (v === null || v === undefined) return 'None';
-  if (v instanceof AdderError) return v.args ? _argsStr(v.pyType, v.args) : String(v.pyMessage ?? '');
+  // (an OSError with an errno reads '[Errno 2] No such file or directory: 'x'', its args (2, '…'))
+  if (v instanceof AdderError) return v.args && v.errno === undefined ? _argsStr(v.pyType, v.args) : String(v.pyMessage ?? '');
   if (v && typeof v === 'object' && typeof v.__str__ !== 'function' && isExceptionClass(v.__adderType__)) return _argsStr(v.__adderType__._pyName, v.args);
   if (v === true) return 'True';
   if (v === false) return 'False';
@@ -1545,8 +1546,9 @@ function _lazySyncIter(name, genFn) {
 }
 // can this be read synchronously, item by item? (a list, str, range, dict, set, JS iterator —
 // not a user class's __iter__ or a tree-walked generator, which are async)
+// (a tree-walked generator has a Symbol.iterator, which only refuses: it is async)
 const _isSyncSource = (v) => v !== null && v !== undefined && !isUserIterable(v) &&
-  (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function');
+  (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function' && v._asyncGen !== true);
 const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && (typeof v[Symbol.iterator] !== 'function' || v._asyncGen === true);   // (a tree-walked generator's Symbol.iterator only refuses)
 // iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
 export function _pyEach(obj) {
@@ -5756,14 +5758,39 @@ const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
 // A module's own exception type (dataclasses.FrozenInstanceError, statistics.StatisticsError,
 // binascii.Error, ...): a builtin-style type under `parent`, raised and caught like ValueError.
 // (re.error is assigned after this function's tables are initialised — see the end of the file)
+// an exception instance from its constructor's arguments. The OSError family as CPython's:
+// OSError(errno, strerror[, filename[, winerror[, filename2]]]) sets those attributes, reads
+// '[Errno 2] No such file or directory: 'x'' and keeps args (errno, strerror); OSError itself
+// with a known errno is its subclass (OSError(2, …) is a FileNotFoundError).
+const _OS_ERRNO_SUBCLASS = {
+  1: 'PermissionError', 2: 'FileNotFoundError', 3: 'ProcessLookupError', 4: 'InterruptedError', 10: 'ChildProcessError',
+  11: 'BlockingIOError', 13: 'PermissionError', 17: 'FileExistsError', 20: 'NotADirectoryError', 21: 'IsADirectoryError',
+  32: 'BrokenPipeError', 103: 'ConnectionAbortedError', 104: 'ConnectionResetError', 108: 'BrokenPipeError',
+  110: 'TimeoutError', 111: 'ConnectionRefusedError', 114: 'BlockingIOError', 115: 'BlockingIOError',
+};
+function _newExc(name, a) {
+  if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+  const isOS = name === 'OSError' || name === 'IOError' || name === 'EnvironmentError' || _excChain(name).includes('OSError');
+  if (isOS && a.length >= 2 && a.length <= 5) {
+    const [errno, strerror] = a;
+    const filename = a.length > 2 ? a[2] : null, filename2 = a.length > 4 ? a[4] : null;
+    const sub = (name === 'OSError' || name === 'IOError' || name === 'EnvironmentError') && typeof errno === 'number' && _OS_ERRNO_SUBCLASS[errno];
+    const head = `[Errno ${pyStr(errno)}] ${pyStr(strerror)}`;
+    const msg = filename === null ? head : filename2 === null ? `${head}: ${pyRepr(filename)}` : `${head}: ${pyRepr(filename)} -> ${pyRepr(filename2)}`;
+    const e = new AdderError(sub || name, msg, undefined, [errno, strerror]);
+    e.errno = errno; e.strerror = strerror; e.filename = filename; e.filename2 = filename2;
+    return e;
+  }
+  const e = new AdderError(name, _argsStr(name, a), undefined, a);
+  if (isOS) { e.errno = null; e.strerror = null; e.filename = null; e.filename2 = null; }
+  return e;
+}
+
 export function makeExcType(name, parent, ...moreParents) {
   if (!_excParents[name]) { _excParents[name] = parent; _EXC_NAMES.push(name); }
   if (moreParents.length) _excExtraParents[name] = moreParents;
   if (_typeObjects[name]) return _typeObjects[name];
-  const ctor = (...a) => {
-    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
-    return new AdderError(name, _argsStr(name, a), undefined, a);
-  };
+  const ctor = (...a) => _newExc(name, a);
   ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name.split('.').pop();
   _typeObjects[name] = ctor;
   return ctor;
@@ -6210,10 +6237,30 @@ export function excTypeOf(err) {
   return null;
 }
 
-export function _mapVFSError(e) {
-  const map = { ENOENT: 'FileNotFoundError', EEXIST: 'FileExistsError',
-    EISDIR: 'IsADirectoryError', ENOTDIR: 'NotADirectoryError', EACCES: 'PermissionError' };
-  return new AdderError(map[e?.code] || 'OSError', e?.message || String(e));
+// an OSError as CPython raises one from a failed call: errno, strerror, filename, args
+// (errno, strerror), str '[Errno 2] No such file or directory: 'x''
+export function _osError(pyType, errno, strerror, filename = null) {
+  const msg = filename === null || filename === undefined ? `[Errno ${errno}] ${strerror}` : `[Errno ${errno}] ${strerror}: ${pyRepr(filename)}`;
+  const e = new AdderError(pyType, msg, undefined, [errno, strerror]);
+  e.errno = errno; e.strerror = strerror; e.filename = filename ?? null; e.filename2 = null;
+  return e;
+}
+// a VFS error as the OSError CPython raises for it (Linux's errno and message); filename is the
+// path the program gave, when the caller knows it
+const _VFS_ERRNO = {
+  ENOENT: ['FileNotFoundError', 2, 'No such file or directory'], EEXIST: ['FileExistsError', 17, 'File exists'],
+  EISDIR: ['IsADirectoryError', 21, 'Is a directory'], ENOTDIR: ['NotADirectoryError', 20, 'Not a directory'],
+  EACCES: ['PermissionError', 13, 'Permission denied'], EPERM: ['PermissionError', 1, 'Operation not permitted'],
+  ENOTEMPTY: ['OSError', 39, 'Directory not empty'], ENOSPC: ['OSError', 28, 'No space left on device'],
+  EXDEV: ['OSError', 18, 'Invalid cross-device link'], EIO: ['OSError', 5, 'Input/output error'],
+  ENOTSUP: ['OSError', 95, 'Operation not supported'], EBUSY: ['OSError', 16, 'Device or resource busy'],
+  EBADF: ['OSError', 9, 'Bad file descriptor'], EINVAL: ['OSError', 22, 'Invalid argument'],
+};
+export function _mapVFSError(e, filename) {
+  if (e instanceof AdderError) return e;
+  const m = e && _VFS_ERRNO[e.code];
+  if (m) return _osError(m[0], m[1], m[2], filename ?? e.path ?? null);
+  return new AdderError('OSError', e?.message || String(e));
 }
 
 // os.stat(): CPython's fields from a VFS stat — st_mode carries the file-type bits (S_IFREG /
@@ -6223,21 +6270,73 @@ function _statResult(info) {
   const perm = info.mode ? info.mode & 0o7777 : info.type === 'directory' ? 0o755 : 0o644;
   const m = info.modified ? info.modified.getTime() / 1000 : 0;
   const c = info.created ? info.created.getTime() / 1000 : m;
-  return { st_mode: typeBits | perm, st_size: info.size || 0, st_mtime: m, st_atime: m, st_ctime: c,
+  const at = info.accessed ? info.accessed.getTime() / 1000 : m;
+  return { st_mode: typeBits | perm, st_size: info.size || 0, st_mtime: m, st_atime: at, st_ctime: c,
     st_mtime_ns: intNorm(BigInt(Math.round(m * 1e3)) * 1000000n), st_nlink: 1, st_ino: 0, st_dev: 0, st_uid: 0, st_gid: 0, st_type: info.type };
 }
 
+// readinto's target: a writable buffer — a bytearray, a memoryview (of one, or of an
+// array.array), an array.array — its length, and data copied into its start (the count)
+function _writableLen(b) {
+  if (b instanceof PyMemoryView) return b.nbytes;
+  if (b instanceof PyByteArray) return b.length;
+  if (b !== null && typeof b === 'object' && typeof b._pyBufferExport === 'function') return b._pyBufferExport().length;
+  if (b instanceof Uint8Array) throw new AdderError('TypeError', 'readinto() argument must be read-write bytes-like object, not bytes');
+  throw new AdderError('TypeError', `readinto() argument must be read-write bytes-like object, not ${pyTypeName(b)}`);
+}
+function _writeInto(b, data) {
+  const n = Math.min(data.length, _writableLen(b));
+  if (b instanceof PyMemoryView) { if (b.readonly) throw new AdderError('TypeError', 'cannot modify read-only memory'); for (let i = 0; i < n; i++) b.obj[b._start + i] = data[i]; }
+  else if (b instanceof PyByteArray) { for (let i = 0; i < n; i++) b[i] = data[i]; }
+  else { const u = b._pyBufferExport(); for (let i = 0; i < n; i++) u[i] = data[i]; }
+  return n;
+}
+
+// os.DirEntry: one entry of os.scandir — name, path, and its type as the listing found it
+class _OsDirEntry {
+  constructor(name, path, linkInfo, targetInfo) {
+    this.name = name; this.path = path; this._link = linkInfo; this._target = targetInfo;
+  }
+  is_dir(...a) { const info = _osFollow(this, a); return !!info && info.type === 'directory'; }
+  is_file(...a) { const info = _osFollow(this, a); return !!info && info.type === 'file'; }
+  is_symlink() { return !!this._link && this._link.type === 'symlink'; }
+  is_junction() { return false; }
+  stat(...a) {
+    const info = _osFollow(this, a);
+    if (!info) throw new AdderError('FileNotFoundError', `[Errno 2] No such file or directory: '${this.path}'`);
+    return _statResult(info);
+  }
+  inode() { return 0; }
+  __fspath__() { return this.path; }
+  __repr__() { return `<DirEntry ${pyRepr(this.name)}>`; }
+  __str__() { return this.__repr__(); }
+}
+function _osFollow(entry, a) {
+  const kw = a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw ? a[a.length - 1] : null;
+  const follow = kw ? kw.follow_symlinks !== false : a.length ? !!a[0] : true;
+  return follow ? entry._target : entry._link;
+}
+const _osDirEntryType = (() => {
+  const ctor = () => { throw new AdderError('TypeError', "cannot create 'posix.DirEntry' instances"); };
+  ctor._pyName = 'DirEntry'; ctor._pyClass = true; ctor.__name__ = 'DirEntry'; ctor.__module__ = 'posix'; ctor._jsClass = _OsDirEntry;
+  _OsDirEntry.prototype.__adderClass__ = 'DirEntry';
+  _OsDirEntry.prototype.__adderType__ = ctor;
+  return ctor;
+})();
+
 // ── file object ──
 
-export async function _createAdderFile(vfs, filePath, mode) {
+export async function _createAdderFile(vfs, filePath, mode, opts = null) {
   // CPython's file model: one buffer, one position, read and written through. The mode is
   // r / w / a / x (read; truncate; append — writes always at the end; create, failing if it
   // exists), '+' adds the other direction, 'b' bytes. The VFS is written on close.
+  // (os.open's flags reach combinations a mode string can't: opts.readable / writable set the
+  // directions, opts.create makes an 'r'-kind file that doesn't exist yet)
   const isBinary = mode.includes('b');
   const kind = mode.replace(/[bt+U]/g, '')[0] || 'r';
   const plus = mode.includes('+');
-  const readable = kind === 'r' || plus;
-  const writable = kind !== 'r' || plus;
+  const readable = opts && opts.readable !== undefined ? opts.readable : kind === 'r' || plus;
+  const writable = opts && opts.writable !== undefined ? opts.writable : kind !== 'r' || plus;
   const empty = () => (isBinary ? new Uint8Array(0) : '');
   const unsupported = (what) => new AdderError('UnsupportedOperation', what);
 
@@ -6250,16 +6349,18 @@ export async function _createAdderFile(vfs, filePath, mode) {
   if (kind === 'x') {
     let exists = false;
     try { await vfs.stat(filePath); exists = true; } catch { /* free */ }
-    if (exists) throw new AdderError('FileExistsError', `[Errno 17] File exists: '${filePath}'`);
+    if (exists) throw _osError('FileExistsError', 17, 'File exists', filePath);
   }
+  let created = false;
   if (kind === 'r' || kind === 'a') {
     try { setContent(await vfs.readFile(filePath, isBinary ? 'bytes' : undefined)); } catch (e) {
-      if (kind === 'r') throw _mapVFSError(e);
+      if (kind === 'r' && !(opts && opts.create && e && e.code === 'ENOENT')) throw _mapVFSError(e, filePath);
       setContent(empty());
+      created = true;
     }
   }
   if (kind === 'a') _pos = length();
-  const mustExist = kind !== 'r';   // w / a / x make the file, written or not
+  const mustExist = kind !== 'r' || created;   // w / a / x make the file, written or not
   const rawVfs = vfs[_RAW_VFS] || vfs;
   // data the VFS hasn't seen goes out at the next filesystem call or the end of the run
   // (flushOpenFiles) — what CPython's close-when-dropped does for open(p, 'w').write(s)
@@ -6337,6 +6438,8 @@ export async function _createAdderFile(vfs, filePath, mode) {
     writable() { checkOpen(); return writable; },
     seekable() { checkOpen(); return true; },
     isatty() { checkOpen(); return false; },
+    // its file descriptor, given out on first ask (os.read / os.fstat / os.close take it)
+    fileno() { checkOpen(); return _fdOf(f); },
     get mode() { return mode; },
 
     // at the position (overwriting, then extending) — at the end in append mode
@@ -6371,6 +6474,7 @@ export async function _createAdderFile(vfs, filePath, mode) {
       if (_closed) return;
       _closed = true;
       _pendingFiles.delete(f);
+      _fdRelease(f);
       await f._writeOut();
     },
 
@@ -6396,6 +6500,14 @@ export async function _createAdderFile(vfs, filePath, mode) {
     get name() { return filePath; },
     get closed() { return _closed; },
   };
+
+  if (isBinary) {
+    // a binary file is buffered in CPython: readinto / read1 / peek too
+    f.readinto = (b) => { checkRead(); const data = f.read(_writableLen(b)); return _writeInto(b, data); };
+    f.readinto1 = f.readinto;
+    f.read1 = (size = -1) => f.read(size === null || size < 0 ? 8192 : size);
+    f.peek = (size = 0) => { checkRead(); return _bytes.slice(Math.min(_pos, _len), Math.min(_len, _pos + Math.max(8192, Number(size) || 0))); };
+  }
 
   if (mustExist) { _dirty = true; _pendingFiles.add(f); }   // w / a / x make the file at open
   return f;
@@ -6429,6 +6541,17 @@ function _posixNormpath(path) {
 
 function _createOsModule(getVfs, pth) {
   const _resolve = (p) => _resolvePath(p, pth);
+  // a trailing keyword bag; a path relative to dir_fd's directory when one is given
+  const _osKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw ? a.pop() : null);
+  const _osAt = (p, kw) => {
+    const s = _fsp(p);
+    if (kw && kw.dir_fd !== null && kw.dir_fd !== undefined && !s.startsWith('/')) {
+      const d = _fdGet(kw.dir_fd);
+      if (!d._isDir) throw new AdderError('NotADirectoryError', '[Errno 20] Not a directory');
+      return _resolve(d._path === '/' ? '/' + s : d._path + '/' + s);
+    }
+    return _resolve(s);
+  };
 
   // the string functions are CPython's posixpath, line for line (its edge cases: basename('a/')
   // is '', dirname('') is '', normpath('') is '.', join restarts at an absolute part)
@@ -6500,9 +6623,14 @@ function _createOsModule(getVfs, pth) {
   const os = {
     sep: '/', linesep: '\n', name: 'posix',
     path: osPath,
+    // open(2) flags, Linux's values
+    O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_ACCMODE: 3, O_CREAT: 0o100, O_EXCL: 0o200, O_NOCTTY: 0o400,
+    O_TRUNC: 0o1000, O_APPEND: 0o2000, O_NONBLOCK: 0o4000, O_DSYNC: 0o10000, O_SYNC: 0o4010000,
+    O_DIRECTORY: 0o200000, O_NOFOLLOW: 0o400000, O_CLOEXEC: 0o2000000,
 
     listdir: async (p) => {
-      try { return await getVfs().readdir(_resolve(p || '.')); }
+      const dir = typeof p === 'number' ? _fdGet(p)._path : _resolve(p || '.');
+      try { return await getVfs().readdir(dir); }
       catch (e) { throw _mapVFSError(e); }
     },
     mkdir: async (p) => {
@@ -6537,12 +6665,151 @@ function _createOsModule(getVfs, pth) {
       try { await getVfs().rename(_resolve(src), _resolve(dst)); }
       catch (e) { throw _mapVFSError(e); }
     },
-    stat: async (p) => {
+    // stat(path, *, dir_fd=None, follow_symlinks=True); an fd is fstat
+    stat: async (p, ...a) => {
+      const kw = _osKw(a);
+      if (typeof p === 'number') return os.fstat(p);
       try {
-        const info = await getVfs().stat(_resolve(p));
+        const vfs = getVfs(), path = _osAt(p, kw);
+        const info = kw && kw.follow_symlinks === false ? await vfs.lstat(path) : await vfs.stat(path);
         return _statResult(info);
       } catch (e) { throw _mapVFSError(e); }
     },
+    // utime(path, times=None, *, ns=None, dir_fd=None, follow_symlinks=True): times (atime,
+    // mtime) in seconds, ns the same in nanoseconds, neither: now
+    utime: async (p, ...a) => {
+      const kw = _osKw(a);
+      let times = a.length ? a[0] : kw && kw.times !== undefined ? kw.times : null;
+      const ns = kw && kw.ns !== undefined && kw.ns !== null ? kw.ns : null;
+      let at, mt;
+      if (ns !== null) { at = Number(ns[0]) / 1e9; mt = Number(ns[1]) / 1e9; }
+      else if (times === null || times === undefined) { at = mt = Date.now() / 1000; }
+      else { if (!Array.isArray(times) || times.length !== 2) throw new AdderError('TypeError', "utime: 'times' must be either a tuple of two ints or None"); at = Number(times[0]); mt = Number(times[1]); }
+      const path = typeof p === 'number' ? _fdGet(p)._path : _osAt(p, kw);
+      try { await getVfs().utime(path, at, mt); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : _fsp(p)); }
+      return null;
+    },
+    chmod: async (p, mode, ...a) => {
+      const kw = _osKw(a);
+      const path = typeof p === 'number' ? _fdGet(p)._path : _osAt(p, kw);
+      try { await getVfs().chmod(path, Number(mode) & 0o7777); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : _fsp(p)); }
+      return null;
+    },
+    // (a symlink itself, not what it points at)
+    lstat: async (p, ...a) => {
+      const kw = _osKw(a);
+      try {
+        const info = await getVfs().lstat(_osAt(p, kw));
+        return _statResult(info);
+      } catch (e) { throw _mapVFSError(e); }
+    },
+    // the entries of a directory as DirEntry objects, their types read once (as CPython's are,
+    // from the directory listing): an iterator that is also a context manager
+    scandir: async (p = '.') => {
+      // (of an fd: the directory it is open on, its entries' paths their bare names)
+      const byFd = typeof p === 'number';
+      const given = byFd ? null : p === null || p === undefined ? '.' : _fsp(p);
+      const dir = byFd ? _fdGet(p)._path : _resolve(given);
+      const vfs = getVfs();
+      let names;
+      try { names = await vfs.readdir(dir); } catch (e) { throw _mapVFSError(e); }
+      const entries = [];
+      for (const name of names) {
+        const full = dir === '/' ? '/' + name : dir + '/' + name;
+        let link = null, target = null;
+        try { link = await vfs.lstat(full); } catch { /* vanished */ }
+        if (link && link.type === 'symlink') { try { target = await vfs.stat(full); } catch { /* dangling */ } } else target = link;
+        const shown = byFd ? name : given.endsWith('/') ? given + name : given + '/' + name;   // os.path.join(path, name)
+        entries.push(new _OsDirEntry(name, shown, link, target));
+      }
+      let i = 0, closed = false;
+      const it = {
+        __adderClass__: 'ScandirIterator',
+        __iter__() { return it; },
+        __next__() {
+          if (closed || i >= entries.length) throw new AdderError('StopIteration', '');
+          return entries[i++];
+        },
+        [Symbol.iterator]() { return { next: () => (closed || i >= entries.length ? { value: undefined, done: true } : { value: entries[i++], done: false }) }; },
+        close() { closed = true; return null; },
+        __enter__() { return it; },
+        __exit__() { closed = true; return false; },
+      };
+      return it;
+    },
+    DirEntry: _osDirEntryType,
+
+    // ── file descriptors (see _fdTable) ──
+    // os.open(path, flags, mode=0o777, *, dir_fd=None): the flags as open(2) reads them
+    open: async (p, ...a) => {
+      const kw = _osKw(a);
+      const flags = Number(a[0] ?? (kw && kw.flags) ?? 0);
+      const path = _osAt(p, kw);
+      const shown = typeof p === 'string' ? p : _fsp(p);
+      const acc = flags & 3;
+      const vfs = getVfs();
+      let info = null;
+      try { info = await vfs.stat(path); } catch { /* not there */ }
+      if (info && info.type === 'directory') {
+        if (acc !== 0) throw _osError('IsADirectoryError', 21, 'Is a directory', shown);
+        return _fdAlloc({ _path: path, _isDir: true });
+      }
+      if (info && (flags & 0o200000)) throw _osError('NotADirectoryError', 20, 'Not a directory', shown);
+      if (!info && !(flags & 0o100)) throw _osError('FileNotFoundError', 2, 'No such file or directory', shown);
+      if (info && (flags & 0o100) && (flags & 0o200)) throw _osError('FileExistsError', 17, 'File exists', shown);
+      const kind = (flags & 0o100) && (flags & 0o200) ? 'x' : (flags & 0o1000) && acc !== 0 ? 'w' : (flags & 0o2000) ? 'a' : 'r';
+      const file = await _createAdderFile(vfs, path, kind + 'b' + (acc === 2 ? '+' : ''), { readable: acc !== 1, writable: acc !== 0, create: !!(flags & 0o100) });
+      file._fd = _fdAlloc(file);
+      return file._fd;
+    },
+    read: async (fd, n) => {
+      const o = _fdGet(fd);
+      if (o._isDir) throw new AdderError('IsADirectoryError', '[Errno 21] Is a directory');
+      const r = await o.read(Number(n));
+      return typeof r === 'string' ? new TextEncoder().encode(r) : r;
+    },
+    write: (fd, data) => {
+      const o = _fdGet(fd);
+      if (o._isDir) throw new AdderError('IsADirectoryError', '[Errno 21] Is a directory');
+      if (String(o._mode).includes('b')) return o.write(data);
+      const b = data instanceof Uint8Array ? data : Uint8Array.from(data);
+      o.write(new TextDecoder().decode(b));
+      return b.length;
+    },
+    lseek: (fd, pos, how) => _fdGet(fd).seek(Number(pos), Number(how)),
+    fstat: async (fd) => {
+      const o = _fdGet(fd);
+      if (!o._isDir && o._writeOut) await o._writeOut();
+      try { return _statResult(await getVfs().stat(o._path)); } catch (e) { throw _mapVFSError(e); }
+    },
+    // the file closes with its last fd (a dup keeps it open)
+    close: async (fd) => {
+      const o = _fdGet(fd);
+      _fdTable.delete(Number(fd));
+      if (!o._isDir && ![..._fdTable.values()].includes(o)) await o.close();
+      return null;
+    },
+    closerange: async (lo, hi) => {
+      for (const fd of [..._fdTable.keys()]) if (fd >= lo && fd < hi) await adderModules.os.close(fd);
+      return null;
+    },
+    dup: (fd) => _fdAlloc(_fdGet(fd)),
+    dup2: async (fd, fd2) => {
+      const o = _fdGet(fd);
+      if (_fdTable.has(Number(fd2)) && _fdTable.get(Number(fd2)) !== o) await adderModules.os.close(fd2);
+      _fdTable.set(Number(fd2), o);
+      return Number(fd2);
+    },
+    fdopen: (fd, ...a) => adderModules.builtins.open(fd, ...a),
+    ftruncate: (fd, length) => { _fdGet(fd).truncate(Number(length)); return null; },
+    fsync: async (fd) => { const o = _fdGet(fd); if (o._writeOut) await o._writeOut(); return null; },
+    fdatasync: async (fd) => { const o = _fdGet(fd); if (o._writeOut) await o._writeOut(); return null; },
+    isatty: (fd) => { _fdGet(fd); return false; },
+    get_inheritable: (fd) => { _fdGet(fd); return false; },
+    set_inheritable: (fd) => { _fdGet(fd); return null; },
+    get_blocking: (fd) => { _fdGet(fd); return true; },
+    set_blocking: (fd) => { _fdGet(fd); return null; },
+    device_encoding: () => null,
     getcwd: () => _cwd.value,
     chdir: (p) => { _cwd.value = _resolve(p); },
 
@@ -6653,9 +6920,26 @@ function _createShutilModule(getVfs) {
   // shutil/glob used to skip that step and the raw `data/foo.csv`
   // hit `vfs.resolve` which has no mount for non-absolute paths.
   const r = (p) => _resolvePath(p, _vfsPath);
+  // the times and the permission bits, where the backend keeps them (one that doesn't: a no-op)
+  const copyStat = async (src, dst, times = true) => {
+    const vfs = getVfs();
+    let info;
+    try { info = await vfs.stat(r(src)); } catch (e) { throw _mapVFSError(e, _fsp(src)); }
+    if (info.mode !== undefined) { try { await vfs.chmod(r(dst), info.mode & 0o7777); } catch (e) { if (e && e.code !== 'ENOTSUP') throw _mapVFSError(e, _fsp(dst)); } }
+    if (times && info.modified) {
+      const m = info.modified.getTime() / 1000, a = info.accessed ? info.accessed.getTime() / 1000 : m;
+      try { await vfs.utime(r(dst), a, m); } catch (e) { if (e && e.code !== 'ENOTSUP') throw _mapVFSError(e, _fsp(dst)); }
+    }
+  };
+  // copy / copy2 into a directory copy to dir/basename(src); they return the destination
+  const intoDir = async (src, dst) => {
+    const d = _fsp(dst);
+    try { if ((await getVfs().stat(r(d))).type === 'directory') return (d.endsWith('/') ? d : d + '/') + _fsp(src).split('/').pop(); } catch { /* not there: a file */ }
+    return d;
+  };
   return {
-    copy: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
-    copy2: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
+    copy: async (src, dst) => { const to = await intoDir(src, dst); try { await getVfs().cp(r(src), r(to)); } catch (e) { throw _mapVFSError(e); } await copyStat(src, to, false); return to; },
+    copy2: async (src, dst) => { const to = await intoDir(src, dst); try { await getVfs().cp(r(src), r(to)); } catch (e) { throw _mapVFSError(e); } await copyStat(src, to); return to; },
     copytree: async (src, dst) => { try { await getVfs().cp(r(src), r(dst), { recursive: true }); } catch (e) { throw _mapVFSError(e); } },
     // rmtree(path, ignore_errors=False): with ignore_errors (positional or keyword) a missing tree is fine
     rmtree: async (p, ignore = false) => {
@@ -6664,10 +6948,8 @@ function _createShutilModule(getVfs) {
       return null;
     },
     copyfile: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } return dst; },
-    // the VFS keeps no permission bits / times to carry over: copying them is a no-op, as on a
-    // filesystem without them (the source must still exist)
-    copystat: async (src, dst) => { try { await getVfs().stat(r(src)); } catch (e) { throw _mapVFSError(e); } return null; },
-    copymode: async (src, dst) => { try { await getVfs().stat(r(src)); } catch (e) { throw _mapVFSError(e); } return null; },
+    copystat: async (src, dst) => { await copyStat(src, dst); return null; },
+    copymode: async (src, dst) => { await copyStat(src, dst, false); return null; },
     copyfileobj: async (fsrc, fdst, length = 0) => {
       const read = adderGetAttr(fsrc, 'read'), write = adderGetAttr(fdst, 'write');
       for (;;) {
@@ -6683,15 +6965,6 @@ function _createShutilModule(getVfs) {
 }
 
 // ── glob module ──
-
-function _createGlobModule(getVfs) {
-  return {
-    glob: async (pattern) => {
-      try { return await getVfs().glob(_resolvePath(pattern, _vfsPath)); }
-      catch (e) { throw _mapVFSError(e); }
-    },
-  };
-}
 
 // ── fs module registration ──
 
@@ -6721,9 +6994,35 @@ export function flushOpenFiles() {
   })();
   return _flushing;
 }
+// ── file descriptors ──
+// An fd is an entry here: the file object behind it — the binary one os.open makes, or the
+// open() file whose fileno() was asked for (on first ask: a file nothing asks keeps none) — or a
+// directory handle (os.open of a directory: scandir(fd), dir_fd=). 0 / 1 / 2 are the standard
+// streams; the rest are the lowest free from 3, as POSIX gives them.
+const _fdTable = new Map();
+function _fdAlloc(obj, from = 3) {
+  let fd = from;
+  while (_fdTable.has(fd)) fd++;
+  _fdTable.set(fd, obj);
+  return fd;
+}
+function _fdOf(file) {
+  if (file._fd !== undefined && _fdTable.get(file._fd) === file) return file._fd;
+  file._fd = _fdAlloc(file);
+  return file._fd;
+}
+function _fdRelease(file) {
+  for (const [fd, o] of _fdTable) if (o === file) _fdTable.delete(fd);
+}
+export function _fdGet(fd) {
+  const o = typeof fd === 'number' || typeof fd === 'bigint' ? _fdTable.get(Number(fd)) : undefined;
+  if (!o) throw _osError('OSError', 9, 'Bad file descriptor');
+  return o;
+}
+
 // the VFS as adder sees it: its async methods wait for the pending files first
 const _VFS_ASYNC = new Set(['readFile', 'writeFile', 'mkdir', 'readdir', 'stat', 'lstat', 'unlink', 'rmdir', 'rm',
-  'rename', 'exists', 'touch', 'cp', 'symlink', 'readlink', 'chmod', 'chown', 'glob', 'du', 'export', 'import',
+  'rename', 'exists', 'touch', 'cp', 'symlink', 'readlink', 'chmod', 'chown', 'utime', 'glob', 'du', 'export', 'import',
   'toFile', 'resolveHandle', 'readRange', 'createWriter', 'writeFrom', 'writeFiles', 'deleteBatch', 'listTree']);
 const _RAW_VFS = Symbol('rawVFS');
 function _flushingVFS(vfs) {
@@ -6753,7 +7052,9 @@ let _osExtrasHook = null;
 export function setOsExtrasHook(fn) { _osExtrasHook = fn; if (adderModules.os) fn(adderModules.os); }
 
 export function setAdderVFS(vfsInstance, pathUtils) {
-  _adderVFS = _flushingVFS(vfsInstance && vfsInstance[_RAW_VFS] ? vfsInstance[_RAW_VFS] : vfsInstance);
+  const rawNew = vfsInstance && vfsInstance[_RAW_VFS] ? vfsInstance[_RAW_VFS] : vfsInstance;
+  if (rawNew !== (_adderVFS && _adderVFS[_RAW_VFS])) _fdTable.clear();   // another filesystem: its fds are gone
+  _adderVFS = _flushingVFS(rawNew);
   if (pathUtils) _vfsPath = pathUtils;
   // reset cwd and module cache for the new VFS
   _cwd.value = _HOME;
@@ -6822,7 +7123,7 @@ export function _ensureFsModules(pathUtils) {
   adderModules['os.path'] = adderModules.os.path;
   adderModules.pathlib = { Path: _createPathClass(getVfs, pth) };
   adderModules.shutil = _createShutilModule(getVfs);
-  adderModules.glob = _createGlobModule(getVfs);
+  // (glob is CPython's glob.py, over os.scandir)
 }
 
 // dict(mapping | pairs, **kw)
@@ -8712,6 +9013,20 @@ export function adderBuiltins(printFn) {
           throw new AdderError('ValueError', `invalid mode: '${mode}'`);
         } }
       if (!_adderVFS) throw new AdderError('RuntimeError', 'filesystem not available — call adder.setVFS(vfsInstance, pathUtils) first');
+      // open(fd, mode): the file behind the descriptor — itself for bytes, text over it otherwise
+      // (one position, as one fd has; closing it closes the fd)
+      if (typeof pathOrObj === 'number' || typeof pathOrObj === 'bigint') {
+        const o = _fdGet(pathOrObj);
+        if (o._isDir) throw new AdderError('IsADirectoryError', '[Errno 21] Is a directory');
+        const wantBinary = mode.includes('b');
+        if (wantBinary === String(o._mode).includes('b')) return o;
+        if (!wantBinary) {
+          const enc = (kw && kw.encoding) || (typeof rest[2] === 'string' ? rest[2] : null) || 'utf-8';
+          const errors = (kw && kw.errors) || (typeof rest[3] === 'string' ? rest[3] : null) || 'strict';
+          return adderModules.io.TextIOWrapper(o, { _kw: true, encoding: enc, errors });
+        }
+        throw new AdderError('ValueError', 'binary mode over a text file descriptor is not supported here');
+      }
       const raw = pathOrObj?._path ? pathOrObj._path : String(pathOrObj);
       const p = _resolvePath(raw, _vfsPath);
       return _createAdderFile(_adderVFS, p, mode || 'r');
@@ -8760,10 +9075,7 @@ export function adderBuiltins(printFn) {
   for (const name of _EXC_NAMES) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (_typeObjects[name] && _typeObjects[name]._pyClass) { builtins[name] = _stableTypes[name] = _typeObjects[name]; continue; }
-    const ctor = (...a) => {
-      if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
-      return new AdderError(name, _argsStr(name, a), undefined, a);
-    };
+    const ctor = (...a) => _newExc(name, a);
     ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
     builtins[name] = ctor;
     _typeObjects[name] = _stableTypes[name] = ctor;

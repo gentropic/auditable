@@ -353,6 +353,15 @@ describe('MemoryBackend', () => {
     assert.equal(info.mode, 0o444);
   });
 
+  it('utime sets the access and modification times (seconds since the epoch)', async () => {
+    const vfs = await VFS.create();
+    await vfs.writeFile('/file.txt', 'x');
+    await vfs.utime('/file.txt', 1000, 2000.5);
+    const info = await vfs.stat('/file.txt');
+    assert.equal(info.accessed.getTime(), 1000000);
+    assert.equal(info.modified.getTime(), 2000500);
+  });
+
   it('chown', async () => {
     const vfs = await VFS.create();
     await vfs.writeFile('/file.txt', 'x');

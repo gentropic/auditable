@@ -4,7 +4,7 @@ import { path } from './path.js';
 const READ_OPS = new Set(['read', 'readFile', 'readdir', 'stat', 'lstat', 'exists',
   'createReadStream', 'glob', 'du', 'export', 'readlink']);
 const WRITE_OPS = new Set(['write', 'writeFile', 'mkdir', 'rmdir', 'unlink', 'rename',
-  'cp', 'touch', 'chmod', 'chown', 'symlink', 'rm', 'import', 'createWriter', 'writeFrom']);
+  'cp', 'touch', 'chmod', 'chown', 'utime', 'symlink', 'rm', 'import', 'createWriter', 'writeFrom']);
 
 function checkPermission(operation, p, principal, meta) {
   // No principal → unrestricted

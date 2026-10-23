@@ -5520,7 +5520,8 @@ function pyRepr(v) {
 
 function pyStr(v) {
   if (v === null || v === undefined) return 'None';
-  if (v instanceof AdderError) return v.args ? _argsStr(v.pyType, v.args) : String(v.pyMessage ?? '');
+  // (an OSError with an errno reads '[Errno 2] No such file or directory: 'x'', its args (2, '…'))
+  if (v instanceof AdderError) return v.args && v.errno === undefined ? _argsStr(v.pyType, v.args) : String(v.pyMessage ?? '');
   if (v && typeof v === 'object' && typeof v.__str__ !== 'function' && isExceptionClass(v.__adderType__)) return _argsStr(v.__adderType__._pyName, v.args);
   if (v === true) return 'True';
   if (v === false) return 'False';
@@ -5712,8 +5713,9 @@ function _lazySyncIter(name, genFn) {
 }
 // can this be read synchronously, item by item? (a list, str, range, dict, set, JS iterator —
 // not a user class's __iter__ or a tree-walked generator, which are async)
+// (a tree-walked generator has a Symbol.iterator, which only refuses: it is async)
 const _isSyncSource = (v) => v !== null && v !== undefined && !isUserIterable(v) &&
-  (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function');
+  (typeof v === 'string' || Array.isArray(v) || typeof v[Symbol.iterator] === 'function' && v._asyncGen !== true);
 const _isAsyncOnly = (v) => v !== null && typeof v === 'object' && typeof v[Symbol.asyncIterator] === 'function' && (typeof v[Symbol.iterator] !== 'function' || v._asyncGen === true);   // (a tree-walked generator's Symbol.iterator only refuses)
 // iterate anything adder can loop over, one item at a time (sync, async, or a user __iter__)
 function _pyEach(obj) {
@@ -9923,14 +9925,39 @@ const _EXC_NAMES = ['BaseException', ...Object.keys(_excParents)];
 // A module's own exception type (dataclasses.FrozenInstanceError, statistics.StatisticsError,
 // binascii.Error, ...): a builtin-style type under `parent`, raised and caught like ValueError.
 // (re.error is assigned after this function's tables are initialised — see the end of the file)
+// an exception instance from its constructor's arguments. The OSError family as CPython's:
+// OSError(errno, strerror[, filename[, winerror[, filename2]]]) sets those attributes, reads
+// '[Errno 2] No such file or directory: 'x'' and keeps args (errno, strerror); OSError itself
+// with a known errno is its subclass (OSError(2, …) is a FileNotFoundError).
+const _OS_ERRNO_SUBCLASS = {
+  1: 'PermissionError', 2: 'FileNotFoundError', 3: 'ProcessLookupError', 4: 'InterruptedError', 10: 'ChildProcessError',
+  11: 'BlockingIOError', 13: 'PermissionError', 17: 'FileExistsError', 20: 'NotADirectoryError', 21: 'IsADirectoryError',
+  32: 'BrokenPipeError', 103: 'ConnectionAbortedError', 104: 'ConnectionResetError', 108: 'BrokenPipeError',
+  110: 'TimeoutError', 111: 'ConnectionRefusedError', 114: 'BlockingIOError', 115: 'BlockingIOError',
+};
+function _newExc(name, a) {
+  if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
+  const isOS = name === 'OSError' || name === 'IOError' || name === 'EnvironmentError' || _excChain(name).includes('OSError');
+  if (isOS && a.length >= 2 && a.length <= 5) {
+    const [errno, strerror] = a;
+    const filename = a.length > 2 ? a[2] : null, filename2 = a.length > 4 ? a[4] : null;
+    const sub = (name === 'OSError' || name === 'IOError' || name === 'EnvironmentError') && typeof errno === 'number' && _OS_ERRNO_SUBCLASS[errno];
+    const head = `[Errno ${pyStr(errno)}] ${pyStr(strerror)}`;
+    const msg = filename === null ? head : filename2 === null ? `${head}: ${pyRepr(filename)}` : `${head}: ${pyRepr(filename)} -> ${pyRepr(filename2)}`;
+    const e = new AdderError(sub || name, msg, undefined, [errno, strerror]);
+    e.errno = errno; e.strerror = strerror; e.filename = filename; e.filename2 = filename2;
+    return e;
+  }
+  const e = new AdderError(name, _argsStr(name, a), undefined, a);
+  if (isOS) { e.errno = null; e.strerror = null; e.filename = null; e.filename2 = null; }
+  return e;
+}
+
 function makeExcType(name, parent, ...moreParents) {
   if (!_excParents[name]) { _excParents[name] = parent; _EXC_NAMES.push(name); }
   if (moreParents.length) _excExtraParents[name] = moreParents;
   if (_typeObjects[name]) return _typeObjects[name];
-  const ctor = (...a) => {
-    if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
-    return new AdderError(name, _argsStr(name, a), undefined, a);
-  };
+  const ctor = (...a) => _newExc(name, a);
   ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name.split('.').pop();
   _typeObjects[name] = ctor;
   return ctor;
@@ -10377,10 +10404,30 @@ function excTypeOf(err) {
   return null;
 }
 
-function _mapVFSError(e) {
-  const map = { ENOENT: 'FileNotFoundError', EEXIST: 'FileExistsError',
-    EISDIR: 'IsADirectoryError', ENOTDIR: 'NotADirectoryError', EACCES: 'PermissionError' };
-  return new AdderError(map[e?.code] || 'OSError', e?.message || String(e));
+// an OSError as CPython raises one from a failed call: errno, strerror, filename, args
+// (errno, strerror), str '[Errno 2] No such file or directory: 'x''
+function _osError(pyType, errno, strerror, filename = null) {
+  const msg = filename === null || filename === undefined ? `[Errno ${errno}] ${strerror}` : `[Errno ${errno}] ${strerror}: ${pyRepr(filename)}`;
+  const e = new AdderError(pyType, msg, undefined, [errno, strerror]);
+  e.errno = errno; e.strerror = strerror; e.filename = filename ?? null; e.filename2 = null;
+  return e;
+}
+// a VFS error as the OSError CPython raises for it (Linux's errno and message); filename is the
+// path the program gave, when the caller knows it
+const _VFS_ERRNO = {
+  ENOENT: ['FileNotFoundError', 2, 'No such file or directory'], EEXIST: ['FileExistsError', 17, 'File exists'],
+  EISDIR: ['IsADirectoryError', 21, 'Is a directory'], ENOTDIR: ['NotADirectoryError', 20, 'Not a directory'],
+  EACCES: ['PermissionError', 13, 'Permission denied'], EPERM: ['PermissionError', 1, 'Operation not permitted'],
+  ENOTEMPTY: ['OSError', 39, 'Directory not empty'], ENOSPC: ['OSError', 28, 'No space left on device'],
+  EXDEV: ['OSError', 18, 'Invalid cross-device link'], EIO: ['OSError', 5, 'Input/output error'],
+  ENOTSUP: ['OSError', 95, 'Operation not supported'], EBUSY: ['OSError', 16, 'Device or resource busy'],
+  EBADF: ['OSError', 9, 'Bad file descriptor'], EINVAL: ['OSError', 22, 'Invalid argument'],
+};
+function _mapVFSError(e, filename) {
+  if (e instanceof AdderError) return e;
+  const m = e && _VFS_ERRNO[e.code];
+  if (m) return _osError(m[0], m[1], m[2], filename ?? e.path ?? null);
+  return new AdderError('OSError', e?.message || String(e));
 }
 
 // os.stat(): CPython's fields from a VFS stat — st_mode carries the file-type bits (S_IFREG /
@@ -10390,21 +10437,73 @@ function _statResult(info) {
   const perm = info.mode ? info.mode & 0o7777 : info.type === 'directory' ? 0o755 : 0o644;
   const m = info.modified ? info.modified.getTime() / 1000 : 0;
   const c = info.created ? info.created.getTime() / 1000 : m;
-  return { st_mode: typeBits | perm, st_size: info.size || 0, st_mtime: m, st_atime: m, st_ctime: c,
+  const at = info.accessed ? info.accessed.getTime() / 1000 : m;
+  return { st_mode: typeBits | perm, st_size: info.size || 0, st_mtime: m, st_atime: at, st_ctime: c,
     st_mtime_ns: intNorm(BigInt(Math.round(m * 1e3)) * 1000000n), st_nlink: 1, st_ino: 0, st_dev: 0, st_uid: 0, st_gid: 0, st_type: info.type };
 }
 
+// readinto's target: a writable buffer — a bytearray, a memoryview (of one, or of an
+// array.array), an array.array — its length, and data copied into its start (the count)
+function _writableLen(b) {
+  if (b instanceof PyMemoryView) return b.nbytes;
+  if (b instanceof PyByteArray) return b.length;
+  if (b !== null && typeof b === 'object' && typeof b._pyBufferExport === 'function') return b._pyBufferExport().length;
+  if (b instanceof Uint8Array) throw new AdderError('TypeError', 'readinto() argument must be read-write bytes-like object, not bytes');
+  throw new AdderError('TypeError', `readinto() argument must be read-write bytes-like object, not ${pyTypeName(b)}`);
+}
+function _writeInto(b, data) {
+  const n = Math.min(data.length, _writableLen(b));
+  if (b instanceof PyMemoryView) { if (b.readonly) throw new AdderError('TypeError', 'cannot modify read-only memory'); for (let i = 0; i < n; i++) b.obj[b._start + i] = data[i]; }
+  else if (b instanceof PyByteArray) { for (let i = 0; i < n; i++) b[i] = data[i]; }
+  else { const u = b._pyBufferExport(); for (let i = 0; i < n; i++) u[i] = data[i]; }
+  return n;
+}
+
+// os.DirEntry: one entry of os.scandir — name, path, and its type as the listing found it
+class _OsDirEntry {
+  constructor(name, path, linkInfo, targetInfo) {
+    this.name = name; this.path = path; this._link = linkInfo; this._target = targetInfo;
+  }
+  is_dir(...a) { const info = _osFollow(this, a); return !!info && info.type === 'directory'; }
+  is_file(...a) { const info = _osFollow(this, a); return !!info && info.type === 'file'; }
+  is_symlink() { return !!this._link && this._link.type === 'symlink'; }
+  is_junction() { return false; }
+  stat(...a) {
+    const info = _osFollow(this, a);
+    if (!info) throw new AdderError('FileNotFoundError', `[Errno 2] No such file or directory: '${this.path}'`);
+    return _statResult(info);
+  }
+  inode() { return 0; }
+  __fspath__() { return this.path; }
+  __repr__() { return `<DirEntry ${pyRepr(this.name)}>`; }
+  __str__() { return this.__repr__(); }
+}
+function _osFollow(entry, a) {
+  const kw = a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw ? a[a.length - 1] : null;
+  const follow = kw ? kw.follow_symlinks !== false : a.length ? !!a[0] : true;
+  return follow ? entry._target : entry._link;
+}
+const _osDirEntryType = (() => {
+  const ctor = () => { throw new AdderError('TypeError', "cannot create 'posix.DirEntry' instances"); };
+  ctor._pyName = 'DirEntry'; ctor._pyClass = true; ctor.__name__ = 'DirEntry'; ctor.__module__ = 'posix'; ctor._jsClass = _OsDirEntry;
+  _OsDirEntry.prototype.__adderClass__ = 'DirEntry';
+  _OsDirEntry.prototype.__adderType__ = ctor;
+  return ctor;
+})();
+
 // ── file object ──
 
-async function _createAdderFile(vfs, filePath, mode) {
+async function _createAdderFile(vfs, filePath, mode, opts = null) {
   // CPython's file model: one buffer, one position, read and written through. The mode is
   // r / w / a / x (read; truncate; append — writes always at the end; create, failing if it
   // exists), '+' adds the other direction, 'b' bytes. The VFS is written on close.
+  // (os.open's flags reach combinations a mode string can't: opts.readable / writable set the
+  // directions, opts.create makes an 'r'-kind file that doesn't exist yet)
   const isBinary = mode.includes('b');
   const kind = mode.replace(/[bt+U]/g, '')[0] || 'r';
   const plus = mode.includes('+');
-  const readable = kind === 'r' || plus;
-  const writable = kind !== 'r' || plus;
+  const readable = opts && opts.readable !== undefined ? opts.readable : kind === 'r' || plus;
+  const writable = opts && opts.writable !== undefined ? opts.writable : kind !== 'r' || plus;
   const empty = () => (isBinary ? new Uint8Array(0) : '');
   const unsupported = (what) => new AdderError('UnsupportedOperation', what);
 
@@ -10417,16 +10516,18 @@ async function _createAdderFile(vfs, filePath, mode) {
   if (kind === 'x') {
     let exists = false;
     try { await vfs.stat(filePath); exists = true; } catch { /* free */ }
-    if (exists) throw new AdderError('FileExistsError', `[Errno 17] File exists: '${filePath}'`);
+    if (exists) throw _osError('FileExistsError', 17, 'File exists', filePath);
   }
+  let created = false;
   if (kind === 'r' || kind === 'a') {
     try { setContent(await vfs.readFile(filePath, isBinary ? 'bytes' : undefined)); } catch (e) {
-      if (kind === 'r') throw _mapVFSError(e);
+      if (kind === 'r' && !(opts && opts.create && e && e.code === 'ENOENT')) throw _mapVFSError(e, filePath);
       setContent(empty());
+      created = true;
     }
   }
   if (kind === 'a') _pos = length();
-  const mustExist = kind !== 'r';   // w / a / x make the file, written or not
+  const mustExist = kind !== 'r' || created;   // w / a / x make the file, written or not
   const rawVfs = vfs[_RAW_VFS] || vfs;
   // data the VFS hasn't seen goes out at the next filesystem call or the end of the run
   // (flushOpenFiles) — what CPython's close-when-dropped does for open(p, 'w').write(s)
@@ -10504,6 +10605,8 @@ async function _createAdderFile(vfs, filePath, mode) {
     writable() { checkOpen(); return writable; },
     seekable() { checkOpen(); return true; },
     isatty() { checkOpen(); return false; },
+    // its file descriptor, given out on first ask (os.read / os.fstat / os.close take it)
+    fileno() { checkOpen(); return _fdOf(f); },
     get mode() { return mode; },
 
     // at the position (overwriting, then extending) — at the end in append mode
@@ -10538,6 +10641,7 @@ async function _createAdderFile(vfs, filePath, mode) {
       if (_closed) return;
       _closed = true;
       _pendingFiles.delete(f);
+      _fdRelease(f);
       await f._writeOut();
     },
 
@@ -10563,6 +10667,14 @@ async function _createAdderFile(vfs, filePath, mode) {
     get name() { return filePath; },
     get closed() { return _closed; },
   };
+
+  if (isBinary) {
+    // a binary file is buffered in CPython: readinto / read1 / peek too
+    f.readinto = (b) => { checkRead(); const data = f.read(_writableLen(b)); return _writeInto(b, data); };
+    f.readinto1 = f.readinto;
+    f.read1 = (size = -1) => f.read(size === null || size < 0 ? 8192 : size);
+    f.peek = (size = 0) => { checkRead(); return _bytes.slice(Math.min(_pos, _len), Math.min(_len, _pos + Math.max(8192, Number(size) || 0))); };
+  }
 
   if (mustExist) { _dirty = true; _pendingFiles.add(f); }   // w / a / x make the file at open
   return f;
@@ -10596,6 +10708,17 @@ function _posixNormpath(path) {
 
 function _createOsModule(getVfs, pth) {
   const _resolve = (p) => _resolvePath(p, pth);
+  // a trailing keyword bag; a path relative to dir_fd's directory when one is given
+  const _osKw = (a) => (a.length && a[a.length - 1] !== null && typeof a[a.length - 1] === 'object' && a[a.length - 1]._kw ? a.pop() : null);
+  const _osAt = (p, kw) => {
+    const s = _fsp(p);
+    if (kw && kw.dir_fd !== null && kw.dir_fd !== undefined && !s.startsWith('/')) {
+      const d = _fdGet(kw.dir_fd);
+      if (!d._isDir) throw new AdderError('NotADirectoryError', '[Errno 20] Not a directory');
+      return _resolve(d._path === '/' ? '/' + s : d._path + '/' + s);
+    }
+    return _resolve(s);
+  };
 
   // the string functions are CPython's posixpath, line for line (its edge cases: basename('a/')
   // is '', dirname('') is '', normpath('') is '.', join restarts at an absolute part)
@@ -10667,9 +10790,14 @@ function _createOsModule(getVfs, pth) {
   const os = {
     sep: '/', linesep: '\n', name: 'posix',
     path: osPath,
+    // open(2) flags, Linux's values
+    O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_ACCMODE: 3, O_CREAT: 0o100, O_EXCL: 0o200, O_NOCTTY: 0o400,
+    O_TRUNC: 0o1000, O_APPEND: 0o2000, O_NONBLOCK: 0o4000, O_DSYNC: 0o10000, O_SYNC: 0o4010000,
+    O_DIRECTORY: 0o200000, O_NOFOLLOW: 0o400000, O_CLOEXEC: 0o2000000,
 
     listdir: async (p) => {
-      try { return await getVfs().readdir(_resolve(p || '.')); }
+      const dir = typeof p === 'number' ? _fdGet(p)._path : _resolve(p || '.');
+      try { return await getVfs().readdir(dir); }
       catch (e) { throw _mapVFSError(e); }
     },
     mkdir: async (p) => {
@@ -10704,12 +10832,151 @@ function _createOsModule(getVfs, pth) {
       try { await getVfs().rename(_resolve(src), _resolve(dst)); }
       catch (e) { throw _mapVFSError(e); }
     },
-    stat: async (p) => {
+    // stat(path, *, dir_fd=None, follow_symlinks=True); an fd is fstat
+    stat: async (p, ...a) => {
+      const kw = _osKw(a);
+      if (typeof p === 'number') return os.fstat(p);
       try {
-        const info = await getVfs().stat(_resolve(p));
+        const vfs = getVfs(), path = _osAt(p, kw);
+        const info = kw && kw.follow_symlinks === false ? await vfs.lstat(path) : await vfs.stat(path);
         return _statResult(info);
       } catch (e) { throw _mapVFSError(e); }
     },
+    // utime(path, times=None, *, ns=None, dir_fd=None, follow_symlinks=True): times (atime,
+    // mtime) in seconds, ns the same in nanoseconds, neither: now
+    utime: async (p, ...a) => {
+      const kw = _osKw(a);
+      let times = a.length ? a[0] : kw && kw.times !== undefined ? kw.times : null;
+      const ns = kw && kw.ns !== undefined && kw.ns !== null ? kw.ns : null;
+      let at, mt;
+      if (ns !== null) { at = Number(ns[0]) / 1e9; mt = Number(ns[1]) / 1e9; }
+      else if (times === null || times === undefined) { at = mt = Date.now() / 1000; }
+      else { if (!Array.isArray(times) || times.length !== 2) throw new AdderError('TypeError', "utime: 'times' must be either a tuple of two ints or None"); at = Number(times[0]); mt = Number(times[1]); }
+      const path = typeof p === 'number' ? _fdGet(p)._path : _osAt(p, kw);
+      try { await getVfs().utime(path, at, mt); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : _fsp(p)); }
+      return null;
+    },
+    chmod: async (p, mode, ...a) => {
+      const kw = _osKw(a);
+      const path = typeof p === 'number' ? _fdGet(p)._path : _osAt(p, kw);
+      try { await getVfs().chmod(path, Number(mode) & 0o7777); } catch (e) { if (e && e.code === 'ENOTSUP') return null; throw _mapVFSError(e, typeof p === 'number' ? null : _fsp(p)); }
+      return null;
+    },
+    // (a symlink itself, not what it points at)
+    lstat: async (p, ...a) => {
+      const kw = _osKw(a);
+      try {
+        const info = await getVfs().lstat(_osAt(p, kw));
+        return _statResult(info);
+      } catch (e) { throw _mapVFSError(e); }
+    },
+    // the entries of a directory as DirEntry objects, their types read once (as CPython's are,
+    // from the directory listing): an iterator that is also a context manager
+    scandir: async (p = '.') => {
+      // (of an fd: the directory it is open on, its entries' paths their bare names)
+      const byFd = typeof p === 'number';
+      const given = byFd ? null : p === null || p === undefined ? '.' : _fsp(p);
+      const dir = byFd ? _fdGet(p)._path : _resolve(given);
+      const vfs = getVfs();
+      let names;
+      try { names = await vfs.readdir(dir); } catch (e) { throw _mapVFSError(e); }
+      const entries = [];
+      for (const name of names) {
+        const full = dir === '/' ? '/' + name : dir + '/' + name;
+        let link = null, target = null;
+        try { link = await vfs.lstat(full); } catch { /* vanished */ }
+        if (link && link.type === 'symlink') { try { target = await vfs.stat(full); } catch { /* dangling */ } } else target = link;
+        const shown = byFd ? name : given.endsWith('/') ? given + name : given + '/' + name;   // os.path.join(path, name)
+        entries.push(new _OsDirEntry(name, shown, link, target));
+      }
+      let i = 0, closed = false;
+      const it = {
+        __adderClass__: 'ScandirIterator',
+        __iter__() { return it; },
+        __next__() {
+          if (closed || i >= entries.length) throw new AdderError('StopIteration', '');
+          return entries[i++];
+        },
+        [Symbol.iterator]() { return { next: () => (closed || i >= entries.length ? { value: undefined, done: true } : { value: entries[i++], done: false }) }; },
+        close() { closed = true; return null; },
+        __enter__() { return it; },
+        __exit__() { closed = true; return false; },
+      };
+      return it;
+    },
+    DirEntry: _osDirEntryType,
+
+    // ── file descriptors (see _fdTable) ──
+    // os.open(path, flags, mode=0o777, *, dir_fd=None): the flags as open(2) reads them
+    open: async (p, ...a) => {
+      const kw = _osKw(a);
+      const flags = Number(a[0] ?? (kw && kw.flags) ?? 0);
+      const path = _osAt(p, kw);
+      const shown = typeof p === 'string' ? p : _fsp(p);
+      const acc = flags & 3;
+      const vfs = getVfs();
+      let info = null;
+      try { info = await vfs.stat(path); } catch { /* not there */ }
+      if (info && info.type === 'directory') {
+        if (acc !== 0) throw _osError('IsADirectoryError', 21, 'Is a directory', shown);
+        return _fdAlloc({ _path: path, _isDir: true });
+      }
+      if (info && (flags & 0o200000)) throw _osError('NotADirectoryError', 20, 'Not a directory', shown);
+      if (!info && !(flags & 0o100)) throw _osError('FileNotFoundError', 2, 'No such file or directory', shown);
+      if (info && (flags & 0o100) && (flags & 0o200)) throw _osError('FileExistsError', 17, 'File exists', shown);
+      const kind = (flags & 0o100) && (flags & 0o200) ? 'x' : (flags & 0o1000) && acc !== 0 ? 'w' : (flags & 0o2000) ? 'a' : 'r';
+      const file = await _createAdderFile(vfs, path, kind + 'b' + (acc === 2 ? '+' : ''), { readable: acc !== 1, writable: acc !== 0, create: !!(flags & 0o100) });
+      file._fd = _fdAlloc(file);
+      return file._fd;
+    },
+    read: async (fd, n) => {
+      const o = _fdGet(fd);
+      if (o._isDir) throw new AdderError('IsADirectoryError', '[Errno 21] Is a directory');
+      const r = await o.read(Number(n));
+      return typeof r === 'string' ? new TextEncoder().encode(r) : r;
+    },
+    write: (fd, data) => {
+      const o = _fdGet(fd);
+      if (o._isDir) throw new AdderError('IsADirectoryError', '[Errno 21] Is a directory');
+      if (String(o._mode).includes('b')) return o.write(data);
+      const b = data instanceof Uint8Array ? data : Uint8Array.from(data);
+      o.write(new TextDecoder().decode(b));
+      return b.length;
+    },
+    lseek: (fd, pos, how) => _fdGet(fd).seek(Number(pos), Number(how)),
+    fstat: async (fd) => {
+      const o = _fdGet(fd);
+      if (!o._isDir && o._writeOut) await o._writeOut();
+      try { return _statResult(await getVfs().stat(o._path)); } catch (e) { throw _mapVFSError(e); }
+    },
+    // the file closes with its last fd (a dup keeps it open)
+    close: async (fd) => {
+      const o = _fdGet(fd);
+      _fdTable.delete(Number(fd));
+      if (!o._isDir && ![..._fdTable.values()].includes(o)) await o.close();
+      return null;
+    },
+    closerange: async (lo, hi) => {
+      for (const fd of [..._fdTable.keys()]) if (fd >= lo && fd < hi) await adderModules.os.close(fd);
+      return null;
+    },
+    dup: (fd) => _fdAlloc(_fdGet(fd)),
+    dup2: async (fd, fd2) => {
+      const o = _fdGet(fd);
+      if (_fdTable.has(Number(fd2)) && _fdTable.get(Number(fd2)) !== o) await adderModules.os.close(fd2);
+      _fdTable.set(Number(fd2), o);
+      return Number(fd2);
+    },
+    fdopen: (fd, ...a) => adderModules.builtins.open(fd, ...a),
+    ftruncate: (fd, length) => { _fdGet(fd).truncate(Number(length)); return null; },
+    fsync: async (fd) => { const o = _fdGet(fd); if (o._writeOut) await o._writeOut(); return null; },
+    fdatasync: async (fd) => { const o = _fdGet(fd); if (o._writeOut) await o._writeOut(); return null; },
+    isatty: (fd) => { _fdGet(fd); return false; },
+    get_inheritable: (fd) => { _fdGet(fd); return false; },
+    set_inheritable: (fd) => { _fdGet(fd); return null; },
+    get_blocking: (fd) => { _fdGet(fd); return true; },
+    set_blocking: (fd) => { _fdGet(fd); return null; },
+    device_encoding: () => null,
     getcwd: () => _cwd.value,
     chdir: (p) => { _cwd.value = _resolve(p); },
 
@@ -10820,9 +11087,26 @@ function _createShutilModule(getVfs) {
   // shutil/glob used to skip that step and the raw `data/foo.csv`
   // hit `vfs.resolve` which has no mount for non-absolute paths.
   const r = (p) => _resolvePath(p, _vfsPath);
+  // the times and the permission bits, where the backend keeps them (one that doesn't: a no-op)
+  const copyStat = async (src, dst, times = true) => {
+    const vfs = getVfs();
+    let info;
+    try { info = await vfs.stat(r(src)); } catch (e) { throw _mapVFSError(e, _fsp(src)); }
+    if (info.mode !== undefined) { try { await vfs.chmod(r(dst), info.mode & 0o7777); } catch (e) { if (e && e.code !== 'ENOTSUP') throw _mapVFSError(e, _fsp(dst)); } }
+    if (times && info.modified) {
+      const m = info.modified.getTime() / 1000, a = info.accessed ? info.accessed.getTime() / 1000 : m;
+      try { await vfs.utime(r(dst), a, m); } catch (e) { if (e && e.code !== 'ENOTSUP') throw _mapVFSError(e, _fsp(dst)); }
+    }
+  };
+  // copy / copy2 into a directory copy to dir/basename(src); they return the destination
+  const intoDir = async (src, dst) => {
+    const d = _fsp(dst);
+    try { if ((await getVfs().stat(r(d))).type === 'directory') return (d.endsWith('/') ? d : d + '/') + _fsp(src).split('/').pop(); } catch { /* not there: a file */ }
+    return d;
+  };
   return {
-    copy: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
-    copy2: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } },
+    copy: async (src, dst) => { const to = await intoDir(src, dst); try { await getVfs().cp(r(src), r(to)); } catch (e) { throw _mapVFSError(e); } await copyStat(src, to, false); return to; },
+    copy2: async (src, dst) => { const to = await intoDir(src, dst); try { await getVfs().cp(r(src), r(to)); } catch (e) { throw _mapVFSError(e); } await copyStat(src, to); return to; },
     copytree: async (src, dst) => { try { await getVfs().cp(r(src), r(dst), { recursive: true }); } catch (e) { throw _mapVFSError(e); } },
     // rmtree(path, ignore_errors=False): with ignore_errors (positional or keyword) a missing tree is fine
     rmtree: async (p, ignore = false) => {
@@ -10831,10 +11115,8 @@ function _createShutilModule(getVfs) {
       return null;
     },
     copyfile: async (src, dst) => { try { await getVfs().cp(r(src), r(dst)); } catch (e) { throw _mapVFSError(e); } return dst; },
-    // the VFS keeps no permission bits / times to carry over: copying them is a no-op, as on a
-    // filesystem without them (the source must still exist)
-    copystat: async (src, dst) => { try { await getVfs().stat(r(src)); } catch (e) { throw _mapVFSError(e); } return null; },
-    copymode: async (src, dst) => { try { await getVfs().stat(r(src)); } catch (e) { throw _mapVFSError(e); } return null; },
+    copystat: async (src, dst) => { await copyStat(src, dst); return null; },
+    copymode: async (src, dst) => { await copyStat(src, dst, false); return null; },
     copyfileobj: async (fsrc, fdst, length = 0) => {
       const read = adderGetAttr(fsrc, 'read'), write = adderGetAttr(fdst, 'write');
       for (;;) {
@@ -10850,15 +11132,6 @@ function _createShutilModule(getVfs) {
 }
 
 // ── glob module ──
-
-function _createGlobModule(getVfs) {
-  return {
-    glob: async (pattern) => {
-      try { return await getVfs().glob(_resolvePath(pattern, _vfsPath)); }
-      catch (e) { throw _mapVFSError(e); }
-    },
-  };
-}
 
 // ── fs module registration ──
 
@@ -10888,9 +11161,35 @@ function flushOpenFiles() {
   })();
   return _flushing;
 }
+// ── file descriptors ──
+// An fd is an entry here: the file object behind it — the binary one os.open makes, or the
+// open() file whose fileno() was asked for (on first ask: a file nothing asks keeps none) — or a
+// directory handle (os.open of a directory: scandir(fd), dir_fd=). 0 / 1 / 2 are the standard
+// streams; the rest are the lowest free from 3, as POSIX gives them.
+const _fdTable = new Map();
+function _fdAlloc(obj, from = 3) {
+  let fd = from;
+  while (_fdTable.has(fd)) fd++;
+  _fdTable.set(fd, obj);
+  return fd;
+}
+function _fdOf(file) {
+  if (file._fd !== undefined && _fdTable.get(file._fd) === file) return file._fd;
+  file._fd = _fdAlloc(file);
+  return file._fd;
+}
+function _fdRelease(file) {
+  for (const [fd, o] of _fdTable) if (o === file) _fdTable.delete(fd);
+}
+function _fdGet(fd) {
+  const o = typeof fd === 'number' || typeof fd === 'bigint' ? _fdTable.get(Number(fd)) : undefined;
+  if (!o) throw _osError('OSError', 9, 'Bad file descriptor');
+  return o;
+}
+
 // the VFS as adder sees it: its async methods wait for the pending files first
 const _VFS_ASYNC = new Set(['readFile', 'writeFile', 'mkdir', 'readdir', 'stat', 'lstat', 'unlink', 'rmdir', 'rm',
-  'rename', 'exists', 'touch', 'cp', 'symlink', 'readlink', 'chmod', 'chown', 'glob', 'du', 'export', 'import',
+  'rename', 'exists', 'touch', 'cp', 'symlink', 'readlink', 'chmod', 'chown', 'utime', 'glob', 'du', 'export', 'import',
   'toFile', 'resolveHandle', 'readRange', 'createWriter', 'writeFrom', 'writeFiles', 'deleteBatch', 'listTree']);
 const _RAW_VFS = Symbol('rawVFS');
 function _flushingVFS(vfs) {
@@ -10920,7 +11219,9 @@ let _osExtrasHook = null;
 function setOsExtrasHook(fn) { _osExtrasHook = fn; if (adderModules.os) fn(adderModules.os); }
 
 function setAdderVFS(vfsInstance, pathUtils) {
-  _adderVFS = _flushingVFS(vfsInstance && vfsInstance[_RAW_VFS] ? vfsInstance[_RAW_VFS] : vfsInstance);
+  const rawNew = vfsInstance && vfsInstance[_RAW_VFS] ? vfsInstance[_RAW_VFS] : vfsInstance;
+  if (rawNew !== (_adderVFS && _adderVFS[_RAW_VFS])) _fdTable.clear();   // another filesystem: its fds are gone
+  _adderVFS = _flushingVFS(rawNew);
   if (pathUtils) _vfsPath = pathUtils;
   // reset cwd and module cache for the new VFS
   _cwd.value = _HOME;
@@ -10989,7 +11290,7 @@ function _ensureFsModules(pathUtils) {
   adderModules['os.path'] = adderModules.os.path;
   adderModules.pathlib = { Path: _createPathClass(getVfs, pth) };
   adderModules.shutil = _createShutilModule(getVfs);
-  adderModules.glob = _createGlobModule(getVfs);
+  // (glob is CPython's glob.py, over os.scandir)
 }
 
 // dict(mapping | pairs, **kw)
@@ -12879,6 +13180,20 @@ function adderBuiltins(printFn) {
           throw new AdderError('ValueError', `invalid mode: '${mode}'`);
         } }
       if (!_adderVFS) throw new AdderError('RuntimeError', 'filesystem not available — call adder.setVFS(vfsInstance, pathUtils) first');
+      // open(fd, mode): the file behind the descriptor — itself for bytes, text over it otherwise
+      // (one position, as one fd has; closing it closes the fd)
+      if (typeof pathOrObj === 'number' || typeof pathOrObj === 'bigint') {
+        const o = _fdGet(pathOrObj);
+        if (o._isDir) throw new AdderError('IsADirectoryError', '[Errno 21] Is a directory');
+        const wantBinary = mode.includes('b');
+        if (wantBinary === String(o._mode).includes('b')) return o;
+        if (!wantBinary) {
+          const enc = (kw && kw.encoding) || (typeof rest[2] === 'string' ? rest[2] : null) || 'utf-8';
+          const errors = (kw && kw.errors) || (typeof rest[3] === 'string' ? rest[3] : null) || 'strict';
+          return adderModules.io.TextIOWrapper(o, { _kw: true, encoding: enc, errors });
+        }
+        throw new AdderError('ValueError', 'binary mode over a text file descriptor is not supported here');
+      }
       const raw = pathOrObj?._path ? pathOrObj._path : String(pathOrObj);
       const p = _resolvePath(raw, _vfsPath);
       return _createAdderFile(_adderVFS, p, mode || 'r');
@@ -12927,10 +13242,7 @@ function adderBuiltins(printFn) {
   for (const name of _EXC_NAMES) {
     if (_stableTypes[name]) { builtins[name] = _stableTypes[name]; continue; }
     if (_typeObjects[name] && _typeObjects[name]._pyClass) { builtins[name] = _stableTypes[name] = _typeObjects[name]; continue; }
-    const ctor = (...a) => {
-      if (a.length && a[a.length - 1] && a[a.length - 1]._kw) a.pop();
-      return new AdderError(name, _argsStr(name, a), undefined, a);
-    };
+    const ctor = (...a) => _newExc(name, a);
     ctor._pyName = name; ctor._pyClass = true; ctor.__name__ = name;
     builtins[name] = ctor;
     _typeObjects[name] = _stableTypes[name] = ctor;
@@ -15049,12 +15361,15 @@ function _execScope(args, scope) {
 
 // ── comprehensions ──
 
-function _evalGenExpr(node, scope) {
+async function _evalGenExpr(node, scope) {
   // A generator object, as Python's: lazy, iterates once, and an iterator itself (next() works).
-  // The body runs on first use; its outermost iterable is evaluated then too.
+  // The body runs on first use — but its outermost iterable is evaluated, and iter() taken of it,
+  // here and now, in the enclosing scope (`names = (x for x in names)` iterates the old names;
+  // a non-iterable is a TypeError at the genexpr, not at its first next())
+  const first = _iterOf(await adderEval(node.generators[0].iter, scope));
   let gen = null;
   const run = () => {
-    if (!gen) { const genScope = new AdderScope(scope); genScope._isComp = true; gen = _genExprIter(node, genScope, 0); }
+    if (!gen) { const genScope = new AdderScope(scope); genScope._isComp = true; gen = _genExprIter(node, genScope, 0, first); }
     return gen;
   };
   return {
@@ -15066,10 +15381,16 @@ function _evalGenExpr(node, scope) {
   };
 }
 
-async function* _genExprIter(node, scope, genIdx) {
+function _iterOf(iterable) {
+  if (iterable === null || iterable === undefined || typeof iterable === 'number' || typeof iterable === 'boolean' || typeof iterable === 'bigint') {
+    throw new AdderError('TypeError', `'${pyTypeName(iterable)}' object is not iterable`);
+  }
+  return isUserIterable(iterable) ? pyIterAsync(iterable) : iterable && iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+}
+
+async function* _genExprIter(node, scope, genIdx, iter = null) {
   const gen = node.generators[genIdx];
-  const iterable = await adderEval(gen.iter, scope);
-  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  if (iter === null) iter = _iterOf(await adderEval(gen.iter, scope));
   for await (const value of iter) {
     await _assignTarget(gen.target, value, scope);
     let pass = true;
@@ -16716,6 +17037,11 @@ const _py = {
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
   // when there is one, else the async variant
   genExpr: (src, syncGen, asyncGen) => {
+    // (iter() of the first source is taken here, as Python's genexpr does: None or a number is
+    // a TypeError at the generator expression)
+    if (src === null || src === undefined || typeof src === 'number' || typeof src === 'boolean' || typeof src === 'bigint') {
+      throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not iterable`);
+    }
     const sync = syncGen && src !== null && src !== undefined && !isUserIterable(src) &&
       (Array.isArray(src) || typeof src === 'string' || typeof src[Symbol.iterator] === 'function');
     const g = sync ? syncGen(_iterArray(src)) : asyncGen(_pyEach(src));
@@ -23614,9 +23940,11 @@ adderModules.tempfile = {
     const vfs = _dtVfsOr();
     const dir = args.dir ?? '/tmp';
     try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
-    const p = `${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`;
-    await vfs.writeFile(p, '');
-    return mkTuple([3, p]);
+    const os = adderModules.os;
+    const p = os.path.abspath(`${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`);
+    // an fd open on it for reading and writing, created exclusively — as CPython's
+    const fd = await os.open(p, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600);
+    return mkTuple([fd, p]);
   },
   mktemp: (suffix = '', prefix = 'tmp', dir = null) => `${(dir ?? '/tmp').replace(/\/$/, '')}/${prefix}${_dtTmpName()}${suffix}`,
   TemporaryDirectory: _dtTempDirCtor,
@@ -23628,7 +23956,7 @@ adderModules.tempfile = {
 
 // adder stdlib — the "plumbing" modules real libraries import at the top of their files:
 // types, abc, numbers, errno, atexit, codecs, keyword, calendar, unicodedata, stat, platform,
-// locale, fnmatch, shlex, threading, queue, traceback, reprlib, weakref, gettext, getpass,
+// locale, shlex, threading, queue, traceback, reprlib, weakref, gettext, getpass,
 // linecache, copyreg, asyncio, typing_extensions, inspect; plus string.Formatter, os.PathLike /
 // fspath, and a real sys.version_info. subprocess and socket exist because libraries import them
 // unconditionally; anything they would do raises (no processes, no sockets in the browser).
@@ -24224,48 +24552,7 @@ adderModules.locale = _syModule('locale', {
   format_string: (fmt, val) => pyMod(fmt, val),
 });
 
-// ── fnmatch ──
-{
-  // fnmatch.translate: the shell pattern as a Python regex source (CPython's shape)
-  const translate = (pat) => {
-    let i = 0, res = '';
-    const n = pat.length;
-    while (i < n) {
-      const c = pat[i++];
-      if (c === '*') { while (pat[i] === '*') i++; res += '.*'; }
-      else if (c === '?') res += '.';
-      else if (c === '[') {
-        let j = i;
-        if (pat[j] === '!') j++;
-        if (pat[j] === ']') j++;
-        while (j < n && pat[j] !== ']') j++;
-        if (j >= n) res += '\\[';
-        else {
-          let stuff = pat.slice(i, j).replace(/\\/g, '\\\\');
-          i = j + 1;
-          if (stuff[0] === '!') stuff = '^' + stuff.slice(1);
-          else if (stuff[0] === '^') stuff = '\\' + stuff;
-          res += `[${stuff}]`;
-        }
-      } else res += c.replace(/[.*+?^${}()|[\]\\\-#&~ ]/g, '\\$&');
-    }
-    return `(?s:${res})\\Z`;
-  };
-  const jsRe = new Map();
-  const toJs = (pat) => {
-    if (!jsRe.has(pat)) {
-      const src = translate(pat).replace(/^\(\?s:/, '(?:').replace(/\\Z$/, '$');
-      jsRe.set(pat, new RegExp('^' + src, 's'));
-    }
-    return jsRe.get(pat);
-  };
-  const fnmatchcase = (name, pat) => toJs(String(pat)).test(String(name));
-  adderModules.fnmatch = _syModule('fnmatch', {
-    translate, fnmatchcase,
-    fnmatch: (name, pat) => fnmatchcase(name, pat),   // posix: case-sensitive (os.path.normcase is the identity)
-    filter: (names, pat) => [...pyIter(names)].filter((n) => fnmatchcase(n, pat)),
-  });
-}
+// (fnmatch is CPython's fnmatch.py, vendored)
 
 // ── shlex ──
 {
@@ -27772,7 +28059,7 @@ adderModules.selectors = _ntModule('selectors', {
 // -- stdlib-py.js --
 
 // GENERATED by ext/adder/gen-pylib.js from ext/adder/pylib/ — do not edit; edit the .py files.
-// adder stdlib modules written in Python (frozen modules): __adder__, __future__, _collections_abc, _colorize, _compression, _markupbase, _pyrepl, _pyrepl.pager, _tokenize, argparse, bisect, bz2, cmd, code, codeop, collections, colorsys, dataclasses, difflib, doctest, filecmp, fileinput, getopt, glob, graphlib, heapq, html.parser, importlib._bootstrap, importlib._bootstrap_external, ipaddress, json, json.decoder, json.encoder, json.scanner, json.tool, mimetypes, netrc, optparse, pickletools, pkgutil, pydoc, quopri, random, runpy, sched, secrets, shelve, shutil, tabnanny, tarfile, timeit, token, tokenize, tomllib, tomllib._parser, tomllib._re, tomllib._types, unittest, unittest.__main__, unittest._log, unittest.async_case, unittest.case, unittest.loader, unittest.main, unittest.mock, unittest.result, unittest.runner, unittest.signals, unittest.suite, unittest.util, wave, xml, xml.etree.ElementTree, xml.etree
+// adder stdlib modules written in Python (frozen modules): __adder__, __future__, _collections_abc, _colorize, _compression, _markupbase, _pyrepl, _pyrepl.pager, _tokenize, argparse, bisect, bz2, cmd, code, codeop, collections, colorsys, dataclasses, difflib, doctest, filecmp, fileinput, fnmatch, getopt, glob, graphlib, heapq, html.parser, importlib._bootstrap, importlib._bootstrap_external, ipaddress, json, json.decoder, json.encoder, json.scanner, json.tool, mimetypes, netrc, optparse, pickletools, pkgutil, pydoc, quopri, random, runpy, sched, secrets, shelve, shutil, tabnanny, tarfile, timeit, token, tokenize, tomllib, tomllib._parser, tomllib._re, tomllib._types, unittest, unittest.__main__, unittest._log, unittest.async_case, unittest.case, unittest.loader, unittest.main, unittest.mock, unittest.result, unittest.runner, unittest.signals, unittest.suite, unittest.util, wave, xml, xml.etree.ElementTree, xml.etree
 // (all but xml.* are CPython's own, verbatim — PSF License 2.0: see pylib/README.md and pylib/LICENSE-PSF.txt)
 
 
@@ -27799,6 +28086,7 @@ Object.assign(frozenPyModules, {
   "doctest": { pkg: false, gz: "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" },
   "filecmp": { pkg: false, gz: "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" },
   "fileinput": { pkg: false, gz: "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" },
+  "fnmatch": { pkg: false, gz: "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" },
   "getopt": { pkg: false, gz: "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" },
   "glob": { pkg: false, gz: "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" },
   "graphlib": { pkg: false, gz: "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" },
@@ -27880,7 +28168,7 @@ const _frozenPyairData =
 // END DATA
 ;
 Object.assign(frozenPyCompiled, _frozenPyairData);
-frozenPyBuild.id = "43a175750197641e8fb0";
+frozenPyBuild.id = "8a9670a34d35f9405491";
 
 // -- runner.js --
 
@@ -28712,6 +29000,9 @@ class AdderLowerCtx extends BaseLowerCtx {
       args = [this._compRename.get(args[0]), ...args.slice(1)];
     } else if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._classBodyOf && this._classNames && this._classNames.has(args[0])) {
       args = [`__cb_${args[0]}`, ...args.slice(1)];
+    } else if (op === 'for_of_region' && extra && typeof extra.target_name === 'string' && this._classBodyOf && this._classNames && this._classNames.has(extra.target_name)) {
+      // (a for loop's variable is bound by the loop itself, not a store: the same name)
+      extra = { ...extra, target_name: `__cb_${extra.target_name}` };
     }
     // what lowering in sync mode would do differently (lowerFuncDef: a body with none of it
     // needs no second, sync-mode copy — it would be the same code)
@@ -30458,6 +30749,7 @@ function lowerClassDef(ctx, node) {
         let n = null;
         if (op.op === 'store' && typeof op.args[0] === 'string' && !isTemp(op.args[0])) n = binding(op.args[0]);
         else if (op.op === 'func_region' && op.name) n = binding(pyNameOf(op.name));
+        else if (op.op === 'for_of_region' && typeof op.target_name === 'string' && !isTemp(op.target_name)) n = binding(op.target_name);
         if (n !== null && !classMemberNames.includes(n)) classMemberNames.push(n);
         if (op.op === 'func_region') continue;
         for (const v of Object.values(op)) {

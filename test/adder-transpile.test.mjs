@@ -1133,6 +1133,38 @@ describe('adder — CPython parity found by the stdlib sweep', () => {
     'm = type(sys)("mm")',
     'r = [f(), _g is globals, type(sys) is types.ModuleType, m.__name__, types.ModuleType.__name__]',
   ], [5, true, true, 'mm', 'module']));
+  it("a generator expression's first iterable is evaluated where it stands (glob's names = (… in names))", () => both([
+    'def f(names):',
+    '    names = (x for x in names if x != 2)',
+    '    return list(names)',
+    'bad = None',
+    'try:',
+    '    g = (x for x in 5)',
+    'except TypeError:',
+    '    bad = "TypeError"',
+    'r = [f([1, 2, 3]), bad]',
+  ], [[1, 3], 'TypeError']));
+  it("a for loop's variable — and what its body binds — in a class body are class attributes", () => both([
+    'class C:',
+    '    n = 0',
+    '    for x in ["a", "b"]:',
+    '        n += 1',
+    '        last = x',
+    '    seen = (x, last)',
+    'r = [C.n, C.x, C.last, list(C.seen)]',
+  ], [2, 'b', 'b', ['b', 'b']]));
+  it("OSError(errno, strerror[, filename]) as CPython's: the attributes, the message, the subclass by errno", () => both([
+    'e = OSError(2, "gone", "f.txt")',
+    'f = OSError("plain")',
+    'r = [type(e).__name__, e.errno, e.strerror, e.filename, str(e), list(e.args), f.errno, str(f), type(OSError(17, "x")).__name__]',
+  ], ['FileNotFoundError', 2, 'gone', 'f.txt', "[Errno 2] gone: 'f.txt'", [2, 'gone'], null, 'plain', 'FileExistsError']));
+  it('tree-walked generators feed itertools.chain (recursive glob)', () => both([
+    'import itertools',
+    'def g():',
+    '    yield 1',
+    '    yield 2',
+    'r = list(itertools.chain((0,), g()))',
+  ], [0, 1, 2]));
 });
 
 describe('adder transpile — deterministic output', () => {

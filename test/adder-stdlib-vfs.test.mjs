@@ -156,6 +156,68 @@ open("/tmp/c.txt", "w").write("left open")
     assert.equal(await r.vfs.readFile('/tmp/c.txt'), 'left open');
   });
 
+  it('file descriptors: os.open / read / write / lseek / fstat / dup / close, open(fd), mkstemp, fileno', async () => {
+    const r = await runBoth(`
+import os, tempfile, errno
+fd, name = tempfile.mkstemp(suffix=".txt")
+print(fd >= 3, os.path.exists(name))
+with open(fd, "w") as f:
+    f.write("A\\nB\\nC")
+print(open(name).read().split("\\n"))
+fd = os.open(name, os.O_RDWR)
+print(os.read(fd, 2), os.lseek(fd, 0, os.SEEK_CUR), os.lseek(fd, 0, os.SEEK_END))
+os.lseek(fd, 0, os.SEEK_SET)
+print(os.write(fd, b"Z"), os.fstat(fd).st_size)
+fd2 = os.dup(fd)
+os.close(fd)
+print(os.read(fd2, 10))
+os.close(fd2)
+try:
+    os.close(fd2)
+except OSError as e:
+    print(e.errno == errno.EBADF, str(e))
+fd = os.open(name, os.O_WRONLY | os.O_TRUNC)
+os.write(fd, b"new")
+os.close(fd)
+print(open(name, "rb").read())
+try:
+    os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+except FileExistsError as e:
+    print(e.errno, e.filename == name)
+d = os.open(os.path.dirname(name), os.O_RDONLY)
+print(os.path.basename(name) in os.listdir(d), os.stat(os.path.basename(name), dir_fd=d).st_size)
+os.close(d)
+with open(name, "rb") as f:
+    print(os.fstat(f.fileno()).st_size, os.read(f.fileno(), 1))
+`);
+    assert.equal(r.text, [
+      'True True', "['A', 'B', 'C']", "b'A\\n' 2 5", '1 5', "b'\\nB\\nC'", 'True [Errno 9] Bad file descriptor',
+      "b'new'", '17 True', 'True 3', "3 b'n'", '',
+    ].join('\n'));
+  });
+
+  it("glob is CPython's glob.py over os.scandir; os.utime, and shutil.copy2 / copystat carry times and mode", async () => {
+    const r = await runBoth(`
+import os, glob, shutil
+os.makedirs("/tmp/g/sub/deep")
+for n in ["a.txt", "b.py", "sub/c.txt", "sub/deep/d.txt", ".h.txt"]:
+    open("/tmp/g/" + n, "w").write(n)
+os.chdir("/tmp/g")
+print(sorted(glob.glob("*.txt")), sorted(glob.glob("**/*.txt", recursive=True)), glob.escape("a[b]*"))
+with os.scandir(".") as it:
+    print(sorted((e.name, e.is_dir(), e.path) for e in it))
+os.utime("a.txt", (1000, 2000))
+os.chmod("a.txt", 0o600)
+print(os.stat("a.txt").st_mtime, os.stat("a.txt").st_atime)
+print(shutil.copy2("a.txt", "sub"), os.stat("sub/a.txt").st_mtime, oct(os.stat("sub/a.txt").st_mode & 0o777))
+`);
+    assert.equal(r.text, [
+      "['a.txt'] ['a.txt', 'sub/c.txt', 'sub/deep/d.txt'] a[[]b][*]",
+      "[('.h.txt', False, './.h.txt'), ('a.txt', False, './a.txt'), ('b.py', False, './b.py'), ('sub', True, './sub')]",
+      '2000 1000', 'sub/a.txt 2000 0o600', '',
+    ].join('\n'));
+  });
+
   it("bz2: CPython's bz2.py over _bz2 (libbzip2's bytes); BZ2File on a path, text mode", async () => {
     const r = await runBoth(`
 import bz2, hashlib

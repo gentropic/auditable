@@ -219,6 +219,9 @@ class AdderLowerCtx extends BaseLowerCtx {
       args = [this._compRename.get(args[0]), ...args.slice(1)];
     } else if ((op === 'store' || op === 'load') && typeof args[0] === 'string' && this._classBodyOf && this._classNames && this._classNames.has(args[0])) {
       args = [`__cb_${args[0]}`, ...args.slice(1)];
+    } else if (op === 'for_of_region' && extra && typeof extra.target_name === 'string' && this._classBodyOf && this._classNames && this._classNames.has(extra.target_name)) {
+      // (a for loop's variable is bound by the loop itself, not a store: the same name)
+      extra = { ...extra, target_name: `__cb_${extra.target_name}` };
     }
     // what lowering in sync mode would do differently (lowerFuncDef: a body with none of it
     // needs no second, sync-mode copy — it would be the same code)
@@ -1965,6 +1968,7 @@ function lowerClassDef(ctx, node) {
         let n = null;
         if (op.op === 'store' && typeof op.args[0] === 'string' && !isTemp(op.args[0])) n = binding(op.args[0]);
         else if (op.op === 'func_region' && op.name) n = binding(pyNameOf(op.name));
+        else if (op.op === 'for_of_region' && typeof op.target_name === 'string' && !isTemp(op.target_name)) n = binding(op.target_name);
         if (n !== null && !classMemberNames.includes(n)) classMemberNames.push(n);
         if (op.op === 'func_region') continue;
         for (const v of Object.values(op)) {

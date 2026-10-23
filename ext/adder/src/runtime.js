@@ -1069,6 +1069,11 @@ export const _py = {
   // a generator expression (see lowerGeneratorExp): the sync variant over a synchronous source
   // when there is one, else the async variant
   genExpr: (src, syncGen, asyncGen) => {
+    // (iter() of the first source is taken here, as Python's genexpr does: None or a number is
+    // a TypeError at the generator expression)
+    if (src === null || src === undefined || typeof src === 'number' || typeof src === 'boolean' || typeof src === 'bigint') {
+      throw new AdderError('TypeError', `'${pyTypeName(src)}' object is not iterable`);
+    }
     const sync = syncGen && src !== null && src !== undefined && !isUserIterable(src) &&
       (Array.isArray(src) || typeof src === 'string' || typeof src[Symbol.iterator] === 'function');
     const g = sync ? syncGen(_iterArray(src)) : asyncGen(_pyEach(src));

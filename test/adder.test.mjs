@@ -1146,12 +1146,14 @@ count = len(matches)
     await vfs.writeFile('/deep/a.txt', 'a');
     await vfs.mkdir('/deep/sub');
     await vfs.writeFile('/deep/sub/b.txt', 'b');
+    // (CPython's: ** is any depth only with recursive=True; else it is *)
     const r = await pyExec(`
 import glob
-matches = glob.glob('/deep/**/*.txt')
-count = len(matches)
+matches = sorted(glob.glob('/deep/**/*.txt', recursive=True))
+flat = glob.glob('/deep/**/*.txt')
 `);
-    assert.ok(r.get('count') >= 2);
+    assert.deepStrictEqual([...r.get('matches')], ['/deep/a.txt', '/deep/sub/b.txt']);
+    assert.deepStrictEqual([...r.get('flat')], ['/deep/sub/b.txt']);
   });
 });
 

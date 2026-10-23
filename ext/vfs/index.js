@@ -354,6 +354,7 @@ function _makeNode(type, content) {
       size: 0,
       created: now,
       modified: now,
+      accessed: now,
       mode: type === 'directory' ? 0o755 : 0o644,
       owner: 'user',
       group: 'staff',
@@ -516,6 +517,7 @@ class MemoryBackend extends Backend {
       size: m.size,
       created: m.created,
       modified: m.modified,
+      accessed: m.accessed || m.modified,
       mode: m.mode,
       owner: m.owner,
       group: m.group,
@@ -530,6 +532,7 @@ class MemoryBackend extends Backend {
       size: m.size,
       created: m.created,
       modified: m.modified,
+      accessed: m.accessed || m.modified,
       mode: m.mode,
       owner: m.owner,
       group: m.group,
@@ -588,6 +591,12 @@ class MemoryBackend extends Backend {
   async chmod(p, mode) {
     const node = this._resolve(p);
     node._meta.mode = mode;
+  }
+
+  async utime(p, atime, mtime) {
+    const node = this._resolve(p);
+    node._meta.accessed = new Date(atime * 1000);
+    node._meta.modified = new Date(mtime * 1000);
   }
 
   async chown(p, owner, group) {
@@ -3030,7 +3039,7 @@ async function vfsGlob(vfs, pattern) {
 const READ_OPS = new Set(['read', 'readFile', 'readdir', 'stat', 'lstat', 'exists',
   'createReadStream', 'glob', 'du', 'export', 'readlink']);
 const WRITE_OPS = new Set(['write', 'writeFile', 'mkdir', 'rmdir', 'unlink', 'rename',
-  'cp', 'touch', 'chmod', 'chown', 'symlink', 'rm', 'import', 'createWriter', 'writeFrom']);
+  'cp', 'touch', 'chmod', 'chown', 'utime', 'symlink', 'rm', 'import', 'createWriter', 'writeFrom']);
 
 function checkPermission(operation, p, principal, meta) {
   // No principal → unrestricted
@@ -3469,6 +3478,16 @@ class VFS extends EventEmitter {
     this._checkWrite(backend, p);
     if (!backend.chmod) throw vfsError('ENOTSUP', p);
     await backend.chmod(subpath, mode);
+  }
+
+  // set a file's access and modification times (seconds since the epoch, as os.utime takes them)
+  async utime(p, atime, mtime, opts) {
+    const principal = opts?.principal;
+    checkPermission('utime', p, principal);
+    const { backend, subpath } = this.resolve(p);
+    this._checkWrite(backend, p);
+    if (!backend.utime) throw vfsError('ENOTSUP', p);
+    await backend.utime(subpath, atime, mtime);
   }
 
   async chown(p, owner, group, opts) {

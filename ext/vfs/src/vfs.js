@@ -405,6 +405,16 @@ class VFS extends EventEmitter {
     await backend.chmod(subpath, mode);
   }
 
+  // set a file's access and modification times (seconds since the epoch, as os.utime takes them)
+  async utime(p, atime, mtime, opts) {
+    const principal = opts?.principal;
+    checkPermission('utime', p, principal);
+    const { backend, subpath } = this.resolve(p);
+    this._checkWrite(backend, p);
+    if (!backend.utime) throw vfsError('ENOTSUP', p);
+    await backend.utime(subpath, atime, mtime);
+  }
+
   async chown(p, owner, group, opts) {
     const principal = opts?.principal;
     checkPermission('chown', p, principal);

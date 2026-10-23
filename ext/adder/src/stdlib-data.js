@@ -1760,9 +1760,11 @@ adderModules.tempfile = {
     const vfs = _dtVfsOr();
     const dir = args.dir ?? '/tmp';
     try { await vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
-    const p = `${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`;
-    await vfs.writeFile(p, '');
-    return mkTuple([3, p]);
+    const os = adderModules.os;
+    const p = os.path.abspath(`${dir.replace(/\/$/, '')}/${args.prefix ?? 'tmp'}${_dtTmpName()}${args.suffix ?? ''}`);
+    // an fd open on it for reading and writing, created exclusively — as CPython's
+    const fd = await os.open(p, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600);
+    return mkTuple([fd, p]);
   },
   mktemp: (suffix = '', prefix = 'tmp', dir = null) => `${(dir ?? '/tmp').replace(/\/$/, '')}/${prefix}${_dtTmpName()}${suffix}`,
   TemporaryDirectory: _dtTempDirCtor,

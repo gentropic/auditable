@@ -90,7 +90,7 @@ class NodeBackend extends Backend {
   async stat(p) {
     try {
       const st = await fsp.stat(this._abs(p));
-      return { type: st.isDirectory() ? 'directory' : 'file', size: st.isDirectory() ? 0 : st.size, created: st.birthtime, modified: st.mtime, mode: st.mode & 0o777 };
+      return { type: st.isDirectory() ? 'directory' : 'file', size: st.isDirectory() ? 0 : st.size, created: st.birthtime, modified: st.mtime, accessed: st.atime, mode: st.mode & 0o777 };
     } catch (e) { throw this._map(e, p); }
   }
 
@@ -167,6 +167,10 @@ class NodeBackend extends Backend {
   }
   async chmod(p, mode) {
     try { await fsp.chmod(this._abs(p), mode); }
+    catch (e) { throw this._map(e, p); }
+  }
+  async utime(p, atime, mtime) {
+    try { await fsp.utimes(this._abs(p), atime, mtime); }
     catch (e) { throw this._map(e, p); }
   }
   async chown(p, owner, group) {

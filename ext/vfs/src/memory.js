@@ -12,6 +12,7 @@ function _makeNode(type, content) {
       size: 0,
       created: now,
       modified: now,
+      accessed: now,
       mode: type === 'directory' ? 0o755 : 0o644,
       owner: 'user',
       group: 'staff',
@@ -174,6 +175,7 @@ class MemoryBackend extends Backend {
       size: m.size,
       created: m.created,
       modified: m.modified,
+      accessed: m.accessed || m.modified,
       mode: m.mode,
       owner: m.owner,
       group: m.group,
@@ -188,6 +190,7 @@ class MemoryBackend extends Backend {
       size: m.size,
       created: m.created,
       modified: m.modified,
+      accessed: m.accessed || m.modified,
       mode: m.mode,
       owner: m.owner,
       group: m.group,
@@ -246,6 +249,12 @@ class MemoryBackend extends Backend {
   async chmod(p, mode) {
     const node = this._resolve(p);
     node._meta.mode = mode;
+  }
+
+  async utime(p, atime, mtime) {
+    const node = this._resolve(p);
+    node._meta.accessed = new Date(atime * 1000);
+    node._meta.modified = new Date(mtime * 1000);
   }
 
   async chown(p, owner, group) {

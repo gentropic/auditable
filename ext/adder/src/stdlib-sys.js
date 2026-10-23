@@ -1,6 +1,6 @@
 // adder stdlib — the "plumbing" modules real libraries import at the top of their files:
 // types, abc, numbers, errno, atexit, codecs, keyword, calendar, unicodedata, stat, platform,
-// locale, fnmatch, shlex, threading, queue, traceback, reprlib, weakref, gettext, getpass,
+// locale, shlex, threading, queue, traceback, reprlib, weakref, gettext, getpass,
 // linecache, copyreg, asyncio, typing_extensions, inspect; plus string.Formatter, os.PathLike /
 // fspath, and a real sys.version_info. subprocess and socket exist because libraries import them
 // unconditionally; anything they would do raises (no processes, no sockets in the browser).
@@ -605,48 +605,7 @@ adderModules.locale = _syModule('locale', {
   format_string: (fmt, val) => pyMod(fmt, val),
 });
 
-// ── fnmatch ──
-{
-  // fnmatch.translate: the shell pattern as a Python regex source (CPython's shape)
-  const translate = (pat) => {
-    let i = 0, res = '';
-    const n = pat.length;
-    while (i < n) {
-      const c = pat[i++];
-      if (c === '*') { while (pat[i] === '*') i++; res += '.*'; }
-      else if (c === '?') res += '.';
-      else if (c === '[') {
-        let j = i;
-        if (pat[j] === '!') j++;
-        if (pat[j] === ']') j++;
-        while (j < n && pat[j] !== ']') j++;
-        if (j >= n) res += '\\[';
-        else {
-          let stuff = pat.slice(i, j).replace(/\\/g, '\\\\');
-          i = j + 1;
-          if (stuff[0] === '!') stuff = '^' + stuff.slice(1);
-          else if (stuff[0] === '^') stuff = '\\' + stuff;
-          res += `[${stuff}]`;
-        }
-      } else res += c.replace(/[.*+?^${}()|[\]\\\-#&~ ]/g, '\\$&');
-    }
-    return `(?s:${res})\\Z`;
-  };
-  const jsRe = new Map();
-  const toJs = (pat) => {
-    if (!jsRe.has(pat)) {
-      const src = translate(pat).replace(/^\(\?s:/, '(?:').replace(/\\Z$/, '$');
-      jsRe.set(pat, new RegExp('^' + src, 's'));
-    }
-    return jsRe.get(pat);
-  };
-  const fnmatchcase = (name, pat) => toJs(String(pat)).test(String(name));
-  adderModules.fnmatch = _syModule('fnmatch', {
-    translate, fnmatchcase,
-    fnmatch: (name, pat) => fnmatchcase(name, pat),   // posix: case-sensitive (os.path.normcase is the identity)
-    filter: (names, pat) => [...pyIter(names)].filter((n) => fnmatchcase(n, pat)),
-  });
-}
+// (fnmatch is CPython's fnmatch.py, vendored)
 
 // ── shlex ──
 {

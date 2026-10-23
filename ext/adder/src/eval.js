@@ -1870,12 +1870,15 @@ function _execScope(args, scope) {
 
 // ── comprehensions ──
 
-function _evalGenExpr(node, scope) {
+async function _evalGenExpr(node, scope) {
   // A generator object, as Python's: lazy, iterates once, and an iterator itself (next() works).
-  // The body runs on first use; its outermost iterable is evaluated then too.
+  // The body runs on first use — but its outermost iterable is evaluated, and iter() taken of it,
+  // here and now, in the enclosing scope (`names = (x for x in names)` iterates the old names;
+  // a non-iterable is a TypeError at the genexpr, not at its first next())
+  const first = _iterOf(await adderEval(node.generators[0].iter, scope));
   let gen = null;
   const run = () => {
-    if (!gen) { const genScope = new AdderScope(scope); genScope._isComp = true; gen = _genExprIter(node, genScope, 0); }
+    if (!gen) { const genScope = new AdderScope(scope); genScope._isComp = true; gen = _genExprIter(node, genScope, 0, first); }
     return gen;
   };
   return {
@@ -1887,10 +1890,16 @@ function _evalGenExpr(node, scope) {
   };
 }
 
-async function* _genExprIter(node, scope, genIdx) {
+function _iterOf(iterable) {
+  if (iterable === null || iterable === undefined || typeof iterable === 'number' || typeof iterable === 'boolean' || typeof iterable === 'bigint') {
+    throw new AdderError('TypeError', `'${pyTypeName(iterable)}' object is not iterable`);
+  }
+  return isUserIterable(iterable) ? pyIterAsync(iterable) : iterable && iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+}
+
+async function* _genExprIter(node, scope, genIdx, iter = null) {
   const gen = node.generators[genIdx];
-  const iterable = await adderEval(gen.iter, scope);
-  const iter = isUserIterable(iterable) ? pyIterAsync(iterable) : iterable[Symbol.asyncIterator] ? iterable : pyIter(iterable);
+  if (iter === null) iter = _iterOf(await adderEval(gen.iter, scope));
   for await (const value of iter) {
     await _assignTarget(gen.target, value, scope);
     let pass = true;
