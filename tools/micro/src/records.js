@@ -8,10 +8,10 @@
 // delimited text and how record numbering drifted (see the 2026-08 audit,
 // [[reference_micro_source_dispatch]]). This module is where those decisions
 // live now; a new source kind is added HERE, once.
-import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields } from '../../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher } from '../../../ext/condenser/src/main.js';
 import { streamParquetColumns, readParquetRow } from '../../../ext/parquet/index.js';
 import { compileValue, deps } from '../../../ext/expr/index.js';
-import { readLFM } from '../../../ext/lfm/lfm.js';
+import { readLFM, readLFMLayout, verifyLFM, lfmBlockStream } from '../../../ext/lfm/lfm.js';
 import { S, activeDocs } from './state.js';
 
 // ── headers + schema ──────────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ export async function docPositionStream(d) {
 // writeLFM, so every layer stays a real Leapfrog file (round-trippable,
 // self-contained for projects, re-parsed by winding).
 export async function openLfmMesh(blob) {
-  const r = await readLFM(await blob.arrayBuffer());
+  const r = await readLFM(blob);                           // lazy: the XML head + each block sliced, never one whole buffer
   let nv = 0, nt = 0;
   for (const m of r.meshes) { nv += m.vCount; nt += m.tCount; }
   const vertices = new Float64Array(nv * 3);
@@ -247,6 +247,68 @@ export async function openLfmMesh(blob) {
     vertices, triangles,
     lfmMeshes: r.meshes.map((m) => ({ name: m.name, colour: m.colour })),
   };
+}
+// .lfm too big for the context tier → condenser's STREAMED soup contract
+// ({ header, streamChunks } like openPlySoup). The descriptor comes from the XML
+// head; the checksum is verified (incrementally past 256 MB); then every mesh's
+// vertex block is INFLATED AS A STREAM into the shared local-f32 vertex table, and
+// in streamChunks each triangle block is inflated as a stream into RawChunk
+// batches — no block, let alone the file, is ever whole. All meshes merge (the
+// split path is for files small enough to rewrite as per-mesh children).
+export const lfmTriCount = async (blob) => (await readLFMLayout(blob)).meshes.reduce((t, m) => t + m.tCount, 0);
+async function* lfmValues(blob, lay, block, Type) {
+  const per = Type.BYTES_PER_ELEMENT;
+  const reader = lfmBlockStream(blob, lay, block).getReader();
+  let carry = new Uint8Array(0);
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    let b = value;
+    if (carry.length) { const m = new Uint8Array(carry.length + b.length); m.set(carry); m.set(b, carry.length); b = m; }
+    const whole = b.length - (b.length % per);
+    const aligned = new Uint8Array(whole); aligned.set(b.subarray(0, whole));   // typed views need alignment
+    carry = b.slice(whole);
+    yield new Type(aligned.buffer);
+  }
+}
+export async function openLfmSoup(blob, { onProgress } = {}) {
+  const lay = await readLFMLayout(blob);
+  await verifyLFM(blob, lay, { onProgress: onProgress ? (msg) => onProgress(msg) : undefined });
+  const vt = soupVertexTable();
+  const bases = [];
+  let nt = 0;
+  for (const m of lay.meshes) {
+    bases.push(vt.n);
+    let pend = [];
+    for await (const vals of lfmValues(blob, lay, m.verticesBlock, Float64Array)) {
+      for (let i = 0; i < vals.length; i++) {
+        pend.push(vals[i]);
+        if (pend.length === 3) { vt.push(pend[0], pend[1], pend[2]); pend = []; }
+      }
+    }
+    nt += m.tCount;
+    if (onProgress) onProgress(`vertices ${vt.n.toLocaleString()}`);
+  }
+  const header = { kind: 'mesh', soup: true, format: 'lfm', vertexCount: vt.n, triCount: nt, bbox: { min: vt.min, max: vt.max },
+    lfmMeshes: lay.meshes.map((m) => ({ name: m.name, colour: m.colour })) };
+  async function* streamChunks({ batchTris = 1 << 16 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    for (let mi = 0; mi < lay.meshes.length; mi++) {
+      const base = bases[mi], tri = [];
+      for await (const vals of lfmValues(blob, lay, lay.meshes[mi].trianglesBlock, Int32Array)) {
+        for (let i = 0; i < vals.length; i++) {
+          tri.push(vals[i] + base);
+          if (tri.length === 3) { tb.tri(tri[0], tri[1], tri[2]); tri.length = 0; }
+        }
+        yield* tb.take();
+      }
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
+  return { header, streamChunks };
 }
 // Re-derive a context mesh's { vertices, triangles } from its source(s). A Datamine
 // wireframe is a pt/tr PAIR (md.ptBlob + md.blob); everything else is single-file.

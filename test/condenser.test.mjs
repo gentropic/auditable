@@ -1206,3 +1206,86 @@ test('peekDxfHead describes a head; openDxf refuses a file too big for one strin
   const huge = { size: DXF_RESIDENT_MAX + 1, text: () => { throw new Error('must not read'); } };
   await assert.rejects(() => openDxf(huge), /too large to read whole/);
 });
+
+// ── streamed soups for OBJ / ASCII PLY / .msh: same triangles as the context
+//    readers, never a whole-file read, every slab seam exercised ───────────────
+
+import { openObjSoup, openMshSoup } from '../ext/condenser/src/main.js';
+
+class NoWholeBlob extends Blob {
+  text() { throw new Error('read WHOLE as text — must never happen'); }
+  arrayBuffer() { throw new Error('read WHOLE — must never happen'); }
+}
+const refCorners = (m) => {
+  const out = [];
+  for (const t of m.triangles) out.push(m.vertices[3 * t], m.vertices[3 * t + 1], m.vertices[3 * t + 2]);
+  return out;
+};
+async function soupCorners(doc) {
+  const out = [];
+  for await (const r of doc.streamChunks({ batchTris: 3 })) {
+    for (let i = 0; i < r.count; i++) out.push(r.ax[i], r.ay[i], r.az[i], r.bx[i], r.by[i], r.bz[i], r.cx[i], r.cy[i], r.cz[i]);
+  }
+  return out;
+}
+const close = (a, b, tol = 1e-3) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < tol);   // f32-local corners: mm at UTM
+
+// an OBJ with the awkward bits: vt/vn lines, v/vt/vn faces, a quad, negative
+// indices, comments, CRLF, leading whitespace, a group
+const OBJ = ['# survey DTM', 'o pit', 'v 612000.125 7765000.5 702.25', 'v 612010 7765000 703', 'vt 0 0', 'vn 0 0 1',
+  '  v 612010 7765010 704', 'v 612000 7765010 701.5', 'g bench', 'f 1/1/1 2/1/1 3/1/1 4/1/1',
+  'v 612020 7765000 705', 'f -1 2 3', 'f 2//1 5//1 3//1', ''].join('\r\n');
+
+test('openObjSoup: same triangles as openObj, at every slab size, never a whole read', async () => {
+  const ref = refCorners(await openObj(new Blob([OBJ])));
+  for (const slab of [7, 16, 64, 1 << 20]) {
+    const d = await openObjSoup(new NoWholeBlob([OBJ]), { slab });
+    assert.equal(d.header.vertexCount, 5);
+    assert.ok(close(await soupCorners(d), ref), `slab ${slab}`);
+    assert.equal(d.header.triCount, ref.length / 9);
+  }
+});
+
+test('openPlySoup (ascii): streamed, same triangles as openPlyMesh, at every slab size', async () => {
+  const txt = ['ply', 'format ascii 1.0', 'element vertex 5', 'property double x', 'property double y', 'property double z', 'property uchar red',
+    'element face 3', 'property list uchar int vertex_indices', 'end_header',
+    '612000 7765000 700 9', '612010 7765000 701 9', '', '612010 7765010 702 9', '612000 7765010 703 9', '612020 7765005 704 9',
+    '4 0 1 2 3', '3 1 4 2', '3 0 2 3', ''].join('\n');
+  const ref = refCorners(await openPlyMesh(new Blob([txt])));
+  for (const slab of [5, 13, 64, 1 << 20]) {
+    const d = await openPlySoup(new NoWholeBlob([txt]), { slab });
+    assert.ok(close(await soupCorners(d), ref), `slab ${slab}`);
+    assert.equal(d.header.triCount, ref.length / 9);
+  }
+});
+
+test('openMshSoup: the .msh arrays sliced, same triangles as openMsh, out-of-range dropped not thrown', async () => {
+  const vertices = Float64Array.from([612000, 7765000, 700, 612010, 7765000, 701, 612010, 7765010, 702, 612000, 7765010, 703]);
+  const triangles = Int32Array.from([0, 1, 2, 0, 2, 3, 1, 3, 2]);
+  const bytes = await writeMSH({ arrays: { Location: { type: 'Double', components: 3, count: 4, data: vertices }, Tri: { type: 'Integer', components: 3, count: 3, data: triangles } } });
+  const ref = refCorners(await openMsh(new Blob([bytes])));
+  for (const slab of [24, 48, 1 << 20]) {
+    const d = await openMshSoup(new NoWholeBlob([bytes]), { slab });
+    assert.equal(d.header.vertexCount, 4);
+    assert.ok(close(await soupCorners(d), ref), `slab ${slab}`);
+  }
+  // openMsh itself no longer reads the file whole either
+  const m = await openMsh(new NoWholeBlob([bytes]));
+  assert.equal(m.header.triCount, 3);
+  const bad = await writeMSH({ arrays: { Location: { type: 'Double', components: 3, count: 4, data: vertices }, Tri: { type: 'Integer', components: 3, count: 2, data: Int32Array.from([0, 1, 2, 0, 9, 3]) } } });
+  const d = await openMshSoup(new Blob([bad]));
+  await soupCorners(d);
+  assert.equal(d.header.triCount, 1); assert.equal(d.header.dropped, 1);
+});
+
+test('openDmWireframe reads both halves in page runs (no whole-file buffer)', async () => {
+  const { makeDM } = await import('./dm-make.mjs');
+  const pt = makeDM([{ name: 'XP', type: 'N' }, { name: 'YP', type: 'N' }, { name: 'ZP', type: 'N' }, { name: 'PID', type: 'N' }],
+    [{ XP: 0, YP: 0, ZP: 0, PID: 10 }, { XP: 1, YP: 0, ZP: 0, PID: 11 }, { XP: 0, YP: 1, ZP: 0, PID: 12 }, { XP: 1, YP: 1, ZP: 1, PID: 13 }]);
+  const tr = makeDM([{ name: 'PID1', type: 'N' }, { name: 'PID2', type: 'N' }, { name: 'PID3', type: 'N' }],
+    [{ PID1: 10, PID2: 11, PID3: 12 }, { PID1: 11, PID2: 13, PID3: 12 }, { PID1: 10, PID2: 99, PID3: 12 }]);
+  const m = await openDmWireframe(new NoWholeBlob([pt]), new NoWholeBlob([tr]));
+  assert.equal(m.header.vertexCount, 4);
+  assert.equal(m.header.triCount, 2);
+  assert.equal(m.header.dropped, 1);
+});

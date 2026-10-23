@@ -922,7 +922,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -939,9 +939,9 @@ import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model fi
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, readParquetRow, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
-import { SURFER_BLANK, writeSurferGrd, readSurferGrd, readEsriAsc, writeEsriAsc } from './src/grid-io.js';   // grid serialization
+import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
-import { blockCaps, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
+import { blockCaps, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { PAINT_BLANK, paintRecount, matColSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
 import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
@@ -7297,9 +7297,18 @@ function registerDocs(lid, kind, docs = {}) {
 // row, x0/y0 are SAMPLE CENTERS, dy positive (row r's centre = y0 − r·dy).
 const ascLooksLikeGrid = async (blob) => /^\s*ncols\b/i.test(await blob.slice(0, 64).text());
 async function readAnyGrid(blob, name, displayCache = null, band = 0) {
-  if (/\.(tif|tiff)$/i.test(name)) {
-    const g = await readGTiff(blob);
-    if (displayCache) {
+  {
+    // ONE path for every grid format: a GeoTIFF parses its IFDs; .asc/.grd become
+    // the same readGTiff-shaped SOURCE (grid-io.js openGridSource — text grids are
+    // indexed in one streamed pass). Display decimates under a cap, eval windows the
+    // full-res source — so a multi-GB ASCII DEM opens like a big COG does.
+    const isTiff = /\.(tif|tiff)$/i.test(name);
+    const DISPLAY_DECODE_CAP = window.__gridDisplayCap || 8_000_000;   // test seam
+    const g = isTiff ? await readGTiff(blob) : await openGridSource(blob, name, {
+      displayCap: DISPLAY_DECODE_CAP,
+      onProgress: (a, t) => { $('#meta').textContent = `${name} — indexing ${Math.round(100 * a / t)}%…`; },
+    });
+    if (displayCache && isTiff) {
       // a project display-cache sidecar: reuse the parsed IFDs for windowed
       // eval, but take the DISPLAY straight from the cache (no re-decimation)
       const grid = displayCache;
@@ -7311,7 +7320,6 @@ async function readAnyGrid(blob, name, displayCache = null, band = 0) {
     }
     // decode an OVERVIEW within a decode budget for the display — a big COG
     // paints instantly; the full-res data is read windowed, only for eval
-    const DISPLAY_DECODE_CAP = window.__gridDisplayCap || 8_000_000;   // test seam
     const level = pickOverviewForCap(g, DISPLAY_DECODE_CAP);
     // even the coarsest overview may exceed the budget (or there are NO
     // overviews) — decimate that level to fit, one segment resident at a time.
@@ -7320,15 +7328,15 @@ async function readAnyGrid(blob, name, displayCache = null, band = 0) {
     const grid = step > 1 ? await gridDecimatedFromGTiff(g, level, step, band) : await gridFromGTiff(g, level, band);
     if (grid.x0 == null) { grid.x0 = grid.dx / 2; grid.y0 = grid.ny * grid.dy - grid.dy / 2; }
     const img = g.images[0], lvl = g.images[level];
-    grid.form = `GeoTIFF ${img.bitsPerSample}-bit${img.sampleFormat === 3 ? ' float' : img.sampleFormat === 2 ? ' int' : ''}` +
-      `${{ 1: '', 5: ', LZW', 8: ', deflate', 32946: ', deflate', 32773: ', PackBits' }[img.compression] ?? ''}${img.tiled ? ', tiled' : ''}` +
+    grid.form = (isTiff
+      ? `GeoTIFF ${img.bitsPerSample}-bit${img.sampleFormat === 3 ? ' float' : img.sampleFormat === 2 ? ' int' : ''}` +
+        `${{ 1: '', 5: ', LZW', 8: ', deflate', 32946: ', deflate', 32773: ', PackBits' }[img.compression] ?? ''}${img.tiled ? ', tiled' : ''}`
+      : g.form) +
       `${level > 0 ? ` · overview ${lvl.width}×${lvl.height} of ${img.width}×${img.height}` : ''}` +
       `${step > 1 ? ` · display ÷${step} (${grid.nx}×${grid.ny})` : ''}`;
     grid.bands = img.samplesPerPixel; grid.band = band; grid._src = { g, level, name, step, band };                  // windowable full-res source (eval + export)
     return grid;
   }
-  if (/\.grd$/i.test(name)) return readSurferGrd(blob);
-  return readEsriAsc(blob);
 }
 // grid → the POINTS pipeline (spec §7.1 v1: heightfield cells as records,
 // zero new GL). The FULL grid stays on the layer (L.docs.gridDoc) for the
@@ -7682,6 +7690,7 @@ async function openPlyBlob(blob, name, opts = {}) {
 // whole-file read, one static chunk, scenery (no records: not pickable, not
 // filterable). Picks pass THROUGH a mesh to the elements behind it.
 const CONTEXT_TRI_CAP = 2_000_000;                        // above this → the streaming soup tier
+const MESH_STREAM_BYTES = 160 * 1024 * 1024;              // an OBJ past this streams (its text announces no triangle count)
 async function plyFaceCount(blob) {
   try {
     let sampleLen = 64 * 1024, h = null;
@@ -7741,7 +7750,7 @@ const lfmTint = (c) => (c ? '#' + [c.r, c.g, c.b].map((v) => Math.max(0, Math.mi
 // split a multi-mesh .lfm into per-solid layers inside a layer group; each
 // child is a valid ONE-MESH .lfm carrying its name + colour (→ the tint)
 async function openLfmSplit(blob, name, mode) {
-  const r = await readLFM(await blob.arrayBuffer());
+  const r = await readLFM(blob);                           // lazy (XML head + blocks sliced) — never one whole buffer
   const base = name.replace(/\.lfm$/i, '');
   const ids = [];
   let first = mode !== 'add';
@@ -7779,8 +7788,19 @@ async function openMeshDoc(blob, name, opts = {}) {
   // file ever being held whole; .msh/.obj formats are whole-file reads anyway,
   // so their vertices are transient and only the soup stays resident.
   let header = null, soupSrc = null;
-  if (!opts.prebuilt && /\.ply$/i.test(name) && (opts.forceSoup || await plyFaceCount(blob) > CONTEXT_TRI_CAP)) {
-    const doc = await openPlySoup(blob, { onProgress: (a, b2) => { $('#meta').textContent = `${name} — reading vertices… ${Math.round(100 * a / b2)}%`; } });
+  // a TRUE streaming provider per format, chosen before anything is read whole:
+  // PLY and .msh announce their triangle count in a header, .lfm in its XML
+  // descriptor; OBJ announces nothing, so its size decides (≈ 60–90 B of text
+  // per triangle → MESH_STREAM_BYTES ≈ the context cap)
+  const pct = (a, b2) => { $('#meta').textContent = `${name} — reading vertices… ${Math.round(100 * a / b2)}%`; };
+  const streamDoc = opts.prebuilt ? null
+    : /\.ply$/i.test(name) ? ((opts.forceSoup || await plyFaceCount(blob) > CONTEXT_TRI_CAP) ? () => openPlySoup(blob, { onProgress: pct }) : null)
+    : /\.msh$/i.test(name) ? ((opts.forceSoup || ((await readMSHLayout(blob)).triangles || { count: 0 }).count > CONTEXT_TRI_CAP) ? () => openMshSoup(blob, { onProgress: pct }) : null)
+    : /\.obj$/i.test(name) ? ((opts.forceSoup || blob.size > MESH_STREAM_BYTES) ? () => openObjSoup(blob, { onProgress: pct }) : null)
+    : /\.lfm$/i.test(name) ? ((opts.forceSoup || await lfmTriCount(blob) > CONTEXT_TRI_CAP) ? () => openLfmSoup(blob, { onProgress: (msg) => { $('#meta').textContent = `${name} — ${msg}`; } }) : null)
+    : null;
+  if (streamDoc) {
+    const doc = await streamDoc();
     header = doc.header;
     soupSrc = (o) => doc.streamChunks(o);
   } else {
@@ -7945,9 +7965,12 @@ async function describeFile(f) {
         sampleLen *= 4;
       }
       const names = [...xml.matchAll(/<mesh>[\s\S]*?<name>([^<]*)<\/name>/g)].map((m2) => m2[1].trim()).filter(Boolean);
-      d.objGroups = names;
-      d.split = names.length > 1;
-      d.desc = `Leapfrog model (.lfm)${names.length ? ` · ${names.length} mesh${names.length > 1 ? 'es' : ''}` : ''}`;
+      // a split rewrites every mesh as its own in-memory .lfm child — fine for a
+      // deliverable, not for a multi-hundred-MB model, which opens as ONE streamed mesh
+      const bigLfm = f.size > 256 * 1024 * 1024;
+      d.objGroups = bigLfm ? [] : names;
+      d.split = !bigLfm && names.length > 1;
+      d.desc = `Leapfrog model (.lfm)${names.length ? ` · ${names.length} mesh${names.length > 1 ? 'es' : ''}` : ''}${bigLfm ? ` · ${(f.size / 2 ** 30).toFixed(1)} GB · one streamed mesh` : ''}`;
     } else if (/\.dxf$/i.test(name)) {
       d.kind = 'dxf';
       d.desc = 'DXF drawing';
@@ -7979,6 +8002,12 @@ async function describeFile(f) {
       }
     } else if (/\.msh$/i.test(name)) {
       d.kind = 'mesh'; d.desc = 'Leapfrog mesh (.msh)';
+    } else if (/\.obj$/i.test(name) && f.size > MESH_STREAM_BYTES) {
+      // too big to read for a census (or to split — a split rewrites the file per
+      // group): it opens as ONE streamed mesh
+      d.kind = 'mesh';
+      d.objGroups = []; d.split = false;
+      d.desc = `Wavefront mesh (.obj) · ${(f.size / 2 ** 30).toFixed(1)} GB · one streamed mesh`;
     } else if (/\.obj$/i.test(name)) {
       d.kind = 'mesh';
       // group census (full read — context meshes are small): only groups that
@@ -10227,15 +10256,17 @@ async function tidyProject() {
         const taken = claimed.get(target);
         if (taken != null && taken !== curRel) { collided++; $('#meta').textContent = `tidy: “${basename(fd.name)}” collides in ${target.split('/')[0]}/ — left in place`; continue; }
         claimed.set(target, curRel);
-        const bytes = await (await (await resolveFileHandle(dir, curRel)).getFile()).arrayBuffer();
+        // STREAMED copy (pipeTo closes the writable): a whole-file read here failed
+        // outright on a multi-GB source, part-way through tidying the folder
+        const srcFile = await (await resolveFileHandle(dir, curRel)).getFile();
         const nh = await resolveFileHandle(dir, target, { create: true });
-        const w = await nh.createWritable(); await w.write(bytes); await w.close();
+        await srcFile.stream().pipeTo(await nh.createWritable());
         if (!L.dh) L.handle = nh;
         for (const suf of ['.meta.json', '.disp.grd', '.disp.json']) {   // sidecars ride along
           try {
-            const sb = await (await (await resolveFileHandle(dir, curRel + suf)).getFile()).arrayBuffer();
+            const sf = await (await resolveFileHandle(dir, curRel + suf)).getFile();
             const sh = await resolveFileHandle(dir, target + suf, { create: true });
-            const sw = await sh.createWritable(); await sw.write(sb); await sw.close();
+            await sf.stream().pipeTo(await sh.createWritable());
             await removeFileAt(dir, curRel + suf);
           } catch { /* no such sidecar */ }
         }
@@ -13145,7 +13176,7 @@ function layerMenu(L, x, y) {
       { label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
       ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : []),
       { label: 'Export as ESRI ASCII grid…', action: () => exportGridAsc(L) },
-      ...(L.docs.gridDoc.source && !L.docs.gridDoc.fullRes && S.project ? [{ label: 'Build display cache', action: async () => { try { const why = await writeGridDisplayCache(L, S.project.dir); $('#meta').textContent = why ? `display cache: ${why}` : `display cache written · ${L.name}.disp.grd`; } catch (e) { $('#meta').textContent = `display cache — ${e.message}`; } } }] : []),
+      ...(L.docs.gridDoc.source && !L.docs.gridDoc.fullRes && S.project && /\.(tif|tiff)$/i.test(L.name) ? [{ label: 'Build display cache', action: async () => { try { const why = await writeGridDisplayCache(L, S.project.dir); $('#meta').textContent = why ? `display cache: ${why}` : `display cache written · ${L.name}.disp.grd`; } catch (e) { $('#meta').textContent = `display cache — ${e.message}`; } } }] : []),
     ] }] : []),
     ...(L.kind === 'mesh' ? (() => {
       const items = [];

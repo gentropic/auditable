@@ -16,7 +16,27 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readLFM, writeLFM, LFMError } from '../lfm.js';
+import { readLFM, writeLFM, LFMError, createSha256 } from '../lfm.js';
+import { createHash } from 'node:crypto';
+
+// the incremental SHA-256 that verifies a binary section too big for one WebCrypto
+// digest call — must equal the reference for every length (padding edges 55/56/64)
+// and every way of chunking the updates
+describe('createSha256', () => {
+  test('matches node:crypto across lengths and chunkings', () => {
+    let seed = 7;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) >>> 0; return seed >>> 24; };
+    for (const len of [0, 1, 3, 55, 56, 57, 63, 64, 65, 119, 120, 128, 1000, 70000]) {
+      const data = Uint8Array.from({ length: len }, rnd);
+      const want = createHash('sha256').update(data).digest('hex');
+      for (const chunk of [1, 7, 64, 100, 1 << 20]) {
+        const h = createSha256();
+        for (let i = 0; i < len; i += chunk) h.update(data.subarray(i, i + chunk));
+        assert.equal(h.hex(), want, `len ${len} chunk ${chunk}`);
+      }
+    }
+  });
+});
 
 const HAS_DOM_PARSER = typeof DOMParser !== 'undefined';
 if (!HAS_DOM_PARSER) {

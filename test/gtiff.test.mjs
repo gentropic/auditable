@@ -366,3 +366,50 @@ test('multi-band: band selection deinterleaves the right sample', async () => {
   assert.equal(g0.data[0], 100); assert.equal(g1.data[0], 500);   // band 0 vs band 1 differ
   assert.equal(g0.data[7], 107); assert.equal(g1.data[7], 493);
 });
+
+// ── a Blob is read in SLICES, never whole (multi-GB DEMs) ─────────────────────────
+
+// counts slice reads and the bytes they pull; headCache:16 forces real slice
+// reads even for these tiny fixtures (the default head cache would serve them)
+class CountingBlob extends Blob {
+  constructor(parts) { super(parts); this.reads = 0; this.bytes = 0; }
+  slice(a, b) { this.reads++; this.bytes += Math.max(0, Math.min(b ?? this.size, this.size) - (a || 0)); return super.slice(a, b); }
+  arrayBuffer() { throw new Error('read WHOLE — must never happen'); }
+}
+
+test('Blob input: identical pixels to the bytes path, never one whole read (strips, tiles, BE, every codec)', async () => {
+  const cases = [demTiff({}), demTiff({ compression: 5 }), demTiff({ compression: 8 }), demTiff({ compression: 32773 }),
+    demTiff({ le: false, data: demBytes(false) }), tiledDem().tif];
+  for (const bytes of cases) {
+    const ref = await readGTiff(bytes);
+    const blob = new CountingBlob([bytes]);
+    const g = await readGTiff(blob, { headCache: 16 });
+    assert.deepStrictEqual(g.geo, ref.geo);
+    assert.deepStrictEqual([...(await g.images[0].read())], [...(await ref.images[0].read())]);
+    const w = { x: 1, y: 1, width: 3, height: 2 };
+    assert.deepStrictEqual([...(await g.images[0].readWindow(w)).data], [...(await ref.images[0].readWindow(w)).data]);
+    assert.ok(blob.reads > 1, 'read in slices');
+  }
+});
+
+test('Blob input: a strip-per-row raster coalesces into few reads; a window reads only its rows', async () => {
+  // 64 rows × 1 row per strip, uncompressed float32, rows contiguous on disk
+  const NX = 32, NY = 64, rowB = NX * 4;
+  const rows = [];
+  for (let r = 0; r < NY; r++) { const b = new Uint8Array(rowB), v = new DataView(b.buffer); for (let c = 0; c < NX; c++) v.setFloat32(c * 4, r * 1000 + c, true); rows.push(b); }
+  const entries = [[256, 3, 1, [NX]], [257, 3, 1, [NY]], [258, 3, 1, [32]], [259, 3, 1, [1]], [262, 3, 1, [1]],
+    [277, 3, 1, [1]], [278, 3, 1, [1]], [279, 4, NY, rows.map(() => rowB)], [339, 3, 1, [3]]];
+  const probe = writeTiff({ entries: [...entries, [273, 4, NY, rows.map(() => 0)]].sort((a, b) => a[0] - b[0]), imageData: [] });
+  const offs = rows.map((_, i) => probe.length + i * rowB);
+  const tif = writeTiff({ entries: [...entries, [273, 4, NY, offs]].sort((a, b) => a[0] - b[0]), imageData: rows });
+  const blob = new CountingBlob([tif]);
+  const g = await readGTiff(blob, { headCache: 16 });
+  const before = blob.reads;
+  const full = await g.images[0].read();
+  assert.equal(full[63 * NX + 5], 63005);
+  assert.ok(blob.reads - before <= 2, `64 strips coalesced into ${blob.reads - before} read(s)`);
+  const b2 = blob.bytes;
+  const win = await g.images[0].readWindow({ x: 0, y: 40, width: NX, height: 3 });
+  assert.equal(win.data[0], 40000);
+  assert.ok(blob.bytes - b2 <= 3 * rowB, `the window pulled ${blob.bytes - b2} bytes (3 rows = ${3 * rowB})`);
+});

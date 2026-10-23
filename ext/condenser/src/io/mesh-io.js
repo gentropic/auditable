@@ -55,7 +55,7 @@ const ARRAY_FOR = {
 
 // ── Leapfrog .msh ──
 export async function openMsh(blob) {
-  const msh = await readMSH(new Uint8Array(await blob.arrayBuffer()));
+  const msh = await readMSH(blob);                     // sliced per array — never one whole-file buffer
   if (!msh.vertices || !msh.triangles) throw new Error('msh: no vertex/triangle arrays found');
   const vertices = Float64Array.from(msh.vertices);
   const triangles = Uint32Array.from(msh.triangles);

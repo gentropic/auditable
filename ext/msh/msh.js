@@ -106,6 +106,7 @@ export class MSHError extends Error {
  *  @returns {Promise<MSHResult>}
  */
 export async function readMSH(input, opts = {}) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) return _readMSHBlob(input, opts);
   const bytes = _coerceBytes(input);
   const validateIndices = opts.validateIndices !== false;
 
@@ -196,6 +197,67 @@ export async function readMSH(input, opts = {}) {
     }
   }
 
+  return result;
+}
+
+/** The file's LAYOUT without reading its arrays: version, signature, and each
+ *  declared array with its byte `offset` and `bytes` — plus `vertices` /
+ *  `triangles` naming the first Double-3 and Integer-3 arrays (readMSH's rule).
+ *  A Blob/File is read only at its head (the text index), so a multi-GB mesh is
+ *  described for free and a streaming reader can slice one array at a time.
+ *  @param {Blob|ArrayBuffer|Uint8Array} input */
+export async function readMSHLayout(input) {
+  const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
+  const size = isBlob ? input.size : _coerceBytes(input).length;
+  let head, binaryHeaderStart = -1;
+  for (let len = 64 * 1024; ; len *= 4) {                   // the text index is small; grow until [binary] shows
+    head = isBlob ? new Uint8Array(await input.slice(0, Math.min(size, len)).arrayBuffer()) : _coerceBytes(input).subarray(0, Math.min(size, len));
+    binaryHeaderStart = _indexOfBytes(head, SECTION_BINARY);
+    if (binaryHeaderStart >= 0 || len >= size || len >= 64 * 1024 * 1024) break;
+  }
+  if (binaryHeaderStart < 0) throw new MSHError('missing [binary] section header');
+  const binaryStart = binaryHeaderStart + SECTION_BINARY.length;
+  const { version, declarations } = _parseTextHeader(new TextDecoder('utf-8').decode(head.subarray(0, binaryHeaderStart)));
+  if (binaryStart + BINARY_PREFIX_LENGTH > size) throw new MSHError('binary section truncated before signature');
+  const sig = isBlob
+    ? new Uint8Array(await input.slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH).arrayBuffer())
+    : _coerceBytes(input).slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH);
+  let cursor = binaryStart + BINARY_PREFIX_LENGTH;
+  const arrays = [];
+  for (const decl of declarations) {
+    const info = MSH_TYPES[decl.type];
+    if (!info) throw new MSHError(`unsupported type "${decl.type}" for array "${decl.name}"`);
+    const bytes = decl.components * decl.count * info.bytes;
+    if (cursor + bytes > size) {
+      throw new MSHError(`array "${decl.name}" declared ${bytes} bytes but file has only ${size - cursor} remaining`);
+    }
+    arrays.push({ ...decl, offset: cursor, bytes });
+    cursor += bytes;
+  }
+  if (size - cursor > 8) throw new MSHError(`${size - cursor} unexpected bytes after the last declared array`);
+  const vertices = arrays.find((a) => a.type === 'Double' && a.components === 3) || null;
+  const triangles = arrays.find((a) => a.type === 'Integer' && a.components === 3) || null;
+  return { version, binarySignature: sig, arrays, vertices, triangles, size };
+}
+
+// readMSH over a Blob: the layout from the head, then each array sliced on its own
+// — never one whole-file buffer (and no second copy of it).
+async function _readMSHBlob(blob, opts) {
+  const lay = await readMSHLayout(blob);
+  const arrays = new Map();
+  for (const a of lay.arrays) {
+    const bytes = new Uint8Array(await blob.slice(a.offset, a.offset + a.bytes).arrayBuffer());
+    arrays.set(a.name, { type: a.type, components: a.components, count: a.count, data: _readTypedArray(bytes, 0, a.components * a.count, MSH_TYPES[a.type]) });
+  }
+  const result = { version: lay.version, arrays, binarySignature: lay.binarySignature };
+  if (lay.vertices) result.vertices = arrays.get(lay.vertices.name).data;
+  if (lay.triangles) result.triangles = arrays.get(lay.triangles.name).data;
+  if (opts.validateIndices !== false && result.vertices && result.triangles) {
+    const vCount = result.vertices.length / 3 | 0, t = result.triangles;
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] < 0 || t[i] >= vCount) throw new MSHError(`triangle index ${t[i]} at position ${i} is out of range (0..${vCount - 1})`);
+    }
+  }
   return result;
 }
 

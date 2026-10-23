@@ -76,13 +76,79 @@ export class LFMError extends Error {
  * @returns {Promise<LFMResult>}
  */
 export async function readLFM(input, options = {}) {
-  const { onProgress } = options;
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const { onProgress, verify = true } = options;
+  const layout = await readLFMLayout(input);
+  const src = layout._src;
 
-  // ── XML descriptor ────────────────────────────────────────────────
-  const xmlEnd = findCloseTag(bytes);
+  if (verify) {
+    onProgress?.('verifying SHA-256');
+    const actualSha = await binarySha256(src, layout.binaryStart, layout.binaryLength, onProgress);
+    if (actualSha !== layout.sha256) {
+      throw new LFMError(
+        `SHA-256 mismatch\n  expected ${layout.sha256}\n  got      ${actualSha}`);
+    }
+  }
+
+  // ── walk meshes ───────────────────────────────────────────────────
+  const meshes = [];
+  for (let i = 0; i < layout.meshes.length; i++) {
+    const lm = layout.meshes[i];
+    const name = lm.name;
+    onProgress?.(`decoding mesh ${i + 1}/${layout.meshes.length}`);
+
+    const vertices  = await decodeBlock(src, layout.binaryStart, lm.verticesBlock, 'Float64Array', name);
+    const triangles = await decodeBlock(src, layout.binaryStart, lm.trianglesBlock, 'Int32Array',   name);
+
+    if (vertices.length  % 3 !== 0)
+      throw new LFMError(`${name}: vertex scalar count ${vertices.length} not divisible by 3`);
+    if (triangles.length % 3 !== 0)
+      throw new LFMError(`${name}: triangle scalar count ${triangles.length} not divisible by 3`);
+
+    const vCount = vertices.length / 3;
+    const tCount = triangles.length / 3;
+    let maxIdx = -1, minIdx = Infinity;
+    for (let k = 0; k < triangles.length; k++) {
+      if (triangles[k] > maxIdx) maxIdx = triangles[k];
+      if (triangles[k] < minIdx) minIdx = triangles[k];
+    }
+    if (vCount > 0 && (maxIdx >= vCount || minIdx < 0)) {
+      throw new LFMError(
+        `${name}: triangle index out of range [${minIdx},${maxIdx}] vs ${vCount} vertices`);
+    }
+
+    meshes.push({ name, colour: lm.colour, attributes: lm.attributes, vertices, triangles, vCount, tCount });
+  }
+
+  return {
+    collectionName: layout.collectionName,
+    version: layout.version,
+    meshes,
+    binary: {
+      length: layout.binaryLength,
+      sha256: layout.sha256,
+      checksumOk: !!verify,
+      xmlBytes: layout.xmlBytes,
+      fileBytes: src.size,
+    },
+  };
+}
+
+/**
+ * readLFMLayout(input) — the descriptor WITHOUT decoding a single block: the
+ * collection, each mesh's name / colour / attributes / counts and its vertex +
+ * triangle block declarations ({ offset, size, numElements, datatype }, offsets
+ * relative to `binaryStart`). A Blob/File is read in slices — the XML head, never
+ * the binary section — so a multi-GB model costs nothing to describe, and a
+ * streaming consumer can inflate one block at a time (lfmBlockStream).
+ * @param {Blob | ArrayBuffer | Uint8Array} input
+ */
+export async function readLFMLayout(input) {
+  const src = byteSource(input);
+  // ── XML descriptor (headers are small: the close tag sits in the first 8 MB) ──
+  const head = await src.read(0, Math.min(src.size, 8 * 1024 * 1024 + 64));
+  const xmlEnd = findCloseTag(head);
   if (xmlEnd < 0) throw new LFMError('not an LFM file: no </leapfrogModelFile> tag');
-  const xmlText = new TextDecoder('utf-8').decode(bytes.subarray(0, xmlEnd));
+  const xmlText = new TextDecoder('utf-8').decode(head.subarray(0, xmlEnd));
   const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
   const perr = xml.querySelector('parsererror');
   if (perr) throw new LFMError('XML parse failure: ' + perr.textContent.split('\n')[0]);
@@ -102,56 +168,36 @@ export async function readLFM(input, options = {}) {
   // Past XML close + 3-byte separator (0x0A 0x5C 0x30), the binary
   // section starts at the first zlib magic. Scanning is more robust
   // than trusting the separator's exact form.
-  const bs = findZlibMagic(bytes, xmlEnd);
-  if (bs < 0) throw new LFMError('no zlib stream after XML descriptor');
-  if (bs + length > bytes.length) throw new LFMError('binary section truncated');
-  const binary = bytes.subarray(bs, bs + length);
+  const after = await src.read(xmlEnd, 64);
+  const rel = findZlibMagic(after, 0);
+  if (rel < 0) throw new LFMError('no zlib stream after XML descriptor');
+  const bs = xmlEnd + rel;
+  if (bs + length > src.size) throw new LFMError('binary section truncated');
 
-  onProgress?.('verifying SHA-256');
-  const actualSha = await sha256Hex(binary);
-  if (actualSha !== expectedSha) {
-    throw new LFMError(
-      `SHA-256 mismatch\n  expected ${expectedSha}\n  got      ${actualSha}`);
-  }
-
-  // ── walk meshes ───────────────────────────────────────────────────
   const collection = xml.getElementsByTagNameNS(LFM_NS, 'collectionOfMeshes')[0];
   if (!collection) throw new LFMError('missing <collectionOfMeshes>');
   const collectionName =
     collection.getElementsByTagNameNS(LFM_NS, 'name')[0]?.textContent ?? '';
-
+  const block = (decl, meshName) => {
+    const b = {
+      datatype: decl.getAttribute('datatype'),
+      offset: parseInt(decl.getAttribute('offset'), 10),
+      size: parseInt(decl.getAttribute('size'), 10),
+      numElements: parseInt(decl.getAttribute('numElements'), 10),
+      tag: decl.localName,
+    };
+    if (!Number.isFinite(b.offset) || !Number.isFinite(b.size) || !Number.isFinite(b.numElements)) {
+      throw new LFMError(`${meshName}: malformed block declaration on <${decl.localName}>`);
+    }
+    return b;
+  };
   const meshes = [];
   const ams = collection.getElementsByTagNameNS(LFM_NS, 'attributedMesh');
   for (let i = 0; i < ams.length; i++) {
     const am   = ams[i];
     const mesh = am.getElementsByTagNameNS(LFM_NS, 'mesh')[0];
     const name = mesh.getElementsByTagNameNS(LFM_NS, 'name')[0].textContent;
-    onProgress?.(`decoding mesh ${i + 1}/${ams.length}`);
-
-    const v = mesh.getElementsByTagNameNS(LFM_NS, 'vertices')[0];
-    const t = mesh.getElementsByTagNameNS(LFM_NS, 'triangles')[0];
     const c = mesh.getElementsByTagNameNS(LFM_NS, 'colour')[0];
-
-    const vertices  = await decodeBlock(binary, v, 'Float64Array', name);
-    const triangles = await decodeBlock(binary, t, 'Int32Array',   name);
-
-    if (vertices.length  % 3 !== 0)
-      throw new LFMError(`${name}: vertex scalar count ${vertices.length} not divisible by 3`);
-    if (triangles.length % 3 !== 0)
-      throw new LFMError(`${name}: triangle scalar count ${triangles.length} not divisible by 3`);
-
-    const vCount = vertices.length / 3;
-    const tCount = triangles.length / 3;
-    let maxIdx = -1, minIdx = Infinity;
-    for (let k = 0; k < triangles.length; k++) {
-      if (triangles[k] > maxIdx) maxIdx = triangles[k];
-      if (triangles[k] < minIdx) minIdx = triangles[k];
-    }
-    if (vCount > 0 && (maxIdx >= vCount || minIdx < 0)) {
-      throw new LFMError(
-        `${name}: triangle index out of range [${minIdx},${maxIdx}] vs ${vCount} vertices`);
-    }
-
     const colour = {
       r: parseInt(c.getAttribute('red'),   10),
       g: parseInt(c.getAttribute('green'), 10),
@@ -161,20 +207,130 @@ export async function readLFM(input, options = {}) {
     for (const ma of am.getElementsByTagNameNS(LFM_NS, 'meshAttribute')) {
       attributes[ma.getAttribute('name')] = ma.getAttribute('value');
     }
-
-    meshes.push({ name, colour, attributes, vertices, triangles, vCount, tCount });
+    const verticesBlock = block(mesh.getElementsByTagNameNS(LFM_NS, 'vertices')[0], name);
+    const trianglesBlock = block(mesh.getElementsByTagNameNS(LFM_NS, 'triangles')[0], name);
+    meshes.push({
+      name, colour, attributes, verticesBlock, trianglesBlock,
+      vCount: verticesBlock.numElements / 3, tCount: trianglesBlock.numElements / 3,
+    });
   }
+  const out = {
+    collectionName, version: xml.documentElement.getAttribute('version') ?? '?',
+    meshes, binaryStart: bs, binaryLength: length, sha256: expectedSha, xmlBytes: xmlEnd, fileBytes: src.size,
+  };
+  Object.defineProperty(out, '_src', { value: src });      // the byte source, for readLFM / lfmBlockStream
+  return out;
+}
 
+/**
+ * verifyLFM(input, layout, { onProgress }) — the binary section's SHA-256 against
+ * the descriptor's, throwing LFMError on a mismatch. readLFM does this itself; a
+ * streaming consumer (lfmBlockStream) calls it first. Incremental over slices for
+ * a section too big to digest in one WebCrypto call.
+ */
+export async function verifyLFM(input, layout, { onProgress } = {}) {
+  const actual = await binarySha256(layout._src || byteSource(input), layout.binaryStart, layout.binaryLength, onProgress);
+  if (actual !== layout.sha256) throw new LFMError(`SHA-256 mismatch\n  expected ${layout.sha256}\n  got      ${actual}`);
+  return true;
+}
+
+/**
+ * lfmBlockStream(input, layout, block) → a ReadableStream of the block's
+ * DECOMPRESSED bytes, inflated as they're read — a multi-hundred-MB triangle
+ * block never exists whole. `block` is a layout mesh's verticesBlock or
+ * trianglesBlock. Chunk boundaries are arbitrary (a value may straddle two).
+ */
+export function lfmBlockStream(input, layout, block) {
+  const at = layout.binaryStart + block.offset;
+  const raw = typeof Blob !== 'undefined' && input instanceof Blob
+    ? input.slice(at, at + block.size)
+    : new Blob([byteSource(input).bytes.subarray(at, at + block.size)]);
+  return raw.stream().pipeThrough(new DecompressionStream('deflate'));
+}
+
+// A byte SOURCE: random access without holding the file. A Blob/File is read in
+// slices (a multi-GB .lfm never becomes one ArrayBuffer); bytes are subarrayed.
+function byteSource(input) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) {
+    return { size: input.size, read: async (off, len) => new Uint8Array(await input.slice(off, off + len).arrayBuffer()) };
+  }
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  return { size: bytes.length, bytes, read: async (off, len) => bytes.subarray(off, Math.min(bytes.length, off + len)) };
+}
+
+// The binary section's SHA-256. Whole-buffer WebCrypto when it can be one buffer
+// (in memory already, or ≤ 256 MB); past that, the incremental SHA-256 below
+// over 8 MB slices — WebCrypto has no incremental digest, and a single read of a
+// multi-GB section is exactly what the browser refuses.
+const WHOLE_DIGEST_MAX = 256 * 1024 * 1024;
+async function binarySha256(src, start, length, onProgress) {
+  if (src.bytes || length <= WHOLE_DIGEST_MAX) return sha256Hex(await src.read(start, length));
+  const h = createSha256();
+  const SLAB = 8 * 1024 * 1024;
+  for (let at = 0; at < length; at += SLAB) {
+    h.update(await src.read(start + at, Math.min(SLAB, length - at)));
+    onProgress?.(`verifying SHA-256 ${Math.round(100 * Math.min(length, at + SLAB) / length)}%`);
+  }
+  return h.hex();
+}
+
+// Incremental SHA-256 (FIPS 180-4), for sections too big to digest in one call.
+const SHA_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+export function createSha256() {
+  const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const W = new Uint32Array(64);
+  const buf = new Uint8Array(64);
+  let bufLen = 0, total = 0;
+  const block = (b, o) => {
+    for (let i = 0; i < 16; i++) W[i] = (b[o + 4 * i] << 24) | (b[o + 4 * i + 1] << 16) | (b[o + 4 * i + 2] << 8) | b[o + 4 * i + 3];
+    for (let i = 16; i < 64; i++) {
+      const w15 = W[i - 15], w2 = W[i - 2];
+      const s0 = ((w15 >>> 7) | (w15 << 25)) ^ ((w15 >>> 18) | (w15 << 14)) ^ (w15 >>> 3);
+      const s1 = ((w2 >>> 17) | (w2 << 15)) ^ ((w2 >>> 19) | (w2 << 13)) ^ (w2 >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+    }
+    let a = H[0], b2 = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+      const t1 = (h + S1 + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
+      const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+      const t2 = (S0 + ((a & b2) ^ (a & c) ^ (b2 & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b2; b2 = a; a = (t1 + t2) | 0;
+    }
+    H[0] += a; H[1] += b2; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+  };
   return {
-    collectionName,
-    version: xml.documentElement.getAttribute('version') ?? '?',
-    meshes,
-    binary: {
-      length,
-      sha256: expectedSha,
-      checksumOk: true,
-      xmlBytes: xmlEnd,
-      fileBytes: bytes.length,
+    update(data) {
+      let i = 0;
+      total += data.length;
+      if (bufLen) {
+        while (bufLen < 64 && i < data.length) buf[bufLen++] = data[i++];
+        if (bufLen === 64) { block(buf, 0); bufLen = 0; }
+      }
+      for (; i + 64 <= data.length; i += 64) block(data, i);
+      while (i < data.length) buf[bufLen++] = data[i++];
+      return this;
+    },
+    hex() {
+      const bits = total * 8;
+      const pad = new Uint8Array(((bufLen < 56 ? 56 : 120) - bufLen) + 8);
+      pad[0] = 0x80;
+      const hi = Math.floor(bits / 2 ** 32), lo = bits >>> 0;
+      const n = pad.length;
+      pad[n - 8] = hi >>> 24; pad[n - 7] = hi >>> 16; pad[n - 6] = hi >>> 8; pad[n - 5] = hi;
+      pad[n - 4] = lo >>> 24; pad[n - 3] = lo >>> 16; pad[n - 2] = lo >>> 8; pad[n - 1] = lo;
+      total -= pad.length;                                   // padding isn't message length
+      this.update(pad);
+      return Array.from(H, (x) => x.toString(16).padStart(8, '0')).join('');
     },
   };
 }
@@ -225,24 +381,18 @@ async function sha256Hex(bytes) {
     .map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function decodeBlock(binary, decl, typeName, meshName) {
-  const datatype = decl.getAttribute('datatype');
-  const offset = parseInt(decl.getAttribute('offset'), 10);
-  const size   = parseInt(decl.getAttribute('size'),   10);
-  const numEl  = parseInt(decl.getAttribute('numElements'), 10);
-  if (!Number.isFinite(offset) || !Number.isFinite(size) || !Number.isFinite(numEl)) {
-    throw new LFMError(`${meshName}: malformed block declaration on <${decl.localName}>`);
-  }
+async function decodeBlock(src, binaryStart, blk, typeName, meshName) {
+  const { datatype, offset, size, numElements: numEl } = blk;
   if (datatype !== '3float64' && datatype !== '3int32') {
     throw new LFMError(`${meshName}: unsupported datatype "${datatype}"`);
   }
   const expectedScalarBytes = typeName === 'Float64Array' ? 8 : 4;
 
-  const compressed   = binary.subarray(offset, offset + size);
+  const compressed   = await src.read(binaryStart + offset, size);
   const decompressed = await inflate(compressed);
   if (decompressed.length !== numEl * expectedScalarBytes) {
     throw new LFMError(
-      `${meshName}: <${decl.localName}> decompressed to ${decompressed.length}B, ` +
+      `${meshName}: <${blk.tag}> decompressed to ${decompressed.length}B, ` +
       `expected ${numEl * expectedScalarBytes}B (${numEl} × ${expectedScalarBytes})`);
   }
 

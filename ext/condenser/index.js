@@ -2816,6 +2816,7 @@ class MSHError extends Error {
  *  @returns {Promise<MSHResult>}
  */
 async function readMSH(input, opts = {}) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) return _readMSHBlob(input, opts);
   const bytes = _coerceBytes(input);
   const validateIndices = opts.validateIndices !== false;
 
@@ -2906,6 +2907,67 @@ async function readMSH(input, opts = {}) {
     }
   }
 
+  return result;
+}
+
+/** The file's LAYOUT without reading its arrays: version, signature, and each
+ *  declared array with its byte `offset` and `bytes` — plus `vertices` /
+ *  `triangles` naming the first Double-3 and Integer-3 arrays (readMSH's rule).
+ *  A Blob/File is read only at its head (the text index), so a multi-GB mesh is
+ *  described for free and a streaming reader can slice one array at a time.
+ *  @param {Blob|ArrayBuffer|Uint8Array} input */
+async function readMSHLayout(input) {
+  const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
+  const size = isBlob ? input.size : _coerceBytes(input).length;
+  let head, binaryHeaderStart = -1;
+  for (let len = 64 * 1024; ; len *= 4) {                   // the text index is small; grow until [binary] shows
+    head = isBlob ? new Uint8Array(await input.slice(0, Math.min(size, len)).arrayBuffer()) : _coerceBytes(input).subarray(0, Math.min(size, len));
+    binaryHeaderStart = _indexOfBytes(head, SECTION_BINARY);
+    if (binaryHeaderStart >= 0 || len >= size || len >= 64 * 1024 * 1024) break;
+  }
+  if (binaryHeaderStart < 0) throw new MSHError('missing [binary] section header');
+  const binaryStart = binaryHeaderStart + SECTION_BINARY.length;
+  const { version, declarations } = _parseTextHeader(new TextDecoder('utf-8').decode(head.subarray(0, binaryHeaderStart)));
+  if (binaryStart + BINARY_PREFIX_LENGTH > size) throw new MSHError('binary section truncated before signature');
+  const sig = isBlob
+    ? new Uint8Array(await input.slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH).arrayBuffer())
+    : _coerceBytes(input).slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH);
+  let cursor = binaryStart + BINARY_PREFIX_LENGTH;
+  const arrays = [];
+  for (const decl of declarations) {
+    const info = MSH_TYPES[decl.type];
+    if (!info) throw new MSHError(`unsupported type "${decl.type}" for array "${decl.name}"`);
+    const bytes = decl.components * decl.count * info.bytes;
+    if (cursor + bytes > size) {
+      throw new MSHError(`array "${decl.name}" declared ${bytes} bytes but file has only ${size - cursor} remaining`);
+    }
+    arrays.push({ ...decl, offset: cursor, bytes });
+    cursor += bytes;
+  }
+  if (size - cursor > 8) throw new MSHError(`${size - cursor} unexpected bytes after the last declared array`);
+  const vertices = arrays.find((a) => a.type === 'Double' && a.components === 3) || null;
+  const triangles = arrays.find((a) => a.type === 'Integer' && a.components === 3) || null;
+  return { version, binarySignature: sig, arrays, vertices, triangles, size };
+}
+
+// readMSH over a Blob: the layout from the head, then each array sliced on its own
+// — never one whole-file buffer (and no second copy of it).
+async function _readMSHBlob(blob, opts) {
+  const lay = await readMSHLayout(blob);
+  const arrays = new Map();
+  for (const a of lay.arrays) {
+    const bytes = new Uint8Array(await blob.slice(a.offset, a.offset + a.bytes).arrayBuffer());
+    arrays.set(a.name, { type: a.type, components: a.components, count: a.count, data: _readTypedArray(bytes, 0, a.components * a.count, MSH_TYPES[a.type]) });
+  }
+  const result = { version: lay.version, arrays, binarySignature: lay.binarySignature };
+  if (lay.vertices) result.vertices = arrays.get(lay.vertices.name).data;
+  if (lay.triangles) result.triangles = arrays.get(lay.triangles.name).data;
+  if (opts.validateIndices !== false && result.vertices && result.triangles) {
+    const vCount = result.vertices.length / 3 | 0, t = result.triangles;
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] < 0 || t[i] >= vCount) throw new MSHError(`triangle index ${t[i]} at position ${i} is out of range (0..${vCount - 1})`);
+    }
+  }
   return result;
 }
 
@@ -3362,7 +3424,7 @@ const ARRAY_FOR = {
 
 // ── Leapfrog .msh ──
 async function openMsh(blob) {
-  const msh = await readMSH(new Uint8Array(await blob.arrayBuffer()));
+  const msh = await readMSH(blob);                     // sliced per array — never one whole-file buffer
   if (!msh.vertices || !msh.triangles) throw new Error('msh: no vertex/triangle arrays found');
   const vertices = Float64Array.from(msh.vertices);
   const triangles = Uint32Array.from(msh.triangles);
@@ -3952,6 +4014,158 @@ async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = 
 // discipline (Morton, shuffle, quantize) lives in core/soup-geom.js.
 
 
+// ── byte-level text walking (OBJ, ASCII PLY): no per-line strings, no whole read ──
+const SLAB$soup_io = 8 << 20;
+const POW10$soup_io = []; for (let i = 0; i <= 22; i++) POW10$soup_io.push(Number('1e' + i));
+function slowNum(b, s, e) { let t = ''; for (let i = s; i < e; i++) t += String.fromCharCode(b[i]); return parseFloat(t); }
+// parseFloat over bytes [s,e): exact for ≤15 significant digits (one correctly
+// rounded op), parseFloat itself for exponents / long mantissas
+function numAt(b, s, e) {
+  let i = s, neg = false;
+  if (b[i] === 45 || b[i] === 43) { neg = b[i] === 45; i++; }
+  let mant = 0, sig = 0, exp = 0, dot = false, digits = 0;
+  for (; i < e; i++) {
+    const c = b[i];
+    if (c >= 48 && c <= 57) { digits++; if (sig || c !== 48) { if (++sig > 15) return slowNum(b, s, e); } mant = mant * 10 + (c - 48); if (dot) exp--; }
+    else if (c === 46 && !dot) dot = true;
+    else return slowNum(b, s, e);
+  }
+  if (!digits || -exp > 22) return slowNum(b, s, e);
+  const v = exp ? mant / POW10$soup_io[-exp] : mant;
+  return neg ? -v : v;
+}
+// blob[from, to) in ~8 MB slabs, each cut at its last newline (the tail rides into
+// the next slab): yields { b, base, n } where b[0..n) holds only complete lines
+// and base is b[0]'s file offset. Per-SLAB, not per-line — a promise per line
+// would cost more than parsing the line.
+async function* lineSlabs(blob, from, to, { onProgress, signal, slab = SLAB$soup_io } = {}) {
+  let at = from, carry = null, carryAbs = 0;
+  while (at < to) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const end = Math.min(to, at + slab);
+    let b = new Uint8Array(await blob.slice(at, end).arrayBuffer()), base = at;
+    if (carry) { const m = new Uint8Array(carry.length + b.length); m.set(carry); m.set(b, carry.length); b = m; base = carryAbs; carry = null; }
+    at = end;
+    let n = b.length;
+    if (at < to) {
+      n = b.lastIndexOf(10) + 1;
+      if (n < b.length) { carry = b.slice(n); carryAbs = base + n; }
+    }
+    if (onProgress) onProgress(at, to);
+    yield { b, base, n };
+  }
+}
+// the lines of one slab: onLine(b, start, end, absStart) — end excludes \r\n; → false stops
+function forLines({ b, base, n }, onLine) {
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    if (b[i] !== 10) continue;
+    if (onLine(b, s, i > s && b[i - 1] === 13 ? i - 1 : i, base + s) === false) return false;
+    s = i + 1;
+  }
+  if (s < n && onLine(b, s, n, base + s) === false) return false;
+  return true;
+}
+async function eachLine(blob, from, to, onLine, opts) {
+  for await (const sl of lineSlabs(blob, from, to, opts)) if (forLines(sl, onLine) === false) return;
+}
+// whitespace-separated tokens of one line → calls tok(s, e) in order
+function tokens(b, s, e, tok) {
+  let i = s;
+  while (i < e) {
+    while (i < e && (b[i] === 32 || b[i] === 9)) i++;
+    if (i >= e) break;
+    const t = i;
+    while (i < e && b[i] !== 32 && b[i] !== 9) i++;
+    if (tok(t, i) === false) return;
+  }
+}
+
+// the vertex table every soup provider builds: local f32 against the first
+// vertex (mm at UTM magnitudes), plus the world bbox — 12 B/vertex, transient
+function soupVertexTable(cap = 1 << 16) {
+  let verts = new Float32Array(3 * cap), n = 0;
+  const vo = [0, 0, 0], min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  return {
+    push(X, Y, Z) {
+      if (n === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+      if (3 * n === verts.length) { const g = new Float32Array(verts.length * 2); g.set(verts); verts = g; }
+      verts[3 * n] = X - vo[0]; verts[3 * n + 1] = Y - vo[1]; verts[3 * n + 2] = Z - vo[2];
+      if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+      if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+      if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      n++;
+    },
+    get n() { return n; }, get verts() { return verts; }, vo, min, max,
+  };
+}
+// triangle index batches → RawChunk batches (the createSoupChunkBuilder contract)
+function soupTriBatcher(vt, batchTris) {
+  const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+  let n = 0, tris = 0, dropped = 0;
+  const out = [];
+  return {
+    tri(a, b, c) {
+      const nv = vt.n;
+      if (a < 0 || b < 0 || c < 0 || a >= nv || b >= nv || c >= nv) { dropped++; return; }
+      ia[n] = a; ib[n] = b; ic[n] = c;
+      if (++n === batchTris) { out.push(emitBatch(vt.verts, vt.vo, ia, ib, ic, n)); tris += n; n = 0; }
+    },
+    flush() { if (n) { out.push(emitBatch(vt.verts, vt.vo, ia, ib, ic, n)); tris += n; n = 0; } },
+    take() { return out.splice(0); },
+    get tris() { return tris; }, get dropped() { return dropped; },
+  };
+}
+
+/**
+ * openObjSoup(blob) — a Wavefront OBJ too big to read whole, as a STREAMED soup.
+ * Two passes, neither holding the file: (1) `v` lines → the local-f32 vertex table
+ * + bbox, (2) `f` lines (fanned; v, v/vt, v//vn, v/vt/vn; negative = relative to the
+ * vertices seen so far) → RawChunk batches. Groups/materials are not split here
+ * (a split of a multi-GB OBJ would rewrite it); that's the context tier's job.
+ */
+async function openObjSoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  const vt = soupVertexTable();
+  await eachLine(blob, 0, blob.size, (b, s, e) => {
+    while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+    if (b[s] !== 118 || (b[s + 1] !== 32 && b[s + 1] !== 9)) return;   // "v "
+    const v = [];
+    tokens(b, s + 2, e, (t0, t1) => { v.push(numAt(b, t0, t1)); return v.length < 3; });
+    vt.push(v[0], v[1], v[2] || 0);
+  }, { onProgress, slab });
+  if (!vt.n) throw new Error('obj: no v lines');
+  const header = { kind: 'mesh', soup: true, format: 'obj', vertexCount: vt.n, triCount: 0, bbox: { min: vt.min, max: vt.max } };
+
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    let seenV = 0;
+    const ix = [];
+    const onLine = (b, s, e) => {
+      while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+      if (b[s] === 118 && (b[s + 1] === 32 || b[s + 1] === 9)) { seenV++; return; }
+      if (b[s] !== 102 || (b[s + 1] !== 32 && b[s + 1] !== 9)) return;   // "f "
+      ix.length = 0;
+      tokens(b, s + 2, e, (t0, t1) => {
+        let i = t0, neg = false, v = 0, any = false;
+        if (b[i] === 45) { neg = true; i++; }
+        for (; i < t1 && b[i] >= 48 && b[i] <= 57; i++) { v = v * 10 + (b[i] - 48); any = true; }
+        if (!any || v === 0) return;
+        ix.push(neg ? seenV - v : v - 1);
+      });
+      for (let k = 2; k < ix.length; k++) tb.tri(ix[0], ix[k - 1], ix[k]);
+    };
+    for await (const sl of lineSlabs(blob, 0, blob.size, { signal, onProgress: op2, slab })) {
+      forLines(sl, onLine);
+      yield* tb.take();                                     // batches leave per slab — nothing accumulates
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
+  return { header, streamChunks };
+}
+
 /**
  * openPlySoup(blob) — the TRUE streaming provider (binary_le + ascii PLY, the
  * formats photogrammetry exports). Two passes over the blob, neither holding
@@ -3961,7 +4175,7 @@ async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = 
  * → { header, streamChunks } — header = { kind:'mesh', soup:true, format,
  *    vertexCount, triCount(≈ faces, exact after stream), bbox }
  */
-async function openPlySoup(blob, { onProgress } = {}) {
+async function openPlySoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
   let sampleLen = 64 * 1024, ply = null;
   for (;;) {
     const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
@@ -3985,7 +4199,6 @@ async function openPlySoup(blob, { onProgress } = {}) {
   const vo = [0, 0, 0];
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   let faceStart;                                            // byte offset where faces begin (binary) / line index (ascii)
-  let asciiLines = null;
   if (!ascii) {
     const SLAB = 1 << 23;                                   // 8 MB windows
     let seen = 0;
@@ -4009,25 +4222,27 @@ async function openPlySoup(blob, { onProgress } = {}) {
     }
     faceStart = ply.dataOffset + nv * ply.stride;
   } else {
-    // ascii: one decode, line-split (ascii photogrammetry at soup scale is
-    // rare; the binary path is the load-bearing one)
-    const text = await blob.text();
-    asciiLines = text.slice(ply.dataOffset).split('\n');
+    // ascii: the vertex lines walked in slabs (never one string — an ascii
+    // photogrammetry export can be gigabytes); faceStart = the byte offset of the
+    // first line after the nv-th vertex
     const xi = ply.props.indexOf(px), yi = ply.props.indexOf(py), zi = ply.props.indexOf(pz);
-    let rec = 0, at = 0;
-    while (rec < nv && at < asciiLines.length) {
-      const t = asciiLines[at++].trim();
-      if (!t) continue;
-      const f = t.split(/\s+/);
-      const X = +f[xi], Y = +f[yi], Z = +f[zi];
+    const need = Math.max(xi, yi, zi);
+    const f = new Float64Array(need + 1);
+    let rec = 0;
+    faceStart = blob.size;
+    await eachLine(blob, ply.dataOffset, blob.size, (b, s, e, abs) => {
+      if (rec >= nv) { faceStart = abs; return false; }
+      let k = 0, any = false;
+      tokens(b, s, e, (t0, t1) => { any = true; if (k <= need) f[k] = numAt(b, t0, t1); k++; return k <= need; });
+      if (!any) return;                                     // blank line
+      const X = f[xi], Y = f[yi], Z = f[zi];
       if (rec === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
       verts[rec * 3] = X - vo[0]; verts[rec * 3 + 1] = Y - vo[1]; verts[rec * 3 + 2] = Z - vo[2];
       if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
       if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
       if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
       rec++;
-    }
-    faceStart = at;
+    }, { onProgress: onProgress ? (a) => onProgress(a, blob.size) : null, slab });
   }
 
   const header = {
@@ -4091,23 +4306,73 @@ async function openPlySoup(blob, { onProgress } = {}) {
         if (op2) op2(base, blob.size);
       }
     } else {
-      let at = faceStart, fc = 0;
-      while (fc < face.count && at < asciiLines.length) {
-        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-        const t = asciiLines[at++].trim();
-        if (!t) continue;
-        const f = t.split(/\s+/);
-        const k = +f[0];
-        const ix = new Uint32Array(k);
-        for (let j = 0; j < k; j++) ix[j] = +f[1 + j];
-        yield* pushFan(ix, k);
-        fc++;
+      // face lines in slabs: "k i0 i1 … i(k-1) [other props]" — the vertex list leads
+      let fc = 0;
+      const ix = new Uint32Array(256);
+      const ready = [];
+      for await (const sl of lineSlabs(blob, faceStart, blob.size, { signal, slab })) {
+        forLines(sl, (b, s, e) => {
+          if (fc >= face.count) return false;
+          let k = -1, j = 0;
+          tokens(b, s, e, (t0, t1) => {
+            const v = numAt(b, t0, t1);
+            if (k < 0) { k = Math.min(255, v | 0); return k > 0; }
+            ix[j++] = v;
+            return j < k;
+          });
+          if (k < 0) return;                                // blank line
+          for (const x of pushFan(ix, k)) ready.push(x);
+          fc++;
+        });
+        while (ready.length) yield ready.shift();
+        if (op2) op2(sl.base + sl.n, blob.size);
+        if (fc >= face.count) break;
       }
     }
     yield* flushTo(true);
     header.triCount = tris + n;                             // exact after the stream (fans expand quads)
   }
 
+  return { header, streamChunks };
+}
+
+/**
+ * openMshSoup(blob) — a Leapfrog .msh too big for the context tier, STREAMED.
+ * The text index names each array's offset (readMSHLayout reads only the head),
+ * so: (1) the Location array in 8 MB slices → the local-f32 vertex table + bbox,
+ * (2) the Tri array in slices → RawChunk batches. Out-of-range indices are
+ * dropped and counted (readMSH throws on them; a stream reports instead).
+ */
+async function openMshSoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  const lay = await readMSHLayout(blob);
+  if (!lay.vertices || !lay.triangles) throw new Error('msh: no vertex/triangle arrays found');
+  const V = lay.vertices, T = lay.triangles;
+  const vt = soupVertexTable(V.count);
+  const VREC = 24, per = Math.max(1, Math.floor(slab / VREC));
+  for (let i = 0; i < V.count; i += per) {
+    const n = Math.min(per, V.count - i);
+    const dv = new DataView(await blob.slice(V.offset + i * VREC, V.offset + (i + n) * VREC).arrayBuffer());
+    for (let k = 0; k < n; k++) vt.push(dv.getFloat64(k * VREC, true), dv.getFloat64(k * VREC + 8, true), dv.getFloat64(k * VREC + 16, true));
+    if (onProgress) onProgress(V.offset + (i + n) * VREC, blob.size);
+  }
+  const header = { kind: 'mesh', soup: true, format: 'msh', vertexCount: V.count, triCount: T.count, bbox: { min: vt.min, max: vt.max } };
+
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    const TREC = 12, tper = Math.max(1, Math.floor(slab / TREC));
+    for (let i = 0; i < T.count; i += tper) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const n = Math.min(tper, T.count - i);
+      const dv = new DataView(await blob.slice(T.offset + i * TREC, T.offset + (i + n) * TREC).arrayBuffer());
+      for (let k = 0; k < n; k++) tb.tri(dv.getInt32(k * TREC, true), dv.getInt32(k * TREC + 4, true), dv.getInt32(k * TREC + 8, true));
+      yield* tb.take();
+      if (op2) op2(T.offset + (i + n) * TREC, blob.size);
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
   return { header, streamChunks };
 }
 
@@ -5766,6 +6031,46 @@ function readDM(buffer) {
 // (per-record INC) and non-model .dm files are a later milestone.
 
 
+// PROJECTED batches over any .dm — decode only the requested column indices by
+// striding each field's fixed word-offset across records (no whole-record decode,
+// no per-row allocation), ~4 MB page runs at a time, never the whole file. Numeric
+// col → Float64Array (NaN = missing); alpha col → string[] (''=missing); constants
+// come free from the header. Yields { recStart, count, cols } where cols[idx] is the
+// array for column `idx`, RAW record numbering (recStart + k over ALL records).
+// opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
+// page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
+// can match a filter — parquet's row-group skip, retrofitted onto .dm).
+async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
+  const ids = [...new Set(colIdxs)];
+  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    if (shouldRead) {
+      let totalR = 0;
+      for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+      if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
+    }
+    const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let total = 0;
+    for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+    let w = 0;
+    for (let pg = page; pg <= pEnd; pg++) {
+      const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
+      for (let r = 0; r < nRec; r++) {
+        const recBase = pageBase + r * h.maxLen * h.wordSize;
+        for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+        w++;
+      }
+    }
+    const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+    yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
+  }
+}
+
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
@@ -5817,36 +6122,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
   // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in
   // the run can match a filter — parquet's row-group skip, retrofitted onto .dm)
-  async function* columnBatches(colIdxs, { signal, shouldRead = null } = {}) {
-    const ids = [...new Set(colIdxs)];
-    const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
-    const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
-    for (let page = 2; page <= h.lastPage; page += pagesPer) {
-      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-      const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
-      if (shouldRead) {
-        let totalR = 0;
-        for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-        if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
-      }
-      const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
-      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      let total = 0;
-      for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-      const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
-      let w = 0;
-      for (let pg = page; pg <= pEnd; pg++) {
-        const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
-        for (let r = 0; r < nRec; r++) {
-          const recBase = pageBase + r * h.maxLen * h.wordSize;
-          for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
-          w++;
-        }
-      }
-      const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
-      yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
-    }
-  }
+  const columnBatches = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, opts);
 
   // the grid, straight from the DD (corner origin → centroid convention).
   // A regular model carries the grid as DD constants (XMORIG/XINC/NX…) → no sweep.
@@ -6043,13 +6319,18 @@ function dmWireframeRole(names) {
   return null;
 }
 
-// Join a points file + a triangles file into a mesh. Reads both whole (wireframes
-// are small — 2–4 k records is typical); maps PID → 0-based vertex index (gaps ok);
-// drops any triangle whose vertices don't resolve (reports the count). Multiple
-// GROUPs merge into one mesh for v1.
+// Join a points file + a triangles file into a mesh. Both halves are read in page
+// runs, striding only the fields the join needs (PID/XP/YP/ZP, PID1-3) — never a
+// whole-file buffer, so a big survey DTM pair opens too; maps PID → 0-based vertex
+// index (gaps ok); drops any triangle whose vertices don't resolve (reports the
+// count). Multiple GROUPs merge into one mesh for v1.
+const dmHeadOf = async (blob) => {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  return parseHeader(head, detectDM(head) || {});
+};
+const missing = (v) => v == null || v === '' || (typeof v === 'number' && Number.isNaN(v));
 async function openDmWireframe(ptBlob, trBlob) {
-  const pb = new Uint8Array(await ptBlob.arrayBuffer());
-  const ph = parseHeader(pb, detectDM(pb) || {});
+  const ph = await dmHeadOf(ptBlob);
   const pu = ph.columns.map((c) => c.name.toUpperCase());
   const xi = pu.indexOf('XP'), yi = pu.indexOf('YP'), zi = pu.indexOf('ZP'), pid = pu.indexOf('PID');
   if (xi < 0 || yi < 0 || zi < 0 || pid < 0) throw new Error('dm wireframe: the points file needs XP/YP/ZP/PID');
@@ -6057,29 +6338,30 @@ async function openDmWireframe(ptBlob, trBlob) {
   const vx = [];
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   let n = 0;
-  for (let i = 0; i < ph.recordCount; i++) {
-    const { offset, length } = recordRange(ph, i);
-    const v = decodeRecord(pb.subarray(offset, offset + length), ph);
-    const id = v[pid], x = v[xi], y = v[yi], z = v[zi];
-    if (id == null || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-    idxOfPid.set(id, n++); vx.push(x, y, z);
-    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
-    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
-    if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+  for await (const run of dmColumnBatches(ptBlob, ph, [pid, xi, yi, zi])) {
+    const P = run.cols[pid], X = run.cols[xi], Y = run.cols[yi], Z = run.cols[zi];
+    for (let k = 0; k < run.count; k++) {
+      const id = P[k], x = X[k], y = Y[k], z = Z[k];
+      if (missing(id) || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      idxOfPid.set(id, n++); vx.push(x, y, z);
+      if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+      if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+      if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+    }
   }
-  const tb = new Uint8Array(await trBlob.arrayBuffer());
-  const th = parseHeader(tb, detectDM(tb) || {});
+  const th = await dmHeadOf(trBlob);
   const tu = th.columns.map((c) => c.name.toUpperCase());
   const a = tu.indexOf('PID1'), b = tu.indexOf('PID2'), c = tu.indexOf('PID3');
   if (a < 0 || b < 0 || c < 0) throw new Error('dm wireframe: the triangles file needs PID1/PID2/PID3');
   const tri = [];
   let dropped = 0;
-  for (let i = 0; i < th.recordCount; i++) {
-    const { offset, length } = recordRange(th, i);
-    const r = decodeRecord(tb.subarray(offset, offset + length), th);
-    const i1 = idxOfPid.get(r[a]), i2 = idxOfPid.get(r[b]), i3 = idxOfPid.get(r[c]);
-    if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
-    tri.push(i1, i2, i3);
+  for await (const run of dmColumnBatches(trBlob, th, [a, b, c])) {
+    const A = run.cols[a], B = run.cols[b], C = run.cols[c];
+    for (let k = 0; k < run.count; k++) {
+      const i1 = idxOfPid.get(A[k]), i2 = idxOfPid.get(B[k]), i3 = idxOfPid.get(C[k]);
+      if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
+      tri.push(i1, i2, i3);
+    }
   }
   if (!n || !tri.length) throw new Error('dm wireframe: no resolvable triangles');
   const vertices = Float64Array.from(vx), triangles = Uint32Array.from(tri);
@@ -7120,7 +7402,7 @@ const KIND = new Uint8Array(1072);
 for (let c = 0; c < KIND.length; c++) { const k = valueKind(c); KIND[c] = k === 'num' ? 1 : k === 'int' ? 2 : k === 'bool' ? 3 : 0; }
 const kindOf = (c) => (c >= 0 && c < KIND.length ? KIND[c] : (c >= 1010 && c <= 1059 ? 1 : c >= 1060 && c <= 1071 ? 2 : 0));
 
-const POW10 = []; for (let i = 0; i <= 22; i++) POW10.push(Number('1e' + i));
+const POW10$stream = []; for (let i = 0; i <= 22; i++) POW10$stream.push(Number('1e' + i));
 const latin1 = (b, s, e) => { let out = ''; for (let i = s; i < e; i += 4096) out += String.fromCharCode.apply(null, b.subarray(i, Math.min(e, i + 4096))); return out; };
 
 // parseFloat over a byte range, exactly: ≤15 significant digits and a power of ten
@@ -7149,7 +7431,7 @@ function parseNumber(b, s, e) {
   }
   if (!digits) return NaN;
   if (-exp > 22) return parseFloat((neg ? '-' : '') + latin1(b, s, i));
-  const v = exp ? mant / POW10[-exp] : mant;
+  const v = exp ? mant / POW10$stream[-exp] : mant;
   return neg ? -v : v;
 }
 
@@ -7535,7 +7817,7 @@ function peekDxf(bytes) {
 // above this a consumer should stream (below it the resident reader is exact and
 // keeps the full mesh tier: solid queries, mesh export, welded surfaces)
 const DXF_STREAM_BYTES = 256 * 1024 * 1024;
-const SLAB = 8 << 20;                                       // 8 MB reads
+const SLAB$dxf_stream = 8 << 20;                                       // 8 MB reads
 const HEAD = 16 << 20;                                      // the head peek / first bbox sample
 const WINDOW = 256 << 10, WINDOWS = 24;                     // bbox sampling across the file
 
@@ -7703,7 +7985,7 @@ async function openDxfStream(blob, { as = null } = {}) {
     let at = 0;
     while (at < blob.size) {
       if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-      const end = Math.min(blob.size, at + SLAB);
+      const end = Math.min(blob.size, at + SLAB$dxf_stream);
       st.push(new Uint8Array(await blob.slice(at, end).arrayBuffer()));
       at = end;
       if (onProgress) onProgress(at, blob.size);
@@ -9610,6 +9892,10 @@ export {
   createSoupChunkBuilder,
   soupFromMesh,
   openPlySoup,
+  openObjSoup,
+  openMshSoup,
+  soupVertexTable,
+  soupTriBatcher,
   createSoupPipeline,
   categoryPalettePixels,
   createBlocksPipeline,
@@ -9651,4 +9937,5 @@ export {
   createRenderer,
   createEdl,
   writeMSH,
+  readMSHLayout,
 };

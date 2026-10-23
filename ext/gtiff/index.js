@@ -175,11 +175,56 @@ function undoPredictor3(bytes, rowWidth, rows, bytesPerSample, samplesPerPixel, 
 const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8 };
 const PLATFORM_LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
+// A byte SOURCE: random access by (offset, length) without holding the file. A
+// Blob/File is read in slices (a multi-GB DEM never becomes one ArrayBuffer — past
+// ~2 GB the browser refuses that read outright); bytes in memory are subarrayed.
+// The head is cached: IFDs, tag arrays and a COG's whole directory live there.
+const HEAD_CACHE = 1 << 20;
+async function byteSource(input, headCache = HEAD_CACHE) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) {
+    const size = input.size;
+    const head = new Uint8Array(await input.slice(0, Math.min(size, headCache)).arrayBuffer());
+    return {
+      size, lazy: true,
+      async read(off, len) {
+        if (off + len <= head.length) return head.subarray(off, off + len);
+        return new Uint8Array(await input.slice(off, Math.min(size, off + len)).arrayBuffer());
+      },
+    };
+  }
+  const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
+  return { size: bytes.length, lazy: false, read: async (off, len) => bytes.subarray(off, Math.min(bytes.length, off + len)) };
+}
+
+// segments → [segment, raw bytes] in order, with NEARBY segments coalesced into one
+// read (a strip-per-row TIFF has a strip per row; one slice read each would be
+// tens of thousands of reads). Gaps up to COALESCE_GAP are read through; a run
+// stops at COALESCE_MAX.
+const COALESCE_GAP = 64 << 10, COALESCE_MAX = 16 << 20;
+async function* segmentBytes(src, segs) {
+  if (!src.lazy) { for (const s of segs) yield [s, await src.read(s.off, s.len)]; return; }
+  let i = 0;
+  while (i < segs.length) {
+    let j = i + 1, lo = segs[i].off, hi = segs[i].off + segs[i].len;
+    while (j < segs.length) {
+      const s = segs[j];
+      if (s.off < hi || s.off - hi > COALESCE_GAP || Math.max(hi, s.off + s.len) - lo > COALESCE_MAX) break;
+      hi = Math.max(hi, s.off + s.len); j++;
+    }
+    const buf = await src.read(lo, hi - lo);
+    for (let k = i; k < j; k++) yield [segs[k], buf.subarray(segs[k].off - lo, segs[k].off - lo + segs[k].len)];
+    i = j;
+  }
+}
+
 function readValues(view, bytes, off, type, count, le) {
   const size = TYPE_SIZE[type] || 1;
   const total = size * count;
   // values ≤ 4 bytes live inline in the entry, else the entry holds an offset
-  const at = total <= 4 ? off : view.getUint32(off, le);
+  return decodeValues(view, bytes, total <= 4 ? off : view.getUint32(off, le), type, count, le);
+}
+function decodeValues(view, bytes, at, type, count, le) {
+  const size = TYPE_SIZE[type] || 1;
   if (type === 2) {                                        // ASCII (NUL-terminated)
     let s = '';
     for (let i = 0; i < count; i++) { const c = bytes[at + i]; if (c === 0) break; s += String.fromCharCode(c); }
@@ -253,32 +298,42 @@ function parseGeo(tags, warnings) {
   return geo;
 }
 
-async function readGTiff(input) {
-  const bytes = input instanceof Blob ? new Uint8Array(await input.arrayBuffer())
-    : input instanceof ArrayBuffer ? new Uint8Array(input) : input;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (bytes.length < 8) throw new Error('gtiff: not a TIFF (too short)');
-  const bo = view.getUint16(0, false);
+// readGTiff(Blob | File | ArrayBuffer | Uint8Array). A Blob is NEVER read whole:
+// the IFD chain and tag arrays come from slices, pixels from coalesced segment
+// reads — so a DEM bigger than any one buffer opens, and a window costs its tiles.
+async function readGTiff(input, { headCache } = {}) {
+  const src = await byteSource(input, headCache);
+  if (src.size < 8) throw new Error('gtiff: not a TIFF (too short)');
+  const hb = await src.read(0, 8);
+  const hv = new DataView(hb.buffer, hb.byteOffset, hb.byteLength);
+  const bo = hv.getUint16(0, false);
   const le = bo === 0x4949;                                // 'II'
   if (!le && bo !== 0x4d4d) throw new Error('gtiff: not a TIFF (bad byte-order mark)');
-  const magic = view.getUint16(2, le);
+  const magic = hv.getUint16(2, le);
   if (magic === 43) throw new Error('gtiff: BigTIFF not supported yet (classic TIFF only)');
   if (magic !== 42) throw new Error(`gtiff: not a TIFF (magic ${magic})`);
 
   const warnings = [];
   const ifds = [];
-  let off = view.getUint32(4, le);
+  let off = hv.getUint32(4, le);
   while (off && ifds.length < 64) {
-    const count = view.getUint16(off, le);
+    if (off + 2 > src.size) { warnings.push(`IFD offset ${off} past the end of the file — chain cut`); break; }
+    const cb = await src.read(off, 2);
+    const count = new DataView(cb.buffer, cb.byteOffset, 2).getUint16(0, le);
+    const eb = await src.read(off + 2, count * 12 + 4);
+    const ev = new DataView(eb.buffer, eb.byteOffset, eb.byteLength);
     const tags = new Map();
     for (let i = 0; i < count; i++) {
-      const e = off + 2 + i * 12;
-      const tag = view.getUint16(e, le), type = view.getUint16(e + 2, le), n = view.getUint32(e + 4, le);
+      const e = i * 12;
+      const tag = ev.getUint16(e, le), type = ev.getUint16(e + 2, le), n = ev.getUint32(e + 4, le);
       if (!TYPE_SIZE[type]) continue;
-      tags.set(tag, readValues(view, bytes, e + 8, type, n, le));
+      const total = TYPE_SIZE[type] * n;
+      if (total <= 4) { tags.set(tag, readValues(ev, eb, e + 8, type, n, le)); continue; }
+      const vb = await src.read(ev.getUint32(e + 8, le), total);  // out-of-line values (tile offsets, geokeys…)
+      tags.set(tag, decodeValues(new DataView(vb.buffer, vb.byteOffset, vb.byteLength), vb, 0, type, n, le));
     }
     ifds.push(tags);
-    off = view.getUint32(off + 2 + count * 12, le);
+    off = ev.byteLength >= count * 12 + 4 ? ev.getUint32(count * 12, le) : 0;
   }
   if (!ifds.length) throw new Error('gtiff: no IFDs');
 
@@ -317,8 +372,8 @@ async function readGTiff(input) {
         return list;
       },
       // decode one segment → native-endian bytes, predictor undone
-      async decodeSeg(s, bytesPer) {
-        const raw = bytes.subarray(s.off, s.off + s.len);
+      async decodeSeg(s, bytesPer, raw) {
+        if (!raw) raw = await src.read(s.off, s.len);
         const seg = await decodeSegment(compression, raw, s.w * s.rows * spp * bytesPer);
         if (predictor === 2) undoPredictor2(seg, s.w, s.rows, bytesPer, spp, le);
         else if (predictor === 3) undoPredictor3(seg, s.w, s.rows, bytesPer, spp, le);
@@ -342,8 +397,8 @@ async function readGTiff(input) {
         const rowOut = w.width * spp * bytesPer;
         const segs = this.segments(win ? w : null);
         if (!segs.length) throw new Error('gtiff: no strip/tile offsets');
-        for (const s of segs) {
-          const seg = await this.decodeSeg(s, bytesPer);
+        for await (const [s, raw] of segmentBytes(src, segs)) {
+          const seg = await this.decodeSeg(s, bytesPer, raw);
           const rowSeg = s.w * spp * bytesPer;
           const oc0 = Math.max(s.x0, w.x), oc1 = Math.min(s.x0 + s.w, Math.min(w.x + w.width, width));
           const or0 = Math.max(s.y0, w.y), or1 = Math.min(s.y0 + s.rows, Math.min(w.y + w.height, height));
@@ -381,8 +436,8 @@ async function readGTiff(input) {
         const outView = typedView(outBytes.buffer, fmt, bps);
         const segs = this.segments(null);
         if (!segs.length) throw new Error('gtiff: no strip/tile offsets');
-        for (const s of segs) {
-          const seg = await this.decodeSeg(s, bytesPer);
+        for await (const [s, raw] of segmentBytes(src, segs)) {
+          const seg = await this.decodeSeg(s, bytesPer, raw);
           const segView = typedView(seg.buffer, fmt, bps);   // native-endian samples
           const r0 = Math.ceil(s.y0 / step) * step, r1 = Math.min(s.y0 + s.rows, height);
           const c0 = Math.ceil(s.x0 / step) * step, c1 = Math.min(s.x0 + s.w, width);

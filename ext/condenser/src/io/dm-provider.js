@@ -15,6 +15,46 @@
 
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '../../../dm/src/dm.js';
 
+// PROJECTED batches over any .dm — decode only the requested column indices by
+// striding each field's fixed word-offset across records (no whole-record decode,
+// no per-row allocation), ~4 MB page runs at a time, never the whole file. Numeric
+// col → Float64Array (NaN = missing); alpha col → string[] (''=missing); constants
+// come free from the header. Yields { recStart, count, cols } where cols[idx] is the
+// array for column `idx`, RAW record numbering (recStart + k over ALL records).
+// opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
+// page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
+// can match a filter — parquet's row-group skip, retrofitted onto .dm).
+async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
+  const ids = [...new Set(colIdxs)];
+  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    if (shouldRead) {
+      let totalR = 0;
+      for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+      if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
+    }
+    const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let total = 0;
+    for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+    let w = 0;
+    for (let pg = page; pg <= pEnd; pg++) {
+      const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
+      for (let r = 0; r < nRec; r++) {
+        const recBase = pageBase + r * h.maxLen * h.wordSize;
+        for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+        w++;
+      }
+    }
+    const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+    yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
+  }
+}
+
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
@@ -66,36 +106,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
   // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in
   // the run can match a filter — parquet's row-group skip, retrofitted onto .dm)
-  async function* columnBatches(colIdxs, { signal, shouldRead = null } = {}) {
-    const ids = [...new Set(colIdxs)];
-    const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
-    const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
-    for (let page = 2; page <= h.lastPage; page += pagesPer) {
-      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-      const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
-      if (shouldRead) {
-        let totalR = 0;
-        for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-        if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
-      }
-      const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
-      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      let total = 0;
-      for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-      const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
-      let w = 0;
-      for (let pg = page; pg <= pEnd; pg++) {
-        const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
-        for (let r = 0; r < nRec; r++) {
-          const recBase = pageBase + r * h.maxLen * h.wordSize;
-          for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
-          w++;
-        }
-      }
-      const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
-      yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
-    }
-  }
+  const columnBatches = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, opts);
 
   // the grid, straight from the DD (corner origin → centroid convention).
   // A regular model carries the grid as DD constants (XMORIG/XINC/NX…) → no sweep.
@@ -292,13 +303,18 @@ export function dmWireframeRole(names) {
   return null;
 }
 
-// Join a points file + a triangles file into a mesh. Reads both whole (wireframes
-// are small — 2–4 k records is typical); maps PID → 0-based vertex index (gaps ok);
-// drops any triangle whose vertices don't resolve (reports the count). Multiple
-// GROUPs merge into one mesh for v1.
+// Join a points file + a triangles file into a mesh. Both halves are read in page
+// runs, striding only the fields the join needs (PID/XP/YP/ZP, PID1-3) — never a
+// whole-file buffer, so a big survey DTM pair opens too; maps PID → 0-based vertex
+// index (gaps ok); drops any triangle whose vertices don't resolve (reports the
+// count). Multiple GROUPs merge into one mesh for v1.
+const dmHeadOf = async (blob) => {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  return parseHeader(head, detectDM(head) || {});
+};
+const missing = (v) => v == null || v === '' || (typeof v === 'number' && Number.isNaN(v));
 export async function openDmWireframe(ptBlob, trBlob) {
-  const pb = new Uint8Array(await ptBlob.arrayBuffer());
-  const ph = parseHeader(pb, detectDM(pb) || {});
+  const ph = await dmHeadOf(ptBlob);
   const pu = ph.columns.map((c) => c.name.toUpperCase());
   const xi = pu.indexOf('XP'), yi = pu.indexOf('YP'), zi = pu.indexOf('ZP'), pid = pu.indexOf('PID');
   if (xi < 0 || yi < 0 || zi < 0 || pid < 0) throw new Error('dm wireframe: the points file needs XP/YP/ZP/PID');
@@ -306,29 +322,30 @@ export async function openDmWireframe(ptBlob, trBlob) {
   const vx = [];
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   let n = 0;
-  for (let i = 0; i < ph.recordCount; i++) {
-    const { offset, length } = recordRange(ph, i);
-    const v = decodeRecord(pb.subarray(offset, offset + length), ph);
-    const id = v[pid], x = v[xi], y = v[yi], z = v[zi];
-    if (id == null || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-    idxOfPid.set(id, n++); vx.push(x, y, z);
-    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
-    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
-    if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+  for await (const run of dmColumnBatches(ptBlob, ph, [pid, xi, yi, zi])) {
+    const P = run.cols[pid], X = run.cols[xi], Y = run.cols[yi], Z = run.cols[zi];
+    for (let k = 0; k < run.count; k++) {
+      const id = P[k], x = X[k], y = Y[k], z = Z[k];
+      if (missing(id) || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      idxOfPid.set(id, n++); vx.push(x, y, z);
+      if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+      if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+      if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+    }
   }
-  const tb = new Uint8Array(await trBlob.arrayBuffer());
-  const th = parseHeader(tb, detectDM(tb) || {});
+  const th = await dmHeadOf(trBlob);
   const tu = th.columns.map((c) => c.name.toUpperCase());
   const a = tu.indexOf('PID1'), b = tu.indexOf('PID2'), c = tu.indexOf('PID3');
   if (a < 0 || b < 0 || c < 0) throw new Error('dm wireframe: the triangles file needs PID1/PID2/PID3');
   const tri = [];
   let dropped = 0;
-  for (let i = 0; i < th.recordCount; i++) {
-    const { offset, length } = recordRange(th, i);
-    const r = decodeRecord(tb.subarray(offset, offset + length), th);
-    const i1 = idxOfPid.get(r[a]), i2 = idxOfPid.get(r[b]), i3 = idxOfPid.get(r[c]);
-    if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
-    tri.push(i1, i2, i3);
+  for await (const run of dmColumnBatches(trBlob, th, [a, b, c])) {
+    const A = run.cols[a], B = run.cols[b], C = run.cols[c];
+    for (let k = 0; k < run.count; k++) {
+      const i1 = idxOfPid.get(A[k]), i2 = idxOfPid.get(B[k]), i3 = idxOfPid.get(C[k]);
+      if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
+      tri.push(i1, i2, i3);
+    }
   }
   if (!n || !tri.length) throw new Error('dm wireframe: no resolvable triangles');
   const vertices = Float64Array.from(vx), triangles = Uint32Array.from(tri);

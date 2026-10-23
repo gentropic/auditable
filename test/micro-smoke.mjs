@@ -1025,6 +1025,39 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
     JSON.stringify(streamed.onlyLines) === '["strings"]');
 }
 
+// ── STREAMED meshes: OBJ / .msh / .lfm each have a true streaming provider (no
+// whole-file read) chosen when the mesh is past the context cap — forced here on
+// small fixtures; each must land as a streamed soup with every triangle ──
+{
+  const soups = await p.evaluate(async () => {
+    const m = window._micro;
+    const { writeMSH } = await import('/ext/msh/msh.js');
+    const { writeLFM } = await import('/ext/lfm/lfm.js');
+    const N = 30, V = new Float64Array(3 * N * N), T = new Int32Array(6 * (N - 1) * (N - 1));
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) V.set([612000 + i * 5, 7765000 + j * 5, 700 + Math.sin(i / 4) * 5], 3 * (j * N + i));
+    let t = 0;
+    for (let j = 0; j < N - 1; j++) for (let i = 0; i < N - 1; i++) { const a = j * N + i; T.set([a, a + 1, a + N + 1, a, a + N + 1, a + N], t); t += 6; }
+    const nt = T.length / 3;
+    const obj = ['o t', ...Array.from({ length: N * N }, (_, k) => `v ${V[3 * k]} ${V[3 * k + 1]} ${V[3 * k + 2]}`),
+      ...Array.from({ length: nt }, (_, q) => `f ${T[3 * q] + 1} ${T[3 * q + 1] + 1} ${T[3 * q + 2] + 1}`)].join('\n');
+    const msh = await writeMSH({ arrays: { Location: { type: 'Double', components: 3, count: N * N, data: V }, Tri: { type: 'Integer', components: 3, count: nt, data: T } } });
+    const lfm = await writeLFM({ collectionName: 't', meshes: [{ name: 'a', colour: { r: 1, g: 2, b: 3 }, attributes: {}, vertices: V, triangles: T.subarray(0, 3 * 400) }, { name: 'b', colour: { r: 1, g: 2, b: 3 }, attributes: {}, vertices: V, triangles: T.subarray(3 * 400) }] });
+    const out = { nt };
+    for (const [name, bytes] of [['t.obj', obj], ['t.msh', msh], ['t.lfm', lfm]]) {
+      await m.openBlob(new Blob([bytes]), name, 'add', null, { forceSoup: true });
+      const L = m.layers().find((x) => x.name === name);
+      out[name] = L ? { soup: !!L.docs.meshDoc.header.soup, tris: L.docs.meshDoc.header.triCount, drawn: m.renderer.layerElementCount(L.id) } : document.querySelector('#meta').textContent;
+      if (L) m.renderer.removeLayer(L.id);
+    }
+    return out;
+  });
+  for (const nm of ['t.obj', 't.msh', 't.lfm']) {
+    const s = soups[nm];
+    chk(`streamed ${nm.slice(2)} → soup with every triangle (${JSON.stringify(s)}, want ${soups.nt})`,
+      s && s.soup === true && s.tris === soups.nt && s.drawn === soups.nt);
+  }
+}
+
 console.log(ok && process.exitCode !== 1 ? '\nMICRO SMOKE: PASS' : '\nMICRO SMOKE: FAIL');
 await b.close(); server.close();
 process.exit(ok && process.exitCode !== 1 ? 0 : 1);

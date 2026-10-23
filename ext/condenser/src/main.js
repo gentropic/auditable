@@ -19,7 +19,7 @@ export { openMsh, openObj, openPlyMesh } from './io/mesh-io.js';
 export { buildMeshChunk, buildHeightfieldMesh } from './core/mesh-geom.js';
 export { createMeshPipeline } from './core/gl-mesh.js';
 export { buildSoupChunk, soupLocalCentroid, createSoupChunkBuilder, soupFromMesh } from './core/soup-geom.js';
-export { openPlySoup } from './io/soup-io.js';
+export { openPlySoup, openObjSoup, openMshSoup, soupVertexTable, soupTriBatcher } from './io/soup-io.js';
 export { createSoupPipeline } from './core/gl-soup.js';
 export { categoryPalettePixels, createBlocksPipeline } from './core/gl-blocks.js';
 export { createPickPipeline, layerOfId, faceOfId, isMiss, NO_FACE, FACE_CUT, FACE_NORMALS, FACE_NAMES } from './core/gl-pick.js';
@@ -30,4 +30,4 @@ export { openDxfStream, peekDxfHead, DXF_STREAM_BYTES } from './io/dxf-stream.js
 export { mat4Perspective, mat4Ortho, mat4LookAt, mat4Multiply, mat4Inverse, transformPoint, frustumPlanes, aabbInFrustum, createOrbitCamera, attachOrbitInput } from './core/camera.js';
 export { makeProgram, rampPixels, palettePixels, uploadChunk, createRenderer } from './core/gl.js';
 export { createEdl } from './core/edl.js';
-export { writeMSH } from '../../msh/msh.js';   // mesh export (micro): the ARANZ writer rides the already-inlined @gcu/msh
+export { writeMSH, readMSHLayout } from '../../msh/msh.js';   // mesh export (micro): the ARANZ writer rides the already-inlined @gcu/msh
