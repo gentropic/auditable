@@ -983,6 +983,46 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   }, dxfMixed);
   chk(`DXF mixed: dominant mesh (${reint.asMesh}), Reinterpret offers ${JSON.stringify(reint.opts)}, → lines becomes strings (${reint.afterKind}), back-options ${JSON.stringify(reint.backOpts)}`,
     reint.asMesh === true && reint.opts.includes('lines') && reint.afterKind === 'strings' && reint.backOpts.includes('mesh'));
+
+  // STREAMED: a DXF too big for one string (gigabyte 3DFACE topographies) goes
+  // through condenser's openDxfStream — one pass, every kind its own sibling layer
+  // in a group, each named for the FILE (the project source). Forced here on a
+  // fixture; above 256 MB it is automatic.
+  const pegs = ['0', 'POINT', '8', 'PEGS', '10', String(X0 + 5), '20', String(Y0 + 5), '30', '705',
+    '0', 'POINT', '8', 'PEGS', '10', String(X0 + 15), '20', String(Y0 + 25), '30', '706'];
+  const dxfAll = dxfWrap([...faces, ...pl('CREST', 710), ...pegs]);
+  const streamed = await p.evaluate(async (all) => {
+    const m = window._micro;
+    const before = m.layers().length;
+    await m.openBlob(new Blob([all]), 'pit_all.dxf', 'add', null, { streamDxf: true });
+    await new Promise((r) => setTimeout(r, 400));
+    const Ls = m.layers().filter((x) => x.name === 'pit_all.dxf');
+    const by = (suffix) => Ls.find((x) => (x.label || '').endsWith(suffix));
+    const surf = by('surface'), str = by('strings'), pts = by('points');
+    const group = (function find(nodes) { for (const n of nodes || []) { if (n.children) { if (n.name === 'pit_all.dxf') return n; const g = find(n.children); if (g) return g; } } return null; })(m.layerTree());
+    const out = {
+      added: m.layers().length - before, labels: Ls.map((x) => x.label),
+      surf: surf && { kind: surf.kind, soup: !!surf.docs.meshDoc.header.soup, tris: surf.docs.meshDoc.header.triCount, tint: surf.tint },
+      str: str && { count: str.docs.stringsDoc.header.count, cats: str.docs.stringsDoc.header.categories, colorSel: str.colorSel, row0: await m.fetchLayerRow(str, 0), legend: str.catLegend && str.catLegend.entries.length },
+      pts: pts && { rows: m.attrRowCountOf(pts), row1: await m.fetchLayerRow(pts, 1) },
+      grouped: !!group,
+    };
+    // `as` keeps one kind (Open as / a project reload)
+    await m.openBlob(new Blob([all]), 'pit_lines.dxf', 'add', null, { streamDxf: true, asKind: 'lines' });
+    await new Promise((r) => setTimeout(r, 300));
+    const only = m.layers().filter((x) => x.name === 'pit_lines.dxf');
+    out.onlyLines = only.map((x) => (x.docs.stringsDoc ? x.docs.stringsDoc.header.kind : x.kind));
+    for (const L of [...Ls, ...only]) m.renderer.removeLayer(L.id);
+    return out;
+  }, dxfAll);
+  chk(`DXF STREAMED: one pass → ${streamed.added} sibling layers ${JSON.stringify(streamed.labels)} (surface ${JSON.stringify(streamed.surf)}, strings ${JSON.stringify(streamed.str)}, points ${JSON.stringify(streamed.pts)}, grouped ${streamed.grouped})`,
+    streamed.added === 3 && streamed.grouped
+    && streamed.surf && streamed.surf.kind === 'mesh' && streamed.surf.soup && streamed.surf.tris === 8 && streamed.surf.tint === '#ff7f00'
+    && streamed.str && streamed.str.count === 4 && JSON.stringify(streamed.str.cats) === '["CREST"]' && streamed.str.colorSel === 'cat'
+    && Array.isArray(streamed.str.row0) && streamed.str.row0[0] === 'CREST'
+    && streamed.pts && streamed.pts.rows === 2 && Array.isArray(streamed.pts.row1) && streamed.pts.row1[3] === 'PEGS');
+  chk(`DXF STREAMED with as=lines keeps ONE kind (${JSON.stringify(streamed.onlyLines)})`,
+    JSON.stringify(streamed.onlyLines) === '["strings"]');
 }
 
 console.log(ok && process.exitCode !== 1 ? '\nMICRO SMOKE: PASS' : '\nMICRO SMOKE: FAIL');

@@ -1147,3 +1147,62 @@ test('openDxf: a strings-only file auto-picks strings; empty refuses; wrong `as`
   await assert.rejects(() => openDxf(new Blob([dxfText([])])), /no 3D scene geometry/);
   await assert.rejects(() => openDxf(new Blob([stringsOnly]), { as: 'mesh' }), /no mesh content — the file carries strings/);
 });
+
+// ── openDxfStream: the same DXF, streamed (files too big for one string) ──────────
+
+import { openDxfStream, peekDxfHead, DXF_RESIDENT_MAX } from '../ext/condenser/src/main.js';
+
+async function drain(sd, opts) {
+  const got = { mesh: [], strings: [], points: [] };
+  for await (const b of sd.batches(opts)) got[b.kind].push(b.raw);
+  return got;
+}
+
+test('openDxfStream: ONE pass yields every kind — mesh soup, strings, points — matching openDxf', async () => {
+  const blob = new Blob([DXF_FIXTURE]);
+  const sd = await openDxfStream(blob);
+  assert.equal(sd.header.kind, 'dxf-stream');
+  assert.ok(sd.header.bbox.min[0] >= 451200 && sd.header.bbox.max[0] <= 451400, 'sampled bbox over the data');
+  const got = await drain(sd, { batchTris: 2, batchSegs: 2, batchPoints: 1 });   // tiny batches: the seams get exercised
+  const s = sd.summary;
+  assert.ok(s.done);
+  assert.deepEqual(s.kinds, ['mesh', 'strings', 'points']);
+  // mesh: same triangles as the resident reader, as world-f64 soup corners
+  const ref = await openDxf(blob, { as: 'mesh' });
+  assert.equal(s.counts.triangles, ref.header.triCount);
+  const corners = [];
+  for (const r of got.mesh) for (let i = 0; i < r.count; i++) corners.push(r.ax[i], r.ay[i], r.az[i], r.bx[i], r.by[i], r.bz[i], r.cx[i], r.cy[i], r.cz[i]);
+  const refCorners = [];
+  for (const t of ref.triangles) refCorners.push(ref.vertices[3 * t], ref.vertices[3 * t + 1], ref.vertices[3 * t + 2]);
+  assert.deepEqual(corners, refCorners);
+  assert.equal(got.mesh[0].x[0], (corners[0] + corners[3] + corners[6]) / 3, 'centroids ride along');
+  // strings: segments + records like openDxf's (categories are first-seen, per kind)
+  assert.equal(s.counts.segments, 3);
+  assert.equal(s.counts.strings, 2);
+  assert.deepEqual(s.strings.categories, ['CREST', 'TOE']);
+  assert.deepEqual(s.strings.fetchRecord(0), ['CREST', 0]);
+  assert.deepEqual(s.strings.fetchRecord(2), ['TOE', 1]);
+  const p0 = s.strings.recordPosition(0);
+  [451230, 8200510, 391].forEach((v, i) => assert.ok(Math.abs(p0[i] - v) < 1e-3, `midpoint ${i}`));
+  assert.equal(got.strings.reduce((t, r) => t + r.count, 0), 3);
+  assert.deepEqual([...got.strings[0].recIdx], [0, 1]);
+  // points
+  assert.equal(s.counts.points, 2);
+  assert.deepEqual(s.points.fetchRecord(1), [451240, 8200540, 396, 'PEGS']);
+  assert.deepEqual(got.points.map((r) => r.recStart), [0, 1]);
+});
+
+test('openDxfStream as:<kind> keeps only that kind (a reinterpret / project reload)', async () => {
+  const sd = await openDxfStream(new Blob([DXF_FIXTURE]), { as: 'strings' });
+  const got = await drain(sd);
+  assert.equal(got.mesh.length + got.points.length, 0);
+  assert.equal(sd.summary.counts.segments, 3);
+  assert.deepEqual(sd.summary.kinds, ['strings']);
+});
+
+test('peekDxfHead describes a head; openDxf refuses a file too big for one string, by name', async () => {
+  const p = await peekDxfHead(new Blob([DXF_FIXTURE]), 400);
+  assert.ok(p.partial && p.counts.triangles >= 1);
+  const huge = { size: DXF_RESIDENT_MAX + 1, text: () => { throw new Error('must not read'); } };
+  await assert.rejects(() => openDxf(huge), /too large to read whole/);
+});

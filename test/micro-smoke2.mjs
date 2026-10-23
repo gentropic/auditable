@@ -2401,6 +2401,51 @@ await p.close();
   await ps.close();
 }
 
+// ═══ a STREAMED DXF across a project save/reopen: three sibling layers share ONE
+//     source file — copied once, each reopening as ITS kind (not the dominant one,
+//     and not every kind again); Reload-from-disk keeps the kind too ═══
+{
+  const px = await mkPage('sm2dxf');
+  await px.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2dxf', { recursive: true }); } catch { } });
+  await px.evaluate(async () => {
+    const nl = String.fromCharCode(10);
+    const L = ['0', 'SECTION', '2', 'ENTITIES'];
+    for (let i = 0; i < 3; i++) L.push('0', '3DFACE', '8', 'TOPO', '10', String(500000 + i * 10), '20', '6000000', '30', '100', '11', String(500010 + i * 10), '21', '6000000', '31', '101',
+      '12', String(500010 + i * 10), '22', '6000010', '32', '102', '13', String(500000 + i * 10), '23', '6000010', '33', '101');
+    L.push('0', 'POLYLINE', '8', 'CREST', '70', '8');
+    for (let k = 0; k < 4; k++) L.push('0', 'VERTEX', '8', 'CREST', '70', '32', '10', String(500000 + k * 8), '20', '6000005', '30', '110');
+    L.push('0', 'SEQEND', '0', 'POINT', '8', 'PEGS', '10', '500005', '20', '6000002', '30', '103', '0', 'ENDSEC', '0', 'EOF', '');
+    await window._micro.openBlob(new File([L.join(nl)], 'site.dxf'), 'site.dxf', 'replace', null, { streamDxf: true });
+  });
+  const kindsOf = () => px.evaluate(() => window._micro.layers().filter((x) => x.name === 'site.dxf')
+    .map((x) => (x.docs.stringsDoc ? x.docs.stringsDoc.header.kind : x.kind)).sort());
+  const before = await kindsOf();
+  await saveProject(px);
+  const files = await px.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dxf');
+    const out = [];
+    const walk = async (d, pre) => { for await (const [n, h] of d.entries()) { if (h.kind === 'directory') await walk(h, pre + n + '/'); else if (/\.dxf$/i.test(n)) out.push(pre + n); } };
+    await walk(dir, '');
+    return out;
+  });
+  await px.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dxf'); await window._micro.openProjectDir(dir); });
+  await px.waitForFunction(() => window._micro.layers().filter((x) => x.name === 'site.dxf').length >= 3, null, { timeout: 60000 });
+  await px.waitForTimeout(500);
+  const after = await kindsOf();
+  chk(`streamed DXF round-trips a project: ${JSON.stringify(before)} → ${JSON.stringify(after)}, source copied once (${JSON.stringify(files)})`,
+    JSON.stringify(before) === '["blockmodel","mesh","strings"]' && JSON.stringify(after) === JSON.stringify(before) && files.length === 1);
+  // Reload-from-disk on the STRINGS layer keeps it strings (it used to reopen as the dominant mesh)
+  const reloaded = await px.evaluate(async () => {
+    const m = window._micro;
+    const L = m.layers().find((x) => x.name === 'site.dxf' && x.docs.stringsDoc && x.docs.stringsDoc.header.kind === 'strings');
+    await m.reloadLayerFromDisk(L);
+    await new Promise((r) => setTimeout(r, 400));
+    return m.layers().filter((x) => x.name === 'site.dxf').map((x) => (x.docs.stringsDoc ? x.docs.stringsDoc.header.kind : x.kind)).sort();
+  });
+  chk(`Reload-from-disk keeps a DXF layer's kind (${JSON.stringify(reloaded)})`, JSON.stringify(reloaded) === '["blockmodel","mesh","strings"]');
+  await px.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

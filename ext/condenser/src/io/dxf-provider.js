@@ -18,12 +18,20 @@
 import { read as readDxf } from '../../../dxf/src/read.js';
 import { extractScene } from '../../../dxf/src/scene.js';
 
+// past this a DXF cannot be read as ONE string (V8 caps strings near 512 M
+// characters, and the browser fails the read first — Chrome calls that a
+// "permission problem"); openDxfStream (dxf-stream.js) owns those files
+export const DXF_RESIDENT_MAX = 480 * 1024 * 1024;
+const tooBig = (blob) => new Error(`dxf: ${(blob.size / 2 ** 30).toFixed(1)} GB is too large to read whole — only the streamed reader opens it (no solid queries / mesh export from it yet)`);
+
 export async function peekDxfScene(blob) {
+  if (blob.size > DXF_RESIDENT_MAX) throw tooBig(blob);
   const scene = extractScene(readDxf(await blob.text()));
   return scene.counts;
 }
 
 export async function openDxf(blob, { as = null } = {}) {
+  if (blob.size > DXF_RESIDENT_MAX) throw tooBig(blob);
   const doc = readDxf(await blob.text());
   const scene = extractScene(doc);
   const kinds = [];

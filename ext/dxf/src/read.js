@@ -256,7 +256,7 @@ function nullFeature(rec) {
 // ── structure ────────────────────────────────────────────────────────────────────
 
 // Split a flat pair list into entity records at each code-0 boundary.
-function splitRecords(pairs) {
+export function splitRecords(pairs) {
   const recs = [];
   let cur = null;
   for (const p of pairs) {
@@ -286,7 +286,7 @@ function headerVar(pairs, name) {
   return undefined;
 }
 
-function parseLayers(records) {
+export function parseLayers(records) {
   const layers = {};
   for (const r of records) {
     if (r.type !== 'LAYER') continue;
@@ -296,7 +296,7 @@ function parseLayers(records) {
   return layers;
 }
 
-function parseBlocks(records, warnings) {
+export function parseBlocks(records, warnings) {
   const blocks = {};
   for (let i = 0; i < records.length; i++) {
     if (records[i].type !== 'BLOCK') continue;
@@ -311,7 +311,7 @@ function parseBlocks(records, warnings) {
 
 // Walk entity records → features, resolving the compound entities (POLYLINE vertex
 // streams, INSERT attribute streams) and isolating per-entity parse errors.
-function assembleEntities(records, warnings) {
+export function assembleEntities(records, warnings) {
   const features = [];
   for (let i = 0; i < records.length; i++) {
     const rec = records[i];

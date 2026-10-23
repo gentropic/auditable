@@ -922,7 +922,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openDxf, peekDxfScene, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -7014,6 +7014,8 @@ async function openDmWireframeBlob(ptFile, trFile, mode = 'replace', at = null) 
 // overrides it (the dialog's Open-as / Reinterpret-as 'lines'). Strings become
 // a sticks layer whose CATEGORY is the DXF layer — class eyes hide a bench.
 async function openDxfBlob(blob, name, opts) {
+  // big files stream; `stream` forces it for a small one (the smoke guards the streamed path with a fixture)
+  if (opts.stream || blob.size > DXF_STREAM_BYTES) return openDxfStreamed(blob, name, opts);
   const lid = opts.layer, first = opts.first;
   const r = await openDxf(blob, { as: opts.as || null });
   const dxfHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
@@ -7070,6 +7072,134 @@ async function openDxfBlob(blob, name, opts) {
     $('#meta').textContent = `${name} — ${header.count.toLocaleString()} points (DXF pegs)`;
   }
 }
+// A DXF too big to read whole (a 3DFACE topography reaches gigabytes; one JS
+// string can't hold it) streams: ONE pass through condenser's openDxfStream
+// feeds every kind the file holds into its own layer — the surface as a
+// streamed soup mesh, design strings as capsules, pegs as points — siblings in
+// a group, each keeping L.name = the file (that is the project source). `as`
+// (Open as / Reinterpret / a project reload) keeps just one kind. Like any
+// streamed mesh, the surface is display/section/pick only: solid queries and
+// mesh export need the resident tier.
+async function openDxfStreamed(blob, name, opts) {
+  const first = opts.first, as = opts.as || null;
+  const dxfHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
+  const authored = (c) => (c && !(c[0] === 255 && c[1] === 255 && c[2] === 255) ? c : null);   // ACI 7 is "foreground", not a colour
+  const gb = (blob.size / 2 ** 30).toFixed(1);
+  $('#meta').textContent = `${name} — ${gb} GB · sampling extents…`;
+  const sd = await openDxfStream(blob, { as });
+  fitFromHeader(sd.header, first);
+  const sum = sd.summary;
+  const primary = layerById(opts.layer);
+  const lids = {}, builders = {}, headers = {}, extra = [];
+  const LABEL = { mesh: 'surface', strings: 'strings', points: 'points' };
+  const setup = (kind, lid) => {
+    const L = layerById(lid);
+    const bbox = sd.header.bbox;
+    const onChunk = (c) => { renderer.addChunk(c, 'base', lid); requestRender(); };
+    if (kind === 'mesh') {
+      const header = headers.mesh = { kind: 'mesh', soup: true, streamed: true, format: 'dxf', vertexCount: 0, triCount: 0, bbox };
+      L.kind = 'mesh';
+      L.docs = { meshDoc: { blob, name, header } };
+      L.tint = opts.tint || '#9ea3a8';
+      L.opacity = opts.opacity != null ? opts.opacity : 1;
+      renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity });
+      builders.mesh = createSoupChunkBuilder({ frame, chunkSize: 1 << 17, batchSize: 1 << 19, seed: 1, onChunk });
+    } else if (kind === 'strings') {
+      const header = headers.strings = { kind: 'strings', format: 'dxf', count: 0, strings: 0, columns: ['LAYER', 'STRING'], mapping: { chan: null, cat: 0 }, categories: null, numericColumns: [], chanRange: [0, 0], bbox };
+      registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord: sum.strings.fetchRecord, recordPosition: sum.strings.recordPosition } });
+      renderer.setCategories(1);
+      renderer.setLayerCats(lid, 256);
+      renderer.setLayerStickRadius(lid, 0.8);
+      builders.strings = createStickChunkBuilder({ frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk });
+    } else {
+      const header = headers.points = { kind: 'blockmodel', format: 'dxf', count: 0, grid: null, columns: ['X', 'Y', 'Z', 'LAYER'], mapping: { x: 0, y: 1, z: 2, chan: null, cat: 3 }, categories: null, numericColumns: [], bbox };
+      registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord: sum.points.fetchRecord } });
+      renderer.setCategories(1);
+      renderer.setLayerCats(lid, 256);
+      builders.points = createChunkBuilder({ frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk });
+    }
+  };
+  // the first kind to arrive takes the layer openBlob allocated; later kinds get siblings
+  const lidFor = (kind) => {
+    if (kind in lids) return lids[kind];
+    let lid;
+    if (!Object.keys(lids).length) lid = opts.layer;
+    else {
+      lid = allocLayerId();
+      if (lid == null) { lids[kind] = null; return null; }  // layer limit: that kind is skipped (reported below)
+      S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: primary ? primary.handle : null, storage: 'loose', lineage: openLineage(name, blob) });
+      extra.push(lid);
+    }
+    lids[kind] = lid;
+    const L = layerById(lid);
+    if (L) L.label = `${name} · ${LABEL[kind]}`;
+    setup(kind, lid);
+    return lid;
+  };
+  try {
+    let lastMeta = 0;
+    const progress = (at, total) => {
+      const now = performance.now(); if (now - lastMeta < 150) return; lastMeta = now;
+      const c = sum.counts;
+      const parts = [c.triangles && `${c.triangles.toLocaleString()} triangles`, c.strings && `${c.strings.toLocaleString()} strings`, c.points && `${c.points.toLocaleString()} points`].filter(Boolean);
+      $('#meta').textContent = `${name} — streaming ${Math.round(100 * at / total)}% of ${gb} GB${parts.length ? ' · ' + parts.join(' · ') : ''}`;
+    };
+    for await (const b of sd.batches({ onProgress: progress })) {
+      const lid = lidFor(b.kind);
+      if (lid == null) continue;
+      if (b.kind === 'points') {
+        const r = b.raw;
+        builders.points.push({ count: r.count, x: r.x, y: r.y, z: r.z, intensity: new Uint16Array(r.count), classification: r.cat, rgb: null, recStart: r.recStart });
+      } else builders[b.kind].push(b.raw);
+      await new Promise((r2) => setTimeout(r2));            // yield to the render loop
+    }
+    if (!Object.keys(lids).length) throw new Error(as ? `dxf: no ${as === 'strings' ? 'design strings' : as} in this file` : 'dxf: no 3D scene geometry (no faces, polylines or points)');
+    // finish each layer: true bboxes, counts, classes + authored colours
+    for (const [kind, lid] of Object.entries(lids)) {
+      if (lid == null) continue;
+      const L = layerById(lid);
+      const doc = builders[kind].flush();
+      if (L) L.bboxLocal = doc.bboxLocal;
+      if (kind === 'mesh') {
+        const h = headers.mesh;
+        h.triCount = sum.counts.triangles; h.vertexCount = 3 * sum.counts.triangles;
+        const tint = opts.tint === undefined && authored(sum.meshColor);
+        if (L && tint) { L.tint = dxfHex(tint); renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity }); }
+        if (L) { L.colorSel = $('#colorBy').value; L.docs.meshDoc.metaLine = `${name} — ${h.triCount.toLocaleString()} triangles · DXF · streamed`; }
+      } else {
+        const h = headers[kind], s = sum[kind];
+        h.count = kind === 'strings' ? sum.counts.segments : sum.counts.points;
+        if (kind === 'strings') h.strings = sum.counts.strings;
+        h.categories = s.categories;
+        h.catColors = s.catColors ? s.catColors.map(authored) : null;
+        renderer.setLayerCats(lid, h.categories ? 256 : 0);
+        if (L) {
+          L.colorSel = h.categories ? 'cat' : 'solid';
+          if (h.categories && h.catColors && h.catColors.some(Boolean)) {
+            L.catLegend = { col: 'LAYER', entries: h.categories.map((nm, i) => (h.catColors[i] ? { values: [nm], color: dxfHex(h.catColors[i]) } : null)).filter(Boolean), otherColor: '#555a5f' };
+            applyCatLegend(L, true);
+          }
+        }
+      }
+    }
+    recomputeUnion();
+    if (first && _docBbox) cam.fit(_docBbox);               // the sampled bbox aimed the first view; now the true one
+    const prim = layerById(opts.layer);
+    if (prim) setColorLabels(prim.kind === 'mesh' ? null : headers[Object.keys(lids).find((k) => lids[k] === opts.layer)]);
+    const placed = Object.entries(lids).filter(([, v]) => v != null).map(([k]) => k);
+    const ids = placed.map((k) => lids[k]);
+    if (ids.length > 1) createLayerGroup(name, ids, { collapsed: false });
+    const c = sum.counts, skipped = Object.entries(lids).filter(([, v]) => v == null).map(([k]) => k);
+    const warn = sum.warnings.length + sum.warningsSuppressed;
+    $('#meta').textContent = `${name} — streamed ${gb} GB · ` + [
+      c.triangles && `${c.triangles.toLocaleString()} triangles`, c.strings && `${c.strings.toLocaleString()} strings`, c.points && `${c.points.toLocaleString()} points`,
+    ].filter(Boolean).join(' · ') + (warn ? ` · ${warn.toLocaleString()} unsupported/skipped entities` : '') + (skipped.length ? ` · ${skipped.join('+')} not shown (layer limit)` : '');
+    requestRender();
+  } catch (e) {
+    for (const lid of extra) { renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); }
+    throw e;
+  }
+}
 // provenance: every layer carries a lineage tree — how it was made. Opened
 // files are leaves (op:'open'); derived ops (join/reconcile/optimize/keyjoin/
 // grid) wrap their sources. Embedded in Parquet exports (kvMetadata) + persisted
@@ -7101,7 +7231,7 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
   try {
-    if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity }); }
+    if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity, stream: !!over.streamDxf }); }
     else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
     else if (/\.dm$/i.test(name)) { await openDmBlob(blob, name, { layer: lid, first, forcePoints, cached: over.cached, mapping: over.mapping }); }
     // grid stays extension-driven (no table→grid provider yet); asKind only picks points↔surface.
@@ -7836,6 +7966,16 @@ async function describeFile(f) {
           ];
           d.dxfAs = d.dxfInterps.length ? d.dxfInterps[0][0] : null;
         } catch (e2) { d.desc = `DXF — ${e2.message}`; }
+      } else if (f.size > DXF_STREAM_BYTES) {
+        // too big to preview whole: describe what its HEAD holds; it opens streamed,
+        // every kind in one pass unless one is picked
+        try {
+          const p = await peekDxfHead(f);
+          const seen = [p.counts.triangles && 'faces', p.counts.strings && 'strings', p.counts.points && 'points'].filter(Boolean);
+          d.desc = `DXF drawing · ${(f.size / 2 ** 30).toFixed(1)} GB · streamed${seen.length ? ` · starts with ${seen.join(' + ')}` : ''}`;
+        } catch (e2) { d.desc = `DXF — ${e2.message}`; }
+        d.dxfInterps = [['all', 'everything it holds (streamed)'], ['mesh', 'surface only'], ['lines', 'design strings only'], ['points', 'points only']];
+        d.dxfAs = 'all';
       }
     } else if (/\.msh$/i.test(name)) {
       d.kind = 'mesh'; d.desc = 'Leapfrog mesh (.msh)';
@@ -9601,14 +9741,18 @@ async function copyLayerIn(L, dir) {
 function askCopyOutside(outside) {
   return new Promise((res) => {
     const loose = outside.length - outside.filter((L) => L.handle).length;
-    const total = outside.reduce((t, L) => t + layerBytes(L), 0);
+    // one file can back several layers (a streamed DXF's surface/strings/points
+    // siblings) — list and size each FILE once; copyLayerIn copies it once too
+    const files = [], seen = new Set();
+    for (const L of outside) for (const fd of layerFiles(L)) { if (!seen.has(fd.blob)) { seen.add(fd.blob); files.push(fd); } }
+    const total = files.reduce((t, fd) => t + fd.blob.size, 0);
     const body = $('#svDlgBody');
     body.textContent = '';
     const note = document.createElement('div'); note.className = 'ex-row';
     note.textContent = `${outside.length} layer${outside.length > 1 ? 's' : ''} (${fmtSize(total)}) live${outside.length > 1 ? '' : 's'} outside the project folder:`;
     body.appendChild(note);
-    for (const L of outside) {
-      for (const fd of layerFiles(L)) {
+    {
+      for (const fd of files) {
         const row = document.createElement('div'); row.className = 'sv-row';
         const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = fd.name; nm.title = fd.name;
         const sz = document.createElement('span'); sz.className = 'sz'; sz.textContent = fmtSize(fd.blob.size);
@@ -9941,7 +10085,9 @@ async function openProjectDir(dir) {
       if (handle) _fileHandles.set(file, handle);
       // a mesh-bearing .ply saved as a POINTS layer must reopen as points
       const overR = ls.kind === 'mesh'
-        ? { tint: ls.tint, opacity: ls.opacity, forceSoup: !!ls.soup }
+        // a DXF surface reopens as JUST the surface (a streamed DXF would otherwise
+        // bring its strings/points siblings back a second time)
+        ? { tint: ls.tint, opacity: ls.opacity, forceSoup: !!ls.soup, ...(/\.dxf$/i.test(ls.source) ? { asKind: 'mesh' } : {}) }
         : ls.kind === 'table'
           ? (ls.sheet ? { sheet: ls.sheet } : { asKind: 'table' })
           : ls.kind === 'strings' ? { asKind: 'lines' }
@@ -14884,7 +15030,10 @@ async function reloadLayerFromDisk(L) {
     renderer.removeLayer(L.id);
     S.layers = S.layers.filter((l) => l.id !== L.id);
     preregisterReopenHandle(fresh, keep);
-    await openBlob(fresh, L.name, 'add', null, doc && doc.forcePoints ? { asKind: 'points' } : undefined);
+    // a DXF layer is ONE kind of what its file holds — reopen that kind, not the dominant one
+    const sd = L.docs.stringsDoc;
+    const dxfAs = /\.dxf$/i.test(L.name) ? (sd ? (sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh') : null;
+    await openBlob(fresh, L.name, 'add', null, dxfAs ? { asKind: dxfAs } : doc && doc.forcePoints ? { asKind: 'points' } : undefined);
     const L2 = restoreReopenIdentity(activeLayer(), keep);
     if (L2) {
       applyLayerStyling(L2, style);

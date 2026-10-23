@@ -676,3 +676,136 @@ test('extractScene resolves COLOURS: explicit ACI, bylayer through the table, un
   ].flat());
   assert.equal(extractScene(read(mixed)).mesh.color, null);
 });
+
+// ── the streaming reader (stream.js): same scene as read() + extractScene() ─────
+
+import { createSceneStream, peekDxf } from '../ext/dxf/src/stream.js';
+
+// the resident scene, flattened to the streaming shape (triangles as corner triples)
+function residentScene(txt) {
+  const doc = read(txt);
+  const s = extractScene(doc);
+  const tris = [];
+  if (s.mesh) {
+    const v = s.mesh.vertices, t = s.mesh.triangles;
+    for (let i = 0; i < t.length; i++) tris.push(v[t[i] * 3], v[t[i] * 3 + 1], v[t[i] * 3 + 2]);
+  }
+  return {
+    tris,
+    strings: s.strings.map((st) => ({ layer: st.layer, color: st.color, pts: [...st.pts] })),
+    points: s.points.map((p) => ({ layer: p.layer, color: p.color, xyz: [p.x, p.y, p.z] })),
+    layers: s.layers,
+    warnings: doc.warnings.map((w) => w.reason),
+  };
+}
+// the streamed scene, fed in `chunk`-byte pieces
+function streamedScene(txt, chunk) {
+  const tris = [], strings = [], points = [], layerSet = new Set();
+  const st = createSceneStream({
+    tri(layer, rgb, ...c) { tris.push(...c); layerSet.add(layer); },
+    string(layer, color, pts) { strings.push({ layer, color, pts: [...pts] }); layerSet.add(layer); },
+    point(layer, color, x, y, z) { points.push({ layer, color, xyz: [x, y, z] }); layerSet.add(layer); },
+  });
+  const bytes = new TextEncoder().encode(txt);
+  for (let at = 0; at < bytes.length; at += chunk) st.push(bytes.subarray(at, at + chunk));
+  const r = st.end();
+  return { tris, strings, points, layers: [...layerSet].sort(), warnings: r.warnings.map((w) => w.reason), summary: r };
+}
+
+const STREAM_CORPUS = () => {
+  const faces = wrap([
+    ent('0', '3DFACE', '8', 'TOPO', '10', '650000.125', '20', '7800000.5', '30', '100', '11', '650010', '21', '7800000', '31', '100.25',
+        '12', '650010', '22', '7800010', '32', '101', '13', '650000', '23', '7800010', '33', '101'),
+    ent('0', '3DFACE', '8', 'TOPO', '62', '3', '10', '0', '20', '0', '30', '100', '11', '10', '21', '10', '31', '101',
+        '12', '0', '22', '20', '32', '102', '13', '0', '23', '20', '33', '102'),
+    '0', 'POLYLINE', '8', 'SOLID', '70', '64',
+    ...v3(50, 0, 0, 192), ...v3(60, 0, 0, 192), ...v3(55, 10, 0, 192), ...v3(55, 5, 9, 192),
+    ent('0', 'VERTEX', '8', 'SOLID', '70', '128', '71', '1', '72', '-2', '73', '3', '74', '4'),
+    ent('0', 'VERTEX', '8', 'SOLID', '70', '128', '71', '1', '72', '2', '73', '9'),
+    '0', 'SEQEND',
+    '0', 'POLYLINE', '8', 'CREST', '70', '9',
+    ...v3(0, 0, 310, 32), ...v3(20, 0, 312, 32, ['42', '0.5']), ...v3(20, 20, 314, 32),
+    '0', 'SEQEND',
+    ent('0', 'LWPOLYLINE', '8', 'ROAD', '90', '2', '70', '0', '38', '7.5',
+        '10', '0', '20', '0', '42', '0.4142135623730951', '10', '10', '20', '10'),
+    ent('0', 'LINE', '8', 'ROAD', '10', '1e2', '20', '-2.5E-1', '30', '0', '11', '3', '21', '4', '31', '5'),
+    ent('0', 'POINT', '8', 'PEGS', '10', '1', '20', '2', '30', '3'),
+    ent('0', 'MTEXT', '8', 'NOTES', '1', 'not geometry'),
+    ent('0', 'POINT', '8', 'PEGS', '10', '4', '20', '5', '30', '6'),
+  ].flat());
+  const grid = [];
+  for (let m = 0; m < 3; m++) for (let n = 0; n < 3; n++) grid.push(...v3(n * 10, m * 10, m + n, 64));
+  const polygon = wrap(['0', 'POLYLINE', '8', 'G', '70', '33', '71', '3', '72', '3', ...grid, '0', 'SEQEND',
+    '0', 'POLYLINE', '8', 'G', '70', '16', '71', '4', '72', '4', ...grid, '0', 'SEQEND'].flat());
+  return { DXF, DXF_CRLF: DXF.replace(/\n/g, '\r\n'), DXF_BOM: '﻿' + DXF, faces, polygon };
+};
+
+test('stream: the streamed scene equals read()+extractScene(), at every chunking', () => {
+  for (const [name, txt] of Object.entries(STREAM_CORPUS())) {
+    const ref = residentScene(txt.replace(/^﻿/, ''));
+    for (const chunk of [1, 2, 7, 64, 4096, 1 << 20]) {
+      const got = streamedScene(txt, chunk);
+      assert.deepEqual(got.tris, ref.tris, `${name} @${chunk}: triangles`);
+      assert.deepEqual(got.strings, ref.strings, `${name} @${chunk}: strings`);
+      assert.deepEqual(got.points, ref.points, `${name} @${chunk}: points`);
+      assert.deepEqual(got.layers, ref.layers, `${name} @${chunk}: layers`);
+      assert.deepEqual(got.warnings, ref.warnings, `${name} @${chunk}: warnings`);
+    }
+  }
+});
+
+test('stream: header variables, units and the layer table arrive before geometry', () => {
+  const order = [];
+  const st = createSceneStream({
+    header: (h) => order.push(['header', h]), layers: (l) => order.push(['layers', l]),
+    tri() { order.push(['geom']); }, string() { order.push(['geom']); }, point() { order.push(['geom']); },
+  });
+  st.push(new TextEncoder().encode(DXF));
+  const r = st.end();
+  assert.equal(order[0][0], 'header');
+  assert.equal(order[0][1].acadver, 'AC1015');
+  assert.equal(order[0][1].units, 'm');                      // $INSUNITS 6
+  assert.equal(order[1][0], 'layers');
+  assert.ok(order[1][1].DH_TRACES);
+  assert.ok(r.counts.strings >= 4 && r.counts.points >= 2 && r.counts.triangles === 1);
+});
+
+test('stream: $EXTMIN/$EXTMAX are read from the header', () => {
+  const txt = ['0', 'SECTION', '2', 'HEADER', '9', '$EXTMIN', '10', '650000', '20', '7800000', '30', '-12.5',
+    '9', '$EXTMAX', '10', '651000', '20', '7801000', '30', '400', '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
+  const st = createSceneStream({ tri() {}, string() {}, point() {} });
+  st.push(new TextEncoder().encode(txt));
+  const r = st.end();
+  assert.deepEqual(r.header.extmin, [650000, 7800000, -12.5]);
+  assert.deepEqual(r.header.extmax, [651000, 7801000, 400]);
+});
+
+test('stream: numbers parse exactly like parseFloat (fast path + fallbacks)', () => {
+  const vals = ['650123.456', '-7800987.654321', '0.1', '1e-7', '-2.5E+3', '123456789012345.6', '0.000000000000000000000001',
+    '  42.0  ', '.5', '-.25', '3.', '7', '1.23456789012345678', '999999999999999', '12abc', '+8.5'];
+  for (const v of vals) {
+    const txt = wrap(ent('0', 'POINT', '8', 'P', '10', v, '20', '0', '30', '0'));
+    let got = null;
+    const st = createSceneStream({ tri() {}, string() {}, point(l, c, x) { got = x; } });
+    st.push(new TextEncoder().encode(txt));
+    st.end();
+    const want = Number.isNaN(parseFloat(v)) ? 0 : parseFloat(v);
+    assert.equal(got, want, `"${v}"`);
+  }
+});
+
+test('stream: a binary DXF is refused by name; garbage never throws', () => {
+  const bin = new TextEncoder().encode('AutoCAD Binary DXF\r\n\x1a\x00rest');
+  const st = createSceneStream({ tri() {}, string() {}, point() {} });
+  assert.throws(() => { st.push(bin); st.end(); }, /BINARY DXF/);
+  const g = createSceneStream({ tri() {}, string() {}, point() {} });
+  assert.doesNotThrow(() => { g.push(new TextEncoder().encode('not\na\ndxf\n0\n\n\n0\nSECTION\n2')); g.end(); });
+});
+
+test('peekDxf: a truncated HEAD reports the entity mix it saw', () => {
+  const { faces } = STREAM_CORPUS();
+  const head = new TextEncoder().encode(faces).subarray(0, 900);   // cut mid-file
+  const p = peekDxf(head);
+  assert.ok(p.counts.triangles >= 2, `saw the faces (${p.counts.triangles})`);
+  assert.ok(p.layers.includes('TOPO'));
+});
