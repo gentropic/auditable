@@ -1,4 +1,4 @@
-// @gcu/wireframe 0.0.1 (src/index.js) — vendored from gentropic/wireframe@1c15e38 by ext/wireframe/build.js (do not edit; MIT)
+// @gcu/wireframe 0.0.1 (src/index.js) — vendored from gentropic/wireframe@0682659 by ext/wireframe/build.js (do not edit; MIT)
 
 // ── src/zip.js ──
 
@@ -2243,6 +2243,9 @@ function decodeChunk$parquet(bytes, col, out, o = 0) {
 // Reading .wfr files: open → manifest + per-element footers → bricks decoded on demand.
 
 const MIMETYPE = 'application/vnd.gentropic.wireframe';
+const FORMAT_VERSION = '0.1';
+// informative: where this format is described (SPEC §4) — written, never fetched
+const SPEC_URL = `https://gentropic.org/wireframe/${FORMAT_VERSION}`;
 const td$wfr = new TextDecoder();
 
 // A ranged view of one stored member.
@@ -3290,7 +3293,7 @@ function createElementWriter(spec, ctx) {
     // outputs: the vertex table streams into the zip; the cell table goes to scratch, copied in after
     const path = `elements/${encodeURIComponent(spec.name)}/`;
     const coords = grid ? { mode: 'grid', origin, step } : { mode: 'float64' };
-    const kvFor = (table) => ({ wireframe: JSON.stringify({ version: '0.1', element: spec.name, kind: spec.kind, table, ...(table === 'vertices' ? { coords } : {}) }) });
+    const kvFor = (table) => ({ wireframe: JSON.stringify({ version: FORMAT_VERSION, spec: SPEC_URL, element: spec.name, kind: spec.kind, table, ...(table === 'vertices' ? { coords } : {}) }) });
     const ctype = grid ? { type: 'INT32', encoding: 'DELTA_BINARY_PACKED' } : { type: 'DOUBLE', encoding: 'BYTE_STREAM_SPLIT' };
     const keepVid = spec.kind !== 'points' || !!spec.keepVid;
     const pqCol = (n, t, prefix) => ({ name: n, ...PQ[t], ...(t === 'string' ? { labels: labels[prefix + n].list } : {}) });
@@ -3553,7 +3556,7 @@ function createWfrWriter(sink, { budget = Infinity, backing = null, scratch = nu
         elements.push(manifest);
       }
       const f = frame || { origin: elements.find((e) => e.coords.origin)?.coords.origin || [0, 0, 0] };
-      const manifest = { format: 'wireframe', version: '0.1', frame: { crs: null, units: 'm', ...f }, elements, members, meta };
+      const manifest = { format: 'wireframe', version: FORMAT_VERSION, spec: SPEC_URL, frame: { crs: null, units: 'm', ...f }, elements, members, meta };
       await zw.add('wireframe.json', te$write.encode(JSON.stringify(manifest)), { hash: false });
       const { size } = await zw.finish();
       return { size, manifest, stats: store.stats };
@@ -3659,6 +3662,8 @@ function checkTopology(V, F) {
 export {
   openWfr,
   MIMETYPE,
+  FORMAT_VERSION,
+  SPEC_URL,
   writeWfr,
   createWfrWriter,
   attrType,

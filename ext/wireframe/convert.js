@@ -1,4 +1,4 @@
-// @gcu/wireframe 0.0.1 (src/convert.js) — vendored from gentropic/wireframe@1c15e38 by ext/wireframe/build.js (do not edit; MIT)
+// @gcu/wireframe 0.0.1 (src/convert.js) — vendored from gentropic/wireframe@0682659 by ext/wireframe/build.js (do not edit; MIT)
 
 // ── src/convert/bytes-in.js ──
 
