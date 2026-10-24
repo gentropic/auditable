@@ -1276,35 +1276,56 @@ for (let c = 0; c < KIND.length; c++) { const k = valueKind(c); KIND[c] = k === 
 const kindOf = (c) => (c >= 0 && c < KIND.length ? KIND[c] : (c >= 1010 && c <= 1059 ? 1 : c >= 1060 && c <= 1071 ? 2 : 0));
 
 const POW10 = []; for (let i = 0; i <= 22; i++) POW10.push(Number('1e' + i));
-const latin1 = (b, s, e) => { let out = ''; for (let i = s; i < e; i += 4096) out += String.fromCharCode.apply(null, b.subarray(i, Math.min(e, i + 4096))); return out; };
+// bytes → a JS string, one char per byte; short ranges (numbers, names, handles) by a plain loop,
+// which beats both TextDecoder and fromCharCode.apply-over-a-subarray at these lengths
+const latin1 = (b, s, e) => {
+  if (e - s <= 64) { let out = ''; for (let i = s; i < e; i++) out += String.fromCharCode(b[i]); return out; }
+  let out = ''; for (let i = s; i < e; i += 4096) out += String.fromCharCode.apply(null, b.subarray(i, Math.min(e, i + 4096))); return out;
+};
+const MAX_EXACT = 9007199254740992; // 2^53
 
-// parseFloat over a byte range, exactly: ≤15 significant digits and a power of ten
-// ≤ 22 are both exact doubles, so one division/multiplication is correctly rounded —
-// the same answer parseFloat gives. Anything else (exponents, long mantissas) falls
-// back to parseFloat on the text. Leading/trailing junk behaves like parseFloat's
-// prefix rule; no digits at all → NaN.
+// parseFloat over a byte range, exactly (Clinger's fast path): when the decimal mantissa is an
+// integer ≤ 2^53 and the power of ten is within 10^±22, both are exact doubles, so one
+// multiplication or division is correctly rounded — the same answer parseFloat gives. Zeros are
+// held pending until a nonzero digit needs them, so trailing zeros never inflate the mantissa;
+// exponents ("1.5E+03") are folded in. Anything outside that falls back to parseFloat on the
+// text. Leading/trailing junk behaves like parseFloat's prefix rule; no digits at all → NaN.
 function parseNumber(b, s, e) {
   while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+  const s0 = s;
   let neg = false;
   if (s < e && (b[s] === 45 || b[s] === 43)) { neg = b[s] === 45; s++; }
-  let mant = 0, digits = 0, sig = 0, exp = 0, seenDot = false, i = s;
+  let mant = 0, digits = 0, exp = 0, pending = 0, seenDot = false, i = s;
   for (; i < e; i++) {
     const ch = b[i];
     if (ch >= 48 && ch <= 57) {
       digits++;
-      if (sig > 0 || ch !== 48) {
-        if (sig >= 15) return parseFloat(latin1(b, s - (neg ? 1 : 0), e));
-        sig++;
-      }
-      mant = mant * 10 + (ch - 48);
       if (seenDot) exp--;
+      if (ch === 48) { if (mant !== 0) pending++; continue; } // leading zeros vanish; others wait
+      if (pending) { if (pending > 22) return parseFloat(latin1(b, s0, e)); mant *= POW10[pending]; pending = 0; }
+      mant = mant * 10 + (ch - 48);
+      if (mant >= MAX_EXACT) return parseFloat(latin1(b, s0, e)); // ≥, not >: 2^53 + 1 would round down to 2^53
     } else if (ch === 46 && !seenDot) seenDot = true;
-    else if (ch === 101 || ch === 69) return parseFloat((neg ? '-' : '') + latin1(b, s, e));
-    else break;
+    else if (ch === 101 || ch === 69) {
+      // an exponent only if digits follow (parseFloat's prefix rule: "1e" and "1e+" read as 1)
+      let j = i + 1, eneg = false;
+      if (j < e && (b[j] === 45 || b[j] === 43)) { eneg = b[j] === 45; j++; }
+      if (j >= e || b[j] < 48 || b[j] > 57) break;
+      let ev = 0;
+      for (; j < e && b[j] >= 48 && b[j] <= 57; j++) { ev = ev * 10 + (b[j] - 48); if (ev > 1000) return parseFloat(latin1(b, s0, e)); }
+      exp += eneg ? -ev : ev;
+      i = j;
+      break;
+    } else break;
   }
   if (!digits) return NaN;
-  if (-exp > 22) return parseFloat((neg ? '-' : '') + latin1(b, s, i));
-  const v = exp ? mant / POW10[-exp] : mant;
+  const p = exp + pending;
+  let v;
+  if (mant === 0) v = 0;
+  else if (p === 0) v = mant;
+  else if (p > 0 && p <= 22) v = mant * POW10[p];
+  else if (p < 0 && p >= -22) v = mant / POW10[-p];
+  else return parseFloat(latin1(b, s0, i));
   return neg ? -v : v;
 }
 
@@ -1562,17 +1583,32 @@ function createSceneStream(sink, opts = {}) {
     }
   }
 
-  // a string value, with a per-code cache (entity types and layer names repeat endlessly)
+  // a string value, with a small per-code cache: entity types, layer names and subclass markers
+  // repeat endlessly — and code 100 alternates ("AcDbEntity", "AcDbFace" on every entity), so one
+  // entry per code would thrash; four, replaced round-robin, holds them. Short pure-ASCII values
+  // (and every unique handle) decode by a plain loop, not a TextDecoder call per value.
   function strValue(c, b, s, e) {
     const len = e - s;
-    const hit = strCache.get(c);
-    if (hit && hit.b.length === len) {
-      let same = true;
-      for (let i = 0; i < len; i++) if (hit.b[i] !== b[s + i]) { same = false; break; }
-      if (same) return hit.s;
+    let ent = strCache.get(c);
+    if (ent) {
+      for (let k = 0; k < ent.n; k++) {
+        const hb = ent.b[k];
+        if (hb.length !== len) continue;
+        let same = true;
+        for (let i = 0; i < len; i++) if (hb[i] !== b[s + i]) { same = false; break; }
+        if (same) return ent.s[k];
+      }
     }
-    const v = decoder.decode(b.subarray(s, e));
-    if (len <= 256) strCache.set(c, { b: b.slice(s, e), s: v });
+    let ascii = len <= 64;
+    if (ascii) for (let i = s; i < e; i++) if (b[i] >= 128) { ascii = false; break; }
+    const v = ascii ? latin1(b, s, e) : decoder.decode(b.subarray(s, e));
+    // handles (5, 105, 320–369, 390–399, 1005) are unique by design: caching them only churns
+    const handle = c === 5 || c === 105 || c === 1005 || (c >= 320 && c <= 369) || (c >= 390 && c <= 399);
+    if (len <= 256 && !handle) {
+      if (!ent) { ent = { b: [], s: [], n: 0, next: 0 }; strCache.set(c, ent); }
+      const k = ent.n < 4 ? ent.n++ : (ent.next = (ent.next + 1) % 4);
+      ent.b[k] = b.slice(s, e); ent.s[k] = v;
+    }
     return v;
   }
 

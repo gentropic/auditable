@@ -809,3 +809,37 @@ test('peekDxf: a truncated HEAD reports the entity mix it saw', () => {
   assert.ok(p.counts.triangles >= 2, `saw the faces (${p.counts.triangles})`);
   assert.ok(p.layers.includes('TOPO'));
 });
+
+test('stream: number parsing is exactly parseFloat — 16+ digit mantissas, exponents, zeros, junk', () => {
+  // the fast path takes mantissas < 2^53 with 10^±22 (Clinger) and defers zeros; everything else falls
+  // back to parseFloat. A wrong bound (2^60) makes this fail by the thousand — verified when written.
+  let seed = 12345;
+  const r = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+  const digits = (n) => { let s = ''; for (let i = 0; i < n; i++) s += Math.floor(r() * 10); return s; };
+  const gen = () => {
+    const k = Math.floor(r() * 10);
+    if (k === 0) return String(r() * 10 ** (Math.floor(r() * 40) - 20) * (r() < 0.5 ? -1 : 1));
+    if (k === 1) return (r() * 1e7).toPrecision(1 + Math.floor(r() * 21));
+    if (k === 2) return (r() * 1e6).toExponential(Math.floor(r() * 18)).replace('e', r() < 0.5 ? 'E' : 'e');
+    if (k === 3) return digits(1 + Math.floor(r() * 18)) + '.' + digits(Math.floor(r() * 18)) + '0'.repeat(Math.floor(r() * 6));
+    if (k === 4) return '9007199254740' + digits(3) + (r() < 0.5 ? '.' + digits(2) : '');
+    if (k === 5) return (r() < 0.5 ? '-' : '+') + '0'.repeat(Math.floor(r() * 4)) + '.' + '0'.repeat(Math.floor(r() * 25)) + digits(1 + Math.floor(r() * 16));
+    if (k === 6) return digits(1 + Math.floor(r() * 5)) + ['e', 'E+', 'e-', 'e'][Math.floor(r() * 4)] + (r() < 0.2 ? '' : String(Math.floor(r() * 330)));
+    if (k === 7) return ' ' + digits(3) + '.' + digits(3) + ['', 'abc', '.5', ' '][Math.floor(r() * 4)];
+    if (k === 8) return digits(1 + Math.floor(r() * 3)) + '0'.repeat(Math.floor(r() * 30)) + (r() < 0.5 ? '.0' : '');
+    return '7' + digits(6) + '.' + digits(9 + Math.floor(r() * 4));
+  };
+  const nums = Array.from({ length: 40000 }, gen);
+  let text = '0\nSECTION\n2\nENTITIES\n';
+  for (const s of nums) text += `0\nPOINT\n8\nL\n100\nAcDbEntity\n100\nAcDbPoint\n10\n${s}\n20\n0\n30\n0\n`;
+  text += '0\nENDSEC\n0\nEOF\n';
+  const got = [], layers = new Set();
+  const st = createSceneStream({ tri() {}, string() {}, point(l, c, x) { got.push(x); layers.add(l); } });
+  st.push(new TextEncoder().encode(text)); st.end();
+  assert.equal(got.length, nums.length);
+  for (let i = 0; i < nums.length; i++) {
+    let want = parseFloat(nums[i]); if (Number.isNaN(want)) want = 0;
+    assert.ok(Object.is(got[i], want), `${JSON.stringify(nums[i])}: got ${got[i]}, want ${want}`);
+  }
+  assert.deepEqual([...layers], ['L'], 'alternating subclass markers on code 100 leave the layer cache intact');
+});
