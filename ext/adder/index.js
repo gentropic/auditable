@@ -13573,9 +13573,20 @@ function _reVerbose(p) {
 //   atomic groups (?>…) become their plain forms (JS has neither: only which patterns FAIL to
 //   match after backtracking can differ).
 function _reError(msg, pos) { return new AdderError('re.error', pos === undefined ? msg : `${msg} at position ${pos}`); }
-function _reToJs(p, f) {
-  const ascii = !!(f & 256), dotall = !!(f & 16), multiline = !!(f & 8);
-  const W = ascii ? 'A-Za-z0-9_' : '\\p{L}\\p{N}\\p{Mn}\\p{Pc}';
+// fold: the pattern carries no JS i flag (see _reTranslate), so where case folding is on each
+// cased letter becomes both cases — [aA] outside a class, a-z → a-zA-Z inside one
+function _reCases(c) {
+  const lo = c.toLowerCase(), up = c.toUpperCase();
+  return lo !== up && [...lo].length === 1 && [...up].length === 1 ? (c === lo ? up : lo) : '';
+}
+function _reToJs(p, f, fold = false) {
+  let ascii = !!(f & 256), dotall = !!(f & 16), multiline = !!(f & 8), icase = !!(f & 2);
+  const wordOf = (a) => a ? 'A-Za-z0-9_' : '\\p{L}\\p{N}\\p{Mn}\\p{Pc}';
+  let W = wordOf(ascii);
+  // every ( pushes the flag state it opened in and ) restores it, so a scoped group (?s:…) /
+  // (?-m:…) is resolved HERE — . $ \w already read these flags — instead of handed to the engine
+  // (RegExp modifiers need V8 12.5+: Node 23, Chrome 125; CPython's fnmatch emits (?s:…))
+  const scopes = [];
   let out = '', i = 0, inClass = false, lastClassEscape = false, lastAtom = false;
   const n = p.length;
   const hex = (k, what) => {
@@ -13640,6 +13651,17 @@ function _reToJs(p, f) {
       // a '-' right after a class escape (\w-.) is a literal, as in Python
       if (c === '-' && lastClassEscape) { out += '\\-'; i++; lastClassEscape = false; continue; }
       lastClassEscape = false;
+      if (fold && icase) {
+        const hi = p[i + 1] === '-' && p[i + 2] !== undefined && p[i + 2] !== ']' && p[i + 2] !== '\\' ? p[i + 2] : null;
+        if (hi !== null) {                           // a range: its other-case twin when both ends have one
+          const a = _reCases(c), b = _reCases(hi);
+          out += c + '-' + hi + (a && b && (a < b) === (c < hi) ? a + '-' + b : '');
+          i += 3; continue;
+        }
+        // a range to an escaped end (a-\x7a): keep it intact; a twin glued on would split it
+        out += c + (p[i + 1] === '-' && p[i + 2] === '\\' ? '' : _reCases(c)); i++;
+        continue;
+      }
       out += c; i++;
       continue;
     }
@@ -13655,18 +13677,42 @@ function _reToJs(p, f) {
         if (j < 0) throw _reError('missing ), unterminated comment', i);
         i = j + 1; continue;
       }
-      if (p.startsWith('(?P<', i)) { out += '(?<'; i += 4; lastAtom = false; continue; }
+      const sc = /^\(\?([aiLmsux]*)(?:-([imsx]*))?:/.exec(p.slice(i));
+      if (sc && (sc[1] || sc[2] !== undefined)) {
+        const on = sc[1], off = sc[2] || '';
+        if (sc[2] !== undefined && !off) throw _reError('missing flag', i + sc[0].length - 1);
+        if (on.includes('x') || off.includes('x')) throw _reError('scoped verbose flag (?x:…) is not supported', i);
+        scopes.push({ ascii, dotall, multiline, icase });
+        if (on.includes('a')) ascii = true;
+        if (on.includes('u') || on.includes('L')) ascii = false;
+        W = wordOf(ascii);
+        if (on.includes('s')) dotall = true;
+        if (off.includes('s')) dotall = false;
+        if (on.includes('m')) multiline = true;
+        if (off.includes('m')) multiline = false;
+        // case folding: fold mode (set whenever such a group exists) rewrites the letters
+        if (on.includes('i')) icase = true;
+        if (off.includes('i')) icase = false;
+        out += '(?:';
+        i += sc[0].length; lastAtom = false; continue;
+      }
+      if (p.startsWith('(?P<', i)) { scopes.push({ ascii, dotall, multiline, icase }); out += '(?<'; i += 4; lastAtom = false; continue; }
       if (p.startsWith('(?P=', i)) {
         const j = p.indexOf(')', i);
         out += `\\k<${p.slice(i + 4, j)}>`; i = j + 1; lastAtom = true; continue;
       }
-      if (p.startsWith('(?>', i)) { out += '(?:'; i += 3; lastAtom = false; continue; }   // atomic → plain group
       if (p.startsWith('(?(', i)) throw _reError('conditional groups (?(…)…) are not supported', i);
+      scopes.push({ ascii, dotall, multiline, icase });
+      if (p.startsWith('(?>', i)) { out += '(?:'; i += 3; lastAtom = false; continue; }   // atomic → plain group
       const g = /^\(\?([aiLmsux]+)\)/.exec(p.slice(i));
       if (g) throw _reError('global flags not at the start of the expression', i);
       out += c; i++; lastAtom = false; continue;
     }
-    if (c === ')') { out += c; i++; lastAtom = true; continue; }
+    if (c === ')') {
+      const o = scopes.pop();
+      if (o) { ascii = o.ascii; dotall = o.dotall; multiline = o.multiline; icase = o.icase; W = wordOf(ascii); }
+      out += c; i++; lastAtom = true; continue;
+    }
     if (c === '{') {
       const q = /^\{(\d*)(,(\d*))?\}/.exec(p.slice(i));
       if (q && lastAtom && (q[1] !== '' || (q[2] && q[3] !== ''))) {
@@ -13687,10 +13733,14 @@ function _reToJs(p, f) {
       lastAtom = false;
       continue;
     }
-    if (c === '.') { out += dotall ? '.' : '[^\\n]'; i++; lastAtom = true; continue; }
-    if (c === '$') { out += multiline ? '$' : '(?=\\n?(?![\\s\\S]))'; i++; lastAtom = false; continue; }
-    if (c === '|' || c === '^') { out += c; i++; lastAtom = false; continue; }
-    out += c; i++; lastAtom = true;
+    // . $ ^ are spelled out (no JS s/m flags), so a scoped group can change them mid-pattern;
+    // MULTILINE lines end at \n only, as in Python (JS's m also breaks at \r and U+2028/9)
+    if (c === '.') { out += dotall ? '[\\s\\S]' : '[^\\n]'; i++; lastAtom = true; continue; }
+    if (c === '$') { out += multiline ? '(?=\\n|(?![\\s\\S]))' : '(?=\\n?(?![\\s\\S]))'; i++; lastAtom = false; continue; }
+    if (c === '^') { out += multiline ? '(?:(?<![\\s\\S])|(?<=\\n))' : '(?<![\\s\\S])'; i++; lastAtom = false; continue; }
+    if (c === '|') { out += c; i++; lastAtom = false; continue; }
+    const other = fold && icase ? _reCases(c) : '';
+    out += other ? `[${c}${other}]` : c; i++; lastAtom = true;
   }
   if (inClass) throw _reError('unterminated character set', p.lastIndexOf('['));
   return out;
@@ -13707,11 +13757,13 @@ function _reTranslate(pattern, flags) {
     p = p.slice(lead[0].length);
   }
   if (f & 64) p = _reVerbose(p);
-  p = _reToJs(p, f);
+  // a group that switches case folding ((?i:…) (?-i:…)) → no JS i flag for the whole pattern;
+  // _reToJs folds the letters itself where it's on (a stray match on an escaped paren only costs
+  // that pattern the native flag, never correctness)
+  const foldLetters = /\(\?[aiLmsux]*(?:i[aiLmsux]*(?:-[imsx]*)?|-[msx]*i[imsx]*):/.test(p);
+  p = _reToJs(p, f, foldLetters);
   let js = '';
-  if (f & 2) js += 'i';
-  if (f & 8) js += 'm';
-  if (f & 16) js += 's';
+  if (f & 2 && !foldLetters) js += 'i';
   if (!(f & 256)) js += 'u';
   // .flags as CPython reports them: a str pattern is UNICODE unless ASCII; a bytes pattern is
   // neither (its ASCII semantics above are implied, not a flag)
@@ -26366,7 +26418,7 @@ const _TM_PT = {
   j: '(?<j>36[0-6]|3[0-5]\\d|[12]\\d\\d|0[1-9]\\d|00[1-9]|[1-9]\\d|0[1-9]|[1-9])', m: '(?<m>1[0-2]|0[1-9]|[1-9])', M: '(?<M>[0-5]\\d|\\d)',
   S: '(?<S>6[0-1]|[0-5]\\d|\\d)', y: '(?<y>\\d\\d)', Y: '(?<Y>\\d\\d\\d\\d)', p: '(?<p>am|pm)', b: `(?<b>${_TM_MONTHS.map((x) => x.slice(0, 3)).join('|')})`,
   B: `(?<B>${_TM_MONTHS.join('|')})`, a: `(?<a>${_TM_DAYS.map((x) => x.slice(0, 3)).join('|')})`, A: `(?<A>${_TM_DAYS.join('|')})`,
-  w: '(?<w>[0-6])', u: '(?<u>[1-7])', z: '(?<z>[+-]\\d\\d:?[0-5]\\d(:?[0-5]\\d(\\.\\d{1,6})?)?|(?-i:Z))', Z: '(?<Z>utc|gmt)', '%': '%',
+  w: '(?<w>[0-6])', u: '(?<u>[1-7])', z: '(?<z>[+-]\\d\\d:?[0-5]\\d(:?[0-5]\\d(\\.\\d{1,6})?)?|Z)', Z: '(?<Z>utc|gmt)', '%': '%',
 };
 function _tmStrptimeParts(str, fmt) {
   if (typeof str !== 'string') throw new AdderError('TypeError', `strptime() argument 1 must be str, not ${pyTypeName(str)}`);
@@ -26384,7 +26436,9 @@ function _tmStrptimeParts(str, fmt) {
   }
   const re = new RegExp(`^${pat}`, 'i');
   const m = re.exec(str);
-  if (!m) throw new AdderError('ValueError', `time data ${pyRepr(str)} does not match format ${pyRepr(fmt)}`);
+  // %z's UTC designator is an uppercase Z only (CPython: (?-i:Z)); a pattern can't say that under
+  // the i flag without RegExp modifiers (Node 23+), so a lowercase z is refused after the match
+  if (!m || (m.groups && m.groups.z === 'z')) throw new AdderError('ValueError', `time data ${pyRepr(str)} does not match format ${pyRepr(fmt)}`);
   if (m[0].length !== str.length) throw new AdderError('ValueError', `unconverted data remains: ${str.slice(m[0].length)}`);
   const g = m.groups || {};
   let year = 1900, month = 1, day = 1, hour = 0, minute = 0, second = 0, us = 0, tz = null, yday = null;

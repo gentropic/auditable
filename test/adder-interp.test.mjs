@@ -870,6 +870,33 @@ describe('adderEval — regex named groups', () => {
     assert.strictEqual(defines.k, 'foo');
     assert.strictEqual(defines.v, 'bar');
   });
+
+  // scoped flags are resolved by the translator, not left to the engine (RegExp modifiers need
+  // Node 23+; CPython's fnmatch.translate emits (?s:…)). Expected values are CPython 3.13's.
+  it('scoped inline flags (?s:…) (?-s:…) (?m:…), and fnmatch.translate', async () => {
+    const src = [
+      'import re, fnmatch',
+      'a = bool(re.fullmatch(r"(?s:a.b)", "a\\nb"))',
+      'b = bool(re.fullmatch(r"a(?s:.)b.", "a\\nbc"))',
+      'c = bool(re.fullmatch(r"a(?s:.)b.", "a\\nb\\n"))',
+      'd = bool(re.search(r"(?-s:a.b)", "a\\nb", re.S))',
+      'e = re.findall(r"(?m:^\\w+$)", "one\\ntwo")',
+      'f = re.findall(r"^\\w+$", "one\\ntwo")',
+      'g = re.findall(r"(?m:^x)|y$", "x\\nx y\\ny")',
+      'h = bool(re.match(fnmatch.translate("*.txt"), "dir\\nname.txt"))',
+      'i = bool(re.fullmatch(r"(?i:ab)c", "ABc"))',
+      'j = bool(re.fullmatch(r"(?i:A)b", "ab"))',
+      'k = bool(re.fullmatch(r"(?i:A)b", "aB"))',
+      'l = re.findall(r"(?i:[a-c]+)x", "ABCx abcx aBcX")',
+      'm = bool(re.fullmatch(r"(?i)a(?-i:b)c", "AbC"))',
+      'n = bool(re.fullmatch(r"(?i)a(?-i:b)c", "ABC"))',
+      'o = re.findall(r"(?i:é)", "Éé")',
+    ].join('\n');
+    const { defines: d } = await pyEval(src);
+    assert.deepStrictEqual(plain('abcdefghijklmno'.split('').map((k) => d[k])),
+      [true, true, false, false, ['one', 'two'], [], ['x', 'x', 'y'], true,
+        true, true, false, ['ABCx', 'abcx'], true, false, ['É', 'é']]);
+  });
 });
 
 // ── Phase 1b: augmented assignment dunders ──

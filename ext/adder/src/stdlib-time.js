@@ -606,7 +606,7 @@ const _TM_PT = {
   j: '(?<j>36[0-6]|3[0-5]\\d|[12]\\d\\d|0[1-9]\\d|00[1-9]|[1-9]\\d|0[1-9]|[1-9])', m: '(?<m>1[0-2]|0[1-9]|[1-9])', M: '(?<M>[0-5]\\d|\\d)',
   S: '(?<S>6[0-1]|[0-5]\\d|\\d)', y: '(?<y>\\d\\d)', Y: '(?<Y>\\d\\d\\d\\d)', p: '(?<p>am|pm)', b: `(?<b>${_TM_MONTHS.map((x) => x.slice(0, 3)).join('|')})`,
   B: `(?<B>${_TM_MONTHS.join('|')})`, a: `(?<a>${_TM_DAYS.map((x) => x.slice(0, 3)).join('|')})`, A: `(?<A>${_TM_DAYS.join('|')})`,
-  w: '(?<w>[0-6])', u: '(?<u>[1-7])', z: '(?<z>[+-]\\d\\d:?[0-5]\\d(:?[0-5]\\d(\\.\\d{1,6})?)?|(?-i:Z))', Z: '(?<Z>utc|gmt)', '%': '%',
+  w: '(?<w>[0-6])', u: '(?<u>[1-7])', z: '(?<z>[+-]\\d\\d:?[0-5]\\d(:?[0-5]\\d(\\.\\d{1,6})?)?|Z)', Z: '(?<Z>utc|gmt)', '%': '%',
 };
 function _tmStrptimeParts(str, fmt) {
   if (typeof str !== 'string') throw new AdderError('TypeError', `strptime() argument 1 must be str, not ${pyTypeName(str)}`);
@@ -624,7 +624,9 @@ function _tmStrptimeParts(str, fmt) {
   }
   const re = new RegExp(`^${pat}`, 'i');
   const m = re.exec(str);
-  if (!m) throw new AdderError('ValueError', `time data ${pyRepr(str)} does not match format ${pyRepr(fmt)}`);
+  // %z's UTC designator is an uppercase Z only (CPython: (?-i:Z)); a pattern can't say that under
+  // the i flag without RegExp modifiers (Node 23+), so a lowercase z is refused after the match
+  if (!m || (m.groups && m.groups.z === 'z')) throw new AdderError('ValueError', `time data ${pyRepr(str)} does not match format ${pyRepr(fmt)}`);
   if (m[0].length !== str.length) throw new AdderError('ValueError', `unconverted data remains: ${str.slice(m[0].length)}`);
   const g = m.groups || {};
   let year = 1900, month = 1, day = 1, hour = 0, minute = 0, second = 0, us = 0, tz = null, yday = null;
