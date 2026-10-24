@@ -144,14 +144,15 @@ export async function writeSource(wr, src, opts = {}) {
         } else await soupElement(w, { name: el.name, chunks: wfrSoupDoc(el).streamChunks(), spec, meta: elMeta, signal });
       } else if (el.kind === 'lines') {
         const d = wfrStringsDoc(el);
-        const lw = w.element({ ...spec, name: el.name, kind: 'lines', cellAttributes: { layer: 'string', string: 'i32' }, meta: elMeta });
+        const ord = d.header.polylines;   // line + seq survive the re-encode; a plain network has neither
+        const lw = w.element({ ...spec, name: el.name, kind: 'lines', cellAttributes: { layer: 'string', ...(ord ? { line: 'i32', seq: 'i32' } : {}) }, meta: elMeta });
         for await (const r of d.streamChunks()) {
-          const n = r.count, P = new Float64Array(6 * n), layer = new Array(n), sid = new Int32Array(n);
+          const n = r.count, P = new Float64Array(6 * n), layer = new Array(n), sid = new Int32Array(n), sq = new Int32Array(n);
           for (let i = 0; i < n; i++) {
             P.set([r.ax[i], r.ay[i], r.az[i], r.bx[i], r.by[i], r.bz[i]], 6 * i);
-            const rec = d.fetchRecord(r.recIdx[i]); layer[i] = rec[0]; sid[i] = rec[1];
+            const rec = d.fetchRecord(r.recIdx[i]); layer[i] = rec[0]; sid[i] = rec[1]; sq[i] = rec[2];
           }
-          await lw.soup(P, { layer, string: sid });
+          await lw.soup(P, { layer, ...(ord ? { line: sid, seq: sq } : {}) });
         }
       } else {
         const d = wfrPointsDoc(el);

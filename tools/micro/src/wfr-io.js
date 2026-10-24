@@ -114,20 +114,21 @@ function growable(Type) {
 // ── lines → a strings (sticks) layer ───────────────────────────────────────────
 // Same contract as condenser's resident DXF strings: header { kind:'strings', columns, mapping,
 // categories, catColors, count }, streamChunks → stick RawChunks, fetchRecord / recordPosition.
-// The category comes from a `layer` cell attribute when there is one; STRING from `string`.
+// The category comes from a `layer` cell attribute when there is one; LINE and SEQ from the reserved
+// `line` + `seq` (SPEC §5 — which polyline, and the position along it).
 export function wfrStringsDoc(el) {
   const ca = new Set(attrColumns(el, 'cells').map((c) => c.name));
-  const hasLayer = ca.has('layer'), hasString = ca.has('string'), hasRGB = ca.has('color.r') && ca.has('color.g') && ca.has('color.b');
+  const hasLayer = ca.has('layer'), hasLine = ca.has('line'), hasSeq = ca.has('seq'), hasRGB = ca.has('color.r') && ca.has('color.g') && ca.has('color.b');
   const cats = catTable(), bb = bboxOf(el), o = bb.min;
-  const seg = { cat: growable(Uint8Array), str: growable(Int32Array), mx: growable(Float32Array), my: growable(Float32Array), mz: growable(Float32Array) };
-  const header = { kind: 'strings', format: 'wfr', element: el.name, count: el.meta.counts.cells, strings: 0, columns: ['LAYER', 'STRING'], mapping: { chan: null, cat: hasLayer ? 0 : null }, categories: null, catColors: null, numericColumns: [], chanRange: [0, 0], bbox: bb };
+  const seg = { cat: growable(Uint8Array), str: growable(Int32Array), seq: growable(Int32Array), mx: growable(Float32Array), my: growable(Float32Array), mz: growable(Float32Array) };
+  const header = { kind: 'strings', format: 'wfr', element: el.name, count: el.meta.counts.cells, strings: 0, columns: ['LAYER', 'LINE', 'SEQ'], polylines: hasLine && hasSeq, mapping: { chan: null, cat: hasLayer ? 0 : null }, categories: null, catColors: null, numericColumns: [], chanRange: [0, 0], bbox: bb };
   async function* streamChunks() {
     const toWorld = worldOf(el), ids = new Set();
     for (let k = 0; k < el.bricks; k++) {
       const b = await el.readBrick(k);
       const n = b.x.length, w = new Float64Array(3 * n);
       toWorld(b.x, b.y, b.z, n, w);
-      const names = [hasLayer && 'layer', hasString && 'string', ...(hasRGB ? ['color.r', 'color.g', 'color.b'] : [])].filter(Boolean);
+      const names = [hasLayer && 'layer', hasLine && 'line', hasSeq && 'seq', ...(hasRGB ? ['color.r', 'color.g', 'color.b'] : [])].filter(Boolean);
       const a = names.length ? await el.readRowGroup('cells', k, names) : {};
       const m = b.cells.length / 2, r = { count: m, cat: new Uint8Array(m), recIdx: new Uint32Array(m), chan: new Float64Array(m) };
       for (const c of ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'x', 'y', 'z']) r[c] = new Float64Array(m);
@@ -137,10 +138,10 @@ export function wfrStringsDoc(el) {
         const mx = (w[A] + w[B]) / 2, my = (w[A + 1] + w[B + 1]) / 2, mz = (w[A + 2] + w[B + 2]) / 2;
         r.x[s] = mx; r.y[s] = my; r.z[s] = mz;
         const code = hasLayer ? cats.of(a.layer[s], hasRGB ? [a['color.r'][s], a['color.g'][s], a['color.b'][s]] : null) : 0;
-        const sid = hasString ? a.string[s] : -1;
-        if (hasString) ids.add(sid);
+        const sid = hasLine ? a.line[s] : -1, sq = hasSeq ? a.seq[s] : -1;
+        if (hasLine) ids.add(sid);
         r.cat[s] = code; r.recIdx[s] = seg.cat.length;
-        seg.cat.push(code); seg.str.push(sid); seg.mx.push(mx - o[0]); seg.my.push(my - o[1]); seg.mz.push(mz - o[2]);
+        seg.cat.push(code); seg.str.push(sid); seg.seq.push(sq); seg.mx.push(mx - o[0]); seg.my.push(my - o[1]); seg.mz.push(mz - o[2]);
       }
       yield r;
     }
@@ -150,7 +151,7 @@ export function wfrStringsDoc(el) {
   }
   return {
     header, streamChunks,
-    fetchRecord: (rec) => [hasLayer ? cats.names[seg.cat.at(rec)] : '', seg.str.at(rec)],
+    fetchRecord: (rec) => [hasLayer ? cats.names[seg.cat.at(rec)] : '', seg.str.at(rec), seg.seq.at(rec)],
     recordPosition: (rec) => [o[0] + seg.mx.at(rec), o[1] + seg.my.at(rec), o[2] + seg.mz.at(rec)],
   };
 }

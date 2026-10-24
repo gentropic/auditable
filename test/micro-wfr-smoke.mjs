@@ -28,7 +28,7 @@ const parts = [];
 await writeWfr({ write: (b) => { parts.push(b.slice()); } }, {
   elements: [
     { name: 'cube', kind: 'triangles', positions: V, cells: F, topology: 'check', vertexAttributes: { 'color.r': Uint8Array.from({ length: 8 }, (_, i) => (i * 30) % 256), 'color.g': new Uint8Array(8).fill(40), 'color.b': new Uint8Array(8).fill(200) } },
-    { name: 'strings', kind: 'lines', positions: new Float64Array([500000, 7400000, 300, 500005, 7400000, 300, 500010, 7400002, 300, 500000, 7400010, 310, 500006, 7400012, 312]), cells: Uint32Array.from([0, 1, 1, 2, 3, 4]), cellAttributes: { layer: ['PIT', 'PIT', 'ROAD'], string: Int32Array.of(0, 0, 1), 'color.r': Uint8Array.of(255, 255, 0), 'color.g': Uint8Array.of(0, 0, 255), 'color.b': Uint8Array.of(0, 0, 0) } },
+    { name: 'strings', kind: 'lines', positions: new Float64Array([500000, 7400000, 300, 500005, 7400000, 300, 500010, 7400002, 300, 500000, 7400010, 310, 500006, 7400012, 312]), cells: Uint32Array.from([0, 1, 1, 2, 3, 4]), cellAttributes: { layer: ['PIT', 'PIT', 'ROAD'], line: Int32Array.of(0, 0, 1), seq: Int32Array.of(0, 1, 0), 'color.r': Uint8Array.of(255, 255, 0), 'color.g': Uint8Array.of(0, 0, 255), 'color.b': Uint8Array.of(0, 0, 0) } },
     { name: 'pegs', kind: 'points', positions: new Float64Array([500001, 7400001, 301, 500002, 7400003, 302, 500004, 7400004, 303]), vertexAttributes: { layer: ['A', 'B', 'A'] } },
   ],
 });
@@ -107,7 +107,7 @@ async function importArc(url, tag) {
   chk(`${tag} import: three elements → three layers in a group`, r.n === 3 && r.group);
   chk(`${tag} import: cube re-welded (12 tris / 8 vertices), vertex colours on the GPU path, color.* columns at their vid`, r.mesh.tri === 12 && r.mesh.v === 8 && r.mesh.el === 'cube' && r.mesh.colored && r.mesh.cols.includes('color.r') && r.mesh.red3 === 90);
   chk(`${tag} import: the checked topology travels with the layer`, r.mesh.topo && r.mesh.topo.closed === true && r.mesh.topo.status === 'checked');
-  chk(`${tag} import: strings categorized by layer, authored colours → legend, records`, r.str.count === 3 && JSON.stringify(r.str.cats) === '["PIT","ROAD"]' && r.str.legend === 2 && r.str.rec[0] === 'ROAD' && r.str.rec[1] === 1);
+  chk(`${tag} import: strings categorized by layer, authored colours → legend, records [layer, line, seq]`, r.str.count === 3 && JSON.stringify(r.str.cats) === '["PIT","ROAD"]' && r.str.legend === 2 && r.str.rec[0] === 'ROAD' && r.str.rec[1] === 1 && r.str.rec[2] === 0);
   chk(`${tag} import: pegs with layers and records`, r.pegs.count === 3 && r.pegs.rec[3] === 'B');
   chk(`${tag} import: element filter + forceSoup → one streamed layer`, r.soup.n === 1 && r.soup.soup === true && r.soup.tri === 12);
   await p.close();
@@ -150,7 +150,7 @@ async function convertArc(url, tag) {
     return { e: res.manifest.elements.map((x) => [x.counts.cells, x.counts.vertices, x.columns.map((c) => c.name).join('/'), x.meta.lineage && x.meta.lineage.op]), b0: vd.attrs['color.b'][0], s: r2.manifest.elements.map((x) => [x.kind, x.counts.cells, x.columns.map((c) => c.name).join('/')]) };
   });
   chk(`${tag} export: a PLY mesh layer → indexed, colours as color.r/g/b, lineage kept`, ex.e.length === 1 && ex.e[0][0] === 28800 && ex.e[0][1] === 14641 && ex.e[0][2] === 'color.r/color.g/color.b' && ex.e[0][3] === 'open' && ex.b0 === 120);
-  chk(`${tag} export: a DXF strings layer → only its lines (layer + colour + string id)`, ex.s.length === 1 && ex.s[0][0] === 'lines' && ex.s[0][1] === 4 && /layer/.test(ex.s[0][2]));
+  chk(`${tag} export: a DXF strings layer → only its lines (layer + colour + line/seq order)`, ex.s.length === 1 && ex.s[0][0] === 'lines' && ex.s[0][1] === 4 && /layer/.test(ex.s[0][2]) && ['line', 'seq'].every((c) => ex.s[0][2].split('/').includes(c)));
   await p.close();
 }
 
