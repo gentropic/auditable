@@ -1,0 +1,8 @@
+{
+  "name": "@gcu/wireframe",
+  "private": true,
+  "description": "VENDORED copy of @gcu/wireframe (the .wfr mesh format) for in-repo consumers like micro. Source of truth: github.com/gentropic/wireframe — regenerate with `node ext/wireframe/build.js`; do not edit index.js. Not published from here.",
+  "type": "module",
+  "main": "./index.js",
+  "license": "MIT"
+}

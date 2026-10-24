@@ -19,6 +19,7 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
+await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
 const mkPage = async (proj) => {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });

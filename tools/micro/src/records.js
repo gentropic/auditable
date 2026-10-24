@@ -13,6 +13,7 @@ import { streamParquetColumns, readParquetRow } from '../../../ext/parquet/index
 import { compileValue, deps } from '../../../ext/expr/index.js';
 import { readLFM, readLFMLayout, verifyLFM, lfmBlockStream } from '../../../ext/lfm/lfm.js';
 import { S, activeDocs } from './state.js';
+import { isWfrName, rereadWfrMesh } from './wfr-io.js';
 
 // ── headers + schema ──────────────────────────────────────────────────────────
 export function layerHeaderOf(L) {
@@ -314,6 +315,7 @@ export async function openLfmSoup(blob, { onProgress } = {}) {
 // wireframe is a pt/tr PAIR (md.ptBlob + md.blob); everything else is single-file.
 export async function reReadMesh(md) {
   if (md.header.format === 'dm-wireframe') return openDmWireframe(md.ptBlob, md.blob);
+  if (md.header.format === 'wfr' || isWfrName(md.name)) return rereadWfrMesh(md.blob, md.header.element);
   if (md.header.format === 'dxf' || /\.dxf$/i.test(md.name)) return openDxf(md.blob, { as: 'mesh' });
   const open = /\.msh$/i.test(md.name) ? openMsh : /\.obj$/i.test(md.name) ? openObj : /\.lfm$/i.test(md.name) ? openLfmMesh : openPlyMesh;
   return open(md.blob);

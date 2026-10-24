@@ -1761,6 +1761,8 @@ if (target === 'micro') {
     '../../ext/sheet/index.js': '#sheet',
     '../../ext/dispatch/index.js': '#dispatch',       // @gcu/dispatch — the EXPERIMENTAL NL command bar (off by default)
     '../../ext/leadacid/index.js': '#leadacid',      // the lead-acid shell shim (feature-detected; dormant on the web)
+    '../../ext/wireframe/index.js': '#wireframe',    // @gcu/wireframe — .wfr meshes (vendored from gentropic/wireframe)
+    '../../ext/wireframe/convert.js': '#wireframe-convert',   // its streamed PLY/OBJ/DXF → .wfr adapters
   };
   const libs = [
     ['condenser', 'ext/condenser/index.js'],
@@ -1779,6 +1781,8 @@ if (target === 'micro') {
     ['units',     'ext/units/index.js'],               // @gcu/units — grade/density unit declarations (grade-tonnage)
     ['yaml',      'ext/yaml/index.js'],                // @gcu/yaml — recipes (hand-editable analysis setups)
     ['sheet',     'ext/sheet/index.js'],               // @gcu/sheet — .xlsx worksheets as table documents (typed columns)
+    ['wireframe', 'ext/wireframe/index.js'],           // @gcu/wireframe — .wfr read/write (node ext/wireframe/build.js)
+    ['wireframe-convert', 'ext/wireframe/convert.js'], // @gcu/wireframe/convert — PLY/OBJ/DXF → .wfr, streamed
   ];
   const modules = [];
   for (const [name, rel] of libs) {

@@ -89,6 +89,7 @@ const parquet = new Uint8Array(writeParquet({ columnData: (() => {
 
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
 const ctx = await b.newContext({ viewport: { width: 1000, height: 700 } });
+await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
 let ok = true;
 const chk = (name, cond) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${name}`); ok = ok && cond; };
 

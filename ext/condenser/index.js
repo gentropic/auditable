@@ -7922,6 +7922,9 @@ async function peekDxfHead(blob, bytes = 8 << 20) {
   return { ...p, partial: head.length < blob.size, fraction: head.length / (blob.size || 1) };
 }
 
+// the push parser itself, for consumers that want the raw scene stream (e.g. @gcu/wireframe's
+// DXF → .wfr adapter) without a second copy of @gcu/dxf in the bundle
+
 async function openDxfStream(blob, { as = null } = {}) {
   let bbox = await sampleBounds(blob);
   let headerVars = null;
@@ -9956,6 +9959,7 @@ export {
   openDxfStream,
   peekDxfHead,
   DXF_STREAM_BYTES,
+  createSceneStream,
   mat4Perspective,
   mat4Ortho,
   mat4LookAt,

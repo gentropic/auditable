@@ -534,6 +534,25 @@
   #meDlg select, #meDlg input[type=text] { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 4px 6px; }
   #meDlg .me-note { color: var(--dim); font-size: 11px; line-height: 1.5; min-height: 28px; }
   #meDlg .dh-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--border); }
+  #cwDlg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.5); z-index: 8; }
+  #cwDlg.show { display: flex; }
+  #cwDlg .box { width: min(560px, 94vw); background: #1a1a1a; border: 1px solid var(--bd2); }
+  #cwDlg .hd { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 13px; color: var(--accent); }
+  #cwDlg .hd button { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+  #cwDlg .bd { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; font-family: var(--mono); font-size: 12px; color: var(--text); }
+  #cwDlg .cw-src { display: flex; flex-direction: column; gap: 3px; max-height: 150px; overflow-y: auto; }
+  #cwDlg .cw-row { display: flex; gap: 8px; align-items: baseline; }
+  #cwDlg .cw-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cwDlg .cw-row .sz { color: var(--dim); }
+  #cwDlg .cw-row button { background: none; border: none; color: var(--muted); cursor: pointer; }
+  #cwDlg .cw-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
+  #cwDlg .cw-grid label { color: var(--muted); }
+  #cwDlg select, #cwDlg input[type=text] { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 4px 6px; }
+  #cwDlg .cw-note { color: var(--dim); font-size: 11px; line-height: 1.5; }
+  #cwDlg .dh-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--border); }
+  #cwDlg #cwMsg { flex: 1; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+  #cwProg { height: 3px; background: #242424; margin: 0 16px; border-radius: 2px; overflow: hidden; }
+  #cwProgFill { height: 100%; width: 0%; background: var(--accent); transition: width 0.15s linear; }
   #meDlg .dh-foot #meDlgMsg { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: auto; }
   /* manual plot ranges (GT + swath): an aligned label·min·max grid */
   .rr-row { display: grid; grid-template-columns: minmax(32px, auto) 1fr 1fr; gap: 4px 6px; align-items: center; width: 100%; }
@@ -901,6 +920,7 @@
   <div id="opDlg"><div class="box"><div class="hd"><span>store block models as Parquet</span><button id="opCancel">×</button></div><div class="bd" id="opDlgBody"></div><div class="dh-foot"><span id="opDlgMsg"></span><button id="opNot">Not now</button><button id="opGo">Convert</button></div></div></div>
   <div id="brDlg"><div class="box"><div class="hd"><span>rename layers</span><button id="brCancel">×</button></div><div class="bd" id="brDlgBody"></div><div class="dh-foot"><span id="brDlgMsg"></span><button id="brNot">Cancel</button><button id="brGo">Apply</button></div></div></div>
   <div id="meDlg"><div class="box"><div class="hd"><span>export mesh</span><button id="meCancel">×</button></div><div class="bd" id="meDlgBody"></div><div class="dh-foot"><span id="meDlgMsg"></span><button id="meNot">Cancel</button><button id="meGo">Export</button></div></div></div>
+  <div id="cwDlg"><div class="box"><div class="hd"><span id="cwTitle">convert to .wfr</span><button id="cwClose">×</button></div><div class="bd" id="cwDlgBody"></div><div id="cwProg" style="display:none"><div id="cwProgFill"></div></div><div class="dh-foot"><span id="cwMsg"></span><button id="cwCancel">Cancel</button><button id="cwGo">Convert</button></div></div></div>
   <div id="plDlg"><div class="box"><div class="hd"><span>opening project</span><button id="plClose">×</button></div><div class="bd" id="plDlgBody"></div></div></div>
   <div id="sbDlg"><div class="box"><div class="hd"><span>select by solid</span><button id="sbCancel">×</button></div><div class="bd" id="sbDlgBody"></div><div id="sbProg" style="display:none"><div id="sbProgFill"></div></div><div class="dh-foot"><span id="sbDlgMsg"></span><button id="sbRcp" class="rcp">save as recipe…</button><button id="sbGo">Run</button></div></div></div>
   <div id="adDlg"><div class="box"><div class="hd"><span>assign domains</span><button id="adCancel">×</button></div><div class="bd" id="adDlgBody"></div><div id="adProg" style="display:none"><div id="adProgFill"></div></div><div class="dh-foot"><span id="adDlgMsg"></span><button id="adGo">Assign</button></div></div></div>
@@ -948,6 +968,8 @@ import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from 
 import { numericColsOf, blockVolumeOf, volumeContextOf, volumeAt, computeGT, computeSwath, extractSamples, autoDeclusterSizes, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
 import { fmtSize, layerBytes, layerFiles, basename, joinPath, kindDir, relPathFor, resolveFileHandle, removeFileAt, layerRelpath, resolveDhFile, dhSetName } from './src/paths.js';   // project folder layout + path resolution
 import { elementGeometry, layerColumnsOps, buildElementManifest, dhElementName, peekCollarCols, buildDhSetManifest, descFromElement, buildGridElementManifest, elementHydrate } from './src/manifest.js';   // element-manifest builders + hydrate (persistence stays here)
+import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc, wfrPointsDoc, vertexColorOf } from './src/wfr-io.js';   // .wfr elements → the mesh / strings / points shapes micro already reads
+import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';   // ONE path to .wfr: convert files, export layers, store project meshes
 const __MICRO_BUILD__ = 'dev';                             // stamped '<version> · <hash> · <date>' by node build.js --target=micro
 
 const $ = (s) => document.querySelector(s);
@@ -6567,6 +6589,7 @@ const MESH_EXPORT_FMTS = [
   { id: 'lfm', label: 'LFM — Leapfrog model (colours)', multi: 'named meshes + colours' },
   { id: 'ply', label: 'PLY — binary, double precision', multi: 'merged into one mesh' },
   { id: 'msh', label: 'MSH — ARANZ / Leapfrog surface', multi: 'merged into one mesh' },
+  { id: 'wfr', label: 'WFR — wireframe (bricked, attributes kept)', multi: 'named elements' },
 ];
 function openMeshExportDialog(Ls) {
   Ls = (Ls || []).filter((L) => L && L.kind === 'mesh' && L.docs.meshDoc);
@@ -6593,12 +6616,140 @@ function openMeshExportDialog(Ls) {
   $('#meGo').onclick = async () => {
     const fmt = sel.value, fname = nameIn.value.trim() || baseName + '.' + fmt;
     close();
+    if (fmt === 'wfr') return openWfrDialog({ layers: Ls });   // the .wfr job has its own options (step, budget, topology)
     try { await exportMeshes(Ls, fmt, fname); }
     catch (e) { $('#meta').textContent = `mesh export failed: ${e.message}`; }
   };
   $('#meNot').onclick = close;
   $('#meCancel').onclick = close;
   $('#meDlg').classList.add('show');
+}
+// ── .wfr: Convert (source files, never loaded) and Export (loaded layers) — one dialog, one job ──
+// Sources stream through src/wfr-write.js into @gcu/wireframe's writer (bounded memory, spills to
+// OPFS past the budget). Output goes to a file handle (streamed, never resident), the project's
+// meshes/ folder, or a download / the shell's Downloads. "Open when done" loads the result.
+const wfrExportable = (L) => !!(L && L.docs && (L.docs.meshDoc || L.docs.stringsDoc));
+const WFR_STEPS = [['0.1 mm grid', 1e-4], ['1 mm grid', 1e-3], ['1 cm grid', 1e-2], ['lossless (float64)', null]];
+const WFR_BUDGETS = [['256 MB', 256], ['512 MB', 512], ['1 GB', 1024], ['2 GB', 2048]];
+let _wfrJob = null;                                         // { ctrl } while a job runs
+async function openWfrDialog({ files = null, layers = null } = {}) {
+  const mode = layers ? 'export' : 'convert';
+  let srcs = [];                                            // convert: [{ files:[…], name }]
+  const Ls = (layers || []).filter(wfrExportable);
+  const addFiles = async (fl) => {
+    const ok = [...fl].filter((f) => WFR_SOURCE_RE.test(f.name));
+    const { pairs, singles } = await detectDmWireframePairs(ok);
+    for (const [pt, tr] of pairs) srcs.push({ files: [pt, tr], name: tr.name.replace(/(tr)?\.dm$/i, '') + '.dm' });
+    for (const f of singles) if (!/\.dm$/i.test(f.name)) srcs.push({ files: [f], name: f.name });
+    render();
+  };
+  $('#cwTitle').textContent = mode === 'export' ? 'export to .wfr' : 'convert to .wfr';
+  $('#cwGo').textContent = mode === 'export' ? 'Export' : 'Convert';
+  const body = $('#cwDlgBody'); body.textContent = '';
+  const list = document.createElement('div'); list.className = 'cw-src';
+  const addBtn = document.createElement('button'); addBtn.textContent = 'Add files…'; addBtn.className = 'meta-act';
+  const picker = document.createElement('input'); picker.type = 'file'; picker.multiple = true; picker.accept = '.ply,.obj,.dxf,.msh,.lfm,.dm,.wfr'; picker.style.display = 'none';
+  picker.onchange = () => { addFiles(picker.files); picker.value = ''; };
+  addBtn.onclick = () => picker.click();
+  addBtn.style.alignSelf = 'flex-start';
+  const grid = document.createElement('div'); grid.className = 'cw-grid';
+  const field = (label, el) => { const l = document.createElement('label'); l.textContent = label; grid.append(l, el); return el; };
+  const nameIn = field('output', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false }));
+  const dest = field('save to', document.createElement('select'));
+  const canPick = typeof window.showSaveFilePicker === 'function' && !shell.present;
+  const dests = [...(canPick ? [['file', 'a file on disk (streamed)']] : []), ...(S.project && S.project.dir ? [['project', `project ${S.project.name}/meshes/`]] : []), ['download', shell.present ? 'Downloads (shell)' : 'download']];
+  for (const [v, t] of dests) dest.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
+  if (S.project && S.project.dir) dest.value = 'project';
+  const step = field('coordinates', document.createElement('select'));
+  WFR_STEPS.forEach(([t, v], i) => step.append(Object.assign(document.createElement('option'), { value: String(i), textContent: t })));
+  const budget = field('memory', document.createElement('select'));
+  for (const [t, v] of WFR_BUDGETS) budget.append(Object.assign(document.createElement('option'), { value: String(v), textContent: t }));
+  budget.value = '512';
+  const checks = document.createElement('div'); checks.className = 'cw-checks';
+  const cb = (label, on) => { const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox'; c.checked = on; l.append(c, ' ' + label + '  '); checks.append(l); return c; };
+  const topo = cb('verify topology', false);
+  const openAfter = cb('open when done', mode === 'convert');
+  const note = document.createElement('div'); note.className = 'cw-note';
+  const render = () => {
+    list.textContent = '';
+    const items = mode === 'export' ? Ls.map((L) => ({ label: L.label || L.name, size: layerBytes ? layerBytes(L) : 0 })) : srcs.map((s) => ({ label: s.files.length === 2 ? `${s.files[0].name} + ${s.files[1].name}` : s.files[0].name, size: s.files.reduce((a, f) => a + f.size, 0), s }));
+    for (const it of items) {
+      const row = document.createElement('div'); row.className = 'cw-row';
+      const nm = Object.assign(document.createElement('span'), { className: 'nm', textContent: it.label });
+      const sz = Object.assign(document.createElement('span'), { className: 'sz', textContent: it.size ? fmtSize(it.size) : '' });
+      row.append(nm, sz);
+      if (it.s) { const x = Object.assign(document.createElement('button'), { textContent: '×', title: 'remove' }); x.onclick = () => { srcs = srcs.filter((q) => q !== it.s); render(); }; row.append(x); }
+      list.append(row);
+    }
+    if (!items.length) list.append(Object.assign(document.createElement('div'), { className: 'cw-note', textContent: mode === 'export' ? 'no exportable layers selected' : 'add .ply .obj .dxf .msh .lfm, Datamine pt/tr pairs, or .wfr files' }));
+    if (!nameIn.dataset.touched) nameIn.value = (items.length === 1 ? wfrBase(items[0].label.split(' + ').pop()) : (mode === 'export' ? 'layers' : items.length ? wfrBase(items[0].label) + '-set' : 'converted')) + '.wfr';
+    note.textContent = (mode === 'convert' ? 'Files are converted without loading them as layers. ' : 'Streamed layers are converted from their source. ')
+      + 'Every element keeps world coordinates; the grid step is the precision (0.1 mm is finer than any survey). Memory past the budget spills to browser storage and is cleared afterwards.';
+    $('#cwGo').disabled = !items.length;
+  };
+  nameIn.oninput = () => { nameIn.dataset.touched = '1'; };
+  body.append(list, ...(mode === 'convert' ? [addBtn, picker] : []), grid, checks, note);
+  const prog = $('#cwProg'), fill = $('#cwProgFill'), msg = $('#cwMsg');
+  prog.style.display = 'none'; fill.style.width = '0%'; msg.textContent = '';
+  const close = () => { if (_wfrJob) return; $('#cwDlg').classList.remove('show'); };
+  $('#cwClose').onclick = close;
+  $('#cwCancel').onclick = () => { if (_wfrJob) { _wfrJob.ctrl.abort(); msg.textContent = 'cancelling…'; } else close(); };
+  $('#cwGo').onclick = async () => {
+    if (_wfrJob) return;
+    let fname = (nameIn.value.trim() || 'converted.wfr').replace(/[\\/]/g, '_');
+    if (!/\.wfr$/i.test(fname)) fname += '.wfr';
+    const st = WFR_STEPS[+step.value][1];
+    const spec = { coords: st == null ? { mode: 'float64' } : { step: st }, ...(topo.checked ? { topology: 'check' } : {}) };
+    let sink = null, handle = null;
+    try {
+      if (dest.value === 'file') {
+        handle = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'wireframe mesh', accept: { 'application/vnd.gentropic.wireframe': ['.wfr'] } }] });
+        fname = handle.name;
+      } else if (dest.value === 'project') {
+        const dir = await S.project.dir.getDirectoryHandle('meshes', { create: true });
+        handle = await dir.getFileHandle(fname, { create: true });
+      }
+      sink = handle ? await handleSink(handle) : partsSink();
+    } catch (e) { if (e && e.name === 'AbortError') return; msg.textContent = `can't write there: ${e.message || e}`; return; }
+    const ctrl = new AbortController();
+    _wfrJob = { ctrl };
+    $('#cwGo').disabled = true; prog.style.display = '';
+    const t0 = performance.now();
+    try {
+      const res = await runWfrJob({
+        sink, spec, budget: +budget.value * 1024 * 1024, signal: ctrl.signal,
+        sources: mode === 'convert' ? srcs : [], layers: mode === 'export' ? Ls : [],
+        onProgress: (p) => {
+          if (p.phase === 'reading') {
+            const frac = (p.index + (p.total ? p.bytes / p.total : 0)) / Math.max(1, p.count);
+            fill.style.width = `${Math.round(70 * frac)}%`;
+            msg.textContent = `reading ${p.source}${p.total ? ` — ${Math.round(100 * p.bytes / p.total)}%` : '…'}`;
+          } else { fill.style.width = '80%'; msg.textContent = 'sorting into bricks, writing…'; }
+        },
+      });
+      await sink.close();
+      fill.style.width = '100%';
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      const els = res.manifest.elements;
+      const file = handle ? await handle.getFile() : new File([sink.blob()], fname, { type: 'application/vnd.gentropic.wireframe' });
+      msg.textContent = `${fname} — ${els.length} element${els.length === 1 ? '' : 's'}, ${fmtSize(res.size)}, ${secs} s`;
+      $('#meta').textContent = `wrote ${fname} — ${els.map((e) => `${e.name}: ${(e.kind === 'points' ? e.counts.vertices : e.counts.cells).toLocaleString()} ${e.kind === 'triangles' ? 'triangles' : e.kind === 'lines' ? 'segments' : 'points'}`).join(' · ')} · ${fmtSize(res.size)} in ${secs} s`;
+      if (!handle) await deliverBlob(file, fname);
+      if (handle) { try { _fileHandles.set(file, handle); } catch { /* not a handle-tracking build */ } }
+      _wfrJob = null;
+      if (openAfter.checked) { $('#cwDlg').classList.remove('show'); await openBlob(file, fname, S.layers.length ? 'add' : 'replace'); }
+    } catch (e) {
+      if (sink) await sink.abort();
+      if (handle && dest.value === 'project') { try { await (await S.project.dir.getDirectoryHandle('meshes')).removeEntry(handle.name); } catch { /* best effort */ } }
+      msg.textContent = e && e.name === 'AbortError' ? 'cancelled — nothing written' : `failed: ${e.message || e}`;
+      fill.style.width = '0%';
+    } finally {
+      _wfrJob = null; $('#cwGo').disabled = false;
+    }
+  };
+  render();
+  if (files) await addFiles(files);
+  $('#cwDlg').classList.add('show');
 }
 // write the decimated display grid + a size-key as sidecars next to a
 // project-stored tiff, so reopening skips re-decimating the source. Returns a
@@ -7029,48 +7180,111 @@ async function openDxfBlob(blob, name, opts) {
     return;
   }
   if (r.header.kind === 'strings') {
-    const { header, streamChunks, fetchRecord, recordPosition } = r;
-    registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord, recordPosition } });
-    fitFromHeader(header, first);
-    renderer.setCategories(header.categories ? 1 : 0);
-    renderer.setLayerCats(lid, header.categories ? 256 : 0);
-    renderer.setLayerStickRadius(lid, 0.8);
-    setColorLabels(header);
-    const cb = createStickChunkBuilder({ frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
-    for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) { cb.push(rc); await new Promise((r2) => setTimeout(r2)); }
-    const doc = cb.flush();
-    const L = layerById(lid);
-    if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
-    if (L && header.categories && header.catColors && header.catColors.some(Boolean)) {
-      L.catLegend = {
-        col: header.columns[header.mapping.cat],
-        entries: header.categories.map((nm, i) => (header.catColors[i] ? { values: [nm], color: dxfHex(header.catColors[i]) } : null)).filter(Boolean),
-        otherColor: '#555a5f',
-      };
-      applyCatLegend(L, true);
-    }
-    recomputeUnion();
+    const header = await openStringsLayer(blob, name, lid, first, r);
     $('#meta').textContent = `${name} — ${(header.strings || 0).toLocaleString()} design strings · ${header.count.toLocaleString()} segments · ${(header.categories || []).length} DXF layers`;
     return;
   }
-  // pegs: a point layer; the stringsDoc carries the table (X/Y/Z/LAYER rows)
-  {
-    const { header, streamChunks, fetchRecord } = r;
-    registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord } });
-    fitFromHeader(header, first);
-    renderer.setCategories(header.categories ? 1 : 0);
-    renderer.setLayerCats(lid, header.categories ? 256 : 0);
-    setColorLabels(header);
-    const cb = createChunkBuilder({ frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
-    for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
-      cb.push({ count: rc.count, x: rc.x, y: rc.y, z: rc.z, intensity: new Uint16Array(rc.count), classification: rc.cat || new Uint8Array(rc.count), rgb: null, recStart: rc.recStart || 0 });
+  const header = await openPegsLayer(blob, name, lid, first, r);
+  $('#meta').textContent = `${name} — ${header.count.toLocaleString()} points (DXF pegs)`;
+}
+// A .wfr (wireframe container) — one layer per element, siblings in a group when there are
+// several, each layer keeping L.name = the file (the project source) and its element's name in
+// the doc header. Triangles take the context tier up to CONTEXT_TRI_CAP (re-welded by vid, vertex
+// attributes become the vertices location's columns, colours reach the GPU) and stream brick by
+// brick above it; lines become a strings layer; points a points layer. `element` (Reinterpret,
+// a project reload) opens just that one.
+async function openWfrFile(blob, name, opts) {
+  const wfr = await openWfrBlob(blob);
+  let els = wfr.elements;
+  if (opts.element != null) els = els.filter((e) => e.name === opts.element);
+  if (!els.length) throw new Error(opts.element != null ? `wfr: no element "${opts.element}" in ${name}` : `wfr: ${name} holds no elements`);
+  const primary = layerById(opts.layer), ids = [], skipped = [];
+  const multi = els.length > 1;
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    let lid = opts.layer;
+    if (i > 0) {
+      lid = allocLayerId();
+      if (lid == null) { skipped.push(el.name); continue; }
+      S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: primary ? primary.handle : null, storage: 'loose', lineage: openLineage(name, blob) });
     }
-    const doc = cb.flush();
     const L = layerById(lid);
-    if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
-    recomputeUnion();
-    $('#meta').textContent = `${name} — ${header.count.toLocaleString()} points (DXF pegs)`;
+    if (L && multi) L.label = `${name} · ${el.name}`;
+    const first = opts.first && i === 0;
+    const tag = `${name}${multi ? ` · ${el.name}` : ''}`;
+    if (el.kind === 'triangles') {
+      if (!opts.forceSoup && el.meta.counts.cells <= CONTEXT_TRI_CAP) {
+        const m = await wfrResidentMesh(el, { onProgress: (k, n) => { $('#meta').textContent = `${tag} — reading bricks ${k}/${n}…`; } });
+        await openMeshDoc(blob, name, { layer: lid, first, prebuilt: m, tint: opts.tint, opacity: opts.opacity });
+      } else await openMeshDoc(blob, name, { layer: lid, first, soupDoc: wfrSoupDoc(el), tint: opts.tint, opacity: opts.opacity });
+    } else if (el.kind === 'lines') {
+      const h = await openStringsLayer(blob, name, lid, first, wfrStringsDoc(el), { authoredOnly: true });
+      $('#meta').textContent = `${tag} — ${h.count.toLocaleString()} segments${h.strings ? ` · ${h.strings.toLocaleString()} strings` : ''}${h.categories ? ` · ${h.categories.length} layers` : ''}`;
+    } else {
+      const h = await openPegsLayer(blob, name, lid, first, wfrPointsDoc(el), { authoredOnly: true });
+      $('#meta').textContent = `${tag} — ${h.count.toLocaleString()} points`;
+    }
+    ids.push(lid);
   }
+  if (ids.length > 1) createLayerGroup(name, ids, { collapsed: false });
+  if (multi) $('#meta').textContent = `${name} — ${ids.length} elements (${summarizeElements(wfr).filter((s) => !skipped.includes(s.name)).map((s) => `${s.name}: ${s.kind}`).join(' · ')})${skipped.length ? ` · ${skipped.length} skipped (layer limit)` : ''}`;
+  return ids;
+}
+// A strings (sticks) layer from any provider of the condenser strings contract — resident DXF,
+// a .wfr lines element: { header, streamChunks → stick RawChunks, fetchRecord, recordPosition }.
+// The header may only learn its categories while streaming (a .wfr reads its layer attribute
+// brick by brick), so the category legend is applied after the stream.
+async function openStringsLayer(blob, name, lid, first, r, catOpts) {
+  const { header, streamChunks, fetchRecord, recordPosition } = r;
+  registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord, recordPosition } });
+  fitFromHeader(header, first);
+  const catsUpfront = header.mapping && header.mapping.cat != null;
+  renderer.setCategories(catsUpfront ? 1 : 0);
+  renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
+  renderer.setLayerStickRadius(lid, 0.8);
+  setColorLabels(header);
+  const cb = createStickChunkBuilder({ frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
+  for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) { cb.push(rc); await new Promise((r2) => setTimeout(r2)); }
+  const doc = cb.flush();
+  finishCatLayer(lid, header, doc, catOpts);
+  return header;
+}
+// A points layer from the DXF-pegs contract (resident DXF pegs, a .wfr points element).
+async function openPegsLayer(blob, name, lid, first, r, catOpts) {
+  const { header, streamChunks, fetchRecord } = r;
+  registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord } });
+  fitFromHeader(header, first);
+  const catsUpfront = header.mapping && header.mapping.cat != null;
+  renderer.setCategories(catsUpfront ? 1 : 0);
+  renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
+  setColorLabels(header);
+  const cb = createChunkBuilder({ frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
+  for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
+    cb.push({ count: rc.count, x: rc.x, y: rc.y, z: rc.z, intensity: new Uint16Array(rc.count), classification: rc.cat || new Uint8Array(rc.count), rgb: null, recStart: rc.recStart || 0 });
+    await new Promise((r2) => setTimeout(r2));
+  }
+  const doc = cb.flush();
+  finishCatLayer(lid, header, doc, catOpts);
+  return header;
+}
+// bbox, colour mode and the authored category legend once a categorized layer has streamed
+function finishCatLayer(lid, header, doc, { authoredOnly = false } = {}) {
+  const hex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
+  const authored = (c) => (c && !(c[0] === 255 && c[1] === 255 && c[2] === 255) ? c : null);   // white is "foreground", not a colour
+  renderer.setLayerCats(lid, header.categories ? 256 : 0);
+  if (header.categories) renderer.setCategories(1);
+  const L = layerById(lid);
+  if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
+  const colors = header.catColors ? (authoredOnly ? header.catColors.map(authored) : header.catColors) : null;
+  if (L && header.categories && colors && colors.some(Boolean)) {
+    L.catLegend = {
+      col: header.columns[header.mapping.cat],
+      entries: header.categories.map((nm, i) => (colors[i] ? { values: [nm], color: hex(colors[i]) } : null)).filter(Boolean),
+      otherColor: '#555a5f',
+    };
+    applyCatLegend(L, true);
+  }
+  recomputeUnion();
 }
 // A DXF too big to read whole (a 3DFACE topography reaches gigabytes; one JS
 // string can't hold it) streams: ONE pass through condenser's openDxfStream
@@ -7231,7 +7445,8 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
   try {
-    if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity, stream: !!over.streamDxf }); }
+    if (isWfrName(name)) { await openWfrFile(blob, name, { layer: lid, first, element: over.element, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
+    else if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity, stream: !!over.streamDxf }); }
     else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
     else if (/\.dm$/i.test(name)) { await openDmBlob(blob, name, { layer: lid, first, forcePoints, cached: over.cached, mapping: over.mapping }); }
     // grid stays extension-driven (no table→grid provider yet); asKind only picks points↔surface.
@@ -7247,7 +7462,7 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
     else if (/\.(csv|txt|dat|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered }); }
     else if (/\.ply$/i.test(name)) { await openPlyBlob(blob, name, { layer: lid, first }); }
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
-    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .tif .grd .asc`);
+    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .tif .grd .asc`);
     else {
       const { header, streamChunks } = await openLas(blob);
       registerDocs(lid, 'points', { lasDoc: { blob, header } });
@@ -7793,7 +8008,8 @@ async function openMeshDoc(blob, name, opts = {}) {
   // descriptor; OBJ announces nothing, so its size decides (≈ 60–90 B of text
   // per triangle → MESH_STREAM_BYTES ≈ the context cap)
   const pct = (a, b2) => { $('#meta').textContent = `${name} — reading vertices… ${Math.round(100 * a / b2)}%`; };
-  const streamDoc = opts.prebuilt ? null
+  const streamDoc = opts.soupDoc ? () => opts.soupDoc        // a ready streaming provider (a big .wfr element)
+    : opts.prebuilt ? null
     : /\.ply$/i.test(name) ? ((opts.forceSoup || await plyFaceCount(blob) > CONTEXT_TRI_CAP) ? () => openPlySoup(blob, { onProgress: pct }) : null)
     : /\.msh$/i.test(name) ? ((opts.forceSoup || ((await readMSHLayout(blob)).triangles || { count: 0 }).count > CONTEXT_TRI_CAP) ? () => openMshSoup(blob, { onProgress: pct }) : null)
     : /\.obj$/i.test(name) ? ((opts.forceSoup || blob.size > MESH_STREAM_BYTES) ? () => openObjSoup(blob, { onProgress: pct }) : null)
@@ -7815,9 +8031,11 @@ async function openMeshDoc(blob, name, opts = {}) {
       setupLayer(header);
       fitFromHeader(header, opts.first !== false);
       const chunk = buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame });
+      // per-vertex colour when the mesh carries it (a .wfr's color.r/g/b, a PLY's red/green/blue)
+      const vcol = vertexColorOf(m.attrs, chunk.vertexCount);
+      if (vcol) { chunk.color = vcol; if (L) L.vertexColored = true; }   // the shader takes vColor in place of the tint
       renderer.addChunk(chunk, 'base', lid);
-      if (L) L.bboxLocal = chunk.bboxLocal;
-      recomputeUnion();
+      if (L) L.bboxLocal = chunk.bboxLocal;      recomputeUnion();
       setColorLabels(null);
       $('#meta').textContent = `${name} — ${header.triCount.toLocaleString()} triangles · ${header.vertexCount.toLocaleString()} vertices · ${header.format}`;
       requestRender();
@@ -7936,6 +8154,14 @@ async function describeFile(f) {
     if (/\.las$/i.test(name)) {
       const h = parseLasHeader(new DataView(await f.slice(0, 1024).arrayBuffer()));
       d.kind = 'las'; d.desc = `LAS ${h.version} fmt ${h.format} · ${Number(h.count).toLocaleString()} points`;
+    } else if (isWfrName(name)) {
+      // the directory + manifest only — a census without decoding a brick
+      d.kind = 'wfr';
+      try {
+        const els = summarizeElements(await openWfrBlob(f));
+        const word = { triangles: 'triangles', lines: 'segments', points: 'points' };
+        d.desc = `wireframe · ${els.length} element${els.length === 1 ? '' : 's'}: ` + els.map((e) => `${e.name} (${(e.kind === 'points' ? e.vertices : e.cells).toLocaleString()} ${word[e.kind]})`).join(', ');
+      } catch (e2) { d.desc = `wireframe — ${e2.message}`; }
     } else if (/\.ply$/i.test(name)) {
       const h = parsePlyHeader(new TextDecoder('latin1').decode(await f.slice(0, 64 * 1024).arrayBuffer()));
       const face = h && h.elements ? h.elements.find((e) => e.name === 'face') : null;
@@ -9570,6 +9796,71 @@ async function maybeAutoOptimize() {
   } else if (choice !== 'on') return;
   for (const L of picked) { $('#meta').textContent = `optimizing ${L.name}…`; try { await convertLayerToParquet(L, { keepOriginal }); } catch (e) { $('#meta').textContent = `optimize ${L.name}: ${e.message}`; } }
 }
+// ── meshes are .wfr in a project — the mesh twin of "Parquet is the project store" ──
+// On save, mesh / strings / pegs layers whose source isn't already a .wfr are packed into
+// meshes/<source>.wfr (one file per SOURCE: a DXF's surface, strings and pegs share one) and
+// re-open in place from their element — same layer id, label, tint, visibility, legend; lineage
+// records the store. Asked once (remembered); Tools → Settings changes it. Source files already in
+// the project are KEPT: packing never deletes data on its own (Tidy is the explicit verb).
+let _autoPack = (() => { try { return localStorage.getItem('micro.autoPackMeshes'); } catch { return null; } })();   // 'on' | 'off' | null
+function setAutoPack(v) { _autoPack = v; try { localStorage.setItem('micro.autoPackMeshes', v); } catch { /* private mode */ } }
+const packableMesh = (L) => wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob);
+async function packLayersToWfr(Ls) {
+  if (!S.project || !Ls.length) return 0;
+  const dir = S.project.dir, mdir = await dir.getDirectoryHandle('meshes', { create: true });
+  const exists = async (n) => { try { await mdir.getFileHandle(n); return true; } catch { return false; } };
+  const groups = new Map();                                   // one .wfr per source blob
+  for (const L of Ls) { const b = layerFiles(L).map((fd) => fd.blob).find(Boolean); if (!groups.has(b)) groups.set(b, []); groups.get(b).push(L); }
+  let packed = 0;
+  for (const members of groups.values()) {
+    const base = wfrBase(members[0].name);
+    let fname = `${base}.wfr`;
+    for (let i = 2; await exists(fname); i++) fname = `${base}-${i}.wfr`;
+    const fh = await mdir.getFileHandle(fname, { create: true });
+    const sink = await handleSink(fh);
+    let res;
+    try {
+      res = await packLayers({ sink, layers: members, onProgress: (p) => { $('#meta').textContent = p.phase === 'reading' ? `storing ${p.source} as .wfr${p.total ? ` — ${Math.round(100 * p.bytes / p.total)}%` : '…'}` : `storing ${fname} — writing…`; } });
+      await sink.close();
+    } catch (e) {
+      await sink.abort(); await mdir.removeEntry(fname).catch(() => {});
+      $('#meta').textContent = `store as .wfr: ${members.map((L) => L.label || L.name).join(', ')} — ${e.message}`;
+      continue;
+    }
+    const file = await fh.getFile();
+    _fileHandles.set(file, fh);
+    for (const L of members) {
+      const els = res.elementsOf.get(L);
+      if (!els || els.length !== 1) continue;                 // a source that split into several elements stays as it was
+      const keep = { label: L.label, visible: L.visible, tint: L.tint, opacity: L.opacity, catLegend: L.catLegend, lineage: L.lineage, sectioned: renderer.layerSectioned(L.id) };
+      renderer.removeLayer(L.id);
+      L.docs = {};
+      L.name = fname; L.handle = fh; L.storage = 'project';
+      await openWfrFile(file, fname, { layer: L.id, first: false, element: els[0], tint: keep.tint, opacity: keep.opacity });
+      if (keep.label) L.label = keep.label;
+      L.lineage = mkLineage('store', { format: 'wfr', file: `meshes/${fname}`, element: els[0] }, [keep.lineage]);
+      if (keep.visible === false) { L.visible = false; renderer.setLayerVisible(L.id, false); }
+      if (keep.sectioned != null && keep.sectioned !== true) renderer.setLayerSectioned(L.id, keep.sectioned);
+      if (keep.catLegend) { L.catLegend = keep.catLegend; applyCatLegend(L, true); }
+      packed++;
+    }
+  }
+  recomputeUnion(); renderLayers(); markProjectDirty(); requestRender();
+  return packed;
+}
+async function maybeAutoPackMeshes() {
+  const cands = S.layers.filter(packableMesh);
+  if (!cands.length || _autoPack === 'off') return;
+  if (_autoPack == null) {
+    const yes = await microConfirm('store meshes as .wfr',
+      `${cands.length} mesh/strings/points layer${cands.length === 1 ? '' : 's'} (${cands.map((L) => L.label || L.name).slice(0, 4).join(', ')}${cands.length > 4 ? ', …' : ''}) can be stored in the project as .wfr — bricked, a fraction of the size, quick to reopen, attributes kept. Source files already in the project are kept. Do this on every save?`,
+      'Yes, always', 'Not now');
+    setAutoPack(yes ? 'on' : 'off');
+    if (!yes) return;
+  }
+  const n = await packLayersToWfr(cands);
+  if (n) $('#meta').textContent = `stored ${n} layer${n === 1 ? '' : 's'} as .wfr in meshes/`;
+}
 function updateProjectTitle() {
   document.title = S.project ? `micro — ${S.project.name}${S.project.dirty ? ' •' : ''}` : 'micro';
 }
@@ -9684,6 +9975,7 @@ function projectManifest() {
       analysis: L.analysis || undefined,                   // GT/swath window setups (series by layer NAME) + pinned-open state + geometry
       ...captureLayerSurface(L),   // gridSurface · drape · flatZ · faceted · band — the ONE surface-state source (shared with scenes; parity-tested)
       soup: (L.kind === 'mesh' && L.docs.meshDoc && L.docs.meshDoc.header.soup) || undefined,
+      element: ((L.docs.meshDoc || L.docs.stringsDoc || {}).header || {}).element ?? undefined,   // a .wfr layer reopens ITS element of a shared file
       hiddenCats: L.catHidden && L.catHidden.size
         ? [...L.catHidden].map((c) => { const h2 = layerHeaderOf(L); return h2 && h2.categories && h2.categories[c] != null ? h2.categories[c] : c; })
         : undefined,
@@ -9817,6 +10109,7 @@ async function saveProject() {
   try {
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: write permission denied'; return; }
     await maybeAutoOptimize();                              // reorder block models to spatial Parquet BEFORE triage, so the parquet is what's referenced/copied
+    await maybeAutoPackMeshes();                            // and meshes/strings/pegs into meshes/*.wfr (written in place, so triage sees them in-project)
     // A just-optimized layer's bytes are now Parquet but its handle was dropped
     // (convertLayerToParquet). Write the Parquet INTO the project + delete the old
     // source here — so triage sees a clean in-project layer (no spurious "copy
@@ -10124,6 +10417,7 @@ async function openProjectDir(dir) {
               : (/\.ply$/i.test(ls.source) ? { forcePoints: true } : (ls.mapping ? { mapping: ls.mapping } : {}));
       if (ls.gridSurface) { overR.asKind = 'surface'; if (ls.flatZ != null) overR.flatZ = ls.flatZ; if (ls.faceted) overR.smooth = false; }   // a grid saved as a surface reopens as one (relief/flat, smooth/faceted; drape applied post-load)
       if (ls.band) overR.band = ls.band;                    // multi-band GeoTIFF: the chosen band
+      if (ls.element != null) overR.element = ls.element;   // a .wfr layer: just its element
       // grid display-cache: matching source size → display from the sidecar,
       // skipping the re-decimation (eval still windows the source full res)
       if (ls.kind !== 'mesh' && /\.(tif|tiff)$/i.test(ls.source)) {
@@ -10752,6 +11046,7 @@ $('#mFile').onclick = () => {
     { label: 'New project…', action: newProject },
     { label: 'Open…', kbd: '', action: openFilePicker },
     { label: 'File info…', kbd: 'i', action: showFileInfo },
+    { label: 'Convert to .wfr…', action: () => openWfrDialog() },
   ];
   if (hasFSAA) {
     items.push({ sep: true },
@@ -10916,6 +11211,7 @@ const PREFS = [
   { sec: 'interaction', label: 'camera follows the section scrub', desc: 'scrubbing a section slab carries the camera along with it', kind: 'toggle', get: () => _secFollow, set: (v) => { $('#secFollow').checked = v; $('#secFollow').dispatchEvent(new Event('input')); } },
   { sec: 'compute', label: 'by-solid compute', desc: 'the flag / select-by-solid engine — CPU is slower but cannot trip the GPU driver watchdog on a huge solid', kind: 'choice', opts: [['gpu', 'GPU (fast)'], ['cpu', 'CPU (watchdog-safe)']], get: () => (_windingGpu ? 'gpu' : 'cpu'), set: (v) => setWindingGpu(v === 'gpu') },
   { sec: 'compute', label: 'derived-column residency', desc: 'how much memory derived columns may keep resident before being re-derived on demand', kind: 'choice', opts: [['auto', 'auto (scales with RAM)'], ['off', 'off (re-derive on demand)'], ['256', '256 MB'], ['512', '512 MB'], ['1024', '1 GB']], get: () => { try { return localStorage.getItem('micro.pinBudget') || 'auto'; } catch { return 'auto'; } }, set: (v) => setPinBudget(v) },
+  { sec: 'data', label: 'store meshes as .wfr on save', desc: 'pack mesh, strings and points layers into meshes/*.wfr when the project saves — bricked, compact, quick to reopen, attributes kept; source files are kept', kind: 'choice', opts: [['on', 'always'], ['off', 'never'], ['ask', 'ask on next save']], get: () => (_autoPack || 'ask'), set: (v) => { if (v === 'ask') { _autoPack = null; try { localStorage.removeItem('micro.autoPackMeshes'); } catch { /* private */ } } else setAutoPack(v); } },
   { sec: 'data', label: 'optimize models to spatial Parquet on save', desc: 'Morton-sort block models into spatial Parquet when the project saves — smaller, faster to reopen, row-group query skipping', kind: 'choice', opts: [['on', 'always'], ['off', 'never'], ['ask', 'ask on next save']], get: () => (_autoOptimize || 'ask'), set: (v) => { if (v === 'ask') { _autoOptimize = null; try { localStorage.removeItem('micro.autoOptimize'); } catch { /* private */ } } else setAutoOptimize(v); } },
   { sec: 'experimental', label: 'natural-language command bar', desc: '⌘K, type a phrase — it PROPOSES a command and never runs it; trains on this project\'s vocabulary, in this tab, in about a second', kind: 'toggle', get: () => _nlOn, set: (v) => { nlSetEnabled(v); if (v) nlEnsureTrained(); } },
 ];
@@ -11019,6 +11315,7 @@ $('#mTools').onclick = () => menuAt($('#mTools'), [
   { label: 'Scrub section forward', kbd: '.', action: () => scrubSection(1) },
   { sep: true },
   { label: (_autoOptimize === 'on' ? '✓ ' : '') + 'Auto-optimize block models to spatial Parquet on save', action: () => setAutoOptimize(_autoOptimize === 'on' ? 'off' : 'on') },
+  { label: (_autoPack === 'on' ? '✓ ' : '') + 'Store meshes as .wfr on save', action: () => setAutoPack(_autoPack === 'on' ? 'off' : 'on') },
   { label: 'Settings…', action: openSettingsWindow },
   { label: 'Memory…', action: showMemoryInfo },
 ]);
@@ -12006,6 +12303,9 @@ const COMMANDS = [
   { id: 'surf-extend', group: 'Layer', title: 'Extend surface to footprint…', kw: 'grow cover topo grid mesh fill trend', when: () => surfaceableLayers().length > 0, run: (cx) => openSurfaceTools('extend', cx.L) },
   { id: 'surf-combine', group: 'Layer', title: 'Combine surfaces…', kw: 'min max priority mean merge patch topo union overlap', when: () => surfaceableLayers().length >= 2, run: (cx) => openSurfaceTools('combine', cx.L) },
   { id: 'stats', group: 'Analysis', title: 'Stats…', kw: 'summary table group by mean std quantiles domain report', when: (c) => !!(c.L && layerTableHeader(c.L) && numericColsOf(c.L).length), run: (c) => openStats(c.L) },
+  { id: 'convert-wfr', group: 'File', title: 'Convert files to .wfr…', kw: 'wireframe mesh dxf ply obj msh lfm datamine convert pack', run: () => openWfrDialog() },
+  { id: 'pack-wfr', group: 'File', title: 'Store meshes in the project as .wfr', kw: 'wireframe pack optimize meshes project compact', when: () => !!S.project && S.layers.some(packableMesh), run: async () => { const n = await packLayersToWfr(S.layers.filter(packableMesh)); $('#meta').textContent = n ? `stored ${n} layer${n === 1 ? '' : 's'} as .wfr in meshes/ — save the project to keep it` : 'nothing stored'; } },
+  { id: 'export-wfr', group: 'Layer', title: 'Export as .wfr…', kw: 'wireframe mesh strings points save pack', when: () => S.layers.some(wfrExportable), run: (c) => { const sel = lpSelIds().map(layerById).filter(wfrExportable); openWfrDialog({ layers: sel.length ? sel : (wfrExportable(c.L) ? [c.L] : S.layers.filter(wfrExportable)) }); } },
   { id: 'export-mesh', group: 'Layer', title: 'Export mesh(es)…', kw: 'obj ply msh lfm wavefront leapfrog save', when: () => S.layers.some((L) => L.kind === 'mesh' && L.docs.meshDoc), run: (c) => {
     const sel = lpSelIds().map(layerById).filter((x) => x && x.kind === 'mesh' && x.docs.meshDoc);
     openMeshExportDialog(sel.length ? sel : (c.L && c.L.kind === 'mesh' ? [c.L] : S.layers.filter((L) => L.kind === 'mesh' && L.docs.meshDoc)));
@@ -16513,7 +16813,7 @@ cv.addEventListener('pointerup', (e) => {
   showRecord(hit);
 });
 
-window._micro = { get hasFSAA() { return hasFSAA; }, deliverBlob, closeProject, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, deliverBlob, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped
