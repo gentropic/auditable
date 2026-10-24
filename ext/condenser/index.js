@@ -4979,6 +4979,284 @@ function createBlocksPipeline(gl) {
   return { upload, drawSlice, begin, setRepaint };
 }
 
+// ── src/core/camera.js ──
+
+// @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
+// matrix ops, not a scene graph (dee's camera is Three-coupled — micro-spec §5
+// says borrow the *math*, and the math is textbook, so it lives here).
+// Column-major Float32Array(16), GL convention. All coordinates FRAME-LOCAL —
+// the document frame keeps magnitudes small enough for f32 uniforms.
+
+function mat4Perspective(fovYRad, aspect, near, far) {
+  const f = 1 / Math.tan(fovYRad / 2), nf = 1 / (near - far);
+  const m = new Float32Array(16);
+  m[0] = f / aspect; m[5] = f;
+  m[10] = (far + near) * nf; m[11] = -1;
+  m[14] = 2 * far * near * nf;
+  return m;
+}
+
+function mat4Ortho(halfH, aspect, near, far) {
+  const halfW = halfH * aspect, m = new Float32Array(16);
+  m[0] = 1 / halfW; m[5] = 1 / halfH;
+  m[10] = -2 / (far - near); m[14] = -(far + near) / (far - near);
+  m[15] = 1;
+  return m;
+}
+
+function mat4LookAt(eye, target, up) {
+  let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
+  let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
+  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  const m = new Float32Array(16);
+  m[0] = xx; m[4] = xy; m[8] = xz; m[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+  m[1] = yx; m[5] = yy; m[9] = yz; m[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+  m[2] = zx; m[6] = zy; m[10] = zz; m[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+  m[15] = 1;
+  return m;
+}
+
+function mat4Multiply(a, b) {                       // a·b (both column-major)
+  const m = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    m[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return m;
+}
+
+// General 4×4 inverse (cofactor expansion, column-major). Used to unproject
+// (pixel, depth) → world in the deferred re-shade resolve; the viewProj is
+// always invertible for a real camera. Returns null on a singular matrix.
+function mat4Inverse(m) {
+  const inv = new Float32Array(16);
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+  const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if (!det) return null;
+  const d = 1 / det;
+  for (let i = 0; i < 16; i++) inv[i] *= d;
+  return inv;
+}
+
+// Frustum planes from a viewProj matrix (Gribb–Hartmann, column-major): six
+// [a,b,c,d] rows — a point is inside when a·x+b·y+c·z+d ≥ 0 for all six.
+function frustumPlanes(m) {
+  const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
+  const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+  return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), add(r3, r2), sub(r3, r2)];
+}
+
+// Conservative AABB-vs-frustum: positive-vertex test — the box is out only when
+// its most-positive corner for some plane is still behind that plane.
+function aabbInFrustum(planes, b) {                 // b = [minX,minY,minZ,maxX,maxY,maxZ]
+  for (const [a, bb, c, d] of planes) {
+    const px = a > 0 ? b[3] : b[0], py = bb > 0 ? b[4] : b[1], pz = c > 0 ? b[5] : b[2];
+    if (a * px + bb * py + c * pz + d < 0) return false;
+  }
+  return true;
+}
+
+function transformPoint(m, p) {                     // m · [p,1] → perspective divide
+  const x = p[0], y = p[1], z = p[2];
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
+  return [
+    (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
+    (m[1] * x + m[5] * y + m[9] * z + m[13]) / w,
+    (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
+  ];
+}
+
+/**
+ * Orbit camera: target + spherical (radius, theta around Z, phi from the XY
+ * plane). Z-up (geology convention). Produces eye/view/proj; near/far adapt to
+ * the orbit radius each update (dee's depth-precision trick).
+ */
+// A camera state that draws geometry at p as the original draws p + o — a layer
+// offset as a change of camera, not of geometry. view/viewProj gain a trailing
+// translation; eye and target move by −o, so every shader that works from
+// (p − eye), the view's rotation columns and viewProj (block/stick raycasts,
+// gl_FragDepth, the headlight) stays exact. Section planes must be shifted the
+// same way by the caller (d − n·o). Under vertical exaggeration the offset's z
+// stretches with everything else, since the z-scale lives inside viewProj.
+function translateState(s, o) {
+  if (!o) return s;
+  const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, o[0], o[1], o[2], 1];
+  return {
+    ...s,
+    eye: [s.eye[0] - o[0], s.eye[1] - o[1], s.eye[2] - o[2]],
+    target: [s.target[0] - o[0], s.target[1] - o[1], s.target[2] - o[2]],
+    view: mat4Multiply(s.view, T),
+    viewProj: mat4Multiply(s.viewProj, T),
+  };
+}
+
+function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
+  const c = {
+    target: [0, 0, 0], radius: 100, theta: Math.PI / 4, phi: Math.PI / 5, fovY,
+    aspect: 1, near: 0.1, far: 1e6,
+    ortho: false, halfH: 0,                                // ortho: half-height = radius·tan(fovY/2) — toggling keeps apparent size at the target
+    zExag: 1,                                              // vertical exaggeration: a GLOBAL scene z-scale folded into viewProj (all layers stay registered; queries stay in real coords — see update())
+    eye: [0, 0, 0], view: null, proj: null, viewProj: null,
+  };
+  const EPS = 0.01;
+  function update() {
+    c.phi = Math.max(-Math.PI / 2 + EPS, Math.min(Math.PI / 2 - EPS, c.phi));
+    c.radius = Math.max(0.05, c.radius);
+    const cp = Math.cos(c.phi);
+    c.eye = [
+      c.target[0] + c.radius * cp * Math.cos(c.theta),
+      c.target[1] + c.radius * cp * Math.sin(c.theta),
+      c.target[2] + c.radius * Math.sin(c.phi),
+    ];
+    // near at radius/4000: on a km-scale fitted model the old /1000 put the
+    // clip plane METRES in front of the camera — visible slicing when panning
+    // close past geometry. /4000 keeps depth precision under a block size at
+    // the far end of a 24-bit buffer (error ~ z²/(near·2²⁴): ~3 m at z=10 km
+    // with near 2.5 m) while clipping 4× closer.
+    c.near = Math.max(c.radius / 4000, 0.01);
+    c.far = c.radius * 100;
+    c.view = mat4LookAt(c.eye, c.target, [0, 0, 1]);
+    c.halfH = c.radius * Math.tan(c.fovY / 2);
+    c.proj = c.ortho ? mat4Ortho(c.halfH, c.aspect, c.near, c.far) : mat4Perspective(c.fovY, c.aspect, c.near, c.far);
+    c.viewProj = mat4Multiply(c.proj, c.view);
+    // Vertical exaggeration: fold a world-space z-scale into viewProj, pivoted at
+    // the target's z (so the look-at point stays fixed). viewProj·M means every
+    // vertex is z-scaled AT DRAW ONLY — shaders still test real z for section
+    // culling (before viewProj), pick is the ID-buffer (real recIdx), measure
+    // reads source records, and unproject uses inverse(viewProj) which yields real
+    // coords. One matrix, all layers registered, every query honest.
+    if (c.zExag && c.zExag !== 1) {
+      const S = c.zExag, tz = c.target[2];                 // z' = tz + (z-tz)·S  ⇒  column-major z-scale about tz
+      c.viewProj = mat4Multiply(c.viewProj, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, S, 0, 0, 0, tz * (1 - S), 1]);
+    }
+    return c;
+  }
+  return {
+    get state() { return c; },
+    update,
+    setAspect(a) { c.aspect = a || 1; return update(); },
+    orbit(dTheta, dPhi) { c.theta += dTheta; c.phi += dPhi; return update(); },
+    dolly(f) { c.radius *= f; return update(); },
+    pan(dxPx, dyPx, viewportH) {                           // screen px → world at target depth
+      const s = 2 * c.radius * Math.tan(c.fovY / 2) / (viewportH || 1);
+      const ct = Math.cos(c.theta), st = Math.sin(c.theta), sp = Math.sin(c.phi), cp = Math.cos(c.phi);
+      // camera right = (-st, ct, 0); camera up ≈ (-ct·sp, -st·sp, cp)
+      c.target[0] += (-st) * (-dxPx * s) + (-ct * sp) * (dyPx * s);
+      c.target[1] += (ct) * (-dxPx * s) + (-st * sp) * (dyPx * s);
+      // vertical exaggeration stretches displayed z by zExag, so a real-z move
+      // shows amplified — divide the up-vector's z contribution by zExag so the
+      // grabbed point tracks the cursor 1:1 (M⁻¹ of the up-move; x/y are unscaled).
+      // In plan view cp=0 → no change, as it should be.
+      c.target[2] += cp * (dyPx * s) / (c.zExag || 1);
+      return update();
+    },
+    setOrtho(on) { c.ortho = !!on; return update(); },
+    fit(bbox) {                                            // frame a local-space bbox
+      c.target = [(bbox[0] + bbox[3]) / 2, (bbox[1] + bbox[4]) / 2, (bbox[2] + bbox[5]) / 2];
+      const dx = bbox[3] - bbox[0], dy = bbox[4] - bbox[1], dz = bbox[5] - bbox[2];
+      const d = Math.hypot(dx, dy, dz) || 1;
+      c.radius = (d / 2) / Math.tan(c.fovY / 2) * 1.2;
+      return update();
+    },
+  };
+}
+
+// Wire standard mouse/touch input onto an orbit camera. Returns a detach fn.
+// left-drag orbit · right-drag / shift-drag pan · wheel dolly.
+function attachOrbitInput(canvas, cam, { onChange } = {}) {
+  // pointers tracked by id: one = orbit (or pan with right-button/shift),
+  // two = the touch grammar — pinch dollies, the centroid pans, twist orbits
+  // theta. touch-action:none or the browser eats the gestures first.
+  canvas.style.touchAction = 'none';
+  const pts = new Map();
+  let mode = null, lx = 0, ly = 0;
+  let pinch = null;                                        // { span, cx, cy, angle }
+  const pinchState = () => {
+    const [a, b] = [...pts.values()];
+    return {
+      span: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+      cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+    };
+  };
+  const down = (e) => {
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+    if (pts.size === 2) { pinch = pinchState(); mode = 'pinch'; return; }
+    if (pts.size > 2) return;                              // third finger: ignore
+    mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
+    lx = e.clientX; ly = e.clientY;
+  };
+  const move = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'pinch' && pts.size >= 2) {
+      const now = pinchState();
+      cam.dolly(pinch.span / now.span > 0 ? pinch.span / now.span : 1);
+      cam.pan(now.cx - pinch.cx, now.cy - pinch.cy, canvas.clientHeight);
+      let dA = now.angle - pinch.angle;
+      if (dA > Math.PI) dA -= 2 * Math.PI;
+      if (dA < -Math.PI) dA += 2 * Math.PI;
+      if (!cam.state.orbitLock) cam.orbit(-dA, 0);         // twist: grab-the-world (locked views don't twist)
+      pinch = now;
+      if (onChange) onChange();
+      return;
+    }
+    if (!mode || mode === 'pinch') return;
+    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+    // orbitLock (state flag): 2D/section-locked views — drags PAN instead of
+    // orbiting, so a locked plan/section can't be knocked off-plane by a drag
+    if (mode === 'orbit') { if (cam.state.orbitLock) cam.pan(dx, dy, canvas.clientHeight); else cam.orbit(-dx * 0.006, dy * 0.006); }
+    else cam.pan(dx, dy, canvas.clientHeight);
+    if (onChange) onChange();
+  };
+  const up = (e) => {
+    pts.delete(e.pointerId);
+    try { canvas.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+    if (pts.size >= 2) { pinch = pinchState(); return; }   // still pinching with others
+    if (pts.size === 1) {                                  // pinch → single: re-anchor, no jump
+      const rest = [...pts.values()][0];
+      mode = 'orbit'; lx = rest.x; ly = rest.y; pinch = null;
+      return;
+    }
+    mode = null; pinch = null;
+  };
+  const wheel = (e) => { e.preventDefault(); cam.dolly(Math.pow(1.0015, e.deltaY)); if (onChange) onChange(); };
+  const ctx = (e) => e.preventDefault();
+  canvas.addEventListener('pointerdown', down);
+  canvas.addEventListener('pointermove', move);
+  canvas.addEventListener('pointerup', up);
+  canvas.addEventListener('pointercancel', up);
+  canvas.addEventListener('wheel', wheel, { passive: false });
+  canvas.addEventListener('contextmenu', ctx);
+  return () => {
+    canvas.removeEventListener('pointerdown', down);
+    canvas.removeEventListener('pointermove', move);
+    canvas.removeEventListener('pointerup', up);
+    canvas.removeEventListener('pointercancel', up);
+    canvas.removeEventListener('wheel', wheel);
+    canvas.removeEventListener('contextmenu', ctx);
+  };
+}
+
 // ── src/core/gl-pick.js ──
 
 // @gcu/condenser — GPU ID-buffer picking. On click, the visible chunks re-render
@@ -5484,8 +5762,18 @@ function createPickPipeline(gl) {
       return m;
     };
     // per layer: an exempt layer (st.sectioned === false) picks whole
+    // a moved layer (setLayerOffset) is cut where it is DRAWN: in its own
+    // coordinates the plane sits at d − n·o (gl.js offsetSec, mirrored)
+    const secFor = (st) => {
+      const o = st && st.offset;
+      if (!section || !o) return section;
+      const k = section.n[0] * o[0] + section.n[1] * o[1] + section.n[2] * o[2];
+      return section.d0 !== undefined ? { ...section, d: section.d - k, d0: section.d0 - k } : { ...section, d: section.d - k };
+    };
+    // ...and drawn with its own camera: the offset folded in as a translation
+    const stateFor = (st) => (st && st.offset ? translateState(cam.state, st.offset) : cam.state);
     const setSec = (u, st) => {
-      let s = st && st.sectioned === false ? null : section;
+      let s = st && st.sectioned === false ? null : secFor(st);
       const pm = st ? st.sectioned : true;
       if (s && (pm === 'front' || pm === 'behind') && s.d0 !== undefined) { const H = Math.max(1e5, 8 * (s.half || 1)); s = { ...s, d: pm === 'front' ? s.d0 + H : s.d0 - H, half: H }; }
       gl.uniform4f(u.secPlane, s ? s.n[0] : 0, s ? s.n[1] : 0, s ? s.n[2] : 1, s ? s.d : 0);
@@ -5495,7 +5783,7 @@ function createPickPipeline(gl) {
     // slab the blocks use (gl.js meshSecOf) — mirror it or the pick disagrees
     // with the picture on exactly the views geologists spend their day in.
     const setSecMesh = (u, st) => {
-      let s2 = st && st.sectioned === false ? null : section;
+      let s2 = st && st.sectioned === false ? null : secFor(st);
       const pm = st ? st.sectioned : true;
       const clip = s2 && (pm === 'front' || pm === 'behind' ? pm : s2.clip);
       if (s2 && (clip === 'front' || clip === 'behind') && s2.d0 !== undefined) {
@@ -5543,6 +5831,7 @@ function createPickPipeline(gl) {
       gl.uniform1f(uPts.pointPx, dpp);
       for (const [id, group] of byLayer(ptsChunks)) {
       const st = stateOf(id);
+      gl.uniformMatrix4fv(uPts.viewProj, false, stateFor(st).viewProj);
       gl.uniform1ui(uPts.layer, id >>> 0);
       setSec(uPts, st);
       setCatVis(uPts, st);
@@ -5566,20 +5855,21 @@ function createPickPipeline(gl) {
     const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0);
     if (blkChunks.length) {
       gl.useProgram(blk);
-      gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
-      gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const v = s.view;
-      gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
-      gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
-      gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
-      {
+      // the camera uniforms, per layer (a moved layer has its own)
+      const setBlkCam = (s) => {
+        gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
+        gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        const v = s.view;
+        gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
+        gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
+        gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
         const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
         const fl = Math.hypot(...f) || 1;
         gl.uniform3f(uBlk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
         gl.uniform1f(uBlk.backoff, s.radius * 2);
-      }
+      };
       gl.uniform1f(uBlk.demotePx, 2.0);
       gl.uniform1f(uBlk.pointPx, dpp);
       gl.uniform1f(uBlk.fixedSplat, blocksAsPoints ? 1 : 0);
@@ -5587,6 +5877,7 @@ function createPickPipeline(gl) {
       for (const [id, group] of byLayer(blkChunks)) {
         gl.uniform1ui(uBlk.layer, id >>> 0);
       const st = stateOf(id);
+      setBlkCam(stateFor(st));
       setSec(uBlk, st);
       setCatVis(uBlk, st);
       setRule(uBlk, st);
@@ -5629,23 +5920,24 @@ function createPickPipeline(gl) {
     const stkChunks = chunks.filter((c) => c.kind === 'sticks' && c.cursor > 0);
     if (stkChunks.length) {
       gl.useProgram(stk);
-      gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
-      gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
-      gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
-      {
+      const setStkCam = (s) => {
+        gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
+        gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
         const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
         const fl = Math.hypot(...f) || 1;
         gl.uniform3f(uStk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
         gl.uniform1f(uStk.backoff, s.radius * 2);
-      }
+      };
       gl.uniform1f(uStk.demotePx, 2.0);
       gl.uniform1f(uStk.pointPx, dpp);
       gl.uniform1f(uStk.fixedSplat, blocksAsPoints ? 1 : 0);
       for (const [id, group] of byLayer(stkChunks)) {
         gl.uniform1ui(uStk.layer, id >>> 0);
       const st2 = stateOf(id);
+      setStkCam(stateFor(st2));
       setSec(uStk, st2);
       setCatVis(uStk, st2);
       setRule(uStk, st2);
@@ -5683,16 +5975,17 @@ function createPickPipeline(gl) {
     const mshChunks = chunks.filter((c) => c.kind === 'mesh' && c.idxCount > 0);
     if (mshChunks.length) {
       gl.useProgram(msh);
-      gl.uniformMatrix4fv(uMsh.viewProj, false, s.viewProj);
-      gl.uniform3f(uMsh.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
-      const fl = Math.hypot(...f) || 1;
-      gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
-      gl.uniform1f(uMsh.ortho, s.ortho ? 1 : 0);
       for (const [id, group] of byLayer(mshChunks)) {
         const st = stateOf(id);
         const pickable = st.meshPickable != null ? st.meshPickable : (st.meshOpacity == null || st.meshOpacity >= 0.95);
         if (!pickable) continue;
+        const ms = stateFor(st);
+        gl.uniformMatrix4fv(uMsh.viewProj, false, ms.viewProj);
+        gl.uniform3f(uMsh.eye, ms.eye[0], ms.eye[1], ms.eye[2]);
+        const f = [ms.target[0] - ms.eye[0], ms.target[1] - ms.eye[1], ms.target[2] - ms.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uMsh.ortho, ms.ortho ? 1 : 0);
         gl.uniform1ui(uMsh.layer, id >>> 0);
         setSecMesh(uMsh, st);                              // the TRACE band, exactly as gl.js's meshSecOf draws it
         for (const c of group) {
@@ -8049,265 +8342,6 @@ async function openDxfStream(blob, { as = null } = {}) {
   return { header, batches, summary };
 }
 
-// ── src/core/camera.js ──
-
-// @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
-// matrix ops, not a scene graph (dee's camera is Three-coupled — micro-spec §5
-// says borrow the *math*, and the math is textbook, so it lives here).
-// Column-major Float32Array(16), GL convention. All coordinates FRAME-LOCAL —
-// the document frame keeps magnitudes small enough for f32 uniforms.
-
-function mat4Perspective(fovYRad, aspect, near, far) {
-  const f = 1 / Math.tan(fovYRad / 2), nf = 1 / (near - far);
-  const m = new Float32Array(16);
-  m[0] = f / aspect; m[5] = f;
-  m[10] = (far + near) * nf; m[11] = -1;
-  m[14] = 2 * far * near * nf;
-  return m;
-}
-
-function mat4Ortho(halfH, aspect, near, far) {
-  const halfW = halfH * aspect, m = new Float32Array(16);
-  m[0] = 1 / halfW; m[5] = 1 / halfH;
-  m[10] = -2 / (far - near); m[14] = -(far + near) / (far - near);
-  m[15] = 1;
-  return m;
-}
-
-function mat4LookAt(eye, target, up) {
-  let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
-  let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
-  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
-  l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
-  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
-  const m = new Float32Array(16);
-  m[0] = xx; m[4] = xy; m[8] = xz; m[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
-  m[1] = yx; m[5] = yy; m[9] = yz; m[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
-  m[2] = zx; m[6] = zy; m[10] = zz; m[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
-  m[15] = 1;
-  return m;
-}
-
-function mat4Multiply(a, b) {                       // a·b (both column-major)
-  const m = new Float32Array(16);
-  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
-    m[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
-  }
-  return m;
-}
-
-// General 4×4 inverse (cofactor expansion, column-major). Used to unproject
-// (pixel, depth) → world in the deferred re-shade resolve; the viewProj is
-// always invertible for a real camera. Returns null on a singular matrix.
-function mat4Inverse(m) {
-  const inv = new Float32Array(16);
-  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
-  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
-  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
-  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
-  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
-  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
-  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
-  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
-  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
-  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
-  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
-  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
-  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
-  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
-  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
-  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
-  const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-  if (!det) return null;
-  const d = 1 / det;
-  for (let i = 0; i < 16; i++) inv[i] *= d;
-  return inv;
-}
-
-// Frustum planes from a viewProj matrix (Gribb–Hartmann, column-major): six
-// [a,b,c,d] rows — a point is inside when a·x+b·y+c·z+d ≥ 0 for all six.
-function frustumPlanes(m) {
-  const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
-  const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
-  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
-  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
-  return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), add(r3, r2), sub(r3, r2)];
-}
-
-// Conservative AABB-vs-frustum: positive-vertex test — the box is out only when
-// its most-positive corner for some plane is still behind that plane.
-function aabbInFrustum(planes, b) {                 // b = [minX,minY,minZ,maxX,maxY,maxZ]
-  for (const [a, bb, c, d] of planes) {
-    const px = a > 0 ? b[3] : b[0], py = bb > 0 ? b[4] : b[1], pz = c > 0 ? b[5] : b[2];
-    if (a * px + bb * py + c * pz + d < 0) return false;
-  }
-  return true;
-}
-
-function transformPoint(m, p) {                     // m · [p,1] → perspective divide
-  const x = p[0], y = p[1], z = p[2];
-  const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
-  return [
-    (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
-    (m[1] * x + m[5] * y + m[9] * z + m[13]) / w,
-    (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
-  ];
-}
-
-/**
- * Orbit camera: target + spherical (radius, theta around Z, phi from the XY
- * plane). Z-up (geology convention). Produces eye/view/proj; near/far adapt to
- * the orbit radius each update (dee's depth-precision trick).
- */
-function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
-  const c = {
-    target: [0, 0, 0], radius: 100, theta: Math.PI / 4, phi: Math.PI / 5, fovY,
-    aspect: 1, near: 0.1, far: 1e6,
-    ortho: false, halfH: 0,                                // ortho: half-height = radius·tan(fovY/2) — toggling keeps apparent size at the target
-    zExag: 1,                                              // vertical exaggeration: a GLOBAL scene z-scale folded into viewProj (all layers stay registered; queries stay in real coords — see update())
-    eye: [0, 0, 0], view: null, proj: null, viewProj: null,
-  };
-  const EPS = 0.01;
-  function update() {
-    c.phi = Math.max(-Math.PI / 2 + EPS, Math.min(Math.PI / 2 - EPS, c.phi));
-    c.radius = Math.max(0.05, c.radius);
-    const cp = Math.cos(c.phi);
-    c.eye = [
-      c.target[0] + c.radius * cp * Math.cos(c.theta),
-      c.target[1] + c.radius * cp * Math.sin(c.theta),
-      c.target[2] + c.radius * Math.sin(c.phi),
-    ];
-    // near at radius/4000: on a km-scale fitted model the old /1000 put the
-    // clip plane METRES in front of the camera — visible slicing when panning
-    // close past geometry. /4000 keeps depth precision under a block size at
-    // the far end of a 24-bit buffer (error ~ z²/(near·2²⁴): ~3 m at z=10 km
-    // with near 2.5 m) while clipping 4× closer.
-    c.near = Math.max(c.radius / 4000, 0.01);
-    c.far = c.radius * 100;
-    c.view = mat4LookAt(c.eye, c.target, [0, 0, 1]);
-    c.halfH = c.radius * Math.tan(c.fovY / 2);
-    c.proj = c.ortho ? mat4Ortho(c.halfH, c.aspect, c.near, c.far) : mat4Perspective(c.fovY, c.aspect, c.near, c.far);
-    c.viewProj = mat4Multiply(c.proj, c.view);
-    // Vertical exaggeration: fold a world-space z-scale into viewProj, pivoted at
-    // the target's z (so the look-at point stays fixed). viewProj·M means every
-    // vertex is z-scaled AT DRAW ONLY — shaders still test real z for section
-    // culling (before viewProj), pick is the ID-buffer (real recIdx), measure
-    // reads source records, and unproject uses inverse(viewProj) which yields real
-    // coords. One matrix, all layers registered, every query honest.
-    if (c.zExag && c.zExag !== 1) {
-      const S = c.zExag, tz = c.target[2];                 // z' = tz + (z-tz)·S  ⇒  column-major z-scale about tz
-      c.viewProj = mat4Multiply(c.viewProj, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, S, 0, 0, 0, tz * (1 - S), 1]);
-    }
-    return c;
-  }
-  return {
-    get state() { return c; },
-    update,
-    setAspect(a) { c.aspect = a || 1; return update(); },
-    orbit(dTheta, dPhi) { c.theta += dTheta; c.phi += dPhi; return update(); },
-    dolly(f) { c.radius *= f; return update(); },
-    pan(dxPx, dyPx, viewportH) {                           // screen px → world at target depth
-      const s = 2 * c.radius * Math.tan(c.fovY / 2) / (viewportH || 1);
-      const ct = Math.cos(c.theta), st = Math.sin(c.theta), sp = Math.sin(c.phi), cp = Math.cos(c.phi);
-      // camera right = (-st, ct, 0); camera up ≈ (-ct·sp, -st·sp, cp)
-      c.target[0] += (-st) * (-dxPx * s) + (-ct * sp) * (dyPx * s);
-      c.target[1] += (ct) * (-dxPx * s) + (-st * sp) * (dyPx * s);
-      // vertical exaggeration stretches displayed z by zExag, so a real-z move
-      // shows amplified — divide the up-vector's z contribution by zExag so the
-      // grabbed point tracks the cursor 1:1 (M⁻¹ of the up-move; x/y are unscaled).
-      // In plan view cp=0 → no change, as it should be.
-      c.target[2] += cp * (dyPx * s) / (c.zExag || 1);
-      return update();
-    },
-    setOrtho(on) { c.ortho = !!on; return update(); },
-    fit(bbox) {                                            // frame a local-space bbox
-      c.target = [(bbox[0] + bbox[3]) / 2, (bbox[1] + bbox[4]) / 2, (bbox[2] + bbox[5]) / 2];
-      const dx = bbox[3] - bbox[0], dy = bbox[4] - bbox[1], dz = bbox[5] - bbox[2];
-      const d = Math.hypot(dx, dy, dz) || 1;
-      c.radius = (d / 2) / Math.tan(c.fovY / 2) * 1.2;
-      return update();
-    },
-  };
-}
-
-// Wire standard mouse/touch input onto an orbit camera. Returns a detach fn.
-// left-drag orbit · right-drag / shift-drag pan · wheel dolly.
-function attachOrbitInput(canvas, cam, { onChange } = {}) {
-  // pointers tracked by id: one = orbit (or pan with right-button/shift),
-  // two = the touch grammar — pinch dollies, the centroid pans, twist orbits
-  // theta. touch-action:none or the browser eats the gestures first.
-  canvas.style.touchAction = 'none';
-  const pts = new Map();
-  let mode = null, lx = 0, ly = 0;
-  let pinch = null;                                        // { span, cx, cy, angle }
-  const pinchState = () => {
-    const [a, b] = [...pts.values()];
-    return {
-      span: Math.hypot(b.x - a.x, b.y - a.y) || 1,
-      cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
-      angle: Math.atan2(b.y - a.y, b.x - a.x),
-    };
-  };
-  const down = (e) => {
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
-    if (pts.size === 2) { pinch = pinchState(); mode = 'pinch'; return; }
-    if (pts.size > 2) return;                              // third finger: ignore
-    mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
-    lx = e.clientX; ly = e.clientY;
-  };
-  const move = (e) => {
-    if (!pts.has(e.pointerId)) return;
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (mode === 'pinch' && pts.size >= 2) {
-      const now = pinchState();
-      cam.dolly(pinch.span / now.span > 0 ? pinch.span / now.span : 1);
-      cam.pan(now.cx - pinch.cx, now.cy - pinch.cy, canvas.clientHeight);
-      let dA = now.angle - pinch.angle;
-      if (dA > Math.PI) dA -= 2 * Math.PI;
-      if (dA < -Math.PI) dA += 2 * Math.PI;
-      if (!cam.state.orbitLock) cam.orbit(-dA, 0);         // twist: grab-the-world (locked views don't twist)
-      pinch = now;
-      if (onChange) onChange();
-      return;
-    }
-    if (!mode || mode === 'pinch') return;
-    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
-    // orbitLock (state flag): 2D/section-locked views — drags PAN instead of
-    // orbiting, so a locked plan/section can't be knocked off-plane by a drag
-    if (mode === 'orbit') { if (cam.state.orbitLock) cam.pan(dx, dy, canvas.clientHeight); else cam.orbit(-dx * 0.006, dy * 0.006); }
-    else cam.pan(dx, dy, canvas.clientHeight);
-    if (onChange) onChange();
-  };
-  const up = (e) => {
-    pts.delete(e.pointerId);
-    try { canvas.releasePointerCapture(e.pointerId); } catch { /* gone */ }
-    if (pts.size >= 2) { pinch = pinchState(); return; }   // still pinching with others
-    if (pts.size === 1) {                                  // pinch → single: re-anchor, no jump
-      const rest = [...pts.values()][0];
-      mode = 'orbit'; lx = rest.x; ly = rest.y; pinch = null;
-      return;
-    }
-    mode = null; pinch = null;
-  };
-  const wheel = (e) => { e.preventDefault(); cam.dolly(Math.pow(1.0015, e.deltaY)); if (onChange) onChange(); };
-  const ctx = (e) => e.preventDefault();
-  canvas.addEventListener('pointerdown', down);
-  canvas.addEventListener('pointermove', move);
-  canvas.addEventListener('pointerup', up);
-  canvas.addEventListener('pointercancel', up);
-  canvas.addEventListener('wheel', wheel, { passive: false });
-  canvas.addEventListener('contextmenu', ctx);
-  return () => {
-    canvas.removeEventListener('pointerdown', down);
-    canvas.removeEventListener('pointermove', move);
-    canvas.removeEventListener('pointerup', up);
-    canvas.removeEventListener('pointercancel', up);
-    canvas.removeEventListener('wheel', wheel);
-    canvas.removeEventListener('contextmenu', ctx);
-  };
-}
-
 // ── src/core/gl-resolve.js ──
 
 // @gcu/condenser — DEFERRED RE-SHADE (render-paths spec §2). Once the scene
@@ -8918,7 +8952,16 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // a layer's view of the section: false = exempt, 'front'/'behind' = keep that
   // side only (a half-space is a slab with the far face pushed past the data —
   // same trick the global clip uses, but per layer, derived from sec.d0)
+  // a layer's offset (setLayerOffset) moves its geometry at draw time, so the
+  // section must cut where the layer is DRAWN: in its own coordinates the plane
+  // sits at d − n·o. Shifting here covers every pipeline (meshSecOf calls this).
+  const offsetSec = (sec, o) => {
+    if (!sec || !o) return sec;
+    const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
+    return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
+  };
   const layerSecOf = (ls, sec) => {
+    sec = offsetSec(sec, ls.offset);
     const m = ls.sectioned;
     if (!sec || m === false) return m === false ? null : sec;
     if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
@@ -8943,12 +8986,31 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
             meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
             ruleTex: null, ruleH: 0, ruleOn: false,
-            chanTex: null, chanTexRange: null };
+            chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
     }
     return l;
   }
   const activeChunk = (c) => { const l = layers.get(c._layer); return !!l && l.visible && c._set === l.set; };
+  // a chunk's bbox where it is DRAWN (its layer's offset applied) — culling,
+  // depth ordering, LOD weights and the content bbox; the stored bboxLocal stays
+  // the geometry's own (it is also the points dequantize box)
+  const drawnBox = (c, out) => {
+    const l = layers.get(c._layer), o = l && l.offset, b = c.bboxLocal;
+    if (!o) return b;
+    for (let i = 0; i < 3; i++) { out[i] = b[i] + o[i]; out[i + 3] = b[i + 3] + o[i]; }
+    return out;
+  };
+  // the camera a layer is drawn with: its offset folded in as a translation
+  // (camera.js translateState); one object per layer per frame, the shared
+  // camera itself when the layer isn't moved
+  const camFor = (cam, id, memo) => {
+    const l = layers.get(id), o = l && l.offset;
+    if (!o) return cam;
+    let c = memo && memo.get(id);
+    if (!c) { c = { state: translateState(cam.state, o) }; if (memo) memo.set(id, c); }
+    return c;
+  };
   const freeChunk = (c) => { gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
   const byLayer = (arr) => {
     const m = new Map();
@@ -9258,6 +9320,38 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       const ls = layerOf(layer);
       if (ls.visible !== !!on) { ls.visible = !!on; needClear = true; }
     },
+    // Translate a layer at DRAW time: [dx, dy, dz] in frame-local units (the
+    // frame's units — metres for a metric CRS); [0,0,0] or null clears it. No
+    // re-upload, no chunk rebuild: the offset is folded into the camera the
+    // layer is drawn and picked with, so every pipeline (points, blocks, sticks,
+    // meshes, soups), the section (it cuts the displaced geometry), culling, the
+    // deferred re-shade and the ID buffer agree. DISPLAY ONLY: records keep
+    // their true coordinates, elevation colouring reads the true z, and pick()
+    // returns record identities, so nothing the host reads back is displaced.
+    setLayerOffset(layer, o) {
+      const ls = layerOf(layer);
+      const v = o && (o[0] || o[1] || o[2]) ? [+o[0] || 0, +o[1] || 0, +o[2] || 0] : null;
+      const cur = ls.offset;
+      if (!v && !cur) return;
+      if (v && cur && v[0] === cur[0] && v[1] === cur[1] && v[2] === cur[2]) return;
+      ls.offset = v;
+      needClear = true;                                    // moves pixels: re-raster (and drop the id capture)
+    },
+    layerOffset(layer) { const ls = layers.get(layer); return ls && ls.offset ? [...ls.offset] : [0, 0, 0]; },
+    // the frame-local bbox of what is drawn — every visible layer's chunks with
+    // their offsets applied (sticks padded by their radius) — for fit-to-view on
+    // an exploded scene. null when nothing is visible.
+    contentBbox({ layers: only = null } = {}) {
+      const out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      const tmp = new Float64Array(6);
+      for (const c of chunks) {
+        if (!activeChunk(c) || (only && !only.includes(c._layer))) continue;
+        const b = drawnBox(c, tmp);
+        const r = c.kind === 'sticks' ? layerOf(c._layer).stickRadius : 0;
+        for (let i = 0; i < 3; i++) { out[i] = Math.min(out[i], b[i] - r); out[i + 3] = Math.max(out[i + 3], b[i + 3] + r); }
+      }
+      return out[0] === Infinity ? null : Float64Array.from(out);
+    },
     removeLayer(layer) {
       for (let i = chunks.length - 1; i >= 0; i--) {
         if (chunks[i]._layer !== layer) continue;
@@ -9356,6 +9450,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     // Returns { drawn, converged, visible }.
     draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null } = {}) {
       const vp = cam.state.viewProj;
+      const camMemo = new Map();
+      const camOf = (id) => camFor(cam, id, camMemo);      // a moved layer's camera (setLayerOffset)
       const sec = section && section.on ? section : null;
       const secKey = sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off';
       // the old single draw key, SPLIT: structural changes re-raster; cosmetic
@@ -9435,16 +9531,18 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           }
           gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);     // back to the EDL target
           gl.viewport(0, 0, canvas.width, canvas.height);
-          // headlight — the exact formula blocksPipe.begin computes
-          const s = cam.state, v = s.view;
-          let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
-          const ll = Math.hypot(lx, ly, lz) || 1;
-          lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
-          const l2 = Math.hypot(lx, ly, lz) || 1;
-          const lightDir = [lx / l2, ly / l2, lz / l2];
-          const invVP = mat4Inverse(vp);                   // edge-line unproject
-          const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
           for (const [id, group] of groups) {
+            // the layer's own camera: an offset layer unprojects into ITS
+            // coordinates, so the lattice snap and the cut-wall side stay exact
+            const s = camOf(id).state, v = s.view;
+            // headlight — the exact formula blocksPipe.begin computes
+            let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+            const ll = Math.hypot(lx, ly, lz) || 1;
+            lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+            const l2 = Math.hypot(lx, ly, lz) || 1;
+            const lightDir = [lx / l2, ly / l2, lz / l2];
+            const invVP = mat4Inverse(s.viewProj);         // edge-line unproject
+            const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
             const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
             let u;
             if (group[0].kind === 'blocks') {
@@ -9499,17 +9597,17 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       const planes = frustumPlanes(vp);
       const eye = cam.state.eye;
       const visible = [];
-      const padBox = new Float64Array(6);
+      const padBox = new Float64Array(6), movedBox = new Float64Array(6);
       for (const c of chunks) {
         if (!activeChunk(c)) continue;
-        let cullBox = c.bboxLocal;
+        const b = drawnBox(c, movedBox);                   // where it's drawn (layer offset applied)
+        let cullBox = b;
         if (c.kind === 'sticks') {
           const r = layerOf(c._layer).stickRadius;
-          for (let i = 0; i < 3; i++) { padBox[i] = c.bboxLocal[i] - r; padBox[i + 3] = c.bboxLocal[i + 3] + r; }
+          for (let i = 0; i < 3; i++) { padBox[i] = b[i] - r; padBox[i + 3] = b[i + 3] + r; }
           cullBox = padBox;
         }
         if (!aabbInFrustum(planes, cullBox)) { if (moving) c.cursor = 0; continue; }
-        const b = c.bboxLocal;
         const cx = (b[0] + b[3]) / 2 - eye[0], cy = (b[1] + b[4]) / 2 - eye[1], cz = (b[2] + b[5]) / 2 - eye[2];
         const dist = Math.max(Math.hypot(cx, cy, cz), cam.state.near);
         const r = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2 || 1;
@@ -9549,7 +9647,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         for (const [id, group] of byLayer(msh)) {
           if (!group.some((c) => moving || c.cursor === 0)) continue;
           const ls = layerOf(id);
-          meshPipe.begin(cam, { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
+          meshPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
             vcolor: group.some((c) => c.hasColor), vnormal: group.some((c) => c.hasNormal) });   // heightfield drape + smooth normals
           for (const c of group) {
             if (!(moving || c.cursor === 0)) continue;
@@ -9568,7 +9666,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (soup.length) {
         for (const [id, group] of byLayer(soup)) {
           const ls = layerOf(id);
-          soupPipe.begin(cam, { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
+          soupPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
           for (const c of group) {
             const [first, k] = allot(c);
             if (k > 0) {
@@ -9596,6 +9694,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
+          gl.uniformMatrix4fv(uni.viewProj, false, camOf(id).state.viewProj);   // a moved layer's camera
           const lsec = layerSecOf(ls, sec);
           gl.uniform4f(uni.secPlane, lsec ? lsec.n[0] : 0, lsec ? lsec.n[1] : 0, lsec ? lsec.n[2] : 1, lsec ? lsec.d : 0);
           gl.uniform2f(uni.secCfg, lsec ? 1 : 0, lsec ? lsec.half : 0);
@@ -9668,7 +9767,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           const ls = layerOf(id), o = lopt(id);
           const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
           const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
-          blocksPipe.begin(cam, {
+          blocksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
@@ -9718,7 +9817,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           const ls = layerOf(id), o = lopt(id);
           const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
           const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
-          sticksPipe.begin(cam, {
+          sticksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
@@ -9968,6 +10067,7 @@ export {
   transformPoint,
   frustumPlanes,
   aabbInFrustum,
+  translateState,
   createOrbitCamera,
   attachOrbitInput,
   makeProgram,

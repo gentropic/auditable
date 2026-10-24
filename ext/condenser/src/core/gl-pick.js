@@ -8,6 +8,7 @@
 // row number in the source file.
 
 import { makeProgram } from './gl-util.js';
+import { translateState } from './camera.js';
 
 // no encoder: the pick target is RG32UI (R = record, G = layer + face), so the
 // ids go out as integers instead of being smeared across four bytes and
@@ -502,8 +503,18 @@ export function createPickPipeline(gl) {
       return m;
     };
     // per layer: an exempt layer (st.sectioned === false) picks whole
+    // a moved layer (setLayerOffset) is cut where it is DRAWN: in its own
+    // coordinates the plane sits at d − n·o (gl.js offsetSec, mirrored)
+    const secFor = (st) => {
+      const o = st && st.offset;
+      if (!section || !o) return section;
+      const k = section.n[0] * o[0] + section.n[1] * o[1] + section.n[2] * o[2];
+      return section.d0 !== undefined ? { ...section, d: section.d - k, d0: section.d0 - k } : { ...section, d: section.d - k };
+    };
+    // ...and drawn with its own camera: the offset folded in as a translation
+    const stateFor = (st) => (st && st.offset ? translateState(cam.state, st.offset) : cam.state);
     const setSec = (u, st) => {
-      let s = st && st.sectioned === false ? null : section;
+      let s = st && st.sectioned === false ? null : secFor(st);
       const pm = st ? st.sectioned : true;
       if (s && (pm === 'front' || pm === 'behind') && s.d0 !== undefined) { const H = Math.max(1e5, 8 * (s.half || 1)); s = { ...s, d: pm === 'front' ? s.d0 + H : s.d0 - H, half: H }; }
       gl.uniform4f(u.secPlane, s ? s.n[0] : 0, s ? s.n[1] : 0, s ? s.n[2] : 1, s ? s.d : 0);
@@ -513,7 +524,7 @@ export function createPickPipeline(gl) {
     // slab the blocks use (gl.js meshSecOf) — mirror it or the pick disagrees
     // with the picture on exactly the views geologists spend their day in.
     const setSecMesh = (u, st) => {
-      let s2 = st && st.sectioned === false ? null : section;
+      let s2 = st && st.sectioned === false ? null : secFor(st);
       const pm = st ? st.sectioned : true;
       const clip = s2 && (pm === 'front' || pm === 'behind' ? pm : s2.clip);
       if (s2 && (clip === 'front' || clip === 'behind') && s2.d0 !== undefined) {
@@ -561,6 +572,7 @@ export function createPickPipeline(gl) {
       gl.uniform1f(uPts.pointPx, dpp);
       for (const [id, group] of byLayer(ptsChunks)) {
       const st = stateOf(id);
+      gl.uniformMatrix4fv(uPts.viewProj, false, stateFor(st).viewProj);
       gl.uniform1ui(uPts.layer, id >>> 0);
       setSec(uPts, st);
       setCatVis(uPts, st);
@@ -584,20 +596,21 @@ export function createPickPipeline(gl) {
     const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0);
     if (blkChunks.length) {
       gl.useProgram(blk);
-      gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
-      gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const v = s.view;
-      gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
-      gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
-      gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
-      {
+      // the camera uniforms, per layer (a moved layer has its own)
+      const setBlkCam = (s) => {
+        gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
+        gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        const v = s.view;
+        gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
+        gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
+        gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
         const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
         const fl = Math.hypot(...f) || 1;
         gl.uniform3f(uBlk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
         gl.uniform1f(uBlk.backoff, s.radius * 2);
-      }
+      };
       gl.uniform1f(uBlk.demotePx, 2.0);
       gl.uniform1f(uBlk.pointPx, dpp);
       gl.uniform1f(uBlk.fixedSplat, blocksAsPoints ? 1 : 0);
@@ -605,6 +618,7 @@ export function createPickPipeline(gl) {
       for (const [id, group] of byLayer(blkChunks)) {
         gl.uniform1ui(uBlk.layer, id >>> 0);
       const st = stateOf(id);
+      setBlkCam(stateFor(st));
       setSec(uBlk, st);
       setCatVis(uBlk, st);
       setRule(uBlk, st);
@@ -647,23 +661,24 @@ export function createPickPipeline(gl) {
     const stkChunks = chunks.filter((c) => c.kind === 'sticks' && c.cursor > 0);
     if (stkChunks.length) {
       gl.useProgram(stk);
-      gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
-      gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
-      gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
-      {
+      const setStkCam = (s) => {
+        gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
+        gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
         const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
         const fl = Math.hypot(...f) || 1;
         gl.uniform3f(uStk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
         gl.uniform1f(uStk.backoff, s.radius * 2);
-      }
+      };
       gl.uniform1f(uStk.demotePx, 2.0);
       gl.uniform1f(uStk.pointPx, dpp);
       gl.uniform1f(uStk.fixedSplat, blocksAsPoints ? 1 : 0);
       for (const [id, group] of byLayer(stkChunks)) {
         gl.uniform1ui(uStk.layer, id >>> 0);
       const st2 = stateOf(id);
+      setStkCam(stateFor(st2));
       setSec(uStk, st2);
       setCatVis(uStk, st2);
       setRule(uStk, st2);
@@ -701,16 +716,17 @@ export function createPickPipeline(gl) {
     const mshChunks = chunks.filter((c) => c.kind === 'mesh' && c.idxCount > 0);
     if (mshChunks.length) {
       gl.useProgram(msh);
-      gl.uniformMatrix4fv(uMsh.viewProj, false, s.viewProj);
-      gl.uniform3f(uMsh.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
-      const fl = Math.hypot(...f) || 1;
-      gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
-      gl.uniform1f(uMsh.ortho, s.ortho ? 1 : 0);
       for (const [id, group] of byLayer(mshChunks)) {
         const st = stateOf(id);
         const pickable = st.meshPickable != null ? st.meshPickable : (st.meshOpacity == null || st.meshOpacity >= 0.95);
         if (!pickable) continue;
+        const ms = stateFor(st);
+        gl.uniformMatrix4fv(uMsh.viewProj, false, ms.viewProj);
+        gl.uniform3f(uMsh.eye, ms.eye[0], ms.eye[1], ms.eye[2]);
+        const f = [ms.target[0] - ms.eye[0], ms.target[1] - ms.eye[1], ms.target[2] - ms.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uMsh.ortho, ms.ortho ? 1 : 0);
         gl.uniform1ui(uMsh.layer, id >>> 0);
         setSecMesh(uMsh, st);                              // the TRACE band, exactly as gl.js's meshSecOf draws it
         for (const c of group) {

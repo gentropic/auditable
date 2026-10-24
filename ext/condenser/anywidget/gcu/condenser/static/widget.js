@@ -2820,6 +2820,7 @@ class MSHError extends Error {
  *  @returns {Promise<MSHResult>}
  */
 async function readMSH(input, opts = {}) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) return _readMSHBlob(input, opts);
   const bytes = _coerceBytes(input);
   const validateIndices = opts.validateIndices !== false;
 
@@ -2910,6 +2911,67 @@ async function readMSH(input, opts = {}) {
     }
   }
 
+  return result;
+}
+
+/** The file's LAYOUT without reading its arrays: version, signature, and each
+ *  declared array with its byte `offset` and `bytes` — plus `vertices` /
+ *  `triangles` naming the first Double-3 and Integer-3 arrays (readMSH's rule).
+ *  A Blob/File is read only at its head (the text index), so a multi-GB mesh is
+ *  described for free and a streaming reader can slice one array at a time.
+ *  @param {Blob|ArrayBuffer|Uint8Array} input */
+async function readMSHLayout(input) {
+  const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
+  const size = isBlob ? input.size : _coerceBytes(input).length;
+  let head, binaryHeaderStart = -1;
+  for (let len = 64 * 1024; ; len *= 4) {                   // the text index is small; grow until [binary] shows
+    head = isBlob ? new Uint8Array(await input.slice(0, Math.min(size, len)).arrayBuffer()) : _coerceBytes(input).subarray(0, Math.min(size, len));
+    binaryHeaderStart = _indexOfBytes(head, SECTION_BINARY);
+    if (binaryHeaderStart >= 0 || len >= size || len >= 64 * 1024 * 1024) break;
+  }
+  if (binaryHeaderStart < 0) throw new MSHError('missing [binary] section header');
+  const binaryStart = binaryHeaderStart + SECTION_BINARY.length;
+  const { version, declarations } = _parseTextHeader(new TextDecoder('utf-8').decode(head.subarray(0, binaryHeaderStart)));
+  if (binaryStart + BINARY_PREFIX_LENGTH > size) throw new MSHError('binary section truncated before signature');
+  const sig = isBlob
+    ? new Uint8Array(await input.slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH).arrayBuffer())
+    : _coerceBytes(input).slice(binaryStart, binaryStart + BINARY_PREFIX_LENGTH);
+  let cursor = binaryStart + BINARY_PREFIX_LENGTH;
+  const arrays = [];
+  for (const decl of declarations) {
+    const info = MSH_TYPES[decl.type];
+    if (!info) throw new MSHError(`unsupported type "${decl.type}" for array "${decl.name}"`);
+    const bytes = decl.components * decl.count * info.bytes;
+    if (cursor + bytes > size) {
+      throw new MSHError(`array "${decl.name}" declared ${bytes} bytes but file has only ${size - cursor} remaining`);
+    }
+    arrays.push({ ...decl, offset: cursor, bytes });
+    cursor += bytes;
+  }
+  if (size - cursor > 8) throw new MSHError(`${size - cursor} unexpected bytes after the last declared array`);
+  const vertices = arrays.find((a) => a.type === 'Double' && a.components === 3) || null;
+  const triangles = arrays.find((a) => a.type === 'Integer' && a.components === 3) || null;
+  return { version, binarySignature: sig, arrays, vertices, triangles, size };
+}
+
+// readMSH over a Blob: the layout from the head, then each array sliced on its own
+// — never one whole-file buffer (and no second copy of it).
+async function _readMSHBlob(blob, opts) {
+  const lay = await readMSHLayout(blob);
+  const arrays = new Map();
+  for (const a of lay.arrays) {
+    const bytes = new Uint8Array(await blob.slice(a.offset, a.offset + a.bytes).arrayBuffer());
+    arrays.set(a.name, { type: a.type, components: a.components, count: a.count, data: _readTypedArray(bytes, 0, a.components * a.count, MSH_TYPES[a.type]) });
+  }
+  const result = { version: lay.version, arrays, binarySignature: lay.binarySignature };
+  if (lay.vertices) result.vertices = arrays.get(lay.vertices.name).data;
+  if (lay.triangles) result.triangles = arrays.get(lay.triangles.name).data;
+  if (opts.validateIndices !== false && result.vertices && result.triangles) {
+    const vCount = result.vertices.length / 3 | 0, t = result.triangles;
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] < 0 || t[i] >= vCount) throw new MSHError(`triangle index ${t[i]} at position ${i} is out of range (0..${vCount - 1})`);
+    }
+  }
   return result;
 }
 
@@ -3366,7 +3428,7 @@ const ARRAY_FOR = {
 
 // ── Leapfrog .msh ──
 async function openMsh(blob) {
-  const msh = await readMSH(new Uint8Array(await blob.arrayBuffer()));
+  const msh = await readMSH(blob);                     // sliced per array — never one whole-file buffer
   if (!msh.vertices || !msh.triangles) throw new Error('msh: no vertex/triangle arrays found');
   const vertices = Float64Array.from(msh.vertices);
   const triangles = Uint32Array.from(msh.triangles);
@@ -3956,6 +4018,158 @@ async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = 
 // discipline (Morton, shuffle, quantize) lives in core/soup-geom.js.
 
 
+// ── byte-level text walking (OBJ, ASCII PLY): no per-line strings, no whole read ──
+const SLAB$soup_io = 8 << 20;
+const POW10$soup_io = []; for (let i = 0; i <= 22; i++) POW10$soup_io.push(Number('1e' + i));
+function slowNum(b, s, e) { let t = ''; for (let i = s; i < e; i++) t += String.fromCharCode(b[i]); return parseFloat(t); }
+// parseFloat over bytes [s,e): exact for ≤15 significant digits (one correctly
+// rounded op), parseFloat itself for exponents / long mantissas
+function numAt(b, s, e) {
+  let i = s, neg = false;
+  if (b[i] === 45 || b[i] === 43) { neg = b[i] === 45; i++; }
+  let mant = 0, sig = 0, exp = 0, dot = false, digits = 0;
+  for (; i < e; i++) {
+    const c = b[i];
+    if (c >= 48 && c <= 57) { digits++; if (sig || c !== 48) { if (++sig > 15) return slowNum(b, s, e); } mant = mant * 10 + (c - 48); if (dot) exp--; }
+    else if (c === 46 && !dot) dot = true;
+    else return slowNum(b, s, e);
+  }
+  if (!digits || -exp > 22) return slowNum(b, s, e);
+  const v = exp ? mant / POW10$soup_io[-exp] : mant;
+  return neg ? -v : v;
+}
+// blob[from, to) in ~8 MB slabs, each cut at its last newline (the tail rides into
+// the next slab): yields { b, base, n } where b[0..n) holds only complete lines
+// and base is b[0]'s file offset. Per-SLAB, not per-line — a promise per line
+// would cost more than parsing the line.
+async function* lineSlabs(blob, from, to, { onProgress, signal, slab = SLAB$soup_io } = {}) {
+  let at = from, carry = null, carryAbs = 0;
+  while (at < to) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const end = Math.min(to, at + slab);
+    let b = new Uint8Array(await blob.slice(at, end).arrayBuffer()), base = at;
+    if (carry) { const m = new Uint8Array(carry.length + b.length); m.set(carry); m.set(b, carry.length); b = m; base = carryAbs; carry = null; }
+    at = end;
+    let n = b.length;
+    if (at < to) {
+      n = b.lastIndexOf(10) + 1;
+      if (n < b.length) { carry = b.slice(n); carryAbs = base + n; }
+    }
+    if (onProgress) onProgress(at, to);
+    yield { b, base, n };
+  }
+}
+// the lines of one slab: onLine(b, start, end, absStart) — end excludes \r\n; → false stops
+function forLines({ b, base, n }, onLine) {
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    if (b[i] !== 10) continue;
+    if (onLine(b, s, i > s && b[i - 1] === 13 ? i - 1 : i, base + s) === false) return false;
+    s = i + 1;
+  }
+  if (s < n && onLine(b, s, n, base + s) === false) return false;
+  return true;
+}
+async function eachLine(blob, from, to, onLine, opts) {
+  for await (const sl of lineSlabs(blob, from, to, opts)) if (forLines(sl, onLine) === false) return;
+}
+// whitespace-separated tokens of one line → calls tok(s, e) in order
+function tokens(b, s, e, tok) {
+  let i = s;
+  while (i < e) {
+    while (i < e && (b[i] === 32 || b[i] === 9)) i++;
+    if (i >= e) break;
+    const t = i;
+    while (i < e && b[i] !== 32 && b[i] !== 9) i++;
+    if (tok(t, i) === false) return;
+  }
+}
+
+// the vertex table every soup provider builds: local f32 against the first
+// vertex (mm at UTM magnitudes), plus the world bbox — 12 B/vertex, transient
+function soupVertexTable(cap = 1 << 16) {
+  let verts = new Float32Array(3 * cap), n = 0;
+  const vo = [0, 0, 0], min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  return {
+    push(X, Y, Z) {
+      if (n === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
+      if (3 * n === verts.length) { const g = new Float32Array(verts.length * 2); g.set(verts); verts = g; }
+      verts[3 * n] = X - vo[0]; verts[3 * n + 1] = Y - vo[1]; verts[3 * n + 2] = Z - vo[2];
+      if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
+      if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
+      if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
+      n++;
+    },
+    get n() { return n; }, get verts() { return verts; }, vo, min, max,
+  };
+}
+// triangle index batches → RawChunk batches (the createSoupChunkBuilder contract)
+function soupTriBatcher(vt, batchTris) {
+  const ia = new Uint32Array(batchTris), ib = new Uint32Array(batchTris), ic = new Uint32Array(batchTris);
+  let n = 0, tris = 0, dropped = 0;
+  const out = [];
+  return {
+    tri(a, b, c) {
+      const nv = vt.n;
+      if (a < 0 || b < 0 || c < 0 || a >= nv || b >= nv || c >= nv) { dropped++; return; }
+      ia[n] = a; ib[n] = b; ic[n] = c;
+      if (++n === batchTris) { out.push(emitBatch(vt.verts, vt.vo, ia, ib, ic, n)); tris += n; n = 0; }
+    },
+    flush() { if (n) { out.push(emitBatch(vt.verts, vt.vo, ia, ib, ic, n)); tris += n; n = 0; } },
+    take() { return out.splice(0); },
+    get tris() { return tris; }, get dropped() { return dropped; },
+  };
+}
+
+/**
+ * openObjSoup(blob) — a Wavefront OBJ too big to read whole, as a STREAMED soup.
+ * Two passes, neither holding the file: (1) `v` lines → the local-f32 vertex table
+ * + bbox, (2) `f` lines (fanned; v, v/vt, v//vn, v/vt/vn; negative = relative to the
+ * vertices seen so far) → RawChunk batches. Groups/materials are not split here
+ * (a split of a multi-GB OBJ would rewrite it); that's the context tier's job.
+ */
+async function openObjSoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  const vt = soupVertexTable();
+  await eachLine(blob, 0, blob.size, (b, s, e) => {
+    while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+    if (b[s] !== 118 || (b[s + 1] !== 32 && b[s + 1] !== 9)) return;   // "v "
+    const v = [];
+    tokens(b, s + 2, e, (t0, t1) => { v.push(numAt(b, t0, t1)); return v.length < 3; });
+    vt.push(v[0], v[1], v[2] || 0);
+  }, { onProgress, slab });
+  if (!vt.n) throw new Error('obj: no v lines');
+  const header = { kind: 'mesh', soup: true, format: 'obj', vertexCount: vt.n, triCount: 0, bbox: { min: vt.min, max: vt.max } };
+
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    let seenV = 0;
+    const ix = [];
+    const onLine = (b, s, e) => {
+      while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+      if (b[s] === 118 && (b[s + 1] === 32 || b[s + 1] === 9)) { seenV++; return; }
+      if (b[s] !== 102 || (b[s + 1] !== 32 && b[s + 1] !== 9)) return;   // "f "
+      ix.length = 0;
+      tokens(b, s + 2, e, (t0, t1) => {
+        let i = t0, neg = false, v = 0, any = false;
+        if (b[i] === 45) { neg = true; i++; }
+        for (; i < t1 && b[i] >= 48 && b[i] <= 57; i++) { v = v * 10 + (b[i] - 48); any = true; }
+        if (!any || v === 0) return;
+        ix.push(neg ? seenV - v : v - 1);
+      });
+      for (let k = 2; k < ix.length; k++) tb.tri(ix[0], ix[k - 1], ix[k]);
+    };
+    for await (const sl of lineSlabs(blob, 0, blob.size, { signal, onProgress: op2, slab })) {
+      forLines(sl, onLine);
+      yield* tb.take();                                     // batches leave per slab — nothing accumulates
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
+  return { header, streamChunks };
+}
+
 /**
  * openPlySoup(blob) — the TRUE streaming provider (binary_le + ascii PLY, the
  * formats photogrammetry exports). Two passes over the blob, neither holding
@@ -3965,7 +4179,7 @@ async function* soupFromMesh({ vertices, triangles }, { batchTris = 1 << 16 } = 
  * → { header, streamChunks } — header = { kind:'mesh', soup:true, format,
  *    vertexCount, triCount(≈ faces, exact after stream), bbox }
  */
-async function openPlySoup(blob, { onProgress } = {}) {
+async function openPlySoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
   let sampleLen = 64 * 1024, ply = null;
   for (;;) {
     const text = new TextDecoder('latin1').decode(await blob.slice(0, Math.min(sampleLen, blob.size)).arrayBuffer());
@@ -3989,7 +4203,6 @@ async function openPlySoup(blob, { onProgress } = {}) {
   const vo = [0, 0, 0];
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   let faceStart;                                            // byte offset where faces begin (binary) / line index (ascii)
-  let asciiLines = null;
   if (!ascii) {
     const SLAB = 1 << 23;                                   // 8 MB windows
     let seen = 0;
@@ -4013,25 +4226,27 @@ async function openPlySoup(blob, { onProgress } = {}) {
     }
     faceStart = ply.dataOffset + nv * ply.stride;
   } else {
-    // ascii: one decode, line-split (ascii photogrammetry at soup scale is
-    // rare; the binary path is the load-bearing one)
-    const text = await blob.text();
-    asciiLines = text.slice(ply.dataOffset).split('\n');
+    // ascii: the vertex lines walked in slabs (never one string — an ascii
+    // photogrammetry export can be gigabytes); faceStart = the byte offset of the
+    // first line after the nv-th vertex
     const xi = ply.props.indexOf(px), yi = ply.props.indexOf(py), zi = ply.props.indexOf(pz);
-    let rec = 0, at = 0;
-    while (rec < nv && at < asciiLines.length) {
-      const t = asciiLines[at++].trim();
-      if (!t) continue;
-      const f = t.split(/\s+/);
-      const X = +f[xi], Y = +f[yi], Z = +f[zi];
+    const need = Math.max(xi, yi, zi);
+    const f = new Float64Array(need + 1);
+    let rec = 0;
+    faceStart = blob.size;
+    await eachLine(blob, ply.dataOffset, blob.size, (b, s, e, abs) => {
+      if (rec >= nv) { faceStart = abs; return false; }
+      let k = 0, any = false;
+      tokens(b, s, e, (t0, t1) => { any = true; if (k <= need) f[k] = numAt(b, t0, t1); k++; return k <= need; });
+      if (!any) return;                                     // blank line
+      const X = f[xi], Y = f[yi], Z = f[zi];
       if (rec === 0) { vo[0] = X; vo[1] = Y; vo[2] = Z; }
       verts[rec * 3] = X - vo[0]; verts[rec * 3 + 1] = Y - vo[1]; verts[rec * 3 + 2] = Z - vo[2];
       if (X < min[0]) min[0] = X; if (X > max[0]) max[0] = X;
       if (Y < min[1]) min[1] = Y; if (Y > max[1]) max[1] = Y;
       if (Z < min[2]) min[2] = Z; if (Z > max[2]) max[2] = Z;
       rec++;
-    }
-    faceStart = at;
+    }, { onProgress: onProgress ? (a) => onProgress(a, blob.size) : null, slab });
   }
 
   const header = {
@@ -4095,23 +4310,73 @@ async function openPlySoup(blob, { onProgress } = {}) {
         if (op2) op2(base, blob.size);
       }
     } else {
-      let at = faceStart, fc = 0;
-      while (fc < face.count && at < asciiLines.length) {
-        if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-        const t = asciiLines[at++].trim();
-        if (!t) continue;
-        const f = t.split(/\s+/);
-        const k = +f[0];
-        const ix = new Uint32Array(k);
-        for (let j = 0; j < k; j++) ix[j] = +f[1 + j];
-        yield* pushFan(ix, k);
-        fc++;
+      // face lines in slabs: "k i0 i1 … i(k-1) [other props]" — the vertex list leads
+      let fc = 0;
+      const ix = new Uint32Array(256);
+      const ready = [];
+      for await (const sl of lineSlabs(blob, faceStart, blob.size, { signal, slab })) {
+        forLines(sl, (b, s, e) => {
+          if (fc >= face.count) return false;
+          let k = -1, j = 0;
+          tokens(b, s, e, (t0, t1) => {
+            const v = numAt(b, t0, t1);
+            if (k < 0) { k = Math.min(255, v | 0); return k > 0; }
+            ix[j++] = v;
+            return j < k;
+          });
+          if (k < 0) return;                                // blank line
+          for (const x of pushFan(ix, k)) ready.push(x);
+          fc++;
+        });
+        while (ready.length) yield ready.shift();
+        if (op2) op2(sl.base + sl.n, blob.size);
+        if (fc >= face.count) break;
       }
     }
     yield* flushTo(true);
     header.triCount = tris + n;                             // exact after the stream (fans expand quads)
   }
 
+  return { header, streamChunks };
+}
+
+/**
+ * openMshSoup(blob) — a Leapfrog .msh too big for the context tier, STREAMED.
+ * The text index names each array's offset (readMSHLayout reads only the head),
+ * so: (1) the Location array in 8 MB slices → the local-f32 vertex table + bbox,
+ * (2) the Tri array in slices → RawChunk batches. Out-of-range indices are
+ * dropped and counted (readMSH throws on them; a stream reports instead).
+ */
+async function openMshSoup(blob, { onProgress, slab = SLAB$soup_io } = {}) {
+  const lay = await readMSHLayout(blob);
+  if (!lay.vertices || !lay.triangles) throw new Error('msh: no vertex/triangle arrays found');
+  const V = lay.vertices, T = lay.triangles;
+  const vt = soupVertexTable(V.count);
+  const VREC = 24, per = Math.max(1, Math.floor(slab / VREC));
+  for (let i = 0; i < V.count; i += per) {
+    const n = Math.min(per, V.count - i);
+    const dv = new DataView(await blob.slice(V.offset + i * VREC, V.offset + (i + n) * VREC).arrayBuffer());
+    for (let k = 0; k < n; k++) vt.push(dv.getFloat64(k * VREC, true), dv.getFloat64(k * VREC + 8, true), dv.getFloat64(k * VREC + 16, true));
+    if (onProgress) onProgress(V.offset + (i + n) * VREC, blob.size);
+  }
+  const header = { kind: 'mesh', soup: true, format: 'msh', vertexCount: V.count, triCount: T.count, bbox: { min: vt.min, max: vt.max } };
+
+  async function* streamChunks({ batchTris = 1 << 16, signal, onProgress: op2 } = {}) {
+    const tb = soupTriBatcher(vt, batchTris);
+    const TREC = 12, tper = Math.max(1, Math.floor(slab / TREC));
+    for (let i = 0; i < T.count; i += tper) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const n = Math.min(tper, T.count - i);
+      const dv = new DataView(await blob.slice(T.offset + i * TREC, T.offset + (i + n) * TREC).arrayBuffer());
+      for (let k = 0; k < n; k++) tb.tri(dv.getInt32(k * TREC, true), dv.getInt32(k * TREC + 4, true), dv.getInt32(k * TREC + 8, true));
+      yield* tb.take();
+      if (op2) op2(T.offset + (i + n) * TREC, blob.size);
+    }
+    tb.flush();
+    yield* tb.take();
+    header.triCount = tb.tris;
+    header.dropped = tb.dropped;
+  }
   return { header, streamChunks };
 }
 
@@ -4718,6 +4983,284 @@ function createBlocksPipeline(gl) {
   return { upload, drawSlice, begin, setRepaint };
 }
 
+// ── src/core/camera.js ──
+
+// @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
+// matrix ops, not a scene graph (dee's camera is Three-coupled — micro-spec §5
+// says borrow the *math*, and the math is textbook, so it lives here).
+// Column-major Float32Array(16), GL convention. All coordinates FRAME-LOCAL —
+// the document frame keeps magnitudes small enough for f32 uniforms.
+
+function mat4Perspective(fovYRad, aspect, near, far) {
+  const f = 1 / Math.tan(fovYRad / 2), nf = 1 / (near - far);
+  const m = new Float32Array(16);
+  m[0] = f / aspect; m[5] = f;
+  m[10] = (far + near) * nf; m[11] = -1;
+  m[14] = 2 * far * near * nf;
+  return m;
+}
+
+function mat4Ortho(halfH, aspect, near, far) {
+  const halfW = halfH * aspect, m = new Float32Array(16);
+  m[0] = 1 / halfW; m[5] = 1 / halfH;
+  m[10] = -2 / (far - near); m[14] = -(far + near) / (far - near);
+  m[15] = 1;
+  return m;
+}
+
+function mat4LookAt(eye, target, up) {
+  let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
+  let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
+  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  const m = new Float32Array(16);
+  m[0] = xx; m[4] = xy; m[8] = xz; m[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+  m[1] = yx; m[5] = yy; m[9] = yz; m[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+  m[2] = zx; m[6] = zy; m[10] = zz; m[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+  m[15] = 1;
+  return m;
+}
+
+function mat4Multiply(a, b) {                       // a·b (both column-major)
+  const m = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    m[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return m;
+}
+
+// General 4×4 inverse (cofactor expansion, column-major). Used to unproject
+// (pixel, depth) → world in the deferred re-shade resolve; the viewProj is
+// always invertible for a real camera. Returns null on a singular matrix.
+function mat4Inverse(m) {
+  const inv = new Float32Array(16);
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+  const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if (!det) return null;
+  const d = 1 / det;
+  for (let i = 0; i < 16; i++) inv[i] *= d;
+  return inv;
+}
+
+// Frustum planes from a viewProj matrix (Gribb–Hartmann, column-major): six
+// [a,b,c,d] rows — a point is inside when a·x+b·y+c·z+d ≥ 0 for all six.
+function frustumPlanes(m) {
+  const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
+  const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+  return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), add(r3, r2), sub(r3, r2)];
+}
+
+// Conservative AABB-vs-frustum: positive-vertex test — the box is out only when
+// its most-positive corner for some plane is still behind that plane.
+function aabbInFrustum(planes, b) {                 // b = [minX,minY,minZ,maxX,maxY,maxZ]
+  for (const [a, bb, c, d] of planes) {
+    const px = a > 0 ? b[3] : b[0], py = bb > 0 ? b[4] : b[1], pz = c > 0 ? b[5] : b[2];
+    if (a * px + bb * py + c * pz + d < 0) return false;
+  }
+  return true;
+}
+
+function transformPoint(m, p) {                     // m · [p,1] → perspective divide
+  const x = p[0], y = p[1], z = p[2];
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
+  return [
+    (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
+    (m[1] * x + m[5] * y + m[9] * z + m[13]) / w,
+    (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
+  ];
+}
+
+/**
+ * Orbit camera: target + spherical (radius, theta around Z, phi from the XY
+ * plane). Z-up (geology convention). Produces eye/view/proj; near/far adapt to
+ * the orbit radius each update (dee's depth-precision trick).
+ */
+// A camera state that draws geometry at p as the original draws p + o — a layer
+// offset as a change of camera, not of geometry. view/viewProj gain a trailing
+// translation; eye and target move by −o, so every shader that works from
+// (p − eye), the view's rotation columns and viewProj (block/stick raycasts,
+// gl_FragDepth, the headlight) stays exact. Section planes must be shifted the
+// same way by the caller (d − n·o). Under vertical exaggeration the offset's z
+// stretches with everything else, since the z-scale lives inside viewProj.
+function translateState(s, o) {
+  if (!o) return s;
+  const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, o[0], o[1], o[2], 1];
+  return {
+    ...s,
+    eye: [s.eye[0] - o[0], s.eye[1] - o[1], s.eye[2] - o[2]],
+    target: [s.target[0] - o[0], s.target[1] - o[1], s.target[2] - o[2]],
+    view: mat4Multiply(s.view, T),
+    viewProj: mat4Multiply(s.viewProj, T),
+  };
+}
+
+function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
+  const c = {
+    target: [0, 0, 0], radius: 100, theta: Math.PI / 4, phi: Math.PI / 5, fovY,
+    aspect: 1, near: 0.1, far: 1e6,
+    ortho: false, halfH: 0,                                // ortho: half-height = radius·tan(fovY/2) — toggling keeps apparent size at the target
+    zExag: 1,                                              // vertical exaggeration: a GLOBAL scene z-scale folded into viewProj (all layers stay registered; queries stay in real coords — see update())
+    eye: [0, 0, 0], view: null, proj: null, viewProj: null,
+  };
+  const EPS = 0.01;
+  function update() {
+    c.phi = Math.max(-Math.PI / 2 + EPS, Math.min(Math.PI / 2 - EPS, c.phi));
+    c.radius = Math.max(0.05, c.radius);
+    const cp = Math.cos(c.phi);
+    c.eye = [
+      c.target[0] + c.radius * cp * Math.cos(c.theta),
+      c.target[1] + c.radius * cp * Math.sin(c.theta),
+      c.target[2] + c.radius * Math.sin(c.phi),
+    ];
+    // near at radius/4000: on a km-scale fitted model the old /1000 put the
+    // clip plane METRES in front of the camera — visible slicing when panning
+    // close past geometry. /4000 keeps depth precision under a block size at
+    // the far end of a 24-bit buffer (error ~ z²/(near·2²⁴): ~3 m at z=10 km
+    // with near 2.5 m) while clipping 4× closer.
+    c.near = Math.max(c.radius / 4000, 0.01);
+    c.far = c.radius * 100;
+    c.view = mat4LookAt(c.eye, c.target, [0, 0, 1]);
+    c.halfH = c.radius * Math.tan(c.fovY / 2);
+    c.proj = c.ortho ? mat4Ortho(c.halfH, c.aspect, c.near, c.far) : mat4Perspective(c.fovY, c.aspect, c.near, c.far);
+    c.viewProj = mat4Multiply(c.proj, c.view);
+    // Vertical exaggeration: fold a world-space z-scale into viewProj, pivoted at
+    // the target's z (so the look-at point stays fixed). viewProj·M means every
+    // vertex is z-scaled AT DRAW ONLY — shaders still test real z for section
+    // culling (before viewProj), pick is the ID-buffer (real recIdx), measure
+    // reads source records, and unproject uses inverse(viewProj) which yields real
+    // coords. One matrix, all layers registered, every query honest.
+    if (c.zExag && c.zExag !== 1) {
+      const S = c.zExag, tz = c.target[2];                 // z' = tz + (z-tz)·S  ⇒  column-major z-scale about tz
+      c.viewProj = mat4Multiply(c.viewProj, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, S, 0, 0, 0, tz * (1 - S), 1]);
+    }
+    return c;
+  }
+  return {
+    get state() { return c; },
+    update,
+    setAspect(a) { c.aspect = a || 1; return update(); },
+    orbit(dTheta, dPhi) { c.theta += dTheta; c.phi += dPhi; return update(); },
+    dolly(f) { c.radius *= f; return update(); },
+    pan(dxPx, dyPx, viewportH) {                           // screen px → world at target depth
+      const s = 2 * c.radius * Math.tan(c.fovY / 2) / (viewportH || 1);
+      const ct = Math.cos(c.theta), st = Math.sin(c.theta), sp = Math.sin(c.phi), cp = Math.cos(c.phi);
+      // camera right = (-st, ct, 0); camera up ≈ (-ct·sp, -st·sp, cp)
+      c.target[0] += (-st) * (-dxPx * s) + (-ct * sp) * (dyPx * s);
+      c.target[1] += (ct) * (-dxPx * s) + (-st * sp) * (dyPx * s);
+      // vertical exaggeration stretches displayed z by zExag, so a real-z move
+      // shows amplified — divide the up-vector's z contribution by zExag so the
+      // grabbed point tracks the cursor 1:1 (M⁻¹ of the up-move; x/y are unscaled).
+      // In plan view cp=0 → no change, as it should be.
+      c.target[2] += cp * (dyPx * s) / (c.zExag || 1);
+      return update();
+    },
+    setOrtho(on) { c.ortho = !!on; return update(); },
+    fit(bbox) {                                            // frame a local-space bbox
+      c.target = [(bbox[0] + bbox[3]) / 2, (bbox[1] + bbox[4]) / 2, (bbox[2] + bbox[5]) / 2];
+      const dx = bbox[3] - bbox[0], dy = bbox[4] - bbox[1], dz = bbox[5] - bbox[2];
+      const d = Math.hypot(dx, dy, dz) || 1;
+      c.radius = (d / 2) / Math.tan(c.fovY / 2) * 1.2;
+      return update();
+    },
+  };
+}
+
+// Wire standard mouse/touch input onto an orbit camera. Returns a detach fn.
+// left-drag orbit · right-drag / shift-drag pan · wheel dolly.
+function attachOrbitInput(canvas, cam, { onChange } = {}) {
+  // pointers tracked by id: one = orbit (or pan with right-button/shift),
+  // two = the touch grammar — pinch dollies, the centroid pans, twist orbits
+  // theta. touch-action:none or the browser eats the gestures first.
+  canvas.style.touchAction = 'none';
+  const pts = new Map();
+  let mode = null, lx = 0, ly = 0;
+  let pinch = null;                                        // { span, cx, cy, angle }
+  const pinchState = () => {
+    const [a, b] = [...pts.values()];
+    return {
+      span: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+      cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+    };
+  };
+  const down = (e) => {
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+    if (pts.size === 2) { pinch = pinchState(); mode = 'pinch'; return; }
+    if (pts.size > 2) return;                              // third finger: ignore
+    mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
+    lx = e.clientX; ly = e.clientY;
+  };
+  const move = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'pinch' && pts.size >= 2) {
+      const now = pinchState();
+      cam.dolly(pinch.span / now.span > 0 ? pinch.span / now.span : 1);
+      cam.pan(now.cx - pinch.cx, now.cy - pinch.cy, canvas.clientHeight);
+      let dA = now.angle - pinch.angle;
+      if (dA > Math.PI) dA -= 2 * Math.PI;
+      if (dA < -Math.PI) dA += 2 * Math.PI;
+      if (!cam.state.orbitLock) cam.orbit(-dA, 0);         // twist: grab-the-world (locked views don't twist)
+      pinch = now;
+      if (onChange) onChange();
+      return;
+    }
+    if (!mode || mode === 'pinch') return;
+    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+    // orbitLock (state flag): 2D/section-locked views — drags PAN instead of
+    // orbiting, so a locked plan/section can't be knocked off-plane by a drag
+    if (mode === 'orbit') { if (cam.state.orbitLock) cam.pan(dx, dy, canvas.clientHeight); else cam.orbit(-dx * 0.006, dy * 0.006); }
+    else cam.pan(dx, dy, canvas.clientHeight);
+    if (onChange) onChange();
+  };
+  const up = (e) => {
+    pts.delete(e.pointerId);
+    try { canvas.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+    if (pts.size >= 2) { pinch = pinchState(); return; }   // still pinching with others
+    if (pts.size === 1) {                                  // pinch → single: re-anchor, no jump
+      const rest = [...pts.values()][0];
+      mode = 'orbit'; lx = rest.x; ly = rest.y; pinch = null;
+      return;
+    }
+    mode = null; pinch = null;
+  };
+  const wheel = (e) => { e.preventDefault(); cam.dolly(Math.pow(1.0015, e.deltaY)); if (onChange) onChange(); };
+  const ctx = (e) => e.preventDefault();
+  canvas.addEventListener('pointerdown', down);
+  canvas.addEventListener('pointermove', move);
+  canvas.addEventListener('pointerup', up);
+  canvas.addEventListener('pointercancel', up);
+  canvas.addEventListener('wheel', wheel, { passive: false });
+  canvas.addEventListener('contextmenu', ctx);
+  return () => {
+    canvas.removeEventListener('pointerdown', down);
+    canvas.removeEventListener('pointermove', move);
+    canvas.removeEventListener('pointerup', up);
+    canvas.removeEventListener('pointercancel', up);
+    canvas.removeEventListener('wheel', wheel);
+    canvas.removeEventListener('contextmenu', ctx);
+  };
+}
+
 // ── src/core/gl-pick.js ──
 
 // @gcu/condenser — GPU ID-buffer picking. On click, the visible chunks re-render
@@ -5223,8 +5766,18 @@ function createPickPipeline(gl) {
       return m;
     };
     // per layer: an exempt layer (st.sectioned === false) picks whole
+    // a moved layer (setLayerOffset) is cut where it is DRAWN: in its own
+    // coordinates the plane sits at d − n·o (gl.js offsetSec, mirrored)
+    const secFor = (st) => {
+      const o = st && st.offset;
+      if (!section || !o) return section;
+      const k = section.n[0] * o[0] + section.n[1] * o[1] + section.n[2] * o[2];
+      return section.d0 !== undefined ? { ...section, d: section.d - k, d0: section.d0 - k } : { ...section, d: section.d - k };
+    };
+    // ...and drawn with its own camera: the offset folded in as a translation
+    const stateFor = (st) => (st && st.offset ? translateState(cam.state, st.offset) : cam.state);
     const setSec = (u, st) => {
-      let s = st && st.sectioned === false ? null : section;
+      let s = st && st.sectioned === false ? null : secFor(st);
       const pm = st ? st.sectioned : true;
       if (s && (pm === 'front' || pm === 'behind') && s.d0 !== undefined) { const H = Math.max(1e5, 8 * (s.half || 1)); s = { ...s, d: pm === 'front' ? s.d0 + H : s.d0 - H, half: H }; }
       gl.uniform4f(u.secPlane, s ? s.n[0] : 0, s ? s.n[1] : 0, s ? s.n[2] : 1, s ? s.d : 0);
@@ -5234,7 +5787,7 @@ function createPickPipeline(gl) {
     // slab the blocks use (gl.js meshSecOf) — mirror it or the pick disagrees
     // with the picture on exactly the views geologists spend their day in.
     const setSecMesh = (u, st) => {
-      let s2 = st && st.sectioned === false ? null : section;
+      let s2 = st && st.sectioned === false ? null : secFor(st);
       const pm = st ? st.sectioned : true;
       const clip = s2 && (pm === 'front' || pm === 'behind' ? pm : s2.clip);
       if (s2 && (clip === 'front' || clip === 'behind') && s2.d0 !== undefined) {
@@ -5282,6 +5835,7 @@ function createPickPipeline(gl) {
       gl.uniform1f(uPts.pointPx, dpp);
       for (const [id, group] of byLayer(ptsChunks)) {
       const st = stateOf(id);
+      gl.uniformMatrix4fv(uPts.viewProj, false, stateFor(st).viewProj);
       gl.uniform1ui(uPts.layer, id >>> 0);
       setSec(uPts, st);
       setCatVis(uPts, st);
@@ -5305,20 +5859,21 @@ function createPickPipeline(gl) {
     const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0);
     if (blkChunks.length) {
       gl.useProgram(blk);
-      gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
-      gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const v = s.view;
-      gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
-      gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
-      gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
-      {
+      // the camera uniforms, per layer (a moved layer has its own)
+      const setBlkCam = (s) => {
+        gl.uniformMatrix4fv(uBlk.viewProj, false, s.viewProj);
+        gl.uniform3f(uBlk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        const v = s.view;
+        gl.uniform3f(uBlk.right, v[0], v[4], v[8]);
+        gl.uniform3f(uBlk.up, v[1], v[5], v[9]);
+        gl.uniform1f(uBlk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uBlk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uBlk.orthoRay, s.ortho ? 1 : 0);
         const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
         const fl = Math.hypot(...f) || 1;
         gl.uniform3f(uBlk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
         gl.uniform1f(uBlk.backoff, s.radius * 2);
-      }
+      };
       gl.uniform1f(uBlk.demotePx, 2.0);
       gl.uniform1f(uBlk.pointPx, dpp);
       gl.uniform1f(uBlk.fixedSplat, blocksAsPoints ? 1 : 0);
@@ -5326,6 +5881,7 @@ function createPickPipeline(gl) {
       for (const [id, group] of byLayer(blkChunks)) {
         gl.uniform1ui(uBlk.layer, id >>> 0);
       const st = stateOf(id);
+      setBlkCam(stateFor(st));
       setSec(uBlk, st);
       setCatVis(uBlk, st);
       setRule(uBlk, st);
@@ -5368,23 +5924,24 @@ function createPickPipeline(gl) {
     const stkChunks = chunks.filter((c) => c.kind === 'sticks' && c.cursor > 0);
     if (stkChunks.length) {
       gl.useProgram(stk);
-      gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
-      gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
-      gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
-      gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
-      gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
-      {
+      const setStkCam = (s) => {
+        gl.uniformMatrix4fv(uStk.viewProj, false, s.viewProj);
+        gl.uniform3f(uStk.eye, s.eye[0], s.eye[1], s.eye[2]);
+        gl.uniform1f(uStk.perspScale, s.ortho ? (viewportH / 2) / s.halfH : (viewportH / 2) / Math.tan(s.fovY / 2));
+        gl.uniform1f(uStk.ortho, s.ortho ? 1 : 0);
+        gl.uniform1f(uStk.orthoRay, s.ortho ? 1 : 0);
         const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
         const fl = Math.hypot(...f) || 1;
         gl.uniform3f(uStk.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
         gl.uniform1f(uStk.backoff, s.radius * 2);
-      }
+      };
       gl.uniform1f(uStk.demotePx, 2.0);
       gl.uniform1f(uStk.pointPx, dpp);
       gl.uniform1f(uStk.fixedSplat, blocksAsPoints ? 1 : 0);
       for (const [id, group] of byLayer(stkChunks)) {
         gl.uniform1ui(uStk.layer, id >>> 0);
       const st2 = stateOf(id);
+      setStkCam(stateFor(st2));
       setSec(uStk, st2);
       setCatVis(uStk, st2);
       setRule(uStk, st2);
@@ -5422,16 +5979,17 @@ function createPickPipeline(gl) {
     const mshChunks = chunks.filter((c) => c.kind === 'mesh' && c.idxCount > 0);
     if (mshChunks.length) {
       gl.useProgram(msh);
-      gl.uniformMatrix4fv(uMsh.viewProj, false, s.viewProj);
-      gl.uniform3f(uMsh.eye, s.eye[0], s.eye[1], s.eye[2]);
-      const f = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
-      const fl = Math.hypot(...f) || 1;
-      gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
-      gl.uniform1f(uMsh.ortho, s.ortho ? 1 : 0);
       for (const [id, group] of byLayer(mshChunks)) {
         const st = stateOf(id);
         const pickable = st.meshPickable != null ? st.meshPickable : (st.meshOpacity == null || st.meshOpacity >= 0.95);
         if (!pickable) continue;
+        const ms = stateFor(st);
+        gl.uniformMatrix4fv(uMsh.viewProj, false, ms.viewProj);
+        gl.uniform3f(uMsh.eye, ms.eye[0], ms.eye[1], ms.eye[2]);
+        const f = [ms.target[0] - ms.eye[0], ms.target[1] - ms.eye[1], ms.target[2] - ms.eye[2]];
+        const fl = Math.hypot(...f) || 1;
+        gl.uniform3f(uMsh.fwd, f[0] / fl, f[1] / fl, f[2] / fl);
+        gl.uniform1f(uMsh.ortho, ms.ortho ? 1 : 0);
         gl.uniform1ui(uMsh.layer, id >>> 0);
         setSecMesh(uMsh, st);                              // the TRACE band, exactly as gl.js's meshSecOf draws it
         for (const c of group) {
@@ -5770,6 +6328,46 @@ function readDM(buffer) {
 // (per-record INC) and non-model .dm files are a later milestone.
 
 
+// PROJECTED batches over any .dm — decode only the requested column indices by
+// striding each field's fixed word-offset across records (no whole-record decode,
+// no per-row allocation), ~4 MB page runs at a time, never the whole file. Numeric
+// col → Float64Array (NaN = missing); alpha col → string[] (''=missing); constants
+// come free from the header. Yields { recStart, count, cols } where cols[idx] is the
+// array for column `idx`, RAW record numbering (recStart + k over ALL records).
+// opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
+// page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
+// can match a filter — parquet's row-group skip, retrofitted onto .dm).
+async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
+  const ids = [...new Set(colIdxs)];
+  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    if (shouldRead) {
+      let totalR = 0;
+      for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+      if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
+    }
+    const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let total = 0;
+    for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+    let w = 0;
+    for (let pg = page; pg <= pEnd; pg++) {
+      const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
+      for (let r = 0; r < nRec; r++) {
+        const recBase = pageBase + r * h.maxLen * h.wordSize;
+        for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+        w++;
+      }
+    }
+    const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+    yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
+  }
+}
+
 const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
@@ -5821,36 +6419,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
   // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in
   // the run can match a filter — parquet's row-group skip, retrofitted onto .dm)
-  async function* columnBatches(colIdxs, { signal, shouldRead = null } = {}) {
-    const ids = [...new Set(colIdxs)];
-    const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
-    const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
-    for (let page = 2; page <= h.lastPage; page += pagesPer) {
-      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-      const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
-      if (shouldRead) {
-        let totalR = 0;
-        for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-        if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
-      }
-      const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
-      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      let total = 0;
-      for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-      const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
-      let w = 0;
-      for (let pg = page; pg <= pEnd; pg++) {
-        const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
-        for (let r = 0; r < nRec; r++) {
-          const recBase = pageBase + r * h.maxLen * h.wordSize;
-          for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
-          w++;
-        }
-      }
-      const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
-      yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
-    }
-  }
+  const columnBatches = (colIdxs, opts) => dmColumnBatches(blob, h, colIdxs, opts);
 
   // the grid, straight from the DD (corner origin → centroid convention).
   // A regular model carries the grid as DD constants (XMORIG/XINC/NX…) → no sweep.
@@ -6047,13 +6616,18 @@ function dmWireframeRole(names) {
   return null;
 }
 
-// Join a points file + a triangles file into a mesh. Reads both whole (wireframes
-// are small — 2–4 k records is typical); maps PID → 0-based vertex index (gaps ok);
-// drops any triangle whose vertices don't resolve (reports the count). Multiple
-// GROUPs merge into one mesh for v1.
+// Join a points file + a triangles file into a mesh. Both halves are read in page
+// runs, striding only the fields the join needs (PID/XP/YP/ZP, PID1-3) — never a
+// whole-file buffer, so a big survey DTM pair opens too; maps PID → 0-based vertex
+// index (gaps ok); drops any triangle whose vertices don't resolve (reports the
+// count). Multiple GROUPs merge into one mesh for v1.
+const dmHeadOf = async (blob) => {
+  const head = new Uint8Array(await blob.slice(0, Math.min(8192, blob.size)).arrayBuffer());
+  return parseHeader(head, detectDM(head) || {});
+};
+const missing = (v) => v == null || v === '' || (typeof v === 'number' && Number.isNaN(v));
 async function openDmWireframe(ptBlob, trBlob) {
-  const pb = new Uint8Array(await ptBlob.arrayBuffer());
-  const ph = parseHeader(pb, detectDM(pb) || {});
+  const ph = await dmHeadOf(ptBlob);
   const pu = ph.columns.map((c) => c.name.toUpperCase());
   const xi = pu.indexOf('XP'), yi = pu.indexOf('YP'), zi = pu.indexOf('ZP'), pid = pu.indexOf('PID');
   if (xi < 0 || yi < 0 || zi < 0 || pid < 0) throw new Error('dm wireframe: the points file needs XP/YP/ZP/PID');
@@ -6061,29 +6635,30 @@ async function openDmWireframe(ptBlob, trBlob) {
   const vx = [];
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   let n = 0;
-  for (let i = 0; i < ph.recordCount; i++) {
-    const { offset, length } = recordRange(ph, i);
-    const v = decodeRecord(pb.subarray(offset, offset + length), ph);
-    const id = v[pid], x = v[xi], y = v[yi], z = v[zi];
-    if (id == null || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-    idxOfPid.set(id, n++); vx.push(x, y, z);
-    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
-    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
-    if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+  for await (const run of dmColumnBatches(ptBlob, ph, [pid, xi, yi, zi])) {
+    const P = run.cols[pid], X = run.cols[xi], Y = run.cols[yi], Z = run.cols[zi];
+    for (let k = 0; k < run.count; k++) {
+      const id = P[k], x = X[k], y = Y[k], z = Z[k];
+      if (missing(id) || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      idxOfPid.set(id, n++); vx.push(x, y, z);
+      if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+      if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+      if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+    }
   }
-  const tb = new Uint8Array(await trBlob.arrayBuffer());
-  const th = parseHeader(tb, detectDM(tb) || {});
+  const th = await dmHeadOf(trBlob);
   const tu = th.columns.map((c) => c.name.toUpperCase());
   const a = tu.indexOf('PID1'), b = tu.indexOf('PID2'), c = tu.indexOf('PID3');
   if (a < 0 || b < 0 || c < 0) throw new Error('dm wireframe: the triangles file needs PID1/PID2/PID3');
   const tri = [];
   let dropped = 0;
-  for (let i = 0; i < th.recordCount; i++) {
-    const { offset, length } = recordRange(th, i);
-    const r = decodeRecord(tb.subarray(offset, offset + length), th);
-    const i1 = idxOfPid.get(r[a]), i2 = idxOfPid.get(r[b]), i3 = idxOfPid.get(r[c]);
-    if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
-    tri.push(i1, i2, i3);
+  for await (const run of dmColumnBatches(trBlob, th, [a, b, c])) {
+    const A = run.cols[a], B = run.cols[b], C = run.cols[c];
+    for (let k = 0; k < run.count; k++) {
+      const i1 = idxOfPid.get(A[k]), i2 = idxOfPid.get(B[k]), i3 = idxOfPid.get(C[k]);
+      if (i1 == null || i2 == null || i3 == null || i1 === i2 || i2 === i3 || i1 === i3) { dropped++; continue; }
+      tri.push(i1, i2, i3);
+    }
   }
   if (!n || !tri.length) throw new Error('dm wireframe: no resolvable triangles');
   const vertices = Float64Array.from(vx), triangles = Uint32Array.from(tri);
@@ -6792,6 +7367,10 @@ function explode(doc, _opts = {}) {
 // sampled to chords, lines, arcs, circles), and points — each tagged with its
 // DXF layer. This is the bridge a 3D viewer (micro's condenser engine) builds
 // layers from; the Document itself stays the canonical, lossless model.
+//
+// The per-feature walk (emitSceneFeature) is shared with the STREAMING reader
+// (stream.js), so a file read whole and the same file streamed produce the same
+// strings, chords and colours — one geometry rule, two transports.
 
 // sample one bulge span into chord points (excluding p0, including p1):
 // ~24 chords for a full circle, never fewer than 2 for a visible arc
@@ -6807,6 +7386,69 @@ function sampleSpan(p0, p1, bulge, z0, z1, out) {
   }
 }
 
+// a bulge-polyline geometry → its chord points (bulges sampled), or null (< 2 vertices)
+function polylineChords(g) {
+  const v = g.vertices;
+  const nV = v.length / 3;
+  if (nV < 2) return null;
+  if (!g.bulges && !g.closed) return Float64Array.from(v);   // straight & open: the vertices ARE the chords
+  const pts = [v[0], v[1], v[2]];
+  const spans = g.closed ? nV : nV - 1;
+  for (let i = 0; i < spans; i++) {
+    const a = i, b = (i + 1) % nV;
+    const bulge = g.bulges ? g.bulges[a] || 0 : 0;
+    sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
+  }
+  return Float64Array.from(pts);
+}
+
+const TRI = Uint32Array.of(0, 1, 2), QUAD = Uint32Array.of(0, 1, 2, 0, 2, 3);
+
+/**
+ * Route one exploded feature into a scene sink:
+ *   sink.mesh(layer, rgb, vertices, triangles)   — optional; absent → per-triangle
+ *   sink.tri(layer, rgb, ax, ay, az, bx, by, bz, cx, cy, cz)
+ *   sink.string(layer, rgb, pts)                  — chord points, Float64Array
+ *   sink.point(layer, rgb, x, y, z)
+ * Text / attdef / hatch metadata are not scene geometry → ignored.
+ */
+function emitSceneFeature(f, layers, sink) {
+  const g = f.geometry;
+  if (!g) return;
+  const layer = (f.properties && f.properties.layer) || '0';
+  const rgb = colorToRgb(f.properties && f.properties.color, layer, layers);
+  if (g.kind === 'mesh') {
+    if (sink.mesh) { sink.mesh(layer, rgb, g.vertices, g.triangles); return; }
+    const v = g.vertices, t = g.triangles;
+    for (let i = 0; i + 2 < t.length; i += 3) {
+      const a = t[i] * 3, b = t[i + 1] * 3, c = t[i + 2] * 3;
+      sink.tri(layer, rgb, v[a], v[a + 1], v[a + 2], v[b], v[b + 1], v[b + 2], v[c], v[c + 1], v[c + 2]);
+    }
+  } else if (g.kind === 'face') {
+    const v = g.vertices;
+    const nV = v.length / 3;
+    if (sink.mesh) {                                       // indexed: a quad shares its diagonal's vertices
+      if (nV >= 3) sink.mesh(layer, rgb, v, nV === 4 ? QUAD : TRI);
+      return;
+    }
+    if (nV >= 3) sink.tri(layer, rgb, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]);
+    if (nV === 4) sink.tri(layer, rgb, v[0], v[1], v[2], v[6], v[7], v[8], v[9], v[10], v[11]);
+  } else if (g.kind === 'polyline') {
+    const pts = polylineChords(g);
+    if (pts) sink.string(layer, rgb, pts);
+  } else if (g.kind === 'circle') {
+    const n = 32, pts = new Float64Array(3 * (n + 1));
+    const z = g.center[2] || 0;
+    for (let k = 0; k <= n; k++) {
+      const a = (k / n) * TAU;
+      pts[3 * k] = g.center[0] + g.radius * Math.cos(a); pts[3 * k + 1] = g.center[1] + g.radius * Math.sin(a); pts[3 * k + 2] = z;
+    }
+    sink.string(layer, rgb, pts);
+  } else if (g.kind === 'point') {
+    sink.point(layer, rgb, g.position[0], g.position[1], g.position[2] || 0);
+  }
+}
+
 // → { mesh: {vertices,triangles}|null, strings: [{layer,pts:Float64Array}],
 //     points: [{layer,x,y,z}], layers: [names], counts, bbox: [min3,max3]|null }
 function extractScene(doc) {
@@ -6816,60 +7458,37 @@ function extractScene(doc) {
   const layerSet = new Set();
   const layerColors = {};                                  // layer name → [r,g,b] | null (first resolved wins)
   let meshColor;                                           // uniform across every face → the mesh tint; mixed → null
-
-  for (const f of flat.features || []) {
-    const g = f.geometry;
-    if (!g) continue;
-    const layer = (f.properties && f.properties.layer) || '0';
-    const rgb = colorToRgb(f.properties && f.properties.color, layer, doc.layers);
+  const foldLayerColor = (layer, rgb) => {
     if (!(layer in layerColors) || (layerColors[layer] == null && rgb)) layerColors[layer] = rgb;
-
-    const foldMeshColor = () => {
-      if (meshColor === undefined) meshColor = rgb;
-      else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
-    };
-    if (g.kind === 'mesh') {
+  };
+  const seen = (layer, rgb) => { layerSet.add(layer); foldLayerColor(layer, rgb); };
+  const foldMeshColor = (rgb) => {
+    if (meshColor === undefined) meshColor = rgb;
+    else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
+  };
+  const sink = {
+    mesh(layer, rgb, vertices, triangles) {
       const base = mv.length / 3;
-      for (let i = 0; i < g.vertices.length; i++) mv.push(g.vertices[i]);
-      for (let i = 0; i < g.triangles.length; i++) mt.push(base + g.triangles[i]);
-      layerSet.add(layer);
-      foldMeshColor();
-    } else if (g.kind === 'face') {
-      const v = g.vertices;
+      for (let i = 0; i < vertices.length; i++) mv.push(vertices[i]);
+      for (let i = 0; i < triangles.length; i++) mt.push(base + triangles[i]);
+      seen(layer, rgb); foldMeshColor(rgb);
+    },
+    tri(layer, rgb, ax, ay, az, bx, by, bz, cx, cy, cz) {
       const base = mv.length / 3;
-      for (let i = 0; i < v.length; i++) mv.push(v[i]);
-      const nV = v.length / 3;
-      if (nV >= 3) mt.push(base, base + 1, base + 2);
-      if (nV === 4) mt.push(base, base + 2, base + 3);
-      layerSet.add(layer);
-      foldMeshColor();
-    } else if (g.kind === 'polyline') {
-      const v = g.vertices;
-      const nV = v.length / 3;
-      if (nV < 2) continue;
-      const pts = [v[0], v[1], v[2]];
-      const spans = g.closed ? nV : nV - 1;
-      for (let i = 0; i < spans; i++) {
-        const a = i, b = (i + 1) % nV;
-        const bulge = g.bulges ? g.bulges[a] || 0 : 0;
-        sampleSpan([v[a * 3], v[a * 3 + 1]], [v[b * 3], v[b * 3 + 1]], bulge, v[a * 3 + 2], v[b * 3 + 2], pts);
-      }
-      strings.push({ layer, color: rgb, pts: Float64Array.from(pts) });
-      layerSet.add(layer);
-    } else if (g.kind === 'circle') {
-      const n = 32, pts = [];
-      const z = g.center[2] || 0;
-      for (let k = 0; k <= n; k++) {
-        const a = (k / n) * TAU;
-        pts.push(g.center[0] + g.radius * Math.cos(a), g.center[1] + g.radius * Math.sin(a), z);
-      }
-      strings.push({ layer, color: rgb, pts: Float64Array.from(pts) });
-      layerSet.add(layer);
-    } else if (g.kind === 'point') {
-      points.push({ layer, color: rgb, x: g.position[0], y: g.position[1], z: g.position[2] || 0 });
-      layerSet.add(layer);
+      mv.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+      mt.push(base, base + 1, base + 2);
+      seen(layer, rgb); foldMeshColor(rgb);
+    },
+    string(layer, rgb, pts) { strings.push({ layer, color: rgb, pts }); seen(layer, rgb); },
+    point(layer, rgb, x, y, z) { points.push({ layer, color: rgb, x, y, z }); seen(layer, rgb); },
+  };
+  for (const f of flat.features || []) {
+    // layer colours are folded for every geometry-bearing feature, as before
+    if (f.geometry) {
+      const layer = (f.properties && f.properties.layer) || '0';
+      foldLayerColor(layer, colorToRgb(f.properties && f.properties.color, layer, doc.layers));
     }
-    // text / attdef / hatch metadata: not scene geometry
+    emitSceneFeature(f, doc.layers, sink);
   }
 
   // the shared bbox over everything extracted
@@ -6915,12 +7534,20 @@ function extractScene(doc) {
 // (faces win, then strings, then points). A DXF is parsed resident — like OBJ
 // and MSH, these are design files, not block models.
 
+// past this a DXF cannot be read as ONE string (V8 caps strings near 512 M
+// characters, and the browser fails the read first — Chrome calls that a
+// "permission problem"); openDxfStream (dxf-stream.js) owns those files
+const DXF_RESIDENT_MAX = 480 * 1024 * 1024;
+const tooBig = (blob) => new Error(`dxf: ${(blob.size / 2 ** 30).toFixed(1)} GB is too large to read whole — only the streamed reader opens it (no solid queries / mesh export from it yet)`);
+
 async function peekDxfScene(blob) {
+  if (blob.size > DXF_RESIDENT_MAX) throw tooBig(blob);
   const scene = extractScene(read(await blob.text()));
   return scene.counts;
 }
 
 async function openDxf(blob, { as = null } = {}) {
+  if (blob.size > DXF_RESIDENT_MAX) throw tooBig(blob);
   const doc = read(await blob.text());
   const scene = extractScene(doc);
   const kinds = [];
@@ -7033,263 +7660,690 @@ async function openDxf(blob, { as = null } = {}) {
   };
 }
 
-// ── src/core/camera.js ──
+// ── ../dxf/src/stream.js ──
 
-// @gcu/condenser — minimal mat4 math + an orbit camera. Raw WebGL2 needs ~four
-// matrix ops, not a scene graph (dee's camera is Three-coupled — micro-spec §5
-// says borrow the *math*, and the math is textbook, so it lives here).
-// Column-major Float32Array(16), GL convention. All coordinates FRAME-LOCAL —
-// the document frame keeps magnitudes small enough for f32 uniforms.
+// @gcu/dxf streaming reader — the scene, read as the bytes go by.
+//
+// read() takes the whole file as ONE string, which caps a DXF at what a JS string
+// can hold (~512 M characters in V8) — and a triangulated topography exported as
+// 3DFACEs blows past that easily (≈300–400 bytes of text per face). This is the
+// push-parser twin: createSceneStream(sink) takes byte chunks in any sizes, splits
+// them into group-code pairs ACROSS chunk boundaries, and walks entities straight
+// into the same scene sink extractScene uses (scene.js emitSceneFeature) — so
+// nothing is held but the entity in flight.
+//
+// The adapter (whoever owns the I/O) feeds it: a Blob's slices, a stream reader, a
+// Node file handle. Pure — no I/O here.
+//
+// Hot entities are FAST-PATHED straight from typed slots, no pair objects: 3DFACE,
+// LINE, POINT, LWPOLYLINE, and POLYLINE with its VERTEX stream (polyface meshes,
+// polygon meshes, 2D/3D polylines — a single polyface can hold millions of
+// vertices, so its vertex table is kept in growable typed arrays). Everything else
+// (ARC, CIRCLE, INSERT + ATTRIB, TEXT, the unsupported) is buffered as ordinary
+// records and handed to the resident reader's own entity parsers + explode(), so
+// the two paths cannot drift on the rare entities. TABLES (layer colours) and
+// BLOCKS (insert targets) are small by nature and parsed resident at ENDSEC.
+//
+// Semantics match read() + extractScene() exactly: the code-driven value types,
+// the desync guard, "first value wins" for a simple entity's codes, the 3DFACE
+// triangle rule (4th corner == 3rd), polyface 1-based |indices|, polygon-mesh
+// wrap flags, bulge sampling. test/dxf.test.mjs runs both paths over one corpus.
 
-function mat4Perspective(fovYRad, aspect, near, far) {
-  const f = 1 / Math.tan(fovYRad / 2), nf = 1 / (near - far);
-  const m = new Float32Array(16);
-  m[0] = f / aspect; m[5] = f;
-  m[10] = (far + near) * nf; m[11] = -1;
-  m[14] = 2 * far * near * nf;
-  return m;
-}
 
-function mat4Ortho(halfH, aspect, near, far) {
-  const halfW = halfH * aspect, m = new Float32Array(16);
-  m[0] = 1 / halfW; m[5] = 1 / halfH;
-  m[10] = -2 / (far - near); m[14] = -(far + near) / (far - near);
-  m[15] = 1;
-  return m;
-}
+const INSUNITS_NAMES = { 1: 'in', 2: 'ft', 4: 'mm', 5: 'cm', 6: 'm', 9: 'mm', 10: 'm', 14: 'dm' };
+const MAX_WARNINGS = 1000;                                 // a file of a million MTEXTs reports a count, not a million rows
+const BINARY_SENTINEL = 'AutoCAD Binary DXF';
 
-function mat4LookAt(eye, target, up) {
-  let zx = eye[0] - target[0], zy = eye[1] - target[1], zz = eye[2] - target[2];
-  let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
-  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
-  l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
-  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
-  const m = new Float32Array(16);
-  m[0] = xx; m[4] = xy; m[8] = xz; m[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
-  m[1] = yx; m[5] = yy; m[9] = yz; m[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
-  m[2] = zx; m[6] = zy; m[10] = zz; m[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
-  m[15] = 1;
-  return m;
-}
+// value kind per group code, precomputed (0 str · 1 num · 2 int · 3 bool)
+const KIND = new Uint8Array(1072);
+for (let c = 0; c < KIND.length; c++) { const k = valueKind(c); KIND[c] = k === 'num' ? 1 : k === 'int' ? 2 : k === 'bool' ? 3 : 0; }
+const kindOf = (c) => (c >= 0 && c < KIND.length ? KIND[c] : (c >= 1010 && c <= 1059 ? 1 : c >= 1060 && c <= 1071 ? 2 : 0));
 
-function mat4Multiply(a, b) {                       // a·b (both column-major)
-  const m = new Float32Array(16);
-  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
-    m[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+const POW10$stream = []; for (let i = 0; i <= 22; i++) POW10$stream.push(Number('1e' + i));
+// bytes → a JS string, one char per byte; short ranges (numbers, names, handles) by a plain loop,
+// which beats both TextDecoder and fromCharCode.apply-over-a-subarray at these lengths
+const latin1 = (b, s, e) => {
+  if (e - s <= 64) { let out = ''; for (let i = s; i < e; i++) out += String.fromCharCode(b[i]); return out; }
+  let out = ''; for (let i = s; i < e; i += 4096) out += String.fromCharCode.apply(null, b.subarray(i, Math.min(e, i + 4096))); return out;
+};
+const MAX_EXACT = 9007199254740992; // 2^53
+
+// parseFloat over a byte range, exactly (Clinger's fast path): when the decimal mantissa is an
+// integer ≤ 2^53 and the power of ten is within 10^±22, both are exact doubles, so one
+// multiplication or division is correctly rounded — the same answer parseFloat gives. Zeros are
+// held pending until a nonzero digit needs them, so trailing zeros never inflate the mantissa;
+// exponents ("1.5E+03") are folded in. Anything outside that falls back to parseFloat on the
+// text. Leading/trailing junk behaves like parseFloat's prefix rule; no digits at all → NaN.
+function parseNumber(b, s, e) {
+  while (s < e && (b[s] === 32 || b[s] === 9)) s++;
+  const s0 = s;
+  let neg = false;
+  if (s < e && (b[s] === 45 || b[s] === 43)) { neg = b[s] === 45; s++; }
+  let mant = 0, digits = 0, exp = 0, pending = 0, seenDot = false, i = s;
+  for (; i < e; i++) {
+    const ch = b[i];
+    if (ch >= 48 && ch <= 57) {
+      digits++;
+      if (seenDot) exp--;
+      if (ch === 48) { if (mant !== 0) pending++; continue; } // leading zeros vanish; others wait
+      if (pending) { if (pending > 22) return parseFloat(latin1(b, s0, e)); mant *= POW10$stream[pending]; pending = 0; }
+      mant = mant * 10 + (ch - 48);
+      if (mant >= MAX_EXACT) return parseFloat(latin1(b, s0, e)); // ≥, not >: 2^53 + 1 would round down to 2^53
+    } else if (ch === 46 && !seenDot) seenDot = true;
+    else if (ch === 101 || ch === 69) {
+      // an exponent only if digits follow (parseFloat's prefix rule: "1e" and "1e+" read as 1)
+      let j = i + 1, eneg = false;
+      if (j < e && (b[j] === 45 || b[j] === 43)) { eneg = b[j] === 45; j++; }
+      if (j >= e || b[j] < 48 || b[j] > 57) break;
+      let ev = 0;
+      for (; j < e && b[j] >= 48 && b[j] <= 57; j++) { ev = ev * 10 + (b[j] - 48); if (ev > 1000) return parseFloat(latin1(b, s0, e)); }
+      exp += eneg ? -ev : ev;
+      i = j;
+      break;
+    } else break;
   }
-  return m;
+  if (!digits) return NaN;
+  const p = exp + pending;
+  let v;
+  if (mant === 0) v = 0;
+  else if (p === 0) v = mant;
+  else if (p > 0 && p <= 22) v = mant * POW10$stream[p];
+  else if (p < 0 && p >= -22) v = mant / POW10$stream[-p];
+  else return parseFloat(latin1(b, s0, i));
+  return neg ? -v : v;
 }
 
-// General 4×4 inverse (cofactor expansion, column-major). Used to unproject
-// (pixel, depth) → world in the deferred re-shade resolve; the viewProj is
-// always invertible for a real camera. Returns null on a singular matrix.
-function mat4Inverse(m) {
-  const inv = new Float32Array(16);
-  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
-  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
-  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
-  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
-  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
-  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
-  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
-  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
-  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
-  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
-  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
-  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
-  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
-  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
-  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
-  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
-  const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-  if (!det) return null;
-  const d = 1 / det;
-  for (let i = 0; i < 16; i++) inv[i] *= d;
-  return inv;
+// growable typed arrays (the polyline vertex table, LWPOLYLINE vertices)
+function grow(Type) {
+  let a = new Type(64), n = 0;
+  return {
+    push(v) { if (n === a.length) { const b = new Type(a.length * 2); b.set(a); a = b; } a[n++] = v; },
+    get length() { return n; }, set length(v) { n = v; },
+    at(i) { return a[i]; }, set(i, v) { a[i] = v; },
+    slice() { return a.slice(0, n); },
+  };
 }
 
-// Frustum planes from a viewProj matrix (Gribb–Hartmann, column-major): six
-// [a,b,c,d] rows — a point is inside when a·x+b·y+c·z+d ≥ 0 for all six.
-function frustumPlanes(m) {
-  const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
-  const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
-  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
-  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
-  return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), add(r3, r2), sub(r3, r2)];
-}
+const FAST = new Set(['3DFACE', 'LINE', 'POINT', 'LWPOLYLINE', 'POLYLINE']);
 
-// Conservative AABB-vs-frustum: positive-vertex test — the box is out only when
-// its most-positive corner for some plane is still behind that plane.
-function aabbInFrustum(planes, b) {                 // b = [minX,minY,minZ,maxX,maxY,maxZ]
-  for (const [a, bb, c, d] of planes) {
-    const px = a > 0 ? b[3] : b[0], py = bb > 0 ? b[4] : b[1], pz = c > 0 ? b[5] : b[2];
-    if (a * px + bb * py + c * pz + d < 0) return false;
+/**
+ * createSceneStream(sink, opts?) → { push(bytes), end() → summary }
+ *   sink: { tri, string, point } (scene.js contract; no `mesh` → triangles arrive
+ *         one by one, the soup shape a streaming consumer wants), optional
+ *         sink.vertex(x, y, z) for each polyline/mesh geometry vertex, plus optional
+ *         sink.header(info) once HEADER closes and sink.layers(table) once TABLES
+ *         closes — early enough to plant a frame / seed categories before geometry.
+ *   summary: { header, layers, warnings, warningsSuppressed, counts:{triangles,
+ *              strings, points}, bytes }
+ * Throws only on a BINARY DXF (a different format, named in the error).
+ */
+function createSceneStream(sink, opts = {}) {
+  const decoder = new TextDecoder('utf-8');
+  const strCache = new Map();                              // code → { b: Uint8Array, s } — layer/type names repeat
+  let carry = null, bytes = 0, started = false;
+  let code = -1;                                           // pending group code (-1 = expecting a code line)
+
+  // ── document state ──
+  const header = { acadver: undefined, insunits: undefined, units: opts.units || 'm', codepage: undefined, extmin: null, extmax: null };
+  let layers = {}, blocks = {};
+  const warnings = []; let suppressed = 0;
+  const warn = (w) => { if (warnings.length < MAX_WARNINGS) warnings.push(w); else suppressed++; };
+  const counts = { triangles: 0, strings: 0, points: 0 };
+  const out = {
+    tri(l, c, ax, ay, az, bx, by, bz, cx, cy, cz) { counts.triangles++; sink.tri(l, c, ax, ay, az, bx, by, bz, cx, cy, cz); },
+    string(l, c, pts) { counts.strings++; sink.string(l, c, pts); },
+    point(l, c, x, y, z) { counts.points++; sink.point(l, c, x, y, z); },
+  };
+
+  // opts.section: start INSIDE a section — for a window cut from the middle of a
+  // file (bbox sampling), resynced to an entity boundary by the caller
+  let section = opts.section || null, wantSectionName = false;
+  let hvar = null;                                         // HEADER: the $VARIABLE being read
+  let rawPairs = null;                                     // TABLES / BLOCKS: the section's pairs, resident
+  // ENTITIES record state
+  let rtype = null;                                        // current record's type
+  let generic = null;                                      // { type, pairs } for a slow-path record
+  const genBuf = [];                                       // buffered slow-path records (INSERT + ATTRIBs stay together)
+  const slot = new Float64Array(1072), has = new Uint8Array(1072), touched = [];
+  let rLayer = '0', rAci = null, rTc = null, rHandle = null;
+  const lw = { x: grow(Float64Array), y: grow(Float64Array), b: grow(Float64Array) };
+  let poly = null;                                         // active POLYLINE: header fields + growable vertex table
+
+  // colour memo: consecutive entities almost always share layer + colour
+  let mLayer = null, mAci = undefined, mTc = undefined, mRgb = null;
+  const rgbOf = (layer, aci, tc) => {
+    if (layer !== mLayer || aci !== mAci || tc !== mTc) { mLayer = layer; mAci = aci; mTc = tc; mRgb = colorToRgb(resolveColor({ aci, trueColor: tc }), layer, layers); }
+    return mRgb;
+  };
+  let lwUsed = false;
+  const resetRecord = () => {
+    for (let i = 0; i < touched.length; i++) has[touched[i]] = 0;
+    touched.length = 0;
+    rLayer = '0'; rAci = null; rTc = null; rHandle = null;
+    if (lwUsed) { lw.x.length = 0; lw.y.length = 0; lw.b.length = 0; lwUsed = false; }
+  };
+  const S = (c, d = 0) => (has[c] ? slot[c] : d);
+
+  // ── slow path: buffered records → the resident parsers → explode → the sink ──
+  function flushGeneric() {
+    if (!genBuf.length) return;
+    const feats = assembleEntities(genBuf.splice(0), { push: warn });
+    const ex = explode({ features: feats, blocks, warnings: [] });
+    for (const w of ex.warnings) warn(w);
+    for (const f of ex.features) emitSceneFeature(f, layers, out);
   }
-  return true;
-}
 
-function transformPoint(m, p) {                     // m · [p,1] → perspective divide
-  const x = p[0], y = p[1], z = p[2];
-  const w = m[3] * x + m[7] * y + m[11] * z + m[15] || 1;
-  return [
-    (m[0] * x + m[4] * y + m[8] * z + m[12]) / w,
-    (m[1] * x + m[5] * y + m[9] * z + m[13]) / w,
-    (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
-  ];
+  // ── fast-path finalizers ──
+  function endFace() {
+    const rgb = rgbOf(rLayer, rAci, rTc);
+    const x0 = S(10), y0 = S(20), z0 = S(30), x1 = S(11), y1 = S(21), z1 = S(31);
+    const x2 = S(12), y2 = S(22), z2 = S(32), x3 = S(13), y3 = S(23), z3 = S(33);
+    out.tri(rLayer, rgb, x0, y0, z0, x1, y1, z1, x2, y2, z2);
+    if (!(x3 === x2 && y3 === y2 && z3 === z2)) out.tri(rLayer, rgb, x0, y0, z0, x2, y2, z2, x3, y3, z3);
+  }
+  function endLine() {
+    out.string(rLayer, rgbOf(rLayer, rAci, rTc), Float64Array.of(S(10), S(20), S(30), S(11), S(21), S(31)));
+  }
+  function endPoint() { out.point(rLayer, rgbOf(rLayer, rAci, rTc), S(10), S(20), S(30)); }
+  function endLwpolyline() {
+    const n = lw.x.length, elev = S(38);
+    const vertices = new Float64Array(n * 3);
+    let anyBulge = false;
+    for (let i = 0; i < n; i++) { vertices[i * 3] = lw.x.at(i); vertices[i * 3 + 1] = lw.y.at(i); vertices[i * 3 + 2] = elev; if (lw.b.at(i) !== 0) anyBulge = true; }
+    const pts = polylineChords({ vertices, bulges: anyBulge ? lw.b.slice() : null, closed: (S(70) & 1) === 1 });
+    if (pts) out.string(rLayer, rgbOf(rLayer, rAci, rTc), pts);
+  }
+  function beginPoly() {
+    poly = {
+      flags: S(70), M: S(71), N: S(72), layer: rLayer, aci: rAci, tc: rTc, handle: rHandle,
+      x: grow(Float64Array), y: grow(Float64Array), z: grow(Float64Array), b: grow(Float64Array), f: grow(Int32Array),
+      i1: grow(Int32Array), i2: grow(Int32Array), i3: grow(Int32Array), i4: grow(Int32Array),
+    };
+  }
+  function addVertex() {
+    if (sink.vertex) {                                      // optional: every GEOMETRY vertex as it passes (bbox sampling)
+      const vf = S(70);
+      if (!(vf & 128) || (vf & 64)) sink.vertex(S(10), S(20), S(30));
+    }
+    poly.x.push(S(10)); poly.y.push(S(20)); poly.z.push(S(30)); poly.b.push(S(42)); poly.f.push(S(70));
+    poly.i1.push(S(71)); poly.i2.push(S(72)); poly.i3.push(S(73)); poly.i4.push(S(74));
+  }
+  function endPoly() {
+    const p = poly; poly = null;
+    const rgb = rgbOf(p.layer, p.aci, p.tc);
+    const n = p.x.length;
+    if (p.flags & 64) {                                     // polyface mesh
+      const gv = [];                                        // geometry-vertex record indices, in order
+      const faces = [];
+      for (let k = 0; k < n; k++) {
+        const vf = p.f.at(k);
+        if (vf & 128 && !(vf & 64)) {
+          const idx = [p.i1.at(k), p.i2.at(k), p.i3.at(k), p.i4.at(k)].map(Math.abs).filter((v) => v > 0);
+          if (idx.length >= 3) faces.push(idx);
+        } else gv.push(k);
+      }
+      const nV = gv.length;
+      let dropped = 0, tris = 0;
+      const vtx = (ix) => gv[ix - 1];
+      for (const f of faces) {
+        if (f.some((ix) => ix > nV)) { dropped++; continue; }
+        const a = vtx(f[0]), b = vtx(f[1]), c = vtx(f[2]);
+        out.tri(p.layer, rgb, p.x.at(a), p.y.at(a), p.z.at(a), p.x.at(b), p.y.at(b), p.z.at(b), p.x.at(c), p.y.at(c), p.z.at(c));
+        tris++;
+        if (f.length === 4) {
+          const d = vtx(f[3]);
+          out.tri(p.layer, rgb, p.x.at(a), p.y.at(a), p.z.at(a), p.x.at(c), p.y.at(c), p.z.at(c), p.x.at(d), p.y.at(d), p.z.at(d));
+          tris++;
+        }
+      }
+      if (dropped) warn({ handle: p.handle, entity: 'POLYLINE(polyface)', reason: `${dropped} face(s) referenced vertices past the table — dropped` });
+      if (!tris) warn({ handle: p.handle, entity: 'POLYLINE(polyface)', reason: 'no resolvable faces' });
+      return;
+    }
+    if (p.flags & 16) {                                     // polygon mesh: an M×N grid
+      const M = p.M, N = p.N;
+      const gv = [];
+      for (let k = 0; k < n; k++) { const vf = p.f.at(k); if (!(vf & 128) || (vf & 64)) gv.push(k); }
+      if (M < 2 || N < 2 || gv.length < M * N) {
+        warn({ handle: p.handle, entity: 'POLYLINE(polygon mesh)', reason: `grid ${M}×${N} but ${gv.length} vertices — skipped` });
+        return;
+      }
+      const closedM = (p.flags & 1) === 1, closedN = (p.flags & 32) === 32;
+      const at = (m, nn) => gv[m * N + nn];
+      const T = (a, b, c) => out.tri(p.layer, rgb, p.x.at(a), p.y.at(a), p.z.at(a), p.x.at(b), p.y.at(b), p.z.at(b), p.x.at(c), p.y.at(c), p.z.at(c));
+      for (let m = 0; m < (closedM ? M : M - 1); m++) {
+        for (let nn = 0; nn < (closedN ? N : N - 1); nn++) {
+          const a = at(m, nn), b = at((m + 1) % M, nn), c = at((m + 1) % M, (nn + 1) % N), d = at(m, (nn + 1) % N);
+          T(a, b, c); T(a, c, d);
+        }
+      }
+      return;
+    }
+    // a 2D / 3D polyline: every vertex record, in order (read.js's rule)
+    const vertices = new Float64Array(n * 3);
+    let anyBulge = false;
+    for (let k = 0; k < n; k++) { vertices[k * 3] = p.x.at(k); vertices[k * 3 + 1] = p.y.at(k); vertices[k * 3 + 2] = p.z.at(k); if (p.b.at(k) !== 0) anyBulge = true; }
+    const pts = polylineChords({ vertices, bulges: anyBulge ? p.b.slice() : null, closed: (p.flags & 1) === 1 });
+    if (pts) out.string(p.layer, rgb, pts);
+  }
+
+  // close the record in flight (called at every code 0, and at section end)
+  function endRecord() {
+    if (generic) { genBuf.push(generic); generic = null; }
+    else if (rtype === '3DFACE') endFace();
+    else if (rtype === 'LINE') endLine();
+    else if (rtype === 'POINT') endPoint();
+    else if (rtype === 'LWPOLYLINE') endLwpolyline();
+    else if (rtype === 'POLYLINE') beginPoly();
+    else if (rtype === 'VERTEX') addVertex();
+    rtype = null;
+    resetRecord();
+  }
+  function beginRecord(type) {
+    // a polyline closes at its SEQEND — or, defensively, at any record that isn't a VERTEX
+    if (poly && type !== 'VERTEX') endPoly();
+    const fast = FAST.has(type) || (type === 'VERTEX' && poly);
+    if (type === 'SEQEND' && !genBuf.length && !poly) { rtype = null; return; }   // a polyline's SEQEND (already closed above)
+    if (!fast) {
+      // keep INSERT/ATTRIB/SEQEND groups together; otherwise flush in modest batches
+      if (genBuf.length >= 256 && type !== 'ATTRIB' && type !== 'SEQEND' && type !== 'VERTEX') flushGeneric();
+      generic = { type, pairs: [] };
+      rtype = null;
+      return;
+    }
+    if (genBuf.length) flushGeneric();
+    rtype = type;
+  }
+
+  function endSection() {
+    if (section === 'ENTITIES') { endRecord(); if (poly) endPoly(); flushGeneric(); }
+    else if (section === 'TABLES') { layers = parseLayers(splitRecords(rawPairs)); if (sink.layers) sink.layers(layers); }
+    else if (section === 'BLOCKS') { blocks = parseBlocks(splitRecords(rawPairs), { push: warn }); }
+    else if (section === 'HEADER') { if (sink.header) sink.header(headerInfo()); }
+    rawPairs = null; section = null; hvar = null;
+  }
+  const headerInfo = () => ({ ...header, units: INSUNITS_NAMES[header.insunits] ?? header.units });
+
+  // ── one group-code pair ──
+  function pair(c, num, str) {
+    if (c === 0) {
+      if (str === 'SECTION') { if (section) endSection(); wantSectionName = true; return; }
+      if (str === 'ENDSEC') { endSection(); return; }
+      if (str === 'EOF') { if (section) endSection(); return; }
+      if (section === 'ENTITIES') { endRecord(); beginRecord(str); return; }
+      if (rawPairs) rawPairs.push({ code: 0, value: str });
+      return;
+    }
+    if (wantSectionName && c === 2) {
+      wantSectionName = false; section = str;
+      if (section === 'TABLES' || section === 'BLOCKS') rawPairs = [];
+      return;
+    }
+    if (section === 'ENTITIES') {
+      if (generic) { generic.pairs.push({ code: c, value: str !== null ? str : num }); return; }
+      if (!rtype) return;
+      if (c === 8) { rLayer = str; return; }
+      if (c === 62) { if (rAci === null) rAci = num; return; }
+      if (c === 420) { if (rTc === null) rTc = num; return; }
+      if (c === 5) { rHandle = str; return; }
+      if (rtype === 'LWPOLYLINE') {
+        if (c === 10) { lw.x.push(num); lw.y.push(0); lw.b.push(0); lwUsed = true; return; }
+        if (c === 20 && lw.x.length) { lw.y.set(lw.x.length - 1, num); return; }
+        if (c === 42 && lw.x.length) { lw.b.set(lw.x.length - 1, num); return; }
+      }
+      if (str === null && c < 1072 && !has[c]) { has[c] = 1; touched.push(c); slot[c] = num; }
+      return;
+    }
+    if (rawPairs) { rawPairs.push({ code: c, value: str !== null ? str : num }); return; }
+    if (section === 'HEADER') {
+      if (c === 9) { hvar = str; return; }
+      if (hvar === '$EXTMIN' || hvar === '$EXTMAX') {
+        const k = hvar === '$EXTMIN' ? 'extmin' : 'extmax';
+        const ax = c === 10 ? 0 : c === 20 ? 1 : c === 30 ? 2 : -1;
+        if (ax >= 0) (header[k] ??= [0, 0, 0])[ax] = num;
+      } else if (hvar === '$INSUNITS' && c === 70) header.insunits = num;
+      else if (hvar === '$ACADVER' && c === 1) header.acadver = str;
+      else if (hvar === '$DWGCODEPAGE' && c === 3) header.codepage = str;
+    }
+  }
+
+  // a string value, with a small per-code cache: entity types, layer names and subclass markers
+  // repeat endlessly — and code 100 alternates ("AcDbEntity", "AcDbFace" on every entity), so one
+  // entry per code would thrash; four, replaced round-robin, holds them. Short pure-ASCII values
+  // (and every unique handle) decode by a plain loop, not a TextDecoder call per value.
+  function strValue(c, b, s, e) {
+    const len = e - s;
+    let ent = strCache.get(c);
+    if (ent) {
+      for (let k = 0; k < ent.n; k++) {
+        const hb = ent.b[k];
+        if (hb.length !== len) continue;
+        let same = true;
+        for (let i = 0; i < len; i++) if (hb[i] !== b[s + i]) { same = false; break; }
+        if (same) return ent.s[k];
+      }
+    }
+    let ascii = len <= 64;
+    if (ascii) for (let i = s; i < e; i++) if (b[i] >= 128) { ascii = false; break; }
+    const v = ascii ? latin1(b, s, e) : decoder.decode(b.subarray(s, e));
+    // handles (5, 105, 320–369, 390–399, 1005) are unique by design: caching them only churns
+    const handle = c === 5 || c === 105 || c === 1005 || (c >= 320 && c <= 369) || (c >= 390 && c <= 399);
+    if (len <= 256 && !handle) {
+      if (!ent) { ent = { b: [], s: [], n: 0, next: 0 }; strCache.set(c, ent); }
+      const k = ent.n < 4 ? ent.n++ : (ent.next = (ent.next + 1) % 4);
+      ent.b[k] = b.slice(s, e); ent.s[k] = v;
+    }
+    return v;
+  }
+
+  // ── lines → pairs ──
+  function line(b, s, e) {
+    if (e > s && b[e - 1] === 13) e--;                     // CRLF
+    if (code < 0) {
+      // expecting a group code: trimmed integer, else the desync guard skips the line
+      let i = s; while (i < e && (b[i] === 32 || b[i] === 9)) i++;
+      let j = e; while (j > i && (b[j - 1] === 32 || b[j - 1] === 9)) j--;
+      if (i === j) return;                                  // blank line
+      let neg = false, v = 0, k = i;
+      if (b[k] === 45 || b[k] === 43) { neg = b[k] === 45; k++; }
+      if (k === j) return;
+      for (; k < j; k++) { const ch = b[k]; if (ch < 48 || ch > 57) return; v = v * 10 + (ch - 48); }
+      code = neg ? -v : v;
+      return;
+    }
+    const c = code; code = -1;
+    const kind = kindOf(c);
+    if (kind === 0) { pair(c, 0, strValue(c, b, s, e)); return; }
+    if (kind === 3) { let i = s, j = e; while (i < j && b[i] <= 32) i++; while (j > i && b[j - 1] <= 32) j--; pair(c, !(j - i === 1 && b[i] === 48), null); return; }
+    let n = parseNumber(b, s, e);
+    if (Number.isNaN(n)) n = 0;
+    else if (kind === 2) n = Math.trunc(n);
+    pair(c, n, null);
+  }
+
+  // the first bytes: refuse a binary DXF by name, step over a UTF-8 BOM
+  function start(b) {
+    started = true;
+    if (latin1(b, 0, Math.min(b.length, BINARY_SENTINEL.length)) === BINARY_SENTINEL) throw new Error('dxf: this is a BINARY DXF — only ASCII DXF is supported (re-export as ASCII)');
+    return b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf ? b.subarray(3) : b;
+  }
+  // every complete line of b; the tail (no newline yet) is carried — or, at the end, is the last line
+  // (a plain byte loop, not indexOf: a DXF line averages ~10 bytes, and a native
+  // call per line costs more than scanning it)
+  function feed(b, final) {
+    const n = b.length;
+    let s = 0, i = 0;
+    while (i < n) {
+      if (b[i] === 10) { line(b, s, i); s = i + 1; }
+      i++;
+    }
+    if (s < n) { if (final) line(b, s, n); else carry = b.slice(s); }
+  }
+
+  return {
+    push(chunk) {
+      let b = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      bytes += b.length;
+      if (!started) {
+        if (carry) { const m = new Uint8Array(carry.length + b.length); m.set(carry); m.set(b, carry.length); b = m; carry = null; }
+        if (b.length < BINARY_SENTINEL.length + 3) { carry = b; return; }   // too few bytes to tell yet
+        b = start(b);
+      } else if (carry) {
+        // finish the carried partial line from the head of this chunk, without copying the chunk
+        let nl = 0; while (nl < b.length && b[nl] !== 10) nl++;
+        const m = new Uint8Array(carry.length + nl); m.set(carry); m.set(b.subarray(0, nl), carry.length); carry = null;
+        if (nl === b.length) { carry = m; return; }
+        line(m, 0, m.length);
+        b = b.subarray(nl + 1);
+      }
+      feed(b, false);
+    },
+    end() {
+      if (carry) { let b = carry; carry = null; if (!started) b = start(b); feed(b, true); }
+      if (code >= 0) line(new Uint8Array(0), 0, 0);       // a code with no value line → its empty value (parsePairs' rule)
+      if (section) endSection();
+      return { header: headerInfo(), layers, warnings, warningsSuppressed: suppressed, counts, bytes };
+    },
+  };
 }
 
 /**
- * Orbit camera: target + spherical (radius, theta around Z, phi from the XY
- * plane). Z-up (geology convention). Produces eye/view/proj; near/far adapt to
- * the orbit radius each update (dee's depth-precision trick).
+ * peekDxf(bytes) — what a HEAD of the file says, without reading the rest: header
+ * variables ($EXTMIN/$EXTMAX/$INSUNITS…) + the entity mix seen so far. For an open
+ * dialog's description of a file too big to read for a preview. A truncated head
+ * is fine (the last entity in flight is simply closed).
  */
-function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
-  const c = {
-    target: [0, 0, 0], radius: 100, theta: Math.PI / 4, phi: Math.PI / 5, fovY,
-    aspect: 1, near: 0.1, far: 1e6,
-    ortho: false, halfH: 0,                                // ortho: half-height = radius·tan(fovY/2) — toggling keeps apparent size at the target
-    zExag: 1,                                              // vertical exaggeration: a GLOBAL scene z-scale folded into viewProj (all layers stay registered; queries stay in real coords — see update())
-    eye: [0, 0, 0], view: null, proj: null, viewProj: null,
-  };
-  const EPS = 0.01;
-  function update() {
-    c.phi = Math.max(-Math.PI / 2 + EPS, Math.min(Math.PI / 2 - EPS, c.phi));
-    c.radius = Math.max(0.05, c.radius);
-    const cp = Math.cos(c.phi);
-    c.eye = [
-      c.target[0] + c.radius * cp * Math.cos(c.theta),
-      c.target[1] + c.radius * cp * Math.sin(c.theta),
-      c.target[2] + c.radius * Math.sin(c.phi),
-    ];
-    // near at radius/4000: on a km-scale fitted model the old /1000 put the
-    // clip plane METRES in front of the camera — visible slicing when panning
-    // close past geometry. /4000 keeps depth precision under a block size at
-    // the far end of a 24-bit buffer (error ~ z²/(near·2²⁴): ~3 m at z=10 km
-    // with near 2.5 m) while clipping 4× closer.
-    c.near = Math.max(c.radius / 4000, 0.01);
-    c.far = c.radius * 100;
-    c.view = mat4LookAt(c.eye, c.target, [0, 0, 1]);
-    c.halfH = c.radius * Math.tan(c.fovY / 2);
-    c.proj = c.ortho ? mat4Ortho(c.halfH, c.aspect, c.near, c.far) : mat4Perspective(c.fovY, c.aspect, c.near, c.far);
-    c.viewProj = mat4Multiply(c.proj, c.view);
-    // Vertical exaggeration: fold a world-space z-scale into viewProj, pivoted at
-    // the target's z (so the look-at point stays fixed). viewProj·M means every
-    // vertex is z-scaled AT DRAW ONLY — shaders still test real z for section
-    // culling (before viewProj), pick is the ID-buffer (real recIdx), measure
-    // reads source records, and unproject uses inverse(viewProj) which yields real
-    // coords. One matrix, all layers registered, every query honest.
-    if (c.zExag && c.zExag !== 1) {
-      const S = c.zExag, tz = c.target[2];                 // z' = tz + (z-tz)·S  ⇒  column-major z-scale about tz
-      c.viewProj = mat4Multiply(c.viewProj, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, S, 0, 0, 0, tz * (1 - S), 1]);
-    }
-    return c;
-  }
+function peekDxf(bytes) {
+  let lastLayer = null;
+  const layerSet = new Set();
+  const note = (l) => { if (l !== lastLayer) { lastLayer = l; layerSet.add(l); } };
+  const st = createSceneStream({ tri: (l) => note(l), string: (l) => note(l), point: (l) => note(l) });
+  st.push(bytes);
+  const r = st.end();
+  return { header: r.header, counts: r.counts, layers: [...layerSet].sort(), tableLayers: Object.keys(r.layers), bytes: r.bytes };
+}
+
+// ── src/io/dxf-stream.js ──
+
+// DXF, STREAMED — for a file too big to read whole. openDxf (dxf-provider.js) parses
+// resident, which caps a DXF at what one JS string holds (~512 M characters; past
+// that the browser's read fails, Chrome calling it a "permission problem"). A
+// triangulated topography exported as 3DFACEs reaches gigabytes, so this provider
+// walks the Blob in slices through @gcu/dxf's push-parser and hands the geometry
+// out as BATCHES for the streaming builders, holding nothing but the batch in
+// flight plus each kind's small per-record table:
+//
+//   openDxfStream(blob, { as }) → { header, batches(opts), summary }
+//     header  — kind:'dxf-stream', bbox (SAMPLED: head + windows across the file —
+//               it plants the frame and the first camera, nothing quantizes on it),
+//               headerVars, size
+//     batches — async generator of { kind:'mesh', raw } (soup RawChunks — the
+//               createSoupChunkBuilder contract), { kind:'strings', raw } (stick
+//               RawChunks, category = DXF layer), { kind:'points', raw }
+//     summary — filled as the stream runs, final when it ends: counts, per-kind
+//               categories + authored colours, the uniform mesh colour, warnings,
+//               and each kind's record accessors (fetchRecord / recordPosition)
+//
+// One pass yields every kind the file holds; `as` keeps only one (a reinterpret or
+// a project reload asks for exactly the layer it is restoring).
+
+// above this a consumer should stream (below it the resident reader is exact and
+// keeps the full mesh tier: solid queries, mesh export, welded surfaces)
+const DXF_STREAM_BYTES = 256 * 1024 * 1024;
+const SLAB$dxf_stream = 8 << 20;                                       // 8 MB reads
+const HEAD = 16 << 20;                                      // the head peek / first bbox sample
+const WINDOW = 256 << 10, WINDOWS = 24;                     // bbox sampling across the file
+
+// growable typed column (records the strings / points tables keep)
+function column(Type, init = 1 << 16) {
+  let a = new Type(init), n = 0;
   return {
-    get state() { return c; },
-    update,
-    setAspect(a) { c.aspect = a || 1; return update(); },
-    orbit(dTheta, dPhi) { c.theta += dTheta; c.phi += dPhi; return update(); },
-    dolly(f) { c.radius *= f; return update(); },
-    pan(dxPx, dyPx, viewportH) {                           // screen px → world at target depth
-      const s = 2 * c.radius * Math.tan(c.fovY / 2) / (viewportH || 1);
-      const ct = Math.cos(c.theta), st = Math.sin(c.theta), sp = Math.sin(c.phi), cp = Math.cos(c.phi);
-      // camera right = (-st, ct, 0); camera up ≈ (-ct·sp, -st·sp, cp)
-      c.target[0] += (-st) * (-dxPx * s) + (-ct * sp) * (dyPx * s);
-      c.target[1] += (ct) * (-dxPx * s) + (-st * sp) * (dyPx * s);
-      // vertical exaggeration stretches displayed z by zExag, so a real-z move
-      // shows amplified — divide the up-vector's z contribution by zExag so the
-      // grabbed point tracks the cursor 1:1 (M⁻¹ of the up-move; x/y are unscaled).
-      // In plan view cp=0 → no change, as it should be.
-      c.target[2] += cp * (dyPx * s) / (c.zExag || 1);
-      return update();
-    },
-    setOrtho(on) { c.ortho = !!on; return update(); },
-    fit(bbox) {                                            // frame a local-space bbox
-      c.target = [(bbox[0] + bbox[3]) / 2, (bbox[1] + bbox[4]) / 2, (bbox[2] + bbox[5]) / 2];
-      const dx = bbox[3] - bbox[0], dy = bbox[4] - bbox[1], dz = bbox[5] - bbox[2];
-      const d = Math.hypot(dx, dy, dz) || 1;
-      c.radius = (d / 2) / Math.tan(c.fovY / 2) * 1.2;
-      return update();
-    },
+    push(v) { if (n === a.length) { const b = new Type(a.length * 2); b.set(a); a = b; } a[n++] = v; },
+    get length() { return n; },
+    at(i) { return a[i]; },
   };
 }
 
-// Wire standard mouse/touch input onto an orbit camera. Returns a detach fn.
-// left-drag orbit · right-drag / shift-drag pan · wheel dolly.
-function attachOrbitInput(canvas, cam, { onChange } = {}) {
-  // pointers tracked by id: one = orbit (or pan with right-button/shift),
-  // two = the touch grammar — pinch dollies, the centroid pans, twist orbits
-  // theta. touch-action:none or the browser eats the gestures first.
-  canvas.style.touchAction = 'none';
-  const pts = new Map();
-  let mode = null, lx = 0, ly = 0;
-  let pinch = null;                                        // { span, cx, cy, angle }
-  const pinchState = () => {
-    const [a, b] = [...pts.values()];
-    return {
-      span: Math.hypot(b.x - a.x, b.y - a.y) || 1,
-      cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
-      angle: Math.atan2(b.y - a.y, b.x - a.x),
+// the plausible-coordinate guard (the 1e20 "unset" extents some exporters write)
+const plausible = (v) => Number.isFinite(v) && Math.abs(v) < 1e12;
+
+/**
+ * Sampled bounds: the head, then WINDOWS evenly spaced slices, each resynced to an
+ * entity boundary (a "0" code line followed by an entity name) and cut at the last
+ * one (so no number is read truncated). Approximate by design — enough to plant a
+ * frame origin near the data and aim the first camera; the layers' true bboxes come
+ * from the builders as the geometry arrives.
+ */
+async function sampleBounds(blob) {
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const grow = (x, y, z) => {
+    if (!plausible(x) || !plausible(y) || !plausible(z)) return;
+    if (x < min[0]) min[0] = x; if (y < min[1]) min[1] = y; if (z < min[2]) min[2] = z;
+    if (x > max[0]) max[0] = x; if (y > max[1]) max[1] = y; if (z > max[2]) max[2] = z;
+  };
+  const sink = {
+    tri(l, c, ax, ay, az, bx, by, bz, cx, cy, cz) { grow(ax, ay, az); grow(bx, by, bz); grow(cx, cy, cz); },
+    string(l, c, p) { for (let i = 0; i + 2 < p.length; i += 3) grow(p[i], p[i + 1], p[i + 2]); },
+    point(l, c, x, y, z) { grow(x, y, z); },
+    vertex(x, y, z) { grow(x, y, z); },                     // a window inside one giant polyface still counts
+  };
+  const POLYFACE_HEAD = new TextEncoder().encode('0\nPOLYLINE\n70\n64\n');
+  const ENTITY_START = /\n[ \t]*0\r?\n(?=[A-Z3])/g;
+  const sampleAt = async (off, len, inEntities) => {
+    const bytes = new Uint8Array(await blob.slice(off, Math.min(blob.size, off + len)).arrayBuffer());
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    const starts = [...text.matchAll(ENTITY_START)].map((m) => m.index + 1);
+    if (starts.length < 2) return;
+    const from = inEntities ? starts[0] : 0, to = starts[starts.length - 1];
+    const st = createSceneStream(sink, inEntities ? { section: 'ENTITIES' } : {});
+    // a window that opens mid-POLYLINE: give its VERTEX run a header to belong to
+    if (inEntities && text.startsWith('VERTEX', from + text.slice(from).indexOf('\n') + 1)) st.push(POLYFACE_HEAD);
+    st.push(bytes.subarray(from, to));
+    st.end();
+  };
+  await sampleAt(0, HEAD, false);                           // the head: real section structure
+  if (blob.size > HEAD) {
+    for (let k = 1; k <= WINDOWS; k++) {
+      const off = Math.floor(((blob.size - WINDOW) * k) / WINDOWS);
+      if (off > HEAD) await sampleAt(off, WINDOW, true);
+    }
+  }
+  return min[0] === Infinity ? null : { min, max };
+}
+
+/** peekDxfHead(blob) — the dialog's description of a file too big to preview whole. */
+async function peekDxfHead(blob, bytes = 8 << 20) {
+  const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, bytes)).arrayBuffer());
+  const p = peekDxf(head);
+  return { ...p, partial: head.length < blob.size, fraction: head.length / (blob.size || 1) };
+}
+
+// the push parser itself, for consumers that want the raw scene stream (e.g. @gcu/wireframe's
+// DXF → .wfr adapter) without a second copy of @gcu/dxf in the bundle
+
+async function openDxfStream(blob, { as = null } = {}) {
+  let bbox = await sampleBounds(blob);
+  let headerVars = null;
+  {
+    const head = new Uint8Array(await blob.slice(0, Math.min(blob.size, 1 << 20)).arrayBuffer());
+    headerVars = peekDxf(head).header;
+    if (!bbox && headerVars.extmin && headerVars.extmax && [...headerVars.extmin, ...headerVars.extmax].every(plausible)) {
+      bbox = { min: headerVars.extmin.slice(), max: headerVars.extmax.slice() };
+    }
+  }
+  if (!bbox) bbox = { min: [0, 0, 0], max: [1, 1, 1] };
+  const header = { kind: 'dxf-stream', format: 'dxf', bbox, size: blob.size, headerVars, sampledBbox: true };
+
+  const want = (k) => !as || as === k;
+  // per-kind category tables (≤ 255 layers fit the category byte; past that a kind
+  // keeps its geometry and drops its classes, like the resident reader)
+  const catTable = () => ({ names: [], colors: [], index: new Map(), overflow: false });
+  const cats = { strings: catTable(), points: catTable() };
+  const catOf = (t, layer, rgb) => {
+    let i = t.index.get(layer);
+    if (i === undefined) {
+      if (t.names.length >= 255) { t.overflow = true; return 0; }
+      i = t.names.length; t.index.set(layer, i); t.names.push(layer); t.colors.push(rgb || null);
+    } else if (!t.colors[i] && rgb) t.colors[i] = rgb;
+    return i;
+  };
+  // records: strings keep (layer, string id) + a midpoint per segment; points keep xyz + layer
+  const o = bbox.min;                                       // midpoints stored f32 local to here (mm at km extents)
+  const seg = { cat: column(Uint8Array), str: column(Uint32Array), mx: column(Float32Array), my: column(Float32Array), mz: column(Float32Array) };
+  const pt = { x: column(Float64Array), y: column(Float64Array), z: column(Float64Array), cat: column(Uint8Array) };
+  let meshColor;                                            // uniform → the tint; mixed → null
+
+  const summary = {
+    done: false, counts: { triangles: 0, strings: 0, segments: 0, points: 0 }, warnings: [], warningsSuppressed: 0,
+    meshColor: null, kinds: [],
+    strings: { categories: null, catColors: null, fetchRecord: (rec) => [cats.strings.names[seg.cat.at(rec)], seg.str.at(rec)], recordPosition: (rec) => [o[0] + seg.mx.at(rec), o[1] + seg.my.at(rec), o[2] + seg.mz.at(rec)] },
+    points: { categories: null, catColors: null, fetchRecord: (rec) => [pt.x.at(rec), pt.y.at(rec), pt.z.at(rec), cats.points.names[pt.cat.at(rec)]] },
+  };
+
+  async function* batches({ batchTris = 1 << 16, batchSegs = 1 << 16, batchPoints = 1 << 16, onProgress, signal } = {}) {
+    const queue = [];
+    const MESH = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'cx', 'cy', 'cz', 'x', 'y', 'z'];
+    const newMesh = () => { const b = { count: 0 }; for (const c of MESH) b[c] = new Float64Array(batchTris); return b; };
+    const STICK = ['ax', 'ay', 'az', 'bx', 'by', 'bz', 'x', 'y', 'z'];
+    const newStick = () => { const b = { count: 0, cat: new Uint8Array(batchSegs), recIdx: new Uint32Array(batchSegs), chan: new Float64Array(batchSegs) }; for (const c of STICK) b[c] = new Float64Array(batchSegs); return b; };
+    const newPts = () => ({ count: 0, x: new Float64Array(batchPoints), y: new Float64Array(batchPoints), z: new Float64Array(batchPoints), cat: new Uint8Array(batchPoints), recIdx: new Uint32Array(batchPoints), recStart: pt.x.length });
+    const trim = (b, cols) => { const n = b.count; for (const c of cols) b[c] = b[c].subarray(0, n); return b; };
+    let mb = null, sb = null, pb = null;
+    const flushMesh = () => { if (mb && mb.count) queue.push({ kind: 'mesh', raw: trim(mb, MESH) }); mb = null; };
+    const flushSticks = () => { if (sb && sb.count) queue.push({ kind: 'strings', raw: trim(sb, [...STICK, 'cat', 'recIdx', 'chan']) }); sb = null; };
+    const flushPts = () => { if (pb && pb.count) queue.push({ kind: 'points', raw: trim(pb, ['x', 'y', 'z', 'cat', 'recIdx']) }); pb = null; };
+
+    const sink = {
+      tri(layer, rgb, ax, ay, az, bx, by, bz, cx, cy, cz) {
+        if (!want('mesh')) return;
+        if (meshColor === undefined) meshColor = rgb;
+        else if (meshColor && (!rgb || meshColor[0] !== rgb[0] || meshColor[1] !== rgb[1] || meshColor[2] !== rgb[2])) meshColor = null;
+        if (!mb) mb = newMesh();
+        const i = mb.count++;
+        mb.ax[i] = ax; mb.ay[i] = ay; mb.az[i] = az; mb.bx[i] = bx; mb.by[i] = by; mb.bz[i] = bz;
+        mb.cx[i] = cx; mb.cy[i] = cy; mb.cz[i] = cz;
+        mb.x[i] = (ax + bx + cx) / 3; mb.y[i] = (ay + by + cy) / 3; mb.z[i] = (az + bz + cz) / 3;
+        summary.counts.triangles++;
+        if (mb.count === batchTris) flushMesh();
+      },
+      string(layer, rgb, p) {
+        if (!want('strings')) return;
+        const code = catOf(cats.strings, layer, rgb);
+        const sid = summary.counts.strings++;
+        for (let k = 0; k + 5 < p.length; k += 3) {
+          if (!sb) sb = newStick();
+          const i = sb.count++;
+          const rec = seg.cat.length;
+          sb.ax[i] = p[k]; sb.ay[i] = p[k + 1]; sb.az[i] = p[k + 2];
+          sb.bx[i] = p[k + 3]; sb.by[i] = p[k + 4]; sb.bz[i] = p[k + 5];
+          const mx = (p[k] + p[k + 3]) / 2, my = (p[k + 1] + p[k + 4]) / 2, mz = (p[k + 2] + p[k + 5]) / 2;
+          sb.x[i] = mx; sb.y[i] = my; sb.z[i] = mz;
+          sb.cat[i] = code; sb.recIdx[i] = rec;
+          seg.cat.push(code); seg.str.push(sid); seg.mx.push(mx - o[0]); seg.my.push(my - o[1]); seg.mz.push(mz - o[2]);
+          summary.counts.segments++;
+          if (sb.count === batchSegs) flushSticks();
+        }
+      },
+      point(layer, rgb, x, y, z) {
+        if (!want('points')) return;
+        const code = catOf(cats.points, layer, rgb);
+        if (!pb) pb = newPts();
+        const i = pb.count++;
+        pb.x[i] = x; pb.y[i] = y; pb.z[i] = z; pb.cat[i] = code; pb.recIdx[i] = pt.x.length;
+        pt.x.push(x); pt.y.push(y); pt.z.push(z); pt.cat.push(code);
+        summary.counts.points++;
+        if (pb.count === batchPoints) flushPts();
+      },
     };
-  };
-  const down = (e) => {
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
-    if (pts.size === 2) { pinch = pinchState(); mode = 'pinch'; return; }
-    if (pts.size > 2) return;                              // third finger: ignore
-    mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
-    lx = e.clientX; ly = e.clientY;
-  };
-  const move = (e) => {
-    if (!pts.has(e.pointerId)) return;
-    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (mode === 'pinch' && pts.size >= 2) {
-      const now = pinchState();
-      cam.dolly(pinch.span / now.span > 0 ? pinch.span / now.span : 1);
-      cam.pan(now.cx - pinch.cx, now.cy - pinch.cy, canvas.clientHeight);
-      let dA = now.angle - pinch.angle;
-      if (dA > Math.PI) dA -= 2 * Math.PI;
-      if (dA < -Math.PI) dA += 2 * Math.PI;
-      if (!cam.state.orbitLock) cam.orbit(-dA, 0);         // twist: grab-the-world (locked views don't twist)
-      pinch = now;
-      if (onChange) onChange();
-      return;
+
+    const st = createSceneStream(sink);
+    let at = 0;
+    while (at < blob.size) {
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const end = Math.min(blob.size, at + SLAB$dxf_stream);
+      st.push(new Uint8Array(await blob.slice(at, end).arrayBuffer()));
+      at = end;
+      if (onProgress) onProgress(at, blob.size);
+      while (queue.length) yield queue.shift();
     }
-    if (!mode || mode === 'pinch') return;
-    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
-    // orbitLock (state flag): 2D/section-locked views — drags PAN instead of
-    // orbiting, so a locked plan/section can't be knocked off-plane by a drag
-    if (mode === 'orbit') { if (cam.state.orbitLock) cam.pan(dx, dy, canvas.clientHeight); else cam.orbit(-dx * 0.006, dy * 0.006); }
-    else cam.pan(dx, dy, canvas.clientHeight);
-    if (onChange) onChange();
-  };
-  const up = (e) => {
-    pts.delete(e.pointerId);
-    try { canvas.releasePointerCapture(e.pointerId); } catch { /* gone */ }
-    if (pts.size >= 2) { pinch = pinchState(); return; }   // still pinching with others
-    if (pts.size === 1) {                                  // pinch → single: re-anchor, no jump
-      const rest = [...pts.values()][0];
-      mode = 'orbit'; lx = rest.x; ly = rest.y; pinch = null;
-      return;
+    const r = st.end();
+    flushMesh(); flushSticks(); flushPts();
+    while (queue.length) yield queue.shift();
+
+    summary.warnings = r.warnings; summary.warningsSuppressed = r.warningsSuppressed;
+    summary.header = r.header;
+    summary.meshColor = meshColor || null;
+    for (const k of ['strings', 'points']) {
+      const t = cats[k];
+      summary[k].categories = t.overflow || !t.names.length ? null : t.names.slice();
+      summary[k].catColors = summary[k].categories ? t.colors.slice() : null;
     }
-    mode = null; pinch = null;
-  };
-  const wheel = (e) => { e.preventDefault(); cam.dolly(Math.pow(1.0015, e.deltaY)); if (onChange) onChange(); };
-  const ctx = (e) => e.preventDefault();
-  canvas.addEventListener('pointerdown', down);
-  canvas.addEventListener('pointermove', move);
-  canvas.addEventListener('pointerup', up);
-  canvas.addEventListener('pointercancel', up);
-  canvas.addEventListener('wheel', wheel, { passive: false });
-  canvas.addEventListener('contextmenu', ctx);
-  return () => {
-    canvas.removeEventListener('pointerdown', down);
-    canvas.removeEventListener('pointermove', move);
-    canvas.removeEventListener('pointerup', up);
-    canvas.removeEventListener('pointercancel', up);
-    canvas.removeEventListener('wheel', wheel);
-    canvas.removeEventListener('contextmenu', ctx);
-  };
+    summary.kinds = [summary.counts.triangles && 'mesh', summary.counts.segments && 'strings', summary.counts.points && 'points'].filter(Boolean);
+    summary.done = true;
+  }
+
+  return { header, batches, summary };
 }
 
 // ── src/core/gl-resolve.js ──
@@ -7902,7 +8956,16 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // a layer's view of the section: false = exempt, 'front'/'behind' = keep that
   // side only (a half-space is a slab with the far face pushed past the data —
   // same trick the global clip uses, but per layer, derived from sec.d0)
+  // a layer's offset (setLayerOffset) moves its geometry at draw time, so the
+  // section must cut where the layer is DRAWN: in its own coordinates the plane
+  // sits at d − n·o. Shifting here covers every pipeline (meshSecOf calls this).
+  const offsetSec = (sec, o) => {
+    if (!sec || !o) return sec;
+    const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
+    return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
+  };
   const layerSecOf = (ls, sec) => {
+    sec = offsetSec(sec, ls.offset);
     const m = ls.sectioned;
     if (!sec || m === false) return m === false ? null : sec;
     if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
@@ -7927,12 +8990,31 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
             meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
             ruleTex: null, ruleH: 0, ruleOn: false,
-            chanTex: null, chanTexRange: null };
+            chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
     }
     return l;
   }
   const activeChunk = (c) => { const l = layers.get(c._layer); return !!l && l.visible && c._set === l.set; };
+  // a chunk's bbox where it is DRAWN (its layer's offset applied) — culling,
+  // depth ordering, LOD weights and the content bbox; the stored bboxLocal stays
+  // the geometry's own (it is also the points dequantize box)
+  const drawnBox = (c, out) => {
+    const l = layers.get(c._layer), o = l && l.offset, b = c.bboxLocal;
+    if (!o) return b;
+    for (let i = 0; i < 3; i++) { out[i] = b[i] + o[i]; out[i + 3] = b[i + 3] + o[i]; }
+    return out;
+  };
+  // the camera a layer is drawn with: its offset folded in as a translation
+  // (camera.js translateState); one object per layer per frame, the shared
+  // camera itself when the layer isn't moved
+  const camFor = (cam, id, memo) => {
+    const l = layers.get(id), o = l && l.offset;
+    if (!o) return cam;
+    let c = memo && memo.get(id);
+    if (!c) { c = { state: translateState(cam.state, o) }; if (memo) memo.set(id, c); }
+    return c;
+  };
   const freeChunk = (c) => { gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
   const byLayer = (arr) => {
     const m = new Map();
@@ -8242,6 +9324,38 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       const ls = layerOf(layer);
       if (ls.visible !== !!on) { ls.visible = !!on; needClear = true; }
     },
+    // Translate a layer at DRAW time: [dx, dy, dz] in frame-local units (the
+    // frame's units — metres for a metric CRS); [0,0,0] or null clears it. No
+    // re-upload, no chunk rebuild: the offset is folded into the camera the
+    // layer is drawn and picked with, so every pipeline (points, blocks, sticks,
+    // meshes, soups), the section (it cuts the displaced geometry), culling, the
+    // deferred re-shade and the ID buffer agree. DISPLAY ONLY: records keep
+    // their true coordinates, elevation colouring reads the true z, and pick()
+    // returns record identities, so nothing the host reads back is displaced.
+    setLayerOffset(layer, o) {
+      const ls = layerOf(layer);
+      const v = o && (o[0] || o[1] || o[2]) ? [+o[0] || 0, +o[1] || 0, +o[2] || 0] : null;
+      const cur = ls.offset;
+      if (!v && !cur) return;
+      if (v && cur && v[0] === cur[0] && v[1] === cur[1] && v[2] === cur[2]) return;
+      ls.offset = v;
+      needClear = true;                                    // moves pixels: re-raster (and drop the id capture)
+    },
+    layerOffset(layer) { const ls = layers.get(layer); return ls && ls.offset ? [...ls.offset] : [0, 0, 0]; },
+    // the frame-local bbox of what is drawn — every visible layer's chunks with
+    // their offsets applied (sticks padded by their radius) — for fit-to-view on
+    // an exploded scene. null when nothing is visible.
+    contentBbox({ layers: only = null } = {}) {
+      const out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      const tmp = new Float64Array(6);
+      for (const c of chunks) {
+        if (!activeChunk(c) || (only && !only.includes(c._layer))) continue;
+        const b = drawnBox(c, tmp);
+        const r = c.kind === 'sticks' ? layerOf(c._layer).stickRadius : 0;
+        for (let i = 0; i < 3; i++) { out[i] = Math.min(out[i], b[i] - r); out[i + 3] = Math.max(out[i + 3], b[i + 3] + r); }
+      }
+      return out[0] === Infinity ? null : Float64Array.from(out);
+    },
     removeLayer(layer) {
       for (let i = chunks.length - 1; i >= 0; i--) {
         if (chunks[i]._layer !== layer) continue;
@@ -8340,6 +9454,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     // Returns { drawn, converged, visible }.
     draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null } = {}) {
       const vp = cam.state.viewProj;
+      const camMemo = new Map();
+      const camOf = (id) => camFor(cam, id, camMemo);      // a moved layer's camera (setLayerOffset)
       const sec = section && section.on ? section : null;
       const secKey = sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off';
       // the old single draw key, SPLIT: structural changes re-raster; cosmetic
@@ -8419,16 +9535,18 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           }
           gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);     // back to the EDL target
           gl.viewport(0, 0, canvas.width, canvas.height);
-          // headlight — the exact formula blocksPipe.begin computes
-          const s = cam.state, v = s.view;
-          let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
-          const ll = Math.hypot(lx, ly, lz) || 1;
-          lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
-          const l2 = Math.hypot(lx, ly, lz) || 1;
-          const lightDir = [lx / l2, ly / l2, lz / l2];
-          const invVP = mat4Inverse(vp);                   // edge-line unproject
-          const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
           for (const [id, group] of groups) {
+            // the layer's own camera: an offset layer unprojects into ITS
+            // coordinates, so the lattice snap and the cut-wall side stay exact
+            const s = camOf(id).state, v = s.view;
+            // headlight — the exact formula blocksPipe.begin computes
+            let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+            const ll = Math.hypot(lx, ly, lz) || 1;
+            lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+            const l2 = Math.hypot(lx, ly, lz) || 1;
+            const lightDir = [lx / l2, ly / l2, lz / l2];
+            const invVP = mat4Inverse(s.viewProj);         // edge-line unproject
+            const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
             const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
             let u;
             if (group[0].kind === 'blocks') {
@@ -8483,17 +9601,17 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       const planes = frustumPlanes(vp);
       const eye = cam.state.eye;
       const visible = [];
-      const padBox = new Float64Array(6);
+      const padBox = new Float64Array(6), movedBox = new Float64Array(6);
       for (const c of chunks) {
         if (!activeChunk(c)) continue;
-        let cullBox = c.bboxLocal;
+        const b = drawnBox(c, movedBox);                   // where it's drawn (layer offset applied)
+        let cullBox = b;
         if (c.kind === 'sticks') {
           const r = layerOf(c._layer).stickRadius;
-          for (let i = 0; i < 3; i++) { padBox[i] = c.bboxLocal[i] - r; padBox[i + 3] = c.bboxLocal[i + 3] + r; }
+          for (let i = 0; i < 3; i++) { padBox[i] = b[i] - r; padBox[i + 3] = b[i + 3] + r; }
           cullBox = padBox;
         }
         if (!aabbInFrustum(planes, cullBox)) { if (moving) c.cursor = 0; continue; }
-        const b = c.bboxLocal;
         const cx = (b[0] + b[3]) / 2 - eye[0], cy = (b[1] + b[4]) / 2 - eye[1], cz = (b[2] + b[5]) / 2 - eye[2];
         const dist = Math.max(Math.hypot(cx, cy, cz), cam.state.near);
         const r = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2 || 1;
@@ -8533,7 +9651,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         for (const [id, group] of byLayer(msh)) {
           if (!group.some((c) => moving || c.cursor === 0)) continue;
           const ls = layerOf(id);
-          meshPipe.begin(cam, { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
+          meshPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
             vcolor: group.some((c) => c.hasColor), vnormal: group.some((c) => c.hasNormal) });   // heightfield drape + smooth normals
           for (const c of group) {
             if (!(moving || c.cursor === 0)) continue;
@@ -8552,7 +9670,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (soup.length) {
         for (const [id, group] of byLayer(soup)) {
           const ls = layerOf(id);
-          soupPipe.begin(cam, { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
+          soupPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
           for (const c of group) {
             const [first, k] = allot(c);
             if (k > 0) {
@@ -8580,6 +9698,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
+          gl.uniformMatrix4fv(uni.viewProj, false, camOf(id).state.viewProj);   // a moved layer's camera
           const lsec = layerSecOf(ls, sec);
           gl.uniform4f(uni.secPlane, lsec ? lsec.n[0] : 0, lsec ? lsec.n[1] : 0, lsec ? lsec.n[2] : 1, lsec ? lsec.d : 0);
           gl.uniform2f(uni.secCfg, lsec ? 1 : 0, lsec ? lsec.half : 0);
@@ -8652,7 +9771,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           const ls = layerOf(id), o = lopt(id);
           const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
           const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
-          blocksPipe.begin(cam, {
+          blocksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
@@ -8702,7 +9821,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           const ls = layerOf(id), o = lopt(id);
           const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
           const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
-          sticksPipe.begin(cam, {
+          sticksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,

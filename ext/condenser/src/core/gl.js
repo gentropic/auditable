@@ -8,7 +8,7 @@
 // chunks proportionally; each chunk draws its FIRST k elements — correct as a
 // uniform subsample because chunks.js shuffled them (the §2.1.4 invariant).
 
-import { frustumPlanes, aabbInFrustum, mat4Inverse } from './camera.js';
+import { frustumPlanes, aabbInFrustum, mat4Inverse, translateState } from './camera.js';
 import { createBlocksPipeline, categoryPalettePixels } from './gl-blocks.js';
 import { createSticksPipeline } from './gl-sticks.js';
 import { createMeshPipeline } from './gl-mesh.js';
@@ -230,7 +230,16 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
   // a layer's view of the section: false = exempt, 'front'/'behind' = keep that
   // side only (a half-space is a slab with the far face pushed past the data —
   // same trick the global clip uses, but per layer, derived from sec.d0)
+  // a layer's offset (setLayerOffset) moves its geometry at draw time, so the
+  // section must cut where the layer is DRAWN: in its own coordinates the plane
+  // sits at d − n·o. Shifting here covers every pipeline (meshSecOf calls this).
+  const offsetSec = (sec, o) => {
+    if (!sec || !o) return sec;
+    const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
+    return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
+  };
   const layerSecOf = (ls, sec) => {
+    sec = offsetSec(sec, ls.offset);
     const m = ls.sectioned;
     if (!sec || m === false) return m === false ? null : sec;
     if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
@@ -255,12 +264,31 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
             intensityMax: 1, docChan: [Infinity, -Infinity], catN: 0, stickRadius: 1, sectioned: true,
             meshTint: [0.62, 0.64, 0.66], meshOpacity: 1, opacity: 1, catVisTex: null, rampTex: null, paletteTex: null, paletteW: 0, selTex: null, selH: 0,
             ruleTex: null, ruleH: 0, ruleOn: false,
-            chanTex: null, chanTexRange: null };
+            chanTex: null, chanTexRange: null, offset: null };
       layers.set(id, l);
     }
     return l;
   }
   const activeChunk = (c) => { const l = layers.get(c._layer); return !!l && l.visible && c._set === l.set; };
+  // a chunk's bbox where it is DRAWN (its layer's offset applied) — culling,
+  // depth ordering, LOD weights and the content bbox; the stored bboxLocal stays
+  // the geometry's own (it is also the points dequantize box)
+  const drawnBox = (c, out) => {
+    const l = layers.get(c._layer), o = l && l.offset, b = c.bboxLocal;
+    if (!o) return b;
+    for (let i = 0; i < 3; i++) { out[i] = b[i] + o[i]; out[i + 3] = b[i + 3] + o[i]; }
+    return out;
+  };
+  // the camera a layer is drawn with: its offset folded in as a translation
+  // (camera.js translateState); one object per layer per frame, the shared
+  // camera itself when the layer isn't moved
+  const camFor = (cam, id, memo) => {
+    const l = layers.get(id), o = l && l.offset;
+    if (!o) return cam;
+    let c = memo && memo.get(id);
+    if (!c) { c = { state: translateState(cam.state, o) }; if (memo) memo.set(id, c); }
+    return c;
+  };
   const freeChunk = (c) => { gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
   const byLayer = (arr) => {
     const m = new Map();
@@ -570,6 +598,38 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
       const ls = layerOf(layer);
       if (ls.visible !== !!on) { ls.visible = !!on; needClear = true; }
     },
+    // Translate a layer at DRAW time: [dx, dy, dz] in frame-local units (the
+    // frame's units — metres for a metric CRS); [0,0,0] or null clears it. No
+    // re-upload, no chunk rebuild: the offset is folded into the camera the
+    // layer is drawn and picked with, so every pipeline (points, blocks, sticks,
+    // meshes, soups), the section (it cuts the displaced geometry), culling, the
+    // deferred re-shade and the ID buffer agree. DISPLAY ONLY: records keep
+    // their true coordinates, elevation colouring reads the true z, and pick()
+    // returns record identities, so nothing the host reads back is displaced.
+    setLayerOffset(layer, o) {
+      const ls = layerOf(layer);
+      const v = o && (o[0] || o[1] || o[2]) ? [+o[0] || 0, +o[1] || 0, +o[2] || 0] : null;
+      const cur = ls.offset;
+      if (!v && !cur) return;
+      if (v && cur && v[0] === cur[0] && v[1] === cur[1] && v[2] === cur[2]) return;
+      ls.offset = v;
+      needClear = true;                                    // moves pixels: re-raster (and drop the id capture)
+    },
+    layerOffset(layer) { const ls = layers.get(layer); return ls && ls.offset ? [...ls.offset] : [0, 0, 0]; },
+    // the frame-local bbox of what is drawn — every visible layer's chunks with
+    // their offsets applied (sticks padded by their radius) — for fit-to-view on
+    // an exploded scene. null when nothing is visible.
+    contentBbox({ layers: only = null } = {}) {
+      const out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      const tmp = new Float64Array(6);
+      for (const c of chunks) {
+        if (!activeChunk(c) || (only && !only.includes(c._layer))) continue;
+        const b = drawnBox(c, tmp);
+        const r = c.kind === 'sticks' ? layerOf(c._layer).stickRadius : 0;
+        for (let i = 0; i < 3; i++) { out[i] = Math.min(out[i], b[i] - r); out[i + 3] = Math.max(out[i + 3], b[i + 3] + r); }
+      }
+      return out[0] === Infinity ? null : Float64Array.from(out);
+    },
     removeLayer(layer) {
       for (let i = chunks.length - 1; i >= 0; i--) {
         if (chunks[i]._layer !== layer) continue;
@@ -668,6 +728,8 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
     // Returns { drawn, converged, visible }.
     draw(cam, { budget = 3_000_000, pointPx = 2.5, colorMode = 0, blocksAsPoints = false, blockEdges = false, section = null, clip = null, layerOpts = null } = {}) {
       const vp = cam.state.viewProj;
+      const camMemo = new Map();
+      const camOf = (id) => camFor(cam, id, camMemo);      // a moved layer's camera (setLayerOffset)
       const sec = section && section.on ? section : null;
       const secKey = sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off';
       // the old single draw key, SPLIT: structural changes re-raster; cosmetic
@@ -747,16 +809,18 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
           }
           gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);     // back to the EDL target
           gl.viewport(0, 0, canvas.width, canvas.height);
-          // headlight — the exact formula blocksPipe.begin computes
-          const s = cam.state, v = s.view;
-          let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
-          const ll = Math.hypot(lx, ly, lz) || 1;
-          lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
-          const l2 = Math.hypot(lx, ly, lz) || 1;
-          const lightDir = [lx / l2, ly / l2, lz / l2];
-          const invVP = mat4Inverse(vp);                   // edge-line unproject
-          const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
           for (const [id, group] of groups) {
+            // the layer's own camera: an offset layer unprojects into ITS
+            // coordinates, so the lattice snap and the cut-wall side stay exact
+            const s = camOf(id).state, v = s.view;
+            // headlight — the exact formula blocksPipe.begin computes
+            let lx = s.eye[0] - s.target[0], ly = s.eye[1] - s.target[1], lz = s.eye[2] - s.target[2];
+            const ll = Math.hypot(lx, ly, lz) || 1;
+            lx = lx / ll + v[1] * 0.4; ly = ly / ll + v[5] * 0.4; lz = lz / ll + v[9] * 0.4;
+            const l2 = Math.hypot(lx, ly, lz) || 1;
+            const lightDir = [lx / l2, ly / l2, lz / l2];
+            const invVP = mat4Inverse(s.viewProj);         // edge-line unproject
+            const perspScale = s.ortho ? (canvas.height / 2) / s.halfH : (canvas.height / 2) / Math.tan(s.fovY / 2);
             const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
             let u;
             if (group[0].kind === 'blocks') {
@@ -811,17 +875,17 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
       const planes = frustumPlanes(vp);
       const eye = cam.state.eye;
       const visible = [];
-      const padBox = new Float64Array(6);
+      const padBox = new Float64Array(6), movedBox = new Float64Array(6);
       for (const c of chunks) {
         if (!activeChunk(c)) continue;
-        let cullBox = c.bboxLocal;
+        const b = drawnBox(c, movedBox);                   // where it's drawn (layer offset applied)
+        let cullBox = b;
         if (c.kind === 'sticks') {
           const r = layerOf(c._layer).stickRadius;
-          for (let i = 0; i < 3; i++) { padBox[i] = c.bboxLocal[i] - r; padBox[i + 3] = c.bboxLocal[i + 3] + r; }
+          for (let i = 0; i < 3; i++) { padBox[i] = b[i] - r; padBox[i + 3] = b[i + 3] + r; }
           cullBox = padBox;
         }
         if (!aabbInFrustum(planes, cullBox)) { if (moving) c.cursor = 0; continue; }
-        const b = c.bboxLocal;
         const cx = (b[0] + b[3]) / 2 - eye[0], cy = (b[1] + b[4]) / 2 - eye[1], cz = (b[2] + b[5]) / 2 - eye[2];
         const dist = Math.max(Math.hypot(cx, cy, cz), cam.state.near);
         const r = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2 || 1;
@@ -861,7 +925,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
         for (const [id, group] of byLayer(msh)) {
           if (!group.some((c) => moving || c.cursor === 0)) continue;
           const ls = layerOf(id);
-          meshPipe.begin(cam, { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
+          meshPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec),
             vcolor: group.some((c) => c.hasColor), vnormal: group.some((c) => c.hasNormal) });   // heightfield drape + smooth normals
           for (const c of group) {
             if (!(moving || c.cursor === 0)) continue;
@@ -880,7 +944,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
       if (soup.length) {
         for (const [id, group] of byLayer(soup)) {
           const ls = layerOf(id);
-          soupPipe.begin(cam, { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
+          soupPipe.begin(camOf(id), { tint: ls.meshTint, opacity: ls.meshOpacity, section: meshSecOf(ls, sec) });
           for (const c of group) {
             const [first, k] = allot(c);
             if (k > 0) {
@@ -908,6 +972,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
         const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
+          gl.uniformMatrix4fv(uni.viewProj, false, camOf(id).state.viewProj);   // a moved layer's camera
           const lsec = layerSecOf(ls, sec);
           gl.uniform4f(uni.secPlane, lsec ? lsec.n[0] : 0, lsec ? lsec.n[1] : 0, lsec ? lsec.n[2] : 1, lsec ? lsec.d : 0);
           gl.uniform2f(uni.secCfg, lsec ? 1 : 0, lsec ? lsec.half : 0);
@@ -980,7 +1045,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
           const ls = layerOf(id), o = lopt(id);
           const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
           const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
-          blocksPipe.begin(cam, {
+          blocksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
@@ -1030,7 +1095,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
           const ls = layerOf(id), o = lopt(id);
           const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
           const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
-          sticksPipe.begin(cam, {
+          sticksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,

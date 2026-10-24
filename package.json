@@ -27,6 +27,7 @@
     "test:micro2": "node test/micro-smoke2.mjs",
     "test:micro:all": "npm run test:micro && npm run test:micro2 && npm run test:micro:wfr",
     "test:micro:wfr": "node test/micro-wfr-smoke.mjs",
+    "test:condenser:offset": "node test/condenser-offset.mjs",
     "test:wuffle": "node test/wuffle-smoke.mjs",
     "test:wuffle:bench": "node test/wuffle-bench-smoke.mjs",
     "test:gnsslog": "node test/gnsslog-smoke.mjs",

@@ -106,6 +106,25 @@ export function transformPoint(m, p) {                     // m · [p,1] → per
  * plane). Z-up (geology convention). Produces eye/view/proj; near/far adapt to
  * the orbit radius each update (dee's depth-precision trick).
  */
+// A camera state that draws geometry at p as the original draws p + o — a layer
+// offset as a change of camera, not of geometry. view/viewProj gain a trailing
+// translation; eye and target move by −o, so every shader that works from
+// (p − eye), the view's rotation columns and viewProj (block/stick raycasts,
+// gl_FragDepth, the headlight) stays exact. Section planes must be shifted the
+// same way by the caller (d − n·o). Under vertical exaggeration the offset's z
+// stretches with everything else, since the z-scale lives inside viewProj.
+export function translateState(s, o) {
+  if (!o) return s;
+  const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, o[0], o[1], o[2], 1];
+  return {
+    ...s,
+    eye: [s.eye[0] - o[0], s.eye[1] - o[1], s.eye[2] - o[2]],
+    target: [s.target[0] - o[0], s.target[1] - o[1], s.target[2] - o[2]],
+    view: mat4Multiply(s.view, T),
+    viewProj: mat4Multiply(s.viewProj, T),
+  };
+}
+
 export function createOrbitCamera({ fovY = 45 * Math.PI / 180 } = {}) {
   const c = {
     target: [0, 0, 0], radius: 100, theta: Math.PI / 4, phi: Math.PI / 5, fovY,

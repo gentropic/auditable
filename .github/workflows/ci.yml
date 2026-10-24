@@ -57,3 +57,5 @@ jobs:
         run: npm run test:micro2
       - name: lamina built smoke — ship artifact + Sealed net gate
         run: node test/lamina-built-smoke.mjs
+      - name: condenser layer offsets — every pipeline, pick, section, resolve
+        run: npm run test:condenser:offset
