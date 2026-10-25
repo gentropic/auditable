@@ -26,7 +26,7 @@
 // hit position), opacity < 1 (screen-door), catVis / isolate (they CULL
 // geometry, so the id buffer itself goes stale), sticks / soup layers.
 
-import { makeProgram } from './gl-util.js';
+import { makeProgram, IDENTITY3 } from './gl-util.js';
 import { FACE_NORMALS } from './gl-pick.js';
 
 const TEXW = 8192;
@@ -39,6 +39,7 @@ layout(location=1) in float aChan;
 layout(location=2) in float aCat;
 layout(location=3) in uint aRec;
 uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                   // lattice rotation (identity = axis-aligned)
 uniform vec2 uChanChunk;                 // this chunk's [min, span] (dequantize aChan)
 uniform vec2 uTexSize;
 flat out vec4 vAttr;
@@ -47,7 +48,7 @@ void main() {
   vec2 px = vec2(float(rec & 8191) + 0.5, float(rec >> 13) + 0.5);
   gl_Position = vec4(px / uTexSize * 2.0 - 1.0, 0.0, 1.0);
   gl_PointSize = 1.0;
-  float z = uGridOrigin.z + aIjk.z * uGridSize.z;
+  float z = (uGridOrigin + uGridRot * (aIjk * uGridSize)).z;
   vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, 0.0);
 }`;
 
@@ -237,7 +238,7 @@ export function createResolvePipeline(gl) {
   const bakePoints = makeProgram(gl, BAKE_VERT_POINTS, BAKE_FRAG);
   const resolveProg = makeProgram(gl, RESOLVE_VERT, RESOLVE_FRAG);
   const U = (p, n) => gl.getUniformLocation(p, n);
-  const uB = { gridOrigin: U(bakeBlocks, 'uGridOrigin'), gridSize: U(bakeBlocks, 'uGridSize'), chanChunk: U(bakeBlocks, 'uChanChunk'), texSize: U(bakeBlocks, 'uTexSize') };
+  const uB = { gridOrigin: U(bakeBlocks, 'uGridOrigin'), gridSize: U(bakeBlocks, 'uGridSize'), gridRot: U(bakeBlocks, 'uGridRot'), chanChunk: U(bakeBlocks, 'uChanChunk'), texSize: U(bakeBlocks, 'uTexSize') };
   const uP = { boxMin: U(bakePoints, 'uBoxMin'), boxSpan: U(bakePoints, 'uBoxSpan'), texSize: U(bakePoints, 'uTexSize') };
   const uR = {
     id: U(resolveProg, 'uId'), attr: U(resolveProg, 'uAttr'), ramp: U(resolveProg, 'uRamp'), palette: U(resolveProg, 'uPalette'),
@@ -304,6 +305,7 @@ export function createResolvePipeline(gl) {
           const g = c.grid;
           gl.uniform3f(uB.gridOrigin, g.originLocal[0], g.originLocal[1], g.originLocal[2]);
           gl.uniform3f(uB.gridSize, g.size[0], g.size[1], g.size[2]);
+          gl.uniformMatrix3fv(uB.gridRot, false, g.rot || IDENTITY3);
           const span = c.chanRange[1] - c.chanRange[0];
           gl.uniform2f(uB.chanChunk, c.chanRange[0], span > 0 ? span : 0);
           gl.bindVertexArray(blocksBakeVao(c));

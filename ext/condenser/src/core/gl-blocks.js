@@ -22,10 +22,13 @@
 // cull keeps anything TOUCHING the slab (box support radius along the normal);
 // demoted splats keep the centroid test (sub-pixel, and a splat can't clip).
 //
-// Positions are IJK-exact (§2.5): center = uGridOrigin + aIjk · uGridSize, with
-// uGridOrigin the frame-local centroid of block (0,0,0).
+// Positions are IJK-exact (§2.5): center = uGridOrigin + uGridRot · (aIjk · uGridSize),
+// with uGridOrigin the frame-local centroid of block (0,0,0). uGridRot is the
+// lattice ROTATION (columns = the unit U/V/W directions; identity for an
+// axis-aligned model): one orientation per chunk, so a rotated model draws as
+// true oriented boxes — the ray-box test runs in the block's own frame.
 
-import { makeProgram } from './gl-util.js';
+import { makeProgram, IDENTITY3 } from './gl-util.js';
 
 const VERT = `#version 300 es
 precision highp float;
@@ -37,6 +40,7 @@ layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
 uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
 uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
 uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
@@ -75,7 +79,7 @@ flat out float vPxR;                    // projected radius (edge-line fade near
 out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
-  vec3 center = uGridOrigin + aIjk * uGridSize;
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
   vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
@@ -92,7 +96,7 @@ void main() {
   // along the plane normal) — the fragment shader then clips the ray interval
   // EXACTLY, so straddling blocks show their true cut instead of vanishing.
   // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
-  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(uSecPlane.xyz));
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
   float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
   float cls = aCat;
@@ -159,6 +163,7 @@ uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
 uniform vec2 uSecCfg;
 uniform float uEdges;                   // 1 = draw block edge lines (View toggle)
+uniform mat3 uGridRot;                  // lattice rotation — the box test runs in its frame
 out vec4 outColor;
 ${SCREENDOOR}
 void main() {
@@ -174,18 +179,22 @@ void main() {
   // orthographic: parallel rays -- origin backed off along the view direction)
   vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
   vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
-  vec3 inv = 1.0 / rd;                  // IEEE inf on axis-parallel rays is fine here
-  vec3 t0 = (vCenter - vHalf - ro) * inv;
-  vec3 t1 = (vCenter + vHalf - ro) * inv;
+  // the box test in the BLOCK's frame (a rotation: t along the ray is unchanged)
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  vec3 inv = 1.0 / rdL;                 // IEEE inf on axis-parallel rays is fine here
+  vec3 t0 = (-vHalf - roL) * inv;
+  vec3 t1 = (vHalf - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
   if (tin > tout || tout < 0.0) discard;
-  // face normal = the slab that produced the BOX entry (chosen pre-clip)
+  // face normal = the slab that produced the BOX entry (chosen pre-clip), back in world space
   vec3 n = vec3(0.0);
-  if (tin == tmin3.x) n = vec3(-sign(rd.x), 0.0, 0.0);
-  else if (tin == tmin3.y) n = vec3(0.0, -sign(rd.y), 0.0);
-  else n = vec3(0.0, 0.0, -sign(rd.z));
+  if (tin == tmin3.x) n = vec3(-sign(rdL.x), 0.0, 0.0);
+  else if (tin == tmin3.y) n = vec3(0.0, -sign(rdL.y), 0.0);
+  else n = vec3(0.0, 0.0, -sign(rdL.z));
+  n = uGridRot * n;
   // TRUE SECTION: intersect the ray-box interval with the ray-slab interval.
   // When the slab plane replaces the box entry, the visible surface is the CUT
   // INTERIOR — flat, plane normal, slightly darkened — so a thin section reads
@@ -216,7 +225,7 @@ void main() {
   // the section wall). fwidth gives a ~screen-constant line; fade the effect
   // out as the block shrinks toward demotion so the far field stays clean.
   if (uEdges > 0.5) {
-    vec3 a2 = abs(p - vCenter) / vHalf;
+    vec3 a2 = abs(toBox * (p - vCenter)) / vHalf;
     float m1 = max(a2.x, max(a2.y, a2.z));
     float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
     float e = onCut ? m1 : m2;
@@ -269,7 +278,7 @@ export function createBlocksPipeline(gl) {
     const U = (n) => gl.getUniformLocation(prog, n);
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
-      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'),
+      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
       dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
       colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
@@ -358,6 +367,7 @@ export function createBlocksPipeline(gl) {
     }
     gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
     gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+    gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
     const span = c.chanRange[1] - c.chanRange[0];
     gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);

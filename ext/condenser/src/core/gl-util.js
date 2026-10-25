@@ -13,3 +13,6 @@ export function makeProgram(gl, vsrc, fsrc) {
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('condenser link: ' + gl.getProgramInfoLog(p));
   return p;
 }
+
+// a block chunk's lattice rotation when it has none (axis-aligned), column-major mat3
+export const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);

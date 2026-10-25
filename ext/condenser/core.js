@@ -493,16 +493,35 @@ function createChunkBuilder({ frame, chunkSize = 1 << 20, batchSize = 0, morton 
 // }
 
 
-// Grid from three axes (world coords) + a frame → the block-chunk grid descriptor.
-// origin here is the centroid of block (0,0,0), frame-local.
-function makeBlockGrid(axes, frame) {
+// Grid from three axes + a frame → the block-chunk grid descriptor. origin here
+// is the centroid of block (0,0,0), frame-local.
+//
+// ROTATED lattices (grid/basis.js): `rot` is the rotation R (column-major,
+// columns = the unit U/V/W directions) and `anchor` the world point the lattice
+// coordinates are measured from (block 0's centroid, canonically). The axes are
+// then LATTICE coordinates q = Rᵀ·(p − anchor), where the lattice is
+// axis-aligned; block (i,j,k)'s world centroid is anchor + R·(origin_q + ijk·pitch).
+// An axis-aligned grid is rot = null, so every existing caller is unchanged.
+function makeBlockGrid(axes, frame, rot = null, anchor = null) {
   const o = frame.origin;
-  return {
-    originLocal: [axes[0].origin - o[0], axes[1].origin - o[1], axes[2].origin - o[2]],
+  const q0 = [axes[0].origin, axes[1].origin, axes[2].origin];
+  const R = rot && !isIdentity3(rot) ? Array.from(rot) : null;
+  let originLocal;
+  if (R) {
+    const A = anchor || [0, 0, 0];
+    const d = [R[0] * q0[0] + R[3] * q0[1] + R[6] * q0[2], R[1] * q0[0] + R[4] * q0[1] + R[7] * q0[2], R[2] * q0[0] + R[5] * q0[1] + R[8] * q0[2]];
+    originLocal = [(A[0] - o[0]) + d[0], (A[1] - o[1]) + d[1], (A[2] - o[2]) + d[2]];   // anchor − frame first: small numbers meet small numbers
+  } else originLocal = [q0[0] - o[0], q0[1] - o[1], q0[2] - o[2]];
+  const g = {
+    originLocal,
     size: [axes[0].pitch || 1, axes[1].pitch || 1, axes[2].pitch || 1],
     count: [axes[0].count, axes[1].count, axes[2].count],
   };
+  if (R) { g.rot = Float32Array.from(R); g.rotD = R; }       // f32 for the GPU, f64 for CPU math
+  return g;
 }
+const isIdentity3 = (r) => Math.abs(r[0] - 1) < 1e-12 && Math.abs(r[4] - 1) < 1e-12 && Math.abs(r[8] - 1) < 1e-12
+  && Math.abs(r[1]) < 1e-12 && Math.abs(r[2]) < 1e-12 && Math.abs(r[3]) < 1e-12 && Math.abs(r[5]) < 1e-12 && Math.abs(r[6]) < 1e-12 && Math.abs(r[7]) < 1e-12;
 
 /**
  * Build one BlockChunk from columnar world-space block centroids + attributes.
@@ -527,11 +546,20 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
   let minI = 65535, minJ = 65535, minK = 65535, maxI = 0, maxJ = 0, maxK = 0;
   // sub-blocked: track actual box faces (variable half-dims) for the cull bbox
   let fx0 = Infinity, fy0 = Infinity, fz0 = Infinity, fx1 = -Infinity, fy1 = -Infinity, fz1 = -Infinity;
+  const R = grid.rotD || null;                              // rotated lattice: IJK in the lattice frame
   for (let k = 0; k < n; k++) {
     const i = perm[k];
-    const bi = Math.max(0, Math.round((x[i] - o[0] - gx) / sx));
-    const bj = Math.max(0, Math.round((y[i] - o[1] - gy) / sy));
-    const bk = Math.max(0, Math.round((z[i] - o[2] - gz) / sz));
+    let bi, bj, bk;
+    if (R) {
+      const dx = x[i] - o[0] - gx, dy = y[i] - o[1] - gy, dz = z[i] - o[2] - gz;
+      bi = Math.max(0, Math.round((R[0] * dx + R[1] * dy + R[2] * dz) / sx));
+      bj = Math.max(0, Math.round((R[3] * dx + R[4] * dy + R[5] * dz) / sy));
+      bk = Math.max(0, Math.round((R[6] * dx + R[7] * dy + R[8] * dz) / sz));
+    } else {
+      bi = Math.max(0, Math.round((x[i] - o[0] - gx) / sx));
+      bj = Math.max(0, Math.round((y[i] - o[1] - gy) / sy));
+      bk = Math.max(0, Math.round((z[i] - o[2] - gz) / sz));
+    }
     ijk[k * 3] = bi; ijk[k * 3 + 1] = bj; ijk[k * 3 + 2] = bk;
     if (bi < minI) minI = bi; if (bi > maxI) maxI = bi;
     if (bj < minJ) minJ = bj; if (bj > maxJ) maxJ = bj;
@@ -549,13 +577,24 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
       if (cz - h[2] < fz0) fz0 = cz - h[2]; if (cz + h[2] > fz1) fz1 = cz + h[2];
     }
   }
-  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked)
-  const bboxLocal = sub
-    ? Float64Array.of(fx0, fy0, fz0, fx1, fy1, fz1)
-    : Float64Array.of(
-        gx + minI * sx - sx / 2, gy + minJ * sy - sy / 2, gz + minK * sz - sz / 2,
-        gx + maxI * sx + sx / 2, gy + maxJ * sy + sy / 2, gz + maxK * sz + sz / 2,
-      );
+  // culling bbox = outer faces of the extreme blocks (variable-size when sub-blocked).
+  // Rotated: the world AABB of the chunk's IJK box (its 8 corners through R).
+  let bboxLocal;
+  if (R) {
+    bboxLocal = Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+    for (const ci of [minI - 0.5, maxI + 0.5]) for (const cj of [minJ - 0.5, maxJ + 0.5]) for (const ck of [minK - 0.5, maxK + 0.5]) {
+      const u = ci * sx, v = cj * sy, w = ck * sz;
+      const p = [gx + R[0] * u + R[3] * v + R[6] * w, gy + R[1] * u + R[4] * v + R[7] * w, gz + R[2] * u + R[5] * v + R[8] * w];
+      for (let a = 0; a < 3; a++) { if (p[a] < bboxLocal[a]) bboxLocal[a] = p[a]; if (p[a] > bboxLocal[a + 3]) bboxLocal[a + 3] = p[a]; }
+    }
+  } else {
+    bboxLocal = sub
+      ? Float64Array.of(fx0, fy0, fz0, fx1, fy1, fz1)
+      : Float64Array.of(
+          gx + minI * sx - sx / 2, gy + minJ * sy - sy / 2, gz + minK * sz - sz / 2,
+          gx + maxI * sx + sx / 2, gy + maxJ * sy + sy / 2, gz + maxK * sz + sz / 2,
+        );
+  }
   const chunk = { kind: 'blocks', count: n, grid, ijk, chan: outChan, chanRange: [cMin, cMax], cat: outCat, recIdx: outR, bboxLocal };
   if (sub) { chunk.dim = outDim; chunk.dimPalette = dimPalette; }
   return chunk;
@@ -564,11 +603,10 @@ function buildBlockChunk({ x, y, z, chan, cat, recIdx, dim }, grid, frame, rnd, 
 // Exact centroid of element k, frame-local (tests + picking).
 function blockLocalCenter(chunk, k) {
   const g = chunk.grid;
-  return [
-    g.originLocal[0] + chunk.ijk[k * 3] * g.size[0],
-    g.originLocal[1] + chunk.ijk[k * 3 + 1] * g.size[1],
-    g.originLocal[2] + chunk.ijk[k * 3 + 2] * g.size[2],
-  ];
+  const u = chunk.ijk[k * 3] * g.size[0], v = chunk.ijk[k * 3 + 1] * g.size[1], w = chunk.ijk[k * 3 + 2] * g.size[2];
+  const R = g.rotD;
+  if (R) return [g.originLocal[0] + R[0] * u + R[3] * v + R[6] * w, g.originLocal[1] + R[1] * u + R[4] * v + R[7] * w, g.originLocal[2] + R[2] * u + R[5] * v + R[8] * w];
+  return [g.originLocal[0] + u, g.originLocal[1] + v, g.originLocal[2] + w];
 }
 
 /**
@@ -1014,6 +1052,9 @@ function makeProgram(gl, vsrc, fsrc) {
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('condenser link: ' + gl.getProgramInfoLog(p));
   return p;
 }
+
+// a block chunk's lattice rotation when it has none (axis-aligned), column-major mat3
+const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
 
 // ── src/core/gl-sticks.js ──
 
@@ -1779,8 +1820,11 @@ function createSoupPipeline(gl) {
 // cull keeps anything TOUCHING the slab (box support radius along the normal);
 // demoted splats keep the centroid test (sub-pixel, and a splat can't clip).
 //
-// Positions are IJK-exact (§2.5): center = uGridOrigin + aIjk · uGridSize, with
-// uGridOrigin the frame-local centroid of block (0,0,0).
+// Positions are IJK-exact (§2.5): center = uGridOrigin + uGridRot · (aIjk · uGridSize),
+// with uGridOrigin the frame-local centroid of block (0,0,0). uGridRot is the
+// lattice ROTATION (columns = the unit U/V/W directions; identity for an
+// axis-aligned model): one orientation per chunk, so a rotated model draws as
+// true oriented boxes — the ray-box test runs in the block's own frame.
 
 
 const VERT$gl_blocks = `#version 300 es
@@ -1793,6 +1837,7 @@ layout(location=4) in uint aDim;        // uint8 size code → uDimPalette (sub-
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                  // lattice rotation (identity = axis-aligned)
 uniform sampler2D uDimPalette;          // Nx1 RGBA32F: per-code half-dims (box radius)
 uniform float uSubBlock;                // 1 = variable-size boxes (read aDim → palette)
 uniform float uPerspScale;              // persp: px/world at distance 1; ortho: px/world flat
@@ -1831,7 +1876,7 @@ flat out float vPxR;                    // projected radius (edge-line fade near
 out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
-  vec3 center = uGridOrigin + aIjk * uGridSize;
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
   vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
@@ -1848,7 +1893,7 @@ void main() {
   // along the plane normal) — the fragment shader then clips the ray interval
   // EXACTLY, so straddling blocks show their true cut instead of vanishing.
   // Demoted splats can't clip, so they keep the centroid test (sub-pixel there).
-  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(uSecPlane.xyz));
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));   // the normal in the box's frame
   float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);
   float cls = aCat;
@@ -1915,6 +1960,7 @@ uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
 uniform vec2 uSecCfg;
 uniform float uEdges;                   // 1 = draw block edge lines (View toggle)
+uniform mat3 uGridRot;                  // lattice rotation — the box test runs in its frame
 out vec4 outColor;
 ${SCREENDOOR$gl_blocks}
 void main() {
@@ -1930,18 +1976,22 @@ void main() {
   // orthographic: parallel rays -- origin backed off along the view direction)
   vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
   vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
-  vec3 inv = 1.0 / rd;                  // IEEE inf on axis-parallel rays is fine here
-  vec3 t0 = (vCenter - vHalf - ro) * inv;
-  vec3 t1 = (vCenter + vHalf - ro) * inv;
+  // the box test in the BLOCK's frame (a rotation: t along the ray is unchanged)
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  vec3 inv = 1.0 / rdL;                 // IEEE inf on axis-parallel rays is fine here
+  vec3 t0 = (-vHalf - roL) * inv;
+  vec3 t1 = (vHalf - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
   if (tin > tout || tout < 0.0) discard;
-  // face normal = the slab that produced the BOX entry (chosen pre-clip)
+  // face normal = the slab that produced the BOX entry (chosen pre-clip), back in world space
   vec3 n = vec3(0.0);
-  if (tin == tmin3.x) n = vec3(-sign(rd.x), 0.0, 0.0);
-  else if (tin == tmin3.y) n = vec3(0.0, -sign(rd.y), 0.0);
-  else n = vec3(0.0, 0.0, -sign(rd.z));
+  if (tin == tmin3.x) n = vec3(-sign(rdL.x), 0.0, 0.0);
+  else if (tin == tmin3.y) n = vec3(0.0, -sign(rdL.y), 0.0);
+  else n = vec3(0.0, 0.0, -sign(rdL.z));
+  n = uGridRot * n;
   // TRUE SECTION: intersect the ray-box interval with the ray-slab interval.
   // When the slab plane replaces the box entry, the visible surface is the CUT
   // INTERIOR — flat, plane normal, slightly darkened — so a thin section reads
@@ -1972,7 +2022,7 @@ void main() {
   // the section wall). fwidth gives a ~screen-constant line; fade the effect
   // out as the block shrinks toward demotion so the far field stays clean.
   if (uEdges > 0.5) {
-    vec3 a2 = abs(p - vCenter) / vHalf;
+    vec3 a2 = abs(toBox * (p - vCenter)) / vHalf;
     float m1 = max(a2.x, max(a2.y, a2.z));
     float m2 = max(min(a2.x, a2.y), min(max(a2.x, a2.y), a2.z));
     float e = onCut ? m1 : m2;
@@ -2025,7 +2075,7 @@ function createBlocksPipeline(gl) {
     const U = (n) => gl.getUniformLocation(prog, n);
     return { prog, uni: {
       viewProj: U('uViewProj'), eye: U('uEye'), right: U('uRight'), up: U('uUp'),
-      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'),
+      gridOrigin: U('uGridOrigin'), gridSize: U('uGridSize'), gridRot: U('uGridRot'),
       dimPalette: U('uDimPalette'), subBlock: U('uSubBlock'), opacity: U('uOpacity'),
       perspScale: U('uPerspScale'), demotePx: U('uDemotePx'), pointPx: U('uPointPx'),
       colorMode: U('uColorMode'), zRange: U('uZRange'), chanChunk: U('uChanChunk'), chanDoc: U('uChanDoc'),
@@ -2114,6 +2164,7 @@ function createBlocksPipeline(gl) {
     }
     gl.uniform3f(uni.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
     gl.uniform3f(uni.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+    gl.uniformMatrix3fv(uni.gridRot, false, c.grid.rot || IDENTITY3);
     const span = c.chanRange[1] - c.chanRange[0];
     gl.uniform2f(uni.chanChunk, c.chanRange[0], span > 0 ? span : 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
@@ -2557,6 +2608,7 @@ layout(location=4) in uint aDim;
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;
 uniform sampler2D uDimPalette;
 uniform float uSubBlock;
 uniform float uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
@@ -2576,7 +2628,7 @@ flat out float vCull;
 out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
-  vec3 center = uGridOrigin + aIjk * uGridSize;
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
   vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
@@ -2596,7 +2648,7 @@ void main() {
   }
   // touch-the-slab cull (support radius) — the fragment clips exactly, matching
   // the visual true-section cut so the cut wall is pickable
-  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(uSecPlane.xyz));
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));
   float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);   // hidden (isolated or sectioned) isn't pickable
   float cls = aCat;
@@ -2624,6 +2676,7 @@ uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
 uniform vec2 uSecCfg;
 uniform uint uLayer;
+uniform mat3 uGridRot;
 out uvec4 outId;
 ${PACK}
 void main() {
@@ -2636,9 +2689,13 @@ void main() {
   }
   vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
   vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
-  vec3 inv = 1.0 / rd;
-  vec3 t0 = (vCenter - vHalf - ro) * inv;
-  vec3 t1 = (vCenter + vHalf - ro) * inv;
+  // the box test in the block's frame (as gl-blocks): a rotated model's FACE
+  // ids name its LATTICE faces (U/V/W ±), not world ones
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  vec3 inv = 1.0 / rdL;
+  vec3 t0 = (-vHalf - roL) * inv;
+  vec3 t1 = (vHalf - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
@@ -2668,7 +2725,7 @@ void main() {
     if (tin > tinBox + 1e-5) face = 6u;                  // the section cut wall
     else {
       uint ax = (tmin3.x >= tmin3.y && tmin3.x >= tmin3.z) ? 0u : ((tmin3.y >= tmin3.z) ? 1u : 2u);
-      float rda = ax == 0u ? rd.x : (ax == 1u ? rd.y : rd.z);
+      float rda = ax == 0u ? rdL.x : (ax == 1u ? rdL.y : rdL.z);
       face = ax * 2u + (rda > 0.0 ? 0u : 1u);
     }
   }
@@ -2914,7 +2971,7 @@ function createPickPipeline(gl) {
   const uBlk = {
     layer: U(blk, 'uLayer'),
     viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
-    gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'),
+    gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
     dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
     perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
     ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
@@ -3123,6 +3180,7 @@ function createPickPipeline(gl) {
         }
         gl.uniform3f(uBlk.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
         gl.uniform3f(uBlk.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+        gl.uniformMatrix3fv(uBlk.gridRot, false, c.grid.rot || IDENTITY3);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, c.cursor);
       }
       }
@@ -3296,6 +3354,7 @@ layout(location=1) in float aChan;
 layout(location=2) in float aCat;
 layout(location=3) in uint aRec;
 uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;                   // lattice rotation (identity = axis-aligned)
 uniform vec2 uChanChunk;                 // this chunk's [min, span] (dequantize aChan)
 uniform vec2 uTexSize;
 flat out vec4 vAttr;
@@ -3304,7 +3363,7 @@ void main() {
   vec2 px = vec2(float(rec & 8191) + 0.5, float(rec >> 13) + 0.5);
   gl_Position = vec4(px / uTexSize * 2.0 - 1.0, 0.0, 1.0);
   gl_PointSize = 1.0;
-  float z = uGridOrigin.z + aIjk.z * uGridSize.z;
+  float z = (uGridOrigin + uGridRot * (aIjk * uGridSize)).z;
   vAttr = vec4(z, uChanChunk.x + aChan * uChanChunk.y, aCat, 0.0);
 }`;
 
@@ -3494,7 +3553,7 @@ function createResolvePipeline(gl) {
   const bakePoints = makeProgram(gl, BAKE_VERT_POINTS, BAKE_FRAG);
   const resolveProg = makeProgram(gl, RESOLVE_VERT, RESOLVE_FRAG);
   const U = (p, n) => gl.getUniformLocation(p, n);
-  const uB = { gridOrigin: U(bakeBlocks, 'uGridOrigin'), gridSize: U(bakeBlocks, 'uGridSize'), chanChunk: U(bakeBlocks, 'uChanChunk'), texSize: U(bakeBlocks, 'uTexSize') };
+  const uB = { gridOrigin: U(bakeBlocks, 'uGridOrigin'), gridSize: U(bakeBlocks, 'uGridSize'), gridRot: U(bakeBlocks, 'uGridRot'), chanChunk: U(bakeBlocks, 'uChanChunk'), texSize: U(bakeBlocks, 'uTexSize') };
   const uP = { boxMin: U(bakePoints, 'uBoxMin'), boxSpan: U(bakePoints, 'uBoxSpan'), texSize: U(bakePoints, 'uTexSize') };
   const uR = {
     id: U(resolveProg, 'uId'), attr: U(resolveProg, 'uAttr'), ramp: U(resolveProg, 'uRamp'), palette: U(resolveProg, 'uPalette'),
@@ -3561,6 +3620,7 @@ function createResolvePipeline(gl) {
           const g = c.grid;
           gl.uniform3f(uB.gridOrigin, g.originLocal[0], g.originLocal[1], g.originLocal[2]);
           gl.uniform3f(uB.gridSize, g.size[0], g.size[1], g.size[2]);
+          gl.uniformMatrix3fv(uB.gridRot, false, g.rot || IDENTITY3);
           const span = c.chanRange[1] - c.chanRange[0];
           gl.uniform2f(uB.chanChunk, c.chanRange[0], span > 0 ? span : 0);
           gl.bindVertexArray(blocksBakeVao(c));
@@ -4388,10 +4448,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       // Hidden layers can't change pixels; meshes ignore color opts entirely
       // (their cosmetics go through setLayerMeshStyle → needClear).
       const sigOf = (id) => { const o = lopt(id); return `${o.colorMode}|${o.clip ? `${o.clip[0]}~${o.clip[1]}` : 'a'}`; };
-      const kindBy = new Map(), subBy = new Set();
+      const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
         if (c.dimPalette) subBy.add(c._layer);             // sub-blocked: variable half-dims
+        if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
       for (const id of kindBy.keys()) if (lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
@@ -4416,6 +4477,9 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
             // the hit point, the lattice snaps the center); sub-blocked models
             // have per-block half-dims the depth alone can't recover
             if (k === 'blocks' && (ls.edges != null ? ls.edges : blockEdges) && subBy.has(id)) { bail = true; break; }
+            // a ROTATED model's face ids name lattice faces and its centers don't
+            // snap to world axes — the resolve's world-axis shading would lie
+            if (rotBy.has(id)) { bail = true; break; }
             groups.set(id, []);
             // NOTE: isolate filters and class eyes (catVis) are FINE here even
             // though they cull — changing them goes through needClear, so at

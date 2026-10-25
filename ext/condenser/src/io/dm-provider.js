@@ -14,6 +14,7 @@
 // (per-record INC) and non-model .dm files are a later milestone.
 
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '../../../dm/src/dm.js';
+import { inferSubBlockLattice, dimKey, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
 
 // PROJECTED batches over any .dm — decode only the requested column indices by
 // striding each field's fixed word-offset across records (no whole-record decode,
@@ -127,10 +128,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     grid = cached.grid || null; bbox = cached.bbox;
     subBlocked = !!cached.subBlocked;
     dimPalette = cached.dimPalette || null;
-    if (subBlocked && dimPalette) {
-      const r10c = (v) => Number(v.toPrecision(10));
-      dimCode = new Map(dimPalette.map((h2, i) => [`${r10c(h2[0] * 2)},${r10c(h2[1] * 2)},${r10c(h2[2] * 2)}`, i]));
-    }
+    if (subBlocked && dimPalette) dimCode = dimCodeFromPalette(dimPalette);
   } else if (regular) {
     grid = {
       x: { origin: mor[0] + inc[0] / 2, pitch: inc[0], count: Math.round(cnt[0]) },
@@ -158,7 +156,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
           const dx = DX[k], dy = DY[k], dz = DZ[k];
           if (dx > 0 && dy > 0 && dz > 0) {
             if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-            if (dimSet.size <= 300) dimSet.add(`${r10(dx)},${r10(dy)},${r10(dz)}`);
+            if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKey(dx, dy, dz));
           }
         }
       }
@@ -166,26 +164,8 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     if (!Number.isFinite(min[0])) throw new Error('dm: no finite XC/YC/ZC centroids');
     bbox = { min, max };
     // sub-blocked: fine lattice (pitch = minDim/2) + size palette — same rule as CSV
-    if (perRecDims && dimSet.size > 1 && Number.isFinite(minDim[0])) {
-      const finePitch = [minDim[0] / 2, minDim[1] / 2, minDim[2] / 2];
-      const fineAxes = [0, 1, 2].map((a) => {
-        if (ax[a].size >= CAP || !(finePitch[a] > 0)) return null;
-        const vals = [...ax[a]].sort((u, v) => u - v);
-        const origin = vals[0], pitch = finePitch[a];
-        const c = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
-        if (c > 65535) return null;
-        const eps = Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6);
-        for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
-        return { origin, pitch, count: c };
-      });
-      if (fineAxes.every(Boolean)) {
-        subBlocked = true;
-        const dims = [...dimSet].slice(0, 256).map((k) => k.split(',').map(Number));
-        dimPalette = dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]);
-        dimCode = new Map(dims.map((d, i) => [`${r10(d[0])},${r10(d[1])},${r10(d[2])}`, i]));
-        grid = { x: fineAxes[0], y: fineAxes[1], z: fineAxes[2] };
-      }
-    }
+    const sb = perRecDims ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
+    if (sb) { subBlocked = true; dimPalette = sb.dimPalette; dimCode = sb.dimCode; grid = sb.grid; }
   }
 
   // channels: every per-record numeric non-definition column; first alpha = category
@@ -213,7 +193,6 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     dm: h,                                                  // the @gcu/dm header: O(1) record fetch + the filter sweep
   };
 
-  const r10s = (v) => Number(v.toPrecision(10));
   async function* streamChunks({ chunkPoints = 1 << 18, signal, onProgress } = {}) {
     const alloc = () => ({
       x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints),
@@ -247,7 +226,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
           }
           buf.cat[fill] = code;
         }
-        if (buf.dim) { const c = dimCode.get(`${r10s(DX[k])},${r10s(DY[k])},${r10s(DZ[k])}`); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dim) { const c = dimCode.get(dimKey(DX[k], DY[k], DZ[k])); buf.dim[fill] = c === undefined ? 0 : c; }
         buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
         fill++;
         if (fill === chunkPoints) {

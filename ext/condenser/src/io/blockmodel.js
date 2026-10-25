@@ -13,7 +13,9 @@
 //   RawChunk = { count, x, y, z: Float64Array, chan: Float64Array,
 //                cat: Uint8Array|null, recStart }
 
-import { inferAxis } from '../grid/infer.js';
+import { inferAxis, inferSubBlockLattice, dimKey, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
+import { WS, splitFields, RecordJoiner, sampleRecords } from './delimited.js';
+import { detectRotatedLattice, latticeMisfit } from '../grid/basis.js';
 
 const X_RE = /^(x|xc|xcent(er|re)?|xmid|east(ing)?|xworld|centroid_?x)$/i;
 const Y_RE = /^(y|yc|ycent(er|re)?|ymid|north(ing)?|yworld|centroid_?y)$/i;
@@ -24,27 +26,45 @@ const DIMY_RE = /^(dy|yinc|ysize|ydim|dim_?y)$/i;
 const DIMZ_RE = /^(dz|zinc|zsize|zdim|dim_?z)$/i;
 const NONGRADE_RE = /^(ijk|id|index|row|i|j|k|dens|density|sg|topo|pct|proportion)$/i;
 
-const WS = 'ws';                                           // whitespace-delimiter sentinel ('\s' in a string is just 's')
-const splitter = (delim) => (delim === WS ? (l) => l.trim().split(/\s+/) : (l) => l.split(delim));
+// a RECORD splitter: RFC 4180 quotes honoured (delimited.js); unquoted lines take the plain split
+const splitter = (delim) => (l) => splitFields(l, delim);
 
 // Detect delimiter + header from the first text block.
 export function sniffDelimited(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(0, 24);
-  if (!lines.length) throw new Error('blockmodel: no data lines');
+  if (!text.split(/\r?\n/).some((l) => l.trim() && !l.startsWith('#'))) throw new Error('blockmodel: no data lines');
+  // a sample can end mid-record; a quoted record cut off at the edge is dropped,
+  // and a cut plain last line is dropped too unless it is all there is
+  const cut = !/\n\s*$/.test(text);
   let best = null;
   for (const d of [',', ';', '\t', WS]) {
+    let recs = sampleRecords(text, d, { max: 25 });
+    if (cut && recs.length > 1 && recs.length < 25) recs = recs.slice(0, -1);
+    recs = recs.slice(0, 24);
+    if (!recs.length) continue;
     const split = splitter(d);
-    const counts = lines.map((l) => split(l).length);
+    const counts = recs.map((l) => split(l).length);
     const n = counts[0];
     if (n < 2) continue;
-    if (counts.every((c) => c === n) && (!best || n > best.n)) best = { delim: d, n };
+    if (counts.every((c) => c === n) && (!best || n > best.n)) best = { delim: d, n, first: recs[0] };
   }
   if (!best) throw new Error('blockmodel: no consistent delimiter found');
-  const first = splitter(best.delim)(lines[0]).map((s) => s.trim());
+  const first = splitter(best.delim)(best.first).map((s) => s.trim());
   const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
   const hasHeader = first.some((s) => !numericish(s));
   return { delim: best.delim, header: hasHeader ? first : null, columns: best.n };
 }
+
+// Per-block size columns (DX/DY/DZ, XINC…) by name → { x, y, z } indices, or
+// null unless all three are present. Shared with every columnar reader so a
+// Parquet file is recognised by the same names a CSV is.
+export function findDimColumns(header) {
+  if (!header) return null;
+  const find = (re) => header.findIndex((h) => re.test(String(h).trim()));
+  const d = { x: find(DIMX_RE), y: find(DIMY_RE), z: find(DIMZ_RE) };
+  return d.x >= 0 && d.y >= 0 && d.z >= 0 ? d : null;
+}
+/** is this column name a per-block size column? */
+export const isDimColumn = (name) => DIM_RE.test(String(name).trim());
 
 // Pick column roles from names. Returns null when centroids can't be identified.
 export function mapColumns(header) {
@@ -67,8 +87,16 @@ export function mapColumns(header) {
 // re-reads raw rows through the same path.
 export async function* lineFields(blob, delim, hasHeader, { signal, onProgress } = {}) {
   const reader = blob.stream().pipeThrough(new TextDecoderStream()).getReader();
-  const split = splitter(delim);
+  const split = splitter(delim), join = new RecordJoiner(delim);
   let carry = '', first = hasHeader, bytesSeen = 0;
+  const take = (l, batch) => {
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (!join.pending && (!l || l[0] === '#')) return;
+    const r = join.push(l);
+    if (r == null) return;
+    if (first) { first = false; return; }
+    batch.push(split(r));
+  };
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -79,16 +107,15 @@ export async function* lineFields(blob, delim, hasHeader, { signal, onProgress }
       const lines = text.split('\n');
       carry = lines.pop();
       const batch = [];
-      for (let l of lines) {
-        if (l.endsWith('\r')) l = l.slice(0, -1);
-        if (!l || l[0] === '#') continue;
-        if (first) { first = false; continue; }
-        batch.push(split(l));
-      }
+      for (const l of lines) take(l, batch);
       if (onProgress) onProgress(bytesSeen, blob.size);
       if (batch.length) yield batch;
     }
-    if (carry && carry[0] !== '#' && carry.trim() && !first) yield [split(carry)];
+    const batch = [];
+    if (carry && (join.pending || carry.trim())) take(carry, batch);
+    const rest = join.flush();
+    if (rest != null && !first) batch.push(split(rest));
+    if (batch.length) yield batch;
   } finally { reader.releaseLock(); }
 }
 
@@ -101,8 +128,20 @@ export async function* lineFields(blob, delim, hasHeader, { signal, onProgress }
 async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress } = {}) {
   const reader = blob.stream().getReader();
   const dec = new TextDecoder();
-  const split = splitter(delim);
-  let carryText = '', carryAt = 0, pos = 0, first = hasHeader, bytesSeen = 0;
+  const split = splitter(delim), join = new RecordJoiner(delim);
+  let carryText = '', carryAt = 0, pos = 0, first = hasHeader, bytesSeen = 0, recAt = 0;
+  // one line (its byte offset `start`) into the joiner; a completed record keeps
+  // the offset of its FIRST line, so the sparse index always points at a record start
+  const take = (l, start, fields, at) => {
+    if (l.endsWith('\r')) l = l.slice(0, -1);
+    if (!join.pending && (!l || l[0] === '#')) return;
+    const wasPending = join.pending;
+    const r = join.push(l);
+    if (!wasPending) recAt = start;
+    if (r == null) return;
+    if (first) { first = false; return; }
+    fields.push(split(r)); at.push(recAt);
+  };
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -116,14 +155,7 @@ async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgre
       const lines = text.split('\n');
       const nextCarry = lines.pop();                       // == nl.length complete lines remain
       const fields = [], at = [];
-      for (let i = 0; i < lines.length; i++) {
-        const start = i === 0 ? carryAt : nl[i - 1] + 1;
-        let l = lines[i];
-        if (l.endsWith('\r')) l = l.slice(0, -1);
-        if (!l || l[0] === '#') continue;
-        if (first) { first = false; continue; }
-        fields.push(split(l)); at.push(start);
-      }
+      for (let i = 0; i < lines.length; i++) take(lines[i], i === 0 ? carryAt : nl[i - 1] + 1, fields, at);
       carryText = nextCarry;
       carryAt = nl.length ? nl[nl.length - 1] + 1 : carryAt;
       pos += value.length;
@@ -131,7 +163,11 @@ async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgre
       if (fields.length) yield { fields, at };
     }
     const tail = carryText + dec.decode();                 // flush any held-back multi-byte bytes
-    if (tail && tail[0] !== '#' && tail.trim() && !first) yield { fields: [split(tail.endsWith('\r') ? tail.slice(0, -1) : tail)], at: [carryAt] };
+    const fields = [], at = [];
+    if (tail && (join.pending || tail.trim())) take(tail, carryAt, fields, at);
+    const rest = join.flush();
+    if (rest != null && !first) { fields.push(split(rest)); at.push(recAt); }
+    if (fields.length) yield { fields, at };
   } finally { reader.releaseLock(); }
 }
 
@@ -145,7 +181,7 @@ export async function fetchDelimitedRecord(blob, header, rec) {
   const a = Math.min(Math.floor(rec / idx.k), idx.offsets.length - 1);
   let remaining = rec - a * idx.k;
   const m = header.mapping;
-  const split = splitter(header.delim);
+  const split = splitter(header.delim), join = new RecordJoiner(header.delim);
   const reader = blob.slice(idx.offsets[a]).stream().pipeThrough(new TextDecoderStream()).getReader();
   let carry = '';
   try {
@@ -153,10 +189,17 @@ export async function fetchDelimitedRecord(blob, header, rec) {
       const { done, value } = await reader.read();
       const lines = done ? (carry ? [carry] : []) : (carry + value).split('\n');
       if (!done) carry = lines.pop();
+      if (done && join.pending) lines.push(null);           // end of file: flush an unterminated quoted record
       for (let l of lines) {
-        if (l.endsWith('\r')) l = l.slice(0, -1);
-        if (!l || l[0] === '#') continue;
-        const f = split(l);
+        let rec2;
+        if (l === null) rec2 = join.flush();
+        else {
+          if (l.endsWith('\r')) l = l.slice(0, -1);
+          if (!join.pending && (!l || l[0] === '#')) continue;
+          rec2 = join.push(l);
+        }
+        if (rec2 == null) continue;
+        const f = split(rec2);
         const xv = +f[m.x], yv = +f[m.y], zv = +f[m.z];
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         if (remaining === 0) return f;
@@ -172,7 +215,6 @@ const CAP_DISTINCT = 300000;                               // per-axis discovery
 // sweep 2 as a shared factory: the same cold-recipe stream whether the header
 // came from a live discovery or a cached `discovered` payload (sidecars)
 function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null) {
-  const r10 = (v) => Number(v.toPrecision(10));
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
     const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
@@ -183,7 +225,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
         buf.chan[fill] = map.chan != null ? +f[map.chan] : 0;
         if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
-        if (buf.dim) { const key = `${r10(+f[dimInfo.cols.x])},${r10(+f[dimInfo.cols.y])},${r10(+f[dimInfo.cols.z])}`; const c = dimInfo.code.get(key); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dim) { const c = dimInfo.code.get(dimKey(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
         fill++;
         if (fill === chunkPoints) {
           yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recStart };
@@ -195,7 +237,16 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
   };
 }
 
-export async function openBlockModel(blob, { mapping = null, discovered = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+// opts.lattice — a DECLARED lattice ({ x, y, z } axes, optionally rot + anchor
+//   for a rotated one; see grid/basis.js): applied as stated, never inferred,
+//   but every record is checked against it in the discovery sweep and the open
+//   throws (naming the record) if one is off it.
+// opts.rotated — false skips the rotated-lattice detection. Otherwise a model
+//   that is NOT an axis-aligned grid is tried as a rotated one (reservoir →
+//   basis → a fit over every record); a hit is returned as
+//   header.latticeCandidate and NOT applied — the caller confirms it (an
+//   inferred rotation is never applied silently).
+export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -209,9 +260,8 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     const map2 = header.mapping;
     const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
     // sub-blocked: rebuild the size-code map from the persisted half-dim palette (×2)
-    const r10b = (v) => Number(v.toPrecision(10));
     const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
-      ? { cols: header.dimCols, code: new Map(header.dimPalette.map((hd, i) => [`${r10b(hd[0] * 2)},${r10b(hd[1] * 2)},${r10b(hd[2] * 2)}`, i])) }
+      ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
       : null;
     return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2) };
   }
@@ -232,7 +282,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // category detection below (which skips map.chan). Demote a non-numeric
   // AUTO pick; an explicit mapping stays the caller's call.
   if (!mapping && map.chan != null && sniff.header) {
-    const lines0 = head.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(1, 40);
+    const lines0 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split0 = splitter(sniff.delim);
     const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
     if (vals0.length && vals0.every((v) => Number.isNaN(Number(v)))) map.chan = null;
@@ -241,7 +291,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // auto category: first column whose head-sample values are all non-numeric
   let catCol = map.cat;
   if (catCol == null && sniff.header) {
-    const lines = head.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(1, 40);
+    const lines = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split = splitter(sniff.delim);
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
       if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
@@ -253,8 +303,8 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
   // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
   // distinct (dx,dy,dz) triples that become the size-code palette.
-  const dimCols = sniff.header ? { x: sniff.header.findIndex((h) => DIMX_RE.test(h.trim())), y: sniff.header.findIndex((h) => DIMY_RE.test(h.trim())), z: sniff.header.findIndex((h) => DIMZ_RE.test(h.trim())) } : { x: -1, y: -1, z: -1 };
-  const hasDims = dimCols.x >= 0 && dimCols.y >= 0 && dimCols.z >= 0;
+  const dimCols = findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
+  const hasDims = dimCols.x >= 0;
   const minDim = [Infinity, Infinity, Infinity];
   const dimSet = new Set();
 
@@ -266,12 +316,16 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   let count = 0;
   const hasHeaderRow = !!sniff.header && !sniff.generated;
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
+  const RES = 50000, res = [];                             // reservoir: the first centroids (rotated-lattice inference)
+  let declaredMisfit = null;
   for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
     for (let fi = 0; fi < fields.length; fi++) {
       const f = fields[fi];
       const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
       if (count % indexEvery === 0) anchors.push(at[fi]);
+      if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
+      else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
       count++;
       if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
@@ -284,38 +338,38 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
         const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
         if (dx > 0 && dy > 0 && dz > 0) {
           if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-          if (dimSet.size <= 300) dimSet.add(`${round10(dx)},${round10(dy)},${round10(dz)}`);
+          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKey(dx, dy, dz));
         }
       }
     }
   }
 
+  if (lattice && declaredMisfit) throw new Error(`declared lattice rejected — ${declaredMisfit}`);
   const axes = ax.map((s) => (s.size < CAP_DISTINCT ? inferAxis([...s].sort((a, b) => a - b)) : null));
-  let grid = axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+  let grid = lattice ? { ...lattice } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
 
   // ── sub-blocked detection ── dims vary → fine-lattice IJK (pitch = min dim /2,
   // so every power-of-2 sub-block centroid lands on it) + a size-code palette.
   // Off the fine lattice (non-power-of-2 splits) → leave it null → points fallback.
   let subBlocked = false, dimPalette = null, dimInfo = null;
-  if (hasDims && dimSet.size > 1 && Number.isFinite(minDim[0])) {
-    const finePitch = [minDim[0] / 2, minDim[1] / 2, minDim[2] / 2];
-    const fineAxes = [0, 1, 2].map((a) => {
-      if (ax[a].size >= CAP_DISTINCT || !(finePitch[a] > 0)) return null;
-      const vals = [...ax[a]].sort((u, v) => u - v);
-      const origin = vals[0], pitch = finePitch[a];
-      const cnt = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
-      if (cnt > 65535) return null;
-      const eps = Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6);
-      for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
-      return { origin, pitch, count: cnt };
-    });
-    if (fineAxes.every(Boolean)) {
-      subBlocked = true;
-      const dims = [...dimSet].slice(0, 256).map((k) => k.split(',').map(Number));
-      dimPalette = dims.map(([dx, dy, dz]) => [dx / 2, dy / 2, dz / 2]);       // half-dims (box radius)
-      dimInfo = { cols: dimCols, code: new Map(dims.map((d, i) => [`${round10(d[0])},${round10(d[1])},${round10(d[2])}`, i])) };
-      grid = { x: fineAxes[0], y: fineAxes[1], z: fineAxes[2] };                // fine lattice → IJK
-    }
+  const sb = hasDims && !lattice ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP_DISTINCT }) : null;
+  if (sb) {
+    subBlocked = true;
+    dimPalette = sb.dimPalette;                                // half-dims (box radius)
+    dimInfo = { cols: dimCols, code: sb.dimCode };
+    grid = sb.grid;                                            // fine lattice → IJK
+  }
+  // not an axis-aligned grid → maybe a ROTATED one (a candidate, for the caller to confirm)
+  let latticeCandidate = null;
+  if (!grid && !subBlocked && rotated && res.length >= 24) {
+    const coordSweep = () => (async function* () {
+      for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal })) {
+        const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+        for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = +f[map.x]; y[i] = +f[map.y]; z[i] = +f[map.z]; }
+        yield { x, y, z, count: n };
+      }
+    })();
+    latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
   }
   const categories = catCol != null && catCounts.size > 0 && catCounts.size <= 255
     ? [...catCounts.keys()].sort() : null;
@@ -325,7 +379,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // the UI offers these as color channels; switching re-runs sweep 2 only.
   const numericColumns = [];
   if (sniff.header) {
-    const lines2 = head.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#')).slice(1, 40);
+    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split2 = splitter(sniff.delim);
     for (let i = 0; i < sniff.columns; i++) {
       if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
@@ -337,6 +391,8 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     kind: 'blockmodel', count,
     bbox: { min, max },
     grid,                                                   // null → not a regular grid (points fallback)
+    latticeCandidate,                                       // a detected ROTATED lattice, not applied (caller confirms) — or null
+    lattice: lattice ? { basis: 'declared' } : null,
     subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)

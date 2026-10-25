@@ -7,7 +7,7 @@
 // spatial index. The record index is THE join key (micro-spec §4): a pick is a
 // row number in the source file.
 
-import { makeProgram } from './gl-util.js';
+import { makeProgram, IDENTITY3 } from './gl-util.js';
 import { translateState } from './camera.js';
 
 // no encoder: the pick target is RG32UI (R = record, G = layer + face), so the
@@ -87,6 +87,7 @@ layout(location=4) in uint aDim;
 uniform mat4 uViewProj;
 uniform vec3 uEye, uRight, uUp;
 uniform vec3 uGridOrigin, uGridSize;
+uniform mat3 uGridRot;
 uniform sampler2D uDimPalette;
 uniform float uSubBlock;
 uniform float uPerspScale, uDemotePx, uPointPx, uFixedSplat, uOrtho;
@@ -106,7 +107,7 @@ flat out float vCull;
 out vec2 vCorner;
 out vec3 vWorldPos;
 void main() {
-  vec3 center = uGridOrigin + aIjk * uGridSize;
+  vec3 center = uGridOrigin + uGridRot * (aIjk * uGridSize);
   vec3 half_ = uSubBlock > 0.5 ? texelFetch(uDimPalette, ivec2(int(aDim), 0), 0).rgb : uGridSize * 0.5;
   float r = length(half_);
   float dist = max(distance(uEye, center), 1e-3);
@@ -126,7 +127,7 @@ void main() {
   }
   // touch-the-slab cull (support radius) — the fragment clips exactly, matching
   // the visual true-section cut so the cut wall is pickable
-  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(uSecPlane.xyz));
+  float secSupp = demoted > 0.5 ? 0.0 : dot(half_, abs(transpose(uGridRot) * uSecPlane.xyz));
   float secCull = (uSecCfg.x > 0.5 && abs(dot(center, uSecPlane.xyz) - uSecPlane.w) > uSecCfg.y + secSupp) ? 1.0 : 0.0;
   vCull = max((uIsolate > 0.5 && m < 0.5) ? 1.0 : 0.0, secCull);   // hidden (isolated or sectioned) isn't pickable
   float cls = aCat;
@@ -154,6 +155,7 @@ uniform mat4 uViewProj;
 uniform vec4 uSecPlane;
 uniform vec2 uSecCfg;
 uniform uint uLayer;
+uniform mat3 uGridRot;
 out uvec4 outId;
 ${PACK}
 void main() {
@@ -166,9 +168,13 @@ void main() {
   }
   vec3 ro = uOrthoRay > 0.5 ? vWorldPos - uFwd * uBackoff : uEye;
   vec3 rd = uOrthoRay > 0.5 ? uFwd : normalize(vWorldPos - uEye);
-  vec3 inv = 1.0 / rd;
-  vec3 t0 = (vCenter - vHalf - ro) * inv;
-  vec3 t1 = (vCenter + vHalf - ro) * inv;
+  // the box test in the block's frame (as gl-blocks): a rotated model's FACE
+  // ids name its LATTICE faces (U/V/W ±), not world ones
+  mat3 toBox = transpose(uGridRot);
+  vec3 roL = toBox * (ro - vCenter), rdL = toBox * rd;
+  vec3 inv = 1.0 / rdL;
+  vec3 t0 = (-vHalf - roL) * inv;
+  vec3 t1 = (vHalf - roL) * inv;
   vec3 tmin3 = min(t0, t1), tmax3 = max(t0, t1);
   float tin = max(max(tmin3.x, tmin3.y), tmin3.z);
   float tout = min(min(tmax3.x, tmax3.y), tmax3.z);
@@ -198,7 +204,7 @@ void main() {
     if (tin > tinBox + 1e-5) face = 6u;                  // the section cut wall
     else {
       uint ax = (tmin3.x >= tmin3.y && tmin3.x >= tmin3.z) ? 0u : ((tmin3.y >= tmin3.z) ? 1u : 2u);
-      float rda = ax == 0u ? rd.x : (ax == 1u ? rd.y : rd.z);
+      float rda = ax == 0u ? rdL.x : (ax == 1u ? rdL.y : rdL.z);
       face = ax * 2u + (rda > 0.0 ? 0u : 1u);
     }
   }
@@ -444,7 +450,7 @@ export function createPickPipeline(gl) {
   const uBlk = {
     layer: U(blk, 'uLayer'),
     viewProj: U(blk, 'uViewProj'), eye: U(blk, 'uEye'), right: U(blk, 'uRight'), up: U(blk, 'uUp'),
-    gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'),
+    gridOrigin: U(blk, 'uGridOrigin'), gridSize: U(blk, 'uGridSize'), gridRot: U(blk, 'uGridRot'),
     dimPalette: U(blk, 'uDimPalette'), subBlock: U(blk, 'uSubBlock'),
     perspScale: U(blk, 'uPerspScale'), demotePx: U(blk, 'uDemotePx'), pointPx: U(blk, 'uPointPx'), fixedSplat: U(blk, 'uFixedSplat'),
     ortho: U(blk, 'uOrtho'), fwd: U(blk, 'uFwd'), orthoRay: U(blk, 'uOrthoRay'), backoff: U(blk, 'uBackoff'),
@@ -653,6 +659,7 @@ export function createPickPipeline(gl) {
         }
         gl.uniform3f(uBlk.gridOrigin, c.grid.originLocal[0], c.grid.originLocal[1], c.grid.originLocal[2]);
         gl.uniform3f(uBlk.gridSize, c.grid.size[0], c.grid.size[1], c.grid.size[2]);
+        gl.uniformMatrix3fv(uBlk.gridRot, false, c.grid.rot || IDENTITY3);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, c.cursor);
       }
       }

@@ -753,10 +753,11 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
       // Hidden layers can't change pixels; meshes ignore color opts entirely
       // (their cosmetics go through setLayerMeshStyle → needClear).
       const sigOf = (id) => { const o = lopt(id); return `${o.colorMode}|${o.clip ? `${o.clip[0]}~${o.clip[1]}` : 'a'}`; };
-      const kindBy = new Map(), subBy = new Set();
+      const kindBy = new Map(), subBy = new Set(), rotBy = new Set();
       for (const c of chunks) if (activeChunk(c)) {
         if (!kindBy.has(c._layer)) kindBy.set(c._layer, c.kind);
         if (c.dimPalette) subBy.add(c._layer);             // sub-blocked: variable half-dims
+        if (c.grid && c.grid.rot) rotBy.add(c._layer);     // rotated lattice: face ids are lattice faces
       }
       const dirty = new Set(cosmeticDirtyLayers);
       for (const id of kindBy.keys()) if (lastCosSig.get(id) !== sigOf(id)) dirty.add(id);
@@ -781,6 +782,9 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
             // the hit point, the lattice snaps the center); sub-blocked models
             // have per-block half-dims the depth alone can't recover
             if (k === 'blocks' && (ls.edges != null ? ls.edges : blockEdges) && subBy.has(id)) { bail = true; break; }
+            // a ROTATED model's face ids name lattice faces and its centers don't
+            // snap to world axes — the resolve's world-axis shading would lie
+            if (rotBy.has(id)) { bail = true; break; }
             groups.set(id, []);
             // NOTE: isolate filters and class eyes (catVis) are FINE here even
             // though they cull — changing them goes through needClear, so at

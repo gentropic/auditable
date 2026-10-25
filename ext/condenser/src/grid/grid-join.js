@@ -19,6 +19,21 @@
 const REL = 1e-6;                                          // relative tolerance
 
 // tolerant Euclidean gcd of two positive floats
+import { sameBasis, inFrameOf, basisAngles } from './basis.js';
+
+// ROTATED lattices (grid/basis.js): two grids are comparable only when they
+// share a basis — then both are expressed about ONE anchor (inFrameOf) and the
+// axis-wise machinery below runs unchanged on lattice coordinates. Different
+// orientations have no common lattice; the reason says so (cross-basis
+// oriented-box resampling is the v2 path).
+function basisMismatch(A, B) {
+  if (!A.rot && !B.rot) return null;
+  if (sameBasis(A.rot, B.rot)) return null;
+  const d = (G) => (G.rot ? `rotated (azimuth ${basisAngles(G.rot).azimuth.toFixed(1)}°)` : 'axis-aligned');
+  return `different lattice orientations — ${d(A)} vs ${d(B)}; no common lattice (cross-orientation resampling isn't supported yet)`;
+}
+const sameFrame = (G, ref) => (G.rot || ref.rot ? inFrameOf(G, ref) : G);
+
 export function floatGcd(a, b, tol) {
   a = Math.abs(a); b = Math.abs(b);
   if (a < b) { const t = a; a = b; b = t; }
@@ -64,6 +79,9 @@ export function axisMap(src, tgt, opts = {}) {
 // axes:[ax,ay,az], nested }. Uses each axis as source vs the other as target
 // (symmetric compatibility — direction doesn't change compatibility).
 export function gridsCompatible(A, B, opts = {}) {
+  const bad = basisMismatch(A, B);
+  if (bad) return { ok: false, reason: bad };
+  B = sameFrame(B, A);
   const axes = [];
   let nested = true;
   for (const k of ['x', 'y', 'z']) {
@@ -71,13 +89,18 @@ export function gridsCompatible(A, B, opts = {}) {
     if (!m.ok) return { ok: false, reason: `${k.toUpperCase()}: ${m.reason}` };
     axes.push(m); nested = nested && m.nested;
   }
-  return { ok: true, axes, nested };
+  return { ok: true, axes, nested, rotated: !!A.rot };
 }
 
 // Build a resampler from source axes → target axes. Returns { ok, reason } or a
 // resampler with dense target accumulators. Numeric ops: mean (weighted), sum,
 // count, coverage. Categorical: majority (weighted vote).
 export function makeResampler(srcAxes, tgtAxes, opts = {}) {
+  // source INDICES stay in the source's own lattice frame; only its origins are
+  // re-expressed about the target's anchor so the phases compare
+  const bad = basisMismatch(srcAxes, tgtAxes);
+  if (bad) return { ok: false, reason: bad };
+  srcAxes = sameFrame(srcAxes, tgtAxes);
   const X = axisMap(srcAxes.x, tgtAxes.x, opts);
   const Y = axisMap(srcAxes.y, tgtAxes.y, opts);
   const Z = axisMap(srcAxes.z, tgtAxes.z, opts);
@@ -222,6 +245,9 @@ export function makeBoxAggregator(tgt, opts = {}) {
 // per-axis via {x,y,z}). Returns { ok, reason } or { x, y, z } target axes.
 export function commonLattice(grids, opts = {}) {
   if (!grids.length) return { ok: false, reason: 'no grids' };
+  for (const G of grids.slice(1)) { const bad = basisMismatch(grids[0], G); if (bad) return { ok: false, reason: bad }; }
+  const ref = grids[0];
+  if (ref.rot) { const out = commonLattice(grids.map((G) => { const g = sameFrame(G, ref); return { x: g.x, y: g.y, z: g.z }; }), opts); return out.ok ? { ...out, rot: ref.rot, anchor: ref.anchor } : out; }
   const res = opts.resolution || 'finest';
   const out = {};
   for (const k of ['x', 'y', 'z']) {

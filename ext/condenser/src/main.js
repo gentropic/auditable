@@ -9,9 +9,11 @@ export { LasFormatError, parseLasHeader, decodeLasRecords, openLas } from './io/
 export { mulberry32, shuffledIndices, shuffleInPlace, documentFrame, buildChunk, chunkLocalPosition, createChunkBuilder } from './core/chunks.js';
 export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton.js';
 export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder } from './core/blocks.js';
-export { inferAxis } from './grid/infer.js';
+export { inferAxis, inferSubBlockLattice, dimKey, dimCodeFromPalette, DIM_PALETTE_MAX } from './grid/infer.js';
+export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, latticeMisfit, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from './grid/grid-join.js';
-export { sniffDelimited, mapColumns, openBlockModel, openTable, lineFields, fetchDelimitedRecord } from './io/blockmodel.js';
+export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord } from './io/blockmodel.js';
+export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine } from './io/delimited.js';
 export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces } from './io/drillholes.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';
 export { createSticksPipeline } from './core/gl-sticks.js';
