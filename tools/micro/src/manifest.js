@@ -8,13 +8,17 @@
 // Boundaries held here: manifest = data model, project.json = view state;
 // persistence (persistElement/loadElement) stays app-side — these BUILD and
 // HYDRATE, they never touch storage.
+import { splitDelimitedRecord, delimitedRecords, delimiterOfLine, basisOfGrid } from '../../../ext/condenser/src/main.js';
 import { layerTableHeader, primaryLocationOf, attrRowCountOf, colIsNumeric } from './records.js';
 import { matColSourceHash, isStoredCat, PAINT_BLANK } from './columns.js';
 import { basename, layerFiles, dhSetName } from './paths.js';
 
 export function elementGeometry(L, h) {
   if (L.dh || h.kind === 'drillholes') return { kind: 'drillhole', crs: null };
-  if (h.grid) return { kind: 'block-model', variant: h.subBlocked ? 'sub-blocked' : 'regular', crs: null, origin: null, rotation: null };
+  // a ROTATED lattice records its basis in the producer's form (U/V/W world
+  // generators, origin = block 0's centroid) + how it was decided (inferred and
+  // confirmed by whom, or declared) — spec §6
+  if (h.grid) return { kind: 'block-model', variant: h.subBlocked ? 'sub-blocked' : 'regular', crs: null, origin: null, rotation: h.grid.rot ? { ...basisOfGrid(h.grid), decided: h.lattice || { basis: 'declared' } } : null };
   return { kind: 'points', crs: null };
 }
 // one layer's column set + ops at a location — shared by the single-location
@@ -113,9 +117,10 @@ export const dhElementName = (L) => dhSetName(L).replace(/\.holes\.json$/, '.ele
 export async function peekCollarCols(dh) {                 // header + first-row peek: names + rough types (cached)
   if (dh._collarCols) return dh._collarCols;
   try {
-    const head = (await dh.blobs.collar.slice(0, 65536).text()).split(/\r?\n/);
-    const delim = [',', ';', '\t'].reduce((a, b2) => (head[0].split(b2).length > head[0].split(a).length ? b2 : a), ',');
-    const cells2 = (ln) => ln.split(delim).map((x) => x.trim().replace(/^"|"$/g, ''));
+    const text = await dh.blobs.collar.slice(0, 65536).text(), nl = text.indexOf('\n');
+    const delim = delimiterOfLine((nl < 0 ? text : text.slice(0, nl)).replace(/\r$/, ''));
+    const head = delimitedRecords(text, delim);              // records, not lines (quoted fields may span lines)
+    const cells2 = (ln) => splitDelimitedRecord(ln, delim).map((x) => x.trim());
     const names = cells2(head[0]).filter(Boolean), row1 = head[1] ? cells2(head[1]) : [];
     dh._collarCols = names.map((nm, i) => ({ name: nm, type: row1[i] !== undefined && row1[i] !== '' && Number.isFinite(+row1[i]) ? 'number' : 'string' }));
   } catch { dh._collarCols = []; }

@@ -181,9 +181,15 @@ export function surfaceFromGrid(g) {
   };
   return { grid: g, sampleZ };
 }
-// a BLOCK MODEL's regular lattice (origin/pitch/count per axis), when it has one
+// a BLOCK MODEL's regular lattice (origin/pitch/count per axis), when it has one.
+// A ROTATED model's axes are LATTICE coordinates and carry rot + anchor
+// (condenser grid/basis.js) — the grid-join engine compares two such grids
+// only when they share a basis, and anything mapping world points onto the
+// axes goes through latticeMapOf.
 export function gridAxesOf(L) {
   const g = L && L.docs && L.docs.blockDoc && L.docs.blockDoc.header && L.docs.blockDoc.header.grid;
   if (!g || !g.x || g.x.pitch == null) return null;
-  return { x: { origin: g.x.origin, pitch: g.x.pitch, count: g.x.count }, y: { origin: g.y.origin, pitch: g.y.pitch, count: g.y.count }, z: { origin: g.z.origin, pitch: g.z.pitch, count: g.z.count } };
+  const out = { x: { origin: g.x.origin, pitch: g.x.pitch, count: g.x.count }, y: { origin: g.y.origin, pitch: g.y.pitch, count: g.y.count }, z: { origin: g.z.origin, pitch: g.z.pitch, count: g.z.count } };
+  if (g.rot) { out.rot = g.rot; out.anchor = g.anchor; }
+  return out;
 }

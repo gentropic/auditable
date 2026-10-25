@@ -55,6 +55,8 @@ jobs:
         run: npm run test:micro
       - name: micro smoke 2 — data-integrity + persistence
         run: npm run test:micro2
+      - name: micro host smoke — addLayer, load results, quoted CSV, Parquet sub-blocks, rotated models
+        run: npm run test:micro:host
       - name: lamina built smoke — ship artifact + Sealed net gate
         run: node test/lamina-built-smoke.mjs
       - name: condenser layer offsets — every pipeline, pick, section, resolve

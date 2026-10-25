@@ -143,7 +143,8 @@
   <a href="#ref"><span class="n">A</span>Reference — keys &amp; the expression language</a>
   <a href="#formats"><span class="n">B</span>Formats</a>
   <a href="#glossary"><span class="n">C</span>Glossary</a>
-  <a href="#idx"><span class="n">D</span>Index</a>
+  <a href="#dev"><span class="n">D</span>For developers</a>
+  <a href="#idx"><span class="n">E</span>Index</a>
 </nav>
 
 <h2 id="what"><span class="n">1</span>What micro is</h2>
@@ -669,8 +670,8 @@ params:
 <h2 id="formats"><span class="n">B</span>Formats</h2>
 <table>
   <tr><th>Format</th><th>Read</th><th>Write</th><th>Notes</th></tr>
-  <tr><td>CSV / TXT / DAT</td><td>✓</td><td>✓</td><td>delimiter sniffed (, ; tab); block models need coordinate columns; per-block <code>dX/dY/dZ</code> → sub-blocked</td></tr>
-  <tr><td>Parquet</td><td>✓</td><td>✓</td><td>streamed with predicate + spatial push-down; micro's own store (Morton-sorted, self-describing metadata)</td></tr>
+  <tr><td>CSV / TXT / DAT</td><td>✓</td><td>✓</td><td>delimiter sniffed (, ; tab); RFC 4180 quoting (a quoted field may hold the delimiter, a line break or a doubled quote); block models need coordinate columns; per-block <code>dX/dY/dZ</code> → sub-blocked; a rotated lattice is detected and offered (App. D)</td></tr>
+  <tr><td>Parquet</td><td>✓</td><td>✓</td><td>streamed with predicate + spatial push-down; micro's own store (Morton-sorted, self-describing metadata); per-block <code>DX/DY/DZ</code> → sub-blocked; a file may <b>declare</b> its lattice, rotated or not, in <code>micro:model</code> (App. D)</td></tr>
   <tr><td>Datamine <code>.dm</code></td><td>✓</td><td>—</td><td>block models + wireframe pairs (<code>…pt.dm</code>/<code>…tr.dm</code>); per-record <code>XINC/YINC/ZINC</code> → sub-blocked; export via CSV/Parquet</td></tr>
   <tr><td>LAS</td><td>✓</td><td>—</td><td>point clouds; LAZ is not read (needs a compiled decoder — see §20)</td></tr>
   <tr><td>PLY</td><td>✓</td><td>✓</td><td>points or mesh; writes <code>double</code> coordinates</td></tr>
@@ -705,8 +706,72 @@ params:
   <tr><td><b>recipe</b></td><td>an analysis setup saved as commented YAML — re-runnable, hand-editable, data not code</td></tr>
 </table>
 
-<h2 id="idx"><span class="n">D</span>Index</h2>
+<h2 id="dev"><span class="n">D</span>For developers — hosting micro, and <code>micro:model</code></h2>
+<p>micro can be driven by another page. Load it unmodified in a same-origin frame and call <code>window._micro</code>. This appendix covers two contracts: <b>handing micro a layer as typed columns</b>, and the <b><code>micro:model</code> footer</b> that lets a Parquet file state its own lattice. Everything here is what micro's own tests exercise (<code>test/micro-host-smoke.mjs</code>).</p>
+
+<h3 id="host-api">Handing micro a layer: <code>addLayer</code></h3>
+<p>When the data comes from software that already knows what it is, write no file. Pass columns and their meaning. Nothing is sniffed: no name guessing, no grid discovery.</p>
+<pre>const id = await window._micro.addLayer({
+  kind: 'blocks',                       // 'blocks' | 'points' | 'mesh' | 'drillholes' | 'table'
+  name: 'Au_OK',
+  columns: {                            // one length; any number of value columns
+    E: Float64Array, N: Float64Array, RL: Float64Array,
+    Au: Float32Array,
+    LITO: { codes: Uint8Array, labels: ['Granito', 'Skarn'] },   // a category, already coded
+  },
+  roles: { x: 'E', y: 'N', z: 'RL', value: 'Au', category: 'LITO' },
+  lattice: { … },                       // optional — the DECLARED lattice (below)
+  sizes: { dx: 'DX', dy: 'DY', dz: 'DZ' },   // optional — sub-block sizes: column names, arrays or constants
+  frame: { crs: 'EPSG:31983' },         // optional
+});</pre>
+<ul>
+  <li><b>Columns</b>: typed arrays (any of <code>Float64Array</code>, <code>Float32Array</code> or the integer kinds), plain arrays of numbers or strings, or <code>{ codes, labels }</code> for a coded category. The category keeps <i>your</i> label order.</li>
+  <li><b><code>kind: 'mesh'</code></b> takes <code>vertices</code> (a <code>Float64Array</code> of x,y,z triples) and <code>triangles</code> (a <code>Uint32Array</code> of index triples) instead of columns.</li>
+  <li><b><code>kind: 'drillholes'</code></b> takes three tables, <code>collar</code>, <code>survey</code> and <code>intervals</code>, each <code>{ columns, roles }</code>. The roles are: collar <code>bhid x y z</code> (+ optional <code>eoh</code>); survey <code>bhid at az dip</code> (<code>depth</code> works for <code>at</code>); intervals <code>bhid from to</code> (+ optional <code>value</code>, <code>category</code>). Optional <code>method</code> and <code>dipConvention</code> are as in the import dialog.</li>
+  <li><b><code>kind: 'table'</code></b> takes columns only. A free-text table belongs here, not inside a spatial layer.</li>
+</ul>
+<p><b>The layer is a file-backed layer.</b> micro writes the columns once into its own formats (Parquet for blocks and points, with a <code>micro:model</code> footer; binary PLY for meshes; RFC 4180 CSV for drillhole and plain tables) and opens them with every role stated. Pick, colour-by, filters, stats, grade–tonnage, swath, sections, export and project save therefore behave exactly as for a file, and there is no second code path to drift.</p>
+<p><b>Success and failure come back to you.</b> <code>addLayer</code> resolves to the layer id once the layer is complete. The first layer's id is <code>0</code>, so test for <code>null</code>, not truthiness. It rejects with the error micro would otherwise show, and still shows it on the status line. The same holds for files:</p>
+<pre>const id = await _micro.openBlob(file, name, 'add');                        // id, or null on failure
+await _micro.openBlob(file, name, 'add', null, { throw: true });             // rejects instead
+addEventListener('micro:layer-added',  (e) => e.detail);   // { id, name, kind }
+addEventListener('micro:layer-failed', (e) => e.detail);   // { name, error }
+addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason } — a declared lattice refused</pre>
+
+<h3 id="micro-model">A Parquet file that states its lattice: <code>micro:model</code></h3>
+<p>micro reads the <code>micro:model</code> key-value entry from <b>any</b> Parquet file's footer, not only its own exports. A producer that knows its block model's lattice can write it, and the file then opens with no discovery sweep. The value is JSON:</p>
+<table>
+  <tr><th>key</th><th></th><th>meaning</th></tr>
+  <tr><td><code>bbox</code></td><td>required</td><td><code>{ min: [x,y,z], max: [x,y,z] }</code>: the model's extent (it frames the view).</td></tr>
+  <tr><td><code>grid</code></td><td>required</td><td>The lattice, or <code>null</code> for points. Axis-aligned: <code>{ x, y, z }</code>, each <code>{ origin, pitch, count }</code> with <code>origin</code> the <b>centroid of block 0</b> (not its corner). Rotated: <code>{ basis: { origin, U, V, W, counts, source? } }</code> (below).</td></tr>
+  <tr><td><code>categories</code></td><td>optional</td><td>The category column's distinct values (≤255), in the code order you want.</td></tr>
+  <tr><td><code>subBlocked</code></td><td>optional</td><td><code>true</code> for variable-size blocks. Then <code>grid</code> is the <b>fine</b> lattice (pitch = the smallest block size ÷ 2) and you must also write <code>dims</code> and <code>dimPalette</code>.</td></tr>
+  <tr><td><code>dims</code></td><td>with <code>subBlocked</code></td><td><code>{ x: 'DX', y: 'DY', z: 'DZ' }</code>: the size columns <b>by name</b>.</td></tr>
+  <tr><td><code>dimPalette</code></td><td>with <code>subBlocked</code></td><td>The distinct sizes as <b>half</b>-sizes, <code>[[hx,hy,hz], …]</code> (≤256).</td></tr>
+  <tr><td><code>declared</code></td><td>optional</td><td>Who states the lattice (e.g. <code>"mm"</code>). A declared or rotated lattice is applied without asking, but <b>checked</b> (below).</td></tr>
+  <tr><td><code>v</code></td><td>optional</td><td>Format version; <code>1</code> today.</td></tr>
+</table>
+<p>A sub-blocked model written <i>without</i> <code>dims</code> and <code>dimPalette</code> is not trusted: micro runs discovery and rebuilds them. Its size columns are found by the same names as in a CSV (<code>DX/DY/DZ</code>, <code>XINC…</code>, <code>DIMX…</code>), so sub-blocked Parquet also works with no <code>micro:model</code> at all. The <code>micro:frame</code> entry (<code>{ crs }</code>) carries the coordinate system.</p>
+
+<h3 id="rotated">Rotated block models</h3>
+<p>A model whose lattice axes aren't east/north/up is drawn as <b>true rotated boxes</b> with exact picking and true sections. The rotation is stored as a basis, never as angles:</p>
+<pre>"grid": { "basis": {
+  "origin": [x, y, z],                  // the CENTROID of block (0,0,0), world coordinates
+  "U": [ux, uy, uz], "V": [vx, vy, vz], "W": [wx, wy, wz],   // world vectors = block size × direction
+  "counts": [nu, nv, nw],
+  "source": { "convention": "azimuth/dip/pitch (ZXZ, clockwise from north)", "angles": [a, b, c] }
+} }</pre>
+<ul>
+  <li><b>Convert your angles once</b> to U/V/W. <code>source</code> is kept for provenance only and micro never reads angles back. U, V and W must be perpendicular: a sheared lattice is refused, not approximated.</li>
+  <li><b>A declared lattice is your statement, not micro's guess</b>, so no confirmation is asked. micro still maps every centroid through it. If one falls off the lattice (more than a thousandth of a block), the declaration is <b>refused</b>, the model opens as points, and the status line says which record and by how much. <code>addLayer</code> with a wrong lattice rejects in the same way.</li>
+  <li><b>No declaration?</b> micro tries to infer one: nearest-neighbour displacements give the directions, then a fit over every record measures the sizes and checks the lattice. An inferred rotation is <b>never applied silently</b>. micro asks “rotated boxes or points?”. Hosts can answer in advance with <code>openBlob(…, { acceptLattice: true | false })</code>.</li>
+  <li>Exports write the lattice back (the internal form plus this basis form), so a rotated model round-trips through Parquet and project save. The layer's lineage and element manifest record whether the lattice was inferred or declared, and who confirmed it.</li>
+  <li><b>What works on a rotated model:</b> everything per-record (filters, stats, grade–tonnage, swath, export, select/flag by solid per centroid) and <b>joins and reconciles between models on the same rotated lattice</b>. <b>Not yet:</b> resampling between different orientations (the join panel says so), proportions by solid, rotated sub-blocked models, and the empty-grid creator.</li>
+</ul>
+
+<h2 id="idx"><span class="n">E</span>Index</h2>
 <div style="column-count:2;column-gap:2em;font-size:.88em">
+<p style="margin:.15em 0">addLayer (host API) — App. D</p>
 <p style="margin:.15em 0">attribute table — §4, §7</p>
 <p style="margin:.15em 0">autocomplete — §5, App. A</p>
 <p style="margin:.15em 0">background (figure) — §17</p>
@@ -747,10 +812,11 @@ params:
 <p style="margin:.15em 0">measure — §4</p>
 <p style="margin:.15em 0">memory budget / pin cache — §16, §22</p>
 <p style="margin:.15em 0">mesh export — §18</p>
+<p style="margin:.15em 0">micro:model — App. D</p>
 <p style="margin:.15em 0">offline / install — §21</p>
 <p style="margin:.15em 0">opacity — §4, §15</p>
 <p style="margin:.15em 0">painting a column — §8</p>
-<p style="margin:.15em 0">Parquet — §16, App. B</p>
+<p style="margin:.15em 0">Parquet — §16, App. B, App. D</p>
 <p style="margin:.15em 0">phases (demo) — §2, §3</p>
 <p style="margin:.15em 0">picking / record panel — §4</p>
 <p style="margin:.15em 0">projects (folders) — §18</p>
@@ -758,6 +824,7 @@ params:
 <p style="margin:.15em 0">recipes — §18</p>
 <p style="margin:.15em 0">reconcile (Δ map) — §9</p>
 <p style="margin:.15em 0">rename (batch) — §2</p>
+<p style="margin:.15em 0">rotated block models — App. D</p>
 <p style="margin:.15em 0">routines (recipes of recipes) — §18</p>
 <p style="margin:.15em 0">routine editor — §18</p>
 <p style="margin:.15em 0">inputs (ask-me-first recipes) — §18</p>

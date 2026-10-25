@@ -942,7 +942,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -1120,10 +1120,12 @@ async function pickHitPoint(hit, cssX, cssY) {
     const L = layerById(hit.layer);
     const half = await blockHalfDims(L, hit.rec);          // sub-blocks carry their own size
     if (!half) return world;
-    const ax = face >> 1, sign = (face & 1) ? 1 : -1;      // 0=−X 1=+X 2=−Y 3=+Y 4=−Z 5=+Z
+    const ax = face >> 1;                                  // 0=−X 1=+X 2=−Y 3=+Y 4=−Z 5=+Z (a ROTATED model: its lattice U/V/W faces)
     n = FACE_NORMALS[face];
+    const R = L && L.docs.blockDoc && L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot;
+    if (R) n = [R[0] * n[0] + R[3] * n[1] + R[6] * n[2], R[1] * n[0] + R[4] * n[1] + R[7] * n[2], R[2] * n[0] + R[5] * n[1] + R[8] * n[2]];
     const cLocal = [world[0] - frame.origin[0], world[1] - frame.origin[1], world[2] - frame.origin[2]];
-    dist = (cLocal[ax] + sign * half[ax]) * sign;          // dot(n, p) = n[ax]·p[ax]; n[ax] = sign
+    dist = n[0] * cLocal[0] + n[1] * cLocal[1] + n[2] * cLocal[2] + half[ax];   // the face plane: dot(n, centre) + half-extent
   }
   const den = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
   if (Math.abs(den) < 1e-9) return world;
@@ -1990,7 +1992,7 @@ async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimal
       { key: 'micro:lineage', value: JSON.stringify(expLin) },
       // full-scope exports carry their discovery (self-describing on reopen);
       // filtered/selection subsets don't — their bbox/categories would lie
-      ...(scope === 'all' && h.bbox ? [{ key: 'micro:model', value: JSON.stringify({ grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: h.subBlocked || false }) }] : []),
+      ...(scope === 'all' && h.bbox ? [{ key: 'micro:model', value: JSON.stringify(microModelOf(h)) }] : []),
     ];
     const columnData = colIdx.map((i, k) => ({ name: cols[i].name, data: pqCols[k] }));
     const bytes = writeParquet({ columnData, codec, rowGroupSize: 1 << 16, kvMetadata: kv });
@@ -2029,7 +2031,7 @@ async function convertLayerToParquet(L, cvOpts = {}) {
     // categories discovery is already done, so carry it in the file itself
     // (shared files stay self-contained; foreign parquets fall back to discovery
     // + the project sidecar)
-    { key: 'micro:model', value: JSON.stringify({ grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: h.subBlocked || false }) },
+    { key: 'micro:model', value: JSON.stringify(microModelOf(h)) },
   ];
   // over the in-memory ceiling → the STREAMING file-order path: row groups
   // accumulate 64k at a time and append to the blob writer (peak memory ≈ one
@@ -2499,6 +2501,7 @@ async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], onProgr
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size || !grid.count) return null;
+  if (grid.rot) return null;                               // a ROTATED lattice: the dense engine samples an axis-aligned one — callers fall back to per-centroid winding
   const usePeel = method === 'peel';
   const m = await meshVariant(meshL, usePeel ? 'solid' : variant);   // peel handles closed/open via surfaceType, no skirt closures
   const eng = usePeel ? await meshPeel(meshL) : await meshWinding(meshL, variant);
@@ -2949,7 +2952,7 @@ async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', meshB = 
       },
     });
   } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `ratio by solid: ${e.message}`; return null; }
-  if (!dense || (between && !denseB)) { $('#meta').textContent = 'ratio by solid: needs context-tier meshes + a regular model'; return null; }
+  if (!dense || (between && !denseB)) { $('#meta').textContent = (L.docs.blockDoc && L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot) ? 'ratio by solid: proportions on a ROTATED model aren\'t supported yet — select / flag by solid work (per centroid)' : 'ratio by solid: needs context-tier meshes + a regular model'; return null; }
   if (epoch !== _ratioEpoch) return null;
   const col = createPaintCol(L, name, 'ratio');
   if (!col) return null;
@@ -3159,16 +3162,17 @@ async function runSpatialJoin({ leftL, rightL, target, columns, derived = [], co
     // sub-blocked source: no source lattice — scatter each block as a volume-
     // overlap BOX onto the target (aggregates to the parent/target resolution).
     const sub = !!(h0 && h0.subBlocked && h0.dimCols);
+    if (sub && T.rot) throw new Error(`${side} is sub-blocked: scattering sub-blocks onto a ROTATED lattice isn't supported yet`);
     if (sub) { perSource[side] = { L, sub: true, R: makeBoxAggregator(T), dimCols: h0.dimCols, cols: [] }; continue; }
     const sa = gridAxesOf(L); if (!sa) throw new Error(`${side} is not a regular block model`);
     const R = makeResampler(sa, T); if (!R.ok) throw new Error(`${side}: ${R.reason}`);
-    perSource[side] = { L, sa, R, cols: [] };
+    perSource[side] = { L, sa, R, cols: [], toQ: latticeMapOf(sa) };   // a rotated source indexes in its OWN lattice frame
   }
   for (const c of columns) { if (!perSource[c.src]) throw new Error(`no ${c.src} layer for column ${c.name}`); perSource[c.src].cols.push(c); }
   // stream each source, scatter its columns
   for (const side of Object.keys(perSource)) {
     const ps = perSource[side]; if (!ps.cols.length) continue;
-    const { L, sa, R, sub, dimCols } = ps, h = layerTableHeader(L), m = h.mapping;
+    const { L, sa, R, sub, dimCols, toQ } = ps, h = layerTableHeader(L), m = h.mapping;
     for (const c of ps.cols) {
       c._i = h.columns.indexOf(c.name); c._w = c.weight ? h.columns.indexOf(c.weight) : -1;
       if (c.num) c._acc = R.newAcc(); else { c._acc = R.newCatAcc(); c._dict = ['']; c._codeOf = new Map(); }
@@ -3192,7 +3196,8 @@ async function runSpatialJoin({ leftL, rightL, target, columns, derived = [], co
           hx = (+f[dimCols.x] || 0) / 2; hy = (+f[dimCols.y] || 0) / 2; hz = (+f[dimCols.z] || 0) / 2;
           if (!(hx > 0 && hy > 0 && hz > 0)) continue;
         } else {
-          si = Math.round((wx - sa.x.origin) / (sa.x.pitch || 1)); sj = Math.round((wy - sa.y.origin) / (sa.y.pitch || 1)); sk = sa.z.pitch ? Math.round((wz - sa.z.origin) / sa.z.pitch) : 0;
+          const q = sa.rot ? toQ(wx, wy, wz) : [wx, wy, wz];
+          si = Math.round((q[0] - sa.x.origin) / (sa.x.pitch || 1)); sj = Math.round((q[1] - sa.y.origin) / (sa.y.pitch || 1)); sk = sa.z.pitch ? Math.round((q[2] - sa.z.origin) / sa.z.pitch) : 0;
           if (si < 0 || si >= sa.x.count || sj < 0 || sj >= sa.y.count || sk < 0 || sk >= sa.z.count) continue;
         }
         for (const c of ps.cols) {
@@ -3230,10 +3235,11 @@ async function runSpatialJoin({ leftL, rightL, target, columns, derived = [], co
   const getAt = (idx) => (name) => { const c = byOut[name]; if (!c || !c._present[idx]) return null; return c.num ? c._out[idx] : (c._dict[c._codes[idx]] || null); };
   const heads = ['XC', 'YC', 'ZC', ...columns.map((c) => c.out || c.name), ...derived.map((d) => d.out), ...covCols.map((c) => (c.out || c.name) + '_cov')];
   const ox = T.x.origin, oy = T.y.origin, oz = T.z.origin, px = T.x.pitch, py = T.y.pitch, pz = T.z.pitch;
+  const toW = T.rot ? worldMapOf(T) : null;                // a rotated target writes WORLD centroids (and is reopened with its lattice declared)
   const parts = [heads.join(',') + '\n']; let buf = '';
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     const idx = i + nx * (j + ny * k); if (!present[idx]) continue;
-    const row = [ox + i * px, oy + j * py, oz + k * pz];
+    const row = toW ? toW(ox + i * px, oy + j * py, oz + k * pz).map((v) => +v.toFixed(6)) : [ox + i * px, oy + j * py, oz + k * pz];
     for (const c of columns) {
       if (!c._present[idx]) { row.push(''); continue; }
       if (c.num) row.push(+c._out[idx].toFixed(6)); else row.push(csvCell(c._dict[c._codes[idx]] || ''));
@@ -3900,7 +3906,7 @@ async function routineReadTableFull(name) {
     });
     return { columns: h.columns, rows, sheet: h.sheet };
   }
-  const lines = (await (await fh.getFile()).text()).split(/\r?\n/).filter((x) => x.trim());
+  const lines = csvRecords(await (await fh.getFile()).text());
   const cells2 = collarCells(lines);
   const columns = cells2(lines[0]);
   const rows = lines.slice(1).map((ln) => { const c = cells2(ln); return Object.fromEntries(columns.map((h, i2) => [h, c[i2] !== undefined && c[i2] !== '' && Number.isFinite(+c[i2]) ? +c[i2] : c[i2]])); });
@@ -6783,7 +6789,7 @@ function ngSourceBbox(d) {
 }
 // block-model layers eligible for the common-grid creator, and the common
 // lattice covering the selected ones at the chosen resolution.
-const ngBlockLayers = () => S.layers.filter((L) => gridAxesOf(L));
+const ngBlockLayers = () => S.layers.filter((L) => { const g = gridAxesOf(L); return g && !g.rot; });   // the creator builds axis-aligned grids
 function compatAxes(d) {
   const sel = ngBlockLayers().filter((L) => d.compatSel.has(L.id));
   if (sel.length < 1) return { ok: false, reason: 'pick at least one model' };
@@ -7438,7 +7444,7 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
   const isTable = over.asKind === 'table' || /\.xlsx$/i.test(name)
     || (/\.(csv|txt|dat|tsv)$/i.test(name) && !over.mapping && !over.discovered && !isMesh && over.asKind == null && !await delimitedHasCoords(blob));
   const lid = allocLayerId();
-  if (lid == null) { $('#meta').textContent = `layer limit reached (${LAYER_CAP}) — remove one first`; return; }
+  if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
   const first = S.layers.length === 0;
   S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: (typeof File !== 'undefined' && blob instanceof File && _fileHandles.get(blob)) || null, storage: 'loose', lineage: over.lineage || openLineage(name, blob) });
   S.activeId = lid;
@@ -7452,14 +7458,14 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
     // grid stays extension-driven (no table→grid provider yet); asKind only picks points↔surface.
     else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.(tif|tiff|grd)$/i.test(name)) { await openGridBlob(blob, name, { layer: lid, first, displayCache: over.displayCache, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, band: over.band || 0, smooth: over.smooth }); }
     else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.asc$/i.test(name) && await ascLooksLikeGrid(blob)) { await openGridBlob(blob, name, { layer: lid, first, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, smooth: over.smooth }); }
-    else if (/\.(parquet|pq)$/i.test(name)) { await openParquetBlocks(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, cached: over.cached }); }
+    else if (/\.(parquet|pq)$/i.test(name)) { await openParquetBlocks(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, cached: over.cached, strictMapping: over.strictMapping, acceptLattice: over.acceptLattice }); }
     // .xyz/.pts default to POINTS (2-decimal coords form a fake lattice); a
     // block/points asKind override rides forcePoints for every delimited file.
     else if (/\.xlsx$/i.test(name)) { await openXlsxBlob(blob, name, { layer: lid, first, sheet: over.sheet }); }
     // a delimited file with NO X/Y/Z is a TABLE, not an error (unless a mapping
     // was passed, which asserts the coordinates by hand)
     else if (isTable && /\.(csv|txt|dat|tsv)$/i.test(name)) { await openTableBlob(blob, name, { layer: lid, first }); }
-    else if (/\.(csv|txt|dat|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered }); }
+    else if (/\.(csv|txt|dat|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered, lattice: over.lattice, acceptLattice: over.acceptLattice }); }
     else if (/\.ply$/i.test(name)) { await openPlyBlob(blob, name, { layer: lid, first }); }
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
     else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .tif .grd .asc`);
@@ -7477,6 +7483,8 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
     if (L && L.colorSel == null) L.colorSel = $('#colorBy').value;   // a fallback — a branch that chose (DXF strings → 'cat') keeps its choice
     renderLayers();
     dispatchEvent(new Event('micro:project-dirty'));
+    dispatchEvent(new CustomEvent('micro:layer-added', { detail: { id: lid, name, kind: L ? L.kind : null } }));
+    return lid;
   } catch (e) {
     $('#meta').textContent = `${name} — ${e.message}`;
     renderer.removeLayer(lid);
@@ -7484,7 +7492,240 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
     if (S.layers.length) setActiveLayer(S.layers[0].id);
     else $('#empty').style.display = '';
     renderLayers();
+    return layerFailed(name, e, over);
   }
+}
+// The caller's half of a load. A failed load has always been shown in #meta and
+// cleaned up; a host driving micro also needs to KNOW. openBlob resolves to the
+// new layer id (null on failure) and fires micro:layer-added / micro:layer-failed;
+// with over.throw it rejects with the error instead of resolving null.
+function layerFailed(name, err, over = {}) {
+  dispatchEvent(new CustomEvent('micro:layer-failed', { detail: { name, error: err && err.message || String(err) } }));
+  if (over.throw) { if (err && typeof err === 'object') err._micro = true; throw err; }
+  return null;
+}
+// ── the HOST front door: _micro.addLayer(spec) ────────────────────────────────
+// A host page that already knows what its data IS hands micro typed columns and
+// their roles; nothing is sniffed. The columns are written once into micro's
+// OWN formats — a block model or point set as Parquet (with a `micro:model`
+// footer stating the lattice, so no discovery runs), a mesh as binary PLY, a
+// drillhole trio or a table as RFC-4180 CSV — and opened with every role passed
+// explicitly. So the layer IS a file-backed layer: pick, colour-by, filters,
+// stats, GT, swath, sections, export and project save all work on it exactly
+// as on a file, with no second code path to drift. The bytes are held in
+// memory as a File; saving the project writes them into it like any source.
+//
+// Resolves to the layer id once the layer is complete; rejects with the error
+// micro would otherwise show (it is still shown in #meta). Contract and
+// examples: docs/index.html (#host-api).
+const INGEST_KINDS = ['blocks', 'points', 'mesh', 'drillholes', 'table'];
+async function addLayer(spec = {}) {
+  const kind = spec.kind;
+  try {
+    if (!INGEST_KINDS.includes(kind)) throw new Error(`addLayer: kind must be one of ${INGEST_KINDS.join(' | ')} (got ${JSON.stringify(kind)})`);
+    const name = String(spec.name || kind);
+    const lineage = mkLineage('ingest', { kind, roles: spec.roles || null, lattice: spec.lattice ? 'declared' : undefined, by: 'host' }, []);
+    let lid;
+    if (kind === 'blocks' || kind === 'points') lid = await ingestColumnsLayer(spec, name, lineage);
+    else if (kind === 'mesh') lid = await ingestMeshLayer(spec, name, lineage);
+    else if (kind === 'drillholes') lid = await ingestDrillholes(spec, name, lineage);
+    else lid = await ingestTable(spec, name, lineage);
+    const L = layerById(lid);
+    if (L) { L.label = name; renderLayers(); }
+    return lid;
+  } catch (e) {
+    // errors raised BEFORE a layer existed never reached openBlob's handler
+    if (!e._micro) { $('#meta').textContent = `${spec.name || kind || 'addLayer'} — ${e.message}`; dispatchEvent(new CustomEvent('micro:layer-failed', { detail: { name: spec.name || kind, error: e.message } })); }
+    throw e;
+  }
+}
+// one column → { type, data, labels? }: the Parquet physical type, the values,
+// and (for a pre-coded category) the code → label list in the HOST's order
+function ingestColumn(nm, v) {
+  if (v && typeof v === 'object' && !ArrayBuffer.isView(v) && !Array.isArray(v) && v.codes) {
+    const labels = (v.labels || []).map(String);
+    const data = Array.from(v.codes, (c) => (c >= 0 && c < labels.length ? labels[c] : null));
+    return { type: 'STRING', data, labels, n: data.length };
+  }
+  if (ArrayBuffer.isView(v)) {
+    const type = v instanceof Float64Array ? 'DOUBLE' : v instanceof Float32Array ? 'FLOAT'
+      : (v instanceof Int8Array || v instanceof Int16Array || v instanceof Int32Array || v instanceof Uint8Array || v instanceof Uint8ClampedArray || v instanceof Uint16Array) ? 'INT32'
+        : v instanceof BigInt64Array ? 'INT64' : null;
+    if (type === null) return { type: 'DOUBLE', data: Float64Array.from(v, Number), n: v.length };   // Uint32 / BigUint64: widen honestly
+    return { type, data: v, n: v.length };
+  }
+  if (Array.isArray(v)) {
+    const isNum = v.every((x) => x == null || typeof x === 'number');
+    return isNum ? { type: 'DOUBLE', data: v.map((x) => (x == null ? null : x)), n: v.length } : { type: 'STRING', data: v.map((x) => (x == null ? null : String(x))), n: v.length };
+  }
+  throw new Error(`addLayer: column “${nm}” must be a typed array, an array, or { codes, labels }`);
+}
+function ingestTableCols(columns, what = 'columns') {
+  if (!columns || typeof columns !== 'object') throw new Error(`addLayer: ${what} must be an object of named columns`);
+  const names = Object.keys(columns);
+  if (!names.length) throw new Error(`addLayer: ${what} is empty`);
+  const cols = {};
+  for (const nm of names) cols[nm] = ingestColumn(nm, columns[nm]);
+  const n = cols[names[0]].n;
+  for (const nm of names) if (cols[nm].n !== n) throw new Error(`addLayer: column “${nm}” has ${cols[nm].n} values, “${names[0]}” has ${n} — every column in ${what} must be one length`);
+  if (!n) throw new Error(`addLayer: ${what} has no rows`);
+  return { names, cols, n };
+}
+function ingestRole(t, roles, key, required, what = 'roles') {
+  const nm = roles && roles[key];
+  if (nm == null) { if (required) throw new Error(`addLayer: ${what}.${key} is required`); return null; }
+  const i = t.names.indexOf(nm);
+  if (i < 0) throw new Error(`addLayer: ${what}.${key} names “${nm}”, which is not a column (${t.names.join(', ')})`);
+  return i;
+}
+// a declared lattice → micro's grid. Forms: { x:{origin,pitch,count}, y, z }
+// (axis-aligned per axis), { origin:[..], pitch:[..]|size:[..], counts:[..] },
+// or the §2 basis { origin, U, V, W, counts, source? } — origin is ALWAYS block
+// 0's CENTROID. A rotated basis becomes { x,y,z, rot, anchor } (grid/basis.js).
+function normalizeLattice(lat) {
+  if (!lat) return null;
+  if (lat.basis) lat = lat.basis;
+  if (lat.x && lat.y && lat.z) return { x: { ...lat.x }, y: { ...lat.y }, z: { ...lat.z }, ...(lat.rot ? { rot: lat.rot, anchor: lat.anchor } : {}) };
+  if (lat.U && lat.V && lat.W) { try { return gridFromBasis(lat); } catch (e) { throw new Error(`addLayer: ${e.message}`); } }
+  const o = lat.origin, p = lat.pitch || lat.size, c = lat.counts || lat.count;
+  if (!o || !p || !c || o.length !== 3 || p.length !== 3 || c.length !== 3) throw new Error('addLayer: lattice needs { origin:[x,y,z], pitch:[dx,dy,dz], counts:[nx,ny,nz] } (or per-axis x/y/z, or a U/V/W basis)');
+  return { x: { origin: +o[0], pitch: +p[0], count: c[0] | 0 }, y: { origin: +o[1], pitch: +p[1], count: c[1] | 0 }, z: { origin: +o[2], pitch: +p[2], count: c[2] | 0 } };
+}
+// the honest check for a DECLARED lattice: every centroid sits on a node of it
+// (within the gridsCompatible-family tolerance) and inside its counts. A host's
+// or file's statement is applied without a confirm — but never against the data.
+function checkDeclaredGrid(grid, X, Y, Z, n) {
+  for (const k of ['x', 'y', 'z']) if (!(grid[k].count >= 1) || !(grid[k].pitch > 0 || grid[k].count === 1)) throw new Error(`addLayer: declared lattice axis ${k} needs pitch > 0 and count ≥ 1`);
+  for (let i = 0; i < n; i++) {
+    const x = +X[i], y = +Y[i], z = +Z[i];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    const bad = latticeMisfit(grid, x, y, z, i);
+    if (bad) throw new Error(`addLayer: declared lattice rejected — ${bad}`);
+  }
+}
+async function ingestColumnsLayer(spec, name, lineage) {
+  const t = ingestTableCols(spec.columns);
+  const roles = spec.roles || {};
+  const xi = ingestRole(t, roles, 'x', true), yi = ingestRole(t, roles, 'y', true), zi = ingestRole(t, roles, 'z', true);
+  const vi = ingestRole(t, roles, 'value', false), ci = ingestRole(t, roles, 'category', false);
+  for (const i of [xi, yi, zi]) if (t.cols[t.names[i]].type === 'STRING') throw new Error(`addLayer: coordinate column “${t.names[i]}” is not numeric`);
+  if (vi != null && t.cols[t.names[vi]].type === 'STRING') throw new Error(`addLayer: roles.value “${t.names[vi]}” is not numeric — use roles.category for text`);
+  // sub-block sizes: each a column name, an array, or a constant
+  let dims = null;
+  if (spec.sizes && spec.kind === 'blocks') {
+    const sz = spec.sizes, out = {};
+    for (const [k, def] of [['x', 'dx'], ['y', 'dy'], ['z', 'dz']]) {
+      const v = sz[def] != null ? sz[def] : sz[k];
+      if (v == null) throw new Error(`addLayer: sizes.${def} is required with sizes`);
+      if (typeof v === 'string') { const i = t.names.indexOf(v); if (i < 0) throw new Error(`addLayer: sizes.${def} names “${v}”, which is not a column`); out[k] = v; continue; }
+      let nm = def.toUpperCase(); while (t.names.includes(nm)) nm += '_';
+      const col = typeof v === 'number' ? { type: 'DOUBLE', data: new Float64Array(t.n).fill(v), n: t.n } : ingestColumn(nm, v);
+      if (col.n !== t.n) throw new Error(`addLayer: sizes.${def} has ${col.n} values, expected ${t.n}`);
+      t.names.push(nm); t.cols[nm] = col; out[k] = nm;
+    }
+    dims = out;
+  }
+  const X = t.cols[t.names[xi]].data, Y = t.cols[t.names[yi]].data, Z = t.cols[t.names[zi]].data;
+  // the model the footer states: bbox, categories (host order), lattice
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < t.n; i++) {
+    const p = [+X[i], +Y[i], +Z[i]];
+    if (!p.every(Number.isFinite)) continue;
+    for (let a = 0; a < 3; a++) { if (p[a] < min[a]) min[a] = p[a]; if (p[a] > max[a]) max[a] = p[a]; }
+  }
+  if (!Number.isFinite(min[0])) throw new Error('addLayer: no finite coordinates');
+  let categories = null;
+  if (ci != null) {
+    const c = t.cols[t.names[ci]];
+    categories = c.labels ? c.labels : [...new Set(c.data.filter((v) => v != null && v !== '').map(String))].sort();
+    if (categories.length > 255) categories = null;        // past 255 the code is a u8 — no category colouring, as for a file
+  }
+  let grid = null, subBlocked = false, dimPalette = null;
+  if (spec.kind === 'blocks') {
+    const r10 = (v) => Number(v.toPrecision(10));
+    if (dims && spec.lattice && normalizeLattice(spec.lattice).rot) throw new Error('addLayer: a ROTATED sub-blocked model isn\'t supported yet (rotated lattices are regular-block only for now)');
+    if (dims) {
+      const ax = [new Set(), new Set(), new Set()], minDim = [Infinity, Infinity, Infinity], keys = new Set();
+      const DX = t.cols[dims.x].data, DY = t.cols[dims.y].data, DZ = t.cols[dims.z].data;
+      for (let i = 0; i < t.n; i++) {
+        ax[0].add(r10(+X[i])); ax[1].add(r10(+Y[i])); ax[2].add(r10(+Z[i]));
+        const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
+        if (dx > 0 && dy > 0 && dz > 0) { if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz; if (keys.size <= DIM_PALETTE_MAX) keys.add(dimKey(dx, dy, dz)); }
+      }
+      const sb = inferSubBlockLattice(ax, minDim, keys);
+      if (sb) { grid = sb.grid; subBlocked = true; dimPalette = sb.dimPalette; }
+      else if (keys.size <= 1 && Number.isFinite(minDim[0])) dims = null;   // one size everywhere: a regular model — fall through
+      else throw new Error(`addLayer: sizes given, but the blocks don't sit on a power-of-2 sub-lattice${keys.size > DIM_PALETTE_MAX ? ` (more than ${DIM_PALETTE_MAX} distinct sizes)` : ''} — open as points, or check the sizes`);
+    }
+    if (!grid && spec.lattice) {
+      grid = normalizeLattice(spec.lattice);
+      checkDeclaredGrid(grid, X, Y, Z, t.n);
+    } else if (!grid) {
+      const ax = [new Set(), new Set(), new Set()];
+      for (let i = 0; i < t.n; i++) { const p = [+X[i], +Y[i], +Z[i]]; if (p.every(Number.isFinite)) for (let a = 0; a < 3; a++) ax[a].add(r10(p[a])); }
+      const axes = ax.map((s) => (s.size < 300000 ? inferAxis([...s].sort((a, b) => a - b)) : null));
+      grid = axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;   // null → centroids as points, as for a file
+    }
+  }
+  const header = { grid, bbox: { min, max }, categories, subBlocked, dimPalette, columns: t.names, dimCols: dims ? { x: t.names.indexOf(dims.x), y: t.names.indexOf(dims.y), z: t.names.indexOf(dims.z) } : null, lattice: spec.lattice ? { basis: 'declared', by: 'host' } : null };
+  const model = { ...microModelOf(header), declared: spec.lattice ? 'host' : undefined };
+  const kv = [
+    { key: 'micro:model', value: JSON.stringify(model) },
+    { key: 'micro:frame', value: JSON.stringify({ origin: [0, 0, 0], crs: (spec.frame && spec.frame.crs) || null, spatial: false }) },
+    { key: 'micro:lineage', value: JSON.stringify(lineage) },
+  ];
+  const bytes = writeParquet({ columnData: t.names.map((nm) => ({ name: nm, data: t.cols[nm].data, type: t.cols[nm].type })), codec: 'UNCOMPRESSED', rowGroupSize: 1 << 16, kvMetadata: kv });
+  const fileName = /\.parquet$/i.test(name) ? name : `${name}.parquet`;
+  const file = new File([bytes], fileName, { type: 'application/vnd.apache.parquet' });
+  const mapping = { x: xi, y: yi, z: zi, chan: vi, cat: ci };
+  return openBlob(file, fileName, 'add', null, { asKind: spec.kind === 'points' ? 'points' : 'blocks', mapping, strictMapping: true, cached: spec.kind === 'points' ? null : model, lineage, throw: true });
+}
+async function ingestMeshLayer(spec, name, lineage) {
+  const v = spec.vertices, tr = spec.triangles;
+  if (!ArrayBuffer.isView(v) || v.length % 3) throw new Error('addLayer: mesh.vertices must be a typed array of x,y,z triples');
+  if (!ArrayBuffer.isView(tr) || tr.length % 3) throw new Error('addLayer: mesh.triangles must be a typed array of index triples');
+  const nv = v.length / 3;
+  for (let i = 0; i < tr.length; i++) if (!(tr[i] >= 0 && tr[i] < nv)) throw new Error(`addLayer: mesh.triangles[${i}] = ${tr[i]} is not a vertex index (${nv} vertices)`);
+  const fileName = /\.ply$/i.test(name) ? name : `${name}.ply`;
+  const file = new File([writePlyMeshBytes(Float64Array.from(v), Uint32Array.from(tr))], fileName);
+  return openBlob(file, fileName, 'add', null, { asKind: 'mesh', lineage, throw: true, tint: spec.tint, opacity: spec.opacity });
+}
+// columns → RFC 4180 CSV text: a field holding the delimiter, a quote, a line
+// break or edge spaces is quoted; NaN / null are empty
+function columnsToCsv(t) {
+  const q = (s) => (/[",\r\n]|^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  const out = [t.names.map(q).join(',')];
+  for (let i = 0; i < t.n; i++) {
+    out.push(t.names.map((nm) => { const v = t.cols[nm].data[i]; if (v == null) return ''; if (typeof v === 'number' && !Number.isFinite(v)) return ''; return q(String(v)); }).join(','));
+  }
+  return out.join('\n') + '\n';
+}
+async function ingestDrillholes(spec, name, lineage) {
+  const tbl = (key) => {
+    const s = spec[key];
+    if (!s || !s.columns) throw new Error(`addLayer: drillholes.${key} must be { columns, roles }`);
+    return { t: ingestTableCols(s.columns, `${key}.columns`), roles: s.roles || {} };
+  };
+  const C = tbl('collar'), Sv = tbl('survey'), I = tbl('intervals');
+  const mappings = {
+    collar: { bhid: ingestRole(C.t, C.roles, 'bhid', true, 'collar.roles'), x: ingestRole(C.t, C.roles, 'x', true, 'collar.roles'), y: ingestRole(C.t, C.roles, 'y', true, 'collar.roles'), z: ingestRole(C.t, C.roles, 'z', true, 'collar.roles'), eoh: ingestRole(C.t, C.roles, 'eoh', false, 'collar.roles') ?? -1 },
+    survey: { bhid: ingestRole(Sv.t, Sv.roles, 'bhid', true, 'survey.roles'), at: ingestRole(Sv.t, Sv.roles, Sv.roles.at != null ? 'at' : 'depth', false, 'survey.roles') ?? -1, az: ingestRole(Sv.t, Sv.roles, 'az', true, 'survey.roles'), dip: ingestRole(Sv.t, Sv.roles, 'dip', true, 'survey.roles') },
+    intervals: { bhid: ingestRole(I.t, I.roles, 'bhid', true, 'intervals.roles'), from: ingestRole(I.t, I.roles, 'from', true, 'intervals.roles'), to: ingestRole(I.t, I.roles, 'to', true, 'intervals.roles') },
+  };
+  const base = name.replace(/\.(csv|txt)$/i, '');
+  const file = (t, suffix) => new File([columnsToCsv(t)], `${base}_${suffix}.csv`, { type: 'text/csv' });
+  const files = { collar: file(C.t, 'collar'), survey: file(Sv.t, 'survey'), intervals: file(I.t, 'intervals') };
+  const opts = { mappings, chan: ingestRole(I.t, I.roles, 'value', false, 'intervals.roles'), cat: ingestRole(I.t, I.roles, 'category', false, 'intervals.roles') };
+  if (opts.chan == null) delete opts.chan;
+  if (opts.cat == null) delete opts.cat;
+  if (spec.method) opts.method = spec.method;
+  if (spec.dipConvention) opts.dipConvention = spec.dipConvention;
+  return openDrillholeLayer(files, opts, 'add', { lineage, throw: true });
+}
+async function ingestTable(spec, name, lineage) {
+  const t = ingestTableCols(spec.columns);
+  const fileName = /\.csv$/i.test(name) ? name : `${name}.csv`;
+  return openBlob(new File([columnsToCsv(t)], fileName, { type: 'text/csv' }), fileName, 'add', null, { asKind: 'table', lineage, throw: true });
 }
 // A see-through context surface must not steal the click meant for the block
 // under it — you made it see-through precisely to work on what is behind it. So
@@ -8064,13 +8305,13 @@ async function openMeshDoc(blob, name, opts = {}) {
 // Drillholes (micro-layers spec §5): collar + survey + intervals → desurveyed
 // interval midpoints as ONE element layer over the assay table. recIdx = the
 // original interval row (the identity survives @gcu/drillhole's depth sort).
-async function openDrillholeLayer(files, opts = {}, mode = 'add') {
+async function openDrillholeLayer(files, opts = {}, mode = 'add', over = {}) {
   if (mode !== 'add') closeAllLayers();
   const lid = allocLayerId();
-  if (lid == null) { $('#meta').textContent = `layer limit reached (${LAYER_CAP}) — remove one first`; return; }
+  if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed('drillholes', new Error(msg), over); }
   const first = S.layers.length === 0;
   const name = (files.intervals && files.intervals.name) || 'drillholes';
-  S.layers.push({ id: lid, name, label: `holes · ${name}`, kind: 'points', dh: true, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'loose', lineage: openLineage(name, files.intervals) });
+  S.layers.push({ id: lid, name, label: `holes · ${name}`, kind: 'points', dh: true, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'loose', lineage: over.lineage || openLineage(name, files.intervals) });
   S.activeId = lid;
   $('#meta').textContent = `${name} — desurveying…`;
   $('#empty').style.display = 'none';
@@ -8100,7 +8341,9 @@ async function openDrillholeLayer(files, opts = {}, mode = 'add') {
     ensureDhSetGroups();                                   // every dh layer lives in its SET group (the group IS the element)
     renderLayers();
     dispatchEvent(new Event('micro:project-dirty'));
+    dispatchEvent(new CustomEvent('micro:layer-added', { detail: { id: lid, name, kind: 'drillholes' } }));
     requestRender();
+    return lid;
   } catch (e) {
     $('#meta').textContent = `${name} — ${e.message}`;
     renderer.removeLayer(lid);
@@ -8108,6 +8351,7 @@ async function openDrillholeLayer(files, opts = {}, mode = 'add') {
     if (S.layers.length) setActiveLayer(S.layers[0].id);
     else $('#empty').style.display = '';
     renderLayers();
+    return layerFailed(name, e, over);
   }
 }
 // re-channel a drillhole layer (all in memory upstream — cheap)
@@ -8636,6 +8880,40 @@ function pqGroupRanges(rg) {
   for (const nm in rg.columns) { const st = rg.columns[nm]; const mn = Number(st.min), mx = Number(st.max); if (Number.isFinite(mn) && Number.isFinite(mx)) ranges[nm.toLowerCase()] = { min: mn, max: mx }; }
   return ranges;
 }
+// `micro:model` — the discovery a block-model Parquet carries in its footer kv,
+// so it opens without a discovery sweep. Written by micro's exports and read
+// from ANY Parquet file: a producer that knows its lattice may write it too.
+// The contract is in docs/index.html (#micro-model). Size columns ride as
+// NAMES (`dims`), never indices — a producer's column order is its own business.
+function microModelOf(h) {
+  const m = { v: 1, grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: !!h.subBlocked };
+  // a rotated lattice also states itself in the producer's form (grid.basis:
+  // origin = block 0's centroid, U/V/W = pitch × direction) beside the internal
+  // rot/anchor, so the file reads the same to micro and to anyone else
+  if (h.grid && h.grid.rot) m.grid = { ...h.grid, basis: basisOfGrid(h.grid) };
+  if (h.lattice) m.lattice = h.lattice;
+  if (h.subBlocked && h.dimCols && h.dimPalette && h.columns) {
+    m.dims = { x: h.columns[h.dimCols.x], y: h.columns[h.dimCols.y], z: h.columns[h.dimCols.z] };
+    m.dimPalette = h.dimPalette;
+  }
+  return m;
+}
+// micro:model's grid → micro's internal grid. Forms accepted: per-axis
+// { x, y, z } (axis-aligned), the internal rotated form (+ rot, anchor), or a
+// producer's { basis: { origin, U, V, W, counts, source? } } alone.
+function microModelGrid(m) {
+  const g = m && m.grid;
+  if (!g) return null;
+  if (g.rot && g.anchor && g.x) return { x: g.x, y: g.y, z: g.z, rot: g.rot, anchor: g.anchor, ...(g.source ? { source: g.source } : {}) };
+  if (g.basis) return gridFromBasis(g.basis);
+  return g.x ? { x: g.x, y: g.y, z: g.z } : null;
+}
+// micro:model `dims` (names) → column indices in THIS file, or null if absent/missing
+function microModelDimCols(m, names) {
+  if (!m || !m.dims) return null;
+  const d = { x: names.indexOf(m.dims.x), y: names.indexOf(m.dims.y), z: names.indexOf(m.dims.z) };
+  return d.x >= 0 && d.y >= 0 && d.z >= 0 ? d : null;
+}
 async function openParquetBlocks(blob, name, opts = {}) {
   // the layer holds the BLOB, never the bytes: every read below range-reads
   // (toAsyncBuffer slices the blob), so a multi-GB parquet costs no residency.
@@ -8648,7 +8926,8 @@ async function openParquetBlocks(blob, name, opts = {}) {
   const mapping = opts.mapping || mapColumns(names) || { x: 0, y: 1, z: 2, chan: names.length > 3 ? 3 : null, cat: null };
   if (mapping.x == null || mapping.y == null || mapping.z == null) throw new Error('parquet: could not identify X/Y/Z centroid columns');
   if (mapping.chan != null && !_pqNum(typeOf[names[mapping.chan]])) mapping.chan = null;   // demote a text auto-chan
-  if (mapping.cat == null) for (let i = 0; i < names.length; i++) { if (i === mapping.x || i === mapping.y || i === mapping.z || i === mapping.chan) continue; if (!_pqNum(typeOf[names[i]])) { mapping.cat = i; break; } }
+  // a host's stated roles are exact (strictMapping): no auto-category
+  if (mapping.cat == null && !opts.strictMapping) for (let i = 0; i < names.length; i++) { if (i === mapping.x || i === mapping.y || i === mapping.z || i === mapping.chan) continue; if (!_pqNum(typeOf[names[i]])) { mapping.cat = i; break; } }
   const xN = names[mapping.x], yN = names[mapping.y], zN = names[mapping.z];
   const chanN = mapping.chan != null ? names[mapping.chan] : null, catN = mapping.cat != null ? names[mapping.cat] : null;
   const N = info.rowCount;
@@ -8660,22 +8939,49 @@ async function openParquetBlocks(blob, name, opts = {}) {
   // `micro:model` kv (micro-written parquets are self-describing)
   let kvModel = null;
   try { const e = (info.meta.key_value_metadata || []).find((x) => x.key === 'micro:model'); if (e) kvModel = JSON.parse(e.value); } catch { /* foreign file */ }
-  const cachedPq = opts.cached || kvModel;
-  let grid = null, categories = null;
+  // per-block size columns (DX/DY/DZ…) → maybe SUB-BLOCKED, as for CSV. A
+  // cached model that says sub-blocked must name its size columns and carry the
+  // palette (micro:model `dims` + `dimPalette`); one that doesn't (older micro
+  // exports wrote only the flag) is not trusted — discovery rebuilds it.
+  const dimIdx = findDimColumns(names);
+  const cachedPq0 = opts.cached || kvModel;
+  const cachedDims = cachedPq0 && cachedPq0.subBlocked ? microModelDimCols(cachedPq0, names) : null;
+  const cachedPq = cachedPq0 && (!cachedPq0.subBlocked || (cachedDims && Array.isArray(cachedPq0.dimPalette))) ? cachedPq0 : null;
+  let grid = null, categories = null, subBlocked = false, dimPalette = null, dimCols = null;
+  let latticeInfo = null, latticeCandidate = null, latticeRejected = null;
   if (cachedPq && cachedPq.bbox && !opts.forcePoints) {
     // freshness = the caller's contract (sidecar) or intrinsic (kv rides the file)
-    grid = cachedPq.grid || null;
+    grid = microModelGrid(cachedPq);
     categories = cachedPq.categories || null;
+    if (cachedPq.subBlocked && grid) { subBlocked = true; dimPalette = cachedPq.dimPalette; dimCols = cachedDims; }
     var min = [...cachedPq.bbox.min], max = [...cachedPq.bbox.max];   // hoisted (used by header below)
+    // a DECLARED lattice (a producer stated it) or any rotated one is the file's
+    // statement, applied without a confirm — but checked against every centroid:
+    // one off it and the declaration is refused, loudly, and the model shows as points
+    if (grid && (grid.rot || cachedPq.declared) && !opts.cached) {
+      $('#meta').textContent = `${name} — checking the declared lattice…`;
+      let bad = null, rec = 0;
+      for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) {
+        const X = cols[xN], Y = cols[yN], Z = cols[zN];
+        for (let i = 0; i < count && !bad; i++, rec++) { const xv = +X[i], yv = +Y[i], zv = +Z[i]; if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = latticeMisfit(grid, xv, yv, zv, rec); }
+        if (bad) break;
+      }
+      if (bad) { latticeRejected = bad; grid = null; subBlocked = false; }
+    }
+    if (grid) latticeInfo = cachedPq.lattice || (cachedPq.declared || grid.rot ? { basis: 'declared', by: cachedPq.declared || 'file' } : null);
   } else {
   const CAP = 100000, r10 = (v) => Number(v.toPrecision(10));
   var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   const ax = [new Set(), new Set(), new Set()];
   const catSet = catN ? new Set() : null;
-  const discCols = catN ? [xN, yN, zN, catN] : [xN, yN, zN];
+  const dN = dimIdx ? [names[dimIdx.x], names[dimIdx.y], names[dimIdx.z]] : null;
+  const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
+  const RES = 50000, res = [];                              // reservoir: the first centroids (rotated-lattice inference)
+  const discCols = [xN, yN, zN, ...(catN ? [catN] : []), ...(dN || [])];
   $('#meta').textContent = `${name} — discovering grid…`;
   for await (const { count, cols } of streamParquetColumns(blob, discCols, info.rowGroups, info.meta)) {
     const X = cols[xN], Y = cols[yN], Z = cols[zN], C = catN ? cols[catN] : null;
+    const DX = dN ? cols[dN[0]] : null, DY = dN ? cols[dN[1]] : null, DZ = dN ? cols[dN[2]] : null;
     for (let i = 0; i < count; i++) {
       const xv = +X[i], yv = +Y[i], zv = +Z[i];
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
@@ -8683,33 +8989,59 @@ async function openParquetBlocks(blob, name, opts = {}) {
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
       if (ax[0].size < CAP) ax[0].add(r10(xv)); if (ax[1].size < CAP) ax[1].add(r10(yv)); if (ax[2].size < CAP) ax[2].add(r10(zv));
+      if (res.length < RES * 3) res.push(xv, yv, zv);
       if (catSet && catSet.size <= 256) { const v = C[i]; if (v != null && v !== '') catSet.add(String(v)); }
+      if (DX) {
+        const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
+        if (dx > 0 && dy > 0 && dz > 0) {
+          if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
+          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKey(dx, dy, dz));
+        }
+      }
     }
     await new Promise((res) => setTimeout(res));
   }
   const axes = ax.map((set) => (set.size < CAP ? inferAxis([...set].sort((a, b) => a - b)) : null));
   grid = !opts.forcePoints && axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
+  // the same sub-block rule as the CSV and .dm readers (condenser grid/infer.js)
+  const sb = !opts.forcePoints && dN ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
+  if (sb) { grid = sb.grid; subBlocked = true; dimPalette = sb.dimPalette; dimCols = dimIdx; }
+  // not an axis-aligned grid → maybe a ROTATED one: a candidate the opener confirms
+  if (!grid && !subBlocked && !opts.forcePoints && res.length >= 24) {
+    $('#meta').textContent = `${name} — trying a rotated lattice…`;
+    const coordSweep = () => (async function* () {
+      for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) yield { x: cols[xN], y: cols[yN], z: cols[zN], count };
+    })();
+    latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
+  }
   categories = catSet && catSet.size > 0 && catSet.size <= 255 ? [...catSet].sort() : null;
   }
   const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
-  const numericColumns = names.map((n, i) => ({ name: n, i })).filter(({ i }) => i !== mapping.x && i !== mapping.y && i !== mapping.z && _pqNum(typeOf[names[i]]));
+  const numericColumns = names.map((n, i) => ({ name: n, i })).filter(({ i }) => i !== mapping.x && i !== mapping.y && i !== mapping.z && !(subBlocked && isDimColumn(names[i])) && _pqNum(typeOf[names[i]]));
   const attributes = names.filter((_, i) => i !== mapping.x && i !== mapping.y && i !== mapping.z);
-  const header = { kind: 'blockmodel', count: N, bbox: { min, max }, grid, columns: names, mapping, delim: ',', hasHeaderRow: true, numericColumns, categories, attributes, parquet: true };
-  // ── display: stream the coord + chan + cat columns row-group by row-group
-  // into the chunk builder; nothing decoded is retained after the chunk. ──
+  let crs = null;
+  try { const e = (info.meta.key_value_metadata || []).find((x) => x.key === 'micro:frame'); if (e) crs = JSON.parse(e.value).crs || null; } catch { /* foreign file */ }
+  const header = { kind: 'blockmodel', count: N, bbox: { min, max }, grid, subBlocked, dimPalette, dimCols, columns: names, mapping, delim: ',', hasHeaderRow: true, numericColumns, categories, attributes, parquet: true, crs, lattice: latticeInfo, latticeCandidate, latticeRejected };
+  // ── display: stream the coord + chan + cat (+ size) columns row-group by
+  // row-group into the chunk builder; nothing decoded is retained after it. ──
+  const dimCode = subBlocked ? new Map(dimPalette.map((hd, i) => [dimKey(hd[0] * 2, hd[1] * 2, hd[2] * 2), i])) : null;
+  const sizeN = subBlocked ? [names[dimCols.x], names[dimCols.y], names[dimCols.z]] : null;
   async function* streamChunks() {
-    const cnames = [xN, yN, zN, ...(chanN ? [chanN] : []), ...(catN ? [catN] : [])];
+    const cnames = [...new Set([xN, yN, zN, ...(chanN ? [chanN] : []), ...(catN ? [catN] : []), ...(sizeN || [])])];
     for await (const { start, count, cols } of streamParquetColumns(blob, cnames, info.rowGroups, info.meta)) {
       const X = cols[xN], Y = cols[yN], Z = cols[zN], CH = chanN ? cols[chanN] : null, CA = catN ? cols[catN] : null;
+      const DX = sizeN ? cols[sizeN[0]] : null, DY = sizeN ? cols[sizeN[1]] : null, DZ = sizeN ? cols[sizeN[2]] : null;
       const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), chan = new Float64Array(count);
       const cat = catCode ? new Uint8Array(count) : null, recIdx = new Uint32Array(count);
+      const dim = dimCode ? new Uint8Array(count) : null;
       for (let i = 0; i < count; i++) {
         x[i] = +X[i]; y[i] = +Y[i]; z[i] = +Z[i];
         chan[i] = CH ? +CH[i] : 0;
         if (cat) cat[i] = catCode.get(String(CA[i] ?? '')) ?? 0;
+        if (dim) dim[i] = dimCode.get(dimKey(+DX[i], +DY[i], +DZ[i])) ?? 0;
         recIdx[i] = start + i;
       }
-      yield { count, x, y, z, chan, cat, recIdx, recStart: start };
+      yield { count, x, y, z, chan, cat, dim, recIdx, recStart: start };
       await new Promise((res) => setTimeout(res));
     }
   }
@@ -8854,6 +9186,28 @@ async function applyTableFilter(L, expr) {
   attrTableFilterChanged(L.id);
   $('#meta').textContent = `${L.label || L.name} — ${hits.toLocaleString()} of ${h.count.toLocaleString()} rows match`;
 }
+// ── rotated lattices (condenser grid/basis.js) ───────────────────────────────
+// A provider that finds no axis-aligned grid tries a ROTATED one and hands back
+// header.latticeCandidate — never applied silently (spec §3): the user says
+// boxes or points. opts.acceptLattice (true/false) answers for a caller that
+// has already decided (a host, a test); the decision is stamped on the header
+// (header.lattice) and so rides into the sidecar, the manifest and lineage.
+const fmtPitch = (v) => String(+(+v).toFixed(4));
+function latticeNote(g) {
+  if (!g || !g.rot) return '';
+  const a = basisAngles(g.rot);
+  return ` · rotated ${a.azimuth.toFixed(1)}°${a.zOnly ? '' : `, tilt ${a.tilt.toFixed(1)}°`}`;
+}
+async function settleLatticeCandidate(header, name, opts = {}) {
+  const c = header.latticeCandidate;
+  if (!c || header.grid) return;
+  const g = c.grid, a = c.angles;
+  const desc = `${g.x.count}×${g.y.count}×${g.z.count} blocks of ${fmtPitch(g.x.pitch)}×${fmtPitch(g.y.pitch)}×${fmtPitch(g.z.pitch)}, azimuth ${a.azimuth.toFixed(1)}°${a.zOnly ? '' : `, tilted ${a.tilt.toFixed(1)}°`}`;
+  const yes = opts.acceptLattice != null ? !!opts.acceptLattice
+    : await microConfirm('rotated block model', `${name} isn't on an axis-aligned grid, but every centroid sits on a ROTATED lattice: ${desc}. Draw it as rotated boxes, or keep the centroids as points?`, 'rotated boxes', 'points');
+  header.latticeCandidate = null;
+  if (yes) { header.grid = g; header.lattice = { basis: 'inferred', confirmed: opts.acceptLattice != null ? 'caller' : 'user', azimuth: +a.azimuth.toFixed(4), tilt: +a.tilt.toFixed(4) }; }
+}
 async function openBlocksBlob(blob, name, opts = {}) {
   const lid = opts.layer != null ? opts.layer : S.activeId;
   // a cached discovery skips sweep 1: project sidecars pass opts.discovered;
@@ -8869,26 +9223,30 @@ async function openBlocksBlob(blob, name, opts = {}) {
     || (opts.chan != null && prevDoc && prevDoc.header ? { ...prevDoc.header.mapping, chan: opts.chan } : null);
   renderer.removeLayer(lid); if (!opts.keepFilter) renderer.setFilter(null, {}, lid);
   const prov = opts.provider ? await opts.provider() : null;
-  const { header, streamChunks } = prov || await openBlockModel(blob, discovered ? { discovered } : (mapping ? { mapping } : {}));
-  if (opts.forcePoints) header.grid = null;
+  const bmOpts = discovered ? { discovered } : { ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), rotated: !opts.forcePoints };
+  const { header, streamChunks } = prov || await openBlockModel(blob, bmOpts);
+  if (opts.forcePoints) { header.grid = null; header.latticeCandidate = null; }
+  await settleLatticeCandidate(header, name, opts);
+  if (header.latticeRejected) dispatchEvent(new CustomEvent('micro:lattice-rejected', { detail: { name, reason: header.latticeRejected } }));
   // keep the provider's STREAM, not just its data. It used to be used once at
   // open and discarded, so every later consumer re-derived how to read this
   // source from format flags — which is how Parquet kept landing in the
   // delimited branch. A doc that carries its own reader cannot be misread.
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, parquet: prov ? prov.parquet : null, streamChunks };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
+  { const L0 = layerById(lid); if (L0 && L0.lineage && header.grid && header.grid.rot) L0.lineage.params = { ...(L0.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }) } }; }
   fitFromHeader(header, opts.first !== false && opts.chan == null);
   renderer.setCategories(header.categories ? header.categories.length : 0);
   setColorLabels(header);
   if (header.grid) {
-    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
+    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
     const dimPalette = header.subBlocked ? header.dimPalette : null;
     const cb = createBlockChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.metaLine = header.subBlocked
       ? `${name} — ${doc.count.toLocaleString()} sub-blocks · fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
-      : `${name} — ${doc.count.toLocaleString()} blocks · grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
+      : `${name} — ${doc.count.toLocaleString()} blocks · grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${latticeNote(header.grid)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     $('#meta').textContent = blockDoc.metaLine;
     if (_filterExpr.trim() && opts.keepFilter) applyBlockFilter(_filterExpr);
   } else {
@@ -8909,7 +9267,7 @@ async function openBlocksBlob(blob, name, opts = {}) {
     const doc = cb.flush();
     const L2 = layerById(lid); if (L2) L2.bboxLocal = doc.bboxLocal;
     recomputeUnion();
-    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids${blockDoc.forcePoints ? '' : ' (no regular grid detected — points view)'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
+    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids${header.latticeRejected ? ` (the declared lattice was REFUSED: ${header.latticeRejected} — points view)` : blockDoc.forcePoints ? '' : ' (no regular grid detected — points view)'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     $('#meta').textContent = blockDoc.metaLine;
     if (_filterExpr.trim() && opts.keepFilter) applyBlockFilter(_filterExpr);
   }
@@ -10207,9 +10565,10 @@ async function saveProject() {
           header: isDmL
             ? { kind: 'dm', count: h.count, bbox: h.bbox, grid: h.grid, subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, categories: h.categories || null }
             : isPq
-              ? { kind: 'parquet', count: h.count, bbox: h.bbox, grid: h.grid, categories: h.categories || null }
+              ? { ...microModelOf(h), kind: 'parquet', count: h.count }
               : {
-                kind: h.kind, count: h.count, bbox: h.bbox, grid: h.grid,
+                kind: h.kind, count: h.count, bbox: h.bbox, grid: h.grid, lattice: h.lattice || null,
+                subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, dimCols: h.dimCols || null,
                 columns: h.columns, mapping: h.mapping, delim: h.delim, hasHeaderRow: h.hasHeaderRow,
                 numericColumns: h.numericColumns, categories: h.categories, attributes: h.attributes,
                 index: h.index ? { k: h.index.k, offsets: [...h.index.offsets] } : undefined,
@@ -11025,7 +11384,9 @@ function showFileInfo() {
       row('grid', [h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num).join(sep(' × ')));
       row('block size', [h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num).join(sep(' × ')));
     }
-    row('block 0 centroid', [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin].map(num).join(sep(', ')));
+    const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin];
+    row('block 0 centroid', c0.map(num).join(sep(', ')));
+    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); row('rotation', `azimuth ${ag.azimuth.toFixed(2)}°${ag.zOnly ? '' : ` · tilt ${ag.tilt.toFixed(2)}°`} · ${(h.lattice && h.lattice.basis) || 'declared'}${h.lattice && h.lattice.confirmed ? ` (confirmed by ${h.lattice.confirmed})` : ''}`); }
   }
   if (h.scale) {
     row('scale', h.scale.map(num).join(sep(', ')));
@@ -14912,9 +15273,8 @@ async function broadcastCollarCol(L, colName) {
   const outName = taken.has(String(colName).toLowerCase()) ? colName + '_C' : colName;
   if (taken.has(String(outName).toLowerCase())) { $('#meta').textContent = `broadcast: “${outName}” already exists`; return; }
   const text = await dh.blobs.collar.text();               // the collar table is small — parse it whole
-  const lines = text.split(/\r?\n/).filter((x) => x.trim());
-  const delim = [',', ';', '\t'].reduce((a, b2) => (lines[0].split(b2).length > lines[0].split(a).length ? b2 : a), ',');
-  const cells2 = (ln) => ln.split(delim).map((x) => x.trim().replace(/^"|"$/g, ''));
+  const lines = csvRecords(text);
+  const cells2 = collarCells(lines);
   const names = cells2(lines[0]), low = names.map((x) => x.toLowerCase());
   const ci = low.indexOf(String(colName).toLowerCase());
   if (ci < 0) { $('#meta').textContent = `broadcast: “${colName}” not in the collar file`; return; }
@@ -15613,7 +15973,7 @@ async function runSpatialJoinUI(L, R, jf) {
     const name = `${shortName(L)}⋈${shortName(R)}.csv`;
     const { blob, cells } = await runSpatialJoin({ leftL: L, rightL: R, target: T, columns, label: 'join', useSelection: !!jf.useSel });
     const lin = mkLineage('join', { target: jf.target, ...(jf.useSel ? { selection: true } : {}), columns: columns.map((c) => ({ src: c.src, name: c.name, out: c.out, op: c.op || undefined, weight: c.weight || undefined })) }, [L.lineage, R.lineage]);
-    await openBlob(blob, name, 'add', null, { lineage: lin });
+    await openBlob(blob, name, 'add', null, { lineage: lin, ...(T.rot ? { lattice: T } : {}) });
     $('#meta').textContent = `joined ${cells.toLocaleString()} cells → ${name}`;
   } catch (e) { $('#meta').textContent = `join: ${e.message}`; }
 }
@@ -15770,7 +16130,7 @@ async function runReconcile(L, R, jf, grade) {
     // XC,YC,ZC, ...columns, ...derived, so Δ is at 3 + columns.length
     const dIdx = 3 + columns.length;
     const lin = mkLineage('reconcile', { grade, target: 'common-finest', ...(jf.useSel ? { selection: true } : {}), of: `${shortName(L)}−${shortName(R)}` }, [L.lineage, R.lineage]);
-    await openBlob(blob, name, 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: dIdx, cat: null }, lineage: lin });
+    await openBlob(blob, name, 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: dIdx, cat: null }, lineage: lin, ...(T.rot ? { lattice: T } : {}) });
     const J = activeLayer();
     if (J) {
       const jh = layerTableHeader(J);
@@ -15924,7 +16284,8 @@ function renderSourceTab(body, L) {
     sec('block grid');
     line(`count <span class="v">${h.grid.x.count} × ${h.grid.y.count} × ${h.grid.z.count}</span>`);
     line(`block <span class="v">${fm(h.grid.x.pitch)} × ${fm(h.grid.y.pitch)} × ${fm(h.grid.z.pitch)}</span> m`);
-    line(`block 0 centroid <span class="v">${fm(h.grid.x.origin)}, ${fm(h.grid.y.origin)}, ${fm(h.grid.z.origin)}</span>`);
+    { const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin]; line(`block 0 centroid <span class="v">${fm(c0[0])}, ${fm(c0[1])}, ${fm(c0[2])}</span>`); }
+    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); line(`rotated <span class="v">azimuth ${ag.azimuth.toFixed(1)}°${ag.zOnly ? '' : `, tilt ${ag.tilt.toFixed(1)}°`}</span> · ${(h.lattice && h.lattice.basis) || 'declared'}`); }
   }
   if (h.bbox) {
     sec('extent — world');
@@ -16158,9 +16519,16 @@ function dhFilterSweep(L, expr) {                          // the interval-table
   requestRender();
   return hits2;
 }
+// small whole-file tables (collar / survey): RECORDS, not lines — a quoted
+// field may hold the delimiter or a line break (condenser's record layer)
+function csvRecords(text) {
+  const nl = text.indexOf('\n');
+  const d = delimiterOfLine((nl < 0 ? text : text.slice(0, nl)).replace(/\r$/, ''));
+  return delimitedRecords(text, d, { dropPartial: false }).filter((x) => x.trim());
+}
 function collarCells(lines) {
-  const delim = [',', ';', '\t'].reduce((a, b2) => (lines[0].split(b2).length > lines[0].split(a).length ? b2 : a), ',');
-  return (ln) => ln.split(delim).map((x) => x.trim().replace(/^"|"$/g, ''));
+  const delim = delimiterOfLine(lines[0]);
+  return (ln) => splitDelimitedRecord(ln, delim).map((x) => x.trim());
 }
 function collarKeyIndex(dh, low) {                         // the hole-id column on the COLLAR side
   // the RESOLVED collar mapping is the truth — it was sniffed/mapped against the
@@ -16188,7 +16556,7 @@ async function applyHoleFilter(L, expr) {
   const v = validate(expr, schema);
   if (!v.ok) return { err: (v.errors[0] && v.errors[0].message) || 'invalid expression' };
   const fn = compileBool(expr, schema, { decimal: '.' });
-  const lines = (await dh.blobs.collar.text()).split(/\r?\n/).filter((x) => x.trim());
+  const lines = csvRecords(await dh.blobs.collar.text());
   const cells2 = collarCells(lines);
   const names = cells2(lines[0]), low = names.map((x) => x.toLowerCase());
   const ki = collarKeyIndex(dh, low);
@@ -16227,7 +16595,7 @@ async function filterHolesSet(nd) {
 // a lightweight table view over a small CSV blob (the collar/survey tables —
 // hole-granularity data that deserves inspection but isn't a render layer)
 async function openCsvTableWindow(title, blob) {
-  const lines = (await blob.text()).split(/\r?\n/).filter((x) => x.trim());
+  const lines = csvRecords(await blob.text());
   if (!lines.length) { $('#meta').textContent = `${title}: empty file`; return; }
   const cells2 = collarCells(lines);
   const CAP = 10000;
@@ -16365,7 +16733,7 @@ async function showHoleTraces(nd) {
   const name = dhGroupName(basename(info.blobs.collar.name || 'holes')) + ' · traces';
   const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2._holeIds);
   if (memb && memb._holeIds) {                             // the hole filter propagates to the traces
-    const lines = (await info.blobs.collar.text()).split(/\r?\n/).filter((x) => x.trim());
+    const lines = csvRecords(await info.blobs.collar.text());
     const cells2 = collarCells(lines);
     const low = cells2(lines[0]).map((x) => x.toLowerCase());
     const ki = collarKeyIndex(memb.docs.dhDoc, low);
@@ -16813,7 +17181,7 @@ cv.addEventListener('pointerup', (e) => {
   showRecord(hit);
 });
 
-window._micro = { get hasFSAA() { return hasFSAA; }, deliverBlob, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, addLayer, deliverBlob, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped
