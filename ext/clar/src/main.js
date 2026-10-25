@@ -1,6 +1,6 @@
-// @gcu/facet — structural geology on a triangulated surface.
+// @gcu/clar — structural geology on a triangulated surface.
 //
-// Given an outcrop mesh, facet turns what a geologist points at into measured
+// Given an outcrop mesh, clar turns what a geologist points at into measured
 // attitudes: paint a patch, fit a plane to it, read its dip and dip direction,
 // digitize traces along the surface, and classify the fracture network they form.
 //
@@ -12,9 +12,9 @@
 //   network.js    I/Y/X node classification and fracture connectivity
 //   sets.js       reading plane sets back out of painted vertex colors
 //
-// Mesh topology is NOT here. `buildAdjacency` and `components` are @gcu/groma's,
+// Mesh topology is NOT here. `buildAdjacency` and `components` are @gcu/geometry's,
 // re-exported below so a consumer needs one import rather than two, but there is
-// exactly one implementation and it lives in groma. Attitude conversion and the
+// exactly one implementation and it lives in @gcu/geometry. Attitude conversion and the
 // eigensolver are @gcu/bearing's, for the same reason.
 //
 // Coordinates are **x = East, y = North, z = Up**, in metres — micro's world
@@ -28,5 +28,5 @@ export { geodesic, geodesicField, geodesicBall } from './geodesic.js';
 export { nodeClasses } from './network.js';
 export { detectSets } from './sets.js';
 
-// re-exported from @gcu/groma — mesh topology has one home, and this is not it
-export { buildAdjacency, neighbors, incidentFaces, degree, components } from '../../groma/src/topology.js';
+// re-exported from @gcu/geometry — mesh topology has one home, and this is not it
+export { buildAdjacency, neighbors, incidentFaces, degree, components } from '../../geometry/src/topology.js';

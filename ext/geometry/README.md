@@ -1,13 +1,12 @@
-# @gcu/groma
+# @gcu/geometry
 
-**The robust-geometry base of the GCU stack.** Named for the Roman surveyor's
-cross-staff, alongside `regula` (drafting geometry) and `libella` (elevation).
+**The robust-geometry base of the GCU stack.**
 
 Zero dependencies. Everything is plain typed arrays — no classes to serialize,
 so a BVH or an adjacency crosses a worker boundary by transfer.
 
 ```js
-import { buildBVH, raycastBVH, buildAdjacency, neighbors, components } from '@gcu/groma';
+import { buildBVH, raycastBVH, buildAdjacency, neighbors, components } from '@gcu/geometry';
 ```
 
 ## What lives here
@@ -41,14 +40,14 @@ repeated corner contributes only its real edges. Field meshes are not clean.
 ## Why it exists
 
 Four packages were carrying their own copy of "BVH + mesh topology". This is the
-one copy. `@gcu/winding` is now the generalized winding number *on* groma;
-`@gcu/facet` will be structural geology on it. `@gcu/peel` still has its own BVH
+one copy. `@gcu/winding` is now the generalized winding number *on* @gcu/geometry;
+`@gcu/clar` will be structural geology on it. `@gcu/peel` still has its own BVH
 — folding it in is the follow-up, once this API has two real consumers proving
 its shape rather than one speculative one.
 
 ## Build & test
 
 ```bash
-node ext/groma/build.js      # -> index.js, self-contained ESM
-node --test test/groma.test.mjs
+node ext/geometry/build.js      # -> index.js, self-contained ESM
+node --test test/geometry.test.mjs
 ```

@@ -1,7 +1,7 @@
 {
-  "name": "@gcu/facet",
+  "name": "@gcu/geometry",
   "version": "0.1.0",
-  "description": "Structural geology on a triangulated surface: plane fitting by PCA of vertex positions, geodesic brush and traces, fracture-network topology, painted-color set detection.",
+  "description": "Robust geometry base: BVH build and ray queries, CSR mesh topology (vertex-vertex and vertex-face adjacency), connected components. Zero dependencies, typed arrays throughout.",
   "type": "module",
   "main": "src/main.js",
   "exports": {
@@ -17,18 +17,14 @@
   "scripts": {
     "build": "node build.js"
   },
-  "dependencies": {
-    "@gcu/bearing": "*",
-    "@gcu/groma": "*"
-  },
   "keywords": [
-    "structural-geology",
-    "outcrop",
-    "attitude",
-    "dip",
-    "fracture",
+    "bvh",
+    "raycast",
     "mesh",
-    "geodesic",
+    "topology",
+    "adjacency",
+    "csr",
+    "geometry",
     "auditable",
     "gcu"
   ],
@@ -37,9 +33,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gentropic/auditable.git",
-    "directory": "ext/facet"
+    "directory": "ext/geometry"
   },
-  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/facet",
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/geometry",
   "bugs": {
     "url": "https://github.com/gentropic/auditable/issues"
   }

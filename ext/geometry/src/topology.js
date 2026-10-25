@@ -1,4 +1,4 @@
-// @gcu/groma — mesh topology in CSR form.
+// @gcu/geometry — mesh topology in CSR form.
 //
 // Two adjacency graphs, built once in linear time, that everything walking a
 // surface needs: a geodesic brush, a flood fill, Dijkstra along the surface,

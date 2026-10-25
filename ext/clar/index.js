@@ -1,11 +1,11 @@
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
-// @gcu/facet — Structural geology on a triangulated surface: plane fitting by PCA of vertex positions, geodesic brush and traces, fracture-network topology, painted-color set detection.
+// @gcu/clar — Structural geology on a triangulated surface: plane fitting by PCA of vertex positions, geodesic brush and traces, fracture-network topology, painted-color set detection.
 
 import { symmetricEigen3, conversions, statistics } from '@gcu/bearing';
 
 // ── src/fit.js ──
 
-// @gcu/facet — plane fitting by principal component analysis of vertex POSITIONS.
+// @gcu/clar — plane fitting by principal component analysis of vertex POSITIONS.
 //
 // This is a total-least-squares fit: the plane that minimizes the sum of squared
 // perpendicular distances to a set of points. It is NOT an average of face
@@ -284,7 +284,7 @@ function fisherOf(normals, indices, n, pole) {
 
 // ── src/brush.js ──
 
-// @gcu/facet — the painting brush.
+// @gcu/clar — the painting brush.
 //
 // A brush stroke is the intersection of two conditions:
 //
@@ -312,7 +312,7 @@ function fisherOf(normals, indices, n, pole) {
  * @param {{origin: ArrayLike<number>, direction: ArrayLike<number>}} ray
  *        the view ray; `direction` need not be unit length
  * @param {number} radius                cylinder radius, in world units
- * @param {object} adj                   from groma's buildAdjacency
+ * @param {object} adj                   from @gcu/geometry's buildAdjacency
  * @param {ArrayLike<number>} positions  flat xyz
  * @param {object} [opts]
  * @param {Uint8Array} [opts.exclude]    vertices already painted into another set;
@@ -393,7 +393,7 @@ function distanceToRay(point, ray) {
 
 // ── src/geodesic.js ──
 
-// @gcu/facet — shortest paths ALONG a surface.
+// @gcu/clar — shortest paths ALONG a surface.
 //
 // Distance here is measured through the mesh, not through the air: the cost of
 // an edge is its Euclidean length, and a path may only follow edges. That is
@@ -463,7 +463,7 @@ class MinHeap {
  * cheaper than a decrease-key and needs no index-into-heap bookkeeping.
  *
  * @param {number|ArrayLike<number>} seeds  a vertex, or several (all at distance 0)
- * @param {object} adj                      from groma's buildAdjacency
+ * @param {object} adj                      from @gcu/geometry's buildAdjacency
  * @param {ArrayLike<number>} positions     flat xyz
  * @param {object} [opts]
  * @param {number} [opts.maxDist=Infinity]  stop expanding past this surface distance
@@ -543,7 +543,7 @@ function geodesicBall(seed, maxDist, adj, positions, opts = {}) {
 
 // ── src/network.js ──
 
-// @gcu/facet — fracture-network topology, the Sanderson & Nixon I/Y/X scheme.
+// @gcu/clar — fracture-network topology, the Sanderson & Nixon I/Y/X scheme.
 //
 // Once traces are digitized, the network's connectivity is read off the nodes
 // where traces meet, classified by how many branches arrive:
@@ -627,7 +627,7 @@ function nodeClasses(traces) {
 
 // ── src/sets.js ──
 
-// @gcu/facet — reading plane sets back out of vertex colors (ply2atti compat).
+// @gcu/clar — reading plane sets back out of vertex colors (ply2atti compat).
 //
 // The established workflow this replaces is: paint the outcrop mesh in MeshLab
 // with saturated primary colors, one color per joint set, export .ply, run
@@ -705,9 +705,9 @@ function saturate(x, tol) {
   return -1;
 }
 
-// ── ../groma/src/topology.js ──
+// ── ../geometry/src/topology.js ──
 
-// @gcu/groma — mesh topology in CSR form.
+// @gcu/geometry — mesh topology in CSR form.
 //
 // Two adjacency graphs, built once in linear time, that everything walking a
 // surface needs: a geodesic brush, a flood fill, Dijkstra along the surface,
@@ -878,9 +878,9 @@ function components(adj, subset) {
 
 // ── src/main.js ──
 
-// @gcu/facet — structural geology on a triangulated surface.
+// @gcu/clar — structural geology on a triangulated surface.
 //
-// Given an outcrop mesh, facet turns what a geologist points at into measured
+// Given an outcrop mesh, clar turns what a geologist points at into measured
 // attitudes: paint a patch, fit a plane to it, read its dip and dip direction,
 // digitize traces along the surface, and classify the fracture network they form.
 //
@@ -892,9 +892,9 @@ function components(adj, subset) {
 //   network.js    I/Y/X node classification and fracture connectivity
 //   sets.js       reading plane sets back out of painted vertex colors
 //
-// Mesh topology is NOT here. `buildAdjacency` and `components` are @gcu/groma's,
+// Mesh topology is NOT here. `buildAdjacency` and `components` are @gcu/geometry's,
 // re-exported below so a consumer needs one import rather than two, but there is
-// exactly one implementation and it lives in groma. Attitude conversion and the
+// exactly one implementation and it lives in @gcu/geometry. Attitude conversion and the
 // eigensolver are @gcu/bearing's, for the same reason.
 //
 // Coordinates are **x = East, y = North, z = Up**, in metres — micro's world
@@ -903,7 +903,7 @@ function components(adj, subset) {
 // the original's five hand-rolled and mutually disagreeing conversions.
 
 
-// re-exported from @gcu/groma — mesh topology has one home, and this is not it
+// re-exported from @gcu/geometry — mesh topology has one home, and this is not it
 
 export {
   attitude,

@@ -1,9 +1,9 @@
-// @gcu/groma — BVH + CSR mesh topology.
+// @gcu/geometry — BVH + CSR mesh topology.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBVH, raycastBVH, buildAdjacency, neighbors, incidentFaces, degree, components,
-} from '../ext/groma/src/main.js';
+} from '../ext/geometry/src/main.js';
 
 // a unit quad in the z=0 plane, split into two triangles sharing the 1-2 edge
 //   3---2
@@ -125,7 +125,7 @@ test('components: a fully connected subset is one component', () => {
   assert.equal(components(a, all).count, 1);
 });
 
-test('BVH + raycast still work after the move to groma', () => {
+test('BVH + raycast still work after the move to @gcu/geometry', () => {
   const bvh = buildBVH(QUAD_V, QUAD_T);
   const mesh = { vertices: QUAD_V, triangles: QUAD_T, nodes: bvh.nodes, triIndices: bvh.triIndices };
   // NB pick points OFF the shared diagonal (y = x): a ray down the seam may

@@ -1199,7 +1199,7 @@ function evaluateWorker(worker, meshName, blockModel, opts = {}) {
 //
 // A Frame has two faculties with different reach:
 //   1. numerical framing — the world↔local offset (`origin`), for the precision path
-//      (dee/voxmesh/groma/regula/dxf/moncad compute in it; it gates every F32 downcast);
+//      (dee/voxmesh/geometry/regula/dxf/moncad compute in it; it gates every F32 downcast);
 //   2. coordinate identity — the `crs` descriptor + `units`, universal provenance so
 //      "what do these world numbers mean" is never silent.
 //
@@ -1326,7 +1326,7 @@ function frameFromBounds(bounds, opts = {}) {
 // stay meaningful at any magnitude — a fixed absolute 1e-9 is meaningless against UTM
 // operands, the same failure class as the original silent-shift bug. `extent` is the
 // working span (e.g. the local bbox diagonal); `rel` is the relative floor. Feeds the
-// @gcu/regula tolerance model. Note exact sign/orientation tests stay EXACT (groma
+// @gcu/regula tolerance model. Note exact sign/orientation tests stay EXACT (@gcu/geometry
 // predicates) — this ε is only for constructed quantities.
 function extentTolerance(frame, extent, { rel = 1e-9 } = {}) {
   const e = Math.abs(extent) || 1;

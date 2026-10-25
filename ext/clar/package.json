@@ -1,7 +1,7 @@
 {
-  "name": "@gcu/groma",
+  "name": "@gcu/clar",
   "version": "0.1.0",
-  "description": "Robust geometry base: BVH build and ray queries, CSR mesh topology (vertex-vertex and vertex-face adjacency), connected components. Zero dependencies, typed arrays throughout.",
+  "description": "Structural geology on a triangulated surface: plane fitting by PCA of vertex positions, geodesic brush and traces, fracture-network topology, painted-color set detection.",
   "type": "module",
   "main": "src/main.js",
   "exports": {
@@ -17,14 +17,18 @@
   "scripts": {
     "build": "node build.js"
   },
+  "dependencies": {
+    "@gcu/bearing": "*",
+    "@gcu/geometry": "*"
+  },
   "keywords": [
-    "bvh",
-    "raycast",
+    "structural-geology",
+    "outcrop",
+    "attitude",
+    "dip",
+    "fracture",
     "mesh",
-    "topology",
-    "adjacency",
-    "csr",
-    "geometry",
+    "geodesic",
     "auditable",
     "gcu"
   ],
@@ -33,9 +37,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gentropic/auditable.git",
-    "directory": "ext/groma"
+    "directory": "ext/clar"
   },
-  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/groma",
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/clar",
   "bugs": {
     "url": "https://github.com/gentropic/auditable/issues"
   }

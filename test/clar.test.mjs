@@ -1,4 +1,4 @@
-// @gcu/facet — structural geology on a triangulated surface.
+// @gcu/clar — structural geology on a triangulated surface.
 //
 // The load-bearing tests here are the round trips: a synthetic plane built AT a
 // known attitude has to come back AT that attitude. The original's failure mode
@@ -12,7 +12,7 @@ import {
   geodesic, geodesicField, geodesicBall,
   nodeClasses, detectSets,
   buildAdjacency, components,
-} from '../ext/facet/src/main.js';
+} from '../ext/clar/src/main.js';
 
 // ── fixtures ──
 

@@ -1,8 +1,8 @@
-# @gcu/facet
+# @gcu/clar
 
 Structural geology on a triangulated surface.
 
-Given a photogrammetry mesh of an outcrop, facet turns what a geologist points at
+Given a photogrammetry mesh of an outcrop, clar turns what a geologist points at
 into measured attitudes: paint a patch of a joint face, fit a plane to it, read
 its dip and dip direction, digitize fracture traces along the surface, and
 classify the network they form.
@@ -14,7 +14,7 @@ gets back vertex indices and numbers.
 ```js
 import {
   buildAdjacency, brush, components, fitPlane, geodesic, nodeClasses,
-} from '@gcu/facet';
+} from '@gcu/clar';
 
 const adj = buildAdjacency(positions, triangles);        // once per mesh
 
@@ -74,7 +74,7 @@ tessellate finely pulls the fit toward its own orientation. Pass
 surface area it represents instead, which makes the fit **independent of how the
 mesh was built**.
 
-How much this matters, from `test/facet.test.mjs`: take one surface — a symmetric
+How much this matters, from `test/clar.test.mjs`: take one surface — a symmetric
 valley whose two limbs have equal area — and mesh it two ways that differ only in
 which limb got refined.
 
@@ -149,19 +149,19 @@ are essentially never saturated, so there is no threshold to tune.
 ## What is not here
 
 Mesh topology. `buildAdjacency`, `neighbors`, `incidentFaces`, `degree` and
-`components` are re-exported from **`@gcu/groma`** so that a consumer needs one
+`components` are re-exported from **`@gcu/geometry`** so that a consumer needs one
 import instead of two, but there is exactly one implementation and it lives in
-groma. The eigensolver and the attitude conversion are **`@gcu/bearing`**'s for
+@gcu/geometry. The eigensolver and the attitude conversion are **`@gcu/bearing`**'s for
 the same reason.
 
 ## Build
 
 ```
-node ext/facet/build.js
+node ext/clar/build.js
 ```
 
-groma's topology is inlined, so the bundle stands alone. `@gcu/bearing` stays a
+@gcu/geometry's topology is inlined, so the bundle stands alone. `@gcu/bearing` stays a
 bare specifier — it is 128 KB of vendored stereonet library that hosts need in
 their own right, and one copy resolved through an import map beats two.
 
-Tests: `test/facet.test.mjs`, run by `npm test`.
+Tests: `test/clar.test.mjs`, run by `npm test`.

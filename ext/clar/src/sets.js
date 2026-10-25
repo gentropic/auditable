@@ -1,4 +1,4 @@
-// @gcu/facet — reading plane sets back out of vertex colors (ply2atti compat).
+// @gcu/clar — reading plane sets back out of vertex colors (ply2atti compat).
 //
 // The established workflow this replaces is: paint the outcrop mesh in MeshLab
 // with saturated primary colors, one color per joint set, export .ply, run

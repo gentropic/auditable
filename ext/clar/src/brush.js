@@ -1,4 +1,4 @@
-// @gcu/facet — the painting brush.
+// @gcu/clar — the painting brush.
 //
 // A brush stroke is the intersection of two conditions:
 //
@@ -26,7 +26,7 @@
  * @param {{origin: ArrayLike<number>, direction: ArrayLike<number>}} ray
  *        the view ray; `direction` need not be unit length
  * @param {number} radius                cylinder radius, in world units
- * @param {object} adj                   from groma's buildAdjacency
+ * @param {object} adj                   from @gcu/geometry's buildAdjacency
  * @param {ArrayLike<number>} positions  flat xyz
  * @param {object} [opts]
  * @param {Uint8Array} [opts.exclude]    vertices already painted into another set;

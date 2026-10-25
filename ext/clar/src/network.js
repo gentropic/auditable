@@ -1,4 +1,4 @@
-// @gcu/facet — fracture-network topology, the Sanderson & Nixon I/Y/X scheme.
+// @gcu/clar — fracture-network topology, the Sanderson & Nixon I/Y/X scheme.
 //
 // Once traces are digitized, the network's connectivity is read off the nodes
 // where traces meet, classified by how many branches arrive:

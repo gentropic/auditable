@@ -1,4 +1,4 @@
-// @gcu/facet — shortest paths ALONG a surface.
+// @gcu/clar — shortest paths ALONG a surface.
 //
 // Distance here is measured through the mesh, not through the air: the cost of
 // an edge is its Euclidean length, and a path may only follow edges. That is
@@ -68,7 +68,7 @@ class MinHeap {
  * cheaper than a decrease-key and needs no index-into-heap bookkeeping.
  *
  * @param {number|ArrayLike<number>} seeds  a vertex, or several (all at distance 0)
- * @param {object} adj                      from groma's buildAdjacency
+ * @param {object} adj                      from @gcu/geometry's buildAdjacency
  * @param {ArrayLike<number>} positions     flat xyz
  * @param {object} [opts]
  * @param {number} [opts.maxDist=Infinity]  stop expanding past this surface distance

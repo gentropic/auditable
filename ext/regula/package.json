@@ -1,7 +1,7 @@
 {
   "name": "@gcu/regula",
   "version": "0.1.0",
-  "description": "2D drafting curve-operations for the GCU geometry stack — the Roman straightedge, sibling to groma's surveyor's cross. Operates on the @gcu/dxf bulge-primitive (line and arc are one curve), keeping geometry canonical through every op: a transform leaves arcs as arcs, offset-of-an-arc is an arc (not a chord fan). v0.1 ships the transform tier (translate/rotate/scale/mirror, bulge-correct, zero-dep); intersection, trim/extend, fillet/chamfer, and offset follow, on @gcu/groma's exact predicates with a coordinate-relative tolerance. Written from the geometry literature.",
+  "description": "2D drafting curve-operations for the GCU geometry stack — the Roman straightedge. Operates on the @gcu/dxf bulge-primitive (line and arc are one curve), keeping geometry canonical through every op: a transform leaves arcs as arcs, offset-of-an-arc is an arc (not a chord fan). v0.1 ships the transform tier (translate/rotate/scale/mirror, bulge-correct, zero-dep); intersection, trim/extend, fillet/chamfer, and offset follow, on @gcu/geometry's exact predicates with a coordinate-relative tolerance. Written from the geometry literature.",
   "type": "module",
   "main": "./src/main.js",
   "exports": {

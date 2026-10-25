@@ -1,4 +1,4 @@
-// @gcu/facet — plane fitting by principal component analysis of vertex POSITIONS.
+// @gcu/clar — plane fitting by principal component analysis of vertex POSITIONS.
 //
 // This is a total-least-squares fit: the plane that minimizes the sum of squared
 // perpendicular distances to a set of points. It is NOT an average of face

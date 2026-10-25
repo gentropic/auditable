@@ -5,7 +5,7 @@ coordinate can account for itself.**
 
 moncad (after **Monge**, descriptive geometry) is a small standalone 2D CAD tool with
 GCU sensibilities — "bigger than lamina, not humongous" — backed by the geometry cluster
-(`@gcu/frame`, `@gcu/dxf`, `@gcu/groma`, `@gcu/regula`, later `@gcu/libella`). It is not
+(`@gcu/frame`, `@gcu/dxf`, `@gcu/geometry`, `@gcu/regula`, later `@gcu/libella`). It is not
 a from-scratch app; it is a GCU surface that composes the eco. Deploy is lamina-style:
 in-repo source at `tools/moncad/`, built to a single self-contained `moncad.html`,
 deployed to a sibling repo.
@@ -34,7 +34,7 @@ this file is moncad-the-app's identity and architecture.
 moncad is an **instrument**, not an application. You don't *use* a theodolite, you *read*
 it. The product is the panel: the readouts, the snap glyphs, the constraint indicators —
 honest, legible, functional over decorative. The Roman-surveying-instrument names
-(groma / regula / libella) are deliberate; moncad is the rig that operates them.
+(regula / libella) are deliberate; moncad is the rig that operates them.
 
 "Instrument" means **legible**, not austere. A mixing desk or a cockpit is dense with
 clearly-labelled, grabbable controls. A friendly, well-labelled toolbar is a *good
@@ -122,7 +122,7 @@ later. The hard graphics problems are *sidestepped* by a **hybrid split**, not s
   crosshair redraws only the light overlay while the heavy geometry sits still on the GPU
   — *better* interaction feel than pure Canvas2D.
 - **Picking → a CPU spatial index** (uniform grid) → candidates → precise hit-test via
-  groma/regula predicates. The same index **is** the snapping index (snapping is a
+  geometry + regula predicates. The same index **is** the snapping index (snapping is a
   spatial-query problem), so picking rides it for free — no GPU picking.
 
 **WebGL2, not WebGPU:** WebGL2 runs everywhere offline (the networkless north star).
@@ -176,11 +176,11 @@ switch, and override land **with the draw tools**, tuned against actual drafting
 |---|---|
 | coordinate framing, world↔local, provenance | `@gcu/frame` |
 | open / save real DXF (layers, blocks, XDATA) | `@gcu/dxf` |
-| exact predicates for edit ops (point-side, intersection) | `@gcu/groma` (planned) |
+| exact predicates for edit ops (point-side, intersection) | `@gcu/geometry` (planned) |
 | offset / fillet / chamfer / trim | `@gcu/regula` (planned) |
 | cota / structure contours / sections (geological mode) | `@gcu/libella` (planned, v2) |
 
-Pulled in as the work demands them — `groma`/`regula` arrive with the edit long-tail,
+Pulled in as the work demands them — `@gcu/geometry`/`regula` arrive with the edit long-tail,
 designed against moncad as their real consumer.
 
 ---

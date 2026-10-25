@@ -1,5 +1,5 @@
 // ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/main.js
-// @gcu/regula — 2D drafting curve-operations for the GCU geometry stack — the Roman straightedge, sibling to groma's surveyor's cross. Operates on the @gcu/dxf bulge-primitive (line and arc are one curve), keeping geometry canonical through every op: a transform leaves arcs as arcs, offset-of-an-arc is an arc (not a chord fan). v0.1 ships the transform tier (translate/rotate/scale/mirror, bulge-correct, zero-dep); intersection, trim/extend, fillet/chamfer, and offset follow, on @gcu/groma's exact predicates with a coordinate-relative tolerance. Written from the geometry literature.
+// @gcu/regula — 2D drafting curve-operations for the GCU geometry stack — the Roman straightedge. Operates on the @gcu/dxf bulge-primitive (line and arc are one curve), keeping geometry canonical through every op: a transform leaves arcs as arcs, offset-of-an-arc is an arc (not a chord fan). v0.1 ships the transform tier (translate/rotate/scale/mirror, bulge-correct, zero-dep); intersection, trim/extend, fillet/chamfer, and offset follow, on @gcu/geometry's exact predicates with a coordinate-relative tolerance. Written from the geometry literature.
 
 // ── src/transform.js ──
 
@@ -695,12 +695,12 @@ function offset(path, d, tol) {
 // ── src/main.js ──
 
 // @gcu/regula — module manifest. The 2D drafting curve-ops layer of the GCU geometry
-// stack (the Roman straightedge, sibling to groma's surveyor's cross). It operates on the
+// stack (the Roman straightedge). It operates on the
 // @gcu/dxf bulge-primitive: line + arc are one curve (bulge = 0 is straight), kept
 // canonical through every op (offset-of-an-arc is an arc, not a chord fan).
 //
 // v0.1 ships the `transform` tier (similarity + reflection — zero-dep). The curve-ops
-// tiers (intersection → trim/extend → fillet/chamfer → offset), and the @gcu/groma exact
+// tiers (intersection → trim/extend → fillet/chamfer → offset), and the @gcu/geometry exact
 // `orient2d` floor + the threaded `Tolerance` object they need, land as edit work pulls
 // them — designed against moncad as the real consumer. See spec_inbox/CAD/SPEC-curves.md.
 
