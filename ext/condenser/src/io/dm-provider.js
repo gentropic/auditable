@@ -70,9 +70,10 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   const idx = (n) => names.indexOf(n);
   const constVal = (n) => { const c = h.columns[idx(n)]; return c && c.isConstant ? c.constantValue : null; };
 
-  const xc = idx('XC') >= 0 ? idx('XC') : idx('X');
-  const yc = idx('YC') >= 0 ? idx('YC') : idx('Y');
-  const zc = idx('ZC') >= 0 ? idx('ZC') : idx('Z');
+  // centroid fields: stated by the caller (mapping.x/y/z), else XC/YC/ZC (or X/Y/Z)
+  const xc = mapping && mapping.x != null ? mapping.x : idx('XC') >= 0 ? idx('XC') : idx('X');
+  const yc = mapping && mapping.y != null ? mapping.y : idx('YC') >= 0 ? idx('YC') : idx('Y');
+  const zc = mapping && mapping.z != null ? mapping.z : idx('ZC') >= 0 ? idx('ZC') : idx('Z');
   if (xc < 0 || yc < 0 || zc < 0) throw new Error('dm: no XC/YC/ZC centroid fields — not a block model export');
 
   // Decoded-record batches (a cold recipe). Reads ~4 MB page runs sequentially;
@@ -176,7 +177,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   const chan = mapping && mapping.chan != null ? mapping.chan : (numericColumns[0] ? numericColumns[0].i : null);
   // category: an explicit mapping.cat wins (any column — numeric domain codes
   // dict-encode as strings below); default = the first non-constant alpha
-  const catIdx = mapping && mapping.cat != null ? mapping.cat : h.columns.findIndex((c) => c.type === 'A' && !c.isConstant);
+  const catIdx = mapping && mapping.cat != null ? mapping.cat : h.columns.findIndex((c) => c.type === 'A' && !c.isConstant);   // mapping.cat = -1 → stated: none
   // a sidecar's categories describe the column it was written for — a re-keyed
   // cat must rebuild its dict during the sweep, not inherit the old column's
   const cachedCats = cached && cached.categories && (!cached.mapping || cached.mapping.cat == null || cached.mapping.cat === catIdx) ? cached.categories : null;

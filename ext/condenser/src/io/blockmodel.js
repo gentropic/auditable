@@ -246,7 +246,10 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 //   basis → a fit over every record); a hit is returned as
 //   header.latticeCandidate and NOT applied — the caller confirms it (an
 //   inferred rotation is never applied silently).
-export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+// opts.dims — { x, y, z } column indices of the per-block size columns, stated
+//   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
+// mapping.cat = -1 — "no category" (no auto-pick from the text columns).
+export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -290,7 +293,8 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
 
   // auto category: first column whose head-sample values are all non-numeric
   let catCol = map.cat;
-  if (catCol == null && sniff.header) {
+  if (catCol === -1) catCol = null;                         // stated: no category
+  else if (catCol == null && sniff.header) {
     const lines = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split = splitter(sniff.delim);
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
@@ -303,7 +307,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
   // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
   // distinct (dx,dy,dz) triples that become the size-code palette.
-  const dimCols = findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
+  const dimCols = dims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
   const hasDims = dimCols.x >= 0;
   const minDim = [Infinity, Infinity, Infinity];
   const dimSet = new Set();

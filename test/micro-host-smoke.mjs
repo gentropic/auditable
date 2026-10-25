@@ -321,6 +321,87 @@ async function rotatedChecks(url, label) {
   await p.close();
 }
 
+// addLayer with a FILE (the big-data door): opened in place, never copied,
+// roles stated by name against the file's header, handles remembered
+async function fileChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  console.log(`── addLayer({ file }) (${label})`);
+  const f = await p.evaluate(async () => {
+    const m = window._micro, out = {};
+    // CSV with unconventional names: nothing sniffed, the text column NOT auto-picked as a category
+    const rows = ['EAST,NORTH,RL,GRADE,ROCK,NOTE'];
+    let k = 0;
+    for (let z = 0; z < 2; z++) for (let y = 0; y < 3; y++) for (let x = 0; x < 4; x++) { rows.push(`${1000 + x * 10},${2000 + y * 10},${300 + z * 5},${k},${k % 2 ? 'BIF' : 'CANGA'},"note, ${k}"`); k++; }
+    const csv = new File([rows.join('\n') + '\n'], 'model_export.csv', { type: 'text/csv' });
+    const id1 = await m.addLayer({ kind: 'blocks', file: csv, name: 'from_file', roles: { x: 'EAST', y: 'NORTH', z: 'RL', value: 'GRADE' } });
+    const L1 = m.layers().find((q) => q.id === id1), h1 = L1.docs.blockDoc.header;
+    out.csv = { sameBlob: L1.docs.blockDoc.blob === csv, grid: h1.grid && [h1.grid.x.count, h1.grid.y.count, h1.grid.z.count].join('×'), chan: h1.columns[h1.mapping.chan], cats: h1.categories, label: L1.label, n: h1.count };
+    // a File made in ANOTHER frame (the host case): not `instanceof File` here
+    const fr = document.createElement('iframe'); document.body.appendChild(fr);
+    const foreign = new fr.contentWindow.File([rows.join('\n') + '\n'], 'foreign.csv');
+    out.crossRealm = !(foreign instanceof File);
+    const idF = await m.addLayer({ kind: 'blocks', file: foreign, roles: { x: 'EAST', y: 'NORTH', z: 'RL', category: 'ROCK' } });
+    out.foreign = m.layers().find((q) => q.id === idF).docs.blockDoc.header.categories;
+    fr.remove();
+    // Parquet: a declared ROTATED basis stated by the host, and sizes from columns NOT named DX/DY/DZ
+    const { writeParquet } = await import('/ext/parquet/index.js');
+    const AZ = 25 * Math.PI / 180, U = [Math.cos(AZ) * 10, -Math.sin(AZ) * 10, 0], V = [Math.sin(AZ) * 10, Math.cos(AZ) * 10, 0], W = [0, 0, 5], O = [612000, 7765000, 800];
+    const X = [], Y = [], Z = [], G = [];
+    for (let kk = 0; kk < 2; kk++) for (let j = 0; j < 4; j++) for (let i = 0; i < 5; i++) { const w = [0, 1, 2].map((a) => O[a] + i * U[a] + j * V[a] + kk * W[a]); X.push(w[0]); Y.push(w[1]); Z.push(w[2]); G.push(i + j); }
+    const pqRot = new File([writeParquet({ columnData: [{ name: 'E', data: X, type: 'DOUBLE' }, { name: 'N', data: Y, type: 'DOUBLE' }, { name: 'H', data: Z, type: 'DOUBLE' }, { name: 'AU', data: G, type: 'DOUBLE' }], codec: 'UNCOMPRESSED' })], 'rot.parquet');
+    const idR = await m.addLayer({ kind: 'blocks', file: pqRot, roles: { x: 'E', y: 'N', z: 'H', value: 'AU' }, lattice: { basis: { origin: O, U, V, W, counts: [5, 4, 2] } } });
+    const hR = m.layers().find((q) => q.id === idR).docs.blockDoc.header;
+    out.rot = { rot: !!(hR.grid && hR.grid.rot), by: hR.lattice && hR.lattice.by };
+    try { await m.addLayer({ kind: 'blocks', file: pqRot, roles: { x: 'E', y: 'N', z: 'H' }, lattice: { basis: { origin: O.map((v, a) => v + 0.5 * U[a]), U, V, W, counts: [5, 4, 2] } } }); out.rotBad = 'accepted'; } catch (e) { out.rotBad = e.message; }
+    const SX = [5, 25, 5, 25], SY = [5, 5, 15, 15], SZ = [5, 5, 5, 5], S = [10, 10, 10, 10];
+    for (const dx of [-2.5, 2.5]) for (const dy of [-2.5, 2.5]) for (const dz of [-2.5, 2.5]) { SX.push(15 + dx); SY.push(5 + dy); SZ.push(5 + dz); S.push(5); }
+    const pqSub = new File([writeParquet({ columnData: [{ name: 'X', data: SX, type: 'DOUBLE' }, { name: 'Y', data: SY, type: 'DOUBLE' }, { name: 'Z', data: SZ, type: 'DOUBLE' }, { name: 'SIZE', data: S, type: 'DOUBLE' }], codec: 'UNCOMPRESSED' })], 'subs.parquet');
+    const idS = await m.addLayer({ kind: 'blocks', file: pqSub, roles: { x: 'X', y: 'Y', z: 'Z' }, sizes: { dx: 'SIZE', dy: 'SIZE', dz: 'SIZE' } });
+    const hS = m.layers().find((q) => q.id === idS).docs.blockDoc.header;
+    out.sub = { sub: hS.subBlocked, pal: hS.dimPalette && hS.dimPalette.length };
+    // .dm whose centroid fields are NOT XC/YC/ZC: only stated roles can open it
+    const { makeDM } = await import('/test/dm-make.mjs');
+    const fields = [{ name: 'XCEN', type: 'N' }, { name: 'YCEN', type: 'N' }, { name: 'ZCEN', type: 'N' }, { name: 'FE', type: 'N' }, { name: 'LITO', type: 'A', width: 8 }];
+    const drows = []; for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) drows.push({ XCEN: 5 + i * 10, YCEN: 5 + j * 10, ZCEN: 2.5, FE: i * 10 + j, LITO: i % 2 ? 'BIF' : 'CANGA' });
+    const dmFile = new File([makeDM(fields, drows, { precision: 'ep' })], 'odd.dm');
+    const idD = await m.addLayer({ kind: 'blocks', file: dmFile, roles: { x: 'XCEN', y: 'YCEN', z: 'ZCEN', value: 'FE' } });
+    const hD = m.layers().find((q) => q.id === idD).docs.blockDoc.header;
+    out.dm = { n: hD.count, x: hD.columns[hD.mapping.x], cats: hD.categories };
+    // an OPFS FileSystemFileHandle: opened, and the layer keeps the handle
+    const root = await navigator.storage.getDirectory(), fh = await root.getFileHandle('handle_model.csv', { create: true });
+    const wr = await fh.createWritable(); await wr.write(rows.join('\n') + '\n'); await wr.close();
+    const idH = await m.addLayer({ kind: 'blocks', file: fh, roles: { x: 'EAST', y: 'NORTH', z: 'RL' } });
+    out.handle = m.layers().find((q) => q.id === idH).handle === fh;
+    // drillholes, mixed sources: collar in memory, survey + intervals as files
+    const idDh = await m.addLayer({
+      kind: 'drillholes', name: 'mixed',
+      collar: { columns: { HOLE: ['H1'], E: Float64Array.from([0]), N: Float64Array.from([0]), RL: Float64Array.from([100]) }, roles: { bhid: 'HOLE', x: 'E', y: 'N', z: 'RL' } },
+      survey: { file: new File(['HOLE,AT,BRG,INC\nH1,0,0,90\n'], 's.csv'), roles: { bhid: 'HOLE', at: 'AT', az: 'BRG', dip: 'INC' } },
+      intervals: { file: new File(['HOLE,F,T,CU,OBS\nH1,0,2,0.5,"a, b"\nH1,2,4,0.7,"line\nbreak"\n'], 'i.csv'), roles: { bhid: 'HOLE', from: 'F', to: 'T', value: 'CU' } },
+    });
+    const dh = m.layers().find((q) => q.id === idDh).docs.dhDoc.header;
+    out.dh = [dh.count, dh.placed, dh.holes];
+    // rejections name the problem
+    const rej = async (spec) => { try { await m.addLayer(spec); return 'accepted'; } catch (e) { return e.message; } };
+    out.r1 = await rej({ kind: 'blocks', file: csv, roles: { x: 'EAST', y: 'NORTH', z: 'ELEV' } });
+    out.r2 = await rej({ kind: 'blocks', file: new Blob([rows.join('\n')]), roles: { x: 'EAST', y: 'NORTH', z: 'RL' } });
+    out.r3 = await rej({ kind: 'blocks', file: { nope: true }, roles: {} });
+    out.r4 = await rej({ kind: 'blocks', file: pqSub, roles: { x: 'X', y: 'Y', z: 'Z' }, sizes: { dx: 'SIZE', dy: 'SIZE', dz: 'SIZE' }, lattice: { origin: [0, 0, 0], pitch: [1, 1, 1], counts: [1, 1, 1] } });
+    return out;
+  });
+  chk(`file: CSV opened IN PLACE (same Blob ${f.csv.sameBlob}), grid ${f.csv.grid}, value ${f.csv.chan}, no auto-category (${JSON.stringify(f.csv.cats)}), label “${f.csv.label}”`, f.csv.sameBlob && f.csv.grid === '4×3×2' && f.csv.chan === 'GRADE' && f.csv.cats === null && f.csv.label === 'from_file' && f.csv.n === 24);
+  chk(`file: a File from another frame (cross-realm ${f.crossRealm}) opens; stated category ${JSON.stringify(f.foreign)}`, f.crossRealm && JSON.stringify(f.foreign) === '["BIF","CANGA"]');
+  chk(`file: Parquet + a declared rotated basis → rotated, by ${f.rot.by}; a wrong one rejects (“${(f.rotBad || '').slice(0, 45)}…”)`, f.rot.rot && f.rot.by === 'host' && /declared lattice rejected/.test(f.rotBad));
+  chk(`file: Parquet sizes from a column named SIZE → sub-blocked (palette ${f.sub.pal})`, f.sub.sub === true && f.sub.pal === 2);
+  chk(`file: .dm with XCEN/YCEN/ZCEN by stated roles → ${f.dm.n} records on ${f.dm.x}, no auto-category`, f.dm.n === 12 && f.dm.x === 'XCEN' && f.dm.cats === null);
+  chk(`file: a FileSystemFileHandle opens and the layer keeps it (${f.handle})`, f.handle);
+  chk(`file: drillholes from mixed sources (memory + files) → ${JSON.stringify(f.dh)}`, f.dh[0] === 2 && f.dh[1] === 2 && f.dh[2] === 1);
+  chk(`file: rejections — unknown column, no extension, not a file, sizes+lattice`, /not a column of the file/.test(f.r1) && /spec\.format/.test(f.r2) && /File, a Blob or a FileSystemFileHandle/.test(f.r3) && /sizes OR a lattice/.test(f.r4));
+  await p.close();
+}
+
 // B: an ingested layer is a file-backed layer — it saves into a project folder
 // and comes back from it (blocks with host-ordered categories, sub-blocks, a drillhole set)
 async function projectRoundTrip(url, proj) {
@@ -366,8 +447,10 @@ try {
   await run('/tools/micro/index.html', 'dev tree');
   await projectRoundTrip('/tools/micro/index.html', 'hostrt');
   await rotatedChecks('/tools/micro/index.html', 'dev tree');
+  await fileChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
+  await fileChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

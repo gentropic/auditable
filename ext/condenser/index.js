@@ -1915,7 +1915,10 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 //   basis → a fit over every record); a hit is returned as
 //   header.latticeCandidate and NOT applied — the caller confirms it (an
 //   inferred rotation is never applied silently).
-async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+// opts.dims — { x, y, z } column indices of the per-block size columns, stated
+//   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
+// mapping.cat = -1 — "no category" (no auto-pick from the text columns).
+async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -1959,7 +1962,8 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
 
   // auto category: first column whose head-sample values are all non-numeric
   let catCol = map.cat;
-  if (catCol == null && sniff.header) {
+  if (catCol === -1) catCol = null;                         // stated: no category
+  else if (catCol == null && sniff.header) {
     const lines = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split = splitter(sniff.delim);
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
@@ -1972,7 +1976,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   // per-block dimension columns (DX/DY/DZ, XINC…) → the model may be SUB-BLOCKED
   // (variable box size). Discovery tracks the fine pitch (min dim/axis) + the
   // distinct (dx,dy,dz) triples that become the size-code palette.
-  const dimCols = findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
+  const dimCols = dims || findDimColumns(sniff.header) || { x: -1, y: -1, z: -1 };
   const hasDims = dimCols.x >= 0;
   const minDim = [Infinity, Infinity, Infinity];
   const dimSet = new Set();
@@ -7034,9 +7038,10 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   const idx = (n) => names.indexOf(n);
   const constVal = (n) => { const c = h.columns[idx(n)]; return c && c.isConstant ? c.constantValue : null; };
 
-  const xc = idx('XC') >= 0 ? idx('XC') : idx('X');
-  const yc = idx('YC') >= 0 ? idx('YC') : idx('Y');
-  const zc = idx('ZC') >= 0 ? idx('ZC') : idx('Z');
+  // centroid fields: stated by the caller (mapping.x/y/z), else XC/YC/ZC (or X/Y/Z)
+  const xc = mapping && mapping.x != null ? mapping.x : idx('XC') >= 0 ? idx('XC') : idx('X');
+  const yc = mapping && mapping.y != null ? mapping.y : idx('YC') >= 0 ? idx('YC') : idx('Y');
+  const zc = mapping && mapping.z != null ? mapping.z : idx('ZC') >= 0 ? idx('ZC') : idx('Z');
   if (xc < 0 || yc < 0 || zc < 0) throw new Error('dm: no XC/YC/ZC centroid fields — not a block model export');
 
   // Decoded-record batches (a cold recipe). Reads ~4 MB page runs sequentially;
@@ -7140,7 +7145,7 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   const chan = mapping && mapping.chan != null ? mapping.chan : (numericColumns[0] ? numericColumns[0].i : null);
   // category: an explicit mapping.cat wins (any column — numeric domain codes
   // dict-encode as strings below); default = the first non-constant alpha
-  const catIdx = mapping && mapping.cat != null ? mapping.cat : h.columns.findIndex((c) => c.type === 'A' && !c.isConstant);
+  const catIdx = mapping && mapping.cat != null ? mapping.cat : h.columns.findIndex((c) => c.type === 'A' && !c.isConstant);   // mapping.cat = -1 → stated: none
   // a sidecar's categories describe the column it was written for — a re-keyed
   // cat must rebuild its dict during the sweep, not inherit the old column's
   const cachedCats = cached && cached.categories && (!cached.mapping || cached.mapping.cat == null || cached.mapping.cat === catIdx) ? cached.categories : null;
