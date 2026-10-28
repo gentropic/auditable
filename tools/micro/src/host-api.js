@@ -106,6 +106,24 @@ export function createHostApi(d) {
     selection: (id) => { const L = live(id), records = d.selectionRecords(L); return { layer: L.id, count: records.length, records }; },
     select: verb((id, records, { mode = 'replace' } = {}) => d.setSelectionRecords(live(id), records == null ? [] : Array.from(records), mode)),
     clearSelection: verb((id) => { if (id == null) d.clearSelection(); else d.setSelectionRecords(live(id), [], 'replace'); }),
+    // micro's own lasso over a polygon of canvas CSS pixels: what a user lasso
+    // would select (visible = what's drawn; through: true = everything inside the
+    // tube, occlusion ignored). id null = every layer, as the user's lasso.
+    // → { layer, count } (one layer) | [{ layer, count }, …] (all)
+    selectInPolygon: verb((id, polygon, opts = {}) => d.selectInPolygon(id == null ? null : live(id).id, polygon, opts)),
+
+    // ── screen → world ──
+    // worldAt([x, y]) → { world: [x,y,z], layer, rec, face } | null — the surface under
+    // a canvas CSS point, resolved as a click resolves it (the block FACE entered,
+    // the section, z-exaggeration), WITHOUT firing micro:pick or opening the panel.
+    // worldAt([[x, y], …]) → one entry per point, from ONE pick render.
+    worldAt: verb((pts) => {
+      const one = Array.isArray(pts) && pts.length === 2 && !Array.isArray(pts[0]);
+      const list = one ? [pts] : pts;
+      if (!Array.isArray(list) || !list.every((p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(+p[0]) && Number.isFinite(+p[1])))
+        throw new Error('micro: worldAt takes [x, y] or [[x, y], …] (canvas CSS pixels)');
+      return d.worldAtPoints(list.map((p) => [+p[0], +p[1]])).then((r) => (one ? r[0] : r));
+    }),
 
     // ── the section, in world terms ──
     // section() → null (off) | { mode, axis, normal, position (n·p, world), thickness, clip, dipDir?, dip? }

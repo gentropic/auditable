@@ -486,6 +486,89 @@ async function pickChecks(url, label) {
 
 // window.micro — the versioned host API: readiness, chrome, colour-by (incl. the
 // re-reads and a drillhole layer's REPLACEMENT), groups, rows, filter, removal
+// screen ↔ world for a host (MineMind's grease pencil): worldAt resolves a canvas
+// point the way a click does — WITHOUT a click's side effects — and selectInPolygon
+// IS the user's lasso. A 3-level stack, so visible (top only) and through differ.
+async function screenChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && window.micro, null, { timeout: 30000 });
+  console.log(`── worldAt · selectInPolygon (${label})`);
+  const r = await p.evaluate(async () => {
+    const m = window._micro, M = window.micro, out = {};
+    window.__picks = [];
+    addEventListener('micro:pick', (e) => window.__picks.push(e.detail));
+    const X = [], Y = [], Z = [];
+    for (let l = 0; l < 3; l++) for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) { X.push(1005 + 10 * i); Y.push(2005 + 10 * j); Z.push(305 - 10 * l); }
+    const id = await M.addLayer({ kind: 'blocks', name: 'stack', columns: { X: Float64Array.from(X), Y: Float64Array.from(Y), Z: Float64Array.from(Z) }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    const id2 = await M.addLayer({ kind: 'blocks', name: 'aside', columns: { X: Float64Array.from([1105, 1115]), Y: Float64Array.from([2005, 2005]), Z: Float64Array.from([305, 305]) }, roles: { x: 'X', y: 'Y', z: 'Z' } });
+    m.cam.fit(m.docBbox()); m.cam.state.phi = Math.PI / 2 - 0.02; m.cam.state.theta = 0.3; m.cam.update(); m.requestRender();
+    await new Promise((res) => setTimeout(res, 400));
+    const cv = document.querySelector('#cv');
+    const proj = (w) => {                                    // world → canvas CSS px, under the CURRENT viewProj (incl. z-exaggeration)
+      const rect = cv.getBoundingClientRect(), st = m.cam.state, o = m.frame.origin, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], V = st.viewProj;
+      const xx = V[0] * q[0] + V[4] * q[1] + V[8] * q[2] + V[12], yy = V[1] * q[0] + V[5] * q[1] + V[9] * q[2] + V[13], ww = V[3] * q[0] + V[7] * q[1] + V[11] * q[2] + V[15];
+      return [(xx / ww + 1) / 2 * rect.width, (1 - yy / ww) / 2 * rect.height];
+    };
+    const rowOf = async (rec) => { const row = await m.fetchLayerRow(m.layers().find((q) => q.id === id), rec); const h = m.layers().find((q) => q.id === id).docs.blockDoc.header.mapping; return [+row[h.x], +row[h.y], +row[h.z]]; };
+    // ── worldAt: one point, then a batch with misses
+    const P = proj([1025, 2015, 310]);
+    out.one = await M.worldAt(P);
+    out.oneRow = out.one && out.one.rec != null ? await rowOf(out.one.rec) : null;
+    out.batch = await M.worldAt([P, [-3, 5], [2, 2]]);
+    out.picks = window.__picks.length;
+    out.panel = document.querySelector('#recPanel').classList.contains('show');
+    // ── under z-exaggeration the answer stays in REAL coordinates
+    await M.setView({ zExag: 3 }); m.requestRender(); await new Promise((res) => setTimeout(res, 300));
+    out.exag = await M.worldAt(proj([1025, 2015, 310]));
+    await M.setView({ zExag: 1 }); m.requestRender(); await new Promise((res) => setTimeout(res, 300));
+    // ── selectInPolygon: the 6 columns i=1..3 × j=1..2, inset from their edges
+    const poly = [[1012, 2012], [1038, 2012], [1038, 2028], [1012, 2028]].map((w) => proj([w[0], w[1], 310]));
+    await M.select(id2, [0]);                                // another layer's selection: a one-layer lasso must keep it
+    out.vis = await M.selectInPolygon(id, poly);
+    out.visRecs = M.selection(id).records;
+    out.aside = M.selection(id2).count;
+    m.selectByPolygon(poly, 'replace', false);               // the USER's lasso over the same polygon
+    out.userRecs = M.selection(id).records;
+    out.userAside = M.selection(id2).count;
+    out.thr = await M.selectInPolygon(id, poly, { through: true });
+    const one = [[1022, 2012], [1028, 2012], [1028, 2018], [1022, 2018]].map((w) => proj([w[0], w[1], 310]));
+    await M.selectInPolygon(id, poly);
+    out.rem = await M.selectInPolygon(id, one, { mode: 'remove' });
+    out.add = await M.selectInPolygon(id, one, { mode: 'add' });
+    out.all = await M.selectInPolygon(null, poly);
+    const rej = async (f) => { try { await f(); return 'accepted'; } catch (e) { return e.message; } };
+    out.rej = [
+      await rej(() => M.selectInPolygon(id, poly, { mode: 'toggle' })),
+      await rej(() => M.selectInPolygon(id, poly.slice(0, 2))),
+      await rej(() => M.selectInPolygon(999, poly)),
+      await rej(() => M.worldAt('here')),
+    ];
+    // ── a mesh sheet over the stack at z 320: worldAt answers the MESH, by BVH raycast
+    const mid = await M.addLayer({ kind: 'mesh', name: 'sheet', vertices: Float64Array.from([990, 1990, 320, 1060, 1990, 320, 990, 2050, 320, 1060, 2050, 320]), triangles: Uint32Array.from([0, 1, 2, 1, 3, 2]) });
+    m.requestRender(); await new Promise((res) => setTimeout(res, 400));
+    out.mesh = await M.worldAt(proj([1025, 2015, 320]));
+    out.meshId = mid;
+    out.picksAfter = window.__picks.length;
+    return out;
+  });
+  chk(`worldAt over a mesh sheet → layer ${r.mesh && r.mesh.layer} (the sheet is ${r.meshId}), rec ${r.mesh && r.mesh.rec}, world ${JSON.stringify(r.mesh && r.mesh.world.map((v) => +v.toFixed(3)))}`,
+    r.mesh && r.mesh.layer === r.meshId && r.mesh.rec === null && Math.abs(r.mesh.world[2] - 320) < 1e-6 && Math.abs(r.mesh.world[0] - 1025) < 5 && Math.abs(r.mesh.world[1] - 2015) < 5);
+  const o = r.one, w = o && o.world;
+  chk(`worldAt(block (2,1)'s top) → layer ${o && o.layer}, rec ${o && o.rec}, face ${o && o.face}, world ${JSON.stringify(w && w.map((v) => +v.toFixed(3)))}; that record's centre ${JSON.stringify(r.oneRow)}`,
+    !!o && o.face === 5 && Math.abs(w[0] - 1025) < 5 && Math.abs(w[1] - 2015) < 5 && Math.abs(w[2] - 310) < 1e-6 && r.oneRow && r.oneRow[0] === 1025 && r.oneRow[1] === 2015 && r.oneRow[2] === 305);
+  chk(`worldAt batch → [hit, off-canvas ${JSON.stringify(r.batch[1])}, empty ${JSON.stringify(r.batch[2])}]; no micro:pick (${r.picks}), no record panel (${r.panel})`,
+    r.batch.length === 3 && r.batch[0] && r.batch[0].rec === o.rec && r.batch[1] === null && r.batch[2] === null && r.picks === 0 && !r.panel);
+  chk(`worldAt under zExag 3 → z ${r.exag && +r.exag.world[2].toFixed(4)} (real coordinates: the top face, 310)`, r.exag && r.exag.face === 5 && Math.abs(r.exag.world[2] - 310) < 1e-6 && r.exag.rec === o.rec);
+  chk(`selectInPolygon visible → ${JSON.stringify(r.vis)}, records ${JSON.stringify(r.visRecs)} = the user's lasso ${JSON.stringify(r.userRecs)}; the other layer's selection kept (${r.aside}; the user's lasso cleared it: ${r.userAside})`,
+    r.vis.count === 6 && JSON.stringify(r.visRecs) === JSON.stringify(r.userRecs) && r.visRecs.every((k) => k < 12) && r.aside === 1 && r.userAside === 0);
+  chk(`selectInPolygon through → ${JSON.stringify(r.thr)} (all three levels); remove one → ${r.rem.count}, add it back → ${r.add.count}; all layers → ${JSON.stringify(r.all)}`,
+    r.thr.count === 18 && r.rem.count === 5 && r.add.count === 6 && Array.isArray(r.all) && r.all.find((x) => x.layer === r.vis.layer).count === 6);
+  chk(`rejections: ${r.rej.join(' · ')}; still no micro:pick (${r.picksAfter})`,
+    /mode is replace, add or remove/.test(r.rej[0]) && /at least 3/.test(r.rej[1]) && /no layer/.test(r.rej[2]) && /worldAt takes/.test(r.rej[3]) && r.picksAfter === 0);
+  await p.close();
+}
+
 async function apiChecks(url, label) {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
   await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
@@ -767,6 +850,11 @@ async function projectRoundTrip(url, proj) {
 }
 
 try {
+  if (process.env.ONLY === 'screen') {                    // ONLY=screen: just worldAt / selectInPolygon
+    await screenChecks('/tools/micro/index.html', 'dev tree');
+    await screenChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'api') {                       // ONLY=api: just the window.micro checks (dev tree + built)
     await apiChecks('/tools/micro/index.html', 'dev tree');
     await api2Checks('/tools/micro/index.html', 'dev tree');
@@ -781,12 +869,14 @@ try {
   await pickChecks('/tools/micro/index.html', 'dev tree');
   await apiChecks('/tools/micro/index.html', 'dev tree');
   await api2Checks('/tools/micro/index.html', 'dev tree');
+  await screenChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
   await pickChecks('/micro.html', 'built micro.html');
   await apiChecks('/micro.html', 'built micro.html');
   await api2Checks('/micro.html', 'built micro.html');
+  await screenChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

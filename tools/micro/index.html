@@ -1395,12 +1395,19 @@ function selectionStatus() {
     ? `selected: ${total.toLocaleString()} element${total === 1 ? '' : 's'}${nL > 1 ? ` across ${nL} layers` : ''} — shift adds · alt subtracts · Esc clears`
     : 'selection: nothing there';
 }
-function selectByPolygon(poly, mode, isRect) {
+// a lasso restricted to ONE layer (the host's selectInPolygon) replaces only that
+// layer's selection; the user's lasso (only == null) replaces everyone's
+function clearForLasso(only) {
+  if (only == null) { clearSelection({ silent: true }); return; }
+  const L = layerById(only);
+  if (L && L._selMask) { L._selMask.fill(0); applyLayerSelection(L); }
+}
+function selectByPolygon(poly, mode, isRect, only = null) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [x, y] of poly) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   const region = renderer.pickRegion({ x: Math.max(0, x0), y: Math.max(0, y0), w: x1 - x0, h: y1 - y0 }, cam,
     { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() });
-  if (!region) { $('#meta').textContent = 'selection: nothing there'; return; }
+  if (!region) { if (mode === 'replace') clearForLasso(only); $('#meta').textContent = 'selection: nothing there'; return; }
   const { data, w, h, dpr } = region;
   const rx = Math.max(0, x0), ry = Math.max(0, y0);
   const perLayer = new Map();
@@ -1410,13 +1417,14 @@ function selectByPolygon(poly, mode, isRect) {
       const o = (j * w + i) * 4;
       if (isMiss(data[o + 1])) continue;                    // nothing under this pixel
       const lid = layerOfId(data[o + 1]);                  // G = layer | face<<16, R = record
+      if (only != null && lid !== only) continue;
       if (!isRect && !pipTest(rx + i / dpr, cssY, poly)) continue;
       let set = perLayer.get(lid);
       if (!set) perLayer.set(lid, set = new Set());
       set.add(data[o] >>> 0);
     }
   }
-  if (mode === 'replace') clearSelection({ silent: true });
+  if (mode === 'replace') clearForLasso(only);
   for (const L of S.layers) {
     const hits = perLayer.get(L.id);
     if (!hits) continue;
@@ -1441,7 +1449,7 @@ function selectByPolygon(poly, mode, isRect) {
 // the data; drillholes resolve O(1) via recordPosition. Cost ≈ one load sweep.
 let _selThrough = false;
 let _selEpoch = 0;
-async function selectVolume(poly, mode, isRect) {
+async function selectVolume(poly, mode, isRect, only = null) {
   const epoch = ++_selEpoch;
   const o = frame ? frame.origin : [0, 0, 0];
   const vp = cam.state.viewProj;
@@ -1457,10 +1465,11 @@ async function selectVolume(poly, mode, isRect) {
     const py2 = (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * rc.height;
     return inPoly(px2, py2);
   };
-  if (mode === 'replace') clearSelection({ silent: true });
+  if (mode === 'replace') clearForLasso(only);
   const v = mode === 'subtract' ? 0 : 1;
   for (const L of S.layers) {
     if (!L.visible || L.kind === 'mesh') continue;
+    if (only != null && L.id !== only) continue;
     const d = L.docs;
     const n = attrRowCountOf(L);
     if (!n) continue;
@@ -17678,6 +17687,68 @@ async function emitPick(hit, source, extra) {
   }
   dispatchEvent(new CustomEvent('micro:pick', { detail }));
 }
+// ── screen → world, for a host (window.micro.worldAt). Many canvas CSS points,
+// ONE pick render: the ID buffer over their bbox, each point decoded where a click
+// would decode it, then the click's own hit-point resolution — a block's entered
+// FACE (section + z-exaggeration honoured through pixelRay), a mesh by BVH raycast.
+// No micro:pick, no record panel, no highlight. → [{ world, layer, rec, face } | null]
+async function worldAtPoints(points) {
+  const out = new Array(points.length).fill(null);
+  if (!points.length || !renderer.chunkCount) return out;
+  const r = cv.getBoundingClientRect();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of points) {
+    if (!(x >= 0 && y >= 0 && x < r.width && y < r.height)) continue;
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  if (x0 === Infinity) return out;                          // every point off the canvas
+  const rx = Math.max(0, Math.floor(x0) - 1), ry = Math.max(0, Math.floor(y0) - 1);
+  const region = renderer.pickRegion({ x: rx, y: ry, w: Math.ceil(x1) - rx + 2, h: Math.ceil(y1) - ry + 2 }, cam,
+    { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() });
+  if (!region) return out;
+  const { data, w, h, dpr } = region;
+  // the region's GL origin, as gl.js computed it (rows are bottom-up)
+  const gx0 = Math.max(0, Math.round(rx * dpr));
+  const gy0 = Math.max(0, cv.height - Math.round(ry * dpr) - h);
+  for (let k = 0; k < points.length; k++) {
+    const [x, y] = points[k];
+    if (!(x >= 0 && y >= 0 && x < r.width && y < r.height)) continue;
+    const i = Math.round(x * dpr) - gx0, j = Math.round(cv.height - y * dpr - 1) - gy0;
+    if (i < 0 || j < 0 || i >= w || j >= h) continue;
+    const o = (j * w + i) * 4, g = data[o + 1];
+    if (isMiss(g)) continue;
+    const hit = { layer: layerOfId(g), rec: data[o] >>> 0, face: faceOfId(g) };
+    const L = layerById(hit.layer);
+    if (!L) continue;
+    if (L.kind === 'mesh') {
+      const mh = await meshHitAt(L, x, y).catch(() => null);
+      if (mh && mh.point) out[k] = { world: [+mh.point[0], +mh.point[1], +mh.point[2]], layer: hit.layer, rec: null, face: null };
+      continue;
+    }
+    const p = await pickHitPoint(hit, x, y).catch(() => null);
+    if (p && p.every(Number.isFinite)) out[k] = { world: [+p[0], +p[1], +p[2]], layer: hit.layer, rec: hit.rec, face: hit.face === NO_FACE_CODE ? null : hit.face };
+  }
+  return out;
+}
+const NO_FACE_CODE = 7;
+// a host's lasso (window.micro.selectInPolygon): micro's own visible or through
+// selection, over a CSS-pixel polygon, on one layer (or every layer, as the
+// user's lasso does). → the resulting selection count(s).
+async function hostSelectInPolygon(lid, poly, { mode = 'replace', through = false } = {}) {
+  const m = { replace: 'replace', add: 'add', remove: 'subtract' }[mode];
+  if (!m) throw new Error(`micro: mode is replace, add or remove (got ${JSON.stringify(mode)})`);
+  if (!Array.isArray(poly) || poly.length < 3 || !poly.every((p) => Array.isArray(p) && Number.isFinite(+p[0]) && Number.isFinite(+p[1])))
+    throw new Error('micro: selectInPolygon needs a polygon of at least 3 [x, y] canvas points');
+  const pts = poly.map((p) => [+p[0], +p[1]]);
+  if (lid != null) {
+    const L = layerById(lid);
+    if (L.kind === 'mesh' || !attrRowCountOf(L)) throw new Error(`micro: “${L.label || L.name}” has no records to select`);
+  }
+  if (through) await selectVolume(pts, m, false, lid);
+  else selectByPolygon(pts, m, false, lid);
+  const one = (L) => ({ layer: L.id, count: L._selCount || 0 });
+  return lid != null ? one(layerById(lid)) : S.layers.filter((L) => L.kind !== 'mesh' && attrRowCountOf(L)).map(one);
+}
 // The other direction: a host picks a record. Highlights it, shows its panel,
 // reveals it in an open attribute table and, with `frame`, centres the view on it
 // (orbit distance kept). Does NOT fire micro:pick. Resolves to the record's world
@@ -17735,6 +17806,7 @@ const _host = createHostApi({
   groupPathOf, groupsList, fileLayersInGroup, ungroupAt, setGroupVisible,
   sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
   selectionRecords, setSelectionRecords, clearSelection: () => clearSelection({ silent: true }),
+  worldAtPoints, selectInPolygon: hostSelectInPolygon,
   mirrorFilterBox: (e) => { $('#filter').value = e; syncFilterClear(); },
   clearPick: () => { $('#recPanel').classList.remove('show'); $('#rpCfg').classList.remove('show'); renderer.setPicked(null); requestRender(); },
   fit: (L) => { if (L) fitLayer(L); else if (renderer.chunkCount) { cam.fit(rendererDocBbox()); requestRender(); } },
