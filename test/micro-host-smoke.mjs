@@ -402,6 +402,85 @@ async function fileChecks(url, label) {
   await p.close();
 }
 
+// micro:pick — a USER pick (canvas click, attribute-table row) reaches the host;
+// a host-driven _micro.pick shows + frames a record and does NOT echo back
+async function pickChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  console.log(`── micro:pick (${label})`);
+  const setup = await p.evaluate(async () => {
+    const m = window._micro;
+    window.__picks = [];
+    addEventListener('micro:pick', (e) => window.__picks.push(e.detail));
+    const n = 12, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n), au = new Float64Array(n);
+    for (let k = 0; k < n; k++) { x[k] = 1005 + (k % 4) * 10; y[k] = 2005 + Math.floor(k / 4) * 10; z[k] = 305; au[k] = 100 + k; }
+    const id = await m.addLayer({ kind: 'blocks', name: 'pickme', columns: { X: x, Y: y, Z: z, AU: au }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    m.cam.fit(m.docBbox()); m.cam.state.phi = Math.PI / 2 - 0.02; m.cam.state.theta = 0.3; m.cam.update(); m.requestRender();
+    await new Promise((res) => setTimeout(res, 400));
+    const cv = document.querySelector('#cv'), rect = cv.getBoundingClientRect();
+    const proj = (w) => { const st = m.cam.state, o = m.frame.origin, q = [w[0] - o[0], w[1] - o[1], w[2] - o[2]], M = st.viewProj; const xx = M[0] * q[0] + M[4] * q[1] + M[8] * q[2] + M[12], yy = M[1] * q[0] + M[5] * q[1] + M[9] * q[2] + M[13], ww = M[3] * q[0] + M[7] * q[1] + M[11] * q[2] + M[15]; return [rect.left + (xx / ww + 1) / 2 * rect.width, rect.top + (1 - yy / ww) / 2 * rect.height]; };
+    m.cam.dolly(2.5); m.requestRender();                   // room around the model for an empty click
+    await new Promise((res) => setTimeout(res, 300));
+    return { id, at: proj([1025, 2015, 310]) };           // block (2,1) = AU 106
+  });
+  // a real click on the canvas
+  await p.mouse.click(setup.at[0], setup.at[1]);
+  await p.waitForFunction(() => window.__picks.length >= 1, null, { timeout: 10000 });
+  const c1 = await p.evaluate(async (id) => {
+    const d = window.__picks[0], m = window._micro;
+    const row = d && d.rec != null ? await m.fetchLayerRow(m.layers().find((q) => q.id === d.layer), d.rec) : null;
+    const h = m.layers().find((q) => q.id === id).docs.blockDoc.header;
+    return { d, au: row && +row[h.mapping.chan] };
+  }, setup.id);
+  const w = c1.d && c1.d.world;
+  chk(`pick: a canvas click → micro:pick { layer ${c1.d && c1.d.layer}, rec ${c1.d && c1.d.rec}, source ${c1.d && c1.d.source}, world ${JSON.stringify(w)} } → fetchLayerRow AU ${c1.au}`,
+    c1.d && c1.d.layer === setup.id && c1.d.source === 'canvas' && c1.au === 106 && w && Math.abs(w[0] - 1025) < 1e-6 && Math.abs(w[1] - 2015) < 1e-6 && 'face' in c1.d);
+  // a click on nothing clears: a canvas pixel (not under any panel) where pick finds nothing
+  const empty = await p.evaluate(() => {
+    const m = window._micro, cv = document.querySelector('#cv'), r = cv.getBoundingClientRect();
+    for (let fy = 0.2; fy < 0.9; fy += 0.1) for (let fx = 0.1; fx < 0.95; fx += 0.05) {
+      const x = r.left + fx * r.width, y = r.top + fy * r.height;
+      if (document.elementFromPoint(x, y) === cv && m.renderer.pick(x - r.left, y - r.top, m.cam, {}) == null) return [x, y];
+    }
+    return null;
+  });
+  await p.mouse.click(empty[0], empty[1]);
+  await p.waitForFunction(() => window.__picks.length >= 2, null, { timeout: 10000 });
+  const c2 = await p.evaluate(() => window.__picks[1]);
+  chk(`pick: a click on nothing → micro:pick null`, c2 === null);
+  // a row selected in the attribute table
+  const c3 = await p.evaluate(async (id) => {
+    const m = window._micro, L = m.layers().find((q) => q.id === id);
+    m.openAttrTable(L);
+    for (let t = 0; t < 100 && !m.attrTables.get(id); t++) await new Promise((r) => setTimeout(r, 25));
+    m.attrTables.get(id).grid.setSelection({ r0: 3, c0: 0, r1: 3, c1: 0 });
+    for (let t = 0; t < 100 && window.__picks.length < 3; t++) await new Promise((r) => setTimeout(r, 25));
+    return window.__picks[2];
+  }, setup.id);
+  chk(`pick: an attribute-table row → micro:pick { rec ${c3 && c3.rec}, source ${c3 && c3.source} }`, c3 && c3.layer === setup.id && c3.rec === 3 && c3.source === 'table' && c3.world && Math.abs(c3.world[0] - 1035) < 1e-6);
+  // the host picks: panel shown, view centred, NO event back; bad input rejects
+  const c4 = await p.evaluate(async (id) => {
+    const m = window._micro, before = window.__picks.length;
+    const world = await m.pick({ layer: id, rec: 11, frame: true });
+    await new Promise((r) => setTimeout(r, 100));
+    const t = m.cam.state.target, o = m.frame.origin;
+    const rej = async (a) => { try { await m.pick(a); return 'accepted'; } catch (e) { return e.message; } };
+    return {
+      world, echoed: window.__picks.length - before,
+      panel: document.querySelector('#recPanel').classList.contains('show') && /AU/.test(document.querySelector('#rpList').textContent),
+      centred: world && Math.hypot(t[0] + o[0] - world[0], t[1] + o[1] - world[1], t[2] + o[2] - world[2]) < 1e-6,
+      r1: await rej({ layer: 999, rec: 0 }), r2: await rej({ layer: id, rec: 12 }),
+    };
+  }, setup.id);
+  chk(`pick: _micro.pick({ rec 11, frame }) → world ${JSON.stringify(c4.world)}, panel ${c4.panel}, centred ${c4.centred}, ${c4.echoed} events echoed; rejects “${c4.r1}” / “${c4.r2}”`,
+    c4.world && Math.abs(c4.world[0] - 1035) < 1e-6 && Math.abs(c4.world[1] - 2025) < 1e-6 && c4.panel && c4.centred && c4.echoed === 0 && /no layer 999/.test(c4.r1) && /not a record/.test(c4.r2));
+  // closing the record panel clears the host's view too
+  const c5 = await p.evaluate(async () => { const n = window.__picks.length; document.querySelector('#rpClose').click(); await new Promise((r) => setTimeout(r, 50)); return { n: window.__picks.length - n, d: window.__picks[window.__picks.length - 1] }; });
+  chk(`pick: closing the record panel → micro:pick null`, c5.n === 1 && c5.d === null);
+  await p.close();
+}
+
 // B: an ingested layer is a file-backed layer — it saves into a project folder
 // and comes back from it (blocks with host-ordered categories, sub-blocks, a drillhole set)
 async function projectRoundTrip(url, proj) {
@@ -448,9 +527,11 @@ try {
   await projectRoundTrip('/tools/micro/index.html', 'hostrt');
   await rotatedChecks('/tools/micro/index.html', 'dev tree');
   await fileChecks('/tools/micro/index.html', 'dev tree');
+  await pickChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
+  await pickChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

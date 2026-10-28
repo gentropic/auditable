@@ -751,6 +751,19 @@ await _micro.openBlob(file, name, 'add', null, { throw: true });             // 
 addEventListener('micro:layer-added',  (e) => e.detail);   // { id, name, kind }
 addEventListener('micro:layer-failed', (e) => e.detail);   // { name, error }
 addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason } — a declared lattice refused</pre>
+<p id="host-pick"><b>Hearing what the user picked.</b> When the user clicks a record in the view or selects a row in an attribute table, micro fires <code>micro:pick</code> on <code>window</code>. Read the record's values with <code>fetchLayerRow(layer, rec)</code>:</p>
+<pre>addEventListener('micro:pick', async (e) => {
+  const d = e.detail;   // { layer, rec, face, world: [x, y, z] | null, source: 'canvas' | 'table' }, or null
+  if (!d) return clearMyView();          // a click on nothing, or the record panel closed
+  const L = _micro.layers().find((q) => q.id === d.layer);
+  const row = await _micro.fetchLayerRow(L, d.rec);
+});</pre>
+<ul>
+  <li><code>rec</code> is micro's record number, which is not necessarily your row: micro may reorder a Parquet file spatially. Carry your own key in a column and read it from the row.</li>
+  <li><code>world</code> is in world coordinates. <code>face</code> is the block face that was clicked, when known.</li>
+  <li>A click on a mesh gives <code>{ layer, rec: null, kind: 'mesh', world }</code>: the point on the surface.</li>
+</ul>
+<p>The other direction: <code>await _micro.pick({ layer, rec, frame: true })</code> highlights the record, shows its panel, reveals it in an open attribute table and, with <code>frame</code>, centres the view on it, keeping the zoom. It resolves to the record's world position and rejects on an unknown layer or record. It does <b>not</b> fire <code>micro:pick</code>, so a host that answers picks by picking can't loop.</p>
 
 <h3 id="micro-model">A Parquet file that states its lattice: <code>micro:model</code></h3>
 <p>micro reads the <code>micro:model</code> key-value entry from <b>any</b> Parquet file's footer, not only its own exports. A producer that knows its block model's lattice can write it, and the file then opens with no discovery sweep. The value is JSON:</p>
