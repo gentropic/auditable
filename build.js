@@ -1852,6 +1852,21 @@ if (target === 'micro') {
   const bootStamped = boot.replace("const __MICRO_BUILD__ = 'dev';", () => `const __MICRO_BUILD__ = '${micStamp}';`);
 
   html = html.replace(appMatch[0], () => `<script>\n${bootStamped}</script>`);
+
+  // Third-party notices — micro is MIT but bundles, via @gcu/parquet, hyparquet +
+  // hyparquet-writer and the fflate (gzip) / fzstd (zstd) codecs, all MIT. Their
+  // minified bundles drop the copyright headers, so the full licenses ride here
+  // (same block as lamina's). @gcu/lfm is first-party (BSD-3-Clause, in-tree).
+  const micNoticeLibs = [
+    ['hyparquet + hyparquet-writer (© Hyperparam, via @gcu/parquet)', 'ext/parquet/vendor/LICENSE-hyparquet'],
+    ['fflate (via @gcu/parquet)', 'ext/archive/vendor/LICENSE-fflate'], ['fzstd (via @gcu/parquet)', 'ext/archive/vendor/LICENSE-fzstd']];
+  const micNotices = micNoticeLibs.map(([n, rel]) => {
+    const p = path.join(__dirname, rel);
+    return fs.existsSync(p) ? `\n===== ${n} =====\n${fs.readFileSync(p, 'utf8').trim()}\n` : `\n===== ${n} ===== (MIT — license file missing at build)\n`;
+  }).join('');
+  html = html.replace('</head>', () => `<!-- THIRD-PARTY NOTICES\nmicro is MIT (© Arthur Endlein Correia / Geoscientific Chaos Union, gentropic.org).\nIt bundles, via @gcu/parquet:\n${micNotices}\n-->\n`
+    .replace(/--+(?=[^>])/g, '-') + '</head>');
+
   const outPath = path.join(__dirname, 'micro.html');
   fs.writeFileSync(outPath, html);
   console.log(`Built micro.html (${(fs.statSync(outPath).size / 1024).toFixed(1)} KB in the clear, ${modules.length} modules) — build ${micStamp}`);

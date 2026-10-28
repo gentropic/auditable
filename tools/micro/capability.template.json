@@ -35,7 +35,12 @@
     "install": false,
     "csp": "<emitted by @gcu/seal from the artifact's own <meta>>"
   },
-  "third_party": [],
+  "third_party": [
+    { "name": "hyparquet", "license": "MIT", "copyright": "© Hyperparam", "use": "Apache Parquet read (via @gcu/parquet)" },
+    { "name": "hyparquet-writer", "license": "MIT", "copyright": "© Hyperparam", "use": "Apache Parquet write — Store as Parquet, exports (via @gcu/parquet)" },
+    { "name": "fflate", "license": "MIT", "copyright": "© Arjun Barrett", "use": "gzip codec for Parquet (via @gcu/parquet)" },
+    { "name": "fzstd", "license": "MIT", "copyright": "© Arjun Barrett", "use": "zstd decode for Parquet (via @gcu/parquet)" }
+  ],
   "source": "https://github.com/gentropic/auditable (ext/condenser + tools/micro)",
   "license": "MIT"
 }
