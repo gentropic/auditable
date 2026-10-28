@@ -707,11 +707,47 @@ params:
 </table>
 
 <h2 id="dev"><span class="n">D</span>For developers — hosting micro, and <code>micro:model</code></h2>
-<p>micro can be driven by another page. Load it unmodified in a same-origin frame and call <code>window._micro</code>. This appendix covers two contracts: <b>handing micro a layer as typed columns</b>, and the <b><code>micro:model</code> footer</b> that lets a Parquet file state its own lattice. Everything here is what micro's own tests exercise (<code>test/micro-host-smoke.mjs</code>).</p>
+<p>micro can be driven by another page. Load it unmodified in a same-origin frame and call <code>window.micro</code>, the host API. This appendix covers that API, <b>handing micro a layer as typed columns</b>, and the <b><code>micro:model</code> footer</b> that lets a Parquet file state its own lattice. Everything here is what micro's own tests exercise (<code>test/micro-host-smoke.mjs</code>).</p>
+
+<h3 id="api">The host API: <code>window.micro</code></h3>
+<p><code>window.micro</code> is the surface to build on. It is versioned: within <code>micro.version === 1</code> changes only add, and a break would be version 2. (<code>window._micro</code> also exists. It is micro's test surface, reaching into hundreds of internals, and any of them can change without notice.)</p>
+<pre>&lt;iframe id="m" src="micro.html?embed=1"&gt;&lt;/iframe&gt;
+
+const frame = document.getElementById('m');
+frame.addEventListener('micro:ready', () => {        // fired on YOUR iframe element
+  const micro = frame.contentWindow.micro;
+  // …
+});
+// or, if micro may already be up:  await frame.contentWindow.micro.ready</pre>
+<table>
+<tr><th>call</th><th>does</th></tr>
+<tr><td><code>layers()</code> · <code>layer(id)</code></td><td>Plain data: <code>{ id, name, file, kind, count, columns, colorBy, colorChoices, visible, group }</code>. <code>kind</code> is <code>blocks points drillholes mesh surface grid table traces</code>.</td></tr>
+<tr><td><code>addLayer(spec)</code></td><td>Columns or a file, roles stated (below). Resolves to the new id.</td></tr>
+<tr><td><code>open(file, { name, group, acceptLattice })</code></td><td>Opens a <code>File</code>, <code>Blob</code> or handle as micro opens a dropped file: everything is sniffed.</td></tr>
+<tr><td><code>removeLayer(id)</code> · <code>setVisible(id, on)</code> · <code>setActive(id)</code></td><td></td></tr>
+<tr><td><code>columns(id)</code> · <code>row(id, rec)</code></td><td><code>row</code> resolves to <code>{ column: value, … }</code> by name.</td></tr>
+<tr><td><code>setColorBy(id, column)</code></td><td>A column name, <code>'elev'</code>, <code>'solid'</code> or <code>'rules'</code> (LAS/PLY points: <code>'elevation' 'intensity' 'classification' 'rgb'</code>). Rejects with the choices. A channel or category the layer wasn't opened with means re-reading the file, which takes a while on a big model.</td></tr>
+<tr><td><code>filter(id, expr)</code> · <code>clearFilter(id)</code></td><td>The language of micro's filter box. The layer becomes the active one.</td></tr>
+<tr><td><code>pick({ layer, rec, frame })</code> · <code>clearPick()</code></td><td>See <a href="#host-pick">picks</a>.</td></tr>
+<tr><td><code>fit(id?)</code> · <code>look(view)</code></td><td><code>view</code>: <code>north south east west plan below</code>.</td></tr>
+<tr><td><code>groups()</code> · <code>group(path, ids)</code> · <code>ungroup(path)</code> · <code>setGroupVisible(path, on)</code></td><td>Groups by path, <code>'Model/Domains'</code>. See below.</td></tr>
+<tr><td><code>chrome()</code> · <code>setChrome({ title, badge })</code></td><td>Show or hide micro's title and the Sealed badge.</td></tr>
+</table>
+<p>Every action returns a promise that rejects with the reason; <code>layers</code>, <code>layer</code>, <code>columns</code>, <code>groups</code> and <code>chrome</code> answer at once. Events, all on micro's <code>window</code>:</p>
+<pre>micro:ready            { version }            (also on the host's &lt;iframe&gt;)
+micro:layer-added      { id, name, kind }
+micro:layer-failed     { name, error }
+micro:layer-removed    { id }
+micro:layer-replaced   { from, to }
+micro:lattice-rejected { name, reason }
+micro:pick             { layer, rec, face, world, source } | null</pre>
+<p><b>Ids can change, and the API follows them.</b> Re-reading a drillhole layer (a new colour channel or category, a re-desurvey) or a few other re-reads (Reinterpret as, Reload from disk, a grid band) replaces the layer with a new one, with a new id. <code>micro:layer-replaced</code> says so, the new layer keeps its place in the layer tree, and any API call given the old id acts on the new layer. <code>setColorBy</code> resolves to the id the layer has afterwards.</p>
+<p><b>Groups.</b> A group is a path of names. <code>addLayer({ …, group: 'Model/Domains' })</code> and <code>open(file, { group })</code> file a new layer into it, creating the groups on the way; <code>group(path, ids)</code> moves existing layers. A group exists while it holds layers, so there is no empty group to make. A drillhole layer moves with its whole set.</p>
+<p><b>Embedding.</b> <code>micro.html?embed=1</code> hides the title and the Sealed badge from the first paint; <code>setChrome</code> changes that later. Hiding the badge in an embed is the honest default: Sealed is a claim about micro's own page, and a same-origin host page can read everything micro holds and has a network of its own. Help → <i>Why it's Sealed</i> stays either way.</p>
 
 <h3 id="host-api">Handing micro a layer: <code>addLayer</code></h3>
 <p>When the data comes from software that already knows what it is, write no file. Pass columns and their meaning. Nothing is sniffed: no name guessing, no grid discovery.</p>
-<pre>const id = await window._micro.addLayer({
+<pre>const id = await micro.addLayer({
   kind: 'blocks',                       // 'blocks' | 'points' | 'mesh' | 'drillholes' | 'table'
   name: 'Au_OK',
   columns: {                            // one length; any number of value columns
@@ -731,7 +767,7 @@ params:
   <li><b><code>kind: 'table'</code></b> takes columns only. A free-text table belongs here, not inside a spatial layer.</li>
 </ul>
 <p><b>Big data: pass a file, not columns.</b> Give <code>file</code> instead of <code>columns</code>: a <code>File</code>, a <code>Blob</code> or a <code>FileSystemFileHandle</code>. The file is opened <b>in place</b>, never copied and never held decoded (CSV, Parquet and <code>.dm</code> stream from it). Roles name its header's columns.</p>
-<pre>await _micro.addLayer({ kind: 'blocks', file, name: 'Au_OK',
+<pre>await micro.addLayer({ kind: 'blocks', file, name: 'Au_OK',
   roles: { x: 'EAST', y: 'NORTH', z: 'RL', value: 'AU' },
   lattice: { basis: { … } },            // CSV / Parquet; checked against every record
   sizes: { dx: 'SX', dy: 'SY', dz: 'SZ' }, // column NAMES (a .dm's are XINC/YINC/ZINC)
@@ -746,24 +782,24 @@ params:
 </ul>
 <p><b>The layer is a file-backed layer.</b> micro writes the columns once into its own formats (Parquet for blocks and points, with a <code>micro:model</code> footer; binary PLY for meshes; RFC 4180 CSV for drillhole and plain tables) and opens them with every role stated. Pick, colour-by, filters, stats, grade–tonnage, swath, sections, export and project save therefore behave exactly as for a file, and there is no second code path to drift.</p>
 <p><b>Success and failure come back to you.</b> <code>addLayer</code> resolves to the layer id once the layer is complete. The first layer's id is <code>0</code>, so test for <code>null</code>, not truthiness. It rejects with the error micro would otherwise show, and still shows it on the status line. The same holds for files:</p>
-<pre>const id = await _micro.openBlob(file, name, 'add');                        // id, or null on failure
-await _micro.openBlob(file, name, 'add', null, { throw: true });             // rejects instead
+<pre>const id = await micro.open(file, { name });                 // id; rejects with the reason
 addEventListener('micro:layer-added',  (e) => e.detail);   // { id, name, kind }
 addEventListener('micro:layer-failed', (e) => e.detail);   // { name, error }
 addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason } — a declared lattice refused</pre>
-<p id="host-pick"><b>Hearing what the user picked.</b> When the user clicks a record in the view or selects a row in an attribute table, micro fires <code>micro:pick</code> on <code>window</code>. Read the record's values with <code>fetchLayerRow(layer, rec)</code>:</p>
+<p><b>The layer starts coloured by what you named.</b> With <code>roles.category</code> it is coloured by the category; else, with <code>roles.value</code>, by the value; else by elevation. <code>colorBy: 'column'</code> in the spec chooses for you, and <code>setColorBy</code> changes it later.</p>
+<p><b>Several categories.</b> A block model carries several text columns (lithology, weathering, domain). <code>roles: { …, categories: ['LITH', 'WX', 'DOMAIN'] }</code> offers each in micro's colour-by list. The first opens as the category unless <code>roles.category</code> names one, and choosing another re-reads the model with it as the category, as <code>setColorBy(id, 'WX')</code> does. For drillholes, put <code>categories</code> in the interval table's roles.</p>
+<p id="host-pick"><b>Hearing what the user picked.</b> When the user clicks a record in the view or selects a row in an attribute table, micro fires <code>micro:pick</code> on <code>window</code>. Read the record's values with <code>row(layer, rec)</code>:</p>
 <pre>addEventListener('micro:pick', async (e) => {
   const d = e.detail;   // { layer, rec, face, world: [x, y, z] | null, source: 'canvas' | 'table' }, or null
   if (!d) return clearMyView();          // a click on nothing, or the record panel closed
-  const L = _micro.layers().find((q) => q.id === d.layer);
-  const row = await _micro.fetchLayerRow(L, d.rec);
+  const row = await micro.row(d.layer, d.rec);   // { AU: 1.2, LITO: 'BIF', … }
 });</pre>
 <ul>
   <li><code>rec</code> is micro's record number, which is not necessarily your row: micro may reorder a Parquet file spatially. Carry your own key in a column and read it from the row.</li>
   <li><code>world</code> is in world coordinates. <code>face</code> is the block face that was clicked, when known.</li>
   <li>A click on a mesh gives <code>{ layer, rec: null, kind: 'mesh', world }</code>: the point on the surface.</li>
 </ul>
-<p>The other direction: <code>await _micro.pick({ layer, rec, frame: true })</code> highlights the record, shows its panel, reveals it in an open attribute table and, with <code>frame</code>, centres the view on it, keeping the zoom. It resolves to the record's world position and rejects on an unknown layer or record. It does <b>not</b> fire <code>micro:pick</code>, so a host that answers picks by picking can't loop.</p>
+<p>The other direction: <code>await micro.pick({ layer, rec, frame: true })</code> highlights the record, shows its panel, reveals it in an open attribute table and, with <code>frame</code>, centres the view on it, keeping the zoom. It resolves to the record's world position and rejects on an unknown layer or record. It does <b>not</b> fire <code>micro:pick</code>, so a host that answers picks by picking can't loop.</p>
 
 <h3 id="micro-model">A Parquet file that states its lattice: <code>micro:model</code></h3>
 <p>micro reads the <code>micro:model</code> key-value entry from <b>any</b> Parquet file's footer, not only its own exports. A producer that knows its block model's lattice can write it, and the file then opens with no discovery sweep. The value is JSON:</p>

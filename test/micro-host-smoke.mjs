@@ -15,6 +15,8 @@ import { readFile } from 'fs/promises';
 import { extname } from 'path';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript' };
 const server = http.createServer(async (req, res) => {
+  // a bare HOST page (micro's own CSP forbids frames, so it can't host itself)
+  if (req.url === '/__host.html') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>host</title><body></body>'); return; }
   try { const p = decodeURIComponent(new URL(req.url, 'http://x').pathname); const data = await readFile('.' + p);
     res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' }); res.end(data);
   } catch { res.writeHead(404); res.end(); }
@@ -481,6 +483,125 @@ async function pickChecks(url, label) {
   await p.close();
 }
 
+// window.micro — the versioned host API: readiness, chrome, colour-by (incl. the
+// re-reads and a drillhole layer's REPLACEMENT), groups, rows, filter, removal
+async function apiChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window.micro.ready, null, { timeout: 30000 });
+  console.log(`── window.micro (${label})`);
+  // readiness on the host's <iframe> element, and ?embed=1 from the first paint
+  const hp = await ctx.newPage(); hp.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await hp.goto(`http://127.0.0.1:${PORT}/__host.html`);
+  const fr = await hp.evaluate(async (u) => {
+    const f = document.createElement('iframe');
+    f.style.cssText = 'position:fixed;left:0;top:0;width:1000px;height:600px';   // desktop layout (under 720px the phone layout drops the title anyway)
+    const got = new Promise((res) => f.addEventListener('micro:ready', (e) => res(e.detail), { once: true }));
+    f.src = u + '?embed=1';
+    document.body.appendChild(f);
+    const detail = await Promise.race([got, new Promise((r) => setTimeout(() => r('timeout'), 30000))]);
+    const w = f.contentWindow, doc = f.contentDocument;
+    const shown = (sel) => w.getComputedStyle(doc.querySelector(sel)).display !== 'none';
+    const out = { detail, version: w.micro.version, title: shown('#bar > .title'), badge: shown('#sealBadge'), chrome: w.micro.chrome() };
+    out.after = w.micro.setChrome({ title: true });
+    out.titleBack = shown('#bar > .title');
+    out.readyApi = (await w.micro.ready) === w.micro;
+    f.remove();
+    return out;
+  }, url);
+  await hp.close();
+  chk(`api: micro:ready on the host's iframe (${JSON.stringify(fr.detail)}); ?embed=1 hides title ${!fr.title} + badge ${!fr.badge}; setChrome({ title }) brings it back (${JSON.stringify([fr.chrome, fr.after, fr.titleBack, fr.readyApi])})`,
+    fr.detail && fr.detail.version === 1 && fr.version === 1 && !fr.title && !fr.badge && fr.chrome.title === false && fr.chrome.badge === false && fr.after.title === true && fr.after.badge === false && fr.titleBack && fr.readyApi);
+
+  const r = await p.evaluate(async () => {
+    const m = window.micro, out = {}, ev = [];
+    for (const t of ['micro:layer-replaced', 'micro:layer-removed']) addEventListener(t, (e) => ev.push([t, e.detail]));
+    const vis = new Map(), rd = window._micro.renderer, sv = rd.setLayerVisible.bind(rd);
+    rd.setLayerVisible = (l, on) => { vis.set(l, !!on); return sv(l, on); };
+    const n = 24, X = new Float64Array(n), Y = new Float64Array(n), Z = new Float64Array(n), AU = new Float64Array(n), CU = new Float64Array(n);
+    const LITO = [], WX = [];
+    for (let k = 0; k < n; k++) { X[k] = 5 + (k % 4) * 10; Y[k] = 5 + Math.floor(k / 4) % 3 * 10; Z[k] = 5 + Math.floor(k / 12) * 10; AU[k] = k; CU[k] = 100 - k; LITO.push(k % 2 ? 'BIF' : 'CANGA'); WX.push(k % 3 ? 'FRESH' : 'OX'); }
+    // a stated category → coloured by it at once, filed into a nested group
+    const a = await m.addLayer({ kind: 'blocks', name: 'by_cat', group: 'Model/Domains', columns: { X, Y, Z, AU, CU, LITO }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', category: 'LITO' } });
+    out.a = m.layer(a);
+    // roles.categories (no category): the first opens as the category, the rest are offered
+    const b = await m.addLayer({ kind: 'blocks', name: 'cats', columns: { X, Y, Z, AU, CU, LITO, WX }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', categories: ['LITO', 'WX'] } });
+    out.b0 = m.layer(b);
+    await m.setActive(b);
+    out.bOpts = [...document.querySelectorAll('#colorBy option')].map((o) => o.value).filter((v) => v.startsWith('catcol:'));
+    out.bId = await m.setColorBy(b, 'WX');               // a re-read with WX as THE category
+    out.b1 = m.layer(b);
+    out.bCats = window._micro.layers().find((q) => q.id === b).docs.blockDoc.header.categories;
+    // value only → coloured by the value; then a channel the open didn't load, on a NON-active layer
+    const c = await m.addLayer({ kind: 'blocks', name: 'by_val', columns: { X, Y, Z, AU, CU }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    out.c0 = m.layer(c).colorBy;
+    await m.setActive(a);
+    const dd0 = document.querySelector('#colorBy').value;
+    out.cId = await m.setColorBy(c, 'CU');
+    out.c1 = m.layer(c).colorBy;
+    const Lc = window._micro.layers().find((q) => q.id === c), hc = Lc.docs.blockDoc.header;
+    out.cChan = hc.columns[hc.mapping.chan];
+    out.stillActive = window._micro.activeId() === a && document.querySelector('#colorBy').value === dd0;
+    try { await m.setColorBy(c, 'NOPE'); out.bad = 'accepted'; } catch (e) { out.bad = e.message; }
+    // drillholes in a group: a re-channel REPLACES the layer; it keeps its group, the old id forwards
+    const h = await m.addLayer({
+      kind: 'drillholes', name: 'holes', group: 'Holes',
+      collar: { columns: { H: ['A', 'B'], E: Float64Array.from([0, 20]), N: Float64Array.from([0, 0]), RL: Float64Array.from([50, 50]) }, roles: { bhid: 'H', x: 'E', y: 'N', z: 'RL' } },
+      survey: { columns: { H: ['A', 'B'], D: Float64Array.from([0, 0]), AZ: Float64Array.from([0, 0]), DIP: Float64Array.from([90, 90]) }, roles: { bhid: 'H', at: 'D', az: 'AZ', dip: 'DIP' } },
+      intervals: { columns: { H: ['A', 'A', 'B'], F: Float64Array.from([0, 2, 0]), T: Float64Array.from([2, 4, 3]), AU: Float64Array.from([1, 2, 3]), CU: Float64Array.from([9, 8, 7]), DOM: ['ox', 'fr', 'ox'] }, roles: { bhid: 'H', from: 'F', to: 'T', value: 'AU', category: 'DOM' } },
+    });
+    out.h0 = m.layer(h);
+    out.hId = await m.setColorBy(h, 'CU');
+    out.h1 = m.layer(h);                                  // the OLD id, followed forward
+    out.hEv = ev.filter((e) => e[0] === 'micro:layer-replaced').map((e) => e[1]);
+    // groups
+    out.groups = m.groups().map((g) => g.path);
+    await m.group('Other/Deep', [c]);
+    out.cGroup = m.layer(c).group;
+    await m.setGroupVisible('Model', false);
+    out.aHidden = vis.get(a) === false;
+    await m.setGroupVisible('Model', true);
+    out.aBack = vis.get(a) === true;
+    await m.ungroup('Model');
+    out.aAfterUngroup = m.layer(a).group;
+    try { await m.group('Empty', []); out.emptyGroup = 'accepted'; } catch (e) { out.emptyGroup = e.message; }
+    // rows by name, filter, removal
+    out.row = await m.row(a, 5);
+    await m.filter(c, 'AU > 20');
+    out.filt = window._micro.layers().find((q) => q.id === c).filterExpr;
+    await m.clearFilter(c);
+    out.filtCleared = window._micro.layers().find((q) => q.id === c).filterExpr;
+    await m.removeLayer(b);
+    out.removed = ev.some((e) => e[0] === 'micro:layer-removed' && e[1].id === b) && m.layer(b) === null;
+    // open(): a file as micro opens a dropped one, filed into a group
+    const csv = ['X,Y,Z,AU'];
+    for (let k = 0; k < 8; k++) csv.push(`${(k % 2) * 10 + 5},${(k >> 1 & 1) * 10 + 5},${(k >> 2) * 10 + 5},${k}`);
+    const o = await m.open(new File([csv.join('\n') + '\n'], 'opened.csv'), { group: 'Opened' });
+    out.opened = m.layer(o);
+    try { await m.open({ nope: 1 }); out.openBad = 'accepted'; } catch (e) { out.openBad = e.message; }
+    try { await m.look('sideways'); out.look = 'accepted'; } catch (e) { out.look = e.message; }
+    await m.look('plan'); await m.fit(a);
+    try { await m.row(a, 999); out.badRow = 'accepted'; } catch (e) { out.badRow = e.message; }
+    return out;
+  });
+  chk(`api: addLayer with a category starts coloured by it (${r.a.colorBy}), kind ${r.a.kind}, filed in “${r.a.group}”`, r.a.colorBy === 'LITO' && r.a.kind === 'blocks' && r.a.group === 'Model/Domains' && r.a.count === 24);
+  chk(`api: roles.categories → ${r.b0.colorBy} first, ${JSON.stringify(r.bOpts)} offered; setColorBy WX re-reads → ${r.b1.colorBy} ${JSON.stringify(r.bCats)}, same id ${r.bId === r.b0.id}`,
+    r.b0.colorBy === 'LITO' && JSON.stringify(r.bOpts) === '["catcol:WX"]' && r.b1.colorBy === 'WX' && JSON.stringify(r.bCats) === '["FRESH","OX"]' && r.bId === r.b0.id && r.b1.colorChoices.includes('LITO'));
+  chk(`api: a value-only layer starts on ${r.c0}; setColorBy CU on a NON-active layer re-reads (${r.cChan}) and leaves the active layer + its dropdown alone (${r.stillActive})`,
+    r.c0 === 'AU' && r.c1 === 'CU' && r.cChan === 'CU' && r.stillActive);
+  chk(`api: an unknown column rejects with the choices (“${r.bad.slice(0, 70)}…”)`, /“NOPE”/.test(r.bad) && /AU, CU/.test(r.bad));
+  chk(`api: a drillhole re-channel replaces the layer (${r.h0.id} → ${r.hId}, event ${JSON.stringify(r.hEv)}); the old id follows forward, coloured by ${r.h1.colorBy}, still in “${r.h1.group}”`,
+    r.h0.kind === 'drillholes' && r.h0.colorBy === 'DOM' && r.hId !== r.h0.id && r.h1 && r.h1.id === r.hId && r.h1.colorBy === 'CU' && r.h1.group === 'Holes'
+    && r.hEv.length === 1 && r.hEv[0].from === r.h0.id && r.hEv[0].to === r.hId);
+  chk(`api: groups ${JSON.stringify(r.groups)}; group() files (${r.cGroup}); setGroupVisible hides (${r.aHidden}) and shows (${r.aBack}); ungroup lifts (${JSON.stringify(r.aAfterUngroup)}); no empty groups`,
+    ['Model', 'Model/Domains', 'Holes'].every((g) => r.groups.includes(g)) && r.cGroup === 'Other/Deep' && r.aHidden && r.aBack && r.aAfterUngroup === 'Domains' && /at least one layer/.test(r.emptyGroup));
+  chk(`api: row() is named ${JSON.stringify(r.row)}; filter sets “${r.filt}” and clears; removeLayer fires micro:layer-removed; bad view/rec reject`,
+    r.row && r.row.AU === 5 && r.row.LITO === 'BIF' && r.filt === 'AU > 20' && r.filtCleared === '' && r.removed && /look\(\) takes/.test(r.look) && /not a record/.test(r.badRow));
+  chk(`api: open() sniffs a dropped-style file → ${r.opened && r.opened.kind} ×${r.opened && r.opened.count} in “${r.opened && r.opened.group}”; a non-file rejects`,
+    r.opened && r.opened.kind === 'blocks' && r.opened.count === 8 && r.opened.group === 'Opened' && /File, a Blob or a FileSystemFileHandle/.test(r.openBad));
+  await p.close();
+}
+
 // B: an ingested layer is a file-backed layer — it saves into a project folder
 // and comes back from it (blocks with host-ordered categories, sub-blocks, a drillhole set)
 async function projectRoundTrip(url, proj) {
@@ -523,15 +644,22 @@ async function projectRoundTrip(url, proj) {
 }
 
 try {
+  if (process.env.ONLY === 'api') {                       // ONLY=api: just the window.micro checks (dev tree + built)
+    await apiChecks('/tools/micro/index.html', 'dev tree');
+    await apiChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   await run('/tools/micro/index.html', 'dev tree');
   await projectRoundTrip('/tools/micro/index.html', 'hostrt');
   await rotatedChecks('/tools/micro/index.html', 'dev tree');
   await fileChecks('/tools/micro/index.html', 'dev tree');
   await pickChecks('/tools/micro/index.html', 'dev tree');
+  await apiChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
   await pickChecks('/micro.html', 'built micro.html');
+  await apiChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

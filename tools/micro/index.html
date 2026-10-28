@@ -610,6 +610,8 @@
   .lin-when { color: var(--dim); font-size: 10px; font-family: monospace; white-space: nowrap; }
   #sealBadge { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--go, #5c8a5a); color: var(--go, #7fb47c); border-radius: 10px; padding: 1px 8px 1px 6px; font: 11px/1 var(--sans, sans-serif); cursor: pointer; opacity: .85; }
   #sealBadge:hover { opacity: 1; background: color-mix(in srgb, var(--go, #5c8a5a) 14%, transparent); }
+  /* host chrome switches (?embed=1, micro.setChrome) — Help → Why it's Sealed stays */
+  body.chrome-notitle #bar > .title, body.chrome-nobadge #sealBadge { display: none !important; }
   #sealPop { position: fixed; z-index: 210; width: min(340px, 92vw); background: var(--panel, #1c1c1c); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 34px rgba(0,0,0,0.5); padding: 12px 14px; font: 12px/1.5 var(--sans, sans-serif); color: var(--fg, #ddd); }
   #sealPop h4 { margin: 0 0 5px; font-size: 13px; display: flex; align-items: center; gap: 6px; color: var(--go, #7fb47c); }
   #sealPop ul { margin: 6px 0; padding-left: 18px; }
@@ -835,6 +837,8 @@
 </style>
 </head>
 <body>
+  <script>/* ?embed=1 — micro inside a host page: no title, no Sealed badge, from the first paint (micro.setChrome changes it later) */
+  (function () { try { if (new URLSearchParams(location.search).get('embed') === '1') document.body.classList.add('embed', 'chrome-notitle', 'chrome-nobadge'); } catch (e) {} })();</script>
   <div id="bar">
     <button id="btnBurger" title="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg></button>
     <span class="title">micro</span>
@@ -961,6 +965,7 @@ import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, 
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
+import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { PAINT_BLANK, paintRecount, matColSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
@@ -1632,14 +1637,7 @@ function addPaintValue(L, col, label) {
 // set a layer's color channel (through the toolbar when active, direct otherwise)
 function setLayerColorSel(L, v) {
   L.colorSel = v;
-  if (L.id === S.activeId) {
-    addPaintColorOptions(L);
-    const cb = $('#colorBy');
-    if ([...cb.options].some((o) => o.value === v)) { cb.value = v; cb.dispatchEvent(new Event('change')); return; }
-  }
-  applyRamp(L, true);
-  syncRuleMode(L);
-  dispatchEvent(new Event('micro:project-dirty'));
+  return setLayerColorBy(L, v).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
 }
 // the stroke core: assign `code` to a set of records, with a diff-based undo
 // entry (indices + old codes — bounded, cheap even at 50M records)
@@ -7523,6 +7521,16 @@ async function addLayer(spec = {}) {
   const kind = spec.kind;
   try {
     if (!INGEST_KINDS.includes(kind)) throw new Error(`addLayer: kind must be one of ${INGEST_KINDS.join(' | ')} (got ${JSON.stringify(kind)})`);
+    // roles.categories: several text columns offered in the colour-by list. With no
+    // roles.category, the first of them opens as the category (no re-read later).
+    const R0 = kind === 'drillholes' ? spec.intervals && spec.intervals.roles : spec.roles;
+    const cats = R0 && R0.categories != null ? [].concat(R0.categories).map(String) : null;
+    if (cats && !cats.length) throw new Error('addLayer: roles.categories is empty');
+    if (cats && R0.category == null) {
+      const R1 = { ...R0, category: cats[0] };
+      spec = kind === 'drillholes' ? { ...spec, intervals: { ...spec.intervals, roles: R1 } } : { ...spec, roles: R1 };
+    }
+    const roles = (kind === 'drillholes' ? spec.intervals && spec.intervals.roles : spec.roles) || {};
     const name = String(spec.name || kind);
     const lineage = mkLineage('ingest', { kind, roles: spec.roles || null, lattice: spec.lattice ? 'declared' : undefined, by: 'host' }, []);
     let lid;
@@ -7531,8 +7539,27 @@ async function addLayer(spec = {}) {
     else if (kind === 'mesh') lid = await ingestMeshLayer(spec, name, lineage);
     else if (kind === 'drillholes') lid = await ingestDrillholes(spec, name, lineage);
     else lid = await ingestTable(spec, name, lineage);
-    const L = layerById(lid);
-    if (L) { L.label = name; renderLayers(); }
+    let L = layerById(lid);
+    if (L) {
+      L.label = name;
+      if (cats) {
+        const h = colorHeaderOf(L), have = h ? h.columns : [];
+        const bad = cats.filter((c) => !have.includes(c));
+        if (bad.length) { removeLayerUI(L.id); throw new Error(`addLayer: roles.categories names ${bad.map((c) => JSON.stringify(c)).join(', ')}, not ${bad.length > 1 ? 'columns' : 'a column'} of the layer (it has ${have.join(', ')})`); }
+        L.catChoices = cats;
+        addPaintColorOptions(L);
+      }
+      if (spec.group) fileLayersInGroup(spec.group, [L.id]);
+      // the host named the column it cares about: start coloured by it (category,
+      // else value), not by elevation. spec.colorBy overrides.
+      const want = spec.colorBy != null ? spec.colorBy : roles.category != null ? roles.category : roles.value != null ? roles.value : null;
+      if (want != null) {
+        try { lid = await setLayerColorBy(L, colorSelFor(L, want)); }
+        catch (e) { if (spec.colorBy != null) { removeLayerUI(L.id); throw e; } }   // a stated colorBy is checked; the role default is best-effort
+        L = layerById(lid);
+      }
+      renderLayers();
+    }
     return lid;
   } catch (e) {
     // errors raised BEFORE a layer existed never reached openBlob's handler
@@ -7998,7 +8025,7 @@ function setSurfaceFlatZ(L, flatZ) {
 // drop `visible`. Data-representation styling that legitimately resets on a
 // reinterpret (colour/filter/ramps) is deliberately NOT preserved here.
 function captureReopenIdentity(L) {
-  return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage };
+  return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage, oldId: L.id, slot: treeSlotOf(L.id) };
 }
 function preregisterReopenHandle(blob, keep) {   // openBlob reads _fileHandles → must run BEFORE it
   if (keep.handle && blob && typeof blob === 'object') _fileHandles.set(blob, keep.handle);
@@ -8009,6 +8036,7 @@ function restoreReopenIdentity(L2, keep) {        // call with the fresh active 
   L2.storage = keep.storage;
   if (keep.handle) L2.handle = keep.handle;
   if (keep.visible === false) { L2.visible = false; renderer.setLayerVisible(L2.id, false); }
+  if (keep.oldId != null) layerReplaced(keep.oldId, L2.id, keep.slot);
   return L2;
 }
 // ── derived styling that survives a DATA-PRESERVING reopen ──
@@ -8033,6 +8061,7 @@ function captureLayerStyling(L, { clearCats = false } = {}) {
     holeFilter: L.holeFilter, _holeIds: L._holeIds, _holeMask: L._holeMask,
     opacity: L.opacity, clip: L.clip, gtUnits: L.gtUnits,
     legend: L.legend, legendTitle: L.legendTitle, edges: L.edges, _recHide: L._recHide,
+    catChoices: L.catChoices,
   };
 }
 function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
@@ -8055,6 +8084,7 @@ function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
   if (keep.legendTitle != null) L2.legendTitle = keep.legendTitle;
   if (keep.edges != null) L2.edges = keep.edges;
   if (keep._recHide) L2._recHide = keep._recHide;
+  if (keep.catChoices) { L2.catChoices = keep.catChoices; addPaintColorOptions(L2); }
   if (keep.holeFilter) { L2.holeFilter = keep.holeFilter; L2._holeIds = keep._holeIds; L2._holeMask = keep._holeMask; }
   if (keep.colorSel && [...$('#colorBy').options].some((o) => o.value === keep.colorSel)) { L2.colorSel = keep.colorSel; setLayerColorSel(L2, keep.colorSel); }
   if (keep.filterExpr) { L2.filterExpr = keep.filterExpr; }        // the sweep is driven by the caller when this layer is active
@@ -8443,25 +8473,12 @@ async function openDrillholeLayer(files, opts = {}, mode = 'add', over = {}) {
     return layerFailed(name, e, over);
   }
 }
-// re-channel a drillhole layer (all in memory upstream — cheap)
-async function reopenDhChan(chan) {
-  const L = activeLayer(); if (!L || !L.dh || !L.docs.dhDoc) return;
-  const files = L.docs.dhDoc.blobs, cfg = { ...L.docs.dhDoc.config, chan };
-  const id = captureReopenIdentity(L);
-  const setKey = L._setKey, intervalName = L._intervalName;
-  const style = captureLayerStyling(L);                               // was DROPPED — a re-channel keeps the same columns, so styling should ride through
-  const keepFilter = L.filterExpr;
-  renderer.removeLayer(L.id);
-  S.layers = S.layers.filter((l) => l.id !== L.id);
-  await openDrillholeLayer(files, cfg, 'add');
-  const L2 = restoreReopenIdentity(activeLayer(), id);
-  if (L2) {
-    L2._setKey = setKey; L2._intervalName = intervalName;
-    applyLayerStyling(L2, style);
-    if (id.visible === false) applyTreeVisibility();
-    if (keepFilter) { $('#filter').value = keepFilter; syncFilterClear(); applyBlockFilter(keepFilter); }
-  }
-  renderLayers();
+// re-channel a drillhole layer (all in memory upstream — cheap). It is a re-desurvey
+// with a new channel: it had its own copy that removed the layer BEFORE reopening,
+// the order reopenDh was fixed away from (a failed open lost the layer).
+async function reopenDhChan(chan, L = activeLayer()) {
+  if (!L || !L.dh || !L.docs.dhDoc) return null;
+  return reopenDh(L, { chan });
 }
 
 // ── the OPEN dialog (every UI open lands here): a row per file — load toggle,
@@ -8976,6 +8993,9 @@ function pqGroupRanges(rg) {
 // NAMES (`dims`), never indices — a producer's column order is its own business.
 function microModelOf(h) {
   const m = { v: 1, grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: !!h.subBlocked };
+  // the labels belong to ONE column: say which, or a re-map to another category
+  // column would read these labels as its own
+  if (h.categories && h.mapping && h.mapping.cat != null && h.columns) m.catColumn = h.columns[h.mapping.cat];
   // a rotated lattice also states itself in the producer's form (grid.basis:
   // origin = block 0's centroid, U/V/W = pitch × direction) beside the internal
   // rot/anchor, so the file reads the same to micro and to anyone else
@@ -9038,7 +9058,11 @@ async function openParquetBlocks(blob, name, opts = {}) {
   const declared = opts.lattice || null;
   const cachedPq0 = declared ? null : (opts.cached || kvModel);
   const cachedDims = cachedPq0 && cachedPq0.subBlocked ? microModelDimCols(cachedPq0, names) : null;
-  const cachedPq = cachedPq0 && (!cachedPq0.subBlocked || (cachedDims && Array.isArray(cachedPq0.dimPalette))) ? cachedPq0 : null;
+  // the cached categories must be THIS open's category column. Older footers don't
+  // name it (catColumn), so they're trusted unless the caller changed the category;
+  // a model cached with none can't serve one either. Untrusted → discovery sweeps.
+  const catOk = (c) => (!c.categories ? catN == null : c.catColumn ? c.catColumn === catN : !opts.catChanged);
+  const cachedPq = cachedPq0 && catOk(cachedPq0) && (!cachedPq0.subBlocked || (cachedDims && Array.isArray(cachedPq0.dimPalette))) ? cachedPq0 : null;
   let grid = null, categories = null, subBlocked = false, dimPalette = null, dimCols = null;
   let latticeInfo = null, latticeCandidate = null, latticeRejected = null;
   if (cachedPq && cachedPq.bbox && !opts.forcePoints) {
@@ -9479,20 +9503,101 @@ function reopenBlockChan(doc, chan, extra = {}) {
 // (blockCaps / layerRecords / docPositionStream live in src/records.js)
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
 $('#colorBy').addEventListener('change', () => {
-  const v = $('#colorBy').value;
-  const L = activeLayer(); if (L) { L.colorSel = v; applyRamp(L, true); syncRuleMode(L); }
-  dispatchEvent(new Event('micro:project-dirty'));
-  if (v.startsWith('chan:') && activeDocs().dhDoc && +v.slice(5) !== activeDocs().dhDoc.header.mapping.chan) { reopenDhChan(+v.slice(5)); return; }
-  if (v.startsWith('chan:') && activeDocs().blockDoc && +v.slice(5) !== activeDocs().blockDoc.header.mapping.chan) {
+  const L = activeLayer();
+  if (L) setLayerColorBy(L, $('#colorBy').value).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
+  else requestRender();
+});
+// ── colour-by: ONE function for the dropdown and the host (window.micro). It
+// used to live in the dropdown's change handler, so it only ever acted on the
+// ACTIVE layer, and setLayerColorSel (its non-active stand-in) skipped the
+// re-read a channel the open didn't load needs, quietly drawing the old one.
+// A drillhole re-read REPLACES the layer (a new id — see layerReplaced), so this
+// resolves to the id of the layer that now carries the colour.
+//   v: 'elev' | 'solid' | 'rules' | 'cat' | 'chan:i' | 'catcol:NAME' | 'paint:…' | 'calc:…' | '0'–'3' (LAS/PLY)
+async function setLayerColorBy(L, v) {
+  if (!L) return null;
+  v = String(v);
+  if (v.startsWith('catcol:')) {                           // another text column becomes THE category (a re-read)
+    const name = v.slice(7), h = colorHeaderOf(L), i = h ? h.columns.indexOf(name) : -1;
+    if (i < 0) throw new Error(`no column “${name}” on “${L.label || L.name}”`);
+    if (!(h.categories && h.mapping.cat === i)) {
+      L.colorSel = 'cat';
+      await useAsCategory(L, i);
+      L = layerById(followLayer(L.id)) || L;
+    }
+    v = 'cat';
+  }
+  L.colorSel = v;
+  const d = L.docs || {};
+  let reread = false;
+  if (v.startsWith('chan:')) {
+    const ch = +v.slice(5);
+    if (d.dhDoc && ch !== d.dhDoc.header.mapping.chan) { await reopenDhChan(ch, L); L = layerById(followLayer(L.id)) || L; reread = true; }
     // Three sources, not two. This dispatch predated Parquet and sent it down the
     // delimited branch, where openBlocksBlob sniffed the Parquet bytes as text,
     // found no rows, and replaced a good document with an empty one — the layer
     // kept its count and its columns and drew nothing. Parquet re-opens through
     // its own provider, and takes the new channel as a mapping patch because it
     // resolves columns by mapping rather than by an opts.chan index.
-    reopenBlockChan(activeDocs().blockDoc, +v.slice(5));
-  } else requestRender();
-});
+    else if (d.blockDoc && ch !== d.blockDoc.header.mapping.chan) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
+  }
+  L.colorSel = v;                                          // (re)asserted on the successor
+  // a re-read rewrites the dropdown from THAT layer's header — hand it back to the active one
+  if (reread && L.id !== S.activeId && activeLayer()) setActiveLayer(S.activeId);
+  if (L.id === S.activeId) {
+    addPaintColorOptions(L);
+    const cb = $('#colorBy');
+    if ([...cb.options].some((o) => o.value === v)) cb.value = v;
+  }
+  applyRamp(L, true); syncRuleMode(L);
+  dispatchEvent(new Event('micro:project-dirty'));
+  requestRender();
+  return L.id;
+}
+const colorHeaderOf = (L) => { const d = (L && L.docs) || {}; return d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : null; };
+const POINT_MODES = { elevation: '0', elev: '0', intensity: '1', classification: '2', rgb: '3' };
+// what a layer can be coloured by, as a host names it (column names + mode words)
+function colorChoices(L) {
+  const h = colorHeaderOf(L);
+  if (!h) return L && (L.docs.lasDoc || L.docs.plyDoc) ? ['elevation', 'intensity', 'classification', 'rgb'] : [];
+  const out = ['elev', ...(h.numericColumns || []).map((c) => c.name)];
+  if (h.categories) out.push(h.columns[h.mapping.cat]);
+  for (const c of L.catChoices || []) if (!out.includes(c)) out.push(c);
+  for (const p of L.paintCols || []) out.push(p.name);
+  for (const c of L.calcCols || []) if (c.ty !== 'string') out.push(c.name);
+  out.push('rules', 'solid');
+  return out;
+}
+// the inverse: what a layer is coloured by, as a host names it
+function colorByName(L) {
+  const v = String(L.colorSel != null ? L.colorSel : L.id === S.activeId ? $('#colorBy').value : '');
+  const h = colorHeaderOf(L);
+  if (!h) return ['elevation', 'intensity', 'classification', 'rgb'][+v] || null;
+  if (v === 'elev' || v === 'solid' || v === 'rules') return v;
+  if (v.startsWith('chan:')) return h.columns[+v.slice(5)] ?? null;
+  if (v === 'cat') return h.categories ? h.columns[h.mapping.cat] : null;
+  if (v.startsWith('paint:') || v.startsWith('calc:')) return v.slice(v.indexOf(':') + 1);
+  return v || null;
+}
+// a column NAME (or a mode word) → the colour-by selection value for that layer
+function colorSelFor(L, col) {
+  const c = String(col), h = colorHeaderOf(L);
+  if (!h) { if (POINT_MODES[c] != null && (L.docs.lasDoc || L.docs.plyDoc)) return POINT_MODES[c]; }
+  else {
+    if (c === 'elev' || c === 'elevation') return 'elev';
+    if (c === 'solid' || c === 'rules') return c;
+    const i = h.columns.indexOf(c);
+    if (i >= 0) {
+      if ((h.numericColumns || []).some((n) => n.i === i)) return 'chan:' + i;
+      if (h.categories && h.mapping.cat === i) return 'cat';
+      return 'catcol:' + c;                                // another text column: becomes THE category
+    }
+    if ((L.paintCols || []).some((p) => p.name === c)) return 'paint:' + c;
+    if ((L.calcCols || []).some((p) => p.name === c && p.ty !== 'string')) return 'calc:' + c;
+  }
+  const ch = colorChoices(L);
+  throw new Error(`color: “${c}” is not something “${L.label || L.name}” can be coloured by${ch.length ? ` (${ch.join(', ')})` : ''}`);
+}
 for (const id of ['clipMin', 'clipMax']) $('#' + id).addEventListener('input', () => {
   const L = activeLayer(); if (L) { L.clip = [$('#clipMin').value, $('#clipMax').value]; const pcR = paintActiveCol(L) || calcDisplayCol(L); if (rampCfgOf(L) || (pcR && pcR.kind === 'ratio')) applyRamp(L, true); }
   dispatchEvent(new Event('micro:project-dirty'));
@@ -10417,6 +10522,7 @@ function projectManifest() {
       label: L.label && L.label !== L.name ? L.label : undefined,
       external: L.storage === 'external' || undefined,
       colorSel: L.colorSel, clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
+      catChoices: L.catChoices && L.catChoices.length ? L.catChoices : undefined,
       sectioned: (() => { const m = renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
       kind: (L.kind === 'mesh' && !L.gridSurface) ? 'mesh'
         : L.kind === 'table' ? 'table'
@@ -10831,6 +10937,7 @@ async function openProjectDir(dir) {
           restoreHiddenCats(Ld, ls.hiddenCats);
           if (ls.ramps) { Ld.ramps = ls.ramps; applyRamp(Ld, true); }
           if (ls.catLegend) { Ld.catLegend = ls.catLegend; applyCatLegend(Ld, true); }
+          if (Array.isArray(ls.catChoices)) { Ld.catChoices = ls.catChoices; addPaintColorOptions(Ld); }
           if (ls.colorSel && [...$('#colorBy').options].some((o) => o.value === ls.colorSel)) { Ld.colorSel = ls.colorSel; $('#colorBy').value = ls.colorSel; syncRuleMode(Ld); }
           await restoreStyleExtras(Ld, ls);
           idAt[i] = Ld.id;
@@ -10919,6 +11026,7 @@ async function openProjectDir(dir) {
       if (ls.colTypes) { L.colTypes = ls.colTypes; applyColTypes(L); }
       try { await loadElement(L, dir); } catch { /* derived — never block a load */ }   // ƒ + matcols BEFORE filter/color (both may reference them)
       if (ls.calcCols && !(L.calcCols || []).length) L.calcCols = ls.calcCols;   // legacy projects (no element manifest)
+      if (Array.isArray(ls.catChoices)) L.catChoices = ls.catChoices;
       addPaintColorOptions(L);
       // color channel first (may re-stream), then filter (sweeps), then the rest
       if (ls.colorSel && ls.colorSel !== $('#colorBy').value && [...$('#colorBy').options].some((o) => o.value === ls.colorSel)) {
@@ -13881,9 +13989,10 @@ function removeLayerUI(id) {
   pinEvictLayer(id);
   S.layers = S.layers.filter((l) => l.id !== id);
   recomputeUnion();
-  if (!S.layers.length) { closeAllLayers(); $('#empty').style.display = ''; $('#meta').textContent = ''; return; }
+  if (!S.layers.length) { closeAllLayers(); $('#empty').style.display = ''; $('#meta').textContent = ''; dispatchEvent(new CustomEvent('micro:layer-removed', { detail: { id } })); return; }
   if (S.activeId === id) setActiveLayer(S.layers[0].id);
   renderLayers(); requestRender();
+  dispatchEvent(new CustomEvent('micro:layer-removed', { detail: { id } }));
 }
 function layerMenu(L, x, y) {
   const selN = _lpSel.size;
@@ -15070,6 +15179,16 @@ function addPaintColorOptions(L) {
     }
   }
   for (const o of [...sel.options]) if (o.value.startsWith('calc:') && !(L.calcCols || []).some((c) => c.ty !== 'string' && 'calc:' + c.name === o.value)) o.remove();
+  // other text columns a host offered as categories (addLayer roles.categories):
+  // choosing one re-reads the layer with it as THE category (setLayerColorBy)
+  const h = colorHeaderOf(L), curCat = h && h.categories ? h.columns[h.mapping.cat] : null;
+  for (const o of [...sel.options]) if (o.value.startsWith('catcol:')) o.remove();
+  for (const name of L.catChoices || []) {
+    if (name === curCat) continue;
+    const o = document.createElement('option'); o.value = 'catcol:' + name; o.textContent = name;
+    const after = [...sel.options].find((x) => x.value === 'cat') || [...sel.options].find((x) => x.value === 'rules');
+    sel.insertBefore(o, after ? (after.value === 'cat' ? after.nextSibling : after) : null);
+  }
 }
 // (ruleDefaultColor lives in src/columns.js)
 function applyRulePalette(L, force) {
@@ -15651,7 +15770,7 @@ async function reopenDh(L, patch, { clearCats = false } = {}) {
   const id = captureReopenIdentity(L);                                // label · visible · storage (handle n/a for compound dh)
   const setKey = L._setKey, intervalName = L._intervalName;           // dh-set membership (dh-specific, not generic identity)
   const style = captureLayerStyling(L, { clearCats });
-  const oldId = L.id;
+  const oldId = L.id, prevActive = S.activeId;
   // open FIRST, remove the old layer only on success. The old order removed L
   // and then, if openDrillholeLayer threw, grafted L's identity/styling onto
   // whatever activeLayer() happened to be — corrupting an unrelated layer and
@@ -15671,8 +15790,11 @@ async function reopenDh(L, patch, { clearCats = false } = {}) {
   applyLayerStyling(L2, style, { clearCats });
   if (id.visible === false) applyTreeVisibility();
   if (L2.id === S.activeId && L2.filterExpr) { $('#filter').value = L2.filterExpr; await applyBlockFilter(L2.filterExpr); }
+  // re-reading a layer that wasn't active (a host's setColorBy) mustn't take the focus
+  if (prevActive !== oldId && layerById(prevActive)) setActiveLayer(prevActive);
   renderLayers();
   if (_propOpen) { _propFor = null; renderProps(); }
+  return L2;
 }
 // re-open a delimited layer with a patched column mapping (X/Y/Z/cat re-keys)
 async function reopenWithMapping(L, patch, { clearCats = false } = {}) {
@@ -15683,6 +15805,7 @@ async function reopenWithMapping(L, patch, { clearCats = false } = {}) {
   const ropts = {
     layer: L.id, first: false, forcePoints: doc.forcePoints,
     mapping: { x: m.x, y: m.y, z: m.z, chan: m.chan, cat: m.cat },
+    catChanged: m.cat !== doc.header.mapping.cat,          // a cached category list is another column's
   };
   // .dm resolves columns by chan/cat indices (x/y/z come from the DD page)
   if (doc.header.dm) {
@@ -16517,6 +16640,118 @@ function treeFindParent(node, arr = S.layerTree) {
   }
   return null;
 }
+// ── groups by PATH ("Model/Domains"), for a host. A group exists while it holds
+// something: an emptied one dissolves (treeSync), so making one = filing layers
+// into it. Drillhole set groups are the element itself, so a drillhole layer is
+// filed by moving its whole SET group. ──
+const groupSegs = (path) => String(path == null ? '' : path).split('/').map((s) => s.trim()).filter(Boolean);
+function groupAt(path) {
+  let arr = S.layerTree, g = null;
+  for (const seg of groupSegs(path)) {
+    g = arr.find((nd) => typeof nd !== 'number' && nd.group && !nd.dhSet && nd.name === seg);
+    if (!g) return null;
+    arr = g.children;
+  }
+  return g;
+}
+function groupPathOf(id) {                                 // the plain-group path a layer sits under ('' at the root)
+  const s = treeSlotOf(id);
+  return s ? s.path.filter((p) => !p.dhSet).map((p) => p.name).join('/') : '';
+}
+function groupsList() {
+  treeSync();
+  const out = [];
+  const walk = (arr, pre) => {
+    for (const nd of arr) {
+      if (typeof nd === 'number' || !nd.group) continue;
+      const path = nd.dhSet ? pre : (pre ? pre + '/' : '') + nd.name;
+      if (!nd.dhSet) out.push({ path, name: nd.name, visible: nd.visible !== false, collapsed: !!nd.collapsed, layers: groupLayerIds(nd) });
+      walk(nd.children, path);
+    }
+  };
+  walk(S.layerTree, '');
+  return out;
+}
+function fileLayersInGroup(path, ids) {
+  treeSync();
+  const segs = groupSegs(path);
+  for (const id of ids) {
+    const set = dhSetGroupOf(id);
+    const node = set || id;                                // the set travels whole
+    const dest = segs.length ? ensureGroupPath(segs) : S.layerTree;
+    const src = treeFindParent(node);
+    if (!src || src.arr === dest) continue;
+    src.arr.splice(src.i, 1);
+    dest.push(node);
+  }
+  treeSync(); applyTreeVisibility(); renderLayers(); markProjectDirty();
+}
+function setGroupVisible(path, on) {
+  const g = groupAt(path); if (!g) return false;
+  g.visible = !!on;
+  applyTreeVisibility(); renderLayers(); markProjectDirty();
+  return true;
+}
+function ungroupAt(path) {                                 // dissolve: the children take the group's place
+  const g = groupAt(path); if (!g) return false;
+  const src = treeFindParent(g); if (!src) return false;
+  src.arr.splice(src.i, 1, ...g.children);
+  treeSync(); applyTreeVisibility(); renderLayers(); markProjectDirty();
+  return true;
+}
+// ── a reopen that REPLACES a layer. Drillhole re-reads open the new layer before
+// removing the old one (a failure keeps the original), and the id is baked into
+// the GPU record keys, so the successor can't take the old id. It used to land at
+// the ROOT of the tree, out of its group (re-channel a grouped drillhole set and
+// it fell out). Now the successor takes the old layer's place, and a host hears
+// `micro:layer-replaced` { from, to }; the API follows stale ids forward.
+// A slot is the group PATH by name (+ each group's state) and an index — not live
+// references, because the old layer's group dissolves if it was the only child.
+function treeSlotOf(id) {
+  const path = [];
+  const walk = (arr) => {
+    for (let i = 0; i < arr.length; i++) {
+      const nd = arr[i];
+      if (nd === id) return i;
+      if (typeof nd !== 'number' && nd.group) {
+        path.push({ name: nd.name, visible: nd.visible, collapsed: nd.collapsed, dhSet: !!nd.dhSet });
+        const r = walk(nd.children);
+        if (r != null) return r;
+        path.pop();
+      }
+    }
+    return null;
+  };
+  const i = walk(S.layerTree);
+  return i == null ? null : { path, i };
+}
+function treePlace(id, slot) {
+  if (!slot) return;
+  const src = treeFindParent(id);
+  if (src) src.arr.splice(src.i, 1);
+  let arr = S.layerTree;
+  for (const seg of slot.path) {
+    let g = arr.find((nd) => typeof nd !== 'number' && nd.group && nd.name === seg.name && !!nd.dhSet === seg.dhSet);
+    if (!g) { g = { group: true, name: seg.name, visible: seg.visible, collapsed: seg.collapsed, children: [], ...(seg.dhSet ? { dhSet: true } : {}) }; arr.push(g); }
+    arr = g.children;
+  }
+  arr.splice(Math.min(slot.i, arr.length), 0, id);
+}
+const _successor = new Map();                              // replaced id → the id that replaced it
+function layerReplaced(oldId, newId, slot) {
+  treePlace(newId, slot);
+  treeSync();
+  applyTreeVisibility();
+  if (oldId === newId) return;
+  _successor.set(oldId, newId);
+  dispatchEvent(new CustomEvent('micro:layer-replaced', { detail: { from: oldId, to: newId } }));
+}
+// an id → the live layer it now names (follows replacements; ids recycle, so a
+// LIVE id is never forwarded)
+function followLayer(id) {
+  for (let k = 0; k < 64 && id != null && !layerById(id) && _successor.has(id); k++) id = _successor.get(id);
+  return id;
+}
 function treeContains(nd, target) {
   if (nd === target) return true;
   if (typeof nd === 'number' || !nd.group) return false;
@@ -17342,6 +17577,32 @@ if (shell.present) {
   }).catch(() => { /* no intake plugin in this build */ });
   window._micro.shell = shell;
 }
+
+// ── window.micro — the HOST API (src/host-api.js; manual appendix D). The small,
+// versioned surface a host page builds on; window._micro above stays the smokes'
+// unstable reach into everything. Announced last: micro is up. ──
+const _host = createHostApi({
+  followLayer, addLayer, removeLayer: removeLayerUI, setActiveLayer, applyBlockFilter, pickRecord,
+  openFile: async (src, o) => {
+    const f = await ingestSource(src, 'open()\'s file');
+    const lid = await openBlob(f, String(o.name || f.name || 'file'), 'add', null, { throw: true, ...(o.acceptLattice != null ? { acceptLattice: o.acceptLattice } : {}) });
+    if (lid != null && o.group) fileLayersInGroup(o.group, [lid]);
+    return lid;
+  },
+  treeChanged: () => { applyTreeVisibility(); renderLayers(); markProjectDirty(); },
+  colorByName, colorChoices, colorSelFor, setLayerColorBy,
+  groupPathOf, groupsList, fileLayersInGroup, ungroupAt, setGroupVisible,
+  clearPick: () => { $('#recPanel').classList.remove('show'); $('#rpCfg').classList.remove('show'); renderer.setPicked(null); requestRender(); },
+  fit: (L) => { if (L) fitLayer(L); else if (renderer.chunkCount) { cam.fit(rendererDocBbox()); requestRender(); } },
+  look: (v) => ({
+    north: () => setView(-Math.PI / 2, 0), south: () => setView(Math.PI / 2, 0),
+    east: () => setView(Math.PI, 0), west: () => setView(0, 0),
+    plan: () => setView(cam.state.theta, PHI_MAX), below: () => setView(cam.state.theta, -PHI_MAX),
+  })[v](),
+});
+window.micro = _host.api;
+window._micro.setColorBy = (id, column) => _host.api.setColorBy(id, column);   // what plow's studio feature-detects
+_host.announce();
 </script>
 </body>
 </html>
