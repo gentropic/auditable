@@ -110,6 +110,13 @@ export function createParquetSource(buf, t, { blockSize = 256, cacheBlocks = 16,
     inflight.set(b, p);
     return p;
   }
+  const groupStarts = [];          // first record of each row group (ascending)
+  { let s = 0; for (const rg of t.rowGroups) { groupStarts.push(s); s += rg.rowCount; } }
+  function groupOf(i) {
+    let lo = 0, hi = groupStarts.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (groupStarts[m] <= i) lo = m; else hi = m - 1; }
+    return lo;
+  }
   function cachedRow(r) {
     const b = Math.floor(r / K);
     if (!cache.has(b)) return null;
@@ -127,7 +134,8 @@ export function createParquetSource(buf, t, { blockSize = 256, cacheBlocks = 16,
       loadBlock(Math.floor(r / K)).catch(() => {});
       return LOADING;
     },
-    async ensureRow(r) { if (r >= 0 && r < n) await loadBlock(Math.floor(r / K)); return this.rowAt(r); },
+    // resolves WITH the row: a burst of concurrent reads may evict its block first
+    async ensureRow(r) { if (r < 0 || r >= n) return null; const b = Math.floor(r / K); return (await loadBlock(b))[r - b * K] || null; },
     header(c) { return { label: names[c] != null ? names[c] : `col ${c + 1}`, type: this.colType(c) }; },
     colType(c) { return (t.schema[c] && t.schema[c].type) || 'string'; },
     onReady(cb) { readyCbs.push(cb); return () => { const i = readyCbs.indexOf(cb); if (i >= 0) readyCbs.splice(i, 1); }; },
@@ -199,6 +207,35 @@ export function createParquetSource(buf, t, { blockSize = 256, cacheBlocks = 16,
       const b = Math.floor(i / K);
       const row = (await loadBlock(b))[i - b * K];
       return row ? row.slice() : new Array(ncols).fill('');
+    },
+    // Many records at once (a sorted/filtered view's screenful, a host rows() call).
+    // Parquet can't read one row: any read decodes the whole column chunk (one row
+    // ≈ the whole row group, measured), so scattered single reads cost a decode
+    // EACH. Here every row group is decoded once for all the records it holds.
+    async readByLocs(locs) {
+      const out = new Array(locs.length), byGroup = new Map();
+      for (let k = 0; k < locs.length; k++) {
+        const i = locs[k], hit = i >= 0 && i < n ? cachedRow(i) : null;
+        if (hit) { out[k] = hit.slice(); continue; }
+        if (!(i >= 0 && i < n)) { out[k] = new Array(ncols).fill(''); continue; }
+        const g = groupOf(i);
+        if (!byGroup.has(g)) byGroup.set(g, []);
+        byGroup.get(g).push(k);
+      }
+      // one read per ≤`slice`-row window of a group (the scans' bound), so a sparse
+      // request over a huge row group never builds a row array for every row in it
+      for (const ks of byGroup.values()) {
+        ks.sort((a, b) => locs[a] - locs[b]);
+        for (let a = 0; a < ks.length;) {
+          const lo = locs[ks[a]];
+          let b = a; while (b + 1 < ks.length && locs[ks[b + 1]] - lo < slice) b++;
+          const hi = locs[ks[b]];
+          const got = await readParquetRows(buf, { rowStart: lo, rowEnd: hi + 1, columns: names, metadata: meta });
+          for (let j = a; j <= b; j++) out[ks[j]] = got[locs[ks[j]] - lo].map(dispOf);
+          a = b + 1;
+        }
+      }
+      return out;
     },
   };
   return { view, cursor };

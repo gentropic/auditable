@@ -562,6 +562,7 @@ function withCalcCursor(source, baseCount, calcs) {
     get skipped() { return source.skipped; },   // live, not the spread's snapshot
     eachRecord: (opts, visit) => source.eachRecord(opts, (disp, fields, l0, l1) => visit(disp, extendRaw(fields, calcs), l0, l1)),
     readByLoc: async (l0, l1) => extendDisp(await source.readByLoc(l0, l1), calcs),
+    ...(source.readByLocs ? { readByLocs: async (l0s, l1s) => (await source.readByLocs(l0s, l1s)).map((f) => extendDisp(f, calcs)) } : {}),
   };
 }
 
@@ -711,16 +712,39 @@ function createResultView(source, result, schema, { cacheRows = 1024 } = {}) {
   const cols = schema ? schema.length : 1;
   const notify = () => { for (const cb of readyCbs) { try { cb(); } catch (e) { console.error('[lamina] onReady threw', e); } } };
 
+  const keep = (r, fields) => { cache.set(r, fields); while (cache.size > cacheRows) cache.delete(cache.keys().next().value); };
+  // → the row's fields (resolved WITH them: a big burst may evict a row before an
+  // awaiting caller looks it up). A backing with `readByLocs` (Parquet, where any
+  // read decodes a whole column chunk) gets every row asked for in the same tick
+  // as ONE batch — a screenful or a host rows() call, not a decode per row.
+  let queue = null;
   function loadRow(r) {
-    if (cache.has(r)) return Promise.resolve();
+    if (cache.has(r)) return Promise.resolve(cache.get(r));
     if (inflight.has(r)) return inflight.get(r);
-    const p = Promise.resolve(source.readByLoc(offsets[r], lengths[r])).then((fields) => {
-      cache.set(r, fields);
-      while (cache.size > cacheRows) cache.delete(cache.keys().next().value);
-      inflight.delete(r); notify();
-    }, (err) => { inflight.delete(r); console.error('[lamina] loadRow failed', err); });
+    let p;
+    if (source.readByLocs) {
+      p = new Promise((resolve) => {
+        if (!queue) { queue = []; queueMicrotask(flush); }
+        queue.push([r, resolve]);
+      });
+    } else {
+      p = Promise.resolve(source.readByLoc(offsets[r], lengths[r])).then((fields) => {
+        keep(r, fields); inflight.delete(r); notify(); return fields;
+      }, (err) => { inflight.delete(r); console.error('[lamina] loadRow failed', err); return null; });
+    }
     inflight.set(r, p);
     return p;
+  }
+  async function flush() {
+    const q = queue; queue = null;
+    let got = null;
+    try { got = await source.readByLocs(q.map(([r]) => offsets[r]), q.map(([r]) => lengths[r])); } catch (err) { console.error('[lamina] batch read failed', err); }
+    for (let k = 0; k < q.length; k++) {
+      const [r, resolve] = q[k], fields = got ? got[k] : null;
+      if (fields) keep(r, fields);
+      inflight.delete(r); resolve(fields);
+    }
+    notify();
   }
 
   return {
@@ -734,7 +758,7 @@ function createResultView(source, result, schema, { cacheRows = 1024 } = {}) {
       loadRow(r);
       return LOADING;
     },
-    async ensureRow(r) { if (r < 0 || r >= offsets.length) return null; await loadRow(r); return this.rowAt(r); },
+    async ensureRow(r) { if (r < 0 || r >= offsets.length) return null; const f = await loadRow(r); return f || this.rowAt(r); },
     rowHeaderAt(r) { return (r < 0 || r >= nums.length) ? r + 1 : nums[r] + 1; },   // original (1-based) row
     header(c) { return { label: schema && schema[c] ? schema[c].name : `col ${c + 1}`, type: this.colType(c), calc: !!(schema && schema[c] && schema[c].calc) }; },
     colType(c) { return (schema && schema[c] && schema[c].type) || 'string'; },

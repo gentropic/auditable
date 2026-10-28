@@ -115,8 +115,28 @@ async function run(url, label) {
     out.hid = await L.setColumn('cu', { hidden: true });
     out.typed = await L.setColumn('ID', { type: 'string' });
     out.order = await L.orderColumns(['LITO', 'ID']);
-    // ── rejections
     const rej = async (p) => { try { await p; return 'accepted'; } catch (e) { return e.message; } };
+    // ── a SCATTERED sort (CU = i % 100 / 10 → every row group, every 256-block):
+    // rows() must batch — one read per 1024-row chunk, not one decode per row
+    // (MineMind: 2.3 s per rows(0, 200) on a sorted 88k-row file)
+    await L.clearFilter();
+    await L.sort([{ column: 'CU', desc: true }]);
+    const src = window._lamina.current.source, reads = { one: 0, many: 0 };
+    const one = src.readByLoc, many = src.readByLocs;
+    src.readByLoc = function (...a) { reads.one++; return one.apply(this, a); };
+    src.readByLocs = function (...a) { reads.many++; return many.apply(this, a); };
+    const t2 = performance.now();
+    out.scat = await L.rows(0, 3000, { columns: ['ID', 'CU'] });
+    out.scatMs = performance.now() - t2;
+    src.readByLoc = one; src.readByLocs = many;
+    out.scatReads = reads;
+    out.pos = L.positionsOf(out.scat.records);
+    out.selRec = await L.select({ record: out.scat.records[5], columns: ['ID'] });
+    await L.filter('CU < 9.9');                    // the 9.9 records are now filtered out
+    out.posFiltered = L.positionsOf([out.scat.records[0], 98, -1, 10 ** 9]);
+    out.badPos = await rej(Promise.resolve().then(() => L.positionsOf(7)));
+    out.badSelRec = await rej(L.select({ record: out.scat.records[0] }));
+    // ── rejections
     out.rej = {
       badFilter: await rej(L.filter('NOPE > 1')),
       badCol: await rej(L.stats('NOPE')),
@@ -157,6 +177,15 @@ async function run(url, label) {
   chk(`export → ${r.exp.type}, ${r.exp.lines} lines, ${JSON.stringify(r.exp.head)}`, r.exp.type === 'text/csv' && r.exp.lines === 1001 && r.exp.head[0] === 'ID,AU' && /^199999,/.test(r.exp.head[1]));
   chk(`select rows 2…4 × ID,BIG → ${JSON.stringify(r.sel)}; lamina:selection ${JSON.stringify(r.selEv)}`,
     r.sel.from === 2 && r.sel.to === 4 && r.sel.columns.join() === 'ID,BIG' && r.sel.record === 199997 && r.selEv.length >= 1 && r.selEv[r.selEv.length - 1].to === 4);
+  {
+    const s = r.scat, ok = s.rows.length === 3000 && s.rows.slice(0, 2000).every((x) => x[1] === 9.9) && s.rows.every((x, k) => Number(x[0]) === s.records[k]);
+    chk(`sorted by CU (scattered): rows(0, 3000) in ${r.scatMs.toFixed(0)} ms with ${r.scatReads.many} batch read(s), ${r.scatReads.one} single reads; values match their records`,
+      ok && r.scatReads.one === 0 && r.scatReads.many >= 1 && r.scatReads.many <= 6);   // 3 chunks of 1024 + the grid repainting its own screenful
+  }
+  chk(`positionsOf(those records) → 0…2999; select({ record }) → row ${r.selRec.from}, record ${r.selRec.record}`,
+    r.pos.length === 3000 && r.pos.every((p, k) => p === k) && r.selRec.from === 5 && r.selRec.to === 5 && r.selRec.record === r.scat.records[5]);
+  chk(`positionsOf under a filter → ${JSON.stringify(r.posFiltered)} (filtered out, kept, -1, past the end); rejections: ${r.badPos} · ${r.badSelRec}`,
+    r.posFiltered[0] === -1 && r.posFiltered[1] >= 0 && r.posFiltered[2] === -1 && r.posFiltered[3] === -1 && /positionsOf/.test(r.badPos) && /not in the view/.test(r.badSelRec));
   chk(`setColumn hidden → ${r.hid.hidden}; type → ${r.typed.type}; orderColumns → ${r.order.slice(0, 3)}`, r.hid.hidden === true && r.typed.type === 'string' && r.order[0] === 'LITO' && r.order[1] === 'ID');
   chk(`rejections: ${JSON.stringify(r.rej)}`, /NOPE/.test(r.rej.badFilter) && /no column "NOPE"/.test(r.rej.badCol) && /not in the view/.test(r.rej.badRow) && /taken/.test(r.rej.takenCalc) && /binary/.test(r.rej.binary) && /not a lens/.test(r.rej.notLens));
   chk(`open(bytes, { name }) → ${JSON.stringify([r.fromBytes.format, r.fromBytes.rows])}; events ${JSON.stringify(r.ev)}`,

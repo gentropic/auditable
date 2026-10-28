@@ -38,6 +38,7 @@ export function withCalcCursor(source, baseCount, calcs) {
     get skipped() { return source.skipped; },   // live, not the spread's snapshot
     eachRecord: (opts, visit) => source.eachRecord(opts, (disp, fields, l0, l1) => visit(disp, extendRaw(fields, calcs), l0, l1)),
     readByLoc: async (l0, l1) => extendDisp(await source.readByLoc(l0, l1), calcs),
+    ...(source.readByLocs ? { readByLocs: async (l0s, l1s) => (await source.readByLocs(l0s, l1s)).map((f) => extendDisp(f, calcs)) } : {}),
   };
 }
 

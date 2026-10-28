@@ -52,6 +52,27 @@ export function createHostApi(d) {
     return String(raw);
   };
   const recordOf = (vs, r) => (vs.rowHeaderAt ? vs.rowHeaderAt(r) - 1 : r);
+  // file records → their rows in the current view (-1 = filtered out / no such
+  // record). One pass over the view; nothing allocated per file row, so a huge
+  // view costs time, never memory.
+  const positionsOf = (c, records) => {
+    const vs = view(c), n = vs.rowCount(), total = c.baseVs.rowCount();
+    const want = new Map();
+    for (let k = 0; k < records.length; k++) {
+      const x = Number(records[k]);
+      if (!Number.isInteger(x) || x < 0 || x >= total) continue;
+      if (!want.has(x)) want.set(x, []);
+      want.get(x).push(k);
+    }
+    const out = new Array(records.length).fill(-1);
+    if (!vs.rowHeaderAt) { for (const [x, ks] of want) if (x < n) for (const k of ks) out[k] = x; return out; }
+    let left = want.size;
+    for (let r = 0; r < n && left; r++) {
+      const x = vs.rowHeaderAt(r) - 1, ks = want.get(x);
+      if (ks) { for (const k of ks) out[k] = r; want.delete(x); left--; }
+    }
+    return out;
+  };
   const verb = (fn) => async (...a) => fn(...a);
   const chrome = () => ({ title: !document.body.classList.contains('chrome-notitle') });
 
@@ -91,14 +112,27 @@ export function createHostApi(d) {
       const idx = o.columns ? o.columns.map((x) => colIndex(c, x)) : c.schema.map((_, i) => i);
       const a = Math.max(0, start | 0), b = Math.min(n, a + Math.max(0, count | 0));
       const rows = [], records = [];
-      for (let r = a; r < b; r++) {
-        const f = await vs.ensureRow(r);
+      // ask for a chunk of rows TOGETHER: a view that batches (a sorted or filtered
+      // Parquet) reads them in one decode per row group, not one per row
+      for (let r0 = a; r0 < b; r0 += 1024) {
+        const r1 = Math.min(b, r0 + 1024), got = [];
+        for (let r = r0; r < r1; r++) got.push(vs.ensureRow(r));
+        const fs = await Promise.all(got);
         if (d.current() !== c) throw new Error('lamina: the table changed while reading');
-        rows.push(idx.map((i) => value(c, i, f && f[i])));
-        records.push(recordOf(vs, r));
+        for (let r = r0; r < r1; r++) {
+          const f = fs[r - r0];
+          rows.push(idx.map((i) => value(c, i, f && f[i])));
+          records.push(recordOf(vs, r));
+        }
       }
       return { columns: idx.map((i) => c.schema[i].name), rows, records };
     }),
+    // [record, …] → [viewRow | -1, …]: where file records sit in the filtered/sorted view
+    positionsOf: (records) => {
+      const c = table();
+      if (!Array.isArray(records) && !ArrayBuffer.isView(records)) throw new Error('lamina: positionsOf takes an array of record numbers');
+      return positionsOf(c, records);
+    },
     row: verb(async (r) => {
       const c = table(), vs = view(c);
       if (!Number.isInteger(r) || r < 0 || r >= vs.rowCount()) throw new Error(`lamina: row ${r} is not in the view (0…${vs.rowCount() - 1})`);
@@ -136,6 +170,11 @@ export function createHostApi(d) {
     // { from, to, columns? } — view rows (inclusive) and column names (default: the first)
     select: verb(async (o) => {
       const c = table(), n = view(c).rowCount();
+      if (o && o.record != null) {                 // a file record → its row in the current view
+        const p = positionsOf(c, [o.record])[0];
+        if (p < 0) throw new Error(`lamina: record ${o.record} is not in the view`);
+        o = { ...o, from: p, to: p };
+      }
       const from = o.from | 0, to = o.to == null ? from : o.to | 0;
       if (from < 0 || to < from || to >= n) throw new Error(`lamina: rows ${from}…${to} are not in the view (0…${n - 1})`);
       const cols = (o.columns && o.columns.length ? o.columns : [c.schema[c._vis ? c._vis[0] : 0].name]).map((x) => colIndex(c, x));
