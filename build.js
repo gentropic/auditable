@@ -2118,6 +2118,7 @@ if (target === 'lamina') {
     '@gcu/loom': '#loom', '@gcu/lamina': '#lamina', '@gcu/proc': '#proc',
     '@gcu/archive': '#archive', '@gcu/dm': '#dm', '@gcu/expr': '#expr', '@gcu/filterui': '#filterui', '@gcu/sluice': '#sluice', '@gcu/recon': '#recon', '@gcu/units': '#units', '@gcu/sheet': '#sheet', 'fflate': '#fflate', './idb-cache.js': '#idb-cache',
     '@gcu/leadacid': '#leadacid',             // the lead-acid shell shim (feature-detected; dormant on the web)
+    '@gcu/parquet': '#parquet', './parquet-source.js': '#parquet-source', './host-api.js': '#host-api',
   };
   const libs = [
     ['loom',    'ext/loom/index.js'],
@@ -2125,6 +2126,7 @@ if (target === 'lamina') {
     ['proc',    'ext/proc/index.js'],
     ['archive', 'ext/archive/index.js'],          // no Wasm (xz/bzip2 are @gcu/lzma + @gcu/bz2) — fits lamina's CSP (no 'wasm-unsafe-eval')
     ['sheet',   'ext/sheet/index.js'],            // @gcu/sheet — a worksheet as a typed table source (inflates via DecompressionStream: still WASM-free)
+    ['parquet', 'ext/parquet/index.js'],          // @gcu/parquet — vendored hyparquet + WASM-free codecs (snappy/gzip/zstd)
     ['dm',      'ext/dm/index.js'],
     ['expr',    'ext/expr/index.js'],
     ['filterui', 'ext/filterui/index.js'],          // the shared filter-widget drawer
@@ -2140,12 +2142,11 @@ if (target === 'lamina') {
     if (!fs.existsSync(p)) { console.error(`Error: ${rel} not found — build the ext package first.`); process.exit(1); }
     modules.push({ name, source: fs.readFileSync(p, 'utf8').replace(/^\n+/, '').replace(/\n+$/, '') });
   }
-  modules.push({ name: 'idb-cache', source: fs.readFileSync(path.join(lamJsDir, 'idb-cache.js'), 'utf8').trim() });
-
-  // The app: rewrite each `from '<spec>'` to its '#'-form (the import map keys).
-  let appSrc = fs.readFileSync(path.join(lamJsDir, 'app.js'), 'utf8');
-  for (const [from, to] of Object.entries(SPEC)) appSrc = appSrc.split(`from '${from}'`).join(`from '${to}'`);
-  modules.push({ name: 'app', source: appSrc.trim() });
+  // The app and its sibling modules: rewrite each `from '<spec>'` to its '#'-form
+  // (the import map keys). Siblings come first so the app's imports resolve.
+  const rewriteSpecs = (src) => { for (const [from, to] of Object.entries(SPEC)) src = src.split(`from '${from}'`).join(`from '${to}'`); return src.trim(); };
+  for (const sib of ['idb-cache', 'parquet-source', 'host-api']) modules.push({ name: sib, source: rewriteSpecs(fs.readFileSync(path.join(lamJsDir, sib + '.js'), 'utf8')) });
+  modules.push({ name: 'app', source: rewriteSpecs(fs.readFileSync(path.join(lamJsDir, 'app.js'), 'utf8')) });
 
   // Boot: registry → blob URLs → import map (+ the worker bundle URL) → import all.
   const entries = modules.map((m) =>
@@ -2192,7 +2193,8 @@ if (target === 'lamina') {
   // compliant + self-contained ("view source; that's the point"). lamina carries
   // no @gcu/licenses surface.
   const noticeLibs = [['fflate', 'ext/archive/vendor/LICENSE-fflate'], ['fzstd', 'ext/archive/vendor/LICENSE-fzstd'],
-    ['@gcu/bz2 (libbzip2)', 'ext/bz2/LICENSE'], ['@gcu/lzma (liblzma)', 'ext/lzma/LICENSE']];
+    ['@gcu/bz2 (libbzip2)', 'ext/bz2/LICENSE'], ['@gcu/lzma (liblzma)', 'ext/lzma/LICENSE'],
+    ['hyparquet + hyparquet-writer (© Hyperparam, via @gcu/parquet)', 'ext/parquet/vendor/LICENSE-hyparquet']];
   const notices = noticeLibs.map(([n, rel]) => {
     const p = path.join(__dirname, rel);
     return fs.existsSync(p) ? `\n===== ${n} =====\n${fs.readFileSync(p, 'utf8').trim()}\n` : `\n===== ${n} ===== (MIT — license file missing at build)\n`;

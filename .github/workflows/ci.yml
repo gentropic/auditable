@@ -59,5 +59,7 @@ jobs:
         run: npm run test:micro:host
       - name: lamina built smoke — ship artifact + Sealed net gate
         run: node test/lamina-built-smoke.mjs
+      - name: lamina host smoke — Parquet tables + window.lamina (dev tree + the built file)
+        run: npm run test:lamina:host
       - name: condenser layer offsets — every pipeline, pick, section, resolve
         run: npm run test:condenser:offset

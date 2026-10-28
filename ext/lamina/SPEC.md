@@ -160,8 +160,11 @@ artifact in the GCU enterprise-profile sense:
 ## NOT
 
 - Not editable (that's `@gcu/strata`). Not a database / query engine. Not
-  Parquet/Arrow (binary columnar — deferred; would vendor a reader). Not a true
-  external-merge sort yet. `zst`/`bz2` are resident-only (no browser streaming
+  Arrow IPC / Feather. Parquet IS read (2026-10-28, `tools/lamina/js/parquet-source.js`
+  over `@gcu/parquet`), with limits: Snappy / gzip / zstd / uncompressed only (LZ4 and
+  Brotli refused by name — their pure-JS decoders aren't vetted, and the WASM ones
+  would break the posture); flat columns only (a nested struct / list / map column
+  is left out and named in the format facts). Not a true external-merge sort yet. `zst`/`bz2` are resident-only (no browser streaming
   decoder); `xz` is dropped from the shipped tool (WASM — see Security posture).
 
 ## Deferred

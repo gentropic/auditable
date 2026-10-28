@@ -26,6 +26,7 @@
     "test:leadacid": "node test/leadacid-intent-smoke.mjs",
     "test:micro2": "node test/micro-smoke2.mjs",
     "test:micro:host": "node test/micro-host-smoke.mjs",
+    "test:lamina:host": "node test/lamina-host-smoke.mjs",
     "test:micro:all": "npm run test:micro && npm run test:micro2 && npm run test:micro:wfr && npm run test:micro:host",
     "test:micro:wfr": "node test/micro-wfr-smoke.mjs",
     "test:condenser:offset": "node test/condenser-offset.mjs",

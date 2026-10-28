@@ -99,6 +99,7 @@
   <a href="#sealed"><span class="n">14</span>Security: Sealed</a>
   <a href="#install"><span class="n">15</span>Install &amp; offline</a>
   <a href="#ref"><span class="n">A</span>Reference</a>
+  <a href="#api"><span class="n">B</span>Embedding: <code>window.lamina</code></a>
 </nav>
 
 <h2 id="what"><span class="n">1</span>What lamina is</h2>
@@ -107,6 +108,7 @@
 <ul>
   <li><b>Delimited tables</b> — CSV / TSV / TXT / DAT, any size; GSLIB / Geo-EAS and whitespace dumps detected, <code>#</code> comment preambles skipped</li>
   <li><b>Datamine <code>.dm</code></b> — opened directly at any size, decoded on the fly (no conversion), with the same filter / sort / stats as CSV; filters read only the columns they need (strided), which is how a 17-column file filters 30× faster than a naïve decode</li>
+  <li><b>Apache Parquet</b> — opened directly at any size: columns typed from the file itself, rows read by range, and a filter skips every row group whose footer statistics prove it can't match</li>
   <li><b>Archives</b> — zip / tar / gz / zst / bz2: peek inside and window huge compressed entries <i>without unpacking</i></li>
   <li><b>Text</b> → lines · <b>binary</b> → hex — nothing refuses to open</li>
 </ul>
@@ -118,6 +120,7 @@
 <h3>What it opens</h3>
 <p><b>CSV / TSV</b> and any delimited text, at any size — lamina windows the file rather than loading it. <b>Datamine <code>.dm</code></b> block models, read the same way. Plain <b>text</b> as lines. <b>Archives</b> (<code>.zip .tar .gz .zst .bz2</code>) — peek inside and open an entry without extracting.</p>
 <p><b>Excel <code>.xlsx</code></b> — drop a workbook and lamina lists its <b>sheets</b>; pick one and it opens as a table. Columns arrive <b>typed from Excel itself</b> (a column is numeric because the workbook says so, not because a string happened to parse), so filters, statistics and distributions work on it immediately. A workbook is a zip and must be read whole, so unlike a CSV it is bounded by memory — for a very large sheet, export it as CSV and lamina will window it at any size. Opening a sheet this way is usually quicker than starting Excel, and the <a href="#dist">column distributions</a> tell you more than Excel will.</p>
+<p><b>Apache Parquet <code>.parquet</code></b> — the columnar format pandas, Polars, DuckDB and Spark write. lamina reads the schema from the file's footer, so numbers are numbers and text is text with no guessing, then reads only the rows on screen. Scans read only the columns they use, and a filter skips each <b>row group</b> whose minimum and maximum show it holds no match, which on a sorted or spatially ordered file can skip almost all of it. Integer columns read as ordinary numbers; a 64-bit integer column with values beyond what a JavaScript number holds exactly (2<sup>53</sup>, about 9×10<sup>15</sup>) reads as <b>text</b>, so no digit is silently rounded. Two limits: Snappy, gzip, zstd or uncompressed files only (LZ4 and Brotli are refused by name), and flat columns only — a nested struct / list / map column is left out, and the kind badge's facts say which.</p>
 <h3>If a file reads wrong</h3>
 <p>Click the <b>kind badge</b> (top right) or <b>Data → Interpretation…</b> to force the delimiter, header on/off, rows to skip, comment prefix, decimal point vs comma, or the <b>character encoding</b> (UTF-8 · Windows-1252 · Latin-1 · UTF-16). A <code>⚠ encoding?</code> hint appears in the footer when bytes don't decode cleanly as UTF-8 — mojibake never passes silently.</p>
 
@@ -212,8 +215,43 @@
 <h3>The filter language</h3>
 <p>Comparisons <code>= != &gt; &gt;= &lt; &lt;=</code>, boolean <code>and or not</code> (C-style <code>== &amp;&amp;</code> also work), <code>between a and b</code>, <code>in (…)</code>, <code>contains</code> / <code>like</code> / <code>matches</code>, <code>is blank</code> / <code>is filled</code>, functions <code>round int abs sqrt log exp pow min max clamp bin if coalesce ifnum isnum isnan</code>. Bare words are columns, quoted words are text; bracket awkward names: <code>["Cu (ppm)"] &gt; 30</code>. The same expressions define calculated columns and the grade–tonnage factors.</p>
 
+<h2 id="api"><span class="n">B</span>Embedding: <code>window.lamina</code></h2>
+<p>A page that embeds lamina (in an <code>&lt;iframe&gt;</code> on the same origin) drives it through <code>window.lamina</code> — a small, versioned host API. Its promises:</p>
+<ul>
+  <li><b>Versioned:</b> <code>lamina.version === 1</code>; changes within version 1 only add.</li>
+  <li><b>Plain data out:</b> numbers, strings, arrays, objects — never a live internal object.</li>
+  <li><b>Columns by name,</b> case-insensitive, like the filter language.</li>
+  <li><b>Actions return promises</b> that reject with the reason; getters are synchronous.</li>
+  <li><b>One table at a time:</b> every verb acts on the open table.</li>
+</ul>
+<p><code>window._lamina</code> is lamina's test surface: it reaches into internals that can be renamed at any commit. Build on <code>window.lamina</code>.</p>
+<pre><code>iframe.addEventListener('lamina:ready', () =&gt; { const lamina = iframe.contentWindow.lamina; … });   // fired on your &lt;iframe&gt;
+// or: await iframe.contentWindow.lamina.ready</code></pre>
+<table>
+  <tr><th>Call</th><th>Does</th></tr>
+  <tr><td><code>open(file, { name })</code></td><td>Opens a File, Blob, FileSystemFileHandle or bytes as a dropped file is opened (CSV/TSV, <code>.dm</code>, Parquet, <code>.xlsx</code>, archives). Resolves to <code>info()</code>; rejects when the file isn't a table, or when it holds several (a multi-sheet workbook, an archive) and lamina is showing its picker.</td></tr>
+  <tr><td><code>info()</code></td><td><code>null</code>, or <code>{ name, format, bytes, rows, totalRows, columns, filter, sort }</code>. <code>rows</code> counts the current view; <code>format</code> is <code>csv tsv dm parquet xlsx text</code>.</td></tr>
+  <tr><td><code>columns()</code></td><td><code>[{ name, type, hidden, format, width, calc?, expr? }]</code> in the file's order; <code>type</code> is <code>number</code> or <code>string</code>.</td></tr>
+  <tr><td><code>setColumn(name, { hidden, type, format })</code></td><td>Hide or show, read as number or text, number format (as a lens writes it: <code>{ mode: 'fixed' | 'sci' | 'group', digits }</code>).</td></tr>
+  <tr><td><code>orderColumns(names)</code></td><td>Puts these columns first, in this order; resolves to the whole display order.</td></tr>
+  <tr><td><code>rows(start, count, { columns })</code></td><td>Rows of the current view (filtered and sorted): <code>{ columns, rows: [[…]], records }</code>. Number columns come back as numbers, blanks as <code>null</code>; <code>records</code> gives each row's record number in the file (0-based).</td></tr>
+  <tr><td><code>row(i)</code></td><td>View row <code>i</code> as <code>{ column: value }</code>.</td></tr>
+  <tr><td><code>filter(expr)</code> · <code>clearFilter()</code></td><td>The <a href="#ref">filter language</a>. Resolves to <code>{ matched, total }</code>; a bad expression rejects with the same message the filter box shows.</td></tr>
+  <tr><td><code>sort([{ column, desc }])</code></td><td>Most significant key first; <code>[]</code> or <code>null</code> clears.</td></tr>
+  <tr><td><code>goto(i)</code> · <code>select({ from, to, columns })</code> · <code>selection()</code></td><td>Bring a view row into sight; select a block of rows and columns; read the selection as <code>{ from, to, columns, record }</code> or <code>null</code>.</td></tr>
+  <tr><td><code>addCalc(name, expr)</code> · <code>removeCalc(name)</code></td><td>Calculated columns (never written to the file).</td></tr>
+  <tr><td><code>lens()</code> · <code>applyLens(lens)</code></td><td>The whole view as data — the <a href="#lens"><code>.lamina</code> lens</a> object. <code>applyLens</code> resolves to <code>{ skipped }</code>, naming whatever didn't match this file.</td></tr>
+  <tr><td><code>stats(column)</code></td><td>Count, blanks, min/max/mean/std, quantiles and histogram (or the top values of a text column), over the filtered rows when a filter is on.</td></tr>
+  <tr><td><code>groupBy({ by, values, weight })</code></td><td><code>{ by, groups: [{ key, count, values: { column: { n, mean, std, min, max, sum, wmean } } }], total, truncated }</code>.</td></tr>
+  <tr><td><code>gradeTonnage({ by, grades, volume, density, proportion, densityUnit })</code></td><td>Tonnes and tonnage-weighted grade per group. <code>volume</code>, <code>density</code> and <code>proportion</code> are expressions (a column, a constant, <code>dx * dy * dz</code>); <code>densityUnit</code> declares the density's unit.</td></tr>
+  <tr><td><code>export({ format, columns, allRows, header, to })</code></td><td>The current view (or <code>allRows</code>) as CSV or TSV: a Blob, or — with <code>to</code>, a WritableStream — streamed, resolving to <code>{ rows }</code>. Use <code>to</code> for big extracts.</td></tr>
+  <tr><td><code>chrome()</code> · <code>setChrome({ title })</code></td><td>Show or hide lamina's title. <code>lamina.html?embed=1</code> hides it from the first paint.</td></tr>
+</table>
+<p><b>Events</b> (on lamina's <code>window</code>): <code>lamina:ready</code> (also on your <code>&lt;iframe&gt;</code> element), <code>lamina:opened</code> (detail: <code>info()</code>), <code>lamina:open-failed</code> <code>{ name, reason, detail }</code>, <code>lamina:selection</code> (detail: <code>selection()</code>, once per change).</p>
+<p class="tip"><b>Note —</b> In an embed, lamina is only as sealed as the page around it: your page can read everything lamina holds and has network access of its own. A Sealed claim belongs to <code>lamina.html</code> opened on its own.</p>
+
 <footer>
-  <b>lamina</b> — part of the Auditable project, <a href="https://gentropic.org" target="_blank" rel="noopener">Geoscientific Chaos Union</a>. Engine: <code>@gcu/lamina</code>; grid: <code>@gcu/loom</code>; expressions: <code>@gcu/expr</code>; archives: <code>fflate · fzstd · seek-bzip</code> (MIT). MIT.<br>
+  <b>lamina</b> — part of the Auditable project, <a href="https://gentropic.org" target="_blank" rel="noopener">Geoscientific Chaos Union</a>. Engine: <code>@gcu/lamina</code>; grid: <code>@gcu/loom</code>; expressions: <code>@gcu/expr</code>; archives: <code>fflate · fzstd · seek-bzip</code>; Parquet: <code>hyparquet</code> via <code>@gcu/parquet</code> (MIT). MIT.<br>
   Screenshots are generated from the app by an automated harness, so they track the current build. See the in-app <b>Help</b> menu for the terse quick reference.
 </footer>
 

@@ -87,12 +87,15 @@ function grower() {
  * works on any backing (CSV byte-blocks, a windowed .dm, …) unchanged.
  * @param {object} opts  { predicate, dataStart?, onProgress?, max? }
  */
-export async function scanFilter(source, { predicate, dataStart = 0, onProgress, max = 16 * 1024 * 1024, signal, cols = null } = {}) {
+export async function scanFilter(source, { predicate, dataStart = 0, onProgress, max = 16 * 1024 * 1024, signal, cols = null, prune = null } = {}) {
   // `cols` = the predicate's referenced column indices — an optional projection
   // hint. A backing that can read one column cheaply (a .dm, by striding) decodes
   // only those; a text backing (CSV) ignores it and decodes the whole row anyway.
+  // `prune(ranges)` = a chunk push-down hint: a backing with per-chunk column stats
+  // (a Parquet row group's footer min/max) skips a chunk it returns false for.
+  // It must be conservative — false only when NO row in the chunk can match.
   const offsets = grower(), lengths = grower(), nums = grower();
-  await source.eachRecord({ dataStart, onProgress, signal, cols }, (disp, fields, loc0, loc1) => {
+  await source.eachRecord({ dataStart, onProgress, signal, cols, prune }, (disp, fields, loc0, loc1) => {
     if (predicate(fields)) {
       offsets.push(loc0); lengths.push(loc1); nums.push(disp);
       if (offsets.n > max) throw new Error('too many matches — refine the filter');

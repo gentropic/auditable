@@ -461,6 +461,8 @@
   }
   #meta button.meta-act { margin-left: .5em; padding: 0 .55em; font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 3px; cursor: pointer; opacity: .85; }
   #meta button.meta-act:hover { opacity: 1; }
+  /* host chrome: ?embed=1 (or lamina.setChrome) hides the title */
+  body.chrome-notitle #toolbar > .title { display: none !important; }
 </style>
 <!-- Standalone @gcu/* resolution (a single-file build inlines these later). -->
 <!-- dev bench: load with ?bench to run shell-style on the desktop (mocks /native). Stripped at build. -->
@@ -478,12 +480,14 @@
   "@gcu/recon":   "../../ext/recon/index.js",
   "@gcu/units":   "../../ext/units/index.js",
   "@gcu/sheet":   "../../ext/sheet/index.js",
+  "@gcu/parquet": "../../ext/parquet/index.js",
   "@gcu/leadacid": "../../ext/leadacid/index.js",
   "fflate":       "../../ext/archive/vendor/fflate.module.mjs"
 } }
 </script>
 </head>
 <body>
+<script>(function () { try { if (new URLSearchParams(location.search).get('embed') === '1') document.body.classList.add('embed', 'chrome-notitle'); } catch (e) {} })();</script>
   <div id="toolbar">
     <span class="title">lamina</span>
     <button class="mb" id="mFile">File</button>

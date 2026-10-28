@@ -10,7 +10,7 @@
 import { createGrid, PENDING } from '@gcu/loom';
 import { shell } from '@gcu/leadacid';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { detectKind, buildMemorySource, buildFileSource, buildStreamSource, buildSourceFromIndex, indexOf, fileKey, createRecordViewSource, scanFilter, createResultView, scanSortKeys, scanColumnStats, scanAllColumnStats, scanGroupBy, scanGradeTonnage, scanDataQuality, parseNum, createLaminaProvider, LOADING, withCalcCursor, withCalcView } from '@gcu/lamina';
-import { compile, compileBool, validate, deps, complete, tokenize, parse as exprParse, quoteIdent } from '@gcu/expr';   // SQL-WHERE-flavored filter + calc language; complete() drives autocomplete, tokenize() the highlight overlay
+import { compile, compileBool, validate, deps, complete, tokenize, parse as exprParse, quoteIdent, canMatch } from '@gcu/expr';   // SQL-WHERE-flavored filter + calc language; complete() drives autocomplete, tokenize() the highlight overlay
 import { gradeTonnage } from '@gcu/sluice';   // streaming accumulators — the grade-tonnage cutoff curve (one accumulator per grade field, driven from lamina's record cursor)
 import { convert as unitConvert } from '@gcu/units';   // grade/density unit declarations — the block-model report
 import { geometryAccumulator, inferGeometry } from '@gcu/recon';   // grid-geometry inference (harvested from BMA) — the grid summary
@@ -21,6 +21,8 @@ import { census as xlsxCensus, openSheet as xlsxOpenSheet } from '@gcu/sheet';  
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '@gcu/dm';
 import { Unzip, UnzipInflate } from 'fflate';
 import { idbCache } from './idb-cache.js';
+import { looksParquet, fileBuffer, openParquetTable, createParquetSource } from './parquet-source.js';
+import { createHostApi } from './host-api.js';
 
 // Below this COMPRESSED size we decompress the archive whole (resident — best UX:
 // true random access + cacheable index). Above it we WINDOW the entry through the
@@ -61,6 +63,8 @@ function setTheme(t) { theme = t; try { localStorage.setItem('lamina.theme', t);
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (theme === 'auto') applyTheme(); });
 let lastScan = null;            // 'worker'|'inline'|'cache'|'resident'|'stream' — last index-scan path (automation hook)
 let current = null;             // { source, d, dataStart, baseVs, label, totalBytes } — the open file (for filtering)
+let _host = null;               // the host API (window.lamina) — created at the end of the module
+let _hostNote = null;           // the last note panel's text: why an open showed a note instead of a table
 
 // ── off-thread index scan (a @gcu/proc module-call imports the lamina bundle and
 // runs scanFileToIndex over File.stream(); the File crosses by reference, the
@@ -94,6 +98,7 @@ function fmtBytes(n) {
 
 // The non-grid panel: binary handoff, archive guards, empty-archive notes.
 function showNote(name, badge, title, msg, meta) {
+  _hostNote = `${title}: ${msg}`; if (_host) _host.fire('open-failed', { name, reason: title, detail: msg });
   if (grid) { grid.destroy(); grid = null; }
   current = null; $('#filter').value = ''; syncFilterClear();   // nothing filterable on a note panel
   $('#fileName').textContent = name;
@@ -123,6 +128,7 @@ function mount(name, d, src, totalBytes) {
   recompute();
   refreshGutter();
   if (_pendingLens || _pendingLensView) Promise.resolve().then(applyPendingLens);   // after openFile sets current.file
+  tableOpened();
 }
 
 // Derive the active view from base + filter + sort and render it. Filter and sort
@@ -184,7 +190,7 @@ function mountView(vs, info = {}, keepVScroll = false) {
   $('#binary').style.display = 'none';
   $('#empty').style.display = 'none';
   const badge = $('#kindBadge'); badge.style.display = '';
-  badge.textContent = c.d.dm ? 'dm' : c.d.xlsx ? `xlsx · ${c.d.xlsx}` : c.d.kind === 'delimited' ? `CSV · ${c.d.delimiter === '\t' ? 'TSV' : 'delimited'}` : c.d.kind;
+  badge.textContent = c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.xlsx ? `xlsx · ${c.d.xlsx}` : c.d.kind === 'delimited' ? `CSV · ${c.d.delimiter === '\t' ? 'TSV' : 'delimited'}` : c.d.kind;
   badge.title = detectedFacts(c.d).map(([k, v]) => `${k}: ${v}`).join(' · ') + ' — click to change how the file is read';
 
   const base = createLaminaProvider(vs, { PENDING });
@@ -250,7 +256,7 @@ function mountView(vs, info = {}, keepVScroll = false) {
   if (info.sorted && c.sort) rows += ` · sorted by ${c.sort.map((s) => c.schema[s.col].name + (s.dir === 'desc' ? ' ↓' : ' ↑')).join(', ')}`;
   const cols = c.hidden.size ? `${vis.length} of ${total} cols` : `${vis.length} cols`;
   const skipped = c.d.skip ? ` · ${c.d.skip} ${c.d.comment ? c.d.comment + '-' : ''}comment lines skipped` : '';
-  const kindLabel = c.d.dm ? 'dm' : c.d.kind;
+  const kindLabel = c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.kind;
   const resident = residentEstimate(c);                  // the never-resident superpower, made visible
   const resTerm = (resident != null && resident < c.totalBytes * 0.6) ? ` · ~${fmtBytes(resident)} resident` : '';
   c._meta = `${rows} × ${cols} · ${fmtBytes(c.totalBytes)}${resTerm} · ${kindLabel}${skipped}`;   // remembered so a copy-flash can restore it
@@ -275,7 +281,7 @@ function setColType(uc, type) {
   current.typeOverrides = current.typeOverrides || {};
   current.typeOverrides[current.schema[uc].name] = type;   // by name → round-trips in the lens
   if (current._statsCache) current._statsCache.clear();    // type change → stats meaning changed
-  recompute();
+  return recompute();
 }
 
 // Cell color-scale (heatmap). Perceptual, colour-blind-safe ramps (switchboard CVD
@@ -517,6 +523,7 @@ let _selTimer = null;
 const SEL_STATS_CAP = 50000;
 function onSelectionChanged(sel) {
   if (_recPanelOpen && sel) renderRecordCard(sel.r0);
+  if (_host) hostSelectionChanged();
   clearTimeout(_selTimer);
   _selTimer = setTimeout(() => updateSelStats(sel), 90);
 }
@@ -851,11 +858,11 @@ async function applyFilter(str) {
   try { predicate = compileBool(str, cols, { decimal: c.d.decimal }); } catch (e) { return filterErr(e); }
   $('#filter').classList.remove('err');
   $('#meta').textContent = 'filtering…';
-  // on a .dm, PROJECT the scan to the predicate's referenced columns (strided
-  // decode — read only those fields per record, not all N). Skip when calc columns
+  // on a .dm or a Parquet, PROJECT the scan to the predicate's referenced columns
+  // (.dm: strided decode; Parquet: only those column chunks). Skip when calc columns
   // are in play (their formulas may reach any column → full decode is required).
   let projCols = null;
-  if (c.dm && (!c.calcs || !c.calcs.length)) {
+  if ((c.dm || c.parquet) && (!c.calcs || !c.calcs.length)) {
     try {
       const idxOf = new Map(c.d.schema.map((s, i) => [String(s.name).toLowerCase(), i]));
       const need = new Set();
@@ -867,6 +874,8 @@ async function applyFilter(str) {
   try {
     c.filterResult = await scanFilter(c.source, {
       predicate, dataStart: c.dataStart, signal: ac.signal, cols: projCols,
+      // a Parquet skips whole row groups whose footer min/max prove no match
+      prune: c.parquet ? (ranges) => canMatch(str, ranges) : null,
       onProgress: (b, n) => { $('#meta').textContent = `filtering… ${n ? Math.round((100 * b) / n) : 0}% · Esc to cancel`; },
     });
     const r = recompute(); refreshGutterFiltered(); return r;   // overlay the matched-rows distribution on the gutters
@@ -882,6 +891,7 @@ function filterErr(e) { $('#filter').classList.add('err'); $('#meta').textConten
 function open(name, bytes, force) {
   if (!force) {
     const lens = sniffLens(bytes); if (lens) return applyLens(lens);   // a .lamina lens, not data
+    if (looksParquet(bytes.subarray(0, 4), bytes.subarray(Math.max(0, bytes.length - 4)))) return openParquet(name, bytes, bytes.length);
     const dmFmt = detectDM(bytes.subarray(0, Math.min(4096, bytes.length)));   // Datamine .dm?
     if (dmFmt) {
       try {
@@ -904,6 +914,7 @@ function open(name, bytes, force) {
 // Render in-memory bytes (a small file, or a decompressed archive entry) through
 // the RESIDENT memory source — no streaming, no index cache.
 function openInner(label, bytes) {
+  if (looksParquet(bytes.subarray(0, 4), bytes.subarray(Math.max(0, bytes.length - 4)))) return openParquet(label, bytes, bytes.length);
   const d = detectKind(bytes.subarray(0, 65536), { name: label });
   if (d.kind === 'binary') return showBinary(label, bytes.length);
   lastScan = 'resident';
@@ -1081,6 +1092,7 @@ function mountSheet(name, tbl, totalBytes = 0) {
   recompute();
   refreshGutter();
   if (_pendingLens || _pendingLensView) Promise.resolve().then(applyPendingLens);
+  tableOpened();
 }
 // .xlsx / .xlsm → pick a sheet (if there's more than one), then mount it.
 async function openXlsx(file) {
@@ -1120,6 +1132,33 @@ function mountDm(name, reader, h, totalBytes) {
   recompute();
   refreshGutter();
   if (_pendingLens || _pendingLensView) Promise.resolve().then(applyPendingLens);
+  tableOpened();
+}
+
+// Apache Parquet (tools/lamina/js/parquet-source.js): the footer → a typed schema,
+// a windowed browse view + a record cursor sharing one block cache. Any size.
+// `buf` is resident bytes or a File-backed range reader (fileBuffer).
+async function openParquet(name, buf, totalBytes) {
+  $('#fileName').textContent = name; $('#empty').style.display = 'none';
+  $('#meta').textContent = 'reading the Parquet footer…';
+  let t;
+  try { t = await openParquetTable(buf); }
+  catch (e) { return showNote(name, 'parquet', "can't show this Parquet file", e.message || String(e), `${fmtBytes(totalBytes)} · parquet`); }
+  mountParquet(name, buf, t, totalBytes);
+}
+function mountParquet(name, buf, t, totalBytes) {
+  if (grid) { grid.destroy(); grid = null; }
+  const { view: baseVs, cursor: source } = createParquetSource(buf, t);
+  const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema: t.schema, dataStart: 0, decimal: '.', parquet: t.facts };
+  current = { source, d, schema: t.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, parquet: true };
+  _recPinned = null; _recRow = 0;
+  $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
+  lastScan = 'parquet';
+  initCalcState();
+  recompute();
+  refreshGutter();
+  if (_pendingLens || _pendingLensView) Promise.resolve().then(applyPendingLens);
+  tableOpened();
 }
 
 // ── calculated columns (read-time derived columns; @gcu/expr) ──────────────────
@@ -1313,6 +1352,7 @@ async function applyLensView(lens) {
   const where = lens.source && lens.source !== c.label ? ` (from ${lens.source})` : '';
   $('#meta').textContent = skip.length ? `lens applied${where} — skipped: ${skip.join('; ')}` : `lens applied${where}`;
   if (!skip.length) setTimeout(() => { if (current === c && c._meta) $('#meta').textContent = c._meta; }, 3500);
+  return skip;
 }
 
 // Mount-time hook: a lens waiting for data, or one mid-apply across a re-read.
@@ -1954,6 +1994,12 @@ async function openFile(file, force) {
       catch (e) { return showNote(file.name, fmt, `couldn't read this ${fmt}`, e.message || String(e), `${fmtBytes(file.size)} · ${fmt}`); }
     }
 
+    // Apache Parquet — PAR1 at both ends. The footer is the schema; rows are read
+    // by range (File.slice), never the whole file.
+    if (file.size >= 12 && looksParquet(head, new Uint8Array(await file.slice(file.size - 4).arrayBuffer()))) {
+      return openParquet(file.name, fileBuffer(file), file.size);
+    }
+
     // Datamine .dm (binary table) — sniff the DD page, then window it: a record
     // cursor + browse view read only the records they touch via File.slice. No
     // resident decode at any size; filter/sort/stats run the same as CSV.
@@ -2043,6 +2089,7 @@ function delimName(ch) {
 function detectedFacts(d) {
   if (!d) return [];
   if (d.dm) return [['format', 'Datamine .dm'], ['columns', String((d.schema || []).length)]];
+  if (d.parquet) return d.parquet;
   if (d.kind === 'binary') return [['format', 'binary']];
   if (d.kind === 'text') { const f = [['format', 'plain text']]; if (d.skip) f.push(['preamble', `${d.skip} line${d.skip > 1 ? 's' : ''}`]); return f; }
   const f = [];
@@ -2107,7 +2154,7 @@ $('#goto').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.targe
 // ── file pick ──
 // Type hints for the OS dialog (lamina still opens anything — All Files stays).
 const PICK_TYPES = [
-  { description: 'Tables', accept: { 'text/csv': ['.csv', '.tsv', '.tab', '.txt'], 'application/octet-stream': ['.dm', '.lam', '.lamina'] } },
+  { description: 'Tables', accept: { 'text/csv': ['.csv', '.tsv', '.tab', '.txt'], 'application/octet-stream': ['.dm', '.parquet', '.lam', '.lamina'] } },
   { description: 'Archives', accept: { 'application/octet-stream': ['.zip', '.tar', '.gz', '.zst', '.bz2', '.xz'] } },
 ];
 // ── in-grid find (Ctrl+F) ───────────────────────────────────────────────────────
@@ -2332,7 +2379,7 @@ $('#mHelp').onclick = () => menuAt($('#mHelp'), [
 const HELP = {
   start: ['Getting started',
     `<b>lamina</b> opens any file — even a multi-gigabyte one — and lets you scroll, filter, and sort it. It never loads the whole file, so size isn't the problem.<br><br>`
-    + `<b>Open</b> — File → Open (<code>Ctrl+O</code>) or drag a file in. CSV/TSV → table · Datamine <code>.dm</code> → table · text → lines · binary → hex · <code>.zip</code>/<code>.tar</code>/<code>.gz</code>/<code>.zst</code>/<code>.bz2</code>/<code>.xz</code> → peek inside. <b>No file handy?</b> — the empty screen offers <i>▸ open a sample block model</i> (120,000 rows, generated locally — nothing is downloaded).<br><br>`
+    + `<b>Open</b> — File → Open (<code>Ctrl+O</code>) or drag a file in. CSV/TSV → table · Datamine <code>.dm</code> · Apache <code>.parquet</code> → table · text → lines · binary → hex · <code>.zip</code>/<code>.tar</code>/<code>.gz</code>/<code>.zst</code>/<code>.bz2</code>/<code>.xz</code> → peek inside. <b>No file handy?</b> — the empty screen offers <i>▸ open a sample block model</i> (120,000 rows, generated locally — nothing is downloaded).<br><br>`
     + `<b>If a file reads wrong</b> — click the <b>kind badge</b> (top-right) or <b>Data → Interpretation</b> to force the delimiter, header on/off, skip comment lines, switch the decimal point/comma, or pick the <b>character encoding</b> (UTF-8 · Windows-1252 · Latin-1 · UTF-16). A <code>⚠ encoding?</code> hint appears in the footer if bytes don't decode as UTF-8.<br><br>`
     + `<b>Column distributions</b> — each header shows a mini distribution + null-rate bar (histogram for numbers, colored top-values bar for categories; <code>≈</code> = sampled, <code>log</code> = auto log-scaled). It's interactive: <b>hover</b> for the value/category, <b>tap</b> to filter, <b>double-click</b> for full Statistics, <b>drag</b> a range to filter. Toggle under <b>View → Column distributions</b>.<br><br>`
     + `<b>Understand & check the data</b> — <b>Σ stats</b> (toolbar) summarizes every column at once; <b>Tools → Group by…</b> aggregates by domain (with weighting); <b>Tools → Grade–tonnage…</b> reports tonnes · grade · metal by domain <i>and</i> the cutoff curves; <b>Tools → Data quality…</b> flags silent problems (leading-zero codes, missing-value sentinels, junk in numeric columns). See <i>Analysis &amp; quality</i>.<br><br>`
@@ -2370,7 +2417,7 @@ const HELP = {
     + `<b>row # box</b> — jump to a row<br>Selected cells <b>copy</b> as TSV (Ctrl+C).`],
   about: ['About lamina',
     `<b>lamina</b> — open any file, however large, and scroll, filter, sort, derive, summarize, and quality-check it. Windowed, read-only, offline.<br><br>`
-    + `Delimited → grid, text → lines, binary → hex. Opens <b>Datamine .dm</b> tables directly — at any size, decoded on the fly (no conversion), with the same filter / sort / stats as CSV. Reads inside zip / tar / gz / zst / bz2 / xz, and windows huge compressed entries without unpacking. Detects GSLIB / Geo-EAS + whitespace dumps and skips <code>#</code> comment preambles. <b>Grade–tonnage</b> (by domain + cutoff curves) runs windowed on any size.<br><br>`
+    + `Delimited → grid, text → lines, binary → hex. Opens <b>Datamine .dm</b> and <b>Apache Parquet</b> tables directly — at any size, decoded on the fly (no conversion), with the same filter / sort / stats as CSV. Reads inside zip / tar / gz / zst / bz2 / xz, and windows huge compressed entries without unpacking. Detects GSLIB / Geo-EAS + whitespace dumps and skips <code>#</code> comment preambles. <b>Grade–tonnage</b> (by domain + cutoff curves) runs windowed on any size.<br><br>`
     + `Part of the Geoscientific Chaos Union — <code>gentropic.org</code>.<br><br>`
     + `<span style="color:var(--dim)">MIT. Bundles <code>fflate · fzstd · seek-bzip</code> (all MIT) for reading archives — full notices in this file's source.</span><br>`
     + `<span style="color:var(--dim)">build <code>${__LAMINA_BUILD__}</code></span>`],
@@ -3786,6 +3833,84 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') { $('#help').classList.remove('show'); closeCalcEditor(); closeCalcManager(); closeExportDialog(); }
 });
 
+// ── the host API (window.lamina — js/host-api.js) ─────────────────────────────
+// What it needs from the app, as functions the UI itself calls.
+async function hostOpen(input, { name } = {}) {
+  _hostNote = null;
+  const before = current;
+  if (input instanceof ArrayBuffer) input = new Uint8Array(input);
+  if (input instanceof Uint8Array) await open(name || 'data', input);
+  else if (input && typeof input.getFile === 'function') await openFile(await input.getFile());   // a FileSystemFileHandle
+  else if (input && typeof input.slice === 'function' && typeof input.size === 'number') {        // a File / Blob (any realm)
+    await openFile(input.name ? input : new File([input], name || 'data'));
+  } else throw new Error('lamina: open() takes a File, Blob, FileSystemFileHandle or bytes');
+  if (_hostNote) throw new Error(`lamina: ${_hostNote}`);
+  if ($('#picker').classList.contains('show')) throw new Error('lamina: this file holds several tables — lamina is showing its picker');
+  if (!current || current === before) throw new Error('lamina: nothing opened (a .lamina lens? use applyLens)');
+}
+function tableOpened() {
+  if (!_host) return;
+  const c = current;
+  queueMicrotask(() => { if (current === c) _host.fire('opened', _host.info()); });
+}
+function hostSelection() {
+  const c = current; if (!c || !grid) return null;
+  const s = grid.getSelection(); if (!s) return null;
+  const vs = c.view || c.baseVs;
+  const r0 = Math.min(s.r0, s.r1), r1 = Math.max(s.r0, s.r1), c0 = Math.min(s.c0, s.c1), c1 = Math.max(s.c0, s.c1);
+  const cols = []; for (let dc = c0; dc <= c1; dc++) { const uc = c._vis ? c._vis[dc] : dc; if (uc != null && c.schema[uc]) cols.push(c.schema[uc].name); }
+  return { from: r0, to: r1, columns: cols, record: vs.rowHeaderAt ? vs.rowHeaderAt(r0) - 1 : r0 };
+}
+let _selQueued = false;
+function hostSelectionChanged() {
+  if (_selQueued) return;
+  _selQueued = true;
+  queueMicrotask(() => { _selQueued = false; _host.fire('selection', hostSelection()); });
+}
+function hostGradeTonnage({ group, grades, volume, density, proportion, densityUnit }) {
+  const c = current;
+  const mk = (label, s) => {
+    if (!String(s || '').trim()) return { fn: () => 1 };
+    const v = validate(String(s), c.schema);
+    if (!v.ok) throw new Error(`lamina: ${label}: ${friendlyError(v.errors, c.schema, String(s))}`);
+    return { fn: compile(String(s), c.schema, { decimal: c.d.decimal }) };
+  };
+  const vol = mk('volume', volume), prop = mk('proportion', proportion);
+  let dens = mk('density', density);
+  const dScale = unitConvert(1, densityUnit || 't/m3', 't/m3');
+  if (dScale !== 1) { const f0 = dens.fn; dens = { fn: (fields) => f0(fields) * dScale }; }
+  return scanGradeTonnage(c.source, { groupCol: group, gradeCols: grades, volume: vol, density: dens, proportion: prop, dataStart: c.dataStart, decimal: c.d.decimal, rows: c.filterResult ? c.filterResult.nums : null });
+}
+_host = createHostApi({
+  current: () => current,
+  parseNum,
+  open: hostOpen,
+  filterText: () => $('#filter').value,
+  setColType, setColFormat, hideColumn, showColumn,
+  settle: () => Promise.resolve(),
+  setColOrder: (idx) => { current.colOrder = idx; rerender(); },
+  displayOrder: () => pinnedFirstOrder(current),
+  applyFilter: async (s) => { $('#filter').value = s; syncFilterClear(); await applyFilter(s); },
+  checkExpr: (s, cols) => { const v = validate(String(s), cols); return v.ok ? null : friendlyError(v.errors, cols, String(s)); },
+  filterError: () => ($('#filter').classList.contains('err') ? $('#meta').textContent.replace(/^filter: /, '') : null),
+  setSort: (keys) => { current.sort = keys; return recompute(); },
+  gotoRow,
+  selection: hostSelection,
+  select: (from, to, cols) => {
+    const c = current, dcs = cols.map((uc) => c._vis.indexOf(uc));
+    if (dcs.some((x) => x < 0)) throw new Error('lamina: a hidden column cannot be selected');
+    grid.setSelection({ r0: from, r1: to, c0: Math.min(...dcs), c1: Math.max(...dcs) });
+    grid.revealCell(from, Math.min(...dcs));
+  },
+  addCalc, removeCalc, buildLens,
+  applyLens: async (lens) => applyLens(lens),
+  columnStats: (uc, o) => laminaColumnStats(uc, o),
+  groupBy: (g, vs, w) => scanGroupBy(current.source, { groupCol: g, valueCols: vs, weightCol: w, dataStart: current.dataStart, decimal: current.d.decimal, rows: current.filterResult ? current.filterResult.nums : null }),
+  gradeTonnage: hostGradeTonnage,
+  runExport, exportToString,
+});
+window.lamina = _host.api;
+
 window._lamina = { shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
@@ -3857,3 +3982,6 @@ if (shell.present) {
     } catch (e) { $('#meta').textContent = `could not open ${item.name || 'the shared file'}: ${e.message || e}`; }
   }).catch(() => { /* no intake plugin in this build */ });
 }
+
+// the host API is ready once everything above has run (window.lamina, lamina:ready)
+_host.announce();

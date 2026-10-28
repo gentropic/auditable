@@ -37,7 +37,9 @@
   "third_party": [
     { "name": "fflate", "license": "MIT", "copyright": "© Arjun Barrett", "use": "zip/gz decode (via @gcu/archive)" },
     { "name": "fzstd", "license": "MIT", "copyright": "© Arjun Barrett", "use": "zstd decode" },
-    { "name": "seek-bzip", "license": "MIT", "copyright": "© C. Scott Ananian", "use": "bzip2 decode" }
+    { "name": "seek-bzip", "license": "MIT", "copyright": "© C. Scott Ananian", "use": "bzip2 decode" },
+    { "name": "hyparquet", "license": "MIT", "copyright": "© Hyperparam", "use": "Apache Parquet read (via @gcu/parquet)" },
+    { "name": "hyparquet-writer", "license": "MIT", "copyright": "© Hyperparam", "use": "bundled with @gcu/parquet (lamina reads only)" }
   ],
   "source": "https://github.com/gentropic/auditable (ext/lamina + tools/lamina)",
   "license": "MIT"
