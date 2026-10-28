@@ -13,6 +13,7 @@ import { chromium } from 'playwright';
 import http from 'http';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
+import { writeParquet } from '../ext/parquet/index.js';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript' };
 const server = http.createServer(async (req, res) => {
   // a bare HOST page (micro's own CSP forbids frames, so it can't host itself)
@@ -699,7 +700,29 @@ async function api2Checks(url, label) {
   chk(`audit: two layers filtered at once both finish (${JSON.stringify(r.both)})`, r.both[0] === 5 && r.both[1] === 2);
   chk(`audit: a FAILED re-read keeps the original layer and renames nothing (${JSON.stringify(r.failKeep.after)})`,
     r.failKeep.still && JSON.stringify(r.failKeep.before) === JSON.stringify(r.failKeep.after));
+  // ── a pandas-shaped Parquet: INT64 coordinates and an INT64 index column. hyparquet
+  // decodes INT64 as BigInt and micro's reads did `+v` (which throws on a BigInt), so
+  // this model failed to open; @gcu/parquet now converts at the boundary
+  const q = await p.evaluate(async (bytes) => {
+    const m = window.micro, out = {};
+    try {
+      const id = await m.open(new File([new Uint8Array(bytes)], 'int64.parquet'));
+      await m.setColorBy(id, '_block');
+      await m.filter(id, '_block > 20');
+      let drawn = -1;
+      for (let t = 0; t < 80; t++) { drawn = window._micro.renderer.layerElementCount(id); if (drawn === 3) break; await new Promise((res) => setTimeout(res, 25)); }
+      out.ok = { count: m.layer(id).count, colorBy: m.layer(id).colorBy, drawn, row: m.row ? (await m.row(id, 21))._block : null };
+    } catch (e) { out.err = e.message; }
+    return out;
+  }, [...new Uint8Array(int64Parquet())]);
+  chk(`INT64 Parquet (pandas' integer columns) opens, colours and filters by its INT64 column: ${JSON.stringify(q)}`,
+    q.ok && q.ok.count === 24 && q.ok.colorBy === '_block' && q.ok.drawn === 3 && q.ok.row === 21);
   await p.close();
+}
+function int64Parquet() {
+  const n = 24, X = [], Y = [], Z = [], AU = [], B = [];
+  for (let k = 0; k < n; k++) { X.push(BigInt(600005 + (k % 4) * 10)); Y.push(BigInt(7000005 + Math.floor(k / 4) % 3 * 10)); Z.push(BigInt(305 + Math.floor(k / 12) * 10)); AU.push(k * 0.5); B.push(BigInt(k)); }
+  return writeParquet({ columnData: [{ name: 'X', data: X, type: 'INT64' }, { name: 'Y', data: Y, type: 'INT64' }, { name: 'Z', data: Z, type: 'INT64' }, { name: 'AU', data: AU, type: 'DOUBLE' }, { name: '_block', data: B, type: 'INT64' }] });
 }
 
 // B: an ingested layer is a file-backed layer — it saves into a project folder

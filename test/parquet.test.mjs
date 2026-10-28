@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { zstdCompressSync } from 'node:zlib';
-import { writeParquet, readParquet, readParquetColumns, parquetInfo, parquetInfoAsync, parquetWriteBuffer, writeCompressors, streamParquetColumns, readParquetRange, readParquetRow } from '../ext/parquet/index.js';
+import { writeParquet, readParquet, readParquetColumns, parquetInfo, parquetInfoAsync, parquetWriteBuffer, writeCompressors, streamParquetColumns, readParquetRange, readParquetRow, readParquetRows, readParquetColumnMap, parquetFields } from '../ext/parquet/index.js';
 
 // a little block-model-shaped table: XC,YC,ZC + FE + a LITO string
 const N = 5000;
@@ -150,6 +150,50 @@ test('parquetInfoAsync censuses from the footer via range reads (no full load)',
   assert.equal(info.rowCount, M);
   assert.deepEqual(info.columns.map((c) => c.name), ['A', 'B', 'C']);
   assert.ok(fetched < ab.byteLength / 2, `range-read ${fetched} of ${ab.byteLength} bytes — should be a bounded tail`);
+});
+
+// pandas writes every integer column as INT64, which hyparquet decodes as BigInt
+// — and `+v` on a BigInt throws. Every read converts at the boundary.
+test('INT64 reads back as Numbers; a wide column as strings; opt-out keeps BigInt', async () => {
+  const n = 300;
+  const id = [], big = [], v = [];
+  for (let i = 0; i < n; i++) { id.push(BigInt(i * 7)); big.push(2n ** 60n + BigInt(i)); v.push(i * 0.5); }
+  const buf = writeParquet({ columnData: [{ name: 'ID', data: id, type: 'INT64' }, { name: 'BIG', data: big, type: 'INT64' }, { name: 'V', data: v, type: 'DOUBLE' }], rowGroupSize: 128 });
+  const info = parquetInfo(buf);
+  assert.equal(info.columns.find((c) => c.name === 'BIG').wide, true);
+  assert.equal(info.columns.find((c) => c.name === 'ID').wide, undefined);
+  assert.equal(typeof info.rowGroups[1].columns.ID.min, 'number', 'footer stats are Numbers too');
+  assert.equal(info.rowGroups[1].columns.ID.min, 128 * 7);
+
+  const rows = await readParquet(buf);
+  assert.equal(rows[10].ID, 70);
+  assert.equal(rows[10].BIG, (2n ** 60n + 10n).toString(), 'wide → exact decimal string');
+  const range = await readParquetRange(buf, ['ID', 'BIG'], 200, 205, info.meta);
+  assert.deepEqual(range.ID, [1400, 1407, 1414, 1421, 1428]);
+  assert.equal(typeof range.BIG[0], 'string');
+  assert.equal((await readParquetRow(buf, 5, info.meta)).ID, 35);
+  const chunks = []; for await (const ch of streamParquetColumns(buf, ['ID'], info.rowGroups, info.meta)) chunks.push(ch);
+  assert.equal(chunks[2].cols.ID[0], 256 * 7);
+  assert.equal((await readParquetColumnMap(buf, ['ID'])).ID[299], 299 * 7);
+  assert.equal((await readParquetColumns(buf))[3].ID, 21);
+  assert.equal(typeof (await readParquet(buf, { int64: 'bigint' }))[0].ID, 'bigint');
+
+  const arr = await readParquetRows(buf, { rowStart: 126, rowEnd: 130, metadata: info.meta });
+  assert.deepEqual(arr.map((r) => r[0]), [882, 889, 896, 903], 'rows across a row-group boundary');
+  assert.equal(arr[0][2], 63);
+  assert.deepEqual((await readParquetRows(buf, { rowStart: 0, rowEnd: 1, columns: ['V', 'ID'] }))[0], [0, 0]);
+});
+
+test('parquetFields — what each top-level column reads back as', () => {
+  const buf = writeParquet({ columnData: [
+    { name: 'N', data: [1.5, 2], type: 'DOUBLE' }, { name: 'I', data: [1n, 2n], type: 'INT64' },
+    { name: 'S', data: ['a', 'b'], type: 'STRING' }, { name: 'B', data: [true, false], type: 'BOOLEAN' },
+    { name: 'W', data: [2n ** 62n, 1n], type: 'INT64' },
+  ] });
+  const f = Object.fromEntries(parquetFields(parquetInfo(buf).meta).map((x) => [x.name, x]));
+  assert.equal(f.N.kind, 'number'); assert.equal(f.I.kind, 'number'); assert.equal(f.S.kind, 'string');
+  assert.equal(f.B.kind, 'boolean'); assert.equal(f.W.kind, 'string'); assert.equal(f.W.wide, true);
+  assert.ok(Object.values(f).every((x) => !x.nested));
 });
 
 test('kvMetadata survives the round trip (a place to stamp micro geo/frame)', () => {

@@ -32,13 +32,18 @@ misread; add them to `readCompressors` when a real file needs one.
 ## API
 
 ```js
-import { parquetInfo, readParquet, readParquetColumns, writeParquet } from '@gcu/parquet';
+import { parquetInfo, readParquet, readParquetColumns, readParquetRows, parquetFields, writeParquet } from '@gcu/parquet';
 
 const info = parquetInfo(arrayBuffer);   // footer ONLY — no page decode
 // { rowCount, columns:[{name,type,codec}], rowGroups:[{rowCount, columns:{name:{min,max,nulls}}}], codec, meta }
 
 const rows = await readParquet(arrayBuffer, { columns:['XC','YC','ZC'], rowStart, rowEnd });   // row objects
 const cols = await readParquetColumns(arrayBuffer, { columns:['FE'] });                        // whole columns
+
+// a row range as row ARRAYS, every column in one decode call (a table view's block)
+const block = await readParquetRows(file, { rowStart: 1000, rowEnd: 1256, columns, metadata: info.meta });
+// what each top-level column reads back as: number | string | boolean | date | bytes | nested
+const fields = parquetFields(info.meta);   // [{ name, kind, physical, logical, nested, wide? }]
 
 const bytes = writeParquet({
   columnData: [{ name:'XC', data: xc }, { name:'FE', data: fe }],
@@ -47,6 +52,22 @@ const bytes = writeParquet({
   kvMetadata: [{ key:'micro:frame', value: JSON.stringify(frame) }],
 });
 ```
+
+## INT64 reads back as numbers
+
+hyparquet decodes INT64 (and UINT_64) as **BigInt**, and pandas writes every
+integer column as INT64, so an ordinary id or count column arrives as BigInt,
+where `+v` and `v * 2` throw. Every read here converts at the boundary:
+
+- a column whose footer stats stay within ±(2⁵³ − 1) reads as Numbers, exactly;
+- a **wide** column (a footer bound outside that range: 64-bit ids, hashes) reads
+  as decimal **strings**, every value, so the column keeps one type and no digit
+  is silently rounded. `parquetInfo` marks it `wide: true`;
+- with no stats to go by, each value converts on its own (a Number when safe,
+  else its string).
+
+Footer statistics come back the same way (never BigInt). Pass `int64: 'bigint'`
+to any read to keep hyparquet's BigInts.
 
 ## Why vendor (vs. NIH like @gcu/gtiff)
 
@@ -59,7 +80,7 @@ so the streaming/lazy model comes for free.
 ## Build
 
 `node ext/parquet/build.js` (rollup, terser) → `index.js` (~116 KB self-contained
-ESM). Deps live in `ext/parquet/package.json`; `cd ext/parquet && npm install`
+ESM; the hyparquet license is kept in `vendor/LICENSE-hyparquet` for builds that credit it). Deps live in `ext/parquet/package.json`; `cd ext/parquet && npm install`
 before building. Tests: `test/parquet.test.mjs` (round-trips snappy/gzip, reads a
 zstd fixture, footer discovery, columnar/subset reads, kvMetadata).
 
