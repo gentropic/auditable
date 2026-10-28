@@ -2665,9 +2665,11 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
 
   const ds = dhDesurveySamples({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
 
-  // the interval-shape checks (overlaps, inverted from/to…) come from validate
+  // the interval-shape checks (overlaps, inverted from/to…) come from validate.
+  // ONE entry per row — the samples' `bhid` above has two (FROM and TO ends).
   const iv = {
-    bhid, from: tIv.rows.map((r) => +r[m.intervals.from]), to: tIv.rows.map((r) => +r[m.intervals.to]), cols: [],
+    bhid: tIv.rows.map((r) => r[m.intervals.bhid]),
+    from: tIv.rows.map((r) => +r[m.intervals.from]), to: tIv.rows.map((r) => +r[m.intervals.to]), cols: [],
   };
   let report = ds.report;
   try {

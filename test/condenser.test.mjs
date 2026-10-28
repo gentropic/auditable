@@ -651,6 +651,8 @@ test('drillholes: desurveyed midpoints — analytic positions, identity through 
   assert.deepEqual(header.categories, ['CANGA', 'HEMATITE', 'ITABIRITE', 'WASTE']);
   assert.ok(header.report.checks.some((c) => c.id === 'orphan-sample' && c.bhids.includes('GHOST')));
   assert.ok(header.report.checks.some((c) => c.id === 'collar-no-survey' && c.bhids.includes('NS')));
+  // every row here has FROM < TO: validate must see n rows, not the 2n sample ends
+  assert.ok(!header.report.checks.some((c) => c.id === 'bad-interval'), 'clean intervals are not bad-interval');
 
   const placed = new Map();                               // recIdx → [x,y,z,chan]
   for await (const rc of streamChunks({ chunkPoints: 3 })) {
