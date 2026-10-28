@@ -88,12 +88,12 @@ export function createHostApi(d) {
     // 'elevation' | 'intensity' | 'classification' | 'rgb' (LAS/PLY points).
     // Resolves to the layer's id, which a drillhole re-read changes.
     setColorBy: verb((id, column) => { const L = live(id); return d.setLayerColorBy(L, d.colorSelFor(L, column)); }),
-    // the expression language of micro's filter box; '' clears. The layer
-    // becomes the active one (the filter box shows its expression).
+    // the expression language of micro's filter box; '' clears. Any layer — the
+    // box shows the active layer's filter, so it mirrors this only for that one.
     filter: verb(async (id, expr) => {
-      const L = live(id);
-      if (L.id !== S.activeId) d.setActiveLayer(L.id);
-      await d.applyBlockFilter(String(expr == null ? '' : expr));
+      const L = live(id), e = String(expr == null ? '' : expr);
+      if (L.id === S.activeId) d.mirrorFilterBox(e);
+      await d.applyBlockFilter(e, L);
     }),
     clearFilter: verb((id) => api.filter(id, '')),
 
@@ -101,7 +101,28 @@ export function createHostApi(d) {
     pick: verb(({ layer, rec, frame = false } = {}) => d.pickRecord({ layer: d.followLayer(layer), rec, frame })),
     clearPick: verb(() => d.clearPick()),
 
+    // ── selection (the user's rectangle / lasso / through, or the host's), by
+    // record index. micro:selection { layer, count } fires when it changes. ──
+    selection: (id) => { const L = live(id), records = d.selectionRecords(L); return { layer: L.id, count: records.length, records }; },
+    select: verb((id, records, { mode = 'replace' } = {}) => d.setSelectionRecords(live(id), records == null ? [] : Array.from(records), mode)),
+    clearSelection: verb((id) => { if (id == null) d.clearSelection(); else d.setSelectionRecords(live(id), [], 'replace'); }),
+
+    // ── the section, in world terms ──
+    // section() → null (off) | { mode, axis, normal, position (n·p, world), thickness, clip, dipDir?, dip? }
+    // setSection({ axis | normal | dipDir+dip, at: [x,y,z] | position, thickness, clip }) — null turns it off
+    section: () => d.sectionWorld(),
+    setSection: verb((o) => d.setSectionWorld(o)),
+
     // ── view ──
+    // view() → { target: [x,y,z] world, look (bearing looked toward, °), elevation (°, 90 = plan), distance, ortho, zExag }
+    view: () => d.cameraWorld(),
+    setView: verb((v) => d.setCameraWorld(v || {})),
+    // a figure of the current view as a PNG Blob, rendered to convergence, with
+    // micro's decorations (scale bar, north arrow, legends, title) unless decorations: false
+    snapshot: verb(({ scale = 1, decorations = true } = {}) => new Promise((res, rej) => {
+      const c = d.renderFigure(scale, { decorations });
+      c.toBlob((b) => (b ? res(b) : rej(new Error('micro: snapshot failed'))), 'image/png');
+    })),
     fit: verb((id) => { d.fit(id == null ? null : live(id)); }),
     look: verb((view) => {
       if (!VIEWS.includes(view)) throw new Error(`micro: look() takes ${VIEWS.join(' | ')} (got ${JSON.stringify(view)})`);

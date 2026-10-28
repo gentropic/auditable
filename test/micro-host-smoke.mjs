@@ -602,6 +602,106 @@ async function apiChecks(url, label) {
   await p.close();
 }
 
+// window.micro, part 2 — section / view / selection / snapshot, and the
+// active-layer audit: a layer's filter is its own, and a failed re-read keeps it
+async function api2Checks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window.micro.ready, null, { timeout: 30000 });
+  console.log(`── window.micro: section · view · selection · snapshot · per-layer filters (${label})`);
+  const r = await p.evaluate(async () => {
+    const m = window.micro, out = {}, sel = [];
+    addEventListener('micro:selection', (e) => sel.push(e.detail));
+    const mk = (x0) => {
+      const n = 24, X = new Float64Array(n), Y = new Float64Array(n), Z = new Float64Array(n), AU = new Float64Array(n), CU = new Float64Array(n);
+      for (let k = 0; k < n; k++) { X[k] = x0 + 5 + (k % 4) * 10; Y[k] = 7000005 + Math.floor(k / 4) % 3 * 10; Z[k] = 305 + Math.floor(k / 12) * 10; AU[k] = k; CU[k] = 100 - k; }
+      return { X, Y, Z, AU, CU };
+    };
+    const a = await m.addLayer({ kind: 'blocks', name: 'A', columns: mk(600000), roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const b = await m.addLayer({ kind: 'blocks', name: 'B', columns: mk(600100), roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    // ── section, in world terms
+    out.off = m.section();
+    out.z = await m.setSection({ axis: 'z', at: [600020, 7000015, 315], thickness: 4 });
+    out.zBack = m.section();
+    out.n = await m.setSection({ normal: [1, 1, 0], position: (600020 + 7000015) / Math.SQRT2 });
+    out.dd = await m.setSection({ dipDir: 90, dip: 60, clip: 'front' });
+    try { await m.setSection({ axis: 'q' }); out.badSec = 'accepted'; } catch (e) { out.badSec = e.message; }
+    out.offAgain = await m.setSection(null);
+    // ── view
+    out.v1 = await m.setView({ target: [600050, 7000015, 310], look: 90, elevation: 30, distance: 400, ortho: true });
+    out.v2 = m.view();
+    await m.setView({ ortho: false, look: 0 });
+    out.v3 = m.view();
+    // ── selection, both ways
+    const n0 = sel.length;
+    out.selN = await m.select(a, [1, 5, 7]);
+    await new Promise((res) => setTimeout(res, 0));
+    out.selRead = m.selection(a);
+    out.selRead = { count: out.selRead.count, records: [...out.selRead.records], typed: out.selRead.records instanceof Uint32Array };
+    out.selAdd = await m.select(a, [9], { mode: 'add' });
+    out.selRem = await m.select(a, [1], { mode: 'remove' });
+    await new Promise((res) => setTimeout(res, 0));
+    out.selEv = sel.slice(n0);
+    try { await m.select(a, [99]); out.selBad = 'accepted'; } catch (e) { out.selBad = e.message; }
+    await m.clearSelection(a);
+    out.selCleared = m.selection(a).count;
+    // ── snapshot
+    await m.fit();
+    const blob = await m.snapshot({ scale: 2 });
+    const bmp = await createImageBitmap(blob);
+    const cv = document.querySelector('#cv');
+    out.snap = { type: blob.type, size: blob.size, w: bmp.width, h: bmp.height, cw: cv.width, ch: cv.height };
+    const plain = await m.snapshot({ decorations: false });
+    out.snapPlain = plain.type === 'image/png' && plain.size > 0;
+    // ── per-layer filters (the audit). A is filtered while B is ACTIVE, without stealing focus…
+    await m.setActive(b);
+    await m.filter(a, 'AU > 20');
+    const _m = window._micro, LA = () => _m.layers().find((q) => q.id === a);
+    out.fA = { expr: LA().filterExpr, mask: !!LA()._filterMask, active: _m.activeId(), box: document.querySelector('#filter').value };
+    // …and SURVIVES a re-read of A (a channel switch) — the re-read used to restore the ACTIVE layer's filter
+    await m.setColorBy(a, 'CU');
+    // what is DRAWN, not the JS mask (which outlives the GPU's): a filtered regular
+    // model draws only its matches (compacted) — 3 of 24, not all 24
+    let drawn = -1;
+    for (let t = 0; t < 80; t++) { drawn = _m.renderer.layerElementCount(a); if (drawn === 3) break; await new Promise((res) => setTimeout(res, 25)); }
+    out.fAfter = { expr: LA().filterExpr, drawn };
+    // two layers' sweeps at once: one no longer aborts the other
+    const pa = m.filter(a, 'AU < 5'), pb = m.filter(b, 'AU > 21');   // 5 and 2 — distinct from A's earlier 3, so an aborted sweep shows
+    await Promise.all([pa, pb]);
+    const cnt = (L) => (L._filterMask ? L._filterMask.reduce((t, v) => t + v, 0) : -1);
+    out.both = [cnt(LA()), cnt(_m.layers().find((q) => q.id === b))];
+    // ── a FAILED re-read keeps the original, and grafts nothing onto another layer
+    // (the source no longer reads — as a file changed on disk would — and B is the
+    // active layer, the one the old code would have dressed as A)
+    await m.setActive(b);
+    const before = _m.layers().map((q) => [q.id, q.label || q.name]);
+    const LAobj = LA(), good = LAobj.docs.blockDoc.blob;
+    LAobj.docs.blockDoc.blob = new File(['PAR1 not really'], 'A.parquet');
+    try { await _m.reopenAs(LAobj, 'points'); } catch { /* reported on the status line */ }
+    LAobj.docs.blockDoc.blob = good;
+    const after = _m.layers().map((q) => [q.id, q.label || q.name]);
+    out.failKeep = { before, after, still: !!_m.layers().find((q) => q === LAobj) };
+    return out;
+  });
+  chk(`api: section() off → null; axis z at a world point → position ${r.z && r.z.position} (thickness ${r.z && r.z.thickness}), read back the same`,
+    r.off === null && r.z.axis === 'z' && Math.abs(r.z.position - 315) < 1e-6 && r.z.thickness === 4 && r.zBack.position === r.z.position && r.offAgain === null);
+  chk(`api: a free normal → ${r.n.mode} at ${r.n.position.toFixed(3)}; dipDir/dip → ${r.dd.mode} ${r.dd.dipDir}/${r.dd.dip} ${r.dd.clip}; a bad axis rejects`,
+    r.n.mode === 'knife' && Math.abs(r.n.position - (600020 + 7000015) / Math.SQRT2) < 1e-6 && Math.abs(r.n.normal[0] - Math.SQRT1_2) < 1e-12 && r.dd.mode === 'custom' && r.dd.dipDir === 90 && r.dd.dip === 60 && r.dd.clip === 'front' && /x, y or z/.test(r.badSec));
+  chk(`api: setView/view round-trip — target ${JSON.stringify(r.v2.target)}, look ${r.v2.look}, elevation ${r.v2.elevation}, ortho ${r.v2.ortho}; look 0 = north (${r.v3.look})`,
+    r.v2.target.every((v, i) => Math.abs(v - [600050, 7000015, 310][i]) < 1e-6) && Math.abs(r.v2.look - 90) < 1e-9 && Math.abs(r.v2.elevation - 30) < 1e-9 && r.v2.distance === 400 && r.v2.ortho === true && r.v3.ortho === false && Math.abs(r.v3.look) < 1e-9);
+  chk(`api: select → selection() ${JSON.stringify(r.selRead)}; add/remove → ${r.selAdd}/${r.selRem}; micro:selection ${JSON.stringify(r.selEv)}; bad rec rejects; clear → ${r.selCleared}`,
+    r.selN === 3 && r.selRead.count === 3 && JSON.stringify(r.selRead.records) === '[1,5,7]' && r.selRead.typed && r.selAdd === 4 && r.selRem === 3
+    && r.selEv.length >= 3 && r.selEv.every((e) => e.layer === r.selEv[0].layer) && r.selEv[r.selEv.length - 1].count === 3 && /not a record/.test(r.selBad) && r.selCleared === 0);
+  chk(`api: snapshot({ scale: 2 }) → ${r.snap.type} ${r.snap.w}×${r.snap.h} (canvas ${r.snap.cw}×${r.snap.ch}), ${r.snap.size} bytes; decorations: false too`,
+    r.snap.type === 'image/png' && r.snap.w === 2 * r.snap.cw && r.snap.h === 2 * r.snap.ch && r.snap.size > 1000 && r.snapPlain);
+  chk(`audit: filter() on a background layer leaves the focus (${r.fA.active}) and the box (“${r.fA.box}”) alone; its filter SURVIVES its re-read (${JSON.stringify(r.fAfter)})`,
+    r.fA.expr === 'AU > 20' && r.fA.mask && r.fA.box === '' && r.fAfter.expr === 'AU > 20' && r.fAfter.drawn === 3);
+  chk(`audit: two layers filtered at once both finish (${JSON.stringify(r.both)})`, r.both[0] === 5 && r.both[1] === 2);
+  chk(`audit: a FAILED re-read keeps the original layer and renames nothing (${JSON.stringify(r.failKeep.after)})`,
+    r.failKeep.still && JSON.stringify(r.failKeep.before) === JSON.stringify(r.failKeep.after));
+  await p.close();
+}
+
 // B: an ingested layer is a file-backed layer — it saves into a project folder
 // and comes back from it (blocks with host-ordered categories, sub-blocks, a drillhole set)
 async function projectRoundTrip(url, proj) {
@@ -646,7 +746,9 @@ async function projectRoundTrip(url, proj) {
 try {
   if (process.env.ONLY === 'api') {                       // ONLY=api: just the window.micro checks (dev tree + built)
     await apiChecks('/tools/micro/index.html', 'dev tree');
+    await api2Checks('/tools/micro/index.html', 'dev tree');
     await apiChecks('/micro.html', 'built micro.html');
+    await api2Checks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
   await run('/tools/micro/index.html', 'dev tree');
@@ -655,11 +757,13 @@ try {
   await fileChecks('/tools/micro/index.html', 'dev tree');
   await pickChecks('/tools/micro/index.html', 'dev tree');
   await apiChecks('/tools/micro/index.html', 'dev tree');
+  await api2Checks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
   await pickChecks('/micro.html', 'built micro.html');
   await apiChecks('/micro.html', 'built micro.html');
+  await api2Checks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

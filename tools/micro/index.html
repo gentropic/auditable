@@ -899,7 +899,7 @@
       <option value="front">front</option>
       <option value="behind">behind</option>
     </select>
-    <input id="secPos" type="range" min="0" max="1" step="0.002" value="0.5" title="scrub the section" style="width:140px;display:none">
+    <input id="secPos" type="range" min="0" max="1" step="any" value="0.5" title="scrub the section" style="width:140px;display:none">
     <input id="secHalf" type="number" min="0.5" step="0.5" value="5" title="slab half-thickness (m)" style="width:56px;display:none">
     <label id="secPlaneW" title="outline the section plane in the view" style="display:none"><input id="secPlaneVis" type="checkbox">plane</label>
     <label id="secFollowW" title="camera follows the scrub — the cut stays put on screen while you walk the deposit section by section" style="display:none"><input id="secFollow" type="checkbox">follow</label>
@@ -1327,7 +1327,7 @@ function pipTest(x, y, poly) {
 function clearSelection({ silent } = {}) {
   let had = false;
   for (const L of S.layers) {
-    if (L._selMask) { had = true; L._selMask = null; L._selCount = 0; renderer.setLayerSelection(L.id, null); attrTableSelChanged(L.id); refreshLinkedWindows(L); }
+    if (L._selMask) { had = true; L._selMask = null; L._selCount = 0; renderer.setLayerSelection(L.id, null); attrTableSelChanged(L.id); refreshLinkedWindows(L); selectionChanged(L.id, 0); }
   }
   if (had) { markProjectDirty(); requestRender(); if (!silent) $('#meta').textContent = 'selection cleared'; }
   return had;
@@ -1341,6 +1341,18 @@ function applyLayerSelection(L) {
   renderer.setLayerSelection(L.id, c ? L._selMask : null);
   attrTableSelChanged(L.id);
   refreshLinkedWindows(L);                                 // GT/swath windows tracking the selection recompute
+  selectionChanged(L.id, c);
+}
+// every selection change funnels here (applyLayerSelection / clearSelection) →
+// ONE `micro:selection` per layer per task, however many steps a tool took
+const _selDirty = new Map();
+function selectionChanged(lid, count) {
+  const first = !_selDirty.size;
+  _selDirty.set(lid, count);
+  if (first) queueMicrotask(() => {
+    const all = [..._selDirty]; _selDirty.clear();
+    for (const [layer, n] of all) dispatchEvent(new CustomEvent('micro:selection', { detail: { layer, count: n } }));
+  });
 }
 // turn the current filter's matches into a real 3D selection — makes the
 // contextual thing explicit (and a sel-scope recipe REPRODUCIBLE: filter,
@@ -2139,7 +2151,7 @@ async function convertLayerToParquet(L, cvOpts = {}) {
   if (keepColorSel && [...$('#colorBy').options].some((o) => o.value === keepColorSel)) { L.colorSel = keepColorSel; setLayerColorSel(L, keepColorSel); }
   // calc columns recompute from the reordered base (no per-record cache); the
   // filter re-sweeps (with pushdown) against the new order
-  if (keepFilter && keepFilter.trim()) { $('#filter').value = keepFilter; syncFilterClear(); await applyBlockFilter(keepFilter); }
+  await refilterLayer(L, keepFilter);
   renderLayers(); markProjectDirty();
   $('#meta').textContent = streaming
     ? `converted “${base}.parquet” — ${n.toLocaleString()} blocks, streamed in file order (footer index per 64k group). Save the project to store it.`
@@ -3668,8 +3680,8 @@ async function resultToLayer(title, tsv, lineageOp) {
   const leaf = String(title).split('/').pop().trim() || 'result';
   const name = `${recipeSlug(leaf)}.tsv`;
   const blob = new Blob([tsv], { type: 'text/tab-separated-values' });
-  await openBlob(blob, name, 'add', null, { asKind: 'table', lineage: lineageOp ? mkLineage(lineageOp.op, lineageOp.params || {}, lineageOp.sources || []) : undefined });
-  const L = activeLayer();
+  const _got = await openBlob(blob, name, 'add', null, { asKind: 'table', lineage: lineageOp ? mkLineage(lineageOp.op, lineageOp.params || {}, lineageOp.sources || []) : undefined });
+  const L = layerById(_got);
   if (L) fileLayerByPath(L, title);                        // path → group; plain name → just the label
   const rows = L && L.docs.tableDoc ? L.docs.tableDoc.header.count.toLocaleString() : '?';
   $('#meta').textContent = `${title} → a table layer (${rows} rows) — filter it, join it, export it`;
@@ -3781,7 +3793,7 @@ function applyCalcCols(L, cols) {
     const t2 = _attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
     markProjectDirty();
     if (L.id === S.activeId) addPaintColorOptions(L);       // new ƒ columns reach color-by now, not on the next layer switch
-    if (L === activeLayer() && L.filterExpr) applyBlockFilter(L.filterExpr);   // a live ƒ filter picks up replaced definitions
+    if (L.filterExpr) refilterLayer(L);                     // a live ƒ filter picks up replaced definitions (any layer, not just the active one)
     if (calcSelOf(L)) { applyRamp(L, true); syncRuleMode(L); }   // a live ƒ color re-realizes (closure-hash gated)
     if (_propOpen && _propFor === L.id) renderProps();
   }
@@ -5567,7 +5579,7 @@ function openCalcWindow(L, selIdx) {
   const select = (k) => { sel = k; render(); };
   function invalidate() {
     L._calcFns = null; L._colStats = null; markProjectDirty();
-    if (L === activeLayer() && L.filterExpr) applyBlockFilter(L.filterExpr);   // a live filter picks up the new definition
+    if (L.filterExpr) refilterLayer(L);                     // a live filter picks up the new definition (any layer)
     if (L.id === S.activeId) addPaintColorOptions(L);       // ƒ color-by options track the column set
     if (calcSelOf(L)) { applyRamp(L, true); syncRuleMode(L); }   // a live ƒ color re-realizes (closure-hash gated)
     renderProps();
@@ -7083,7 +7095,7 @@ function closeAllLayers() {
   for (const [lid] of _attrTables) closeAttrTable(lid);
   renderer.clearChunks(); renderer.setPicked(null);
   S.layers = []; S.activeId = 0; frame = null; _docBbox = null;
-  _filterExpr = ''; _filterEpoch++;
+  _filterExpr = ''; _filterEpochs.clear();
   $('#filter').value = ''; syncFilterClear();
   $('#recPanel').classList.remove('show');
   clearMeasure();
@@ -8024,6 +8036,24 @@ function setSurfaceFlatZ(L, flatZ) {
 // through unchanged, so a reopen can't silently drop one the way reopenAs used to
 // drop `visible`. Data-representation styling that legitimately resets on a
 // reinterpret (colour/filter/ramps) is deliberately NOT preserved here.
+// re-read a layer as a NEW layer: open FIRST, remove the old one only once the new
+// one stands. Four paths (Reinterpret as, Reload from disk, a grid band, a grid's
+// surface/points switch) removed first, so a failed open lost the layer, and then
+// adopted "whatever is active now" as the result, grafting the lost layer's label,
+// handle and visibility onto an unrelated one. reopenDh was fixed to this order
+// first; now it is everyone's. Resolves to the new layer, or null (original kept).
+async function reopenReplacing(L, blob, open) {
+  const keep = captureReopenIdentity(L);
+  preregisterReopenHandle(blob, keep);
+  let lid2 = null;
+  try { lid2 = await open(); } catch { lid2 = null; }      // openBlob reports its own failure on the status line
+  const L2 = lid2 != null ? layerById(lid2) : null;
+  if (!L2 || L2 === L) return L2 === L ? L : null;
+  renderer.removeLayer(L.id);
+  S.layers = S.layers.filter((l) => l.id !== L.id);
+  pinEvictLayer(L.id);
+  return restoreReopenIdentity(L2, keep);                  // label · visible · handle · storage + its tree slot (layerReplaced)
+}
 function captureReopenIdentity(L) {
   return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage, oldId: L.id, slot: treeSlotOf(L.id) };
 }
@@ -8120,11 +8150,8 @@ async function applyLayerSurface(L, s) {
     || (cur.flatZ != null ? cur.flatZ : null) !== (s.flatZ != null ? s.flatZ : null) || !!cur.faceted !== !!s.faceted;
   let L2 = L;
   if (needsReopen) {
-    const blob = gd.blob, name = L.name, keep = captureReopenIdentity(L);
-    renderer.removeLayer(L.id); S.layers = S.layers.filter((l) => l.id !== L.id);
-    preregisterReopenHandle(blob, keep);
-    await openBlob(blob, name, 'add', null, { asKind: s.gridSurface ? 'surface' : 'points', band: s.band || 0, flatZ: s.gridSurface && s.flatZ != null ? s.flatZ : null, smooth: s.gridSurface ? !s.faceted : undefined });
-    L2 = restoreReopenIdentity(activeLayer(), keep);
+    const blob = gd.blob, name = L.name;
+    L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: s.gridSurface ? 'surface' : 'points', band: s.band || 0, flatZ: s.gridSurface && s.flatZ != null ? s.flatZ : null, smooth: s.gridSurface ? !s.faceted : undefined }));
   }
   if (L2 && L2.gridSurface) {                                // drape: in-place rebuild, no reopen
     const want = s.drape || null;
@@ -8147,14 +8174,8 @@ async function setGridBand(L, band) {
   const gd = L.docs && L.docs.gridDoc; if (!gd || !(gd.grid.bands > 1)) return;
   const blob = gd.blob, name = L.name;
   const wasSurface = !!L.gridSurface, drape = L.drapeSource, flatZ = L.surfaceFlatZ, smooth = L.surfaceSmooth;
-  const keep = captureReopenIdentity(L);
-  renderer.removeLayer(L.id);
-  S.layers = S.layers.filter((l) => l.id !== L.id);
-  preregisterReopenHandle(blob, keep);
-  await openBlob(blob, name, 'add', null, { asKind: wasSurface ? 'surface' : 'points', band, flatZ: wasSurface ? flatZ : null, smooth: wasSurface ? smooth : undefined });
-  const L2 = restoreReopenIdentity(activeLayer(), keep);
+  const L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: wasSurface ? 'surface' : 'points', band, flatZ: wasSurface ? flatZ : null, smooth: wasSurface ? smooth : undefined }));
   if (L2) {
-    if (keep.visible === false) applyTreeVisibility();
     if (wasSurface && drape) { const g = S.layers.find((x) => x.name === drape && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid); if (g) recolorSurface(L2, g); }
   }
   renderLayers(); markProjectDirty();
@@ -8307,10 +8328,10 @@ async function openObjSplit(blob, name, mode) {
   for (const [gname, faces] of parts) {
     const gblob = new Blob([head + faces.join('\n') + '\n']);
     const before = S.layers.length;
-    await openBlob(gblob, `${base} · ${gname}.obj`, first ? 'replace' : 'add');
+    const _got = await openBlob(gblob, `${base} · ${gname}.obj`, first ? 'replace' : 'add');
     first = false;
     if (S.layers.length > before || (before && mode !== 'add' && S.layers.length === 1)) {
-      const L = activeLayer();
+      const L = layerById(_got);
       if (L && !ids.includes(L.id)) ids.push(L.id); else skipped++;
     } else skipped++;
   }
@@ -8334,10 +8355,10 @@ async function openLfmSplit(blob, name, mode) {
     $('#meta').textContent = `${name} — writing ${m.name}…`;
     const buf = await writeLFM({ collectionName: m.name, meshes: [m] });
     const before = S.layers.length;
-    await openBlob(new Blob([buf]), `${base} · ${m.name}.lfm`, first ? 'replace' : 'add', null, { tint: lfmTint(m.colour) || undefined });
+    const _got = await openBlob(new Blob([buf]), `${base} · ${m.name}.lfm`, first ? 'replace' : 'add', null, { tint: lfmTint(m.colour) || undefined });
     first = false;
     if (S.layers.length > before || (before && mode !== 'add' && S.layers.length === 1)) {
-      const L = activeLayer();
+      const L = layerById(_got);
       if (L && !ids.includes(L.id)) ids.push(L.id); else skipped++;
     } else skipped++;
   }
@@ -8676,8 +8697,8 @@ async function loadDrillholeSet(set, cfg, replaceFirst) {
   const ids = [];
   let first = replaceFirst;
   for (const iv of set.intervals) {
-    await openDrillholeLayer({ collar: set.collar.file, survey: set.survey.file, intervals: iv.file }, { method: cfg.method || 'minimumCurvature', dipConvention: cfg.dip || 'auto' }, first ? 'replace' : 'add');
-    const L = activeLayer();
+    const _got = await openDrillholeLayer({ collar: set.collar.file, survey: set.survey.file, intervals: iv.file }, { method: cfg.method || 'minimumCurvature', dipConvention: cfg.dip || 'auto' }, first ? 'replace' : 'add');
+    const L = layerById(_got);
     if (L) { L._setKey = key; L._intervalName = iv.name; ids.push(L.id); }
     first = false;
   }
@@ -8958,8 +8979,8 @@ $('#dhImport').onclick = async () => {
     if (collarMap) mappings.collar = collarMap;
     if (surveyMap) mappings.survey = surveyMap;
     const ivm = roleMap(iv); if (ivm) mappings.intervals = ivm;
-    await openDrillholeLayer({ collar: d.collar.blob, survey: d.survey.blob, intervals: iv.blob }, { mappings, method: d.method, dipConvention: d.dip }, first ? 'replace' : 'add');
-    const L = activeLayer(); if (L) { L._setKey = key; L._intervalName = iv.name; ids.push(L.id); }
+    const _got = await openDrillholeLayer({ collar: d.collar.blob, survey: d.survey.blob, intervals: iv.blob }, { mappings, method: d.method, dipConvention: d.dip }, first ? 'replace' : 'add');
+    const L = layerById(_got); if (L) { L._setKey = key; L._intervalName = iv.name; ids.push(L.id); }
     first = false;
   }
   if (ids.length) createLayerGroup(dhGroupName(basename(d.collar.name)), ids, { collapsed: false, dhSet: true });
@@ -9229,8 +9250,8 @@ async function openWorkbook(blob, name, mode = 'add') {
   if (!picked || !picked.length) return;
   const ids = [];
   for (let i = 0; i < picked.length; i++) {
-    await openBlob(blob, name, i === 0 ? mode : 'add', null, { sheet: picked[i] });
-    const L = activeLayer();
+    const _got = await openBlob(blob, name, i === 0 ? mode : 'add', null, { sheet: picked[i] });
+    const L = layerById(_got);
     if (L) ids.push(L.id);
   }
   if (ids.length > 1) createLayerGroup(basename(name), ids, { collapsed: false });   // the workbook IS the group
@@ -9370,7 +9391,7 @@ async function openBlocksBlob(blob, name, opts = {}) {
       ? `${name} — ${doc.count.toLocaleString()} sub-blocks · fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
       : `${name} — ${doc.count.toLocaleString()} blocks · grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${latticeNote(header.grid)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     $('#meta').textContent = blockDoc.metaLine;
-    if (_filterExpr.trim() && opts.keepFilter) applyBlockFilter(_filterExpr);
+    { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
   } else {
     // centroids as points (sub-blocked / irregular): grade → the intensity slot
     const cb = createChunkBuilder({ frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
@@ -9391,7 +9412,7 @@ async function openBlocksBlob(blob, name, opts = {}) {
     recomputeUnion();
     blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids${header.latticeRejected ? ` (the declared lattice was REFUSED: ${header.latticeRejected} — points view)` : blockDoc.forcePoints ? '' : ' (no regular grid detected — points view)'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     $('#meta').textContent = blockDoc.metaLine;
-    if (_filterExpr.trim() && opts.keepFilter) applyBlockFilter(_filterExpr);
+    { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
   }
   requestRender();
 }
@@ -9453,7 +9474,7 @@ async function openDmBlob(blob, name, opts = {}) {
     blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids (sub-blocked .dm — points view)${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
   }
   $('#meta').textContent = blockDoc.metaLine;
-  if (_filterExpr.trim() && opts.keepFilter) applyBlockFilter(_filterExpr);
+  { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
   requestRender();
 }
 
@@ -9607,23 +9628,41 @@ for (const id of ['clipMin', 'clipMax']) $('#' + id).addEventListener('input', (
 // sweep over the file → a bitmask by record index → a GPU mask texture (dim or
 // isolate). The §4 selection contract, arriving via the local UI first. ──
 let _filterExpr = '';
-let _filterEpoch = 0;                                      // guards overlapping sweeps (a newer filter aborts the older one)
-async function applyBlockFilter(expr) {
-  const inp = $('#filter');
-  syncHL(inp, $('#filterHL'));                             // the input text is overlay-drawn — keep it painted on programmatic sets too
-  // the ACTIVE LAYER's docs, never the module aliases — a stale alias once
+const _filterEpochs = new Map();                          // layer id → its latest filter (a newer filter on that layer aborts the older sweep)
+let _filterSeq = 0;
+// re-sweep a layer's filter after something changed under it (a re-read, new ƒ
+// definitions, a reload) — ANY layer; the box mirrors it when it's the active one
+async function refilterLayer(L, expr = L && L.filterExpr) {
+  if (!L || !String(expr || '').trim()) return;
+  if (L.id === S.activeId) { $('#filter').value = expr; syncFilterClear(); }
+  await applyBlockFilter(expr, L);
+}
+// L defaults to the active layer (the filter box). It used to BE the active layer,
+// so every path that re-filters after a re-read did it only `if active`, and a
+// background layer whose GPU mask a re-read dropped kept saying "filtered" while
+// drawing everything. Any layer now; the box mirrors only the active one.
+async function applyBlockFilter(expr, L = activeLayer()) {
+  const isActive = !!L && L.id === S.activeId;
+  const inp = isActive ? $('#filter') : document.createElement('input');   // the box's error mark belongs to the active layer's filter
+  expr = String(expr == null ? '' : expr);
+  if (isActive) syncHL(inp, $('#filterHL'));               // the input text is overlay-drawn — keep it painted on programmatic sets too
+  // the TARGET layer's docs, never the module aliases — a stale alias once
   // filtered the assay table while the model was active and hung a 7k-bit
   // mask on a 1.8M-block layer
-  const AL = activeLayer();
+  const AL = L;
   if (AL && AL.kind === 'table') return applyTableFilter(AL, expr);   // no geometry to mask — the table view is the whole effect
   const fBlockDoc = AL ? AL.docs.blockDoc : null;
   const fDhDoc = AL ? AL.docs.dhDoc : null;
   if (!fBlockDoc && !fDhDoc) { $('#meta').textContent = 'filter: open a block model or drillholes first'; return; }
-  const lid = S.activeId;                                   // the sweep belongs to THIS layer even if focus moves
-  const Lr = layerById(lid); if (Lr) Lr.filterExpr = expr;
+  const lid = AL.id;                                        // the sweep belongs to THIS layer even if focus moves
+  AL.filterExpr = expr;
   dispatchEvent(new Event('micro:project-dirty'));
-  _filterExpr = expr;
-  const epoch = ++_filterEpoch;
+  if (isActive) _filterExpr = expr;
+  // superseded = a NEWER filter on the SAME layer (it was one global counter, so
+  // filtering one layer silently aborted another layer's running sweep)
+  const epoch = ++_filterSeq;                               // one sequence for all layers: safe across recycled ids
+  _filterEpochs.set(lid, epoch);
+  const alive = () => _filterEpochs.get(lid) === epoch;
   if (!expr.trim() && !(AL && AL._holeMask)) {             // a hole filter still masks with an empty expression
     renderer.setFilter(null, {}, lid); renderer.clearCompact(lid); inp.classList.remove('err'); requestRender();
     { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; attrTableFilterChanged(lid); refreshLinkedWindows(Lf, 'filtered'); } }
@@ -9712,7 +9751,7 @@ async function applyBlockFilter(expr) {
     window.__pinUsed = false;
     if (chunkF && readCols.length && readCols.every((nm) => pinGet(AL, nm))) {
       window.__pinUsed = true;
-      const got = await pinnedSweep(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => epoch === _filterEpoch });
+      const got = await pinnedSweep(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     } else {
     const tee = (chunkF && pinBudgetBytes() > 0) ? {} : null;   // tee the scan into the pin cache
@@ -9766,9 +9805,9 @@ async function applyBlockFilter(expr) {
       rec = start + count;
       start += count;                                       // advance for kept groups too (skip branch does its own)
       window.__pqFilterSkipped = skipped;                  // smoke hook
-      await new Promise((r2) => setTimeout(r2)); if (epoch !== _filterEpoch) return;
+      await new Promise((r2) => setTimeout(r2)); if (!alive()) return;
     }
-    if (tee && !skipped && epoch === _filterEpoch) {        // pin ONLY a complete scan (skipped groups would leave holes)
+    if (tee && !skipped && alive()) {        // pin ONLY a complete scan (skipped groups would leave holes)
       for (const nm of readCols) { const e = tee[nm]; if (!e) continue; delete e.map; pinPut(AL, nm, e); }
     }
     if (skipped) $('#meta').textContent = `filter: ${skipped} of ${P.rowGroups.length} row groups skipped by the footer…`;
@@ -9802,7 +9841,7 @@ async function applyBlockFilter(expr) {
     const pinNames = colIdxs ? colIdxs.map((bi) => ({ k: header.columns[bi], bi })) : [];
     if (chunkF && pinNames.length && pinNames.every((tn) => pinGet(AL, tn.k))) {
       window.__pinUsed = true;
-      const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => epoch === _filterEpoch });
+      const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     }
     if (!window.__pinUsed) {
@@ -9854,9 +9893,9 @@ async function applyBlockFilter(expr) {
         }
         rec = recStart + count;
         await new Promise((r2) => setTimeout(r2));
-        if (epoch !== _filterEpoch) return;
+        if (!alive()) return;
       }
-      if (tee && !bandsSkipped && epoch === _filterEpoch) { for (const tn of pinNames) { const e = tee[tn.k]; if (!e) continue; delete e.map; pinPut(AL, tn.k, e); } }   // pin only COMPLETE scans
+      if (tee && !bandsSkipped && alive()) { for (const tn of pinNames) { const e = tee[tn.k]; if (!e) continue; delete e.map; pinPut(AL, tn.k, e); } }   // pin only COMPLETE scans
       window.__dmBandsSkipped = bandsSkipped;              // smoke hook
       if (bandsSkipped) $('#meta').textContent = `filter: ${bandsSkipped} of ${bandsTotal} page-runs skipped by the sidecar index…`;
     } else {
@@ -9871,7 +9910,7 @@ async function applyBlockFilter(expr) {
         }
         rec = recStart + rows.length;
         await new Promise((r) => setTimeout(r));
-        if (epoch !== _filterEpoch) return;
+        if (!alive()) return;
       }
     }
     }
@@ -9915,7 +9954,7 @@ async function applyBlockFilter(expr) {
     }
     if (chunkF && pinNames.length && pinNames.every((tn) => pinGet(AL, tn.k))) {
       window.__pinUsed = true;
-      const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => epoch === _filterEpoch });
+      const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     }
     if (!window.__pinUsed) {
@@ -9925,7 +9964,7 @@ async function applyBlockFilter(expr) {
       let bandsSkipped = 0;
       const nBands = Math.ceil(header.count / BB.size);
       for (let b = 0; b < nBands; b++) {
-        if (epoch !== _filterEpoch) return;
+        if (!alive()) return;
         const ranges = {};
         for (const nm in BB.cols) { const arr = BB.cols[nm]; const v0 = arr[b * 2], v1 = arr[b * 2 + 1]; if (v0 != null) ranges[nm.toLowerCase()] = { min: v0, max: v1 }; }
         if (!pqGroupCanMatch(astC, ranges)) { bandsSkipped++; rec = Math.min(header.count, (b + 1) * BB.size); continue; }
@@ -9938,7 +9977,7 @@ async function applyBlockFilter(expr) {
         for await (const batch of lineFields(blob.slice(byteStart, byteEnd), header.delim, false)) {
           for (const f of batch) { if (rec >= bandEnd) break; scanRow(f); }
           await new Promise((r) => setTimeout(r));
-          if (epoch !== _filterEpoch) return;
+          if (!alive()) return;
         }
       }
       window.__csvBandsSkipped = bandsSkipped;             // smoke hook
@@ -9954,14 +9993,14 @@ async function applyBlockFilter(expr) {
     for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns)) {
       for (const f of batch) scanRow(f);
       await new Promise((r) => setTimeout(r));
-      if (epoch !== _filterEpoch) return;                  // superseded — stop before pushing more compact chunks
+      if (!alive()) return;                  // superseded — stop before pushing more compact chunks
     }
-    if (teeAcc && epoch === _filterEpoch) { for (const tn of pinNames) { const e = teeAcc[tn.k]; if (!e) continue; delete e.map; delete e.bi; pinPut(AL, tn.k, e); } teeAcc = null; }
+    if (teeAcc && alive()) { for (const tn of pinNames) { const e = teeAcc[tn.k]; if (!e) continue; delete e.map; delete e.bi; pinPut(AL, tn.k, e); } teeAcc = null; }
     }
     }
   }
 
-  if (epoch !== _filterEpoch) return;                      // superseded mid-scan by a newer filter
+  if (!alive()) return;                      // superseded mid-scan by a newer filter
   if (cb2) {                                               // compacted: matches ARE the chunks — no mask needed
     cflush(); cb2.flush();
     renderer.setFilter(null, {}, lid);
@@ -10470,6 +10509,139 @@ function applySection(sec) {
   $('#secHalf').value = sec.half != null ? sec.half : 10;
   syncSectionBtn(); requestRender();
 }
+// ── the section and the camera in WORLD terms (the host API speaks these). The
+// UI keeps a section as a FRACTION of the data's extent along the normal, in
+// frame-local coordinates; a host thinks in world coordinates and metres. ──
+const SEC_AXIS = { x: 'ns', y: 'ew', z: 'plan' };
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+function sectionWorld() {
+  const s = currentSection(); if (!s) return null;
+  const mode = $('#secMode').value, n = s.n.slice(), off = dot3(n, frame ? frame.origin : [0, 0, 0]);
+  const axis = Object.keys(SEC_AXIS).find((k) => SEC_AXIS[k] === mode) || null;
+  return {
+    mode, axis, normal: n,
+    position: s.d0 + off,                                  // the plane: n·p = position, world units
+    thickness: s.clip === 'slab' ? 2 * s.half : null, clip: s.clip,
+    ...(mode === 'custom' ? { dipDir: +$('#secDipDir').value, dip: +$('#secDip').value } : {}),
+  };
+}
+// o: null | { axis: 'x'|'y'|'z' } | { normal: [x,y,z] } | { dipDir, dip }, plus
+// { at: [x,y,z] | position: n·p, thickness, clip: 'slab'|'front'|'behind' }.
+// Omitted parts keep their current value. Resolves the section as it now stands.
+function setSectionWorld(o) {
+  const mode0 = $('#secMode').value;
+  if (!o || o.mode === 'off') {
+    if (mode0 !== 'off') { $('#secMode').value = 'off'; $('#secMode').dispatchEvent(new Event('input')); }
+    return null;
+  }
+  if (!renderer.chunkCount) throw new Error('section: there is nothing to cut yet');
+  let mode = null, knifeN = null;
+  if (o.axis != null) {
+    mode = SEC_AXIS[String(o.axis).toLowerCase()];
+    if (!mode) throw new Error(`section: axis is x, y or z (got ${JSON.stringify(o.axis)})`);
+  } else if (o.normal != null) {
+    const v = [].concat(o.normal).map(Number), l = Math.hypot(...v);
+    if (v.length !== 3 || !(l > 0) || v.some((c) => !Number.isFinite(c))) throw new Error('section: normal must be three finite numbers, not all zero');
+    const n = v.map((c) => c / l);
+    const ax = Object.keys(SEC_N).find((k) => Math.abs(Math.abs(dot3(SEC_N[k], n)) - 1) < 1e-9);
+    if (ax && dot3(SEC_N[ax], n) > 0) mode = ax; else { mode = 'knife'; knifeN = n; }
+  } else if (o.dipDir != null || o.dip != null) {
+    mode = 'custom';
+    if (o.dipDir != null) $('#secDipDir').value = ((+o.dipDir % 360) + 360) % 360;
+    if (o.dip != null) $('#secDip').value = Math.max(0, Math.min(90, +o.dip));
+  } else if (mode0 === 'off') throw new Error('section: say which plane — axis, normal, or dipDir + dip');
+  if (o.clip != null) {
+    if (!['slab', 'front', 'behind'].includes(o.clip)) throw new Error(`section: clip is slab, front or behind (got ${JSON.stringify(o.clip)})`);
+    $('#secClip').value = o.clip;
+  }
+  if (o.thickness != null) {
+    if (!(+o.thickness > 0)) throw new Error('section: thickness must be positive');
+    $('#secHalf').value = +o.thickness / 2;
+  }
+  if (mode === 'knife') { _knife = { n: knifeN }; $('#secMode').value = 'knife'; armKnife(false); syncSecUI(); }   // like applySection: don't re-arm the knife tool
+  else if (mode && mode !== mode0) { $('#secMode').value = mode; $('#secMode').dispatchEvent(new Event('input')); }
+  else syncSecUI();
+  _secPosPrev = null;
+  if (o.at != null || o.position != null) {
+    const n = secNormal();
+    let pw;
+    if (o.at != null) { const a = [].concat(o.at).map(Number); if (a.length !== 3 || a.some((c) => !Number.isFinite(c))) throw new Error('section: at must be [x, y, z]'); pw = dot3(n, a); }
+    else { pw = +o.position; if (!Number.isFinite(pw)) throw new Error('section: position must be a number'); }
+    const [lo, hi] = secRange(), dl = pw - dot3(n, frame ? frame.origin : [0, 0, 0]);
+    $('#secPos').value = hi > lo ? Math.max(0, Math.min(1, (dl - lo) / (hi - lo))) : 0.5;   // clamped to the data
+  }
+  syncSectionBtn();
+  document.body.classList.toggle('sec-on', _isMobile() && $('#secMode').value !== 'off');
+  markProjectDirty(); requestRender();
+  return sectionWorld();
+}
+// camera: look = the compass bearing you LOOK toward (0 = north, 90 = east),
+// elevation = how far above the target the eye sits (90 = plan, looking down)
+const R2D = 180 / Math.PI;
+function cameraWorld() {
+  const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
+  const look = ((Math.atan2(-Math.cos(st.theta), -Math.sin(st.theta)) * R2D) % 360 + 360) % 360;
+  return { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], look, elevation: st.phi * R2D, distance: st.radius, ortho: !!st.ortho, zExag: st.zExag || 1 };
+}
+function setCameraWorld(v = {}) {
+  const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
+  const num = (x, what) => { const n = +x; if (!Number.isFinite(n)) throw new Error(`view: ${what} must be a number`); return n; };
+  if (v.target != null) {
+    const t = [].concat(v.target).map(Number);
+    if (t.length !== 3 || t.some((c) => !Number.isFinite(c))) throw new Error('view: target must be [x, y, z]');
+    st.target = [t[0] - o[0], t[1] - o[1], t[2] - o[2]];
+  }
+  if (v.look != null) { const b = num(v.look, 'look') / R2D; st.theta = Math.atan2(-Math.cos(b), -Math.sin(b)); }
+  if (v.elevation != null) st.phi = Math.max(-PHI_MAX, Math.min(PHI_MAX, num(v.elevation, 'elevation') / R2D));
+  if (v.distance != null) { const dd = num(v.distance, 'distance'); if (!(dd > 0)) throw new Error('view: distance must be positive'); st.radius = dd; }
+  if (v.ortho != null) cam.setOrtho(!!v.ortho);
+  if (v.zExag != null) setZExag(num(v.zExag, 'zExag'));
+  cam.update(); requestRender();
+  return cameraWorld();
+}
+// a figure as a canvas: rendered to CONVERGENCE (the interactive canvas may be
+// mid-accumulation), decorations on top unless asked not to. Scale 1–4.
+function renderFigureCanvas(scale = 1, { decorations = true } = {}) {
+  scale = Math.max(1, Math.min(4, (scale | 0) || 1));
+  const r = cv.getBoundingClientRect();
+  const bw = cv.width, bh = cv.height, tw = bw * scale, th = bh * scale;
+  const opts = currentDrawOpts(); opts.pointPx = opts.pointPx * scale;
+  const edlOpts = { enabled: $('#edlOn').checked, strength: +$('#edlStr').value, radius: 1.4 * scale };
+  if (scale !== 1) cv.width = tw, cv.height = th;
+  renderer.invalidate();
+  let res, guard = 0;
+  do { res = edl.render(tw, th, cam, () => renderer.draw(cam, opts), edlOpts); guard++; } while (!res.converged && guard < 4000);
+  const out = document.createElement('canvas'); out.width = tw; out.height = th;
+  const g = out.getContext('2d'); g.drawImage(cv, 0, 0);
+  if (decorations) { const sx = tw / r.width; g.setTransform(sx, 0, 0, sx, 0, 0); renderDeco(g, r.width, r.height); }
+  if (scale !== 1) { cv.width = bw; cv.height = bh; }
+  renderer.invalidate(); requestRender();
+  return out;
+}
+// selection, by record index (the host API): read it, set it
+function selectionRecords(L) {
+  const m = L._selMask; if (!m || !L._selCount) return new Uint32Array(0);
+  const out = new Uint32Array(L._selCount);
+  for (let i = 0, k = 0; i < m.length && k < out.length; i++) if (m[i]) out[k++] = i;
+  return out;
+}
+function setSelectionRecords(L, recs, mode = 'replace') {
+  const n = attrRowCountOf(L);
+  if (!n) throw new Error(`select: “${L.label || L.name}” has no records`);
+  if (!['replace', 'add', 'remove'].includes(mode)) throw new Error(`select: mode is replace, add or remove (got ${JSON.stringify(mode)})`);
+  const list = recs == null ? [] : recs;
+  for (const r of list) if (!Number.isInteger(+r) || r < 0 || r >= n) throw new Error(`select: ${r} is not a record of “${L.label || L.name}”`);
+  if (mode === 'replace' || !L._selMask || L._selMask.length !== n) {
+    const keep = mode !== 'replace' && L._selMask && L._selMask.length === n ? L._selMask : null;
+    L._selMask = keep || new Uint8Array(n);
+    if (mode === 'replace') L._selMask.fill(0);
+  }
+  const v = mode === 'remove' ? 0 : 1;
+  for (const r of list) L._selMask[r] = v;
+  applyLayerSelection(L);
+  selectionStatus(); markProjectDirty(); requestRender();
+  return L._selCount || 0;
+}
 // selection masks persist run-length encoded (alternating 0-run/1-run lengths)
 function rleEncode(mask) {
   const runs = [];
@@ -10931,7 +11103,7 @@ async function openProjectDir(dir) {
           if (ls.calcCols && !(Ld.calcCols || []).length) Ld.calcCols = ls.calcCols;   // legacy projects (no element manifest)
           addPaintColorOptions(Ld);
           if (ls.holeFilter) { try { await applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
-          if (ls.filter && ls.filter.trim()) { $('#filter').value = ls.filter; syncFilterClear(); await applyBlockFilter(ls.filter); }
+          await refilterLayer(Ld, ls.filter);
           if (ls.visible === false) { Ld.visible = false; renderer.setLayerVisible(Ld.id, false); }
           if (ls.sectioned != null && ls.sectioned !== true) renderer.setLayerSectioned(Ld.id, ls.sectioned);
           restoreHiddenCats(Ld, ls.hiddenCats);
@@ -11016,9 +11188,9 @@ async function openProjectDir(dir) {
           }
         } catch { /* no sidecar — full discovery as usual */ }
       }
-      await openBlob(file, basename(ls.source), i === 0 || !S.layers.length ? 'replace' : 'add', null, overR);
-      { const Lx = activeLayer(); if (Lx) { Lx.storage = ls.external ? 'external' : 'project'; if (ls.label) Lx.label = ls.label; if (ls.opacity != null && Lx.kind !== 'mesh') { Lx.opacity = ls.opacity; renderer.setLayerOpacity(Lx.id, ls.opacity); } if (ls.recHide && ls.recHide.length) Lx._recHide = new Set(ls.recHide); if (ls.legend) Lx.legend = true; if (ls.legendTitle) Lx.legendTitle = ls.legendTitle; if (ls.edges != null) { Lx.edges = ls.edges; renderer.setLayerEdges(Lx.id, ls.edges); } if (ls.gtUnits) Lx.gtUnits = ls.gtUnits; } }   // mesh opacity rides overR
-      const L = activeLayer();
+      const _got = await openBlob(file, basename(ls.source), i === 0 || !S.layers.length ? 'replace' : 'add', null, overR);
+      { const Lx = layerById(_got); if (Lx) { Lx.storage = ls.external ? 'external' : 'project'; if (ls.label) Lx.label = ls.label; if (ls.opacity != null && Lx.kind !== 'mesh') { Lx.opacity = ls.opacity; renderer.setLayerOpacity(Lx.id, ls.opacity); } if (ls.recHide && ls.recHide.length) Lx._recHide = new Set(ls.recHide); if (ls.legend) Lx.legend = true; if (ls.legendTitle) Lx.legendTitle = ls.legendTitle; if (ls.edges != null) { Lx.edges = ls.edges; renderer.setLayerEdges(Lx.id, ls.edges); } if (ls.gtUnits) Lx.gtUnits = ls.gtUnits; } }   // mesh opacity rides overR
+      const L = layerById(_got);
       if (!L) { plRow(i, 'failed to open', 'skip'); continue; }   // that open failed; its layer rolled back
       if (ls.drape && L.gridSurface) L._pendingDrape = ls.drape;   // apply after ALL layers land (the drape grid may come later)
       if (sidecar && sidecar.colStats) L._colStats = sidecar.colStats;   // the styling/statistics UIs wake up scanned
@@ -11038,7 +11210,7 @@ async function openProjectDir(dir) {
       }
       if (String(L.colorSel || '').startsWith('calc:')) { applyRamp(L, true); syncRuleMode(L); }   // realize + color the ƒ channel
       if (ls.clip && (ls.clip[0] || ls.clip[1])) { L.clip = [String(ls.clip[0] || ''), String(ls.clip[1] || '')]; $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1]; }
-      if (ls.filter && ls.filter.trim()) { $('#filter').value = ls.filter; syncFilterClear(); await applyBlockFilter(ls.filter); }
+      await refilterLayer(L, ls.filter);
       if (ls.visible === false) { L.visible = false; applyTreeVisibility(); }
       if (ls.sectioned != null && ls.sectioned !== true) renderer.setLayerSectioned(L.id, ls.sectioned);
       restoreHiddenCats(L, ls.hiddenCats);
@@ -11212,8 +11384,8 @@ async function scanFolderForNewData() {
         const ids = [];
         for (const iv of s.ivs) {                            // one dh layer per interval table, sharing the set
           const intervals = await resolveDhFile(dir, s.setDir, iv);
-          await openDrillholeLayer({ collar, survey, intervals }, s.desc.config || {}, S.layers.length ? 'add' : 'replace');
-          const L = activeLayer(); if (L) { L.storage = 'project'; L._setPath = s.e.path; L._setKey = s.e.path; L._intervalName = iv; ids.push(L.id); }
+          const _got = await openDrillholeLayer({ collar, survey, intervals }, s.desc.config || {}, S.layers.length ? 'add' : 'replace');
+          const L = layerById(_got); if (L) { L.storage = 'project'; L._setPath = s.e.path; L._setKey = s.e.path; L._intervalName = iv; ids.push(L.id); }
         }
         if (ids.length) createLayerGroup(dhGroupName(s.desc.collar), ids, { collapsed: false, dhSet: true });
       } catch (err) { $('#meta').textContent = `scan: “${s.e.name}” — ${err.message}`; }
@@ -12438,29 +12610,11 @@ function _figureDownload(out) {
 // (a one-shot supersample), then restored — point size / EDL radius scale too so
 // the figure looks identical, just sharper. Sealed: no network, pure canvas.
 function exportFigure(scale = _figScale) {
-  scale = Math.max(1, Math.min(4, (scale | 0) || 1));
-  const r = cv.getBoundingClientRect();
-  if (scale === 1) {
-    const out = document.createElement('canvas'); out.width = cv.width; out.height = cv.height;
-    const g = out.getContext('2d'); g.drawImage(cv, 0, 0);
-    const sx = cv.width / r.width; g.setTransform(sx, 0, 0, sx, 0, 0);
-    renderDeco(g, r.width, r.height);
-    _figureDownload(out); return;
-  }
-  const bw = cv.width, bh = cv.height, tw = bw * scale, th = bh * scale;
-  const opts = currentDrawOpts(); opts.pointPx = opts.pointPx * scale;   // px → keep relative size at higher res
-  const edlOpts = { enabled: $('#edlOn').checked, strength: +$('#edlStr').value, radius: 1.4 * scale };
-  $('#meta').textContent = `rendering figure ${scale}×…`;
-  cv.width = tw; cv.height = th;
-  renderer.invalidate();                                    // reset accumulation → full re-render at the new size
-  let res, guard = 0; const cap = 4000;
-  do { res = edl.render(tw, th, cam, () => renderer.draw(cam, opts), edlOpts); guard++; } while (!res.converged && guard < cap);
-  const out = document.createElement('canvas'); out.width = tw; out.height = th;
-  const g = out.getContext('2d'); g.drawImage(cv, 0, 0);
-  const sx = tw / r.width; g.setTransform(sx, 0, 0, sx, 0, 0);
-  renderDeco(g, r.width, r.height);
-  _figureDownload(out);
-  cv.width = bw; cv.height = bh; renderer.invalidate(); requestRender();   // restore interactive backing
+  // one renderer for the menu and the host (micro.snapshot): rendered to
+  // convergence at any scale — the 1× path used to copy the interactive canvas
+  // as it stood, which could be mid-accumulation
+  if (scale > 1) $('#meta').textContent = `rendering figure ${scale}×…`;
+  _figureDownload(renderFigureCanvas(scale));
 }
 // Decorations & figure — a NON-MODAL float panel (not a modal): decorations draw
 // live on the viewport, so a dimming backdrop would hide what you're adjusting.
@@ -13617,10 +13771,10 @@ async function openDemoProject() {
   try {
     const sf = makeDemoSurfaces();
     const openSurf = async (grid, name, label) => {
-      await openBlob(new Blob([writeEsriAsc(grid)]), name, 'add');
-      const gl2 = activeLayer();
+      const _got = await openBlob(new Blob([writeEsriAsc(grid)]), name, 'add');
+      const gl2 = layerById(_got);
       if (gl2) await reopenAs(gl2, 'surface');             // shaded relief, not an elevation point cloud
-      const L = activeLayer();
+      const L = layerById(followLayer(_got));
       if (L) L.label = label;
       return L;
     };
@@ -15789,7 +15943,7 @@ async function reopenDh(L, patch, { clearCats = false } = {}) {
   L2._setKey = setKey; L2._intervalName = intervalName;             // stay in the same drillhole set
   applyLayerStyling(L2, style, { clearCats });
   if (id.visible === false) applyTreeVisibility();
-  if (L2.id === S.activeId && L2.filterExpr) { $('#filter').value = L2.filterExpr; await applyBlockFilter(L2.filterExpr); }
+  await refilterLayer(L2);                                 // any layer: a re-read dropped its GPU mask
   // re-reading a layer that wasn't active (a host's setColorBy) mustn't take the focus
   if (prevActive !== oldId && layerById(prevActive)) setActiveLayer(prevActive);
   renderLayers();
@@ -15867,14 +16021,9 @@ async function reopenAs(L, kind) {
     blob = new Blob([csv], { type: 'text/csv' });
     name = `${basename(L.name).replace(/\.xlsx$/i, '')}-${h.sheet}.csv`;
   }
-  const keep = captureReopenIdentity(L);
-  renderer.removeLayer(L.id);
-  S.layers = S.layers.filter((l) => l.id !== L.id);
-  preregisterReopenHandle(blob, keep);
-  await openBlob(blob, name, 'add', null, { asKind: kind });
-  restoreReopenIdentity(activeLayer(), keep);   // incl. visible — reinterpreting a hidden layer used to bring it back visible
-  if (keep.visible === false) applyTreeVisibility();
+  const L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: kind }));   // incl. visible — reinterpreting a hidden layer used to bring it back visible
   renderLayers(); markProjectDirty();
+  return L2;
 }
 function reinterpretMenu(L, x, y) { menuXY(x, y, reinterpretOptions(L).map((o) => ({ label: `→ ${o.label}`, action: () => reopenAs(L, o.kind) }))); }
 // ── Reload from disk — the missing verb between Scan folder (NEW files only)
@@ -15928,32 +16077,24 @@ async function reloadLayerFromDisk(L) {
       L2._selMask = null; L2._selCount = 0;                // and the selection's GPU twin was cleared too — same reasoning, missed first pass
       pinEvictLayer(L2.id);                                // pinned columns belong to the OLD bytes
     }
-    // applyBlockFilter acts on the ACTIVE layer (it takes no layer argument), so a
-    // background layer cannot be re-swept here — nulling its mask above is what
-    // matters: it can no longer disagree with the GPU, and it re-sweeps on focus.
-    if (L2 && L2.id === S.activeId && L2.filterExpr) await applyBlockFilter(L2.filterExpr);   // the filter scan posts its own status
+    // re-sweep against the fresh bytes — any layer (applyBlockFilter used to act on
+    // the active layer only, and a background one was left unfiltered until refocused)
+    await refilterLayer(L2);                               // the filter scan posts its own status
     $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;
   } else {
     // dm / parquet / mesh / grid / las / ply: remove → re-open fresh → restore
-    const keep = captureReopenIdentity(L);
     const style = captureLayerStyling(L);
     const surf = captureLayerSurface(L);
     const filterExpr = L.filterExpr;
-    const wasActive = L.id === S.activeId;
-    renderer.removeLayer(L.id);
-    S.layers = S.layers.filter((l) => l.id !== L.id);
-    preregisterReopenHandle(fresh, keep);
     // a DXF layer is ONE kind of what its file holds — reopen that kind, not the dominant one
     const sd = L.docs.stringsDoc;
     const dxfAs = /\.dxf$/i.test(L.name) ? (sd ? (sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh') : null;
-    await openBlob(fresh, L.name, 'add', null, dxfAs ? { asKind: dxfAs } : doc && doc.forcePoints ? { asKind: 'points' } : undefined);
-    const L2 = restoreReopenIdentity(activeLayer(), keep);
+    const L2 = await reopenReplacing(L, fresh, () => openBlob(fresh, L.name, 'add', null, dxfAs ? { asKind: dxfAs } : doc && doc.forcePoints ? { asKind: 'points' } : undefined));
     if (L2) {
       applyLayerStyling(L2, style);
       await applyLayerSurface(L2, surf);
-      if (keep.visible === false) applyTreeVisibility();
       L2.filterExpr = filterExpr;
-      if (wasActive && filterExpr) await applyBlockFilter(filterExpr);
+      await refilterLayer(L2, filterExpr);                 // any layer (was: only if it had been the active one)
     }
     renderLayers();
     $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;
@@ -17014,8 +17155,8 @@ async function pickIntervalFile() {
 async function addIntervalToSet(nd) {
   const info = dhSetInfo(nd); if (!info) return;
   const file = await pickIntervalFile(); if (!file) return;
-  await openDrillholeLayer({ collar: info.blobs.collar, survey: info.blobs.survey, intervals: file }, { ...info.config }, 'add');
-  const L2 = activeLayer(); if (L2) {
+  const _got = await openDrillholeLayer({ collar: info.blobs.collar, survey: info.blobs.survey, intervals: file }, { ...info.config }, 'add');
+  const L2 = layerById(_got); if (L2) {
     L2._setKey = info.setKey; L2._intervalName = file.name; treeMove(L2.id, nd, 'into');
     // inherit the set's hole filter — a filtered set that gains an interval table
     // otherwise shows ALL holes on the new one while its siblings show a subset
@@ -17029,8 +17170,8 @@ async function addIntervalToLayer(L) {
   const dh = L.docs.dhDoc; if (!dh) return;
   const file = await pickIntervalFile(); if (!file) return;
   const key = L._setKey || ('dhset:' + (++_dhSetSeq)); L._setKey = key; if (!L._intervalName) L._intervalName = basename(layerFiles(L)[2].name);
-  await openDrillholeLayer({ collar: dh.blobs.collar, survey: dh.blobs.survey, intervals: file }, { ...dh.config }, 'add');
-  const L2 = activeLayer(); if (!L2) return;
+  const _got = await openDrillholeLayer({ collar: dh.blobs.collar, survey: dh.blobs.survey, intervals: file }, { ...dh.config }, 'add');
+  const L2 = layerById(_got); if (!L2) return;
   L2._setKey = key; L2._intervalName = file.name;
   const grp = dhSetGroupOf(L.id);
   if (grp) treeMove(L2.id, grp, 'into');
@@ -17042,8 +17183,8 @@ async function addIntervalToLayer(L) {
 async function redesurveySet(nd, patch) {
   for (const id of groupLayerIds(nd).slice()) {
     const L = layerById(id); if (!L || !L.dh) continue;
-    await reopenDh(L, patch);
-    const L2 = activeLayer(); if (L2) treeMove(L2.id, nd, 'into');
+    const L2 = await reopenDh(L, patch);   // the replacement (null if it failed and kept the original)
+    if (L2) treeMove(L2.id, nd, 'into');
   }
   // the trace sticks are desurveyed from the OLD geometry — rebuild them, the
   // way filterHolesSet does after a hole-filter change, or they render the old
@@ -17592,6 +17733,9 @@ const _host = createHostApi({
   treeChanged: () => { applyTreeVisibility(); renderLayers(); markProjectDirty(); },
   colorByName, colorChoices, colorSelFor, setLayerColorBy,
   groupPathOf, groupsList, fileLayersInGroup, ungroupAt, setGroupVisible,
+  sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
+  selectionRecords, setSelectionRecords, clearSelection: () => clearSelection({ silent: true }),
+  mirrorFilterBox: (e) => { $('#filter').value = e; syncFilterClear(); },
   clearPick: () => { $('#recPanel').classList.remove('show'); $('#rpCfg').classList.remove('show'); renderer.setPicked(null); requestRender(); },
   fit: (L) => { if (L) fitLayer(L); else if (renderer.chunkCount) { cam.fit(rendererDocBbox()); requestRender(); } },
   look: (v) => ({

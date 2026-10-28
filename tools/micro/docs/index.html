@@ -727,8 +727,12 @@ frame.addEventListener('micro:ready', () => {        // fired on YOUR iframe ele
 <tr><td><code>removeLayer(id)</code> · <code>setVisible(id, on)</code> · <code>setActive(id)</code></td><td></td></tr>
 <tr><td><code>columns(id)</code> · <code>row(id, rec)</code></td><td><code>row</code> resolves to <code>{ column: value, … }</code> by name.</td></tr>
 <tr><td><code>setColorBy(id, column)</code></td><td>A column name, <code>'elev'</code>, <code>'solid'</code> or <code>'rules'</code> (LAS/PLY points: <code>'elevation' 'intensity' 'classification' 'rgb'</code>). Rejects with the choices. A channel or category the layer wasn't opened with means re-reading the file, which takes a while on a big model.</td></tr>
-<tr><td><code>filter(id, expr)</code> · <code>clearFilter(id)</code></td><td>The language of micro's filter box. The layer becomes the active one.</td></tr>
+<tr><td><code>filter(id, expr)</code> · <code>clearFilter(id)</code></td><td>The language of micro's filter box, on any layer (the box itself shows the active layer's filter).</td></tr>
 <tr><td><code>pick({ layer, rec, frame })</code> · <code>clearPick()</code></td><td>See <a href="#host-pick">picks</a>.</td></tr>
+<tr><td><code>selection(id)</code> · <code>select(id, records, { mode })</code> · <code>clearSelection(id?)</code></td><td>The user's (or your) selection by record index: <code>{ layer, count, records: Uint32Array }</code>. <code>mode</code>: <code>replace add remove</code>. <code>micro:selection</code> fires when it changes.</td></tr>
+<tr><td><code>section()</code> · <code>setSection(plane)</code></td><td>In world terms. <code>section()</code> is <code>null</code> when off, else <code>{ mode, axis, normal, position, thickness, clip }</code>, where the plane is <code>normal · p = position</code>. <code>setSection({ axis: 'x'|'y'|'z' } | { normal } | { dipDir, dip }, plus at: [x,y,z] or position, thickness, clip: 'slab'|'front'|'behind')</code>; parts you leave out stay as they are; <code>null</code> turns it off. A position past the data is clamped to it.</td></tr>
+<tr><td><code>view()</code> · <code>setView(v)</code></td><td>The camera in world terms: <code>{ target: [x,y,z], look, elevation, distance, ortho, zExag }</code>. <code>look</code> is the bearing you look toward (0 north, 90 east); <code>elevation</code> is how far above the target the eye sits (90 is plan). <code>setView</code> takes any of them.</td></tr>
+<tr><td><code>snapshot({ scale, decorations })</code></td><td>The view as a PNG <code>Blob</code>, rendered fully, with micro's scale bar, north arrow, legends and title unless <code>decorations: false</code>. <code>scale</code> 1–4.</td></tr>
 <tr><td><code>fit(id?)</code> · <code>look(view)</code></td><td><code>view</code>: <code>north south east west plan below</code>.</td></tr>
 <tr><td><code>groups()</code> · <code>group(path, ids)</code> · <code>ungroup(path)</code> · <code>setGroupVisible(path, on)</code></td><td>Groups by path, <code>'Model/Domains'</code>. See below.</td></tr>
 <tr><td><code>chrome()</code> · <code>setChrome({ title, badge })</code></td><td>Show or hide micro's title and the Sealed badge.</td></tr>
@@ -740,7 +744,8 @@ micro:layer-failed     { name, error }
 micro:layer-removed    { id }
 micro:layer-replaced   { from, to }
 micro:lattice-rejected { name, reason }
-micro:pick             { layer, rec, face, world, source } | null</pre>
+micro:pick             { layer, rec, face, world, source } | null
+micro:selection        { layer, count }</pre>
 <p><b>Ids can change, and the API follows them.</b> Re-reading a drillhole layer (a new colour channel or category, a re-desurvey) or a few other re-reads (Reinterpret as, Reload from disk, a grid band) replaces the layer with a new one, with a new id. <code>micro:layer-replaced</code> says so, the new layer keeps its place in the layer tree, and any API call given the old id acts on the new layer. <code>setColorBy</code> resolves to the id the layer has afterwards.</p>
 <p><b>Groups.</b> A group is a path of names. <code>addLayer({ …, group: 'Model/Domains' })</code> and <code>open(file, { group })</code> file a new layer into it, creating the groups on the way; <code>group(path, ids)</code> moves existing layers. A group exists while it holds layers, so there is no empty group to make. A drillhole layer moves with its whole set.</p>
 <p><b>Embedding.</b> <code>micro.html?embed=1</code> hides the title and the Sealed badge from the first paint; <code>setChrome</code> changes that later. Hiding the badge in an embed is the honest default: Sealed is a claim about micro's own page, and a same-origin host page can read everything micro holds and has a network of its own. Help → <i>Why it's Sealed</i> stays either way.</p>
