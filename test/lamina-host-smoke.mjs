@@ -82,11 +82,21 @@ async function run(url, label) {
     out.stats = await L.stats('AU');
     out.gb = await L.groupBy({ by: 'LITO', values: ['AU'] });
     out.gt = await L.gradeTonnage({ by: 'LITO', grades: ['CU'], volume: '10', density: '2.5' });
+    // ── the skip count belongs to the filter, not to the shared cursor: once the
+    // gutter exists, every filter also starts an un-awaited gutter scan, which used to
+    // zero cursor.skipped before a caller could read it (MineMind's pyarrow fixtures)
+    const until = async (f) => { for (let i = 0; i < 400 && !f(); i++) await new Promise((res) => setTimeout(res, 25)); return f(); };
+    out.gutterReady = await until(() => window._lamina.current.gutter);
+    out.f2 = await L.filter('AU >= 1990');
+    await until(() => window._lamina.current.gutterFiltered);
+    out.skipped2 = window._lamina.current.source.skipped;
     out.sort = await L.sort([{ column: 'au', desc: true }]);
     out.sorted = await L.rows(0, 2, { columns: ['ID'] });
     // ── calc columns + the lens round trip
     out.calc = await L.addCalc('AU2', 'AU * 2');
     out.calcRow = (await L.rows(0, 1, { columns: ['AU', 'AU2'] })).rows[0];
+    out.fCalc = await L.filter('AU >= 1990');                    // through the calc-decorated cursor
+    out.skippedCalc = window._lamina.current.source.skipped;
     out.lens = L.lens();
     await L.clearFilter(); await L.sort(null); await L.removeCalc('AU2');
     out.cleared = L.info();
@@ -130,6 +140,10 @@ async function run(url, label) {
     r.deep.rows.map((x) => x[0]).join() === '150000,150001,150002' && r.deep.rows[0][1] === (2n ** 60n + 150000n).toString() && JSON.stringify(r.deep.records) === '[150000,150001,150002]'
     && r.row7.ID === 7 && r.row7.LITO === 'sulf' && r.row7.OXI === 'false' && Math.abs(r.row7.AU - 0.07) < 1e-12);
   chk(`filter AU >= 1990 → ${JSON.stringify(r.f)}; ${r.skipped} of ${groups} row groups skipped by their footer`, r.f.matched === 1000 && r.f.total === N && r.skipped === groups - 1 && r.fInfo.filter === 'AU >= 1990' && r.fInfo.rows === 1000);
+  chk(`filter after the gutter exists (${r.gutterReady ? 'ready' : 'NOT ready — vacuous'}) → ${JSON.stringify(r.f2)}; cursor.skipped after the gutter scan ${r.skipped2}`,
+    !!r.gutterReady && r.f2.matched === 1000 && r.f2.rowGroups && r.f2.rowGroups.skipped === groups - 1 && r.f2.rowGroups.total === groups && r.skipped2 === groups - 1);
+  chk(`filter with a calc column on → ${JSON.stringify(r.fCalc)}; cursor.skipped ${r.skippedCalc}`,
+    r.fCalc.matched === 1000 && r.fCalc.rowGroups && r.fCalc.rowGroups.skipped === groups - 1 && r.skippedCalc === groups - 1);
   chk(`filtered rows carry their file records: ${JSON.stringify(r.fRows)}`, JSON.stringify(r.fRows.records) === '[199000,199001]' && r.fRows.rows[0][0] === 199000);
   chk(`stats('AU') over the filter → n ${r.stats.n}, min ${r.stats.min}, max ${r.stats.max}`, r.stats.n === 1000 && Math.abs(r.stats.min - 1990) < 1e-9 && Math.abs(r.stats.max - 1999.99) < 1e-6);
   chk(`groupBy LITO → ${r.gb.groups.map((g) => g.key + ':' + g.count).join(' ')}, total ${r.gb.total.count}, AU mean ${r.gb.total.values.AU.mean.toFixed(3)}`,

@@ -95,13 +95,16 @@ export async function scanFilter(source, { predicate, dataStart = 0, onProgress,
   // (a Parquet row group's footer min/max) skips a chunk it returns false for.
   // It must be conservative — false only when NO row in the chunk can match.
   const offsets = grower(), lengths = grower(), nums = grower();
-  await source.eachRecord({ dataStart, onProgress, signal, cols, prune }, (disp, fields, loc0, loc1) => {
+  // A backing that prunes resolves eachRecord to { skipped, chunks } for THIS scan;
+  // that rides on the result (`pruned`), never read back off the shared cursor.
+  const r = await source.eachRecord({ dataStart, onProgress, signal, cols, prune }, (disp, fields, loc0, loc1) => {
     if (predicate(fields)) {
       offsets.push(loc0); lengths.push(loc1); nums.push(disp);
       if (offsets.n > max) throw new Error('too many matches — refine the filter');
     }
   });
-  return { offsets: offsets.done(), lengths: lengths.done(), nums: nums.done() };
+  const pruned = prune && r && Number.isFinite(r.skipped) ? { skipped: r.skipped, chunks: r.chunks } : null;
+  return { offsets: offsets.done(), lengths: lengths.done(), nums: nums.done(), pruned };
 }
 
 /**

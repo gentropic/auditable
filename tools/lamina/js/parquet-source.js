@@ -147,19 +147,21 @@ export function createParquetSource(buf, t, { blockSize = 256, cacheBlocks = 16,
 
   const cursor = {
     kind: 'parquet', rowCount: n, schema: t.schema, delimiter: '\t', quote: '"',
-    skipped: 0,                     // row groups the last pruned scan skipped (automation / the footer)
+    skipped: 0,                     // row groups the last PRUNED scan skipped (scans without `prune` leave it alone)
     // eachRecord(opts, visit(disp, rawFields, loc0, loc1)) — the @gcu/lamina cursor
     // contract. `cols` = column indices to read (others stay undefined); `prune(ranges)`
     // false = this row group can't match, skip it; `rows` = an ascending subset.
+    // Resolves to { skipped, chunks }: THIS scan's skip count, so a caller never reads
+    // a number another scan (the gutter refresh, a stats pass) wrote in the meantime.
     async eachRecord({ dataStart = 0, rows = null, onProgress, limit = Infinity, cols = null, prune = null, signal } = {}, visit) {
       const want = cols ? cols.filter((i) => i >= 0 && i < ncols) : null;
       const readNames = want ? want.map((i) => names[i]) : names;
-      let start = 0, sp = 0, seen = 0;
-      cursor.skipped = 0;
+      let start = 0, sp = 0, seen = 0, skipped = 0;
+      const done = () => { if (prune) cursor.skipped = skipped; return { skipped, chunks: t.rowGroups.length }; };
       for (const rg of t.rowGroups) {
         const gEnd = start + rg.rowCount;
         if (prune && !prune(rangesOf(rg))) {
-          cursor.skipped++;
+          skipped++;
           start = gEnd; if (onProgress) onProgress(start, n); continue;
         }
         for (let s = start; s < gEnd; s += slice) {
@@ -167,7 +169,7 @@ export function createParquetSource(buf, t, { blockSize = 256, cacheBlocks = 16,
           const e = Math.min(gEnd, s + slice);
           if (rows) {                                          // nothing of the subset in this slice → don't read it
             while (sp < rows.length && rows[sp] + dataStart < s) sp++;
-            if (sp >= rows.length) return;
+            if (sp >= rows.length) return done();
             if (rows[sp] + dataStart >= e) continue;
           }
           const got = await readParquetRows(buf, { rowStart: s, rowEnd: e, columns: readNames, metadata: meta });
@@ -184,13 +186,14 @@ export function createParquetSource(buf, t, { blockSize = 256, cacheBlocks = 16,
             if (want) { vals = new Array(ncols); for (let j = 0; j < want.length; j++) vals[want[j]] = rawOf(src[j]); }
             else { vals = new Array(ncols); for (let j = 0; j < ncols; j++) vals[j] = rawOf(src[j]); }
             visit(disp, vals, i, 0);
-            if (++seen >= limit) return;
+            if (++seen >= limit) return done();
           }
           if (onProgress) onProgress(e, n);
-          if (rows && sp >= rows.length) return;
+          if (rows && sp >= rows.length) return done();
         }
         start = gEnd;
       }
+      return done();
     },
     async readByLoc(i) {
       const b = Math.floor(i / K);

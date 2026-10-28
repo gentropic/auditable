@@ -115,8 +115,11 @@ export function createHostApi(d) {
       if (err) throw new Error(`lamina: ${err}`);
       await d.applyFilter(expr);
       const e = d.filterError(); if (e) throw new Error(`lamina: ${e}`);
-      const cc = d.current();
-      return { matched: cc.filterResult ? cc.filterResult.nums.length : cc.baseVs.rowCount(), total: cc.baseVs.rowCount() };
+      const cc = d.current(), fr = cc.filterResult;
+      const out = { matched: fr ? fr.nums.length : cc.baseVs.rowCount(), total: cc.baseVs.rowCount() };
+      // a Parquet: the row groups THIS filter skipped by their footer min/max
+      if (fr && fr.pruned) out.rowGroups = { skipped: fr.pruned.skipped, total: fr.pruned.chunks };
+      return out;
     }),
     clearFilter: verb(async () => { table(); await d.applyFilter(''); }),
     // [{ column, desc }], most significant first; [] or null clears

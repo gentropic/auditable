@@ -35,6 +35,7 @@ export function withCalcCursor(source, baseCount, calcs) {
   if (!calcs || !calcs.length) return source;
   return {
     ...source,
+    get skipped() { return source.skipped; },   // live, not the spread's snapshot
     eachRecord: (opts, visit) => source.eachRecord(opts, (disp, fields, l0, l1) => visit(disp, extendRaw(fields, calcs), l0, l1)),
     readByLoc: async (l0, l1) => extendDisp(await source.readByLoc(l0, l1), calcs),
   };

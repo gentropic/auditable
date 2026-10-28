@@ -236,7 +236,7 @@
   <tr><td><code>orderColumns(names)</code></td><td>Puts these columns first, in this order; resolves to the whole display order.</td></tr>
   <tr><td><code>rows(start, count, { columns })</code></td><td>Rows of the current view (filtered and sorted): <code>{ columns, rows: [[…]], records }</code>. Number columns come back as numbers, blanks as <code>null</code>; <code>records</code> gives each row's record number in the file (0-based).</td></tr>
   <tr><td><code>row(i)</code></td><td>View row <code>i</code> as <code>{ column: value }</code>.</td></tr>
-  <tr><td><code>filter(expr)</code> · <code>clearFilter()</code></td><td>The <a href="#ref">filter language</a>. Resolves to <code>{ matched, total }</code>; a bad expression rejects with the same message the filter box shows.</td></tr>
+  <tr><td><code>filter(expr)</code> · <code>clearFilter()</code></td><td>The <a href="#ref">filter language</a>. Resolves to <code>{ matched, total }</code>; on a Parquet also <code>rowGroups: { skipped, total }</code>, the row groups this filter skipped by their footer min/max. A bad expression rejects with the same message the filter box shows.</td></tr>
   <tr><td><code>sort([{ column, desc }])</code></td><td>Most significant key first; <code>[]</code> or <code>null</code> clears.</td></tr>
   <tr><td><code>goto(i)</code> · <code>select({ from, to, columns })</code> · <code>selection()</code></td><td>Bring a view row into sight; select a block of rows and columns; read the selection as <code>{ from, to, columns, record }</code> or <code>null</code>.</td></tr>
   <tr><td><code>addCalc(name, expr)</code> · <code>removeCalc(name)</code></td><td>Calculated columns (never written to the file).</td></tr>
