@@ -11,6 +11,8 @@
 // Run with `npm run test:micro:host`. Dev tree, then the BUILT micro.html.
 import { chromium } from 'playwright';
 import http from 'http';
+import path from 'path';
+import { pathToFileURL } from 'url';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 import { writeParquet } from '../ext/parquet/index.js';
@@ -849,7 +851,100 @@ async function projectRoundTrip(url, proj) {
   await p.close();
 }
 
+// column statistics — the columnar scan (Parquet, .dm) against the row scan
+// (CSV) and against values computed here: one column scanned on its own,
+// merged not replaced, cancellable, Parquet's footer before any scan
+async function statsChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  console.log(`── column statistics (${label})`);
+  const r = await p.evaluate(async () => {
+    const m = window._micro, out = {};
+    const { writeParquet } = await import('/ext/parquet/index.js');
+    const { makeDM } = await import('/test/dm-make.mjs');
+    const X = [], Y = [], Z = [], AU = [], ROCK = [];
+    const NX = 10, NY = 10, NZ = 35;                        // 3500 blocks over 4 row groups of 1000
+    let k = 0;
+    for (let z = 0; z < NZ; z++) for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) {
+      X.push(5 + 10 * x); Y.push(5 + 10 * y); Z.push(2.5 + 5 * z);
+      AU.push(k % 7 === 3 ? null : ((k * 7919) % 1000) / 100);   // every 7th blank
+      ROCK.push(['BIF', 'CANGA', 'SKARN'][k % 3]); k++;
+    }
+    const au = AU.filter((v) => v != null), n = au.length;
+    const mean = au.reduce((a, v) => a + v, 0) / n;
+    const sd = Math.sqrt(au.reduce((a, v) => a + (v - mean) ** 2, 0) / (n - 1));
+    const sorted = au.slice().sort((a, b) => a - b);
+    out.expect = { n, nulls: AU.length - n, mean, sd, min: sorted[0], max: sorted[n - 1], p50: sorted[Math.floor(n / 2)] };
+    const pq = new File([writeParquet({ columnData: [{ name: 'X', data: X, type: 'DOUBLE' }, { name: 'Y', data: Y, type: 'DOUBLE' }, { name: 'Z', data: Z, type: 'DOUBLE' }, { name: 'AU', data: AU, type: 'DOUBLE' }, { name: 'ROCK', data: ROCK, type: 'STRING' }], rowGroupSize: 1000, codec: 'SNAPPY' })], 'stats.parquet');
+    const id = await m.addLayer({ kind: 'blocks', file: pq, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const L = m.layers().find((q) => q.id === id);
+    out.groups = L.docs.blockDoc.parquet.rowGroups.length;
+    const f = m.footerColStats(L);
+    out.footer = f && f.AU && { n: f.AU.n, nulls: f.AU.nulls, min: f.AU.min, max: f.AU.max, rock: !!f.ROCK };
+    const pick = (s) => s && { n: s.n, nulls: s.nulls, mean: s.mean, sd: s.std, min: s.min, max: s.max, p50: s.p50 };
+    await m.scanColumns(L, null, { columns: ['AU'] });
+    out.au = pick(L._colStats.AU); out.afterOne = Object.keys(L._colStats); out.completeOne = m.colStatsComplete(L); out.via = L._lastScan.via;
+    await m.scanColumns(L, null, { columns: ['AU'], workers: false });
+    out.auPage = pick(L._colStats.AU); out.viaPage = L._lastScan.via;
+    const ac = new AbortController(); ac.abort();
+    try { await m.scanColumns(L, null, { signal: ac.signal }); out.cancel = 'ran'; } catch (e) { out.cancel = e.name; }
+    out.afterCancel = Object.keys(L._colStats);
+    await m.scanColumns(L, null);
+    out.rock = L._colStats.ROCK && { n: L._colStats.ROCK.n, distinct: L._colStats.ROCK.distinct };
+    out.x = pick(L._colStats.X); out.completeAll = m.colStatsComplete(L); out.auAgain = pick(L._colStats.AU);
+    // the same table as CSV (the row scan) and as .dm (the strided columnar scan)
+    const csv = ['X,Y,Z,AU,ROCK'].concat(X.map((_, i) => `${X[i]},${Y[i]},${Z[i]},${AU[i] ?? ''},${ROCK[i]}`)).join('\n') + '\n';
+    const idC = await m.addLayer({ kind: 'blocks', file: new File([csv], 'stats.csv'), roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const LC = m.layers().find((q) => q.id === idC);
+    await m.scanColumns(LC, null, { columns: ['AU'] });
+    out.csv = pick(LC._colStats.AU);
+    const fields = [{ name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' }, { name: 'AU', type: 'N' }, { name: 'ROCK', type: 'A', width: 8 }];
+    const drows = X.map((_, i) => ({ XC: X[i], YC: Y[i], ZC: Z[i], AU: AU[i] ?? -1e30, ROCK: ROCK[i] }));   // -1e30 = Datamine's absent
+    const idD = await m.addLayer({ kind: 'blocks', file: new File([makeDM(fields, drows, { precision: 'ep' })], 'stats.dm'), roles: { x: 'XC', y: 'YC', z: 'ZC', value: 'AU' } });
+    const LD = m.layers().find((q) => q.id === idD);
+    await m.scanColumns(LD, null, { bands: true });
+    out.dm = pick(LD._colStats.AU); out.dmRock = LD._colStats.ROCK && LD._colStats.ROCK.distinct;
+    out.dmBand = LD._bands && LD._bands.cols.AU && LD._bands.cols.AU.slice(0, 2);
+    return out;
+  });
+  const E = r.expect, near = (a, b, t = 1e-9) => a != null && Math.abs(a - b) <= t * Math.max(1, Math.abs(b));
+  const same = (s) => s && s.n === E.n && s.nulls === E.nulls && near(s.mean, E.mean) && near(s.sd, E.sd) && s.min === E.min && s.max === E.max && Math.abs(s.p50 - E.p50) < 0.2;
+  chk(`stats: Parquet footer before any scan — AU n ${r.footer && r.footer.n}, nulls ${r.footer && r.footer.nulls}, ${r.footer && r.footer.min}…${r.footer && r.footer.max}; text column left out (${r.groups} row groups)`,
+    r.groups === 4 && r.footer && r.footer.n === E.n && r.footer.nulls === E.nulls && r.footer.min === E.min && r.footer.max === E.max && !r.footer.rock);
+  chk(`stats: one column scans ALONE (${JSON.stringify(r.afterOne)}, complete ${r.completeOne}) and is exact — mean ${r.au && r.au.mean.toFixed(6)} vs ${E.mean.toFixed(6)}, p50 ${r.au && r.au.p50.toFixed(3)} vs ${E.p50}`,
+    JSON.stringify(r.afterOne) === '["AU"]' && r.completeOne === false && same(r.au));
+  chk(`stats: Parquet scans in WORKERS (${r.via}); the page path (${r.viaPage}) gives the same numbers (mean ${r.auPage && r.auPage.mean.toFixed(9)})`, r.via === 'workers' && r.viaPage === 'page' && same(r.auPage) && near(r.auPage.mean, r.au.mean, 1e-12));
+  chk(`stats: a cancelled scan throws ${r.cancel} and keeps what was there (${JSON.stringify(r.afterCancel)})`, r.cancel === 'AbortError' && JSON.stringify(r.afterCancel) === '["AU"]');
+  chk(`stats: the full scan merges every column (complete ${r.completeAll}); ROCK ${JSON.stringify(r.rock)}; X ${r.x && r.x.min}…${r.x && r.x.max}; AU unchanged`,
+    r.completeAll && r.rock && r.rock.n === 3500 && r.rock.distinct === 3 && r.x.min === 5 && r.x.max === 95 && r.x.n === 3500 && same(r.auAgain));
+  chk(`stats: the CSV row scan and the .dm strided scan agree with Parquet's (csv mean ${r.csv && r.csv.mean.toFixed(6)}, dm ${r.dm && r.dm.mean.toFixed(6)}, dm ROCK ${r.dmRock})`, same(r.csv) && same(r.dm) && r.dmRock === 3);
+  if (/micro.html$/.test(url)) {                         // the built file opened from disk
+    const pf = await ctx.newPage(); pf.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+    await pf.goto(pathToFileURL(path.resolve('micro.html')).href, { waitUntil: 'load' });
+    await pf.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
+    const rf = await pf.evaluate(async () => {
+      const m = window._micro, N = 2000, X = [], Y = [], Z = [], AU = [];
+      for (let i = 0; i < N; i++) { X.push(5 + 10 * (i % 20)); Y.push(5 + 10 * ((i / 20 | 0) % 10)); Z.push(2.5 + 5 * (i / 200 | 0)); AU.push(i % 9 === 4 ? NaN : (i * 37 % 100) / 10); }
+      const id = await m.addLayer({ kind: 'blocks', columns: { X, Y, Z, AU }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+      const L = m.layers().find((q) => q.id === id);
+      await m.scanColumns(L, null, { columns: ['AU'] });
+      const au = AU.filter(Number.isFinite), mean = au.reduce((a, v) => a + v, 0) / au.length;
+      return { parquet: !!L.docs.blockDoc.parquet, via: L._lastScan.via, n: L._colStats.AU.n, nulls: L._colStats.AU.nulls, mean: L._colStats.AU.mean, expect: { n: au.length, nulls: N - au.length, mean } };
+    });
+    chk(`stats: from file:// the scan answers anyway (via ${rf.via}, n ${rf.n}/${rf.expect.n}, nulls ${rf.nulls}, mean ${rf.mean && rf.mean.toFixed(6)})`, rf.parquet && rf.n === rf.expect.n && rf.nulls === rf.expect.nulls && near(rf.mean, rf.expect.mean));
+    await pf.close();
+  }
+  chk(`stats: .dm band index from the columnar scan — band 0 AU ${JSON.stringify(r.dmBand)}`, r.dmBand && r.dmBand[0] === E.min && r.dmBand[1] === E.max);
+  await p.close();
+}
+
 try {
+  if (process.env.ONLY === 'stats') {                     // ONLY=stats: just the column statistics
+    await statsChecks('/tools/micro/index.html', 'dev tree');
+    await statsChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'screen') {                    // ONLY=screen: just worldAt / selectInPolygon
     await screenChecks('/tools/micro/index.html', 'dev tree');
     await screenChecks('/micro.html', 'built micro.html');
@@ -870,6 +965,7 @@ try {
   await apiChecks('/tools/micro/index.html', 'dev tree');
   await api2Checks('/tools/micro/index.html', 'dev tree');
   await screenChecks('/tools/micro/index.html', 'dev tree');
+  await statsChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
@@ -877,6 +973,7 @@ try {
   await apiChecks('/micro.html', 'built micro.html');
   await api2Checks('/micro.html', 'built micro.html');
   await screenChecks('/micro.html', 'built micro.html');
+  await statsChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

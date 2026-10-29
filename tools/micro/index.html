@@ -687,6 +687,7 @@
   .pp-badge { color: var(--accent); font-size: 10px; border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; }
   .pp-stats { margin: 2px 0 8px 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
   .pp-stats .v { color: var(--text); }
+  .pp-stats .pp-footnote { font-style: italic; opacity: .8; }
   .pp-spark { display: block; margin-top: 3px; }
   .pp-scan { width: 100%; margin: 0 0 10px; background: #242424; border: 1px solid var(--border); color: var(--muted); font: inherit; padding: 4px 8px; cursor: pointer; }
   .pp-scan:hover { color: var(--accent); border-color: var(--accent); }
@@ -955,7 +956,7 @@ import { parse as yamlParse, emit as yamlEmit, scalar as yamlScalar, mapNode as 
 import { census as xlsxCensus, openSheet as xlsxOpenSheet } from '../../ext/sheet/index.js';   // @gcu/sheet — worksheets as table documents (typed columns; no CSV round-trip)
 import { compileBool, compileValue, compileChunk, compileChunkBool, validate, complete, parse, deps, canMatch, quoteIdent, tokenize } from '../../ext/expr/index.js';   // lamina's filter language + autocomplete, verbatim
 import { createFilterDrawer, renderChain as fuiRenderChain, renderLeaf as fuiRenderLeaf, fmtNum as fuiFmtNum, flattenExpr as fuiFlatten } from '../../ext/filterui/index.js';   // @gcu/filterui — the span-surgical AST↔widget engine (extracted from this very drawer)
-import { welford, tdigest, quantileFromCentroids, topK, cardinality } from '../../ext/sluice/index.js';   // streaming column stats (one pass, all columns)
+import { welford, tdigest, quantileFromCentroids, cdfFromCentroids, histogramFromCentroids, topK, cardinality } from '../../ext/sluice/index.js';   // streaming column stats (one pass, all columns)
 import { createGrid, PENDING } from '../../ext/loom/index.js';   // the attribute table's canvas grid (lamina's engine)
 import { buildBVH, windingBVH, Winding, raycastBVH } from '../../ext/winding/index.js';   // select-by-solid containment (spec 17)
 import { Peel } from '../../ext/peel/index.js';   // depth-peel by-solid — fast on clean closed meshes (complements winding)
@@ -968,7 +969,7 @@ import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // sha
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
-import { PAINT_BLANK, paintRecount, matColSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
+import { PAINT_BLANK, paintRecount, matColSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
 import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
 import { numericColsOf, blockVolumeOf, volumeContextOf, volumeAt, computeGT, computeSwath, extractSamples, autoDeclusterSizes, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
 import { fmtSize, layerBytes, layerFiles, basename, joinPath, kindDir, relPathFor, resolveFileHandle, removeFileAt, layerRelpath, resolveDhFile, dhSetName } from './src/paths.js';   // project folder layout + path resolution
@@ -10941,7 +10942,7 @@ async function saveProject() {
       try {
         const h = doc.header;
         const isPq = !!doc.parquet, isDmL = !!h.dm;
-        if (!L._colStats || (!L._bands && !isPq)) {
+        if (!colStatsComplete(L) || (!L._bands && !isPq)) {
           $('#meta').textContent = `indexing ${L.label || L.name}…`;
           await scanColumns(L, (a, b) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b ? Math.round(100 * a / b) : 0}%…`; }, { bands: !isPq });
         }
@@ -14790,12 +14791,8 @@ function renderRampSection(body, L) {
   const stat = colName && L._colStats && L._colStats[colName];
   if (!stat || stat.kind !== 'num' || !stat.centroids) {
     const btn = document.createElement('button'); btn.className = 'pp-scan';
-    btn.textContent = `scan columns for the ${colName || 'channel'} histogram + quantiles`;
-    btn.onclick = async () => {
-      btn.disabled = true;
-      await scanColumns(L, (a, b2) => { btn.textContent = `scanning… ${b2 ? Math.round((100 * a) / b2) : a}%`; });
-      renderProps();
-    };
+    btn.textContent = `scan ${colName || 'the channel'} for its histogram + quantiles`;
+    wireScanButton(btn, L, colName ? [colName] : null);
     body.appendChild(btn);
     return;
   }
@@ -14803,8 +14800,7 @@ function renderRampSection(body, L) {
   const cvh = document.createElement('canvas'); cvh.className = 'pp-hist'; cvh.width = 480; cvh.height = 144;
   const [lo, hi] = rampRangeFor(L);
   const span = hi > lo ? hi - lo : 1;
-  const N = 48, bins = new Float64Array(N);
-  for (const [mean, n] of stat.centroids) bins[Math.min(N - 1, Math.max(0, Math.floor(((mean - lo) / span) * N)))] += n;
+  const N = 48, bins = histogramFromCentroids(stat.centroids, stat.total, lo, lo + span, N);
   let peak = 0;
   const pos = [];
   for (let b2 = 0; b2 < N; b2++) { if (bins[b2] > peak) peak = bins[b2]; if (bins[b2] > 0) pos.push(bins[b2]); }
@@ -14945,12 +14941,8 @@ function renderIntervalTable(body, L, lo, hi) {
   const h = layerTableHeader(L);
   const colName = String(selv).startsWith('chan:') && h ? h.columns[+String(selv).slice(5)] : null;
   const stat = colName && L._colStats && L._colStats[colName];
-  const bandCount = (a, b2) => {
-    if (!stat || !stat.centroids) return null;
-    let n = 0;
-    for (const [m2, w2] of stat.centroids) if (m2 >= a && m2 < b2) n += w2;
-    return n;
-  };
+  const F = stat && stat.centroids ? cdfFromCentroids(stat.centroids, stat.total) : null;
+  const bandCount = (a, b2) => (F ? Math.max(0, F(b2) - F(a)) : null);
   const edges = [lo, ...breaks, hi];
   const fmtN = (v) => (v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e5 ? Math.round(v / 1e3) + 'k' : Math.round(v).toLocaleString());
   const liveRows = [];                                     // per-band element refs for the live drag sync
@@ -15826,9 +15818,7 @@ function setColType(L, i, ty) {
 function sparkline(centroids, total, min, max) {
   const c = document.createElement('canvas'); c.width = 120; c.height = 18; c.className = 'pp-spark';
   const g = c.getContext('2d');
-  const N = 24, bins = new Float64Array(N);
-  const span = max > min ? max - min : 1;
-  for (const [mean, n] of centroids) bins[Math.min(N - 1, Math.max(0, Math.floor(((mean - min) / span) * N)))] += n;
+  const N = 24, bins = histogramFromCentroids(centroids, total, min, max > min ? max : min + 1, N);
   let peak = 0; for (let b = 0; b < N; b++) if (bins[b] > peak) peak = bins[b];
   g.fillStyle = '#c89b3c';
   for (let b = 0; b < N; b++) { const hp = peak ? Math.round((16 * bins[b]) / peak) : 0; if (hp) g.fillRect(b * 5, 17 - hp, 4, hp); }
@@ -15842,15 +15832,10 @@ function renderColumnsTab(body, L) {
     return;
   }
   const scan = document.createElement('button'); scan.className = 'pp-scan';
-  scan.textContent = L._colStats ? 'rescan columns' : 'scan columns — one pass, every column';
-  scan.onclick = async () => {
-    scan.disabled = true;
-    try {
-      await scanColumns(L, (a, b2) => { scan.textContent = `scanning… ${b2 ? Math.min(100, Math.round((100 * a) / b2)) : a.toLocaleString()}%`; });
-      renderProps();
-    } catch (e) { scan.textContent = `scan failed — ${e.message}`; scan.disabled = false; }
-  };
+  scan.textContent = colStatsComplete(L) ? 'rescan columns' : 'scan columns — one pass, every column';
+  wireScanButton(scan, L, null);
   body.appendChild(scan);
+  const footer = colStatsComplete(L) ? null : footerColStats(L);
   const calcB = document.createElement('button'); calcB.className = 'pp-scan';
   calcB.textContent = (L.calcCols || []).length ? `ƒ calculations… (${L.calcCols.length})` : 'ƒ add calculated column…';
   calcB.onclick = () => openCalcWindow(L, (L.calcCols || []).length ? 0 : -1);
@@ -15884,7 +15869,7 @@ function renderColumnsTab(body, L) {
     kb.onclick = (e) => { e.stopPropagation(); const r2 = kb.getBoundingClientRect(); openMenu(r2.left - 60, r2.bottom + 2); };
     row.appendChild(kb);
     body.appendChild(row);
-    appendColStats(body, L._colStats && L._colStats[name], onCtx);
+    appendColStats(body, (L._colStats && L._colStats[name]) || (footer && footer[name]), onCtx);
   }
   // ── ƒ calculated columns (§10.1): row-extensions the filter/scan/record all see ──
   const calc = L.calcCols || [];
@@ -15908,11 +15893,29 @@ function renderColumnsTab(body, L) {
   });
   body.appendChild(ppNote('right-click a column: type (number/text — drives the filter and color-by) · use as category / color channel · ƒ columns work in the filter, the scan, and the record panel'));
 }
+// a scan button: click scans (`columns` = the names, null = every column), a
+// second click while it runs cancels; the panel re-renders when the scan lands
+function wireScanButton(btn, L, columns) {
+  let ac = null;
+  btn.onclick = async () => {
+    if (ac) { ac.abort(); return; }
+    ac = new AbortController();
+    try {
+      await scanColumns(L, (a, b2) => { btn.textContent = `scanning… ${b2 ? Math.min(100, Math.round((100 * a) / b2)) : a.toLocaleString()}% — click to cancel`; }, { columns, signal: ac.signal });
+      renderProps();
+    } catch (e) {
+      btn.textContent = e.name === 'AbortError' ? 'scan cancelled — click to scan again' : `scan failed — ${e.message}`;
+    } finally { ac = null; }
+  };
+}
 function appendColStats(body, stat, onCtx) {
   if (!stat) return;
   const d = document.createElement('div'); d.className = 'pp-stats';
   if (onCtx) d.oncontextmenu = onCtx;
-  if (stat.kind === 'num') {
+  if (stat.footer) {                                       // Parquet's footer, before any scan
+    d.innerHTML = `n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>`
+      + `<span class="v">${fmtStat(stat.min)}</span> … <span class="v">${fmtStat(stat.max)}</span> <span class="pp-footnote">from the file's footer — scan for mean, sd + quantiles</span>`;
+  } else if (stat.kind === 'num') {
     d.innerHTML = `n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>`
       + `mean <span class="v">${fmtStat(stat.mean)}</span> · std <span class="v">${fmtStat(stat.std)}</span><br>`
       + `<span class="v">${fmtStat(stat.min)}</span> · p25 <span class="v">${fmtStat(stat.p25)}</span> · p50 <span class="v">${fmtStat(stat.p50)}</span> · p75 <span class="v">${fmtStat(stat.p75)}</span> · <span class="v">${fmtStat(stat.max)}</span>`;
@@ -17771,7 +17774,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, addLayer, pick: pickRecord,deliverBlob, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, addLayer, pick: pickRecord,deliverBlob, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

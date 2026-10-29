@@ -4,9 +4,10 @@
 // the app injects the sidecar reader (setSidecarReader); UI reactions to a
 // changed column set are injected too (setColumnsChangedHook).
 import { parquetInfo, readParquetRange, writeParquet } from '../../../ext/parquet/index.js';
-import { welford, tdigest, quantileFromCentroids, topK, cardinality } from '../../../ext/sluice/index.js';
 import { deps, parse } from '../../../ext/expr/index.js';
 import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow } from './records.js';
+import { openDmModel } from '../../../ext/condenser/src/main.js';
+import { colAcc, scanParquetInWorkers, STAT_SLICE } from './colstats.js';
 
 export const PAINT_BLANK = '#33373c';                      // unpainted recedes toward the background
 
@@ -235,80 +236,209 @@ export async function pinnedSweep(AL, header, m, names, needL, calcChunkFns, chu
   }
   return hits;
 }
-// ONE streamed pass over the layer's table → per-column stats for the columns
-// tab (welford + t-digest numerics, topK/cardinality text), extended rows in
-// census order. opts.bands: also collect per-64k-record-band min/max for every
-// BASE numeric column into L._bands — the .dm/CSV pushdown substrate
-// (parquet's footer stats, retrofitted). Band numbering = the layer's RECORD
-// numbering (raw for .dm/parquet, accepted rows for delimited).
-export async function scanColumns(L, onTick, { bands = false } = {}) {
+// ── column statistics ─────────────────────────────────────────────────────────
+// Per-column stats for the columns tab and the styling histogram: welford +
+// t-digest for numbers, topK/cardinality for text. Streamed, bounded memory.
+//
+// opts.columns — the names to scan (default: every column). A partial scan
+//   MERGES into L._colStats, so asking for one column never drops the others.
+// opts.bands — also collect per-64k-record-band min/max for every BASE numeric
+//   column into L._bands, the .dm/CSV pushdown substrate (parquet's footer
+//   stats, retrofitted). Whole-table scans only. Band numbering = the layer's
+//   RECORD numbering (raw for .dm/parquet, accepted rows for delimited).
+// opts.signal — an AbortSignal; an aborted scan throws AbortError and leaves
+//   L._colStats as it was.
+// opts.workers — false keeps a Parquet scan on the page (the fallback path).
+//
+// Parquet base columns go to a pool of workers (colstats.js), row groups
+// shared out, states merged; where workers can't run (file://) the page does it.
+// Parquet and .dm base columns are read COLUMNAR (only the asked-for columns,
+// typed batches, no row arrays); calc/paint columns and delimited sources ride
+// the row pass (extendRow needs whole rows). onTick(done, total) reports rows.
+const YIELD_MS = 12;
+
+export async function scanColumns(L, onTick, { bands = false, columns = null, signal = null, workers = true } = {}) {
   const h = layerTableHeader(L); if (!h) return null;
   const calc = L.calcCols || [];
   const paint = L.paintCols || [];
+  const nBase = h.columns.length;
   const cols = h.columns.concat(calc.map((c) => c.name), paint.map((c) => c.name));
-  const isNumAt = (i) => (i < h.columns.length ? colIsNumeric(L, h, i)
-    : i < h.columns.length + calc.length ? (calc[i - h.columns.length].ty || 'number') === 'number'
-    : paint[i - h.columns.length - calc.length].kind === 'ratio');   // painted = categorical, ratio = numeric
-  const W = welford(), TD = tdigest(), TK = topK({ limit: 500 }), CD = cardinality({ limit: 4096 });
-  const st = cols.map((name, i) => (isNumAt(i)
-    ? { num: true, w: W.create(), td: TD.create(), nulls: 0 }
-    : { num: false, top: TK.create(), card: CD.create(), nulls: 0 }));
+  const isNumAt = (i) => (i < nBase ? colIsNumeric(L, h, i)
+    : i < nBase + calc.length ? (calc[i - nBase].ty || 'number') === 'number'
+    : paint[i - nBase - calc.length].kind === 'ratio');   // painted = categorical, ratio = numeric
+  const want = columns ? new Set(columns) : null;
+  const idxs = cols.map((_, i) => i).filter((i) => !want || want.has(cols[i]));
+  if (want) bands = false;                                 // bands index the whole table, never a subset
+  const acc = colAcc();
+  const st = new Map(idxs.map((i) => [i, acc.create(isNumAt(i))]));
+  const doc = L.docs.blockDoc;
+  const columnar = !!(doc && (doc.parquet || (doc.header && doc.header.dm)));
+  const colIdx = columnar ? idxs.filter((i) => i < nBase) : [];
+  const rowIdx = columnar ? idxs.filter((i) => i >= nBase) : idxs;
+  const total = (doc && doc.header && doc.header.count) || 0;
+  const passes = (colIdx.length ? 1 : 0) + (rowIdx.length ? 1 : 0);
+  let pass = 0;
+  const tick = onTick ? (done) => onTick(Math.round((pass * total + done) / Math.max(1, passes)), total) : null;
+  const pacer = makePacer(signal);
   const BAND = 65536;
-  const bandCols = bands ? h.columns.map((nm, i) => (colIsNumeric(L, h, i) ? i : -1)).filter((i) => i >= 0) : [];
-  const bandData = bands ? new Map(bandCols.map((i) => [i, []])) : null;   // colIdx → [min0,max0, min1,max1, …]
-  let rows = 0;
-  // renderer record numbering for painted lookups (delimited skips bad-coord rows)
-  const mSc = h.mapping || {};
-  const isDelimSc = !blockCaps(L).rowIsRecord;
-  let recSc = 0;
-  for await (const batch of layerRows(L, onTick ? (a, b) => onTick(a, b) : null)) {
-    for (const f0 of batch) {
-      let rAt = null;
-      if (!isDelimSc) rAt = recSc++;
-      else if (Number.isFinite(+f0[mSc.x]) && Number.isFinite(+f0[mSc.y]) && Number.isFinite(+f0[mSc.z])) rAt = recSc++;
-      const f = extendRow(L, f0, rAt);
-      rows++;
-      if (bands && rAt != null) {                          // band index rides the layer's record numbering (raw for .dm, accepted for CSV)
-        const at = ((rAt / BAND) | 0) * 2;
-        for (const i of bandCols) {
-          const x = typeof f0[i] === 'number' ? f0[i] : parseFloat(f0[i]);
-          if (!Number.isFinite(x)) continue;
-          const arr = bandData.get(i);
-          if (arr[at] === undefined) { arr[at] = x; arr[at + 1] = x; }
-          else { if (x < arr[at]) arr[at] = x; if (x > arr[at + 1]) arr[at + 1] = x; }
-        }
-      }
-      for (let i = 0; i < cols.length; i++) {
-        const c = st[i], v = f[i];
-        if (c.num) {
-          const x = typeof v === 'number' ? v : parseFloat(v);
-          if (!Number.isFinite(x)) { c.nulls++; continue; }
-          W.push(c.w, x); TD.push(c.td, x);
-        } else {
-          const sv = v == null ? '' : String(v).trim();
-          if (!sv) { c.nulls++; continue; }
-          TK.push(c.top, sv); CD.push(c.card, sv);
-        }
-      }
-    }
-    await new Promise((r) => setTimeout(r));               // the panel stays live
+  let bandData = null, rows = 0;
+  // Parquet: a pool of workers, row groups handed out (null = can't run here → below)
+  let via = 'page';
+  if (colIdx.length && doc.parquet && !bands && workers) {
+    const P = doc.parquet;
+    const got = await scanParquetInWorkers({ file: P.buf, meta: P.meta, rowGroups: P.rowGroups, cols: colIdx.map((i) => ({ name: h.columns[i], num: isNumAt(i) })), signal, onProgress: tick });
+    if (got) { colIdx.forEach((i, k) => st.set(i, got[k])); rows = total; pass++; colIdx.length = 0; via = 'workers'; }
   }
-  if (bands) {
+  if (colIdx.length) {
+    const bandCols = bands ? colIdx.filter((i) => isNumAt(i)) : [];
+    if (bands) bandData = new Map(bandCols.map((i) => [i, []]));
+    for await (const { start, count, i, arr } of columnarBatches(L, colIdx, signal)) {
+      {
+        const c = st.get(i);
+        for (let a = 0; a < count; a += STAT_SLICE) {
+          const b = Math.min(count, a + STAT_SLICE);
+          if (c.num) acc.pushNumbers(c, arr, a, b); else for (let k = a; k < b; k++) acc.pushText(c, arr[k]);
+          await pacer();
+        }
+        if (bandData && bandData.has(i)) bandMinMax(bandData.get(i), arr, count, start, BAND);
+      }
+      rows = Math.max(rows, start + count);
+      if (tick) tick(rows);
+    }
+    pass++;
+  }
+  if (rowIdx.length) {
+    const bandCols = bands && !colIdx.length ? h.columns.map((nm, i) => (colIsNumeric(L, h, i) ? i : -1)).filter((i) => i >= 0) : [];
+    if (bandCols.length) bandData = new Map(bandCols.map((i) => [i, []]));
+    const mSc = h.mapping || {};
+    const isDelimSc = !blockCaps(L).rowIsRecord;           // renderer record numbering for painted lookups (delimited skips bad-coord rows)
+    let recSc = 0, done = 0;
+    rows = 0;
+    for await (const batch of layerRows(L, null)) {
+      for (const f0 of batch) {
+        let rAt = null;
+        if (!isDelimSc) rAt = recSc++;
+        else if (Number.isFinite(+f0[mSc.x]) && Number.isFinite(+f0[mSc.y]) && Number.isFinite(+f0[mSc.z])) rAt = recSc++;
+        const f = extendRow(L, f0, rAt);
+        rows++;
+        if (bandCols.length && rAt != null) {              // band index rides the layer's record numbering (raw for .dm, accepted for CSV)
+          const at = ((rAt / BAND) | 0) * 2;
+          for (const i of bandCols) {
+            const x = typeof f0[i] === 'number' ? f0[i] : parseFloat(f0[i]);
+            if (!Number.isFinite(x)) continue;
+            const arr = bandData.get(i);
+            if (arr[at] === undefined) { arr[at] = x; arr[at + 1] = x; }
+            else { if (x < arr[at]) arr[at] = x; if (x > arr[at + 1]) arr[at + 1] = x; }
+          }
+        }
+        for (const i of rowIdx) {
+          const c = st.get(i);
+          if (c.num) acc.pushNumber(c, f[i]); else acc.pushText(c, f[i]);
+        }
+        if ((++done & 4095) === 0) await pacer();
+      }
+      if (tick) tick(rows);
+      await pacer();
+    }
+    pass++;
+  }
+  if (signal && signal.aborted) throw abortError();
+  if (bandData) {
     const colsOut = {};
-    for (const i of bandCols) colsOut[h.columns[i]] = bandData.get(i).map((v) => (v === undefined ? null : v));
+    for (const [i, arr] of bandData) colsOut[h.columns[i]] = Array.from(arr, (v) => (v === undefined ? null : v));
     L._bands = { size: BAND, cols: colsOut };
   }
-  L._colStats = {};
-  for (let i = 0; i < cols.length; i++) {
-    const c = st[i];
-    if (c.num) {
-      const w = W.result(c.w), td = TD.result(c.td);
-      const q = (p) => quantileFromCentroids(td.centroids, td.count, p);
-      L._colStats[cols[i]] = { kind: 'num', n: w.count, nulls: c.nulls, mean: w.mean, std: w.std, min: w.min, max: w.max, p25: q(0.25), p50: q(0.5), p75: q(0.75), centroids: td.centroids, total: td.count };
-    } else {
-      const t = TK.result(c.top);
-      L._colStats[cols[i]] = { kind: 'txt', n: rows - c.nulls, nulls: c.nulls, distinct: t.distinct, overflow: t.overflow, top: t.top(5) };
+  const out = want && L._colStats ? { ...L._colStats } : {};
+  for (const i of idxs) out[cols[i]] = acc.result(st.get(i), rows);
+  L._colStats = out;
+  L._lastScan = { via };                                   // which path ran (the smoke reads it)
+  return out;
+}
+
+// every column of the table has a scanned entry (a partial scan leaves gaps)
+export function colStatsComplete(L) {
+  const h = layerTableHeader(L);
+  if (!h || !L._colStats) return false;
+  const names = h.columns.concat((L.calcCols || []).map((c) => c.name), (L.paintCols || []).map((c) => c.name));
+  return names.every((n) => L._colStats[n]);
+}
+
+// what Parquet's footer already knows, per column, before any scan: n, nulls,
+// min and max (numbers only). { name → { kind:'num', n, nulls, min, max, footer:true } }
+// or null for a source with no footer.
+export function footerColStats(L) {
+  const P = L.docs && L.docs.blockDoc && L.docs.blockDoc.parquet;
+  if (!P || !P.rowGroups) return null;
+  const out = {};
+  for (const rg of P.rowGroups) {
+    for (const name in rg.columns || {}) {
+      const c = rg.columns[name];
+      const o = out[name] || (out[name] = { kind: 'num', n: 0, nulls: 0, min: Infinity, max: -Infinity, footer: true, ok: true });
+      o.n += rg.rowCount; o.nulls += c.nulls || 0;
+      if (typeof c.min === 'number' && typeof c.max === 'number') { if (c.min < o.min) o.min = c.min; if (c.max > o.max) o.max = c.max; } else o.ok = false;
     }
   }
-  return L._colStats;
+  for (const name in out) {
+    const o = out[name];
+    o.n -= o.nulls;
+    if (!o.ok || o.min === Infinity) delete out[name];   // a text column, or a group without stats
+    else delete o.ok;
+  }
+  return out;
 }
+
+// columnar batches of BASE columns, ONE column at a time: { start, count, i, arr }
+// (i = the column index, start = the batch's first record). Parquet: one row
+// group at a time, one column chunk decoded per call — one column resident and
+// the page never waits on a whole group's decode. .dm: strided, those fields only.
+async function* columnarBatches(L, colIdx, signal) {
+  const doc = L.docs.blockDoc, h = doc.header;
+  if (doc.parquet) {
+    const P = doc.parquet;
+    let start = 0;
+    for (const rg of P.rowGroups) {
+      const count = rg.rowCount;
+      for (const i of colIdx) {
+        if (signal && signal.aborted) throw abortError();
+        const name = h.columns[i];
+        const got = await readParquetRange(P.buf, [name], start, start + count, P.meta);
+        yield { start, count, i, arr: got[name] };
+      }
+      start += count;
+    }
+    return;
+  }
+  const { columnBatches } = await openDmModel(doc.blob);
+  for await (const { recStart, count, cols } of columnBatches(colIdx)) {
+    for (const i of colIdx) {
+      if (signal && signal.aborted) throw abortError();
+      yield { start: recStart, count, i, arr: cols[i] };
+    }
+  }
+}
+
+// per-64k-record band min/max of one column batch (records start..start+count)
+function bandMinMax(out, col, count, start, BAND) {
+  for (let k = 0; k < count; k++) {
+    const v = col[k];
+    const x = typeof v === 'number' ? v : (v == null || v === '' ? NaN : parseFloat(v));
+    if (!Number.isFinite(x)) continue;
+    const at = (((start + k) / BAND) | 0) * 2;
+    if (out[at] === undefined) { out[at] = x; out[at + 1] = x; }
+    else { if (x < out[at]) out[at] = x; if (x > out[at + 1]) out[at + 1] = x; }
+  }
+}
+
+// yield to the page every YIELD_MS of work (a fixed yield per batch either
+// starves the page on big batches or wastes time on small ones); checks abort
+function makePacer(signal) {
+  let last = performance.now();
+  return async () => {
+    if (signal && signal.aborted) throw abortError();
+    if (performance.now() - last < YIELD_MS) return;
+    await new Promise((r) => setTimeout(r));
+    last = performance.now();
+    if (signal && signal.aborted) throw abortError();
+  };
+}
+function abortError() { return Object.assign(new Error('scan cancelled'), { name: 'AbortError' }); }
