@@ -168,10 +168,23 @@ export async function readParquetRange(input, columns, rowStart, rowEnd, metadat
   const file = toAsyncBuffer(input);
   if (!metadata && opts.int64 !== 'bigint') metadata = await parquetMetadataAsync(file);   // the INT64 rule reads the footer stats
   const wide = wideInt64(metadata);
+  // ONE decode call for all the columns, taken COLUMNAR (hyparquet's onChunk):
+  // no row assembly, about half the time of the per-column row reads. A chunk
+  // can cover whole pages beyond the range, so pieces are clipped to
+  // [rowStart, rowEnd). Columns come back as plain Arrays (typed chunks are
+  // copied out), one shape whatever the file's nullability.
+  rowStart = rowStart || 0;
+  if (rowEnd == null) rowEnd = Number((metadata || await parquetMetadataAsync(file)).num_rows);
+  const pieces = new Map(columns.map((n) => [n, []]));
+  await parquetRead({ file, compressors: readCompressors, metadata, columns, rowStart, rowEnd,
+    onChunk: ({ columnName, columnData, rowStart: s, rowEnd: e }) => { const p = pieces.get(columnName); if (p) p.push({ s, e, d: columnData }); } });
   const out = {};
   for (const name of columns) {
-    const col = [];
-    await parquetRead({ file, compressors: readCompressors, metadata, columns: [name], rowStart, rowEnd, onComplete: (rows) => { for (const r of rows) col.push(r[0]); } });
+    const col = new Array(Math.max(0, rowEnd - rowStart)).fill(null);
+    for (const { s, e, d } of pieces.get(name)) {
+      const a = Math.max(s, rowStart), b = Math.min(e, rowEnd);
+      for (let r = a; r < b; r++) col[r - rowStart] = d[r - s];
+    }
     out[name] = opts.int64 === 'bigint' ? col : int64Column(col, wide.has(name));
   }
   return out;
