@@ -51,6 +51,39 @@ export const DIM_PALETTE_MAX = 256;
 const r10 = (v) => Number(v.toPrecision(10));
 /** The canonical key of one (dx, dy, dz) size triple — full sizes, not halves. */
 export const dimKey = (dx, dy, dz) => `${r10(dx)},${r10(dy)},${r10(dz)}`;
+/**
+ * dimKey with a memo: the same triple builds its string once. Distinct sizes are
+ * few (≤ DIM_PALETTE_MAX on any model we draw), so the memo stays small.
+ */
+export function makeDimKeyer() {
+  const memo = new Map();
+  return (dx, dy, dz) => {
+    let my = memo.get(dx); if (!my) memo.set(dx, my = new Map());
+    let mz = my.get(dy); if (!mz) my.set(dy, mz = new Map());
+    let k = mz.get(dz); if (k === undefined) mz.set(dz, k = dimKey(dx, dy, dz));
+    return k;
+  };
+}
+/**
+ * One axis's distinct centroids, rounded to 10 significant digits. `add(v)` gives
+ * exactly `if (set.size < cap) set.add(r10(v))`, but rounds each distinct RAW value
+ * once: r10 goes through a string, and per value it was 60 s of a 60M-block open.
+ * A block model repeats a few hundred values per axis, so almost every add is a
+ * Set hit. The raw memo is bounded; past it, values are rounded as they come.
+ */
+export function axisDistinct(cap) {
+  const set = new Set(), seen = new Set(), RAW = cap * 4;
+  let last = NaN;
+  return {
+    set,
+    add(v) {
+      if (v === last || set.size >= cap) return;
+      last = v;
+      if (seen.size < RAW) { if (seen.has(v)) return; seen.add(v); }
+      set.add(r10(v));
+    },
+  };
+}
 /** size key → palette code, rebuilt from a persisted half-size palette. */
 export function dimCodeFromPalette(dimPalette) {
   return new Map(dimPalette.map((h, i) => [dimKey(h[0] * 2, h[1] * 2, h[2] * 2), i]));

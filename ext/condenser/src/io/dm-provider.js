@@ -14,7 +14,7 @@
 // (per-record INC) and non-model .dm files are a later milestone.
 
 import { detectDM, parseHeader, recordRange, decodeRecord, readField } from '../../../dm/src/dm.js';
-import { inferSubBlockLattice, dimKey, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
+import { inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
 
 // PROJECTED batches over any .dm — decode only the requested column indices by
 // striding each field's fixed word-offset across records (no whole-record decode,
@@ -138,9 +138,10 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     };
     bbox = { min: [mor[0], mor[1], mor[2]], max: [mor[0] + inc[0] * cnt[0], mor[1] + inc[1] * cnt[1], mor[2] + inc[2] * cnt[2]] };
   } else {
-    const CAP = 300000, r10 = (v) => Number(v.toPrecision(10));
+    const CAP = 300000, dimKeyOf = makeDimKeyer();
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    const ax = [new Set(), new Set(), new Set()];            // axis distinct centroids (for the fine lattice)
+    const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)];   // axis distinct centroids (for the fine lattice)
+    const ax = axc.map((c) => c.set);
     const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
     const sweepCols = perRecDims ? [xc, yc, zc, incIdx.x, incIdx.y, incIdx.z] : [xc, yc, zc];
     for await (const { recStart, count, cols } of columnBatches(sweepCols)) {
@@ -153,11 +154,11 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
         if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
         if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
         if (perRecDims) {
-          if (ax[0].size < CAP) ax[0].add(r10(xv)); if (ax[1].size < CAP) ax[1].add(r10(yv)); if (ax[2].size < CAP) ax[2].add(r10(zv));
+          axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
           const dx = DX[k], dy = DY[k], dz = DZ[k];
           if (dx > 0 && dy > 0 && dz > 0) {
             if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-            if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKey(dx, dy, dz));
+            if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
           }
         }
       }
@@ -208,6 +209,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
     if (catIdx >= 0) streamCols.push(catIdx);
     if (dimCode) streamCols.push(incIdx.x, incIdx.y, incIdx.z);
     let buf = alloc(), fill = 0, done = 0;
+    const dimKeyOf = makeDimKeyer();
     for await (const { recStart, count, cols } of columnBatches(streamCols, { signal })) {
       const X = cols[xc], Y = cols[yc], Z = cols[zc];
       const CH = chan != null ? cols[chan] : null, CA = catIdx >= 0 ? cols[catIdx] : null;
@@ -227,7 +229,7 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
           }
           buf.cat[fill] = code;
         }
-        if (buf.dim) { const c = dimCode.get(dimKey(DX[k], DY[k], DZ[k])); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dim) { const c = dimCode.get(dimKeyOf(DX[k], DY[k], DZ[k])); buf.dim[fill] = c === undefined ? 0 : c; }
         buf.recIdx[fill] = recStart + k;                   // RAW record number — the join key
         fill++;
         if (fill === chunkPoints) {

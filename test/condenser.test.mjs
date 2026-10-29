@@ -1291,3 +1291,29 @@ test('openDmWireframe reads both halves in page runs (no whole-file buffer)', as
   assert.equal(m.header.triCount, 2);
   assert.equal(m.header.dropped, 1);
 });
+
+// ── axisDistinct / makeDimKeyer: the discovery sweep's memoized rounding ──
+// Each must give exactly what the per-value form gave (`if (size < cap)
+// set.add(r10(v))`, `dimKey(...)`) — including at the cap and past the raw memo.
+import { axisDistinct, makeDimKeyer, dimKey } from '../ext/condenser/src/main.js';
+test('axisDistinct: same set as rounding every value, at and past the caps', () => {
+  const r10 = (v) => Number(v.toPrecision(10));
+  const rnd = mulberry32(7);
+  const cases = [
+    { cap: 1000, vals: Array.from({ length: 50000 }, (_, i) => 7000002.5 + 5 * (i % 300)) },                          // a lattice axis
+    { cap: 1000, vals: Array.from({ length: 50000 }, (_, i) => 1000 + 5 * (i % 300) + (i % 7) * 1e-12) },             // float noise below 10 digits
+    { cap: 100, vals: Array.from({ length: 5000 }, () => Math.floor(rnd() * 500) * 0.1) },                           // hits the cap
+    { cap: 10, vals: Array.from({ length: 5000 }, () => rnd() * 1e6) },                                              // past the raw memo (4 × cap)
+  ];
+  for (const { cap, vals } of cases) {
+    const want = new Set();
+    for (const v of vals) if (want.size < cap) want.add(r10(v));
+    const c = axisDistinct(cap);
+    for (const v of vals) c.add(v);
+    assert.deepEqual([...c.set].sort((a, b) => a - b), [...want].sort((a, b) => a - b));
+  }
+});
+test('makeDimKeyer: the same keys as dimKey', () => {
+  const k = makeDimKeyer();
+  for (const t of [[5, 5, 5], [2.5, 5, 10], [5, 5, 5], [0.1 + 0.2, 1, 1], [2.5, 5, 10]]) assert.equal(k(...t), dimKey(...t));
+});

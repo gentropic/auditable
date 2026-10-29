@@ -13,7 +13,7 @@
 //   RawChunk = { count, x, y, z: Float64Array, chan: Float64Array,
 //                cat: Uint8Array|null, recStart }
 
-import { inferAxis, inferSubBlockLattice, dimKey, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
+import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
 import { WS, splitFields, RecordJoiner, sampleRecords } from './delimited.js';
 import { detectRotatedLattice, latticeMisfit } from '../grid/basis.js';
 
@@ -218,6 +218,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
     const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
+    const dimKeyOf = makeDimKeyer();
     for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2 })) {
       for (const f of batch) {
         const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
@@ -225,7 +226,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
         buf.chan[fill] = map.chan != null ? +f[map.chan] : 0;
         if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
-        if (buf.dim) { const c = dimInfo.code.get(dimKey(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
+        if (buf.dim) { const c = dimInfo.code.get(dimKeyOf(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
         fill++;
         if (fill === chunkPoints) {
           yield { count: fill, x: buf.x, y: buf.y, z: buf.z, chan: buf.chan, cat: buf.cat, dim: buf.dim, recStart };
@@ -313,10 +314,11 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   const dimSet = new Set();
 
   // ── sweep 1: discovery — axis distincts + extents + category dictionary ──
-  const ax = [new Set(), new Set(), new Set()];
+  const axc = [axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT)];
+  const ax = axc.map((c) => c.set);
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   const catCounts = new Map();
-  const round10 = (v) => Number(v.toPrecision(10));
+  const dimKeyOf = makeDimKeyer();
   let count = 0;
   const hasHeaderRow = !!sniff.header && !sniff.generated;
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
@@ -334,15 +336,13 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
       if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
-      if (ax[0].size < CAP_DISTINCT) ax[0].add(round10(xv));
-      if (ax[1].size < CAP_DISTINCT) ax[1].add(round10(yv));
-      if (ax[2].size < CAP_DISTINCT) ax[2].add(round10(zv));
+      axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
       if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); if (v) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
       if (hasDims) {
         const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
         if (dx > 0 && dy > 0 && dz > 0) {
           if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKey(dx, dy, dz));
+          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
         }
       }
     }
