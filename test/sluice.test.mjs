@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   accumulator, count, sum, extent, welford, weightedStats,
-  tdigest, quantile, quantileFromCentroids,
+  tdigest, quantile, quantileFromCentroids, cdfFromCentroids, histogramFromCentroids,
   topK, cardinality,
   histogram, cumulativeFromTop,
   collect, groupBy, binned,
@@ -118,6 +118,73 @@ test('tdigest merge keeps the median', () => {
   const out = acc.result(m);
   assert.equal(out.count, 10000);
   assert.ok(Math.abs(quantileFromCentroids(out.centroids, out.count, 0.5) - 5000) < 100);
+});
+
+// the size bound must scale with N: a digest stays O(δ) centroids however many
+// values it has seen. (It read 4·δ·q(1−q) — centroids capped near δ points, so
+// N/20 centroids and quadratic flushes: 12M values took minutes.)
+const skewed = (n, seed = 7) => {                           // a gamma-ish grade: x², x ~ Exp(1)
+  let s = seed; const r = () => ((s = (s * 1103515245 + 12345) % 2147483648) + 0.5) / 2147483648;
+  return Float64Array.from({ length: n }, () => (-Math.log(r())) ** 2);
+};
+test('tdigest stays bounded and accurate as N grows', () => {
+  const acc = tdigest();
+  const xs = skewed(400000), ex = Float64Array.from(xs).sort();
+  const s = acc.create();
+  for (const v of xs) acc.push(s, v);
+  const out = acc.result(s);
+  assert.ok(out.centroids.length < 1500, `centroids ${out.centroids.length}`);
+  for (const p of [0.01, 0.25, 0.5, 0.75, 0.99]) {
+    const e = ex[Math.floor(p * (xs.length - 1))], a = quantileFromCentroids(out.centroids, out.count, p);
+    assert.ok(Math.abs(a - e) / e < 0.01, `p${p}: ${a} vs ${e}`);
+  }
+});
+
+test('tdigest pushArray matches push, skips non-finite, and merges', () => {
+  const acc = tdigest();
+  const xs = skewed(200000, 11), ex = Float64Array.from(xs).sort();
+  const s = acc.create();
+  for (let o = 0; o < xs.length; o += 30000) acc.pushArray(s, xs, o, Math.min(xs.length, o + 30000));
+  const out = acc.result(s);
+  assert.equal(out.count, xs.length);
+  assert.ok(out.centroids.length < 1500);
+  for (const p of [0.01, 0.5, 0.99]) {
+    const e = ex[Math.floor(p * (xs.length - 1))];
+    assert.ok(Math.abs(quantileFromCentroids(out.centroids, out.count, p) - e) / e < 0.01, `p${p}`);
+  }
+  const m = acc.create();
+  assert.equal(acc.pushArray(m, [1, null, 2, NaN, 3, undefined, Infinity, '4']), 3);   // a string is not a number
+  acc.push(m, 4);
+  assert.deepEqual(acc.result(m).centroids, [[1, 1], [2, 1], [3, 1], [4, 1]]);
+  const a = acc.create(), b = acc.create();
+  acc.pushArray(a, xs, 0, 100000); acc.pushArray(b, xs, 100000);
+  const mm = acc.result(acc.merge(a, b));
+  assert.equal(mm.count, xs.length);
+  const e = ex[Math.floor(0.5 * (xs.length - 1))];
+  assert.ok(Math.abs(quantileFromCentroids(mm.centroids, mm.count, 0.5) - e) / e < 0.01);
+});
+
+test('histogramFromCentroids spreads centroid mass through the CDF', () => {
+  const acc = tdigest();
+  const xs = skewed(300000, 5);
+  const s = acc.create();
+  acc.pushArray(s, xs);
+  const { centroids, count } = acc.result(s);
+  const lo = 0, hi = 4, B = 20;
+  const exact = new Float64Array(B);
+  for (const v of xs) exact[Math.min(B - 1, Math.max(0, Math.floor((v - lo) / (hi - lo) * B)))]++;   // beyond hi → the last bin
+  const h = histogramFromCentroids(centroids, count, lo, hi, B);
+  assert.ok(Math.abs(h.reduce((a, v) => a + v, 0) - count) < 1e-6, 'every value lands in a bin');
+  const point = new Float64Array(B);                       // the old way: each centroid piled on its mean
+  for (const [m, n] of centroids) point[Math.min(B - 1, Math.max(0, Math.floor((m - lo) / (hi - lo) * B)))] += n;
+  const l1 = (x) => x.reduce((acc2, v, b) => acc2 + Math.abs(v - exact[b]), 0) / count;
+  assert.ok(l1(h) < 0.025, `L1 ${l1(h)}`);
+  assert.ok(l1(h) < l1(point), `cdf ${l1(h)} vs point ${l1(point)}`);
+  const F = cdfFromCentroids(centroids, count);
+  assert.equal(F(-1), 0);
+  assert.equal(F(1e9), count);
+  const below1 = xs.filter((v) => v < 1).length;
+  assert.ok(Math.abs(F(1) - below1) / below1 < 0.01);
 });
 
 // ── categorical ───────────────────────────────────────────────────────
