@@ -1047,7 +1047,81 @@ async function openChecks(url, label) {
     W.kvOk.grid && P.kvOk.grid && W.kvOk.fp.h === P.kvOk.fp.h && W.kvOk.fp.n === 1286 && !W.kvBad.grid && !P.kvBad.grid && /outside the lattice/.test(W.kvBad.reason) && W.kvBad.reason === P.kvBad.reason);
 }
 
+// a shared colour scale across panes (the atelier's comparison windows): two
+// micro pages, two models with the same grade at the centre block but different
+// data ranges. Per-pane scaling colours that block differently; one range makes
+// the centre pixels match. Plus the palette, the reasons, and addLayer.
+async function colourChecks(url, label) {
+  console.log(`── colour range and palette (${label})`);
+  const pane = async (hi) => {
+    const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+    await p.setViewportSize({ width: 600, height: 480 });
+    await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+    await p.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+    await p.evaluate(async (hi) => {
+      const X = [], Y = [], Z = [], AU = [], ROCK = [];
+      for (let j = 0; j < 11; j++) for (let i = 0; i < 11; i++) { X.push(5 + 10 * i); Y.push(5 + 10 * j); Z.push(5); AU.push(i === 5 && j === 5 ? 5 : (hi * ((i + j) % 11)) / 10); ROCK.push(i < 5 ? 'A' : 'B'); }
+      window.__id = await window.micro.addLayer({ kind: 'blocks', name: 'pane', columns: { X, Y, Z, AU, ROCK }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+      await window.micro.look('plan'); await window.micro.fit();
+    }, hi);
+    return p;
+  };
+  // the centre pixel of a figure without decorations
+  const centre = (p) => p.evaluate(async () => {
+    const b = await window.micro.snapshot({ decorations: false }), bmp = await createImageBitmap(b);
+    const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+    return [...g.getImageData(bmp.width >> 1, bmp.height >> 1, 1, 1).data.slice(0, 3)];
+  });
+  const A = await pane(10), B = await pane(20);
+  const same = (a, b, t = 3) => a.every((v, i) => Math.abs(v - b[i]) <= t);
+  const a0 = await centre(A), b0 = await centre(B);
+  const ra0 = await A.evaluate(() => window.micro.colorRange(window.__id));
+  for (const p of [A, B]) await p.evaluate(() => window.micro.setColorRange(window.__id, { min: 0, max: 20 }));
+  const a1 = await centre(A), b1 = await centre(B);
+  const info = await A.evaluate(() => { const l = window.micro.layer(window.__id); return { range: l.colorRange, palette: l.palette }; });
+  chk(`colour: per-pane scaling colours the same grade differently (${a0} vs ${b0}, A auto ${ra0 && `${ra0.min}…${ra0.max}`}); one range makes them match (${a1} vs ${b1}); layer() reads it back ${JSON.stringify(info.range)}`,
+    !same(a0, b0) && same(a1, b1) && ra0 && ra0.min === 0 && ra0.max === 10 && ra0.fixed === false && info.range.min === 0 && info.range.max === 20 && info.range.fixed === true && info.palette === 'viridis');
+  // a difference: rdbu, symmetric about the centre grade → white-ish there
+  const r2 = await A.evaluate(async () => {
+    const m = window.micro, out = { palettes: m.palettes() };
+    await m.setPalette(window.__id, 'rdbu'); await m.setColorRange(window.__id, { min: 0, max: 10 });
+    out.palette = m.layer(window.__id).palette;
+    return out;
+  });
+  const a2 = await centre(A);
+  const spread = Math.max(...a2) - Math.min(...a2);
+  chk(`colour: palettes() lists ${r2.palettes.map((q) => `${q.name}/${q.kind}`).join(', ')}; rdbu on 0…10 draws the grade-5 centre neutral (${a2}, channel spread ${spread})`,
+    r2.palettes.some((q) => q.name === 'rdbu' && q.kind === 'diverging') && r2.palette === 'rdbu' && spread <= 12 && Math.min(...a2) > 60);
+  const r3 = await A.evaluate(async () => {
+    const m = window.micro, out = {};
+    await m.setColorRange(window.__id, null);
+    out.auto = m.colorRange(window.__id);
+    for (const [k, f] of [['badRange', () => m.setColorRange(window.__id, { min: 5, max: 5 })], ['badName', () => m.setPalette(window.__id, 'nope')]]) { try { await f(); out[k] = 'ok'; } catch (e) { out[k] = e.message; } }
+    await m.setColorBy(window.__id, 'ROCK');
+    out.catRange = m.colorRange(window.__id);
+    try { await m.setColorRange(window.__id, { min: 0, max: 1 }); out.onCat = 'ok'; } catch (e) { out.onCat = e.message; }
+    // addLayer takes both, applied after its colour-by; a wrong one rejects and leaves no layer
+    const n0 = m.layers().length;
+    const id = await m.addLayer({ kind: 'blocks', name: 'diff', columns: { X: [5, 15], Y: [5, 5], Z: [5, 5], D: [-1, 2] }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'D' }, palette: 'rdbu', colorRange: { min: -2, max: 2 } });
+    const l = m.layer(id); out.added = { range: l.colorRange, palette: l.palette };
+    try { await m.addLayer({ kind: 'blocks', name: 'diff2', columns: { X: [5], Y: [5], Z: [5], D: [1] }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'D' }, colorRange: { min: 2, max: 1 } }); out.addBad = 'ok'; } catch (e) { out.addBad = e.message; }
+    out.layersAfter = m.layers().length - n0;
+    return out;
+  });
+  chk(`colour: null hands the range back to the data (${JSON.stringify(r3.auto)}); bad input rejects — “${r3.badRange}”, “${r3.badName}”`,
+    r3.auto && r3.auto.fixed === false && r3.auto.min === 0 && r3.auto.max === 10 && /min < max/.test(r3.badRange) && /no palette “nope”/.test(r3.badName));
+  chk(`colour: a category colour-by has no range (${r3.catRange}) and refuses one — “${r3.onCat}”`, r3.catRange === null && /no numeric range/.test(r3.onCat));
+  chk(`colour: addLayer takes palette + colorRange (${JSON.stringify(r3.added)}); a wrong range rejects and leaves no layer (“${r3.addBad}”, +${r3.layersAfter})`,
+    r3.added.palette === 'rdbu' && r3.added.range.min === -2 && r3.added.range.max === 2 && /min < max/.test(r3.addBad) && r3.layersAfter === 1);
+  await A.close(); await B.close();
+}
+
 try {
+  if (process.env.ONLY === 'colour') {                    // ONLY=colour: the colour range + palette
+    await colourChecks('/tools/micro/index.html', 'dev tree');
+    await colourChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'open') {                      // ONLY=open: just the Parquet open paths
     await openChecks('/tools/micro/index.html', 'dev tree');
     await openChecks('/micro.html', 'built micro.html');
@@ -1080,6 +1154,7 @@ try {
   await screenChecks('/tools/micro/index.html', 'dev tree');
   await statsChecks('/tools/micro/index.html', 'dev tree');
   await openChecks('/tools/micro/index.html', 'dev tree');
+  await colourChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
@@ -1089,6 +1164,7 @@ try {
   await screenChecks('/micro.html', 'built micro.html');
   await statsChecks('/micro.html', 'built micro.html');
   await openChecks('/micro.html', 'built micro.html');
+  await colourChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }

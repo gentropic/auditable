@@ -7581,6 +7581,13 @@ async function addLayer(spec = {}) {
         catch (e) { if (spec.colorBy != null) { removeLayerUI(L.id); throw e; } }   // a stated colorBy is checked; the role default is best-effort
         L = layerById(lid);
       }
+      // the colour scale, after the colour-by it belongs to: a stated one is checked
+      if (L && (spec.palette != null || spec.colorRange !== undefined)) {
+        try {
+          if (spec.palette != null) setLayerPalette(L, spec.palette);
+          if (spec.colorRange !== undefined) setLayerColorRange(L, spec.colorRange);
+        } catch (e) { removeLayerUI(L.id); throw e; }
+      }
       renderLayers();
     }
     return lid;
@@ -9682,6 +9689,52 @@ function colorSelFor(L, col) {
   const ch = colorChoices(L);
   throw new Error(`color: “${c}” is not something “${L.label || L.name}” can be coloured by${ch.length ? ` (${ch.join(', ')})` : ''}`);
 }
+// ── colour RANGE and PALETTE, for the host (window.micro) and addLayer. Both act
+// on what the styling panel acts on: the range is the layer's clip (the min/max
+// boxes — the shader clamps outside it to the end colours), the palette is the
+// preset of the CURRENT colour-by's ramp (each colour-by keeps its own).
+// Only a numeric colour-by has either.
+function numericColorSel(L) {
+  const sel = String(colorSelOf(L));
+  if (sel === 'elev' || sel.startsWith('chan:')) return true;
+  if (sel === '0') return !!(L.docs.lasDoc || L.docs.plyDoc);   // LAS/PLY elevation
+  if (sel.startsWith('paint:')) { const pc = (L.paintCols || []).find((c) => c.name === sel.slice(6)); return !!(pc && (pc.kind === 'ratio' || pc.mat)); }
+  if (sel.startsWith('calc:')) return (L.calcCols || []).some((c) => c.name === sel.slice(5) && c.ty !== 'string');
+  return false;
+}
+const notNumeric = (L, what) => new Error(`${what}: “${L.label || L.name}” is coloured by ${colorByName(L) ?? 'nothing'}, which has no numeric range`);
+// the range in use → { min, max, fixed } (fixed = the host or the user set it), or null
+function layerColorRange(L) {
+  if (!numericColorSel(L)) return null;
+  const [min, max] = rampRangeFor(L);
+  const fixed = Number.isFinite(parseFloat(L.clip[0])) || Number.isFinite(parseFloat(L.clip[1]));
+  return { min, max, fixed };
+}
+function setLayerColorRange(L, r) {
+  if (!numericColorSel(L)) throw notNumeric(L, 'setColorRange');
+  if (r == null) L.clip = ['', ''];
+  else {
+    const lo = +(r && r.min), hi = +(r && r.max);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(lo < hi)) throw new Error(`setColorRange: needs { min, max }, finite, min < max (got ${JSON.stringify(r)})`);
+    L.clip = [String(lo), String(hi)];                   // String(number) round-trips a double exactly
+  }
+  if (L.id === S.activeId) { $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1]; }   // the active layer draws from the boxes
+  applyRamp(L, true);                                      // a custom ramp (or a ratio palette) bakes the range in
+  if (_propOpen) { _propFor = null; renderProps(); }
+  markProjectDirty();
+  requestRender();
+}
+function layerPalette(L) { return numericColorSel(L) ? ((rampCfgOf(L) || {}).preset || 'viridis') : null; }
+function setLayerPalette(L, name) {
+  const n = String(name);
+  if (!RAMP_PRESETS[n]) throw new Error(`setPalette: no palette “${n}” (${Object.keys(RAMP_PRESETS).join(', ')})`);
+  if (!numericColorSel(L)) throw notNumeric(L, 'setPalette');
+  setRampCfg(L, { preset: n });
+  applyRamp(L, true);                                      // now, not when the layer's stage settles
+  if (_propOpen) { _propFor = null; renderProps(); }
+  requestRender();
+}
+const paletteList = () => Object.keys(RAMP_PRESETS).map((name) => ({ name, kind: RAMP_KIND[name] || 'sequential' }));
 for (const id of ['clipMin', 'clipMax']) $('#' + id).addEventListener('input', () => {
   const L = activeLayer(); if (L) { L.clip = [$('#clipMin').value, $('#clipMax').value]; const pcR = paintActiveCol(L) || calcDisplayCol(L); if (rampCfgOf(L) || (pcR && pcR.kind === 'ratio')) applyRamp(L, true); }
   dispatchEvent(new Event('micro:project-dirty'));
@@ -16183,7 +16236,12 @@ const RAMP_PRESETS = {
   magma: [[0, 0, 4], [81, 18, 124], [183, 55, 121], [252, 137, 97], [252, 253, 191]],
   turbo: [[48, 18, 59], [62, 156, 254], [34, 236, 161], [218, 226, 25], [122, 4, 3]],
   greys: [[24, 24, 24], [235, 235, 235]],
+  // ColorBrewer RdBu (7, reversed: low blue → high red). White sits exactly at
+  // the middle, so a range symmetric about 0 centres a difference on zero
+  rdbu: [[33, 102, 172], [103, 169, 207], [209, 229, 240], [247, 247, 247], [253, 219, 199], [239, 138, 98], [178, 24, 43]],
 };
+// what each palette is for, as the host API lists them (palettes())
+const RAMP_KIND = { viridis: 'sequential', magma: 'sequential', turbo: 'sequential', greys: 'sequential', spectral: 'diverging', rdbu: 'diverging' };
 function rampSample(stops, t) {
   const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
   const k = Math.min(stops.length - 2, x | 0), f = x - k;
@@ -17859,6 +17917,7 @@ const _host = createHostApi({
   },
   treeChanged: () => { applyTreeVisibility(); renderLayers(); markProjectDirty(); },
   colorByName, colorChoices, colorSelFor, setLayerColorBy,
+  layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList,
   groupPathOf, groupsList, fileLayersInGroup, ungroupAt, setGroupVisible,
   sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
   selectionRecords, setSelectionRecords, clearSelection: () => clearSelection({ silent: true }),

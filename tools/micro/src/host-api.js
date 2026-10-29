@@ -45,6 +45,8 @@ export function createHostApi(d) {
     columns: (attrColumnsOf(L) || []).map((c) => bare(c.name)),
     colorBy: d.colorByName(L),
     colorChoices: d.colorChoices(L),
+    colorRange: d.layerColorRange(L),                      // { min, max, fixed } | null (a colour-by with no numeric range)
+    palette: d.layerPalette(L),                            // the current colour-by's palette | null
     visible: L.visible !== false,
     group: d.groupPathOf(L.id),
   });
@@ -88,6 +90,15 @@ export function createHostApi(d) {
     // 'elevation' | 'intensity' | 'classification' | 'rgb' (LAS/PLY points).
     // Resolves to the layer's id, which a drillhole re-read changes.
     setColorBy: verb((id, column) => { const L = live(id); return d.setLayerColorBy(L, d.colorSelFor(L, column)); }),
+    // the colour scale of a NUMERIC colour-by. Range: { min, max } fixes it (values
+    // outside take the end colours), null hands it back to the data. It belongs to
+    // the layer, as the styling panel's min/max boxes do — set it after setColorBy.
+    // Palette: by name (palettes()); each colour-by keeps its own. For a
+    // difference: setPalette(id, 'rdbu') + a range symmetric about 0.
+    setColorRange: verb((id, range) => { d.setLayerColorRange(live(id), range); }),
+    colorRange: (id) => d.layerColorRange(live(id)),
+    setPalette: verb((id, name) => { d.setLayerPalette(live(id), name); }),
+    palettes: () => d.paletteList(),
     // the expression language of micro's filter box; '' clears. Any layer — the
     // box shows the active layer's filter, so it mirrors this only for that one.
     filter: verb(async (id, expr) => {
