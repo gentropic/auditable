@@ -939,7 +939,120 @@ async function statsChecks(url, label) {
   await p.close();
 }
 
+// opening a Parquet on the worker pool (discovery + decode) must build the SAME
+// model the page path builds: the same header, and byte-identical chunks (the
+// builder is seeded, so the two streams hash equal in arrival order). Regular
+// with a category, a null coordinate, a ragged last group; and sub-blocked.
+// Plus: a colour-by switch reuses the discovered grid (no second sweep).
+async function openChecks(url, label) {
+  console.log(`── opening Parquet on workers vs the page (${label})`);
+  const build = () => {
+    window.__pqFiles = async () => {
+      const { writeParquet } = await import('/ext/parquet/index.js');
+      const X = [], Y = [], Z = [], AU = [], CU = [], ROCK = [];
+      let k = 0;
+      for (let z = 0; z < 13; z++) for (let y = 0; y < 11; y++) for (let x = 0; x < 9; x++) {
+        X.push(k === 777 ? NaN : 1000.5 + 10 * x); Y.push(7000002 + 10 * y); Z.push(400 + 5 * z);
+        AU.push(k % 11 === 5 ? null : ((k * 7919) % 1000) / 100); CU.push((k * 31 % 500) / 100);
+        ROCK.push(['BIF', 'CANGA', 'SKARN', 'QTZ'][(k >> 3) % 4]); k++;
+      }
+      const regCols = [{ name: 'X', data: X, type: 'DOUBLE' }, { name: 'Y', data: Y, type: 'DOUBLE' }, { name: 'Z', data: Z, type: 'DOUBLE' }, { name: 'AU', data: AU, type: 'DOUBLE' }, { name: 'CU', data: CU, type: 'DOUBLE' }, { name: 'ROCK', data: ROCK, type: 'STRING' }];
+      window.__pqColumns = async () => regCols;
+      const reg = new File([writeParquet({ columnData: regCols, rowGroupSize: 400, codec: 'SNAPPY' })], 'reg.parquet');
+      // sub-blocked: 10 m parents, every third one split into 8 × 5 m
+      const sx = [], sy = [], sz = [], dx = [], dy = [], dz = [], g = [];
+      let p = 0;
+      for (let z = 0; z < 6; z++) for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++, p++) {
+        const cx = 5 + 10 * x, cy = 5 + 10 * y, cz = 5 + 10 * z;
+        if (p % 3) { sx.push(cx); sy.push(cy); sz.push(cz); dx.push(10); dy.push(10); dz.push(10); g.push(p / 10); }
+        else for (const ox of [-2.5, 2.5]) for (const oy of [-2.5, 2.5]) for (const oz of [-2.5, 2.5]) { sx.push(cx + ox); sy.push(cy + oy); sz.push(cz + oz); dx.push(5); dy.push(5); dz.push(5); g.push(p / 10 + ox); }
+      }
+      const sub = new File([writeParquet({ columnData: [{ name: 'X', data: sx, type: 'DOUBLE' }, { name: 'Y', data: sy, type: 'DOUBLE' }, { name: 'Z', data: sz, type: 'DOUBLE' }, { name: 'DX', data: dx, type: 'DOUBLE' }, { name: 'DY', data: dy, type: 'DOUBLE' }, { name: 'DZ', data: dz, type: 'DOUBLE' }, { name: 'G', data: g, type: 'DOUBLE' }], rowGroupSize: 300, codec: 'SNAPPY' })], 'sub.parquet');
+      return { reg, sub };
+    };
+    // FNV over every chunk the renderer is handed, in arrival order
+    window.__fp = { h: 0x811c9dc5, n: 0, chunks: 0 };
+    const add = window._micro.renderer.addChunk.bind(window._micro.renderer);
+    window._micro.renderer.addChunk = (c, set, layer) => {
+      const f = window.__fp;
+      for (const key of ['ijk', 'chan', 'cat', 'recIdx', 'dim']) {
+        const a = c[key]; if (!a) continue;
+        const u8 = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+        for (let i = 0; i < u8.length; i++) f.h = Math.imul(f.h ^ u8[i], 16777619) >>> 0;
+      }
+      f.n += c.count || 0; f.chunks++;
+      return add(c, set, layer);
+    };
+  };
+  const openBoth = async (noWorker) => {
+    const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+    if (noWorker) await p.addInitScript(() => { window.Worker = undefined; });
+    await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+    await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
+    await p.evaluate(build);
+    const r = await p.evaluate(async () => {
+      const m = window._micro, { reg, sub } = await window.__pqFiles(), out = {};
+      const hdr = (L) => { const h = L.docs.blockDoc.header; return JSON.stringify({ grid: h.grid, bbox: h.bbox, categories: h.categories, subBlocked: h.subBlocked, dimPalette: h.dimPalette, count: h.count }); };
+      const take = () => { const f = window.__fp, r = { h: f.h, n: f.n, chunks: f.chunks }; window.__fp = { h: 0x811c9dc5, n: 0, chunks: 0 }; return r; };
+      const idR = await m.addLayer({ kind: 'blocks', file: reg, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', category: 'ROCK' } });
+      out.reg = { hdr: hdr(m.layers().find((q) => q.id === idR)), fp: take() };
+      // colour-by CU: the grid must come from the live header — no "discovering grid"
+      let sawDisc = false;
+      const mo = new MutationObserver(() => { if (/discovering grid/.test(document.getElementById('meta').textContent)) sawDisc = true; });
+      mo.observe(document.getElementById('meta'), { childList: true, characterData: true, subtree: true });
+      await window.micro.setColorBy(idR, 'CU');
+      mo.disconnect();
+      out.switched = { hdr: hdr(m.layers().find((q) => q.id === idR)), fp: take(), sawDisc };
+      const idC = await m.addLayer({ kind: 'blocks', file: reg, roles: { x: 'X', y: 'Y', z: 'Z', value: 'CU', category: 'ROCK' } });
+      out.freshCU = { hdr: hdr(m.layers().find((q) => q.id === idC)), fp: take() };
+      const idS = await m.addLayer({ kind: 'blocks', file: sub, roles: { x: 'X', y: 'Y', z: 'Z', value: 'G' } });
+      out.sub = { hdr: hdr(m.layers().find((q) => q.id === idS)), fp: take() };
+      // a DECLARED lattice, both doors: the caller's (addLayer lattice) and the
+      // file's (micro:model, declared). Right → applied; one block off → refused,
+      // with the same first-misfit message either way
+      const latOk = { origin: [1000.5, 7000002, 400], pitch: [10, 10, 5], counts: [9, 11, 13] };
+      const latBad = { origin: [1000.5, 7000002, 400], pitch: [10, 10, 5], counts: [9, 11, 12] };   // the top level falls outside
+      const idL = await m.addLayer({ kind: 'blocks', file: reg, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', category: 'ROCK' }, lattice: latOk });
+      out.declOk = { hdr: hdr(m.layers().find((q) => q.id === idL)), fp: take() };
+      try { await m.addLayer({ kind: 'blocks', file: reg, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', category: 'ROCK' }, lattice: latBad }); out.declBad = 'accepted'; } catch (e) { out.declBad = e.message; }
+      take();
+      const { writeParquet } = await import('/ext/parquet/index.js');
+      const raw = await window.__pqColumns();
+      const kvFile = (lat) => new File([writeParquet({ columnData: raw, rowGroupSize: 400, codec: 'SNAPPY', kvMetadata: [{ key: 'micro:model', value: JSON.stringify({ v: 1, declared: 'smoke', bbox: { min: [1000.5, 7000002, 400], max: [1080.5, 7000102, 460] }, grid: { x: { origin: lat.origin[0], pitch: lat.pitch[0], count: lat.counts[0] }, y: { origin: lat.origin[1], pitch: lat.pitch[1], count: lat.counts[1] }, z: { origin: lat.origin[2], pitch: lat.pitch[2], count: lat.counts[2] } } }) }] })], 'kv.parquet');
+      const idK = await m.addLayer({ kind: 'blocks', file: kvFile(latOk), roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+      out.kvOk = { grid: !!m.layers().find((q) => q.id === idK).docs.blockDoc.header.grid, fp: take() };
+      const kvBadDone = new Promise((res) => addEventListener('micro:lattice-rejected', (e) => res(e.detail.reason), { once: true }));
+      const idKB = await m.addLayer({ kind: 'blocks', file: kvFile(latBad), roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+      out.kvBad = { reason: await kvBadDone, grid: !!m.layers().find((q) => q.id === idKB).docs.blockDoc.header.grid };
+      take();
+      return out;
+    });
+    await p.close();
+    return r;
+  };
+  const W = await openBoth(false), P = await openBoth(true);
+  const g = JSON.parse(W.reg.hdr), gs = JSON.parse(W.sub.hdr);
+  chk(`open: a regular Parquet (4 groups, a NaN X) — ${g.grid && `${g.grid.x.count}×${g.grid.y.count}×${g.grid.z.count}`}, categories ${JSON.stringify(g.categories)}; workers and page agree on the header`,
+    g.grid && g.grid.x.count === 9 && g.grid.y.count === 11 && g.grid.z.count === 13 && JSON.stringify(g.categories) === '["BIF","CANGA","QTZ","SKARN"]' && W.reg.hdr === P.reg.hdr);
+  chk(`open: …and on every block drawn (${W.reg.fp.n} blocks in ${W.reg.fp.chunks} chunks, hash ${W.reg.fp.h.toString(16)} vs ${P.reg.fp.h.toString(16)})`,
+    W.reg.fp.n === 9 * 11 * 13 - 1 && W.reg.fp.h === P.reg.fp.h && W.reg.fp.n === P.reg.fp.n);
+  chk(`open: sub-blocked Parquet — ${gs.subBlocked ? `${gs.dimPalette.length} sizes` : 'NOT sub-blocked'}; workers and page agree (header, and hash ${W.sub.fp.h.toString(16)} vs ${P.sub.fp.h.toString(16)} over ${W.sub.fp.n})`,
+    gs.subBlocked && gs.dimPalette.length === 2 && W.sub.hdr === P.sub.hdr && W.sub.fp.h === P.sub.fp.h && W.sub.fp.n === P.sub.fp.n);
+  chk(`open: a colour-by switch keeps the discovered grid (no discovery sweep: ${!W.switched.sawDisc && !P.switched.sawDisc}) and draws what a fresh open on CU draws`,
+    !W.switched.sawDisc && !P.switched.sawDisc && W.switched.hdr === W.freshCU.hdr && W.switched.fp.h === W.freshCU.fp.h && P.switched.fp.h === W.freshCU.fp.h);
+  const D = JSON.parse(W.declOk.hdr);
+  chk(`open: a caller-declared lattice applies (${D.grid && D.grid.z.count} levels) and draws the same both ways (${W.declOk.fp.h.toString(16)} vs ${P.declOk.fp.h.toString(16)}); a wrong one is refused alike — “${W.declBad}”`,
+    D.grid && D.grid.z.count === 13 && W.declOk.hdr === P.declOk.hdr && W.declOk.fp.h === P.declOk.fp.h && W.declOk.fp.h === W.reg.fp.h && /outside the lattice/.test(W.declBad) && W.declBad === P.declBad);
+  chk(`open: a micro:model declared in the footer is checked (ok → grid, workers and page draw alike: ${W.kvOk.fp.h === P.kvOk.fp.h}, ${W.kvOk.fp.n} blocks); a wrong one opens as points, refused alike — “${W.kvBad.reason}”`,
+    W.kvOk.grid && P.kvOk.grid && W.kvOk.fp.h === P.kvOk.fp.h && W.kvOk.fp.n === 1286 && !W.kvBad.grid && !P.kvBad.grid && /outside the lattice/.test(W.kvBad.reason) && W.kvBad.reason === P.kvBad.reason);
+}
+
 try {
+  if (process.env.ONLY === 'open') {                      // ONLY=open: just the Parquet open paths
+    await openChecks('/tools/micro/index.html', 'dev tree');
+    await openChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'stats') {                     // ONLY=stats: just the column statistics
     await statsChecks('/tools/micro/index.html', 'dev tree');
     await statsChecks('/micro.html', 'built micro.html');
@@ -966,6 +1079,7 @@ try {
   await api2Checks('/tools/micro/index.html', 'dev tree');
   await screenChecks('/tools/micro/index.html', 'dev tree');
   await statsChecks('/tools/micro/index.html', 'dev tree');
+  await openChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
@@ -974,6 +1088,7 @@ try {
   await api2Checks('/micro.html', 'built micro.html');
   await screenChecks('/micro.html', 'built micro.html');
   await statsChecks('/micro.html', 'built micro.html');
+  await openChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }
