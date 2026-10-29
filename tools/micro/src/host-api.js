@@ -53,6 +53,7 @@ export function createHostApi(d) {
   const chrome = () => ({
     title: !document.body.classList.contains('chrome-notitle'),
     badge: !document.body.classList.contains('chrome-nobadge'),
+    presenting: document.body.classList.contains('presenting'),
   });
   // async verbs: a synchronous throw becomes a rejection, like every other failure
   const verb = (fn) => async (...a) => fn(...a);
@@ -170,13 +171,22 @@ export function createHostApi(d) {
     ungroup: verb((path) => { if (!d.ungroupAt(path)) throw new Error(`micro: no group “${path}”`); }),
     setGroupVisible: verb((path, on) => { if (!d.setGroupVisible(path, on)) throw new Error(`micro: no group “${path}”`); }),
 
-    // ── chrome: the title and the Sealed badge (?embed=1 hides both) ──
+    // ── chrome: the title and the Sealed badge (?embed=1 hides both), and
+    // presenting — only the picture: every bar and panel hidden, the canvas takes
+    // the window. CSS only, so turning it off brings back exactly what was open. ──
     chrome,
     setChrome: (o = {}) => {
       if (o.title != null) document.body.classList.toggle('chrome-notitle', !o.title);
       if (o.badge != null) document.body.classList.toggle('chrome-nobadge', !o.badge);
+      if (o.presenting != null) document.body.classList.toggle('presenting', !!o.presenting);
       return chrome();
     },
+
+    // ── decorations: drawn ON the picture (live and in snapshot) ──
+    // { scale, north, title: text | null, legend: [ids] }; setDecorations takes any
+    // subset — legend: true (every visible layer) | false | id | [ids]
+    decorations: () => d.decorations(),
+    setDecorations: verb((o = {}) => d.setDecorations(o, live)),
   };
 
   // the app calls this once it is up: the promise resolves, and `micro:ready` fires

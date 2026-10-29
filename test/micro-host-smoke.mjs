@@ -1116,8 +1116,84 @@ async function colourChecks(url, label) {
   await A.close(); await B.close();
 }
 
+// presenting (setChrome) + decorations — MineMind's presentation mode: only the
+// picture, reversible, the decorations drawn on it
+async function presentChecks(url, label) {
+  console.log(`── presenting + decorations (${label})`);
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.setViewportSize({ width: 900, height: 600 });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window.micro && window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  const frames = () => p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 100)))));
+  await p.evaluate(async () => {
+    const X = [], Y = [], Z = [], AU = [];
+    for (let j = 0; j < 11; j++) for (let i = 0; i < 11; i++) { X.push(5 + 10 * i); Y.push(5 + 10 * j); Z.push(5); AU.push((i + j) % 11); }
+    window.__id = await window.micro.addLayer({ kind: 'blocks', name: 'pres', columns: { X, Y, Z, AU }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    await window.micro.look('plan'); await window.micro.fit();
+    // open what a user would have open: the layers + properties panels, a GT window
+    window._micro.toggleLayersPanel(true);
+    const L = window._micro.layers().find((l) => l.id === window.__id);
+    window._micro.openProps(L); window._micro.openGradeTonnage(L);
+  });
+  await frames();
+  const UI = ['#bar', '#bar2', 'footer', '#layersPanel', '#propPanel', '.fwin'];
+  const state = () => p.evaluate((UI) => {
+    const r = document.getElementById('cv').getBoundingClientRect();
+    const shown = Object.fromEntries(UI.map((s) => { const e = document.querySelector(s); return [s, !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0]; }));
+    return { cv: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], win: [innerWidth, innerHeight], gl: [document.getElementById('cv').width, document.getElementById('cv').height], view: window.micro.view(), shown, chrome: window.micro.chrome() };
+  }, UI);
+  const s0 = await state();
+  await p.evaluate(() => window.micro.setChrome({ presenting: true }));
+  await frames();
+  const s1 = await state();
+  const pick = await p.evaluate(async () => { const r = await window.micro.worldAt([[450, 300]]); return r[0] && r[0].layer; });
+  const sameView = (a, b) => a.target.every((v, i) => Math.abs(v - b.target[i]) < 1e-6) && Math.abs(a.look - b.look) < 1e-6 && Math.abs(a.elevation - b.elevation) < 1e-6 && Math.abs(a.distance - b.distance) < 1e-6;
+  chk(`present: before, the UI is up (${Object.entries(s0.shown).filter(([, v]) => v).map(([k]) => k).join(' ')}) and the canvas is ${s0.cv[2]}×${s0.cv[3]}`,
+    Object.values(s0.shown).every(Boolean) && s0.cv[3] < s0.win[1] - 50 && s0.chrome.presenting === false);
+  chk(`present: presenting hides every bar and panel (${Object.entries(s1.shown).filter(([, v]) => v).map(([k]) => k).join(' ') || 'none shown'}); the canvas takes the window (${s1.cv} of ${s1.win}, GL ${s1.gl}); camera unchanged; picking still works (layer ${pick})`,
+    Object.values(s1.shown).every((v) => !v) && s1.cv[0] === 0 && s1.cv[1] === 0 && s1.cv[2] === s1.win[0] && s1.cv[3] === s1.win[1] && s1.gl[1] > s0.gl[1]
+      && sameView(s0.view, s1.view) && s1.chrome.presenting === true && pick === (await p.evaluate(() => window.__id)));
+  // decorations: on the picture, live (the overlay canvas) and in the snapshot
+  const inked = () => p.evaluate(async () => {
+    const count = async (deco) => { const b = await window.micro.snapshot({ decorations: deco }), bmp = await createImageBitmap(b); const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d'); g.drawImage(bmp, 0, 0); return g.getImageData(0, 0, bmp.width, bmp.height).data; };
+    const a = await count(true), b = await count(false); let n = 0; for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++;
+    return n;
+  });
+  const d0 = await p.evaluate(() => window.micro.decorations());
+  const ink0 = await inked();
+  const d1 = await p.evaluate(() => window.micro.setDecorations({ scale: true, north: true, title: 'Demo', legend: true }));
+  await frames();
+  const ink1 = await inked();
+  const live = await p.evaluate(() => { const d = document.getElementById('decoCv'); return [d.width, getComputedStyle(d).display]; });
+  const id = await p.evaluate(() => window.__id);
+  chk(`present: setDecorations turns on scale/north/title/legend (${JSON.stringify(d1)}, was ${JSON.stringify(d0)}); the snapshot gains ${ink1} inked px (was ${ink0}); the live overlay draws (${live})`,
+    d0.scale === false && d0.legend.length === 0 && d1.scale && d1.north && d1.title === 'Demo' && d1.legend.length === 1 && d1.legend[0] === id && ink0 === 0 && ink1 > 500 && live[0] > 0);
+  const bad = await p.evaluate(async () => {
+    const out = {}, m = window.micro;
+    for (const [k, o] of [['id', { legend: [9999], scale: false }], ['type', { scale: 'yes' }], ['title', { title: 3 }]]) { try { await m.setDecorations(o); out[k] = 'ok'; } catch (e) { out[k] = e.message; } }
+    out.after = m.decorations();
+    const off = await m.setDecorations({ title: null, legend: false });
+    out.off = off;
+    return out;
+  });
+  chk(`present: bad decorations reject and change nothing — “${bad.id}”, “${bad.type}”, “${bad.title}”; title null + legend false clear them (${JSON.stringify(bad.off)})`,
+    /no layer/.test(bad.id) && /true or false/.test(bad.type) && /string/.test(bad.title) && bad.after.scale === true && bad.after.legend.length === 1 && bad.off.title === null && bad.off.legend.length === 0 && bad.off.scale === true);
+  await p.evaluate(() => window.micro.setChrome({ presenting: false }));
+  await frames();
+  const s2 = await state();
+  chk(`present: turning it off brings back exactly what was open (${Object.entries(s2.shown).filter(([, v]) => v).map(([k]) => k).join(' ')}), the canvas at ${s2.cv[2]}×${s2.cv[3]}, the camera as it was`,
+    Object.values(s2.shown).every(Boolean) && s2.cv.every((v, i) => v === s0.cv[i]) && sameView(s0.view, s2.view) && s2.chrome.presenting === false);
+  await p.evaluate(() => window.micro.setDecorations({ scale: false, north: false }));
+  await p.close();
+}
+
 try {
-  if (process.env.ONLY === 'colour') {                    // ONLY=colour: the colour range + palette
+  if (process.env.ONLY === 'present') {                   // ONLY=present: presenting + decorations
+    await presentChecks('/tools/micro/index.html', 'dev tree');
+    await presentChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
+  if (process.env.ONLY === 'colour') {                   // ONLY=colour: the colour range + palette
     await colourChecks('/tools/micro/index.html', 'dev tree');
     await colourChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
@@ -1155,6 +1231,7 @@ try {
   await statsChecks('/tools/micro/index.html', 'dev tree');
   await openChecks('/tools/micro/index.html', 'dev tree');
   await colourChecks('/tools/micro/index.html', 'dev tree');
+  await presentChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
@@ -1165,6 +1242,7 @@ try {
   await statsChecks('/micro.html', 'built micro.html');
   await openChecks('/micro.html', 'built micro.html');
   await colourChecks('/micro.html', 'built micro.html');
+  await presentChecks('/micro.html', 'built micro.html');
 } finally {
   await b.close(); server.close();
 }
