@@ -3072,6 +3072,37 @@ await p.close();
   await pi.close();
 }
 
+// ── §45: a pack opened from a file joins the recent projects as itself (beside
+//     its folder, not replacing it), and its chip reopens it read-only ──
+{
+  const pr = await mkPage('sm2rc');
+  await pr.evaluate(async () => { const r = await navigator.storage.getDirectory(); for (const n of ['sm2rc', 'sm2rc-packs']) { try { await r.removeEntry(n, { recursive: true }); } catch { /* fresh */ } } });
+  await pr.evaluate(async () => { await window._micro.openBlob(new File(['XC,YC,ZC,FE\n5,5,5,1\n15,5,5,2\n5,15,5,3\n15,15,5,4\n'], 'rc.csv'), 'rc.csv', 'replace'); });
+  await pr.waitForFunction(() => window._micro.layers().some((x) => x.docs.blockDoc), null, { timeout: 20000 });
+  await saveProject(pr);
+  const rc = await pr.evaluate(async () => {
+    const M = window._micro, q = (x) => document.querySelector(x);
+    const blob = (await window.micro.backupProject()).blob;
+    const pd = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2rc-packs', { create: true });
+    const h = await pd.getFileHandle('sm2rc.zip.micro', { create: true });
+    const w = await h.createWritable(); await w.write(blob); await w.close();
+    window.showOpenFilePicker = async () => [h];
+    M.closeProject();
+    await M.openProjectPack();                              // File → Open project pack…: the picker's file
+    const opened = !!(M.project() && M.project().pack);
+    for (let n = 0; n < 50 && ![...q('#emptyProjects').querySelectorAll('.er-chip')].some((c) => /· pack$/.test(c.textContent)); n++) await new Promise((z) => setTimeout(z, 50));
+    const chips = [...q('#emptyProjects').querySelectorAll('.er-chip')].map((c) => c.textContent);
+    M.closeProject();
+    [...q('#emptyProjects').querySelectorAll('.er-chip')].find((c) => c.textContent === 'sm2rc · pack').click();
+    for (let n = 0; n < 100 && !(M.project() && M.project().pack); n++) await new Promise((z) => setTimeout(z, 50));
+    return { opened, chips, again: !!(M.project() && M.project().pack), name: M.project() && M.project().name, layers: M.layers().length };
+  });
+  chk(`a pack opened from a file joins the recent projects beside its folder [${rc.chips.join(' · ')}]`,
+    rc.opened && rc.chips.includes('sm2rc · pack') && rc.chips.includes('sm2rc'));
+  chk(`…and its chip reopens it read-only (${rc.name}, pack ${rc.again}, ${rc.layers} layer)`, rc.again && rc.name === 'sm2rc' && rc.layers === 1);
+  await pr.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

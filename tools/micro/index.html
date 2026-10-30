@@ -10951,13 +10951,31 @@ function projectManifest() {
     })(),
   };
 }
+// a pack opened from a file the browser can hand back (a picker, a drop, recents)
+// joins the recent projects as itself — reopening reads the same file, read-only
+async function rememberPack(handle, name) {
+  try {
+    const list = (await _idb.get(PROJECTS_KEY)) || [];
+    const next = [{ name, handle, pack: true }].concat(list.filter((e) => e.name !== name || !e.pack)).slice(0, 8);
+    await _idb.set(PROJECTS_KEY, next);
+    renderEmptyProjects();
+  } catch { /* best-effort */ }
+}
+async function openPackFromHandle(h) {
+  try {
+    if (h.queryPermission && await h.queryPermission({ mode: 'read' }) !== 'granted' && h.requestPermission) await h.requestPermission({ mode: 'read' });
+    const f = await h.getFile();
+    _fileHandles.set(f, h);
+    return await openProjectPack(f);
+  } catch (e) { $('#meta').textContent = `open pack: ${h.name} can't be read any more (moved or deleted?) — ${e.message || e}`; return null; }
+}
 async function rememberProject(dir) {
   if (dir && dir._pack) return;                            // a pack is opened from its file, not remembered as a folder
   try {
     const list = (await _idb.get(PROJECTS_KEY)) || [];
     const links = {};
     for (const L of S.layers) if (L.storage === 'external' && L.handle) links[L.name] = L.handle;
-    const next = [{ name: dir.name, handle: dir, links }].concat(list.filter((e) => e.name !== dir.name)).slice(0, 8);
+    const next = [{ name: dir.name, handle: dir, links }].concat(list.filter((e) => e.name !== dir.name || e.pack)).slice(0, 8);
     await _idb.set(PROJECTS_KEY, next);
     renderEmptyProjects();
   } catch { /* best-effort */ }
@@ -11292,7 +11310,7 @@ async function openProjectDir(dir, { pack = null } = {}) {
     closeAllLayers();
     $('#empty').style.display = 'none';
     let links = {};
-    try { const list = (await _idb.get(PROJECTS_KEY)) || []; const e = list.find((x) => x.name === dir.name); links = (e && e.links) || {}; } catch { /* none */ }
+    try { const list = (await _idb.get(PROJECTS_KEY)) || []; const e = list.find((x) => x.name === dir.name && !x.pack); links = (e && e.links) || {}; } catch { /* none */ }
     plStart(mf.layers, dir.name);
     const idAt = [];                                       // manifest index → restored layer id
     for (let i = 0; i < mf.layers.length; i++) {
@@ -11572,7 +11590,7 @@ async function backupProject({ lean = null, to = null, save = null, host = false
 // verdict goes to the status line (and to a host as micro:pack-checked).
 const pickBackupFile = async () => {
   try {
-    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project pack', accept: { [BACKUP_MIME]: ['.micro'] } }] }); return await h.getFile(); }
+    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project pack', accept: { [BACKUP_MIME]: ['.micro'] } }] }); const f = await h.getFile(); _fileHandles.set(f, h); return f; }
     return await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.micro'; i.onchange = () => res(i.files[0] || null); i.click(); });
   } catch { return null; }
 };
@@ -11604,6 +11622,7 @@ async function openProjectPack(blob = null, { host = false, asked = false } = {}
   if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort();
   if (!(await openProjectDir(pack.dir, { pack }))) return fail($('#meta').textContent.replace(/^project open failed — /, '') || 'the project in the pack did not open');
   updateProjectTitle();
+  { const h = !host && _fileHandles.get(blob); if (h) rememberPack(h, pack.dir.name); }
   pack.abort = new AbortController();
   pack.check = pack.verify({ signal: pack.abort.signal }).then((v) => {
     pack.checked = v;
@@ -12031,8 +12050,9 @@ async function renderEmptyProjects() {
   el.appendChild(lab);
   for (const e of list.slice(0, 6)) {
     const chip = document.createElement('a'); chip.className = 'er-chip';
-    chip.textContent = e.name; chip.title = 'open project';
-    chip.onclick = () => openProjectDir(e.handle);
+    chip.textContent = e.pack ? `${e.name} · pack` : e.name;
+    chip.title = e.pack ? `open the pack ${e.handle && e.handle.name || ''} (read-only)` : 'open project';
+    chip.onclick = () => (e.pack ? openPackFromHandle(e.handle) : openProjectDir(e.handle));
     el.appendChild(chip);
   }
 }
