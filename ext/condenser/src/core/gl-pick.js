@@ -9,6 +9,7 @@
 
 import { makeProgram, IDENTITY3 } from './gl-util.js';
 import { translateState } from './camera.js';
+import { layerSection, meshSection } from './section.js';
 
 // no encoder: the pick target is RG32UI (R = record, G = layer + face), so the
 // ids go out as integers instead of being smeared across four bytes and
@@ -508,37 +509,16 @@ export function createPickPipeline(gl) {
       for (const c of arr) { const id = c._layer || 0; let g = m.get(id); if (!g) m.set(id, g = []); g.push(c); }
       return m;
     };
-    // per layer: an exempt layer (st.sectioned === false) picks whole
-    // a moved layer (setLayerOffset) is cut where it is DRAWN: in its own
-    // coordinates the plane sits at d − n·o (gl.js offsetSec, mirrored)
-    const secFor = (st) => {
-      const o = st && st.offset;
-      if (!section || !o) return section;
-      const k = section.n[0] * o[0] + section.n[1] * o[1] + section.n[2] * o[2];
-      return section.d0 !== undefined ? { ...section, d: section.d - k, d0: section.d0 - k } : { ...section, d: section.d - k };
-    };
+    // the layer's view of the section — section.js, the SAME function the draw
+    // uses (it was a hand-kept mirror here; a pick must agree with the picture)
     // ...and drawn with its own camera: the offset folded in as a translation
     const stateFor = (st) => (st && st.offset ? translateState(cam.state, st.offset) : cam.state);
-    const setSec = (u, st) => {
-      let s = st && st.sectioned === false ? null : secFor(st);
-      const pm = st ? st.sectioned : true;
-      if (s && (pm === 'front' || pm === 'behind') && s.d0 !== undefined) { const H = Math.max(1e5, 8 * (s.half || 1)); s = { ...s, d: pm === 'front' ? s.d0 + H : s.d0 - H, half: H }; }
+    const setSecWith = (u, s) => {
       gl.uniform4f(u.secPlane, s ? s.n[0] : 0, s ? s.n[1] : 0, s ? s.n[2] : 1, s ? s.d : 0);
       gl.uniform2f(u.secCfg, s ? 1 : 0, s ? s.half : 0);
     };
-    // a mesh's section is a TRACE band at the true plane, not the fat half-space
-    // slab the blocks use (gl.js meshSecOf) — mirror it or the pick disagrees
-    // with the picture on exactly the views geologists spend their day in.
-    const setSecMesh = (u, st) => {
-      let s2 = st && st.sectioned === false ? null : secFor(st);
-      const pm = st ? st.sectioned : true;
-      const clip = s2 && (pm === 'front' || pm === 'behind' ? pm : s2.clip);
-      if (s2 && (clip === 'front' || clip === 'behind') && s2.d0 !== undefined) {
-        s2 = { ...s2, d: s2.d0, half: Math.max(0.01, s2.traceHalf || 1) };
-      }
-      gl.uniform4f(u.secPlane, s2 ? s2.n[0] : 0, s2 ? s2.n[1] : 0, s2 ? s2.n[2] : 1, s2 ? s2.d : 0);
-      gl.uniform2f(u.secCfg, s2 ? 1 : 0, s2 ? s2.half : 0);
-    };
+    const setSec = (u, st) => setSecWith(u, layerSection(section, st ? st.sectioned : true, st && st.offset));
+    const setSecMesh = (u, st) => setSecWith(u, meshSection(section, st ? st.sectioned : true, st && st.offset));
     // hidden classes aren't pickable (same texture the visual pass culls by)
     const setCatVis = (u, st) => {
       const t = st && st.catVisTex;

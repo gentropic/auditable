@@ -15,6 +15,7 @@ import { createMeshPipeline } from './gl-mesh.js';
 import { createSoupPipeline } from './gl-soup.js';
 import { createPickPipeline } from './gl-pick.js';
 import { createResolvePipeline } from './gl-resolve.js';
+import { layerSection, meshSection } from './section.js';
 
 const VERT = `#version 300 es
 precision highp float;
@@ -227,36 +228,10 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
   // (§3). Single-layer callers never notice: layer 0 shifts by zero and every
   // API defaults to it. ──
   const layers = new Map();                               // id → per-layer state
-  // a layer's view of the section: false = exempt, 'front'/'behind' = keep that
-  // side only (a half-space is a slab with the far face pushed past the data —
-  // same trick the global clip uses, but per layer, derived from sec.d0)
-  // a layer's offset (setLayerOffset) moves its geometry at draw time, so the
-  // section must cut where the layer is DRAWN: in its own coordinates the plane
-  // sits at d − n·o. Shifting here covers every pipeline (meshSecOf calls this).
-  const offsetSec = (sec, o) => {
-    if (!sec || !o) return sec;
-    const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
-    return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
-  };
-  const layerSecOf = (ls, sec) => {
-    sec = offsetSec(sec, ls.offset);
-    const m = ls.sectioned;
-    if (!sec || m === false) return m === false ? null : sec;
-    if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
-      const H = Math.max(1e5, 8 * (sec.half || 1));
-      return { ...sec, d: m === 'front' ? sec.d0 + H : sec.d0 - H, half: H, clip: m, traceHalf: sec.traceHalf || (sec.half < 9e4 ? sec.half : 1) };
-    }
-    return sec;
-  };
-  // meshes render their section as a TRACE flattened onto the wall — for a
-  // half-space clip the slab half is ~1e5 (it swallows the scene), so the
-  // trace band narrows to the TRUE plane ± traceHalf; slab sections already
-  // carry the right width
-  const meshSecOf = (ls, sec) => {
-    const s2 = layerSecOf(ls, sec);
-    if (!s2 || !(s2.clip === 'front' || s2.clip === 'behind') || s2.d0 === undefined) return s2;
-    return { ...s2, d: s2.d0, half: Math.max(0.01, s2.traceHalf || 1) };
-  };
+  // a layer's view of the section (sectioned mode + its draw offset) — section.js,
+  // shared with the pick pipeline so the pick always agrees with the picture
+  const layerSecOf = (ls, sec) => layerSection(sec, ls.sectioned, ls.offset);
+  const meshSecOf = (ls, sec) => meshSection(sec, ls.sectioned, ls.offset);
   function layerOf(id) {
     let l = layers.get(id);
     if (!l) {

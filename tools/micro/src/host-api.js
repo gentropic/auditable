@@ -144,6 +144,33 @@ export function createHostApi(d) {
     // ── the section, in world terms ──
     // section() → null (off) | { mode, axis, normal, position (n·p, world), thickness, clip, dipDir?, dip? }
     // setSection({ axis | normal | dipDir+dip, at: [x,y,z] | position, thickness, clip }) — null turns it off
+    // a layer's cut by the section: 'follow' | 'front' | 'behind' | 'off' |
+    // { thickness } (follow with its own slab, full width like setSection's) |
+    // { wholeHoles: true, thickness? } (drillholes: holes whose collar → EOH path
+    // crosses the slab draw whole, the rest hidden)
+    layerCut: (id) => {
+      const m = d.layerSectioned(live(id).id);
+      if (m === true || m == null) return 'follow';
+      if (m === false) return 'off';
+      if (typeof m === 'object') return m.whole ? { wholeHoles: true, ...(m.half > 0 ? { thickness: 2 * m.half } : {}) } : { thickness: 2 * m.half };
+      return m;
+    },
+    setLayerCut: verb((id, cut) => {
+      const L = live(id);
+      let m;
+      if (cut === 'follow') m = true;
+      else if (cut === 'off') m = false;
+      else if (cut === 'front' || cut === 'behind') m = cut;
+      else if (cut && typeof cut === 'object') {
+        if (cut.thickness != null && !(+cut.thickness > 0)) throw new Error('micro: setLayerCut thickness must be positive');
+        if (cut.wholeHoles) {
+          if (!L.dh) throw new Error('micro: wholeHoles is for drillhole layers');
+          m = { whole: true, ...(cut.thickness != null ? { half: +cut.thickness / 2 } : {}) };
+        } else if (cut.thickness != null) m = { half: +cut.thickness / 2 };
+        else throw new Error('micro: setLayerCut needs { thickness } or { wholeHoles: true }');
+      } else throw new Error("micro: setLayerCut takes 'follow' | 'front' | 'behind' | 'off' | { thickness } | { wholeHoles, thickness? }");
+      d.setLayerSectionMode(L, m);
+    }),
     section: () => d.sectionWorld(),
     setSection: verb((o) => d.setSectionWorld(o)),
 

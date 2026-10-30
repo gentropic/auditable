@@ -2889,7 +2889,55 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     return k === undefined ? null : [px[k], py[k], pz[k]];
   };
 
-  return { header, streamChunks, fetchRecord, recordPosition };
+  // each hole's collar → EOH path (lazy: only a "keep holes that cross the
+  // slab" section asks). → Map(bhid → Float64Array [x,y,z, x,y,z, …]) in world
+  // coordinates, depth order. The EOH reaches at least the deepest interval TO.
+  let _paths = null;
+  const holePaths = () => {
+    if (_paths) return _paths;
+    const deepest = new Map();
+    for (let i = 0; i < n; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
+    const { perHole } = desurveyHolePaths(collars, surveys, opts, deepest);
+    _paths = new Map();
+    for (const [hi, pts] of perHole) {
+      const xyz = new Float64Array(pts.length * 3);
+      pts.forEach((pt, k) => { xyz[3 * k] = pt[1]; xyz[3 * k + 1] = pt[2]; xyz[3 * k + 2] = pt[3]; });
+      _paths.set(collars[hi].bhid, xyz);
+    }
+    return _paths;
+  };
+
+  return { header, streamChunks, fetchRecord, recordPosition, holePaths };
+}
+
+// Each hole's PATH, collar → end of hole: desurveyed at depth 0, every survey
+// station, and the EOH (the collar's, else the deepest survey station, else
+// `extraEoh` — the deepest interval TO, so a path always covers its samples).
+// → { perHole: Map(collar row → [[seq, x, y, z], …] in depth order), report }.
+// Shared by openDrillholeTraces (the path layer) and openDrillholes' holePaths
+// (a section's "keep holes that cross the slab").
+function desurveyHolePaths(collars, surveys, opts = {}, extraEoh = null) {
+  const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
+  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
+  for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
+  for (const c of collars) {
+    if (!depthsOf.has(c.bhid)) continue;
+    let eoh = c.eoh != null && Number.isFinite(c.eoh) ? c.eoh : maxSurvey.get(c.bhid);
+    const deep = extraEoh ? extraEoh.get(c.bhid) : null;
+    if (deep != null && Number.isFinite(deep) && !(eoh >= deep)) eoh = deep;
+    if (eoh) depthsOf.get(c.bhid).add(eoh);
+  }
+  const sBhid = [], sDepth = [], sRow = [], sSeq = [];
+  for (const [hb, ds] of depthsOf) {
+    const sorted = [...ds].filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
+    sorted.forEach((d, k) => { sBhid.push(hb); sDepth.push(d); sRow.push(holeIdx.get(hb)); sSeq.push(k); });
+  }
+  const samples = { bhid: sBhid, depth: Float64Array.from(sDepth), cols: [{ name: '__row', values: Float64Array.from(sRow) }, { name: '__seq', values: Float64Array.from(sSeq) }] };
+  const ds = dhDesurveySamples({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
+  const perHole = new Map();
+  for (const row of ds.rows) { const hi = row[5] | 0, sq = row[6] | 0; if (!perHole.has(hi)) perHole.set(hi, []); perHole.get(hi).push([sq, row[1], row[2], row[3]]); }
+  for (const pts of perHole.values()) pts.sort((a, b) => a[0] - b[0]);
+  return { perHole, report: ds.report };
 }
 
 /**
@@ -2912,24 +2960,7 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
   }));
   const surveys = tSurvey.rows.map((r) => ({ bhid: r[ms.bhid], depth: ms.at >= 0 ? +r[ms.at] : 0, az: +r[ms.az], dip: +r[ms.dip] }));
 
-  // per hole: sample depths = {0} ∪ survey station depths ∪ {EOH}; EOH from the
-  // collar when present, else the deepest survey station
-  const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
-  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
-  for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
-  for (const c of collars) { if (depthsOf.has(c.bhid)) { const eoh = c.eoh != null && Number.isFinite(c.eoh) ? c.eoh : maxSurvey.get(c.bhid); if (eoh) depthsOf.get(c.bhid).add(eoh); } }
-
-  const sBhid = [], sDepth = [], sRow = [], sSeq = [];
-  for (const [hb, ds] of depthsOf) {
-    const sorted = [...ds].filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
-    sorted.forEach((d, k) => { sBhid.push(hb); sDepth.push(d); sRow.push(holeIdx.get(hb)); sSeq.push(k); });
-  }
-  const samples = { bhid: sBhid, depth: Float64Array.from(sDepth), cols: [{ name: '__row', values: Float64Array.from(sRow) }, { name: '__seq', values: Float64Array.from(sSeq) }] };
-  const ds = dhDesurveySamples({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
-
-  // group placed points by hole, order by __seq, connect consecutive → segments
-  const perHole = new Map();
-  for (const row of ds.rows) { const hi = row[5] | 0, sq = row[6] | 0; if (!perHole.has(hi)) perHole.set(hi, []); perHole.get(hi).push([sq, row[1], row[2], row[3]]); }
+  const { perHole, report: pathReport } = desurveyHolePaths(collars, surveys, opts);
   let nSeg = 0;
   for (const pts of perHole.values()) { pts.sort((a, b) => a[0] - b[0]); nSeg += Math.max(0, pts.length - 1); }
   const ax = new Float64Array(nSeg), ay = new Float64Array(nSeg), az = new Float64Array(nSeg);
@@ -2948,10 +2979,10 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
     }
   }
   const header = {
-    kind: 'drillholeTraces', count: nSeg, holes: depthsOf.size,
+    kind: 'drillholeTraces', count: nSeg, holes: perHole.size,
     bbox: { min, max }, chanRange: [0, 1],
     columns: tCollar.columns, collarMapping: mc, surveyMapping: ms,
-    method: opts.method || 'minimumCurvature', dipConvention: ds.report ? ds.report.dipConvention : (opts.dipConvention || 'auto'),
+    method: opts.method || 'minimumCurvature', dipConvention: pathReport ? pathReport.dipConvention : (opts.dipConvention || 'auto'),
   };
   async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
     for (let at = 0; at < nSeg; at += chunkPoints) {
@@ -6038,6 +6069,56 @@ function attachOrbitInput(canvas, cam, { onChange } = {}) {
   };
 }
 
+// ── src/core/section.js ──
+
+// A layer's view of the section — ONE definition for the draw (gl.js) and the
+// pick (gl-pick.js). They were two hand-kept copies; a pick that disagrees with
+// the picture is the bug a geologist meets on exactly the views they work in.
+//
+// sec: { n, d, half, d0?, clip?, traceHalf? } — d0 is the plane, d/half the slab
+// mode (a layer's `sectioned`):
+//   true            follow the section
+//   false           don't cut
+//   'front'/'behind' keep that side only (a half-space is a slab with the far
+//                   face pushed past the data — the global clip's own trick)
+//   { half }        follow with this layer's OWN slab: ± half around the plane,
+//                   whatever the section's slab or half-space
+//   { whole: true } don't cut — the host hides what misses the slab itself
+//                   (micro keeps the drillholes that cross it, whole)
+// offset: a moved layer (setLayerOffset) is cut where it is DRAWN — in its own
+// coordinates the plane sits at d − n·o.
+
+function offsetSection(sec, o) {
+  if (!sec || !o) return sec;
+  const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
+  return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
+}
+
+function layerSection(sec, mode = true, offset = null) {
+  sec = offsetSection(sec, offset);
+  const m = mode;
+  if (m && typeof m === 'object') {
+    if (!sec || m.whole) return null;
+    if (m.half > 0) return { ...sec, d: sec.d0 !== undefined ? sec.d0 : sec.d, half: m.half, clip: 'slab', traceHalf: undefined };
+    return sec;
+  }
+  if (!sec || m === false) return null;
+  if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
+    const H = Math.max(1e5, 8 * (sec.half || 1));
+    return { ...sec, d: m === 'front' ? sec.d0 + H : sec.d0 - H, half: H, clip: m, traceHalf: sec.traceHalf || (sec.half < 9e4 ? sec.half : 1) };
+  }
+  return sec;
+}
+
+// meshes render their section as a TRACE flattened onto the wall — for a
+// half-space the slab half is ~1e5 (it swallows the scene), so the trace band
+// narrows to the TRUE plane ± traceHalf; slab sections already carry the width
+function meshSection(sec, mode = true, offset = null) {
+  const s2 = layerSection(sec, mode, offset);
+  if (!s2 || !(s2.clip === 'front' || s2.clip === 'behind') || s2.d0 === undefined) return s2;
+  return { ...s2, d: s2.d0, half: Math.max(0.01, s2.traceHalf || 1) };
+}
+
 // ── src/core/gl-pick.js ──
 
 // @gcu/condenser — GPU ID-buffer picking. On click, the visible chunks re-render
@@ -6548,37 +6629,16 @@ function createPickPipeline(gl) {
       for (const c of arr) { const id = c._layer || 0; let g = m.get(id); if (!g) m.set(id, g = []); g.push(c); }
       return m;
     };
-    // per layer: an exempt layer (st.sectioned === false) picks whole
-    // a moved layer (setLayerOffset) is cut where it is DRAWN: in its own
-    // coordinates the plane sits at d − n·o (gl.js offsetSec, mirrored)
-    const secFor = (st) => {
-      const o = st && st.offset;
-      if (!section || !o) return section;
-      const k = section.n[0] * o[0] + section.n[1] * o[1] + section.n[2] * o[2];
-      return section.d0 !== undefined ? { ...section, d: section.d - k, d0: section.d0 - k } : { ...section, d: section.d - k };
-    };
+    // the layer's view of the section — section.js, the SAME function the draw
+    // uses (it was a hand-kept mirror here; a pick must agree with the picture)
     // ...and drawn with its own camera: the offset folded in as a translation
     const stateFor = (st) => (st && st.offset ? translateState(cam.state, st.offset) : cam.state);
-    const setSec = (u, st) => {
-      let s = st && st.sectioned === false ? null : secFor(st);
-      const pm = st ? st.sectioned : true;
-      if (s && (pm === 'front' || pm === 'behind') && s.d0 !== undefined) { const H = Math.max(1e5, 8 * (s.half || 1)); s = { ...s, d: pm === 'front' ? s.d0 + H : s.d0 - H, half: H }; }
+    const setSecWith = (u, s) => {
       gl.uniform4f(u.secPlane, s ? s.n[0] : 0, s ? s.n[1] : 0, s ? s.n[2] : 1, s ? s.d : 0);
       gl.uniform2f(u.secCfg, s ? 1 : 0, s ? s.half : 0);
     };
-    // a mesh's section is a TRACE band at the true plane, not the fat half-space
-    // slab the blocks use (gl.js meshSecOf) — mirror it or the pick disagrees
-    // with the picture on exactly the views geologists spend their day in.
-    const setSecMesh = (u, st) => {
-      let s2 = st && st.sectioned === false ? null : secFor(st);
-      const pm = st ? st.sectioned : true;
-      const clip = s2 && (pm === 'front' || pm === 'behind' ? pm : s2.clip);
-      if (s2 && (clip === 'front' || clip === 'behind') && s2.d0 !== undefined) {
-        s2 = { ...s2, d: s2.d0, half: Math.max(0.01, s2.traceHalf || 1) };
-      }
-      gl.uniform4f(u.secPlane, s2 ? s2.n[0] : 0, s2 ? s2.n[1] : 0, s2 ? s2.n[2] : 1, s2 ? s2.d : 0);
-      gl.uniform2f(u.secCfg, s2 ? 1 : 0, s2 ? s2.half : 0);
-    };
+    const setSec = (u, st) => setSecWith(u, layerSection(section, st ? st.sectioned : true, st && st.offset));
+    const setSecMesh = (u, st) => setSecWith(u, meshSection(section, st ? st.sectioned : true, st && st.offset));
     // hidden classes aren't pickable (same texture the visual pass culls by)
     const setCatVis = (u, st) => {
       const t = st && st.catVisTex;
@@ -9720,36 +9780,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // (§3). Single-layer callers never notice: layer 0 shifts by zero and every
   // API defaults to it. ──
   const layers = new Map();                               // id → per-layer state
-  // a layer's view of the section: false = exempt, 'front'/'behind' = keep that
-  // side only (a half-space is a slab with the far face pushed past the data —
-  // same trick the global clip uses, but per layer, derived from sec.d0)
-  // a layer's offset (setLayerOffset) moves its geometry at draw time, so the
-  // section must cut where the layer is DRAWN: in its own coordinates the plane
-  // sits at d − n·o. Shifting here covers every pipeline (meshSecOf calls this).
-  const offsetSec = (sec, o) => {
-    if (!sec || !o) return sec;
-    const k = sec.n[0] * o[0] + sec.n[1] * o[1] + sec.n[2] * o[2];
-    return sec.d0 !== undefined ? { ...sec, d: sec.d - k, d0: sec.d0 - k } : { ...sec, d: sec.d - k };
-  };
-  const layerSecOf = (ls, sec) => {
-    sec = offsetSec(sec, ls.offset);
-    const m = ls.sectioned;
-    if (!sec || m === false) return m === false ? null : sec;
-    if ((m === 'front' || m === 'behind') && sec.d0 !== undefined) {
-      const H = Math.max(1e5, 8 * (sec.half || 1));
-      return { ...sec, d: m === 'front' ? sec.d0 + H : sec.d0 - H, half: H, clip: m, traceHalf: sec.traceHalf || (sec.half < 9e4 ? sec.half : 1) };
-    }
-    return sec;
-  };
-  // meshes render their section as a TRACE flattened onto the wall — for a
-  // half-space clip the slab half is ~1e5 (it swallows the scene), so the
-  // trace band narrows to the TRUE plane ± traceHalf; slab sections already
-  // carry the right width
-  const meshSecOf = (ls, sec) => {
-    const s2 = layerSecOf(ls, sec);
-    if (!s2 || !(s2.clip === 'front' || s2.clip === 'behind') || s2.d0 === undefined) return s2;
-    return { ...s2, d: s2.d0, half: Math.max(0.01, s2.traceHalf || 1) };
-  };
+  // a layer's view of the section (sectioned mode + its draw offset) — section.js,
+  // shared with the pick pipeline so the pick always agrees with the picture
+  const layerSecOf = (ls, sec) => layerSection(sec, ls.sectioned, ls.offset);
+  const meshSecOf = (ls, sec) => meshSection(sec, ls.sectioned, ls.offset);
   function layerOf(id) {
     let l = layers.get(id);
     if (!l) {
@@ -10816,6 +10850,7 @@ export {
   readDelimited,
   openDrillholes,
   openDrillholeTraces,
+  desurveyHolePaths,
   QUALIFIED_DEFAULT,
   classifyQualified,
   qualifiedNumber,
@@ -10851,6 +10886,9 @@ export {
   FACE_CUT,
   FACE_NORMALS,
   FACE_NAMES,
+  layerSection,
+  meshSection,
+  offsetSection,
   openDmModel,
   fetchDmRecord,
   peekDmColumns,

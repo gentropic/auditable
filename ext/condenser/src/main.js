@@ -14,7 +14,7 @@ export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRot
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from './grid/grid-join.js';
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord } from './io/blockmodel.js';
 export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine } from './io/delimited.js';
-export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces } from './io/drillholes.js';
+export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces, desurveyHolePaths } from './io/drillholes.js';
 export { QUALIFIED_DEFAULT, classifyQualified, qualifiedNumber, censusQualified, describeQualified } from './io/qualified.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';
 export { createSticksPipeline } from './core/gl-sticks.js';
@@ -26,6 +26,7 @@ export { openPlySoup, openObjSoup, openMshSoup, soupVertexTable, soupTriBatcher 
 export { createSoupPipeline } from './core/gl-soup.js';
 export { categoryPalettePixels, createBlocksPipeline } from './core/gl-blocks.js';
 export { createPickPipeline, layerOfId, faceOfId, isMiss, NO_FACE, FACE_CUT, FACE_NORMALS, FACE_NAMES } from './core/gl-pick.js';
+export { layerSection, meshSection, offsetSection } from './core/section.js';
 export { openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe } from './io/dm-provider.js';
 export { parsePlyHeader, openPly } from './io/ply.js';
 export { openDxf, peekDxfScene, DXF_RESIDENT_MAX } from './io/dxf-provider.js';

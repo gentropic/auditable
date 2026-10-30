@@ -256,7 +256,55 @@ export async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     return k === undefined ? null : [px[k], py[k], pz[k]];
   };
 
-  return { header, streamChunks, fetchRecord, recordPosition };
+  // each hole's collar → EOH path (lazy: only a "keep holes that cross the
+  // slab" section asks). → Map(bhid → Float64Array [x,y,z, x,y,z, …]) in world
+  // coordinates, depth order. The EOH reaches at least the deepest interval TO.
+  let _paths = null;
+  const holePaths = () => {
+    if (_paths) return _paths;
+    const deepest = new Map();
+    for (let i = 0; i < n; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
+    const { perHole } = desurveyHolePaths(collars, surveys, opts, deepest);
+    _paths = new Map();
+    for (const [hi, pts] of perHole) {
+      const xyz = new Float64Array(pts.length * 3);
+      pts.forEach((pt, k) => { xyz[3 * k] = pt[1]; xyz[3 * k + 1] = pt[2]; xyz[3 * k + 2] = pt[3]; });
+      _paths.set(collars[hi].bhid, xyz);
+    }
+    return _paths;
+  };
+
+  return { header, streamChunks, fetchRecord, recordPosition, holePaths };
+}
+
+// Each hole's PATH, collar → end of hole: desurveyed at depth 0, every survey
+// station, and the EOH (the collar's, else the deepest survey station, else
+// `extraEoh` — the deepest interval TO, so a path always covers its samples).
+// → { perHole: Map(collar row → [[seq, x, y, z], …] in depth order), report }.
+// Shared by openDrillholeTraces (the path layer) and openDrillholes' holePaths
+// (a section's "keep holes that cross the slab").
+export function desurveyHolePaths(collars, surveys, opts = {}, extraEoh = null) {
+  const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
+  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
+  for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
+  for (const c of collars) {
+    if (!depthsOf.has(c.bhid)) continue;
+    let eoh = c.eoh != null && Number.isFinite(c.eoh) ? c.eoh : maxSurvey.get(c.bhid);
+    const deep = extraEoh ? extraEoh.get(c.bhid) : null;
+    if (deep != null && Number.isFinite(deep) && !(eoh >= deep)) eoh = deep;
+    if (eoh) depthsOf.get(c.bhid).add(eoh);
+  }
+  const sBhid = [], sDepth = [], sRow = [], sSeq = [];
+  for (const [hb, ds] of depthsOf) {
+    const sorted = [...ds].filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
+    sorted.forEach((d, k) => { sBhid.push(hb); sDepth.push(d); sRow.push(holeIdx.get(hb)); sSeq.push(k); });
+  }
+  const samples = { bhid: sBhid, depth: Float64Array.from(sDepth), cols: [{ name: '__row', values: Float64Array.from(sRow) }, { name: '__seq', values: Float64Array.from(sSeq) }] };
+  const ds = dhDesurveySamples({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
+  const perHole = new Map();
+  for (const row of ds.rows) { const hi = row[5] | 0, sq = row[6] | 0; if (!perHole.has(hi)) perHole.set(hi, []); perHole.get(hi).push([sq, row[1], row[2], row[3]]); }
+  for (const pts of perHole.values()) pts.sort((a, b) => a[0] - b[0]);
+  return { perHole, report: ds.report };
 }
 
 /**
@@ -279,24 +327,7 @@ export async function openDrillholeTraces({ collar, survey }, opts = {}) {
   }));
   const surveys = tSurvey.rows.map((r) => ({ bhid: r[ms.bhid], depth: ms.at >= 0 ? +r[ms.at] : 0, az: +r[ms.az], dip: +r[ms.dip] }));
 
-  // per hole: sample depths = {0} ∪ survey station depths ∪ {EOH}; EOH from the
-  // collar when present, else the deepest survey station
-  const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
-  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
-  for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
-  for (const c of collars) { if (depthsOf.has(c.bhid)) { const eoh = c.eoh != null && Number.isFinite(c.eoh) ? c.eoh : maxSurvey.get(c.bhid); if (eoh) depthsOf.get(c.bhid).add(eoh); } }
-
-  const sBhid = [], sDepth = [], sRow = [], sSeq = [];
-  for (const [hb, ds] of depthsOf) {
-    const sorted = [...ds].filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
-    sorted.forEach((d, k) => { sBhid.push(hb); sDepth.push(d); sRow.push(holeIdx.get(hb)); sSeq.push(k); });
-  }
-  const samples = { bhid: sBhid, depth: Float64Array.from(sDepth), cols: [{ name: '__row', values: Float64Array.from(sRow) }, { name: '__seq', values: Float64Array.from(sSeq) }] };
-  const ds = dhDesurveySamples({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
-
-  // group placed points by hole, order by __seq, connect consecutive → segments
-  const perHole = new Map();
-  for (const row of ds.rows) { const hi = row[5] | 0, sq = row[6] | 0; if (!perHole.has(hi)) perHole.set(hi, []); perHole.get(hi).push([sq, row[1], row[2], row[3]]); }
+  const { perHole, report: pathReport } = desurveyHolePaths(collars, surveys, opts);
   let nSeg = 0;
   for (const pts of perHole.values()) { pts.sort((a, b) => a[0] - b[0]); nSeg += Math.max(0, pts.length - 1); }
   const ax = new Float64Array(nSeg), ay = new Float64Array(nSeg), az = new Float64Array(nSeg);
@@ -315,10 +346,10 @@ export async function openDrillholeTraces({ collar, survey }, opts = {}) {
     }
   }
   const header = {
-    kind: 'drillholeTraces', count: nSeg, holes: depthsOf.size,
+    kind: 'drillholeTraces', count: nSeg, holes: perHole.size,
     bbox: { min, max }, chanRange: [0, 1],
     columns: tCollar.columns, collarMapping: mc, surveyMapping: ms,
-    method: opts.method || 'minimumCurvature', dipConvention: ds.report ? ds.report.dipConvention : (opts.dipConvention || 'auto'),
+    method: opts.method || 'minimumCurvature', dipConvention: pathReport ? pathReport.dipConvention : (opts.dipConvention || 'auto'),
   };
   async function* streamChunks({ chunkPoints = 1 << 16 } = {}) {
     for (let at = 0; at < nSeg; at += chunkPoints) {

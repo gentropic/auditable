@@ -959,7 +959,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
+import { openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -1018,7 +1018,9 @@ function currentDrawOpts() {
   const modeOf = (v) => (v === 'elev' ? 0 : v && v.startsWith('chan:') ? 1 : v === 'cat' || v === 'rules' || (v && v.startsWith('paint:')) ? 2 : v === 'solid' ? 3 : +v || 0);
   const layerOpts = {};
   for (const L of S.layers) layerOpts[L.id] = { colorMode: L.id === S.activeId ? resolveColorMode() : modeOf(L.colorSel), clip: L.id === S.activeId ? [clipV('clipMin'), clipV('clipMax')] : clipOf(L) };
-  return { budget: +$('#budget').value, pointPx: +$('#ptPx').value, colorMode: resolveColorMode(), blocksAsPoints: _viewMode === 'points', blockEdges: _blockEdges, section: currentSection(), clip: [clipV('clipMin'), clipV('clipMax')], layerOpts: S.layers.length ? layerOpts : null };
+  const section = currentSection();
+  syncWholeHoles(section);                                 // whole-holes layers: which holes cross the slab (cheap unless it moved)
+  return { budget: +$('#budget').value, pointPx: +$('#ptPx').value, colorMode: resolveColorMode(), blocksAsPoints: _viewMode === 'points', blockEdges: _blockEdges, section, clip: [clipV('clipMin'), clipV('clipMax')], layerOpts: S.layers.length ? layerOpts : null };
 }
 function loop(t) {
   if (dirty || !converged) {                               // keep converging while still (progressive accumulation)
@@ -1132,9 +1134,21 @@ async function pickHitPoint(hit, cssX, cssY) {
   const { o, d } = pixelRay(cssX, cssY);
   let n, dist;                                             // plane: dot(n, p_local) = dist
   if (face === FACE_CUT) {
+    // the cut face is one of the LAYER's slab faces (d ± half — its own slab, a
+    // half-space's true plane, the section's slab), whichever the ray meets
+    // first. It used to be the section plane d0 always, so a pick on a ±5 m
+    // slab's wall landed 5 m deep and a layer's own slab wasn't seen at all.
     const sec = currentSection();
     if (!sec || !sec.on) return world;
-    n = sec.n; dist = sec.d0 != null ? sec.d0 : sec.d;     // the TRUE plane, not the fat slab face
+    const s = layerSection(sec, renderer.layerSectioned(hit.layer));
+    if (!s) return world;
+    n = s.n;
+    const on = n[0] * o[0] + n[1] * o[1] + n[2] * o[2], dn = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
+    if (Math.abs(dn) < 1e-9) return world;
+    const ts = [s.d - s.half, s.d + s.half].map((f) => (f - on) / dn).filter((t) => t > 0);
+    if (!ts.length) return world;
+    const t = Math.min(...ts);
+    return [o[0] + d[0] * t + frame.origin[0], o[1] + d[1] * t + frame.origin[1], o[2] + d[2] * t + frame.origin[2]];
   } else {
     const L = layerById(hit.layer);
     const half = await blockHalfDims(L, hit.rec);          // sub-blocks carry their own size
@@ -8495,9 +8509,9 @@ async function openDrillholeLayer(files, opts = {}, mode = 'add', over = {}) {
   $('#meta').textContent = `${name} — desurveying…`;
   $('#empty').style.display = 'none';
   try {
-    const { header, streamChunks, fetchRecord, recordPosition } = await openDrillholes(
+    const { header, streamChunks, fetchRecord, recordPosition, holePaths } = await openDrillholes(
       { collar: files.collar, survey: files.survey, intervals: files.intervals }, opts);
-    const dhDoc = { blobs: { ...files }, header, fetchRecord, recordPosition, config: { ...opts } };
+    const dhDoc = { blobs: { ...files }, header, fetchRecord, recordPosition, holePaths, config: { ...opts } };
     peekCollarCols(dhDoc);                                 // warm the collar-column cache (menu + manifest)
     registerDocs(lid, 'points', { dhDoc });
     qualifyDhDoc(layerById(lid));                          // <0.001 → a number for every interval reader; rawRecord keeps the text
@@ -9773,7 +9787,7 @@ let _filterSeq = 0;
 // re-sweep a layer's filter after something changed under it (a re-read, new ƒ
 // definitions, a reload) — ANY layer; the box mirrors it when it's the active one
 async function refilterLayer(L, expr = L && L.filterExpr) {
-  if (!L || !String(expr || '').trim()) return;
+  if (!L || (!String(expr || '').trim() && !holeMaskOf(L))) return;   // a hole mask (hole filter / whole-holes section) still masks with no expression
   if (L.id === S.activeId) { $('#filter').value = expr; syncFilterClear(); }
   await applyBlockFilter(expr, L);
 }
@@ -9803,7 +9817,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
   const epoch = ++_filterSeq;                               // one sequence for all layers: safe across recycled ids
   _filterEpochs.set(lid, epoch);
   const alive = () => _filterEpochs.get(lid) === epoch;
-  if (!expr.trim() && !(AL && AL._holeMask)) {             // a hole filter still masks with an empty expression
+  if (!expr.trim() && !holeMaskOf(AL)) {             // a hole filter still masks with an empty expression
     renderer.setFilter(null, {}, lid); renderer.clearCompact(lid); inp.classList.remove('err'); requestRender();
     { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; attrTableFilterChanged(lid); refreshLinkedWindows(Lf, 'filtered'); } }
     $('#meta').textContent = (fBlockDoc || fDhDoc).metaLine; return;
@@ -12218,7 +12232,7 @@ drag — orbit · right-drag / shift-drag — pan · wheel — zoom · <code>⌃
 <b>sections</b> — a cut through the data; everything hidden is neither drawn nor pickable. Blocks and drillhole sticks cut <b>true</b>: a block straddling the plane shows its cut interior at the plane (a thin slab reads as a continuous painted wall), and a sectioned mesh's trace draws <b>over</b> the wall like a wireframe outline on a section plot<br>
 pick a preset (plan · N–S · E–W), press <code>k</code> (or <code>c</code> for <i>cut</i>) and <b>drag a line</b> (the vertical section through it; <code>⇧</code> snaps to 15°, <code>⇧⌥</code> to 5°, <code>Esc</code> cancels), or choose <b>custom</b> and type the plane's dip direction + dip · <code>x</code> toggles the section on/off<br>
 <b>slab · front · behind</b> — keep a band of ±thickness, or everything on one side of the plane<br>
-<b>plane</b> — outline the cut plane in the view · <b>2D</b> — face-on + orthographic + rotation locked (drags pan; the paper-section view) · right-click a layer → <b>Cut by sections</b>: follow · keep front only · keep behind only · don't cut (keep topo whole for context, or split one model at the plane while another follows the slab)<br>
+<b>plane</b> — outline the cut plane in the view · <b>2D</b> — face-on + orthographic + rotation locked (drags pan; the paper-section view) · right-click a layer → <b>Cut by sections</b>: follow · follow with its own slab (± m) · keep front only · keep behind only · don't cut (keep topo whole for context, or split one model at the plane while another follows the slab) · on drillholes, keep holes that cross the slab, whole<br>
 <code>l</code> — face the section (<code>⇧L</code> its back) · <code>,</code> <code>.</code> — walk the section one slab at a time · <code>⌃</code>wheel scrubs · <code>⌥</code>wheel thickens the slab · <b>follow</b> — the camera walks with the scrub (the cut stays put on screen) · the number is slab half-thickness (m)<br><br>
 <b>goto</b> — <code>g</code> then <code>1</code>–<code>9</code> recalls a view slot; <code>g</code> then <code>Shift+digit</code> saves the current view into that slot (a bookmark named “slot N” — camera + section, travels with the project). <code>F1</code> opens this help<br><br>
 <b>selection</b> (<code>r</code> rectangle · <code>v</code> lasso, or Tools menu) — drag over the scene: what you SEE gets selected (occlusion-honest, all visible layers at once), tinted gold; <b>shift</b> adds, <b>alt</b> subtracts, <code>Esc</code> clears; releasing WITH shift/alt keeps the tool armed for the next gesture (middle-drag still orbits; Settings → interaction to change); the attribute table's <b>selected</b> view lists the grabbed rows; selections persist in the project<br>
@@ -14417,11 +14431,7 @@ function layerMenu(L, x, y) {
         action: () => { L.edges = v; renderer.setLayerEdges(L.id, v); markProjectDirty(); requestRender(); },
       })),
     }] : []),
-    { label: (() => { const m = renderer.layerSectioned(L.id); return 'Cut by sections' + (m === true ? '' : m === false ? ' (off)' : ` (${m})`); })(), submenu: () => {
-      const m = renderer.layerSectioned(L.id);
-      const opt = (v, t) => ({ label: (m === v ? '✓ ' : '') + t, action: () => { renderer.setLayerSectioned(L.id, v); markProjectDirty(); requestRender(); } });
-      return [opt(true, 'follow the section'), opt('front', 'keep front only'), opt('behind', 'keep behind only'), opt(false, "don't cut")];
-    } },
+    { label: 'Cut by sections' + secModeLabel(renderer.layerSectioned(L.id)), submenu: () => sectionModeItems(L) },
     { label: L.visible ? 'Hide layer' : 'Show layer', action: () => showNode(L.id, !L.visible) },
     { sep: true },                                          // ── arrange / lifecycle ──
     { label: 'Move', submenu: () => [
@@ -17276,9 +17286,117 @@ function moveLayerToGroupMenu(L, x, y) {
 // interval sweep) and to the trace sticks (traces regenerate from the matching
 // holes only). Nothing materializes — the relation carries the verdict.
 // The expression validates against the collar columns (peekCollarCols types).
+// ── a layer's cut by the section (Cut by sections ▸). The renderer's per-layer
+// mode: true (follow) · 'front' · 'behind' · false (don't cut) · { half } —
+// follow with this layer's OWN slab, ± half around the plane · { whole, half? }
+// — drillholes: not cut; the holes whose collar → end-of-hole path crosses the
+// slab draw whole, the others are hidden. ──
+function secModeLabel(m) {
+  if (m === true || m == null) return '';
+  if (m === false) return ' (off)';
+  if (typeof m === 'object') return m.whole ? ` (whole holes${m.half > 0 ? `, ± ${m.half} m` : ''})` : ` (± ${m.half} m)`;
+  return ` (${m})`;
+}
+function setLayerSectionMode(L, m) {
+  renderer.setLayerSectioned(L.id, m);
+  markProjectDirty(); requestRender();
+}
+function sectionModeItems(L) {
+  const m = renderer.layerSectioned(L.id);
+  const own = m && typeof m === 'object' && m.half > 0 ? m.half : null;
+  const whole = !!(m && typeof m === 'object' && m.whole);
+  const opt = (on, t, v) => ({ label: (on ? '✓ ' : '') + t, action: () => setLayerSectionMode(L, v) });
+  const askHalf = async (keepWhole = false) => {
+    const cur = own || +$('#secHalf').value || 10;
+    const v = await microPrompt('this layer’s slab: ± metres around the section plane', String(cur));
+    if (v == null || !String(v).trim()) return;
+    const h = +String(v).replace(',', '.');
+    if (!(h > 0)) { $('#meta').textContent = 'slab: a positive number of metres'; return; }
+    setLayerSectionMode(L, keepWhole ? { whole: true, half: h } : { half: h });
+  };
+  return [
+    opt(m === true, 'follow the section', true),
+    { label: (own != null && !whole ? '✓ ' : '') + `follow, with its own slab${own != null && !whole ? ` (± ${own} m)` : ''}…`, action: () => askHalf(false) },
+    opt(m === 'front', 'keep front only', 'front'),
+    opt(m === 'behind', 'keep behind only', 'behind'),
+    ...(L.dh ? [opt(whole, 'keep holes that cross the slab, whole', { whole: true, ...(own != null ? { half: own } : {}) })] : []),
+    opt(m === false, "don't cut", false),
+    ...(L.dh && whole ? [{ sep: true }, { label: own != null ? `holes test a slab of ± ${own} m…` : 'holes test their own slab…', action: () => askHalf(true) },
+      ...(own != null ? [{ label: 'holes test the section’s slab', action: () => setLayerSectionMode(L, { whole: true }) }] : [])] : []),
+  ];
+}
+// the slab a whole-holes layer tests against: its own ± half, else the section's
+// (the slab, or a half-space's trace band). Frame-local, like the section.
+function wholeHolesSlab(L, sec) {
+  const m = renderer.layerSectioned(L.id);
+  if (!m || typeof m !== 'object' || !m.whole || !sec) return null;
+  const d0 = sec.d0 !== undefined ? sec.d0 : sec.d;
+  const half = m.half > 0 ? m.half : (sec.clip === 'front' || sec.clip === 'behind') ? (sec.traceHalf || 1) : sec.half;
+  return { n: sec.n, d0, half };
+}
+// which holes' collar → EOH paths reach into the slab (a station inside it, or
+// a path segment jumping across it)
+function crossingHoles(L, slab) {
+  const dh = L.docs.dhDoc; if (!dh || !dh.holePaths) return null;
+  const o = frame ? frame.origin : [0, 0, 0];
+  const [nx, ny, nz] = slab.n;
+  const off = nx * o[0] + ny * o[1] + nz * o[2];            // the paths are WORLD coordinates; the plane is frame-local
+  const lo = slab.d0 - slab.half + off, hi = slab.d0 + slab.half + off;
+  const out = new Set();
+  for (const [bh, xyz] of dh.holePaths()) {
+    let prev = null;
+    for (let k = 0; k < xyz.length; k += 3) {
+      const t = nx * xyz[k] + ny * xyz[k + 1] + nz * xyz[k + 2];
+      if ((t >= lo && t <= hi) || (prev != null && ((prev < lo && t > hi) || (prev > hi && t < lo)))) { out.add(bh); break; }
+      prev = t;
+    }
+  }
+  return out;
+}
+function maskOfHoles(L, holes) {
+  const dh = L.docs.dhDoc, im = dh.header.intervalMapping, raw = dh.rawRecord || dh.fetchRecord;
+  const mask = new Uint8Array(dh.header.count);
+  for (let i = 0; i < mask.length; i++) { const f = raw(i); if (f && holes.has(f[im.bhid])) mask[i] = 1; }
+  return mask;
+}
+// the hole-level mask a drillhole filter starts from: the hole filter AND the
+// whole-holes section (either may be absent)
+function holeMaskOf(L) {
+  const a = (L && L._holeMask) || null, b = (L && L._secHoleMask) || null;
+  if (!a || !b) return a || b;
+  const m = new Uint8Array(a.length);
+  for (let i = 0; i < m.length; i++) m[i] = a[i] & b[i];
+  return m;
+}
+// per frame (currentDrawOpts): when the section or a whole-holes layer changed,
+// recompute which holes cross; refilter only when that SET changed (a scrub
+// mostly doesn't change it)
+let _wholeKey = '';
+function syncWholeHoles(sec) {
+  let key = sec ? `${sec.n.join()}|${sec.d0}|${sec.d}|${sec.half}|${sec.traceHalf}|` : 'off|';
+  let any = false;
+  for (const L of S.layers) {
+    if (!L.dh) continue;
+    const m = renderer.layerSectioned(L.id);
+    if (m && typeof m === 'object' && m.whole) { key += `${L.id}:${m.half || ''};`; any = true; }
+    else if (L._secHoleSig != null) { key += `${L.id}:x;`; any = true; }
+  }
+  if (!any || key === _wholeKey) { if (!any) _wholeKey = ''; return; }
+  _wholeKey = key;
+  for (const L of S.layers) {
+    if (!L.dh || !L.docs.dhDoc) continue;
+    const slab = wholeHolesSlab(L, sec);
+    const holes = slab ? crossingHoles(L, slab) : null;
+    const sig = holes ? `${holes.size}:${[...holes].sort().join('\u0001')}` : null;
+    if (sig === (L._secHoleSig == null ? null : L._secHoleSig)) continue;
+    L._secHoleSig = sig;
+    L._secHoleMask = holes ? maskOfHoles(L, holes) : null;
+    refilterLayer(L);
+  }
+}
 function dhFilterSweep(L, expr) {                          // the interval-table sweep for ANY dh layer (hole-mask aware)
   const dh = L && L.docs && L.docs.dhDoc; if (!dh) return null;
-  const hm = L._holeMask || null;
+  const hm = holeMaskOf(L);
   if (!(expr || '').trim()) {
     if (!hm) { renderer.setFilter(null, {}, L.id); L._filterMask = null; attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); requestRender(); return null; }
     renderer.setActiveSet('base', L.id);
@@ -18110,6 +18228,7 @@ const _host = createHostApi({
   stepGroup: (path, dir) => { const g = groupAt(path); if (!g) return null; if (!g.exclusive) return false; stepExclusive(dir, g); return true; },
   sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
   decorations: hostDecorations, setDecorations: setHostDecorations,
+  layerSectioned: (id) => renderer.layerSectioned(id), setLayerSectionMode,
   setDetectionLimits: (L, column, policy) => {
     const h = layerTableHeader(L), i = h ? h.columns.indexOf(column) : -1;
     if (i < 0) throw new Error(`micro: no column “${column}” on “${L.label || L.name}”`);

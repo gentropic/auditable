@@ -2618,6 +2618,93 @@ await p.close();
   await pq.close();
 }
 
+// ── §39: a layer's own cut. { thickness } = follow the section with this
+//     layer's OWN slab (the pick, looking along the cut, meets its near face
+//     where the picture does); { wholeHoles } = a drillhole layer isn't cut,
+//     holes whose collar → EOH PATH crosses the slab draw whole, the rest are
+//     hidden — including a hole whose samples never reach the slab, ANDed with
+//     the interval filter, following a scrub, surviving a save/reopen. ──
+{
+  const pc = await mkPage('sm2cut');
+  await pc.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2cut', { recursive: true }); } catch { /* fresh */ } });
+  await pc.evaluate(async () => {
+    let t = 'XC,YC,ZC,FE\n';
+    for (let k = 0; k < 5; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${i + j + k}\n`;
+    await window._micro.openBlob(new Blob([t]), 'bm.csv', 'replace');
+    const f = (s, n) => new File([s], n);
+    // H1 x=5, H2 x=50, H3 x=90 vertical; H4 inclined east from x=20 to ~x=62 over 60 m,
+    // sampled only over its first 10 m (x 20..27) — only its PATH reaches x=50
+    const collar = 'BHID,X,Y,Z\nH1,5,50,60\nH2,50,50,60\nH3,90,50,60\nH4,20,50,60\n';
+    const survey = 'BHID,AT,AZ,DIP\nH1,0,0,-90\nH2,0,0,-90\nH3,0,0,-90\nH4,0,90,-45\nH4,60,90,-45\n';
+    let iv = 'BHID,FROM,TO,CU\n';
+    for (const [h, cu] of [['H1', 1], ['H2', 2], ['H3', 3]]) for (let d = 0; d < 40; d += 10) iv += `${h},${d},${d + 10},${cu}\n`;
+    iv += 'H4,0,10,4\n';
+    await window._micro.importDrillholes({ collar: f(collar, 'collars.csv'), survey: f(survey, 'survey.csv'), intervals: f(iv, 'assay.csv') }, {}, 'add');
+  });
+  await pc.waitForFunction(() => window._micro.layers().some((x) => x.dh && x.docs.dhDoc), null, { timeout: 30000 });
+  const ids = await pc.evaluate(() => { const m = window._micro; return { bm: m.layers().find((x) => x.name === 'bm.csv').id, dh: m.layers().find((x) => x.dh).id }; });
+  // look east along an x-section at x=50 ±6 (thickness 12: no block centre on an edge), ortho, the pick at the canvas centre
+  const nearX = () => pc.evaluate(async () => {
+    const m = window._micro, M = window.micro;
+    await M.setSection({ axis: 'x', position: 50, thickness: 12, clip: 'slab' });
+    document.querySelector('#view').focus();
+    m.cam.setOrtho(true);
+    m.requestRender(); await new Promise((r) => setTimeout(r, 300));
+    const cv = document.querySelector('#view canvas') || document.querySelector('canvas');
+    const r = cv.getBoundingClientRect();
+    const hit = await M.worldAt([r.width / 2, r.height / 2]);
+    return hit ? { x: hit.world[0], layer: hit.layer } : null;
+  });
+  await pc.evaluate((dh) => window.micro.setVisible(dh, false), ids.dh);
+  await pc.evaluate(() => window._micro.setActiveLayer(window._micro.layers().find((x) => x.name === 'bm.csv').id));
+  await pc.locator('body').press('e');
+  const h0 = await nearX();
+  await pc.evaluate((bm) => window.micro.setLayerCut(bm, { thickness: 42 }), ids.bm);
+  const h1 = await nearX();
+  const cut1 = await pc.evaluate((bm) => window.micro.layerCut(bm), ids.bm);
+  chk(`own slab: looking east the cut wall moves from x≈${h0 && h0.x.toFixed(1)} (section ±6) to x≈${h1 && h1.x.toFixed(1)} (its own ±21); layerCut → ${JSON.stringify(cut1)}`,
+    h0 && Math.abs(h0.x - 44) < 0.5 && h1 && Math.abs(h1.x - 29) < 0.5 && cut1 && cut1.thickness === 42);
+  await pc.evaluate((bm) => window.micro.setLayerCut(bm, 'follow'), ids.bm);
+  // whole holes
+  await pc.evaluate((dh) => window.micro.setVisible(dh, true), ids.dh);
+  const holesShown = (expr) => pc.evaluate(async (a) => {
+    const m = window._micro, L = m.layers().find((x) => x.dh);
+    if (a.expr != null) { m.setActiveLayer(L.id); document.querySelector('#filter').value = a.expr; await m.applyBlockFilter(a.expr); }
+    m.requestRender(); await new Promise((r) => setTimeout(r, 400));
+    const dh = L.docs.dhDoc, im = dh.header.intervalMapping, mask = L._filterMask;
+    if (!mask) return 'all';
+    const s = new Set(); for (let i = 0; i < mask.length; i++) if (mask[i]) s.add(dh.rawRecord(i)[im.bhid]);
+    return [...s].sort().join(',');
+  }, { expr });
+  await pc.evaluate((dh) => window.micro.setLayerCut(dh, { wholeHoles: true }), ids.dh);
+  const w0 = await holesShown(null);
+  chk(`whole holes at x=50: H2 + H4 (whose samples stop at x≈27 — its path crosses) → ${w0}`, w0 === 'H2,H4');
+  const w1 = await holesShown('CU > 3');
+  chk(`ANDed with the interval filter (CU > 3) → ${w1}`, w1 === 'H4');
+  await pc.evaluate(async () => { const m = window._micro; document.querySelector('#filter').value = ''; await m.applyBlockFilter(''); await window.micro.setSection({ axis: 'x', position: 10, thickness: 10, clip: 'slab' }); });
+  const w2 = await holesShown(null);
+  chk(`the section moves to x=10 → ${w2}`, w2 === 'H1');
+  await pc.evaluate((dh) => window.micro.setLayerCut(dh, { wholeHoles: true, thickness: 70 }), ids.dh);
+  const w3 = await holesShown(null);
+  chk(`holes with their own ±35 m slab at x=10 (H2 at x=50 stays out) → ${w3}`, w3 === 'H1,H4');
+  let refused = 0;
+  for (const bad of [['bm', { wholeHoles: true }], ['dh', { thickness: -1 }], ['dh', 'sideways']]) {
+    try { await pc.evaluate((a) => window.micro.setLayerCut(a.id, a.cut), { id: ids[bad[0]], cut: bad[1] }); } catch { refused++; }
+  }
+  chk(`setLayerCut refuses whole holes on a block model, a bad thickness, an unknown mode (${refused}/3)`, refused === 3);
+  // save + reopen: the cut modes ride in the project, the mask comes back
+  await pc.evaluate((bm) => window.micro.setLayerCut(bm, { thickness: 40 }), ids.bm);
+  await saveProject(pc);
+  await pc.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2cut'); await window._micro.openProjectDir(dir); });
+  await pc.waitForFunction(() => window._micro.layers().some((x) => x.dh && x.docs.dhDoc) && window._micro.layers().some((x) => x.name === 'bm.csv'), null, { timeout: 60000 });
+  await pc.waitForTimeout(800);
+  const re = await pc.evaluate(() => { const m = window._micro; return { bm: window.micro.layerCut(m.layers().find((x) => x.name === 'bm.csv').id), dh: window.micro.layerCut(m.layers().find((x) => x.dh).id) }; });
+  await pc.evaluate(() => window.micro.setSection({ axis: 'x', position: 10, thickness: 10, clip: 'slab' }));
+  const w4 = await holesShown(null);
+  chk(`cut modes survive a save/reopen (${JSON.stringify(re)}), whole holes → ${w4}`, re.bm && re.bm.thickness === 40 && re.dh && re.dh.wholeHoles && re.dh.thickness === 70 && w4 === 'H1,H4');
+  await pc.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
