@@ -250,6 +250,9 @@
   #lpRows .lp-drop-below { box-shadow: 0 2px 0 var(--accent); }
   #lpRows .lp-drop-into { outline: 1px solid var(--accent); outline-offset: -1px; }
   #lpRows .lp-row input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+  /* a mutually exclusive group's children: a round eye, so the rule shows before the click */
+  #lpRows .lp-row input.lp-radio { appearance: none; -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; border: 1px solid var(--muted); background: transparent; cursor: pointer; flex: 0 0 auto; }
+  #lpRows .lp-row input.lp-radio:checked { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 3.5px, transparent 4px); }
   #lpRows .lp-row .lp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #lpRows .lp-row.off .lp-name { color: var(--dim); }
   #lpRows .lp-row .lp-n { color: var(--dim); font-size: 11px; }
@@ -12189,7 +12192,7 @@ const HELP_KEYS = `
 drag — orbit · right-drag / shift-drag — pan · wheel — zoom · <code>⌃</code>wheel — scrub the section · <code>⌥</code>wheel — slab thickness<br>
 <b>click</b> a block or point — pick it: magenta glow + the record panel (full source row)<br>
 <code>m</code> then two clicks — <b>measure</b>: 3D · plan · Δz between the picked records (<code>Esc</code> clears)<br>
-<code>p</code> — <b>layers panel</b>: open several datasets together (drop several files at once, or Open… → "add as a layer"); right-click a layer for zoom / info / filter / remove · <code>[</code> / <code>]</code> step the active layer<br>
+<code>p</code> — <b>layers panel</b>: open several datasets together (drop several files at once, or Open… → "add as a layer"); right-click a layer for zoom / info / filter / remove · <code>[</code> / <code>]</code> step the active layer · right-click a group → <b>Mutually exclusive</b> shows one child at a time (round eyes), and <code>{</code> / <code>}</code> step through it<br>
 <code>h</code> — hide/show the <b>active layer</b> (flick between overlaid models) · <code>⇧H</code> — <b>solo</b> it (again restores; step layers with <code>[</code> <code>]</code> while soloed to walk them one at a time) · <code>F2</code> — <b>rename</b> it · <code>⇧B</code> — <b>block edges</b> on/off (per-layer override in the layer's right-click menu)<br>
 <code>Ctrl+S</code> — <b>save the project</b>: File → project folder (Chromium) keeps your layers, styling, filters, camera, section, and saved views in a plain folder — project.json + the files<br><br>
 <b>view</b><br>
@@ -13213,7 +13216,7 @@ const COMMANDS = [
   { id: 'optimize', group: 'Layer', title: 'Store as Parquet…', kw: 'optimize morton index materialize convert spatial', when: (c) => c.L && c.L.docs.blockDoc && !c.L.docs.blockDoc.parquet, run: async (c) => { const res = await openOptimizeDialog([c.L]); if (res && res.layers.length) await convertLayerToParquet(c.L, { keepOriginal: res.keepOriginal }); } },
   { id: 'paint', group: 'Layer', title: 'Paint column…', kw: 'brush domain category', when: (c) => c.L && layerTableHeader(c.L), run: (c) => openPaintPalette(c.L) },
   { id: 'export', group: 'Layer', title: 'Export rows…', kw: 'csv parquet save out', when: (c) => c.L && layerTableHeader(c.L), run: (c) => openExportDialog(c.L) },
-  { id: 'hide', group: 'Layer', title: 'Hide / show layer', kw: 'visible toggle', when: (c) => c.L, run: (c) => { c.L.visible = !c.L.visible; applyTreeVisibility(); renderLayers(); } },
+  { id: 'hide', group: 'Layer', title: 'Hide / show layer', kw: 'visible toggle', when: (c) => c.L, run: (c) => showNode(c.L.id, !c.L.visible) },
   { id: 'remove', group: 'Layer', title: 'Remove layer', kw: 'delete close', when: (c) => c.L, run: (c) => removeLayerUI(c.L.id) },
   { id: 'settings', group: 'Tools', title: 'Settings…', kw: 'preferences options prefs background budget selection compute', run: () => openSettingsWindow() },
   { id: 'memory', group: 'Tools', title: 'Memory…', kw: 'vram usage ram', run: () => showMemoryInfo() },
@@ -13666,7 +13669,8 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'p') toggleLayersPanel();
   else if (k === 'P') { const Lp = activeLayer(); if (Lp) { setActiveLayer(Lp.id); openProps(); } }   // ⇧P: layer Properties (pairs with p = layers panel)
   else if (k === 'B') { setBlockEdges(!_blockEdges); $('#meta').textContent = `block edges ${_blockEdges ? 'on' : 'off'}`; }   // ⇧B: block edges (the View toggle)
-  else if (k === 'h') { const Lh = activeLayer(); if (Lh) { Lh.visible = !Lh.visible; applyTreeVisibility(); renderLayers(); $('#meta').textContent = `${Lh.label || Lh.name} ${Lh.visible ? 'shown' : 'hidden'}`; } }   // h: hide/show the active layer (compare-overlays flick)
+  else if (k === 'h') { const Lh = activeLayer(); if (Lh) { showNode(Lh.id, !Lh.visible); $('#meta').textContent = `${Lh.label || Lh.name} ${Lh.visible ? 'shown' : 'hidden'}`; } }   // h: hide/show the active layer (compare-overlays flick)
+  else if (k === '{' || k === '}') stepExclusive(k === '}' ? 1 : -1);   // { }: step the active layer's mutually exclusive group (pit phases)
   else if (k === 'H') soloActiveLayer();                  // ⇧H: solo the active layer (again = restore; re-solos if active changed)
   else if (k === 'F2') { const Lr = activeLayer(); if (Lr) { e.preventDefault(); renameActiveLayer(Lr); } }   // F2: rename (the Windows reflex)
   else if (k === 't') { const Lt = activeLayer(); if (Lt && hasRecords(Lt)) openAttrTable(Lt); }
@@ -14400,7 +14404,7 @@ function layerMenu(L, x, y) {
       const opt = (v, t) => ({ label: (m === v ? '✓ ' : '') + t, action: () => { renderer.setLayerSectioned(L.id, v); markProjectDirty(); requestRender(); } });
       return [opt(true, 'follow the section'), opt('front', 'keep front only'), opt('behind', 'keep behind only'), opt(false, "don't cut")];
     } },
-    { label: L.visible ? 'Hide layer' : 'Show layer', action: () => { L.visible = !L.visible; applyTreeVisibility(); renderLayers(); } },
+    { label: L.visible ? 'Hide layer' : 'Show layer', action: () => showNode(L.id, !L.visible) },
     { sep: true },                                          // ── arrange / lifecycle ──
     { label: 'Move', submenu: () => [
       { label: 'Up', action: () => treeMoveStep(L.id, -1) },
@@ -16844,6 +16848,74 @@ function applyTreeVisibility() {
   walk(S.layerTree, true);
   requestRender();
 }
+// ── mutually exclusive groups (QGIS's radio groups). A group flagged `exclusive`
+// shows at most one of its DIRECT children (a subgroup counts as one); none is
+// allowed. showNode is the ONE place the rule is enforced — every "turn this on"
+// (eye, h, palette, context menu, host) goes through it. Scenes and bookmarks
+// restore what was saved, without it. Table layers have no geometry → ignored. ──
+const _isTableNode = (nd) => typeof nd === 'number' && (layerById(nd) || {}).kind === 'table';
+function nodeShown(nd) { return typeof nd === 'number' ? !!(layerById(nd) || {}).visible : nd.visible !== false; }
+function setNodeFlag(nd, on) {
+  if (typeof nd === 'number') { const L = layerById(nd); if (L) L.visible = !!on; } else nd.visible = !!on;
+}
+// the groups from the root down to `node`'s parent ([] at the root, null if absent)
+function groupChainOf(node, arr = S.layerTree, chain = []) {
+  for (const nd of arr) {
+    if (nd === node) return chain;
+    if (typeof nd !== 'number' && nd.group) {
+      const r = groupChainOf(node, nd.children, [...chain, nd]);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+function showNode(nd, on) {
+  setNodeFlag(nd, on);
+  if (on) {
+    const chain = groupChainOf(nd) || [];
+    const g = chain[chain.length - 1];
+    if (g && g.exclusive) for (const sib of g.children) if (sib !== nd && !_isTableNode(sib)) setNodeFlag(sib, false);
+  }
+  applyTreeVisibility(); renderLayers(); markProjectDirty();
+}
+// flag a group exclusive; turning it ON keeps the topmost shown child
+function setGroupExclusive(g, on) {
+  g.exclusive = !!on;
+  if (on) {
+    let kept = false;
+    for (const c of g.children) {
+      if (_isTableNode(c) || !nodeShown(c)) continue;
+      if (kept) setNodeFlag(c, false); else kept = true;
+    }
+  }
+  applyTreeVisibility(); renderLayers(); markProjectDirty();
+}
+// { / }: step the nearest exclusive group around the active layer (wraps). The
+// shown child moves on, and the active layer follows it.
+// A host may pass the (exclusive) group itself instead.
+function stepExclusive(dir, gIn = null) {
+  let g = gIn, here = -1;
+  if (!g) {
+    const La = activeLayer();
+    const chain = La ? groupChainOf(La.id) : null;
+    let k = chain ? chain.length - 1 : -1;
+    while (k >= 0 && !chain[k].exclusive) k--;
+    if (k < 0) { $('#meta').textContent = '{ } step a mutually exclusive group — the active layer isn’t in one'; return false; }
+    g = chain[k];
+    here = g.children.filter((c) => !_isTableNode(c)).indexOf(chain[k + 1] || La.id);
+  }
+  const kids = g.children.filter((c) => !_isTableNode(c));
+  if (!kids.length) return false;
+  let cur = kids.findIndex(nodeShown);
+  if (cur < 0) cur = here < 0 ? (dir > 0 ? -1 : 0) : here - dir;   // none shown: start at the active layer, else the end
+  const next = kids[((cur + dir) % kids.length + kids.length) % kids.length];
+  showNode(next, true);
+  const lead = typeof next === 'number' ? next : groupLayerIds(next).find((id) => !_isTableNode(id));
+  if (lead != null && lead !== S.activeId) setActiveLayer(lead);
+  const label = typeof next === 'number' ? (layerById(next).label || layerById(next).name) : next.name;
+  $('#meta').textContent = `${g.name}: ${label} (${kids.indexOf(next) + 1}/${kids.length})`;
+  return true;
+}
 // gather a group's layer ids (recursive)
 function groupLayerIds(nd, out = []) {
   for (const c of nd.children) {
@@ -16911,13 +16983,13 @@ function createLayerGroup(name, layerIds, { collapsed = true, dhSet = false } = 
 function treeToManifest(idOf) {
   const conv = (arr) => arr.map((nd) => (typeof nd === 'number'
     ? (idOf.has(nd) ? idOf.get(nd) : null)
-    : { g: nd.name, v: nd.visible, c: nd.collapsed, ch: conv(nd.children), d: nd.dhSet ? 1 : undefined })).filter((x) => x !== null);
+    : { g: nd.name, v: nd.visible, c: nd.collapsed, ch: conv(nd.children), d: nd.dhSet ? 1 : undefined, x: nd.exclusive ? 1 : undefined })).filter((x) => x !== null);
   return conv(S.layerTree);
 }
 function treeFromManifest(tree, idAt) {
   const conv = (arr) => arr.map((nd) => (typeof nd === 'number'
     ? (idAt[nd] != null ? idAt[nd] : null)
-    : { group: true, name: nd.g, visible: nd.v !== false, collapsed: !!nd.c, children: conv(nd.ch || []), ...(nd.d ? { dhSet: true } : {}) }))
+    : { group: true, name: nd.g, visible: nd.v !== false, collapsed: !!nd.c, children: conv(nd.ch || []), ...(nd.d ? { dhSet: true } : {}), ...(nd.x ? { exclusive: true } : {}) }))
     .filter((x) => x !== null && (typeof x === 'number' || x.children.length));
   S.layerTree = conv(tree || []);
   treeSync();
@@ -16960,7 +17032,7 @@ function groupsList() {
     for (const nd of arr) {
       if (typeof nd === 'number' || !nd.group) continue;
       const path = nd.dhSet ? pre : (pre ? pre + '/' : '') + nd.name;
-      if (!nd.dhSet) out.push({ path, name: nd.name, visible: nd.visible !== false, collapsed: !!nd.collapsed, layers: groupLayerIds(nd) });
+      if (!nd.dhSet) out.push({ path, name: nd.name, visible: nd.visible !== false, collapsed: !!nd.collapsed, exclusive: !!nd.exclusive, layers: groupLayerIds(nd) });
       walk(nd.children, path);
     }
   };
@@ -16983,8 +17055,7 @@ function fileLayersInGroup(path, ids) {
 }
 function setGroupVisible(path, on) {
   const g = groupAt(path); if (!g) return false;
-  g.visible = !!on;
-  applyTreeVisibility(); renderLayers(); markProjectDirty();
+  showNode(g, on);
   return true;
 }
 function ungroupAt(path) {                                 // dissolve: the children take the group's place
@@ -17009,7 +17080,7 @@ function treeSlotOf(id) {
       const nd = arr[i];
       if (nd === id) return i;
       if (typeof nd !== 'number' && nd.group) {
-        path.push({ name: nd.name, visible: nd.visible, collapsed: nd.collapsed, dhSet: !!nd.dhSet });
+        path.push({ name: nd.name, visible: nd.visible, collapsed: nd.collapsed, exclusive: !!nd.exclusive, dhSet: !!nd.dhSet });
         const r = walk(nd.children);
         if (r != null) return r;
         path.pop();
@@ -17027,7 +17098,7 @@ function treePlace(id, slot) {
   let arr = S.layerTree;
   for (const seg of slot.path) {
     let g = arr.find((nd) => typeof nd !== 'number' && nd.group && nd.name === seg.name && !!nd.dhSet === seg.dhSet);
-    if (!g) { g = { group: true, name: seg.name, visible: seg.visible, collapsed: seg.collapsed, children: [], ...(seg.dhSet ? { dhSet: true } : {}) }; arr.push(g); }
+    if (!g) { g = { group: true, name: seg.name, visible: seg.visible, collapsed: seg.collapsed, children: [], ...(seg.exclusive ? { exclusive: true } : {}), ...(seg.dhSet ? { dhSet: true } : {}) }; arr.push(g); }
     arr = g.children;
   }
   arr.splice(Math.min(slot.i, arr.length), 0, id);
@@ -17432,6 +17503,7 @@ function groupMenu(nd, x, y) {
       if (u) { cam.fit(u); requestRender(); }
     } },
     { label: 'Opacity', submenu: () => groupOpacityItems(nd) },
+    { label: (nd.exclusive ? '✓ ' : '') + 'Mutually exclusive', kbd: '{ }', action: () => setGroupExclusive(nd, !nd.exclusive) },
     { sep: true },
     { label: 'Ungroup (keep layers)', action: () => {
       treeSync();
@@ -17488,7 +17560,7 @@ function renderLayers() {
       addEventListener('pointermove', move); addEventListener('pointerup', up);
     });
   };
-  const layerRow = (L, depth, dim) => {
+  const layerRow = (L, depth, dim, parent) => {
     const row = document.createElement('div');
     row.className = 'lp-row' + (L.id === S.activeId ? ' active' : '') + (_lpSel.has(L.id) ? ' sel' : '') + (L.visible ? '' : ' off') + (dim ? ' dim' : '');
     row.dataset.lid = L.id;
@@ -17500,7 +17572,8 @@ function renderLayers() {
     } else {
       eye = document.createElement('input');
       eye.type = 'checkbox'; eye.checked = L.visible; eye.title = 'visible (a disabled group greys the row — the eye stays yours)';
-      eye.onclick = (e) => { e.stopPropagation(); L.visible = eye.checked; applyTreeVisibility(); renderLayers(); dispatchEvent(new Event('micro:project-dirty')); };
+      eye.onclick = (e) => { e.stopPropagation(); showNode(L.id, eye.checked); };
+      if (parent && parent.exclusive) { eye.classList.add('lp-radio'); eye.title = 'visible — one at a time in this group ({ } steps through it)'; }
     }
     const name = document.createElement('span'); name.className = 'lp-name';
     name.textContent = (L.storage === 'external' ? '↗ ' : '') + (L.label || L.name);
@@ -17530,9 +17603,9 @@ function renderLayers() {
     rows.appendChild(row);
     visual.push({ row, node: L.id, isGroup: false });
   };
-  const walk = (arr, depth, dim) => {
+  const walk = (arr, depth, dim, parent = null) => {
     for (const nd of arr) {
-      if (typeof nd === 'number') { const L = layerById(nd); if (L) layerRow(L, depth, dim); continue; }
+      if (typeof nd === 'number') { const L = layerById(nd); if (L) layerRow(L, depth, dim, parent); continue; }
       const row = document.createElement('div');
       row.className = 'lp-row lp-group' + (nd.visible ? '' : ' off') + (dim ? ' dim' : '');
       row.style.paddingLeft = `${6 + depth * 14}px`;
@@ -17541,9 +17614,11 @@ function renderLayers() {
       caret.onclick = (e) => { e.stopPropagation(); nd.collapsed = !nd.collapsed; renderLayers(); markProjectDirty(); };
       const eye = document.createElement('input');
       eye.type = 'checkbox'; eye.checked = nd.visible; eye.title = 'group visibility — children keep their own eyes';
-      eye.onclick = (e) => { e.stopPropagation(); nd.visible = eye.checked; applyTreeVisibility(); renderLayers(); dispatchEvent(new Event('micro:project-dirty')); };
+      eye.onclick = (e) => { e.stopPropagation(); showNode(nd, eye.checked); };
+      if (parent && parent.exclusive) eye.classList.add('lp-radio');
       const name = document.createElement('span'); name.className = 'lp-name';
       name.textContent = nd.name;
+      if (nd.exclusive) name.title = 'mutually exclusive — one child at a time ({ } steps)';
       const ids = groupLayerIds(nd);
       const n = document.createElement('span'); n.className = 'lp-n';
       n.textContent = ids.length + (nd.collapsed ? ` · ${ids.reduce((t, id) => t + (renderer.layerElementCount(id) || 0), 0).toLocaleString()}` : '');
@@ -17574,7 +17649,7 @@ function renderLayers() {
           infoRow('↧', basename(info.blobs.survey.name || 'survey'), rep.docs.dhDoc.config.method === 'minimumCurvature' || !rep.docs.dhDoc.config.method ? 'min curv' : rep.docs.dhDoc.config.method, (x, y) => surveyRowMenu(nd, x, y));
         }
       }
-      if (!nd.collapsed) walk(nd.children, depth + 1, dim || !nd.visible);
+      if (!nd.collapsed) walk(nd.children, depth + 1, dim || !nd.visible, nd);
     }
   };
   walk(S.layerTree, 0, false);
@@ -17950,6 +18025,9 @@ const _host = createHostApi({
   colorByName, colorChoices, colorSelFor, setLayerColorBy,
   layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList,
   groupPathOf, groupsList, fileLayersInGroup, ungroupAt, setGroupVisible,
+  showLayer: (id, on) => showNode(id, on),
+  setGroupExclusive: (path, on) => { const g = groupAt(path); if (!g) return false; setGroupExclusive(g, on); return true; },
+  stepGroup: (path, dir) => { const g = groupAt(path); if (!g) return null; if (!g.exclusive) return false; stepExclusive(dir, g); return true; },
   sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
   decorations: hostDecorations, setDecorations: setHostDecorations,
   selectionRecords, setSelectionRecords, clearSelection: () => clearSelection({ silent: true }),

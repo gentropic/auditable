@@ -73,7 +73,7 @@ export function createHostApi(d) {
     // detected rotation unless acceptLattice says). A File, Blob or handle.
     open: verb((file, o = {}) => d.openFile(file, o)),
     removeLayer: verb((id) => { d.removeLayer(live(id).id); }),
-    setVisible: verb((id, on) => { const L = live(id); L.visible = !!on; d.treeChanged(); }),
+    setVisible: verb((id, on) => d.showLayer(live(id).id, !!on)),   // in a mutually exclusive group, showing one hides its siblings
     setActive: verb((id) => { d.setActiveLayer(live(id).id); }),
     columns: (id) => info(live(id)).columns,
     row: verb(async (id, rec) => {
@@ -170,6 +170,15 @@ export function createHostApi(d) {
     }),
     ungroup: verb((path) => { if (!d.ungroupAt(path)) throw new Error(`micro: no group “${path}”`); }),
     setGroupVisible: verb((path, on) => { if (!d.setGroupVisible(path, on)) throw new Error(`micro: no group “${path}”`); }),
+    // mutually exclusive (QGIS's radio group): at most one direct child shows;
+    // turning it on keeps the topmost shown child. stepGroup(path, ±1) shows the
+    // next/previous child (wraps) and makes it the active layer.
+    setGroupExclusive: verb((path, on) => { if (!d.setGroupExclusive(path, !!on)) throw new Error(`micro: no group “${path}”`); }),
+    stepGroup: verb((path, dir = 1) => {
+      const r = d.stepGroup(path, dir < 0 ? -1 : 1);
+      if (r == null) throw new Error(`micro: no group “${path}”`);
+      if (!r) throw new Error(`micro: group “${path}” isn’t mutually exclusive`);
+    }),
 
     // ── chrome: the title and the Sealed badge (?embed=1 hides both), and
     // presenting — only the picture: every bar and panel hidden, the canvas takes

@@ -2447,6 +2447,88 @@ await p.close();
   await px.close();
 }
 
+// ── §37: mutually exclusive groups (QGIS's radio groups). One direct child at a
+//     time, enforced on EVERY way of showing a layer (the eye, h, the host),
+//     { } step through the group, the flag survives a save/reopen, and turning
+//     it off gives the checkboxes back. ──
+{
+  const pe = await mkPage('sm2excl');
+  await pe.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2excl', { recursive: true }); } catch { /* fresh */ } });
+  const ids = await pe.evaluate(async () => {
+    const mk = (off) => { let t = 'XC,YC,ZC,FE\n'; for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) t += `${off + i * 5},${j * 5},0,${i + j}\n`; return new Blob([t]); };
+    const out = [];
+    for (const [k, n] of ['fase_1', 'fase_2', 'fase_3', 'topo'].entries()) out.push(await window._micro.openBlob(mk(k * 30), n + '.csv', k ? 'add' : 'replace'));
+    window._micro.createLayerGroup('phases', out.slice(0, 3));
+    const g = window._micro.layerTree().find((n) => n && n.group && n.name === 'phases');
+    g.collapsed = false;
+    window._micro.applyTreeVisibility();
+    return out;
+  });
+  const state = () => pe.evaluate((ids2) => {
+    const L = (id) => window._micro.layers().find((x) => x.id === id);
+    return { vis: ids2.map((id) => !!L(id).visible).map(Number).join(''), radios: document.querySelectorAll('#lpRows input.lp-radio').length, active: window._micro.activeId() };
+  }, ids);
+  await pe.evaluate(() => window.micro.setGroupExclusive('phases', true));
+  const s0 = await state();
+  chk(`exclusive keeps the topmost shown child, others off (${s0.vis}), radio eyes on its 3 children (${s0.radios})`, s0.vis === '1001' && s0.radios === 3);
+  // the eye: click fase_3's round eye → it alone in the group; topo (outside) untouched
+  await pe.evaluate((id) => document.querySelector(`#lpRows .lp-row[data-lid="${id}"] input`).click(), ids[2]);
+  const s1 = await state();
+  chk(`clicking a radio eye swaps the shown child (${s1.vis})`, s1.vis === '0011');
+  // h on the active layer obeys it too
+  await pe.evaluate((id) => window._micro.setActiveLayer(id), ids[1]);
+  await pe.locator('body').press('h');
+  const s2 = await state();
+  chk(`h shows the active child and hides its sibling (${s2.vis})`, s2.vis === '0101');
+  // } / { step and the active layer follows; { wraps from the first child
+  await pe.locator('body').press('}');
+  const s3 = await state();
+  await pe.locator('body').press('{'); await pe.locator('body').press('{');
+  const s4 = await state();
+  await pe.locator('body').press('{');
+  const s5 = await state();
+  chk(`} steps to fase_3 (${s3.vis}, active ${s3.active}); {{ back to fase_1 (${s4.vis}); { wraps to fase_3 (${s5.vis})`,
+    s3.vis === '0011' && s3.active === ids[2] && s4.vis === '1001' && s4.active === ids[0] && s5.vis === '0011' && s5.active === ids[2]);
+  // the host: setVisible obeys, stepGroup steps, groups() reports it, a plain group refuses stepGroup
+  const host = await pe.evaluate(async (ids2) => {
+    const m = window.micro;
+    await m.setVisible(ids2[0], true);
+    const a = ids2.map((id) => +!!window._micro.layers().find((x) => x.id === id).visible).join('');
+    await m.stepGroup('phases', 1);
+    const b2 = ids2.map((id) => +!!window._micro.layers().find((x) => x.id === id).visible).join('');
+    const listed = (m.groups().find((g) => g.path === 'phases') || {}).exclusive;
+    await m.group('plain', [ids2[3]]);
+    let refused = false; try { await m.stepGroup('plain', 1); } catch { refused = true; }
+    await m.ungroup('plain');
+    return { a, b: b2, listed, refused };
+  }, ids);
+  chk(`host: setVisible obeys (${host.a}), stepGroup steps (${host.b}), groups() says exclusive, a plain group refuses stepGroup`,
+    host.a === '1001' && host.b === '0101' && host.listed === true && host.refused);
+  // save + reopen: the flag and the one shown child survive
+  await saveProject(pe);
+  await pe.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2excl'); await window._micro.openProjectDir(dir); });
+  await pe.waitForFunction(() => window._micro.layers().length === 4, null, { timeout: 60000 });
+  await pe.waitForTimeout(500);
+  const re = await pe.evaluate(() => {
+    const g = window._micro.layerTree().find((n) => n && n.group && n.name === 'phases');
+    const vis = window._micro.layers().filter((L) => /^fase_/.test(L.name)).sort((a, b) => a.name.localeCompare(b.name)).map((L) => +!!L.visible).join('');
+    return { ex: !!(g && g.exclusive), vis };
+  });
+  chk(`exclusive survives a save/reopen (${re.ex}, ${re.vis})`, re.ex && re.vis === '010');
+  // off: checkboxes return, two children may show at once
+  const off = await pe.evaluate(async () => {
+    const m = window.micro;
+    await m.setGroupExclusive('phases', false);
+    const g = window._micro.layerTree().find((n) => n && n.group && n.name === 'phases');
+    g.collapsed = false; window._micro.applyTreeVisibility();
+    const fs = window._micro.layers().filter((L) => /^fase_/.test(L.name)).sort((a, b) => a.name.localeCompare(b.name));
+    await m.setVisible(fs[0].id, true);
+    return { vis: fs.map((L) => +!!L.visible).join(''), radios: document.querySelectorAll('#lpRows input.lp-radio').length };
+  });
+  chk(`off: plain checkboxes (${off.radios} radios), two children shown (${off.vis})`, off.radios === 0 && off.vis === '110');
+  await pe.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
