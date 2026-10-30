@@ -89,6 +89,22 @@ export function createHostApi(d) {
       if (!blob || typeof blob.slice !== 'function') throw new Error('micro: restoreProject needs a .zip.micro File, Blob or file handle');
       return d.restoreProject(blob, folder, { host: true });
     }),
+    // openProjectPack(file): a .zip.micro opened AS the project, read-only, nothing
+    // unpacked (each file is a slice of the pack). → { name, files, bytes, info,
+    // checked } — checked resolves { ok, files, bad } once the background CRC pass
+    // has read the whole pack (also fired as micro:pack-checked)
+    openProjectPack: verb(async (file) => {
+      const blob = file && typeof file.getFile === 'function' ? await file.getFile() : file;
+      if (!blob || typeof blob.slice !== 'function') throw new Error('micro: openProjectPack needs a .zip.micro File, Blob or file handle');
+      return d.openProjectPack(blob, { host: true });
+    }),
+    // savePackAsFolder(folder): the open pack — its files plus this session's
+    // changes — written into an EMPTY folder handle, which becomes the project
+    savePackAsFolder: verb(async (folder) => {
+      if (!folder || typeof folder.getFileHandle !== 'function') throw new Error('micro: savePackAsFolder needs a folder (a FileSystemDirectoryHandle)');
+      if (!S.project || !S.project.pack) throw new Error('micro: no project pack is open');
+      return d.savePackAsFolder({ dest: folder, host: true });
+    }),
     setVisible: verb((id, on) => d.showLayer(live(id).id, !!on)),   // in a mutually exclusive group, showing one hides its siblings
     setActive: verb((id) => { d.setActiveLayer(live(id).id); }),
     columns: (id) => info(live(id)).columns,

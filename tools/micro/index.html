@@ -993,7 +993,7 @@ import { fmtSize, layerBytes, layerFiles, basename, joinPath, kindDir, relPathFo
 import { elementGeometry, layerColumnsOps, buildElementManifest, dhElementName, peekCollarCols, buildDhSetManifest, descFromElement, buildGridElementManifest, elementHydrate } from './src/manifest.js';   // element-manifest builders + hydrate (persistence stays here)
 import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc, wfrPointsDoc, vertexColorOf } from './src/wfr-io.js';   // .wfr elements → the mesh / strings / points shapes micro already reads
 import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';
-import { inventoryProject, writeBackup, readBackup, restoreBackup, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
+import { inventoryProject, writeBackup, readBackup, restoreBackup, openPack, writeTree, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
 const __MICRO_BUILD__ = 'dev';                             // stamped '<version> · <hash> · <date>' by node build.js --target=micro
 
 const $ = (s) => document.querySelector(s);
@@ -6725,9 +6725,9 @@ async function openWfrDialog({ files = null, layers = null } = {}) {
   const nameIn = field('output', Object.assign(document.createElement('input'), { type: 'text', spellcheck: false }));
   const dest = field('save to', document.createElement('select'));
   const canPick = typeof window.showSaveFilePicker === 'function' && !shell.present;
-  const dests = [...(canPick ? [['file', 'a file on disk (streamed)']] : []), ...(S.project && S.project.dir ? [['project', `project ${S.project.name}/meshes/`]] : []), ['download', shell.present ? 'Downloads (shell)' : 'download']];
+  const dests = [...(canPick ? [['file', 'a file on disk (streamed)']] : []), ...(S.project && S.project.dir && !S.project.pack ? [['project', `project ${S.project.name}/meshes/`]] : []), ['download', shell.present ? 'Downloads (shell)' : 'download']];
   for (const [v, t] of dests) dest.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
-  if (S.project && S.project.dir) dest.value = 'project';
+  if (S.project && S.project.dir && !S.project.pack) dest.value = 'project';
   const step = field('coordinates', document.createElement('select'));
   WFR_STEPS.forEach(([t, v], i) => step.append(Object.assign(document.createElement('option'), { value: String(i), textContent: t })));
   const budget = field('memory', document.createElement('select'));
@@ -6832,7 +6832,8 @@ async function writeGridDisplayCache(L, dir) {
   const gh = await resolveFileHandle(dir, rel + '.disp.grd', { create: true });
   let w = await gh.createWritable(); await w.write(writeSurferGrd(g)); await w.close();
   const jh = await resolveFileHandle(dir, rel + '.disp.json', { create: true });
-  w = await jh.createWritable(); await w.write(JSON.stringify({ v: 1, size: gd.blob.size, mtime: (gd.blob.lastModified || 0), nx: g.nx, ny: g.ny, band: (g.band || 0) })); await w.close();   // band is part of the identity: a multi-band GeoTIFF is ONE file size for every band
+  const stamp = await cacheStamp(dir, rel, gd.blob);
+  w = await jh.createWritable(); await w.write(JSON.stringify({ v: 1, size: gd.blob.size, mtime: stamp, nx: g.nx, ny: g.ny, band: (g.band || 0) })); await w.close();   // band is part of the identity: a multi-band GeoTIFF is ONE file size for every band
   return null;
 }
 // New grid / block model dialog: type + extent (parameters or cover a layer /
@@ -7490,7 +7491,7 @@ async function openDxfStreamed(blob, name, opts) {
 function mkLineage(op, params, sources) { return { op, at: Date.now(), build: __MICRO_BUILD__, params: params || {}, sources: (sources || []).filter(Boolean) }; }
 function openLineage(name, blob) { return { op: 'open', at: Date.now(), build: __MICRO_BUILD__, params: {}, origin: { file: name, bytes: (blob && blob.size) || 0 }, sources: [] }; }
 async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
-  if (isBackupName(name)) { await restoreProject(blob); return null; }   // a project backup restores, it doesn't open as a layer
+  if (isBackupName(name)) { await openPackFile(blob); return null; }   // a project pack opens as the project (or unpacks), not as a layer
   if (mode !== 'add') closeAllLayers();
   // interpretation: honor an explicit asKind override ('points' | 'blocks' |
   // 'mesh'), else sniff by extension/content. grid-from-table isn't a provider
@@ -8770,7 +8771,7 @@ async function loadDrillholeSet(set, cfg, replaceFirst) {
 const dhGroupName = (collarName) => basename(String(collarName)).replace(/\.[^.]+$/, '').replace(/[_-]?collars?$/i, '') || 'drillholes';
 async function openFilesDialog(files) {
   const bk = files.filter((f) => isBackupName(f.name));
-  if (bk.length) { await restoreProject(bk[0]); files = files.filter((f) => !isBackupName(f.name)); if (!files.length) return; }
+  if (bk.length) { await openPackFile(bk[0]); files = files.filter((f) => !isBackupName(f.name)); if (!files.length) return; }
   const rows = [];
   for (const f of files) rows.push(await describeFile(f));
   _ofDlg = { rows, dhCfg: {}, mode: S.layers.length ? 'add' : 'replace' };
@@ -10630,7 +10631,7 @@ async function maybeAutoPackMeshes() {
   if (n) $('#meta').textContent = `stored ${n} layer${n === 1 ? '' : 's'} as .wfr in meshes/`;
 }
 function updateProjectTitle() {
-  document.title = S.project ? `micro — ${S.project.name}${S.project.dirty ? ' •' : ''}` : 'micro';
+  document.title = S.project ? `micro — ${S.project.name}${S.project.pack ? ' (pack, read-only)' : ''}${S.project.dirty ? ' •' : ''}` : 'micro';
 }
 function captureCamera() {
   const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
@@ -10910,6 +10911,7 @@ function projectManifest() {
   };
 }
 async function rememberProject(dir) {
+  if (dir && dir._pack) return;                            // a pack is opened from its file, not remembered as a folder
   try {
     const list = (await _idb.get(PROJECTS_KEY)) || [];
     const links = {};
@@ -10920,6 +10922,7 @@ async function rememberProject(dir) {
   } catch { /* best-effort */ }
 }
 async function saveProjectAs() {
+  if (S.project && S.project.pack) return savePackAsFolder();
   if (!hasFSAA) return;
   let dir;
   try { dir = await pickDirectory(); } catch { return; }   // cancelled
@@ -10939,9 +10942,9 @@ async function saveProjectAs() {
 // the copy-into-project verb (layer context menu + the command palette): one
 // SIZED consent step (never copy without consent — the G1 storage rule), then
 // copyLayerIn routes the file to its kind folder.
-function canCopyIntoProject(L) { return !!(S.project && L && L.storage !== 'project' && L.storage !== 'volatile' && layerFiles(L).length); }
+function canCopyIntoProject(L) { return !!(S.project && !S.project.pack && L && L.storage !== 'project' && L.storage !== 'volatile' && layerFiles(L).length); }
 function copyLayerIntoProject(L) {
-  if (!canCopyIntoProject(L)) { $('#meta').textContent = S.project ? 'copy: this layer is already in the project (or has no file)' : 'copy: open a project folder first'; return; }
+  if (!canCopyIntoProject(L)) { $('#meta').textContent = S.project && S.project.pack ? 'copy: a project pack is read-only — save it as a folder first' : S.project ? 'copy: this layer is already in the project (or has no file)' : 'copy: open a project folder first'; return; }
   setTimeout(() => menuXY(innerWidth / 2 - 120, innerHeight / 3, [
     { label: `Copy “${L.name}”${L.dh ? ' (collar + survey + intervals)' : ''} (${fmtSize(layerBytes(L))}) into ${S.project.name}/`, action: async () => { $('#meta').textContent = `copying ${L.name}…`; await copyLayerIn(L, S.project.dir); markProjectDirty(); $('#meta').textContent = `copied ${L.name} into the project (${fmtSize(layerBytes(L))})`; renderLayers(); } },
     { label: 'Cancel', action: () => {} },
@@ -10957,6 +10960,7 @@ async function copyLayerIn(L, dir) {
     const fh = await resolveFileHandle(dir, rel, { create: true });
     const w = await fh.createWritable();
     await fd.blob.stream().pipeTo(w);
+    _copiedBlobs.add(fd.blob);
     if (!L.dh) L.handle = fh;
   }
   L.storage = 'project';
@@ -10996,6 +11000,16 @@ function askCopyOutside(outside) {
     $('#svDlg').classList.add('show');
   });
 }
+// bytes micro itself copied into a folder (copy into project, a pack saved as a
+// folder): the copy has a new mtime by nature, so neither the in-folder test nor a
+// cache sidecar may hold the source's own stamp against it
+const _copiedBlobs = new WeakSet();
+// the stamp a cache sidecar records: the file ON DISK's, when micro made that file
+// from these bytes; the source's own otherwise (an edit on disk must not inherit a cache)
+async function cacheStamp(dir, rel, blob) {
+  if (_copiedBlobs.has(blob)) { try { const f = await (await resolveFileHandle(dir, rel)).getFile(); if (f.size === blob.size) return f.lastModified; } catch { /* not there */ } }
+  return blob.lastModified || 0;
+}
 // Does an on-disk file identify as THIS layer's source? Size, plus last-modified
 // when the in-memory blob carries one (a File does; a synthetic/converted blob
 // does not). Narrows the old size-only test, which aliased any two same-name,
@@ -11003,11 +11017,13 @@ function askCopyOutside(outside) {
 // layer just writes its own (correct) bytes instead of aliasing.
 function sameSourceFile(diskFile, blob) {
   if (diskFile.size !== blob.size) return false;
+  if (_copiedBlobs.has(blob)) return true;                 // micro wrote that copy from these bytes: a new mtime, the same file
   if (blob.lastModified && diskFile.lastModified) return diskFile.lastModified === blob.lastModified;
   return true;   // one side has no timestamp — size is all we can compare
 }
 async function saveProject() {
   if (!S.project) return saveProjectAs();
+  if (S.project.pack) return savePackAsFolder();
   const dir = S.project.dir;
   try {
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: write permission denied'; return; }
@@ -11106,7 +11122,7 @@ async function saveProject() {
           await scanColumns(L, (a, b) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b ? Math.round(100 * a / b) : 0}%…`; }, { bands: !isPq });
         }
         const meta = {
-          v: 2, size: doc.blob.size, mtime: (doc.blob.lastModified || 0),
+          v: 2, size: doc.blob.size, mtime: await cacheStamp(dir, L._relpath || relPathFor(L, L.name), doc.blob),
           header: isDmL
             ? { kind: 'dm', count: h.count, bbox: h.bbox, grid: h.grid, subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, categories: h.categories || null }
             : isPq
@@ -11223,13 +11239,13 @@ function plEnd() {
   _plState.rows = null; _plState.active = -1;
 }
 $('#plClose').onclick = () => { $('#plDlg').classList.remove('show'); };
-async function openProjectDir(dir) {
+async function openProjectDir(dir, { pack = null } = {}) {
   try {
     dir = await rehydrateHandle(dir);                       // an IDB clone of a shell tree handle → live (web handles pass through)
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: permission denied'; return; }
     const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
-    S.project = { dir, name: dir.name, dirty: false };
+    S.project = { dir, name: dir.name, dirty: false, pack };
     await loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
     closeAllLayers();
     $('#empty').style.display = 'none';
@@ -11418,18 +11434,20 @@ async function openProjectDir(dir) {
     updateProjectTitle();
     rememberProject(dir);
     plEnd();
-    $('#meta').textContent = `project “${S.project.name}” — ${S.layers.length} layer${S.layers.length === 1 ? '' : 's'}`;
+    $('#meta').textContent = `project “${S.project.name}”${pack ? ' (pack, read-only)' : ''} — ${S.layers.length} layer${S.layers.length === 1 ? '' : 's'}`;
     requestRender();
+    return true;
   } catch (e) {
     plEnd();
     $('#meta').textContent = `project open failed — ${e.message}`;
+    return false;
   }
 }
 async function openProjectPicker() {
   if (!hasFSAA) return;
   try { await openProjectDir(await pickDirectory()); } catch { /* cancelled */ }
 }
-function closeProject() { S.project = null; S.views = []; S.scenes = []; updateProjectTitle(); }
+function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; updateProjectTitle(); }
 // Tidy: migrate an already-saved project's files into their kind subfolders
 // (drillholes / models / clouds / meshes / grids), carrying sidecars along and
 // rewriting project.json + the drillhole descriptors. Files are MOVED (not
@@ -11503,27 +11521,96 @@ async function backupProject({ lean = null, to = null, save = null, host = false
   }
   return out;
 }
+// ── project packs: a .zip.micro opened as the project, read-only, nothing unpacked ──
+// Each file is a slice of the pack (src/backup.js openPack). Changes in the session
+// — bookmarks, recipes, painted columns — live in memory beside it; Save writes the
+// whole project, changes included, into an empty folder and carries on there. A
+// slice skips the CRC, so the pack is read through once in the background and the
+// verdict goes to the status line (and to a host as micro:pack-checked).
+const pickBackupFile = async () => {
+  try {
+    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project pack', accept: { [BACKUP_MIME]: ['.micro'] } }] }); return await h.getFile(); }
+    return await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.micro'; i.onchange = () => res(i.files[0] || null); i.click(); });
+  } catch { return null; }
+};
+function packSummary(blob, info, members, bytes) {
+  const when = info.created ? new Date(info.created).toLocaleString() : 'unknown date';
+  const lk = info.linked || [];
+  return `${blob.name || 'backup'}: “${info.project || '?'}”, backed up ${when}${info.lean ? ' (lean)' : ''} — ${members.length} files, ${fmtSize(bytes)}.`
+    + (lk.length ? ` It doesn't hold ${lk.length} layer${lk.length === 1 ? '' : 's'} that were linked from outside the folder (${lk.slice(0, 3).join(', ')}${lk.length > 3 ? ', …' : ''}); the project will ask where they are.` : '')
+    + (S.project && S.project.dirty ? ` This closes ${S.project.name}, which has unsaved changes.` : '');
+}
+// a .zip.micro opened like any file (drop, Open…, "open with"): look, or unpack
+async function openPackFile(blob) {
+  let rb;
+  try { rb = await readBackup(blob); } catch (e) { $('#meta').textContent = `open: ${e.message}`; return null; }
+  const a = await microChoose('project pack', packSummary(blob, rb.info || {}, rb.members, rb.bytes)
+    + ' Open it read-only to look around (nothing is unpacked), or unpack it into an empty folder to work in it.',
+    [{ label: 'Cancel', value: null }, ...(hasFSAA ? [{ label: 'Unpack to a folder…', value: 'unpack' }] : []), { label: 'Open (read-only)', value: 'open' }]);
+  if (a === 'unpack') return restoreProject(blob, null, { asked: true });
+  if (a === 'open') return openProjectPack(blob, { asked: true });
+  return null;
+}
+async function openProjectPack(blob = null, { host = false, asked = false } = {}) {
+  const fail = (m) => { if (host) throw new Error(`micro: ${m}`); $('#meta').textContent = `open pack: ${m}`; return null; };
+  if (!blob) { blob = await pickBackupFile(); if (!blob) return null; }
+  let pack;
+  try { pack = await openPack(blob); } catch (e) { return fail(e.message); }
+  if (!host && !asked && S.project && S.project.dirty
+    && !(await microConfirm('open project pack', `This closes ${S.project.name}, which has unsaved changes.`, 'Open pack', 'Cancel'))) return null;
+  if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort();
+  if (!(await openProjectDir(pack.dir, { pack }))) return fail($('#meta').textContent.replace(/^project open failed — /, '') || 'the project in the pack did not open');
+  updateProjectTitle();
+  pack.abort = new AbortController();
+  pack.check = pack.verify({ signal: pack.abort.signal }).then((v) => {
+    pack.checked = v;
+    dispatchEvent(new CustomEvent('micro:pack-checked', { detail: { name: blob.name || pack.dir.name, ok: v.ok, files: v.files, bad: v.bad } }));
+    if (!S.project || S.project.pack !== pack) return v;
+    if (v.ok) $('#meta').textContent = `pack checked — ${v.files} files intact`;
+    else {
+      $('#meta').textContent = `pack DAMAGED — ${v.bad.length} file${v.bad.length === 1 ? '' : 's'} fail their checksum: ${v.bad.map((b) => b.path).slice(0, 3).join(', ')}${v.bad.length > 3 ? ', …' : ''}`;
+      if (!host) microChoose('project pack damaged', `${v.bad.length} of the ${v.files} files in ${blob.name || 'the pack'} don't match the checksum they were written with, so what micro shows from them may be wrong: ${v.bad.map((b) => b.path).join(', ')}.`, [{ label: 'OK', value: true }]);
+    }
+    return v;
+  }, (e) => { if (e && e.name !== 'AbortError') $('#meta').textContent = `pack check failed — ${e.message || e}`; return null; });
+  return { name: pack.dir.name, files: pack.members.length, bytes: pack.bytes, info: pack.info, checked: pack.check };
+}
+// Save on a pack: the whole tree (the pack's files + this session's changes) into
+// an empty folder, which then becomes the project; a normal save writes the rest
+async function savePackAsFolder({ dest = null, host = false } = {}) {
+  const pack = S.project.pack;
+  if (!dest && !hasFSAA) { $('#meta').textContent = "save: a project pack is read-only here — this browser can't write project folders"; return null; }
+  if (!host && !dest) {
+    const ok = await microChoose('save project', `${S.project.name} is a project pack, opened read-only. To keep your changes, save it as a project folder: pick an empty folder and micro writes the whole project there (${fmtSize(pack.bytes)}), then carries on working in it. The pack itself stays as it is.`,
+      [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]);
+    if (!ok) return null;
+  }
+  if (!dest) { try { dest = await pickDirectory(); } catch { return null; } }
+  const src = S.project.dir;
+  try { await writeTree(src, dest, { onProgress: progressMeta('saving the pack as a folder') }); }
+  catch (e) { if (host) throw e; $('#meta').textContent = `save failed — ${e.message || e}`; return null; }
+  // the layers' files are now in dest: point them there, and say they're micro's copies
+  for (const L of S.layers) {
+    for (const fd of layerFiles(L)) _copiedBlobs.add(fd.blob);
+    if (L.handle && L.handle._pack && L.handle._path) { try { L.handle = await resolveFileHandle(dest, L.handle._path.join('/')); } catch { /* triage finds it by path */ } }
+  }
+  if (pack.abort) pack.abort.abort();
+  S.project = { dir: dest, name: dest.name, dirty: true };
+  updateProjectTitle();
+  await saveProject();
+  rememberProject(dest);
+  return { name: dest.name };
+}
 // restore: a .zip.micro → an EMPTY folder → opened as the project
-async function restoreProject(blob = null, dest = null, { host = false } = {}) {
+async function restoreProject(blob = null, dest = null, { host = false, asked = false } = {}) {
   const fail = (m) => { if (host) throw new Error(`micro: ${m}`); $('#meta').textContent = `restore: ${m}`; return null; };
   if (!dest && !hasFSAA) return fail("this browser can't write project folders");
-  if (!blob) {
-    try {
-      if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project backup', accept: { [BACKUP_MIME]: ['.micro'] } }] }); blob = await h.getFile(); }
-      else blob = await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.onchange = () => res(i.files[0] || null); i.click(); });
-    } catch { return null; }
-    if (!blob) return null;
-  }
+  if (!blob) { blob = await pickBackupFile(); if (!blob) return null; }
   let rb;
   try { rb = await readBackup(blob); } catch (e) { return fail(e.message); }
-  if (!host) {
-    const i = rb.info || {}, when = i.created ? new Date(i.created).toLocaleString() : 'unknown date';
-    const lk = i.linked || [];
-    const msg = `${blob.name || 'backup'}: “${i.project || '?'}”, backed up ${when}${i.lean ? ' (lean)' : ''} — ${rb.members.length} files, ${fmtSize(rb.bytes)}.`
-      + (lk.length ? ` It doesn't hold ${lk.length} layer${lk.length === 1 ? '' : 's'} that were linked from outside the folder (${lk.slice(0, 3).join(', ')}${lk.length > 3 ? ', …' : ''}); the project will ask where they are.` : '')
-      + (S.project && S.project.dirty ? ` This closes ${S.project.name}, which has unsaved changes.` : '')
-      + ' Next, pick an empty folder to restore it into.';
-    if (!(await microChoose('restore project', msg, [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]))) return null;
+  if (!host && !asked) {
+    if (!(await microChoose('restore project', packSummary(blob, rb.info || {}, rb.members, rb.bytes) + ' Next, pick an empty folder to restore it into.',
+      [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]))) return null;
   }
   if (!dest) { try { dest = await pickDirectory(); } catch { return null; } }
   let res;
@@ -12074,17 +12161,20 @@ $('#mFile').onclick = () => {
     { label: 'File info…', kbd: 'i', action: showFileInfo },
     { label: 'Convert to .wfr…', action: () => openWfrDialog() },
   ];
+  items.push({ sep: true });
+  const isPack = !!(S.project && S.project.pack);
+  if (hasFSAA) items.push({ label: 'Open project folder…', action: openProjectPicker });
+  items.push({ label: 'Open project pack…', action: () => openProjectPack() });
   if (hasFSAA) {
-    items.push({ sep: true },
-      { label: 'Open project folder…', action: openProjectPicker },
-      { label: S.project ? `Save project${S.project.dirty ? ' •' : ''}` : 'Save project', kbd: 'Ctrl+S', action: saveProject },
-      { label: 'Save project as…', action: saveProjectAs },
-      { label: 'Scan folder for new data…', action: scanFolderForNewData },
-      { label: 'Tidy project folder…', action: tidyProject });
-    if (S.project) items.push({ label: 'Back up project…', action: () => backupProject() });
-    items.push({ label: 'Restore project from backup…', action: () => restoreProject() });
-    if (S.project) items.push({ label: `Close project (${S.project.name})`, action: closeProject });
+    items.push(
+      { label: isPack ? 'Save as a project folder…' : S.project ? `Save project${S.project.dirty ? ' •' : ''}` : 'Save project', kbd: 'Ctrl+S', action: saveProject },
+      ...(isPack ? [] : [{ label: 'Save project as…', action: saveProjectAs },
+        { label: 'Scan folder for new data…', action: scanFolderForNewData },
+        { label: 'Tidy project folder…', action: tidyProject }]));
   }
+  if (S.project) items.push({ label: 'Back up project…', action: () => backupProject() });
+  if (hasFSAA) items.push({ label: 'Restore project from backup…', action: () => restoreProject() });
+  if (S.project) items.push({ label: `Close project (${S.project.name})`, action: closeProject });
   if (_remember && _recents.length) {
     items.push({ sep: true });
     for (const e of _recents.slice(0, 10)) items.push({ label: (e.handle ? '' : '↻ ') + e.name, action: () => openRecent(e) });
@@ -13316,10 +13406,11 @@ const COMMANDS = [
   // Access API) — say so instead of the commands just not existing
   { id: 'nofs', group: 'File', title: 'Save / open project (needs Chrome or Edge)', kw: 'store firefox safari unsupported', when: () => !hasFSAA,
     run: () => { $('#meta').textContent = 'projects need the File System Access API — use Chrome or Edge to save/open a project folder. Viewing, filtering and analysis work in any browser.'; } },
-  { id: 'tidy', group: 'File', title: 'Tidy project folder', kw: 'organize subfolders kind reorganize move drillholes models clouds meshes grids', when: () => hasFSAA && !!S.project, run: () => tidyProject() },
+  { id: 'tidy', group: 'File', title: 'Tidy project folder', kw: 'organize subfolders kind reorganize move drillholes models clouds meshes grids', when: () => hasFSAA && !!S.project && !S.project.pack, run: () => tidyProject() },
   { id: 'backup', group: 'File', title: 'Back up project', kw: 'backup zip archive export whole project copy move machine .zip.micro save', when: () => !!S.project, run: () => backupProject() },
+  { id: 'open-pack', group: 'File', title: 'Open project pack (read-only)', kw: 'open pack backup zip .zip.micro read-only view look without unpacking', when: () => true, run: () => openProjectPack() },
   { id: 'restore', group: 'File', title: 'Restore project from backup', kw: 'restore backup zip unzip import project .zip.micro unpack', when: () => hasFSAA, run: () => restoreProject() },
-  { id: 'scan', group: 'File', title: 'Scan folder for new data', kw: 'import inbox dropped rescan pick up new files refresh', when: () => hasFSAA && !!S.project, run: () => scanFolderForNewData() },
+  { id: 'scan', group: 'File', title: 'Scan folder for new data', kw: 'import inbox dropped rescan pick up new files refresh', when: () => hasFSAA && !!S.project && !S.project.pack, run: () => scanFolderForNewData() },
   { id: 'png', group: 'File', title: 'Save viewport PNG', kw: 'screenshot image capture', run: () => $('#btnShot').click() },
   { id: 'figure', group: 'File', title: 'Export figure (PNG)…', kw: 'decorations scale bar north legend title report', run: () => exportFigure() },
   { id: 'blockedges', group: 'View', title: 'Toggle block edges', kw: 'borders lines wireframe outline grid', when: (c) => c.L && !!c.L.docs.blockDoc, run: () => setBlockEdges(!_blockEdges) },
@@ -18343,7 +18434,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, backupProject, restoreProject, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped
@@ -18383,7 +18474,7 @@ const _host = createHostApi({
   sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
   decorations: hostDecorations, setDecorations: setHostDecorations,
   layerSectioned: (id) => renderer.layerSectioned(id), setLayerSectionMode,
-  backupProject, restoreProject,
+  backupProject, restoreProject, openProjectPack, savePackAsFolder,
   setDetectionLimits: (L, column, policy) => {
     const h = layerTableHeader(L), i = h ? h.columns.indexOf(column) : -1;
     if (i < 0) throw new Error(`micro: no column “${column}” on “${L.label || L.name}”`);

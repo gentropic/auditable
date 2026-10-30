@@ -2850,7 +2850,7 @@ await p.close();
     [...q('#pmFoot').querySelectorAll('button')].find((b) => /^Lean/.test(b.textContent)).click();
     const res = await pr;
     const f = await (await out.getFileHandle(window.__suggested)).getFile();
-    // opening a .zip.micro like any file → the restore question (cancelled here)
+    // opening a .zip.micro like any file → the pack question (cancelled here)
     const pr2 = window._micro.openBlob(f, f.name, 'add');
     for (let t = 0; t < 100 && !q('#pmDlg').classList.contains('show'); t++) await new Promise((x) => setTimeout(x, 50));
     const t2 = q('#pmTitle').textContent, ok2 = q('#pmOk').textContent;
@@ -2859,7 +2859,109 @@ await p.close();
   });
   chk(`UI: footer [${ui.foot.join(' · ')}] → Lean → ${ui.size} bytes in the picked file; a .zip.micro opened as a file asks “${ui.t2}” → ${ui.ok2}`,
     ui.foot[0] === 'Cancel' && /^Lean \(/.test(ui.foot[1]) && /^Full \(/.test(ui.foot[2]) && ui.lean === true && ui.size === ui.wrote && ui.size > 0
-    && ui.t2 === 'restore project' && ui.ok2 === 'Choose folder…' && ui.layers >= 1);
+    && ui.t2 === 'project pack' && ui.ok2 === 'Open (read-only)' && ui.layers >= 1);
+  await pk.close();
+}
+
+// ── §42: project packs — a .zip.micro opened AS the project, read-only, nothing
+//     unpacked. The layers read slices of the pack; a Full pack's caches still
+//     match (exact mtimes recorded), a lean one's are absent (the non-vacuity
+//     twin); changes in the session live beside the pack; Save writes the whole
+//     tree, changes included, into an empty folder and carries on there with no
+//     "copy these in?" question and caches that still match on reopen; the
+//     background CRC pass reports a damaged pack. ──
+{
+  const pk = await mkPage('sm2pk');
+  await pk.evaluate(async () => { const r = await navigator.storage.getDirectory(); for (const n of ['sm2pk', 'sm2pk-saved']) { try { await r.removeEntry(n, { recursive: true }); } catch { /* fresh */ } } });
+  await pk.evaluate(async () => {
+    let t = 'XC,YC,ZC,FE,ROCK\n';
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${i + j + k},${(i + k) % 2 ? 'ox' : 'fr'}\n`;
+    await window._micro.openBlob(new File([t], 'bm.csv'), 'bm.csv', 'replace');
+  });
+  await pk.waitForFunction(() => window._micro.layers().some((x) => x.name === 'bm.csv' && x.docs.blockDoc), null, { timeout: 20000 });
+  await pk.evaluate(async () => { document.querySelector('#filter').value = 'FE > 4'; await window._micro.applyBlockFilter('FE > 4'); });
+  await saveProject(pk);
+  await pk.evaluate(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2pk'); const w = await (await d.getFileHandle('notes.txt', { create: true })).createWritable(); await w.write('field notes'); await w.close(); });
+  const op = await pk.evaluate(async () => {
+    const M = window.micro, m = window._micro;
+    window.__full = (await M.backupProject()).blob; window.__lean = (await M.backupProject({ lean: true })).blob;
+    m.closeProject();
+    const bm = () => m.layers().find((x) => x.name === 'bm.csv');
+    const res = await M.openProjectPack(new File([window.__full], 'sm2pk.zip.micro'));
+    const L = bm(), P = m.project();
+    const notes = await (await (await P.dir.getFileHandle('notes.txt')).getFile()).text();
+    const v = await res.checked;
+    const out = { name: res.name, files: res.files, pack: !!P.pack, title: document.title, filter: L && L.filterExpr, bands: !!(L && L._bands), notes, checked: v && v.ok, meta: document.querySelector('#meta').textContent };
+    // a session change: a new file, and a new filter (the manifest)
+    const w = await (await P.dir.getFileHandle('notes2.txt', { create: true })).createWritable(); await w.write('seen in the pack'); await w.close();
+    document.querySelector('#filter').value = 'FE > 6'; await m.applyBlockFilter('FE > 6');
+    out.packSame = (await window.__full.arrayBuffer()).byteLength === window.__full.size;
+    return out;
+  });
+  chk(`pack opens as the project, read-only: “${op.name}” (${op.files} files) · title “${op.title}” · filter ${op.filter} · notes “${op.notes}” · CRC pass ${op.checked} (“${op.meta}”)`,
+    op.name === 'sm2pk' && op.pack && /pack, read-only/.test(op.title) && op.filter === 'FE > 4' && op.notes === 'field notes' && op.checked === true && /pack checked — \d+ files intact/.test(op.meta));
+  chk(`a Full pack's caches match on open (the band index came from the sidecar: ${op.bands})`, op.bands === true);
+  // the File menu for a pack
+  const menu = await pk.evaluate(async () => {
+    document.querySelector('#mFile').click(); await new Promise((r) => setTimeout(r, 50));
+    const labels = [...document.querySelectorAll('.menu .item')].map((d) => d.textContent.replace(/Ctrl\+S$/, '').trim());
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    return labels;
+  });
+  chk(`File menu on a pack: Open project pack… + “Save as a project folder…”, no Tidy / Scan / Save as (${menu.filter((l) => /project|pack|Tidy|Scan/.test(l)).join(' · ')})`,
+    menu.includes('Open project pack…') && menu.includes('Save as a project folder…') && !menu.some((l) => /^Tidy|^Scan|^Save project as/.test(l)));
+  // Save: the whole tree into an empty folder, then it's a normal project
+  const sv = await pk.evaluate(async () => {
+    const m = window._micro, q = (x) => document.querySelector(x);
+    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('sm2pk-saved', { create: true });
+    let copyAsked = false; const obs = new MutationObserver(() => { if (q('#svDlg').classList.contains('show')) { copyAsked = true; q('#svCopy').click(); } }); obs.observe(q('#svDlg'), { attributes: true });
+    const pr = m.saveProject();
+    for (let t = 0; t < 100 && !q('#pmDlg').classList.contains('show'); t++) await new Promise((x) => setTimeout(x, 50));
+    const title = q('#pmTitle').textContent, okLabel = q('#pmOk').textContent;
+    q('#pmOk').click(); await pr; obs.disconnect();
+    const P = m.project(), d = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2pk-saved');
+    const rd = async (path) => { const parts = path.split('/'), n = parts.pop(); let x = d; for (const s2 of parts) x = await x.getDirectoryHandle(s2); return (await x.getFileHandle(n)).getFile(); };
+    const mf = JSON.parse(await (await rd('project.json')).text());
+    const csv = await rd('models/bm.csv'), meta = JSON.parse(await (await rd('models/bm.csv.meta.json')).text());
+    const out = { title, okLabel, copyAsked, pack: !!P.pack, name: P.name, dirty: P.dirty, filter: mf.layers[0].filter, notes2: await (await rd('notes2.txt')).text(), stampOk: meta.mtime === csv.lastModified && meta.size === csv.size, docTitle: document.title };
+    // reopen the saved folder from disk: the caches match
+    await m.openProjectDir(d);
+    const L = m.layers().find((x) => x.name === 'bm.csv');
+    out.reBands = !!(L && L._bands); out.reFilter = L && L.filterExpr;
+    return out;
+  });
+  chk(`Save on a pack asks “${sv.title}” → ${sv.okLabel} → the project is now ${sv.name} (pack ${sv.pack}, dirty ${sv.dirty}), no copy-in question (${sv.copyAsked})`,
+    sv.title === 'save project' && sv.okLabel === 'Choose folder…' && !sv.pack && sv.name === 'sm2pk-saved' && !sv.dirty && !sv.copyAsked && !/read-only/.test(sv.docTitle));
+  chk(`…the folder holds the session's changes (filter ${sv.filter}, notes2 “${sv.notes2}”) and caches stamped to the copies (${sv.stampOk}); reopened, they match (bands ${sv.reBands}, filter ${sv.reFilter})`,
+    sv.filter === 'FE > 6' && sv.notes2 === 'seen in the pack' && sv.stampOk && sv.reBands && sv.reFilter === 'FE > 6');
+  const ln = await pk.evaluate(async () => {
+    const M = window.micro, m = window._micro;
+    await M.openProjectPack(new File([window.__lean], 'sm2pk-lean.zip.micro'));
+    const L = m.layers().find((x) => x.name === 'bm.csv');
+    const out = { bands: !!(L && L._bands), filter: L && L.filterExpr };
+    // a damaged pack: one bit in the model
+    const u8 = new Uint8Array(await window.__full.arrayBuffer());
+    const at = new TextDecoder().decode(u8).indexOf('XC,YC,ZC,FE,ROCK\n5,5,5');
+    u8[at + 23] ^= 1;                                  // the first FE digit: 0 → 1
+    let ev = null; addEventListener('micro:pack-checked', (e) => { if (e.detail.name === 'bad.zip.micro') ev = e.detail; });   // the lean pack's own check may still land
+    const res = await M.openProjectPack(new File([u8], 'bad.zip.micro'));
+    const v = await res.checked;
+    out.at = at; out.ok = v.ok; out.bad = v.bad.map((b) => b.path); out.ev = ev && ev.ok; out.meta = document.querySelector('#meta').textContent;
+    // opening one like any file: the pack question, Open = read-only
+    const q = (x) => document.querySelector(x);
+    const pr = m.openBlob(new File([window.__full], 'sm2pk.zip.micro'), 'sm2pk.zip.micro', 'add');
+    for (let t = 0; t < 100 && !q('#pmDlg').classList.contains('show'); t++) await new Promise((x) => setTimeout(x, 50));
+    out.foot = [...q('#pmFoot').querySelectorAll('button')].map((b) => b.textContent);
+    q('#pmOk').click(); await pr;
+    for (let t = 0; t < 100 && !(m.project() && m.project().pack && m.layers().some((x) => x.name === 'bm.csv')); t++) await new Promise((x) => setTimeout(x, 50));
+    out.uiPack = !!(m.project() && m.project().pack);
+    return out;
+  });
+  chk(`a lean pack carries no caches (bands ${ln.bands}) but the same project (filter ${ln.filter})`, ln.bands === false && ln.filter === 'FE > 4');
+  chk(`a damaged pack: the CRC pass names ${ln.bad.join(', ')} (event ok ${ln.ev}; “${ln.meta.slice(0, 60)}…”)`,
+    ln.at > 0 && ln.ok === false && ln.bad.length === 1 && ln.bad[0] === 'models/bm.csv' && ln.ev === false && /pack DAMAGED/.test(ln.meta));
+  chk(`opening a .zip.micro: [${ln.foot.join(' · ')}] → Open opens it read-only (${ln.uiPack})`,
+    ln.foot.join('|') === 'Cancel|Unpack to a folder…|Open (read-only)' && ln.uiPack);
   await pk.close();
 }
 
