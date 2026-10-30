@@ -16,6 +16,7 @@
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { dhValidate } from '../../../drillhole/src/validate.js';
 import { sniffDelimited, lineFields } from './blockmodel.js';
+import { qualifiedNumber, censusQualified, QUALIFIED_DEFAULT } from './qualified.js';
 
 const BHID_RE = /^(bhid|holeid|hole_?id|dhid|dh_?id|hole|collar_?id|id)$/i;
 const X_RE = /^(x|xc|xcollar|east(ing)?|utm_?e)$/i;
@@ -119,16 +120,20 @@ export async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   const keyCols = new Set([m.intervals.bhid, m.intervals.from, m.intervals.to]);
   // numeric / categorical detection over a head sample of the interval table
   const probe = tIv.rows.slice(0, 200);
-  const numericCols = [], textCols = [];
+  const numericCols = [], textCols = [], qualifiedCols = [];
   tIv.columns.forEach((name, i) => {
     if (keyCols.has(i)) return;
     const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
     if (!vals.length) return;
-    if (vals.every((v) => !Number.isNaN(Number(v)))) numericCols.push({ i, name });
-    else if (vals.every((v) => Number.isNaN(Number(v)))) textCols.push({ i, name });
+    const cq = censusQualified(vals);                     // <0.001, >10 and lab codes count as numeric
+    if (cq.numeric) numericCols.push({ i, name });
+    else if (cq.num + cq.below + cq.above === 0) textCols.push({ i, name });
+    if (cq.qualified) qualifiedCols.push({ i, name, below: cq.below, above: cq.above, code: cq.code });
   });
   const chan = opts.chan != null ? opts.chan : (numericCols[0] ? numericCols[0].i : null);
   const catCol = opts.cat != null ? opts.cat : (textCols[0] ? textCols[0].i : null);
+  // opts.qualify = { [column name]: policy } — the channel's <x / >x rule (default <x → x/2)
+  const chanPolicy = (chan != null && opts.qualify && opts.qualify[tIv.columns[chan]]) || QUALIFIED_DEFAULT;
 
   // samples = BOTH interval endpoints (2 per row): the desurveyed FROM and TO
   // positions are the capsule segment, arc-correct via positionAt; the render
@@ -145,7 +150,7 @@ export async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     depth[2 * i] = +r[m.intervals.from]; depth[2 * i + 1] = +r[m.intervals.to];
     rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
     endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
-    chanVals[i] = chan != null ? +r[chan] : 0;
+    chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
     if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
   }
   const samples = { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] };
@@ -215,6 +220,7 @@ export async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     collarColumns: tCollar.columns, surveyColumns: tSurvey.columns,
     collarMapping: m.collar, surveyMapping: m.survey,
     numericColumns: numericCols,
+    qualifiedColumns: qualifiedCols,
     categories,
     attributes: [
       ...(chan != null ? [tIv.columns[chan]] : []),

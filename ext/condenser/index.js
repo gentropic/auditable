@@ -1701,6 +1701,85 @@ function delimiterOfLine(line) {
   return [',', ';', '\t'].reduce((a, b) => (splitFields(line, b).length > splitFields(line, a).length ? b : a), ',');
 }
 
+// ── src/io/qualified.js ──
+
+// ── qualified numbers: assay values with a detection-limit qualifier ──────────
+// A lab table writes `<0.001` for "below detection" and `>10` for "over the
+// upper limit", plus codes for "no value" (BDL, ND, LNR, IS, -). Read as plain
+// numbers those are NaN, so ONE such cell made the whole column text. This is
+// the one place they become numbers, under a policy:
+//   below: 'half' (the resource-estimation convention, default) | 'limit' | 'zero' | 'blank'
+//   above: 'limit' (default) | 'blank'
+//   negBelow: false — when true a NEGATIVE value means "below |v|" (some labs
+//     write -0.001 for <0.001). Off by default: -99/-999 usually means MISSING,
+//     so it's a per-column decision, never a guess.
+// A plain number is untouched; blank stays blank (NaN); text stays NaN.
+
+const QUALIFIED_DEFAULT = Object.freeze({ below: 'half', above: 'limit', negBelow: false });
+
+const QUAL_RE = /^([<>]=?|≤|≥)\s*([+]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/;
+// "no value" codes labs write in a numeric column (case-insensitive, dots optional)
+const CODE_RE = /^(?:b\.?d\.?l\.?|n\.?d\.?|l\.?n\.?r\.?|i\.?s\.?|n\.?s\.?s?\.?|n\.?r\.?|n\/?a|n\.a\.|nan|null|none|missing|-+|\*+)$/i;
+
+// what a cell IS: { kind: 'num'|'below'|'above'|'code'|'blank'|'text', v }
+function classifyQualified(s) {
+  if (s == null) return { kind: 'blank', v: NaN };
+  if (typeof s === 'number') return Number.isFinite(s) ? { kind: 'num', v: s } : { kind: 'blank', v: NaN };
+  const t = String(s).trim();
+  if (t === '') return { kind: 'blank', v: NaN };
+  const n = +t;
+  if (Number.isFinite(n)) return { kind: 'num', v: n };
+  const m = QUAL_RE.exec(t);
+  if (m) {
+    const lim = +m[2];
+    return { kind: m[1][0] === '<' || m[1] === '≤' ? 'below' : 'above', v: lim };
+  }
+  if (CODE_RE.test(t)) return { kind: 'code', v: NaN };
+  return { kind: 'text', v: NaN };
+}
+
+// a cell → number under a policy (NaN = blank). The fast path is a plain number.
+function qualifiedNumber(s, policy = QUALIFIED_DEFAULT) {
+  if (typeof s === 'number') return s;
+  if (s == null || s === '') return NaN;
+  const n = +s;
+  if (Number.isFinite(n)) {
+    if (n < 0 && policy && policy.negBelow) return belowValue(-n, policy);
+    return n;
+  }
+  const c = classifyQualified(s);
+  if (c.kind === 'below') return belowValue(c.v, policy);
+  if (c.kind === 'above') return (policy && policy.above === 'blank') ? NaN : c.v;
+  return NaN;
+}
+function belowValue(lim, policy) {
+  const b = (policy && policy.below) || 'half';
+  return b === 'limit' ? lim : b === 'zero' ? 0 : b === 'blank' ? NaN : lim / 2;
+}
+
+// Census of a sample of cells: is this a numeric column once qualifiers count?
+// numeric: every non-blank cell is a number, a qualified number or a code, and
+// at least one is a real number (a column of nothing but codes is not data).
+function censusQualified(vals) {
+  const out = { n: 0, num: 0, below: 0, above: 0, code: 0, text: 0 };
+  for (const s of vals) {
+    const k = classifyQualified(s).kind;
+    if (k === 'blank') continue;
+    out.n++; out[k]++;
+  }
+  out.numeric = out.n > 0 && out.text === 0 && out.num > 0;
+  out.qualified = out.numeric && (out.below + out.above + out.code) > 0;
+  return out;
+}
+
+// a policy's one-line description (UI + lineage)
+function describeQualified(policy = QUALIFIED_DEFAULT) {
+  const b = policy.below || 'half';
+  const below = b === 'half' ? '<x → x/2' : b === 'limit' ? '<x → x' : b === 'zero' ? '<x → 0' : '<x → blank';
+  const above = policy.above === 'blank' ? '>x → blank' : '>x → x';
+  return `${below} · ${above}${policy.negBelow ? ' · −x → below x' : ''}`;
+}
+
 // ── src/io/blockmodel.js ──
 
 // @gcu/condenser — delimited block-model provider (CSV/GSLIB-ish exports).
@@ -1912,11 +1991,17 @@ async function fetchDelimitedRecord(blob, header, rec) {
   } finally { reader.releaseLock(); }
 }
 
+// the colour channel's qualifier policy: qualify = { [column name]: policy } (else the default)
+function policyOf(qualify, columns, i) {
+  const name = columns && i != null ? columns[i] : null;
+  return (qualify && name != null && qualify[name]) || QUALIFIED_DEFAULT;
+}
+
 const CAP_DISTINCT = 300000;                               // per-axis discovery cap
 
 // sweep 2 as a shared factory: the same cold-recipe stream whether the header
 // came from a live discovery or a cached `discovered` payload (sidecars)
-function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null) {
+function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT) {
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
     const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
@@ -1926,7 +2011,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
         const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
-        buf.chan[fill] = map.chan != null ? +f[map.chan] : 0;
+        buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
         if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
         if (buf.dim) { const c = dimInfo.code.get(dimKeyOf(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
         fill++;
@@ -1952,7 +2037,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 // opts.dims — { x, y, z } column indices of the per-block size columns, stated
 //   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
 // mapping.cat = -1 — "no category" (no auto-pick from the text columns).
-async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -1969,7 +2054,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
       ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
       : null;
-    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2) };
+    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan)) };
   }
   const head = await blob.slice(0, Math.min(sample, blob.size)).text();
   const sniff = sniffDelimited(head);
@@ -1991,7 +2076,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     const lines0 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split0 = splitter(sniff.delim);
     const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
-    if (vals0.length && vals0.every((v) => Number.isNaN(Number(v)))) map.chan = null;
+    if (vals0.length && !censusQualified(vals0).numeric) map.chan = null;
   }
 
   // auto category: first column whose head-sample values are all non-numeric
@@ -2003,7 +2088,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
       if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
       const vals = lines.map((l) => (split(l)[i] || '').trim()).filter(Boolean);
-      if (vals.length && vals.every((v) => Number.isNaN(Number(v)))) catCol = i;
+      if (vals.length && (({ num, below, above }) => num + below + above === 0)(censusQualified(vals))) catCol = i;
     }
   }
 
@@ -2083,14 +2168,16 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
 
   // every plausible scalar column (numeric in the head sample, not a coord/dim) —
   // the UI offers these as color channels; switching re-runs sweep 2 only.
-  const numericColumns = [];
+  const numericColumns = [], qualifiedColumns = [];
   if (sniff.header) {
     const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split2 = splitter(sniff.delim);
     for (let i = 0; i < sniff.columns; i++) {
       if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
       const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
-      if (vals.length && vals.every((v) => !Number.isNaN(Number(v)))) numericColumns.push({ i, name: sniff.header[i] });
+      const cq = vals.length ? censusQualified(vals) : null;
+      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
+      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
     }
   }
   const header = {
@@ -2104,6 +2191,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
     numericColumns,
+    qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
     categories,
     attributes: [
       ...(map.chan != null && sniff.header ? [sniff.header[map.chan]] : []),
@@ -2112,7 +2200,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   };
 
   // ── sweep 2 (cold recipe): the shared stream factory ──
-  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo);
+  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan));
 
   return { header, streamChunks };
 }
@@ -2140,7 +2228,7 @@ async function openTable(blob, { signal, onProgress } = {}) {
         const v = f[i];
         if (v === '' || v == null) continue;
         stat[i].n++;
-        if (Number.isFinite(+v)) stat[i].num++;
+        if (classifyQualified(v).kind !== 'text') stat[i].num++;   // numbers, <x / >x and lab codes all count
       }
       count++;
     }
@@ -2665,16 +2753,20 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   const keyCols = new Set([m.intervals.bhid, m.intervals.from, m.intervals.to]);
   // numeric / categorical detection over a head sample of the interval table
   const probe = tIv.rows.slice(0, 200);
-  const numericCols = [], textCols = [];
+  const numericCols = [], textCols = [], qualifiedCols = [];
   tIv.columns.forEach((name, i) => {
     if (keyCols.has(i)) return;
     const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
     if (!vals.length) return;
-    if (vals.every((v) => !Number.isNaN(Number(v)))) numericCols.push({ i, name });
-    else if (vals.every((v) => Number.isNaN(Number(v)))) textCols.push({ i, name });
+    const cq = censusQualified(vals);                     // <0.001, >10 and lab codes count as numeric
+    if (cq.numeric) numericCols.push({ i, name });
+    else if (cq.num + cq.below + cq.above === 0) textCols.push({ i, name });
+    if (cq.qualified) qualifiedCols.push({ i, name, below: cq.below, above: cq.above, code: cq.code });
   });
   const chan = opts.chan != null ? opts.chan : (numericCols[0] ? numericCols[0].i : null);
   const catCol = opts.cat != null ? opts.cat : (textCols[0] ? textCols[0].i : null);
+  // opts.qualify = { [column name]: policy } — the channel's <x / >x rule (default <x → x/2)
+  const chanPolicy = (chan != null && opts.qualify && opts.qualify[tIv.columns[chan]]) || QUALIFIED_DEFAULT;
 
   // samples = BOTH interval endpoints (2 per row): the desurveyed FROM and TO
   // positions are the capsule segment, arc-correct via positionAt; the render
@@ -2691,7 +2783,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     depth[2 * i] = +r[m.intervals.from]; depth[2 * i + 1] = +r[m.intervals.to];
     rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
     endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
-    chanVals[i] = chan != null ? +r[chan] : 0;
+    chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
     if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
   }
   const samples = { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] };
@@ -2761,6 +2853,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     collarColumns: tCollar.columns, surveyColumns: tSurvey.columns,
     collarMapping: m.collar, surveyMapping: m.survey,
     numericColumns: numericCols,
+    qualifiedColumns: qualifiedCols,
     categories,
     attributes: [
       ...(chan != null ? [tIv.columns[chan]] : []),
@@ -10723,6 +10816,11 @@ export {
   readDelimited,
   openDrillholes,
   openDrillholeTraces,
+  QUALIFIED_DEFAULT,
+  classifyQualified,
+  qualifiedNumber,
+  censusQualified,
+  describeQualified,
   buildStickChunk,
   stickLocalCenter,
   createStickChunkBuilder,

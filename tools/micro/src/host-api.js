@@ -97,6 +97,10 @@ export function createHostApi(d) {
     // Palette: by name (palettes()); each colour-by keeps its own. For a
     // difference: setPalette(id, 'rdbu') + a range symmetric about 0.
     setColorRange: verb((id, range) => { d.setLayerColorRange(live(id), range); }),
+    // a CSV/drillhole numeric column's detection-limit rule: { below: 'half' |
+    // 'limit' | 'zero' | 'blank', above: 'limit' | 'blank', negBelow } (any
+    // subset; the rest keeps its current value). Saved with the project.
+    setDetectionLimits: verb((id, column, policy) => d.setDetectionLimits(live(id), column, policy)),
     colorRange: (id) => d.layerColorRange(live(id)),
     setPalette: verb((id, name) => { d.setLayerPalette(live(id), name); }),
     palettes: () => d.paletteList(),

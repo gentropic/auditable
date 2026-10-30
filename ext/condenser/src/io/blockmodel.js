@@ -15,6 +15,7 @@
 
 import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
 import { WS, splitFields, RecordJoiner, sampleRecords } from './delimited.js';
+import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
 import { detectRotatedLattice, latticeMisfit } from '../grid/basis.js';
 
 const X_RE = /^(x|xc|xcent(er|re)?|xmid|east(ing)?|xworld|centroid_?x)$/i;
@@ -210,11 +211,17 @@ export async function fetchDelimitedRecord(blob, header, rec) {
   } finally { reader.releaseLock(); }
 }
 
+// the colour channel's qualifier policy: qualify = { [column name]: policy } (else the default)
+function policyOf(qualify, columns, i) {
+  const name = columns && i != null ? columns[i] : null;
+  return (qualify && name != null && qualify[name]) || QUALIFIED_DEFAULT;
+}
+
 const CAP_DISTINCT = 300000;                               // per-axis discovery cap
 
 // sweep 2 as a shared factory: the same cold-recipe stream whether the header
 // came from a live discovery or a cached `discovered` payload (sidecars)
-function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null) {
+function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT) {
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
     const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
@@ -224,7 +231,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
         const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
-        buf.chan[fill] = map.chan != null ? +f[map.chan] : 0;
+        buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
         if (buf.cat) { const c = catCode.get((f[catCol] || '').trim()); buf.cat[fill] = c === undefined ? 0 : c; }
         if (buf.dim) { const c = dimInfo.code.get(dimKeyOf(+f[dimInfo.cols.x], +f[dimInfo.cols.y], +f[dimInfo.cols.z])); buf.dim[fill] = c === undefined ? 0 : c; }
         fill++;
@@ -250,7 +257,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 // opts.dims — { x, y, z } column indices of the per-block size columns, stated
 //   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
 // mapping.cat = -1 — "no category" (no auto-pick from the text columns).
-export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -267,7 +274,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
       ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
       : null;
-    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2) };
+    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan)) };
   }
   const head = await blob.slice(0, Math.min(sample, blob.size)).text();
   const sniff = sniffDelimited(head);
@@ -289,7 +296,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     const lines0 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split0 = splitter(sniff.delim);
     const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
-    if (vals0.length && vals0.every((v) => Number.isNaN(Number(v)))) map.chan = null;
+    if (vals0.length && !censusQualified(vals0).numeric) map.chan = null;
   }
 
   // auto category: first column whose head-sample values are all non-numeric
@@ -301,7 +308,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
       if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
       const vals = lines.map((l) => (split(l)[i] || '').trim()).filter(Boolean);
-      if (vals.length && vals.every((v) => Number.isNaN(Number(v)))) catCol = i;
+      if (vals.length && (({ num, below, above }) => num + below + above === 0)(censusQualified(vals))) catCol = i;
     }
   }
 
@@ -381,14 +388,16 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
 
   // every plausible scalar column (numeric in the head sample, not a coord/dim) —
   // the UI offers these as color channels; switching re-runs sweep 2 only.
-  const numericColumns = [];
+  const numericColumns = [], qualifiedColumns = [];
   if (sniff.header) {
     const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
     const split2 = splitter(sniff.delim);
     for (let i = 0; i < sniff.columns; i++) {
       if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
       const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
-      if (vals.length && vals.every((v) => !Number.isNaN(Number(v)))) numericColumns.push({ i, name: sniff.header[i] });
+      const cq = vals.length ? censusQualified(vals) : null;
+      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
+      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
     }
   }
   const header = {
@@ -402,6 +411,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
     numericColumns,
+    qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
     categories,
     attributes: [
       ...(map.chan != null && sniff.header ? [sniff.header[map.chan]] : []),
@@ -410,7 +420,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   };
 
   // ── sweep 2 (cold recipe): the shared stream factory ──
-  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo);
+  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan));
 
   return { header, streamChunks };
 }
@@ -438,7 +448,7 @@ export async function openTable(blob, { signal, onProgress } = {}) {
         const v = f[i];
         if (v === '' || v == null) continue;
         stat[i].n++;
-        if (Number.isFinite(+v)) stat[i].num++;
+        if (classifyQualified(v).kind !== 'text') stat[i].num++;   // numbers, <x / >x and lab codes all count
       }
       count++;
     }

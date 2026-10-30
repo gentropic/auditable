@@ -15,6 +15,7 @@ export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, c
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord } from './io/blockmodel.js';
 export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine } from './io/delimited.js';
 export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces } from './io/drillholes.js';
+export { QUALIFIED_DEFAULT, classifyQualified, qualifiedNumber, censusQualified, describeQualified } from './io/qualified.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';
 export { createSticksPipeline } from './core/gl-sticks.js';
 export { openMsh, openObj, openPlyMesh } from './io/mesh-io.js';

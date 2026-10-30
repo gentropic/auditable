@@ -959,7 +959,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { openLas, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
+import { openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -979,7 +979,7 @@ import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js'
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
-import { blockCaps, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
+import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { PAINT_BLANK, paintRecount, matColSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
 import { startParquetPool, defaultPoolSize, discoverParquetInWorkers, decodeParquetInWorkers, checkLatticeInWorkers } from './src/pqpool.js';   // the Parquet worker pool: open discovery + decode (stats ride it too, via columns.js)
@@ -1949,7 +1949,7 @@ function exportColumnsOf(L) {
   return cols;
 }
 let _exportEpoch = 0;
-async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false } = {}) {
+async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false } = {}) {
   const h = layerTableHeader(L); if (!h) return -1;
   await ensureStoredValues(L, null);                       // exports read every column
   const cols = exportColumnsOf(L);
@@ -1978,7 +1978,9 @@ async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimal
   const isDelim = !blockCaps(L).rowIsRecord;
   const isDm = !!(L.docs.blockDoc && L.docs.blockDoc.header.dm);
   let rec = 0, written = 0;
-  for await (const batch of layerRows(L, null)) {
+  // CSV keeps the source text (<0.001) unless asked for the substitutes; Parquet's
+  // numeric columns are doubles, so it always writes the substituted number
+  for await (const batch of layerRows(L, null, { raw: !isParquet && !qualified })) {
     for (const f0 of batch) {
       if (isDelim) {
         const xv = +f0[m.x], yv = +f0[m.y], zv = +f0[m.z];
@@ -2186,7 +2188,7 @@ function openExportDialog(L0) {
   const layers = S.layers.filter((L) => layerTableHeader(L));
   if (!layers.length) { $('#meta').textContent = 'export: no table-backed layers (blocks or drillholes)'; return; }
   const L = L0 && layerTableHeader(L0) ? L0 : (activeLayer() && layerTableHeader(activeLayer()) ? activeLayer() : layers[0]);
-  _exDlg = { lid: L.id, scope: 'all', off: new Set(), delim: ',', dec: false, name: null, format: 'csv', codec: 'SNAPPY', spatialSort: true };
+  _exDlg = { lid: L.id, scope: 'all', off: new Set(), delim: ',', dec: false, name: null, format: 'csv', codec: 'SNAPPY', spatialSort: true, qual: false };
   renderExportDialog();
   $('#exDlg').classList.add('show');
 }
@@ -2296,6 +2298,14 @@ function renderExportDialog() {
     decLab.append(decCb, 'decimal comma');
     decLab.title = 'write 61,4 instead of 61.4 in numeric columns (pt-BR Excel)';
     mkRow2('delimiter', dSel, decLab);
+    if (rowQualifier(L)) {                                 // a CSV / drillhole layer: <0.001 can be written as read or as substituted
+      const qLab = document.createElement('label');
+      const qCb = document.createElement('input'); qCb.type = 'checkbox'; qCb.checked = d.qual;
+      qCb.onchange = () => { d.qual = qCb.checked; };
+      qLab.append(qCb, 'write <x / >x as their substitutes');
+      qLab.title = 'off: values leave as the file had them (<0.001). On: as micro reads them (each column’s detection-limit rule, e.g. 0.0005; lab codes blank)';
+      mkRow2('detection limits', qLab);
+    }
   }
   // filename
   const nameIn = document.createElement('input'); nameIn.type = 'text';
@@ -2315,7 +2325,7 @@ $('#exGo').onclick = async () => {
   btn.disabled = true;
   $('#exDlgMsg').textContent = 'sweeping…';
   try {
-    const n = await runExport(L, { scope: d.scope, colIdx, delim: d.delim, decimalComma: d.dec, format: d.format, codec: d.codec, spatialSort: d.spatialSort, filename: (d.name || exDefaultName(L, d.format)).trim() || exDefaultName(L, d.format) });
+    const n = await runExport(L, { scope: d.scope, colIdx, delim: d.delim, decimalComma: d.dec, format: d.format, codec: d.codec, spatialSort: d.spatialSort, qualified: d.qual, filename: (d.name || exDefaultName(L, d.format)).trim() || exDefaultName(L, d.format) });
     if (n >= 0) { $('#exDlg').classList.remove('show'); _exDlg = null; }
   } finally { btn.disabled = false; }
 };
@@ -8109,7 +8119,7 @@ function restoreReopenIdentity(L2, keep) {        // call with the fresh active 
 // this → a re-channel silently kept the loader's inferred colTypes.
 function captureLayerStyling(L, { clearCats = false } = {}) {
   return {
-    colTypes: L.colTypes, calcCols: L.calcCols, ramps: L.ramps,
+    colTypes: L.colTypes, qualify: L.qualify, calcCols: L.calcCols, ramps: L.ramps,
     catHidden: clearCats ? null : L.catHidden, catLegend: clearCats ? null : L.catLegend,
     rules: L.rules, ruleHidden: L.ruleHidden, paintCols: L.paintCols,
     // a re-desurvey/re-map/re-channel keeps the SAME rows, so these survive too.
@@ -8125,7 +8135,7 @@ function captureLayerStyling(L, { clearCats = false } = {}) {
 }
 function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
   if (!L2) return L2;
-  L2.colTypes = keep.colTypes; applyColTypes(L2);
+  L2.colTypes = keep.colTypes; L2.qualify = keep.qualify; applyColTypes(L2);
   L2.calcCols = keep.calcCols;
   L2.ramps = keep.ramps; if (rampCfgOf(L2)) applyRamp(L2, true);
   if (clearCats) { L2.catHidden = null; L2.catLegend = null; renderer.setLayerCatVisibility(L2.id, null); renderer.setLayerPalette(L2.id, null); }
@@ -8490,6 +8500,7 @@ async function openDrillholeLayer(files, opts = {}, mode = 'add', over = {}) {
     const dhDoc = { blobs: { ...files }, header, fetchRecord, recordPosition, config: { ...opts } };
     peekCollarCols(dhDoc);                                 // warm the collar-column cache (menu + manifest)
     registerDocs(lid, 'points', { dhDoc });
+    qualifyDhDoc(layerById(lid));                          // <0.001 → a number for every interval reader; rawRecord keeps the text
     fitFromHeader(header, first);
     renderer.setCategories(header.categories ? 1 : 0);
     renderer.setLayerCats(lid, header.categories ? 256 : 0);
@@ -9448,7 +9459,8 @@ async function openBlocksBlob(blob, name, opts = {}) {
     || (opts.chan != null && prevDoc && prevDoc.header ? { ...prevDoc.header.mapping, chan: opts.chan } : null);
   renderer.removeLayer(lid); if (!opts.keepFilter) renderer.setFilter(null, {}, lid);
   const prov = opts.provider ? await opts.provider() : null;
-  const bmOpts = discovered ? { discovered } : { ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), ...(opts.dimCols ? { dims: opts.dimCols } : {}), rotated: !opts.forcePoints };
+  const qualify = (layerById(lid) || {}).qualify || opts.qualify || null;
+  const bmOpts = discovered ? { discovered, qualify } : { qualify, ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), ...(opts.dimCols ? { dims: opts.dimCols } : {}), rotated: !opts.forcePoints };
   const { header, streamChunks } = prov || await openBlockModel(blob, bmOpts);
   if (opts.forcePoints) { header.grid = null; header.latticeCandidate = null; }
   await settleLatticeCandidate(header, name, opts);
@@ -10044,7 +10056,9 @@ async function applyBlockFilter(expr, L = activeLayer()) {
     }
   } else {
     let teeAcc = null; const pinNames = [];                 // pin-cache tee state (set up below)
-    const scanRow = (f) => {
+    const qRow = rowQualifier(AL);                          // <0.001 → its substitute, as every other read
+    const scanRow = (f0) => {
+      const f = qRow ? qRow(f0) : f0;
       const xv = +f[m.x], yv = +f[m.y], zv = +f[m.z];
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) return;   // same rows sweep 2 kept
       if (teeAcc) for (const tn of pinNames) {
@@ -10842,6 +10856,7 @@ function projectManifest() {
         ? [...L.catHidden].map((c) => { const h2 = layerHeaderOf(L); return h2 && h2.categories && h2.categories[c] != null ? h2.categories[c] : c; })
         : undefined,
       colTypes: L.colTypes && Object.keys(L.colTypes).length ? L.colTypes : undefined,
+      qualify: L.qualify && Object.keys(L.qualify).length ? L.qualify : undefined,
       holeFilter: (L.dh && L.holeFilter) || undefined,     // the collars-location predicate (view state)
       // calcCols live in the ELEMENT manifest (spec rule 10) — read here only as legacy
       ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
@@ -11227,6 +11242,7 @@ async function openProjectDir(dir) {
           if (ls.dh.set) { Ld._setPath = ls.dh.set; Ld._setKey = ls.dh.set; Ld._intervalName = ivName; }   // group siblings; rescan won't re-offer
           if (ls.label) Ld.label = ls.label;
           if (ls.colTypes) { Ld.colTypes = ls.colTypes; applyColTypes(Ld); }
+          if (ls.qualify) { Ld.qualify = ls.qualify; Ld._qualFn = undefined; _qualifyReopen.push(Ld.id); }
           try { await loadElement(Ld, dir); } catch { /* derived — never block a load */ }   // ƒ + matcols BEFORE filter/color (both may reference them)
           if (ls.calcCols && !(Ld.calcCols || []).length) Ld.calcCols = ls.calcCols;   // legacy projects (no element manifest)
           addPaintColorOptions(Ld);
@@ -11324,6 +11340,7 @@ async function openProjectDir(dir) {
       if (sidecar && sidecar.colStats) L._colStats = sidecar.colStats;   // the styling/statistics UIs wake up scanned
       if (sidecar && sidecar.bands) L._bands = sidecar.bands;            // .dm/CSV filter pushdown substrate
       if (ls.colTypes) { L.colTypes = ls.colTypes; applyColTypes(L); }
+      if (ls.qualify) { L.qualify = ls.qualify; L._qualFn = undefined; _qualifyReopen.push(L.id); }
       try { await loadElement(L, dir); } catch { /* derived — never block a load */ }   // ƒ + matcols BEFORE filter/color (both may reference them)
       if (ls.calcCols && !(L.calcCols || []).length) L.calcCols = ls.calcCols;   // legacy projects (no element manifest)
       if (Array.isArray(ls.catChoices)) L.catChoices = ls.catChoices;
@@ -11359,7 +11376,8 @@ async function openProjectDir(dir) {
       L._pendingDrape = null;
       if (g) { try { recolorSurface(L, g); } catch { /* drape grid gone/incompatible → stays elevation */ } }
     }
-    await loadRecipes(dir);                                // recipes/ *.yaml → Tools → Recipes
+    await settleQualifyReopens();                          // stored <x / >x policies: re-read a channel the open coloured by the default
+    await loadRecipes(dir);                               // recipes/ *.yaml → Tools → Recipes
     // pinned analysis windows come back configured (after ALL layers landed —
     // series may reference other layers). Run stays manual: no surprise scans.
     for (const L of S.layers) {
@@ -15945,12 +15963,63 @@ function setColType(L, i, ty) {
   const at = (h.numericColumns || (h.numericColumns = [])).findIndex((c) => c.i === i);
   if (ty === 'number' && at < 0) { h.numericColumns.push({ i, name }); h.numericColumns.sort((a, b) => a.i - b.i); }
   if (ty === 'string' && at >= 0) h.numericColumns.splice(at, 1);
-  L._colStats = null;                                      // the kind changed — stale
+  L._colStats = null; L._qualFn = undefined;               // the kind changed — stale
   if (L.id === S.activeId) { const keep = $('#colorBy').value; setColorLabels(h); if ([...$('#colorBy').options].some((o) => o.value === keep)) $('#colorBy').value = keep; }
   markProjectDirty();
   renderProps();
 }
 // (applyColTypes lives in src/records.js)
+// ── a numeric column's detection-limit policy (CSV / drillholes). Values are
+// substituted at the read, so a change invalidates everything derived from a
+// read: column stats, pinned columns, the band index, the filter mask — and the
+// colour channel, which the open parsed (a re-read, like a channel switch). ──
+const QUALIFY_BELOW = [['half', '<x → x/2 (half the limit)'], ['limit', '<x → x (the limit)'], ['zero', '<x → 0'], ['blank', '<x → blank']];
+function qualifyMenuItems(L, i) {
+  const h = layerTableHeader(L), name = h.columns[i], p = qualifyPolicy(L, name);
+  return [
+    ...QUALIFY_BELOW.map(([k, label]) => ({ label: ((p.below || 'half') === k ? '✓ ' : '') + label, action: () => setColumnQualify(L, i, { ...p, below: k }) })),
+    { sep: true },
+    { label: (p.above !== 'blank' ? '✓ ' : '') + '>x → x (the limit)', action: () => setColumnQualify(L, i, { ...p, above: 'limit' }) },
+    { label: (p.above === 'blank' ? '✓ ' : '') + '>x → blank', action: () => setColumnQualify(L, i, { ...p, above: 'blank' }) },
+    { sep: true },
+    { label: (p.negBelow ? '✓ ' : '') + 'Negative = below detection (−0.001 → <0.001)', action: () => setColumnQualify(L, i, { ...p, negBelow: !p.negBelow }) },
+  ];
+}
+async function setColumnQualify(L, i, policy) {
+  const h = layerTableHeader(L); if (!h) return null;
+  const name = h.columns[i];
+  const pol = { below: policy.below || 'half', above: policy.above === 'blank' ? 'blank' : 'limit', negBelow: !!policy.negBelow };
+  L.qualify = { ...(L.qualify || {}) };
+  if (pol.below === 'half' && pol.above === 'limit' && !pol.negBelow) delete L.qualify[name];   // the default isn't stored
+  else L.qualify[name] = pol;
+  if (!Object.keys(L.qualify).length) L.qualify = null;
+  markProjectDirty();
+  return refreshQualified(L, h.mapping && h.mapping.chan === i);
+}
+// drop everything derived from a read; re-read when the colour channel changed
+async function refreshQualified(L, rechan) {
+  L._qualFn = undefined; L._colStats = null; L._bands = null;
+  pinEvictLayer(L.id);
+  const d = L.docs || {};
+  if (rechan && d.dhDoc) { L = (await reopenDh(L, { qualify: L.qualify || null })) || L; }
+  else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await refilterLayer(L); applyRamp(L, true); }
+  else await refilterLayer(L);
+  if (_propOpen) { _propFor = null; renderProps(); }
+  requestRender();
+  return L.id;
+}
+// project load: a stored policy on the colour channel means the open coloured by
+// the default — re-read those layers once they're all in
+const _qualifyReopen = [];
+async function settleQualifyReopens() {
+  const ids = _qualifyReopen.splice(0);
+  for (const id of ids) {
+    const L = layerById(followLayer(id)); if (!L) continue;
+    const h = layerTableHeader(L), ch = h && h.mapping ? h.mapping.chan : null;
+    const chName = ch != null ? h.columns[ch] : null;
+    await refreshQualified(L, !!(chName && L.qualify && L.qualify[chName]));
+  }
+}
 // (layerRows lives in src/records.js)
 // opts.bands: also collect per-64k-record-band min/max for every BASE numeric
 // column into L._bands — the .dm/CSV pushdown substrate (parquet's footer
@@ -15987,6 +16056,12 @@ function renderColumnsTab(body, L) {
     const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; nm.title = name;
     const ty = document.createElement('span'); ty.className = 'ty'; ty.textContent = colIsNumeric(L, h, i) ? 'number' : 'text';
     row.append(nm, ty);
+    const qc = (h.qualifiedColumns || []).find((c) => c.i === i);
+    if (qc && colIsNumeric(L, h, i)) {                     // the column reads numeric BECAUSE <x / >x / codes were substituted — say so
+      const b3 = document.createElement('span'); b3.className = 'pp-badge'; b3.textContent = '<DL';
+      b3.title = `qualified values in the sample: ${qc.below} below detection · ${qc.above} above · ${qc.code} lab codes\nread as ${describeQualified(qualifyPolicy(L, name))} (codes → blank) — right-click to change`;
+      row.appendChild(b3);
+    }
     const role = colRole(h, i);
     if (role) { const b2 = document.createElement('span'); b2.className = 'pp-badge'; b2.textContent = role; row.appendChild(b2); }
     const openMenu = (x, y) => {
@@ -15996,6 +16071,7 @@ function renderColumnsTab(body, L) {
       menuXY(x, y, [
         { label: (isNum ? '✓ ' : '') + 'Number', action: () => { if (!isNum && !spatial) setColType(L, i, 'number'); } },
         { label: (!isNum ? '✓ ' : '') + 'Text', action: () => { if (isNum && !spatial) setColType(L, i, 'string'); } },
+        ...(isNum && !spatial && rowQualifier(L) ? [{ label: 'Below / above detection', submenu: () => qualifyMenuItems(L, i) }] : []),
         ...(spatial ? [] : [
           { sep: true },
           ...(isNum && L.docs.blockDoc ? [{ label: 'Use as color channel', action: () => { const v = `chan:${i}`; if ([...$('#colorBy').options].some((o) => o.value === v)) { $('#colorBy').value = v; $('#colorBy').dispatchEvent(new Event('change')); } } }] : []),
@@ -16060,6 +16136,10 @@ function appendColStats(body, stat, onCtx) {
     d.innerHTML = `n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>`
       + `mean <span class="v">${fmtStat(stat.mean)}</span> · std <span class="v">${fmtStat(stat.std)}</span><br>`
       + `<span class="v">${fmtStat(stat.min)}</span> · p25 <span class="v">${fmtStat(stat.p25)}</span> · p50 <span class="v">${fmtStat(stat.p50)}</span> · p75 <span class="v">${fmtStat(stat.p75)}</span> · <span class="v">${fmtStat(stat.max)}</span>`;
+    if (stat.qual) {                                       // detection-limit values were substituted — never silently
+      const t = stat.qual, bits = [t.below && `${t.below.toLocaleString()} below detection`, t.above && `${t.above.toLocaleString()} above`, t.code && `${t.code.toLocaleString()} lab codes → blank`].filter(Boolean);
+      d.insertAdjacentHTML('beforeend', `<br><span class="pp-footnote">${bits.join(' · ')} — substituted on read</span>`);
+    }
     if (stat.centroids && stat.centroids.length && stat.max > stat.min) d.appendChild(sparkline(stat.centroids, stat.total, stat.min, stat.max));
   } else {
     const top = stat.top.map(([v, n]) => `${v} <span class="v">${Math.round((100 * n) / (stat.n || 1))}%</span>`).join(' · ');
@@ -16073,7 +16153,7 @@ function appendColStats(body, stat, onCtx) {
 async function reopenDh(L, patch, { clearCats = false } = {}) {
   const dh = L.docs.dhDoc; if (!dh) return;
   closeAttrTable(L.id);
-  const files = dh.blobs, cfg = { ...dh.config, ...patch };
+  const files = dh.blobs, cfg = { ...dh.config, qualify: L.qualify || null, ...patch };
   const id = captureReopenIdentity(L);                                // label · visible · storage (handle n/a for compound dh)
   const setKey = L._setKey, intervalName = L._intervalName;           // dh-set membership (dh-specific, not generic identity)
   const style = captureLayerStyling(L, { clearCats });
@@ -17816,7 +17896,7 @@ async function showRecord(hit) {
     return;
   }
   if (dd) {
-    const f = dd.fetchRecord(rec);
+    const f = rawRecordOf(L, rec) || dd.fetchRecord(rec);
     if (!f) { showRecPanel(`${tag}interval · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
     const rows = dd.header.columns.map((name, i) => [name, f[i]]);
     appendCalcRows(rows, L, f, dd.header, rec);
@@ -17991,7 +18071,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, addLayer, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped
@@ -18030,6 +18110,15 @@ const _host = createHostApi({
   stepGroup: (path, dir) => { const g = groupAt(path); if (!g) return null; if (!g.exclusive) return false; stepExclusive(dir, g); return true; },
   sectionWorld, setSectionWorld, cameraWorld, setCameraWorld, renderFigure: renderFigureCanvas,
   decorations: hostDecorations, setDecorations: setHostDecorations,
+  setDetectionLimits: (L, column, policy) => {
+    const h = layerTableHeader(L), i = h ? h.columns.indexOf(column) : -1;
+    if (i < 0) throw new Error(`micro: no column “${column}” on “${L.label || L.name}”`);
+    if (!rowQualifier(L) || !colIsNumeric(L, h, i)) throw new Error(`micro: “${column}” isn’t a numeric column of a CSV or drillhole layer`);
+    const p = policy || {};
+    if (p.below != null && !['half', 'limit', 'zero', 'blank'].includes(p.below)) throw new Error('micro: below must be half | limit | zero | blank');
+    if (p.above != null && !['limit', 'blank'].includes(p.above)) throw new Error('micro: above must be limit | blank');
+    return setColumnQualify(L, i, { ...qualifyPolicy(L, column), ...p }).then(() => undefined);
+  },
   selectionRecords, setSelectionRecords, clearSelection: () => clearSelection({ silent: true }),
   worldAtPoints, selectInPolygon: hostSelectInPolygon,
   mirrorFilterBox: (e) => { $('#filter').value = e; syncFilterClear(); },

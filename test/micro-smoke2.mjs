@@ -2529,6 +2529,95 @@ await p.close();
   await pe.close();
 }
 
+// ── §38: detection-limit values. A CSV column with <0.002 / >0.5 / BDL among its
+//     numbers reads NUMERIC (it used to read as text); <x → x/2 by default, >x →
+//     x, codes → blank — the same value in the colour channel, the filter, the
+//     column stats (which count what was substituted) and a substituted export,
+//     while the record row and a default CSV export keep the source text. A
+//     per-column rule re-reads all of it and survives a save/reopen; drillhole
+//     intervals do the same through their resident rows. ──
+{
+  const pq = await mkPage('sm2qual');
+  await pq.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2qual', { recursive: true }); } catch { /* fresh */ } });
+  // 72 blocks; k%9: 0 → <0.002, 1 → >0.5, 2 → BDL, else (k%9)/100
+  const cu = (k) => (k % 9 === 0 ? '<0.002' : k % 9 === 1 ? '>0.5' : k % 9 === 2 ? 'BDL' : ((k % 9) / 100).toFixed(2));
+  let csv = 'XC,YC,ZC,CU_pct,LITO\n';
+  for (let k = 0; k < 72; k++) csv += `${(k % 6) * 10},${((k / 6 | 0) % 6) * 10},${(k / 36 | 0) * 10},${cu(k)},${k % 2 ? 'OX' : 'FR'}\n`;
+  const nBelow = 8, nAbove = 8, nCode = 8;
+  const plain = []; for (let k = 0; k < 72; k++) if (k % 9 > 2) plain.push((k % 9) / 100);
+  const meanOf = (below) => (plain.reduce((a, b) => a + b, 0) + nBelow * below + nAbove * 0.5) / (plain.length + nBelow + nAbove);
+  const read = (expr) => pq.evaluate(async (e) => {
+    const m = window._micro, L = m.layers().find((x) => x.name === 'q.csv');
+    m.setActiveLayer(L.id);
+    document.querySelector('#filter').value = e; await m.applyBlockFilter(e);
+    const hits = L._filterMask ? L._filterMask.reduce((a, b) => a + b, 0) : -1;
+    await m.applyBlockFilter('');
+    const st = (await m.scanColumns(L, null)).CU_pct;
+    return { hits, mean: st.mean, n: st.n, qual: st.qual, chan: m.renderer.layerChanRange(L.id) };
+  }, expr);
+  await pq.evaluate(async (t) => { await window._micro.openBlob(new Blob([t]), 'q.csv', 'replace'); }, csv);
+  await pq.waitForFunction(() => window._micro.layers().some((x) => x.name === 'q.csv' && x.docs.blockDoc), null, { timeout: 20000 });
+  const open = await pq.evaluate(() => {
+    const m = window._micro, L = m.layers().find((x) => x.name === 'q.csv'), h = L.docs.blockDoc.header;
+    const i = h.columns.indexOf('CU_pct');
+    return { numeric: h.numericColumns.some((c) => c.i === i), qualified: (h.qualifiedColumns || []).map((c) => c.name), chan: h.columns[h.mapping.chan], cat: h.columns[h.mapping.cat] };
+  });
+  chk(`a <x column opens numeric + qualified, colours by it, LITO stays the category (${JSON.stringify(open)})`,
+    open.numeric && open.qualified.join() === 'CU_pct' && open.chan === 'CU_pct' && open.cat === 'LITO');
+  const r0 = await read('CU_pct < 0.0015');
+  chk(`default <x → x/2: filter < 0.0015 hits the ${r0.hits} below-detection blocks, colour starts at ${r0.chan && r0.chan[0]}, mean ${r0.mean && r0.mean.toFixed(5)}`,
+    r0.hits === nBelow && Math.abs(r0.chan[0] - 0.001) < 1e-9 && Math.abs(r0.mean - meanOf(0.001)) < 1e-9 && r0.n === 72 - nCode);
+  chk(`the column stats count the substitutions (${JSON.stringify(r0.qual)})`, r0.qual && r0.qual.below === nBelow && r0.qual.above === nAbove && r0.qual.code === nCode);
+  const raw = await pq.evaluate(async () => { const m = window._micro, L = m.layers().find((x) => x.name === 'q.csv'); return (await m.fetchLayerRow(L, 0))[3]; });
+  chk(`the record row keeps the source text (${raw})`, raw === '<0.002');
+  // exports: CSV keeps the text by default, writes the substitute when asked
+  const exportText = async (qualified) => {
+    const [dl] = await Promise.all([pq.waitForEvent('download'), pq.evaluate((q) => { const m = window._micro; return m.runExport(m.layers().find((x) => x.name === 'q.csv'), { scope: 'all', qualified: q, filename: 'q-out.csv' }); }, qualified)]);
+    return (await import('fs')).readFileSync(await dl.path(), 'utf8');
+  };
+  const ex0 = await exportText(false), ex1 = await exportText(true);
+  chk('CSV export writes <0.002 as read; with substitutes it writes 0.001 and blanks the codes',
+    ex0.includes(',<0.002,') && ex0.includes(',BDL,') && !ex1.includes('<0.002') && ex1.includes(',0.001,') && !ex1.includes('BDL'));
+  // a per-column rule: <x → x re-reads the colour, the filter and the stats
+  await pq.evaluate(async () => { const m = window._micro; await window.micro.setDetectionLimits(m.layers().find((x) => x.name === 'q.csv').id, 'CU_pct', { below: 'limit' }); });
+  const r1 = await read('CU_pct < 0.0015');
+  chk(`<x → x: no hits below 0.0015 (${r1.hits}), colour starts at ${r1.chan && r1.chan[0]}, mean follows`,
+    r1.hits === 0 && Math.abs(r1.chan[0] - 0.002) < 1e-9 && Math.abs(r1.mean - meanOf(0.002)) < 1e-9);
+  let refused = false;
+  try { await pq.evaluate(() => window.micro.setDetectionLimits(window._micro.layers().find((x) => x.name === 'q.csv').id, 'CU_pct', { below: 'third' })); } catch { refused = true; }
+  chk('a bad rule is refused', refused);
+  // save + reopen: the rule rides in the project and the channel re-reads under it
+  await saveProject(pq);
+  await pq.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2qual'); await window._micro.openProjectDir(dir); });
+  await pq.waitForFunction(() => window._micro.layers().some((x) => x.name === 'q.csv' && x.docs.blockDoc), null, { timeout: 60000 });
+  await pq.waitForTimeout(800);
+  const re = await pq.evaluate(() => { const m = window._micro, L = m.layers().find((x) => x.name === 'q.csv'); return { q: L.qualify, chan: m.renderer.layerChanRange(L.id) }; });
+  chk(`the rule survives a save/reopen (${JSON.stringify(re.q)}, colour from ${re.chan && re.chan[0]})`, re.q && re.q.CU_pct && re.q.CU_pct.below === 'limit' && Math.abs(re.chan[0] - 0.002) < 1e-9);
+  // drillholes: interval rows are resident; the analyses read the substitute, the row panel the text
+  const dh = await pq.evaluate(async () => {
+    const m = window._micro, f = (t, n) => new File([t], n);
+    await m.importDrillholes({ collar: f('BHID,X,Y,Z\nH1,0,0,100\nH2,50,0,100\n', 'collars.csv'), survey: f('BHID,AT,AZ,DIP\nH1,0,0,-90\nH2,0,0,-90\n', 'survey.csv'),
+      intervals: f('BHID,FROM,TO,CU_pct,SAMPLE_ID\nH1,0,2,<0.001,S1\nH1,2,4,0.0011,S2\nH1,4,6,0.0038,S3\nH2,0,2,<0.001,S4\nH2,2,4,0.0070,S5\n', 'assay.csv') }, {}, 'replace');
+    const L = m.layers().find((x) => x.dh);
+    const i = L.docs.dhDoc.header.columns.indexOf('CU_pct');
+    m.setActiveLayer(L.id);
+    document.querySelector('#filter').value = 'CU_pct < 0.001'; await m.applyBlockFilter('CU_pct < 0.001');
+    const hits = L._filterMask ? L._filterMask.reduce((a, b) => a + b, 0) : -1;
+    return { numeric: L.docs.dhDoc.header.numericColumns.some((c) => c.i === i), row: (await m.fetchLayerRow(L, 0))[i], read: L.docs.dhDoc.fetchRecord(0)[i], hits, lo: L.docs.dhDoc.header.chanRange[0] };
+  });
+  chk(`drillholes: CU_pct numeric, row text ${dh.row}, read ${dh.read}, filter < 0.001 hits ${dh.hits}, colour from ${dh.lo}`,
+    dh.numeric && dh.row === '<0.001' && dh.read === 0.0005 && dh.hits === 2 && dh.lo === 0.0005);
+  const dh2 = await pq.evaluate(async () => {                // a rule on a drillhole channel re-desurveys under it
+    const m = window._micro;
+    await window.micro.setDetectionLimits(m.layers().find((x) => x.dh).id, 'CU_pct', { below: 'limit' });
+    const L = m.layers().find((x) => x.dh), i = L.docs.dhDoc.header.columns.indexOf('CU_pct');
+    return { lo: L.docs.dhDoc.header.chanRange[0], read: L.docs.dhDoc.fetchRecord(0)[i], q: L.qualify, filter: L.filterExpr, hits: L._filterMask ? L._filterMask.reduce((a, b) => a + b, 0) : -1 };
+  });
+  chk(`drillholes: <x → x re-reads the channel (from ${dh2.lo}), the rows (${dh2.read}) and the kept filter (${dh2.hits} hits)`,
+    dh2.lo === 0.001 && dh2.read === 0.001 && dh2.q && dh2.q.CU_pct.below === 'limit' && dh2.filter === 'CU_pct < 0.001' && dh2.hits === 0);
+  await pq.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

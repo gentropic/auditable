@@ -5,8 +5,8 @@
 // changed column set are injected too (setColumnsChangedHook).
 import { parquetInfo, readParquetRange, writeParquet } from '../../../ext/parquet/index.js';
 import { deps, parse } from '../../../ext/expr/index.js';
-import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow } from './records.js';
-import { openDmModel } from '../../../ext/condenser/src/main.js';
+import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier } from './records.js';
+import { openDmModel, classifyQualified } from '../../../ext/condenser/src/main.js';
 import { colAcc, scanParquetInWorkers, STAT_SLICE } from './colstats.js';
 
 export const PAINT_BLANK = '#33373c';                      // unpainted recedes toward the background
@@ -282,6 +282,7 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
   const pacer = makePacer(signal);
   const BAND = 65536;
   let bandData = null, rows = 0;
+  const qual = new Map();                                 // column → { below, above, code } substituted on read (the row scan fills it)
   // Parquet: a pool of workers, row groups handed out (null = can't run here → below)
   let via = 'page';
   if (colIdx.length && doc.parquet && !bands && workers) {
@@ -314,8 +315,17 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
     const isDelimSc = !blockCaps(L).rowIsRecord;           // renderer record numbering for painted lookups (delimited skips bad-coord rows)
     let recSc = 0, done = 0;
     rows = 0;
-    for await (const batch of layerRows(L, null)) {
-      for (const f0 of batch) {
+    // read RAW and qualify here, so the scan can count what was substituted
+    // (<x below detection, >x above, lab codes) — the stats say so, never silently
+    const q = rowQualifier(L);
+    for await (const batch of layerRows(L, null, { raw: true })) {
+      for (const fr of batch) {
+        const f0 = q ? q(fr) : fr;
+        if (f0 !== fr) for (let i = 0; i < nBase; i++) if (f0[i] !== fr[i]) {
+          let t = qual.get(i); if (!t) qual.set(i, (t = { below: 0, above: 0, code: 0 }));
+          const k = classifyQualified(fr[i]).kind;
+          if (k === 'below' || (k === 'num' && +fr[i] < 0)) t.below++; else if (k === 'above') t.above++; else t.code++;
+        }
         let rAt = null;
         if (!isDelimSc) rAt = recSc++;
         else if (Number.isFinite(+f0[mSc.x]) && Number.isFinite(+f0[mSc.y]) && Number.isFinite(+f0[mSc.z])) rAt = recSc++;
@@ -350,6 +360,7 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
   }
   const out = want && L._colStats ? { ...L._colStats } : {};
   for (const i of idxs) out[cols[i]] = acc.result(st.get(i), rows);
+  for (const [i, t] of qual) if (out[cols[i]]) out[cols[i]].qual = t;   // { below, above, code } substituted on read
   L._colStats = out;
   L._lastScan = { via };                                   // which path ran (the smoke reads it)
   return out;

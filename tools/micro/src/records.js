@@ -8,7 +8,7 @@
 // delimited text and how record numbering drifted (see the 2026-08 audit,
 // [[reference_micro_source_dispatch]]). This module is where those decisions
 // live now; a new source kind is added HERE, once.
-import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher } from '../../../ext/condenser/src/main.js';
+import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher, qualifiedNumber, QUALIFIED_DEFAULT } from '../../../ext/condenser/src/main.js';
 import { streamParquetColumns, readParquetRow } from '../../../ext/parquet/index.js';
 import { compileValue, deps } from '../../../ext/expr/index.js';
 import { readLFM, readLFMLayout, verifyLFM, lfmBlockStream } from '../../../ext/lfm/lfm.js';
@@ -76,6 +76,62 @@ export function calcFns(L) {
 }
 // rec (the renderer record index) keys painted-column lookups; callers that
 // sweep in renderer numbering pass it, others leave painted values blank
+// ── qualified numbers (CSV block models, CSV tables, drillhole intervals) ─────
+// `<0.001`, `>10` and lab codes (BDL, ND, -) in a NUMERIC column become numbers
+// under the column's policy (L.qualify[name], default <x → x/2, >x → x, codes →
+// blank) — at the READ, so filter, stats, GT, swath, calc, joins and export all
+// see the same value. Display paths (record panel, attribute table) keep the
+// source text. A plain number is untouched and the row is only copied when a
+// cell actually changes, so an ordinary file pays one `+v` per numeric cell.
+// .dm and Parquet aren't covered (their numeric columns are typed already).
+export function qualifyPolicy(L, name) {
+  return (L && L.qualify && L.qualify[name]) || QUALIFIED_DEFAULT;
+}
+export function rowQualifier(L) {
+  if (!L) return null;
+  const d = L.docs || {};
+  const csv = (d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) || d.dhDoc || (d.tableDoc && !d.tableDoc.xlsx);
+  const h = csv ? layerTableHeader(L) : null;
+  if (L._qualFn !== undefined && L._qualH === h) return L._qualFn;   // cached per header: a re-map / re-read rebuilds it
+  let fn = null;
+  if (h) {
+    const m = h.mapping || {}, im = h.intervalMapping || {};
+    const skip = new Set([m.x, m.y, m.z, im.bhid, im.from, im.to]);
+    const cols = [];
+    for (let i = 0; i < h.columns.length; i++) if (!skip.has(i) && colIsNumeric(L, h, i)) cols.push([i, qualifyPolicy(L, h.columns[i])]);
+    if (cols.length) fn = (f) => {
+      if (!f) return f;
+      let out = f;
+      for (let k = 0; k < cols.length; k++) {
+        const i = cols[k][0], v = out[i];
+        if (typeof v !== 'string' || v === '') continue;
+        const n = +v;
+        if (n === n && !(n < 0 && cols[k][1].negBelow)) continue;   // a plain number (the common case)
+        const q = qualifiedNumber(v, cols[k][1]);
+        if (out === f) out = f.slice();
+        out[i] = q === q ? q : '';                          // NaN (a code) → blank
+      }
+      return out;
+    };
+  }
+  L._qualFn = fn; L._qualH = h;
+  return fn;
+}
+// a drillhole doc's rows are resident; fetchRecord is what every interval reader
+// calls, so it becomes the qualified read and the raw one moves to rawRecord
+export function qualifyDhDoc(L) {
+  const dh = L && L.docs && L.docs.dhDoc;
+  if (!dh || dh.rawRecord) return;
+  const raw = dh.fetchRecord;
+  dh.rawRecord = raw;
+  dh.fetchRecord = (i) => { const q = rowQualifier(L); return q ? q(raw(i)) : raw(i); };
+}
+// a layer's display row: the source text, never the substitute
+export function rawRecordOf(L, rec) {
+  const dh = L && L.docs && L.docs.dhDoc;
+  return dh ? (dh.rawRecord || dh.fetchRecord)(rec) : null;
+}
+
 export function extendRow(L, f, rec) {
   const pcs = L && L.paintCols && L.paintCols.length ? L.paintCols : null;
   const cf = calcFns(L);
@@ -89,7 +145,8 @@ export function extendRow(L, f, rec) {
   if (cf) {
     const start = out.length;                               // calc census slots (input order), filled in DEPENDENCY order
     for (let i = 0; i < cf.n; i++) out.push(null);
-    for (const { idx, fn } of cf.ordered) { let v; try { v = fn(out); } catch { v = null; } out[start + idx] = v === undefined ? null : v; }
+    const q = rowQualifier(L), w = q ? q(out) : out;        // a display row is raw: calcs still read the substitute
+    for (const { idx, fn } of cf.ordered) { let v; try { v = fn(w); } catch { v = null; } v = v === undefined ? null : v; w[start + idx] = v; out[start + idx] = v; }
   }
   return out;
 }
@@ -122,11 +179,12 @@ export function blockCaps(L) {
 }
 // one streamed pass of decoded field arrays over the layer's table — the same
 // three sources the filter sweeps (dh in-memory, .dm pages, delimited lines)
-export async function* layerRows(L, onProgress) {
+// opts.raw: the SOURCE text (<0.001), not the detection-limit substitute — a CSV export's default
+export async function* layerRows(L, onProgress, { raw = false } = {}) {
   const d = L.docs;
   if (d.dhDoc) {
-    const dh = d.dhDoc, rows = [];
-    for (let i = 0; i < dh.header.count; i++) rows.push(dh.fetchRecord(i));
+    const dh = d.dhDoc, rows = [], read = raw && dh.rawRecord ? dh.rawRecord : dh.fetchRecord;
+    for (let i = 0; i < dh.header.count; i++) rows.push(read(i));
     yield rows;
   } else if (d.blockDoc && d.blockDoc.header.dm) {
     const { recordBatches } = await openDmModel(d.blockDoc.blob);
@@ -155,17 +213,19 @@ export async function* layerRows(L, onProgress) {
     }
   } else if (d.tableDoc) {
     const { blob, header } = d.tableDoc;
+    const q = raw ? null : rowQualifier(L);
     let done = 0;
     for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow)) {
-      yield batch;
+      yield q ? batch.map(q) : batch;
       done += batch.length;
       if (onProgress) onProgress(done, header.count);
     }
   } else if (d.blockDoc) {
     const { blob, header } = d.blockDoc;
     let done = 0;
+    const q = raw ? null : rowQualifier(L);
     for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns)) {
-      yield batch;
+      yield q ? batch.map(q) : batch;
       done += batch.length;
       if (onProgress) onProgress(done, header.count);
     }
@@ -397,7 +457,7 @@ export async function fetchLayerRow(L, rec) {
   }
   if (d.tableDoc && d.tableDoc.xlsx) return d.tableDoc.xlsx.at(rec);
   if (d.tableDoc) return await fetchDelimitedRecord(d.tableDoc.blob, d.tableDoc.header, rec);
-  if (d.dhDoc) return d.dhDoc.fetchRecord(rec);
+  if (d.dhDoc) return rawRecordOf(L, rec);                 // the source text (<0.001), not the substitute
   if (d.stringsDoc) return d.stringsDoc.fetchRecord(rec);  // a segment knows its DXF layer + string
   if (d.tracesDoc) return d.tracesDoc.fetchRecord(rec);    // pick a trace → its collar record
   if (d.blockDoc && d.blockDoc.parquet) { const row = await readParquetRow(d.blockDoc.parquet.buf, rec, d.blockDoc.parquet.meta); return row ? d.blockDoc.parquet.names.map((n) => { const v = row[n]; return v == null ? '' : v; }) : null; }
@@ -500,12 +560,13 @@ export async function sampleRow(L) {
     if (d.dhDoc) return d.dhDoc.fetchRecord(0);
     if (d.blockDoc && d.blockDoc.header.dm) return await fetchDmRecord(d.blockDoc.blob, d.blockDoc.header.dm, 0);
     if (d.blockDoc && d.blockDoc.parquet) return await fetchLayerRow(L, 0);   // NOT the delimited reader
-    if (d.blockDoc) return await fetchCsvRecord(0, d.blockDoc);
+    if (d.blockDoc) { const f = await fetchCsvRecord(0, d.blockDoc); const q = rowQualifier(L); return q ? q(f) : f; }
   } catch { /* no sample — type defaults */ }
   return null;
 }
 // re-apply a layer's persisted column-type overrides onto its (rebuilt) header
 export function applyColTypes(L) {
+  if (L) L._qualFn = undefined;
   const h = layerTableHeader(L); if (!h || !L.colTypes) return;
   for (const [name, ty] of Object.entries(L.colTypes)) {
     const i = h.columns.indexOf(name); if (i < 0) continue;
