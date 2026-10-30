@@ -985,7 +985,8 @@ import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // sha
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
-import { PAINT_BLANK, paintRecount, matColSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
+import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
+import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
 import { startParquetPool, defaultPoolSize, discoverParquetInWorkers, decodeParquetInWorkers, checkLatticeInWorkers } from './src/pqpool.js';   // the Parquet worker pool: open discovery + decode (stats ride it too, via columns.js)
 import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
 import { numericColsOf, blockVolumeOf, volumeContextOf, volumeAt, computeGT, computeSwath, extractSamples, autoDeclusterSizes, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
@@ -6872,7 +6873,8 @@ async function writeGridDisplayCache(L, dir) {
   let w = await gh.createWritable(); await w.write(writeSurferGrd(g)); await w.close();
   const jh = await resolveFileHandle(dir, rel + '.disp.json', { create: true });
   const stamp = await cacheStamp(dir, rel, gd.blob);
-  w = await jh.createWritable(); await w.write(JSON.stringify({ v: 1, size: gd.blob.size, mtime: stamp, nx: g.nx, ny: g.ny, band: (g.band || 0) })); await w.close();   // band is part of the identity: a multi-band GeoTIFF is ONE file size for every band
+  const hash = (await sourceHash(gd.blob)) || undefined;
+  w = await jh.createWritable(); await w.write(JSON.stringify({ v: 1, size: gd.blob.size, mtime: stamp, hash, nx: g.nx, ny: g.ny, band: (g.band || 0) })); await w.close();   // band is part of the identity: a multi-band GeoTIFF is ONE file size for every band
   return null;
 }
 // New grid / block model dialog: type + extent (parameters or cover a layer /
@@ -11133,6 +11135,7 @@ async function saveProject() {
       const rep = members[0];
       const setRel = joinPath('drillholes', dhElementName(rep));
       try {
+        for (const L of members) await ensureSourceHash(L);   // the set manifest records each member's source by content
         const elem = await buildDhSetManifest(members);
         const dh2 = await resolveFileHandle(dir, setRel, { create: true });
         const w = await dh2.createWritable(); await w.write(JSON.stringify(elem, null, 2) + '\n'); await w.close();
@@ -11161,7 +11164,7 @@ async function saveProject() {
           await scanColumns(L, (a, b) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b ? Math.round(100 * a / b) : 0}%…`; }, { bands: !isPq });
         }
         const meta = {
-          v: 2, size: doc.blob.size, mtime: await cacheStamp(dir, L._relpath || relPathFor(L, L.name), doc.blob),
+          v: 2, size: doc.blob.size, mtime: await cacheStamp(dir, L._relpath || relPathFor(L, L.name), doc.blob), hash: (await sourceHash(doc.blob)) || undefined,
           header: isDmL
             ? { kind: 'dm', count: h.count, bbox: h.bbox, grid: h.grid, subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, categories: h.categories || null }
             : isPq
@@ -11389,7 +11392,7 @@ async function openProjectDir(dir, { pack = null } = {}) {
           // served for band B: right numbers under the cursor (eval windows the
           // source at full res), wrong picture on screen. Caches written before
           // this carry no `band`, so they only match band 0.
-          if (jj && jj.v === 1 && jj.size === file.size && (!jj.mtime || jj.mtime === file.lastModified) && (jj.band || 0) === (ls.band || 0)) {
+          if (jj && jj.v === 1 && sidecarMatches(jj, file, jj.hash ? await sourceHash(file) : null) && (jj.band || 0) === (ls.band || 0)) {
             const grd = await readSurferGrd(await (await resolveFileHandle(dir, ls.source + '.disp.grd')).getFile());
             overR.displayCache = grd;
           }
@@ -11404,9 +11407,10 @@ async function openProjectDir(dir, { pack = null } = {}) {
           const mh = await resolveFileHandle(dir, ls.source + '.meta.json');
           const mj = JSON.parse(await (await mh.getFile()).text());
           // size alone cannot tell an edited file from an untouched one — any rewrite
-          // preserving the byte count defeated this. Sidecars written before this carry
-          // no mtime, so they still match on size and keep working.
-          if (mj && (mj.v === 1 || mj.v === 2) && mj.size === file.size && (!mj.mtime || mj.mtime === file.lastModified)) {
+          // preserving the byte count defeated this. The content hash decides when the
+          // sidecar has one (a byte-identical copy matches whatever its mtime; a
+          // same-size edit doesn't); older sidecars fall back to the mtime, then size.
+          if (mj && (mj.v === 1 || mj.v === 2) && sidecarMatches(mj, file, mj.hash ? await sourceHash(file) : null)) {
             sidecar = mj;
             if (mj.header && (mj.header.kind === 'dm' || mj.header.kind === 'parquet')) overR.cached = mj.header;
             else overR.discovered = mj.header;

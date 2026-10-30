@@ -3020,6 +3020,58 @@ await p.close();
   await pt.close();
 }
 
+// ── §44: source identity by CONTENT (a sampled hash). A byte-identical rewrite
+//     with a new mtime (what any copy is) keeps the discovery sidecar AND the
+//     painted column; a same-size edit makes both stale. Before: the mtime threw
+//     the sidecar away on a copy, and size:rows reloaded the paint onto edited
+//     data. ──
+{
+  const pi = await mkPage('sm2id');
+  await pi.evaluate(async () => { const r = await navigator.storage.getDirectory(); try { await r.removeEntry('sm2id', { recursive: true }); } catch { /* fresh */ } });
+  await pi.evaluate(async () => {
+    let t = 'XC,YC,ZC,FE\n';
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 5; j++) for (let i = 0; i < 5; i++) t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${(i + j + k) % 10}\n`;
+    await window._micro.openBlob(new File([t], 'bm.csv'), 'bm.csv', 'replace');
+  });
+  await pi.waitForFunction(() => window._micro.layers().some((x) => x.name === 'bm.csv' && x.docs.blockDoc), null, { timeout: 20000 });
+  await saveProject(pi);
+  const id = await pi.evaluate(async () => {
+    const M = window._micro, q = (x) => document.querySelector(x);
+    const L0 = M.layers()[0];
+    const col = M.createPaintCol(L0, 'ZONE'), code = M.addPaintValue(L0, col, 'ore');
+    M.paintApply(L0, col, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], code);
+    await M.saveProject();
+    for (let n = 0; n < 100 && !/project saved/.test(q('#meta').textContent); n++) await new Promise((z) => setTimeout(z, 100));
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2id');
+    const models = await dir.getDirectoryHandle('models');
+    const meta = JSON.parse(await (await (await models.getFileHandle('bm.csv.meta.json')).getFile()).text());
+    const orig = await (await models.getFileHandle('bm.csv')).getFile();
+    const text = await orig.text();
+    const rewrite = async (s2) => { await new Promise((z) => setTimeout(z, 30)); const w = await (await models.getFileHandle('bm.csv')).createWritable(); await w.write(s2); await w.close(); };
+    const reopen = async () => {
+      await M.openProjectDir(dir);
+      const L = M.layers().find((x) => x.name === 'bm.csv');
+      const z = L && (L.paintCols || []).find((c) => c.name === 'ZONE');
+      return { bands: !!(L && L._bands), zone: z ? [...z.codes].filter((v) => v > 0).length : 0, meta: q('#meta').textContent };
+    };
+    const out = { hash: meta.hash || null };
+    await rewrite(text);                                    // the same bytes, a new mtime
+    out.mtimeMoved = (await (await models.getFileHandle('bm.csv')).getFile()).lastModified !== orig.lastModified;
+    out.copy = await reopen();
+    const edited = text.replace('\n5,5,5,0\n', '\n5,5,5,9\n');   // one grade, same size, same rows
+    out.sameSize = edited.length === text.length && edited !== text;
+    await rewrite(edited);
+    out.edit = await reopen();
+    return out;
+  });
+  chk(`the sidecar records the source's content hash (${id.hash})`, /^[0-9a-f]{16}$/.test(id.hash || ''));
+  chk(`a byte-identical rewrite (new mtime: ${id.mtimeMoved}) keeps the discovery cache (bands ${id.copy.bands}) and the painted column (${id.copy.zone} = 10)`,
+    id.mtimeMoved && id.copy.bands && id.copy.zone === 10);
+  chk(`a same-size edit (${id.sameSize}) makes both stale: cache ${id.edit.bands ? 'REUSED' : 'rebuilt'}, painted column ${id.edit.zone ? `RELOADED (${id.edit.zone})` : 'not reloaded'}`,
+    id.sameSize && !id.edit.bands && id.edit.zone === 0);
+  await pi.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

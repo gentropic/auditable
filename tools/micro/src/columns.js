@@ -8,6 +8,7 @@ import { deps, parse } from '../../../ext/expr/index.js';
 import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier } from './records.js';
 import { openDmModel, classifyQualified } from '../../../ext/condenser/src/main.js';
 import { colAcc, scanParquetInWorkers, STAT_SLICE } from './colstats.js';
+import { sourceHash, sourceHashSync, sameSource } from './identity.js';
 
 export const PAINT_BLANK = '#33373c';                      // unpainted recedes toward the background
 
@@ -26,7 +27,19 @@ export function paintRecount(col) {
 // persist in a per-layer <layer>.cols/ sidecar (project dir → FSAA/OPFS), else
 // IDB (loose), else memory; a manifest sourceHash guards a source reorder.
 // Source-agnostic — "materialize a calc column" and other producers write here.
-export function matColSourceHash(L) { const b = layerBlob(L); return `${(b && b.size) || 0}:${attrRowCountOf(L) || 0}`; }
+//
+// The identity is "size:rows:hash" — the hash a sampled CONTENT hash (src/identity.js)
+// of the layer's source (a drillhole layer's: its interval table, the file its rows
+// come from; its size field stays 0, as it always was). Compare identities with
+// sameSource, never ===: one written before hashes is "size:rows" and still matches.
+const idBlob = (L) => layerBlob(L) || (L && L.dh && L.docs.dhDoc && L.docs.dhDoc.blobs && L.docs.dhDoc.blobs.intervals) || null;
+export function ensureSourceHash(L) { return sourceHash(idBlob(L)); }   // await before writing or comparing an identity
+export function matColSourceHash(L) {
+  const b = layerBlob(L), ib = idBlob(L);
+  const h = sourceHashSync(ib);
+  if (!h && ib) sourceHash(ib);                            // fill the cache for the next caller
+  return `${(b && b.size) || 0}:${attrRowCountOf(L) || 0}${h ? ':' + h : ''}`;
+}
 export function matColLooseId(L) { const b = layerBlob(L); return `${L.name}:${(b && b.size) || 0}`; }
 export function matColList(L) { return ((L && L.paintCols) || []).filter((c) => c.mat); }
 // everything the .cols/ sidecar stores: numeric matcols + ALL dict category
@@ -167,7 +180,7 @@ export function pinPut(L, name, entry) {
 export function pinGet(L, name) {
   const e = _pinCache.get(L.id + ':' + String(name).toLowerCase());
   if (!e) return null;
-  if (e.hash !== matColSourceHash(L)) { pinEvictLayer(L.id); return null; }   // source changed → stale
+  if (!sameSource(e.hash, matColSourceHash(L))) { pinEvictLayer(L.id); return null; }   // source changed → stale
   e.t = ++_pinTick; return e;
 }
 export function pinEvictLayer(id) { for (const [k, e] of [..._pinCache]) if (k.startsWith(id + ':')) { _pinCache.delete(k); _pinBytes -= e.bytes; } }
