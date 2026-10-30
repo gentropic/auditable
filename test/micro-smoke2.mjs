@@ -2726,6 +2726,61 @@ await p.close();
   await pc.close();
 }
 
+// ── §40: the store-as-.wfr question. Every answer is a footer button (the
+//     header's × only closes): Never · Not now · Yes · Yes, always. "Not now"
+//     asks again next SESSION (it used to switch the feature off for good);
+//     "Yes" stores this once and keeps asking. ──
+{
+  const ctx2 = await b.newContext({ viewport: { width: 1100, height: 750 } });   // no init script: the question is unanswered here
+  const open = async () => {
+    const p = await ctx2.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+    await p.goto(`http://127.0.0.1:${PORT}/tools/micro/index.html`, { waitUntil: 'load' });
+    await p.waitForFunction(() => window._micro, null, { timeout: 20000 });
+    await p.evaluate(async () => {
+      window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('sm2wfr', { create: true });
+      window._micro.setAutoOptimize('off');
+    });
+    return p;
+  };
+  // save, answering the copy-sources dialog; `answer` = the .wfr button to click (null = expect no question)
+  const save = (p, answer) => p.evaluate(async (ans) => {
+    const m = window._micro, q = (s) => document.querySelector(s);
+    q('#meta').textContent = '';
+    m.saveProjectAs();
+    let asked = null;
+    for (let t = 0; t < 600; t++) {
+      if (q('#svDlg').classList.contains('show')) q('#svCopy').click();
+      if (q('#pmDlg').classList.contains('show') && !asked) {
+        asked = { head: q('#pmCancel').textContent, foot: [...q('#pmFoot').querySelectorAll('button')].map((x) => x.textContent) };
+        const btn = [...q('#pmFoot').querySelectorAll('button')].find((x) => x.textContent === ans);
+        if (btn) btn.click(); else q('#pmCancel').click();
+      }
+      if (/project saved/.test(q('#meta').textContent)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    let wfr = 0;
+    try { const d = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2wfr')).getDirectoryHandle('meshes'); for await (const [n] of d.entries()) if (n.endsWith('.wfr')) wfr++; } catch { /* none */ }
+    return { asked, wfr, stored: localStorage.getItem('micro.autoPackMeshes'), saved: /project saved/.test(q('#meta').textContent) };
+  }, answer);
+  const p1 = await open();
+  await p1.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2wfr', { recursive: true }); } catch { /* fresh */ } localStorage.removeItem('micro.autoPackMeshes'); });
+  await p1.evaluate(() => window._micro.openBlob(new Blob(['v 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\nf 1 2 3\nf 1 2 4\nf 1 3 4\nf 2 3 4\n']), 'tet.obj', 'replace'));
+  await p1.waitForFunction(() => window._micro.layers().some((x) => x.kind === 'mesh' || x.mesh), null, { timeout: 20000 });
+  const a1 = await save(p1, 'Not now');
+  chk(`.wfr question: × in the header (${a1.asked && a1.asked.head}), answers in the footer [${a1.asked && a1.asked.foot.join(' · ')}]`,
+    a1.asked && a1.asked.head === '×' && a1.asked.foot.join('|') === 'Never|Not now|Yes|Yes, always');
+  chk(`"Not now" stores nothing and remembers nothing (wfr ${a1.wfr}, setting ${a1.stored}), saved ${a1.saved}`, a1.saved && a1.wfr === 0 && a1.stored == null);
+  const a2 = await save(p1, null);
+  chk(`…and isn't asked again this session (asked: ${JSON.stringify(a2.asked)})`, a2.saved && a2.asked == null && a2.wfr === 0);
+  await p1.close();
+  const p2 = await open();                                  // a new session asks again
+  await p2.evaluate(() => window._micro.openBlob(new Blob(['v 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\nf 1 2 3\nf 1 2 4\nf 1 3 4\nf 2 3 4\n']), 'tet.obj', 'replace'));
+  await p2.waitForFunction(() => window._micro.layers().some((x) => x.kind === 'mesh' || x.mesh), null, { timeout: 20000 });
+  const a3 = await save(p2, 'Yes');
+  chk(`a new session asks again; "Yes" stores this once (wfr ${a3.wfr}) and remembers nothing (setting ${a3.stored})`, a3.asked && a3.saved && a3.wfr === 1 && a3.stored == null);
+  await p2.close(); await ctx2.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

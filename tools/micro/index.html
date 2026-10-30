@@ -740,7 +740,11 @@
   #pmDlg input { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 12px; color: var(--text-hi); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 5px 8px; }
   #pmDlg input:focus { outline: none; border-color: var(--accent); }
   #pmDlg #pmMsg { font-family: var(--mono); font-size: 12px; color: var(--text); line-height: 1.6; }
-  #pmDlg .dh-foot { display: flex; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--border); }
+  #pmDlg .dh-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
+  #pmDlg .box.wide { width: min(460px, 94vw); }
+  #pmDlg .dh-foot button.pm-alt { border-color: var(--bd2); padding: 4px 12px; }
+  #pmDlg .dh-foot button.pm-quiet { margin-right: auto; border-color: transparent; background: none; color: var(--muted); padding-left: 0; }
+  #pmDlg .dh-foot button.pm-quiet:hover { color: var(--text-hi); }
   #pmDlg .dh-foot button { font-family: var(--mono); font-size: 12px; color: var(--text-hi); background: var(--bg-btn); border: 1px solid var(--accent); border-radius: 3px; padding: 4px 18px; cursor: pointer; }
   /* ── narrow screens (phones): the SAME UI, no reflow — the two bars scroll
      sideways, panels/windows clamp to the viewport, hit targets fatten ── */
@@ -945,7 +949,7 @@
   <div id="ngDlg"><div class="box"><div class="hd"><span>new grid / block model</span><button id="ngCancel">×</button></div><div class="bd" id="ngDlgBody"></div><div class="dh-foot"><span id="ngDlgMsg"></span><button id="ngGo">Create</button></div></div></div>
   <div id="sfDlg"><div class="box"><div class="hd"><span id="sfTitle">surface tools</span><button id="sfCancel">×</button></div><div class="bd" id="sfDlgBody"></div><div class="dh-foot"><span id="sfDlgMsg"></span><button id="sfGo">Create</button></div></div></div>
   <div id="rgDlg"><div class="box"><div class="hd"><span>mesh → grid</span><button id="rgCancel">×</button></div><div class="bd" id="rgDlgBody"></div><div class="dh-foot"><span id="rgDlgMsg"></span><button id="rgGo">Rasterize</button></div></div></div>
-  <div id="pmDlg"><div class="box"><div class="hd"><span id="pmTitle">name</span><button id="pmCancel">×</button></div><div class="bd"><div id="pmMsg" style="display:none"></div><input id="pmInput" type="text" spellcheck="false" autocomplete="off"></div><div class="dh-foot"><button id="pmOk">OK</button></div></div></div>
+  <div id="pmDlg"><div class="box"><div class="hd"><span id="pmTitle">name</span><button id="pmCancel">×</button></div><div class="bd"><div id="pmMsg" style="display:none"></div><input id="pmInput" type="text" spellcheck="false" autocomplete="off"></div><div class="dh-foot" id="pmFoot"><button id="pmOk">OK</button></div></div></div>
   <svg id="compass" class="se" width="74" height="74" viewBox="0 0 74 74" title="north — click for plan view; right-click for options">
     <circle cx="37" cy="37" r="33" fill="rgba(18,18,18,0.55)" stroke="#4a4a4a" stroke-width="2"/>
     <rect x="35.5" y="0" width="3" height="7" fill="#4a4a4a"/>
@@ -10496,6 +10500,7 @@ function markProjectDirty() {
 // escape hatch; the remembered choice is resettable from Tools → Settings.
 let _autoOptimize = (() => { try { return localStorage.getItem('micro.autoOptimize'); } catch { return null; } })();   // 'on' | 'off' | null (unasked)
 function setAutoOptimize(v) { _autoOptimize = v; try { localStorage.setItem('micro.autoOptimize', v); } catch { /* private mode */ } }
+let _autoOptimizeSkip = false;
 // the Morton in-memory converter's ceiling — above this, convertLayerToParquet
 // switches to the STREAMING file-order path (bounded memory, no sort). Auto-
 // optimize-on-save still skips big models: streaming a multi-GB file mid-save
@@ -10543,9 +10548,10 @@ async function maybeAutoOptimize() {
   if (!cands.length) return;
   let choice = _autoOptimize, picked = cands, keepOriginal = false;
   if (choice == null) {
+    if (_autoOptimizeSkip) return;
     const res = await openOptimizeDialog(cands, { fromSave: true });
-    if (!res) { setAutoOptimize('off'); return; }
-    if (res.auto != null) setAutoOptimize(res.auto ? 'on' : 'off');
+    if (!res) { _autoOptimizeSkip = true; return; }           // Not now / ×: ask again next session, not never (Settings has never)
+    if (res.auto) setAutoOptimize('on');                    // unticked: converted this once; a NEW model still asks
     picked = res.layers; keepOriginal = res.keepOriginal;
     if (!picked.length) return;
   } else if (choice !== 'on') return;
@@ -10559,6 +10565,7 @@ async function maybeAutoOptimize() {
 // the project are KEPT: packing never deletes data on its own (Tidy is the explicit verb).
 let _autoPack = (() => { try { return localStorage.getItem('micro.autoPackMeshes'); } catch { return null; } })();   // 'on' | 'off' | null
 function setAutoPack(v) { _autoPack = v; try { localStorage.setItem('micro.autoPackMeshes', v); } catch { /* private mode */ } }
+let _autoPackSkip = false;
 const packableMesh = (L) => wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob);
 async function packLayersToWfr(Ls) {
   if (!S.project || !Ls.length) return 0;
@@ -10607,11 +10614,13 @@ async function maybeAutoPackMeshes() {
   const cands = S.layers.filter(packableMesh);
   if (!cands.length || _autoPack === 'off') return;
   if (_autoPack == null) {
-    const yes = await microConfirm('store meshes as .wfr',
-      `${cands.length} mesh/strings/points layer${cands.length === 1 ? '' : 's'} (${cands.map((L) => L.label || L.name).slice(0, 4).join(', ')}${cands.length > 4 ? ', …' : ''}) can be stored in the project as .wfr — bricked, a fraction of the size, quick to reopen, attributes kept. Source files already in the project are kept. Do this on every save?`,
-      'Yes, always', 'Not now');
-    setAutoPack(yes ? 'on' : 'off');
-    if (!yes) return;
+    if (_autoPackSkip) return;                             // "Not now" holds for this session
+    const a = await microChoose('store meshes as .wfr',
+      `${cands.length} mesh/strings/points layer${cands.length === 1 ? '' : 's'} (${cands.map((L) => L.label || L.name).slice(0, 4).join(', ')}${cands.length > 4 ? ', …' : ''}) can be stored in the project as .wfr — bricked, a fraction of the size, quick to reopen, attributes kept. Source files already in the project are kept. Settings → "store meshes as .wfr on save" changes your answer later.`,
+      [{ label: 'Never', value: 'never', quiet: true }, { label: 'Not now', value: 'skip' }, { label: 'Yes', value: 'once' }, { label: 'Yes, always', value: 'always' }]);
+    if (a === 'never') { setAutoPack('off'); return; }
+    if (a === 'always') setAutoPack('on');
+    else if (a !== 'once') { _autoPackSkip = true; return; }   // Not now / × / Esc: ask again next session
   }
   const n = await packLayersToWfr(cands);
   if (n) $('#meta').textContent = `stored ${n} layer${n === 1 ? '' : 's'} as .wfr in meshes/`;
@@ -11589,28 +11598,44 @@ function microPrompt(title, initial = '') {
     inp.focus(); inp.select();
   });
 }
-// confirm rides the same dialog — the input yields to a message; resolves
-// true on OK, false on Esc / × / backdrop
-function microConfirm(title, msg, okLabel, cancelLabel) {
+// several answers on the same dialog: one footer button per choice, in order,
+// the LAST the primary (focused); { quiet: true } sits apart on the left for a
+// rarely-wanted answer. × / Esc / backdrop resolve null — the header's × only
+// ever closes, every answer is in the footer.
+let _pmOkValue;
+function microChoose(title, msg, choices) {
   return new Promise((resolve) => {
-    _pmResolve = (v) => resolve(v !== null);
+    _pmResolve = resolve;
     $('#pmTitle').textContent = title;
     const m = $('#pmMsg');
     m.textContent = msg; m.style.display = '';
     $('#pmInput').style.display = 'none';
-    $('#pmOk').textContent = okLabel || 'OK';
-    $('#pmCancel').textContent = cancelLabel || 'Cancel';
+    const prim = choices[choices.length - 1];
+    $('#pmOk').textContent = prim.label; _pmOkValue = prim.value;
+    for (const c of choices.slice(0, -1)) {
+      const b = document.createElement('button');
+      b.className = c.quiet ? 'pm-alt pm-quiet' : 'pm-alt';
+      b.textContent = c.label; b.onclick = () => pmClose(c.value);
+      $('#pmFoot').insertBefore(b, $('#pmOk'));
+    }
+    $('#pmDlg .box').classList.toggle('wide', choices.length > 2);
     $('#pmDlg').classList.add('show');
     $('#pmOk').focus();
   });
 }
+// confirm = a two-answer choice; true on OK, false on cancel / Esc / × / backdrop
+function microConfirm(title, msg, okLabel, cancelLabel) {
+  return microChoose(title, msg, [{ label: cancelLabel || 'Cancel', value: false }, { label: okLabel || 'OK', value: true }]).then((v) => v === true);
+}
 function pmClose(v) {
   if (!_pmResolve) return;
   $('#pmDlg').classList.remove('show');
-  $('#pmOk').textContent = 'OK'; $('#pmCancel').textContent = 'Cancel';   // restore defaults for other dialogs
+  $('#pmFoot').querySelectorAll('.pm-alt').forEach((b) => b.remove());   // restore the prompt's bare footer
+  $('#pmDlg .box').classList.remove('wide');
+  $('#pmOk').textContent = 'OK'; _pmOkValue = undefined;
   const r = _pmResolve; _pmResolve = null; r(v);
 }
-$('#pmOk').onclick = () => pmClose($('#pmInput').value);
+$('#pmOk').onclick = () => pmClose(_pmOkValue !== undefined ? _pmOkValue : $('#pmInput').value);
 $('#pmCancel').onclick = () => pmClose(null);
 $('#pmDlg').addEventListener('pointerdown', (e) => { if (e.target === $('#pmDlg')) pmClose(null); });
 $('#pmInput').addEventListener('keydown', (e) => {
