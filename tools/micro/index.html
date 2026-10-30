@@ -1480,6 +1480,90 @@ function selectByPolygon(poly, mode, isRect, only = null) {
 // geometry, occlusion ignored (that's the point: grab what's BEHIND too, the
 // mode painting will want). Positions come from the same streams that loaded
 // the data; drillholes resolve O(1) via recordPosition. Cost ≈ one load sweep.
+// "Through" acts on what is DRAWN, not on everything in the tube. Its point is
+// occlusion — reach what's behind — not a way past the display: a record the
+// filter keeps out (filters isolate), a hidden category or rule class, the
+// section, or a hidden layer/group keeps off the screen can't be selected or
+// painted through either. (It could, and a through-lasso over a filtered model
+// selected the filtered-out blocks too — into selection → column, exports of the
+// selection, grade-tonnage on it. The anywidget's select_through always had this
+// rule.) ONE scan for select and paint, so the two can't disagree.
+function layerShown(lid) {
+  let shown = null;
+  const walk = (arr, on) => {                              // applyTreeVisibility's own walk
+    for (const nd of arr) {
+      if (typeof nd === 'number') { if (nd === lid) shown = !!(on && (layerById(nd) || {}).visible); }
+      else walk(nd.children, on && nd.visible);
+    }
+  };
+  walk(S.layerTree, true);
+  return shown == null ? !!(layerById(lid) || {}).visible : shown;
+}
+// → (chunk, i, r) => is record r (chunk row i) on screen? null when nothing hides
+function throughDrawnTest(L) {
+  const isDh = !!(L.docs && L.docs.dhDoc);
+  const mask = isDh ? (L._drawMask || null) : (L._filterMask || null);   // dh: filter AND whole-holes
+  let codes = null, hidden = null;                         // codes null → the chunk's own category codes
+  if (ruleModeOf(L)) { if (L.ruleHidden && L.ruleHidden.size && L._ruleCodes) { codes = L._ruleCodes; hidden = L.ruleHidden; } }
+  else if (!paintActiveCol(L) && L.catHidden && L.catHidden.size) hidden = L.catHidden;
+  const cs = currentSection();
+  const sec = cs ? layerSection(cs, renderer.layerSectioned(L.id)) : null;
+  if (!mask && !hidden && !sec) return null;
+  const o = frame ? frame.origin : [0, 0, 0];
+  // a block's reach along the section normal: its half-dims projected on n
+  // (rotated lattices through their U/V/W; sub-blocks by their size code)
+  let reach = () => 0;
+  const bh = !isDh && L.docs.blockDoc && L.docs.blockDoc.header;
+  if (sec && bh && bh.grid && bh.grid.x) {
+    const n = sec.n, R = bh.grid.rot;
+    const ax = R ? [[R[0], R[1], R[2]], [R[3], R[4], R[5]], [R[6], R[7], R[8]]] : [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const pr = ax.map((u) => Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]));
+    const of = (h) => h[0] * pr[0] + h[1] * pr[1] + h[2] * pr[2];
+    const reg = of([bh.grid.x.pitch / 2, bh.grid.y.pitch / 2, bh.grid.z.pitch / 2]);
+    const pal = bh.subBlocked && bh.dimPalette ? bh.dimPalette.map(of) : null;
+    const palMax = pal ? Math.max(reg, ...pal) : reg;
+    reach = (ch, i) => (pal ? (ch.dim ? (pal[ch.dim[i]] ?? palMax) : palMax) : reg);
+  }
+  const dot = (x, y, z) => sec.n[0] * (x - o[0]) + sec.n[1] * (y - o[1]) + sec.n[2] * (z - o[2]);
+  return (ch, i, r) => {
+    if (mask && !mask[r]) return false;
+    if (hidden && (codes || ch.cat) && hidden.has(codes ? codes[r] : ch.cat[i])) return false;   // a stream without codes can't say
+    if (sec) {
+      const lo = sec.d - sec.half, hi = sec.d + sec.half;
+      if (ch.ax) {                                         // an interval: drawn if its segment meets the slab
+        const a = dot(ch.ax[i], ch.ay[i], ch.az[i]), b = dot(ch.bx[i], ch.by[i], ch.bz[i]);
+        if (Math.max(a, b) < lo || Math.min(a, b) > hi) return false;
+      } else {
+        const t = dot(ch.x[i], ch.y[i], ch.z[i]), k = reach(ch, i);
+        if (t + k < lo || t - k > hi) return false;
+      }
+    }
+    return true;
+  };
+}
+// stream a layer's records, calling onHit(r) for each one drawn whose position
+// projects into the gesture. false when superseded by a newer gesture.
+async function throughScan(L, hit, onHit, epoch, verb) {
+  if (!layerShown(L.id)) return true;
+  const d = L.docs, n = attrRowCountOf(L);
+  const drawn = throughDrawnTest(L);
+  const streamChunks = d.dhDoc && d.dhDoc.streamChunks ? d.dhDoc.streamChunks : await docPositionStream(d);
+  if (!streamChunks) return true;
+  let done = 0;
+  for await (const ch of streamChunks({ chunkPoints: 1 << 18 })) {
+    if (epoch !== _selEpoch) return false;                 // superseded by a newer gesture
+    const xs = ch.x, ys = ch.y, zs = ch.z, recs = ch.recIdx || null, base = ch.recStart || 0;
+    for (let i = 0; i < ch.count; i++) {
+      const r = recs ? recs[i] : base + i;
+      if (r >= n || !hit(xs[i], ys[i], zs[i])) continue;
+      if (drawn && !drawn(ch, i, r)) continue;
+      onHit(r);
+    }
+    done += ch.count;
+    if ((done & 0xFFFFF) === 0) { $('#meta').textContent = `${verb} through: ${L.label || L.name} — ${done.toLocaleString()} scanned…`; await new Promise((r2) => setTimeout(r2)); }
+  }
+  return true;
+}
 let _selThrough = false;
 let _selEpoch = 0;
 async function selectVolume(poly, mode, isRect, only = null) {
@@ -1501,42 +1585,15 @@ async function selectVolume(poly, mode, isRect, only = null) {
   if (mode === 'replace') clearForLasso(only);
   const v = mode === 'subtract' ? 0 : 1;
   for (const L of S.layers) {
-    if (!L.visible || L.kind === 'mesh') continue;
+    if (!layerShown(L.id) || L.kind === 'mesh') continue;
     if (only != null && L.id !== only) continue;
-    const d = L.docs;
     const n = attrRowCountOf(L);
     if (!n) continue;
     if (!L._selMask || L._selMask.length !== n) L._selMask = new Uint8Array(n);
     const m = L._selMask;
     $('#meta').textContent = `select through: sweeping ${L.label || L.name}…`;
-    try {
-      if (d.dhDoc && d.dhDoc.recordPosition) {
-        for (let r = 0; r < n; r++) {
-          const pos = d.dhDoc.recordPosition(r);
-          if (pos && hit(pos[0], pos[1], pos[2])) m[r] = v;
-        }
-      } else {
-        // re-open the provider for a fresh position stream (the docs keep the
-        // blob + header; the stream is a cold recipe by design)
-        const streamChunks = await docPositionStream(d);
-        if (!streamChunks) continue;
-        let done = 0;
-        for await (const rc2 of streamChunks({ chunkPoints: 1 << 18 })) {
-          if (epoch !== _selEpoch) return;                 // superseded by a newer gesture
-          const xs = rc2.x, ys = rc2.y, zs = rc2.z;
-          const recs = rc2.recIdx || null;
-          const base = rc2.recStart || 0;
-          for (let i = 0; i < rc2.count; i++) {
-            if (hit(xs[i], ys[i], zs[i])) {
-              const r = recs ? recs[i] : base + i;
-              if (r < n) m[r] = v;
-            }
-          }
-          done += rc2.count;
-          if ((done & 0xFFFFF) === 0) { $('#meta').textContent = `select through: ${L.label || L.name} — ${done.toLocaleString()} scanned…`; await new Promise((r2) => setTimeout(r2)); }
-        }
-      }
-    } catch (e) { $('#meta').textContent = `select through: ${L.name} — ${e.message}`; }
+    try { if (!(await throughScan(L, hit, (r) => { m[r] = v; }, epoch, 'select'))) return; }
+    catch (e) { $('#meta').textContent = `select through: ${L.name} — ${e.message}`; }
     applyLayerSelection(L);
   }
   if (epoch !== _selEpoch) return;
@@ -1779,27 +1836,9 @@ async function paintVolume(poly, code, isRect) {
     const py2 = (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * rc.height;
     return inPoly(px2, py2);
   };
-  const d = L.docs;
-  const n = attrRowCountOf(L);
   const hits = [];
-  try {
-    if (d.dhDoc && d.dhDoc.recordPosition) {
-      for (let r = 0; r < n; r++) { const pos = d.dhDoc.recordPosition(r); if (pos && hit(pos[0], pos[1], pos[2])) hits.push(r); }
-    } else {
-      const streamChunks = await docPositionStream(d);
-      if (!streamChunks) return;
-      let done = 0;
-      for await (const rc2 of streamChunks({ chunkPoints: 1 << 18 })) {
-        if (epoch !== _selEpoch) return;
-        const xs = rc2.x, ys = rc2.y, zs = rc2.z;
-        const recs = rc2.recIdx || null;
-        const base = rc2.recStart || 0;
-        for (let i = 0; i < rc2.count; i++) if (hit(xs[i], ys[i], zs[i])) { const r = recs ? recs[i] : base + i; if (r < n) hits.push(r); }
-        done += rc2.count;
-        if ((done & 0xFFFFF) === 0) { $('#meta').textContent = `paint through: ${L.label || L.name} — ${done.toLocaleString()} scanned…`; await new Promise((r2) => setTimeout(r2)); }
-      }
-    }
-  } catch (e) { $('#meta').textContent = `paint through: ${e.message}`; return; }
+  try { if (!(await throughScan(L, hit, (r) => { hits.push(r); }, epoch, 'paint'))) return; }
+  catch (e) { $('#meta').textContent = `paint through: ${e.message}`; return; }
   if (epoch !== _selEpoch) return;
   paintApply(L, col, hits, code);
 }
@@ -2801,7 +2840,7 @@ async function selectByGridSurface(gridL, { mode = 'below', meshB = null, target
   const epoch = ++_selEpoch;
   if (combine === 'replace') clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
-  const Ls = targets || S.layers.filter((L) => L.visible && hasRecords(L) && !L.docs.gridDoc);
+  const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L) && !L.docs.gridDoc);   // what's on screen (a hidden group hides its layers)
   const bbox4 = targetsXYBbox(Ls);
   const surfA = surfaceFromGrid(await residentGridForEval(gridL, bbox4));
   const surfB = mode === 'between' && meshB && meshB.docs.gridDoc ? surfaceFromGrid(await residentGridForEval(meshB, bbox4)) : null;
@@ -2918,7 +2957,7 @@ async function selectBySolid(meshL, { mode = 'inside', meshB = null, targets = n
   const epoch = ++_selEpoch;
   if (combine === 'replace') clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
-  const Ls = targets || S.layers.filter((L) => L.visible && hasRecords(L));
+  const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L));
   let S = null, SB = null;                                 // the sparse-path BVHs, built lazily
   for (let li = 0; li < Ls.length; li++) {
     const L = Ls[li];
@@ -5993,7 +6032,7 @@ function openSolidDialog(meshL0) {
     solid: (meshL0 && geoms.includes(meshL0) ? meshL0 : geoms[0]).id,
     act: 'select', side: null, combine: 'replace', method: 'winding',
     res: [3, 3, 3], name: null, flagName: null, flagLabel: 'IN',
-    targets: new Set(elements.filter((L) => L.visible).map((L) => L.id)),
+    targets: new Set(elements.filter((L) => layerShown(L.id)).map((L) => L.id)),
     ratioLid: null, surfB: null,
   };
   renderSolidDialog();
@@ -6275,7 +6314,7 @@ async function sbStateFromParams(p) {
   } else {
     const wanted = Array.isArray(p.targets) && p.targets.length ? p.targets.map(String) : null;
     const elements = S.layers.filter((L) => hasRecords(L) && !L.docs.gridDoc);
-    for (const L of elements) if (wanted ? wanted.some((n2) => L.name === n2 || L.label === n2) : L.visible) d.targets.add(L.id);
+    for (const L of elements) if (wanted ? wanted.some((n2) => L.name === n2 || L.label === n2) : layerShown(L.id)) d.targets.add(L.id);
     if (wanted) {
       const missing = wanted.filter((n2) => !elements.some((L) => L.name === n2 || L.label === n2));
       if (missing.length) throw new Error(`solid recipe: target layer${missing.length > 1 ? 's' : ''} not loaded — ${missing.join(', ')}`);
@@ -18434,7 +18473,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

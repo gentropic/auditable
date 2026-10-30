@@ -2965,6 +2965,61 @@ await p.close();
   await pk.close();
 }
 
+// ── §43: "through" acts on what is DRAWN. A through-lasso reaches behind
+//     (occlusion), never past the display: records the filter keeps out, hidden
+//     categories, the section and a hidden layer are neither selected nor painted.
+//     It used to take every record in the tube — 144 of 144 at every step below. ──
+{
+  const pt = await mkPage('sm2th');
+  const th = await pt.evaluate(async () => {
+    const M = window._micro, W = window.micro, q = (x) => document.querySelector(x);
+    let t = 'XC,YC,ZC,FE,ROCK\n';
+    const rows = [];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) {
+      const r = { x: 5 + i * 10, fe: i + j + k, rock: (i + k) % 2 ? 'ox' : 'fr' }; rows.push(r);
+      t += `${r.x},${5 + j * 10},${5 + k * 10},${r.fe},${r.rock}\n`;
+    }
+    await M.openBlob(new File([t], 'th.csv'), 'th.csv', 'replace');
+    for (let n = 0; n < 100 && !(M.layers()[0] && M.layers()[0].docs.blockDoc); n++) await new Promise((z) => setTimeout(z, 100));
+    const L = M.layers()[0];
+    q('#btnFit').click(); await new Promise((z) => setTimeout(z, 500));
+    const c = q('canvas'), w = c.clientWidth, h = c.clientHeight;
+    const box = [[2, 2], [w - 2, 2], [w - 2, h - 2], [2, h - 2]];
+    const sel = async () => { M.clearSelection({ silent: true }); await M.selectVolume(box, 'replace', true); return L._selCount || 0; };
+    const out = {};
+    out.all = await sel();
+    q('#filter').value = 'FE > 4'; await M.applyBlockFilter('FE > 4');
+    out.filter = [await sel(), rows.filter((r) => r.fe > 4).length];
+    const cats = L.docs.blockDoc.header.categories || [];
+    const ox = cats.indexOf('ox');
+    L.catHidden = new Set([ox]);
+    out.cat = [await sel(), rows.filter((r) => r.fe > 4 && r.rock !== 'ox').length, ox];
+    await W.setSection({ axis: 'x', position: 25, thickness: 4, clip: 'slab' });
+    out.sec = [await sel(), rows.filter((r) => r.fe > 4 && r.rock !== 'ox' && r.x === 25).length];
+    // paint through: the same rule
+    const col = M.createPaintCol(L, 'ZONE'); const code = M.addPaintValue(L, col, 'a');
+    M.paintArm(L.id, 'ZONE', code);
+    await M.paintVolume(box, code, true);
+    out.paint = [...col.codes].filter((v) => v === code).length;
+    M.paintDisarm();
+    // a hidden layer is out of reach
+    await W.setVisible(L.id, false);
+    out.hidden = [await sel(), M.layerShown(L.id)];
+    await W.setVisible(L.id, true);
+    // and with nothing hiding, through takes everything again
+    L.catHidden = new Set(); await W.setSection(null); q('#filter').value = ''; await M.applyBlockFilter('');
+    out.back = await sel();
+    return out;
+  });
+  chk(`through, nothing hidden: ${th.all} of 144`, th.all === 144);
+  chk(`through skips what the filter keeps out (${th.filter[0]}, matches ${th.filter[1]})`, th.filter[0] === th.filter[1] && th.filter[1] < 144);
+  chk(`…and a hidden category (code ${th.cat[2]}): ${th.cat[0]}, expected ${th.cat[1]}`, th.cat[2] >= 0 && th.cat[0] === th.cat[1] && th.cat[1] < th.filter[1]);
+  chk(`…and what the section cuts away (one block wide): ${th.sec[0]}, expected ${th.sec[1]}`, th.sec[0] === th.sec[1] && th.sec[1] > 0 && th.sec[1] < th.cat[1]);
+  chk(`paint through follows the same rule (${th.paint} painted = ${th.sec[1]})`, th.paint === th.sec[1]);
+  chk(`a hidden layer is out of reach (${th.hidden[0]} selected, shown ${th.hidden[1]}); nothing hidden → ${th.back} again`, th.hidden[0] === 0 && th.hidden[1] === false && th.back === 144);
+  await pt.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
