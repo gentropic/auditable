@@ -73,6 +73,22 @@ export function createHostApi(d) {
     // detected rotation unless acceptLattice says). A File, Blob or handle.
     open: verb((file, o = {}) => d.openFile(file, o)),
     removeLayer: verb((id) => { d.removeLayer(live(id).id); }),
+
+    // ── project backups (.zip.micro) ──
+    // backupProject({ lean, to, save }): the open project folder as one zip, no
+    // dialogs. to = a WritableStream or FileSystemFileHandle (streamed, never
+    // resident); without one the result carries a Blob (fine for small projects).
+    // save: true saves unsaved changes first; otherwise the backup holds the last
+    // save. → { name, size, files, lean, linked, blob? }
+    backupProject: verb((o = {}) => d.backupProject({ ...o, host: true })),
+    // restoreProject(file, folder): a .zip.micro (File, Blob or handle) unpacked
+    // into an EMPTY folder handle, then opened as the project. → { name, files, bytes, info }
+    restoreProject: verb(async (file, folder) => {
+      if (!folder || typeof folder.getFileHandle !== 'function') throw new Error('micro: restoreProject needs a folder (a FileSystemDirectoryHandle)');
+      const blob = file && typeof file.getFile === 'function' ? await file.getFile() : file;
+      if (!blob || typeof blob.slice !== 'function') throw new Error('micro: restoreProject needs a .zip.micro File, Blob or file handle');
+      return d.restoreProject(blob, folder, { host: true });
+    }),
     setVisible: verb((id, on) => d.showLayer(live(id).id, !!on)),   // in a mutually exclusive group, showing one hides its siblings
     setActive: verb((id) => { d.setActiveLayer(live(id).id); }),
     columns: (id) => info(live(id)).columns,

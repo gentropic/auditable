@@ -2781,6 +2781,88 @@ await p.close();
   await p2.close(); await ctx2.close();
 }
 
+// ── §41: project backups (.zip.micro). The whole folder streams into one zip —
+//     mimetype first, micro-backup.json, project/… — hand-dropped files and
+//     sidecars included; lean leaves out only the rebuildable caches; restore
+//     unpacks into an EMPTY folder and opens it as the project; it refuses a
+//     folder that already holds one and anything that isn't a backup. The UI
+//     path (Lean / Full in the footer → a picked file) and opening a .zip.micro
+//     like any file (→ the restore question) ride the same code. ──
+{
+  const pk = await mkPage('sm2bk');
+  await pk.evaluate(async () => { const r = await navigator.storage.getDirectory(); for (const n of ['sm2bk', 'sm2bk-r', 'sm2bk-ui']) { try { await r.removeEntry(n, { recursive: true }); } catch { /* fresh */ } } });
+  await pk.evaluate(async () => {
+    let t = 'XC,YC,ZC,FE,ROCK\n';
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${i + j + k},${(i + k) % 2 ? 'ox' : 'fr'}\n`;
+    await window._micro.openBlob(new File([t], 'bm.csv'), 'bm.csv', 'replace');
+  });
+  await pk.waitForFunction(() => window._micro.layers().some((x) => x.name === 'bm.csv' && x.docs.blockDoc), null, { timeout: 20000 });
+  await pk.evaluate(async () => { const m = window._micro; document.querySelector('#filter').value = 'FE > 4'; await m.applyBlockFilter('FE > 4'); });
+  await saveProject(pk);
+  // a file dropped into the folder by hand is data too
+  await pk.evaluate(async () => { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2bk'); const w = await (await d.getFileHandle('notes.txt', { create: true })).createWritable(); await w.write('field notes'); await w.close(); });
+  const bk = await pk.evaluate(async () => {
+    const M = window.micro;
+    const list = async (blob) => {
+      const u8 = new Uint8Array(await blob.arrayBuffer()), dv = new DataView(u8.buffer);
+      let e = u8.length - 22; while (e > 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+      let p = dv.getUint32(e + 16, true); const n = dv.getUint16(e + 10, true), out = [];
+      for (let i = 0; i < n; i++) { const nl = dv.getUint16(p + 28, true), el = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true); out.push(new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nl))); p += 46 + nl + el + cl; }
+      return { names: out, head: new TextDecoder().decode(u8.subarray(30, 38)) + ':' + new TextDecoder().decode(u8.subarray(38, 38 + 39)) };
+    };
+    const full = await M.backupProject();
+    const lean = await M.backupProject({ lean: true });
+    const lf = await list(full.blob), ll = await list(lean.blob);
+    window.__bk = full.blob;
+    return { name: full.name, head: lf.head, full: lf.names, lean: ll.names, files: full.files, sizes: [full.size, lean.size] };
+  });
+  const hasMeta = (a) => a.some((n) => /\.meta\.json$/.test(n));
+  chk(`backup: ${bk.name} — mimetype first (${bk.head}); ${bk.files} files incl. project.json, the model, the hand-dropped notes.txt and its .meta.json cache`,
+    /^sm2bk-\d{4}-\d\d-\d\d\.zip\.micro$/.test(bk.name) && bk.head === 'mimetype:application/vnd.gentropic.micro-project'
+    && bk.full[0] === 'mimetype' && bk.full[1] === 'micro-backup.json' && bk.full.includes('project/project.json') && bk.full.includes('project/notes.txt')
+    && bk.full.some((n) => /^project\/models\/bm\.csv$/.test(n)) && hasMeta(bk.full));
+  chk(`lean leaves out only the caches (${bk.full.length} → ${bk.lean.length} members, ${bk.sizes.join(' → ')} bytes)`,
+    !hasMeta(bk.lean) && bk.lean.length === bk.full.length - bk.full.filter((n) => /\.(meta\.json|disp\.grd|disp\.json)$/.test(n)).length && bk.lean.includes('project/notes.txt'));
+  // restore into an empty folder → opened as the project
+  const rs = await pk.evaluate(async () => {
+    const r = await navigator.storage.getDirectory(), dest = await r.getDirectoryHandle('sm2bk-r', { create: true });
+    const res = await window.micro.restoreProject(new File([window.__bk], 'b.zip.micro'), dest);
+    for (let t = 0; t < 100 && !window._micro.layers().some((x) => x.name === 'bm.csv' && x.docs.blockDoc); t++) await new Promise((q) => setTimeout(q, 100));
+    const L = window._micro.layers().find((x) => x.name === 'bm.csv');
+    let notes = null; try { notes = await (await (await dest.getFileHandle('notes.txt')).getFile()).text(); } catch { /* missing */ }
+    const errs = [];
+    try { await window.micro.restoreProject(new File([window.__bk], 'b.zip.micro'), dest); } catch (e) { errs.push(e.message); }
+    try { await window.micro.restoreProject(new File(['not a zip at all'], 'x.zip.micro'), await r.getDirectoryHandle('sm2bk-x', { create: true })); } catch (e) { errs.push(e.message); }
+    return { files: res.files, project: res.info.project, dir: window._micro.project() && window._micro.project().name, layer: !!L, filter: L && L.filterExpr, notes, errs };
+  });
+  chk(`restore → ${rs.files} files into ${rs.dir}, opened as the project (“${rs.project}”: bm.csv ${rs.layer}, filter ${rs.filter}, notes.txt “${rs.notes}”)`,
+    rs.dir === 'sm2bk-r' && rs.project === 'sm2bk' && rs.layer && rs.filter === 'FE > 4' && rs.notes === 'field notes');
+  chk(`restore refuses a folder that already holds a project, and a file that isn't a backup (${rs.errs.join(' | ')})`,
+    rs.errs.length === 2 && /already holds/.test(rs.errs[0]) && /not a micro backup/.test(rs.errs[1]));
+  // the UI: File → Back up project… asks Lean / Full in the footer, then writes to the picked file
+  const ui = await pk.evaluate(async () => {
+    const r = await navigator.storage.getDirectory(), out = await r.getDirectoryHandle('sm2bk-ui', { create: true });
+    window.showSaveFilePicker = async (o) => { window.__suggested = o.suggestedName; return out.getFileHandle(o.suggestedName, { create: true }); };
+    const q = (s) => document.querySelector(s);
+    const pr = window._micro.backupProject();
+    for (let t = 0; t < 100 && !q('#pmDlg').classList.contains('show'); t++) await new Promise((x) => setTimeout(x, 50));
+    const foot = [...q('#pmFoot').querySelectorAll('button')].map((b) => b.textContent);
+    [...q('#pmFoot').querySelectorAll('button')].find((b) => /^Lean/.test(b.textContent)).click();
+    const res = await pr;
+    const f = await (await out.getFileHandle(window.__suggested)).getFile();
+    // opening a .zip.micro like any file → the restore question (cancelled here)
+    const pr2 = window._micro.openBlob(f, f.name, 'add');
+    for (let t = 0; t < 100 && !q('#pmDlg').classList.contains('show'); t++) await new Promise((x) => setTimeout(x, 50));
+    const t2 = q('#pmTitle').textContent, ok2 = q('#pmOk').textContent;
+    q('#pmCancel').click(); await pr2;
+    return { foot, lean: res && res.lean, size: f.size, wrote: res && res.size, t2, ok2, layers: window._micro.layers().length };
+  });
+  chk(`UI: footer [${ui.foot.join(' · ')}] → Lean → ${ui.size} bytes in the picked file; a .zip.micro opened as a file asks “${ui.t2}” → ${ui.ok2}`,
+    ui.foot[0] === 'Cancel' && /^Lean \(/.test(ui.foot[1]) && /^Full \(/.test(ui.foot[2]) && ui.lean === true && ui.size === ui.wrote && ui.size > 0
+    && ui.t2 === 'restore project' && ui.ok2 === 'Choose folder…' && ui.layers >= 1);
+  await pk.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

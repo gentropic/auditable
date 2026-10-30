@@ -1763,6 +1763,7 @@ if (target === 'micro') {
     '../../ext/leadacid/index.js': '#leadacid',      // the lead-acid shell shim (feature-detected; dormant on the web)
     '../../ext/wireframe/index.js': '#wireframe',    // @gcu/wireframe — .wfr meshes (vendored from gentropic/wireframe)
     '../../ext/wireframe/convert.js': '#wireframe-convert',   // its streamed PLY/OBJ/DXF → .wfr adapters
+    '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
   };
   const libs = [
     ['condenser', 'ext/condenser/index.js'],
@@ -1783,6 +1784,7 @@ if (target === 'micro') {
     ['sheet',     'ext/sheet/index.js'],               // @gcu/sheet — .xlsx worksheets as table documents (typed columns)
     ['wireframe', 'ext/wireframe/index.js'],           // @gcu/wireframe — .wfr read/write (node ext/wireframe/build.js)
     ['wireframe-convert', 'ext/wireframe/convert.js'], // @gcu/wireframe/convert — PLY/OBJ/DXF → .wfr, streamed
+    ['zipstream', 'ext/archive/src/zipstream.js'],     // zero-import module: the src file IS the shippable one (no fflate, no WASM)
   ];
   const modules = [];
   for (const [name, rel] of libs) {
