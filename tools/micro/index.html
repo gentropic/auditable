@@ -9787,7 +9787,7 @@ let _filterSeq = 0;
 // re-sweep a layer's filter after something changed under it (a re-read, new ƒ
 // definitions, a reload) — ANY layer; the box mirrors it when it's the active one
 async function refilterLayer(L, expr = L && L.filterExpr) {
-  if (!L || (!String(expr || '').trim() && !holeMaskOf(L))) return;   // a hole mask (hole filter / whole-holes section) still masks with no expression
+  if (!L || (!String(expr || '').trim() && !L._holeMask && !L._secHoleMask)) return;   // a hole filter masks with no expression; a whole-holes section still has to be drawn
   if (L.id === S.activeId) { $('#filter').value = expr; syncFilterClear(); }
   await applyBlockFilter(expr, L);
 }
@@ -9817,7 +9817,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
   const epoch = ++_filterSeq;                               // one sequence for all layers: safe across recycled ids
   _filterEpochs.set(lid, epoch);
   const alive = () => _filterEpochs.get(lid) === epoch;
-  if (!expr.trim() && !holeMaskOf(AL)) {             // a hole filter still masks with an empty expression
+  if (!expr.trim() && !(fDhDoc && (AL._holeMask || AL._secHoleMask))) {   // drillholes: the hole filter / the section's holes still go through the sweep
     renderer.setFilter(null, {}, lid); renderer.clearCompact(lid); inp.classList.remove('err'); requestRender();
     { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; attrTableFilterChanged(lid); refreshLinkedWindows(Lf, 'filtered'); } }
     $('#meta').textContent = (fBlockDoc || fDhDoc).metaLine; return;
@@ -9829,8 +9829,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
     const r = dhFilterSweep(AL, expr);
     if (r && r.err) { inp.classList.add('err'); $('#meta').textContent = `filter: ${r.err}`; return; }
     inp.classList.remove('err');
-    const hits2 = typeof r === 'number' ? r : fDhDoc.header.count;
-    $('#meta').textContent = `${fDhDoc.metaLine} · filter: ${hits2.toLocaleString()} of ${fDhDoc.header.count.toLocaleString()} match${AL && AL._holeIds ? ` · ${AL._holeIds.size} holes` : ''}`;
+    $('#meta').textContent = dhFilterMeta(AL);
     return;
   }
   const { blob, header } = fBlockDoc;
@@ -16317,6 +16316,7 @@ async function reloadLayerFromDisk(L) {
       L2._bands = null;
       L2._catCounts = null;
       L2._filterMask = null;                               // the GPU filter was cleared by the re-open; keep JS in step
+      if (L2.dh) invalidateWholeHoles(L2);                 // the section's crossing holes too (next frame recomputes)
       L2._selMask = null; L2._selCount = 0;                // and the selection's GPU twin was cleared too — same reasoning, missed first pass
       pinEvictLayer(L2.id);                                // pinned columns belong to the OLD bytes
     }
@@ -17359,14 +17359,36 @@ function maskOfHoles(L, holes) {
   for (let i = 0; i < mask.length; i++) { const f = raw(i); if (f && holes.has(f[im.bhid])) mask[i] = 1; }
   return mask;
 }
-// the hole-level mask a drillhole filter starts from: the hole filter AND the
-// whole-holes section (either may be absent)
-function holeMaskOf(L) {
-  const a = (L && L._holeMask) || null, b = (L && L._secHoleMask) || null;
-  if (!a || !b) return a || b;
-  const m = new Uint8Array(a.length);
-  for (let i = 0; i < m.length; i++) m[i] = a[i] & b[i];
-  return m;
+// TWO masks on a drillhole layer, kept apart on purpose:
+// - L._filterMask — the FILTER: the interval expression AND the hole filter. It's
+//   data: export "matches", the analyses' 'filtered' scope, filter → selection,
+//   the attribute table and the status line all read it.
+// - L._secHoleMask — a DISPLAY rule: the whole-holes section's crossing holes.
+//   Moving the section changes what's drawn, never what the filter matched.
+// pushDhMask is the one place the renderer's per-layer mask is set for a
+// drillhole layer: the filter AND the display rules (L._drawMask, for the smokes).
+function pushDhMask(L) {
+  const dh = L && L.docs && L.docs.dhDoc; if (!dh) return;
+  let sec = L._secHoleMask || null;
+  if (sec && sec.length !== dh.header.count) { invalidateWholeHoles(L); sec = null; }   // a re-read changed the records — next frame recomputes
+  const f = L._filterMask || null;
+  let m = f || sec;
+  if (f && sec) { m = new Uint8Array(f.length); for (let i = 0; i < m.length; i++) m[i] = f[i] & sec[i]; }
+  L._drawMask = m;
+  if (!m) renderer.setFilter(null, {}, L.id);
+  else { renderer.setActiveSet('base', L.id); renderer.setFilter(m, { isolate: true }, L.id); }
+  requestRender();
+}
+function invalidateWholeHoles(L) {
+  L._secHoleMask = null; L._secHoleSig = null; L._secHoleCount = 0; _wholeKey = '';
+}
+// the status line for a drillhole layer's filter (+ the section's holes, said apart)
+function dhFilterMeta(L) {
+  const dh = L.docs.dhDoc;
+  let t = dh.metaLine;
+  if (L._filterMask) t += ` · filter: ${(L._filterHits || 0).toLocaleString()} of ${dh.header.count.toLocaleString()} match${L._holeIds ? ` · ${L._holeIds.size} holes` : ''}`;
+  if (L._secHoleSig != null) t += ` · ${L._secHoleCount} holes cross the section`;
+  return t;
 }
 // per frame (currentDrawOpts): when the section or a whole-holes layer changed,
 // recompute which holes cross; refilter only when that SET changed (a scrub
@@ -17378,7 +17400,7 @@ function syncWholeHoles(sec) {
   for (const L of S.layers) {
     if (!L.dh) continue;
     const m = renderer.layerSectioned(L.id);
-    if (m && typeof m === 'object' && m.whole) { key += `${L.id}:${m.half || ''};`; any = true; }
+    if (m && typeof m === 'object' && m.whole) { key += `${L.id}:${m.half || ''}:${L._secHoleSig != null ? 's' : 'n'};`; any = true; }   // a re-opened layer (no set yet) re-keys
     else if (L._secHoleSig != null) { key += `${L.id}:x;`; any = true; }
   }
   if (!any || key === _wholeKey) { if (!any) _wholeKey = ''; return; }
@@ -17391,18 +17413,20 @@ function syncWholeHoles(sec) {
     if (sig === (L._secHoleSig == null ? null : L._secHoleSig)) continue;
     L._secHoleSig = sig;
     L._secHoleMask = holes ? maskOfHoles(L, holes) : null;
-    refilterLayer(L);
+    L._secHoleCount = holes ? holes.size : 0;
+    pushDhMask(L);                                         // display only — the filter didn't change
+    if (L.id === S.activeId) $('#meta').textContent = dhFilterMeta(L);
   }
 }
 function dhFilterSweep(L, expr) {                          // the interval-table sweep for ANY dh layer (hole-mask aware)
   const dh = L && L.docs && L.docs.dhDoc; if (!dh) return null;
-  const hm = holeMaskOf(L);
+  const hm = L._holeMask || null;                           // the hole filter IS a filter; the section's holes are not
   if (!(expr || '').trim()) {
-    if (!hm) { renderer.setFilter(null, {}, L.id); L._filterMask = null; attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); requestRender(); return null; }
-    renderer.setActiveSet('base', L.id);
-    renderer.setFilter(hm, { isolate: true }, L.id);
-    L._filterMask = hm.slice(); attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); requestRender();
-    let hits = 0; for (const m of hm) if (m) hits++; return hits;
+    L._filterMask = hm ? hm.slice() : null;
+    let hits = 0; if (hm) for (const m of hm) if (m) hits++;
+    L._filterHits = hits;
+    attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
+    return hm ? hits : null;
   }
   const schema = schemaExt(L, dh.header);
   const v2 = validate(expr, schema);
@@ -17411,10 +17435,8 @@ function dhFilterSweep(L, expr) {                          // the interval-table
   const mask2 = new Uint8Array(dh.header.count);
   let hits2 = 0;
   for (let i = 0; i < dh.header.count; i++) { if (hm && !hm[i]) continue; if (fn2(extendRow(L, dh.fetchRecord(i), i))) { mask2[i] = 1; hits2++; } }
-  renderer.setActiveSet('base', L.id);
-  renderer.setFilter(mask2, { isolate: true }, L.id);
-  L._filterMask = mask2; attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered');
-  requestRender();
+  L._filterMask = mask2; L._filterHits = hits2;
+  attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
   return hits2;
 }
 // small whole-file tables (collar / survey): RECORDS, not lines — a quoted

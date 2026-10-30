@@ -2623,7 +2623,9 @@ await p.close();
 //     where the picture does); { wholeHoles } = a drillhole layer isn't cut,
 //     holes whose collar → EOH PATH crosses the slab draw whole, the rest are
 //     hidden — including a hole whose samples never reach the slab, ANDed with
-//     the interval filter, following a scrub, surviving a save/reopen. ──
+//     the interval filter, following a scrub, surviving a save/reopen. The
+//     section's holes are a DISPLAY rule: what the filter matched (export
+//     "matches", filter → selection, analyses) never depends on the section. ──
 {
   const pc = await mkPage('sm2cut');
   await pc.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2cut', { recursive: true }); } catch { /* fresh */ } });
@@ -2671,7 +2673,7 @@ await p.close();
     const m = window._micro, L = m.layers().find((x) => x.dh);
     if (a.expr != null) { m.setActiveLayer(L.id); document.querySelector('#filter').value = a.expr; await m.applyBlockFilter(a.expr); }
     m.requestRender(); await new Promise((r) => setTimeout(r, 400));
-    const dh = L.docs.dhDoc, im = dh.header.intervalMapping, mask = L._filterMask;
+    const dh = L.docs.dhDoc, im = dh.header.intervalMapping, mask = L._drawMask;   // what's DRAWN
     if (!mask) return 'all';
     const s = new Set(); for (let i = 0; i < mask.length; i++) if (mask[i]) s.add(dh.rawRecord(i)[im.bhid]);
     return [...s].sort().join(',');
@@ -2681,6 +2683,25 @@ await p.close();
   chk(`whole holes at x=50: H2 + H4 (whose samples stop at x≈27 — its path crosses) → ${w0}`, w0 === 'H2,H4');
   const w1 = await holesShown('CU > 3');
   chk(`ANDed with the interval filter (CU > 3) → ${w1}`, w1 === 'H4');
+  // the filter stays the filter: CU >= 2 matches H2+H3+H4's 9 intervals whatever
+  // the section shows (H2+H4 drawn)
+  const fx = await pc.evaluate(async () => {
+    const m = window._micro, L = m.layers().find((x) => x.dh);
+    document.querySelector('#filter').value = 'CU >= 2'; await m.applyBlockFilter('CU >= 2');
+    m.requestRender(); await new Promise((r) => setTimeout(r, 400));
+    const dh = L.docs.dhDoc, im = dh.header.intervalMapping;
+    const holes = (mask) => { const s = new Set(); for (let i = 0; i < mask.length; i++) if (mask[i]) s.add(dh.rawRecord(i)[im.bhid]); return [...s].sort().join(','); };
+    const meta = document.querySelector('#meta').textContent;
+    const drawn = holes(L._drawMask), filtered = holes(L._filterMask || []);
+    const exported = await m.runExport(L, { scope: 'matches', download: false });
+    m.filterToSelection(L);
+    const sel = L._selCount; m.clearSelection({ silent: true });
+    document.querySelector('#filter').value = ''; await m.applyBlockFilter('');
+    return { drawn, filtered, exported, sel, meta, after: L._filterMask ? 'mask' : 'none', drawnAfter: holes(L._drawMask || []) };
+  });
+  chk(`the section isn't a filter: CU >= 2 draws ${fx.drawn}, matches ${fx.filtered}; export "matches" ${fx.exported} rows, filter → selection ${fx.sel}; cleared → filter ${fx.after}, still drawn ${fx.drawnAfter} ("${fx.meta}")`,
+    fx.drawn === 'H2,H4' && fx.filtered === 'H2,H3,H4' && fx.exported === 9 && fx.sel === 9 && fx.after === 'none' && fx.drawnAfter === 'H2,H4'
+    && /9 of 13 match/.test(fx.meta) && /2 holes cross the section/.test(fx.meta));
   await pc.evaluate(async () => { const m = window._micro; document.querySelector('#filter').value = ''; await m.applyBlockFilter(''); await window.micro.setSection({ axis: 'x', position: 10, thickness: 10, clip: 'slab' }); });
   const w2 = await holesShown(null);
   chk(`the section moves to x=10 → ${w2}`, w2 === 'H1');
