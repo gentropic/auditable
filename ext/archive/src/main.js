@@ -5,6 +5,7 @@
 //   source.js  — source adapter normalization (Uint8Array | VFS | stream | fetch)
 //   sink.js    — sink adapter normalization (VFS | stream | memory)
 //   zip.js     — ZIP read/write (fflate wrapper)
+//   zipstream.js — ranged ZIP reader + streaming Zip64 writer (the large-file path)
 //   api.js     — public surface: archive.list, archive.read, archive.extract,
 //                archive.compress, archive.stream, archive.gzip/gunzip, etc.
 //
@@ -21,6 +22,7 @@ export * from './detect.js';
 export * from './source.js';
 export * from './sink.js';
 export * from './zip.js';
+export * from './zipstream.js';
 export * from './tar.js';
 export * from './gz.js';
 export * from './zst.js';

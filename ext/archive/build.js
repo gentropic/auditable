@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(__dirname, 'src');
 const vendorDir = path.join(__dirname, 'vendor');
 
-const files = ['detect.js', 'source.js', 'sink.js', 'zip.js', 'tar.js', 'gz.js', 'zst.js', 'xz.js', 'bz2.js', 'walk.js', 'writer.js', 'api.js'];
+const files = ['detect.js', 'source.js', 'sink.js', 'zip.js', 'zipstream.js', 'tar.js', 'gz.js', 'zst.js', 'xz.js', 'bz2.js', 'walk.js', 'writer.js', 'api.js'];
 
 // One bundle, no Wasm: xz and bzip2 are @gcu/lzma and @gcu/bz2 (liblzma and
 // libbzip2 ported to JavaScript), so a strict-CSP host (lamina: no 'wasm-unsafe-eval')
@@ -88,6 +88,7 @@ export {
   detectFormat, magicForFormat,
   normalizeSource, normalizeSink,
   listZip, readZip,
+  openZipRanged, createZipStreamWriter, blobSource, bytesSource, crc32,
   listTar, readTar, writeTar,
   gunzipBytes, gzipBytes,
   unzstdBytes, zstdBytes,
