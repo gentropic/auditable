@@ -3482,6 +3482,107 @@ function gradeUnitFactor(serUnit, plotUnit) {
 // blank = count/volume) + an optional row filter. One streamed scan per Run
 // caches each series' grade-descending cumulative curve (Σw / Σwg), so cutoff
 // count, plot unit, and manual ranges are LIVE afterwards — no re-scan. ──
+// ── grade-tonnage, never resident and exact ──
+// One streamed pass per series into a SPARSE histogram whose bin edges are the
+// multiples of a fine power-of-ten step h = 10^e, each bin holding the exact Σw
+// and Σw·g of what fell in it. Tonnage and mean grade at a cutoff that is a bin
+// edge are then EXACT — no approximation, at any model size, in memory bounded
+// by the occupied bins (a span far wider than first guessed coarsens ×10, which
+// keeps every edge an edge). The cutoffs are ROUND (1·2·5 × 10ⁿ, a multiple of
+// every series' h), so every one is an edge: exactly nCut+1 of them, covering
+// the data from a round value at or below its minimum. Exact when the series'
+// units convert by powers of ten (% · ppm · g/t · fraction); a non-decimal
+// conversion (oz/t) lands within one fine bin (~1/20000 of the range).
+// (It replaced pushing every (g, w) into JS arrays and sorting them — 130 s and
+// a 69 s freeze at 60M blocks.)
+const GT_BINS_TARGET = 20000, GT_BINS_CAP = 400000;
+const gtEdge = (k, e) => (e >= 0 ? k * 10 ** e : k / 10 ** -e);          // a decimal edge, exactly as typed
+function gtBinOf(g, e) {                                   // the largest k with edge(k) ≤ g
+  let k = Math.floor(e >= 0 ? g / 10 ** e : g * 10 ** -e);
+  while (gtEdge(k + 1, e) <= g) k++;
+  while (gtEdge(k, e) > g) k--;
+  return k;
+}
+function gtAccumulator() {
+  const se = { e: null, bins: new Map(), n: 0, gmin: Infinity, gmax: -Infinity, pend: [] };
+  const put = (g, w) => {
+    const k = gtBinOf(g, se.e);
+    const b = se.bins.get(k);
+    if (b) { b[0] += w; b[1] += w * g; } else se.bins.set(k, [w, w * g]);
+    if (se.bins.size > GT_BINS_CAP) {                       // wider than guessed: ×10, edges stay edges
+      se.e++;
+      const old = se.bins; se.bins = new Map();
+      for (const [k2, b2] of old) { const k3 = Math.floor(k2 / 10), t = se.bins.get(k3); if (t) { t[0] += b2[0]; t[1] += b2[1]; } else se.bins.set(k3, [b2[0], b2[1]]); }
+    }
+  };
+  const settle = () => {                                    // the fine step from the first values' spread
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < se.pend.length; i += 2) { const g = se.pend[i]; if (g < lo) lo = g; if (g > hi) hi = g; }
+    const span = Math.max(hi - lo, Math.abs(hi) * 1e-9, 1e-12);
+    se.e = Math.floor(Math.log10(span / GT_BINS_TARGET));
+    const pend = se.pend; se.pend = null;
+    for (let i = 0; i < pend.length; i += 2) put(pend[i], pend[i + 1]);
+  };
+  se.add = (g, w) => {
+    se.n++; if (g < se.gmin) se.gmin = g; if (g > se.gmax) se.gmax = g;
+    if (se.pend) { se.pend.push(g, w); if (se.pend.length >= 1 << 17) settle(); return; }
+    put(g, w);
+  };
+  // → descending bin keys + cumulative Σw / Σw·g above each (the shape the plot reads)
+  se.finish = () => {
+    if (se.pend) settle();
+    const keys = Float64Array.from(se.bins.keys()).sort().reverse();
+    const cw = new Float64Array(keys.length + 1), cwg = new Float64Array(keys.length + 1);
+    for (let i = 0; i < keys.length; i++) { const b = se.bins.get(keys[i]); cw[i + 1] = cw[i] + b[0]; cwg[i + 1] = cwg[i] + b[1]; }
+    se.keys = keys; se.cw = cw; se.cwg = cwg; se.bins = null;
+    if (se.e == null) se.e = 0;
+  };
+  return se;
+}
+// Σw / Σw·g of everything at or above cutoff cN (native units): bins from the
+// first edge ≥ cN up
+function gtAbove(se, cN) {
+  let K = gtBinOf(cN, se.e); if (gtEdge(K, se.e) < cN) K++;
+  let lo = 0, hi = se.keys.length; while (lo < hi) { const md = (lo + hi) >> 1; if (se.keys[md] >= K) lo = md + 1; else hi = md; }
+  return [se.cw[lo], se.cwg[lo]];
+}
+// the cutoffs (axis units): nCut+1 round values, a common multiple of every
+// series' fine step, from a round value ≤ the data minimum to one ≥ its maximum
+// (overshooting it by ~25% at most)
+function gtCuts(scanSeries, nCut, factorOf) {
+  let gmin = Infinity, gmax = -Infinity, fine = 0;
+  for (const se of scanSeries) {
+    if (!se.n) continue;
+    const f = factorOf(se);
+    gmin = Math.min(gmin, se.gmin * f); gmax = Math.max(gmax, se.gmax * f);
+    fine = Math.max(fine, 10 ** se.e * Math.abs(f));
+  }
+  if (!(gmax >= gmin)) return null;
+  const N = Math.max(1, nCut | 0);
+  if (gmax === gmin) return [gmin];
+  // step = m·10^j, m from a DENSE round set (1·2·5 alone overshot the data by up
+  // to ×2.5 — half the chart flat), ≥ fine and ≥ the span / N. m has one decimal,
+  // so a cut is (i·10m)·10^(j−1): integer arithmetic, exactly the decimal typed.
+  // A step must also be a whole multiple of the fine bin (10^(j−1) ≥ fine) so
+  // every cut stays an edge.
+  let j = Math.floor(Math.log10(Math.max((gmax - gmin) / N, fine))), mi = 0;
+  const M10 = [10, 12, 15, 20, 25, 30, 40, 50, 60, 80];
+  const stepOf = () => (j - 1 >= 0 ? M10[mi] * 10 ** (j - 1) : M10[mi] / 10 ** (1 - j));
+  const cutOf = (i) => (j - 1 >= 0 ? i * M10[mi] * 10 ** (j - 1) : (i * M10[mi]) / 10 ** (1 - j));
+  const unit = j - 1 >= 0 ? 10 ** (j - 1) : 1 / 10 ** (1 - j);
+  for (let guard = 0; guard < 200; guard++) {
+    const step = stepOf();
+    if (unit >= fine * (1 - 1e-9) && step * N >= (gmax - gmin) * (1 - 1e-12)) {
+      let L0 = Math.floor(gmin / step);                    // the largest round cut ≤ gmin, by the same exact arithmetic
+      while (cutOf(L0 + 1) <= gmin) L0++;
+      while (cutOf(L0) > gmin) L0--;
+      if (cutOf(L0 + N) >= gmax) { const cuts = []; for (let i = 0; i <= N; i++) cuts.push(cutOf(L0 + i)); return cuts; }
+    }
+    if (++mi === M10.length) { mi = 0; j++; }
+  }
+  const cuts = []; for (let i = 0; i <= N; i++) cuts.push(gmin + (gmax - gmin) * i / N);   // unreachable in practice
+  return cuts;
+}
 function openGradeTonnage(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'grade-tonnage: needs a regular block model'; return; }
   const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = ++_fwinZ; return; } ex.win.close(); }   // a recipe replaces the open window
@@ -3528,10 +3629,9 @@ function openGradeTonnage(L, ropts) {
       plotChart(cv, { series: [], placeholder: busy ? 'scanning…' : (st.stale ? 'press Run' : 'no data') });
       win._spec = null; win.el._gtSpec = null; return;
     }
-    let gmin = Infinity, gmax = -Infinity, weighted = false;
-    for (const se of st.scan.series) { const f = gradeUnitFactor(se.s.unit, st.gradeUnit); if (se.gmin * f < gmin) gmin = se.gmin * f; if (se.gmax * f > gmax) gmax = se.gmax * f; if (se.weighted) weighted = true; }
-    if (!Number.isFinite(gmin) || gmin === Infinity) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
-    const cuts = []; for (let i = 0; i <= st.nCut; i++) cuts.push(gmin + (gmax - gmin) * i / st.nCut);
+    const weighted = st.scan.series.some((se) => se.weighted);
+    const cuts = gtCuts(st.scan.series, st.nCut, (se) => gradeUnitFactor(se.s.unit, st.gradeUnit));
+    if (!cuts) { win.sub.textContent = 'no data'; plotChart(cv, { series: [] }); win._spec = null; win.el._gtSpec = null; return; }
     const gl = guLabel();
     const spec = { xLabel: `cutoff${gl ? ` (${gl})` : ''}`, leftLabel: weighted ? 'tonnage (t)' : 'volume (m³)', rightLabel: `mean grade${gl ? ` (${gl})` : ''}`, series: [], ...rangesOf(st) };
     const multi = st.scan.series.length > 1 && new Set(st.scan.series.map((se) => se.s.layerId)).size > 1;
@@ -3540,9 +3640,8 @@ function openGradeTonnage(L, ropts) {
       const nm = multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col;
       const tPts = [], gPts = [];
       for (const c of cuts) {
-        const cN = c / f;                                  // axis units → this series' native grade
-        let lo = 0, hi = se.gsorted.length; while (lo < hi) { const md = (lo + hi) >> 1; if (se.gsorted[md] >= cN) lo = md + 1; else hi = md; }
-        tPts.push([c, se.cw[lo]]); gPts.push([c, se.cw[lo] > 0 ? (se.cwg[lo] / se.cw[lo]) * f : NaN]);
+        const [t, tg] = gtAbove(se, c / f);                // axis units → this series' native grade
+        tPts.push([c, t]); gPts.push([c, t > 0 ? (tg / t) * f : NaN]);
       }
       spec.series.push({ name: `${nm} · t`, color: se.s.color, axis: 'left', kind: 'line', data: tPts });
       spec.series.push({ name: `${nm} · grade`, color: se.s.color, axis: 'right', kind: 'line', data: gPts });
@@ -3573,9 +3672,10 @@ function openGradeTonnage(L, ropts) {
       let weightFn = null, filterFn = null;
       if (s.weight && s.weight.trim()) { try { weightFn = compileValue(s.weight, schema, { decimal: '.' }); } catch { throw new Error(`series weight "${s.weight}": invalid`); } }
       if (s.filter && s.filter.trim()) { try { filterFn = compileBool(s.filter, schema, { decimal: '.' }); } catch { throw new Error(`series filter "${s.filter}": invalid`); } }
-      return { s, L: Lx, vc: volumeContextOf(Lx), gradeFn, weightFn, filterFn, g: [], w: [], n: 0, weighted: !!weightFn };
+      return Object.assign(gtAccumulator(), { s, L: Lx, vc: volumeContextOf(Lx), gradeFn, weightFn, filterFn, weighted: !!weightFn });
     }).filter(Boolean);
     let total = 0;
+    const N = series.reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
     for (const se of series) {
       const Lx = se.L, mask = scopeMask(st, Lx);
       // layerRecords owns the record number — the raw rec++ this replaces was the
@@ -3586,22 +3686,17 @@ function openGradeTonnage(L, ropts) {
       // GT window actually runs.
       for await (const { f: row, rec: rr } of layerRecords(Lx)) {
         {
-          total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total); await new Promise((r) => setTimeout(r)); }
+          total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N); await new Promise((r) => setTimeout(r)); }
           if (mask && !(rr < mask.length && mask[rr])) continue;
           if (se.filterFn && !se.filterFn(row)) continue;
           const g = +se.gradeFn(row); if (!Number.isFinite(g)) continue;
           const w = (se.weightFn ? (+se.weightFn(row) || 0) * dScale : 1) * volumeAt(se.vc, row);
           if (!(w > 0)) continue;
-          se.g.push(g); se.w.push(w); se.n++;
+          se.add(g, w);
         }
       }
-      if (onProgress) onProgress(total);
-      const ord = [...se.g.keys()].sort((a, b) => se.g[b] - se.g[a]);
-      const gsorted = new Float64Array(ord.length), cw = new Float64Array(ord.length + 1), cwg = new Float64Array(ord.length + 1);
-      for (let k = 0; k < ord.length; k++) { gsorted[k] = se.g[ord[k]]; cw[k + 1] = cw[k] + se.w[ord[k]]; cwg[k + 1] = cwg[k] + se.w[ord[k]] * se.g[ord[k]]; }
-      se.gsorted = gsorted; se.cw = cw; se.cwg = cwg;
-      se.gmin = ord.length ? gsorted[ord.length - 1] : Infinity; se.gmax = ord.length ? gsorted[0] : -Infinity;
-      se.g = se.w = null;
+      if (onProgress) onProgress(total, N);
+      se.finish();
     }
     return { series };
   };
@@ -3611,7 +3706,7 @@ function openGradeTonnage(L, ropts) {
       win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return;
     }
     st.running = true; runBtn.disabled = true; win.sub.textContent = 'scanning…';
-    try { st.scan = await scanGT((n) => { progEl.textContent = `${n.toLocaleString()} rows…`; }); }
+    try { st.scan = await scanGT((n, N) => { progEl.textContent = rowsProgress(n, N); }); }
     catch (e) { win.sub.textContent = `grade-tonnage: ${e.message}`; st.running = false; runBtn.disabled = false; progEl.textContent = ''; return; }
     st.running = false; runBtn.disabled = false; progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     saveAnalysisCfg(L, 'gt', cfgOf(), win);                // a successful Run snapshots the setup into the project
@@ -3620,11 +3715,10 @@ function openGradeTonnage(L, ropts) {
   // copy the computed numbers: cutoff | per-series tonnes/grade/metal (TSV)
   const tableTSV = () => {
     if (!st.scan || !st.scan.series.length) return null;
-    let gmin = Infinity, gmax = -Infinity, weighted = false;
-    for (const se of st.scan.series) { const f = gradeUnitFactor(se.s.unit, st.gradeUnit); if (se.gmin * f < gmin) gmin = se.gmin * f; if (se.gmax * f > gmax) gmax = se.gmax * f; if (se.weighted) weighted = true; }
-    if (!Number.isFinite(gmin) || gmin === Infinity) return null;
+    const weighted = st.scan.series.some((se) => se.weighted);
+    const cuts = gtCuts(st.scan.series, st.nCut, (se) => gradeUnitFactor(se.s.unit, st.gradeUnit));
+    if (!cuts) return null;
     const gl = guLabel(), mScale = st.gradeUnit ? unitConvert(1, st.gradeUnit, 'fraction') : 1, tU = weighted ? 't' : 'm³';
-    const cuts = []; for (let i = 0; i <= st.nCut; i++) cuts.push(gmin + (gmax - gmin) * i / st.nCut);
     const multi = st.scan.series.length > 1;
     const names = st.scan.series.map((se) => { const Lx = layerById(se.s.layerId); return multi ? `${(Lx ? (Lx.label || Lx.name) : '').replace(/\.[^.]*$/, '')}·${se.s.col}` : se.s.col; });
     const head = [`cutoff${gl ? ` (${gl})` : ''}`];
@@ -3633,9 +3727,8 @@ function openGradeTonnage(L, ropts) {
     for (const c of cuts) {
       const row = [c];
       for (const se of st.scan.series) {
-        const f = gradeUnitFactor(se.s.unit, st.gradeUnit), cN = c / f;
-        let lo = 0, hi = se.gsorted.length; while (lo < hi) { const md = (lo + hi) >> 1; if (se.gsorted[md] >= cN) lo = md + 1; else hi = md; }
-        const t = se.cw[lo], g = t > 0 ? (se.cwg[lo] / se.cw[lo]) * f : NaN;
+        const f = gradeUnitFactor(se.s.unit, st.gradeUnit);
+        const [t, tg] = gtAbove(se, c / f), g = t > 0 ? (tg / t) * f : NaN;
         row.push(t, Number.isFinite(g) ? g : '', Number.isFinite(g) ? t * g * mScale : '');
       }
       lines.push(row.join('\t'));
@@ -5325,6 +5418,19 @@ function statsGroupCols(L) {
   for (const c of (L.paintCols || [])) if (c.kind !== 'ratio') out.push(c.name);
   return out;
 }
+// quantile digests fed in batches: a per-value push sorted a 2000-value JS
+// buffer per flush (the 18 s freeze at 60M, with the pinned path never
+// yielding); pushArray sorts a typed batch natively. BOTH stats paths feed
+// through this, so their batch boundaries — hence their digests — stay identical.
+// a scan's progress line: "1.2M of 60M rows · 2%" — what's happening and how far
+function rowsProgress(n, N) { return N ? `${n.toLocaleString()} of ${N.toLocaleString()} rows · ${Math.min(100, Math.floor(100 * n / N))}%` : `${n.toLocaleString()} rows…`; }
+const TD_BATCH = 8192;
+function tdAdd(TD, a, x) {
+  if (!a.tb) { a.tb = new Float64Array(TD_BATCH); a.tn = 0; }
+  a.tb[a.tn++] = x;
+  if (a.tn === TD_BATCH) { TD.pushArray(a.td, a.tb, 0, TD_BATCH); a.tn = 0; }
+}
+function tdDone(TD, a) { if (a.tn) { TD.pushArray(a.td, a.tb, 0, a.tn); a.tn = 0; } return TD.result(a.td); }
 // stats over PINNED columns: when every base column in the request's dependency
 // cone is pinned (a prior complete filter scan teed it), accumulate over 256K
 // typed windows via censusChunkCols — the tier-3 engine — instead of decoding
@@ -5332,7 +5438,7 @@ function statsGroupCols(L) {
 // they read straight off their census slots; only the free-text weight
 // expression compiles chunk-wise. Identical accumulators and row order →
 // identical results; anything unpinned → null (the row path takes over).
-function scanStatsPinned(L, st, mask) {
+async function scanStatsPinned(L, st, mask, onProgress) {
   const h = layerTableHeader(L); if (!h) return null;
   const censusSchema = schemaExt(L, h);
   const slotOf = (nm) => censusSchema.findIndex((c) => c.name === nm);
@@ -5392,9 +5498,11 @@ function scanStatsPinned(L, st, mask) {
         const a = A[s];
         a.n++; a.sw += w; a.swx += w * x; a.swx2 += w * x * x;
         if (x < a.min) a.min = x; if (x > a.max) a.max = x;
-        TD.push(a.td, x);
+        tdAdd(TD, a, x);
       }
     }
+    if (onProgress) onProgress(at + n, total);
+    await new Promise((z) => setTimeout(z));               // one window per task: the UI stays live
   }
   const rows = [];
   for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
@@ -5402,7 +5510,7 @@ function scanStatsPinned(L, st, mask) {
     for (let s = 0; s < st.cols.length; s++) {
       const a = A[s]; if (!a.n) continue;
       const mean = a.swx / a.sw, vr = Math.max(0, a.swx2 / a.sw - mean * mean);
-      const td = TD.result(a.td), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
+      const td = tdDone(TD, a), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
       rows.push({ group: g, col: st.cols[s], n: a.n, mean, std: Math.sqrt(vr), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
     }
   }
@@ -5467,16 +5575,17 @@ function openStats(L, ropts) {
     const mask = scopeMask(st, L);
     // materialized inputs must be resident for BOTH paths (evicted → blanks otherwise)
     await ensureStoredValues(L, new Set([...st.cols, st.groupBy, st.weight].filter(Boolean).map((x) => String(x).toLowerCase())));
-    const fast = scanStatsPinned(L, st, mask);             // pinned columns → the tier-3 window path
+    const fast = await scanStatsPinned(L, st, mask, onProgress);   // pinned columns → the tier-3 window path
     if (fast) return fast;
     const TD = tdigest();
     const mkAcc = () => colFns.map(() => ({ n: 0, sw: 0, swx: 0, swx2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
     const groups = new Map();
     let overflow = false, total = 0;
+    const N = attrRowCountOf(L) || 0;
     // layerRecords owns the record number (see scanGT)
     for await (const { f: row, rec: rr } of layerRecords(L)) {
       {
-        total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total); await new Promise((r) => setTimeout(r)); }
+        total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N); await new Promise((r) => setTimeout(r)); }
         if (mask && !(rr < mask.length && mask[rr])) continue;
         let g = '';
         if (groupFn) { const gv = groupFn(row); g = gv == null || gv === '' ? '—' : String(gv); }
@@ -5490,18 +5599,18 @@ function openStats(L, ropts) {
           const a = A[i];
           a.n++; a.sw += w; a.swx += w * x; a.swx2 += w * x * x;
           if (x < a.min) a.min = x; if (x > a.max) a.max = x;
-          TD.push(a.td, x);
+          tdAdd(TD, a, x);
         }
       }
     }
-    if (onProgress) onProgress(total);
+    if (onProgress) onProgress(total, N);
     const rows = [];
     for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
       const A = groups.get(g);
       for (let i = 0; i < colFns.length; i++) {
         const a = A[i]; if (!a.n) continue;
         const mean = a.swx / a.sw, vr = Math.max(0, a.swx2 / a.sw - mean * mean);
-        const td = TD.result(a.td), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
+        const td = tdDone(TD, a), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
         rows.push({ group: g, col: colFns[i].c, n: a.n, mean, std: Math.sqrt(vr), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
       }
     }
@@ -5511,7 +5620,7 @@ function openStats(L, ropts) {
     if (st.running) return;
     if (st.scope !== 'all' && !scopeMask(st, L)) { win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }
     st.running = true; runBtn.disabled = true; win.sub.textContent = 'scanning…';
-    try { st.scan = await scanStats((n) => { progEl.textContent = `${n.toLocaleString()} rows…`; }); }
+    try { st.scan = await scanStats((n, N) => { progEl.textContent = rowsProgress(n, N); }); }
     catch (e) { win.sub.textContent = `stats: ${e.message}`; st.running = false; runBtn.disabled = false; progEl.textContent = ''; return; }
     st.running = false; runBtn.disabled = false; progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     saveAnalysisCfg(L, 'stats', cfgOf(), win);

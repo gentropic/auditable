@@ -3103,6 +3103,67 @@ await p.close();
   await pr.close();
 }
 
+// ── §46: grade-tonnage is EXACT and never resident — a sparse histogram on
+//     power-of-ten edges, ROUND cutoffs (each one an edge). Checked against brute
+//     force on grades sitting exactly ON cutoff values (0.29, 0.3 — where float
+//     binning goes wrong), with and without a density expression. ──
+{
+  const pg = await mkPage('sm2gt');
+  const gt = await pg.evaluate(async () => {
+    const M = window._micro;
+    let t = 'XC,YC,ZC,AU,SG\n';
+    const rows = [];
+    let r = 7;
+    for (let k = 0; k < 6; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) {
+      r = (r * 1103515245 + 12345) >>> 0;
+      const au = [0.29, 0.3, 0.1, 1.5, 0.05][r % 5] + ((r >>> 8) % 3 === 0 ? (r >>> 12) % 100 / 100 : 0);   // many values exactly on round cuts
+      const sg = 2.5 + ((r >>> 4) % 5) / 10;
+      const AU = +au.toFixed(2);
+      rows.push({ au: AU, sg });
+      t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${AU},${sg}\n`;
+    }
+    await M.openBlob(new File([t], 'gt.csv'), 'gt.csv', 'replace');
+    for (let n = 0; n < 100 && !(M.layers()[0] && M.layers()[0].docs.blockDoc); n++) await new Promise((z) => setTimeout(z, 100));
+    const L = M.layers()[0];
+    const runGT = async (weight) => {
+      for (const e of document.querySelectorAll('.fwin')) if (e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')) e.querySelector('.fwin-x, .x, [title="close"]')?.click();
+      M.openGradeTonnage(L, { run: true, cfg: { nCut: 20, series: [{ layer: 'gt.csv', col: 'AU', weight }] } });
+      let el = null;
+      for (let n = 0; n < 200; n++) { el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage') && e._gtSpec); if (el) break; await new Promise((z) => setTimeout(z, 50)); }
+      return el && el._gtSpec;
+    };
+    const check = (spec, weightOf) => {
+      const tS = spec.series[0].data, gS = spec.series[1].data;
+      let bad = 0;
+      const cuts = tS.map((d) => d[0]);
+      for (let i = 0; i < tS.length; i++) {
+        const c = tS[i][0];
+        let T = 0, TG = 0;
+        for (const x of rows) if (x.au >= c) { const w = weightOf(x) * 1000; T += w; TG += w * x.au; }
+        const tOk = Math.abs(tS[i][1] - T) <= 1e-9 * Math.max(1, T);
+        const gOk = T > 0 ? Math.abs(gS[i][1] - TG / T) <= 1e-12 * Math.max(1, TG / T) : !Number.isFinite(gS[i][1]);
+        if (!tOk || !gOk) bad++;
+      }
+      const mn = Math.min(...rows.map((x) => x.au)), mx = Math.max(...rows.map((x) => x.au));
+      const step = cuts[1] - cuts[0];
+      const round = cuts.every((c) => Math.abs(c / step - Math.round(c / step)) < 1e-9) && [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8].some((m) => Math.abs(step / (m * 10 ** Math.round(Math.log10(step / m))) - 1) < 1e-9);
+      const tight = (cuts[cuts.length - 1] - cuts[0]) <= 1.25 * (mx - mn) + 2 * step;   // the axis hugs the data
+      return { n: cuts.length, bad, first: cuts[0], last: cuts[cuts.length - 1], mn, mx, step, round, tight, on029: cuts.includes(0.29) || cuts.includes(0.3) };
+    };
+    const a = check(await runGT(''), () => 1);
+    const b = check(await runGT('SG'), (x) => x.sg);
+    // the stats window says how far it is ("n of N rows · %")
+    M.openStats(L, { run: true, cfg: { cols: ['AU'] } });
+    let prog = '';
+    for (let n = 0; n < 100; n++) { const el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('stats')); const pe = el && el.querySelector('.sw-prog'); if (pe && pe.textContent) { prog = pe.textContent; break; } if (el && el.querySelector('table')) break; await new Promise((z) => setTimeout(z, 5)); }
+    return { a, b, prog };
+  });
+  chk(`GT exact vs brute force, count: ${gt.a.n} cuts, ${gt.a.bad} wrong · round step ${gt.a.step} (${gt.a.round}, tight ${gt.a.tight}) · ${gt.a.first} ≤ min ${gt.a.mn}, ${gt.a.last} ≥ max ${gt.a.mx} · a cut sits on a data value (${gt.a.on029})`,
+    gt.a.n === 21 && gt.a.bad === 0 && gt.a.round && gt.a.tight && gt.a.first <= gt.a.mn && gt.a.last >= gt.a.mx);
+  chk(`GT exact vs brute force, tonnes (SG): ${gt.b.n} cuts, ${gt.b.bad} wrong`, gt.b.n === 21 && gt.b.bad === 0);
+  await pg.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
