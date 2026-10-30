@@ -44,6 +44,19 @@ after(() => {
   }
 });
 
+// Wait on a CONDITION, not a guessed duration: worker startup under a loaded
+// machine (the whole npm test suite at once) is many times an idle one's, and a
+// fixed sleep sized for idle failed there. Resolves as soon as it holds; a
+// generous deadline still fails a real hang.
+async function until(cond, { timeout = 10000, every = 20 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    if (await cond()) return true;
+    if (Date.now() - t0 > timeout) return false;
+    await new Promise((r) => setTimeout(r, every));
+  }
+}
+
 function makePm(opts = {}) {
   return new ProcessManager({ createWorker: createNodeWorker, ...opts });
 }
@@ -383,8 +396,10 @@ describe('pool', () => {
 describe('process table', () => {
   it('list / get / killAll work', async () => {
     const pm = makePm();
-    const a = await pm.spawn((n) => new Promise(r => setTimeout(() => r(n), 100)), { args: [1] });
-    const b = await pm.spawn((n) => new Promise(r => setTimeout(() => r(n), 100)), { args: [2] });
+    // long-lived, so neither can finish on its own before killAll — however slow
+    // the second spawn is (100 ms lives used to run out under load: a was DONE)
+    const a = await pm.spawn((n) => new Promise(r => setTimeout(() => r(n), 30000)), { args: [1] });
+    const b = await pm.spawn((n) => new Promise(r => setTimeout(() => r(n), 30000)), { args: [2] });
     assert.equal(pm.list().length, 2);
     assert.ok(pm.get(a.pid));
     assert.ok(pm.get(b.pid));
@@ -1017,9 +1032,13 @@ describe('daemons (Phase E)', () => {
       maxRestarts: 5,
     });
 
-    // Wait for restart chain to settle: starts × 3, with 100ms + 200ms
-    // backoff between attempts. 500ms is comfortably enough.
-    await new Promise(r => setTimeout(r, 600));
+    // Wait for the restart chain to settle: three starts with 100ms + 200ms of
+    // backoff between them, and the third start reporting RUNNING.
+    assert.ok(await until(async () => {
+      const svc = pm.services()[0];
+      return svc && svc.state === STATE.RUNNING && parseInt(await vfs.readFile('/count', 'utf8'), 10) >= 3;
+    }), 'the third start never came up');
+    await new Promise(r => setTimeout(r, 300));             // and no FOURTH start sneaks in after it
     const final = await vfs.readFile('/count', 'utf8');
     assert.equal(parseInt(final, 10), 3);
     const svc = pm.services()[0];
@@ -1040,9 +1059,8 @@ describe('daemons (Phase E)', () => {
       restart: 'on-crash',
       maxRestarts: 2,
     });
-    // 100ms + 200ms = 300ms of backoff between three attempts; wait
-    // enough to let the supervisor give up.
-    await new Promise(r => setTimeout(r, 1000));
+    // three attempts with 100ms + 200ms of backoff, then the supervisor gives up
+    assert.ok(await until(() => { const s2 = pm.services()[0]; return s2 && s2.state === 'failed'; }), 'the supervisor never gave up');
     const svc = pm.services()[0];
     assert.equal(svc.state, 'failed');
     pm.shutdown();
