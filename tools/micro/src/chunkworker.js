@@ -72,26 +72,36 @@ async function startParallel(o, K, onChunk, onPage) {
   const doc = { count: 0, bboxLocal: Float64Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity), chanRange: [Infinity, -Infinity] };
   let pend = [], pendCount = 0, k = 0, next = 0, closed = false, failure = null;
   const done = new Map(), free = [...ws], queue = [];
-  let waiters = [], flushWaiter = null;
-  const inFlight = () => k - next;                         // batches cut but not yet handed on
+  let waiters = [], flushWaiter = null, handed = 0, draining = false;
+  const outq = [];                                         // chunks in order, ready to hand on (null = a batch's end)
+  const inFlight = () => k - handed;                       // batches cut but not yet fully handed on
   const wake = () => {
     if (failure) { for (const r of waiters) r.reject(failure); waiters = []; if (flushWaiter) flushWaiter.reject(failure); return; }
     if (inFlight() < ws.length * 2) { for (const r of waiters) r.resolve(); waiters = []; }
-    if (flushWaiter && !pendCount && next === k) { const f = flushWaiter; flushWaiter = null; f.resolve(doc); }
+    if (flushWaiter && !pendCount && handed === k) { const f = flushWaiter; flushWaiter = null; f.resolve(doc); }
+  };
+  // ONE chunk per task: a batch's chunks arrive together, and handing them all on
+  // in one message handler held the page for every chunk's GPU upload at once
+  // (~100 ms a batch at 60M); one at a time, the page breathes between uploads
+  const drain = () => {
+    draining = false;
+    while (outq.length && outq[0] === null) { outq.shift(); handed++; }
+    const c = outq.shift();
+    if (c) {
+      doc.count += c.count;
+      const b = doc.bboxLocal, cb = c.bboxLocal;
+      for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
+      if (c.chanRange[0] < doc.chanRange[0]) doc.chanRange[0] = c.chanRange[0];
+      if (c.chanRange[1] > doc.chanRange[1]) doc.chanRange[1] = c.chanRange[1];
+      if (!closed) onChunk(c);
+      while (outq.length && outq[0] === null) { outq.shift(); handed++; }
+    }
+    if (outq.length) { draining = true; setTimeout(drain); }
+    wake();
   };
   const deliver = () => {
-    while (done.has(next)) {
-      const chunks = done.get(next); done.delete(next); next++;
-      for (const c of chunks) {
-        doc.count += c.count;
-        const b = doc.bboxLocal, cb = c.bboxLocal;
-        for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
-        if (c.chanRange[0] < doc.chanRange[0]) doc.chanRange[0] = c.chanRange[0];
-        if (c.chanRange[1] > doc.chanRange[1]) doc.chanRange[1] = c.chanRange[1];
-        if (!closed) onChunk(c);
-      }
-    }
-    wake();
+    while (done.has(next)) { const chunks = done.get(next); done.delete(next); next++; outq.push(...chunks, null); }
+    if (!draining) drain();
   };
   const pump = () => {
     while (free.length && queue.length) {

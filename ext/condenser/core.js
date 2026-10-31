@@ -4085,7 +4085,13 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // size, points-vs-boxes, the section, the target size
   const capKey = (cam, pointPx, blocksAsPoints, sec) =>
     `${Array.prototype.join.call(cam.state.viewProj, ',')}|${pointPx}|${blocksAsPoints ? 'P' : 'B'}|${sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off'}|${canvas.width}x${canvas.height}`;
-  const capReady = (key) => !globalThis.__noPickCapture && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
+  // a pending re-raster (needClear) means what is clickable changed — a class eye,
+  // a rule code under eyes, visibility — but the capture is only thrown away when
+  // the next frame draws; until then it must not answer a pick
+  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
+  // every capture that is thrown away goes through here, so a fence still pending
+  // on it is deleted rather than left to the collector
+  const dropCapture = () => { if (idCapture && idCapture.fence) gl.deleteSync(idCapture.fence); idCapture = null; };
   const layerMaxRec = new Map();                          // layer → 1 + highest record index seen
   const bakeDirty = new Set();                            // layers whose attr bake is stale
   let resolves = 0;                                       // resolve passes run (harness observability)
@@ -4118,7 +4124,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
     addChunk(chunk, set = 'base', layer = 0) {
       const ls = layerOf(layer);
-      idCapture = null;                                   // new geometry: the captured id buffer is stale
+      dropCapture();                                      // new geometry: the captured id buffer is stale
       // recIdx stays RAW — the layer rides a per-draw uniform, so there is no
       // per-element rewrite here any more (and no 3-bit ceiling on layers)
       // honest VRAM accounting: every typed array in the CPU chunk becomes a
@@ -4468,7 +4474,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (w <= 0 || h <= 0) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
       if (capReady(key)) { pickFromCapture++; return { data: pickPipe.readCaptured(x, y, w, h), w, h, dpr }; }
-      if (idCapture && idCapture.key !== key) idCapture = null;   // the scissored pass below draws into the same target
+      if (idCapture && idCapture.key !== key) dropCapture();   // the scissored pass below draws into the same target
       const data = pickPipe.pickRegion(x, y, w, h, chunks.filter(activeChunk), cam, {
         pointPx, blocksAsPoints, layerStates: layers, section: sec,
         viewportW: canvas.width, viewportH: canvas.height,
@@ -4492,6 +4498,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         gl.deleteSync(idCapture.fence); idCapture.fence = null; return true;
       }
       if (!idCapture || idCapture.key !== key || idCapture.w !== canvas.width || idCapture.h !== canvas.height) {
+        dropCapture();
         idCapture = { key, complete: false, list: chunks.filter(activeChunk), next: 0, tex: null, depth: null, w: canvas.width, h: canvas.height };
         pickPipe.beginCapture(canvas.width, canvas.height);
       }
@@ -4504,7 +4511,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (idCapture.next >= idCapture.list.length) Object.assign(idCapture, { complete: true, tex: r.tex, depth: r.depth, list: null, fence: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) });
       return false;                                        // the next call waits for the fence
     },
-    get captureReady() { return !!(idCapture && idCapture.complete && !idCapture.fence); },
+    get captureReady() { return !needClear && !!(idCapture && idCapture.complete && !idCapture.fence); },
     get picksFromCapture() { return pickFromCapture; },
     pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
@@ -4520,7 +4527,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         const g = o[1] >>> 0;
         return { layer: g & 0xFFFF, rec: o[0] >>> 0, face: (g >>> 16) & 7 };
       }
-      if (idCapture && idCapture.key !== key) idCapture = null;
+      if (idCapture && idCapture.key !== key) dropCapture();
       return pickPipe.pick(px, py, chunks.filter(activeChunk), cam, {
         pointPx, blocksAsPoints, layerStates: layers, section: sec,
         viewportW: canvas.width, viewportH: canvas.height,
@@ -4532,7 +4539,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
       layers.clear();
       if (resolvePipe) resolvePipe.clear();
-      layerMaxRec.clear(); bakeDirty.clear(); idCapture = null;
+      layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
     resize() {
@@ -4620,6 +4627,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
           const ck = capKey(cam, pointPx, blocksAsPoints, sec);
           if (!capReady(ck)) {
+            dropCapture();
             idCapture = { ...pickPipe.captureViewport(act, cam, {
               pointPx, blocksAsPoints, layerStates: layers,
               section: sec, viewportW: canvas.width, viewportH: canvas.height,
@@ -4693,7 +4701,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       lastKey = structKey; needClear = false;
       for (const id of kindBy.keys()) lastCosSig.set(id, sigOf(id));
       cosmeticDirtyLayers.clear();
-      if (moving) { repaintSet.clear(); idCapture = null; }   // full redraw covers pending repaint; the capture is stale
+      if (moving) { repaintSet.clear(); dropCapture(); }   // full redraw covers pending repaint; the capture is stale
 
       // frustum-cull + front-to-back over chunk bboxes (tight, thanks to Morton)
       const planes = frustumPlanes(vp);

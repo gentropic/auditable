@@ -252,11 +252,33 @@ function volumes(ctx, view, n, num) {
   return vol;
 }
 
+// ── weighted moments, numerically stable ──
+// { sw, mean, m2 } by West's weighted Welford update, and Chan's merge between
+// partials. Σwx² − (Σwx)²/Σw cancelled most of its digits when a column's spread is
+// small next to its mean (SG ≈ 2.7 ± 0.16: ~1e-10 relative, and order-dependent);
+// this keeps the spread itself, so page, workers and any chunking agree to ~1e-15.
+// Population variance (m2 / Σw), as before.
+export function momentAdd(a, x, w) {
+  a.sw += w;
+  const d = x - a.mean;
+  a.mean += d * (w / a.sw);
+  a.m2 += w * d * (x - a.mean);
+}
+export function momentMerge(a, b) {
+  if (!b.sw) return;
+  if (!a.sw) { a.sw = b.sw; a.mean = b.mean; a.m2 = b.m2; return; }
+  const sw = a.sw + b.sw, d = b.mean - a.mean;
+  a.mean += d * (b.sw / sw);
+  a.m2 += b.m2 + d * d * (a.sw * b.sw / sw);
+  a.sw = sw;
+}
+export const momentStd = (a) => (a.sw > 0 ? Math.sqrt(Math.max(0, a.m2 / a.sw)) : NaN);
+
 // ── the STATS kernel ─────────────────────────────────────────────────────────
 // params: { schema, cols: [expr…] (quoted names), groupBy: expr | null, weight:
 // expr | null }. One chunk → the groups in FIRST-SEEN order (so merging chunks in
 // order reproduces the row path's group order and its 256-group cap), each with
-// per column { n, sw, swx, swx2, min, max } + a t-digest state (sluice). Moments
+// per column { n, sw, mean, m2, min, max } + a t-digest state (sluice). Moments
 // are weighted; quantiles unweighted — as the window says.
 export function statsKernel(E, CV, SL) {
   const TD = SL.tdigest();
@@ -276,19 +298,19 @@ export function statsKernel(E, CV, SL) {
         let g = '';
         if (gv) { const v = gv[i]; g = v == null || v === '' || (typeof v === 'number' && v !== v) ? '—' : String(v); }
         let A = groups.get(g);
-        if (!A) { if (groups.size >= 256) { overflow = true; continue; } A = xs.map(() => ({ n: 0, sw: 0, swx: 0, swx2: 0, min: Infinity, max: -Infinity, vals: [] })); groups.set(g, A); }
+        if (!A) { if (groups.size >= 256) { overflow = true; continue; } A = xs.map(() => ({ n: 0, sw: 0, mean: 0, m2: 0, min: Infinity, max: -Infinity, vals: [] })); groups.set(g, A); }
         const wt = w ? (w[i] || 0) : 1;
         if (!(wt > 0)) continue;
         for (let s = 0; s < xs.length; s++) {
           const x = xs[s][i]; if (!Number.isFinite(x)) continue;
           const a = A[s];
-          a.n++; a.sw += wt; a.swx += wt * x; a.swx2 += wt * x * x;
+          a.n++; momentAdd(a, x, wt);
           if (x < a.min) a.min = x; if (x > a.max) a.max = x;
           a.vals.push(x);
         }
       }
       const out = [];
-      for (const [g, A] of groups) out.push([g, A.map((a) => { const td = TD.create(); if (a.vals.length) TD.pushArray(td, a.vals); return { n: a.n, sw: a.sw, swx: a.swx, swx2: a.swx2, min: a.min, max: a.max, td }; })]);
+      for (const [g, A] of groups) out.push([g, A.map((a) => { const td = TD.create(); if (a.vals.length) TD.pushArray(td, a.vals); return { n: a.n, sw: a.sw, mean: a.mean, m2: a.m2, min: a.min, max: a.max, td }; })]);
       return { groups: out, overflow };
     },
   };
@@ -304,7 +326,7 @@ export function statsMerge(SL, parts) {
       if (!A) { if (groups.size >= 256) { overflow = true; continue; } groups.set(g, accs); continue; }
       accs.forEach((b, s) => {
         const a = A[s];
-        a.n += b.n; a.sw += b.sw; a.swx += b.swx; a.swx2 += b.swx2;
+        a.n += b.n; momentMerge(a, b);
         if (b.min < a.min) a.min = b.min; if (b.max > a.max) a.max = b.max;
         a.td = TD.merge(a.td, b.td);
       });

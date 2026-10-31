@@ -984,7 +984,7 @@ import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSour
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
-import { gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge } from './src/kernels.js';   // the analysis kernels (page + scan workers)
+import { gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/kernels.js';   // the analysis kernels (page + scan workers)
 import { scanColumnar, canScanColumnar } from './src/colscan.js';   // columnar, parallel scans of Parquet models
 import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk builder off the page (compaction)
 import { buildValueTexture } from './src/valuetex.js';       // colour-by a column the chunks don't carry: a per-record value texture
@@ -5442,7 +5442,7 @@ async function scanStatsPinned(L, st, mask, onProgress, signal) {
   } catch { return null; }
   const total = attrRowCountOf(L) || 0; if (!total) return null;
   const TD = tdigest();
-  const mkAcc = () => st.cols.map(() => ({ n: 0, sw: 0, swx: 0, swx2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
+  const mkAcc = () => st.cols.map(() => ({ n: 0, sw: 0, mean: 0, m2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
   const groups = new Map();
   let overflow = false;
   const scr = {};
@@ -5469,7 +5469,7 @@ async function scanStatsPinned(L, st, mask, onProgress, signal) {
         const x = numOf(colArrs[s][i]);
         if (!Number.isFinite(x)) continue;
         const a = A[s];
-        a.n++; a.sw += w; a.swx += w * x; a.swx2 += w * x * x;
+        a.n++; momentAdd(a, x, w);
         if (x < a.min) a.min = x; if (x > a.max) a.max = x;
         tdAdd(TD, a, x);
       }
@@ -5483,9 +5483,8 @@ async function scanStatsPinned(L, st, mask, onProgress, signal) {
     const A = groups.get(g);
     for (let s = 0; s < st.cols.length; s++) {
       const a = A[s]; if (!a.n) continue;
-      const mean = a.swx / a.sw, vr = Math.max(0, a.swx2 / a.sw - mean * mean);
       const td = tdDone(TD, a), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
-      rows.push({ group: g, col: st.cols[s], n: a.n, mean, std: Math.sqrt(vr), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
+      rows.push({ group: g, col: st.cols[s], n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
     }
   }
   window.__statsFast = (window.__statsFast || 0) + 1;      // test observability (smoke2 §37 asserts non-vacuity)
@@ -5557,9 +5556,8 @@ function openStats(L, ropts) {
         const A = merged.groups.get(g);
         for (let i = 0; i < colFns.length; i++) {
           const a = A[i]; if (!a.n) continue;
-          const mean = a.swx / a.sw, vr = Math.max(0, a.swx2 / a.sw - mean * mean);
           const td = TDm.result(a.td), q = (p2) => quantileFromCentroids(td.centroids, td.count, p2);
-          rows.push({ group: g, col: colFns[i].c, n: a.n, mean, std: Math.sqrt(vr), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
+          rows.push({ group: g, col: colFns[i].c, n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
         }
       }
       return { rows, groupBy: st.groupBy, weighted: !!weightFn, overflow: merged.overflow, where };
@@ -5567,7 +5565,7 @@ function openStats(L, ropts) {
     const fast = await scanStatsPinned(L, st, mask, onProgress, signal);   // pinned columns → the tier-3 window path
     if (fast) return fast;
     const TD = tdigest();
-    const mkAcc = () => colFns.map(() => ({ n: 0, sw: 0, swx: 0, swx2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
+    const mkAcc = () => colFns.map(() => ({ n: 0, sw: 0, mean: 0, m2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
     const groups = new Map();
     let overflow = false, total = 0;
     const N = attrRowCountOf(L) || 0;
@@ -5586,7 +5584,7 @@ function openStats(L, ropts) {
           const x = numOf(colFns[i].fn(row));
           if (!Number.isFinite(x)) continue;
           const a = A[i];
-          a.n++; a.sw += w; a.swx += w * x; a.swx2 += w * x * x;
+          a.n++; momentAdd(a, x, w);
           if (x < a.min) a.min = x; if (x > a.max) a.max = x;
           tdAdd(TD, a, x);
         }
@@ -5598,9 +5596,8 @@ function openStats(L, ropts) {
       const A = groups.get(g);
       for (let i = 0; i < colFns.length; i++) {
         const a = A[i]; if (!a.n) continue;
-        const mean = a.swx / a.sw, vr = Math.max(0, a.swx2 / a.sw - mean * mean);
         const td = tdDone(TD, a), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
-        rows.push({ group: g, col: colFns[i].c, n: a.n, mean, std: Math.sqrt(vr), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
+        rows.push({ group: g, col: colFns[i].c, n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
       }
     }
     return { rows, groupBy: st.groupBy, weighted: !!weightFn, overflow };

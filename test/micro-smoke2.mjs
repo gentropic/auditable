@@ -3273,7 +3273,7 @@ await p.close();
 
 // ── §49: stats + swath COLUMNAR (src/colscan.js) agree with the row path, and
 //     Run ↔ Cancel. The same 150,000 blocks as Parquet (columnar, workers) and as
-//     CSV (the row path): stats grouped + weighted — moments to 1e-12 (std 1e-8), quantiles
+//     CSV (the row path): stats grouped + weighted — moments (std too) to 1e-12, quantiles
 //     within the t-digest's tolerance; the swath band table to 1e-9. Cancel: a
 //     fresh run says "cancelled"; a cancelled re-run keeps the previous result. ──
 {
@@ -3306,9 +3306,9 @@ await p.close();
     for (const a of sP.rows) {
       const b = sC.rows.find((x2) => x2.group === a.group && x2.col === a.col);
       if (!b || a.n !== b.n) { mom++; continue; }
-      // std is Σwx²/Σw − mean²: a column with a small spread next to its mean (SG ≈ 2.7 ± 0.16) amplifies the
-      // summation ORDER (per row group, then merged) ~300× — 1e-10 relative, not a parity bug
-      for (const k of ['mean', 'std', 'min', 'max']) if (Math.abs(a[k] - b[k]) > (k === 'std' ? 1e-8 : 1e-12) * Math.max(1, Math.abs(b[k]))) { mom++; (window.__momDiff = window.__momDiff || []).push(`${a.group}/${a.col}/${k}: ${a[k]} vs ${b[k]}`); }
+      // std is Welford + Chan's merge (src/kernels.js): with Σwx² − mean², SG ≈ 2.7 ± 0.16 amplified the
+      // summation ORDER ~300× (1e-10 relative, which needed a 1e-8 tolerance); now std holds to 1e-12 too
+      for (const k of ['mean', 'std', 'min', 'max']) if (Math.abs(a[k] - b[k]) > 1e-12 * Math.max(1, Math.abs(b[k]))) { mom++; (window.__momDiff = window.__momDiff || []).push(`${a.group}/${a.col}/${k}: ${a[k]} vs ${b[k]}`); }
       for (const k of ['q25', 'q50', 'q75']) if (Math.abs(a[k] - b[k]) > 0.01 * span) qBad++;
     }
     const wP = await swath(LP), wC = await swath(LC);
@@ -3677,15 +3677,25 @@ await p.close();
     M.cam.orbit(0.3, 0); M.requestRender();
     await new Promise((r) => requestAnimationFrame(r)); await new Promise((r) => requestAnimationFrame(r));
     const staleBefore = M.renderer.captureReady;
+    // what is clickable changes WITHOUT a camera move (the layer hidden): the capture
+    // must stop answering at once — not only after the next frame has drawn
+    const ok2 = await ready();
+    M.renderer.setLayerVisible(id, false);
+    const readyAfterHide = M.renderer.captureReady;
+    const capB = M.renderer.picksFromCapture;
+    const hidden = await W.worldAt([[c.width / 2, c.height / 2]]);
+    const hiddenPick = { ok2, readyAfterHide, used: M.renderer.picksFromCapture - capB, hit: !!(hidden && hidden[0]) };
+    M.renderer.setLayerVisible(id, true); M.requestRender();
     // the row worker: a pick's row = the page's read of that row
     const L = M.layers().find((l) => l.id === id);
     const rows = [];
     for (const rec of [0, 4321, N - 1]) rows.push(JSON.stringify(await M.fetchLayerRow(L, rec)) === JSON.stringify(['X', 'Y', 'Z', 'AU'].map((nm) => ({ X: x, Y: y, Z: z, AU: au })[nm][rec])));
-    return { plain, sect, staleBefore, rows };
+    return { plain, sect, staleBefore, hiddenPick, rows };
   });
   chk(`pick from the idle capture = a rendered pick at 49 points (${pc.plain.hits} hits, ${pc.plain.used} answered from the capture)`, pc.plain.ready && pc.plain.used > 0 && pc.plain.same && pc.plain.hits > 10);
   chk(`…with a section on too (${pc.sect.hits} hits, same: ${pc.sect.same})`, pc.sect.ready && pc.sect.used > 0 && pc.sect.same);
   chk(`a moved camera drops the capture (ready right after: ${pc.staleBefore})`, pc.staleBefore === false);
+  chk(`a hidden layer: the capture stops answering before the next frame (${JSON.stringify(pc.hiddenPick)})`, pc.hiddenPick.ok2 && !pc.hiddenPick.readyAfterHide && pc.hiddenPick.used === 0 && !pc.hiddenPick.hit);
   chk(`a Parquet row read by the row worker = the source row (${pc.rows})`, pc.rows.every(Boolean));
   await pq5.close();
 }
