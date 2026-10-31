@@ -963,7 +963,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { coordNum, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
+import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -985,7 +985,7 @@ import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // sha
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/kernels.js';   // the analysis kernels (page + scan workers)
-import { scanColumnar, canScanColumnar, setCsvColumnar } from './src/colscan.js';   // columnar, parallel scans of Parquet / .dm / indexed CSV models
+import { scanColumnar, canScanColumnar, setCsvColumnar, zoneKeeper } from './src/colscan.js';   // columnar, parallel scans of Parquet / .dm / indexed CSV models
 import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk builder off the page (compaction)
 import { buildValueTexture } from './src/valuetex.js';       // colour-by a column the chunks don't carry: a per-record value texture
 import { parquetRow } from './src/rowworker.js';          // a Parquet row off the page (the pick, the record panel)
@@ -2763,7 +2763,8 @@ async function* layerPositions(L, bbox = null) {
     let wake = null, finished = false, failure = null, skipped = 0;
     const poke = () => { if (wake) { const w = wake; wake = null; w(); } };
     scanColumnar(L, { kernel: 'positions', params: { coords: coordNames }, exprs: [], extraCols: coordNames, signal: ac.signal,
-      skipGroup: (g, rg) => { const sk = !!bbox && !!P && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },   // footer bboxes: Parquet only
+      skipGroup: (g, rg) => { const sk = !!bbox && !!P && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },   // footer bboxes: Parquet
+      keepZone: bbox ? zoneKeeper(L, { bbox }) : null,     // a CSV's zone bboxes
       onPart: (g, part, start) => new Promise((taken) => { if (ac.signal.aborted) { taken(); return; } queue.push({ part, start, taken }); poke(); }) })
       .then(() => { finished = true; poke(); }, (e) => { failure = e; poke(); });
     try {
@@ -3612,6 +3613,7 @@ function openGradeTonnage(L, ropts) {
       const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: { base: vc.base, dims } };
       const base = total;
       const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx), signal,
+        keepZone: seriesZoneKeep(Lx, params.series.map((x) => x.filter), scopeMask(st, Lx)),
         onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
       ses.forEach((se, k) => {
         const acc = gtMerge(parts.map((p2) => p2 && p2[k]));
@@ -3746,6 +3748,16 @@ function openGradeTonnage(L, ropts) {
 }
 // the row mask a scope implies for layer L (null = all rows); message when the
 // scope's prerequisite isn't there yet
+// a scan's zone keeper (src/colscan.js zoneKeeper) for analysis series: zones with
+// nothing in scope, and — when EVERY series has a filter — zones none of them can
+// match (the filters ORed: a zone one series needs is read for all)
+function seriesZoneKeep(L, filters, mask) {
+  let ast = null;
+  if (filters.length && filters.every((f) => f && String(f).trim())) {
+    try { for (const f of filters) { const a = parse(f); ast = ast ? { t: 'or', l: ast, r: a } : a; } } catch { ast = null; }
+  }
+  return zoneKeeper(L, { ast, mask });
+}
 function scopeMask(st, L) {
   if (st.scope === 'selection') return L._selMask || null;
   if (st.scope === 'filtered') return L._filterMask || null;
@@ -5008,6 +5020,7 @@ async function scanSwath(st, onProgress, signal) {
     const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dirs, fineOrigin, fineW, coords, vol: { base: vc.base, dims } };
     const base = total;
     const { parts } = await scanColumnar(Lx, { kernel: 'swath', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: [...coords, ...(dims || [])], mask: scopeMask(st, Lx), signal,
+      keepZone: seriesZoneKeep(Lx, params.series.map((x) => x.filter), scopeMask(st, Lx)),
       onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
     swathMerge(parts, ses.length, dirs.length).forEach((r, k) => { ses[k].fine = r.fine; ses[k].n = r.n; });
   }
@@ -5554,7 +5567,7 @@ function openStats(L, ropts) {
     if (pinnedFirst) return pinnedFirst;
     if (canScanColumnar(L)) {                              // Parquet / .dm / an indexed CSV: columnar + parallel (src/colscan.js)
       const params = { cols: colFns.map((c) => quoteIdent(c.c)), groupBy: st.groupBy || null, weight: (st.weight || '').trim() || null };
-      const { parts, where } = await scanColumnar(L, { kernel: 'stats', params, exprs: [...params.cols, params.groupBy, params.weight], mask, signal, onProgress });
+      const { parts, where } = await scanColumnar(L, { kernel: 'stats', params, exprs: [...params.cols, params.groupBy, params.weight], mask, signal, onProgress, keepZone: zoneKeeper(L, { mask }) });
       const merged = statsMerge({ tdigest }, parts), TDm = tdigest(), rows = [];
       for (const g of [...merged.groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
         const A = merged.groups.get(g);
@@ -9651,7 +9664,7 @@ async function openBlocksBlob(blob, name, opts = {}) {
   renderer.removeLayer(lid); if (!opts.keepFilter) renderer.setFilter(null, {}, lid);
   const prov = opts.provider ? await opts.provider() : null;
   const qualify = (layerById(lid) || {}).qualify || opts.qualify || null;
-  const bmOpts = discovered ? { discovered, qualify } : { qualify, ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), ...(opts.dimCols ? { dims: opts.dimCols } : {}), rotated: !opts.forcePoints };
+  const bmOpts = discovered ? { discovered, qualify } : { qualify, zones: !window.__noZones, ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), ...(opts.dimCols ? { dims: opts.dimCols } : {}), rotated: !opts.forcePoints };
   const { header, streamChunks } = prov || await openBlockModel(blob, bmOpts);
   if (opts.forcePoints) { header.grid = null; header.latticeCandidate = null; }
   await settleLatticeCandidate(header, name, opts);
@@ -10130,7 +10143,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
   // as everywhere, units the pushdown rules out never read (keepUnit: the footer's
   // min/max, or the .dm sidecar bands), matches + pins handed over IN UNIT ORDER.
   // false = superseded by a newer filter on this layer.
-  const engineFilter = async (readCols, keepUnit, skipWhat) => {
+  const engineFilter = async (readCols, keepUnit, skipWhat, keepZone = null) => {
       // tee the scan into the pin cache — only when its columns FIT the budget (a
       // refine needs every one of them): at 60M blocks four columns are 1.9 GB, and
       // the cache kept almost none of it after a half-second allocate-and-fill
@@ -10138,7 +10151,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       const ac = new AbortController();                      // a newer filter on this layer supersedes → stop the workers
       const names = fBlockDoc.parquet ? fBlockDoc.parquet.names : header.columns;
       const params = { expr, coords: [names[m.x], names[m.y], names[m.z]], chan: m.chan != null ? names[m.chan] : null, cat: m.cat != null ? names[m.cat] : null, categories: header.categories || null, tee: tee ? readCols : null };
-      let skipped = 0, units = 0;
+      let skipped = 0, units = 0, zonesSkipped = 0, zonesTotal = 0;
       const teePart = (part, start) => {
         for (const nm of readCols) {
           if (tee[nm] === null) continue;
@@ -10156,7 +10169,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
         }
       };
       try {
-        await scanColumnar(AL, { kernel: 'filter', params, exprs: [expr], extraCols: readCols, signal: ac.signal,
+        const res = await scanColumnar(AL, { kernel: 'filter', params, exprs: [expr], extraCols: readCols, signal: ac.signal, keepZone,
           skipGroup: keepUnit ? (g, u) => { units++; const sk = !keepUnit(u); if (sk) skipped++; return sk; } : null,
           onProgress: (d, N, w) => { if (alive() && N) $('#meta').textContent = `filter: ${rowsProgress(d, N)} · ${w}`; },
           onPart: (g, part, start) => {
@@ -10166,14 +10179,17 @@ async function applyBlockFilter(expr, L = activeLayer()) {
             for (let j = 0; j < mt.rec.length; j++) collect(mt.x[j], mt.y[j], mt.z[j], mt.chan[j], mt.cat ? mt.cat[j] : 0, start + mt.rec[j]);
             if (tee) teePart(part, start);
           } });
+        zonesSkipped = res.zonesSkipped; zonesTotal = res.zones;
       } catch (e) { if (e && e.name === 'AbortError') return false; throw e; }
       if (!alive()) return false;
       rec = header.count;
       window.__pqFilterSkipped = skipped;                    // smoke hook
-      if (tee && !skipped) {                                 // pin ONLY a complete scan (skipped groups would leave holes)
+      if (tee && !skipped && !zonesSkipped) {                // pin ONLY a complete scan (skipped groups would leave holes)
         for (const nm of readCols) { const e = tee[nm]; if (!e) continue; delete e.map; pinPut(AL, nm, e); }
       }
       if (skipped) $('#meta').textContent = `filter: ${skipped} of ${units} ${skipWhat}…`;
+      if (zonesSkipped) $('#meta').textContent = `filter: ${zonesSkipped} of ${zonesTotal} zones skipped by the zone maps…`;
+      window.__csvZonesSkipped = zonesSkipped;             // smoke hook
       window.__dmBandsSkipped = skipped;                   // smoke hook (the .dm name)
       return true;
   };
@@ -10400,8 +10416,9 @@ async function applyBlockFilter(expr, L = activeLayer()) {
         }
         return pqGroupCanMatch(astC, ranges);
       } : null;
-      const ok = await engineFilter(pinNames.map((tn) => tn.k), keep, 'runs skipped by the sidecar index');
-      window.__csvBandsSkipped = window.__dmBandsSkipped;   // smoke hook (the CSV name)
+      const kz = zoneKeeper(AL, { ast: astC });              // the zone maps (finer); the bands where there are none
+      const ok = await engineFilter(pinNames.map((tn) => tn.k), kz ? null : keep, 'runs skipped by the sidecar index', kz);
+      window.__csvBandsSkipped = kz ? window.__csvZonesSkipped : window.__dmBandsSkipped;   // smoke hook (the CSV name)
       if (!ok) return;
     } else if (!window.__pinUsed) {
     const BB = AL && AL._bands, idxC = header.index;
@@ -11438,6 +11455,7 @@ async function saveProject() {
                 numericColumns: h.numericColumns, categories: h.categories, attributes: h.attributes,
                 index: h.index ? { k: h.index.k, offsets: [...h.index.offsets] } : undefined,
                 dropped: h.dropped || null,
+                zones: zonesToJSON(h.zones) || undefined,
               },
           colStats: L._colStats || undefined,
           bands: L._bands || undefined,
@@ -18758,7 +18776,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, startChunkBuilder, setCsvColumnar, canScanColumnar, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

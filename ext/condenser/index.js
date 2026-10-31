@@ -1800,6 +1800,127 @@ function describeQualified(policy = QUALIFIED_DEFAULT) {
   return `${below} · ${above}${policy.negBelow ? ' · −x → below x' : ''}`;
 }
 
+// ── src/io/zones.js ──
+
+// ZONE MAPS — per-k-record statistics of a delimited model, for skipping.
+//
+// A zone is k consecutive RECORDS (the renderer's numbering), the grain of the
+// sparse line index, so zone z's bytes are [index.offsets[z], index.offsets[z+1])
+// and a reader can seek straight past it. Per zone:
+//   numeric column → min, max, and whether a blank may read there;
+//   category column → the set of values present (a 256-bit set over the
+//   column's dictionary; a column with more than 256 values keeps none).
+// Built in the open's discovery pass (every value is read there anyway).
+//
+// SOUND under every qualifier policy, so a policy change never invalidates them:
+// what a cell can read as is covered, whatever the policy says —
+//   <x  → 0, x/2, x or blank   ⇒ the range takes in [0, x], and a blank
+//   >x  → x or blank            ⇒ x, and a blank
+//   −n  → −n, or (negBelow) [0, n] or blank  ⇒ [−n, n], and a blank
+//   a code / text / ''          ⇒ a blank
+// Coordinates take no qualifier (the row qualifier skips them): just the value.
+// A zone with nothing finite keeps min > max — "no stats", it must be read.
+
+const grow$zones = (a, n, Type, fill) => {
+  if (a.length >= n) return a;
+  const b = new Type(Math.max(n, a.length * 2)); if (fill !== undefined) b.fill(fill); b.set(a); return b;
+};
+
+function createZoneBuilder(columns, { num, coord, k = 1024, catMax = 256 }) {
+  const coordSet = new Set(coord);
+  const nums = [...num].map((i) => ({ i, name: columns[i], coord: coordSet.has(i), min: new Float64Array(64).fill(Infinity), max: new Float64Array(64).fill(-Infinity), blank: new Uint8Array(64) }));
+  const numSet = new Set(num);
+  const cats = columns.map((name, i) => i).filter((i) => !numSet.has(i)).map((i) => ({ i, name: columns[i], dict: new Map(), bits: new Uint32Array(64 * 8), dead: false }));
+  let nz = 0;
+  const widen = (c, z, x) => { if (x < c.min[z]) c.min[z] = x; if (x > c.max[z]) c.max[z] = x; };
+  return {
+    // one accepted record's fields (rec = its record number, in order)
+    push(f, rec) {
+      const z = (rec / k) | 0;
+      if (z >= nz) {
+        nz = z + 1;
+        for (const c of nums) { c.min = grow$zones(c.min, nz, Float64Array, Infinity); c.max = grow$zones(c.max, nz, Float64Array, -Infinity); c.blank = grow$zones(c.blank, nz, Uint8Array); }
+        for (const c of cats) if (!c.dead) c.bits = grow$zones(c.bits, nz * 8, Uint32Array);
+      }
+      for (let q = 0; q < nums.length; q++) {
+        const c = nums[q], v = f[c.i];
+        const x = typeof v === 'number' ? v : v == null || v === '' ? NaN : +v;
+        if (x === x && x !== Infinity && x !== -Infinity) {
+          widen(c, z, x);
+          if (x < 0 && !c.coord) { widen(c, z, -x); widen(c, z, 0); c.blank[z] = 1; }
+          continue;
+        }
+        c.blank[z] = 1;
+        if (c.coord || v == null || v === '') continue;
+        const cq = classifyQualified(v);
+        if (cq.kind === 'below') { widen(c, z, 0); widen(c, z, cq.v); }
+        else if (cq.kind === 'above') widen(c, z, cq.v);
+      }
+      for (let q = 0; q < cats.length; q++) {
+        const c = cats[q];
+        if (c.dead) continue;
+        const v = f[c.i] == null ? '' : String(f[c.i]);
+        let code = c.dict.get(v);
+        if (code === undefined) {
+          if (c.dict.size >= catMax) { c.dead = true; c.bits = null; c.dict = null; continue; }
+          code = c.dict.size; c.dict.set(v, code);
+        }
+        c.bits[z * 8 + (code >>> 5)] |= 1 << (code & 31);
+      }
+    },
+    finish(count) {
+      const n = Math.ceil(count / k);
+      const num = {}, cat = {};
+      for (const c of nums) num[c.name] = { min: c.min.slice(0, n), max: c.max.slice(0, n), blank: c.blank.slice(0, n) };
+      for (const c of cats) if (!c.dead) cat[c.name] = { dict: [...c.dict.keys()], bits: c.bits.slice(0, n * 8) };
+      return { k, n, count, num, cat };
+    },
+  };
+}
+
+// the statistics of zones [z0, z1] (inclusive), as canMatch reads them
+// ({ name → { min, max, hasBlank } | { values } }), for the columns in `names`
+// (all when omitted)
+function zoneRanges(zones, z0, z1, names = null) {
+  const out = {};
+  const want = names ? new Set(names.map((s) => String(s).toLowerCase())) : null;
+  for (const name in zones.num) {
+    if (want && !want.has(name.toLowerCase())) continue;
+    const c = zones.num[name];
+    let mn = Infinity, mx = -Infinity, bl = false;
+    for (let z = z0; z <= z1; z++) { if (c.min[z] < mn) mn = c.min[z]; if (c.max[z] > mx) mx = c.max[z]; if (c.blank[z]) bl = true; }
+    out[name] = { min: mn, max: mx, hasBlank: bl };
+  }
+  for (const name in zones.cat) {
+    if (want && !want.has(name.toLowerCase())) continue;
+    const c = zones.cat[name], values = [];
+    for (let code = 0; code < c.dict.length; code++) {
+      const w = code >>> 5, b = 1 << (code & 31);
+      for (let z = z0; z <= z1; z++) if (c.bits[z * 8 + w] & b) { values.push(c.dict[code]); break; }
+    }
+    out[name] = { values };
+  }
+  return out;
+}
+
+// to and from a sidecar (JSON): the arrays as base64 of their bytes
+const b64 = (a) => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (s, Type) => { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Type(u.buffer); };
+function zonesToJSON(zones) {
+  if (!zones) return null;
+  const num = {}, cat = {};
+  for (const n in zones.num) { const c = zones.num[n]; num[n] = { min: b64(c.min), max: b64(c.max), blank: b64(c.blank) }; }
+  for (const n in zones.cat) { const c = zones.cat[n]; cat[n] = { dict: c.dict, bits: b64(c.bits) }; }
+  return { k: zones.k, n: zones.n, count: zones.count, num, cat };
+}
+function zonesFromJSON(j) {
+  if (!j || !j.num) return null;
+  const num = {}, cat = {};
+  for (const n in j.num) { const c = j.num[n]; num[n] = { min: unb64(c.min, Float64Array), max: unb64(c.max, Float64Array), blank: unb64(c.blank, Uint8Array) }; }
+  for (const n in j.cat) { const c = j.cat[n]; cat[n] = { dict: c.dict, bits: unb64(c.bits, Uint32Array) }; }
+  return { k: j.k, n: j.n, count: j.count, num, cat };
+}
+
 // ── src/io/blockmodel.js ──
 
 // @gcu/condenser — delimited block-model provider (CSV/GSLIB-ish exports).
@@ -2055,16 +2176,21 @@ async function readDelimitedRun(blob, run, o) {
   return outs;
 }
 
-// The runs a delimited model is read in by the columnar engine: `anchors`
-// index entries each (index.k records per entry), the last to the end of the
-// file. [] without a complete index (an old sidecar) → the caller keeps the row path.
-function delimitedRuns(header, size, anchors = 256) {
+// The runs a delimited model is read in by the columnar engine: up to `anchors`
+// index entries each (index.k records per entry; an entry is a ZONE), the last to
+// the end of the file. keep(z) → false leaves zone z out — a run is consecutive
+// kept zones, so a skipped zone's bytes are never read. [] without a complete
+// index (an old sidecar) → the caller keeps the row path.
+function delimitedRuns(header, size, anchors = 256, keep = null) {
   const idx = header.index, n = header.count;
   if (!idx || !idx.k || !idx.offsets || !n || idx.offsets.length !== Math.ceil(n / idx.k)) return [];
-  const runs = [];
-  for (let a = 0; a < idx.offsets.length; a += anchors) {
-    const b = a + anchors, start = a * idx.k;
-    runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < idx.offsets.length ? idx.offsets[b] : size });
+  const runs = [], nz = idx.offsets.length;
+  const push = (a, b) => { const start = a * idx.k; runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < nz ? idx.offsets[b] : size }); };
+  let a = -1;
+  for (let z = 0; z <= nz; z++) {
+    const kept = z < nz && (!keep || keep(z));
+    if (kept && a < 0) a = z;
+    if (a >= 0 && (!kept || z - a === anchors)) { push(a, z); a = kept ? z : -1; }
   }
   return runs;
 }
@@ -2115,7 +2241,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 // opts.dims — { x, y, z } column indices of the per-block size columns, stated
 //   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
 // mapping.cat = -1 — "no category" (no auto-pick from the text columns).
-async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, zones = false, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -2125,6 +2251,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
       index: discovered.index
         ? { k: discovered.index.k, offsets: discovered.index.offsets instanceof Float64Array ? discovered.index.offsets : Float64Array.from(discovered.index.offsets) }
         : undefined,
+      zones: discovered.zones && discovered.zones.num && typeof Object.values(discovered.zones.num)[0]?.min === 'string' ? zonesFromJSON(discovered.zones) : (discovered.zones || null),
     };
     const map2 = header.mapping;
     const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
@@ -2178,6 +2305,28 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const minDim = [Infinity, Infinity, Infinity];
   const dimSet = new Set();
 
+  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
+  // the UI offers these as color channels; switching re-runs sweep 2 only.
+  const numericColumns = [], qualifiedColumns = [];
+  if (sniff.header) {
+    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
+    const split2 = splitter(sniff.delim);
+    for (let i = 0; i < sniff.columns; i++) {
+      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
+      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
+      const cq = vals.length ? censusQualified(vals) : null;
+      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
+      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
+    }
+  }
+  // zone maps (opts.zones): per-index-entry skip statistics, filled in the same
+  // pass — numeric = the coordinates, the size columns and the numeric columns;
+  // every other column is a category candidate
+  const zb = zones && sniff.header ? createZoneBuilder(sniff.header, {
+    num: [map.x, map.y, map.z, ...sniff.header.map((h, i) => (DIM_RE.test(String(h).trim()) ? i : -1)).filter((i) => i >= 0), ...numericColumns.map((c) => c.i)].filter((i, q, a) => a.indexOf(i) === q),
+    coord: [map.x, map.y, map.z], k: indexEvery,
+  }) : null;
+
   // ── sweep 1: discovery — axis distincts + extents + category dictionary ──
   const axc = [axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT)];
   const ax = axc.map((c) => c.set);
@@ -2204,6 +2353,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
         continue;
       }
       if (count % indexEvery === 0) anchors.push(at[fi]);
+      if (zb) zb.push(f, count);
       if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
       else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
       count++;
@@ -2253,20 +2403,6 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     ? [...catCounts.keys()].sort() : null;
   const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
 
-  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
-  // the UI offers these as color channels; switching re-runs sweep 2 only.
-  const numericColumns = [], qualifiedColumns = [];
-  if (sniff.header) {
-    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split2 = splitter(sniff.delim);
-    for (let i = 0; i < sniff.columns; i++) {
-      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
-      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
-      const cq = vals.length ? censusQualified(vals) : null;
-      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
-      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
-    }
-  }
   const header = {
     kind: 'blockmodel', count,
     bbox: { min, max },
@@ -2278,6 +2414,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
     dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
+    zones: zb ? zb.finish(count) : null,                   // per-index-entry skip statistics (io/zones.js)
     numericColumns,
     qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
     categories,
@@ -8734,7 +8871,7 @@ function parseNumber(b, s, e) {
 }
 
 // growable typed arrays (the polyline vertex table, LWPOLYLINE vertices)
-function grow(Type) {
+function grow$stream(Type) {
   let a = new Type(64), n = 0;
   return {
     push(v) { if (n === a.length) { const b = new Type(a.length * 2); b.set(a); a = b; } a[n++] = v; },
@@ -8786,7 +8923,7 @@ function createSceneStream(sink, opts = {}) {
   const genBuf = [];                                       // buffered slow-path records (INSERT + ATTRIBs stay together)
   const slot = new Float64Array(1072), has = new Uint8Array(1072), touched = [];
   let rLayer = '0', rAci = null, rTc = null, rHandle = null;
-  const lw = { x: grow(Float64Array), y: grow(Float64Array), b: grow(Float64Array) };
+  const lw = { x: grow$stream(Float64Array), y: grow$stream(Float64Array), b: grow$stream(Float64Array) };
   let poly = null;                                         // active POLYLINE: header fields + growable vertex table
 
   // colour memo: consecutive entities almost always share layer + colour
@@ -8836,8 +8973,8 @@ function createSceneStream(sink, opts = {}) {
   function beginPoly() {
     poly = {
       flags: S(70), M: S(71), N: S(72), layer: rLayer, aci: rAci, tc: rTc, handle: rHandle,
-      x: grow(Float64Array), y: grow(Float64Array), z: grow(Float64Array), b: grow(Float64Array), f: grow(Int32Array),
-      i1: grow(Int32Array), i2: grow(Int32Array), i3: grow(Int32Array), i4: grow(Int32Array),
+      x: grow$stream(Float64Array), y: grow$stream(Float64Array), z: grow$stream(Float64Array), b: grow$stream(Float64Array), f: grow$stream(Int32Array),
+      i1: grow$stream(Int32Array), i2: grow$stream(Int32Array), i3: grow$stream(Int32Array), i4: grow$stream(Int32Array),
     };
   }
   function addVertex() {
@@ -11078,6 +11215,10 @@ export {
   qualifiedNumber,
   censusQualified,
   describeQualified,
+  createZoneBuilder,
+  zoneRanges,
+  zonesToJSON,
+  zonesFromJSON,
   buildStickChunk,
   stickLocalCenter,
   createStickChunkBuilder,

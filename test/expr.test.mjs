@@ -196,6 +196,32 @@ test('blank-propagation invariant — a missing grade never becomes 0', () => {
 
 // ── v0.2 additions ────────────────────────────────────────────────────────────
 
+test('canMatch — category value sets: never skips a chunk that has a match (oracle)', () => {
+  const pool = ['ox', 'fr', 'tr', 'OX', '', '1', '01', 'ox ', 'a,b'];
+  const consts = ["'ox'", "'OX'", "'fr'", "''", "'1'", '1', "'zz'", "'a,b'"];
+  let r = 9, pruned = 0;
+  const rnd = (n) => { r = (r * 1103515245 + 12345) >>> 0; return (r >>> 8) % n; };
+  for (let t = 0; t < 4000; t++) {
+    const values = [...new Set(Array.from({ length: 1 + rnd(4) }, () => pool[rnd(pool.length)]))];
+    const c = consts[rnd(consts.length)], c2 = consts[rnd(consts.length)];
+    const forms = [`ROCK = ${c}`, `ROCK != ${c}`, `${c} = ROCK`, `ROCK in (${c}, ${c2})`, `ROCK = ${c} or AU > 1`, `ROCK = ${c} and ROCK != ${c2}`];
+    const ex = forms[rnd(forms.length)];
+    const can = canMatch(ex, { rock: { values }, au: { min: 0, max: 0.5 } });
+    // the truth: some value in the set (with any AU in range) matches
+    const truth = values.some((v) => [0, 0.25, 0.5].some((au) => evalBool(ex, { ROCK: v, AU: au })));
+    if (truth) assert.ok(can, `skipped a match: ${ex} over ${JSON.stringify(values)}`);
+    if (!can) pruned++;
+  }
+  assert.ok(pruned > 500, `prunes something (${pruned})`);
+  // plain cases
+  assert.equal(canMatch("ROCK = 'ox'", { rock: { values: ['fr', 'tr'] } }), false);
+  assert.equal(canMatch("ROCK = 'ox'", { rock: { values: ['fr', 'ox'] } }), true);
+  assert.equal(canMatch("ROCK in ('ox', 'tr')", { rock: { values: ['fr'] } }), false);
+  assert.equal(canMatch("ROCK != 'ox'", { rock: { values: ['ox'] } }), false);
+  assert.equal(canMatch("ROCK != 'ox'", { rock: { values: ['ox', ''] } }), true);   // a blank row matches !=
+  assert.equal(canMatch("ROCK > 'm'", { rock: { values: ['a'] } }), true);         // ordering on a set: scan
+});
+
 test('canMatch — conservative chunk push-down over per-column stats', () => {
   const R = { au: { min: 0.1, max: 2.5 }, z: { min: 100, max: 200 } };
   // provably impossible → false (skip the chunk)

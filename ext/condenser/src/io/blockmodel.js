@@ -17,6 +17,7 @@ import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFro
 import { WS, splitFields, RecordJoiner, sampleRecords, coordNum } from './delimited.js';
 import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
 import { detectRotatedLattice, latticeMisfit } from '../grid/basis.js';
+import { createZoneBuilder, zonesFromJSON } from './zones.js';
 
 const X_RE = /^(x|xc|xcent(er|re)?|xmid|east(ing)?|xworld|centroid_?x)$/i;
 const Y_RE = /^(y|yc|ycent(er|re)?|ymid|north(ing)?|yworld|centroid_?y)$/i;
@@ -255,16 +256,21 @@ export async function readDelimitedRun(blob, run, o) {
   return outs;
 }
 
-// The runs a delimited model is read in by the columnar engine: `anchors`
-// index entries each (index.k records per entry), the last to the end of the
-// file. [] without a complete index (an old sidecar) → the caller keeps the row path.
-export function delimitedRuns(header, size, anchors = 256) {
+// The runs a delimited model is read in by the columnar engine: up to `anchors`
+// index entries each (index.k records per entry; an entry is a ZONE), the last to
+// the end of the file. keep(z) → false leaves zone z out — a run is consecutive
+// kept zones, so a skipped zone's bytes are never read. [] without a complete
+// index (an old sidecar) → the caller keeps the row path.
+export function delimitedRuns(header, size, anchors = 256, keep = null) {
   const idx = header.index, n = header.count;
   if (!idx || !idx.k || !idx.offsets || !n || idx.offsets.length !== Math.ceil(n / idx.k)) return [];
-  const runs = [];
-  for (let a = 0; a < idx.offsets.length; a += anchors) {
-    const b = a + anchors, start = a * idx.k;
-    runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < idx.offsets.length ? idx.offsets[b] : size });
+  const runs = [], nz = idx.offsets.length;
+  const push = (a, b) => { const start = a * idx.k; runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < nz ? idx.offsets[b] : size }); };
+  let a = -1;
+  for (let z = 0; z <= nz; z++) {
+    const kept = z < nz && (!keep || keep(z));
+    if (kept && a < 0) a = z;
+    if (a >= 0 && (!kept || z - a === anchors)) { push(a, z); a = kept ? z : -1; }
   }
   return runs;
 }
@@ -315,7 +321,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 // opts.dims — { x, y, z } column indices of the per-block size columns, stated
 //   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
 // mapping.cat = -1 — "no category" (no auto-pick from the text columns).
-export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+export async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, zones = false, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -325,6 +331,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
       index: discovered.index
         ? { k: discovered.index.k, offsets: discovered.index.offsets instanceof Float64Array ? discovered.index.offsets : Float64Array.from(discovered.index.offsets) }
         : undefined,
+      zones: discovered.zones && discovered.zones.num && typeof Object.values(discovered.zones.num)[0]?.min === 'string' ? zonesFromJSON(discovered.zones) : (discovered.zones || null),
     };
     const map2 = header.mapping;
     const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
@@ -378,6 +385,28 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   const minDim = [Infinity, Infinity, Infinity];
   const dimSet = new Set();
 
+  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
+  // the UI offers these as color channels; switching re-runs sweep 2 only.
+  const numericColumns = [], qualifiedColumns = [];
+  if (sniff.header) {
+    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
+    const split2 = splitter(sniff.delim);
+    for (let i = 0; i < sniff.columns; i++) {
+      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
+      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
+      const cq = vals.length ? censusQualified(vals) : null;
+      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
+      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
+    }
+  }
+  // zone maps (opts.zones): per-index-entry skip statistics, filled in the same
+  // pass — numeric = the coordinates, the size columns and the numeric columns;
+  // every other column is a category candidate
+  const zb = zones && sniff.header ? createZoneBuilder(sniff.header, {
+    num: [map.x, map.y, map.z, ...sniff.header.map((h, i) => (DIM_RE.test(String(h).trim()) ? i : -1)).filter((i) => i >= 0), ...numericColumns.map((c) => c.i)].filter((i, q, a) => a.indexOf(i) === q),
+    coord: [map.x, map.y, map.z], k: indexEvery,
+  }) : null;
+
   // ── sweep 1: discovery — axis distincts + extents + category dictionary ──
   const axc = [axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT)];
   const ax = axc.map((c) => c.set);
@@ -404,6 +433,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
         continue;
       }
       if (count % indexEvery === 0) anchors.push(at[fi]);
+      if (zb) zb.push(f, count);
       if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
       else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
       count++;
@@ -453,20 +483,6 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     ? [...catCounts.keys()].sort() : null;
   const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
 
-  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
-  // the UI offers these as color channels; switching re-runs sweep 2 only.
-  const numericColumns = [], qualifiedColumns = [];
-  if (sniff.header) {
-    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split2 = splitter(sniff.delim);
-    for (let i = 0; i < sniff.columns; i++) {
-      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
-      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
-      const cq = vals.length ? censusQualified(vals) : null;
-      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
-      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
-    }
-  }
   const header = {
     kind: 'blockmodel', count,
     bbox: { min, max },
@@ -478,6 +494,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
     dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
+    zones: zb ? zb.finish(count) : null,                   // per-index-entry skip statistics (io/zones.js)
     numericColumns,
     qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
     categories,

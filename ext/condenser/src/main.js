@@ -16,6 +16,7 @@ export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel
 export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine, coordNum } from './io/delimited.js';
 export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces, desurveyHolePaths } from './io/drillholes.js';
 export { QUALIFIED_DEFAULT, classifyQualified, qualifiedNumber, censusQualified, describeQualified } from './io/qualified.js';
+export { createZoneBuilder, zoneRanges, zonesToJSON, zonesFromJSON } from './io/zones.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';
 export { createSticksPipeline } from './core/gl-sticks.js';
 export { openMsh, openObj, openPlyMesh } from './io/mesh-io.js';

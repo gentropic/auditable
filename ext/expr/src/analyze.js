@@ -6,6 +6,7 @@
 
 import { parse, asAst, quoteIdent, ExprParseError } from './parse.js';
 import { evaluate } from './eval.js';
+import { eq, inSet } from './runtime.js';
 
 // Free field references — the expression's source columns (original case, deduped).
 export function deps(exprOrAst, opts) {
@@ -78,6 +79,11 @@ export function validate(exprOrAst, columns, opts) {
 // Soundness note (`!=`): a BLANK row matches `AU != 5` (eq(blank,5) is false), and
 // min/max stats don't describe blanks — so `!=` prunes only when the stats assert
 // `hasBlank: false`. (Hand-rolled pushdowns typically miss this.)
+//
+// A CATEGORY column's stats are the set of values present: { values: [...] } (a
+// blank is the value ''). `=`, `!=` and `in` against constants test the set with
+// the evaluator's own equality (runtime eq / inSet), so the two can't disagree; anything
+// else on such a column must scan.
 const FLIP = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '=': '=', '!=': '!=' };
 export function canMatch(exprOrAst, ranges, opts) {
   let ast;
@@ -90,11 +96,25 @@ export function canMatch(exprOrAst, ranges, opts) {
     return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
   };
   const usable = (fr) => fr && Number.isFinite(fr.min) && Number.isFinite(fr.max);
+  const cval = (n) => {                                               // a field-free subtree's value, or undefined
+    if (deps(n).length) return undefined;
+    try { return evaluate(n, {}); } catch { return undefined; }
+  };
+  const valuesOf = (n) => { const fr = rangeOf(n); return fr && Array.isArray(fr.values) ? fr.values : null; };
   function m(n) {
     switch (n.t) {
       case 'and': return m(n.l) && m(n.r);                            // either side impossible → the conjunction is
       case 'or': return m(n.l) || m(n.r);
       case 'cmp': {
+        if (n.op === '=' || n.op === '!=') {                          // a category column: its value set
+          let vs = valuesOf(n.l), side = n.r;
+          if (!vs) { vs = valuesOf(n.r); side = n.l; }
+          if (vs) {
+            const k = cval(side);
+            if (k === undefined) return true;
+            return n.op === '=' ? vs.some((v) => eq(v, k)) : vs.some((v) => !eq(v, k));
+          }
+        }
         let fr = rangeOf(n.l), k = cnum(n.r), o = n.op;
         if (!usable(fr) || k === null) {
           const fr2 = rangeOf(n.r), k2 = cnum(n.l);
@@ -116,6 +136,11 @@ export function canMatch(exprOrAst, ranges, opts) {
         return (usable(fr) && lo !== null && hi !== null) ? (fr.max >= lo && fr.min <= hi) : true;
       }
       case 'in': {
+        const vs = valuesOf(n.e);
+        if (vs) {                                                     // the evaluator's in (runtime inSet), over the value set
+          const ks = n.set.map(cval);
+          return ks.some((k) => k === undefined) || vs.some((v) => inSet(v, ks));
+        }
         const fr = rangeOf(n.e); if (!usable(fr)) return true;
         return n.set.some((s) => { const k = cnum(s); return k === null ? true : (fr.min <= k && k <= fr.max); });
       }

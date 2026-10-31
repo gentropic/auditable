@@ -3833,6 +3833,98 @@ await p.close();
   await pf.close();
 }
 
+// ── §58: ZONE MAPS (condenser io/zones.js, src/colscan.js zoneKeeper): the open
+//     builds per-1024-record statistics; scans skip the zones that can't hold an
+//     answer. A lattice-ordered CSV (z slabs), qualified grades sprinkled through,
+//     a category confined to the top slabs. The filter skips zones and its mask is
+//     the row path's bit for bit — for a coordinate slab, a category, a qualified
+//     threshold (<0.05 may read as 0.025, 0.05, 0 or blank: never skipped); GT with
+//     a series filter and stats over a selection skip zones and equal the unzoned
+//     answer; the zones survive a save + reopen (the sidecar). ──
+{
+  const pz = await mkPage('sm2zones');
+  const zr = await pz.evaluate(async () => {
+    const M = window._micro;
+    M.setPinBudget('off'); M.setCsvColumnar(true, 4);
+    const NX = 32, NY = 32, NZ = 40;                       // 40960 records → 40 zones
+    let s = 'X,Y,Z,AU,ROCK\n', q = 3, i = 0;
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let a = 0; a < NX; a++, i++) {
+      q = (q * 1103515245 + 12345) >>> 0;
+      const au = i % 97 === 0 ? '<0.05' : String((k / 10 + ((q >>> 8) % 100) / 100).toFixed(2));
+      const rock = k >= 30 ? ['ox', 'fr'][(q >>> 16) % 2] : ['tr', 'fr'][(q >>> 16) % 2];
+      s += `${5 + a * 10},${5 + j * 10},${5 + k * 10},${au},${rock}\n`;
+    }
+    const id = await M.openBlob(new File([s], 'zones.csv'), 'zones.csv', 'replace');
+    const L = M.layers().find((l) => l.id === id), h = L.docs.blockDoc.header;
+    const out = { n: h.zones && h.zones.n, cats: h.zones && Object.keys(h.zones.cat) };
+    const maskOf = async (expr, mode) => {
+      M.setCsvColumnar(mode !== 'row', 4, mode === 'zones');
+      window.__csvZonesSkipped = 0;
+      await M.applyBlockFilter(expr, L);
+      const m = L._filterMask ? Uint8Array.from(L._filterMask) : null;
+      const sk = window.__csvZonesSkipped || 0;
+      await M.applyBlockFilter('', L);
+      return { m, sk };
+    };
+    const same = (a, b) => { if (!a || !b || a.length !== b.length) return -1; let d = 0; for (let x = 0; x < a.length; x++) if (a[x] !== b[x]) d++; return d; };
+    out.f = {};
+    for (const ex of ['Z < 100', "ROCK = 'ox'", 'AU < 0.03', "Z > 300 and ROCK = 'tr'"]) {
+      const zn = await maskOf(ex, 'zones'), off = await maskOf(ex, 'nozones'), row = await maskOf(ex, 'row');
+      let hits = 0; for (const v of zn.m) hits += v;
+      out.f[ex] = { skipped: zn.sk, offSkipped: off.sk, dZoneRow: same(zn.m, row.m), dOffRow: same(off.m, row.m), hits };
+    }
+    // GT with a series filter, zones on vs off (both on the workers)
+    const gtOf = async (zonesOn) => {
+      M.setCsvColumnar(true, 4, zonesOn);
+      const el0 = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); if (el0) el0.remove();
+      M.openGradeTonnage(L, { run: true, cfg: { nCut: 12, series: [{ layer: L.name, col: 'AU', filter: 'Z < 100' }] } });
+      for (let n = 0; n < 600; n++) { const el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); if (el && el._gtSpec) return el._gtSpec.series[0].data; await new Promise((z) => setTimeout(z, 50)); }
+      return null;
+    };
+    const gOn = await gtOf(true), gOff = await gtOf(false);
+    const close = (a, b) => JSON.stringify(a, (k2, v) => (typeof v === 'number' ? +v.toPrecision(12) : v)) === JSON.stringify(b, (k2, v) => (typeof v === 'number' ? +v.toPrecision(12) : v));
+    out.gt = { same: !!gOn && close(gOn, gOff), rows: gOn && gOn.length };
+    // stats over a selection (the top slabs): zones with nothing selected are skipped
+    const sel = new Uint8Array(h.count); for (let r = 30 * 1024; r < h.count; r++) sel[r] = 1;
+    L._selMask = sel; L._selCount = h.count - 30 * 1024;
+    M.setCsvColumnar(true, 4, true);
+    const keep = M.zoneKeeper(L, { mask: sel });
+    let kept = 0; for (let z = 0; z < h.zones.n; z++) if (keep(z)) kept++;
+    out.selKept = kept;
+    const statsOf = async (zonesOn) => {
+      M.setCsvColumnar(true, 4, zonesOn);
+      const old = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('stats')); if (old) old.remove();
+      M.openStats(L, { run: true, cfg: { cols: ['AU'], groupBy: 'ROCK', scope: 'selection' } });
+      for (let n = 0; n < 600; n++) { const el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('stats')); if (el && el._scanWhere) return el._statsRows; await new Promise((z) => setTimeout(z, 50)); }
+      return null;
+    };
+    const sOn = await statsOf(true), sOff = await statsOf(false);
+    out.stats = { same: !!sOn && close(sOn.map((x) => ({ ...x, q25: 0, q50: 0, q75: 0 })), sOff.map((x) => ({ ...x, q25: 0, q50: 0, q75: 0 }))), rows: sOn && sOn.length };
+    M.setCsvColumnar(true); M.setPinBudget('auto');
+    return out;
+  });
+  await saveProject(pz);
+  await pz.close();
+  const pz2 = await mkPage('sm2zones');
+  await pz2.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2zones'); await window._micro.openProjectDir(dir); });
+  await pz2.waitForFunction(() => window._micro.layers().length && window._micro.layers()[0].docs.blockDoc && window._micro.layers()[0].docs.blockDoc.metaLine, null, { timeout: 60000 });
+  const re = await pz2.evaluate(async () => {
+    const M = window._micro, L = M.layers()[0], zs = L.docs.blockDoc.header.zones;
+    window.__csvZonesSkipped = 0; M.setPinBudget('off');
+    await M.applyBlockFilter('Z < 100', L);
+    let hits = 0; for (const v of L._filterMask) hits += v;
+    M.setPinBudget('auto');
+    return { n: zs && zs.n, typed: !!zs && zs.num.Z.min instanceof Float64Array, skipped: window.__csvZonesSkipped, hits };
+  });
+  await pz2.close();
+  chk(`zone maps built at the open: ${zr.n} zones, categories ${JSON.stringify(zr.cats)}`, zr.n === 40 && zr.cats.includes('ROCK'));
+  for (const [ex, f] of Object.entries(zr.f)) chk(`filter ${ex}: ${f.skipped} zones skipped (unzoned ${f.offSkipped}), ${f.hits} hits; mask vs the row path: ${f.dZoneRow} differ (unzoned ${f.dOffRow})`,
+    f.dZoneRow === 0 && f.dOffRow === 0 && f.offSkipped === 0 && (ex === 'AU < 0.03' ? f.hits > 0 : f.skipped > 0));
+  chk(`GT with a series filter (Z < 100): zones on = off (${zr.gt.same}, ${zr.gt.rows} cutoffs)`, zr.gt.same && zr.gt.rows > 5);
+  chk(`stats over a selection: ${zr.selKept} of 40 zones read, the same answer as unzoned (${zr.stats.same}, ${zr.stats.rows} rows)`, zr.selKept === 10 && zr.stats.same && zr.stats.rows >= 2);
+  chk(`the zones survive save + reopen (${re.n} zones, typed ${re.typed}): Z < 100 skips ${re.skipped}, ${re.hits} hits`, re.n === 40 && re.typed && re.skipped > 0 && re.hits === 32 * 32 * 10);
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

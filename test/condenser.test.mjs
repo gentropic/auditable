@@ -650,6 +650,50 @@ test('blockmodel: rows without usable coordinates are dropped and reported, ever
   assert.equal((await openBlockModel(new Blob(['X,Y,Z\n1,2,3\n4,5,6\n']))).header.dropped, null);
 });
 
+// zone maps: a zone the statistics rule out holds no matching record — under EVERY
+// qualifier policy (the oracle evaluates each record's substituted values)
+import { zoneRanges, zonesToJSON, zonesFromJSON, qualifiedNumber } from '../ext/condenser/src/main.js';
+import { canMatch as exprCanMatch, evalBool as exprEvalBool } from '../ext/expr/src/main.js';
+test('zones: sound skip statistics (numeric with qualifiers, categories, coordinates), every policy', async () => {
+  let txt = 'X,Y,Z,AU,CU,ROCK,NOTE\n', r = 5;
+  const rnd = (n) => { r = (r * 1103515245 + 12345) >>> 0; return (r >>> 8) % n; };
+  const rows = [];
+  for (let i = 0; i < 4000; i++) {
+    const z = 5 + ((i / 400) | 0) * 10;                        // lattice order: z slabs
+    const kind = rnd(20);
+    const au = kind === 0 ? '<0.05' : kind === 1 ? '>9' : kind === 2 ? 'n.d.' : kind === 3 ? '' : kind === 4 && i < 600 ? '-0.5' : kind === 4 && i >= 2800 && i < 3200 ? '-50' : String((((i / 400) | 0) + rnd(100) / 100).toFixed(2));
+    const rock = i < 1500 ? ['ox', 'fr'][rnd(2)] : ['tr', 'fr', ''][rnd(3)];
+    const cu = String(rnd(50) / 10);
+    const row = [5 + (i % 20) * 10, 5 + (((i / 20) | 0) % 20) * 10, z, au, cu, rock, `n${i}`];
+    rows.push(row); txt += row.join(',') + '\n';
+  }
+  const { header } = await openBlockModel(new Blob([txt]), { indexEvery: 64, zones: true });
+  const zs = header.zones;
+  assert.equal(zs.n, Math.ceil(4000 / 64));
+  assert.ok(zs.num.AU && zs.num.Z && zs.cat.ROCK && !zs.cat.NOTE, 'AU/Z numeric, ROCK a category, NOTE (4000 values) none');
+  const policies = [{ below: 'half', above: 'limit' }, { below: 'limit', above: 'limit' }, { below: 'zero', above: 'blank' }, { below: 'blank', above: 'limit', negBelow: true }, { below: 'half', above: 'limit', negBelow: true }];
+  const exprs = ['AU > 3.5', 'AU < 0.04', 'AU < -0.1', 'AU > 20', 'AU <= 0', 'AU between 2 and 2.5', 'AU != 0.025', 'Z < 30', 'Z >= 75 and AU > 7', "ROCK = 'ox'", "ROCK = ''", "ROCK != 'fr'", "ROCK in ('tr', 'zz')", "ROCK = 'ox' or Z > 90", 'CU > 4.9', 'AU = 9'];
+  const z2 = zonesFromJSON(JSON.parse(JSON.stringify(zonesToJSON(zs))));
+  let skipped = 0;
+  for (const ex of exprs) for (let z = 0; z < zs.n; z++) {
+    const can = exprCanMatch(ex, zoneRanges(zs, z, z));
+    assert.equal(exprCanMatch(ex, zoneRanges(z2, z, z)), can, 'the sidecar round trip says the same');
+    if (can) continue;
+    skipped++;
+    for (let q = z * 64; q < Math.min(4000, (z + 1) * 64); q++) for (const pol of policies) {
+      const f = rows[q];
+      const vals = { X: f[0], Y: f[1], Z: f[2], AU: qualifiedNumber(f[3], pol), CU: +f[4], ROCK: f[5], NOTE: f[6] };
+      if (Number.isNaN(vals.AU)) vals.AU = null;
+      assert.ok(!exprEvalBool(ex, vals), `zone ${z} skipped for ${ex}, but record ${q} matches under ${JSON.stringify(pol)}`);
+    }
+  }
+  assert.ok(skipped > 200, `skips something (${skipped})`);
+  // a range over several zones is the union
+  const all = zoneRanges(zs, 0, zs.n - 1, ['Z', 'ROCK']);
+  assert.deepEqual([all.Z.min, all.Z.max], [5, 95]);
+  assert.deepEqual([...all.ROCK.values].sort(), ['', 'fr', 'ox', 'tr']);
+});
+
 // ── drillhole provider ──
 import { classifyDrillholeHeader, sniffDrillholeFiles, openDrillholes } from '../ext/condenser/src/main.js';
 
