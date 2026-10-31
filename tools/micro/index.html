@@ -984,7 +984,7 @@ import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSour
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
-import { gtAccumulator, gtAbove, gtCuts, gtMerge } from './src/kernels.js';   // the analysis kernels (page + scan workers)
+import { gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge } from './src/kernels.js';   // the analysis kernels (page + scan workers)
 import { scanColumnar, canScanColumnar } from './src/colscan.js';   // columnar, parallel scans of Parquet models
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
@@ -3555,7 +3555,7 @@ function openGradeTonnage(L, ropts) {
   const markStale = () => { st.stale = true; if (staleEl) staleEl.textContent = st.scan ? '↻ config changed — Run to update' : ''; };
   // one streamed pass per series: compile grade / weight / filter, collect
   // (g, w), sort grade-descending → cumulative Σw / Σwg (then drop the raw pairs)
-  const scanGT = async (onProgress) => {
+  const scanGT = async (onProgress, signal) => {
     const dScale = unitConvert(1, st.densUnit, 't/m3');
     const series = st.series.map((s) => {
       const Lx = layerById(s.layerId); if (!Lx) return null;
@@ -3586,7 +3586,7 @@ function openGradeTonnage(L, ropts) {
       const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
       const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: { base: vc.base, dims } };
       const base = total;
-      const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx),
+      const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx), signal,
         onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
       ses.forEach((se, k) => {
         const acc = gtMerge(parts.map((p2) => p2 && p2[k]));
@@ -3604,7 +3604,7 @@ function openGradeTonnage(L, ropts) {
       // GT window actually runs.
       for await (const { f: row, rec: rr } of layerRecords(Lx)) {
         {
-          total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
+          total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
           if (mask && !(rr < mask.length && mask[rr])) continue;
           if (se.filterFn && !se.filterFn(row)) continue;
           const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;   // a blank grade is unestimated, not 0
@@ -3615,6 +3615,7 @@ function openGradeTonnage(L, ropts) {
       }
       if (onProgress) onProgress(total, N, 'on this page');
       se.finish();
+      where = where || 'on this page';
     }
     return { series, where };
   };
@@ -3623,10 +3624,11 @@ function openGradeTonnage(L, ropts) {
     if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
       win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return;
     }
-    st.running = true; runBtn.disabled = true; win.sub.textContent = 'scanning…';
-    try { st.scan = await scanGT((n, N, w) => { progEl.textContent = rowsProgress(n, N) + (w ? ` · ${w}` : ''); }); }
-    catch (e) { win.sub.textContent = `grade-tonnage: ${e.message}`; st.running = false; runBtn.disabled = false; progEl.textContent = ''; return; }
-    st.running = false; runBtn.disabled = false; progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
+    st.running = true; win.sub.textContent = 'scanning…';
+    const rc = runCancellable(runBtn);
+    try { st.scan = await scanGT((n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
+    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `grade-tonnage: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
     win.el._scanWhere = st.scan.where;                     // where the scan ran (workers / this page) — the smokes read it
     saveAnalysisCfg(L, 'gt', cfgOf(), win);                // a successful Run snapshots the setup into the project
     plot();
@@ -4947,7 +4949,7 @@ function swathDirNames(st) {
 // Bounded by BINS, not blocks (so a 200M model is fine) — the scalable answer to
 // "don't cache every element". Each series compiles its own grade/weight/filter
 // expression (@gcu/expr); weight defaults to the block's geometric support.
-async function scanSwath(st, onProgress) {
+async function scanSwath(st, onProgress, signal) {
   const dirs = swathModeDirs(st);
   const series = st.series.map((s) => {
     const L = layerById(s.layerId); if (!L) return null;
@@ -4971,8 +4973,21 @@ async function scanSwath(st, onProgress) {
   const range = dirs.map((dir) => { let lo = Infinity, hi = -Infinity; for (const se of series) { const [a, b] = projRange(se.L, dir); if (a < lo) lo = a; if (b > hi) hi = b; } return [lo, hi]; });
   const fineW = range.map(([lo, hi]) => Math.max(1e-6, (hi - lo) / 600 || 1));
   const fineOrigin = range.map(([lo]) => lo);
-  let total = 0;
+  let total = 0, where = '';
+  const colL = [...new Set(series.filter((se) => canScanColumnar(se.L)).map((se) => se.L))];
+  const N = colL.reduce((t, Lx) => t + (attrRowCountOf(Lx) || 0), 0) + series.filter((se) => !colL.includes(se.L)).reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
+  for (const Lx of colL) {                                 // columnar + parallel (src/colscan.js): one pass per layer
+    const ses = series.filter((se) => se.L === Lx), vc = ses[0].vc, h = layerTableHeader(Lx), m = ses[0].m;
+    const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
+    const coords = [h.columns[m.x], h.columns[m.y], h.columns[m.z]];
+    const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dirs, fineOrigin, fineW, coords, vol: { base: vc.base, dims } };
+    const base = total;
+    const { parts } = await scanColumnar(Lx, { kernel: 'swath', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: [...coords, ...(dims || [])], mask: scopeMask(st, Lx), signal,
+      onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
+    swathMerge(parts, ses.length, dirs.length).forEach((r, k) => { ses[k].fine = r.fine; ses[k].n = r.n; });
+  }
   for (const se of series) {
+    if (colL.includes(se.L)) continue;
     // scope mask per series layer: selection / current filter / all. A layer
     // without the scope's mask contributes ALL its rows (e.g. comparing a
     // filtered model against unfiltered samples) — the sub line names the scope.
@@ -4981,7 +4996,7 @@ async function scanSwath(st, onProgress) {
     // their positions in the extended row, so m.x/y/z still index correctly
     for await (const { f: row, rec: rr } of layerRecords(L)) {
       {
-        total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total); await new Promise((r) => setTimeout(r)); }
+        total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
         if (selMask && !(rr < selMask.length && selMask[rr])) continue;
         const x = +row[m.x], y = +row[m.y], z = +row[m.z]; if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
         if (se.filterFn && !se.filterFn(row)) continue;
@@ -4995,9 +5010,10 @@ async function scanSwath(st, onProgress) {
         se.n++;
       }
     }
-    if (onProgress) onProgress(total);
+    if (onProgress) onProgress(total, N, 'on this page');
+    where = where || 'on this page';
   }
-  return { dirs, dirNames: swathDirNames(st), series, range, fineW, fineOrigin };
+  return { dirs, dirNames: swathDirNames(st), series, range, fineW, fineOrigin, where };
 }
 // re-aggregate the fine bins of direction `di` into display bands — a pure,
 // instant recompute (exact weighted mean, since we kept the sums). This is why
@@ -5179,10 +5195,12 @@ function openSwath(L, ropts) {
     if (st.scope !== 'all' && !st.series.some((s) => { const Lx = layerById(s.layerId); return Lx && scopeMask(st, Lx); })) {
       win.sub.textContent = scopeMissing(st, zebraL()) || `no layer carries a ${st.scope} mask`; return;
     }
-    st.running = true; runBtn.disabled = true; win.sub.textContent = 'scanning…';
-    try { st.scan = await scanSwath(st, (n) => { progEl.textContent = `${n.toLocaleString()} rows…`; }); }
-    catch (e) { win.sub.textContent = `swath: ${e.message}`; st.running = false; runBtn.disabled = false; progEl.textContent = ''; return; }
-    st.running = false; runBtn.disabled = false; progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
+    st.running = true; win.sub.textContent = 'scanning…';
+    const rc = runCancellable(runBtn);
+    try { st.scan = await scanSwath(st, (n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
+    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `swath: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
+    if (st.scan) win.el._scanWhere = st.scan.where;
     if (!st.scan) { win.sub.textContent = 'no series to scan'; plotChart(cv, { series: [] }); return; }
     saveAnalysisCfg(L, 'swath', cfgOf(), win);             // a successful Run snapshots the setup into the project
     plot();
@@ -5341,6 +5359,17 @@ function statsGroupCols(L) {
 // buffer per flush (the 18 s freeze at 60M, with the pinned path never
 // yielding); pushArray sorts a typed batch natively. BOTH stats paths feed
 // through this, so their batch boundaries — hence their digests — stay identical.
+// Run ↔ Cancel: while a window's scan runs, its Run button cancels it. The
+// previous result stays on screen until a new one replaces it.
+function runCancellable(btn) {
+  const ac = new AbortController(), prev = btn.onclick;
+  btn.textContent = 'Cancel'; btn.disabled = false; btn.title = 'stop this scan (the previous result stays)';
+  btn.onclick = () => { ac.abort(); btn.disabled = true; };
+  return { signal: ac.signal, done: () => { btn.textContent = 'Run'; btn.disabled = false; btn.title = ''; btn.onclick = prev; } };
+}
+const abortErr = () => Object.assign(new Error('cancelled'), { name: 'AbortError' });
+const checkAbort = (signal) => { if (signal && signal.aborted) throw abortErr(); };
+const scanProgressText = (n, N, w) => rowsProgress(n, N) + (w ? ` · ${w}` : '');
 // a scan's progress line: "1.2M of 60M rows · 2%" — what's happening and how far
 function rowsProgress(n, N) { return N ? `${n.toLocaleString()} of ${N.toLocaleString()} rows · ${Math.min(100, Math.floor(100 * n / N))}%` : `${n.toLocaleString()} rows…`; }
 const TD_BATCH = 8192;
@@ -5357,7 +5386,7 @@ function tdDone(TD, a) { if (a.tn) { TD.pushArray(a.td, a.tb, 0, a.tn); a.tn = 0
 // they read straight off their census slots; only the free-text weight
 // expression compiles chunk-wise. Identical accumulators and row order →
 // identical results; anything unpinned → null (the row path takes over).
-async function scanStatsPinned(L, st, mask, onProgress) {
+async function scanStatsPinned(L, st, mask, onProgress, signal) {
   const h = layerTableHeader(L); if (!h) return null;
   const censusSchema = schemaExt(L, h);
   const slotOf = (nm) => censusSchema.findIndex((c) => c.name === nm);
@@ -5420,7 +5449,8 @@ async function scanStatsPinned(L, st, mask, onProgress) {
         tdAdd(TD, a, x);
       }
     }
-    if (onProgress) onProgress(at + n, total);
+    if (onProgress) onProgress(at + n, total, 'pinned, on this page');
+    checkAbort(signal);
     await new Promise((z) => setTimeout(z));               // one window per task: the UI stays live
   }
   const rows = [];
@@ -5484,7 +5514,7 @@ function openStats(L, ropts) {
     for (const r of st.scan.rows) lines.push([...(gb ? [r.group] : []), r.col, r.n, r.mean, r.std, r.min, r.q25, r.q50, r.q75, r.max].join('\t'));
     return lines.join('\n');
   };
-  const scanStats = async (onProgress) => {
+  const scanStats = async (onProgress, signal) => {
     const h = layerTableHeader(L), schema = schemaExt(L, h);
     const colFns = st.cols.map((c) => { try { return { c, fn: compileValue(quoteIdent(c), schema, { decimal: '.' }) }; } catch { return null; } }).filter(Boolean);   // NAMES as expressions → quote
     if (!colFns.length) throw new Error('no valid columns');
@@ -5494,7 +5524,22 @@ function openStats(L, ropts) {
     const mask = scopeMask(st, L);
     // materialized inputs must be resident for BOTH paths (evicted → blanks otherwise)
     await ensureStoredValues(L, new Set([...st.cols, st.groupBy, st.weight].filter(Boolean).map((x) => String(x).toLowerCase())));
-    const fast = await scanStatsPinned(L, st, mask, onProgress);   // pinned columns → the tier-3 window path
+    if (canScanColumnar(L)) {                              // Parquet: columnar + parallel (src/colscan.js)
+      const params = { cols: colFns.map((c) => quoteIdent(c.c)), groupBy: st.groupBy || null, weight: (st.weight || '').trim() || null };
+      const { parts, where } = await scanColumnar(L, { kernel: 'stats', params, exprs: [...params.cols, params.groupBy, params.weight], mask, signal, onProgress });
+      const merged = statsMerge({ tdigest }, parts), TDm = tdigest(), rows = [];
+      for (const g of [...merged.groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
+        const A = merged.groups.get(g);
+        for (let i = 0; i < colFns.length; i++) {
+          const a = A[i]; if (!a.n) continue;
+          const mean = a.swx / a.sw, vr = Math.max(0, a.swx2 / a.sw - mean * mean);
+          const td = TDm.result(a.td), q = (p2) => quantileFromCentroids(td.centroids, td.count, p2);
+          rows.push({ group: g, col: colFns[i].c, n: a.n, mean, std: Math.sqrt(vr), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
+        }
+      }
+      return { rows, groupBy: st.groupBy, weighted: !!weightFn, overflow: merged.overflow, where };
+    }
+    const fast = await scanStatsPinned(L, st, mask, onProgress, signal);   // pinned columns → the tier-3 window path
     if (fast) return fast;
     const TD = tdigest();
     const mkAcc = () => colFns.map(() => ({ n: 0, sw: 0, swx: 0, swx2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
@@ -5504,7 +5549,7 @@ function openStats(L, ropts) {
     // layerRecords owns the record number (see scanGT)
     for await (const { f: row, rec: rr } of layerRecords(L)) {
       {
-        total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N); await new Promise((r) => setTimeout(r)); }
+        total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
         if (mask && !(rr < mask.length && mask[rr])) continue;
         let g = '';
         if (groupFn) { const gv = groupFn(row); g = gv == null || gv === '' ? '—' : String(gv); }
@@ -5538,10 +5583,12 @@ function openStats(L, ropts) {
   const run = async () => {
     if (st.running) return;
     if (st.scope !== 'all' && !scopeMask(st, L)) { win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }
-    st.running = true; runBtn.disabled = true; win.sub.textContent = 'scanning…';
-    try { st.scan = await scanStats((n, N) => { progEl.textContent = rowsProgress(n, N); }); }
-    catch (e) { win.sub.textContent = `stats: ${e.message}`; st.running = false; runBtn.disabled = false; progEl.textContent = ''; return; }
-    st.running = false; runBtn.disabled = false; progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
+    st.running = true; win.sub.textContent = 'scanning…';
+    const rc = runCancellable(runBtn);
+    try { st.scan = await scanStats((n, N, w) => { progEl.textContent = scanProgressText(n, N, w); }, rc.signal); }
+    catch (e) { win.sub.textContent = e.name === 'AbortError' ? (st.scan ? 'cancelled — showing the previous result' : 'cancelled') : `stats: ${e.message}`; st.running = false; rc.done(); progEl.textContent = ''; return; }
+    st.running = false; rc.done(); progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
+    win.el._scanWhere = st.scan.where || 'on this page';
     saveAnalysisCfg(L, 'stats', cfgOf(), win);
     render();
   };

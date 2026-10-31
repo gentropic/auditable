@@ -3271,6 +3271,74 @@ await p.close();
   await pc.close();
 }
 
+// ── §49: stats + swath COLUMNAR (src/colscan.js) agree with the row path, and
+//     Run ↔ Cancel. The same 150,000 blocks as Parquet (columnar, workers) and as
+//     CSV (the row path): stats grouped + weighted — moments to 1e-12 (std 1e-8), quantiles
+//     within the t-digest's tolerance; the swath band table to 1e-9. Cancel: a
+//     fresh run says "cancelled"; a cancelled re-run keeps the previous result. ──
+{
+  const pw = await mkPage('sm2colb');
+  const cb = await pw.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const NX = 60, NY = 50, NZ = 50, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N), sg = new Float64Array(N), codes = new Uint8Array(N);
+    let r = 5, csv = 'X,Y,Z,AU,SG,ROCK\n';
+    const labels = ['ox', 'fr', 'tr'];
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let q = 0; q < NX; q++, i++) {
+      r = (r * 1103515245 + 12345) >>> 0;
+      x[i] = 5 + q * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10;
+      au[i] = (r % 9 === 0) ? NaN : ((r >>> 8) % 1000) / 250;
+      sg[i] = 2.4 + ((r >>> 4) % 6) / 10;
+      codes[i] = (r >>> 16) % 3;
+      csv += `${x[i]},${y[i]},${z[i]},${Number.isFinite(au[i]) ? au[i] : ''},${sg[i]},${labels[codes[i]]}\n`;
+    }
+    const idP = await W.addLayer({ kind: 'blocks', name: 'colb.parquet', columns: { X: x, Y: y, Z: z, AU: au, SG: sg, ROCK: { codes, labels } }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU', category: 'ROCK' } });
+    await M.openBlob(new File([csv], 'colb.csv'), 'colb.csv', 'add');
+    for (let n = 0; n < 200 && !M.layers().some((q) => q.name === 'colb.csv' && q.docs.blockDoc); n++) await new Promise((z2) => setTimeout(z2, 100));
+    const LP = M.layers().find((q) => q.id === idP), LC = M.layers().find((q) => q.name === 'colb.csv');
+    const winOf = (prefix, L) => [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent === `${prefix} · ${L.label || L.name}`);
+    const waitWhere = async (prefix, L) => { for (let n = 0; n < 600; n++) { const e = winOf(prefix, L); if (e && e._scanWhere) return e; await new Promise((z2) => setTimeout(z2, 50)); } return null; };
+    const stats = async (L) => { M.openStats(L, { run: true, cfg: { cols: ['AU', 'SG'], groupBy: 'ROCK', weight: 'SG', scope: 'all' } }); const e = await waitWhere('stats', L); return { rows: e._statsRows, where: e._scanWhere }; };
+    const swath = async (L) => { M.openSwath(L, { run: true, cfg: { series: [{ layer: L.name, col: 'AU', weight: 'SG' }] } }); const e = await waitWhere('swath', L); return { tsv: e._tableTSV && e._tableTSV(), where: e._scanWhere }; };
+    const sP = await stats(LP), sC = await stats(LC);
+    let mom = 0, qBad = 0;
+    const span = 4;
+    for (const a of sP.rows) {
+      const b = sC.rows.find((x2) => x2.group === a.group && x2.col === a.col);
+      if (!b || a.n !== b.n) { mom++; continue; }
+      // std is Σwx²/Σw − mean²: a column with a small spread next to its mean (SG ≈ 2.7 ± 0.16) amplifies the
+      // summation ORDER (per row group, then merged) ~300× — 1e-10 relative, not a parity bug
+      for (const k of ['mean', 'std', 'min', 'max']) if (Math.abs(a[k] - b[k]) > (k === 'std' ? 1e-8 : 1e-12) * Math.max(1, Math.abs(b[k]))) { mom++; (window.__momDiff = window.__momDiff || []).push(`${a.group}/${a.col}/${k}: ${a[k]} vs ${b[k]}`); }
+      for (const k of ['q25', 'q50', 'q75']) if (Math.abs(a[k] - b[k]) > 0.01 * span) qBad++;
+    }
+    const wP = await swath(LP), wC = await swath(LC);
+    const nums = (t) => (t || '').split('\n').slice(1).map((l) => l.split('\t').map(Number));
+    const A = nums(wP.tsv), B = nums(wC.tsv);
+    let sw = A.length === B.length && A.length > 0 ? 0 : 1;
+    if (!sw) for (let i = 0; i < A.length; i++) for (let j = 0; j < A[i].length; j++) { const u = A[i][j], v = B[i][j]; if (!(Number.isNaN(u) && Number.isNaN(v)) && Math.abs(u - v) > 1e-9 * Math.max(1, Math.abs(v))) sw++; }
+    // Cancel: a fresh run, then a re-run over a kept result
+    M.openGradeTonnage(LP, { run: true, cfg: { nCut: 10, series: [{ layer: LP.name, col: 'AU' }] } });
+    let g = winOf('grade-tonnage', LP); const btn1 = g.querySelector('.sw-run'); const label1 = btn1.textContent; btn1.click();
+    for (let n = 0; n < 200 && !/cancelled/.test(g.querySelector('.fwin-head .sub').textContent); n++) await new Promise((z2) => setTimeout(z2, 25));
+    const sub1 = g.querySelector('.fwin-head .sub').textContent, lab1b = g.querySelector('.sw-run').textContent;
+    g.querySelector('.sw-run').click();                     // a full run
+    for (let n = 0; n < 600 && !g._gtSpec; n++) await new Promise((z2) => setTimeout(z2, 50));
+    const kept = JSON.stringify(g._gtSpec.series[0].data);
+    g.querySelector('.sw-run').click(); g.querySelector('.sw-run').click();   // Run, then Cancel
+    for (let n = 0; n < 200 && !/cancelled/.test(g.querySelector('.fwin-head .sub').textContent); n++) await new Promise((z2) => setTimeout(z2, 25));
+    const sub2 = g.querySelector('.fwin-head .sub').textContent;
+    return { momDiff: window.__momDiff || [], groups: LP.docs.blockDoc.parquet.rowGroups.length, statsRows: sP.rows.length, mom, qBad, whereS: [sP.where, sC.where], swRows: A.length, sw, whereW: [wP.where, wC.where],
+      label1, sub1, lab1b, sub2, keptSame: JSON.stringify(g._gtSpec.series[0].data) === kept };
+  });
+  for (const d of cb.momDiff) console.log(`   ${d}`);
+  chk(`stats columnar (${cb.whereS[0]}) = row path (${cb.whereS[1]}) on ${cb.groups} row groups: ${cb.statsRows} rows (group × column, weighted), ${cb.mom} moment mismatches, ${cb.qBad} quantiles outside 1% of the range`,
+    /worker/.test(cb.whereS[0]) && cb.whereS[1] === 'on this page' && cb.statsRows === 6 && cb.mom === 0 && cb.qBad === 0);
+  chk(`swath columnar (${cb.whereW[0]}) = row path (${cb.whereW[1]}): ${cb.swRows} bands, ${cb.sw} mismatches`, /worker/.test(cb.whereW[0]) && cb.whereW[1] === 'on this page' && cb.swRows > 5 && cb.sw === 0);
+  chk(`Run ↔ Cancel: running shows “${cb.label1}”; cancelled → “${cb.sub1}”, the button back to “${cb.lab1b}”; a cancelled re-run → “${cb.sub2}”, the previous result kept (${cb.keptSame})`,
+    cb.label1 === 'Cancel' && /^cancelled/.test(cb.sub1) && cb.lab1b === 'Run' && /previous result/.test(cb.sub2) && cb.keptSame);
+  await pw.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

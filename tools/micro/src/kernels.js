@@ -129,14 +129,7 @@ export function gtKernel(E, CV) {
     // view: the chunk's columns (chunkview); mask: the scope mask slice or null
     group(ctx, view, n, mask) {
       const { params } = ctx, sc = ctx.scratch;
-      let vol = null;
-      if (ctx.dimIdx) {
-        const dx = CV.chunkNumbers({ buf: view[ctx.dimIdx[0]] || [] }, n, sc.dx || (sc.dx = new Float64Array(n)));
-        const dy = CV.chunkNumbers({ buf: view[ctx.dimIdx[1]] || [] }, n, sc.dy || (sc.dy = new Float64Array(n)));
-        const dz = CV.chunkNumbers({ buf: view[ctx.dimIdx[2]] || [] }, n, sc.dz || (sc.dz = new Float64Array(n)));
-        vol = sc.vol && sc.vol.length >= n ? sc.vol : (sc.vol = new Float64Array(n));
-        for (let i = 0; i < n; i++) { const v = Math.abs((dx[i] || 0) * (dy[i] || 0) * (dz[i] || 0)); vol[i] = v > 0 ? v : params.vol.base; }   // = analysis.js volumeAt
-      }
+      const vol = volumes(ctx, view, n, (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n))));
       return ctx.series.map((se, k) => {
         const acc = gtAccumulator();
         const g = CV.chunkNumbers(se.grade(view, n), n, sc['g' + k] || (sc['g' + k] = new Float64Array(n)));
@@ -185,4 +178,137 @@ export function gtMerge(parts) {
   acc.e = e; acc.bins = bins; acc.pend = null;
   acc.finish();
   return acc;
+}
+
+// ── the SWATH kernel ─────────────────────────────────────────────────────────
+// params: { schema, series: [{ grade, weight, filter }], dirs: [[dx,dy,dz]…],
+// fineOrigin: [..], fineW: [..], coords: [x, y, z] (names), vol: { base, dims } }.
+// One chunk → per series, per direction, the fine bins' {Σw, Σwg, n} as
+// transferable arrays + the series' row count. Same arithmetic as scanSwath's
+// row path: the block's support × the weight, a fine bin per (t − origin) / width.
+export function swathKernel(E, CV) {
+  return {
+    init(params, calcs) {
+      const sch = params.schema, ix = (nm) => sch.findIndex((c) => c.name === nm);
+      const one = (txt, bool) => { if (!txt) return null; return bool ? E.compileChunkBool(txt, sch, { decimal: '.' }) : E.compileChunk(txt, sch, { decimal: '.' }); };
+      return {
+        params, calcFns: CV.compileCalcs(E, calcs, sch),
+        series: params.series.map((s) => ({ grade: one(s.grade), weight: one(s.weight), filter: one(s.filter, true) })),
+        cIdx: params.coords.map(ix), dimIdx: params.vol.dims ? params.vol.dims.map(ix) : null, scratch: {},
+      };
+    },
+    group(ctx, view, n, mask) {
+      const { params } = ctx, sc = ctx.scratch, dirs = params.dirs;
+      const num = (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n)));
+      const X = num(ctx.cIdx[0], 'x'), Y = num(ctx.cIdx[1], 'y'), Z = num(ctx.cIdx[2], 'z');
+      const vol = volumes(ctx, view, n, num);
+      return ctx.series.map((se, k) => {
+        const g = CV.chunkNumbers(se.grade(view, n), n, sc['g' + k] || (sc['g' + k] = new Float64Array(n)));
+        const w = se.weight ? CV.chunkNumbers(se.weight(view, n), n, sc['w' + k] || (sc['w' + k] = new Float64Array(n))) : null;
+        const f = se.filter ? se.filter(view, n) : null;
+        const fine = dirs.map(() => new Map());
+        let cnt = 0;
+        for (let i = 0; i < n; i++) {
+          if (mask && !mask[i]) continue;
+          const x = X[i], y = Y[i], z = Z[i]; if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+          if (f && f[i] !== 1) continue;
+          const gv = g[i]; if (!Number.isFinite(gv)) continue;
+          const wv = (w ? (w[i] || 0) : 1) * (vol ? vol[i] : params.vol.base); if (!(wv > 0)) continue;
+          for (let di = 0; di < dirs.length; di++) {
+            const d = dirs[di], t = x * d[0] + y * d[1] + z * d[2], bi = Math.floor((t - params.fineOrigin[di]) / params.fineW[di]);
+            let e = fine[di].get(bi); if (!e) { e = [0, 0, 0]; fine[di].set(bi, e); }
+            e[0] += wv; e[1] += wv * gv; e[2]++;
+          }
+          cnt++;
+        }
+        return { n: cnt, fine: fine.map((mp) => { const keys = Float64Array.from(mp.keys()), sw = new Float64Array(keys.length), swg = new Float64Array(keys.length), nn = new Float64Array(keys.length); let i = 0; for (const e of mp.values()) { sw[i] = e[0]; swg[i] = e[1]; nn[i] = e[2]; i++; } return { keys, sw, swg, n: nn }; }) };
+      });
+    },
+  };
+}
+// partials (chunk order) → per series { n, fine: [Map(bin → { sw, swg, n })] per direction }
+export function swathMerge(parts, nSeries, nDirs) {
+  const out = [];
+  for (let k = 0; k < nSeries; k++) {
+    const fine = Array.from({ length: nDirs }, () => new Map()); let cnt = 0;
+    for (const p of parts) {
+      const s = p && p[k]; if (!s) continue;
+      cnt += s.n;
+      s.fine.forEach((fd, di) => { for (let i = 0; i < fd.keys.length; i++) { const kb = fd.keys[i]; let e = fine[di].get(kb); if (!e) { e = { sw: 0, swg: 0, n: 0 }; fine[di].set(kb, e); } e.sw += fd.sw[i]; e.swg += fd.swg[i]; e.n += fd.n[i]; } });
+    }
+    out.push({ n: cnt, fine });
+  }
+  return out;
+}
+
+// per-record block support (sub-block dims → volume), = analysis.js volumeAt;
+// null when every block has the constant volume
+function volumes(ctx, view, n, num) {
+  if (!ctx.dimIdx) return null;
+  const sc = ctx.scratch, base = ctx.params.vol.base;
+  const dx = num(ctx.dimIdx[0], 'dx'), dy = num(ctx.dimIdx[1], 'dy'), dz = num(ctx.dimIdx[2], 'dz');
+  const vol = sc.vol && sc.vol.length >= n ? sc.vol : (sc.vol = new Float64Array(n));
+  for (let i = 0; i < n; i++) { const v = Math.abs((dx[i] || 0) * (dy[i] || 0) * (dz[i] || 0)); vol[i] = v > 0 ? v : base; }
+  return vol;
+}
+
+// ── the STATS kernel ─────────────────────────────────────────────────────────
+// params: { schema, cols: [expr…] (quoted names), groupBy: expr | null, weight:
+// expr | null }. One chunk → the groups in FIRST-SEEN order (so merging chunks in
+// order reproduces the row path's group order and its 256-group cap), each with
+// per column { n, sw, swx, swx2, min, max } + a t-digest state (sluice). Moments
+// are weighted; quantiles unweighted — as the window says.
+export function statsKernel(E, CV, SL) {
+  const TD = SL.tdigest();
+  return {
+    init(params, calcs) {
+      const sch = params.schema, one = (txt) => (txt ? E.compileChunk(txt, sch, { decimal: '.' }) : null);
+      return { params, TD, calcFns: CV.compileCalcs(E, calcs, sch), cols: params.cols.map(one), groupBy: one(params.groupBy), weight: one(params.weight), scratch: {} };
+    },
+    group(ctx, view, n, mask) {
+      const sc = ctx.scratch;
+      const xs = ctx.cols.map((c, s) => CV.chunkNumbers(c(view, n), n, sc['c' + s] || (sc['c' + s] = new Float64Array(n))));
+      const gv = ctx.groupBy ? ctx.groupBy(view, n).buf : null;
+      const w = ctx.weight ? CV.chunkNumbers(ctx.weight(view, n), n, sc.w || (sc.w = new Float64Array(n))) : null;
+      const groups = new Map(); let overflow = false;
+      for (let i = 0; i < n; i++) {
+        if (mask && !mask[i]) continue;
+        let g = '';
+        if (gv) { const v = gv[i]; g = v == null || v === '' || (typeof v === 'number' && v !== v) ? '—' : String(v); }
+        let A = groups.get(g);
+        if (!A) { if (groups.size >= 256) { overflow = true; continue; } A = xs.map(() => ({ n: 0, sw: 0, swx: 0, swx2: 0, min: Infinity, max: -Infinity, vals: [] })); groups.set(g, A); }
+        const wt = w ? (w[i] || 0) : 1;
+        if (!(wt > 0)) continue;
+        for (let s = 0; s < xs.length; s++) {
+          const x = xs[s][i]; if (!Number.isFinite(x)) continue;
+          const a = A[s];
+          a.n++; a.sw += wt; a.swx += wt * x; a.swx2 += wt * x * x;
+          if (x < a.min) a.min = x; if (x > a.max) a.max = x;
+          a.vals.push(x);
+        }
+      }
+      const out = [];
+      for (const [g, A] of groups) out.push([g, A.map((a) => { const td = TD.create(); if (a.vals.length) TD.pushArray(td, a.vals); return { n: a.n, sw: a.sw, swx: a.swx, swx2: a.swx2, min: a.min, max: a.max, td }; })]);
+      return { groups: out, overflow };
+    },
+  };
+}
+// partials (chunk order) → { groups: Map(key → [acc per column]), overflow }
+export function statsMerge(SL, parts) {
+  const TD = SL.tdigest(), groups = new Map(); let overflow = false;
+  for (const p of parts) {
+    if (!p) continue;
+    if (p.overflow) overflow = true;
+    for (const [g, accs] of p.groups) {
+      let A = groups.get(g);
+      if (!A) { if (groups.size >= 256) { overflow = true; continue; } groups.set(g, accs); continue; }
+      accs.forEach((b, s) => {
+        const a = A[s];
+        a.n += b.n; a.sw += b.sw; a.swx += b.swx; a.swx2 += b.swx2;
+        if (b.min < a.min) a.min = b.min; if (b.max > a.max) a.max = b.max;
+        a.td = TD.merge(a.td, b.td);
+      });
+    }
+  }
+  return { groups, overflow };
 }

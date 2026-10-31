@@ -19,14 +19,19 @@ import * as kernels from './kernels.js';
 import { layerTableHeader, schemaExt, calcOrder } from './records.js';
 import { chunkSpecOf, chunkPageOf, expandedDeps, ensureStoredValues } from './columns.js';
 import * as E from '../../../ext/expr/index.js';
+import * as sluice from '../../../ext/sluice/index.js';
 const { parse } = E;
 
 export function canScanColumnar(L) { return !!(L && L.docs && L.docs.blockDoc && L.docs.blockDoc.parquet); }
 
 // exprs: the expression TEXTS the job evaluates (their columns are what's read);
-// extraCols: base column names read regardless (sub-block dims); mask: a
-// per-record scope mask or null; onProgress(done, total, where)
-export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], mask = null, onProgress = null, signal = null }) {
+// extraCols: base column names read regardless (coordinates, sub-block dims);
+// mask: a per-record scope mask or null; onProgress(done, total, where);
+// skipGroup(g, rowGroup) → true skips a group unread (footer pushdown);
+// onPart(g, part, start): each partial handed over IN GROUP ORDER as soon as
+// the groups before it are in, then dropped (a filter's matches needn't all be
+// held) — without it the partials come back in `parts`.
+export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], mask = null, onProgress = null, signal = null, skipGroup = null, onPart = null }) {
   const bd = L.docs.blockDoc, P = bd.parquet, h = layerTableHeader(L);
   const needL = new Set(extraCols.map((c) => String(c).toLowerCase()));
   for (const x of exprs) { if (!x) continue; let ast; try { ast = parse(x); } catch { continue; } for (const d of expandedDeps(L, ast)) needL.add(d); }
@@ -38,34 +43,56 @@ export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], m
   const spec = chunkSpecOf(L, h, needL);
   const kp = { ...params, schema };
   const K = kernels[kernel + 'Kernel'];
-  const rowGroups = P.rowGroups, starts = groupStarts(rowGroups), total = h.count;
+  const rowGroups = P.rowGroups, starts = groupStarts(rowGroups);
+  const keep = rowGroups.map((rg, g) => !(skipGroup && skipGroup(g, rg)));
+  const todo = rowGroups.map((rg, g) => g).filter((g) => keep[g]);
+  const total = todo.reduce((t, g) => t + rowGroups[g].rowCount, 0);
   const parts = new Array(rowGroups.length);
-  let done = 0;
-  const pool = await startParquetPool({ file: P.buf, meta: P.meta, task: 'scan', p: { kernel, params: kp, calcs, spec, readCols }, n: defaultPoolSize(rowGroups.length), signal });
+  let done = 0, next = 0;
+  const deliver = () => {                                   // hand over everything ready, in group order
+    if (!onPart) return;
+    while (next < rowGroups.length && (!keep[next] || parts[next] !== undefined)) {
+      if (keep[next]) { onPart(next, parts[next], starts[next]); parts[next] = null; }
+      next++;
+    }
+  };
+  if (!todo.length) { if (onProgress) onProgress(0, 0, 'nothing to read'); return { parts, where: 'nothing to read', workers: 0, skipped: rowGroups.length }; }
+  const pool = await startParquetPool({ file: P.buf, meta: P.meta, task: 'scan', p: { kernel, params: kp, calcs, spec, readCols }, n: defaultPoolSize(todo.length), signal });
   const where = pool ? `on ${pool.size} worker${pool.size === 1 ? '' : 's'}` : 'on this page';
   if (onProgress) onProgress(0, total, where);
+  const abort = () => Object.assign(new Error('cancelled'), { name: 'AbortError' });
   try {
     if (pool) {
-      await Promise.all(rowGroups.map((rg, g) => {
-        const start = starts[g], count = rg.rowCount;
-        const page = chunkPageOf(L, spec, start, count, { copy: true });
-        const m = mask ? mask.slice(start, start + count) : null;
-        const transfer = [...page.filter(Boolean).map((a) => a.buffer), ...(m ? [m.buffer] : [])];
-        return pool.run({ start, count, page, mask: m, transfer }).then((out) => { parts[g] = out; done += count; if (onProgress) onProgress(done, total, where); });
-      }));
+      // at most two jobs per worker in flight: the page slices are copied as
+      // jobs go out, not all at once, and out-of-order partials stay few
+      let qi = 0;
+      const feed = async () => {
+        while (qi < todo.length) {
+          if (signal && signal.aborted) throw abort();
+          const g = todo[qi++], start = starts[g], count = rowGroups[g].rowCount;
+          const page = chunkPageOf(L, spec, start, count, { copy: true });
+          const m = mask ? mask.slice(start, start + count) : null;
+          const transfer = [...page.filter(Boolean).map((a2) => a2.buffer), ...(m ? [m.buffer] : [])];
+          parts[g] = await pool.run({ start, count, page, mask: m, transfer });
+          done += count; if (onProgress) onProgress(done, total, where);
+          deliver();
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(todo.length, pool.size * 2) }, feed));
     } else {
-      const k = K(E, CV);
+      const k = K(E, CV, sluice);
       const ctx = k.init(kp, calcs);
-      for (let g = 0; g < rowGroups.length; g++) {
-        if (signal && signal.aborted) throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+      for (const g of todo) {
+        if (signal && signal.aborted) throw abort();
         const start = starts[g], count = rowGroups[g].rowCount;
         const cols = readCols.length ? await readParquetRange(P.buf, readCols, start, start + count, P.meta) : {};
         const view = CV.chunkView(spec, cols, chunkPageOf(L, spec, start, count), count, ctx.calcFns);
         parts[g] = k.group(ctx, view, count, mask ? mask.subarray(start, start + count) : null);
         done += count; if (onProgress) onProgress(done, total, where);
+        deliver();
         await new Promise((z) => setTimeout(z));             // one group per task: the page stays live
       }
     }
   } finally { if (pool) pool.close(); }
-  return { parts, where, workers: pool ? pool.size : 0 };
+  return { parts, where, workers: pool ? pool.size : 0, skipped: rowGroups.length - todo.length };
 }

@@ -138,7 +138,7 @@ self.onmessage = async ({ data }) => {
           import(${JSON.stringify(libUrl('chunkview', './chunkview.js'))}),
           import(${JSON.stringify(libUrl('kernels', './kernels.js'))}),
         ]);
-        CV = cv; kern = K[p.kernel + 'Kernel'](E, CV); kctx = kern.init(p.params, p.calcs);
+        CV = cv; kern = K[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs);
       }
       if (task === 'decode') codes = {
         cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
