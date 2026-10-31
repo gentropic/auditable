@@ -626,7 +626,9 @@ async function apiChecks(url, label) {
     out.cId = await m.setColorBy(c, 'CU');
     out.c1 = m.layer(c).colorBy;
     const Lc = window._micro.layers().find((q) => q.id === c), hc = Lc.docs.blockDoc.header;
-    out.cChan = hc.columns[hc.mapping.chan];
+    // what the layer DRAWS: a channel the chunks don't carry comes from the value texture (no re-read)
+    out.cChan = Lc._valTex ? Lc._valTex.name : hc.columns[hc.mapping.chan];
+    out.cHow = Lc._valTex ? 'value texture' : 're-read';
     out.stillActive = window._micro.activeId() === a && document.querySelector('#colorBy').value === dd0;
     try { await m.setColorBy(c, 'NOPE'); out.bad = 'accepted'; } catch (e) { out.bad = e.message; }
     // drillholes in a group: a re-channel REPLACES the layer; it keeps its group, the old id forwards
@@ -673,7 +675,7 @@ async function apiChecks(url, label) {
   chk(`api: addLayer with a category starts coloured by it (${r.a.colorBy}), kind ${r.a.kind}, filed in “${r.a.group}”`, r.a.colorBy === 'LITO' && r.a.kind === 'blocks' && r.a.group === 'Model/Domains' && r.a.count === 24);
   chk(`api: roles.categories → ${r.b0.colorBy} first, ${JSON.stringify(r.bOpts)} offered; setColorBy WX re-reads → ${r.b1.colorBy} ${JSON.stringify(r.bCats)}, same id ${r.bId === r.b0.id}`,
     r.b0.colorBy === 'LITO' && JSON.stringify(r.bOpts) === '["catcol:WX"]' && r.b1.colorBy === 'WX' && JSON.stringify(r.bCats) === '["FRESH","OX"]' && r.bId === r.b0.id && r.b1.colorChoices.includes('LITO'));
-  chk(`api: a value-only layer starts on ${r.c0}; setColorBy CU on a NON-active layer re-reads (${r.cChan}) and leaves the active layer + its dropdown alone (${r.stillActive})`,
+  chk(`api: a value-only layer starts on ${r.c0}; setColorBy CU on a NON-active layer draws ${r.cChan} (${r.cHow}) and leaves the active layer + its dropdown alone (${r.stillActive})`,
     r.c0 === 'AU' && r.c1 === 'CU' && r.cChan === 'CU' && r.stillActive);
   chk(`api: an unknown column rejects with the choices (“${r.bad.slice(0, 70)}…”)`, /“NOPE”/.test(r.bad) && /AU, CU/.test(r.bad));
   chk(`api: a drillhole re-channel replaces the layer (${r.h0.id} → ${r.hId}, event ${JSON.stringify(r.hEv)}); the old id follows forward, coloured by ${r.h1.colorBy}, still in “${r.h1.group}”`,
@@ -1001,10 +1003,17 @@ async function openChecks(url, label) {
       const mo = new MutationObserver(() => { if (/discovering grid/.test(document.getElementById('meta').textContent)) sawDisc = true; });
       mo.observe(document.getElementById('meta'), { childList: true, characterData: true, subtree: true });
       await window.micro.setColorBy(idR, 'CU');
+      const LR = m.layers().find((q) => q.id === idR);
+      out.texSwitch = { fp: take(), sawDisc, tex: LR._valTex ? LR._valTex.name : null, range: m.renderer.layerChanRange(idR) };
+      // …and the RE-STREAM the texture replaced (still the path for what a texture can't draw)
+      await window.micro.setColorBy(idR, 'AU'); take();
+      window.__noValueTex = true;
+      await window.micro.setColorBy(idR, 'CU');
+      window.__noValueTex = false;
       mo.disconnect();
       out.switched = { hdr: hdr(m.layers().find((q) => q.id === idR)), fp: take(), sawDisc };
       const idC = await m.addLayer({ kind: 'blocks', file: reg, roles: { x: 'X', y: 'Y', z: 'Z', value: 'CU', category: 'ROCK' } });
-      out.freshCU = { hdr: hdr(m.layers().find((q) => q.id === idC)), fp: take() };
+      out.freshCU = { hdr: hdr(m.layers().find((q) => q.id === idC)), fp: take(), range: m.renderer.layerChanRange(idC) };
       const idS = await m.addLayer({ kind: 'blocks', file: sub, roles: { x: 'X', y: 'Y', z: 'Z', value: 'G' } });
       out.sub = { hdr: hdr(m.layers().find((q) => q.id === idS)), fp: take() };
       // a DECLARED lattice, both doors: the caller's (addLayer lattice) and the
@@ -1038,7 +1047,10 @@ async function openChecks(url, label) {
     W.reg.fp.n === 9 * 11 * 13 - 1 && W.reg.fp.h === P.reg.fp.h && W.reg.fp.n === P.reg.fp.n);
   chk(`open: sub-blocked Parquet — ${gs.subBlocked ? `${gs.dimPalette.length} sizes` : 'NOT sub-blocked'}; workers and page agree (header, and hash ${W.sub.fp.h.toString(16)} vs ${P.sub.fp.h.toString(16)} over ${W.sub.fp.n})`,
     gs.subBlocked && gs.dimPalette.length === 2 && W.sub.hdr === P.sub.hdr && W.sub.fp.h === P.sub.fp.h && W.sub.fp.n === P.sub.fp.n);
-  chk(`open: a colour-by switch keeps the discovered grid (no discovery sweep: ${!W.switched.sawDisc && !P.switched.sawDisc}) and draws what a fresh open on CU draws`,
+  chk(`open: a colour-by switch to CU builds no chunks (${W.texSwitch.fp.chunks} / ${P.texSwitch.fp.chunks}) — a value texture of ${W.texSwitch.tex}, range [${W.texSwitch.range}] = a fresh open on CU's [${W.freshCU.range}]`,
+    W.texSwitch.fp.chunks === 0 && P.texSwitch.fp.chunks === 0 && W.texSwitch.tex === 'CU' && P.texSwitch.tex === 'CU'
+    && JSON.stringify(W.texSwitch.range) === JSON.stringify(W.freshCU.range) && JSON.stringify(P.texSwitch.range) === JSON.stringify(W.freshCU.range));
+  chk(`open: the re-stream (what a texture can't draw) keeps the discovered grid (no discovery sweep: ${!W.switched.sawDisc && !P.switched.sawDisc}) and draws what a fresh open on CU draws`,
     !W.switched.sawDisc && !P.switched.sawDisc && W.switched.hdr === W.freshCU.hdr && W.switched.fp.h === W.freshCU.fp.h && P.switched.fp.h === W.freshCU.fp.h);
   const D = JSON.parse(W.declOk.hdr);
   chk(`open: a caller-declared lattice applies (${D.grid && D.grid.z.count} levels) and draws the same both ways (${W.declOk.fp.h.toString(16)} vs ${P.declOk.fp.h.toString(16)}); a wrong one is refused alike — “${W.declBad}”`,

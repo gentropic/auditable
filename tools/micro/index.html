@@ -978,7 +978,7 @@ import { buildBVH, windingBVH, Winding, raycastBVH } from '../../ext/winding/ind
 import { Peel } from '../../ext/peel/index.js';   // depth-peel by-solid — fast on clean closed meshes (complements winding)
 import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model files (multi-mesh + colours)
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
-import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, readParquetRow, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
+import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
@@ -987,6 +987,8 @@ import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, laye
 import { gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge } from './src/kernels.js';   // the analysis kernels (page + scan workers)
 import { scanColumnar, canScanColumnar } from './src/colscan.js';   // columnar, parallel scans of Parquet models
 import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk builder off the page (compaction)
+import { buildValueTexture } from './src/valuetex.js';       // colour-by a column the chunks don't carry: a per-record value texture
+import { parquetRow } from './src/rowworker.js';          // a Parquet row off the page (the pick, the record panel)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
 import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
@@ -1031,9 +1033,10 @@ function currentDrawOpts() {
   syncWholeHoles(section);                                 // whole-holes layers: which holes cross the slab (cheap unless it moved)
   return { budget: +$('#budget').value, pointPx: +$('#ptPx').value, colorMode: resolveColorMode(), blocksAsPoints: _viewMode === 'points', blockEdges: _blockEdges, section, clip: [clipV('clipMin'), clipV('clipMax')], layerOpts: S.layers.length ? layerOpts : null };
 }
+let _idleCapDone = false;
 function loop(t) {
   if (dirty || !converged) {                               // keep converging while still (progressive accumulation)
-    dirty = false;
+    dirty = false; _idleCapDone = false;                   // (a drawn frame may have moved the camera: re-check the capture)
     const [w, h] = renderer.resize();
     cam.setAspect(w / h);
     const opts = currentDrawOpts();
@@ -1051,6 +1054,10 @@ function loop(t) {
     drawSwathBand();                                       // the swath hover/drag band ghost
     drawCompass();
     drawDecorations();                                     // scale bar / north / legend / title overlay
+  } else if (!_idleCapDone) {                              // still and converged: build the pick buffer, a batch a frame
+    const o = currentDrawOpts();
+    try { _idleCapDone = renderer.idleCapture(cam, { pointPx: o.pointPx, blocksAsPoints: o.blocksAsPoints, section: o.section, budget: o.budget }); }
+    catch (e) { _idleCapDone = true; console.warn('pick capture:', e); }   // never let idle work stop the render loop
   }
   requestAnimationFrame(loop);
 }
@@ -7254,14 +7261,28 @@ function fitFromHeader(header, first = true) {
     if (Math.hypot(dx, dy) > ext * 10) $('#meta').textContent = `⚠ ${Math.round(Math.hypot(dx, dy) / 1000)} km from the current data — different area or CRS?`;
   }
 }
+// the open's block chunk builder: OFF the page (src/chunkworker.js — the same
+// builder, batches and seed, so the same chunks). Building ran on the page and
+// was most of a big open's stalls (~0.5 s a 2M-block batch, Morton sort and
+// packing). 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give
+// the frustum test teeth. Where workers can't run, the page builds, as before.
+async function baseBlockBuilder(lid, { frame, grid, dimPalette }) {
+  const cb = await startChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1,
+    onChunk: (c) => { if (layerById(lid)) { renderer.addChunk(c, 'base', lid); requestRender(); } } });
+  window.__baseOffPage = cb.offPage;                     // smoke hook: where the open built its chunks
+  return cb;
+}
 async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.activeId) {
-  let done = 0;
-  for await (const rc of streamChunks({ chunkPoints })) {
-    cb.push(rc); done += rc.count;
-    $('#meta').textContent = `${name} — streaming ${Math.round(100 * done / (header.count || 1))}%`;
-    await new Promise((r) => setTimeout(r));              // yield to the render loop
-  }
-  const doc = cb.flush();
+  let done = 0, doc;
+  try {
+    for await (const rc of streamChunks({ chunkPoints })) {
+      const n = rc.count;
+      cb.push(rc); done += n;                             // (an off-page builder takes rc's arrays: read nothing from it after)
+      $('#meta').textContent = `${name} — streaming ${Math.round(100 * done / (header.count || 1))}%`;
+      await new Promise((r) => setTimeout(r));            // yield to the render loop
+    }
+    doc = await cb.flush();
+  } finally { if (cb.close) cb.close(); }                 // every chunk is in (or the read failed): the worker can go
   const L = layerById(lid);
   if (L) L.bboxLocal = doc.bboxLocal;
   recomputeUnion();
@@ -7278,7 +7299,7 @@ const allocLayerId = () => {
   return null;
 };
 function closeAllLayers() {
-  for (const L of S.layers) { pinEvictLayer(L.id); closeCompactBuilder(L.id); }   // nothing pinned (or still compacting) survives a clear
+  for (const L of S.layers) { pinEvictLayer(L.id); closeCompactBuilder(L.id); dropValueTex(L); }   // nothing pinned (or still compacting, or a value texture) survives a clear
   for (const [lid] of _attrTables) closeAttrTable(lid);
   renderer.clearChunks(); renderer.setPicked(null);
   S.layers = []; S.activeId = 0; frame = null; _docBbox = null;
@@ -9636,8 +9657,9 @@ async function openBlocksBlob(blob, name, opts = {}) {
     const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
     const dimPalette = header.subBlocked ? header.dimPalette : null;
-    const cb = createBlockChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
+    const cb = await baseBlockBuilder(lid, { frame, grid, dimPalette });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
+    blockDoc.drawn = doc.count;                            // how many records have a block (a value texture leaves the rest out of its range)
     blockDoc.metaLine = header.subBlocked
       ? `${name} — ${doc.count.toLocaleString()} sub-blocks · fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
       : `${name} — ${doc.count.toLocaleString()} blocks · grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${fmtPitch(header.grid.x.pitch)}×${fmtPitch(header.grid.y.pitch)}×${fmtPitch(header.grid.z.pitch)}${latticeNote(header.grid)}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
@@ -9699,8 +9721,9 @@ async function openDmBlob(blob, name, opts = {}) {
     const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], frame);
     blockDoc.grid = grid;
     const dimPalette = header.subBlocked ? header.dimPalette : null;
-    const cb = createBlockChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
+    const cb = await baseBlockBuilder(lid, { frame, grid, dimPalette });
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
+    blockDoc.drawn = doc.count;
     blockDoc.metaLine = header.subBlocked
       ? `${name} — ${doc.count.toLocaleString()} sub-blocks · .dm fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
       : `${name} — ${doc.count.toLocaleString()} blocks · .dm grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
@@ -9779,6 +9802,59 @@ $('#colorBy').addEventListener('change', () => {
   if (L) setLayerColorBy(L, $('#colorBy').value).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
   else requestRender();
 });
+// ── colour by a column the chunks don't carry: the per-record VALUE TEXTURE ──
+// The chunks keep the channel they were built with (header.mapping.chan); any
+// other numeric column draws from an R32F texture, one texel per record, that the
+// renderer reads instead of the chunk attribute (setLayerChanTex). One texture per
+// layer is kept (4 bytes a record of GPU memory), so going back to a column seen
+// last is instant. Everything that colours a layer funnels through ensureValueTex:
+// the dropdown, the host, project restore, and applyRamp after any re-read — so a
+// re-read (a new document) can never keep drawing the old document's values.
+const valueTexEligible = (L) => { const bd = L && L.docs && L.docs.blockDoc; return !!(bd && bd.grid && !bd.forcePoints && !window.__noValueTex); };
+function valueTexWant(L, sel) {                            // the column the texture must hold, or null (the chunks' own)
+  sel = String(sel || ''); if (!sel.startsWith('chan:')) return null;
+  const bd = L.docs && L.docs.blockDoc; if (!bd) return null;
+  const ch = +sel.slice(5); if (ch === bd.header.mapping.chan) return null;
+  return bd.header.columns[ch] ?? null;
+}
+const valueTexKey = (L, name) => name + '|' + JSON.stringify((L.qualify && L.qualify[name]) || null);
+function dropValueTex(L) {
+  if (L._valTexBusy) { L._valTexBusy.ac.abort(); L._valTexBusy = null; }
+  if (!L._valTex) return;
+  renderer.setLayerChanTex(L.id, null); renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null;
+}
+// → true (coloured from the texture, or none needed), false (superseded), null
+// (a texture can't do it — the caller re-streams)
+function ensureValueTex(L, sel = colorSelOf(L)) {
+  const bd = L.docs && L.docs.blockDoc;
+  if (L._valTex && (!bd || L._valTex.hdr !== bd.header)) dropValueTex(L);   // a re-read: those values were the old document's
+  const name = valueTexWant(L, sel);
+  if (!name) { if (L._valTex) { renderer.setLayerChanTex(L.id, null); requestRender(); } return Promise.resolve(true); }
+  if (!valueTexEligible(L)) return Promise.resolve(null);
+  const key = valueTexKey(L, name);
+  if (L._valTex && L._valTex.key === key) { renderer.setLayerChanTex(L.id, L._valTex.tex, L._valTex.range); requestRender(); return Promise.resolve(true); }
+  if (L._valTexBusy && L._valTexBusy.key === key) return L._valTexBusy.p;
+  if (L._valTexBusy) L._valTexBusy.ac.abort();             // a newer colour supersedes the one being read
+  const ac = new AbortController(), t0 = performance.now();
+  const p = (async () => {
+    let r;
+    try {
+      r = await buildValueTexture(L, renderer.gl, quoteIdent(name), { signal: ac.signal,
+        onProgress: (dn, N, w) => { if (!ac.signal.aborted && N) $('#meta').textContent = `colour by ${name}: ${rowsProgress(dn, N)} · ${w}`; } });
+    } catch (e) { if (e && e.name === 'AbortError') return false; throw e; }
+    finally { if (L._valTexBusy && L._valTexBusy.ac === ac) L._valTexBusy = null; }
+    if (!r) return null;
+    if (ac.signal.aborted || !layerById(L.id) || L.docs.blockDoc !== bd || valueTexWant(L, colorSelOf(L)) !== name) { renderer.gl.deleteTexture(r.tex); return false; }
+    if (L._valTex) { renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null; }
+    L._valTex = { key, hdr: bd.header, tex: r.tex, range: r.range, name };
+    renderer.setLayerChanTex(L.id, r.tex, r.range);
+    applyRamp(L, true); requestRender();
+    $('#meta').textContent = `coloured by ${name} — ${r.finite.toLocaleString()} values in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${r.where}`;
+    return true;
+  })();
+  L._valTexBusy = { key, ac, p };
+  return p;
+}
 // ── colour-by: ONE function for the dropdown and the host (window.micro). It
 // used to live in the dropdown's change handler, so it only ever acted on the
 // ACTIVE layer, and setLayerColorSel (its non-active stand-in) skipped the
@@ -9811,7 +9887,15 @@ async function setLayerColorBy(L, v) {
     // kept its count and its columns and drew nothing. Parquet re-opens through
     // its own provider, and takes the new channel as a mapping patch because it
     // resolves columns by mapping rather than by an opts.chan index.
-    else if (d.blockDoc && ch !== d.blockDoc.header.mapping.chan) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
+    // A column the chunks weren't built with: read ONLY that column into a value
+    // texture (src/valuetex.js) — the re-stream rebuilt every chunk to change one
+    // number per block (17–19 s at 60M). The re-stream stays for what a texture
+    // can't draw (a points view) or hold (more records than the GPU's texture size).
+    else if (d.blockDoc && ch !== d.blockDoc.header.mapping.chan) {
+      if (L.id === S.activeId && [...$('#colorBy').options].some((o) => o.value === v)) $('#colorBy').value = v;
+      const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
+      if (ok === null) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
+    }
   }
   L.colorSel = v;                                          // (re)asserted on the successor
   // a re-read rewrites the dropdown from THAT layer's header — hand it back to the active one
@@ -11581,7 +11665,8 @@ async function openProjectDir(dir, { pack = null } = {}) {
       if (ls.colorSel && ls.colorSel !== $('#colorBy').value && [...$('#colorBy').options].some((o) => o.value === ls.colorSel)) {
         L.colorSel = ls.colorSel;
         if (ls.colorSel.startsWith('chan:') && L.docs.blockDoc && +ls.colorSel.slice(5) !== L.docs.blockDoc.header.mapping.chan) {
-          await reopenBlockChan(L.docs.blockDoc, +ls.colorSel.slice(5), { keepFilter: false });
+          const ok = valueTexEligible(L) ? await ensureValueTex(L, ls.colorSel) : null;
+          if (ok === null) await reopenBlockChan(L.docs.blockDoc, +ls.colorSel.slice(5), { keepFilter: false });
         }
         if ([...$('#colorBy').options].some((o) => o.value === ls.colorSel)) $('#colorBy').value = ls.colorSel;
       }
@@ -12845,7 +12930,7 @@ async function recordPosition(hit) {
     return row && Number.isFinite(+row[0]) ? [+row[0], +row[1], +row[2]] : null;
   }
   const m = bd && bd.header.mapping;
-  if (bd && bd.parquet) { const row = await readParquetRow(bd.parquet.buf, rec, bd.parquet.meta); const cn = bd.parquet.coordNames; return row ? [+row[cn[0]], +row[cn[1]], +row[cn[2]]] : null; }
+  if (bd && bd.parquet) { const row = await parquetRow(bd.parquet, rec); const cn = bd.parquet.coordNames; return row ? [+row[cn[0]], +row[cn[1]], +row[cn[2]]] : null; }
   if (bd && bd.header.dm) {
     const vals = await fetchDmRecord(bd.blob, bd.header.dm, rec);
     return [vals[m.x], vals[m.y], vals[m.z]];
@@ -14732,6 +14817,7 @@ function fitLayer(L) { if (L.bboxLocal) { cam.fit(L.bboxLocal); requestRender();
 function removeLayerUI(id) {
   dispatchEvent(new Event('micro:project-dirty'));
   closeAttrTable(id);
+  { const Lr = layerById(id); if (Lr) dropValueTex(Lr); }
   renderer.removeLayer(id);
   // pinned columns outlive their layer otherwise — a leak, and worse: layer ids
   // come from a recycled 64-slot pool, so a NEW layer taking a freed id could be
@@ -16338,7 +16424,15 @@ async function realizeCalc(L, name) {                      // one pass → per-r
   try { await ensureStoredValues(L, expandedDeps(L, parse(quoteIdent(name)))); } catch { /* unknown deps → blanks */ }
   const fn = compileValue(quoteIdent(name), schemaExt(L, h), { decimal: '.' });   // a NAME as an expression → quote
   const n = attrRowCountOf(L) || 0; const vals = new Float32Array(n); let rec = 0;
-  for await (const batch of layerRows(L, null)) { for (const f0 of batch) { if (rec >= n) break; let v; try { v = numOf(fn(extendRow(L, f0, rec))); } catch { v = NaN; } vals[rec] = Number.isFinite(v) ? v : NaN; rec++; } await new Promise((r) => setTimeout(r)); }
+  // numbered as the renderer numbers (layerRecords): a CSV row with no usable
+  // coordinates is no record, so counting it shifted every later value one block on
+  for await (const { f } of layerRecords(L, null)) {
+    if (rec >= n) break;
+    let v; try { v = numOf(fn(f)); } catch { v = NaN; }
+    vals[rec] = Number.isFinite(v) ? v : NaN; rec++;
+    if ((rec & 0xFFFF) === 0) await new Promise((r) => setTimeout(r));
+  }
+  for (let i = rec; i < n; i++) vals[i] = NaN;              // past the last record: blank, never 0
   return vals;
 }
 async function materializeCalcCol(L, name) {
@@ -16428,6 +16522,7 @@ async function refreshQualified(L, rechan) {
   if (rechan && d.dhDoc) { L = (await reopenDh(L, { qualify: L.qualify || null })) || L; }
   else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await refilterLayer(L); applyRamp(L, true); }
   else await refilterLayer(L);
+  if (L.docs && L.docs.blockDoc) await ensureValueTex(L);
   if (_propOpen) { _propFor = null; renderProps(); }
   requestRender();
   return L.id;
@@ -16844,6 +16939,7 @@ function rampRangeFor(L) {
 }
 function applyRamp(L, force) {
   if (!force) return stageGate(L, () => applyRamp(L, true));
+  if (L.docs && L.docs.blockDoc) ensureValueTex(L).catch((e) => { $('#meta').textContent = `colour — ${e.message}`; });
   const pcR = paintActiveCol(L) || calcDisplayCol(L);
   if (!pcR && calcSelOf(L)) ensureCalcDisplay(L);          // realize lazily; it re-applies on completion
   if (pcR && pcR.kind === 'ratio') { applyPaintPalette(L, pcR); return; }   // ramp+clip bake INTO the palette
@@ -18460,7 +18556,7 @@ async function showRecord(hit) {
   }
   if (bd && bd.parquet) {
     showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, [], 'fetching…');
-    const row = await readParquetRow(bd.parquet.buf, rec, bd.parquet.meta);
+    const row = await parquetRow(bd.parquet, rec);
     if (!row) { showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
     const f = bd.header.columns.map((n) => { const v = row[n]; return v == null ? '—' : v; });
     const rows = bd.header.columns.map((nm, i) => [nm, f[i]]);

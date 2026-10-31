@@ -6622,7 +6622,7 @@ function createPickPipeline(gl) {
    */
   // the shared ID-buffer pass: scissored to (px,py,w,h), leaves the FBO bound
   // for the caller's readPixels. pick() reads 1px; pickRegion() reads the block.
-  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH }) {
+  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false }) {
     const stateOf = (id) => (layerStates && layerStates.get(id)) || { maskTex: null, isolate: false };
     const byLayer = (arr) => {
       const m = new Map();
@@ -6665,13 +6665,39 @@ function createPickPipeline(gl) {
     gl.viewport(0, 0, w, h);
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(px, py, w2, h2);
-    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);            // layer = NO_LAYER → "nothing here"
-    gl.clear(gl.DEPTH_BUFFER_BIT);
+    if (!noClear) {                                        // (a progressive capture's later batches draw over the earlier ones)
+      gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);          // layer = NO_LAYER → "nothing here"
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+    }
     gl.enable(gl.DEPTH_TEST);
     const s = cam.state;
     const dpp = pointPx * (window.devicePixelRatio || 1);
+    // A chunk writes only inside its bbox's screen footprint (+ a splat's
+    // radius), so a scissored pick draws just the chunks over the region. A
+    // one-pixel pick on a 60M-block model ran the vertex stage for every block
+    // (~0.5 s, the page waiting on readPixels); Morton chunks are tight, so the
+    // few under the cursor are all it needs. A box that crosses the eye plane
+    // can't be projected — it's drawn, conservatively. The full-viewport capture
+    // draws everything.
+    const whole = px <= 0 && py <= 0 && px + w2 >= viewportW && py + h2 >= viewportH;
+    const margin = dpp + 2;
+    const covers = (c) => {
+      const b = c.bboxLocal;
+      if (whole || !b || !(b[0] <= b[3])) return true;
+      const m = stateFor(stateOf(c._layer || 0)).viewProj;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        const x = b[k & 1 ? 3 : 0], y = b[k & 2 ? 4 : 1], z = b[k & 4 ? 5 : 2];
+        const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(cw > 1e-9)) return true;
+        const sx = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / cw * 0.5 + 0.5) * viewportW;
+        const sy = ((m[1] * x + m[5] * y + m[9] * z + m[13]) / cw * 0.5 + 0.5) * viewportH;
+        if (sx < x0) x0 = sx; if (sx > x1) x1 = sx; if (sy < y0) y0 = sy; if (sy > y1) y1 = sy;
+      }
+      return !(x1 < px - margin || x0 > px + w2 + margin || y1 < py - margin || y0 > py + h2 + margin);
+    };
 
-    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0);
+    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0 && covers(c));
     if (ptsChunks.length) {
       gl.useProgram(pts);
       gl.uniformMatrix4fv(uPts.viewProj, false, s.viewProj);
@@ -6699,7 +6725,7 @@ function createPickPipeline(gl) {
       }
     }
 
-    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0);
+    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0 && covers(c));
     if (blkChunks.length) {
       gl.useProgram(blk);
       // the camera uniforms, per layer (a moved layer has its own)
@@ -6889,7 +6915,35 @@ function createPickPipeline(gl) {
     return { tex: colorTex, depth: depthTex, w, h };
   }
 
-  return { pick, pickRegion, captureViewport, NO_LAYER };
+  // the same capture, PROGRESSIVE: beginCapture clears the whole target, each
+  // captureMore draws one batch of chunks over it (depth-tested against what's
+  // there), so the full id buffer of a still frame is built across idle frames
+  // instead of in one long pass. Same result as captureViewport.
+  function beginCapture(viewportW, viewportH) {
+    ensure(viewportW, viewportH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function captureMore(chunks, cam, opts) {
+    renderInto(0, 0, opts.viewportW, opts.viewportH, chunks, cam, { ...opts, noClear: true });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    return { tex: colorTex, depth: depthTex, w, h };
+  }
+  // a rect of the CAPTURED buffer (no render) — what pickRegion returns
+  function readCaptured(px, py, w2, h2) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const out = new Uint32Array(w2 * h2 * 4);
+    gl.readPixels(px, py, w2, h2, gl.RGBA_INTEGER, gl.UNSIGNED_INT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  return { pick, pickRegion, captureViewport, beginCapture, captureMore, readCaptured, NO_LAYER };
 }
 
 // ── ../dm/src/dm.js ──
@@ -9787,6 +9841,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   let pickedLayer = 0xFFFFFFFF;                           // …and its layer (the pair IS the identity now)
   const repaintSet = new Set();                           // records to repaint over a converged frame
   let lastConverged = false;
+  let pickFromCapture = 0;                                // picks answered from the capture (a test seam)
   // ── layers (micro-layers spec §1): each opened dataset is a layer with its own
   // visibility, filter mask, compaction set, and color ranges. recIdx is
   // PARTITIONED — (layerId << 29) | record — so one ID buffer serves all layers
@@ -9797,6 +9852,12 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // shared with the pick pipeline so the pick always agrees with the picture
   const layerSecOf = (ls, sec) => layerSection(sec, ls.sectioned, ls.offset);
   const meshSecOf = (ls, sec) => meshSection(sec, ls.sectioned, ls.offset);
+  // a layer's DOCUMENT value range: the opt-in value texture's when one is set
+  // (its range IS the document's then), else what the chunks carried. The clip
+  // applies over either.
+  const docRangeOf = (ls) => ls.chanTex && ls.chanTexRange
+    ? [ls.chanTexRange[0], ls.chanTexRange[0] + ls.chanTexRange[1]]
+    : [ls.docChan[0] === Infinity ? 0 : ls.docChan[0], ls.docChan[1]];
   function layerOf(id) {
     let l = layers.get(id);
     if (!l) {
@@ -9847,7 +9908,12 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // falls back to the re-raster.
   const cosmeticDirtyLayers = new Set();                  // layers a cosmetic setter touched
   const lastCosSig = new Map();                           // layer → view-opts signature last rastered/resolved
-  let idCapture = null;                                   // { tex, w, h } from pickPipe.captureViewport
+  let idCapture = null;                                   // { tex, depth, w, h, key, complete } — the converged frame's id buffer
+  // what an id buffer depends on besides the geometry: the camera, the point
+  // size, points-vs-boxes, the section, the target size
+  const capKey = (cam, pointPx, blocksAsPoints, sec) =>
+    `${Array.prototype.join.call(cam.state.viewProj, ',')}|${pointPx}|${blocksAsPoints ? 'P' : 'B'}|${sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off'}|${canvas.width}x${canvas.height}`;
+  const capReady = (key) => !globalThis.__noPickCapture && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
   const layerMaxRec = new Map();                          // layer → 1 + highest record index seen
   const bakeDirty = new Set();                            // layers whose attr bake is stale
   let resolves = 0;                                       // resolve passes run (harness observability)
@@ -9975,7 +10041,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     // stick thickness (world meters) — a live per-layer knob
     setLayerStickRadius(layer, r) { const ls = layerOf(layer); const v = Math.max(0.05, +r || 1); if (ls.stickRadius !== v) { ls.stickRadius = v; needClear = true; } },
     layerStickRadius(layer) { return layerOf(layer).stickRadius; },
-    layerChanRange(layer) { const ls = layers.get(layer); return ls && ls.docChan[0] !== Infinity ? [ls.docChan[0], ls.docChan[1]] : null; },
+    layerChanRange(layer) { const ls = layers.get(layer); return ls && (ls.chanTex && ls.chanTexRange || ls.docChan[0] !== Infinity) ? docRangeOf(ls) : null; },
     // per-layer section participation: an exempt layer draws (and picks) whole
     // while the others are slabbed — e.g. topo kept for context during sectioning
     setLayerSectioned(layer, mode) { const ls = layerOf(layer); const v = mode === undefined ? true : mode; if (ls.sectioned !== v) { ls.sectioned = v; needClear = true; } },
@@ -10228,22 +10294,63 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       const h = Math.min(canvas.height, Math.round(cssRect.h * dpr));
       const y = Math.max(0, canvas.height - yTop - h);
       if (w <= 0 || h <= 0) return null;
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (capReady(key)) { pickFromCapture++; return { data: pickPipe.readCaptured(x, y, w, h), w, h, dpr }; }
+      if (idCapture && idCapture.key !== key) idCapture = null;   // the scissored pass below draws into the same target
       const data = pickPipe.pickRegion(x, y, w, h, chunks.filter(activeChunk), cam, {
-        pointPx, blocksAsPoints, layerStates: layers,
-        section: section && section.on ? section : null,
+        pointPx, blocksAsPoints, layerStates: layers, section: sec,
         viewportW: canvas.width, viewportH: canvas.height,
       });
       return { data, w, h, dpr };                          // rows bottom-up (GL), NO_HIT = 0xFFFFFFFF
     },
+    // IDLE WORK: build the converged frame's id buffer a batch of chunks per call
+    // (the app calls it each idle frame until it says done). With it complete, a
+    // pick or a marquee just READS it: a click on a 60M-block model no longer
+    // runs the vertex stage over every block while the page waits. Any change —
+    // the camera, the geometry, a re-raster — throws the capture away and the
+    // next idle frames rebuild it. → true when there is nothing (more) to do.
+    idleCapture(cam, { pointPx = 2.5, blocksAsPoints = false, section = null, budget = 3_000_000 } = {}) {
+      if (!chunks.length || !lastConverged || needClear) return true;
+      if (!pickPipe) pickPipe = createPickPipeline(gl);
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height) {   // complete — done once the GPU has caught up with it
+        if (!idCapture.fence) return true;
+        const st = gl.getSyncParameter(idCapture.fence, gl.SYNC_STATUS);
+        if (st !== gl.SIGNALED) return false;
+        gl.deleteSync(idCapture.fence); idCapture.fence = null; return true;
+      }
+      if (!idCapture || idCapture.key !== key || idCapture.w !== canvas.width || idCapture.h !== canvas.height) {
+        idCapture = { key, complete: false, list: chunks.filter(activeChunk), next: 0, tex: null, depth: null, w: canvas.width, h: canvas.height };
+        pickPipe.beginCapture(canvas.width, canvas.height);
+      }
+      const batch = []; let n = 0;
+      while (idCapture.next < idCapture.list.length && (n < budget || !batch.length)) { const c = idCapture.list[idCapture.next++]; batch.push(c); n += c.count || 0; }
+      const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      const r = pickPipe.captureMore(batch, cam, { pointPx, blocksAsPoints, layerStates: layers, section: sec, viewportW: canvas.width, viewportH: canvas.height });
+      gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      if (idCapture.next >= idCapture.list.length) Object.assign(idCapture, { complete: true, tex: r.tex, depth: r.depth, list: null, fence: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) });
+      return false;                                        // the next call waits for the fence
+    },
+    get captureReady() { return !!(idCapture && idCapture.complete && !idCapture.fence); },
+    get picksFromCapture() { return pickFromCapture; },
     pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
       const dpr = window.devicePixelRatio || 1;
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (capReady(key)) {                                 // the still frame's id buffer is complete: read it, no render
+        pickFromCapture++;
+        const o = pickPipe.readCaptured(px, py, 1, 1);
+        if (o[1] === pickPipe.NO_LAYER) return null;
+        const g = o[1] >>> 0;
+        return { layer: g & 0xFFFF, rec: o[0] >>> 0, face: (g >>> 16) & 7 };
+      }
+      if (idCapture && idCapture.key !== key) idCapture = null;
       return pickPipe.pick(px, py, chunks.filter(activeChunk), cam, {
-        pointPx, blocksAsPoints, layerStates: layers,
-        section: section && section.on ? section : null,
+        pointPx, blocksAsPoints, layerStates: layers, section: sec,
         viewportW: canvas.width, viewportH: canvas.height,
       });
     },
@@ -10339,11 +10446,12 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           // still scene that never gets a cosmetic poke never pays for one
           if (!pickPipe) pickPipe = createPickPipeline(gl);
           const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-          if (!idCapture || idCapture.w !== canvas.width || idCapture.h !== canvas.height) {
-            idCapture = pickPipe.captureViewport(act, cam, {
+          const ck = capKey(cam, pointPx, blocksAsPoints, sec);
+          if (!capReady(ck)) {
+            idCapture = { ...pickPipe.captureViewport(act, cam, {
               pointPx, blocksAsPoints, layerStates: layers,
               section: sec, viewportW: canvas.width, viewportH: canvas.height,
-            });
+            }), key: ck, complete: true };
           }
           for (const [id, group] of groups) {              // (re)bake stale attr textures
             if (!resolvePipe.hasBake(id) || bakeDirty.has(id)) {
@@ -10368,8 +10476,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
             const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
             let u;
             if (group[0].kind === 'blocks') {
-              const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
-              const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
+              const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
+              const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
               // the cut wall faces the viewer: the section normal signed toward the eye
               const lsec = layerSecOf(ls, sec);
               let cutN = [0, 0, 1];
@@ -10379,7 +10487,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
               }
               u = {
                 kind: 'blocks', colorMode: o.colorMode, zRange: zr,
-                chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
+                chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
                 paletteN: 256, intensityScale: 1,
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette,
                 mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
@@ -10587,11 +10695,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         };
         const beginLayer = (id) => {
           const ls = layerOf(id), o = lopt(id);
-          const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
-          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
+          const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
+          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
           blocksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
-            chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
+            chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
@@ -10637,8 +10745,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         };
         const beginStkLayer = (id) => {
           const ls = layerOf(id), o = lopt(id);
-          const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
-          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
+          const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
+          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
           sticksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],

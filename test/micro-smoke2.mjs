@@ -3553,6 +3553,123 @@ await p.close();
   await pq3.close();
 }
 
+// ── §54: colour by a column the chunks don't carry = a per-record VALUE TEXTURE
+//     (src/valuetex.js): no re-read, the picture the re-stream would draw, the range
+//     the column's, blanks at the low end; the same on CSV (the row path). ──
+{
+  const pq4 = await mkPage('sm2vtex');
+  const vt = await pq4.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const NX = 40, NY = 30, NZ = 20, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N), cu = new Float64Array(N);
+    let r = 7, lo = Infinity, hi = -Infinity, blanks = 0;
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let q = 0; q < NX; q++, i++) {
+      r = (r * 1103515245 + 12345) >>> 0;
+      x[i] = 5 + q * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10;
+      au[i] = ((r >>> 8) % 1000) / 250;
+      cu[i] = i % 97 === 0 ? NaN : 0.2 + q * 0.05 + k * 0.01;
+      if (Number.isFinite(cu[i])) { if (cu[i] < lo) lo = cu[i]; if (cu[i] > hi) hi = cu[i]; } else blanks++;
+    }
+    x[5] = NaN; cu[5] = 99;                                 // a record with no X is not drawn: its 99 must stay out of the range
+    const id = await W.addLayer({ kind: 'blocks', name: 'vt.parquet', columns: { X: x, Y: y, Z: z, AU: au, CU: cu }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const L = M.layers().find((l) => l.id === id);
+    const px = async () => {
+      const b = await W.snapshot({ decorations: false });
+      const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+      g.drawImage(bm, 0, 0); return g.getImageData(0, 0, bm.width, bm.height).data;
+    };
+    const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) > 4 || Math.abs(a[i + 1] - b[i + 1]) > 4 || Math.abs(a[i + 2] - b[i + 2]) > 4) n++; return n / (a.length / 4); };
+    const hdr0 = L.docs.blockDoc.header, auIdx = hdr0.columns.indexOf('AU');
+    const pAU = await px();
+    await W.setColorBy(id, 'CU');
+    const tex = { onTex: !!L._valTex, sameDoc: L.docs.blockDoc.header === hdr0 && hdr0.mapping.chan === auIdx, range: M.renderer.layerChanRange(id), lo, hi, meta: document.querySelector('#meta').textContent };
+    const pTex = await px();
+    // the reference: the same colour by the re-stream (texture path off)
+    await W.setColorBy(id, 'AU');
+    window.__noValueTex = true;
+    await W.setColorBy(id, 'CU');
+    window.__noValueTex = false;
+    const L2 = M.layers().find((l) => l.id === id);
+    const restreamed = L2.docs.blockDoc.header !== hdr0;
+    const pRe = await px();
+    // and back to AU — now the column the chunks DON'T carry, so a texture again
+    await W.setColorBy(id, 'AU');
+    const backOnTex = !!L2._valTex && L2._valTex.name === 'AU';
+    const pAU2 = await px();
+    // CSV: the row path
+    let csv = 'X,Y,Z,AU,CU\n';
+    for (let i = 0; i < N; i++) csv += `${x[i]},${y[i]},${z[i]},${au[i]},${Number.isFinite(cu[i]) ? cu[i] : ''}\n`;
+    const id2 = await M.openBlob(new File([csv], 'vt.csv'), 'vt.csv', 'add');
+    await W.removeLayer(id);                                // the CSV alone on screen (same blocks)
+    await W.setColorBy(id2, 'CU');
+    const L3 = M.layers().find((l) => l.id === id2);
+    const csvTex = { onTex: !!L3._valTex, range: M.renderer.layerChanRange(id2) };
+    const cTex = await px();
+    // the CSV re-stream's picture: a record shifted by the row with no X would show
+    await W.setColorBy(id2, 'AU');
+    window.__noValueTex = true; await W.setColorBy(id2, 'CU'); window.__noValueTex = false;
+    const cRe = await px();
+    return { tex, restreamed, dTexRe: differ(pTex, pRe), dTexAU: differ(pTex, pAU), backOnTex, dAU: differ(pAU, pAU2),
+      csv: { ...csvTex, dTexRe: differ(cTex, cRe), meta: document.querySelector('#meta').textContent }, blanks, baseOffPage: window.__baseOffPage };
+  });
+  const near = (a, b) => Math.abs(a - b) < 1e-5;
+  chk(`colour by CU (not in the chunks): a value texture, no re-read (“${vt.tex.meta}”)`, vt.tex.onTex && vt.tex.sameDoc);
+  chk(`its range is CU's own over the drawn blocks [${vt.tex.range}] (${vt.blanks} blanks and an undrawn 99 left out)`, vt.tex.range && near(vt.tex.range[0], vt.tex.lo) && near(vt.tex.range[1], vt.tex.hi));
+  chk(`the texture draws what the re-stream draws: ${(100 * vt.dTexRe).toFixed(2)}% of pixels differ (vs ${(100 * vt.dTexAU).toFixed(1)}% between CU and AU)`, vt.restreamed && vt.dTexRe < 0.005 && vt.dTexAU > 0.05);
+  chk(`back to AU after the re-stream: a texture again, the same picture as the open (${(100 * vt.dAU).toFixed(2)}% differ)`, vt.backOnTex && vt.dAU < 0.005);
+  chk(`CSV (the row path, the renderer's record numbering): a value texture, range [${vt.csv.range}], ${(100 * vt.csv.dTexRe).toFixed(2)}% of pixels differ from the CSV re-stream`, vt.csv.dTexRe < 0.005 && vt.csv.onTex && vt.csv.range && near(vt.csv.range[0], vt.tex.lo) && near(vt.csv.range[1], vt.tex.hi));
+  chk(`the open built its block chunks off the page (${vt.baseOffPage}) — and the pictures above are those chunks`, vt.baseOffPage === true);
+  await pq4.close();
+}
+
+// ── §55: a still frame's pick buffer is built in idle frames (renderer.idleCapture);
+//     a pick then READS it — and reads exactly what a rendered pick finds, with and
+//     without a section; a moved camera throws it away. Parquet rows come from the
+//     row worker, the same values as the page's read. ──
+{
+  const pq5 = await mkPage('sm2pickcap');
+  const pc = await pq5.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const NX = 30, NY = 24, NZ = 16, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N);
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let q = 0; q < NX; q++, i++) { x[i] = 5 + q * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10; au[i] = (q * 7 + j * 3 + k) % 11; }
+    const id = await W.addLayer({ kind: 'blocks', name: 'pc.parquet', columns: { X: x, Y: y, Z: z, AU: au }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const frames = (k) => new Promise((r) => { const f = () => (--k <= 0 ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+    const ready = async () => { await frames(3);              // the change draws first (a moved section drops the old capture)
+      for (let n = 0; n < 400 && !M.renderer.captureReady; n++) await new Promise((r) => requestAnimationFrame(r)); return M.renderer.captureReady; };
+    const c = document.querySelector('#cv').getBoundingClientRect();
+    const pts = []; for (let a = 1; a < 8; a++) for (let b = 1; b < 8; b++) pts.push([c.width * a / 8, c.height * b / 8]);
+    const key = (r) => JSON.stringify(r.map((h) => h && [h.layer, h.rec, h.face]));
+    const compare = async () => {
+      const ok0 = await ready();
+      const before = M.renderer.picksFromCapture;
+      const fromCap = key(await W.worldAt(pts));
+      const used = M.renderer.picksFromCapture - before;
+      globalThis.__noPickCapture = true;
+      const rendered = key(await W.worldAt(pts));
+      globalThis.__noPickCapture = false;
+      return { ready: ok0, used, same: fromCap === rendered, hits: JSON.parse(fromCap).filter(Boolean).length };
+    };
+    const plain = await compare();
+    await W.setSection({ axis: 'x', at: [155, 120, 80], thickness: 40 });
+    const sect = await compare();
+    // a camera change: the capture goes, the next pick renders (and is still right)
+    M.cam.orbit(0.3, 0); M.requestRender();
+    await new Promise((r) => requestAnimationFrame(r)); await new Promise((r) => requestAnimationFrame(r));
+    const staleBefore = M.renderer.captureReady;
+    // the row worker: a pick's row = the page's read of that row
+    const L = M.layers().find((l) => l.id === id);
+    const rows = [];
+    for (const rec of [0, 4321, N - 1]) rows.push(JSON.stringify(await M.fetchLayerRow(L, rec)) === JSON.stringify(['X', 'Y', 'Z', 'AU'].map((nm) => ({ X: x, Y: y, Z: z, AU: au })[nm][rec])));
+    return { plain, sect, staleBefore, rows };
+  });
+  chk(`pick from the idle capture = a rendered pick at 49 points (${pc.plain.hits} hits, ${pc.plain.used} answered from the capture)`, pc.plain.ready && pc.plain.used > 0 && pc.plain.same && pc.plain.hits > 10);
+  chk(`…with a section on too (${pc.sect.hits} hits, same: ${pc.sect.same})`, pc.sect.ready && pc.sect.used > 0 && pc.sect.same);
+  chk(`a moved camera drops the capture (ready right after: ${pc.staleBefore})`, pc.staleBefore === false);
+  chk(`a Parquet row read by the row worker = the source row (${pc.rows})`, pc.rows.every(Boolean));
+  await pq5.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

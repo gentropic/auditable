@@ -9,7 +9,8 @@
 // [[reference_micro_source_dispatch]]). This module is where those decisions
 // live now; a new source kind is added HERE, once.
 import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher, qualifiedNumber, QUALIFIED_DEFAULT } from '../../../ext/condenser/src/main.js';
-import { streamParquetColumns, readParquetRow } from '../../../ext/parquet/index.js';
+import { streamParquetColumns } from '../../../ext/parquet/index.js';
+import { parquetRow } from './rowworker.js';            // a Parquet row off the page (it costs its row group)
 import { compileValue, deps } from '../../../ext/expr/index.js';
 import { readLFM, readLFMLayout, verifyLFM, lfmBlockStream } from '../../../ext/lfm/lfm.js';
 import { S, activeDocs } from './state.js';
@@ -468,7 +469,7 @@ export async function fetchLayerRow(L, rec) {
   if (d.dhDoc) return rawRecordOf(L, rec);                 // the source text (<0.001), not the substitute
   if (d.stringsDoc) return d.stringsDoc.fetchRecord(rec);  // a segment knows its DXF layer + string
   if (d.tracesDoc) return d.tracesDoc.fetchRecord(rec);    // pick a trace → its collar record
-  if (d.blockDoc && d.blockDoc.parquet) { const row = await readParquetRow(d.blockDoc.parquet.buf, rec, d.blockDoc.parquet.meta); return row ? d.blockDoc.parquet.names.map((n) => { const v = row[n]; return v == null ? '' : v; }) : null; }
+  if (d.blockDoc && d.blockDoc.parquet) { const row = await parquetRow(d.blockDoc.parquet, rec); return row ? d.blockDoc.parquet.names.map((n) => { const v = row[n]; return v == null ? '' : v; }) : null; }
   if (d.blockDoc && d.blockDoc.header.dm) return await fetchDmRecord(d.blockDoc.blob, d.blockDoc.header.dm, rec);
   if (d.blockDoc) return await fetchCsvRecord(rec, d.blockDoc);
   if (d.plyDoc) return await d.plyDoc.fetchRecord(rec);

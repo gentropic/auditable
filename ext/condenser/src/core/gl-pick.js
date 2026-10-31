@@ -502,7 +502,7 @@ export function createPickPipeline(gl) {
    */
   // the shared ID-buffer pass: scissored to (px,py,w,h), leaves the FBO bound
   // for the caller's readPixels. pick() reads 1px; pickRegion() reads the block.
-  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH }) {
+  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false }) {
     const stateOf = (id) => (layerStates && layerStates.get(id)) || { maskTex: null, isolate: false };
     const byLayer = (arr) => {
       const m = new Map();
@@ -545,13 +545,39 @@ export function createPickPipeline(gl) {
     gl.viewport(0, 0, w, h);
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(px, py, w2, h2);
-    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);            // layer = NO_LAYER → "nothing here"
-    gl.clear(gl.DEPTH_BUFFER_BIT);
+    if (!noClear) {                                        // (a progressive capture's later batches draw over the earlier ones)
+      gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);          // layer = NO_LAYER → "nothing here"
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+    }
     gl.enable(gl.DEPTH_TEST);
     const s = cam.state;
     const dpp = pointPx * (window.devicePixelRatio || 1);
+    // A chunk writes only inside its bbox's screen footprint (+ a splat's
+    // radius), so a scissored pick draws just the chunks over the region. A
+    // one-pixel pick on a 60M-block model ran the vertex stage for every block
+    // (~0.5 s, the page waiting on readPixels); Morton chunks are tight, so the
+    // few under the cursor are all it needs. A box that crosses the eye plane
+    // can't be projected — it's drawn, conservatively. The full-viewport capture
+    // draws everything.
+    const whole = px <= 0 && py <= 0 && px + w2 >= viewportW && py + h2 >= viewportH;
+    const margin = dpp + 2;
+    const covers = (c) => {
+      const b = c.bboxLocal;
+      if (whole || !b || !(b[0] <= b[3])) return true;
+      const m = stateFor(stateOf(c._layer || 0)).viewProj;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        const x = b[k & 1 ? 3 : 0], y = b[k & 2 ? 4 : 1], z = b[k & 4 ? 5 : 2];
+        const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(cw > 1e-9)) return true;
+        const sx = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / cw * 0.5 + 0.5) * viewportW;
+        const sy = ((m[1] * x + m[5] * y + m[9] * z + m[13]) / cw * 0.5 + 0.5) * viewportH;
+        if (sx < x0) x0 = sx; if (sx > x1) x1 = sx; if (sy < y0) y0 = sy; if (sy > y1) y1 = sy;
+      }
+      return !(x1 < px - margin || x0 > px + w2 + margin || y1 < py - margin || y0 > py + h2 + margin);
+    };
 
-    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0);
+    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0 && covers(c));
     if (ptsChunks.length) {
       gl.useProgram(pts);
       gl.uniformMatrix4fv(uPts.viewProj, false, s.viewProj);
@@ -579,7 +605,7 @@ export function createPickPipeline(gl) {
       }
     }
 
-    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0);
+    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0 && covers(c));
     if (blkChunks.length) {
       gl.useProgram(blk);
       // the camera uniforms, per layer (a moved layer has its own)
@@ -769,5 +795,33 @@ export function createPickPipeline(gl) {
     return { tex: colorTex, depth: depthTex, w, h };
   }
 
-  return { pick, pickRegion, captureViewport, NO_LAYER };
+  // the same capture, PROGRESSIVE: beginCapture clears the whole target, each
+  // captureMore draws one batch of chunks over it (depth-tested against what's
+  // there), so the full id buffer of a still frame is built across idle frames
+  // instead of in one long pass. Same result as captureViewport.
+  function beginCapture(viewportW, viewportH) {
+    ensure(viewportW, viewportH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function captureMore(chunks, cam, opts) {
+    renderInto(0, 0, opts.viewportW, opts.viewportH, chunks, cam, { ...opts, noClear: true });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    return { tex: colorTex, depth: depthTex, w, h };
+  }
+  // a rect of the CAPTURED buffer (no render) — what pickRegion returns
+  function readCaptured(px, py, w2, h2) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const out = new Uint32Array(w2 * h2 * 4);
+    gl.readPixels(px, py, w2, h2, gl.RGBA_INTEGER, gl.UNSIGNED_INT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  return { pick, pickRegion, captureViewport, beginCapture, captureMore, readCaptured, NO_LAYER };
 }

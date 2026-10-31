@@ -378,6 +378,38 @@ export function filterKernel(E, CV) {
   };
 }
 
+// ── the VALUES kernel ────────────────────────────────────────────────────────
+// params: { schema, expr (a column name quoted, or a calc's text), blank, coords }.
+// One chunk → the value of every record as Float32 (what the colour-by texture
+// holds: one texel per record), a blank written as `blank`, + the min/max over
+// the records that are DRAWN (finite x, y, z — the renderer's rule), so the
+// colour range is the one the chunks would have carried.
+export function valuesKernel(E, CV) {
+  return {
+    init(params, calcs) {
+      const sch = params.schema;
+      return { params, calcFns: CV.compileCalcs(E, calcs, sch), val: E.compileChunk(params.expr, sch, { decimal: '.' }),
+        c: (params.coords || []).map((nm) => sch.findIndex((c) => c.name === nm)), scratch: {} };
+    },
+    group(ctx, view, n) {
+      const sc = ctx.scratch;
+      const V = CV.chunkNumbers(ctx.val(view, n), n, sc.v || (sc.v = new Float64Array(n)));
+      const num = (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n)));
+      const C = ctx.c.length === 3 && ctx.c.every((i) => i >= 0) ? [num(ctx.c[0], 'x'), num(ctx.c[1], 'y'), num(ctx.c[2], 'z')] : null;
+      const v = new Float32Array(n), blank = ctx.params.blank;
+      let lo = Infinity, hi = -Infinity, finite = 0;
+      for (let i = 0; i < n; i++) {
+        const x = V[i];
+        if (!Number.isFinite(x)) { v[i] = blank; continue; }
+        v[i] = x;
+        if (C && !(Number.isFinite(C[0][i]) && Number.isFinite(C[1][i]) && Number.isFinite(C[2][i]))) continue;   // not drawn: not in the range
+        if (x < lo) lo = x; if (x > hi) hi = x; finite++;
+      }
+      return { v, lo, hi, finite };
+    },
+  };
+}
+
 // ── the POSITIONS kernel ─────────────────────────────────────────────────────
 // params: { schema, coords: [x, y, z] (names) }. One chunk → the coordinates of
 // the records that HAVE them (finite x, y, z — the renderer's rule) + their
