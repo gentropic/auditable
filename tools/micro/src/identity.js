@@ -67,6 +67,13 @@ export function sameSource(stored, current) {
   if (a[0] !== b[0] || a[1] !== b[1]) return false;
   return !(a[2] && b[2]) || a[2] === b[2];
 }
+// why stored columns no longer fit: the same bytes read as a different number of
+// records (the record rule changed — e.g. rows with a blank coordinate are no
+// records now) or a different file
+export function staleWhy(stored, current) {
+  const a = String(stored).split(':'), b = String(current).split(':');
+  return a[0] === b[0] && a[1] !== b[1] && (!(a[2] && b[2]) || a[2] === b[2]) ? `the same file now reads as ${b[1]} records, not ${a[1]}` : 'source changed';
+}
 // a cache sidecar ({ size, mtime?, hash? }) against the file it sits beside: the
 // hash decides when both have one (a byte-identical copy matches whatever its
 // mtime); otherwise the mtime, as before

@@ -619,6 +619,37 @@ test('blockmodel: sparse index — headerless whitespace dump (generated names p
   assert.equal(f[3], (200 * 0.7).toFixed(3));
 });
 
+// a blank coordinate is NO coordinate: the row is no record (it used to read as
+// 0 — a block at the origin), and the open says what it dropped
+import { coordNum, readDelimitedRun, delimitedRuns } from '../ext/condenser/src/main.js';
+test('blockmodel: rows without usable coordinates are dropped and reported, every reader agreeing', async () => {
+  assert.ok(Number.isNaN(coordNum('')) && Number.isNaN(coordNum('  ')) && Number.isNaN(coordNum(null)) && Number.isNaN(coordNum(undefined)) && Number.isNaN(coordNum('abc')));
+  assert.equal(coordNum('0'), 0); assert.equal(coordNum(' 12.5'), 12.5); assert.equal(coordNum(7), 7);
+  let txt = 'X,Y,Z,AU\n';
+  const kept = [];
+  for (let i = 0; i < 200; i++) {
+    const x = i === 3 || i === 150 ? '' : i === 77 ? 'n/a' : String(5 + (i % 10) * 10);
+    const y = i === 120 ? ' ' : String(5 + ((i / 10) | 0) * 10);
+    txt += `${x},${y},5,${i}\n`;
+    if (![3, 77, 120, 150].includes(i)) kept.push(i);
+  }
+  const blob = new Blob([txt]);
+  const { header, streamChunks } = await openBlockModel(blob, { indexEvery: 16 });
+  assert.equal(header.count, 196);
+  assert.deepEqual(header.dropped, { blank: 3, text: 1, firstRow: 4 });
+  let drawn = 0, minX = Infinity;
+  for await (const c of streamChunks()) { drawn += c.count; for (let i = 0; i < c.count; i++) minX = Math.min(minX, c.x[i]); }
+  assert.equal(drawn, 196);
+  assert.equal(minX, 5);                                     // nothing at the origin
+  for (const rec of [0, 3, 100, 195]) assert.equal((await fetchDelimitedRecord(blob, header, rec))[3], String(kept[rec]));
+  const runs = delimitedRuns(header, blob.size, 2);
+  const au = [];
+  for (const run of runs) au.push(...(await readDelimitedRun(blob, run, { delim: header.delim, x: 0, y: 1, z: 2, cols: [{ i: 3, num: true, policy: null }] }))[0]);
+  assert.deepEqual(au, kept);
+  // a clean file reports nothing
+  assert.equal((await openBlockModel(new Blob(['X,Y,Z\n1,2,3\n4,5,6\n']))).header.dropped, null);
+});
+
 // ── drillhole provider ──
 import { classifyDrillholeHeader, sniffDrillholeFiles, openDrillholes } from '../ext/condenser/src/main.js';
 

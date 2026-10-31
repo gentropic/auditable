@@ -8,7 +8,7 @@
 // delimited text and how record numbering drifted (see the 2026-08 audit,
 // [[reference_micro_source_dispatch]]). This module is where those decisions
 // live now; a new source kind is added HERE, once.
-import { openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher, qualifiedNumber, QUALIFIED_DEFAULT } from '../../../ext/condenser/src/main.js';
+import { coordNum, openLas, decodeLasRecords, openPly, openBlockModel, openDmModel, fetchDmRecord, openDmWireframe, fetchDelimitedRecord, openMsh, openObj, openPlyMesh, openDxf, lineFields, soupVertexTable, soupTriBatcher, qualifiedNumber, QUALIFIED_DEFAULT } from '../../../ext/condenser/src/main.js';
 import { streamParquetColumns } from '../../../ext/parquet/index.js';
 import { parquetRow } from './rowworker.js';            // a Parquet row off the page (it costs its row group)
 import { compileValue, deps } from '../../../ext/expr/index.js';
@@ -262,7 +262,7 @@ export async function* layerRecords(L, onProgress) {
   for await (const batch of layerRows(L, onProgress || null)) {
     for (const f0 of batch) {
       if (gate) {
-        const xv = +f0[m.x], yv = +f0[m.y], zv = +f0[m.z];
+        const xv = coordNum(f0[m.x]), yv = coordNum(f0[m.y]), zv = coordNum(f0[m.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;   // renderer numbering
       }
       const rAt = rec++;
@@ -437,7 +437,7 @@ export async function fetchCsvRecord(rec, doc = activeDocs().blockDoc) {
   let n = 0;
   for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns)) {
     for (const f of batch) {
-      const xv = +f[m.x], yv = +f[m.y], zv = +f[m.z];
+      const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
       if (n === rec) return f;
       n++;

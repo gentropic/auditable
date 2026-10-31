@@ -18,6 +18,12 @@ const isSpace = (c) => c === 32 || c === 9;
 const plainSplit = (delim) => (delim === WS ? (l) => l.trim().split(/\s+/) : (l) => l.split(delim));
 
 /** Split one RECORD (possibly multi-line) into fields. */
+// A COORDINATE as a number: a blank (or whitespace, or null) is NO coordinate —
+// NaN, so the row is no record — never the 0 unary plus makes of it (a block at
+// the origin nobody put there). Everything that decides "is this row a record"
+// reads coordinates through this.
+export const coordNum = (v) => (typeof v === 'number' ? v : v == null || v === '' || (v.charCodeAt(0) <= 32 && v.trim() === '') ? NaN : +v);
+
 export function splitFields(line, delim) {
   if (line.indexOf('"') < 0) return plainSplit(delim)(line);
   const ws = delim === WS, n = line.length, out = [];

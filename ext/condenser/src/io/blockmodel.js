@@ -14,7 +14,7 @@
 //                cat: Uint8Array|null, recStart }
 
 import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
-import { WS, splitFields, RecordJoiner, sampleRecords } from './delimited.js';
+import { WS, splitFields, RecordJoiner, sampleRecords, coordNum } from './delimited.js';
 import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
 import { detectRotatedLattice, latticeMisfit } from '../grid/basis.js';
 
@@ -201,7 +201,7 @@ export async function fetchDelimitedRecord(blob, header, rec) {
         }
         if (rec2 == null) continue;
         const f = split(rec2);
-        const xv = +f[m.x], yv = +f[m.y], zv = +f[m.z];
+        const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         if (remaining === 0) return f;
         remaining--;
@@ -226,9 +226,9 @@ export async function readDelimitedRun(blob, run, o) {
   const n = run.count, outs = o.cols.map((c) => (c.num ? new Float64Array(n) : new Array(n)));
   const coord = new Set([o.x, o.y, o.z]);
   const conv = o.cols.map((c) => {
-    // a coordinate as the record test reads it (unary plus: a blank is 0 — the
-    // block the renderer drew there), so positions agree with the drawn blocks
-    if (c.num && coord.has(c.i)) return (v) => +v;
+    // a coordinate as the record test reads it (coordNum), so positions agree
+    // with the drawn blocks
+    if (c.num && coord.has(c.i)) return coordNum;
     const pol = c.policy;
     const qual = pol ? (v) => {
       if (typeof v !== 'string' || v === '') return v;
@@ -244,7 +244,7 @@ export async function readDelimitedRun(blob, run, o) {
   let m = 0;
   for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false)) {
     for (const f of batch) {
-      const xv = +f[o.x], yv = +f[o.y], zv = +f[o.z];
+      const xv = coordNum(f[o.x]), yv = coordNum(f[o.y]), zv = coordNum(f[o.z]);
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
       if (m >= n) throw new Error(`the record index doesn't match the file: more than ${n} records from byte ${run.byteStart}`);
       for (let k = 0; k < outs.length; k++) outs[k][m] = conv[k](f[o.cols[k].i]);
@@ -286,7 +286,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
     const dimKeyOf = makeDimKeyer();
     for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2 })) {
       for (const f of batch) {
-        const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
+        const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
         buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
@@ -389,11 +389,20 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
   const RES = 50000, res = [];                             // reservoir: the first centroids (rotated-lattice inference)
   let declaredMisfit = null;
+  // rows that are no record, by reason — reported, never silent (the first one's
+  // data-row number, to find it): a blank coordinate, or one that isn't a number
+  const dropped = { blank: 0, text: 0, firstRow: -1 };
+  let dataRow = 0;
   for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
-    for (let fi = 0; fi < fields.length; fi++) {
+    for (let fi = 0; fi < fields.length; fi++, dataRow++) {
       const f = fields[fi];
-      const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
-      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+      const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) {
+        const blank = [f[map.x], f[map.y], f[map.z]].some((v) => v == null || String(v).trim() === '');
+        if (blank) dropped.blank++; else dropped.text++;
+        if (dropped.firstRow < 0) dropped.firstRow = dataRow + 1;
+        continue;
+      }
       if (count % indexEvery === 0) anchors.push(at[fi]);
       if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
       else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
@@ -434,7 +443,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     const coordSweep = () => (async function* () {
       for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal })) {
         const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
-        for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = +f[map.x]; y[i] = +f[map.y]; z[i] = +f[map.z]; }
+        for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
         yield { x, y, z, count: n };
       }
     })();
@@ -468,6 +477,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
+    dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
     numericColumns,
     qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
     categories,

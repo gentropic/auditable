@@ -39,6 +39,7 @@ export function defaultPoolSize(groups) {
 // smallest size per axis and the distinct size keys, and the first `res`
 // valid centroids.
 export function discoverGroup(p, cols, count, res) {
+  const cn = (v) => (typeof v === 'number' ? v : v == null || v === '' || (v.charCodeAt(0) <= 32 && v.trim() === '') ? NaN : +v);   // = condenser coordNum (this body runs in a worker: no imports)
   const r10 = (v) => Number(v.toPrecision(10));
   const dimKey = (a, b, c) => `${r10(a)},${r10(b)},${r10(c)}`;   // = condenser grid/infer.js dimKey
   const X = cols[p.xN], Y = cols[p.yN], Z = cols[p.zN], C = p.catN ? cols[p.catN] : null;
@@ -55,7 +56,7 @@ export function discoverGroup(p, cols, count, res) {
     ax[a].add(r10(v));
   };
   for (let i = 0; i < count; i++) {
-    const xv = +X[i], yv = +Y[i], zv = +Z[i];
+    const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]);
     if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
     valid++;
     if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
@@ -82,6 +83,7 @@ export function discoverGroup(p, cols, count, res) {
 // ── the decode job: one row group as the chunk builder's typed arrays ─────────
 // Same conversion as the page's streamChunks (openParquetBlocks).
 export function decodeGroup(p, cols, start, count, codes) {
+  const cn = (v) => (typeof v === 'number' ? v : v == null || v === '' || (v.charCodeAt(0) <= 32 && v.trim() === '') ? NaN : +v);   // = condenser coordNum
   const r10 = (v) => Number(v.toPrecision(10));
   const X = cols[p.xN], Y = cols[p.yN], Z = cols[p.zN], CH = p.chanN ? cols[p.chanN] : null, CA = p.catN ? cols[p.catN] : null;
   const DX = p.sizeN ? cols[p.sizeN[0]] : null, DY = p.sizeN ? cols[p.sizeN[1]] : null, DZ = p.sizeN ? cols[p.sizeN[2]] : null;
@@ -97,7 +99,7 @@ export function decodeGroup(p, cols, start, count, codes) {
   // a row without a usable centroid isn't drawn; record numbers stay RAW
   let m = 0;
   for (let i = 0; i < count; i++) {
-    const xv = +X[i], yv = +Y[i], zv = +Z[i];
+    const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]);
     if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
     x[m] = xv; y[m] = yv; z[m] = zv;
     chan[m] = CH ? +CH[i] : 0;
@@ -116,6 +118,7 @@ import * as SL from ${JSON.stringify(libUrl('sluice', '../../../ext/sluice/index
 const makeColAcc = ${makeColAcc.toString()};
 const discoverGroup = ${discoverGroup.toString()};
 const decodeGroup = ${decodeGroup.toString()};
+const coordNum = (v) => (typeof v === 'number' ? v : v == null || v === '' || (v.charCodeAt(0) <= 32 && v.trim() === '') ? NaN : +v);
 let file = null, meta = null, task = null, p = null, st = null, acc = null, codes = null, misfit = null;
 let CV = null, kern = null, kctx = null, CD = null;
 // every ArrayBuffer under a result, for the transfer list (a scan partial's bins)
@@ -168,7 +171,7 @@ self.onmessage = async ({ data }) => {
         const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
         const X = cols[p.cols[0]], Y = cols[p.cols[1]], Z = cols[p.cols[2]];
         let bad = null;
-        for (let i = 0; i < count && !bad; i++) { const xv = +X[i], yv = +Y[i], zv = +Z[i]; if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = misfit(p.grid, xv, yv, zv, start + i); }
+        for (let i = 0; i < count && !bad; i++) { const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = misfit(p.grid, xv, yv, zv, start + i); }
         self.postMessage({ type: 'result', id, out: { bad } });
       } else if (task === 'scan') {
         // the needed columns of this group → the chunk view → the kernel's partial

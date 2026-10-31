@@ -3706,8 +3706,8 @@ await p.close();
 // ── §56: a CSV block model on the COLUMNAR engine (src/colscan.js): the open's
 //     line index cut into runs, each run parsed on a worker. The same file twice —
 //     one layer on the workers, one held to the row path — must agree, through the
-//     awkward rows: a non-number X and a non-number Y (no records), a BLANK X (a
-//     block at 0, as the open reads it — positions must agree with it), a
+//     awkward rows: a non-number X, a non-number Y and a BLANK X — no records,
+//     dropped and REPORTED (a blank coordinate is no block at 0), a
 //     comment and a blank line, a quoted category holding a comma, quotes and a
 //     NEWLINE, qualified grades (<0.02 → its substitute, n.d. → blank, >5), and
 //     runs of 1024 records so the file is several runs. Stats (moments to 1e-12),
@@ -3740,6 +3740,7 @@ await p.close();
     const stats = async (L) => { M.openStats(L, { run: true, cfg: { cols: ['AU', 'CU'], groupBy: 'ROCK', scope: 'all' } }); const e = await waitWhere('stats', L); return { rows: e._statsRows, where: e._scanWhere }; };
     const swath = async (L) => { M.openSwath(L, { run: true, cfg: { series: [{ layer: L.name, col: 'CU' }] } }); const e = await waitWhere('swath', L); return { tsv: e._tableTSV && e._tableTSV(), where: e._scanWhere }; };
     const onA = M.canScanColumnar(LA);
+    const dropped = LA.docs.blockDoc.header.dropped, metaA = LA.docs.blockDoc.metaLine;
     const sA = await stats(LA), wA = await swath(LA);
     M.setCsvColumnar(false);
     const offB = !M.canScanColumnar(LB);
@@ -3787,17 +3788,49 @@ await p.close();
     alone(LA, true);
     await W.setColorBy(idA, 'AU'); alone(LB, false); const pAU = await px(); alone(LB, true);
     M.setPinBudget('auto');
-    return { swDiffs: window.__swd || [], onA, offB, runs: idx ? idx.offsets.length : 0, count, rowsS: sA.rows.length, mom, qBad, diffs, whereS: [sA.where, sB.where], swRows: A.length, sw, whereW: [wA.where, wB.where],
+    return { dropped, metaA, swDiffs: window.__swd || [], onA, offB, runs: idx ? idx.offsets.length : 0, count, rowsS: sA.rows.length, mom, qBad, diffs, whereS: [sA.where, sB.where], swRows: A.length, sw, whereW: [wA.where, wB.where],
       hits, mdiff, engineRan, qualified, texA, texB, dTex: differ(pA, pB), dAU: differ(pA, pAU) };
   });
   for (const d of [...r.diffs, ...r.swDiffs].slice(0, 8)) console.log(`   ${d}`);
-  chk(`CSV on the engine: ${r.count} records (6400 rows less the two whose coordinates are not numbers), ${r.runs} runs of 1024; the reference held to the row path (${r.onA}, ${r.offB})`, r.onA && r.offB && r.count === 6398 && r.runs === 7);
+  chk(`CSV on the engine: ${r.count} records (6400 rows less the three without usable coordinates), ${r.runs} runs of 1024; the reference held to the row path (${r.onA}, ${r.offB})`, r.onA && r.offB && r.count === 6397 && r.runs === 7);
+  chk(`the dropped rows are reported: ${JSON.stringify(r.dropped)} — “${(r.metaA || '').replace(/^.* · (\d+ rows dropped)/, '$1')}”`,
+    r.dropped && r.dropped.blank === 1 && r.dropped.text === 2 && r.dropped.firstRow === 4 && /3 rows dropped — no usable coordinates \(1 blank, 2 not a number; first at data row 4\)/.test(r.metaA || ''));
   chk(`stats: CSV on the workers (${r.whereS[0]}) = the row path (${r.whereS[1]}): ${r.rowsS} rows, ${r.mom} moment mismatches, ${r.qBad} quantiles off`, /worker/.test(r.whereS[0]) && r.whereS[1] === 'on this page' && r.rowsS >= 6 && r.mom === 0 && r.qBad === 0);
   chk(`swath: CSV on the workers (${r.whereW[0]}) = the row path (${r.whereW[1]}): ${r.swRows} bands, ${r.sw} mismatches`, /worker/.test(r.whereW[0]) && r.whereW[1] === 'on this page' && r.swRows > 5 && r.sw === 0);
   chk(`filter: the engine's mask = the row path's, bit for bit (${r.mdiff} differ, ${r.hits} hits, ≥ the ${r.qualified} qualified <0.02 rows less those without coordinates)`, r.engineRan && r.mdiff === 0 && r.hits >= r.qualified - 2);
   chk(`value texture: workers (${r.texA.where}) [${r.texA.range}] = row path (${r.texB.where}) [${r.texB.range}]; ${(100 * r.dTex).toFixed(2)}% of pixels differ (vs ${(100 * r.dAU).toFixed(1)}% CU vs AU)`,
     /worker/.test(r.texA.where) && r.texB.where === 'on this page' && r.texA.range && r.texB.range && r.texA.range[0] === r.texB.range[0] && r.texA.range[1] === r.texB.range[1] && r.dTex < 0.001 && r.dAU > 0.05);
   await pc.close();
+}
+
+// ── §57: a project saved BEFORE the coordinate rule: its CSV sidecar (v2) holds a
+//     discovery that counted a blank-coordinate row as a block. Forged here (the
+//     saved v3 sidecar rewritten as v2 with that row's count back in); the reopen
+//     must not trust it — rediscovered, the true count, the drop reported. ──
+{
+  let s = 'X,Y,Z,AU\n';
+  for (let i = 0; i < 3000; i++) s += `${i === 10 ? '' : 5 + (i % 30) * 10},${5 + ((i / 30) | 0) * 10},5,${i}\n`;
+  let pf = await mkPage('sm2oldcsv');
+  await pf.evaluate((csv) => window._micro.openBlob(new File([csv], 'old.csv'), 'old.csv', 'replace'), s);
+  await pf.waitForFunction(() => window._micro.layers().length && window._micro.layers()[0].docs.blockDoc, null, { timeout: 60000 });
+  await saveProject(pf);
+  const forged = await pf.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2oldcsv');
+    const mh = await (await dir.getDirectoryHandle('models')).getFileHandle('old.csv.meta.json');
+    const j = JSON.parse(await (await mh.getFile()).text());
+    const was = { v: j.v, count: j.header.count, dropped: j.header.dropped };
+    j.v = 2; j.header.count += 1; delete j.header.dropped;   // what the old rule wrote
+    const w = await mh.createWritable(); await w.write(JSON.stringify(j)); await w.close();
+    return was;
+  });
+  await pf.close();
+  pf = await mkPage('sm2oldcsv');
+  await pf.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2oldcsv'); await window._micro.openProjectDir(dir); });
+  await pf.waitForFunction(() => window._micro.layers().length && window._micro.layers()[0].docs.blockDoc && window._micro.layers()[0].docs.blockDoc.metaLine, null, { timeout: 60000 });
+  const re = await pf.evaluate(() => { const L = window._micro.layers()[0], h = L.docs.blockDoc.header; return { count: h.count, dropped: h.dropped, drawn: window._micro.renderer.layerElementCount(L.id), meta: L.docs.blockDoc.metaLine }; });
+  chk(`a v3 sidecar was written (v${forged.v}, ${forged.count} records, dropped ${JSON.stringify(forged.dropped)})`, forged.v === 3 && forged.count === 2999 && forged.dropped && forged.dropped.blank === 1);
+  chk(`an old (v2) CSV sidecar is not trusted: rediscovered → ${re.count} records, ${re.drawn} drawn, dropped ${JSON.stringify(re.dropped)}`, re.count === 2999 && re.drawn === 2999 && re.dropped && re.dropped.blank === 1 && /1 row dropped/.test(re.meta));
+  await pf.close();
 }
 
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');

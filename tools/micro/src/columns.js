@@ -6,7 +6,7 @@
 import { parquetInfo, readParquetRange, writeParquet } from '../../../ext/parquet/index.js';
 import { deps, parse } from '../../../ext/expr/index.js';
 import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier } from './records.js';
-import { openDmModel, classifyQualified } from '../../../ext/condenser/src/main.js';
+import { openDmModel, classifyQualified, coordNum } from '../../../ext/condenser/src/main.js';
 import { colAcc, scanParquetInWorkers, STAT_SLICE } from './colstats.js';
 import { sourceHash, sourceHashSync, sameSource } from './identity.js';
 import { chunkView } from './chunkview.js';
@@ -353,7 +353,7 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
         }
         let rAt = null;
         if (!isDelimSc) rAt = recSc++;
-        else if (Number.isFinite(+f0[mSc.x]) && Number.isFinite(+f0[mSc.y]) && Number.isFinite(+f0[mSc.z])) rAt = recSc++;
+        else if (Number.isFinite(coordNum(f0[mSc.x])) && Number.isFinite(coordNum(f0[mSc.y])) && Number.isFinite(coordNum(f0[mSc.z]))) rAt = recSc++;
         const f = extendRow(L, f0, rAt);
         rows++;
         if (bandCols.length && rAt != null) {              // band index rides the layer's record numbering (raw for .dm, accepted for CSV)

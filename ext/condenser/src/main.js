@@ -13,7 +13,7 @@ export { inferAxis, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, di
 export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, latticeMisfit, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from './grid/grid-join.js';
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord, readDelimitedRun, delimitedRuns } from './io/blockmodel.js';
-export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine } from './io/delimited.js';
+export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine, coordNum } from './io/delimited.js';
 export { classifyDrillholeHeader, sniffDrillholeFiles, readDelimited, openDrillholes, openDrillholeTraces, desurveyHolePaths } from './io/drillholes.js';
 export { QUALIFIED_DEFAULT, classifyQualified, qualifiedNumber, censusQualified, describeQualified } from './io/qualified.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';

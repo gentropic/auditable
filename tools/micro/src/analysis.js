@@ -8,6 +8,7 @@ import { convert as unitConvert } from '../../../ext/units/index.js';
 import { layerTableHeader, colIsNumeric, schemaExt, layerRecords, attrRowCountOf, numOf } from './records.js';
 import { ensureStoredValues } from './columns.js';
 import { gridAxesOf } from './grid-ops.js';
+import { coordNum } from '../../../ext/condenser/src/main.js';
 
 export function numericColsOf(L) {
   const h = layerTableHeader(L); if (!h) return []; const m = h.mapping || {};
@@ -86,7 +87,7 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
       rc++;
       const inSel = !selMask || (rAt < selMask.length && selMask[rAt]);
       if (!inSel) continue;
-      const x = +f[m.x], y = +f[m.y], z = +f[m.z]; if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      const x = coordNum(f[m.x]), y = coordNum(f[m.y]), z = coordNum(f[m.z]); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
       const t = x * dir[0] + y * dir[1] + z * dir[2], bi = Math.floor((t - offset) / bandWidth);
       let e = bands.get(bi); if (!e) { e = { w: new Float64Array(cols.length), wg: new Float64Array(cols.length), tw: 0, n: 0 }; bands.set(bi, e); }
       const wt = (wi >= 0 ? (+f[wi] || 0) : 1) * vol; e.tw += wt; e.n++;
