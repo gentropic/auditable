@@ -3487,6 +3487,72 @@ await p.close();
   await pd2.close();
 }
 
+// ── §53: the filter's compaction builds OFF the page (src/chunkworker.js — the
+//     half-second Morton-sort + packing stalls), the compact set holds exactly the
+//     matches, a SUPERSEDED filter's late chunks never land in the next one's set,
+//     and the pin tee only runs when its columns fit the budget. ──
+{
+  const pq3 = await mkPage('sm2comp');
+  const cp = await pq3.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const NX = 60, NY = 50, NZ = 50, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N);
+    let r = 21;
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let q = 0; q < NX; q++, i++) { r = (r * 1103515245 + 12345) >>> 0; x[i] = 5 + q * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10; au[i] = ((r >>> 8) % 1000) / 250; }
+    const id = await W.addLayer({ kind: 'blocks', name: 'comp.parquet', columns: { X: x, Y: y, Z: z, AU: au }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const L = M.layers().find((l) => l.id === id);
+    M.setActiveLayer(L.id);
+    const count = (pred) => { let n = 0; for (let i = 0; i < N; i++) if (pred(au[i])) n++; return n; };
+    window.__compactOffPage = null;
+    await M.applyBlockFilter('AU > 3', L);
+    const a = { drawn: M.renderer.layerElementCount(L.id), want: count((v) => v > 3), offPage: window.__compactOffPage, meta: document.querySelector('#meta').textContent };
+    // superseded: a wide filter, replaced at once by a narrow one — only the narrow one's chunks may remain
+    const p1 = M.applyBlockFilter('AU > 0.5', L);
+    const p2 = M.applyBlockFilter('AU > 3.8', L);
+    await Promise.all([p1, p2]);
+    await new Promise((z2) => setTimeout(z2, 500));         // any late chunks from the superseded builder would have landed by now
+    const b = { drawn: M.renderer.layerElementCount(L.id), want: count((v) => v > 3.8) };
+    // the tee: a budget too small for the scan's columns → nothing allocated or pinned
+    M.setPinBudget('off'); M.setPinBudget(1);                // 1 MB
+    await M.applyBlockFilter('AU > 2', L);
+    const pinnedSmall = M.pinStats().cols;
+    M.setPinBudget(256);
+    await M.applyBlockFilter('AU > 2.5', L);
+    const pinnedBig = M.pinStats().cols;
+    M.setPinBudget('auto');
+    // the builder itself, with SMALL batches so chunks flow mid-stream: off the page =
+    // byte-identical to on the page (same seed, same batches); close() drops late chunks
+    const grid = L.docs.blockDoc.grid, frame = M.frame;
+    const build = async (offPage) => {
+      const Wk = window.Worker; if (!offPage) window.Worker = undefined;
+      const got = [];
+      const cb = await M.startChunkBuilder({ frame, grid, chunkSize: 4096, batchSize: 16384, seed: 2, onChunk: (c) => got.push(c) });
+      if (!offPage) window.Worker = Wk;
+      for (let at = 0; at < 100000; at += 25000) {
+        const n = 25000, o = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), chan: new Float64Array(n), cat: null, recIdx: new Uint32Array(n) };
+        for (let i = 0; i < n; i++) { const g = at + i; o.x[i] = x[g]; o.y[i] = y[g]; o.z[i] = z[g]; o.chan[i] = au[g]; o.recIdx[i] = g; }
+        cb.push(o);
+      }
+      await cb.flush(); cb.close();
+      return { off: cb.offPage, sig: got.map((c) => c.count + ':' + Array.from(c.recIdx.subarray(0, 8)).join(',') + ':' + Array.from(c.ijk.subarray(0, 6)).join(',')).join('|'), n: got.length };
+    };
+    const on = await build(false), off = await build(true);
+    const late = [];
+    const cl = await M.startChunkBuilder({ frame, grid, chunkSize: 4096, batchSize: 8192, seed: 2, onChunk: (c) => late.push(c) });
+    for (let k = 0; k < 6; k++) { const n = 20000, o = { count: n, x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), chan: new Float64Array(n), cat: null, recIdx: new Uint32Array(n) }; for (let i = 0; i < n; i++) { o.x[i] = x[i]; o.y[i] = y[i]; o.z[i] = z[i]; o.recIdx[i] = i; } cl.push(o); }
+    cl.close();
+    await new Promise((z2) => setTimeout(z2, 800));
+    return { a, b, pinnedSmall, pinnedBig, on, off, lateAfterClose: late.length };
+  });
+  chk(`compaction off the page (${cp.a.offPage}): the compact set holds exactly the matches (${cp.a.drawn} = ${cp.a.want}; “${cp.a.meta.split('·').pop().trim()}”)`,
+    cp.a.offPage === true && cp.a.drawn === cp.a.want && /compacted/.test(cp.a.meta));
+  chk(`a superseded filter's late chunks never land: ${cp.b.drawn} drawn = the newer filter's ${cp.b.want}`, cp.b.drawn === cp.b.want);
+  chk(`the builder off the page is byte-identical to on it (${cp.off.n} chunks, offPage ${cp.off.off} vs ${cp.on.off}, same: ${cp.off.sig === cp.on.sig}); closed mid-stream → ${cp.lateAfterClose} late chunks delivered`,
+    cp.off.off === true && cp.on.off === false && cp.off.n > 10 && cp.off.sig === cp.on.sig && cp.lateAfterClose === 0);
+  chk(`the pin tee only runs when it fits: 1 MB budget → ${cp.pinnedSmall} pinned; 256 MB → ${cp.pinnedBig}`, cp.pinnedSmall === 0 && cp.pinnedBig > 0);
+  await pq3.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

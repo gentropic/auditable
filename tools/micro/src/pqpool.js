@@ -22,7 +22,7 @@ void readParquetRange; void sluice; void expr; void chunkview; void kernels;
 // where a library lives, for a worker to import: the built file maps '#name'
 // to a blob URL in its import map; the dev tree has no such entry, so the
 // path relative to this module is the answer there
-function libUrl(name, devRel) {
+export function libUrl(name, devRel) {
   try { const u = import.meta.resolve('#' + name); if (/^(blob|https?|file):/.test(u)) return u; } catch { /* not mapped */ }
   return new URL(devRel, import.meta.url).href;
 }
