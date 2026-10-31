@@ -4209,6 +4209,40 @@ await p.close();
   chk(`decimal comma survives the project (sidecar ${r2.decimal}): ${r2.n} hits`, r2.decimal === ',' && r2.n === r.want);
 }
 
+// ── §66: UNDO beyond paint (src/undo.js). Ctrl+Z puts back a selection that was
+//     replaced or cleared, a filter changed from the box, and a calc column
+//     removed from the calc window — in reverse order; with nothing left it says so. ──
+{
+  const pu = await mkPage('sm2undo');
+  const r = await pu.evaluate(async () => {
+    const M = window._micro, z = () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    const settle = async (ok) => { for (let n = 0; n < 100 && !ok(); n++) await new Promise((q) => setTimeout(q, 30)); };
+    let s = 'X,Y,Z,AU\n'; for (let i = 0; i < 64; i++) s += `${(i % 4) * 10},${((i / 4 | 0) % 4) * 10},${(i / 16 | 0) * 10},${i}\n`;
+    const id = await M.openBlob(new File([s], 'un.csv'), 'un.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id), out = {};
+    const box = document.querySelector('#filter'), enter = (v) => { box.value = v; box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
+    enter('AU > 40'); await settle(() => L.filterExpr === 'AU > 40' && L._filterMask);
+    M.filterToSelection(L); out.sel = L._selCount;
+    await new Promise((q) => setTimeout(q, 600));            // past the coalescing window
+    M.clearSelection(); out.cleared = L._selCount || 0;
+    z(); await settle(() => L._selCount === out.sel); out.selBack = L._selCount;
+    enter('AU > 50'); await settle(() => L.filterExpr === 'AU > 50');
+    z(); await settle(() => L.filterExpr === 'AU > 40'); out.filterBack = L.filterExpr;
+    M.applyCalcCols(L, [{ name: 'AU2', expr: 'AU * 2' }]);
+    M.openCalcWindow(L, 0);
+    const rm = [...document.querySelectorAll('.awin-btn')].find((b) => b.textContent === 'remove'); rm.click();
+    out.calcGone = !(L.calcCols || []).some((c) => c.name === 'AU2'); out.top = M.undoLabel();
+    z(); await settle(() => (L.calcCols || []).some((c) => c.name === 'AU2')); out.calcBack = (L.calcCols || []).some((c) => c.name === 'AU2');
+    for (let n = 0; n < 6; n++) { z(); await new Promise((q) => setTimeout(q, 80)); }
+    out.meta = document.querySelector('#meta').textContent;
+    return out;
+  });
+  await pu.close();
+  chk(`undo: a cleared selection comes back (${r.sel} → ${r.cleared} → ${r.selBack})`, r.sel === 23 && r.cleared === 0 && r.selBack === 23);
+  chk(`undo: a filter changed from the box reverts (“${r.filterBack}”)`, r.filterBack === 'AU > 40');
+  chk(`undo: a calc column removed in the calc window returns (${r.calcGone} → ${r.calcBack}, top “${r.top}”); at the bottom: “${r.meta}”`, r.calcGone && r.calcBack && /nothing to undo/.test(r.meta));
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

@@ -17,6 +17,7 @@ import { mkLineage } from './lineage.js';
 import { persistElement } from './element-store.js';
 import { gridAxesOf } from './grid-ops.js';
 import { keyJoinToCols, runKeyJoin, shortName, spatialJoinToCols } from './joins.js';
+import { pushUndo } from './undo.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setPropsHooks): CONTEXT_TRI_CAP, _docBbox, addPaintValue, appendColStats, applyLayerOpacity, collarCells, colorHeaderOf, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, frame, hexToRgb01, markProjectDirty, menuXY, microPrompt, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, renderer, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth
 let H = {};
@@ -396,7 +397,7 @@ export function renderRuleList(body, L) {
         const r2 = kb.getBoundingClientRect();
         H.menuXY(r2.left - 60, r2.bottom + 2, [
           { label: 'Duplicate', action: () => { remapHidden(() => rules.splice(idx + 1, 0, { name: r.name ? r.name + ' copy' : '', expr: r.expr, color: ruleDefaultColor(rules.length) })); structural(); renderProps(); } },
-          { label: 'Remove', action: () => { remapHidden(() => rules.splice(idx, 1)); structural(); renderProps(); } },
+          { label: 'Remove', action: () => { const gone = rules[idx]; pushUndo(`remove rule ${gone.name || gone.expr || ''}`.trim(), () => { remapHidden(() => rules.splice(Math.min(idx, rules.length), 0, gone)); structural(); refreshProps(); }); remapHidden(() => rules.splice(idx, 1)); structural(); renderProps(); } },
         ]);
       };
       row.appendChild(kb);
@@ -1706,7 +1707,7 @@ export function renderColumnsTab(body, L) {
     row.append(fx, nm, ty);
     const openMenu = (x, y) => H.menuXY(x, y, [
       { label: 'Edit…', action: () => H.openCalcWindow(L, k) },
-      { label: 'Remove', action: () => { L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; H.markProjectDirty(); renderProps(); } },
+      { label: 'Remove', action: () => { const gone = L.calcCols[k]; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(k, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; H.markProjectDirty(); refreshProps(); }); L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; H.markProjectDirty(); renderProps(); } },
     ]);
     const onCtx = (e) => { e.preventDefault(); openMenu(e.clientX, e.clientY); };
     row.oncontextmenu = onCtx;
