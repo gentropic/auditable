@@ -984,6 +984,8 @@ import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSour
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
+import { gtAccumulator, gtAbove, gtCuts, gtMerge } from './src/kernels.js';   // the analysis kernels (page + scan workers)
+import { scanColumnar, canScanColumnar } from './src/colscan.js';   // columnar, parallel scans of Parquet models
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
 import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
@@ -3482,107 +3484,6 @@ function gradeUnitFactor(serUnit, plotUnit) {
 // blank = count/volume) + an optional row filter. One streamed scan per Run
 // caches each series' grade-descending cumulative curve (Σw / Σwg), so cutoff
 // count, plot unit, and manual ranges are LIVE afterwards — no re-scan. ──
-// ── grade-tonnage, never resident and exact ──
-// One streamed pass per series into a SPARSE histogram whose bin edges are the
-// multiples of a fine power-of-ten step h = 10^e, each bin holding the exact Σw
-// and Σw·g of what fell in it. Tonnage and mean grade at a cutoff that is a bin
-// edge are then EXACT — no approximation, at any model size, in memory bounded
-// by the occupied bins (a span far wider than first guessed coarsens ×10, which
-// keeps every edge an edge). The cutoffs are ROUND (1·2·5 × 10ⁿ, a multiple of
-// every series' h), so every one is an edge: exactly nCut+1 of them, covering
-// the data from a round value at or below its minimum. Exact when the series'
-// units convert by powers of ten (% · ppm · g/t · fraction); a non-decimal
-// conversion (oz/t) lands within one fine bin (~1/20000 of the range).
-// (It replaced pushing every (g, w) into JS arrays and sorting them — 130 s and
-// a 69 s freeze at 60M blocks.)
-const GT_BINS_TARGET = 20000, GT_BINS_CAP = 400000;
-const gtEdge = (k, e) => (e >= 0 ? k * 10 ** e : k / 10 ** -e);          // a decimal edge, exactly as typed
-function gtBinOf(g, e) {                                   // the largest k with edge(k) ≤ g
-  let k = Math.floor(e >= 0 ? g / 10 ** e : g * 10 ** -e);
-  while (gtEdge(k + 1, e) <= g) k++;
-  while (gtEdge(k, e) > g) k--;
-  return k;
-}
-function gtAccumulator() {
-  const se = { e: null, bins: new Map(), n: 0, gmin: Infinity, gmax: -Infinity, pend: [] };
-  const put = (g, w) => {
-    const k = gtBinOf(g, se.e);
-    const b = se.bins.get(k);
-    if (b) { b[0] += w; b[1] += w * g; } else se.bins.set(k, [w, w * g]);
-    if (se.bins.size > GT_BINS_CAP) {                       // wider than guessed: ×10, edges stay edges
-      se.e++;
-      const old = se.bins; se.bins = new Map();
-      for (const [k2, b2] of old) { const k3 = Math.floor(k2 / 10), t = se.bins.get(k3); if (t) { t[0] += b2[0]; t[1] += b2[1]; } else se.bins.set(k3, [b2[0], b2[1]]); }
-    }
-  };
-  const settle = () => {                                    // the fine step from the first values' spread
-    let lo = Infinity, hi = -Infinity;
-    for (let i = 0; i < se.pend.length; i += 2) { const g = se.pend[i]; if (g < lo) lo = g; if (g > hi) hi = g; }
-    const span = Math.max(hi - lo, Math.abs(hi) * 1e-9, 1e-12);
-    se.e = Math.floor(Math.log10(span / GT_BINS_TARGET));
-    const pend = se.pend; se.pend = null;
-    for (let i = 0; i < pend.length; i += 2) put(pend[i], pend[i + 1]);
-  };
-  se.add = (g, w) => {
-    se.n++; if (g < se.gmin) se.gmin = g; if (g > se.gmax) se.gmax = g;
-    if (se.pend) { se.pend.push(g, w); if (se.pend.length >= 1 << 17) settle(); return; }
-    put(g, w);
-  };
-  // → descending bin keys + cumulative Σw / Σw·g above each (the shape the plot reads)
-  se.finish = () => {
-    if (se.pend) settle();
-    const keys = Float64Array.from(se.bins.keys()).sort().reverse();
-    const cw = new Float64Array(keys.length + 1), cwg = new Float64Array(keys.length + 1);
-    for (let i = 0; i < keys.length; i++) { const b = se.bins.get(keys[i]); cw[i + 1] = cw[i] + b[0]; cwg[i + 1] = cwg[i] + b[1]; }
-    se.keys = keys; se.cw = cw; se.cwg = cwg; se.bins = null;
-    if (se.e == null) se.e = 0;
-  };
-  return se;
-}
-// Σw / Σw·g of everything at or above cutoff cN (native units): bins from the
-// first edge ≥ cN up
-function gtAbove(se, cN) {
-  let K = gtBinOf(cN, se.e); if (gtEdge(K, se.e) < cN) K++;
-  let lo = 0, hi = se.keys.length; while (lo < hi) { const md = (lo + hi) >> 1; if (se.keys[md] >= K) lo = md + 1; else hi = md; }
-  return [se.cw[lo], se.cwg[lo]];
-}
-// the cutoffs (axis units): nCut+1 round values, a common multiple of every
-// series' fine step, from a round value ≤ the data minimum to one ≥ its maximum
-// (overshooting it by ~25% at most)
-function gtCuts(scanSeries, nCut, factorOf) {
-  let gmin = Infinity, gmax = -Infinity, fine = 0;
-  for (const se of scanSeries) {
-    if (!se.n) continue;
-    const f = factorOf(se);
-    gmin = Math.min(gmin, se.gmin * f); gmax = Math.max(gmax, se.gmax * f);
-    fine = Math.max(fine, 10 ** se.e * Math.abs(f));
-  }
-  if (!(gmax >= gmin)) return null;
-  const N = Math.max(1, nCut | 0);
-  if (gmax === gmin) return [gmin];
-  // step = m·10^j, m from a DENSE round set (1·2·5 alone overshot the data by up
-  // to ×2.5 — half the chart flat), ≥ fine and ≥ the span / N. m has one decimal,
-  // so a cut is (i·10m)·10^(j−1): integer arithmetic, exactly the decimal typed.
-  // A step must also be a whole multiple of the fine bin (10^(j−1) ≥ fine) so
-  // every cut stays an edge.
-  let j = Math.floor(Math.log10(Math.max((gmax - gmin) / N, fine))), mi = 0;
-  const M10 = [10, 12, 15, 20, 25, 30, 40, 50, 60, 80];
-  const stepOf = () => (j - 1 >= 0 ? M10[mi] * 10 ** (j - 1) : M10[mi] / 10 ** (1 - j));
-  const cutOf = (i) => (j - 1 >= 0 ? i * M10[mi] * 10 ** (j - 1) : (i * M10[mi]) / 10 ** (1 - j));
-  const unit = j - 1 >= 0 ? 10 ** (j - 1) : 1 / 10 ** (1 - j);
-  for (let guard = 0; guard < 200; guard++) {
-    const step = stepOf();
-    if (unit >= fine * (1 - 1e-9) && step * N >= (gmax - gmin) * (1 - 1e-12)) {
-      let L0 = Math.floor(gmin / step);                    // the largest round cut ≤ gmin, by the same exact arithmetic
-      while (cutOf(L0 + 1) <= gmin) L0++;
-      while (cutOf(L0) > gmin) L0--;
-      if (cutOf(L0 + N) >= gmax) { const cuts = []; for (let i = 0; i <= N; i++) cuts.push(cutOf(L0 + i)); return cuts; }
-    }
-    if (++mi === M10.length) { mi = 0; j++; }
-  }
-  const cuts = []; for (let i = 0; i <= N; i++) cuts.push(gmin + (gmax - gmin) * i / N);   // unreachable in practice
-  return cuts;
-}
 function openGradeTonnage(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'grade-tonnage: needs a regular block model'; return; }
   const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = ++_fwinZ; return; } ex.win.close(); }   // a recipe replaces the open window
@@ -3674,9 +3575,26 @@ function openGradeTonnage(L, ropts) {
       if (s.filter && s.filter.trim()) { try { filterFn = compileBool(s.filter, schema, { decimal: '.' }); } catch { throw new Error(`series filter "${s.filter}": invalid`); } }
       return Object.assign(gtAccumulator(), { s, L: Lx, vc: volumeContextOf(Lx), gradeFn, weightFn, filterFn, weighted: !!weightFn });
     }).filter(Boolean);
-    let total = 0;
-    const N = series.reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
+    // a Parquet layer's series are scanned COLUMNAR and in parallel (src/colscan.js):
+    // one pass per layer for all of its series, only the columns they need, a row
+    // group per worker. Everything else keeps the row path below.
+    const colL = [...new Set(series.filter((se) => canScanColumnar(se.L)).map((se) => se.L))];
+    let total = 0, where = '';
+    const N = colL.reduce((t, Lx) => t + (attrRowCountOf(Lx) || 0), 0) + series.filter((se) => !colL.includes(se.L)).reduce((t, se) => t + (attrRowCountOf(se.L) || 0), 0);
+    for (const Lx of colL) {
+      const ses = series.filter((se) => se.L === Lx), vc = ses[0].vc, h = layerTableHeader(Lx);
+      const dims = vc.dc ? [h.columns[vc.dc.x], h.columns[vc.dc.y], h.columns[vc.dc.z]] : null;
+      const params = { series: ses.map((se) => ({ grade: quoteIdent(se.s.col), weight: (se.s.weight || '').trim() || null, filter: (se.s.filter || '').trim() || null })), dScale, vol: { base: vc.base, dims } };
+      const base = total;
+      const { parts } = await scanColumnar(Lx, { kernel: 'gt', params, exprs: params.series.flatMap((x) => [x.grade, x.weight, x.filter]), extraCols: dims || [], mask: scopeMask(st, Lx),
+        onProgress: (d, n, w) => { total = base + d; where = w; if (onProgress) onProgress(total, N, w); } });
+      ses.forEach((se, k) => {
+        const acc = gtMerge(parts.map((p2) => p2 && p2[k]));
+        Object.assign(se, { e: acc.e, keys: acc.keys, cw: acc.cw, cwg: acc.cwg, n: acc.n, gmin: acc.gmin, gmax: acc.gmax, bins: null, pend: null });
+      });
+    }
     for (const se of series) {
+      if (colL.includes(se.L)) continue;
       const Lx = se.L, mask = scopeMask(st, Lx);
       // layerRecords owns the record number — the raw rec++ this replaces was the
       // mis-numbering bug (a delimited source's bad-coordinate rows were counted
@@ -3686,7 +3604,7 @@ function openGradeTonnage(L, ropts) {
       // GT window actually runs.
       for await (const { f: row, rec: rr } of layerRecords(Lx)) {
         {
-          total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N); await new Promise((r) => setTimeout(r)); }
+          total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
           if (mask && !(rr < mask.length && mask[rr])) continue;
           if (se.filterFn && !se.filterFn(row)) continue;
           const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;   // a blank grade is unestimated, not 0
@@ -3695,10 +3613,10 @@ function openGradeTonnage(L, ropts) {
           se.add(g, w);
         }
       }
-      if (onProgress) onProgress(total, N);
+      if (onProgress) onProgress(total, N, 'on this page');
       se.finish();
     }
-    return { series };
+    return { series, where };
   };
   const run = async () => {
     if (st.running) return;
@@ -3706,9 +3624,10 @@ function openGradeTonnage(L, ropts) {
       win.sub.textContent = scopeMissing(st, L) || `no layer carries a ${st.scope} mask`; return;
     }
     st.running = true; runBtn.disabled = true; win.sub.textContent = 'scanning…';
-    try { st.scan = await scanGT((n, N) => { progEl.textContent = rowsProgress(n, N); }); }
+    try { st.scan = await scanGT((n, N, w) => { progEl.textContent = rowsProgress(n, N) + (w ? ` · ${w}` : ''); }); }
     catch (e) { win.sub.textContent = `grade-tonnage: ${e.message}`; st.running = false; runBtn.disabled = false; progEl.textContent = ''; return; }
     st.running = false; runBtn.disabled = false; progEl.textContent = ''; st.stale = false; if (staleEl) staleEl.textContent = '';
+    win.el._scanWhere = st.scan.where;                     // where the scan ran (workers / this page) — the smokes read it
     saveAnalysisCfg(L, 'gt', cfgOf(), win);                // a successful Run snapshots the setup into the project
     plot();
   };

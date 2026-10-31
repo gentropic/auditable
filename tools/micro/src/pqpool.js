@@ -1,6 +1,8 @@
-// micro pqpool — a pool of module workers over ONE Parquet file, for the three
-// jobs that read a whole model: column statistics, the open's discovery sweep,
-// and the open's render decode. Each job is one row group.
+// micro pqpool — a pool of module workers over ONE Parquet file, for the jobs
+// that read a whole model: column statistics, the open's discovery sweep, the
+// open's render decode, and the analysis SCANS (a kernel from src/kernels.js over
+// the chunk view from src/chunkview.js — src/colscan.js drives them). Each job is
+// one row group.
 //
 // The worker bodies are SELF-CONTAINED functions embedded with toString(), so
 // they can't close over this module: what they need comes in through init.
@@ -9,10 +11,13 @@
 // the caller does the work on the page, as before.
 import { readParquetRange } from '../../../ext/parquet/index.js';
 import * as sluice from '../../../ext/sluice/index.js';
+import * as expr from '../../../ext/expr/index.js';
+import * as chunkview from './chunkview.js';
+import * as kernels from './kernels.js';
 
-// keep both libraries reachable from this module's graph (the worker imports
+// keep the libraries reachable from this module's graph (the worker imports
 // them by URL; the static imports keep the build's registry entries honest)
-void readParquetRange; void sluice;
+void readParquetRange; void sluice; void expr; void chunkview; void kernels;
 
 // where a library lives, for a worker to import: the built file maps '#name'
 // to a blob URL in its import map; the dev tree has no such entry, so the
@@ -112,6 +117,14 @@ const makeColAcc = ${makeColAcc.toString()};
 const discoverGroup = ${discoverGroup.toString()};
 const decodeGroup = ${decodeGroup.toString()};
 let file = null, meta = null, task = null, p = null, st = null, acc = null, codes = null, misfit = null;
+let CV = null, kern = null, kctx = null;
+// every ArrayBuffer under a result, for the transfer list (a scan partial's bins)
+const buffersOf = (o, out = []) => {
+  if (o && ArrayBuffer.isView(o)) { if (!out.includes(o.buffer)) out.push(o.buffer); }
+  else if (Array.isArray(o)) for (const x of o) buffersOf(x, out);
+  else if (o && typeof o === 'object') for (const k in o) buffersOf(o[k], out);
+  return out;
+};
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === 'init') {
@@ -119,6 +132,14 @@ self.onmessage = async ({ data }) => {
       // the lattice check runs condenser's own latticeMisfit, imported only here
       if (task === 'check') misfit = (await import(${JSON.stringify(libUrl('condenser', '../../../ext/condenser/src/main.js'))})).latticeMisfit;
       if (task === 'stats') { acc = makeColAcc(SL); st = p.cols.map((c) => acc.create(c.num)); }
+      if (task === 'scan') {
+        const [E, cv, K] = await Promise.all([
+          import(${JSON.stringify(libUrl('expr', '../../../ext/expr/index.js'))}),
+          import(${JSON.stringify(libUrl('chunkview', './chunkview.js'))}),
+          import(${JSON.stringify(libUrl('kernels', './kernels.js'))}),
+        ]);
+        CV = cv; kern = K[p.kernel + 'Kernel'](E, CV); kctx = kern.init(p.params, p.calcs);
+      }
       if (task === 'decode') codes = {
         cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
         dim: p.dimKeys ? new Map(p.dimKeys.map((k, i) => [k, i])) : null,
@@ -146,6 +167,12 @@ self.onmessage = async ({ data }) => {
         let bad = null;
         for (let i = 0; i < count && !bad; i++) { const xv = +X[i], yv = +Y[i], zv = +Z[i]; if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = misfit(p.grid, xv, yv, zv, start + i); }
         self.postMessage({ type: 'result', id, out: { bad } });
+      } else if (task === 'scan') {
+        // the needed columns of this group → the chunk view → the kernel's partial
+        const cols = p.readCols.length ? await PQ.readParquetRange(file, p.readCols, start, start + count, meta) : {};
+        const view = CV.chunkView(p.spec, cols, data.page || [], count, kctx.calcFns);
+        const out = kern.group(kctx, view, count, data.mask || null);
+        self.postMessage({ type: 'result', id, out }, buffersOf(out));
       } else if (task === 'decode') {
         const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
         const out = decodeGroup(p, cols, start, count, codes);
@@ -202,7 +229,7 @@ export async function startParquetPool({ file, meta, task, p, n, makeColAcc, sig
     while (free.length && queue.length) {
       const w = free.pop(), q = queue.shift();
       pending.set(q.id, { ...q, w });
-      w.postMessage({ type: 'job', id: q.id, ...q.job });
+      w.postMessage({ type: 'job', id: q.id, ...q.job }, q.job.transfer || []);
     }
   };
   for (const w of workers) {

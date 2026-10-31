@@ -9,6 +9,7 @@ import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, l
 import { openDmModel, classifyQualified } from '../../../ext/condenser/src/main.js';
 import { colAcc, scanParquetInWorkers, STAT_SLICE } from './colstats.js';
 import { sourceHash, sourceHashSync, sameSource } from './identity.js';
+import { chunkView } from './chunkview.js';
 
 export const PAINT_BLANK = '#33373c';                      // unpainted recedes toward the background
 
@@ -197,20 +198,31 @@ export function pinWindow(e, start, n, scratch) {
 // Float32 subarray VIEWS, paint decoded to dict strings, calcs REALIZED
 // chunk-wise (compileChunk) in dependency order. PROJECTED: only `needed`
 // (lowercased) columns materialize; the rest stay null (blank).
-export function censusChunkCols(L, h, baseByName, start, n, needed, calcChunkFns) {
-  const base = h.columns, pcs = (L && L.paintCols) || [], ccs = (L && L.calcCols) || [];
-  const out = new Array(base.length + pcs.length + ccs.length).fill(null);
-  for (let i = 0; i < base.length; i++) { const c = baseByName[base[i]]; if (c) out[i] = c; }
-  for (let j = 0; j < pcs.length; j++) {
+// the view spec of L's columns (src/chunkview.js) — plain data, so a scan worker
+// can be handed the same spec the page uses. needed: lowercased names, or null = all.
+export function chunkSpecOf(L, h, needed) {
+  const pcs = (L && L.paintCols) || [];
+  return {
+    base: h.columns,
+    paints: pcs.map((pc) => ({ name: pc.name, kind: pc.kind || null, mat: !!pc.mat, dict: pc.mat ? null : pc.dict, need: !needed || needed.has(String(pc.name).toLowerCase()) })),
+    calcCount: ((L && L.calcCols) || []).length,
+  };
+}
+// the page's per-paint slices for records [start, start+n): views, not copies
+// (copy: true for a worker, which needs its own buffers to receive)
+export function chunkPageOf(L, spec, start, n, { copy = false } = {}) {
+  const pcs = (L && L.paintCols) || [];
+  return spec.paints.map((ps, j) => {
+    if (!ps.need) return null;
     const pc = pcs[j];
-    if (needed && !needed.has(String(pc.name).toLowerCase())) continue;
-    if (pc.mat) { out[base.length + j] = pc.fvalues ? pc.fvalues.subarray(start, start + n) : null; continue; }   // evicted mid-scan → blanks (ensureStoredValues at scan heads prevents this)
-    const a = new Array(n);
-    for (let i = 0; i < n; i++) { const code = pc.codes[start + i] || 0; a[i] = pc.kind === 'ratio' ? +(code / 255).toFixed(3) : ((code && pc.dict[code]) || ''); }
-    out[base.length + j] = a;
-  }
-  if (calcChunkFns) for (const { slot, fn } of calcChunkFns) { const { buf } = fn(out, n); out[slot] = buf; }
-  return out;
+    const src = pc.mat ? pc.fvalues : pc.codes;            // evicted matcol → null → blanks (ensureStoredValues at scan heads prevents this)
+    if (!src) return null;
+    return copy ? src.slice(start, start + n) : src.subarray(start, start + n);
+  });
+}
+export function censusChunkCols(L, h, baseByName, start, n, needed, calcChunkFns) {
+  const spec = chunkSpecOf(L, h, needed);
+  return chunkView(spec, baseByName, chunkPageOf(L, spec, start, n), n, calcChunkFns);
 }
 // an expression's dependency cone, calc-EXPANDED (lowercased names)
 export function expandedDeps(L, ast) {

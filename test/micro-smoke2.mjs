@@ -3216,6 +3216,61 @@ await p.close();
   await pb.close();
 }
 
+// ── §48: grade-tonnage COLUMNAR on a Parquet model (src/colscan.js) — 200,000
+//     blocks = 4 row groups, a series whose grade is a CALC column (AU2 = AU*2),
+//     weighted by a density column, filtered on a PAINTED column, scoped to the
+//     selection — so the chunk view's base · paint · calc slots and the scope mask
+//     all ride. Exact against brute force; run on the WORKERS and again with
+//     workers unavailable (the page fallback) → the two answers are bit-identical
+//     (partials merge in row-group order). ──
+{
+  const pc = await mkPage('sm2col');
+  const cg = await pc.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const NX = 100, NY = 100, NZ = 20, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N), sg = new Float64Array(N);
+    let r = 11;
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let q = 0; q < NX; q++, i++) {
+      r = (r * 1103515245 + 12345) >>> 0;
+      x[i] = 5 + q * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10;
+      au[i] = (r % 7 === 0) ? NaN : +((r >>> 8) % 400 / 100).toFixed(2);   // some unestimated, grades on 0.01 steps
+      sg[i] = 2.4 + ((r >>> 4) % 6) / 10;
+    }
+    const id = await W.addLayer({ kind: 'blocks', name: 'colgt', columns: { X: x, Y: y, Z: z, AU: au, SG: sg }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const L = M.layers().find((q) => q.id === id);
+    const groups = L.docs.blockDoc.parquet.rowGroups.length;
+    L.calcCols = (L.calcCols || []).concat([{ name: 'AU2', expr: 'AU * 2' }]); L._calcFns = null; L._colStats = null;
+    const col = M.createPaintCol(L, 'ZONE'), ore = M.addPaintValue(L, col, 'ore');
+    const oreRecs = []; for (let i = 0; i < N; i++) if (i % 3 !== 1) oreRecs.push(i);
+    M.paintApply(L, col, oreRecs, ore);
+    L._selMask = new Uint8Array(N); for (let i = 0; i < N; i++) L._selMask[i] = (i % 5 !== 2) ? 1 : 0; L._selCount = N;   // the selection scope
+    const runGT = async () => {
+      M.openGradeTonnage(L, { run: true, cfg: { nCut: 25, scope: 'selection', series: [{ layer: L.name, col: 'AU2', weight: 'SG', filter: 'ZONE == "ore"' }] } });
+      let el = null;
+      for (let n = 0; n < 600 && !el; n++) { el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage') && e._gtSpec && e._scanWhere); if (!el) await new Promise((z2) => setTimeout(z2, 50)); }
+      return { spec: el._gtSpec, where: el._scanWhere };
+    };
+    const a = await runGT();
+    const Wk = window.Worker; window.Worker = undefined;   // no workers here → the page runs the groups
+    const b = await runGT();
+    window.Worker = Wk;
+    // brute force: zone ore, in the selection, estimated, weight SG × 1000 m³
+    const tA = a.spec.series[0].data, gA = a.spec.series[1].data;
+    let bad = 0;
+    for (let c = 0; c < tA.length; c++) {
+      const cut = tA[c][0]; let T = 0, TG = 0;
+      for (let i = 0; i < N; i++) { if (i % 3 === 1 || i % 5 === 2 || !Number.isFinite(au[i])) continue; const g = au[i] * 2; if (g >= cut) { const w = sg[i] * 1000; T += w; TG += w * g; } }
+      if (Math.abs(tA[c][1] - T) > 1e-9 * Math.max(1, T) || (T > 0 ? Math.abs(gA[c][1] - TG / T) > 1e-12 * (TG / T) : Number.isFinite(gA[c][1]))) bad++;
+    }
+    const same = JSON.stringify(a.spec.series.map((s2) => s2.data)) === JSON.stringify(b.spec.series.map((s2) => s2.data));
+    return { groups, cuts: tA.length, bad, whereA: a.where, whereB: b.where, same };
+  });
+  chk(`grade-tonnage columnar on ${cg.groups} row groups (calc grade · density · painted filter · selection): ${cg.cuts} cuts, ${cg.bad} wrong vs brute force, ran ${cg.whereA}`,
+    cg.groups >= 3 && cg.cuts === 26 && cg.bad === 0 && /worker/.test(cg.whereA || ''));
+  chk(`…and without workers (${cg.whereB}) the answer is bit-identical (${cg.same})`, cg.whereB === 'on this page' && cg.same);
+  await pc.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
