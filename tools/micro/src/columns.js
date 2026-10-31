@@ -3,7 +3,7 @@
 // governs both filter pins and matcol residency. No project-FS access here —
 // the app injects the sidecar reader (setSidecarReader); UI reactions to a
 // changed column set are injected too (setColumnsChangedHook).
-import { parquetInfo, readParquetRange, writeParquet } from '../../../ext/parquet/index.js';
+import { parquetInfo, readParquetRange, createParquetBlobWriter } from '../../../ext/parquet/index.js';
 import { deps, parse } from '../../../ext/expr/index.js';
 import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier } from './records.js';
 import { openDmModel, classifyQualified, coordNum } from '../../../ext/condenser/src/main.js';
@@ -83,15 +83,22 @@ export function matColSet(L, name, fvalues, meta = {}) {
 // one column ↔ one Parquet file (manifest rule A.1): typed, null-aware (NaN ↔ null),
 // SNAPPY, canonical 256K row groups with footer stats — a materialized column reads
 // like any base column and gains push-down. Legacy raw .f32 still loads (PAR1 sniff).
+// → a Blob, written ONE ROW GROUP AT A TIME: the null-aware JS array the writer
+// needs exists for 256K values at most (it was the whole column — Array.from at
+// 16-24 B a value, ~1 GB of heap per column at 50M records, on every save).
 export function matColEncode(c) {
-  const data = c.mat
-    ? Array.from(c.fvalues, (v) => (Number.isFinite(v) ? v : null))
-    : Array.from(c.codes, (code) => (code ? (c.dict[code] ?? null) : null));   // category: dict-decoded strings
-  return writeParquet({
-    columnData: [{ name: c.name, data }],
-    codec: 'SNAPPY', rowGroupSize: 1 << 18,
+  const G = 1 << 18, n = c.mat ? c.fvalues.length : c.codes.length;
+  const pw = createParquetBlobWriter({
+    columnTypes: { [c.name]: c.mat ? 'DOUBLE' : 'STRING' }, codec: 'SNAPPY',
     kvMetadata: [{ key: 'micro:lineage', value: JSON.stringify(c.lineage || null) }],
   });
+  for (let a = 0; a < n || a === 0; a += G) {
+    const b = Math.min(n, a + G), data = new Array(b - a);
+    if (c.mat) for (let i = a; i < b; i++) { const v = c.fvalues[i]; data[i - a] = Number.isFinite(v) ? v : null; }
+    else for (let i = a; i < b; i++) { const code = c.codes[i]; data[i - a] = code ? (c.dict[code] ?? null) : null; }   // category: dict-decoded strings
+    pw.write([{ name: c.name, data }]);
+  }
+  return pw.finish();
 }
 export async function matColDecodeStr(bytes) {
   const u8v = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);

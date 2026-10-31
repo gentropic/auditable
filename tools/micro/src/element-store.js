@@ -56,7 +56,7 @@ export async function persistElement(L) {
     if (!L.dh) { const mh = await resolveFileHandle(S.project.dir, `${rel}.element.json`, { create: true }); const w = await mh.createWritable(); await w.write(JSON.stringify(elem, null, 2)); await w.close(); }   // dh members ride the SET manifest
     return 'project';
   }
-  try { const id = matColLooseId(L); for (const c of cols) { if (c.mat && !c.fvalues) continue; await _idb.set(`matcol:${id}:col:${c.name}`, matColEncode(c).buffer); } await _idb.set(`matcol:${id}:element`, elem); return 'idb'; }
+  try { const id = matColLooseId(L); for (const c of cols) { if (c.mat && !c.fvalues) continue; await _idb.set(`matcol:${id}:col:${c.name}`, await matColEncode(c).arrayBuffer()); } await _idb.set(`matcol:${id}:element`, elem); return 'idb'; }
   catch { return 'memory'; }
 }
 // a stored column the load could not apply — collected on the layer, reported

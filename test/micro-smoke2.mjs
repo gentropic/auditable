@@ -4055,6 +4055,59 @@ await p.close();
     lost.dlg && lost.title === 'stored columns not read' && /\bV\b/.test(lost.msg) && /missing/.test(lost.msg) && /not read/.test(lost.meta));
 }
 
+// ── §62: THE EXTERNAL MORTON SORT in the app (condenser createMortonSorter).
+//     Optimize and the sorted Parquet export spill bucket by bucket; forced to
+//     tiny buckets (window.__msortTarget) so a small model takes the many-bucket
+//     path: the file's rows come out in Morton order, every block exactly once,
+//     each value still with its own coordinates, and a materialized column
+//     permuted with them. The unsorted export streams in file order. ──
+{
+  const pg = await mkPage('sm2msort');
+  const r = await pg.evaluate(async () => {
+    const M = window._micro;
+    const { readParquetRange, parquetInfo } = await import('/ext/parquet/index.js');
+    const { mortonKey } = await import('/ext/condenser/src/main.js');
+    window.__msortTarget = 8;
+    let t = 'XC,YC,ZC,FE,ROCK\n';
+    for (let k = 0; k < 5; k++) for (let j = 0; j < 7; j++) for (let i = 0; i < 9; i++) t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${i * 100 + j},${(i + j) % 3 ? 'ox' : 'fr'}\n`;
+    const id = await M.openBlob(new File([t], 'ms.csv'), 'ms.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id), h = L.docs.blockDoc.header;
+    M.applyCalcCols(L, [{ name: 'EST', expr: 'FE * 2' }]);
+    await M.materializeCalcCol(L, 'EST');
+    const bb = h.bbox, q = (v, a) => Math.max(0, Math.min(1023, ((v - bb.min[a]) * 1023 / (bb.max[a] - bb.min[a])) | 0));
+    const keyOf = (x, y, z) => mortonKey(q(x, 0), q(y, 1), q(z, 2)) >>> 0;
+    const inspect = async (blob) => {
+      const buf = await blob.arrayBuffer(), info = parquetInfo(buf);
+      const c = await readParquetRange(buf, ['XC', 'YC', 'ZC', 'FE', 'ROCK'], 0, info.rowCount, info.meta);
+      let ordered = 0, aligned = 0, prev = -1; const seen = new Set();
+      for (let i = 0; i < info.rowCount; i++) {
+        const k = keyOf(c.XC[i], c.YC[i], c.ZC[i]); if (k >= prev) ordered++; prev = k;
+        const ii = (c.XC[i] - 5) / 10, jj = (c.YC[i] - 5) / 10;
+        if (c.FE[i] === ii * 100 + jj && c.ROCK[i] === ((ii + jj) % 3 ? 'ox' : 'fr')) aligned++;
+        seen.add(`${c.XC[i]},${c.YC[i]},${c.ZC[i]}`);
+      }
+      return { n: info.rowCount, ordered, aligned, distinct: seen.size, firstX: c.XC.slice(0, 3) };
+    };
+    await M.runExport(L, { format: 'parquet', spatialSort: true, download: false, filename: 'a.parquet' });
+    const sorted = await inspect(window._lastExport);
+    await M.runExport(L, { format: 'parquet', spatialSort: false, download: false, filename: 'b.parquet' });
+    const plain = await inspect(window._lastExport);
+    await M.convertLayerToParquet(L, { keepOriginal: true });
+    const P = L.docs.blockDoc.parquet;
+    const opt = await inspect(new Blob([P.buf instanceof Blob ? await P.buf.arrayBuffer() : P.buf]));
+    const mc = M.matColGet(L, 'EST'); let estBad = 0;
+    for (let rec = 0; rec < 315; rec++) { const row = await M.fetchLayerRow(L, rec); if (Math.abs(mc.fvalues[rec] - (+row[3]) * 2) > 1e-6) estBad++; }
+    window.__msortTarget = 0;
+    return { sorted, plain, opt, estBad };
+  });
+  await pg.close();
+  chk(`external sort, sorted export: ${r.sorted.n} rows, ${r.sorted.ordered} in Morton order, ${r.sorted.aligned} with their own values, ${r.sorted.distinct} distinct blocks`,
+    r.sorted.n === 315 && r.sorted.ordered === 315 && r.sorted.aligned === 315 && r.sorted.distinct === 315);
+  chk(`unsorted export streams in FILE order (${JSON.stringify(r.plain.firstX)}), ${r.plain.aligned} aligned`, r.plain.n === 315 && r.plain.aligned === 315 && r.plain.firstX.join() === '5,15,25');
+  chk(`external sort, optimize: ${r.opt.ordered} of ${r.opt.n} in Morton order, ${r.opt.aligned} aligned; the materialized column follows its blocks (${r.estBad} off)`,
+    r.opt.n === 315 && r.opt.ordered === 315 && r.opt.aligned === 315 && r.estBad === 0);
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

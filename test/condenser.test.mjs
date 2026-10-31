@@ -1418,3 +1418,31 @@ test('makeDimKeyer: the same keys as dimKey', () => {
   const k = makeDimKeyer();
   for (const t of [[5, 5, 5], [2.5, 5, 10], [5, 5, 5], [0.1 + 0.2, 1, 1], [2.5, 5, 10]]) assert.equal(k(...t), dimKey(...t));
 });
+
+// the EXTERNAL Morton sort: many buckets, spilled as Blob parts, read back in key
+// order — every record once, its values with it, ties in input order
+test('createMortonSorter: Z-order out, every record once, values travel, nulls survive', async () => {
+  const { createMortonSorter, mortonKey } = await import('../ext/condenser/src/main.js');
+  const N = 30000, bbox = { min: [1000, 2000, 300], max: [1990, 2990, 790] };
+  const pts = Array.from({ length: N }, (_, i) => { const r = (i * 2654435761) >>> 0; return [1000 + (r % 991), 2000 + ((r >>> 10) % 991), 300 + ((r >>> 20) % 491)]; });
+  const s = createMortonSorter({ bbox, n: N, kinds: ['num', 'str', 'num'], target: 500, staging: 1 << 16 });
+  assert.ok(s.buckets >= 64, `${s.buckets} buckets`);
+  pts.forEach(([x, y, z], i) => s.push(x, y, z, [i % 11 ? i / 4 : null, i % 7 ? `L${i % 5}` : null, x], i));
+  assert.equal(s.count, N);
+  const q = (v, a) => Math.max(0, Math.min(1023, ((v - bbox.min[a]) * 1023 / (bbox.max[a] - bbox.min[a])) | 0));
+  const keyOf = (i) => mortonKey(q(pts[i][0], 0), q(pts[i][1], 1), q(pts[i][2], 2)) >>> 0;
+  const seen = new Uint8Array(N);
+  let prevKey = -1, prevRec = -1, groups = 0, bad = 0;
+  for await (const g of s.batches(4096)) {
+    groups++;
+    for (let r = 0; r < g.count; r++) {
+      const i = g.recs[r], k = keyOf(i);
+      if (k < prevKey || (k === prevKey && i < prevRec)) bad++;
+      prevKey = k; prevRec = i; seen[i]++;
+      if (g.cols[0][r] !== (i % 11 ? i / 4 : null) || g.cols[1][r] !== (i % 7 ? `L${i % 5}` : null) || g.cols[2][r] !== pts[i][0]) bad++;
+    }
+  }
+  assert.equal(bad, 0, 'out of order or a value off its record');
+  assert.ok(seen.every((c) => c === 1), 'every record exactly once');
+  assert.equal(groups, Math.ceil(N / 4096));
+});
