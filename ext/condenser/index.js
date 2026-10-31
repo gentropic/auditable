@@ -9905,10 +9905,16 @@ function createResolvePipeline(gl) {
       const h = Math.max(1, Math.ceil(maxRec / TEXW));
       let b = bakes.get(layerId);
       if (!b || b.h < h) {
-        if (b) gl.deleteTexture(b.tex);
+        if (b) { gl.deleteTexture(b.tex); bakes.delete(layerId); }
+        // 16 B a record: past MAX_TEXTURE_SIZE rows, or when the GPU can't find the
+        // memory, there is no bake — null, and the layer re-rasters instead (always
+        // correct, just slower). It used to allocate unchecked and resolve garbage.
+        if (h > gl.getParameter(gl.MAX_TEXTURE_SIZE)) return null;
+        while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
         const tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEXW, h, 0, gl.RGBA, gl.FLOAT, null);
+        if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); return null; }
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         b = { tex, h };
@@ -10316,6 +10322,48 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     return false;
   };
 
+  // ── per-record byte textures (filter / selection / rule codes) ──────────────
+  // 8192 records a row, one byte a record. Uploaded in BANDS of 64 rows from one
+  // small reused buffer — it used to allocate (and fill) a full W×H copy on every
+  // call, ~50 MB per brush stroke at 50M records. bits: a 0/1 mask (sent as
+  // 0/255); otherwise the bytes go up as they are. Past the GPU's
+  // MAX_TEXTURE_SIZE rows the texture can't exist: that THROWS, naming the
+  // limit — it used to fail silently and the layer drew as if unfiltered.
+  const REC_W = 8192, BAND = 64;
+  const maxTexRows = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  let bandBuf = null;
+  function recordTexture(ls, texKey, hKey, data, bits, what) {
+    if (!ArrayBuffer.isView(data)) data = Uint8Array.from(data, (v) => (bits ? (v ? 1 : 0) : v));
+    const n = data.length, H = Math.max(1, Math.ceil(n / REC_W));
+    if (H > maxTexRows) {
+      if (ls[texKey]) { gl.deleteTexture(ls[texKey]); ls[texKey] = null; ls[hKey] = 0; }
+      throw new Error(`${what}: ${n.toLocaleString()} records — more than this GPU can index (${(REC_W * maxTexRows).toLocaleString()}, ${maxTexRows} texture rows of ${REC_W})`);
+    }
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (!(ls[texKey] && H === ls[hKey])) {
+      if (ls[texKey]) gl.deleteTexture(ls[texKey]);
+      while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, REC_W, H);
+      if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); ls[texKey] = null; ls[hKey] = 0; throw new Error(`${what}: the GPU could not allocate ${REC_W}×${H} (out of video memory?)`); }
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      ls[texKey] = tex; ls[hKey] = H;
+    } else gl.bindTexture(gl.TEXTURE_2D, ls[texKey]);
+    if (!bandBuf) bandBuf = new Uint8Array(REC_W * BAND);
+    for (let r0 = 0; r0 < H; r0 += BAND) {
+      const rows = Math.min(BAND, H - r0), a = r0 * REC_W, b = Math.min(n, a + rows * REC_W);
+      if (!bits && b - a === rows * REC_W) {                  // whole rows of bytes: straight from the caller's array
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, REC_W, rows, gl.RED, gl.UNSIGNED_BYTE, data.subarray(a, b));
+        continue;
+      }
+      const buf = bandBuf.subarray(0, rows * REC_W);
+      if (bits) { for (let i = a; i < b; i++) buf[i - a] = data[i] ? 255 : 0; } else buf.set(data.subarray(a, b));
+      buf.fill(0, b - a);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, REC_W, rows, gl.RED, gl.UNSIGNED_BYTE, buf);
+    }
+  }
   return {
     gl,
     // background clear color (also the figure/screenshot backdrop, since EDL
@@ -10388,21 +10436,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (!mask) {
         if (ls.maskTex) { gl.deleteTexture(ls.maskTex); ls.maskTex = null; }
       } else {
-        const W = 8192, H = Math.max(1, Math.ceil(mask.length / W));
-        const padded = new Uint8Array(W * H);
-        for (let i = 0; i < mask.length; i++) padded[i] = mask[i] ? 255 : 0;
-        if (ls.maskTex && H === ls.maskH) {
-          gl.bindTexture(gl.TEXTURE_2D, ls.maskTex);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.UNSIGNED_BYTE, padded);
-        } else {
-          if (ls.maskTex) gl.deleteTexture(ls.maskTex);
-          ls.maskTex = gl.createTexture(); ls.maskH = H;
-          gl.bindTexture(gl.TEXTURE_2D, ls.maskTex);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, padded);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
+        recordTexture(ls, 'maskTex', 'maskH', mask, true, 'filter');
       }
       if (culled) needClear = true; else cosmeticDirtyLayers.add(layer);   // dim-mode filter is a re-shade, not a re-raster
     },
@@ -10462,21 +10496,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (!mask) {
         if (ls.selTex) { gl.deleteTexture(ls.selTex); ls.selTex = null; ls.selH = 0; }
       } else {
-        const W = 8192, H = Math.max(1, Math.ceil(mask.length / W));
-        const padded = new Uint8Array(W * H);
-        for (let i = 0; i < mask.length; i++) padded[i] = mask[i] ? 255 : 0;
-        if (ls.selTex && H === ls.selH) {
-          gl.bindTexture(gl.TEXTURE_2D, ls.selTex);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.UNSIGNED_BYTE, padded);
-        } else {
-          if (ls.selTex) gl.deleteTexture(ls.selTex);
-          ls.selTex = gl.createTexture(); ls.selH = H;
-          gl.bindTexture(gl.TEXTURE_2D, ls.selTex);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, padded);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
+        recordTexture(ls, 'selTex', 'selH', mask, true, 'selection');
       }
       cosmeticDirtyLayers.add(layer);                                // a wash, not a cull — re-shade path
     },
@@ -10490,21 +10510,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (!codes) {
         if (ls.ruleTex) { gl.deleteTexture(ls.ruleTex); ls.ruleTex = null; ls.ruleH = 0; }
       } else {
-        const W = 8192, H = Math.max(1, Math.ceil(codes.length / W));
-        const padded = new Uint8Array(W * H);
-        padded.set(codes);
-        if (ls.ruleTex && H === ls.ruleH) {
-          gl.bindTexture(gl.TEXTURE_2D, ls.ruleTex);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.UNSIGNED_BYTE, padded);
-        } else {
-          if (ls.ruleTex) gl.deleteTexture(ls.ruleTex);
-          ls.ruleTex = gl.createTexture(); ls.ruleH = H;
-          gl.bindTexture(gl.TEXTURE_2D, ls.ruleTex);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, padded);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
+        recordTexture(ls, 'ruleTex', 'ruleH', codes, false, 'rule codes');
       }
       // rule codes recolor (cosmetic) — but when class EYES are active they
       // also re-CULL through catVis, which the captured id buffer can't follow
@@ -10850,6 +10856,9 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           }
           gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);     // back to the EDL target
           gl.viewport(0, 0, canvas.width, canvas.height);
+          // a layer whose bake couldn't exist (past MAX_TEXTURE_SIZE, out of video
+          // memory) has nothing to resolve from: the frame re-rasters instead
+          for (const id of groups.keys()) if (!resolvePipe.hasBake(id)) break resolveOk;
           for (const [id, group] of groups) {
             // the layer's own camera: an offset layer unprojects into ITS
             // coordinates, so the lattice snap and the cut-wall side stay exact

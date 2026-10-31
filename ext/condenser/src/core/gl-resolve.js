@@ -284,10 +284,16 @@ export function createResolvePipeline(gl) {
       const h = Math.max(1, Math.ceil(maxRec / TEXW));
       let b = bakes.get(layerId);
       if (!b || b.h < h) {
-        if (b) gl.deleteTexture(b.tex);
+        if (b) { gl.deleteTexture(b.tex); bakes.delete(layerId); }
+        // 16 B a record: past MAX_TEXTURE_SIZE rows, or when the GPU can't find the
+        // memory, there is no bake — null, and the layer re-rasters instead (always
+        // correct, just slower). It used to allocate unchecked and resolve garbage.
+        if (h > gl.getParameter(gl.MAX_TEXTURE_SIZE)) return null;
+        while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
         const tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEXW, h, 0, gl.RGBA, gl.FLOAT, null);
+        if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); return null; }
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         b = { tex, h };

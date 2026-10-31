@@ -614,6 +614,106 @@ function createChunkBuilder({ frame, chunkSize = 1 << 20, batchSize = 0, morton 
   };
 }
 
+// ── src/core/msort.js ──
+
+// @gcu/condenser — an EXTERNAL Morton sort: records in, records back out in
+// Z-order, whatever the model size, in bounded memory.
+//
+// Sorting in memory meant holding every column of every record at once (boxed
+// JS values, 16-24 B each: ~2 GB at the 8M-block ceiling micro had to impose,
+// with bigger models written unsorted). Here:
+//   push    — each record's key is its 30-bit Morton key against a FIXED bbox
+//             (so keys from any pass compare); the record lands in the BUCKET of
+//             its key's top bits, staged a few thousand records at a time and
+//             SPILLED as a Blob part (keys · source record numbers · numbers as
+//             Float64 · strings as JSON). The browser pages large Blob data to
+//             disk itself — no file permission, no OPFS.
+//   batches — bucket by bucket (buckets ARE key ranges, so their order is the
+//             global order), read back, radix-sort by the full key (stable), and
+//             yield groups of `groupSize` records with their source record
+//             numbers (`recs`) — the permutation a caller applies to anything
+//             else it keeps per record.
+// Peak memory ≈ one bucket (target records × columns) + the staging buffers.
+
+// opts: { bbox: { min:[x,y,z], max:[x,y,z] }, n (expected records), kinds:
+// ['num'|'str', …] per column, target (records per bucket, ~1M), staging (bytes
+// of staging across buckets, ~64 MB) }
+function createMortonSorter({ bbox, n = 0, kinds, target = 1 << 20, staging = 64 << 20 }) {
+  const nc = kinds.length, isNum = kinds.map((k) => k === 'num');
+  const lo = bbox.min, hi = bbox.max;
+  const sc = [0, 1, 2].map((a) => (hi[a] > lo[a] ? 1023 / (hi[a] - lo[a]) : 0));
+  const q = (v, a) => { const t = ((v - lo[a]) * sc[a]) | 0; return t < 0 ? 0 : t > 1023 ? 1023 : t; };
+  // 2 bits of slack over n/target: real models fill their bbox unevenly
+  const bits = Math.max(0, Math.min(15, Math.ceil(Math.log2(Math.max(1, n / target))) + 2));
+  const B = 1 << bits, shift = 30 - bits;
+  const chunk = Math.max(256, Math.min(1 << 14, Math.floor(staging / (B * (nc + 1) * 8))));
+  const buckets = Array.from({ length: B }, () => ({ parts: [], n: 0, keys: null, recs: null, cols: null, c: 0 }));
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  let total = 0;
+  const stage = (bk) => {
+    bk.keys = new Uint32Array(chunk); bk.recs = new Uint32Array(chunk);
+    bk.cols = kinds.map((k) => (k === 'num' ? new Float64Array(chunk) : new Array(chunk)));
+    bk.c = 0;
+  };
+  const spill = (bk) => {
+    const c = bk.c; if (!c) return;
+    const pieces = [bk.keys.slice(0, c), bk.recs.slice(0, c)], strLens = [];
+    for (let j = 0; j < nc; j++) {
+      if (isNum[j]) pieces.push(bk.cols[j].slice(0, c));
+      else { const b = enc.encode(JSON.stringify(bk.cols[j].slice(0, c))); strLens.push(b.length); pieces.push(b); }
+    }
+    bk.parts.push({ blob: new Blob(pieces), c, strLens });
+    stage(bk);
+  };
+  return {
+    bits, buckets: B,
+    get count() { return total; },
+    // values: one per column — a number or null for 'num', a string or null for 'str'
+    push(x, y, z, values, rec) {
+      const key = mortonKey(q(x, 0), q(y, 1), q(z, 2)) >>> 0;
+      const bk = buckets[key >>> shift];
+      if (!bk.keys) stage(bk);
+      const i = bk.c++;
+      bk.keys[i] = key; bk.recs[i] = rec;
+      for (let j = 0; j < nc; j++) { const v = values[j]; bk.cols[j][i] = isNum[j] ? (v == null ? NaN : v) : (v == null ? null : v); }
+      bk.n++; total++;
+      if (bk.c === chunk) spill(bk);
+    },
+    // → async iterator of { count, cols: [Array(count)] (numbers or null / strings
+    //   or null), recs: Uint32Array(count) }, in Morton order
+    async *batches(groupSize = 1 << 16) {
+      for (const bk of buckets) spill(bk);
+      let gCols = kinds.map(() => []), gRecs = [], gN = 0;
+      const flush = function* () { if (gN) { yield { count: gN, cols: gCols, recs: Uint32Array.from(gRecs) }; gCols = kinds.map(() => []); gRecs = []; gN = 0; } };
+      for (const bk of buckets) {
+        if (!bk.n) continue;
+        const m = bk.n, keys = new Uint32Array(m), recs = new Uint32Array(m);
+        const cols = kinds.map((k) => (k === 'num' ? new Float64Array(m) : new Array(m)));
+        let at = 0;
+        for (const pt of bk.parts) {
+          const buf = await pt.blob.arrayBuffer(), c = pt.c;
+          keys.set(new Uint32Array(buf, 0, c), at); recs.set(new Uint32Array(buf, 4 * c, c), at);
+          let off = 8 * c, s = 0;
+          for (let j = 0; j < nc; j++) {
+            if (isNum[j]) { cols[j].set(new Float64Array(buf.slice(off, off + 8 * c)), at); off += 8 * c; }
+            else { const arr = JSON.parse(dec.decode(new Uint8Array(buf, off, pt.strLens[s]))); off += pt.strLens[s++]; for (let i = 0; i < c; i++) cols[j][at + i] = arr[i]; }
+          }
+          at += c;
+        }
+        bk.parts = null;                                   // the bucket's spill is consumed
+        const order = radixSortIndices(keys, m);
+        for (let r = 0; r < m; r++) {
+          const i = order[r];
+          for (let j = 0; j < nc; j++) { const v = cols[j][i]; gCols[j].push(isNum[j] ? (v !== v ? null : v) : v); }
+          gRecs.push(recs[i]); gN++;
+          if (gN === groupSize) yield* flush();
+        }
+      }
+      yield* flush();
+    },
+  };
+}
+
 // ── src/core/blocks.js ──
 
 // @gcu/condenser — block-model chunks: IJK-exact representation (micro-spec §2.5).
@@ -757,14 +857,29 @@ function blockLocalCenter(chunk, k) {
   return [g.originLocal[0] + u, g.originLocal[1] + v, g.originLocal[2] + w];
 }
 
+// a batch's own random stream (seedPerBatch): batch k shuffles the same way
+// whoever builds it and whatever was built before — what lets batches be built
+// in parallel (micro's chunkworker) and still come out byte-identical
+const batchSeed = (seed, k) => (Math.imul(k + 1, 0x9E3779B1) ^ seed) >>> 0;
+
+// ONE Morton batch → its chunks: sort the batch by Morton key, slice it into
+// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dim,
+// recIdx } of n records. The builder's batch step, exported so a worker can run it.
+function buildBlockBatch(cols, n, { grid, frame, dimPalette = null, chunkSize, rnd }) {
+  const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
+  const out = [];
+  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n)), dimPalette));
+  return out;
+}
+
 /**
  * BlockChunkBuilder — same shape as createChunkBuilder but for block RawChunks
  * ({ count, x, y, z, chan: Float32Array|Float64Array, cat: Uint8Array|null,
  * recStart }). Batch-Morton, sliced, shuffled. Tracks the document chan range
  * (for the color ramp) alongside the local bbox.
  */
-function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, onChunk }) {
-  const rnd = mulberry32(seed);
+function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
+  let rnd = mulberry32(seed), batchNo = 0;
   const batchN = batchSize || chunkSize * 4;
   let pend = [], pendCount = 0;
   const doc = {
@@ -791,10 +906,9 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
     };
     const n = pendCount;
     pend = []; pendCount = 0;
-    const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
-    for (let start = 0; start < n; start += chunkSize) {
-      const slice = order.subarray(start, Math.min(start + chunkSize, n));
-      const chunk = buildBlockChunk(cols, grid, frame, rnd, slice, dimPalette);
+    if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
+    batchNo++;
+    for (const chunk of buildBlockBatch(cols, n, { grid, frame, dimPalette, chunkSize, rnd })) {
       doc.count += chunk.count;
       const b = doc.bboxLocal, cb = chunk.bboxLocal;
       for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
@@ -1013,6 +1127,20 @@ function latticeMapOf(grid) {
   const R = grid && grid.rot, A = (grid && grid.anchor) || [0, 0, 0];
   if (!R) return (x, y, z) => [x, y, z];
   return (x, y, z) => toLattice(R, x - A[0], y - A[1], z - A[2]);
+}
+/**
+ * a grid's world point → its cell: (x,y,z) → i + nx·(j + ny·k), or -1 outside.
+ * Nearest centroid, in the grid's OWN lattice frame — so a rotated grid is looked
+ * up through its basis, never with world coordinates against lattice-frame
+ * origins. A z pitch of 0/null is a 2D grid (k = 0).
+ */
+function cellOf(grid) {
+  const toQ = latticeMapOf(grid), X = grid.x, Y = grid.y, Z = grid.z, nx = X.count, ny = Y.count, nz = Z.count || 1;
+  return (x, y, z) => {
+    const q = toQ(x, y, z);
+    const i = Math.round((q[0] - X.origin) / (X.pitch || 1)), j = Math.round((q[1] - Y.origin) / (Y.pitch || 1)), k = Z.pitch ? Math.round((q[2] - Z.origin) / Z.pitch) : 0;
+    return i >= 0 && i < nx && j >= 0 && j < ny && k >= 0 && k < nz ? i + nx * (j + ny * k) : -1;
+  };
 }
 /** a grid's lattice → world map (inverse of latticeMapOf) */
 function worldMapOf(grid) {
@@ -1612,6 +1740,12 @@ const isSpace = (c) => c === 32 || c === 9;
 const plainSplit = (delim) => (delim === WS ? (l) => l.trim().split(/\s+/) : (l) => l.split(delim));
 
 /** Split one RECORD (possibly multi-line) into fields. */
+// A COORDINATE as a number: a blank (or whitespace, or null) is NO coordinate —
+// NaN, so the row is no record — never the 0 unary plus makes of it (a block at
+// the origin nobody put there). Everything that decides "is this row a record"
+// reads coordinates through this.
+const coordNum = (v) => (typeof v === 'number' ? v : v == null || v === '' || (v.charCodeAt(0) <= 32 && v.trim() === '') ? NaN : +v);
+
 function splitFields(line, delim) {
   if (line.indexOf('"') < 0) return plainSplit(delim)(line);
   const ws = delim === WS, n = line.length, out = [];
@@ -1782,6 +1916,127 @@ function describeQualified(policy = QUALIFIED_DEFAULT) {
   const below = b === 'half' ? '<x → x/2' : b === 'limit' ? '<x → x' : b === 'zero' ? '<x → 0' : '<x → blank';
   const above = policy.above === 'blank' ? '>x → blank' : '>x → x';
   return `${below} · ${above}${policy.negBelow ? ' · −x → below x' : ''}`;
+}
+
+// ── src/io/zones.js ──
+
+// ZONE MAPS — per-k-record statistics of a delimited model, for skipping.
+//
+// A zone is k consecutive RECORDS (the renderer's numbering), the grain of the
+// sparse line index, so zone z's bytes are [index.offsets[z], index.offsets[z+1])
+// and a reader can seek straight past it. Per zone:
+//   numeric column → min, max, and whether a blank may read there;
+//   category column → the set of values present (a 256-bit set over the
+//   column's dictionary; a column with more than 256 values keeps none).
+// Built in the open's discovery pass (every value is read there anyway).
+//
+// SOUND under every qualifier policy, so a policy change never invalidates them:
+// what a cell can read as is covered, whatever the policy says —
+//   <x  → 0, x/2, x or blank   ⇒ the range takes in [0, x], and a blank
+//   >x  → x or blank            ⇒ x, and a blank
+//   −n  → −n, or (negBelow) [0, n] or blank  ⇒ [−n, n], and a blank
+//   a code / text / ''          ⇒ a blank
+// Coordinates take no qualifier (the row qualifier skips them): just the value.
+// A zone with nothing finite keeps min > max — "no stats", it must be read.
+
+const grow$zones = (a, n, Type, fill) => {
+  if (a.length >= n) return a;
+  const b = new Type(Math.max(n, a.length * 2)); if (fill !== undefined) b.fill(fill); b.set(a); return b;
+};
+
+function createZoneBuilder(columns, { num, coord, k = 1024, catMax = 256 }) {
+  const coordSet = new Set(coord);
+  const nums = [...num].map((i) => ({ i, name: columns[i], coord: coordSet.has(i), min: new Float64Array(64).fill(Infinity), max: new Float64Array(64).fill(-Infinity), blank: new Uint8Array(64) }));
+  const numSet = new Set(num);
+  const cats = columns.map((name, i) => i).filter((i) => !numSet.has(i)).map((i) => ({ i, name: columns[i], dict: new Map(), bits: new Uint32Array(64 * 8), dead: false }));
+  let nz = 0;
+  const widen = (c, z, x) => { if (x < c.min[z]) c.min[z] = x; if (x > c.max[z]) c.max[z] = x; };
+  return {
+    // one accepted record's fields (rec = its record number, in order)
+    push(f, rec) {
+      const z = (rec / k) | 0;
+      if (z >= nz) {
+        nz = z + 1;
+        for (const c of nums) { c.min = grow$zones(c.min, nz, Float64Array, Infinity); c.max = grow$zones(c.max, nz, Float64Array, -Infinity); c.blank = grow$zones(c.blank, nz, Uint8Array); }
+        for (const c of cats) if (!c.dead) c.bits = grow$zones(c.bits, nz * 8, Uint32Array);
+      }
+      for (let q = 0; q < nums.length; q++) {
+        const c = nums[q], v = f[c.i];
+        const x = typeof v === 'number' ? v : v == null || v === '' ? NaN : +v;
+        if (x === x && x !== Infinity && x !== -Infinity) {
+          widen(c, z, x);
+          if (x < 0 && !c.coord) { widen(c, z, -x); widen(c, z, 0); c.blank[z] = 1; }
+          continue;
+        }
+        c.blank[z] = 1;
+        if (c.coord || v == null || v === '') continue;
+        const cq = classifyQualified(v);
+        if (cq.kind === 'below') { widen(c, z, 0); widen(c, z, cq.v); }
+        else if (cq.kind === 'above') widen(c, z, cq.v);
+      }
+      for (let q = 0; q < cats.length; q++) {
+        const c = cats[q];
+        if (c.dead) continue;
+        const v = f[c.i] == null ? '' : String(f[c.i]);
+        let code = c.dict.get(v);
+        if (code === undefined) {
+          if (c.dict.size >= catMax) { c.dead = true; c.bits = null; c.dict = null; continue; }
+          code = c.dict.size; c.dict.set(v, code);
+        }
+        c.bits[z * 8 + (code >>> 5)] |= 1 << (code & 31);
+      }
+    },
+    finish(count) {
+      const n = Math.ceil(count / k);
+      const num = {}, cat = {};
+      for (const c of nums) num[c.name] = { min: c.min.slice(0, n), max: c.max.slice(0, n), blank: c.blank.slice(0, n) };
+      for (const c of cats) if (!c.dead) cat[c.name] = { dict: [...c.dict.keys()], bits: c.bits.slice(0, n * 8) };
+      return { k, n, count, num, cat };
+    },
+  };
+}
+
+// the statistics of zones [z0, z1] (inclusive), as canMatch reads them
+// ({ name → { min, max, hasBlank } | { values } }), for the columns in `names`
+// (all when omitted)
+function zoneRanges(zones, z0, z1, names = null) {
+  const out = {};
+  const want = names ? new Set(names.map((s) => String(s).toLowerCase())) : null;
+  for (const name in zones.num) {
+    if (want && !want.has(name.toLowerCase())) continue;
+    const c = zones.num[name];
+    let mn = Infinity, mx = -Infinity, bl = false;
+    for (let z = z0; z <= z1; z++) { if (c.min[z] < mn) mn = c.min[z]; if (c.max[z] > mx) mx = c.max[z]; if (c.blank[z]) bl = true; }
+    out[name] = { min: mn, max: mx, hasBlank: bl };
+  }
+  for (const name in zones.cat) {
+    if (want && !want.has(name.toLowerCase())) continue;
+    const c = zones.cat[name], values = [];
+    for (let code = 0; code < c.dict.length; code++) {
+      const w = code >>> 5, b = 1 << (code & 31);
+      for (let z = z0; z <= z1; z++) if (c.bits[z * 8 + w] & b) { values.push(c.dict[code]); break; }
+    }
+    out[name] = { values };
+  }
+  return out;
+}
+
+// to and from a sidecar (JSON): the arrays as base64 of their bytes
+const b64 = (a) => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (s, Type) => { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Type(u.buffer); };
+function zonesToJSON(zones) {
+  if (!zones) return null;
+  const num = {}, cat = {};
+  for (const n in zones.num) { const c = zones.num[n]; num[n] = { min: b64(c.min), max: b64(c.max), blank: b64(c.blank) }; }
+  for (const n in zones.cat) { const c = zones.cat[n]; cat[n] = { dict: c.dict, bits: b64(c.bits) }; }
+  return { k: zones.k, n: zones.n, count: zones.count, num, cat };
+}
+function zonesFromJSON(j) {
+  if (!j || !j.num) return null;
+  const num = {}, cat = {};
+  for (const n in j.num) { const c = j.num[n]; num[n] = { min: unb64(c.min, Float64Array), max: unb64(c.max, Float64Array), blank: unb64(c.blank, Uint8Array) }; }
+  for (const n in j.cat) { const c = j.cat[n]; cat[n] = { dict: c.dict, bits: unb64(c.bits, Uint32Array) }; }
+  return { k: j.k, n: j.n, count: j.count, num, cat };
 }
 
 // ── src/io/blockmodel.js ──
@@ -1985,7 +2240,7 @@ async function fetchDelimitedRecord(blob, header, rec) {
         }
         if (rec2 == null) continue;
         const f = split(rec2);
-        const xv = +f[m.x], yv = +f[m.y], zv = +f[m.z];
+        const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         if (remaining === 0) return f;
         remaining--;
@@ -1993,6 +2248,69 @@ async function fetchDelimitedRecord(blob, header, rec) {
       if (done) return null;
     }
   } finally { reader.releaseLock(); }
+}
+
+// A RUN of a delimited model as columns: the bytes [run.byteStart, run.byteEnd)
+// — both anchors of the sparse index, so the run starts at a record and the
+// quote state is clean — read with the same rules as every sweep (blank/#
+// skipped in the reader, non-finite coordinates skipped here), so its records are
+// run.start … run.start + run.count in the renderer's numbering. The count is
+// CHECKED: an index that doesn't fit the bytes throws instead of renumbering.
+// o: { delim, x, y, z (coordinate field indices), cols: [{ i, num, policy }] } →
+// one column per entry: num → Float64Array (blank / non-number → NaN, the pin
+// cache's rule); else the field text. policy (a qualifier policy, or null) is
+// applied as the page's row qualifier applies it: <0.001 → its substitute, a code
+// → blank, before the number is taken.
+async function readDelimitedRun(blob, run, o) {
+  const n = run.count, outs = o.cols.map((c) => (c.num ? new Float64Array(n) : new Array(n)));
+  const coord = new Set([o.x, o.y, o.z]);
+  const conv = o.cols.map((c) => {
+    // a coordinate as the record test reads it (coordNum), so positions agree
+    // with the drawn blocks
+    if (c.num && coord.has(c.i)) return coordNum;
+    const pol = c.policy;
+    const qual = pol ? (v) => {
+      if (typeof v !== 'string' || v === '') return v;
+      const x = +v;
+      if (x === x && !(x < 0 && pol.negBelow)) return v;
+      const q = qualifiedNumber(v, pol);
+      return q === q ? q : '';
+    } : (v) => v;
+    return c.num
+      ? (v) => { v = qual(v); const x = +v; return v == null || v === '' || !Number.isFinite(x) ? NaN : x; }
+      : (v) => { v = qual(v); return v == null ? '' : typeof v === 'string' ? v : String(v); };
+  });
+  let m = 0;
+  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false)) {
+    for (const f of batch) {
+      const xv = coordNum(f[o.x]), yv = coordNum(f[o.y]), zv = coordNum(f[o.z]);
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+      if (m >= n) throw new Error(`the record index doesn't match the file: more than ${n} records from byte ${run.byteStart}`);
+      for (let k = 0; k < outs.length; k++) outs[k][m] = conv[k](f[o.cols[k].i]);
+      m++;
+    }
+  }
+  if (m !== n) throw new Error(`the record index doesn't match the file: ${m} records from byte ${run.byteStart}, ${n} expected`);
+  return outs;
+}
+
+// The runs a delimited model is read in by the columnar engine: up to `anchors`
+// index entries each (index.k records per entry; an entry is a ZONE), the last to
+// the end of the file. keep(z) → false leaves zone z out — a run is consecutive
+// kept zones, so a skipped zone's bytes are never read. [] without a complete
+// index (an old sidecar) → the caller keeps the row path.
+function delimitedRuns(header, size, anchors = 256, keep = null) {
+  const idx = header.index, n = header.count;
+  if (!idx || !idx.k || !idx.offsets || !n || idx.offsets.length !== Math.ceil(n / idx.k)) return [];
+  const runs = [], nz = idx.offsets.length;
+  const push = (a, b) => { const start = a * idx.k; runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < nz ? idx.offsets[b] : size }); };
+  let a = -1;
+  for (let z = 0; z <= nz; z++) {
+    const kept = z < nz && (!keep || keep(z));
+    if (kept && a < 0) a = z;
+    if (a >= 0 && (!kept || z - a === anchors)) { push(a, z); a = kept ? z : -1; }
+  }
+  return runs;
 }
 
 // the colour channel's qualifier policy: qualify = { [column name]: policy } (else the default)
@@ -2012,7 +2330,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
     const dimKeyOf = makeDimKeyer();
     for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2 })) {
       for (const f of batch) {
-        const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
+        const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         buf.x[fill] = xv; buf.y[fill] = yv; buf.z[fill] = zv;
         buf.chan[fill] = map.chan != null ? qualifiedNumber(f[map.chan], chanPolicy) : 0;   // <0.001 → a number under the column's policy
@@ -2041,7 +2359,7 @@ function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, di
 // opts.dims — { x, y, z } column indices of the per-block size columns, stated
 //   by the caller (otherwise found by name: DX/DY/DZ, XINC…).
 // mapping.cat = -1 — "no category" (no auto-pick from the text columns).
-async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, signal, onProgress } = {}) {
+async function openBlockModel(blob, { mapping = null, discovered = null, lattice = null, rotated = true, dims = null, qualify = null, sample = 512 * 1024, indexEvery = 1024, zones = false, signal, onProgress } = {}) {
   // a cached discovery (project sidecars / channel re-streams): skip sweep 1
   // entirely — the header is rebuilt from the payload, sweep 2 streams as usual
   if (discovered) {
@@ -2051,6 +2369,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
       index: discovered.index
         ? { k: discovered.index.k, offsets: discovered.index.offsets instanceof Float64Array ? discovered.index.offsets : Float64Array.from(discovered.index.offsets) }
         : undefined,
+      zones: discovered.zones && discovered.zones.num && typeof Object.values(discovered.zones.num)[0]?.min === 'string' ? zonesFromJSON(discovered.zones) : (discovered.zones || null),
     };
     const map2 = header.mapping;
     const catCode2 = header.categories ? new Map(header.categories.map((v, i) => [v, i])) : null;
@@ -2104,6 +2423,28 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const minDim = [Infinity, Infinity, Infinity];
   const dimSet = new Set();
 
+  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
+  // the UI offers these as color channels; switching re-runs sweep 2 only.
+  const numericColumns = [], qualifiedColumns = [];
+  if (sniff.header) {
+    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
+    const split2 = splitter(sniff.delim);
+    for (let i = 0; i < sniff.columns; i++) {
+      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
+      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
+      const cq = vals.length ? censusQualified(vals) : null;
+      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
+      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
+    }
+  }
+  // zone maps (opts.zones): per-index-entry skip statistics, filled in the same
+  // pass — numeric = the coordinates, the size columns and the numeric columns;
+  // every other column is a category candidate
+  const zb = zones && sniff.header ? createZoneBuilder(sniff.header, {
+    num: [map.x, map.y, map.z, ...sniff.header.map((h, i) => (DIM_RE.test(String(h).trim()) ? i : -1)).filter((i) => i >= 0), ...numericColumns.map((c) => c.i)].filter((i, q, a) => a.indexOf(i) === q),
+    coord: [map.x, map.y, map.z], k: indexEvery,
+  }) : null;
+
   // ── sweep 1: discovery — axis distincts + extents + category dictionary ──
   const axc = [axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT), axisDistinct(CAP_DISTINCT)];
   const ax = axc.map((c) => c.set);
@@ -2115,12 +2456,22 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const anchors = [];                                      // sparse record index: byte offset of every indexEvery-th accepted row
   const RES = 50000, res = [];                             // reservoir: the first centroids (rotated-lattice inference)
   let declaredMisfit = null;
+  // rows that are no record, by reason — reported, never silent (the first one's
+  // data-row number, to find it): a blank coordinate, or one that isn't a number
+  const dropped = { blank: 0, text: 0, firstRow: -1 };
+  let dataRow = 0;
   for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
-    for (let fi = 0; fi < fields.length; fi++) {
+    for (let fi = 0; fi < fields.length; fi++, dataRow++) {
       const f = fields[fi];
-      const xv = +f[map.x], yv = +f[map.y], zv = +f[map.z];
-      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+      const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) {
+        const blank = [f[map.x], f[map.y], f[map.z]].some((v) => v == null || String(v).trim() === '');
+        if (blank) dropped.blank++; else dropped.text++;
+        if (dropped.firstRow < 0) dropped.firstRow = dataRow + 1;
+        continue;
+      }
       if (count % indexEvery === 0) anchors.push(at[fi]);
+      if (zb) zb.push(f, count);
       if (lattice && declaredMisfit === null) declaredMisfit = latticeMisfit(lattice, xv, yv, zv, count);
       else if (!lattice && res.length < RES * 3) res.push(xv, yv, zv);
       count++;
@@ -2160,7 +2511,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     const coordSweep = () => (async function* () {
       for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal })) {
         const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
-        for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = +f[map.x]; y[i] = +f[map.y]; z[i] = +f[map.z]; }
+        for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
         yield { x, y, z, count: n };
       }
     })();
@@ -2170,20 +2521,6 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     ? [...catCounts.keys()].sort() : null;
   const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
 
-  // every plausible scalar column (numeric in the head sample, not a coord/dim) —
-  // the UI offers these as color channels; switching re-runs sweep 2 only.
-  const numericColumns = [], qualifiedColumns = [];
-  if (sniff.header) {
-    const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split2 = splitter(sniff.delim);
-    for (let i = 0; i < sniff.columns; i++) {
-      if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
-      const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
-      const cq = vals.length ? censusQualified(vals) : null;
-      if (cq && cq.numeric) numericColumns.push({ i, name: sniff.header[i] });
-      if (cq && cq.qualified) qualifiedColumns.push({ i, name: sniff.header[i], below: cq.below, above: cq.above, code: cq.code });
-    }
-  }
   const header = {
     kind: 'blockmodel', count,
     bbox: { min, max },
@@ -2194,6 +2531,8 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
+    dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
+    zones: zb ? zb.finish(count) : null,                   // per-index-entry skip statistics (io/zones.js)
     numericColumns,
     qualifiedColumns,                                       // numeric once <x / >x / lab codes count (seen in the head sample)
     categories,
@@ -2731,6 +3070,39 @@ async function sniffDrillholeFiles(files) {
  *              the page's centroids-as-points path renders it)
  *   fetchRecord(rec) → the ORIGINAL interval row (O(1), in memory)
  */
+// A BLANK IS NO NUMBER (the CSV coordinate rule, 9f295586): `+''` is 0, which put
+// a collar at the origin, bent a survey horizontal at a blank dip (or north at a
+// blank azimuth), and started an interval at the collar on a blank FROM. Rows like
+// that are DROPPED and REPORTED — a check on header.report, shown with the others:
+//   a collar with a blank X/Y/Z      → dropped (its intervals report as no-collar)
+//   a survey station with a blank depth/azimuth/dip → dropped (the hole
+//                                      interpolates across it)
+//   an interval with a blank FROM/TO → not placed (still a record, not drawn)
+//   a blank EOH                      → no EOH (the deepest station / interval TO)
+// A collar keeps its file ROW (`row`): a trace's record is the collar row.
+function blankCheck(checks, id, label, bhids) {
+  if (!bhids.length) return;
+  checks.push({ id, label, count: bhids.length, bhids: [...new Set(bhids.map((b) => String(b ?? '')))].slice(0, 200) });
+}
+function parseCollars(t, mc) {
+  const collars = [], blank = [];
+  t.rows.forEach((r, row) => {
+    const x = coordNum(r[mc.x]), y = coordNum(r[mc.y]), z = coordNum(r[mc.z]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { blank.push(r[mc.bhid]); return; }
+    const e = mc.eoh != null && mc.eoh >= 0 ? coordNum(r[mc.eoh]) : NaN;
+    collars.push({ bhid: r[mc.bhid], x, y, z, eoh: Number.isFinite(e) ? e : undefined, row });
+  });
+  return { collars, blank };
+}
+function parseSurveys(t, ms) {
+  const surveys = [], blank = [];
+  for (const r of t.rows) {
+    const depth = ms.at != null && ms.at >= 0 ? coordNum(r[ms.at]) : 0, az = coordNum(r[ms.az]), dip = coordNum(r[ms.dip]);
+    if (!Number.isFinite(depth) || !Number.isFinite(az) || !Number.isFinite(dip)) { blank.push(r[ms.bhid]); continue; }
+    surveys.push({ bhid: r[ms.bhid], depth, az, dip });
+  }
+  return { surveys, blank };
+}
 async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   const tCollar = await readDelimited(collar);
   const tSurvey = await readDelimited(survey);
@@ -2744,14 +3116,10 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   if (!m.survey || m.survey.az == null) throw new Error('drillholes: survey columns not identified (need BHID + AZ + DIP)');
   if (!m.intervals || m.intervals.from == null) throw new Error('drillholes: interval columns not identified (need BHID + FROM + TO)');
 
-  // @gcu/drillhole table shapes
-  const collars = tCollar.rows.map((r) => ({
-    bhid: r[m.collar.bhid], x: +r[m.collar.x], y: +r[m.collar.y], z: +r[m.collar.z],
-    eoh: m.collar.eoh >= 0 ? +r[m.collar.eoh] : undefined,
-  }));
-  const surveys = tSurvey.rows.map((r) => ({
-    bhid: r[m.survey.bhid], depth: m.survey.at >= 0 ? +r[m.survey.at] : 0, az: +r[m.survey.az], dip: +r[m.survey.dip],
-  }));
+  // @gcu/drillhole table shapes — blanks dropped and reported (see parseCollars)
+  const { collars, blank: blankCollars } = parseCollars(tCollar, m.collar);
+  const { surveys, blank: blankSurveys } = parseSurveys(tSurvey, m.survey);
+  const collarOfRow = new Map(collars.map((c) => [c.row, c]));
 
   const n = tIv.rows.length;
   const keyCols = new Set([m.intervals.bhid, m.intervals.from, m.intervals.to]);
@@ -2776,30 +3144,37 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   // positions are the capsule segment, arc-correct via positionAt; the render
   // midpoint derives as (A+B)/2. __row + __end thread the source row and
   // which endpoint through the per-hole depth sort (the identity).
-  const bhid = new Array(2 * n), depth = new Float64Array(2 * n);
-  const rowIdx = new Float64Array(2 * n), endIdx = new Float64Array(2 * n);
-  const chanVals = new Float64Array(n), catVals = catCol != null ? new Array(n) : null;
-  const catCounts = new Map();
+  const fromOf = new Float64Array(n), toOf = new Float64Array(n), blankIv = [];
   for (let i = 0; i < n; i++) {
     const r = tIv.rows[i];
-    const hb = r[m.intervals.bhid];
-    bhid[2 * i] = hb; bhid[2 * i + 1] = hb;
-    depth[2 * i] = +r[m.intervals.from]; depth[2 * i + 1] = +r[m.intervals.to];
-    rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
-    endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
+    fromOf[i] = coordNum(r[m.intervals.from]); toOf[i] = coordNum(r[m.intervals.to]);
+    if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) blankIv.push(r[m.intervals.bhid]);
+  }
+  const nS = n - blankIv.length;
+  const bhid = new Array(2 * nS), depth = new Float64Array(2 * nS);
+  const rowIdx = new Float64Array(2 * nS), endIdx = new Float64Array(2 * nS);
+  const chanVals = new Float64Array(n), catVals = catCol != null ? new Array(n) : null;
+  const catCounts = new Map();
+  const iv = { bhid: [], from: [], to: [], cols: [] };     // ONE entry per placeable row, for validate + the section paths
+  for (let i = 0, s2 = 0; i < n; i++) {
+    const r = tIv.rows[i];
     chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
     if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+    if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) continue;
+    const hb = r[m.intervals.bhid];
+    bhid[2 * s2] = hb; bhid[2 * s2 + 1] = hb;
+    depth[2 * s2] = fromOf[i]; depth[2 * s2 + 1] = toOf[i];
+    rowIdx[2 * s2] = i; rowIdx[2 * s2 + 1] = i;
+    endIdx[2 * s2] = 0; endIdx[2 * s2 + 1] = 1;
+    iv.bhid.push(hb); iv.from.push(fromOf[i]); iv.to.push(toOf[i]);
+    s2++;
   }
   const samples = { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] };
 
   const ds = dhDesurveySamples$index({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
 
-  // the interval-shape checks (overlaps, inverted from/to…) come from validate.
-  // ONE entry per row — the samples' `bhid` above has two (FROM and TO ends).
-  const iv = {
-    bhid: tIv.rows.map((r) => r[m.intervals.bhid]),
-    from: tIv.rows.map((r) => +r[m.intervals.from]), to: tIv.rows.map((r) => +r[m.intervals.to]), cols: [],
-  };
+  // the interval-shape checks (overlaps, inverted from/to…) come from validate
+  // (iv above: ONE entry per row — the samples' `bhid` has two, FROM and TO ends)
   let report = ds.report;
   try {
     const v = dhValidate$index({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
@@ -2807,6 +3182,13 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     const extra = Object.values(v.checks || {}).filter((c) => !seen.has(c.id));
     report = { ...report, checks: report.checks.concat(extra) };
   } catch { /* validate's report is a bonus, not a gate */ }
+  {
+    const blanks = [];
+    blankCheck(blanks, 'blank-collar', 'collars with a blank X/Y/Z — dropped', blankCollars);
+    blankCheck(blanks, 'blank-survey', 'survey stations with a blank depth / azimuth / dip — dropped (the hole interpolates across)', blankSurveys);
+    blankCheck(blanks, 'blank-interval', 'intervals with a blank FROM / TO — not placed', blankIv);
+    if (blanks.length) report = { ...report, checks: blanks.concat(report.checks) };
+  }
 
   const categories = catCounts.size > 0 && catCounts.size <= 255 ? [...catCounts.keys()].sort() : null;
   const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
@@ -2834,7 +3216,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     ax[k] = A[0]; ay[k] = A[1]; az[k] = A[2];
     bx[k] = B[0]; by[k] = B[1]; bz[k] = B[2];
     px[k] = (A[0] + B[0]) / 2; py[k] = (A[1] + B[1]) / 2; pz[k] = (A[2] + B[2]) / 2;
-    pChan[k] = Number.isFinite(chanVals[src]) ? chanVals[src] : 0;
+    pChan[k] = chanVals[src];                            // a blank grade is missing (NaN), not 0
     if (pCat) { const c = catCode.get(catVals[src]); pCat[k] = c === undefined ? 0 : c; }
     pRec[k] = src;
     for (let a2 = 0; a2 < 3; a2++) {
@@ -2900,13 +3282,13 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   const holePaths = () => {
     if (_paths) return _paths;
     const deepest = new Map();
-    for (let i = 0; i < n; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
+    for (let i = 0; i < iv.bhid.length; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
     const { perHole } = desurveyHolePaths(collars, surveys, opts, deepest);
     _paths = new Map();
     for (const [hi, pts] of perHole) {
       const xyz = new Float64Array(pts.length * 3);
       pts.forEach((pt, k) => { xyz[3 * k] = pt[1]; xyz[3 * k + 1] = pt[2]; xyz[3 * k + 2] = pt[3]; });
-      _paths.set(collars[hi].bhid, xyz);
+      _paths.set(collarOfRow.get(hi).bhid, xyz);
     }
     return _paths;
   };
@@ -2922,7 +3304,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
 // (a section's "keep holes that cross the slab").
 function desurveyHolePaths(collars, surveys, opts = {}, extraEoh = null) {
   const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
-  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
+  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, c.row ?? i); } });   // a hole is its collar ROW
   for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
   for (const c of collars) {
     if (!depthsOf.has(c.bhid)) continue;
@@ -2959,10 +3341,9 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
   const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
   if (!mc || mc.x == null) throw new Error('drillhole traces: collar columns not identified (need BHID + X/Y/Z)');
   if (!ms || ms.az == null) throw new Error('drillhole traces: survey columns not identified (need BHID + AZ + DIP)');
-  const collars = tCollar.rows.map((r) => ({
-    bhid: r[mc.bhid], x: +r[mc.x], y: +r[mc.y], z: +r[mc.z], eoh: mc.eoh >= 0 ? +r[mc.eoh] : undefined,
-  }));
-  const surveys = tSurvey.rows.map((r) => ({ bhid: r[ms.bhid], depth: ms.at >= 0 ? +r[ms.at] : 0, az: +r[ms.az], dip: +r[ms.dip] }));
+  const { collars } = parseCollars(tCollar, mc);          // blanks dropped (openDrillholes reports them)
+  const { surveys } = parseSurveys(tSurvey, ms);
+  const collarOfRow = new Map(collars.map((c) => [c.row, c]));
 
   const { perHole, report: pathReport } = desurveyHolePaths(collars, surveys, opts);
   let nSeg = 0;
@@ -3006,8 +3387,8 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
   // has no face. Was a hard `() => null`, which made Measure silently no-op on a
   // trace segment.
   const recordPosition = (rec) => {
-    const c = collars[rec];
-    return c && Number.isFinite(c.x) ? [c.x, c.y, c.z] : null;
+    const c = collarOfRow.get(rec);
+    return c ? [c.x, c.y, c.z] : null;
   };
   return { header, streamChunks, fetchRecord, recordPosition };
 }
@@ -6626,7 +7007,7 @@ function createPickPipeline(gl) {
    */
   // the shared ID-buffer pass: scissored to (px,py,w,h), leaves the FBO bound
   // for the caller's readPixels. pick() reads 1px; pickRegion() reads the block.
-  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH }) {
+  function renderInto(px, py, w2, h2, chunks, cam, { pointPx, blocksAsPoints = false, layerStates = null, section = null, viewportW, viewportH, noClear = false }) {
     const stateOf = (id) => (layerStates && layerStates.get(id)) || { maskTex: null, isolate: false };
     const byLayer = (arr) => {
       const m = new Map();
@@ -6669,13 +7050,39 @@ function createPickPipeline(gl) {
     gl.viewport(0, 0, w, h);
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(px, py, w2, h2);
-    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);            // layer = NO_LAYER → "nothing here"
-    gl.clear(gl.DEPTH_BUFFER_BIT);
+    if (!noClear) {                                        // (a progressive capture's later batches draw over the earlier ones)
+      gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);          // layer = NO_LAYER → "nothing here"
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+    }
     gl.enable(gl.DEPTH_TEST);
     const s = cam.state;
     const dpp = pointPx * (window.devicePixelRatio || 1);
+    // A chunk writes only inside its bbox's screen footprint (+ a splat's
+    // radius), so a scissored pick draws just the chunks over the region. A
+    // one-pixel pick on a 60M-block model ran the vertex stage for every block
+    // (~0.5 s, the page waiting on readPixels); Morton chunks are tight, so the
+    // few under the cursor are all it needs. A box that crosses the eye plane
+    // can't be projected — it's drawn, conservatively. The full-viewport capture
+    // draws everything.
+    const whole = px <= 0 && py <= 0 && px + w2 >= viewportW && py + h2 >= viewportH;
+    const margin = dpp + 2;
+    const covers = (c) => {
+      const b = c.bboxLocal;
+      if (whole || !b || !(b[0] <= b[3])) return true;
+      const m = stateFor(stateOf(c._layer || 0)).viewProj;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        const x = b[k & 1 ? 3 : 0], y = b[k & 2 ? 4 : 1], z = b[k & 4 ? 5 : 2];
+        const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+        if (!(cw > 1e-9)) return true;
+        const sx = ((m[0] * x + m[4] * y + m[8] * z + m[12]) / cw * 0.5 + 0.5) * viewportW;
+        const sy = ((m[1] * x + m[5] * y + m[9] * z + m[13]) / cw * 0.5 + 0.5) * viewportH;
+        if (sx < x0) x0 = sx; if (sx > x1) x1 = sx; if (sy < y0) y0 = sy; if (sy > y1) y1 = sy;
+      }
+      return !(x1 < px - margin || x0 > px + w2 + margin || y1 < py - margin || y0 > py + h2 + margin);
+    };
 
-    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0);
+    const ptsChunks = chunks.filter((c) => c.kind === 'points' && c.cursor > 0 && covers(c));
     if (ptsChunks.length) {
       gl.useProgram(pts);
       gl.uniformMatrix4fv(uPts.viewProj, false, s.viewProj);
@@ -6703,7 +7110,7 @@ function createPickPipeline(gl) {
       }
     }
 
-    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0);
+    const blkChunks = chunks.filter((c) => c.kind === 'blocks' && c.cursor > 0 && covers(c));
     if (blkChunks.length) {
       gl.useProgram(blk);
       // the camera uniforms, per layer (a moved layer has its own)
@@ -6893,7 +7300,35 @@ function createPickPipeline(gl) {
     return { tex: colorTex, depth: depthTex, w, h };
   }
 
-  return { pick, pickRegion, captureViewport, NO_LAYER };
+  // the same capture, PROGRESSIVE: beginCapture clears the whole target, each
+  // captureMore draws one batch of chunks over it (depth-tested against what's
+  // there), so the full id buffer of a still frame is built across idle frames
+  // instead of in one long pass. Same result as captureViewport.
+  function beginCapture(viewportW, viewportH) {
+    ensure(viewportW, viewportH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.clearBufferuiv(gl.COLOR, 0, MISS_CLEAR);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function captureMore(chunks, cam, opts) {
+    renderInto(0, 0, opts.viewportW, opts.viewportH, chunks, cam, { ...opts, noClear: true });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    return { tex: colorTex, depth: depthTex, w, h };
+  }
+  // a rect of the CAPTURED buffer (no render) — what pickRegion returns
+  function readCaptured(px, py, w2, h2) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const out = new Uint32Array(w2 * h2 * 4);
+    gl.readPixels(px, py, w2, h2, gl.RGBA_INTEGER, gl.UNSIGNED_INT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  return { pick, pickRegion, captureViewport, beginCapture, captureMore, readCaptured, NO_LAYER };
 }
 
 // ── ../dm/src/dm.js ──
@@ -7182,37 +7617,50 @@ function readDM(buffer) {
 // col → Float64Array (NaN = missing); alpha col → string[] (''=missing); constants
 // come free from the header. Yields { recStart, count, cols } where cols[idx] is the
 // array for column `idx`, RAW record numbering (recStart + k over ALL records).
+// The page RUNS a column read walks: ~4 MB of pages each, with the records they
+// hold. One definition — the generator below and a parallel scan (micro's worker
+// pool) cut the file the same way, so a run is the same unit everywhere (and a
+// sidecar band check asked of a run means the same records).
+function dmPageRuns(h) {
+  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+  const runs = [];
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    let count = 0;
+    for (let pg = page; pg <= pEnd; pg++) count += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    runs.push({ page, pEnd, start: (page - 2) * h.recordsPerPage, count });
+  }
+  return runs;
+}
+// ONE run's requested fields, by striding (only those fields are decoded):
+// → { recStart, count, cols: { [colIdx]: Float64Array (blank = NaN) | string[] (blank = '') } }
+async function readDmRun(blob, h, colIdxs, run) {
+  const ids = [...new Set(colIdxs)];
+  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+  const bytes = new Uint8Array(await blob.slice((run.page - 1) * h.pageSize, run.pEnd * h.pageSize).arrayBuffer());
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const total = run.count;
+  const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+  let w = 0;
+  for (let pg = run.page; pg <= run.pEnd; pg++) {
+    const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - run.page) * h.pageSize;
+    for (let r = 0; r < nRec; r++) {
+      const recBase = pageBase + r * h.maxLen * h.wordSize;
+      for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+      w++;
+    }
+  }
+  const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+  return { recStart: run.start, count: total, cols: cobj };
+}
 // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
 // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
 // can match a filter — parquet's row-group skip, retrofitted onto .dm).
 async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
-  const ids = [...new Set(colIdxs)];
-  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
-  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
-  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+  for (const run of dmPageRuns(h)) {
     if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
-    if (shouldRead) {
-      let totalR = 0;
-      for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-      if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
-    }
-    const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
-    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    let total = 0;
-    for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-    const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
-    let w = 0;
-    for (let pg = page; pg <= pEnd; pg++) {
-      const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
-      for (let r = 0; r < nRec; r++) {
-        const recBase = pageBase + r * h.maxLen * h.wordSize;
-        for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
-        w++;
-      }
-    }
-    const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
-    yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
+    if (shouldRead && !shouldRead(run.start, run.count)) continue;
+    yield await readDmRun(blob, h, colIdxs, run);
   }
 }
 
@@ -8583,7 +9031,7 @@ function parseNumber(b, s, e) {
 }
 
 // growable typed arrays (the polyline vertex table, LWPOLYLINE vertices)
-function grow(Type) {
+function grow$stream(Type) {
   let a = new Type(64), n = 0;
   return {
     push(v) { if (n === a.length) { const b = new Type(a.length * 2); b.set(a); a = b; } a[n++] = v; },
@@ -8635,7 +9083,7 @@ function createSceneStream(sink, opts = {}) {
   const genBuf = [];                                       // buffered slow-path records (INSERT + ATTRIBs stay together)
   const slot = new Float64Array(1072), has = new Uint8Array(1072), touched = [];
   let rLayer = '0', rAci = null, rTc = null, rHandle = null;
-  const lw = { x: grow(Float64Array), y: grow(Float64Array), b: grow(Float64Array) };
+  const lw = { x: grow$stream(Float64Array), y: grow$stream(Float64Array), b: grow$stream(Float64Array) };
   let poly = null;                                         // active POLYLINE: header fields + growable vertex table
 
   // colour memo: consecutive entities almost always share layer + colour
@@ -8685,8 +9133,8 @@ function createSceneStream(sink, opts = {}) {
   function beginPoly() {
     poly = {
       flags: S(70), M: S(71), N: S(72), layer: rLayer, aci: rAci, tc: rTc, handle: rHandle,
-      x: grow(Float64Array), y: grow(Float64Array), z: grow(Float64Array), b: grow(Float64Array), f: grow(Int32Array),
-      i1: grow(Int32Array), i2: grow(Int32Array), i3: grow(Int32Array), i4: grow(Int32Array),
+      x: grow$stream(Float64Array), y: grow$stream(Float64Array), z: grow$stream(Float64Array), b: grow$stream(Float64Array), f: grow$stream(Int32Array),
+      i1: grow$stream(Int32Array), i2: grow$stream(Int32Array), i3: grow$stream(Int32Array), i4: grow$stream(Int32Array),
     };
   }
   function addVertex() {
@@ -9461,10 +9909,16 @@ function createResolvePipeline(gl) {
       const h = Math.max(1, Math.ceil(maxRec / TEXW));
       let b = bakes.get(layerId);
       if (!b || b.h < h) {
-        if (b) gl.deleteTexture(b.tex);
+        if (b) { gl.deleteTexture(b.tex); bakes.delete(layerId); }
+        // 16 B a record: past MAX_TEXTURE_SIZE rows, or when the GPU can't find the
+        // memory, there is no bake — null, and the layer re-rasters instead (always
+        // correct, just slower). It used to allocate unchecked and resolve garbage.
+        if (h > gl.getParameter(gl.MAX_TEXTURE_SIZE)) return null;
+        while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
         const tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEXW, h, 0, gl.RGBA, gl.FLOAT, null);
+        if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); return null; }
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         b = { tex, h };
@@ -9778,6 +10232,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   let pickedLayer = 0xFFFFFFFF;                           // …and its layer (the pair IS the identity now)
   const repaintSet = new Set();                           // records to repaint over a converged frame
   let lastConverged = false;
+  let pickFromCapture = 0;                                // picks answered from the capture (a test seam)
   // ── layers (micro-layers spec §1): each opened dataset is a layer with its own
   // visibility, filter mask, compaction set, and color ranges. recIdx is
   // PARTITIONED — (layerId << 29) | record — so one ID buffer serves all layers
@@ -9788,6 +10243,12 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // shared with the pick pipeline so the pick always agrees with the picture
   const layerSecOf = (ls, sec) => layerSection(sec, ls.sectioned, ls.offset);
   const meshSecOf = (ls, sec) => meshSection(sec, ls.sectioned, ls.offset);
+  // a layer's DOCUMENT value range: the opt-in value texture's when one is set
+  // (its range IS the document's then), else what the chunks carried. The clip
+  // applies over either.
+  const docRangeOf = (ls) => ls.chanTex && ls.chanTexRange
+    ? [ls.chanTexRange[0], ls.chanTexRange[0] + ls.chanTexRange[1]]
+    : [ls.docChan[0] === Infinity ? 0 : ls.docChan[0], ls.docChan[1]];
   function layerOf(id) {
     let l = layers.get(id);
     if (!l) {
@@ -9838,7 +10299,18 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
   // falls back to the re-raster.
   const cosmeticDirtyLayers = new Set();                  // layers a cosmetic setter touched
   const lastCosSig = new Map();                           // layer → view-opts signature last rastered/resolved
-  let idCapture = null;                                   // { tex, w, h } from pickPipe.captureViewport
+  let idCapture = null;                                   // { tex, depth, w, h, key, complete } — the converged frame's id buffer
+  // what an id buffer depends on besides the geometry: the camera, the point
+  // size, points-vs-boxes, the section, the target size
+  const capKey = (cam, pointPx, blocksAsPoints, sec) =>
+    `${Array.prototype.join.call(cam.state.viewProj, ',')}|${pointPx}|${blocksAsPoints ? 'P' : 'B'}|${sec ? `${sec.n.join(',')}|${sec.d}|${sec.half}` : 'off'}|${canvas.width}x${canvas.height}`;
+  // a pending re-raster (needClear) means what is clickable changed — a class eye,
+  // a rule code under eyes, visibility — but the capture is only thrown away when
+  // the next frame draws; until then it must not answer a pick
+  const capReady = (key) => !globalThis.__noPickCapture && !needClear && !!(idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height);
+  // every capture that is thrown away goes through here, so a fence still pending
+  // on it is deleted rather than left to the collector
+  const dropCapture = () => { if (idCapture && idCapture.fence) gl.deleteSync(idCapture.fence); idCapture = null; };
   const layerMaxRec = new Map();                          // layer → 1 + highest record index seen
   const bakeDirty = new Set();                            // layers whose attr bake is stale
   let resolves = 0;                                       // resolve passes run (harness observability)
@@ -9854,6 +10326,48 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     return false;
   };
 
+  // ── per-record byte textures (filter / selection / rule codes) ──────────────
+  // 8192 records a row, one byte a record. Uploaded in BANDS of 64 rows from one
+  // small reused buffer — it used to allocate (and fill) a full W×H copy on every
+  // call, ~50 MB per brush stroke at 50M records. bits: a 0/1 mask (sent as
+  // 0/255); otherwise the bytes go up as they are. Past the GPU's
+  // MAX_TEXTURE_SIZE rows the texture can't exist: that THROWS, naming the
+  // limit — it used to fail silently and the layer drew as if unfiltered.
+  const REC_W = 8192, BAND = 64;
+  const maxTexRows = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  let bandBuf = null;
+  function recordTexture(ls, texKey, hKey, data, bits, what) {
+    if (!ArrayBuffer.isView(data)) data = Uint8Array.from(data, (v) => (bits ? (v ? 1 : 0) : v));
+    const n = data.length, H = Math.max(1, Math.ceil(n / REC_W));
+    if (H > maxTexRows) {
+      if (ls[texKey]) { gl.deleteTexture(ls[texKey]); ls[texKey] = null; ls[hKey] = 0; }
+      throw new Error(`${what}: ${n.toLocaleString()} records — more than this GPU can index (${(REC_W * maxTexRows).toLocaleString()}, ${maxTexRows} texture rows of ${REC_W})`);
+    }
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (!(ls[texKey] && H === ls[hKey])) {
+      if (ls[texKey]) gl.deleteTexture(ls[texKey]);
+      while (gl.getError() !== gl.NO_ERROR) { /* drain stale errors */ }
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, REC_W, H);
+      if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(tex); ls[texKey] = null; ls[hKey] = 0; throw new Error(`${what}: the GPU could not allocate ${REC_W}×${H} (out of video memory?)`); }
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      ls[texKey] = tex; ls[hKey] = H;
+    } else gl.bindTexture(gl.TEXTURE_2D, ls[texKey]);
+    if (!bandBuf) bandBuf = new Uint8Array(REC_W * BAND);
+    for (let r0 = 0; r0 < H; r0 += BAND) {
+      const rows = Math.min(BAND, H - r0), a = r0 * REC_W, b = Math.min(n, a + rows * REC_W);
+      if (!bits && b - a === rows * REC_W) {                  // whole rows of bytes: straight from the caller's array
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, REC_W, rows, gl.RED, gl.UNSIGNED_BYTE, data.subarray(a, b));
+        continue;
+      }
+      const buf = bandBuf.subarray(0, rows * REC_W);
+      if (bits) { for (let i = a; i < b; i++) buf[i - a] = data[i] ? 255 : 0; } else buf.set(data.subarray(a, b));
+      buf.fill(0, b - a);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, r0, REC_W, rows, gl.RED, gl.UNSIGNED_BYTE, buf);
+    }
+  }
   return {
     gl,
     // background clear color (also the figure/screenshot backdrop, since EDL
@@ -9871,7 +10385,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
     addChunk(chunk, set = 'base', layer = 0) {
       const ls = layerOf(layer);
-      idCapture = null;                                   // new geometry: the captured id buffer is stale
+      dropCapture();                                      // new geometry: the captured id buffer is stale
       // recIdx stays RAW — the layer rides a per-draw uniform, so there is no
       // per-element rewrite here any more (and no 3-bit ceiling on layers)
       // honest VRAM accounting: every typed array in the CPU chunk becomes a
@@ -9926,21 +10440,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (!mask) {
         if (ls.maskTex) { gl.deleteTexture(ls.maskTex); ls.maskTex = null; }
       } else {
-        const W = 8192, H = Math.max(1, Math.ceil(mask.length / W));
-        const padded = new Uint8Array(W * H);
-        for (let i = 0; i < mask.length; i++) padded[i] = mask[i] ? 255 : 0;
-        if (ls.maskTex && H === ls.maskH) {
-          gl.bindTexture(gl.TEXTURE_2D, ls.maskTex);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.UNSIGNED_BYTE, padded);
-        } else {
-          if (ls.maskTex) gl.deleteTexture(ls.maskTex);
-          ls.maskTex = gl.createTexture(); ls.maskH = H;
-          gl.bindTexture(gl.TEXTURE_2D, ls.maskTex);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, padded);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
+        recordTexture(ls, 'maskTex', 'maskH', mask, true, 'filter');
       }
       if (culled) needClear = true; else cosmeticDirtyLayers.add(layer);   // dim-mode filter is a re-shade, not a re-raster
     },
@@ -9966,7 +10466,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     // stick thickness (world meters) — a live per-layer knob
     setLayerStickRadius(layer, r) { const ls = layerOf(layer); const v = Math.max(0.05, +r || 1); if (ls.stickRadius !== v) { ls.stickRadius = v; needClear = true; } },
     layerStickRadius(layer) { return layerOf(layer).stickRadius; },
-    layerChanRange(layer) { const ls = layers.get(layer); return ls && ls.docChan[0] !== Infinity ? [ls.docChan[0], ls.docChan[1]] : null; },
+    layerChanRange(layer) { const ls = layers.get(layer); return ls && (ls.chanTex && ls.chanTexRange || ls.docChan[0] !== Infinity) ? docRangeOf(ls) : null; },
     // per-layer section participation: an exempt layer draws (and picks) whole
     // while the others are slabbed — e.g. topo kept for context during sectioning
     setLayerSectioned(layer, mode) { const ls = layerOf(layer); const v = mode === undefined ? true : mode; if (ls.sectioned !== v) { ls.sectioned = v; needClear = true; } },
@@ -10000,21 +10500,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (!mask) {
         if (ls.selTex) { gl.deleteTexture(ls.selTex); ls.selTex = null; ls.selH = 0; }
       } else {
-        const W = 8192, H = Math.max(1, Math.ceil(mask.length / W));
-        const padded = new Uint8Array(W * H);
-        for (let i = 0; i < mask.length; i++) padded[i] = mask[i] ? 255 : 0;
-        if (ls.selTex && H === ls.selH) {
-          gl.bindTexture(gl.TEXTURE_2D, ls.selTex);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.UNSIGNED_BYTE, padded);
-        } else {
-          if (ls.selTex) gl.deleteTexture(ls.selTex);
-          ls.selTex = gl.createTexture(); ls.selH = H;
-          gl.bindTexture(gl.TEXTURE_2D, ls.selTex);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, padded);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
+        recordTexture(ls, 'selTex', 'selH', mask, true, 'selection');
       }
       cosmeticDirtyLayers.add(layer);                                // a wash, not a cull — re-shade path
     },
@@ -10028,21 +10514,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       if (!codes) {
         if (ls.ruleTex) { gl.deleteTexture(ls.ruleTex); ls.ruleTex = null; ls.ruleH = 0; }
       } else {
-        const W = 8192, H = Math.max(1, Math.ceil(codes.length / W));
-        const padded = new Uint8Array(W * H);
-        padded.set(codes);
-        if (ls.ruleTex && H === ls.ruleH) {
-          gl.bindTexture(gl.TEXTURE_2D, ls.ruleTex);
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, H, gl.RED, gl.UNSIGNED_BYTE, padded);
-        } else {
-          if (ls.ruleTex) gl.deleteTexture(ls.ruleTex);
-          ls.ruleTex = gl.createTexture(); ls.ruleH = H;
-          gl.bindTexture(gl.TEXTURE_2D, ls.ruleTex);
-          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, padded);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        }
+        recordTexture(ls, 'ruleTex', 'ruleH', codes, false, 'rule codes');
       }
       // rule codes recolor (cosmetic) — but when class EYES are active they
       // also re-CULL through catVis, which the captured id buffer can't follow
@@ -10219,22 +10691,64 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       const h = Math.min(canvas.height, Math.round(cssRect.h * dpr));
       const y = Math.max(0, canvas.height - yTop - h);
       if (w <= 0 || h <= 0) return null;
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (capReady(key)) { pickFromCapture++; return { data: pickPipe.readCaptured(x, y, w, h), w, h, dpr }; }
+      if (idCapture && idCapture.key !== key) dropCapture();   // the scissored pass below draws into the same target
       const data = pickPipe.pickRegion(x, y, w, h, chunks.filter(activeChunk), cam, {
-        pointPx, blocksAsPoints, layerStates: layers,
-        section: section && section.on ? section : null,
+        pointPx, blocksAsPoints, layerStates: layers, section: sec,
         viewportW: canvas.width, viewportH: canvas.height,
       });
       return { data, w, h, dpr };                          // rows bottom-up (GL), NO_HIT = 0xFFFFFFFF
     },
+    // IDLE WORK: build the converged frame's id buffer a batch of chunks per call
+    // (the app calls it each idle frame until it says done). With it complete, a
+    // pick or a marquee just READS it: a click on a 60M-block model no longer
+    // runs the vertex stage over every block while the page waits. Any change —
+    // the camera, the geometry, a re-raster — throws the capture away and the
+    // next idle frames rebuild it. → true when there is nothing (more) to do.
+    idleCapture(cam, { pointPx = 2.5, blocksAsPoints = false, section = null, budget = 3_000_000 } = {}) {
+      if (!chunks.length || !lastConverged || needClear) return true;
+      if (!pickPipe) pickPipe = createPickPipeline(gl);
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (idCapture && idCapture.complete && idCapture.key === key && idCapture.w === canvas.width && idCapture.h === canvas.height) {   // complete — done once the GPU has caught up with it
+        if (!idCapture.fence) return true;
+        const st = gl.getSyncParameter(idCapture.fence, gl.SYNC_STATUS);
+        if (st !== gl.SIGNALED) return false;
+        gl.deleteSync(idCapture.fence); idCapture.fence = null; return true;
+      }
+      if (!idCapture || idCapture.key !== key || idCapture.w !== canvas.width || idCapture.h !== canvas.height) {
+        dropCapture();
+        idCapture = { key, complete: false, list: chunks.filter(activeChunk), next: 0, tex: null, depth: null, w: canvas.width, h: canvas.height };
+        pickPipe.beginCapture(canvas.width, canvas.height);
+      }
+      const batch = []; let n = 0;
+      while (idCapture.next < idCapture.list.length && (n < budget || !batch.length)) { const c = idCapture.list[idCapture.next++]; batch.push(c); n += c.count || 0; }
+      const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      const r = pickPipe.captureMore(batch, cam, { pointPx, blocksAsPoints, layerStates: layers, section: sec, viewportW: canvas.width, viewportH: canvas.height });
+      gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      if (idCapture.next >= idCapture.list.length) Object.assign(idCapture, { complete: true, tex: r.tex, depth: r.depth, list: null, fence: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) });
+      return false;                                        // the next call waits for the fence
+    },
+    get captureReady() { return !needClear && !!(idCapture && idCapture.complete && !idCapture.fence); },
+    get picksFromCapture() { return pickFromCapture; },
     pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
       const dpr = window.devicePixelRatio || 1;
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+      const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
+      if (capReady(key)) {                                 // the still frame's id buffer is complete: read it, no render
+        pickFromCapture++;
+        const o = pickPipe.readCaptured(px, py, 1, 1);
+        if (o[1] === pickPipe.NO_LAYER) return null;
+        const g = o[1] >>> 0;
+        return { layer: g & 0xFFFF, rec: o[0] >>> 0, face: (g >>> 16) & 7 };
+      }
+      if (idCapture && idCapture.key !== key) dropCapture();
       return pickPipe.pick(px, py, chunks.filter(activeChunk), cam, {
-        pointPx, blocksAsPoints, layerStates: layers,
-        section: section && section.on ? section : null,
+        pointPx, blocksAsPoints, layerStates: layers, section: sec,
         viewportW: canvas.width, viewportH: canvas.height,
       });
     },
@@ -10244,7 +10758,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
       layers.clear();
       if (resolvePipe) resolvePipe.clear();
-      layerMaxRec.clear(); bakeDirty.clear(); idCapture = null;
+      layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
     resize() {
@@ -10330,11 +10844,13 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           // still scene that never gets a cosmetic poke never pays for one
           if (!pickPipe) pickPipe = createPickPipeline(gl);
           const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-          if (!idCapture || idCapture.w !== canvas.width || idCapture.h !== canvas.height) {
-            idCapture = pickPipe.captureViewport(act, cam, {
+          const ck = capKey(cam, pointPx, blocksAsPoints, sec);
+          if (!capReady(ck)) {
+            dropCapture();
+            idCapture = { ...pickPipe.captureViewport(act, cam, {
               pointPx, blocksAsPoints, layerStates: layers,
               section: sec, viewportW: canvas.width, viewportH: canvas.height,
-            });
+            }), key: ck, complete: true };
           }
           for (const [id, group] of groups) {              // (re)bake stale attr textures
             if (!resolvePipe.hasBake(id) || bakeDirty.has(id)) {
@@ -10344,6 +10860,9 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
           }
           gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);     // back to the EDL target
           gl.viewport(0, 0, canvas.width, canvas.height);
+          // a layer whose bake couldn't exist (past MAX_TEXTURE_SIZE, out of video
+          // memory) has nothing to resolve from: the frame re-rasters instead
+          for (const id of groups.keys()) if (!resolvePipe.hasBake(id)) break resolveOk;
           for (const [id, group] of groups) {
             // the layer's own camera: an offset layer unprojects into ITS
             // coordinates, so the lattice snap and the cut-wall side stay exact
@@ -10359,8 +10878,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
             const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
             let u;
             if (group[0].kind === 'blocks') {
-              const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
-              const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
+              const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
+              const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
               // the cut wall faces the viewer: the section normal signed toward the eye
               const lsec = layerSecOf(ls, sec);
               let cutN = [0, 0, 1];
@@ -10370,7 +10889,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
               }
               u = {
                 kind: 'blocks', colorMode: o.colorMode, zRange: zr,
-                chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
+                chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
                 paletteN: 256, intensityScale: 1,
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette,
                 mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
@@ -10404,7 +10923,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       lastKey = structKey; needClear = false;
       for (const id of kindBy.keys()) lastCosSig.set(id, sigOf(id));
       cosmeticDirtyLayers.clear();
-      if (moving) { repaintSet.clear(); idCapture = null; }   // full redraw covers pending repaint; the capture is stale
+      if (moving) { repaintSet.clear(); dropCapture(); }   // full redraw covers pending repaint; the capture is stale
 
       // frustum-cull + front-to-back over chunk bboxes (tight, thanks to Morton)
       const planes = frustumPlanes(vp);
@@ -10578,11 +11097,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         };
         const beginLayer = (id) => {
           const ls = layerOf(id), o = lopt(id);
-          const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
-          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
+          const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
+          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
           blocksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
-            chanDoc: ls.chanTex && ls.chanTexRange ? ls.chanTexRange : [cLo, cHi > cLo ? cHi - cLo : 1],
+            chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
@@ -10628,8 +11147,8 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         };
         const beginStkLayer = (id) => {
           const ls = layerOf(id), o = lopt(id);
-          const cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : (ls.docChan[0] === Infinity ? 0 : ls.docChan[0]);
-          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : ls.docChan[1];
+          const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
+          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
           sticksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
             chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
