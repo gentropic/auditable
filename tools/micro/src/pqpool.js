@@ -139,8 +139,9 @@ self.onmessage = async ({ data }) => {
           import(${JSON.stringify(libUrl('kernels', './kernels.js'))}),
         ]);
         CV = cv; kern = K[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs);
-        // a .dm source: condenser's run reader (fields decoded by striding)
-        if (p.source && p.source.kind === 'dm') CD = await import(${JSON.stringify(libUrl('condenser', '../../../ext/condenser/src/main.js'))});
+        // a .dm source: condenser's run reader (fields decoded by striding); a
+        // delimited one: its byte-run reader
+        if (p.source && (p.source.kind === 'dm' || p.source.kind === 'csv')) CD = await import(${JSON.stringify(libUrl('condenser', '../../../ext/condenser/src/main.js'))});
       }
       if (task === 'decode') codes = {
         cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
@@ -175,6 +176,9 @@ self.onmessage = async ({ data }) => {
         if (p.readCols.length && p.source && p.source.kind === 'dm') {
           const r = await CD.readDmRun(file, p.source.h, p.source.idx, data.run);
           p.readCols.forEach((n, k) => { cols[n] = r.cols[p.source.idx[k]]; });
+        } else if (p.readCols.length && p.source && p.source.kind === 'csv') {
+          const r = await CD.readDelimitedRun(file, data.run, p.source.o);
+          p.readCols.forEach((n, k) => { cols[n] = r[k]; });
         } else if (p.readCols.length) cols = await PQ.readParquetRange(file, p.readCols, start, start + count, meta);
         const view = CV.chunkView(p.spec, cols, data.page || [], count, kctx.calcFns);
         const out = kern.group(kctx, view, count, data.mask || null);

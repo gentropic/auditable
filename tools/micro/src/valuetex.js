@@ -65,7 +65,9 @@ export async function buildValueTexture(L, gl, expr, { onProgress = null, signal
   // stays out of the range (CSV's row path numbers only drawn records already)
   const m = h.mapping || {};
   // — read only when the layer HAS such records (the open counted what it drew)
-  const bd = L.docs.blockDoc, undrawn = !bd || bd.drawn == null || bd.drawn < n;
+  // (a delimited model's records ARE its drawn rows: the open numbered no other)
+  const bd = L.docs.blockDoc, delim = !!bd && !bd.parquet && !bd.header.dm;
+  const undrawn = !delim && (!bd || bd.drawn == null || bd.drawn < n);
   const coords = columnar && undrawn && m.x != null && m.y != null && m.z != null ? [h.columns[m.x], h.columns[m.y], h.columns[m.z]] : null;
   // Float64 values → Float32 + blanks → upload; the range over DRAWN records
   // (finite coordinates) when the coordinates are at hand

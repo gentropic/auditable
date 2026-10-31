@@ -12,19 +12,35 @@
 // Two SOURCES, one engine: a Parquet model's row groups, and a Datamine .dm's
 // page RUNS (condenser dmPageRuns / readDmRun: ~4 MB of fixed-size pages, only
 // the needed fields decoded by striding). Both number every record (rowIsRecord),
-// so a unit's start is its first record. CSV keeps the row path.
+// so a unit's start is its first record. And a DELIMITED model's runs (condenser
+// delimitedRuns / readDelimitedRun): the open's sparse index marks the byte start
+// of every 1024th accepted record, so a run of index entries starts at a record
+// (quote state clean) whose number is known — the renderer's numbering, which
+// skips rows without usable coordinates. A model opened without that index (an
+// old sidecar) keeps the row path.
 import { readParquetRange } from '../../../ext/parquet/index.js';
-import { dmPageRuns, readDmRun } from '../../../ext/condenser/src/main.js';
+import { dmPageRuns, readDmRun, delimitedRuns, readDelimitedRun } from '../../../ext/condenser/src/main.js';
 import { startParquetPool, defaultPoolSize, groupStarts } from './pqpool.js';
 import * as CV from './chunkview.js';
 import * as kernels from './kernels.js';
-import { layerTableHeader, schemaExt, calcOrder } from './records.js';
+import { layerTableHeader, schemaExt, calcOrder, colIsNumeric, qualifyPolicy } from './records.js';
 import { chunkSpecOf, chunkPageOf, expandedDeps, ensureStoredValues } from './columns.js';
 import * as E from '../../../ext/expr/index.js';
 import * as sluice from '../../../ext/sluice/index.js';
 const { parse } = E;
 
-export function canScanColumnar(L) { const bd = L && L.docs && L.docs.blockDoc; return !!(bd && (bd.parquet || (bd.header && bd.header.dm))); }
+export function canScanColumnar(L) {
+  const bd = L && L.docs && L.docs.blockDoc;
+  if (!bd) return false;
+  if (bd.parquet || (bd.header && bd.header.dm)) return true;
+  return csvColumnar && !!bd.blob && !!bd.header.mapping && delimitedRuns(bd.header, bd.blob.size, 1).length > 0;
+}
+// smoke hooks: the delimited source off (the row path's answer, for comparison)
+// and its run length in index entries (small, so a small test file has several)
+// 64 entries = 65536 records: one sidecar BAND, so the filter's band pushdown
+// skips whole runs exactly as it skipped bands
+let csvColumnar = true, csvAnchors = 64;
+export function setCsvColumnar(on, anchors = 64) { csvColumnar = !!on; csvAnchors = anchors; }
 // the units a source is read in, and how the page reads one (the workers read the
 // same unit their own way — src/pqpool.js)
 function sourceOf(L, readCols) {
@@ -35,6 +51,21 @@ function sourceOf(L, readCols) {
       names: P.names, file: P.buf, meta: P.meta, desc: { kind: 'parquet' },
       units: P.rowGroups.map((rg, g) => ({ start: starts[g], count: rg.rowCount, rg })),
       read: (u) => readParquetRange(P.buf, readCols, u.start, u.start + u.count, P.meta),
+    };
+  }
+  if (!bd.header.dm) {
+    // each column as the row path sees it: the row qualifier's substitutes
+    // (never on the coordinates), numbers as the pin cache holds them
+    const m = h.mapping, schema = schemaExt(L, h), coord = new Set([m.x, m.y, m.z]);
+    const cols = readCols.map((n) => {
+      const i = h.columns.indexOf(n);
+      return { i, num: (schema[i] || {}).type === 'number', policy: !coord.has(i) && colIsNumeric(L, h, i) ? qualifyPolicy(L, n) : null };
+    });
+    const o = { delim: h.delim, x: m.x, y: m.y, z: m.z, cols };
+    return {
+      names: h.columns, file: bd.blob, meta: null, desc: { kind: 'csv', o },
+      units: delimitedRuns(h, bd.blob.size, csvAnchors).map((run) => ({ start: run.start, count: run.count, run })),
+      read: async (u) => { const r = await readDelimitedRun(bd.blob, u.run, o); const out = {}; readCols.forEach((n, k) => { out[n] = r[k]; }); return out; },
     };
   }
   const dmh = bd.header.dm, idx = readCols.map((n) => h.columns.indexOf(n));

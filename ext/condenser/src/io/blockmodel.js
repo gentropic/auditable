@@ -211,6 +211,64 @@ export async function fetchDelimitedRecord(blob, header, rec) {
   } finally { reader.releaseLock(); }
 }
 
+// A RUN of a delimited model as columns: the bytes [run.byteStart, run.byteEnd)
+// — both anchors of the sparse index, so the run starts at a record and the
+// quote state is clean — read with the same rules as every sweep (blank/#
+// skipped in the reader, non-finite coordinates skipped here), so its records are
+// run.start … run.start + run.count in the renderer's numbering. The count is
+// CHECKED: an index that doesn't fit the bytes throws instead of renumbering.
+// o: { delim, x, y, z (coordinate field indices), cols: [{ i, num, policy }] } →
+// one column per entry: num → Float64Array (blank / non-number → NaN, the pin
+// cache's rule); else the field text. policy (a qualifier policy, or null) is
+// applied as the page's row qualifier applies it: <0.001 → its substitute, a code
+// → blank, before the number is taken.
+export async function readDelimitedRun(blob, run, o) {
+  const n = run.count, outs = o.cols.map((c) => (c.num ? new Float64Array(n) : new Array(n)));
+  const coord = new Set([o.x, o.y, o.z]);
+  const conv = o.cols.map((c) => {
+    // a coordinate as the record test reads it (unary plus: a blank is 0 — the
+    // block the renderer drew there), so positions agree with the drawn blocks
+    if (c.num && coord.has(c.i)) return (v) => +v;
+    const pol = c.policy;
+    const qual = pol ? (v) => {
+      if (typeof v !== 'string' || v === '') return v;
+      const x = +v;
+      if (x === x && !(x < 0 && pol.negBelow)) return v;
+      const q = qualifiedNumber(v, pol);
+      return q === q ? q : '';
+    } : (v) => v;
+    return c.num
+      ? (v) => { v = qual(v); const x = +v; return v == null || v === '' || !Number.isFinite(x) ? NaN : x; }
+      : (v) => { v = qual(v); return v == null ? '' : typeof v === 'string' ? v : String(v); };
+  });
+  let m = 0;
+  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false)) {
+    for (const f of batch) {
+      const xv = +f[o.x], yv = +f[o.y], zv = +f[o.z];
+      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+      if (m >= n) throw new Error(`the record index doesn't match the file: more than ${n} records from byte ${run.byteStart}`);
+      for (let k = 0; k < outs.length; k++) outs[k][m] = conv[k](f[o.cols[k].i]);
+      m++;
+    }
+  }
+  if (m !== n) throw new Error(`the record index doesn't match the file: ${m} records from byte ${run.byteStart}, ${n} expected`);
+  return outs;
+}
+
+// The runs a delimited model is read in by the columnar engine: `anchors`
+// index entries each (index.k records per entry), the last to the end of the
+// file. [] without a complete index (an old sidecar) → the caller keeps the row path.
+export function delimitedRuns(header, size, anchors = 256) {
+  const idx = header.index, n = header.count;
+  if (!idx || !idx.k || !idx.offsets || !n || idx.offsets.length !== Math.ceil(n / idx.k)) return [];
+  const runs = [];
+  for (let a = 0; a < idx.offsets.length; a += anchors) {
+    const b = a + anchors, start = a * idx.k;
+    runs.push({ start, count: Math.min(n, b * idx.k) - start, byteStart: idx.offsets[a], byteEnd: b < idx.offsets.length ? idx.offsets[b] : size });
+  }
+  return runs;
+}
+
 // the colour channel's qualifier policy: qualify = { [column name]: policy } (else the default)
 function policyOf(qualify, columns, i) {
   const name = columns && i != null ? columns[i] : null;

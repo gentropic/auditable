@@ -3273,13 +3273,14 @@ await p.close();
 
 // ── §49: stats + swath COLUMNAR (src/colscan.js) agree with the row path, and
 //     Run ↔ Cancel. The same 150,000 blocks as Parquet (columnar, workers) and as
-//     CSV (the row path): stats grouped + weighted — moments (std too) to 1e-12, quantiles
+//     CSV (held to the row path here — §56 checks CSV on the workers against it): stats grouped + weighted — moments (std too) to 1e-12, quantiles
 //     within the t-digest's tolerance; the swath band table to 1e-9. Cancel: a
 //     fresh run says "cancelled"; a cancelled re-run keeps the previous result. ──
 {
   const pw = await mkPage('sm2colb');
   const cb = await pw.evaluate(async () => {
     const M = window._micro, W = window.micro;
+    M.setCsvColumnar(false);                                // the CSV is the ROW-PATH reference
     const NX = 60, NY = 50, NZ = 50, N = NX * NY * NZ;
     const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N), sg = new Float64Array(N), codes = new Uint8Array(N);
     let r = 5, csv = 'X,Y,Z,AU,SG,ROCK\n';
@@ -3327,6 +3328,7 @@ await p.close();
     g.querySelector('.sw-run').click(); g.querySelector('.sw-run').click();   // Run, then Cancel
     for (let n = 0; n < 200 && !/cancelled/.test(g.querySelector('.fwin-head .sub').textContent); n++) await new Promise((z2) => setTimeout(z2, 25));
     const sub2 = g.querySelector('.fwin-head .sub').textContent;
+    M.setCsvColumnar(true);
     return { momDiff: window.__momDiff || [], groups: LP.docs.blockDoc.parquet.rowGroups.length, statsRows: sP.rows.length, mom, qBad, whereS: [sP.where, sC.where], swRows: A.length, sw, whereW: [wP.where, wC.where],
       label1, sub1, lab1b, sub2, keptSame: JSON.stringify(g._gtSpec.series[0].data) === kept };
   });
@@ -3575,7 +3577,8 @@ await p.close();
 
 // ── §54: colour by a column the chunks don't carry = a per-record VALUE TEXTURE
 //     (src/valuetex.js): no re-read, the picture the re-stream would draw, the range
-//     the column's, blanks at the low end; the same on CSV (the row path). ──
+//     the column's, blanks at the low end; the same on CSV (its line index's runs,
+//     in the renderer's numbering). ──
 {
   const pq4 = await mkPage('sm2vtex');
   const vt = await pq4.evaluate(async () => {
@@ -3623,7 +3626,7 @@ await p.close();
     await W.removeLayer(id);                                // the CSV alone on screen (same blocks)
     await W.setColorBy(id2, 'CU');
     const L3 = M.layers().find((l) => l.id === id2);
-    const csvTex = { onTex: !!L3._valTex, range: M.renderer.layerChanRange(id2) };
+    const csvTex = { onTex: !!L3._valTex, range: M.renderer.layerChanRange(id2), where: L3._valTex && L3._valTex.where };
     const cTex = await px();
     // the CSV re-stream's picture: a record shifted by the row with no X would show
     await W.setColorBy(id2, 'AU');
@@ -3637,7 +3640,7 @@ await p.close();
   chk(`its range is CU's own over the drawn blocks [${vt.tex.range}] (${vt.blanks} blanks and an undrawn 99 left out)`, vt.tex.range && near(vt.tex.range[0], vt.tex.lo) && near(vt.tex.range[1], vt.tex.hi));
   chk(`the texture draws what the re-stream draws: ${(100 * vt.dTexRe).toFixed(2)}% of pixels differ (vs ${(100 * vt.dTexAU).toFixed(1)}% between CU and AU)`, vt.restreamed && vt.dTexRe < 0.005 && vt.dTexAU > 0.05);
   chk(`back to AU after the re-stream: a texture again, the same picture as the open (${(100 * vt.dAU).toFixed(2)}% differ)`, vt.backOnTex && vt.dAU < 0.005);
-  chk(`CSV (the row path, the renderer's record numbering): a value texture, range [${vt.csv.range}], ${(100 * vt.csv.dTexRe).toFixed(2)}% of pixels differ from the CSV re-stream`, vt.csv.dTexRe < 0.005 && vt.csv.onTex && vt.csv.range && near(vt.csv.range[0], vt.tex.lo) && near(vt.csv.range[1], vt.tex.hi));
+  chk(`CSV (${vt.csv.where}, the renderer's record numbering): a value texture, range [${vt.csv.range}], ${(100 * vt.csv.dTexRe).toFixed(2)}% of pixels differ from the CSV re-stream`, vt.csv.dTexRe < 0.005 && vt.csv.onTex && vt.csv.range && near(vt.csv.range[0], vt.tex.lo) && near(vt.csv.range[1], vt.tex.hi));
   chk(`the open built its block chunks off the page (${vt.baseOffPage}) — and the pictures above are those chunks`, vt.baseOffPage === true);
   await pq4.close();
 }
@@ -3698,6 +3701,103 @@ await p.close();
   chk(`a hidden layer: the capture stops answering before the next frame (${JSON.stringify(pc.hiddenPick)})`, pc.hiddenPick.ok2 && !pc.hiddenPick.readyAfterHide && pc.hiddenPick.used === 0 && !pc.hiddenPick.hit);
   chk(`a Parquet row read by the row worker = the source row (${pc.rows})`, pc.rows.every(Boolean));
   await pq5.close();
+}
+
+// ── §56: a CSV block model on the COLUMNAR engine (src/colscan.js): the open's
+//     line index cut into runs, each run parsed on a worker. The same file twice —
+//     one layer on the workers, one held to the row path — must agree, through the
+//     awkward rows: a non-number X and a non-number Y (no records), a BLANK X (a
+//     block at 0, as the open reads it — positions must agree with it), a
+//     comment and a blank line, a quoted category holding a comma, quotes and a
+//     NEWLINE, qualified grades (<0.02 → its substitute, n.d. → blank, >5), and
+//     runs of 1024 records so the file is several runs. Stats (moments to 1e-12),
+//     swath (1e-9), the filter's mask (bit for bit, qualified values included), and
+//     the value texture (range + picture). ──
+{
+  const pc = await mkPage('sm2csvcol');
+  const r = await pc.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    M.setCsvColumnar(true, 1);
+    M.setPinBudget('off');                                  // nothing answered from memory: every read is a real read
+    const NX = 20, NY = 20, NZ = 16;
+    let s = 'X,Y,Z,AU,CU,ROCK\n', q = 11, i = 0, qualified = 0;
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let a = 0; a < NX; a++, i++) {
+      q = (q * 1103515245 + 12345) >>> 0;
+      const X = i === 3 ? 'n/a' : i === 5 ? '' : 5 + a * 10, Y = i === 2000 ? 'abc' : 5 + j * 10, Z = 5 + k * 10;
+      let au = String(((q >>> 8) % 1000) / 250);
+      if (i % 13 === 0) { au = '<0.02'; qualified++; } else if (i % 29 === 0) au = 'n.d.'; else if (i % 31 === 0) au = '';
+      const cu = i % 17 === 0 ? '>5' : String(0.2 + a * 0.05 + k * 0.01);
+      const rock = i % 50 === 7 ? '"ox, ""weathered""\nzone"' : ['ox', 'fr', 'tr'][(q >>> 16) % 3];
+      s += `${X},${Y},${Z},${au},${cu},${rock}\n`;
+      if (i === 900) s += '# a comment line\n\n';
+    }
+    const idA = await M.openBlob(new File([s], 'colA.csv'), 'colA.csv', 'add');
+    const idB = await M.openBlob(new File([s], 'colB.csv'), 'colB.csv', 'add');
+    const LA = M.layers().find((l) => l.id === idA), LB = M.layers().find((l) => l.id === idB);
+    const idx = LA.docs.blockDoc.header.index, count = LA.docs.blockDoc.header.count;
+    const winOf = (prefix, L) => [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent === `${prefix} · ${L.label || L.name}`);
+    const waitWhere = async (prefix, L) => { for (let n = 0; n < 600; n++) { const e = winOf(prefix, L); if (e && e._scanWhere) return e; await new Promise((z) => setTimeout(z, 50)); } return null; };
+    const stats = async (L) => { M.openStats(L, { run: true, cfg: { cols: ['AU', 'CU'], groupBy: 'ROCK', scope: 'all' } }); const e = await waitWhere('stats', L); return { rows: e._statsRows, where: e._scanWhere }; };
+    const swath = async (L) => { M.openSwath(L, { run: true, cfg: { series: [{ layer: L.name, col: 'CU' }] } }); const e = await waitWhere('swath', L); return { tsv: e._tableTSV && e._tableTSV(), where: e._scanWhere }; };
+    const onA = M.canScanColumnar(LA);
+    const sA = await stats(LA), wA = await swath(LA);
+    M.setCsvColumnar(false);
+    const offB = !M.canScanColumnar(LB);
+    const sB = await stats(LB), wB = await swath(LB);
+    M.setCsvColumnar(true, 1);
+    let mom = 0, qBad = 0; const diffs = [];
+    for (const a of sA.rows) {
+      const b = sB.rows.find((x) => x.group === a.group && x.col === a.col);
+      if (!b || a.n !== b.n) { mom++; diffs.push(`${a.group}/${a.col}: n ${a.n} vs ${b && b.n}`); continue; }
+      for (const k of ['mean', 'std', 'min', 'max']) if (Math.abs(a[k] - b[k]) > 1e-12 * Math.max(1, Math.abs(b[k]))) { mom++; diffs.push(`${a.group}/${a.col}/${k}: ${a[k]} vs ${b[k]}`); }
+      for (const k of ['q25', 'q50', 'q75']) if (Math.abs(a[k] - b[k]) > 0.01 * Math.max(1e-9, b.max - b.min)) qBad++;
+    }
+    const nums = (t) => (t || '').split('\n').slice(1).map((l) => l.split('\t').map(Number));
+    const A = nums(wA.tsv), B = nums(wB.tsv);
+    let sw = A.length === B.length && A.length > 0 ? 0 : 1;
+    if (!sw) for (let x = 0; x < A.length; x++) for (let y = 0; y < A[x].length; y++) { const u = A[x][y], v = B[x][y]; if (!(Number.isNaN(u) && Number.isNaN(v)) && Math.abs(u - v) > 1e-9 * Math.max(1, Math.abs(v))) { sw++; (window.__swd = window.__swd || []).push(`band ${x} col ${y}: ${u} vs ${v}`); } }
+    // the filter: the qualified <0.02 reads as its substitute (0.01) on both paths
+    const F = 'AU < 0.015 or CU > 4.9';
+    M.setActiveLayer(idA); window.__csvBandsSkipped = undefined;
+    await M.applyBlockFilter(F, LA);
+    const engineRan = window.__csvBandsSkipped !== undefined;
+    M.setCsvColumnar(false); M.setActiveLayer(idB);
+    await M.applyBlockFilter(F, LB);
+    M.setCsvColumnar(true, 1);
+    const mA = LA._filterMask, mB = LB._filterMask;
+    let hits = 0, mdiff = mA && mB && mA.length === mB.length ? 0 : -1;
+    if (mdiff === 0) for (let x = 0; x < mA.length; x++) { hits += mA[x]; if (mA[x] !== mB[x]) mdiff++; }
+    await M.applyBlockFilter('', LA); await M.applyBlockFilter('', LB);
+    // the value texture: colour by CU on each, each alone on screen
+    const px = async () => {
+      const b = await W.snapshot({ decorations: false });
+      const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+      g.drawImage(bm, 0, 0); return g.getImageData(0, 0, bm.width, bm.height).data;
+    };
+    const differ = (a, b) => { let n = 0; for (let x = 0; x < a.length; x += 4) if (Math.abs(a[x] - b[x]) > 4 || Math.abs(a[x + 1] - b[x + 1]) > 4 || Math.abs(a[x + 2] - b[x + 2]) > 4) n++; return n / (a.length / 4); };
+    const alone = (L, on) => { L.visible = on; M.renderer.setLayerVisible(L.id, on); };
+    await W.setColorBy(idA, 'CU');
+    const texA = { where: LA._valTex && LA._valTex.where, range: M.renderer.layerChanRange(idA) };
+    M.setCsvColumnar(false);
+    await W.setColorBy(idB, 'CU');
+    const texB = { where: LB._valTex && LB._valTex.where, range: M.renderer.layerChanRange(idB) };
+    M.setCsvColumnar(true);
+    alone(LB, false); const pA = await px();
+    alone(LB, true); alone(LA, false); const pB = await px();
+    alone(LA, true);
+    await W.setColorBy(idA, 'AU'); alone(LB, false); const pAU = await px(); alone(LB, true);
+    M.setPinBudget('auto');
+    return { swDiffs: window.__swd || [], onA, offB, runs: idx ? idx.offsets.length : 0, count, rowsS: sA.rows.length, mom, qBad, diffs, whereS: [sA.where, sB.where], swRows: A.length, sw, whereW: [wA.where, wB.where],
+      hits, mdiff, engineRan, qualified, texA, texB, dTex: differ(pA, pB), dAU: differ(pA, pAU) };
+  });
+  for (const d of [...r.diffs, ...r.swDiffs].slice(0, 8)) console.log(`   ${d}`);
+  chk(`CSV on the engine: ${r.count} records (6400 rows less the two whose coordinates are not numbers), ${r.runs} runs of 1024; the reference held to the row path (${r.onA}, ${r.offB})`, r.onA && r.offB && r.count === 6398 && r.runs === 7);
+  chk(`stats: CSV on the workers (${r.whereS[0]}) = the row path (${r.whereS[1]}): ${r.rowsS} rows, ${r.mom} moment mismatches, ${r.qBad} quantiles off`, /worker/.test(r.whereS[0]) && r.whereS[1] === 'on this page' && r.rowsS >= 6 && r.mom === 0 && r.qBad === 0);
+  chk(`swath: CSV on the workers (${r.whereW[0]}) = the row path (${r.whereW[1]}): ${r.swRows} bands, ${r.sw} mismatches`, /worker/.test(r.whereW[0]) && r.whereW[1] === 'on this page' && r.swRows > 5 && r.sw === 0);
+  chk(`filter: the engine's mask = the row path's, bit for bit (${r.mdiff} differ, ${r.hits} hits, ≥ the ${r.qualified} qualified <0.02 rows less those without coordinates)`, r.engineRan && r.mdiff === 0 && r.hits >= r.qualified - 2);
+  chk(`value texture: workers (${r.texA.where}) [${r.texA.range}] = row path (${r.texB.where}) [${r.texB.range}]; ${(100 * r.dTex).toFixed(2)}% of pixels differ (vs ${(100 * r.dAU).toFixed(1)}% CU vs AU)`,
+    /worker/.test(r.texA.where) && r.texB.where === 'on this page' && r.texA.range && r.texB.range && r.texA.range[0] === r.texB.range[0] && r.texA.range[1] === r.texB.range[1] && r.dTex < 0.001 && r.dAU > 0.05);
+  await pc.close();
 }
 
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
