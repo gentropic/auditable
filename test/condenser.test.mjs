@@ -752,6 +752,32 @@ test('drillholes: desurveyed midpoints — analytic positions, identity through 
   assert.equal(fetchRecord(5), null);
 });
 
+
+// a blank is no number in a drillhole table either: `+''` was 0 — a collar at the
+// origin, a survey bent horizontal at a blank dip, an interval from the collar
+test('drillholes: blanks are dropped and reported, never read as 0', async () => {
+  const { openDrillholeTraces } = await import('../ext/condenser/src/main.js');
+  const collar = new Blob(['BHID,X,Y,Z,EOH\nA,1000,2000,100,\nB,,2000,100,80\n']);   // A: blank EOH; B: blank X
+  const survey = new Blob(['BHID,AT,AZ,DIP\nA,0,0,90\nA,50,0,\n']);                  // A@50: blank dip (read as 0 = horizontal)
+  const intervals = new Blob(['BHID,FROM,TO,AU\nA,60,70,1.5\nA,,10,2.0\nB,0,10,3.0\nA,70,72,\n']);
+  const { header, streamChunks } = await openDrillholes({ collar, survey, intervals });
+  const ids = Object.fromEntries(header.report.checks.map((c) => [c.id, c]));
+  assert.deepEqual(ids['blank-collar'] && ids['blank-collar'].bhids, ['B']);
+  assert.deepEqual(ids['blank-survey'] && ids['blank-survey'].bhids, ['A']);
+  assert.equal(ids['blank-interval'] && ids['blank-interval'].count, 1);
+  assert.equal(header.count, 4);                            // still four records
+  const placed = new Map();
+  for await (const rc of streamChunks()) for (let i = 0; i < rc.count; i++) placed.set(rc.recIdx[i], [rc.x[i], rc.y[i], rc.z[i], rc.chan[i]]);
+  assert.deepEqual([...placed.keys()].sort(), [0, 3]);      // the blank-FROM row and B's (no collar) are not placed
+  const a = placed.get(0);                                   // vertical all the way: the blank-dip station is gone
+  assert.ok(Math.abs(a[0] - 1000) < 1e-9 && Math.abs(a[2] - 35) < 1e-9, `A 60–70 at ${a}`);
+  assert.ok(Number.isNaN(placed.get(3)[3]), 'a blank grade is missing, not 0');
+  const tr = await openDrillholeTraces({ collar, survey });
+  assert.deepEqual(tr.recordPosition(0), [1000, 2000, 100]);
+  assert.equal(tr.recordPosition(1), null);                  // B: no collar position
+  assert.deepEqual(tr.fetchRecord(0).slice(0, 2), ['A', '1000']);   // a trace's record is still the collar ROW
+});
+
 test('drillholes: method + dip convention options thread through', async () => {
   const collar = new Blob(['BHID,X,Y,Z\nA,0,0,0\n']);
   const surveyNeg = new Blob(['BHID,AT,AZ,DIP\nA,0,0,-90\n']);                     // neg-down file

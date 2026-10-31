@@ -2966,6 +2966,39 @@ async function sniffDrillholeFiles(files) {
  *              the page's centroids-as-points path renders it)
  *   fetchRecord(rec) → the ORIGINAL interval row (O(1), in memory)
  */
+// A BLANK IS NO NUMBER (the CSV coordinate rule, 9f295586): `+''` is 0, which put
+// a collar at the origin, bent a survey horizontal at a blank dip (or north at a
+// blank azimuth), and started an interval at the collar on a blank FROM. Rows like
+// that are DROPPED and REPORTED — a check on header.report, shown with the others:
+//   a collar with a blank X/Y/Z      → dropped (its intervals report as no-collar)
+//   a survey station with a blank depth/azimuth/dip → dropped (the hole
+//                                      interpolates across it)
+//   an interval with a blank FROM/TO → not placed (still a record, not drawn)
+//   a blank EOH                      → no EOH (the deepest station / interval TO)
+// A collar keeps its file ROW (`row`): a trace's record is the collar row.
+function blankCheck(checks, id, label, bhids) {
+  if (!bhids.length) return;
+  checks.push({ id, label, count: bhids.length, bhids: [...new Set(bhids.map((b) => String(b ?? '')))].slice(0, 200) });
+}
+function parseCollars(t, mc) {
+  const collars = [], blank = [];
+  t.rows.forEach((r, row) => {
+    const x = coordNum(r[mc.x]), y = coordNum(r[mc.y]), z = coordNum(r[mc.z]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { blank.push(r[mc.bhid]); return; }
+    const e = mc.eoh != null && mc.eoh >= 0 ? coordNum(r[mc.eoh]) : NaN;
+    collars.push({ bhid: r[mc.bhid], x, y, z, eoh: Number.isFinite(e) ? e : undefined, row });
+  });
+  return { collars, blank };
+}
+function parseSurveys(t, ms) {
+  const surveys = [], blank = [];
+  for (const r of t.rows) {
+    const depth = ms.at != null && ms.at >= 0 ? coordNum(r[ms.at]) : 0, az = coordNum(r[ms.az]), dip = coordNum(r[ms.dip]);
+    if (!Number.isFinite(depth) || !Number.isFinite(az) || !Number.isFinite(dip)) { blank.push(r[ms.bhid]); continue; }
+    surveys.push({ bhid: r[ms.bhid], depth, az, dip });
+  }
+  return { surveys, blank };
+}
 async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   const tCollar = await readDelimited(collar);
   const tSurvey = await readDelimited(survey);
@@ -2979,14 +3012,10 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   if (!m.survey || m.survey.az == null) throw new Error('drillholes: survey columns not identified (need BHID + AZ + DIP)');
   if (!m.intervals || m.intervals.from == null) throw new Error('drillholes: interval columns not identified (need BHID + FROM + TO)');
 
-  // @gcu/drillhole table shapes
-  const collars = tCollar.rows.map((r) => ({
-    bhid: r[m.collar.bhid], x: +r[m.collar.x], y: +r[m.collar.y], z: +r[m.collar.z],
-    eoh: m.collar.eoh >= 0 ? +r[m.collar.eoh] : undefined,
-  }));
-  const surveys = tSurvey.rows.map((r) => ({
-    bhid: r[m.survey.bhid], depth: m.survey.at >= 0 ? +r[m.survey.at] : 0, az: +r[m.survey.az], dip: +r[m.survey.dip],
-  }));
+  // @gcu/drillhole table shapes — blanks dropped and reported (see parseCollars)
+  const { collars, blank: blankCollars } = parseCollars(tCollar, m.collar);
+  const { surveys, blank: blankSurveys } = parseSurveys(tSurvey, m.survey);
+  const collarOfRow = new Map(collars.map((c) => [c.row, c]));
 
   const n = tIv.rows.length;
   const keyCols = new Set([m.intervals.bhid, m.intervals.from, m.intervals.to]);
@@ -3011,30 +3040,37 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   // positions are the capsule segment, arc-correct via positionAt; the render
   // midpoint derives as (A+B)/2. __row + __end thread the source row and
   // which endpoint through the per-hole depth sort (the identity).
-  const bhid = new Array(2 * n), depth = new Float64Array(2 * n);
-  const rowIdx = new Float64Array(2 * n), endIdx = new Float64Array(2 * n);
-  const chanVals = new Float64Array(n), catVals = catCol != null ? new Array(n) : null;
-  const catCounts = new Map();
+  const fromOf = new Float64Array(n), toOf = new Float64Array(n), blankIv = [];
   for (let i = 0; i < n; i++) {
     const r = tIv.rows[i];
-    const hb = r[m.intervals.bhid];
-    bhid[2 * i] = hb; bhid[2 * i + 1] = hb;
-    depth[2 * i] = +r[m.intervals.from]; depth[2 * i + 1] = +r[m.intervals.to];
-    rowIdx[2 * i] = i; rowIdx[2 * i + 1] = i;
-    endIdx[2 * i] = 0; endIdx[2 * i + 1] = 1;
+    fromOf[i] = coordNum(r[m.intervals.from]); toOf[i] = coordNum(r[m.intervals.to]);
+    if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) blankIv.push(r[m.intervals.bhid]);
+  }
+  const nS = n - blankIv.length;
+  const bhid = new Array(2 * nS), depth = new Float64Array(2 * nS);
+  const rowIdx = new Float64Array(2 * nS), endIdx = new Float64Array(2 * nS);
+  const chanVals = new Float64Array(n), catVals = catCol != null ? new Array(n) : null;
+  const catCounts = new Map();
+  const iv = { bhid: [], from: [], to: [], cols: [] };     // ONE entry per placeable row, for validate + the section paths
+  for (let i = 0, s2 = 0; i < n; i++) {
+    const r = tIv.rows[i];
     chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
     if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+    if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) continue;
+    const hb = r[m.intervals.bhid];
+    bhid[2 * s2] = hb; bhid[2 * s2 + 1] = hb;
+    depth[2 * s2] = fromOf[i]; depth[2 * s2 + 1] = toOf[i];
+    rowIdx[2 * s2] = i; rowIdx[2 * s2 + 1] = i;
+    endIdx[2 * s2] = 0; endIdx[2 * s2 + 1] = 1;
+    iv.bhid.push(hb); iv.from.push(fromOf[i]); iv.to.push(toOf[i]);
+    s2++;
   }
   const samples = { bhid, depth, cols: [{ name: '__row', values: rowIdx }, { name: '__end', values: endIdx }] };
 
   const ds = dhDesurveySamples({ collars, surveys, samples }, { method: opts.method || 'minimumCurvature', dipConvention: opts.dipConvention || 'auto' });
 
-  // the interval-shape checks (overlaps, inverted from/to…) come from validate.
-  // ONE entry per row — the samples' `bhid` above has two (FROM and TO ends).
-  const iv = {
-    bhid: tIv.rows.map((r) => r[m.intervals.bhid]),
-    from: tIv.rows.map((r) => +r[m.intervals.from]), to: tIv.rows.map((r) => +r[m.intervals.to]), cols: [],
-  };
+  // the interval-shape checks (overlaps, inverted from/to…) come from validate
+  // (iv above: ONE entry per row — the samples' `bhid` has two, FROM and TO ends)
   let report = ds.report;
   try {
     const v = dhValidate({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
@@ -3042,6 +3078,13 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     const extra = Object.values(v.checks || {}).filter((c) => !seen.has(c.id));
     report = { ...report, checks: report.checks.concat(extra) };
   } catch { /* validate's report is a bonus, not a gate */ }
+  {
+    const blanks = [];
+    blankCheck(blanks, 'blank-collar', 'collars with a blank X/Y/Z — dropped', blankCollars);
+    blankCheck(blanks, 'blank-survey', 'survey stations with a blank depth / azimuth / dip — dropped (the hole interpolates across)', blankSurveys);
+    blankCheck(blanks, 'blank-interval', 'intervals with a blank FROM / TO — not placed', blankIv);
+    if (blanks.length) report = { ...report, checks: blanks.concat(report.checks) };
+  }
 
   const categories = catCounts.size > 0 && catCounts.size <= 255 ? [...catCounts.keys()].sort() : null;
   const catCode = categories ? new Map(categories.map((v, i) => [v, i])) : null;
@@ -3069,7 +3112,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
     ax[k] = A[0]; ay[k] = A[1]; az[k] = A[2];
     bx[k] = B[0]; by[k] = B[1]; bz[k] = B[2];
     px[k] = (A[0] + B[0]) / 2; py[k] = (A[1] + B[1]) / 2; pz[k] = (A[2] + B[2]) / 2;
-    pChan[k] = Number.isFinite(chanVals[src]) ? chanVals[src] : 0;
+    pChan[k] = chanVals[src];                            // a blank grade is missing (NaN), not 0
     if (pCat) { const c = catCode.get(catVals[src]); pCat[k] = c === undefined ? 0 : c; }
     pRec[k] = src;
     for (let a2 = 0; a2 < 3; a2++) {
@@ -3135,13 +3178,13 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   const holePaths = () => {
     if (_paths) return _paths;
     const deepest = new Map();
-    for (let i = 0; i < n; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
+    for (let i = 0; i < iv.bhid.length; i++) { const hb = iv.bhid[i], t = iv.to[i]; if (Number.isFinite(t) && !(deepest.get(hb) >= t)) deepest.set(hb, t); }
     const { perHole } = desurveyHolePaths(collars, surveys, opts, deepest);
     _paths = new Map();
     for (const [hi, pts] of perHole) {
       const xyz = new Float64Array(pts.length * 3);
       pts.forEach((pt, k) => { xyz[3 * k] = pt[1]; xyz[3 * k + 1] = pt[2]; xyz[3 * k + 2] = pt[3]; });
-      _paths.set(collars[hi].bhid, xyz);
+      _paths.set(collarOfRow.get(hi).bhid, xyz);
     }
     return _paths;
   };
@@ -3157,7 +3200,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
 // (a section's "keep holes that cross the slab").
 function desurveyHolePaths(collars, surveys, opts = {}, extraEoh = null) {
   const depthsOf = new Map(), holeIdx = new Map(), maxSurvey = new Map();
-  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, i); } });
+  collars.forEach((c, i) => { if (!depthsOf.has(c.bhid)) { depthsOf.set(c.bhid, new Set([0])); holeIdx.set(c.bhid, c.row ?? i); } });   // a hole is its collar ROW
   for (const s of surveys) { if (depthsOf.has(s.bhid)) { depthsOf.get(s.bhid).add(s.depth); maxSurvey.set(s.bhid, Math.max(maxSurvey.get(s.bhid) || 0, s.depth)); } }
   for (const c of collars) {
     if (!depthsOf.has(c.bhid)) continue;
@@ -3194,10 +3237,9 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
   const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
   if (!mc || mc.x == null) throw new Error('drillhole traces: collar columns not identified (need BHID + X/Y/Z)');
   if (!ms || ms.az == null) throw new Error('drillhole traces: survey columns not identified (need BHID + AZ + DIP)');
-  const collars = tCollar.rows.map((r) => ({
-    bhid: r[mc.bhid], x: +r[mc.x], y: +r[mc.y], z: +r[mc.z], eoh: mc.eoh >= 0 ? +r[mc.eoh] : undefined,
-  }));
-  const surveys = tSurvey.rows.map((r) => ({ bhid: r[ms.bhid], depth: ms.at >= 0 ? +r[ms.at] : 0, az: +r[ms.az], dip: +r[ms.dip] }));
+  const { collars } = parseCollars(tCollar, mc);          // blanks dropped (openDrillholes reports them)
+  const { surveys } = parseSurveys(tSurvey, ms);
+  const collarOfRow = new Map(collars.map((c) => [c.row, c]));
 
   const { perHole, report: pathReport } = desurveyHolePaths(collars, surveys, opts);
   let nSeg = 0;
@@ -3241,8 +3283,8 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
   // has no face. Was a hard `() => null`, which made Measure silently no-op on a
   // trace segment.
   const recordPosition = (rec) => {
-    const c = collars[rec];
-    return c && Number.isFinite(c.x) ? [c.x, c.y, c.z] : null;
+    const c = collarOfRow.get(rec);
+    return c ? [c.x, c.y, c.z] : null;
   };
   return { header, streamChunks, fetchRecord, recordPosition };
 }
