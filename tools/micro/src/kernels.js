@@ -312,3 +312,68 @@ export function statsMerge(SL, parts) {
   }
   return { groups, overflow };
 }
+
+// ── the FILTER kernel ────────────────────────────────────────────────────────
+// params: { schema, expr, coords: [x, y, z] (names), chan: name | null, cat: name
+// | null, categories: [label…] | null, tee: [name…] | null }. One chunk → the
+// match mask (1 = matches AND has finite coordinates — the renderer's own rule,
+// so a null coordinate is never a phantom block at 0,0,0), the matched records'
+// render data for compaction (x, y, z, channel, category code, offset), and, when
+// the pin cache wants them, the decoded columns (numbers as Float64, text as a
+// local dictionary + codes the page re-keys).
+export function filterKernel(E, CV) {
+  return {
+    init(params, calcs) {
+      const sch = params.schema, ix = (nm) => (nm == null ? -1 : sch.findIndex((c) => c.name === nm));
+      return {
+        params, calcFns: CV.compileCalcs(E, calcs, sch), test: E.compileChunkBool(params.expr, sch, { decimal: '.' }),
+        c: params.coords.map(ix), chan: ix(params.chan), cat: ix(params.cat),
+        catCode: params.categories ? new Map(params.categories.map((v, i) => [v, i])) : null,
+        tee: (params.tee || []).map((nm) => [nm, ix(nm)]), scratch: {},
+      };
+    },
+    group(ctx, view, n) {
+      const sc = ctx.scratch;
+      const num = (i, key) => (i < 0 ? null : CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n))));
+      const mk = ctx.test(view, n);
+      const X = num(ctx.c[0], 'x'), Y = num(ctx.c[1], 'y'), Z = num(ctx.c[2], 'z'), CH = num(ctx.chan, 'ch');
+      const C = ctx.cat >= 0 ? view[ctx.cat] : null;
+      const mask = new Uint8Array(n);
+      let k = 0;
+      for (let i = 0; i < n; i++) {
+        if (mk[i] !== 1) continue;
+        if (!Number.isFinite(X[i]) || !Number.isFinite(Y[i]) || !Number.isFinite(Z[i])) continue;
+        mask[i] = 1; k++;
+      }
+      const mx = new Float64Array(k), my = new Float64Array(k), mz = new Float64Array(k), mch = new Float64Array(k), rec = new Uint32Array(k);
+      const mcat = ctx.catCode && C ? new Uint8Array(k) : null;
+      for (let i = 0, j = 0; i < n; i++) {
+        if (!mask[i]) continue;
+        mx[j] = X[i]; my[j] = Y[i]; mz[j] = Z[i];
+        mch[j] = CH && Number.isFinite(CH[i]) ? CH[i] : 0;
+        if (mcat) mcat[j] = ctx.catCode.get(String(C[i] ?? '').trim()) ?? 0;
+        rec[j] = i; j++;
+      }
+      let tee = null;
+      if (ctx.tee.length) {
+        tee = {};
+        for (const [nm, i] of ctx.tee) {
+          const src = i >= 0 ? view[i] : null;
+          if (!src) { tee[nm] = null; continue; }
+          let kind = null;
+          for (let q = 0; q < n && kind === null; q++) { const v = src[q]; if (v != null) kind = typeof v === 'number' ? 'num' : 'str'; }
+          if (kind !== 'str') { const d = new Float64Array(n); for (let q = 0; q < n; q++) { const v = src[q]; d[q] = v == null ? NaN : +v; } tee[nm] = { data: d }; continue; }
+          const dict = [''], map = new Map([['', 0]]), codes = new Uint16Array(n);
+          let ok = true;
+          for (let q = 0; q < n; q++) {
+            const v = src[q] == null ? '' : String(src[q]); let c = map.get(v);
+            if (c === undefined) { if (dict.length > 65535) { ok = false; break; } c = dict.length; dict.push(v); map.set(v, c); }
+            codes[q] = c;
+          }
+          tee[nm] = ok ? { dict, codes } : null;
+        }
+      }
+      return { mask, hits: k, match: { x: mx, y: my, z: mz, chan: mch, cat: mcat, rec }, tee };
+    },
+  };
+}

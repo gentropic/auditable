@@ -10031,44 +10031,57 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       window.__pinUsed = true;
       const got = await pinnedSweep(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
+    } else if (chunkF) {
+      // the COLUMNAR engine (src/colscan.js): row groups on the worker pool (or
+      // on the page one per task), the same chunk view as everywhere, footer-
+      // skipped groups never read, matches + pins handed over IN GROUP ORDER
+      const tee = pinBudgetBytes() > 0 ? {} : null;          // tee the scan into the pin cache
+      const ac = new AbortController();                      // a newer filter on this layer supersedes → stop the workers
+      const params = { expr, coords: [P.names[m.x], P.names[m.y], P.names[m.z]], chan: m.chan != null ? P.names[m.chan] : null, cat: m.cat != null ? P.names[m.cat] : null, categories: header.categories || null, tee: tee ? readCols : null };
+      let skipped = 0;
+      const teePart = (part, start) => {
+        for (const nm of readCols) {
+          if (tee[nm] === null) continue;
+          const src = part.tee && part.tee[nm];
+          if (!src) { tee[nm] = null; continue; }
+          let e = tee[nm];
+          if (e === undefined) e = tee[nm] = src.data ? { data: new Float64Array(header.count).fill(NaN) } : { codes: new Uint16Array(header.count), dict: [''], map: new Map([['', 0]]) };
+          if (e.data && src.data) { e.data.set(src.data, start); continue; }
+          if (!(e.codes && src.codes)) { tee[nm] = null; continue; }   // a column that changed kind between groups isn't pinned
+          const re = new Uint16Array(src.dict.length);          // the group's local dictionary → the layer's
+          let full = false;
+          for (let c = 0; c < src.dict.length; c++) { const v = src.dict[c]; let gc = e.map.get(v); if (gc === undefined) { if (e.dict.length > 65535) { full = true; break; } gc = e.dict.length; e.dict.push(v); e.map.set(v, gc); } re[c] = gc; }
+          if (full) { tee[nm] = null; continue; }
+          for (let q = 0; q < src.codes.length; q++) e.codes[start + q] = re[src.codes[q]];
+        }
+      };
+      try {
+        await scanColumnar(AL, { kernel: 'filter', params, exprs: [expr], extraCols: readCols, signal: ac.signal,
+          skipGroup: (g, rg) => { const sk = !pqGroupCanMatch(ast, pqGroupRanges(rg)); if (sk) skipped++; return sk; },
+          onProgress: (d, N, w) => { if (alive() && N) $('#meta').textContent = `filter: ${rowsProgress(d, N)} · ${w}`; },
+          onPart: (g, part, start) => {
+            if (!alive()) { ac.abort(); return; }
+            mask.set(part.mask, start); hits += part.hits;
+            const mt = part.match;
+            for (let j = 0; j < mt.rec.length; j++) collect(mt.x[j], mt.y[j], mt.z[j], mt.chan[j], mt.cat ? mt.cat[j] : 0, start + mt.rec[j]);
+            if (tee) teePart(part, start);
+          } });
+      } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
+      if (!alive()) return;
+      rec = header.count;
+      window.__pqFilterSkipped = skipped;                    // smoke hook
+      if (tee && !skipped) {                                 // pin ONLY a complete scan (skipped groups would leave holes)
+        for (const nm of readCols) { const e = tee[nm]; if (!e) continue; delete e.map; pinPut(AL, nm, e); }
+      }
+      if (skipped) $('#meta').textContent = `filter: ${skipped} of ${P.rowGroups.length} row groups skipped by the footer…`;
     } else {
-    const tee = (chunkF && pinBudgetBytes() > 0) ? {} : null;   // tee the scan into the pin cache
+    // no parseable expression: the ROW path, every column of every group
     let start = 0, skipped = 0;
     for (const rg of P.rowGroups) {
       const count = rg.rowCount;
       if (ast && !pqGroupCanMatch(ast, pqGroupRanges(rg))) { start += count; skipped++; continue; }   // pushdown skip
       const cols = await readParquetRange(P.buf, readCols, start, start + count, P.meta);
-      if (tee) for (const nm of readCols) {
-        const src = cols[nm]; if (!src) { tee[nm] = null; continue; }
-        let e = tee[nm];
-        if (e === undefined) {
-          let kind = null;
-          for (let i = 0; i < count && kind === null; i++) { const v = src[i]; if (v != null) kind = typeof v === 'number' ? 'num' : 'str'; }
-          e = tee[nm] = kind === 'str' ? { codes: new Uint16Array(header.count), dict: [''], map: new Map([['', 0]]) } : { data: new Float64Array(header.count).fill(NaN) };
-        }
-        if (e === null) continue;
-        if (e.data) { for (let i = 0; i < count; i++) { const v = src[i]; e.data[start + i] = v == null ? NaN : +v; } }
-        else for (let i = 0; i < count; i++) {
-          const v = src[i] == null ? '' : String(src[i]); let c = e.map.get(v);
-          if (c === undefined) { if (e.dict.length > 65535) { tee[nm] = null; break; } c = e.dict.length; e.dict.push(v); e.map.set(v, c); }
-          e.codes[start + i] = c;
-        }
-      }
-      const cX = cols[P.names[m.x]], cY = cols[P.names[m.y]], cZ = cols[P.names[m.z]];
-      const cChan = m.chan != null ? cols[P.names[m.chan]] : null, cCat = m.cat != null ? cols[P.names[m.cat]] : null;
-      if (chunkF) {
-        const ccols = censusChunkCols(AL, header, cols, start, count, needL, calcChunkFns);
-        const mk = chunkF(ccols, count);
-        for (let i = 0; i < count; i++) {
-          if (mk[i] !== 1) continue;
-          const xv = +cX[i], yv = +cY[i], zv = +cZ[i];
-          if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-          const r = start + i;
-          mask[r] = 1; hits++;
-          const code = catCode && cCat ? (catCode.get(String(cCat[i] ?? '').trim()) ?? 0) : 0;
-          collect(xv, yv, zv, cChan ? +cChan[i] : 0, code, r);
-        }
-      } else for (let i = 0; i < count; i++) {              // no parseable ast — the row path
+      for (let i = 0; i < count; i++) {                     // no parseable ast — the row path
         const r = start + i;
         const f = new Array(P.names.length);
         for (let ci = 0; ci < P.names.length; ci++) { const c = cols[P.names[ci]]; f[ci] = c ? (c[i] ?? '') : ''; }
@@ -10084,9 +10097,6 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       start += count;                                       // advance for kept groups too (skip branch does its own)
       window.__pqFilterSkipped = skipped;                  // smoke hook
       await new Promise((r2) => setTimeout(r2)); if (!alive()) return;
-    }
-    if (tee && !skipped && alive()) {        // pin ONLY a complete scan (skipped groups would leave holes)
-      for (const nm of readCols) { const e = tee[nm]; if (!e) continue; delete e.map; pinPut(AL, nm, e); }
     }
     if (skipped) $('#meta').textContent = `filter: ${skipped} of ${P.rowGroups.length} row groups skipped by the footer…`;
     }

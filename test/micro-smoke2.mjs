@@ -3339,6 +3339,64 @@ await p.close();
   await pw.close();
 }
 
+// ── §50: the FILTER on the columnar engine (src/colscan.js) — 150,000 blocks,
+//     a predicate on a CALC column and a PAINTED column; on the workers it matches
+//     brute force, without workers the page gives the bit-identical mask, a block
+//     with a null coordinate never enters it (the old path read null as 0 — a
+//     phantom at the origin), and the columns the workers decoded are TEED into
+//     the pin cache: the next filter refines from memory, right answer. ──
+{
+  const pf = await mkPage('sm2colc');
+  const fc = await pf.evaluate(async () => {
+    const M = window._micro, W = window.micro, q = (x2) => document.querySelector(x2);
+    const NX = 60, NY = 50, NZ = 50, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), au = new Float64Array(N);
+    let r = 3;
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let qq = 0; qq < NX; qq++, i++) {
+      r = (r * 1103515245 + 12345) >>> 0;
+      x[i] = 5 + qq * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10; au[i] = ((r >>> 8) % 1000) / 250;
+    }
+    const nullAt = 7; x[nullAt] = NaN; au[nullAt] = 3.9;   // matches the predicate, has no X
+    const id = await W.addLayer({ kind: 'blocks', name: 'colc.parquet', columns: { X: x, Y: y, Z: z, AU: au }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const L = M.layers().find((l) => l.id === id);
+    M.setActiveLayer(L.id);
+    L.calcCols = (L.calcCols || []).concat([{ name: 'AU2', expr: 'AU * 2' }]); L._calcFns = null; L._colStats = null;
+    const col = M.createPaintCol(L, 'ZONE'), ore = M.addPaintValue(L, col, 'ore');
+    const recs = []; for (let i = 0; i < N; i++) if (i % 3 !== 1) recs.push(i);
+    M.paintApply(L, col, recs, ore);
+    const want = (pred) => { let n = 0; for (let i = 0; i < N; i++) if (Number.isFinite(x[i]) && pred(i)) n++; return n; };
+    const seen = [];
+    const obs = new MutationObserver(() => { const t = q('#meta').textContent; if (/worker|this page/.test(t)) seen.push(t); });
+    obs.observe(q('#meta'), { childList: true, characterData: true, subtree: true });
+    const run = async (expr) => { q('#filter').value = expr; await M.applyBlockFilter(expr, L); const m = L._filterMask; let h = 0; for (let i = 0; i < m.length; i++) h += m[i]; return { h, m: m.slice(), nullIn: m[nullAt] }; };
+    const EXPR = 'AU2 > 3 and ZONE == "ore"';
+    M.setPinBudget('off'); M.setPinBudget(256);              // a clean pin cache that will take the tee
+    const a = await run(EXPR);
+    const sawWorkers = seen.some((t) => /worker/.test(t)); seen.length = 0;
+    const pinnedAfter = M.pinStats().cols;
+    M.setPinBudget('off');                                   // no pins → the next run reads the file again
+    const Wk = window.Worker; window.Worker = undefined;
+    const b = await run(EXPR);
+    window.Worker = Wk;
+    const sawPage = seen.some((t) => /this page/.test(t));
+    obs.disconnect();
+    let same = a.m.length === b.m.length; for (let i = 0; same && i < a.m.length; i++) if (a.m[i] !== b.m[i]) same = false;
+    // the tee: a fresh worker scan pins its columns; the next filter refines from them
+    M.setPinBudget(256);
+    await run(EXPR);
+    window.__pinUsed = false;
+    const c = await run('AU > 1');
+    M.setPinBudget('auto');                                  // the context is shared with later sections
+    return { N, hits: a.h, want: want((i) => au[i] * 2 > 3 && i % 3 !== 1), nullIn: a.nullIn, sawWorkers, sawPage, same, pinnedAfter, refineHits: c.h, refineWant: want((i) => au[i] > 1), pinUsed: window.__pinUsed === true };
+  });
+  chk(`filter on the workers (seen: ${fc.sawWorkers}), calc + painted predicate: ${fc.hits} = brute force ${fc.want}; the null-coordinate block is out (${fc.nullIn})`,
+    fc.sawWorkers && fc.hits === fc.want && fc.nullIn === 0);
+  chk(`…without workers the page runs it (seen: ${fc.sawPage}) and the mask is bit-identical (${fc.same})`, fc.sawPage && fc.same);
+  chk(`…the workers' columns are teed into the pin cache (${fc.pinnedAfter} pinned) and the next filter refines from memory (${fc.pinUsed}): ${fc.refineHits} = ${fc.refineWant}`,
+    fc.pinnedAfter > 0 && fc.pinUsed && fc.refineHits === fc.refineWant);
+  await pf.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
