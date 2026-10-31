@@ -979,6 +979,7 @@ import { Peel } from '../../ext/peel/index.js';   // depth-peel by-solid — fas
 import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model files (multi-mesh + colours)
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
+import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
@@ -7163,7 +7164,7 @@ function _moveTo(el, host) { if (!_home.has(el)) _home.set(el, { parent: el.pare
 function _moveHome(el) { const h = _home.get(el); if (h && h.parent) h.parent.insertBefore(el, h.next && h.next.parentNode === h.parent ? h.next : null); }
 function ensureMobileChrome() {
   if ($('#btnLayersM')) return;
-  const mk = (id, title, svg) => { const b = document.createElement('button'); b.id = id; b.title = title; b.innerHTML = svg; return b; };
+  const mk = (id, title, svg) => { const b = document.createElement('button'); b.id = id; b.title = title; setHTML(b, trusted(svg)); return b; };
   const layersB = mk('btnLayersM', 'layers', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 10 6-10 6L2 8z"/><path d="m2 13 10 6 10-6"/></svg>');
   const propsB = mk('btnPropsM', 'properties of the active layer', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2" fill="var(--bg-bar)"/><circle cx="15" cy="12" r="2" fill="var(--bg-bar)"/><circle cx="7" cy="18" r="2" fill="var(--bg-bar)"/></svg>');
   layersB.onclick = () => toggleLayersPanel();
@@ -9795,16 +9796,11 @@ function setColorLabels(header) {
   const sel = $('#colorBy');
   const blocks = header && (header.kind === 'blockmodel' || header.kind === 'drillholes');
   if (!blocks) {
-    sel.innerHTML = '<option value="0">elevation</option><option value="1">intensity</option><option value="2">classification</option><option value="3">rgb</option>';
+    setHTML(sel, trusted('<option value="0">elevation</option><option value="1">intensity</option><option value="2">classification</option><option value="3">rgb</option>'));
     sel.value = '0';
     return;
   }
-  let h = '<option value="elev">elevation</option>';
-  for (const c of header.numericColumns || []) h += `<option value="chan:${c.i}">${c.name}</option>`;
-  if (header.categories) h += `<option value="cat">${header.columns[header.mapping.cat]}</option>`;
-  h += '<option value="rules">rule-based</option>';
-  h += '<option value="solid">solid</option>';
-  sel.innerHTML = h;
+  setHTML(sel, html`<option value="elev">elevation</option>${(header.numericColumns || []).map((c) => html`<option value="chan:${c.i}">${c.name}</option>`)}${header.categories ? html`<option value="cat">${header.columns[header.mapping.cat]}</option>` : ''}<option value="rules">rule-based</option><option value="solid">solid</option>`);
   sel.value = header.mapping.chan != null ? `chan:${header.mapping.chan}` : 'elev';
 }
 // Re-open a block model on a new grade channel. THREE sources, not two — and the
@@ -10507,7 +10503,7 @@ function acRefresh(input, getCtx) {
   _ac.input = input; _ac.res = res; _ac.sel = 0; acRender(input);
 }
 function acRender(input) {
-  const pop = $('#acPopup'); pop.innerHTML = '';
+  const pop = $('#acPopup'); pop.replaceChildren();
   _ac.res.options.forEach((o, i) => {
     const row = document.createElement('div'); row.className = 'ac-item' + (i === _ac.sel ? ' sel' : '');
     const v = document.createElement('span'); v.className = 'ac-val ac-' + o.kind; v.textContent = o.value;
@@ -10549,16 +10545,15 @@ attachAutocomplete($('#filter'), filterCtx);
 // matched padding makes it align by construction; we keep it scroll-synced. ──
 function renderExprHL(hl, src) {
   if (!hl) return;
-  const escH = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  const toks = tokenize(src);
-  let html = '', pos = 0;
+  const toks = tokenize(src), parts = [];
+  let pos = 0;
   for (const t of toks) {
-    if (t.start > pos) html += escH(src.slice(pos, t.start));
-    html += `<span class="hl-${t.kind}">${escH(t.value)}</span>`;
+    if (t.start > pos) parts.push(src.slice(pos, t.start));
+    parts.push(html`<span class="hl-${t.kind}">${t.value}</span>`);
     pos = t.end;
   }
-  if (pos < src.length) html += escH(src.slice(pos));
-  hl.innerHTML = html;
+  if (pos < src.length) parts.push(src.slice(pos));
+  setHTML(hl, html`${parts}`);
 }
 function syncHL(input, hl) { if (!hl) return; renderExprHL(hl, input.value); hl.scrollLeft = input.scrollLeft; hl.scrollTop = input.scrollTop || 0; }
 function syncFilterClear() { $('#filterWrap').classList.toggle('has', !!$('#filter').value); syncHL($('#filter'), $('#filterHL')); }
@@ -12424,19 +12419,18 @@ function showFileInfo() {
   const d0 = (AL0 && AL0.docs) || {};
   const meshDoc = d0.meshDoc || null;
   const doc = meshDoc || d0.blockDoc || d0.dhDoc || d0.plyDoc || d0.lasDoc;
-  if (!doc) { showHelp('file info', 'no file open'); return; }
+  if (!doc) { showHelp('file info', html`no file open`); return; }
   const h = doc.header;
-  const escA = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const fmtC = (v) => (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 4 }));
   // one copyable value: raw goes to the clipboard, shown formatted
-  const V = (raw, shown) => (raw == null ? '<span class="fi-x">—</span>' : `<span class="fi-v" data-copy="${escA(raw)}">${shown != null ? shown : escA(raw)}</span>`);
+  const V = (raw, shown) => (raw == null ? html`<span class="fi-x">—</span>` : html`<span class="fi-v" data-copy="${raw}">${shown != null ? shown : raw}</span>`);
   const num = (v) => (v == null ? V(null) : V(v, fmtC(v)));
-  const sep = (x) => `<span class="fi-x">${x}</span>`;
+  const sep = (x) => html`<span class="fi-x">${x}</span>`;
   const rows = [];
-  const row = (k, v) => rows.push(`<tr><td class="fi-k">${k}</td><td>${v}</td></tr>`);
+  const row = (k, v) => rows.push(html`<tr><td class="fi-k">${k}</td><td>${v}</td></tr>`);
   // full-width wrapping row — for prose (drillhole checks) that would blow out
   // the nowrap key column and push every value off-screen
-  const wide = (html) => rows.push(`<tr><td colspan="2" class="fi-w">${html}</td></tr>`);
+  const wide = (h2) => rows.push(html`<tr><td colspan="2" class="fi-w">${h2}</td></tr>`);
   row('file', V(meshDoc ? meshDoc.name : d0.blockDoc ? d0.blockDoc.name : d0.plyDoc ? d0.plyDoc.name : 'point cloud'));
   row('kind', V(meshDoc ? `${h.soup ? 'streamed mesh' : 'context mesh'} (${h.format})` : d0.dhDoc ? `drillholes (${h.method === 'minimumCurvature' ? 'minimum curvature' : h.method}, dip ${h.dipConvention})` : d0.lasDoc ? `LAS ${h.version} · point format ${h.format}` : d0.plyDoc ? `PLY ${h.format === 'ascii' ? 'ascii' : 'binary (little-endian)'}` : h.dm ? 'Datamine .dm block model' : h.grid ? 'delimited block model' : 'delimited points'));
   if (meshDoc) {
@@ -12448,36 +12442,36 @@ function showFileInfo() {
   if (d0.dhDoc) {
     row('holes', num(h.holes));
     row('placed', num(h.placed));
-    for (const c of h.report.checks) wide(`${sep('⚠')} ${escA(c.label)} ${sep('—')} ${V(c.count)}${c.bhids.length ? ' ' + sep('·') + ' ' + V(c.bhids.slice(0, 8).join(', ') + (c.bhids.length > 8 ? '…' : '')) : ''}`);
+    for (const c of h.report.checks) wide(html`${sep('⚠')} ${c.label} ${sep('—')} ${V(c.count)}${c.bhids.length ? html` ${sep('·')} ${V(c.bhids.slice(0, 8).join(', ') + (c.bhids.length > 8 ? '…' : ''))}` : ''}`);
   }
   if (h.bbox) {
     for (const [ax, i] of [['X', 0], ['Y', 1], ['Z', 2]]) {
-      row(ax, `${num(h.bbox.min[i])} ${sep('–')} ${num(h.bbox.max[i])} ${sep('(Δ')} ${num(h.bbox.max[i] - h.bbox.min[i])}${sep(')')}`);
+      row(ax, html`${num(h.bbox.min[i])} ${sep('–')} ${num(h.bbox.max[i])} ${sep('(Δ')} ${num(h.bbox.max[i] - h.bbox.min[i])}${sep(')')}`);
     }
   }
-  if (frame) row('frame origin', frame.origin.map(num).join(sep(', ')) + (frame.crs ? ` ${sep('·')} ${V(frame.crs)}` : ''));
+  if (frame) row('frame origin', html`${joinH(frame.origin.map(num), sep(', '))}${frame.crs ? html` ${sep('·')} ${V(frame.crs)}` : ''}`);
   if (AL0 && renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(renderer.layerVramBytes(AL0.id))));
   if (h.grid) {
     if (h.subBlocked && h.dimPalette) {
-      row('grid (fine lattice)', [h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num).join(sep(' × ')));
-      const sizes = h.dimPalette.map((d) => d.map((v) => num(v * 2)).join('×'));
-      row('sub-block sizes', `${sizes.length} ` + (sizes.length === 1 ? 'size' : 'sizes') + sep(': ') + sizes.slice(0, 6).join(sep(' · ')) + (sizes.length > 6 ? sep(' …') : ''));
+      row('grid (fine lattice)', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
+      const sizes = h.dimPalette.map((d) => joinH(d.map((v) => num(v * 2)), '×'));
+      row('sub-block sizes', html`${sizes.length} ${sizes.length === 1 ? 'size' : 'sizes'}${sep(': ')}${joinH(sizes.slice(0, 6), sep(' · '))}${sizes.length > 6 ? sep(' …') : ''}`);
     } else {
-      row('grid', [h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num).join(sep(' × ')));
-      row('block size', [h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num).join(sep(' × ')));
+      row('grid', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
+      row('block size', joinH([h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num), sep(' × ')));
     }
     const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin];
-    row('block 0 centroid', c0.map(num).join(sep(', ')));
+    row('block 0 centroid', joinH(c0.map(num), sep(', ')));
     if (h.grid.rot) { const ag = basisAngles(h.grid.rot); row('rotation', `azimuth ${ag.azimuth.toFixed(2)}°${ag.zOnly ? '' : ` · tilt ${ag.tilt.toFixed(2)}°`} · ${(h.lattice && h.lattice.basis) || 'declared'}${h.lattice && h.lattice.confirmed ? ` (confirmed by ${h.lattice.confirmed})` : ''}`); }
   }
   if (h.scale) {
-    row('scale', h.scale.map(num).join(sep(', ')));
-    row('offset', h.offset.map(num).join(sep(', ')));
+    row('scale', joinH(h.scale.map(num), sep(', ')));
+    row('offset', joinH(h.offset.map(num), sep(', ')));
   }
-  if (h.columns) row('columns', h.columns.map((c) => V(c)).join(sep(' · ')));
-  if (h.attributes && h.attributes.length) row('channels', h.attributes.map((c) => V(c)).join(sep(' · ')));
-  if (h.categories && h.categories.length) row(h.columns && h.mapping && h.mapping.cat != null ? escA(h.columns[h.mapping.cat]) : 'categories', h.categories.map((c) => V(c)).join(sep(' · ')));
-  showHelp('file info', `<table class="fi">${rows.join('')}</table>`);
+  if (h.columns) row('columns', joinH(h.columns.map((c) => V(c)), sep(' · ')));
+  if (h.attributes && h.attributes.length) row('channels', joinH(h.attributes.map((c) => V(c)), sep(' · ')));
+  if (h.categories && h.categories.length) row(h.columns && h.mapping && h.mapping.cat != null ? h.columns[h.mapping.cat] : 'categories', joinH(h.categories.map((c) => V(c)), sep(' · ')));
+  showHelp('file info', html`<table class="fi">${rows}</table>`);
   $('#helpBody').querySelectorAll('.fi-v').forEach((el) => el.onclick = () => {
     const v = el.getAttribute('data-copy'); if (v == null) return;
     copyText(v);
@@ -12527,26 +12521,25 @@ $('#mFile').onclick = () => {
 };
 // scene-global memory readout (the numbers live in the renderer; this is a table)
 async function showMemoryInfo() {
-  const escM = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const rows = [];
-  const row = (k, v) => rows.push(`<tr><td class="fi-k">${escM(k)}</td><td>${v}</td></tr>`);
+  const row = (k, v) => rows.push(html`<tr><td class="fi-k">${k}</td><td>${v}</td></tr>`);
   let total = 0;
   for (const L of S.layers) {
     const b = renderer.layerVramBytes(L.id);
     total += b;
-    row(L.label || L.name, `${escM(fmtSize(b))} <span class="fi-x">· ${escM((renderer.layerElementCount(L.id) || 0).toLocaleString())} elements${L.visible ? '' : ' · hidden (still resident)'}</span>`);
+    row(L.label || L.name, html`${fmtSize(b)} <span class="fi-x">· ${(renderer.layerElementCount(L.id) || 0).toLocaleString()} elements${L.visible ? '' : ' · hidden (still resident)'}</span>`);
   }
-  row('total vram', `<b>${escM(fmtSize(renderer.vramBytes || total))}</b>`);
-  { const st = pinStats(); if (st.bytes || st.budget) row('filter column cache', `${escM(fmtSize(st.bytes))} <span class="fi-x">· ${st.cols} column${st.cols === 1 ? '' : 's'} pinned · budget ${st.budget ? escM(fmtSize(st.budget)) : 'off'}</span>`); }
-  if (performance.memory) row('js heap', escM(fmtSize(performance.memory.usedJSHeapSize)));
+  row('total vram', html`<b>${fmtSize(renderer.vramBytes || total)}</b>`);
+  { const st = pinStats(); if (st.bytes || st.budget) row('filter column cache', html`${fmtSize(st.bytes)} <span class="fi-x">· ${st.cols} column${st.cols === 1 ? '' : 's'} pinned · budget ${st.budget ? fmtSize(st.budget) : 'off'}</span>`); }
+  if (performance.memory) row('js heap', fmtSize(performance.memory.usedJSHeapSize));
   if (navigator.storage && navigator.storage.estimate) {
     try {
       const est = await navigator.storage.estimate();
-      row('site storage', `${escM(fmtSize(est.usage || 0))} <span class="fi-x">of ${escM(fmtSize(est.quota || 0))} available</span>`);
+      row('site storage', html`${fmtSize(est.usage || 0)} <span class="fi-x">of ${fmtSize(est.quota || 0)} available</span>`);
     } catch { /* unavailable */ }
   }
-  row('', '<span class="fi-x">vram = geometry buffers held by layers (hidden layers included). Convert big meshes to streamed, or remove layers, to shed it.</span>');
-  showHelp('memory', `<table class="fi">${rows.join('')}</table>`);
+  row('', html`<span class="fi-x">vram = geometry buffers held by layers (hidden layers included). Convert big meshes to streamed, or remove layers, to shed it.</span>`);
+  showHelp('memory', html`<table class="fi">${rows}</table>`);
 }
 $('#btnBurger').onclick = () => menuAt($('#btnBurger'), [
   { label: 'File', action: () => setTimeout(() => $('#mFile').click(), 0) },
@@ -12864,13 +12857,13 @@ function showAbout() {
     in this tab. No model file, no network, no WASM: micro stays Sealed, and it cannot be out of date.
     It will misread you. Nothing it proposes is destructive.</span></span>
   </label>`;
-  showHelp('about micro', HELP_ABOUT + exp);
+  showHelp('about micro', trusted(HELP_ABOUT + exp));
   const cb = $('#nlToggle');
   if (cb) cb.onchange = () => { nlSetEnabled(cb.checked); if (cb.checked) nlEnsureTrained(); };
 }
 function showHelp(title, html) {
   $('#helpTitle').textContent = title;
-  $('#helpBody').innerHTML = html;
+  setHTML($('#helpBody'), html);
   $('#help').classList.add('show');
 }
 // Check for a new build. Seal-safe: the page never fetches — it asks the service
@@ -12888,8 +12881,8 @@ function checkForUpdates() {
   }).catch(() => { $('#meta').textContent = 'update check failed'; });
 }
 $('#mHelp').onclick = () => menuAt($('#mHelp'), [
-  { label: 'Keyboard & mouse…', action: () => showHelp('keyboard & mouse', HELP_KEYS) },
-  { label: 'Analysis & workbench…', action: () => showHelp('analysis & workbench', HELP_ANALYSIS) },
+  { label: 'Keyboard & mouse…', action: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
+  { label: 'Analysis & workbench…', action: () => showHelp('analysis & workbench', trusted(HELP_ANALYSIS)) },
   { label: 'Full documentation ↗', action: () => window.open('https://gentropic.org/micro/docs/', '_blank', 'noopener') },
   { label: 'Shortcut card (print) ↗', action: () => window.open('https://gentropic.org/micro/docs/card.html', '_blank', 'noopener') },
   { label: 'Why it’s Sealed (security)…', action: () => sealedInfo() },
@@ -13489,12 +13482,12 @@ function sealedInfo() {
   const existing = $('#sealPop'); if (existing) { existing.remove(); return; }
   const badge = $('#sealBadge'), r = badge.getBoundingClientRect();
   const pop = document.createElement('div'); pop.id = 'sealPop';
-  pop.innerHTML = '<h4><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Sealed — nothing leaves this machine</h4>'
+  setHTML(pop, trusted('<h4><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Sealed — nothing leaves this machine</h4>'
     + '<ul><li><b>No network access from the page.</b> The page policy blocks every connection (<code>connect-src \'none\'</code>) — no telemetry, no cloud, no data egress.</li>'
     + '<li>Your data — point clouds, block models, drillholes — stays on this device (memory / local disk), never uploaded.</li>'
     + '<li><b>WASM-free</b>, runtime in the clear — the code is readable and auditable, not opaque binary.</li>'
     + '<li><b>File vs hosted app.</b> The downloadable <code>micro.html</code> is what\'s sealed: zero network, no service worker. The hosted app (gentropic.org/micro) adds a service worker <i>outside</i> the sealed page that caches it for offline use + checks for a newer build — fetching only micro\'s own files, never your data. Run the downloaded file for provable zero-network.</li></ul>'
-    + '<div class="dim">Verify the build + how to bring it through approval → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a></div>';
+    + '<div class="dim">Verify the build + how to bring it through approval → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a></div>'));
   document.body.appendChild(pop);
   pop.style.left = Math.max(6, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
   pop.style.top = (r.bottom + 6) + 'px';
@@ -13636,7 +13629,7 @@ function openBatchRename(Ls) {
     if (pre.length >= 2 && pre.length < Math.min(...base.map((s) => s.length))) mkStrip(`✂ prefix “${pre.length > 18 ? pre.slice(0, 17) + '…' : pre}”`, (s) => s.slice(pre.length));
     if (suf.length >= 2 && suf.length < Math.min(...base.map((s) => s.length))) mkStrip(`✂ suffix “${suf.length > 18 ? '…' + suf.slice(-17) : suf}”`, (s) => s.slice(0, s.length - suf.length));
     if (!ops.children.length) { const n = document.createElement('span'); n.style.color = 'var(--dim)'; n.textContent = 'no common prefix/suffix'; ops.append(n); }
-    tbl.innerHTML = '<tr><th>before</th><th>after</th></tr>';
+    setHTML(tbl, trusted('<tr><th>before</th><th>after</th></tr>'));
     Ls.forEach((L, i) => {
       const from = L.label || L.name, to = preview[i];
       const tr = document.createElement('tr');
@@ -13806,8 +13799,8 @@ const COMMANDS = [
   { id: 'memory', group: 'Tools', title: 'Memory…', kw: 'vram usage ram', run: () => showMemoryInfo() },
   { id: 'sealed', group: 'Help', title: 'Why it\'s Sealed (security)…', kw: 'network privacy offline trust connect-src wasm verify', run: () => sealedInfo() },
   { id: 'update', group: 'Help', title: 'Check for updates…', kw: 'version new build reload service worker', run: () => checkForUpdates() },
-  { id: 'helpwork', group: 'Help', title: 'Analysis & workbench help…', kw: 'grade tonnage swath reconcile join validate lineage figure docs guide', run: () => showHelp('analysis & workbench', HELP_ANALYSIS) },
-  { id: 'helpkeys', group: 'Help', title: 'Keyboard & mouse help…', kw: 'shortcuts docs guide', run: () => showHelp('keyboard & mouse', HELP_KEYS) },
+  { id: 'helpwork', group: 'Help', title: 'Analysis & workbench help…', kw: 'grade tonnage swath reconcile join validate lineage figure docs guide', run: () => showHelp('analysis & workbench', trusted(HELP_ANALYSIS)) },
+  { id: 'helpkeys', group: 'Help', title: 'Keyboard & mouse help…', kw: 'shortcuts docs guide', run: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
 ];
 let _palOpen = false, _palSel = 0, _palItems = [], _palNlMode = false;
 const palCtx = () => ({ L: activeLayer(), layers: S.layers, project: S.project });
@@ -14137,7 +14130,7 @@ function openPalette(opts = {}) {
   let ov = $('#palOverlay');
   if (!ov) {
     ov = document.createElement('div'); ov.id = 'palOverlay';
-    ov.innerHTML = '<div id="palBox"><input id="palInput" placeholder="Type a command…  (↑↓ to move · Enter to run · Esc to close)" autocomplete="off" spellcheck="false"><div id="palList"></div></div>';
+    setHTML(ov, trusted('<div id="palBox"><input id="palInput" placeholder="Type a command…  (↑↓ to move · Enter to run · Esc to close)" autocomplete="off" spellcheck="false"><div id="palList"></div></div>'));
     document.body.appendChild(ov);
     ov.addEventListener('pointerdown', (e) => { if (e.target === ov) closePalette(); });
     $('#palInput').addEventListener('input', () => { _palSel = _isMobile() ? -1 : 0; renderPalette(); });
@@ -14275,7 +14268,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'o') { cam.setOrtho(!cam.state.ortho); requestRender(); }
   else if (k === 'x') toggleSection();
   else if (k === 'g') armGoto();                          // the goto leader — bare digits are NOT bound (a stray digit must never teleport the camera)
-  else if (k === 'F1') { e.preventDefault(); showHelp('keyboard & mouse', HELP_KEYS); }
+  else if (k === 'F1') { e.preventDefault(); showHelp('keyboard & mouse', trusted(HELP_KEYS)); }
 });
 
 // Synthetic QF block model AS A CSV BLOB — exercises the full provider path
@@ -15231,7 +15224,7 @@ function renderStyleTab(body, L) {
       for (const c of (h2 && h2.numericColumns) || []) add(`chan:${c.i}`, c.name);
       for (const pc of (L.paintCols || []).filter((c) => c.kind === 'ratio')) add('paint:' + pc.name, '% ' + pc.name);
     } else {
-      colSel.innerHTML = '<option value="0">elevation</option><option value="1">intensity</option>';
+      setHTML(colSel, trusted('<option value="0">elevation</option><option value="1">intensity</option>'));
     }
     if ([...colSel.options].some((o) => o.value === selv)) colSel.value = selv;
     colSel.onchange = () => { if (colSel.value.startsWith('paint:')) addPaintColorOptions(L); setSel(colSel.value); };
@@ -16703,20 +16696,17 @@ function appendColStats(body, stat, onCtx) {
   const d = document.createElement('div'); d.className = 'pp-stats';
   if (onCtx) d.oncontextmenu = onCtx;
   if (stat.footer) {                                       // Parquet's footer, before any scan
-    d.innerHTML = `n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>`
-      + `<span class="v">${fmtStat(stat.min)}</span> … <span class="v">${fmtStat(stat.max)}</span> <span class="pp-footnote">from the file's footer — scan for mean, sd + quantiles</span>`;
+    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br><span class="v">${fmtStat(stat.min)}</span> … <span class="v">${fmtStat(stat.max)}</span> <span class="pp-footnote">from the file's footer — scan for mean, sd + quantiles</span>`);
   } else if (stat.kind === 'num') {
-    d.innerHTML = `n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>`
-      + `mean <span class="v">${fmtStat(stat.mean)}</span> · std <span class="v">${fmtStat(stat.std)}</span><br>`
-      + `<span class="v">${fmtStat(stat.min)}</span> · p25 <span class="v">${fmtStat(stat.p25)}</span> · p50 <span class="v">${fmtStat(stat.p50)}</span> · p75 <span class="v">${fmtStat(stat.p75)}</span> · <span class="v">${fmtStat(stat.max)}</span>`;
+    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>mean <span class="v">${fmtStat(stat.mean)}</span> · std <span class="v">${fmtStat(stat.std)}</span><br><span class="v">${fmtStat(stat.min)}</span> · p25 <span class="v">${fmtStat(stat.p25)}</span> · p50 <span class="v">${fmtStat(stat.p50)}</span> · p75 <span class="v">${fmtStat(stat.p75)}</span> · <span class="v">${fmtStat(stat.max)}</span>`);
     if (stat.qual) {                                       // detection-limit values were substituted — never silently
       const t = stat.qual, bits = [t.below && `${t.below.toLocaleString()} below detection`, t.above && `${t.above.toLocaleString()} above`, t.code && `${t.code.toLocaleString()} lab codes → blank`].filter(Boolean);
-      d.insertAdjacentHTML('beforeend', `<br><span class="pp-footnote">${bits.join(' · ')} — substituted on read</span>`);
+      appendHTML(d, html`<br><span class="pp-footnote">${bits.join(' · ')} — substituted on read</span>`);
     }
     if (stat.centroids && stat.centroids.length && stat.max > stat.min) d.appendChild(sparkline(stat.centroids, stat.total, stat.min, stat.max));
   } else {
-    const top = stat.top.map(([v, n]) => `${v} <span class="v">${Math.round((100 * n) / (stat.n || 1))}%</span>`).join(' · ');
-    d.innerHTML = `n <span class="v">${stat.n.toLocaleString()}</span> · distinct <span class="v">${stat.distinct}${stat.overflow ? '+' : ''}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>${top}`;
+    const top = joinH(stat.top.map(([v, n]) => html`${v} <span class="v">${Math.round((100 * n) / (stat.n || 1))}%</span>`), ' · ');
+    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · distinct <span class="v">${stat.distinct}${stat.overflow ? '+' : ''}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>${top}`);
   }
   body.appendChild(d);
 }
@@ -17374,10 +17364,10 @@ function renderSourceTab(body, L) {
   const d = L.docs || {};
   const h = layerHeaderOf(L);
   if (!h) { body.appendChild(ppNote('no source metadata for this layer')); return; }
-  const escS = (v) => String(v == null ? '—' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const escS = (v) => (v == null ? '—' : String(v));      // text: html`…` escapes it
   const fm = (v) => (v == null || !Number.isFinite(v) ? '–' : Number.isInteger(v) ? v.toLocaleString() : +v.toFixed(3) + '');
   const sec = (t) => { const el = document.createElement('div'); el.className = 'pp-sec'; el.textContent = t; body.appendChild(el); };
-  const line = (html) => { const el = document.createElement('div'); el.className = 'pp-stats'; el.style.marginLeft = '0'; el.innerHTML = html; body.appendChild(el); };
+  const line = (h2) => { const el = document.createElement('div'); el.className = 'pp-stats'; el.style.marginLeft = '0'; setHTML(el, h2); body.appendChild(el); };
   if (d.blockDoc && !d.blockDoc.header.dm) {
     sec('position — column mapping');
     const row = document.createElement('div'); row.className = 'pp-row';
@@ -17391,18 +17381,18 @@ function renderSourceTab(body, L) {
       row.appendChild(wrap);
     }
     body.appendChild(row);
-    line('<span class="fi-x">changing a mapping re-reads the file</span>');
+    line(trusted('<span class="fi-x">changing a mapping re-reads the file</span>'));
   } else if (d.blockDoc && d.blockDoc.header.dm) {
     sec('position');
-    line(`Datamine .dm — centroids from <span class="v">XC / YC / ZC</span>, grid from the DD constants`);
+    line(html`Datamine .dm — centroids from <span class="v">XC / YC / ZC</span>, grid from the DD constants`);
   } else if (d.dhDoc) {
     const dh = d.dhDoc;
     sec('tables');
     const bn = (b2) => escS(b2 && b2.name);
-    line(`collar <span class="v">${bn(dh.blobs.collar)}</span> · <span class="v">${h.holes}</span> holes`);
-    line(`survey <span class="v">${bn(dh.blobs.survey)}</span>`);
-    line(`intervals <span class="v">${bn(dh.blobs.intervals)}</span> · <span class="v">${h.placed.toLocaleString()}</span> of <span class="v">${h.count.toLocaleString()}</span> placed`);
-    for (const c of h.report.checks) line(`⚠ ${escS(c.label)} · <span class="v">${c.count}</span>${c.bhids && c.bhids.length ? ` <span class="fi-x">(${escS(c.bhids.slice(0, 4).join(', '))}${c.bhids.length > 4 ? '…' : ''})</span>` : ''}`);
+    line(html`collar <span class="v">${bn(dh.blobs.collar)}</span> · <span class="v">${h.holes}</span> holes`);
+    line(html`survey <span class="v">${bn(dh.blobs.survey)}</span>`);
+    line(html`intervals <span class="v">${bn(dh.blobs.intervals)}</span> · <span class="v">${h.placed.toLocaleString()}</span> of <span class="v">${h.count.toLocaleString()}</span> placed`);
+    for (const c of h.report.checks) line(html`⚠ ${escS(c.label)} · <span class="v">${c.count}</span>${c.bhids && c.bhids.length ? html` <span class="fi-x">(${escS(c.bhids.slice(0, 4).join(', '))}${c.bhids.length > 4 ? '…' : ''})</span>` : ''}`);
     // collar + survey geometry mapping — re-map a column and re-desurvey.
     // (The interval table's grade/category columns live in the columns tab.)
     const mapSec = (title, cols, mapping, role, fields) => {
@@ -17426,7 +17416,7 @@ function renderSourceTab(body, L) {
     };
     mapSec('collar — column mapping', h.collarColumns, h.collarMapping, 'collar', [['bhid', 'hole id', false], ['x', 'X', false], ['y', 'Y', false], ['z', 'Z', false], ['eoh', 'EOH', true]]);
     mapSec('survey — column mapping', h.surveyColumns, h.surveyMapping, 'survey', [['bhid', 'hole id', false], ['at', 'depth', true], ['az', 'azimuth', false], ['dip', 'dip', false]]);
-    if (h.collarColumns && h.collarColumns.length) line('<span class="fi-x">re-mapping a column re-desurveys the holes</span>');
+    if (h.collarColumns && h.collarColumns.length) line(trusted('<span class="fi-x">re-mapping a column re-desurveys the holes</span>'));
     sec('desurvey');
     const mRow = document.createElement('div'); mRow.className = 'pp-row';
     const mLab = document.createElement('label'); mLab.textContent = 'method';
@@ -17448,28 +17438,28 @@ function renderSourceTab(body, L) {
     dSel.onchange = () => reopenDh(L, { dipConvention: dSel.value });
     dRow.append(dLab, dSel);
     body.appendChild(dRow);
-    line('<span class="fi-x">changing method or dip re-desurveys the holes</span>');
+    line(trusted('<span class="fi-x">changing method or dip re-desurveys the holes</span>'));
   } else if (L.kind === 'mesh') {
     sec('mesh');
-    line(`<span class="v">${(h.triCount || 0).toLocaleString()}</span> triangles · <span class="v">${(h.vertexCount || 0).toLocaleString()}</span> vertices · <span class="v">${escS(h.format)}</span>${h.soup ? ' · <span class="v">streamed</span>' : ''}`);
+    line(html`<span class="v">${(h.triCount || 0).toLocaleString()}</span> triangles · <span class="v">${(h.vertexCount || 0).toLocaleString()}</span> vertices · <span class="v">${escS(h.format)}</span>${h.soup ? html` · <span class="v">streamed</span>` : ''}`);
   } else {
     sec('position');
-    line(`<span class="v">${escS(h.kind === 'las' ? `LAS ${h.version} fmt ${h.format}` : 'PLY ' + escS(h.format))}</span> — positions from the file's own records`);
+    line(html`<span class="v">${escS(h.kind === 'las' ? `LAS ${h.version} fmt ${h.format}` : 'PLY ' + escS(h.format))}</span> — positions from the file's own records`);
   }
   if (h.grid) {
     sec('block grid');
-    line(`count <span class="v">${h.grid.x.count} × ${h.grid.y.count} × ${h.grid.z.count}</span>`);
-    line(`block <span class="v">${fm(h.grid.x.pitch)} × ${fm(h.grid.y.pitch)} × ${fm(h.grid.z.pitch)}</span> m`);
-    { const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin]; line(`block 0 centroid <span class="v">${fm(c0[0])}, ${fm(c0[1])}, ${fm(c0[2])}</span>`); }
-    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); line(`rotated <span class="v">azimuth ${ag.azimuth.toFixed(1)}°${ag.zOnly ? '' : `, tilt ${ag.tilt.toFixed(1)}°`}</span> · ${(h.lattice && h.lattice.basis) || 'declared'}`); }
+    line(html`count <span class="v">${h.grid.x.count} × ${h.grid.y.count} × ${h.grid.z.count}</span>`);
+    line(html`block <span class="v">${fm(h.grid.x.pitch)} × ${fm(h.grid.y.pitch)} × ${fm(h.grid.z.pitch)}</span> m`);
+    { const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin]; line(html`block 0 centroid <span class="v">${fm(c0[0])}, ${fm(c0[1])}, ${fm(c0[2])}</span>`); }
+    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); line(html`rotated <span class="v">azimuth ${ag.azimuth.toFixed(1)}°${ag.zOnly ? '' : `, tilt ${ag.tilt.toFixed(1)}°`}</span> · ${(h.lattice && h.lattice.basis) || 'declared'}`); }
   }
   if (h.bbox) {
     sec('extent — world');
     for (const [ax, i] of [['X', 0], ['Y', 1], ['Z', 2]]) {
-      line(`${ax} <span class="v">${fm(h.bbox.min[i])}</span> – <span class="v">${fm(h.bbox.max[i])}</span> <span class="fi-x">· Δ</span> <span class="v">${fm(h.bbox.max[i] - h.bbox.min[i])}</span>`);
+      line(html`${ax} <span class="v">${fm(h.bbox.min[i])}</span> – <span class="v">${fm(h.bbox.max[i])}</span> <span class="fi-x">· Δ</span> <span class="v">${fm(h.bbox.max[i] - h.bbox.min[i])}</span>`);
     }
   }
-  if (frame) { sec('frame'); line(`origin <span class="v">${frame.origin.map(fm).join(', ')}</span>`); }
+  if (frame) { sec('frame'); line(html`origin <span class="v">${frame.origin.map(fm).join(', ')}</span>`); }
 }
 // ── layer GROUPS (spec §4.1 v1): the panel is a tree. A node is a layerId or
 // { group, name, visible, collapsed, children }. Visibility is QGIS's: every
@@ -18454,9 +18444,7 @@ let _recLayer = null, _recRows = [], _recNote = '', _recAllNames = [], _recQ = '
 function paintRecList() {
   const hide = _recLayer && _recLayer._recHide;
   const vis = (hide && hide.size) ? _recRows.filter(([k]) => !hide.has(String(k))) : _recRows;
-  let h = vis.map(([k, v]) => `<div class="rp-row"><span class="k" title="${k}">${k}</span><span class="v">${v}</span></div>`).join('');
-  if (_recNote) h += `<div class="rp-note">${_recNote}</div>`;
-  $('#rpList').innerHTML = h;
+  setHTML($('#rpList'), html`${vis.map(([k, v]) => html`<div class="rp-row"><span class="k" title="${k}">${k}</span><span class="v">${v}</span></div>`)}${_recNote ? html`<div class="rp-note">${_recNote}</div>` : ''}`);
   const fb = $('#rpFieldsBtn');
   fb.style.display = _recAllNames.length ? '' : 'none';
   const nh = hide ? hide.size : 0;

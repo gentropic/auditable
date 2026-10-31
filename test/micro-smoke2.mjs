@@ -9,6 +9,12 @@ import { chromium } from 'playwright';
 import http from 'http';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
+// --built: run every section against the BUILT micro.html (node build.js
+// --target=micro) instead of the dev tree — the registry/blob bundle is where a
+// carve or a new import breaks without the dev tree noticing.
+const BUILT = process.argv.includes('--built');
+const APP = BUILT ? '/micro.html' : '/tools/micro/index.html';
+if (BUILT) console.log('micro-smoke2 against the BUILT micro.html');
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript' };
 const server = http.createServer(async (req, res) => {
   try { const p = decodeURIComponent(new URL(req.url, 'http://x').pathname); const data = await readFile('.' + p);
@@ -23,7 +29,7 @@ await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMe
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
 const mkPage = async (proj) => {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
-  await p.goto(`http://127.0.0.1:${PORT}/tools/micro/index.html`, { waitUntil: 'load' });
+  await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro, null, { timeout: 20000 });
   await p.evaluate((pr) => { window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle(pr, { create: true }); }, proj);
   return p;
@@ -2309,9 +2315,9 @@ await p.close();
   await pt3.evaluate(() => document.querySelector('#ofOpen').click());
   await pt3.waitForFunction(() => window._micro.layers().length === 2, null, { timeout: 60000 });
   chk('opening the offer lands the layer (2 layers)', true);
-  pt3.evaluate(() => window._micro.scanFolderForNewData());
-  await pt3.waitForFunction(() => /scan: no new data|scan failed|scan:/.test(document.querySelector('#meta').textContent) && !document.querySelector('#ofDlg').classList.contains('show'), null, { timeout: 60000 });
-  const meta2 = await pt3.evaluate(() => document.querySelector('#meta').textContent);
+  // awaited, and the line read at once: the just-opened layer's own late status
+  // can overwrite the meta line a moment later (a race, not a scan failure)
+  const meta2 = await pt3.evaluate(async () => { await window._micro.scanFolderForNewData(); return document.querySelector('#ofDlg').classList.contains('show') ? 'offered again' : document.querySelector('#meta').textContent; });
   chk(`a re-scan finds nothing new (the opened file is referenced) — “${meta2}”`, /no new data/.test(meta2));
   await pt3.close();
 }
@@ -2734,7 +2740,7 @@ await p.close();
   const ctx2 = await b.newContext({ viewport: { width: 1100, height: 750 } });   // no init script: the question is unanswered here
   const open = async () => {
     const p = await ctx2.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
-    await p.goto(`http://127.0.0.1:${PORT}/tools/micro/index.html`, { waitUntil: 'load' });
+    await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
     await p.waitForFunction(() => window._micro, null, { timeout: 20000 });
     await p.evaluate(async () => {
       window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('sm2wfr', { create: true });
@@ -3923,6 +3929,36 @@ await p.close();
   chk(`GT with a series filter (Z < 100): zones on = off (${zr.gt.same}, ${zr.gt.rows} cutoffs)`, zr.gt.same && zr.gt.rows > 5);
   chk(`stats over a selection: ${zr.selKept} of 40 zones read, the same answer as unzoned (${zr.stats.same}, ${zr.stats.rows} rows)`, zr.selKept === 10 && zr.stats.same && zr.stats.rows >= 2);
   chk(`the zones survive save + reopen (${re.n} zones, typed ${re.typed}): Z < 100 skips ${re.skipped}, ${re.hits} hits`, re.n === 40 && re.typed && re.skipped > 0 && re.hits === 32 * 32 * 10);
+}
+
+// ── §59: FILE TEXT IS NEVER MARKUP (src/html.js). A CSV whose column name, a
+//     category value and a cell carry an onerror payload: the colour-by list, the
+//     record panel and the file info render it as TEXT, and nothing runs. ──
+{
+  const px = await mkPage('sm2xss');
+  const xr = await px.evaluate(async () => {
+    const M = window._micro, bad = (n) => `<img src=x onerror="window.__xss=(window.__xss||0)+${n}">`;
+    let s = `X,Y,Z,"${bad(1).replace(/"/g, '""')}",ROCK,NOTE\n`;
+    for (let i = 0; i < 64; i++) s += `${(i % 4) * 10},${((i / 4 | 0) % 4) * 10},${(i / 16 | 0) * 10},${i / 10},"${(i % 2 ? bad(2) : 'ox').replace(/"/g, '""')}","${bad(4).replace(/"/g, '""')}"\n`;
+    const id = await M.openBlob(new File([s], `${bad(8)}.csv`), `${bad(8)}.csv`, 'replace');
+    const opts = [...document.querySelectorAll('#colorBy option')].map((o) => o.textContent);
+    await window.micro.pick({ layer: id, rec: 1 });
+    for (let n = 0; n < 100 && !/onerror/.test(document.querySelector('#rpList').textContent); n++) await new Promise((z) => setTimeout(z, 50));
+    const rp = document.querySelector('#rpList');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true }));
+    await new Promise((z) => setTimeout(z, 300));
+    const fi = document.querySelector('#helpBody');
+    await new Promise((z) => setTimeout(z, 300));                 // an <img onerror> fires on a task, not synchronously
+    return {
+      xss: window.__xss || 0,
+      optText: opts.some((t) => t.includes('<img')),
+      rpText: /<img src=x onerror/.test(rp.textContent), rpImgs: rp.querySelectorAll('img').length,
+      fiText: /<img src=x onerror/.test(fi.textContent), fiImgs: fi.querySelectorAll('img').length,
+    };
+  });
+  await px.close();
+  chk(`file text renders as text — colour-by ${xr.optText}, record panel ${xr.rpText} (${xr.rpImgs} <img>), file info ${xr.fiText} (${xr.fiImgs} <img>); nothing ran (__xss ${xr.xss})`,
+    xr.xss === 0 && xr.optText && xr.rpText && xr.rpImgs === 0 && xr.fiText && xr.fiImgs === 0);
 }
 
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');

@@ -55,6 +55,14 @@ jobs:
         run: npm run test:micro
       - name: micro smoke 2 — data-integrity + persistence
         run: npm run test:micro2
+      - name: micro smoke 2 against the BUILT micro.html (the registry bundle)
+        run: npm run test:micro2:built
+      - name: micro mobile smoke — review mode (dev tree + built)
+        run: npm run test:micro:mobile
+      - name: micro shell smoke — lead-acid intake / export / tree
+        run: npm run test:micro:shell
+      - name: micro wfr smoke — .wfr convert / pack / export
+        run: npm run test:micro:wfr
       - name: micro host smoke — addLayer, load results, quoted CSV, Parquet sub-blocks, rotated models
         run: npm run test:micro:host
       - name: lamina built smoke — ship artifact + Sealed net gate
