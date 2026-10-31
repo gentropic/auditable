@@ -3164,6 +3164,58 @@ await p.close();
   await pg.close();
 }
 
+// ── §47: a BLANK grade is missing, never zero. `+''` and `+null` are 0, so the
+//     analyses counted every unestimated block as grade 0. A model where a third
+//     of the blocks have no AU: grade-tonnage at its lowest cut holds only the
+//     estimated tonnage, stats n/mean see only the estimated values — on BOTH
+//     stats paths (row and pinned), and realizing a calc keeps blanks blank. ──
+{
+  const pb = await mkPage('sm2blank');
+  const bl = await pb.evaluate(async () => {
+    const M = window._micro;
+    let t = 'XC,YC,ZC,AU,ROCK\n';
+    const est = [];
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) {
+      const blank = (i + j + k) % 3 === 0, au = 0.5 + ((i * 7 + j * 3 + k) % 10) / 10;
+      if (!blank) est.push(au);
+      t += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${blank ? '' : au},${i % 2 ? 'ox' : 'fr'}\n`;
+    }
+    await M.openBlob(new File([t], 'blank.csv'), 'blank.csv', 'replace');
+    for (let n = 0; n < 100 && !(M.layers()[0] && M.layers()[0].docs.blockDoc); n++) await new Promise((z) => setTimeout(z, 100));
+    const L = M.layers()[0];
+    // grade-tonnage (count, no density): tonnage at the lowest cut = estimated blocks × 1000 m³
+    M.openGradeTonnage(L, { run: true, cfg: { nCut: 10, series: [{ layer: 'blank.csv', col: 'AU' }] } });
+    let el = null;
+    for (let n = 0; n < 200 && !el; n++) { el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage') && e._gtSpec); if (!el) await new Promise((z) => setTimeout(z, 50)); }
+    const gt0 = el._gtSpec.series[0].data[0][1], gtG0 = el._gtSpec.series[1].data[0][1];
+    const mean = est.reduce((a, b) => a + b, 0) / est.length;
+    const runStats = async () => {
+      for (const w of document.querySelectorAll('.fwin')) delete w._statsRows;
+      M.openStats(L, { run: true, cfg: { cols: ['AU'], groupBy: '', weight: '', scope: 'all' } });
+      const w = await new Promise((res) => { const t2 = setInterval(() => { for (const x of document.querySelectorAll('.fwin')) if (x._statsRows) { clearInterval(t2); res(x); } }, 50); });
+      return w._statsRows[0];
+    };
+    const row = await runStats();
+    // the pinned path: a full filter scan pins AU, then stats again
+    const before = window.__statsFast || 0;
+    const inp = document.querySelector('#filter'); inp.value = 'XC >= 0 and AU >= 0 or AU < 0'; inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await new Promise((res) => { const t2 = setInterval(() => { if (L._filterMask) { clearInterval(t2); res(); } }, 50); });
+    inp.value = ''; await M.applyBlockFilter('');
+    const pinned = await runStats();
+    // realizing a calc column keeps a blank blank
+    L.calcCols = (L.calcCols || []).concat([{ name: 'AU2', expr: 'AU * 2' }]); L._calcFns = null;
+    const vals = await M.realizeCalc(L, 'AU2');
+    const nanCount = [...vals].filter((v) => Number.isNaN(v)).length;
+    return { n: est.length, total: 108, gt0, gtG0, mean, row: { n: row.n, mean: row.mean }, pinned: { n: pinned.n, mean: pinned.mean, fast: (window.__statsFast || 0) > before }, nanCount };
+  });
+  chk(`grade-tonnage counts only estimated blocks: ${bl.gt0} m³ at the lowest cut = ${bl.n} × 1000 (of ${bl.total} blocks), mean ${bl.gtG0.toFixed(4)} = ${bl.mean.toFixed(4)}`,
+    bl.gt0 === bl.n * 1000 && Math.abs(bl.gtG0 - bl.mean) < 1e-12);
+  chk(`stats skip blanks — row path n ${bl.row.n} = ${bl.n}, mean ${bl.row.mean.toFixed(4)}; pinned path (ran: ${bl.pinned.fast}) n ${bl.pinned.n}, mean ${bl.pinned.mean.toFixed(4)}`,
+    bl.row.n === bl.n && Math.abs(bl.row.mean - bl.mean) < 1e-12 && bl.pinned.n === bl.n && Math.abs(bl.pinned.mean - bl.mean) < 1e-12);
+  chk(`realizing a calc keeps blanks blank (${bl.nanCount} NaN = ${bl.total - bl.n} unestimated)`, bl.nanCount === bl.total - bl.n);
+  await pb.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

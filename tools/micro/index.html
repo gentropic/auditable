@@ -983,7 +983,7 @@ import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js'
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
-import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
+import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
 import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
@@ -3305,7 +3305,7 @@ async function runSpatialJoin({ leftL, rightL, target, columns, derived = [], co
         for (const c of ps.cols) {
           const wt = c._w >= 0 ? (+f[c._w] || 0) : 1; if (wt <= 0 && c._w >= 0) continue;
           if (c.num) {
-            const v = +f[c._i]; if (!Number.isFinite(v)) continue;
+            const v = numOf(f[c._i]); if (!Number.isFinite(v)) continue;   // a blank is missing, not 0
             if (sub) R.scatterBox(wx, wy, wz, hx, hy, hz, v, wt, c._acc); else R.scatter(si, sj, sk, v, wt, c._acc);
           } else {
             const lbl = f[c._i] == null ? '' : String(f[c._i]); let code = c._codeOf.get(lbl); if (code == null) { code = c._dict.length; c._dict.push(lbl); c._codeOf.set(lbl, code); }
@@ -3689,7 +3689,7 @@ function openGradeTonnage(L, ropts) {
           total++; if ((total & 0xffff) === 0) { if (onProgress) onProgress(total, N); await new Promise((r) => setTimeout(r)); }
           if (mask && !(rr < mask.length && mask[rr])) continue;
           if (se.filterFn && !se.filterFn(row)) continue;
-          const g = +se.gradeFn(row); if (!Number.isFinite(g)) continue;
+          const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;   // a blank grade is unestimated, not 0
           const w = (se.weightFn ? (+se.weightFn(row) || 0) * dScale : 1) * volumeAt(se.vc, row);
           if (!(w > 0)) continue;
           se.add(g, w);
@@ -5066,7 +5066,7 @@ async function scanSwath(st, onProgress) {
         if (selMask && !(rr < selMask.length && selMask[rr])) continue;
         const x = +row[m.x], y = +row[m.y], z = +row[m.z]; if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
         if (se.filterFn && !se.filterFn(row)) continue;
-        const g = +se.gradeFn(row); if (!Number.isFinite(g)) continue;
+        const g = numOf(se.gradeFn(row)); if (!Number.isFinite(g)) continue;
         const w = (se.weightFn ? (+se.weightFn(row) || 0) : 1) * volumeAt(se.vc, row); if (!(w > 0)) continue;
         for (let di = 0; di < dirs.length; di++) {
           const d = dirs[di], t = x * d[0] + y * d[1] + z * d[2], bi = Math.floor((t - fineOrigin[di]) / fineW[di]);
@@ -5493,7 +5493,7 @@ async function scanStatsPinned(L, st, mask, onProgress) {
       const w = wArr ? (+wArr[i] || 0) : 1;
       if (!(w > 0)) continue;
       for (let s = 0; s < colArrs.length; s++) {
-        const x = +colArrs[s][i];
+        const x = numOf(colArrs[s][i]);
         if (!Number.isFinite(x)) continue;
         const a = A[s];
         a.n++; a.sw += w; a.swx += w * x; a.swx2 += w * x * x;
@@ -5594,7 +5594,7 @@ function openStats(L, ropts) {
         const w = weightFn ? (+weightFn(row) || 0) : 1;
         if (!(w > 0)) continue;
         for (let i = 0; i < colFns.length; i++) {
-          const x = +colFns[i].fn(row);
+          const x = numOf(colFns[i].fn(row));
           if (!Number.isFinite(x)) continue;
           const a = A[i];
           a.n++; a.sw += w; a.swx += w * x; a.swx2 += w * x * x;
@@ -16307,7 +16307,7 @@ function realizeCalcPinned(L, name) {
     const ccols = censusChunkCols(L, h, byName, at, n, needL, chunkFns);
     const col = ccols[baseLen + paintLen + target];
     if (!col) return null;
-    for (let i = 0; i < n; i++) { const v = +col[i]; vals[at + i] = Number.isFinite(v) ? v : NaN; }
+    for (let i = 0; i < n; i++) { const v = numOf(col[i]); vals[at + i] = Number.isFinite(v) ? v : NaN; }
   }
   return vals;
 }
@@ -16318,7 +16318,7 @@ async function realizeCalc(L, name) {                      // one pass → per-r
   try { await ensureStoredValues(L, expandedDeps(L, parse(quoteIdent(name)))); } catch { /* unknown deps → blanks */ }
   const fn = compileValue(quoteIdent(name), schemaExt(L, h), { decimal: '.' });   // a NAME as an expression → quote
   const n = attrRowCountOf(L) || 0; const vals = new Float32Array(n); let rec = 0;
-  for await (const batch of layerRows(L, null)) { for (const f0 of batch) { if (rec >= n) break; let v; try { v = +fn(extendRow(L, f0, rec)); } catch { v = NaN; } vals[rec] = Number.isFinite(v) ? v : NaN; rec++; } await new Promise((r) => setTimeout(r)); }
+  for await (const batch of layerRows(L, null)) { for (const f0 of batch) { if (rec >= n) break; let v; try { v = numOf(fn(extendRow(L, f0, rec))); } catch { v = NaN; } vals[rec] = Number.isFinite(v) ? v : NaN; rec++; } await new Promise((r) => setTimeout(r)); }
   return vals;
 }
 async function materializeCalcCol(L, name) {

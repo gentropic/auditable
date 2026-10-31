@@ -5,7 +5,7 @@
 // rows come from there); ensureStoredValues faults evicted matcols back in at
 // every scan head. No DOM — the windows drive these and own the drawing.
 import { convert as unitConvert } from '../../../ext/units/index.js';
-import { layerTableHeader, colIsNumeric, schemaExt, layerRecords, attrRowCountOf } from './records.js';
+import { layerTableHeader, colIsNumeric, schemaExt, layerRecords, attrRowCountOf, numOf } from './records.js';
 import { ensureStoredValues } from './columns.js';
 import { gridAxesOf } from './grid-ops.js';
 
@@ -55,7 +55,7 @@ export async function computeGT(L, cols, weightCol, nCut, onProgress, selMask) {
     rc++;
     if (!selMask || (rAt < selMask.length && selMask[rAt])) {
       const wt = (wi >= 0 ? (+f[wi] || 0) : dConst != null ? dConst : 1) * dScale * vol;
-      for (let s = 0; s < idx.length; s++) { const v = +f[idx[s]]; if (Number.isFinite(v)) { ser[s].g.push(v); ser[s].w.push(wt); if (v < gmin) gmin = v; if (v > gmax) gmax = v; } }
+      for (let s = 0; s < idx.length; s++) { const v = numOf(f[idx[s]]); if (Number.isFinite(v)) { ser[s].g.push(v); ser[s].w.push(wt); if (v < gmin) gmin = v; if (v > gmax) gmax = v; } }
     }
     if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }   // yield per 64k, not per batch
   }
@@ -90,7 +90,7 @@ export async function computeSwath(L, cols, dir, bandWidth, offset, weightCol, o
       const t = x * dir[0] + y * dir[1] + z * dir[2], bi = Math.floor((t - offset) / bandWidth);
       let e = bands.get(bi); if (!e) { e = { w: new Float64Array(cols.length), wg: new Float64Array(cols.length), tw: 0, n: 0 }; bands.set(bi, e); }
       const wt = (wi >= 0 ? (+f[wi] || 0) : 1) * vol; e.tw += wt; e.n++;
-      for (let s = 0; s < idx.length; s++) { const v = +f[idx[s]]; if (Number.isFinite(v)) { e.w[s] += wt; e.wg[s] += wt * v; } }
+      for (let s = 0; s < idx.length; s++) { const v = numOf(f[idx[s]]); if (Number.isFinite(v)) { e.w[s] += wt; e.wg[s] += wt * v; } }
     }
     if ((rc & 0xffff) === 0) { if (onProgress) onProgress(rc); await new Promise((r) => setTimeout(r)); }   // yield per 64k, not per batch
   }

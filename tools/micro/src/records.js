@@ -151,6 +151,14 @@ export function extendRow(L, f, rec) {
   return out;
 }
 
+// a field as a NUMBER for the analyses: a blank is MISSING (NaN), never zero.
+// `+''`, `+'  '` and `+null` are all 0 — finite — so a plain unary plus counted
+// every unestimated block as grade 0: tonnage added at cutoff 0 and the mean
+// dragged down (grade-tonnage, swath), n and the mean (stats), averaged in as 0
+// (spatial join), stored as 0 (realizing a calc column). Anything else converts
+// as before (+v), so '12abc' stays NaN.
+export const numOf = (v) => (typeof v === 'number' ? v : v == null || (typeof v === 'string' && v.trim() === '') ? NaN : +v);
+
 // ── capabilities + record identity ────────────────────────────────────────────
 // What a block source CAN DO, asked instead of what it IS. One definition, so a
 // new source is right everywhere at once instead of in however many places
