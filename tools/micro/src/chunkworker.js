@@ -18,7 +18,7 @@
 // then returns a promise while enough batches are in flight (backpressure: a few
 // batches held, never the model).
 import { createBlockChunkBuilder } from '../../../ext/condenser/src/main.js';
-import { libUrl } from './pqpool.js';
+import { libUrl } from './liburl.js';
 
 const buffersOf = (o, out = []) => {
   if (o && ArrayBuffer.isView(o)) { if (!out.includes(o.buffer)) out.push(o.buffer); }

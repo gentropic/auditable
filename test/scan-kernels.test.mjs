@@ -3,7 +3,7 @@
 // mean and std — the old Σwx² − mean² form lost ~1e-10 relative to cancellation.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { momentAdd, momentMerge, momentStd } from '../tools/micro/src/kernels.js';
+import { momentAdd, momentMerge, momentStd } from '../ext/scan/src/kernels.js';
 
 const rnd = (s) => () => ((s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 2 ** 32);
 const fresh = () => ({ sw: 0, mean: 0, m2: 0 });

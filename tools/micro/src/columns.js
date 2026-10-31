@@ -7,9 +7,8 @@ import { parquetInfo, readParquetRange, writeParquet } from '../../../ext/parque
 import { deps, parse } from '../../../ext/expr/index.js';
 import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, layerRows, extendRow, rowQualifier } from './records.js';
 import { openDmModel, classifyQualified, coordNum } from '../../../ext/condenser/src/main.js';
-import { colAcc, scanParquetInWorkers, STAT_SLICE } from './colstats.js';
+import { scan, STAT_SLICE, chunkView } from './scanner.js';   // @gcu/scan: the column accumulator, its Parquet pool job, the chunk view
 import { sourceHash, sourceHashSync, sameSource } from './identity.js';
-import { chunkView } from './chunkview.js';
 
 export const PAINT_BLANK = '#33373c';                      // unpainted recedes toward the background
 
@@ -198,7 +197,7 @@ export function pinWindow(e, start, n, scratch) {
 // Float32 subarray VIEWS, paint decoded to dict strings, calcs REALIZED
 // chunk-wise (compileChunk) in dependency order. PROJECTED: only `needed`
 // (lowercased) columns materialize; the rest stay null (blank).
-// the view spec of L's columns (src/chunkview.js) — plain data, so a scan worker
+// the view spec of L's columns (@gcu/scan chunkview) — plain data, so a scan worker
 // can be handed the same spec the page uses. needed: lowercased names, or null = all.
 export function chunkSpecOf(L, h, needed) {
   const pcs = (L && L.paintCols) || [];
@@ -275,7 +274,7 @@ export async function pinnedSweep(AL, header, m, names, needL, calcChunkFns, chu
 //   L._colStats as it was.
 // opts.workers — false keeps a Parquet scan on the page (the fallback path).
 //
-// Parquet base columns go to a pool of workers (colstats.js), row groups
+// Parquet base columns go to a pool of workers (@gcu/scan parquetStats), row groups
 // shared out, states merged; where workers can't run (file://) the page does it.
 // Parquet and .dm base columns are read COLUMNAR (only the asked-for columns,
 // typed batches, no row arrays); calc/paint columns and delimited sources ride
@@ -294,7 +293,7 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
   const want = columns ? new Set(columns) : null;
   const idxs = cols.map((_, i) => i).filter((i) => !want || want.has(cols[i]));
   if (want) bands = false;                                 // bands index the whole table, never a subset
-  const acc = colAcc();
+  const acc = scan.colAcc();
   const st = new Map(idxs.map((i) => [i, acc.create(isNumAt(i))]));
   const doc = L.docs.blockDoc;
   const columnar = !!(doc && (doc.parquet || (doc.header && doc.header.dm)));
@@ -312,7 +311,7 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
   let via = 'page';
   if (colIdx.length && doc.parquet && !bands && workers) {
     const P = doc.parquet;
-    const got = await scanParquetInWorkers({ file: P.buf, meta: P.meta, rowGroups: P.rowGroups, cols: colIdx.map((i) => ({ name: h.columns[i], num: isNumAt(i) })), signal, onProgress: tick });
+    const got = await scan.parquetStats({ file: P.buf, meta: P.meta, rowGroups: P.rowGroups, cols: colIdx.map((i) => ({ name: h.columns[i], num: isNumAt(i) })), signal, onProgress: tick });
     if (got) { colIdx.forEach((i, k) => st.set(i, got[k])); rows = total; pass++; colIdx.length = 0; via = 'workers'; }
   }
   if (colIdx.length) {

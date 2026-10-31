@@ -1,10 +1,10 @@
-// micro chunkview — THE view of a chunk of records that every expression sees:
+// @gcu/scan chunkview — THE view of a chunk of records that every expression sees:
 // the base columns by name, then the stored derived columns (painted labels /
 // ratio fractions / materialized values), then the calc columns evaluated in
 // dependency order. Positions follow schemaExt (base · paint · calc).
 //
-// ZERO imports on purpose: the page uses it (columns.js censusChunkCols) and so do
-// the scan workers (src/pqpool.js), and a module worker has no import map, so
+// ZERO imports on purpose: the page uses it (micro's columns.js census) and so do
+// the scan workers (worker.js), and a module worker has no import map, so
 // anything it imports must arrive by URL. What it needs (@gcu/expr's compileChunk)
 // is passed in. One definition on both sides — the semantics can't drift apart.
 

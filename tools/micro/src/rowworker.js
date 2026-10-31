@@ -12,7 +12,8 @@
 // ({ buf, meta, names, rowGroups }). Same values as readParquetRow (int64 → Number).
 // Where a worker can't start (file://), the page reads, as before.
 import { readParquetRow } from '../../../ext/parquet/index.js';
-import { libUrl, groupStarts } from './pqpool.js';
+import { libUrl } from './liburl.js';
+import { groupStarts } from './scanner.js';
 
 const IDLE_MS = 60000;
 const CACHE_CELLS = 16_000_000;                             // rows × columns kept decoded at most (one group)

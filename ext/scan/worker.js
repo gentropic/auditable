@@ -1,5 +1,10 @@
-// micro kernels — the per-chunk computations of the analysis windows, shared by
-// the page and the scan workers (src/pqpool.js, src/colscan.js).
+// ⚠ GENERATED FILE — DO NOT EDIT. Source: src/  Build: @gcu/build src/worker-main.js
+// @gcu/scan — Kernels over a block model's records — grade-tonnage, swath, statistics, filters, values, positions — columnar and parallel, never resident. Parquet row groups, Datamine .dm page runs and indexed delimited runs (with zone-map skipping) on a pool of module workers, the same kernel on the page where workers can't run, partials merged in unit order so the answer never depends on which. Zero imports: its libraries (parquet, condenser, expr, sluice) are injected.
+
+// ── src/kernels.js ──
+
+// @gcu/scan kernels — the per-chunk computations (grade-tonnage, swath, stats,
+// filter, values, positions), shared by the page and the workers (worker.js, run.js).
 //
 // ZERO imports, like chunkview.js: a module worker has no import map, so what a
 // kernel needs (@gcu/expr, the chunk view) is passed in. A kernel turns one chunk
@@ -20,15 +25,15 @@
 // conversion (oz/t) lands within one fine bin (~1/20000 of the range).
 // (It replaced pushing every (g, w) into JS arrays and sorting them — 130 s and
 // a 69 s freeze at 60M blocks.)
-export const GT_BINS_TARGET = 20000, GT_BINS_CAP = 400000;
-export const gtEdge = (k, e) => (e >= 0 ? k * 10 ** e : k / 10 ** -e);          // a decimal edge, exactly as typed
-export function gtBinOf(g, e) {                                   // the largest k with edge(k) ≤ g
+const GT_BINS_TARGET = 20000, GT_BINS_CAP = 400000;
+const gtEdge = (k, e) => (e >= 0 ? k * 10 ** e : k / 10 ** -e);          // a decimal edge, exactly as typed
+function gtBinOf(g, e) {                                   // the largest k with edge(k) ≤ g
   let k = Math.floor(e >= 0 ? g / 10 ** e : g * 10 ** -e);
   while (gtEdge(k + 1, e) <= g) k++;
   while (gtEdge(k, e) > g) k--;
   return k;
 }
-export function gtAccumulator() {
+function gtAccumulator() {
   const se = { e: null, bins: new Map(), n: 0, gmin: Infinity, gmax: -Infinity, pend: [] };
   const put = (g, w) => {
     const k = gtBinOf(g, se.e);
@@ -66,7 +71,7 @@ export function gtAccumulator() {
 }
 // Σw / Σw·g of everything at or above cutoff cN (native units): bins from the
 // first edge ≥ cN up
-export function gtAbove(se, cN) {
+function gtAbove(se, cN) {
   let K = gtBinOf(cN, se.e); if (gtEdge(K, se.e) < cN) K++;
   let lo = 0, hi = se.keys.length; while (lo < hi) { const md = (lo + hi) >> 1; if (se.keys[md] >= K) lo = md + 1; else hi = md; }
   return [se.cw[lo], se.cwg[lo]];
@@ -74,7 +79,7 @@ export function gtAbove(se, cN) {
 // the cutoffs (axis units): nCut+1 round values, a common multiple of every
 // series' fine step, from a round value ≤ the data minimum to one ≥ its maximum
 // (overshooting it by ~25% at most)
-export function gtCuts(scanSeries, nCut, factorOf) {
+function gtCuts(scanSeries, nCut, factorOf) {
   let gmin = Infinity, gmax = -Infinity, fine = 0;
   for (const se of scanSeries) {
     if (!se.n) continue;
@@ -114,7 +119,7 @@ export function gtCuts(scanSeries, nCut, factorOf) {
 // is already a quoted name or an expression), dScale (density unit → t/m³), vol:
 // { base, dims: [nameX, nameY, nameZ] | null } }. One chunk → per series the
 // accumulator's bins as transferable arrays.
-export function gtKernel(E, CV) {
+function gtKernel(E, CV) {
   return {
     init(params, calcs) {
       const sch = params.schema;
@@ -149,7 +154,7 @@ export function gtKernel(E, CV) {
   };
 }
 // an accumulator's state as plain transferable data
-export function gtPartial(acc) {
+function gtPartial(acc) {
   if (acc.pend) {                                            // never settled (few values): settle now
     acc.finish();
     return { e: acc.e, keys: acc.keys, w: binDiffs(acc.cw), wg: binDiffs(acc.cwg), n: acc.n, gmin: acc.gmin, gmax: acc.gmax };
@@ -161,7 +166,7 @@ export function gtPartial(acc) {
 const binDiffs = (c) => { const o = new Float64Array(c.length - 1); for (let i = 0; i < o.length; i++) o[i] = c[i + 1] - c[i]; return o; };
 // partials (chunk order) → one finished accumulator: every partial brought to the
 // coarsest step among them (×10 merges keep every edge an edge), bins added in order
-export function gtMerge(parts) {
+function gtMerge(parts) {
   const live = parts.filter((p) => p && p.n);
   const acc = gtAccumulator();
   if (!live.length) { acc.finish(); return acc; }
@@ -186,7 +191,7 @@ export function gtMerge(parts) {
 // One chunk → per series, per direction, the fine bins' {Σw, Σwg, n} as
 // transferable arrays + the series' row count. Same arithmetic as scanSwath's
 // row path: the block's support × the weight, a fine bin per (t − origin) / width.
-export function swathKernel(E, CV) {
+function swathKernel(E, CV) {
   return {
     init(params, calcs) {
       const sch = params.schema, ix = (nm) => sch.findIndex((c) => c.name === nm);
@@ -227,7 +232,7 @@ export function swathKernel(E, CV) {
   };
 }
 // partials (chunk order) → per series { n, fine: [Map(bin → { sw, swg, n })] per direction }
-export function swathMerge(parts, nSeries, nDirs) {
+function swathMerge(parts, nSeries, nDirs) {
   const out = [];
   for (let k = 0; k < nSeries; k++) {
     const fine = Array.from({ length: nDirs }, () => new Map()); let cnt = 0;
@@ -258,13 +263,13 @@ function volumes(ctx, view, n, num) {
 // small next to its mean (SG ≈ 2.7 ± 0.16: ~1e-10 relative, and order-dependent);
 // this keeps the spread itself, so page, workers and any chunking agree to ~1e-15.
 // Population variance (m2 / Σw), as before.
-export function momentAdd(a, x, w) {
+function momentAdd(a, x, w) {
   a.sw += w;
   const d = x - a.mean;
   a.mean += d * (w / a.sw);
   a.m2 += w * d * (x - a.mean);
 }
-export function momentMerge(a, b) {
+function momentMerge(a, b) {
   if (!b.sw) return;
   if (!a.sw) { a.sw = b.sw; a.mean = b.mean; a.m2 = b.m2; return; }
   const sw = a.sw + b.sw, d = b.mean - a.mean;
@@ -272,7 +277,7 @@ export function momentMerge(a, b) {
   a.m2 += b.m2 + d * d * (a.sw * b.sw / sw);
   a.sw = sw;
 }
-export const momentStd = (a) => (a.sw > 0 ? Math.sqrt(Math.max(0, a.m2 / a.sw)) : NaN);
+const momentStd = (a) => (a.sw > 0 ? Math.sqrt(Math.max(0, a.m2 / a.sw)) : NaN);
 
 // ── the STATS kernel ─────────────────────────────────────────────────────────
 // params: { schema, cols: [expr…] (quoted names), groupBy: expr | null, weight:
@@ -280,7 +285,7 @@ export const momentStd = (a) => (a.sw > 0 ? Math.sqrt(Math.max(0, a.m2 / a.sw)) 
 // order reproduces the row path's group order and its 256-group cap), each with
 // per column { n, sw, mean, m2, min, max } + a t-digest state (sluice). Moments
 // are weighted; quantiles unweighted — as the window says.
-export function statsKernel(E, CV, SL) {
+function statsKernel(E, CV, SL) {
   const TD = SL.tdigest();
   return {
     init(params, calcs) {
@@ -316,7 +321,7 @@ export function statsKernel(E, CV, SL) {
   };
 }
 // partials (chunk order) → { groups: Map(key → [acc per column]), overflow }
-export function statsMerge(SL, parts) {
+function statsMerge(SL, parts) {
   const TD = SL.tdigest(), groups = new Map(); let overflow = false;
   for (const p of parts) {
     if (!p) continue;
@@ -343,7 +348,7 @@ export function statsMerge(SL, parts) {
 // render data for compaction (x, y, z, channel, category code, offset), and, when
 // the pin cache wants them, the decoded columns (numbers as Float64, text as a
 // local dictionary + codes the page re-keys).
-export function filterKernel(E, CV) {
+function filterKernel(E, CV) {
   return {
     init(params, calcs) {
       const sch = params.schema, ix = (nm) => (nm == null ? -1 : sch.findIndex((c) => c.name === nm));
@@ -406,7 +411,7 @@ export function filterKernel(E, CV) {
 // holds: one texel per record), a blank written as `blank`, + the min/max over
 // the records that are DRAWN (finite x, y, z — the renderer's rule), so the
 // colour range is the one the chunks would have carried.
-export function valuesKernel(E, CV) {
+function valuesKernel(E, CV) {
   return {
     init(params, calcs) {
       const sch = params.schema;
@@ -436,7 +441,7 @@ export function valuesKernel(E, CV) {
 // params: { schema, coords: [x, y, z] (names) }. One chunk → the coordinates of
 // the records that HAVE them (finite x, y, z — the renderer's rule) + their
 // offsets in the chunk. A block with no X is not a block at the origin.
-export function positionsKernel(E, CV) {
+function positionsKernel(E, CV) {
   return {
     init(params, calcs) {
       const sch = params.schema;
@@ -457,3 +462,306 @@ export function positionsKernel(E, CV) {
     },
   };
 }
+
+// ── src/chunkview.js ──
+
+// @gcu/scan chunkview — THE view of a chunk of records that every expression sees:
+// the base columns by name, then the stored derived columns (painted labels /
+// ratio fractions / materialized values), then the calc columns evaluated in
+// dependency order. Positions follow schemaExt (base · paint · calc).
+//
+// ZERO imports on purpose: the page uses it (micro's columns.js census) and so do
+// the scan workers (worker.js), and a module worker has no import map, so
+// anything it imports must arrive by URL. What it needs (@gcu/expr's compileChunk)
+// is passed in. One definition on both sides — the semantics can't drift apart.
+
+// spec: { base: [name…], paints: [{ name, kind, mat, dict, need }] } — paints in
+// L.paintCols order; `need` false skips the column (left null, as the census did).
+// page: per paint index, the chunk's slice — Uint8 codes, or the materialized
+// Float32 values (null = evicted → blank). calcFns: [{ slot, fn }] from compileCalcs.
+function chunkView(spec, baseByName, page, n, calcFns) {
+  const base = spec.base, pcs = spec.paints;
+  const out = new Array(base.length + pcs.length + (spec.calcCount || 0)).fill(null);
+  for (let i = 0; i < base.length; i++) { const c = baseByName[base[i]]; if (c) out[i] = c; }
+  for (let j = 0; j < pcs.length; j++) {
+    const pc = pcs[j];
+    if (!pc.need) continue;
+    const src = page[j];
+    if (pc.mat) { out[base.length + j] = src || null; continue; }
+    const a = new Array(n);
+    if (!src) { a.fill(pc.kind === 'ratio' ? 0 : ''); out[base.length + j] = a; continue; }
+    for (let i = 0; i < n; i++) { const code = src[i] || 0; a[i] = pc.kind === 'ratio' ? +(code / 255).toFixed(3) : ((code && pc.dict[code]) || ''); }
+    out[base.length + j] = a;
+  }
+  if (calcFns) for (const { slot, fn } of calcFns) { const { buf } = fn(out, n); out[slot] = buf; }
+  return out;
+}
+
+// calcs: [{ slot, expr }] in dependency order (calcOrder) → [{ slot, fn }]. A calc
+// that won't compile reads blank, as everywhere.
+function compileCalcs(E, calcs, schema) {
+  return calcs.map(({ slot, expr }) => {
+    let fn; try { fn = E.compileChunk(expr, schema, { decimal: '.' }); } catch { fn = () => ({ t: 'raw', buf: [] }); }
+    return { slot, fn };
+  });
+}
+
+// a chunk result as numbers for the analyses: compileChunk hands back a Float64
+// buffer (blank = NaN) or raw values, where a blank is '' or null — MISSING, never
+// 0 (unary plus would say 0). Same rule as records.js numOf.
+function chunkNumbers(r, n, out) {
+  const buf = r.buf;
+  if (buf instanceof Float64Array) return buf;
+  const o = out && out.length >= n ? out : new Float64Array(n);
+  if (r.t === 'bool' && ArrayBuffer.isView(buf)) {         // 0 / 1, and 2 = blank
+    for (let i = 0; i < n; i++) o[i] = buf[i] === 2 ? NaN : buf[i];
+    return o;
+  }
+  for (let i = 0; i < n; i++) {
+    const v = buf[i];
+    o[i] = typeof v === 'number' ? v : v == null || (typeof v === 'string' && v.trim() === '') ? NaN : +v;   // true → 1, false → 0, as numOf
+  }
+  return o;
+}
+
+// ── src/colacc.js ──
+
+// @gcu/scan colacc — the per-column statistics accumulator.
+//
+// ZERO imports, like kernels.js: the page and the workers push values through
+// this one definition (the worker bundle carries it too), so their states merge.
+// sl = the @gcu/sluice exports. Numbers: welford + t-digest; text: topK +
+// cardinality. States are plain data (structured-cloneable) and merge.
+
+const STAT_SLICE = 65536;
+
+function makeColAcc(sl) {
+  const W = sl.welford(), TD = sl.tdigest(), TK = sl.topK({ limit: 500 }), CD = sl.cardinality({ limit: 4096 });
+  const buf = new Float64Array(STAT_SLICE);
+  const num = (v) => (typeof v === 'number' ? v : (v == null || v === '' ? NaN : parseFloat(v)));
+  return {
+    create: (isNum) => (isNum ? { num: true, w: W.create(), td: TD.create(), nulls: 0 }
+      : { num: false, top: TK.create(), card: CD.create(), nulls: 0 }),
+    pushNumber(c, v) {
+      const x = num(v);
+      if (!Number.isFinite(x)) { c.nulls++; return; }
+      W.push(c.w, x); TD.push(c.td, x);
+    },
+    // a slice [a, b) of a column batch (b − a ≤ STAT_SLICE): welford per value,
+    // the t-digest once for the slice (a native sort + one merge)
+    pushNumbers(c, arr, a, b) {
+      let m = 0;
+      for (let k = a; k < b; k++) {
+        const x = num(arr[k]);
+        if (!Number.isFinite(x)) { c.nulls++; continue; }
+        W.push(c.w, x);
+        buf[m++] = x;
+      }
+      if (m) TD.pushArray(c.td, buf, 0, m);
+    },
+    pushText(c, v) {
+      const sv = v == null ? '' : String(v).trim();
+      if (!sv) { c.nulls++; return; }
+      TK.push(c.top, sv); CD.push(c.card, sv);
+    },
+    merge(c, o) {
+      if (c.num) { c.w = W.merge(c.w, o.w); c.td = TD.merge(c.td, o.td); }
+      else { c.top = TK.merge(c.top, o.top); c.card = CD.merge(c.card, o.card); }
+      c.nulls += o.nulls;
+    },
+    result(c, rows) {
+      if (c.num) {
+        const w = W.result(c.w), td = TD.result(c.td);
+        const q = (p) => sl.quantileFromCentroids(td.centroids, td.count, p);
+        return { kind: 'num', n: w.count, nulls: c.nulls, mean: w.mean, std: w.std, min: w.min, max: w.max, p25: q(0.25), p50: q(0.5), p75: q(0.75), centroids: td.centroids, total: td.count };
+      }
+      const t = TK.result(c.top);
+      return { kind: 'txt', n: rows - c.nulls, nulls: c.nulls, distinct: t.distinct, overflow: t.overflow, top: t.top(5) };
+    },
+  };
+}
+
+// ── src/tasks.js ──
+
+// @gcu/scan tasks — the per-unit jobs a Parquet model's open runs: the discovery
+// summary of one row group, and its render decode. ZERO imports: condenser's
+// coordNum and dimKey come in as `cd`, so the worker and the page read a
+// coordinate and key a block size by ONE definition (they were copies, three
+// times over, embedded into the worker with toString()).
+
+// ── discovery: what the open's sweep collects, for one row group ──────────────
+// Merged in group order, exactly what a sequential sweep gives: per-axis distinct
+// centroids rounded to 10 digits (capped), bbox, the category values (capped at
+// 257), the smallest size per axis and the distinct size keys, and the first
+// `res` valid centroids.
+function discoverGroup(cd, p, cols, count, res) {
+  const cn = cd.coordNum, r10 = (v) => Number(v.toPrecision(10));
+  const X = cols[p.xN], Y = cols[p.yN], Z = cols[p.zN], C = p.catN ? cols[p.catN] : null;
+  const DX = p.dN ? cols[p.dN[0]] : null, DY = p.dN ? cols[p.dN[1]] : null, DZ = p.dN ? cols[p.dN[2]] : null;
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const ax = [new Set(), new Set(), new Set()], seen = [new Set(), new Set(), new Set()];
+  const cats = C ? new Set() : null, dims = DX ? new Set() : null, minDim = [Infinity, Infinity, Infinity];
+  const out = res > 0 ? new Float64Array(res * 3) : null;
+  let nres = 0, valid = 0;
+  const add = (a, v) => {
+    if (ax[a].size >= p.cap) return;
+    const s = seen[a];
+    if (s.size < p.cap * 4) { if (s.has(v)) return; s.add(v); }
+    ax[a].add(r10(v));
+  };
+  for (let i = 0; i < count; i++) {
+    const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]);
+    if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+    valid++;
+    if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
+    if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
+    if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
+    add(0, xv); add(1, yv); add(2, zv);
+    if (nres < res) { out[nres * 3] = xv; out[nres * 3 + 1] = yv; out[nres * 3 + 2] = zv; nres++; }
+    if (cats && cats.size <= 256) { const v = C[i]; if (v != null && v !== '') cats.add(String(v)); }
+    if (DX) {
+      const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
+      if (dx > 0 && dy > 0 && dz > 0) {
+        if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
+        if (dims.size <= p.dimMax) dims.add(cd.dimKey(dx, dy, dz));
+      }
+    }
+  }
+  return {
+    valid, min, max, ax: ax.map((s) => [...s]),
+    cats: cats ? [...cats] : null, dims: dims ? [...dims] : null, minDim,
+    res: out ? out.subarray(0, nres * 3) : null,
+  };
+}
+
+// ── decode: one row group as the chunk builder's typed arrays ─────────────────
+// codes = { cat: Map(value → code) | null, dim: Map(dimKey → palette index) | null }.
+// A row without a usable centroid isn't drawn; record numbers stay RAW.
+function decodeGroup(cd, p, cols, start, count, codes) {
+  const cn = cd.coordNum;
+  const X = cols[p.xN], Y = cols[p.yN], Z = cols[p.zN], CH = p.chanN ? cols[p.chanN] : null, CA = p.catN ? cols[p.catN] : null;
+  const DX = p.sizeN ? cols[p.sizeN[0]] : null, DY = p.sizeN ? cols[p.sizeN[1]] : null, DZ = p.sizeN ? cols[p.sizeN[2]] : null;
+  const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), chan = new Float64Array(count);
+  const cat = codes.cat ? new Uint8Array(count) : null, dim = codes.dim ? new Uint8Array(count) : null, recIdx = new Uint32Array(count);
+  const memo = new Map();
+  const dimCode = (dx, dy, dz) => {
+    let my = memo.get(dx); if (!my) memo.set(dx, my = new Map());
+    let mz = my.get(dy); if (!mz) my.set(dy, mz = new Map());
+    let c = mz.get(dz); if (c === undefined) mz.set(dz, c = codes.dim.get(cd.dimKey(dx, dy, dz)) ?? 0);
+    return c;
+  };
+  let m = 0;
+  for (let i = 0; i < count; i++) {
+    const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]);
+    if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
+    x[m] = xv; y[m] = yv; z[m] = zv;
+    chan[m] = CH ? (CH[i] == null ? NaN : +CH[i]) : 0;    // a null grade is missing (NaN), not 0
+    if (cat) cat[m] = codes.cat.get(String(CA[i] ?? '')) ?? 0;
+    if (dim) dim[m] = dimCode(+DX[i], +DY[i], +DZ[i]);
+    recIdx[m++] = start + i;
+  }
+  // trimmed copies, not views: the transfer list moves whole buffers
+  const cut = (a) => (a && m < count ? a.slice(0, m) : a);
+  return { count: m, x: cut(x), y: cut(y), z: cut(z), chan: cut(chan), cat: cut(cat), dim: cut(dim), recIdx: cut(recIdx), recStart: start };
+}
+
+// ── src/worker.js ──
+
+const kernels = Object.freeze({ GT_BINS_TARGET, GT_BINS_CAP, gtEdge, gtBinOf, gtAccumulator, gtAbove, gtCuts, gtKernel, gtPartial, gtMerge, swathKernel, swathMerge, momentAdd, momentMerge, momentStd, statsKernel, statsMerge, filterKernel, valuesKernel, positionsKernel });
+const CV = Object.freeze({ chunkView, compileCalcs, chunkNumbers });
+// @gcu/scan worker — the body of every pool worker, a real module (it used to be
+// a template string with functions pasted in by toString(), where a module-scope
+// reference worked on the page and threw only in the worker).
+//
+// The worker bundle (worker.js at the package root) has ZERO static imports: a
+// module worker started from a blob has no import map, so its libraries arrive
+// as URLs in the init message (`libs`) and are imported then — parquet + sluice
+// always, condenser for a .dm / delimited source, a lattice check or a decode,
+// expr for a scan. Kernels, the chunk view, the accumulator and the tasks are
+// this bundle's own code: one definition on the page and in the worker.
+
+// every ArrayBuffer under a result, for the transfer list (a scan partial's bins)
+function buffersOf(o, out = []) {
+  if (o && ArrayBuffer.isView(o)) { if (!out.includes(o.buffer)) out.push(o.buffer); }
+  else if (Array.isArray(o)) for (const x of o) buffersOf(x, out);
+  else if (o && typeof o === 'object') for (const k in o) buffersOf(o[k], out);
+  return out;
+}
+
+// load(url) imports a library: the pool's bootstrap passes `(u) => import(u)` (a bundle may not
+// carry a dynamic import — @gcu/build E006 — and it needn't: the bootstrap is a string)
+function serve(self, load) {
+  let file = null, meta = null, task = null, p = null, st = null, acc = null, codes = null;
+  let PQ = null, SL = null, CD = null, kern = null, kctx = null;
+  self.onmessage = async ({ data }) => {
+    try {
+      if (data.type === 'init') {
+        ({ file, meta, task, p } = data);
+        const libs = data.libs;
+        [PQ, SL] = await Promise.all([load(libs.parquet), load(libs.sluice)]);
+        const needCD = task === 'check' || task === 'discover' || task === 'decode' || (task === 'scan' && p.source && (p.source.kind === 'dm' || p.source.kind === 'csv'));
+        if (needCD) CD = await load(libs.condenser);
+        if (task === 'stats') { acc = makeColAcc(SL); st = p.cols.map((c) => acc.create(c.num)); }
+        if (task === 'scan') { const E = await load(libs.expr); kern = kernels[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs); }
+        if (task === 'decode') codes = {
+          cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
+          dim: p.dimKeys ? new Map(p.dimKeys.map((k, i) => [k, i])) : null,
+        };
+        self.postMessage({ type: 'ready' });
+      } else if (data.type === 'job') {
+        const { id, start, count } = data;
+        if (task === 'stats') {
+          // one column at a time: a whole group's columns at once is a bigger heap
+          for (let k = 0; k < p.cols.length; k++) {
+            const name = p.cols[k].name;
+            const arr = (await PQ.readParquetRange(file, [name], start, start + count, meta))[name];
+            if (p.cols[k].num) for (let a = 0; a < count; a += 65536) acc.pushNumbers(st[k], arr, a, Math.min(count, a + 65536));
+            else for (let i = 0; i < count; i++) acc.pushText(st[k], arr[i]);
+          }
+          self.postMessage({ type: 'result', id, out: { count } });
+        } else if (task === 'discover') {
+          const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
+          const out = discoverGroup(CD, p, cols, count, data.res || 0);
+          self.postMessage({ type: 'result', id, out }, out.res ? [out.res.buffer] : []);
+        } else if (task === 'check') {
+          // the first centroid in this group off the declared lattice (records RAW)
+          const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
+          const X = cols[p.cols[0]], Y = cols[p.cols[1]], Z = cols[p.cols[2]], cn = CD.coordNum;
+          let bad = null;
+          for (let i = 0; i < count && !bad; i++) { const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = CD.latticeMisfit(p.grid, xv, yv, zv, start + i); }
+          self.postMessage({ type: 'result', id, out: { bad } });
+        } else if (task === 'scan') {
+          // the needed columns of this unit → the chunk view → the kernel's partial
+          let cols = {};
+          if (p.readCols.length && p.source && p.source.kind === 'dm') {
+            const r = await CD.readDmRun(file, p.source.h, p.source.idx, data.run);
+            p.readCols.forEach((n, k) => { cols[n] = r.cols[p.source.idx[k]]; });
+          } else if (p.readCols.length && p.source && p.source.kind === 'csv') {
+            const r = await CD.readDelimitedRun(file, data.run, p.source.o);
+            p.readCols.forEach((n, k) => { cols[n] = r[k]; });
+          } else if (p.readCols.length) cols = await PQ.readParquetRange(file, p.readCols, start, start + count, meta);
+          const view = CV.chunkView(p.spec, cols, data.page || [], count, kctx.calcFns);
+          const out = kern.group(kctx, view, count, data.mask || null);
+          self.postMessage({ type: 'result', id, out }, buffersOf(out));
+        } else if (task === 'decode') {
+          const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
+          const out = decodeGroup(CD, p, cols, start, count, codes);
+          const tr = [out.x.buffer, out.y.buffer, out.z.buffer, out.chan.buffer, out.recIdx.buffer];
+          if (out.cat) tr.push(out.cat.buffer); if (out.dim) tr.push(out.dim.buffer);
+          self.postMessage({ type: 'result', id, out }, tr);
+        }
+      } else if (data.type === 'finish') {
+        self.postMessage({ type: 'final', out: task === 'stats' ? st : null });
+      }
+    } catch (e) { self.postMessage({ type: 'error', id: data && data.id, message: (e && e.message) || String(e) }); }
+  };
+}
+
+// ── src/worker-main.js ──
+
+// @gcu/scan — the worker bundle's entry (worker.js at the package root): what a
+// pool worker imports. Zero static imports beyond this package's own code.
+
+export {
+  serve,
+};

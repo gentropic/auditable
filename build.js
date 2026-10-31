@@ -1749,6 +1749,7 @@ if (target === 'micro') {
     '../../ext/expr/index.js': '#expr',
     '../../ext/filterui/index.js': '#filterui',
     '../../ext/sluice/index.js': '#sluice',
+    '../../ext/scan/src/main.js': '#scan',            // @gcu/scan — the columnar/parallel scans (dev: src; build: the bundle)
     '../../ext/loom/index.js': '#loom',
     '../../ext/winding/index.js': '#winding',
     '../../ext/peel/index.js': '#peel',
@@ -1772,6 +1773,8 @@ if (target === 'micro') {
     ['expr',      'ext/expr/index.js'],
     ['filterui',  'ext/filterui/index.js'],           // the shared filter-widget engine (extracted from the fd* drawer)
     ['sluice',    'ext/sluice/index.js'],              // streaming column stats (the columns tab)
+    ['scan',      'ext/scan/index.js'],                // @gcu/scan — kernels over a model's records on a worker pool (zero imports: injected)
+    ['scan-worker', 'ext/scan/worker.js'],             // what a scan pool worker imports (resolved by URL — src/liburl.js)
     ['loom',      'ext/loom/index.js'],                // the attribute table's canvas grid
     ['winding',   'ext/winding/index.js'],             // select-by-solid containment (spec 17)
     ['peel',      'ext/peel/index.js'],                // depth-peel by-solid (fast on clean closed meshes)
@@ -1814,6 +1817,9 @@ if (target === 'micro') {
       out = out.split(`from './src/${nm}.js'`).join(`from '#${nm}'`);
       if (srcSeen.has(nm)) continue;
       srcSeen.add(nm);
+      // a src module and a library share ONE '#name' namespace: same name → one
+      // silently shadows the other in the import map (src/scan.js vs @gcu/scan did)
+      if (libs.some(([ln]) => ln === nm)) { console.error(`Error: tools/micro/src/${nm}.js has the same registry name as the '${nm}' library — rename the module`); process.exit(1); }
       const sp = path.join(micDir, 'src', `${nm}.js`);
       if (!fs.existsSync(sp)) { console.error(`Error: tools/micro/src/${nm}.js not found (imported by the app)`); process.exit(1); }
       let ss = fs.readFileSync(sp, 'utf8');

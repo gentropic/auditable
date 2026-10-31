@@ -985,7 +985,7 @@ import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSour
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
-import { gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/kernels.js';   // the analysis kernels (page + scan workers)
+import { scan, defaultPoolSize, gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/scanner.js';   // the analysis kernels (page + scan workers)
 import { scanColumnar, canScanColumnar, setCsvColumnar, zoneKeeper } from './src/colscan.js';   // columnar, parallel scans of Parquet / .dm / indexed CSV models
 import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk builder off the page (compaction)
 import { buildValueTexture } from './src/valuetex.js';       // colour-by a column the chunks don't carry: a per-record value texture
@@ -993,7 +993,6 @@ import { parquetRow } from './src/rowworker.js';          // a Parquet row off t
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
 import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
-import { startParquetPool, defaultPoolSize, discoverParquetInWorkers, decodeParquetInWorkers, checkLatticeInWorkers } from './src/pqpool.js';   // the Parquet worker pool: open discovery + decode (stats ride it too, via columns.js)
 import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
 import { numericColsOf, blockVolumeOf, volumeContextOf, volumeAt, computeGT, computeSwath, extractSamples, autoDeclusterSizes, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
 import { fmtSize, layerBytes, layerFiles, basename, joinPath, kindDir, relPathFor, resolveFileHandle, removeFileAt, layerRelpath, resolveDhFile, dhSetName } from './src/paths.js';   // project folder layout + path resolution
@@ -9344,7 +9343,7 @@ async function openParquetBlocks(blob, name, opts = {}) {
     if (grid && (grid.rot || cachedPq.declared) && !opts.cached) {
       $('#meta').textContent = `${name} — checking the declared lattice…`;
       // on the worker pool when it can run; else record by record on the page
-      const pooledCheck = await checkLatticeInWorkers({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid });
+      const pooledCheck = await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid });
       let bad = pooledCheck ? pooledCheck.bad : null, rec = 0;
       if (!pooledCheck) for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) {
         const X = cols[xN], Y = cols[yN], Z = cols[zN];
@@ -9369,7 +9368,7 @@ async function openParquetBlocks(blob, name, opts = {}) {
   // pool job, below). Each group's summary merges in group order into
   // the same sets the page sweep fills — caps included — so either path gives
   // the same grid, categories and reservoir.
-  const pooled = await discoverParquetInWorkers({
+  const pooled = await scan.discoverParquet({
     file: blob, meta: info.meta, rowGroups: info.rowGroups, res: RES,
     p: { cols: discCols, xN, yN, zN, catN, dN, cap: CAP, dimMax: DIM_PALETTE_MAX },
     onProgress: (d) => { $('#meta').textContent = `${name} — discovering grid… ${Math.round(100 * d / N)}%`; },
@@ -9408,7 +9407,7 @@ async function openParquetBlocks(blob, name, opts = {}) {
   // the declared lattice's record-by-record check ran on the page only if the
   // pool couldn't take discovery; with the pool, it's a pool job of its own
   if (declared && pooled) {
-    const c = await checkLatticeInWorkers({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid: declared });
+    const c = await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid: declared });
     if (c) declaredBad = c.bad;
     else {                                                 // never unchecked: the page does it
       let rec = 0;
@@ -9450,9 +9449,9 @@ async function openParquetBlocks(blob, name, opts = {}) {
     const cnames = [...new Set([xN, yN, zN, ...(chanN ? [chanN] : []), ...(catN ? [catN] : []), ...(sizeN || [])])];
     // decode on the worker pool when it can run: the groups come back as the
     // builder's typed arrays (transferred), in order — the page only builds chunks
-    const pool = await startParquetPool({ file: blob, meta: info.meta, task: 'decode', n: defaultPoolSize(info.rowGroups.length),
+    const pool = await scan.startPool({ file: blob, meta: info.meta, task: 'decode', n: defaultPoolSize(info.rowGroups.length),
       p: { cols: cnames, xN, yN, zN, chanN, catN, sizeN, categories, dimKeys: subBlocked ? dimPalette.map((hd) => dimKey(hd[0] * 2, hd[1] * 2, hd[2] * 2)) : null } });
-    if (pool) { yield* decodeParquetInWorkers(pool, info.rowGroups); return; }
+    if (pool) { yield* scan.decodeParquet(pool, info.rowGroups); return; }
     const dimKeyOf = makeDimKeyer();
     for await (const { start, count, cols } of streamParquetColumns(blob, cnames, info.rowGroups, info.meta)) {
       const X = cols[xN], Y = cols[yN], Z = cols[zN], CH = chanN ? cols[chanN] : null, CA = catN ? cols[catN] : null;

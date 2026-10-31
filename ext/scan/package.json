@@ -1,0 +1,34 @@
+{
+  "name": "@gcu/scan",
+  "version": "0.1.0",
+  "description": "Kernels over a block model's records — grade-tonnage, swath, statistics, filters, values, positions — columnar and parallel, never resident. Parquet row groups, Datamine .dm page runs and indexed delimited runs (with zone-map skipping) on a pool of module workers, the same kernel on the page where workers can't run, partials merged in unit order so the answer never depends on which. Zero imports: its libraries (parquet, condenser, expr, sluice) are injected.",
+  "type": "module",
+  "main": "./src/main.js",
+  "exports": {
+    ".": "./src/main.js",
+    "./worker": "./src/worker-main.js",
+    "./bundled": "./index.js",
+    "./bundled/worker": "./worker.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "index.js",
+    "worker.js"
+  ],
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": ["block-model", "parquet", "datamine", "columnar", "worker-pool", "grade-tonnage", "swath", "zone-maps", "streaming", "auditable", "gcu"],
+  "license": "MIT",
+  "author": "Arthur Endlein Correia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gentropic/auditable.git",
+    "directory": "ext/scan"
+  },
+  "homepage": "https://github.com/gentropic/auditable/tree/main/ext/scan",
+  "bugs": {
+    "url": "https://github.com/gentropic/auditable/issues"
+  }
+}
