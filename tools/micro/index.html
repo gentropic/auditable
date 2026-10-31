@@ -10214,9 +10214,12 @@ async function applyBlockFilter(expr, L = activeLayer()) {
           .map((it) => { let fn; try { fn = compileChunk(it.c.expr, censusSchema, { decimal: '.' }); } catch { fn = () => ({ t: 'raw', buf: [] }); } return { slot: baseLen + paintLen + it.idx, fn }; })
       : null;
     // ── TIER 3, REFINE: every needed column pinned → evaluate with NO file read ──
-    window.__pinUsed = false;
+    // pinUsed is LOCAL: filters on two layers run at once (routines, the host
+    // API), and a shared global let B reset A's mid-await — A then ran the full
+    // scan too and counted its hits twice. window.__pinUsed mirrors it for the smokes.
+    let pinUsed = false; window.__pinUsed = false;
     if (chunkF && readCols.length && readCols.every((nm) => pinGet(AL, nm))) {
-      window.__pinUsed = true;
+      pinUsed = window.__pinUsed = true;
       const got = await pinnedSweep(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     } else if (chunkF) {
@@ -10265,7 +10268,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       colIdxs = [...need];
     }
     // TIER 3: pinned -> no file read; else the projected scan TEES into the cache
-    window.__pinUsed = false;
+    let pinUsed = false; window.__pinUsed = false;
     const censusSchema = schemaExt(AL, header);
     const chunkF = ast ? compileChunkBool(ast, censusSchema, { decimal: '.' }) : null;
     const baseLen = header.columns.length, paintLen = ((AL && AL.paintCols) || []).length;
@@ -10275,11 +10278,11 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       : null;
     const pinNames = colIdxs ? colIdxs.map((bi) => ({ k: header.columns[bi], bi })) : [];
     if (chunkF && pinNames.length && pinNames.every((tn) => pinGet(AL, tn.k))) {
-      window.__pinUsed = true;
+      pinUsed = window.__pinUsed = true;
       const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     }
-    if (!window.__pinUsed) {
+    if (!pinUsed) {
     // BAND PUSHDOWN: sidecar per-64k min/max per column → skip whole page-runs
     // the predicate provably can't match (parquet's row-group skip on .dm).
     // Sound/conservative — pqGroupCanMatch keeps anything it can't decide.
@@ -10378,7 +10381,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
     // SEEKING past its bytes, with the record numbering advanced exactly.
     let astC = null; try { astC = parse(expr); } catch { astC = null; }
     // ── TIER 3 (pin cache): needed columns pinned → evaluate with NO file read ──
-    window.__pinUsed = false;
+    let pinUsed = false; window.__pinUsed = false;
     const needL = astC ? expandedDeps(AL, astC) : null;
     const censusSchema = schemaExt(AL, header);
     const chunkF = astC ? compileChunkBool(astC, censusSchema, { decimal: '.' }) : null;
@@ -10394,11 +10397,11 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       for (const bi of want) if (bi != null && header.columns[bi] != null) pinNames.push({ k: header.columns[bi], bi });
     }
     if (chunkF && pinNames.length && pinNames.every((tn) => pinGet(AL, tn.k))) {
-      window.__pinUsed = true;
+      pinUsed = window.__pinUsed = true;
       const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     }
-    if (!window.__pinUsed && chunkF && canScanColumnar(AL)) {
+    if (!pinUsed && chunkF && canScanColumnar(AL)) {
       // the engine: the line index's runs on the worker pool (src/colscan.js), the
       // sidecar bands skipping runs unread — a run is one band
       const BK = AL && AL._bands;
@@ -10415,7 +10418,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       const ok = await engineFilter(pinNames.map((tn) => tn.k), kz ? null : keep, 'runs skipped by the sidecar index', kz);
       window.__csvBandsSkipped = kz ? window.__csvZonesSkipped : window.__dmBandsSkipped;   // smoke hook (the CSV name)
       if (!ok) return;
-    } else if (!window.__pinUsed) {
+    } else if (!pinUsed) {
     const BB = AL && AL._bands, idxC = header.index;
     const perBand = BB && idxC && idxC.k ? Math.round(BB.size / idxC.k) : 0;
     if (BB && idxC && astC && perBand > 0 && idxC.offsets && idxC.offsets.length > 0) {
@@ -11419,7 +11422,14 @@ async function saveProject() {
     // as compact Surfer binary so a huge DEM's project reopens WITHOUT
     // re-decimating the source (eval still windows the source at full res)
     for (const L of S.layers) { try { await writeGridDisplayCache(L, dir); } catch { /* cache, never a failure */ } }
-    for (const L of S.layers) { try { if (layerTableHeader(L) || (L.docs && L.docs.gridDoc)) await persistElement(L); } catch { /* the element manifest + sidecar cols are derived — never a save failure */ } }
+    // the element manifest + its columns: NOT derived — paint is hand-brushed, a
+    // calc is authored, a join brought another file's values. A failure here is
+    // reported (and the project stays unsaved), never swallowed.
+    const colFails = [];
+    for (const L of S.layers) {
+      if (!(layerTableHeader(L) || (L.docs && L.docs.gridDoc))) continue;
+      try { await persistElement(L); } catch (e) { colFails.push(`${L.label || L.name}: ${e && e.message || e}`); }
+    }
     // derived-cache sidecars (spec section 12): the discovery header + column
     // stats + BAND min/max travel WITH the data — reopening skips the discovery
     // sweep, the styling/statistics UIs wake up already scanned, and .dm filters
@@ -11465,12 +11475,15 @@ async function saveProject() {
     const w = await fh.createWritable();
     await w.write(JSON.stringify(projectManifest(), null, 2) + '\n');
     await w.close();
-    S.project.dirty = false;
+    S.project.dirty = colFails.length > 0;                 // columns that didn't save: still unsaved work
     updateProjectTitle();
     renderLayers();
     rememberProject(dir);                                  // refresh the stored links alongside
     const ext = S.layers.filter((L) => L.storage === 'external').length;
-    $('#meta').textContent = `project saved — ${S.project.name}/project.json${ext ? ` · ${ext} linked outside the folder` : ''}`;
+    if (colFails.length) {
+      $('#meta').textContent = `project saved — but the columns of ${colFails.length} layer${colFails.length === 1 ? '' : 's'} did NOT save`;
+      microChoose('columns not saved', `The project file is written, but these layers' columns (paint, ƒ, joined) could not be stored — ${colFails.join(' · ')}. They are still here in this session. Save again, or export the layer, before closing.`, [{ label: 'OK', value: true }]);
+    } else $('#meta').textContent = `project saved — ${S.project.name}/project.json${ext ? ` · ${ext} linked outside the folder` : ''}`;
   } catch (e) {
     $('#meta').textContent = `project save failed — ${e.message}`;
   }
@@ -11602,7 +11615,7 @@ async function openProjectDir(dir, { pack = null } = {}) {
           if (ls.label) Ld.label = ls.label;
           if (ls.colTypes) { Ld.colTypes = ls.colTypes; applyColTypes(Ld); }
           if (ls.qualify) { Ld.qualify = ls.qualify; Ld._qualFn = undefined; _qualifyReopen.push(Ld.id); }
-          try { await loadElement(Ld, dir); } catch { /* derived — never block a load */ }   // ƒ + matcols BEFORE filter/color (both may reference them)
+          try { await loadElement(Ld, dir); } catch (e) { (Ld._colsUnread || (Ld._colsUnread = [])).push({ name: 'columns', why: e && e.message || String(e) }); }   // ƒ + matcols BEFORE filter/color (both may reference them); never blocks the load, always reported
           if (ls.calcCols && !(Ld.calcCols || []).length) Ld.calcCols = ls.calcCols;   // legacy projects (no element manifest)
           addPaintColorOptions(Ld);
           if (ls.holeFilter) { try { await applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
@@ -11704,7 +11717,7 @@ async function openProjectDir(dir, { pack = null } = {}) {
       if (sidecar && sidecar.bands) L._bands = sidecar.bands;            // .dm/CSV filter pushdown substrate
       if (ls.colTypes) { L.colTypes = ls.colTypes; applyColTypes(L); }
       if (ls.qualify) { L.qualify = ls.qualify; L._qualFn = undefined; _qualifyReopen.push(L.id); }
-      try { await loadElement(L, dir); } catch { /* derived — never block a load */ }   // ƒ + matcols BEFORE filter/color (both may reference them)
+      try { await loadElement(L, dir); } catch (e) { (L._colsUnread || (L._colsUnread = [])).push({ name: 'columns', why: e && e.message || String(e) }); }   // ƒ + matcols BEFORE filter/color (both may reference them); never blocks the load, always reported
       if (ls.calcCols && !(L.calcCols || []).length) L.calcCols = ls.calcCols;   // legacy projects (no element manifest)
       if (Array.isArray(ls.catChoices)) L.catChoices = ls.catChoices;
       addPaintColorOptions(L);
@@ -11757,6 +11770,11 @@ async function openProjectDir(dir, { pack = null } = {}) {
     rememberProject(dir);
     plEnd();
     $('#meta').textContent = `project “${S.project.name}”${pack ? ' (pack, read-only)' : ''} — ${S.layers.length} layer${S.layers.length === 1 ? '' : 's'}`;
+    const unread = S.layers.flatMap((L) => (L._colsUnread || []).map((u) => `${L.label || L.name} · ${u.name}: ${u.why}`));
+    if (unread.length) {
+      $('#meta').textContent += ` — ${unread.length} stored column${unread.length === 1 ? '' : 's'} not read`;
+      microChoose('stored columns not read', `The project opened, but these stored columns could not be read — ${unread.join(' · ')}`, [{ label: 'OK', value: true }]);
+    }
     requestRender();
     return true;
   } catch (e) {

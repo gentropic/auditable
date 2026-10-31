@@ -59,7 +59,11 @@ export async function persistElement(L) {
   try { const id = matColLooseId(L); for (const c of cols) { if (c.mat && !c.fvalues) continue; await _idb.set(`matcol:${id}:col:${c.name}`, matColEncode(c).buffer); } await _idb.set(`matcol:${id}:element`, elem); return 'idb'; }
   catch { return 'memory'; }
 }
+// a stored column the load could not apply — collected on the layer, reported
+// by the project open (never silently skipped)
+const unread = (L, name, why) => (L._colsUnread || (L._colsUnread = [])).push({ name, why });
 export async function loadElement(L, dir) {
+  L._colsUnread = null;
   let elem = null, man = null, get = null;
   if (dir && L.storage === 'project') {
     const rel = await layerRelpath(L, dir);
@@ -85,16 +89,16 @@ export async function loadElement(L, dir) {
     if (L.dh) { const me = basename(L.name); lk = Object.keys(locs).find((k) => locs[k].source && locs[k].source.file === me) || lk; }
     mats = elementHydrate(L, elem, lk);                    // derived ƒ restore even when materialized are stale
     const hash = lk && locs[lk] && locs[lk].source && locs[lk].source.hash;
-    if (hash && !sameSource(hash, cur)) { if (mats.length) { const el = document.querySelector('#meta'); if (el) el.textContent = `${L.name}: stored columns not applied (${staleWhy(hash, cur)}) — re-run to refresh`; } return 0; }
+    if (hash && !sameSource(hash, cur)) { if (mats.length) { const why = staleWhy(hash, cur); unread(L, mats.map((c) => c.name).join(', '), `${why} — re-run to refresh`); const el = document.querySelector('#meta'); if (el) el.textContent = `${L.name}: stored columns not applied (${why}) — re-run to refresh`; } return 0; }
   } else if (man && man.cols) {
-    if (man.sourceHash && !sameSource(man.sourceHash, cur)) { const el = document.querySelector('#meta'); if (el) el.textContent = `${L.name}: stored columns not applied (${staleWhy(man.sourceHash, cur)}) — re-run to refresh`; return 0; }
+    if (man.sourceHash && !sameSource(man.sourceHash, cur)) { const why = staleWhy(man.sourceHash, cur); unread(L, (man.cols || []).map((c) => c.name).join(', '), `${why} — re-run to refresh`); const el = document.querySelector('#meta'); if (el) el.textContent = `${L.name}: stored columns not applied (${why}) — re-run to refresh`; return 0; }
     mats = man.cols;
   }
   if (!mats.length || !get) return 0;
   let loaded = 0;
   for (const cm of mats) {
     try {
-      const buf = await get(cm.name); if (!buf) continue;
+      const buf = await get(cm.name); if (!buf) { unread(L, cm.name, 'no stored file'); continue; }
       if (cm.type === 'category') {                        // stored category: string column → dict/codes, legend from the manifest
         const vals = await matColDecodeStr(buf);
         const dict = [''], colors = [PAINT_BLANK];
@@ -114,7 +118,7 @@ export async function loadElement(L, dir) {
         columnsChanged(L);                                 // color-by options track the column set (active-layer guard inside)
       } else matColSet(L, cm.name, await matColDecode(buf), { lineage: cm.lineage });
       loaded++;
-    } catch { /* skip a missing file */ }
+    } catch (e) { unread(L, cm.name, e && e.name === 'NotFoundError' ? 'its file is missing from the project' : (e && e.message) || String(e)); }
   }
   return loaded;
 }

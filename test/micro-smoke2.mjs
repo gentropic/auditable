@@ -4007,6 +4007,54 @@ await p.close();
   chk(`column stats count records only: AU n ${rr.statsN} (of 90), max ${rr.statsMax} (the dropped rows' 99 is not there)`, rr.statsN === 90 && rr.statsMax === 3);
 }
 
+// ── §61: A COLUMN THAT DIDN'T SAVE IS SAID SO. Paint is hand-brushed — not
+//     derived — and a failed persistElement used to be swallowed ("derived —
+//     never a save failure"), the project marked saved. Forced honestly: the
+//     layer's `.cols/` folder replaced by a FILE of that name. Then the other
+//     side: a stored column's file deleted → the reopen reports it. ──
+{
+  const pc = await mkPage('sm2colfail');
+  await pc.evaluate(async () => {
+    const M = window._micro;
+    let s = 'X,Y,Z,ID\n', k = 'ID,V\n';
+    for (let i = 0; i < 64; i++) { s += `${(i % 4) * 10},${((i / 4 | 0) % 4) * 10},${(i / 16 | 0) * 10},${i}\n`; k += `${i},${i * 3}\n`; }
+    const id = await M.openBlob(new File([s], 'cf.csv'), 'cf.csv', 'replace');
+    const kid = await M.openBlob(new File([k], 'cfk.csv'), 'cfk.csv', 'add');
+    await M.keyJoinToCols(M.layers().find((q) => q.id === id), M.layers().find((q) => q.id === kid), { leftKey: 'ID', rightKey: 'ID', bring: ['V'], dup: 'first' });   // a STORED column: cf.csv.cols/V.parquet
+  });
+  await saveProject(pc);
+  const fail = await pc.evaluate(async () => {
+    const M = window._micro;
+    const models = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2colfail')).getDirectoryHandle('models');
+    await models.removeEntry('cf.csv.cols', { recursive: true });
+    const w = await (await models.getFileHandle('cf.csv.cols', { create: true })).createWritable(); await w.write('in the way'); await w.close();
+    await M.saveProject();
+    for (let n = 0; n < 100 && !document.querySelector('#pmDlg').classList.contains('show'); n++) await new Promise((z) => setTimeout(z, 50));
+    const r = { meta: document.querySelector('#meta').textContent, dlg: document.querySelector('#pmDlg').classList.contains('show'), title: document.querySelector('#pmTitle').textContent, msg: document.querySelector('#pmMsg').textContent, dirty: !!M.project().dirty };
+    document.querySelector('#pmOk').click();
+    await models.removeEntry('cf.csv.cols');               // clear the way: a clean save, then lose one column's file
+    return r;
+  });
+  await pc.evaluate(() => window._micro.saveProject());   // awaited: the meta line already says "project saved — but…"
+  await pc.evaluate(async () => {
+    const cols = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2colfail')).getDirectoryHandle('models')).getDirectoryHandle('cf.csv.cols');
+    await cols.removeEntry('V.parquet');
+  });
+  await pc.close();
+  const pc2 = await mkPage('sm2colfail');
+  const lost = await pc2.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2colfail');
+    await window._micro.openProjectDir(dir);
+    for (let n = 0; n < 200 && !document.querySelector('#pmDlg').classList.contains('show'); n++) await new Promise((z) => setTimeout(z, 50));
+    return { dlg: document.querySelector('#pmDlg').classList.contains('show'), title: document.querySelector('#pmTitle').textContent, msg: document.querySelector('#pmMsg').textContent, meta: document.querySelector('#meta').textContent };
+  });
+  await pc2.close();
+  chk(`a column that can't be stored is REPORTED — “${fail.title}” (${fail.msg.slice(0, 70)}…), meta “${fail.meta.slice(0, 60)}”, project still unsaved ${fail.dirty}`,
+    fail.dlg && fail.title === 'columns not saved' && /cf\.csv/.test(fail.msg) && /did NOT save/.test(fail.meta) && fail.dirty);
+  chk(`a stored column whose file is gone is REPORTED on reopen — “${lost.title}”: ${lost.msg.slice(0, 90)}`,
+    lost.dlg && lost.title === 'stored columns not read' && /\bV\b/.test(lost.msg) && /missing/.test(lost.msg) && /not read/.test(lost.meta));
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
