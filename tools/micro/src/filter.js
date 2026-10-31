@@ -85,6 +85,32 @@ export const _compactBuilders = new Map();
 
 export function closeCompactBuilder(lid) { const b = _compactBuilders.get(lid); if (b) { b.close(); _compactBuilders.delete(lid); } }
 
+// ── what every block source's sweep shares ──────────────────────────────────
+// the CHUNK plan: the predicate compiled columnar over the layer's census schema,
+// and the calc columns it reaches (only those, in evaluation order)
+function chunkPlan(AL, header, ast, needL) {
+  const censusSchema = schemaExt(AL, header);
+  const chunkF = ast ? compileChunkBool(ast, censusSchema, { decimal: '.' }) : null;
+  const baseLen = header.columns.length, paintLen = ((AL && AL.paintCols) || []).length;
+  const calcChunkFns = (ast && AL && AL.calcCols && AL.calcCols.length)
+    ? calcOrder(AL).filter((it) => !needL || needL.has(String(it.c.name).toLowerCase()))
+        .map((it) => { let fn; try { fn = compileChunk(it.c.expr, censusSchema, { decimal: '.' }); } catch { fn = () => ({ t: 'raw', buf: [] }); } return { slot: baseLen + paintLen + it.idx, fn }; })
+    : null;
+  return { censusSchema, chunkF, calcChunkFns };
+}
+// TIER 3: every needed column PINNED → the sweep runs from memory, no file read.
+// → the hits (≥ 0), -1 when superseded, or null when not every column is pinned
+// (the caller then reads). Its own answer, never a shared flag: filters on two
+// layers run at once (routines, the host API), and the global flag this used to
+// be let B reset A's mid-await, so A ran the full scan too and counted its hits
+// twice. window.__pinUsed mirrors the last answer for the smokes.
+async function tryPinned(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive }) {
+  const ok = !!chunkF && pinNames.length > 0 && pinNames.every((tn) => pinGet(AL, tn.k));
+  window.__pinUsed = ok;
+  if (!ok) return null;
+  return pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
+}
+
 export async function applyBlockFilter(expr, L = activeLayer()) {
   const isActive = !!L && L.id === S.activeId;
   const inp = isActive ? $('#filter') : document.createElement('input');   // the box's error mark belongs to the active layer's filter
@@ -240,22 +266,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     }
     // the CHUNK path: the filter (and any calc it references) evaluates columnar
     // over each row group via compileChunk — rows are built only for MATCHES
-    const censusSchema = schemaExt(AL, header);
-    const chunkF = ast ? compileChunkBool(ast, censusSchema, { decimal: '.' }) : null;
-    const baseLen = header.columns.length, paintLen = ((AL && AL.paintCols) || []).length;
-    const calcChunkFns = (ast && AL && AL.calcCols && AL.calcCols.length)
-      ? calcOrder(AL).filter((it) => !needL || needL.has(String(it.c.name).toLowerCase()))
-          .map((it) => { let fn; try { fn = compileChunk(it.c.expr, censusSchema, { decimal: '.' }); } catch { fn = () => ({ t: 'raw', buf: [] }); } return { slot: baseLen + paintLen + it.idx, fn }; })
-      : null;
+    const { chunkF, calcChunkFns } = chunkPlan(AL, header, ast, needL);
     // ── TIER 3, REFINE: every needed column pinned → evaluate with NO file read ──
-    // pinUsed is LOCAL: filters on two layers run at once (routines, the host
-    // API), and a shared global let B reset A's mid-await — A then ran the full
-    // scan too and counted its hits twice. window.__pinUsed mirrors it for the smokes.
-    let pinUsed = false; window.__pinUsed = false;
-    if (chunkF && readCols.length && readCols.every((nm) => pinGet(AL, nm))) {
-      pinUsed = window.__pinUsed = true;
-      const got = await pinnedSweep(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
-      if (got < 0) return; hits += got; rec = header.count;
+    const pinned = await tryPinned(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive });
+    if (pinned != null) {
+      if (pinned < 0) return; hits += pinned; rec = header.count;
     } else if (chunkF) {
       if (!(await engineFilter(readCols, (rg) => pqGroupCanMatch(ast, pqGroupRanges(rg)), 'row groups skipped by the footer'))) return;
     } else {
@@ -302,21 +317,11 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
       colIdxs = [...need];
     }
     // TIER 3: pinned -> no file read; else the projected scan TEES into the cache
-    let pinUsed = false; window.__pinUsed = false;
-    const censusSchema = schemaExt(AL, header);
-    const chunkF = ast ? compileChunkBool(ast, censusSchema, { decimal: '.' }) : null;
-    const baseLen = header.columns.length, paintLen = ((AL && AL.paintCols) || []).length;
-    const calcChunkFns = (ast && AL && AL.calcCols && AL.calcCols.length)
-      ? calcOrder(AL).filter((it) => !needL || needL.has(String(it.c.name).toLowerCase()))
-          .map((it) => { let cfn; try { cfn = compileChunk(it.c.expr, censusSchema, { decimal: '.' }); } catch { cfn = () => ({ t: 'raw', buf: [] }); } return { slot: baseLen + paintLen + it.idx, fn: cfn }; })
-      : null;
+    const { censusSchema, chunkF, calcChunkFns } = chunkPlan(AL, header, ast, needL);
     const pinNames = colIdxs ? colIdxs.map((bi) => ({ k: header.columns[bi], bi })) : [];
-    if (chunkF && pinNames.length && pinNames.every((tn) => pinGet(AL, tn.k))) {
-      pinUsed = window.__pinUsed = true;
-      const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
-      if (got < 0) return; hits += got; rec = header.count;
-    }
-    if (!pinUsed) {
+    const pinned = await tryPinned(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive });
+    if (pinned != null) { if (pinned < 0) return; hits += pinned; rec = header.count; }
+    if (pinned == null) {
     // BAND PUSHDOWN: sidecar per-64k min/max per column → skip whole page-runs
     // the predicate provably can't match (parquet's row-group skip on .dm).
     // Sound/conservative — pqGroupCanMatch keeps anything it can't decide.
@@ -415,26 +420,17 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     // SEEKING past its bytes, with the record numbering advanced exactly.
     let astC = null; try { astC = parse(expr); } catch { astC = null; }
     // ── TIER 3 (pin cache): needed columns pinned → evaluate with NO file read ──
-    let pinUsed = false; window.__pinUsed = false;
     const needL = astC ? expandedDeps(AL, astC) : null;
-    const censusSchema = schemaExt(AL, header);
-    const chunkF = astC ? compileChunkBool(astC, censusSchema, { decimal: '.' }) : null;
-    const baseLen = header.columns.length, paintLen = ((AL && AL.paintCols) || []).length;
-    const calcChunkFns = (astC && AL && AL.calcCols && AL.calcCols.length)
-      ? calcOrder(AL).filter((it) => !needL || needL.has(String(it.c.name).toLowerCase()))
-          .map((it) => { let cfn; try { cfn = compileChunk(it.c.expr, censusSchema, { decimal: '.' }); } catch { cfn = () => ({ t: 'raw', buf: [] }); } return { slot: baseLen + paintLen + it.idx, fn: cfn }; })
-      : null;
+    const { censusSchema, chunkF, calcChunkFns } = chunkPlan(AL, header, astC, needL);
     if (chunkF) {                                          // the needed BASE columns, by name (coords + cat + chan + the dep cone)
       const want = new Set([m.x, m.y, m.z]); if (m.cat != null) want.add(m.cat); if (m.chan != null) want.add(m.chan);
       const lowById = new Map(header.columns.map((nm, i) => [String(nm).toLowerCase(), i]));
       if (needL) for (const d of needL) { const bi = lowById.get(d); if (bi !== undefined) want.add(bi); }
       for (const bi of want) if (bi != null && header.columns[bi] != null) pinNames.push({ k: header.columns[bi], bi });
     }
-    if (chunkF && pinNames.length && pinNames.every((tn) => pinGet(AL, tn.k))) {
-      pinUsed = window.__pinUsed = true;
-      const got = await pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
-      if (got < 0) return; hits += got; rec = header.count;
-    }
+    const pinned = await tryPinned(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive });
+    if (pinned != null) { if (pinned < 0) return; hits += pinned; rec = header.count; }
+    const pinUsed = pinned != null;
     if (!pinUsed && chunkF && canScanColumnar(AL)) {
       // the engine: the line index's runs on the worker pool (src/colscan.js), the
       // sidecar bands skipping runs unread — a run is one band
