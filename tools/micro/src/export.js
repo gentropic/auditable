@@ -33,7 +33,15 @@ export function exportColumnsOf(L) {
 
 export let _exportEpoch = 0;
 
-export async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false } = {}) {
+// both long jobs can be STOPPED: the footer's cancel button (the app's busyCancel)
+// aborts between batches — an export writes nothing, an optimize leaves the layer
+// exactly as it was. A caller's own signal is honoured too.
+const cancelled = (signal) => !!(signal && signal.aborted);
+export async function runExport(L, opts = {}) {
+  const bc = H.busyCancel ? H.busyCancel() : null;
+  try { return await runExportInner(L, { ...opts, signal: opts.signal || (bc && bc.signal) }); } finally { if (bc) bc.done(); }
+}
+async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false, signal = null } = {}) {
   const h = layerTableHeader(L); if (!h) return -1;
   await ensureStoredValues(L, null);                       // exports read every column
   const cols = exportColumnsOf(L);
@@ -115,6 +123,7 @@ export async function runExport(L, { scope = 'all', colIdx = null, delim = ',', 
     $('#meta').textContent = `export: ${written.toLocaleString()} rows…`;
     await new Promise((r) => setTimeout(r));
     if (epoch !== _exportEpoch) return -1;                 // superseded
+    if (cancelled(signal)) { $('#meta').textContent = 'export cancelled — nothing written'; return -1; }
   }
   let blob;
   if (isParquet) {
@@ -127,6 +136,7 @@ export async function runExport(L, { scope = 'all', colIdx = null, delim = ',', 
         at += g.count; $('#meta').textContent = `export: spatial sort + write — ${at.toLocaleString()} / ${written.toLocaleString()}…`;
         await new Promise((r) => setTimeout(r));
         if (epoch !== _exportEpoch) return -1;             // superseded
+        if (cancelled(signal)) { $('#meta').textContent = 'export cancelled — nothing written'; return -1; }
       }
     } else flushGrp();
     if (!written) pqw.write(colIdx.map((i) => ({ name: cols[i].name, data: [] })));   // an empty export is still a file
@@ -147,6 +157,11 @@ export async function runExport(L, { scope = 'all', colIdx = null, delim = ',', 
 // through the existing parquet path (no manifest surgery, no in-place record
 // remap). A subsequent project save stores the optimized copy.
 export async function convertLayerToParquet(L, cvOpts = {}) {
+  const bc = H.busyCancel ? H.busyCancel() : null;
+  try { return await convertInner(L, { ...cvOpts, signal: cvOpts.signal || (bc && bc.signal) }); } finally { if (bc) bc.done(); }
+}
+async function convertInner(L, cvOpts) {
+  const signal = cvOpts.signal;
   const h = layerTableHeader(L);
   if (!h || (L.docs.blockDoc && L.docs.blockDoc.parquet)) { $('#meta').textContent = 'store as Parquet: needs a non-Parquet block model'; return; }
   const m = h.mapping || {};
@@ -190,6 +205,7 @@ export async function convertLayerToParquet(L, cvOpts = {}) {
       }
       $('#meta').textContent = `optimize: ${n.toLocaleString()} / ${(h.count || 0).toLocaleString()} blocks read…`;
       await new Promise((r) => setTimeout(r));
+      if (cancelled(signal)) { $('#meta').textContent = 'optimize cancelled — the layer is unchanged'; return; }
     }
     if (!n) { $('#meta').textContent = 'store as Parquet: empty model'; return; }
     optLineage = mkLineage('optimize', { morton: true, format: 'parquet', blocks: n }, [L.lineage]);
@@ -202,6 +218,7 @@ export async function convertLayerToParquet(L, cvOpts = {}) {
       order.set(g.recs, at); at += g.count;
       $('#meta').textContent = `optimize: spatial sort + write — ${at.toLocaleString()} / ${n.toLocaleString()}…`;
       await new Promise((r) => setTimeout(r));
+      if (cancelled(signal)) { $('#meta').textContent = 'optimize cancelled — the layer is unchanged'; return; }
     }
     outBlob = w.finish();
   } catch (e) { $('#meta').textContent = `optimize: ${e.message}`; return; }

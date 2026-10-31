@@ -1446,3 +1446,28 @@ test('createMortonSorter: Z-order out, every record once, values travel, nulls s
   assert.ok(seen.every((c) => c === 1), 'every record exactly once');
   assert.equal(groups, Math.ceil(N / 4096));
 });
+
+// a DECIMAL COMMA (';' between fields, 1,5 in them): detected at the sniff and
+// normalized where fields are split — every reader sees 1.5
+test('delimited: a decimal comma is read as a decimal point, everywhere', async () => {
+  const { openBlockModel, sniffDelimited, fetchDelimitedRecord, lineFields } = await import('../ext/condenser/src/main.js');
+  let t = 'X;Y;Z;AU;ROCK\n';
+  for (let k = 0; k < 2; k++) for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) t += `${5 + i * 10},5;${5 + j * 10};${5 + k * 10};${i},${j}5;${i ? 'ox' : '<0,05'}\n`;
+  const blob = new Blob([t]);
+  assert.equal(sniffDelimited(t).decimal, ',');
+  const { header, streamChunks } = await openBlockModel(blob, { indexEvery: 4 });
+  assert.equal(header.decimal, ',');
+  assert.equal(header.count, 24);
+  assert.ok(header.grid && header.grid.x.count === 4 && header.grid.x.pitch === 10, 'the lattice from 5,5 / 15,5 / …');
+  const xs = [], au = [];
+  for await (const c of streamChunks()) for (let i = 0; i < c.count; i++) { xs.push(c.x[i]); au.push(c.chan[i]); }
+  assert.deepEqual([...new Set(xs)].sort((a, b) => a - b), [5.5, 15.5, 25.5, 35.5]);
+  assert.ok(au.every((v) => Number.isFinite(v)) && Math.abs(au[1] - 1.05) < 1e-12, `grades are numbers (${au.slice(0, 3)})`);
+  const rec = await fetchDelimitedRecord(blob, header, 5);
+  assert.equal(rec[0], '15.5'); assert.equal(rec[3], '1.15');
+  const rows = []; for await (const b of lineFields(blob, ';', true, { decimal: ',' })) rows.push(...b);
+  assert.equal(rows[0][4], '<0.05');                       // the qualifier reads it too
+  // a ';' file with POINT decimals, and a plain CSV, are untouched
+  assert.equal(sniffDelimited('X;Y;AU\n1.5;2;3,7\n2.5;3;4\n').decimal, '.');
+  assert.equal(sniffDelimited('X,Y,AU\n1,2,3\n').decimal, '.');
+});

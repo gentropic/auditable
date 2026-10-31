@@ -485,9 +485,10 @@ const pqFilt = await p.evaluate(() => { const L = window._micro.layers().find((x
 chk(`Parquet filter ZC>655 → ${pqFilt.h} hits, ${pqFilt.skipped}/${pqFilt.groups} groups skipped by the footer`, pqFilt.h === 600 && pqFilt.skipped > 0);
 // ── the PIN CACHE (tier 3): a complete scan tees columns; the re-filter runs with NO file read ──
 const runF = async (expr) => {
-  await p.evaluate((e) => { const i = document.querySelector('#filter'); i.value = e; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); }, expr);
-  await p.waitForFunction(() => /filter:|match/.test(document.querySelector('#meta').textContent), null, { timeout: 30000 });
-  await p.waitForTimeout(250);
+  // wait for THIS filter's mask (a new array per run) — the meta line still says
+  // "match" from the previous one, which under load raced a fixed sleep
+  await p.evaluate((e) => { const L = window._micro.layers().find((x) => x.name === 'model.parquet'); window.__prevMask = L._filterMask; const i = document.querySelector('#filter'); i.value = e; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); }, expr);
+  await p.waitForFunction(() => { const L = window._micro.layers().find((x) => x.name === 'model.parquet'); return L._filterMask && L._filterMask !== window.__prevMask && /filter:|match/.test(document.querySelector('#meta').textContent); }, null, { timeout: 30000 });
   return p.evaluate(() => { const L = window._micro.layers().find((x) => x.name === 'model.parquet'); let h = 0; for (const m of L._filterMask || []) if (m) h++; return { h, pinned: window.__pinUsed === true, stats: window._micro.pinStats() }; });
 };
 const f1p = await runF('ZC > -1e9');                        // no groups skippable → complete scan → TEE

@@ -29,7 +29,13 @@ const DIMZ_RE = /^(dz|zinc|zsize|zdim|dim_?z)$/i;
 const NONGRADE_RE = /^(ijk|id|index|row|i|j|k|dens|density|sg|topo|pct|proportion)$/i;
 
 // a RECORD splitter: RFC 4180 quotes honoured (delimited.js); unquoted lines take the plain split
-const splitter = (delim) => (l) => splitFields(l, delim);
+// a DECIMAL COMMA (1,5 — the Brazilian / European convention, with ';' or tab
+// between fields): normalized where the fields are split, so every reader —
+// coordinates, grades, the qualifier's <0,05 — sees 1.5 and nothing downstream
+// has to know. Only a field that is entirely a comma-decimal number changes.
+const COMMA_NUM = /^(\s*[<>]?=?\s*[-+]?\d*),(\d+(?:[eE][-+]?\d+)?\s*)$/;
+const fixDecimal = (f) => { for (let i = 0; i < f.length; i++) { const v = f[i]; if (v && v.indexOf(',') >= 0) { const m = COMMA_NUM.exec(v); if (m) f[i] = m[1] + '.' + m[2]; } } return f; };
+const splitter = (delim, decimal) => (decimal === ',' && delim !== ',' ? (l) => fixDecimal(splitFields(l, delim)) : (l) => splitFields(l, delim));
 
 // Detect delimiter + header from the first text block.
 export function sniffDelimited(text) {
@@ -52,8 +58,16 @@ export function sniffDelimited(text) {
   if (!best) throw new Error('blockmodel: no consistent delimiter found');
   const first = splitter(best.delim)(best.first).map((s) => s.trim());
   const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
-  const hasHeader = first.some((s) => !numericish(s));
-  return { delim: best.delim, header: hasHeader ? first : null, columns: best.n };
+  // the decimal mark: with a non-comma delimiter, data fields that are comma-
+  // decimal numbers (1,5) and none that are point-decimal (1.5) → ','
+  let decimal = '.';
+  if (best.delim !== ',') {
+    let comma = 0, point = 0;
+    for (const r of sampleRecords(text, best.delim, { max: 25 }).slice(1)) for (const f of splitter(best.delim)(r)) { const t = f.trim(); if (COMMA_NUM.test(t)) comma++; else if (/^[<>]?=?\s*[-+]?\d*\.\d+(?:[eE][-+]?\d+)?$/.test(t)) point++; }
+    if (comma > 0 && point === 0) decimal = ',';
+  }
+  const hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  return { delim: best.delim, header: hasHeader ? first : null, columns: best.n, decimal };
 }
 
 // Per-block size columns (DX/DY/DZ, XINC…) by name → { x, y, z } indices, or
@@ -87,9 +101,9 @@ export function mapColumns(header) {
 // next sweep). Skips blanks + '#'; yields trimmed field arrays in batches so the
 // consumer controls pacing. Exported: the filter sweep (a mask by record index)
 // re-reads raw rows through the same path.
-export async function* lineFields(blob, delim, hasHeader, { signal, onProgress } = {}) {
+export async function* lineFields(blob, delim, hasHeader, { signal, onProgress, decimal = '.' } = {}) {
   const reader = blob.stream().pipeThrough(new TextDecoderStream()).getReader();
-  const split = splitter(delim), join = new RecordJoiner(delim);
+  const split = splitter(delim, decimal), join = new RecordJoiner(delim);
   let carry = '', first = hasHeader, bytesSeen = 0;
   const take = (l, batch) => {
     if (l.endsWith('\r')) l = l.slice(0, -1);
@@ -127,10 +141,10 @@ export async function* lineFields(blob, delim, hasHeader, { signal, onProgress }
 // byte-level line splitting is exact; text still decodes in BULK per chunk
 // (per-line decode would be ~50× slower at 50M rows). These offsets feed the
 // sparse record index (fetchDelimitedRecord) — the pick join on big CSVs.
-async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress } = {}) {
+async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress, decimal = '.' } = {}) {
   const reader = blob.stream().getReader();
   const dec = new TextDecoder();
-  const split = splitter(delim), join = new RecordJoiner(delim);
+  const split = splitter(delim, decimal), join = new RecordJoiner(delim);
   let carryText = '', carryAt = 0, pos = 0, first = hasHeader, bytesSeen = 0, recAt = 0;
   // one line (its byte offset `start`) into the joiner; a completed record keeps
   // the offset of its FIRST line, so the sparse index always points at a record start
@@ -183,7 +197,7 @@ export async function fetchDelimitedRecord(blob, header, rec) {
   const a = Math.min(Math.floor(rec / idx.k), idx.offsets.length - 1);
   let remaining = rec - a * idx.k;
   const m = header.mapping;
-  const split = splitter(header.delim), join = new RecordJoiner(header.delim);
+  const split = splitter(header.delim, header.decimal), join = new RecordJoiner(header.delim);
   const reader = blob.slice(idx.offsets[a]).stream().pipeThrough(new TextDecoderStream()).getReader();
   let carry = '';
   try {
@@ -243,7 +257,7 @@ export async function readDelimitedRun(blob, run, o) {
       : (v) => { v = qual(v); return v == null ? '' : typeof v === 'string' ? v : String(v); };
   });
   let m = 0;
-  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false)) {
+  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false, { decimal: o.decimal })) {
     for (const f of batch) {
       const xv = coordNum(f[o.x]), yv = coordNum(f[o.y]), zv = coordNum(f[o.z]);
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
@@ -285,12 +299,12 @@ const CAP_DISTINCT = 300000;                               // per-axis discovery
 
 // sweep 2 as a shared factory: the same cold-recipe stream whether the header
 // came from a live discovery or a cached `discovered` payload (sidecars)
-function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT) {
+function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT, decimal = '.') {
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
     const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
     const dimKeyOf = makeDimKeyer();
-    for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2 })) {
+    for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2, decimal })) {
       for (const f of batch) {
         const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
@@ -339,7 +353,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
       ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
       : null;
-    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan)) };
+    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan), header.decimal) };
   }
   const head = await blob.slice(0, Math.min(sample, blob.size)).text();
   const sniff = sniffDelimited(head);
@@ -359,7 +373,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // AUTO pick; an explicit mapping stays the caller's call.
   if (!mapping && map.chan != null && sniff.header) {
     const lines0 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split0 = splitter(sniff.delim);
+    const split0 = splitter(sniff.delim, sniff.decimal);
     const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
     if (vals0.length && !censusQualified(vals0).numeric) map.chan = null;
   }
@@ -369,7 +383,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   if (catCol === -1) catCol = null;                         // stated: no category
   else if (catCol == null && sniff.header) {
     const lines = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split = splitter(sniff.delim);
+    const split = splitter(sniff.delim, sniff.decimal);
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
       if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
       const vals = lines.map((l) => (split(l)[i] || '').trim()).filter(Boolean);
@@ -390,7 +404,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   const numericColumns = [], qualifiedColumns = [];
   if (sniff.header) {
     const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split2 = splitter(sniff.delim);
+    const split2 = splitter(sniff.delim, sniff.decimal);
     for (let i = 0; i < sniff.columns; i++) {
       if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
       const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
@@ -422,7 +436,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   // data-row number, to find it): a blank coordinate, or one that isn't a number
   const dropped = { blank: 0, text: 0, firstRow: -1 };
   let dataRow = 0;
-  for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
+  for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress, decimal: sniff.decimal })) {
     for (let fi = 0; fi < fields.length; fi++, dataRow++) {
       const f = fields[fi];
       const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
@@ -471,7 +485,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   let latticeCandidate = null;
   if (!grid && !subBlocked && rotated && res.length >= 24) {
     const coordSweep = () => (async function* () {
-      for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal })) {
+      for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, decimal: sniff.decimal })) {
         const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
         for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
         yield { x, y, z, count: n };
@@ -492,6 +506,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
     subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
+    decimal: sniff.decimal,                                 // ',' — every re-read normalizes 1,5 the same way
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
     dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
     zones: zb ? zb.finish(count) : null,                   // per-index-entry skip statistics (io/zones.js)
@@ -505,7 +520,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   };
 
   // ── sweep 2 (cold recipe): the shared stream factory ──
-  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan));
+  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan), sniff.decimal);
 
   return { header, streamChunks };
 }
@@ -527,7 +542,7 @@ export async function openTable(blob, { signal, onProgress } = {}) {
   // provider uses, so mixed columns with a stray 'n/a' still read as numbers)
   const stat = columns.map(() => ({ n: 0, num: 0 }));
   let count = 0;
-  for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
+  for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, onProgress, decimal: sniff.decimal })) {
     for (const f of batch) {
       for (let i = 0; i < columns.length && i < f.length; i++) {
         const v = f[i];
@@ -543,5 +558,5 @@ export async function openTable(blob, { signal, onProgress } = {}) {
   // a table needs ROWS. Prose lands here with a plausible-looking delimiter and
   // no data — "0 rows · 10 columns" is not a table, it is a misread file.
   if (!count) throw new Error('no data rows — this does not look like a table');
-  return { header: { table: true, columns, count, delim: sniff.delim, hasHeaderRow, numericColumns, mapping: null, grid: null, bbox: null } };
+  return { header: { table: true, columns, count, delim: sniff.delim, decimal: sniff.decimal, hasHeaderRow, numericColumns, mapping: null, grid: null, bbox: null } };
 }

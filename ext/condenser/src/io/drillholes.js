@@ -58,7 +58,7 @@ export async function readDelimited(blob, { sample = 256 * 1024 } = {}) {
   const sniff = sniffDelimited(head);
   if (!sniff.header) throw new Error('drillholes: table has no header row');
   const rows = [];
-  for await (const batch of lineFields(blob, sniff.delim, true)) {
+  for await (const batch of lineFields(blob, sniff.delim, true, { decimal: sniff.decimal })) {
     for (const f of batch) rows.push(f);
   }
   return { columns: sniff.header.map((c) => String(c).trim()), rows };

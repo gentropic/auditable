@@ -774,6 +774,8 @@
     #empty { padding: 0 16px; }
     footer { gap: 10px; }
     footer #meta { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    footer #metaCancel { margin: 0 8px 0 4px; padding: 0 7px; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); font: inherit; font-size: 11px; cursor: pointer; }
+    footer #metaCancel:hover { border-color: var(--accent); }
     footer #meta button.meta-act { margin-left: .5em; padding: 0 .55em; font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 3px; cursor: pointer; opacity: .85; }
     footer #meta button.meta-act:hover { opacity: 1; }
     footer #stats, footer #camTP { display: none; }
@@ -960,7 +962,7 @@
     <polygon id="cmpE" fill="#d4d9de"/>
     <text id="cmpN" fill="#c89b3c" font-size="11" font-family="monospace" font-weight="bold" text-anchor="middle" dominant-baseline="middle" paint-order="stroke" stroke="#121212" stroke-width="3">N</text>
   </svg>
-  <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
+  <footer><span id="meta">—</span><button id="metaCancel" hidden title="stop this — nothing is written, nothing changes">cancel</button><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
 import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, cellOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, createMortonSorter, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
@@ -2020,7 +2022,7 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ addPaintColorOptions, applyLayerSelection, deliverBlob, get frame() { return frame; }, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
+setExportHooks({ busyCancel, addPaintColorOptions, applyLayerSelection, deliverBlob, get frame() { return frame; }, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
 
 
 
@@ -2260,7 +2262,7 @@ async function resultToLayer(title, tsv, lineageOp) {
 
 
 // src/recipes.js reaches back into the app through these
-setRecipesHooks({ applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, menuXY, microPrompt, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe });
+setRecipesHooks({ applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, menuXY, microConfirm, microPrompt, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe });
 
 // apply a calc-column SET to a layer — REPLACE on same name (idempotency is
 // gospel: run-twice == run-once), append the new; invalid expressions are
@@ -7541,7 +7543,7 @@ async function saveProject() {
           await scanColumns(L, (a, b) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b ? Math.round(100 * a / b) : 0}%…`; }, { bands: !isPq });
         }
         const meta = {
-          v: isDmL || isPq ? 2 : 3, size: doc.blob.size, mtime: await cacheStamp(dir, L._relpath || relPathFor(L, L.name), doc.blob), hash: (await sourceHash(doc.blob)) || undefined,
+          v: isDmL || isPq ? 2 : 4, size: doc.blob.size, mtime: await cacheStamp(dir, L._relpath || relPathFor(L, L.name), doc.blob), hash: (await sourceHash(doc.blob)) || undefined,
           header: isDmL
             ? { kind: 'dm', count: h.count, bbox: h.bbox, grid: h.grid, subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, categories: h.categories || null }
             : isPq
@@ -7549,7 +7551,7 @@ async function saveProject() {
               : {
                 kind: h.kind, count: h.count, bbox: h.bbox, grid: h.grid, lattice: h.lattice || null,
                 subBlocked: h.subBlocked || false, dimPalette: h.dimPalette || null, dimCols: h.dimCols || null,
-                columns: h.columns, mapping: h.mapping, delim: h.delim, hasHeaderRow: h.hasHeaderRow,
+                columns: h.columns, mapping: h.mapping, delim: h.delim, decimal: h.decimal || '.', hasHeaderRow: h.hasHeaderRow,
                 numericColumns: h.numericColumns, categories: h.categories, attributes: h.attributes,
                 index: h.index ? { k: h.index.k, offsets: [...h.index.offsets] } : undefined,
                 dropped: h.dropped || null,
@@ -7795,7 +7797,7 @@ async function openProjectDir(dir, { pack = null } = {}) {
           // v3: a delimited discovery made under the coordinate rule (a blank coordinate
           // is no record); an older one counted such rows, so it's rebuilt
           const binHdr = mj && mj.header && (mj.header.kind === 'dm' || mj.header.kind === 'parquet');
-          if (mj && (mj.v === 3 || ((mj.v === 1 || mj.v === 2) && binHdr)) && sidecarMatches(mj, file, mj.hash ? await sourceHash(file) : null)) {
+          if (mj && (mj.v === 4 || ((mj.v === 1 || mj.v === 2) && binHdr)) && sidecarMatches(mj, file, mj.hash ? await sourceHash(file) : null)) {
             sidecar = mj;
             if (mj.header && (mj.header.kind === 'dm' || mj.header.kind === 'parquet')) overR.cached = mj.header;
             else overR.discovered = mj.header;
@@ -7880,6 +7882,21 @@ async function openProjectDir(dir, { pack = null } = {}) {
 async function openProjectPicker() {
   if (!hasFSAA) return;
   try { await openProjectDir(await pickDirectory()); } catch { /* cancelled */ }
+}
+// the tab closing (or reloading) with work only this session holds: a dirty
+// project, or — without one — any layer carrying its own painted / calculated
+// columns. The browser shows its own "leave site?" prompt; nothing else is stopped.
+function unsavedWork() {
+  if (S.project) return !!S.project.dirty && !S.project.pack;
+  return S.layers.some((L) => (L.paintCols || []).some((c) => c.name !== '_swath') || (L.calcCols || []).length > 0);
+}
+addEventListener('beforeunload', (e) => { if (unsavedWork()) { e.preventDefault(); e.returnValue = ''; } });
+// a long job the user can stop (export, optimize): the footer's cancel button —
+// shown while it runs, one job at a time; done() hides it again
+function busyCancel() {
+  const b = $('#metaCancel'), ac = new AbortController();
+  b.hidden = false; b.onclick = () => { ac.abort(); b.hidden = true; };
+  return { signal: ac.signal, done: () => { b.hidden = true; b.onclick = null; } };
 }
 function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; updateProjectTitle(); }
 // Tidy: migrate an already-saved project's files into their kind subfolders
@@ -8323,6 +8340,7 @@ function armGoto() {
   $('#meta').textContent = 'goto — 1–9 recalls a view slot · Shift+digit saves the current view · Esc cancels';
 }
 async function removeBookmark(v) {
+  if (!(await microConfirm('remove bookmark', `Remove the bookmark “${v.name}”${S.project && v.file ? ` — and its file ${v.file} in the project` : ''}?`, 'Remove'))) return;
   S.views = S.views.filter((x) => x !== v);
   if (S.project && v.file) { try { await removeFileAt(S.project.dir, v.file); } catch { /* already gone */ } }
   markProjectDirty();
@@ -8371,6 +8389,7 @@ async function saveSceneAs(withSel) {
   $('#meta').textContent = `${existing ? 'updated' : 'saved'} scene “${name}” (${s.layers.length} layer${s.layers.length === 1 ? '' : 's'}${withSel ? ' + selection' : ''})${S.project ? ` → ${s.file}` : ' (in memory — save the project to keep it)'}`;
 }
 async function removeScene(s) {
+  if (!(await microConfirm('remove scene', `Remove the scene “${s.name}”${S.project && s.file ? ` — and its file ${s.file} in the project` : ''}?`, 'Remove'))) return;
   S.scenes = S.scenes.filter((x) => x !== s);
   if (S.project && s.file) { try { await removeFileAt(S.project.dir, s.file); } catch { /* already gone */ } }
   markProjectDirty();
@@ -8609,7 +8628,7 @@ $('#mFile').onclick = () => {
   }
   if (S.project) items.push({ label: 'Back up project…', action: () => backupProject() });
   if (hasFSAA) items.push({ label: 'Restore project from backup…', action: () => restoreProject() });
-  if (S.project) items.push({ label: `Close project (${S.project.name})`, action: closeProject });
+  if (S.project) items.push({ label: `Close project (${S.project.name})`, action: async () => { if (S.project.dirty && !(await microConfirm('close project', `“${S.project.name}” has unsaved changes — close it anyway? The layers stay open; the files on disk are untouched.`, 'Close'))) return; closeProject(); } });
   if (_remember && _recents.length) {
     items.push({ sep: true });
     for (const e of _recents.slice(0, 10)) items.push({ label: (e.handle ? '' : '↻ ') + e.name, action: () => openRecent(e) });
@@ -9899,7 +9918,7 @@ const COMMANDS = [
   { id: 'paint', group: 'Layer', title: 'Paint column…', kw: 'brush domain category', when: (c) => c.L && layerTableHeader(c.L), run: (c) => openPaintPalette(c.L) },
   { id: 'export', group: 'Layer', title: 'Export rows…', kw: 'csv parquet save out', when: (c) => c.L && layerTableHeader(c.L), run: (c) => openExportDialog(c.L) },
   { id: 'hide', group: 'Layer', title: 'Hide / show layer', kw: 'visible toggle', when: (c) => c.L, run: (c) => showNode(c.L.id, !c.L.visible) },
-  { id: 'remove', group: 'Layer', title: 'Remove layer', kw: 'delete close', when: (c) => c.L, run: (c) => removeLayerUI(c.L.id) },
+  { id: 'remove', group: 'Layer', title: 'Remove layer', kw: 'delete close', when: (c) => c.L, run: (c) => confirmRemoveLayer(c.L.id) },
   { id: 'settings', group: 'Tools', title: 'Settings…', kw: 'preferences options prefs background budget selection compute', run: () => openSettingsWindow() },
   { id: 'memory', group: 'Tools', title: 'Memory…', kw: 'vram usage ram', run: () => showMemoryInfo() },
   { id: 'sealed', group: 'Help', title: 'Why it\'s Sealed (security)…', kw: 'network privacy offline trust connect-src wasm verify', run: () => sealedInfo() },
@@ -10874,6 +10893,16 @@ function toggleLayersPanel(force) {
 }
 $('#lpClose').onclick = () => toggleLayersPanel(false);
 function fitLayer(L) { if (L.bboxLocal) { cam.fit(L.bboxLocal); requestRender(); } }
+// the UI's remove (context menu, palette): a layer carrying its OWN columns —
+// painted, calculated, joined — loses them with it (the file on disk is never
+// touched, but those exist nowhere else until a save), so that asks first. The
+// host API and the open paths call removeLayerUI directly, without asking.
+async function confirmRemoveLayer(id) {
+  const L = layerById(id); if (!L) return;
+  const own = [...(L.paintCols || []).filter((c) => c.name !== '_swath'), ...(L.calcCols || [])].map((c) => c.name);
+  if (own.length && !(await microConfirm('remove layer', `Remove “${L.label || L.name}”? Its ${own.length} column${own.length === 1 ? '' : 's'} of its own (${own.slice(0, 6).join(', ')}${own.length > 6 ? ', …' : ''}) go${own.length === 1 ? 'es' : ''} with it${S.project && !S.project.dirty ? ' from this session (the saved project still has them until the next save)' : ''}. The file on disk is untouched.`, 'Remove'))) return;
+  removeLayerUI(id);
+}
 function removeLayerUI(id) {
   dispatchEvent(new Event('micro:project-dirty'));
   closeAttrTable(id);
@@ -11003,7 +11032,7 @@ function layerMenu(L, x, y) {
       label: `Copy into project (${fmtSize(layerBytes(L))})`,
       action: () => copyLayerIntoProject(L),
     }] : []),
-    { label: 'Remove layer', action: () => removeLayerUI(L.id) },
+    { label: 'Remove layer', action: () => confirmRemoveLayer(L.id) },
     { sep: true },
     { label: 'Properties…', action: () => { setActiveLayer(L.id); openProps(); } },
   ]);
@@ -12659,7 +12688,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, applySwathZebra, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, applySwathZebra, confirmRemoveLayer, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

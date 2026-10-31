@@ -465,7 +465,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
         const byteEnd = aN < idxC.offsets.length ? idxC.offsets[aN] : blob.size;
         rec = b * BB.size;                                 // accepted-row numbering at the band start
         const bandEnd = Math.min(header.count, (b + 1) * BB.size);
-        for await (const batch of lineFields(blob.slice(byteStart, byteEnd), header.delim, false)) {
+        for await (const batch of lineFields(blob.slice(byteStart, byteEnd), header.delim, false, { decimal: header.decimal })) {
           for (const f of batch) { if (rec >= bandEnd) break; scanRow(f); }
           await new Promise((r) => setTimeout(r));
           if (!alive()) return;
@@ -481,7 +481,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
         teeAcc[tn.k] = ty === 'number' ? { bi: tn.bi, data: new Float64Array(header.count).fill(NaN) } : { bi: tn.bi, codes: new Uint16Array(header.count), dict: [''], map: new Map([['', 0]]) };
       }
     }
-    for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns)) {
+    for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns, { decimal: header.decimal })) {
       for (const f of batch) scanRow(f);
       await new Promise((r) => setTimeout(r));
       if (!alive()) return;                  // superseded — stop before pushing more compact chunks

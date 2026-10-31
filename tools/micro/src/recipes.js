@@ -551,6 +551,7 @@ export async function loadRecipes(dir) {
 }
 
 export async function deleteRecipe(r) {
+  if (!(await H.microConfirm(r.tool === 'routine' ? 'delete routine' : 'delete recipe', `Delete “${r.name}” — the file ${r.file} in the project? This can't be undone.`, 'Delete'))) return;
   await removeFileAt(S.project.dir, r.file);
   S.recipes = S.recipes.filter((x) => x !== r);
   $('#meta').textContent = `deleted recipe “${r.name}” (${r.file})`;

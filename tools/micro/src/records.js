@@ -224,7 +224,7 @@ export async function* layerRows(L, onProgress, { raw = false } = {}) {
     const { blob, header } = d.tableDoc;
     const q = raw ? null : rowQualifier(L);
     let done = 0;
-    for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow)) {
+    for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow, { decimal: header.decimal })) {
       yield q ? batch.map(q) : batch;
       done += batch.length;
       if (onProgress) onProgress(done, header.count);
@@ -233,7 +233,7 @@ export async function* layerRows(L, onProgress, { raw = false } = {}) {
     const { blob, header } = d.blockDoc;
     let done = 0;
     const q = raw ? null : rowQualifier(L);
-    for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns)) {
+    for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns, { decimal: header.decimal })) {
       yield q ? batch.map(q) : batch;
       done += batch.length;
       if (onProgress) onProgress(done, header.count);
@@ -435,7 +435,7 @@ export async function fetchCsvRecord(rec, doc = activeDocs().blockDoc) {
   if (header.index) return await fetchDelimitedRecord(blob, header, rec);
   const m = header.mapping;
   let n = 0;
-  for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns)) {
+  for await (const batch of lineFields(blob, header.delim, header.hasHeaderRow !== undefined ? header.hasHeaderRow : !!header.columns, { decimal: header.decimal })) {
     for (const f of batch) {
       const xv = coordNum(f[m.x]), yv = coordNum(f[m.y]), zv = coordNum(f[m.z]);
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;

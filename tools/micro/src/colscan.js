@@ -59,7 +59,7 @@ function sourceOf(L, readCols, keepZone = null) {
       const i = h.columns.indexOf(n);
       return { i, num: (schema[i] || {}).type === 'number', policy: !coord.has(i) && colIsNumeric(L, h, i) ? qualifyPolicy(L, n) : null };
     });
-    return scan.sources.delimited(bd.blob, h, { delim: h.delim, x: m.x, y: m.y, z: m.z, cols }, readCols, { anchors: csvAnchors, keep: keepZone });
+    return scan.sources.delimited(bd.blob, h, { delim: h.delim, decimal: h.decimal, x: m.x, y: m.y, z: m.z, cols }, readCols, { anchors: csvAnchors, keep: keepZone });
   }
   return scan.sources.dm(bd.blob, bd.header.dm, h.columns, readCols);
 }

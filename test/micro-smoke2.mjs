@@ -3834,7 +3834,7 @@ await p.close();
   await pf.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2oldcsv'); await window._micro.openProjectDir(dir); });
   await pf.waitForFunction(() => window._micro.layers().length && window._micro.layers()[0].docs.blockDoc && window._micro.layers()[0].docs.blockDoc.metaLine, null, { timeout: 60000 });
   const re = await pf.evaluate(() => { const L = window._micro.layers()[0], h = L.docs.blockDoc.header; return { count: h.count, dropped: h.dropped, drawn: window._micro.renderer.layerElementCount(L.id), meta: L.docs.blockDoc.metaLine }; });
-  chk(`a v3 sidecar was written (v${forged.v}, ${forged.count} records, dropped ${JSON.stringify(forged.dropped)})`, forged.v === 3 && forged.count === 2999 && forged.dropped && forged.dropped.blank === 1);
+  chk(`a v4 sidecar was written (v${forged.v}, ${forged.count} records, dropped ${JSON.stringify(forged.dropped)})`, forged.v === 4 && forged.count === 2999 && forged.dropped && forged.dropped.blank === 1);
   chk(`an old (v2) CSV sidecar is not trusted: rediscovered → ${re.count} records, ${re.drawn} drawn, dropped ${JSON.stringify(re.dropped)}`, re.count === 2999 && re.drawn === 2999 && re.dropped && re.dropped.blank === 1 && /1 row dropped/.test(re.meta));
   await pf.close();
 }
@@ -4106,6 +4106,107 @@ await p.close();
   chk(`unsorted export streams in FILE order (${JSON.stringify(r.plain.firstX)}), ${r.plain.aligned} aligned`, r.plain.n === 315 && r.plain.aligned === 315 && r.plain.firstX.join() === '5,15,25');
   chk(`external sort, optimize: ${r.opt.ordered} of ${r.opt.n} in Morton order, ${r.opt.aligned} aligned; the materialized column follows its blocks (${r.estBad} off)`,
     r.opt.n === 315 && r.opt.ordered === 315 && r.opt.aligned === 315 && r.estBad === 0);
+}
+
+// ── §63: RECOVERY — work that only this session holds isn't lost silently.
+//     Closing the tab with a layer's own painted / calculated column asks (the
+//     browser's beforeunload prompt) and without one doesn't; removing such a
+//     layer from the UI asks, Cancel keeps it, Remove removes it. ──
+{
+  const mkLayer = async (pg, withCol) => pg.evaluate(async (wc) => {
+    const M = window._micro;
+    let s = 'X,Y,Z,AU\n'; for (let i = 0; i < 27; i++) s += `${(i % 3) * 10},${((i / 3 | 0) % 3) * 10},${(i / 9 | 0) * 10},${i}\n`;
+    const id = await M.openBlob(new File([s], 'rc.csv'), 'rc.csv', 'replace');
+    if (wc) M.applyCalcCols(M.layers().find((q) => q.id === id), [{ name: 'AU2', expr: 'AU * 2' }]);
+    return id;
+  }, withCol);
+  const asksOnClose = async (withCol) => {
+    const pg = await mkPage('sm2rec');
+    await mkLayer(pg, withCol);
+    let asked = false;
+    pg.on('dialog', async (d) => { if (d.type() === 'beforeunload') asked = true; await d.accept(); });
+    await pg.close({ runBeforeUnload: true });
+    for (let n = 0; n < 40 && !pg.isClosed(); n++) await new Promise((z) => setTimeout(z, 50));
+    return asked;
+  };
+  const askWith = await asksOnClose(true), askWithout = await asksOnClose(false);
+  const pr = await mkPage('sm2rec');
+  const id = await mkLayer(pr, true);
+  const rm = await pr.evaluate(async (lid) => {
+    const M = window._micro, out = {};
+    const wait = async () => { for (let n = 0; n < 100 && !document.querySelector('#pmDlg').classList.contains('show'); n++) await new Promise((z) => setTimeout(z, 20)); return document.querySelector('#pmDlg').classList.contains('show'); };
+    let p = M.confirmRemoveLayer(lid); out.asked = await wait(); out.msg = document.querySelector('#pmMsg').textContent;
+    document.querySelector('#pmCancel').click(); await p; out.keptOnCancel = M.layers().some((q) => q.id === lid);
+    p = M.confirmRemoveLayer(lid); await wait(); document.querySelector('#pmOk').click(); await p;
+    out.goneOnOk = !M.layers().some((q) => q.id === lid);
+    return out;
+  }, id);
+  await pr.close();
+  chk(`closing the tab with a layer's own column ASKS (${askWith}); with nothing of its own it doesn't (${!askWithout})`, askWith && !askWithout);
+  chk(`removing a layer that carries its own column asks (“${rm.msg.slice(0, 70)}…”), Cancel keeps it (${rm.keptOnCancel}), Remove removes it (${rm.goneOnOk})`, rm.asked && /AU2/.test(rm.msg) && rm.keptOnCancel && rm.goneOnOk);
+}
+
+// ── §64: LONG JOBS STOP. Export and optimize show the footer's cancel while they
+//     run; a click mid-way writes nothing (export) and leaves the layer exactly
+//     as it was (optimize); the button hides again. ──
+{
+  const pc = await mkPage('sm2cancel');
+  const r = await pc.evaluate(async () => {
+    const M = window._micro, b = document.querySelector('#metaCancel');
+    let s = 'X,Y,Z,AU\n'; for (let i = 0; i < 20000; i++) s += `${(i % 40) * 10},${((i / 40 | 0) % 25) * 10},${(i / 1000 | 0) * 10},${i % 97}\n`;
+    const id = await M.openBlob(new File([s], 'cx.csv'), 'cx.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    const clickWhileRunning = async (start) => {
+      const p = start();
+      let seen = false;
+      for (let n = 0; n < 200 && !seen; n++) { await new Promise((z) => setTimeout(z, 1)); if (!b.hidden) { seen = true; b.click(); } }
+      const ret = await p;
+      return { seen, ret, meta: document.querySelector('#meta').textContent, hiddenAfter: b.hidden };
+    };
+    window._lastExport = null;
+    const ex = await clickWhileRunning(() => M.runExport(L, { format: 'parquet', download: false, filename: 'c.parquet' }));
+    ex.wrote = !!window._lastExport;
+    const op = await clickWhileRunning(() => M.convertLayerToParquet(L, { keepOriginal: true }));
+    op.stillCsv = !L.docs.blockDoc.parquet && L.name === 'cx.csv';
+    const full = await M.runExport(L, { format: 'csv', download: false, filename: 'd.csv' });   // and an uninterrupted one still completes
+    return { ex, op, full, hidden: b.hidden };
+  });
+  await pc.close();
+  chk(`export cancels mid-way: the button showed (${r.ex.seen}), nothing written (${!r.ex.wrote}), “${r.ex.meta}”, hidden after (${r.ex.hiddenAfter})`, r.ex.seen && !r.ex.wrote && r.ex.ret === -1 && /cancelled/.test(r.ex.meta) && r.ex.hiddenAfter);
+  chk(`optimize cancels mid-way: the layer is unchanged (${r.op.stillCsv}), “${r.op.meta}”`, r.op.seen && r.op.stillCsv && /cancelled/.test(r.op.meta) && r.op.hiddenAfter);
+  chk(`an uninterrupted export still completes (${r.full} rows), the button hidden (${r.hidden})`, r.full === 20000 && r.hidden);
+}
+
+// ── §65: A DECIMAL COMMA CSV (';' between fields, 1,5 in them) opens as numbers:
+//     the lattice from its coordinates, a filter over its grades on the workers
+//     (the delimited source normalizes the same way) and on the row path, equal
+//     to brute force; and through a project save + reopen (the sidecar keeps it). ──
+{
+  const pd = await mkPage('sm2dec');
+  const r = await pd.evaluate(async () => {
+    const M = window._micro;
+    let s = 'X;Y;Z;AU\n', want = 0;
+    for (let k = 0; k < 8; k++) for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) { const au = ((i * 7 + j * 3 + k) % 50) / 10; if (au > 2.5) want++; s += `${5 + i * 10},5;${5 + j * 10};${5 + k * 10};${String(au).replace('.', ',')}\n`; }
+    const id = await M.openBlob(new File([s], 'dec.csv'), 'dec.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id), h = L.docs.blockDoc.header;
+    const hits = async (columnar) => { M.setCsvColumnar(columnar, 4); M.setPinBudget('off'); await M.applyBlockFilter('AU > 2.5', L); let n = 0; for (const v of L._filterMask) n += v; await M.applyBlockFilter('', L); return n; };
+    return { decimal: h.decimal, count: h.count, grid: h.grid && [h.grid.x.count, h.grid.x.pitch, h.grid.x.origin], want, workers: await hits(true), rows: await hits(false) };
+  });
+  await saveProject(pd);
+  await pd.close();
+  const pd2 = await mkPage('sm2dec');
+  const r2 = await pd2.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dec');
+    await window._micro.openProjectDir(dir);
+    const L = window._micro.layers()[0];
+    window._micro.setCsvColumnar(true); window._micro.setPinBudget('off');
+    await window._micro.applyBlockFilter('AU > 2.5', L); let n = 0; for (const v of L._filterMask) n += v;
+    return { decimal: L.docs.blockDoc.header.decimal, n };
+  });
+  await pd2.close();
+  chk(`decimal comma: detected (${r.decimal}), ${r.count} records, the lattice ${JSON.stringify(r.grid)} from 5,5 / 15,5 …`, r.decimal === ',' && r.count === 2048 && r.grid && r.grid[0] === 16 && r.grid[1] === 10 && r.grid[2] === 5.5);
+  chk(`decimal comma: AU > 2.5 — workers ${r.workers}, row path ${r.rows}, brute force ${r.want}`, r.workers === r.want && r.rows === r.want);
+  chk(`decimal comma survives the project (sidecar ${r2.decimal}): ${r2.n} hits`, r2.decimal === ',' && r2.n === r.want);
 }
 
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
