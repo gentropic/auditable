@@ -30,7 +30,9 @@ export function canScanColumnar(L) { return !!(L && L.docs && L.docs.blockDoc &&
 // skipGroup(g, rowGroup) → true skips a group unread (footer pushdown);
 // onPart(g, part, start): each partial handed over IN GROUP ORDER as soon as
 // the groups before it are in, then dropped (a filter's matches needn't all be
-// held) — without it the partials come back in `parts`.
+// held) — without it the partials come back in `parts`. onPart may return a
+// promise: the next job isn't sent until it settles (BACKPRESSURE — a slow
+// consumer holds at most a few groups, never the whole model).
 export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], mask = null, onProgress = null, signal = null, skipGroup = null, onPart = null }) {
   const bd = L.docs.blockDoc, P = bd.parquet, h = layerTableHeader(L);
   const needL = new Set(extraCols.map((c) => String(c).toLowerCase()));
@@ -48,14 +50,14 @@ export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], m
   const todo = rowGroups.map((rg, g) => g).filter((g) => keep[g]);
   const total = todo.reduce((t, g) => t + rowGroups[g].rowCount, 0);
   const parts = new Array(rowGroups.length);
-  let done = 0, next = 0;
-  const deliver = () => {                                   // hand over everything ready, in group order
+  let done = 0, next = 0, chain = Promise.resolve();
+  const deliver = () => (chain = chain.then(async () => {  // hand over everything ready, in group order, one at a time
     if (!onPart) return;
     while (next < rowGroups.length && (!keep[next] || parts[next] !== undefined)) {
-      if (keep[next]) { onPart(next, parts[next], starts[next]); parts[next] = null; }
-      next++;
+      const g = next++;
+      if (keep[g]) { const part = parts[g]; parts[g] = null; await onPart(g, part, starts[g]); }
     }
-  };
+  }));
   if (!todo.length) { if (onProgress) onProgress(0, 0, 'nothing to read'); return { parts, where: 'nothing to read', workers: 0, skipped: rowGroups.length }; }
   const pool = await startParquetPool({ file: P.buf, meta: P.meta, task: 'scan', p: { kernel, params: kp, calcs, spec, readCols }, n: defaultPoolSize(todo.length), signal });
   const where = pool ? `on ${pool.size} worker${pool.size === 1 ? '' : 's'}` : 'on this page';
@@ -75,7 +77,7 @@ export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], m
           const transfer = [...page.filter(Boolean).map((a2) => a2.buffer), ...(m ? [m.buffer] : [])];
           parts[g] = await pool.run({ start, count, page, mask: m, transfer });
           done += count; if (onProgress) onProgress(done, total, where);
-          deliver();
+          await deliver();
         }
       };
       await Promise.all(Array.from({ length: Math.min(todo.length, pool.size * 2) }, feed));
@@ -89,7 +91,7 @@ export async function scanColumnar(L, { kernel, params, exprs, extraCols = [], m
         const view = CV.chunkView(spec, cols, chunkPageOf(L, spec, start, count), count, ctx.calcFns);
         parts[g] = k.group(ctx, view, count, mask ? mask.subarray(start, start + count) : null);
         done += count; if (onProgress) onProgress(done, total, where);
-        deliver();
+        await deliver();
         await new Promise((z) => setTimeout(z));             // one group per task: the page stays live
       }
     }

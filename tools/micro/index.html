@@ -2715,6 +2715,10 @@ function pqGroupBboxIntersects(rg, coordNames, bb) {
         || Number(ry.max) < bb[1] || Number(ry.min) > bb[4]
         || Number(rz.max) < bb[2] || Number(rz.min) > bb[5]);
 }
+// bbox: a SPATIAL PUSHDOWN — only for a question about what's INSIDE something.
+// "Outside a solid" is every block the solid's bbox doesn't touch too, so those
+// callers pass null (passing the bbox silently dropped every far-away row group
+// from an outside selection / flag / fraction on Parquet models).
 async function* layerPositions(L, bbox = null) {
   const d = L.docs;
   const n = attrRowCountOf(L);
@@ -2738,26 +2742,38 @@ async function* layerPositions(L, bbox = null) {
     return;
   }
   if (d.blockDoc && d.blockDoc.parquet) {
-    // spatial pushdown: a Morton-sorted parquet has tight per-group bboxes, so a
-    // solid's bbox skips the row groups it can't touch (never decoded). Iterate
-    // the FULL group list with a running FILE offset (skipped groups advance the
-    // cursor but aren't read) — recs are raw file record indices. (Mirrors the
-    // filter pushdown; NOT streamParquetColumns, whose cumulative start is wrong
-    // for a filtered subset.)
-    const P = d.blockDoc.parquet, [xN, yN, zN] = P.coordNames;
-    let start = 0, skipped = 0;
-    for (const rg of P.rowGroups) {
-      const count = rg.rowCount;
-      if (bbox && !pqGroupBboxIntersects(rg, P.coordNames, bbox)) { start += count; skipped++; continue; }
-      const cols = await readParquetRange(P.buf, P.coordNames, start, start + count, P.meta);
-      const X = cols[xN], Y = cols[yN], Z = cols[zN];
-      const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), recs = new Uint32Array(count);
-      for (let i = 0; i < count; i++) { x[i] = +X[i]; y[i] = +Y[i]; z[i] = +Z[i]; recs[i] = start + i; }
-      yield { x, y, z, recs, base: start, count };
-      start += count;
+    // the COLUMNAR engine (src/colscan.js): the coordinates of each row group read
+    // on the worker pool (or on the page where workers can't start), handed over
+    // in group order with backpressure — a slow consumer (the per-point winding
+    // fallback) holds a few groups, never the model. Spatial pushdown: a Morton-
+    // sorted parquet has tight per-group bboxes, so a solid's bbox skips the groups
+    // it can't touch (never read). Records without finite coordinates aren't
+    // positions (they were read as 0,0,0 — inside or outside a solid at the origin).
+    const P = d.blockDoc.parquet;
+    const ac = new AbortController(), queue = [];
+    let wake = null, finished = false, failure = null, skipped = 0;
+    const poke = () => { if (wake) { const w = wake; wake = null; w(); } };
+    scanColumnar(L, { kernel: 'positions', params: { coords: P.coordNames }, exprs: [], extraCols: P.coordNames, signal: ac.signal,
+      skipGroup: (g, rg) => { const sk = !!bbox && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },
+      onPart: (g, part, start) => new Promise((taken) => { if (ac.signal.aborted) { taken(); return; } queue.push({ part, start, taken }); poke(); }) })
+      .then(() => { finished = true; poke(); }, (e) => { failure = e; poke(); });
+    try {
+      for (;;) {
+        if (queue.length) {
+          const { part, start, taken } = queue.shift();
+          const recs = new Uint32Array(part.rec.length);
+          for (let i = 0; i < recs.length; i++) recs[i] = start + part.rec[i];
+          yield { x: part.x, y: part.y, z: part.z, recs, base: start, count: recs.length };
+          taken();                                         // the consumer came back for more → the next group may go
+          continue;
+        }
+        if (failure) { if (failure.name === 'AbortError') return; throw failure; }
+        if (finished) { _pqPosSkipped = skipped; try { window.__pqPosSkipped = skipped; } catch { /* headless */ } return; }
+        await new Promise((r) => { wake = r; });
+      }
+    } finally {                                            // the consumer stopped early (superseded, cancelled) → stop the workers
+      if (!finished) { ac.abort(); for (const q of queue.splice(0)) q.taken(); }
     }
-    _pqPosSkipped = skipped; try { window.__pqPosSkipped = skipped; } catch { /* headless */ }
-    return;
   }
   let streamChunks = null;
   if (d.blockDoc && d.blockDoc.header.dm) ({ streamChunks } = await openDmModel(d.blockDoc.blob));
@@ -2976,7 +2992,7 @@ async function selectBySolid(meshL, { mode = 'inside', meshB = null, targets = n
       const denseB = dense && between ? await evalSolidOnGrid(meshB, L, { mode: 'flag', variant: 'above', method, onProgress: (f) => prog(0.4 + f * 0.4, 'winding B') }) : null;
       if (dense && (!between || denseB)) {
         let done = 0;
-        for await (const ch of layerPositions(L, dense.bbox)) {
+        for await (const ch of layerPositions(L, want || between ? dense.bbox : null)) {
           if (epoch !== _selEpoch) return;
           for (let i = 0; i < ch.count; i++) {
             const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1;
@@ -2997,7 +3013,7 @@ async function selectBySolid(meshL, { mode = 'inside', meshB = null, targets = n
         const inA = solidHit(S);
         const inB = between ? solidHit(SB) : null;
         let done = 0;
-        for await (const ch of layerPositions(L, S.bbox)) {
+        for await (const ch of layerPositions(L, want || between ? S.bbox : null)) {
           if (epoch !== _selEpoch) return;
           for (let i = 0; i < ch.count; i++) {
             const hitA = inA(ch.x[i], ch.y[i], ch.z[i]);
@@ -3063,7 +3079,7 @@ async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', meshB = 
   const n = attrRowCountOf(L);
   const codes = col.codes;
   let done = 0, touched = 0;
-  for await (const ch of layerPositions(L, dense.bbox)) {
+  for await (const ch of layerPositions(L, mode === 'outside' ? null : dense.bbox)) {
     if (epoch !== _ratioEpoch) return null;
     for (let i = 0; i < ch.count; i++) {
       let p2 = dense.lookup(ch.x[i], ch.y[i], ch.z[i]);
@@ -3119,7 +3135,7 @@ async function flagBySolid(meshL, targets, { name, label = 'IN', mode = 'inside'
       const denseB = dense && between ? await evalSolidOnGrid(meshB, L, { mode: 'flag', variant: 'above', method, onProgress: (f) => prog(0.4 + f * 0.4, 'winding B') }) : null;
       if (epoch !== _ratioEpoch) return made;
       if (dense && (!between || denseB)) {
-        for await (const ch of layerPositions(L, dense.bbox)) {
+        for await (const ch of layerPositions(L, want || between ? dense.bbox : null)) {
           if (epoch !== _ratioEpoch) return made;
           for (let i = 0; i < ch.count; i++) {
             const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1;
@@ -3139,7 +3155,7 @@ async function flagBySolid(meshL, targets, { name, label = 'IN', mode = 'inside'
         if (!S || (between && !SB)) { $('#meta').textContent = 'flag by solid: needs context-tier meshes'; return made; }
         const inA = solidHit(S);
         const inB = between ? solidHit(SB) : null;
-        for await (const ch of layerPositions(L, S.bbox)) {
+        for await (const ch of layerPositions(L, want || between ? S.bbox : null)) {
           if (epoch !== _ratioEpoch) return made;
           for (let i = 0; i < ch.count; i++) {
             const hitA = inA(ch.x[i], ch.y[i], ch.z[i]);

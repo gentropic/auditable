@@ -377,3 +377,29 @@ export function filterKernel(E, CV) {
     },
   };
 }
+
+// ── the POSITIONS kernel ─────────────────────────────────────────────────────
+// params: { schema, coords: [x, y, z] (names) }. One chunk → the coordinates of
+// the records that HAVE them (finite x, y, z — the renderer's rule) + their
+// offsets in the chunk. A block with no X is not a block at the origin.
+export function positionsKernel(E, CV) {
+  return {
+    init(params, calcs) {
+      const sch = params.schema;
+      return { params, calcFns: CV.compileCalcs(E, calcs, sch), c: params.coords.map((nm) => sch.findIndex((c) => c.name === nm)), scratch: {} };
+    },
+    group(ctx, view, n) {
+      const sc = ctx.scratch;
+      const num = (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n)));
+      const X = num(ctx.c[0], 'x'), Y = num(ctx.c[1], 'y'), Z = num(ctx.c[2], 'z');
+      let k = 0;
+      for (let i = 0; i < n; i++) if (Number.isFinite(X[i]) && Number.isFinite(Y[i]) && Number.isFinite(Z[i])) k++;
+      const x = new Float64Array(k), y = new Float64Array(k), z = new Float64Array(k), rec = new Uint32Array(k);
+      for (let i = 0, j = 0; i < n; i++) {
+        if (!(Number.isFinite(X[i]) && Number.isFinite(Y[i]) && Number.isFinite(Z[i]))) continue;
+        x[j] = X[i]; y[j] = Y[i]; z[j] = Z[i]; rec[j] = i; j++;
+      }
+      return { x, y, z, rec };
+    },
+  };
+}

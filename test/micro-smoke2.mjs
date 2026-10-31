@@ -3397,6 +3397,46 @@ await p.close();
   await pf.close();
 }
 
+// ── §51: by-solid on the columnar engine — layerPositions reads a Parquet
+//     model's coordinates on the worker pool with backpressure. Select inside /
+//     outside a box solid on 150,000 blocks = brute force; a block with no X is
+//     neither (it was read as 0,0,0); without workers the counts are identical. ──
+{
+  const ps = await mkPage('sm2cold');
+  const sd = await ps.evaluate(async () => {
+    const M = window._micro, W = window.micro;
+    const NX = 60, NY = 50, NZ = 50, N = NX * NY * NZ;
+    const x = new Float64Array(N), y = new Float64Array(N), z = new Float64Array(N), v = new Float64Array(N);
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let q = 0; q < NX; q++, i++) { x[i] = 5 + q * 10; y[i] = 5 + j * 10; z[i] = 5 + k * 10; v[i] = (i % 97) / 10; }
+    const nullAt = 1234; x[nullAt] = NaN;
+    const id = await W.addLayer({ kind: 'blocks', name: 'cold.parquet', columns: { X: x, Y: y, Z: z, V: v }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'V' } });
+    const L = M.layers().find((l) => l.id === id);
+    const lo = [101, 152, 203], hi = [377, 318, 409];       // a box off the block centres
+    const V2 = [], c = (a, b, d) => V2.push(a ? hi[0] : lo[0], b ? hi[1] : lo[1], d ? hi[2] : lo[2]);
+    for (let k = 0; k < 8; k++) c(k & 1, k & 2, k & 4);
+    const T = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5];
+    const mid = await W.addLayer({ kind: 'mesh', name: 'box', vertices: Float64Array.from(V2), triangles: Uint32Array.from(T) });
+    const ML = M.layers().find((l) => l.id === mid);
+    let inBF = 0, finite = 0;
+    for (let i = 0; i < N; i++) { if (!Number.isFinite(x[i])) continue; finite++; if (x[i] > lo[0] && x[i] < hi[0] && y[i] > lo[1] && y[i] < hi[1] && z[i] > lo[2] && z[i] < hi[2]) inBF++; }
+    const sel = async (mode) => { await M.selectBySolid(ML, { targets: [L], mode }); return { n: L._selCount || 0, nullIn: L._selMask ? L._selMask[nullAt] : 0 }; };
+    const a = { inside: await sel('inside'), outside: await sel('outside') };
+    await M.flagBySolid(ML, [L], { name: 'OUTF', label: 'OUT', mode: 'outside' });
+    const pcF = M.paintColByName(L, 'OUTF'), oc = pcF ? pcF.dict.indexOf('OUT') : -1;
+    let flagged = 0; if (pcF) for (let i = 0; i < pcF.codes.length; i++) if (pcF.codes[i] === oc) flagged++;
+    a.flagOut = flagged;
+    const Wk = window.Worker; window.Worker = undefined;
+    const b = { inside: await sel('inside'), outside: await sel('outside') };
+    window.Worker = Wk;
+    return { N, inBF, finite, a, b };
+  });
+  chk(`by-solid on Parquet (columnar positions): inside ${sd.a.inside.n} = brute force ${sd.inBF}; outside ${sd.a.outside.n} = ${sd.finite} with coordinates − inside; the block with no X is in neither (${sd.a.inside.nullIn}/${sd.a.outside.nullIn})`,
+    sd.a.inside.n === sd.inBF && sd.a.outside.n === sd.finite - sd.inBF && sd.a.inside.nullIn === 0 && sd.a.outside.nullIn === 0);
+  chk(`flag OUTSIDE reaches the row groups the solid's bbox never touches: ${sd.a.flagOut} flagged = ${sd.finite - sd.inBF}`, sd.a.flagOut === sd.finite - sd.inBF);
+  chk(`…without workers: inside ${sd.b.inside.n}, outside ${sd.b.outside.n} — identical`, sd.b.inside.n === sd.a.inside.n && sd.b.outside.n === sd.a.outside.n);
+  await ps.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
