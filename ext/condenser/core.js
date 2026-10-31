@@ -609,14 +609,29 @@ function blockLocalCenter(chunk, k) {
   return [g.originLocal[0] + u, g.originLocal[1] + v, g.originLocal[2] + w];
 }
 
+// a batch's own random stream (seedPerBatch): batch k shuffles the same way
+// whoever builds it and whatever was built before — what lets batches be built
+// in parallel (micro's chunkworker) and still come out byte-identical
+const batchSeed = (seed, k) => (Math.imul(k + 1, 0x9E3779B1) ^ seed) >>> 0;
+
+// ONE Morton batch → its chunks: sort the batch by Morton key, slice it into
+// chunkSize pieces, build (and shuffle) each. cols = { x, y, z, chan, cat, dim,
+// recIdx } of n records. The builder's batch step, exported so a worker can run it.
+function buildBlockBatch(cols, n, { grid, frame, dimPalette = null, chunkSize, rnd }) {
+  const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
+  const out = [];
+  for (let start = 0; start < n; start += chunkSize) out.push(buildBlockChunk(cols, grid, frame, rnd, order.subarray(start, Math.min(start + chunkSize, n)), dimPalette));
+  return out;
+}
+
 /**
  * BlockChunkBuilder — same shape as createChunkBuilder but for block RawChunks
  * ({ count, x, y, z, chan: Float32Array|Float64Array, cat: Uint8Array|null,
  * recStart }). Batch-Morton, sliced, shuffled. Tracks the document chan range
  * (for the color ramp) alongside the local bbox.
  */
-function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, onChunk }) {
-  const rnd = mulberry32(seed);
+function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1 << 20, batchSize = 0, seed = 1, seedPerBatch = false, onChunk }) {
+  let rnd = mulberry32(seed), batchNo = 0;
   const batchN = batchSize || chunkSize * 4;
   let pend = [], pendCount = 0;
   const doc = {
@@ -643,10 +658,9 @@ function createBlockChunkBuilder({ frame, grid, dimPalette = null, chunkSize = 1
     };
     const n = pendCount;
     pend = []; pendCount = 0;
-    const order = radixSortIndices(mortonKeys(cols.x, cols.y, cols.z, n), n);
-    for (let start = 0; start < n; start += chunkSize) {
-      const slice = order.subarray(start, Math.min(start + chunkSize, n));
-      const chunk = buildBlockChunk(cols, grid, frame, rnd, slice, dimPalette);
+    if (seedPerBatch) rnd = mulberry32(batchSeed(seed, batchNo));
+    batchNo++;
+    for (const chunk of buildBlockBatch(cols, n, { grid, frame, dimPalette, chunkSize, rnd })) {
       doc.count += chunk.count;
       const b = doc.bboxLocal, cb = chunk.bboxLocal;
       for (let i = 0; i < 3; i++) { if (cb[i] < b[i]) b[i] = cb[i]; if (cb[i + 3] > b[i + 3]) b[i + 3] = cb[i + 3]; }
@@ -5077,6 +5091,8 @@ export {
   buildBlockChunk,
   blockLocalCenter,
   createBlockChunkBuilder,
+  buildBlockBatch,
+  batchSeed,
   buildStickChunk,
   stickLocalCenter,
   createStickChunkBuilder,

@@ -8,7 +8,7 @@
 export { LasFormatError, parseLasHeader, decodeLasRecords, openLas } from './io/las.js';
 export { mulberry32, shuffledIndices, shuffleInPlace, documentFrame, buildChunk, chunkLocalPosition, createChunkBuilder } from './core/chunks.js';
 export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton.js';
-export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder } from './core/blocks.js';
+export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed } from './core/blocks.js';
 export { inferAxis, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from './grid/infer.js';
 export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, latticeMisfit, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from './grid/grid-join.js';

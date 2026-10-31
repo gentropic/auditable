@@ -7267,9 +7267,13 @@ function fitFromHeader(header, first = true) {
 // packing). 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give
 // the frustum test teeth. Where workers can't run, the page builds, as before.
 async function baseBlockBuilder(lid, { frame, grid, dimPalette }) {
-  const cb = await startChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1,
+  // several builders, a Morton batch each (every batch its own seed, so the
+  // chunks — and their order — are the same however many build them, or the page)
+  const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+  const cb = await startChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, seedPerBatch: true,
+    workers: window.__baseBuilders || Math.max(1, Math.min(4, hc - 2)),
     onChunk: (c) => { if (layerById(lid)) { renderer.addChunk(c, 'base', lid); requestRender(); } } });
-  window.__baseOffPage = cb.offPage;                     // smoke hook: where the open built its chunks
+  window.__baseOffPage = cb.offPage; window.__baseBuilders_n = cb.workers;   // smoke hooks: where (and on how many) the open built its chunks
   return cb;
 }
 async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.activeId) {
@@ -7277,7 +7281,7 @@ async function streamInto(cb, streamChunks, header, name, chunkPoints, lid = S.a
   try {
     for await (const rc of streamChunks({ chunkPoints })) {
       const n = rc.count;
-      cb.push(rc); done += n;                             // (an off-page builder takes rc's arrays: read nothing from it after)
+      await cb.push(rc); done += n;                       // (an off-page builder may take rc's arrays: read nothing from it after; it may hold us back)
       $('#meta').textContent = `${name} — streaming ${Math.round(100 * done / (header.count || 1))}%`;
       await new Promise((r) => setTimeout(r));            // yield to the render loop
     }

@@ -4,7 +4,7 @@
 // re-exports this same surface plus io/ + grid/.
 export { mulberry32, shuffledIndices, shuffleInPlace, documentFrame, buildChunk, chunkLocalPosition, createChunkBuilder } from './core/chunks.js';
 export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton.js';
-export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder } from './core/blocks.js';
+export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed } from './core/blocks.js';
 export { buildStickChunk, stickLocalCenter, createStickChunkBuilder } from './core/sticks.js';
 export { buildMeshChunk, buildHeightfieldMesh } from './core/mesh-geom.js';
 export { buildSoupChunk, soupLocalCentroid, createSoupChunkBuilder, soupFromMesh } from './core/soup-geom.js';
