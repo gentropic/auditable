@@ -117,7 +117,7 @@ const makeColAcc = ${makeColAcc.toString()};
 const discoverGroup = ${discoverGroup.toString()};
 const decodeGroup = ${decodeGroup.toString()};
 let file = null, meta = null, task = null, p = null, st = null, acc = null, codes = null, misfit = null;
-let CV = null, kern = null, kctx = null;
+let CV = null, kern = null, kctx = null, CD = null;
 // every ArrayBuffer under a result, for the transfer list (a scan partial's bins)
 const buffersOf = (o, out = []) => {
   if (o && ArrayBuffer.isView(o)) { if (!out.includes(o.buffer)) out.push(o.buffer); }
@@ -139,6 +139,8 @@ self.onmessage = async ({ data }) => {
           import(${JSON.stringify(libUrl('kernels', './kernels.js'))}),
         ]);
         CV = cv; kern = K[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs);
+        // a .dm source: condenser's run reader (fields decoded by striding)
+        if (p.source && p.source.kind === 'dm') CD = await import(${JSON.stringify(libUrl('condenser', '../../../ext/condenser/src/main.js'))});
       }
       if (task === 'decode') codes = {
         cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
@@ -169,7 +171,11 @@ self.onmessage = async ({ data }) => {
         self.postMessage({ type: 'result', id, out: { bad } });
       } else if (task === 'scan') {
         // the needed columns of this group → the chunk view → the kernel's partial
-        const cols = p.readCols.length ? await PQ.readParquetRange(file, p.readCols, start, start + count, meta) : {};
+        let cols = {};
+        if (p.readCols.length && p.source && p.source.kind === 'dm') {
+          const r = await CD.readDmRun(file, p.source.h, p.source.idx, data.run);
+          p.readCols.forEach((n, k) => { cols[n] = r.cols[p.source.idx[k]]; });
+        } else if (p.readCols.length) cols = await PQ.readParquetRange(file, p.readCols, start, start + count, meta);
         const view = CV.chunkView(p.spec, cols, data.page || [], count, kctx.calcFns);
         const out = kern.group(kctx, view, count, data.mask || null);
         self.postMessage({ type: 'result', id, out }, buffersOf(out));

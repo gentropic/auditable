@@ -22,37 +22,50 @@ import { inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, D
 // col → Float64Array (NaN = missing); alpha col → string[] (''=missing); constants
 // come free from the header. Yields { recStart, count, cols } where cols[idx] is the
 // array for column `idx`, RAW record numbering (recStart + k over ALL records).
+// The page RUNS a column read walks: ~4 MB of pages each, with the records they
+// hold. One definition — the generator below and a parallel scan (micro's worker
+// pool) cut the file the same way, so a run is the same unit everywhere (and a
+// sidecar band check asked of a run means the same records).
+export function dmPageRuns(h) {
+  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
+  const runs = [];
+  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
+    let count = 0;
+    for (let pg = page; pg <= pEnd; pg++) count += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
+    runs.push({ page, pEnd, start: (page - 2) * h.recordsPerPage, count });
+  }
+  return runs;
+}
+// ONE run's requested fields, by striding (only those fields are decoded):
+// → { recStart, count, cols: { [colIdx]: Float64Array (blank = NaN) | string[] (blank = '') } }
+export async function readDmRun(blob, h, colIdxs, run) {
+  const ids = [...new Set(colIdxs)];
+  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
+  const bytes = new Uint8Array(await blob.slice((run.page - 1) * h.pageSize, run.pEnd * h.pageSize).arrayBuffer());
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const total = run.count;
+  const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
+  let w = 0;
+  for (let pg = run.page; pg <= run.pEnd; pg++) {
+    const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - run.page) * h.pageSize;
+    for (let r = 0; r < nRec; r++) {
+      const recBase = pageBase + r * h.maxLen * h.wordSize;
+      for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
+      w++;
+    }
+  }
+  const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
+  return { recStart: run.start, count: total, cols: cobj };
+}
 // opts.shouldRead(recStart, count): PUSHDOWN hook — return false and the whole
 // page-run is skipped BEFORE any I/O (sidecar band stats prove no record in the run
 // can match a filter — parquet's row-group skip, retrofitted onto .dm).
 async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } = {}) {
-  const ids = [...new Set(colIdxs)];
-  const cols = ids.map((i) => h.columns[i]), alpha = cols.map((c) => c.type === 'A');
-  const pagesPer = Math.max(1, Math.floor((4 << 20) / h.pageSize));
-  for (let page = 2; page <= h.lastPage; page += pagesPer) {
+  for (const run of dmPageRuns(h)) {
     if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-    const pEnd = Math.min(page + pagesPer - 1, h.lastPage);
-    if (shouldRead) {
-      let totalR = 0;
-      for (let pg = page; pg <= pEnd; pg++) totalR += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-      if (!shouldRead((page - 2) * h.recordsPerPage, totalR)) continue;
-    }
-    const bytes = new Uint8Array(await blob.slice((page - 1) * h.pageSize, pEnd * h.pageSize).arrayBuffer());
-    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    let total = 0;
-    for (let pg = page; pg <= pEnd; pg++) total += pg === h.lastPage ? h.lastRec : h.recordsPerPage;
-    const out = cols.map((c, ci) => (alpha[ci] ? new Array(total) : new Float64Array(total)));
-    let w = 0;
-    for (let pg = page; pg <= pEnd; pg++) {
-      const nRec = pg === h.lastPage ? h.lastRec : h.recordsPerPage, pageBase = (pg - page) * h.pageSize;
-      for (let r = 0; r < nRec; r++) {
-        const recBase = pageBase + r * h.maxLen * h.wordSize;
-        for (let ci = 0; ci < cols.length; ci++) { const v = readField(dv, h, cols[ci], recBase); out[ci][w] = alpha[ci] ? (v == null ? '' : v) : (v == null ? NaN : v); }
-        w++;
-      }
-    }
-    const cobj = {}; ids.forEach((idx, ci) => { cobj[idx] = out[ci]; });
-    yield { recStart: (page - 2) * h.recordsPerPage, count: total, cols: cobj };
+    if (shouldRead && !shouldRead(run.start, run.count)) continue;
+    yield await readDmRun(blob, h, colIdxs, run);
   }
 }
 

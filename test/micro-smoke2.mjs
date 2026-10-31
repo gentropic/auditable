@@ -3437,6 +3437,56 @@ await p.close();
   await ps.close();
 }
 
+// ── §52: a Datamine .dm on the same engine — its page RUNS are the units
+//     (condenser dmPageRuns / readDmRun, fields decoded by striding). 300,000
+//     records = 2 runs: grade-tonnage (density-weighted, blanks unestimated) and
+//     the filter run on the workers and match brute force. ──
+{
+  const pd2 = await mkPage('sm2dmcol');
+  const dc = await pd2.evaluate(async () => {
+    const M = window._micro, q = (x2) => document.querySelector(x2);
+    const { makeDM } = await import('/test/dm-make.mjs');
+    const fields = [{ name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' }, { name: 'AU', type: 'N' }, { name: 'SG', type: 'N' },
+      { name: 'XINC', type: 'N', constant: 10 }, { name: 'YINC', type: 'N', constant: 10 }, { name: 'ZINC', type: 'N', constant: 10 },   // the Datamine model fields: a regular lattice
+      { name: 'XMORIG', type: 'N', constant: 0 }, { name: 'YMORIG', type: 'N', constant: 0 }, { name: 'ZMORIG', type: 'N', constant: 0 },
+      { name: 'NX', type: 'N', constant: 100 }, { name: 'NY', type: 'N', constant: 100 }, { name: 'NZ', type: 'N', constant: 30 }];
+    const NX = 100, NY = 100, NZ = 30, N = NX * NY * NZ, rows = new Array(N), au = new Float64Array(N), sg = new Float64Array(N);
+    let r = 9;
+    for (let k = 0, i = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let x = 0; x < NX; x++, i++) {
+      r = (r * 1103515245 + 12345) >>> 0;
+      au[i] = r % 11 === 0 ? NaN : ((r >>> 8) % 300) / 100;
+      sg[i] = 2.5 + ((r >>> 4) % 5) / 10;
+      rows[i] = { XC: 5 + x * 10, YC: 5 + j * 10, ZC: 5 + k * 10, AU: Number.isFinite(au[i]) ? au[i] : null, SG: sg[i] };
+    }
+    await M.openBlob(new File([makeDM(fields, rows)], 'm.dm'), 'm.dm', 'replace');
+    for (let n = 0; n < 300 && !(M.layers()[0] && M.layers()[0].docs.blockDoc); n++) await new Promise((z) => setTimeout(z, 100));
+    const L = M.layers()[0];
+    au.forEach((v, i) => { if (Number.isFinite(v)) au[i] = Math.fround(v); }); sg.forEach((v, i) => { sg[i] = Math.fround(v); });   // .dm single precision
+    // grade-tonnage, density-weighted
+    M.openGradeTonnage(L, { run: true, cfg: { nCut: 15, series: [{ layer: L.name, col: 'AU', weight: 'SG' }] } });
+    let el = null;
+    for (let n = 0; n < 600 && !el; n++) { el = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage') && e._gtSpec && e._scanWhere); if (!el) await new Promise((z) => setTimeout(z, 50)); }
+    if (!el) { const w = [...document.querySelectorAll('.fwin')].find((e) => e.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); return { err: w ? w.querySelector('.fwin-head .sub').textContent : 'no window — meta: ' + q('#meta').textContent + ' · grid ' + JSON.stringify(!!M.gridAxesOf(L)) + ' · nums ' + M.numericColsOf(L).join(',') + ' · count ' + L.docs.blockDoc.header.count + ' · layers ' + M.layers().length }; }
+    const vol = 1000, tS = el._gtSpec.series[0].data, gS = el._gtSpec.series[1].data;
+    let bad = 0;
+    for (let c = 0; c < tS.length; c++) {
+      let T = 0, TG = 0; for (let i = 0; i < N; i++) if (Number.isFinite(au[i]) && au[i] >= tS[c][0]) { const w = sg[i] * vol; T += w; TG += w * au[i]; }
+      if (Math.abs(tS[c][1] - T) > 1e-9 * Math.max(1, T) || (T > 0 && Math.abs(gS[c][1] - TG / T) > 1e-9 * (TG / T))) bad++;
+    }
+    // the filter
+    const seen = []; const obs = new MutationObserver(() => { const t = q('#meta').textContent; if (/worker/.test(t)) seen.push(t); }); obs.observe(q('#meta'), { childList: true, characterData: true, subtree: true });
+    q('#filter').value = 'AU > 2 and SG >= 2.7'; await M.applyBlockFilter('AU > 2 and SG >= 2.7', L);
+    obs.disconnect();
+    let hits = 0; for (let i = 0; i < L._filterMask.length; i++) hits += L._filterMask[i];
+    let want = 0; for (let i = 0; i < N; i++) if (au[i] > 2 && sg[i] >= 2.7) want++;
+    return { N, count: L.docs.blockDoc.header.count, gtWhere: el._scanWhere, cuts: tS.length, bad, hits, want, filterWorkers: seen.length > 0 };
+  });
+  if (dc.err) console.log('   GT error: ' + dc.err);
+  chk(`.dm grade-tonnage on the engine (${dc.gtWhere}): ${dc.cuts} cuts, ${dc.bad} wrong vs brute force (${dc.count} records, density-weighted)`, /worker/.test(dc.gtWhere || '') && dc.count === dc.N && dc.bad === 0);
+  chk(`.dm filter on the workers (${dc.filterWorkers}): ${dc.hits} = brute force ${dc.want}`, dc.filterWorkers && dc.hits === dc.want);
+  await pd2.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

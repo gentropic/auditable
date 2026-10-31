@@ -2741,20 +2741,21 @@ async function* layerPositions(L, bbox = null) {
     yield { x, y, z, recs, base: 0, count };
     return;
   }
-  if (d.blockDoc && d.blockDoc.parquet) {
-    // the COLUMNAR engine (src/colscan.js): the coordinates of each row group read
+  if (canScanColumnar(L)) {
+    // the COLUMNAR engine (src/colscan.js): the coordinates of each row group (or .dm page run) read
     // on the worker pool (or on the page where workers can't start), handed over
     // in group order with backpressure — a slow consumer (the per-point winding
     // fallback) holds a few groups, never the model. Spatial pushdown: a Morton-
     // sorted parquet has tight per-group bboxes, so a solid's bbox skips the groups
     // it can't touch (never read). Records without finite coordinates aren't
     // positions (they were read as 0,0,0 — inside or outside a solid at the origin).
-    const P = d.blockDoc.parquet;
+    const P = d.blockDoc.parquet, hh = layerTableHeader(L), mm = hh.mapping;
+    const coordNames = P ? P.coordNames : [hh.columns[mm.x], hh.columns[mm.y], hh.columns[mm.z]];
     const ac = new AbortController(), queue = [];
     let wake = null, finished = false, failure = null, skipped = 0;
     const poke = () => { if (wake) { const w = wake; wake = null; w(); } };
-    scanColumnar(L, { kernel: 'positions', params: { coords: P.coordNames }, exprs: [], extraCols: P.coordNames, signal: ac.signal,
-      skipGroup: (g, rg) => { const sk = !!bbox && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },
+    scanColumnar(L, { kernel: 'positions', params: { coords: coordNames }, exprs: [], extraCols: coordNames, signal: ac.signal,
+      skipGroup: (g, rg) => { const sk = !!bbox && !!P && !pqGroupBboxIntersects(rg, P.coordNames, bbox); if (sk) skipped++; return sk; },   // footer bboxes: Parquet only
       onPart: (g, part, start) => new Promise((taken) => { if (ac.signal.aborted) { taken(); return; } queue.push({ part, start, taken }); poke(); }) })
       .then(() => { finished = true; poke(); }, (e) => { failure = e; poke(); });
     try {
@@ -10016,6 +10017,55 @@ async function applyBlockFilter(expr, L = activeLayer()) {
     if (cfill === CB) cflush();
   };
 
+  // the COLUMNAR engine (src/colscan.js) for a Parquet or .dm model: row groups /
+  // page runs on the worker pool (or on the page one per task), the same chunk view
+  // as everywhere, units the pushdown rules out never read (keepUnit: the footer's
+  // min/max, or the .dm sidecar bands), matches + pins handed over IN UNIT ORDER.
+  // false = superseded by a newer filter on this layer.
+  const engineFilter = async (readCols, keepUnit, skipWhat) => {
+      const tee = pinBudgetBytes() > 0 ? {} : null;          // tee the scan into the pin cache
+      const ac = new AbortController();                      // a newer filter on this layer supersedes → stop the workers
+      const names = fBlockDoc.parquet ? fBlockDoc.parquet.names : header.columns;
+      const params = { expr, coords: [names[m.x], names[m.y], names[m.z]], chan: m.chan != null ? names[m.chan] : null, cat: m.cat != null ? names[m.cat] : null, categories: header.categories || null, tee: tee ? readCols : null };
+      let skipped = 0, units = 0;
+      const teePart = (part, start) => {
+        for (const nm of readCols) {
+          if (tee[nm] === null) continue;
+          const src = part.tee && part.tee[nm];
+          if (!src) { tee[nm] = null; continue; }
+          let e = tee[nm];
+          if (e === undefined) e = tee[nm] = src.data ? { data: new Float64Array(header.count).fill(NaN) } : { codes: new Uint16Array(header.count), dict: [''], map: new Map([['', 0]]) };
+          if (e.data && src.data) { e.data.set(src.data, start); continue; }
+          if (!(e.codes && src.codes)) { tee[nm] = null; continue; }   // a column that changed kind between groups isn't pinned
+          const re = new Uint16Array(src.dict.length);          // the group's local dictionary → the layer's
+          let full = false;
+          for (let c = 0; c < src.dict.length; c++) { const v = src.dict[c]; let gc = e.map.get(v); if (gc === undefined) { if (e.dict.length > 65535) { full = true; break; } gc = e.dict.length; e.dict.push(v); e.map.set(v, gc); } re[c] = gc; }
+          if (full) { tee[nm] = null; continue; }
+          for (let q = 0; q < src.codes.length; q++) e.codes[start + q] = re[src.codes[q]];
+        }
+      };
+      try {
+        await scanColumnar(AL, { kernel: 'filter', params, exprs: [expr], extraCols: readCols, signal: ac.signal,
+          skipGroup: keepUnit ? (g, u) => { units++; const sk = !keepUnit(u); if (sk) skipped++; return sk; } : null,
+          onProgress: (d, N, w) => { if (alive() && N) $('#meta').textContent = `filter: ${rowsProgress(d, N)} · ${w}`; },
+          onPart: (g, part, start) => {
+            if (!alive()) { ac.abort(); return; }
+            mask.set(part.mask, start); hits += part.hits;
+            const mt = part.match;
+            for (let j = 0; j < mt.rec.length; j++) collect(mt.x[j], mt.y[j], mt.z[j], mt.chan[j], mt.cat ? mt.cat[j] : 0, start + mt.rec[j]);
+            if (tee) teePart(part, start);
+          } });
+      } catch (e) { if (e && e.name === 'AbortError') return false; throw e; }
+      if (!alive()) return false;
+      rec = header.count;
+      window.__pqFilterSkipped = skipped;                    // smoke hook
+      if (tee && !skipped) {                                 // pin ONLY a complete scan (skipped groups would leave holes)
+        for (const nm of readCols) { const e = tee[nm]; if (!e) continue; delete e.map; pinPut(AL, nm, e); }
+      }
+      if (skipped) $('#meta').textContent = `filter: ${skipped} of ${units} ${skipWhat}…`;
+      window.__dmBandsSkipped = skipped;                   // smoke hook (the .dm name)
+      return true;
+  };
   if (fBlockDoc.parquet) {
     // parquet: the footer prunes work TWO ways —
     //  · row-group SKIP: per-group column min/max prove no match → never decode
@@ -10048,48 +10098,7 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       const got = await pinnedSweep(AL, header, m, readCols.map((nm) => ({ k: nm })), needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
       if (got < 0) return; hits += got; rec = header.count;
     } else if (chunkF) {
-      // the COLUMNAR engine (src/colscan.js): row groups on the worker pool (or
-      // on the page one per task), the same chunk view as everywhere, footer-
-      // skipped groups never read, matches + pins handed over IN GROUP ORDER
-      const tee = pinBudgetBytes() > 0 ? {} : null;          // tee the scan into the pin cache
-      const ac = new AbortController();                      // a newer filter on this layer supersedes → stop the workers
-      const params = { expr, coords: [P.names[m.x], P.names[m.y], P.names[m.z]], chan: m.chan != null ? P.names[m.chan] : null, cat: m.cat != null ? P.names[m.cat] : null, categories: header.categories || null, tee: tee ? readCols : null };
-      let skipped = 0;
-      const teePart = (part, start) => {
-        for (const nm of readCols) {
-          if (tee[nm] === null) continue;
-          const src = part.tee && part.tee[nm];
-          if (!src) { tee[nm] = null; continue; }
-          let e = tee[nm];
-          if (e === undefined) e = tee[nm] = src.data ? { data: new Float64Array(header.count).fill(NaN) } : { codes: new Uint16Array(header.count), dict: [''], map: new Map([['', 0]]) };
-          if (e.data && src.data) { e.data.set(src.data, start); continue; }
-          if (!(e.codes && src.codes)) { tee[nm] = null; continue; }   // a column that changed kind between groups isn't pinned
-          const re = new Uint16Array(src.dict.length);          // the group's local dictionary → the layer's
-          let full = false;
-          for (let c = 0; c < src.dict.length; c++) { const v = src.dict[c]; let gc = e.map.get(v); if (gc === undefined) { if (e.dict.length > 65535) { full = true; break; } gc = e.dict.length; e.dict.push(v); e.map.set(v, gc); } re[c] = gc; }
-          if (full) { tee[nm] = null; continue; }
-          for (let q = 0; q < src.codes.length; q++) e.codes[start + q] = re[src.codes[q]];
-        }
-      };
-      try {
-        await scanColumnar(AL, { kernel: 'filter', params, exprs: [expr], extraCols: readCols, signal: ac.signal,
-          skipGroup: (g, rg) => { const sk = !pqGroupCanMatch(ast, pqGroupRanges(rg)); if (sk) skipped++; return sk; },
-          onProgress: (d, N, w) => { if (alive() && N) $('#meta').textContent = `filter: ${rowsProgress(d, N)} · ${w}`; },
-          onPart: (g, part, start) => {
-            if (!alive()) { ac.abort(); return; }
-            mask.set(part.mask, start); hits += part.hits;
-            const mt = part.match;
-            for (let j = 0; j < mt.rec.length; j++) collect(mt.x[j], mt.y[j], mt.z[j], mt.chan[j], mt.cat ? mt.cat[j] : 0, start + mt.rec[j]);
-            if (tee) teePart(part, start);
-          } });
-      } catch (e) { if (e && e.name === 'AbortError') return; throw e; }
-      if (!alive()) return;
-      rec = header.count;
-      window.__pqFilterSkipped = skipped;                    // smoke hook
-      if (tee && !skipped) {                                 // pin ONLY a complete scan (skipped groups would leave holes)
-        for (const nm of readCols) { const e = tee[nm]; if (!e) continue; delete e.map; pinPut(AL, nm, e); }
-      }
-      if (skipped) $('#meta').textContent = `filter: ${skipped} of ${P.rowGroups.length} row groups skipped by the footer…`;
+      if (!(await engineFilter(readCols, (rg) => pqGroupCanMatch(ast, pqGroupRanges(rg)), 'row groups skipped by the footer'))) return;
     } else {
     // no parseable expression: the ROW path, every column of every group
     let start = 0, skipped = 0;
@@ -10167,7 +10176,11 @@ async function applyBlockFilter(expr, L = activeLayer()) {
       if (!keep) bandsSkipped++;
       return keep;
     } : null;
-    if (colIdxs) {
+    if (colIdxs && chunkF) {
+      // the engine: page runs in parallel, the sidecar band pushdown skips runs unread
+      const keep = shouldRead ? (u) => shouldRead(u.start, u.count) : null;
+      if (!(await engineFilter(colIdxs.map((ci) => header.columns[ci]), keep, 'page-runs skipped by the sidecar index'))) return;
+    } else if (colIdxs) {
       const tee = (chunkF && pinBudgetBytes() > 0) ? {} : null;
       for await (const { recStart, count, cols } of columnBatches(colIdxs, { shouldRead })) {
         if (tee) for (const tn of pinNames) {
