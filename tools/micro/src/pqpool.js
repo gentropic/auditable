@@ -102,7 +102,7 @@ export function decodeGroup(p, cols, start, count, codes) {
     const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]);
     if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
     x[m] = xv; y[m] = yv; z[m] = zv;
-    chan[m] = CH ? +CH[i] : 0;
+    chan[m] = CH ? (CH[i] == null ? NaN : +CH[i]) : 0;   // a null grade is missing (NaN, as the CSV stream reads it), not 0
     if (cat) cat[m] = codes.cat.get(String(CA[i] ?? '')) ?? 0;
     if (dim) dim[m] = dimCode(+DX[i], +DY[i], +DZ[i]);
     recIdx[m++] = start + i;

@@ -10,7 +10,7 @@ export { mulberry32, shuffledIndices, shuffleInPlace, documentFrame, buildChunk,
 export { part1by2, mortonKey, mortonKeys, radixSortIndices } from './core/morton.js';
 export { makeBlockGrid, buildBlockChunk, blockLocalCenter, createBlockChunkBuilder, buildBlockBatch, batchSeed } from './core/blocks.js';
 export { inferAxis, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from './grid/infer.js';
-export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, latticeMisfit, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
+export { basisFromVectors, basisAngles, inferLatticeBasis, fitLattice, detectRotatedLattice, latticeMisfit, gridFromBasis, basisOfGrid, latticeMapOf, worldMapOf, cellOf, inFrameOf, sameBasis, isAxisAligned, toLattice, fromLattice } from './grid/basis.js';
 export { floatGcd, axisMap, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice } from './grid/grid-join.js';
 export { sniffDelimited, mapColumns, findDimColumns, isDimColumn, openBlockModel, openTable, lineFields, fetchDelimitedRecord, readDelimitedRun, delimitedRuns } from './io/blockmodel.js';
 export { splitFields as splitDelimitedRecord, sampleRecords as delimitedRecords, delimiterOfLine, coordNum } from './io/delimited.js';

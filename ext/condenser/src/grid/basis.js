@@ -62,6 +62,20 @@ export function latticeMapOf(grid) {
   if (!R) return (x, y, z) => [x, y, z];
   return (x, y, z) => toLattice(R, x - A[0], y - A[1], z - A[2]);
 }
+/**
+ * a grid's world point → its cell: (x,y,z) → i + nx·(j + ny·k), or -1 outside.
+ * Nearest centroid, in the grid's OWN lattice frame — so a rotated grid is looked
+ * up through its basis, never with world coordinates against lattice-frame
+ * origins. A z pitch of 0/null is a 2D grid (k = 0).
+ */
+export function cellOf(grid) {
+  const toQ = latticeMapOf(grid), X = grid.x, Y = grid.y, Z = grid.z, nx = X.count, ny = Y.count, nz = Z.count || 1;
+  return (x, y, z) => {
+    const q = toQ(x, y, z);
+    const i = Math.round((q[0] - X.origin) / (X.pitch || 1)), j = Math.round((q[1] - Y.origin) / (Y.pitch || 1)), k = Z.pitch ? Math.round((q[2] - Z.origin) / Z.pitch) : 0;
+    return i >= 0 && i < nx && j >= 0 && j < ny && k >= 0 && k < nz ? i + nx * (j + ny * k) : -1;
+  };
+}
 /** a grid's lattice → world map (inverse of latticeMapOf) */
 export function worldMapOf(grid) {
   const R = grid && grid.rot, A = (grid && grid.anchor) || [0, 0, 0];

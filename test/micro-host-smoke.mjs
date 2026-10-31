@@ -306,6 +306,24 @@ async function rotatedChecks(url, label) {
     return { comp: comp.ok, cells, n: lines.length, match, crossReason: cross.reason };
   });
   chk(`rot: same-basis join — compatible ${j.comp}, ${j.cells} cells, ${j.match}/${j.n} carry B's value at B's centroid`, j.comp && j.cells === 36 && j.match === 36);
+  // join → COLUMNS on the rotated model: each of A's records looks its cell up
+  // through the basis (condenser cellOf) — world coordinates against
+  // lattice-frame origins attached NaN or another cell's value
+  const jc = await p.evaluate(async () => {
+    const m = window._micro, LAT = window.__lat;
+    const A = m.layers().find((q) => q.name === 'rot.csv'), B = m.layers().find((q) => q.name === 'rotB.csv');
+    const outs = await m.spatialJoinToCols(A, B, { cols: ['right:CU'], ops: {}, weights: {}, useSel: false });
+    const v = m.matColGet(A, outs[0]).fvalues;
+    const aRows = window.__latCsv(LAT).trim().split('\n').slice(1).map((l) => l.split(',').map(Number));
+    const bRows = window.__latCsv({ ...LAT, n: [4, 3, 3] }, { shift: [2, 1, 0], col: 'CU', offset: 1000 }).trim().split('\n').slice(1).map((l) => l.split(',').map(Number));
+    let hit = 0, miss = 0, bad = 0;
+    aRows.forEach((r, i) => {
+      const b = bRows.find((q) => Math.hypot(q[0] - r[0], q[1] - r[1], q[2] - r[2]) < 0.01);
+      if (b ? v[i] === b[3] : Number.isNaN(v[i])) (b ? hit++ : miss++); else bad++;
+    });
+    return { hit, miss, bad };
+  });
+  chk(`rot: join → columns — ${jc.hit} records carry B's value at their own cell, ${jc.miss} outside B stay blank, ${jc.bad} wrong`, jc.hit === 36 && jc.bad === 0 && jc.miss === 8 * 6 * 3 - 36);
   chk(`rot: rotated vs axis-aligned is refused with a reason (“${(j.crossReason || '').slice(0, 50)}…”)`, /different lattice orientations/.test(j.crossReason || ''));
 
   // addLayer with a rotated basis: declared → no question; wrong → rejected

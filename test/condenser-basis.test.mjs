@@ -148,3 +148,20 @@ test('basis: a producer basis ↔ the internal grid round-trips; axis-aligned st
   assert.ok(!aa.rot && aa.x.origin === 5 && aa.z.pitch === 5);
   assert.throws(() => gridFromBasis({ origin: [0, 0, 0], U: [10, 0, 0], V: [3, 10, 0], W: [0, 0, 5], counts: [2, 2, 2] }), /not perpendicular/);
 });
+
+test('cellOf: a world point finds ITS cell through the basis (rotated and axis-aligned, 2D, outside → -1)', async () => {
+  const { gridFromBasis, cellOf } = await import('../ext/condenser/src/grid/basis.js');
+  const az = rad(30), P = [10, 10, 5], O = [612345.5, 7765432.25, 812.5], n = [8, 6, 3];
+  const U = [Math.cos(az) * P[0], -Math.sin(az) * P[0], 0], V = [Math.sin(az) * P[1], Math.cos(az) * P[1], 0], W = [0, 0, P[2]];
+  const g = gridFromBasis({ origin: O, U, V, W, counts: n });
+  const at = cellOf(g);
+  for (let k = 0; k < n[2]; k++) for (let j = 0; j < n[1]; j++) for (let i = 0; i < n[0]; i++) {
+    const w = [0, 1, 2].map((d) => O[d] + i * U[d] + j * V[d] + k * W[d] + 0.3 * (U[d] + V[d] - W[d]) / 10);   // off-centre, still inside
+    assert.equal(at(w[0], w[1], w[2]), i + n[0] * (j + n[1] * k));
+  }
+  const out = [0, 1, 2].map((d) => O[d] - U[d]);
+  assert.equal(at(out[0], out[1], out[2]), -1);
+  const aa = cellOf({ x: { origin: 5, pitch: 10, count: 4 }, y: { origin: 5, pitch: 10, count: 3 }, z: { origin: 0, pitch: 0, count: 1 } });
+  assert.equal(aa(36, 24, 999), 3 + 4 * 2);                // 2D: z ignored
+  assert.equal(aa(46, 5, 0), -1);
+});

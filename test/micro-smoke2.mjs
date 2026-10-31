@@ -3961,6 +3961,52 @@ await p.close();
     xr.xss === 0 && xr.optText && xr.rpText && xr.rpImgs === 0 && xr.fiText && xr.fiImgs === 0);
 }
 
+// ── §60: RECORDS, NOT ROWS — the back-attach paths. A CSV model with blank-
+//     coordinate rows (dropped at the open, not records): join → columns (spatial
+//     and key), the swath zebra and the column stats each give every record ITS
+//     OWN value. Each walked raw rows and counted the dropped one, so every later
+//     block took its neighbour's joined value. ──
+{
+  const pr = await mkPage('sm2recs');
+  const rr = await pr.evaluate(async () => {
+    const M = window._micro;
+    const NX = 6, NY = 5, NZ = 3, val = (i, j, k) => i + 10 * j + 100 * k;
+    let sl = 'X,Y,Z,ID,AU\n', sr = 'X,Y,Z,CU\n', sk = 'ID,V\n';
+    const expect = [];                                     // per RECORD: [i, j, k, id]
+    let id = 0;
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++, id++) {
+      if (id === 3 || id === 41) sl += `,,${5 + k * 10},${9000 + id},99\n`;   // blank X,Y: dropped, not a record
+      sl += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${id},${(id % 7) / 2}\n`;
+      sr += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${val(i, j, k)}\n`;
+      sk += `${id},${id * 7}\n`;
+      expect.push([i, j, k, id]);
+    }
+    const idL = await M.openBlob(new File([sl], 'left.csv'), 'left.csv', 'replace');
+    const idR = await M.openBlob(new File([sr], 'right.csv'), 'right.csv', 'add');
+    const idK = await M.openBlob(new File([sk], 'keys.csv'), 'keys.csv', 'add');
+    const [L, R, K] = [idL, idR, idK].map((x) => M.layers().find((q) => q.id === x));
+    const out = { records: L.docs.blockDoc.header.count, dropped: L.docs.blockDoc.header.dropped };
+    const sp = await M.spatialJoinToCols(L, R, { cols: ['right:CU'], ops: {}, weights: {}, useSel: false });
+    const cu = M.matColGet(L, sp[0]).fvalues;
+    out.spatialBad = expect.filter(([i, j, k], r) => cu[r] !== val(i, j, k)).length;
+    const kj = await M.keyJoinToCols(L, K, { leftKey: 'ID', rightKey: 'ID', bring: ['V'], dup: 'first' });
+    const v = M.matColGet(L, kj.outs[0]).fvalues;
+    out.keyBad = expect.filter(([, , , d], r) => v[r] !== d * 7).length;
+    await M.applySwathZebra(L, [1, 0, 0], 10, 0);
+    const z = M.paintColByName(L, '_swath').codes;
+    out.zebraBad = expect.filter(([i], r) => z[r] !== ((i & 1) ? 1 : 2)).length;
+    const st = await M.scanColumns(L, null, {});
+    out.statsN = st.AU && st.AU.n; out.statsMax = st.AU && st.AU.max;
+    return out;
+  });
+  await pr.close();
+  chk(`records not rows: ${rr.records} records, ${rr.dropped && rr.dropped.blank} dropped at the open`, rr.records === 90 && rr.dropped && rr.dropped.blank === 2);
+  chk(`join → columns (spatial): every record carries its own cell's value (${rr.spatialBad} wrong)`, rr.spatialBad === 0);
+  chk(`join → columns (key): every record carries its own key's value (${rr.keyBad} wrong)`, rr.keyBad === 0);
+  chk(`swath zebra: every record striped by its own X (${rr.zebraBad} wrong)`, rr.zebraBad === 0);
+  chk(`column stats count records only: AU n ${rr.statsN} (of 90), max ${rr.statsMax} (the dropped rows' 99 is not there)`, rr.statsN === 90 && rr.statsMax === 3);
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

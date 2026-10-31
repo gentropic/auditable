@@ -338,22 +338,24 @@ export async function scanColumns(L, onTick, { bands = false, columns = null, si
     if (bandCols.length) bandData = new Map(bandCols.map((i) => [i, []]));
     const mSc = h.mapping || {};
     const isDelimSc = !blockCaps(L).rowIsRecord;           // renderer record numbering for painted lookups (delimited skips bad-coord rows)
+    const gateSc = isDelimSc && mSc.x != null && mSc.y != null && mSc.z != null;   // a table has no coordinates: every row counts
     let recSc = 0, done = 0;
     rows = 0;
     // read RAW and qualify here, so the scan can count what was substituted
     // (<x below detection, >x above, lab codes) — the stats say so, never silently
     const q = rowQualifier(L);
-    for await (const batch of layerRows(L, null, { raw: true })) {
+    for await (const batch of layerRows(L, null, { raw: true })) {   /* rows ok: stats: raw text to count substitutions; gates its own coordinates */
       for (const fr of batch) {
+        let rAt = null;
+        if (!isDelimSc) rAt = recSc++;
+        else if (Number.isFinite(coordNum(fr[mSc.x])) && Number.isFinite(coordNum(fr[mSc.y])) && Number.isFinite(coordNum(fr[mSc.z]))) rAt = recSc++;   // coordinates take no qualifier
+        else if (gateSc) continue;                         // not a record (dropped at the open): no stats, like GT / swath / the filter
         const f0 = q ? q(fr) : fr;
         if (f0 !== fr) for (let i = 0; i < nBase; i++) if (f0[i] !== fr[i]) {
           let t = qual.get(i); if (!t) qual.set(i, (t = { below: 0, above: 0, code: 0 }));
           const k = classifyQualified(fr[i]).kind;
           if (k === 'below' || (k === 'num' && +fr[i] < 0)) t.below++; else if (k === 'above') t.above++; else t.code++;
         }
-        let rAt = null;
-        if (!isDelimSc) rAt = recSc++;
-        else if (Number.isFinite(coordNum(f0[mSc.x])) && Number.isFinite(coordNum(f0[mSc.y])) && Number.isFinite(coordNum(f0[mSc.z]))) rAt = recSc++;
         const f = extendRow(L, f0, rAt);
         rows++;
         if (bandCols.length && rAt != null) {              // band index rides the layer's record numbering (raw for .dm, accepted for CSV)

@@ -963,7 +963,7 @@
   <footer><span id="meta">—</span><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
+import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, cellOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -2050,7 +2050,7 @@ async function runExport(L, { scope = 'all', colIdx = null, delim = ',', decimal
   let rec = 0, written = 0;
   // CSV keeps the source text (<0.001) unless asked for the substitutes; Parquet's
   // numeric columns are doubles, so it always writes the substituted number
-  for await (const batch of layerRows(L, null, { raw: !isParquet && !qualified })) {
+  for await (const batch of layerRows(L, null, { raw: !isParquet && !qualified })) {   /* rows ok: export: raw source text; gates its own coordinates below */
     for (const f0 of batch) {
       if (isDelim) {
         const xv = coordNum(f0[m.x]), yv = coordNum(f0[m.y]), zv = coordNum(f0[m.z]);
@@ -2154,7 +2154,7 @@ async function convertLayerToParquet(L, cvOpts = {}) {
     let acc = names.map(() => []), accN = 0;
     const flushGroup = () => { if (!accN) return; w.write(names.map((nm, k) => ({ name: nm, data: acc[k] }))); acc = names.map(() => []); accN = 0; };
     try {
-      for await (const batch of layerRows(L, null)) {
+      for await (const batch of layerRows(L, null)) {   /* rows ok: optimize: gates its own coordinates */
         for (const f0 of batch) {
           if (isDelim) { const xv = coordNum(f0[m.x]), yv = coordNum(f0[m.y]), zv = coordNum(f0[m.z]); if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue; }
           const f = isDm ? f0.map((v) => (v == null ? '' : v)) : f0;
@@ -2178,7 +2178,7 @@ async function convertLayerToParquet(L, cvOpts = {}) {
   let XC = new Float64Array(cap), YC = new Float64Array(cap), ZC = new Float64Array(cap);
   let rc = 0;
   try {
-    for await (const batch of layerRows(L, null)) {
+    for await (const batch of layerRows(L, null)) {   /* rows ok: optimize: gates its own coordinates */
       for (const f0 of batch) {
         if (isDelim) { const xv = coordNum(f0[m.x]), yv = coordNum(f0[m.y]), zv = coordNum(f0[m.z]); if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue; }
         const f = isDm ? f0.map((v) => (v == null ? '' : v)) : f0;
@@ -3314,7 +3314,7 @@ async function runSpatialJoin({ leftL, rightL, target, columns, derived = [], co
     const isDelim = !blockCaps(L).rowIsRecord;
     let rec2 = 0;
     let rc = 0;
-    for await (const batch of layerRows(L, null)) {
+    for await (const batch of layerRows(L, null)) {   /* rows ok: join scatter: gates its own coordinates */
       for (const f of batch) {
         const wx = coordNum(f[m.x]), wy = coordNum(f[m.y]), wz = coordNum(f[m.z]);
         const badCoord = !Number.isFinite(wx) || !Number.isFinite(wy) || !Number.isFinite(wz);
@@ -3399,7 +3399,7 @@ async function runKeyJoin({ leftL, rightL, leftKey, rightKey, bring, dup = 'firs
   const rNum = bringIdx.map((i) => colIsNumeric(rightL, rh, i));
   const map = new Map();
   let rc = 0, dupSeen = false;
-  for await (const batch of layerRows(rightL, null)) {
+  for await (const batch of layerRows(rightL, null)) {   /* rows ok: key-join lookup table: keyed, not numbered */
     for (const f of batch) {
       const k = f[rki] == null ? '' : String(f[rki]);
       const vals = bringIdx.map((i) => f[i]);
@@ -3415,7 +3415,7 @@ async function runKeyJoin({ leftL, rightL, leftKey, rightKey, bring, dup = 'firs
   const outNames = bring.map((n) => (lh.columns.includes(n) ? (prefix || 'r_') + n : n));
   const heads = [...lh.columns, ...outNames];
   const parts = [heads.map(csvCell).join(',') + '\n']; let buf = '', matched = 0, total = 0;
-  for await (const batch of layerRows(leftL, null)) {
+  for await (const batch of layerRows(leftL, null)) {   /* rows ok: key join → a new CSV: every source row, the new layer numbers its own */
     for (const f of batch) {
       const k = f[lki] == null ? '' : String(f[lki]);
       const e = map.get(k); if (e) matched++; total++;
@@ -5365,11 +5365,10 @@ async function applySwathZebra(L, dir, bandWidth, offset) {
   let col = paintColByName(L, '_swath'); if (!col) { col = createPaintCol(L, '_swath'); if (!col) return; }
   while (col.dict.length < 3) addPaintValue(L, col, col.dict.length === 1 ? 'band A' : 'band B');
   col.colors[1] = '#3a3f45'; col.colors[2] = '#c8c2b0';
-  const codes = col.codes; let rec = 0;
-  for await (const batch of layerRows(L, null)) for (const f of batch) {
+  const codes = col.codes;
+  for await (const { f, rec } of layerRecords(L)) {        // records, not rows: stripes stay on their own blocks after a dropped row
     const x = coordNum(f[m.x]), y = coordNum(f[m.y]), z = coordNum(f[m.z]);
     if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && rec < codes.length) { const bi = Math.floor((x * dir[0] + y * dir[1] + z * dir[2] - offset) / bandWidth); codes[rec] = (bi & 1) ? 1 : 2; }
-    rec++;
   }
   paintRecount(col); col._swathParity = true;
   applyPaintPalette && setLayerColorSel(L, 'paint:_swath');
@@ -9468,7 +9467,7 @@ async function openParquetBlocks(blob, name, opts = {}) {
         const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
         x[m] = xv; y[m] = yv; z[m] = zv;
-        chan[m] = CH ? +CH[i] : 0;
+        chan[m] = CH ? (CH[i] == null ? NaN : +CH[i]) : 0;   // a null grade is missing (NaN, as the CSV stream reads it), not 0
         if (cat) cat[m] = catCode.get(String(CA[i] ?? '')) ?? 0;
         if (dim) dim[m] = dimCode.get(dimKeyOf(+DX[i], +DY[i], +DZ[i])) ?? 0;
         recIdx[m++] = start + i;
@@ -9606,7 +9605,7 @@ async function applyTableFilter(L, expr) {
   inp.classList.remove('err');
   const mask = new Uint8Array(h.count);
   let hits = 0, rec = 0;
-  for await (const batch of layerRows(L, null)) {
+  for await (const batch of layerRows(L, null)) {   /* rows ok: a table: no coordinates, every row is a record */
     for (const f0 of batch) {
       const f = extendRow(L, f0, rec);
       let keep = false;
@@ -15865,7 +15864,7 @@ async function ensureCatCounts(L, info) {
     // fixes the bug and deletes the duplication together.
     const m = d.blockDoc.header.mapping;
     const code = new Map(info.names.map((n, i) => [n, i]));
-    for await (const batch of layerRows(L, null)) {
+    for await (const batch of layerRows(L, null)) {   /* rows ok: category counts: placed blocks only, not numbered */
       for (const f of batch) {
         if (!Number.isFinite(coordNum(f[m.x])) || !Number.isFinite(coordNum(f[m.y])) || !Number.isFinite(coordNum(f[m.z]))) continue;
         const c = code.get(String(f[m.cat]).trim());
@@ -16138,7 +16137,7 @@ async function runRules(L, force) {
   const isDm = !!(L.docs.blockDoc && L.docs.blockDoc.header.dm);
   let rec = 0;
   $('#meta').textContent = 'rules: sweeping…';
-  for await (const batch of layerRows(L, (a, b) => { $('#meta').textContent = `rules: sweeping… ${b ? Math.min(100, Math.round((100 * a) / b)) + '%' : a.toLocaleString()}`; })) {
+  for await (const batch of layerRows(L, (a, b) =>   /* rows ok: rules: gates its own coordinates */ { $('#meta').textContent = `rules: sweeping… ${b ? Math.min(100, Math.round((100 * a) / b)) + '%' : a.toLocaleString()}`; })) {
     for (const f0 of batch) {
       if (isDelim) {
         const xv = coordNum(f0[m.x]), yv = coordNum(f0[m.y]), zv = coordNum(f0[m.z]);
@@ -16383,7 +16382,7 @@ async function broadcastCollarCol(L, colName) {
   const lin = mkLineage('broadcast', { from: 'collars', column: colName, key: names[ki], holes: map.size }, [L.lineage].filter(Boolean));
   if (numeric) {
     const vals = new Float32Array(n); let rec = 0;
-    for await (const batch of layerRows(L, null)) { for (const f0 of batch) { if (rec >= n) break; const v = map.get(String(f0[im.bhid] ?? '').trim()); const x = v === '' || v == null ? NaN : +v; vals[rec] = Number.isFinite(x) ? x : NaN; rec++; } await new Promise((r) => setTimeout(r)); }
+    for await (const batch of layerRows(L, null)) { for (const f0 of batch) { if (rec >= n) break; const v = map.get(   /* rows ok: drillhole intervals: every row is a record */String(f0[im.bhid] ?? '').trim()); const x = v === '' || v == null ? NaN : +v; vals[rec] = Number.isFinite(x) ? x : NaN; rec++; } await new Promise((r) => setTimeout(r)); }
     matColSet(L, outName, vals, { lineage: lin });
     try { await persistElement(L); } catch { /* best-effort */ }
   } else {
@@ -16391,7 +16390,7 @@ async function broadcastCollarCol(L, colName) {
     if (!col) return;
     col.lineage = lin;
     const codeOf = new Map(); let rec = 0, full = false;
-    for await (const batch of layerRows(L, null)) {
+    for await (const batch of layerRows(L, null)) {   /* rows ok: drillhole intervals: every row is a record */
       for (const f0 of batch) {
         if (rec >= n || full) break;
         const v = String(map.get(String(f0[im.bhid] ?? '').trim()) ?? '').trim();
@@ -17164,7 +17163,7 @@ async function spatialJoinToCols(L, R, jf) {
   if (!columns.length) throw new Error('pick right-side columns (the left ones are already here)');
   const res = await runSpatialJoin({ leftL: null, rightL: R, target: T, columns, coverage: false, label: 'join', asCells: true, useSelection: !!jf.useSel });
   const h = layerTableHeader(L), m = h.mapping;
-  const nx = T.x.count, ny = T.y.count;
+  const cellAt = cellOf(T);                                // rotation-aware: a rotated target is looked up in its own lattice frame
   const n = attrRowCountOf(L) || 0;
   const taken = new Set([...h.columns, ...(L.calcCols || []).map((c) => c.name), ...(L.paintCols || []).map((c) => c.name)].map((x) => String(x).toLowerCase()));
   const outs = res.columns.map((c) => {
@@ -17174,29 +17173,23 @@ async function spatialJoinToCols(L, R, jf) {
     else { o.pc = createPaintCol(L, out); if (!o.pc) throw new Error('column limit'); o.pc._noAutoColor = true; o.codeOf = new Map(); }
     return o;
   });
-  let rec = 0;
-  for await (const batch of layerRows(L, null)) {
-    for (const f of batch) {
-      if (rec >= n) break;
-      const wx = coordNum(f[m.x]), wy = coordNum(f[m.y]), wz = coordNum(f[m.z]);
-      let idx = -1;
-      if (Number.isFinite(wx) && Number.isFinite(wy) && Number.isFinite(wz)) {
-        const i = Math.round((wx - T.x.origin) / (T.x.pitch || 1)), j = Math.round((wy - T.y.origin) / (T.y.pitch || 1)), k = T.z.pitch ? Math.round((wz - T.z.origin) / T.z.pitch) : 0;
-        if (i >= 0 && i < nx && j >= 0 && j < ny && k >= 0 && k < T.z.count) idx = i + nx * (j + ny * k);
+  // RECORDS, not rows (layerRecords): a delimited row with no coordinates is not
+  // a record, and counting it gave every later block its neighbour's value
+  let done = 0;
+  for await (const { f, rec } of layerRecords(L)) {
+    if (rec >= n) break;
+    const wx = coordNum(f[m.x]), wy = coordNum(f[m.y]), wz = coordNum(f[m.z]);
+    const idx = Number.isFinite(wx) && Number.isFinite(wy) && Number.isFinite(wz) ? cellAt(wx, wy, wz) : -1;
+    for (const o of outs) {
+      const c = o.c;
+      if (idx < 0 || !c._present[idx]) { if (c.num) o.vals[rec] = NaN; continue; }
+      if (c.num) o.vals[rec] = c._out[idx];
+      else {
+        const lbl = c._dict[c._codes[idx]] || '';
+        if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
       }
-      for (const o of outs) {
-        const c = o.c;
-        if (idx < 0 || !c._present[idx]) { if (c.num) o.vals[rec] = NaN; continue; }
-        if (c.num) o.vals[rec] = c._out[idx];
-        else {
-          const lbl = c._dict[c._codes[idx]] || '';
-          if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
-        }
-      }
-      rec++;
     }
-    $('#meta').textContent = `join: attaching ${rec.toLocaleString()} records…`;
-    await new Promise((r) => setTimeout(r));
+    if ((++done & 65535) === 0) { $('#meta').textContent = `join: attaching ${done.toLocaleString()} records…`; await new Promise((r) => setTimeout(r)); }
   }
   for (const o of outs) {
     const lin = mkLineage('estimate', { method: 'resample', fromElement: R.name, column: o.c.name, op: o.c.op || (o.c.num ? 'mean' : 'majority'), weight: o.c.weight || undefined, ...(jf.useSel ? { selection: true } : {}) }, [L.lineage, R.lineage].filter(Boolean));
@@ -17217,7 +17210,7 @@ async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'first' }) 
   const rNum = bringIdx.map((i) => colIsNumeric(R, rh, i));
   const map = new Map();
   let rc = 0, dupSeen = false;
-  for await (const batch of layerRows(R, null)) {
+  for await (const batch of layerRows(R, null)) {   /* rows ok: key-join lookup table: keyed, not numbered */
     for (const f of batch) {
       const k = f[rki] == null ? '' : String(f[rki]);
       const vals = bringIdx.map((i) => f[i]);
@@ -17239,23 +17232,19 @@ async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'first' }) 
     else { o.pc = createPaintCol(L, out); if (!o.pc) throw new Error('column limit'); o.codeOf = new Map(); }
     return o;
   });
-  let rec = 0, matched = 0;
-  for await (const batch of layerRows(L, null)) {
-    for (const f of batch) {
-      if (rec >= n) break;
-      const e = map.get(f[lki] == null ? '' : String(f[lki]));
-      if (e) matched++;
-      for (const o of outs) {
-        if (o.num) { const v = e ? +e.vals[o.b] : NaN; o.vals[rec] = Number.isFinite(v) ? v : NaN; }
-        else {
-          const lbl = e ? String(e.vals[o.b] ?? '').trim() : '';
-          if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
-        }
+  let matched = 0, done = 0;
+  for await (const { f, rec } of layerRecords(L)) {        // records, not rows (see spatialJoinToCols)
+    if (rec >= n) break;
+    const e = map.get(f[lki] == null ? '' : String(f[lki]));
+    if (e) matched++;
+    for (const o of outs) {
+      if (o.num) { const v = e ? +e.vals[o.b] : NaN; o.vals[rec] = Number.isFinite(v) ? v : NaN; }
+      else {
+        const lbl = e ? String(e.vals[o.b] ?? '').trim() : '';
+        if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
       }
-      rec++;
     }
-    $('#meta').textContent = `join: attaching ${rec.toLocaleString()}…`;
-    await new Promise((r) => setTimeout(r));
+    if ((++done & 65535) === 0) { $('#meta').textContent = `join: attaching ${done.toLocaleString()}…`; await new Promise((r) => setTimeout(r)); }
   }
   for (const o of outs) {
     const lin = mkLineage('key-lookup', { fromElement: R.name, leftKey, rightKey, column: rh.columns[o.bi], dup }, [L.lineage, R.lineage].filter(Boolean));
@@ -17266,7 +17255,7 @@ async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'first' }) 
   try { await persistElement(L); } catch { /* best-effort */ }
   setLayerColorSel(L, 'paint:' + outs[0].out);
   markProjectDirty(); renderProps(); requestRender();
-  return { outs: outs.map((o) => o.out), matched, rows: rec };
+  return { outs: outs.map((o) => o.out), matched, rows: done };
 }
 function openReconcileMenu(L, R, jf, shared, anchor) {
   const r = anchor.getBoundingClientRect();
@@ -17302,7 +17291,7 @@ async function runReconcile(L, R, jf, grade) {
       const jh = layerTableHeader(J);
       const ai = jh.columns.indexOf(aName), bi = jh.columns.indexOf(bName);
       let sum = 0, sumAbs = 0, n = 0, refOnly = 0, thisOnly = 0, mx = 0;
-      for await (const batch of layerRows(J, null)) for (const f of batch) {
+      for await (const batch of layerRows(J, null)) for (const f of batch) {   /* rows ok: reconcile summary over the derived layer: counts, not numbered */
         const aP = f[ai] !== '' && Number.isFinite(+f[ai]), bP = f[bi] !== '' && Number.isFinite(+f[bi]);
         if (aP && bP) { const dv = +f[bi] - +f[ai]; sum += dv; sumAbs += Math.abs(dv); if (Math.abs(dv) > mx) mx = Math.abs(dv); n++; }
         else if (aP) refOnly++; else if (bP) thisOnly++;
@@ -18764,7 +18753,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, applySwathZebra, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped
