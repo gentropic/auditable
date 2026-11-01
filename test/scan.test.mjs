@@ -80,6 +80,36 @@ test('scan: stats over a source equal the accumulator over every value', async (
   assert.ok(Math.abs(momentStd(a) - ref.std * Math.sqrt((N - 1) / N)) < 1e-9);
 });
 
+// the resource cross-tab: tonnage / metal / count by a group × grade bins, every
+// source the same, every cell the brute force; a blank grade keeps its tonnage
+test('scan: the cross-tab — group × grade bins over three sources equals the brute force', async () => {
+  const { crosstabMerge, xtabSlot, xtabKey } = await import('../ext/scan/src/kernels.js');
+  const S = await sources();
+  const edges = [2.5, 5, 7.5];
+  const want = new Map();
+  for (const r of rows) {
+    const k = xtabKey(r.Z); if (!want.has(k)) want.set(k, new Float64Array(3 * (edges.length + 2)));
+    const A = want.get(k), s = 3 * xtabSlot(edges, r.AU), w = 1000 * (r.AU > 9 ? 0 : 1);   // density 0 above 9 → skipped
+    if (!(w > 0)) continue;
+    A[s] += w; A[s + 1] += w * r.AU; A[s + 2]++;
+  }
+  for (const k of ['pq', 'csv', 'dm']) {
+    const res = await scan.run({ source: S[k], kernel: 'crosstab', spec, readCols: ['X', 'Y', 'Z', 'AU'],
+      params: { schema, group: 'Z', grade: 'AU', weight: 'if(AU > 9, 0, 1)', filter: null, dScale: 1, vol: { base: 1000, dims: null }, edges } });
+    const got = crosstabMerge(res.parts);
+    assert.equal(got.overflow, false);
+    assert.deepEqual([...got.groups.keys()].sort(), [...want.keys()].sort(), `${k}: the groups`);
+    for (const [g, A] of want) {
+      const B = got.groups.get(g);
+      for (let i = 0; i < A.length; i++) assert.ok(Math.abs(A[i] - B[i]) < 1e-6 * Math.max(1, Math.abs(A[i])), `${k}: group ${g} cell ${i}: ${B[i]} vs ${A[i]}`);
+    }
+  }
+  assert.equal(xtabSlot(edges, 2.5), 1, 'a cutoff belongs to the bin it opens');
+  assert.equal(xtabSlot(edges, 2.4999), 0);
+  assert.equal(xtabSlot(edges, 99), 3);
+  assert.equal(xtabSlot(edges, NaN), 4, 'blank → its own slot');
+});
+
 // the Parquet open's jobs: without workers they run on the page — never null —
 // and give what one sequential pass over the records gives (micro keeps no copy)
 test('scan: Parquet discovery, lattice check and decode run on the page without workers', async () => {

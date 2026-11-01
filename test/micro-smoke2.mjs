@@ -4306,6 +4306,81 @@ await p.close();
   await pq.close();
 }
 
+// ── §68: the RESOURCE CROSS-TAB (src/xtab.js). Tonnage / grade / metal / count
+//     by ROCK × AU bins, density SG × block volume; a blank grade keeps its
+//     tonnage in "no grade" so the total is the model's. Every cell equals a
+//     brute force, columnar (workers) and row path alike; cumulative, flip,
+//     selection scope and the long-form TSV agree with it. ──
+{
+  const px = await mkPage('sm2xtab');
+  const r = await px.evaluate(async () => {
+    const M = window._micro, out = {};
+    const rock = ['ox', 'fr', 'tr'];
+    let s = 'X,Y,Z,AU,SG,ROCK\n'; const recs = [];
+    for (let i = 0; i < 600; i++) {
+      const x = 5 + (i % 10) * 10, y = 5 + ((i / 10 | 0) % 10) * 10, z = 5 + (i / 100 | 0) * 10;
+      const au = i % 37 === 0 ? '' : ((i * 7919) % 400) / 100, sg = 2.5 + (i % 5) * 0.1, rk = rock[i % 3];
+      s += `${x},${y},${z},${au},${sg.toFixed(1)},${rk}\n`; recs.push({ au: au === '' ? NaN : +au, sg: +sg.toFixed(1), rk });
+    }
+    const id = await M.openBlob(new File([s], 'xt.csv'), 'xt.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    const edges = [1, 2], V = 1000;
+    const brute = (keep) => {
+      const t = new Map();
+      recs.forEach((q, i) => {
+        if (keep && !keep(i)) return;
+        const k = q.rk, w = q.sg * V; if (!t.has(k)) t.set(k, Array.from({ length: 4 }, () => ({ w: 0, wg: 0, n: 0 })));
+        const sl = !Number.isFinite(q.au) ? 3 : q.au < 1 ? 0 : q.au < 2 ? 1 : 2, c = t.get(k)[sl];
+        c.w += w; if (sl < 3) c.wg += w * q.au; c.n++;
+      });
+      return t;
+    };
+    const h = M.openCrosstab(L);
+    Object.assign(h.st, { group: 'ROCK', grade: 'AU', weight: 'SG', cutoffs: '1 2', gradeUnit: 'g/t' });
+    const check = (b, label) => {
+      const X = h.win.el._xtab, bad = [];
+      const rowIx = (k) => X.rows.indexOf(k);
+      for (const [k, cells] of b) for (let c = 0; c < 4; c++) {
+        const want = cells[c], ri = rowIx(k);
+        const t = X.cell(ri, c, 'tonnage'), n = X.cell(ri, c, 'count'), g = X.cell(ri, c, 'grade'), m = X.cell(ri, c, 'metal');
+        if (Math.abs(t - want.w) > 1e-6 * Math.max(1, want.w) || n !== want.n) bad.push(`${label} ${k}/${c}: t ${t} vs ${want.w}, n ${n} vs ${want.n}`);
+        if (c < 3 && want.w > 0 && Math.abs(g - want.wg / want.w) > 1e-9) bad.push(`${label} ${k}/${c}: grade ${g}`);
+        if (c < 3 && Math.abs(m - want.wg * 1e-6) > 1e-12 * Math.max(1, want.wg)) bad.push(`${label} ${k}/${c}: metal ${m} vs ${want.wg * 1e-6}`);
+        if (c === 3 && Number.isFinite(g)) bad.push(`${label} ${k}: a no-grade cell has a grade`);
+      }
+      const tot = [...b.values()].reduce((a, cells) => a + cells.reduce((x, c) => x + c.w, 0), 0);
+      const T = X.cell(X.rows.indexOf('total'), X.cols.length - 1, 'tonnage');
+      if (Math.abs(T - tot) > 1e-6 * tot) bad.push(`${label}: grand total ${T} vs ${tot}`);
+      return bad;
+    };
+    await h.run(); out.where = h.win.el._scanWhere; out.cols = h.win.el._xtab.cols.join(' | '); out.rows = h.win.el._xtab.rows.join(' | ');
+    out.bad = check(brute(), 'columnar');
+    // the row path gives the same table
+    M.setCsvColumnar(false); await h.run(); out.wherePage = h.win.el._scanWhere; out.badPage = check(brute(), 'page'); M.setCsvColumnar(true);
+    // cumulative: ≥1 is bins 1+2
+    h.st.mode = 'cum'; await h.run();
+    { const X = h.win.el._xtab, b = brute(), ri = X.rows.indexOf('ox'); out.cumCols = X.cols.join(' | ');
+      out.cumOk = Math.abs(X.cell(ri, 0, 'tonnage') - (b.get('ox')[1].w + b.get('ox')[2].w)) < 1e-6; }
+    h.st.mode = 'bins';
+    // the selection scope: the first 300 records
+    const m = new Uint8Array(600); for (let i = 0; i < 300; i++) m[i] = 1;
+    L._selMask = m; L._selCount = 300; h.st.scope = 'selection'; await h.run();
+    out.badSel = check(brute((i) => i < 300), 'selection');
+    h.st.scope = 'all'; await h.run();
+    // flip draws the transpose
+    h.win.el.querySelectorAll('.sw-add')[0].click();         // ⇄ flip
+    out.flipHead = [...h.win.el.querySelectorAll('.xt-tbl tr:first-child th')].map((t) => t.textContent).join(' | ');
+    out.tsv = h.tableTSV().split('\n');
+    out.cut = [M.parseCutoffs('0,5 1 2'), M.parseCutoffs('2,0.5,1'), M.parseCutoffs('1; 1;3')].map((a) => a.join(' ')).join(' / ');
+    return out;
+  });
+  await px.close();
+  chk(`xtab: ROCK × AU bins (${r.cols}) · rows ${r.rows} — every cell the brute force (tonnage, grade, metal, count), ${r.where}${r.bad.length ? " — " + r.bad.slice(0, 3).join('; ') : ''}`, r.bad.length === 0 && r.cols === '< 1 | 1–2 | ≥ 2 | no grade | total' && r.rows === 'fr | ox | tr | total');
+  chk(`xtab: the row path agrees (${r.wherePage})${r.badPage.length ? " — " + r.badPage.slice(0, 3).join('; ') : ''}`, r.badPage.length === 0 && r.wherePage === 'on this page' && r.where !== r.wherePage);
+  chk(`xtab: cumulative (${r.cumCols}) · selection scope (${r.badSel.length} bad) · flip heads ${r.flipHead}`, r.cumOk && r.cumCols === '≥ 1 | ≥ 2 | all graded | no grade | total' && r.badSel.length === 0 && /^AU \\ ROCK \| fr \| ox \| tr \| total$/.test(r.flipHead));
+  chk(`xtab: the TSV is long form, every measure (${r.tsv.length - 1} rows: ${r.tsv[0]}) · cutoffs parse ${r.cut}`, r.tsv.length - 1 === 4 * 5 && /^ROCK\tAU bin\ttonnage \(t\)\tgrade \(g\/t\)\tmetal \(t\)\tblocks$/.test(r.tsv[0]) && r.cut === '0.5 1 2 / 0.5 1 2 / 1 3');
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

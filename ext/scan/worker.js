@@ -340,6 +340,76 @@ function statsMerge(SL, parts) {
   return { groups, overflow };
 }
 
+// ── CROSS-TAB: the resource table — tonnage, metal and count by a GROUP (a
+// category, a paint column, a domain) × GRADE BINS between cutoffs. A group's
+// cells are one Float64Array of [w, wg, n] per slot: slot 0 below the first
+// cutoff, slot k in [edges[k-1], edges[k]), slot E (= edges.length) at or above
+// the last, and slot E+1 the rows with NO grade (blank) — their tonnage still
+// counts, so the table's total is the model's. Additive: a merge adds.
+// params = { schema, group, grade, weight, filter, dScale, vol, edges }
+const XTAB_GROUPS_CAP = 256;
+// the slot of a grade under ascending `edges` (blank → the last slot)
+function xtabSlot(edges, g) {
+  if (!Number.isFinite(g)) return edges.length + 1;
+  let lo = 0, hi = edges.length;                           // the number of edges ≤ g
+  while (lo < hi) { const m = (lo + hi) >> 1; if (edges[m] <= g) lo = m + 1; else hi = m; }
+  return lo;
+}
+// one row into the groups map → false once the cap refuses a NEW group
+function xtabAdd(groups, key, edges, g, w) {
+  let A = groups.get(key);
+  if (!A) { if (groups.size >= XTAB_GROUPS_CAP) return false; A = new Float64Array(3 * (edges.length + 2)); groups.set(key, A); }
+  const s = 3 * xtabSlot(edges, g);
+  A[s] += w; if (Number.isFinite(g)) A[s + 1] += w * g; A[s + 2]++;
+  return true;
+}
+const xtabKey = (v) => (v == null || v === '' || (typeof v === 'number' && v !== v) ? '—' : String(v));
+function crosstabKernel(E, CV) {
+  return {
+    init(params, calcs) {
+      const sch = params.schema;
+      const one = (txt, bool) => { if (!txt) return null; return bool ? E.compileChunkBool(txt, sch, { decimal: '.' }) : E.compileChunk(txt, sch, { decimal: '.' }); };
+      return {
+        params, calcFns: CV.compileCalcs(E, calcs, sch),
+        group: one(params.group), grade: one(params.grade), weight: one(params.weight), filter: one(params.filter, true),
+        dimIdx: params.vol.dims ? params.vol.dims.map((nm) => sch.findIndex((c) => c.name === nm)) : null,
+        scratch: {},
+      };
+    },
+    group(ctx, view, n, mask) {
+      const { params } = ctx, sc = ctx.scratch;
+      const vol = volumes(ctx, view, n, (i, key) => CV.chunkNumbers({ buf: view[i] || [] }, n, sc[key] || (sc[key] = new Float64Array(n))));
+      const g = CV.chunkNumbers(ctx.grade(view, n), n, sc.g || (sc.g = new Float64Array(n)));
+      const w = ctx.weight ? CV.chunkNumbers(ctx.weight(view, n), n, sc.w || (sc.w = new Float64Array(n))) : null;
+      const gv = ctx.group ? ctx.group(view, n).buf : null;
+      const f = ctx.filter ? ctx.filter(view, n) : null;
+      const groups = new Map(); let overflow = false;
+      for (let i = 0; i < n; i++) {
+        if (mask && !mask[i]) continue;
+        if (f && f[i] !== 1) continue;
+        const wv = (w ? ((w[i] || 0) * params.dScale) : 1) * (vol ? vol[i] : params.vol.base);   // a blank density reads 0 → skipped, as GT does
+        if (!(wv > 0)) continue;
+        if (!xtabAdd(groups, gv ? xtabKey(gv[i]) : '', params.edges, g[i], wv)) overflow = true;
+      }
+      return { groups: [...groups], overflow };
+    },
+  };
+}
+// partials (chunk order) → { groups: Map(key → cells), overflow }
+function crosstabMerge(parts) {
+  const groups = new Map(); let overflow = false;
+  for (const p of parts) {
+    if (!p) continue;
+    if (p.overflow) overflow = true;
+    for (const [k, c] of p.groups) {
+      const A = groups.get(k);
+      if (!A) { if (groups.size >= XTAB_GROUPS_CAP) { overflow = true; continue; } groups.set(k, Float64Array.from(c)); continue; }
+      for (let i = 0; i < A.length; i++) A[i] += c[i];
+    }
+  }
+  return { groups, overflow };
+}
+
 // ── the FILTER kernel ────────────────────────────────────────────────────────
 // params: { schema, expr, coords: [x, y, z] (names), chan: name | null, cat: name
 // | null, categories: [label…] | null, tee: [name…] | null }. One chunk → the
@@ -683,7 +753,7 @@ function decodeGroup(cd, p, cols, start, count, codes) {
 
 // ── src/worker.js ──
 
-const kernels = Object.freeze({ GT_BINS_TARGET, GT_BINS_CAP, gtEdge, gtBinOf, gtAccumulator, gtAbove, gtCuts, gtKernel, gtPartial, gtMerge, swathKernel, swathMerge, momentAdd, momentMerge, momentStd, statsKernel, statsMerge, filterKernel, valuesKernel, positionsKernel });
+const kernels = Object.freeze({ GT_BINS_TARGET, GT_BINS_CAP, gtEdge, gtBinOf, gtAccumulator, gtAbove, gtCuts, gtKernel, gtPartial, gtMerge, swathKernel, swathMerge, momentAdd, momentMerge, momentStd, statsKernel, statsMerge, XTAB_GROUPS_CAP, xtabSlot, xtabAdd, xtabKey, crosstabKernel, crosstabMerge, filterKernel, valuesKernel, positionsKernel });
 const CV = Object.freeze({ chunkView, compileCalcs, chunkNumbers });
 // @gcu/scan worker — the body of every pool worker, a real module (it used to be
 // a template string with functions pasted in by toString(), where a module-scope
