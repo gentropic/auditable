@@ -295,3 +295,82 @@ test('desurveySamples — point-support locator (single-depth assays)', () => {
   });
   assert.ok(eoh.report.checks.some(c => c.id === 'past-eoh') && eoh.rows.length === 1, 'past-EOH sample kept + advised');
 });
+
+test('qa — every check names its row, and a clean set reports nothing', () => {
+  const clean = DH.qa({
+    collars: [{ bhid: 'A', x: 0, y: 0, z: 100, eoh: 50 }],
+    surveys: [{ bhid: 'A', depth: 0, az: 90, dip: 60 }, { bhid: 'A', depth: 30, az: 92, dip: 61 }],
+    intervals: [{ name: 'assay', bhid: ['A', 'A', 'A'], from: [0, 10, 25], to: [10, 25, 50] }],
+  });
+  assert.deepEqual(clean.findings, [], 'a clean set: no findings');
+  assert.equal(clean.holes, 1);
+  assert.equal(clean.dipConvention, 'pos-down');
+
+  const r = DH.qa({
+    collars: [
+      { bhid: 'A', x: 0, y: 0, z: 100, eoh: 40 },        // row 0
+      { bhid: 'B', x: NaN, y: 5, z: 100 },               // row 1 — blank X: dropped, its rows are NOT orphans
+      { bhid: 'A', x: 9, y: 9, z: 9 },                   // row 2 — duplicate
+      { bhid: '', x: 1, y: 1, z: 1 },                    // row 3 — no ID
+      { bhid: 'C', x: 50, y: 0, z: 100, eoh: -1 },       // row 4 — EOH ≤ 0; no survey; no intervals
+    ],
+    surveys: [
+      { bhid: 'A', depth: 0, az: 0, dip: 90 },           // row 0
+      { bhid: 'A', depth: 10, az: 0, dip: 45 },          // row 1 — a 45° bend over 10 → 135°/30
+      { bhid: 'A', depth: 10, az: 0, dip: 46 },          // row 2 — same depth as row 1
+      { bhid: 'A', depth: 20, az: 400, dip: 46 },        // row 3 — azimuth past 360
+      { bhid: 'A', depth: 30, az: 0, dip: 95 },          // row 4 — |dip| > 90
+      { bhid: 'A', depth: NaN, az: 0, dip: 46 },         // row 5 — blank depth
+      { bhid: 'A', depth: 45, az: 0, dip: 46 },          // row 6 — past EOH 40
+      { bhid: 'B', depth: 0, az: 0, dip: 90 },           // row 7 — hole B's collar was dropped: silent
+      { bhid: 'Z', depth: 0, az: 0, dip: 90 },           // row 8 — orphan
+    ],
+    intervals: [{ name: 'assay',
+      bhid: ['A', 'A', 'A', 'A', 'A', 'A', 'B', 'Q', 'A'],
+      from: [0, 5, 12, 20, 20, NaN, 0, 0, 30],
+      to:   [6, 10, 20, 15, 20, 30, 5, 1, 120] }],
+  }, { extrapMax: 30 });
+  const at = (check) => r.findings.filter((f) => f.check === check).map((f) => [f.table, f.row, f.bhid]);
+  assert.deepEqual(at('collar-blank-xyz'), [['collar', 1, 'B']]);
+  assert.deepEqual(at('collar-dup'), [['collar', 2, 'A']]);
+  assert.deepEqual(at('collar-no-bhid'), [['collar', 3, '']]);
+  assert.deepEqual(at('collar-eoh-bad'), [['collar', 4, 'C']]);
+  assert.deepEqual(at('hole-no-survey'), [['collar', 4, 'C']]);
+  assert.deepEqual(at('hole-no-intervals'), [['assay', null, 'C']]);
+  assert.deepEqual(at('survey-orphan'), [['survey', 8, 'Z']], 'B (a dropped collar) is not an orphan');
+  assert.deepEqual(at('survey-blank'), [['survey', 5, 'A']]);
+  assert.deepEqual(at('survey-dip-range'), [['survey', 4, 'A']]);
+  assert.deepEqual(at('survey-az-range'), [['survey', 3, 'A']]);
+  assert.deepEqual(at('survey-dup-depth'), [['survey', 2, 'A']]);
+  assert.deepEqual(at('survey-past-eoh'), [['survey', 6, 'A']]);
+  const dl = r.findings.find((f) => f.check === 'survey-dogleg');
+  assert.ok(dl && dl.row === 2 && dl.from === 0 && dl.to === 10 && /°\/30/.test(dl.detail), `the bend 0→10 (the kept station is row 2): ${JSON.stringify(dl)}`);
+  assert.deepEqual(at('interval-orphan'), [['assay', 7, 'Q']], 'B is silent here too');
+  assert.deepEqual(at('interval-blank'), [['assay', 5, 'A']]);
+  assert.deepEqual(at('interval-inverted'), [['assay', 3, 'A'], ['assay', 4, 'A']]);
+  assert.equal(r.findings.find((f) => f.check === 'interval-inverted' && f.row === 4).detail, 'zero length');
+  const ov = r.findings.find((f) => f.check === 'interval-overlap');
+  assert.ok(ov && ov.row === 1 && /row 1 \(0–6\)/.test(ov.detail), `5–10 overlaps 0–6: ${JSON.stringify(ov)}`);
+  const gap = r.findings.filter((f) => f.check === 'interval-gap');
+  assert.deepEqual(gap.map((g) => [g.row, g.from, g.to]), [[2, 10, 12], [8, 20, 30]], 'the gaps, bounded by the depths either side');
+  assert.deepEqual(at('interval-past-eoh'), [['assay', 8, 'A']], 'once per hole');
+  assert.deepEqual(at('interval-past-survey'), [['assay', 8, 'A']], '120 is 75 past the deepest kept station (45)');
+  const s = Object.fromEntries(r.summary.map((x) => [x.check, x]));
+  assert.equal(s['interval-gap'].count, 2);
+  assert.equal(s['interval-gap'].holes, 1);
+  assert.deepEqual(r.summary.map((x) => x.check), Object.keys(DH.QA_CHECKS).filter((k) => s[k]), 'summary in check order');
+  assert.ok(r.findings.every((f) => DH.QA_CHECKS[f.check][0] === f.severity));
+});
+
+test('qa — the dip convention is detected, and the dogleg limit is a knob', () => {
+  const t = {
+    collars: [{ bhid: 'A', x: 0, y: 0, z: 0 }],
+    surveys: [{ bhid: 'A', depth: 0, az: 0, dip: -60 }, { bhid: 'A', depth: 30, az: 0, dip: -63 }],
+    intervals: [],
+  };
+  const r = DH.qa(t);
+  assert.equal(r.dipConvention, 'neg-down');
+  assert.equal(r.findings.length, 0, '3° over 30 is under the default 10°/30');
+  const tight = DH.qa(t, { doglegMax: 2 });
+  assert.equal(tight.findings.filter((f) => f.check === 'survey-dogleg').length, 1);
+});

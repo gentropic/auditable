@@ -778,6 +778,34 @@ test('drillholes: blanks are dropped and reported, never read as 0', async () =>
   assert.deepEqual(tr.fetchRecord(0).slice(0, 2), ['A', '1000']);   // a trace's record is still the collar ROW
 });
 
+
+// the QA report reads the set's own files: a blank is a finding AT ITS ROW, and the
+// values census sees every interval column — a typo in a grade column is found
+test('drillholes: the QA report — row by row from the files, plus a values census', async () => {
+  const { drillholeQa } = await import('../ext/condenser/src/main.js');
+  const collar = new Blob(['BHID,X,Y,Z,EOH\nA,1000,2000,100,60\nB,,2000,100,80\nC,1100,2000,100,50\n']);
+  const survey = new Blob(['BHID,AT,AZ,DIP\nA,0,0,90\nA,50,0,\nC,0,0,90\nZ,0,0,90\n']);
+  const assay = new Blob(['BHID,FROM,TO,AU,ROCK\nA,0,10,1.5,gr\nA,12,20,l.5,gr\nA,20,70,<0.05,gr\nC,0,50,2,ba\nB,0,10,3,gr\n']);
+  const lith = new Blob(['BHID,FROM,TO,ROCK\nA,0,30,gr\nA,25,60,gr\n']);
+  const r = await drillholeQa({ collar, survey, intervals: [{ blob: assay, name: 'assay' }, { blob: lith, name: 'lith' }] });
+  const at = (check) => r.findings.filter((f) => f.check === check).map((f) => [f.table, f.row, f.bhid]);
+  assert.deepEqual(at('collar-blank-xyz'), [['collar', 1, 'B']], "B's blank X: a finding at row 1, and its interval is not an orphan too");
+  assert.deepEqual(at('survey-blank'), [['survey', 1, 'A']]);
+  assert.deepEqual(at('survey-orphan'), [['survey', 3, 'Z']]);
+  assert.deepEqual(at('interval-gap'), [['assay', 1, 'A']]);
+  assert.deepEqual(at('interval-past-eoh'), [['assay', 2, 'A']]);
+  assert.deepEqual(at('interval-overlap'), [['lith', 1, 'A']], 'each interval table checked on its own');
+  assert.deepEqual(at('hole-no-intervals'), [['lith', null, 'C']]);
+  const vt = r.findings.find((f) => f.check === 'value-text');
+  assert.ok(vt && vt.table === 'assay' && vt.row === 1 && vt.bhid === 'A' && /AU: 1 text entry \(first: “l\.5”\)/.test(vt.detail), JSON.stringify(vt));
+  assert.ok(r.summary.some((s) => s.check === 'value-text' && s.count === 1), 'the census finding is in the summary');
+  const au = r.values.find((v) => v.table === 'assay' && v.column === 'AU');
+  assert.deepEqual([au.rows, au.num, au.below, au.text, au.numeric], [5, 3, 1, 1, true]);
+  const rock = r.values.find((v) => v.table === 'assay' && v.column === 'ROCK');
+  assert.equal(rock.numeric, false, 'a text column is no finding');
+  assert.equal(r.holes, 2);
+  assert.deepEqual(r.tables.intervals.map((t) => [t.name, t.rows]), [['assay', 5], ['lith', 2]]);
+});
 test('drillholes: method + dip convention options thread through', async () => {
   const collar = new Blob(['BHID,X,Y,Z\nA,0,0,0\n']);
   const surveyNeg = new Blob(['BHID,AT,AZ,DIP\nA,0,0,-90\n']);                     // neg-down file

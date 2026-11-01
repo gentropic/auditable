@@ -15,9 +15,10 @@
 
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { dhValidate } from '../../../drillhole/src/validate.js';
+import { dhQa, dhQaSummary, DH_QA_CHECKS } from '../../../drillhole/src/qa.js';
 import { sniffDelimited, lineFields } from './blockmodel.js';
 import { coordNum } from './delimited.js';
-import { qualifiedNumber, censusQualified, QUALIFIED_DEFAULT } from './qualified.js';
+import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
 
 const BHID_RE = /^(bhid|holeid|hole_?id|dhid|dh_?id|hole|collar_?id|id)$/i;
 const X_RE = /^(x|xc|xcollar|east(ing)?|utm_?e)$/i;
@@ -416,4 +417,54 @@ export async function openDrillholeTraces({ collar, survey }, opts = {}) {
     return c ? [c.x, c.y, c.z] : null;
   };
   return { header, streamChunks, fetchRecord, recordPosition };
+}
+
+/**
+ * drillholeQa({ collar, survey, intervals: [{ blob, name, mapping? }] }, opts) —
+ * the QA report of a drillhole SET, row by row (@gcu/drillhole qa), read from its
+ * own files: nothing is pre-dropped, so a blank coordinate is a finding at its row
+ * rather than an absence. Plus a census of every interval column (blank / number /
+ * <x / >x / code / text), and a `value-text` finding for a column of numbers that
+ * holds a little text (a typo reads as blank — the report says where).
+ * opts = { mappings: { collar, survey }, dipConvention, doglegMax, gapMin, extrapMax }
+ * → dhQa's { findings, summary, holes, dipConvention, tables } + { values }
+ */
+export async function drillholeQa({ collar, survey, intervals = [] }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('drillhole QA: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('drillhole QA: survey columns not identified (need BHID + AZ + DIP)');
+  const num = (r, i) => (i != null && i >= 0 ? coordNum(r[i]) : NaN);
+  const collars = tCollar.rows.map((r, row) => ({ bhid: r[mc.bhid], x: num(r, mc.x), y: num(r, mc.y), z: num(r, mc.z), eoh: num(r, mc.eoh), row }));
+  // no depth column: every station is at the collar (as parseSurveys reads it)
+  const surveys = tSurvey.rows.map((r, row) => ({ bhid: r[ms.bhid], depth: ms.at != null && ms.at >= 0 ? num(r, ms.at) : 0, az: num(r, ms.az), dip: num(r, ms.dip), row }));
+  const ivTables = [], values = [], extra = [];
+  for (const [k, iv] of intervals.entries()) {
+    const t = await readDelimited(iv.blob);
+    const mi = iv.mapping || (classifyDrillholeHeader(t.columns) || {}).mapping;
+    if (!mi || mi.from == null || mi.to == null) throw new Error(`drillhole QA: ${iv.name || 'an interval table'} — FROM / TO not identified`);
+    const name = iv.name || `intervals ${k + 1}`;
+    ivTables.push({ name, bhid: t.rows.map((r) => r[mi.bhid]), from: t.rows.map((r) => num(r, mi.from)), to: t.rows.map((r) => num(r, mi.to)) });
+    const keys = new Set([mi.bhid, mi.from, mi.to]);
+    t.columns.forEach((column, i) => {
+      if (keys.has(i)) return;
+      const c = { table: name, column, rows: t.rows.length, blank: 0, num: 0, below: 0, above: 0, code: 0, text: 0, firstText: -1, textSample: null };
+      t.rows.forEach((r, row) => {
+        const kind = classifyQualified(r[i]).kind;
+        c[kind]++;
+        if (kind === 'text' && c.firstText < 0) { c.firstText = row; c.textSample = String(r[i]).trim(); }
+      });
+      const filled = c.rows - c.blank;
+      // a column of numbers: numbers are the bulk and text a stray few (≤ 2, or ≤ 10%)
+      const nums = c.num + c.below + c.above + c.code;
+      c.numeric = c.num > 0 && nums > c.text && c.text <= Math.max(2, 0.1 * filled);
+      if (c.numeric && c.text) extra.push({ check: 'value-text', severity: DH_QA_CHECKS['value-text'][0], table: name, row: c.firstText, bhid: String(t.rows[c.firstText][mi.bhid] ?? '').trim(), from: num(t.rows[c.firstText], mi.from), to: num(t.rows[c.firstText], mi.to), detail: `${column}: ${c.text} text ${c.text === 1 ? 'entry' : 'entries'} (first: “${c.textSample}”)` });
+      values.push(c);
+    });
+  }
+  const r = dhQa({ collars, surveys, intervals: ivTables }, opts);
+  if (extra.length) { r.findings = r.findings.concat(extra); r.summary = dhQaSummary(r.findings); }
+  return { ...r, values, columns: { collar: tCollar.columns, survey: tSurvey.columns } };
 }

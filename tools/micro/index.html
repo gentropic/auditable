@@ -574,6 +574,23 @@
   .st-tbl td { padding: 2px 10px 2px 0; border-bottom: 1px solid rgba(127,127,127,0.08); white-space: nowrap; }
   .st-tbl td.num { text-align: right; }
   .st-tbl tr:hover td { background: rgba(127,127,127,0.06); }
+  /* drillhole QA: the checks that fired (rail), the findings table, the foot */
+  .qa-checks { display: flex; flex-direction: column; gap: 2px; padding-bottom: 8px; }
+  .qa-check { display: flex; align-items: flex-start; gap: 6px; text-align: left; font: 11px var(--mono); color: var(--muted); background: none; border: 1px solid transparent; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
+  .qa-check:hover { color: var(--text-hi); border-color: var(--border); }
+  .qa-check.on { color: var(--text-hi); border-color: var(--accent); }
+  .qa-check i { flex: 0 0 8px; height: 8px; border-radius: 50%; margin-top: 3px; }
+  .qa-check span { flex: 1; }
+  .qa-check b { font-weight: normal; color: var(--text-hi); }
+  .qa-clean { color: var(--ok); font: 11px var(--mono); padding: 4px; }
+  .qa-bar { padding: 6px 8px 0; }
+  .qa-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px; }
+  .qa-tbl tr { cursor: pointer; }
+  .qa-tbl td.qa-sev { padding-right: 4px; }
+  .qa-foot { padding: 4px 8px 6px; border-top: 1px solid var(--border); margin: 0; }
+  .qa-note { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qa-foot button { flex: 0 0 auto; white-space: nowrap; font: 11px var(--mono); color: var(--text-hi); background: var(--bg-btn); border: 1px solid var(--border); border-radius: 3px; padding: 2px 10px; cursor: pointer; }
+  .qa-foot button:hover { border-color: var(--accent); }
   #brDlg .dh-foot button { font-family: var(--mono); font-size: 12px; color: var(--text-hi); background: var(--bg-btn); border: 1px solid var(--accent); border-radius: 3px; padding: 4px 18px; cursor: pointer; }
   #brDlg .dh-foot #brNot { border-color: var(--border); }
 
@@ -982,7 +999,8 @@ import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model fi
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
-import { pushUndo, undoLast, undoLabel, clearUndo } from './src/undo.js';   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
+import { pushUndo, undoLast, undoLabel, clearUndo } from './src/undo.js';
+import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
@@ -2369,6 +2387,34 @@ setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintColorOptions,
 
 // src/stats.js reaches back into the app through these
 setStatsHooks({ menuXY, saveRecipe });
+// the QA window's view of the app: the set's members, the camera, the selection
+setDhQaHooks({
+  members: (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace),
+  setName: (nd) => nd.name || 'drillholes',
+  zoomToHole: (L, bhid) => {
+    const paths = L.docs.dhDoc.holePaths ? L.docs.dhDoc.holePaths() : null; if (!paths) return false;
+    let xyz = paths.get(bhid);
+    if (!xyz) for (const [k, v] of paths) if (String(k).trim() === bhid) { xyz = v; break; }
+    if (!xyz || !xyz.length) return false;
+    const o = frame ? frame.origin : [0, 0, 0], b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let k = 0; k < xyz.length; k += 3) for (let a = 0; a < 3; a++) { const v = xyz[k + a] - o[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
+    const pad = Math.max(10, 0.15 * Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]));   // the hole plus some room around it
+    for (let a = 0; a < 3; a++) { b[a] -= pad; b[a + 3] += pad; }
+    cam.fit(b); requestRender();
+    return true;
+  },
+  // a finding's hole IDs are trimmed: match the interval rows' IDs the same way
+  selectHoles: (members, bhids) => {
+    for (const L of members) {
+      const dh = L.docs.dhDoc, im = dh.header.intervalMapping, raw = dh.rawRecord || dh.fetchRecord;
+      const mask = new Uint8Array(dh.header.count);
+      for (let i = 0; i < mask.length; i++) { const f = raw(i); if (f && bhids.has(String(f[im.bhid] ?? '').trim())) mask[i] = 1; }
+      L._selMask = mask; applyLayerSelection(L);
+    }
+    requestRender();
+  },
+  deliverBlob: (blob, name) => deliverBlob(blob, name),
+});
 
 
 
@@ -8878,7 +8924,7 @@ right-click the layer → <b>Tint…</b> / <b>Opacity…</b> · sections cut mes
 matching elements isolate — everything else drops out of the render, the table, and the analysis<br>
 the <b>▾ drawer</b> beside the box projects the expression as LIVE WIDGETS — sliders + chips with operator dropdowns, clickable and/or pills, real bracket groups, a remove × per condition, and a multiline editor; every control rewrites its own span of the text<br><br>
 <b>ƒ derived columns</b> — Tools → <b>Calculated columns…</b> is the workbench: expressions over the FULL schema (calc-on-calc composes), an <code>if()</code> ladder projects as a case table, constants as sliders. Colour by <code>ƒ NAME</code> straight from the colour dropdown. Joins and drillhole broadcasts land as materialized columns too — the filter, GT/swath, record panel, and exports all see every one of them<br><br>
-<b>drillholes</b> — a set is a GROUP: ◈ collars and ↧ survey rows carry their own actions (attribute tables, <b>Filter holes…</b> over collar columns — the verdict masks every interval table and the traces — <b>Broadcast</b> a collar column onto the intervals, re-desurvey, traces)<br><br>
+<b>drillholes</b> — a set is a GROUP: ◈ collars and ↧ survey rows carry their own actions (attribute tables, <b>Filter holes…</b> over collar columns — the verdict masks every interval table and the traces — <b>Broadcast</b> a collar column onto the intervals, re-desurvey, traces). The set's menu has <b>QA report…</b>: every row to look at before estimating — blank or duplicate collars, orphan and bad survey stations, doglegs, gaps, overlaps, depths past the end of hole, text in a grade column — each at its table and row; click one to go to the hole; export it as TSV<br><br>
 <b>knobs</b><br>
 <b>min/max</b> boxes clip the color scale (outliers stop eating the ramp; empty = auto) · View menu: <b>boxes</b> = true block faces · <b>points</b> = fixed splats (snappier) · <b>block edges</b> = outline every block (and every cut block on a section) · <b>budget</b> = elements per frame (lower = snappier; converges when still) · <b>EDL</b> = the shading that makes points read as a surface`;
 const HELP_ABOUT = `
@@ -9812,6 +9858,7 @@ const COMMANDS = [
   { id: 'scan', group: 'File', title: 'Scan folder for new data', kw: 'import inbox dropped rescan pick up new files refresh', when: () => hasFSAA && !!S.project && !S.project.pack, run: () => scanFolderForNewData() },
   { id: 'png', group: 'File', title: 'Save viewport PNG', kw: 'screenshot image capture', run: () => $('#btnShot').click() },
   { id: 'figure', group: 'File', title: 'Export figure (PNG)…', kw: 'decorations scale bar north legend title report', run: () => exportFigure() },
+  { id: 'dhqa', group: 'Analysis', title: 'Drillhole QA report', kw: 'drillhole qa qc check validate collar survey interval gaps overlaps dogleg eoh orphan duplicate blank', when: (c) => !!(c.L && c.L.dh && c.L.docs.dhDoc && dhSetGroupOf(c.L.id)), run: (c) => openDhQa(dhSetGroupOf(c.L.id)) },
   { id: 'blockedges', group: 'View', title: 'Toggle block edges', kw: 'borders lines wireframe outline grid', when: (c) => c.L && !!c.L.docs.blockDoc, run: () => setBlockEdges(!_blockEdges) },
   { id: 'secfollow', group: 'View', title: 'Section: camera follows the scrub', kw: 'walk slicer step through benches follow', when: () => !!currentSection(), run: () => { const c = $('#secFollow'); c.checked = !c.checked; c.dispatchEvent(new Event('input')); $('#meta').textContent = `section follow ${c.checked ? 'on' : 'off'}`; } },
   { id: 'sec2d', group: 'View', title: 'Section: 2D lock (face-on, ortho, no orbit)', kw: 'paper plan flat lock rotation', when: () => !!currentSection(), run: () => { const c = $('#sec2D'); c.checked = !c.checked; c.dispatchEvent(new Event('input')); } },
@@ -12141,6 +12188,7 @@ function groupMenu(nd, x, y) {
   if (nd.dhSet) {                                          // location verbs live on the collar/survey ROWS now
     items.push({ label: setHasTraces(nd) ? 'Hide hole traces' : 'Show hole traces', action: () => showHoleTraces(nd) });
     items.push({ label: 'Add interval table…', action: () => addIntervalToSet(nd) });
+    items.push({ label: 'QA report…', action: () => openDhQa(nd) });
     items.push({ sep: true });
   }
   menuXY(x, y, [
@@ -12649,7 +12697,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, openDhQa, qaWins: _qaWins, dhSetGroupOf, applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

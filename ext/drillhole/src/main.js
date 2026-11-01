@@ -10,6 +10,7 @@
 //   samples.js   — desurveySamples (point-support locator)
 //   merge.js     — mergeIntervals (down-hole union re-segment join)
 //   process.js   — process (validate → desurvey → composite, one call)
+//   qa.js        — qa (the row-by-row QA report: every row a reviewer must look at)
 
 export {
   dhTangent as tangent,
@@ -23,3 +24,4 @@ export { dhDefaultLength as defaultLength, dhComposite as composite } from './co
 export { dhDesurveySamples as desurveySamples } from './samples.js';
 export { dhMergeIntervals as mergeIntervals } from './merge.js';
 export { dhProcess as process } from './process.js';
+export { dhQa as qa, dhQaSummary as qaSummary, DH_QA_CHECKS as QA_CHECKS } from './qa.js';

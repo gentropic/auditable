@@ -49,6 +49,17 @@ modules from here now.
   no-survey holes (desurveyed straight down) — each lands in the report with a count
   and a BHID list.
 
+- **QA report** — `qa({ collars, surveys, intervals: [{ name, bhid, from, to }] }, opts)`
+  names every ROW a reviewer must look at before estimating, where `validate` counts per
+  hole: blank / duplicate / ID-less collars, orphan, blank, negative, out-of-range and
+  same-depth survey stations, **doglegs** past a limit (°/30, default 10), past-EOH
+  stations and intervals, orphan / blank / inverted / overlapping intervals, **gaps**,
+  intervals far past the deepest survey — each a finding `{ check, severity, table, row,
+  bhid, from, to, detail }`, one or more interval tables at once. Tables come in with
+  blanks as NaN (not pre-dropped), so a blank is a finding at its row; a dropped collar's
+  rows aren't reported again as orphans. `QA_CHECKS` is the catalog (severity + label),
+  `qaSummary(findings)` the per-check roll-up.
+
 - **Merge** — `mergeIntervals(A, B)` joins two down-hole interval tables on a
   **union re-segment** (breaks need not align; columns carried verbatim, gaps and
   overlaps counted) → a table the compositing pipeline runs on.
@@ -79,7 +90,7 @@ const { header, rows, report } = dh.process({
 
 The lower-level pieces are exported as clean names too: `desurveyHole` / `positionAt` /
 `normalizeSurveys` / `detectDipConvention` / `validate` / `composite` / `defaultLength` /
-`desurveySamples` / `mergeIntervals` / `tangent`.
+`desurveySamples` / `mergeIntervals` / `qa` / `qaSummary` / `QA_CHECKS` / `tangent`.
 
 ## Build & test
 

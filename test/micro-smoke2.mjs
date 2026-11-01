@@ -4243,6 +4243,69 @@ await p.close();
   chk(`undo: a calc column removed in the calc window returns (${r.calcGone} → ${r.calcBack}, top “${r.top}”); at the bottom: “${r.meta}”`, r.calcGone && r.calcBack && /nothing to undo/.test(r.meta));
 }
 
+// ── §67: the DRILLHOLE QA report (src/dhqa.js). A two-table set with known
+//     problems: every finding at its row, from the files — a blank collar X, an
+//     orphan survey, a dogleg, a gap, an overlap in the second table, a typo in
+//     a grade column; clicking a finding goes to the hole and selects its
+//     intervals in every table; the limits re-run it; the TSV carries every
+//     finding and says what it ran on. ──
+{
+  const pq = await mkPage('sm2dhqa');
+  const r = await pq.evaluate(async () => {
+    const M = window._micro, f = (s, nm) => new File([s], nm, { type: 'text/csv' });
+    const settle = async (ok) => { for (let n = 0; n < 200 && !ok(); n++) await new Promise((q) => setTimeout(q, 30)); };
+    const collar = 'BHID,X,Y,Z,EOH\nH1,1000,2000,300,60\nH2,,2000,300,60\nH3,1100,2000,300,100\n';
+    const survey = 'BHID,AT,AZ,DIP\nH1,0,0,90\nH3,0,0,90\nH3,30,0,60\nH3,60,0,60\nZZ,0,0,90\n';     // H3: 30° over 30 m = 30°/30
+    const assay = 'BHID,FROM,TO,AU\nH1,0,10,1.5\nH1,12,20,l.5\nH1,20,40,0.8\nH3,0,50,2.1\nH3,50,90,1.1\nH2,0,10,3\n';
+    const litho = 'BHID,FROM,TO,ROCK\nH1,0,30,gr\nH1,25,60,gr\nH3,0,100,ba\n';
+    const files = { collar: f(collar, 'collars.csv'), survey: f(survey, 'survey.csv') };
+    const idA = await M.importDrillholes({ ...files, intervals: f(assay, 'assay.csv') }, {}, 'replace');
+    const A = M.layers().find((q) => q.id === idA); A._setKey = 'qa'; A._intervalName = 'assay.csv';
+    const grp = M.dhSetGroupOf(A.id);
+    const idB = await M.importDrillholes({ collar: A.docs.dhDoc.blobs.collar, survey: A.docs.dhDoc.blobs.survey, intervals: f(litho, 'litho.csv') }, {}, 'add');
+    const B = M.layers().find((q) => q.id === idB); B._setKey = 'qa'; B._intervalName = 'litho.csv';
+    M.treeMove(B.id, grp, 'into');
+    const h = await M.openDhQa(M.dhSetGroupOf(A.id));
+    const res = h.state.r, out = {};
+    const at = (c) => res.findings.filter((x) => x.check === c).map((x) => `${x.table}:${x.row == null ? '-' : x.row + 1}:${x.bhid}`).join(' ');
+    out.members = res.tables.intervals.map((t) => t.name).join(',');
+    out.blank = at('collar-blank-xyz'); out.orphan = at('survey-orphan'); out.dogleg = at('survey-dogleg');
+    out.gap = at('interval-gap'); out.overlap = at('interval-overlap'); out.text = at('value-text');
+    out.n = res.findings.length;
+    out.checks = [...h.el.querySelectorAll('.qa-check')].length;
+    out.rows = h.el.querySelectorAll('.qa-tbl tr').length - 1;
+    // a check in the rail narrows the table to it
+    [...h.el.querySelectorAll('.qa-check')].find((b) => /dogleg/.test(b.title)).click();
+    out.narrow = h.el.querySelectorAll('.qa-tbl tr').length - 1;
+    // click the finding: the camera goes to H3, its intervals are selected in BOTH tables
+    const t0 = M.cam.state.target.slice(), T = () => M.cam.state.target;
+    h.el.querySelectorAll('.qa-tbl tr')[1].click();
+    await settle(() => A._selCount && B._selCount);
+    out.moved = Math.hypot(T()[0] - t0[0], T()[1] - t0[1], T()[2] - t0[2]);
+    out.selA = A._selCount; out.selB = B._selCount;
+    // a stricter dogleg limit: one more knob, one more finding? (30°/30 → none at 45)
+    const dl = [...h.el.querySelectorAll('.sw-rail input')][0];
+    dl.value = '45'; dl.dispatchEvent(new Event('change'));
+    await settle(() => !h.state.running && h.state.r && !h.state.r.findings.some((x) => x.check === 'survey-dogleg'));
+    out.dogAfter = h.state.r.findings.filter((x) => x.check === 'survey-dogleg').length;
+    out.nAfter = h.state.r.findings.length;
+    out.sub = h.el.querySelector('.fwin-head .sub').textContent;
+    return out;
+  });
+  chk(`dh QA: the set's two interval tables (${r.members}); ${r.n} findings over ${r.checks} checks, ${r.rows} rows drawn`, r.members === 'assay.csv,litho.csv' && r.rows === r.n && r.checks >= 6);
+  chk(`dh QA: each at its row — blank X ${r.blank} · orphan ${r.orphan} · dogleg ${r.dogleg} · gap ${r.gap} · overlap ${r.overlap} · typo ${r.text}`,
+    r.blank === 'collar:2:H2' && r.orphan === 'survey:5:ZZ' && r.dogleg === 'survey:3:H3' && r.gap === 'assay.csv:2:H1' && r.overlap === 'litho.csv:2:H1' && r.text === 'assay.csv:2:H1');
+  chk(`dh QA: a check narrows the table (${r.narrow}); a finding goes to its hole (camera moved ${r.moved && r.moved.toFixed(1)}) and selects it in both tables (${r.selA} + ${r.selB})`,
+    r.narrow === 1 && r.moved > 1 && r.selA === 2 && r.selB === 1);
+  chk(`dh QA: the dogleg limit re-runs it (45°/30 → ${r.dogAfter} doglegs, ${r.nAfter} findings) · “${r.sub}”`, r.dogAfter === 0 && r.nAfter === r.n - 1 && /3 holes|2 holes/.test(r.sub));
+  const [dl] = await Promise.all([pq.waitForEvent('download'), pq.evaluate(() => [...document.querySelectorAll('.qa-foot button')].find((b) => b.textContent === 'export TSV').click())]);
+  const tsv = await (async () => { const s = await dl.createReadStream(); const parts = []; for await (const c of s) parts.push(c); return Buffer.concat(parts).toString('utf8'); })();
+  const tl = tsv.trim().split('\n'), data = tl.filter((l) => !l.startsWith('#'));
+  chk(`dh QA: the TSV has every finding (${data.length - 1}) after a header saying what ran (${tl.filter((l) => l.startsWith('#')).length} lines: files, limits)`,
+    data.length - 1 === r.nAfter && /collars\.csv .* survey\.csv .* assay\.csv .* litho\.csv/.test(tl[1]) && /dogleg 45/.test(tl[2]) && data[0] === 'severity\tcheck\ttable\trow\thole\tfrom\tto\tdetail');
+  await pq.close();
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
