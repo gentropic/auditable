@@ -1037,7 +1037,8 @@ import { openGradeTonnage, _gtWins, setGtHooks } from './src/gt.js';
 import { openSwath, _swathWins, projRange, applySwathZebra, AXIS_NAMES, setSwathHooks } from './src/swath.js';
 import { openStats, _statsWins, setStatsHooks } from './src/stats.js';
 import { openCrosstab, _xtabWins, setXtabHooks, parseCutoffs } from './src/xtab.js';
-import { openXyPlot, _xyWins } from './src/xyplot.js';   // scatter (density at any size) + Q-Q (two sides, any layers)   // the resource cross-tab (group × grade bins)
+import { openXyPlot, _xyWins } from './src/xyplot.js';
+import { openOmfBlob, omfCensus, setOmfHooks } from './src/omf.js';   // Open Mining Format v1 → a layer per element   // scatter (density at any size) + Q-Q (two sides, any layers)   // the resource cross-tab (group × grade bins)
 import { openValidation } from './src/validation.js';
 import { recipeSlug, routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems, openRoutineWindow, openInputsDialog, setRecipesHooks } from './src/recipes.js';
 import { meshSolidOf, solidOrientedMesh, _windingGpu, setWindingGpu, sbCancelActive, targetsXYBbox, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
@@ -2396,6 +2397,7 @@ setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintColorOptions,
 // src/stats.js reaches back into the app through these
 setStatsHooks({ menuXY, saveRecipe });
 setXtabHooks({ markProjectDirty });
+setOmfHooks({ addLayer, closeAllLayers, layerById, mkLineage, openLineage, renderLayers });
 // the QA window's view of the app: the set's members, the camera, the selection
 setDhQaHooks({
   members: (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace),
@@ -4339,6 +4341,14 @@ setLineageHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; } });
 
 async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
   if (isBackupName(name)) { await openPackFile(blob); return null; }   // a project pack opens as the project (or unpacks), not as a layer
+  // an OMF project is many layers (one per element), each through the host door
+  if (/\.omf$/i.test(name)) {
+    try {
+      const r = await openOmfBlob(blob, name, mode);
+      $('#meta').textContent = `${name} — ${r.layers.length} layer${r.layers.length === 1 ? '' : 's'}${r.notes.length ? ' · ' + r.notes.join(' · ') : ''}`;
+      return r.layers.length ? r.layers[0] : null;
+    } catch (e) { $('#meta').textContent = `${name} — ${e.message}`; if (over.throw) throw e; return null; }
+  }
   if (mode !== 'add') closeAllLayers();
   // interpretation: honor an explicit asKind override ('points' | 'blocks' |
   // 'mesh'), else sniff by extension/content. grid-from-table isn't a provider
@@ -4379,7 +4389,7 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
     else if (/\.(csv|txt|dat|tsv|asc|xyz|pts)$/i.test(name)) { await openBlocksBlob(blob, name, { layer: lid, first, forcePoints, mapping: over.mapping, discovered: over.discovered, lattice: over.lattice, acceptLattice: over.acceptLattice, dimCols: over.dimCols }); }
     else if (/\.ply$/i.test(name)) { await openPlyBlob(blob, name, { layer: lid, first }); }
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
-    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .tif .grd .asc`);
+    else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc`);
     else {
       const { header, streamChunks } = await openLas(blob);
       registerDocs(lid, 'points', { lasDoc: { blob, header } });
@@ -5423,7 +5433,13 @@ async function describeFile(f) {
   }
   const d = { file: f, name, load: true, kind: 'unknown', desc: '', columns: null, mapping: null, forcePoints: /\.(xyz|pts)$/i.test(name), dhRole: null };
   try {
-    if (/\.las$/i.test(name)) {
+    if (/\.omf$/i.test(name)) {
+      d.kind = 'omf';
+      try {
+        const els = await omfCensus(f);
+        d.desc = `OMF project · ${els.length} element${els.length === 1 ? '' : 's'}: ` + els.map((e) => `${e.name} (${e.kind}${e.size ? ' ' + e.size : ''})`).join(', ') + ' → a layer each';
+      } catch (e2) { d.desc = `OMF — ${e2.message}`; }
+    } else if (/\.las$/i.test(name)) {
       const h = parseLasHeader(new DataView(await f.slice(0, 1024).arrayBuffer()));
       d.kind = 'las'; d.desc = `LAS ${h.version} fmt ${h.format} · ${Number(h.count).toLocaleString()} points`;
     } else if (isWfrName(name)) {

@@ -4439,6 +4439,70 @@ await p.close();
     r.qqN[0] === 30000 && r.qqN[1] === r.oxN && r.qqErr < 0.01 && r.dh.n > 0 && r.dh.mono && r.tsv === 102);
 }
 
+// ── §70: OMF v1 (src/omf.js). A project with a ROTATED block model (scalar +
+//     mapped data), a point set, a triangulated surface and a line set, under a
+//     project origin: a layer per element in one group; the block model's lattice
+//     declared and rotated, every record at its expected centroid (W fastest, as
+//     the format orders cells) with its own value and category; the line set
+//     named as not read. ──
+{
+  const po = await mkPage('sm2omf');
+  const r = await po.evaluate(async () => {
+    const M = window._micro, out = {};
+    const { writeOMF } = await import('/ext/omf1/index.js');
+    const th = Math.PI / 6, au = [Math.cos(th), Math.sin(th), 0], av = [-Math.sin(th), Math.cos(th), 0], aw = [0, 0, 1];
+    const nu = 4, nv = 3, nw = 2, du = 10, dv = 8, dw = 5, N = nu * nv * nw, org = [100, 50, 0], P0 = [500000, 7000000, 300];
+    const AU = Float64Array.from({ length: N }, (_, k) => k * 0.5 + 0.1), IDX = BigInt64Array.from({ length: N }, (_, k) => BigInt(k % 3));
+    const project = { type: 'Project', name: 'mine', description: '', origin: P0, date_created: '2026-11-01T00:00:00Z', date_modified: '2026-11-01T00:00:00Z', elements: [
+      { type: 'VolumeElement', name: 'bm', description: '', color: null,
+        geometry: { type: 'VolumeGridGeometry', origin: org, axis_u: au, axis_v: av, axis_w: aw, tensor_u: new Float64Array(nu).fill(du), tensor_v: new Float64Array(nv).fill(dv), tensor_w: new Float64Array(nw).fill(dw) },
+        data: [{ type: 'ScalarData', name: 'AU', description: '', location: 'cells', colormap: null, array: AU },
+               { type: 'MappedData', name: 'ROCK', description: '', location: 'cells', indices: IDX, legends: [{ type: 'Legend', name: 'code', values: new Float64Array([11, 22, 33]) }] }] },
+      { type: 'PointSetElement', name: 'collars', description: '', color: null,
+        geometry: { type: 'PointSetGeometry', vertices: new Float64Array([0, 0, 0, 10, 0, 0, 0, 10, 0, 10, 10, 5]) },
+        data: [{ type: 'ScalarData', name: 'DEPTH', description: '', location: 'vertices', colormap: null, array: new Float64Array([100, 120, 90, 150]) }] },
+      { type: 'SurfaceElement', name: 'topo', description: '', color: null, textures: [],
+        geometry: { type: 'SurfaceGeometry', vertices: new Float64Array([0, 0, 0, 50, 0, 0, 0, 50, 0, 50, 50, 2]), triangles: new BigInt64Array([0n, 1n, 2n, 1n, 3n, 2n]) }, data: [] },
+      { type: 'LineSetElement', name: 'faults', description: '', color: null,
+        geometry: { type: 'LineSetGeometry', vertices: new Float64Array([0, 0, 0, 1, 1, 1]), segments: new BigInt64Array([0n, 1n]) }, data: [] },
+    ] };
+    const bytes = await writeOMF(project);
+    const first = await M.openBlob(new File([bytes], 'mine.omf'), 'mine.omf', 'replace');
+    out.meta = document.querySelector('#meta').textContent;
+    const Ls = M.layers();
+    out.layers = Ls.map((L) => `${L.label || L.name}:${L.kind}`).join(' | ');
+    const grp = M.layerTree().find((n) => n && n.group && n.name === 'mine');
+    out.grouped = !!grp && grp.children.length === 3;
+    const B = Ls.find((L) => (L.label || L.name) === 'bm');
+    const h = B.docs.blockDoc.header;
+    out.rot = !!(h.grid && h.grid.rot); out.counts = h.grid && [h.grid.x.count, h.grid.y.count, h.grid.z.count].join('×'); out.n = h.count;
+    out.declared = h.lattice && h.lattice.basis;
+    out.lineage = B.lineage && B.lineage.op;
+    // every record: its centroid and values (W fastest, then V, then U)
+    let bad = 0, worst = 0;
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) for (let l = 0; l < nw; l++) {
+      const k = (i * nv + j) * nw + l, cu = (i + 0.5) * du, cv = (j + 0.5) * dv, cw = (l + 0.5) * dw;
+      const want = [0, 1, 2].map((a) => P0[a] + org[a] + au[a] * cu + av[a] * cv + aw[a] * cw);
+      const row = await M.fetchLayerRow(B, k), cols = h.columns, at = (c) => row[cols.indexOf(c)];
+      const d = Math.max(...[0, 1, 2].map((a) => Math.abs(+at('XYZ'[a]) - want[a])));
+      worst = Math.max(worst, d);
+      if (d > 1e-6 || Math.abs(+at('AU') - AU[k]) > 1e-12 || String(at('ROCK')) !== String([11, 22, 33][k % 3])) bad++;
+    }
+    out.bad = bad; out.worst = worst;
+    const C = Ls.find((L) => (L.label || L.name) === 'collars');
+    out.pts = C && C.docs.blockDoc && C.docs.blockDoc.header.count;
+    const row0 = C && await M.fetchLayerRow(C, 3); out.pt3 = row0 && row0.slice(0, 4).map(Number).join(',');
+    const T = Ls.find((L) => (L.label || L.name) === 'topo');
+    out.mesh = T && T.kind;
+    out.first = first === Ls[0].id;
+    return out;
+  });
+  await po.close();
+  chk(`omf: a layer per element (${r.layers}) grouped under the file (${r.grouped}); the line set named · “${r.meta}”`, r.grouped && /bm:/.test(r.layers) && /collars:/.test(r.layers) && /topo:mesh/.test(r.layers) && /faults: lines — not read yet/.test(r.meta) && r.first);
+  chk(`omf: the block model's lattice declared (${r.declared}) and rotated (${r.rot}), ${r.counts}, ${r.n} blocks; lineage “${r.lineage}”`, r.declared === 'declared' && r.rot && r.counts === '4×3×2' && r.n === 24 && r.lineage === 'omf');
+  chk(`omf: every block at its centroid with its own AU and ROCK (W fastest; ${r.bad} wrong, worst ${r.worst.toExponential(1)} m off) · points ${r.pts} (#3 ${r.pt3})`, r.bad === 0 && r.pts === 4 && r.pt3 === '500010,7000010,305,150');
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
