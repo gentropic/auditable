@@ -83,10 +83,13 @@ export async function openDhQa(nd) {
   foot.append(note, expB);
   main.append(tabs, bar, list, foot);
 
+  // errors first, then warnings, then notes — what to fix leads; table order within each
+  const RANK = { error: 0, warn: 1, info: 2 };
   const shown = () => {
     if (!st.r) return [];
     const h = st.hole.toLowerCase();
-    return st.r.findings.filter((f) => (!st.check || f.check === st.check) && (!st.table || f.table === st.table) && (!h || String(f.bhid).toLowerCase().includes(h)));
+    return st.r.findings.filter((f) => (!st.check || f.check === st.check) && (!st.table || f.table === st.table) && (!h || String(f.bhid).toLowerCase().includes(h)))
+      .map((f, i) => [f, i]).sort((a, b) => RANK[a[0].severity] - RANK[b[0].severity] || a[1] - b[1]).map((x) => x[0]);
   };
   const fmtD = (v) => (v == null || !Number.isFinite(v) ? '' : String(Math.round(v * 1000) / 1000));
   const cell = (tr, text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; tr.append(td); return td; };

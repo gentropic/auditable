@@ -124,8 +124,9 @@ const openModel = (csv, name, mode = 'replace') => p.evaluate(([c, n, m]) => win
 // 0a ── the demo project scene (the guided tour's opening view)
 await p.evaluate(() => window._micro.openDemoProject());
 await p.waitForFunction(() => window._micro.layers().length >= 6 && window._micro.layers().some((L) => L.dh && L.docs.dhDoc), null, { timeout: 90000 });
-await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].pop(); if (w) w.querySelector('.fwin-head button:last-child').click(); });
+await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].pop(); if (w) { w.style.width = '470px'; w.style.height = '330px'; w.style.left = (innerWidth - 484) + 'px'; w.style.top = '64px'; if (w._onResized) w._onResized(); } });   // the tour's grade-tonnage window, clear of the ore ring
 await shot('demoscene', { wait: 2600 });
+await p.evaluate(() => window._micro.closeAllWindows());   // the demo's grade-tonnage window stays out of the next shots
 
 // 0b ── the hole filter: a collars predicate thins the set (sticks + intervals)
 await p.evaluate(async () => {
@@ -168,7 +169,7 @@ await p.evaluate(async () => {
   window._micro.toggleFilterDrawer(true);
 });
 await shot('filterdrawer', { wait: 1200 });
-await p.evaluate(async () => { window._micro.toggleFilterDrawer(false); await window._micro.applyBlockFilter(''); });
+await p.evaluate(async () => { window._micro.toggleFilterDrawer(false); document.querySelector('#filter').value = ''; await window._micro.applyBlockFilter(''); });
 
 // 1c ── the ƒ Calculations window: an if() ladder as a case table
 await p.evaluate(() => {
@@ -189,6 +190,7 @@ await p.evaluate(() => window._micro.openGradeTonnage(window._micro.layers()[0])
 await p.evaluate(() => {
   const w = [...document.querySelectorAll('.fwin')].find((e) => /grade-tonnage/.test(e.querySelector('.t').textContent));
   const pu = w.querySelector('.sw-unit-plot'); pu.value = 'pct'; pu.dispatchEvent(new Event('change'));
+  const de = w.querySelector('.sw-ser input.sw-in'); de.value = '2.8'; de.dispatchEvent(new Event('change'));
   w.querySelector('.sw-run').click();
 });
 await p.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => /grade-tonnage/.test(e.querySelector('.t').textContent)); return w && w._gtSpec && w._gtSpec.series.length; }, { timeout: 30000 });
@@ -254,6 +256,7 @@ await p.waitForFunction(() => window._micro.layers().some((L) => L.dh), { timeou
 // 7b ── the drillhole SET in the layers panel: group + collar/survey rows
 await shot('dhset', { el: '#layersPanel', wait: 800, blankOk: true });
 await p.evaluate(() => { const A = window._micro.layers().find((L) => L.name === 'model_A.csv'); window._micro.setActiveLayer(A.id); window._micro.openValidation(A); });
+await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].pop(); if (w) { w.style.left = '360px'; w.style.top = '90px'; } });
 await shot('validation', { wait: 2200 });
 
 // 8 ── lineage inspector
@@ -350,6 +353,149 @@ await p.evaluate(() => {
 });
 await shot('routinetracker', { el: '.fwin[data-routine-run]', wait: 700 });
 await p.evaluate(() => { document.querySelectorAll('.fwin').forEach((w) => w.remove()); });
+
+// ── the shots added with the 2026-11 manual overhaul ─────────────────────────
+const winOf = (re) => p.evaluate((src) => { const w = [...document.querySelectorAll('.fwin')].find((e) => new RegExp(src).test(e.querySelector('.t').textContent)); return !!w; }, re.source);
+const placeWin = (re, x, y, w, h) => p.evaluate(([src, x2, y2, w2, h2]) => {
+  const el = [...document.querySelectorAll('.fwin')].find((e) => new RegExp(src).test(e.querySelector('.t').textContent));
+  if (!el) return;
+  el.style.left = x2 + 'px'; el.style.top = y2 + 'px'; if (w2) el.style.width = w2 + 'px'; if (h2) el.style.height = h2 + 'px';
+  if (el._onResized) el._onResized();
+}, [re.source, x, y, w, h]);
+const showOnly = (names) => p.evaluate((ns) => {
+  const m = window._micro;
+  for (const L of m.layers()) { const on = ns.some((n) => (L.label || L.name) === n || L.name === n || (n === 'dh' && L.dh)); L.visible = on; m.renderer.setLayerVisible(L.id, on); }
+  m.applyTreeVisibility(); m.requestRender();
+}, names);
+
+// 13 ── the open dialog: a model and a drillhole trio, each file's role detected
+await p.evaluate(([a, c, s, as]) => window._micro.openFilesDialog([new File([a], 'model_A.csv'), new File([c], 'collars.csv'), new File([s], 'survey.csv'), new File([as], 'assay.csv')]), [D.A, D.collar, D.survey, D.assay]);
+await p.waitForFunction(() => document.querySelector('#ofDlg.show') && document.querySelectorAll('#ofDlgBody select').length >= 3, null, { timeout: 15000 });
+await shot('opendialog', { wait: 900, blankOk: true });
+await p.evaluate(() => document.querySelector('#ofCancel').click());
+
+// 14 ── the attribute table, a row picked in both
+await showOnly(['model_A.csv']);
+await p.evaluate(async () => {
+  const m = window._micro, A = m.layers().find((L) => L.name === 'model_A.csv');
+  m.setActiveLayer(A.id); m.cam.fit(m.docBbox()); m.openAttrTable(A);
+  await m.pick({ layer: A.id, rec: 6650 });
+});
+await placeWin(/model_A/, 640, 90, 600, 420);
+await shot('attrtable', { wait: 1600 });
+await p.evaluate(() => { window._micro.closeAllWindows(); window._micro.clearPick && window._micro.clearPick(); });
+
+// 15 ── the resource cross-tab: LITO × FE bins, tonnes at 2.8 t/m³
+await p.evaluate(async () => {
+  const m = window._micro, A = m.layers().find((L) => L.name === 'model_A.csv');
+  const h = m.openCrosstab(A, { cfg: { group: 'LITO', grade: 'FE', weight: '2.8', cutoffs: '35 45 55', densUnit: 't/m3', gradeUnit: 'pct', measure: 'tonnage', mode: 'bins' } });
+  await h.run();
+});
+await placeWin(/cross-tab/, 380, 100, 860, 470);
+await shot('xtab', { wait: 1200 });
+await p.evaluate(() => window._micro.closeAllWindows());
+
+// 16 ── scatter: two correlated grades over 30,000 blocks → a density
+{
+  const r = rng(5); let s = 'X,Y,Z,AU,CU\n';
+  for (let i = 0; i < 30000; i++) {
+    const au = Math.exp(r() * 3.2 - 2.2), cu = 0.05 + 0.18 * au * (0.6 + r() * 0.8) + r() * 0.04;
+    s += `${5 + (i % 50) * 10},${5 + ((i / 50 | 0) % 30) * 10},${5 + (i / 1500 | 0) * 10},${au.toFixed(4)},${cu.toFixed(4)}\n`;
+  }
+  await openModel(s, 'polymetal.csv', 'add');
+  await layerReady('polymetal.csv');
+}
+await showOnly(['polymetal.csv']);
+await p.evaluate(async () => {
+  const m = window._micro, P = m.layers().find((L) => L.name === 'polymetal.csv');
+  m.setActiveLayer(P.id); m.cam.fit(m.docBbox());
+  const h = m.openXyPlot(P);
+  Object.assign(h.st, { x: 'AU', y: 'CU', logX: true, logY: true });
+  h.win.el.querySelectorAll('.sw-seg')[0].children[0].click();
+  await h.run();
+});
+await placeWin(/scatter/, 420, 90, 820, 520);
+await shot('scatter', { wait: 1200 });
+
+// 17 ── Q-Q: the model against the drillholes, both FE
+await showOnly(['model_A.csv', 'dh']);
+await p.evaluate(async () => {
+  const m = window._micro, P = m.layers().find((L) => L.name === 'polymetal.csv'), A = m.layers().find((L) => L.name === 'model_A.csv'), D2 = m.layers().find((L) => L.dh);
+  const h = m.xyWins.get(P.id);
+  h.win.el.querySelectorAll('.sw-seg')[0].children[1].click();
+  Object.assign(h.st.a, { layerId: A.id, col: 'FE', filter: '', scope: 'all' });
+  Object.assign(h.st.b, { layerId: D2.id, col: 'FE', filter: '', scope: 'all' });
+  h.win.el.querySelectorAll('.sw-seg')[0].children[1].click();   // rebuild the rail on the new sides
+  await h.run();
+  m.setActiveLayer(A.id); m.cam.fit(m.docBbox());
+});
+await placeWin(/scatter/, 420, 90, 820, 520);
+await shot('qq', { wait: 1200 });
+await p.evaluate(() => window._micro.closeAllWindows());
+
+// 18 ── the drillhole QA report on a set with planted problems
+await p.evaluate(async ([c, s, a]) => {
+  const m = window._micro;
+  const cl = c.split('\n'); cl[3] = cl[3].replace(/,(\d+),/, ',,');               // a blank X
+  cl.push(cl[5]);                                                                  // a duplicate collar
+  const sv = s.split('\n'); sv.push('DH099,0,0,-90');                             // an orphan survey
+  sv.splice(4, 0, sv[4].replace(/,0,-90$/, ',0,-60').replace(/,0,0,/, ',40,0,'));  // a dogleg station
+  const as = a.split('\n'); as.splice(6, 0, as[6].replace(/,(\d+),(\d+),/, (x, f, t) => `,${+f + 2},${+t + 2},`));   // an overlap
+  as.splice(20, 1);                                                                // a gap
+  as.splice(30, 0, as[30].replace(/,([\d.]+)$/, ',4.2O'));                        // a typo in a grade
+  const id = await m.importDrillholes({ collar: new File([cl.join('\n')], 'qa_collars.csv'), survey: new File([sv.join('\n')], 'qa_survey.csv'), intervals: new File([as.join('\n')], 'qa_assay.csv') }, {}, 'add');
+  const L = m.layers().find((q) => q.id === id);
+  await m.openDhQa(m.dhSetGroupOf(L.id));
+}, [D.collar, D.survey, D.assay]);
+await showOnly(['dh']);
+await p.evaluate(() => { const m = window._micro; m.cam.fit(m.docBbox()); });
+await placeWin(/drillhole QA/, 360, 80, 900, 520);
+await shot('dhqa', { wait: 1400 });
+await p.evaluate(() => window._micro.closeAllWindows());
+
+// 19 ── mesh QA: an ore shell with a hole in it
+await p.evaluate(async () => {
+  const m = window._micro, V = [], T = [], nu = 28, nv = 14, c = [220, 160, 45], r = [120, 80, 30];
+  for (let j = 0; j <= nv; j++) for (let i = 0; i < nu; i++) {
+    const th = (i / nu) * 2 * Math.PI, ph = (j / nv) * Math.PI;
+    V.push(c[0] + r[0] * Math.sin(ph) * Math.cos(th), c[1] + r[1] * Math.sin(ph) * Math.sin(th), c[2] + r[2] * Math.cos(ph));
+  }
+  const at = (i, j) => j * nu + (i % nu);
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+    if (j === 6 && (i === 3 || i === 4)) continue;                                  // the hole
+    T.push(at(i, j), at(i, j + 1), at(i + 1, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+  }
+  const id = await m.addLayer({ kind: 'mesh', name: 'ore shell', vertices: Float64Array.from(V), triangles: Uint32Array.from(T), tint: '#c8722e' });
+  const L = m.layers().find((q) => q.id === id);
+  const h = await m.openMeshQa(L);
+  h.win.el.querySelector('.mq-tbl tr:nth-child(2)').click();
+});
+await showOnly(['ore shell']);
+await placeWin(/mesh QA/, 560, 90, 680, 440);
+await shot('meshqa', { wait: 1400 });
+await p.evaluate(() => window._micro.closeAllWindows());
+
+// 20 ── the phone review layout: grade–tonnage as a sheet over the model
+{
+  const ph = await b.newContext({ viewport: { width: 412, height: 860 }, deviceScaleFactor: 2.5, hasTouch: true, isMobile: true });
+  const q = await ph.newPage();
+  await q.goto(`http://127.0.0.1:${PORT}/tools/micro/index.html?mobile=1`, { waitUntil: 'load' });
+  await q.waitForFunction(() => window._micro, null, { timeout: 15000 });
+  await q.evaluate((a) => window._micro.openBlob(new Blob([a]), 'model_A.csv', 'replace'), D.A);
+  await q.waitForFunction(() => { const L = window._micro.layers()[0]; return L && window._micro.renderer.layerElementCount(L.id) > 0; }, null, { timeout: 60000 });
+  await q.evaluate(() => {
+    const cb = document.querySelector('#colorBy'); const o = [...cb.options].find((x) => /FE/.test(x.textContent) && x.value.startsWith('chan:')); if (o) { cb.value = o.value; cb.dispatchEvent(new Event('change')); }
+    window._micro.openGradeTonnage(window._micro.layers()[0]);
+    const w = [...document.querySelectorAll('.fwin')].pop();
+    const de = w.querySelector('.sw-ser input.sw-in'); de.value = '2.8'; de.dispatchEvent(new Event('change'));   // tonnes, not volume
+    w.querySelector('.sw-run').click();
+  });
+  await q.waitForTimeout(2500);
+  await q.evaluate(() => new Promise((res) => { window._micro.requestRender(); requestAnimationFrame(() => requestAnimationFrame(res)); }));
+  await q.screenshot({ path: join(OUT, 'mobile.png') });
+  console.log('shot: mobile');
+  await ph.close();
+}
 
 console.log('done →', OUT);
 await b.close(); server.close();
