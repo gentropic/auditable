@@ -6,6 +6,7 @@
 // fraction, no BVH) — and assign-domains, one category column by max-fraction
 // winner. Carved from index.html (phase 3).
 import { Winding, buildBVH, windingBVH } from '../../../ext/winding/index.js';
+import { weldVertices } from '../../../ext/geometry/index.js';
 import { attrRowCountOf, hasRecords, layerTableHeader, meshVertexData } from './records.js';
 import { S } from './state.js';
 import { Peel } from '../../../ext/peel/index.js';
@@ -74,22 +75,8 @@ export async function solidOrientedMesh(meshL) {
   // separate tents (the fixture topo: 144 boundary edges where the sheet has 24).
   // New arrays — the shared parse stays as the file gave it.
   const m = (() => {
-    const V0 = m0.vertices, T0 = m0.triangles;
-    const seen = new Map(), remap = new Int32Array(V0.length / 3), Vw = [];
-    let nv = 0;
-    for (let i = 0; i < V0.length / 3; i++) {
-      const k = `${V0[i * 3]},${V0[i * 3 + 1]},${V0[i * 3 + 2]}`;
-      let j = seen.get(k);
-      if (j == null) { j = nv++; seen.set(k, j); Vw.push(V0[i * 3], V0[i * 3 + 1], V0[i * 3 + 2]); }
-      remap[i] = j;
-    }
-    if (nv === V0.length / 3) return m0;                   // nothing to weld
-    const Tw = [];
-    for (let t = 0; t < T0.length; t += 3) {
-      const a = remap[T0[t]], b = remap[T0[t + 1]], c = remap[T0[t + 2]];
-      if (a !== b && b !== c && a !== c) Tw.push(a, b, c);   // welding can collapse a sliver
-    }
-    return { vertices: Float64Array.from(Vw), triangles: Uint32Array.from(Tw), welded: V0.length / 3 - nv };
+    const w = weldVertices(m0.vertices, m0.triangles);     // @gcu/geometry — the same weld mesh QA runs
+    return w.welded ? w : m0;                              // nothing to weld: the parse as it is
   })();
   // topology: edge → face count; a boundary edge has exactly one face
   const edges = new Map();

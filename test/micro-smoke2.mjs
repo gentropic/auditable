@@ -4503,6 +4503,51 @@ await p.close();
   chk(`omf: every block at its centroid with its own AU and ROCK (W fastest; ${r.bad} wrong, worst ${r.worst.toExponential(1)} m off) · points ${r.pts} (#3 ${r.pt3})`, r.bad === 0 && r.pts === 4 && r.pt3 === '500010,7000010,305,150');
 }
 
+// ── §71: MESH QA (src/meshqa.js → @gcu/geometry meshQa). A closed box far from
+//     the origin: watertight, one shell, its exact volume and the tonnage at a
+//     density; the same box with a triangle missing: not closed, the hole found
+//     and the camera stepping to it; a per-face soup welds into the same solid. ──
+{
+  const pm = await mkPage('sm2meshqa');
+  const r = await pm.evaluate(async () => {
+    const M = window._micro, out = {};
+    const settle = async (ok) => { for (let n = 0; n < 200 && !ok(); n++) await new Promise((q) => setTimeout(q, 30)); };
+    const [x0, y0, z0, x1, y1, z1] = [500000, 7000000, 100, 500010, 7000020, 130];
+    const V = [x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1];
+    const T = [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7];
+    const idA = await M.addLayer({ kind: 'mesh', name: 'box', vertices: Float64Array.from(V), triangles: Uint32Array.from(T) });
+    const A = M.layers().find((q) => q.id === idA);
+    const h = await M.openMeshQa(A);
+    out.a = { ...h.win.el._meshQa, shells: h.win.el._meshQa.shells.length };
+    h.win.el.querySelector('.sw-rail input.sw-in').value = '2.7'; h.win.el.querySelector('.sw-rail input.sw-in').dispatchEvent(new Event('change'));
+    out.tonnes = [...h.win.el.querySelectorAll('.mq-sum .sw-row')].map((d) => d.textContent).find((t) => /^tonnes/.test(t));
+    out.tsv = h.tableTSV().split('\n')[1];
+    // a hole: the first bottom triangle gone
+    const idB = await M.addLayer({ kind: 'mesh', name: 'holed', vertices: Float64Array.from(V), triangles: Uint32Array.from(T.slice(3)) });
+    const B = M.layers().find((q) => q.id === idB);
+    const hb = await M.openMeshQa(B);
+    out.b = { watertight: hb.win.el._meshQa.watertight, volume: hb.win.el._meshQa.volume, boundary: hb.win.el._meshQa.issues.boundary.count };
+    const t0 = M.cam.state.target.slice();
+    hb.win.el.querySelector('.mq-tbl tr:nth-child(2)').click();
+    const o = M.frame.origin, tg = M.cam.state.target.map((v, k) => v + o[k]);
+    out.zoom = { z: tg[2], moved: Math.hypot(...tg.map((v, k) => v - o[k] - t0[k])) };
+    out.subB = hb.win.el.querySelector('.fwin-head .sub').textContent;
+    // a per-face soup (every corner repeated) welds into the same solid
+    const SV = []; for (const i of T) SV.push(V[3 * i], V[3 * i + 1], V[3 * i + 2]);
+    const idC = await M.addLayer({ kind: 'mesh', name: 'soup', vertices: Float64Array.from(SV), triangles: Uint32Array.from(T.map((_, k) => k)) });
+    const hc = await M.openMeshQa(M.layers().find((q) => q.id === idC));
+    out.c = { watertight: hc.win.el._meshQa.watertight, volume: hc.win.el._meshQa.volume, welded: hc.win.el._meshQa.welded };
+    hc.win.el.querySelector('.sw-rail input[type=checkbox]').click();
+    await settle(() => !hc.st.running && hc.win.el._meshQa && hc.win.el._meshQa.welded === 0);
+    out.c2 = { watertight: hc.win.el._meshQa.watertight, shells: hc.win.el._meshQa.shells.length };
+    return out;
+  });
+  await pm.close();
+  chk(`mesh QA: a closed box — watertight ${r.a.watertight}, faces one way ${r.a.consistent}, ${r.a.shells} shell, volume ${r.a.volume} (10×20×30), ${r.tonnes}`, r.a.watertight && r.a.consistent && r.a.shells === 1 && Math.abs(r.a.volume - 6000) < 1e-6 && /16,200/.test(r.tonnes) && /^1\t12\tyes\t6000/.test(r.tsv));
+  chk(`mesh QA: a triangle missing — watertight ${r.b.watertight}, volume ${r.b.volume}, ${r.b.boundary} boundary edges; a click goes to the hole (z ${r.zoom.z.toFixed(1)}, moved ${r.zoom.moved.toFixed(1)}) · “${r.subB}”`, !r.b.watertight && r.b.volume == null && r.b.boundary === 3 && Math.abs(r.zoom.z - 100) < 1e-6 && r.zoom.moved > 1 && /not watertight/.test(r.subB));
+  chk(`mesh QA: a per-face soup welds into the solid (${r.c.welded} welded, watertight ${r.c.watertight}, volume ${r.c.volume}); without the weld: ${r.c2.shells} loose shells`, r.c.welded === 28 && r.c.watertight && Math.abs(r.c.volume - 6000) < 1e-6 && !r.c2.watertight && r.c2.shells === 12);
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

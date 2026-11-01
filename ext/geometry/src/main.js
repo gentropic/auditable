@@ -5,6 +5,7 @@
 //
 //   BVH        build + ray queries — one copy, instead of one per consumer
 //   topology   CSR vertex->vertex and vertex->face adjacency for triangle meshes
+//   mesh QA    weld, watertight / manifold / orientation, shells, area + volume
 //
 // Consumers: @gcu/winding (generalized winding number ON @gcu/geometry), @gcu/clar
 // (structural geology ON @gcu/geometry), micro. @gcu/peel still carries its own BVH;
@@ -17,3 +18,4 @@
 export { buildBVH, NODE_SIZE, triArea2 } from './bvh.js';
 export { raycastBVH } from './ray.js';
 export { buildAdjacency, neighbors, incidentFaces, degree, components } from './topology.js';
+export { weldVertices, meshQa } from './meshqa.js';

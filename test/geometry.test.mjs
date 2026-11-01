@@ -1,8 +1,8 @@
-// @gcu/geometry — BVH + CSR mesh topology.
+// @gcu/geometry — BVH + CSR mesh topology + mesh QA.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildBVH, raycastBVH, buildAdjacency, neighbors, incidentFaces, degree, components,
+  buildBVH, raycastBVH, buildAdjacency, neighbors, incidentFaces, degree, components, meshQa, weldVertices,
 } from '../ext/geometry/src/main.js';
 
 // a unit quad in the z=0 plane, split into two triangles sharing the 1-2 edge
@@ -162,4 +162,60 @@ test('adjacency scales linearly enough to be usable on a real mesh', () => {
   // and the CSR is internally consistent at scale
   assert.equal(a.vvOffsets[a.vertexCount], a.vvNeighbors.length);
   assert.equal(a.vfOffsets[a.vertexCount], a.vfFaces.length);
+});
+
+// ── mesh QA ──────────────────────────────────────────────────────────────────
+
+// an axis-aligned box [x0,x1]×[y0,y1]×[z0,z1], faces wound outward
+function box(x0, y0, z0, x1, y1, z1, { inward = false } = {}) {
+  const V = [x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1];
+  const T = [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7];
+  if (inward) for (let t = 0; t < T.length; t += 3) [T[t + 1], T[t + 2]] = [T[t + 2], T[t + 1]];
+  return { V, T };
+}
+const join = (...ms) => { const V = [], T = []; for (const m of ms) { const o = V.length / 3; V.push(...m.V); T.push(...m.T.map((i) => i + o)); } return { V, T }; };
+
+test('meshQa — a closed box: watertight, consistent, its exact volume and area (far from the origin too)', () => {
+  const b = box(500000, 7000000, 100, 500010, 7000020, 130);
+  const r = meshQa(b.V, b.T);
+  assert.equal(r.watertight, true); assert.equal(r.consistent, true);
+  assert.equal(r.shells.length, 1);
+  assert.ok(Math.abs(r.volume - 6000) < 1e-6, `volume ${r.volume}`);
+  assert.ok(Math.abs(r.area - 2 * (200 + 300 + 600)) < 1e-6, `area ${r.area}`);
+  for (const k of ['boundary', 'nonManifold', 'flipped', 'degenerate', 'duplicate']) assert.equal(r.issues[k].count, 0, k);
+  const inv = meshQa(box(0, 0, 0, 1, 1, 1, { inward: true }).V, box(0, 0, 0, 1, 1, 1, { inward: true }).T);
+  assert.ok(Math.abs(inv.volume + 1) < 1e-12, 'wound inward: the volume says so (negative)');
+});
+
+test('meshQa — a hole, a flipped face, a fin, a sliver and a duplicate are each found where they are', () => {
+  const b = box(0, 0, 0, 2, 2, 2);
+  const hole = meshQa(b.V, b.T.slice(3));                          // the first bottom triangle gone
+  assert.equal(hole.watertight, false); assert.equal(hole.volume, null);
+  assert.equal(hole.issues.boundary.count, 3);
+  assert.ok(hole.issues.boundary.at.every((p) => p[2] === 0), 'the hole is in the bottom face');
+  const T = b.T.slice(); [T[4], T[5]] = [T[5], T[4]];              // one face flipped
+  const fl = meshQa(b.V, T);
+  assert.equal(fl.consistent, false); assert.equal(fl.issues.flipped.count, 3, 'its three edges');
+  const fin = meshQa([...b.V, 1, 1, 5], [...b.T, 0, 1, 8]);        // a third face on the 0-1 edge
+  assert.equal(fin.issues.nonManifold.count, 1); assert.equal(fin.issues.boundary.count, 2);
+  const sl = meshQa([...b.V, 0, 0, 0, 1, 0, 0, 2, 0, 0], [...b.T, 8, 9, 10], { weld: false });
+  assert.equal(sl.issues.degenerate.count, 1, 'three points on a line');
+  const dup = meshQa(b.V, [...b.T, b.T[0], b.T[2], b.T[1]]);
+  assert.equal(dup.issues.duplicate.count, 1, 'the same three corners, either winding');
+});
+
+test('meshQa — a soup welds into one solid; two shells and a void sum by sign', () => {
+  const b = box(0, 0, 0, 1, 1, 1);
+  const V = [], T = [];
+  for (let t = 0; t < b.T.length; t++) { V.push(b.V[3 * b.T[t]], b.V[3 * b.T[t] + 1], b.V[3 * b.T[t] + 2]); T.push(t); }   // every corner repeated per face
+  const raw = meshQa(V, T, { weld: false });
+  assert.equal(raw.shells.length, 12, 'unwelded: twelve loose triangles');
+  const w = meshQa(V, T);
+  assert.equal(w.welded, 36 - 8); assert.equal(w.watertight, true); assert.ok(Math.abs(w.volume - 1) < 1e-12);
+  const two = meshQa(...Object.values(join(box(0, 0, 0, 1, 1, 1), box(5, 0, 0, 7, 1, 1))));
+  assert.equal(two.shells.length, 2); assert.ok(Math.abs(two.volume - 3) < 1e-12);
+  const hollow = meshQa(...Object.values(join(box(0, 0, 0, 4, 4, 4), box(1, 1, 1, 2, 2, 2, { inward: true }))));
+  assert.ok(Math.abs(hollow.volume - (64 - 1)) < 1e-9, `a void wound inward subtracts: ${hollow.volume}`);
+  const wv = weldVertices([0, 0, 0, 0, 0, 0, 1, 0, 0], [0, 1, 2]);
+  assert.equal(wv.collapsed, 1); assert.equal(wv.triangles.length, 0);
 });
