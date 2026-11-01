@@ -22,7 +22,7 @@ export function _sheetExclusive(keep) {
 }
 
 // the handle: drag the head vertically to snap peek / half / tall; past peek closes (or minimizes a window)
-export const _SHEET_H = ['38vh', '60vh', '92vh'];
+export const _SHEET_H = ['38svh', '60svh', '92svh'];   // svh: the viewport WITH the browser's URL bar — vh is the bar-hidden one, so 92vh ran off the top
 
 export function _sheetDrag(el, e, onDismiss) {
   const id = e.pointerId, y0 = e.clientY; let yLast = y0;
@@ -75,7 +75,7 @@ export function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose
   w = Math.min(w, innerWidth - 12); h = Math.min(h, innerHeight - 72);
   x = Math.max(0, Math.min(x, innerWidth - w - 6)); y = Math.max(28, Math.min(y, innerHeight - h - 30));
   const el = document.createElement('div'); el.className = 'fwin'; el.dataset.kind = kind;
-  if (_isMobile()) { el.classList.add('sheet'); el.style.cssText += `z-index:${nextZ()};`; el.style.setProperty('--sheet-h', '60vh'); }
+  if (_isMobile()) { el.classList.add('sheet'); el.style.cssText += `z-index:${nextZ()};`; el.style.setProperty('--sheet-h', '60svh'); }
   else el.style.cssText += `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${nextZ()};`;
   const head = document.createElement('div'); head.className = 'fwin-head';
   const t = document.createElement('span'); t.className = 't'; t.textContent = title;

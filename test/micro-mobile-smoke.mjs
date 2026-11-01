@@ -148,6 +148,60 @@ async function drive(url, tag) {
   await shot('palette');
   await p.evaluate(() => window._micro.closePalette());
 
+  // 6. stacking: what opens over a sheet is really on top of it (hit-tested, not z-compared)
+  const stack = await p.evaluate(async () => {
+    window._micro.openProps();
+    await new Promise((r) => setTimeout(r, 200));
+    const r = document.getElementById('propPanel').getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const out = {};
+    for (const id of ['help', 'pmDlg']) {
+      const el = document.getElementById(id); el.classList.add('show');
+      await new Promise((res) => setTimeout(res, 50));
+      out[id] = el.contains(document.elementFromPoint(x, y));
+      el.classList.remove('show');
+    }
+    return out;
+  });
+  chk(`[${tag}] over a sheet: help on top ${stack.help}, confirm on top ${stack.pmDlg}`, stack.help && stack.pmDlg);
+
+  // 7. the tallest sheet fits with a section on — its handle stays below the top bar
+  const tall = await p.evaluate(async () => {
+    if (!document.body.classList.contains('sec-on')) document.getElementById('btnSection').click();
+    await new Promise((r) => setTimeout(r, 300));
+    const pp = document.getElementById('propPanel'); pp.style.setProperty('--sheet-h', '92svh');
+    await new Promise((r) => setTimeout(r, 100));
+    const top = Math.round(pp.getBoundingClientRect().top);
+    pp.style.removeProperty('--sheet-h');
+    document.getElementById('btnSection').click();
+    return top;
+  });
+  chk(`[${tag}] tall sheet with a section on: top ${tag && tall} stays at or below the top bar (36)`, tall >= 36);
+
+  // 8. pull-to-refresh is off (it reloads the session)
+  const over = await p.evaluate(() => [getComputedStyle(document.documentElement).overscrollBehaviorY, getComputedStyle(document.body).overscrollBehaviorY]);
+  chk(`[${tag}] overscroll-behavior: html ${over[0]}, body ${over[1]}`, over[0] === 'none' && over[1] === 'none');
+
+  // 9. back on the analysis window: a long subtitle can't push the title or × away, and the
+  //    footer leaves the form room
+  const win = await p.evaluate(async () => {
+    window._micro.closeProps && window._micro.closeProps();
+    const chip = document.querySelector('#winStrip .win-chip'); if (chip) chip.click();
+    await new Promise((r) => setTimeout(r, 300));
+    const w = [...document.querySelectorAll('.fwin.sheet')].find((x) => x.style.display !== 'none');
+    if (!w) return null;
+    const head = w.querySelector('.fwin-head'); let sub = head.querySelector('.sub');
+    if (!sub) { sub = document.createElement('span'); sub.className = 'sub'; head.querySelector('.t').after(sub); }
+    sub.textContent = 'a very long subtitle '.repeat(6);
+    await new Promise((r) => setTimeout(r, 50));
+    const t = head.querySelector('.t').getBoundingClientRect();
+    const btns = [...head.querySelectorAll('button')].map((b) => b.getBoundingClientRect());
+    const rail = w.querySelector('.sw-rail').getBoundingClientRect(), foot = w.querySelector('.sw-foot').getBoundingClientRect();
+    return { titleW: Math.round(t.width), right: Math.round(Math.max(...btns.map((b) => b.right))), railH: Math.round(rail.height), footH: Math.round(foot.height) };
+  });
+  chk(`[${tag}] window head: title ${win && win.titleW}px, buttons end at ${win && win.right} (≤ 384); footer ${win && win.footH}px of a ${win && win.railH}px form`,
+    !!win && win.titleW >= 40 && win.right <= 384 && win.footH <= win.railH * 0.6);
+  await shot('window');
+
   chk(`[${tag}] no page errors (${errs.length ? errs.slice(0, 2).join(' ; ') : 'none'})`, errs.length === 0);
   await ctx.close();
 }

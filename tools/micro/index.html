@@ -434,9 +434,11 @@
     display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: grab;
     border-bottom: 1px solid var(--border); color: var(--accent); user-select: none; flex: 0 0 auto;
   }
-  .fwin-head .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fwin-head .sub { color: var(--dim); font-size: 11px; white-space: nowrap; }
-  .fwin-head button { background: none; border: none; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; padding: 0 3px; }
+  /* the title keeps a floor and the subtitle gives way — a long nowrap .sub used to squeeze .t to 0 and push the × off the window */
+  .fwin-head .t { flex: 1 1 auto; min-width: 4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fwin-head .sub { color: var(--dim); font-size: 11px; white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .fwin-head > label { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .fwin-head button { flex: 0 0 auto; background: none; border: none; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; padding: 0 3px; }
   .fwin-head button:hover { color: var(--text-hi); }
   .fwin-head label { color: var(--muted); display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; }
   .fwin-body { flex: 1; position: relative; overflow: hidden; min-height: 0; }
@@ -812,6 +814,10 @@
      body.mobile (set from the media query or ?mobile=1) so it is forceable and the
      same components take a different host layout: one top bar, a bottom tool bar,
      every floating thing a bottom SHEET, one sheet at a time. ── */
+  /* what sits under a sheet: the tool bar (80), plus the section strip (44) while a section is on */
+  body.mobile { --sheet-bottom: 80px; overscroll-behavior: none; }   /* no pull-to-refresh: it reloads the session */
+  body.mobile.sec-on { --sheet-bottom: 124px; }
+  html:has(body.mobile) { overscroll-behavior: none; }
   body.mobile #bar .title, body.mobile #bar .mb, body.mobile #bar .spacer { display: none; }
   body.mobile #btnBurger, body.mobile #bar #btnCmd { display: inline-flex; }   /* outranks the .mb hide */
   body.mobile #bar #filterWrap { flex: 1 1 auto; min-width: 0; }
@@ -850,12 +856,12 @@
   /* sheets: windows + panels anchored to the bottom, one at a time, the head is the handle */
   body.mobile .fwin, body.mobile #layersPanel, body.mobile #propPanel, body.mobile #recPanel {
     position: fixed; left: 0 !important; right: 0; top: auto !important; bottom: 80px; width: auto !important; max-width: none;
-    height: min(var(--sheet-h, 60vh), calc(100vh - 36px - 80px)) !important; z-index: 60;
+    height: min(var(--sheet-h, 60svh), calc(100svh - 36px - var(--sheet-bottom))) !important; z-index: 40;   /* under the shared float counter (41+), so menus, dialogs and the help open ABOVE a panel sheet */
     border-radius: 12px 12px 0 0; border-left: none; border-right: none; border-top: 1px solid var(--bd2);
     box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
   }
   body.mobile.sec-on .fwin, body.mobile.sec-on #layersPanel, body.mobile.sec-on #propPanel, body.mobile.sec-on #recPanel { bottom: 124px; }
-  body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44vh; }
+  body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44svh; }
   body.mobile .fwin-head { cursor: default; padding: 10px 12px 8px; position: relative; min-height: 44px; align-items: center; touch-action: none; }
   body.mobile .fwin-head::before { content: ''; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--bd2); }
   body.mobile .fwin-head button { min-width: 36px; min-height: 36px; font-size: 18px; }
@@ -876,7 +882,15 @@
   body.mobile #palOverlay { align-items: flex-end; }
   body.mobile #palBox { margin: 0 0 80px; width: 100vw; max-width: none; border-radius: 12px 12px 0 0; border-left: none; border-right: none; }
   body.mobile #palInput { font-size: 16px; padding: 14px 16px; }
-  body.mobile #palList { max-height: calc(100vh - 36px - 80px - 60px); }
+  body.mobile #palList { max-height: calc(100svh - 36px - 80px - 60px); }
+  /* the analysis footer on a phone: one wrapping row, not a five-row stack that ate the form */
+  body.mobile .sw-foot { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 9px; }
+  body.mobile .sw-foot .sw-run { flex: 1 1 96px; min-height: 36px; }
+  body.mobile .sw-foot .sw-add { flex: 0 0 auto; min-height: 36px; padding: 4px 8px; }
+  body.mobile .sw-foot .pp-exp { display: flex; flex: 1 1 100%; gap: 4px; }
+  body.mobile .sw-foot .pp-exp .awin-btn { flex: 1 1 0; min-height: 32px; }
+  body.mobile .sw-foot .sw-stale, body.mobile .sw-foot .sw-prog { flex: 1 1 100%; }
+  body.mobile .sw-foot .sw-stale:empty, body.mobile .sw-foot .sw-prog:empty { display: none; }
   body.mobile .pal-item { min-height: 44px; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 14px; }
   body.mobile .pal-item.pal-nl { flex-direction: column; }
   body.mobile .pal-g { min-width: 0; }
@@ -10792,6 +10806,14 @@ addEventListener('keydown', (e) => {                       // Escape: topmost di
   else if (help && help.classList.contains('show')) { help.classList.remove('show'); e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
 $('#help').addEventListener('pointerdown', (e) => { if (e.target === $('#help')) $('#help').classList.remove('show'); });
+// the transient overlays join the same stacking order when they appear — their static
+// z-indexes (9 · 30 · 31 · 50) sat under every float window (41+), so a confirm, the
+// help, the filter drawer or autocomplete could open BEHIND a window or a phone sheet
+for (const _id of ['pmDlg', 'help', 'fdrawer', 'acPopup']) {
+  const el = $('#' + _id); if (!el) continue;
+  new MutationObserver(() => { if (el.classList.contains('show')) el.style.zIndex = nextZ(); })
+    .observe(el, { attributes: true, attributeFilter: ['class'] });
+}
 addEventListener('keydown', (e) => {                       // Ctrl+` cycles the floats — the bottom-most rises
   if (e.key !== '`' || !e.ctrlKey || e.altKey || e.metaKey) return;
   const wins = [...document.querySelectorAll('.fwin')].filter((x) => x.style.display !== 'none');
