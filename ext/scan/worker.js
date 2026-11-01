@@ -634,7 +634,23 @@ function discoverGroup(cd, p, cols, count, res) {
   };
 }
 
+// ── check: the first centroid in one group off a declared lattice ─────────────
+// p = { cols: [x, y, z], grid }; records RAW (start + i) → a misfit message or null
+function checkGroup(cd, p, cols, start, count) {
+  const X = cols[p.cols[0]], Y = cols[p.cols[1]], Z = cols[p.cols[2]], cn = cd.coordNum;
+  let bad = null;
+  for (let i = 0; i < count && !bad; i++) { const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = cd.latticeMisfit(p.grid, xv, yv, zv, start + i); }
+  return bad;
+}
+
 // ── decode: one row group as the chunk builder's typed arrays ─────────────────
+// the code maps a decode job's params name (built once per worker, or per job on the page)
+function decodeCodes(p) {
+  return {
+    cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
+    dim: p.dimKeys ? new Map(p.dimKeys.map((k, i) => [k, i])) : null,
+  };
+}
 // codes = { cat: Map(value → code) | null, dim: Map(dimKey → palette index) | null }.
 // A row without a usable centroid isn't drawn; record numbers stay RAW.
 function decodeGroup(cd, p, cols, start, count, codes) {
@@ -703,10 +719,7 @@ function serve(self, load) {
         if (needCD) CD = await load(libs.condenser);
         if (task === 'stats') { acc = makeColAcc(SL); st = p.cols.map((c) => acc.create(c.num)); }
         if (task === 'scan') { const E = await load(libs.expr); kern = kernels[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs); }
-        if (task === 'decode') codes = {
-          cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
-          dim: p.dimKeys ? new Map(p.dimKeys.map((k, i) => [k, i])) : null,
-        };
+        if (task === 'decode') codes = decodeCodes(p);
         self.postMessage({ type: 'ready' });
       } else if (data.type === 'job') {
         const { id, start, count } = data;
@@ -724,12 +737,8 @@ function serve(self, load) {
           const out = discoverGroup(CD, p, cols, count, data.res || 0);
           self.postMessage({ type: 'result', id, out }, out.res ? [out.res.buffer] : []);
         } else if (task === 'check') {
-          // the first centroid in this group off the declared lattice (records RAW)
           const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
-          const X = cols[p.cols[0]], Y = cols[p.cols[1]], Z = cols[p.cols[2]], cn = CD.coordNum;
-          let bad = null;
-          for (let i = 0; i < count && !bad; i++) { const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = CD.latticeMisfit(p.grid, xv, yv, zv, start + i); }
-          self.postMessage({ type: 'result', id, out: { bad } });
+          self.postMessage({ type: 'result', id, out: { bad: checkGroup(CD, p, cols, start, count) } });
         } else if (task === 'scan') {
           // the needed columns of this unit → the chunk view → the kernel's partial
           let cols = {};

@@ -49,7 +49,23 @@ export function discoverGroup(cd, p, cols, count, res) {
   };
 }
 
+// ── check: the first centroid in one group off a declared lattice ─────────────
+// p = { cols: [x, y, z], grid }; records RAW (start + i) → a misfit message or null
+export function checkGroup(cd, p, cols, start, count) {
+  const X = cols[p.cols[0]], Y = cols[p.cols[1]], Z = cols[p.cols[2]], cn = cd.coordNum;
+  let bad = null;
+  for (let i = 0; i < count && !bad; i++) { const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = cd.latticeMisfit(p.grid, xv, yv, zv, start + i); }
+  return bad;
+}
+
 // ── decode: one row group as the chunk builder's typed arrays ─────────────────
+// the code maps a decode job's params name (built once per worker, or per job on the page)
+export function decodeCodes(p) {
+  return {
+    cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
+    dim: p.dimKeys ? new Map(p.dimKeys.map((k, i) => [k, i])) : null,
+  };
+}
 // codes = { cat: Map(value → code) | null, dim: Map(dimKey → palette index) | null }.
 // A row without a usable centroid isn't drawn; record numbers stay RAW.
 export function decodeGroup(cd, p, cols, start, count, codes) {

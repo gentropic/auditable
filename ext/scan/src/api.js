@@ -15,7 +15,6 @@ import { zoneKeep } from './zones.js';
 import { startPool } from './pool.js';
 import { discoverParquet, checkLattice, decodeParquet, parquetStats } from './parquet-jobs.js';
 import { makeColAcc } from './colacc.js';
-import { discoverGroup, decodeGroup } from './tasks.js';
 
 export function createScan({ deps, urls = {} } = {}) {
   const D = deps || {};
@@ -29,13 +28,11 @@ export function createScan({ deps, urls = {} } = {}) {
     },
     zoneKeep: (zs, opts) => zoneKeep(D, zs, opts),
     startPool: (opts) => startPool(urls, opts),
-    discoverParquet: (opts) => discoverParquet(urls, opts),
-    checkLattice: (opts) => checkLattice(urls, opts),
-    decodeParquet,
+    // these three never resolve null: without workers they run on the page
+    discoverParquet: (opts) => discoverParquet(urls, D, opts),
+    checkLattice: (opts) => checkLattice(urls, D, opts),
+    decodeParquet: (opts) => decodeParquet(urls, D, opts),
     parquetStats: (opts) => parquetStats(urls, D.sluice, opts),
     colAcc: () => makeColAcc(D.sluice),
-    // the tasks, for a page that runs them itself (where workers can't)
-    discoverGroup: (p, cols, count, res) => discoverGroup(D.condenser, p, cols, count, res),
-    decodeGroup: (p, cols, start, count, codes) => decodeGroup(D.condenser, p, cols, start, count, codes),
   };
 }

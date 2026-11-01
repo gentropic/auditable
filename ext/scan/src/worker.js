@@ -11,7 +11,7 @@
 import * as kernels from './kernels.js';
 import * as CV from './chunkview.js';
 import { makeColAcc } from './colacc.js';
-import { discoverGroup, decodeGroup } from './tasks.js';
+import { discoverGroup, decodeGroup, checkGroup, decodeCodes } from './tasks.js';
 
 // every ArrayBuffer under a result, for the transfer list (a scan partial's bins)
 function buffersOf(o, out = []) {
@@ -36,10 +36,7 @@ export function serve(self, load) {
         if (needCD) CD = await load(libs.condenser);
         if (task === 'stats') { acc = makeColAcc(SL); st = p.cols.map((c) => acc.create(c.num)); }
         if (task === 'scan') { const E = await load(libs.expr); kern = kernels[p.kernel + 'Kernel'](E, CV, SL); kctx = kern.init(p.params, p.calcs); }
-        if (task === 'decode') codes = {
-          cat: p.categories ? new Map(p.categories.map((v, i) => [v, i])) : null,
-          dim: p.dimKeys ? new Map(p.dimKeys.map((k, i) => [k, i])) : null,
-        };
+        if (task === 'decode') codes = decodeCodes(p);
         self.postMessage({ type: 'ready' });
       } else if (data.type === 'job') {
         const { id, start, count } = data;
@@ -57,12 +54,8 @@ export function serve(self, load) {
           const out = discoverGroup(CD, p, cols, count, data.res || 0);
           self.postMessage({ type: 'result', id, out }, out.res ? [out.res.buffer] : []);
         } else if (task === 'check') {
-          // the first centroid in this group off the declared lattice (records RAW)
           const cols = await PQ.readParquetRange(file, p.cols, start, start + count, meta);
-          const X = cols[p.cols[0]], Y = cols[p.cols[1]], Z = cols[p.cols[2]], cn = CD.coordNum;
-          let bad = null;
-          for (let i = 0; i < count && !bad; i++) { const xv = cn(X[i]), yv = cn(Y[i]), zv = cn(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = CD.latticeMisfit(p.grid, xv, yv, zv, start + i); }
-          self.postMessage({ type: 'result', id, out: { bad } });
+          self.postMessage({ type: 'result', id, out: { bad: checkGroup(CD, p, cols, start, count) } });
         } else if (task === 'scan') {
           // the needed columns of this unit → the chunk view → the kernel's partial
           let cols = {};

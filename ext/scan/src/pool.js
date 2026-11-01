@@ -9,7 +9,7 @@
 // the page's blob modules; an old browser; a clone failure), startPool resolves
 // null and the caller does the work on the page.
 
-const abortError = () => Object.assign(new Error('cancelled'), { name: 'AbortError' });
+export const abortError = () => Object.assign(new Error('cancelled'), { name: 'AbortError' });
 
 export function defaultPoolSize(units) {
   const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;

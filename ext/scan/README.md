@@ -52,8 +52,7 @@ The caller plans the job:
 `onPart` hands partials over in unit order, with backpressure.
 
 - **Zone skipping:** `scan.zoneKeep(header.zones, { ast, names, bbox, coords, mask })` gives a `keep(z)` for the delimited source. It is sound under every qualifier policy: condenser's zone maps widen for `<x`, `>x` and negative codes.
-- **Parquet open jobs:** `discoverParquet`, `checkLattice`, `decodeParquet`, `parquetStats`.
-- **Running tasks on the page:** `discoverGroup` and `decodeGroup` are exported for a page that runs them itself.
+- **Parquet open jobs:** `discoverParquet`, `checkLattice`, `decodeParquet` (an async generator, groups in order) and `parquetStats`. Without workers the first three run the same per-group task on the page, a group at a time, so they never resolve null; `parquetStats` does resolve null, and the caller's own scan takes over.
 
 ## Build
 

@@ -80,6 +80,38 @@ test('scan: stats over a source equal the accumulator over every value', async (
   assert.ok(Math.abs(momentStd(a) - ref.std * Math.sqrt((N - 1) / N)) < 1e-9);
 });
 
+// the Parquet open's jobs: without workers they run on the page — never null —
+// and give what one sequential pass over the records gives (micro keeps no copy)
+test('scan: Parquet discovery, lattice check and decode run on the page without workers', async () => {
+  const cols4 = ['X', 'Y', 'Z', 'AU'];
+  const withGap = rows.map((r, i) => (i === 1234 ? { ...r, X: null } : r));   // one blank coordinate: not a record of the draw
+  const buf = parquet.writeParquet({ columnData: cols4.map((name) => ({ name, data: withGap.map((r) => r[name]), type: 'DOUBLE' })), rowGroupSize: 700 });
+  const info = parquet.parquetInfo(buf);
+  assert.ok(info.rowGroups.length > 1);
+  const base = { file: new Blob([buf]), meta: info.meta, rowGroups: info.rowGroups };
+  const p = { cols: ['X', 'Y', 'Z'], xN: 'X', yN: 'Y', zN: 'Z', catN: null, dN: null, cap: 100000, dimMax: 256 };
+  let progress = 0;
+  const groups = await scan.discoverParquet({ ...base, p, res: 100, onProgress: (d) => { progress = d; } });
+  assert.equal(groups.length, info.rowGroups.length);
+  assert.equal(progress, N);
+  assert.equal(groups.reduce((a, g) => a + g.valid, 0), N - 1);
+  const axes = [0, 1, 2].map((a) => condenser.inferAxis([...new Set(groups.flatMap((g) => g.ax[a]))].sort((u, v) => u - v)));
+  assert.deepEqual(axes.map((x) => x.count), [20, 25, 10]);
+  assert.equal(groups[0].res.length, 300, 'the reservoir from the leading group');
+  const grid = { x: axes[0], y: axes[1], z: axes[2] };
+  assert.equal((await scan.checkLattice({ ...base, cols: ['X', 'Y', 'Z'], grid })).bad, null, 'every centroid on its lattice');
+  const off = { ...grid, x: { ...grid.x, origin: grid.x.origin + 3 } };
+  assert.match(String((await scan.checkLattice({ ...base, cols: ['X', 'Y', 'Z'], grid: off })).bad), /^record 0 is off the lattice along U/, 'the first record named');
+  const dp = { cols: cols4, xN: 'X', yN: 'Y', zN: 'Z', chanN: 'AU', catN: null, sizeN: null, categories: null, dimKeys: null };
+  const rec = [], chan = [];
+  for await (const g of scan.decodeParquet({ ...base, p: dp })) { rec.push(...g.recIdx); chan.push(...g.chan); }
+  assert.equal(rec.length, N - 1);
+  assert.ok(!rec.includes(1234) && rec[1234] === 1235, 'records stay raw past the blank');
+  assert.equal(chan[1234], rows[1235].AU);
+  const ctl = new AbortController(); ctl.abort();
+  await assert.rejects(scan.discoverParquet({ ...base, p, res: 0, signal: ctl.signal }), { name: 'AbortError' });
+});
+
 test('scan: createScan names a missing dependency; an unknown kernel throws', async () => {
   assert.throws(() => createScan({ deps: { parquet, condenser, expr } }), /deps\.sluice/);
   const S = await sources();

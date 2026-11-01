@@ -950,9 +950,10 @@ async function statsChecks(url, label) {
       const L = m.layers().find((q) => q.id === id);
       await m.scanColumns(L, null, { columns: ['AU'] });
       const au = AU.filter(Number.isFinite), mean = au.reduce((a, v) => a + v, 0) / au.length;
-      return { parquet: !!L.docs.blockDoc.parquet, via: L._lastScan.via, n: L._colStats.AU.n, nulls: L._colStats.AU.nulls, mean: L._colStats.AU.mean, expect: { n: au.length, nulls: N - au.length, mean } };
+      const g = L.docs.blockDoc.header.grid;
+      return { grid: g ? [g.x.count, g.y.count, g.z.count].join('x') : null, parquet: !!L.docs.blockDoc.parquet, via: L._lastScan.via, n: L._colStats.AU.n, nulls: L._colStats.AU.nulls, mean: L._colStats.AU.mean, expect: { n: au.length, nulls: N - au.length, mean } };
     });
-    chk(`stats: from file:// the scan answers anyway (via ${rf.via}, n ${rf.n}/${rf.expect.n}, nulls ${rf.nulls}, mean ${rf.mean && rf.mean.toFixed(6)})`, rf.parquet && rf.n === rf.expect.n && rf.nulls === rf.expect.nulls && near(rf.mean, rf.expect.mean));
+    chk(`file://: the Parquet open discovers its grid on the page (${rf.grid}) and the scan answers anyway (via ${rf.via}, n ${rf.n}/${rf.expect.n}, nulls ${rf.nulls}, mean ${rf.mean && rf.mean.toFixed(6)})`, rf.grid === '20x10x10' && rf.parquet && rf.n === rf.expect.n && rf.nulls === rf.expect.nulls && near(rf.mean, rf.expect.mean));
     await pf.close();
   }
   chk(`stats: .dm band index from the columnar scan — band 0 AU ${JSON.stringify(r.dmBand)}`, r.dmBand && r.dmBand[0] === E.min && r.dmBand[1] === E.max);

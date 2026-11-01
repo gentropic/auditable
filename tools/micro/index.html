@@ -988,7 +988,7 @@ import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSour
 import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
-import { scan, defaultPoolSize, gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/scanner.js';   // the analysis kernels (page + scan workers)
+import { scan, gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/scanner.js';   // the analysis kernels (page + scan workers)
 import { scanColumnar, canScanColumnar, setCsvColumnar, zoneKeeper } from './src/colscan.js';   // columnar, parallel scans of Parquet / .dm / indexed CSV models
 import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk builder off the page (compaction)
 import { buildValueTexture } from './src/valuetex.js';       // colour-by a column the chunks don't carry: a per-record value texture
@@ -5926,82 +5926,37 @@ async function openParquetBlocks(blob, name, opts = {}) {
     // one off it and the declaration is refused, loudly, and the model shows as points
     if (grid && (grid.rot || cachedPq.declared) && !opts.cached) {
       $('#meta').textContent = `${name} — checking the declared lattice…`;
-      // on the worker pool when it can run; else record by record on the page
-      const pooledCheck = await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid });
-      let bad = pooledCheck ? pooledCheck.bad : null, rec = 0;
-      if (!pooledCheck) for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) {
-        const X = cols[xN], Y = cols[yN], Z = cols[zN];
-        for (let i = 0; i < count && !bad; i++, rec++) { const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) bad = latticeMisfit(grid, xv, yv, zv, rec); }
-        if (bad) break;
-      }
+      // on the worker pool when it can run, else on the page (@gcu/scan decides)
+      const { bad } = await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid });
       if (bad) { latticeRejected = bad; grid = null; subBlocked = false; }
     }
     if (grid) latticeInfo = cachedPq.lattice || (cachedPq.declared || grid.rot ? { basis: 'declared', by: cachedPq.declared || 'file' } : null);
   } else {
-  const CAP = 100000, dimKeyOf = makeDimKeyer();
+  const CAP = 100000;
   var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-  const axc = [axisDistinct(CAP), axisDistinct(CAP), axisDistinct(CAP)], ax = axc.map((c) => c.set);
+  const ax = [new Set(), new Set(), new Set()];
   const catSet = catN ? new Set() : null;
   const dN = dimIdx ? [names[dimIdx.x], names[dimIdx.y], names[dimIdx.z]] : null;
   const minDim = [Infinity, Infinity, Infinity], dimSet = new Set();
   const RES = 50000, res = [];                              // reservoir: the first centroids (rotated-lattice inference)
-  let recN = 0, declaredBad = null;
   const discCols = [xN, yN, zN, ...(catN ? [catN] : []), ...(dN || [])];
   $('#meta').textContent = `${name} — discovering grid…`;
-  // on the worker pool when it can run (a declared lattice's check is its own
-  // pool job, below). Each group's summary merges in group order into
-  // the same sets the page sweep fills — caps included — so either path gives
-  // the same grid, categories and reservoir.
-  const pooled = await scan.discoverParquet({
+  // @gcu/scan runs each row group's summary on the worker pool when it can, else
+  // on the page; merged here in group order, caps included, it is what one
+  // sequential sweep gives (the grid, categories and reservoir)
+  const groups = await scan.discoverParquet({
     file: blob, meta: info.meta, rowGroups: info.rowGroups, res: RES,
     p: { cols: discCols, xN, yN, zN, catN, dN, cap: CAP, dimMax: DIM_PALETTE_MAX },
     onProgress: (d) => { $('#meta').textContent = `${name} — discovering grid… ${Math.round(100 * d / N)}%`; },
   });
-  if (pooled) for (const g of pooled) {
+  for (const g of groups) {
     for (let a = 0; a < 3; a++) { if (g.min[a] < min[a]) min[a] = g.min[a]; if (g.max[a] > max[a]) max[a] = g.max[a]; for (const v of g.ax[a]) { if (ax[a].size >= CAP) break; ax[a].add(v); } }
     if (catSet && g.cats) for (const v of g.cats) { if (catSet.size > 256) break; catSet.add(v); }
     if (g.dims) { for (let a = 0; a < 3; a++) if (g.minDim[a] < minDim[a]) minDim[a] = g.minDim[a]; for (const k of g.dims) { if (dimSet.size > DIM_PALETTE_MAX) break; dimSet.add(k); } }
     if (g.res) for (let k = 0; k < g.res.length && res.length < RES * 3; k++) res.push(g.res[k]);
   }
-  else for await (const { count, cols } of streamParquetColumns(blob, discCols, info.rowGroups, info.meta)) {
-    const X = cols[xN], Y = cols[yN], Z = cols[zN], C = catN ? cols[catN] : null;
-    const DX = dN ? cols[dN[0]] : null, DY = dN ? cols[dN[1]] : null, DZ = dN ? cols[dN[2]] : null;
-    for (let i = 0; i < count; i++, recN++) {
-      const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]);
-      if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-      if (xv < min[0]) min[0] = xv; if (xv > max[0]) max[0] = xv;
-      if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
-      if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
-      if (declared) { if (declaredBad === null) declaredBad = latticeMisfit(declared, xv, yv, zv, recN); }
-      else {
-        axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-        if (res.length < RES * 3) res.push(xv, yv, zv);
-      }
-      if (catSet && catSet.size <= 256) { const v = C[i]; if (v != null && v !== '') catSet.add(String(v)); }
-      if (DX) {
-        const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
-        if (dx > 0 && dy > 0 && dz > 0) {
-          if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz;
-          if (dimSet.size <= DIM_PALETTE_MAX) dimSet.add(dimKeyOf(dx, dy, dz));
-        }
-      }
-    }
-    await new Promise((res) => setTimeout(res));
-  }
-  // the declared lattice's record-by-record check ran on the page only if the
-  // pool couldn't take discovery; with the pool, it's a pool job of its own
-  if (declared && pooled) {
-    const c = await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid: declared });
-    if (c) declaredBad = c.bad;
-    else {                                                 // never unchecked: the page does it
-      let rec = 0;
-      for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) {
-        const X = cols[xN], Y = cols[yN], Z = cols[zN];
-        for (let i = 0; i < count && !declaredBad; i++, rec++) { const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) declaredBad = latticeMisfit(declared, xv, yv, zv, rec); }
-        if (declaredBad) break;
-      }
-    }
-  }
+  // a declared lattice is checked against every centroid, as its own job
+  const declaredBad = declared ? (await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid: declared })).bad : null;
   if (declared && declaredBad) throw new Error(`declared lattice rejected — ${declaredBad}`);
   const axes = declared ? null : ax.map((set) => (set.size < CAP ? inferAxis([...set].sort((a, b) => a - b)) : null));
   grid = opts.forcePoints ? null : declared ? { ...declared } : axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;
@@ -6031,34 +5986,10 @@ async function openParquetBlocks(blob, name, opts = {}) {
   const sizeN = subBlocked ? [names[dimCols.x], names[dimCols.y], names[dimCols.z]] : null;
   async function* streamChunks() {
     const cnames = [...new Set([xN, yN, zN, ...(chanN ? [chanN] : []), ...(catN ? [catN] : []), ...(sizeN || [])])];
-    // decode on the worker pool when it can run: the groups come back as the
-    // builder's typed arrays (transferred), in order — the page only builds chunks
-    const pool = await scan.startPool({ file: blob, meta: info.meta, task: 'decode', n: defaultPoolSize(info.rowGroups.length),
+    // each group as the builder's typed arrays, in order — decoded on the worker
+    // pool when it can run, else on the page; here the page only builds chunks
+    yield* scan.decodeParquet({ file: blob, meta: info.meta, rowGroups: info.rowGroups,
       p: { cols: cnames, xN, yN, zN, chanN, catN, sizeN, categories, dimKeys: subBlocked ? dimPalette.map((hd) => dimKey(hd[0] * 2, hd[1] * 2, hd[2] * 2)) : null } });
-    if (pool) { yield* scan.decodeParquet(pool, info.rowGroups); return; }
-    const dimKeyOf = makeDimKeyer();
-    for await (const { start, count, cols } of streamParquetColumns(blob, cnames, info.rowGroups, info.meta)) {
-      const X = cols[xN], Y = cols[yN], Z = cols[zN], CH = chanN ? cols[chanN] : null, CA = catN ? cols[catN] : null;
-      const DX = sizeN ? cols[sizeN[0]] : null, DY = sizeN ? cols[sizeN[1]] : null, DZ = sizeN ? cols[sizeN[2]] : null;
-      const x = new Float64Array(count), y = new Float64Array(count), z = new Float64Array(count), chan = new Float64Array(count);
-      const cat = catCode ? new Uint8Array(count) : null, recIdx = new Uint32Array(count);
-      const dim = dimCode ? new Uint8Array(count) : null;
-      // a row without a usable centroid isn't drawn (it would round to cell 0,0,0);
-      // record numbers stay RAW (recIdx), as for .dm — the pick still joins
-      let m = 0;
-      for (let i = 0; i < count; i++) {
-        const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]);
-        if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
-        x[m] = xv; y[m] = yv; z[m] = zv;
-        chan[m] = CH ? (CH[i] == null ? NaN : +CH[i]) : 0;   // a null grade is missing (NaN, as the CSV stream reads it), not 0
-        if (cat) cat[m] = catCode.get(String(CA[i] ?? '')) ?? 0;
-        if (dim) dim[m] = dimCode.get(dimKeyOf(+DX[i], +DY[i], +DZ[i])) ?? 0;
-        recIdx[m++] = start + i;
-      }
-      const cut = (a) => (a && m < count ? a.subarray(0, m) : a);
-      yield { count: m, x: cut(x), y: cut(y), z: cut(z), chan: cut(chan), cat: cut(cat), dim: cut(dim), recIdx: cut(recIdx), recStart: start };
-      await new Promise((res) => setTimeout(res));
-    }
   }
   // the layer holds NO decoded columns — just the bytes, schema, and row-group
   // table; pick/filter/eval re-read the source, a group at a time (like CSV)
