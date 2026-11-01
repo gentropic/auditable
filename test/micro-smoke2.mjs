@@ -4381,6 +4381,64 @@ await p.close();
   chk(`xtab: the TSV is long form, every measure (${r.tsv.length - 1} rows: ${r.tsv[0]}) · cutoffs parse ${r.cut}`, r.tsv.length - 1 === 4 * 5 && /^ROCK\tAU bin\ttonnage \(t\)\tgrade \(g\/t\)\tmetal \(t\)\tblocks$/.test(r.tsv[0]) && r.cut === '0.5 1 2 / 0.5 1 2 / 1 3');
 }
 
+// ── §69: SCATTER + Q-Q (src/xyplot.js). Scatter: a filtered subset draws every
+//     pair (r = the brute force); the whole 30,000 blocks draw as a density whose
+//     cells add up to n, the row path giving the same grid; log axes count the
+//     zeros off. Q-Q: a column against its own subset — the quantiles the exact
+//     ones within the digest's error — and a drillhole layer as a side. ──
+{
+  const px = await mkPage('sm2xy');
+  const r = await px.evaluate(async () => {
+    const M = window._micro, out = {};
+    let s = 'X,Y,Z,AU,CU,ROCK\n'; const A = [], C = [], R = [];
+    let seed = 7; const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 2 ** 32);
+    for (let i = 0; i < 30000; i++) {
+      const x = 5 + (i % 50) * 10, y = 5 + ((i / 50 | 0) % 30) * 10, z = 5 + (i / 1500 | 0) * 10;
+      const au = i % 97 === 0 ? 0 : +(Math.exp(rnd() * 3 - 1.5)).toFixed(4), cu = +(0.4 * au + rnd() * 0.5).toFixed(4), rk = i % 3 ? 'fr' : 'ox';
+      s += `${x},${y},${z},${au},${cu},${rk}\n`; A.push(au); C.push(cu); R.push(rk);
+    }
+    const id = await M.openBlob(new File([s], 'xy.csv'), 'xy.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    const pearson = (xs, ys) => { const n = xs.length, mx = xs.reduce((a, v) => a + v, 0) / n, my = ys.reduce((a, v) => a + v, 0) / n; let sxy = 0, sxx = 0, syy = 0; for (let i = 0; i < n; i++) { const dx = xs[i] - mx, dy = ys[i] - my; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; } return sxy / Math.sqrt(sxx * syy); };
+    const h = M.openXyPlot(L);
+    // a subset: Z < 15 and ROCK ox → few enough pairs to draw each one
+    Object.assign(h.st, { x: 'AU', y: 'CU', filter: 'Z < 15 and ROCK == "ox"' });
+    await h.run();
+    const keep = A.map((_, i) => i).filter((i) => (5 + ((i / 1500) | 0) * 10) < 15 && R[i] === 'ox');
+    out.small = h.win.el._xy; out.rSmall = pearson(keep.map((i) => A[i]), keep.map((i) => C[i])); out.nSmall = keep.length;
+    // everything: a density
+    h.st.filter = ''; await h.run(); out.big = { ...h.win.el._xy, gridSum: [...h.win.el._xy.grid].reduce((a, v) => a + v, 0), grid: null };
+    out.rBig = pearson(A, C);
+    const g1 = [...h.win.el._xy.grid];
+    M.setCsvColumnar(false); await h.run(); out.samePage = JSON.stringify([...h.win.el._xy.grid]) === JSON.stringify(g1); M.setCsvColumnar(true);
+    // log axes: the zeros are counted off
+    h.st.logX = true; h.st.logY = true; await h.run(); out.log = { n: h.win.el._xy.n, offLog: h.win.el._xy.offLog };
+    out.zeros = A.filter((v) => !(v > 0)).length;
+    out.notes = h.win.el.querySelector('.xy-notes').textContent;
+    // Q-Q: AU (all) against AU where ROCK == "ox"
+    h.win.el.querySelectorAll('.sw-seg')[0].children[1].click();
+    Object.assign(h.st.a, { layerId: L.id, col: 'AU', filter: '' }); Object.assign(h.st.b, { layerId: L.id, col: 'AU', filter: 'ROCK == "ox"' });
+    await h.run();
+    const exact = (vs, p) => { const v = vs.slice().sort((a, b) => a - b); const k = p * (v.length - 1), lo = Math.floor(k); return v[lo] + (v[Math.min(v.length - 1, lo + 1)] - v[lo]) * (k - lo); };
+    const qq = h.win.el._xy, P = [0.1, 0.25, 0.5, 0.75, 0.9], at = (p) => Math.round(p * 100);   // QQ_P[k] = k/100 for k = 1…99
+    out.qqErr = Math.max(...P.map((p) => Math.abs(qq.qa[at(p)] - exact(A, p)) / exact(A, p)), ...P.map((p) => Math.abs(qq.qb[at(p)] - exact(A.filter((_, i) => R[i] === 'ox'), p)) / exact(A.filter((_, i) => R[i] === 'ox'), p)));
+    out.qqN = [qq.na, qq.nb]; out.oxN = R.filter((x) => x === 'ox').length;
+    // a drillhole layer as the y side (the row path; no blockDoc)
+    const did = await M.importDrillholes(M.makeDemoDrillholes(), {}, 'add');
+    const D = M.layers().find((q) => q.id === did), dcol = M.numericColsOf(D)[0];
+    Object.assign(h.st.b, { layerId: D.id, col: dcol, filter: '' }); await h.run();
+    const qd = h.win.el._xy; out.dh = { n: qd && qd.nb, mono: !!qd && qd.qb.every((v, i, a) => i === 0 || v >= a[i - 1]), col: dcol };
+    out.tsv = h.tableTSV().split('\n').length;
+    return out;
+  });
+  await px.close();
+  chk(`xy: a filtered subset draws every pair (${r.small.pts} of ${r.nSmall}, over ${r.small.over}) · r ${r.small.r.toFixed(6)} vs ${r.rSmall.toFixed(6)}`, !r.small.over && r.small.pts === r.nSmall && r.small.n === r.nSmall && Math.abs(r.small.r - r.rSmall) < 1e-9);
+  chk(`xy: 30,000 pairs as a density — cells add to n (${r.big.gridSum} / ${r.big.n}), r ${r.big.r.toFixed(6)} vs ${r.rBig.toFixed(6)}; the row path draws the same grid (${r.samePage})`, r.big.over && r.big.gridSum === 30000 && r.big.n === 30000 && Math.abs(r.big.r - r.rBig) < 1e-9 && r.samePage);
+  chk(`xy: log axes leave the zeros off and say so (${r.log.offLog} of ${r.zeros}; “${r.notes}”)`, r.log.offLog === r.zeros && r.log.n === 30000 - r.zeros && /left off the log axis/.test(r.notes));
+  chk(`xy: Q-Q — a column against its subset (n ${r.qqN.join(' vs ')}), P10…P90 within ${(r.qqErr * 100).toFixed(2)}% of exact; a drillhole side (${r.dh.col}, n ${r.dh.n}, monotone ${r.dh.mono}); TSV ${r.tsv} lines`,
+    r.qqN[0] === 30000 && r.qqN[1] === r.oxN && r.qqErr < 0.01 && r.dh.n > 0 && r.dh.mono && r.tsv === 102);
+}
+
 console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

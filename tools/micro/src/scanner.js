@@ -24,4 +24,5 @@ export {
   defaultPoolSize, groupStarts, makeColAcc, STAT_SLICE, chunkView, compileCalcs, chunkNumbers,
   gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentMerge, momentStd,
   xtabAdd, xtabSlot, xtabKey, crosstabMerge, XTAB_GROUPS_CAP,
+  scatterAccumulator, scatterAdd, scatterMerge, scatterR,
 } from '../../../ext/scan/src/main.js';

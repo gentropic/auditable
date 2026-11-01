@@ -3,7 +3,7 @@
 // filter / the selection — from the pin cache when the columns are resident,
 // columnar on workers otherwise. Carved from index.html (phase 3).
 import { attrRowCountOf, calcOrder, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
-import { compileChunk, compileValue, parse, quoteIdent } from '../../../ext/expr/index.js';
+import { compileBool, compileChunk, compileValue, parse, quoteIdent } from '../../../ext/expr/index.js';
 import { censusChunkCols, ensureStoredValues, expandedDeps, pinGet, pinWindow } from './columns.js';
 import { quantileFromCentroids, tdigest } from '../../../ext/sluice/index.js';
 import { momentAdd, momentStd, statsMerge } from './scanner.js';
@@ -122,11 +122,88 @@ export async function scanStatsPinned(L, st, mask, onProgress, signal) {
     for (let s = 0; s < st.cols.length; s++) {
       const a = A[s]; if (!a.n) continue;
       const td = tdDone(TD, a), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
-      rows.push({ group: g, col: st.cols[s], n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
+      rows.push({ group: g, col: st.cols[s], n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75), centroids: td.centroids, count: td.count });
     }
   }
   window.__statsFast = (window.__statsFast || 0) + 1;      // test observability (smoke2 §37 asserts non-vacuity)
   return { rows, groupBy: st.groupBy, weighted: !!weightChunk, overflow };
+}
+
+// one stats pass over a layer — q = { cols, groupBy, weight, filter }, mask = a
+// record mask or null → { rows: [{ group, col, n, mean, std, min, max, q25, q50,
+// q75, centroids, count }], groupBy, weighted, overflow, where }. The stats window
+// runs it; so does Q-Q (any quantile from a row's digest). Pinned columns first
+// (no filter), columnar on workers where the layer can, the page otherwise.
+export async function statsScan(L, q, mask, onProgress, signal) {
+  const h = layerTableHeader(L), schema = schemaExt(L, h);
+  const colFns = q.cols.map((c) => { try { return { c, fn: compileValue(quoteIdent(c), schema, { decimal: '.' }) }; } catch { return null; } }).filter(Boolean);   // NAMES as expressions → quote
+  if (!colFns.length) throw new Error('no valid columns');
+  let groupFn = null, weightFn = null, filterFn = null;
+  const filterX = (q.filter || '').trim() || null;
+  if (filterX) { try { filterFn = compileBool(filterX, schema, { decimal: '.' }); } catch { throw new Error(`filter "${filterX}": invalid`); } }
+  if (q.groupBy) { try { groupFn = compileValue(q.groupBy, schema, { decimal: '.' }); } catch { throw new Error(`group by "${q.groupBy}": invalid`); } }
+  if (q.weight && q.weight.trim()) { try { weightFn = compileValue(q.weight, schema, { decimal: '.' }); } catch { throw new Error(`weight "${q.weight}": invalid`); } }
+  // materialized inputs must be resident for BOTH paths (evicted → blanks otherwise)
+  await ensureStoredValues(L, new Set([...q.cols, q.groupBy, q.weight].filter(Boolean).map((x) => String(x).toLowerCase())));
+  if (filterX) { let ast = null; try { ast = parse(filterX); } catch { /* compiled above */ } if (ast) await ensureStoredValues(L, new Set(expandedDeps(L, ast))); }
+  // a delimited model's resident columns beat re-parsing its text on the pool
+  const bdS = L.docs.blockDoc, delimS = !!bdS && !bdS.parquet && !bdS.header.dm;
+  const pinnedFirst = delimS && !filterX && canScanColumnar(L) ? await scanStatsPinned(L, q, mask, onProgress, signal) : null;
+  if (pinnedFirst) return pinnedFirst;
+  if (canScanColumnar(L)) {                              // Parquet / .dm / an indexed CSV: columnar + parallel (src/colscan.js)
+    const params = { cols: colFns.map((c) => quoteIdent(c.c)), groupBy: q.groupBy || null, weight: (q.weight || '').trim() || null, filter: filterX };
+    const { parts, where } = await scanColumnar(L, { kernel: 'stats', params, exprs: [...params.cols, params.groupBy, params.weight, params.filter], mask, signal, onProgress, keepZone: zoneKeeper(L, { mask }) });
+    const merged = statsMerge({ tdigest }, parts), TDm = tdigest(), rows = [];
+    for (const g of [...merged.groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
+      const A = merged.groups.get(g);
+      for (let i = 0; i < colFns.length; i++) {
+        const a = A[i]; if (!a.n) continue;
+        const td = TDm.result(a.td), qf = (p2) => quantileFromCentroids(td.centroids, td.count, p2);
+        rows.push({ group: g, col: colFns[i].c, n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: qf(0.25), q50: qf(0.5), q75: qf(0.75), centroids: td.centroids, count: td.count });
+      }
+    }
+    return { rows, groupBy: q.groupBy, weighted: !!weightFn, overflow: merged.overflow, where };
+  }
+  const fast = filterX ? null : await scanStatsPinned(L, q, mask, onProgress, signal);   // pinned columns → the tier-3 window path
+  if (fast) return fast;
+  const TD = tdigest();
+  const mkAcc = () => colFns.map(() => ({ n: 0, sw: 0, mean: 0, m2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
+  const groups = new Map();
+  let overflow = false, total = 0;
+  const N = attrRowCountOf(L) || 0;
+  // layerRecords owns the record number (see scanGT)
+  for await (const { f: row, rec: rr } of layerRecords(L)) {
+    {
+      total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
+      if (mask && !(rr < mask.length && mask[rr])) continue;
+      if (filterFn && !filterFn(row)) continue;
+      let g = '';
+      if (groupFn) { const gv = groupFn(row); g = gv == null || gv === '' ? '—' : String(gv); }
+      let A = groups.get(g);
+      if (!A) { if (groups.size >= 256) { overflow = true; continue; } A = mkAcc(); groups.set(g, A); }
+      const w = weightFn ? (+weightFn(row) || 0) : 1;
+      if (!(w > 0)) continue;
+      for (let i = 0; i < colFns.length; i++) {
+        const x = numOf(colFns[i].fn(row));
+        if (!Number.isFinite(x)) continue;
+        const a = A[i];
+        a.n++; momentAdd(a, x, w);
+        if (x < a.min) a.min = x; if (x > a.max) a.max = x;
+        tdAdd(TD, a, x);
+      }
+    }
+  }
+  if (onProgress) onProgress(total, N);
+  const rows = [];
+  for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
+    const A = groups.get(g);
+    for (let i = 0; i < colFns.length; i++) {
+      const a = A[i]; if (!a.n) continue;
+      const td = tdDone(TD, a), qf = (p) => quantileFromCentroids(td.centroids, td.count, p);
+      rows.push({ group: g, col: colFns[i].c, n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: qf(0.25), q50: qf(0.5), q75: qf(0.75), centroids: td.centroids, count: td.count });
+    }
+  }
+  return { rows, groupBy: q.groupBy, weighted: !!weightFn, overflow };
 }
 
 export function openStats(L, ropts) {
@@ -168,7 +245,7 @@ export function openStats(L, ropts) {
     }
     main.append(tbl);
     win.sub.textContent = `${st.scope !== 'all' ? st.scope + ' · ' : ''}${st.scan.rows.length} row${st.scan.rows.length === 1 ? '' : 's'}${st.scan.weighted ? ' · weighted mean/std (quantiles unweighted)' : ''}${st.scan.overflow ? ' · ⚠ over 256 groups — extra groups dropped' : ''}`;
-    win.el._statsRows = st.scan.rows;
+    win.el._statsRows = st.scan.rows.map(({ centroids, count, ...r }) => r);   // the digests feed Q-Q, not this table
   };
   const tableTSV = () => {
     if (!st.scan) return null;
@@ -177,74 +254,7 @@ export function openStats(L, ropts) {
     for (const r of st.scan.rows) lines.push([...(gb ? [r.group] : []), r.col, r.n, r.mean, r.std, r.min, r.q25, r.q50, r.q75, r.max].join('\t'));
     return lines.join('\n');
   };
-  const scanStats = async (onProgress, signal) => {
-    const h = layerTableHeader(L), schema = schemaExt(L, h);
-    const colFns = st.cols.map((c) => { try { return { c, fn: compileValue(quoteIdent(c), schema, { decimal: '.' }) }; } catch { return null; } }).filter(Boolean);   // NAMES as expressions → quote
-    if (!colFns.length) throw new Error('no valid columns');
-    let groupFn = null, weightFn = null;
-    if (st.groupBy) { try { groupFn = compileValue(st.groupBy, schema, { decimal: '.' }); } catch { throw new Error(`group by "${st.groupBy}": invalid`); } }
-    if (st.weight && st.weight.trim()) { try { weightFn = compileValue(st.weight, schema, { decimal: '.' }); } catch { throw new Error(`weight "${st.weight}": invalid`); } }
-    const mask = scopeMask(st, L);
-    // materialized inputs must be resident for BOTH paths (evicted → blanks otherwise)
-    await ensureStoredValues(L, new Set([...st.cols, st.groupBy, st.weight].filter(Boolean).map((x) => String(x).toLowerCase())));
-    // a delimited model's resident columns beat re-parsing its text on the pool
-    const bdS = L.docs.blockDoc, delimS = !!bdS && !bdS.parquet && !bdS.header.dm;
-    const pinnedFirst = delimS && canScanColumnar(L) ? await scanStatsPinned(L, st, mask, onProgress, signal) : null;
-    if (pinnedFirst) return pinnedFirst;
-    if (canScanColumnar(L)) {                              // Parquet / .dm / an indexed CSV: columnar + parallel (src/colscan.js)
-      const params = { cols: colFns.map((c) => quoteIdent(c.c)), groupBy: st.groupBy || null, weight: (st.weight || '').trim() || null };
-      const { parts, where } = await scanColumnar(L, { kernel: 'stats', params, exprs: [...params.cols, params.groupBy, params.weight], mask, signal, onProgress, keepZone: zoneKeeper(L, { mask }) });
-      const merged = statsMerge({ tdigest }, parts), TDm = tdigest(), rows = [];
-      for (const g of [...merged.groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
-        const A = merged.groups.get(g);
-        for (let i = 0; i < colFns.length; i++) {
-          const a = A[i]; if (!a.n) continue;
-          const td = TDm.result(a.td), q = (p2) => quantileFromCentroids(td.centroids, td.count, p2);
-          rows.push({ group: g, col: colFns[i].c, n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
-        }
-      }
-      return { rows, groupBy: st.groupBy, weighted: !!weightFn, overflow: merged.overflow, where };
-    }
-    const fast = await scanStatsPinned(L, st, mask, onProgress, signal);   // pinned columns → the tier-3 window path
-    if (fast) return fast;
-    const TD = tdigest();
-    const mkAcc = () => colFns.map(() => ({ n: 0, sw: 0, mean: 0, m2: 0, min: Infinity, max: -Infinity, td: TD.create() }));
-    const groups = new Map();
-    let overflow = false, total = 0;
-    const N = attrRowCountOf(L) || 0;
-    // layerRecords owns the record number (see scanGT)
-    for await (const { f: row, rec: rr } of layerRecords(L)) {
-      {
-        total++; if ((total & 0xffff) === 0) { checkAbort(signal); if (onProgress) onProgress(total, N, 'on this page'); await new Promise((r) => setTimeout(r)); }
-        if (mask && !(rr < mask.length && mask[rr])) continue;
-        let g = '';
-        if (groupFn) { const gv = groupFn(row); g = gv == null || gv === '' ? '—' : String(gv); }
-        let A = groups.get(g);
-        if (!A) { if (groups.size >= 256) { overflow = true; continue; } A = mkAcc(); groups.set(g, A); }
-        const w = weightFn ? (+weightFn(row) || 0) : 1;
-        if (!(w > 0)) continue;
-        for (let i = 0; i < colFns.length; i++) {
-          const x = numOf(colFns[i].fn(row));
-          if (!Number.isFinite(x)) continue;
-          const a = A[i];
-          a.n++; momentAdd(a, x, w);
-          if (x < a.min) a.min = x; if (x > a.max) a.max = x;
-          tdAdd(TD, a, x);
-        }
-      }
-    }
-    if (onProgress) onProgress(total, N);
-    const rows = [];
-    for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
-      const A = groups.get(g);
-      for (let i = 0; i < colFns.length; i++) {
-        const a = A[i]; if (!a.n) continue;
-        const td = tdDone(TD, a), q = (p) => quantileFromCentroids(td.centroids, td.count, p);
-        rows.push({ group: g, col: colFns[i].c, n: a.n, mean: a.mean, std: momentStd(a), min: a.min, max: a.max, q25: q(0.25), q50: q(0.5), q75: q(0.75) });
-      }
-    }
-    return { rows, groupBy: st.groupBy, weighted: !!weightFn, overflow };
-  };
+  const scanStats = (onProgress, signal) => statsScan(L, st, scopeMask(st, L), onProgress, signal);
   const run = async () => {
     if (st.running) return;
     if (st.scope !== 'all' && !scopeMask(st, L)) { win.sub.textContent = scopeMissing(st, L) || `no ${st.scope} mask`; return; }

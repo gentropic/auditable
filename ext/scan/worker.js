@@ -290,16 +290,18 @@ function statsKernel(E, CV, SL) {
   return {
     init(params, calcs) {
       const sch = params.schema, one = (txt) => (txt ? E.compileChunk(txt, sch, { decimal: '.' }) : null);
-      return { params, TD, calcFns: CV.compileCalcs(E, calcs, sch), cols: params.cols.map(one), groupBy: one(params.groupBy), weight: one(params.weight), scratch: {} };
+      return { params, TD, calcFns: CV.compileCalcs(E, calcs, sch), cols: params.cols.map(one), groupBy: one(params.groupBy), weight: one(params.weight), filter: params.filter ? E.compileChunkBool(params.filter, sch, { decimal: '.' }) : null, scratch: {} };
     },
     group(ctx, view, n, mask) {
       const sc = ctx.scratch;
       const xs = ctx.cols.map((c, s) => CV.chunkNumbers(c(view, n), n, sc['c' + s] || (sc['c' + s] = new Float64Array(n))));
       const gv = ctx.groupBy ? ctx.groupBy(view, n).buf : null;
       const w = ctx.weight ? CV.chunkNumbers(ctx.weight(view, n), n, sc.w || (sc.w = new Float64Array(n))) : null;
+      const f = ctx.filter ? ctx.filter(view, n) : null;
       const groups = new Map(); let overflow = false;
       for (let i = 0; i < n; i++) {
         if (mask && !mask[i]) continue;
+        if (f && f[i] !== 1) continue;
         let g = '';
         if (gv) { const v = gv[i]; g = v == null || v === '' || (typeof v === 'number' && v !== v) ? '—' : String(v); }
         let A = groups.get(g);
@@ -408,6 +410,78 @@ function crosstabMerge(parts) {
     }
   }
   return { groups, overflow };
+}
+
+// ── SCATTER: two columns against each other, at any size. A fixed grid of counts
+// over the given ranges (log10 per axis on request), the moments that give a
+// correlation, and — while the pair count stays under `keep` — the points
+// themselves, so a small model is drawn exactly and a big one as a density.
+// Pairs where either value is blank don't count; on a log axis a value ≤ 0 is
+// counted as `offLog` and left out; a value outside the range is clamped into
+// the edge cell (the range comes from the same data, so that's only rounding).
+// params = { schema, x, y, filter, bins, keep, range: [x0, x1, y0, y1], logX, logY }
+function scatterAccumulator(p) {
+  return { n: 0, offLog: 0, grid: new Uint32Array(p.bins * p.bins), m: { n: 0, mx: 0, my: 0, sxx: 0, syy: 0, sxy: 0 }, pts: [], over: false };
+}
+// one pair in (x, y already finite)
+function scatterAdd(acc, p, x, y) {
+  if ((p.logX && !(x > 0)) || (p.logY && !(y > 0))) { acc.offLog++; return; }
+  const u = p.logX ? Math.log10(x) : x, v = p.logY ? Math.log10(y) : y;
+  const r = p.range, B = p.bins;
+  const i = Math.min(B - 1, Math.max(0, Math.floor((u - r[0]) / (r[1] - r[0] || 1) * B)));
+  const j = Math.min(B - 1, Math.max(0, Math.floor((v - r[2]) / (r[3] - r[2] || 1) * B)));
+  acc.grid[j * B + i]++;
+  acc.n++;
+  // co-moments on the plotted axes (Welford, so merges stay exact)
+  const m = acc.m; m.n++;
+  const dx = u - m.mx; m.mx += dx / m.n;
+  const dy = v - m.my; m.my += dy / m.n;
+  m.sxx += dx * (u - m.mx); m.syy += dy * (v - m.my); m.sxy += dx * (v - m.my);
+  if (!acc.over) { if (acc.pts.length < 2 * p.keep) acc.pts.push(x, y); else { acc.over = true; acc.pts = []; } }
+}
+function scatterMerge(parts, p) {
+  const out = scatterAccumulator(p);
+  for (const a of parts) {
+    if (!a) continue;
+    out.n += a.n; out.offLog += a.offLog;
+    for (let i = 0; i < out.grid.length; i++) out.grid[i] += a.grid[i];
+    const m = out.m, b = a.m;
+    if (b.n) {
+      const n = m.n + b.n, dx = b.mx - m.mx, dy = b.my - m.my;
+      m.sxx += b.sxx + dx * dx * m.n * b.n / n; m.syy += b.syy + dy * dy * m.n * b.n / n; m.sxy += b.sxy + dx * dy * m.n * b.n / n;
+      m.mx += dx * b.n / n; m.my += dy * b.n / n; m.n = n;
+    }
+    if (!out.over) { if (a.over || out.pts.length + a.pts.length > 2 * p.keep) { out.over = true; out.pts = []; } else for (let i = 0; i < a.pts.length; i++) out.pts.push(a.pts[i]); }
+  }
+  return out;
+}
+const scatterR = (m) => (m.sxx > 0 && m.syy > 0 ? m.sxy / Math.sqrt(m.sxx * m.syy) : NaN);
+function scatterKernel(E, CV) {
+  return {
+    init(params, calcs) {
+      const sch = params.schema;
+      return {
+        params, calcFns: CV.compileCalcs(E, calcs, sch),
+        x: E.compileChunk(params.x, sch, { decimal: '.' }), y: E.compileChunk(params.y, sch, { decimal: '.' }),
+        filter: params.filter ? E.compileChunkBool(params.filter, sch, { decimal: '.' }) : null, scratch: {},
+      };
+    },
+    group(ctx, view, n, mask) {
+      const p = ctx.params, sc = ctx.scratch;
+      const X = CV.chunkNumbers(ctx.x(view, n), n, sc.x || (sc.x = new Float64Array(n)));
+      const Y = CV.chunkNumbers(ctx.y(view, n), n, sc.y || (sc.y = new Float64Array(n)));
+      const f = ctx.filter ? ctx.filter(view, n) : null;
+      const acc = scatterAccumulator(p);
+      for (let i = 0; i < n; i++) {
+        if (mask && !mask[i]) continue;
+        if (f && f[i] !== 1) continue;
+        const x = X[i], y = Y[i];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        scatterAdd(acc, p, x, y);
+      }
+      return acc;
+    },
+  };
 }
 
 // ── the FILTER kernel ────────────────────────────────────────────────────────
@@ -753,7 +827,7 @@ function decodeGroup(cd, p, cols, start, count, codes) {
 
 // ── src/worker.js ──
 
-const kernels = Object.freeze({ GT_BINS_TARGET, GT_BINS_CAP, gtEdge, gtBinOf, gtAccumulator, gtAbove, gtCuts, gtKernel, gtPartial, gtMerge, swathKernel, swathMerge, momentAdd, momentMerge, momentStd, statsKernel, statsMerge, XTAB_GROUPS_CAP, xtabSlot, xtabAdd, xtabKey, crosstabKernel, crosstabMerge, filterKernel, valuesKernel, positionsKernel });
+const kernels = Object.freeze({ GT_BINS_TARGET, GT_BINS_CAP, gtEdge, gtBinOf, gtAccumulator, gtAbove, gtCuts, gtKernel, gtPartial, gtMerge, swathKernel, swathMerge, momentAdd, momentMerge, momentStd, statsKernel, statsMerge, XTAB_GROUPS_CAP, xtabSlot, xtabAdd, xtabKey, crosstabKernel, crosstabMerge, scatterAccumulator, scatterAdd, scatterMerge, scatterR, scatterKernel, filterKernel, valuesKernel, positionsKernel });
 const CV = Object.freeze({ chunkView, compileCalcs, chunkNumbers });
 // @gcu/scan worker — the body of every pool worker, a real module (it used to be
 // a template string with functions pasted in by toString(), where a module-scope

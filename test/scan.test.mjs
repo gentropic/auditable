@@ -110,6 +110,31 @@ test('scan: the cross-tab — group × grade bins over three sources equals the 
   assert.equal(xtabSlot(edges, NaN), 4, 'blank → its own slot');
 });
 
+// scatter: the density grid, the co-moments and the kept points over every source
+// equal the brute force; the stats kernel's filter keeps only the matching rows
+test('scan: scatter — grid, correlation and points over three sources; stats take a filter', async () => {
+  const { scatterMerge, scatterAccumulator, scatterAdd, scatterR, statsMerge } = await import('../ext/scan/src/kernels.js');
+  const S = await sources();
+  const p = { x: 'X', y: 'AU', filter: 'Z < 50', bins: 16, keep: 10000, range: [5, 195, 0, 10], logX: false, logY: false };
+  const ref = scatterAccumulator(p);
+  for (const r of rows) if (r.Z < 50) scatterAdd(ref, p, r.X, r.AU);
+  for (const k of ['pq', 'csv', 'dm']) {
+    const res = await scan.run({ source: S[k], kernel: 'scatter', spec, readCols: ['X', 'Y', 'Z', 'AU'], params: { schema, ...p } });
+    const got = scatterMerge(res.parts, p);
+    assert.equal(got.n, ref.n, `${k}: n`);
+    assert.deepEqual([...got.grid], [...ref.grid], `${k}: the grid`);
+    assert.ok(Math.abs(scatterR(got.m) - scatterR(ref.m)) < 1e-12, `${k}: r`);
+    assert.equal(got.over, false); assert.equal(got.pts.length, 2 * ref.n, `${k}: every point kept`);
+  }
+  const small = { ...p, keep: 100 }, many = scatterMerge((await scan.run({ source: S.pq, kernel: 'scatter', spec, readCols: ['X', 'Y', 'Z', 'AU'], params: { schema, ...small } })).parts, small);
+  assert.ok(many.over && many.pts.length === 0, 'past `keep`: no points, the grid only');
+  const lg = { ...p, filter: null, logY: true, range: [5, 195, -2, 1] }, lacc = scatterAccumulator(lg);
+  for (const r of rows) scatterAdd(lacc, lg, r.X, r.AU);
+  assert.equal(lacc.offLog, rows.filter((r) => !(r.AU > 0)).length, 'a value ≤ 0 on a log axis is counted, not plotted');
+  const st = await scan.run({ source: S.csv, kernel: 'stats', spec, readCols: ['X', 'Y', 'Z', 'AU'], params: { schema, cols: ['AU'], groupBy: null, weight: null, filter: 'Z < 50' } });
+  assert.equal(statsMerge(sluice, st.parts).groups.get('')[0].n, rows.filter((r) => r.Z < 50).length, 'the stats filter');
+});
+
 // the Parquet open's jobs: without workers they run on the page — never null —
 // and give what one sequential pass over the records gives (micro keeps no copy)
 test('scan: Parquet discovery, lattice check and decode run on the page without workers', async () => {

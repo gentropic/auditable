@@ -9,5 +9,6 @@ export {
   GT_BINS_TARGET, GT_BINS_CAP, gtEdge, gtBinOf, gtAccumulator, gtAbove, gtCuts, gtKernel, gtPartial, gtMerge,
   swathKernel, swathMerge, momentAdd, momentMerge, momentStd, statsKernel, statsMerge,
   XTAB_GROUPS_CAP, xtabSlot, xtabAdd, xtabKey, crosstabKernel, crosstabMerge,
+  scatterAccumulator, scatterAdd, scatterMerge, scatterR, scatterKernel,
   filterKernel, valuesKernel, positionsKernel,
 } from './kernels.js';

@@ -9,14 +9,14 @@ import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
 import { volumeAt, volumeContextOf, numericColsOf } from './analysis.js';
-import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitSel, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
+import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitSel, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
 import { floatWin, nextZ } from './windows.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { crosstabMerge, xtabAdd, xtabKey, XTAB_GROUPS_CAP } from './scanner.js';
 import { statsGroupCols } from './stats.js';
 import { gridAxesOf } from './grid-ops.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setXtabHooks): markProjectDirty, deliverBlob
+// the app's side, passed in once (setXtabHooks): markProjectDirty
 let H = {};
 export function setXtabHooks(h) { H = h; }
 export const _xtabWins = new Map();
@@ -216,13 +216,11 @@ export function openCrosstab(L, ropts) {
     rail.append(vSec);
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
-    const cp = document.createElement('button'); cp.className = 'sw-add'; cp.textContent = 'copy table (TSV)'; cp.title = 'every measure in long form: group · bin · tonnage · grade · metal · blocks';
-    cp.onclick = async () => { const t = tableTSV(); if (!t) return; try { await navigator.clipboard.writeText(t); win.sub.textContent = 'copied'; } catch { H.deliverBlob(new Blob([t + '\n'], { type: 'text/tab-separated-values' }), `xtab-${(L.label || L.name).replace(/\.[^.]+$/, '')}.tsv`); } };
-    const dl = document.createElement('button'); dl.className = 'sw-add'; dl.textContent = 'export TSV';
-    dl.onclick = () => { const t = tableTSV(); if (t) H.deliverBlob(new Blob([t + '\n'], { type: 'text/tab-separated-values' }), `xtab-${(L.label || L.name).replace(/\.[^.]+$/, '')}.tsv`); };
+    // the results row every analysis window shares: ⇥ layer · ⧉ table (every measure, long form)
+    const res = plotExportBtns(null, () => `xtab-${(L.label || L.name).replace(/\.[^.]+$/, '')}`, tableTSV, 'cross-tab');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';
-    foot.append(runBtn, cp, dl, staleEl, progEl); rail.append(foot);
+    foot.append(runBtn, res, staleEl, progEl); rail.append(foot);
   }
   const handle = { win, redraw: run, st, run, tableTSV };
   _xtabWins.set(L.id, handle);
