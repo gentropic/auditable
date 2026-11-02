@@ -12834,20 +12834,44 @@ async function showRecord(hit) {
     showRecPanel(`${tag}point · #${rec.toLocaleString()}`, rows);
   }
 }
-// click vs drag: small movement, short hold
+// a finger is not a pixel: when the exact pixel under a TOUCH misses, take the
+// nearest hit within R css px — one ID-buffer read over the disc. A drillhole a
+// pixel or two wide was all but untappable. → { hit, x, y } (css, the hit's pixel) | null
+const TOUCH_PICK_R = 16;
+function nearPick(cx, cy, R, opts) {
+  const region = renderer.pickRegion({ x: Math.max(0, cx - R), y: Math.max(0, cy - R), w: 2 * R + 1, h: 2 * R + 1 }, cam, opts);
+  if (!region) return null;
+  const { data, w, h, dpr } = region, rx = Math.max(0, cx - R), ry = Math.max(0, cy - R);
+  let best = null, bd = R * R;
+  for (let j = 0; j < h; j++) {
+    const y = ry + (h - 1 - j) / dpr;                      // GL rows are bottom-up
+    for (let i = 0; i < w; i++) {
+      const o = (j * w + i) * 4;
+      if (isMiss(data[o + 1])) continue;
+      const x = rx + i / dpr, d2 = (x - cx) ** 2 + (y - cy) ** 2;
+      if (d2 > bd) continue;
+      bd = d2; best = { hit: { layer: layerOfId(data[o + 1]), rec: data[o] >>> 0, face: faceOfId(data[o + 1]) }, x, y };
+    }
+  }
+  return best;
+}
+// click vs drag: small movement, short hold — a finger drifts more than a mouse
 let _pdown = null;
-cv.addEventListener('pointerdown', (e) => { _pdown = { x: e.clientX, y: e.clientY, t: performance.now(), b: e.button }; });
+cv.addEventListener('pointerdown', (e) => { _pdown = { x: e.clientX, y: e.clientY, t: performance.now(), b: e.button, touch: e.pointerType === 'touch' || e.pointerType === 'pen' }; });
 cv.addEventListener('pointerup', (e) => {
   const d = _pdown; _pdown = null;
   if (!d || d.b !== 0) return;
-  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5 || performance.now() - d.t > 500) return;
+  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > (d.touch ? 12 : 5) || performance.now() - d.t > 500) return;
   const r = cv.getBoundingClientRect();
-  const hit = renderer.pick(e.clientX - r.left, e.clientY - r.top, cam, { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() });
+  let px = e.clientX - r.left, py = e.clientY - r.top;
+  const popts = { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() };
+  let hit = renderer.pick(px, py, cam, popts);
+  if (hit == null && d.touch) { const nb = nearPick(Math.round(px), Math.round(py), TOUCH_PICK_R, popts); if (nb) { hit = nb.hit; px = nb.x; py = nb.y; } }
   if (hit == null) { $('#recPanel').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); return; }
   const hitL = layerById(hit.layer);
   if (hitL && hitL.kind === 'mesh') {                      // a surface: no rows to show, so show the geometry
     renderer.setPicked(null); requestRender();
-    showMeshRecord(hitL, e.clientX - r.left, e.clientY - r.top)
+    showMeshRecord(hitL, px, py)
       .then((h) => emitPick(h ? { layer: hit.layer, rec: null } : null, 'canvas', h ? { kind: 'mesh', world: h.point } : null));
     return;
   }

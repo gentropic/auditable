@@ -242,7 +242,11 @@ async function drive(url, tag) {
   const menus = await p.evaluate(() => document.querySelectorAll('.menu').length);
   chk(`[${tag}] tap "${parent && parent.label}": ${menus} menus open (the root + its submenu, nothing run)`, !!parent && menus === 2);
   await p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
-  await p.mouse.click(5, 60); await p.waitForTimeout(150);
+  // dismiss without clicking anything (a click at a fixed spot landed on a menu item — it armed measure)
+  await p.evaluate(() => document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
+  await p.waitForTimeout(150);
+  const { menusLeft, meas } = await p.evaluate(() => ({ menusLeft: document.querySelectorAll('.menu').length, meas: document.getElementById('btnMeasure').classList.contains('on') }));
+  chk(`[${tag}] menus dismissed by an outside press (${menusLeft} left), measure armed ${meas}`, menusLeft === 0 && !meas);
 
   // 13. a section set by the host API (no input event) still brings up the strip
   const api = await p.evaluate(async () => {
@@ -321,7 +325,8 @@ async function drive(url, tag) {
   });
   chk(`[${tag}] paint stroke of ${pr.n}: painted ${pr.painted} → ↶ restored ${pr.undone} → ↷ repainted ${pr.redone}`, pr.n > 0 && pr.painted && pr.undone && pr.redone);
   chk(`[${tag}] selection bar: → column made PHONESEL ${col}; × cleared (${nZ}, "${b2.text}"); tool off → bar gone ${!b3.on}`, col && nZ === 0 && b2.on && !b3.on);
-  await mode('replace').catch(() => {});
+  await mode('replace');                                   // (re-arms the tool — by design) …
+  await p.evaluate(() => { if (document.getElementById('btnSelRect').classList.contains('on')) document.getElementById('btnSelRect').click(); });   // … so put it down again
 
   // 18. long-press on a layer row opens ITS menu — one menu, and lifting the finger
   //     neither activates the row nor runs a menu item; ⋯ opens the same menu by tap;
@@ -354,6 +359,39 @@ async function drive(url, tag) {
   chk(`[${tag}] long-press "${tgt.name}": ${lpres.menus} menu (${lpres.items} items), active stayed "${a1}" (was "${a0}"); ⋯ (${more && more.w}px) → ${moreMenus} menu; a short tap activates → "${a2}"`,
     lpres.menus === 1 && lpres.items > 3 && a1 === a0 && !!more && moreMenus === 1 && a2 === tgt.name);
   await cdp.detach();
+
+  // 19. a finger near an edge: the exact pixel misses, the disc around it doesn't —
+  //     a touch tap there opens a record; a MOUSE click there still picks nothing
+  const edge = await p.evaluate(async () => {
+    const M = window._micro;
+    M.toggleLayersPanel(false);
+    for (const w of document.querySelectorAll('.fwin')) if (w.style.display !== 'none' && w._minimize) w._minimize();
+    document.getElementById('recPanel').classList.remove('show');
+    await new Promise((r) => setTimeout(r, 600));
+    const cv = document.getElementById('cv'), r = cv.getBoundingClientRect();
+    let hits = 0;
+    for (const fy of [0.5, 0.4, 0.6, 0.3, 0.7]) {
+      const y = Math.round(r.height * fy), row = [];
+      for (let x = 20; x < r.width - 20; x += 2) { const h = !!M.renderer.pick(x, y, M.cam, {}); row.push([x, h]); if (h) hits++; }
+      for (let i = 0; i < row.length; i++) {               // a miss 8–10 px from the nearest hit, either side
+        if (row[i][1]) continue;
+        const x = row[i][0];
+        const near = row.filter(([x2, h]) => h && Math.abs(x2 - x) <= 10);
+        const tooNear = row.some(([x2, h]) => h && Math.abs(x2 - x) < 8);
+        if (near.length && !tooNear) return { x: r.left + x, y: r.top + y, from: near[0][0], miss: x, pickAt: !!M.renderer.pick(x, y, M.cam, {}) };
+      }
+    }
+    return { none: true, hits };
+  });
+  let touchRec = false, mouseRec = true;
+  if (edge && !edge.none) {
+    await p.touchscreen.tap(edge.x, edge.y); await p.waitForTimeout(600);
+    touchRec =await p.evaluate(() => document.getElementById('recPanel').classList.contains('show'));
+    await p.evaluate(() => document.getElementById('recPanel').classList.remove('show'));
+    await p.mouse.click(edge.x, edge.y); await p.waitForTimeout(600);
+    mouseRec = await p.evaluate(() => document.getElementById('recPanel').classList.contains('show'));
+  }
+  chk(`[${tag}] near-edge tap (${edge && (edge.none ? `no edge found, ${edge.hits} hits` : Math.abs(edge.miss - edge.from))}px off the model, exact pixel ${edge && edge.pickAt ? 'hits' : 'misses'}): touch opens a record ${touchRec}, mouse picks nothing ${!mouseRec}`, !!edge && !edge.none && !edge.pickAt && touchRec && !mouseRec);
 
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
