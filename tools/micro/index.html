@@ -1050,7 +1050,7 @@ import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGrou
 import { mkLineage, openLineage, microModelOf, setLineageHooks } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
-import { floatWin, raiseWindow, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile, setWindowsHooks } from './src/windows.js';
+import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile, setWindowsHooks } from './src/windows.js';
 import { plotChart, plotExportBtns, SERIES_COLORS, scopeMask, scopeMissing, rangesOf, rangesForCfg, rangesFromCfg, rangesRow, saveAnalysisCfg, setAnalysisOpen, applyAnalysisGeo, runCancellable, checkAbort, scanProgressText, analysisSerCfg, analysisSerRestore, gradeUnitFactor, gradeUnitSel, reconcilePairs, seriesZoneKeep, niceStep, fmtStat, rowsProgress, setAnalysisUiHooks } from './src/analysis-ui.js';
 import { openGradeTonnage, _gtWins, setGtHooks } from './src/gt.js';
 import { openSwath, _swathWins, projRange, applySwathZebra, AXIS_NAMES, setSwathHooks } from './src/swath.js';
@@ -1371,7 +1371,11 @@ $('#secPlaneVis').addEventListener('input', requestRender);
 $('#btnMeasure').onclick = () => { if (_measure.arm) clearMeasure(); else armMeasure(); };
 $('#btnSection').onclick = () => toggleSection();
 $('#btnKnife').onclick = () => { $('#secMode').value = 'knife'; $('#secMode').dispatchEvent(new Event('input')); };   // arm the free-plane cut (same as k / secMode=knife)
-function syncSectionBtn() { $('#btnSection').classList.toggle('on', $('#secMode').value !== 'off'); }
+function syncSectionBtn() {                                 // the bar button AND the phone's section strip follow every path that changes the section
+  const on = $('#secMode').value !== 'off';
+  $('#btnSection').classList.toggle('on', on);
+  document.body.classList.toggle('sec-on', on && document.body.classList.contains('mobile'));
+}
 $('#secMode').addEventListener('input', syncSectionBtn);
 // FOLLOW mode: the camera translates with the scrub (Δd along the plane normal)
 // so the cut stays put on screen while the deposit slides through it — walking
@@ -1939,7 +1943,7 @@ function openPaintPalette(L) {
   if (!L) return;
   if (L.kind === 'mesh' || !layerTableHeader(L)) { $('#meta').textContent = 'paint: needs a table-backed layer (blocks or drillholes)'; return; }
   const ex = _paintWins.get(L.id);
-  if (ex) { ex.win.el.style.zIndex = nextZ(); ex.win.el.classList.remove('min'); return; }
+  if (ex) { focusWindow(ex.win.el); return; }
   const brushable = (L.paintCols || []).filter((c) => c.kind !== 'ratio');
   const st = {
     colName: (brushable[0] && brushable[0].name) || null,
@@ -2739,7 +2743,7 @@ function openCalcWindow(L, selIdx) {
 }
 function openLineageWindow(L) {
   if (!L || !L.lineage) { $('#meta').textContent = 'lineage: none recorded'; return; }
-  const ex = _linWins.get(L.id); if (ex) { ex.el.style.zIndex = nextZ(); return; }
+  const ex = _linWins.get(L.id); if (ex) { focusWindow(ex.el); return; }
   const win = floatWin({ title: `lineage · ${L.label || L.name}`, sub: '', x: 100, y: 110, w: 520, h: 320, onClose: () => _linWins.delete(L.id) });
   win.body.style.cssText += 'display:flex;flex-direction:column';
   const tree = document.createElement('div'); tree.className = 'lin-tree'; tree.style.cssText = 'flex:1;overflow:auto;padding:6px 4px';
@@ -3911,7 +3915,9 @@ function ensureMobileChrome() {
 }
 function layoutBars() {
   const mobile = _forceMobile || _mqPhone.matches;
+  const was = document.body.classList.contains('mobile');
   document.body.classList.toggle('mobile', mobile);
+  if (was !== mobile) relayoutWindows(mobile);
   ensureMobileChrome();
   if (mobile) {
     for (const sel of _TOOLROW) _moveTo($(sel), $('#bar'));             // park them (the hidden ones stay hidden by CSS)
@@ -3953,7 +3959,7 @@ addEventListener('resize', _sheetLayout);
 
 
 
-for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => toggleLayersPanel(false)], ['#propPanel', '.rp-head', () => closeProps()], ['#recPanel', '.rp-head', () => $('#rpClose').click()]]) {
+for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => closeLayersPanel()], ['#propPanel', '.rp-head', () => closeProps()], ['#recPanel', '.rp-head', () => $('#rpClose').click()]]) {
   const h = $(id) && ($(id).querySelector(head) || $(id).firstElementChild);
   if (h) {
     h.addEventListener('pointerdown', (e) => { if (!_isMobile() || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; _sheetDrag($(id), e, dismiss); });
@@ -8540,10 +8546,17 @@ function _placeMenu(m, x, y) {
   m.style.left = Math.max(2, Math.min(x, innerWidth - mw - 4)) + 'px';
   m.style.top = Math.max(2, Math.min(y, innerHeight - mh - 4)) + 'px';
 }
+// a TOUCH tap fires an emulated mouseenter before its click: the submenu opened under
+// the finger (flipped over the parent on a narrow screen) and the click landed on one
+// of ITS items — Tools → Recipes ran "open a project…". After a touch, hover opens
+// nothing; the parent row's click opens it instead.
+let _menuPtr = 'mouse';
+addEventListener('pointerdown', (e) => { _menuPtr = e.pointerType || 'mouse'; }, true);
 function _wireMenu(m, level) {
   m.querySelectorAll('.item').forEach((d) => {
     const it = d._item;
-    d.addEventListener('mouseenter', () => {
+    d.addEventListener('mouseenter', () => { if (_menuPtr !== 'touch') openSub(); });
+    const openSub = () => {
       if (_menuChain[level + 1] && _menuChain[level + 1]._forItem === d) return;   // its submenu is already open
       _closeDeeperThan(level);                             // hovering a sibling closes the old submenu
       if (!it || !it.submenu) return;
@@ -8556,9 +8569,9 @@ function _wireMenu(m, level) {
       const sw = sub.offsetWidth || 180;
       if (r.right - 3 + sw > innerWidth - 4) sub.style.left = Math.max(2, r.left - sw + 3) + 'px';   // flip left if it would overflow
       _wireMenu(sub, level + 1);
-    });
+    };
     d.addEventListener('click', (e) => {
-      if (it && it.submenu && !it.action) { e.stopPropagation(); d.dispatchEvent(new Event('mouseenter')); return; }   // parent row: open, don't dismiss
+      if (it && it.submenu && !it.action) { e.stopPropagation(); openSub(); return; }   // parent row: open, don't dismiss
       closeMenu(); if (it && it.action) it.action();
     });
   });
@@ -9534,7 +9547,7 @@ function exportFigure(scale = _figScale) {
 // Everything applies live; the window's × dismisses. Single instance.
 let _decoWin = null;
 function openDecoPanel() {
-  if (_decoWin) { _decoWin.el.style.zIndex = nextZ(); _decoWin.el.classList.remove('min'); return; }
+  if (_decoWin) { focusWindow(_decoWin.el); return; }
   const win = floatWin({ title: 'decorations & figure', sub: '', x: Math.max(12, innerWidth - 336), y: 92, w: 316, h: 430, onClose: () => { _decoWin = null; } });
   _decoWin = win;
   const wrap = document.createElement('div'); wrap.className = 'deco-panel'; win.body.appendChild(wrap);
@@ -10826,7 +10839,7 @@ const _attrTables = new Map();                             // layerId → { win,
 // (fetchLayerRow / attrColumnsOf / the LOCATIONS vocabulary — primaryLocationOf,
 // locationsOf, attrRowCountOf, hasRecords — live in src/records.js)
 function openAttrTable(L) {
-  if (_attrTables.has(L.id)) { const t2 = _attrTables.get(L.id); t2.win.el.style.zIndex = nextZ(); t2.win.el.classList.remove('min'); return; }
+  if (_attrTables.has(L.id)) { const t2 = _attrTables.get(L.id); focusWindow(t2.win.el); return; }
   const cols = attrColumnsOf(L);
   if (!cols) { $('#meta').textContent = 'no table behind this layer'; return; }
   const total = attrRowCountOf(L);
@@ -10973,7 +10986,16 @@ function toggleLayersPanel(force) {
   if (show) _sheetExclusive(el);
   if (force == null) _lpUserHidden = !show;
 }
-$('#lpClose').onclick = () => toggleLayersPanel(false);
+// an explicit close (× or a swipe down) is the user's word — renderLayers must not re-open it
+function closeLayersPanel() { _lpUserHidden = true; toggleLayersPanel(false); }
+$('#lpClose').onclick = closeLayersPanel;
+// renderLayers' automatic show: never on top of another phone sheet — it ran on ~50
+// actions and each one minimized whatever window you were reading
+function _otherSheetOpen() {
+  if (!_isMobile()) return false;
+  return $('#propPanel').classList.contains('show') || $('#recPanel').classList.contains('show')
+    || [...document.querySelectorAll('.fwin')].some((w) => w.style.display !== 'none');
+}
 function fitLayer(L) { if (L.bboxLocal) { cam.fit(L.bboxLocal); requestRender(); } }
 // the UI's remove (context menu, palette): a layer carrying its OWN columns —
 // painted, calculated, joined — loses them with it (the file on disk is never
@@ -12436,7 +12458,7 @@ function renderLayers() {
     }
   };
   walk(S.layerTree, 0, false);
-  if (S.layers.length >= 1 && !_lpUserHidden) toggleLayersPanel(true);   // the panel is the layer's front door — right-click is the menu
+  if (S.layers.length >= 1 && !_lpUserHidden && !$('#layersPanel').classList.contains('show') && !_otherSheetOpen()) toggleLayersPanel(true);   // the panel is the layer's front door — right-click is the menu
   if (S.layers.length === 0) toggleLayersPanel(false);
   if (_propOpen && _propFor !== S.activeId) renderProps();  // re-target, never rebuild under a typing cursor
   if (_propOpen && !S.layers.length) closeProps();
@@ -12772,7 +12794,7 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, openMeshQa, meshQaWins: _meshQaWins, openXyPlot, xyWins: _xyWins, openCrosstab, xtabWins: _xtabWins, parseCutoffs, openDhQa, qaWins: _qaWins, dhSetGroupOf, applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, renderLayers, applySection, openMeshQa, meshQaWins: _meshQaWins, openXyPlot, xyWins: _xyWins, openCrosstab, xtabWins: _xtabWins, parseCutoffs, openDhQa, qaWins: _qaWins, dhSetGroupOf, applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

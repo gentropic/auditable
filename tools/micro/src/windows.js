@@ -43,6 +43,44 @@ export function _sheetDrag(el, e, onDismiss) {
   addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', cancel);
 }
 
+// the layout changed under open windows (a rotated phone, a resized desktop window,
+// a foldable unfolding): a sheet has no geometry of its own, so going to desktop it
+// was stranded at (0,0); going to the phone every window stacked as a sheet at once.
+// Desktop: give each a cascaded place. Phone: the topmost stays the sheet, the rest
+// minimize to chips.
+export function relayoutWindows(mobile) {
+  const wins = [...document.querySelectorAll('.fwin')];
+  if (mobile) {
+    let top = null;
+    for (const w of wins) {
+      w.classList.add('sheet');
+      if (!w.style.getPropertyValue('--sheet-h')) w.style.setProperty('--sheet-h', '60svh');
+      if (w.style.display !== 'none' && (!top || (+w.style.zIndex || 0) > (+top.style.zIndex || 0))) top = w;
+    }
+    if (top) _sheetExclusive(top);
+  } else {
+    let i = 0;
+    for (const w of wins) {
+      if (!w.classList.contains('sheet')) continue;
+      w.classList.remove('sheet');
+      const ww = Math.min(560, innerWidth - 12), hh = Math.min(320, innerHeight - 72);
+      w.style.left = Math.min(90 + i * 26, Math.max(0, innerWidth - ww - 6)) + 'px';
+      w.style.top = Math.min(90 + i * 22, Math.max(28, innerHeight - hh - 30)) + 'px';
+      w.style.width = ww + 'px'; w.style.height = hh + 'px';
+      i++;
+      if (w._onResized) requestAnimationFrame(() => w._onResized());
+    }
+  }
+}
+
+// bring an EXISTING window back — the "open it again" path of every window opener:
+// restores it from the strip, and on a phone makes it THE sheet (bumping its z alone
+// left a minimized window hidden and a phone sheet under the one that was open)
+export function focusWindow(el) {
+  if (_isMobile()) _sheetExclusive(el);
+  raiseWindow(el);
+}
+
 export function raiseWindow(el) {
   if (el._chip) { el._chip.remove(); el._chip = null; el.style.display = ''; }   // restore from the strip
   el.style.zIndex = nextZ();
@@ -102,7 +140,7 @@ export function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose
     saveGeo(); el.style.display = 'none'; el.classList.remove('top');
     const chip = document.createElement('button'); chip.className = 'win-chip';
     chip.textContent = t.textContent; chip.title = 'restore ' + t.textContent;
-    chip.onclick = () => { if (_isMobile()) _sheetExclusive(el); raiseWindow(el); };
+    chip.onclick = () => focusWindow(el);
     el._chip = chip; _winStrip().appendChild(chip);
   };
   el._minimize = () => minB.onclick();

@@ -7,7 +7,7 @@
 // yet, and the window says so.
 import { meshQa } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { fmtStat, plotExportBtns } from './analysis-ui.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
 const $ = (s) => document.querySelector(s);
@@ -28,7 +28,7 @@ const SEV = { error: '#c0584a', warn: '#c8a43c', ok: 'var(--ok)' };
 export async function openMeshQa(L) {
   const md = L && L.docs && L.docs.meshDoc;
   if (!md) { $('#meta').textContent = 'mesh QA: needs a mesh layer'; return null; }
-  const ex = _meshQaWins.get(L.id); if (ex && ex.win.el.isConnected) { ex.win.el.style.zIndex = nextZ(); return ex; }
+  const ex = _meshQaWins.get(L.id); if (ex && ex.win.el.isConnected) { focusWindow(ex.win.el); return ex; }
   const st = { weld: true, density: '', densUnit: 't/m3', r: null, err: null, running: false, step: {} };
   const win = floatWin({ title: `mesh QA · ${L.label || L.name}`, sub: 'checking…', x: Math.max(12, innerWidth - 760), y: 110, w: 720, h: 440,
     onClose: () => { _meshQaWins.delete(L.id); } });

@@ -8,7 +8,7 @@ import { censusChunkCols, ensureStoredValues, expandedDeps, pinGet, pinWindow } 
 import { quantileFromCentroids, tdigest } from '../../../ext/sluice/index.js';
 import { momentAdd, momentStd, statsMerge } from './scanner.js';
 import { applyAnalysisGeo, checkAbort, fmtStat, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { numericColsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 const $ = (s) => document.querySelector(s);
@@ -208,7 +208,7 @@ export async function statsScan(L, q, mask, onProgress, signal) {
 
 export function openStats(L, ropts) {
   if (!L || !layerTableHeader(L)) { $('#meta').textContent = 'stats: needs a table-backed layer'; return; }
-  const ex = _statsWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = nextZ(); return; } ex.win.close(); }
+  const ex = _statsWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return; } ex.win.close(); }
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'stats: no numeric column'; return; }
   const st = { cols: [nums[0]], groupBy: '', weight: '', scope: 'all', scan: null, stale: true, running: false };
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.stats);

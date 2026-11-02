@@ -4,7 +4,7 @@
 // the selection, columnar on workers where the model allows. Carved from
 // index.html (phase 3).
 import { gridAxesOf } from './grid-ops.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { numericColsOf, volumeAt, volumeContextOf } from './analysis.js';
 import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, checkAbort, gradeUnitFactor, gradeUnitSel, plotChart, plotExportBtns, rangesForCfg, rangesFromCfg, rangesOf, rangesRow, reconcilePairs, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, seriesZoneKeep, setAnalysisOpen } from './analysis-ui.js';
 import { gtAbove, gtAccumulator, gtCuts, gtMerge } from './scanner.js';
@@ -29,7 +29,7 @@ export const _gtWins = new Map();
 // count, plot unit, and manual ranges are LIVE afterwards — no re-scan. ──
 export function openGradeTonnage(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'grade-tonnage: needs a regular block model'; return; }
-  const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = nextZ(); return; } ex.win.close(); }   // a recipe replaces the open window
+  const ex = _gtWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return; } ex.win.close(); }   // a recipe replaces the open window
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'grade-tonnage: no numeric column'; return; }
   const pairs = reconcilePairs(nums);
   // unit DECLARATIONS (what the data is, not display toggles) — persisted per

@@ -12,7 +12,7 @@ import { SERIES_COLORS, analysisSerCfg, analysisSerRestore, applyAnalysisGeo, ch
 import { swathMerge } from './scanner.js';
 import { coordNum } from '../../../ext/condenser/src/main.js';
 import { gridAxesOf } from './grid-ops.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { paintRecount } from './columns.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setSwathHooks): _attrTables, addPaintColorOptions, addPaintValue, applyLayerSelection, applyPaintPalette, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, menuXY, paintColByName, paintSelOf, rendererDocBbox, requestRender, saveRecipe, selectionStatus, setLayerColorSel, setSwathBand
@@ -140,7 +140,7 @@ export const _swathWins = new Map();
 
 export function openSwath(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'swath: needs a regular block model'; return; }
-  const ex = _swathWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = nextZ(); return; } ex.win.close(); }   // a recipe replaces the open window
+  const ex = _swathWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return; } ex.win.close(); }   // a recipe replaces the open window
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'swath: no numeric column'; return; }
   const pairs = reconcilePairs(nums);
   const mkSer = (Lx, col, i) => ({ layerId: Lx.id, col, unit: (Lx.gtUnits && Lx.gtUnits.grade) || '', weight: '', filter: '', color: SERIES_COLORS[i % SERIES_COLORS.length] });

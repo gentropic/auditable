@@ -3,7 +3,7 @@
 // sample mean) and a model-vs-sample swath. Carved from index.html (phase 3).
 import { S, layerById } from './state.js';
 import { gridAxesOf } from './grid-ops.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { autoDeclusterSizes, computeSampleSwath, computeSwath, extractSamples, numericColsOf } from './analysis.js';
 import { SERIES_COLORS, fmtStat, niceStep, plotChart, plotExportBtns } from './analysis-ui.js';
 import { declusterCell, declusterSweep } from '../../../ext/gsjs/src/decluster.js';
@@ -26,7 +26,7 @@ export const _valWins = new Map();
 export function openValidation(M) {
   if (!M || !gridAxesOf(M)) { $('#meta').textContent = 'validation: needs a regular block model'; return; }
   const dhs = drillholeLayers(); if (!dhs.length) { $('#meta').textContent = 'validation: open a drillhole layer (the samples) first'; return; }
-  const ex = _valWins.get(M.id); if (ex) { ex.win.el.style.zIndex = nextZ(); return; }
+  const ex = _valWins.get(M.id); if (ex) { focusWindow(ex.win.el); return; }
   const mnums = numericColsOf(M); if (!mnums.length) { $('#meta').textContent = 'validation: the model has no numeric column'; return; }
   const D0 = dhs[0], snums = numericColsOf(D0), shared = mnums.find((c) => snums.includes(c));
   const st = { dh: D0.id, mGrade: shared || mnums[0], sGrade: shared || snums[0] || null, cell: null, axis: 0 };

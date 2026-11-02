@@ -202,10 +202,86 @@ async function drive(url, tag) {
     !!win && win.titleW >= 40 && win.right <= 384 && win.footH <= win.railH * 0.6);
   await shot('window');
 
+  // 10. a minimized window re-opened by its opener (the palette's path) comes back as THE sheet
+  const reopen = await p.evaluate(async () => {
+    const w = [...document.querySelectorAll('.fwin.sheet')].find((x) => x.style.display !== 'none');
+    w._minimize();
+    const L = window._micro.layers().find((l) => l.kind === 'blocks');
+    window._micro.openGradeTonnage(L);
+    await new Promise((r) => setTimeout(r, 300));
+    return { shown: w.style.display !== 'none', chip: !!w._chip, visible: [...document.querySelectorAll('.fwin')].filter((x) => x.style.display !== 'none').length };
+  });
+  chk(`[${tag}] re-open a minimized window: shown ${reopen.shown}, chip gone ${!reopen.chip}, sheets visible ${reopen.visible}`, reopen.shown && !reopen.chip && reopen.visible === 1);
+
+  // 11. the layers sheet: an automatic re-render never pushes the open window aside, and an explicit close sticks
+  const lp = await p.evaluate(async () => {
+    const M = window._micro, L = M.layers().find((l) => l.kind === 'blocks');
+    M.setActiveLayer(L.id); M.renderLayers();
+    await new Promise((r) => setTimeout(r, 100));
+    const winKept = [...document.querySelectorAll('.fwin')].some((x) => x.style.display !== 'none');
+    document.getElementById('btnLayersM').click();
+    await new Promise((r) => setTimeout(r, 100));
+    const opened = document.getElementById('layersPanel').classList.contains('show');
+    document.getElementById('lpClose').click();
+    M.setActiveLayer(L.id); M.renderLayers();
+    await new Promise((r) => setTimeout(r, 100));
+    return { winKept, opened, stayedClosed: !document.getElementById('layersPanel').classList.contains('show') };
+  });
+  chk(`[${tag}] layers sheet: a re-render left the window ${lp.winKept ? 'open' : 'MINIMIZED'}; opened ${lp.opened}, × then re-render → stays closed ${lp.stayedClosed}`, lp.winKept && lp.opened && lp.stayedClosed);
+
+  // 12. a TAP on a submenu parent opens its submenu — it does not run the item that lands under the finger
+  const bb = await p.evaluate(() => { const r = document.getElementById('btnBurger').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await p.touchscreen.tap(bb.x, bb.y); await p.waitForTimeout(300);
+  const tools = await p.evaluate(() => { const it = [...document.querySelectorAll('.menu .item')].find((d) => d.textContent.trim() === 'Tools'); if (!it) return null; const r = it.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  if (tools) { await p.touchscreen.tap(tools.x, tools.y); await p.waitForTimeout(300); }
+  const parent = await p.evaluate(() => {
+    const it = [...document.querySelectorAll('.menu .item')].find((d) => d.querySelector('.sub'));
+    if (!it) return null; const r = it.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, label: it.textContent };
+  });
+  if (parent) { await p.touchscreen.tap(parent.x, parent.y); await p.waitForTimeout(300); }
+  const menus = await p.evaluate(() => document.querySelectorAll('.menu').length);
+  chk(`[${tag}] tap "${parent && parent.label}": ${menus} menus open (the root + its submenu, nothing run)`, !!parent && menus === 2);
+  await p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+  await p.mouse.click(5, 60); await p.waitForTimeout(150);
+
+  // 13. a section set by the host API (no input event) still brings up the strip
+  const api = await p.evaluate(async () => {
+    document.getElementById('secMode').value = 'off'; document.getElementById('secMode').dispatchEvent(new Event('input'));
+    const M = window._micro; const s0 = document.body.classList.contains('sec-on');
+    if (M.applySection) M.applySection({ mode: 'knife', knifeN: [0.6, 0.8, 0], pos: 0.5, half: 10 });
+    return { s0, s1: document.body.classList.contains('sec-on'), has: !!M.applySection };
+  });
+  chk(`[${tag}] a knife section applied without an input event: strip on ${api.s1} (was ${api.s0})`, api.has && !api.s0 && api.s1);
+  await p.evaluate(() => { document.getElementById('secMode').value = 'off'; document.getElementById('secMode').dispatchEvent(new Event('input')); });
+
   chk(`[${tag}] no page errors (${errs.length ? errs.slice(0, 2).join(' ; ') : 'none'})`, errs.length === 0);
   await ctx.close();
 }
 
+// the layout switching under open windows: a real narrow viewport (no ?mobile=1, the
+// media query decides), widened to desktop and back
+async function modeSwitch(url, tag) {
+  const ctx = await browser.newContext(S24);
+  const p = await ctx.newPage();
+  await p.goto(url, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });
+  await p.evaluate(() => window._micro.openDemoProject());
+  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 120000 });
+  await p.evaluate(() => { const L = window._micro.layers().find((l) => l.kind === 'blocks'); window._micro.openStats(L); });
+  await p.waitForTimeout(500);
+  await p.setViewportSize({ width: 1280, height: 800 }); await p.waitForTimeout(500);
+  const desk = await p.evaluate(() => ({ mobile: document.body.classList.contains('mobile'),
+    wins: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').map((w) => { const r = w.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), sheet: w.classList.contains('sheet') }; }) }));
+  await p.setViewportSize({ width: 384, height: 787 }); await p.waitForTimeout(500);
+  const phone = await p.evaluate(() => ({ mobile: document.body.classList.contains('mobile'),
+    visible: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').length, sheets: document.querySelectorAll('.fwin.sheet').length, n: document.querySelectorAll('.fwin').length }));
+  const placed = desk.wins.length > 0 && desk.wins.every((w) => !w.sheet && w.x > 0 && w.y >= 28 && w.w >= 300 && w.w < 1280);
+  chk(`[${tag}] phone → desktop: ${desk.wins.length} windows placed ${JSON.stringify(desk.wins)}; → phone: ${phone.visible} visible of ${phone.n}, all sheets ${phone.sheets === phone.n}`,
+    !desk.mobile && placed && phone.mobile && phone.visible === 1 && phone.sheets === phone.n);
+  await ctx.close();
+}
+
+await modeSwitch(`http://127.0.0.1:${PORT}/tools/micro/index.html`, 'dev');
 await drive(`http://127.0.0.1:${PORT}/tools/micro/index.html?mobile=1`, 'dev');
 if (fs.existsSync(path.join(root, 'micro.html'))) await drive(`http://127.0.0.1:${PORT}/micro.html?mobile=1`, 'built');
 else chk('built micro.html exists (node build.js --target=micro)', false);

@@ -14,7 +14,7 @@ import { compileBool, compileValue, quoteIdent } from '../../../ext/expr/index.j
 import { quantileFromCentroids } from '../../../ext/sluice/index.js';
 import { numericColsOf } from './analysis.js';
 import { applyAnalysisGeo, checkAbort, fmtStat, niceStep, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { scatterAccumulator, scatterAdd, scatterMerge, scatterR } from './scanner.js';
 import { statsScan } from './stats.js';
@@ -101,7 +101,7 @@ function axisRange(row, log) {
 
 export function openXyPlot(L, ropts) {
   if (!L || !layerTableHeader(L)) { $('#meta').textContent = 'scatter / Q-Q: needs a table-backed layer'; return null; }
-  const ex = _xyWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = nextZ(); return ex; } ex.win.close(); }
+  const ex = _xyWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return ex; } ex.win.close(); }
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'scatter / Q-Q: no numeric column'; return null; }
   const side = (Lx, col) => ({ layerId: Lx.id, col, filter: '', scope: 'all' });
   const st = { mode: 'scatter', x: nums[0], y: nums[1] || nums[0], filter: '', scope: 'all', logX: false, logY: false, line11: false,

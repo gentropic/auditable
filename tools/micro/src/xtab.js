@@ -10,7 +10,7 @@ import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/ex
 import { convert as unitConvert } from '../../../ext/units/index.js';
 import { volumeAt, volumeContextOf, numericColsOf } from './analysis.js';
 import { applyAnalysisGeo, checkAbort, fmtStat, gradeUnitSel, plotExportBtns, runCancellable, saveAnalysisCfg, scanProgressText, scopeMask, scopeMissing, setAnalysisOpen } from './analysis-ui.js';
-import { floatWin, nextZ } from './windows.js';
+import { floatWin, focusWindow } from './windows.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { crosstabMerge, xtabAdd, xtabKey, XTAB_GROUPS_CAP } from './scanner.js';
 import { statsGroupCols } from './stats.js';
@@ -33,7 +33,7 @@ export function parseCutoffs(txt) {
 
 export function openCrosstab(L, ropts) {
   if (!L || !gridAxesOf(L)) { $('#meta').textContent = 'cross-tab: needs a regular block model'; return null; }
-  const ex = _xtabWins.get(L.id); if (ex) { if (!ropts) { ex.win.el.style.zIndex = nextZ(); return ex; } ex.win.close(); }
+  const ex = _xtabWins.get(L.id); if (ex) { if (!ropts) { focusWindow(ex.win.el); return ex; } ex.win.close(); }
   const nums = numericColsOf(L); if (!nums.length) { $('#meta').textContent = 'cross-tab: no numeric column'; return null; }
   const groups0 = statsGroupCols(L), gu0 = L.gtUnits || {};
   const w0 = gu0.weight === '#const' ? (gu0.densConst != null ? String(gu0.densConst) : '') : (gu0.weight || '');
