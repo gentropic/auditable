@@ -518,6 +518,43 @@ async function drive(url, tag) {
   chk(`[${tag}] Back: window ${bk0.wins} → ${bkWin.wins}; props → ${bkProps.props}; menus ${bkM2.menus} → ${bkSub.menus} → ${bkMenu.menus}; select → ${bkSel.sel}; closed by hand → history entry ${bkHand.state ? 'LEFT' : 'gone'}`,
     bk0.wins === 1 && bk0.state === 1 && bkWin.wins === 0 && !bkProps.props && bkM2.menus === 2 && bkSub.menus === 1 && bkMenu.menus === 0 && !bkSel.sel && !bkHand.state);
 
+  // 23. double-tap: on the model the orbit centre glides to that spot; on empty space, fit
+  // 24. measuring by finger: a tap takes A under the finger; press-slide-lift takes B under
+  //     the crosshair 64 px ABOVE the finger, not under the finger
+  const secWas = await p.evaluate(async () => { const m = document.getElementById('secMode'), was = m.value; m.value = 'off'; m.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('rpClose').click(); for (const w of document.querySelectorAll('.fwin')) if (w._minimize && w.style.display !== 'none') w._minimize();
+    document.getElementById('btnFit').click(); await new Promise((r) => setTimeout(r, 1500)); return was; });
+  const dt = await p.evaluate(() => { const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), hits = [];
+    for (let y = 20; y < r.height - 20; y += 6) for (let x = 20; x < r.width - 20; x += 6) if (M.renderer.pick(x, y, M.cam, {})) hits.push([x, y]);
+    hits.sort((a, c) => a[0] - c[0]);
+    const cx = r.width / 2, cy = r.height / 2, far = hits.filter(([x, y]) => Math.hypot(x - cx, y - cy) > 60);
+    return { r: [r.left, r.top], off: far[Math.floor(far.length * 0.3)], a: hits[Math.floor(hits.length * 0.2)], b: hits[Math.floor(hits.length * 0.8)], t0: M.cam.state.target.slice() }; });
+  await p.touchscreen.tap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]); await p.waitForTimeout(80); await p.touchscreen.tap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]);
+  await p.waitForTimeout(800);
+  const piv = await p.evaluate((t0) => { const M = window._micro, t = M.cam.state.target; return { moved: Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]), meta: document.getElementById('meta').textContent }; }, dt.t0);
+  const emptyPt = await p.evaluate(() => { const M = window._micro, r = document.getElementById('cv').getBoundingClientRect();
+    for (let y = 30; y < r.height - 30; y += 8) for (let x = 20; x < r.width - 20; x += 8) if (!M.renderer.pick(x, y, M.cam, {}) && document.elementFromPoint(r.left + x, r.top + y) === document.getElementById('cv')) return [r.left + x, r.top + y]; return null; });
+  if (emptyPt) { await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(80); await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(1200); }
+  const fitBack = await p.evaluate((t0) => { const t = window._micro.cam.state.target; return Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]); }, dt.t0);
+  chk(`[${tag}] double-tap: the orbit centre moved ${piv.moved.toFixed(0)} m to the tapped spot ("${piv.meta}"); empty space → fit (back within ${fitBack.toFixed(1)} m)`,
+    piv.moved > 10 && /orbiting/.test(piv.meta) && !!emptyPt && fitBack < 1);
+  await p.evaluate(() => { document.getElementById('rpClose').click(); document.getElementById('btnMeasure').click(); });
+  const cdpM = await ctx.newCDPSession(p);
+  const TT = (type, x, y) => cdpM.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: dt.r[0] + x, y: dt.r[1] + y }] });
+  await TT('touchStart', ...dt.a); await TT('touchEnd'); await p.waitForTimeout(600);
+  const mA = await p.evaluate(() => document.getElementById('meta').textContent);
+  const [bx, by] = dt.b;
+  await TT('touchStart', bx - 30, by + 94);
+  for (let i = 1; i <= 6; i++) await TT('touchMove', bx - 30 + 5 * i, by + 94 - 5 * i);
+  await p.waitForTimeout(100);
+  const aimShown = await p.evaluate(() => { const s = document.getElementById('aimSvg'); return !!s && s.style.display !== 'none'; });
+  await TT('touchEnd'); await p.waitForTimeout(800);
+  const mB = await p.evaluate(() => ({ meta: document.getElementById('meta').textContent, B: [+document.getElementById('mB').getAttribute('cx'), +document.getElementById('mB').getAttribute('cy')], aimGone: document.getElementById('aimSvg').style.display === 'none' }));
+  chk(`[${tag}] measure by finger: tap → "${mA}"; the crosshair showed ${aimShown}; B at ${mB.B.map(Math.round)} for a crosshair at ${bx},${by} (the finger was 64 px lower) → "${mB.meta}"`,
+    /second point/.test(mA) && aimShown && Math.hypot(mB.B[0] - bx, mB.B[1] - by) < 3 && /measure: [\d.]+ m/.test(mB.meta) && mB.aimGone);
+  await p.evaluate((was) => { const m = document.getElementById('secMode'); m.value = was; m.dispatchEvent(new Event('input', { bubbles: true })); }, secWas);
+  await p.keyboard.press('Escape');
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {

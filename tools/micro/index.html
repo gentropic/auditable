@@ -9472,7 +9472,7 @@ function armMeasure() {
   $('#measureSvg').style.display = 'none';
   $('#btnMeasure').classList.add('on');
   cv.style.cursor = 'crosshair';
-  $('#meta').textContent = 'measure: click two points/blocks';
+  $('#meta').textContent = _isMobile() ? 'measure: tap two points — hold and slide for a crosshair' : 'measure: click two points/blocks';
 }
 function clearMeasure() {
   _measure = { arm: 0, a: null, b: null, mouse: null };
@@ -9483,11 +9483,11 @@ function clearMeasure() {
 }
 async function measureClick(cssX, cssY) {
   const hit = renderer.pick(cssX, cssY, cam, { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() });
-  if (hit == null) return;
+  if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
   const world = await pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
   if (!world) return;
   const local = [world[0] - frame.origin[0], world[1] - frame.origin[1], world[2] - frame.origin[2]];
-  if (!_measure.a) { _measure.a = local; $('#meta').textContent = 'measure: click the second point'; drawMeasure(); }
+  if (!_measure.a) { _measure.a = local; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); }
   else {
     _measure.b = local; _measure.arm = 0; _measure.mouse = null;
     cv.style.cursor = '';
@@ -9995,8 +9995,63 @@ cv.addEventListener('pointerdown', (e) => {
   if (!_measure.arm || e.button !== 0) return;
   e.stopImmediatePropagation(); e.preventDefault();
   const r = cv.getBoundingClientRect();
+  if (e.pointerType === 'touch') { measureAim(e); return; }
   measureClick(e.clientX - r.left, e.clientY - r.top);
 }, { capture: true });
+// a FINGER covers what it measures. A quick tap measures where it lands (with the touch
+// pick's 16 px allowance); press and slide (or hold) and a crosshair rides 64 px above the
+// finger — aim it, lift, and the point is taken under the crosshair. A second finger
+// cancels the aim.
+const AIM_DY = 64;
+let _aim = null;                                           // { id, x0, y0, t0, on, x, y } — canvas css px
+function aimSvg() {
+  let s = $('#aimSvg');
+  if (!s) {
+    s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.id = 'aimSvg';
+    s.setAttribute('style', 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;z-index:2');
+    setHTML(s, trusted('<g id="aimG" stroke-linecap="round"><circle r="13" fill="none" stroke="#121212" stroke-width="4"/><circle r="13" fill="none" stroke="#ff26b3" stroke-width="1.6"/>'
+      + '<path d="M-22 0H-6M6 0H22M0 -22V-6M0 6V22" stroke="#121212" stroke-width="4"/><path d="M-22 0H-6M6 0H22M0 -22V-6M0 6V22" stroke="#ff26b3" stroke-width="1.6"/><circle r="1.6" fill="#ff26b3"/></g>'));
+    $('#view').appendChild(s);
+  }
+  return s;
+}
+function drawAim() {
+  const s = aimSvg();
+  if (!_aim || !_aim.on) { s.style.display = 'none'; return; }
+  s.style.display = '';
+  s.querySelector('#aimG').setAttribute('transform', `translate(${_aim.x} ${_aim.y})`);
+  if (_measure.a && !_measure.b) { _measure.mouse = [_aim.x, _aim.y]; drawMeasure(); }
+}
+function measureAim(e) {
+  if (_aim) { _aim = null; drawAim(); return; }            // a second finger: never mind
+  const r = cv.getBoundingClientRect();
+  const id = e.pointerId, x0 = e.clientX - r.left, y0 = e.clientY - r.top;
+  _aim = { id, x0, y0, t0: performance.now(), on: false, x: x0, y: Math.max(0, y0 - AIM_DY) };
+  const hold = setTimeout(() => { if (_aim && _aim.id === id) { _aim.on = true; drawAim(); } }, 250);
+  const done = () => { clearTimeout(hold); removeEventListener('pointermove', move, true); removeEventListener('pointerup', up, true); removeEventListener('pointercancel', cancel, true); };
+  const move = (ev) => {
+    if (!_aim || ev.pointerId !== id) return;
+    ev.preventDefault(); ev.stopImmediatePropagation();
+    const x = ev.clientX - r.left, y = ev.clientY - r.top;
+    if (!_aim.on && Math.hypot(x - x0, y - y0) > 10) _aim.on = true;
+    _aim.x = x; _aim.y = Math.max(0, y - AIM_DY);
+    drawAim();
+  };
+  const cancel = (ev) => { if (ev.pointerId === id) { done(); _aim = null; drawAim(); } };
+  const up = (ev) => {
+    if (ev.pointerId !== id) return;
+    done();
+    ev.stopImmediatePropagation();
+    const a = _aim; _aim = null; drawAim();
+    if (!a) return;                                        // cancelled by a second finger
+    if (a.on) { measureClick(a.x, a.y); return; }          // aimed: exactly under the crosshair
+    let x = a.x0, y = a.y0;                                // a tap: under the finger, or the nearest hit within 16 px
+    const popts = { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() };
+    if (renderer.pick(x, y, cam, popts) == null) { const nb = nearPick(Math.round(x), Math.round(y), TOUCH_PICK_R, popts); if (nb) { x = nb.x; y = nb.y; } }
+    measureClick(x, y);
+  };
+  addEventListener('pointermove', move, { capture: true, passive: false }); addEventListener('pointerup', up, true); addEventListener('pointercancel', cancel, true);
+}
 
 // view directions: keep target + radius, set azimuth/elevation. Mining reading:
 // n = LOOKING north (camera south of target), level view; d = plan (down); u = up.
@@ -10006,6 +10061,27 @@ function setView(theta, phi) {
   cam.update(); requestRender();
 }
 const PHI_MAX = Math.PI / 2 - 0.02;
+// orbit about a picked spot: the target GLIDES there (a short eased pan — same angle, same
+// distance), so the spot comes to the centre without the view jumping
+let _lastTap = null, _glideRaf = 0;
+function glideTarget(to, ms = 260) {
+  const st = cam.state, from = st.target.slice(), t0 = performance.now();
+  cancelAnimationFrame(_glideRaf);
+  const step = () => {
+    const k = Math.min(1, (performance.now() - t0) / ms), ease = 1 - (1 - k) ** 3;
+    st.target = from.map((v, i) => v + (to[i] - v) * ease);
+    cam.update(); requestRender();
+    if (k < 1) _glideRaf = requestAnimationFrame(step);
+  };
+  step();
+}
+async function pivotOn(hit, cssX, cssY) {
+  const L = layerById(hit.layer);
+  const w = L && L.kind === 'mesh' ? ((await meshHitAt(L, cssX, cssY)) || {}).point : await pickHitPoint(hit, cssX, cssY);
+  if (!w || !frame) return;
+  glideTarget([w[0] - frame.origin[0], w[1] - frame.origin[1], w[2] - frame.origin[2]]);
+  $('#meta').textContent = 'orbiting about the tapped spot — double-tap empty space to fit';
+}
 // face-on to the current section: look along the plane normal (minimal turn —
 // keep the side we're already on) and pivot the orbit on the section plane.
 function viewAlongSection(back = false) {
@@ -13039,8 +13115,18 @@ cv.addEventListener('pointerup', (e) => {
   const popts = { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() };
   let hit = renderer.pick(px, py, cam, popts);
   if (hit == null && d.touch) { const nb = nearPick(Math.round(px), Math.round(py), TOUCH_PICK_R, popts); if (nb) { hit = nb.hit; px = nb.x; py = nb.y; } }
+  // a finger's DOUBLE tap: on the model, orbit about that spot (the first tap already
+  // showed its record); on empty space, fit. Touch only — a mouse keeps its clicks.
+  const now = performance.now();
+  const dbl = d.touch && _lastTap && now - _lastTap.t < 320 && Math.hypot(e.clientX - _lastTap.x, e.clientY - _lastTap.y) < 30;
+  _lastTap = dbl ? null : { t: now, x: e.clientX, y: e.clientY };
+  if (dbl) {
+    if (hit == null) { $('#btnFit').click(); $('#meta').textContent = 'fit — double-tap the model to orbit about a spot'; }
+    else pivotOn(hit, px, py);
+    return;
+  }
   if (hit == null) { $('#recPanel').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); return; }
-  _recTap = { y: r.top + py, t: performance.now() };       // the card keeps clear of the tapped spot
+  _recTap ={ y: r.top + py, t: performance.now() };       // the card keeps clear of the tapped spot
   const hitL = layerById(hit.layer);
   if (hitL && hitL.kind === 'mesh') {                      // a surface: no rows to show, so show the geometry
     renderer.setPicked(null); requestRender();
