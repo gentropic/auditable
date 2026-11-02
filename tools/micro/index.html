@@ -921,6 +921,24 @@
   /* typing a filter, the top bar is the filter: the other buttons step aside until it blurs */
   body.mobile #bar:has(#filter:focus) > :not(#filterWrap) { display: none !important; }
   body.mobile #acPopup .ac-item { min-height: 40px; align-items: center; font-size: 14px; }
+  /* the EXPRESSION STRIP: while a filter / ƒ field has focus on a phone, two rows ride the
+     keyboard's top edge (--kb, from visualViewport) — the symbols a phone keyboard hides two
+     pages deep, and what the completer offers at the caret (columns, operators, the values) */
+  #exprStrip { display: none; }
+  body.mobile.expr-on #exprStrip {
+    display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 900;
+    background: var(--bg-bar); border-top: 1px solid var(--bd2); font-family: var(--mono); box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.4);
+  }
+  #exprStrip .xs-row { display: flex; align-items: center; gap: 5px; height: 42px; padding: 0 6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior: contain; }
+  #exprStrip .xs-row::-webkit-scrollbar { display: none; }
+  #exprStrip .xs-row + .xs-row { border-top: 1px solid var(--border); }
+  #exprStrip button { flex: 0 0 auto; min-width: 36px; height: 32px; padding: 0 9px; border: 1px solid var(--bd2); border-radius: 4px; background: var(--bg-btn); color: var(--text-hi); font: inherit; font-size: 15px; white-space: nowrap; touch-action: pan-x; }
+  #exprStrip .xs-sugg button { font-size: 13px; }
+  #exprStrip button.k-column { color: var(--text-hi); }
+  #exprStrip button.k-value { color: var(--ok); }
+  #exprStrip button.k-function { color: var(--accent); }
+  #exprStrip button.k-keyword, #exprStrip button.k-operator { color: var(--info); }
+  #exprStrip .xs-none { color: var(--dim); font-size: 12px; padding: 0 4px; white-space: nowrap; }
   body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44svh; }
   /* a pick opens a CARD: sized to its content, floating over the view (which does NOT yield —
      nothing moves under a stray tap); above the bar + strips + any open sheet + the chips, or
@@ -1044,6 +1062,7 @@
        layers / properties buttons for the bottom tool bar — populated by layoutBars() -->
   <div id="secStrip"><button id="secThin" title="thinner slab">−</button><button id="secThick" title="thicker slab">+</button><button id="secMoreBtn" title="more section options — keep · dip · plane · follow · 2D" aria-label="more section options">⋯</button></div>
   <div id="secExtra"><span id="secKeep" class="seg" title="what the section keeps"><button data-c="slab">slab</button><button data-c="front">front</button><button data-c="behind">behind</button></span></div>
+  <div id="exprStrip" aria-label="expression keys"><div class="xs-row xs-keys"></div><div class="xs-row xs-sugg"></div></div>
   <div id="selBar"><span id="selBarShape" class="seg" title="the shape you drag"><button data-k="rect" title="rectangle" aria-label="rectangle"></button><button data-k="lasso" title="lasso" aria-label="lasso"></button></span><button id="selBarThrough" title="through — take everything in the dragged tube, hidden blocks included; off = only what you can see" aria-label="select through"></button><span id="selBarModes" class="seg" title="what the next drag does — a phone has no shift / alt"><button data-m="replace">new</button><button data-m="add" aria-label="add">+</button><button data-m="subtract" aria-label="remove">−</button></span><span class="sp"></span><button id="selBarCol" title="write the selection as a 0 / 1 column on this layer">→ col</button><button id="selBarClear" title="clear the selection" aria-label="clear the selection">×</button></div>
   <div id="view"><canvas id="cv"></canvas><canvas id="decoCv" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas><svg id="knifeSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="knifeLine" stroke="#c89b3c" stroke-width="1.5" stroke-dasharray="6 4"/></svg><svg id="secSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="secPoly" fill="rgba(200,155,60,0.05)" stroke="#c89b3c" stroke-width="1.2" stroke-dasharray="7 5"/></svg><svg id="bandSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="bandPolyA" fill="rgba(74,120,176,0.10)" stroke="#4a78b0" stroke-width="1.4"/><polygon id="bandPolyB" fill="none" stroke="#4a78b0" stroke-width="1.4" stroke-dasharray="4 3"/><text id="bandLabel" fill="#fff" font-size="11" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3"></text></svg><svg id="selSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="selShape" fill="rgba(255,217,77,0.08)" stroke="#ffd94d" stroke-width="1.2" stroke-dasharray="5 4"/></svg><svg id="measureSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="mLineCase" stroke="#121212" stroke-width="4" stroke-linecap="round"/><line id="mLine" stroke="#ff26b3" stroke-width="1.5"/><circle id="mA" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><circle id="mB" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><text id="mLabel" fill="#fff" font-size="12" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3.5"></text></svg></div>
   <div id="empty"><b>open a block model, drillholes, or point cloud</b><span>Open… or drag .csv / .xlsx / .dm / .parquet / .las / .ply / .xyz / .msh / .obj / .lfm / .dxf / .wfr / .omf / .tif / .grd anywhere — several at once become layers</span><span>nothing handy? <a id="sampleDemo" class="cta">▸ open the demo project</a></span><span style="margin-top:-4px">a block model + drillholes + topography, sectioned, with a grade–tonnage curve — nothing is downloaded, it is all made here</span><span>or just <a id="sampleBlocks">▸ a 2M-block model</a> · a bench scan at <a data-sample="2000000">▸ 2M</a> · <a data-sample="10000000">▸ 10M</a> · <a data-sample="50000000">▸ 50M</a> points — all made locally</span><span style="color:var(--faint)">new here? &nbsp;<a href="https://gentropic.org/micro/docs/" target="_blank" rel="noopener noreferrer">read the manual</a> &nbsp;·&nbsp; Help → Keyboard &amp; mouse — the whole vocabulary</span><span class="empty-sec">Evaluating this for work? → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a> — verify it, and how to bring it through approval</span><span class="empty-sec empty-dl">One file, no install — <a href="https://gentropic.org/micro/micro.html" download="micro.html">download micro.html</a> to keep, share, or run offline</span><div id="emptyRecents" class="empty-recents"></div><div id="emptyProjects" class="empty-recents"></div></div>
@@ -2801,6 +2820,7 @@ function openCalcWindow(L, selIdx) {
       return v.ok;
     };
     const sync = () => syncHL(ed, edhl);
+    exprField(ed, () => ({ columns: schemaFor(), values: L.id === S.activeId ? columnValues : () => [] }));   // the phone's strip
     for (const ev of ['scroll', 'keyup', 'click']) ed.addEventListener(ev, sync);
     ed.addEventListener('input', () => { sync(); if (check()) project(); });
     // ── the PROJECTION: the expression rendered as widgets (same contract as the
@@ -6909,7 +6929,7 @@ function attachAutocomplete(input, getCtx) {
   input.addEventListener('blur', () => setTimeout(acClose, 120));        // delay so a popup click lands first
 }
 function acRefresh(input, getCtx) {
-  if (_ac.suppress) return;
+  if (_ac.suppress || (_exprFields.has(input) && _isMobile())) return;   // a phone has the strip instead
   const ctx = getCtx(); if (!ctx) return acClose();
   const res = complete(input.value, input.selectionStart, ctx);
   if (!res.options.length) return acClose();
@@ -6952,6 +6972,84 @@ function acAccept(i) {
   acClose();
 }
 attachAutocomplete($('#filter'), filterCtx);
+
+// ── the phone's EXPRESSION STRIP: a field registered here (the filter, the ƒ editor)
+// gets, while it has focus on a phone, a keys row (caret ◂ ▸ and the symbols a phone
+// keyboard hides — = > < ( ) " , …) and a suggestions row — the completer's own options
+// at the caret, so after a column it offers operators, after `=` the category values.
+// It takes the floating popup's place there. Chips act on click with mousedown
+// prevented, so the field keeps focus and the keyboard stays up. ──
+const _exprFields = new WeakMap();                         // field → () => completer ctx
+const XS_KEYS = ['=', '>', '<', '(', ')', '"', ',', '!=', '>=', '<=', '+', '-', '*', '/'];
+const XS_PAD = new Set(['=', '>', '<', '!=', '>=', '<=', '+', '-', '*', '/']);   // spaced both sides
+function exprField(el, getCtx) { _exprFields.set(el, getCtx); }
+const exprStripField = () => { const a = document.activeElement; return a && _exprFields.has(a) && _isMobile() ? a : null; };
+// put `txt` over [from, to) with the caret `back` chars before its end, then let the
+// field's own input listeners (highlight, validation, the strip) see it
+function xsInsert(el, from, to, txt, back = 0) {
+  el.value = el.value.slice(0, from) + txt + el.value.slice(to);
+  const c = from + txt.length - back;
+  el.setSelectionRange(c, c);
+  el.dispatchEvent(new Event('input'));
+}
+function xsKey(el, k) {
+  const v = el.value, a = el.selectionStart, b = el.selectionEnd;
+  if (k === '◂' || k === '▸') { const c = Math.max(0, Math.min(v.length, (k === '◂' ? Math.min(a, b) : Math.max(a, b)) + (a === b ? (k === '◂' ? -1 : 1) : 0))); el.setSelectionRange(c, c); return xsSync(); }
+  if (k === '"') {                                        // a pair, caret inside — or step over a closing one
+    if (a === b && v[a] === '"') { el.setSelectionRange(a + 1, a + 1); return xsSync(); }
+    return xsInsert(el, a, b, '""', 1);
+  }
+  if (k === ')' && a === b && v[a] === ')') { el.setSelectionRange(a + 1, a + 1); return xsSync(); }
+  if (XS_PAD.has(k)) {
+    const pre = a > 0 && !/\s/.test(v[a - 1]) ? ' ' : '';
+    const post = v[b] === ' ' ? '' : ' ';
+    return xsInsert(el, a, b, pre + k + post, post ? 0 : -1);   // over an existing space: land past it
+  }
+  xsInsert(el, a, b, k === ',' ? ', ' : k);
+}
+function xsAccept(el, res, o) {                            // a suggestion: acAccept's replace, plus a trailing
+  const tail = el.value[res.to];                           // space so the next row (operators) follows on
+  const opens = o.value.endsWith('(');
+  const ins = o.value + (opens || tail === ' ' || tail === ')' ? '' : ' ');
+  xsInsert(el, res.from, res.to, ins);
+}
+function xsSync() {
+  const el = exprStripField();
+  document.body.classList.toggle('expr-on', !!el);
+  if (!el) return;
+  acClose();
+  const strip = $('#exprStrip'), keys = strip.querySelector('.xs-keys'), sugg = strip.querySelector('.xs-sugg');
+  if (!keys.childElementCount) for (const k of ['◂', '▸', ...XS_KEYS]) {
+    const b = document.createElement('button'); b.type = 'button'; b.tabIndex = -1; b.textContent = k === '-' ? '−' : k; b.dataset.k = k;
+    if (k === '◂' || k === '▸') b.setAttribute('aria-label', k === '◂' ? 'caret left' : 'caret right');
+    keys.appendChild(b);
+  }
+  sugg.replaceChildren();
+  const ctx = _exprFields.get(el)();
+  const res = ctx ? complete(el.value, el.selectionStart, ctx) : { options: [] };
+  if (!res.options.length) { const s = document.createElement('span'); s.className = 'xs-none'; s.textContent = ctx ? 'no suggestions here — type, or use the keys above' : 'no columns'; sugg.appendChild(s); }
+  for (const o of res.options.slice(0, 60)) {
+    const b = document.createElement('button'); b.type = 'button'; b.tabIndex = -1; b.className = 'k-' + o.kind; b.textContent = o.value;
+    if (o.detail) b.title = o.detail;
+    b.onclick = () => xsAccept(el, res, o);
+    sugg.appendChild(b);
+  }
+  sugg.scrollLeft = 0;
+}
+{
+  const strip = $('#exprStrip');
+  strip.addEventListener('mousedown', (e) => e.preventDefault());   // keep the field's focus (and the keyboard)
+  strip.querySelector('.xs-keys').addEventListener('click', (e) => { const b = e.target.closest('button'); const el = exprStripField(); if (b && el) xsKey(el, b.dataset.k); });
+  document.addEventListener('focusin', xsSync);
+  document.addEventListener('focusout', () => setTimeout(xsSync, 0));   // after focus lands on whatever's next
+  document.addEventListener('selectionchange', () => { if (exprStripField()) xsSync(); });   // a tap moves the caret → new context
+  document.addEventListener('input', (e) => { if (_exprFields.has(e.target)) xsSync(); }, true);
+  const vv = window.visualViewport;                         // the keyboard: whatever the visual viewport lost at the bottom
+  const kb = () => document.documentElement.style.setProperty('--kb', vv ? Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) + 'px' : '0px');
+  if (vv) { vv.addEventListener('resize', kb); vv.addEventListener('scroll', kb); }
+  kb();
+}
+exprField($('#filter'), filterCtx);
 
 // ── expr syntax highlighting (lamina's overlay pattern verbatim): a colored
 // layer driven by expr.tokenize behind a transparent-text input. Monospace +
@@ -8550,12 +8648,13 @@ async function newProject() {
 // the in-app prompt — same grammar as window.prompt (null on cancel), but
 // it's OUR dialog: Enter accepts, Esc/backdrop cancel, text pre-selected
 let _pmResolve = null;
-function microPrompt(title, initial = '') {
+function microPrompt(title, initial = '', opts = {}) {
   return new Promise((resolve) => {
     _pmResolve = resolve;
     $('#pmTitle').textContent = title;
     $('#pmMsg').style.display = 'none';
     const inp = $('#pmInput');
+    if (opts.expr) exprField(inp, opts.expr); else _exprFields.delete(inp);   // an expression answer gets the phone's strip
     inp.style.display = '';
     inp.value = initial;
     $('#pmDlg').classList.add('show');
@@ -11449,7 +11548,8 @@ function layerMenu(L, x, y) {
     { sep: true },                                          // ── derive / store ──
     ...((L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
     ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: async () => {
-      const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', L.holeFilter || '');
+      const cc = await peekCollarCols(L.docs.dhDoc).catch(() => []);
+      const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', L.holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
       if (v == null) return;
       const r = await applyHoleFilter(L, v);
       $('#meta').textContent = r && r.err ? `hole filter: ${r.err}` : (r && r.holes != null ? `hole filter: ${r.holes} of ${r.total} holes` : 'hole filter cleared');
@@ -12473,7 +12573,8 @@ async function applyHoleFilter(L, expr) {
 async function filterHolesSet(nd) {
   const members = groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc);
   if (!members.length) return;
-  const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', members[0].holeFilter || '');
+  const cc = await peekCollarCols(members[0].docs.dhDoc).catch(() => []);
+  const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', members[0].holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
   if (v == null) return;
   let res = null;
   for (const L of members) {

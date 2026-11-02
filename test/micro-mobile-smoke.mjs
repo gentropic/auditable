@@ -555,6 +555,41 @@ async function drive(url, tag) {
   await p.evaluate((was) => { const m = document.getElementById('secMode'); m.value = was; m.dispatchEvent(new Event('input', { bubbles: true })); }, secWas);
   await p.keyboard.press('Escape');
 
+  // 25. the expression strip: a focused filter gets keys + the completer's chips (not the
+  //     floating popup); real taps build `COL > ` then a category value without losing focus;
+  //     the ƒ editor gets it too; blurring takes it away
+  const xs = () => p.evaluate(() => { const s = document.getElementById('exprStrip'), r = s.getBoundingClientRect(), f = document.activeElement;
+    return { shown: getComputedStyle(s).display !== 'none', bottom: Math.round(r.bottom), vh: innerHeight, val: f && f.value, focus: f && (f.id || f.tagName), ac: document.getElementById('acPopup').classList.contains('show'),
+      kinds: [...new Set([...s.querySelectorAll('.xs-sugg button')].map((b) => b.className))], keys: s.querySelectorAll('.xs-keys button').length }; });
+  await p.evaluate(() => { const M = window._micro; M.setActiveLayer(M.layers().find((l) => l.kind === 'blocks').id); const f = document.getElementById('filter'); f.value = ''; f.dispatchEvent(new Event('input')); });
+  await p.tap('#filter'); await p.waitForTimeout(200);
+  const xs0 = await xs();
+  const firstCol = await p.evaluate(() => document.querySelector('#exprStrip .xs-sugg button.k-column').textContent);
+  await p.tap('#exprStrip .xs-sugg button.k-column'); await p.waitForTimeout(80);
+  const xs1 = await xs();
+  await p.tap('#exprStrip .xs-keys button[data-k=">"]'); await p.waitForTimeout(80);
+  const xs2 = await xs();
+  const catCol = await p.evaluate(() => { const h = window._micro.blockDoc().header; return h.columns[h.mapping.cat]; });
+  await p.evaluate(() => { const f = document.getElementById('filter'); f.value = ''; f.dispatchEvent(new Event('input')); });
+  await p.keyboard.type(catCol); await p.tap('#exprStrip .xs-keys button[data-k="="]'); await p.waitForTimeout(80);
+  const xs3 = await xs();
+  await p.tap('#exprStrip .xs-sugg button.k-value'); await p.waitForTimeout(80);
+  const xs4 = await xs();
+  await p.evaluate(() => { const f = document.getElementById('filter'); f.value = ''; f.dispatchEvent(new Event('input')); f.blur(); });
+  await p.waitForTimeout(100);
+  const xs5 = await xs();
+  chk(`[${tag}] expression strip on the filter: ${xs0.keys} keys + ${xs0.kinds.join(' ')} (popup ${xs0.ac}), flush at the bottom ${xs0.bottom}/${xs0.vh}; taps → "${xs1.val}" → "${xs2.val}" (focus ${xs2.focus}); "${xs3.val}" offers ${xs3.kinds.join(' ')} → "${xs4.val}"; blurred → shown ${xs5.shown}`,
+    xs0.shown && !xs0.ac && xs0.keys >= 10 && xs0.kinds.includes('k-column') && xs0.bottom === xs0.vh
+    && xs1.val === firstCol + ' ' && xs1.kinds.includes('k-operator') && xs2.val === firstCol + ' > ' && xs2.focus === 'filter'
+    && xs3.val === catCol + ' = ' && xs3.kinds.join() === 'k-value' && new RegExp(`^${catCol} = ".+" $`).test(xs4.val) && !xs5.shown);
+  await p.evaluate(() => { const M = window._micro; M.openCalcWindow(M.layers().find((L) => L.id === M.activeId())); });
+  await p.waitForTimeout(400);
+  await p.tap('.cw-edwrap textarea'); await p.waitForTimeout(150);
+  await p.tap('#exprStrip .xs-keys button[data-k="("]'); await p.tap('#exprStrip .xs-sugg button.k-column'); await p.tap('#exprStrip .xs-keys button[data-k="+"]');
+  const xsCalc = await xs();
+  chk(`[${tag}] … and on the ƒ editor: "${xsCalc.val}" (focus ${xsCalc.focus})`, xsCalc.shown && /^\(\w+ \+ $/.test(xsCalc.val) && xsCalc.focus === 'TEXTAREA');
+  await p.evaluate(() => { document.activeElement.blur(); for (const w of document.querySelectorAll('.fwin')) if (w._minimize && w.style.display !== 'none') w._minimize(); });
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {
