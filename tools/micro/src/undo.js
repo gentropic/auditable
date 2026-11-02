@@ -11,6 +11,10 @@
 const MAX = 50, COALESCE_MS = 500;
 const stack = [];
 let undoing = false;
+// told whenever the history changes — the phone's undo button follows it
+const listeners = new Set();
+export function onUndoChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+const changed = () => { for (const fn of listeners) fn(); };
 
 export function pushUndo(label, undo, { key = null } = {}) {
   if (undoing) return;
@@ -18,14 +22,16 @@ export function pushUndo(label, undo, { key = null } = {}) {
   if (key && top && top.key === key && now - top.at < COALESCE_MS) { top.at = now; return; }
   stack.push({ label, undo, key, at: now });
   if (stack.length > MAX) stack.shift();
+  changed();
 }
 export const isUndoing = () => undoing;
 export const undoLabel = () => (stack.length ? stack[stack.length - 1].label : null);
-export function clearUndo() { stack.length = 0; }
+export function clearUndo() { stack.length = 0; changed(); }
 // → the label undone, or null when there was nothing
 export async function undoLast() {
   const e = stack.pop();
   if (!e) return null;
+  changed();
   // only the SYNCHRONOUS part is guarded: the restore's own recording happens
   // there (re-applying a selection); a user action while an async restore runs
   // (a filter re-sweeping) is a real step and must record

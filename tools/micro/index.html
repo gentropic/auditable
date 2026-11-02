@@ -660,6 +660,9 @@
   #sealPop li { margin: 2px 0; }
   #sealPop a { color: var(--accent); }
   #sealPop .dim { color: var(--dim); font-size: 11px; margin-top: 6px; }
+  #glLost { position: fixed; left: 8px; right: 8px; top: 44px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--bg-bar); border: 1px solid var(--fault, #d07a5c); border-radius: 6px; font: 12px/1.5 var(--mono); color: var(--text-hi); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  #glLost span { flex: 1 1 220px; }
+  #glLost button { font: inherit; color: var(--text-hi); background: var(--bg-btn); border: 1px solid var(--bd2); border-radius: 3px; padding: 6px 12px; min-height: 36px; cursor: pointer; }
   #palOverlay { position: fixed; inset: 0; z-index: 200; display: none; align-items: flex-start; justify-content: center; background: rgba(0,0,0,0.32); }
   #palBox { margin-top: 12vh; width: min(560px, 92vw); background: var(--panel, #1c1c1c); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); overflow: hidden; }
   #palInput { width: 100%; box-sizing: border-box; padding: 12px 14px; font: 15px/1.2 system-ui, sans-serif; background: transparent; color: var(--fg, #eee); border: none; border-bottom: 1px solid var(--border); outline: none; }
@@ -820,6 +823,11 @@
   html:has(body.mobile) { overscroll-behavior: none; }
   body.mobile #bar .title, body.mobile #bar .mb, body.mobile #bar .spacer { display: none; }
   body.mobile #btnBurger, body.mobile #bar #btnCmd { display: inline-flex; }   /* outranks the .mb hide */
+  /* undo by touch — Ctrl+Z is the desktop's; a phone has no keyboard for it */
+  #btnUndo { display: none; }
+  body.mobile #bar #btnUndo { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; padding: 4px 8px; }
+  body.mobile #bar #btnUndo svg { width: 18px; height: 18px; }
+  body.mobile #bar #btnUndo:disabled { opacity: .35; }
   body.mobile #bar #filterWrap { flex: 1 1 auto; min-width: 0; }
   body.mobile #bar button { min-height: 32px; }
   body.mobile #bar2 { display: none; }
@@ -910,6 +918,7 @@
     <button class="mb" id="mView">View</button>
     <button class="mb" id="mHelp">Help</button>
     <button class="mb" id="btnCmd" title="command palette (Ctrl/⌘K) — search every action">⌘K</button>
+    <button id="btnUndo" title="nothing to undo" disabled aria-label="undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
     <span id="filterWrap"><div id="filterHL" class="exprhl" aria-hidden="true"></div><input id="filter" type="text" spellcheck="false" autocomplete="off" placeholder="filter…  e.g.  FE > 55 and LITO = &quot;HEMATITE&quot;" title="lamina's filter language, over every column in the file — Enter applies, Esc clears"><button id="filterClear" title="clear the filter" tabindex="-1">×</button><button id="filterWidgets" title="filter widgets — edit the filter as live controls" tabindex="-1">▾</button></span>
     <span class="spacer"></span>
     <button id="btnSelRect" title="select — rectangle (r) · shift adds, alt subtracts · the layers toggle flips to through/volume"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.034 12.681a.498.498 0 0 1 .647-.647l9 3.5a.5.5 0 0 1-.033.943l-3.444 1.068a1 1 0 0 0-.66.66l-1.067 3.443a.5.5 0 0 1-.943.033z"/><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h2"/><path d="M14 3h1"/><path d="M3 9v1"/><path d="M21 9v2"/><path d="M3 14v1"/></svg></button>
@@ -1024,7 +1033,7 @@ import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model fi
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
-import { pushUndo, undoLast, undoLabel, clearUndo } from './src/undo.js';
+import { pushUndo, undoLast, undoLabel, clearUndo, onUndoChange } from './src/undo.js';
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
@@ -1079,6 +1088,26 @@ const fpsBuf = [];
 function requestRender() { dirty = true; }
 attachOrbitInput(cv, cam, { onChange: requestRender });
 new ResizeObserver(() => { const [w, h] = renderer.resize(); cam.setAspect(w / h); requestRender(); }).observe(cv);
+// the GPU context can be taken away (Android does it under memory pressure, or after
+// the tab sat in the background). Every layer's GPU copy is gone with it, but the
+// session — layers, painted and calculated columns, selections — is plain JS and
+// still here. Say so, and offer the two safe exits instead of a silent black view.
+// (Re-streaming every layer into a fresh context is the real cure: roadmapped.)
+cv.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();                                      // lets the browser hand a context back
+  let bar = $('#glLost');
+  if (!bar) {
+    bar = document.createElement('div'); bar.id = 'glLost'; bar.setAttribute('role', 'alert');
+    const msg = document.createElement('span');
+    msg.textContent = 'The system reset the 3D graphics. Your layers and columns are still here — save the project, then reload.';
+    const save = document.createElement('button'); save.textContent = 'save project';
+    save.onclick = () => saveProject().catch((err) => { msg.textContent = 'save failed — ' + err.message; });
+    const reload = document.createElement('button'); reload.textContent = 'reload';
+    reload.onclick = () => location.reload();
+    bar.append(msg, save, reload); document.body.appendChild(bar);
+  }
+  bar.style.zIndex = nextZ();
+});
 
 let converged = true;
 let _viewMode = 'boxes';                                   // boxes = impostors · points = fixed splats (View menu)
@@ -1877,7 +1906,27 @@ function paintUndo(L) {
   paintAfterEdit(L, col);
   $('#meta').textContent = `paint: undid ${u.idx.length.toLocaleString()} · ${col.name}`;
 }
+// ONE undo, for Ctrl+Z and the phone's ↶ button: the paint stack of the layer being
+// painted (or the active one) first, then the shared history
+function _undoTarget() {
+  const Lz = _paintArm ? layerById(_paintArm.lid) : activeLayer();
+  return Lz && Lz._paintUndo && Lz._paintUndo.length ? Lz : null;
+}
+function undoAction() {
+  const Lz = _undoTarget();
+  if (Lz) paintUndo(Lz);
+  else if (undoLabel()) undoLast().then((lbl) => { if (lbl) $('#meta').textContent = `undone: ${lbl}`; });
+  else $('#meta').textContent = 'nothing to undo';
+}
+function syncUndoBtn() {
+  const b = $('#btnUndo'); if (!b) return;
+  const lbl = _undoTarget() ? 'paint stroke' : undoLabel();
+  b.disabled = !lbl;
+  b.title = lbl ? `undo ${lbl}` : 'nothing to undo';
+}
+onUndoChange(syncUndoBtn);
 function paintAfterEdit(L, col) {
+  syncUndoBtn();
   if (paintSelOf(L) === col.name) renderer.setLayerRuleCodes(L.id, col.codes);
   const w = _paintWins.get(L.id); if (w) w.render();
   const t2 = _attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
@@ -3918,6 +3967,10 @@ function layoutBars() {
   const was = document.body.classList.contains('mobile');
   document.body.classList.toggle('mobile', mobile);
   if (was !== mobile) relayoutWindows(mobile);
+  // a phone renders at most 2 device pixels per CSS pixel (an S24+'s 2.8 is ~2× the
+  // fill for no visible gain); the CSS size didn't change, so resize by hand
+  renderer.setMaxPixelRatio(mobile ? 2 : Infinity);
+  { const [w, h] = renderer.resize(); cam.setAspect(w / h); requestRender(); }
   ensureMobileChrome();
   if (mobile) {
     for (const sel of _TOOLROW) _moveTo($(sel), $('#bar'));             // park them (the hidden ones stay hidden by CSS)
@@ -8737,6 +8790,7 @@ async function showMemoryInfo() {
   row('', html`<span class="fi-x">vram = geometry buffers held by layers (hidden layers included). Convert big meshes to streamed, or remove layers, to shed it.</span>`);
   showHelp('memory', html`<table class="fi">${rows}</table>`);
 }
+$('#btnUndo').onclick = () => undoAction();
 $('#btnBurger').onclick = () => menuAt($('#btnBurger'), [
   { label: 'File', action: () => setTimeout(() => $('#mFile').click(), 0) },
   { label: 'Data', action: () => setTimeout(() => $('#mData').click(), 0) },
@@ -10418,10 +10472,7 @@ window.addEventListener('keydown', (e) => {
   // In a text field it stays the field's own text undo.
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z') && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) {
     e.preventDefault();
-    const Lz = _paintArm ? layerById(_paintArm.lid) : activeLayer();
-    if (Lz && Lz._paintUndo && Lz._paintUndo.length) paintUndo(Lz);
-    else if (undoLabel()) undoLast().then((lbl) => { if (lbl) $('#meta').textContent = `undone: ${lbl}`; });
-    else $('#meta').textContent = 'nothing to undo';
+    undoAction();
   }
   else if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyK' && _nlOn) { e.preventDefault(); closePalette(); openPalette({ nl: true }); }   // Alt+K → straight to the NL bar (experimental)
 }, true);
@@ -12458,6 +12509,7 @@ function renderLayers() {
     }
   };
   walk(S.layerTree, 0, false);
+  syncUndoBtn();                                           // the active layer decides whose paint strokes ↶ undoes
   if (S.layers.length >= 1 && !_lpUserHidden && !$('#layersPanel').classList.contains('show') && !_otherSheetOpen()) toggleLayersPanel(true);   // the panel is the layer's front door — right-click is the menu
   if (S.layers.length === 0) toggleLayersPanel(false);
   if (_propOpen && _propFor !== S.activeId) renderProps();  // re-target, never rebuild under a typing cursor

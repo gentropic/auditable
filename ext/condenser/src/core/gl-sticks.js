@@ -7,6 +7,7 @@
 // Radius is a live per-layer uniform (world meters) — the "stick thickness"
 // knob. Mask / section / picked-glow / repaint identical to blocks.
 
+import { backingRatio } from './ratio.js';
 import { makeProgram } from './gl-util.js';
 
 // 4×4-Bayer screen-door opacity (see gl-mesh / gl-blocks): see-through without
@@ -322,7 +323,7 @@ export function createSticksPipeline(gl) {
         gl.uniform1f(uni.backoff, s.radius * 2);
       }
       gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
       gl.uniform1i(uni.colorMode, colorMode);
       gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);

@@ -16,6 +16,7 @@ import { createSoupPipeline } from './gl-soup.js';
 import { createPickPipeline } from './gl-pick.js';
 import { createResolvePipeline } from './gl-resolve.js';
 import { layerSection, meshSection } from './section.js';
+import { backingRatio } from './ratio.js';
 
 const VERT = `#version 300 es
 precision highp float;
@@ -189,7 +190,7 @@ export function uploadChunk(gl, chunk) {
  * New chunks stream INTO the accumulation (no clear — they just draw behind).
  * All of it is correct because chunk prefixes are uniform subsamples (§2.1.4).
  */
-export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
+export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRatio = Infinity } = {}) {
   // preserveDrawingBuffer: the viewport is also the screenshot-export surface
   // (micro-spec §6) and readPixels-after-frame is how the smoke verifies renders;
   // the cost is one buffer copy per composite — negligible next to the splat pass.
@@ -674,7 +675,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
     pickRegion(cssRect, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingRatio(canvas);
       const x = Math.max(0, Math.round(cssRect.x * dpr));
       const yTop = Math.round(cssRect.y * dpr);
       const w = Math.min(canvas.width - x, Math.round(cssRect.w * dpr));
@@ -725,7 +726,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
     pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingRatio(canvas);
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
@@ -751,8 +752,12 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
+    // cap the backing ratio (Infinity = the device's own). A phone at DPR 2.8 fills
+    // ~2× the pixels of DPR 2 for no visible gain; the next resize() applies it.
+    setMaxPixelRatio(r) { maxPixelRatio = r > 0 ? r : Infinity; },
+    get maxPixelRatio() { return maxPixelRatio; },
     resize() {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, maxPixelRatio);   // the cap — every other site reads the ratio back from the canvas
       const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needClear = true; }
       return [w, h];
@@ -1006,7 +1011,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = 
         const ptsGroups = byLayer(pts);
         gl.useProgram(prog);
         gl.uniformMatrix4fv(uni.viewProj, false, vp);
-        gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+        gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas));
         gl.uniform1ui(uni.picked, pickedRec);
         gl.uniform1ui(uni.pickedLayer, pickedLayer);
         gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);

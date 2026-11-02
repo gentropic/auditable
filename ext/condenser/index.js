@@ -3747,6 +3747,17 @@ function createStickChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, se
   };
 }
 
+// ── src/core/ratio.js ──
+
+// the canvas's BACKING ratio — device pixels per CSS pixel as the renderer actually
+// sized it. Not window.devicePixelRatio: the renderer may cap it (a phone at DPR 2.8
+// renders ~2× the pixels of DPR 2 for no visible gain), and every CSS→device mapping
+// — picks, marquees, splat sizes — must use the ratio the buffer really has.
+function backingRatio(canvas) {
+  const cw = canvas && canvas.clientWidth;
+  return cw ? canvas.width / cw : ((typeof window !== 'undefined' && window.devicePixelRatio) || 1);
+}
+
 // ── src/core/gl-util.js ──
 
 // @gcu/condenser — shared GL scaffolding (used by the splat + impostor pipelines).
@@ -4093,7 +4104,7 @@ function createSticksPipeline(gl) {
         gl.uniform1f(uni.backoff, s.radius * 2);
       }
       gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
       gl.uniform1i(uni.colorMode, colorMode);
       gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
@@ -6368,7 +6379,7 @@ function createBlocksPipeline(gl) {
         gl.uniform1f(uni.backoff, s.radius * 2);
       }
       gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
       gl.uniform1i(uni.colorMode, colorMode);
       gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
@@ -7291,7 +7302,7 @@ function createPickPipeline(gl) {
     }
     gl.enable(gl.DEPTH_TEST);
     const s = cam.state;
-    const dpp = pointPx * (window.devicePixelRatio || 1);
+    const dpp = pointPx * backingRatio(gl.canvas);
     // A chunk writes only inside its bbox's screen footprint (+ a splat's
     // radius), so a scissored pick draws just the chunks over the region. A
     // one-pixel pick on a 60M-block model ran the vertex stage for every block
@@ -10434,7 +10445,7 @@ function uploadChunk(gl, chunk) {
  * New chunks stream INTO the accumulation (no clear — they just draw behind).
  * All of it is correct because chunk prefixes are uniform subsamples (§2.1.4).
  */
-function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
+function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRatio = Infinity } = {}) {
   // preserveDrawingBuffer: the viewport is also the screenshot-export surface
   // (micro-spec §6) and readPixels-after-frame is how the smoke verifies renders;
   // the cost is one buffer copy per composite — negligible next to the splat pass.
@@ -10919,7 +10930,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     pickRegion(cssRect, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingRatio(canvas);
       const x = Math.max(0, Math.round(cssRect.x * dpr));
       const yTop = Math.round(cssRect.y * dpr);
       const w = Math.min(canvas.width - x, Math.round(cssRect.w * dpr));
@@ -10970,7 +10981,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingRatio(canvas);
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
@@ -10996,8 +11007,12 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
+    // cap the backing ratio (Infinity = the device's own). A phone at DPR 2.8 fills
+    // ~2× the pixels of DPR 2 for no visible gain; the next resize() applies it.
+    setMaxPixelRatio(r) { maxPixelRatio = r > 0 ? r : Infinity; },
+    get maxPixelRatio() { return maxPixelRatio; },
     resize() {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, maxPixelRatio);   // the cap — every other site reads the ratio back from the canvas
       const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needClear = true; }
       return [w, h];
@@ -11251,7 +11266,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         const ptsGroups = byLayer(pts);
         gl.useProgram(prog);
         gl.uniformMatrix4fv(uni.viewProj, false, vp);
-        gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+        gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas));
         gl.uniform1ui(uni.picked, pickedRec);
         gl.uniform1ui(uni.pickedLayer, pickedLayer);
         gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);

@@ -254,6 +254,48 @@ async function drive(url, tag) {
   chk(`[${tag}] a knife section applied without an input event: strip on ${api.s1} (was ${api.s0})`, api.has && !api.s0 && api.s1);
   await p.evaluate(() => { document.getElementById('secMode').value = 'off'; document.getElementById('secMode').dispatchEvent(new Event('input')); });
 
+  // 16. undo by touch: a filter enables ↶, a real tap on it puts the filter back, and ↶ goes idle again
+  const before = await p.evaluate(async () => {
+    const M = window._micro, L = M.layers().find((l) => l.kind === 'blocks'); M.setActiveLayer(L.id);
+    const c = M.numericColsOf(L)[0], name = typeof c === 'string' ? c : (c && c.name);
+    const b = document.getElementById('btnUndo');
+    if (!b) return { shown: false };
+    const idle = b.disabled, shown = getComputedStyle(b).display !== 'none';
+    const f = document.getElementById('filter'); f.value = `${name} > -1e30`;
+    f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await new Promise((r) => setTimeout(r, 800));
+    const ub = b.getBoundingClientRect();
+    return { name, idle, shown, armed: !b.disabled, title: b.title, filtered: L.filterExpr, x: ub.left + ub.width / 2, y: ub.top + ub.height / 2, h: Math.round(ub.height) };
+  });
+  if (before.shown) { await p.touchscreen.tap(before.x, before.y); await p.waitForTimeout(800); }
+  const after = await p.evaluate(() => { const L = window._micro.layers().find((l) => l.kind === 'blocks'), b = document.getElementById('btnUndo'); return { filter: L.filterExpr || '', idle: !!b && b.disabled, meta: document.getElementById('meta').textContent }; });
+  chk(`[${tag}] ↶ shown ${before.shown} (${before.h}px), idle ${before.idle} → after a filter armed ${before.armed} ("${before.title}") → tapped: filter "${after.filter}", idle ${after.idle}, "${after.meta}"`,
+    before.shown && before.armed && !!before.filtered && after.filter === '' && after.idle && /undone: filter/.test(after.meta));
+
+  // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
+  //     pick through the capped buffer still lands on the model
+  const dpr = await p.evaluate(async () => {
+    const M = window._micro, cv = document.getElementById('cv');
+    document.getElementById('btnFit').click();
+    await new Promise((r) => setTimeout(r, 1500));
+    const r = cv.getBoundingClientRect();
+    let hit = null;
+    for (const [fx, fy] of [[0.5, 0.5], [0.45, 0.5], [0.55, 0.5], [0.5, 0.45], [0.5, 0.55]]) { hit = M.renderer.pick(r.width * fx, r.height * fy, M.cam, {}); if (hit) break; }
+    return { ratio: +(cv.width / cv.clientWidth).toFixed(3), device: devicePixelRatio, hit: !!hit };
+  });
+  chk(`[${tag}] pixel ratio capped: canvas ${dpr.ratio} per CSS px (device ${dpr.device}); a pick lands ${dpr.hit}`, dpr.ratio <= 2.001 && dpr.device > 2 && dpr.hit);
+
+  // 15. the GPU context lost: preventDefault'd (restorable) and the user is TOLD, with save + reload
+  const lost = await p.evaluate(async () => {
+    const ext = document.getElementById('cv').getContext('webgl2').getExtension('WEBGL_lose_context');
+    if (!ext) return null;
+    ext.loseContext();
+    await new Promise((r) => setTimeout(r, 300));
+    const bar = document.getElementById('glLost');
+    return bar ? { buttons: [...bar.querySelectorAll('button')].map((b) => b.textContent), onTop: bar.contains(document.elementFromPoint(bar.getBoundingClientRect().left + 20, bar.getBoundingClientRect().top + 10)) } : { buttons: [] };
+  });
+  chk(`[${tag}] context lost → banner ${lost && lost.buttons.join(' · ')}, on top ${lost && lost.onTop}`, !!lost && lost.buttons.join() === 'save project,reload' && lost.onTop);
+
   chk(`[${tag}] no page errors (${errs.length ? errs.slice(0, 2).join(' ; ') : 'none'})`, errs.length === 0);
   await ctx.close();
 }

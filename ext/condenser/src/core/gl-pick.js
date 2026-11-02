@@ -7,6 +7,7 @@
 // spatial index. The record index is THE join key (micro-spec §4): a pick is a
 // row number in the source file.
 
+import { backingRatio } from './ratio.js';
 import { makeProgram, IDENTITY3 } from './gl-util.js';
 import { translateState } from './camera.js';
 import { layerSection, meshSection } from './section.js';
@@ -551,7 +552,7 @@ export function createPickPipeline(gl) {
     }
     gl.enable(gl.DEPTH_TEST);
     const s = cam.state;
-    const dpp = pointPx * (window.devicePixelRatio || 1);
+    const dpp = pointPx * backingRatio(gl.canvas);
     // A chunk writes only inside its bbox's screen footprint (+ a splat's
     // radius), so a scissored pick draws just the chunks over the region. A
     // one-pixel pick on a 60M-block model ran the vertex stage for every block

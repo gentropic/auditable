@@ -28,6 +28,7 @@
 // axis-aligned model): one orientation per chunk, so a rotated model draws as
 // true oriented boxes — the ray-box test runs in the block's own frame.
 
+import { backingRatio } from './ratio.js';
 import { makeProgram, IDENTITY3 } from './gl-util.js';
 
 const VERT = `#version 300 es
@@ -401,7 +402,7 @@ export function createBlocksPipeline(gl) {
         gl.uniform1f(uni.backoff, s.radius * 2);
       }
       gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
       gl.uniform1i(uni.colorMode, colorMode);
       gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
