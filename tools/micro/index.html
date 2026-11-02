@@ -861,6 +861,10 @@
   body.mobile #secStrip select { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 6px 6px; min-height: 36px; }
   body.mobile #secStrip input[type="range"] { flex: 1 1 auto; width: auto !important; min-width: 0; accent-color: var(--accent); height: 36px; }
   body.mobile #secStrip button { font-family: var(--mono); font-size: 14px; color: var(--text); background: var(--bg-btn); border: 1px solid var(--bd2); border-radius: 3px; min-width: 40px; min-height: 36px; }
+  /* ⋯ on a row: its context menu by tap (phones — a long-press does the same) */
+  .row-more { display: none; }
+  body.mobile .row-more { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 36px; min-height: 32px; margin-left: 2px; padding: 0; background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+  body.mobile .lp-row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   /* the selection bar — while the select tool is armed or something is selected: the
      count, what the next drag does (new · add · remove), selection → column, clear */
   #selBar { display: none; }
@@ -1048,6 +1052,7 @@ import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model fi
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
+import { installLongPress, moreButton } from './src/longpress.js';
 import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, clearUndo, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
@@ -1103,6 +1108,9 @@ const fpsBuf = [];
 function requestRender() { dirty = true; }
 attachOrbitInput(cv, cam, { onChange: requestRender });
 new ResizeObserver(() => { const [w, h] = renderer.resize(); cam.setAspect(w / h); requestRender(); }).observe(cv);
+// touch: a press held still opens the element's context menu (iOS has none of its
+// own). Not on the 3D view — a held finger there is the picking loupe's (roadmapped)
+installLongPress({ exclude: 'input, textarea, select, [contenteditable], #cv' });
 // the GPU context can be taken away (Android does it under memory pressure, or after
 // the tab sat in the background). Every layer's GPU copy is gone with it, but the
 // session — layers, painted and calculated columns, selections — is plain JS and
@@ -12545,7 +12553,7 @@ function renderLayers() {
     // column-align per depth — a group's eye sits level with its siblings,
     // and its children land one indent to the RIGHT of it, not the left
     const slot = document.createElement('span'); slot.className = 'lp-caret';
-    row.append(slot, eye, name, n);
+    row.append(slot, eye, name, n, moreButton(row));
     row.onclick = (e) => {
       if (e.ctrlKey || e.metaKey) {
         // starting a multi-select: promote the currently-active layer in first,
@@ -12583,7 +12591,7 @@ function renderLayers() {
       const n = document.createElement('span'); n.className = 'lp-n';
       n.textContent = ids.length + (nd.collapsed ? ` · ${ids.reduce((t, id) => t + (renderer.layerElementCount(id) || 0), 0).toLocaleString()}` : '');
       armDrag(row, nd);
-      row.append(caret, eye, name, n);
+      row.append(caret, eye, name, n, moreButton(row));
       row.onclick = (e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) return; nd.collapsed = !nd.collapsed; renderLayers(); };
       row.oncontextmenu = (e) => { e.preventDefault(); groupMenu(nd, e.clientX, e.clientY); };
       rows.appendChild(row);

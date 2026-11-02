@@ -323,6 +323,38 @@ async function drive(url, tag) {
   chk(`[${tag}] selection bar: → column made PHONESEL ${col}; × cleared (${nZ}, "${b2.text}"); tool off → bar gone ${!b3.on}`, col && nZ === 0 && b2.on && !b3.on);
   await mode('replace').catch(() => {});
 
+  // 18. long-press on a layer row opens ITS menu — one menu, and lifting the finger
+  //     neither activates the row nor runs a menu item; ⋯ opens the same menu by tap;
+  //     a short tap still activates
+  const cdp = await p.context().newCDPSession(p);
+  const touch = async (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+  const rowsInfo = await p.evaluate(async () => {
+    const lp = document.getElementById('layersPanel');
+    if (!lp.classList.contains('show')) document.getElementById('btnLayersM').click();
+    await new Promise((r) => setTimeout(r, 300));
+    const M = window._micro, act = M.activeId();
+    const rows = [...lp.querySelectorAll('.lp-row:not(.lp-group):not(.lp-info)')].map((r) => { const b = r.getBoundingClientRect(); return { x: b.left + b.width * 0.45, y: b.top + b.height / 2, name: r.querySelector('.lp-name').textContent, h: b.height }; }).filter((r) => r.h > 0);
+    return { act, rows };
+  });
+  const tgt = rowsInfo.rows.find((r) => r.name !== (rowsInfo.rows[0] && rowsInfo.rows[0].name)) || rowsInfo.rows[0];
+  const activeName = () => p.evaluate(() => { const M = window._micro, L = M.layers().find((l) => l.id === M.activeId()); return L ? (L.label || L.name) : null; });
+  const a0 = await activeName();
+  await touch('touchStart', tgt.x, tgt.y); await p.waitForTimeout(750); await touch('touchEnd', tgt.x, tgt.y); await p.waitForTimeout(400);
+  const lpres = await p.evaluate(() => ({ menus: document.querySelectorAll('.menu').length, items: [...document.querySelectorAll('.menu .item')].length }));
+  const a1 = await activeName();
+  await p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+  await p.evaluate(() => { for (const m of document.querySelectorAll('.menu')) m.remove(); });
+  const more = await p.evaluate(() => { const b = [...document.querySelectorAll('#layersPanel .row-more')].find((x) => x.getBoundingClientRect().height > 0); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: Math.round(r.width) }; });
+  if (more) { await p.touchscreen.tap(more.x, more.y); await p.waitForTimeout(300); }
+  const moreMenus = await p.evaluate(() => document.querySelectorAll('.menu').length);
+  await p.evaluate(() => { for (const m of document.querySelectorAll('.menu')) m.remove(); });
+  await p.waitForTimeout(500);
+  await p.touchscreen.tap(tgt.x, tgt.y); await p.waitForTimeout(300);
+  const a2 = await activeName();
+  chk(`[${tag}] long-press "${tgt.name}": ${lpres.menus} menu (${lpres.items} items), active stayed "${a1}" (was "${a0}"); ⋯ (${more && more.w}px) → ${moreMenus} menu; a short tap activates → "${a2}"`,
+    lpres.menus === 1 && lpres.items > 3 && a1 === a0 && !!more && moreMenus === 1 && a2 === tgt.name);
+  await cdp.detach();
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {
