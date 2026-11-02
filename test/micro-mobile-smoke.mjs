@@ -482,6 +482,42 @@ async function drive(url, tag) {
     && cLow.show && cLow.card && cLow.top && cLow.t <= 48 && cLow.view === c0.view
     && cBig.show && !cBig.card && cBig.view < c0.view - 100 && cSwap.show && !cSwap.card && cSwap.title !== cBig.title);
 
+  // 21. no text field under 16 px (a phone zooms the page into one), the filter's highlight
+  //     mirror matches it, and typing a filter takes the whole top bar
+  const inputs = await p.evaluate(async () => {
+    window._micro.openProps(); await new Promise((r) => setTimeout(r, 400));
+    const small = [...document.querySelectorAll('input, select, textarea')].filter((e) => {
+      const r = e.getBoundingClientRect(); if (!r.width || !r.height || ['checkbox', 'radio', 'range', 'color', 'file'].includes(e.type)) return false;
+      return parseFloat(getComputedStyle(e).fontSize) < 16;
+    }).map((e) => e.id || e.className || e.tagName);
+    document.querySelector('#propPanel .rp-close').click();
+    const f = document.getElementById('filter'), w0 = Math.round(f.getBoundingClientRect().width);
+    f.focus(); await new Promise((r) => setTimeout(r, 100));
+    const w1 = Math.round(f.getBoundingClientRect().width), hl = getComputedStyle(document.getElementById('filterHL')).fontSize;
+    f.blur(); await new Promise((r) => setTimeout(r, 200));
+    return { small, w0, w1, hl, burger: getComputedStyle(document.getElementById('btnBurger')).display };
+  });
+  chk(`[${tag}] inputs ≥ 16 px (under: ${inputs.small.join(', ') || 'none'}), filter mirror ${inputs.hl}; focused the filter grows ${inputs.w0} → ${inputs.w1}px and gives the bar back (burger ${inputs.burger})`,
+    inputs.small.length === 0 && inputs.hl === '16px' && inputs.w1 > inputs.w0 + 150 && inputs.burger !== 'none');
+  // 22. Android Back closes what's on top (window → chip, a panel, a submenu then its menu,
+  //     an armed tool) instead of leaving; closing by hand takes the history entry back off
+  const backSt = () => p.evaluate(() => ({ state: history.state && history.state.microBack, wins: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').length,
+    props: document.getElementById('propPanel').classList.contains('show'), menus: document.querySelectorAll('body > .menu').length, sel: document.getElementById('btnSelRect').classList.contains('on') }));
+  const goBack = async () => { await p.evaluate(() => history.back()); await p.waitForTimeout(400); return backSt(); };
+  await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')][0]; if (w && w._chip) w._chip.click(); });
+  await p.waitForTimeout(400);
+  const bk0 = await backSt(), bkWin = await goBack();
+  await p.evaluate(() => window._micro.openProps()); await p.waitForTimeout(300); const bkProps = await goBack();
+  await p.evaluate(() => document.getElementById('mTools').click()); await p.waitForTimeout(250);
+  await p.evaluate(() => [...document.querySelectorAll('.menu .item')].find((d) => d.querySelector('.sub')).click()); await p.waitForTimeout(250);
+  const bkM2 = await backSt(), bkSub = await goBack(), bkMenu = await goBack();
+  await p.evaluate(() => document.getElementById('btnSelRect').click()); await p.waitForTimeout(300); const bkSel = await goBack();
+  await p.evaluate(() => window._micro.openProps()); await p.waitForTimeout(300);
+  await p.evaluate(() => document.querySelector('#propPanel .rp-close').click()); await p.waitForTimeout(400);
+  const bkHand = await backSt();
+  chk(`[${tag}] Back: window ${bk0.wins} → ${bkWin.wins}; props → ${bkProps.props}; menus ${bkM2.menus} → ${bkSub.menus} → ${bkMenu.menus}; select → ${bkSel.sel}; closed by hand → history entry ${bkHand.state ? 'LEFT' : 'gone'}`,
+    bk0.wins === 1 && bk0.state === 1 && bkWin.wins === 0 && !bkProps.props && bkM2.menus === 2 && bkSub.menus === 1 && bkMenu.menus === 0 && !bkSel.sel && !bkHand.state);
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {

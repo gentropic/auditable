@@ -913,6 +913,14 @@
     border-radius: 12px 12px 0 0; border-left: none; border-right: none; border-top: 1px solid var(--bd2);
     box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
   }
+  /* a phone zooms the whole page into a focused field set under 16 px — every text field,
+     select and number box is 16 px here (and the filter's highlight mirror with it, or the
+     colours drift off the caret) */
+  body.mobile input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  body.mobile select, body.mobile textarea, body.mobile .exprhl { font-size: 16px !important; }
+  /* typing a filter, the top bar is the filter: the other buttons step aside until it blurs */
+  body.mobile #bar:has(#filter:focus) > :not(#filterWrap) { display: none !important; }
+  body.mobile #acPopup .ac-item { min-height: 40px; align-items: center; font-size: 14px; }
   body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44svh; }
   /* a pick opens a CARD: sized to its content, floating over the view (which does NOT yield —
      nothing moves under a stray tap); above the bar + strips + any open sheet + the chips, or
@@ -11077,6 +11085,54 @@ addEventListener('keydown', (e) => {                       // Escape: topmost di
   else if (help && help.classList.contains('show')) { help.classList.remove('show'); e.preventDefault(); e.stopImmediatePropagation(); }
 }, true);
 $('#help').addEventListener('pointerdown', (e) => { if (e.target === $('#help')) $('#help').classList.remove('show'); });
+// ── Android Back (the phone): close what's on top instead of leaving micro. While anything
+// closable is open, ONE sentinel history entry sits on the stack; Back pops it, we close
+// the topmost thing and re-arm if more is open. Closing things by hand takes the sentinel
+// back off (a quiet history.back()), so Back with nothing open leaves as it always did.
+// Never the desktop, and never anything destructive: a selection or a section stays.
+const _BACK_STEPS = [
+  [() => _menuChain.length > 1, () => _menuChain.pop().remove()],                 // a submenu, then its menu
+  [() => _menuChain.length > 0, () => closeMenu()],
+  [() => $('#pmDlg').classList.contains('show'), () => pmClose(null)],
+  [() => $('#acPopup').classList.contains('show'), () => acClose()],
+  [() => _palOpen, () => closePalette()],
+  [() => _dlgStack.some((id) => id !== 'plDlg'), () => _dlgCancel(_dlgStack.filter((id) => id !== 'plDlg').pop())],
+  [() => $('#help').classList.contains('show'), () => $('#help').classList.remove('show')],
+  [() => _fdOpen, () => toggleFilterDrawer(false)],
+  [() => $('#recPanel').classList.contains('show'), () => $('#rpClose').click()],
+  [() => _propOpen, () => closeProps()],
+  [() => $('#layersPanel').classList.contains('show'), () => closeLayersPanel()],
+  [() => !!_backTopWindow(), () => _backTopWindow()._minimize()],                  // a window sheet goes to its chip
+  [() => _knifeArm, () => { armKnife(false); $('#secMode').value = 'off'; $('#secMode').dispatchEvent(new Event('input')); }],
+  [() => !!_paintArm, () => paintDisarm()],
+  [() => !!_selArm, () => disarmSelect()],
+  [() => !!(_measure.arm || _measure.b), () => clearMeasure()],
+];
+function _backTopWindow() {
+  let top = null;
+  for (const w of document.querySelectorAll('.fwin')) if (w.style.display !== 'none' && w._minimize && (!top || (+w.style.zIndex || 0) > (+top.style.zIndex || 0))) top = w;
+  return top;
+}
+let _backArmed = false, _backIgnorePop = 0, _backRaf = 0;
+const _backOpen = () => _isMobile() && _BACK_STEPS.some(([open]) => open());
+function syncBackGuard() {
+  if (_backRaf) return;
+  _backRaf = requestAnimationFrame(() => {
+    _backRaf = 0;
+    const open = _backOpen();
+    if (open && !_backArmed) { history.pushState({ microBack: 1 }, ''); _backArmed = true; }
+    else if (!open && _backArmed) { _backArmed = false; _backIgnorePop++; history.back(); }
+  });
+}
+addEventListener('popstate', () => {
+  if (_backIgnorePop) { _backIgnorePop--; return; }        // our own quiet history.back()
+  if (!_backArmed) return;                                 // a real navigation, not ours
+  _backArmed = false;
+  const step = _isMobile() && _BACK_STEPS.find(([open]) => open());
+  if (step) step[1]();
+  syncBackGuard();                                         // more still open → a fresh sentinel
+});
+new MutationObserver(syncBackGuard).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'] });
 // the transient overlays join the same stacking order when they appear — their static
 // z-indexes (9 · 30 · 31 · 50) sat under every float window (41+), so a confirm, the
 // help, the filter drawer or autocomplete could open BEHIND a window or a phone sheet
