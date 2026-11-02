@@ -45,6 +45,7 @@ export const KEYS = [
   { group: 'everything else', keys: ['⌘/Ctrl K'], does: 'command palette — every action, filtered to what applies', bind: null, card: { group: 'everything else', label: 'palette' } },
   { group: 'everything else', keys: ['⌘/Ctrl S'], does: 'save the project', bind: null, card: { group: 'everything else', label: 'save project' } },
   { group: 'everything else', keys: ['⌘/Ctrl Z'], does: 'undo — a paint stroke, a selection, a filter, a removed ƒ column or rule', bind: null, card: { group: 'everything else', label: 'undo' } },
+  { group: 'everything else', keys: ['⌘/Ctrl Shift Z', 'Ctrl Y'], does: 'redo — what the last undo took back (a new edit clears it)', bind: null, card: { group: 'everything else', label: 'redo' } },
   { group: 'everything else', keys: ['Ctrl `'], does: 'cycle through the open windows', bind: null },
   { group: 'everything else', keys: ['F1'], does: 'keyboard & mouse help', bind: ['F1'] },
 ];

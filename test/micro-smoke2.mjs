@@ -4233,7 +4233,19 @@ await p.close();
     const rm = [...document.querySelectorAll('.awin-btn')].find((b) => b.textContent === 'remove'); rm.click();
     out.calcGone = !(L.calcCols || []).some((c) => c.name === 'AU2'); out.top = M.undoLabel();
     z(); await settle(() => (L.calcCols || []).some((c) => c.name === 'AU2')); out.calcBack = (L.calcCols || []).some((c) => c.name === 'AU2');
-    for (let n = 0; n < 6; n++) { z(); await new Promise((q) => setTimeout(q, 80)); }
+    // REDO (Ctrl+Shift+Z / Ctrl+Y): takes the removal again, then undo restores it once more
+    const rz = (y) => document.dispatchEvent(new KeyboardEvent('keydown', y ? { key: 'y', ctrlKey: true, bubbles: true } : { key: 'Z', ctrlKey: true, shiftKey: true, bubbles: true }));
+    rz(false); await settle(() => !(L.calcCols || []).some((c) => c.name === 'AU2')); out.redoGone = !(L.calcCols || []).some((c) => c.name === 'AU2');
+    z(); await settle(() => (L.calcCols || []).some((c) => c.name === 'AU2'));
+    rz(true); await settle(() => !(L.calcCols || []).some((c) => c.name === 'AU2')); out.redoY = !(L.calcCols || []).some((c) => c.name === 'AU2');
+    z(); await settle(() => (L.calcCols || []).some((c) => c.name === 'AU2'));
+    // a fresh edit forks the history: redo is gone
+    enter('AU > 45'); await settle(() => L.filterExpr === 'AU > 45'); await new Promise((q) => setTimeout(q, 400));
+    rz(false); out.forked = /nothing to redo/.test(document.querySelector('#meta').textContent);   // redoAction says so synchronously
+    await new Promise((q) => setTimeout(q, 150)); out.forked = out.forked && L.filterExpr === 'AU > 45';
+    for (let n = 0; n < 8; n++) { z(); await new Promise((q) => setTimeout(q, 80)); }
+    await new Promise((q) => setTimeout(q, 400));
+    z(); await new Promise((q) => setTimeout(q, 80));
     out.meta = document.querySelector('#meta').textContent;
     return out;
   });
@@ -4241,6 +4253,7 @@ await p.close();
   chk(`undo: a cleared selection comes back (${r.sel} → ${r.cleared} → ${r.selBack})`, r.sel === 23 && r.cleared === 0 && r.selBack === 23);
   chk(`undo: a filter changed from the box reverts (“${r.filterBack}”)`, r.filterBack === 'AU > 40');
   chk(`undo: a calc column removed in the calc window returns (${r.calcGone} → ${r.calcBack}, top “${r.top}”); at the bottom: “${r.meta}”`, r.calcGone && r.calcBack && /nothing to undo/.test(r.meta));
+  chk(`redo: Ctrl+Shift+Z takes the removal again (${r.redoGone}), Ctrl+Y too (${r.redoY}); a fresh edit forks the history — nothing to redo (${r.forked})`, r.redoGone && r.redoY && r.forked);
 }
 
 // ── §67: the DRILLHOLE QA report (src/dhqa.js). A two-table set with known

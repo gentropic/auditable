@@ -817,17 +817,18 @@
      body.mobile (set from the media query or ?mobile=1) so it is forceable and the
      same components take a different host layout: one top bar, a bottom tool bar,
      every floating thing a bottom SHEET, one sheet at a time. ── */
-  /* what sits under a sheet: the tool bar (80), plus the section strip (44) while a section is on */
-  body.mobile { --sheet-bottom: 80px; overscroll-behavior: none; }   /* no pull-to-refresh: it reloads the session */
-  body.mobile.sec-on { --sheet-bottom: 124px; }
+  /* what sits under a sheet: the tool bar (80), the selection bar and the section strip (44 each, while on) */
+  body.mobile { --sec-h: 0px; --sel-h: 0px; --sheet-bottom: calc(80px + var(--sec-h) + var(--sel-h)); overscroll-behavior: none; }   /* no pull-to-refresh: it reloads the session */
+  body.mobile.sec-on { --sec-h: 44px; }
+  body.mobile.sel-on { --sel-h: 44px; }
   html:has(body.mobile) { overscroll-behavior: none; }
   body.mobile #bar .title, body.mobile #bar .mb, body.mobile #bar .spacer { display: none; }
   body.mobile #btnBurger, body.mobile #bar #btnCmd { display: inline-flex; }   /* outranks the .mb hide */
   /* undo by touch — Ctrl+Z is the desktop's; a phone has no keyboard for it */
-  #btnUndo { display: none; }
-  body.mobile #bar #btnUndo { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; padding: 4px 8px; }
-  body.mobile #bar #btnUndo svg { width: 18px; height: 18px; }
-  body.mobile #bar #btnUndo:disabled { opacity: .35; }
+  #btnUndo, #btnRedo { display: none; }
+  body.mobile #bar #btnUndo, body.mobile #bar #btnRedo { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; padding: 4px 8px; }
+  body.mobile #bar #btnUndo svg, body.mobile #bar #btnRedo svg { width: 18px; height: 18px; }
+  body.mobile #bar #btnUndo:disabled, body.mobile #bar #btnRedo:disabled { opacity: .35; }
   body.mobile #bar #filterWrap { flex: 1 1 auto; min-width: 0; }
   body.mobile #bar button { min-height: 32px; }
   body.mobile #bar2 { display: none; }
@@ -845,8 +846,7 @@
   body.mobile #barTools button.on, body.mobile #barTools button.lit { color: var(--accent); background: none; }
   .tl { display: none; }
   body.mobile #barTools .tl { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em; white-space: nowrap; }
-  body.mobile #view { inset: 36px 0 calc(80px + var(--sheet-inset, 0px)) 0; }   /* the open sheet's height — the model re-centres above it */
-  body.mobile.sec-on #view { inset: 36px 0 calc(124px + var(--sheet-inset, 0px)) 0; }   /* + the section strip */
+  body.mobile #view { inset: 36px 0 calc(var(--sheet-bottom) + var(--sheet-inset, 0px)) 0; }   /* the open sheet's height — the model re-centres above it */
   body.mobile #empty { inset: 36px 0 80px 0; }
   body.mobile #empty { padding: 0 16px; }
   body.mobile footer { gap: 10px; }
@@ -855,20 +855,34 @@
   /* the section strip — the instrument row's section controls, moved, only while a section is on */
   #secStrip { display: none; }
   body.mobile.sec-on #secStrip {
-    display: flex; position: absolute; left: 0; right: 0; bottom: 80px; height: 44px; z-index: 6; align-items: center; gap: 8px; padding: 0 10px;
+    display: flex; position: absolute; left: 0; right: 0; bottom: calc(80px + var(--sel-h)); height: 44px; z-index: 6; align-items: center; gap: 8px; padding: 0 10px;
     border-top: 1px solid var(--border); background: var(--bg-bar); font-family: var(--mono); font-size: 12px;
   }
   body.mobile #secStrip select { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 6px 6px; min-height: 36px; }
   body.mobile #secStrip input[type="range"] { flex: 1 1 auto; width: auto !important; min-width: 0; accent-color: var(--accent); height: 36px; }
   body.mobile #secStrip button { font-family: var(--mono); font-size: 14px; color: var(--text); background: var(--bg-btn); border: 1px solid var(--bd2); border-radius: 3px; min-width: 40px; min-height: 36px; }
+  /* the selection bar — while the select tool is armed or something is selected: the
+     count, what the next drag does (new · add · remove), selection → column, clear */
+  #selBar { display: none; }
+  body.mobile.sel-on #selBar {
+    display: flex; position: absolute; left: 0; right: 0; bottom: 80px; height: 44px; z-index: 6; align-items: center; gap: 6px; padding: 0 8px;
+    border-top: 1px solid var(--border); background: var(--bg-bar); font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+  #selBarCount { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-hi); }
+  #selBarModes { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--bd2); border-radius: 3px; overflow: hidden; }
+  #selBar button { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-btn); border: none; min-height: 34px; padding: 0 8px; cursor: pointer; }
+  #selBarModes button + button { border-left: 1px solid var(--bd2); }
+  #selBarModes button.on { background: var(--accent); color: #121212; }
+  #selBarCol, #selBarClear { flex: 0 0 auto; border: 1px solid var(--bd2) !important; border-radius: 3px; }
+  #selBarClear { min-width: 36px; font-size: 16px !important; }
+  #selBar button:disabled { opacity: .35; cursor: default; }
   /* sheets: windows + panels anchored to the bottom, one at a time, the head is the handle */
   body.mobile .fwin, body.mobile #layersPanel, body.mobile #propPanel, body.mobile #recPanel {
-    position: fixed; left: 0 !important; right: 0; top: auto !important; bottom: 80px; width: auto !important; max-width: none;
+    position: fixed; left: 0 !important; right: 0; top: auto !important; bottom: var(--sheet-bottom); width: auto !important; max-width: none;
     height: min(var(--sheet-h, 60svh), calc(100svh - 36px - var(--sheet-bottom))) !important; z-index: 40;   /* under the shared float counter (41+), so menus, dialogs and the help open ABOVE a panel sheet */
     border-radius: 12px 12px 0 0; border-left: none; border-right: none; border-top: 1px solid var(--bd2);
     box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
   }
-  body.mobile.sec-on .fwin, body.mobile.sec-on #layersPanel, body.mobile.sec-on #propPanel, body.mobile.sec-on #recPanel { bottom: 124px; }
   body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44svh; }
   body.mobile .fwin-head { cursor: default; padding: 10px 12px 8px; position: relative; min-height: 44px; align-items: center; touch-action: none; }
   body.mobile .fwin-head::before { content: ''; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--bd2); }
@@ -878,8 +892,7 @@
   body.mobile .rp-grab, body.mobile .lp-grab { display: none; }   /* the desktop edge-resize grabs — a sheet resizes by its handle */
   /* minimized-window chips ride on the open sheet's top edge (like tabs), so a window
      is always one tap away while another sheet is up — never behind it */
-  body.mobile #winStrip { left: 8px; right: 8px; bottom: calc(84px + var(--sheet-inset, 0px)); max-width: none; z-index: 61; }
-  body.mobile.sec-on #winStrip { bottom: calc(128px + var(--sheet-inset, 0px)); }
+  body.mobile #winStrip { left: 8px; right: 8px; bottom: calc(var(--sheet-bottom) + 4px + var(--sheet-inset, 0px)); max-width: none; z-index: 61; }
   body.mobile .win-chip { min-height: 32px; padding: 4px 12px; }
   /* analysis windows stack: the plot (the answer) on top, the form below it */
   body.mobile .sw-body { flex-direction: column-reverse; }
@@ -919,6 +932,7 @@
     <button class="mb" id="mHelp">Help</button>
     <button class="mb" id="btnCmd" title="command palette (Ctrl/⌘K) — search every action">⌘K</button>
     <button id="btnUndo" title="nothing to undo" disabled aria-label="undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button id="btnRedo" title="nothing to redo" disabled aria-label="redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
     <span id="filterWrap"><div id="filterHL" class="exprhl" aria-hidden="true"></div><input id="filter" type="text" spellcheck="false" autocomplete="off" placeholder="filter…  e.g.  FE > 55 and LITO = &quot;HEMATITE&quot;" title="lamina's filter language, over every column in the file — Enter applies, Esc clears"><button id="filterClear" title="clear the filter" tabindex="-1">×</button><button id="filterWidgets" title="filter widgets — edit the filter as live controls" tabindex="-1">▾</button></span>
     <span class="spacer"></span>
     <button id="btnSelRect" title="select — rectangle (r) · shift adds, alt subtracts · the layers toggle flips to through/volume"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.034 12.681a.498.498 0 0 1 .647-.647l9 3.5a.5.5 0 0 1-.033.943l-3.444 1.068a1 1 0 0 0-.66.66l-1.067 3.443a.5.5 0 0 1-.943.033z"/><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h2"/><path d="M14 3h1"/><path d="M3 9v1"/><path d="M21 9v2"/><path d="M3 14v1"/></svg></button>
@@ -979,6 +993,7 @@
   <!-- review mode: the section strip (hosts #secMode + #secPos while a section is on) and the
        layers / properties buttons for the bottom tool bar — populated by layoutBars() -->
   <div id="secStrip"><button id="secThin" title="thinner slab">−</button><button id="secThick" title="thicker slab">+</button></div>
+  <div id="selBar"><span id="selBarCount"></span><span id="selBarModes" title="what the next drag does — a phone has no shift / alt"><button data-m="replace">new</button><button data-m="add">+ add</button><button data-m="subtract">− remove</button></span><button id="selBarCol" title="write the selection as a 0 / 1 column on this layer">→ column</button><button id="selBarClear" title="clear the selection" aria-label="clear the selection">×</button></div>
   <div id="view"><canvas id="cv"></canvas><canvas id="decoCv" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas><svg id="knifeSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="knifeLine" stroke="#c89b3c" stroke-width="1.5" stroke-dasharray="6 4"/></svg><svg id="secSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="secPoly" fill="rgba(200,155,60,0.05)" stroke="#c89b3c" stroke-width="1.2" stroke-dasharray="7 5"/></svg><svg id="bandSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="bandPolyA" fill="rgba(74,120,176,0.10)" stroke="#4a78b0" stroke-width="1.4"/><polygon id="bandPolyB" fill="none" stroke="#4a78b0" stroke-width="1.4" stroke-dasharray="4 3"/><text id="bandLabel" fill="#fff" font-size="11" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3"></text></svg><svg id="selSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="selShape" fill="rgba(255,217,77,0.08)" stroke="#ffd94d" stroke-width="1.2" stroke-dasharray="5 4"/></svg><svg id="measureSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="mLineCase" stroke="#121212" stroke-width="4" stroke-linecap="round"/><line id="mLine" stroke="#ff26b3" stroke-width="1.5"/><circle id="mA" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><circle id="mB" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><text id="mLabel" fill="#fff" font-size="12" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3.5"></text></svg></div>
   <div id="empty"><b>open a block model, drillholes, or point cloud</b><span>Open… or drag .csv / .xlsx / .dm / .parquet / .las / .ply / .xyz / .msh / .obj / .lfm / .dxf / .wfr / .omf / .tif / .grd anywhere — several at once become layers</span><span>nothing handy? <a id="sampleDemo" class="cta">▸ open the demo project</a></span><span style="margin-top:-4px">a block model + drillholes + topography, sectioned, with a grade–tonnage curve — nothing is downloaded, it is all made here</span><span>or just <a id="sampleBlocks">▸ a 2M-block model</a> · a bench scan at <a data-sample="2000000">▸ 2M</a> · <a data-sample="10000000">▸ 10M</a> · <a data-sample="50000000">▸ 50M</a> points — all made locally</span><span style="color:var(--faint)">new here? &nbsp;<a href="https://gentropic.org/micro/docs/" target="_blank" rel="noopener noreferrer">read the manual</a> &nbsp;·&nbsp; Help → Keyboard &amp; mouse — the whole vocabulary</span><span class="empty-sec">Evaluating this for work? → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a> — verify it, and how to bring it through approval</span><span class="empty-sec empty-dl">One file, no install — <a href="https://gentropic.org/micro/micro.html" download="micro.html">download micro.html</a> to keep, share, or run offline</span><div id="emptyRecents" class="empty-recents"></div><div id="emptyProjects" class="empty-recents"></div></div>
   <div id="drop-hint">drop to open</div>
@@ -1033,7 +1048,7 @@ import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model fi
 import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
-import { pushUndo, undoLast, undoLabel, clearUndo, onUndoChange } from './src/undo.js';
+import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, clearUndo, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
@@ -1475,14 +1490,21 @@ function recordSelectionUndo(L, label) {
   const prev = L._selShadow || null, lid = L.id, cur = L._selMask;
   if (!prev && !cur) return;                               // nothing before, nothing now
   if (prev && cur && prev.length === cur.length) { let same = true; for (let i = 0; i < cur.length; i++) if (!prev[i] !== !cur[i]) { same = false; break; } if (same) return; }   // a re-apply, not a change
-  pushUndo(label, () => { const Lx = layerById(lid); if (!Lx) return; Lx._selMask = prev ? prev.slice() : null; applyLayerSelection(Lx); }, { key: 'sel:' + lid });
+  const restore = (m) => { const Lx = layerById(lid); if (!Lx) return; Lx._selMask = m ? m.slice() : null; applyLayerSelection(Lx); };
+  // the redo's AFTER is the shadow shadowSelection takes right after this (shared, not
+  // a second copy); past SEL_UNDO_MAX there is no shadow, so no redo either
+  const box = { next: null }; L._selRedoBox = cur && cur.length > SEL_UNDO_MAX ? null : box;
+  pushUndo(label, () => restore(prev), { key: 'sel:' + lid, redo: L._selRedoBox ? () => restore(box.next) : null });
 }
-function shadowSelection(L) { L._selShadow = L._selMask && L._selMask.length <= SEL_UNDO_MAX ? L._selMask.slice() : null; }
+function shadowSelection(L) {
+  L._selShadow = L._selMask && L._selMask.length <= SEL_UNDO_MAX ? L._selMask.slice() : null;
+  if (L._selRedoBox) { L._selRedoBox.next = L._selShadow; L._selRedoBox = null; }
+}
 function clearSelection({ silent } = {}) {
   let had = false;
-  for (const L of S.layers) {
+  withUndoGroup('clear selection', () => { for (const L of S.layers) {
     if (L._selMask) { had = true; L._selMask = null; L._selCount = 0; recordSelectionUndo(L, 'clear selection'); shadowSelection(L); renderer.setLayerSelection(L.id, null); attrTableSelChanged(L.id); refreshLinkedWindows(L); selectionChanged(L.id, 0); }
-  }
+  } });
   if (had) { markProjectDirty(); requestRender(); if (!silent) $('#meta').textContent = 'selection cleared'; }
   return had;
 }
@@ -1502,6 +1524,7 @@ function applyLayerSelection(L) {
 // ONE `micro:selection` per layer per task, however many steps a tool took
 const _selDirty = new Map();
 function selectionChanged(lid, count) {
+  syncSelBar();
   const first = !_selDirty.size;
   _selDirty.set(lid, count);
   if (first) queueMicrotask(() => {
@@ -1733,6 +1756,7 @@ function setSelStick(v) { _selStick = v; try { localStorage.setItem('micro.selSt
 let _selPts = null;
 function armSelect(kind) {
   _selArm = kind; _selPts = null;
+  queueMicrotask(syncSelBar);
   _paintLastKind = kind;
   $('#btnSelRect').classList.toggle('on', kind === 'rect');
   $('#btnSelLasso').classList.toggle('on', kind === 'lasso');
@@ -1747,6 +1771,7 @@ function disarmSelect() {
   _selArm = null; _selPts = null;
   $('#btnSelRect').classList.remove('on');
   $('#btnSelLasso').classList.remove('on');
+  syncSelBar();
   cv.style.cursor = '';
   $('#selSvg').style.display = 'none';
 }
@@ -1758,7 +1783,32 @@ function setSelThrough(v) {
   if (_selArm) armSelect(_selArm);                         // refresh the armed hint
 }
 $('#btnSelThrough').onclick = () => setSelThrough(!_selThrough);
-const selModeOf = (e) => (e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace');
+// a phone has no shift / alt: the selection bar's new · add · remove sets what the
+// next drag does (sticky until changed); the modifiers still win on a keyboard
+let _selTouchMode = 'replace';
+const selModeOf = (e) => (e.shiftKey ? 'add' : e.altKey ? 'subtract' : _selTouchMode);
+function selBarTarget() {
+  const A = activeLayer();
+  return A && A._selCount ? A : S.layers.find((L) => L._selCount) || null;
+}
+function syncSelBar() {
+  const mobile = document.body.classList.contains('mobile');
+  let total = 0, nL = 0;
+  for (const L of S.layers) if (L._selCount) { total += L._selCount; nL++; }
+  const on = mobile && (total > 0 || !!_selArm);
+  document.body.classList.toggle('sel-on', on);
+  if (!on) return;
+  const T = selBarTarget();
+  $('#selBarCount').textContent = total
+    ? `${total.toLocaleString()} selected${nL > 1 ? ` · ${nL} layers` : T ? ` · ${T.label || T.name}` : ''}`
+    : (_selTouchMode === 'subtract' ? 'drag to remove' : 'drag to select');
+  for (const b of $('#selBarModes').children) b.classList.toggle('on', b.dataset.m === _selTouchMode);
+  $('#selBarCol').disabled = !T;
+  $('#selBarClear').disabled = !total;
+}
+for (const b of $('#selBarModes').children) b.onclick = () => { _selTouchMode = b.dataset.m; if (!_selArm) armSelect('rect'); syncSelBar(); };
+$('#selBarCol').onclick = () => { const T = selBarTarget(); if (T) selectionToColumn(T); };
+$('#selBarClear').onclick = () => { clearSelection(); syncSelBar(); };
 function drawSelShape() {
   const el = $('#selShape');
   if (!_selPts || _selPts.length < 2) { el.setAttribute('points', ''); return; }
@@ -1798,10 +1848,13 @@ cv.addEventListener('pointerup', (e) => {
       (_selThrough ? paintVolume : paintByPolygon)(poly, e.altKey ? 0 : _paintArm.code, kind === 'rect');
       armSelect(kind);
     } else {
-      (_selThrough ? selectVolume : selectByPolygon)(poly, selModeOf(e), kind === 'rect');
-      // stickiness per Settings: 'smart' re-arms when released with shift/alt
-      // (add/subtract says more gestures are coming), 'sticky' always, 'oneshot' never
-      if (_selStick === 'sticky' || (_selStick === 'smart' && (e.shiftKey || e.altKey))) armSelect(kind);
+      const mode = selModeOf(e);
+      withUndoGroup(mode === 'replace' ? 'selection' : mode === 'add' ? 'add to selection' : 'remove from selection',
+        () => (_selThrough ? selectVolume : selectByPolygon)(poly, mode, kind === 'rect'));
+      // stickiness per Settings: 'smart' re-arms after an add/subtract (shift/alt, or
+      // the phone bar's + add / − remove: more gestures are coming), 'sticky' always,
+      // 'oneshot' never
+      if (_selStick === 'sticky' || (_selStick === 'smart' && mode !== 'replace')) armSelect(kind);
     }
   } else $('#meta').textContent = _paintArm ? 'paint: nothing there' : 'selection: nothing there';
 }, { capture: true });
@@ -1885,6 +1938,7 @@ function paintApply(L, col, recs, code) {
   if (!idx.length) { $('#meta').textContent = 'paint: nothing new there'; return 0; }
   const st = (L._paintUndo = L._paintUndo || []);
   st.push({ col: col.name, idx: Uint32Array.from(idx), old: Uint8Array.from(old) });
+  freshStep();                                             // a new stroke forks the history: redo is gone
   L._paintVer = (L._paintVer || 0) + 1;                    // ƒ display realizations that read this paint go stale
   let bytes = 0; for (const u of st) bytes += u.idx.length * 5;
   while (st.length > 1 && bytes > 32e6) { const d = st.shift(); bytes -= d.idx.length * 5; }
@@ -1893,36 +1947,79 @@ function paintApply(L, col, recs, code) {
   $('#meta').textContent = `paint: ${idx.length.toLocaleString()} → ${code ? col.dict[code] : 'unpainted'} · ${col.name} (Ctrl+Z undoes)`;
   return idx.length;
 }
-function paintUndo(L) {
-  const st = L._paintUndo;
-  if (!st || !st.length) { $('#meta').textContent = 'paint: nothing to undo'; return; }
-  const u = st.pop();
+// move one stroke between a layer's paint stacks: restore its codes and record the
+// inverse on the other stack (undo → redo, redo → undo)
+function paintSwap(L, from, to) {
+  const u = L[from].pop();
   const col = paintColByName(L, u.col);
-  if (!col) return;
+  if (!col) return null;
+  const now = new Uint8Array(u.idx.length);
   for (let i = 0; i < u.idx.length; i++) {
     const r = u.idx[i];
-    if (r < col.codes.length) { col.counts[col.codes[r]]--; col.counts[u.old[i]]++; col.codes[r] = u.old[i]; }
+    if (r < col.codes.length) { now[i] = col.codes[r]; col.counts[col.codes[r]]--; col.counts[u.old[i]]++; col.codes[r] = u.old[i]; }
   }
+  (L[to] = L[to] || []).push({ col: u.col, idx: u.idx, old: now });
+  L._paintVer = (L._paintVer || 0) + 1;
   paintAfterEdit(L, col);
-  $('#meta').textContent = `paint: undid ${u.idx.length.toLocaleString()} · ${col.name}`;
+  return { n: u.idx.length, col };
 }
-// ONE undo, for Ctrl+Z and the phone's ↶ button: the paint stack of the layer being
-// painted (or the active one) first, then the shared history
+function paintUndo(L) {
+  if (!L._paintUndo || !L._paintUndo.length) { $('#meta').textContent = 'paint: nothing to undo'; return; }
+  const r = paintSwap(L, '_paintUndo', '_paintRedo'); if (!r) return;
+  _redoOrder.push(L.id);
+  $('#meta').textContent = `paint: undid ${r.n.toLocaleString()} · ${r.col.name}`;
+}
+function paintRedo(L) {
+  if (!L._paintRedo || !L._paintRedo.length) return;
+  const r = paintSwap(L, '_paintRedo', '_paintUndo'); if (!r) return;
+  $('#meta').textContent = `paint: redid ${r.n.toLocaleString()} · ${r.col.name}`;
+}
+// ONE undo and ONE redo, for the keys and the phone's ↶ ↷ buttons. Undo: the paint
+// stack of the layer being painted (or the active one) first, then the shared
+// history. Redo replays in the reverse order of the undos — _redoOrder says which
+// stack each one came from ('h' = the shared history, a layer id = its paint).
+const _redoOrder = [];
+onFreshStep(() => { _redoOrder.length = 0; for (const L of S.layers) L._paintRedo = null; });
 function _undoTarget() {
   const Lz = _paintArm ? layerById(_paintArm.lid) : activeLayer();
   return Lz && Lz._paintUndo && Lz._paintUndo.length ? Lz : null;
 }
 function undoAction() {
   const Lz = _undoTarget();
-  if (Lz) paintUndo(Lz);
-  else if (undoLabel()) undoLast().then((lbl) => { if (lbl) $('#meta').textContent = `undone: ${lbl}`; });
+  if (Lz) { paintUndo(Lz); syncUndoBtn(); }
+  else if (undoLabel()) {
+    if (undoTopRedoable()) _redoOrder.push('h');           // NOW, not after the await — a redo right behind must find it
+    undoLast().then((r) => { if (r) $('#meta').textContent = `undone: ${r.label}`; syncUndoBtn(); });
+  }
   else $('#meta').textContent = 'nothing to undo';
 }
+function _redoNext() {
+  while (_redoOrder.length) {                             // skip entries whose layer went away
+    const k = _redoOrder[_redoOrder.length - 1];
+    if (k === 'h' ? redoLabel() : (layerById(k) && layerById(k)._paintRedo && layerById(k)._paintRedo.length)) return k;
+    _redoOrder.pop();
+  }
+  return null;
+}
+function redoAction() {
+  const k = _redoNext();
+  if (k == null) { $('#meta').textContent = 'nothing to redo'; return; }
+  _redoOrder.pop();
+  if (k === 'h') redoLast().then((lbl) => { if (lbl) $('#meta').textContent = `redone: ${lbl}`; syncUndoBtn(); });
+  else { paintRedo(layerById(k)); syncUndoBtn(); }
+}
 function syncUndoBtn() {
-  const b = $('#btnUndo'); if (!b) return;
-  const lbl = _undoTarget() ? 'paint stroke' : undoLabel();
-  b.disabled = !lbl;
-  b.title = lbl ? `undo ${lbl}` : 'nothing to undo';
+  const b = $('#btnUndo'), rb = $('#btnRedo');
+  if (b) {
+    const lbl = _undoTarget() ? 'paint stroke' : undoLabel();
+    b.disabled = !lbl;
+    b.title = lbl ? `undo ${lbl}` : 'nothing to undo';
+  }
+  if (rb) {
+    const k = _redoNext(), lbl = k == null ? null : k === 'h' ? redoLabel() : 'paint stroke';
+    rb.disabled = !lbl;
+    rb.title = lbl ? `redo ${lbl}` : 'nothing to redo';
+  }
 }
 onUndoChange(syncUndoBtn);
 function paintAfterEdit(L, col) {
@@ -2770,7 +2867,7 @@ function openCalcWindow(L, selIdx) {
     ctr.appendChild(saveB);
     if (cur) {
       const rmB = document.createElement('button'); rmB.className = 'awin-btn'; rmB.textContent = 'remove';
-      rmB.onclick = () => { const gone = L.calcCols[sel], at = sel; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(at, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); }); if (colorSelOf(L) === 'calc:' + cur.name) setLayerColorSel(L, 'elev'); L.calcCols.splice(sel, 1); L._calcDisplay = null; sel = -1; invalidate(); render(); };
+      rmB.onclick = () => { const gone = L.calcCols[sel], at = sel; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(at, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); }, { redo: () => { const k = L.calcCols.indexOf(gone); if (k >= 0) { L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; L._calcDisplay = null; markProjectDirty(); refreshProps(); } } });if (colorSelOf(L) === 'calc:' + cur.name) setLayerColorSel(L, 'elev'); L.calcCols.splice(sel, 1); L._calcDisplay = null; sel = -1; invalidate(); render(); };
       const matB = document.createElement('button'); matB.className = 'awin-btn'; matB.textContent = 'materialize → stored';
       matB.title = 'compute once, store as a real column (survives even if inputs are removed; faster to scan)';
       matB.onclick = () => materializeCalcCol(L, cur.name);
@@ -3969,6 +4066,7 @@ function layoutBars() {
   if (was !== mobile) relayoutWindows(mobile);
   // a phone renders at most 2 device pixels per CSS pixel (an S24+'s 2.8 is ~2× the
   // fill for no visible gain); the CSS size didn't change, so resize by hand
+  syncSelBar();
   renderer.setMaxPixelRatio(mobile ? 2 : Infinity);
   { const [w, h] = renderer.resize(); cam.setAspect(w / h); requestRender(); }
   ensureMobileChrome();
@@ -6769,7 +6867,8 @@ $('#filterClear').onclick = () => {
 $('#filter').addEventListener('keydown', (e) => {
   const filterStep = (next) => {
     const L = activeLayer(), prev = (L && L.filterExpr) || '';
-    if (L && prev !== next) pushUndo(next ? 'filter' : 'clear filter', async () => { const Lx = layerById(L.id); if (!Lx) return; if (Lx.id === S.activeId) { $('#filter').value = prev; syncFilterClear(); } await applyBlockFilter(prev, Lx); });
+    const put = (v) => async () => { const Lx = layerById(L.id); if (!Lx) return; if (Lx.id === S.activeId) { $('#filter').value = v; syncFilterClear(); } await applyBlockFilter(v, Lx); };
+    if (L && prev !== next) pushUndo(next ? 'filter' : 'clear filter', put(prev), { redo: put(next) });
     applyBlockFilter(next);
   };
   if (e.key === 'Enter') filterStep($('#filter').value);
@@ -8791,6 +8890,7 @@ async function showMemoryInfo() {
   showHelp('memory', html`<table class="fi">${rows}</table>`);
 }
 $('#btnUndo').onclick = () => undoAction();
+$('#btnRedo').onclick = () => redoAction();
 $('#btnBurger').onclick = () => menuAt($('#btnBurger'), [
   { label: 'File', action: () => setTimeout(() => $('#mFile').click(), 0) },
   { label: 'Data', action: () => setTimeout(() => $('#mData').click(), 0) },
@@ -10473,6 +10573,10 @@ window.addEventListener('keydown', (e) => {
   else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z') && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) {
     e.preventDefault();
     undoAction();
+  }
+  else if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key === 'z' || e.key === 'Z')) || (!e.shiftKey && (e.key === 'y' || e.key === 'Y'))) && !/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) {
+    e.preventDefault();
+    redoAction();
   }
   else if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyK' && _nlOn) { e.preventDefault(); closePalette(); openPalette({ nl: true }); }   // Alt+K → straight to the NL bar (experimental)
 }, true);
@@ -12510,6 +12614,7 @@ function renderLayers() {
   };
   walk(S.layerTree, 0, false);
   syncUndoBtn();                                           // the active layer decides whose paint strokes ↶ undoes
+  syncSelBar();
   if (S.layers.length >= 1 && !_lpUserHidden && !$('#layersPanel').classList.contains('show') && !_otherSheetOpen()) toggleLayersPanel(true);   // the panel is the layer's front door — right-click is the menu
   if (S.layers.length === 0) toggleLayersPanel(false);
   if (_propOpen && _propFor !== S.activeId) renderProps();  // re-target, never rebuild under a typing cursor

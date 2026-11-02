@@ -272,6 +272,57 @@ async function drive(url, tag) {
   chk(`[${tag}] ↶ shown ${before.shown} (${before.h}px), idle ${before.idle} → after a filter armed ${before.armed} ("${before.title}") → tapped: filter "${after.filter}", idle ${after.idle}, "${after.meta}"`,
     before.shown && before.armed && !!before.filtered && after.filter === '' && after.idle && /undone: filter/.test(after.meta));
 
+  // 17. the selection bar: new · add · remove by touch (no shift / alt on a phone),
+  //     undo AND redo of a selection step, selection → column, clear
+  await p.evaluate(async () => { window._micro.closeProps && window._micro.closeProps(); for (const w of document.querySelectorAll('.fwin')) if (w.style.display !== 'none' && w._minimize) w._minimize(); document.getElementById('btnFit').click(); await new Promise((r) => setTimeout(r, 1200)); });
+  const vr = await p.evaluate(() => { const r = document.getElementById('cv').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
+  const drag = async (fx0, fy0, fx1, fy1) => {
+    await p.mouse.move(vr.x + vr.w * fx0, vr.y + vr.h * fy0); await p.mouse.down();
+    await p.mouse.move(vr.x + vr.w * fx1, vr.y + vr.h * fy1, { steps: 6 }); await p.mouse.up();
+    await p.waitForTimeout(700);
+  };
+  const selN = () => p.evaluate(() => window._micro.layers().reduce((a, L) => a + (L._selCount || 0), 0));
+  const bar = () => p.evaluate(() => { const b = document.getElementById('selBar'), r = b.getBoundingClientRect(); return { on: document.body.classList.contains('sel-on'), shown: getComputedStyle(b).display === 'flex', bottom: Math.round(r.bottom), text: document.getElementById('selBarCount').textContent, mode: (document.querySelector('#selBarModes .on') || {}).dataset?.m }; });
+  const mode = (m) => p.evaluate((m) => document.querySelector(`#selBarModes [data-m="${m}"]`).click(), m);
+  await p.evaluate(() => document.getElementById('btnSelRect').click());
+  const b0 = await bar();
+  await drag(0.30, 0.30, 0.55, 0.55); const nA = await selN();
+  await mode('add'); await drag(0.50, 0.45, 0.75, 0.75); const nB = await selN();
+  await mode('subtract'); await drag(0.30, 0.30, 0.55, 0.55); const nC = await selN();
+  const b1 = await bar();
+  await p.evaluate(() => document.getElementById('btnUndo').click()); await p.waitForTimeout(400); const nU = await selN();
+  await p.evaluate(() => document.getElementById('btnRedo').click()); await p.waitForTimeout(400); const nR = await selN();
+  const redoIdle = await p.evaluate(() => document.getElementById('btnRedo').disabled);
+  chk(`[${tag}] selection bar: armed → shown ${b0.shown} (bottom ${b0.bottom}, "${b0.text}"); new ${nA} → + add ${nB} → − remove ${nC} ("${b1.text}", mode ${b1.mode}); ↶ ${nU} ↷ ${nR}, redo idle after ${redoIdle}`,
+    b0.on && b0.shown && b0.bottom === 787 - 80 && nA > 0 && nB > nA && nC < nB && nC > 0 && b1.mode === 'subtract' && nU === nB && nR === nC && redoIdle);
+  // → column: the prompt, a name, a 0/1 column on the layer the bar names
+  await p.evaluate(() => document.getElementById('selBarCol').click()); await p.waitForTimeout(300);
+  await p.evaluate(() => { const i = document.getElementById('pmInput'); i.value = 'PHONESEL'; document.getElementById('pmOk').click(); });
+  await p.waitForTimeout(400);
+  const col = await p.evaluate(() => window._micro.layers().some((L) => (L.paintCols || []).some((c) => c.name === 'PHONESEL')));
+  await p.evaluate(() => document.getElementById('selBarClear').click()); await p.waitForTimeout(200);
+  const b2 = await bar(), nZ = await selN();
+  await p.evaluate(() => document.getElementById('btnSelRect').click()); await p.waitForTimeout(200);
+  const b3 = await bar();
+  // paint strokes undo AND redo through the same buttons
+  const pr = await p.evaluate(async () => {
+    const M = window._micro, L = M.layers().find((q) => (q.paintCols || []).some((c) => c.name === 'PHONESEL'));
+    M.setActiveLayer(L.id);
+    const col = M.paintColByName(L, 'PHONESEL'), code = col.dict.length - 1, recs = [];
+    for (let r = 0; r < col.codes.length && recs.length < 50; r++) if (col.codes[r] !== code) recs.push(r);
+    const before = recs.map((r) => col.codes[r]).join();
+    M.paintApply(L, col, recs, code);
+    const painted = recs.every((r) => col.codes[r] === code);
+    document.getElementById('btnUndo').click(); await new Promise((q) => setTimeout(q, 100));
+    const undone = recs.map((r) => col.codes[r]).join() === before;
+    document.getElementById('btnRedo').click(); await new Promise((q) => setTimeout(q, 100));
+    const redone = recs.every((r) => col.codes[r] === code);
+    return { n: recs.length, painted, undone, redone };
+  });
+  chk(`[${tag}] paint stroke of ${pr.n}: painted ${pr.painted} → ↶ restored ${pr.undone} → ↷ repainted ${pr.redone}`, pr.n > 0 && pr.painted && pr.undone && pr.redone);
+  chk(`[${tag}] selection bar: → column made PHONESEL ${col}; × cleared (${nZ}, "${b2.text}"); tool off → bar gone ${!b3.on}`, col && nZ === 0 && b2.on && !b3.on);
+  await mode('replace').catch(() => {});
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {
