@@ -394,6 +394,10 @@
   .pp-rule.off input[type="text"] { color: var(--dim); }
   .pp-rule .grip { color: var(--dim); cursor: grab; user-select: none; font-size: 10px; }
   .pp-rule .grip:hover { color: var(--accent); }
+  /* reorder grips take the drag — without this a finger's drag scrolls the panel and the grip gets pointercancel */
+  .pp-cat .grip, .pp-rule .grip, .fwin-grip { touch-action: none; }
+  body.mobile .pp-rule { grid-template-columns: 28px 16px 16px 62px 1fr 34px 14px; }
+  body.mobile .pp-cat .grip, body.mobile .pp-rule .grip { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 32px; font-size: 14px; }
   .pp-rule .else-nm { color: var(--dim); font-size: 11px; }
   .pw-body { padding: 6px 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
   .pw-colrow { display: flex; align-items: center; gap: 6px; padding: 2px 0 6px; }
@@ -924,6 +928,10 @@
   /* the EXPRESSION STRIP: while a filter / ƒ field has focus on a phone, two rows ride the
      keyboard's top edge (--kb, from visualViewport) — the symbols a phone keyboard hides two
      pages deep, and what the completer offers at the caret (columns, operators, the values) */
+  /* the magnifier: a loupe over what the finger hides (and over the measure crosshair) */
+  #loupe { display: none; position: fixed; z-index: 950; width: 132px; height: 132px; border-radius: 50%; overflow: hidden; pointer-events: none;
+    border: 2px solid var(--accent); box-shadow: 0 6px 22px rgba(0, 0, 0, 0.6); background: #121212; }
+  #loupe canvas { width: 100%; height: 100%; display: block; }
   #exprStrip { display: none; }
   body.mobile.expr-on #exprStrip {
     display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 900;
@@ -984,6 +992,34 @@
   body.mobile .pal-item.pal-nl { flex-direction: column; }
   body.mobile .pal-g { min-width: 0; }
   body.mobile .pal-t { font-size: 14px; }
+  /* ── a phone held SIDEWAYS (body.land): height is what's short, so the tool bar becomes a
+     left rail, the strips sit over the status line, and a sheet docks on the RIGHT at full
+     height — the view yields its width (--sheet-inset-x), not its height ── */
+  body.mobile.land { --rail-w: 60px; --sheet-bottom: calc(24px + var(--sec-h) + var(--sel-h)); }
+  body.mobile.land #barTools {
+    top: 36px; bottom: 24px; left: 0; right: auto; width: var(--rail-w); height: auto; flex-direction: column; justify-content: space-around;
+    padding: 0; border-top: none; border-right: 1px solid var(--border);
+  }
+  body.mobile.land #barTools button { flex: 1 1 0; min-height: 40px; width: 100%; }
+  body.mobile.land #view { inset: 36px var(--sheet-inset-x, 0px) var(--sheet-bottom) var(--rail-w); }
+  body.mobile.land.sec-on #secStrip { left: var(--rail-w); bottom: calc(24px + var(--sel-h)); }
+  body.mobile.land.sec-on.sec-more #secExtra { left: var(--rail-w); bottom: calc(24px + var(--sel-h) + 44px); }
+  body.mobile.land.sel-on #selBar { left: var(--rail-w); bottom: 24px; }
+  body.mobile.land .fwin, body.mobile.land #layersPanel, body.mobile.land #propPanel, body.mobile.land #recPanel {
+    left: auto !important; right: 0; width: min(46vw, 440px) !important; top: 36px !important; height: auto !important;
+    border-radius: 12px 0 0 0; border-top: none; border-left: 1px solid var(--bd2); box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
+  }
+  body.mobile.land .fwin-head::before, body.mobile.land #layersPanel .lp-head::before, body.mobile.land #propPanel .rp-head::before, body.mobile.land #recPanel:not(.card) .rp-head::before { display: none; }   /* no pull handle: a side sheet closes by a swipe right or its × */
+  body.mobile.land #recPanel.card { left: auto !important; right: calc(var(--sheet-inset-x, 0px) + 8px); width: min(380px, 44vw) !important; top: auto !important; height: auto !important; border-radius: 12px; border: 1px solid var(--bd2); }
+  body.mobile.land #recPanel.card.card-top { top: 44px !important; bottom: auto !important; }
+  body.mobile.land #winStrip { left: calc(var(--rail-w) + 8px); right: calc(var(--sheet-inset-x, 0px) + 8px); bottom: calc(var(--sheet-bottom) + 4px); }
+  body.mobile.land #compass.se, body.mobile.land #compass.ne { right: calc(var(--sheet-inset-x, 0px) + 12px) !important; }
+  body.mobile.land #compass.sw, body.mobile.land #compass.nw { left: calc(var(--rail-w) + 12px); }
+  body.mobile.land #compass.se, body.mobile.land #compass.sw { bottom: calc(var(--sheet-bottom) + 10px); }
+  body.mobile.land:has(#winStrip:not(:empty)) #compass.se, body.mobile.land:has(#winStrip:not(:empty)) #compass.sw { bottom: calc(var(--sheet-bottom) + 48px); }
+  body.mobile.land #empty { inset: 36px 0 24px var(--rail-w); }
+  body.mobile.land #palBox { margin: 0 0 24px var(--rail-w); width: calc(100vw - var(--rail-w)); }
+  body.mobile.land #palList { max-height: calc(100svh - 36px - 24px - 60px); }
 </style>
 </head>
 <body>
@@ -4137,7 +4173,7 @@ $('#btnFit').onclick = () => { if (renderer.chunkCount) { cam.fit(rendererDocBbo
 // and lit states travel with them), the section controls to a strip, every
 // floating thing becomes a bottom sheet (floatWin + the panels). Desktop puts
 // everything back where it came from.
-const _mqPhone = matchMedia('(max-width: 720px)');
+const _mqPhone = matchMedia('(max-width: 720px), (max-height: 500px) and (pointer: coarse)');   // a phone held sideways is wide but short
 const _forceMobile = new URLSearchParams(location.search).get('mobile') === '1';
 // src/windows.js reaches back into the app through these
 setWindowsHooks({ get _propOpen() { return _propOpen; }, closeProps, toggleLayersPanel });
@@ -4171,6 +4207,7 @@ function layoutBars() {
   const mobile = _forceMobile || _mqPhone.matches;
   const was = document.body.classList.contains('mobile');
   document.body.classList.toggle('mobile', mobile);
+  syncLand();
   if (was !== mobile) relayoutWindows(mobile);
   // a phone renders at most 2 device pixels per CSS pixel (an S24+'s 2.8 is ~2× the
   // fill for no visible gain); the CSS size didn't change, so resize by hand
@@ -4195,7 +4232,11 @@ function layoutBars() {
 const _SEC_EXTRA_LABELS = ['#secPlaneW', '#secFollowW', '#sec2DW'];
 const _SEC_MOVED = ['#secMode', '#secPos', '#secDipDir', '#secDip', ..._SEC_EXTRA_LABELS];
 for (const sel of _SEC_MOVED) { const el = $(sel); _home.set(el, { parent: el.parentNode, next: el.nextSibling }); }
+// sideways: a phone layout whose height is the short side (rotating doesn't always cross
+// the media query, so this follows every resize)
+function syncLand() { document.body.classList.toggle('land', document.body.classList.contains('mobile') && innerWidth > innerHeight); }
 _mqPhone.addEventListener('change', layoutBars);
+addEventListener('resize', syncLand);
 layoutBars();
 
 
@@ -4207,13 +4248,17 @@ function _sheetLayout() {
   if (_sheetLayoutRaf) return;
   _sheetLayoutRaf = requestAnimationFrame(() => {
     _sheetLayoutRaf = 0;
-    if (!_isMobile()) { document.body.style.removeProperty('--sheet-inset'); return; }
+    const bs = document.body.style;
+    if (!_isMobile()) { bs.removeProperty('--sheet-inset'); bs.removeProperty('--sheet-inset-x'); return; }
+    const land = document.body.classList.contains('land');
     let h = 0;
     for (const el of document.querySelectorAll('.fwin.sheet, #layersPanel.show, #propPanel.show, #recPanel.show:not(.card)')) {   // a pick card floats; the view doesn't yield to it
       if (el.style.display === 'none') continue;
-      h = Math.max(h, el.getBoundingClientRect().height);
+      const rr = el.getBoundingClientRect();
+      h = Math.max(h, land ? rr.width : rr.height);         // sideways the sheet docks right: the view gives up width
     }
-    document.body.style.setProperty('--sheet-inset', h ? h + 'px' : '0px');
+    bs.setProperty('--sheet-inset', !land && h ? h + 'px' : '0px');
+    bs.setProperty('--sheet-inset-x', land && h ? h + 'px' : '0px');
   });
 }
 new MutationObserver(_sheetLayout).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'] });
@@ -9361,6 +9406,23 @@ the <b>▾ drawer</b> beside the box projects the expression as LIVE WIDGETS —
 <b>drillholes</b> — a set is a GROUP: ◈ collars and ↧ survey rows carry their own actions (attribute tables, <b>Filter holes…</b> over collar columns — the verdict masks every interval table and the traces — <b>Broadcast</b> a collar column onto the intervals, re-desurvey, traces). The set's menu has <b>QA report…</b>: every row to look at before estimating — blank or duplicate collars, orphan and bad survey stations, doglegs, gaps, overlaps, depths past the end of hole, text in a grade column — each at its table and row; click one to go to the hole; export it as TSV<br><br>
 <b>knobs</b><br>
 <b>min/max</b> boxes clip the color scale (outliers stop eating the ramp; empty = auto) · View menu: <b>boxes</b> = true block faces · <b>points</b> = fixed splats (snappier) · <b>block edges</b> = outline every block (and every cut block on a section) · <b>budget</b> = elements per frame (lower = snappier; converges when still) · <b>EDL</b> = the shading that makes points read as a surface`;
+const HELP_TOUCH = `
+<b>the view</b><br>
+one finger — orbit · two fingers — pinch to zoom, move together to pan, twist to turn<br>
+<b>tap</b> a block, point or surface — its record opens as a card (the view doesn't move; drag the card's handle up for the full sheet, flick it away to close) · a tap a little off an edge still finds it<br>
+<b>double-tap</b> the model — orbit about that spot · double-tap empty space — fit<br>
+<b>hold still</b> on the model — the <b>magnifier</b>: what's under your finger, enlarged above it; slide onto the exact spot and lift to pick it<br><br>
+<b>the bottom bar</b><br>
+<b>layers</b> · <b>props</b> (the active layer) · <b>select</b> · <b>section</b> · <b>measure</b> · <b>fit</b> — everything else is in ☰ and the <b>⌘K</b> palette (type what you want: "grade tonnage", "export", "save")<br>
+↶ ↷ in the top bar undo and redo — one gesture is one step<br><br>
+<b>select</b> — drag a rectangle or draw a lasso (the shape buttons on the selection bar); <b>new · + · −</b> say what the next drag does (a phone has no shift / alt); <b>through</b> takes hidden blocks too; <b>→ col</b> writes the selection as a column; × clears<br>
+<b>section</b> — the strip above the bar: the mode, a scrub slider, − / + for the slab; <b>⋯</b> for slab · front · behind, a custom dip, plane · follow · 2D<br>
+<b>measure</b> — tap two points; or press and slide: a crosshair rides above your finger (with the magnifier) and lifting takes the point under it<br><br>
+<b>sheets</b> — every window and panel is a sheet from the bottom (on the right, holding the phone sideways); drag its handle to resize, past the bottom to close; one at a time — the others wait as chips above it; the view moves its middle above the sheet<br>
+<b>rows</b> — long-press a layer row (or tap its ⋯) for its menu<br>
+<b>typing an expression</b> (filter, ƒ columns, hole filter) — a strip rides the keyboard: the symbols a phone keyboard hides, ◂ ▸ to move the cursor, and what fits at the cursor — columns, then operators, then the category values<br>
+<b>Back</b> closes what's on top — a menu, a dialog, the card, a sheet, an armed tool — before it leaves micro<br><br>
+<b>swath</b> — drag sideways across the plot to hold a band range (and select it in 3D); tap a bar to see its band in the model`;
 const HELP_ABOUT = `
 <b>micro</b> — a streaming workbench for massive spatial-element files: LiDAR point clouds
 (.las, .ply, .xyz), block models (.csv, .dm, .parquet — regular or variable-size sub-blocked), grids, and drillholes. No import step —
@@ -9447,10 +9509,11 @@ function checkForUpdates() {
   }).catch(() => { $('#meta').textContent = 'update check failed'; });
 }
 $('#mHelp').onclick = () => menuAt($('#mHelp'), [
+  ...(_isMobile() ? [{ label: 'Touch…', action: () => showHelp('touch', trusted(HELP_TOUCH)) }] : []),   // a phone first: no keys to speak of
   { label: 'Keyboard & mouse…', action: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
   { label: 'Analysis & workbench…', action: () => showHelp('analysis & workbench', trusted(HELP_ANALYSIS)) },
   { label: 'Full documentation ↗', action: () => window.open('https://gentropic.org/micro/docs/', '_blank', 'noopener') },
-  { label: 'Shortcut card (print) ↗', action: () => window.open('https://gentropic.org/micro/docs/card.html', '_blank', 'noopener') },
+  ...(_isMobile() ? [] : [{ label: 'Shortcut card (print) ↗', action: () => window.open('https://gentropic.org/micro/docs/card.html', '_blank', 'noopener') }]),
   { label: 'Why it’s Sealed (security)…', action: () => sealedInfo() },
   { label: 'Check for updates…', action: () => checkForUpdates() },
   { label: 'About micro', action: () => showAbout() },
@@ -10116,8 +10179,9 @@ function aimSvg() {
 }
 function drawAim() {
   const s = aimSvg();
-  if (!_aim || !_aim.on) { s.style.display = 'none'; return; }
+  if (!_aim || !_aim.on) { s.style.display = 'none'; hideLoupe(); return; }
   s.style.display = '';
+  drawLoupe(_aim.x, _aim.y);                               // the magnifier over the crosshair's spot
   s.querySelector('#aimG').setAttribute('transform', `translate(${_aim.x} ${_aim.y})`);
   if (_measure.a && !_measure.b) { _measure.mouse = [_aim.x, _aim.y]; drawMeasure(); }
 }
@@ -10442,6 +10506,7 @@ const COMMANDS = [
   { id: 'sealed', group: 'Help', title: 'Why it\'s Sealed (security)…', kw: 'network privacy offline trust connect-src wasm verify', run: () => sealedInfo() },
   { id: 'update', group: 'Help', title: 'Check for updates…', kw: 'version new build reload service worker', run: () => checkForUpdates() },
   { id: 'helpwork', group: 'Help', title: 'Analysis & workbench help…', kw: 'grade tonnage swath reconcile join validate lineage figure docs guide', run: () => showHelp('analysis & workbench', trusted(HELP_ANALYSIS)) },
+  { id: 'helptouch', group: 'Help', title: 'Touch help…', kw: 'phone gestures finger tap pinch docs guide', run: () => showHelp('touch', trusted(HELP_TOUCH)) },
   { id: 'helpkeys', group: 'Help', title: 'Keyboard & mouse help…', kw: 'shortcuts docs guide', run: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
 ];
 let _palOpen = false, _palSel = 0, _palItems = [], _palNlMode = false;
@@ -13226,8 +13291,14 @@ cv.addEventListener('pointerup', (e) => {
     else pivotOn(hit, px, py);
     return;
   }
+  showPickAt(hit, px, py);
+});
+// what a tap on the canvas shows: the record (a card on a phone), or a surface's geometry,
+// or nothing — the tap handler's and the magnifier's one path
+function showPickAt(hit, px, py) {
+  const r = cv.getBoundingClientRect();
   if (hit == null) { $('#recPanel').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); return; }
-  _recTap ={ y: r.top + py, t: performance.now() };       // the card keeps clear of the tapped spot
+  _recTap = { y: r.top + py, t: performance.now() };      // the card keeps clear of the tapped spot
   const hitL = layerById(hit.layer);
   if (hitL && hitL.kind === 'mesh') {                      // a surface: no rows to show, so show the geometry
     renderer.setPicked(null); requestRender();
@@ -13238,7 +13309,89 @@ cv.addEventListener('pointerup', (e) => {
   renderer.setPicked(hit); requestRender();
   showRecord(hit);
   emitPick(hit, 'canvas');
-});
+}
+
+// ── the MAGNIFIER (Vogel & Baudisch's Shift): a finger hides what it touches. Hold still
+// on the view with no tool armed and a loupe opens ABOVE the finger — what's under it,
+// ×2.5, a crosshair on the exact point, the record there lit live; slide to refine (the
+// view holds still meanwhile), lift to pick exactly there. The measure crosshair uses the
+// same loupe. Touch only. ──
+const LOUPE_D = 132, LOUPE_ZOOM = 2.5, LOUPE_HOLD = 350;
+let _loupe = null;                                         // { id, x, y, hit } while magnifying
+function loupeEl() {
+  let el = $('#loupe');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'loupe'; el.setAttribute('aria-hidden', 'true');
+    const c = document.createElement('canvas'); el.appendChild(c);
+    document.body.appendChild(el);
+  }
+  return el;
+}
+// show the loupe magnifying the canvas around (x, y) (canvas px); `fx, fy` = the finger,
+// which it keeps clear of — above, or beside it when there's no room above
+function drawLoupe(x, y, fx = x, fy = y) {
+  const el = loupeEl(), c = el.firstChild, r = cv.getBoundingClientRect();
+  const ratio = cv.width / (cv.clientWidth || 1), dp = Math.round(LOUPE_D * Math.min(2, devicePixelRatio || 1));
+  if (c.width !== dp) { c.width = dp; c.height = dp; }
+  let cx = r.left + fx, cy = r.top + Math.min(fy, y) - 100 - LOUPE_D / 2 + 30;
+  if (cy - LOUPE_D / 2 < 40) { cy = r.top + fy - 40; cx = r.left + fx + (fx < r.width / 2 ? 1 : -1) * (LOUPE_D / 2 + 44); }
+  cx = Math.max(LOUPE_D / 2 + 4, Math.min(innerWidth - LOUPE_D / 2 - 4, cx));
+  el.style.left = (cx - LOUPE_D / 2) + 'px'; el.style.top = (cy - LOUPE_D / 2) + 'px'; el.style.display = 'block';
+  const g = c.getContext('2d'), src = (LOUPE_D / LOUPE_ZOOM) * ratio;
+  g.fillStyle = '#121212'; g.fillRect(0, 0, dp, dp);
+  g.imageSmoothingEnabled = false;
+  try { g.drawImage(cv, x * ratio - src / 2, y * ratio - src / 2, src, src, 0, 0, dp, dp); } catch { /* a lost context */ }
+  const m = dp / 2, k = dp / LOUPE_D;
+  g.strokeStyle = 'rgba(0,0,0,0.7)'; g.lineWidth = 3 * k;
+  g.beginPath(); g.moveTo(m - 14 * k, m); g.lineTo(m - 4 * k, m); g.moveTo(m + 4 * k, m); g.lineTo(m + 14 * k, m); g.moveTo(m, m - 14 * k); g.lineTo(m, m - 4 * k); g.moveTo(m, m + 4 * k); g.lineTo(m, m + 14 * k); g.stroke();
+  g.strokeStyle = '#f0b44c'; g.lineWidth = 1.5 * k; g.stroke();
+}
+function hideLoupe() { const el = $('#loupe'); if (el) el.style.display = 'none'; }
+const loupeFree = () => !_measure.arm && !_selArm && !_paintArm && !_knifeArm;
+cv.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch' || !_isMobile() || e.button !== 0 || !loupeFree()) return;
+  if (_loupe) { endLoupe(); return; }                      // a second finger: let the pinch have it
+  const r = cv.getBoundingClientRect(), id = e.pointerId, x0 = e.clientX, y0 = e.clientY;
+  let fingers = 1;
+  const arm = { id, x0, y0 };
+  const early = (ev) => { if (ev.pointerId === id && Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) quit(); };
+  const other = (ev) => { if (ev.pointerType === 'touch' && ev.pointerId !== id) { fingers++; quit(); } };
+  const quit = () => { clearTimeout(arm.t); removeEventListener('pointermove', early, true); removeEventListener('pointerdown', other, true); removeEventListener('pointerup', quit, true); removeEventListener('pointercancel', quit, true); };
+  arm.t = setTimeout(() => {
+    quit();
+    if (fingers > 1 || !loupeFree()) return;
+    _pdown = null;                                         // the lift is the loupe's, not a tap's
+    _loupe = { id, x: x0 - r.left, y: y0 - r.top, hit: null, meta: $('#meta').textContent };
+    loupeMove({ pointerId: id, clientX: x0, clientY: y0, preventDefault() {}, stopImmediatePropagation() {} });
+    addEventListener('pointermove', loupeMove, { capture: true, passive: false });
+    addEventListener('pointerup', loupeUp, true); addEventListener('pointercancel', loupeCancel, true);
+    $('#meta').textContent = 'magnifier — slide onto the spot, lift to pick it';
+  }, LOUPE_HOLD);
+  addEventListener('pointermove', early, true); addEventListener('pointerdown', other, true);
+  addEventListener('pointerup', quit, true); addEventListener('pointercancel', quit, true);
+}, { capture: true });
+function loupeMove(e) {
+  if (!_loupe || e.pointerId !== _loupe.id) return;
+  e.preventDefault(); e.stopImmediatePropagation();       // the view holds still while magnifying
+  const r = cv.getBoundingClientRect();
+  _loupe.x = Math.max(0, Math.min(r.width - 1, e.clientX - r.left)); _loupe.y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
+  const popts = { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() };
+  _loupe.hit = renderer.pick(Math.round(_loupe.x), Math.round(_loupe.y), cam, popts);
+  renderer.setPicked(_loupe.hit); requestRender();
+  requestAnimationFrame(() => { if (_loupe) drawLoupe(_loupe.x, _loupe.y); });   // after the lit record draws
+}
+function endLoupe() {
+  removeEventListener('pointermove', loupeMove, true); removeEventListener('pointerup', loupeUp, true); removeEventListener('pointercancel', loupeCancel, true);
+  if (_loupe && $('#meta').textContent.startsWith('magnifier')) $('#meta').textContent = _loupe.meta;   // the hint goes with the loupe
+  _loupe = null; hideLoupe();
+}
+function loupeUp(e) {
+  if (!_loupe || e.pointerId !== _loupe.id) return;
+  const { x, y, hit } = _loupe;
+  endLoupe();                                              // (the up still reaches the orbit control, which lets go)
+  showPickAt(hit, x, y);
+}
+function loupeCancel(e) { if (_loupe && e.pointerId === _loupe.id) { endLoupe(); renderer.setPicked(null); requestRender(); } }
 
 // ── the pick, for a host page ──────────────────────────────────────────────────
 // A USER pick leaves micro as `micro:pick` on window: { layer, rec, face, world,

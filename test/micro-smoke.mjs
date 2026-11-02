@@ -689,10 +689,10 @@ const sw2 = await p.evaluate(async () => {
     loc: [...w().querySelectorAll('label')].some((l) => /locate on 3D/.test(l.textContent)),
     perDir: [...w().querySelectorAll('.sw-h')].some((h) => /^bands · /.test(h.textContent)) };
   const cv3 = w().querySelector('.sw-main canvas'); const r3 = cv3.getBoundingClientRect();
-  cv3.dispatchEvent(new MouseEvent('mousemove', { clientX: r3.left + r3.width / 2, clientY: r3.top + r3.height / 2, bubbles: true }));
+  cv3.dispatchEvent(new PointerEvent('pointermove', { clientX: r3.left + r3.width / 2, clientY: r3.top + r3.height / 2, bubbles: true, pointerId: 1, pointerType: 'mouse' }));   // the plot listens for pointer events
   await new Promise((r) => setTimeout(r, 100));
   const ghost = document.querySelector('#bandSvg').style.display !== 'none';
-  cv3.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+  cv3.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerId: 1, pointerType: 'mouse' }));
   w().querySelector('.fwin-head button:last-child').click();   // close
   return { noAuto, ran, tabs, rebinLive, tabRebin, segs, ctl, ghost };
 });

@@ -163,9 +163,10 @@ const drag = await p.evaluate(async () => {
   const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath'));
   const cv2 = el.querySelector('.sw-main canvas'), r = cv2.getBoundingClientRect();
   const at = (fx) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * 0.5, bubbles: true });
-  cv2.dispatchEvent(new MouseEvent('mousedown', { ...at(0.3), button: 0 }));
-  cv2.dispatchEvent(new MouseEvent('mousemove', at(0.7)));
-  window.dispatchEvent(new MouseEvent('mouseup', at(0.7)));
+  const pe = (o) => ({ ...o, pointerId: 1, pointerType: 'mouse', isPrimary: true });   // the plot listens for pointer events (a finger drags it too)
+  cv2.dispatchEvent(new PointerEvent('pointerdown', pe({ ...at(0.3), button: 0 })));
+  cv2.dispatchEvent(new PointerEvent('pointermove', pe(at(0.7))));
+  cv2.dispatchEvent(new PointerEvent('pointerup', pe(at(0.7))));
   await new Promise((r2) => setTimeout(r2, 150));
   const sel = [...document.querySelectorAll('.menu .item')].find((x) => /Select rows in/.test(x.textContent));
   if (sel) sel._item.action();

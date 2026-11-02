@@ -25,6 +25,7 @@ export function _sheetExclusive(keep) {
 export const _SHEET_H = ['38svh', '60svh', '92svh'];   // svh: the viewport WITH the browser's URL bar — vh is the bar-hidden one, so 92vh ran off the top
 
 export function _sheetDrag(el, e, onDismiss) {
+  if (document.body.classList.contains('land')) return _sideSheetDrag(e, onDismiss);
   const id = e.pointerId, y0 = e.clientY; let yLast = y0;
   let cur = _SHEET_H.indexOf(el.style.getPropertyValue('--sheet-h').trim()); if (cur < 0) cur = 1;
   const snap = (i) => { el.style.setProperty('--sheet-h', _SHEET_H[i]); if (el._onResized) requestAnimationFrame(() => el._onResized()); };
@@ -40,6 +41,17 @@ export function _sheetDrag(el, e, onDismiss) {
     if (dy > 70) { if (cur === 0) onDismiss(); else snap(cur - 1); }
     else if (dy < -70) snap(Math.min(2, cur + 1));
   };
+  addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', cancel);
+}
+
+// a phone held sideways: the sheet docks right at full height, so there are no detents —
+// a swipe toward the edge closes it, anything else leaves it be
+function _sideSheetDrag(e, onDismiss) {
+  const id = e.pointerId, x0 = e.clientX; let xLast = x0;
+  const done = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', cancel); };
+  const move = (ev) => { if (ev.pointerId === id) { xLast = ev.clientX; ev.preventDefault(); } };
+  const cancel = (ev) => { if (ev.pointerId === id) done(); };
+  const up = (ev) => { if (ev.pointerId !== id) return; done(); if (xLast - x0 > 70) onDismiss(); };
   addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', cancel);
 }
 

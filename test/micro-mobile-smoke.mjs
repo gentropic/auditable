@@ -590,6 +590,48 @@ async function drive(url, tag) {
   chk(`[${tag}] … and on the ƒ editor: "${xsCalc.val}" (focus ${xsCalc.focus})`, xsCalc.shown && /^\(\w+ \+ $/.test(xsCalc.val) && xsCalc.focus === 'TEXTAREA');
   await p.evaluate(() => { document.activeElement.blur(); for (const w of document.querySelectorAll('.fwin')) if (w._minimize && w.style.display !== 'none') w._minimize(); });
 
+  // 26. the magnifier: hold still on the model → a loupe above the finger; slide (the view
+  //     holds still), lift → that record's card; the hint goes with the loupe
+  const mg = await p.evaluate(async () => { const M = window._micro, m = document.getElementById('secMode'), was = m.value; m.value = 'off'; m.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('rpClose').click(); document.getElementById('btnFit').click(); await new Promise((r) => setTimeout(r, 1500));
+    const r = document.getElementById('cv').getBoundingClientRect(), hits = [];
+    for (let y = 20; y < r.height - 20; y += 6) for (let x = 20; x < r.width - 20; x += 6) if (M.renderer.pick(x, y, M.cam, {})) hits.push([x, y]);
+    hits.sort((a, c) => a[1] - c[1]); return { was, r: [r.left, r.top], a: hits[Math.floor(hits.length * 0.6)], t0: M.cam.state.theta, p0: M.cam.state.phi }; });
+  const LT = (type, x, y) => cdpM.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: mg.r[0] + x, y: mg.r[1] + y }] });
+  await LT('touchStart', mg.a[0] - 20, mg.a[1] - 10); await p.waitForTimeout(500);
+  const lHeld = await p.evaluate(() => { const l = document.getElementById('loupe'); const r = l && l.getBoundingClientRect(); return { shown: !!l && l.style.display === 'block', bottom: r && r.bottom }; });
+  for (let i = 1; i <= 5; i++) await LT('touchMove', mg.a[0] - 20 + 4 * i, mg.a[1] - 10 + 2 * i);
+  await p.waitForTimeout(150); await LT('touchEnd'); await p.waitForTimeout(800);
+  const lUp = await p.evaluate((t) => ({ loupe: (document.getElementById('loupe') || { style: {} }).style.display, card: document.getElementById('recPanel').classList.contains('show') && document.getElementById('recPanel').classList.contains('card'),
+    turned: Math.abs(window._micro.cam.state.theta - t.t0) + Math.abs(window._micro.cam.state.phi - t.p0), meta: document.getElementById('meta').textContent }), mg);
+  chk(`[${tag}] magnifier: held → loupe ${lHeld.shown} (its bottom ${Math.round(lHeld.bottom)} above the finger ${Math.round(mg.r[1] + mg.a[1] - 10)}); slid + lifted → card ${lUp.card}, view turned ${lUp.turned.toFixed(4)}, loupe ${lUp.loupe}, hint gone ${!/^magnifier/.test(lUp.meta)}`,
+    lHeld.shown && lHeld.bottom < mg.r[1] + mg.a[1] - 10 && lUp.card && lUp.turned === 0 && lUp.loupe === 'none' && !/^magnifier/.test(lUp.meta));
+  await p.evaluate((was) => { document.getElementById('rpClose').click(); const m = document.getElementById('secMode'); m.value = was; m.dispatchEvent(new Event('input', { bubbles: true })); }, mg.was);
+
+  // 27. swath by touch: a sideways drag across the plot holds a band range and offers to select
+  //     it (the plot leaves vertical swipes to the sheet: pan-y); reorder grips take their drag
+  await p.evaluate(() => { const M = window._micro; M.openSwath(M.layers().find((l) => l.kind === 'blocks')); });
+  await p.waitForTimeout(500);
+  await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((x) => x.style.display !== 'none'); const run = w && w.querySelector('.sw-run'); if (run && !/ bands · /.test(w.querySelector('.fwin-head').textContent)) run.click(); });
+  await p.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((x) => x.style.display !== 'none'); const h = w && w.querySelector('.fwin-head').textContent; return h && / bands · /.test(h) && !/scanning/.test(h); }, null, { timeout: 90000 });
+  const pc = await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((x) => x.style.display !== 'none'), c = w.querySelector('.sw-main canvas') || w.querySelector('canvas'), r = c.getBoundingClientRect(); return { r: [r.left, r.top, r.width, r.height], ta: getComputedStyle(c).touchAction }; });
+  const sy = pc.r[1] + pc.r[3] * 0.5, sx = pc.r[0] + pc.r[2] * 0.3;
+  const ST = (type, x, y) => cdpM.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+  await ST('touchStart', sx, sy); for (let i = 1; i <= 10; i++) await ST('touchMove', sx + i * 10, sy); await ST('touchEnd'); await p.waitForTimeout(400);
+  const swMenu = await p.evaluate(() => [...document.querySelectorAll('body > .menu .item')].map((d) => d.textContent));
+  const grips = await p.evaluate(() => { const d = document.createElement('div'); d.className = 'pp-rule'; const g = document.createElement('span'); g.className = 'grip'; d.appendChild(g); document.body.appendChild(d); const ta = getComputedStyle(g).touchAction, w = g.getBoundingClientRect().width; d.remove(); return { ta, w }; });
+  chk(`[${tag}] swath by touch: plot ${pc.ta}; a sideways drag → "${swMenu[0] || 'no menu'}"; grips ${grips.ta}, ${Math.round(grips.w)} px wide`,
+    pc.ta === 'pan-y' && /^Select rows in/.test(swMenu[0] || '') && grips.ta === 'none' && grips.w >= 28);
+  await p.keyboard.press('Escape'); await p.evaluate(() => { for (const m of document.querySelectorAll('body > .menu')) m.remove(); for (const w of document.querySelectorAll('.fwin')) if (w._minimize && w.style.display !== 'none') w._minimize(); });
+
+  // 28. Help on a phone leads with touch
+  await p.evaluate(() => document.getElementById('mHelp').click()); await p.waitForTimeout(200);
+  const helpFirst = await p.evaluate(() => { const it = document.querySelector('body > .menu .item'); const t = it && it.textContent; if (it) it.click(); return t; });
+  await p.waitForTimeout(200);
+  const helpShown = await p.evaluate(() => ({ title: document.getElementById('helpTitle').textContent, magnifier: /magnifier/.test(document.getElementById('helpBody').textContent), card: [...document.querySelectorAll('body > .menu .item')].some((d) => /Shortcut card/.test(d.textContent)) }));
+  await p.evaluate(() => document.getElementById('helpClose').click());
+  chk(`[${tag}] Help leads with "${helpFirst}" → "${helpShown.title}" (mentions the magnifier ${helpShown.magnifier})`, /^Touch/.test(helpFirst || '') && helpShown.title === 'touch' && helpShown.magnifier);
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {
@@ -643,7 +685,35 @@ async function modeSwitch(url, tag) {
   await ctx.close();
 }
 
+// a phone held sideways (wide but short, a coarse pointer — no ?mobile=1, the media query
+// decides): the tool bar is a left rail, a sheet docks RIGHT at full height and the view
+// gives up width, not height; a swipe right closes it; rotating back restores the portrait shape
+async function landscape(url, tag) {
+  const ctx = await browser.newContext({ ...S24, viewport: { width: S24.viewport.height, height: S24.viewport.width } });
+  const p = await ctx.newPage();
+  await p.goto(url, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });
+  await p.evaluate(() => window._micro.openDemoProject());
+  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 120000 });
+  await p.waitForTimeout(600);
+  const geo = () => p.evaluate(() => { const R = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) }; };
+    return { land: document.body.classList.contains('land'), view: R(document.getElementById('view')), sheet: R([...document.querySelectorAll('.fwin')].find((x) => x.style.display !== 'none')), rail: R(document.getElementById('barTools')) }; });
+  const g1 = await geo();
+  const hd = await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((x) => x.style.display !== 'none'), r = w.querySelector('.fwin-head').getBoundingClientRect(); return [r.left + 40, r.top + r.height / 2]; });
+  const cdp = await ctx.newCDPSession(p);
+  const T = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+  await T('touchStart', ...hd); for (let i = 1; i <= 8; i++) await T('touchMove', hd[0] + i * 15, hd[1]); await T('touchEnd'); await p.waitForTimeout(500);
+  const g2 = await geo();
+  await p.setViewportSize(S24.viewport); await p.waitForTimeout(600);
+  const g3 = await geo();
+  chk(`[${tag}] sideways: rail ${JSON.stringify(g1.rail)}, sheet ${JSON.stringify(g1.sheet)}, view ${JSON.stringify(g1.view)} (${g1.view.b - g1.view.t} px tall); swipe right → sheet ${g2.sheet ? 'still up' : 'closed'}, view to ${g2.view.r}; upright → land ${g3.land}, rail ${JSON.stringify(g3.rail)}`,
+    g1.land && g1.rail.r <= 64 && g1.rail.t === 36 && g1.sheet && g1.sheet.t === 36 && Math.abs(g1.sheet.r - S24.viewport.height) <= 1 && Math.abs(g1.view.r - g1.sheet.l) <= 1 && g1.view.l === g1.rail.r && g1.view.b - g1.view.t > 240
+    && !g2.sheet && Math.abs(g2.view.r - S24.viewport.height) <= 1 && !g3.land && g3.rail.l === 0 && g3.rail.r === S24.viewport.width);
+  await ctx.close();
+}
+
 await modeSwitch(`http://127.0.0.1:${PORT}/tools/micro/index.html`, 'dev');
+await landscape(`http://127.0.0.1:${PORT}/tools/micro/index.html`, 'dev');
 await drive(`http://127.0.0.1:${PORT}/tools/micro/index.html?mobile=1`, 'dev');
 if (fs.existsSync(path.join(root, 'micro.html'))) await drive(`http://127.0.0.1:${PORT}/micro.html?mobile=1`, 'built');
 else chk('built micro.html exists (node build.js --target=micro)', false);

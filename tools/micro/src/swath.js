@@ -163,7 +163,7 @@ export function openSwath(L, ropts) {
   const cfgOf = () => ({ series: analysisSerCfg(st.series), mode: st.mode, axis: st.axis, dd: st.dd, dip: st.dip, rake: st.rake, trend: st.trend, plunge: st.plunge,
     bandW: st.bandW, off: st.off, bars: st.bars, scope: st.scope, gradeUnit: st.gradeUnit, locate: st.locate, ranges: rangesForCfg(st.ranges) });
   const win = floatWin({ title: `swath · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 660), y: 120, w: 640, h: 440,
-    onClose: () => { saveAnalysisCfg(L, 'swath', cfgOf(), win); setAnalysisOpen(L, 'swath', false); _swathWins.delete(L.id); if (st.zebra) clearSwathZebra(zebraL()); H.setSwathBand(null); removeEventListener('mouseup', onUp); } });
+    onClose: () => { saveAnalysisCfg(L, 'swath', cfgOf(), win); setAnalysisOpen(L, 'swath', false); _swathWins.delete(L.id); if (st.zebra) clearSwathZebra(zebraL()); H.setSwathBand(null); removeEventListener('pointerup', onUp); } });
   setAnalysisOpen(L, 'swath', true);
   applyAnalysisGeo(L, 'swath', win);
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
@@ -233,9 +233,13 @@ export function openSwath(L, ropts) {
     if (mx < map.px0 || mx > map.px1 || my < map.py1 - 6 || my > map.py0 + 6) return null;
     return map.xr[0] + (mx - map.px0) / (map.px1 - map.px0) * (map.xr[1] - map.xr[0]);
   };
-  let dragA = null, dragged = false;
-  cv.addEventListener('mousemove', (ev) => {
+  // pointer events, so a finger works too: a horizontal drag holds a band range (pan-y
+  // leaves a vertical swipe to scroll the sheet), a tap ghosts its band; no hover on touch
+  let dragA = null, dragged = false, dragId = null;
+  cv.style.touchAction = 'pan-y';
+  cv.addEventListener('pointermove', (ev) => {
     if (!st.locate || !st.scan) return;
+    if (dragA == null && ev.pointerType !== 'mouse') return;
     const t = tAt(ev), bw = effWidth(), off = effOffset();
     if (dragA != null) {
       if (t == null) return;
@@ -249,16 +253,23 @@ export function openSwath(L, ropts) {
     const B = Math.floor((t - off) / bw);
     setBand(off + B * bw, off + (B + 1) * bw, false);
   });
-  cv.addEventListener('mouseleave', () => { if (st._band && !st._band.sticky) setBand(null); });
-  cv.addEventListener('mousedown', (ev) => {
+  cv.addEventListener('pointerleave', (ev) => { if (ev.pointerType === 'mouse' && st._band && !st._band.sticky) setBand(null); });
+  cv.addEventListener('pointerdown', (ev) => {
     if (!st.locate || !st.scan || ev.button !== 0) return;
     if (st._band && st._band.sticky) setBand(null);        // click releases a held range
     const t = tAt(ev); if (t == null) return;
-    dragA = t; dragged = false; ev.preventDefault();
+    dragA = t; dragged = false; dragId = ev.pointerId; ev.preventDefault();
+    try { cv.setPointerCapture(ev.pointerId); } catch { /* synthetic */ }
   });
+  cv.addEventListener('pointercancel', (ev) => { if (ev.pointerId === dragId) { dragA = null; dragged = false; dragId = null; } });   // the browser took it (a scroll)
   const onUp = (ev) => {
-    if (dragA == null) return;
-    const was = dragged; dragA = null; dragged = false;
+    if (dragA == null || (dragId != null && ev.pointerId !== dragId)) return;
+    const was = dragged, a0 = dragA; dragA = null; dragged = false; dragId = null;
+    if (!was && ev.pointerType !== 'mouse') {               // a finger's tap: that bin's band, as a hover would
+      const bw = effWidth(), off = effOffset(), B = Math.floor((a0 - off) / bw);
+      setBand(off + B * bw, off + (B + 1) * bw, false);
+      return;
+    }
     if (!was || !st._band) return;
     const { a, b: b2 } = st._band;
     H.menuXY(ev.clientX, ev.clientY, [
@@ -268,7 +279,7 @@ export function openSwath(L, ropts) {
       { label: 'Clear', action: () => setBand(null) },
     ], () => {});                                          // dismiss keeps the ghost
   };
-  addEventListener('mouseup', onUp);
+  addEventListener('pointerup', onUp);
   // materialize the held band range as a real 3D selection on every series layer
   const bandRangeSelect = async (a, b2, mode) => {
     const dir = curDir();
