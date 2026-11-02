@@ -914,6 +914,18 @@
     box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5);
   }
   body.mobile #layersPanel, body.mobile #recPanel { --sheet-h: 44svh; }
+  /* a pick opens a CARD: sized to its content, floating over the view (which does NOT yield —
+     nothing moves under a stray tap); above the bar + strips + any open sheet + the chips, or
+     under the top bar when it would cover the tapped spot. Its handle grows it into the sheet. */
+  body.mobile #recPanel.card {
+    left: 8px !important; right: 8px; bottom: calc(var(--sheet-bottom) + var(--sheet-inset, 0px) + 8px);
+    height: auto !important; max-height: min(212px, 34svh); border-radius: 12px; border: 1px solid var(--bd2); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  }
+  body.mobile:has(#winStrip:not(:empty)) #recPanel.card { bottom: calc(var(--sheet-bottom) + var(--sheet-inset, 0px) + 46px); }
+  body.mobile #recPanel.card.card-top { top: 44px !important; bottom: auto !important; }   /* (!important: the chips rule's :has(#…) outranks this) */
+  body.mobile #recPanel .rp-head { position: relative; }
+  body.mobile #recPanel .rp-head::before { content: ''; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--bd2); }
+  body.mobile #recPanel.card.card-top .rp-head::before { top: auto; bottom: 3px; }
   body.mobile .fwin-head { cursor: default; padding: 10px 12px 8px; position: relative; min-height: 44px; align-items: center; touch-action: none; }
   body.mobile .fwin-head::before { content: ''; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--bd2); }
   body.mobile .fwin-head button { min-width: 36px; min-height: 36px; font-size: 18px; }
@@ -4169,7 +4181,7 @@ function _sheetLayout() {
     _sheetLayoutRaf = 0;
     if (!_isMobile()) { document.body.style.removeProperty('--sheet-inset'); return; }
     let h = 0;
-    for (const el of document.querySelectorAll('.fwin.sheet, #layersPanel.show, #propPanel.show, #recPanel.show')) {
+    for (const el of document.querySelectorAll('.fwin.sheet, #layersPanel.show, #propPanel.show, #recPanel.show:not(.card)')) {   // a pick card floats; the view doesn't yield to it
       if (el.style.display === 'none') continue;
       h = Math.max(h, el.getBoundingClientRect().height);
     }
@@ -4181,10 +4193,30 @@ addEventListener('resize', _sheetLayout);
 
 
 
+// a pick card's handle: a tap or a pull toward the middle of the screen grows it into the
+// record sheet; a flick toward its edge closes it
+function _cardDrag(el, e, onDismiss) {
+  const id = e.pointerId, y0 = e.clientY; let yLast = y0;
+  const done = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', cancel); };
+  const move = (ev) => { if (ev.pointerId === id) { yLast = ev.clientY; ev.preventDefault(); } };
+  const cancel = (ev) => { if (ev.pointerId === id) done(); };
+  const up = (ev) => {
+    if (ev.pointerId !== id) return;
+    done();
+    const inward = (yLast - y0) * (el.classList.contains('card-top') ? 1 : -1);
+    if (Math.abs(yLast - y0) < 8 || inward > 40) expandRecCard();
+    else if (inward < -40) onDismiss();
+  };
+  addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', cancel);
+}
 for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => closeLayersPanel()], ['#propPanel', '.rp-head', () => closeProps()], ['#recPanel', '.rp-head', () => $('#rpClose').click()]]) {
   const h = $(id) && ($(id).querySelector(head) || $(id).firstElementChild);
   if (h) {
-    h.addEventListener('pointerdown', (e) => { if (!_isMobile() || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; _sheetDrag($(id), e, dismiss); });
+    h.addEventListener('pointerdown', (e) => {
+      if (!_isMobile() || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      if ($(id).classList.contains('card')) { _cardDrag($(id), e, dismiss); return; }
+      _sheetDrag($(id), e, dismiss);
+    });
     // a click listener makes the head a TOUCH-ADJUSTMENT candidate: Chromium snaps a
     // tap near the WebGL canvas onto the canvas (it has listeners) unless the head is
     // itself "clickable" — found on the S24+, where every handle tap landed on #cv
@@ -12765,16 +12797,37 @@ async function showMeshRecord(L, cssX, cssY) {
   ]);
   return h;
 }
-function showRecPanel(title, rows, note) {
+// the phone: a pick opens a CARD (content-sized, floating, the view doesn't yield); a record
+// already open swaps its contents in place, card or sheet, with no close-and-reopen
+let _recTap = null;                                        // { y, t }: where the canvas tap landed — good across the
+                                                           // "fetching…" placeholder and the rows that follow it
+function placeRecCard() {
+  const P = $('#recPanel');
+  P.classList.remove('card-top');
+  if (!_recTap || performance.now() - _recTap.t > 4000) return;
+  if (_recTap.y > P.getBoundingClientRect().top - 24) P.classList.add('card-top');   // it would cover what you tapped
+}
+function expandRecCard() {
+  const P = $('#recPanel');
+  P.classList.remove('card', 'card-top');
   if (_propOpen) closeProps();
+  _sheetExclusive(P);
+}
+function showRecPanel(title, rows, note) {
+  const P = $('#recPanel'), mobile = _isMobile();
+  const card = mobile && (!P.classList.contains('show') || P.classList.contains('card'));
+  if (_propOpen && !card) closeProps();
   $('#rpTitle').textContent = _recFace != null ? `${title} · ${FACE_NAMES[_recFace]}` : title;
   _recRows = rows; _recNote = note || ''; _recAllNames = rows.map(([k]) => String(k));
   paintRecList();
   if ($('#rpCfg').classList.contains('show')) renderRecCfg();
-  $('#recPanel').classList.add('show');
-  _sheetExclusive($('#recPanel'));
+  P.classList.toggle('card', card);
+  P.classList.add('show');
+  if (card) { $('#rpCfg').classList.remove('show'); placeRecCard(); }
+  else _sheetExclusive(P);
 }
 $('#rpFieldsBtn').onclick = () => {
+  if ($('#recPanel').classList.contains('card')) expandRecCard();   // field choosing wants the room
   const cfg = $('#rpCfg');
   if (cfg.classList.contains('show')) cfg.classList.remove('show');
   else { cfg.classList.add('show'); renderRecCfg(); }
@@ -12931,6 +12984,7 @@ cv.addEventListener('pointerup', (e) => {
   let hit = renderer.pick(px, py, cam, popts);
   if (hit == null && d.touch) { const nb = nearPick(Math.round(px), Math.round(py), TOUCH_PICK_R, popts); if (nb) { hit = nb.hit; px = nb.x; py = nb.y; } }
   if (hit == null) { $('#recPanel').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); return; }
+  _recTap = { y: r.top + py, t: performance.now() };       // the card keeps clear of the tapped spot
   const hitL = layerById(hit.layer);
   if (hitL && hitL.kind === 'mesh') {                      // a surface: no rows to show, so show the geometry
     renderer.setPicked(null); requestRender();

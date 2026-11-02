@@ -442,6 +442,46 @@ async function drive(url, tag) {
   }
   chk(`[${tag}] near-edge tap (${edge && (edge.none ? `no edge found, ${edge.hits} hits` : Math.abs(edge.miss - edge.from))}px off the model, exact pixel ${edge && edge.pickAt ? 'hits' : 'misses'}): touch opens a record ${touchRec}, mouse picks nothing ${!mouseRec}`, !!edge && !edge.none && !edge.pickAt && touchRec && !mouseRec);
 
+  // 20. a pick opens a CARD: content-sized, floating — the view does NOT shrink; a tap low on
+  //     the screen puts it under the top bar instead; its handle grows it into the record sheet
+  //     (only then does the view yield), and a tap while it's a sheet swaps in place
+  await p.evaluate(async () => { document.getElementById('rpClose').click(); window._micro.toggleLayersPanel(false); window._micro.closeProps && window._micro.closeProps(); for (const w of document.querySelectorAll('.fwin')) if (w._minimize && w.style.display !== 'none') w._minimize(); document.getElementById('btnFit').click(); await new Promise((r) => setTimeout(r, 1500)); });
+  const cardSt = () => p.evaluate(() => { const P = document.getElementById('recPanel'), r = P.getBoundingClientRect();
+    return { show: P.classList.contains('show'), card: P.classList.contains('card'), top: P.classList.contains('card-top'), t: Math.round(r.top), h: Math.round(r.height), view: Math.round(document.getElementById('view').getBoundingClientRect().bottom), title: document.getElementById('rpTitle').textContent }; });
+  const spots = await p.evaluate(() => {
+    const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value }, hits = [];
+    for (let y = 16; y < r.height - 16; y += 6) for (let x = 16; x < r.width - 16; x += 6) {
+      if (!M.renderer.pick(x, y, M.cam, o)) continue;
+      let solid = true; for (const [dx, dy] of [[-3, 0], [3, 0], [0, -3], [0, 3]]) if (!M.renderer.pick(x + dx, y + dy, M.cam, o)) solid = false;   // not a 1-px tip
+      if (solid) hits.push([r.left + x, r.top + y]);
+    }
+    hits.sort((a, b) => a[1] - b[1]);
+    const low = hits.filter(([, y]) => y > r.top + r.height * 0.62);
+    return { high: hits[Math.floor(hits.length * 0.15)], high2: hits[Math.floor(hits.length * 0.05)], low: low[Math.floor(low.length / 2)], n: hits.length };
+  });
+  const c0 = await cardSt();
+  await p.touchscreen.tap(...spots.high); await p.waitForTimeout(800); const cHigh = await cardSt();
+  await p.evaluate(() => document.getElementById('rpClose').click());
+  if (spots.low) { await p.touchscreen.tap(...spots.low); await p.waitForTimeout(800); }
+  const cLow = await cardSt();
+  const cardHandle = await p.evaluate(() => { const r = document.querySelector('#recPanel .rp-head').getBoundingClientRect(); return [r.left + 30, r.top + r.height / 2]; });
+  await p.touchscreen.tap(...cardHandle); await p.waitForTimeout(600); const cBig = await cardSt();
+  const spot2 = await p.evaluate((was) => {                // the view shrank, the model moved: find a DIFFERENT block now
+    const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value };
+    for (let y = 16; y < r.height - 16; y += 6) for (let x = 16; x < r.width - 16; x += 6) {
+      const h = M.renderer.pick(x, y, M.cam, o);
+      if (h && h.rec !== undefined && !was.includes(`row ${h.rec.toLocaleString()}`)) return [r.left + x, r.top + y];
+    }
+    return null;
+  }, cBig.title);
+  if (spot2) { await p.touchscreen.tap(...spot2); await p.waitForTimeout(800); }
+  const cSwap = await cardSt();
+  await p.evaluate(() => document.getElementById('rpClose').click());
+  chk(`[${tag}] pick card: high tap → card ${cHigh.card} (${cHigh.h}px, at ${cHigh.t}), view ${c0.view} → ${cHigh.view}; low tap → under the top bar ${cLow.top} (at ${cLow.t}); handle → sheet ${!cBig.card}, view yields to ${cBig.view}; a tap then swaps in place ("${cBig.title}" → "${cSwap.title}", still a sheet ${!cSwap.card})`,
+    spots.n > 0 && !!spots.low && cHigh.show && cHigh.card && !cHigh.top && cHigh.view === c0.view && cHigh.h < 260
+    && cLow.show && cLow.card && cLow.top && cLow.t <= 48 && cLow.view === c0.view
+    && cBig.show && !cBig.card && cBig.view < c0.view - 100 && cSwap.show && !cSwap.card && cSwap.title !== cBig.title);
+
   // 14. the phone's pixel-ratio cap: the canvas backs at ≤ 2 device px per CSS px, and a
   //     pick through the capped buffer still lands on the model
   const dpr = await p.evaluate(async () => {
