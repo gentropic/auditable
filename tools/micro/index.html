@@ -819,7 +819,7 @@
      every floating thing a bottom SHEET, one sheet at a time. ── */
   /* what sits under a sheet: the tool bar (80), the selection bar and the section strip (44 each, while on) */
   body.mobile { --sec-h: 0px; --sel-h: 0px; --sheet-bottom: calc(80px + var(--sec-h) + var(--sel-h)); overscroll-behavior: none; }   /* no pull-to-refresh: it reloads the session */
-  body.mobile.sec-on { --sec-h: 44px; }
+  body.mobile.sec-on { --sec-h: calc(44px + var(--sec-x, 0px)); }   /* --sec-x = the ⋯ row's measured height */
   body.mobile.sel-on { --sel-h: 44px; }
   html:has(body.mobile) { overscroll-behavior: none; }
   body.mobile #bar .title, body.mobile #bar .mb, body.mobile #bar .spacer { display: none; }
@@ -865,6 +865,26 @@
   body.mobile #secStrip select { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; padding: 6px 6px; min-height: 36px; }
   body.mobile #secStrip input[type="range"] { flex: 1 1 auto; width: auto !important; min-width: 0; accent-color: var(--accent); height: 36px; }
   body.mobile #secStrip button { font-family: var(--mono); font-size: 14px; color: var(--text); background: var(--bg-btn); border: 1px solid var(--bd2); border-radius: 3px; min-width: 40px; min-height: 36px; }
+  body.mobile #secStrip button:disabled { opacity: .35; }
+  body.mobile #secStrip #secMoreBtn { font-size: 18px; line-height: 1; }
+  body.mobile.sec-more #secMoreBtn { color: var(--accent); border-color: var(--accent); }
+  /* …and its second row (⋯): keep · dip direction / dip (custom) · plane · follow · 2D */
+  #secExtra { display: none; }
+  body.mobile.sec-on.sec-more #secExtra {
+    display: flex; flex-wrap: wrap; position: absolute; left: 0; right: 0; bottom: calc(80px + var(--sel-h) + 44px); z-index: 6; align-items: center; gap: 8px; padding: 6px 10px;
+    border-top: 1px solid var(--border); background: var(--bg-bar); font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+  #secExtra .seg { display: inline-flex; border: 1px solid var(--bd2); border-radius: 3px; overflow: hidden; }
+  #secExtra .seg button { font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--bg-btn); border: none; min-height: 36px; padding: 0 9px; cursor: pointer; }
+  #secExtra .seg button + button { border-left: 1px solid var(--bd2); }
+  #secExtra .seg button.on { background: var(--accent); color: #121212; }
+  #secExtra .secNum { display: none; align-items: center; gap: 4px; color: var(--muted); }
+  body.sec-custom #secExtra .secNum { display: inline-flex; }
+  #secExtra input[type="number"] { font-family: var(--mono); font-size: 16px; width: 64px !important; min-height: 36px; padding: 0 6px; color: var(--text); background: var(--bg-field); border: 1px solid var(--bd2); border-radius: 3px; }
+  /* plane · follow · 2D as toggle chips: the lit chip IS the checkbox (the box itself hides) */
+  #secExtra label:not(.secNum) { display: inline-flex; align-items: center; min-height: 36px; padding: 0 9px; border: 1px solid var(--bd2); border-radius: 3px; background: var(--bg-btn); font-size: 13px; cursor: pointer; }
+  #secExtra label:not(.secNum):has(input:checked) { border-color: var(--accent); color: var(--accent); }
+  #secExtra input[type="checkbox"] { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
   /* ⋯ on a row: its context menu by tap (phones — a long-press does the same) */
   .row-more { display: none; }
   body.mobile .row-more { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 36px; min-height: 32px; margin-left: 2px; padding: 0; background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
@@ -873,15 +893,17 @@
      count, what the next drag does (new · add · remove), selection → column, clear */
   #selBar { display: none; }
   body.mobile.sel-on #selBar {
-    display: flex; position: absolute; left: 0; right: 0; bottom: 80px; height: 44px; z-index: 6; align-items: center; gap: 6px; padding: 0 8px;
+    display: flex; position: absolute; left: 0; right: 0; bottom: 80px; height: 44px; z-index: 6; align-items: center; gap: 5px; padding: 0 6px;
     border-top: 1px solid var(--border); background: var(--bg-bar); font-family: var(--mono); font-size: 12px; color: var(--text);
   }
-  #selBarCount { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-hi); }
-  #selBarModes { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--bd2); border-radius: 3px; overflow: hidden; }
-  #selBar button { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg-btn); border: none; min-height: 34px; padding: 0 8px; cursor: pointer; }
-  #selBarModes button + button { border-left: 1px solid var(--bd2); }
-  #selBarModes button.on { background: var(--accent); color: #121212; }
-  #selBarCol, #selBarClear { flex: 0 0 auto; border: 1px solid var(--bd2) !important; border-radius: 3px; }
+  #selBar .sp { flex: 1 1 auto; }
+  #selBar .seg { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--bd2); border-radius: 3px; overflow: hidden; }
+  #selBar button { font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--bg-btn); border: none; min-height: 34px; min-width: 36px; padding: 0 7px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  #selBar button svg { width: 17px; height: 17px; }
+  #selBar .seg button + button { border-left: 1px solid var(--bd2); }
+  #selBar .seg button.on { background: var(--accent); color: #121212; }
+  #selBarThrough.on { color: var(--accent); border-color: var(--accent) !important; }
+  #selBarThrough, #selBarCol, #selBarClear { flex: 0 0 auto; border: 1px solid var(--bd2) !important; border-radius: 3px; }
   #selBarClear { min-width: 36px; font-size: 16px !important; }
   #selBar button:disabled { opacity: .35; cursor: default; }
   /* sheets: windows + panels anchored to the bottom, one at a time, the head is the handle */
@@ -1000,8 +1022,9 @@
   <div id="barTools"></div>
   <!-- review mode: the section strip (hosts #secMode + #secPos while a section is on) and the
        layers / properties buttons for the bottom tool bar — populated by layoutBars() -->
-  <div id="secStrip"><button id="secThin" title="thinner slab">−</button><button id="secThick" title="thicker slab">+</button></div>
-  <div id="selBar"><span id="selBarCount"></span><span id="selBarModes" title="what the next drag does — a phone has no shift / alt"><button data-m="replace">new</button><button data-m="add">+ add</button><button data-m="subtract">− remove</button></span><button id="selBarCol" title="write the selection as a 0 / 1 column on this layer">→ column</button><button id="selBarClear" title="clear the selection" aria-label="clear the selection">×</button></div>
+  <div id="secStrip"><button id="secThin" title="thinner slab">−</button><button id="secThick" title="thicker slab">+</button><button id="secMoreBtn" title="more section options — keep · dip · plane · follow · 2D" aria-label="more section options">⋯</button></div>
+  <div id="secExtra"><span id="secKeep" class="seg" title="what the section keeps"><button data-c="slab">slab</button><button data-c="front">front</button><button data-c="behind">behind</button></span></div>
+  <div id="selBar"><span id="selBarShape" class="seg" title="the shape you drag"><button data-k="rect" title="rectangle" aria-label="rectangle"></button><button data-k="lasso" title="lasso" aria-label="lasso"></button></span><button id="selBarThrough" title="through — take everything in the dragged tube, hidden blocks included; off = only what you can see" aria-label="select through"></button><span id="selBarModes" class="seg" title="what the next drag does — a phone has no shift / alt"><button data-m="replace">new</button><button data-m="add" aria-label="add">+</button><button data-m="subtract" aria-label="remove">−</button></span><span class="sp"></span><button id="selBarCol" title="write the selection as a 0 / 1 column on this layer">→ col</button><button id="selBarClear" title="clear the selection" aria-label="clear the selection">×</button></div>
   <div id="view"><canvas id="cv"></canvas><canvas id="decoCv" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas><svg id="knifeSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="knifeLine" stroke="#c89b3c" stroke-width="1.5" stroke-dasharray="6 4"/></svg><svg id="secSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="secPoly" fill="rgba(200,155,60,0.05)" stroke="#c89b3c" stroke-width="1.2" stroke-dasharray="7 5"/></svg><svg id="bandSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="bandPolyA" fill="rgba(74,120,176,0.10)" stroke="#4a78b0" stroke-width="1.4"/><polygon id="bandPolyB" fill="none" stroke="#4a78b0" stroke-width="1.4" stroke-dasharray="4 3"/><text id="bandLabel" fill="#fff" font-size="11" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3"></text></svg><svg id="selSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><polygon id="selShape" fill="rgba(255,217,77,0.08)" stroke="#ffd94d" stroke-width="1.2" stroke-dasharray="5 4"/></svg><svg id="measureSvg" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none"><line id="mLineCase" stroke="#121212" stroke-width="4" stroke-linecap="round"/><line id="mLine" stroke="#ff26b3" stroke-width="1.5"/><circle id="mA" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><circle id="mB" r="4" fill="#ff26b3" stroke="#121212" stroke-width="1.5"/><text id="mLabel" fill="#fff" font-size="12" font-family="monospace" paint-order="stroke" stroke="#121212" stroke-width="3.5"></text></svg></div>
   <div id="empty"><b>open a block model, drillholes, or point cloud</b><span>Open… or drag .csv / .xlsx / .dm / .parquet / .las / .ply / .xyz / .msh / .obj / .lfm / .dxf / .wfr / .omf / .tif / .grd anywhere — several at once become layers</span><span>nothing handy? <a id="sampleDemo" class="cta">▸ open the demo project</a></span><span style="margin-top:-4px">a block model + drillholes + topography, sectioned, with a grade–tonnage curve — nothing is downloaded, it is all made here</span><span>or just <a id="sampleBlocks">▸ a 2M-block model</a> · a bench scan at <a data-sample="2000000">▸ 2M</a> · <a data-sample="10000000">▸ 10M</a> · <a data-sample="50000000">▸ 50M</a> points — all made locally</span><span style="color:var(--faint)">new here? &nbsp;<a href="https://gentropic.org/micro/docs/" target="_blank" rel="noopener noreferrer">read the manual</a> &nbsp;·&nbsp; Help → Keyboard &amp; mouse — the whole vocabulary</span><span class="empty-sec">Evaluating this for work? → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a> — verify it, and how to bring it through approval</span><span class="empty-sec empty-dl">One file, no install — <a href="https://gentropic.org/micro/micro.html" download="micro.html">download micro.html</a> to keep, share, or run offline</span><div id="emptyRecents" class="empty-recents"></div><div id="emptyProjects" class="empty-recents"></div></div>
   <div id="drop-hint">drop to open</div>
@@ -1413,6 +1436,11 @@ function syncSecUI() {
   if (!on && $('#sec2D').checked) { $('#sec2D').checked = false; $('#sec2D').dispatchEvent(new Event('input')); }   // section off releases the lock
   $('#secDipDir').style.display = mode === 'custom' ? '' : 'none';
   $('#secDip').style.display = mode === 'custom' ? '' : 'none';
+  // the phone's strip + ⋯ row mirror the same state
+  const clip = $('#secClip').value;
+  document.body.classList.toggle('sec-custom', mode === 'custom');
+  for (const b of $('#secKeep').children) b.classList.toggle('on', b.dataset.c === clip);
+  $('#secThin').disabled = $('#secThick').disabled = clip !== 'slab';
 }
 $('#secMode').addEventListener('input', () => {
   syncSecUI();
@@ -1581,6 +1609,7 @@ async function selectionToColumn(L) {
 function selectionStatus() {
   let total = 0, nL = 0;
   for (const L of S.layers) if (L._selCount) { total += L._selCount; nL++; }
+  if (_isMobile()) { $('#meta').textContent = selCountText() || 'selection: nothing there'; return; }   // the bar carries add / remove
   $('#meta').textContent = total
     ? `selected: ${total.toLocaleString()} element${total === 1 ? '' : 's'}${nL > 1 ? ` across ${nL} layers` : ''} — shift adds · alt subtracts · Esc clears`
     : 'selection: nothing there';
@@ -1770,11 +1799,14 @@ function armSelect(kind) {
   _selArm = kind; _selPts = null;
   queueMicrotask(syncSelBar);
   _paintLastKind = kind;
-  $('#btnSelRect').classList.toggle('on', kind === 'rect');
+  if (!_paintArm) _selShapeLast = kind;
+  $('#btnSelRect').classList.toggle('on', kind === 'rect' || (_isMobile() && !_paintArm));   // the phone's one select button stands for either shape
   $('#btnSelLasso').classList.toggle('on', kind === 'lasso');
   cv.style.cursor = 'crosshair';
   $('#meta').textContent = _paintArm
     ? `painting ${paintArmLabel()} — drag to paint · alt erases · Esc stops` + (_selThrough ? ' · THROUGH' : '')
+    : _isMobile()
+    ? (selCountText() || (kind === 'rect' ? 'select: drag a rectangle' : 'select: draw a lasso')) + (_selThrough ? ' · through' : ' · visible only')
     : (kind === 'rect'
       ? 'select: drag a rectangle — shift adds, alt subtracts (and keeps the tool armed)'
       : 'select: draw a lasso — shift adds, alt subtracts (and keeps the tool armed)') + (_selThrough ? ' · THROUGH (everything in the tube)' : ' · visible');
@@ -1787,12 +1819,17 @@ function disarmSelect() {
   cv.style.cursor = '';
   $('#selSvg').style.display = 'none';
 }
-$('#btnSelRect').onclick = () => { if (_selArm === 'rect') disarmSelect(); else armSelect('rect'); };
+let _selShapeLast = 'rect';                                // the phone's select button re-arms the last shape
+$('#btnSelRect').onclick = () => {
+  if (_isMobile()) { if (_selArm && !_paintArm) disarmSelect(); else armSelect(_selShapeLast); return; }
+  if (_selArm === 'rect') disarmSelect(); else armSelect('rect');
+};
 $('#btnSelLasso').onclick = () => { if (_selArm === 'lasso') disarmSelect(); else armSelect('lasso'); };
 function setSelThrough(v) {
   _selThrough = !!v;
   $('#btnSelThrough').classList.toggle('on', _selThrough);
   if (_selArm) armSelect(_selArm);                         // refresh the armed hint
+  syncSelBar();
 }
 $('#btnSelThrough').onclick = () => setSelThrough(!_selThrough);
 // a phone has no shift / alt: the selection bar's new · add · remove sets what the
@@ -1803,22 +1840,36 @@ function selBarTarget() {
   const A = activeLayer();
   return A && A._selCount ? A : S.layers.find((L) => L._selCount) || null;
 }
-function syncSelBar() {
-  const mobile = document.body.classList.contains('mobile');
+function selCountText() {
   let total = 0, nL = 0;
   for (const L of S.layers) if (L._selCount) { total += L._selCount; nL++; }
+  if (!total) return '';
+  const T = selBarTarget();
+  return `${total.toLocaleString()} selected${nL > 1 ? ` · ${nL} layers` : T ? ` · ${T.label || T.name}` : ''}`;
+}
+let _selBarTotal = 0;                                      // the count goes to the status line when it CHANGES
+function syncSelBar() {
+  const mobile = document.body.classList.contains('mobile');
+  let total = 0;
+  for (const L of S.layers) if (L._selCount) total += L._selCount;
   const on = mobile && (total > 0 || !!_selArm);
   document.body.classList.toggle('sel-on', on);
-  if (!on) return;
-  const T = selBarTarget();
-  $('#selBarCount').textContent = total
-    ? `${total.toLocaleString()} selected${nL > 1 ? ` · ${nL} layers` : T ? ` · ${T.label || T.name}` : ''}`
-    : (_selTouchMode === 'subtract' ? 'drag to remove' : 'drag to select');
+  if (!on) { _selBarTotal = total; return; }
+  if (total !== _selBarTotal) { _selBarTotal = total; $('#meta').textContent = selCountText() || 'selection cleared'; }
+  for (const b of $('#selBarShape').children) b.classList.toggle('on', b.dataset.k === (_selArm && !_paintArm ? _selArm : null));
+  $('#selBarThrough').classList.toggle('on', _selThrough);
   for (const b of $('#selBarModes').children) b.classList.toggle('on', b.dataset.m === _selTouchMode);
-  $('#selBarCol').disabled = !T;
+  $('#selBarCol').disabled = !selBarTarget();
   $('#selBarClear').disabled = !total;
 }
-for (const b of $('#selBarModes').children) b.onclick = () => { _selTouchMode = b.dataset.m; if (!_selArm) armSelect('rect'); syncSelBar(); };
+for (const b of $('#selBarModes').children) b.onclick = () => { _selTouchMode = b.dataset.m; if (!_selArm) armSelect(_selShapeLast); syncSelBar(); };
+// the shape + through buttons wear the desktop tool row's own icons
+for (const b of $('#selBarShape').children) {
+  b.appendChild($(b.dataset.k === 'rect' ? '#btnSelRect svg' : '#btnSelLasso svg').cloneNode(true));
+  b.onclick = () => armSelect(b.dataset.k);
+}
+$('#selBarThrough').appendChild($('#btnSelThrough svg').cloneNode(true));
+$('#selBarThrough').onclick = () => setSelThrough(!_selThrough);
 $('#selBarCol').onclick = () => { const T = selBarTarget(); if (T) selectionToColumn(T); };
 $('#selBarClear').onclick = () => { clearSelection(); syncSelBar(); };
 function drawSelShape() {
@@ -4069,6 +4120,11 @@ function ensureMobileChrome() {
   // the slab steppers — the Alt-wheel behaviour (×1.15 per step), as buttons
   const step = (up) => { if ($('#secClip').value !== 'slab') return; const cur = Math.max(0.5, +$('#secHalf').value || 5); $('#secHalf').value = Math.max(0.5, +(cur * (up ? 1.15 : 1 / 1.15)).toPrecision(3)); $('#secHalf').dispatchEvent(new Event('input')); $('#meta').textContent = `slab half-thickness ${+$('#secHalf').value} m`; };
   $('#secThin').onclick = () => step(false); $('#secThick').onclick = () => step(true);
+  // ⋯ — the second row: the instrument row's own controls, moved (so they stay the one source of truth)
+  $('#secMoreBtn').onclick = () => document.body.classList.toggle('sec-more');
+  for (const b of $('#secKeep').children) b.onclick = () => { $('#secClip').value = b.dataset.c; $('#secClip').dispatchEvent(new Event('input', { bubbles: true })); };
+  for (const [id, text] of [['secDipDirL', 'dip dir'], ['secDipL', 'dip']]) { const l = document.createElement('label'); l.id = id; l.className = 'secNum'; l.textContent = text + ' '; $('#secExtra').appendChild(l); }
+  new ResizeObserver(() => document.body.style.setProperty('--sec-x', $('#secExtra').offsetHeight + 'px')).observe($('#secExtra'));
   $('#secMode').addEventListener('input', () => document.body.classList.toggle('sec-on', _isMobile() && $('#secMode').value !== 'off'));
 }
 function layoutBars() {
@@ -4086,16 +4142,19 @@ function layoutBars() {
     for (const sel of _TOOLROW) _moveTo($(sel), $('#bar'));             // park them (the hidden ones stay hidden by CSS)
     for (const sel of _TOOLROW_MOBILE) _moveTo($(sel), $('#barTools'));
     const strip = $('#secStrip'); strip.insertBefore($('#secMode'), $('#secThin')); strip.insertBefore($('#secPos'), $('#secThin'));
-    if (!_home.has($('#secMode'))) { /* first move happened above without recording — record the desktop homes */ }
+    _moveTo($('#secDipDir'), $('#secDipDirL')); _moveTo($('#secDip'), $('#secDipL'));
+    for (const sel of _SEC_EXTRA_LABELS) _moveTo($(sel), $('#secExtra'));
   } else {
     for (const sel of _TOOLROW) _moveTo($(sel), $('#bar'));
     for (const sel of ['#btnLayersM', '#btnPropsM']) _moveTo($(sel), $('#barTools'));
-    _moveHome($('#secMode')); _moveHome($('#secPos'));
+    for (const sel of _SEC_MOVED) _moveHome($(sel));
   }
   document.body.classList.toggle('sec-on', mobile && $('#secMode').value !== 'off');
 }
 // record the section controls' desktop homes BEFORE the first layout moves them
-for (const sel of ['#secMode', '#secPos']) { const el = $(sel); _home.set(el, { parent: el.parentNode, next: el.nextSibling }); }
+const _SEC_EXTRA_LABELS = ['#secPlaneW', '#secFollowW', '#sec2DW'];
+const _SEC_MOVED = ['#secMode', '#secPos', '#secDipDir', '#secDip', ..._SEC_EXTRA_LABELS];
+for (const sel of _SEC_MOVED) { const el = $(sel); _home.set(el, { parent: el.parentNode, next: el.nextSibling }); }
 _mqPhone.addEventListener('change', layoutBars);
 layoutBars();
 

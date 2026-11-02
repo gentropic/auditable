@@ -132,7 +132,31 @@ async function drive(url, tag) {
   await p.evaluate(() => document.getElementById('btnSection').click()); await p.waitForTimeout(400);
   const again = await secState();
   chk(`[${tag}] section strip (bottom ${sec.stripBottom}) hosts mode "${sec.mode}" + a ${sec.sliderW}px scrub slider; toggles off (strip hidden ${!off.stripVisible}, mode "${off.mode}") and back on (${again.on})`,
-    sec.on && sec.stripVisible && sec.stripBottom === 787 - 80 && sec.inStrip && sec.sliderW >= 150 && !off.on && !off.stripVisible && off.mode === 'off' && again.on && again.stripVisible);
+    sec.on && sec.stripVisible && sec.stripBottom === 787 - 80 && sec.inStrip && sec.sliderW >= 120 && !off.on && !off.stripVisible && off.mode === 'off' && again.on && again.stripVisible);
+  // 4b. ⋯ opens the second row: keep (slab/front/behind) drives the real clip, the view yields
+  //     to the row, the slab steppers dim off-slab, custom shows dip dir + dip (≥16 px text)
+  const secMore = await p.evaluate(async () => {
+    const $ = (s) => document.querySelector(s), wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setMode = (v) => { $('#secMode').value = v; $('#secMode').dispatchEvent(new Event('input', { bubbles: true })); };
+    setMode('ew'); await wait(100);
+    const view0 = Math.round($('#view').getBoundingClientRect().bottom);
+    $('#secMoreBtn').click(); await wait(200);
+    const er = $('#secExtra').getBoundingClientRect(), view1 = Math.round($('#view').getBoundingClientRect().bottom);
+    $('#secKeep [data-c="front"]').click(); await wait(100);
+    const front = { clip: $('#secClip').value, thin: $('#secThin').disabled, lit: $('#secKeep .on')?.dataset.c };
+    $('#secKeep [data-c="slab"]').click(); await wait(100);
+    const slabThin = $('#secThin').disabled;
+    const toggles = ['#secPlaneVis', '#secFollow', '#sec2D'].every((s) => $(s).closest('#secExtra'));
+    setMode('custom'); await wait(150);
+    const dd = $('#secDipDir'), dr = dd.getBoundingClientRect();
+    const custom = { shown: dr.width > 0, font: parseFloat(getComputedStyle(dd).fontSize), rows: Math.round($('#secExtra').getBoundingClientRect().height) };
+    setMode('ew'); $('#secMoreBtn').click(); await wait(200);
+    const view2 = Math.round($('#view').getBoundingClientRect().bottom);
+    return { rowH: Math.round(er.height), rowBottom: Math.round(er.bottom), strip: Math.round($('#secStrip').getBoundingClientRect().top), view0, view1, view2, front, slabThin, toggles, custom };
+  });
+  chk(`[${tag}] section ⋯ row: ${secMore.rowH}px sitting on the strip (${secMore.rowBottom}/${secMore.strip}), view ${secMore.view0} → ${secMore.view1} → back ${secMore.view2}; front → clip "${secMore.front.clip}" lit "${secMore.front.lit}", steppers dim ${secMore.front.thin} (slab ${!secMore.slabThin ? 'live' : 'DIM'}); plane/follow/2D moved ${secMore.toggles}; custom dip dir shown ${secMore.custom.shown} at ${secMore.custom.font}px`,
+    secMore.rowH > 0 && secMore.rowH <= 56 && Math.abs(secMore.rowBottom - secMore.strip) <= 1 && secMore.view1 === secMore.view0 - secMore.rowH && secMore.view2 === secMore.view0
+    && secMore.front.clip === 'front' && secMore.front.lit === 'front' && secMore.front.thin && !secMore.slabThin && secMore.toggles && secMore.custom.shown && secMore.custom.font >= 16);
   await p.evaluate(() => document.getElementById('btnSection').click());
 
   // 5. the command palette as a sheet: bottom-anchored, 44px rows, nothing pre-selected
@@ -286,7 +310,7 @@ async function drive(url, tag) {
     await p.waitForTimeout(700);
   };
   const selN = () => p.evaluate(() => window._micro.layers().reduce((a, L) => a + (L._selCount || 0), 0));
-  const bar = () => p.evaluate(() => { const b = document.getElementById('selBar'), r = b.getBoundingClientRect(); return { on: document.body.classList.contains('sel-on'), shown: getComputedStyle(b).display === 'flex', bottom: Math.round(r.bottom), text: document.getElementById('selBarCount').textContent, mode: (document.querySelector('#selBarModes .on') || {}).dataset?.m }; });
+  const bar = () => p.evaluate(() => { const b = document.getElementById('selBar'), r = b.getBoundingClientRect(); return { on: document.body.classList.contains('sel-on'), shown: getComputedStyle(b).display === 'flex', bottom: Math.round(r.bottom), text: document.getElementById('meta').textContent, mode: (document.querySelector('#selBarModes .on') || {}).dataset?.m }; });
   const mode = (m) => p.evaluate((m) => document.querySelector(`#selBarModes [data-m="${m}"]`).click(), m);
   await p.evaluate(() => document.getElementById('btnSelRect').click());
   const b0 = await bar();
@@ -335,6 +359,23 @@ async function drive(url, tag) {
   chk(`[${tag}] selection bar: → column made PHONESEL ${col}; × cleared (${nZ}, "${b2.text}"); tool off → bar gone ${!b3.on}`, col && nZ === 0 && b2.on && !b3.on);
   await mode('replace');                                   // (re-arms the tool — by design) …
   await p.evaluate(() => { if (document.getElementById('btnSelRect').classList.contains('on')) document.getElementById('btnSelRect').click(); });   // … so put it down again
+  // the bar's shape + through: lasso and through from the bar, a through-lasso selects, and the
+  // bottom select button re-arms the LAST shape (a phone has one select button for both)
+  const shapeOf = () => p.evaluate(() => ({ armed: (document.querySelector('#selBarShape .on') || {}).dataset?.k || null, through: document.getElementById('selBarThrough').classList.contains('on'), desk: document.getElementById('btnSelThrough').classList.contains('on'), lit: document.getElementById('btnSelRect').classList.contains('on') }));
+  await p.evaluate(() => document.getElementById('btnSelRect').click());
+  await p.evaluate(() => { document.querySelector('#selBarShape [data-k="lasso"]').click(); document.getElementById('selBarThrough').click(); });
+  const sh0 = await shapeOf();
+  await p.mouse.move(vr.x + vr.w * 0.30, vr.y + vr.h * 0.35); await p.mouse.down();
+  for (const [fx, fy] of [[0.65, 0.30], [0.72, 0.65], [0.35, 0.70], [0.30, 0.40]]) await p.mouse.move(vr.x + vr.w * fx, vr.y + vr.h * fy, { steps: 5 });
+  await p.mouse.up();
+  await p.waitForFunction(() => window._micro.layers().some((L) => L._selCount > 0), null, { timeout: 30000 }).catch(() => {});
+  await p.waitForTimeout(400);
+  const nLasso = await selN(), metaL = await p.evaluate(() => document.getElementById('meta').textContent);
+  await p.evaluate(() => { if (document.getElementById('btnSelRect').classList.contains('on')) document.getElementById('btnSelRect').click(); document.getElementById('btnSelRect').click(); });
+  const sh1 = await shapeOf();
+  chk(`[${tag}] bar shapes: lasso armed ${sh0.armed}, through ${sh0.through} (desktop toggle ${sh0.desk}), select lit ${sh0.lit}; a through-lasso selected ${nLasso} ("${metaL}"); select re-arms "${sh1.armed}"`,
+    sh0.armed === 'lasso' && sh0.through && sh0.desk && sh0.lit && nLasso > 0 && /selected/.test(metaL) && sh1.armed === 'lasso');
+  await p.evaluate(() => { document.getElementById('selBarThrough').click(); document.getElementById('selBarClear').click(); document.querySelector('#selBarShape [data-k="rect"]').click(); document.getElementById('btnSelRect').click(); });
 
   // 18. long-press on a layer row opens ITS menu — one menu, and lifting the finger
   //     neither activates the row nor runs a menu item; ⋯ opens the same menu by tap;
@@ -443,6 +484,8 @@ async function modeSwitch(url, tag) {
   await p.setViewportSize({ width: 1280, height: 800 }); await p.waitForTimeout(500);
   const desk = await p.evaluate(() => ({ mobile: document.body.classList.contains('mobile'),
     wins: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').map((w) => { const r = w.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), sheet: w.classList.contains('sheet') }; }) }));
+  const homes = await p.evaluate(() => ['secMode', 'secPos', 'secDipDir', 'secDip', 'secPlaneW', 'secFollowW', 'sec2DW'].filter((id) => document.getElementById(id).closest('#secStrip, #secExtra')));
+  chk(`[${tag}] → desktop: the section controls went home (${homes.length ? 'still on the phone: ' + homes.join(', ') : 'all'})`, homes.length === 0);
   await p.setViewportSize({ width: 384, height: 787 }); await p.waitForTimeout(500);
   const phone = await p.evaluate(() => ({ mobile: document.body.classList.contains('mobile'),
     visible: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').length, sheets: document.querySelectorAll('.fwin.sheet').length, n: document.querySelectorAll('.fwin').length }));
