@@ -847,6 +847,10 @@
   .tl { display: none; }
   body.mobile #barTools .tl { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em; white-space: nowrap; }
   body.mobile #view { inset: 36px 0 calc(var(--sheet-bottom) + var(--sheet-inset, 0px)) 0; }   /* the open sheet's height — the model re-centres above it */
+  /* the compass rides the view's corners: above the bar + strips + any open sheet, below the one top bar */
+  body.mobile #compass.se, body.mobile #compass.sw { bottom: calc(var(--sheet-bottom) + var(--sheet-inset, 0px) + 10px); }
+  body.mobile:has(#winStrip:not(:empty)) #compass.se, body.mobile:has(#winStrip:not(:empty)) #compass.sw { bottom: calc(var(--sheet-bottom) + var(--sheet-inset, 0px) + 48px); }   /* …and the minimized chips */
+  body.mobile #compass.ne, body.mobile #compass.nw { top: 46px; }
   body.mobile #empty { inset: 36px 0 80px 0; }
   body.mobile #empty { padding: 0 16px; }
   body.mobile footer { gap: 10px; }

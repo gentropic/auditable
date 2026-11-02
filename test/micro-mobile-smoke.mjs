@@ -290,6 +290,14 @@ async function drive(url, tag) {
   const mode = (m) => p.evaluate((m) => document.querySelector(`#selBarModes [data-m="${m}"]`).click(), m);
   await p.evaluate(() => document.getElementById('btnSelRect').click());
   const b0 = await bar();
+  // the compass stays in the view's corner: above the bar, the strips and the minimized chips
+  const cmp = await p.evaluate(() => {
+    const c = document.getElementById('compass').getBoundingClientRect(), v = document.getElementById('view').getBoundingClientRect();
+    const ws = document.getElementById('winStrip'), wr = ws && ws.children.length ? ws.getBoundingClientRect() : null;
+    return { bottom: Math.round(c.bottom), view: Math.round(v.bottom), chips: wr ? Math.round(wr.top) : null };
+  });
+  chk(`[${tag}] compass clears the bottom stack: bottom ${cmp.bottom} ≤ view ${cmp.view}, chips top ${cmp.chips}`,
+    cmp.bottom <= cmp.view && cmp.chips != null && cmp.bottom <= cmp.chips);
   await drag(0.30, 0.30, 0.55, 0.55); const nA = await selN();
   await mode('add'); await drag(0.50, 0.45, 0.75, 0.75); const nB = await selN();
   await mode('subtract'); await drag(0.30, 0.30, 0.55, 0.55); const nC = await selN();
