@@ -1,0 +1,1 @@
+{"version":"v0.6.10","notes":"## micro\n- Cancelling an export, or \"Store as Parquet\", while it reads its last rows now writes nothing, as the button promises. Before, a click in that window was ignored and the file was written anyway.\n\n## Tests\n- micro-smoke2 checks a late cancel without depending on click timing.\n"}
