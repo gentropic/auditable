@@ -145,6 +145,10 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
     if (buf.length) parts.push(buf.join('\r\n') + '\r\n');
     blob = new Blob(parts, { type: 'text/csv' });
   }
+  // a cancel that landed while the row stream read past its last batch (no
+  // per-batch check runs after that) — honoured here, the last moment before
+  // anything is committed; nothing awaits between this and the button hiding
+  if (cancelled(signal)) { $('#meta').textContent = 'export cancelled — nothing written'; return -1; }
   window._lastExport = blob;                               // the smoke reads content here
   $('#meta').textContent = `exported ${written.toLocaleString()} rows → ${filename} (${fmtSize(blob.size)})`;
   if (download) H.deliverBlob(blob, filename);
@@ -221,6 +225,8 @@ async function convertInner(L, cvOpts) {
       if (cancelled(signal)) { $('#meta').textContent = 'optimize cancelled — the layer is unchanged'; return; }
     }
     outBlob = w.finish();
+    // a cancel during the sorter's trailing read (after the last per-batch check)
+    if (cancelled(signal)) { $('#meta').textContent = 'optimize cancelled — the layer is unchanged'; return; }
   } catch (e) { $('#meta').textContent = `optimize: ${e.message}`; return; }
   // 4. replace the blockDoc IN PLACE (reuse the layer id, keep paint/calc/style)
   const base = (L.label || L.name).replace(/\.[^.]+$/, ''), keepLabel = L.label, keepColorSel = L.colorSel, keepFilter = L.filterExpr;

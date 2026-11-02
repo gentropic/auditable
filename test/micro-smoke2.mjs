@@ -4170,12 +4170,19 @@ await p.close();
     const op = await clickWhileRunning(() => M.convertLayerToParquet(L, { keepOriginal: true }));
     op.stillCsv = !L.docs.blockDoc.parquet && L.name === 'cx.csv';
     const full = await M.runExport(L, { format: 'csv', download: false, filename: 'd.csv' });   // and an uninterrupted one still completes
-    return { ex, op, full, hidden: b.hidden };
+    // a cancel that arrives AFTER the last per-batch check (while the row stream
+    // reads past its end) — deterministic, where the click above is a race: a
+    // signal that is clean for the first check and aborted from then on
+    let n = 0; window._lastExport = null;
+    const lateRet = await M.runExport(L, { format: 'parquet', download: false, filename: 'e.parquet', signal: { get aborted() { return ++n > 1; } } });
+    const late = { ret: lateRet, wrote: !!window._lastExport };
+    return { ex, op, full, late, hidden: b.hidden };
   });
   await pc.close();
   chk(`export cancels mid-way: the button showed (${r.ex.seen}), nothing written (${!r.ex.wrote}), “${r.ex.meta}”, hidden after (${r.ex.hiddenAfter})`, r.ex.seen && !r.ex.wrote && r.ex.ret === -1 && /cancelled/.test(r.ex.meta) && r.ex.hiddenAfter);
   chk(`optimize cancels mid-way: the layer is unchanged (${r.op.stillCsv}), “${r.op.meta}”`, r.op.seen && r.op.stillCsv && /cancelled/.test(r.op.meta) && r.op.hiddenAfter);
   chk(`an uninterrupted export still completes (${r.full} rows), the button hidden (${r.hidden})`, r.full === 20000 && r.hidden);
+  chk(`a cancel after the last batch check still writes nothing (returned ${r.late.ret}, wrote ${r.late.wrote})`, r.late.ret === -1 && !r.late.wrote);
 }
 
 // ── §65: A DECIMAL COMMA CSV (';' between fields, 1,5 in them) opens as numbers:
