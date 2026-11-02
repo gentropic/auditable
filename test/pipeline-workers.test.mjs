@@ -1,7 +1,7 @@
 // Parallel scan driver over REAL @gcu/proc workers (Node worker_threads via
 // createNodeWorker). Proves the §7a worker backend: a scan fanned across worker
-// chunks + merged == a single-pass scan. Run with --test-force-exit (worker
-// threads hold the event loop).
+// chunks + merged == a single-pass scan. Exits on its own (2026-11-02: 15/15
+// runs without --test-force-exit).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

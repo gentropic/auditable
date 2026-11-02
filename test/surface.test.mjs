@@ -35,7 +35,9 @@ test('document-editing host (default): save writes the bound path via VFS', asyn
   assert.equal(bus.calls[0].args[0], '/projects/x.strata');
 });
 
-test('document-editing host: setDirty(true) emits DirtyChanged', () => {
+test('document-editing host: setDirty(true) emits DirtyChanged', (t) => {
+  // mocked: a real self-flush timer would hold the process open until it fired
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const bus = fakeBus();
   const host = createWorksHost(bus, TAB, { selfFlushMs: 999999 });  // don't fire the timer
   host.setDirty(true);

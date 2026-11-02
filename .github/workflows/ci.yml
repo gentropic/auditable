@@ -19,6 +19,8 @@ jobs:
   # ── the fast layer: 7k+ library/engine tests, no browser (~30s) ──
   library:
     runs-on: ubuntu-latest
+    # a test file that holds the event loop open hangs the run; fail it instead
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
@@ -30,16 +32,18 @@ jobs:
       # build output) — npm test implicitly assumes a prior `node build.js`.
       - name: build auditable.html (tests read build/auditable.html)
         run: node build.js
-      # --test-concurrency=1: serialize files so --test-force-exit (needed for
-      # the worker-holding-the-loop test) only fires after the truly-last file
-      # completes. In parallel on a 2-core runner it raced, cancelling a
-      # still-running file's subtests ("did not finish before its parent").
+      # No --test-force-exit: every file exits on its own. Forcing the exit
+      # crashed files on Windows (a libuv handle-closing assertion) and, in
+      # parallel, cancelled still-running files. --test-concurrency=1 stays
+      # from that era: serial on a 2-core runner has been reliably green.
       - name: library + engine tests (node --test)
-        run: node --no-warnings --test --test-concurrency=1 --test-force-exit "test/!(adder-wasm).test.*"
+        run: node --no-warnings --test --test-concurrency=1 "test/!(adder-wasm).test.*"
 
   # ── the app-integration smokes: built artifacts in headless Chromium ──
   smoke:
-    runs-on: ubuntu-latest
+    # pinned: ubuntu-latest became 26.04, which Playwright's Chromium install
+    # doesn't support yet (2026-10-28). Unpin when Playwright catches up.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
