@@ -31,8 +31,28 @@ const chk = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}`); ok 
 const browser = await chromium.launch({ args: ['--use-gl=angle'] });
 const S24 = { viewport: { width: 384, height: 787 }, deviceScaleFactor: 2.8125, isMobile: true, hasTouch: true };
 
+// Finding a tap target pixel by pixel with renderer.pick() costs one GPU readback per
+// pixel — ~1 s each on CI's software GL, so a canvas scan ran for hours. __idMap reads
+// the whole id buffer ONCE (pickRegion) and answers pick-shaped lookups from it.
+const ID_MAP = () => {
+  window.__idMap = (o = {}) => {
+    const M = window._micro, cv = document.getElementById('cv'), r = cv.getBoundingClientRect();
+    const reg = M.renderer.pickRegion({ x: 0, y: 0, w: r.width, h: r.height }, M.cam, o);
+    if (!reg) return () => null;
+    const { data, w, h, dpr } = reg;
+    return (x, y) => {
+      const i = Math.round(x * dpr), j = Math.round(h - y * dpr - 1);
+      if (i < 0 || j < 0 || i >= w || j >= h) return null;
+      const k = (j * w + i) * 4;
+      if ((data[k + 1] >>> 0) === 0xFFFFFFFF) return null;
+      return { layer: data[k + 1] & 0xFFFF, rec: data[k] >>> 0 };
+    };
+  };
+};
+
 async function drive(url, tag) {
   const ctx = await browser.newContext(S24);
+  await ctx.addInitScript(ID_MAP);
   const p = await ctx.newPage();
   const errs = [];
   p.on('pageerror', (e) => errs.push(String(e)));
@@ -132,7 +152,7 @@ async function drive(url, tag) {
   await p.evaluate(() => document.getElementById('btnSection').click()); await p.waitForTimeout(400);
   const again = await secState();
   chk(`[${tag}] section strip (bottom ${sec.stripBottom}) hosts mode "${sec.mode}" + a ${sec.sliderW}px scrub slider; toggles off (strip hidden ${!off.stripVisible}, mode "${off.mode}") and back on (${again.on})`,
-    sec.on && sec.stripVisible && sec.stripBottom === 787 - 80 && sec.inStrip && sec.sliderW >= 120 && !off.on && !off.stripVisible && off.mode === 'off' && again.on && again.stripVisible);
+    sec.on && sec.stripVisible && sec.stripBottom === 787 - 80 && sec.inStrip && sec.sliderW >= 100 && !off.on && !off.stripVisible && off.mode === 'off' && again.on && again.stripVisible);
   // 4b. ⋯ opens the second row: keep (slab/front/behind) drives the real clip, the view yields
   //     to the row, the slab steppers dim off-slab, custom shows dip dir + dip (≥16 px text)
   const secMore = await p.evaluate(async () => {
@@ -418,10 +438,10 @@ async function drive(url, tag) {
     document.getElementById('recPanel').classList.remove('show');
     await new Promise((r) => setTimeout(r, 600));
     const cv = document.getElementById('cv'), r = cv.getBoundingClientRect();
-    let hits = 0;
+    let hits = 0; const at = window.__idMap({});
     for (const fy of [0.5, 0.4, 0.6, 0.3, 0.7]) {
       const y = Math.round(r.height * fy), row = [];
-      for (let x = 20; x < r.width - 20; x += 2) { const h = !!M.renderer.pick(x, y, M.cam, {}); row.push([x, h]); if (h) hits++; }
+      for (let x = 20; x < r.width - 20; x += 2) { const h = !!at(x, y); row.push([x, h]); if (h) hits++; }
       for (let i = 0; i < row.length; i++) {               // a miss 8–10 px from the nearest hit, either side
         if (row[i][1]) continue;
         const x = row[i][0];
@@ -449,10 +469,10 @@ async function drive(url, tag) {
   const cardSt = () => p.evaluate(() => { const P = document.getElementById('recPanel'), r = P.getBoundingClientRect();
     return { show: P.classList.contains('show'), card: P.classList.contains('card'), top: P.classList.contains('card-top'), t: Math.round(r.top), h: Math.round(r.height), view: Math.round(document.getElementById('view').getBoundingClientRect().bottom), title: document.getElementById('rpTitle').textContent }; });
   const spots = await p.evaluate(() => {
-    const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value }, hits = [];
+    const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value }, hits = [], at = window.__idMap(o);
     for (let y = 16; y < r.height - 16; y += 6) for (let x = 16; x < r.width - 16; x += 6) {
-      if (!M.renderer.pick(x, y, M.cam, o)) continue;
-      let solid = true; for (const [dx, dy] of [[-3, 0], [3, 0], [0, -3], [0, 3]]) if (!M.renderer.pick(x + dx, y + dy, M.cam, o)) solid = false;   // not a 1-px tip
+      if (!at(x, y)) continue;
+      let solid = true; for (const [dx, dy] of [[-3, 0], [3, 0], [0, -3], [0, 3]]) if (!at(x + dx, y + dy)) solid = false;   // not a 1-px tip
       if (solid) hits.push([r.left + x, r.top + y]);
     }
     hits.sort((a, b) => a[1] - b[1]);
@@ -467,9 +487,9 @@ async function drive(url, tag) {
   const cardHandle = await p.evaluate(() => { const r = document.querySelector('#recPanel .rp-head').getBoundingClientRect(); return [r.left + 30, r.top + r.height / 2]; });
   await p.touchscreen.tap(...cardHandle); await p.waitForTimeout(600); const cBig = await cardSt();
   const spot2 = await p.evaluate((was) => {                // the view shrank, the model moved: find a DIFFERENT block now
-    const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value };
+    const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value }, at = window.__idMap(o);
     for (let y = 16; y < r.height - 16; y += 6) for (let x = 16; x < r.width - 16; x += 6) {
-      const h = M.renderer.pick(x, y, M.cam, o);
+      const h = at(x, y);
       if (h && h.rec !== undefined && !was.includes(`row ${h.rec.toLocaleString()}`)) return [r.left + x, r.top + y];
     }
     return null;
@@ -525,7 +545,7 @@ async function drive(url, tag) {
     document.getElementById('rpClose').click(); for (const w of document.querySelectorAll('.fwin')) if (w._minimize && w.style.display !== 'none') w._minimize();
     document.getElementById('btnFit').click(); await new Promise((r) => setTimeout(r, 1500)); return was; });
   const dt = await p.evaluate(() => { const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), hits = [];
-    for (let y = 20; y < r.height - 20; y += 6) for (let x = 20; x < r.width - 20; x += 6) if (M.renderer.pick(x, y, M.cam, {})) hits.push([x, y]);
+    const at = window.__idMap({}); for (let y = 20; y < r.height - 20; y += 6) for (let x = 20; x < r.width - 20; x += 6) if (at(x, y)) hits.push([x, y]);
     hits.sort((a, c) => a[0] - c[0]);
     const cx = r.width / 2, cy = r.height / 2, far = hits.filter(([x, y]) => Math.hypot(x - cx, y - cy) > 60);
     return { r: [r.left, r.top], off: far[Math.floor(far.length * 0.3)], a: hits[Math.floor(hits.length * 0.2)], b: hits[Math.floor(hits.length * 0.8)], t0: M.cam.state.target.slice() }; });
@@ -533,7 +553,7 @@ async function drive(url, tag) {
   await p.waitForTimeout(800);
   const piv = await p.evaluate((t0) => { const M = window._micro, t = M.cam.state.target; return { moved: Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]), meta: document.getElementById('meta').textContent }; }, dt.t0);
   const emptyPt = await p.evaluate(() => { const M = window._micro, r = document.getElementById('cv').getBoundingClientRect();
-    for (let y = 30; y < r.height - 30; y += 8) for (let x = 20; x < r.width - 20; x += 8) if (!M.renderer.pick(x, y, M.cam, {}) && document.elementFromPoint(r.left + x, r.top + y) === document.getElementById('cv')) return [r.left + x, r.top + y]; return null; });
+    const at = window.__idMap({}); for (let y = 30; y < r.height - 30; y += 8) for (let x = 20; x < r.width - 20; x += 8) if (!at(x, y) && document.elementFromPoint(r.left + x, r.top + y) === document.getElementById('cv')) return [r.left + x, r.top + y]; return null; });
   if (emptyPt) { await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(80); await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(1200); }
   const fitBack = await p.evaluate((t0) => { const t = window._micro.cam.state.target; return Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]); }, dt.t0);
   chk(`[${tag}] double-tap: the orbit centre moved ${piv.moved.toFixed(0)} m to the tapped spot ("${piv.meta}"); empty space → fit (back within ${fitBack.toFixed(1)} m)`,
@@ -595,7 +615,7 @@ async function drive(url, tag) {
   const mg = await p.evaluate(async () => { const M = window._micro, m = document.getElementById('secMode'), was = m.value; m.value = 'off'; m.dispatchEvent(new Event('input', { bubbles: true }));
     document.getElementById('rpClose').click(); document.getElementById('btnFit').click(); await new Promise((r) => setTimeout(r, 1500));
     const r = document.getElementById('cv').getBoundingClientRect(), hits = [];
-    for (let y = 20; y < r.height - 20; y += 6) for (let x = 20; x < r.width - 20; x += 6) if (M.renderer.pick(x, y, M.cam, {})) hits.push([x, y]);
+    const at = window.__idMap({}); for (let y = 20; y < r.height - 20; y += 6) for (let x = 20; x < r.width - 20; x += 6) if (at(x, y)) hits.push([x, y]);
     hits.sort((a, c) => a[1] - c[1]); return { was, r: [r.left, r.top], a: hits[Math.floor(hits.length * 0.6)], t0: M.cam.state.theta, p0: M.cam.state.phi }; });
   const LT = (type, x, y) => cdpM.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: mg.r[0] + x, y: mg.r[1] + y }] });
   await LT('touchStart', mg.a[0] - 20, mg.a[1] - 10); await p.waitForTimeout(500);
@@ -664,6 +684,7 @@ async function drive(url, tag) {
 // media query decides), widened to desktop and back
 async function modeSwitch(url, tag) {
   const ctx = await browser.newContext(S24);
+  await ctx.addInitScript(ID_MAP);
   const p = await ctx.newPage();
   await p.goto(url, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });

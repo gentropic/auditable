@@ -44,6 +44,9 @@ jobs:
     # pinned: ubuntu-latest became 26.04, which Playwright's Chromium install
     # doesn't support yet (2026-10-28). Unpin when Playwright catches up.
     runs-on: ubuntu-24.04
+    # the healthy job runs ~45 min on the 2-core software-GL runner; a stalled
+    # step should fail within the hour and a half, not hit GitHub's 6 h default
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
