@@ -281,9 +281,16 @@ await p.close();
 {
   const pd = await mkPage('sm2demo');
   await pd.click('#sampleDemo');
+  // the demo builds a 1.8M-block model: ~7 s on a desktop, ~50 s at 6× CPU
+  // throttling, and longer on CI's 2-core software-GL runner (it timed out at
+  // 120 s there twice while still progressing). On a timeout, say where it stood.
   await pd.waitForFunction(() => window._micro.layers().length >= 2
     && window._micro.views().length >= 1
-    && [...document.querySelectorAll('.fwin')].some((w) => /grade.tonnage/i.test(w.textContent)), null, { timeout: 120000 });
+    && [...document.querySelectorAll('.fwin')].some((w) => /grade.tonnage/i.test(w.textContent)), null, { timeout: 300000 })
+    .catch(async (e) => {
+      console.log('demo stalled at:', await pd.evaluate(() => JSON.stringify({ meta: document.querySelector('#meta').textContent, layers: window._micro.layers().length, views: window._micro.views().length, windows: [...document.querySelectorAll('.fwin')].map((w) => w.textContent.slice(0, 60)) })));
+      throw e;
+    });
   await pd.waitForTimeout(1000);
   const d = await pd.evaluate(() => {
     const dh = window._micro.layers().find((x) => x.dh);
