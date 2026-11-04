@@ -12,6 +12,20 @@ import { Backend } from './backend.js';
 // a cached handle can go bad if the folder is removed/recreated outside the app, so a raw FSA failure on
 // a (possibly cached) handle evicts + re-resolves fresh from root once before surfacing ENOENT.
 
+// Map a RAW File System Access failure to a VFS error. ONLY a NotFoundError means "missing" (ENOENT).
+// A TypeMismatchError means the entry exists but is the other kind (EISDIR / ENOTDIR). Anything else
+// — NotAllowedError (permission lapsed), InvalidStateError, AbortError, NotReadableError (a lock, a
+// half-written file), a wedged/timed-out op — is EIO. It used to be ENOENT across the board, which let a
+// consumer read a LIVE file as "empty" and then overwrite it (weir's Nov-2026 content-loss postmortem).
+function rawToVfs(e, p, mismatchCode) {
+  if (e && typeof e.code === 'string') return e;   // already a VFSError
+  const name = e && e.name;
+  if (name === 'NotFoundError') return vfsError('ENOENT', p);
+  if (name === 'TypeMismatchError') return vfsError(mismatchCode || 'ENOTDIR', p);
+  if (name === 'NotAllowedError' || name === 'SecurityError') return vfsError('EACCES', p, name);
+  return vfsError('EIO', p, name ? `${name}: ${e.message || ''}`.trim() : String(e && e.message || e));
+}
+
 class HandleBackend extends Backend {
   constructor(root) {
     super();
@@ -50,10 +64,10 @@ class HandleBackend extends Backend {
       acc += '/' + segs[i];
       try {
         dir = await dir.getDirectoryHandle(segs[i]);
-      } catch {
+      } catch (e) {
         // a cached ancestor may be stale → drop this lineage and retry once from root
         if (!fresh && startI > 0) { this._evict(n); return this._resolveDir(n, true); }
-        throw vfsError('ENOENT', p);
+        throw rawToVfs(e, p, 'ENOTDIR');
       }
       this._dirCache.set(acc, dir);
     }
@@ -84,8 +98,7 @@ class HandleBackend extends Backend {
     try {
       return await this._useDir(parentPath, (dir) => dir.getFileHandle(name, create ? { create: true } : undefined));
     } catch (e) {
-      if (e && typeof e.code === 'string') throw e;
-      throw vfsError('ENOENT', p);
+      throw rawToVfs(e, p, 'EISDIR');
     }
   }
 
@@ -96,12 +109,14 @@ class HandleBackend extends Backend {
 
   async readFile(p, encoding) {
     const handle = await this._resolveFile(p);
-    const file = await handle.getFile();
-    if (encoding === 'bytes') {
-      const buf = await file.arrayBuffer();
-      return new Uint8Array(buf);
-    }
-    return await file.text();
+    try {
+      const file = await handle.getFile();
+      if (encoding === 'bytes') {
+        const buf = await file.arrayBuffer();
+        return new Uint8Array(buf);
+      }
+      return await file.text();
+    } catch (e) { throw rawToVfs(e, p); }
   }
 
   async writeFile(p, content) {
@@ -116,15 +131,16 @@ class HandleBackend extends Backend {
 
   // file-or-dir probe on an already-resolved parent handle (no extra walk). null = neither.
   async _probe(parent, name) {
+    const soft = (e) => e && (e.name === 'NotFoundError' || e.name === 'TypeMismatchError');
     try {
       const fh = await parent.getFileHandle(name);
       const file = await fh.getFile();
       return { type: 'file', size: file.size, created: new Date(file.lastModified), modified: new Date(file.lastModified) };
-    } catch { /* not a file */ }
+    } catch (e) { if (!soft(e)) throw rawToVfs(e, name); /* not a file */ }
     try {
       await parent.getDirectoryHandle(name);
       return { type: 'directory', size: 0, created: new Date(0), modified: new Date(0) };
-    } catch { return null; }
+    } catch (e) { if (!soft(e)) throw rawToVfs(e, name); return null; }
   }
 
   async stat(p) {
@@ -136,13 +152,13 @@ class HandleBackend extends Backend {
     // then a separate _resolveDir(n) for the dir-try).
     const wasHit = this._dirCache.has(path.normalize(parentPath));
     let parent;
-    try { parent = await this._resolveDir(parentPath); } catch { throw vfsError('ENOENT', p); }
+    try { parent = await this._resolveDir(parentPath); } catch (e) { throw rawToVfs(e, p); }
     let r = await this._probe(parent, name);
     if (r) return r;
     // both missed — if the parent came from the cache it may be stale; re-resolve fresh once
     if (wasHit) {
       this._evict(parentPath);
-      try { parent = await this._resolveDir(parentPath, true); } catch { throw vfsError('ENOENT', p); }
+      try { parent = await this._resolveDir(parentPath, true); } catch (e) { throw rawToVfs(e, p); }
       r = await this._probe(parent, name);
       if (r) return r;
     }
@@ -198,8 +214,7 @@ class HandleBackend extends Backend {
         await parent.removeEntry(name);
       });
     } catch (e) {
-      if (e && typeof e.code === 'string') throw e;
-      throw vfsError('ENOENT', p);
+      throw rawToVfs(e, p);
     }
   }
 
@@ -218,9 +233,8 @@ class HandleBackend extends Backend {
         await parent.removeEntry(name);
       });
     } catch (e) {
-      if (e && typeof e.code === 'string') throw e;
       if (e && e.name === 'InvalidModificationError') throw vfsError('ENOTEMPTY', p);   // non-empty dir
-      throw vfsError('ENOENT', p);
+      throw rawToVfs(e, p);
     }
   }
 

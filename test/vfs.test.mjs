@@ -1644,28 +1644,30 @@ function createHandleMock() {
       calls.getDir.push(name);
       const entry = this._children.get(name);
       if (entry && entry.type === 'dir') return entry.handle;
+      if (entry) throw new DOMException(`${name} is a file`, 'TypeMismatchError');
       if (opts && opts.create) {
         const h = new MockDirHandle(name);
         this._children.set(name, { type: 'dir', handle: h });
         return h;
       }
-      throw new DOMException('NotFoundError');
+      throw new DOMException(`${name} not found`, 'NotFoundError');
     }
     async getFileHandle(name, opts) {
       calls.getFile.push(name);
       const entry = this._children.get(name);
       if (entry && entry.type === 'file') return entry.handle;
+      if (entry) throw new DOMException(`${name} is a directory`, 'TypeMismatchError');
       if (opts && opts.create) {
         const storage = { content: '', lastModified: Date.now() };
         const h = new MockFileHandle(name, storage);
         this._children.set(name, { type: 'file', handle: h, storage });
         return h;
       }
-      throw new DOMException('NotFoundError');
+      throw new DOMException(`${name} not found`, 'NotFoundError');
     }
     async removeEntry(name, opts) {
       calls.removeEntry.push([name, !!(opts && opts.recursive)]);
-      if (!this._children.has(name)) throw new DOMException('NotFoundError');
+      if (!this._children.has(name)) throw new DOMException(`${name} not found`, 'NotFoundError');
       this._children.delete(name);   // the child's own subtree drops with the reference (recursive-equivalent)
     }
     async *entries() {
@@ -1690,6 +1692,45 @@ describe('HandleBackend via mock', () => {
     await vfs.mount('/h', { type: 'fsaa', handle: root });
     return { vfs, root };
   }
+
+  // A raw FSA failure maps by its NAME. Only NotFoundError is ENOENT: reading a live file
+  // as "missing" lets a consumer treat it as empty and overwrite it.
+  describe('raw FSA errors keep their meaning', () => {
+    async function withFailingRead(errName) {
+      const { vfs, root } = await makeVFS();
+      await vfs.writeFile('/h/live.txt', 'precious');
+      const fh = await root.getFileHandle('live.txt');
+      fh.getFile = async () => { throw new DOMException('nope', errName); };
+      return vfs;
+    }
+    it('NotAllowedError on read → EACCES, not ENOENT', async () => {
+      const vfs = await withFailingRead('NotAllowedError');
+      await assert.rejects(vfs.readFile('/h/live.txt'), { code: 'EACCES' });
+    });
+    it('NotReadableError on read → EIO, not ENOENT', async () => {
+      const vfs = await withFailingRead('NotReadableError');
+      await assert.rejects(vfs.readFile('/h/live.txt'), (e) => e.code === 'EIO' && /NotReadableError/.test(e.message));
+    });
+    it('a lapsed permission during stat surfaces as EACCES', async () => {
+      const vfs = await withFailingRead('NotAllowedError');
+      await assert.rejects(vfs.stat('/h/live.txt'), { code: 'EACCES' });
+    });
+    it('reading a directory as a file → EISDIR', async () => {
+      const { vfs } = await makeVFS();
+      await vfs.mkdir('/h/d');
+      await assert.rejects(vfs.readFile('/h/d'), { code: 'EISDIR' });
+    });
+    it('a file in the middle of a path → ENOTDIR', async () => {
+      const { vfs } = await makeVFS();
+      await vfs.writeFile('/h/f', 'x');
+      await assert.rejects(vfs.readFile('/h/f/inner.txt'), { code: 'ENOTDIR' });
+    });
+    it('still ENOENT for what is really missing', async () => {
+      const { vfs } = await makeVFS();
+      await assert.rejects(vfs.readFile('/h/nope.txt'), { code: 'ENOENT' });
+      assert.equal(await vfs.exists('/h/nope.txt'), false);
+    });
+  });
 
   it('writeFile/readFile string roundtrip', async () => {
     const { vfs } = await makeVFS();
@@ -1908,7 +1949,7 @@ describe('HandleBackend dir-handle cache', () => {
     const stale = b._dirCache.get('/d');
     const realGetFile = stale.getFileHandle.bind(stale);
     let poisoned = true;
-    stale.getFileHandle = async (...a) => { if (poisoned) { poisoned = false; throw new DOMException('NotFoundError'); } return realGetFile(...a); };
+    stale.getFileHandle = async (...a) => { if (poisoned) { poisoned = false; throw new DOMException('stale handle', 'NotFoundError'); } return realGetFile(...a); };
     const dBefore = dirCount(root, 'd');
     assert.equal(await b.readFile('/d/f.txt'), 'v1');                    // recovers via re-resolve + retry
     assert.ok(dirCount(root, 'd') > dBefore, 're-resolved from root after the stale failure');
