@@ -1,4 +1,4 @@
-import { vfsError } from './error.js';
+import { vfsError, isAbsent } from './error.js';
 import { path } from './path.js';
 import { Backend } from './backend.js';
 
@@ -212,7 +212,7 @@ class CacheBackend extends Backend {
 
   async exists(p) {
     try { await this.stat(p); return true; }
-    catch { return false; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async destroy() {

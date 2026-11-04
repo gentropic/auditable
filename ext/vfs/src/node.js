@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import nodePath from 'node:path';
 import { Readable } from 'node:stream';
-import { VFSError } from './error.js';
+import { VFSError, isAbsent } from './error.js';
 import { path } from './path.js';
 import { Backend } from './backend.js';
 import { BACKEND_TYPES } from './vfs.js';
@@ -154,7 +154,7 @@ class NodeBackend extends Backend {
 
   async exists(p) {
     try { await fsp.access(this._abs(p)); return true; }
-    catch (e) { if (e && e.name === 'VFSError') throw e; return false; }
+    catch (e) { const m = this._map(e, p); if (isAbsent(m)) return false; throw m; }
   }
 
   async symlink(target, p) {

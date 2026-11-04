@@ -1,4 +1,4 @@
-import { VFSError, vfsError } from './error.js';
+import { VFSError, vfsError, isAbsent } from './error.js';
 import { path } from './path.js';
 import { EventEmitter } from './emitter.js';
 import { Backend } from './backend.js';
@@ -343,7 +343,7 @@ class VFS extends EventEmitter {
 
   async exists(p, opts) {
     try { await this.stat(p, opts); return true; }
-    catch { return false; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async touch(p, opts) {

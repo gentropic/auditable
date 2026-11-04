@@ -1,3 +1,5 @@
+import { isAbsent } from './error.js';
+
 class Backend {
   static type = 'base';
 
@@ -6,7 +8,7 @@ class Backend {
 
   async exists(p) {
     try { await this.stat(p); return true; }
-    catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async cp(src, dst, opts) {

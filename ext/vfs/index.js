@@ -37,6 +37,14 @@ function vfsError(code, path, detail) {
   return new VFSError(code, path, msg);
 }
 
+// exists() answers false ONLY for these: the path is not there (ENOENT) or runs through a
+// file (ENOTDIR, as POSIX access() says). Any other failure — a lapsed permission, a lock,
+// an I/O error — is NOT "absent" and must propagate: a caller that reads it as absent may
+// create over, or overwrite, a live file.
+function isAbsent(e) {
+  return !!e && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
+}
+
 // -- path.js --
 
 const MIME_TABLE = {
@@ -195,7 +203,7 @@ class Backend {
 
   async exists(p) {
     try { await this.stat(p); return true; }
-    catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async cp(src, dst, opts) {
@@ -2672,7 +2680,7 @@ class OverlayBackend extends Backend {
     const n = path.normalize(p);
     if (this._isWhiteout(n)) return false;
     try { await this.stat(n); return true; }
-    catch { return false; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async reset(p) {
@@ -2951,7 +2959,7 @@ class CacheBackend extends Backend {
 
   async exists(p) {
     try { await this.stat(p); return true; }
-    catch { return false; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async destroy() {
@@ -3426,7 +3434,7 @@ class VFS extends EventEmitter {
 
   async exists(p, opts) {
     try { await this.stat(p, opts); return true; }
-    catch { return false; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async touch(p, opts) {

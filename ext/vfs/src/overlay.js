@@ -1,4 +1,4 @@
-import { vfsError } from './error.js';
+import { vfsError, isAbsent } from './error.js';
 import { path } from './path.js';
 import { Backend } from './backend.js';
 
@@ -157,7 +157,7 @@ class OverlayBackend extends Backend {
     const n = path.normalize(p);
     if (this._isWhiteout(n)) return false;
     try { await this.stat(n); return true; }
-    catch { return false; }
+    catch (e) { if (isAbsent(e)) return false; throw e; }
   }
 
   async reset(p) {

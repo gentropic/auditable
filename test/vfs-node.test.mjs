@@ -103,3 +103,18 @@ test('node backend: rename, recursive remove, touch, readRange, stream', async (
   assert.deepEqual(be.toConfig(), { type: 'node', root: nodePath.resolve(root) }, 'serializable config');
   await fsp.rm(root, { recursive: true, force: true });
 });
+
+test('node backend: exists() is false only for absence — any other failure throws', async () => {
+  const root = await tmpRoot();
+  const vfs = await VFS.create({ type: 'node', root });
+  const backend = vfs.resolve('/').backend;
+  await vfs.writeFile('/f.txt', 'x');
+  assert.equal(await vfs.exists('/f.txt'), true);
+  assert.equal(await backend.exists('/missing.txt'), false, 'ENOENT → false');
+  assert.equal(await backend.exists('/f.txt/inner'), false, 'a path through a file → false');
+  // a failure that is not absence (here node rejects the path outright) used to read as false
+  const abs = backend._abs.bind(backend);
+  backend._abs = (p) => (p === '/bad' ? abs('/f.txt') + '\0' : abs(p));
+  await assert.rejects(backend.exists('/bad'), { code: 'EIO' }, 'an unreadable path throws, not "absent"');
+  await fsp.rm(root, { recursive: true, force: true });
+});

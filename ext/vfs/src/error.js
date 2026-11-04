@@ -32,4 +32,12 @@ function vfsError(code, path, detail) {
   return new VFSError(code, path, msg);
 }
 
-export { VFSError, vfsError, VFS_ERROR_MESSAGES };
+// exists() answers false ONLY for these: the path is not there (ENOENT) or runs through a
+// file (ENOTDIR, as POSIX access() says). Any other failure — a lapsed permission, a lock,
+// an I/O error — is NOT "absent" and must propagate: a caller that reads it as absent may
+// create over, or overwrite, a live file.
+function isAbsent(e) {
+  return !!e && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
+}
+
+export { VFSError, vfsError, VFS_ERROR_MESSAGES, isAbsent };

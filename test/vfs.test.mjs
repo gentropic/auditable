@@ -1711,9 +1711,10 @@ describe('HandleBackend via mock', () => {
       const vfs = await withFailingRead('NotReadableError');
       await assert.rejects(vfs.readFile('/h/live.txt'), (e) => e.code === 'EIO' && /NotReadableError/.test(e.message));
     });
-    it('a lapsed permission during stat surfaces as EACCES', async () => {
+    it('a lapsed permission during stat surfaces as EACCES — exists() too, not "absent"', async () => {
       const vfs = await withFailingRead('NotAllowedError');
       await assert.rejects(vfs.stat('/h/live.txt'), { code: 'EACCES' });
+      await assert.rejects(vfs.exists('/h/live.txt'), { code: 'EACCES' });
     });
     it('reading a directory as a file → EISDIR', async () => {
       const { vfs } = await makeVFS();
@@ -2945,5 +2946,58 @@ describe('DOM helpers', () => {
       URL.revokeObjectURL('blob:fake/999');
       assert.ok(true); // Should not throw
     } finally { teardownDOM(); }
+  });
+});
+
+// ============================================================
+// exists(): false ONLY when the path is absent
+// ============================================================
+// ENOENT, or ENOTDIR (the path runs through a file), answer false. Anything else — a lapsed
+// permission, a lock, an I/O error — propagates: a caller that reads it as absent may create
+// over, or overwrite, a live file.
+describe('exists() reports only absence as false', () => {
+  const failWith = (code) => async () => { throw Object.assign(new Error(code), { code }); };
+
+  it('VFS.exists: ENOENT and ENOTDIR → false, EACCES and EIO throw', async () => {
+    const vfs = await VFS.create({ type: 'memory' });
+    await vfs.writeFile('/f', 'x');
+    assert.equal(await vfs.exists('/nope'), false);
+    assert.equal(await vfs.exists('/f/inner'), false);
+    const { backend } = vfs.resolve('/');
+    for (const code of ['EACCES', 'EIO']) {
+      backend.stat = failWith(code);
+      await assert.rejects(vfs.exists('/f'), { code });
+    }
+  });
+
+  it('VFS.exists: a path outside every mount is absent', async () => {
+    const vfs = await VFS.create();
+    await vfs.mount('/m', { type: 'memory' });
+    assert.equal(await vfs.exists('/elsewhere/x'), false);
+  });
+
+  it('OverlayBackend.exists: a failing lower layer throws, a whiteout is still false', async () => {
+    const vfs = await VFS.create({ type: 'overlay', lower: { type: 'memory' }, upper: { type: 'memory' } });
+    const { backend } = vfs.resolve('/');
+    await backend._lower.writeFile('/a.txt', 'lower');
+    assert.equal(await backend.exists('/a.txt'), true);
+    assert.equal(await backend.exists('/b.txt'), false);
+    await vfs.unlink('/a.txt');                                   // whiteout
+    assert.equal(await backend.exists('/a.txt'), false);
+    await backend._lower.writeFile('/c.txt', 'lower');
+    backend._lower.stat = failWith('EIO');
+    await assert.rejects(backend.exists('/c.txt'), { code: 'EIO' });
+  });
+
+  it('CacheBackend.exists: a failing remote throws instead of reading as absent', async () => {
+    const remote = await VFS.create({ type: 'memory' });
+    await remote.writeFile('/a.txt', 'remote');
+    const { backend: remoteBackend } = remote.resolve('/');
+    const vfs = await VFS.create({ type: 'cache', backend: remoteBackend, store: { type: 'memory' } });
+    const { backend } = vfs.resolve('/');
+    assert.equal(await backend.exists('/a.txt'), true);
+    assert.equal(await backend.exists('/b.txt'), false);
+    remoteBackend.stat = failWith('EACCES');
+    await assert.rejects(backend.exists('/c.txt'), { code: 'EACCES' });
   });
 });
