@@ -12,6 +12,7 @@
 //     flag (winding), a CSV filter, and a project save→reopen round trip.
 
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -88,6 +89,7 @@ const parquet = new Uint8Array(writeParquet({ columnData: (() => {
 })(), rowGroupSize: 512 }));
 
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1000, height: 700 } });
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
 let ok = true;
@@ -815,12 +817,12 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   // the demo must NOT eat the 7-slot element-layer budget: its context surfaces
   // are meshes, so a visitor can still open their own data afterwards
   await pv.click('#sampleDemo');
-  // 300s, polled each second (an rAF poll starves while software GL is busy): the demo assembles 7 layers (desurvey + terrain + meshes) and the CI
+  // 180s: the demo assembles 7 layers (desurvey + terrain + meshes) and the CI
   // runner is 2-core software-GL — locally this takes seconds. On timeout,
   // report WHERE it stalled (#meta narrates each demo stage) instead of a bare
   // TimeoutError.
   try {
-    await pv.waitForFunction(() => window._micro.layers().length > 5, null, { timeout: 300000, polling: 1000 });
+    await pv.waitForFunction(() => window._micro.layers().length > 5, null, { timeout: 180000 });
   } catch (e) {
     const state = await pv.evaluate(() => ({
       layers: window._micro.layers().length,

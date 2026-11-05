@@ -6,6 +6,7 @@
 // Screenshots land in experiments/mobile-*.png for the eye.
 // Run: node test/micro-mobile-smoke.mjs
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,6 +30,7 @@ fs.mkdirSync(path.join(root, 'experiments'), { recursive: true });
 let pass = 0, fail = 0;
 const chk = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}`); ok ? pass++ : fail++; };
 const browser = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(browser);
 const S24 = { viewport: { width: 384, height: 787 }, deviceScaleFactor: 2.8125, isMobile: true, hasTouch: true };
 
 // Finding a tap target pixel by pixel with renderer.pick() costs one GPU readback per
@@ -73,7 +75,7 @@ async function drive(url, tag) {
 
   // 2. the demo project → its grade-tonnage window is a SHEET with the plot above the form
   await p.evaluate(() => window._micro.openDemoProject());
-  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 300000, polling: 1000 });
+  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 120000 });
   await p.waitForTimeout(2500);
   const gt = await p.evaluate(() => {
     const w = document.querySelector('.fwin.sheet'); const r = w.getBoundingClientRect();
@@ -692,7 +694,7 @@ async function modeSwitch(url, tag) {
   await p.goto(url, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });
   await p.evaluate(() => window._micro.openDemoProject());
-  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 300000, polling: 1000 });
+  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 120000 });
   await p.evaluate(() => { const L = window._micro.layers().find((l) => l.kind === 'blocks'); window._micro.openStats(L); });
   await p.waitForTimeout(500);
   await p.setViewportSize({ width: 1280, height: 800 }); await p.waitForTimeout(500);
@@ -718,7 +720,7 @@ async function landscape(url, tag) {
   await p.goto(url, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });
   await p.evaluate(() => window._micro.openDemoProject());
-  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 300000, polling: 1000 });
+  await p.waitForFunction(() => window._micro.layers().length >= 7 && document.querySelector('.fwin.sheet'), null, { timeout: 120000 });
   await p.waitForTimeout(600);
   const geo = () => p.evaluate(() => { const R = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) }; };
     return { land: document.body.classList.contains('land'), view: R(document.getElementById('view')), sheet: R([...document.querySelectorAll('.fwin')].find((x) => x.style.display !== 'none')), rail: R(document.getElementById('barTools')) }; });

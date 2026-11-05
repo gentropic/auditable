@@ -5,6 +5,7 @@
 // from the proc worker — the build's riskiest seam), filter, and a zip entry.
 // Not in `npm test` (needs a browser + a build):  node test/lamina-built-smoke.mjs
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,6 +29,7 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const port = server.address().port;
 const browser = await chromium.launch();
+await installSmokeWaits(browser);
 const page = await browser.newPage();
 const errors = [];
 // The deliberate egress-block test trips a CSP-violation console error on purpose —

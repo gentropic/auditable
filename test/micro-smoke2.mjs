@@ -6,6 +6,7 @@
 // Run with `npm run test:micro2` (or test:micro:all). Slow (~2-3 min) — the
 // fast library layer stays in `npm test`.
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'http';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
@@ -24,6 +25,7 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
@@ -283,10 +285,10 @@ await p.close();
   await pd.click('#sampleDemo');
   // the demo builds a 1.8M-block model: ~7 s on a desktop, ~50 s at 6× CPU
   // throttling, and longer on CI's 2-core software-GL runner (it timed out at
-  // 120 s there twice while still progressing). On a timeout, say where it stood.
+  // 120 s there twice while still progressing — smoke-wait.mjs scales this ×3 on CI). On a timeout, say where it stood.
   await pd.waitForFunction(() => window._micro.layers().length >= 2
     && window._micro.views().length >= 1
-    && [...document.querySelectorAll('.fwin')].some((w) => /grade.tonnage/i.test(w.textContent)), null, { timeout: 300000, polling: 1000 })
+    && [...document.querySelectorAll('.fwin')].some((w) => /grade.tonnage/i.test(w.textContent)), null, { timeout: 120000 })
     .catch(async (e) => {
       console.log('demo stalled at:', await pd.evaluate(() => JSON.stringify({ meta: document.querySelector('#meta').textContent, layers: window._micro.layers().length, views: window._micro.views().length, windows: [...document.querySelectorAll('.fwin')].map((w) => w.textContent.slice(0, 60)) })));
       throw e;

@@ -10,6 +10,7 @@
 //   D  quoted CSV (delimiters, line breaks and doubled quotes inside fields)
 // Run with `npm run test:micro:host`. Dev tree, then the BUILT micro.html.
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'http';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -27,6 +28,7 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
 

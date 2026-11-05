@@ -7,6 +7,7 @@
 // back when cleared. Drives the BUILT ext/condenser/core.js (what embedders
 // vendor). Run: node test/condenser-offset.mjs
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
@@ -22,6 +23,7 @@ const server = http.createServer(async (req, res) => {
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(b);
 const page = await b.newPage({ viewport: { width: 800, height: 600 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));

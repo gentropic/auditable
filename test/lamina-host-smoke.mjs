@@ -8,6 +8,7 @@
 //     setColumn / orderColumns / rejections / the iframe ready event + ?embed=1.
 // Not in `npm test` (needs a browser): node test/lamina-host-smoke.mjs
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,6 +46,7 @@ const groups = Math.ceil(N / RG);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const port = server.address().port;
 const browser = await chromium.launch();
+await installSmokeWaits(browser);
 
 async function run(url, label) {
   console.log(`── ${label}`);

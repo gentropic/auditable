@@ -7,6 +7,7 @@
 // opening it to 'self' is the shell's serve-time act, never the artifact's.
 // Run: node test/micro-shell-smoke.mjs
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,6 +37,7 @@ if (fs.existsSync(path.join(root, 'micro.html'))) {
 } else chk('built micro.html exists (node build.js --target=micro)', false);
 
 const browser = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(browser);
 const p = await browser.newPage({ viewport: { width: 1280, height: 820 } });
 const errs = [];
 p.on('pageerror', (e) => errs.push(String(e)));

@@ -12,6 +12,7 @@
 //             (ids, labels, visibility, colours), and a fresh page reloads each layer's element
 // Run: node test/micro-wfr-smoke.mjs   (needs node build.js --target=micro first)
 import { chromium } from 'playwright';
+import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'http';
 import { readFile, stat } from 'fs/promises';
 import { extname } from 'path';
@@ -68,6 +69,7 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const BASE = `http://127.0.0.1:${server.address().port}`;
 const b = await chromium.launch({ args: ['--use-gl=angle'] });
+await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 }, acceptDownloads: true });
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
 async function page(url, proj) {
