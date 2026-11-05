@@ -546,7 +546,7 @@ const sft = await p.evaluate(async () => {
   const cellIn = [...document.querySelectorAll('#sfDlgBody input[type=number]')][0];
   cellIn.value = '10'; cellIn.dispatchEvent(new Event('input'));
   document.querySelector('#sfGo').click();
-  await new Promise((r) => { const t = setInterval(() => { if (m.layers().some((L) => /^min_/.test(L.name))) { clearInterval(t); r(); } }, 100); setTimeout(() => { clearInterval(t); r(); }, 20000); });
+  await new Promise((r) => { const t = setInterval(() => { if (m.layers().some((L) => /^min_/.test(L.name) && L.docs && L.docs.gridDoc)) { clearInterval(t); r(); } }, 100); setTimeout(() => { clearInterval(t); r(); }, 20000); });
   const L = m.layers().find((x) => /^min_/.test(x.name));
   if (!L) return null;
   const surf = m.surfaceFromGrid(L.docs.gridDoc.grid);
