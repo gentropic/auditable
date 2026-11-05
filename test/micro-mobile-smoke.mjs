@@ -58,6 +58,7 @@ async function drive(url, tag) {
   p.on('pageerror', (e) => errs.push(String(e)));
   await p.goto(url, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });
+  const until = (fn, arg) => p.waitForFunction(fn, arg, { timeout: 20000 }).catch(() => {});
   const shot = (n) => p.screenshot({ path: path.join(root, 'experiments', `mobile-${tag}-${n}.png`) });
 
   // 1. chrome: one top bar, the bottom tool bar with labelled 44px targets, nothing overflows
@@ -480,12 +481,12 @@ async function drive(url, tag) {
     return { high: hits[Math.floor(hits.length * 0.15)], high2: hits[Math.floor(hits.length * 0.05)], low: low[Math.floor(low.length / 2)], n: hits.length };
   });
   const c0 = await cardSt();
-  await p.touchscreen.tap(...spots.high); await p.waitForTimeout(800); const cHigh = await cardSt();
+  await p.touchscreen.tap(...spots.high); await until(() => document.getElementById('recPanel').classList.contains('show')); const cHigh = await cardSt();
   await p.evaluate(() => document.getElementById('rpClose').click());
-  if (spots.low) { await p.touchscreen.tap(...spots.low); await p.waitForTimeout(800); }
+  if (spots.low) { await p.touchscreen.tap(...spots.low); await until(() => { const P = document.getElementById('recPanel'); return P.classList.contains('show') && P.classList.contains('card-top'); }); }
   const cLow = await cardSt();
   const cardHandle = await p.evaluate(() => { const r = document.querySelector('#recPanel .rp-head').getBoundingClientRect(); return [r.left + 30, r.top + r.height / 2]; });
-  await p.touchscreen.tap(...cardHandle); await p.waitForTimeout(600); const cBig = await cardSt();
+  await p.touchscreen.tap(...cardHandle); await until(() => !document.getElementById('recPanel').classList.contains('card')); await p.waitForTimeout(300); const cBig = await cardSt();
   const spot2 = await p.evaluate((was) => {                // the view shrank, the model moved: find a DIFFERENT block now
     const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value }, at = window.__idMap(o);
     for (let y = 16; y < r.height - 16; y += 6) for (let x = 16; x < r.width - 16; x += 6) {
@@ -494,7 +495,7 @@ async function drive(url, tag) {
     }
     return null;
   }, cBig.title);
-  if (spot2) { await p.touchscreen.tap(...spot2); await p.waitForTimeout(800); }
+  if (spot2) { await p.touchscreen.tap(...spot2); await until((was) => document.getElementById('rpTitle').textContent !== was, cBig.title); }
   const cSwap = await cardSt();
   await p.evaluate(() => document.getElementById('rpClose').click());
   chk(`[${tag}] pick card: high tap → card ${cHigh.card} (${cHigh.h}px, at ${cHigh.t}), view ${c0.view} → ${cHigh.view}; low tap → under the top bar ${cLow.top} (at ${cLow.t}); handle → sheet ${!cBig.card}, view yields to ${cBig.view}; a tap then swaps in place ("${cBig.title}" → "${cSwap.title}", still a sheet ${!cSwap.card})`,
@@ -550,11 +551,11 @@ async function drive(url, tag) {
     const cx = r.width / 2, cy = r.height / 2, far = hits.filter(([x, y]) => Math.hypot(x - cx, y - cy) > 60);
     return { r: [r.left, r.top], off: far[Math.floor(far.length * 0.3)], a: hits[Math.floor(hits.length * 0.2)], b: hits[Math.floor(hits.length * 0.8)], t0: M.cam.state.target.slice() }; });
   await p.touchscreen.tap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]); await p.waitForTimeout(80); await p.touchscreen.tap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]);
-  await p.waitForTimeout(800);
+  await until(() => /orbiting/.test(document.getElementById('meta').textContent)); await p.waitForTimeout(800);   // + the glide
   const piv = await p.evaluate((t0) => { const M = window._micro, t = M.cam.state.target; return { moved: Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]), meta: document.getElementById('meta').textContent }; }, dt.t0);
   const emptyPt = await p.evaluate(() => { const M = window._micro, r = document.getElementById('cv').getBoundingClientRect();
     const at = window.__idMap({}); for (let y = 30; y < r.height - 30; y += 8) for (let x = 20; x < r.width - 20; x += 8) if (!at(x, y) && document.elementFromPoint(r.left + x, r.top + y) === document.getElementById('cv')) return [r.left + x, r.top + y]; return null; });
-  if (emptyPt) { await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(80); await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(1200); }
+  if (emptyPt) { await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(80); await p.touchscreen.tap(...emptyPt); await until(() => /^fit/.test(document.getElementById('meta').textContent)); await p.waitForTimeout(1200); }
   const fitBack = await p.evaluate((t0) => { const t = window._micro.cam.state.target; return Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]); }, dt.t0);
   chk(`[${tag}] double-tap: the orbit centre moved ${piv.moved.toFixed(0)} m to the tapped spot ("${piv.meta}"); empty space → fit (back within ${fitBack.toFixed(1)} m)`,
     piv.moved > 10 && /orbiting/.test(piv.meta) && !!emptyPt && fitBack < 1);
@@ -619,9 +620,11 @@ async function drive(url, tag) {
     hits.sort((a, c) => a[1] - c[1]); return { was, r: [r.left, r.top], a: hits[Math.floor(hits.length * 0.6)], t0: M.cam.state.theta, p0: M.cam.state.phi }; });
   const LT = (type, x, y) => cdpM.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: mg.r[0] + x, y: mg.r[1] + y }] });
   await LT('touchStart', mg.a[0] - 20, mg.a[1] - 10); await p.waitForTimeout(500);
+  await until(() => { const l = document.getElementById('loupe'); return !!l && l.style.display === 'block'; });
   const lHeld = await p.evaluate(() => { const l = document.getElementById('loupe'); const r = l && l.getBoundingClientRect(); return { shown: !!l && l.style.display === 'block', bottom: r && r.bottom }; });
   for (let i = 1; i <= 5; i++) await LT('touchMove', mg.a[0] - 20 + 4 * i, mg.a[1] - 10 + 2 * i);
-  await p.waitForTimeout(150); await LT('touchEnd'); await p.waitForTimeout(800);
+  await p.waitForTimeout(150); await LT('touchEnd');
+  await until(() => document.getElementById('recPanel').classList.contains('show')); await p.waitForTimeout(300);
   const lUp = await p.evaluate((t) => ({ loupe: (document.getElementById('loupe') || { style: {} }).style.display, card: document.getElementById('recPanel').classList.contains('show') && document.getElementById('recPanel').classList.contains('card'),
     turned: Math.abs(window._micro.cam.state.theta - t.t0) + Math.abs(window._micro.cam.state.phi - t.p0), meta: document.getElementById('meta').textContent }), mg);
   chk(`[${tag}] magnifier: held → loupe ${lHeld.shown} (its bottom ${Math.round(lHeld.bottom)} above the finger ${Math.round(mg.r[1] + mg.a[1] - 10)}); slid + lifted → card ${lUp.card}, view turned ${lUp.turned.toFixed(4)}, loupe ${lUp.loupe}, hint gone ${!/^magnifier/.test(lUp.meta)}`,
