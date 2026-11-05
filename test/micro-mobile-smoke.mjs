@@ -61,6 +61,22 @@ async function drive(url, tag) {
   await p.goto(url, { waitUntil: 'load' });
   await p.waitForFunction(() => window._micro && document.body.classList.contains('mobile'), null, { timeout: 30000 });
   const until = (fn, arg) => p.waitForFunction(fn, arg, { timeout: 20000 }).catch(() => {});
+  // A tap is a press and a lift sent TOGETHER, as a finger's are. Playwright's tap sends the
+  // lift only once the page has taken the press, and on CI's busy software-GL page that wait
+  // outlasted the magnifier's real-time hold timer (LOUPE_HOLD): quick taps became magnifier
+  // picks, a double-tap two of them. Measured on a page burning 700 ms a frame: 9/10 taps
+  // sent in turn became holds, 0/10 sent together. Each half also carries its own timestamp
+  // (Chromium uses it for e.timeStamp, which micro's 500 ms hold and 320 ms double-tap
+  // windows read), so the test states the timing it means instead of inheriting the runner's.
+  const cdpTap = await ctx.newCDPSession(p);
+  const tap = async (x, y, at = Date.now() / 1000) => {
+    await Promise.all([
+      cdpTap.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }], timestamp: at }),
+      cdpTap.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], timestamp: at + 0.04 }),
+    ]);
+    return at;
+  };
+  const dblTap = async (x, y) => { const t = await tap(x, y); await tap(x, y, t + 0.12); };
   const shot = (n) => p.screenshot({ path: path.join(root, 'experiments', `mobile-${tag}-${n}.png`) });
 
   // 1. chrome: one top bar, the bottom tool bar with labelled 44px targets, nothing overflows
@@ -278,14 +294,14 @@ async function drive(url, tag) {
 
   // 12. a TAP on a submenu parent opens its submenu — it does not run the item that lands under the finger
   const bb = await p.evaluate(() => { const r = document.getElementById('btnBurger').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
-  await p.touchscreen.tap(bb.x, bb.y); await p.waitForTimeout(300);
+  await tap(bb.x, bb.y); await p.waitForTimeout(300);
   const tools = await p.evaluate(() => { const it = [...document.querySelectorAll('.menu .item')].find((d) => d.textContent.trim() === 'Tools'); if (!it) return null; const r = it.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
-  if (tools) { await p.touchscreen.tap(tools.x, tools.y); await p.waitForTimeout(300); }
+  if (tools) { await tap(tools.x, tools.y); await p.waitForTimeout(300); }
   const parent = await p.evaluate(() => {
     const it = [...document.querySelectorAll('.menu .item')].find((d) => d.querySelector('.sub'));
     if (!it) return null; const r = it.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, label: it.textContent };
   });
-  if (parent) { await p.touchscreen.tap(parent.x, parent.y); await p.waitForTimeout(300); }
+  if (parent) { await tap(parent.x, parent.y); await p.waitForTimeout(300); }
   const menus = await p.evaluate(() => document.querySelectorAll('.menu').length);
   chk(`[${tag}] tap "${parent && parent.label}": ${menus} menus open (the root + its submenu, nothing run)`, !!parent && menus === 2);
   await p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
@@ -318,7 +334,7 @@ async function drive(url, tag) {
     const ub = b.getBoundingClientRect();
     return { name, idle, shown, armed: !b.disabled, title: b.title, filtered: L.filterExpr, x: ub.left + ub.width / 2, y: ub.top + ub.height / 2, h: Math.round(ub.height) };
   });
-  if (before.shown) { await p.touchscreen.tap(before.x, before.y); await p.waitForTimeout(800); }
+  if (before.shown) { await tap(before.x, before.y); await p.waitForTimeout(800); }
   const after = await p.evaluate(() => { const L = window._micro.layers().find((l) => l.kind === 'blocks'), b = document.getElementById('btnUndo'); return { filter: L.filterExpr || '', idle: !!b && b.disabled, meta: document.getElementById('meta').textContent }; });
   chk(`[${tag}] ↶ shown ${before.shown} (${before.h}px), idle ${before.idle} → after a filter armed ${before.armed} ("${before.title}") → tapped: filter "${after.filter}", idle ${after.idle}, "${after.meta}"`,
     before.shown && before.armed && !!before.filtered && after.filter === '' && after.idle && /undone: filter/.test(after.meta));
@@ -422,11 +438,11 @@ async function drive(url, tag) {
   await p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
   await p.evaluate(() => { for (const m of document.querySelectorAll('.menu')) m.remove(); });
   const more = await p.evaluate(() => { const b = [...document.querySelectorAll('#layersPanel .row-more')].find((x) => x.getBoundingClientRect().height > 0); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: Math.round(r.width) }; });
-  if (more) { await p.touchscreen.tap(more.x, more.y); await p.waitForTimeout(300); }
+  if (more) { await tap(more.x, more.y); await p.waitForTimeout(300); }
   const moreMenus = await p.evaluate(() => document.querySelectorAll('.menu').length);
   await p.evaluate(() => { for (const m of document.querySelectorAll('.menu')) m.remove(); });
   await p.waitForTimeout(500);
-  await p.touchscreen.tap(tgt.x, tgt.y); await p.waitForTimeout(300);
+  await tap(tgt.x, tgt.y); await p.waitForTimeout(300);
   const a2 = await activeName();
   chk(`[${tag}] long-press "${tgt.name}": ${lpres.menus} menu (${lpres.items} items), active stayed "${a1}" (was "${a0}"); ⋯ (${more && more.w}px) → ${moreMenus} menu; a short tap activates → "${a2}"`,
     lpres.menus === 1 && lpres.items > 3 && a1 === a0 && !!more && moreMenus === 1 && a2 === tgt.name);
@@ -457,7 +473,7 @@ async function drive(url, tag) {
   });
   let touchRec = false, mouseRec = true;
   if (edge && !edge.none) {
-    await p.touchscreen.tap(edge.x, edge.y); await p.waitForTimeout(600);
+    await tap(edge.x, edge.y); await p.waitForTimeout(600);
     touchRec =await p.evaluate(() => document.getElementById('recPanel').classList.contains('show'));
     await p.evaluate(() => document.getElementById('recPanel').classList.remove('show'));
     await p.mouse.click(edge.x, edge.y); await p.waitForTimeout(600);
@@ -483,12 +499,12 @@ async function drive(url, tag) {
     return { high: hits[Math.floor(hits.length * 0.15)], high2: hits[Math.floor(hits.length * 0.05)], low: low[Math.floor(low.length / 2)], n: hits.length };
   });
   const c0 = await cardSt();
-  await p.touchscreen.tap(...spots.high); await until(() => document.getElementById('recPanel').classList.contains('show')); const cHigh = await cardSt();
+  await tap(...spots.high); await until(() => document.getElementById('recPanel').classList.contains('show')); const cHigh = await cardSt();
   await p.evaluate(() => document.getElementById('rpClose').click());
-  if (spots.low) { await p.touchscreen.tap(...spots.low); await until(() => { const P = document.getElementById('recPanel'); return P.classList.contains('show') && P.classList.contains('card-top'); }); }
+  if (spots.low) { await tap(...spots.low); await until(() => { const P = document.getElementById('recPanel'); return P.classList.contains('show') && P.classList.contains('card-top'); }); }
   const cLow = await cardSt();
   const cardHandle = await p.evaluate(() => { const r = document.querySelector('#recPanel .rp-head').getBoundingClientRect(); return [r.left + 30, r.top + r.height / 2]; });
-  await p.touchscreen.tap(...cardHandle); await until(() => !document.getElementById('recPanel').classList.contains('card')); await p.waitForTimeout(300); const cBig = await cardSt();
+  await tap(...cardHandle); await until(() => !document.getElementById('recPanel').classList.contains('card')); await p.waitForTimeout(300); const cBig = await cardSt();
   const spot2 = await p.evaluate((was) => {                // the view shrank, the model moved: find a DIFFERENT block now
     const M = window._micro, r = document.getElementById('cv').getBoundingClientRect(), o = { section: M.currentSection(), pointPx: +document.getElementById('ptPx').value }, at = window.__idMap(o);
     for (let y = 16; y < r.height - 16; y += 6) for (let x = 16; x < r.width - 16; x += 6) {
@@ -497,7 +513,7 @@ async function drive(url, tag) {
     }
     return null;
   }, cBig.title);
-  if (spot2) { await p.touchscreen.tap(...spot2); await until((was) => document.getElementById('rpTitle').textContent !== was, cBig.title); }
+  if (spot2) { await tap(...spot2); await until((was) => document.getElementById('rpTitle').textContent !== was, cBig.title); }
   const cSwap = await cardSt();
   await p.evaluate(() => document.getElementById('rpClose').click());
   chk(`[${tag}] pick card: high tap → card ${cHigh.card} (${cHigh.h}px, at ${cHigh.t}), view ${c0.view} → ${cHigh.view}; low tap → under the top bar ${cLow.top} (at ${cLow.t}); handle → sheet ${!cBig.card}, view yields to ${cBig.view}; a tap then swaps in place ("${cBig.title}" → "${cSwap.title}", still a sheet ${!cSwap.card})`,
@@ -552,12 +568,12 @@ async function drive(url, tag) {
     hits.sort((a, c) => a[0] - c[0]);
     const cx = r.width / 2, cy = r.height / 2, far = hits.filter(([x, y]) => Math.hypot(x - cx, y - cy) > 60);
     return { r: [r.left, r.top], off: far[Math.floor(far.length * 0.3)], a: hits[Math.floor(hits.length * 0.2)], b: hits[Math.floor(hits.length * 0.8)], t0: M.cam.state.target.slice() }; });
-  await p.touchscreen.tap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]); await p.waitForTimeout(80); await p.touchscreen.tap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]);
+  await dblTap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]);
   await until(() => /orbiting/.test(document.getElementById('meta').textContent)); await p.waitForTimeout(800);   // + the glide
   const piv = await p.evaluate((t0) => { const M = window._micro, t = M.cam.state.target; return { moved: Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]), meta: document.getElementById('meta').textContent }; }, dt.t0);
   const emptyPt = await p.evaluate(() => { const M = window._micro, r = document.getElementById('cv').getBoundingClientRect();
     const at = window.__idMap({}); for (let y = 30; y < r.height - 30; y += 8) for (let x = 20; x < r.width - 20; x += 8) if (!at(x, y) && document.elementFromPoint(r.left + x, r.top + y) === document.getElementById('cv')) return [r.left + x, r.top + y]; return null; });
-  if (emptyPt) { await p.touchscreen.tap(...emptyPt); await p.waitForTimeout(80); await p.touchscreen.tap(...emptyPt); await until(() => /^fit/.test(document.getElementById('meta').textContent)); await p.waitForTimeout(1200); }
+  if (emptyPt) { await dblTap(...emptyPt); await until(() => /^fit/.test(document.getElementById('meta').textContent)); await p.waitForTimeout(1200); }
   const fitBack = await p.evaluate((t0) => { const t = window._micro.cam.state.target; return Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]); }, dt.t0);
   chk(`[${tag}] double-tap: the orbit centre moved ${piv.moved.toFixed(0)} m to the tapped spot ("${piv.meta}"); empty space → fit (back within ${fitBack.toFixed(1)} m)`,
     piv.moved > 10 && /orbiting/.test(piv.meta) && !!emptyPt && fitBack < 1);
