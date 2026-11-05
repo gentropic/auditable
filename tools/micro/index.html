@@ -13147,7 +13147,7 @@ $('#rpList').addEventListener('contextmenu', (e) => {
     ...(hasHidden ? [{ label: 'Show all fields', action: () => { _recLayer._recHide.clear(); paintRecList(); if ($('#rpCfg').classList.contains('show')) renderRecCfg(); } }] : []),
   ]);
 });
-$('#rpClose').onclick = () => { $('#recPanel').classList.remove('show'); $('#rpCfg').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); };
+$('#rpClose').onclick = () => { _recSeq++; $('#recPanel').classList.remove('show'); $('#rpCfg').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); };
 
 // (fetchCsvRecord lives in src/records.js)
 function attrTableReveal(lid, rec) { const t2 = _attrTables.get(lid); if (t2) t2.revealRec(rec); }
@@ -13179,7 +13179,14 @@ async function meshHitAt(L, cssX, cssY) {
   const ow = [o[0] + frame.origin[0], o[1] + frame.origin[1], o[2] + frame.origin[2]];
   return raycastBVH(bvh, ow, d);                           // world in → world out
 }
+let _recSeq = 0;
 async function showRecord(hit) {
+  // a record's row arrives AFTER an await (Parquet / .dm / CSV / PLY / LAS read), and
+  // by then the user may have closed the panel or picked something else. Only the
+  // newest pick shows its result: a stale one neither reopens a closed panel nor
+  // overwrites the record that replaced it. (× and every new pick bump _recSeq.)
+  const seq = ++_recSeq;
+  const show = (...a) => { if (seq === _recSeq) showRecPanel(...a); };
   // a pick is a (layer, record) PAIR — resolve THAT layer's own docs, not the
   // active aliases: any visible layer is pickable
   const lid = hit.layer, rec = hit.rec;
@@ -13197,7 +13204,7 @@ async function showRecord(hit) {
     const gd = docs.gridDoc, g = gd.grid;
     const i = gd.dispIdx ? gd.dispIdx[rec] : rec;
     const r = (i / g.nx) | 0, c = i % g.nx;
-    showRecPanel(`${tag}cell · ${r},${c}`, [
+    show(`${tag}cell · ${r},${c}`, [
       ['X', +(g.x0 + c * g.dx).toFixed(3)], ['Y', +(g.y0 - r * g.dy).toFixed(3)],
       ['Z', +g.data[i].toFixed(3)], ['row', r], ['col', c],
     ]);
@@ -13205,42 +13212,42 @@ async function showRecord(hit) {
   }
   if (dd) {
     const f = rawRecordOf(L, rec) || dd.fetchRecord(rec);
-    if (!f) { showRecPanel(`${tag}interval · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
+    if (!f) { show(`${tag}interval · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
     const rows = dd.header.columns.map((name, i) => [name, f[i]]);
     appendCalcRows(rows, L, f, dd.header, rec);
-    showRecPanel(`${tag}interval · row ${rec.toLocaleString()}`, rows);
+    show(`${tag}interval · row ${rec.toLocaleString()}`, rows);
     return;
   }
   if (bd && bd.parquet) {
-    showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, [], 'fetching…');
+    show(`${tag}block · row ${rec.toLocaleString()}`, [], 'fetching…');
     const row = await parquetRow(bd.parquet, rec);
-    if (!row) { showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
+    if (!row) { show(`${tag}block · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
     const f = bd.header.columns.map((n) => { const v = row[n]; return v == null ? '—' : v; });
     const rows = bd.header.columns.map((nm, i) => [nm, f[i]]);
     appendCalcRows(rows, L, f, bd.header, rec);
-    showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, rows);
+    show(`${tag}block · row ${rec.toLocaleString()}`, rows);
     return;
   }
   if (bd && bd.header.dm) {
     const vals = await fetchDmRecord(bd.blob, bd.header.dm, rec);
     const rows = bd.header.columns.map((name, i) => [name, vals[i] == null ? '—' : vals[i]]);
     appendCalcRows(rows, L, vals, bd.header, rec);
-    showRecPanel(`${tag}block · record ${rec.toLocaleString()}`, rows);
+    show(`${tag}block · record ${rec.toLocaleString()}`, rows);
     return;
   }
   if (bd) {
-    showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, [], 'fetching…');
+    show(`${tag}block · row ${rec.toLocaleString()}`, [], 'fetching…');
     const f = await fetchCsvRecord(rec, bd);
-    if (!f) { showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
+    if (!f) { show(`${tag}block · row ${rec.toLocaleString()}`, [], 'row not found'); return; }
     const rows = bd.header.columns.map((name, i) => [name, f[i]]);
     appendCalcRows(rows, L, f, bd.header, rec);
-    showRecPanel(`${tag}block · row ${rec.toLocaleString()}`, rows);
+    show(`${tag}block · row ${rec.toLocaleString()}`, rows);
   } else if (pd) {
-    showRecPanel(`${tag}point · #${rec.toLocaleString()}`, [], 'fetching…');
+    show(`${tag}point · #${rec.toLocaleString()}`, [], 'fetching…');
     const vals = await pd.fetchRecord(rec);
-    if (!vals) { showRecPanel(`${tag}point · #${rec.toLocaleString()}`, [], 'record not found'); return; }
+    if (!vals) { show(`${tag}point · #${rec.toLocaleString()}`, [], 'record not found'); return; }
     const rows = pd.header.columns.map((name, i) => [name, Number.isInteger(vals[i]) ? vals[i] : +vals[i].toFixed(4)]);
-    showRecPanel(`${tag}point · #${rec.toLocaleString()}`, rows);
+    show(`${tag}point · #${rec.toLocaleString()}`, rows);
   } else if (ld) {
     const { blob, header } = ld;
     const off = header.pointOffset + rec * header.recordLen;
@@ -13251,7 +13258,7 @@ async function showRecord(hit) {
       ['intensity', one.intensity[0]], ['classification', one.classification[0]],
     ];
     if (one.rgb) rows.push(['rgb', `${one.rgb[0]} ${one.rgb[1]} ${one.rgb[2]}`]);
-    showRecPanel(`${tag}point · #${rec.toLocaleString()}`, rows);
+    show(`${tag}point · #${rec.toLocaleString()}`, rows);
   }
 }
 // a finger is not a pixel: when the exact pixel under a TOUCH misses, take the
