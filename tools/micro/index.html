@@ -11353,19 +11353,25 @@ function _backTopWindow() {
   for (const w of document.querySelectorAll('.fwin')) if (w.style.display !== 'none' && w._minimize && (!top || (+w.style.zIndex || 0) > (+top.style.zIndex || 0))) top = w;
   return top;
 }
-let _backArmed = false, _backIgnorePop = 0, _backRaf = 0;
+// The quiet history.back() is ASYNCHRONOUS. While it is in flight nothing touches the
+// history: a sentinel pushed then would be the entry that back() pops, the counters
+// and the stack would disagree, and a later quiet back would pop past micro's own
+// page — Back leaving micro, the thing this guard exists to stop. Once it lands, the
+// guard re-checks (something may have opened meanwhile).
+let _backArmed = false, _backPending = false, _backRaf = 0;
 const _backOpen = () => _isMobile() && _BACK_STEPS.some(([open]) => open());
 function syncBackGuard() {
-  if (_backRaf) return;
+  if (_backRaf || _backPending) return;
   _backRaf = requestAnimationFrame(() => {
     _backRaf = 0;
+    if (_backPending) return;
     const open = _backOpen();
     if (open && !_backArmed) { history.pushState({ microBack: 1 }, ''); _backArmed = true; }
-    else if (!open && _backArmed) { _backArmed = false; _backIgnorePop++; history.back(); }
+    else if (!open && _backArmed) { _backArmed = false; _backPending = true; history.back(); }
   });
 }
 addEventListener('popstate', () => {
-  if (_backIgnorePop) { _backIgnorePop--; return; }        // our own quiet history.back()
+  if (_backPending) { _backPending = false; syncBackGuard(); return; }   // our own quiet back landed
   if (!_backArmed) return;                                 // a real navigation, not ours
   _backArmed = false;
   const step = _isMobile() && _BACK_STEPS.find(([open]) => open());
@@ -13269,13 +13275,17 @@ function nearPick(cx, cy, R, opts) {
   }
   return best;
 }
-// click vs drag: small movement, short hold — a finger drifts more than a mouse
+// click vs drag: small movement, short hold — a finger drifts more than a mouse.
+// Times are the EVENTS' (e.timeStamp, performance.now()'s clock), not the handler's:
+// a pick is synchronous and can take a second on a big model, so the next tap's
+// handler runs late — read at handler time, a quick tap looked like a long hold and
+// two quick taps never made a double-tap.
 let _pdown = null;
-cv.addEventListener('pointerdown', (e) => { _pdown = { x: e.clientX, y: e.clientY, t: performance.now(), b: e.button, touch: e.pointerType === 'touch' || e.pointerType === 'pen' }; });
+cv.addEventListener('pointerdown', (e) => { _pdown = { x: e.clientX, y: e.clientY, t: e.timeStamp, b: e.button, touch: e.pointerType === 'touch' || e.pointerType === 'pen' }; });
 cv.addEventListener('pointerup', (e) => {
   const d = _pdown; _pdown = null;
   if (!d || d.b !== 0) return;
-  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > (d.touch ? 12 : 5) || performance.now() - d.t > 500) return;
+  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > (d.touch ? 12 : 5) || e.timeStamp - d.t > 500) return;
   const r = cv.getBoundingClientRect();
   let px = e.clientX - r.left, py = e.clientY - r.top;
   const popts = { pointPx: +$('#ptPx').value, blocksAsPoints: _viewMode === 'points', section: currentSection() };
@@ -13283,7 +13293,7 @@ cv.addEventListener('pointerup', (e) => {
   if (hit == null && d.touch) { const nb = nearPick(Math.round(px), Math.round(py), TOUCH_PICK_R, popts); if (nb) { hit = nb.hit; px = nb.x; py = nb.y; } }
   // a finger's DOUBLE tap: on the model, orbit about that spot (the first tap already
   // showed its record); on empty space, fit. Touch only — a mouse keeps its clicks.
-  const now = performance.now();
+  const now = e.timeStamp;
   const dbl = d.touch && _lastTap && now - _lastTap.t < 320 && Math.hypot(e.clientX - _lastTap.x, e.clientY - _lastTap.y) < 30;
   _lastTap = dbl ? null : { t: now, x: e.clientX, y: e.clientY };
   if (dbl) {
