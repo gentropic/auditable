@@ -815,12 +815,12 @@ chk(`recipes: hand-authored YAML lists (${rcp && rcp.menu}) + auto-runs (${rcp &
   // the demo must NOT eat the 7-slot element-layer budget: its context surfaces
   // are meshes, so a visitor can still open their own data afterwards
   await pv.click('#sampleDemo');
-  // 180s: the demo assembles 7 layers (desurvey + terrain + meshes) and the CI
+  // 300s, polled each second (an rAF poll starves while software GL is busy): the demo assembles 7 layers (desurvey + terrain + meshes) and the CI
   // runner is 2-core software-GL — locally this takes seconds. On timeout,
   // report WHERE it stalled (#meta narrates each demo stage) instead of a bare
   // TimeoutError.
   try {
-    await pv.waitForFunction(() => window._micro.layers().length > 5, null, { timeout: 180000 });
+    await pv.waitForFunction(() => window._micro.layers().length > 5, null, { timeout: 300000, polling: 1000 });
   } catch (e) {
     const state = await pv.evaluate(() => ({
       layers: window._micro.layers().length,

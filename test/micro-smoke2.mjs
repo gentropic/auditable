@@ -286,7 +286,7 @@ await p.close();
   // 120 s there twice while still progressing). On a timeout, say where it stood.
   await pd.waitForFunction(() => window._micro.layers().length >= 2
     && window._micro.views().length >= 1
-    && [...document.querySelectorAll('.fwin')].some((w) => /grade.tonnage/i.test(w.textContent)), null, { timeout: 300000 })
+    && [...document.querySelectorAll('.fwin')].some((w) => /grade.tonnage/i.test(w.textContent)), null, { timeout: 300000, polling: 1000 })
     .catch(async (e) => {
       console.log('demo stalled at:', await pd.evaluate(() => JSON.stringify({ meta: document.querySelector('#meta').textContent, layers: window._micro.layers().length, views: window._micro.views().length, windows: [...document.querySelectorAll('.fwin')].map((w) => w.textContent.slice(0, 60)) })));
       throw e;
