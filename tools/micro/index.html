@@ -4503,7 +4503,7 @@ async function openWfrFile(blob, name, opts) {
     const first = opts.first && i === 0;
     const tag = `${name}${multi ? ` · ${el.name}` : ''}`;
     if (el.kind === 'triangles') {
-      if (!opts.forceSoup && el.meta.counts.cells <= CONTEXT_TRI_CAP) {
+      if (!opts.forceSoup && (opts.forceContext || el.meta.counts.cells <= CONTEXT_TRI_CAP)) {
         const m = await wfrResidentMesh(el, { onProgress: (k, n) => { $('#meta').textContent = `${tag} — reading bricks ${k}/${n}…`; } });
         await openMeshDoc(blob, name, { layer: lid, first, prebuilt: m, tint: opts.tint, opacity: opts.opacity });
       } else await openMeshDoc(blob, name, { layer: lid, first, soupDoc: wfrSoupDoc(el), tint: opts.tint, opacity: opts.opacity });
@@ -4741,9 +4741,9 @@ async function openBlob(blob, name, mode = 'replace', at = null, over = {}) {
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
   try {
-    if (isWfrName(name)) { await openWfrFile(blob, name, { layer: lid, first, element: over.element, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
+    if (isWfrName(name)) { await openWfrFile(blob, name, { layer: lid, first, element: over.element, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
     else if (/\.dxf$/i.test(name)) { await openDxfBlob(blob, name, { layer: lid, first, as: over.asKind === 'lines' ? 'strings' : (over.asKind === 'mesh' || over.asKind === 'points') ? over.asKind : null, tint: over.tint, opacity: over.opacity, stream: !!over.streamDxf }); }
-    else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup }); }
+    else if (isMesh && /\.(msh|obj|lfm|ply)$/i.test(name)) { await openMeshDoc(blob, name, { layer: lid, first, tint: over.tint, opacity: over.opacity, forceSoup: over.forceSoup, forceContext: over.forceContext }); }
     else if (/\.dm$/i.test(name)) { await openDmBlob(blob, name, { layer: lid, first, forcePoints, cached: over.cached, mapping: over.mapping }); }
     // grid stays extension-driven (no table→grid provider yet); asKind only picks points↔surface.
     else if ((over.asKind == null || over.asKind === 'surface' || over.asKind === 'points') && /\.(tif|tiff|grd)$/i.test(name)) { await openGridBlob(blob, name, { layer: lid, first, displayCache: over.displayCache, surface: over.asKind === 'surface', flatZ: over.flatZ != null ? over.flatZ : null, band: over.band || 0, smooth: over.smooth }); }
@@ -5564,7 +5564,9 @@ async function openPlyBlob(blob, name, opts = {}) {
 // Context meshes (micro-layers spec §7 tier 1): wireframes / solids / TINs —
 // whole-file read, one static chunk, scenery (no records: not pickable, not
 // filterable). Picks pass THROUGH a mesh to the elements behind it.
-const CONTEXT_TRI_CAP = 2_000_000;                        // above this → the streaming soup tier
+// above this → the streaming soup tier. ?ctxcap=N lowers it so a smoke can exercise the
+// over-the-cap paths (promote-to-context) on a mesh small enough to build in a test.
+const CONTEXT_TRI_CAP = (() => { try { const n = +new URLSearchParams(location.search).get('ctxcap'); if (n > 0) return n; } catch {} return 2_000_000; })();
 const MESH_STREAM_BYTES = 160 * 1024 * 1024;              // an OBJ past this streams (its text announces no triangle count)
 async function plyFaceCount(blob) {
   try {
@@ -5649,6 +5651,9 @@ async function openMeshDoc(blob, name, opts = {}) {
   const lid = opts.layer != null ? opts.layer : S.activeId;
   $('#meta').textContent = `${name} — reading mesh…`;
   const L = layerById(lid);
+  // over the cap → the streamed soup tier, unless forceContext: the user asked for the
+  // exact tier knowing its cost (structural analysis and solid queries need CPU geometry)
+  const overCap = (n) => !opts.forceContext && n > CONTEXT_TRI_CAP;
   const setupLayer = (header) => {
     if (!L) return;
     L.kind = 'mesh';
@@ -5670,10 +5675,10 @@ async function openMeshDoc(blob, name, opts = {}) {
   const pct = (a, b2) => { $('#meta').textContent = `${name} — reading vertices… ${Math.round(100 * a / b2)}%`; };
   const streamDoc = opts.soupDoc ? () => opts.soupDoc        // a ready streaming provider (a big .wfr element)
     : opts.prebuilt ? null
-    : /\.ply$/i.test(name) ? ((opts.forceSoup || await plyFaceCount(blob) > CONTEXT_TRI_CAP) ? () => openPlySoup(blob, { onProgress: pct }) : null)
-    : /\.msh$/i.test(name) ? ((opts.forceSoup || ((await readMSHLayout(blob)).triangles || { count: 0 }).count > CONTEXT_TRI_CAP) ? () => openMshSoup(blob, { onProgress: pct }) : null)
-    : /\.obj$/i.test(name) ? ((opts.forceSoup || blob.size > MESH_STREAM_BYTES) ? () => openObjSoup(blob, { onProgress: pct }) : null)
-    : /\.lfm$/i.test(name) ? ((opts.forceSoup || await lfmTriCount(blob) > CONTEXT_TRI_CAP) ? () => openLfmSoup(blob, { onProgress: (msg) => { $('#meta').textContent = `${name} — ${msg}`; } }) : null)
+    : /\.ply$/i.test(name) ? ((opts.forceSoup || overCap(await plyFaceCount(blob))) ? () => openPlySoup(blob, { onProgress: pct }) : null)
+    : /\.msh$/i.test(name) ? ((opts.forceSoup || overCap(((await readMSHLayout(blob)).triangles || { count: 0 }).count)) ? () => openMshSoup(blob, { onProgress: pct }) : null)
+    : /\.obj$/i.test(name) ? ((opts.forceSoup || (!opts.forceContext && blob.size > MESH_STREAM_BYTES)) ? () => openObjSoup(blob, { onProgress: pct }) : null)
+    : /\.lfm$/i.test(name) ? ((opts.forceSoup || overCap(await lfmTriCount(blob))) ? () => openLfmSoup(blob, { onProgress: (msg) => { $('#meta').textContent = `${name} — ${msg}`; } }) : null)
     : null;
   if (streamDoc) {
     const doc = await streamDoc();
@@ -5684,7 +5689,7 @@ async function openMeshDoc(blob, name, opts = {}) {
     // otherwise pick the single-file provider by extension.
     const m = opts.prebuilt || await (/\.msh$/i.test(name) ? openMsh : /\.obj$/i.test(name) ? openObj : /\.lfm$/i.test(name) ? openLfmMesh : openPlyMesh)(blob);
     header = m.header;
-    if (opts.forceSoup || header.triCount > CONTEXT_TRI_CAP) {
+    if (opts.forceSoup || overCap(header.triCount)) {
       header = { ...header, soup: true };
       soupSrc = (o) => soupFromMesh(m, o);
     } else {
@@ -7744,6 +7749,7 @@ function projectManifest() {
       analysis: L.analysis || undefined,                   // GT/swath window setups (series by layer NAME) + pinned-open state + geometry
       ...captureLayerSurface(L),   // gridSurface · drape · flatZ · faceted · band — the ONE surface-state source (shared with scenes; parity-tested)
       soup: (L.kind === 'mesh' && L.docs.meshDoc && L.docs.meshDoc.header.soup) || undefined,
+      exact: (L.kind === 'mesh' && L.docs.meshDoc && !L.docs.meshDoc.header.soup && L.docs.meshDoc.header.triCount > CONTEXT_TRI_CAP) || undefined,   // promoted past the cap
       element: ((L.docs.meshDoc || L.docs.stringsDoc || {}).header || {}).element ?? undefined,   // a .wfr layer reopens ITS element of a shared file
       hiddenCats: L.catHidden && L.catHidden.size
         ? [...L.catHidden].map((c) => { const h2 = layerHeaderOf(L); return h2 && h2.categories && h2.categories[c] != null ? h2.categories[c] : c; })
@@ -8228,7 +8234,7 @@ async function openProjectDir(dir, { pack = null } = {}) {
       const overR = ls.kind === 'mesh'
         // a DXF surface reopens as JUST the surface (a streamed DXF would otherwise
         // bring its strings/points siblings back a second time)
-        ? { tint: ls.tint, opacity: ls.opacity, forceSoup: !!ls.soup, ...(/\.dxf$/i.test(ls.source) ? { asKind: 'mesh' } : {}) }
+        ? { tint: ls.tint, opacity: ls.opacity, forceSoup: !!ls.soup, forceContext: !!ls.exact, ...(/\.dxf$/i.test(ls.source) ? { asKind: 'mesh' } : {}) }
         : ls.kind === 'table'
           ? (ls.sheet ? { sheet: ls.sheet } : { asKind: 'table' })
           : ls.kind === 'strings' ? { asKind: 'lines' }
@@ -11660,9 +11666,9 @@ function layerMenu(L, x, y) {
         if (!h.soup) {
           const est = h.triCount * 18;                     // u16 soup: 9 coords × 2 B
           items.push({ label: `Convert to streamed (${fmtSize(now)} → ~${fmtSize(est)})`, action: () => convertMeshLayer(L, true) });
-        } else if (h.triCount <= CONTEXT_TRI_CAP) {
-          const est = h.vertexCount * 12 + h.triCount * 12; // indexed f32 + u32
-          items.push({ label: `Convert to exact (${fmtSize(now)} → ~${fmtSize(est)})`, action: () => convertMeshLayer(L, false) });
+        } else {
+          const est = exactMeshBytes(h);
+          items.push({ label: `Convert to exact (${fmtSize(now)} → ~${fmtSize(est)})${h.triCount > CONTEXT_TRI_CAP ? ' — over the usual cap' : ''}`, action: () => convertMeshLayer(L, false) });
         }
       }
       return items;
@@ -11715,17 +11721,32 @@ function layerMenu(L, x, y) {
 // layer's identity (id, label, style, visibility, section exemption). Exact
 // (indexed f32) trades VRAM for survey-true vertices; streamed (u16 soup)
 // trades ~8 mm-per-chunk quantization for ~2-3× less VRAM + budgeted draw.
-async function convertMeshLayer(L, toSoup) {
-  const md = L.docs.meshDoc; if (!md) return;
+// the exact tier's GPU cost: indexed f32 positions + u32 triangle indices
+function exactMeshBytes(h) { return (h.vertexCount || h.triCount / 2) * 12 + h.triCount * 12; }
+async function convertMeshLayer(L, toSoup, { confirmed = false } = {}) {
+  const md = L.docs.meshDoc; if (!md) return false;
+  const h = md.header;
+  // PROMOTE-TO-CONTEXT: a mesh over the cap opened streamed, which keeps no CPU geometry.
+  // The exact tier is still possible — it costs memory, so it is the user's call, stated
+  // up front, with no hard ceiling (a 20M-triangle outcrop on a workstation is legitimate).
+  if (!toSoup && h.triCount > CONTEXT_TRI_CAP && !confirmed) {
+    const ok = await microConfirm('Load the exact mesh?',
+      `${h.triCount.toLocaleString()} triangles is over the ${CONTEXT_TRI_CAP.toLocaleString()} micro loads exactly by default, so it opened streamed. ` +
+      `The exact tier keeps the whole mesh: about ${fmtSize(exactMeshBytes(h))} of GPU memory, plus the file's geometry in this tab while it loads. ` +
+      'Structural analysis, solid queries and rasterizing need it. A large mesh can make the tab slow, or run out of memory on a small device.',
+      'Load exact', 'Cancel');
+    if (!ok) return false;
+  }
   const keep = { visible: L.visible, sectioned: renderer.layerSectioned(L.id) };
   renderer.removeLayer(L.id);                              // frees chunks + layer state
   $('#meta').textContent = `${md.name} — converting to ${toSoup ? 'streamed' : 'exact'}…`;
   try {
-    await openMeshDoc(md.blob, md.name, { layer: L.id, first: false, tint: L.tint, opacity: L.opacity, forceSoup: toSoup });
+    await openMeshDoc(md.blob, md.name, { layer: L.id, first: false, tint: L.tint, opacity: L.opacity, forceSoup: toSoup, forceContext: !toSoup });
     if (!keep.visible) { L.visible = false; renderer.setLayerVisible(L.id, false); }
     if (keep.sectioned !== true) renderer.setLayerSectioned(L.id, keep.sectioned);
     renderLayers(); markProjectDirty(); requestRender();
-  } catch (e) { $('#meta').textContent = `${md.name} — ${e.message}`; }
+    return true;
+  } catch (e) { $('#meta').textContent = `${md.name} — ${e.message}`; return false; }
 }
 // mesh styling: a small preset palette (geology-ish) + custom hex; opacity is
 // Bayer screen-door in the pipeline, so any value is depth-correct

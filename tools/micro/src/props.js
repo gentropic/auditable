@@ -157,9 +157,8 @@ export function renderStyleTab(body, L) {
       const now = H.renderer.layerVramBytes(L.id);
       const tierTxt = document.createElement('span'); tierTxt.textContent = `${h.soup ? 'streamed' : 'exact'} · ${fmtSize(now)}`;
       body.appendChild(mkRow('tier', tierTxt));
-      const canExact = h.soup && h.triCount <= H.CONTEXT_TRI_CAP;
-      if (!h.soup || canExact) {
-        const est = h.soup ? h.vertexCount * 12 + h.triCount * 12 : h.triCount * 18;
+      {                                                    // exact at any size: past the cap convertMeshLayer asks first
+        const est = h.soup ? (h.vertexCount || h.triCount / 2) * 12 + h.triCount * 12 : h.triCount * 18;
         const btn = document.createElement('button'); btn.className = 'pp-tab';
         btn.textContent = `convert to ${h.soup ? 'exact' : 'streamed'} (~${fmtSize(est)})`;
         btn.onclick = async () => { await H.convertMeshLayer(L, !h.soup); renderProps(); };

@@ -83,6 +83,9 @@ jobs:
       - name: micro host smoke — addLayer, load results, quoted CSV, Parquet sub-blocks, rotated models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run test:micro:host
+      - name: micro structure smoke — capivaras (promote, wand, planes) (dev tree + built)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: npm run test:micro:structure
       - name: lamina built smoke — ship artifact + Sealed net gate
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node test/lamina-built-smoke.mjs
