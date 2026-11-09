@@ -28,7 +28,8 @@ const PORT = server.address().port;
 fs.mkdirSync(path.join(root, 'experiments'), { recursive: true });
 
 let pass = 0, fail = 0;
-const chk = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}`); ok ? pass++ : fail++; };
+let lastOk = true;
+const chk = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}`); ok ? pass++ : fail++; lastOk = !!ok; };
 const browser = await chromium.launch({ args: ['--use-gl=angle'] });
 await installSmokeWaits(browser);
 const S24 = { viewport: { width: 384, height: 787 }, deviceScaleFactor: 2.8125, isMobile: true, hasTouch: true };
@@ -52,10 +53,32 @@ const ID_MAP = () => {
   };
 };
 
+// A TIMELINE for the touch checks that pass here and fail on CI: what the page saw and when —
+// each pointer event (its own timeStamp and the handler's clock), the magnifier showing, the
+// record panel's classes, the status line, and every frame gap over 150 ms. Printed only when
+// a check that reads it fails.
+const TIMELINE = () => {
+  const tl = window.__tl = [], t = () => Math.round(performance.now());
+  for (const ty of ['pointerdown', 'pointerup', 'pointercancel', 'contextmenu'])
+    addEventListener(ty, (e) => tl.push(`${t()} ${ty}${e.pointerType ? ' ' + e.pointerType : ''} ts=${Math.round(e.timeStamp)} @${Math.round(e.clientX)},${Math.round(e.clientY)}`), true);
+  let last = performance.now();
+  const frame = (now) => { if (now - last > 150) tl.push(`${t()} frame gap ${Math.round(now - last)} ms`); last = now; requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+  const seen = new Map();
+  new MutationObserver(() => {
+    const P = document.getElementById('recPanel'), L = document.getElementById('loupe'), M = document.getElementById('meta');
+    const now = { rec: P ? P.className : '', loupe: L ? L.style.display : '', meta: M ? M.textContent.slice(0, 50) : '' };
+    for (const k in now) if (seen.get(k) !== now[k]) { seen.set(k, now[k]); tl.push(`${t()} ${k}: "${now[k]}"`); }
+  }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'style'] });
+};
+
 async function drive(url, tag) {
   const ctx = await browser.newContext(S24);
   await ctx.addInitScript(ID_MAP);
+  await ctx.addInitScript(TIMELINE);
   const p = await ctx.newPage();
+  const tlTake = () => p.evaluate(() => (window.__tl || []).splice(0));
+  const tlDump = (lines) => { if (!lastOk || process.env.SMOKE_TIMELINE) for (const l of lines.slice(-80)) console.log(`      | ${l}`); };
   const errs = [];
   p.on('pageerror', (e) => errs.push(String(e)));
   await p.goto(url, { waitUntil: 'load' });
@@ -499,6 +522,7 @@ async function drive(url, tag) {
     return { high: hits[Math.floor(hits.length * 0.15)], high2: hits[Math.floor(hits.length * 0.05)], low: low[Math.floor(low.length / 2)], n: hits.length };
   });
   const c0 = await cardSt();
+  await tlTake();
   await tap(...spots.high); await until(() => document.getElementById('recPanel').classList.contains('show')); const cHigh = await cardSt();
   await p.evaluate(() => document.getElementById('rpClose').click());
   if (spots.low) { await tap(...spots.low); await until(() => { const P = document.getElementById('recPanel'); return P.classList.contains('show') && P.classList.contains('card-top'); }); }
@@ -520,6 +544,7 @@ async function drive(url, tag) {
     spots.n > 0 && !!spots.low && cHigh.show && cHigh.card && !cHigh.top && cHigh.view === c0.view && cHigh.h < 260
     && cLow.show && cLow.card && cLow.top && cLow.t <= 48 && cLow.view === c0.view
     && cBig.show && !cBig.card && cBig.view < c0.view - 100 && cSwap.show && !cSwap.card && cSwap.title !== cBig.title);
+  tlDump(await tlTake());
 
   // 21. no text field under 16 px (a phone zooms the page into one), the filter's highlight
   //     mirror matches it, and typing a filter takes the whole top bar
@@ -568,6 +593,7 @@ async function drive(url, tag) {
     hits.sort((a, c) => a[0] - c[0]);
     const cx = r.width / 2, cy = r.height / 2, far = hits.filter(([x, y]) => Math.hypot(x - cx, y - cy) > 60);
     return { r: [r.left, r.top], off: far[Math.floor(far.length * 0.3)], a: hits[Math.floor(hits.length * 0.2)], b: hits[Math.floor(hits.length * 0.8)], t0: M.cam.state.target.slice() }; });
+  await tlTake();
   await dblTap(dt.r[0] + dt.off[0], dt.r[1] + dt.off[1]);
   await until(() => /orbiting/.test(document.getElementById('meta').textContent)); await p.waitForTimeout(800);   // + the glide
   const piv = await p.evaluate((t0) => { const M = window._micro, t = M.cam.state.target; return { moved: Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]), meta: document.getElementById('meta').textContent }; }, dt.t0);
@@ -577,6 +603,7 @@ async function drive(url, tag) {
   const fitBack = await p.evaluate((t0) => { const t = window._micro.cam.state.target; return Math.hypot(t[0] - t0[0], t[1] - t0[1], t[2] - t0[2]); }, dt.t0);
   chk(`[${tag}] double-tap: the orbit centre moved ${piv.moved.toFixed(0)} m to the tapped spot ("${piv.meta}"); empty space → fit (back within ${fitBack.toFixed(1)} m)`,
     piv.moved > 10 && /orbiting/.test(piv.meta) && !!emptyPt && fitBack < 1);
+  tlDump(await tlTake());
   await p.evaluate(() => { document.getElementById('rpClose').click(); document.getElementById('btnMeasure').click(); });
   const cdpM = await ctx.newCDPSession(p);
   const TT = (type, x, y) => cdpM.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: dt.r[0] + x, y: dt.r[1] + y }] });
