@@ -409,6 +409,62 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   await p2.close();
 }
 
+// ═══ 6. the trace network: I/Y/X nodes (Sanderson & Nixon). On face A, in plan view:
+//     T1 (J1) along y = 10, T2 (J1) along x = 5 — they cross at (5,10): an X.
+//     T3 (J2) climbs from (7,3) and is ended by a click NEAR T1 whose nearest mesh corner
+//     is (8,9), off the trace — snapping puts its end ON T1 at (8,10): a Y, J2 against J1.
+//     Without the snap it would be one more I and no Y. ═══
+{
+  const p = await mkPage();
+  const id = await addOutcrop(p);
+  await p.evaluate((lid) => window._micro.convertMeshLayer(window._micro.layers().find((q) => q.id === lid), false, { confirmed: true }), id);
+  await p.waitForFunction((lid) => { const L = window._micro.layers().find((q) => q.id === lid); return L && !L.docs.meshDoc.header.soup; }, id, { timeout: 30000 });
+  await p.evaluate((lid) => window._micro.openStructure(window._micro.layers().find((q) => q.id === lid)), id);
+  await p.waitForFunction(() => [...document.querySelectorAll('.fwin')].some((e) => e._structure), null, { timeout: 30000 });
+  await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); [...w.querySelectorAll('.st-tools button')].find((b2) => b2.textContent === 'trace').click(); w.style.visibility = 'hidden'; });
+  const zAt = (x) => (x <= 10 ? 800 - t30 * x : 800 - t30 * 10 + t60 * (x - 10));
+  await p.keyboard.press('d'); await p.waitForTimeout(200);
+  // zoom out until a metre is ~7 px, so the snap (10 px) reaches 0.9 m off the line
+  const pxm = async () => { const [a0] = await toPage(p, [500000, 7000010, zAt(0)]); const [a1] = await toPage(p, [500010, 7000010, zAt(10)]); return Math.abs(a1 - a0) / 10; };
+  const m0 = await pxm();
+  await p.evaluate((k) => { const M = window._micro, o = M.frame.origin, c = [500010 - o[0], 7000010 - o[1], 795 - o[2]], h = 10 * k; M.cam.fit([c[0] - h, c[1] - h, c[2] - h, c[0] + h, c[1] + h, c[2] + h]); M.requestRender(); }, m0 / 7);
+  await p.waitForTimeout(200);
+  const m1 = await pxm();
+  const clickAt = async (x, y) => { const [px, py] = await toPage(p, [500000 + x, 7000000 + y, zAt(x)]); await p.mouse.move(px - 2, py); await p.mouse.click(px, py); await p.waitForTimeout(120); };
+  const finishAt = async (x, y, n) => {
+    const [px, py] = await toPage(p, [500000 + x, 7000000 + y, zAt(x)]);
+    await p.mouse.move(px - 2, py); await p.mouse.dblclick(px, py);
+    await p.waitForFunction(([lid, k]) => (window._micro.layers().find((q) => q.id === lid).traces || []).length === k, [id, n], { timeout: 10000 });
+  };
+  await clickAt(1, 10); await finishAt(9, 10, 1);
+  await clickAt(5, 2); await finishAt(5, 18, 2);
+  await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); [...w.querySelectorAll('button')].find((b2) => b2.textContent === '+ set').click(); });
+  await clickAt(7, 3); await finishAt(7.8, 9.1, 3);
+  const net = await p.evaluate(() => [...document.querySelectorAll('.fwin')].find((e) => e._structure)._structure.network);
+  const end3 = await p.evaluate((lid) => { const t = window._micro.layers().find((q) => q.id === lid).traces[2]; return t.path[t.path.length - 1]; }, id);
+  const nodes = await p.evaluate((lid) => { const D = window._micro.layers().find((q) => q.derivedOf === lid && q.derivedKind === 'nodes'); return D ? window._micro.renderer.layerElementCount(D.id) : 0; }, id);
+  chk(`at ${m1.toFixed(1)} px/m (from ${m0.toFixed(1)}), a click 0.9 m off T1 snaps onto it: T3 ends at vertex ${end3} (= (8,10) → ${10 * 21 + 8})`, end3 === 10 * 21 + 8);
+  chk(`the network: I ${net && net.counts.I} · Y ${net && net.counts.Y} · X ${net && net.counts.X} (want 5 · 1 · 1); branches ${net && net.branches} (6), lines ${net && net.lines} (3), C_L ${net && net.CL.toFixed(2)} (1.33)`,
+    net && net.counts.I === 5 && net.counts.Y === 1 && net.counts.X === 1 && net.branches === 6 && net.lines === 3 && Math.abs(net.CL - 4 / 3) < 1e-9);
+  chk(`abutment: J2 ends against J1 once (${JSON.stringify(net && net.abut)}); 7 node markers drawn (${nodes} triangles = 7 × 8)`,
+    net && net.abut[2] && net.abut[2][1] === 1 && Object.keys(net.abut).length === 1 && nodes === 56);
+  // the window shows it: counts and the I–Y–X triangle
+  const panel = await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); const el = w.querySelector('.st-net'); return el ? { text: el.textContent, dot: !!el.querySelector('svg circle') } : null; });
+  chk(`the window's network panel: counts, C_B/C_L, “J2 ends against J1 ×1”, a point on the I–Y–X triangle`, panel && /I 5/.test(panel.text) && /Y 1/.test(panel.text) && /X 1/.test(panel.text) && /J2 ends against J1 ×1/.test(panel.text) && panel.dot);
+  // a TOUCH is not a crossing. Around (5,14), T2 runs (5,13)→(5,15); a trace (4,13)→(5,14)→(4,14)
+  // comes in and leaves on the same side; (4,13)→(5,14)→(6,15) goes through.
+  const touch = await p.evaluate((lid) => {
+    const M = window._micro, L = M.layers().find((q) => q.id === lid), st = M.structureOf(L), v = (i, j) => j * 21 + i;
+    const base = [L.traces[1]];
+    const t = M.traceNetwork(st, [...base, { set: 2, path: [v(4, 13), v(5, 14), v(4, 14)] }]);
+    const c = M.traceNetwork(st, [...base, { set: 2, path: [v(4, 13), v(5, 14), v(6, 15)] }]);
+    return { touch: t.counts, touches: t.touches, cross: c.counts, crossTouches: c.touches };
+  }, id);
+  chk(`a trace that touches T2 at a vertex and goes back is not a crossing (X ${touch.touch.X}, ${touch.touches} touch); one that goes through is (X ${touch.cross.X})`,
+    touch.touch.X === 0 && touch.touches === 1 && touch.cross.X === 1 && touch.crossTouches === 0);
+  await p.close();
+}
+
 console.log(`\nmicro-structure-smoke: ${pass} passed, ${fail} failed`);
 await b.close(); server.close();
 process.exit(fail ? 1 : 0);

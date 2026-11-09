@@ -20,7 +20,7 @@
 // welded space and converts to file records at the edge (`toFile`, `weldedCodes`).
 // A mesh with nothing to weld has the two spaces identical and pays nothing.
 
-import { buildAdjacency, components, fitPlane, wand, vertexNormals, smoothNormals, vertexAreaWeights, attitude, geodesic } from '../../../ext/clar/index.js';
+import { buildAdjacency, components, fitPlane, wand, vertexNormals, smoothNormals, vertexAreaWeights, attitude, geodesic, nodeClasses, incidentFaces } from '../../../ext/clar/index.js';
 import { statistics } from '../../../ext/bearing/index.js';
 import { weldVertices } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
@@ -359,4 +359,119 @@ export function traceTubes(vertices, paths, colorOf, radius) {
     }
   }
   return { vertices: V, triangles: T, color: C };
+}
+
+// ── the trace network: I/Y/X nodes (Sanderson & Nixon 2015) ──
+// Paths run along mesh edges, so two traces that cross on the surface always share a
+// vertex — edges of a surface don't cross between vertices. The converse fails: two
+// traces can share a vertex and merely TOUCH (one comes in and goes back out on the
+// same side), which by degree alone would read as a crossing. So where two traces
+// both pass through a vertex, the vertex's one-ring decides: remove the first
+// trace's two neighbours from the ring and the ring falls in two; the second trace
+// crosses when its neighbours land in different pieces. A touch is not a node — the
+// second trace's visit gets a vertex id of its own, and clar's count never sees it.
+// The counting itself (degrees → I/Y/X → branches, lines, connectivity) is clar's.
+//
+// A Y also records relative age: the trace that ENDS against another formed after it
+// (it stopped at a fracture that was already there). `abut` counts that per pair of
+// sets — `abut[a][b]` = how many times a trace of set a ends against one of set b.
+export const weldedOf = (st, f) => (st.remap ? st.remap[f] : f);
+function ringPieces(st, v, cut) {
+  // the one-ring of v as a graph (ring neighbours joined through v's faces), minus `cut`
+  const g = new Map();
+  const link = (a, b) => { if (cut.has(a) || cut.has(b)) return; (g.get(a) || g.set(a, []).get(a)).push(b); (g.get(b) || g.set(b, []).get(b)).push(a); };
+  for (const f of incidentFaces(st.adj, v)) {
+    const t = st.triangles, o = f * 3, c = [t[o], t[o + 1], t[o + 2]].filter((x) => x !== v);
+    if (c.length === 2) link(c[0], c[1]);
+  }
+  return g;
+}
+function connectedInRing(g, a, b) {
+  if (a === b) return true;
+  const seen = new Set([a]), q = [a];
+  while (q.length) { const x = q.pop(); for (const y of g.get(x) || []) { if (y === b) return true; if (!seen.has(y)) { seen.add(y); q.push(y); } } }
+  return false;
+}
+export function traceNetwork(st, traces) {
+  const paths = traces.map((t) => Array.from(t.path || [], (f) => weldedOf(st, f)));
+  // vertex → the traces passing THROUGH it (as interior points), with their neighbours there
+  const through = new Map();
+  paths.forEach((p, k) => {
+    for (let i = 1; i < p.length - 1; i++) {
+      const v = p[i]; if (p[i - 1] === v || p[i + 1] === v) continue;
+      (through.get(v) || through.set(v, []).get(v)).push({ k, i, a: p[i - 1], b: p[i + 1] });
+    }
+  });
+  let virt = st.nv;
+  const out = paths.map((p) => p.slice());
+  let touches = 0;
+  for (const [v, list] of through) {
+    if (list.length < 2) continue;
+    const first = list[0];
+    if (first.a === first.b) continue;                   // a trace doubling back: no ring to split
+    const g = ringPieces(st, v, new Set([first.a, first.b]));
+    for (const o of list.slice(1)) {
+      if (o.k === first.k) continue;                     // a trace meeting itself: leave it to the count
+      // sharing an edge with the first (running along it) is not a clean crossing either
+      const shares = o.a === first.a || o.a === first.b || o.b === first.a || o.b === first.b;
+      if (shares || connectedInRing(g, o.a, o.b)) { out[o.k][o.i] = virt++; touches++; }
+    }
+  }
+  const net = nodeClasses(out);
+  // where each node is, and who ends there against whom
+  const ends = new Map();                                // vertex → traces ending there
+  out.forEach((p, k) => { if (!p.length) return; for (const v of new Set([p[0], p[p.length - 1]])) (ends.get(v) || ends.set(v, []).get(v)).push(k); });
+  const abut = {};
+  const nodes = net.nodes.map((n) => {
+    const v = n.vertex < st.nv ? n.vertex : null;
+    const pos = v != null ? [st.positions[3 * v], st.positions[3 * v + 1], st.positions[3 * v + 2]] : null;
+    if (n.kind === 'Y' && v != null) {
+      const e = ends.get(v) || [], th = (through.get(v) || []).filter((o) => out[o.k][o.i] === v).map((o) => o.k);
+      if (e.length === 1 && th.length === 1) {
+        const a = traces[e[0]].set, b = traces[th[0]].set;
+        (abut[a] || (abut[a] = {}))[b] = ((abut[a] || {})[b] || 0) + 1;
+      }
+    }
+    return { vertex: v, kind: n.kind, degree: n.degree, pos };
+  }).filter((n) => n.pos);
+  return { ...net, nodes, abut, touches };
+}
+// node markers: a small octahedron per node, coloured by kind
+export const NODE_COLORS = { I: [0.36, 0.72, 0.9], Y: [0.91, 0.64, 0.24], X: [0.85, 0.44, 0.69], other: [0.6, 0.6, 0.6] };
+export function nodeMarkers(nodes, size) {
+  const D = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  const F = [[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]];
+  const V = new Float64Array(nodes.length * 18), C = new Float32Array(nodes.length * 18), T = new Uint32Array(nodes.length * 24);
+  nodes.forEach((n, k) => {
+    const c = NODE_COLORS[n.kind] || NODE_COLORS.other;
+    D.forEach((d, j) => { for (let a = 0; a < 3; a++) { V[k * 18 + j * 3 + a] = n.pos[a] + d[a] * size; C[k * 18 + j * 3 + a] = c[a]; } });
+    F.forEach((f, j) => { for (let a = 0; a < 3; a++) T[k * 24 + j * 3 + a] = k * 6 + f[a]; });
+  });
+  return { vertices: V, triangles: T, color: C };
+}
+// A click within `radius` of a committed trace's LINE lands on it — on the nearer end of
+// the segment it came closest to (paths only visit vertices). The line, not just its
+// vertices: on a fine mesh the clicked corner is rarely the path's own vertex, and a
+// trace meant to end against another would otherwise stop a vertex short of it — an
+// I where the geologist drew a Y. Returns a welded vertex, or null.
+export function snapToTraces(st, traces, point, radius) {
+  const P = st.positions;
+  let best = null, bd = radius * radius;
+  const consider = (v, d) => { if (d <= bd) { bd = d; best = v; } };
+  for (const t of traces) {
+    const p = t.path || [];
+    for (let i = 0; i < p.length; i++) {
+      const u = weldedOf(st, p[i]), uo = 3 * u;
+      if (i === 0 || p.length === 1) consider(u, (P[uo] - point[0]) ** 2 + (P[uo + 1] - point[1]) ** 2 + (P[uo + 2] - point[2]) ** 2);
+      if (!i) continue;
+      const w = weldedOf(st, p[i - 1]), wo = 3 * w;
+      const e = [P[uo] - P[wo], P[uo + 1] - P[wo + 1], P[uo + 2] - P[wo + 2]];
+      const q = [point[0] - P[wo], point[1] - P[wo + 1], point[2] - P[wo + 2]];
+      const ee = e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+      const s2 = ee > 0 ? Math.max(0, Math.min(1, (q[0] * e[0] + q[1] * e[1] + q[2] * e[2]) / ee)) : 0;
+      const d = (q[0] - s2 * e[0]) ** 2 + (q[1] - s2 * e[1]) ** 2 + (q[2] - s2 * e[2]) ** 2;
+      consider(s2 < 0.5 ? w : u, d);
+    }
+  }
+  return best;
 }

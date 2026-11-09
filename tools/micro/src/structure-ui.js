@@ -10,7 +10,7 @@
 // The geometry lives in ./structure.js; this file is the window and the pointer.
 import { floatWin, focusWindow } from './windows.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
-import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY } from './structure.js';
+import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY, traceNetwork, nodeMarkers, snapToTraces, NODE_COLORS } from './structure.js';
 import { Stereonet } from '../../../ext/bearing/index.js';
 import { detectSets } from '../../../ext/clar/index.js';
 import { writeDxf } from '../../../ext/condenser/src/main.js';
@@ -35,7 +35,7 @@ const SET_COLORS = ['#d9534f', '#4a90d9', '#5cb85c', '#e8a33d', '#9b6fd0', '#3cb
 
 // tool settings ride localStorage — a preference, not project data
 const PREFS_KEY = 'micro.structure';
-const PREF_DEFAULTS = { tool: 'wand', angle: 12, distance: 0, radius: 1, discs: true, orient: false, gc: false, contour: true };
+const PREF_DEFAULTS = { tool: 'wand', angle: 12, distance: 0, radius: 1, discs: true, nodes: true, orient: false, gc: false, contour: true };
 const prefs = (() => { try { return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { ...PREF_DEFAULTS }; } })();
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* private */ } };
 
@@ -134,6 +134,14 @@ async function updateTraces(L, hd) {
   setDerived(L, 'traces', 'traces', paths.length ? traceTubes(m.vertices, paths, rgb, Math.max(1e-3, diag * 0.002)) : null, 1);
 }
 
+// the network's nodes as small octahedra, coloured by kind (I / Y / X)
+function updateNodes(L, hd) {
+  const net = hd.network, md = L.docs.meshDoc, bb = md && md.header.bbox;
+  const diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 10;
+  const on = prefs.nodes && net && net.nodes.length;
+  setDerived(L, 'nodes', 'trace nodes', on ? nodeMarkers(net.nodes, Math.max(1e-3, diag * 0.006)) : null, 1);
+}
+
 // ── the refresh every paint edit runs (stroke, undo, redo, restore) — and every trace edit ──
 export async function structureAfterEdit(L) {
   if (!L || L.kind !== 'mesh' || !setColOf(L)) return;
@@ -147,8 +155,10 @@ export async function structureAfterEdit(L) {
   else hd.planes = tp;
   hd.planes.forEach((p, i) => { p.plane_id = i + 1; });
   hd.selSet = null;
+  hd.network = st && L.traces && L.traces.length ? traceNetwork(st, L.traces) : null;
   updateDiscs(L, hd);
   await updateTraces(L, hd);
+  updateNodes(L, hd);
   if (hd.render) hd.render();
   if (hd.stereo) hd.stereo.render();
 }
@@ -268,6 +278,13 @@ export async function openStructure(L) {
     dc.onchange = () => { prefs.discs = dc.checked; savePrefs(); updateDiscs(L, hd); };
     dl.append(dc, ' plane discs');
     rail.append(dl);
+    if (L.traces && L.traces.length) {
+      const nl = document.createElement('label'); nl.className = 'sw-row'; nl.title = 'where traces end (I), abut (Y) and cross (X), marked on the rock';
+      const nc = document.createElement('input'); nc.type = 'checkbox'; nc.checked = prefs.nodes;
+      nc.onchange = () => { prefs.nodes = nc.checked; savePrefs(); updateNodes(L, hd); };
+      nl.append(nc, ' trace nodes');
+      rail.append(nl);
+    }
     const ol = document.createElement('label'); ol.className = 'sw-row'; ol.title = 'colour the rock by its orientation — hue = dip direction, saturation = dip (flat is white). Joint sets show as patches of one colour before anything is painted';
     const oc = document.createElement('input'); oc.type = 'checkbox'; oc.checked = prefs.orient;
     oc.onchange = () => { prefs.orient = oc.checked; savePrefs(); structureAfterEdit(L); };
@@ -317,9 +334,10 @@ export async function openStructure(L) {
       }
       main.append(t);
     }
+    if (hd.network) main.append(networkPanel(hd.network, col));
     const nSets = new Set(hd.planes.map((p) => p.code)).size;
     win.sub.textContent = `${hd.planes.length} plane${hd.planes.length === 1 ? '' : 's'} · ${nSets} set${nSets === 1 ? '' : 's'}`;
-    win.el._structure = { planes: hd.planes.map(({ _verts, ...p }) => p) };
+    win.el._structure = { planes: hd.planes.map(({ _verts, ...p }) => p), network: hd.network && { counts: hd.network.counts, branches: hd.network.branches, lines: hd.network.lines, CB: hd.network.connectivityPerBranch, CL: hd.network.connectivityPerLine, abut: hd.network.abut, touches: hd.network.touches } };
   }
   hd.render = render;
   async function start() {
@@ -330,6 +348,53 @@ export async function openStructure(L) {
   }
   await start();
   return hd;
+}
+
+// ── the trace network: counts, the I–Y–X triangle, connectivity, who abuts whom ──
+// The ternary is Sanderson & Nixon's: corners I, Y, X, the network a point by its node
+// proportions; the dashed lines are constant connections-per-line, C_L = 1, 2, 3
+// (C_L = 4(Y+X)/(I+Y) — straight lines in the triangle, so two points each).
+const rgbHex = (c) => '#' + c.map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+function networkPanel(net, col) {
+  const box = document.createElement('div'); box.className = 'st-net';
+  const { I, Y, X, other } = net.counts, n = I + Y + X;
+  const W = 150, Hh = 132, P = { I: [10, Hh - 14], Y: [W - 10, Hh - 14], X: [W / 2, 12] };
+  const at = (pi, py, px) => [pi * P.I[0] + py * P.Y[0] + px * P.X[0], pi * P.I[1] + py * P.Y[1] + px * P.X[1]];
+  let svg = `<svg width="${W}" height="${Hh}" viewBox="0 0 ${W} ${Hh}" style="flex:none">`;
+  svg += `<polygon points="${[P.I, P.Y, P.X].map((p) => p.join(',')).join(' ')}" fill="none" stroke="var(--dim)" stroke-width="1"/>`;
+  for (const c of [1, 2, 3]) {
+    const a = at(1 - c / 4, c / 4, 0), b = at(4 / (4 + c), 0, c / (4 + c));
+    svg += `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="var(--dim)" stroke-dasharray="2 3" stroke-width="0.8"/>`;
+    svg += `<text x="${a[0] + 2}" y="${a[1] + 10}" font-size="8" fill="var(--dim)">${c}</text>`;
+  }
+  for (const k of ['I', 'Y', 'X']) svg += `<text x="${P[k][0] + (k === 'I' ? -8 : k === 'Y' ? 2 : -3)}" y="${P[k][1] + (k === 'X' ? -2 : 11)}" font-size="10" fill="${rgbHex(NODE_COLORS[k])}">${k}</text>`;
+  if (n) { const [x, y] = at(I / n, Y / n, X / n); svg += `<circle cx="${x}" cy="${y}" r="4" fill="var(--fg, #ddd)" stroke="#000" stroke-width="0.5"/>`; }
+  svg += '</svg>';
+  const tri = document.createElement('div'); tri.innerHTML = svg; tri.title = 'Sanderson & Nixon (2015): the network by its node proportions; dashed: connections per line C_L = 1, 2, 3';
+  const info = document.createElement('div'); info.className = 'st-netinfo';
+  const line = (t, title) => { const d = document.createElement('div'); d.textContent = t; if (title) d.title = title; info.append(d); return d; };
+  const h = line('trace network'); h.className = 'sw-h';
+  const cnt = line('');
+  for (const k of ['I', 'Y', 'X']) { const sp = document.createElement('span'); sp.style.color = rgbHex(NODE_COLORS[k]); sp.textContent = `${k} ${net.counts[k]}  `; cnt.append(sp); }
+  if (other) cnt.append(`· ${other} other`);
+  cnt.title = 'I: a trace ends in intact rock · Y: a trace ends against another · X: two traces cross' + (other ? ' · other: 5+ branches at one point — usually two nodes digitized on top of each other' : '');
+  line(`${net.branches} branches · ${net.lines} lines`, 'branches = (I + 3Y + 4X) / 2 · lines = (I + Y) / 2');
+  line(`C_B ${net.connectivityPerBranch.toFixed(2)} · C_L ${net.connectivityPerLine.toFixed(2)}`, 'connections per branch (0–2) and per line — C_L ≥ 3.57 is the percolation threshold usually quoted');
+  const pairs = [];
+  for (const a of Object.keys(net.abut)) for (const b of Object.keys(net.abut[a])) pairs.push([+a, +b, net.abut[a][b]]);
+  if (pairs.length) {
+    const ab = line('abutments', 'a trace that ends against another formed after it — the younger set abuts the older'); ab.className = 'sw-h';
+    for (const [a, b, c] of pairs.sort((p, q) => q[2] - p[2])) {
+      const d = document.createElement('div');
+      const sa = document.createElement('span'); sa.textContent = col.dict[a] || '?'; sa.style.color = col.colors[a] || '';
+      const sb = document.createElement('span'); sb.textContent = col.dict[b] || '?'; sb.style.color = col.colors[b] || '';
+      d.append(sa, ' ends against ', sb, ` ×${c}`);
+      info.append(d);
+    }
+  }
+  if (net.touches) line(`${net.touches} touch${net.touches === 1 ? '' : 'es'} not counted`, 'two traces share a point without crossing (or run along each other) — not a node');
+  box.append(tri, info);
+  return box;
 }
 
 // ── ply2atti: sets from a mesh painted in saturated colours ──
@@ -470,10 +535,22 @@ async function regionUnder(L, x, y, eraseKey) {
   if (exclude[r.seed]) return { blocked: true, code: codes[r.seed], st, col, hd };
   return { ...r, erase, shape, st, col, hd, file: toFile(st, r.vertices) };
 }
+const SNAP_PX = 10;
 async function vertexUnder(L, x, y) {
   const st = structureOf(L); if (!st) return null;
   const hit = await H.meshHitAt(L, x, y);
-  return hit ? { st, v: seedOf(st, hit) } : null;
+  if (!hit) return null;
+  if (L.traces && L.traces.length) {
+    // SNAP_PX on screen, as a distance in the world at the hit's depth
+    const r0 = H.pixelRay(x, y), r1 = H.pixelRay(x + SNAP_PX, y);
+    const o = H.frame ? H.frame.origin : [0, 0, 0];
+    const rel = [hit.point[0] - o[0] - r0.o[0], hit.point[1] - o[1] - r0.o[1], hit.point[2] - o[2] - r0.o[2]];
+    const t = (rel[0] * r0.d[0] + rel[1] * r0.d[1] + rel[2] * r0.d[2]) / (r0.d[0] ** 2 + r0.d[1] ** 2 + r0.d[2] ** 2);
+    const rad = Math.hypot(...[0, 1, 2].map((k) => (r1.o[k] - r0.o[k]) + (r1.d[k] - r0.d[k]) * t));
+    const s = snapToTraces(st, L.traces, hit.point, rad);
+    if (s != null) return { st, v: s, snapped: true };
+  }
+  return { st, v: seedOf(st, hit) };
 }
 function traceFinish(L) {
   const hd = _structWins.get(L.id); if (!hd || !hd.drawing) return;
@@ -531,6 +608,8 @@ export function installStructurePointer(cv) {
           if (seq !== _hoverSeq || !u || !hd.drawing) return;
           hd.hoverPath = surfacePath(u.st, hd.drawing.pts[hd.drawing.pts.length - 1], u.v);
           updateTraces(L, hd);
+          if (u.snapped) $('#meta').textContent = 'on an existing trace — click to end against it (a Y node) or carry on across it (an X)';
+          else armHint();
         });
       });
       return;
