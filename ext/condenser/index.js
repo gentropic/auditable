@@ -5219,10 +5219,11 @@ function createMeshPipeline(gl) {
     gl.bufferData(gl.ARRAY_BUFFER, chunk.pos, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    let bCol = null;
     if (chunk.color) {                                     // heightfield drape: per-vertex rgb (loc 1)
-      const bCol = gl.createBuffer(); bufs.push(bCol);
+      bCol = gl.createBuffer(); bufs.push(bCol);
       gl.bindBuffer(gl.ARRAY_BUFFER, bCol);
-      gl.bufferData(gl.ARRAY_BUFFER, chunk.color, gl.STATIC_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, chunk.color, gl.DYNAMIC_DRAW);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
     }
@@ -5238,11 +5239,38 @@ function createMeshPipeline(gl) {
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, chunk.idx, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
     return {
-      kind: 'mesh', vao, buffers: bufs,
-      count: chunk.count, idxCount: chunk.idx.length,
+      kind: 'mesh', vao, buffers: bufs, colorBuf: bCol,
+      count: chunk.count, idxCount: chunk.idx.length, vertexCount: (chunk.pos.length / 3) | 0,
       hasColor: !!chunk.color, hasNormal: !!chunk.normal,
       bboxLocal: chunk.bboxLocal, cursor: 0,
     };
+  }
+
+  // Replace a mesh's per-vertex colours after upload — painting a set onto an outcrop
+  // recolours a few thousand vertices per stroke, and rebuilding the chunk would
+  // re-send the whole mesh. rgb: Float32Array(3·vertexCount), or null to go back to
+  // the tint. [lo, hi) limits the upload to the vertex range a stroke touched (the
+  // array is still the WHOLE mesh's; only that slice is sent).
+  function setColor(c, rgb, lo = 0, hi = c.vertexCount) {
+    if (!rgb) { c.hasColor = false; return; }
+    if (rgb.length < c.vertexCount * 3) throw new Error(`setColor: ${rgb.length / 3} colours for ${c.vertexCount} vertices`);
+    if (!c.colorBuf) {                                     // first colours: a buffer the size of the mesh
+      c.colorBuf = gl.createBuffer(); c.buffers.push(c.colorBuf);
+      gl.bindVertexArray(c.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.colorBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, rgb.subarray(0, c.vertexCount * 3), gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+      c.bytes = (c.bytes || 0) + c.vertexCount * 12;
+    } else {
+      lo = Math.max(0, lo | 0); hi = Math.min(c.vertexCount, hi | 0);
+      if (hi > lo) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.colorBuf);
+        gl.bufferSubData(gl.ARRAY_BUFFER, lo * 12, rgb, lo * 3, (hi - lo) * 3);
+      }
+    }
+    c.hasColor = true;
   }
 
   // per-layer uniforms — tint [r,g,b] 0..1, opacity 0..1, section may be null.
@@ -5280,7 +5308,7 @@ function createMeshPipeline(gl) {
     gl.drawElements(gl.TRIANGLES, c.idxCount, gl.UNSIGNED_INT, 0);
   }
 
-  return { upload, begin, draw };
+  return { upload, begin, draw, setColor };
 }
 
 // ── src/core/soup-geom.js ──
@@ -10726,6 +10754,19 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       needClear = true;
     },
     layerMeshStyle(layer) { const ls = layerOf(layer); return { tint: ls.meshTint, opacity: ls.meshOpacity }; },
+    // context-mesh per-vertex colours, live: rgb is Float32Array(3·vertexCount) for the
+    // layer's (single) context chunk, or null to return to the tint; [lo, hi) is the
+    // vertex range that changed. Painting sets on an outcrop rides this.
+    setLayerMeshColors(layer, rgb, lo, hi) {
+      let hit = false;
+      for (const c of chunks) {
+        if (c._layer !== layer || c.kind !== 'mesh') continue;
+        meshPipe.setColor(c, rgb, lo, hi);
+        hit = true;
+      }
+      if (hit) needClear = true;
+      return hit;
+    },
     // per-layer opacity for blocks (box impostors) + sticks (drillholes) — applied
     // as a screen-door dither in their shaders (see-through, no alpha-blend ordering).
     // Is this mesh layer PICKABLE? null = the default (opaque meshes pick, see-through

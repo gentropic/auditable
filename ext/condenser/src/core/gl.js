@@ -471,6 +471,19 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       needClear = true;
     },
     layerMeshStyle(layer) { const ls = layerOf(layer); return { tint: ls.meshTint, opacity: ls.meshOpacity }; },
+    // context-mesh per-vertex colours, live: rgb is Float32Array(3·vertexCount) for the
+    // layer's (single) context chunk, or null to return to the tint; [lo, hi) is the
+    // vertex range that changed. Painting sets on an outcrop rides this.
+    setLayerMeshColors(layer, rgb, lo, hi) {
+      let hit = false;
+      for (const c of chunks) {
+        if (c._layer !== layer || c.kind !== 'mesh') continue;
+        meshPipe.setColor(c, rgb, lo, hi);
+        hit = true;
+      }
+      if (hit) needClear = true;
+      return hit;
+    },
     // per-layer opacity for blocks (box impostors) + sticks (drillholes) — applied
     // as a screen-door dither in their shaders (see-through, no alpha-blend ordering).
     // Is this mesh layer PICKABLE? null = the default (opaque meshes pick, see-through

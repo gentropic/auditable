@@ -2067,7 +2067,13 @@ const DIMZ_RE = /^(dz|zinc|zsize|zdim|dim_?z)$/i;
 const NONGRADE_RE = /^(ijk|id|index|row|i|j|k|dens|density|sg|topo|pct|proportion)$/i;
 
 // a RECORD splitter: RFC 4180 quotes honoured (delimited.js); unquoted lines take the plain split
-const splitter = (delim) => (l) => splitFields(l, delim);
+// a DECIMAL COMMA (1,5 — the Brazilian / European convention, with ';' or tab
+// between fields): normalized where the fields are split, so every reader —
+// coordinates, grades, the qualifier's <0,05 — sees 1.5 and nothing downstream
+// has to know. Only a field that is entirely a comma-decimal number changes.
+const COMMA_NUM = /^(\s*[<>]?=?\s*[-+]?\d*),(\d+(?:[eE][-+]?\d+)?\s*)$/;
+const fixDecimal = (f) => { for (let i = 0; i < f.length; i++) { const v = f[i]; if (v && v.indexOf(',') >= 0) { const m = COMMA_NUM.exec(v); if (m) f[i] = m[1] + '.' + m[2]; } } return f; };
+const splitter = (delim, decimal) => (decimal === ',' && delim !== ',' ? (l) => fixDecimal(splitFields(l, delim)) : (l) => splitFields(l, delim));
 
 // Detect delimiter + header from the first text block.
 function sniffDelimited(text) {
@@ -2090,8 +2096,16 @@ function sniffDelimited(text) {
   if (!best) throw new Error('blockmodel: no consistent delimiter found');
   const first = splitter(best.delim)(best.first).map((s) => s.trim());
   const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
-  const hasHeader = first.some((s) => !numericish(s));
-  return { delim: best.delim, header: hasHeader ? first : null, columns: best.n };
+  // the decimal mark: with a non-comma delimiter, data fields that are comma-
+  // decimal numbers (1,5) and none that are point-decimal (1.5) → ','
+  let decimal = '.';
+  if (best.delim !== ',') {
+    let comma = 0, point = 0;
+    for (const r of sampleRecords(text, best.delim, { max: 25 }).slice(1)) for (const f of splitter(best.delim)(r)) { const t = f.trim(); if (COMMA_NUM.test(t)) comma++; else if (/^[<>]?=?\s*[-+]?\d*\.\d+(?:[eE][-+]?\d+)?$/.test(t)) point++; }
+    if (comma > 0 && point === 0) decimal = ',';
+  }
+  const hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  return { delim: best.delim, header: hasHeader ? first : null, columns: best.n, decimal };
 }
 
 // Per-block size columns (DX/DY/DZ, XINC…) by name → { x, y, z } indices, or
@@ -2125,9 +2139,9 @@ function mapColumns(header) {
 // next sweep). Skips blanks + '#'; yields trimmed field arrays in batches so the
 // consumer controls pacing. Exported: the filter sweep (a mask by record index)
 // re-reads raw rows through the same path.
-async function* lineFields(blob, delim, hasHeader, { signal, onProgress } = {}) {
+async function* lineFields(blob, delim, hasHeader, { signal, onProgress, decimal = '.' } = {}) {
   const reader = blob.stream().pipeThrough(new TextDecoderStream()).getReader();
-  const split = splitter(delim), join = new RecordJoiner(delim);
+  const split = splitter(delim, decimal), join = new RecordJoiner(delim);
   let carry = '', first = hasHeader, bytesSeen = 0;
   const take = (l, batch) => {
     if (l.endsWith('\r')) l = l.slice(0, -1);
@@ -2165,10 +2179,10 @@ async function* lineFields(blob, delim, hasHeader, { signal, onProgress } = {}) 
 // byte-level line splitting is exact; text still decodes in BULK per chunk
 // (per-line decode would be ~50× slower at 50M rows). These offsets feed the
 // sparse record index (fetchDelimitedRecord) — the pick join on big CSVs.
-async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress } = {}) {
+async function* lineFieldsWithOffsets(blob, delim, hasHeader, { signal, onProgress, decimal = '.' } = {}) {
   const reader = blob.stream().getReader();
   const dec = new TextDecoder();
-  const split = splitter(delim), join = new RecordJoiner(delim);
+  const split = splitter(delim, decimal), join = new RecordJoiner(delim);
   let carryText = '', carryAt = 0, pos = 0, first = hasHeader, bytesSeen = 0, recAt = 0;
   // one line (its byte offset `start`) into the joiner; a completed record keeps
   // the offset of its FIRST line, so the sparse index always points at a record start
@@ -2221,7 +2235,7 @@ async function fetchDelimitedRecord(blob, header, rec) {
   const a = Math.min(Math.floor(rec / idx.k), idx.offsets.length - 1);
   let remaining = rec - a * idx.k;
   const m = header.mapping;
-  const split = splitter(header.delim), join = new RecordJoiner(header.delim);
+  const split = splitter(header.delim, header.decimal), join = new RecordJoiner(header.delim);
   const reader = blob.slice(idx.offsets[a]).stream().pipeThrough(new TextDecoderStream()).getReader();
   let carry = '';
   try {
@@ -2281,7 +2295,7 @@ async function readDelimitedRun(blob, run, o) {
       : (v) => { v = qual(v); return v == null ? '' : typeof v === 'string' ? v : String(v); };
   });
   let m = 0;
-  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false)) {
+  for await (const batch of lineFields(blob.slice(run.byteStart, run.byteEnd), o.delim, false, { decimal: o.decimal })) {
     for (const f of batch) {
       const xv = coordNum(f[o.x]), yv = coordNum(f[o.y]), zv = coordNum(f[o.z]);
       if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
@@ -2323,12 +2337,12 @@ const CAP_DISTINCT = 300000;                               // per-axis discovery
 
 // sweep 2 as a shared factory: the same cold-recipe stream whether the header
 // came from a live discovery or a cached `discovered` payload (sidecars)
-function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT) {
+function makeDelimitedStream(blob, delim, hasHeaderRow, map, catCol, catCode, dimInfo = null, chanPolicy = QUALIFIED_DEFAULT, decimal = '.') {
   return async function* streamChunks({ chunkPoints = 1 << 18, signal: s2, onProgress: op2 } = {}) {
     const alloc = () => ({ x: new Float64Array(chunkPoints), y: new Float64Array(chunkPoints), z: new Float64Array(chunkPoints), chan: new Float64Array(chunkPoints), cat: catCode ? new Uint8Array(chunkPoints) : null, dim: dimInfo ? new Uint8Array(chunkPoints) : null });
     let buf = alloc(), fill = 0, recStart = 0;
     const dimKeyOf = makeDimKeyer();
-    for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2 })) {
+    for await (const batch of lineFields(blob, delim, hasHeaderRow, { signal: s2, onProgress: op2, decimal })) {
       for (const f of batch) {
         const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
         if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
@@ -2377,7 +2391,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     const dimInfo2 = header.subBlocked && header.dimCols && header.dimPalette
       ? { cols: header.dimCols, code: dimCodeFromPalette(header.dimPalette) }
       : null;
-    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan)) };
+    return { header, streamChunks: makeDelimitedStream(blob, header.delim, header.hasHeaderRow, map2, map2.cat, catCode2, dimInfo2, policyOf(qualify, header.columns, map2.chan), header.decimal) };
   }
   const head = await blob.slice(0, Math.min(sample, blob.size)).text();
   const sniff = sniffDelimited(head);
@@ -2397,7 +2411,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   // AUTO pick; an explicit mapping stays the caller's call.
   if (!mapping && map.chan != null && sniff.header) {
     const lines0 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split0 = splitter(sniff.delim);
+    const split0 = splitter(sniff.delim, sniff.decimal);
     const vals0 = lines0.map((l) => (split0(l)[map.chan] || '').trim()).filter(Boolean);
     if (vals0.length && !censusQualified(vals0).numeric) map.chan = null;
   }
@@ -2407,7 +2421,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   if (catCol === -1) catCol = null;                         // stated: no category
   else if (catCol == null && sniff.header) {
     const lines = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split = splitter(sniff.delim);
+    const split = splitter(sniff.delim, sniff.decimal);
     for (let i = 0; i < sniff.columns && catCol == null; i++) {
       if (i === map.x || i === map.y || i === map.z || i === map.chan) continue;
       const vals = lines.map((l) => (split(l)[i] || '').trim()).filter(Boolean);
@@ -2428,7 +2442,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   const numericColumns = [], qualifiedColumns = [];
   if (sniff.header) {
     const lines2 = sampleRecords(head, sniff.delim, { max: 40 }).slice(1);
-    const split2 = splitter(sniff.delim);
+    const split2 = splitter(sniff.delim, sniff.decimal);
     for (let i = 0; i < sniff.columns; i++) {
       if (i === map.x || i === map.y || i === map.z || DIM_RE.test(sniff.header[i].trim())) continue;
       const vals = lines2.map((l) => (split2(l)[i] || '').trim()).filter(Boolean);
@@ -2460,7 +2474,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   // data-row number, to find it): a blank coordinate, or one that isn't a number
   const dropped = { blank: 0, text: 0, firstRow: -1 };
   let dataRow = 0;
-  for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
+  for await (const { fields, at } of lineFieldsWithOffsets(blob, sniff.delim, hasHeaderRow, { signal, onProgress, decimal: sniff.decimal })) {
     for (let fi = 0; fi < fields.length; fi++, dataRow++) {
       const f = fields[fi];
       const xv = coordNum(f[map.x]), yv = coordNum(f[map.y]), zv = coordNum(f[map.z]);
@@ -2509,7 +2523,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   let latticeCandidate = null;
   if (!grid && !subBlocked && rotated && res.length >= 24) {
     const coordSweep = () => (async function* () {
-      for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal })) {
+      for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, decimal: sniff.decimal })) {
         const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
         for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
         yield { x, y, z, count: n };
@@ -2530,6 +2544,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
     subBlocked, dimPalette, dimCols: subBlocked ? dimCols : null,   // variable-size boxes: half-dim palette + size-code per block
     columns: sniff.header, mapping: { ...map, cat: categories ? catCol : null },
     delim: sniff.delim, hasHeaderRow,                       // for external sweeps (the filter mask)
+    decimal: sniff.decimal,                                 // ',' — every re-read normalizes 1,5 the same way
     index: { k: indexEvery, offsets: Float64Array.from(anchors) },   // sparse line-offset index (fetchDelimitedRecord)
     dropped: dropped.blank || dropped.text ? dropped : null,   // rows that are no record (no usable coordinates)
     zones: zb ? zb.finish(count) : null,                   // per-index-entry skip statistics (io/zones.js)
@@ -2543,7 +2558,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   };
 
   // ── sweep 2 (cold recipe): the shared stream factory ──
-  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan));
+  const streamChunks = makeDelimitedStream(blob, sniff.delim, hasHeaderRow, map, catCol, catCode, dimInfo, policyOf(qualify, sniff.header, map.chan), sniff.decimal);
 
   return { header, streamChunks };
 }
@@ -2565,7 +2580,7 @@ async function openTable(blob, { signal, onProgress } = {}) {
   // provider uses, so mixed columns with a stray 'n/a' still read as numbers)
   const stat = columns.map(() => ({ n: 0, num: 0 }));
   let count = 0;
-  for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, onProgress })) {
+  for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, onProgress, decimal: sniff.decimal })) {
     for (const f of batch) {
       for (let i = 0; i < columns.length && i < f.length; i++) {
         const v = f[i];
@@ -2581,7 +2596,7 @@ async function openTable(blob, { signal, onProgress } = {}) {
   // a table needs ROWS. Prose lands here with a plausible-looking delimiter and
   // no data — "0 rows · 10 columns" is not a table, it is a misread file.
   if (!count) throw new Error('no data rows — this does not look like a table');
-  return { header: { table: true, columns, count, delim: sniff.delim, hasHeaderRow, numericColumns, mapping: null, grid: null, bbox: null } };
+  return { header: { table: true, columns, count, delim: sniff.delim, decimal: sniff.decimal, hasHeaderRow, numericColumns, mapping: null, grid: null, bbox: null } };
 }
 
 // ── ../drillhole/src/desurvey.js ──
@@ -2976,6 +2991,180 @@ function dhDesurveySamples$index(tables, opts) {
   return { header: header, rows: rows, report: { checks: checkList, nHoles: nHoles, nSamples: rows.length, dipConvention: dipConvention } };
 }
 
+// ── ../drillhole/src/qa.js ──
+
+// @gcu/drillhole — qa: the drillhole QA report, ROW by row. validate (validate.js)
+// counts what it excludes per hole; this names every row a reviewer has to look
+// at — which table, which row, which depths, what's wrong — before anything is
+// estimated from the holes. Nothing here changes a table: it reads and reports.
+//
+// tables = {
+//   collars:   [{ bhid, x, y, z, eoh, row }],          // blanks as NaN — NOT pre-dropped
+//   surveys:   [{ bhid, depth, az, dip, row }],        // dip raw (per file)
+//   intervals: [{ name, bhid: [], from: [], to: [], rows?: [] }],   // one or more tables
+// }
+// opts = {
+//   dipConvention: 'auto' | 'pos-down' | 'neg-down',
+//   doglegMax: 10,      // °/30 length-units between consecutive stations (dogleg severity)
+//   gapMin: 0.001,      // a gap between consecutive intervals shorter than this is a join
+//   extrapMax: 30,      // an interval deeper than the deepest survey by more than this
+// }
+// → { findings: [{ check, severity, table, row, bhid, from, to, detail }],
+//     summary: [{ check, label, severity, count, holes }], holes, dipConvention, tables }
+// `row` is the 0-based data row of `table` (null for a whole-hole finding); `from`/`to`
+// are the depths involved (a station's depth rides in `from`). Findings come in table
+// order (collars, surveys, then each interval table), rows ascending within a check.
+
+
+const DH_QA_CHECKS = {
+  'collar-no-bhid': ['error', 'collar rows with no hole ID'],
+  'collar-blank-xyz': ['error', 'collars with a blank or non-numeric X/Y/Z (dropped)'],
+  'collar-dup': ['error', 'duplicate collar hole IDs (the first is kept)'],
+  'collar-eoh-bad': ['warn', 'collars with an end-of-hole depth ≤ 0'],
+  'hole-no-survey': ['warn', 'holes with no usable survey (desurveyed straight down)'],
+  'hole-no-intervals': ['info', 'holes with no rows in an interval table'],
+  'survey-orphan': ['error', 'survey rows whose hole has no collar'],
+  'survey-blank': ['error', 'survey rows with a blank or non-numeric depth / azimuth / dip (dropped)'],
+  'survey-depth-neg': ['error', 'survey rows with a negative depth'],
+  'survey-dip-range': ['error', 'survey rows with |dip| > 90°'],
+  'survey-az-range': ['warn', 'survey rows with an azimuth outside 0–360° (read modulo 360)'],
+  'survey-dup-depth': ['warn', 'survey stations at the same depth in a hole (the last is kept)'],
+  'survey-dogleg': ['warn', 'survey intervals bending faster than the dogleg limit'],
+  'survey-past-eoh': ['warn', 'survey stations deeper than the collar end of hole'],
+  'interval-orphan': ['error', 'interval rows whose hole has no collar'],
+  'interval-blank': ['error', 'interval rows with a blank or non-numeric FROM / TO (not placed)'],
+  'interval-negative': ['error', 'interval rows with a negative depth'],
+  'interval-inverted': ['error', 'interval rows with FROM ≥ TO'],
+  'interval-overlap': ['error', 'intervals overlapping an earlier one in the same hole'],
+  'interval-gap': ['warn', 'gaps between consecutive intervals in a hole'],
+  'interval-past-eoh': ['warn', 'intervals deeper than the collar end of hole'],
+  'interval-past-survey': ['info', 'intervals well past the deepest survey station (extrapolated along it)'],
+  'value-text': ['warn', 'interval columns of numbers holding some text (read as blank)'],
+};
+
+// findings → one line per check that fired, in DH_QA_CHECKS order (a caller adding
+// its own findings, e.g. a values census, re-summarizes with this)
+function dhQaSummary(findings) {
+  let by = new Map();
+  for (let fi = 0; fi < findings.length; fi++) {
+    let f = findings[fi], s = by.get(f.check);
+    if (!s) by.set(f.check, s = { check: f.check, label: DH_QA_CHECKS[f.check][1], severity: DH_QA_CHECKS[f.check][0], count: 0, holes: new Set() });
+    s.count++;
+    if (f.bhid) s.holes.add(f.bhid);
+  }
+  return Object.keys(DH_QA_CHECKS).filter(function(k) { return by.has(k); }).map(function(k) { let s = by.get(k); return { check: s.check, label: s.label, severity: s.severity, count: s.count, holes: s.holes.size }; });
+}
+
+function dhQa(tables, opts) {
+  opts = opts || {};
+  let doglegMax = opts.doglegMax != null ? opts.doglegMax : 10;
+  let gapMin = opts.gapMin != null ? opts.gapMin : 0.001;
+  let extrapMax = opts.extrapMax != null ? opts.extrapMax : 30;
+  let findings = [];
+  function add(check, table, row, bhid, from, to, detail) {
+    findings.push({ check: check, severity: DH_QA_CHECKS[check][0], table: table, row: row, bhid: bhid, from: from, to: to, detail: detail || '' });
+  }
+  let fmt = function(v) { return Number.isFinite(v) ? String(Math.round(v * 1000) / 1000) : '—'; };
+  let idOf = function(v) { return v == null ? '' : String(v).trim(); };
+
+  // ── collars ──
+  let holes = new Map();                                  // bhid → { row, eoh, stations: [], deepest }
+  let dropped = new Set();                                // a collar that couldn't be placed: its rows aren't orphans too
+  let collars = tables.collars || [];
+  for (let ci = 0; ci < collars.length; ci++) {
+    let c = collars[ci], row = c.row != null ? c.row : ci, id = idOf(c.bhid);
+    if (!id) { add('collar-no-bhid', 'collar', row, '', null, null); continue; }
+    if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(c.z)) {
+      let which = ['x', 'y', 'z'].filter(function(k) { return !Number.isFinite(c[k]); }).join('/').toUpperCase();
+      add('collar-blank-xyz', 'collar', row, id, null, null, which + ' blank');
+      if (!holes.has(id)) dropped.add(id);
+      continue;
+    }
+    if (holes.has(id)) { add('collar-dup', 'collar', row, id, null, null, 'first at row ' + (holes.get(id).row + 1)); continue; }
+    let eoh = Number.isFinite(c.eoh) ? c.eoh : null;
+    if (eoh != null && eoh <= 0) add('collar-eoh-bad', 'collar', row, id, eoh, null, 'EOH ' + fmt(eoh));
+    holes.set(id, { row: row, eoh: eoh != null && eoh > 0 ? eoh : null, stations: [] });
+  }
+
+  // ── surveys ──
+  let surveys = tables.surveys || [];
+  let conv = opts.dipConvention && opts.dipConvention !== 'auto' ? opts.dipConvention
+    : dhDetectDipConvention$index(surveys.filter(function(s) { return Number.isFinite(s.dip); }));
+  let flip = conv === 'neg-down' ? -1 : 1;
+  for (let si = 0; si < surveys.length; si++) {
+    let s = surveys[si], row = s.row != null ? s.row : si, id = idOf(s.bhid);
+    let h = holes.get(id);
+    if (!h && dropped.has(id)) continue;                  // reported once, at its collar
+    if (!h) { add('survey-orphan', 'survey', row, id, Number.isFinite(s.depth) ? s.depth : null, null); continue; }
+    let blank = [['depth', s.depth], ['azimuth', s.az], ['dip', s.dip]].filter(function(p) { return !Number.isFinite(p[1]); }).map(function(p) { return p[0]; });
+    if (blank.length) { add('survey-blank', 'survey', row, id, Number.isFinite(s.depth) ? s.depth : null, null, blank.join(' / ') + ' blank'); continue; }
+    if (s.depth < 0) { add('survey-depth-neg', 'survey', row, id, s.depth, null, 'depth ' + fmt(s.depth)); continue; }
+    if (Math.abs(s.dip) > 90.000001) { add('survey-dip-range', 'survey', row, id, s.depth, null, 'dip ' + fmt(s.dip)); continue; }
+    if (s.az < 0 || s.az > 360) add('survey-az-range', 'survey', row, id, s.depth, null, 'azimuth ' + fmt(s.az));
+    if (h.eoh != null && s.depth > h.eoh + 1e-9) add('survey-past-eoh', 'survey', row, id, s.depth, null, 'station at ' + fmt(s.depth) + ', EOH ' + fmt(h.eoh));
+    h.stations.push({ depth: s.depth, az: s.az, dip: s.dip * flip, row: row });
+  }
+  for (let [id, h] of holes) {
+    if (!h.stations.length) { add('hole-no-survey', 'collar', h.row, id, null, null); h.deepest = 0; continue; }
+    h.stations.sort(function(a, b) { return a.depth - b.depth || a.row - b.row; });
+    let kept = [];
+    for (let k = 0; k < h.stations.length; k++) {
+      let st = h.stations[k], prev = kept[kept.length - 1];
+      if (prev && Math.abs(prev.depth - st.depth) < 1e-9) {
+        add('survey-dup-depth', 'survey', st.row, id, st.depth, null, 'same depth as row ' + (prev.row + 1));
+        kept[kept.length - 1] = st;                       // last wins, as normalizeSurveys does
+      } else kept.push(st);
+    }
+    for (let k = 1; k < kept.length; k++) {
+      let a = kept[k - 1], b = kept[k];
+      let ta = dhTangent$index(a.az, a.dip), tb = dhTangent$index(b.az, b.dip);
+      let cos = Math.max(-1, Math.min(1, ta[0] * tb[0] + ta[1] * tb[1] + ta[2] * tb[2]));
+      let deg = Math.acos(cos) * 180 / Math.PI, dls = deg * 30 / (b.depth - a.depth);
+      if (dls > doglegMax) add('survey-dogleg', 'survey', b.row, id, a.depth, b.depth, fmt(deg) + '° over ' + fmt(b.depth - a.depth) + ' (' + fmt(dls) + '°/30, limit ' + fmt(doglegMax) + ')');
+    }
+    h.deepest = kept[kept.length - 1].depth;
+  }
+
+  // ── interval tables ──
+  let ivTables = tables.intervals || [];
+  for (let ti = 0; ti < ivTables.length; ti++) {
+    let iv = ivTables[ti], name = iv.name || 'intervals' + (ivTables.length > 1 ? ' ' + (ti + 1) : '');
+    let per = new Map();                                  // bhid → [row index]
+    for (let i = 0; i < iv.bhid.length; i++) {
+      let row = iv.rows ? iv.rows[i] : i, id = idOf(iv.bhid[i]), f = iv.from[i], t = iv.to[i];
+      let fv = Number.isFinite(f) ? f : null, tv = Number.isFinite(t) ? t : null;
+      if (!holes.has(id) && dropped.has(id)) continue;
+      if (!holes.has(id)) { add('interval-orphan', name, row, id, fv, tv); continue; }
+      if (fv == null || tv == null) { add('interval-blank', name, row, id, fv, tv, [fv == null ? 'FROM' : '', tv == null ? 'TO' : ''].filter(Boolean).join(' / ') + ' blank'); continue; }
+      if (f < 0 || t < 0) { add('interval-negative', name, row, id, f, t); continue; }
+      if (f >= t) { add('interval-inverted', name, row, id, f, t, f === t ? 'zero length' : 'FROM > TO'); continue; }
+      let l = per.get(id); if (!l) per.set(id, l = []);
+      l.push(i);
+    }
+    for (let [id, h] of holes) {
+      let l = per.get(id);
+      if (!l) { add('hole-no-intervals', name, null, id, null, null, 'collar row ' + (h.row + 1)); continue; }
+      l.sort(function(a, b) { return iv.from[a] - iv.from[b] || iv.to[a] - iv.to[b] || a - b; });
+      let reach = -Infinity, reachAt = -1, pastEoh = false, pastSurvey = false;
+      for (let k = 0; k < l.length; k++) {
+        let i = l[k], row = iv.rows ? iv.rows[i] : i, f = iv.from[i], t = iv.to[i];
+        if (k > 0 && f < reach - 1e-9) {
+          let j = l[reachAt], jr = iv.rows ? iv.rows[j] : j;
+          add('interval-overlap', name, row, id, f, t, 'overlaps row ' + (jr + 1) + ' (' + fmt(iv.from[j]) + '–' + fmt(iv.to[j]) + ')');
+        } else if (k > 0 && f - reach > gapMin) add('interval-gap', name, row, id, reach, f, 'no interval for ' + fmt(f - reach));
+        if (t > reach) { reach = t; reachAt = k; }
+        if (!pastEoh && h.eoh != null && t > h.eoh + 1e-9) { pastEoh = true; add('interval-past-eoh', name, row, id, f, t, 'TO ' + fmt(t) + ', EOH ' + fmt(h.eoh)); }
+        if (!pastSurvey && h.stations.length && t - h.deepest > extrapMax) { pastSurvey = true; add('interval-past-survey', name, row, id, f, t, 'deepest survey at ' + fmt(h.deepest) + ', ' + fmt(t - h.deepest) + ' past it'); }
+      }
+    }
+  }
+
+  return {
+    findings: findings, summary: dhQaSummary(findings), holes: holes.size, dipConvention: conv,
+    tables: { collars: collars.length, surveys: surveys.length, intervals: ivTables.map(function(t) { return { name: t.name || null, rows: t.bhid.length }; }) },
+  };
+}
+
 // ── src/io/drillholes.js ──
 
 // @gcu/condenser — drillhole provider: collar + survey + interval tables →
@@ -3033,7 +3222,7 @@ async function readDelimited(blob, { sample = 256 * 1024 } = {}) {
   const sniff = sniffDelimited(head);
   if (!sniff.header) throw new Error('drillholes: table has no header row');
   const rows = [];
-  for await (const batch of lineFields(blob, sniff.delim, true)) {
+  for await (const batch of lineFields(blob, sniff.delim, true, { decimal: sniff.decimal })) {
     for (const f of batch) rows.push(f);
   }
   return { columns: sniff.header.map((c) => String(c).trim()), rows };
@@ -3393,6 +3582,56 @@ async function openDrillholeTraces({ collar, survey }, opts = {}) {
   return { header, streamChunks, fetchRecord, recordPosition };
 }
 
+/**
+ * drillholeQa({ collar, survey, intervals: [{ blob, name, mapping? }] }, opts) —
+ * the QA report of a drillhole SET, row by row (@gcu/drillhole qa), read from its
+ * own files: nothing is pre-dropped, so a blank coordinate is a finding at its row
+ * rather than an absence. Plus a census of every interval column (blank / number /
+ * <x / >x / code / text), and a `value-text` finding for a column of numbers that
+ * holds a little text (a typo reads as blank — the report says where).
+ * opts = { mappings: { collar, survey }, dipConvention, doglegMax, gapMin, extrapMax }
+ * → dhQa's { findings, summary, holes, dipConvention, tables } + { values }
+ */
+async function drillholeQa({ collar, survey, intervals = [] }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('drillhole QA: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('drillhole QA: survey columns not identified (need BHID + AZ + DIP)');
+  const num = (r, i) => (i != null && i >= 0 ? coordNum(r[i]) : NaN);
+  const collars = tCollar.rows.map((r, row) => ({ bhid: r[mc.bhid], x: num(r, mc.x), y: num(r, mc.y), z: num(r, mc.z), eoh: num(r, mc.eoh), row }));
+  // no depth column: every station is at the collar (as parseSurveys reads it)
+  const surveys = tSurvey.rows.map((r, row) => ({ bhid: r[ms.bhid], depth: ms.at != null && ms.at >= 0 ? num(r, ms.at) : 0, az: num(r, ms.az), dip: num(r, ms.dip), row }));
+  const ivTables = [], values = [], extra = [];
+  for (const [k, iv] of intervals.entries()) {
+    const t = await readDelimited(iv.blob);
+    const mi = iv.mapping || (classifyDrillholeHeader(t.columns) || {}).mapping;
+    if (!mi || mi.from == null || mi.to == null) throw new Error(`drillhole QA: ${iv.name || 'an interval table'} — FROM / TO not identified`);
+    const name = iv.name || `intervals ${k + 1}`;
+    ivTables.push({ name, bhid: t.rows.map((r) => r[mi.bhid]), from: t.rows.map((r) => num(r, mi.from)), to: t.rows.map((r) => num(r, mi.to)) });
+    const keys = new Set([mi.bhid, mi.from, mi.to]);
+    t.columns.forEach((column, i) => {
+      if (keys.has(i)) return;
+      const c = { table: name, column, rows: t.rows.length, blank: 0, num: 0, below: 0, above: 0, code: 0, text: 0, firstText: -1, textSample: null };
+      t.rows.forEach((r, row) => {
+        const kind = classifyQualified(r[i]).kind;
+        c[kind]++;
+        if (kind === 'text' && c.firstText < 0) { c.firstText = row; c.textSample = String(r[i]).trim(); }
+      });
+      const filled = c.rows - c.blank;
+      // a column of numbers: numbers are the bulk and text a stray few (≤ 2, or ≤ 10%)
+      const nums = c.num + c.below + c.above + c.code;
+      c.numeric = c.num > 0 && nums > c.text && c.text <= Math.max(2, 0.1 * filled);
+      if (c.numeric && c.text) extra.push({ check: 'value-text', severity: DH_QA_CHECKS['value-text'][0], table: name, row: c.firstText, bhid: String(t.rows[c.firstText][mi.bhid] ?? '').trim(), from: num(t.rows[c.firstText], mi.from), to: num(t.rows[c.firstText], mi.to), detail: `${column}: ${c.text} text ${c.text === 1 ? 'entry' : 'entries'} (first: “${c.textSample}”)` });
+      values.push(c);
+    });
+  }
+  const r = dhQa({ collars, surveys, intervals: ivTables }, opts);
+  if (extra.length) { r.findings = r.findings.concat(extra); r.summary = dhQaSummary(r.findings); }
+  return { ...r, values, columns: { collar: tCollar.columns, survey: tSurvey.columns } };
+}
+
 // ── src/core/sticks.js ──
 
 // @gcu/condenser — stick chunks: drillhole interval SEGMENTS (desurveyed
@@ -3510,6 +3749,17 @@ function createStickChunkBuilder({ frame, chunkSize = 1 << 17, batchSize = 0, se
     flush() { flushBatch(); return doc; },
     get doc() { return doc; },
   };
+}
+
+// ── src/core/ratio.js ──
+
+// the canvas's BACKING ratio — device pixels per CSS pixel as the renderer actually
+// sized it. Not window.devicePixelRatio: the renderer may cap it (a phone at DPR 2.8
+// renders ~2× the pixels of DPR 2 for no visible gain), and every CSS→device mapping
+// — picks, marquees, splat sizes — must use the ratio the buffer really has.
+function backingRatio(canvas) {
+  const cw = canvas && canvas.clientWidth;
+  return cw ? canvas.width / cw : ((typeof window !== 'undefined' && window.devicePixelRatio) || 1);
 }
 
 // ── src/core/gl-util.js ──
@@ -3858,7 +4108,7 @@ function createSticksPipeline(gl) {
         gl.uniform1f(uni.backoff, s.radius * 2);
       }
       gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
       gl.uniform1i(uni.colorMode, colorMode);
       gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
@@ -4973,10 +5223,11 @@ function createMeshPipeline(gl) {
     gl.bufferData(gl.ARRAY_BUFFER, chunk.pos, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    let bCol = null;
     if (chunk.color) {                                     // heightfield drape: per-vertex rgb (loc 1)
-      const bCol = gl.createBuffer(); bufs.push(bCol);
+      bCol = gl.createBuffer(); bufs.push(bCol);
       gl.bindBuffer(gl.ARRAY_BUFFER, bCol);
-      gl.bufferData(gl.ARRAY_BUFFER, chunk.color, gl.STATIC_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, chunk.color, gl.DYNAMIC_DRAW);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
     }
@@ -4992,11 +5243,38 @@ function createMeshPipeline(gl) {
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, chunk.idx, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
     return {
-      kind: 'mesh', vao, buffers: bufs,
-      count: chunk.count, idxCount: chunk.idx.length,
+      kind: 'mesh', vao, buffers: bufs, colorBuf: bCol,
+      count: chunk.count, idxCount: chunk.idx.length, vertexCount: (chunk.pos.length / 3) | 0,
       hasColor: !!chunk.color, hasNormal: !!chunk.normal,
       bboxLocal: chunk.bboxLocal, cursor: 0,
     };
+  }
+
+  // Replace a mesh's per-vertex colours after upload — painting a set onto an outcrop
+  // recolours a few thousand vertices per stroke, and rebuilding the chunk would
+  // re-send the whole mesh. rgb: Float32Array(3·vertexCount), or null to go back to
+  // the tint. [lo, hi) limits the upload to the vertex range a stroke touched (the
+  // array is still the WHOLE mesh's; only that slice is sent).
+  function setColor(c, rgb, lo = 0, hi = c.vertexCount) {
+    if (!rgb) { c.hasColor = false; return; }
+    if (rgb.length < c.vertexCount * 3) throw new Error(`setColor: ${rgb.length / 3} colours for ${c.vertexCount} vertices`);
+    if (!c.colorBuf) {                                     // first colours: a buffer the size of the mesh
+      c.colorBuf = gl.createBuffer(); c.buffers.push(c.colorBuf);
+      gl.bindVertexArray(c.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.colorBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, rgb.subarray(0, c.vertexCount * 3), gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+      c.bytes = (c.bytes || 0) + c.vertexCount * 12;
+    } else {
+      lo = Math.max(0, lo | 0); hi = Math.min(c.vertexCount, hi | 0);
+      if (hi > lo) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.colorBuf);
+        gl.bufferSubData(gl.ARRAY_BUFFER, lo * 12, rgb, lo * 3, (hi - lo) * 3);
+      }
+    }
+    c.hasColor = true;
   }
 
   // per-layer uniforms — tint [r,g,b] 0..1, opacity 0..1, section may be null.
@@ -5034,7 +5312,7 @@ function createMeshPipeline(gl) {
     gl.drawElements(gl.TRIANGLES, c.idxCount, gl.UNSIGNED_INT, 0);
   }
 
-  return { upload, begin, draw };
+  return { upload, begin, draw, setColor };
 }
 
 // ── src/core/soup-geom.js ──
@@ -6133,7 +6411,7 @@ function createBlocksPipeline(gl) {
         gl.uniform1f(uni.backoff, s.radius * 2);
       }
       gl.uniform1f(uni.demotePx, 2.0);
-      gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+      gl.uniform1f(uni.pointPx, pointPx * backingRatio(gl.canvas));
       gl.uniform1i(uni.colorMode, colorMode);
       gl.uniform2f(uni.zRange, zRange[0], zRange[1]);
       gl.uniform2f(uni.chanDoc, chanDoc[0], chanDoc[1]);
@@ -7056,7 +7334,7 @@ function createPickPipeline(gl) {
     }
     gl.enable(gl.DEPTH_TEST);
     const s = cam.state;
-    const dpp = pointPx * (window.devicePixelRatio || 1);
+    const dpp = pointPx * backingRatio(gl.canvas);
     // A chunk writes only inside its bbox's screen footprint (+ a splat's
     // radius), so a scissored pick draws just the chunks over the region. A
     // one-pixel pick on a 60M-block model ran the vertex stage for every block
@@ -10199,7 +10477,7 @@ function uploadChunk(gl, chunk) {
  * New chunks stream INTO the accumulation (no clear — they just draw behind).
  * All of it is correct because chunk prefixes are uniform subsamples (§2.1.4).
  */
-function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
+function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRatio = Infinity } = {}) {
   // preserveDrawingBuffer: the viewport is also the screenshot-export surface
   // (micro-spec §6) and readPixels-after-frame is how the smoke verifies renders;
   // the cost is one buffer copy per composite — negligible next to the splat pass.
@@ -10480,6 +10758,19 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       needClear = true;
     },
     layerMeshStyle(layer) { const ls = layerOf(layer); return { tint: ls.meshTint, opacity: ls.meshOpacity }; },
+    // context-mesh per-vertex colours, live: rgb is Float32Array(3·vertexCount) for the
+    // layer's (single) context chunk, or null to return to the tint; [lo, hi) is the
+    // vertex range that changed. Painting sets on an outcrop rides this.
+    setLayerMeshColors(layer, rgb, lo, hi) {
+      let hit = false;
+      for (const c of chunks) {
+        if (c._layer !== layer || c.kind !== 'mesh') continue;
+        meshPipe.setColor(c, rgb, lo, hi);
+        hit = true;
+      }
+      if (hit) needClear = true;
+      return hit;
+    },
     // per-layer opacity for blocks (box impostors) + sticks (drillholes) — applied
     // as a screen-door dither in their shaders (see-through, no alpha-blend ordering).
     // Is this mesh layer PICKABLE? null = the default (opaque meshes pick, see-through
@@ -10684,7 +10975,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     pickRegion(cssRect, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingRatio(canvas);
       const x = Math.max(0, Math.round(cssRect.x * dpr));
       const yTop = Math.round(cssRect.y * dpr);
       const w = Math.min(canvas.width - x, Math.round(cssRect.w * dpr));
@@ -10735,7 +11026,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
     pick(cssX, cssY, cam, { pointPx = 2.5, blocksAsPoints = false, section = null } = {}) {
       if (!chunks.length) return null;
       if (!pickPipe) pickPipe = createPickPipeline(gl);
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = backingRatio(canvas);
       const px = Math.round(cssX * dpr), py = Math.round(canvas.height - cssY * dpr - 1);
       if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
       const sec = section && section.on ? section : null, key = capKey(cam, pointPx, blocksAsPoints, sec);
@@ -10761,8 +11052,12 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
     },
+    // cap the backing ratio (Infinity = the device's own). A phone at DPR 2.8 fills
+    // ~2× the pixels of DPR 2 for no visible gain; the next resize() applies it.
+    setMaxPixelRatio(r) { maxPixelRatio = r > 0 ? r : Infinity; },
+    get maxPixelRatio() { return maxPixelRatio; },
     resize() {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, maxPixelRatio);   // the cap — every other site reads the ratio back from the canvas
       const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; needClear = true; }
       return [w, h];
@@ -11016,7 +11311,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1] } = {}) {
         const ptsGroups = byLayer(pts);
         gl.useProgram(prog);
         gl.uniformMatrix4fv(uni.viewProj, false, vp);
-        gl.uniform1f(uni.pointPx, pointPx * (window.devicePixelRatio || 1));
+        gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas));
         gl.uniform1ui(uni.picked, pickedRec);
         gl.uniform1ui(uni.pickedLayer, pickedLayer);
         gl.uniform2ui(uni.repaint, 0xFFFFFFFF, 0xFFFFFFFF);
