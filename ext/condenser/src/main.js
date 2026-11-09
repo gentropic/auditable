@@ -32,6 +32,7 @@ export { layerSection, meshSection, offsetSection } from './core/section.js';
 export { openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, dmPageRuns, readDmRun } from './io/dm-provider.js';
 export { parsePlyHeader, openPly } from './io/ply.js';
 export { openDxf, peekDxfScene, DXF_RESIDENT_MAX } from './io/dxf-provider.js';
+export { write as writeDxf } from '../../dxf/src/write.js';   // @gcu/dxf's writer — micro exports traces as 3D polylines
 export { openDxfStream, peekDxfHead, DXF_STREAM_BYTES, createSceneStream } from './io/dxf-stream.js';
 export { mat4Perspective, mat4Ortho, mat4LookAt, mat4Multiply, mat4Inverse, transformPoint, frustumPlanes, aabbInFrustum, translateState, createOrbitCamera, attachOrbitInput } from './core/camera.js';
 export { makeProgram, rampPixels, palettePixels, uploadChunk, createRenderer } from './core/gl.js';
