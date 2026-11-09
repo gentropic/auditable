@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import {
   attitude, normalOf, fitTensor, fitPlane, vertexAreaWeights,
   brush, distanceToRay,
+  wand, vertexNormals, smoothNormals,
   geodesic, geodesicField, geodesicBall,
   nodeClasses, detectSets,
   buildAdjacency, components,
@@ -683,6 +684,106 @@ test('performance: brushing and fitting a 100k-vertex mesh stays interactive', (
   assert.ok(painted.length > 4000, `painted ${painted.length}`);
   assert.ok(Math.abs(f.dip) < 1e-9, 'a flat mesh is flat');
   assert.ok(ms < 1000, `brush + fit took ${ms.toFixed(0)} ms`);
+});
+
+// ── the wand: click a face, take the face ──
+
+// a folded sheet: for x ≤ m the surface dips 30° toward E, beyond it rises
+// at 60° (dips toward W) — two faces meeting at a ridge... a valley, here
+function foldMesh(n = 20, m = 10) {
+  const g = flatMesh(n);
+  const t30 = Math.tan(30 * Math.PI / 180), t60 = Math.tan(60 * Math.PI / 180);
+  for (let v = 0; v < g.adj.vertexCount; v++) {
+    const x = g.positions[v * 3];
+    g.positions[v * 3 + 2] = x <= m ? -t30 * x : -t30 * m + t60 * (x - m);
+  }
+  g.normals = vertexNormals(g.positions, g.triangles);
+  return g;
+}
+
+test('vertexNormals: a flat sheet wound counter-clockwise points up', () => {
+  const g = flatMesh(4);
+  const nrm = vertexNormals(g.positions, g.triangles);
+  for (let v = 0; v < g.adj.vertexCount; v++) assert.ok(Math.abs(nrm[v * 3 + 2] - 1) < 1e-6);
+  const sm = smoothNormals(g.adj, nrm, 3);
+  for (let v = 0; v < g.adj.vertexCount; v++) assert.ok(Math.abs(sm[v * 3 + 2] - 1) < 1e-6, 'smoothing a flat field changes nothing');
+});
+
+test('wand: one click takes the whole face and stops at the fold', () => {
+  const g = foldMesh();
+  const seed = 10 * 21 + 4;                                 // x = 4, y = 10: inside the 30° face
+  const { vertices, normal } = wand(seed, g.adj, g.positions, g.normals);
+  const xs = [...vertices].map((v) => g.positions[v * 3]);
+  assert.ok(Math.max(...xs) <= 10, `crossed the fold: reached x = ${Math.max(...xs)}`);
+  // the face is x ∈ [0, 9] fully (the fold column's normals average both faces)
+  assert.ok(vertices.length >= 10 * 21, `took ${vertices.length} of the face`);
+  const f = fitPlane(g.positions, vertices);
+  assert.ok(Math.abs(f.dip - 30) < 0.5, `dip ${f.dip}`);
+  assert.ok(azDiff(f.dipDirection, 90) < 0.5, `dd ${f.dipDirection}`);
+  assert.ok(normal[2] > 0.8, 'the reference normal is the face\'s');
+});
+
+test('wand: from the other face it measures the other attitude', () => {
+  const g = foldMesh();
+  const { vertices } = wand(10 * 21 + 16, g.adj, g.positions, g.normals);
+  const f = fitPlane(g.positions, vertices);
+  assert.ok(Math.abs(f.dip - 60) < 0.5, `dip ${f.dip}`);
+  assert.ok(azDiff(f.dipDirection, 270) < 0.5, `dd ${f.dipDirection}`);
+});
+
+test('wand: a wide enough angle crosses the fold — the limit is the only thing stopping it', () => {
+  const g = foldMesh();
+  const { vertices } = wand(10 * 21 + 4, g.adj, g.positions, g.normals, { maxAngle: 100 });
+  assert.equal(vertices.length, g.adj.vertexCount);
+});
+
+test('wand: maxDistance stops a gentle ramp onto a parallel level', () => {
+  // flat at z = 0, a 3° ramp, flat again at a higher level: every normal passes a
+  // 12° test, so only the distance to the reference plane can tell the levels apart
+  const g = flatMesh(30);
+  const t3 = Math.tan(3 * Math.PI / 180);
+  for (let v = 0; v < g.adj.vertexCount; v++) {
+    const x = g.positions[v * 3];
+    g.positions[v * 3 + 2] = x < 10 ? 0 : x < 20 ? (x - 10) * t3 : 10 * t3;
+  }
+  const nrm = vertexNormals(g.positions, g.triangles);
+  const all = wand(15 * 31 + 3, g.adj, g.positions, nrm);
+  assert.equal(all.vertices.length, g.adj.vertexCount, 'angle alone walks up the ramp');
+  const lvl = wand(15 * 31 + 3, g.adj, g.positions, nrm, { maxDistance: 0.1 });
+  const xs = [...lvl.vertices].map((v) => g.positions[v * 3]);
+  assert.ok(Math.max(...xs) < 12, `reached x = ${Math.max(...xs)}`);
+  assert.ok(Math.min(...xs) === 0, 'and still took the whole lower level');
+});
+
+test('wand: radius caps the reach on a face that runs on', () => {
+  const g = flatMesh(30);
+  const nrm = vertexNormals(g.positions, g.triangles);
+  const { vertices } = wand(15 * 31 + 15, g.adj, g.positions, nrm, { radius: 3 });
+  for (const v of vertices) assert.ok(Math.hypot(g.positions[v * 3] - 15, g.positions[v * 3 + 1] - 15) <= 3 + 1e-9);
+  assert.ok(vertices.length > 20);
+});
+
+test('wand: an exclude mask keeps it out of another set', () => {
+  const g = flatMesh(10);
+  const nrm = vertexNormals(g.positions, g.triangles);
+  const ex = new Uint8Array(g.adj.vertexCount);
+  for (let v = 0; v < ex.length; v++) if (g.positions[v * 3] === 5) ex[v] = 1;   // a painted column wall
+  const { vertices } = wand(5 * 11 + 1, g.adj, g.positions, nrm, { exclude: ex });
+  for (const v of vertices) assert.ok(g.positions[v * 3] < 5);
+});
+
+test('wand: on a noisy face, smoothed normals hold it together', () => {
+  const g = flatMesh(40);
+  let rng = 7;
+  const rand = () => ((rng = (rng * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
+  for (let v = 0; v < g.adj.vertexCount; v++) g.positions[v * 3 + 2] = 0.8 * rand();
+  const raw = vertexNormals(g.positions, g.triangles);
+  const sm = smoothNormals(g.adj, raw, 3);
+  const seed = 20 * 41 + 20;
+  const a = wand(seed, g.adj, g.positions, raw).vertices.length;
+  const b = wand(seed, g.adj, g.positions, sm).vertices.length;
+  assert.ok(b > 0.95 * g.adj.vertexCount, `smoothed took ${b} of ${g.adj.vertexCount}`);
+  assert.ok(b > a, `raw ${a} vs smoothed ${b}: smoothing is what makes the wand usable on photogrammetry`);
 });
 
 function min2(a, b) { return a < b ? a : b; }

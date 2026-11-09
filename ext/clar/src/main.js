@@ -8,6 +8,8 @@
 //                 normal becomes a dip/dip-direction
 //   brush.js      the painting brush — a view-ray cylinder intersected with a
 //                 walk of the surface, so paint spreads and stops like paint
+//   wand.js       the magic wand — grow a coplanar region from one click, stopping
+//                 where the surface turns away; plus vertex normals + smoothing
 //   geodesic.js   shortest paths along the mesh (Dijkstra, binary heap)
 //   network.js    I/Y/X node classification and fracture connectivity
 //   sets.js       reading plane sets back out of painted vertex colors
@@ -24,6 +26,7 @@
 
 export { attitude, normalOf, fitTensor, fitPlane, vertexAreaWeights } from './fit.js';
 export { brush, distanceToRay } from './brush.js';
+export { wand, vertexNormals, smoothNormals } from './wand.js';
 export { geodesic, geodesicField, geodesicBall } from './geodesic.js';
 export { nodeClasses } from './network.js';
 export { detectSets } from './sets.js';
