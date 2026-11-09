@@ -1765,6 +1765,7 @@ if (target === 'micro') {
     '../../ext/wireframe/index.js': '#wireframe',    // @gcu/wireframe — .wfr meshes (vendored from gentropic/wireframe)
     '../../ext/wireframe/convert.js': '#wireframe-convert',   // its streamed PLY/OBJ/DXF → .wfr adapters
     '../../ext/geometry/index.js': '#geometry',     // @gcu/geometry — weld + mesh QA (shells, watertight, volume)
+    '../../ext/clar/index.js': '#clar',             // @gcu/clar — outcrop structure (capivaras): wand/brush, plane fits, attitudes
     '../../ext/omf1/index.js': '#omf1',             // @gcu/omf1 — Open Mining Format v1 (zero-dep; inflate on the platform)
     '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
   };
@@ -1790,7 +1791,9 @@ if (target === 'micro') {
     ['wireframe', 'ext/wireframe/index.js'],           // @gcu/wireframe — .wfr read/write (node ext/wireframe/build.js)
     ['wireframe-convert', 'ext/wireframe/convert.js'], // @gcu/wireframe/convert — PLY/OBJ/DXF → .wfr, streamed
     ['geometry',  'ext/geometry/index.js'],            // @gcu/geometry — mesh QA (src/meshqa.js) + the weld bygeom uses
-    ['omf1',      'ext/omf1/index.js'],                // @gcu/omf1 — .omf v1 projects → layers (src/omf.js)
+    ['bearing',   'ext/bearing/index.js'],             // @gcu/bearing — attitudes + the eigensolver; clar imports it BY BARE NAME
+    ['clar',      'ext/clar/index.js'],                // @gcu/clar — structural analysis on an outcrop mesh (src/structure.js)
+    ['omf1',     'ext/omf1/index.js'],                // @gcu/omf1 — .omf v1 projects → layers (src/omf.js)
     ['zipstream', 'ext/archive/src/zipstream.js'],     // zero-import module: the src file IS the shippable one (no fflate, no WASM)
   ];
   const modules = [];
@@ -1802,6 +1805,7 @@ if (target === 'micro') {
 
   let html = fs.readFileSync(path.join(micDir, 'index.html'), 'utf8');
   html = html.replace(/<!-- dev bench[\s\S]*?<script src="[^"]*bench\.js"><\/script>\s*/, '');   // dev-only bench
+  html = html.replace(/<!-- dev import map[\s\S]*?<script type="importmap">[\s\S]*?<\/script>\s*/, '');   // the boot writes the real one
   const appMatch = html.match(/<script type="module">\n([\s\S]*?)<\/script>/);
   if (!appMatch) { console.error('Error: tools/micro/index.html — inline module script not found.'); process.exit(1); }
   let appSrc = appMatch[1];
@@ -1851,6 +1855,9 @@ if (target === 'micro') {
     "for (const n of _O) _U[n] = URL.createObjectURL(new Blob([_S[n] + '\\n//# sourceURL=micro/' + n + '.js\\n'], { type: 'application/javascript' }));\n" +
     "const _m = document.createElement('script'); _m.type = 'importmap';\n" +
     'const _im = {}; for (const n of _O) _im["#" + n] = _U[n];\n' +
+    // a library is ALSO importable by its package name: clar's bundle imports '@gcu/bearing'
+    // bare (one copy, the host's), and the dev page maps the same name in its own import map
+    'for (const n of ' + JSON.stringify(libs.map(([n]) => n)) + ') _im["@gcu/" + n] = _U[n];\n' +
     "_m.textContent = JSON.stringify({ imports: _im }); document.body.appendChild(_m);\n" +
     'for (const n of _O) await import(_U[n]);\n' +
     '_m.remove();\n' +

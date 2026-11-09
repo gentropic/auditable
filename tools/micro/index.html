@@ -11,6 +11,8 @@
 <title>micro</title>
 <!-- dev bench: load with ?bench to run shell-style on the desktop (mocks /native). Stripped at build. -->
 <script src="../../ext/leadacid/bench.js"></script>
+<!-- dev import map: package names a bundle imports bare (clar → @gcu/bearing). Stripped at build; the boot maps every lib as @gcu/<name>. -->
+<script type="importmap">{ "imports": { "@gcu/bearing": "../../ext/bearing/index.js" } }</script>
 <style>
   :root {
     color-scheme: dark;                 /* native widgets (select popups, scrollbars, checkboxes) render dark */
