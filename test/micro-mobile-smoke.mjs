@@ -541,7 +541,7 @@ async function drive(url, tag) {
   // 22. Android Back closes what's on top (window → chip, a panel, a submenu then its menu,
   //     an armed tool) instead of leaving; closing by hand takes the history entry back off
   const backSt = () => p.evaluate(() => ({ state: history.state && history.state.microBack, wins: [...document.querySelectorAll('.fwin')].filter((w) => w.style.display !== 'none').length,
-    props: document.getElementById('propPanel').classList.contains('show'), menus: document.querySelectorAll('body > .menu').length, sel: document.getElementById('btnSelRect').classList.contains('on') }));
+    props: document.getElementById('propPanel').classList.contains('show'), menus: document.querySelectorAll('body > .menu').length, sel: document.getElementById('btnSelRect').classList.contains('on'), meta: document.getElementById('meta').textContent }));
   const goBack = async () => { await p.evaluate(() => history.back()); await p.waitForTimeout(400); return backSt(); };
   await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')][0]; if (w && w._chip) w._chip.click(); });
   await p.waitForTimeout(400);
@@ -554,8 +554,8 @@ async function drive(url, tag) {
   await p.evaluate(() => window._micro.openProps()); await p.waitForTimeout(300);
   await p.evaluate(() => document.querySelector('#propPanel .rp-close').click()); await p.waitForTimeout(400);
   const bkHand = await backSt();
-  chk(`[${tag}] Back: window ${bk0.wins} → ${bkWin.wins}; props → ${bkProps.props}; menus ${bkM2.menus} → ${bkSub.menus} → ${bkMenu.menus}; select → ${bkSel.sel}; closed by hand → history entry ${bkHand.state ? 'LEFT' : 'gone'}`,
-    bk0.wins === 1 && bk0.state === 1 && bkWin.wins === 0 && !bkProps.props && bkM2.menus === 2 && bkSub.menus === 1 && bkMenu.menus === 0 && !bkSel.sel && !bkHand.state);
+  chk(`[${tag}] Back: window ${bk0.wins} → ${bkWin.wins}; props → ${bkProps.props}; menus ${bkM2.menus} → ${bkSub.menus} → ${bkMenu.menus}; select → ${bkSel.sel} (status "${bkSel.meta}"); closed by hand → history entry ${bkHand.state ? 'LEFT' : 'gone'}`,
+    bk0.wins === 1 && bk0.state === 1 && bkWin.wins === 0 && !bkProps.props && bkM2.menus === 2 && bkSub.menus === 1 && bkMenu.menus === 0 && !bkSel.sel && !/^select:/.test(bkSel.meta) && !bkHand.state);
 
   // 23. double-tap: on the model the orbit centre glides to that spot; on empty space, fit
   // 24. measuring by finger: a tap takes A under the finger; press-slide-lift takes B under

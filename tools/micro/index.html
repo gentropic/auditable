@@ -1870,6 +1870,7 @@ let _selArm = null;                                        // 'rect' | 'lasso' |
 let _selStick = (() => { try { return localStorage.getItem('micro.selStick') || 'smart'; } catch { return 'smart'; } })();
 function setSelStick(v) { _selStick = v; try { localStorage.setItem('micro.selStick', v); } catch { /* private */ } }
 let _selPts = null;
+let _selPrompt = null;                                     // the status line armSelect wrote, to take back on disarm
 function armSelect(kind) {
   _selArm = kind; _selPts = null;
   queueMicrotask(syncSelBar);
@@ -1885,9 +1886,14 @@ function armSelect(kind) {
     : (kind === 'rect'
       ? 'select: drag a rectangle — shift adds, alt subtracts (and keeps the tool armed)'
       : 'select: draw a lasso — shift adds, alt subtracts (and keeps the tool armed)') + (_selThrough ? ' · THROUGH (everything in the tube)' : ' · visible');
+  _selPrompt = $('#meta').textContent;
 }
 function disarmSelect() {
   _selArm = null; _selPts = null;
+  // take the "select: drag a rectangle" prompt back with the tool, or it outlives it (Back,
+  // Esc, the button); a message written since — a count, "nothing there" — stays
+  if (_selPrompt !== null && $('#meta').textContent === _selPrompt) $('#meta').textContent = '';
+  _selPrompt = null;
   $('#btnSelRect').classList.remove('on');
   $('#btnSelLasso').classList.remove('on');
   syncSelBar();
