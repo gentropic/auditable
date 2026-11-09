@@ -10,12 +10,14 @@
 // The geometry lives in ./structure.js; this file is the window and the pointer.
 import { floatWin, focusWindow } from './windows.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
-import { prepareStructure, structureOf, structureCost, regionAt, fitRegion, toFile, weldedCodes, measurePlanes, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY } from './structure.js';
+import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY } from './structure.js';
 import { Stereonet } from '../../../ext/bearing/index.js';
 import { detectSets } from '../../../ext/clar/index.js';
+import { writeDxf } from '../../../ext/condenser/src/main.js';
 import { meshVertexData } from './records.js';
 import { vertexColorOf } from './wfr-io.js';
 import { S, layerById } from './state.js';
+import { pushUndo } from './undo.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side, passed in once (setStructureHooks)
@@ -94,41 +96,59 @@ function showPreview(L, hd, fileVerts, hex) {
   if (hi >= lo) { H.renderer.setLayerMeshColors(L.id, hd.rgb, lo, hi + 1); H.requestRender(); }
 }
 
-// ── the plane discs: a derived, unsaved mesh layer beside the outcrop ──
-function discLayerOf(L) { return S.layers.find((d) => d.derivedOf === L.id && d.derivedKind === 'planes') || null; }
-function updateDiscs(L, hd) {
-  let D = discLayerOf(L);
-  const col = setColOf(L);
-  const want = prefs.discs && hd.planes && hd.planes.length && col;
-  if (!want) { if (D) { H.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); H.renderLayers(); H.requestRender(); } return; }
+// ── derived, unsaved mesh layers beside the outcrop: plane discs and trace tubes ──
+function derivedOf(L, kind) { return S.layers.find((d) => d.derivedOf === L.id && d.derivedKind === kind) || null; }
+function setDerived(L, kind, label, m, opacity) {
+  let D = derivedOf(L, kind);
+  if (!m || !m.triangles.length) { if (D) { H.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); H.renderLayers(); H.requestRender(); } return; }
   if (!D) {
     const id = H.allocLayerId(); if (id == null) return;
-    const name = `${L.label || L.name} · planes`;
-    D = { id, name, label: name, kind: 'mesh', derivedOf: L.id, derivedKind: 'planes', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null, tint: '#ffffff', opacity: 1 };
+    const name = `${L.label || L.name} · ${label}`;
+    D = { id, name, label: name, kind: 'mesh', derivedOf: L.id, derivedKind: kind, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null, tint: '#ffffff', opacity: 1 };
     S.layers.push(D);
   } else H.renderer.removeLayer(D.id);
-  const m = discMesh(hd.planes, (p) => col.colors[p.code] || '#ffffff');
   const chunk = H.buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: H.frame });
   chunk.color = m.color;
   H.renderer.addChunk(chunk, 'base', D.id);
-  H.renderer.setLayerMeshStyle(D.id, { tint: [1, 1, 1], opacity: 0.75 });
+  H.renderer.setLayerMeshStyle(D.id, { tint: [1, 1, 1], opacity });
   D.bboxLocal = chunk.bboxLocal;
   if (!D.visible) H.renderer.setLayerVisible(D.id, false);
   H.renderLayers(); H.requestRender();
 }
+function updateDiscs(L, hd) {
+  const col = setColOf(L);
+  const on = prefs.discs && hd.planes && hd.planes.length && col;
+  setDerived(L, 'planes', 'planes', on ? discMesh(hd.planes, (p) => col.colors[p.code] || '#ffffff') : null, 0.75);
+}
+// the traces as tubes: the committed ones in their set's colour, the one being drawn
+// (and its hover continuation) in white
+async function updateTraces(L, hd) {
+  const col = setColOf(L);
+  const m = await meshVertexData(L); if (!m) return;
+  const paths = [...(L.traces || [])];
+  if (hd.drawing && hd.drawing.path.length) paths.push({ path: hd.drawing.path, _live: true });
+  if (hd.hoverPath && hd.hoverPath.length > 1) paths.push({ path: hd.hoverPath, _live: true });
+  const md = L.docs.meshDoc, bb = md.header.bbox;
+  const diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 10;
+  const rgb = (p) => (p._live ? [1, 1, 1] : H.hexToRgb01((col && col.colors[p.set]) || '#ffffff'));
+  setDerived(L, 'traces', 'traces', paths.length ? traceTubes(m.vertices, paths, rgb, Math.max(1e-3, diag * 0.002)) : null, 1);
+}
 
-// ── the refresh every paint edit runs (stroke, undo, redo, restore) ──
+// ── the refresh every paint edit runs (stroke, undo, redo, restore) — and every trace edit ──
 export async function structureAfterEdit(L) {
   if (!L || L.kind !== 'mesh' || !setColOf(L)) return;
   const hd = _structWins.get(L.id) || L._structView || (L._structView = {});
   await paintMesh(L, hd);
   const st = structureOf(L);
-  if (st) {
-    const col = setColOf(L);
-    hd.planes = measurePlanes(st, col.codes, col.dict);
-    hd.selSet = null;
-    updateDiscs(L, hd);
-  }
+  const col = setColOf(L);
+  const m = (L.traces && L.traces.length) ? await meshVertexData(L) : null;
+  const tp = m ? tracePlanes(m.vertices, L.traces, col.dict) : [];
+  if (st) hd.planes = [...measurePlanes(st, col.codes, col.dict), ...tp];
+  else hd.planes = tp;
+  hd.planes.forEach((p, i) => { p.plane_id = i + 1; });
+  hd.selSet = null;
+  updateDiscs(L, hd);
+  await updateTraces(L, hd);
   if (hd.render) hd.render();
   if (hd.stereo) hd.stereo.render();
 }
@@ -218,7 +238,7 @@ export async function openStructure(L) {
     // ── rail: tool ──
     rail.append(Object.assign(document.createElement('div'), { className: 'sw-h', textContent: 'tool' }));
     const tools = document.createElement('div'); tools.className = 'st-tools';
-    for (const [k, label, title] of [['wand', 'wand', 'click a face: takes the whole coplanar face'], ['brush', 'brush', 'drag: paints within the radius of the stroke, staying on the face it started on'], ['erase', 'erase', 'click (wand) or drag (brush) to unpaint']]) {
+    for (const [k, label, title] of [['wand', 'wand', 'click a face: takes the whole coplanar face'], ['brush', 'brush', 'drag: paints within the radius of the stroke, staying on the face it started on'], ['erase', 'erase', 'click (wand) or drag (brush) to unpaint'], ['trace', 'trace', 'click points along a fracture trace — the line follows the surface between them. Double-click or Enter finishes · Backspace drops the last point · Esc cancels']]) {
       const b = document.createElement('button'); b.className = 'awin-btn' + (prefs.tool === k ? ' on' : ''); b.textContent = label; b.title = title;
       b.onclick = () => { prefs.tool = k; if (k !== 'erase') prefs.shape = k; savePrefs(); render(); arm(L); };
       tools.append(b);
@@ -234,8 +254,8 @@ export async function openStructure(L) {
       r.append(s, i, u); return r;
     };
     const shape = prefs.tool === 'erase' ? (prefs.shape || 'wand') : prefs.tool;
-    rail.append(num('angle', 'angle', 'the wand (and the brush) stop where the surface turns more than this from the face you clicked', '1', '°'));
-    rail.append(num('offset', 'distance', 'optional: they also stop this far off the clicked plane (a step onto a parallel face)', '0.05', 'm'));
+    if (prefs.tool !== 'trace') rail.append(num('angle', 'angle', 'the wand (and the brush) stop where the surface turns more than this from the face you clicked', '1', '°'));
+    if (prefs.tool !== 'trace') rail.append(num('offset', 'distance', 'optional: they also stop this far off the clicked plane (a step onto a parallel face)', '0.05', 'm'));
     if (shape === 'brush') rail.append(num('radius', 'radius', 'the brush circle, in world units', '0.1', 'm'));
     const arm1 = document.createElement('button'); arm1.className = 'awin-btn btn-p' + (_armed && _armed.L === L ? ' on' : '');
     arm1.textContent = _armed && _armed.L === L ? '■ stop (Esc)' : '▸ paint';
@@ -259,6 +279,11 @@ export async function openStructure(L) {
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     const tb = document.createElement('button'); tb.className = 'awin-btn'; tb.textContent = '→ table layer'; tb.title = 'the planes as a table layer (replaces an earlier one of the same name) — filter, export and lineage apply';
     tb.onclick = () => planesToTable(L, hd);
+    if (L.traces && L.traces.length) {
+      const tx = document.createElement('button'); tx.className = 'awin-btn'; tx.textContent = '⇥ traces .dxf'; tx.title = 'the traces as 3D polylines, one DXF layer per set, in world coordinates — for CAD or a modelling package';
+      tx.onclick = async () => { const txt = await tracesToDxf(L); if (txt) H.deliverBlob(new Blob([txt], { type: 'application/dxf' }), `${(L.label || L.name).replace(/\.[^.]+$/, '')}-traces.dxf`); };
+      foot.append(tx);
+    }
     foot.append(tb, plotExportBtns(null, () => `planes-${(L.label || L.name).replace(/\.[^.]+$/, '')}`, () => planesTSV(hd.planes), 'structure'));
     rail.append(foot);
     // ── main: the planes ──
@@ -274,14 +299,20 @@ export async function openStructure(L) {
         const tr = document.createElement('tr'); tr.title = 'click: go to this plane'; if (k === hd.sel || (hd.selSet && hd.selSet.has(k))) tr.className = 'sel';
         const cell = (v, cls) => { const td = document.createElement('td'); td.textContent = v; if (cls) td.className = cls; tr.append(td); return td; };
         cell(String(p.plane_id));
-        const sc = cell(p.set); sc.style.color = col.colors[p.code] || '';
+        const sc = cell(p.set + (p.source === 'trace' ? ' ⌇' : '')); sc.style.color = col.colors[p.code] || '';
+        if (p.source === 'trace') sc.title = `a trace, ${fmtStat(p.length)} long — its plane is fitted through the line`;
         cell(att(p.dip_direction, p.dip));
         cell(p.n_vertices.toLocaleString(), 'num'); cell(fmtStat(p.radius), 'num'); cell(p.eig_ratio.toFixed(3), 'num');
         cell(p.kappa != null ? fmtKappa(p.kappa) : '—', 'num');
         const q = cell(p.flags.length ? '⚠ ' + p.flags.join(', ') : '✓');
         q.style.color = p.flags.length ? '#c8a43c' : 'var(--ok)';
-        if (p.flags.length) q.title = { rough: `rough: e₂/e₁ > ${QUALITY.rough} — the patch is not very planar`, elongated: `elongated: e₁/e₀ < ${QUALITY.elongated} — strike is well determined, dip much less so`, few: `few: under ${QUALITY.few} vertices` }[p.flags[0]];
+        if (p.flags.length) q.title = { straight: 'straight: the trace is nearly a straight line — it fixes the strike, not the dip', rough: `rough: e₂/e₁ > ${QUALITY.rough} — the patch is not very planar`, elongated: `elongated: e₁/e₀ < ${QUALITY.elongated} — strike is well determined, dip much less so`, few: `few: under ${QUALITY.few} vertices` }[p.flags[0]];
         tr.onclick = () => { hd.sel = k; H.zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); render(); };
+        if (p.source === 'trace') {
+          const del = document.createElement('td'); del.textContent = '×'; del.title = 'delete this trace (Ctrl+Z undoes)'; del.style.cursor = 'pointer';
+          del.onclick = (ev) => { ev.stopPropagation(); removeTrace(L, p._trace); };
+          tr.append(del);
+        }
         t.append(tr);
       }
       main.append(t);
@@ -332,8 +363,39 @@ export async function importPaintedSets(L) {
   return made;
 }
 
+// the traces as DXF: one 3D POLYLINE per trace (its surface path, world coordinates),
+// one layer per set, coloured as the set (true colour)
+export async function tracesToDxf(L) {
+  const m = await meshVertexData(L), col = setColOf(L);
+  if (!m || !L.traces || !L.traces.length) return null;
+  const features = L.traces.map((t) => {
+    const v = new Float64Array(t.path.length * 3);
+    t.path.forEach((i, k) => { v[3 * k] = m.vertices[3 * i]; v[3 * k + 1] = m.vertices[3 * i + 1]; v[3 * k + 2] = m.vertices[3 * i + 2]; });
+    const [r, g, b] = H.hexToRgb01((col && col.colors[t.set]) || '#ffffff').map((x) => Math.round(x * 255));
+    return { type: 'polyline', geometry: { vertices: v, closed: false }, properties: { layer: (col && col.dict[t.set]) || 'traces', color: { mode: 'rgb', r, g, b } } };
+  });
+  return writeDxf({ features, layers: Object.fromEntries(features.map((ft) => [ft.properties.layer, {}])) });
+}
+
+// ── trace edits (the shared history: a trace isn't paint) ──
+function commitTrace(L, t) {
+  L.traces = L.traces || [];
+  L.traces.push(t);
+  const undo = () => { const i = L.traces.indexOf(t); if (i >= 0) L.traces.splice(i, 1); H.markProjectDirty(); structureAfterEdit(L); };
+  const redo = () => { if (!L.traces.includes(t)) L.traces.push(t); H.markProjectDirty(); structureAfterEdit(L); };
+  pushUndo('trace', undo, { redo });
+  H.markProjectDirty(); structureAfterEdit(L);
+}
+export function removeTrace(L, k) {
+  const t = L.traces && L.traces[k]; if (!t) return;
+  L.traces.splice(k, 1);
+  pushUndo('delete trace', () => { L.traces.splice(Math.min(k, L.traces.length), 0, t); H.markProjectDirty(); structureAfterEdit(L); },
+    { redo: () => { const i = L.traces.indexOf(t); if (i >= 0) L.traces.splice(i, 1); H.markProjectDirty(); structureAfterEdit(L); } });
+  H.markProjectDirty(); structureAfterEdit(L);
+}
+
 // ── the planes as a table layer (replace on name: running it twice == once) ──
-const TABLE_COLS = ['plane_id', 'set', 'dip_direction', 'dip', 'X', 'Y', 'Z', 'nx', 'ny', 'nz', 'eig0', 'eig1', 'eig2', 'n_vertices', 'average_resultant_length', 'radius', 'kappa', 'rms', 'eig_ratio', 'quality'];
+const TABLE_COLS = ['plane_id', 'set', 'source', 'length', 'dip_direction', 'dip', 'X', 'Y', 'Z', 'nx', 'ny', 'nz', 'eig0', 'eig1', 'eig2', 'n_vertices', 'average_resultant_length', 'radius', 'kappa', 'rms', 'eig_ratio', 'quality'];
 const rowOf = (p) => ({ ...p, quality: p.flags.length ? p.flags.join(' ') : 'ok' });
 function planesTSV(planes) {
   if (!planes || !planes.length) return null;
@@ -364,6 +426,11 @@ function armHint() {
   if (!_armed) return;
   const L = _armed.L, col = setColOf(L), hd = _structWins.get(L.id);
   const set = col && hd ? col.dict[hd.active] : '?';
+  if (prefs.tool === 'trace') {
+    const n = hd && hd.drawing ? hd.drawing.pts.length : 0;
+    $('#meta').textContent = n ? `trace → ${set}: ${n} point${n === 1 ? '' : 's'} — click on along the fracture · double-click / Enter finishes · Backspace drops a point · Esc cancels` : `trace → ${set} — click the first point of a fracture trace · Esc stops`;
+    return;
+  }
   const shape = prefs.tool === 'erase' ? (prefs.shape || 'wand') : prefs.tool;
   $('#meta').textContent = prefs.tool === 'erase'
     ? `erase (${shape}) — ${shape === 'wand' ? 'click a painted face' : 'drag over paint'} · Esc stops`
@@ -380,7 +447,7 @@ export function disarm() {
   $('#cv').style.cursor = '';
   if (was) {
     const hd = _structWins.get(was.L.id);
-    if (hd) { showPreview(was.L, hd, null); if (hd.render) hd.render(); }
+    if (hd) { showPreview(was.L, hd, null); if (hd.drawing || hd.hoverPath) { hd.drawing = null; hd.hoverPath = null; updateTraces(was.L, hd); } if (hd.render) hd.render(); }
     $('#meta').textContent = 'structure: brush down';
   }
 }
@@ -402,6 +469,28 @@ async function regionUnder(L, x, y, eraseKey) {
   // the seed itself may sit in another set (painting) or be unpainted (erasing) — nothing to do there
   if (exclude[r.seed]) return { blocked: true, code: codes[r.seed], st, col, hd };
   return { ...r, erase, shape, st, col, hd, file: toFile(st, r.vertices) };
+}
+async function vertexUnder(L, x, y) {
+  const st = structureOf(L); if (!st) return null;
+  const hit = await H.meshHitAt(L, x, y);
+  return hit ? { st, v: seedOf(st, hit) } : null;
+}
+function traceFinish(L) {
+  const hd = _structWins.get(L.id); if (!hd || !hd.drawing) return;
+  const st = structureOf(L), d = hd.drawing;
+  hd.drawing = null; hd.hoverPath = null;
+  if (d.path.length < 2) { $('#meta').textContent = 'trace: needs two points or more'; updateTraces(L, hd); return; }
+  commitTrace(L, { set: hd.active, pts: d.pts.map((j) => fileOf(st, j)), path: Array.from(d.path, (j) => fileOf(st, j)) });
+  $('#meta').textContent = `trace → ${setColOf(L).dict[hd.active]} (${d.pts.length} points; Ctrl+Z undoes)`;
+}
+function traceRebuild(st, pts) {                           // the path through every control point, in order
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    if (!i) { out.push(pts[0]); continue; }
+    const seg = surfacePath(st, pts[i - 1], pts[i]); if (!seg) return null;
+    for (let k = 1; k < seg.length; k++) out.push(seg[k]);
+  }
+  return out;
 }
 function readout(r) {
   if (!r || r.blocked || !r.vertices || r.vertices.length < 3) return null;
@@ -433,6 +522,19 @@ export function installStructurePointer(cv) {
       return;
     }
     if (e.buttons || e.pointerType !== 'mouse') return;   // hover previews are for a mouse at rest
+    if (prefs.tool === 'trace') {
+      const hd = _structWins.get(L.id); if (!hd || !hd.drawing) return;
+      const [x, y] = inCanvas(e), seq = ++_hoverSeq;
+      requestAnimationFrame(() => {
+        if (seq !== _hoverSeq || !_armed) return;
+        vertexUnder(L, x, y).then((u) => {
+          if (seq !== _hoverSeq || !u || !hd.drawing) return;
+          hd.hoverPath = surfacePath(u.st, hd.drawing.pts[hd.drawing.pts.length - 1], u.v);
+          updateTraces(L, hd);
+        });
+      });
+      return;
+    }
     const [x, y] = inCanvas(e), seq = ++_hoverSeq;
     requestAnimationFrame(() => {
       if (seq !== _hoverSeq || !_armed) return;
@@ -455,6 +557,26 @@ export function installStructurePointer(cv) {
     const L = _armed.L;
     const shape = prefs.tool === 'erase' ? (prefs.shape || 'wand') : prefs.tool;
     const [x, y] = inCanvas(e);
+    if (prefs.tool === 'trace') {
+      const seq = ++_hoverSeq;
+      vertexUnder(L, x, y).then((u) => {
+        if (seq !== _hoverSeq) return;
+        const hd = _structWins.get(L.id); if (!hd) return;
+        if (!u) { $('#meta').textContent = 'trace: not on the rock'; return; }
+        if (!hd.drawing) hd.drawing = { pts: [u.v], path: [u.v] };
+        else {
+          const last = hd.drawing.pts[hd.drawing.pts.length - 1];
+          if (u.v === last) return;                          // the second click of a double-click
+          const seg = surfacePath(u.st, last, u.v);
+          if (!seg) { $('#meta').textContent = 'trace: that point is not connected to the last one along the surface'; return; }
+          hd.drawing.pts.push(u.v);
+          for (let k = 1; k < seg.length; k++) hd.drawing.path.push(seg[k]);
+        }
+        hd.hoverPath = null;
+        armHint(); updateTraces(L, hd);
+      });
+      return;
+    }
     if (shape === 'brush') {
       _stroke = new Set(); _stroke.erase = prefs.tool === 'erase' || e.altKey;
       regionUnder(L, x, y, e.altKey).then((r) => { if (r && !r.blocked && _stroke) for (const i of r.file) _stroke.add(i); });
@@ -479,7 +601,23 @@ export function installStructurePointer(cv) {
   };
   cv.addEventListener('pointerup', end, { capture: true });
   cv.addEventListener('pointercancel', end, { capture: true });
-  addEventListener('keydown', (e) => { if (e.key === 'Escape' && _armed) { disarm(); } });
+  cv.addEventListener('dblclick', (e) => { if (_armed && prefs.tool === 'trace') { e.stopImmediatePropagation(); e.preventDefault(); setTimeout(() => traceFinish(_armed.L), 30); } }, { capture: true });
+  addEventListener('keydown', (e) => {
+    if (!_armed) return;
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    const L = _armed.L, hd = _structWins.get(L.id);
+    if (prefs.tool === 'trace' && hd && hd.drawing) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); hd.drawing = null; hd.hoverPath = null; updateTraces(L, hd); armHint(); return; }
+      if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); traceFinish(L); return; }
+      if (e.key === 'Backspace') {
+        e.preventDefault(); e.stopImmediatePropagation();
+        const d = hd.drawing; d.pts.pop();
+        if (!d.pts.length) hd.drawing = null; else d.path = traceRebuild(structureOf(L), d.pts) || [d.pts[0]];
+        hd.hoverPath = null; updateTraces(L, hd); armHint(); return;
+      }
+    }
+    if (e.key === 'Escape') disarm();
+  }, true);
   // the outcrop goes → its window, discs and arming go with it
   addEventListener('micro:layer-removed', (e) => {
     const id = e.detail && e.detail.id;
@@ -490,6 +628,7 @@ export function installStructurePointer(cv) {
   });
 }
 export const structureArmed = () => _armed;
+export const structureTool = () => prefs.tool;
 
 // ── the stereonet: the planes' poles, linked both ways ──
 // Lower-hemisphere equal-area (bearing's Stereonet). One pole per plane in its set's
@@ -608,10 +747,17 @@ export function openStereonet(L) {
       code = H.addPaintValue(L, col, `J${k}`); if (!code) return;
       col.colors[code] = SET_COLORS[(k - 1) % SET_COLORS.length];
     }
-    const verts = [];
-    for (const k of hd.selSet) { const p = hd.planes[k]; if (p) for (const v2 of p._verts) verts.push(v2); }
+    const verts = [], moved = [];
+    for (const k of hd.selSet) { const p = hd.planes[k]; if (!p) continue; if (p.source === 'trace') moved.push([L.traces[p._trace], L.traces[p._trace].set]); else for (const v2 of p._verts) verts.push(v2); }
     const n = hd.selSet.size;
     hd.selSet = null;
+    if (moved.length) {
+      for (const [t] of moved) t.set = code;
+      pushUndo('move traces', () => { for (const [t, was] of moved) t.set = was; H.markProjectDirty(); structureAfterEdit(L); },
+        { redo: () => { for (const [t] of moved) t.set = code; H.markProjectDirty(); structureAfterEdit(L); } });
+      H.markProjectDirty();
+      if (!verts.length) structureAfterEdit(L);
+    }
     if (verts.length) H.paintApply(L, col, toFile(st, verts), code);   // → re-measure via paintAfterEdit
     $('#meta').textContent = `stereonet: ${n} plane${n === 1 ? '' : 's'} → ${col.dict[code]} (Ctrl+Z undoes)`;
   }

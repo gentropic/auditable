@@ -326,6 +326,89 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   await p.close();
 }
 
+// ═══ 5. traces: a fracture with no exposed face, clicked along its line across the
+//     fold. P is the plane through the fold vertex (10,10) containing face A's mesh
+//     DIAGONAL (1, 1, −tan30) and face B's x-edges (1, 0, tan60) — chosen so the surface
+//     path between clicks runs along mesh edges and lies exactly on P. (A trace oblique
+//     to a coarse grid zigzags across triangles: on this 1 m grid that read 009/64 for
+//     a true 000/60. On a real mesh the edges are cm and the trace is metres.) ═══
+{
+  const p = await mkPage('struct-trace');
+  const id = await addOutcrop(p);
+  await p.evaluate((lid) => window._micro.convertMeshLayer(window._micro.layers().find((q) => q.id === lid), false, { confirmed: true }), id);
+  await p.waitForFunction((lid) => { const L = window._micro.layers().find((q) => q.id === lid); return L && !L.docs.meshDoc.header.soup; }, id, { timeout: 30000 });
+  await p.evaluate((lid) => window._micro.openStructure(window._micro.layers().find((q) => q.id === lid)), id);
+  await p.waitForFunction(() => [...document.querySelectorAll('.fwin')].some((e) => e._structure), null, { timeout: 30000 });
+  await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); [...w.querySelectorAll('.st-tools button')].find((b2) => b2.textContent === 'trace').click(); w.style.visibility = 'hidden'; });
+  const zAt = (x) => (x <= 10 ? 800 - t30 * x : 800 - t30 * 10 + t60 * (x - 10));
+  const clickAt = async (x, y, opts) => { const [px, py] = await toPage(p, [500000 + x, 7000000 + y, zAt(x)]); await p.mouse.move(px - 2, py); await p.mouse.click(px, py, opts); await p.waitForTimeout(120); };
+  // plan view: from the default oblique camera, face B hides part of face A (a click 'on' (7,7)
+  // honestly hits face B in front of it)
+  await p.keyboard.press('d'); await p.waitForTimeout(200);
+  for (const [x, y] of [[4, 4], [7, 7], [10, 10], [13, 10]]) await clickAt(x, y);
+  const [lx, ly] = await toPage(p, [500017, 7000010, zAt(17)]);
+  await p.mouse.move(lx - 2, ly); await p.mouse.dblclick(lx, ly);
+  await p.waitForFunction((lid) => { const L = window._micro.layers().find((q) => q.id === lid); return L.traces && L.traces.length === 1; }, id, { timeout: 10000 });
+  let pl = await planesOf(p);
+  let tp = pl.find((q) => q.source === 'trace');
+  const tr = await p.evaluate((lid) => { const L = window._micro.layers().find((q) => q.id === lid); const D = window._micro.layers().find((q) => q.derivedOf === lid && q.derivedKind === 'traces'); return { pts: L.traces[0].pts.length, path: L.traces[0].path.length, tubes: D ? window._micro.renderer.layerElementCount(D.id) : 0 }; }, id);
+  // P's attitude, from its two in-plane directions
+  const PA = (() => { const d1 = [1, 1, -t30], d2 = [1, 0, t60]; let n = [d1[1] * d2[2] - d1[2] * d2[1], d1[2] * d2[0] - d1[0] * d2[2], d1[0] * d2[1] - d1[1] * d2[0]]; if (n[2] < 0) n = n.map((v) => -v); const L = Math.hypot(...n); n = n.map((v) => v / L); return { dd: (Math.atan2(n[0], n[1]) * 180 / Math.PI + 360) % 360, dip: Math.acos(n[2]) * 180 / Math.PI }; })();
+  chk(`a trace clicked along P across the fold (${tr.pts} points, ${tr.path} path vertices, drawn as ${tr.tubes} tube triangles) fits P: ${tp && `${tp.dip_direction.toFixed(2)}/${tp.dip.toFixed(2)}`} vs ${PA.dd.toFixed(2)}/${PA.dip.toFixed(2)}, flags [${tp && tp.flags}]`,
+    tr.pts === 5 && tr.path === 14 && tr.tubes > 0 && tp && azd(tp.dip_direction, PA.dd) < 0.5 && Math.abs(tp.dip - PA.dip) < 0.5 && !tp.flags.includes('straight'));
+
+  // a straight trace fixes a strike and nothing else — it says so
+  for (const [x, y] of [[4, 3]]) await clickAt(x, y);
+  const [sx2, sy2] = await toPage(p, [500004, 7000017, zAt(4)]);
+  await p.mouse.move(sx2 - 2, sy2); await p.mouse.dblclick(sx2, sy2);
+  await p.waitForFunction((lid) => window._micro.layers().find((q) => q.id === lid).traces.length === 2, id, { timeout: 10000 });
+  pl = await planesOf(p);
+  const straight = pl.filter((q) => q.source === 'trace')[1];
+  chk(`a straight trace (along y at x = 4) is flagged “straight”, not reported with a confident dip (flags [${straight && straight.flags}])`, straight && straight.flags.includes('straight'));
+
+  // Ctrl+Z takes the last trace back (the trace tool is armed: the shared history, not paint)
+  await p.keyboard.press('Control+z');
+  const undone = await p.waitForFunction((lid) => window._micro.layers().find((q) => q.id === lid).traces.length === 1, id, { timeout: 5000 }).then(() => true, () => false);
+  chk(`Ctrl+Z takes the straight trace back (${undone})`, undone);
+
+  // Backspace drops a point mid-trace; Esc abandons it
+  await clickAt(1, 7); await clickAt(4, 8); await clickAt(7, 9);
+  await p.keyboard.press('Backspace');
+  const mid = await p.evaluate((lid) => { const hd = window._micro.structureWins.get(lid); return hd.drawing ? hd.drawing.pts.length : -1; }, id);
+  await p.keyboard.press('Escape');
+  const after = await p.evaluate((lid) => { const hd = window._micro.structureWins.get(lid), L = window._micro.layers().find((q) => q.id === lid); return { drawing: !!hd.drawing, traces: L.traces.length, armed: !!window._micro.structureArmed() }; }, id);
+  chk(`mid-trace: Backspace drops the last point (3 → ${mid}); Esc abandons the trace without committing it (${JSON.stringify(after)})`, mid === 2 && !after.drawing && after.traces === 1 && after.armed);
+
+  // DXF out: read back by @gcu/dxf's own reader, not micro's — one 3D polyline on layer J1, world coordinates
+  const dxf = await p.evaluate(async (lid) => {
+    const M = window._micro, txt = await M.tracesToDxf(M.layers().find((q) => q.id === lid));
+    const { read } = await import('/ext/dxf/index.js');
+    const doc = read(txt), pl = doc.features.filter((ft) => ft.type === 'polyline' && ft.geometry);
+    const v = pl[0] && pl[0].geometry.vertices;
+    return { n: pl.length, verts: v ? v.length / 3 : 0, layer: pl[0] && pl[0].properties.layer, first: v ? [v[0], v[1], v[2]] : null };
+  }, id);
+  chk(`⇥ traces .dxf: one 3D polyline on layer ${dxf.layer} with the path's ${dxf.verts} vertices, in world coordinates (${dxf.first && dxf.first.map((x) => x.toFixed(2)).join(', ')})`,
+    dxf.n === 1 && dxf.verts === 14 && dxf.layer === 'J1' && dxf.first && Math.abs(dxf.first[0] - 500004) < 1e-6 && Math.abs(dxf.first[1] - 7000004) < 1e-6 && Math.abs(dxf.first[2] - zAt(4)) < 1e-6);
+
+  // traces persist with the project and re-measure on reopen
+  await saveProject(p);
+  await p.close();
+  const p2 = await mkPage('struct-trace');
+  await p2.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('struct-trace'); await window._micro.openProjectDir(dir); });
+  await p2.waitForFunction(() => window._micro.layers().some((L) => L.kind === 'mesh' && L.traces && L.traces.length), null, { timeout: 60000 });
+  const rid = await p2.evaluate(() => window._micro.layers().find((q) => q.kind === 'mesh' && !q.derivedOf).id);
+  await p2.evaluate((lid) => window._micro.openStructure(window._micro.layers().find((q) => q.id === lid)), rid);
+  await p2.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); return w && w._structure.planes.some((q) => q.source === 'trace'); }, null, { timeout: 30000 });
+  const tp2 = (await planesOf(p2)).find((q) => q.source === 'trace');
+  chk(`the trace reopens with the project and re-measures the same plane (${tp2.dip_direction.toFixed(1)}/${tp2.dip.toFixed(1)} = ${tp.dip_direction.toFixed(1)}/${tp.dip.toFixed(1)})`,
+    Math.abs(tp2.dip - tp.dip) < 1e-6 && azd(tp2.dip_direction, tp.dip_direction) < 1e-6);
+  // and × in its table row deletes it (undoably)
+  await p2.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); [...w.querySelectorAll('td')].find((td) => td.textContent === '×').click(); });
+  const gone = await p2.waitForFunction((lid) => window._micro.layers().find((q) => q.id === lid).traces.length === 0, rid, { timeout: 5000 }).then(() => true, () => false);
+  chk(`× on a trace's row deletes it (${gone})`, gone);
+  await p2.close();
+}
+
 console.log(`\nmicro-structure-smoke: ${pass} passed, ${fail} failed`);
 await b.close(); server.close();
 process.exit(fail ? 1 : 0);

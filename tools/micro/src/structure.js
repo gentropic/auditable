@@ -20,7 +20,7 @@
 // welded space and converts to file records at the edge (`toFile`, `weldedCodes`).
 // A mesh with nothing to weld has the two spaces identical and pays nothing.
 
-import { buildAdjacency, components, fitPlane, wand, vertexNormals, smoothNormals, vertexAreaWeights, attitude } from '../../../ext/clar/index.js';
+import { buildAdjacency, components, fitPlane, wand, vertexNormals, smoothNormals, vertexAreaWeights, attitude, geodesic } from '../../../ext/clar/index.js';
 import { statistics } from '../../../ext/bearing/index.js';
 import { weldVertices } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
@@ -163,7 +163,7 @@ export function measurePlanes(st, fileCodes, dict, { minVertices = 3 } = {}) {
       if (e0 > 0 && e1 / e0 < QUALITY.elongated) flags.push('elongated');
       if (f.n < QUALITY.few) flags.push('few');
       planes.push({
-        plane_id: planes.length + 1, set: dict[code], code,
+        plane_id: planes.length + 1, set: dict[code], code, source: 'patch',
         dip_direction: f.dipDirection, dip: f.dip,
         X: f.centroid[0], Y: f.centroid[1], Z: f.centroid[2],
         nx: f.normal[0], ny: f.normal[1], nz: f.normal[2],
@@ -283,4 +283,80 @@ export function discMesh(planes, colorOf, { segments = 32, lift = 0.01 } = {}) {
     for (let s = 0; s < segments; s++) { triangles[t++] = c0; triangles[t++] = c0 + 1 + s; triangles[t++] = c0 + 1 + ((s + 1) % segments); }
   }
   return { vertices, triangles, color };
+}
+
+// ── traces: a fracture's line across the rock ──
+// A trace is { set, pts, path }: the control points the geologist clicked and the
+// path between them ALONG THE SURFACE (shortest path over the mesh, clar's
+// geodesic), both as FILE vertex indices — the records, like the paint. Where a
+// joint has no exposed face, its trace is the only evidence of it, and a plane
+// fitted through a trace that crosses relief measures it (Compass's trace tool).
+
+// welded → the file record that stands for it (the first, if several do)
+export const fileOf = (st, j) => (st.remap ? st.fileList[st.fileOffsets[j]] : j);
+// the surface path between two welded vertices, as welded indices (null: unreachable)
+export function surfacePath(st, a, b) {
+  if (a === b) return Uint32Array.of(a);
+  const g = geodesic(a, b, st.adj, st.positions);
+  return g ? g.path : null;
+}
+// a trace's plane. Without relief a trace is a straight line, which fixes the strike
+// and nothing else — `straight` says so rather than reporting a confident dip.
+export const TRACE_STRAIGHT = 0.01;
+export function tracePlanes(vertices, traces, dict) {
+  const out = [];
+  traces.forEach((t, k) => {
+    if (!t.path || t.path.length < 3) return;
+    const f = fitPlane(vertices, Uint32Array.from(t.path));
+    if (!f) return;
+    const [e0, e1, e2] = f.eig;
+    let len = 0;
+    for (let i = 1; i < t.path.length; i++) { const a = t.path[i - 1] * 3, b = t.path[i] * 3; len += Math.hypot(vertices[b] - vertices[a], vertices[b + 1] - vertices[a + 1], vertices[b + 2] - vertices[a + 2]); }
+    const flags = [];
+    if (f.degenerate || (e0 > 0 && e1 / e0 < TRACE_STRAIGHT)) flags.push('straight');
+    if (f.eigRatio21 > QUALITY.rough) flags.push('rough');
+    out.push({
+      plane_id: 0, set: dict[t.set] || '', code: t.set, source: 'trace',
+      dip_direction: f.dipDirection, dip: f.dip,
+      X: f.centroid[0], Y: f.centroid[1], Z: f.centroid[2],
+      nx: f.normal[0], ny: f.normal[1], nz: f.normal[2],    // a trace has no outward side: the pole, downward
+      eig0: e0, eig1: e1, eig2: e2, n_vertices: f.n,
+      average_resultant_length: null, kappa: null,
+      radius: f.radius, rms: f.rms, eig_ratio: f.eigRatio21, length: len,
+      flags, _trace: k, _axes: [f.axes[0], f.axes[1]],
+    });
+  });
+  return out;
+}
+// tubes along trace paths (each segment a hexagonal prism), for the derived traces layer
+export function traceTubes(vertices, paths, colorOf, radius) {
+  const SIDES = 6;
+  let nSeg = 0;
+  for (const p of paths) if (p.path && p.path.length > 1) nSeg += p.path.length - 1;
+  const V = new Float64Array(nSeg * SIDES * 2 * 3), C = new Float32Array(nSeg * SIDES * 2 * 3), T = new Uint32Array(nSeg * SIDES * 6);
+  let v = 0, t = 0;
+  for (const p of paths) {
+    if (!p.path || p.path.length < 2) continue;
+    const col = colorOf(p);
+    for (let i = 1; i < p.path.length; i++) {
+      const a = p.path[i - 1] * 3, b = p.path[i] * 3;
+      const d = [vertices[b] - vertices[a], vertices[b + 1] - vertices[a + 1], vertices[b + 2] - vertices[a + 2]];
+      const L = Math.hypot(...d) || 1; d[0] /= L; d[1] /= L; d[2] /= L;
+      const h = Math.abs(d[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      let u = [d[1] * h[2] - d[2] * h[1], d[2] * h[0] - d[0] * h[2], d[0] * h[1] - d[1] * h[0]];
+      const ul = Math.hypot(...u); u = u.map((x) => x / ul);
+      const w = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]];
+      const base = v;
+      for (const e of [a, b]) for (let s = 0; s < SIDES; s++) {
+        const ang = (2 * Math.PI * s) / SIDES, cs = Math.cos(ang) * radius, sn = Math.sin(ang) * radius;
+        V[3 * v] = vertices[e] + u[0] * cs + w[0] * sn; V[3 * v + 1] = vertices[e + 1] + u[1] * cs + w[1] * sn; V[3 * v + 2] = vertices[e + 2] + u[2] * cs + w[2] * sn;
+        C[3 * v] = col[0]; C[3 * v + 1] = col[1]; C[3 * v + 2] = col[2]; v++;
+      }
+      for (let s = 0; s < SIDES; s++) {
+        const s1 = (s + 1) % SIDES, a0 = base + s, a1 = base + s1, b0 = base + SIDES + s, b1 = base + SIDES + s1;
+        T[t++] = a0; T[t++] = a1; T[t++] = b1; T[t++] = a0; T[t++] = b1; T[t++] = b0;
+      }
+    }
+  }
+  return { vertices: V, triangles: T, color: C };
 }
