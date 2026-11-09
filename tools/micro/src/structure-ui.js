@@ -10,7 +10,9 @@
 // The geometry lives in ./structure.js; this file is the window and the pointer.
 import { floatWin, focusWindow } from './windows.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
-import { prepareStructure, structureOf, structureCost, regionAt, fitRegion, toFile, weldedCodes, measurePlanes, setSummary, vertexColors, discMesh, QUALITY } from './structure.js';
+import { prepareStructure, structureOf, structureCost, regionAt, fitRegion, toFile, weldedCodes, measurePlanes, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY } from './structure.js';
+import { Stereonet } from '../../../ext/bearing/index.js';
+import { detectSets } from '../../../ext/clar/index.js';
 import { meshVertexData } from './records.js';
 import { vertexColorOf } from './wfr-io.js';
 import { S, layerById } from './state.js';
@@ -25,11 +27,14 @@ export const SET_COL = 'SET';
 const fmtSize = (b) => (b >= 1 << 30 ? (b / (1 << 30)).toFixed(1) + ' GB' : b >= 1 << 20 ? Math.round(b / (1 << 20)) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
 const pad3 = (v) => String(Math.round(v) % 360).padStart(3, '0');
 const att = (dd, dip) => `${pad3(dd)}/${String(Math.round(dip)).padStart(2, '0')}`;
+// κ past 10⁵ is 'parallel to measurement precision' — a nine-digit number would claim more than it knows
+const fmtKappa = (k) => (!Number.isFinite(k) || k > 1e5 ? '>10⁵' : fmtStat(k));
 const SET_COLORS = ['#d9534f', '#4a90d9', '#5cb85c', '#e8a33d', '#9b6fd0', '#3cbcb4', '#d96fb0', '#8f9b3c'];
 
 // tool settings ride localStorage — a preference, not project data
 const PREFS_KEY = 'micro.structure';
-const prefs = (() => { try { return { tool: 'wand', angle: 12, distance: 0, radius: 1, discs: true, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { tool: 'wand', angle: 12, distance: 0, radius: 1, discs: true }; } })();
+const PREF_DEFAULTS = { tool: 'wand', angle: 12, distance: 0, radius: 1, discs: true, orient: false, gc: false, contour: true };
+const prefs = (() => { try { return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { ...PREF_DEFAULTS }; } })();
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* private */ } };
 
 // ── the set column ──
@@ -51,6 +56,7 @@ const liveCodes = (col) => col.dict.map((d, i) => (i > 0 && d != null ? i : 0)).
 // them (a photogrammetric outcrop), its tint otherwise. Cached on the doc.
 async function baseColors(L) {
   const md = L.docs.meshDoc;
+  if (prefs.orient) { const st = structureOf(L); if (st) return (md._structOrient = md._structOrient || orientationColors(st)); }
   if (md._structBase) return md._structBase;
   if (L.vertexColored) {
     const m = await meshVertexData(L);
@@ -120,9 +126,11 @@ export async function structureAfterEdit(L) {
   if (st) {
     const col = setColOf(L);
     hd.planes = measurePlanes(st, col.codes, col.dict);
+    hd.selSet = null;
     updateDiscs(L, hd);
   }
   if (hd.render) hd.render();
+  if (hd.stereo) hd.stereo.render();
 }
 
 // ── the window ──
@@ -184,15 +192,20 @@ export async function openStructure(L) {
       sw.oninput = () => { col.colors[code] = sw.value; H.markProjectDirty(); structureAfterEdit(L); };
       const nm = document.createElement('input'); nm.type = 'text'; nm.className = 'sw-in'; nm.value = col.dict[code]; nm.style.width = '54px';
       nm.onchange = () => { const v = nm.value.trim(); if (v && !col.dict.some((d, i) => i !== code && d === v)) { col.dict[code] = v; L._colStats = null; H.markProjectDirty(); structureAfterEdit(L); } else nm.value = col.dict[code]; };
-      const sm = setSummary(hd.planes, code);
+      const sm = setStats(hd.planes, code);
       const info = document.createElement('span'); info.className = 'st-setinfo';
       if (sm.n) {
-        const dd = (Math.atan2(sm.normal[0], sm.normal[1]) * 180 / Math.PI + 180 + 360) % 360;   // the downward pole's trend is opposite the dip direction
-        const dip = Math.acos(Math.min(1, Math.abs(sm.normal[2]))) * 180 / Math.PI;
-        info.textContent = `${sm.n} · ${att(dd, dip)}`; info.title = `${sm.n} plane${sm.n === 1 ? '' : 's'}; mean attitude (vertex-weighted) ${att(dd, dip)}; R̄ ${sm.Rbar.toFixed(3)}`;
+        info.textContent = `${sm.n} · ${att(sm.dip_direction, sm.dip)}`;
+        info.title = `${sm.n} plane${sm.n === 1 ? '' : 's'}; Fisher mean ${att(sm.dip_direction, sm.dip)}${sm.n > 1 ? `; κ ${fmtKappa(sm.kappa)}; α95 ${sm.alpha95.toFixed(1)}°` : ''}`;
       } else info.textContent = '—';
       r.append(rb, sw, nm, info);
       rail.append(r);
+    }
+    if (L.vertexColored) {
+      const imp = document.createElement('button'); imp.className = 'awin-btn'; imp.textContent = '⇩ sets from paint';
+      imp.title = 'ply2atti: a mesh painted in saturated colours (pure red, green, blue, …) — each colour becomes a set; photographic colour never does';
+      imp.onclick = () => importPaintedSets(L);
+      rail.append(imp);
     }
     const add = document.createElement('button'); add.className = 'awin-btn'; add.textContent = '+ set';
     add.onclick = () => {
@@ -235,6 +248,14 @@ export async function openStructure(L) {
     dc.onchange = () => { prefs.discs = dc.checked; savePrefs(); updateDiscs(L, hd); };
     dl.append(dc, ' plane discs');
     rail.append(dl);
+    const ol = document.createElement('label'); ol.className = 'sw-row'; ol.title = 'colour the rock by its orientation — hue = dip direction, saturation = dip (flat is white). Joint sets show as patches of one colour before anything is painted';
+    const oc = document.createElement('input'); oc.type = 'checkbox'; oc.checked = prefs.orient;
+    oc.onchange = () => { prefs.orient = oc.checked; savePrefs(); structureAfterEdit(L); };
+    ol.append(oc, ' colour by orientation');
+    rail.append(ol);
+    const sb = document.createElement('button'); sb.className = 'awin-btn'; sb.textContent = '◎ stereonet'; sb.title = 'the planes\' poles on a lower-hemisphere equal-area net — lasso poles to select planes, move them to another set';
+    sb.onclick = () => openStereonet(L);
+    rail.append(sb);
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     const tb = document.createElement('button'); tb.className = 'awin-btn'; tb.textContent = '→ table layer'; tb.title = 'the planes as a table layer (replaces an earlier one of the same name) — filter, export and lineage apply';
     tb.onclick = () => planesToTable(L, hd);
@@ -250,13 +271,13 @@ export async function openStructure(L) {
       for (const h of ['#', 'set', 'dd/dip', 'n', 'radius', 'e₂/e₁', 'κ', 'quality']) { const th = document.createElement('th'); th.textContent = h; hr.append(th); }
       t.append(hr);
       for (const [k, p] of hd.planes.entries()) {
-        const tr = document.createElement('tr'); tr.title = 'click: go to this plane'; if (k === hd.sel) tr.className = 'sel';
+        const tr = document.createElement('tr'); tr.title = 'click: go to this plane'; if (k === hd.sel || (hd.selSet && hd.selSet.has(k))) tr.className = 'sel';
         const cell = (v, cls) => { const td = document.createElement('td'); td.textContent = v; if (cls) td.className = cls; tr.append(td); return td; };
         cell(String(p.plane_id));
         const sc = cell(p.set); sc.style.color = col.colors[p.code] || '';
         cell(att(p.dip_direction, p.dip));
         cell(p.n_vertices.toLocaleString(), 'num'); cell(fmtStat(p.radius), 'num'); cell(p.eig_ratio.toFixed(3), 'num');
-        cell(p.kappa != null && Number.isFinite(p.kappa) ? fmtStat(p.kappa) : '—', 'num');
+        cell(p.kappa != null ? fmtKappa(p.kappa) : '—', 'num');
         const q = cell(p.flags.length ? '⚠ ' + p.flags.join(', ') : '✓');
         q.style.color = p.flags.length ? '#c8a43c' : 'var(--ok)';
         if (p.flags.length) q.title = { rough: `rough: e₂/e₁ > ${QUALITY.rough} — the patch is not very planar`, elongated: `elongated: e₁/e₀ < ${QUALITY.elongated} — strike is well determined, dip much less so`, few: `few: under ${QUALITY.few} vertices` }[p.flags[0]];
@@ -278,6 +299,37 @@ export async function openStructure(L) {
   }
   await start();
   return hd;
+}
+
+// ── ply2atti: sets from a mesh painted in saturated colours ──
+// The predecessor's workflow: paint the outcrop in MeshLab, one pure colour per set,
+// then extract. clar's detectSets finds the saturated corners of the colour cube
+// (photographic colour never sits exactly on one), and each becomes a set named
+// for its colour, painted with that colour — one paint step per set, so Ctrl+Z
+// takes them back one at a time.
+const COLOR_NAMES = { '100': 'red', '010': 'green', '001': 'blue', '110': 'yellow', '101': 'magenta', '011': 'cyan', '000': 'black', '111': 'white' };
+const toHex = (c) => '#' + c.map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+export async function importPaintedSets(L) {
+  const m = await meshVertexData(L);
+  const nv = m ? m.vertices.length / 3 : 0;
+  const vc = m && vertexColorOf(m.attrs, nv);
+  if (!vc) { $('#meta').textContent = 'sets from paint: this mesh carries no vertex colours'; return 0; }
+  const groups = detectSets(vc);
+  if (!groups.length) { $('#meta').textContent = 'sets from paint: no saturated paint found (photographic colour never counts)'; return 0; }
+  const col = ensureSetCol(L); if (!col) return 0;
+  // a fresh window's empty J1 is a placeholder, not a set the user made
+  for (const c of liveCodes(col)) if (col.dict[c] === 'J1' && !(col.counts && col.counts[c])) col.dict[c] = null;
+  let made = 0;
+  for (const g of groups) {
+    const name = COLOR_NAMES[g.key] || g.key;
+    let code = col.dict.indexOf(name);
+    if (code < 1) { code = H.addPaintValue(L, col, name); if (!code) continue; }
+    col.colors[code] = toHex(g.color);
+    if (H.paintApply(L, col, g.vertices, code)) made++;
+  }
+  $('#meta').textContent = `sets from paint: ${made} set${made === 1 ? '' : 's'} (${groups.map((g) => `${COLOR_NAMES[g.key] || g.key} ${g.vertices.length.toLocaleString()}`).join(' · ')})`;
+  const hd = _structWins.get(L.id); if (hd && hd.render) hd.render();
+  return made;
 }
 
 // ── the planes as a table layer (replace on name: running it twice == once) ──
@@ -387,11 +439,12 @@ export function installStructurePointer(cv) {
       regionUnder(L, x, y, e.altKey).then((r) => {
         if (seq !== _hoverSeq || !_armed) return;
         const hd = _structWins.get(L.id); if (!hd) return;
-        if (!r) { showPreview(L, hd, null); armHint(); return; }
+        if (!r) { showPreview(L, hd, null); setGhost(hd, null); armHint(); return; }
         if (r.blocked) { showPreview(L, hd, null); $('#meta').textContent = r.erase ? 'nothing painted there' : `that face is already in ${r.col.dict[r.code]} — erase it first`; return; }
         const col = setColOf(L);
         showPreview(L, hd, r.file, r.erase ? (col.blankColor || '#333333') : col.colors[hd.active]);
         const t = readout(r);
+        setGhost(hd, r.erase || r.blocked ? null : r);
         $('#meta').textContent = r.erase ? `erase ${r.file.length.toLocaleString()} vertices` : `${r.shape} → ${col.dict[hd.active]}: ${t || `${r.file.length} vertices`} — click to ${r.shape === 'wand' ? 'take it' : 'paint'}`;
       });
     });
@@ -437,3 +490,160 @@ export function installStructurePointer(cv) {
   });
 }
 export const structureArmed = () => _armed;
+
+// ── the stereonet: the planes' poles, linked both ways ──
+// Lower-hemisphere equal-area (bearing's Stereonet). One pole per plane in its set's
+// colour; per set, the Fisher mean and its α95 cone; optional great circles and a
+// density contour of all poles. Click a pole → that plane (the table + the camera);
+// drag a lasso → select planes, then move them to another set — so a stereonet can
+// split a set the way a geologist reads it, and the paint follows (one undo step).
+// Hovering the rock with the wand puts its plane on the net as a ghost pole.
+const NET = 300;
+const NET_STYLE = {
+  background: '#161616',
+  primitive: { stroke: '#8a9099', strokeWidth: 1.2, fill: 'none' },
+  grid: { stroke: '#262626', strokeWidth: 0.5, majorStroke: '#333', majorStrokeWidth: 0.7 },
+  cardinals: { fontSize: 11, fontFamily: 'ui-monospace, monospace', fill: '#8a9099', offset: 12 },
+  pole: { r: 3, fill: '#bbb', stroke: 'none' },
+  plane: { stroke: '#bbb', strokeWidth: 0.8, fill: 'none' },
+  cone: { stroke: '#bbb', strokeWidth: 1, fill: 'none', strokeDasharray: '3,2' },
+};
+function setGhost(hd, r) {
+  const prev = hd.ghost;
+  if (!r || !r.vertices || r.vertices.length < 3) hd.ghost = null;
+  else { const f = fitRegion(r.st, r.vertices); hd.ghost = f ? { dd: f.dipDirection, dip: f.dip } : null; }
+  if (hd.stereo && (prev || hd.ghost)) hd.stereo.render();
+}
+export function openStereonet(L) {
+  const hd = _structWins.get(L.id) || L._structView;
+  if (!hd) { $('#meta').textContent = 'stereonet: open the structure window first'; return null; }
+  if (hd.stereo && hd.stereo.win.el.isConnected) { focusWindow(hd.stereo.win.el); return hd.stereo; }
+  const win = floatWin({ title: `stereonet · ${L.label || L.name}`, sub: '', x: 24, y: 96, w: 340, h: 470, onClose: () => { hd.stereo = null; } });
+  const wrap = document.createElement('div'); wrap.className = 'sn-wrap';
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:8px;height:100%;box-sizing:border-box;overflow:auto';
+  const opts = document.createElement('div'); opts.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--dim)';
+  const tog = (key, label, title) => {
+    const l = document.createElement('label'); l.title = title; const c = document.createElement('input'); c.type = 'checkbox'; c.checked = !!prefs[key];
+    c.onchange = () => { prefs[key] = c.checked; savePrefs(); render(); };
+    l.append(c, ' ' + label); return l;
+  };
+  opts.append(tog('gc', 'great circles', 'each plane as its great circle, not just its pole'), tog('contour', 'density', 'Fisher-kernel density contours of all poles (3 or more)'));
+  const stage = document.createElement('div'); stage.style.cssText = `position:relative;width:${NET}px;height:${NET}px;align-self:center;flex:none;touch-action:none`;
+  const bg = document.createElement('canvas'); bg.width = NET; bg.height = NET; bg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:none';
+  const sn = new Stereonet({ size: NET, padding: 18, style: NET_STYLE, classPrefix: 'msn' });
+  const el = sn.element(); el.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+  const lasso = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+  lasso.setAttribute('fill', 'rgba(200,155,60,0.12)'); lasso.setAttribute('stroke', '#c89b3c'); lasso.setAttribute('stroke-width', '1');
+  stage.append(bg, el);
+  const selRow = document.createElement('div'); selRow.style.cssText = 'display:flex;gap:6px;align-items:center;font-size:11px;min-height:24px';
+  const legend = document.createElement('div'); legend.style.cssText = 'font-size:11px;color:var(--dim);font-family:var(--mono);line-height:1.6';
+  wrap.append(opts, stage, selRow, legend);
+  win.body.append(wrap);
+
+  // the orientation wheel under the net, when the rock is coloured that way: the
+  // same hue/saturation map, so a colour on the rock reads off the net directly
+  let bgFor = null;
+  function drawWheel() {
+    bg.style.display = prefs.orient ? '' : 'none';
+    sn.setStyle({ ...NET_STYLE, background: prefs.orient ? 'none' : NET_STYLE.background });   // setStyle REPLACES the instance style
+    if (!prefs.orient || bgFor === 'wheel') return;
+    const g = bg.getContext('2d'), img = g.createImageData(NET, NET), c = [0, 0, 0];
+    for (let y = 0; y < NET; y++) for (let x = 0; x < NET; x++) {
+      const d = sn.unproject(x + 0.5, y + 0.5); if (!d) continue;
+      orientationRgb(-d[0], -d[1], -d[2], c);               // the pole → the surface normal it stands for
+      const o = (y * NET + x) * 4; img.data[o] = c[0] * 255; img.data[o + 1] = c[1] * 255; img.data[o + 2] = c[2] * 255; img.data[o + 3] = 150;
+    }
+    g.putImageData(img, 0, 0); bgFor = 'wheel';
+  }
+  const colOfCode = (code) => { const col = setColOf(L); return (col && col.colors[code]) || '#bbb'; };
+  function render() {
+    if (!win.el.isConnected) return;
+    const planes = hd.planes || [], col = setColOf(L);
+    drawWheel();
+    sn.clear(); sn.clearContours();
+    if (prefs.contour && planes.length >= 3) sn.contour(planes.map(poleOf), { stroke: '#5a6470', strokeWidth: 0.7 });
+    if (prefs.gc) for (const p of planes) sn.plane(p.dip_direction, p.dip, { stroke: colOfCode(p.code), strokeWidth: 0.7 });
+    planes.forEach((p, k) => {
+      const sel = (hd.selSet && hd.selSet.has(k)) || k === hd.sel;
+      sn.pole(p.dip_direction, p.dip, { fill: colOfCode(p.code), r: 2.5 + Math.min(3, Math.log10(Math.max(1, p.n_vertices)) * 0.8), stroke: sel ? '#ffffff' : 'none', strokeWidth: sel ? 1.5 : 0 });
+    });
+    const lines = [];
+    for (const code of col ? liveCodes(col) : []) {
+      const m = setStats(planes, code); if (!m.n) continue;
+      sn.pole(m.dip_direction, m.dip, { fill: 'none', stroke: colOfCode(code), strokeWidth: 2, r: 6 });
+      if (m.n > 1 && m.alpha95 > 0) {                    // the cone is around the mean POLE (a line: trend/plunge)
+        const tr = (m.dip_direction + 180) % 360, pl = 90 - m.dip;
+        sn.cone(tr, pl, m.alpha95, { stroke: colOfCode(code) });
+      }
+      lines.push([code, `${col.dict[code]} · ${m.n} · ${att(m.dip_direction, m.dip)}${m.n > 1 ? ` · κ ${fmtKappa(m.kappa)} · α95 ${m.alpha95.toFixed(1)}°` : ''}`]);
+    }
+    if (hd.ghost) sn.pole(hd.ghost.dd, hd.ghost.dip, { fill: 'none', stroke: '#ffffff', strokeWidth: 1.5, r: 5, strokeDasharray: '2,2' });
+    sn.render();
+    if (lasso.parentNode !== el) el.append(lasso);
+    legend.textContent = '';
+    for (const [code, t] of lines) { const d = document.createElement('div'); d.textContent = '● ' + t; d.style.color = colOfCode(code); legend.append(d); }
+    if (!lines.length) legend.textContent = 'no planes yet';
+    // the selection: count + move-to-set
+    selRow.textContent = '';
+    const n = hd.selSet ? hd.selSet.size : 0;
+    if (n) {
+      const lab = document.createElement('span'); lab.textContent = `${n} plane${n === 1 ? '' : 's'} selected →`;
+      const to = document.createElement('select'); to.className = 'sw-sel';
+      for (const code of liveCodes(col)) { const o = document.createElement('option'); o.value = code; o.textContent = col.dict[code]; to.append(o); }
+      const nw = document.createElement('option'); nw.value = 'new'; nw.textContent = '+ new set'; to.append(nw);
+      const go = document.createElement('button'); go.className = 'awin-btn btn-p'; go.textContent = 'move';
+      go.onclick = () => moveToSet(to.value);
+      const clr = document.createElement('button'); clr.className = 'awin-btn'; clr.textContent = 'clear';
+      clr.onclick = () => { hd.selSet = null; render(); if (hd.render) hd.render(); };
+      selRow.append(lab, to, go, clr);
+    } else { const t = document.createElement('span'); t.style.color = 'var(--dim)'; t.textContent = 'click a pole · drag a lasso to select planes'; selRow.append(t); }
+    win.sub.textContent = `${planes.length} pole${planes.length === 1 ? '' : 's'}`;
+    win.el._stereo = { poles: planes.length, sel: n, sets: lines.map(([, t]) => t), ghost: hd.ghost };
+  }
+  function moveToSet(v) {
+    const col = setColOf(L), st = structureOf(L); if (!col || !st || !hd.selSet) return;
+    let code = +v;
+    if (v === 'new') {
+      const k = liveCodes(col).length + 1;
+      code = H.addPaintValue(L, col, `J${k}`); if (!code) return;
+      col.colors[code] = SET_COLORS[(k - 1) % SET_COLORS.length];
+    }
+    const verts = [];
+    for (const k of hd.selSet) { const p = hd.planes[k]; if (p) for (const v2 of p._verts) verts.push(v2); }
+    const n = hd.selSet.size;
+    hd.selSet = null;
+    if (verts.length) H.paintApply(L, col, toFile(st, verts), code);   // → re-measure via paintAfterEdit
+    $('#meta').textContent = `stereonet: ${n} plane${n === 1 ? '' : 's'} → ${col.dict[code]} (Ctrl+Z undoes)`;
+  }
+  // pointer: a click picks the nearest pole, a drag draws a lasso
+  const toNet = (e) => { const r = el.getBoundingClientRect(); return [(e.clientX - r.left) * NET / r.width, (e.clientY - r.top) * NET / r.height]; };
+  const polePx = (p) => { const q = sn.project(poleOf(p)); return [q.x, q.y]; };
+  let pts = null;
+  el.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; pts = [toNet(e)]; el.setPointerCapture?.(e.pointerId); e.preventDefault(); });
+  el.addEventListener('pointermove', (e) => {
+    if (!pts) return;
+    const q = toNet(e), last = pts[pts.length - 1];
+    if (Math.hypot(q[0] - last[0], q[1] - last[1]) > 3) { pts.push(q); lasso.setAttribute('points', pts.map((a) => a.join(',')).join(' ')); }
+  });
+  const inPoly = (x, y, poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+  el.addEventListener('pointerup', (e) => {
+    if (!pts) return;
+    const poly = pts; pts = null; lasso.setAttribute('points', '');
+    const planes = hd.planes || [];
+    if (poly.length < 3) {                                 // a click: the nearest pole within 8 px
+      const [x, y] = poly[0]; let best = -1, bd = 8;
+      planes.forEach((p, k) => { const [px, py] = polePx(p); const d = Math.hypot(px - x, py - y); if (d < bd) { bd = d; best = k; } });
+      if (best < 0) { hd.selSet = null; hd.sel = -1; }
+      else if (e.shiftKey) { hd.selSet = hd.selSet || new Set(); if (hd.selSet.has(best)) hd.selSet.delete(best); else hd.selSet.add(best); }
+      else { hd.selSet = new Set([best]); hd.sel = best; const p = planes[best]; H.zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); }
+    } else {
+      const hit = new Set(e.shiftKey && hd.selSet ? hd.selSet : []);
+      planes.forEach((p, k) => { const [px, py] = polePx(p); if (inPoly(px, py, poly)) hit.add(k); });
+      hd.selSet = hit.size ? hit : null;
+    }
+    render(); if (hd.render) hd.render();
+  });
+  hd.stereo = { win, render, sn };
+  render();
+  return hd.stereo;
+}

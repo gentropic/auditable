@@ -229,7 +229,101 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   const pl2 = await planesOf(p2);
   chk(`…and re-measures the same two planes from the paint (${pl2.map((q) => `${q.set} ${q.dip_direction.toFixed(1)}/${q.dip.toFixed(1)}`).join(', ')})`,
     pl2.length === 2 && pl2.some((q) => q.set === 'J1' && Math.abs(q.dip - 30) < 0.5) && pl2.some((q) => q.set === 'J2' && Math.abs(q.dip - 60) < 0.5));
+
+  // ═══ 3. the stereonet, linked both ways; colour by orientation ═══
+  const sw = () => p2.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._stereo); return w ? w._stereo : null; });
+  await p2.evaluate((lid) => window._micro.openStereonet(window._micro.layers().find((q) => q.id === lid)), re.id);
+  await p2.waitForFunction(() => [...document.querySelectorAll('.fwin')].some((e) => e._stereo));
+  // where the poles land, read back through bearing's own projection (SVG coords → which side of the net)
+  const where = await p2.evaluate((lid) => {
+    const hd = window._micro.structureWins.get(lid), sn = hd.stereo.sn, c = 300 / 2;
+    return hd.planes.map((q) => { const n = q.nz > 0 ? [-q.nx, -q.ny, -q.nz] : [q.nx, q.ny, q.nz]; const pr = sn.project(n); return { set: q.set, dx: pr.x - c, dy: pr.y - c }; });
+  }, re.id);
+  const s0 = await sw();
+  const w1 = where.find((q) => q.set === 'J1'), w2 = where.find((q) => q.set === 'J2');
+  // a plane dipping 30° toward 090 has its pole plunging 60° toward 270 (west, near the centre);
+  // one dipping 60° toward 270 has its pole plunging 30° toward 090 (east, near the rim)
+  chk(`the net plots one pole per plane: J1 (090/30) west of centre, J2 (270/60) east and further out (J1 dx ${w1.dx.toFixed(0)}, J2 dx ${w2.dx.toFixed(0)}; legend ${JSON.stringify(s0.sets)})`,
+    s0.poles === 2 && w1.dx < -10 && Math.abs(w1.dy) < 3 && w2.dx > Math.abs(w1.dx) && Math.abs(w2.dy) < 3 && /J1 · 1 · 090\/30/.test(s0.sets[0]) && /J2 · 1 · 270\/60/.test(s0.sets[1]));
+
+  // lasso J1's pole on the net → select → move it to a NEW set: the paint follows, one undo step
+  const box = await p2.evaluate((lid) => { const hd = window._micro.structureWins.get(lid); const r = hd.stereo.sn.element().getBoundingClientRect(); return [r.left, r.top, r.width]; }, re.id);
+  const k = box[2] / 300, cx = box[0] + 150 * k, cy = box[1] + 150 * k, px = cx + w1.dx * k;
+  await p2.mouse.move(px - 14, cy - 14); await p2.mouse.down();
+  for (const [dx, dy] of [[14, -14], [14, 14], [-14, 14], [-14, -14]]) await p2.mouse.move(px + dx, cy + dy, { steps: 4 });
+  await p2.mouse.up();
+  const s1 = await sw();
+  await p2.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._stereo); const sel = w.querySelector('select'); sel.value = 'new'; [...w.querySelectorAll('button')].find((b2) => b2.textContent === 'move').click(); });
+  await p2.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); return w && w._structure.planes.some((q) => q.set === 'J3'); }, null, { timeout: 15000 });
+  const moved = await planesOf(p2);
+  const j3 = moved.find((q) => q.set === 'J3');
+  chk(`a lasso on the net selects J1's pole (${s1.sel} selected) and “move → + new set” repaints that plane as J3 (${moved.map((q) => `${q.set} ${q.dip_direction.toFixed(0)}/${q.dip.toFixed(0)}`).join(', ')})`,
+    s1.sel === 1 && j3 && Math.abs(j3.dip - 30) < 0.5 && !moved.some((q) => q.set === 'J1') && moved.length === 2);
+  await p2.keyboard.press('Control+z');
+  const back = await p2.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); return w && w._structure.planes.some((q) => q.set === 'J1'); }, null, { timeout: 10000 }).then(() => true, () => false);
+  chk(`Ctrl+Z puts the plane back in J1 (${back})`, back);
+
+  // 3D → net: hovering the rock with the wand puts a ghost pole on the net. Face B's
+  // unpainted part (only a brush band of it is J2) — a ghost at 270/60.
+  await p2.evaluate(() => { for (const w of document.querySelectorAll('.fwin')) if (w._structure || w._stereo) w.style.visibility = 'hidden'; });
+  await p2.evaluate(() => { const d = document.querySelector('#plDlg'); if (d && d.classList.contains('show')) document.querySelector('#plClose').click(); });   // the reopen's report, over the view
+  await p2.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); const radios = w.querySelectorAll('.st-set input[type=radio]'); radios[radios.length - 1].click(); [...w.querySelectorAll('.st-tools button')].find((b2) => b2.textContent === 'wand').click(); });
+  // (clicking a tool arms it — the ghost is the armed wand's preview)
+  const [gx, gy] = await toPage(p2, [500018, 7000003, 800 - t30 * 10 + t60 * 8]);
+  await p2.mouse.move(gx - 3, gy); await p2.mouse.move(gx, gy);
+  const ghost = await p2.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._stereo); return w && w._stereo.ghost; }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+  chk(`hovering face B with the wand shows its plane on the net as a ghost pole (${ghost ? `${ghost.dd.toFixed(1)}/${ghost.dip.toFixed(1)}` : 'none'})`, ghost && azd(ghost.dd, 270) < 1 && Math.abs(ghost.dip - 60) < 1);
+
+  // colour by orientation: an unpainted vertex on face B takes hue = 270 (dip direction),
+  // saturation = 60/90 — purple (r .63, g .32, b .95), computed from the dip, not the paint
+  await p2.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); [...w.querySelectorAll('label')].find((l) => /orientation/.test(l.textContent)).querySelector('input').click(); });
+  await p2.waitForTimeout(400);
+  const rgb = await p2.evaluate(async (lid) => {
+    const M = window._micro, L = M.layers().find((q) => q.id === lid), hd = M.structureWins.get(lid);
+    const m = await M.meshVertexData(L), col = L.paintCols.find((c) => c.name === 'SET');
+    for (let i = 0; i < col.codes.length; i++) {
+      const x = m.vertices[3 * i] - 500000, y = m.vertices[3 * i + 1] - 7000000;
+      if (x === 17 && y === 18 && !col.codes[i]) return [hd.rgb[3 * i], hd.rgb[3 * i + 1], hd.rgb[3 * i + 2]];
+    }
+    return null;
+  }, re.id);
+  chk(`colour by orientation: an unpainted vertex on the 270/60 face is purple (${rgb && rgb.map((v) => v.toFixed(2)).join(', ')})`,
+    rgb && Math.abs(rgb[0] - 0.633) < 0.06 && Math.abs(rgb[1] - 0.317) < 0.06 && Math.abs(rgb[2] - 0.95) < 0.03);
   await p2.close();
+}
+
+// ═══ 4. ply2atti: an outcrop PAINTED in saturated colours (the predecessor's MeshLab
+//     workflow) becomes sets — face A red, face B blue, the rest photographic grey ═══
+{
+  const p = await mkPage(null);
+  const ply = (() => {
+    const { V, T } = OUTCROP, nv = V.length / 3, out = ['ply', 'format ascii 1.0', `element vertex ${nv}`, 'property double x', 'property double y', 'property double z',
+      'property uchar red', 'property uchar green', 'property uchar blue', `element face ${T.length / 3}`, 'property list uchar int vertex_indices', 'end_header'];
+    let rng = 11; const rand = () => ((rng = (rng * 1103515245 + 12345) & 0x7fffffff) % 9);
+    for (let i = 0; i < nv; i++) {
+      const x = V[3 * i] - 500000;
+      const rgb = x <= 8 ? [255, 0, 0] : x >= 12 ? [0, 0, 255] : [118 + rand(), 112 + rand(), 104 + rand()];   // grey has jitter, like a photo
+      out.push(`${V[3 * i]} ${V[3 * i + 1]} ${V[3 * i + 2]} ${rgb.join(' ')}`);
+    }
+    for (let t = 0; t < T.length; t += 3) out.push(`3 ${T[t]} ${T[t + 1]} ${T[t + 2]}`);
+    return out.join('\n') + '\n';
+  })();
+  const id = await p.evaluate((txt) => window._micro.openBlob(new File([txt], 'painted.ply'), 'painted.ply', 'replace'), ply);
+  await p.waitForFunction((lid) => { const L = window._micro.layers().find((q) => q.id === lid); return L && L.docs.meshDoc; }, id);
+  await p.evaluate((lid) => window._micro.convertMeshLayer(window._micro.layers().find((q) => q.id === lid), false, { confirmed: true }), id);   // over ?ctxcap → exact
+  await p.waitForFunction((lid) => { const L = window._micro.layers().find((q) => q.id === lid); return L && !L.docs.meshDoc.header.soup && L.vertexColored; }, id, { timeout: 30000 });
+  await p.evaluate((lid) => window._micro.openStructure(window._micro.layers().find((q) => q.id === lid)), id);
+  await p.waitForFunction(() => [...document.querySelectorAll('.fwin')].some((e) => e._structure));
+  const offered = await p.evaluate(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); const b2 = [...w.querySelectorAll('button')].find((x) => /sets from paint/.test(x.textContent)); if (b2) b2.click(); return !!b2; });
+  await p.waitForFunction(() => { const w = [...document.querySelectorAll('.fwin')].find((e) => e._structure); return w && w._structure.planes.length === 2; }, null, { timeout: 15000 }).catch(() => {});
+  const pl = (await planesOf(p)) || [];
+  const sets = await p.evaluate((lid) => { const L = window._micro.layers().find((q) => q.id === lid), col = L.paintCols.find((c) => c.name === 'SET'); return col.dict.map((d, i) => (i && d ? `${d}:${col.counts[i]}:${col.colors[i]}` : null)).filter(Boolean); }, id);
+  const red = pl.find((q) => q.set === 'red'), blue = pl.find((q) => q.set === 'blue');
+  chk(`a mesh painted in pure colours offers “sets from paint” (${offered}); red and blue become sets, the jittered grey doesn't (${sets.join(' · ')})`,
+    offered && sets.length === 2 && sets.includes('red:189:#ff0000') && sets.includes('blue:189:#0000ff'));   // (detectSets orders by colour key: blue 001 before red 100)
+  chk(`…and measure as planes: red ${red && `${red.dip_direction.toFixed(1)}/${red.dip.toFixed(1)}`}, blue ${blue && `${blue.dip_direction.toFixed(1)}/${blue.dip.toFixed(1)}`}`,
+    red && blue && azd(red.dip_direction, 90) < 0.5 && Math.abs(red.dip - 30) < 0.5 && azd(blue.dip_direction, 270) < 0.5 && Math.abs(blue.dip - 60) < 0.5);
+  await p.close();
 }
 
 console.log(`\nmicro-structure-smoke: ${pass} passed, ${fail} failed`);

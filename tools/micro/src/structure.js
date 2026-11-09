@@ -20,7 +20,8 @@
 // welded space and converts to file records at the edge (`toFile`, `weldedCodes`).
 // A mesh with nothing to weld has the two spaces identical and pays nothing.
 
-import { buildAdjacency, components, fitPlane, wand, vertexNormals, smoothNormals, vertexAreaWeights } from '../../../ext/clar/index.js';
+import { buildAdjacency, components, fitPlane, wand, vertexNormals, smoothNormals, vertexAreaWeights, attitude } from '../../../ext/clar/index.js';
+import { statistics } from '../../../ext/bearing/index.js';
 import { weldVertices } from '../../../ext/geometry/index.js';
 import { meshVertexData } from './records.js';
 import { meshSolidOf } from './bygeom.js';
@@ -176,17 +177,51 @@ export function measurePlanes(st, fileCodes, dict, { minVertices = 3 } = {}) {
   }
   return planes;
 }
-// a set's mean attitude: the resultant of its planes' normals, each weighted by its
-// vertex count (a large plane is more of the observation than a sliver)
-export function setSummary(planes, code) {
-  let x = 0, y = 0, z = 0, w = 0, n = 0;
+// a plane's POLE: the downward unit normal (bearing's convention; either sign of the
+// fit gives the same plane)
+export const poleOf = (p) => (p.nz > 0 ? [-p.nx, -p.ny, -p.nz] : [p.nx, p.ny, p.nz]);
+// A set's statistics: Fisher over its planes' poles, one plane = one observation (the
+// usual practice — a stereonet counts measurements, not square metres). Poles are first
+// aligned to one another, not just folded down: a set of near-vertical joints straddles
+// the horizontal, and folding each pole down independently would split it in two.
+export function setStats(planes, code) {
+  const poles = [];
   for (const p of planes) if (p.code === code) {
-    const s = p.nz > 0 ? -1 : 1;                           // fold to the lower hemisphere: planes, not vectors
-    x += s * p.nx * p.n_vertices; y += s * p.ny * p.n_vertices; z += s * p.nz * p.n_vertices; w += p.n_vertices; n++;
+    const q = poleOf(p);
+    if (poles.length && q[0] * poles[0][0] + q[1] * poles[0][1] + q[2] * poles[0][2] < 0) { q[0] = -q[0]; q[1] = -q[1]; q[2] = -q[2]; }
+    poles.push(q);
   }
-  if (!n) return { n: 0 };
-  const L = Math.hypot(x, y, z);
-  return { n, normal: [x / L, y / L, z / L], Rbar: L / w };
+  if (!poles.length) return { n: 0 };
+  const f = statistics.fisherStats(poles);
+  const mean = f.mean[2] > 0 ? f.mean.map((v) => -v) : f.mean;
+  const { dipDirection, dip } = attitude(mean);
+  return { n: f.n, mean, kappa: f.kappa, alpha95: f.alpha95, Rbar: f.Rbar, dip_direction: dipDirection, dip, poles };
+}
+
+// ── colour by orientation (Coltop3D's idea) ──
+// hue = dip direction, saturation = dip (a horizontal surface is white), from the
+// SMOOTHED normals so photogrammetric noise doesn't speckle it. Joint sets show up as
+// patches of one colour before anything is painted.
+export function orientationRgb(nx, ny, nz, out = [0, 0, 0]) {
+  if (nz < 0) { nx = -nx; ny = -ny; nz = -nz; }            // a plane, not a vector: the up side
+  const dip = Math.acos(Math.min(1, nz)) * 180 / Math.PI;
+  const dd = (Math.atan2(nx, ny) * 180 / Math.PI + 360) % 360;
+  const s = Math.min(1, dip / 90), v = 0.95;
+  const h = dd / 60, i = Math.floor(h) % 6, fr = h - Math.floor(h);
+  const p = v * (1 - s), q = v * (1 - s * fr), t = v * (1 - s * (1 - fr));
+  const [r, g, b] = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][i];
+  out[0] = r; out[1] = g; out[2] = b;
+  return out;
+}
+// per-FILE-vertex orientation colours (a welded vertex's normal for each file vertex)
+export function orientationColors(st) {
+  const rgb = new Float32Array(st.nvFile * 3), c = [0, 0, 0], n = st.nSmooth;
+  for (let i = 0; i < st.nvFile; i++) {
+    const j = st.remap ? st.remap[i] : i;
+    orientationRgb(n[3 * j], n[3 * j + 1], n[3 * j + 2], c);
+    rgb[3 * i] = c[0]; rgb[3 * i + 1] = c[1]; rgb[3 * i + 2] = c[2];
+  }
+  return rgb;
 }
 
 // ── what the app draws ──

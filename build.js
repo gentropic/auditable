@@ -1766,6 +1766,7 @@ if (target === 'micro') {
     '../../ext/wireframe/convert.js': '#wireframe-convert',   // its streamed PLY/OBJ/DXF → .wfr adapters
     '../../ext/geometry/index.js': '#geometry',     // @gcu/geometry — weld + mesh QA (shells, watertight, volume)
     '../../ext/clar/index.js': '#clar',             // @gcu/clar — outcrop structure (capivaras): wand/brush, plane fits, attitudes
+    '../../ext/bearing/index.js': '#bearing',       // @gcu/bearing — the stereonet + Fisher statistics (also clar's, by bare name)
     '../../ext/omf1/index.js': '#omf1',             // @gcu/omf1 — Open Mining Format v1 (zero-dep; inflate on the platform)
     '../../ext/archive/src/zipstream.js': '#zipstream', // @gcu/archive's ranged/streaming Zip64 module alone — project backups
   };
