@@ -29,6 +29,14 @@ await installSmokeWaits(b);
 const ctx = await b.newContext({ viewport: { width: 1100, height: 750 } });
 await ctx.addInitScript(() => { try { if (localStorage.getItem('micro.autoPackMeshes') == null) localStorage.setItem('micro.autoPackMeshes', 'off'); } catch { /* opaque origin */ } });   // the .wfr store prompt stays out of the way unless a section opts in
 let ok = true; const chk = (n, c) => { console.log(`${c ? 'ok ' : 'FAIL'} ${n}`); ok = ok && c; };
+// --shard=i/n: run every nth section, starting at the ith (0-based), so the runner
+// (test/micro-smokes.mjs) can spread this file over n processes. Each `if (take())`
+// below is one section; a section shares nothing with another but the helpers above.
+// With no flag every section runs.
+const SHARD = (() => { const a = process.argv.find((x) => x.startsWith('--shard=')); if (!a) return null; const [i, n] = a.slice(8).split('/').map(Number); if (!(n >= 1) || !(i >= 0 && i < n)) throw new Error(`bad ${a}`); return { i, n }; })();
+let _section = 0, _ran = 0;
+const take = () => { const k = _section++; const mine = !SHARD || k % SHARD.n === SHARD.i; if (mine) _ran++; return mine; };
+if (SHARD) console.log(`micro-smoke2 shard ${SHARD.i + 1} of ${SHARD.n}`);
 const mkPage = async (proj) => {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
   await p.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
@@ -54,182 +62,184 @@ const twoBandTiff = () => {
   return wr([...base, [273, 4, 1, [probe.length]]].sort((a, b) => a[0] - b[0]), [bytes]);
 };
 
-// ═══ 1. the .dm sidecar arc: sub-blocked discovery cached, stats + band index
-//     restored, dm band pushdown EXACT ═══
-let p = await mkPage('sm2dm');
-await p.evaluate(async () => {
-  const { makeDM } = await import('/test/dm-make.mjs');
-  const fields = [
-    { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
-    { name: 'XINC', type: 'N' }, { name: 'YINC', type: 'N' }, { name: 'ZINC', type: 'N' },
-    { name: 'XMORIG', type: 'N', constant: 1000 }, { name: 'YMORIG', type: 'N', constant: 2000 }, { name: 'ZMORIG', type: 'N', constant: 400 },
-    { name: 'NX', type: 'N', constant: 40 }, { name: 'NY', type: 'N', constant: 30 }, { name: 'NZ', type: 'N', constant: 120 },
-    { name: 'FE', type: 'N' }, { name: 'LITO', type: 'A', width: 8 },
-  ];
-  const rows = [];
-  for (let k = 0; k < 120; k++) for (let j = 0; j < 30; j++) for (let i = 0; i < 40; i++) {
-    const half = (i + j) % 4 === 0;
-    rows.push({ XC: 1000 + i * 10 + (half ? 2.5 : 5), YC: 2000 + j * 10 + (half ? 2.5 : 5), ZC: 400 + k * 5 + (half ? 1.25 : 2.5),
-      XINC: half ? 5 : 10, YINC: half ? 5 : 10, ZINC: half ? 2.5 : 5,
-      FE: k < 60 ? 20 + (i % 10) : 80 + (i % 10), LITO: (i + j) % 2 ? 'BIF' : 'CANGA' });
-  }
-  await window._micro.openBlob(new Blob([makeDM(fields, rows, { precision: 'ep' })]), 'sub.dm', 'replace');
-});
-await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 90000 });
-await saveProject(p);
-const side = await p.evaluate(async () => {
-  const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dm');
-  const mh = await (await dir.getDirectoryHandle('models')).getFileHandle('sub.dm.meta.json');
-  const j = JSON.parse(await (await mh.getFile()).text());
-  return { v: j.v, sub: j.header && j.header.subBlocked, stats: !!(j.colStats && j.colStats.FE && j.colStats.FE.centroids), bands: !!(j.bands && j.bands.cols && j.bands.cols.FE) };
-});
-chk(`.dm sidecar written (v${side.v}, subBlocked ${side.sub}, colStats ${side.stats}, bands ${side.bands})`, side.v === 2 && side.sub && side.stats && side.bands);
-await p.close();
-p = await mkPage('sm2dm');
-await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dm'); await window._micro.openProjectDir(dir); });
-await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 90000 });
-const re = await p.evaluate(() => { const L = window._micro.layers()[0], h = L.docs.blockDoc.header; return { sub: h.subBlocked, stats: !!(L._colStats && L._colStats.FE), bands: !!(L._bands && L._bands.cols.FE) }; });
-chk(`.dm reopen: discovery cached (subBlocked ${re.sub}) + stats pre-seeded (${re.stats}) + bands loaded (${re.bands})`, re.sub && re.stats && re.bands);
-await p.evaluate(() => { const i = document.querySelector('#filter'); i.value = 'FE > 70'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); });
-await p.waitForFunction(() => { const L = window._micro.layers()[0]; return L._filterMask; }, null, { timeout: 90000 });
-const fl = await p.evaluate(() => { const L = window._micro.layers()[0]; let hits = 0; for (let i = 0; i < L._filterMask.length; i++) hits += L._filterMask[i]; return { hits, skipped: window.__dmBandsSkipped, compact: /compacted/.test(document.querySelector('#meta').textContent) }; });
-chk(`.dm band pushdown: ${fl.skipped} page-runs skipped, ${fl.hits} hits == 72000 (exact)`, fl.skipped > 0 && fl.hits === 72000);
-// filtering a SUB-BLOCKED model must NOT compact (the compact set has no dim
-// palette → matches would collapse to the fine-grid cell minDim/2; the mask
-// path keeps each block's true size). Regression guard for the reported bug.
-chk(`sub-blocked filter uses the mask path, not compaction (${!fl.compact})`, !fl.compact);
-await p.close();
+if (take()) {
+  // ═══ 1. the .dm sidecar arc: sub-blocked discovery cached, stats + band index
+  //     restored, dm band pushdown EXACT ═══
+  let p = await mkPage('sm2dm');
+  await p.evaluate(async () => {
+    const { makeDM } = await import('/test/dm-make.mjs');
+    const fields = [
+      { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
+      { name: 'XINC', type: 'N' }, { name: 'YINC', type: 'N' }, { name: 'ZINC', type: 'N' },
+      { name: 'XMORIG', type: 'N', constant: 1000 }, { name: 'YMORIG', type: 'N', constant: 2000 }, { name: 'ZMORIG', type: 'N', constant: 400 },
+      { name: 'NX', type: 'N', constant: 40 }, { name: 'NY', type: 'N', constant: 30 }, { name: 'NZ', type: 'N', constant: 120 },
+      { name: 'FE', type: 'N' }, { name: 'LITO', type: 'A', width: 8 },
+    ];
+    const rows = [];
+    for (let k = 0; k < 120; k++) for (let j = 0; j < 30; j++) for (let i = 0; i < 40; i++) {
+      const half = (i + j) % 4 === 0;
+      rows.push({ XC: 1000 + i * 10 + (half ? 2.5 : 5), YC: 2000 + j * 10 + (half ? 2.5 : 5), ZC: 400 + k * 5 + (half ? 1.25 : 2.5),
+        XINC: half ? 5 : 10, YINC: half ? 5 : 10, ZINC: half ? 2.5 : 5,
+        FE: k < 60 ? 20 + (i % 10) : 80 + (i % 10), LITO: (i + j) % 2 ? 'BIF' : 'CANGA' });
+    }
+    await window._micro.openBlob(new Blob([makeDM(fields, rows, { precision: 'ep' })]), 'sub.dm', 'replace');
+  });
+  await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 90000 });
+  await saveProject(p);
+  const side = await p.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dm');
+    const mh = await (await dir.getDirectoryHandle('models')).getFileHandle('sub.dm.meta.json');
+    const j = JSON.parse(await (await mh.getFile()).text());
+    return { v: j.v, sub: j.header && j.header.subBlocked, stats: !!(j.colStats && j.colStats.FE && j.colStats.FE.centroids), bands: !!(j.bands && j.bands.cols && j.bands.cols.FE) };
+  });
+  chk(`.dm sidecar written (v${side.v}, subBlocked ${side.sub}, colStats ${side.stats}, bands ${side.bands})`, side.v === 2 && side.sub && side.stats && side.bands);
+  await p.close();
+  p = await mkPage('sm2dm');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dm'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 90000 });
+  const re = await p.evaluate(() => { const L = window._micro.layers()[0], h = L.docs.blockDoc.header; return { sub: h.subBlocked, stats: !!(L._colStats && L._colStats.FE), bands: !!(L._bands && L._bands.cols.FE) }; });
+  chk(`.dm reopen: discovery cached (subBlocked ${re.sub}) + stats pre-seeded (${re.stats}) + bands loaded (${re.bands})`, re.sub && re.stats && re.bands);
+  await p.evaluate(() => { const i = document.querySelector('#filter'); i.value = 'FE > 70'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); });
+  await p.waitForFunction(() => { const L = window._micro.layers()[0]; return L._filterMask; }, null, { timeout: 90000 });
+  const fl = await p.evaluate(() => { const L = window._micro.layers()[0]; let hits = 0; for (let i = 0; i < L._filterMask.length; i++) hits += L._filterMask[i]; return { hits, skipped: window.__dmBandsSkipped, compact: /compacted/.test(document.querySelector('#meta').textContent) }; });
+  chk(`.dm band pushdown: ${fl.skipped} page-runs skipped, ${fl.hits} hits == 72000 (exact)`, fl.skipped > 0 && fl.hits === 72000);
+  // filtering a SUB-BLOCKED model must NOT compact (the compact set has no dim
+  // palette → matches would collapse to the fine-grid cell minDim/2; the mask
+  // path keeps each block's true size). Regression guard for the reported bug.
+  chk(`sub-blocked filter uses the mask path, not compaction (${!fl.compact})`, !fl.compact);
+  await p.close();
 
-// ═══ 2. CSV bands + the explicit Store-as-Parquet dialog + micro:model kv ═══
-const CSV = (() => { let s = 'XC,YC,ZC,FE\n'; for (let k = 0; k < 100; k++) for (let j = 0; j < 40; j++) for (let i = 0; i < 40; i++) s += `${100 + i * 10},${200 + j * 10},${400 + k * 5},${k < 50 ? 20 + (i % 10) : 80 + (i % 10)}\n`; return s; })();
-p = await mkPage('sm2csv');
-await p.evaluate((csv) => window._micro.openBlob(new Blob([csv]), 'big.csv', 'replace'), CSV);
-await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 120000 });
-await saveProject(p);
-await p.close();
-p = await mkPage('sm2csv');
-await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2csv'); await window._micro.openProjectDir(dir); });
-await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 120000 });
-await p.evaluate(() => { const i = document.querySelector('#filter'); i.value = 'FE > 70'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); });
-await p.waitForFunction(() => { const L = window._micro.layers()[0]; return L._filterMask; }, null, { timeout: 120000 });
-const csvFl = await p.evaluate(() => { const L = window._micro.layers()[0]; let hits = 0; for (let i = 0; i < L._filterMask.length; i++) hits += L._filterMask[i]; return { hits, skipped: window.__csvBandsSkipped }; });
-chk(`CSV band pushdown: ${csvFl.skipped} bands skipped, ${csvFl.hits} hits == 80000 (exact)`, csvFl.skipped > 0 && csvFl.hits === 80000);
-// the explicit dialog, keep-original honored
-const opP = p.evaluate(async () => { const L = window._micro.layers()[0]; await window._micro.COMMANDS.find((c) => c.id === 'optimize').run({ L }); }).catch(() => { /* resolves after the dialog; the page may close first */ });
-await p.waitForFunction(() => document.querySelector('#opDlg').classList.contains('show'), null, { timeout: 10000 });
-await p.evaluate(() => { document.querySelector('#opDlg .op-opts input').checked = true; document.querySelector('#opGo').click(); });
-await p.waitForFunction(() => { const L = window._micro.layers()[0]; return L.docs.blockDoc && L.docs.blockDoc.parquet; }, null, { timeout: 120000 });
-chk('Store as Parquet dialog: converted with keep-original', await p.evaluate(() => window._micro.layers()[0]._optimizedOrphan == null));
-// kv self-description: the converted blob reopens with grid, no discovery pass
-const kvOk = await p.evaluate(async () => {
-  const m = window._micro, blob = m.layers()[0].docs.blockDoc.blob;
-  await m.openBlob(blob, 'again.parquet', 'add');
-  const L2 = m.layers().find((x) => x.name === 'again.parquet');
-  return !!(L2 && L2.docs.blockDoc.header.grid);
-});
-chk('micro:model kv: converted parquet reopens with its grid (no discovery)', kvOk);
-await opP;
-await p.close();
+  // ═══ 2. CSV bands + the explicit Store-as-Parquet dialog + micro:model kv ═══
+  const CSV = (() => { let s = 'XC,YC,ZC,FE\n'; for (let k = 0; k < 100; k++) for (let j = 0; j < 40; j++) for (let i = 0; i < 40; i++) s += `${100 + i * 10},${200 + j * 10},${400 + k * 5},${k < 50 ? 20 + (i % 10) : 80 + (i % 10)}\n`; return s; })();
+  p = await mkPage('sm2csv');
+  await p.evaluate((csv) => window._micro.openBlob(new Blob([csv]), 'big.csv', 'replace'), CSV);
+  await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 120000 });
+  await saveProject(p);
+  await p.close();
+  p = await mkPage('sm2csv');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2csv'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => window._micro.layers().length && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) > 100000, null, { timeout: 120000 });
+  await p.evaluate(() => { const i = document.querySelector('#filter'); i.value = 'FE > 70'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); });
+  await p.waitForFunction(() => { const L = window._micro.layers()[0]; return L._filterMask; }, null, { timeout: 120000 });
+  const csvFl = await p.evaluate(() => { const L = window._micro.layers()[0]; let hits = 0; for (let i = 0; i < L._filterMask.length; i++) hits += L._filterMask[i]; return { hits, skipped: window.__csvBandsSkipped }; });
+  chk(`CSV band pushdown: ${csvFl.skipped} bands skipped, ${csvFl.hits} hits == 80000 (exact)`, csvFl.skipped > 0 && csvFl.hits === 80000);
+  // the explicit dialog, keep-original honored
+  const opP = p.evaluate(async () => { const L = window._micro.layers()[0]; await window._micro.COMMANDS.find((c) => c.id === 'optimize').run({ L }); }).catch(() => { /* resolves after the dialog; the page may close first */ });
+  await p.waitForFunction(() => document.querySelector('#opDlg').classList.contains('show'), null, { timeout: 10000 });
+  await p.evaluate(() => { document.querySelector('#opDlg .op-opts input').checked = true; document.querySelector('#opGo').click(); });
+  await p.waitForFunction(() => { const L = window._micro.layers()[0]; return L.docs.blockDoc && L.docs.blockDoc.parquet; }, null, { timeout: 120000 });
+  chk('Store as Parquet dialog: converted with keep-original', await p.evaluate(() => window._micro.layers()[0]._optimizedOrphan == null));
+  // kv self-description: the converted blob reopens with grid, no discovery pass
+  const kvOk = await p.evaluate(async () => {
+    const m = window._micro, blob = m.layers()[0].docs.blockDoc.blob;
+    await m.openBlob(blob, 'again.parquet', 'add');
+    const L2 = m.layers().find((x) => x.name === 'again.parquet');
+    return !!(L2 && L2.docs.blockDoc.header.grid);
+  });
+  chk('micro:model kv: converted parquet reopens with its grid (no discovery)', kvOk);
+  await opP;
+  await p.close();
 
-// ═══ 3. pinned analysis windows across an OPFS reload ═══
-const SMALL = (() => { let s = 'XC,YC,ZC,FE,SG\n'; for (let k = 0; k < 2; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) s += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${(i + 1) * 10},3\n`; return s; })();
-p = await mkPage('sm2an');
-await p.evaluate((csv) => window._micro.openBlob(new Blob([csv]), 'model.csv', 'replace'), SMALL);
-await p.waitForFunction(() => window._micro.layers().length === 1 && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) === 200, null, { timeout: 30000 });
-await p.evaluate(() => window._micro.openGradeTonnage(window._micro.layers()[0]));
-await p.evaluate(() => {
-  const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage'));
-  const wIn = [...el.querySelectorAll('.sw-ser input')].find((i) => /density expr/.test(i.placeholder));
-  wIn.value = 'SG'; wIn.dispatchEvent(new Event('change'));
-  el.querySelector('.sw-run').click();
-});
-await p.waitForFunction(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); return el && el._gtSpec; }, null, { timeout: 30000 });
-await saveProject(p);
-await p.close();
-p = await mkPage('sm2an');
-await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2an'); await window._micro.openProjectDir(dir); });
-await p.waitForFunction(() => [...document.querySelectorAll('.fwin')].some((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')), null, { timeout: 60000 });
-const pin = await p.evaluate(() => {
-  const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage'));
-  const wIn = [...el.querySelectorAll('.sw-ser input')].find((i) => /density expr/.test(i.placeholder));
-  return { sub: el.querySelector('.fwin-head .sub').textContent, weight: wIn && wIn.value, manual: !el._gtSpec };
-});
-chk(`pinned GT reopens configured (“${pin.sub}”, weight “${pin.weight}”, Run manual ${pin.manual})`, /restored/.test(pin.sub) && pin.weight === 'SG' && pin.manual);
+  // ═══ 3. pinned analysis windows across an OPFS reload ═══
+  const SMALL = (() => { let s = 'XC,YC,ZC,FE,SG\n'; for (let k = 0; k < 2; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) s += `${5 + i * 10},${5 + j * 10},${5 + k * 10},${(i + 1) * 10},3\n`; return s; })();
+  p = await mkPage('sm2an');
+  await p.evaluate((csv) => window._micro.openBlob(new Blob([csv]), 'model.csv', 'replace'), SMALL);
+  await p.waitForFunction(() => window._micro.layers().length === 1 && window._micro.renderer.layerElementCount(window._micro.layers()[0].id) === 200, null, { timeout: 30000 });
+  await p.evaluate(() => window._micro.openGradeTonnage(window._micro.layers()[0]));
+  await p.evaluate(() => {
+    const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage'));
+    const wIn = [...el.querySelectorAll('.sw-ser input')].find((i) => /density expr/.test(i.placeholder));
+    wIn.value = 'SG'; wIn.dispatchEvent(new Event('change'));
+    el.querySelector('.sw-run').click();
+  });
+  await p.waitForFunction(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); return el && el._gtSpec; }, null, { timeout: 30000 });
+  await saveProject(p);
+  await p.close();
+  p = await mkPage('sm2an');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2an'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => [...document.querySelectorAll('.fwin')].some((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')), null, { timeout: 60000 });
+  const pin = await p.evaluate(() => {
+    const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage'));
+    const wIn = [...el.querySelectorAll('.sw-ser input')].find((i) => /density expr/.test(i.placeholder));
+    return { sub: el.querySelector('.fwin-head .sub').textContent, weight: wIn && wIn.value, manual: !el._gtSpec };
+  });
+  chk(`pinned GT reopens configured (“${pin.sub}”, weight “${pin.weight}”, Run manual ${pin.manual})`, /restored/.test(pin.sub) && pin.weight === 'SG' && pin.manual);
 
-// ═══ 4. swath drag→select → selection→column (0/1) ═══
-await p.evaluate(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); el.querySelector('.fwin-head button:last-child').click(); });
-await p.evaluate(() => window._micro.openSwath(window._micro.layers()[0]));
-await p.evaluate(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath')); el.querySelector('.sw-run').click(); });
-await p.waitForFunction(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath')); return el && el._swathSpec; }, null, { timeout: 30000 });
-const drag = await p.evaluate(async () => {
-  const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath'));
-  const cv2 = el.querySelector('.sw-main canvas'), r = cv2.getBoundingClientRect();
-  const at = (fx) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * 0.5, bubbles: true });
-  const pe = (o) => ({ ...o, pointerId: 1, pointerType: 'mouse', isPrimary: true });   // the plot listens for pointer events (a finger drags it too)
-  cv2.dispatchEvent(new PointerEvent('pointerdown', pe({ ...at(0.3), button: 0 })));
-  cv2.dispatchEvent(new PointerEvent('pointermove', pe(at(0.7))));
-  cv2.dispatchEvent(new PointerEvent('pointerup', pe(at(0.7))));
-  await new Promise((r2) => setTimeout(r2, 150));
-  const sel = [...document.querySelectorAll('.menu .item')].find((x) => /Select rows in/.test(x.textContent));
-  if (sel) sel._item.action();
-  document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-  await new Promise((r2) => setTimeout(r2, 400));
-  return window._micro.layers()[0]._selCount || 0;
-});
-chk(`swath drag→select lands a real selection (${drag} rows)`, drag > 0 && drag < 200);
-const mat = p.evaluate(() => window._micro.selectionToColumn(window._micro.layers()[0]));
-await p.waitForFunction(() => document.querySelector('#pmDlg').classList.contains('show'), null, { timeout: 5000 });
-await p.evaluate(() => { document.querySelector('#pmInput').value = 'BANDSEL'; document.querySelector('#pmOk').click(); });
-await mat;
-const col01 = await p.evaluate(() => {
-  const L = window._micro.layers()[0], col = (L.paintCols || []).find((c) => c.name === 'BANDSEL');
-  if (!col) return null;
-  let n1 = 0, n0 = 0; for (const c of col.codes) { if (col.dict[c] === '1') n1++; else if (col.dict[c] === '0') n0++; }
-  return { n1, n0, sel: L._selCount, total: col.codes.length };
-});
-chk(`selection→column 0/1: ${col01 && col01.n1} ones == sel, all ${col01 && col01.total} rows explicit`, col01 && col01.n1 === col01.sel && col01.n0 === col01.total - col01.sel);
+  // ═══ 4. swath drag→select → selection→column (0/1) ═══
+  await p.evaluate(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('grade-tonnage')); el.querySelector('.fwin-head button:last-child').click(); });
+  await p.evaluate(() => window._micro.openSwath(window._micro.layers()[0]));
+  await p.evaluate(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath')); el.querySelector('.sw-run').click(); });
+  await p.waitForFunction(() => { const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath')); return el && el._swathSpec; }, null, { timeout: 30000 });
+  const drag = await p.evaluate(async () => {
+    const el = [...document.querySelectorAll('.fwin')].find((e9) => e9.querySelector('.fwin-head .t').textContent.startsWith('swath'));
+    const cv2 = el.querySelector('.sw-main canvas'), r = cv2.getBoundingClientRect();
+    const at = (fx) => ({ clientX: r.left + r.width * fx, clientY: r.top + r.height * 0.5, bubbles: true });
+    const pe = (o) => ({ ...o, pointerId: 1, pointerType: 'mouse', isPrimary: true });   // the plot listens for pointer events (a finger drags it too)
+    cv2.dispatchEvent(new PointerEvent('pointerdown', pe({ ...at(0.3), button: 0 })));
+    cv2.dispatchEvent(new PointerEvent('pointermove', pe(at(0.7))));
+    cv2.dispatchEvent(new PointerEvent('pointerup', pe(at(0.7))));
+    await new Promise((r2) => setTimeout(r2, 150));
+    const sel = [...document.querySelectorAll('.menu .item')].find((x) => /Select rows in/.test(x.textContent));
+    if (sel) sel._item.action();
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    await new Promise((r2) => setTimeout(r2, 400));
+    return window._micro.layers()[0]._selCount || 0;
+  });
+  chk(`swath drag→select lands a real selection (${drag} rows)`, drag > 0 && drag < 200);
+  const mat = p.evaluate(() => window._micro.selectionToColumn(window._micro.layers()[0]));
+  await p.waitForFunction(() => document.querySelector('#pmDlg').classList.contains('show'), null, { timeout: 5000 });
+  await p.evaluate(() => { document.querySelector('#pmInput').value = 'BANDSEL'; document.querySelector('#pmOk').click(); });
+  await mat;
+  const col01 = await p.evaluate(() => {
+    const L = window._micro.layers()[0], col = (L.paintCols || []).find((c) => c.name === 'BANDSEL');
+    if (!col) return null;
+    let n1 = 0, n0 = 0; for (const c of col.codes) { if (col.dict[c] === '1') n1++; else if (col.dict[c] === '0') n0++; }
+    return { n1, n0, sel: L._selCount, total: col.codes.length };
+  });
+  chk(`selection→column 0/1: ${col01 && col01.n1} ones == sel, all ${col01 && col01.total} rows explicit`, col01 && col01.n1 === col01.sel && col01.n0 === col01.total - col01.sel);
 
-// ═══ 5. drillholes in a ROOT-FILES project (the micro-demo shape): the trio
-// already at the folder root → save (no copy prompt — they're in-folder) →
-// the .holes.json descriptor lands in drillholes/ but references root files →
-// reopen must RESOLVE them (descriptor-relative, then root, then drillholes/) ═══
-const DH = {
-  collar: 'BHID,X,Y,Z\nDH001,100,100,50\nDH002,150,100,50\n',
-  survey: 'BHID,AT,AZ,DIP\nDH001,0,0,-90\nDH002,0,0,-90\n',
-  assay: 'BHID,FROM,TO,FE\nDH001,0,10,55\nDH001,10,20,60\nDH002,0,10,45\n',
-};
-p = await mkPage('sm2dh2');
-await p.evaluate(async (D) => {
-  const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dh2', { create: true });
-  for (const [n, d] of [['collars.csv', D.collar], ['survey.csv', D.survey], ['assay.csv', D.assay]]) { const fh = await dir.getFileHandle(n, { create: true }); const w = await fh.createWritable(); await w.write(d); await w.close(); }
-}, DH);
-await p.evaluate((D) => window._micro.importDrillholes({ collar: new File([D.collar], 'collars.csv'), survey: new File([D.survey], 'survey.csv'), intervals: new File([D.assay], 'assay.csv') }, {}, 'replace'), DH);
-await p.waitForFunction(() => window._micro.layers().some((L) => L.dh), null, { timeout: 30000 });
-// a DATA-PRESERVING reopen (re-desurvey) must keep the layer's derived styling AND identity —
-// reopenDh/reopenDhChan/reopenWithMapping now share captureLayerStyling + captureReopenIdentity.
-const dhReopen = await p.evaluate(async () => {
-  const L = window._micro.layers().find((x) => x.dh);
-  L.calcCols = [{ name: 'fe2', expr: 'FE * 2', ty: 'number' }]; L.colTypes = { FE: 'number' };
-  L.visible = false; window._micro.renderer.setLayerVisible(L.id, false);       // hidden → must stay hidden
-  await window._micro.reopenDh(L, {});                                          // re-desurvey, same config
-  const L2 = window._micro.layers().find((x) => x.dh);
-  return { calc: (L2.calcCols || []).map((c) => c.name), colFE: L2.colTypes && L2.colTypes.FE, visible: L2.visible };
-});
-chk(`re-desurvey keeps styling (calc ${JSON.stringify(dhReopen.calc)} + colTypes ${dhReopen.colFE}) and stays hidden (${dhReopen.visible})`,
-  dhReopen.calc.includes('fe2') && dhReopen.colFE === 'number' && dhReopen.visible === false);
-await p.evaluate(() => { const L = window._micro.layers().find((x) => x.dh); L.visible = true; window._micro.renderer.setLayerVisible(L.id, true); });
-await saveProject(p);
-await p.close();
-p = await mkPage('sm2dh2');
-await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dh2'); await window._micro.openProjectDir(dir); });
-await p.waitForFunction(() => window._micro.layers().some((L) => L.dh) || /0 layers/.test(document.querySelector('#meta').textContent), null, { timeout: 60000 });
-const dhBack = await p.evaluate(() => ({ n: window._micro.layers().filter((L) => L.dh).length, meta: document.querySelector('#meta').textContent }));
-chk(`root-files dh project reopens with its drillholes (${dhBack.n} dh layer, “${dhBack.meta.slice(0, 40)}”)`, dhBack.n === 1);
-await p.close();
+  // ═══ 5. drillholes in a ROOT-FILES project (the micro-demo shape): the trio
+  // already at the folder root → save (no copy prompt — they're in-folder) →
+  // the .holes.json descriptor lands in drillholes/ but references root files →
+  // reopen must RESOLVE them (descriptor-relative, then root, then drillholes/) ═══
+  const DH = {
+    collar: 'BHID,X,Y,Z\nDH001,100,100,50\nDH002,150,100,50\n',
+    survey: 'BHID,AT,AZ,DIP\nDH001,0,0,-90\nDH002,0,0,-90\n',
+    assay: 'BHID,FROM,TO,FE\nDH001,0,10,55\nDH001,10,20,60\nDH002,0,10,45\n',
+  };
+  p = await mkPage('sm2dh2');
+  await p.evaluate(async (D) => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dh2', { create: true });
+    for (const [n, d] of [['collars.csv', D.collar], ['survey.csv', D.survey], ['assay.csv', D.assay]]) { const fh = await dir.getFileHandle(n, { create: true }); const w = await fh.createWritable(); await w.write(d); await w.close(); }
+  }, DH);
+  await p.evaluate((D) => window._micro.importDrillholes({ collar: new File([D.collar], 'collars.csv'), survey: new File([D.survey], 'survey.csv'), intervals: new File([D.assay], 'assay.csv') }, {}, 'replace'), DH);
+  await p.waitForFunction(() => window._micro.layers().some((L) => L.dh), null, { timeout: 30000 });
+  // a DATA-PRESERVING reopen (re-desurvey) must keep the layer's derived styling AND identity —
+  // reopenDh/reopenDhChan/reopenWithMapping now share captureLayerStyling + captureReopenIdentity.
+  const dhReopen = await p.evaluate(async () => {
+    const L = window._micro.layers().find((x) => x.dh);
+    L.calcCols = [{ name: 'fe2', expr: 'FE * 2', ty: 'number' }]; L.colTypes = { FE: 'number' };
+    L.visible = false; window._micro.renderer.setLayerVisible(L.id, false);       // hidden → must stay hidden
+    await window._micro.reopenDh(L, {});                                          // re-desurvey, same config
+    const L2 = window._micro.layers().find((x) => x.dh);
+    return { calc: (L2.calcCols || []).map((c) => c.name), colFE: L2.colTypes && L2.colTypes.FE, visible: L2.visible };
+  });
+  chk(`re-desurvey keeps styling (calc ${JSON.stringify(dhReopen.calc)} + colTypes ${dhReopen.colFE}) and stays hidden (${dhReopen.visible})`,
+    dhReopen.calc.includes('fe2') && dhReopen.colFE === 'number' && dhReopen.visible === false);
+  await p.evaluate(() => { const L = window._micro.layers().find((x) => x.dh); L.visible = true; window._micro.renderer.setLayerVisible(L.id, true); });
+  await saveProject(p);
+  await p.close();
+  p = await mkPage('sm2dh2');
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2dh2'); await window._micro.openProjectDir(dir); });
+  await p.waitForFunction(() => window._micro.layers().some((L) => L.dh) || /0 layers/.test(document.querySelector('#meta').textContent), null, { timeout: 60000 });
+  const dhBack = await p.evaluate(() => ({ n: window._micro.layers().filter((L) => L.dh).length, meta: document.querySelector('#meta').textContent }));
+  chk(`root-files dh project reopens with its drillholes (${dhBack.n} dh layer, “${dhBack.meta.slice(0, 40)}”)`, dhBack.n === 1);
+  await p.close();
+}
 
 // ═══ 7. bookmarks (viewpoint) + scenes (full working state) round-trip as files
 //     in bookmarks/ + scenes/ across a project reopen ═══
-{
+if (take()) {
   const pb = await mkPage('sm2bmk');
   const answer = async (nm) => {
     await pb.waitForFunction(() => document.querySelector('#pmDlg') && document.querySelector('#pmDlg').classList.contains('show'), null, { timeout: 8000 });
@@ -280,7 +290,7 @@ await p.close();
 // ═══ 8. the demo project — one click assembles the coming-home scene: a block
 //     model + drillholes, half-cut on the ore lens (holes stay WHOLE), grade-
 //     coloured, with a computed grade-tonnage curve + a saved bookmark ═══
-{
+if (take()) {
   const pd = await mkPage('sm2demo');
   await pd.click('#sampleDemo');
   // the demo builds a 1.8M-block model: ~7 s on a desktop, ~50 s at 6× CPU
@@ -327,7 +337,7 @@ await p.close();
 // ═══ 9. vertical exaggeration — a GLOBAL scene z-scale (camera-level): geometry
 //     intact, rides in the camera capture, and a pick still returns a real record
 //     (queries stay in real coords under exaggeration) ═══
-{
+if (take()) {
   const pe = await mkPage('sm2exag');
   const CSV = () => { let s = 'XC,YC,ZC,FE\n'; for (let k = 0; k < 20; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) s += `${i * 10},${j * 10},${k * 5},${40 + (i % 8)}\n`; return s; };
   await pe.evaluate((csv) => window._micro.openBlob(new Blob([csv]), 'e.csv', 'replace'), CSV());
@@ -371,7 +381,7 @@ await p.close();
 // ═══ 10. heightfield surface — a grid reinterprets from the raw elevation point
 //     cloud to a shaded-relief mesh (per-vertex colour + smooth normals), keeping
 //     gridDoc for by-surface eval ═══
-{
+if (take()) {
   const ph = await mkPage('sm2surf');
   const asc = await ph.evaluate(() => {
     const nc = 100, nr = 80, cs = 25, x0 = 500000, y0 = 6000000;
@@ -473,7 +483,7 @@ await p.close();
 
 // ═══ 11. multi-band GeoTIFF: pick the band (grid ≈ columns) — anytime, in the
 //     properties panel, re-reading the right sample; persists ═══
-{
+if (take()) {
   const pm = await mkPage('sm2band');
   const tif = twoBandTiff();
   await pm.evaluate((arr) => window._micro.openBlob(new Blob([new Uint8Array(arr)]), 'multiband.tif', 'replace'), Array.from(tif));
@@ -501,7 +511,7 @@ await p.close();
 //     composes (calc references a materialized column; out-of-order calc-on-calc).
 //     Interpolation (NN/IDW) was removed — estimation lives in gslib.atra — so the
 //     substrate guards now ride on materialize-a-calc-column, not an estimate ═══
-{
+if (take()) {
   const pg = await mkPage('sm2compose');
   // a REGULAR 11×11 block model with a base GRADE = X (a field rising along X)
   const tgt = await pg.evaluate(() => { let s = 'X,Y,Z,GRADE\n'; for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) s += `${i * 10},${j * 10},0,${i * 10}\n`; return s; });
@@ -556,7 +566,7 @@ await p.close();
 
 // ═══ 14. materialized-column store — a full-precision Float32 column persists in the
 //     per-layer <layer>.cols/ sidecar (OPFS project) and reloads aligned by record ═══
-{
+if (take()) {
   const pc = await mkPage('sm2matcol');
   const bm = await pc.evaluate(() => { let s = 'X,Y,Z,GRADE\n'; for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 2; k++) s += `${i * 10},${j * 10},${k * 10},${(i + j + k).toFixed(1)}\n`; return s; });
   await pc.evaluate((csv) => window._micro.openBlob(new File([csv], 'bm.csv'), 'bm.csv', 'replace'), bm);
@@ -596,7 +606,7 @@ await p.close();
 
 // ═══ 16. the FILTER WIDGET DRAWER — the expression projected as live controls;
 //     widgets rewrite literals SURGICALLY; reset restores the snapshot ═══
-{
+if (take()) {
   const pf = await mkPage('sm2fdrawer');
   const csv = await pf.evaluate(() => {
     let t = 'X,Y,Z,FE,LITO\n'; const LIT = ['HEMATITE', 'ITABIRITE', 'CANGA'];
@@ -710,7 +720,7 @@ await p.close();
 
 // ═══ 17. the ƒ CALCULATIONS window — authoring moved out of the columns tab;
 //     validates vs the FULL schema (calc-on-calc composes); live filter pickup ═══
-{
+if (take()) {
   const pc = await mkPage('sm2calcwin');
   const csv = await pc.evaluate(() => {
     let t = 'X,Y,Z,FE,MN\n';
@@ -824,7 +834,7 @@ await p.close();
 // ═══ 18. DRILLHOLES as the first MULTI-LOCATION element (substrate spec A.3):
 //     one <set>.element.json — collars + vertices(producedBy) + one interval
 //     location per break-set (geometryFrom), HOLEID relations, per-location ƒ ═══
-{
+if (take()) {
   const pd = await mkPage('sm2dhelem');
   await pd.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2dhelem', { recursive: true }); } catch { } });
   await pd.evaluate(async () => {
@@ -917,7 +927,7 @@ await p.close();
 // ═══ 19. JOIN → COLUMNS (the cardinality rule): key joins and own-lattice
 //     spatial joins land as columns ON the layer, never a new layer; ops
 //     record cross-ELEMENT inputs ═══
-{
+if (take()) {
   const pj = await mkPage('sm2join');
   await pj.evaluate(async () => {
     let a = 'X,Y,Z,FE,ID\n', b2 = 'X,Y,Z,AU,ID\n';
@@ -995,7 +1005,7 @@ await p.close();
 
 // ═══ 20. ARRAY-BACKED grid locations: a grid emits its element manifest —
 //     records are lattice nodes, coords IMPLICIT (no coord columns) ═══
-{
+if (take()) {
   const pg = await mkPage('sm2gelem');
   await pg.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2gelem', { recursive: true }); } catch { } });
   await pg.evaluate(async () => {
@@ -1019,7 +1029,7 @@ await p.close();
 
 // ═══ 21. the ROUTINE: recipes running recipes — each-block expansion,
 //     $var substitution, dated report routing, the no-overwrites guard ═══
-{
+if (take()) {
   const pr = await mkPage('sm2routine');
   await pr.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2routine', { recursive: true }); } catch { } });
   await pr.evaluate(() => {
@@ -1178,7 +1188,7 @@ await p.close();
 }
 
 // ── §23: the TABLE kind — a coordinate-less CSV is a first-class layer ──
-{
+if (take()) {
   const pt = await mkPage('sm2table');
   await pt.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2table', { recursive: true }); } catch { } });
   await pt.evaluate(() => window._micro.openBlob(new Blob(['DOMAIN,CUTOFF,PRICE\nHEM,55,105\nITA,50,98\nCANGA,45,80\nWASTE,0,0\n']), 'cutoffs.csv', 'replace'));
@@ -1211,7 +1221,7 @@ await p.close();
 }
 
 // ── §24: Excel — a worksheet is a table (typed), geometry only when asked ──
-{
+if (take()) {
   const px = await mkPage('sm2xlsx');
   await px.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2xlsx', { recursive: true }); } catch { } });
   // build the workbook IN THE PAGE with @gcu/sheet's writer (micro bundles it)
@@ -1250,7 +1260,7 @@ await p.close();
 }
 
 // ── §25: routine params — a key→value sheet is a SCALAR scope, not a fan-out ──
-{
+if (take()) {
   const pp = await mkPage('sm2params');
   await pp.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2params', { recursive: true }); } catch { } });
   await pp.evaluate(() => window._micro.openBlob(new Blob(['X,Y,Z,FE\n0,0,0,50\n10,0,0,55\n20,0,0,60\n']), 'm.csv', 'replace'));
@@ -1289,7 +1299,7 @@ await p.close();
 }
 
 // ── §26: nested each (cross product) vs one each (zip); params as a step ──
-{
+if (take()) {
   const pn = await mkPage('sm2nest');
   await pn.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2nest', { recursive: true }); } catch { } });
   await pn.evaluate(() => window._micro.openBlob(new Blob(['X,Y,Z,FE\n0,0,0,50\n10,0,0,60\n']), 'm.csv', 'replace'));
@@ -1320,7 +1330,7 @@ await p.close();
 }
 
 // ── §27: ${expr} in routines — one calculus; values compute, structure doesn't ──
-{
+if (take()) {
   const pe = await mkPage('sm2expr');
   const ex = await pe.evaluate(async () => {
     const steps = await window._micro.expandRoutine({ steps: [
@@ -1345,7 +1355,7 @@ await p.close();
 }
 
 // ── §28: filter: on an each block — which rows fan out (data selection, not ifs) ──
-{
+if (take()) {
   const pf = await mkPage('sm2eachfilter');
   const ef = await pf.evaluate(async () => {
     const steps = await window._micro.expandRoutine({ steps: [
@@ -1367,7 +1377,7 @@ await p.close();
 }
 
 // ── §29: the guard knows COLUMNS · results become table layers · resume ──
-{
+if (take()) {
   const p3 = await mkPage('sm2r3');
   await p3.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2r3', { recursive: true }); } catch { } });
   await p3.evaluate(() => {
@@ -1417,7 +1427,7 @@ await p.close();
 }
 
 // ── §30: groups as sugar on naming — "swaths/FE drift" files the layer ──
-{
+if (take()) {
   const pg = await mkPage('sm2groups');
   await pg.evaluate(() => window._micro.openBlob(new Blob(['X,Y,Z,FE\n0,0,0,50\n10,0,0,60\n']), 'm.csv', 'replace'));
   await pg.waitForFunction(() => window._micro.layers()[0], null, { timeout: 20000 });
@@ -1442,7 +1452,7 @@ await p.close();
 }
 
 // ── §31: layers are no longer a scarce resource (the id left the pick record) ──
-{
+if (take()) {
   const pl = await mkPage('sm2pool');
   const pool = await pl.evaluate(async () => {
     await window._micro.openBlob(new Blob(['X,Y,Z,FE\n0,0,0,50\n10,0,0,60\n']), 'm.csv', 'replace');
@@ -1498,7 +1508,7 @@ await p.close();
 }
 
 // ── §32: surfaces are pickable — WHICH mesh from the GPU, WHICH TRIANGLE from the CPU ──
-{
+if (take()) {
   const pk = await mkPage('sm2mesh');
   const r = await pk.evaluate(async () => {
     let t = 'XC,YC,ZC,FE\n';
@@ -1576,7 +1586,7 @@ await p.close();
 //   (a) it is OFF by default — a cold visitor never meets a box that guesses
 //   (b) it PROPOSES, it never ACTS — nothing happens until you read it and press Enter
 //   (c) nonsense is refused, not guessed at
-{
+if (take()) {
   const nl = await mkPage('sm2nl');
   const r = await nl.evaluate(async () => {
     let t = 'XC,YC,ZC,FE,LITO\n';
@@ -1631,7 +1641,7 @@ await p.close();
 // Guards the 2026-07-25 coherence pass: dialogs stack on the shared z counter
 // (later on top), Escape unwinds them newest-first, floats are opaque, every
 // analysis foot carries the shared results row, minimize goes to a strip chip.
-{
+if (take()) {
   const wp = await mkPage('sm2win');
   await wp.evaluate(() => {
     let csv = 'XC,YC,ZC,FE\n';
@@ -1743,7 +1753,7 @@ await p.close();
 // ── §34: deferred re-shade — a cosmetic poke over a converged frame is ONE
 //    fullscreen resolve pass (condenser gl-resolve.js, O(pixels) at any model
 //    size), not a re-raster; a CULLING change (isolate filter) still re-rasters ──
-{
+if (take()) {
   const rp = await mkPage('sm2resolve');
   const r = await rp.evaluate(async () => {
     const M = window._micro;
@@ -1798,7 +1808,7 @@ await p.close();
 // to guard with `kind !== 'mesh'` separately, so the wrong number was latent
 // rather than visible — exactly the kind of thing that bites the first caller
 // who forgets. These assert the count is honest and the record spaces are named.
-{
+if (take()) {
   const rp = await mkPage('sm2loc');
   const r = await rp.evaluate(async () => {
     const M = window._micro;
@@ -1846,7 +1856,7 @@ await p.close();
 // whole chain: condenser keeps them at read, meshDoc names them in its header,
 // the vertex table lists them as columns, and a row reads its own values back.
 // That chain is what a ply2atti import will ride on.
-{
+if (take()) {
   const rp = await mkPage('sm2meshvtx');
   const r = await rp.evaluate(async () => {
     const M = window._micro;
@@ -1892,7 +1902,7 @@ await p.close();
 // durable coverage at all. These assert the BEHAVIOR rather than the storage
 // shape ("a calc still resolves after a reload"), so they stay true through the
 // (location, name) re-keying and are what will prove it correct.
-{
+if (take()) {
   const pc = await mkPage('sm2cols');
   const before = await pc.evaluate(async () => {
     const M = window._micro;
@@ -2013,7 +2023,7 @@ await p.close();
 // kept its count and its columns and drew nothing, which is why it read as data
 // loss. Auto-optimize was only ever tested over CSV, and the .dm section turns it
 // off, so the combination was uncovered.
-{
+if (take()) {
   const pd = await mkPage('sm2dmpq');
   await pd.evaluate(async () => {
     const { makeDM } = await import('/test/dm-make.mjs');
@@ -2109,7 +2119,7 @@ await p.close();
 // grade-tonnage. So the colour stayed right while the numbers shuffled, and
 // persistElement baked the misordering into the sidecar. This pins a value to a
 // coordinate and checks they are still together afterwards.
-{
+if (take()) {
   const pm = await mkPage('sm2matorder');
   const r = await pm.evaluate(async () => {
     const M = window._micro;
@@ -2160,7 +2170,7 @@ await p.close();
 // count to index the selection mask and the materialized columns, so after the
 // first bad row every block read another block's selection and another block's
 // grade. layerRecords owns the rule now; this pins it.
-{
+if (take()) {
   const pn = await mkPage('sm2recnum');
   const r = await pn.evaluate(async () => {
     const M = window._micro;
@@ -2199,7 +2209,7 @@ await p.close();
 // then pixelRay at that pixel must return a ray through it — in viewProj's own
 // coordinate space, so no frame bookkeeping (a probe confirmed target round-trips
 // to ~1e-3 at every exaggeration).
-{
+if (take()) {
   const pz = await mkPage('sm2zexag');
   const r = await pz.evaluate(async () => {
     const M = window._micro;
@@ -2242,7 +2252,7 @@ await p.close();
 //     a re-scan finds nothing). These two MOVE FILES and had no test anywhere
 //     (the 2026-08 deep review's worst coverage desert) — guard them BEFORE
 //     the project-lifecycle carve touches them. ──
-{
+if (take()) {
   // open a small block model + save (auto-routes to models/), then FORGE the
   // legacy flat layout: move models/t.csv (+ sidecar) to the ROOT and rewrite
   // project.json's source paths — a faithful pre-kind-folder project.
@@ -2336,7 +2346,7 @@ await p.close();
 //     (numeric domain codes dict-encode as strings), and the choice PERSISTS
 //     across a project save/reload (mapping rides ls.mapping → openDmBlob).
 //     The delimited/parquet paths had this; .dm was the excluded source. ──
-{
+if (take()) {
   const pq = await mkPage('sm2dmcat');
   await pq.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2dmcat', { recursive: true }); } catch { /* fresh */ } });
   await pq.evaluate(async () => {
@@ -2377,7 +2387,7 @@ await p.close();
 //     decoding rows. The guard is a PARITY check: pinned rows == row-path rows
 //     (pins dropped via setPinBudget('off')), with __statsFast proving the fast
 //     path actually ran (non-vacuous). ──
-{
+if (take()) {
   const ps = await mkPage('sm2statfast');
   const teed = await ps.evaluate(async () => {
     const M = window._micro;
@@ -2421,7 +2431,7 @@ await p.close();
 // ═══ a STREAMED DXF across a project save/reopen: three sibling layers share ONE
 //     source file — copied once, each reopening as ITS kind (not the dominant one,
 //     and not every kind again); Reload-from-disk keeps the kind too ═══
-{
+if (take()) {
   const px = await mkPage('sm2dxf');
   await px.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2dxf', { recursive: true }); } catch { } });
   await px.evaluate(async () => {
@@ -2467,7 +2477,7 @@ await p.close();
 //     time, enforced on EVERY way of showing a layer (the eye, h, the host),
 //     { } step through the group, the flag survives a save/reopen, and turning
 //     it off gives the checkboxes back. ──
-{
+if (take()) {
   const pe = await mkPage('sm2excl');
   await pe.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2excl', { recursive: true }); } catch { /* fresh */ } });
   const ids = await pe.evaluate(async () => {
@@ -2552,7 +2562,7 @@ await p.close();
 //     while the record row and a default CSV export keep the source text. A
 //     per-column rule re-reads all of it and survives a save/reopen; drillhole
 //     intervals do the same through their resident rows. ──
-{
+if (take()) {
   const pq = await mkPage('sm2qual');
   await pq.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2qual', { recursive: true }); } catch { /* fresh */ } });
   // 72 blocks; k%9: 0 → <0.002, 1 → >0.5, 2 → BDL, else (k%9)/100
@@ -2642,7 +2652,7 @@ await p.close();
 //     the interval filter, following a scrub, surviving a save/reopen. The
 //     section's holes are a DISPLAY rule: what the filter matched (export
 //     "matches", filter → selection, analyses) never depends on the section. ──
-{
+if (take()) {
   const pc = await mkPage('sm2cut');
   await pc.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2cut', { recursive: true }); } catch { /* fresh */ } });
   await pc.evaluate(async () => {
@@ -2746,7 +2756,7 @@ await p.close();
 //     header's × only closes): Never · Not now · Yes · Yes, always. "Not now"
 //     asks again next SESSION (it used to switch the feature off for good);
 //     "Yes" stores this once and keeps asking. ──
-{
+if (take()) {
   const ctx2 = await b.newContext({ viewport: { width: 1100, height: 750 } });   // no init script: the question is unanswered here
   const open = async () => {
     const p = await ctx2.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
@@ -2804,7 +2814,7 @@ await p.close();
 //     folder that already holds one and anything that isn't a backup. The UI
 //     path (Lean / Full in the footer → a picked file) and opening a .zip.micro
 //     like any file (→ the restore question) ride the same code. ──
-{
+if (take()) {
   const pk = await mkPage('sm2bk');
   await pk.evaluate(async () => { const r = await navigator.storage.getDirectory(); for (const n of ['sm2bk', 'sm2bk-r', 'sm2bk-ui']) { try { await r.removeEntry(n, { recursive: true }); } catch { /* fresh */ } } });
   await pk.evaluate(async () => {
@@ -2886,7 +2896,7 @@ await p.close();
 //     tree, changes included, into an empty folder and carries on there with no
 //     "copy these in?" question and caches that still match on reopen; the
 //     background CRC pass reports a damaged pack. ──
-{
+if (take()) {
   const pk = await mkPage('sm2pk');
   await pk.evaluate(async () => { const r = await navigator.storage.getDirectory(); for (const n of ['sm2pk', 'sm2pk-saved']) { try { await r.removeEntry(n, { recursive: true }); } catch { /* fresh */ } } });
   await pk.evaluate(async () => {
@@ -2985,7 +2995,7 @@ await p.close();
 //     (occlusion), never past the display: records the filter keeps out, hidden
 //     categories, the section and a hidden layer are neither selected nor painted.
 //     It used to take every record in the tube — 144 of 144 at every step below. ──
-{
+if (take()) {
   const pt = await mkPage('sm2th');
   const th = await pt.evaluate(async () => {
     const M = window._micro, W = window.micro, q = (x) => document.querySelector(x);
@@ -3041,7 +3051,7 @@ await p.close();
 //     painted column; a same-size edit makes both stale. Before: the mtime threw
 //     the sidecar away on a copy, and size:rows reloaded the paint onto edited
 //     data. ──
-{
+if (take()) {
   const pi = await mkPage('sm2id');
   await pi.evaluate(async () => { const r = await navigator.storage.getDirectory(); try { await r.removeEntry('sm2id', { recursive: true }); } catch { /* fresh */ } });
   await pi.evaluate(async () => {
@@ -3090,7 +3100,7 @@ await p.close();
 
 // ── §45: a pack opened from a file joins the recent projects as itself (beside
 //     its folder, not replacing it), and its chip reopens it read-only ──
-{
+if (take()) {
   const pr = await mkPage('sm2rc');
   await pr.evaluate(async () => { const r = await navigator.storage.getDirectory(); for (const n of ['sm2rc', 'sm2rc-packs']) { try { await r.removeEntry(n, { recursive: true }); } catch { /* fresh */ } } });
   await pr.evaluate(async () => { await window._micro.openBlob(new File(['XC,YC,ZC,FE\n5,5,5,1\n15,5,5,2\n5,15,5,3\n15,15,5,4\n'], 'rc.csv'), 'rc.csv', 'replace'); });
@@ -3110,7 +3120,8 @@ await p.close();
     const chips = [...q('#emptyProjects').querySelectorAll('.er-chip')].map((c) => c.textContent);
     M.closeProject();
     [...q('#emptyProjects').querySelectorAll('.er-chip')].find((c) => c.textContent === 'sm2rc · pack').click();
-    for (let n = 0; n < 100 && !(M.project() && M.project().pack); n++) await new Promise((z) => setTimeout(z, 50));
+    // the project object is set BEFORE its layers load, so wait for the layer too
+    for (let n = 0; n < 400 && !(M.project() && M.project().pack && M.layers().length); n++) await new Promise((z) => setTimeout(z, 50));
     return { opened, chips, again: !!(M.project() && M.project().pack), name: M.project() && M.project().name, layers: M.layers().length };
   });
   chk(`a pack opened from a file joins the recent projects beside its folder [${rc.chips.join(' · ')}]`,
@@ -3123,7 +3134,7 @@ await p.close();
 //     power-of-ten edges, ROUND cutoffs (each one an edge). Checked against brute
 //     force on grades sitting exactly ON cutoff values (0.29, 0.3 — where float
 //     binning goes wrong), with and without a density expression. ──
-{
+if (take()) {
   const pg = await mkPage('sm2gt');
   const gt = await pg.evaluate(async () => {
     const M = window._micro;
@@ -3185,7 +3196,7 @@ await p.close();
 //     of the blocks have no AU: grade-tonnage at its lowest cut holds only the
 //     estimated tonnage, stats n/mean see only the estimated values — on BOTH
 //     stats paths (row and pinned), and realizing a calc keeps blanks blank. ──
-{
+if (take()) {
   const pb = await mkPage('sm2blank');
   const bl = await pb.evaluate(async () => {
     const M = window._micro;
@@ -3239,7 +3250,7 @@ await p.close();
 //     all ride. Exact against brute force; run on the WORKERS and again with
 //     workers unavailable (the page fallback) → the two answers are bit-identical
 //     (partials merge in row-group order). ──
-{
+if (take()) {
   const pc = await mkPage('sm2col');
   const cg = await pc.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3292,7 +3303,7 @@ await p.close();
 //     CSV (held to the row path here — §56 checks CSV on the workers against it): stats grouped + weighted — moments (std too) to 1e-12, quantiles
 //     within the t-digest's tolerance; the swath band table to 1e-9. Cancel: a
 //     fresh run says "cancelled"; a cancelled re-run keeps the previous result. ──
-{
+if (take()) {
   const pw = await mkPage('sm2colb');
   const cb = await pw.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3363,7 +3374,7 @@ await p.close();
 //     with a null coordinate never enters it (the old path read null as 0 — a
 //     phantom at the origin), and the columns the workers decoded are TEED into
 //     the pin cache: the next filter refines from memory, right answer. ──
-{
+if (take()) {
   const pf = await mkPage('sm2colc');
   const fc = await pf.evaluate(async () => {
     const M = window._micro, W = window.micro, q = (x2) => document.querySelector(x2);
@@ -3419,7 +3430,7 @@ await p.close();
 //     model's coordinates on the worker pool with backpressure. Select inside /
 //     outside a box solid on 150,000 blocks = brute force; a block with no X is
 //     neither (it was read as 0,0,0); without workers the counts are identical. ──
-{
+if (take()) {
   const ps = await mkPage('sm2cold');
   const sd = await ps.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3459,7 +3470,7 @@ await p.close();
 //     (condenser dmPageRuns / readDmRun, fields decoded by striding). 300,000
 //     records = 2 runs: grade-tonnage (density-weighted, blanks unestimated) and
 //     the filter run on the workers and match brute force. ──
-{
+if (take()) {
   const pd2 = await mkPage('sm2dmcol');
   const dc = await pd2.evaluate(async () => {
     const M = window._micro, q = (x2) => document.querySelector(x2);
@@ -3509,7 +3520,7 @@ await p.close();
 //     half-second Morton-sort + packing stalls), the compact set holds exactly the
 //     matches, a SUPERSEDED filter's late chunks never land in the next one's set,
 //     and the pin tee only runs when its columns fit the budget. ──
-{
+if (take()) {
   const pq3 = await mkPage('sm2comp');
   const cp = await pq3.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3595,7 +3606,7 @@ await p.close();
 //     (src/valuetex.js): no re-read, the picture the re-stream would draw, the range
 //     the column's, blanks at the low end; the same on CSV (its line index's runs,
 //     in the renderer's numbering). ──
-{
+if (take()) {
   const pq4 = await mkPage('sm2vtex');
   const vt = await pq4.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3665,7 +3676,7 @@ await p.close();
 //     a pick then READS it — and reads exactly what a rendered pick finds, with and
 //     without a section; a moved camera throws it away. Parquet rows come from the
 //     row worker, the same values as the page's read. ──
-{
+if (take()) {
   const pq5 = await mkPage('sm2pickcap');
   const pc = await pq5.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3729,7 +3740,7 @@ await p.close();
 //     runs of 1024 records so the file is several runs. Stats (moments to 1e-12),
 //     swath (1e-9), the filter's mask (bit for bit, qualified values included), and
 //     the value texture (range + picture). ──
-{
+if (take()) {
   const pc = await mkPage('sm2csvcol');
   const r = await pc.evaluate(async () => {
     const M = window._micro, W = window.micro;
@@ -3823,7 +3834,7 @@ await p.close();
 //     discovery that counted a blank-coordinate row as a block. Forged here (the
 //     saved v3 sidecar rewritten as v2 with that row's count back in); the reopen
 //     must not trust it — rediscovered, the true count, the drop reported. ──
-{
+if (take()) {
   let s = 'X,Y,Z,AU\n';
   for (let i = 0; i < 3000; i++) s += `${i === 10 ? '' : 5 + (i % 30) * 10},${5 + ((i / 30) | 0) * 10},5,${i}\n`;
   let pf = await mkPage('sm2oldcsv');
@@ -3857,7 +3868,7 @@ await p.close();
 //     threshold (<0.05 may read as 0.025, 0.05, 0 or blank: never skipped); GT with
 //     a series filter and stats over a selection skip zones and equal the unzoned
 //     answer; the zones survive a save + reopen (the sidecar). ──
-{
+if (take()) {
   const pz = await mkPage('sm2zones');
   const zr = await pz.evaluate(async () => {
     const M = window._micro;
@@ -3944,7 +3955,7 @@ await p.close();
 // ── §59: FILE TEXT IS NEVER MARKUP (src/html.js). A CSV whose column name, a
 //     category value and a cell carry an onerror payload: the colour-by list, the
 //     record panel and the file info render it as TEXT, and nothing runs. ──
-{
+if (take()) {
   const px = await mkPage('sm2xss');
   const xr = await px.evaluate(async () => {
     const M = window._micro, bad = (n) => `<img src=x onerror="window.__xss=(window.__xss||0)+${n}">`;
@@ -3976,7 +3987,7 @@ await p.close();
 //     and key), the swath zebra and the column stats each give every record ITS
 //     OWN value. Each walked raw rows and counted the dropped one, so every later
 //     block took its neighbour's joined value. ──
-{
+if (take()) {
   const pr = await mkPage('sm2recs');
   const rr = await pr.evaluate(async () => {
     const M = window._micro;
@@ -4022,7 +4033,7 @@ await p.close();
 //     never a save failure"), the project marked saved. Forced honestly: the
 //     layer's `.cols/` folder replaced by a FILE of that name. Then the other
 //     side: a stored column's file deleted → the reopen reports it. ──
-{
+if (take()) {
   const pc = await mkPage('sm2colfail');
   await pc.evaluate(async () => {
     const M = window._micro;
@@ -4071,7 +4082,7 @@ await p.close();
 //     path: the file's rows come out in Morton order, every block exactly once,
 //     each value still with its own coordinates, and a materialized column
 //     permuted with them. The unsorted export streams in file order. ──
-{
+if (take()) {
   const pg = await mkPage('sm2msort');
   const r = await pg.evaluate(async () => {
     const M = window._micro;
@@ -4122,7 +4133,7 @@ await p.close();
 //     Closing the tab with a layer's own painted / calculated column asks (the
 //     browser's beforeunload prompt) and without one doesn't; removing such a
 //     layer from the UI asks, Cancel keeps it, Remove removes it. ──
-{
+if (take()) {
   const mkLayer = async (pg, withCol) => pg.evaluate(async (wc) => {
     const M = window._micro;
     let s = 'X,Y,Z,AU\n'; for (let i = 0; i < 27; i++) s += `${(i % 3) * 10},${((i / 3 | 0) % 3) * 10},${(i / 9 | 0) * 10},${i}\n`;
@@ -4159,7 +4170,7 @@ await p.close();
 // ── §64: LONG JOBS STOP. Export and optimize show the footer's cancel while they
 //     run; a click mid-way writes nothing (export) and leaves the layer exactly
 //     as it was (optimize); the button hides again. ──
-{
+if (take()) {
   const pc = await mkPage('sm2cancel');
   const r = await pc.evaluate(async () => {
     const M = window._micro, b = document.querySelector('#metaCancel');
@@ -4198,7 +4209,7 @@ await p.close();
 //     the lattice from its coordinates, a filter over its grades on the workers
 //     (the delimited source normalizes the same way) and on the row path, equal
 //     to brute force; and through a project save + reopen (the sidecar keeps it). ──
-{
+if (take()) {
   const pd = await mkPage('sm2dec');
   const r = await pd.evaluate(async () => {
     const M = window._micro;
@@ -4229,7 +4240,7 @@ await p.close();
 // ── §66: UNDO beyond paint (src/undo.js). Ctrl+Z puts back a selection that was
 //     replaced or cleared, a filter changed from the box, and a calc column
 //     removed from the calc window — in reverse order; with nothing left it says so. ──
-{
+if (take()) {
   const pu = await mkPage('sm2undo');
   const r = await pu.evaluate(async () => {
     const M = window._micro, z = () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
@@ -4279,7 +4290,7 @@ await p.close();
 //     a grade column; clicking a finding goes to the hole and selects its
 //     intervals in every table; the limits re-run it; the TSV carries every
 //     finding and says what it ran on. ──
-{
+if (take()) {
   const pq = await mkPage('sm2dhqa');
   const r = await pq.evaluate(async () => {
     const M = window._micro, f = (s, nm) => new File([s], nm, { type: 'text/csv' });
@@ -4341,7 +4352,7 @@ await p.close();
 //     tonnage in "no grade" so the total is the model's. Every cell equals a
 //     brute force, columnar (workers) and row path alike; cumulative, flip,
 //     selection scope and the long-form TSV agree with it. ──
-{
+if (take()) {
   const px = await mkPage('sm2xtab');
   const r = await px.evaluate(async () => {
     const M = window._micro, out = {};
@@ -4416,7 +4427,7 @@ await p.close();
 //     cells add up to n, the row path giving the same grid; log axes count the
 //     zeros off. Q-Q: a column against its own subset — the quantiles the exact
 //     ones within the digest's error — and a drillhole layer as a side. ──
-{
+if (take()) {
   const px = await mkPage('sm2xy');
   const r = await px.evaluate(async () => {
     const M = window._micro, out = {};
@@ -4475,7 +4486,7 @@ await p.close();
 //     declared and rotated, every record at its expected centroid (W fastest, as
 //     the format orders cells) with its own value and category; the line set
 //     named as not read. ──
-{
+if (take()) {
   const po = await mkPage('sm2omf');
   const r = await po.evaluate(async () => {
     const M = window._micro, out = {};
@@ -4537,7 +4548,7 @@ await p.close();
 //     the origin: watertight, one shell, its exact volume and the tonnage at a
 //     density; the same box with a triangle missing: not closed, the hole found
 //     and the camera stepping to it; a per-face soup welds into the same solid. ──
-{
+if (take()) {
   const pm = await mkPage('sm2meshqa');
   const r = await pm.evaluate(async () => {
     const M = window._micro, out = {};
@@ -4578,6 +4589,6 @@ await p.close();
   chk(`mesh QA: a per-face soup welds into the solid (${r.c.welded} welded, watertight ${r.c.watertight}, volume ${r.c.volume}); without the weld: ${r.c2.shells} loose shells`, r.c.welded === 28 && r.c.watertight && Math.abs(r.c.volume - 6000) < 1e-6 && !r.c2.watertight && r.c2.shells === 12);
 }
 
-console.log(ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL');
+console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

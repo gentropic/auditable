@@ -31,6 +31,7 @@
     "test:micro:structure": "node test/micro-structure-smoke.mjs && node test/micro-structure-smoke.mjs --built",
     "test:lamina:host": "node test/lamina-host-smoke.mjs",
     "test:micro:all": "npm run test:micro && npm run test:micro2 && npm run test:micro2:built && npm run test:micro:wfr && npm run test:micro:host && npm run test:micro:mobile && npm run test:micro:shell && npm run test:micro:structure",
+    "test:micro:fast": "node test/micro-smokes.mjs",
     "test:micro:wfr": "node test/micro-wfr-smoke.mjs",
     "test:condenser:offset": "node test/condenser-offset.mjs",
     "test:wuffle": "node test/wuffle-smoke.mjs",
