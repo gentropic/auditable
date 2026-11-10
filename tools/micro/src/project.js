@@ -42,9 +42,9 @@ export function markProjectDirty() {
 // layer-menu "Optimize to spatial Parquet"), behind a one-time remembered
 // confirm. Painting stays editable. The manual menu action is the per-layer
 // escape hatch; the remembered choice is resettable from Tools → Settings.
-export let _autoOptimize = (() => { try { return localStorage.getItem('micro.autoOptimize'); } catch { return null; } })();
+export let _autoOptimize = (() => { try { return localStorage.getItem('micro.autoOptimize'); } catch { return null; } })();   // 'on' | 'off' | null (unasked)
 
-export function setAutoOptimize(v) { _autoOptimize = v; try { if (v == null) localStorage.removeItem('micro.autoOptimize'); else localStorage.setItem('micro.autoOptimize', v); } catch { /* private mode */ } }
+export function setAutoOptimize(v) { _autoOptimize = v; try { if (v == null) localStorage.removeItem('micro.autoOptimize'); else localStorage.setItem('micro.autoOptimize', v); } catch { /* private mode */ } }   // null = ask again
 
 export let _autoOptimizeSkip = false;
 
@@ -112,9 +112,9 @@ export async function maybeAutoOptimize() {
 // re-open in place from their element — same layer id, label, tint, visibility, legend; lineage
 // records the store. Asked once (remembered); Tools → Settings changes it. Source files already in
 // the project are KEPT: packing never deletes data on its own (Tidy is the explicit verb).
-export let _autoPack = (() => { try { return localStorage.getItem('micro.autoPackMeshes'); } catch { return null; } })();
+export let _autoPack = (() => { try { return localStorage.getItem('micro.autoPackMeshes'); } catch { return null; } })();   // 'on' | 'off' | null
 
-export function setAutoPack(v) { _autoPack = v; try { if (v == null) localStorage.removeItem('micro.autoPackMeshes'); else localStorage.setItem('micro.autoPackMeshes', v); } catch { /* private mode */ } }
+export function setAutoPack(v) { _autoPack = v; try { if (v == null) localStorage.removeItem('micro.autoPackMeshes'); else localStorage.setItem('micro.autoPackMeshes', v); } catch { /* private mode */ } }   // null = ask again
 
 export let _autoPackSkip = false;
 

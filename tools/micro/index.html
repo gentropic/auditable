@@ -1220,6 +1220,29 @@ import { exportGridAsc, writePlyMeshBytes, exportMeshes, openMeshExportDialog, w
 import { layerWorldBbox, openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo, setGridtoolsHooks } from './src/gridtools.js';
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
 import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
+import { columnValues, filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, renderExprHL, syncHL } from './src/exprfield.js';
+import { _fdOpen, fdBounds, fdValues, fdNum, fdRenderChain, fdRenderLeaf, renderFilterDrawer, toggleFilterDrawer, setFilterDrawerHooks } from './src/filter-drawer.js';
+import { HELP_KEYS, HELP_TOUCH, HELP_ANALYSIS, showAbout, showHelp, checkForUpdates, sealedInfo, setHelpHooks } from './src/help.js';
+import { openCalcWindow, setCalcHooks } from './src/calc.js';
+import { showMemoryInfo, showFileInfo, setFileinfoHooks } from './src/fileinfo.js';
+import { openSettingsWindow, setSettingsHooks } from './src/settings.js';
+import { openLineageWindow, lineageReportHtml, exportLineageReport, setLineageUiHooks } from './src/lineage-ui.js';
+import { _recents, _remember, refreshRecents, addRecent, clearRecents, setRemember, openRecent, openFilePicker, setRecentsHooks } from './src/recents.js';
+import { renameActiveLayer, openBatchRename } from './src/rename.js';
+// src/recents.js reaches back into the app through these
+setRecentsHooks({ get _fileHandles() { return _fileHandles; } });
+// src/lineage-ui.js reaches back into the app through these
+setLineageUiHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; }, deliverBlob });
+// src/settings.js reaches back into the app through these
+setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { return _nlOn; }, get _secFollow() { return _secFollow; }, get _selStick() { return _selStick; }, nlEnsureTrained, nlSetEnabled, requestRender, setBlockEdges, setSelStick });
+// src/fileinfo.js reaches back into the app through these
+setFileinfoHooks({ get frame() { return frame; }, get renderer() { return renderer; } });
+// src/calc.js reaches back into the app through these
+setCalcHooks({ refilterLayer, setLayerColorSel });
+// src/help.js reaches back into the app through these
+setHelpHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
+// src/filter-drawer.js reaches back into the app through these
+setFilterDrawerHooks({ syncFilterClear });
 // src/bygeom-ui.js reaches back into the app through these
 setBygeomUiHooks({ layerShown });
 // src/gridtools.js reaches back into the app through these
@@ -2581,318 +2604,6 @@ setDhQaHooks({
   deliverBlob: (blob, name) => deliverBlob(blob, name),
 });
 
-// ── lineage inspector + report ────────────────────────────────────────────────
-const LINEAGE_LABEL = { open: 'opened', join: 'spatial join', reconcile: 'reconcile', optimize: 'optimize', keyjoin: 'key join', 'grid-cover': 'common grid', 'grid-new': 'new grid', export: 'export' };
-function lineageSummary(lin) {
-  const p = lin.params || {};
-  switch (lin.op) {
-    case 'open': return lin.origin ? `${lin.origin.file}${lin.origin.bytes ? ` · ${fmtSize(lin.origin.bytes)}` : ''}` : 'file';
-    case 'join': return `→ ${p.target || 'target'} grid · ${(p.columns || []).map((c) => c.out || c.name).join(', ')}`;
-    case 'reconcile': return `${p.of || ''} on ${p.grade || ''} · common ${p.target === 'common-finest' ? 'finest' : ''}`;
-    case 'optimize': return `→ Morton spatial Parquet${p.blocks ? ` · ${p.blocks.toLocaleString()} blocks` : ''}`;
-    case 'keyjoin': return `${p.leftKey} = ${p.rightKey} · +${(p.bring || []).join(', ')} · ${p.dup}`;
-    case 'grid-cover': return `${p.resolution} · ${(p.count || []).join('×')} @ ${(p.block || []).join('×')} m`;
-    case 'grid-new': return `${(p.count || []).join('×')} @ ${(p.block || []).join('×')} m`;
-    case 'export': return `${p.format}${p.codec ? ' ' + p.codec : ''}${p.filter ? ` · filter: ${p.filter}` : ''}${p.spatial ? ' · Morton' : ''}`;
-    default: return '';
-  }
-}
-function renderLineageTree(container, lin, depth) {
-  const row = document.createElement('div'); row.className = 'lin-row'; row.style.paddingLeft = (depth * 15 + 2) + 'px';
-  const op = document.createElement('span'); op.className = 'lin-op'; op.textContent = LINEAGE_LABEL[lin.op] || lin.op;
-  const sum = document.createElement('span'); sum.className = 'lin-sum'; sum.textContent = lineageSummary(lin);
-  const when = document.createElement('span'); when.className = 'lin-when'; when.textContent = lin.at ? new Date(lin.at).toLocaleString() : '';
-  when.title = lin.build ? `build ${lin.build}` : '';
-  row.append(op, sum, when); container.appendChild(row);
-  for (const s of lin.sources || []) renderLineageTree(container, s, depth + 1);
-}
-const _linWins = new Map();
-// ── ƒ CALCULATIONS window — the calc-column authoring workbench (Leapfrog's
-// calculations-editor shape): the column list on a left rail, ONE expression
-// editor on the right — multiline, highlighted, live-validated against the
-// FULL schema (base + stored + the OTHER ƒ columns, so calc-on-calc composes;
-// self-reference is excluded). Typing the expression is the primary interface;
-// the projection widgets (constant sliders, if-ladder case table) layer on top.
-const _calcWins = new Map();
-function openCalcWindow(L, selIdx) {
-  if (!L || !layerTableHeader(L)) { $('#meta').textContent = 'calculations: this layer has no column table'; return; }
-  const ex = _calcWins.get(L.id);
-  if (ex) { raiseWindow(ex.el); if (selIdx != null) ex.select(selIdx); return; }
-  const win = floatWin({ title: `ƒ calculations · ${L.label || L.name}`, sub: '', x: 120, y: 100, w: 620, h: 330, onClose: () => _calcWins.delete(L.id) });
-  win.body.style.cssText += 'display:flex;flex-direction:column;';
-  const wrap = document.createElement('div'); wrap.className = 'cw-wrap'; wrap.style.cssText = 'flex:1;min-height:0;';
-  const rail = document.createElement('div'); rail.className = 'cw-rail';
-  const main = document.createElement('div'); main.className = 'cw-main';
-  wrap.append(rail, main);
-  win.body.appendChild(wrap);
-  let sel = selIdx != null ? selIdx : ((L.calcCols || []).length ? 0 : -1);   // -1 = the add form
-  const select = (k) => { sel = k; render(); };
-  function invalidate() {
-    L._calcFns = null; L._colStats = null; markProjectDirty();
-    if (L.filterExpr) refilterLayer(L);                     // a live filter picks up the new definition (any layer)
-    if (L.id === S.activeId) addPaintColorOptions(L);       // ƒ color-by options track the column set
-    if (calcSelOf(L)) { applyRamp(L, true); syncRuleMode(L); }   // a live ƒ color re-realizes (closure-hash gated)
-    renderProps();
-  }
-  function render() {
-    const cols = L.calcCols || [];
-    if (sel >= cols.length) sel = cols.length ? cols.length - 1 : -1;
-    rail.textContent = '';
-    cols.forEach((c, k) => {
-      const it = document.createElement('div'); it.className = 'cw-item' + (k === sel ? ' on' : '');
-      const fx = document.createElement('span'); fx.className = 'fx'; fx.textContent = 'ƒ';
-      it.append(fx, document.createTextNode(c.name)); it.title = c.expr;
-      it.onclick = () => select(k);
-      rail.appendChild(it);
-    });
-    const add = document.createElement('div'); add.className = 'cw-item' + (sel === -1 ? ' on' : ''); add.textContent = '+ add…';
-    add.onclick = () => select(-1);
-    rail.appendChild(add);
-    renderEditor();
-  }
-  function renderEditor() {
-    main.textContent = '';
-    const h = layerTableHeader(L);
-    const cur = sel >= 0 ? L.calcCols[sel] : null;
-    const nameRow = document.createElement('div'); nameRow.className = 'cw-row';
-    const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.placeholder = 'name (e.g. FE_EQ)'; nameIn.style.flex = '1';
-    const tySel = document.createElement('select');
-    for (const [v, t] of [['auto', 'auto'], ['number', 'number'], ['string', 'text']]) tySel.append(new Option(t, v));
-    if (cur) { nameIn.value = cur.name; tySel.value = cur.ty === 'string' ? 'string' : 'number'; }
-    nameRow.append(nameIn, tySel);
-    const edwrap = document.createElement('div'); edwrap.className = 'cw-edwrap';
-    const edhl = document.createElement('div'); edhl.className = 'exprhl'; edhl.setAttribute('aria-hidden', 'true');
-    const ed = document.createElement('textarea'); ed.rows = 3; ed.spellcheck = false; ed.wrap = 'off';
-    ed.placeholder = 'value expression…  e.g.  FE + 0.4 * MN   # comments ok';
-    if (cur) ed.value = cur.expr;
-    edwrap.append(edhl, ed);
-    const err = document.createElement('div'); err.className = 'cw-err';
-    const proj = document.createElement('div'); proj.className = 'cw-proj fdw';
-    const hint = document.createElement('div'); hint.className = 'cw-hint';
-    hint.textContent = 'a value expression over base + stored + other ƒ columns — if(cond, a, b) · bin(x, breaks…) · math + string fns · # comments';
-    const schemaFor = () => schemaExt(L, h).filter((c) => !cur || String(c.name).toLowerCase() !== String(cur.name).toLowerCase());
-    const check = () => {
-      const t = ed.value.trim();
-      if (!t) { ed.classList.remove('err'); err.textContent = ''; return false; }
-      const v = validate(t, schemaFor());
-      ed.classList.toggle('err', !v.ok);
-      err.textContent = v.ok ? '' : ((v.errors[0] && v.errors[0].message) || 'invalid expression');
-      return v.ok;
-    };
-    const sync = () => syncHL(ed, edhl);
-    exprField(ed, () => ({ columns: schemaFor(), values: L.id === S.activeId ? columnValues : () => [] }));   // the phone's strip
-    for (const ev of ['scroll', 'keyup', 'click']) ed.addEventListener(ev, sync);
-    ed.addEventListener('input', () => { sync(); if (check()) project(); });
-    // ── the PROJECTION: the expression rendered as widgets (same contract as the
-    // filter drawer — every element rewrites its own source span in the editor).
-    // An if() ladder projects as a CASE TABLE (condition | value — density by
-    // domain, recovery by lithology); anything else lists its numeric constants
-    // as sliders (tune a coefficient, watch a live filter/ramp move). Widget
-    // edits AUTO-SAVE an existing column (debounced); typed edits wait for save.
-    let cwSpans = []; let saveT = null;
-    const cwReplace = (sp, txt) => {
-      const s0 = ed.value, nt = s0.slice(0, sp.start) + txt + s0.slice(sp.end);
-      const delta = txt.length - (sp.end - sp.start);
-      for (const o of cwSpans) { if (o === sp) continue; if (o.start >= sp.end) { o.start += delta; o.end += delta; } else if (o.start <= sp.start && o.end >= sp.end) { o.end += delta; } }
-      sp.end = sp.start + txt.length;
-      ed.value = nt; sync(); check();
-      if (cur) { clearTimeout(saveT); saveT = setTimeout(() => doSave(true), 400); }
-    };
-    const cwCtx = { push: (sp) => cwSpans.push(sp), replace: cwReplace, rerender: () => project() };
-    const ladderOf = (n) => {
-      if (!(n && n.t === 'call' && n.fn === 'if')) return null;
-      const rows = []; let x = n;
-      while (x && x.t === 'call' && x.fn === 'if' && x.args.length === 3) { rows.push({ cond: x.args[0], val: x.args[1] }); x = x.args[2]; }
-      return { rows, els: x };
-    };
-    const numOf = (x) => (x && x.t === 'num' ? x.v : (x && x.t === 'neg' && x.e && x.e.t === 'num' ? -x.e.v : null));
-    function valCell(v, lo, hi) {                          // a value slot: number+slider / text / read-only expr
-      const cell = document.createElement('span'); cell.className = 'cw-val';
-      const nv = numOf(v);
-      if (nv != null && v.start != null) {
-        cwSpans.push(v);
-        const step = (hi - lo) / 200 || 0.01;
-        const sl = document.createElement('input'); sl.type = 'range'; sl.min = lo; sl.max = hi; sl.step = step; sl.value = nv;
-        const nb = document.createElement('input'); nb.type = 'number'; nb.step = 'any'; nb.value = fdNum(nv, step);
-        sl.oninput = () => { nb.value = fdNum(+sl.value, step); cwReplace(v, fdNum(+sl.value, step)); };
-        sl.onchange = () => project();
-        nb.onchange = () => { cwReplace(v, fdNum(+nb.value, step)); project(); };
-        cell.append(sl, nb);
-      } else if (v && v.t === 'str' && v.start != null) {
-        cwSpans.push(v);
-        const t = document.createElement('input'); t.type = 'text'; t.value = v.v; t.style.width = '90px';
-        t.onchange = () => { cwReplace(v, '"' + t.value.replace(/"/g, '') + '"'); project(); };
-        cell.appendChild(t);
-      } else {
-        const x = document.createElement('span'); x.className = 'fd-expr';
-        x.textContent = v && v.start != null ? ed.value.slice(v.start, v.end) : '…';
-        cell.appendChild(x);
-      }
-      return cell;
-    }
-    function project() {
-      proj.textContent = ''; cwSpans = [];
-      const t = ed.value.trim(); if (!t) return;
-      let ast = null; try { ast = parse(t); } catch { return; }
-      const lad = ladderOf(ast);
-      if (lad) {
-        const sect = document.createElement('div'); sect.className = 'cw-sect'; sect.textContent = 'cases'; proj.appendChild(sect);
-        const nums = [...lad.rows.map((r) => numOf(r.val)), numOf(lad.els)].filter((x) => x != null);
-        let lo = Math.min(...nums), hi = Math.max(...nums);
-        if (!nums.length || lo === hi) { const v = nums[0] || 0, sp2 = Math.max(1, Math.abs(v)); lo = v - sp2; hi = v + sp2; }
-        else { const pad = (hi - lo) * 0.5; lo -= pad; hi += pad; }
-        for (const r of lad.rows) {
-          const row = document.createElement('div'); row.className = 'cw-case';
-          const cond = document.createElement('div'); cond.className = 'cw-cond';
-          if (r.cond && (r.cond.t === 'and' || r.cond.t === 'or')) fdRenderChain(cond, r.cond, L, cwCtx);
-          else fdRenderLeaf(cond, r.cond, L, cwCtx);
-          row.append(cond, valCell(r.val, lo, hi));
-          proj.appendChild(row);
-        }
-        const erow = document.createElement('div'); erow.className = 'cw-case';
-        const elab = document.createElement('div'); elab.className = 'cw-else'; elab.textContent = 'else';
-        erow.append(elab, valCell(lad.els, lo, hi));
-        proj.appendChild(erow);
-        if (lad.els && lad.els.start != null) {            // add a case ABOVE the else (rewrites the else slot)
-          const at = { start: lad.els.start, end: lad.els.end };
-          cwSpans.push(at);
-          const addRow = document.createElement('div'); addRow.className = 'fd-row fd-add';
-          const selC = document.createElement('select');
-          selC.append(new Option('add case…', ''));
-          const mm = h.mapping || {}; const catName = mm.cat != null ? h.columns[mm.cat] : null;
-          if (catName) selC.append(new Option(catName, 'c:' + catName));
-          for (const c of numericColsOf(L)) selC.append(new Option(c, 'n:' + c));
-          selC.onchange = () => {
-            const v = selC.value; if (!v) return;
-            const col = v.slice(2);
-            let clause;
-            if (v[0] === 'c') { const vals = fdValues(L, col, []); clause = quoteIdent(col) + ' = "' + (vals[0] || '') + '"'; }
-            else { const [blo, bhi] = fdBounds(L, col, 0); clause = quoteIdent(col) + ' > ' + fdNum((blo + bhi) / 2, (bhi - blo) / 200 || 0.01); }
-            const elsTxt = ed.value.slice(at.start, at.end);
-            cwReplace(at, 'if(' + clause + ', ' + elsTxt + ', ' + elsTxt + ')');
-            project();
-          };
-          addRow.appendChild(selC);
-          proj.appendChild(addRow);
-        }
-        return;
-      }
-      // constants: every numeric literal becomes a tunable slider, labelled by context
-      const lits = [];
-      (function walk(n) {
-        if (!n || typeof n !== 'object') return;
-        if (numOf(n) != null && n.start != null) { lits.push(n); return; }
-        for (const k of ['l', 'r', 'e', 'lo', 'hi']) if (n[k]) walk(n[k]);
-        if (n.args) n.args.forEach(walk);
-        if (n.set) n.set.forEach(walk);
-      })(ast);
-      if (!lits.length || lits.length > 8) return;
-      const sect = document.createElement('div'); sect.className = 'cw-sect'; sect.textContent = 'constants'; proj.appendChild(sect);
-      for (const v of lits) {
-        const nv = numOf(v), sp2 = Math.max(1, Math.abs(nv) * 2);
-        const row = document.createElement('div'); row.className = 'cw-case';
-        const klab = document.createElement('span'); klab.className = 'cw-klabel';
-        klab.textContent = (v.start > 12 ? '…' : '') + ed.value.slice(Math.max(0, v.start - 12), Math.min(ed.value.length, v.end + 12)).replace(/\n/g, ' ') + (v.end + 12 < ed.value.length ? '…' : '');
-        row.append(klab, valCell(v, nv - sp2, nv + sp2));
-        proj.appendChild(row);
-      }
-    }
-    async function doSave(auto) {
-      const name = nameIn.value.trim(), expr = ed.value.trim();
-      const taken = new Set([...h.columns, ...(L.paintCols || []).map((c) => c.name), ...(L.calcCols || []).filter((_, i) => i !== sel).map((c) => c.name)].map((n) => n.toLowerCase()));
-      if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) { err.textContent = 'name: letters/digits/underscore, not starting with a digit'; return; }
-      if (taken.has(name.toLowerCase())) { err.textContent = `"${name}" already exists`; return; }
-      if (!check()) return;
-      try { compileValue(expr, schemaFor(), { decimal: '.' }); } catch (e) { err.textContent = e.message; return; }
-      let ty = tySel.value;
-      if (ty === 'auto') {                                 // infer from a sample row when the expr reads base columns only
-        ty = 'number';
-        try {
-          const ds = deps(expr).map((d) => String(d).toLowerCase());
-          if (ds.every((d) => h.columns.some((c) => String(c).toLowerCase() === d))) {
-            const fnB = compileValue(expr, blockSchema(h), { decimal: '.' });
-            const sample = await sampleRow(L);
-            if (sample) { const val = fnB(sample); ty = typeof val === 'number' && Number.isFinite(val) ? 'number' : 'string'; }
-          }
-        } catch { /* number by default */ }
-      }
-      const entry = { name, expr, ty };
-      L.calcCols = L.calcCols || [];
-      if (sel >= 0) L.calcCols[sel] = entry; else { L.calcCols.push(entry); sel = L.calcCols.length - 1; }
-      invalidate();
-      if (auto) { const it = rail.children[sel]; if (it) it.title = expr; }   // keep focus/drag alive — no rebuild
-      else render();
-      $('#meta').textContent = `ƒ ${name} ${cur ? 'updated' : 'added'} — it works in the filter, color ramps, GT/swath, the record panel, and exports`;
-    }
-    const ctr = document.createElement('div'); ctr.className = 'awin-ctrls'; ctr.style.cssText = 'border-top:none;background:none;padding:5px 0;';
-    const saveB = document.createElement('button'); saveB.className = 'awin-btn btn-p'; saveB.textContent = cur ? 'save' : 'add column';
-    saveB.onclick = () => doSave(false);
-    ctr.appendChild(saveB);
-    if (cur) {
-      const rmB = document.createElement('button'); rmB.className = 'awin-btn'; rmB.textContent = 'remove';
-      rmB.onclick = () => { const gone = L.calcCols[sel], at = sel; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(at, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); }, { redo: () => { const k = L.calcCols.indexOf(gone); if (k >= 0) { L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; L._calcDisplay = null; markProjectDirty(); refreshProps(); } } });if (colorSelOf(L) === 'calc:' + cur.name) setLayerColorSel(L, 'elev'); L.calcCols.splice(sel, 1); L._calcDisplay = null; sel = -1; invalidate(); render(); };
-      const matB = document.createElement('button'); matB.className = 'awin-btn'; matB.textContent = 'materialize → stored';
-      matB.title = 'compute once, store as a real column (survives even if inputs are removed; faster to scan)';
-      matB.onclick = () => materializeCalcCol(L, cur.name);
-      ctr.append(rmB, matB);
-    }
-    const spacer = document.createElement('span'); spacer.className = 'spacer'; spacer.style.flex = '1';
-    ctr.appendChild(spacer);
-    if ((L.calcCols || []).length) {
-      const rcp = document.createElement('button'); rcp.className = 'awin-btn rcp'; rcp.textContent = 'save as recipe…';
-      rcp.title = 'save this calc-column set as a re-runnable recipe — apply the standard derived columns to any fresh model';
-      rcp.onclick = () => saveRecipe('calccols', { layer: L.name, cols: L.calcCols.map((c) => ({ name: c.name, expr: c.expr, ty: c.ty })) }, `${(L.label || L.name).replace(/\.[^.]+$/, '')} columns`);
-      ctr.appendChild(rcp);
-    }
-    main.append(nameRow, edwrap, err, proj, hint, ctr);
-    requestAnimationFrame(() => { sync(); project(); });
-  }
-  render();
-  _calcWins.set(L.id, { el: win.el, select });
-}
-function openLineageWindow(L) {
-  if (!L || !L.lineage) { $('#meta').textContent = 'lineage: none recorded'; return; }
-  const ex = _linWins.get(L.id); if (ex) { focusWindow(ex.el); return; }
-  const win = floatWin({ title: `lineage · ${L.label || L.name}`, sub: '', x: 100, y: 110, w: 520, h: 320, onClose: () => _linWins.delete(L.id) });
-  win.body.style.cssText += 'display:flex;flex-direction:column';
-  const tree = document.createElement('div'); tree.className = 'lin-tree'; tree.style.cssText = 'flex:1;overflow:auto;padding:6px 4px';
-  renderLineageTree(tree, L.lineage, 0);
-  const foot = document.createElement('div'); foot.className = 'awin-ctrls rt';
-  const cpy = document.createElement('button'); cpy.className = 'awin-btn'; cpy.textContent = 'Copy JSON'; cpy.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(L.lineage, null, 2)); $('#meta').textContent = 'lineage JSON copied'; };
-  const rep = document.createElement('button'); rep.className = 'awin-btn btn-p'; rep.textContent = 'Export report (HTML)…'; rep.onclick = () => exportLineageReport(L);
-  foot.append(cpy, rep);
-  win.body.append(tree, foot);
-  _linWins.set(L.id, win);
-}
-function lineageReportHtml(L) {
-  const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  const rows = [];
-  const walk = (lin, depth) => {
-    rows.push(`<tr><td style="padding-left:${depth * 20 + 6}px"><b>${esc(LINEAGE_LABEL[lin.op] || lin.op)}</b></td><td>${esc(lineageSummary(lin))}</td><td class="w">${lin.at ? esc(new Date(lin.at).toLocaleString()) : ''}</td><td class="w">${esc(lin.build || '')}</td></tr>`);
-    for (const s of lin.sources || []) walk(s, depth + 1);
-  };
-  walk(L.lineage, 0);
-  return `<!doctype html><html><head><meta charset="utf-8"><title>micro lineage — ${esc(L.label || L.name)}</title>
-<style>body{font:13px/1.5 system-ui,sans-serif;color:#1a1a1a;max-width:900px;margin:2rem auto;padding:0 1rem}
-h1{font-size:18px;border-bottom:2px solid #c8722e;padding-bottom:4px}.meta{color:#666;font-size:12px}
-table{border-collapse:collapse;width:100%;margin-top:1rem;font-size:12px}td{border-bottom:1px solid #eee;padding:4px 8px;vertical-align:top}
-td.w{color:#888;white-space:nowrap;font-family:monospace;font-size:11px}
-details{margin-top:1.5rem}pre{background:#f6f6f4;padding:8px;overflow:auto;font-size:11px}</style></head>
-<body><h1>Provenance — ${esc(L.label || L.name)}</h1>
-<p class="meta">Derivation trail for a micro block model. Generated ${esc(new Date().toLocaleString())} · micro ${esc(__MICRO_BUILD__)}.</p>
-<table><thead><tr><td><b>step</b></td><td><b>detail</b></td><td class="w">when</td><td class="w">build</td></tr></thead><tbody>${rows.join('')}</tbody></table>
-<details><summary>machine-readable lineage (JSON)</summary><pre>${esc(JSON.stringify(L.lineage, null, 2))}</pre></details>
-</body></html>`;
-}
-function exportLineageReport(L) {
-  if (!L || !L.lineage) return;
-  const blob = new Blob([lineageReportHtml(L)], { type: 'text/html' });
-  const name = (L.label || L.name).replace(/\.[^.]+$/, '') + '.lineage.html';
-  deliverBlob(blob, name);
-  window._lastReport = blob;
-  $('#meta').textContent = `lineage report → ${name}`;
-}
-
 // the by-geometry dialogs' buttons — assign domains, select by solid (src/bygeom-ui.js)
 $('#adCancel').onclick = adCancel; $('#adGo').onclick = adGo;
 $('#sbCancel').onclick = sbCancel; $('#sbRcp').onclick = sbRcp; $('#sbGo').onclick = sbGo;
@@ -3158,132 +2869,8 @@ async function refilterLayer(L, expr = L && L.filterExpr) {
   await applyBlockFilter(expr, L);
 }
 
-// ── autocomplete (lamina's engine over @gcu/expr complete()): columns, functions,
-// keywords, and DATA VALUES (the category dictionary — picking "HEMATITE" from the
-// list is how you dodge the bare-word-vs-quoted footgun). ──
-function columnValues(name) {
-  const h = (activeDocs().blockDoc || activeDocs().dhDoc) && (activeDocs().blockDoc || activeDocs().dhDoc).header;
-  if (!h || !h.categories) return [];
-  const lc = String(name).toLowerCase();
-  const catName = h.mapping.cat != null ? h.columns[h.mapping.cat] : null;
-  return catName && catName.toLowerCase() === lc ? h.categories : [];
-}
-const filterCtx = () => { const d = activeDocs(), fd = d.blockDoc || d.dhDoc; return fd ? { columns: schemaExt(activeLayer(), fd.header), values: columnValues } : null; };
-const _ac = { input: null, res: null, sel: 0, suppress: false };
-function attachAutocomplete(input, getCtx) {
-  input.addEventListener('input', () => acRefresh(input, getCtx));
-  input.addEventListener('keydown', (e) => acKeydown(e, input), true);   // capture: beat apply-on-Enter
-  input.addEventListener('click', () => acRefresh(input, getCtx));
-  input.addEventListener('blur', () => setTimeout(acClose, 120));        // delay so a popup click lands first
-}
-function acRefresh(input, getCtx) {
-  if (_ac.suppress || (_exprFields.has(input) && _isMobile())) return;   // a phone has the strip instead
-  const ctx = getCtx(); if (!ctx) return acClose();
-  const res = complete(input.value, input.selectionStart, ctx);
-  if (!res.options.length) return acClose();
-  _ac.input = input; _ac.res = res; _ac.sel = 0; acRender(input);
-}
-function acRender(input) {
-  const pop = $('#acPopup'); pop.replaceChildren();
-  _ac.res.options.forEach((o, i) => {
-    const row = document.createElement('div'); row.className = 'ac-item' + (i === _ac.sel ? ' sel' : '');
-    const v = document.createElement('span'); v.className = 'ac-val ac-' + o.kind; v.textContent = o.value;
-    const k = document.createElement('span'); k.className = 'ac-kind'; k.textContent = o.detail || o.kind;
-    row.appendChild(v); row.appendChild(k);
-    row.onmousedown = (e) => { e.preventDefault(); acAccept(i); };
-    pop.appendChild(row);
-  });
-  const r = input.getBoundingClientRect();
-  pop.style.left = Math.min(r.left, innerWidth - 300) + 'px';
-  pop.style.top = (r.bottom + 2) + 'px';
-  pop.style.minWidth = Math.min(Math.max(r.width, 180), 320) + 'px';
-  pop.classList.add('show');
-}
-function acClose() { const pop = $('#acPopup'); if (pop) pop.classList.remove('show'); _ac.res = null; }
-function acKeydown(e, input) {
-  if (!_ac.res || !$('#acPopup').classList.contains('show')) return;     // closed: Enter applies as usual
-  const n = _ac.res.options.length;
-  if (e.key === 'ArrowDown') { e.preventDefault(); e.stopImmediatePropagation(); _ac.sel = (_ac.sel + 1) % n; acRender(input); }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); _ac.sel = (_ac.sel - 1 + n) % n; acRender(input); }
-  else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); e.stopImmediatePropagation(); acAccept(_ac.sel); }
-  else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); acClose(); }
-}
-function acAccept(i) {
-  const input = _ac.input, res = _ac.res; if (!res) return;
-  const o = res.options[i]; if (!o) return;
-  const spaceAfter = (o.kind === 'operator' || o.kind === 'keyword') && !o.value.endsWith('(');
-  const ins = o.value + (spaceAfter ? ' ' : '');
-  input.value = input.value.slice(0, res.from) + ins + input.value.slice(res.to);
-  const caret = res.from + ins.length;
-  input.focus(); input.setSelectionRange(caret, caret);
-  _ac.suppress = true; input.dispatchEvent(new Event('input')); _ac.suppress = false;
-  acClose();
-}
 attachAutocomplete($('#filter'), filterCtx);
 
-// ── the phone's EXPRESSION STRIP: a field registered here (the filter, the ƒ editor)
-// gets, while it has focus on a phone, a keys row (caret ◂ ▸ and the symbols a phone
-// keyboard hides — = > < ( ) " , …) and a suggestions row — the completer's own options
-// at the caret, so after a column it offers operators, after `=` the category values.
-// It takes the floating popup's place there. Chips act on click with mousedown
-// prevented, so the field keeps focus and the keyboard stays up. ──
-const _exprFields = new WeakMap();                         // field → () => completer ctx
-const XS_KEYS = ['=', '>', '<', '(', ')', '"', ',', '!=', '>=', '<=', '+', '-', '*', '/'];
-const XS_PAD = new Set(['=', '>', '<', '!=', '>=', '<=', '+', '-', '*', '/']);   // spaced both sides
-function exprField(el, getCtx) { _exprFields.set(el, getCtx); }
-const exprStripField = () => { const a = document.activeElement; return a && _exprFields.has(a) && _isMobile() ? a : null; };
-// put `txt` over [from, to) with the caret `back` chars before its end, then let the
-// field's own input listeners (highlight, validation, the strip) see it
-function xsInsert(el, from, to, txt, back = 0) {
-  el.value = el.value.slice(0, from) + txt + el.value.slice(to);
-  const c = from + txt.length - back;
-  el.setSelectionRange(c, c);
-  el.dispatchEvent(new Event('input'));
-}
-function xsKey(el, k) {
-  const v = el.value, a = el.selectionStart, b = el.selectionEnd;
-  if (k === '◂' || k === '▸') { const c = Math.max(0, Math.min(v.length, (k === '◂' ? Math.min(a, b) : Math.max(a, b)) + (a === b ? (k === '◂' ? -1 : 1) : 0))); el.setSelectionRange(c, c); return xsSync(); }
-  if (k === '"') {                                        // a pair, caret inside — or step over a closing one
-    if (a === b && v[a] === '"') { el.setSelectionRange(a + 1, a + 1); return xsSync(); }
-    return xsInsert(el, a, b, '""', 1);
-  }
-  if (k === ')' && a === b && v[a] === ')') { el.setSelectionRange(a + 1, a + 1); return xsSync(); }
-  if (XS_PAD.has(k)) {
-    const pre = a > 0 && !/\s/.test(v[a - 1]) ? ' ' : '';
-    const post = v[b] === ' ' ? '' : ' ';
-    return xsInsert(el, a, b, pre + k + post, post ? 0 : -1);   // over an existing space: land past it
-  }
-  xsInsert(el, a, b, k === ',' ? ', ' : k);
-}
-function xsAccept(el, res, o) {                            // a suggestion: acAccept's replace, plus a trailing
-  const tail = el.value[res.to];                           // space so the next row (operators) follows on
-  const opens = o.value.endsWith('(');
-  const ins = o.value + (opens || tail === ' ' || tail === ')' ? '' : ' ');
-  xsInsert(el, res.from, res.to, ins);
-}
-function xsSync() {
-  const el = exprStripField();
-  document.body.classList.toggle('expr-on', !!el);
-  if (!el) return;
-  acClose();
-  const strip = $('#exprStrip'), keys = strip.querySelector('.xs-keys'), sugg = strip.querySelector('.xs-sugg');
-  if (!keys.childElementCount) for (const k of ['◂', '▸', ...XS_KEYS]) {
-    const b = document.createElement('button'); b.type = 'button'; b.tabIndex = -1; b.textContent = k === '-' ? '−' : k; b.dataset.k = k;
-    if (k === '◂' || k === '▸') b.setAttribute('aria-label', k === '◂' ? 'caret left' : 'caret right');
-    keys.appendChild(b);
-  }
-  sugg.replaceChildren();
-  const ctx = _exprFields.get(el)();
-  const res = ctx ? complete(el.value, el.selectionStart, ctx) : { options: [] };
-  if (!res.options.length) { const s = document.createElement('span'); s.className = 'xs-none'; s.textContent = ctx ? 'no suggestions here — type, or use the keys above' : 'no columns'; sugg.appendChild(s); }
-  for (const o of res.options.slice(0, 60)) {
-    const b = document.createElement('button'); b.type = 'button'; b.tabIndex = -1; b.className = 'k-' + o.kind; b.textContent = o.value;
-    if (o.detail) b.title = o.detail;
-    b.onclick = () => xsAccept(el, res, o);
-    sugg.appendChild(b);
-  }
-  sugg.scrollLeft = 0;
-}
 {
   const strip = $('#exprStrip');
   strip.addEventListener('mousedown', (e) => e.preventDefault());   // keep the field's focus (and the keyboard)
@@ -3299,22 +2886,6 @@ function xsSync() {
 }
 exprField($('#filter'), filterCtx);
 
-// ── expr syntax highlighting (lamina's overlay pattern verbatim): a colored
-// layer driven by expr.tokenize behind a transparent-text input. Monospace +
-// matched padding makes it align by construction; we keep it scroll-synced. ──
-function renderExprHL(hl, src) {
-  if (!hl) return;
-  const toks = tokenize(src), parts = [];
-  let pos = 0;
-  for (const t of toks) {
-    if (t.start > pos) parts.push(src.slice(pos, t.start));
-    parts.push(html`<span class="hl-${t.kind}">${t.value}</span>`);
-    pos = t.end;
-  }
-  if (pos < src.length) parts.push(src.slice(pos));
-  setHTML(hl, html`${parts}`);
-}
-function syncHL(input, hl) { if (!hl) return; renderExprHL(hl, input.value); hl.scrollLeft = input.scrollLeft; hl.scrollTop = input.scrollTop || 0; }
 function syncFilterClear() { $('#filterWrap').classList.toggle('has', !!$('#filter').value); syncHL($('#filter'), $('#filterHL')); }
 $('#filter').addEventListener('input', syncFilterClear);
 $('#filterClear').onclick = () => {
@@ -3331,89 +2902,7 @@ $('#filter').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') filterStep($('#filter').value);
   else if (e.key === 'Escape') { $('#filter').value = ''; syncFilterClear(); filterStep(''); }
 });
-// ── the FILTER WIDGET DRAWER — @gcu/filterui, driven by micro's providers ────
-// The engine (span-surgical AST↔widget projection over the expression text) is
-// the shared package now; micro supplies the metadata providers (pinned
-// columns / parquet footers / band sidecars), the @gcu/expr services, the
-// highlight overlay, and the apply debounce. The calc window drives the same
-// row renderers with its own rewrite context, as before.
-let _fdOpen = false, _fdTimer = null, _fdDrawer = null;
-// numeric bounds for a column: pinned column → exact; parquet footers; band sidecars; else spread around v
-function fdBounds(L, col, v) {
-  const e = pinGet(L, col);
-  if (e && e.data) { let mn = Infinity, mx = -Infinity; const d = e.data; for (let i = 0; i < d.length; i++) { const x = d[i]; if (x === x) { if (x < mn) mn = x; if (x > mx) mx = x; } } if (mn <= mx) return [mn, mx]; }
-  const P = L.docs.blockDoc && L.docs.blockDoc.parquet;
-  if (P) { let mn = Infinity, mx = -Infinity; for (const rg of P.rowGroups) { const r = pqGroupRanges(rg)[String(col).toLowerCase()]; if (r) { if (r.min < mn) mn = r.min; if (r.max > mx) mx = r.max; } } if (mn <= mx) return [mn, mx]; }
-  const B = L._bands && L._bands.cols && L._bands.cols[String(col).toLowerCase()];
-  if (B) { let mn = Infinity, mx = -Infinity; for (let b = 0; b * 2 < B.length; b++) { const v0 = B[b * 2], v1 = B[b * 2 + 1]; if (v0 != null) { if (v0 < mn) mn = v0; if (v1 > mx) mx = v1; } } if (mn <= mx) return [mn, mx]; }
-  const sp = Math.max(1, Math.abs(v) * 2); return [v - sp, v + sp];
-}
-// category values for a column: pinned dict → header categories → just the current
-function fdValues(L, col, cur) {
-  const pc = (L.paintCols || []).find((c) => c.name === col && c.dict && c.dict.length);   // flag / derived categorical paint column
-  if (pc) return pc.dict.filter((x) => x !== '');
-  const e = pinGet(L, col); if (e && e.dict) return e.dict.filter((x) => x !== '');
-  const h = layerTableHeader(L); const mm = h && h.mapping;
-  if (h && h.categories && mm && mm.cat != null && String(h.columns[mm.cat]).toLowerCase() === String(col).toLowerCase()) return h.categories.slice();
-  return [...new Set(cur)];
-}
-// the add-row column picker: numeric columns + the mapped category + dict-coded paint columns
-function fdColumnsOf(AL) {
-  const nums = numericColsOf(AL); const h = layerTableHeader(AL); const mm = h.mapping || {};
-  const catName = mm.cat != null ? h.columns[mm.cat] : null;
-  const catPaint = (AL.paintCols || []).filter((c) => c.kind !== 'ratio' && c.dict && c.dict.length > 1);   // flag / derived categorical paint columns
-  const categorical = catName ? [catName] : [];
-  for (const c of catPaint) if (c.name !== catName) categorical.push(c.name);
-  return { numeric: nums, categorical };
-}
-const fdMetaFor = (L) => ({
-  boundsFor: (col, v) => fdBounds(L, col, v),
-  valuesFor: (col, cur) => fdValues(L, col, cur),
-  columns: () => fdColumnsOf(L),
-});
-// calc-window compatibility: the old inline renderers' signatures, now backed by the package
-const fdNum = fuiFmtNum;
-const fdRenderChain = (d, n, L, ctx, delSelf) => fuiRenderChain(d, n, fdMetaFor(L), { quoteIdent, ...ctx }, delSelf);
-const fdRenderLeaf = (d, leaf, L, ctx, del) => fuiRenderLeaf(d, leaf, fdMetaFor(L), { quoteIdent, ...ctx }, del);
-function fdDrawer() {
-  if (_fdDrawer) return _fdDrawer;
-  _fdDrawer = createFilterDrawer({
-    host: $('#fdrawer'),
-    expr: { parse, validate, quoteIdent },
-    meta: {                                                // live: always the ACTIVE layer
-      boundsFor: (col, v) => fdBounds(activeLayer(), col, v),
-      valuesFor: (col, cur) => fdValues(activeLayer(), col, cur),
-      columns: () => { const AL = activeLayer(); return AL && layerTableHeader(AL) ? fdColumnsOf(AL) : { numeric: [], categorical: [] }; },
-    },
-    schema: () => { const AL = activeLayer(); const h = AL && layerTableHeader(AL); return h ? schemaExt(AL, h) : undefined; },
-    highlight: (hl, text) => renderExprHL(hl, text),
-    apply: (text, source) => {
-      $('#filter').value = fuiFlatten(text); syncFilterClear();
-      clearTimeout(_fdTimer);
-      if (source === 'reset' || source === 'clear') applyBlockFilter(text);
-      else _fdTimer = setTimeout(() => applyBlockFilter(text), source === 'editor' ? 300 : 60);
-    },
-  });
-  return _fdDrawer;
-}
-function fdSrc() {
-  if (_fdOpen && _fdDrawer) return _fdDrawer.getText();
-  const L = activeLayer(); return (L && L.filterExpr) || $('#filter').value;
-}
-function renderFilterDrawer() { fdDrawer().render(); }
-function toggleFilterDrawer(force) {
-  const d = $('#fdrawer');
-  _fdOpen = force !== undefined ? force : !_fdOpen;
-  $('#filterWidgets').classList.toggle('on', _fdOpen);
-  $('#filterWidgets').textContent = _fdOpen ? '▴' : '▾';
-  if (!_fdOpen) { d.classList.remove('show'); return; }
-  const L = activeLayer();
-  fdDrawer().open((L && L.filterExpr) || $('#filter').value);
-  const r = $('#filterWrap').getBoundingClientRect();
-  d.style.left = Math.max(8, Math.min(innerWidth - 540, r.left)) + 'px';
-  d.style.top = (r.bottom + 4) + 'px';
-  d.classList.add('show');
-}
+
 $('#filterWidgets').onclick = () => toggleFilterDrawer();
 $('#filter').addEventListener('change', () => { if (_fdOpen) renderFilterDrawer(); });
 for (const ev of ['scroll', 'keyup', 'click', 'input']) $('#filter').addEventListener(ev, () => syncHL($('#filter'), $('#filterHL')));
@@ -3425,87 +2914,7 @@ for (const ev of ['scroll', 'keyup', 'click', 'input']) $('#filter').addEventLis
 // Transparent (shown on the empty state), clearable, disableable (File menu).
 // (_idb — the IndexedDB kv — lives in src/element-store.js)
 const _fileHandles = new WeakMap();                        // File → FileSystemFileHandle (picker/recents/project opens)
-const RECENTS_KEY = '__recents__', RECENTS_MAX = 12;
-let _recents = [];
-let _remember = (() => { try { return localStorage.getItem('micro.recents') !== 'off'; } catch { return true; } })();
-async function refreshRecents() { try { _recents = (_remember && (await _idb.get(RECENTS_KEY))) || []; } catch { _recents = []; } renderEmptyRecents(); }
-async function addRecent(file, handle) {
-  if (!_remember || !file) return;
-  try {
-    const key = file.name + ':' + file.size;
-    const list = (await _idb.get(RECENTS_KEY)) || [];
-    _recents = [{ name: file.name, size: file.size, mtime: file.lastModified || 0, handle: handle || null }]
-      .concat(list.filter((e) => e.name + ':' + e.size !== key)).slice(0, RECENTS_MAX);
-    await _idb.set(RECENTS_KEY, _recents);
-    renderEmptyRecents();
-  } catch { /* best-effort */ }
-}
-async function clearRecents() { try { await _idb.set(RECENTS_KEY, []); } catch { /* ignore */ } _recents = []; renderEmptyRecents(); }
-function setRemember(on) { _remember = on; try { localStorage.setItem('micro.recents', on ? 'on' : 'off'); } catch { /* ignore */ } if (on) refreshRecents(); else clearRecents(); }
-// Reopen a recent: with a handle → re-grant permission + getFile; without →
-// re-pick (we can't, and won't, silently re-read).
-async function openRecent(entry) {
-  closeMenu();
-  if (entry && entry.handle && entry.handle.getFile) {
-    try {
-      const h = entry.handle;
-      if (h.queryPermission) {
-        let perm = await h.queryPermission({ mode: 'read' });
-        if (perm !== 'granted' && h.requestPermission) perm = await h.requestPermission({ mode: 'read' });
-        if (perm !== 'granted') { $('#meta').textContent = 'permission denied — open it again'; return; }
-      }
-      const f = await h.getFile();
-      addRecent(f, h);
-      _fileHandles.set(f, h);
-      // a recent is the picker with the file pre-picked: same dialog, same
-      // add/replace radio. An empty view opens straight — nothing to replace.
-      if (S.layers.length) return openFilesDialog([f]);
-      return openBlob(f, f.name, 'replace');
-    } catch { $('#meta').textContent = `couldn't reopen “${entry.name}” — pick it again`; return openFilePicker(); }
-  }
-  $('#meta').textContent = `“${entry.name}” has no saved handle — pick it again`;
-  return openFilePicker();
-}
-// Recents on the empty state (the prime reopen moment). Chips need
-// pointer-events (the banner is otherwise click-through for drops).
-function renderEmptyRecents() {
-  const el = $('#emptyRecents'); if (!el) return;
-  el.textContent = '';
-  if (!_remember || !_recents.length) return;
-  const lab = document.createElement('span'); lab.className = 'er-label'; lab.textContent = 'recent:';
-  el.appendChild(lab);
-  for (const e of _recents.slice(0, 8)) {
-    const chip = document.createElement('a'); chip.className = 'er-chip' + (e.handle ? '' : ' nohandle');
-    chip.textContent = e.name; chip.title = e.handle ? 'reopen' : 'no saved handle — re-pick';
-    chip.onclick = () => openRecent(e);
-    el.appendChild(chip);
-  }
-}
-function openFilePicker() {
-  if (window.showOpenFilePicker) {
-    (async () => {
-      try {
-        const handles = await window.showOpenFilePicker({ multiple: true });
-        const files = [];
-        for (const h of handles) { const f = await h.getFile(); addRecent(f, h); _fileHandles.set(f, h); files.push(f); }
-        if (files.length) openFilesDialog(files);
-      } catch { /* cancelled */ }
-    })();
-  } else {
-    // The <input> fallback (Firefox + mobile). NO `accept` filter: on Android the
-    // OS picker hides files whose extension has no registered MIME — which greys
-    // out a .dm (lamina's lesson).
-    const inp = document.createElement('input');
-    inp.type = 'file'; inp.multiple = true;
-    inp.onchange = () => {
-      const files = [...inp.files];
-      if (!files.length) return;
-      for (const f of files) addRecent(f, null);
-      openFilesDialog(files);
-    };
-    inp.click();
-  }
-}
+
 refreshRecents();
 
 // ── project folders (micro-layers spec §12, G1 — Chromium/FSAA-gated) ──
@@ -3558,12 +2967,6 @@ async function deliverBlob(blob, filename) {
 }
 // src/project.js reaches back into the app through these
 setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _fileHandles() { return _fileHandles; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, menuXY, microChoose, microConfirm, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, get renderer() { return renderer; }, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
-
-   // 'on' | 'off' | null (unasked)
-   // null = ask again
-
-   // 'on' | 'off' | null
-   // null = ask again
 
 function captureCamera() {
   const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
@@ -3794,81 +3197,6 @@ addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && hasFSAA) { e.preventDefault(); saveProject(); }
 });
 
-// the header panel: everything the providers learned about the open file.
-// A table with click-to-copy values (lamina's grid-summary pattern): display
-// is formatted, the CLIPBOARD gets the raw value — full precision, no
-// thousands separators — ready to paste into a report or another tool.
-function copyText(text) {
-  const ta = document.createElement('textarea');
-  ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:-1000px;left:0;opacity:0';
-  document.body.appendChild(ta); ta.select();
-  try { document.execCommand('copy'); } catch { /* ignore */ }
-  ta.remove();
-}
-function showFileInfo() {
-  const AL0 = activeLayer();
-  const d0 = (AL0 && AL0.docs) || {};
-  const meshDoc = d0.meshDoc || null;
-  const doc = meshDoc || d0.blockDoc || d0.dhDoc || d0.plyDoc || d0.lasDoc;
-  if (!doc) { showHelp('file info', html`no file open`); return; }
-  const h = doc.header;
-  const fmtC = (v) => (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 4 }));
-  // one copyable value: raw goes to the clipboard, shown formatted
-  const V = (raw, shown) => (raw == null ? html`<span class="fi-x">—</span>` : html`<span class="fi-v" data-copy="${raw}">${shown != null ? shown : raw}</span>`);
-  const num = (v) => (v == null ? V(null) : V(v, fmtC(v)));
-  const sep = (x) => html`<span class="fi-x">${x}</span>`;
-  const rows = [];
-  const row = (k, v) => rows.push(html`<tr><td class="fi-k">${k}</td><td>${v}</td></tr>`);
-  // full-width wrapping row — for prose (drillhole checks) that would blow out
-  // the nowrap key column and push every value off-screen
-  const wide = (h2) => rows.push(html`<tr><td colspan="2" class="fi-w">${h2}</td></tr>`);
-  row('file', V(meshDoc ? meshDoc.name : d0.blockDoc ? d0.blockDoc.name : d0.plyDoc ? d0.plyDoc.name : 'point cloud'));
-  row('kind', V(meshDoc ? `${h.soup ? 'streamed mesh' : 'context mesh'} (${h.format})` : d0.dhDoc ? `drillholes (${h.method === 'minimumCurvature' ? 'minimum curvature' : h.method}, dip ${h.dipConvention})` : d0.lasDoc ? `LAS ${h.version} · point format ${h.format}` : d0.plyDoc ? `PLY ${h.format === 'ascii' ? 'ascii' : 'binary (little-endian)'}` : h.dm ? 'Datamine .dm block model' : h.grid ? 'delimited block model' : 'delimited points'));
-  if (meshDoc) {
-    row('triangles', num(h.triCount)); row('vertices', num(h.vertexCount));
-    const tp = AL0 && AL0._solidMesh;
-    if (tp) row('topology', V(tp.closed ? 'closed solid (watertight)' : `open surface · ${tp.boundaryEdges.toLocaleString()} boundary edges`));
-  }
-  else row('records', num(h.count));
-  if (d0.dhDoc) {
-    row('holes', num(h.holes));
-    row('placed', num(h.placed));
-    for (const c of h.report.checks) wide(html`${sep('⚠')} ${c.label} ${sep('—')} ${V(c.count)}${c.bhids.length ? html` ${sep('·')} ${V(c.bhids.slice(0, 8).join(', ') + (c.bhids.length > 8 ? '…' : ''))}` : ''}`);
-  }
-  if (h.bbox) {
-    for (const [ax, i] of [['X', 0], ['Y', 1], ['Z', 2]]) {
-      row(ax, html`${num(h.bbox.min[i])} ${sep('–')} ${num(h.bbox.max[i])} ${sep('(Δ')} ${num(h.bbox.max[i] - h.bbox.min[i])}${sep(')')}`);
-    }
-  }
-  if (frame) row('frame origin', html`${joinH(frame.origin.map(num), sep(', '))}${frame.crs ? html` ${sep('·')} ${V(frame.crs)}` : ''}`);
-  if (AL0 && renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(renderer.layerVramBytes(AL0.id))));
-  if (h.grid) {
-    if (h.subBlocked && h.dimPalette) {
-      row('grid (fine lattice)', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
-      const sizes = h.dimPalette.map((d) => joinH(d.map((v) => num(v * 2)), '×'));
-      row('sub-block sizes', html`${sizes.length} ${sizes.length === 1 ? 'size' : 'sizes'}${sep(': ')}${joinH(sizes.slice(0, 6), sep(' · '))}${sizes.length > 6 ? sep(' …') : ''}`);
-    } else {
-      row('grid', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
-      row('block size', joinH([h.grid.x.pitch, h.grid.y.pitch, h.grid.z.pitch].map(num), sep(' × ')));
-    }
-    const c0 = h.grid.rot ? worldMapOf(h.grid)(h.grid.x.origin, h.grid.y.origin, h.grid.z.origin) : [h.grid.x.origin, h.grid.y.origin, h.grid.z.origin];
-    row('block 0 centroid', joinH(c0.map(num), sep(', ')));
-    if (h.grid.rot) { const ag = basisAngles(h.grid.rot); row('rotation', `azimuth ${ag.azimuth.toFixed(2)}°${ag.zOnly ? '' : ` · tilt ${ag.tilt.toFixed(2)}°`} · ${(h.lattice && h.lattice.basis) || 'declared'}${h.lattice && h.lattice.confirmed ? ` (confirmed by ${h.lattice.confirmed})` : ''}`); }
-  }
-  if (h.scale) {
-    row('scale', joinH(h.scale.map(num), sep(', ')));
-    row('offset', joinH(h.offset.map(num), sep(', ')));
-  }
-  if (h.columns) row('columns', joinH(h.columns.map((c) => V(c)), sep(' · ')));
-  if (h.attributes && h.attributes.length) row('channels', joinH(h.attributes.map((c) => V(c)), sep(' · ')));
-  if (h.categories && h.categories.length) row(h.columns && h.mapping && h.mapping.cat != null ? h.columns[h.mapping.cat] : 'categories', joinH(h.categories.map((c) => V(c)), sep(' · ')));
-  showHelp('file info', html`<table class="fi">${rows}</table>`);
-  $('#helpBody').querySelectorAll('.fi-v').forEach((el) => el.onclick = () => {
-    const v = el.getAttribute('data-copy'); if (v == null) return;
-    copyText(v);
-    el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 700);
-  });
-}
 $('#mFile').onclick = () => {
   const items = [
     { label: 'New project…', action: newProject },
@@ -3910,28 +3238,7 @@ $('#mFile').onclick = () => {
   );
   menuAt($('#mFile'), items);
 };
-// scene-global memory readout (the numbers live in the renderer; this is a table)
-async function showMemoryInfo() {
-  const rows = [];
-  const row = (k, v) => rows.push(html`<tr><td class="fi-k">${k}</td><td>${v}</td></tr>`);
-  let total = 0;
-  for (const L of S.layers) {
-    const b = renderer.layerVramBytes(L.id);
-    total += b;
-    row(L.label || L.name, html`${fmtSize(b)} <span class="fi-x">· ${(renderer.layerElementCount(L.id) || 0).toLocaleString()} elements${L.visible ? '' : ' · hidden (still resident)'}</span>`);
-  }
-  row('total vram', html`<b>${fmtSize(renderer.vramBytes || total)}</b>`);
-  { const st = pinStats(); if (st.bytes || st.budget) row('filter column cache', html`${fmtSize(st.bytes)} <span class="fi-x">· ${st.cols} column${st.cols === 1 ? '' : 's'} pinned · budget ${st.budget ? fmtSize(st.budget) : 'off'}</span>`); }
-  if (performance.memory) row('js heap', fmtSize(performance.memory.usedJSHeapSize));
-  if (navigator.storage && navigator.storage.estimate) {
-    try {
-      const est = await navigator.storage.estimate();
-      row('site storage', html`${fmtSize(est.usage || 0)} <span class="fi-x">of ${fmtSize(est.quota || 0)} available</span>`);
-    } catch { /* unavailable */ }
-  }
-  row('', html`<span class="fi-x">vram = geometry buffers held by layers (hidden layers included). Convert big meshes to streamed, or remove layers, to shed it.</span>`);
-  showHelp('memory', html`<table class="fi">${rows}</table>`);
-}
+
 $('#btnUndo').onclick = () => undoAction();
 $('#btnRedo').onclick = () => redoAction();
 $('#btnBurger').onclick = () => menuAt($('#btnBurger'), [
@@ -4027,108 +3334,7 @@ $('#mData').onclick = () => menuAt($('#mData'), [
   { sep: true },
   { label: 'Export rows…', action: () => openExportDialog(activeLayer()) },
 ]);
-// Tools = the instruments and readouts (lamina's grammar: View is how it
-// LOOKS, Tools is what you DO to it)
-// ── Settings — machine preferences, one declarative registry ────────────────
-// Three kinds of state: VIEW state travels with the project (bookmarks, pinned
-// windows), DATA decisions live in the manifests (mappings, desurvey) — and
-// MACHINE preferences (how this user on this machine likes micro to behave)
-// live here, in localStorage micro.*, never in the project. The window renders
-// itself from PREFS; adding a preference = adding a row.
-const PREFS = [
-  { sec: 'display', label: 'background', desc: 'the scene clear colour — white or paper for print-bound figures (decorations flip to dark ink)', kind: 'choice', opts: [['#121212', 'basalt'], ['#000000', 'black'], ['#ffffff', 'white'], ['#f4f2ec', 'paper']], get: () => _bgColor, set: (v) => setBg(v) },
-  { sec: 'display', label: 'block edges', desc: 'outline every block face — and every cut block on a section', kind: 'toggle', get: () => _blockEdges, set: (v) => setBlockEdges(v) },
-  { sec: 'display', label: 'render budget', desc: 'elements per frame — lower is snappier while orbiting; the picture converges when the camera rests', kind: 'choice', opts: () => [...$('#budget').options].map((o) => [o.value, o.textContent]), get: () => $('#budget').value, set: (v) => { $('#budget').value = v; $('#budget').dispatchEvent(new Event('change')); requestRender(); } },
-  { sec: 'interaction', label: 'selection tool stays armed', desc: 'after a rectangle / lasso: put the tool down, keep it while adding (shift/alt held on release), or keep it until Esc — middle-drag orbits either way', kind: 'choice', opts: [['oneshot', 'never (one shot)'], ['smart', 'with shift/alt held'], ['sticky', 'until Esc']], get: () => _selStick, set: (v) => setSelStick(v) },
-  { sec: 'interaction', label: 'properties auto-apply', desc: 'style edits land as you make them; off = an explicit apply button', kind: 'toggle', get: () => _autoApply, set: (v) => { $('#ppAuto').checked = v; $('#ppAuto').dispatchEvent(new Event('change')); } },
-  { sec: 'interaction', label: 'camera follows the section scrub', desc: 'scrubbing a section slab carries the camera along with it', kind: 'toggle', get: () => _secFollow, set: (v) => { $('#secFollow').checked = v; $('#secFollow').dispatchEvent(new Event('input')); } },
-  { sec: 'compute', label: 'by-solid compute', desc: 'the flag / select-by-solid engine — CPU is slower but cannot trip the GPU driver watchdog on a huge solid', kind: 'choice', opts: [['gpu', 'GPU (fast)'], ['cpu', 'CPU (watchdog-safe)']], get: () => (_windingGpu ? 'gpu' : 'cpu'), set: (v) => setWindingGpu(v === 'gpu') },
-  { sec: 'compute', label: 'derived-column residency', desc: 'how much memory derived columns may keep resident before being re-derived on demand', kind: 'choice', opts: [['auto', 'auto (scales with RAM)'], ['off', 'off (re-derive on demand)'], ['256', '256 MB'], ['512', '512 MB'], ['1024', '1 GB']], get: () => { try { return localStorage.getItem('micro.pinBudget') || 'auto'; } catch { return 'auto'; } }, set: (v) => setPinBudget(v) },
-  { sec: 'data', label: 'store meshes as .wfr on save', desc: 'pack mesh, strings and points layers into meshes/*.wfr when the project saves — bricked, compact, quick to reopen, attributes kept; source files are kept', kind: 'choice', opts: [['on', 'always'], ['off', 'never'], ['ask', 'ask on next save']], get: () => (_autoPack || 'ask'), set: (v) => setAutoPack(v === 'ask' ? null : v) },
-  { sec: 'data', label: 'optimize models to spatial Parquet on save', desc: 'Morton-sort block models into spatial Parquet when the project saves — smaller, faster to reopen, row-group query skipping', kind: 'choice', opts: [['on', 'always'], ['off', 'never'], ['ask', 'ask on next save']], get: () => (_autoOptimize || 'ask'), set: (v) => setAutoOptimize(v === 'ask' ? null : v) },
-  { sec: 'experimental', label: 'natural-language command bar', desc: '⌘K, type a phrase — it PROPOSES a command and never runs it; trains on this project\'s vocabulary, in this tab, in about a second', kind: 'toggle', get: () => _nlOn, set: (v) => { nlSetEnabled(v); if (v) nlEnsureTrained(); } },
-];
-let _settingsWin = null, _settingsSec = 'display';
-function openSettingsWindow() {
-  if (_settingsWin) { raiseWindow(_settingsWin.el); return; }
-  const win = floatWin({ title: 'settings', sub: 'this machine', x: innerWidth / 2 - 280, y: 90, w: 560, h: 440, onClose: () => { _settingsWin = null; } });
-  _settingsWin = win;
-  win.body.style.cssText += 'display:flex;flex-direction:column';
-  const split = document.createElement('div');
-  split.style.cssText = 'flex:1;min-height:0;display:flex';
-  const rail = document.createElement('div');
-  rail.style.cssText = 'flex:0 0 118px;border-right:1px solid var(--border);padding:10px 0;display:flex;flex-direction:column;gap:1px;font-family:var(--mono);font-size:12px';
-  const page = document.createElement('div');
-  page.style.cssText = 'flex:1;min-width:0;overflow-y:auto;padding:12px 16px;font-family:var(--mono);font-size:12px';
-  split.append(rail, page);
-  const foot = document.createElement('div');
-  foot.style.cssText = 'flex:0 0 auto;border-top:1px solid var(--border);background:var(--panel);padding:6px 16px;color:var(--dim);font-family:var(--mono);font-size:11px;line-height:1.45';
-  foot.textContent = 'stored in this browser only — nothing leaves this machine (Sealed) · view state travels with the project; data decisions live in its manifests';
-  win.body.append(split, foot);
-  const SECS = [...new Set(PREFS.map((pr) => pr.sec)), 'housekeeping'];
-  const renderRail = () => {
-    rail.textContent = '';
-    for (const sec of SECS) {
-      const bt = document.createElement('button');
-      const on = _settingsSec === sec;
-      bt.style.cssText = 'text-align:left;background:none;border:none;font:inherit;cursor:pointer;padding:6px 14px;border-left:2px solid ' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? 'var(--accent)' : 'var(--muted)');
-      bt.textContent = sec;
-      bt.onclick = () => { _settingsSec = sec; renderRail(); renderPage(); };
-      rail.appendChild(bt);
-    }
-  };
-  const renderPage = () => {
-    page.textContent = '';
-    if (_settingsSec === 'housekeeping') {
-      const mk = (label, title, fn) => {
-        const wrap = document.createElement('div'); wrap.style.cssText = 'margin-bottom:14px';
-        const bt = document.createElement('button'); bt.className = 'awin-btn'; bt.textContent = label; bt.onclick = fn;
-        const d = document.createElement('div'); d.style.cssText = 'color:var(--dim);font-size:11px;line-height:1.5;margin-top:4px'; d.textContent = title;
-        wrap.append(bt, d); page.appendChild(wrap);
-      };
-      mk('forget window layouts', 'clear every remembered per-kind window position and size — windows open at their defaults again', () => {
-        try { for (const k of Object.keys(localStorage)) if (k.startsWith('micro.winGeo.')) localStorage.removeItem(k); } catch { /* private */ }
-        $('#meta').textContent = 'window layouts forgotten — windows open at their defaults again';
-      });
-      mk('reset all preferences', 'every setting back to its default (window layouts and recents stay)', () => {
-        try { for (const k of ['micro.bg', 'micro.edges', 'micro.budget', 'micro.selStick', 'micro.autoApply', 'micro.secFollow', 'micro.windingCpu', 'micro.pinBudget', 'micro.autoOptimize', 'micro.nl']) localStorage.removeItem(k); } catch { /* private */ }
-        $('#meta').textContent = 'preferences reset — reload micro to see every default again';
-      });
-      return;
-    }
-    for (const pr of PREFS.filter((x) => x.sec === _settingsSec)) {
-      const row = document.createElement('div');
-      row.style.cssText = 'margin-bottom:14px';
-      const top = document.createElement('div');
-      top.style.cssText = 'display:flex;align-items:center;gap:10px';
-      const lab = document.createElement('span'); lab.style.cssText = 'flex:1;min-width:0;color:var(--text)'; lab.textContent = pr.label;
-      top.appendChild(lab);
-      if (pr.kind === 'toggle') {
-        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!pr.get();
-        cb.onchange = () => { pr.set(cb.checked); };
-        top.appendChild(cb);
-      } else {
-        const sel = document.createElement('select'); sel.className = 'sw-sel';
-        const opts = typeof pr.opts === 'function' ? pr.opts() : pr.opts;
-        for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); }
-        const cur = String(pr.get());
-        if (![...sel.options].some((o) => o.value === cur)) { const o = document.createElement('option'); o.value = cur; o.textContent = cur; sel.appendChild(o); }
-        sel.value = cur;
-        sel.onchange = () => { pr.set(sel.value); };
-        top.appendChild(sel);
-      }
-      row.appendChild(top);
-      if (pr.desc) {
-        const d = document.createElement('div');
-        d.style.cssText = 'color:var(--dim);font-size:11px;line-height:1.5;margin-top:3px;max-width:52ch';
-        d.textContent = pr.desc;
-        row.appendChild(d);
-      }
-      page.appendChild(row);
-    }
-  };
-  renderRail(); renderPage();
-}
+
 $('#mTools').onclick = () => menuAt($('#mTools'), [
   { label: 'Measure…', kbd: 'm', action: armMeasure },
   { label: (_measureTP ? '✓ ' : '') + 'Measure trend & plunge', action: toggleMeasureTP },
@@ -4152,150 +3358,7 @@ $('#mTools').onclick = () => menuAt($('#mTools'), [
   { label: 'Settings…', action: openSettingsWindow },
   { label: 'Memory…', action: showMemoryInfo },
 ]);
-const HELP_KEYS = `
-<b>every key</b> (the same list as the manual and the printable card)<br>${keysHelpHtml()}<br><br>
-<b>command palette</b> — <code>⌘K</code> / <code>Ctrl+K</code> (or the <b>⌘K</b> button) searches EVERY action and shows only what applies right now — the fastest way to reach anything, including the analysis tools (Help → <b>Analysis & workbench</b> for those)<br><br>
-<b>mouse</b><br>
-drag — orbit · right-drag / shift-drag — pan · wheel — zoom · <code>⌃</code>wheel — scrub the section · <code>⌥</code>wheel — slab thickness<br>
-<b>click</b> a block or point — pick it: magenta glow + the record panel (full source row)<br>
-<code>m</code> then two clicks — <b>measure</b>: 3D · plan · Δz between the picked records (<code>Esc</code> clears)<br>
-<code>p</code> — <b>layers panel</b>: open several datasets together (drop several files at once, or Open… → "add as a layer"); right-click a layer for zoom / info / filter / remove · <code>[</code> / <code>]</code> step the active layer · right-click a group → <b>Mutually exclusive</b> shows one child at a time (round eyes), and <code>{</code> / <code>}</code> step through it<br>
-<code>h</code> — hide/show the <b>active layer</b> (flick between overlaid models) · <code>⇧H</code> — <b>solo</b> it (again restores; step layers with <code>[</code> <code>]</code> while soloed to walk them one at a time) · <code>F2</code> — <b>rename</b> it · <code>⇧B</code> — <b>block edges</b> on/off (per-layer override in the layer's right-click menu)<br>
-<code>Ctrl+S</code> — <b>save the project</b>: File → project folder (Chromium) keeps your layers, styling, filters, camera, section, and saved views in a plain folder — project.json + the files<br><br>
-<b>view</b><br>
-<code>f</code> fit the data · <code>n</code> <code>s</code> <code>e</code> <code>w</code> look that way (level) · <code>d</code> plan · <code>u</code> from below · <code>o</code> ortho/perspective<br><br>
-<b>sections</b> — a cut through the data; everything hidden is neither drawn nor pickable. Blocks and drillhole sticks cut <b>true</b>: a block straddling the plane shows its cut interior at the plane (a thin slab reads as a continuous painted wall), and a sectioned mesh's trace draws <b>over</b> the wall like a wireframe outline on a section plot<br>
-pick a preset (plan · N–S · E–W), press <code>k</code> (or <code>c</code> for <i>cut</i>) and <b>drag a line</b> (the vertical section through it; <code>⇧</code> snaps to 15°, <code>⇧⌥</code> to 5°, <code>Esc</code> cancels), or choose <b>custom</b> and type the plane's dip direction + dip · <code>x</code> toggles the section on/off<br>
-<b>slab · front · behind</b> — keep a band of ±thickness, or everything on one side of the plane<br>
-<b>plane</b> — outline the cut plane in the view · <b>2D</b> — face-on + orthographic + rotation locked (drags pan; the paper-section view) · right-click a layer → <b>Cut by sections</b>: follow · follow with its own slab (± m) · keep front only · keep behind only · don't cut (keep topo whole for context, or split one model at the plane while another follows the slab) · on drillholes, keep holes that cross the slab, whole<br>
-<code>l</code> — face the section (<code>⇧L</code> its back) · <code>,</code> <code>.</code> — walk the section one slab at a time · <code>⌃</code>wheel scrubs · <code>⌥</code>wheel thickens the slab · <b>follow</b> — the camera walks with the scrub (the cut stays put on screen) · the number is slab half-thickness (m)<br><br>
-<b>goto</b> — <code>g</code> then <code>1</code>–<code>9</code> recalls a view slot; <code>g</code> then <code>Shift+digit</code> saves the current view into that slot (a bookmark named “slot N” — camera + section, travels with the project). <code>F1</code> opens this help<br><br>
-<b>selection</b> (<code>r</code> rectangle · <code>v</code> lasso, or Tools menu) — drag over the scene: what you SEE gets selected (occlusion-honest, all visible layers at once), tinted gold; <b>shift</b> adds, <b>alt</b> subtracts, <code>Esc</code> clears; releasing WITH shift/alt keeps the tool armed for the next gesture (middle-drag still orbits; Settings → interaction to change); the attribute table's <b>selected</b> view lists the grabbed rows; selections persist in the project<br>
-The <b>select-through</b> toolbar toggle (the stacked layers, also Tools → Select through) flips the tools to the extruded tube: EVERYTHING whose position projects inside the shape — occluded included — via one pass over the data (a load-sweep's cost; drillholes are instant)<br><br>
-<b>attribute table</b> (<code>t</code> / right-click a layer / Data menu) — the layer's rows as a floating, layer-pinned window (open several); windowed reads, so a 1.8M-row model scrolls cold; <b>matches</b> shows only the filtered rows; click a row to pick it in the scene — picks scroll the table to their row; ƒ columns included; read-only<br><br>
-<b>layer properties</b> — right-click a layer → Properties… (or View menu): <b>style</b> (color-by, clip, stick radius, mesh tint/opacity/tier) · <b>classes</b> (per-class eyes over the category column — hide lithologies with a click; all · none · invert; hidden classes don't draw or pick; counts fill in as they're swept) · <b>columns</b> (per-column types — number/text drives the filter and color-by; right-click a column to re-type it, make it the category, or the color channel; <b>scan columns</b> streams the whole table once and fills n · mean · std · quantiles · histogram per column; <b>add calculated column…</b> defines ƒ columns (<code>FE + 0.4 * MN</code>) that the filter, the scan, and the record panel all see) · <b>source</b> (X/Y/Z column mapping — change re-reads the file; drillhole tables + desurvey method/dip — change re-desurveys; extent, grid parameters)<br>
-<b>rule-based styling</b> — style mode <b>rule-based</b> (block models + drillholes): ordered rules, each an expression (<code>FE > 60 and LITO = "HEM"</code>) with a name + color; ONE sweep over the table paints each record with its first matching rule (drag to re-prioritize), everything unmatched wears the <b>else</b> color; per-rule eyes hide a rule's records (draw + pick, GPU-side); counts per rule after the sweep; rules persist in the project and re-sweep on load<br>
-<b>paint to column</b> (<code>b</code> / the brush button / Data menu) — interactive domaining: a PAINTED column is a category column you fill by hand. The palette window (layer-pinned, like tables) picks the column + the value; while a value is armed, the <code>r</code> / <code>v</code> gestures PAINT it onto whatever they cross (<b>alt</b> erases, Tools → Select through paints the whole tube, <code>Esc</code> puts the brush down, <code>Ctrl+Z</code> undoes a stroke); or build a careful selection first and <b>apply to selection</b>. While painting the layer colors by the column (unpainted recedes dark); painted values are REAL columns — the filter (<code>DOMAIN = "HW_OXIDE"</code>), the scan, the attribute table, and the record panel all see them; they persist in the project<br>
-<b>export rows</b> (Data → Export rows… / the layer context menu) — data leaves micro the way it came in, as rows: scope <b>all</b> · <b>filter matches</b> · <b>selection</b>; every column including ƒ calculated and ✎ painted ones (paint a DOMAIN, export it, feed the estimator); CSV with delimiter choice + decimal comma; streamed, so 1.8M rows is one sweep, and opening a .dm then exporting IS the .dm → CSV converter. In the attribute table, <code>Ctrl+C</code> copies the grid selection as TSV<br>
-<b>select by solid</b> (Tools menu / right-click a mesh layer) — a closed context mesh (.msh / .obj / small .ply) classifies records by winding number: <b>select inside/outside</b> sweeps any element layers into the ordinary selection (paint or export it — the solids → coded-model loop), a <b>flag column</b> writes a value (e.g. <code>IN</code>) into a NEW painted column on any table-backed layers — blocks, points, drillholes — which you can then touch up with the brush; or <b>fraction-inside column</b> probes each block of a regular model (any per-axis resolution — 3×3×2 for benches, 10×10×10 for 1 m blocklings) and writes a numeric 0–1 column (<code>%</code> badge) the filter, table, and export all see; all of it works with flipped solids and colors the layer by the result when done. OPEN SURFACES (topo, weathering horizons — the dialog reads the mesh topology and says which) classify <b>above / below / between</b> instead: the surface is CLOSED by a skirt to a far apex and the same winding containment applies — strong at any depth, and blocks beyond the surface's footprint honestly come back unclassified; <b>between</b> takes a second surface (below the first AND above the second)<br>
-<b>assign domains</b> (Tools menu) — the whole coded-model loop in one run: pick the domain solids, the model and a column name, and every block goes to the solid holding its largest fraction; unclaimed blocks stay unpainted and the result is an ordinary painted column — filter it, export it, touch it up with the brush<br>
-<b>grids</b> — GeoTIFF / Surfer .grd / ESRI .asc open as heightfield layers (cells are pickable records; huge DEMs decimate for display, the full grid stays for evaluation); a mesh right-click → <b>Rasterize to grid…</b> renders it onto a DEM; grid layers export as ESRI ASCII<br>
-<b>layer groups</b> — the layers panel is a tree: a group's eye greys its children without touching THEIR eyes (re-enable and the pattern returns); <b>drag a row</b> between rows to reorder, ONTO a group to join it (touch: long-press the row → Move up / down / to group); <b>ctrl+click</b> multi-selects rows (shift+click = a range) — right-click → <b>Group N selected…</b>; right-click a layer → Move to group… (or New group…), right-click a group → rename / zoom / ungroup; groups persist in the project<br>
-<b>category legend</b> (categorized mode / classes tab): the color chip edits each class in place; <b>⠿ drag</b> reorders entries; right-click an entry to <b>rename</b>, <b>merge into</b> another (grouped classes share one color and one eye — BIF + ITABIRITE → "Iron Fm"), <b>ungroup</b>, or <b>remove</b> (values fall into a grey <i>other</i> bucket; split it back out any time; <b>reset legend</b> returns to the raw values)<br>
-<b>auto / apply / revert</b> (the panel footer): style edits apply live by default; uncheck <b>auto</b> to batch them (one reconvergence instead of one per edit on a 100M layer) — <b>apply •</b> pushes everything, <b>revert</b> returns to the panel-open snapshot<br>
-<b>ramps + breakpoints</b> (style tab): pick a ramp per layer (viridis · spectral · magma · turbo · greys); on a grade channel, <b>double-click the histogram</b> to add breakpoints (drag moves, right-click removes), <b>classed</b> turns them into a solid-color legend — the grade-shell view; the <b>interval table</b> lists every band with an editable upper bound, a count from the scan, and (classed) a color chip per shell; quantile/equal auto-breaks from the scan<br><br>
-<b>meshes</b> — .msh (Leapfrog) / .obj / .ply-with-faces / .lfm / .dxf / .wfr / Datamine pt+tr pairs, and the surfaces of an .omf project; a multi-object .obj or .lfm offers "split into N solids (as a group)" at open, .lfm solids keeping their Leapfrog colours<br>
-a click on a mesh reports the point on its surface; its vertices are its records (attribute table, paint) · right-click the layer → <b>Mesh QA / volume…</b> (watertight, shells, volume) · <b>Tint…</b> / <b>Opacity…</b> · sections cut meshes per-pixel and draw their trace on the cut face<br><br>
-<b>filter</b> — one expression language over EVERY column (source, ƒ, painted, joined):<br>
-<code>/</code> focuses the box · autocomplete offers columns, functions, and the category values — <code>Tab</code>/<code>Enter</code> accepts<br><code>FE &gt; 55 and LITO = "HEMATITE"</code> · <code>between</code> · <code>in (…)</code> · <code>&#96;spaced name&#96;</code> in backticks · <code># comments</code> — Enter applies, Esc clears<br>
-matching elements isolate — everything else drops out of the render, the table, and the analysis<br>
-the <b>▾ drawer</b> beside the box projects the expression as LIVE WIDGETS — sliders + chips with operator dropdowns, clickable and/or pills, real bracket groups, a remove × per condition, and a multiline editor; every control rewrites its own span of the text<br><br>
-<b>ƒ derived columns</b> — Tools → <b>Calculated columns…</b> is the workbench: expressions over the FULL schema (calc-on-calc composes), an <code>if()</code> ladder projects as a case table, constants as sliders. Colour by <code>ƒ NAME</code> straight from the colour dropdown. Joins and drillhole broadcasts land as materialized columns too — the filter, GT/swath, record panel, and exports all see every one of them<br><br>
-<b>drillholes</b> — a set is a GROUP: ◈ collars and ↧ survey rows carry their own actions (attribute tables, <b>Filter holes…</b> over collar columns — the verdict masks every interval table and the traces — <b>Broadcast</b> a collar column onto the intervals, re-desurvey, traces). The set's menu has <b>QA report…</b>: every row to look at before estimating — blank or duplicate collars, orphan and bad survey stations, doglegs, gaps, overlaps, depths past the end of hole, text in a grade column — each at its table and row; click one to go to the hole; export it as TSV<br><br>
-<b>knobs</b><br>
-<b>min/max</b> boxes clip the color scale (outliers stop eating the ramp; empty = auto) · View menu: <b>boxes</b> = true block faces · <b>points</b> = fixed splats (snappier) · <b>block edges</b> = outline every block (and every cut block on a section) · <b>budget</b> = elements per frame (lower = snappier; converges when still) · <b>EDL</b> = the shading that makes points read as a surface`;
-const HELP_TOUCH = `
-<b>the view</b><br>
-one finger — orbit · two fingers — pinch to zoom, move together to pan, twist to turn<br>
-<b>tap</b> a block, point or surface — its record opens as a card (the view doesn't move; drag the card's handle up for the full sheet, flick it away to close) · a tap a little off an edge still finds it<br>
-<b>double-tap</b> the model — orbit about that spot · double-tap empty space — fit<br>
-<b>hold still</b> on the model — the <b>magnifier</b>: what's under your finger, enlarged above it; slide onto the exact spot and lift to pick it<br><br>
-<b>the bottom bar</b><br>
-<b>layers</b> · <b>props</b> (the active layer) · <b>select</b> · <b>section</b> · <b>measure</b> · <b>fit</b> — everything else is in ☰ and the <b>⌘K</b> palette (type what you want: "grade tonnage", "export", "save")<br>
-↶ ↷ in the top bar undo and redo — one gesture is one step<br><br>
-<b>select</b> — drag a rectangle or draw a lasso (the shape buttons on the selection bar); <b>new · + · −</b> say what the next drag does (a phone has no shift / alt); <b>through</b> takes hidden blocks too; <b>→ col</b> writes the selection as a column; × clears<br>
-<b>section</b> — the strip above the bar: the mode, a scrub slider, − / + for the slab; <b>⋯</b> for slab · front · behind, a custom dip, plane · follow · 2D<br>
-<b>measure</b> — tap two points; or press and slide: a crosshair rides above your finger (with the magnifier) and lifting takes the point under it<br><br>
-<b>sheets</b> — every window and panel is a sheet from the bottom (on the right, holding the phone sideways); drag its handle to resize, past the bottom to close; one at a time — the others wait as chips above it; the view moves its middle above the sheet<br>
-<b>rows</b> — long-press a layer row (or tap its ⋯) for its menu<br>
-<b>typing an expression</b> (filter, ƒ columns, hole filter) — a strip rides the keyboard: the symbols a phone keyboard hides, ◂ ▸ to move the cursor, and what fits at the cursor — columns, then operators, then the category values<br>
-<b>Back</b> closes what's on top — a menu, a dialog, the card, a sheet, an armed tool — before it leaves micro<br><br>
-<b>swath</b> — drag sideways across the plot to hold a band range (and select it in 3D); tap a bar to see its band in the model`;
-const HELP_ABOUT = `
-<b>micro</b> — a streaming workbench for massive spatial-element files: LiDAR point clouds
-(.las, .ply, .xyz), block models (.csv, .dm, .parquet — regular or variable-size sub-blocked), grids, and drillholes. No import step —
-first look in about a second at any size, densifying while you orbit. Beyond viewing:
-filter · section · domain by solid · join &amp; reconcile models · grade-tonnage · swath ·
-validate against drillholes · figure export — all against the source file, all with a
-provenance trail (Help → <b>Analysis &amp; workbench</b>). Nothing leaves your machine.<br><br>
-Engine: <code>@gcu/condenser</code>. Part of the Auditable project — Geoscientific Chaos
-Union, <code>gentropic.org</code>. MIT. All code in this file is GCU's own,
-implemented from the published methods below.<br><br>
-<b>References</b> — the rendering model follows:<br>
-· M. Schütz, G. Mandlburger, J. Otepka, M. Wimmer — <i>Progressive Real-Time Rendering of
-One Billion Points Without Hierarchical Acceleration Structures</i>. Computer Graphics
-Forum 39(2), 51–64, 2020. doi:10.1111/cgf.13911 — the streaming, no-preprocess,
-progressive-accumulation model at micro's core.<br>
-· M. Schütz, B. Kerbl, M. Wimmer — <i>Rendering Point Clouds with Compute Shaders and
-Vertex Order Optimization</i>. Computer Graphics Forum 40(4), 2021. doi:10.1111/cgf.14345
-— the vertex-order/Morton line behind micro's batch chunking.<br>
-· M. Schütz, B. Kerbl, M. Wimmer — <i>Software Rasterization of 2 Billion Points in Real
-Time</i>. Proc. ACM Comput. Graph. Interact. Tech. 5(3), art. 24, 2022. doi:10.1145/3543863<br>
-· C. Boucheny — <i>Visualisation scientifique de grands volumes de données: pour une
-approche perceptive</i>. PhD thesis, Université Joseph Fourier, 2009; and A. Ribes,
-C. Boucheny — <i>Eye-Dome Lighting: a non-photorealistic shading technique</i>. Kitware
-Source 7, 2011 — the EDL shading.<br>
-· C. Sigg, T. Weyrich, M. Botsch, M. Gross — <i>GPU-Based Ray-Casting of Quadratic
-Surfaces</i>. Eurographics Symp. on Point-Based Graphics, 59–65, 2006 — the ray-cast
-impostor technique behind the exact block rendering.<br><br>
-toolbar icons: <a href="https://lucide.dev" target="_blank" rel="noopener">Lucide</a> v0.462.0, ISC license.<br><br>
-build <code>${__MICRO_BUILD__}</code>`;
-const HELP_ANALYSIS = `
-Everything here is on a layer's <b>right-click menu</b> and in the <b>command palette</b> (<code>⌘K</code>) — the palette only shows what applies to the active layer. Every analysis window works the same way: a rail of settings, <b>Run</b> (click again to cancel), a scope of <b>all / filt / sel</b>, and one results row — <b>⤓ png · ⧉ copy · ⇥ layer · ⧉ table</b>; the setup is saved with the project.<br><br>
-<b>grade-tonnage</b> — <b>tonnage</b> + <b>mean grade</b> above cutoff. Each <b>series</b> is a layer + grade column + declared unit + density expression (<code>SG</code>, <code>2.7</code>; blank = volume) + optional filter, so model-vs-model curves are one window; a reconcile layer pre-seeds reference vs new<br>
-<b>resource cross-tab</b> — tonnage · grade · metal · blocks by a group (a category or painted column — domains, classes) × grade bins between your cutoffs, or cumulative above each; a row with no grade keeps its tonnage in its own column<br>
-<b>stats</b> — n · mean · std · quartiles per column, optionally grouped and weighted<br>
-<b>scatter / Q-Q</b> — <b>scatter</b>: one column against another, every pair while there are few, a density at any size, log axes, r; <b>Q-Q</b>: two sides (any layer, column, filter, scope — model vs model, model vs drillholes) quantile against quantile, with the 1:1 line<br>
-<b>swath (drift)</b> — mean grade per slab along a <b>direction</b>: the grid <b>axes</b> X/Y/Z, an oriented trio from <b>dip-direction / dip / rake</b> (across · along-strike · down-dip), or a single <b>trend / plunge</b>. Add a <b>series</b> per curve — each from any layer, with its own <b>column</b>, a free <b>weight expression</b> (blank = block volume; <code>SG</code>, <code>SG*PARTIAL</code>, or a decluster column for tonnage/sample weighting) and its own <b>filter</b> — so you can overlay <b>kriging · NN · samples</b>. Configure, then <b>Run</b> (it scans once, binning all directions together): switching axis and adjusting band width / offset are then instant. <b>zebra</b> paints the alternate bands onto the 3D so you see what the plot bins<br>
-<b>join &amp; reconcile</b> (Properties → <b>join</b> tab) — <b>spatial join</b> resamples a <i>compatible</i> model onto a target grid (a banner shows compatibility: clean replicate/aggregate, or the reason it can't); <b>key join</b> matches by a key column. <b>Reconcile</b> two model versions → a coloured <b>Δ map</b> (this − reference, diverging ramp about 0) on a common lattice, with <b>matched · mean Δ · added · removed</b> — the change-control record<br>
-<b>sub-blocked models</b> — variable-size (octree) block models open as their <b>true boxes</b>, each block at its own size. Join &amp; reconcile aggregate them to the reference grid by <b>volume</b> — a big parent and its small sub-blocks weighted by the space each fills — so a sub-blocked model compares cleanly against a regular one at the parent resolution<br>
-<b>validate vs drillholes</b> — is the model consistent with the samples? Declusters the drillhole grades (spatial sampling over-drills high grade), then reports the <b>global bias</b> (model mean vs declustered sample mean) and a <b>model-vs-sample swath</b>. (Point vs block support: a global offset can be real; the swaths flag <i>local</i> bias)<br>
-<b>common grid</b> (New… → <b>cover compatible models</b>) — an empty model on a lattice that covers <i>and</i> is compatible with several models at once — the natural reconcile target<br>
-<b>optimize to spatial Parquet</b> — reorders a model Morton-sorted (a footer spatial index; queries skip whole row-groups). Runs automatically when you save a project — Parquet is the project store<br>
-<b>lineage</b> — every derived layer remembers <i>how it was made</i>: open → join / reconcile / optimize wraps its sources with the params + build + time. <b>Lineage…</b> shows the tree + exports a readable HTML <b>report</b>; Parquet exports carry it embedded. Provenance you can attach to a sign-off<br>
-<b>linked brushing</b> — scope <b>sel</b> follows the 3D selection (rubber-band a bench and read its curve live), <b>filt</b> the filter box<br>
-<b>drillhole QA</b> (a drillhole set's menu) — every row to look at before estimating: blank or duplicate collars, orphan and bad survey stations, doglegs, gaps, overlaps, depths past the end of hole, text in a grade column — each at its table and row; click one to go to the hole<br>
-<b>mesh QA / volume</b> (a mesh's menu) — watertight or not, shells, flipped faces, slivers, and each shell's volume (× a density: tonnes); click an issue to step to it<br><br>
-<b>figures</b> (View → <b>Decorations &amp; figure…</b>) — a live panel: toggle a <b>scale bar</b>, <b>north arrow</b>, and <b>title</b>; turn on a colour <b>legend per layer</b> (they stack, each captioned by its coloured attribute — rename inline); set a <b>background</b> (white/paper for print — the decorations flip to dark ink). <b>Export figure</b> captures exactly what you see as a report-ready PNG — at <b>1× / 2× / 3×</b> resolution (2×/3× re-render the scene sharper for print)<br>
-<b>windows</b> (View → <b>Windows…</b>) — the analysis + table + paint windows are all draggable and layer-pinned; list / focus / <b>cascade</b> / <b>close all</b> from here<br>`;
-// About + the experiments drawer. The NL command bar lives here, OFF by default:
-// a stranger's first minute must not contain a text box that guesses.
-function showAbout() {
-  const exp = `
-  <h3 style="margin-top:1.2em">Experimental</h3>
-  <p class="fi-note">Off by default, and rightly so — these are not finished.</p>
-  <label style="display:flex;gap:.5em;align-items:flex-start;cursor:pointer">
-    <input type="checkbox" id="nlToggle"${_nlOn ? ' checked' : ''} style="margin-top:.25em">
-    <span><b>Natural-language command bar</b><br>
-    <span class="fi-note">Press ⌘K / Ctrl+K and type a phrase — <i>“colour by FE”</i>, <i>“hematite above 60 iron”</i>,
-    <i>“section on Z at 1020”</i>. It <b>proposes</b> a command and never runs it: you read what it understood, and press Enter.<br>
-    It learns <b>this project's</b> vocabulary — your columns, your lithologies, your layer names — and trains in about a second,
-    in this tab. No model file, no network, no WASM: micro stays Sealed, and it cannot be out of date.
-    It will misread you. Nothing it proposes is destructive.</span></span>
-  </label>`;
-  showHelp('about micro', trusted(HELP_ABOUT + exp));
-  const cb = $('#nlToggle');
-  if (cb) cb.onchange = () => { nlSetEnabled(cb.checked); if (cb.checked) nlEnsureTrained(); };
-}
-function showHelp(title, html) {
-  $('#helpTitle').textContent = title;
-  setHTML($('#helpBody'), html);
-  $('#help').classList.add('show');
-}
-// Check for a new build. Seal-safe: the page never fetches — it asks the service
-// worker (via the deploy-injected __microCheckUpdate → a gcu-sw postMessage), and
-// the SW does the network. Inert on the offline file:// download (no SW → no global).
-function checkForUpdates() {
-  const fn = window.__microCheckUpdate;
-  if (!fn) { $('#meta').textContent = 'updates: this is the offline file — the hosted app (gentropic.org/micro) auto-updates via its service worker'; return; }
-  $('#meta').textContent = 'checking for updates…';
-  fn().then((r) => {
-    if (r && r.changed) $('#meta').textContent = 'a new version is available — reload to apply (see the banner)';
-    else if (r && r.noSw) $('#meta').textContent = 'updates: no service worker present — nothing to check';
-    else if (r && r.timeout) $('#meta').textContent = 'update check timed out — try again';
-    else $('#meta').textContent = 'micro is up to date';
-  }).catch(() => { $('#meta').textContent = 'update check failed'; });
-}
+
 $('#mHelp').onclick = () => menuAt($('#mHelp'), [
   ...(_isMobile() ? [{ label: 'Touch…', action: () => showHelp('touch', trusted(HELP_TOUCH)) }] : []),   // a phone first: no keys to speak of
   { label: 'Keyboard & mouse…', action: () => showHelp('keyboard & mouse', trusted(HELP_KEYS)) },
@@ -4400,24 +3463,7 @@ function windowsMenu(anchor) {
   if (ws.length) items.push({ sep: true }, { label: 'Cascade', action: cascadeWindows }, { label: 'Close all', action: closeAllWindows });
   menuXY(r.left, r.bottom + 2, items);
 }
-// Sealed badge: micro's real differentiator (no network, data stays local,
-// WASM-free) made visible — a click explains why + points at the verifier.
-function sealedInfo() {
-  const existing = $('#sealPop'); if (existing) { existing.remove(); return; }
-  const badge = $('#sealBadge'), r = badge.getBoundingClientRect();
-  const pop = document.createElement('div'); pop.id = 'sealPop';
-  setHTML(pop, trusted('<h4><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Sealed — nothing leaves this machine</h4>'
-    + '<ul><li><b>No network access from the page.</b> The page policy blocks every connection (<code>connect-src \'none\'</code>) — no telemetry, no cloud, no data egress.</li>'
-    + '<li>Your data — point clouds, block models, drillholes — stays on this device (memory / local disk), never uploaded.</li>'
-    + '<li><b>WASM-free</b>, runtime in the clear — the code is readable and auditable, not opaque binary.</li>'
-    + '<li><b>File vs hosted app.</b> The downloadable <code>micro.html</code> is what\'s sealed: zero network, no service worker. The hosted app (gentropic.org/micro) adds a service worker <i>outside</i> the sealed page that caches it for offline use + checks for a newer build — fetching only micro\'s own files, never your data. Run the downloaded file for provable zero-network.</li></ul>'
-    + '<div class="dim">Verify the build + how to bring it through approval → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a></div>'));
-  document.body.appendChild(pop);
-  pop.style.left = Math.max(6, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
-  pop.style.top = (r.bottom + 6) + 'px';
-  const off = (e) => { if (!pop.contains(e.target) && e.target !== badge && !badge.contains(e.target)) { pop.remove(); document.removeEventListener('pointerdown', off); } };
-  setTimeout(() => document.addEventListener('pointerdown', off), 0);
-}
+
 $('#sealBadge').onclick = sealedInfo;
 $('#compass').addEventListener('click', () => setView(-Math.PI / 2, PHI_MAX));   // plan, north up
 $('#compass').addEventListener('pointerdown', (e) => e.stopPropagation());       // don't start an orbit
@@ -4580,82 +3626,7 @@ function toggleSection() {
   }
   sel.dispatchEvent(new Event('input'));
 }
-// scrub the section by one slab thickness (adjacent section, like flipping pages)
-// rename the layer's DISPLAY LABEL (the source name stays load-bearing for
-// save/reload). F2 (the Windows reflex) + the layer context menu + palette.
-async function renameActiveLayer(L) {
-  if (!L) return;
-  const v = await microPrompt('layer name — a path files it into groups (swaths/FE drift)', L.label || L.name);
-  if (!v || !v.trim()) return;
-  const moved = fileLayerByPath(L, v.trim());              // "a/b" → group a, label b; a plain name just renames
-  if (!moved) { renderLayers(); markProjectDirty(); }
-  else $('#meta').textContent = `${L.label} → filed under ${v.trim().split('/').slice(0, -1).join('/')}`;
-}
-// BATCH RENAME (a group / a multi-selection / all layers): strip the common
-// prefix/suffix in one click, or find→replace (plain or regex), with a live
-// before → after table. Labels only — source names stay load-bearing.
-function openBatchRename(Ls) {
-  Ls = (Ls || []).filter(Boolean);
-  if (Ls.length < 2) { $('#meta').textContent = 'rename layers: needs two or more layers'; return; }
-  const body = $('#brDlgBody'); body.textContent = '';
-  // base = names after committed strip ops; the find/replace previews ON TOP
-  let base = Ls.map((L) => L.label || L.name);
-  const commonPrefix = (arr) => { let p = arr[0] || ''; for (const s of arr) { let i = 0; while (i < p.length && i < s.length && p[i] === s[i]) i++; p = p.slice(0, i); } return p; };
-  const commonSuffix = (arr) => { let p = arr[0] || ''; for (const s of arr) { let i = 0; while (i < p.length && i < s.length && p[p.length - 1 - i] === s[s.length - 1 - i]) i++; p = p.slice(p.length - i); } return p; };
-  const ops = document.createElement('div'); ops.className = 'br-ops';
-  const find = document.createElement('div'); find.className = 'br-find';
-  const fIn = document.createElement('input'); fIn.type = 'text'; fIn.placeholder = 'find…';
-  const arrow = document.createElement('span'); arrow.textContent = '→';
-  const rIn = document.createElement('input'); rIn.type = 'text'; rIn.placeholder = 'replace with (blank = remove)';
-  const rxL = document.createElement('label'); const rxC = document.createElement('input'); rxC.type = 'checkbox'; rxL.append(rxC, document.createTextNode('regex')); rxL.title = 'find is a regular expression (g flag); replace may use $1 groups';
-  find.append(fIn, arrow, rIn, rxL);
-  const err = document.createElement('div'); err.className = 'br-err';
-  const tbl = document.createElement('table');
-  body.append(ops, find, err, tbl);
-  let preview = base.slice();
-  const applyFind = (names) => {
-    err.textContent = '';
-    const f = fIn.value; if (!f) return names.slice();
-    try {
-      const re = rxC.checked ? new RegExp(f, 'g') : null;
-      return names.map((s) => (re ? s.replace(re, rIn.value) : s.split(f).join(rIn.value)));
-    } catch (e) { err.textContent = `regex: ${e.message}`; return names.slice(); }
-  };
-  const rebuild = () => {
-    preview = applyFind(base).map((s, i) => (s.trim() ? s.trim() : base[i]));   // an emptied name keeps its base
-    // strip buttons recompute against the CURRENT base (chainable)
-    ops.textContent = '';
-    const pre = commonPrefix(base), suf = commonSuffix(base);
-    const mkStrip = (label, fn) => { const b2 = document.createElement('button'); b2.textContent = label; b2.onclick = () => { base = base.map(fn).map((s, i) => (s.trim() ? s.trim() : base[i])); rebuild(); }; ops.append(b2); };
-    if (pre.length >= 2 && pre.length < Math.min(...base.map((s) => s.length))) mkStrip(`✂ prefix “${pre.length > 18 ? pre.slice(0, 17) + '…' : pre}”`, (s) => s.slice(pre.length));
-    if (suf.length >= 2 && suf.length < Math.min(...base.map((s) => s.length))) mkStrip(`✂ suffix “${suf.length > 18 ? '…' + suf.slice(-17) : suf}”`, (s) => s.slice(0, s.length - suf.length));
-    if (!ops.children.length) { const n = document.createElement('span'); n.style.color = 'var(--dim)'; n.textContent = 'no common prefix/suffix'; ops.append(n); }
-    setHTML(tbl, trusted('<tr><th>before</th><th>after</th></tr>'));
-    Ls.forEach((L, i) => {
-      const from = L.label || L.name, to = preview[i];
-      const tr = document.createElement('tr');
-      const t1 = document.createElement('td'); t1.textContent = from; t1.title = from;
-      const t2 = document.createElement('td'); t2.textContent = to; t2.title = to; t2.className = to !== from ? 'after' : 'same';
-      tr.append(t1, t2); tbl.append(tr);
-    });
-    const changed = Ls.filter((L, i) => preview[i] !== (L.label || L.name)).length;
-    $('#brDlgMsg').textContent = changed ? `${changed} of ${Ls.length} change` : 'no changes yet';
-    $('#brGo').textContent = changed ? `Apply (${changed})` : 'Apply';
-  };
-  fIn.oninput = rIn.oninput = rebuild;
-  rxC.onchange = rebuild;
-  const close = () => { $('#brDlg').classList.remove('show'); $('#brGo').onclick = $('#brNot').onclick = $('#brCancel').onclick = null; };
-  $('#brGo').onclick = () => {
-    let n2 = 0;
-    Ls.forEach((L, i) => { const to = preview[i]; if (to && to !== (L.label || L.name)) { L.label = to; n2++; } });
-    close();
-    if (n2) { renderLayers(); markProjectDirty(); $('#meta').textContent = `renamed ${n2} layer${n2 > 1 ? 's' : ''}`; }
-  };
-  $('#brNot').onclick = close;
-  $('#brCancel').onclick = close;
-  rebuild();
-  $('#brDlg').classList.add('show');
-}
+
 // ⇧H solo: hide everything but the active layer; ⇧H again restores the previous
 // visibility set. If the ACTIVE layer changed while soloed ([ ] stepping), ⇧H
 // re-solos the new one instead of restoring — so ⇧H · ] · ⇧H · ] · ⇧H walks the
