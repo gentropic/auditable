@@ -10,12 +10,12 @@ import { isWfrName, openWfrBlob, summarizeElements } from './wfr-io.js';
 import { readGTiff } from '../../../ext/gtiff/index.js';
 import { MESH_STREAM_BYTES, openBlob, openDmWireframeBlob, openDrillholeLayer, openLfmSplit, openObjSplit, openWorkbook } from './open.js';
 import { parquetInfoAsync } from '../../../ext/parquet/index.js';
-import { S, layerById } from './state.js';
+import { S, _fileHandles, layerById } from './state.js';
 import { basename, fmtSize } from './paths.js';
 import { isBackupName } from './backup.js';
 import { openPackFile } from './project.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOpenDialogHooks): _fileHandles, closeAllLayers, createLayerGroup
+// the app's side, passed in once (setOpenDialogHooks): closeAllLayers, createLayerGroup
 let H = {};
 export function setOpenDialogHooks(h) { H = h; }
 
@@ -420,7 +420,7 @@ export function openDhDialog(trio) {
 export async function dhPickFile(defaultRole) {
   try {
     let file;
-    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker(); file = await h.getFile(); H._fileHandles.set(file, h); }
+    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker(); file = await h.getFile(); _fileHandles.set(file, h); }
     else { file = await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.onchange = () => res(i.files[0]); i.click(); }); }
     if (!file) return null;
     const sniff = sniffDelimitedSafe(await file.slice(0, 64 * 1024).text());

@@ -3,7 +3,7 @@
 // traces, the whole-holes section mode and its mask, the hole filter driven from the
 // collar table, the collar and survey table windows, and the set groups in the tree.
 // The readers live in src/open.js; the app keeps the tree, the camera and the section.
-import { S, layerById } from './state.js';
+import { S, _fileHandles, layerById, requestRender } from './state.js';
 import { openDrillholeLayer } from './open.js';
 import { broadcastCollarCol, refreshProps } from './props.js';
 import { dhFilterMeta, dhFilterSweep } from './filter.js';
@@ -17,7 +17,7 @@ import { dhGroupName, nextDhSetKey } from './open-dialog.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDrillholesHooks): _fileHandles, allocLayerId, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, frame, groupLayerIds, refilterLayer, renderLayers, renderer, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync
+// the app's side, passed in once (setDrillholesHooks): allocLayerId, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, groupLayerIds, refilterLayer, renderLayers, restoreReopenIdentity, setActiveLayer, treeMove, treeSync
 let H = {};
 export function setDrillholesHooks(h) { H = h; }
 
@@ -43,7 +43,7 @@ export async function reopenDh(L, patch, { clearCats = false } = {}) {
   } catch (e) { $('#meta').textContent = `re-desurvey: ${(L.label || L.name)} — ${e.message} (kept the original)`; return; }
   const L2 = S.layers.find((l) => !beforeIds.has(l.id) && l.dh) || null;   // the freshly-opened dh layer, not "whatever is active"
   if (!L2) { $('#meta').textContent = `re-desurvey: ${(L.label || L.name)} — reopen produced no layer (kept the original)`; return; }
-  H.renderer.removeLayer(oldId);
+  S.renderer.removeLayer(oldId);
   S.layers = S.layers.filter((l) => l.id !== oldId);
   S.activeId = L2.id;
   H.restoreReopenIdentity(L2, id);
@@ -61,7 +61,7 @@ export async function reopenDh(L, patch, { clearCats = false } = {}) {
 // the slab a whole-holes layer tests against: its own ± half, else the section's
 // (the slab, or a half-space's trace band). Frame-local, like the section.
 export function wholeHolesSlab(L, sec) {
-  const m = H.renderer.layerSectioned(L.id);
+  const m = S.renderer.layerSectioned(L.id);
   if (!m || typeof m !== 'object' || !m.whole || !sec) return null;
   const d0 = sec.d0 !== undefined ? sec.d0 : sec.d;
   const half = m.half > 0 ? m.half : (sec.clip === 'front' || sec.clip === 'behind') ? (sec.traceHalf || 1) : sec.half;
@@ -72,7 +72,7 @@ export function wholeHolesSlab(L, sec) {
 // a path segment jumping across it)
 export function crossingHoles(L, slab) {
   const dh = L.docs.dhDoc; if (!dh || !dh.holePaths) return null;
-  const o = H.frame ? H.frame.origin : [0, 0, 0];
+  const o = S.frame ? S.frame.origin : [0, 0, 0];
   const [nx, ny, nz] = slab.n;
   const off = nx * o[0] + ny * o[1] + nz * o[2];            // the paths are WORLD coordinates; the plane is frame-local
   const lo = slab.d0 - slab.half + off, hi = slab.d0 + slab.half + off;
@@ -111,9 +111,9 @@ export function pushDhMask(L) {
   let m = f || sec;
   if (f && sec) { m = new Uint8Array(f.length); for (let i = 0; i < m.length; i++) m[i] = f[i] & sec[i]; }
   L._drawMask = m;
-  if (!m) H.renderer.setFilter(null, {}, L.id);
-  else { H.renderer.setActiveSet('base', L.id); H.renderer.setFilter(m, { isolate: true }, L.id); }
-  H.requestRender();
+  if (!m) S.renderer.setFilter(null, {}, L.id);
+  else { S.renderer.setActiveSet('base', L.id); S.renderer.setFilter(m, { isolate: true }, L.id); }
+  requestRender();
 }
 
 export function invalidateWholeHoles(L) {
@@ -130,7 +130,7 @@ export function syncWholeHoles(sec) {
   let any = false;
   for (const L of S.layers) {
     if (!L.dh) continue;
-    const m = H.renderer.layerSectioned(L.id);
+    const m = S.renderer.layerSectioned(L.id);
     if (m && typeof m === 'object' && m.whole) { key += `${L.id}:${m.half || ''}:${L._secHoleSig != null ? 's' : 'n'};`; any = true; }   // a re-opened layer (no set yet) re-keys
     else if (L._secHoleSig != null) { key += `${L.id}:x;`; any = true; }
   }
@@ -315,7 +315,7 @@ export function dhSetGroupOf(id) {
 
 export async function pickIntervalFile() {
   try {
-    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker(); const f = await h.getFile(); H._fileHandles.set(f, h); return f; }
+    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker(); const f = await h.getFile(); _fileHandles.set(f, h); return f; }
     return await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.onchange = () => res(i.files[0]); i.click(); });
   } catch { return null; }
 }
@@ -370,8 +370,8 @@ export async function redesurveySet(nd, patch) {
 export const setHasTraces = (nd) => H.groupLayerIds(nd).some((id) => { const L = layerById(id); return L && L.trace; });
 
 export function hideHoleTraces(nd) {
-  for (const id of H.groupLayerIds(nd).slice()) { const L = layerById(id); if (L && L.trace) { H.renderer.removeLayer(id); S.layers = S.layers.filter((l) => l.id !== id); } }
-  H.treeSync(); H.renderLayers(); H.requestRender();
+  for (const id of H.groupLayerIds(nd).slice()) { const L = layerById(id); if (L && L.trace) { S.renderer.removeLayer(id); S.layers = S.layers.filter((l) => l.id !== id); } }
+  H.treeSync(); H.renderLayers(); requestRender();
 }
 
 export async function showHoleTraces(nd) {
@@ -395,15 +395,15 @@ export async function showHoleTraces(nd) {
   try {
     const { header, streamChunks, fetchRecord } = await openDrillholeTraces({ collar: info.blobs.collar, survey: info.blobs.survey }, { ...info.config });
     const L = layerById(lid); if (L) L.docs = { tracesDoc: { header, fetchRecord, config: info.config } };
-    H.renderer.setLayerStickRadius(lid, 0.4);   // thin
-    const cb = createStickChunkBuilder({ frame: H.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+    S.renderer.setLayerStickRadius(lid, 0.4);   // thin
+    const cb = createStickChunkBuilder({ frame: S.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
     for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) { cb.push(rc); await new Promise((r) => setTimeout(r)); }
     const doc = cb.flush();
     if (L) L.bboxLocal = doc.bboxLocal;
     H.treeSync(); H.treeMove(lid, nd, 'into');    // nest under the set
-    H.renderLayers(); H.requestRender();
+    H.renderLayers(); requestRender();
     $('#meta').textContent = `${header.holes} hole trace${header.holes === 1 ? '' : 's'} · ${header.count.toLocaleString()} segments`;
-  } catch (e) { $('#meta').textContent = `traces — ${e.message}`; H.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); H.renderLayers(); }
+  } catch (e) { $('#meta').textContent = `traces — ${e.message}`; S.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); H.renderLayers(); }
 }
 
 export function redesurveyMenu(nd, x, y) {

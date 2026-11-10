@@ -20,10 +20,23 @@ export const S = {
   // ── recipes (Tools → Recipes): op-shaped YAML files in recipes/
   recipes: [],                                              // { name, tool, params, file }
 
-  // ── long-lived app objects, assigned once at boot (the renderer is created by
-  // the app module; modules that need it read it here)
+  // ── long-lived app objects, assigned once at boot (the app module creates
+  // them; modules that need them read them here)
   renderer: null,
+  cam: null,                                                // the orbit camera
+  cv: null,                                                 // the 3D canvas element
+  build: 'dev',                                             // the build id (a content hash in a built micro.html)
+
+  // ── the scene
+  frame: null,                                              // the shared coordinate frame — set by the first layer opened, cleared when the last one closes
+  dirty: true,                                              // a redraw is owed (requestRender sets it, the render loop clears it)
 };
+
+// ask for a redraw on the next animation frame
+export function requestRender() { S.dirty = true; }
+
+// File → FileSystemFileHandle (picker / recents / project opens)
+export const _fileHandles = new WeakMap();
 
 export const layerById = (id) => S.layers.find((l) => l.id === id) || null;
 export const activeLayer = () => layerById(S.activeId);

@@ -2,8 +2,9 @@
 // and what the Sealed badge says.
 import { keysHelpHtml } from './keys.js';
 import { setHTML, trusted } from './html.js';
+import { S } from './state.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setHelpHooks): __MICRO_BUILD__, _nlOn, nlEnsureTrained, nlSetEnabled
+// the app's side, passed in once (setHelpHooks): _nlOn, nlEnsureTrained, nlSetEnabled
 let HK = {};
 export function setHelpHooks(h) { HK = h; }
 
@@ -96,7 +97,7 @@ Source 7, 2011 — the EDL shading.<br>
 Surfaces</i>. Eurographics Symp. on Point-Based Graphics, 59–65, 2006 — the ray-cast
 impostor technique behind the exact block rendering.<br><br>
 toolbar icons: <a href="https://lucide.dev" target="_blank" rel="noopener">Lucide</a> v0.462.0, ISC license.<br><br>
-build <code>${HK.__MICRO_BUILD__}</code>`;
+build <code>${S.build}</code>`;
 
 export const HELP_ANALYSIS = `
 Everything here is on a layer's <b>right-click menu</b> and in the <b>command palette</b> (<code>⌘K</code>) — the palette only shows what applies to the active layer. Every analysis window works the same way: a rail of settings, <b>Run</b> (click again to cancel), a scope of <b>all / filt / sel</b>, and one results row — <b>⤓ png · ⧉ copy · ⇥ layer · ⧉ table</b>; the setup is saved with the project.<br><br>

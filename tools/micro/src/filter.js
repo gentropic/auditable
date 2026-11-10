@@ -5,7 +5,7 @@
 // sweeps here too. Carved from index.html (phase 3 of the 2026-10-31 review).
 import { canMatch, compileBool, compileChunk, compileChunkBool, parse, validate } from '../../../ext/expr/index.js';
 import { calcOrder, extendRow, layerRows, layerTableHeader, rowQualifier, schemaExt } from './records.js';
-import { S, activeLayer, layerById } from './state.js';
+import { S, activeLayer, layerById, requestRender } from './state.js';
 import { ensureStoredValues, expandedDeps, pinBudgetBytes, pinGet, pinPut, pinnedSweep } from './columns.js';
 import { startChunkBuilder } from './chunkworker.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
@@ -14,7 +14,7 @@ import { coordNum, lineFields, openDmModel } from '../../../ext/condenser/src/ma
 import { rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, frame, pushDhMask, refreshLinkedWindows, renderer, requestRender
+// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, pushDhMask, refreshLinkedWindows
 let H = {};
 export function setFilterHooks(h) { H = h; }
 
@@ -135,7 +135,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   _filterEpochs.set(lid, epoch);
   const alive = () => _filterEpochs.get(lid) === epoch;
   if (!expr.trim() && !(fDhDoc && (AL._holeMask || AL._secHoleMask))) {   // drillholes: the hole filter / the section's holes still go through the sweep
-    closeCompactBuilder(lid); H.renderer.setFilter(null, {}, lid); H.renderer.clearCompact(lid); inp.classList.remove('err'); H.requestRender();
+    closeCompactBuilder(lid); S.renderer.setFilter(null, {}, lid); S.renderer.clearCompact(lid); inp.classList.remove('err'); requestRender();
     { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; H.attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
     $('#meta').textContent = (fBlockDoc || fDhDoc).metaLine; return;
   }
@@ -156,7 +156,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   inp.classList.remove('err');
   const fn = compileBool(expr, schema, { decimal: '.' });
   $('#meta').textContent = 'filter: scanning…';
-  closeCompactBuilder(lid); H.renderer.clearCompact(lid);    // a previous compaction is stale now
+  closeCompactBuilder(lid); S.renderer.clearCompact(lid);    // a previous compaction is stale now
   const mask = new Uint8Array(header.count);
   let rec = 0, hits = 0;
   const m = header.mapping;
@@ -176,7 +176,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   // the builder runs OFF the page (src/chunkworker.js): a 2M-match batch's Morton
   // sort + packing froze the page ~0.5 s, several times per filter on a big model
   let cb2 = isolate && fBlockDoc.grid && compactCap > 0 && !header.subBlocked
-    ? await startChunkBuilder({ frame: H.frame, grid: fBlockDoc.grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 2, onChunk: (c) => { if (alive()) H.renderer.addChunk(c, 'compact', lid); } })
+    ? await startChunkBuilder({ frame: S.frame, grid: fBlockDoc.grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 2, onChunk: (c) => { if (alive()) S.renderer.addChunk(c, 'compact', lid); } })
     : null;
   if (cb2) { _compactBuilders.set(lid, cb2); window.__compactOffPage = cb2.offPage; }   // smoke hook: where compaction ran
   const CB = 1 << 18;
@@ -186,7 +186,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const cflush = () => { if (cfill) { cb2.push({ count: cfill, x: cx, y: cy, z: czz, chan: cch, cat: cct, recIdx: crr }); callocz(); } };
   const collect = (xv, yv, zv, cv, code, r) => {
     if (!cb2) return;
-    if (collected >= compactCap) { closeCompactBuilder(lid); H.renderer.clearCompact(lid); cb2 = null; return; }   // too many — the mask path wins
+    if (collected >= compactCap) { closeCompactBuilder(lid); S.renderer.clearCompact(lid); cb2 = null; return; }   // too many — the mask path wins
     cx[cfill] = xv; cy[cfill] = yv; czz[cfill] = zv;
     cch[cfill] = Number.isFinite(cv) ? cv : 0;
     if (cct) cct[cfill] = code;
@@ -499,16 +499,16 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
     try { await cb2.flush(); } catch { /* a closed / failed builder: superseded, or the mask path below */ }
     if (!alive()) return;
     if (_compactBuilders.get(lid) === cb2) closeCompactBuilder(lid);
-    H.renderer.setFilter(null, {}, lid);
-    H.renderer.setActiveSet('compact', lid);
+    S.renderer.setFilter(null, {}, lid);
+    S.renderer.setActiveSet('compact', lid);
   } else {
-    H.renderer.setActiveSet('base', lid);
-    H.renderer.setFilter(mask, { isolate }, lid);         // default = isolate; context = dim the rest
+    S.renderer.setActiveSet('base', lid);
+    S.renderer.setFilter(mask, { isolate }, lid);         // default = isolate; context = dim the rest
   }
   // the attribute table's only-matches mode needs the mask EITHER WAY — the
   // compact path renders matches as chunks, but the table reads rows
   { const Lf = layerById(lid); if (Lf) { Lf._filterMask = mask; H.attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
-  H.requestRender();
+  requestRender();
   $('#meta').textContent = `${fBlockDoc.metaLine} · filter: ${hits.toLocaleString()} of ${rec.toLocaleString()} match${cb2 ? ' · compacted' : ''}`;
 }
 

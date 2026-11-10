@@ -3,7 +3,7 @@
 // from it; tidy and scan-for-new-data keep the folder in its by-kind layout; backup and
 // restore move a whole project as one file. The app keeps the layer openers, the tree and
 // the camera, and hands them in as hooks.
-import { S, activeLayer, layerById } from './state.js';
+import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
 import { applyColTypes, attrRowCountOf, layerBlob, layerHeaderOf, layerTableHeader } from './records.js';
 import { basename, fmtSize, joinPath, kindDir, layerBytes, layerFiles, layerRelpath, relPathFor, removeFileAt, resolveDhFile, resolveFileHandle } from './paths.js';
 import { convertLayerToParquet } from './export.js';
@@ -29,7 +29,7 @@ import { shell } from '../../../ext/leadacid/index.js';
 import { menuXY } from './menu.js';
 import { microChoose, microConfirm } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): CONTEXT_TRI_CAP, __MICRO_BUILD__, _fileHandles, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, dhGroupName, ensureDhSetGroups, ensureValueTex, flushViewsScenes, hasFSAA, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects, renderLayers, renderer, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, valueTexEligible, wfrExportable, writeGridDisplayCache
+// the app's side, passed in once (setProjectHooks): CONTEXT_TRI_CAP, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, dhGroupName, ensureDhSetGroups, ensureValueTex, flushViewsScenes, hasFSAA, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects, renderLayers, reopenBlockChan, treeFromManifest, treeToManifest, valueTexEligible, wfrExportable, writeGridDisplayCache
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -145,24 +145,24 @@ export async function packLayersToWfr(Ls) {
       continue;
     }
     const file = await fh.getFile();
-    H._fileHandles.set(file, fh);
+    _fileHandles.set(file, fh);
     for (const L of members) {
       const els = res.elementsOf.get(L);
       if (!els || els.length !== 1) continue;                 // a source that split into several elements stays as it was
-      const keep = { label: L.label, visible: L.visible, tint: L.tint, opacity: L.opacity, catLegend: L.catLegend, lineage: L.lineage, sectioned: H.renderer.layerSectioned(L.id) };
-      H.renderer.removeLayer(L.id);
+      const keep = { label: L.label, visible: L.visible, tint: L.tint, opacity: L.opacity, catLegend: L.catLegend, lineage: L.lineage, sectioned: S.renderer.layerSectioned(L.id) };
+      S.renderer.removeLayer(L.id);
       L.docs = {};
       L.name = fname; L.handle = fh; L.storage = 'project';
       await H.openWfrFile(file, fname, { layer: L.id, first: false, element: els[0], tint: keep.tint, opacity: keep.opacity });
       if (keep.label) L.label = keep.label;
       L.lineage = mkLineage('store', { format: 'wfr', file: `meshes/${fname}`, element: els[0] }, [keep.lineage]);
-      if (keep.visible === false) { L.visible = false; H.renderer.setLayerVisible(L.id, false); }
-      if (keep.sectioned != null && keep.sectioned !== true) H.renderer.setLayerSectioned(L.id, keep.sectioned);
+      if (keep.visible === false) { L.visible = false; S.renderer.setLayerVisible(L.id, false); }
+      if (keep.sectioned != null && keep.sectioned !== true) S.renderer.setLayerSectioned(L.id, keep.sectioned);
       if (keep.catLegend) { L.catLegend = keep.catLegend; applyCatLegend(L, true); }
       packed++;
     }
   }
-  H.recomputeUnion(); H.renderLayers(); markProjectDirty(); H.requestRender();
+  H.recomputeUnion(); H.renderLayers(); markProjectDirty(); requestRender();
   return packed;
 }
 
@@ -243,7 +243,7 @@ export function projectManifest() {
       external: L.storage === 'external' || undefined,
       colorSel: L.colorSel, clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
       catChoices: L.catChoices && L.catChoices.length ? L.catChoices : undefined,
-      sectioned: (() => { const m = H.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
+      sectioned: (() => { const m = S.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
       kind: (L.kind === 'mesh' && !L.gridSurface) ? 'mesh'
         : L.kind === 'table' ? 'table'
           : L.docs.stringsDoc ? (L.docs.stringsDoc.header.kind === 'strings' ? 'strings' : 'dxf-points') : undefined,
@@ -307,7 +307,7 @@ export async function openPackFromHandle(h) {
   try {
     if (h.queryPermission && await h.queryPermission({ mode: 'read' }) !== 'granted' && h.requestPermission) await h.requestPermission({ mode: 'read' });
     const f = await h.getFile();
-    H._fileHandles.set(f, h);
+    _fileHandles.set(f, h);
     return await openProjectPack(f);
   } catch (e) { $('#meta').textContent = `open pack: ${h.name} can't be read any more (moved or deleted?) — ${e.message || e}`; return null; }
 }
@@ -592,7 +592,7 @@ export async function restoreStyleExtras(L, ls) {
   // the grade-unit / density declaration that changes what grade-tonnage MEANS.
   // restoreStyleExtras is the one place the dh branch does reach; restore them here.
   if (L.dh) {
-    if (ls.opacity != null) { L.opacity = ls.opacity; H.renderer.setLayerOpacity(L.id, ls.opacity); }
+    if (ls.opacity != null) { L.opacity = ls.opacity; S.renderer.setLayerOpacity(L.id, ls.opacity); }
     if (ls.clip) L.clip = ls.clip;
     if (ls.gtUnits) L.gtUnits = ls.gtUnits;
     if (ls.legend != null) L.legend = ls.legend;
@@ -604,7 +604,7 @@ export async function restoreStyleExtras(L, ls) {
   if (ls.rules) {
     L.rules = ls.rules;
     L.ruleHidden = new Set(ls.ruleHidden || []);
-    if (ruleModeOf(L)) { H.renderer.setLayerRuleMode(L.id, true); await runRules(L, true); }   // declarative: codes rebuild by sweep
+    if (ruleModeOf(L)) { S.renderer.setLayerRuleMode(L.id, true); await runRules(L, true); }   // declarative: codes rebuild by sweep
   }
   if (ls.paintCols) {
     const n2 = attrRowCountOf(L);
@@ -725,8 +725,8 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           addPaintColorOptions(Ld);
           if (ls.holeFilter) { try { await H.applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
           await H.refilterLayer(Ld, ls.filter);
-          if (ls.visible === false) { Ld.visible = false; H.renderer.setLayerVisible(Ld.id, false); }
-          if (ls.sectioned != null && ls.sectioned !== true) H.renderer.setLayerSectioned(Ld.id, ls.sectioned);
+          if (ls.visible === false) { Ld.visible = false; S.renderer.setLayerVisible(Ld.id, false); }
+          if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(Ld.id, ls.sectioned);
           restoreHiddenCats(Ld, ls.hiddenCats);
           if (ls.ramps) { Ld.ramps = ls.ramps; applyRamp(Ld, true); }
           if (ls.catLegend) { Ld.catLegend = ls.catLegend; applyCatLegend(Ld, true); }
@@ -761,7 +761,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
         try { handle = await resolveFileHandle(dir, ls.source); file = await handle.getFile(); }
         catch { $('#meta').textContent = `project: “${ls.source}” missing from the folder — skipped`; plRow(i, 'skipped — missing from the folder', 'skip'); continue; }
       }
-      if (handle) H._fileHandles.set(file, handle);
+      if (handle) _fileHandles.set(file, handle);
       // a mesh-bearing .ply saved as a POINTS layer must reopen as points
       const overR = ls.kind === 'mesh'
         // a DXF surface reopens as JUST the surface (a streamed DXF would otherwise
@@ -814,7 +814,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
         } catch { /* no sidecar — full discovery as usual */ }
       }
       const _got = await H.openBlob(file, basename(ls.source), i === 0 || !S.layers.length ? 'replace' : 'add', null, overR);
-      { const Lx = layerById(_got); if (Lx) { Lx.storage = ls.external ? 'external' : 'project'; if (ls.label) Lx.label = ls.label; if (ls.opacity != null && Lx.kind !== 'mesh') { Lx.opacity = ls.opacity; H.renderer.setLayerOpacity(Lx.id, ls.opacity); } if (ls.recHide && ls.recHide.length) Lx._recHide = new Set(ls.recHide); if (ls.legend) Lx.legend = true; if (ls.legendTitle) Lx.legendTitle = ls.legendTitle; if (ls.edges != null) { Lx.edges = ls.edges; H.renderer.setLayerEdges(Lx.id, ls.edges); } if (ls.gtUnits) Lx.gtUnits = ls.gtUnits; } }   // mesh opacity rides overR
+      { const Lx = layerById(_got); if (Lx) { Lx.storage = ls.external ? 'external' : 'project'; if (ls.label) Lx.label = ls.label; if (ls.opacity != null && Lx.kind !== 'mesh') { Lx.opacity = ls.opacity; S.renderer.setLayerOpacity(Lx.id, ls.opacity); } if (ls.recHide && ls.recHide.length) Lx._recHide = new Set(ls.recHide); if (ls.legend) Lx.legend = true; if (ls.legendTitle) Lx.legendTitle = ls.legendTitle; if (ls.edges != null) { Lx.edges = ls.edges; S.renderer.setLayerEdges(Lx.id, ls.edges); } if (ls.gtUnits) Lx.gtUnits = ls.gtUnits; } }   // mesh opacity rides overR
       const L = layerById(_got);
       if (!L) { plRow(i, 'failed to open', 'skip'); continue; }   // that open failed; its layer rolled back
       if (ls.drape && L.gridSurface) L._pendingDrape = ls.drape;   // apply after ALL layers land (the drape grid may come later)
@@ -839,7 +839,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (ls.clip && (ls.clip[0] || ls.clip[1])) { L.clip = [String(ls.clip[0] || ''), String(ls.clip[1] || '')]; $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1]; }
       await H.refilterLayer(L, ls.filter);
       if (ls.visible === false) { L.visible = false; H.applyTreeVisibility(); }
-      if (ls.sectioned != null && ls.sectioned !== true) H.renderer.setLayerSectioned(L.id, ls.sectioned);
+      if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(L.id, ls.sectioned);
       restoreHiddenCats(L, ls.hiddenCats);
       if (ls.ramps) { L.ramps = ls.ramps; applyRamp(L, true); }
       if (ls.catLegend) { L.catLegend = ls.catLegend; applyCatLegend(L, true); }
@@ -882,7 +882,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       $('#meta').textContent += ` — ${unread.length} stored column${unread.length === 1 ? '' : 's'} not read`;
       microChoose('stored columns not read', `The project opened, but these stored columns could not be read — ${unread.join(' · ')}`, [{ label: 'OK', value: true }]);
     }
-    H.requestRender();
+    requestRender();
     return true;
   } catch (e) {
     plEnd();
@@ -965,7 +965,7 @@ export async function backupProject({ lean = null, to = null, save = null, host 
   const sink = wr ? { write: (b) => wr.write(b) } : { write: (b) => { parts.push(b.slice()); } };
   let res;
   try {
-    res = await writeBackup(dir, sink, { lean: !!lean, name: S.project.name, build: H.__MICRO_BUILD__, linked, onProgress: progressMeta('backing up') });
+    res = await writeBackup(dir, sink, { lean: !!lean, name: S.project.name, build: S.build, linked, onProgress: progressMeta('backing up') });
     if (wr) await wr.close();
   } catch (e) {
     if (wr) { try { await wr.abort(); } catch { /* gone */ } }
@@ -990,7 +990,7 @@ export async function backupProject({ lean = null, to = null, save = null, host 
 // verdict goes to the status line (and to a host as micro:pack-checked).
 export const pickBackupFile = async () => {
   try {
-    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project pack', accept: { [BACKUP_MIME]: ['.micro'] } }] }); const f = await h.getFile(); H._fileHandles.set(f, h); return f; }
+    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project pack', accept: { [BACKUP_MIME]: ['.micro'] } }] }); const f = await h.getFile(); _fileHandles.set(f, h); return f; }
     return await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.micro'; i.onchange = () => res(i.files[0] || null); i.click(); });
   } catch { return null; }
 };
@@ -1025,7 +1025,7 @@ export async function openProjectPack(blob = null, { host = false, asked = false
   if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort();
   if (!(await openProjectDir(pack.dir, { pack }))) return fail($('#meta').textContent.replace(/^project open failed — /, '') || 'the project in the pack did not open');
   updateProjectTitle();
-  { const h = !host && H._fileHandles.get(blob); if (h) rememberPack(h, pack.dir.name); }
+  { const h = !host && _fileHandles.get(blob); if (h) rememberPack(h, pack.dir.name); }
   pack.abort = new AbortController();
   pack.check = pack.verify({ signal: pack.abort.signal }).then((v) => {
     pack.checked = v;
@@ -1200,7 +1200,7 @@ export async function scanFolderForNewData() {
       if (!isData(e.name) || isSidecar(e.path, e.name) || claimed.has(e.path) || refPaths.has(e.path)) continue;
       const file = await e.handle.getFile();
       if (referenced.has(basename(e.name) + ':' + file.size)) continue;
-      H._fileHandles.set(file, e.handle);                       // so opened layers ride the folder handle (no re-copy)
+      _fileHandles.set(file, e.handle);                       // so opened layers ride the folder handle (no re-copy)
       looseFiles.push(file);
     }
     // load complete drillhole sets directly (no decisions needed)
@@ -1241,5 +1241,5 @@ export async function newProject() {
   if ($('#secMode').value !== 'off') { $('#secMode').value = 'off'; $('#secMode').dispatchEvent(new Event('input')); }
   $('#empty').style.display = '';
   $('#meta').textContent = 'new project';
-  H.requestRender();
+  requestRender();
 }

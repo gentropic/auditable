@@ -7,12 +7,12 @@ import { RAMP_KIND, RAMP_PRESETS, addPaintColorOptions, applyRamp, colorSelOf, r
 import { buildValueTexture } from './valuetex.js';
 import { quoteIdent } from '../../../ext/expr/index.js';
 import { rowsProgress } from './analysis-ui.js';
-import { S, activeLayer, layerById } from './state.js';
+import { S, activeLayer, layerById, requestRender } from './state.js';
 import { reopenBlockChan, reopenDhChan } from './open.js';
 import { markProjectDirty } from './project.js';
 import { followLayer } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setColorHooks): renderer, requestRender, setActiveLayer
+// the app's side, passed in once (setColorHooks): setActiveLayer
 let H = {};
 export function setColorHooks(h) { H = h; }
 
@@ -62,7 +62,7 @@ export const valueTexKey = (L, name) => name + '|' + JSON.stringify((L.qualify &
 export function dropValueTex(L) {
   if (L._valTexBusy) { L._valTexBusy.ac.abort(); L._valTexBusy = null; }
   if (!L._valTex) return;
-  H.renderer.setLayerChanTex(L.id, null); H.renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null;
+  S.renderer.setLayerChanTex(L.id, null); S.renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null;
 }
 
 // → true (coloured from the texture, or none needed), false (superseded), null
@@ -71,26 +71,26 @@ export function ensureValueTex(L, sel = colorSelOf(L)) {
   const bd = L.docs && L.docs.blockDoc;
   if (L._valTex && (!bd || L._valTex.hdr !== bd.header)) dropValueTex(L);   // a re-read: those values were the old document's
   const name = valueTexWant(L, sel);
-  if (!name) { if (L._valTex) { H.renderer.setLayerChanTex(L.id, null); H.requestRender(); } return Promise.resolve(true); }
+  if (!name) { if (L._valTex) { S.renderer.setLayerChanTex(L.id, null); requestRender(); } return Promise.resolve(true); }
   if (!valueTexEligible(L)) return Promise.resolve(null);
   const key = valueTexKey(L, name);
-  if (L._valTex && L._valTex.key === key) { H.renderer.setLayerChanTex(L.id, L._valTex.tex, L._valTex.range); H.requestRender(); return Promise.resolve(true); }
+  if (L._valTex && L._valTex.key === key) { S.renderer.setLayerChanTex(L.id, L._valTex.tex, L._valTex.range); requestRender(); return Promise.resolve(true); }
   if (L._valTexBusy && L._valTexBusy.key === key) return L._valTexBusy.p;
   if (L._valTexBusy) L._valTexBusy.ac.abort();             // a newer colour supersedes the one being read
   const ac = new AbortController(), t0 = performance.now();
   const p = (async () => {
     let r;
     try {
-      r = await buildValueTexture(L, H.renderer.gl, quoteIdent(name), { signal: ac.signal,
+      r = await buildValueTexture(L, S.renderer.gl, quoteIdent(name), { signal: ac.signal,
         onProgress: (dn, N, w) => { if (!ac.signal.aborted && N) $('#meta').textContent = `colour by ${name}: ${rowsProgress(dn, N)} · ${w}`; } });
     } catch (e) { if (e && e.name === 'AbortError') return false; throw e; }
     finally { if (L._valTexBusy && L._valTexBusy.ac === ac) L._valTexBusy = null; }
     if (!r) return null;
-    if (ac.signal.aborted || !layerById(L.id) || L.docs.blockDoc !== bd || valueTexWant(L, colorSelOf(L)) !== name) { H.renderer.gl.deleteTexture(r.tex); return false; }
-    if (L._valTex) { H.renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null; }
+    if (ac.signal.aborted || !layerById(L.id) || L.docs.blockDoc !== bd || valueTexWant(L, colorSelOf(L)) !== name) { S.renderer.gl.deleteTexture(r.tex); return false; }
+    if (L._valTex) { S.renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null; }
     L._valTex = { key, hdr: bd.header, tex: r.tex, range: r.range, name, where: r.where };
-    H.renderer.setLayerChanTex(L.id, r.tex, r.range);
-    applyRamp(L, true); H.requestRender();
+    S.renderer.setLayerChanTex(L.id, r.tex, r.range);
+    applyRamp(L, true); requestRender();
     $('#meta').textContent = `coloured by ${name} — ${r.finite.toLocaleString()} values in ${((performance.now() - t0) / 1000).toFixed(1)} s · ${r.where}`;
     return true;
   })();
@@ -150,7 +150,7 @@ export async function setLayerColorBy(L, v) {
   }
   applyRamp(L, true); syncRuleMode(L);
   dispatchEvent(new Event('micro:project-dirty'));
-  H.requestRender();
+  requestRender();
   return L.id;
 }
 
@@ -239,7 +239,7 @@ export function setLayerColorRange(L, r) {
   applyRamp(L, true);                                      // a custom ramp (or a ratio palette) bakes the range in
   refreshProps();
   markProjectDirty();
-  H.requestRender();
+  requestRender();
 }
 
 export function layerPalette(L) { return numericColorSel(L) ? ((rampCfgOf(L) || {}).preset || 'viridis') : null; }
@@ -251,7 +251,7 @@ export function setLayerPalette(L, name) {
   setRampCfg(L, { preset: n });
   applyRamp(L, true);                                      // now, not when the layer's stage settles
   refreshProps();
-  H.requestRender();
+  requestRender();
 }
 
 export const paletteList = () => Object.keys(RAMP_PRESETS).map((name) => ({ name, kind: RAMP_KIND[name] || 'sequential' }));

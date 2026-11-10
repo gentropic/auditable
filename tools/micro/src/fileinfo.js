@@ -7,9 +7,6 @@ import { fmtSize } from './paths.js';
 import { basisAngles, worldMapOf } from '../../../ext/condenser/src/main.js';
 import { pinStats } from './columns.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFileinfoHooks): frame, renderer
-let H = {};
-export function setFileinfoHooks(h) { H = h; }
 
 // the header panel: everything the providers learned about the open file.
 // A table with click-to-copy values (lamina's grid-summary pattern): display
@@ -58,8 +55,8 @@ export function showFileInfo() {
       row(ax, html`${num(h.bbox.min[i])} ${sep('–')} ${num(h.bbox.max[i])} ${sep('(Δ')} ${num(h.bbox.max[i] - h.bbox.min[i])}${sep(')')}`);
     }
   }
-  if (H.frame) row('frame origin', html`${joinH(H.frame.origin.map(num), sep(', '))}${H.frame.crs ? html` ${sep('·')} ${V(H.frame.crs)}` : ''}`);
-  if (AL0 && H.renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(H.renderer.layerVramBytes(AL0.id))));
+  if (S.frame) row('frame origin', html`${joinH(S.frame.origin.map(num), sep(', '))}${S.frame.crs ? html` ${sep('·')} ${V(S.frame.crs)}` : ''}`);
+  if (AL0 && S.renderer.layerVramBytes(AL0.id)) row('vram (layer)', V(fmtSize(S.renderer.layerVramBytes(AL0.id))));
   if (h.grid) {
     if (h.subBlocked && h.dimPalette) {
       row('grid (fine lattice)', joinH([h.grid.x.count, h.grid.y.count, h.grid.z.count].map(num), sep(' × ')));
@@ -94,11 +91,11 @@ export async function showMemoryInfo() {
   const row = (k, v) => rows.push(html`<tr><td class="fi-k">${k}</td><td>${v}</td></tr>`);
   let total = 0;
   for (const L of S.layers) {
-    const b = H.renderer.layerVramBytes(L.id);
+    const b = S.renderer.layerVramBytes(L.id);
     total += b;
-    row(L.label || L.name, html`${fmtSize(b)} <span class="fi-x">· ${(H.renderer.layerElementCount(L.id) || 0).toLocaleString()} elements${L.visible ? '' : ' · hidden (still resident)'}</span>`);
+    row(L.label || L.name, html`${fmtSize(b)} <span class="fi-x">· ${(S.renderer.layerElementCount(L.id) || 0).toLocaleString()} elements${L.visible ? '' : ' · hidden (still resident)'}</span>`);
   }
-  row('total vram', html`<b>${fmtSize(H.renderer.vramBytes || total)}</b>`);
+  row('total vram', html`<b>${fmtSize(S.renderer.vramBytes || total)}</b>`);
   { const st = pinStats(); if (st.bytes || st.budget) row('filter column cache', html`${fmtSize(st.bytes)} <span class="fi-x">· ${st.cols} column${st.cols === 1 ? '' : 's'} pinned · budget ${st.budget ? fmtSize(st.budget) : 'off'}</span>`); }
   if (performance.memory) row('js heap', fmtSize(performance.memory.usedJSHeapSize));
   if (navigator.storage && navigator.storage.estimate) {

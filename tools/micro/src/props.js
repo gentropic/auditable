@@ -4,7 +4,7 @@
 // the columns tab (census stats, types, detection-limit policies, materialize, use as
 // category), the join tab and the source tab. Carved from index.html (phase 3).
 import { _sheetExclusive } from './windows.js';
-import { S, activeLayer, layerById } from './state.js';
+import { S, activeLayer, layerById, requestRender } from './state.js';
 import { attrRowCountOf, blockCaps, calcOrder, colIsNumeric, extendRow, layerHeaderOf, layerRecords, layerRows, layerTableHeader, locationsOf, numOf, qualifyPolicy, rowQualifier, schemaExt } from './records.js';
 import { fmtSize } from './paths.js';
 import { html, setHTML, trusted } from './html.js';
@@ -21,7 +21,7 @@ import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): CONTEXT_TRI_CAP, _docBbox, addPaintValue, appendColStats, applyLayerOpacity, collarCells, colorHeaderOf, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, frame, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, renderer, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth
+// the app's side, passed in once (setPropsHooks): CONTEXT_TRI_CAP, _docBbox, addPaintValue, appendColStats, applyLayerOpacity, collarCells, colorHeaderOf, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, reopenBlockChan, reopenDh, reopenWithMapping, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -51,7 +51,7 @@ export function closeProps() { _propOpen = false; _propFor = null; _rampRepaint 
 
 export function propKindLine(L) {
   const h = layerHeaderOf(L);
-  const n = H.renderer.layerElementCount(L.id) || 0;
+  const n = S.renderer.layerElementCount(L.id) || 0;
   if (L.kind === 'mesh') {
     // a mesh is the one element with two record spaces, so name both rather than
     // reporting triangles as though they were the whole story
@@ -151,12 +151,12 @@ export function renderStyleTab(body, L) {
     op.oninput = () => {
       opVal.textContent = op.value + '%';
       L.opacity = +op.value / 100;
-      stageGate(L, () => { H.renderer.setLayerMeshStyle(L.id, { opacity: L.opacity }); H.requestRender(); });
+      stageGate(L, () => { S.renderer.setLayerMeshStyle(L.id, { opacity: L.opacity }); requestRender(); });
       H.markProjectDirty();
     };
     body.appendChild(mkRow('opacity', op, opVal));
     if (h) {
-      const now = H.renderer.layerVramBytes(L.id);
+      const now = S.renderer.layerVramBytes(L.id);
       const tierTxt = document.createElement('span'); tierTxt.textContent = `${h.soup ? 'streamed' : 'exact'} · ${fmtSize(now)}`;
       body.appendChild(mkRow('tier', tierTxt));
       {                                                    // exact at any size: past the cap convertMeshLayer asks first
@@ -233,7 +233,7 @@ export function renderStyleTab(body, L) {
     const mkClip = (id) => {
       const inp = document.createElement('input'); inp.type = 'number'; inp.style.width = '76px';
       inp.value = $('#' + id).value; inp.placeholder = id === 'clipMin' ? 'min' : 'max';
-      inp.oninput = () => { $('#' + id).value = inp.value; $('#' + id).dispatchEvent(new Event('input')); H.requestRender(); };
+      inp.oninput = () => { $('#' + id).value = inp.value; $('#' + id).dispatchEvent(new Event('input')); requestRender(); };
       return inp;
     };
     body.appendChild(mkRow('clip', mkClip('clipMin'), mkClip('clipMax')));
@@ -428,7 +428,7 @@ export function renderRuleList(body, L) {
 export function renderStickRadius(body, L) {
   const sec = document.createElement('div'); sec.className = 'pp-sec'; sec.textContent = 'style';
   body.appendChild(sec);
-  const cur = H.renderer.layerStickRadius(L.id);
+  const cur = S.renderer.layerStickRadius(L.id);
   // slider covers the common range; the number box types exact / beyond-slider
   // values (no hard cap — deposit-scale views can want fat sticks).
   const r = document.createElement('input'); r.type = 'range'; r.min = 0.2; r.max = 25; r.step = 0.1;
@@ -437,7 +437,7 @@ export function renderStickRadius(body, L) {
   const apply = (v) => {
     if (!Number.isFinite(v) || v <= 0) return;
     L.docs.dhDoc.config.radius = v;
-    stageGate(L, () => { H.renderer.setLayerStickRadius(L.id, v); H.requestRender(); });
+    stageGate(L, () => { S.renderer.setLayerStickRadius(L.id, v); requestRender(); });
     H.markProjectDirty();
   };
   r.oninput = () => { num.value = (+r.value).toFixed(1); apply(+r.value); };
@@ -798,10 +798,10 @@ export function pushAllStyle(L) {
   applyCatLegend(L, true);
   applyRamp(L, true);
   if (ruleModeOf(L) && (L._rulesDirty || !L._ruleCodes) && rulesOf(L).length) runRules(L, true);
-  if (L.kind === 'mesh') H.renderer.setLayerMeshStyle(L.id, { tint: H.hexToRgb01(L.tint || '#9ea3a8'), opacity: L.opacity != null ? L.opacity : 1 });
-  if (L.dh && L.docs.dhDoc) H.renderer.setLayerStickRadius(L.id, L.docs.dhDoc.config.radius || 1);
+  if (L.kind === 'mesh') S.renderer.setLayerMeshStyle(L.id, { tint: H.hexToRgb01(L.tint || '#9ea3a8'), opacity: L.opacity != null ? L.opacity : 1 });
+  if (L.dh && L.docs.dhDoc) S.renderer.setLayerStickRadius(L.id, L.docs.dhDoc.config.radius || 1);
   L._stagePend = false;
-  H.requestRender();
+  requestRender();
   syncPPFooter();
 }
 
@@ -831,14 +831,14 @@ export function syncPPFooter() {
 export function applyCatVisibility(L, force) {
   if (!force) return stageGate(L, () => applyCatVisibility(L, true));
   if (ruleModeOf(L)) return applyRuleVisibility(L, true);  // rule mode: the vis texture is indexed by RULE code
-  if (paintActiveCol(L)) { H.renderer.setLayerCatVisibility(L.id, null); H.requestRender(); return; }   // paint mode: no code eyes
-  if (!L.catHidden || !L.catHidden.size) H.renderer.setLayerCatVisibility(L.id, null);
+  if (paintActiveCol(L)) { S.renderer.setLayerCatVisibility(L.id, null); requestRender(); return; }   // paint mode: no code eyes
+  if (!L.catHidden || !L.catHidden.size) S.renderer.setLayerCatVisibility(L.id, null);
   else {
     const v = new Uint8Array(256).fill(1);
     for (const c of L.catHidden) v[c & 255] = 0;
-    H.renderer.setLayerCatVisibility(L.id, v);
+    S.renderer.setLayerCatVisibility(L.id, v);
   }
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
 }
 
 export function restoreHiddenCats(L, arr) {
@@ -934,7 +934,7 @@ export function applyCatLegend(L, force) {
   const info = layerClassInfo(L);
   if (!info) return;
   const leg = L.catLegend && L.catLegend.col === info.column ? L.catLegend : null;
-  if (!leg) { H.renderer.setLayerPalette(L.id, null); H.requestRender(); return; }
+  if (!leg) { S.renderer.setLayerPalette(L.id, null); requestRender(); return; }
   const width = info.kind === 'las' ? 32 : 256;
   const px = new Uint8Array(width * 4);
   const put = (c, hex) => {
@@ -943,8 +943,8 @@ export function applyCatLegend(L, force) {
   };
   for (let c = 0; c < width; c++) put(c, leg.otherColor || '#555a5f');   // uncovered → the other bucket
   for (const e of leg.entries) for (const c of legendCodesOf(info, e)) if (c < width) put(c, e.color);
-  H.renderer.setLayerPalette(L.id, px, width);
-  H.requestRender();
+  S.renderer.setLayerPalette(L.id, px, width);
+  requestRender();
 }
 
 // ── rule-based styling (spec §10.4): ordered expr predicates → colors. One
@@ -1037,8 +1037,8 @@ export function applyPaintPalette(L, col) {
       const s2 = Math.round(t * 255) * 4;
       px[code * 4] = lut[s2]; px[code * 4 + 1] = lut[s2 + 1]; px[code * 4 + 2] = lut[s2 + 2]; px[code * 4 + 3] = 255;
     }
-    H.renderer.setLayerPalette(L.id, px, 256);
-    H.requestRender();
+    S.renderer.setLayerPalette(L.id, px, 256);
+    requestRender();
     return;
   }
   const px = new Uint8Array(256 * 4);
@@ -1048,8 +1048,8 @@ export function applyPaintPalette(L, col) {
   };
   for (let c = 0; c < 256; c++) put(c, col.blankColor || PAINT_BLANK);
   col.dict.forEach((label, i) => { if (i > 0 && i < 256 && label != null) put(i, col.colors[i] || RULE_ELSE); });
-  H.renderer.setLayerPalette(L.id, px, 256);
-  H.requestRender();
+  S.renderer.setLayerPalette(L.id, px, 256);
+  requestRender();
 }
 
 // (paintRecount lives in src/columns.js)
@@ -1098,19 +1098,19 @@ export function applyRulePalette(L, force) {
   };
   for (let c = 0; c < 256; c++) put(c, (L.rules && L.rules.elseColor) || RULE_ELSE);
   rules.forEach((r, i) => { if (i + 1 < 256) put(i + 1, r.color || RULE_ELSE); });
-  H.renderer.setLayerPalette(L.id, px, 256);
-  H.requestRender();
+  S.renderer.setLayerPalette(L.id, px, 256);
+  requestRender();
 }
 
 export function applyRuleVisibility(L, force) {
   if (!force) return stageGate(L, () => applyRuleVisibility(L, true));
-  if (!L.ruleHidden || !L.ruleHidden.size) H.renderer.setLayerCatVisibility(L.id, null);
+  if (!L.ruleHidden || !L.ruleHidden.size) S.renderer.setLayerCatVisibility(L.id, null);
   else {
     const v = new Uint8Array(256).fill(1);
     for (const c of L.ruleHidden) v[c & 255] = 0;
-    H.renderer.setLayerCatVisibility(L.id, v);
+    S.renderer.setLayerCatVisibility(L.id, v);
   }
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
 }
 
 // mode entry/exit: rules, PAINTED COLUMNS, and categories share the palette +
@@ -1122,21 +1122,21 @@ export function syncRuleMode(L) {
   const pc = paintActiveCol(L) || calcDisplayCol(L);
   if (!pc && calcSelOf(L)) ensureCalcDisplay(L);           // realize lazily; it re-syncs on completion
   if (ruleModeOf(L)) {
-    H.renderer.setLayerRuleMode(L.id, true);
+    S.renderer.setLayerRuleMode(L.id, true);
     applyRulePalette(L, true); applyRuleVisibility(L, true);
-    if (L._ruleCodes) H.renderer.setLayerRuleCodes(L.id, L._ruleCodes);   // paint may have borrowed the texture
+    if (L._ruleCodes) S.renderer.setLayerRuleCodes(L.id, L._ruleCodes);   // paint may have borrowed the texture
     else if (rulesOf(L).length && (!L._ruleCodes || L._rulesDirty)) runRules(L, true);
-    else H.renderer.setLayerRuleCodes(L.id, null);
+    else S.renderer.setLayerRuleCodes(L.id, null);
   } else if (pc) {
-    H.renderer.setLayerRuleMode(L.id, true);
+    S.renderer.setLayerRuleMode(L.id, true);
     applyPaintPalette(L, pc);
-    H.renderer.setLayerCatVisibility(L.id, null);            // no per-value eyes on paint (v1)
-    H.renderer.setLayerRuleCodes(L.id, pc.codes);
+    S.renderer.setLayerCatVisibility(L.id, null);            // no per-value eyes on paint (v1)
+    S.renderer.setLayerRuleCodes(L.id, pc.codes);
   } else {
-    H.renderer.setLayerRuleMode(L.id, false);
+    S.renderer.setLayerRuleMode(L.id, false);
     applyCatLegend(L, true); applyCatVisibility(L, true);
   }
-  H.requestRender();
+  requestRender();
 }
 
 // the sweep: compile each rule against the layer schema (ƒ columns included),
@@ -1149,9 +1149,9 @@ export async function runRules(L, force) {
   if (!force) return stageGate(L, () => runRules(L, true));
   const h = layerTableHeader(L); if (!h) return;
   applyRulePalette(L, true); applyRuleVisibility(L, true);
-  H.renderer.setLayerRuleMode(L.id, ruleModeOf(L));
+  S.renderer.setLayerRuleMode(L.id, ruleModeOf(L));
   const rules = rulesOf(L);
-  if (!rules.length) { L._ruleCodes = null; L._ruleCounts = null; L._rulesDirty = false; H.renderer.setLayerRuleCodes(L.id, null); H.requestRender(); return; }
+  if (!rules.length) { L._ruleCodes = null; L._ruleCounts = null; L._rulesDirty = false; S.renderer.setLayerRuleCodes(L.id, null); requestRender(); return; }
   const schema = schemaExt(L, h);
   const fns = [];
   for (const r of rules) {
@@ -1184,9 +1184,9 @@ export async function runRules(L, force) {
     if (epoch !== _ruleEpoch) return;                      // superseded by a newer sweep
   }
   L._ruleCodes = codes; L._ruleCounts = counts; L._rulesDirty = false;
-  H.renderer.setLayerRuleCodes(L.id, codes);
+  S.renderer.setLayerRuleCodes(L.id, codes);
   $('#meta').textContent = `rules: ${rules.map((r, i) => `${r.name || 'rule ' + (i + 1)} ${counts[i + 1].toLocaleString()}`).join(' · ')} · else ${counts[0].toLocaleString()}`;
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
   if (_propOpen && _propFor === L.id && _propTab === 'style') renderProps();   // refresh the count badges
 }
 
@@ -1336,7 +1336,7 @@ export function renderClassList(body, L, info) {
     mkA('all', () => { for (const c of shownCodes()) L.catHidden.delete(c); sync(); }),
     mkA('none', () => { for (const c of shownCodes()) L.catHidden.add(c); sync(); }),
     mkA('invert', () => { for (const c of shownCodes()) { if (L.catHidden.has(c)) L.catHidden.delete(c); else L.catHidden.add(c); } sync(); }),
-    ...(stored ? [mkA('reset legend', () => { L.catLegend = null; H.renderer.setLayerPalette(L.id, null); H.markProjectDirty(); H.requestRender(); renderProps(); })] : []),
+    ...(stored ? [mkA('reset legend', () => { L.catLegend = null; S.renderer.setLayerPalette(L.id, null); H.markProjectDirty(); requestRender(); renderProps(); })] : []),
   );
   body.appendChild(bulk);
   body.appendChild(ppNote('right-click an entry: rename · merge into · ungroup · remove — the color chip edits in place'));
@@ -1441,7 +1441,7 @@ export async function broadcastCollarCol(L, colName) {
     L._colStats = null; L._calcFns = null;
   }
   H.setLayerColorSel(L, 'paint:' + outName);
-  H.markProjectDirty(); renderProps(); H.requestRender();
+  H.markProjectDirty(); renderProps(); requestRender();
   $('#meta').textContent = `broadcast: ${outName} on ${L.label || L.name} — the filter, color ramps, GT/swath, and exports all see it`;
 }
 
@@ -1529,7 +1529,7 @@ export async function materializeCalcCol(L, name) {
   matColSet(L, name, vals, { lineage: mkLineage('materialize', { from: 'calc', expr: cc.expr }, [L.lineage].filter(Boolean)) });
   if (wasColor) H.setLayerColorSel(L, 'paint:' + name);
   try { await persistElement(L); } catch { /* best-effort */ }
-  H.markProjectDirty(); H.renderLayers(); H.requestRender();
+  H.markProjectDirty(); H.renderLayers(); requestRender();
   $('#meta').textContent = `materialized “${name}” — ${rec.toLocaleString()} values stored`;
 }
 
@@ -1612,7 +1612,7 @@ export async function refreshQualified(L, rechan) {
   else await H.refilterLayer(L);
   if (L.docs && L.docs.blockDoc) await H.ensureValueTex(L);
   refreshProps();
-  H.requestRender();
+  requestRender();
   return L.id;
 }
 
@@ -1810,7 +1810,7 @@ export function rampRangeFor(L) {
   const sel = colorSelOf(L);
   const clip = [parseFloat(L.clip[0]), parseFloat(L.clip[1])];
   if (String(sel).startsWith('chan:')) {
-    const cr = H.renderer.layerChanRange(L.id) || [0, 1];
+    const cr = S.renderer.layerChanRange(L.id) || [0, 1];
     return [Number.isFinite(clip[0]) ? clip[0] : cr[0], Number.isFinite(clip[1]) ? clip[1] : cr[1]];
   }
   if (String(sel).startsWith('paint:')) {                  // ratio channels: absolute 0..1, or a materialized column's real [min,max]
@@ -1823,7 +1823,7 @@ export function rampRangeFor(L) {
     return [Number.isFinite(clip[0]) ? clip[0] : (cd ? cd.min : 0), Number.isFinite(clip[1]) ? clip[1] : (cd ? cd.max : 1)];
   }
   const b = H._docBbox || [0, 0, 0, 1, 1, 1];
-  const o = H.frame ? H.frame.origin[2] : 0;
+  const o = S.frame ? S.frame.origin[2] : 0;
   return [Number.isFinite(clip[0]) ? clip[0] : b[2] + o, Number.isFinite(clip[1]) ? clip[1] : b[5] + o];
 }
 
@@ -1835,12 +1835,12 @@ export function applyRamp(L, force) {
   if (pcR && pcR.kind === 'ratio') { applyPaintPalette(L, pcR); return; }   // ramp+clip bake INTO the palette
   const cfg = rampCfgOf(L);
   if (!cfg || (cfg.preset === 'viridis' && !(cfg.breaks && cfg.breaks.length))) {
-    H.renderer.setLayerRamp(L.id, null);
+    S.renderer.setLayerRamp(L.id, null);
   } else {
     const [lo, hi] = rampRangeFor(L);
-    H.renderer.setLayerRamp(L.id, bakeRampPixels(cfg, lo, hi));
+    S.renderer.setLayerRamp(L.id, bakeRampPixels(cfg, lo, hi));
   }
-  H.requestRender();
+  requestRender();
 }
 
 export let _rampRepaint = null;   // { prev, hist } — the ramp section's live canvases
@@ -2107,5 +2107,5 @@ export function renderSourceTab(body, L) {
       line(html`${ax} <span class="v">${fm(h.bbox.min[i])}</span> – <span class="v">${fm(h.bbox.max[i])}</span> <span class="fi-x">· Δ</span> <span class="v">${fm(h.bbox.max[i] - h.bbox.min[i])}</span>`);
     }
   }
-  if (H.frame) { sec('frame'); line(html`origin <span class="v">${H.frame.origin.map(fm).join(', ')}</span>`); }
+  if (S.frame) { sec('frame'); line(html`origin <span class="v">${S.frame.origin.map(fm).join(', ')}</span>`); }
 }

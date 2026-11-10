@@ -8,7 +8,7 @@
 import { Winding, buildBVH, windingBVH } from '../../../ext/winding/index.js';
 import { weldVertices } from '../../../ext/geometry/index.js';
 import { attrRowCountOf, hasRecords, layerTableHeader, meshVertexData } from './records.js';
-import { S } from './state.js';
+import { S, requestRender } from './state.js';
 import { Peel } from '../../../ext/peel/index.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { openBlockModel, openDmModel, openLas, openPly } from '../../../ext/condenser/src/main.js';
@@ -18,7 +18,7 @@ import { paintRecount } from './columns.js';
 import { mkLineage } from './lineage.js';
 import { addPaintColorOptions } from './props.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, frame, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, requestRender, selEpoch, selectionStatus, setLayerColorSel
+// the app's side, passed in once (setBygeomHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel
 let H = {};
 export function setBygeomHooks(h) { H = h; }
 
@@ -188,7 +188,7 @@ export async function meshWinding(meshL, variant = 'solid') {
     meshL._windingMeshes = new Set();
   }
   if (!meshL._windingMeshes.has(variant)) {
-    meshL._windingEngine.setMesh(m.vertices, m.triangles, { frame: H.frame, name: variant });
+    meshL._windingEngine.setMesh(m.vertices, m.triangles, { frame: S.frame, name: variant });
     meshL._windingMeshes.add(variant);
   }
   return meshL._windingEngine;
@@ -207,7 +207,7 @@ export async function meshPeel(meshL) {
     meshL._peelEngine = P; meshL._peelMeshes = new Set();
   }
   if (!meshL._peelMeshes.has('solid')) {
-    meshL._peelEngine.setMesh(m.vertices, m.triangles, { frame: H.frame, name: 'solid' });
+    meshL._peelEngine.setMesh(m.vertices, m.triangles, { frame: S.frame, name: 'solid' });
     meshL._peelMeshes.add('solid');
   }
   return meshL._peelEngine;
@@ -241,9 +241,9 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
   const [dx, dy, dz] = grid.size;
   const [nx, ny, nz] = grid.count;
   const corner = [                                         // world MIN corner (originLocal = block-0 CENTER, frame-local)
-    grid.originLocal[0] - dx / 2 + H.frame.origin[0],
-    grid.originLocal[1] - dy / 2 + H.frame.origin[1],
-    grid.originLocal[2] - dz / 2 + H.frame.origin[2],
+    grid.originLocal[0] - dx / 2 + S.frame.origin[0],
+    grid.originLocal[1] - dy / 2 + S.frame.origin[1],
+    grid.originLocal[2] - dz / 2 + S.frame.origin[2],
   ];
   const [bx0, by0, bz0, bx1, by1, bz1] = m.bbox;
   const clip = (lo, hi, c, d, n) => [
@@ -284,7 +284,7 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
       const pres = mode === 'flag' ? [1, 1] : [Math.max(1, resolution[0] | 0), Math.max(1, resolution[1] | 0)];
       const stype = m.closed ? 'closed' : 'open';
       result = await Promise.race([
-        eng.evaluate(bmPeel, { mode, axis: 'z', surfaceType: stype, maxPeels: 32, resolution: pres, frame: H.frame, onProgress: prog2, mesh: 'solid' }),
+        eng.evaluate(bmPeel, { mode, axis: 'z', surfaceType: stype, maxPeels: 32, resolution: pres, frame: S.frame, onProgress: prog2, mesh: 'solid' }),
         new Promise((_, rej) => { run.reject = rej; }),
       ]);
       if (result && result.overflow) $('#meta').textContent = `peel: ${result.overflow.toLocaleString()} column(s) exceeded maxPeels — some blocks may be wrong; switch to winding`;
@@ -295,7 +295,7 @@ export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], 
       }
     } else {
       result = await Promise.race([
-        eng.evaluate(bm, { mode, resolution: res, threshold: 0.5, frame: H.frame, onProgress: prog2, mesh: variant }),
+        eng.evaluate(bm, { mode, resolution: res, threshold: 0.5, frame: S.frame, onProgress: prog2, mesh: variant }),
         new Promise((_, rej) => { run.reject = rej; }),
       ]);
     }
@@ -327,11 +327,11 @@ export function sbCancelActive() {
 // their closures ('between' runs below-of-A AND above-of-B)
 export const SB_VARIANT = { inside: 'solid', outside: 'solid', below: 'below', above: 'above' };
 
-export function solidHit(S) {
-  const [bx0, by0, bz0, bx1, by1, bz1] = S.bbox;
+export function solidHit(SA) {
+  const [bx0, by0, bz0, bx1, by1, bz1] = SA.bbox;
   return (x, y, z) =>
     x >= bx0 && x <= bx1 && y >= by0 && y <= by1 && z >= bz0 && z <= bz1
-    && Math.abs(windingBVH(x, y, z, S.vertices, S.triangles, S.nodes, S.triIndices)) >= 0.5;
+    && Math.abs(windingBVH(x, y, z, SA.vertices, SA.triangles, SA.nodes, SA.triIndices)) >= 0.5;
 }
 
 // stream world positions for an element layer — dh resolves O(1), providers
@@ -533,7 +533,7 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
     H.applyLayerSelection(L);
   }
   if (epoch !== H.selEpoch()) return;
-  H.selectionStatus(); H.markProjectDirty(); H.requestRender();
+  H.selectionStatus(); H.markProjectDirty(); requestRender();
 }
 
 export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode = 'below', meshB = null, onProgress = null } = {}) {
@@ -570,7 +570,7 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
   H.setLayerColorSel(L, 'paint:' + col.name);
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `ratio by surface: ${touched.toLocaleString()} of ${n.toLocaleString()} blocks vs “${gridL.label || gridL.name}” → ${col.name}`;
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
   return col;
 }
 
@@ -610,7 +610,7 @@ export async function flagByGridSurface(gridL, targets, { name, label = 'IN', mo
     made++;
     $('#meta').textContent = `flag by surface: ${cnt.toLocaleString()} of ${n.toLocaleString()} → ${name} = ${label} · ${L.label || L.name}`;
   }
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
   return made;
 }
 
@@ -623,7 +623,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
   if (combine === 'replace') H.clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
   const Ls = targets || S.layers.filter((L) => H.layerShown(L.id) && hasRecords(L));
-  let S = null, SB = null;                                 // the sparse-path BVHs, built lazily
+  let SA = null, SB = null;                                 // the sparse-path BVHs, built lazily
   for (let li = 0; li < Ls.length; li++) {
     const L = Ls[li];
     const n = attrRowCountOf(L);
@@ -653,13 +653,13 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
           await new Promise((r2) => setTimeout(r2));
         }
       } else {
-        if (!S) S = await meshSolidOf(meshL, variant);
+        if (!SA) SA = await meshSolidOf(meshL, variant);
         if (between && !SB) SB = await meshSolidOf(meshB, 'above');
-        if (!S || (between && !SB)) { $('#meta').textContent = 'select by solid: needs context-tier meshes'; return; }
-        const inA = solidHit(S);
+        if (!SA || (between && !SB)) { $('#meta').textContent = 'select by solid: needs context-tier meshes'; return; }
+        const inA = solidHit(SA);
         const inB = between ? solidHit(SB) : null;
         let done = 0;
-        for await (const ch of layerPositions(L, want || between ? S.bbox : null)) {
+        for await (const ch of layerPositions(L, want || between ? SA.bbox : null)) {
           if (epoch !== H.selEpoch()) return;
           for (let i = 0; i < ch.count; i++) {
             const hitA = inA(ch.x[i], ch.y[i], ch.z[i]);
@@ -684,7 +684,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
   }
   if (epoch !== H.selEpoch()) return;
   H.selectionStatus();
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
 }
 
 // fraction-inside ratio column (block grids): res³ sub-samples across each
@@ -751,7 +751,7 @@ export async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', m
   H.setLayerColorSel(L, 'paint:' + col.name);                // see the result land
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `ratio by solid: ${touched.toLocaleString()} of ${n.toLocaleString()} blocks touch “${meshL.label || meshL.name}” → ${col.name} (${dense.engine})`;
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
   return col;
 }
 
@@ -767,7 +767,7 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
   const want = mode !== 'outside';
   const epoch = ++_ratioEpoch;
   let made = 0;
-  let S = null, SB = null;
+  let SA = null, SB = null;
   for (let li = 0; li < targets.length; li++) {
     const L = targets[li];
     if (!layerTableHeader(L)) continue;                    // painted columns need a table behind them
@@ -799,12 +799,12 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
           await new Promise((r2) => setTimeout(r2));
         }
       } else {
-        if (!S) S = await meshSolidOf(meshL, variant);
+        if (!SA) SA = await meshSolidOf(meshL, variant);
         if (between && !SB) SB = await meshSolidOf(meshB, 'above');
-        if (!S || (between && !SB)) { $('#meta').textContent = 'flag by solid: needs context-tier meshes'; return made; }
-        const inA = solidHit(S);
+        if (!SA || (between && !SB)) { $('#meta').textContent = 'flag by solid: needs context-tier meshes'; return made; }
+        const inA = solidHit(SA);
         const inB = between ? solidHit(SB) : null;
-        for await (const ch of layerPositions(L, want || between ? S.bbox : null)) {
+        for await (const ch of layerPositions(L, want || between ? SA.bbox : null)) {
           if (epoch !== _ratioEpoch) return made;
           for (let i = 0; i < ch.count; i++) {
             const hitA = inA(ch.x[i], ch.y[i], ch.z[i]);
@@ -839,7 +839,7 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
     made++;
     $('#meta').textContent = `flag by solid: ${cnt.toLocaleString()} of ${n.toLocaleString()} inside → ${name} · filter with ${name} == "${label}"`;
   }
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
   if (failed.length) throw new Error(`flag by solid failed on ${failed.length} of ${targets.length} target${targets.length > 1 ? 's' : ''} — ${failed[0]}`);
   return made;
 }
@@ -907,6 +907,6 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   H.setLayerColorSel(L, 'paint:' + col.name);
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `assign domains: ${assigned.toLocaleString()} of ${n.toLocaleString()} claimed by ${solids.length} solids → ${name}`;
-  H.markProjectDirty(); H.requestRender();
+  H.markProjectDirty(); requestRender();
   return col;
 }

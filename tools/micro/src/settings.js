@@ -5,8 +5,9 @@ import { _windingGpu, setWindingGpu } from './bygeom.js';
 import { setPinBudget } from './columns.js';
 import { _autoOptimize, _autoPack, setAutoOptimize, setAutoPack } from './project.js';
 import { floatWin, raiseWindow } from './windows.js';
+import { requestRender } from './state.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSettingsHooks): _blockEdges, _nlOn, _secFollow, _selStick, nlEnsureTrained, nlSetEnabled, requestRender, setBlockEdges, setSelStick
+// the app's side, passed in once (setSettingsHooks): _blockEdges, _nlOn, _secFollow, _selStick, nlEnsureTrained, nlSetEnabled, setBlockEdges, setSelStick
 let H = {};
 export function setSettingsHooks(h) { H = h; }
 
@@ -21,7 +22,7 @@ export function setSettingsHooks(h) { H = h; }
 export const PREFS = [
   { sec: 'display', label: 'background', desc: 'the scene clear colour — white or paper for print-bound figures (decorations flip to dark ink)', kind: 'choice', opts: [['#121212', 'basalt'], ['#000000', 'black'], ['#ffffff', 'white'], ['#f4f2ec', 'paper']], get: () => _bgColor, set: (v) => setBg(v) },
   { sec: 'display', label: 'block edges', desc: 'outline every block face — and every cut block on a section', kind: 'toggle', get: () => H._blockEdges, set: (v) => H.setBlockEdges(v) },
-  { sec: 'display', label: 'render budget', desc: 'elements per frame — lower is snappier while orbiting; the picture converges when the camera rests', kind: 'choice', opts: () => [...$('#budget').options].map((o) => [o.value, o.textContent]), get: () => $('#budget').value, set: (v) => { $('#budget').value = v; $('#budget').dispatchEvent(new Event('change')); H.requestRender(); } },
+  { sec: 'display', label: 'render budget', desc: 'elements per frame — lower is snappier while orbiting; the picture converges when the camera rests', kind: 'choice', opts: () => [...$('#budget').options].map((o) => [o.value, o.textContent]), get: () => $('#budget').value, set: (v) => { $('#budget').value = v; $('#budget').dispatchEvent(new Event('change')); requestRender(); } },
   { sec: 'interaction', label: 'selection tool stays armed', desc: 'after a rectangle / lasso: put the tool down, keep it while adding (shift/alt held on release), or keep it until Esc — middle-drag orbits either way', kind: 'choice', opts: [['oneshot', 'never (one shot)'], ['smart', 'with shift/alt held'], ['sticky', 'until Esc']], get: () => H._selStick, set: (v) => H.setSelStick(v) },
   { sec: 'interaction', label: 'properties auto-apply', desc: 'style edits land as you make them; off = an explicit apply button', kind: 'toggle', get: () => _autoApply, set: (v) => { $('#ppAuto').checked = v; $('#ppAuto').dispatchEvent(new Event('change')); } },
   { sec: 'interaction', label: 'camera follows the section scrub', desc: 'scrubbing a section slab carries the camera along with it', kind: 'toggle', get: () => H._secFollow, set: (v) => { $('#secFollow').checked = v; $('#secFollow').dispatchEvent(new Event('input')); } },

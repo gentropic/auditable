@@ -2,7 +2,7 @@
 // (its own values, or a second grid draped over it), the flat sheet for a grid with no
 // elevation, the band a multi-band GeoTIFF shows, and the capture/apply pair that carries
 // all of it through a reopen and a saved project.
-import { S } from './state.js';
+import { S, requestRender } from './state.js';
 import { reReadMesh } from './records.js';
 import { niceStep } from './analysis-ui.js';
 import { applyGridExtend, rasterizeMeshToGrid, surfaceFromGrid } from './grid-ops.js';
@@ -14,7 +14,7 @@ import { buildHeightfieldMesh } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
 import { renderLayers } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSurfacesHooks): frame, renderer, reopenReplacing, requestRender
+// the app's side, passed in once (setSurfacesHooks): reopenReplacing
 let H = {};
 export function setSurfacesHooks(h) { H = h; }
 
@@ -23,11 +23,11 @@ export function setSurfacesHooks(h) { H = h; }
 // a mesh is pickable when it is OPAQUE, or when it is the layer you have
 // selected (which is how you say "I mean this surface").
 export function syncMeshPickable() {
-  if (!H.renderer.setLayerPickable) return;
+  if (!S.renderer.setLayerPickable) return;
   for (const L of S.layers) {
     if (L.kind !== 'mesh') continue;
     const opaque = (L.opacity == null || L.opacity >= 0.95);
-    H.renderer.setLayerPickable(L.id, opaque || L.id === S.activeId);
+    S.renderer.setLayerPickable(L.id, opaque || L.id === S.activeId);
   }
 }
 
@@ -75,7 +75,7 @@ export async function meshToGridLayer(meshL, { cell, keep = 'top', extend = 'non
 // values. (Phase 2 of the heightfield-drape arc, §17.)
 export function surfaceColorArray(hf, drapeGrid, rampPreset, elevLo, elevHi) {
   const stops = RAMP_PRESETS[rampPreset] || RAMP_PRESETS.viridis;
-  const color = new Float32Array(hf.count * 3), o = H.frame ? H.frame.origin : [0, 0, 0];
+  const color = new Float32Array(hf.count * 3), o = S.frame ? S.frame.origin : [0, 0, 0];
   if (drapeGrid) {
     const surf = surfaceFromGrid(drapeGrid), vals = new Float32Array(hf.count);
     let lo = Infinity, hi = -Infinity;
@@ -100,20 +100,20 @@ export function surfaceColorArray(hf, drapeGrid, rampPreset, elevLo, elevHi) {
 export function rebuildSurface(L) {
   const gd = L.docs && L.docs.gridDoc; if (!gd || !L.gridSurface) return;
   const flatZ = L.surfaceFlatZ != null ? L.surfaceFlatZ : null;
-  const hf = buildHeightfieldMesh(gd.grid, { stride: gd.stride, frame: H.frame, flatZ }); if (!hf) return;
+  const hf = buildHeightfieldMesh(gd.grid, { stride: gd.stride, frame: S.frame, flatZ }); if (!hf) return;
   let zmin = Infinity, zmax = -Infinity;                    // grid VALUE range (= colour range for elevation/value)
   for (let i = 0; i < hf.count; i++) { const z = hf.values[i]; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
   const drapeLayer = L.drapeSource ? S.layers.find((x) => x.name === L.drapeSource && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid) : null;
   const color = surfaceColorArray(hf, drapeLayer ? drapeLayer.docs.gridDoc.grid : null, (rampCfgOf(L) || {}).preset, zmin, zmax);
   const smooth = L.surfaceSmooth !== false;                 // faceted (no normals → flat per-triangle shading) reads the cell structure
-  const vis = L.visible, sec = H.renderer.layerSectioned(L.id), op = L.opacity != null ? L.opacity : 1;
-  H.renderer.removeLayer(L.id);
-  H.renderer.setLayerMeshStyle(L.id, { tint: [0.6, 0.63, 0.66], opacity: op });
-  H.renderer.addChunk({ kind: 'mesh', pos: hf.pos, idx: hf.idx, color, normal: smooth ? hf.normal : null, count: hf.count, bboxLocal: hf.bboxLocal }, 'base', L.id);
+  const vis = L.visible, sec = S.renderer.layerSectioned(L.id), op = L.opacity != null ? L.opacity : 1;
+  S.renderer.removeLayer(L.id);
+  S.renderer.setLayerMeshStyle(L.id, { tint: [0.6, 0.63, 0.66], opacity: op });
+  S.renderer.addChunk({ kind: 'mesh', pos: hf.pos, idx: hf.idx, color, normal: smooth ? hf.normal : null, count: hf.count, bboxLocal: hf.bboxLocal }, 'base', L.id);
   L.bboxLocal = hf.bboxLocal;
-  if (vis === false) H.renderer.setLayerVisible(L.id, false);
-  if (sec != null && sec !== true) H.renderer.setLayerSectioned(L.id, sec);
-  H.requestRender(); markProjectDirty();
+  if (vis === false) S.renderer.setLayerVisible(L.id, false);
+  if (sec != null && sec !== true) S.renderer.setLayerSectioned(L.id, sec);
+  requestRender(); markProjectDirty();
 }
 
 // set the drape source (null = the grid's own elevation/value)

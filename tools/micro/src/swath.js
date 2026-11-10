@@ -3,7 +3,7 @@
 // with the band under the cursor drawn in 3D, zebra stripes painted onto the
 // blocks, and a band dragged out into a selection. Carved from index.html (phase 3).
 import { dirTrendPlunge, frameDipDirDipRake } from './geom.js';
-import { S, layerById } from './state.js';
+import { S, layerById, requestRender } from './state.js';
 import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { numericColsOf, volumeAt, volumeContextOf } from './analysis.js';
@@ -18,7 +18,7 @@ import { addPaintColorOptions, applyPaintPalette, paintSelOf } from './props.js'
 import { menuXY } from './menu.js';
 import { setSwathBand } from './overlay.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, rendererDocBbox, requestRender, saveRecipe, selectionStatus, setLayerColorSel
+// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, rendererDocBbox, saveRecipe, selectionStatus, setLayerColorSel
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -304,7 +304,7 @@ export function openSwath(L, ropts) {
       }
       H.applyLayerSelection(Lx);
     }
-    H.selectionStatus(); H.markProjectDirty(); H.requestRender();
+    H.selectionStatus(); H.markProjectDirty(); requestRender();
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
   let staleEl, progEl, runBtn;
@@ -454,10 +454,10 @@ export async function applySwathZebra(L, dir, bandWidth, offset) {
   paintRecount(col); col._swathParity = true;
   applyPaintPalette && H.setLayerColorSel(L, 'paint:_swath');
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
-  H.requestRender();
+  requestRender();
 }
 
 export function clearSwathZebra(L) {
   const i = (L.paintCols || []).findIndex((c) => c.name === '_swath');
-  if (i >= 0) { L.paintCols.splice(i, 1); if (paintSelOf(L) === '_swath') H.setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; addPaintColorOptions(L); H.requestRender(); }
+  if (i >= 0) { L.paintCols.splice(i, 1); if (paintSelOf(L) === '_swath') H.setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; addPaintColorOptions(L); requestRender(); }
 }

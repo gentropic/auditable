@@ -1,13 +1,10 @@
 // micro — recent files: the remembered handles, the empty-state list, and the file picker.
 import { _idb } from './element-store.js';
 import { closeMenu } from './menu.js';
-import { S } from './state.js';
+import { S, _fileHandles } from './state.js';
 import { openFilesDialog } from './open-dialog.js';
 import { openBlob } from './open.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setRecentsHooks): _fileHandles
-let H = {};
-export function setRecentsHooks(h) { H = h; }
 
 export const RECENTS_KEY = '__recents__', RECENTS_MAX = 12;
 
@@ -47,7 +44,7 @@ export async function openRecent(entry) {
       }
       const f = await h.getFile();
       addRecent(f, h);
-      H._fileHandles.set(f, h);
+      _fileHandles.set(f, h);
       // a recent is the picker with the file pre-picked: same dialog, same
       // add/replace radio. An empty view opens straight — nothing to replace.
       if (S.layers.length) return openFilesDialog([f]);
@@ -80,7 +77,7 @@ export function openFilePicker() {
       try {
         const handles = await window.showOpenFilePicker({ multiple: true });
         const files = [];
-        for (const h of handles) { const f = await h.getFile(); addRecent(f, h); H._fileHandles.set(f, h); files.push(f); }
+        for (const h of handles) { const f = await h.getFile(); addRecent(f, h); _fileHandles.set(f, h); files.push(f); }
         if (files.length) openFilesDialog(files);
       } catch { /* cancelled */ }
     })();

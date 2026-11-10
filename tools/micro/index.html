@@ -1164,7 +1164,7 @@ import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, clearUndo, onUndoCh
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
-import { S, layerById, activeLayer, activeDocs } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
+import { S, layerById, activeLayer, activeDocs, requestRender } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
 import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
 import { scan, gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/scanner.js';   // the analysis kernels (page + scan workers)
@@ -1183,7 +1183,7 @@ import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc,
 import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';
 import { inventoryProject, writeBackup, readBackup, restoreBackup, openPack, writeTree, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
 import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, closeCompactBuilder, resetFilterState, setFilterHooks } from './src/filter.js';
-import { mkLineage, microModelOf, setLineageHooks } from './src/lineage.js';
+import { mkLineage, microModelOf } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
 import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile, setWindowsHooks } from './src/windows.js';
@@ -1224,46 +1224,44 @@ import { columnValues, filterCtx, attachAutocomplete, acClose, _exprFields, expr
 import { _fdOpen, fdBounds, fdValues, fdNum, fdRenderChain, fdRenderLeaf, renderFilterDrawer, toggleFilterDrawer, setFilterDrawerHooks } from './src/filter-drawer.js';
 import { HELP_KEYS, HELP_TOUCH, HELP_ANALYSIS, showAbout, showHelp, checkForUpdates, sealedInfo, setHelpHooks } from './src/help.js';
 import { openCalcWindow, setCalcHooks } from './src/calc.js';
-import { showMemoryInfo, showFileInfo, setFileinfoHooks } from './src/fileinfo.js';
+import { showMemoryInfo, showFileInfo } from './src/fileinfo.js';
 import { openSettingsWindow, setSettingsHooks } from './src/settings.js';
 import { openLineageWindow, lineageReportHtml, exportLineageReport, setLineageUiHooks } from './src/lineage-ui.js';
-import { _recents, _remember, refreshRecents, addRecent, clearRecents, setRemember, openRecent, openFilePicker, setRecentsHooks } from './src/recents.js';
+import { _recents, _remember, refreshRecents, addRecent, clearRecents, setRemember, openRecent, openFilePicker } from './src/recents.js';
 import { renameActiveLayer, openBatchRename } from './src/rename.js';
-// src/recents.js reaches back into the app through these
-setRecentsHooks({ get _fileHandles() { return _fileHandles; } });
 // src/lineage-ui.js reaches back into the app through these
-setLineageUiHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; }, deliverBlob });
+setLineageUiHooks({ deliverBlob });
 // src/settings.js reaches back into the app through these
-setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { return _nlOn; }, get _secFollow() { return _secFollow; }, get _selStick() { return _selStick; }, nlEnsureTrained, nlSetEnabled, requestRender, setBlockEdges, setSelStick });
-// src/fileinfo.js reaches back into the app through these
-setFileinfoHooks({ get frame() { return frame; }, get renderer() { return renderer; } });
+setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { return _nlOn; }, get _secFollow() { return _secFollow; }, get _selStick() { return _selStick; }, nlEnsureTrained, nlSetEnabled, setBlockEdges, setSelStick });
 // src/calc.js reaches back into the app through these
 setCalcHooks({ refilterLayer, setLayerColorSel });
 // src/help.js reaches back into the app through these
-setHelpHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
+setHelpHooks({ get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
 // src/filter-drawer.js reaches back into the app through these
 setFilterDrawerHooks({ syncFilterClear });
 // src/bygeom-ui.js reaches back into the app through these
 setBygeomUiHooks({ layerShown });
 // src/gridtools.js reaches back into the app through these
-setGridtoolsHooks({ get _docBbox() { return _docBbox; }, get frame() { return frame; } });
+setGridtoolsHooks({ get _docBbox() { return _docBbox; } });
 // src/meshexport.js reaches back into the app through these
-setMeshexportHooks({ get _fileHandles() { return _fileHandles; }, deliverBlob });
+setMeshexportHooks({ deliverBlob });
 // src/overlay.js reaches back into the app through these
-setOverlayHooks({ get _viewMode() { return _viewMode; }, get cam() { return cam; }, currentSection, get cv() { return cv; }, get frame() { return frame; }, pickHitPoint, get renderer() { return renderer; }, get rendererDocBbox() { return rendererDocBbox; }, requestRender });
+setOverlayHooks({ get _viewMode() { return _viewMode; }, currentSection, pickHitPoint, get rendererDocBbox() { return rendererDocBbox; } });
 const __MICRO_BUILD__ = 'dev';                             // stamped '<version> · <hash> · <date>' by node build.js --target=micro
 
 const $ = (s) => document.querySelector(s);
 const cv = $('#cv');
 const renderer = createRenderer(cv);
-S.renderer = renderer;                                     // modules (records.js) read it off S
-setColumnsChangedHook((L) => addPaintColorOptions(L));     // columns.js → the color-by select tracks the column set
 const edl = createEdl(renderer.gl);
 const cam = createOrbitCamera();
-let dirty = true, lastDrawn = 0, frame = null;
+S.renderer = renderer;                                     // the long-lived objects go on S: modules read them there
+S.cam = cam;
+S.cv = cv;
+S.build = __MICRO_BUILD__;
+setColumnsChangedHook((L) => addPaintColorOptions(L));     // columns.js → the color-by select tracks the column set
+let lastDrawn = 0;
 const fpsBuf = [];
 
-function requestRender() { dirty = true; }
 attachOrbitInput(cv, cam, { onChange: requestRender });
 new ResizeObserver(() => { const [w, h] = renderer.resize(); cam.setAspect(w / h); requestRender(); }).observe(cv);
 // touch: a press held still opens the element's context menu (iOS has none of its
@@ -1309,8 +1307,8 @@ function currentDrawOpts() {
 }
 let _idleCapDone = false;
 function loop(t) {
-  if (dirty || !converged) {                               // keep converging while still (progressive accumulation)
-    dirty = false; _idleCapDone = false;                   // (a drawn frame may have moved the camera: re-check the capture)
+  if (S.dirty || !converged) {                             // keep converging while still (progressive accumulation)
+    S.dirty = false; _idleCapDone = false;                 // (a drawn frame may have moved the camera: re-check the capture)
     const [w, h] = renderer.resize();
     cam.setAspect(w / h);
     const opts = currentDrawOpts();
@@ -1438,7 +1436,7 @@ async function pickHitPoint(hit, cssX, cssY) {
     const ts = [s.d - s.half, s.d + s.half].map((f) => (f - on) / dn).filter((t) => t > 0);
     if (!ts.length) return world;
     const t = Math.min(...ts);
-    return [o[0] + d[0] * t + frame.origin[0], o[1] + d[1] * t + frame.origin[1], o[2] + d[2] * t + frame.origin[2]];
+    return [o[0] + d[0] * t + S.frame.origin[0], o[1] + d[1] * t + S.frame.origin[1], o[2] + d[2] * t + S.frame.origin[2]];
   } else {
     const L = layerById(hit.layer);
     const half = await blockHalfDims(L, hit.rec);          // sub-blocks carry their own size
@@ -1447,14 +1445,14 @@ async function pickHitPoint(hit, cssX, cssY) {
     n = FACE_NORMALS[face];
     const R = L && L.docs.blockDoc && L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot;
     if (R) n = [R[0] * n[0] + R[3] * n[1] + R[6] * n[2], R[1] * n[0] + R[4] * n[1] + R[7] * n[2], R[2] * n[0] + R[5] * n[1] + R[8] * n[2]];
-    const cLocal = [world[0] - frame.origin[0], world[1] - frame.origin[1], world[2] - frame.origin[2]];
+    const cLocal = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
     dist = n[0] * cLocal[0] + n[1] * cLocal[1] + n[2] * cLocal[2] + half[ax];   // the face plane: dot(n, centre) + half-extent
   }
   const den = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
   if (Math.abs(den) < 1e-9) return world;
   const t = (dist - (n[0] * o[0] + n[1] * o[1] + n[2] * o[2])) / den;
   if (!Number.isFinite(t) || t <= 0) return world;
-  return [o[0] + d[0] * t + frame.origin[0], o[1] + d[1] * t + frame.origin[1], o[2] + d[2] * t + frame.origin[2]];
+  return [o[0] + d[0] * t + S.frame.origin[0], o[1] + d[1] * t + S.frame.origin[1], o[2] + d[2] * t + S.frame.origin[2]];
 }
 // half-extent of ONE block, in world units. A regular model reads the grid pitch;
 // a SUB-BLOCKED one reads the record's own dim columns — a sub-block's face is
@@ -1826,7 +1824,7 @@ function throughDrawnTest(L) {
   const cs = currentSection();
   const sec = cs ? layerSection(cs, renderer.layerSectioned(L.id)) : null;
   if (!mask && !hidden && !sec) return null;
-  const o = frame ? frame.origin : [0, 0, 0];
+  const o = S.frame ? S.frame.origin : [0, 0, 0];
   // a block's reach along the section normal: its half-dims projected on n
   // (rotated lattices through their U/V/W; sub-blocks by their size code)
   let reach = () => 0;
@@ -1888,7 +1886,7 @@ function nextSelEpoch() { return ++_selEpoch; }
 function selEpoch() { return _selEpoch; }
 async function selectVolume(poly, mode, isRect, only = null) {
   const epoch = nextSelEpoch();
-  const o = frame ? frame.origin : [0, 0, 0];
+  const o = S.frame ? S.frame.origin : [0, 0, 0];
   const vp = cam.state.viewProj;
   const rc = cv.getBoundingClientRect();
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
@@ -2275,7 +2273,7 @@ async function paintVolume(poly, code, isRect) {
   const col = L && paintColByName(L, t.colName);
   if (!col) return;
   const epoch = nextSelEpoch();                               // shares the gesture epoch — a newer stroke supersedes
-  const o = frame ? frame.origin : [0, 0, 0];
+  const o = S.frame ? S.frame.origin : [0, 0, 0];
   const vp = cam.state.viewProj;
   const rc = cv.getBoundingClientRect();
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
@@ -2446,16 +2444,16 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, applyLayerSelection, deliverBlob, get frame() { return frame; }, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
+setExportHooks({ busyCancel, applyLayerSelection, deliverBlob, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
 
 // src/bygeom.js reaches back into the app through these
-setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, get frame() { return frame; }, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, requestRender, selEpoch, selectionStatus, setLayerColorSel });
+setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel });
 
 // src/joins.js reaches back into the app through these
-setJoinsHooks({ addPaintValue, applyRamp, createPaintCol, markProjectDirty, openBlob, renderLayers, renderProps, requestRender, setLayerColorSel, setRampCfg });
+setJoinsHooks({ addPaintValue, applyRamp, createPaintCol, markProjectDirty, openBlob, renderLayers, renderProps, setLayerColorSel, setRampCfg });
 
 // src/analysis-ui.js reaches back into the app through these
 setAnalysisUiHooks({ deliverBlob, markProjectDirty, resultToLayer });
@@ -2534,7 +2532,7 @@ function layerHasColumn(name, layerName) {
 }
 
 // src/swath.js reaches back into the app through these
-setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, requestRender, saveRecipe, selectionStatus, setLayerColorSel });
+setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, saveRecipe, selectionStatus, setLayerColorSel });
 
 // src/stats.js reaches back into the app through these
 setStatsHooks({ saveRecipe });
@@ -2543,15 +2541,13 @@ setOmfHooks({ addLayer, closeAllLayers, renderLayers });
 // frame a WORLD point (radius 0 → a close look, else that much around it)
 setMeshQaHooks({
   zoomToPoint: (p, r) => {
-    const o = frame ? frame.origin : [0, 0, 0], h = Math.max(5, r || 0);
+    const o = S.frame ? S.frame.origin : [0, 0, 0], h = Math.max(5, r || 0);
     cam.fit([p[0] - o[0] - h, p[1] - o[1] - h, p[2] - o[2] - h, p[0] - o[0] + h, p[1] - o[1] + h, p[2] - o[2] + h]); requestRender();
   },
 });
 // the structure window's view of the app (capivaras): paint, the mesh pick, the renderer
 setStructureHooks({
   // wrapped, not referenced: several are const arrows declared further down (TDZ at this point)
-  get renderer() { return renderer; }, get frame() { return frame; },
-  requestRender: (...a) => requestRender(...a),
   renderLayers: (...a) => renderLayers(...a),
   allocLayerId: (...a) => allocLayerId(...a),
   buildMeshChunk: (...a) => buildMeshChunk(...a),
@@ -2566,9 +2562,8 @@ setStructureHooks({
   pixelRay: (...a) => pixelRay(...a),
   addLayer: (...a) => addLayer(...a),
   removeLayerUI: (...a) => removeLayerUI(...a),
-  mkLineage: (...a) => mkLineage(...a),
   zoomToPoint: (p, r) => {
-    const o = frame ? frame.origin : [0, 0, 0], h = Math.max(1, r || 0);
+    const o = S.frame ? S.frame.origin : [0, 0, 0], h = Math.max(1, r || 0);
     cam.fit([p[0] - o[0] - h, p[1] - o[1] - h, p[2] - o[2] - h, p[0] - o[0] + h, p[1] - o[1] + h, p[2] - o[2] + h]); requestRender();
   },
 });
@@ -2582,7 +2577,7 @@ setDhQaHooks({
     let xyz = paths.get(bhid);
     if (!xyz) for (const [k, v] of paths) if (String(k).trim() === bhid) { xyz = v; break; }
     if (!xyz || !xyz.length) return false;
-    const o = frame ? frame.origin : [0, 0, 0], b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    const o = S.frame ? S.frame.origin : [0, 0, 0], b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
     for (let k = 0; k < xyz.length; k += 3) for (let a = 0; a < 3; a++) { const v = xyz[k + a] - o[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
     const pad = Math.max(10, 0.15 * Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]));   // the hole plus some room around it
     for (let a = 0; a < 3; a++) { b[a] -= pad; b[a + 3] += pad; }
@@ -2757,8 +2752,8 @@ const rendererDocBbox = () => _docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
 function fitFromHeader(header, first = true) {
   // the FIRST dataset plants the document frame; later layers REBASE into it
   // (pure world-true translation — micro-layers spec §2). No reprojection ever.
-  if (!frame) frame = documentFrame(header, { crs: null });
-  const o = frame.origin, b = header.bbox;
+  if (!S.frame) S.frame = documentFrame(header, { crs: null });
+  const o = S.frame.origin, b = header.bbox;
   const local = Float64Array.of(b.min[0] - o[0], b.min[1] - o[1], b.min[2] - o[2], b.max[0] - o[0], b.max[1] - o[1], b.max[2] - o[2]);
   if (first) { _docBbox = local; cam.fit(local); }
   else if (_docBbox) {
@@ -2771,7 +2766,7 @@ function fitFromHeader(header, first = true) {
   }
 }
 // src/open.js reaches back into the app through these
-setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, get cam() { return cam; }, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, get frame() { return frame; }, recomputeUnion, removeLayerUI, renderLayers, get renderer() { return renderer; }, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray });
+setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get allocLayerId() { return allocLayerId; }, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, recomputeUnion, removeLayerUI, renderLayers, reopenDh, setActiveLayer, setColorLabels, surfaceColorArray });
 
 // ── layers (micro-layers spec §1): see src/state.js — S.layers/S.activeId. One
 // layer open == exactly the old single-doc behavior (ids 0-shifted, panel hidden).
@@ -2788,7 +2783,7 @@ function closeAllLayers() {
   for (const L of S.layers) { pinEvictLayer(L.id); closeCompactBuilder(L.id); dropValueTex(L); }   // nothing pinned (or still compacting, or a value texture) survives a clear
   for (const [lid] of _attrTables) closeAttrTable(lid);
   renderer.clearChunks(); renderer.setPicked(null);
-  S.layers = []; S.activeId = 0; frame = null; _docBbox = null;
+  S.layers = []; S.activeId = 0; S.frame = null; _docBbox = null;
   resetFilterState();
   $('#filter').value = ''; syncFilterClear();
   $('#recPanel').classList.remove('show');
@@ -2819,20 +2814,18 @@ function setActiveLayer(id) {
   renderLayers();
 }
 
-// src/lineage.js reaches back into the app through these
-setLineageHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; } });
 
 // src/ingest.js reaches back into the app through these
-setIngestHooks({ get _fileHandles() { return _fileHandles; }, removeLayerUI });
+setIngestHooks({ removeLayerUI });
 
 // src/surfaces.js reaches back into the app through these
-setSurfacesHooks({ get frame() { return frame; }, get renderer() { return renderer; }, reopenReplacing, requestRender });
+setSurfacesHooks({ reopenReplacing });
 
 // src/reopen.js reaches back into the app through these
-setReopenHooks({ get _fileHandles() { return _fileHandles; }, closeAttrTable, refilterLayer, get renderer() { return renderer; }, setLayerColorSel });
+setReopenHooks({ closeAttrTable, refilterLayer, setLayerColorSel });
 
 // src/open-dialog.js reaches back into the app through these
-setOpenDialogHooks({ get _fileHandles() { return _fileHandles; }, closeAllLayers, createLayerGroup });
+setOpenDialogHooks({ closeAllLayers, createLayerGroup });
 
 // the two dialogs' buttons
 $('#ofOpen').onclick = ofConfirm;
@@ -2841,10 +2834,10 @@ $('#dhImport').onclick = dhImport;
 $('#dhCancel').onclick = dhCancel;
 
 // src/filter.js reaches back into the app through these
-setFilterHooks({ attrTableFilterChanged, get frame() { return frame; }, pushDhMask, refreshLinkedWindows, get renderer() { return renderer; }, requestRender });
+setFilterHooks({ attrTableFilterChanged, pushDhMask, refreshLinkedWindows });
 
 // src/color.js reaches back into the app through these
-setColorHooks({ get renderer() { return renderer; }, requestRender, setActiveLayer });
+setColorHooks({ setActiveLayer });
 
 // (blockCaps / layerRecords / docPositionStream live in src/records.js)
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
@@ -2910,8 +2903,8 @@ for (const ev of ['scroll', 'keyup', 'click', 'input']) $('#filter').addEventLis
 // handle persists (reopening re-grants permission via the browser — no silent
 // re-read); without one (drag / <input> fallback) we keep the name and re-pick.
 // Transparent (shown on the empty state), clearable, disableable (File menu).
-// (_idb — the IndexedDB kv — lives in src/element-store.js)
-const _fileHandles = new WeakMap();                        // File → FileSystemFileHandle (picker/recents/project opens)
+// (_idb — the IndexedDB kv — lives in src/element-store.js; _fileHandles — the
+// File → FileSystemFileHandle map — lives in src/state.js)
 
 refreshRecents();
 
@@ -2964,15 +2957,15 @@ async function deliverBlob(blob, filename) {
   } catch (e) { meta.textContent = `could not save ${filename}: ${e.message || e}`; }
 }
 // src/project.js reaches back into the app through these
-setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _fileHandles() { return _fileHandles; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, get renderer() { return renderer; }, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
+setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, reopenBlockChan, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
 
 function captureCamera() {
-  const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
+  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
   return { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], radius: st.radius, theta: st.theta, phi: st.phi, ortho: !!st.ortho, zExag: st.zExag || 1 };
 }
 function applyCamera(c) {
   if (!c) return;
-  const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
+  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
   st.target = [c.target[0] - o[0], c.target[1] - o[1], c.target[2] - o[2]];
   st.radius = c.radius; st.theta = c.theta; st.phi = c.phi;
   cam.setOrtho(!!c.ortho);
@@ -3018,7 +3011,7 @@ const SEC_AXIS = { x: 'ns', y: 'ew', z: 'plan' };
 const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 function sectionWorld() {
   const s = currentSection(); if (!s) return null;
-  const mode = $('#secMode').value, n = s.n.slice(), off = dot3(n, frame ? frame.origin : [0, 0, 0]);
+  const mode = $('#secMode').value, n = s.n.slice(), off = dot3(n, S.frame ? S.frame.origin : [0, 0, 0]);
   const axis = Object.keys(SEC_AXIS).find((k) => SEC_AXIS[k] === mode) || null;
   return {
     mode, axis, normal: n,
@@ -3069,7 +3062,7 @@ function setSectionWorld(o) {
     let pw;
     if (o.at != null) { const a = [].concat(o.at).map(Number); if (a.length !== 3 || a.some((c) => !Number.isFinite(c))) throw new Error('section: at must be [x, y, z]'); pw = dot3(n, a); }
     else { pw = +o.position; if (!Number.isFinite(pw)) throw new Error('section: position must be a number'); }
-    const [lo, hi] = secRange(), dl = pw - dot3(n, frame ? frame.origin : [0, 0, 0]);
+    const [lo, hi] = secRange(), dl = pw - dot3(n, S.frame ? S.frame.origin : [0, 0, 0]);
     $('#secPos').value = hi > lo ? Math.max(0, Math.min(1, (dl - lo) / (hi - lo))) : 0.5;   // clamped to the data
   }
   syncSectionBtn();
@@ -3081,12 +3074,12 @@ function setSectionWorld(o) {
 // elevation = how far above the target the eye sits (90 = plan, looking down)
 const R2D = 180 / Math.PI;
 function cameraWorld() {
-  const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
+  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
   const look = ((Math.atan2(-Math.cos(st.theta), -Math.sin(st.theta)) * R2D) % 360 + 360) % 360;
   return { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], look, elevation: st.phi * R2D, distance: st.radius, ortho: !!st.ortho, zExag: st.zExag || 1 };
 }
 function setCameraWorld(v = {}) {
-  const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
+  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
   const num = (x, what) => { const n = +x; if (!Number.isFinite(n)) throw new Error(`view: ${what} must be a number`); return n; };
   if (v.target != null) {
     const t = [].concat(v.target).map(Number);
@@ -3166,7 +3159,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmClose(null); }
 });
 // src/views.js reaches back into the app through these
-setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, get renderer() { return renderer; }, requestRender, setActiveLayer, setLayerColorSel, syncFilterClear });
+setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer, setLayerColorSel, syncFilterClear });
 
 // recent projects on the empty state (chips, like recent files)
 async function renderEmptyProjects() {
@@ -3418,7 +3411,7 @@ async function openSample(n = 2_000_000) {
   const x0 = 610000, y0 = 7760000, z0 = 900, w = 400 * scale, h = 400 * scale;
   const header = { count: n, bbox: { min: [x0, y0, z0 - 12 * 5 * scale], max: [x0 + w, y0 + h, z0 + 2] } };
   fitFromHeader(header, true);
-  const cb = createChunkBuilder({ frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
+  const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { renderer.addChunk(c, 'base', lid); requestRender(); } });
   let done = 0;
   for (const rc of sampleRawChunks(n)) {
     cb.push(rc); done += rc.count;
@@ -3434,7 +3427,7 @@ async function openSample(n = 2_000_000) {
 document.querySelectorAll('[data-sample]').forEach((a) => a.onclick = () => openSample(+a.dataset.sample));
 
 // src/deco.js reaches back into the app through these
-setDecoHooks({ applyCamera, applySection, get cam() { return cam; }, captureCamera, captureSection, get cv() { return cv; }, deliverBlob, renderFigureCanvas, get renderer() { return renderer; }, requestRender });
+setDecoHooks({ applyCamera, applySection, captureCamera, captureSection, deliverBlob, renderFigureCanvas });
 
 applyBg();                                                 // restore the saved background at boot
 // ── window management: as the float windows multiply (GT · swath · validate ·
@@ -3585,8 +3578,8 @@ function glideTarget(to, ms = 260) {
 async function pivotOn(hit, cssX, cssY) {
   const L = layerById(hit.layer);
   const w = L && L.kind === 'mesh' ? ((await meshHitAt(L, cssX, cssY)) || {}).point : await pickHitPoint(hit, cssX, cssY);
-  if (!w || !frame) return;
-  glideTarget([w[0] - frame.origin[0], w[1] - frame.origin[1], w[2] - frame.origin[2]]);
+  if (!w || !S.frame) return;
+  glideTarget([w[0] - S.frame.origin[0], w[1] - S.frame.origin[1], w[2] - S.frame.origin[2]]);
   $('#meta').textContent = 'orbiting about the tapped spot — double-tap empty space to fit';
 }
 // face-on to the current section: look along the plane normal (minimal turn —
@@ -4773,7 +4766,7 @@ function attrTableFilterChanged(lid) { const t2 = _attrTables.get(lid); if (t2) 
 function attrTableSelChanged(lid) { const t2 = _attrTables.get(lid); if (t2 && t2.selChanged) t2.selChanged(); }
 function closeAttrTable(lid) { const t2 = _attrTables.get(lid); if (t2) t2.close(); }
 // src/tree.js reaches back into the app through these
-setTreeHooks({ applyLayerOpacity, get cam() { return cam; }, fitLayer, layerMenu, openBatchRename, get renderer() { return renderer; }, requestRender, setActiveLayer, syncSelBar, syncUndoBtn });
+setTreeHooks({ applyLayerOpacity, fitLayer, layerMenu, openBatchRename, setActiveLayer, syncSelBar, syncUndoBtn });
 
 // panel widths: drag the inner edge; machine prefs (localStorage), CSS vars so
 // the compass dodge tracks live
@@ -5010,7 +5003,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   action: () => applyLayerOpacity(L, pc / 100),
 }));
 // src/props.js reaches back into the app through these
-setPropsHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, collarCells, get colorHeaderOf() { return colorHeaderOf; }, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, get frame() { return frame; }, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, get renderer() { return renderer; }, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth });
+setPropsHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, collarCells, get colorHeaderOf() { return colorHeaderOf; }, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, reopenBlockChan, reopenDh, reopenWithMapping, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth });
 
 $('#ppClose').onclick = closeProps;
 
@@ -5043,7 +5036,7 @@ function appendColStats(body, stat, onCtx) {
   body.appendChild(d);
 }
 // src/drillholes.js reaches back into the app through these
-setDrillholesHooks({ get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, get frame() { return frame; }, groupLayerIds, refilterLayer, renderLayers, get renderer() { return renderer; }, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync });
+setDrillholesHooks({ get allocLayerId() { return allocLayerId; }, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, groupLayerIds, refilterLayer, renderLayers, restoreReopenIdentity, setActiveLayer, treeMove, treeSync });
 
 function targetAxes(jf, L, R) {
   if (jf.target === 'left') return gridAxesOf(L);
@@ -5217,7 +5210,7 @@ async function meshHitAt(L, cssX, cssY) {
   // is frame-local. Lift the origin; the direction is unaffected — a frame is a
   // pure translation, never a rotation (@gcu/frame's whole contract).
   const { o, d } = pixelRay(cssX, cssY);
-  const ow = [o[0] + frame.origin[0], o[1] + frame.origin[1], o[2] + frame.origin[2]];
+  const ow = [o[0] + S.frame.origin[0], o[1] + S.frame.origin[1], o[2] + S.frame.origin[2]];
   return raycastBVH(bvh, ow, d);                           // world in → world out
 }
 let _recSeq = 0;
@@ -5547,14 +5540,14 @@ async function pickRecord({ layer, rec, frame: center = false } = {}) {
   let world = null;
   try { const p = await recordPosition(hit); world = p && p.every(Number.isFinite) ? [+p[0], +p[1], +p[2]] : null; } catch { world = null; }
   if (center && world) {
-    cam.state.target = [world[0] - frame.origin[0], world[1] - frame.origin[1], world[2] - frame.origin[2]];
+    cam.state.target = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
     cam.update();
   }
   requestRender();
   return world;
 }
 
-window._micro = { get hasFSAA() { return hasFSAA; }, renderLayers, applySection, openMeshQa, meshQaWins: _meshQaWins, openXyPlot, xyWins: _xyWins, openCrosstab, xtabWins: _xtabWins, parseCutoffs, openDhQa, qaWins: _qaWins, dhSetGroupOf, applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, openStructure, openStereonet, importPaintedSets, removeTrace, tracesToDxf, structureWins: _structWins, structureOf, prepareStructure, measurePlanes, traceNetwork, planesToTable, structureArmed, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return frame; }, requestRender, docBbox: rendererDocBbox };
+window._micro = { get hasFSAA() { return hasFSAA; }, renderLayers, applySection, openMeshQa, meshQaWins: _meshQaWins, openXyPlot, xyWins: _xyWins, openCrosstab, xtabWins: _xtabWins, parseCutoffs, openDhQa, qaWins: _qaWins, dhSetGroupOf, applySwathZebra, confirmRemoveLayer, undoLabel, startChunkBuilder, setCsvColumnar, canScanColumnar, zoneKeeper, paintVolume, layerShown, backupProject, restoreProject, openProjectPack, openPackFile, savePackAsFolder, addLayer, setColumnQualify, rowQualifier, rawRecordOf, pick: pickRecord,deliverBlob, toggleLayersPanel, closeProject, openWfrDialog, wfr: { runWfrJob, packLayers, partsSink, handleSink }, packLayersToWfr, setAutoPack, renderEmptyProjects, attrRowCountOf, locationsOf, hasRecords, primaryLocationOf, propKindLine, attrColumnsOf, fetchLayerRow, meshVertexData, meshVertexHeader, extendRow, schemaExt, calcFns, blockCaps, docPositionStream, layerRecords, openBlob, openBatchRename, groupMenu, openMeshExportDialog, exportMeshes, selectionToColumn, filterToSelection, applyCalcCols, openSurfaceTools, gridOnLattice, setSwathBand, saveRecipe, loadRecipes, runRecipe, runRoutine, expandRoutine, routineLoadParams, routineReadTableFull, routineEval, routineSubst, routineFilterRows, routineTargets, layerHasColumn, resultToLayer, fileLayerByPath, ensureGroupPath, openRoutineWindow, openInputsDialog, openRoutineTracker, recipesMenuItems, _recipesList: () => S.recipes, openStats, runFigureRecipe, captureFigureCfg, openSample, openBlocksBlob, makeSampleBlockCsv, openDemoProject, makeDemoBlockCsv, makeDemoDrillholes, setZExag, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand, applyBlockFilter, showRecord, knifeCut, addRecent, fetchCsvRecord, currentSection, convertMeshLayer, openProps, showMemoryInfo, setRampCfg, bakeRampPixels, rampRangeFor, applyCatLegend, runRules, syncRuleMode, applyRuleVisibility, openPaintPalette, createPaintCol, addPaintValue, paintArm, paintDisarm, paintApply, paintUndo, paintColByName, setLayerColorSel, runExport, openExportDialog, exportColumnsOf, selectBySolid, ratioBySolid, flagBySolid, selectByGridSurface, ratioByGridSurface, flagByGridSurface, matColSet, matColList, matColGet, persistElement, loadElement, matColDelete, ensureStoredValues, pinPutMatcol, buildElementManifest, buildDhSetManifest, buildGridElementManifest, descFromElement, broadcastCollarCol, materializeCalcCol, setPinBudget, pinStats, rampRangeFor, meshToGridLayer, rasterizeMeshToGrid, applyGridExtend, fillGridNearest, fillGridTrend, markGridExterior, residentGridForEval, surfaceFromGrid, writeEsriAsc, writeSurferGrd, readSurferGrd, writeGridDisplayCache, exportGridAsc, openMeshGridDialog, openNewDialog, buildEmptyGrid, buildEmptyBlockCsv, alignAxis, coverGeometry, openGridBlob, meshSolidOf, openSolidDialog, openParquetBlocks, convertLayerToParquet, setAutoOptimize, setWindingGpu, runSolidRecipe, openSolidRecipeConfigured, sbCfgOf, gridAxesOf, runSpatialJoin, runReconcile, runKeyJoin, spatialJoinToCols, keyJoinToCols, gridsCompatible, commonLattice, openProps, numericColsOf, scanColumns, colStatsComplete, footerColStats, openGradeTonnage, computeGT, openSwath, computeSwath, swathDir, dirTrendPlunge, frameDipDirDipRake, openLineageWindow, openCalcWindow, ensureCalcDisplay, realizeCalc, realizeCalcPinned, exportLineageReport, lineageReportHtml, openPalette, closePalette, COMMANDS, openValidation, extractSamples, computeSampleSwath, declusterWeights, setDeco, setDecoTitle, setLayerLegend, exportFigure, setFigScale, drawDecorations, decorationsMenu, openDecoPanel, setBg, setBlockEdges, windowsMenu, cascadeWindows, closeAllWindows, sealedInfo, openSettingsWindow, setSelStick, createLayerGroup, layerTree: () => S.layerTree, applyTreeVisibility, treeMove, addIntervalToSet, redesurveySet, reopenDh, showHoleTraces, applyHoleFilter, filterHolesSet, dhFilterSweep, openCsvTableWindow, collarsRowMenu, surveyRowMenu, openDhDialog, openObjSplit, openLfmSplit, assignDomains, openDomainsDialog, openAttrTable, attrTables: _attrTables, selectByPolygon, selectVolume, clearSelection, setSelThrough, blockDoc: () => activeDocs().blockDoc || null, layers: () => S.layers, setActiveLayer, activeId: () => S.activeId, openProjectDir, saveProject, saveProjectAs, tidyProject, scanFolderForNewData, reloadLayerFromDisk, canReloadLayer, openTableBlob, applyTableFilter, useAsCategory, reopenWithMapping, openXlsxBlob, openWorkbook, openFilesDialog, reopenAs, reinterpretOptions, project: () => S.project, views: () => S.views, scenes: () => S.scenes, toggleFilterDrawer, renderFilterDrawer, saveViewAs, applyView, saveSceneAs, applyScene, captureScene, removeBookmark, removeScene, importDrillholes: openDrillholeLayer, recordPosition, pickHitPoint, pixelRay, blockHalfDims, meshHitAt, showMeshRecord, syncMeshPickable, openStructure, openStereonet, importPaintedSets, removeTrace, tracesToDxf, structureWins: _structWins, structureOf, prepareStructure, measurePlanes, traceNetwork, planesToTable, structureArmed, nlSetEnabled, nlEnsureTrained, nlPropose, showAbout, nlStats: () => _nlStats, nlHoldOut: (texts) => { _nlExclude = texts ? new Set(texts.map(nlNormText)) : null; _nlDispatcher = null; _nlKey = ''; }, renderer, cam, get frame() { return S.frame; }, requestRender, docBbox: rendererDocBbox };
 
 // ── inside the lead-acid shell (POSTURE A): files shared or opened INTO micro arrive
 // as fs tokens (mmap'd ranged reads) — the shim's fileBlob makes each a Blob-shaped

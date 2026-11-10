@@ -5,12 +5,12 @@
 import { hexToRgb01 } from './open.js';
 import { RAMP_PRESETS, colorSelOf, ensureLegend, layerClassInfo, rampCfgOf, rampRangeFor, rampSample } from './props.js';
 import { layerTableHeader } from './records.js';
-import { S, activeLayer } from './state.js';
+import { S, activeLayer, requestRender } from './state.js';
 import { fmtStat } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDecoHooks): applyCamera, applySection, cam, captureCamera, captureSection, cv, deliverBlob, renderFigureCanvas, renderer, requestRender
+// the app's side, passed in once (setDecoHooks): applyCamera, applySection, captureCamera, captureSection, deliverBlob, renderFigureCanvas
 let HK = {};
 export function setDecoHooks(h) { HK = h; }
 
@@ -29,7 +29,7 @@ export let _deInk = { fg: '#fff', bg: 'rgba(0,0,0,0.6)' };
 
 export function decoInk() { const c = hexToRgb01(_bgColor), lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; return lum > 0.55 ? { fg: '#151515', bg: 'rgba(255,255,255,0.7)' } : { fg: '#fff', bg: 'rgba(0,0,0,0.6)' }; }
 
-export function applyBg() { if (HK.renderer && HK.renderer.setBackground) { HK.renderer.setBackground(hexToRgb01(_bgColor)); HK.requestRender(); } }
+export function applyBg() { if (S.renderer && S.renderer.setBackground) { S.renderer.setBackground(hexToRgb01(_bgColor)); requestRender(); } }
 
 export function setBg(hex) { if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return; _bgColor = hex; try { localStorage.setItem('micro.bg', hex); } catch { /* ignore */ } applyBg(); drawDecorations(); }
 
@@ -38,9 +38,9 @@ export function niceNum(x) { if (!(x > 0)) return 1; const e = Math.pow(10, Math
 export function fmtLen(m) { return m >= 1000 ? +(m / 1000).toPrecision(3) + ' km' : (m < 1 ? +m.toPrecision(2) : +m.toFixed(m < 10 ? 1 : 0)) + ' m'; }
 
 export function worldPerPixel() {
-  const vp = HK.cam.state.viewProj, v = HK.cam.state.view, t = HK.cam.state.target; if (!vp || !v || !t) return null;
+  const vp = S.cam.state.viewProj, v = S.cam.state.view, t = S.cam.state.target; if (!vp || !v || !t) return null;
   let Rw = [v[0], v[4], v[8]]; const rl = Math.hypot(Rw[0], Rw[1], Rw[2]) || 1; Rw = [Rw[0] / rl, Rw[1] / rl, Rw[2] / rl];
-  const r = HK.cv.getBoundingClientRect();
+  const r = S.cv.getBoundingClientRect();
   const proj = (p) => { const cx = vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12], cy = vp[1] * p[0] + vp[5] * p[1] + vp[9] * p[2] + vp[13], cw = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15]; return [((cx / cw) * 0.5 + 0.5) * r.width, (0.5 - (cy / cw) * 0.5) * r.height]; };
   const p0 = proj(t), p1 = proj([t[0] + Rw[0], t[1] + Rw[1], t[2] + Rw[2]]);
   const px = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
@@ -65,11 +65,11 @@ export function drawScaleBar(g, W, H) {
   const barWorld = niceNum(W * 0.18 * wpp), barPx = barWorld / wpp, x = 16, y = H - 22;
   _stroked(g, () => { g.beginPath(); g.moveTo(x, y - 5); g.lineTo(x, y + 5); g.moveTo(x, y); g.lineTo(x + barPx, y); g.moveTo(x + barPx, y - 5); g.lineTo(x + barPx, y + 5); g.stroke(); }, 2);
   g.font = '12px monospace'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-  _label(g, (HK.cam.state.ortho ? '' : '~') + fmtLen(barWorld), x, y - 9);
+  _label(g, (S.cam.state.ortho ? '' : '~') + fmtLen(barWorld), x, y - 9);
 }
 
 export function drawNorthArrow(g, W, H) {
-  const v = HK.cam.state.view; if (!v) return;
+  const v = S.cam.state.view; if (!v) return;
   let nx = v[4], ny = -v[9]; const m = Math.hypot(nx, ny); if (m < 1e-3) return; nx /= m; ny /= m;
   const cx = W - 42 - _rightInset(), cy = 52, Ln = 22;
   const arrow = () => { g.beginPath(); g.moveTo(cx - nx * Ln, cy - ny * Ln); g.lineTo(cx + nx * Ln, cy + ny * Ln); const px = -ny, py = nx; g.moveTo(cx + nx * Ln, cy + ny * Ln); g.lineTo(cx + nx * (Ln - 8) + px * 5, cy + ny * (Ln - 8) + py * 5); g.moveTo(cx + nx * Ln, cy + ny * Ln); g.lineTo(cx + nx * (Ln - 8) - px * 5, cy + ny * (Ln - 8) - py * 5); g.stroke(); };
@@ -141,7 +141,7 @@ export function renderDeco(g, W, H) {
 }
 
 export function drawDecorations() {
-  const dc = $('#decoCv'), r = HK.cv.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+  const dc = $('#decoCv'), r = S.cv.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
   if (!_deco.scale && !_deco.north && !anyLegend() && !_deco.title) { if (dc.width) { dc.width = 0; dc.height = 0; } return; }
   dc.width = Math.round(r.width * dpr); dc.height = Math.round(r.height * dpr);
   const g = dc.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
@@ -285,12 +285,12 @@ export function decorationsMenu() { openDecoPanel(); }   // back-compat alias (V
 // per-layer cut modes captured BY NAME (only non-default: false/'front'/'behind');
 // applying resets everything to follow, then sets the listed overrides
 export function captureCutModes() {
-  return S.layers.map((L) => ({ layer: L.name, mode: HK.renderer.layerSectioned(L.id) })).filter((x) => x.mode !== true);
+  return S.layers.map((L) => ({ layer: L.name, mode: S.renderer.layerSectioned(L.id) })).filter((x) => x.mode !== true);
 }
 
 export function applyCutModes(modes) {
-  for (const L of S.layers) HK.renderer.setLayerSectioned(L.id, true);   // reset to follow
-  for (const { layer, mode } of (modes || [])) { const L = S.layers.find((x) => x.name === layer); if (L) HK.renderer.setLayerSectioned(L.id, mode); }
+  for (const L of S.layers) S.renderer.setLayerSectioned(L.id, true);   // reset to follow
+  for (const { layer, mode } of (modes || [])) { const L = S.layers.find((x) => x.name === layer); if (L) S.renderer.setLayerSectioned(L.id, mode); }
 }
 
 // a figure recipe captures the whole picture: camera + decorations + background
@@ -306,7 +306,7 @@ export async function runFigureRecipe(params) {
     if (params.deco) { Object.assign(_deco, params.deco); saveDeco(); }
     if (params.section) HK.applySection(params.section);       // the section IS the figure for a section plot
     if (params.cutModes) applyCutModes(params.cutModes);
-    drawDecorations(); HK.requestRender();
+    drawDecorations(); requestRender();
     $('#meta').textContent = 'figure recipe: rendering…';
     await new Promise((res) => { const t0 = performance.now(); const t = setInterval(() => { if (/converged/.test($('#stats').textContent) || performance.now() - t0 > 20000) { clearInterval(t); res(); } }, 150); });
     exportFigure(params.figScale || 1);
@@ -314,7 +314,7 @@ export async function runFigureRecipe(params) {
     HK.applyCamera(prev.camera); setBg(prev.bg);
     Object.assign(_deco, prev.deco); saveDeco();
     HK.applySection(prev.section); applyCutModes(prev.cutModes);   // put the section + cut modes back
-    drawDecorations(); HK.requestRender();
+    drawDecorations(); requestRender();
     if (_decoWin && _decoWin._render) _decoWin._render();
   }
 }

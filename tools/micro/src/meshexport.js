@@ -11,11 +11,11 @@ import { fmtSize, layerBytes, layerRelpath, resolveFileHandle } from './paths.js
 import { WFR_SOURCE_RE, baseName as wfrBase, handleSink, partsSink, runWfrJob } from './wfr-write.js';
 import { detectDmWireframePairs, openBlob } from './open.js';
 import { shell } from '../../../ext/leadacid/index.js';
-import { S } from './state.js';
+import { S, _fileHandles } from './state.js';
 import { cacheStamp } from './project.js';
 import { sourceHash } from './identity.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setMeshexportHooks): _fileHandles, deliverBlob
+// the app's side, passed in once (setMeshexportHooks): deliverBlob
 let H = {};
 export function setMeshexportHooks(h) { H = h; }
 
@@ -282,7 +282,7 @@ export async function openWfrDialog({ files = null, layers = null } = {}) {
       msg.textContent = `${fname} — ${els.length} element${els.length === 1 ? '' : 's'}, ${fmtSize(res.size)}, ${secs} s`;
       $('#meta').textContent = `wrote ${fname} — ${els.map((e) => `${e.name}: ${(e.kind === 'points' ? e.counts.vertices : e.counts.cells).toLocaleString()} ${e.kind === 'triangles' ? 'triangles' : e.kind === 'lines' ? 'segments' : 'points'}`).join(' · ')} · ${fmtSize(res.size)} in ${secs} s`;
       if (!handle) await H.deliverBlob(file, fname);
-      if (handle) { try { H._fileHandles.set(file, handle); } catch { /* not a handle-tracking build */ } }
+      if (handle) { try { _fileHandles.set(file, handle); } catch { /* not a handle-tracking build */ } }
       _wfrJob = null;
       if (openAfter.checked) { $('#cwDlg').classList.remove('show'); await openBlob(file, fname, S.layers.length ? 'add' : 'replace'); }
     } catch (e) {

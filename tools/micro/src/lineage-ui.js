@@ -2,8 +2,9 @@
 // and as a standalone HTML report.
 import { fmtSize } from './paths.js';
 import { floatWin, focusWindow } from './windows.js';
+import { S } from './state.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setLineageUiHooks): __MICRO_BUILD__, deliverBlob
+// the app's side, passed in once (setLineageUiHooks): deliverBlob
 let H = {};
 export function setLineageUiHooks(h) { H = h; }
 
@@ -67,7 +68,7 @@ table{border-collapse:collapse;width:100%;margin-top:1rem;font-size:12px}td{bord
 td.w{color:#888;white-space:nowrap;font-family:monospace;font-size:11px}
 details{margin-top:1.5rem}pre{background:#f6f6f4;padding:8px;overflow:auto;font-size:11px}</style></head>
 <body><h1>Provenance — ${esc(L.label || L.name)}</h1>
-<p class="meta">Derivation trail for a micro block model. Generated ${esc(new Date().toLocaleString())} · micro ${esc(H.__MICRO_BUILD__)}.</p>
+<p class="meta">Derivation trail for a micro block model. Generated ${esc(new Date().toLocaleString())} · micro ${esc(S.build)}.</p>
 <table><thead><tr><td><b>step</b></td><td><b>detail</b></td><td class="w">when</td><td class="w">build</td></tr></thead><tbody>${rows.join('')}</tbody></table>
 <details><summary>machine-readable lineage (JSON)</summary><pre>${esc(JSON.stringify(L.lineage, null, 2))}</pre></details>
 </body></html>`;

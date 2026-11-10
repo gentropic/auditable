@@ -2,7 +2,7 @@
 // interpretation, fresh bytes from disk) keeps its identity — its place in the tree, its
 // name, its file handle — and its styling. The capture/restore pairs live here, with the
 // three ways in: reopen with a mapping, reinterpret as another kind, reload from disk.
-import { S, layerById } from './state.js';
+import { S, _fileHandles, layerById } from './state.js';
 import { pinEvictLayer } from './columns.js';
 import { applyColTypes, layerBlob, layerTableHeader } from './records.js';
 import { addPaintColorOptions, applyCatLegend, applyCatVisibility, applyRamp, paintActiveCol, rampCfgOf, refreshProps, ruleModeOf, runRules, syncRuleMode } from './props.js';
@@ -15,7 +15,7 @@ import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
 import { layerReplaced, renderLayers, treeSlotOf } from './tree.js';
 import { menuXY } from './menu.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setReopenHooks): _fileHandles, closeAttrTable, refilterLayer, renderer, setLayerColorSel
+// the app's side, passed in once (setReopenHooks): closeAttrTable, refilterLayer, setLayerColorSel
 let H = {};
 export function setReopenHooks(h) { H = h; }
 
@@ -38,7 +38,7 @@ export async function reopenReplacing(L, blob, open) {
   try { lid2 = await open(); } catch { lid2 = null; }      // openBlob reports its own failure on the status line
   const L2 = lid2 != null ? layerById(lid2) : null;
   if (!L2 || L2 === L) return L2 === L ? L : null;
-  H.renderer.removeLayer(L.id);
+  S.renderer.removeLayer(L.id);
   S.layers = S.layers.filter((l) => l.id !== L.id);
   pinEvictLayer(L.id);
   return restoreReopenIdentity(L2, keep);                  // label · visible · handle · storage + its tree slot (layerReplaced)
@@ -49,7 +49,7 @@ export function captureReopenIdentity(L) {
 }
 
 export function preregisterReopenHandle(blob, keep) {   // openBlob reads _fileHandles → must run BEFORE it
-  if (keep.handle && blob && typeof blob === 'object') H._fileHandles.set(blob, keep.handle);
+  if (keep.handle && blob && typeof blob === 'object') _fileHandles.set(blob, keep.handle);
 }
 
 export function restoreReopenIdentity(L2, keep) {        // call with the fresh active layer AFTER openBlob
@@ -57,7 +57,7 @@ export function restoreReopenIdentity(L2, keep) {        // call with the fresh 
   if (keep.label) L2.label = keep.label;
   L2.storage = keep.storage;
   if (keep.handle) L2.handle = keep.handle;
-  if (keep.visible === false) { L2.visible = false; H.renderer.setLayerVisible(L2.id, false); }
+  if (keep.visible === false) { L2.visible = false; S.renderer.setLayerVisible(L2.id, false); }
   if (keep.oldId != null) layerReplaced(keep.oldId, L2.id, keep.slot);
   return L2;
 }
@@ -93,15 +93,15 @@ export function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
   L2.colTypes = keep.colTypes; L2.qualify = keep.qualify; applyColTypes(L2);
   L2.calcCols = keep.calcCols;
   L2.ramps = keep.ramps; if (rampCfgOf(L2)) applyRamp(L2, true);
-  if (clearCats) { L2.catHidden = null; L2.catLegend = null; H.renderer.setLayerCatVisibility(L2.id, null); H.renderer.setLayerPalette(L2.id, null); }
+  if (clearCats) { L2.catHidden = null; L2.catLegend = null; S.renderer.setLayerCatVisibility(L2.id, null); S.renderer.setLayerPalette(L2.id, null); }
   else {
     if (keep.catHidden && keep.catHidden.size) { L2.catHidden = keep.catHidden; applyCatVisibility(L2, true); }
     if (keep.catLegend) { L2.catLegend = keep.catLegend; applyCatLegend(L2, true); }
   }
-  if (keep.rules) { L2.rules = keep.rules; L2.ruleHidden = keep.ruleHidden; L2._rulesDirty = true; if (ruleModeOf(L2)) { H.renderer.setLayerRuleMode(L2.id, true); runRules(L2, true); } }
+  if (keep.rules) { L2.rules = keep.rules; L2.ruleHidden = keep.ruleHidden; L2._rulesDirty = true; if (ruleModeOf(L2)) { S.renderer.setLayerRuleMode(L2.id, true); runRules(L2, true); } }
   if (keep.paintCols) { L2.paintCols = keep.paintCols; addPaintColorOptions(L2); if (paintActiveCol(L2)) syncRuleMode(L2); }
   // the rows are unchanged, so re-apply the row-scoped view state
-  if (keep.opacity != null) { L2.opacity = keep.opacity; H.renderer.setLayerOpacity(L2.id, keep.opacity); }
+  if (keep.opacity != null) { L2.opacity = keep.opacity; S.renderer.setLayerOpacity(L2.id, keep.opacity); }
   if (keep.clip) L2.clip = keep.clip;
   if (keep.gtUnits) L2.gtUnits = keep.gtUnits;
   if (keep.legend != null) L2.legend = keep.legend;

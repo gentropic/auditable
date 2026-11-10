@@ -13,7 +13,7 @@ import { fmtSize } from './paths.js';
 import { S } from './state.js';
 import { addPaintColorOptions } from './props.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection, deliverBlob, frame, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel
+// the app's side, passed in once (setExportHooks): applyLayerSelection, deliverBlob, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -75,7 +75,7 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
     // stamp the document frame (origin + any CRS) so georeferencing round-trips
     const expLin = mkLineage('export', { format: 'parquet', codec, scope, spatial: doSort, filter: (scope === 'filtered' && L.filterExpr) || undefined }, [L.lineage]);
     const kv = [
-      { key: 'micro:frame', value: JSON.stringify({ origin: H.frame ? [...H.frame.origin] : [0, 0, 0], crs: (h.crs || (L.docs.gridDoc && L.docs.gridDoc.grid.crs)) || null, spatial: doSort }) },
+      { key: 'micro:frame', value: JSON.stringify({ origin: S.frame ? [...S.frame.origin] : [0, 0, 0], crs: (h.crs || (L.docs.gridDoc && L.docs.gridDoc.grid.crs)) || null, spatial: doSort }) },
       { key: 'micro:lineage', value: JSON.stringify(expLin) },
       // full-scope exports carry their discovery (self-describing on reopen);
       // filtered/selection subsets don't — their bbox/categories would lie
@@ -175,7 +175,7 @@ async function convertInner(L, cvOpts) {
   const isDm = !!(L.docs.blockDoc && L.docs.blockDoc.header.dm), isDelim = !!(L.docs.blockDoc && !isDm);
   const intern = names.map((_, k) => (isNum[k] ? null : new Map()));   // one string object per distinct value, not per row
   const kvOf = (lin) => [
-    { key: 'micro:frame', value: JSON.stringify({ origin: H.frame ? [...H.frame.origin] : [0, 0, 0], crs: (h.crs) || null, spatial: !(lin.params && lin.params.streaming) }) },
+    { key: 'micro:frame', value: JSON.stringify({ origin: S.frame ? [...S.frame.origin] : [0, 0, 0], crs: (h.crs) || null, spatial: !(lin.params && lin.params.streaming) }) },
     { key: 'micro:lineage', value: JSON.stringify(lin) },
     // self-description: a micro-written parquet opens FOOTER-ONLY — the grid /
     // categories discovery is already done, so carry it in the file itself

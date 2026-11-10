@@ -1,13 +1,13 @@
 // micro — the 2D OVERLAY drawn over the 3D view: the measure tool (two picked points →
 // distance, bearing and plunge, or trend & plunge), the outline of the section plane, the
 // swath band an analysis window pins onto the model, and the compass.
-import { layerById } from './state.js';
+import { S, layerById, requestRender } from './state.js';
 import { fetchCsvRecord, fetchLayerRow } from './records.js';
 import { parquetRow } from './rowworker.js';
 import { coordNum, decodeLasRecords, fetchDmRecord } from '../../../ext/condenser/src/main.js';
 import { _isMobile } from './windows.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOverlayHooks): _viewMode, cam, currentSection, cv, frame, pickHitPoint, renderer, rendererDocBbox, requestRender
+// the app's side, passed in once (setOverlayHooks): _viewMode, currentSection, pickHitPoint, rendererDocBbox
 let H = {};
 export function setOverlayHooks(h) { H = h; }
 
@@ -63,7 +63,7 @@ export function armMeasure() {
   _measure = { arm: 1, a: null, b: null, mouse: null };
   $('#measureSvg').style.display = 'none';
   $('#btnMeasure').classList.add('on');
-  H.cv.style.cursor = 'crosshair';
+  S.cv.style.cursor = 'crosshair';
   $('#meta').textContent = _isMobile() ? 'measure: tap two points — hold and slide for a crosshair' : 'measure: click two points/blocks';
 }
 
@@ -71,20 +71,20 @@ export function clearMeasure() {
   _measure = { arm: 0, a: null, b: null, mouse: null };
   $('#measureSvg').style.display = 'none';
   $('#btnMeasure').classList.remove('on');
-  H.cv.style.cursor = '';
-  H.requestRender();
+  S.cv.style.cursor = '';
+  requestRender();
 }
 
 export async function measureClick(cssX, cssY) {
-  const hit = H.renderer.pick(cssX, cssY, H.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: H.currentSection() });
+  const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: H.currentSection() });
   if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
   const world = await H.pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
   if (!world) return;
-  const local = [world[0] - H.frame.origin[0], world[1] - H.frame.origin[1], world[2] - H.frame.origin[2]];
+  const local = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
   if (!_measure.a) { _measure.a = local; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); }
   else {
     _measure.b = local; _measure.arm = 0; _measure.mouse = null;
-    H.cv.style.cursor = '';
+    S.cv.style.cursor = '';
     $('#btnMeasure').classList.remove('on');
     updateMeasureReadout();
     drawMeasure();
@@ -115,12 +115,12 @@ export function updateMeasureReadout() {
 }
 
 export function projectToCss(local) {
-  const m = H.cam.state.viewProj;
+  const m = S.cam.state.viewProj;
   const w = m[3] * local[0] + m[7] * local[1] + m[11] * local[2] + m[15];
   if (w <= 0) return null;
   const x = (m[0] * local[0] + m[4] * local[1] + m[8] * local[2] + m[12]) / w;
   const y = (m[1] * local[0] + m[5] * local[1] + m[9] * local[2] + m[13]) / w;
-  return [(x + 1) / 2 * H.cv.clientWidth, (1 - y) / 2 * H.cv.clientHeight];
+  return [(x + 1) / 2 * S.cv.clientWidth, (1 - y) / 2 * S.cv.clientHeight];
 }
 
 export function drawMeasure() {
@@ -174,7 +174,7 @@ export function planeBboxCssPts(n, d, b) {
   const ang = (p) => Math.atan2((p[0] - c0[0]) * w2[0] + (p[1] - c0[1]) * w2[1] + (p[2] - c0[2]) * w2[2],
                                 (p[0] - c0[0]) * u[0] + (p[1] - c0[1]) * u[1] + (p[2] - c0[2]) * u[2]);
   P.sort((a, c2) => ang(a) - ang(c2));
-  const vp = H.cam.state.viewProj, r = H.cv.getBoundingClientRect();
+  const vp = S.cam.state.viewProj, r = S.cv.getBoundingClientRect();
   const pts = [];
   for (const p of P) {
     const cx = vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12];
@@ -190,7 +190,7 @@ export function planeBboxCssPts(n, d, b) {
 export function drawSectionPlane() {
   const svg = $('#secSvg');
   const sec = $('#secPlaneVis').checked ? H.currentSection() : null;
-  if (!sec || !H.cam.state.viewProj) { svg.style.display = 'none'; return; }
+  if (!sec || !S.cam.state.viewProj) { svg.style.display = 'none'; return; }
   const pts = planeBboxCssPts(sec.n, sec.d0, H.rendererDocBbox());
   if (!pts) { svg.style.display = 'none'; return; }
   $('#secPoly').setAttribute('points', pts.join(' '));
@@ -208,8 +208,8 @@ export function setSwathBand(band) { _swathBand = band; drawSwathBand(); }
 export function drawSwathBand() {
   const svg = $('#bandSvg');
   const B = _swathBand;
-  if (!B || !H.cam.state.viewProj) { if (svg) svg.style.display = 'none'; return; }
-  const o = H.frame ? H.frame.origin : [0, 0, 0];
+  if (!B || !S.cam.state.viewProj) { if (svg) svg.style.display = 'none'; return; }
+  const o = S.frame ? S.frame.origin : [0, 0, 0];
   const dLoc = (t) => t - (B.dir[0] * o[0] + B.dir[1] * o[1] + B.dir[2] * o[2]);   // world t → frame-local plane offset
   const ptsA = planeBboxCssPts(B.dir, dLoc(B.a), B.bbox);
   const ptsB = planeBboxCssPts(B.dir, dLoc(B.b), B.bbox);
@@ -225,10 +225,10 @@ export function drawSwathBand() {
 }
 
 export function drawCompass() {
-  const v = H.cam.state.view;
+  const v = S.cam.state.view;
   if (!v) return;                                          // camera not updated yet (first paint comes with the loop)
   { // camera plunge → trend, far right of the footer (mining convention, positive down)
-    const st = H.cam.state;
+    const st = S.cam.state;
     const f = [st.target[0] - st.eye[0], st.target[1] - st.eye[1], st.target[2] - st.eye[2]];
     const plan = Math.hypot(f[0], f[1]);
     const trend = ((Math.atan2(f[0], f[1]) * 180 / Math.PI) + 360) % 360;
@@ -236,14 +236,14 @@ export function drawCompass() {
     $('#camTP').textContent = `${String(Math.round(plunge)).padStart(3)}°→${String(Math.round(trend)).padStart(3, '0')}°`;
   }
   const R = [v[0], v[4], v[8]], U = [v[1], v[5], v[9]];    // camera basis (world → screen)
-  const S = 27, cxp = 37, cyp = 37;
-  const pr = (d) => [cxp + (R[0] * d[0] + R[1] * d[1] + R[2] * d[2]) * S,
-                     cyp - (U[0] * d[0] + U[1] * d[1] + U[2] * d[2]) * S];
+  const SC = 27, cxp = 37, cyp = 37;
+  const pr = (d) => [cxp + (R[0] * d[0] + R[1] * d[1] + R[2] * d[2]) * SC,
+                     cyp - (U[0] * d[0] + U[1] * d[1] + U[2] * d[2]) * SC];
   const tip = pr([0, 0.95, 0]), notch = pr([0, -0.22, 0]);
   const bL = pr([-0.5, -0.82, 0]), bR = pr([0.5, -0.82, 0]);
   $('#cmpW').setAttribute('points', `${tip} ${bL} ${notch}`);
   $('#cmpE').setAttribute('points', `${tip} ${notch} ${bR}`);
-  const nx = R[1] * S, ny = -U[1] * S;                     // projected north (screen px)
+  const nx = R[1] * SC, ny = -U[1] * SC;                     // projected north (screen px)
   const m = Math.hypot(nx, ny);
   const T = $('#cmpN');
   if (m < 3) T.setAttribute('opacity', '0');               // north points at/away from the eye

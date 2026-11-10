@@ -3,7 +3,7 @@
 // multi-select, the group menu). Layers themselves live in S.layers; the tree says where
 // each one sits and whether it shows.
 import { _isMobile, _sheetExclusive } from './windows.js';
-import { S, activeLayer, layerById } from './state.js';
+import { S, activeLayer, layerById, requestRender } from './state.js';
 import { markProjectDirty } from './project.js';
 import { addIntervalToSet, collarsRowMenu, dhSetGroupOf, dhSetInfo, setHasTraces, showHoleTraces, surveyRowMenu } from './drillholes.js';
 import { openDhQa } from './dhqa.js';
@@ -15,7 +15,7 @@ import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { openMeshExportDialog } from './meshexport.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): applyLayerOpacity, cam, fitLayer, layerMenu, openBatchRename, renderer, requestRender, setActiveLayer, syncSelBar, syncUndoBtn
+// the app's side, passed in once (setTreeHooks): applyLayerOpacity, fitLayer, layerMenu, openBatchRename, setActiveLayer, syncSelBar, syncUndoBtn
 let H = {};
 export function setTreeHooks(h) { H = h; }
 
@@ -69,12 +69,12 @@ export function applyTreeVisibility() {
     for (const nd of arr) {
       if (typeof nd === 'number') {
         const L = layerById(nd);
-        H.renderer.setLayerVisible(nd, !!(on && L && L.visible));
+        S.renderer.setLayerVisible(nd, !!(on && L && L.visible));
       } else walk(nd.children, on && nd.visible);
     }
   };
   walk(S.layerTree, true);
-  H.requestRender();
+  requestRender();
 }
 
 // ── mutually exclusive groups (QGIS's radio groups). A group flagged `exclusive`
@@ -471,12 +471,12 @@ export function secModeLabel(m) {
 }
 
 export function setLayerSectionMode(L, m) {
-  H.renderer.setLayerSectioned(L.id, m);
-  markProjectDirty(); H.requestRender();
+  S.renderer.setLayerSectioned(L.id, m);
+  markProjectDirty(); requestRender();
 }
 
 export function sectionModeItems(L) {
-  const m = H.renderer.layerSectioned(L.id);
+  const m = S.renderer.layerSectioned(L.id);
   const own = m && typeof m === 'object' && m.half > 0 ? m.half : null;
   const whole = !!(m && typeof m === 'object' && m.whole);
   const opt = (on, t, v) => ({ label: (on ? '✓ ' : '') + t, action: () => setLayerSectionMode(L, v) });
@@ -535,7 +535,7 @@ export function groupMenu(nd, x, y) {
         if (!u) u = Float64Array.from(b2);
         else for (let i = 0; i < 3; i++) { if (b2[i] < u[i]) u[i] = b2[i]; if (b2[i + 3] > u[i + 3]) u[i + 3] = b2[i + 3]; }
       }
-      if (u) { H.cam.fit(u); H.requestRender(); }
+      if (u) { S.cam.fit(u); requestRender(); }
     } },
     { label: 'Opacity', submenu: () => groupOpacityItems(nd) },
     { label: (nd.exclusive ? '✓ ' : '') + 'Mutually exclusive', kbd: '{ }', action: () => setGroupExclusive(nd, !nd.exclusive) },
@@ -615,7 +615,7 @@ export function renderLayers() {
     name.textContent = (L.storage === 'external' ? '↗ ' : '') + (L.label || L.name);
     name.title = (L.label && L.label !== L.name ? `${L.label} (${L.name})` : L.name) + (L.storage === 'external' ? ' — linked from outside the project folder' : '');
     const n = document.createElement('span'); n.className = 'lp-n';
-    n.textContent = (L.kind === 'table' ? ((layerTableHeader(L) || {}).count || 0) : (H.renderer.layerElementCount(L.id) || 0)).toLocaleString();
+    n.textContent = (L.kind === 'table' ? ((layerTableHeader(L) || {}).count || 0) : (S.renderer.layerElementCount(L.id) || 0)).toLocaleString();
     armDrag(row, L.id);
     // every row carries the caret SLOT (leaves get it empty) so checkboxes
     // column-align per depth — a group's eye sits level with its siblings,
@@ -657,7 +657,7 @@ export function renderLayers() {
       if (nd.exclusive) name.title = 'mutually exclusive — one child at a time ({ } steps)';
       const ids = groupLayerIds(nd);
       const n = document.createElement('span'); n.className = 'lp-n';
-      n.textContent = ids.length + (nd.collapsed ? ` · ${ids.reduce((t, id) => t + (H.renderer.layerElementCount(id) || 0), 0).toLocaleString()}` : '');
+      n.textContent = ids.length + (nd.collapsed ? ` · ${ids.reduce((t, id) => t + (S.renderer.layerElementCount(id) || 0), 0).toLocaleString()}` : '');
       armDrag(row, nd);
       row.append(caret, eye, name, n, moreButton(row));
       row.onclick = (e) => { if (e.ctrlKey || e.metaKey || e.shiftKey) return; nd.collapsed = !nd.collapsed; renderLayers(); };

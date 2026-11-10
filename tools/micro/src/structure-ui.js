@@ -16,8 +16,9 @@ import { detectSets } from '../../../ext/clar/index.js';
 import { writeDxf } from '../../../ext/condenser/src/main.js';
 import { meshVertexData } from './records.js';
 import { vertexColorOf } from './wfr-io.js';
-import { S, layerById } from './state.js';
+import { S, layerById, requestRender } from './state.js';
 import { pushUndo } from './undo.js';
+import { mkLineage } from './lineage.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side, passed in once (setStructureHooks)
@@ -75,8 +76,8 @@ async function paintMesh(L, hd) {
   hd.base = await baseColors(L);
   hd.rgb = vertexColors(nvFile, col.codes, col.colors, hd.base);
   hd.preview = null;
-  H.renderer.setLayerMeshColors(L.id, hd.rgb);
-  H.requestRender();
+  S.renderer.setLayerMeshColors(L.id, hd.rgb);
+  requestRender();
 }
 function restoreVertex(hd, col, i) {
   const c = col.codes[i], rgb = hd.rgb;
@@ -93,27 +94,27 @@ function showPreview(L, hd, fileVerts, hex) {
     const p = H.hexToRgb01(hex || '#ffffff'), q = [0.4 + 0.6 * p[0], 0.4 + 0.6 * p[1], 0.4 + 0.6 * p[2]];
     for (const i of hd.preview) { hd.rgb[3 * i] = q[0]; hd.rgb[3 * i + 1] = q[1]; hd.rgb[3 * i + 2] = q[2]; if (i < lo) lo = i; if (i > hi) hi = i; }
   }
-  if (hi >= lo) { H.renderer.setLayerMeshColors(L.id, hd.rgb, lo, hi + 1); H.requestRender(); }
+  if (hi >= lo) { S.renderer.setLayerMeshColors(L.id, hd.rgb, lo, hi + 1); requestRender(); }
 }
 
 // ── derived, unsaved mesh layers beside the outcrop: plane discs and trace tubes ──
 function derivedOf(L, kind) { return S.layers.find((d) => d.derivedOf === L.id && d.derivedKind === kind) || null; }
 function setDerived(L, kind, label, m, opacity) {
   let D = derivedOf(L, kind);
-  if (!m || !m.triangles.length) { if (D) { H.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); H.renderLayers(); H.requestRender(); } return; }
+  if (!m || !m.triangles.length) { if (D) { S.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); H.renderLayers(); requestRender(); } return; }
   if (!D) {
     const id = H.allocLayerId(); if (id == null) return;
     const name = `${L.label || L.name} · ${label}`;
     D = { id, name, label: name, kind: 'mesh', derivedOf: L.id, derivedKind: kind, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null, tint: '#ffffff', opacity: 1 };
     S.layers.push(D);
-  } else H.renderer.removeLayer(D.id);
-  const chunk = H.buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: H.frame });
+  } else S.renderer.removeLayer(D.id);
+  const chunk = H.buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: S.frame });
   chunk.color = m.color;
-  H.renderer.addChunk(chunk, 'base', D.id);
-  H.renderer.setLayerMeshStyle(D.id, { tint: [1, 1, 1], opacity });
+  S.renderer.addChunk(chunk, 'base', D.id);
+  S.renderer.setLayerMeshStyle(D.id, { tint: [1, 1, 1], opacity });
   D.bboxLocal = chunk.bboxLocal;
-  if (!D.visible) H.renderer.setLayerVisible(D.id, false);
-  H.renderLayers(); H.requestRender();
+  if (!D.visible) S.renderer.setLayerVisible(D.id, false);
+  H.renderLayers(); requestRender();
 }
 function updateDiscs(L, hd) {
   const col = setColOf(L);
@@ -476,7 +477,7 @@ export async function planesToTable(L, hd) {
   const id = await H.addLayer({ kind: 'table', name, columns });
   const T = id != null ? layerById(id) : null;
   if (T) {
-    T.lineage = H.mkLineage('structure.planes', { sets: [...new Set(planes.map((p) => p.set))], planes: planes.length, wand: { angle: prefs.angle, offset: prefs.distance || null } }, [L.lineage].filter(Boolean));
+    T.lineage = mkLineage('structure.planes', { sets: [...new Set(planes.map((p) => p.set))], planes: planes.length, wand: { angle: prefs.angle, offset: prefs.distance || null } }, [L.lineage].filter(Boolean));
     H.markProjectDirty();
     $('#meta').textContent = `structure: ${planes.length} planes → ${name}`;
   }
@@ -528,7 +529,7 @@ async function regionUnder(L, x, y, eraseKey) {
   // painting stays out of OTHER sets; erasing walks only paint
   const exclude = new Uint8Array(st.nv);
   for (let j = 0; j < st.nv; j++) exclude[j] = erase ? (codes[j] === 0 ? 1 : 0) : (codes[j] && codes[j] !== hd.active ? 1 : 0);
-  const { o, d } = H.pixelRay(x, y), org = H.frame.origin;
+  const { o, d } = H.pixelRay(x, y), org = S.frame.origin;
   const ray = { origin: [o[0] + org[0], o[1] + org[1], o[2] + org[2]], direction: d };
   const r = regionAt(st, hit, ray, shape, { angle: prefs.angle, distance: prefs.distance, radius: prefs.radius }, exclude);
   // the seed itself may sit in another set (painting) or be unpainted (erasing) — nothing to do there
@@ -543,7 +544,7 @@ async function vertexUnder(L, x, y) {
   if (L.traces && L.traces.length) {
     // SNAP_PX on screen, as a distance in the world at the hit's depth
     const r0 = H.pixelRay(x, y), r1 = H.pixelRay(x + SNAP_PX, y);
-    const o = H.frame ? H.frame.origin : [0, 0, 0];
+    const o = S.frame ? S.frame.origin : [0, 0, 0];
     const rel = [hit.point[0] - o[0] - r0.o[0], hit.point[1] - o[1] - r0.o[1], hit.point[2] - o[2] - r0.o[2]];
     const t = (rel[0] * r0.d[0] + rel[1] * r0.d[1] + rel[2] * r0.d[2]) / (r0.d[0] ** 2 + r0.d[1] ** 2 + r0.d[2] ** 2);
     const rad = Math.hypot(...[0, 1, 2].map((k) => (r1.o[k] - r0.o[k]) + (r1.d[k] - r0.d[k]) * t));
@@ -702,7 +703,7 @@ export function installStructurePointer(cv) {
     const id = e.detail && e.detail.id;
     if (_armed && _armed.L.id === id) disarm();
     const hd = _structWins.get(id); if (hd) hd.win.close ? hd.win.close() : hd.win.el.remove();
-    for (const D of S.layers.filter((d) => d.derivedOf === id)) { H.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); }
+    for (const D of S.layers.filter((d) => d.derivedOf === id)) { S.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); }
     H.renderLayers();
   });
 }

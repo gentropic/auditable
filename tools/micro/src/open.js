@@ -5,7 +5,7 @@
 // sets and plain tables. The app keeps the document frame, the layer set and the tree, and
 // hands them in as hooks.
 import { startChunkBuilder } from './chunkworker.js';
-import { S, activeLayer, layerById } from './state.js';
+import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
 import { DIM_PALETTE_MAX, DXF_STREAM_BYTES, basisAngles, buildHeightfieldMesh, buildMeshChunk, createChunkBuilder, createSoupChunkBuilder, createStickChunkBuilder, detectRotatedLattice, dimKey, dmWireframeRole, findDimColumns, gridFromBasis, inferAxis, inferSubBlockLattice, isDimColumn, makeBlockGrid, mapColumns, openBlockModel, openDmModel, openDmWireframe, openDrillholes, openDxf, openDxfStream, openLas, openMsh, openMshSoup, openObj, openObjSoup, openPly, openPlyMesh, openPlySoup, openTable, parsePlyHeader, peekDmColumns, readMSHLayout, sniffDelimited, soupFromMesh } from '../../../ext/condenser/src/main.js';
 import { openLineage } from './lineage.js';
 import { isWfrName, openWfrBlob, summarizeElements, vertexColorOf, wfrPointsDoc, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc } from './wfr-io.js';
@@ -26,7 +26,7 @@ import { floatWin } from './windows.js';
 import { applyBlockFilter } from './filter.js';
 import { microConfirm } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOpenHooks): LAYER_CAP, _docBbox, _fileHandles, allocLayerId, cam, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, frame, recomputeUnion, removeLayerUI, renderLayers, renderer, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray
+// the app's side, passed in once (setOpenHooks): LAYER_CAP, _docBbox, allocLayerId, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, recomputeUnion, removeLayerUI, renderLayers, reopenDh, setActiveLayer, setColorLabels, surfaceColorArray
 let H = {};
 export function setOpenHooks(h) { H = h; }
 
@@ -41,7 +41,7 @@ export async function baseBlockBuilder(lid, { frame, grid, dimPalette }) {
   const hc = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
   const cb = await startChunkBuilder({ frame, grid, dimPalette, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 1, seedPerBatch: true,
     workers: window.__baseBuilders || Math.max(1, Math.min(4, hc - 2)),
-    onChunk: (c) => { if (layerById(lid)) { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } } });
+    onChunk: (c) => { if (layerById(lid)) { S.renderer.addChunk(c, 'base', lid); requestRender(); } } });
   window.__baseOffPage = cb.offPage; window.__baseBuilders_n = cb.workers;   // smoke hooks: where (and on how many) the open built its chunks
   return cb;
 }
@@ -198,11 +198,11 @@ export async function openStringsLayer(blob, name, lid, first, r, catOpts) {
   registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord, recordPosition } });
   H.fitFromHeader(header, first);
   const catsUpfront = header.mapping && header.mapping.cat != null;
-  H.renderer.setCategories(catsUpfront ? 1 : 0);
-  H.renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
-  H.renderer.setLayerStickRadius(lid, 0.8);
+  S.renderer.setCategories(catsUpfront ? 1 : 0);
+  S.renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
+  S.renderer.setLayerStickRadius(lid, 0.8);
   H.setColorLabels(header);
-  const cb = createStickChunkBuilder({ frame: H.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+  const cb = createStickChunkBuilder({ frame: S.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) { cb.push(rc); await new Promise((r2) => setTimeout(r2)); }
   const doc = cb.flush();
   finishCatLayer(lid, header, doc, catOpts);
@@ -215,10 +215,10 @@ export async function openPegsLayer(blob, name, lid, first, r, catOpts) {
   registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord } });
   H.fitFromHeader(header, first);
   const catsUpfront = header.mapping && header.mapping.cat != null;
-  H.renderer.setCategories(catsUpfront ? 1 : 0);
-  H.renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
+  S.renderer.setCategories(catsUpfront ? 1 : 0);
+  S.renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
   H.setColorLabels(header);
-  const cb = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+  const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
     cb.push({ count: rc.count, x: rc.x, y: rc.y, z: rc.z, intensity: new Uint16Array(rc.count), classification: rc.cat || new Uint8Array(rc.count), rgb: null, recStart: rc.recStart || 0 });
     await new Promise((r2) => setTimeout(r2));
@@ -232,8 +232,8 @@ export async function openPegsLayer(blob, name, lid, first, r, catOpts) {
 export function finishCatLayer(lid, header, doc, { authoredOnly = false } = {}) {
   const hex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
   const authored = (c) => (c && !(c[0] === 255 && c[1] === 255 && c[2] === 255) ? c : null);   // white is "foreground", not a colour
-  H.renderer.setLayerCats(lid, header.categories ? 256 : 0);
-  if (header.categories) H.renderer.setCategories(1);
+  S.renderer.setLayerCats(lid, header.categories ? 256 : 0);
+  if (header.categories) S.renderer.setCategories(1);
   const L = layerById(lid);
   if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = header.categories ? 'cat' : 'solid'; }
   const colors = header.catColors ? (authoredOnly ? header.catColors.map(authored) : header.catColors) : null;
@@ -271,28 +271,28 @@ export async function openDxfStreamed(blob, name, opts) {
   const setup = (kind, lid) => {
     const L = layerById(lid);
     const bbox = sd.header.bbox;
-    const onChunk = (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); };
+    const onChunk = (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); };
     if (kind === 'mesh') {
       const header = headers.mesh = { kind: 'mesh', soup: true, streamed: true, format: 'dxf', vertexCount: 0, triCount: 0, bbox };
       L.kind = 'mesh';
       L.docs = { meshDoc: { blob, name, header } };
       L.tint = opts.tint || '#9ea3a8';
       L.opacity = opts.opacity != null ? opts.opacity : 1;
-      H.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity });
-      builders.mesh = createSoupChunkBuilder({ frame: H.frame, chunkSize: 1 << 17, batchSize: 1 << 19, seed: 1, onChunk });
+      S.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity });
+      builders.mesh = createSoupChunkBuilder({ frame: S.frame, chunkSize: 1 << 17, batchSize: 1 << 19, seed: 1, onChunk });
     } else if (kind === 'strings') {
       const header = headers.strings = { kind: 'strings', format: 'dxf', count: 0, strings: 0, columns: ['LAYER', 'STRING'], mapping: { chan: null, cat: 0 }, categories: null, numericColumns: [], chanRange: [0, 0], bbox };
       registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord: sum.strings.fetchRecord, recordPosition: sum.strings.recordPosition } });
-      H.renderer.setCategories(1);
-      H.renderer.setLayerCats(lid, 256);
-      H.renderer.setLayerStickRadius(lid, 0.8);
-      builders.strings = createStickChunkBuilder({ frame: H.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk });
+      S.renderer.setCategories(1);
+      S.renderer.setLayerCats(lid, 256);
+      S.renderer.setLayerStickRadius(lid, 0.8);
+      builders.strings = createStickChunkBuilder({ frame: S.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk });
     } else {
       const header = headers.points = { kind: 'blockmodel', format: 'dxf', count: 0, grid: null, columns: ['X', 'Y', 'Z', 'LAYER'], mapping: { x: 0, y: 1, z: 2, chan: null, cat: 3 }, categories: null, numericColumns: [], bbox };
       registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord: sum.points.fetchRecord } });
-      H.renderer.setCategories(1);
-      H.renderer.setLayerCats(lid, 256);
-      builders.points = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk });
+      S.renderer.setCategories(1);
+      S.renderer.setLayerCats(lid, 256);
+      builders.points = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk });
     }
   };
   // the first kind to arrive takes the layer openBlob allocated; later kinds get siblings
@@ -340,7 +340,7 @@ export async function openDxfStreamed(blob, name, opts) {
         const h = headers.mesh;
         h.triCount = sum.counts.triangles; h.vertexCount = 3 * sum.counts.triangles;
         const tint = opts.tint === undefined && authored(sum.meshColor);
-        if (L && tint) { L.tint = dxfHex(tint); H.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity }); }
+        if (L && tint) { L.tint = dxfHex(tint); S.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity }); }
         if (L) { L.colorSel = $('#colorBy').value; L.docs.meshDoc.metaLine = `${name} — ${h.triCount.toLocaleString()} triangles · DXF · streamed`; }
       } else {
         const h = headers[kind], s = sum[kind];
@@ -348,7 +348,7 @@ export async function openDxfStreamed(blob, name, opts) {
         if (kind === 'strings') h.strings = sum.counts.strings;
         h.categories = s.categories;
         h.catColors = s.catColors ? s.catColors.map(authored) : null;
-        H.renderer.setLayerCats(lid, h.categories ? 256 : 0);
+        S.renderer.setLayerCats(lid, h.categories ? 256 : 0);
         if (L) {
           L.colorSel = h.categories ? 'cat' : 'solid';
           if (h.categories && h.catColors && h.catColors.some(Boolean)) {
@@ -359,7 +359,7 @@ export async function openDxfStreamed(blob, name, opts) {
       }
     }
     H.recomputeUnion();
-    if (first && H._docBbox) H.cam.fit(H._docBbox);               // the sampled bbox aimed the first view; now the true one
+    if (first && H._docBbox) S.cam.fit(H._docBbox);               // the sampled bbox aimed the first view; now the true one
     const prim = layerById(opts.layer);
     if (prim) H.setColorLabels(prim.kind === 'mesh' ? null : headers[Object.keys(lids).find((k) => lids[k] === opts.layer)]);
     const placed = Object.entries(lids).filter(([, v]) => v != null).map(([k]) => k);
@@ -370,9 +370,9 @@ export async function openDxfStreamed(blob, name, opts) {
     $('#meta').textContent = `${name} — streamed ${gb} GB · ` + [
       c.triangles && `${c.triangles.toLocaleString()} triangles`, c.strings && `${c.strings.toLocaleString()} strings`, c.points && `${c.points.toLocaleString()} points`,
     ].filter(Boolean).join(' · ') + (warn ? ` · ${warn.toLocaleString()} unsupported/skipped entities` : '') + (skipped.length ? ` · ${skipped.join('+')} not shown (layer limit)` : '');
-    H.requestRender();
+    requestRender();
   } catch (e) {
-    for (const lid of extra) { H.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); }
+    for (const lid of extra) { S.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); }
     throw e;
   }
 }
@@ -405,7 +405,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   const lid = H.allocLayerId();
   if (lid == null) { const msg = `layer limit reached (${H.LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
   const first = S.layers.length === 0;
-  S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: (blob && typeof blob === 'object' && H._fileHandles.get(blob)) || null, storage: 'loose', lineage: over.lineage || openLineage(name, blob) });
+  S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: (blob && typeof blob === 'object' && _fileHandles.get(blob)) || null, storage: 'loose', lineage: over.lineage || openLineage(name, blob) });
   S.activeId = lid;
   $('#meta').textContent = `${name} — reading…`;
   $('#empty').style.display = 'none';
@@ -433,10 +433,10 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
       registerDocs(lid, 'points', { lasDoc: { blob, header } });
       H.fitFromHeader(header, first);
       H.setColorLabels(null);
-      const cb = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+      const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
       const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
-      $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${H.frame.origin.some((v) => v) ? ` · origin ${H.frame.origin.map((v) => v.toLocaleString()).join(', ')}` : ''}`;
-      H.requestRender();
+      $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${S.frame.origin.some((v) => v) ? ` · origin ${S.frame.origin.map((v) => v.toLocaleString()).join(', ')}` : ''}`;
+      requestRender();
     }
     const L = layerById(lid);
     if (L && L.colorSel == null) L.colorSel = $('#colorBy').value;   // a fallback — a branch that chose (DXF strings → 'cat') keeps its choice
@@ -446,7 +446,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     return lid;
   } catch (e) {
     $('#meta').textContent = `${name} — ${e.message}`;
-    H.renderer.removeLayer(lid);
+    S.renderer.removeLayer(lid);
     S.layers = S.layers.filter((l) => l.id !== lid);
     if (S.layers.length) H.setActiveLayer(S.layers[0].id);
     else $('#empty').style.display = '';
@@ -559,24 +559,24 @@ export async function openGridBlob(blob, name, opts = {}) {
   // pick is traded for the solid surface (toggle back to points to pick).
   if (opts.surface) {
     const flatZ = opts.flatZ != null ? opts.flatZ : null;
-    const hf = buildHeightfieldMesh(grid, { stride, frame: H.frame, flatZ });
+    const hf = buildHeightfieldMesh(grid, { stride, frame: S.frame, flatZ });
     if (!hf) throw new Error('grid is all nodata');
     const color = H.surfaceColorArray(hf, opts.drape || null, (rampCfgOf(layerById(lid)) || {}).preset, zmin, zmax);
     registerDocs(lid, 'mesh', { gridDoc });
-    H.fitFromHeader({ ...header, bbox: { min: hf.bboxLocal.slice(0, 3).map((v, i) => v + (H.frame ? H.frame.origin[i] : 0)), max: hf.bboxLocal.slice(3, 6).map((v, i) => v + (H.frame ? H.frame.origin[i] : 0)) } }, opts.first !== false);
+    H.fitFromHeader({ ...header, bbox: { min: hf.bboxLocal.slice(0, 3).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)), max: hf.bboxLocal.slice(3, 6).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)) } }, opts.first !== false);
     const smooth = opts.smooth !== false;
-    H.renderer.setLayerMeshStyle(lid, { tint: [0.6, 0.63, 0.66], opacity: 1 });
-    H.renderer.addChunk({ kind: 'mesh', pos: hf.pos, idx: hf.idx, color, normal: smooth ? hf.normal : null, count: hf.count, bboxLocal: hf.bboxLocal }, 'base', lid);
+    S.renderer.setLayerMeshStyle(lid, { tint: [0.6, 0.63, 0.66], opacity: 1 });
+    S.renderer.addChunk({ kind: 'mesh', pos: hf.pos, idx: hf.idx, color, normal: smooth ? hf.normal : null, count: hf.count, bboxLocal: hf.bboxLocal }, 'base', lid);
     const Lg = layerById(lid);
     if (Lg) { Lg.bboxLocal = hf.bboxLocal; Lg.tint = '#9aa0a6'; Lg.gridSurface = true; Lg.surfaceFlatZ = flatZ; Lg.surfaceSmooth = smooth; }
-    H.recomputeUnion(); H.requestRender();
+    H.recomputeUnion(); requestRender();
     $('#meta').textContent = `${name} — surface · ${hf.vertexCount.toLocaleString()} nodes${stride > 1 ? ` (every ${stride}ᵗʰ)` : ''}${grid.crs ? ` · ${grid.crs}` : ''}`;
     return;
   }
   registerDocs(lid, 'points', { gridDoc });
   H.fitFromHeader(header, opts.first !== false);
   H.setColorLabels(null);
-  const cb = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+  const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   // records are SEQUENTIAL displayed indices (the 29-bit partition can't hold
   // raw node indices of a huge DEM); dispIdx joins a record back to its node
   const dispIdx = new Uint32Array(shown);
@@ -613,7 +613,7 @@ export async function openGridBlob(blob, name, opts = {}) {
   H.recomputeUnion();
   $('#meta').textContent = `${name} — ${nx.toLocaleString()}×${ny.toLocaleString()} ${grid.form}${grid.crs ? ` · ${grid.crs}` : ''}` +
     `${stride > 1 ? ` · showing every ${stride}ᵗʰ node (${shown.toLocaleString()})` : ` · ${shown.toLocaleString()} nodes`}`;
-  H.requestRender();
+  requestRender();
 }
 
 // PLY path: discovery sweep (no header bbox) → the points pipeline. The
@@ -625,10 +625,10 @@ export async function openPlyBlob(blob, name, opts = {}) {
   registerDocs(lid, 'points', { plyDoc: { blob, name, header, fetchRecord } });
   H.fitFromHeader(header, opts.first !== false);
   H.setColorLabels(null);
-  const cb = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+  const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
   $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · PLY ${header.format === 'ascii' ? 'ascii' : 'binary'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
-  H.requestRender();
+  requestRender();
 }
 
 // Context meshes (micro-layers spec §7 tier 1): wireframes / solids / TINs —
@@ -738,7 +738,7 @@ export async function openMeshDoc(blob, name, opts = {}) {
     L.docs = { meshDoc: { blob, name, header, ptBlob: opts.ptBlob || null } };
     L.tint = opts.tint || '#9ea3a8';
     L.opacity = opts.opacity != null ? opts.opacity : 1;
-    H.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity });
+    S.renderer.setLayerMeshStyle(lid, { tint: hexToRgb01(L.tint), opacity: L.opacity });
   };
   // two tiers, chosen by triangle count (§7): ≤ cap → static indexed context
   // mesh; above → the streaming soup (Morton chunks, u16, budgeted prefixes).
@@ -773,15 +773,15 @@ export async function openMeshDoc(blob, name, opts = {}) {
     } else {
       setupLayer(header);
       H.fitFromHeader(header, opts.first !== false);
-      const chunk = buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: H.frame });
+      const chunk = buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: S.frame });
       // per-vertex colour when the mesh carries it (a .wfr's color.r/g/b, a PLY's red/green/blue)
       const vcol = vertexColorOf(m.attrs, chunk.vertexCount);
       if (vcol) { chunk.color = vcol; if (L) L.vertexColored = true; }   // the shader takes vColor in place of the tint
-      H.renderer.addChunk(chunk, 'base', lid);
+      S.renderer.addChunk(chunk, 'base', lid);
       if (L) L.bboxLocal = chunk.bboxLocal;      H.recomputeUnion();
       H.setColorLabels(null);
       $('#meta').textContent = `${name} — ${header.triCount.toLocaleString()} triangles · ${header.vertexCount.toLocaleString()} vertices · ${header.format}`;
-      H.requestRender();
+      requestRender();
       return;
     }
   }
@@ -789,7 +789,7 @@ export async function openMeshDoc(blob, name, opts = {}) {
   setupLayer(header);
   H.fitFromHeader(header, opts.first !== false);
   H.setColorLabels(null);
-  const cb = createSoupChunkBuilder({ frame: H.frame, chunkSize: 1 << 17, batchSize: 1 << 19, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+  const cb = createSoupChunkBuilder({ frame: S.frame, chunkSize: 1 << 17, batchSize: 1 << 19, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   let seen = 0;
   for await (const rc of soupSrc({ batchTris: 1 << 16 })) {
     cb.push(rc);
@@ -802,7 +802,7 @@ export async function openMeshDoc(blob, name, opts = {}) {
   H.recomputeUnion();
   L.docs.meshDoc.metaLine = `${name} — ${doc.count.toLocaleString()} triangles · ${header.vertexCount.toLocaleString()} vertices · ${header.format} · streamed`;
   $('#meta').textContent = L.docs.meshDoc.metaLine;
-  H.requestRender();
+  requestRender();
 }
 
 // Drillholes (micro-layers spec §5): collar + survey + intervals → desurveyed
@@ -826,11 +826,11 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
     registerDocs(lid, 'points', { dhDoc });
     qualifyDhDoc(layerById(lid));                          // <0.001 → a number for every interval reader; rawRecord keeps the text
     H.fitFromHeader(header, first);
-    H.renderer.setCategories(header.categories ? 1 : 0);
-    H.renderer.setLayerCats(lid, header.categories ? 256 : 0);
-    H.renderer.setLayerStickRadius(lid, opts.radius || 1);
+    S.renderer.setCategories(header.categories ? 1 : 0);
+    S.renderer.setLayerCats(lid, header.categories ? 256 : 0);
+    S.renderer.setLayerStickRadius(lid, opts.radius || 1);
     H.setColorLabels(header);
-    const cb = createStickChunkBuilder({ frame: H.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+    const cb = createStickChunkBuilder({ frame: S.frame, chunkSize: 1 << 16, batchSize: 1 << 20, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
     for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) {
       cb.push(rc);
       await new Promise((r) => setTimeout(r));
@@ -846,11 +846,11 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
     H.renderLayers();
     dispatchEvent(new Event('micro:project-dirty'));
     dispatchEvent(new CustomEvent('micro:layer-added', { detail: { id: lid, name, kind: 'drillholes' } }));
-    H.requestRender();
+    requestRender();
     return lid;
   } catch (e) {
     $('#meta').textContent = `${name} — ${e.message}`;
-    H.renderer.removeLayer(lid);
+    S.renderer.removeLayer(lid);
     S.layers = S.layers.filter((l) => l.id !== lid);
     if (S.layers.length) H.setActiveLayer(S.layers[0].id);
     else $('#empty').style.display = '';
@@ -1182,7 +1182,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   $('#meta').textContent = `${name} — ${discovered || opts.provider ? 'reading…' : 'discovering grid…'}`;   // a provider has already discovered
   const mapping = opts.mapping
     || (opts.chan != null && prevDoc && prevDoc.header ? { ...prevDoc.header.mapping, chan: opts.chan } : null);
-  H.renderer.removeLayer(lid); if (!opts.keepFilter) H.renderer.setFilter(null, {}, lid);
+  S.renderer.removeLayer(lid); if (!opts.keepFilter) S.renderer.setFilter(null, {}, lid);
   const prov = opts.provider ? await opts.provider() : null;
   const qualify = (layerById(lid) || {}).qualify || opts.qualify || null;
   const bmOpts = discovered ? { discovered, qualify } : { qualify, zones: !window.__noZones, ...(mapping ? { mapping } : {}), ...(opts.lattice ? { lattice: opts.lattice } : {}), ...(opts.dimCols ? { dims: opts.dimCols } : {}), rotated: !opts.forcePoints };
@@ -1198,13 +1198,13 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
   { const L0 = layerById(lid); if (L0 && L0.lineage && header.grid && header.grid.rot) L0.lineage.params = { ...(L0.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }) } }; }
   H.fitFromHeader(header, opts.first !== false && opts.chan == null);
-  H.renderer.setCategories(header.categories ? header.categories.length : 0);
+  S.renderer.setCategories(header.categories ? header.categories.length : 0);
   H.setColorLabels(header);
   if (header.grid) {
-    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], H.frame, header.grid.rot || null, header.grid.anchor || null);
+    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame, header.grid.rot || null, header.grid.anchor || null);
     blockDoc.grid = grid;
     const dimPalette = header.subBlocked ? header.dimPalette : null;
-    const cb = await baseBlockBuilder(lid, { frame: H.frame, grid, dimPalette });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
+    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, dimPalette });   // 128k/chunk, 16 chunks per Morton batch: tight bboxes are what give the frustum test teeth
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;                            // how many records have a block (a value texture leaves the rest out of its range)
     blockDoc.metaLine = header.subBlocked
@@ -1215,7 +1215,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
     { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
   } else {
     // centroids as points (sub-blocked / irregular): grade → the intensity slot
-    const cb = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+    const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
     let done = 0;
     for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
       let cMin = Infinity, cMax = -Infinity;
@@ -1236,7 +1236,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
     $('#meta').textContent = blockDoc.metaLine;
     { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
   }
-  H.requestRender();
+  requestRender();
 }
 
 // .dm path: grid, bbox, and schema come from the DD page — no discovery sweep
@@ -1256,7 +1256,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   let mapping = opts.mapping || null;
   if (!mapping && (opts.chan != null || opts.cat != null) && prevDoc && prevDoc.header)
     mapping = { chan: opts.chan != null ? opts.chan : prevDoc.header.mapping.chan, ...(opts.cat != null ? { cat: opts.cat } : {}) };
-  H.renderer.removeLayer(lid); if (!opts.keepFilter) H.renderer.setFilter(null, {}, lid);
+  S.renderer.removeLayer(lid); if (!opts.keepFilter) S.renderer.setFilter(null, {}, lid);
   // sub-blocked / irregular models run a FULL discovery sweep before the first
   // chunk (a 13 GB file reads silently for a minute otherwise) — show progress
   const gb = blob.size / 1073741824;
@@ -1265,13 +1265,13 @@ export async function openDmBlob(blob, name, opts = {}) {
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
   H.fitFromHeader(header, opts.first !== false && opts.chan == null);
-  H.renderer.setCategories(header.categories ? 1 : 0);
+  S.renderer.setCategories(header.categories ? 1 : 0);
   H.setColorLabels(header);
   if (header.grid) {
-    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], H.frame);
+    const grid = makeBlockGrid([header.grid.x, header.grid.y, header.grid.z], S.frame);
     blockDoc.grid = grid;
     const dimPalette = header.subBlocked ? header.dimPalette : null;
-    const cb = await baseBlockBuilder(lid, { frame: H.frame, grid, dimPalette });
+    const cb = await baseBlockBuilder(lid, { frame: S.frame, grid, dimPalette });
     const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
     blockDoc.drawn = doc.count;
     blockDoc.metaLine = header.subBlocked
@@ -1280,7 +1280,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   } else {
     // sub-blocked / forced points: centroids as points (grade → intensity slot),
     // RAW record numbers preserved so a picked centroid fetches its .dm record
-    const cb = createChunkBuilder({ frame: H.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { H.renderer.addChunk(c, 'base', lid); H.requestRender(); } });
+    const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
     let done = 0;
     for await (const rc of streamChunks({ chunkPoints: 1 << 18 })) {
       let cMin = Infinity, cMax = -Infinity;
@@ -1299,7 +1299,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   }
   $('#meta').textContent = blockDoc.metaLine;
   { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
-  H.requestRender();
+  requestRender();
 }
 
 // Re-open a block model on a new grade channel. THREE sources, not two — and the

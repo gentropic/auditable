@@ -4,7 +4,7 @@
 // ordinary openers with explicit roles, so an ingested layer IS a file-backed layer and
 // there is no second code path. A file source is opened in place, never copied.
 import { microModelOf, mkLineage } from './lineage.js';
-import { layerById } from './state.js';
+import { _fileHandles, layerById } from './state.js';
 import { addPaintColorOptions } from './props.js';
 import { parquetInfoAsync, writeParquet } from '../../../ext/parquet/index.js';
 import { DIM_PALETTE_MAX, axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, latticeMisfit, makeDimKeyer, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
@@ -13,7 +13,7 @@ import { colorHeaderOf, colorSelFor, setLayerColorBy, setLayerColorRange, setLay
 import { fileLayersInGroup, renderLayers } from './tree.js';
 import { writePlyMeshBytes } from './meshexport.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setIngestHooks): _fileHandles, removeLayerUI
+// the app's side, passed in once (setIngestHooks): removeLayerUI
 let H = {};
 export function setIngestHooks(h) { H = h; }
 
@@ -103,7 +103,7 @@ export async function ingestSource(src, what = 'file') {
   let file = src, handle = null;
   if (src && typeof src.getFile === 'function' && !isBlobLike(src)) { handle = src; file = await src.getFile(); }
   if (!isBlobLike(file)) throw new Error(`addLayer: ${what} must be a File, a Blob or a FileSystemFileHandle`);
-  if (handle) H._fileHandles.set(file, handle);
+  if (handle) _fileHandles.set(file, handle);
   return file;
 }
 
