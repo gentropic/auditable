@@ -50,6 +50,7 @@ node tools/micro/dev/hooks.mjs              # the counts
 node tools/micro/dev/hooks.mjs <module>     # one module's hooks
 node tools/micro/dev/hooks.mjs --all        # every module's hooks
 node tools/micro/dev/hooks.mjs --direct --dry
+node tools/micro/dev/hooks.mjs --direct --cycles
 ```
 
 Each hook is one of four kinds:
@@ -63,7 +64,9 @@ Each hook is one of four kinds:
   renderer;`), or the hook is a getter that returns `S.<prop>`. The module can read
   `S.<prop>` itself. The hook is stale.
 - `import (cycle)`: the target is exported by a module, but that module already
-  depends on this one, directly or through others.
+  depends on this one, directly or through others. Importing it makes the two
+  modules import each other. That is allowed under one rule (see `cycles.mjs`
+  below), so `--direct` leaves these alone unless `--cycles` is given.
 
 A hook written as a wrapper (`(...a) => fn(...a)`) or as a getter with a single
 `return` counts as a hook on what it forwards to.
@@ -73,12 +76,56 @@ name (or with `S.<prop>`), adds the import, and removes `let H` and the setter w
 no hooks remain. In the app it removes the property from the
 `set<Module>Hooks({ … })` call, removes the call when it is empty, and drops app
 imports that are no longer used. `--only=a,b` limits it to some modules.
+`--cycles` converts the `import (cycle)` hooks as well; run `cycles.mjs` afterwards.
 
 It refuses a hook, and says why, when the name it would import is already bound in
 the module (a local named `S` blocks every `state` hook of that module: rename the
 local first), when the module assigns to the hook, when the app imports the target
-under another name, or when the module uses the hooks object whole. It never adds
-an import that closes a cycle.
+under another name, when the module uses the hooks object whole, or when the
+module binds `H` a second time (a local named `H`: rename it). Without `--cycles`
+it never adds an import that closes a cycle.
+
+## cycles.mjs
+
+Finds the import cycles between the modules in `tools/micro/src` and checks the one
+rule that keeps them safe.
+
+```
+node tools/micro/dev/cycles.mjs             # the groups, and every breach of the rule
+node tools/micro/dev/cycles.mjs --verbose   # also the load-time uses that are fine
+node tools/micro/dev/cycles.mjs --why a b   # one chain of imports from a to b
+```
+
+Modules that import each other, directly or through others, form a group. ES
+modules allow that: every binding exists before any module runs, so a function
+that is called later finds its imports filled. What fails is a module that uses a
+group sibling's export while it is still loading, because which of the two runs
+first depends on where the app's imports enter the group. The dev tree and the
+built `micro.html` can enter it at different places, so such a fault can show in
+one and not in the other.
+
+The rule: inside a group, no module uses a sibling's export at load time. Exit
+code 1 when one does, with the file, the line and the name.
+
+Load time is everything outside a function body, plus:
+
+- a function called where it is written (`(() => { … })()`);
+- a function passed to `map`, `forEach`, `filter`, `reduce`, `sort` and the like;
+- a class's superclass, static blocks and static fields;
+- the body of a top-level function of the module that load-time code calls by
+  name. The report names the call that leads there.
+
+A function handed to anything else (`addEventListener`, `setTimeout`, a registry
+of commands) is taken to run later. The check reads the source and does not run
+it, so it cannot follow a call made through a variable or into another module.
+
+To fix a breach, move the use into a function that runs later, or move what is
+used into a module outside the group (`state.js` and the other leaf modules are
+outside it). A load-time use of a module outside the group is fine: that module
+has always run first.
+
+It runs as `npm run test:micro:cycles`, as the first job of
+`node test/micro-smokes.mjs`, and as a CI step.
 
 ## tostate.mjs
 
@@ -107,6 +154,6 @@ read it. Run `hooks.mjs --direct` afterwards.
 
 ## scope.mjs
 
-The scope resolution the three tools share: `parse`, `patIds` (the names a binding
+The scope resolution the tools share: `parse`, `patIds` (the names a binding
 pattern declares) and `moduleRefs` (every reference in a set of statements that
 resolves to the module scope).

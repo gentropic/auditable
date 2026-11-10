@@ -3,20 +3,22 @@
 //   node tools/micro/dev/hooks.mjs                    the count, by where the target lives
 //   node tools/micro/dev/hooks.mjs <module>           that module's hooks
 //   node tools/micro/dev/hooks.mjs --all              every module's hooks
-//   node tools/micro/dev/hooks.mjs --direct [--only=a,b] [--dry]
+//   node tools/micro/dev/hooks.mjs --direct [--cycles] [--only=a,b] [--dry]
 //
 // A module carved out of tools/micro/index.html reaches back into the app through
 // a hooks object: the app calls set<Module>Hooks({ … }) once, the module reads
 // H.<name>. That is right while the target still lives in the app. Once the target
 // has moved to a module of its own, the hook is stale: the module can import it.
 //
-// --direct converts every stale hook whose import closes no cycle:
+// --direct converts every stale hook whose import closes no cycle (with --cycles,
+// those too: see "Import cycles" in README.md, and run cycles.mjs afterwards):
 //   - src/<module>.js: H.<name> becomes the name, imported from its module; the
 //     "passed in once" comment loses it; a hooks object left empty is removed
 //   - index.html: the property leaves set<Module>Hooks({ … }); a call left empty is
 //     removed with its import; an import the app no longer uses is removed
 // It refuses a hook (and says so) when the name is already bound in the module,
-// when the module assigns to it, or when the import would close a cycle.
+// when the module assigns to it, or (without --cycles) when the import would close
+// a cycle.
 // Do not run it while a smoke suite is reading the tree. See README.md.
 import { readFileSync, writeFileSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -26,7 +28,7 @@ const DIR = fileURLToPath(new URL('..', import.meta.url));       // tools/micro/
 const argv = process.argv.slice(2);
 const flag = (k) => argv.includes('--' + k);
 const val = (k) => { const a = argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : ''; };
-const DRY = flag('dry'), DIRECT = flag('direct'), ONLY = val('only').split(',').filter(Boolean);
+const DRY = flag('dry'), DIRECT = flag('direct'), CYCLES = flag('cycles'), ONLY = val('only').split(',').filter(Boolean);
 const one = argv.find((a) => !a.startsWith('--'));
 
 const readText = (p) => { const raw = readFileSync(p, 'utf8'), crlf = raw.includes('\r\n'); return { text: raw.split('\r\n').join('\n'), crlf }; };
@@ -257,8 +259,8 @@ const dropUnusedImport = (src, name) => {
 const rows = audit(app).filter((r) => r.where !== 'app' && (!ONLY.length || ONLY.includes(r.target)));
 const plan = new Map(), cyclic = [];
 for (const r of rows) {
-  if (cyc(r)) { cyclic.push(r); continue; }
-  mods[r.target].imports.add(r.from);                            // later rows see this edge
+  if (cyc(r)) { cyclic.push(r); if (!CYCLES || r.from === r.target) continue; }
+  else mods[r.target].imports.add(r.from);                       // later rows see this edge
   if (!plan.has(r.target)) plan.set(r.target, []);
   plan.get(r.target).push(r);
 }
@@ -280,7 +282,7 @@ for (const [T, items] of plan) {
 }
 const unused = []; for (const nm of dropped) { const before = app; app = dropUnusedImport(app, nm); if (app !== before) unused.push(nm); }
 parse(app);
-console.log(`\n${nDone} hooks became imports in ${writes.length} modules; ${nRefused} refused; ${cyclic.length} would close a cycle`);
+console.log(`\n${nDone} hooks became imports in ${writes.length} modules; ${nRefused} refused; ${cyclic.length} ${CYCLES ? 'close a cycle (run cycles.mjs)' : 'would close a cycle'}`);
 if (unused.length) console.log(`the app no longer imports: ${unused.join(', ')}`);
 for (const n of notes) console.log('note: ' + n);
 if (DRY) { console.log('(dry run — nothing written)'); process.exit(0); }

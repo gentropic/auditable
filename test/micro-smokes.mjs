@@ -17,6 +17,7 @@
 //
 // The suites are the same files `npm run test:micro*` and CI run one by one.
 // micro-smoke2 is the long one, so it is cut into shards (its --shard=i/n).
+// The first job, `cycles`, is the import-cycle check of tools/micro/dev/cycles.mjs.
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -33,6 +34,8 @@ const VERBOSE = has('verbose');
 
 const jobs = [];
 const job = (name, file, ...args) => jobs.push({ name, argv: [path.join('test', file), ...args] });
+// not a browser suite: a source check that takes under a second (tools/micro/dev/README.md, "cycles.mjs")
+jobs.push({ name: 'cycles', argv: [path.join('tools', 'micro', 'dev', 'cycles.mjs')] });
 for (let i = 0; i < SHARDS; i++) job(`smoke2 ${i + 1}/${SHARDS}`, 'micro-smoke2.mjs', `--shard=${i}/${SHARDS}`);
 for (let i = 0; i < SHARDS; i++) job(`smoke2 built ${i + 1}/${SHARDS}`, 'micro-smoke2.mjs', '--built', `--shard=${i}/${SHARDS}`);
 job('smoke', 'micro-smoke.mjs');

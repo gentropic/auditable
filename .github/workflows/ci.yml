@@ -62,6 +62,9 @@ jobs:
         run: node build.js --target=micro
       # every smoke runs even when an earlier one failed (the job still fails), so one
       # run reports every failure instead of stopping at the first
+      - name: micro import cycles — no load-time use between modules that import each other
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: npm run test:micro:cycles
       - name: micro smoke — features
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run test:micro
