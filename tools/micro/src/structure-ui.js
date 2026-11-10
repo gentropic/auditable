@@ -25,9 +25,10 @@ import { markProjectDirty } from './project.js';
 import { addLayer } from './ingest.js';
 import { deliverBlob } from './hostio.js';
 import { allocLayerId, removeLayerUI } from './layers.js';
+import { convertMeshLayer } from './layermenu.js';
 const $ = (s) => document.querySelector(s);
 
-// the app's side, passed in once (setStructureHooks): addPaintValue, buildMeshChunk, convertMeshLayer, createPaintCol, meshHitAt, paintApply, pixelRay, zoomToPoint
+// the app's side, passed in once (setStructureHooks): addPaintValue, buildMeshChunk, createPaintCol, meshHitAt, paintApply, pixelRay, zoomToPoint
 let H = {};
 export function setStructureHooks(h) { H = h; }
 export const _structWins = new Map();                       // mesh layer id → handle
@@ -195,7 +196,7 @@ export async function openStructure(L) {
       const d = say(`This mesh is drawn streamed (${h.triCount.toLocaleString()} triangles), which keeps no geometry on the page to measure. Load it exactly first.`);
       const b = document.createElement('button'); b.className = 'awin-btn btn-p'; b.style.marginTop = '10px';
       b.textContent = `Load exact (~${fmtSize((h.vertexCount || h.triCount / 2) * 12 + h.triCount * 12)} GPU)…`;
-      b.onclick = async () => { if (await H.convertMeshLayer(L, false)) start(); };
+      b.onclick = async () => { if (await convertMeshLayer(L, false)) start(); };
       d.append(document.createElement('br'), b);
       win.sub.textContent = 'streamed — needs the exact mesh';
       return false;

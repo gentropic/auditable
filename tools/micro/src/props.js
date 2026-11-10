@@ -29,8 +29,9 @@ import { openCalcWindow } from './calc.js';
 import { recolorSurface, setGridBand, setSurfaceFlatZ, setSurfaceSmooth } from './surfaces.js';
 import { reopenWithMapping } from './reopen.js';
 import { refilterLayer } from './filter.js';
+import { applyLayerOpacity, convertMeshLayer, setMeshTint } from './layermenu.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint
+// the app's side, passed in once (setPropsHooks): addPaintValue, appendColStats, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -151,7 +152,7 @@ export function renderStyleTab(body, L) {
       body.appendChild(mkRow('shading', shd));
     } else {
       const tintIn = document.createElement('input'); tintIn.type = 'color'; tintIn.value = L.tint || '#9ea3a8';
-      tintIn.oninput = () => H.setMeshTint(L, tintIn.value);
+      tintIn.oninput = () => setMeshTint(L, tintIn.value);
       body.appendChild(mkRow('tint', tintIn));
     }
     const op = document.createElement('input'); op.type = 'range'; op.min = 5; op.max = 100; op.step = 5;
@@ -172,7 +173,7 @@ export function renderStyleTab(body, L) {
         const est = h.soup ? (h.vertexCount || h.triCount / 2) * 12 + h.triCount * 12 : h.triCount * 18;
         const btn = document.createElement('button'); btn.className = 'pp-tab';
         btn.textContent = `convert to ${h.soup ? 'exact' : 'streamed'} (~${fmtSize(est)})`;
-        btn.onclick = async () => { await H.convertMeshLayer(L, !h.soup); renderProps(); };
+        btn.onclick = async () => { await convertMeshLayer(L, !h.soup); renderProps(); };
         body.appendChild(mkRow('', btn));
       }
     }
@@ -294,7 +295,7 @@ export function renderStyleTab(body, L) {
     const op = document.createElement('input'); op.type = 'range'; op.min = 5; op.max = 100; op.step = 5;
     op.value = Math.round((L.opacity != null ? L.opacity : 1) * 100);
     const opVal = document.createElement('span'); opVal.className = 'pp-val'; opVal.textContent = op.value + '%';
-    op.oninput = () => { opVal.textContent = op.value + '%'; H.applyLayerOpacity(L, +op.value / 100); };
+    op.oninput = () => { opVal.textContent = op.value + '%'; applyLayerOpacity(L, +op.value / 100); };
     body.appendChild(mkRow('opacity', op, opVal));
   }
   if (L.dh && L.docs.dhDoc) renderStickRadius(body, L);

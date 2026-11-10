@@ -1,0 +1,236 @@
+// the layer context menu and the actions behind it: fit, remove, mesh tier, tint, opacity
+import { S, layerById, requestRender } from './state.js';
+import { microConfirm, microPrompt } from './prompts.js';
+import { removeLayerUI, setActiveLayer } from './layers.js';
+import { _lpSel, createLayerGroup, lpSelIds, moveLayerToGroupMenu, renderLayers, secModeLabel, sectionModeItems, showNode, treeMoveStep } from './tree.js';
+import { menuXY } from './menu.js';
+import { openBatchRename, renameActiveLayer } from './rename.js';
+import { exportGridAsc, openMeshExportDialog, writeGridDisplayCache } from './meshexport.js';
+import { canReloadLayer, reinterpretMenu, reinterpretOptions, reloadLayerFromDisk } from './reopen.js';
+import { hasRecords, layerTableHeader } from './records.js';
+import { openAttrTable } from './attrtable.js';
+import { numericColsOf } from './analysis.js';
+import { openStats } from './stats.js';
+import { openXyPlot } from './xyplot.js';
+import { gridAxesOf } from './grid-ops.js';
+import { openGradeTonnage } from './gt.js';
+import { openCrosstab } from './xtab.js';
+import { openSwath } from './swath.js';
+import { showFileInfo } from './fileinfo.js';
+import { openLineageWindow } from './lineage-ui.js';
+import { openExportDialog } from './export-dialog.js';
+import { materializeCalcCol, openProps, stageGate } from './props.js';
+import { applyHoleFilter, dhSetGroupOf } from './drillholes.js';
+import { peekCollarCols } from './manifest.js';
+import { canCopyIntoProject, copyLayerIntoProject, markProjectDirty, openOptimizeDialog } from './project.js';
+import { convertLayerToParquet } from './export.js';
+import { scanColumns } from './columns.js';
+import { openSolidDialog } from './bygeom-ui.js';
+import { openMeshGridDialog, openSurfaceTools, surfaceableLayers } from './gridtools.js';
+import { openMeshQa } from './meshqa.js';
+import { openStructure } from './structure-ui.js';
+import { fmtSize, layerBytes } from './paths.js';
+import { CONTEXT_TRI_CAP, hexToRgb01, openMeshDoc } from './open.js';
+import { recolorSurface } from './surfaces.js';
+const $ = (s) => document.querySelector(s);
+// the app's side, passed in once (setLayermenuHooks): _blockEdges, filterToSelection, selectionToColumn
+let H = {};
+export function setLayermenuHooks(h) { H = h; }
+
+export function fitLayer(L) { if (L.bboxLocal) { S.cam.fit(L.bboxLocal); requestRender(); } }
+
+// the UI's remove (context menu, palette): a layer carrying its OWN columns —
+// painted, calculated, joined — loses them with it (the file on disk is never
+// touched, but those exist nowhere else until a save), so that asks first. The
+// host API and the open paths call removeLayerUI directly, without asking.
+export async function confirmRemoveLayer(id) {
+  const L = layerById(id); if (!L) return;
+  const own = [...(L.paintCols || []).filter((c) => c.name !== '_swath'), ...(L.calcCols || [])].map((c) => c.name);
+  if (own.length && !(await microConfirm('remove layer', `Remove “${L.label || L.name}”? Its ${own.length} column${own.length === 1 ? '' : 's'} of its own (${own.slice(0, 6).join(', ')}${own.length > 6 ? ', …' : ''}) go${own.length === 1 ? 'es' : ''} with it${S.project && !S.project.dirty ? ' from this session (the saved project still has them until the next save)' : ''}. The file on disk is untouched.`, 'Remove'))) return;
+  removeLayerUI(id);
+}
+
+export function layerMenu(L, x, y) {
+  const selN = _lpSel.size;
+  menuXY(x, y, [
+    ...(selN >= 2 && _lpSel.has(L.id) ? [
+      { label: `Group ${selN} selected…`, action: async () => {
+        const v = await microPrompt('group name', 'group');
+        if (!v || !v.trim()) return;
+        const ids = lpSelIds();
+        _lpSel.clear();
+        createLayerGroup(v.trim(), ids, { collapsed: false });
+      } },
+      { label: `Rename ${selN} selected…`, action: () => openBatchRename(lpSelIds().map(layerById)) },
+      ...(() => {
+        const meshSel = lpSelIds().map(layerById).filter((x) => x && x.kind === 'mesh' && x.docs.meshDoc);
+        return meshSel.length >= 2 ? [{ label: `Export ${meshSel.length} meshes…`, action: () => openMeshExportDialog(meshSel) }] : [];
+      })(),
+      { sep: true },
+    ] : []),
+    ...(L.kind === 'table' ? [] : [{ label: 'Zoom to layer', action: () => fitLayer(L) }]),
+    { label: 'Rename layer…', kbd: 'F2', action: () => renameActiveLayer(L) },
+    ...(reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
+    ...(canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
+    { sep: true },                                          // ── inspect / analyze ──
+    ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),
+    ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),
+    ...(layerTableHeader(L) && numericColsOf(L).length ? [{ label: 'Stats…', action: () => openStats(L) }, { label: 'Scatter / Q-Q…', action: () => openXyPlot(L) }] : []),
+    ...(gridAxesOf(L) ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
+    ...(L._filterMask ? [{ label: 'Filter → selection', action: () => H.filterToSelection(L) }] : []),
+    ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => H.selectionToColumn(L) }] : []),
+    { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },
+    ...(L.lineage ? [{ label: 'Lineage…', action: () => openLineageWindow(L) }] : []),
+    ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
+    { sep: true },                                          // ── derive / store ──
+    ...((L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
+    ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: async () => {
+      const cc = await peekCollarCols(L.docs.dhDoc).catch(() => []);
+      const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', L.holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
+      if (v == null) return;
+      const r = await applyHoleFilter(L, v);
+      $('#meta').textContent = r && r.err ? `hole filter: ${r.err}` : (r && r.holes != null ? `hole filter: ${r.holes} of ${r.total} holes` : 'hole filter cleared');
+    } }] : []),
+    ...(L.docs.blockDoc && !(L.docs.blockDoc.parquet) ? [{ label: 'Store as Parquet…', action: async () => { const res = await openOptimizeDialog([L]); if (res && res.layers.length) await convertLayerToParquet(L, { keepOriginal: res.keepOriginal }); } }] : []),
+    ...(L.docs.blockDoc ? [{ label: 'Build index (stats + pushdown)…', action: async () => {
+      await scanColumns(L, (a2, b2) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b2 ? Math.round(100 * a2 / b2) : 0}%…`; }, { bands: !L.docs.blockDoc.parquet });
+      $('#meta').textContent = `indexed ${L.label || L.name} — stats + band index ready (written as a sidecar on the next project save)`;
+      markProjectDirty();
+    } }] : []),
+    ...(L.docs.gridDoc ? [{ label: 'Surface tools', submenu: () => [
+      { label: 'Flag / ratio by this surface…', action: () => openSolidDialog(L) },
+      { label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) },
+      ...(surfaceableLayers().length >= 2 ? [{ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) }] : []),
+      { label: 'Export as ESRI ASCII grid…', action: () => exportGridAsc(L) },
+      ...(L.docs.gridDoc.source && !L.docs.gridDoc.fullRes && S.project && /\.(tif|tiff)$/i.test(L.name) ? [{ label: 'Build display cache', action: async () => { try { const why = await writeGridDisplayCache(L, S.project.dir); $('#meta').textContent = why ? `display cache: ${why}` : `display cache written · ${L.name}.disp.grd`; } catch (e) { $('#meta').textContent = `display cache — ${e.message}`; } } }] : []),
+    ] }] : []),
+    ...(L.kind === 'mesh' ? (() => {
+      const items = [];
+      const h = L.docs.meshDoc && L.docs.meshDoc.header;
+      if (h && !h.soup) items.push({ label: 'Select by this solid…', action: () => openSolidDialog(L) });
+      if (h && !h.soup) items.push({ label: 'Rasterize to grid…', action: () => openMeshGridDialog(L) });
+      if (h && !h.soup) items.push({ label: 'Extend to footprint…', action: () => openSurfaceTools('extend', L) });
+      if (h && !h.soup && surfaceableLayers().length >= 2) items.push({ label: 'Combine surfaces…', action: () => openSurfaceTools('combine', L) });
+      if (h) items.push({ label: 'Mesh QA / volume…', action: () => openMeshQa(L) });
+      if (h && !L.derivedOf) items.push({ label: 'Structural analysis…', action: () => openStructure(L) });
+      if (h) items.push({ label: 'Export mesh…', action: () => openMeshExportDialog([L]) });
+      if (h) {
+        const now = S.renderer.layerVramBytes(L.id);
+        if (!h.soup) {
+          const est = h.triCount * 18;                     // u16 soup: 9 coords × 2 B
+          items.push({ label: `Convert to streamed (${fmtSize(now)} → ~${fmtSize(est)})`, action: () => convertMeshLayer(L, true) });
+        } else {
+          const est = exactMeshBytes(h);
+          items.push({ label: `Convert to exact (${fmtSize(now)} → ~${fmtSize(est)})${h.triCount > CONTEXT_TRI_CAP ? ' — over the usual cap' : ''}`, action: () => convertMeshLayer(L, false) });
+        }
+      }
+      return items;
+    })() : []),
+    { sep: true },                                          // ── display ──
+    ...(L.dh ? [{ label: `Stick radius… (${S.renderer.layerStickRadius(L.id)} m)`, action: async () => {
+      const v = await microPrompt('stick radius (metres)', String(S.renderer.layerStickRadius(L.id)));
+      const r = parseFloat(v);
+      if (Number.isFinite(r) && r > 0) {
+        S.renderer.setLayerStickRadius(L.id, r);             // the context-menu path stays live (no panel involved)
+        if (L.docs.dhDoc) L.docs.dhDoc.config.radius = r;   // persists via the project manifest
+        markProjectDirty(); requestRender();
+      }
+    } }] : []),
+    ...(L.kind !== 'mesh' && (L.docs.blockDoc || L.dh) ? [{ label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) }] : []),
+    ...(L.kind === 'mesh' ? [
+      { label: 'Tint…', action: () => setTimeout(() => meshTintMenu(L, x, y), 0) },
+      { label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) },
+    ] : []),
+    ...(L.gridSurface ? [{ label: 'Drape', submenu: () => {
+      const grids = S.layers.filter((g) => g !== L && g.docs && g.docs.gridDoc && g.docs.gridDoc.grid);
+      return [{ label: (L.drapeSource ? '' : '✓ ') + 'elevation', action: () => recolorSurface(L, null) },
+        ...(grids.length ? grids.map((g) => ({ label: (L.drapeSource === g.name ? '✓ ' : '') + (g.label || g.name), action: () => recolorSurface(L, g) })) : [{ label: '(load another grid to drape over it)', action: () => {} }])];
+    } }] : []),
+    ...(L.docs.blockDoc ? [{
+      label: `Block edges: ${L.edges == null ? 'auto' : L.edges ? 'on' : 'off'}`,
+      submenu: () => [[null, `auto (follow View${H._blockEdges ? ' — on' : ' — off'})`], [true, 'on'], [false, 'off']].map(([v, t]) => ({
+        label: ((L.edges === v || (v === null && L.edges == null)) ? '✓ ' : '') + t,
+        action: () => { L.edges = v; S.renderer.setLayerEdges(L.id, v); markProjectDirty(); requestRender(); },
+      })),
+    }] : []),
+    { label: 'Cut by sections' + secModeLabel(S.renderer.layerSectioned(L.id)), submenu: () => sectionModeItems(L) },
+    { label: L.visible ? 'Hide layer' : 'Show layer', action: () => showNode(L.id, !L.visible) },
+    { sep: true },                                          // ── arrange / lifecycle ──
+    { label: 'Move', submenu: () => [
+      { label: 'Up', action: () => treeMoveStep(L.id, -1) },
+      { label: 'Down', action: () => treeMoveStep(L.id, 1) },
+      { label: 'To group…', action: () => setTimeout(() => moveLayerToGroupMenu(L, x, y), 0) },
+    ] },
+    ...(canCopyIntoProject(L) ? [{
+      label: `Copy into project (${fmtSize(layerBytes(L))})`,
+      action: () => copyLayerIntoProject(L),
+    }] : []),
+    { label: 'Remove layer', action: () => confirmRemoveLayer(L.id) },
+    { sep: true },
+    { label: 'Properties…', action: () => { setActiveLayer(L.id); openProps(); } },
+  ]);
+}
+
+// tier conversion: re-open the SAME blob through the other tier, keeping the
+// layer's identity (id, label, style, visibility, section exemption). Exact
+// (indexed f32) trades VRAM for survey-true vertices; streamed (u16 soup)
+// trades ~8 mm-per-chunk quantization for ~2-3× less VRAM + budgeted draw.
+// the exact tier's GPU cost: indexed f32 positions + u32 triangle indices
+export function exactMeshBytes(h) { return (h.vertexCount || h.triCount / 2) * 12 + h.triCount * 12; }
+
+export async function convertMeshLayer(L, toSoup, { confirmed = false } = {}) {
+  const md = L.docs.meshDoc; if (!md) return false;
+  const h = md.header;
+  // PROMOTE-TO-CONTEXT: a mesh over the cap opened streamed, which keeps no CPU geometry.
+  // The exact tier is still possible — it costs memory, so it is the user's call, stated
+  // up front, with no hard ceiling (a 20M-triangle outcrop on a workstation is legitimate).
+  if (!toSoup && h.triCount > CONTEXT_TRI_CAP && !confirmed) {
+    const ok = await microConfirm('Load the exact mesh?',
+      `${h.triCount.toLocaleString()} triangles is over the ${CONTEXT_TRI_CAP.toLocaleString()} micro loads exactly by default, so it opened streamed. ` +
+      `The exact tier keeps the whole mesh: about ${fmtSize(exactMeshBytes(h))} of GPU memory, plus the file's geometry in this tab while it loads. ` +
+      'Structural analysis, solid queries and rasterizing need it. A large mesh can make the tab slow, or run out of memory on a small device.',
+      'Load exact', 'Cancel');
+    if (!ok) return false;
+  }
+  const keep = { visible: L.visible, sectioned: S.renderer.layerSectioned(L.id) };
+  S.renderer.removeLayer(L.id);                              // frees chunks + layer state
+  $('#meta').textContent = `${md.name} — converting to ${toSoup ? 'streamed' : 'exact'}…`;
+  try {
+    await openMeshDoc(md.blob, md.name, { layer: L.id, first: false, tint: L.tint, opacity: L.opacity, forceSoup: toSoup, forceContext: !toSoup });
+    if (!keep.visible) { L.visible = false; S.renderer.setLayerVisible(L.id, false); }
+    if (keep.sectioned !== true) S.renderer.setLayerSectioned(L.id, keep.sectioned);
+    renderLayers(); markProjectDirty(); requestRender();
+    return true;
+  } catch (e) { $('#meta').textContent = `${md.name} — ${e.message}`; return false; }
+}
+
+// mesh styling: a small preset palette (geology-ish) + custom hex; opacity is
+// Bayer screen-door in the pipeline, so any value is depth-correct
+export const MESH_TINTS = [['Grey', '#9ea3a8'], ['Sand', '#c9a86a'], ['Rust', '#b0563a'], ['Green', '#5c8a5a'], ['Blue', '#5b7fa6'], ['Violet', '#8a6fae'], ['Brown', '#8a6a4f']];
+
+export function setMeshTint(L, hex) { L.tint = hex; stageGate(L, () => { S.renderer.setLayerMeshStyle(L.id, { tint: hexToRgb01(hex) }); requestRender(); }); markProjectDirty(); }
+
+export function meshTintMenu(L, x, y) {
+  menuXY(x, y, [
+    ...MESH_TINTS.map(([label, hex]) => ({ label: (L.tint === hex ? '✓ ' : '') + label, action: () => setMeshTint(L, hex) })),
+    { sep: true },
+    { label: 'Custom…', action: async () => {
+      const v = ((await microPrompt('tint (hex)', L.tint || '#9ea3a8')) || '').trim();
+      if (/^#?[0-9a-fA-F]{6}$/.test(v)) setMeshTint(L, v.startsWith('#') ? v : '#' + v);
+    } },
+  ]);
+}
+
+// per-layer opacity, kind-aware: meshes screen-door via meshStyle, blocks/sticks
+// via setLayerOpacity (both are Bayer dither in-shader — see-through, no blend order).
+export function applyLayerOpacity(L, v) {
+  L.opacity = v;
+  if (L.kind === 'mesh') S.renderer.setLayerMeshStyle(L.id, { opacity: v });
+  else S.renderer.setLayerOpacity(L.id, v);
+  markProjectDirty(); requestRender();
+}
+
+export const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
+  label: (Math.round((L.opacity != null ? L.opacity : 1) * 100) === pc ? '✓ ' : '') + pc + '%',
+  action: () => applyLayerOpacity(L, pc / 100),
+}));

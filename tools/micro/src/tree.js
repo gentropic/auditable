@@ -16,8 +16,9 @@ import { microPrompt } from './prompts.js';
 import { openMeshExportDialog } from './meshexport.js';
 import { openBatchRename } from './rename.js';
 import { setActiveLayer } from './layers.js';
+import { applyLayerOpacity, fitLayer, layerMenu } from './layermenu.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): applyLayerOpacity, fitLayer, layerMenu, syncSelBar, syncUndoBtn
+// the app's side, passed in once (setTreeHooks): syncSelBar, syncUndoBtn
 let H = {};
 export function setTreeHooks(h) { H = h; }
 
@@ -508,7 +509,7 @@ export const groupOpacityItems = (nd) => {
   const cur = Ls.length ? Math.round((Ls[0].opacity != null ? Ls[0].opacity : 1) * 100) : 100;
   return [100, 75, 50, 25].map((pc) => ({
     label: (cur === pc ? '✓ ' : '') + pc + '%',
-    action: () => { for (const L of Ls) H.applyLayerOpacity(L, pc / 100); },
+    action: () => { for (const L of Ls) applyLayerOpacity(L, pc / 100); },
   }));
 };
 
@@ -636,8 +637,8 @@ export function renderLayers() {
       if (_lpSel.size) _lpSel.clear();
       setActiveLayer(L.id);
     };
-    row.ondblclick = () => H.fitLayer(L);
-    row.oncontextmenu = (e) => { e.preventDefault(); H.layerMenu(L, e.clientX, e.clientY); };
+    row.ondblclick = () => fitLayer(L);
+    row.oncontextmenu = (e) => { e.preventDefault(); layerMenu(L, e.clientX, e.clientY); };
     rows.appendChild(row);
     visual.push({ row, node: L.id, isGroup: false });
   };
