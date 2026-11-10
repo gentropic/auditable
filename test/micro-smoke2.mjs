@@ -762,7 +762,8 @@ if (take()) {
     const ed = document.querySelector('.cw-edwrap textarea'); ed.value = 'FE + 10 * MN'; ed.dispatchEvent(new Event('input'));
     await new Promise((r) => setTimeout(r, 100));
     [...document.querySelectorAll('.cw-main .awin-btn')].find((x) => x.textContent === 'save').click();
-    await new Promise((r) => setTimeout(r, 500));
+    // the re-filter is a scan: wait for the count to move, not for a fixed time (500 ms was too short with 8 suites running at once)
+    for (let i = 0; i < 100 && count() === h0; i++) await new Promise((r) => setTimeout(r, 100));
     return { h0, h1: count() };
   });
   chk(`calc window: saving a definition re-applies the live filter (${live.h0} → ${live.h1} hits)`,
