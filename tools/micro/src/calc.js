@@ -11,8 +11,9 @@ import { fdBounds, fdNum, fdRenderChain, fdRenderLeaf, fdValues } from './filter
 import { numericColsOf } from './analysis.js';
 import { pushUndo } from './undo.js';
 import { saveRecipe } from './recipes.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setCalcHooks): refilterLayer, setLayerColorSel
+// the app's side, passed in once (setCalcHooks): refilterLayer
 let H = {};
 export function setCalcHooks(h) { H = h; }
 
@@ -240,7 +241,7 @@ export function openCalcWindow(L, selIdx) {
     ctr.appendChild(saveB);
     if (cur) {
       const rmB = document.createElement('button'); rmB.className = 'awin-btn'; rmB.textContent = 'remove';
-      rmB.onclick = () => { const gone = L.calcCols[sel], at = sel; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(at, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); }, { redo: () => { const k = L.calcCols.indexOf(gone); if (k >= 0) { L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; L._calcDisplay = null; markProjectDirty(); refreshProps(); } } });if (colorSelOf(L) === 'calc:' + cur.name) H.setLayerColorSel(L, 'elev'); L.calcCols.splice(sel, 1); L._calcDisplay = null; sel = -1; invalidate(); render(); };
+      rmB.onclick = () => { const gone = L.calcCols[sel], at = sel; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(at, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); }, { redo: () => { const k = L.calcCols.indexOf(gone); if (k >= 0) { L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; L._calcDisplay = null; markProjectDirty(); refreshProps(); } } });if (colorSelOf(L) === 'calc:' + cur.name) setLayerColorSel(L, 'elev'); L.calcCols.splice(sel, 1); L._calcDisplay = null; sel = -1; invalidate(); render(); };
       const matB = document.createElement('button'); matB.className = 'awin-btn'; matB.textContent = 'materialize → stored';
       matB.title = 'compute once, store as a real column (survives even if inputs are removed; faster to scan)';
       matB.onclick = () => materializeCalcCol(L, cur.name);

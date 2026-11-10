@@ -1207,7 +1207,7 @@ import { detectDmWireframePairs, openDmWireframeBlob, openBlob, openGridBlob, CO
 import { addLayer, ingestSource, setIngestHooks } from './src/ingest.js';
 import { nextDhSetKey, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel, setOpenDialogHooks } from './src/open-dialog.js';
 import { reopenDh, invalidateWholeHoles, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces, setDrillholesHooks } from './src/drillholes.js';
-import { resolveColorMode, setColorLabels, dropValueTex, setLayerColorBy, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList, setColorHooks } from './src/color.js';
+import { resolveColorMode, setColorLabels, dropValueTex, setLayerColorBy, setLayerColorSel, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList, setColorHooks } from './src/color.js';
 import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, applyLayerSurface, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
 import { reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk, setReopenHooks } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
@@ -1233,7 +1233,7 @@ import { deliverBlob } from './src/hostio.js';
 // src/settings.js reaches back into the app through these
 setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { return _nlOn; }, get _secFollow() { return _secFollow; }, get _selStick() { return _selStick; }, nlEnsureTrained, nlSetEnabled, setBlockEdges, setSelStick });
 // src/calc.js reaches back into the app through these
-setCalcHooks({ refilterLayer, setLayerColorSel });
+setCalcHooks({ refilterLayer });
 // src/help.js reaches back into the app through these
 setHelpHooks({ get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
 // src/filter-drawer.js reaches back into the app through these
@@ -2118,11 +2118,6 @@ function addPaintValue(L, col, label) {
   markProjectDirty();
   return col.dict.length - 1;
 }
-// set a layer's color channel (through the toolbar when active, direct otherwise)
-function setLayerColorSel(L, v) {
-  L.colorSel = v;
-  return setLayerColorBy(L, v).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
-}
 // the stroke core: assign `code` to a set of records, with a diff-based undo
 // entry (indices + old codes — bounded, cheap even at 50M records)
 function paintApply(L, col, recs, code) {
@@ -2441,16 +2436,16 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, applyLayerSelection, refilterLayer, setActiveLayer, setLayerColorSel });
+setExportHooks({ busyCancel, applyLayerSelection, refilterLayer, setActiveLayer });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
 
 // src/bygeom.js reaches back into the app through these
-setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel });
+setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus });
 
 // src/joins.js reaches back into the app through these
-setJoinsHooks({ addPaintValue, createPaintCol, setLayerColorSel });
+setJoinsHooks({ addPaintValue, createPaintCol });
 
 // src/analysis-ui.js reaches back into the app through these
 setAnalysisUiHooks({ resultToLayer });
@@ -2526,7 +2521,7 @@ function layerHasColumn(name, layerName) {
 }
 
 // src/swath.js reaches back into the app through these
-setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, selectionStatus, setLayerColorSel });
+setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, selectionStatus });
 
 setOmfHooks({ closeAllLayers });
 // frame a WORLD point (radius 0 → a close look, else that much around it)
@@ -2801,7 +2796,7 @@ function setActiveLayer(id) {
 setIngestHooks({ removeLayerUI });
 
 // src/reopen.js reaches back into the app through these
-setReopenHooks({ closeAttrTable, refilterLayer, setLayerColorSel });
+setReopenHooks({ closeAttrTable, refilterLayer });
 
 // src/open-dialog.js reaches back into the app through these
 setOpenDialogHooks({ closeAllLayers });
@@ -3103,7 +3098,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmClose(null); }
 });
 // src/views.js reaches back into the app through these
-setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer, setLayerColorSel, syncFilterClear });
+setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer, syncFilterClear });
 
 // recent projects on the empty state (chips, like recent files)
 async function renderEmptyProjects() {
@@ -4947,7 +4942,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   action: () => applyLayerOpacity(L, pc / 100),
 }));
 // src/props.js reaches back into the app through these
-setPropsHooks({ get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setLayerColorSel, setMeshTint });
+setPropsHooks({ get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setMeshTint });
 
 $('#ppClose').onclick = closeProps;
 

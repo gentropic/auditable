@@ -22,14 +22,14 @@ import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { CONTEXT_TRI_CAP, droppedNote, hexToRgb01, openBlob, reopenBlockChan } from './open.js';
 import { collarCells, csvRecords, reopenDh } from './drillholes.js';
-import { colorHeaderOf, ensureValueTex, setColorLabels } from './color.js';
+import { colorHeaderOf, ensureValueTex, setColorLabels, setLayerColorSel } from './color.js';
 import { followLayer, renderLayers } from './tree.js';
 import { markProjectDirty } from './project.js';
 import { openCalcWindow } from './calc.js';
 import { recolorSurface, setGridBand, setSurfaceFlatZ, setSurfaceSmooth } from './surfaces.js';
 import { reopenWithMapping } from './reopen.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): _docBbox, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setLayerColorSel, setMeshTint
+// the app's side, passed in once (setPropsHooks): _docBbox, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setMeshTint
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -1448,7 +1448,7 @@ export async function broadcastCollarCol(L, colName) {
     paintRecount(col);
     L._colStats = null; L._calcFns = null;
   }
-  H.setLayerColorSel(L, 'paint:' + outName);
+  setLayerColorSel(L, 'paint:' + outName);
   markProjectDirty(); renderProps(); requestRender();
   $('#meta').textContent = `broadcast: ${outName} on ${L.label || L.name} — the filter, color ramps, GT/swath, and exports all see it`;
 }
@@ -1535,7 +1535,7 @@ export async function materializeCalcCol(L, name) {
   L.calcCols = (L.calcCols || []).filter((c) => c.name !== name); L._calcFns = null;   // computed → stored (no schema collision)
   L._calcDisplay = null;                                    // the ephemeral realization is superseded by the stored column
   matColSet(L, name, vals, { lineage: mkLineage('materialize', { from: 'calc', expr: cc.expr }, [L.lineage].filter(Boolean)) });
-  if (wasColor) H.setLayerColorSel(L, 'paint:' + name);
+  if (wasColor) setLayerColorSel(L, 'paint:' + name);
   try { await persistElement(L); } catch { /* best-effort */ }
   markProjectDirty(); renderLayers(); requestRender();
   $('#meta').textContent = `materialized “${name}” — ${rec.toLocaleString()} values stored`;

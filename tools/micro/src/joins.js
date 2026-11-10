@@ -15,8 +15,9 @@ import { applyRamp, renderProps, setRampCfg } from './props.js';
 import { markProjectDirty } from './project.js';
 import { openBlob } from './open.js';
 import { renderLayers } from './tree.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setJoinsHooks): addPaintValue, createPaintCol, setLayerColorSel
+// the app's side, passed in once (setJoinsHooks): addPaintValue, createPaintCol
 let H = {};
 export function setJoinsHooks(h) { H = h; }
 
@@ -255,7 +256,7 @@ export async function spatialJoinToCols(L, R, jf) {
   }
   L._colStats = null; L._calcFns = null;
   try { await persistElement(L); } catch { /* best-effort */ }
-  H.setLayerColorSel(L, 'paint:' + outs[0].out);
+  setLayerColorSel(L, 'paint:' + outs[0].out);
   markProjectDirty(); renderProps(); requestRender();
   return outs.map((o) => o.out);
 }
@@ -311,7 +312,7 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
   }
   L._colStats = null; L._calcFns = null;
   try { await persistElement(L); } catch { /* best-effort */ }
-  H.setLayerColorSel(L, 'paint:' + outs[0].out);
+  setLayerColorSel(L, 'paint:' + outs[0].out);
   markProjectDirty(); renderProps(); requestRender();
   return { outs: outs.map((o) => o.out), matched, rows: done };
 }

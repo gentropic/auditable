@@ -19,8 +19,9 @@ import { mkLineage } from './lineage.js';
 import { addPaintColorOptions } from './props.js';
 import { layerWorldBbox } from './gridtools.js';
 import { markProjectDirty } from './project.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel
+// the app's side, passed in once (setBygeomHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus
 let H = {};
 export function setBygeomHooks(h) { H = h; }
 
@@ -569,7 +570,7 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
     }
   } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `ratio by surface: ${e.message}`; return null; }
   paintRecount(col); L._colStats = null; addPaintColorOptions(L);
-  H.setLayerColorSel(L, 'paint:' + col.name);
+  setLayerColorSel(L, 'paint:' + col.name);
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `ratio by surface: ${touched.toLocaleString()} of ${n.toLocaleString()} blocks vs “${gridL.label || gridL.name}” → ${col.name}`;
   markProjectDirty(); requestRender();
@@ -608,7 +609,7 @@ export async function flagByGridSurface(gridL, targets, { name, label = 'IN', mo
     } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `flag by surface: ${L.name} — ${e.message}`; return made; }
     paintRecount(col); L._colStats = null; addPaintColorOptions(L);
     const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
-    H.setLayerColorSel(L, 'paint:' + name);
+    setLayerColorSel(L, 'paint:' + name);
     made++;
     $('#meta').textContent = `flag by surface: ${cnt.toLocaleString()} of ${n.toLocaleString()} → ${name} = ${label} · ${L.label || L.name}`;
   }
@@ -750,7 +751,7 @@ export async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', m
   paintRecount(col);
   L._colStats = null;
   addPaintColorOptions(L);
-  H.setLayerColorSel(L, 'paint:' + col.name);                // see the result land
+  setLayerColorSel(L, 'paint:' + col.name);                // see the result land
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `ratio by solid: ${touched.toLocaleString()} of ${n.toLocaleString()} blocks touch “${meshL.label || meshL.name}” → ${col.name} (${dense.engine})`;
   markProjectDirty(); requestRender();
@@ -837,7 +838,7 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
     L._colStats = null;
     addPaintColorOptions(L);
     const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
-    H.setLayerColorSel(L, 'paint:' + name);
+    setLayerColorSel(L, 'paint:' + name);
     made++;
     $('#meta').textContent = `flag by solid: ${cnt.toLocaleString()} of ${n.toLocaleString()} inside → ${name} · filter with ${name} == "${label}"`;
   }
@@ -906,7 +907,7 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   paintRecount(col);
   L._colStats = null;
   addPaintColorOptions(L);
-  H.setLayerColorSel(L, 'paint:' + col.name);
+  setLayerColorSel(L, 'paint:' + col.name);
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `assign domains: ${assigned.toLocaleString()} of ${n.toLocaleString()} claimed by ${solids.length} solids → ${name}`;
   markProjectDirty(); requestRender();

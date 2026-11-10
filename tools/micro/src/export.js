@@ -16,8 +16,9 @@ import { markProjectDirty } from './project.js';
 import { openParquetBlocks } from './open.js';
 import { renderLayers } from './tree.js';
 import { deliverBlob } from './hostio.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection, refilterLayer, setActiveLayer, setLayerColorSel
+// the app's side, passed in once (setExportHooks): applyLayerSelection, refilterLayer, setActiveLayer
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -267,7 +268,7 @@ async function convertInner(L, cvOpts) {
   }
   L._colStats = null;                                      // aggregate — recomputed on demand
   addPaintColorOptions(L);
-  if (keepColorSel && [...$('#colorBy').options].some((o) => o.value === keepColorSel)) { L.colorSel = keepColorSel; H.setLayerColorSel(L, keepColorSel); }
+  if (keepColorSel && [...$('#colorBy').options].some((o) => o.value === keepColorSel)) { L.colorSel = keepColorSel; setLayerColorSel(L, keepColorSel); }
   // calc columns recompute from the reordered base (no per-record cache); the
   // filter re-sweeps (with pushdown) against the new order
   await H.refilterLayer(L, keepFilter);

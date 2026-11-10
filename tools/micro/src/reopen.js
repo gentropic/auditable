@@ -14,8 +14,9 @@ import { invalidateWholeHoles } from './drillholes.js';
 import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
 import { layerReplaced, renderLayers, treeSlotOf } from './tree.js';
 import { menuXY } from './menu.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setReopenHooks): closeAttrTable, refilterLayer, setLayerColorSel
+// the app's side, passed in once (setReopenHooks): closeAttrTable, refilterLayer
 let H = {};
 export function setReopenHooks(h) { H = h; }
 
@@ -110,7 +111,7 @@ export function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
   if (keep._recHide) L2._recHide = keep._recHide;
   if (keep.catChoices) { L2.catChoices = keep.catChoices; addPaintColorOptions(L2); }
   if (keep.holeFilter) { L2.holeFilter = keep.holeFilter; L2._holeIds = keep._holeIds; L2._holeMask = keep._holeMask; }
-  if (keep.colorSel && [...$('#colorBy').options].some((o) => o.value === keep.colorSel)) { L2.colorSel = keep.colorSel; H.setLayerColorSel(L2, keep.colorSel); }
+  if (keep.colorSel && [...$('#colorBy').options].some((o) => o.value === keep.colorSel)) { L2.colorSel = keep.colorSel; setLayerColorSel(L2, keep.colorSel); }
   if (keep.filterExpr) { L2.filterExpr = keep.filterExpr; }        // the sweep is driven by the caller when this layer is active
   return L2;
 }

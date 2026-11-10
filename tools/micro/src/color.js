@@ -154,6 +154,12 @@ export async function setLayerColorBy(L, v) {
   return L.id;
 }
 
+// the same, for callers that don't wait: a failure goes to the status line
+export function setLayerColorSel(L, v) {
+  L.colorSel = v;
+  return setLayerColorBy(L, v).catch((e) => { $('#meta').textContent = `color — ${e.message}`; });
+}
+
 export const colorHeaderOf = (L) => { const d = (L && L.docs) || {}; return d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : null; };
 
 export const POINT_MODES = { elevation: '0', elev: '0', intensity: '1', classification: '2', rgb: '3' };

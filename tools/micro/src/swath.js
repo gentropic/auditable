@@ -20,8 +20,9 @@ import { setSwathBand } from './overlay.js';
 import { layerWorldBbox } from './gridtools.js';
 import { markProjectDirty } from './project.js';
 import { saveRecipe } from './recipes.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, rendererDocBbox, selectionStatus, setLayerColorSel
+// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, rendererDocBbox, selectionStatus
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -455,12 +456,12 @@ export async function applySwathZebra(L, dir, bandWidth, offset) {
     if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && rec < codes.length) { const bi = Math.floor((x * dir[0] + y * dir[1] + z * dir[2] - offset) / bandWidth); codes[rec] = (bi & 1) ? 1 : 2; }
   }
   paintRecount(col); col._swathParity = true;
-  applyPaintPalette && H.setLayerColorSel(L, 'paint:_swath');
+  applyPaintPalette && setLayerColorSel(L, 'paint:_swath');
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   requestRender();
 }
 
 export function clearSwathZebra(L) {
   const i = (L.paintCols || []).findIndex((c) => c.name === '_swath');
-  if (i >= 0) { L.paintCols.splice(i, 1); if (paintSelOf(L) === '_swath') H.setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; addPaintColorOptions(L); requestRender(); }
+  if (i >= 0) { L.paintCols.splice(i, 1); if (paintSelOf(L) === '_swath') setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; addPaintColorOptions(L); requestRender(); }
 }
