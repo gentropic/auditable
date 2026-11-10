@@ -40,6 +40,9 @@ A hook is a stopgap. Once the thing it points at lives in a module of its own, t
 module that needed the hook should import it directly. `hooks.mjs` finds those and
 converts them.
 
+A carve also leaves behind the imports that only the moved code used. `unused.mjs`
+lists and removes them.
+
 ## hooks.mjs
 
 Lists the hooks each module receives from the app and says where each one's target
@@ -152,6 +155,32 @@ assignment shares its statement with others.
 
 Once a variable is a state property, a module no longer needs a getter hook to
 read it. Run `hooks.mjs --direct` afterwards.
+
+## unused.mjs
+
+Lists the imports of the app script that nothing in it uses, and removes them.
+
+```
+node tools/micro/dev/unused.mjs                    # the list, grouped by source
+node tools/micro/dev/unused.mjs --prune --dry      # what would be removed
+node tools/micro/dev/unused.mjs --prune            # remove all of them
+node tools/micro/dev/unused.mjs --prune=a,b        # remove only these
+```
+
+A name counts as used when some reference in the script resolves to the module
+scope. A parameter, a local or a property key of the same name is not a use, and
+neither is a mention in a comment or a string. `--prune=` refuses a name that is
+used or is not an import.
+
+A declaration left with no names is removed whole, with the comment at the end of
+its line. The module it named is still built when some other module imports it;
+check that before removing the last import of a module that is loaded for what it
+does at load time. A side-effect import (`import './x.js'`), a default import and
+a namespace import are never touched.
+
+`carve.mjs` and `hooks.mjs --direct` do not do this. `hooks.mjs` drops only the
+app imports of the names it converted. The first run removed 274
+of the app's 773 imports and 17 of its 91 import declarations.
 
 ## scope.mjs
 

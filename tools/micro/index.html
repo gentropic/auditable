@@ -1142,73 +1142,56 @@
   <footer><span id="meta">—</span><button id="metaCancel" hidden title="stop this — nothing is written, nothing changes">cancel</button><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, cellOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, createMortonSorter, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
+import { decodeLasRecords, fetchDmRecord, buildMeshChunk, createChunkBuilder, gridsCompatible, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
-import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
-import { convert as unitConvert } from '../../ext/units/index.js';   // @gcu/units — grade/density unit declarations (grade-tonnage)
-import { parse as yamlParse, emit as yamlEmit, scalar as yamlScalar, mapNode as yamlMap, seqNode as yamlSeq, mapEntry as yamlEntry } from '../../ext/yaml/index.js';   // @gcu/yaml — recipes are hand-editable YAML files
-import { census as xlsxCensus, openSheet as xlsxOpenSheet } from '../../ext/sheet/index.js';   // @gcu/sheet — worksheets as table documents (typed columns; no CSV round-trip)
-import { compileBool, compileValue, compileChunk, compileChunkBool, validate, complete, parse, deps, canMatch, quoteIdent, tokenize } from '../../ext/expr/index.js';   // lamina's filter language + autocomplete, verbatim
-import { createFilterDrawer, renderChain as fuiRenderChain, renderLeaf as fuiRenderLeaf, fmtNum as fuiFmtNum, flattenExpr as fuiFlatten } from '../../ext/filterui/index.js';   // @gcu/filterui — the span-surgical AST↔widget engine (extracted from this very drawer)
-import { welford, tdigest, quantileFromCentroids, cdfFromCentroids, histogramFromCentroids, topK, cardinality } from '../../ext/sluice/index.js';   // streaming column stats (one pass, all columns)
-import { createGrid, PENDING } from '../../ext/loom/index.js';   // the attribute table's canvas grid (lamina's engine)
-import { buildBVH, windingBVH, Winding, raycastBVH } from '../../ext/winding/index.js';   // select-by-solid containment (spec 17)
-import { Peel } from '../../ext/peel/index.js';   // depth-peel by-solid — fast on clean closed meshes (complements winding)
-import { readLFM, writeLFM } from '../../ext/lfm/lfm.js';   // Leapfrog model files (multi-mesh + colours)
-import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, stepForCap, windowForWorldBbox, pickOverviewForCap } from '../../ext/gtiff/index.js';   // GeoTIFF DEMs + windowed/decimated reads (spec 7.1)
-import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
+import { declusterWeights } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
+import { compileValue } from '../../ext/expr/index.js';   // lamina's filter language + autocomplete, verbatim
+import { raycastBVH } from '../../ext/winding/index.js';   // select-by-solid containment (spec 17)
 import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
-import { installLongPress, moreButton } from './src/longpress.js';
+import { installLongPress } from './src/longpress.js';
 import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
-import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
-import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
+import { dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
+import { writeSurferGrd, readSurferGrd, writeEsriAsc } from './src/grid-io.js';   // grid serialization
 import { S, layerById, activeLayer, activeDocs, requestRender } from './src/state.js';   // shared mutable app state (S.layers, S.project, …) + the layer accessors
 import { createHostApi } from './src/host-api.js';   // window.micro — the versioned host API (a thin layer over the app's own functions)
-import { blockCaps, rowQualifier, qualifyDhDoc, rawRecordOf, qualifyPolicy, layerHeaderOf, layerBlob, layerTableHeader, colIsNumeric, blockSchema, schemaExt, calcOrder, calcFns, extendRow, layerRows, layerRecords, docPositionStream, reReadMesh, openLfmMesh, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords, sampleRow, applyColTypes, openLfmSoup, lfmTriCount, numOf } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
-import { scan, gtAccumulator, gtAbove, gtCuts, gtMerge, swathMerge, statsMerge, momentAdd, momentStd } from './src/scanner.js';   // the analysis kernels (page + scan workers)
-import { scanColumnar, canScanColumnar, setCsvColumnar, zoneKeeper } from './src/colscan.js';   // columnar, parallel scans of Parquet / .dm / indexed CSV models
+import { blockCaps, rowQualifier, rawRecordOf, qualifyPolicy, layerTableHeader, colIsNumeric, schemaExt, calcFns, extendRow, layerRecords, docPositionStream, meshVertexData, meshVertexHeader, fetchCsvRecord, fetchLayerRow, attrColumnsOf, primaryLocationOf, locationsOf, attrRowCountOf, hasRecords } from './src/records.js';   // record identity + doc-kind dispatch (the ladders live there now)
+import { canScanColumnar, setCsvColumnar, zoneKeeper } from './src/colscan.js';   // columnar, parallel scans of Parquet / .dm / indexed CSV models
 import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk builder off the page (compaction)
-import { buildValueTexture } from './src/valuetex.js';       // colour-by a column the chunks don't carry: a per-record value texture
 import { parquetRow } from './src/rowworker.js';          // a Parquet row off the page (the pick, the record panel)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
-import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
-import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
-import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
-import { numericColsOf, blockVolumeOf, volumeContextOf, volumeAt, computeGT, computeSwath, extractSamples, autoDeclusterSizes, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
-import { fmtSize, layerFiles, basename, joinPath, kindDir, relPathFor, resolveFileHandle, removeFileAt, layerRelpath, resolveDhFile, dhSetName } from './src/paths.js';   // project folder layout + path resolution
-import { elementGeometry, layerColumnsOps, buildElementManifest, dhElementName, buildDhSetManifest, descFromElement, buildGridElementManifest, elementHydrate } from './src/manifest.js';   // element-manifest builders + hydrate (persistence stays here)
-import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc, wfrPointsDoc, vertexColorOf } from './src/wfr-io.js';   // .wfr elements → the mesh / strings / points shapes micro already reads
-import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';
-import { inventoryProject, writeBackup, readBackup, restoreBackup, openPack, writeTree, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
-import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
-import { mkLineage, microModelOf } from './src/lineage.js';
+import { PAINT_BLANK, paintRecount, matColList, matColGet, matColSet, pinBudgetBytes, setPinBudget, pinStats, pinPutMatcol, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
+import { _idb, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
+import { numericColsOf, computeGT, computeSwath, extractSamples, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
+import { fmtSize } from './src/paths.js';   // project folder layout + path resolution
+import { buildElementManifest, buildDhSetManifest, descFromElement, buildGridElementManifest } from './src/manifest.js';   // element-manifest builders + hydrate (persistence stays here)
+import { runWfrJob, packLayers, handleSink, partsSink } from './src/wfr-write.js';
+import { applyBlockFilter, applyTableFilter, dhFilterSweep, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
+import { mkLineage } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
-import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile } from './src/windows.js';
-import { plotChart, plotExportBtns, SERIES_COLORS, scopeMask, scopeMissing, rangesOf, rangesForCfg, rangesFromCfg, rangesRow, saveAnalysisCfg, setAnalysisOpen, applyAnalysisGeo, runCancellable, checkAbort, scanProgressText, analysisSerCfg, analysisSerRestore, gradeUnitFactor, gradeUnitSel, reconcilePairs, seriesZoneKeep, niceStep, fmtStat, setAnalysisUiHooks } from './src/analysis-ui.js';
+import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, _sheetDrag, _sheetExclusive, _isMobile } from './src/windows.js';
+import { fmtStat, setAnalysisUiHooks } from './src/analysis-ui.js';
 import { openGradeTonnage, _gtWins } from './src/gt.js';
-import { openSwath, _swathWins, projRange, applySwathZebra, AXIS_NAMES, setSwathHooks } from './src/swath.js';
+import { openSwath, _swathWins, applySwathZebra, setSwathHooks } from './src/swath.js';
 import { openStats, _statsWins } from './src/stats.js';
 import { openCrosstab, _xtabWins, parseCutoffs } from './src/xtab.js';
 import { openXyPlot, _xyWins } from './src/xyplot.js';
-import { openOmfBlob, omfCensus } from './src/omf.js';
 import { openMeshQa, setMeshQaHooks, _meshQaWins } from './src/meshqa.js';
-import { openStructure, openStereonet, importPaintedSets, setStructureHooks, structureAfterEdit, installStructurePointer, _structWins, setColOf, planesToTable, structureArmed, structureTool, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
+import { openStructure, openStereonet, importPaintedSets, setStructureHooks, structureAfterEdit, installStructurePointer, _structWins, planesToTable, structureArmed, structureTool, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
 import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './src/structure.js';
-import { keysHelpHtml } from './src/keys.js';   // THE shortcut list (Help, the manual and the card render it)   // a wireframe's QA: watertight, shells, volume   // Open Mining Format v1 → a layer per element   // scatter (density at any size) + Q-Q (two sides, any layers)   // the resource cross-tab (group × grade bins)
 import { openValidation } from './src/validation.js';
 import { recipeSlug, routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems, openRoutineWindow, openInputsDialog, setRecipesHooks } from './src/recipes.js';
-import { meshSolidOf, solidOrientedMesh, _windingGpu, setWindingGpu, sbCancelActive, targetsXYBbox, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
-import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, ppNote, layerClassInfo, _autoApply, pushAllStyle, revertStyle, syncPPFooter, applyCatVisibility, restoreHiddenCats, ensureLegend, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, _qualifyReopen, settleQualifyReopens, sparkline, useAsCategory, RAMP_PRESETS, RAMP_KIND, rampSample, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, refreshProps, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
-import { PROJECTS_KEY, markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, rleEncode, rleDecode, openPackFromHandle, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, cacheStamp, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks } from './src/project.js';
-import { detectDmWireframePairs, openDmWireframeBlob, openBlob, openGridBlob, MESH_STREAM_BYTES, openObjSplit, openLfmSplit, openDrillholeLayer, reopenDhChan, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob, openDmBlob } from './src/open.js';
+import { meshSolidOf, setWindingGpu, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
+import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, sparkline, useAsCategory, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
+import { PROJECTS_KEY, markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, openPackFromHandle, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks } from './src/project.js';
+import { openBlob, openGridBlob, openObjSplit, openLfmSplit, openDrillholeLayer, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob } from './src/open.js';
 import { addLayer, ingestSource } from './src/ingest.js';
-import { nextDhSetKey, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel } from './src/open-dialog.js';
-import { reopenDh, invalidateWholeHoles, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces } from './src/drillholes.js';
+import { openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel } from './src/open-dialog.js';
+import { reopenDh, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetGroupOf, addIntervalToSet, redesurveySet, showHoleTraces } from './src/drillholes.js';
 import { resolveColorMode, setColorLabels, setLayerColorBy, setLayerColorSel, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList } from './src/color.js';
-import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, applyLayerSurface, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
+import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
 import { reopenWithMapping, reinterpretOptions, reopenAs, canReloadLayer, reloadLayerFromDisk } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
 import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, setLayerSectionMode, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
@@ -1220,8 +1203,8 @@ import { exportGridAsc, exportMeshes, openMeshExportDialog, wfrExportable, openW
 import { openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo } from './src/gridtools.js';
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
 import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
-import { columnValues, filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, renderExprHL, syncHL } from './src/exprfield.js';
-import { _fdOpen, fdBounds, fdValues, fdNum, fdRenderChain, fdRenderLeaf, renderFilterDrawer, toggleFilterDrawer } from './src/filter-drawer.js';
+import { filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, syncHL } from './src/exprfield.js';
+import { _fdOpen, renderFilterDrawer, toggleFilterDrawer } from './src/filter-drawer.js';
 import { HELP_KEYS, HELP_TOUCH, HELP_ANALYSIS, showAbout, showHelp, checkForUpdates, sealedInfo, setHelpHooks } from './src/help.js';
 import { openCalcWindow } from './src/calc.js';
 import { showMemoryInfo, showFileInfo } from './src/fileinfo.js';
