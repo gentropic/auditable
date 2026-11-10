@@ -629,13 +629,14 @@ if (take()) {
   });
   chk(`filter drawer renders the expression as widgets (${ui.sliders} slider, ${ui.chips} chips, on=${ui.on})`,
     ui.shown && ui.sliders === 1 && ui.chips >= 3 && ui.on.includes('HEMATITE'));
-  const drag = await pf.evaluate(async () => {
+  const drag = await pf.evaluate(async (h0) => {
     const sl = document.querySelector('#fdrawer input[type="range"]');
     sl.value = 60; sl.dispatchEvent(new Event('input', { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 400));
-    const L = window._micro.layers()[0]; let h = 0; for (const m of L._filterMask) if (m) h++;
-    return { text: document.querySelector('#filter').value, h };
-  });
+    // the re-filter is a scan: wait for the count to move, not for a fixed time (400 ms was too short with 8 suites running at once)
+    const count = () => { const L = window._micro.layers()[0]; let h = 0; for (const m of L._filterMask) if (m) h++; return h; };
+    for (let i = 0; i < 100 && count() === h0; i++) await new Promise((r) => setTimeout(r, 100));
+    return { text: document.querySelector('#filter').value, h: count() };
+  }, hits0);
   chk(`slider drag rewrites the literal SURGICALLY + re-filters live ("${drag.text}" → ${drag.h} hits)`,
     /^FE > (59|60|61)[0-9.]* and LITO = "HEMATITE"$/.test(drag.text) && drag.h > 0 && drag.h < hits0);
   const chip = await pf.evaluate(async () => {
@@ -645,12 +646,13 @@ if (take()) {
     return { v, text: document.querySelector('#filter').value };
   });
   chk(`chip click swaps the category literal (→ "${chip.v}")`, chip.text.includes('LITO = "' + chip.v + '"'));
-  const rst = await pf.evaluate(async () => {
+  const rst = await pf.evaluate(async (h0) => {
     [...document.querySelectorAll('#fdrawer .fd-head button')].find((b) => b.textContent === 'reset').click();
-    await new Promise((r) => setTimeout(r, 400));
-    const L = window._micro.layers()[0]; let h = 0; for (const m of L._filterMask) if (m) h++;
-    return { text: document.querySelector('#filter').value, h };
-  });
+    // same: wait for the re-filter to land on the snapshot's count, for up to 10 s
+    const count = () => { const L = window._micro.layers()[0]; let h = 0; for (const m of L._filterMask) if (m) h++; return h; };
+    for (let i = 0; i < 100 && count() !== h0; i++) await new Promise((r) => setTimeout(r, 100));
+    return { text: document.querySelector('#filter').value, h: count() };
+  }, hits0);
   chk(`reset restores the snapshot exactly ("${rst.text}", ${rst.h} hits == ${hits0})`, rst.text === EXPR && rst.h === hits0);
   // the multiline expression editor: typing there applies (debounced) + re-projects the widgets on commit
   const edt = await pf.evaluate(async () => {
