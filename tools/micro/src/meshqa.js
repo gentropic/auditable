@@ -10,10 +10,8 @@ import { meshVertexData } from './records.js';
 import { floatWin, focusWindow } from './windows.js';
 import { fmtStat, plotExportBtns } from './analysis-ui.js';
 import { convert as unitConvert } from '../../../ext/units/index.js';
+import { zoomToPoint } from './camera.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setMeshQaHooks): zoomToPoint([x,y,z], radius)
-let H = {};
-export function setMeshQaHooks(h) { H = h; }
 export const _meshQaWins = new Map();
 
 const ISSUES = [
@@ -76,7 +74,7 @@ export async function openMeshQa(L) {
       const dot = cell(tr, '●'); dot.style.color = SEV[sev];
       cell(tr, label); cell(tr, s.count.toLocaleString(), 'num');
       const at = cell(tr, s.at.length ? `1 / ${s.at.length}${s.count > s.at.length ? '+' : ''}` : '');
-      tr.onclick = () => { const i = st.step[k] = ((st.step[k] ?? -1) + 1) % s.at.length; H.zoomToPoint(s.at[i], 0); at.textContent = `${i + 1} / ${s.at.length}${s.count > s.at.length ? '+' : ''}`; };
+      tr.onclick = () => { const i = st.step[k] = ((st.step[k] ?? -1) + 1) % s.at.length; zoomToPoint(s.at[i], 0, 5); at.textContent = `${i + 1} / ${s.at.length}${s.count > s.at.length ? '+' : ''}`; };
       it.append(tr);
     }
     if (!any) { const d = document.createElement('div'); d.className = 'qa-clean'; d.textContent = '✓ no topology issues'; main.append(d); } else main.append(it);
@@ -89,7 +87,7 @@ export async function openMeshQa(L) {
       cell(tr, String(i + 1)); cell(tr, s.triangles.toLocaleString(), 'num'); cell(tr, s.closed ? '✓' : '✗');
       cell(tr, fmtV(s.volume), 'num'); if (tonnes(1) != null) cell(tr, fmtV(tonnes(s.volume)), 'num'); cell(tr, fmtV(s.area), 'num');
       cell(tr, [0, 1, 2].map((k) => fmtStat(s.bbox[k + 3] - s.bbox[k])).join(' × '));
-      tr.onclick = () => H.zoomToPoint([0, 1, 2].map((k) => (s.bbox[k] + s.bbox[k + 3]) / 2), Math.hypot(s.bbox[3] - s.bbox[0], s.bbox[4] - s.bbox[1], s.bbox[5] - s.bbox[2]) / 2);
+      tr.onclick = () => zoomToPoint([0, 1, 2].map((k) => (s.bbox[k] + s.bbox[k + 3]) / 2), Math.hypot(s.bbox[3] - s.bbox[0], s.bbox[4] - s.bbox[1], s.bbox[5] - s.bbox[2]) / 2, 5);
       tb.append(tr);
     });
     main.append(tb);

@@ -13,7 +13,7 @@ import { plotExportBtns, fmtStat } from './analysis-ui.js';
 import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY, traceNetwork, nodeMarkers, snapToTraces, NODE_COLORS } from './structure.js';
 import { Stereonet } from '../../../ext/bearing/index.js';
 import { detectSets } from '../../../ext/clar/index.js';
-import { writeDxf } from '../../../ext/condenser/src/main.js';
+import { buildMeshChunk, writeDxf } from '../../../ext/condenser/src/main.js';
 import { meshVertexData } from './records.js';
 import { vertexColorOf } from './wfr-io.js';
 import { S, layerById, requestRender } from './state.js';
@@ -26,9 +26,10 @@ import { addLayer } from './ingest.js';
 import { deliverBlob } from './hostio.js';
 import { allocLayerId, removeLayerUI } from './layers.js';
 import { convertMeshLayer } from './layermenu.js';
+import { zoomToPoint } from './camera.js';
 const $ = (s) => document.querySelector(s);
 
-// the app's side, passed in once (setStructureHooks): addPaintValue, buildMeshChunk, createPaintCol, meshHitAt, paintApply, pixelRay, zoomToPoint
+// the app's side, passed in once (setStructureHooks): addPaintValue, createPaintCol, meshHitAt, paintApply, pixelRay
 let H = {};
 export function setStructureHooks(h) { H = h; }
 export const _structWins = new Map();                       // mesh layer id → handle
@@ -115,7 +116,7 @@ function setDerived(L, kind, label, m, opacity) {
     D = { id, name, label: name, kind: 'mesh', derivedOf: L.id, derivedKind: kind, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null, tint: '#ffffff', opacity: 1 };
     S.layers.push(D);
   } else S.renderer.removeLayer(D.id);
-  const chunk = H.buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: S.frame });
+  const chunk = buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: S.frame });
   chunk.color = m.color;
   S.renderer.addChunk(chunk, 'base', D.id);
   S.renderer.setLayerMeshStyle(D.id, { tint: [1, 1, 1], opacity });
@@ -332,7 +333,7 @@ export async function openStructure(L) {
         const q = cell(p.flags.length ? '⚠ ' + p.flags.join(', ') : '✓');
         q.style.color = p.flags.length ? '#c8a43c' : 'var(--ok)';
         if (p.flags.length) q.title = { straight: 'straight: the trace is nearly a straight line — it fixes the strike, not the dip', rough: `rough: e₂/e₁ > ${QUALITY.rough} — the patch is not very planar`, elongated: `elongated: e₁/e₀ < ${QUALITY.elongated} — strike is well determined, dip much less so`, few: `few: under ${QUALITY.few} vertices` }[p.flags[0]];
-        tr.onclick = () => { hd.sel = k; H.zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); render(); };
+        tr.onclick = () => { hd.sel = k; zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); render(); };
         if (p.source === 'trace') {
           const del = document.createElement('td'); del.textContent = '×'; del.title = 'delete this trace (Ctrl+Z undoes)'; del.style.cursor = 'pointer';
           del.onclick = (ev) => { ev.stopPropagation(); removeTrace(L, p._trace); };
@@ -868,7 +869,7 @@ export function openStereonet(L) {
       planes.forEach((p, k) => { const [px, py] = polePx(p); const d = Math.hypot(px - x, py - y); if (d < bd) { bd = d; best = k; } });
       if (best < 0) { hd.selSet = null; hd.sel = -1; }
       else if (e.shiftKey) { hd.selSet = hd.selSet || new Set(); if (hd.selSet.has(best)) hd.selSet.delete(best); else hd.selSet.add(best); }
-      else { hd.selSet = new Set([best]); hd.sel = best; const p = planes[best]; H.zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); }
+      else { hd.selSet = new Set([best]); hd.sel = best; const p = planes[best]; zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); }
     } else {
       const hit = new Set(e.shiftKey && hd.selSet ? hd.selSet : []);
       planes.forEach((p, k) => { const [px, py] = polePx(p); if (inPoly(px, py, poly)) hit.add(k); });

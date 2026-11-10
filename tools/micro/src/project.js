@@ -1,8 +1,8 @@
 // micro — the PROJECT lifecycle: a project is a folder (or a pack) of readable files plus
 // project.json. Save writes the manifest and copies sources in; open restores every layer
 // from it; tidy and scan-for-new-data keep the folder in its by-kind layout; backup and
-// restore move a whole project as one file. The app keeps the layer openers, the tree and
-// the camera, and hands them in as hooks.
+// restore move a whole project as one file. The app still owns the selection and the
+// section, and hands those in as hooks.
 import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
 import { applyColTypes, attrRowCountOf, layerBlob, layerHeaderOf, layerTableHeader } from './records.js';
 import { basename, fmtSize, joinPath, kindDir, layerBytes, layerFiles, layerRelpath, relPathFor, removeFileAt, resolveDhFile, resolveFileHandle } from './paths.js';
@@ -40,7 +40,8 @@ import { deliverBlob, pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
 import { closeAllLayers, recomputeUnion } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection
+import { applyCamera, captureCamera } from './camera.js';
+// the app's side, passed in once (setProjectHooks): applyLayerSelection, applySection, captureSection
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -292,7 +293,7 @@ export function projectManifest() {
       // its restore threads mapping through openDmBlob (chan + cat honored).
       mapping: L.docs.blockDoc ? L.docs.blockDoc.header.mapping : undefined,
     })),
-    camera: H.captureCamera(),
+    camera: captureCamera(),
     section: H.captureSection(),
     // bookmarks + scenes now live as files in bookmarks/ and scenes/ (not in
     // project.json) — see flushViewsScenes / loadViewsScenes
@@ -879,7 +880,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     }
     if (mf.tree) treeFromManifest(mf.tree, idAt);
     ensureDhSetGroups();                                   // pre-set-group projects: solo dh layers get their element group
-    H.applyCamera(mf.camera);
+    applyCamera(mf.camera);
     H.applySection(mf.section);
     // drapes come after ALL layers land — the drape grid may load later than its surface
     for (const L of S.layers) {

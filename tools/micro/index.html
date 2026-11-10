@@ -1142,7 +1142,7 @@
   <footer><span id="meta">—</span><button id="metaCancel" hidden title="stop this — nothing is written, nothing changes">cancel</button><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { decodeLasRecords, fetchDmRecord, buildMeshChunk, createChunkBuilder, gridsCompatible, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
+import { decodeLasRecords, fetchDmRecord, createChunkBuilder, gridsCompatible, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -1150,6 +1150,7 @@ import { raycastBVH } from '../../ext/winding/index.js';   // select-by-solid co
 import { html, trusted, setHTML } from './src/html.js';
 import { installLongPress } from './src/longpress.js';
 import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
+import { captureCamera, setZExag } from './src/camera.js';   // the view in world terms (bookmarks, scenes, projects), vertical exaggeration
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { writeSurferGrd, readSurferGrd, writeEsriAsc } from './src/grid-io.js';   // grid serialization
@@ -1177,7 +1178,7 @@ import { openSwath, applySwathZebra, setSwathHooks } from './src/swath.js';
 import { openStats } from './src/stats.js';
 import { openCrosstab, _xtabWins, parseCutoffs } from './src/xtab.js';
 import { openXyPlot, _xyWins } from './src/xyplot.js';
-import { openMeshQa, setMeshQaHooks, _meshQaWins } from './src/meshqa.js';
+import { openMeshQa, _meshQaWins } from './src/meshqa.js';
 import { openStructure, openStereonet, importPaintedSets, setStructureHooks, structureAfterEdit, installStructurePointer, _structWins, planesToTable, structureArmed, structureTool, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
 import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './src/structure.js';
 import { openValidation } from './src/validation.js';
@@ -1193,7 +1194,7 @@ import { resolveColorMode, setColorLabels, setLayerColorBy, setLayerColorSel, co
 import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
 import { reopenWithMapping, reinterpretOptions, reopenAs, canReloadLayer, reloadLayerFromDisk } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
-import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, setLayerSectionMode, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
+import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, setLayerSectionMode, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
 import { saveViewAs, applyView, saveViewSlot, recallViewSlot, _gotoArm, gotoDisarm, armGoto, removeBookmark, captureScene, applyScene, saveSceneAs, removeScene, setViewsHooks } from './src/views.js';
 import { _measure, recordPosition, armMeasure, clearMeasure, measureClick, _measureTP, toggleMeasureTP, drawMeasure, drawSectionPlane, setSwathBand, drawSwathBand, drawCompass, setOverlayHooks } from './src/overlay.js';
 import { microPrompt, _pmOkValue, microConfirm, pmClose } from './src/prompts.js';
@@ -2420,55 +2421,18 @@ setJoinsHooks({ addPaintValue, createPaintCol });
 // src/swath.js reaches back into the app through these
 setSwathHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, selectionStatus });
 
-// frame a WORLD point (radius 0 → a close look, else that much around it)
-setMeshQaHooks({
-  zoomToPoint: (p, r) => {
-    const o = S.frame ? S.frame.origin : [0, 0, 0], h = Math.max(5, r || 0);
-    cam.fit([p[0] - o[0] - h, p[1] - o[1] - h, p[2] - o[2] - h, p[0] - o[0] + h, p[1] - o[1] + h, p[2] - o[2] + h]); requestRender();
-  },
-});
 // the structure window's view of the app (capivaras): paint, the mesh pick, the renderer
 setStructureHooks({
   // wrapped, not referenced: several are const arrows declared further down (TDZ at this point)
-  buildMeshChunk: (...a) => buildMeshChunk(...a),
   createPaintCol: (...a) => createPaintCol(...a),
   addPaintValue: (...a) => addPaintValue(...a),
   paintApply: (...a) => paintApply(...a),
   meshHitAt: (...a) => meshHitAt(...a),
   pixelRay: (...a) => pixelRay(...a),
-  zoomToPoint: (p, r) => {
-    const o = S.frame ? S.frame.origin : [0, 0, 0], h = Math.max(1, r || 0);
-    cam.fit([p[0] - o[0] - h, p[1] - o[1] - h, p[2] - o[2] - h, p[0] - o[0] + h, p[1] - o[1] + h, p[2] - o[2] + h]); requestRender();
-  },
 });
 installStructurePointer(cv);
-// the QA window's view of the app: the set's members, the camera, the selection
-setDhQaHooks({
-  members: (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace),
-  setName: (nd) => nd.name || 'drillholes',
-  zoomToHole: (L, bhid) => {
-    const paths = L.docs.dhDoc.holePaths ? L.docs.dhDoc.holePaths() : null; if (!paths) return false;
-    let xyz = paths.get(bhid);
-    if (!xyz) for (const [k, v] of paths) if (String(k).trim() === bhid) { xyz = v; break; }
-    if (!xyz || !xyz.length) return false;
-    const o = S.frame ? S.frame.origin : [0, 0, 0], b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-    for (let k = 0; k < xyz.length; k += 3) for (let a = 0; a < 3; a++) { const v = xyz[k + a] - o[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
-    const pad = Math.max(10, 0.15 * Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]));   // the hole plus some room around it
-    for (let a = 0; a < 3; a++) { b[a] -= pad; b[a + 3] += pad; }
-    cam.fit(b); requestRender();
-    return true;
-  },
-  // a finding's hole IDs are trimmed: match the interval rows' IDs the same way
-  selectHoles: (members, bhids) => {
-    for (const L of members) {
-      const dh = L.docs.dhDoc, im = dh.header.intervalMapping, raw = dh.rawRecord || dh.fetchRecord;
-      const mask = new Uint8Array(dh.header.count);
-      for (let i = 0; i < mask.length; i++) { const f = raw(i); if (f && bhids.has(String(f[im.bhid] ?? '').trim())) mask[i] = 1; }
-      L._selMask = mask; applyLayerSelection(L);
-    }
-    requestRender();
-  },
-});
+// src/dhqa.js reaches back into the app through these
+setDhQaHooks({ applyLayerSelection });
 
 // the by-geometry dialogs' buttons — assign domains, select by solid (src/bygeom-ui.js)
 $('#adCancel').onclick = adCancel; $('#adGo').onclick = adGo;
@@ -2698,29 +2662,8 @@ S.hasFSAA = shell.present ? false : !!window.showDirectoryPicker;
 if (shell.present) shell.tree.probe().then((ok) => { S.hasFSAA = ok; renderEmptyProjects(); }).catch(() => {});
 
 // src/project.js reaches back into the app through these
-setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection });
+setProjectHooks({ applyLayerSelection, applySection, captureSection });
 
-function captureCamera() {
-  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
-  return { target: [st.target[0] + o[0], st.target[1] + o[1], st.target[2] + o[2]], radius: st.radius, theta: st.theta, phi: st.phi, ortho: !!st.ortho, zExag: st.zExag || 1 };
-}
-function applyCamera(c) {
-  if (!c) return;
-  const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
-  st.target = [c.target[0] - o[0], c.target[1] - o[1], c.target[2] - o[2]];
-  st.radius = c.radius; st.theta = c.theta; st.phi = c.phi;
-  cam.setOrtho(!!c.ortho);
-  st.zExag = c.zExag || 1; if ($('#zExag')) $('#zExag').value = st.zExag;   // vertical exaggeration rides with the view (bookmarks/scenes/figure recipes)
-  cam.update(); requestRender();
-}
-// vertical exaggeration — a GLOBAL scene z-scale (camera-level, all layers registered)
-function setZExag(v) {
-  const s = Math.max(0.1, Math.min(50, +v || 1));
-  cam.state.zExag = s;
-  if ($('#zExag') && +$('#zExag').value !== s) $('#zExag').value = s;
-  cam.update(); requestRender();
-  $('#meta').textContent = s === 1 ? 'vertical exaggeration off (1×)' : `vertical exaggeration ${s}×`;
-}
 function captureSection() {
   return { mode: $('#secMode').value, pos: +$('#secPos').value, half: +$('#secHalf').value, knifeN: _knife ? _knife.n : null,
            clip: $('#secClip').value, dipDir: +$('#secDipDir').value, dip: +$('#secDip').value, plane: $('#secPlaneVis').checked || undefined };
@@ -2892,7 +2835,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmClose(null); }
 });
 // src/views.js reaches back into the app through these
-setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection });
+setViewsHooks({ applyLayerSelection, applySection, captureSection });
 
 // recent projects on the empty state (src/project.js)
 renderEmptyProjects();
@@ -3143,7 +3086,7 @@ async function openSample(n = 2_000_000) {
 document.querySelectorAll('[data-sample]').forEach((a) => a.onclick = () => openSample(+a.dataset.sample));
 
 // src/deco.js reaches back into the app through these
-setDecoHooks({ applyCamera, applySection, captureCamera, captureSection, renderFigureCanvas });
+setDecoHooks({ applySection, captureSection, renderFigureCanvas });
 
 applyBg();                                                 // restore the saved background at boot
 // ── window management: as the float windows multiply (GT · swath · validate ·

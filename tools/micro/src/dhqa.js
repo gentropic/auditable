@@ -10,10 +10,37 @@ import { floatWin } from './windows.js';
 import { basename } from './paths.js';
 import { mkLineage } from './lineage.js';
 import { deliverBlob } from './hostio.js';
-// the app's side, passed in once (setDhQaHooks): members(nd) → the set's dh
-// layers, setName(nd), zoomToHole(L, bhid) → bool, selectHoles(members, bhids)
+import { S, layerById, requestRender } from './state.js';
+import { groupLayerIds } from './tree.js';
+// the app's side, passed in once (setDhQaHooks): applyLayerSelection
 let H = {};
 export function setDhQaHooks(h) { H = h; }
+// the set's drillhole layers (its hole traces are a derived layer, not a member)
+const membersOf = (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace);
+const setNameOf = (nd) => nd.name || 'drillholes';
+// the camera goes to one hole: its path plus some room (false when it has none)
+const zoomToHole = (L, bhid) => {
+  const paths = L.docs.dhDoc.holePaths ? L.docs.dhDoc.holePaths() : null; if (!paths) return false;
+  let xyz = paths.get(bhid);
+  if (!xyz) for (const [k, v] of paths) if (String(k).trim() === bhid) { xyz = v; break; }
+  if (!xyz || !xyz.length) return false;
+  const o = S.frame ? S.frame.origin : [0, 0, 0], b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (let k = 0; k < xyz.length; k += 3) for (let a = 0; a < 3; a++) { const v = xyz[k + a] - o[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
+  const pad = Math.max(10, 0.15 * Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]));   // the hole plus some room around it
+  for (let a = 0; a < 3; a++) { b[a] -= pad; b[a + 3] += pad; }
+  S.cam.fit(b); requestRender();
+  return true;
+};
+// a finding's hole IDs are trimmed: match the interval rows' IDs the same way
+const selectHoles = (members, bhids) => {
+  for (const L of members) {
+    const dh = L.docs.dhDoc, im = dh.header.intervalMapping, raw = dh.rawRecord || dh.fetchRecord;
+    const mask = new Uint8Array(dh.header.count);
+    for (let i = 0; i < mask.length; i++) { const f = raw(i); if (f && bhids.has(String(f[im.bhid] ?? '').trim())) mask[i] = 1; }
+    L._selMask = mask; H.applyLayerSelection(L);
+  }
+  requestRender();
+};
 
 const SEV = { error: ['error', '#c0584a'], warn: ['warning', '#c8a43c'], info: ['info', 'var(--info)'] };   // fault red · caution yellow · info blue
 const ROW_CAP = 2000;                                      // rows drawn at once (the export carries all)
@@ -37,13 +64,13 @@ function inputsOf(members) {
 }
 
 export async function openDhQa(nd) {
-  const members = H.members(nd);
+  const members = membersOf(nd);
   if (!members.length) return null;
   const key = members[0]._setKey || 'solo:' + members[0].id;
   const open = _qaWins.get(key);
   if (open && open.el.isConnected) { open.rerun(); return open; }
   const st = { doglegMax: 10, gapMin: 0.001, extrapMax: 30, check: null, table: '', hole: '', tab: 'findings', r: null, err: null, running: false };
-  const win = floatWin({ title: `drillhole QA · ${H.setName(nd)}`, sub: 'reading the set…', x: Math.max(12, innerWidth - 860), y: 96, w: 840, h: 460,
+  const win = floatWin({ title: `drillhole QA · ${setNameOf(nd)}`, sub: 'reading the set…', x: Math.max(12, innerWidth - 860), y: 96, w: 840, h: 460,
     onClose: () => { _qaWins.delete(key); } });
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
   const rail = document.createElement('div'); rail.className = 'sw-rail';
@@ -170,32 +197,32 @@ export async function openDhQa(nd) {
   }
   async function goTo(bhid) {
     if (!bhid) return;
-    const L = H.members(nd)[0]; if (!L) return;
-    const ok = H.zoomToHole(L, bhid);
-    H.selectHoles(H.members(nd), new Set([bhid]));
+    const L = membersOf(nd)[0]; if (!L) return;
+    const ok = zoomToHole(L, bhid);
+    selectHoles(membersOf(nd), new Set([bhid]));
     if (!ok) note.textContent = `${bhid}: not placed (no usable collar) — nothing to go to`;
   }
   function exportTsv() {
     if (!st.r) return;
-    const inp = inputsOf(H.members(nd));
+    const inp = inputsOf(membersOf(nd));
     const lin = mkLineage('drillhole-qa', { doglegMax: st.doglegMax, gapMin: st.gapMin, extrapMax: st.extrapMax, dipConvention: st.r.dipConvention },
       [inp.files.collar, inp.files.survey, ...inp.files.intervals.map((t) => t.blob)].map((b) => ({ file: b.name || '', bytes: b.size || 0 })));
     const clean = (v) => String(v ?? '').replace(/[\t\r\n]+/g, ' ');
     const lines = [
-      `# micro drillhole QA · ${clean(H.setName(nd))} · ${new Date(lin.at).toISOString()} · build ${lin.build || ''}`,
+      `# micro drillhole QA · ${clean(setNameOf(nd))} · ${new Date(lin.at).toISOString()} · build ${lin.build || ''}`,
       `# files: ${lin.sources.map((s) => `${s.file} (${s.bytes} B)`).join(' · ')}`,
       `# limits: dogleg ${st.doglegMax}°/30 · gap ≥ ${st.gapMin} · past survey > ${st.extrapMax} · dip ${st.r.dipConvention} · rows are data rows, 1 = the first after the header`,
       ['severity', 'check', 'table', 'row', 'hole', 'from', 'to', 'detail'].join('\t'),
     ];
     for (const f of st.r.findings) lines.push([f.severity, f.check, f.table, f.row == null ? '' : f.row + 1, f.bhid, fmtD(f.from), fmtD(f.to), f.detail].map(clean).join('\t'));
-    deliverBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/tab-separated-values' }), `${H.setName(nd).replace(/[^\w.-]+/g, '_')}-qa.tsv`);
+    deliverBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/tab-separated-values' }), `${setNameOf(nd).replace(/[^\w.-]+/g, '_')}-qa.tsv`);
   }
   async function run() {
     if (st.running) return;
     st.running = true; st.err = null;
     win.sub.textContent = 'checking…'; win.sub.classList.add('busy');
     try {
-      const inp = inputsOf(H.members(nd));
+      const inp = inputsOf(membersOf(nd));
       st.r = await drillholeQa(inp.files, { mappings: inp.mappings, dipConvention: inp.dipConvention, doglegMax: st.doglegMax, gapMin: st.gapMin, extrapMax: st.extrapMax });
     } catch (e) { st.err = `QA: ${e.message || e}`; st.r = null; }
     finally { st.running = false; win.sub.classList.remove('busy'); }
