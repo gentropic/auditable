@@ -36,8 +36,9 @@ import { dhGroupName, openFilesDialog } from './open-dialog.js';
 import { ensureValueTex, valueTexEligible } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
 import { wfrExportable, writeGridDisplayCache } from './meshexport.js';
+import { deliverBlob, pickDirectory, rehydrateHandle } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, deliverBlob, hasFSAA, pickDirectory, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects
+// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, refilterLayer, renderEmptyProjects
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -334,9 +335,9 @@ export async function rememberProject(dir) {
 
 export async function saveProjectAs() {
   if (S.project && S.project.pack) return savePackAsFolder();
-  if (!H.hasFSAA) return;
+  if (!S.hasFSAA) return;
   let dir;
-  try { dir = await H.pickDirectory(); } catch { return; }   // cancelled
+  try { dir = await pickDirectory(); } catch { return; }   // cancelled
   S.project = { dir, name: dir.name, dirty: false };
   await saveProject();
   rememberProject(dir);
@@ -684,7 +685,7 @@ export function plEnd() {
 
 export async function openProjectDir(dir, { pack = null } = {}) {
   try {
-    dir = await H.rehydrateHandle(dir);                       // an IDB clone of a shell tree handle → live (web handles pass through)
+    dir = await rehydrateHandle(dir);                       // an IDB clone of a shell tree handle → live (web handles pass through)
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: permission denied'; return; }
     const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
@@ -900,8 +901,8 @@ export async function openProjectDir(dir, { pack = null } = {}) {
 }
 
 export async function openProjectPicker() {
-  if (!H.hasFSAA) return;
-  try { await openProjectDir(await H.pickDirectory()); } catch { /* cancelled */ }
+  if (!S.hasFSAA) return;
+  try { await openProjectDir(await pickDirectory()); } catch { /* cancelled */ }
 }
 
 // the tab closing (or reloading) with work only this session holds: a dirty
@@ -985,7 +986,7 @@ export async function backupProject({ lean = null, to = null, save = null, host 
   if (parts) out.blob = new Blob(parts, { type: BACKUP_MIME });
   if (!host) {
     $('#meta').textContent = `backed up ${S.project.name} → ${out.name} (${fmtSize(res.size)}, ${res.files} files${lean ? ', lean' : ''})${linked.length ? ` · ${linked.length} linked layer${linked.length === 1 ? '' : 's'} not included` : ''}`;
-    if (parts) await H.deliverBlob(out.blob, fname);
+    if (parts) await deliverBlob(out.blob, fname);
   }
   return out;
 }
@@ -1017,7 +1018,7 @@ export async function openPackFile(blob) {
   try { rb = await readBackup(blob); } catch (e) { $('#meta').textContent = `open: ${e.message}`; return null; }
   const a = await microChoose('project pack', packSummary(blob, rb.info || {}, rb.members, rb.bytes)
     + ' Open it read-only to look around (nothing is unpacked), or unpack it into an empty folder to work in it.',
-    [{ label: 'Cancel', value: null }, ...(H.hasFSAA ? [{ label: 'Unpack to a folder…', value: 'unpack' }] : []), { label: 'Open (read-only)', value: 'open' }]);
+    [{ label: 'Cancel', value: null }, ...(S.hasFSAA ? [{ label: 'Unpack to a folder…', value: 'unpack' }] : []), { label: 'Open (read-only)', value: 'open' }]);
   if (a === 'unpack') return restoreProject(blob, null, { asked: true });
   if (a === 'open') return openProjectPack(blob, { asked: true });
   return null;
@@ -1053,13 +1054,13 @@ export async function openProjectPack(blob = null, { host = false, asked = false
 // an empty folder, which then becomes the project; a normal save writes the rest
 export async function savePackAsFolder({ dest = null, host = false } = {}) {
   const pack = S.project.pack;
-  if (!dest && !H.hasFSAA) { $('#meta').textContent = "save: a project pack is read-only here — this browser can't write project folders"; return null; }
+  if (!dest && !S.hasFSAA) { $('#meta').textContent = "save: a project pack is read-only here — this browser can't write project folders"; return null; }
   if (!host && !dest) {
     const ok = await microChoose('save project', `${S.project.name} is a project pack, opened read-only. To keep your changes, save it as a project folder: pick an empty folder and micro writes the whole project there (${fmtSize(pack.bytes)}), then carries on working in it. The pack itself stays as it is.`,
       [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]);
     if (!ok) return null;
   }
-  if (!dest) { try { dest = await H.pickDirectory(); } catch { return null; } }
+  if (!dest) { try { dest = await pickDirectory(); } catch { return null; } }
   const src = S.project.dir;
   try { await writeTree(src, dest, { onProgress: progressMeta('saving the pack as a folder') }); }
   catch (e) { if (host) throw e; $('#meta').textContent = `save failed — ${e.message || e}`; return null; }
@@ -1079,7 +1080,7 @@ export async function savePackAsFolder({ dest = null, host = false } = {}) {
 // restore: a .zip.micro → an EMPTY folder → opened as the project
 export async function restoreProject(blob = null, dest = null, { host = false, asked = false } = {}) {
   const fail = (m) => { if (host) throw new Error(`micro: ${m}`); $('#meta').textContent = `restore: ${m}`; return null; };
-  if (!dest && !H.hasFSAA) return fail("this browser can't write project folders");
+  if (!dest && !S.hasFSAA) return fail("this browser can't write project folders");
   if (!blob) { blob = await pickBackupFile(); if (!blob) return null; }
   let rb;
   try { rb = await readBackup(blob); } catch (e) { return fail(e.message); }
@@ -1087,11 +1088,11 @@ export async function restoreProject(blob = null, dest = null, { host = false, a
     if (!(await microChoose('restore project', packSummary(blob, rb.info || {}, rb.members, rb.bytes) + ' Next, pick an empty folder to restore it into.',
       [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]))) return null;
   }
-  if (!dest) { try { dest = await H.pickDirectory(); } catch { return null; } }
+  if (!dest) { try { dest = await pickDirectory(); } catch { return null; } }
   let res;
   try { res = await restoreBackup(blob, dest, { onProgress: progressMeta('restoring') }); } catch (e) { return fail(e.message || String(e)); }
   await openProjectDir(dest);
-  if (H.hasFSAA) rememberProject(dest);
+  if (S.hasFSAA) rememberProject(dest);
   if (!host) $('#meta').textContent = `restored ${(rb.info && rb.info.project) || 'the project'} into ${dest.name} (${res.files} files, ${fmtSize(res.bytes)})`;
   return { name: dest.name, files: res.files, bytes: res.bytes, info: rb.info };
 }

@@ -1,7 +1,7 @@
 // micro — mesh and grid writers: a grid out as ESRI ASCII, meshes out as OBJ / PLY (merged
 // when several are chosen), the .wfr convert / export dialog with its step and budget tables,
-// and the Surfer display cache a big DEM reopens from. Every file leaves through the app's
-// deliverBlob.
+// and the Surfer display cache a big DEM reopens from. Every file leaves through
+// deliverBlob (hostio.js).
 import { gridFromGTiff } from '../../../ext/gtiff/index.js';
 import { writeEsriAsc, writeSurferGrd } from './grid-io.js';
 import { reReadMesh } from './records.js';
@@ -14,10 +14,8 @@ import { shell } from '../../../ext/leadacid/index.js';
 import { S, _fileHandles } from './state.js';
 import { cacheStamp } from './project.js';
 import { sourceHash } from './identity.js';
+import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setMeshexportHooks): deliverBlob
-let H = {};
-export function setMeshexportHooks(h) { H = h; }
 
 // export a grid layer as an ESRI ASCII .asc
 export async function exportGridAsc(L) {
@@ -35,7 +33,7 @@ export async function exportGridAsc(L) {
   if (Math.abs(g.dx - g.dy) > g.dx * 1e-3) $('#meta').textContent = `note: non-square grid exported at cellsize ${g.dx}`;
   const blob = new Blob([writeEsriAsc(g)], { type: 'text/plain' });
   const name = (L.label || L.name).replace(/\.[^.]+$/, '') + '.asc';
-  H.deliverBlob(blob, name);
+  deliverBlob(blob, name);
   $('#meta').textContent = `exported ${name} (${g.nx}×${g.ny})`;
 }
 
@@ -119,7 +117,7 @@ export async function exportMeshes(Ls, fmt, fname) {
           Tri: { type: 'Integer', components: 3, count: g.triangles.length / 3, data: Int32Array.from(g.triangles) },
         } })]);
   }
-  H.deliverBlob(blob, fname);
+  deliverBlob(blob, fname);
   const tris = meshes.reduce((s, m) => s + m.triangles.length / 3, 0);
   $('#meta').textContent = `exported ${fname} — ${Ls.length > 1 ? `${Ls.length} meshes, ` : ''}${tris.toLocaleString()} triangles (${fmtSize(blob.size)})`;
   return blob;
@@ -281,7 +279,7 @@ export async function openWfrDialog({ files = null, layers = null } = {}) {
       const file = handle ? await handle.getFile() : new File([sink.blob()], fname, { type: 'application/vnd.gentropic.wireframe' });
       msg.textContent = `${fname} — ${els.length} element${els.length === 1 ? '' : 's'}, ${fmtSize(res.size)}, ${secs} s`;
       $('#meta').textContent = `wrote ${fname} — ${els.map((e) => `${e.name}: ${(e.kind === 'points' ? e.counts.vertices : e.counts.cells).toLocaleString()} ${e.kind === 'triangles' ? 'triangles' : e.kind === 'lines' ? 'segments' : 'points'}`).join(' · ')} · ${fmtSize(res.size)} in ${secs} s`;
-      if (!handle) await H.deliverBlob(file, fname);
+      if (!handle) await deliverBlob(file, fname);
       if (handle) { try { _fileHandles.set(file, handle); } catch { /* not a handle-tracking build */ } }
       _wfrJob = null;
       if (openAfter.checked) { $('#cwDlg').classList.remove('show'); await openBlob(file, fname, S.layers.length ? 'add' : 'replace'); }

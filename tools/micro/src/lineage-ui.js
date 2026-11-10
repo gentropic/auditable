@@ -3,10 +3,8 @@
 import { fmtSize } from './paths.js';
 import { floatWin, focusWindow } from './windows.js';
 import { S } from './state.js';
+import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setLineageUiHooks): deliverBlob
-let H = {};
-export function setLineageUiHooks(h) { H = h; }
 
 // ── lineage inspector + report ────────────────────────────────────────────────
 export const LINEAGE_LABEL = { open: 'opened', join: 'spatial join', reconcile: 'reconcile', optimize: 'optimize', keyjoin: 'key join', 'grid-cover': 'common grid', 'grid-new': 'new grid', export: 'export' };
@@ -78,7 +76,7 @@ export function exportLineageReport(L) {
   if (!L || !L.lineage) return;
   const blob = new Blob([lineageReportHtml(L)], { type: 'text/html' });
   const name = (L.label || L.name).replace(/\.[^.]+$/, '') + '.lineage.html';
-  H.deliverBlob(blob, name);
+  deliverBlob(blob, name);
   window._lastReport = blob;
   $('#meta').textContent = `lineage report → ${name}`;
 }

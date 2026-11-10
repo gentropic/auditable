@@ -9,9 +9,9 @@ import { drillholeQa } from '../../../ext/condenser/src/main.js';
 import { floatWin } from './windows.js';
 import { basename } from './paths.js';
 import { mkLineage } from './lineage.js';
+import { deliverBlob } from './hostio.js';
 // the app's side, passed in once (setDhQaHooks): members(nd) → the set's dh
-// layers, setName(nd), zoomToHole(L, bhid) → bool, selectHoles(members, bhids),
-// deliverBlob(blob, filename)
+// layers, setName(nd), zoomToHole(L, bhid) → bool, selectHoles(members, bhids)
 let H = {};
 export function setDhQaHooks(h) { H = h; }
 
@@ -188,7 +188,7 @@ export async function openDhQa(nd) {
       ['severity', 'check', 'table', 'row', 'hole', 'from', 'to', 'detail'].join('\t'),
     ];
     for (const f of st.r.findings) lines.push([f.severity, f.check, f.table, f.row == null ? '' : f.row + 1, f.bhid, fmtD(f.from), fmtD(f.to), f.detail].map(clean).join('\t'));
-    H.deliverBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/tab-separated-values' }), `${H.setName(nd).replace(/[^\w.-]+/g, '_')}-qa.tsv`);
+    deliverBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/tab-separated-values' }), `${H.setName(nd).replace(/[^\w.-]+/g, '_')}-qa.tsv`);
   }
   async function run() {
     if (st.running) return;

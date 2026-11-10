@@ -23,6 +23,7 @@ import { renderLayers } from './tree.js';
 import { hexToRgb01 } from './open.js';
 import { markProjectDirty } from './project.js';
 import { addLayer } from './ingest.js';
+import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side, passed in once (setStructureHooks)
@@ -303,7 +304,7 @@ export async function openStructure(L) {
     tb.onclick = () => planesToTable(L, hd);
     if (L.traces && L.traces.length) {
       const tx = document.createElement('button'); tx.className = 'awin-btn'; tx.textContent = '⇥ traces .dxf'; tx.title = 'the traces as 3D polylines, one DXF layer per set, in world coordinates — for CAD or a modelling package';
-      tx.onclick = async () => { const txt = await tracesToDxf(L); if (txt) H.deliverBlob(new Blob([txt], { type: 'application/dxf' }), `${(L.label || L.name).replace(/\.[^.]+$/, '')}-traces.dxf`); };
+      tx.onclick = async () => { const txt = await tracesToDxf(L); if (txt) deliverBlob(new Blob([txt], { type: 'application/dxf' }), `${(L.label || L.name).replace(/\.[^.]+$/, '')}-traces.dxf`); };
       foot.append(tx);
     }
     foot.append(tb, plotExportBtns(null, () => `planes-${(L.label || L.name).replace(/\.[^.]+$/, '')}`, () => planesTSV(hd.planes), 'structure'));

@@ -9,8 +9,9 @@ import { S, activeLayer, requestRender } from './state.js';
 import { fmtStat } from './analysis-ui.js';
 import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
+import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDecoHooks): applyCamera, applySection, captureCamera, captureSection, deliverBlob, renderFigureCanvas
+// the app's side, passed in once (setDecoHooks): applyCamera, applySection, captureCamera, captureSection, renderFigureCanvas
 let HK = {};
 export function setDecoHooks(h) { HK = h; }
 
@@ -189,7 +190,7 @@ export function _figureDownload(out) {
   out.toBlob((blob) => {
     if (!blob) return; window._lastFigure = blob;
     const stem = (activeLayer() && (activeLayer().label || activeLayer().name) || 'micro').replace(/\.[^.]*$/, '').replace(/[^\w.-]+/g, '_');
-    const fname = `figure_${stem}.png`; HK.deliverBlob(blob, fname);
+    const fname = `figure_${stem}.png`; deliverBlob(blob, fname);
     $('#meta').textContent = `figure → ${fname}`;
   }, 'image/png');
 }

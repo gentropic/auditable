@@ -9,8 +9,9 @@ import { parse } from '../../../ext/expr/index.js';
 import { zoneKeeper } from './colscan.js';
 import { S, layerById } from './state.js';
 import { markProjectDirty } from './project.js';
+import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setAnalysisUiHooks): deliverBlob, resultToLayer
+// the app's side, passed in once (setAnalysisUiHooks): resultToLayer
 let H = {};
 export function setAnalysisUiHooks(h) { H = h; }
 
@@ -177,7 +178,7 @@ export function plotExportBtns(cv, nameFn, tableFn, group) {
   };
   if (cv) {
     const save = document.createElement('button'); save.className = 'awin-btn'; save.textContent = '⤓ png'; save.title = 'save the plot as PNG';
-    save.onclick = () => cv.toBlob((blob) => { if (!blob) return; $('#meta').textContent = `saved ${nameFn()}`; H.deliverBlob(blob, nameFn()); }, 'image/png');
+    save.onclick = () => cv.toBlob((blob) => { if (!blob) return; $('#meta').textContent = `saved ${nameFn()}`; deliverBlob(blob, nameFn()); }, 'image/png');
     const copy = document.createElement('button'); copy.className = 'awin-btn'; copy.textContent = '⧉ copy'; copy.title = 'copy the plot to the clipboard';
     copy.onclick = () => cv.toBlob(async (blob) => {
       if (!blob) return;

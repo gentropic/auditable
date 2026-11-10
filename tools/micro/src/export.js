@@ -15,8 +15,9 @@ import { addPaintColorOptions } from './props.js';
 import { markProjectDirty } from './project.js';
 import { openParquetBlocks } from './open.js';
 import { renderLayers } from './tree.js';
+import { deliverBlob } from './hostio.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection, deliverBlob, refilterLayer, setActiveLayer, setLayerColorSel
+// the app's side, passed in once (setExportHooks): applyLayerSelection, refilterLayer, setActiveLayer, setLayerColorSel
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -155,7 +156,7 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
   if (cancelled(signal)) { $('#meta').textContent = 'export cancelled — nothing written'; return -1; }
   window._lastExport = blob;                               // the smoke reads content here
   $('#meta').textContent = `exported ${written.toLocaleString()} rows → ${filename} (${fmtSize(blob.size)})`;
-  if (download) H.deliverBlob(blob, filename);
+  if (download) deliverBlob(blob, filename);
   return written;
 }
 
