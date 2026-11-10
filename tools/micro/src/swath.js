@@ -17,8 +17,11 @@ import { paintRecount } from './columns.js';
 import { addPaintColorOptions, applyPaintPalette, paintSelOf } from './props.js';
 import { menuXY } from './menu.js';
 import { setSwathBand } from './overlay.js';
+import { layerWorldBbox } from './gridtools.js';
+import { markProjectDirty } from './project.js';
+import { saveRecipe } from './recipes.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, rendererDocBbox, saveRecipe, selectionStatus, setLayerColorSel
+// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, rendererDocBbox, selectionStatus, setLayerColorSel
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -28,7 +31,7 @@ export const AXIS_NAMES = { axes: ['X (east)', 'Y (north)', 'Z (elev)'], oriente
 
 // projected extent along dir from the layer bbox corners
 export function projRange(L, dir) {
-  const bb = H.layerWorldBbox(L); if (!bb) return [0, 1];
+  const bb = layerWorldBbox(L); if (!bb) return [0, 1];
   let lo = Infinity, hi = -Infinity;
   for (const x of [bb[0], bb[3]]) for (const y of [bb[1], bb[4]]) for (const z of [bb[2], bb[5]]) { const t = x * dir[0] + y * dir[1] + z * dir[2]; if (t < lo) lo = t; if (t > hi) hi = t; }
   return [lo, hi];
@@ -304,7 +307,7 @@ export function openSwath(L, ropts) {
       }
       H.applyLayerSelection(Lx);
     }
-    H.selectionStatus(); H.markProjectDirty(); requestRender();
+    H.selectionStatus(); markProjectDirty(); requestRender();
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
   let staleEl, progEl, runBtn;
@@ -406,7 +409,7 @@ export function openSwath(L, ropts) {
     const barSel = document.createElement('select'); barSel.className = 'sw-sel'; for (const [v, t] of [['count', 'count'], ['tonnage', 'weight']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; barSel.append(o); } barSel.value = st.bars; barSel.onchange = () => { st.bars = barSel.value; if (st.scan) plot(); }; barRow.append(barL, barSel); vSec.append(barRow);
     // plot unit — the axis target; series with a declared unit convert into it
     const guRow = document.createElement('div'); guRow.className = 'sw-row'; const guL = document.createElement('span'); guL.textContent = 'unit';
-    const guSel = gradeUnitSel(st.gradeUnit, (v) => { st.gradeUnit = v; const Lz = zebraL(); Lz.gtUnits = { ...(Lz.gtUnits || {}), grade: st.gradeUnit }; H.markProjectDirty(); if (st.scan) plot(); }, 'plot unit — the mean-grade axis (shared with grade-tonnage); series with a declared unit convert into it');
+    const guSel = gradeUnitSel(st.gradeUnit, (v) => { st.gradeUnit = v; const Lz = zebraL(); Lz.gtUnits = { ...(Lz.gtUnits || {}), grade: st.gradeUnit }; markProjectDirty(); if (st.scan) plot(); }, 'plot unit — the mean-grade axis (shared with grade-tonnage); series with a declared unit convert into it');
     guSel.classList.add('sw-unit-plot');
     guRow.append(guL, guSel); vSec.append(guRow);
     // locate: hover the plot → the band's slab lights on the 3D; drag → hold a range
@@ -426,7 +429,7 @@ export function openSwath(L, ropts) {
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
     const rcpBtn = document.createElement('button'); rcpBtn.className = 'sw-add rcp'; rcpBtn.textContent = 'save as recipe…'; rcpBtn.title = 'save this setup as a named, re-runnable YAML file in the project (Tools → Recipes)';
-    rcpBtn.onclick = () => H.saveRecipe('swath', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} swath`);
+    rcpBtn.onclick = () => saveRecipe('swath', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} swath`);
     const resRow = plotExportBtns(cv, () => `swath-${(zebraL().label || zebraL().name).replace(/\.[^.]+$/, '')}-${(st.scan ? st.scan.dirNames : swathDirNames(st))[st.axis].split(' ')[0].replace(/[^\w-]/g, '')}.png`, tableTSV, 'swaths');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';

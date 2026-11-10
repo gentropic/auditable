@@ -13,10 +13,9 @@ import { convert as unitConvert } from '../../../ext/units/index.js';
 import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
 import { compileBool, compileValue, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { canScanColumnar, scanColumnar } from './colscan.js';
+import { markProjectDirty } from './project.js';
+import { saveRecipe } from './recipes.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setGtHooks): markProjectDirty, saveRecipe
-let H = {};
-export function setGtHooks(h) { H = h; }
 
 // (numericColsOf / blockVolumeOf / volumeContextOf / volumeAt / computeGT live in src/analysis.js)
 export const _gtWins = new Map();
@@ -53,7 +52,7 @@ export function openGradeTonnage(L, ropts) {
     const ser = analysisSerRestore(saved.series, L); if (ser) st.series = ser;
   }
   const cfgOf = () => ({ series: analysisSerCfg(st.series), nCut: st.nCut, scope: st.scope, gradeUnit: st.gradeUnit, densUnit: st.densUnit, ranges: rangesForCfg(st.ranges) });
-  const persistUnits = () => { L.gtUnits = { ...(L.gtUnits || {}), grade: st.gradeUnit, densUnit: st.densUnit, weight: st.series[0] ? st.series[0].weight : '' }; H.markProjectDirty(); };
+  const persistUnits = () => { L.gtUnits = { ...(L.gtUnits || {}), grade: st.gradeUnit, densUnit: st.densUnit, weight: st.series[0] ? st.series[0].weight : '' }; markProjectDirty(); };
   const guLabel = () => (st.gradeUnit === 'pct' ? '%' : st.gradeUnit);
   const win = floatWin({ title: `grade-tonnage · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 680), y: 100, w: 640, h: 464,
     onClose: () => { saveAnalysisCfg(L, 'gt', cfgOf(), win); setAnalysisOpen(L, 'gt', false); _gtWins.delete(L.id); } });
@@ -253,7 +252,7 @@ export function openGradeTonnage(L, ropts) {
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
     const rcpBtn = document.createElement('button'); rcpBtn.className = 'sw-add rcp'; rcpBtn.textContent = 'save as recipe…'; rcpBtn.title = 'save this setup as a named, re-runnable YAML file in the project (Tools → Recipes)';
-    rcpBtn.onclick = () => H.saveRecipe('gt', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} grade-tonnage`);
+    rcpBtn.onclick = () => saveRecipe('gt', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} grade-tonnage`);
     const resRow = plotExportBtns(cv, () => `gt-${(L.label || L.name).replace(/\.[^.]+$/, '')}.png`, tableTSV, 'grade-tonnage');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';

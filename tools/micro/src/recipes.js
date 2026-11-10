@@ -16,8 +16,12 @@ import { openSwath } from './swath.js';
 import { gridAxesOf } from './grid-ops.js';
 import { menuXY } from './menu.js';
 import { microConfirm, microPrompt } from './prompts.js';
+import { collarCells, csvRecords } from './drillholes.js';
+import { markProjectDirty } from './project.js';
+import { openSolidRecipeConfigured, runSolidRecipe } from './bygeom-ui.js';
+import { runFigureRecipe } from './deco.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setRecipesHooks): applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe
+// the app's side, passed in once (setRecipesHooks): applyCalcCols, layerHasColumn, resultToLayer
 let H = {};
 export function setRecipesHooks(h) { H = h; }
 
@@ -155,8 +159,8 @@ export async function routineReadTableFull(name) {
     });
     return { columns: h.columns, rows, sheet: h.sheet };
   }
-  const lines = H.csvRecords(await (await fh.getFile()).text());
-  const cells2 = H.collarCells(lines);
+  const lines = csvRecords(await (await fh.getFile()).text());
+  const cells2 = collarCells(lines);
   const columns = cells2(lines[0]);
   const rows = lines.slice(1).map((ln) => { const c = cells2(ln); return Object.fromEntries(columns.map((h, i2) => [h, c[i2] !== undefined && c[i2] !== '' && Number.isFinite(+c[i2]) ? +c[i2] : c[i2]])); });
   return { columns, rows, sheet: basename(path).replace(/\.[^.]+$/, '') };
@@ -439,7 +443,7 @@ export async function runRoutine(r, opts = {}) {
     const idx = n; n++;
     if (idx < from) continue;                              // already run (or deliberately skipped)
     if (tracker.cancelled()) {
-      if (wrote) H.markProjectDirty();
+      if (wrote) markProjectDirty();
       tracker.done(`cancelled — ${idx} of ${steps.length} steps done, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`,
         idx < steps.length ? [['Resume', () => runRoutine(r, { from: idx }), 'carry on from where you stopped it']] : []);
       $('#meta').textContent = `routine “${r.name}” cancelled after ${idx} step${idx === 1 ? '' : 's'}`;
@@ -473,7 +477,7 @@ export async function runRoutine(r, opts = {}) {
         }
         el.querySelector('.fwin-head button:last-child').click();   // tidy: close the step's window
       } else if (tool === 'solid') {
-        await H.runSolidRecipe(merged.params);              // long-running (winding/peel) — awaited, not settled
+        await runSolidRecipe(merged.params);              // long-running (winding/peel) — awaited, not settled
       } else if (tool === 'calccols' || tool === 'figure') {
         runRecipe(merged, true);
         await new Promise((r2) => setTimeout(r2, 400));     // engine steps settle; figure runs its own flow
@@ -489,7 +493,7 @@ export async function runRoutine(r, opts = {}) {
       return;
     }
   }
-  H.markProjectDirty();
+  markProjectDirty();
   // say what THIS run did — a resume must not claim the steps it skipped
   const ran = n - from;
   const line = `${ran} step${ran === 1 ? '' : 's'} run${from ? ` (${from} skipped)` : ''}, ${wrote} report${wrote === 1 ? '' : 's'} → ${outDir}/`;
@@ -574,10 +578,10 @@ export async function renameRecipe(r) {
 export function runRecipe(r, andRun = true) {
   if (andRun && Array.isArray(r.inputs) && r.inputs.length) { openInputsDialog(r); return; }   // ask-me-first: the generated dialog runs the substituted copy
   if (r.tool === 'routine') { if (andRun) runRoutine(r); else openRoutineWindow(r); return; }
-  if (r.tool === 'figure') { H.runFigureRecipe(r.params); return; }   // camera-based — no layer to resolve
+  if (r.tool === 'figure') { runFigureRecipe(r.params); return; }   // camera-based — no layer to resolve
   if (r.tool === 'solid') {                                // by-geometry — resolves its own layers
-    if (!andRun) { H.openSolidRecipeConfigured(r.params); return; }
-    H.runSolidRecipe(r.params).catch((e) => { $('#meta').textContent = `recipe “${r.name}”: ${e.message}`; });
+    if (!andRun) { openSolidRecipeConfigured(r.params); return; }
+    runSolidRecipe(r.params).catch((e) => { $('#meta').textContent = `recipe “${r.name}”: ${e.message}`; });
     return;
   }
   const open2 = (Lp) => {

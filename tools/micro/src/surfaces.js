@@ -13,10 +13,8 @@ import { RAMP_PRESETS, rampCfgOf, rampSample } from './props.js';
 import { buildHeightfieldMesh } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
 import { renderLayers } from './tree.js';
+import { reopenReplacing } from './reopen.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSurfacesHooks): reopenReplacing
-let H = {};
-export function setSurfacesHooks(h) { H = h; }
 
 // A see-through context surface must not steal the click meant for the block
 // under it — you made it see-through precisely to work on what is behind it. So
@@ -164,7 +162,7 @@ export async function applyLayerSurface(L, s) {
   let L2 = L;
   if (needsReopen) {
     const blob = gd.blob, name = L.name;
-    L2 = await H.reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: s.gridSurface ? 'surface' : 'points', band: s.band || 0, flatZ: s.gridSurface && s.flatZ != null ? s.flatZ : null, smooth: s.gridSurface ? !s.faceted : undefined }));
+    L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: s.gridSurface ? 'surface' : 'points', band: s.band || 0, flatZ: s.gridSurface && s.flatZ != null ? s.flatZ : null, smooth: s.gridSurface ? !s.faceted : undefined }));
   }
   if (L2 && L2.gridSurface) {                                // drape: in-place rebuild, no reopen
     const want = s.drape || null;
@@ -189,7 +187,7 @@ export async function setGridBand(L, band) {
   const gd = L.docs && L.docs.gridDoc; if (!gd || !(gd.grid.bands > 1)) return;
   const blob = gd.blob, name = L.name;
   const wasSurface = !!L.gridSurface, drape = L.drapeSource, flatZ = L.surfaceFlatZ, smooth = L.surfaceSmooth;
-  const L2 = await H.reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: wasSurface ? 'surface' : 'points', band, flatZ: wasSurface ? flatZ : null, smooth: wasSurface ? smooth : undefined }));
+  const L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: wasSurface ? 'surface' : 'points', band, flatZ: wasSurface ? flatZ : null, smooth: wasSurface ? smooth : undefined }));
   if (L2) {
     if (wasSurface && drape) { const g = S.layers.find((x) => x.name === drape && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid); if (g) recolorSurface(L2, g); }
   }

@@ -20,8 +20,16 @@ import { keyJoinToCols, runKeyJoin, shortName, spatialJoinToCols } from './joins
 import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
+import { CONTEXT_TRI_CAP, droppedNote, hexToRgb01, openBlob, reopenBlockChan } from './open.js';
+import { collarCells, csvRecords, reopenDh } from './drillholes.js';
+import { colorHeaderOf, ensureValueTex, setColorLabels } from './color.js';
+import { followLayer, renderLayers } from './tree.js';
+import { markProjectDirty } from './project.js';
+import { openCalcWindow } from './calc.js';
+import { recolorSurface, setGridBand, setSurfaceFlatZ, setSurfaceSmooth } from './surfaces.js';
+import { reopenWithMapping } from './reopen.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): CONTEXT_TRI_CAP, _docBbox, addPaintValue, appendColStats, applyLayerOpacity, collarCells, colorHeaderOf, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, reopenBlockChan, reopenDh, reopenWithMapping, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth
+// the app's side, passed in once (setPropsHooks): _docBbox, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setLayerColorSel, setMeshTint
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -62,7 +70,7 @@ export function propKindLine(L) {
   }
   if (L.kind === 'table') return `table · ${(h ? h.count : 0).toLocaleString()} rows · ${h ? h.columns.length : 0} columns · no geometry`;
   if (L.dh) return `drillholes · ${n.toLocaleString()} intervals`;
-  const dn = L.docs.blockDoc ? H.droppedNote(L.docs.blockDoc.header) : '';
+  const dn = L.docs.blockDoc ? droppedNote(L.docs.blockDoc.header) : '';
   if (L.docs.blockDoc && L.docs.blockDoc.header.grid) return `block model · ${n.toLocaleString()} blocks${dn}`;
   return `points · ${n.toLocaleString()}${dn}`;
 }
@@ -111,7 +119,7 @@ export function renderStyleTab(body, L) {
     const sel = document.createElement('select');
     for (let i = 0; i < gdoc.grid.bands; i++) { const o = document.createElement('option'); o.value = i; o.textContent = `band ${i + 1}`; sel.appendChild(o); }
     sel.value = gdoc.grid.band || 0;
-    sel.onchange = () => H.setGridBand(L, +sel.value);
+    sel.onchange = () => setGridBand(L, +sel.value);
     body.appendChild(mkRow('band', sel));
   }
   if (L.kind === 'mesh') {
@@ -122,7 +130,7 @@ export function renderStyleTab(body, L) {
       const grids = S.layers.filter((g) => g !== L && g.docs && g.docs.gridDoc && g.docs.gridDoc.grid);
       for (const g of grids) { const o = document.createElement('option'); o.value = g.name; o.textContent = g.label || g.name; sel.appendChild(o); }
       sel.value = L.drapeSource || '';
-      sel.onchange = () => { const g = grids.find((x) => x.name === sel.value); H.recolorSurface(L, g || null); };
+      sel.onchange = () => { const g = grids.find((x) => x.name === sel.value); recolorSurface(L, g || null); };
       body.appendChild(mkRow('drape', sel));
       // shape: relief heightfield, or a FLAT horizontal sheet at a world z (for a
       // 2D data grid with no DEM — appears as a plan sheet coloured by its value)
@@ -130,15 +138,15 @@ export function renderStyleTab(body, L) {
       const flatChk = document.createElement('input'); flatChk.type = 'checkbox'; flatChk.checked = L.surfaceFlatZ != null;
       const zIn = document.createElement('input'); zIn.type = 'number'; zIn.step = 'any'; zIn.style.width = '84px'; zIn.value = L.surfaceFlatZ != null ? L.surfaceFlatZ : 0; zIn.style.display = L.surfaceFlatZ != null ? '' : 'none';
       const zLab = document.createElement('span'); zLab.className = 'pp-val'; zLab.textContent = 'flat @ z'; zLab.style.display = L.surfaceFlatZ != null ? '' : 'none';
-      flatChk.onchange = () => { const on = flatChk.checked; zIn.style.display = on ? '' : 'none'; zLab.style.display = on ? '' : 'none'; H.setSurfaceFlatZ(L, on ? (+zIn.value || 0) : null); };
-      zIn.onchange = () => { if (flatChk.checked) H.setSurfaceFlatZ(L, +zIn.value || 0); };
+      flatChk.onchange = () => { const on = flatChk.checked; zIn.style.display = on ? '' : 'none'; zLab.style.display = on ? '' : 'none'; setSurfaceFlatZ(L, on ? (+zIn.value || 0) : null); };
+      zIn.onchange = () => { if (flatChk.checked) setSurfaceFlatZ(L, +zIn.value || 0); };
       shp.append(flatChk, document.createTextNode(' flatten'), zLab, zIn);
       body.appendChild(mkRow('shape', shp));
       // shading: smooth grid-gradient normals vs faceted (flat per-triangle — reads the cells)
       const shd = document.createElement('select');
       for (const [v, t] of [['smooth', 'smooth'], ['faceted', 'faceted (flat)']]) { const o = document.createElement('option'); o.value = v; o.textContent = t; shd.appendChild(o); }
       shd.value = L.surfaceSmooth === false ? 'faceted' : 'smooth';
-      shd.onchange = () => H.setSurfaceSmooth(L, shd.value === 'smooth');
+      shd.onchange = () => setSurfaceSmooth(L, shd.value === 'smooth');
       body.appendChild(mkRow('shading', shd));
     } else {
       const tintIn = document.createElement('input'); tintIn.type = 'color'; tintIn.value = L.tint || '#9ea3a8';
@@ -152,7 +160,7 @@ export function renderStyleTab(body, L) {
       opVal.textContent = op.value + '%';
       L.opacity = +op.value / 100;
       stageGate(L, () => { S.renderer.setLayerMeshStyle(L.id, { opacity: L.opacity }); requestRender(); });
-      H.markProjectDirty();
+      markProjectDirty();
     };
     body.appendChild(mkRow('opacity', op, opVal));
     if (h) {
@@ -306,7 +314,7 @@ export function renderRuleList(body, L) {
   sec.textContent = 'rules — first match wins';
   body.appendChild(sec);
   // structural change: codes are stale until the next sweep
-  const structural = () => { L._rulesDirty = true; H.markProjectDirty(); runRules(L); };
+  const structural = () => { L._rulesDirty = true; markProjectDirty(); runRules(L); };
   // hidden codes follow their rule OBJECTS through remove/reorder
   const remapHidden = (fn) => {
     const hidObjs = [...L.ruleHidden].filter((c) => c > 0).map((c) => rules[c - 1]).filter(Boolean);
@@ -357,14 +365,14 @@ export function renderRuleList(body, L) {
       if (eye.checked) L.ruleHidden.delete(code); else L.ruleHidden.add(code);
       row.classList.toggle('off', !eye.checked);
       applyRuleVisibility(L);
-      H.markProjectDirty();
+      markProjectDirty();
     };
     const sw = document.createElement('input'); sw.type = 'color';
     sw.value = isElse ? ((L.rules.elseColor) || RULE_ELSE) : (r.color || RULE_ELSE);
     sw.oninput = () => {
       if (isElse) L.rules.elseColor = sw.value; else r.color = sw.value;
       applyRulePalette(L);
-      H.markProjectDirty();
+      markProjectDirty();
     };
     row.append(eye, sw);
     if (isElse) {
@@ -374,7 +382,7 @@ export function renderRuleList(body, L) {
     } else {
       const nm = document.createElement('input'); nm.type = 'text'; nm.placeholder = `rule ${idx + 1}`;
       nm.value = r.name || '';
-      nm.onchange = () => { r.name = nm.value.trim(); H.markProjectDirty(); };
+      nm.onchange = () => { r.name = nm.value.trim(); markProjectDirty(); };
       const ex = document.createElement('input'); ex.type = 'text'; ex.placeholder = 'FE > 55 and LITO = "HEM"';
       ex.value = r.expr || '';
       ex.title = 'the filter language, over every column (ƒ included)';
@@ -384,7 +392,7 @@ export function renderRuleList(body, L) {
         const ok = !!ex.value.trim() && (!schema || validate(ex.value, schema).ok);
         ex.classList.toggle('err', !!ex.value.trim() && !ok);
         if (ok) structural();
-        else { L._rulesDirty = true; H.markProjectDirty(); }
+        else { L._rulesDirty = true; markProjectDirty(); }
       };
       row.append(nm, ex);
     }
@@ -413,7 +421,7 @@ export function renderRuleList(body, L) {
   add.textContent = '+ add rule';
   add.onclick = () => {
     rules.push({ name: '', expr: '', color: ruleDefaultColor(rules.length) });
-    H.markProjectDirty();
+    markProjectDirty();
     renderProps();
   };
   const run = document.createElement('button'); run.className = 'pp-tab';
@@ -438,7 +446,7 @@ export function renderStickRadius(body, L) {
     if (!Number.isFinite(v) || v <= 0) return;
     L.docs.dhDoc.config.radius = v;
     stageGate(L, () => { S.renderer.setLayerStickRadius(L.id, v); requestRender(); });
-    H.markProjectDirty();
+    markProjectDirty();
   };
   r.oninput = () => { num.value = (+r.value).toFixed(1); apply(+r.value); };
   num.onchange = () => { const v = +num.value; r.value = Math.min(Math.max(v, +r.min), +r.max); apply(v); };
@@ -798,7 +806,7 @@ export function pushAllStyle(L) {
   applyCatLegend(L, true);
   applyRamp(L, true);
   if (ruleModeOf(L) && (L._rulesDirty || !L._ruleCodes) && rulesOf(L).length) runRules(L, true);
-  if (L.kind === 'mesh') S.renderer.setLayerMeshStyle(L.id, { tint: H.hexToRgb01(L.tint || '#9ea3a8'), opacity: L.opacity != null ? L.opacity : 1 });
+  if (L.kind === 'mesh') S.renderer.setLayerMeshStyle(L.id, { tint: hexToRgb01(L.tint || '#9ea3a8'), opacity: L.opacity != null ? L.opacity : 1 });
   if (L.dh && L.docs.dhDoc) S.renderer.setLayerStickRadius(L.id, L.docs.dhDoc.config.radius || 1);
   L._stagePend = false;
   requestRender();
@@ -817,7 +825,7 @@ export function revertStyle(L) {
   if (s2.opacity != null) L.opacity = s2.opacity;
   if (s2.radius != null && L.docs && L.docs.dhDoc) L.docs.dhDoc.config.radius = s2.radius;
   pushAllStyle(L);
-  H.markProjectDirty();
+  markProjectDirty();
   renderProps();
 }
 
@@ -838,7 +846,7 @@ export function applyCatVisibility(L, force) {
     for (const c of L.catHidden) v[c & 255] = 0;
     S.renderer.setLayerCatVisibility(L.id, v);
   }
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
 }
 
 export function restoreHiddenCats(L, arr) {
@@ -1077,7 +1085,7 @@ export function addPaintColorOptions(L) {
   for (const o of [...sel.options]) if (o.value.startsWith('calc:') && !(L.calcCols || []).some((c) => c.ty !== 'string' && 'calc:' + c.name === o.value)) o.remove();
   // other text columns a host offered as categories (addLayer roles.categories):
   // choosing one re-reads the layer with it as THE category (setLayerColorBy)
-  const h = H.colorHeaderOf(L), curCat = h && h.categories ? h.columns[h.mapping.cat] : null;
+  const h = colorHeaderOf(L), curCat = h && h.categories ? h.columns[h.mapping.cat] : null;
   for (const o of [...sel.options]) if (o.value.startsWith('catcol:')) o.remove();
   for (const name of L.catChoices || []) {
     if (name === curCat) continue;
@@ -1110,7 +1118,7 @@ export function applyRuleVisibility(L, force) {
     for (const c of L.ruleHidden) v[c & 255] = 0;
     S.renderer.setLayerCatVisibility(L.id, v);
   }
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
 }
 
 // mode entry/exit: rules, PAINTED COLUMNS, and categories share the palette +
@@ -1186,7 +1194,7 @@ export async function runRules(L, force) {
   L._ruleCodes = codes; L._ruleCounts = counts; L._rulesDirty = false;
   S.renderer.setLayerRuleCodes(L.id, codes);
   $('#meta').textContent = `rules: ${rules.map((r, i) => `${r.name || 'rule ' + (i + 1)} ${counts[i + 1].toLocaleString()}`).join(' · ')} · else ${counts[0].toLocaleString()}`;
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
   if (_propOpen && _propFor === L.id && _propTab === 'style') renderProps();   // refresh the count badges
 }
 
@@ -1210,7 +1218,7 @@ export function renderClassList(body, L, info) {
   const covered = new Set();
   for (const e of leg.entries) for (const c of legendCodesOf(info, e)) covered.add(c);
   const uncovered = stored ? info.codes.filter((c) => !covered.has(c)) : [];
-  const touch = () => { ensureLegend(L, info); applyCatLegend(L); H.markProjectDirty(); };
+  const touch = () => { ensureLegend(L, info); applyCatLegend(L); markProjectDirty(); };
   const entryRows = [];                                    // for the drag map
   const rowFor = (e, codes, isOther) => {
     const row = document.createElement('div'); row.className = 'pp-cat' + (codes.length && codes.every((c) => L.catHidden.has(c)) ? ' off' : '');
@@ -1236,7 +1244,7 @@ export function renderClassList(body, L, info) {
           const legS = ensureLegend(L, info);
           const [it] = legS.entries.splice(from, 1);
           legS.entries.splice(target > from ? target - 1 : target, 0, it);
-          H.markProjectDirty();
+          markProjectDirty();
           renderProps();
         };
         addEventListener('pointermove', move); addEventListener('pointerup', up);
@@ -1256,7 +1264,7 @@ export function renderClassList(body, L, info) {
       const legS = ensureLegend(L, info);
       if (isOther) legS.otherColor = sw.value;
       else { const me = legS.entries.find((x) => x === e) || legS.entries.find((x) => x.label === e.label); if (me) me.color = sw.value; }
-      applyCatLegend(L); H.markProjectDirty();
+      applyCatLegend(L); markProjectDirty();
     };
     const nm = document.createElement('span'); nm.className = 'nm';
     nm.textContent = isOther ? `other (${codes.length})` : e.label + (e.values.length > 1 ? ` (${e.values.length})` : '');
@@ -1336,7 +1344,7 @@ export function renderClassList(body, L, info) {
     mkA('all', () => { for (const c of shownCodes()) L.catHidden.delete(c); sync(); }),
     mkA('none', () => { for (const c of shownCodes()) L.catHidden.add(c); sync(); }),
     mkA('invert', () => { for (const c of shownCodes()) { if (L.catHidden.has(c)) L.catHidden.delete(c); else L.catHidden.add(c); } sync(); }),
-    ...(stored ? [mkA('reset legend', () => { L.catLegend = null; S.renderer.setLayerPalette(L.id, null); H.markProjectDirty(); requestRender(); renderProps(); })] : []),
+    ...(stored ? [mkA('reset legend', () => { L.catLegend = null; S.renderer.setLayerPalette(L.id, null); markProjectDirty(); requestRender(); renderProps(); })] : []),
   );
   body.appendChild(bulk);
   body.appendChild(ppNote('right-click an entry: rename · merge into · ungroup · remove — the color chip edits in place'));
@@ -1394,8 +1402,8 @@ export async function broadcastCollarCol(L, colName) {
   const outName = taken.has(String(colName).toLowerCase()) ? colName + '_C' : colName;
   if (taken.has(String(outName).toLowerCase())) { $('#meta').textContent = `broadcast: “${outName}” already exists`; return; }
   const text = await dh.blobs.collar.text();               // the collar table is small — parse it whole
-  const lines = H.csvRecords(text);
-  const cells2 = H.collarCells(lines);
+  const lines = csvRecords(text);
+  const cells2 = collarCells(lines);
   const names = cells2(lines[0]), low = names.map((x) => x.toLowerCase());
   const ci = low.indexOf(String(colName).toLowerCase());
   if (ci < 0) { $('#meta').textContent = `broadcast: “${colName}” not in the collar file`; return; }
@@ -1441,7 +1449,7 @@ export async function broadcastCollarCol(L, colName) {
     L._colStats = null; L._calcFns = null;
   }
   H.setLayerColorSel(L, 'paint:' + outName);
-  H.markProjectDirty(); renderProps(); requestRender();
+  markProjectDirty(); renderProps(); requestRender();
   $('#meta').textContent = `broadcast: ${outName} on ${L.label || L.name} — the filter, color ramps, GT/swath, and exports all see it`;
 }
 
@@ -1529,7 +1537,7 @@ export async function materializeCalcCol(L, name) {
   matColSet(L, name, vals, { lineage: mkLineage('materialize', { from: 'calc', expr: cc.expr }, [L.lineage].filter(Boolean)) });
   if (wasColor) H.setLayerColorSel(L, 'paint:' + name);
   try { await persistElement(L); } catch { /* best-effort */ }
-  H.markProjectDirty(); H.renderLayers(); requestRender();
+  markProjectDirty(); renderLayers(); requestRender();
   $('#meta').textContent = `materialized “${name}” — ${rec.toLocaleString()} values stored`;
 }
 
@@ -1566,8 +1574,8 @@ export function setColType(L, i, ty) {
   if (ty === 'number' && at < 0) { h.numericColumns.push({ i, name }); h.numericColumns.sort((a, b) => a.i - b.i); }
   if (ty === 'string' && at >= 0) h.numericColumns.splice(at, 1);
   L._colStats = null; L._qualFn = undefined;               // the kind changed — stale
-  if (L.id === S.activeId) { const keep = $('#colorBy').value; H.setColorLabels(h); if ([...$('#colorBy').options].some((o) => o.value === keep)) $('#colorBy').value = keep; }
-  H.markProjectDirty();
+  if (L.id === S.activeId) { const keep = $('#colorBy').value; setColorLabels(h); if ([...$('#colorBy').options].some((o) => o.value === keep)) $('#colorBy').value = keep; }
+  markProjectDirty();
   renderProps();
 }
 
@@ -1598,7 +1606,7 @@ export async function setColumnQualify(L, i, policy) {
   if (pol.below === 'half' && pol.above === 'limit' && !pol.negBelow) delete L.qualify[name];   // the default isn't stored
   else L.qualify[name] = pol;
   if (!Object.keys(L.qualify).length) L.qualify = null;
-  H.markProjectDirty();
+  markProjectDirty();
   return refreshQualified(L, h.mapping && h.mapping.chan === i);
 }
 
@@ -1607,10 +1615,10 @@ export async function refreshQualified(L, rechan) {
   L._qualFn = undefined; L._colStats = null; L._bands = null;
   pinEvictLayer(L.id);
   const d = L.docs || {};
-  if (rechan && d.dhDoc) { L = (await H.reopenDh(L, { qualify: L.qualify || null })) || L; }
-  else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await H.reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await H.refilterLayer(L); applyRamp(L, true); }
+  if (rechan && d.dhDoc) { L = (await reopenDh(L, { qualify: L.qualify || null })) || L; }
+  else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await H.refilterLayer(L); applyRamp(L, true); }
   else await H.refilterLayer(L);
-  if (L.docs && L.docs.blockDoc) await H.ensureValueTex(L);
+  if (L.docs && L.docs.blockDoc) await ensureValueTex(L);
   refreshProps();
   requestRender();
   return L.id;
@@ -1623,7 +1631,7 @@ export const _qualifyReopen = [];
 export async function settleQualifyReopens() {
   const ids = _qualifyReopen.splice(0);
   for (const id of ids) {
-    const L = layerById(H.followLayer(id)); if (!L) continue;
+    const L = layerById(followLayer(id)); if (!L) continue;
     const h = layerTableHeader(L), ch = h && h.mapping ? h.mapping.chan : null;
     const chName = ch != null ? h.columns[ch] : null;
     await refreshQualified(L, !!(chName && L.qualify && L.qualify[chName]));
@@ -1658,7 +1666,7 @@ export function renderColumnsTab(body, L) {
   const footer = colStatsComplete(L) ? null : footerColStats(L);
   const calcB = document.createElement('button'); calcB.className = 'pp-scan';
   calcB.textContent = (L.calcCols || []).length ? `ƒ calculations… (${L.calcCols.length})` : 'ƒ add calculated column…';
-  calcB.onclick = () => H.openCalcWindow(L, (L.calcCols || []).length ? 0 : -1);
+  calcB.onclick = () => openCalcWindow(L, (L.calcCols || []).length ? 0 : -1);
   body.appendChild(calcB);
   for (let i = 0; i < h.columns.length; i++) {
     const name = h.columns[i];
@@ -1707,8 +1715,8 @@ export function renderColumnsTab(body, L) {
     const ty = document.createElement('span'); ty.className = 'ty'; ty.textContent = c.ty === 'string' ? 'text' : 'number';
     row.append(fx, nm, ty);
     const openMenu = (x, y) => menuXY(x, y, [
-      { label: 'Edit…', action: () => H.openCalcWindow(L, k) },
-      { label: 'Remove', action: () => { const gone = L.calcCols[k]; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(k, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; H.markProjectDirty(); refreshProps(); }, { redo: () => { const j = L.calcCols.indexOf(gone); if (j >= 0) { L.calcCols.splice(j, 1); L._calcFns = null; L._colStats = null; H.markProjectDirty(); refreshProps(); } } }); L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; H.markProjectDirty(); renderProps(); } },
+      { label: 'Edit…', action: () => openCalcWindow(L, k) },
+      { label: 'Remove', action: () => { const gone = L.calcCols[k]; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(k, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); }, { redo: () => { const j = L.calcCols.indexOf(gone); if (j >= 0) { L.calcCols.splice(j, 1); L._calcFns = null; L._colStats = null; markProjectDirty(); refreshProps(); } } }); L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; markProjectDirty(); renderProps(); } },
     ]);
     const onCtx = (e) => { e.preventDefault(); openMenu(e.clientX, e.clientY); };
     row.oncontextmenu = onCtx;
@@ -1739,8 +1747,8 @@ export function wireScanButton(btn, L, columns) {
 
 // re-key the class column: the same re-open machinery as re-channeling
 export async function useAsCategory(L, i) {
-  if (L.dh && L.docs.dhDoc) return H.reopenDh(L, { cat: i }, { clearCats: true });
-  return H.reopenWithMapping(L, { cat: i }, { clearCats: true });
+  if (L.dh && L.docs.dhDoc) return reopenDh(L, { cat: i }, { clearCats: true });
+  return reopenWithMapping(L, { cat: i }, { clearCats: true });
 }
 
 // ── per-layer color ramps (§10 breakpoints): presets + value BREAKPOINTS,
@@ -1829,7 +1837,7 @@ export function rampRangeFor(L) {
 
 export function applyRamp(L, force) {
   if (!force) return stageGate(L, () => applyRamp(L, true));
-  if (L.docs && L.docs.blockDoc) H.ensureValueTex(L).catch((e) => { $('#meta').textContent = `colour — ${e.message}`; });
+  if (L.docs && L.docs.blockDoc) ensureValueTex(L).catch((e) => { $('#meta').textContent = `colour — ${e.message}`; });
   const pcR = paintActiveCol(L) || calcDisplayCol(L);
   if (!pcR && calcSelOf(L)) ensureCalcDisplay(L);          // realize lazily; it re-applies on completion
   if (pcR && pcR.kind === 'ratio') { applyPaintPalette(L, pcR); return; }   // ramp+clip bake INTO the palette
@@ -1855,7 +1863,7 @@ export function setRampCfg(L, patch) {
     if (_rampRepaint.bands) _rampRepaint.bands();
     if (_rampRepaint.breaksIn) _rampRepaint.breaksIn();
   }
-  H.markProjectDirty();
+  markProjectDirty();
 }
 
 // ── the source tab: where the layer's positions come from + what it spans.
@@ -1999,7 +2007,7 @@ export function renderKeyJoinUI(body, L, R, jf) {
       const { blob, rows, matched } = await runKeyJoin({ leftL: L, rightL: R, leftKey: jf.keyL, rightKey: jf.keyR, bring: [...jf.bring], dup: jf.dup, prefix: shortName(R).replace(/\W+/g, '_') + '_', label: 'join' });
       const name = `${shortName(L)}+${shortName(R)}.csv`;
       const lin = mkLineage('keyjoin', { leftKey: jf.keyL, rightKey: jf.keyR, bring: [...jf.bring], dup: jf.dup }, [L.lineage, R.lineage]);
-      await H.openBlob(blob, name, 'add', null, { lineage: lin });
+      await openBlob(blob, name, 'add', null, { lineage: lin });
       $('#meta').textContent = `key join: ${matched.toLocaleString()} of ${rows.toLocaleString()} rows matched → ${name}`;
     } catch (e) { $('#meta').textContent = `key join: ${e.message}`; }
   };
@@ -2024,7 +2032,7 @@ export function renderSourceTab(body, L) {
       const sel = document.createElement('select'); sel.style.maxWidth = '64px';
       h.columns.forEach((c, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = c; sel.appendChild(o); });
       sel.value = String(h.mapping[key]);
-      sel.onchange = () => H.reopenWithMapping(L, { [key]: +sel.value });
+      sel.onchange = () => reopenWithMapping(L, { [key]: +sel.value });
       wrap.appendChild(sel);
       row.appendChild(wrap);
     }
@@ -2056,7 +2064,7 @@ export function renderSourceTab(body, L) {
         selE.onchange = () => {
           const full = { collar: { ...h.collarMapping }, survey: { ...h.surveyMapping }, intervals: { ...h.intervalMapping } };
           full[role][key] = +selE.value;
-          H.reopenDh(L, { mappings: full });
+          reopenDh(L, { mappings: full });
         };
         wrap.appendChild(selE); row.appendChild(wrap);
       }
@@ -2073,7 +2081,7 @@ export function renderSourceTab(body, L) {
       const o = document.createElement('option'); o.value = v; o.textContent = t; mSel.appendChild(o);
     }
     mSel.value = h.method;
-    mSel.onchange = () => H.reopenDh(L, { method: mSel.value });
+    mSel.onchange = () => reopenDh(L, { method: mSel.value });
     mRow.append(mLab, mSel);
     body.appendChild(mRow);
     const dRow = document.createElement('div'); dRow.className = 'pp-row';
@@ -2083,7 +2091,7 @@ export function renderSourceTab(body, L) {
       const o = document.createElement('option'); o.value = v; o.textContent = t; dSel.appendChild(o);
     }
     dSel.value = (dh.config && dh.config.dipConvention) || 'auto';
-    dSel.onchange = () => H.reopenDh(L, { dipConvention: dSel.value });
+    dSel.onchange = () => reopenDh(L, { dipConvention: dSel.value });
     dRow.append(dLab, dSel);
     body.appendChild(dRow);
     line(trusted('<span class="fi-x">changing method or dip re-desurveys the holes</span>'));

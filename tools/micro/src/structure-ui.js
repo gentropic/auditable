@@ -19,6 +19,10 @@ import { vertexColorOf } from './wfr-io.js';
 import { S, layerById, requestRender } from './state.js';
 import { pushUndo } from './undo.js';
 import { mkLineage } from './lineage.js';
+import { renderLayers } from './tree.js';
+import { hexToRgb01 } from './open.js';
+import { markProjectDirty } from './project.js';
+import { addLayer } from './ingest.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side, passed in once (setStructureHooks)
@@ -66,7 +70,7 @@ async function baseColors(L) {
     const vc = m && vertexColorOf(m.attrs, m.vertices.length / 3);
     if (vc) return (md._structBase = vc);
   }
-  return H.hexToRgb01(L.tint || '#9ea3a8');
+  return hexToRgb01(L.tint || '#9ea3a8');
 }
 // the live rgb buffer, patched in place by the hover preview so a mouse move uploads
 // only the vertices it changed
@@ -81,7 +85,7 @@ async function paintMesh(L, hd) {
 }
 function restoreVertex(hd, col, i) {
   const c = col.codes[i], rgb = hd.rgb;
-  if (c && col.colors[c]) { const p = H.hexToRgb01(col.colors[c]); rgb[3 * i] = p[0]; rgb[3 * i + 1] = p[1]; rgb[3 * i + 2] = p[2]; }
+  if (c && col.colors[c]) { const p = hexToRgb01(col.colors[c]); rgb[3 * i] = p[0]; rgb[3 * i + 1] = p[1]; rgb[3 * i + 2] = p[2]; }
   else if (Array.isArray(hd.base)) { rgb[3 * i] = hd.base[0]; rgb[3 * i + 1] = hd.base[1]; rgb[3 * i + 2] = hd.base[2]; }
   else { rgb[3 * i] = hd.base[3 * i]; rgb[3 * i + 1] = hd.base[3 * i + 1]; rgb[3 * i + 2] = hd.base[3 * i + 2]; }
 }
@@ -91,7 +95,7 @@ function showPreview(L, hd, fileVerts, hex) {
   if (hd.preview) for (const i of hd.preview) { restoreVertex(hd, col, i); if (i < lo) lo = i; if (i > hi) hi = i; }
   hd.preview = fileVerts && fileVerts.length ? fileVerts : null;
   if (hd.preview) {
-    const p = H.hexToRgb01(hex || '#ffffff'), q = [0.4 + 0.6 * p[0], 0.4 + 0.6 * p[1], 0.4 + 0.6 * p[2]];
+    const p = hexToRgb01(hex || '#ffffff'), q = [0.4 + 0.6 * p[0], 0.4 + 0.6 * p[1], 0.4 + 0.6 * p[2]];
     for (const i of hd.preview) { hd.rgb[3 * i] = q[0]; hd.rgb[3 * i + 1] = q[1]; hd.rgb[3 * i + 2] = q[2]; if (i < lo) lo = i; if (i > hi) hi = i; }
   }
   if (hi >= lo) { S.renderer.setLayerMeshColors(L.id, hd.rgb, lo, hi + 1); requestRender(); }
@@ -101,7 +105,7 @@ function showPreview(L, hd, fileVerts, hex) {
 function derivedOf(L, kind) { return S.layers.find((d) => d.derivedOf === L.id && d.derivedKind === kind) || null; }
 function setDerived(L, kind, label, m, opacity) {
   let D = derivedOf(L, kind);
-  if (!m || !m.triangles.length) { if (D) { S.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); H.renderLayers(); requestRender(); } return; }
+  if (!m || !m.triangles.length) { if (D) { S.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); renderLayers(); requestRender(); } return; }
   if (!D) {
     const id = H.allocLayerId(); if (id == null) return;
     const name = `${L.label || L.name} · ${label}`;
@@ -114,7 +118,7 @@ function setDerived(L, kind, label, m, opacity) {
   S.renderer.setLayerMeshStyle(D.id, { tint: [1, 1, 1], opacity });
   D.bboxLocal = chunk.bboxLocal;
   if (!D.visible) S.renderer.setLayerVisible(D.id, false);
-  H.renderLayers(); requestRender();
+  renderLayers(); requestRender();
 }
 function updateDiscs(L, hd) {
   const col = setColOf(L);
@@ -131,7 +135,7 @@ async function updateTraces(L, hd) {
   if (hd.hoverPath && hd.hoverPath.length > 1) paths.push({ path: hd.hoverPath, _live: true });
   const md = L.docs.meshDoc, bb = md.header.bbox;
   const diag = bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 10;
-  const rgb = (p) => (p._live ? [1, 1, 1] : H.hexToRgb01((col && col.colors[p.set]) || '#ffffff'));
+  const rgb = (p) => (p._live ? [1, 1, 1] : hexToRgb01((col && col.colors[p.set]) || '#ffffff'));
   setDerived(L, 'traces', 'traces', paths.length ? traceTubes(m.vertices, paths, rgb, Math.max(1e-3, diag * 0.002)) : null, 1);
 }
 
@@ -220,9 +224,9 @@ export async function openStructure(L) {
       const rb = document.createElement('input'); rb.type = 'radio'; rb.name = 'stset' + L.id; rb.checked = code === hd.active; rb.title = 'paint this set';
       rb.onchange = () => { hd.active = code; render(); if (_armed) armHint(); };
       const sw = document.createElement('input'); sw.type = 'color'; sw.value = col.colors[code] || '#ffffff'; sw.style.cssText = 'width:22px;height:16px;padding:0;border:0;background:none;cursor:pointer';
-      sw.oninput = () => { col.colors[code] = sw.value; H.markProjectDirty(); structureAfterEdit(L); };
+      sw.oninput = () => { col.colors[code] = sw.value; markProjectDirty(); structureAfterEdit(L); };
       const nm = document.createElement('input'); nm.type = 'text'; nm.className = 'sw-in'; nm.value = col.dict[code]; nm.style.width = '54px';
-      nm.onchange = () => { const v = nm.value.trim(); if (v && !col.dict.some((d, i) => i !== code && d === v)) { col.dict[code] = v; L._colStats = null; H.markProjectDirty(); structureAfterEdit(L); } else nm.value = col.dict[code]; };
+      nm.onchange = () => { const v = nm.value.trim(); if (v && !col.dict.some((d, i) => i !== code && d === v)) { col.dict[code] = v; L._colStats = null; markProjectDirty(); structureAfterEdit(L); } else nm.value = col.dict[code]; };
       const sm = setStats(hd.planes, code);
       const info = document.createElement('span'); info.className = 'st-setinfo';
       if (sm.n) {
@@ -437,7 +441,7 @@ export async function tracesToDxf(L) {
   const features = L.traces.map((t) => {
     const v = new Float64Array(t.path.length * 3);
     t.path.forEach((i, k) => { v[3 * k] = m.vertices[3 * i]; v[3 * k + 1] = m.vertices[3 * i + 1]; v[3 * k + 2] = m.vertices[3 * i + 2]; });
-    const [r, g, b] = H.hexToRgb01((col && col.colors[t.set]) || '#ffffff').map((x) => Math.round(x * 255));
+    const [r, g, b] = hexToRgb01((col && col.colors[t.set]) || '#ffffff').map((x) => Math.round(x * 255));
     return { type: 'polyline', geometry: { vertices: v, closed: false }, properties: { layer: (col && col.dict[t.set]) || 'traces', color: { mode: 'rgb', r, g, b } } };
   });
   return writeDxf({ features, layers: Object.fromEntries(features.map((ft) => [ft.properties.layer, {}])) });
@@ -447,17 +451,17 @@ export async function tracesToDxf(L) {
 function commitTrace(L, t) {
   L.traces = L.traces || [];
   L.traces.push(t);
-  const undo = () => { const i = L.traces.indexOf(t); if (i >= 0) L.traces.splice(i, 1); H.markProjectDirty(); structureAfterEdit(L); };
-  const redo = () => { if (!L.traces.includes(t)) L.traces.push(t); H.markProjectDirty(); structureAfterEdit(L); };
+  const undo = () => { const i = L.traces.indexOf(t); if (i >= 0) L.traces.splice(i, 1); markProjectDirty(); structureAfterEdit(L); };
+  const redo = () => { if (!L.traces.includes(t)) L.traces.push(t); markProjectDirty(); structureAfterEdit(L); };
   pushUndo('trace', undo, { redo });
-  H.markProjectDirty(); structureAfterEdit(L);
+  markProjectDirty(); structureAfterEdit(L);
 }
 export function removeTrace(L, k) {
   const t = L.traces && L.traces[k]; if (!t) return;
   L.traces.splice(k, 1);
-  pushUndo('delete trace', () => { L.traces.splice(Math.min(k, L.traces.length), 0, t); H.markProjectDirty(); structureAfterEdit(L); },
-    { redo: () => { const i = L.traces.indexOf(t); if (i >= 0) L.traces.splice(i, 1); H.markProjectDirty(); structureAfterEdit(L); } });
-  H.markProjectDirty(); structureAfterEdit(L);
+  pushUndo('delete trace', () => { L.traces.splice(Math.min(k, L.traces.length), 0, t); markProjectDirty(); structureAfterEdit(L); },
+    { redo: () => { const i = L.traces.indexOf(t); if (i >= 0) L.traces.splice(i, 1); markProjectDirty(); structureAfterEdit(L); } });
+  markProjectDirty(); structureAfterEdit(L);
 }
 
 // ── the planes as a table layer (replace on name: running it twice == once) ──
@@ -474,11 +478,11 @@ export async function planesToTable(L, hd) {
   for (const old of S.layers.filter((x) => x.kind === 'table' && (x.label || x.name).replace(/\.csv$/i, '') === name)) H.removeLayerUI(old.id);
   const columns = {};
   for (const c of TABLE_COLS) columns[c] = planes.map((p) => { const v = rowOf(p)[c]; return v == null || (typeof v === 'number' && !Number.isFinite(v)) ? (c === 'set' || c === 'quality' ? '' : NaN) : v; });
-  const id = await H.addLayer({ kind: 'table', name, columns });
+  const id = await addLayer({ kind: 'table', name, columns });
   const T = id != null ? layerById(id) : null;
   if (T) {
     T.lineage = mkLineage('structure.planes', { sets: [...new Set(planes.map((p) => p.set))], planes: planes.length, wand: { angle: prefs.angle, offset: prefs.distance || null } }, [L.lineage].filter(Boolean));
-    H.markProjectDirty();
+    markProjectDirty();
     $('#meta').textContent = `structure: ${planes.length} planes → ${name}`;
   }
   return id;
@@ -704,7 +708,7 @@ export function installStructurePointer(cv) {
     if (_armed && _armed.L.id === id) disarm();
     const hd = _structWins.get(id); if (hd) hd.win.close ? hd.win.close() : hd.win.el.remove();
     for (const D of S.layers.filter((d) => d.derivedOf === id)) { S.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); }
-    H.renderLayers();
+    renderLayers();
   });
 }
 export const structureArmed = () => _armed;
@@ -833,9 +837,9 @@ export function openStereonet(L) {
     hd.selSet = null;
     if (moved.length) {
       for (const [t] of moved) t.set = code;
-      pushUndo('move traces', () => { for (const [t, was] of moved) t.set = was; H.markProjectDirty(); structureAfterEdit(L); },
-        { redo: () => { for (const [t] of moved) t.set = code; H.markProjectDirty(); structureAfterEdit(L); } });
-      H.markProjectDirty();
+      pushUndo('move traces', () => { for (const [t, was] of moved) t.set = was; markProjectDirty(); structureAfterEdit(L); },
+        { redo: () => { for (const [t] of moved) t.set = code; markProjectDirty(); structureAfterEdit(L); } });
+      markProjectDirty();
       if (!verts.length) structureAfterEdit(L);
     }
     if (verts.length) H.paintApply(L, col, toFile(st, verts), code);   // → re-measure via paintAfterEdit

@@ -14,8 +14,9 @@ import { S, _fileHandles, layerById } from './state.js';
 import { basename, fmtSize } from './paths.js';
 import { isBackupName } from './backup.js';
 import { openPackFile } from './project.js';
+import { createLayerGroup } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOpenDialogHooks): closeAllLayers, createLayerGroup
+// the app's side, passed in once (setOpenDialogHooks): closeAllLayers
 let H = {};
 export function setOpenDialogHooks(h) { H = h; }
 
@@ -235,7 +236,7 @@ export async function loadDrillholeSet(set, cfg, replaceFirst) {
   }
   // multiple interval tables → nest the siblings under a parent group (the set);
   // reopen restores it via the saved tree, so only group at initial load
-  if (ids.length) H.createLayerGroup(dhGroupName(set.collar.name), ids, { collapsed: false, dhSet: true });   // ALWAYS a set group — the group IS the element
+  if (ids.length) createLayerGroup(dhGroupName(set.collar.name), ids, { collapsed: false, dhSet: true });   // ALWAYS a set group — the group IS the element
 }
 
 // a readable set/group name from the collar filename (drop a trailing _collar(s))
@@ -532,7 +533,7 @@ export async function dhImport() {
     const L = layerById(_got); if (L) { L._setKey = key; L._intervalName = iv.name; ids.push(L.id); }
     first = false;
   }
-  if (ids.length) H.createLayerGroup(dhGroupName(basename(d.collar.name)), ids, { collapsed: false, dhSet: true });
+  if (ids.length) createLayerGroup(dhGroupName(basename(d.collar.name)), ids, { collapsed: false, dhSet: true });
 }
 
 export function dhCancel() { $('#dhDlg').classList.remove('show'); }

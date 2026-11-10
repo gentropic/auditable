@@ -12,10 +12,8 @@ import { floatWin, focusWindow } from './windows.js';
 import { numericColsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { menuXY } from './menu.js';
+import { saveRecipe } from './recipes.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setStatsHooks): saveRecipe
-let H = {};
-export function setStatsHooks(h) { H = h; }
 
 // ── STATS: the grouped summary table on the analysis chassis — columns × an
 // optional GROUP BY (the category channel or any painted column — assign
@@ -296,7 +294,7 @@ export function openStats(L, ropts) {
     const foot = document.createElement('div'); foot.className = 'sw-foot';
     runBtn = document.createElement('button'); runBtn.className = 'sw-run'; runBtn.textContent = 'Run'; runBtn.onclick = run;
     const rcpBtn = document.createElement('button'); rcpBtn.className = 'sw-add rcp'; rcpBtn.textContent = 'save as recipe…'; rcpBtn.title = 'save this setup as a named, re-runnable YAML file in the project (Tools → Recipes)';
-    rcpBtn.onclick = () => H.saveRecipe('stats', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} stats`);
+    rcpBtn.onclick = () => saveRecipe('stats', cfgOf(), `${(L.label || L.name).replace(/\.[^.]+$/, '')} stats`);
     const resRow = plotExportBtns(null, () => `stats-${(L.label || L.name).replace(/\.[^.]+$/, '')}.png`, tableTSV, 'stats');
     staleEl = document.createElement('div'); staleEl.className = 'sw-stale'; staleEl.textContent = st.scan && st.stale ? '↻ config changed — Run to update' : '';
     progEl = document.createElement('div'); progEl.className = 'sw-prog';

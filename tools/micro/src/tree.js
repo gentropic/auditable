@@ -14,8 +14,9 @@ import { _propFor, _propOpen, closeProps, renderProps } from './props.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { openMeshExportDialog } from './meshexport.js';
+import { openBatchRename } from './rename.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): applyLayerOpacity, fitLayer, layerMenu, openBatchRename, setActiveLayer, syncSelBar, syncUndoBtn
+// the app's side, passed in once (setTreeHooks): applyLayerOpacity, fitLayer, layerMenu, setActiveLayer, syncSelBar, syncUndoBtn
 let H = {};
 export function setTreeHooks(h) { H = h; }
 
@@ -523,7 +524,7 @@ export function groupMenu(nd, x, y) {
     { label: 'Move up', action: () => treeMoveStep(nd, -1) },
     { label: 'Move down', action: () => treeMoveStep(nd, 1) },
     { label: 'Rename group…', action: async () => { const v = await microPrompt('group name', nd.name); if (v && v.trim()) { nd.name = v.trim(); renderLayers(); markProjectDirty(); } } },
-    ...(groupLayerIds(nd).length >= 2 ? [{ label: 'Rename layers…', action: () => H.openBatchRename(groupLayerIds(nd).map(layerById)) }] : []),
+    ...(groupLayerIds(nd).length >= 2 ? [{ label: 'Rename layers…', action: () => openBatchRename(groupLayerIds(nd).map(layerById)) }] : []),
     ...(() => {
       const gm = groupLayerIds(nd).map(layerById).filter((x) => x && x.kind === 'mesh' && x.docs.meshDoc);
       return gm.length ? [{ label: gm.length > 1 ? `Export ${gm.length} meshes…` : 'Export mesh…', action: () => openMeshExportDialog(gm) }] : [];

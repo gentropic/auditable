@@ -16,8 +16,10 @@ import { basename, layerFiles } from './paths.js';
 import { dhGroupName, nextDhSetKey } from './open-dialog.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
+import { applyLayerStyling, captureLayerStyling, captureReopenIdentity, restoreReopenIdentity } from './reopen.js';
+import { applyTreeVisibility, createLayerGroup, groupLayerIds, renderLayers, treeMove, treeSync } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDrillholesHooks): allocLayerId, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, groupLayerIds, refilterLayer, renderLayers, restoreReopenIdentity, setActiveLayer, treeMove, treeSync
+// the app's side, passed in once (setDrillholesHooks): allocLayerId, closeAttrTable, refilterLayer, setActiveLayer
 let H = {};
 export function setDrillholesHooks(h) { H = h; }
 
@@ -28,9 +30,9 @@ export async function reopenDh(L, patch, { clearCats = false } = {}) {
   const dh = L.docs.dhDoc; if (!dh) return;
   H.closeAttrTable(L.id);
   const files = dh.blobs, cfg = { ...dh.config, qualify: L.qualify || null, ...patch };
-  const id = H.captureReopenIdentity(L);                                // label · visible · storage (handle n/a for compound dh)
+  const id = captureReopenIdentity(L);                                // label · visible · storage (handle n/a for compound dh)
   const setKey = L._setKey, intervalName = L._intervalName;           // dh-set membership (dh-specific, not generic identity)
-  const style = H.captureLayerStyling(L, { clearCats });
+  const style = captureLayerStyling(L, { clearCats });
   const oldId = L.id, prevActive = S.activeId;
   // open FIRST, remove the old layer only on success. The old order removed L
   // and then, if openDrillholeLayer threw, grafted L's identity/styling onto
@@ -46,14 +48,14 @@ export async function reopenDh(L, patch, { clearCats = false } = {}) {
   S.renderer.removeLayer(oldId);
   S.layers = S.layers.filter((l) => l.id !== oldId);
   S.activeId = L2.id;
-  H.restoreReopenIdentity(L2, id);
+  restoreReopenIdentity(L2, id);
   L2._setKey = setKey; L2._intervalName = intervalName;             // stay in the same drillhole set
-  H.applyLayerStyling(L2, style, { clearCats });
-  if (id.visible === false) H.applyTreeVisibility();
+  applyLayerStyling(L2, style, { clearCats });
+  if (id.visible === false) applyTreeVisibility();
   await H.refilterLayer(L2);                                 // any layer: a re-read dropped its GPU mask
   // re-reading a layer that wasn't active (a host's setColorBy) mustn't take the focus
   if (prevActive !== oldId && layerById(prevActive)) H.setActiveLayer(prevActive);
-  H.renderLayers();
+  renderLayers();
   refreshProps();
   return L2;
 }
@@ -212,7 +214,7 @@ export async function applyHoleFilter(L, expr) {
 }
 
 export async function filterHolesSet(nd) {
-  const members = H.groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc);
+  const members = groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc);
   if (!members.length) return;
   const cc = await peekCollarCols(members[0].docs.dhDoc).catch(() => []);
   const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', members[0].holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
@@ -226,7 +228,7 @@ export async function filterHolesSet(nd) {
   $('#meta').textContent = res && res.holes != null
     ? `hole filter: ${res.holes} of ${res.total} holes — intervals${setHasTraces(nd) ? ' + traces' : ''} follow`
     : 'hole filter cleared';
-  H.renderLayers();
+  renderLayers();
 }
 
 // a lightweight table view over a small CSV blob (the collar/survey tables —
@@ -261,7 +263,7 @@ export async function openCsvTableWindow(title, blob) {
 // verbs (table view, the hole filter, broadcast → every member's intervals)
 export function collarsRowMenu(nd, x, y) {
   const info = dhSetInfo(nd); if (!info) return;
-  const members = H.groupLayerIds(nd).map(layerById).filter((L2) => L2 && L2.dh && L2.docs.dhDoc);
+  const members = groupLayerIds(nd).map(layerById).filter((L2) => L2 && L2.dh && L2.docs.dhDoc);
   const rep = members[0]; if (!rep) return;
   const hf = members.find((L2) => L2.holeFilter);
   menuXY(x, y, [
@@ -287,7 +289,7 @@ export function surveyRowMenu(nd, x, y) {
 }
 
 export function ensureDhSetGroups() {
-  H.treeSync();
+  treeSync();
   const bySet = new Map();
   for (const L of S.layers) {
     if (!(L.dh && L.docs.dhDoc) || L.trace || dhSetGroupOf(L.id)) continue;
@@ -297,12 +299,12 @@ export function ensureDhSetGroups() {
   }
   for (const members of bySet.values()) {
     const files = layerFiles(members[0]);
-    H.createLayerGroup(dhGroupName(basename((files[0] && files[0].name) || 'holes')), members.map((L) => L.id), { collapsed: false, dhSet: true });
+    createLayerGroup(dhGroupName(basename((files[0] && files[0].name) || 'holes')), members.map((L) => L.id), { collapsed: false, dhSet: true });
   }
 }
 
 export function dhSetInfo(nd) {
-  for (const id of H.groupLayerIds(nd)) { const L = layerById(id); if (L && L.dh && L.docs.dhDoc) return { blobs: L.docs.dhDoc.blobs, config: L.docs.dhDoc.config, setKey: L._setKey }; }
+  for (const id of groupLayerIds(nd)) { const L = layerById(id); if (L && L.dh && L.docs.dhDoc) return { blobs: L.docs.dhDoc.blobs, config: L.docs.dhDoc.config, setKey: L._setKey }; }
   return null;
 }
 
@@ -326,10 +328,10 @@ export async function addIntervalToSet(nd) {
   const file = await pickIntervalFile(); if (!file) return;
   const _got = await openDrillholeLayer({ collar: info.blobs.collar, survey: info.blobs.survey, intervals: file }, { ...info.config }, 'add');
   const L2 = layerById(_got); if (L2) {
-    L2._setKey = info.setKey; L2._intervalName = file.name; H.treeMove(L2.id, nd, 'into');
+    L2._setKey = info.setKey; L2._intervalName = file.name; treeMove(L2.id, nd, 'into');
     // inherit the set's hole filter — a filtered set that gains an interval table
     // otherwise shows ALL holes on the new one while its siblings show a subset
-    const sib = H.groupLayerIds(nd).map(layerById).find((x) => x && x.dh && x.holeFilter && x !== L2);
+    const sib = groupLayerIds(nd).map(layerById).find((x) => x && x.dh && x.holeFilter && x !== L2);
     if (sib) { await applyHoleFilter(L2, sib.holeFilter); }
   }
   markProjectDirty();
@@ -344,34 +346,34 @@ export async function addIntervalToLayer(L) {
   const L2 = layerById(_got); if (!L2) return;
   L2._setKey = key; L2._intervalName = file.name;
   const grp = dhSetGroupOf(L.id);
-  if (grp) H.treeMove(L2.id, grp, 'into');
-  else H.createLayerGroup(dhGroupName(basename(dh.blobs.collar.name || 'holes')), [L.id, L2.id], { collapsed: false, dhSet: true });
+  if (grp) treeMove(L2.id, grp, 'into');
+  else createLayerGroup(dhGroupName(basename(dh.blobs.collar.name || 'holes')), [L.id, L2.id], { collapsed: false, dhSet: true });
   markProjectDirty();
 }
 
 // re-desurvey every interval table in a set together (they share geometry) —
 // reopenDh keeps _setKey, so the reopened layers stay in the group
 export async function redesurveySet(nd, patch) {
-  for (const id of H.groupLayerIds(nd).slice()) {
+  for (const id of groupLayerIds(nd).slice()) {
     const L = layerById(id); if (!L || !L.dh) continue;
     const L2 = await reopenDh(L, patch);   // the replacement (null if it failed and kept the original)
-    if (L2) H.treeMove(L2.id, nd, 'into');
+    if (L2) treeMove(L2.id, nd, 'into');
   }
   // the trace sticks are desurveyed from the OLD geometry — rebuild them, the
   // way filterHolesSet does after a hole-filter change, or they render the old
   // paths while the interval sticks show the new ones
   if (setHasTraces(nd)) { hideHoleTraces(nd); await showHoleTraces(nd); }
-  H.renderLayers(); markProjectDirty();
+  renderLayers(); markProjectDirty();
 }
 
 // derived collar→EOH hole traces for a set: a non-persisted (volatile) sticks
 // layer, thin + solid grey, nested under the set. Toggled on the set node —
 // shows full hole coverage even where an interval table has gaps.
-export const setHasTraces = (nd) => H.groupLayerIds(nd).some((id) => { const L = layerById(id); return L && L.trace; });
+export const setHasTraces = (nd) => groupLayerIds(nd).some((id) => { const L = layerById(id); return L && L.trace; });
 
 export function hideHoleTraces(nd) {
-  for (const id of H.groupLayerIds(nd).slice()) { const L = layerById(id); if (L && L.trace) { S.renderer.removeLayer(id); S.layers = S.layers.filter((l) => l.id !== id); } }
-  H.treeSync(); H.renderLayers(); requestRender();
+  for (const id of groupLayerIds(nd).slice()) { const L = layerById(id); if (L && L.trace) { S.renderer.removeLayer(id); S.layers = S.layers.filter((l) => l.id !== id); } }
+  treeSync(); renderLayers(); requestRender();
 }
 
 export async function showHoleTraces(nd) {
@@ -380,7 +382,7 @@ export async function showHoleTraces(nd) {
   const lid = H.allocLayerId();
   if (lid == null) { $('#meta').textContent = 'layer limit reached (7 element layers)'; return; }
   const name = dhGroupName(basename(info.blobs.collar.name || 'holes')) + ' · traces';
-  const memb = H.groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2._holeIds);
+  const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2._holeIds);
   if (memb && memb._holeIds) {                             // the hole filter propagates to the traces
     const lines = csvRecords(await info.blobs.collar.text());
     const cells2 = collarCells(lines);
@@ -400,10 +402,10 @@ export async function showHoleTraces(nd) {
     for await (const rc of streamChunks({ chunkPoints: 1 << 16 })) { cb.push(rc); await new Promise((r) => setTimeout(r)); }
     const doc = cb.flush();
     if (L) L.bboxLocal = doc.bboxLocal;
-    H.treeSync(); H.treeMove(lid, nd, 'into');    // nest under the set
-    H.renderLayers(); requestRender();
+    treeSync(); treeMove(lid, nd, 'into');    // nest under the set
+    renderLayers(); requestRender();
     $('#meta').textContent = `${header.holes} hole trace${header.holes === 1 ? '' : 's'} · ${header.count.toLocaleString()} segments`;
-  } catch (e) { $('#meta').textContent = `traces — ${e.message}`; S.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); H.renderLayers(); }
+  } catch (e) { $('#meta').textContent = `traces — ${e.message}`; S.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); renderLayers(); }
 }
 
 export function redesurveyMenu(nd, x, y) {

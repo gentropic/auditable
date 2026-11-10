@@ -8,8 +8,9 @@ import { convert as unitConvert } from '../../../ext/units/index.js';
 import { parse } from '../../../ext/expr/index.js';
 import { zoneKeeper } from './colscan.js';
 import { S, layerById } from './state.js';
+import { markProjectDirty } from './project.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setAnalysisUiHooks): deliverBlob, markProjectDirty, resultToLayer
+// the app's side, passed in once (setAnalysisUiHooks): deliverBlob, resultToLayer
 let H = {};
 export function setAnalysisUiHooks(h) { H = h; }
 
@@ -22,19 +23,19 @@ export const SERIES_COLORS = ['#5b7fa6', '#c8722e', '#5c8a5a', '#8a6fae', '#b056
 //   xLabel, leftLabel, rightLabel, xRange?, title? }
 export function plotChart(cv, spec) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const W = cv.clientWidth || 400, H = cv.clientHeight || 240;
-  cv.width = W * dpr; cv.height = H * dpr;
-  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const W = cv.clientWidth || 400, CH = cv.clientHeight || 240;
+  cv.width = W * dpr; cv.height = CH * dpr;
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, CH);
   const cs = getComputedStyle(document.documentElement);
   const ink = (cs.getPropertyValue('--au-fg') || '#dcdcdc').trim() || '#dcdcdc', dim = '#8a8f95', grid = 'rgba(140,145,150,0.16)';
   const hasRight = spec.series.some((s) => s.axis === 'right');
   const _lMax = Math.max(0, ...spec.series.filter((s2) => s2.axis !== 'right').flatMap((s2) => s2.data.map((d) => Math.abs(d[1] || 0)).filter(Number.isFinite)));
   const mL = Math.max(52, Math.round(_lMax).toLocaleString().length * 6.6 + 14), mR = hasRight ? 50 : 12, mT = 14 + (spec.series.length > 1 ? 12 : 0), mB = 30;
-  const px0 = mL, px1 = W - mR, py0 = H - mB, py1 = mT;
+  const px0 = mL, px1 = W - mR, py0 = CH - mB, py1 = mT;
   const allX = spec.series.flatMap((s) => s.data.map((d) => d[0]));
   if (!allX.length) {
     g.fillStyle = dim; g.font = '12px monospace'; g.textAlign = 'center';
-    g.fillText(spec.placeholder || 'no data', W / 2, H / 2);   // "scanning…" while the sweep runs — not "no data"
+    g.fillText(spec.placeholder || 'no data', W / 2, CH / 2);   // "scanning…" while the sweep runs — not "no data"
     return null;
   }
   // manual range overrides merge PER BOUND ([lo, hi], null = auto) so "just pin the max" works
@@ -60,7 +61,7 @@ export function plotChart(cv, spec) {
   }
   g.restore();
   g.fillStyle = dim; g.textAlign = 'center'; g.font = '10px monospace';
-  if (spec.xLabel) g.fillText(spec.xLabel, (px0 + px1) / 2, H - 4);
+  if (spec.xLabel) g.fillText(spec.xLabel, (px0 + px1) / 2, CH - 4);
   const rot = (txt, x, dir) => { g.save(); g.translate(x, (py0 + py1) / 2); g.rotate(dir * Math.PI / 2); g.fillText(txt, 0, 0); g.restore(); };
   if (spec.leftLabel) rot(spec.leftLabel, 10, -1);
   if (spec.rightLabel && hasRight) rot(spec.rightLabel, W - 8, 1);
@@ -221,7 +222,7 @@ export function saveAnalysisCfg(L, kind, cfg, win) {
   a.geo = a.geo || {};
   const geo = win ? [win.el.offsetLeft, win.el.offsetTop, win.el.offsetWidth, win.el.offsetHeight] : a.geo[kind];
   if (JSON.stringify(a[kind]) !== JSON.stringify(cfg) || JSON.stringify(a.geo[kind]) !== JSON.stringify(geo)) {
-    a[kind] = cfg; a.geo[kind] = geo; H.markProjectDirty();
+    a[kind] = cfg; a.geo[kind] = geo; markProjectDirty();
   }
 }
 
@@ -230,7 +231,7 @@ export function setAnalysisOpen(L, kind, open) {
   const set = new Set(a.open || []);
   if (set.has(kind) === open) return;
   if (open) set.add(kind); else set.delete(kind);
-  a.open = [...set]; H.markProjectDirty();
+  a.open = [...set]; markProjectDirty();
 }
 
 export function applyAnalysisGeo(L, kind, win) {

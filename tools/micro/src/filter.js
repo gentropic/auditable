@@ -13,8 +13,9 @@ import { readParquetRange } from '../../../ext/parquet/index.js';
 import { coordNum, lineFields, openDmModel } from '../../../ext/condenser/src/main.js';
 import { rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
+import { pushDhMask } from './drillholes.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, pushDhMask, refreshLinkedWindows
+// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, refreshLinkedWindows
 let H = {};
 export function setFilterHooks(h) { H = h; }
 
@@ -528,7 +529,7 @@ export function dhFilterSweep(L, expr) {                          // the interva
     L._filterMask = hm ? hm.slice() : null;
     let hits = 0; if (hm) for (const m of hm) if (m) hits++;
     L._filterHits = hits;
-    H.attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); H.pushDhMask(L);
+    H.attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
     return hm ? hits : null;
   }
   const schema = schemaExt(L, dh.header);
@@ -539,6 +540,6 @@ export function dhFilterSweep(L, expr) {                          // the interva
   let hits2 = 0;
   for (let i = 0; i < dh.header.count; i++) { if (hm && !hm[i]) continue; if (fn2(extendRow(L, dh.fetchRecord(i), i))) { mask2[i] = 1; hits2++; } }
   L._filterMask = mask2; L._filterHits = hits2;
-  H.attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); H.pushDhMask(L);
+  H.attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
   return hits2;
 }

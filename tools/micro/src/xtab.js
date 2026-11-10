@@ -15,10 +15,8 @@ import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { crosstabMerge, xtabAdd, xtabKey, XTAB_GROUPS_CAP } from './scanner.js';
 import { statsGroupCols } from './stats.js';
 import { gridAxesOf } from './grid-ops.js';
+import { markProjectDirty } from './project.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setXtabHooks): markProjectDirty
-let H = {};
-export function setXtabHooks(h) { H = h; }
 export const _xtabWins = new Map();
 
 // cutoffs as typed → ascending distinct finite numbers. Separated by spaces or
@@ -42,7 +40,7 @@ export function openCrosstab(L, ropts) {
   const saved = (ropts && ropts.cfg) || (L.analysis && L.analysis.xtab);
   if (saved) for (const k of ['group', 'grade', 'weight', 'filter', 'densUnit', 'gradeUnit', 'cutoffs', 'scope', 'measure', 'mode', 'flip']) if (saved[k] != null) st[k] = saved[k];
   const cfgOf = () => ({ layer: L.name, group: st.group, grade: st.grade, weight: st.weight, filter: st.filter, densUnit: st.densUnit, gradeUnit: st.gradeUnit, cutoffs: st.cutoffs, scope: st.scope, measure: st.measure, mode: st.mode, flip: st.flip });
-  const persistUnits = () => { L.gtUnits = { ...(L.gtUnits || {}), grade: st.gradeUnit, densUnit: st.densUnit, weight: st.weight }; H.markProjectDirty(); };
+  const persistUnits = () => { L.gtUnits = { ...(L.gtUnits || {}), grade: st.gradeUnit, densUnit: st.densUnit, weight: st.weight }; markProjectDirty(); };
   const win = floatWin({ title: `cross-tab · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 760), y: 110, w: 740, h: 500,
     onClose: () => { saveAnalysisCfg(L, 'xtab', cfgOf(), win); setAnalysisOpen(L, 'xtab', false); _xtabWins.delete(L.id); } });
   setAnalysisOpen(L, 'xtab', true);

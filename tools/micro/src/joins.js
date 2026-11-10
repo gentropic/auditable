@@ -11,8 +11,12 @@ import { mkLineage } from './lineage.js';
 import { matColSet, paintRecount } from './columns.js';
 import { persistElement } from './element-store.js';
 import { S, activeLayer, requestRender } from './state.js';
+import { applyRamp, renderProps, setRampCfg } from './props.js';
+import { markProjectDirty } from './project.js';
+import { openBlob } from './open.js';
+import { renderLayers } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setJoinsHooks): addPaintValue, applyRamp, createPaintCol, markProjectDirty, openBlob, renderLayers, renderProps, setLayerColorSel, setRampCfg
+// the app's side, passed in once (setJoinsHooks): addPaintValue, createPaintCol, setLayerColorSel
 let H = {};
 export function setJoinsHooks(h) { H = h; }
 
@@ -252,7 +256,7 @@ export async function spatialJoinToCols(L, R, jf) {
   L._colStats = null; L._calcFns = null;
   try { await persistElement(L); } catch { /* best-effort */ }
   H.setLayerColorSel(L, 'paint:' + outs[0].out);
-  H.markProjectDirty(); H.renderProps(); requestRender();
+  markProjectDirty(); renderProps(); requestRender();
   return outs.map((o) => o.out);
 }
 
@@ -308,7 +312,7 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
   L._colStats = null; L._calcFns = null;
   try { await persistElement(L); } catch { /* best-effort */ }
   H.setLayerColorSel(L, 'paint:' + outs[0].out);
-  H.markProjectDirty(); H.renderProps(); requestRender();
+  markProjectDirty(); renderProps(); requestRender();
   return { outs: outs.map((o) => o.out), matched, rows: done };
 }
 
@@ -336,7 +340,7 @@ export async function runReconcile(L, R, jf, grade) {
     // XC,YC,ZC, ...columns, ...derived, so Δ is at 3 + columns.length
     const dIdx = 3 + columns.length;
     const lin = mkLineage('reconcile', { grade, target: 'common-finest', ...(jf.useSel ? { selection: true } : {}), of: `${shortName(L)}−${shortName(R)}` }, [L.lineage, R.lineage]);
-    await H.openBlob(blob, name, 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: dIdx, cat: null }, lineage: lin, ...(T.rot ? { lattice: T } : {}) });
+    await openBlob(blob, name, 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: dIdx, cat: null }, lineage: lin, ...(T.rot ? { lattice: T } : {}) });
     const J = activeLayer();
     if (J) {
       const jh = layerTableHeader(J);
@@ -349,11 +353,11 @@ export async function runReconcile(L, R, jf, grade) {
       }
       // the diverging spectral ramp, symmetric about 0 → yellow=no change, blue=under, red=over
       if (mx > 0) { J.clip = [String(+(-mx).toPrecision(3)), String(+mx.toPrecision(3))]; if (J.id === S.activeId) { $('#clipMin').value = J.clip[0]; $('#clipMax').value = J.clip[1]; } }
-      H.setRampCfg(J, { preset: 'spectral' });
-      H.applyRamp(J, true); requestRender();
+      setRampCfg(J, { preset: 'spectral' });
+      applyRamp(J, true); requestRender();
       const mean = n ? sum / n : 0, mabs = n ? sumAbs / n : 0;
       $('#meta').textContent = `reconcile ${shortName(L)}−${shortName(R)} (${dName}): ${n.toLocaleString()} matched · mean Δ ${mean >= 0 ? '+' : ''}${mean.toPrecision(3)} · mean|Δ| ${mabs.toPrecision(3)}${thisOnly ? ` · ${thisOnly.toLocaleString()} added` : ''}${refOnly ? ` · ${refOnly.toLocaleString()} removed` : ''} → ${name}`;
     }
-    H.renderLayers();
+    renderLayers();
   } catch (e) { $('#meta').textContent = `reconcile: ${e.message}`; }
 }

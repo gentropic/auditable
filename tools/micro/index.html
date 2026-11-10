@@ -1186,12 +1186,12 @@ import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGrou
 import { mkLineage, microModelOf } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
-import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile, setWindowsHooks } from './src/windows.js';
+import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile } from './src/windows.js';
 import { plotChart, plotExportBtns, SERIES_COLORS, scopeMask, scopeMissing, rangesOf, rangesForCfg, rangesFromCfg, rangesRow, saveAnalysisCfg, setAnalysisOpen, applyAnalysisGeo, runCancellable, checkAbort, scanProgressText, analysisSerCfg, analysisSerRestore, gradeUnitFactor, gradeUnitSel, reconcilePairs, seriesZoneKeep, niceStep, fmtStat, setAnalysisUiHooks } from './src/analysis-ui.js';
-import { openGradeTonnage, _gtWins, setGtHooks } from './src/gt.js';
+import { openGradeTonnage, _gtWins } from './src/gt.js';
 import { openSwath, _swathWins, projRange, applySwathZebra, AXIS_NAMES, setSwathHooks } from './src/swath.js';
-import { openStats, _statsWins, setStatsHooks } from './src/stats.js';
-import { openCrosstab, _xtabWins, setXtabHooks, parseCutoffs } from './src/xtab.js';
+import { openStats, _statsWins } from './src/stats.js';
+import { openCrosstab, _xtabWins, parseCutoffs } from './src/xtab.js';
 import { openXyPlot, _xyWins } from './src/xyplot.js';
 import { openOmfBlob, omfCensus, setOmfHooks } from './src/omf.js';
 import { openMeshQa, setMeshQaHooks, _meshQaWins } from './src/meshqa.js';
@@ -1203,21 +1203,21 @@ import { recipeSlug, routineEval, routineFilterRows, routineSubst, routineReadTa
 import { meshSolidOf, solidOrientedMesh, _windingGpu, setWindingGpu, sbCancelActive, targetsXYBbox, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
 import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, ppNote, layerClassInfo, _autoApply, stageGate, pushAllStyle, revertStyle, syncPPFooter, applyCatVisibility, restoreHiddenCats, ensureLegend, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, _qualifyReopen, settleQualifyReopens, sparkline, useAsCategory, RAMP_PRESETS, RAMP_KIND, rampSample, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, refreshProps, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
 import { PROJECTS_KEY, markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, rleEncode, rleDecode, openPackFromHandle, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, cacheStamp, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks } from './src/project.js';
-import { detectDmWireframePairs, openDmWireframeBlob, openWfrFile, openBlob, openGridBlob, CONTEXT_TRI_CAP, MESH_STREAM_BYTES, hexToRgb01, openObjSplit, openLfmSplit, openMeshDoc, openDrillholeLayer, reopenDhChan, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, droppedNote, openBlocksBlob, openDmBlob, reopenBlockChan, setOpenHooks } from './src/open.js';
+import { detectDmWireframePairs, openDmWireframeBlob, openBlob, openGridBlob, CONTEXT_TRI_CAP, MESH_STREAM_BYTES, hexToRgb01, openObjSplit, openLfmSplit, openMeshDoc, openDrillholeLayer, reopenDhChan, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob, openDmBlob, setOpenHooks } from './src/open.js';
 import { addLayer, ingestSource, setIngestHooks } from './src/ingest.js';
-import { nextDhSetKey, dhGroupName, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel, setOpenDialogHooks } from './src/open-dialog.js';
-import { reopenDh, pushDhMask, invalidateWholeHoles, syncWholeHoles, csvRecords, collarCells, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, ensureDhSetGroups, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces, setDrillholesHooks } from './src/drillholes.js';
-import { resolveColorMode, setColorLabels, valueTexEligible, dropValueTex, ensureValueTex, setLayerColorBy, colorHeaderOf, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList, setColorHooks } from './src/color.js';
-import { syncMeshPickable, meshToGridLayer, surfaceColorArray, recolorSurface, setSurfaceFlatZ, captureLayerSurface, applyLayerSurface, setSurfaceSmooth, setGridBand, setSurfacesHooks } from './src/surfaces.js';
-import { reopenReplacing, captureReopenIdentity, restoreReopenIdentity, captureLayerStyling, applyLayerStyling, reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk, setReopenHooks } from './src/reopen.js';
+import { nextDhSetKey, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel, setOpenDialogHooks } from './src/open-dialog.js';
+import { reopenDh, invalidateWholeHoles, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces, setDrillholesHooks } from './src/drillholes.js';
+import { resolveColorMode, setColorLabels, dropValueTex, setLayerColorBy, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList, setColorHooks } from './src/color.js';
+import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, applyLayerSurface, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
+import { reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk, setReopenHooks } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
-import { treeSync, applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, treeToManifest, treeFromManifest, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, treeMoveStep, moveLayerToGroupMenu, secModeLabel, setLayerSectionMode, sectionModeItems, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
-import { saveViewAs, applyView, saveViewSlot, recallViewSlot, _gotoArm, gotoDisarm, armGoto, removeBookmark, captureScene, applyScene, saveSceneAs, removeScene, flushViewsScenes, loadViewsScenes, setViewsHooks } from './src/views.js';
+import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, treeMoveStep, moveLayerToGroupMenu, secModeLabel, setLayerSectionMode, sectionModeItems, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
+import { saveViewAs, applyView, saveViewSlot, recallViewSlot, _gotoArm, gotoDisarm, armGoto, removeBookmark, captureScene, applyScene, saveSceneAs, removeScene, setViewsHooks } from './src/views.js';
 import { _measure, recordPosition, armMeasure, clearMeasure, measureClick, _measureTP, toggleMeasureTP, drawMeasure, drawSectionPlane, setSwathBand, drawSwathBand, drawCompass, setOverlayHooks } from './src/overlay.js';
 import { microPrompt, _pmOkValue, microConfirm, pmClose } from './src/prompts.js';
 import { _menuChain, closeMenu, menuXY, menuAt } from './src/menu.js';
 import { exportGridAsc, exportMeshes, openMeshExportDialog, wfrExportable, openWfrDialog, writeGridDisplayCache, setMeshexportHooks } from './src/meshexport.js';
-import { layerWorldBbox, openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo, setGridtoolsHooks } from './src/gridtools.js';
+import { openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo, setGridtoolsHooks } from './src/gridtools.js';
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
 import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
 import { columnValues, filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, renderExprHL, syncHL } from './src/exprfield.js';
@@ -2444,22 +2444,20 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, applyLayerSelection, deliverBlob, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
+setExportHooks({ busyCancel, applyLayerSelection, deliverBlob, refilterLayer, setActiveLayer, setLayerColorSel });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
 
 // src/bygeom.js reaches back into the app through these
-setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel });
+setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel });
 
 // src/joins.js reaches back into the app through these
-setJoinsHooks({ addPaintValue, applyRamp, createPaintCol, markProjectDirty, openBlob, renderLayers, renderProps, setLayerColorSel, setRampCfg });
+setJoinsHooks({ addPaintValue, createPaintCol, setLayerColorSel });
 
 // src/analysis-ui.js reaches back into the app through these
-setAnalysisUiHooks({ deliverBlob, markProjectDirty, resultToLayer });
+setAnalysisUiHooks({ deliverBlob, resultToLayer });
 
-// src/gt.js reaches back into the app through these
-setGtHooks({ markProjectDirty, saveRecipe });
 
 // redraw open GT/swath windows bound to L when their scope's input changed
 // (kind: 'selection' after brushing, 'filtered' after a filter run)
@@ -2487,7 +2485,7 @@ async function resultToLayer(title, tsv, lineageOp) {
 }
 
 // src/recipes.js reaches back into the app through these
-setRecipesHooks({ applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe });
+setRecipesHooks({ applyCalcCols, layerHasColumn, resultToLayer });
 
 // apply a calc-column SET to a layer — REPLACE on same name (idempotency is
 // gospel: run-twice == run-once), append the new; invalid expressions are
@@ -2532,12 +2530,9 @@ function layerHasColumn(name, layerName) {
 }
 
 // src/swath.js reaches back into the app through these
-setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, saveRecipe, selectionStatus, setLayerColorSel });
+setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, selectionStatus, setLayerColorSel });
 
-// src/stats.js reaches back into the app through these
-setStatsHooks({ saveRecipe });
-setXtabHooks({ markProjectDirty });
-setOmfHooks({ addLayer, closeAllLayers, renderLayers });
+setOmfHooks({ closeAllLayers });
 // frame a WORLD point (radius 0 → a close look, else that much around it)
 setMeshQaHooks({
   zoomToPoint: (p, r) => {
@@ -2548,19 +2543,15 @@ setMeshQaHooks({
 // the structure window's view of the app (capivaras): paint, the mesh pick, the renderer
 setStructureHooks({
   // wrapped, not referenced: several are const arrows declared further down (TDZ at this point)
-  renderLayers: (...a) => renderLayers(...a),
   allocLayerId: (...a) => allocLayerId(...a),
   buildMeshChunk: (...a) => buildMeshChunk(...a),
-  hexToRgb01: (...a) => hexToRgb01(...a),
   createPaintCol: (...a) => createPaintCol(...a),
   deliverBlob: (...a) => deliverBlob(...a),
   addPaintValue: (...a) => addPaintValue(...a),
   paintApply: (...a) => paintApply(...a),
   convertMeshLayer: (...a) => convertMeshLayer(...a),
-  markProjectDirty: (...a) => markProjectDirty(...a),
   meshHitAt: (...a) => meshHitAt(...a),
   pixelRay: (...a) => pixelRay(...a),
-  addLayer: (...a) => addLayer(...a),
   removeLayerUI: (...a) => removeLayerUI(...a),
   zoomToPoint: (p, r) => {
     const o = S.frame ? S.frame.origin : [0, 0, 0], h = Math.max(1, r || 0);
@@ -2628,8 +2619,6 @@ $('#btnFit').onclick = () => { if (renderer.chunkCount) { cam.fit(rendererDocBbo
 // everything back where it came from.
 const _mqPhone = matchMedia('(max-width: 720px), (max-height: 500px) and (pointer: coarse)');   // a phone held sideways is wide but short
 const _forceMobile = new URLSearchParams(location.search).get('mobile') === '1';
-// src/windows.js reaches back into the app through these
-setWindowsHooks({ get _propOpen() { return _propOpen; }, closeProps, toggleLayersPanel });
 
 const _TOOLROW = ['#btnSelRect', '#btnSelLasso', '#btnSelThrough', '#btnPaint', '#btnMeasure', '#btnSection', '#btnShot', '#btnFit'];
 const _TOOLROW_MOBILE = ['#btnLayersM', '#btnPropsM', '#btnSelRect', '#btnSection', '#btnMeasure', '#btnFit'];
@@ -2766,7 +2755,7 @@ function fitFromHeader(header, first = true) {
   }
 }
 // src/open.js reaches back into the app through these
-setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get allocLayerId() { return allocLayerId; }, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, recomputeUnion, removeLayerUI, renderLayers, reopenDh, setActiveLayer, setColorLabels, surfaceColorArray });
+setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get allocLayerId() { return allocLayerId; }, closeAllLayers, fitFromHeader, recomputeUnion, removeLayerUI, setActiveLayer });
 
 // ── layers (micro-layers spec §1): see src/state.js — S.layers/S.activeId. One
 // layer open == exactly the old single-doc behavior (ids 0-shifted, panel hidden).
@@ -2818,14 +2807,12 @@ function setActiveLayer(id) {
 // src/ingest.js reaches back into the app through these
 setIngestHooks({ removeLayerUI });
 
-// src/surfaces.js reaches back into the app through these
-setSurfacesHooks({ reopenReplacing });
 
 // src/reopen.js reaches back into the app through these
 setReopenHooks({ closeAttrTable, refilterLayer, setLayerColorSel });
 
 // src/open-dialog.js reaches back into the app through these
-setOpenDialogHooks({ closeAllLayers, createLayerGroup });
+setOpenDialogHooks({ closeAllLayers });
 
 // the two dialogs' buttons
 $('#ofOpen').onclick = ofConfirm;
@@ -2834,7 +2821,7 @@ $('#dhImport').onclick = dhImport;
 $('#dhCancel').onclick = dhCancel;
 
 // src/filter.js reaches back into the app through these
-setFilterHooks({ attrTableFilterChanged, pushDhMask, refreshLinkedWindows });
+setFilterHooks({ attrTableFilterChanged, refreshLinkedWindows });
 
 // src/color.js reaches back into the app through these
 setColorHooks({ setActiveLayer });
@@ -2957,7 +2944,7 @@ async function deliverBlob(blob, filename) {
   } catch (e) { meta.textContent = `could not save ${filename}: ${e.message || e}`; }
 }
 // src/project.js reaches back into the app through these
-setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, reopenBlockChan, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
+setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, deliverBlob, get hasFSAA() { return hasFSAA; }, pickDirectory, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects });
 
 function captureCamera() {
   const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
@@ -4766,7 +4753,7 @@ function attrTableFilterChanged(lid) { const t2 = _attrTables.get(lid); if (t2) 
 function attrTableSelChanged(lid) { const t2 = _attrTables.get(lid); if (t2 && t2.selChanged) t2.selChanged(); }
 function closeAttrTable(lid) { const t2 = _attrTables.get(lid); if (t2) t2.close(); }
 // src/tree.js reaches back into the app through these
-setTreeHooks({ applyLayerOpacity, fitLayer, layerMenu, openBatchRename, setActiveLayer, syncSelBar, syncUndoBtn });
+setTreeHooks({ applyLayerOpacity, fitLayer, layerMenu, setActiveLayer, syncSelBar, syncUndoBtn });
 
 // panel widths: drag the inner edge; machine prefs (localStorage), CSS vars so
 // the compass dodge tracks live
@@ -5003,7 +4990,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   action: () => applyLayerOpacity(L, pc / 100),
 }));
 // src/props.js reaches back into the app through these
-setPropsHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, collarCells, get colorHeaderOf() { return colorHeaderOf; }, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, reopenBlockChan, reopenDh, reopenWithMapping, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth });
+setPropsHooks({ get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setLayerColorSel, setMeshTint });
 
 $('#ppClose').onclick = closeProps;
 
@@ -5036,7 +5023,7 @@ function appendColStats(body, stat, onCtx) {
   body.appendChild(d);
 }
 // src/drillholes.js reaches back into the app through these
-setDrillholesHooks({ get allocLayerId() { return allocLayerId; }, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, groupLayerIds, refilterLayer, renderLayers, restoreReopenIdentity, setActiveLayer, treeMove, treeSync });
+setDrillholesHooks({ get allocLayerId() { return allocLayerId; }, closeAttrTable, refilterLayer, setActiveLayer });
 
 function targetAxes(jf, L, R) {
   if (jf.target === 'left') return gridAxesOf(L);

@@ -28,8 +28,16 @@ import { BACKUP_EXT, BACKUP_MIME, inventoryProject, openPack, readBackup, restor
 import { shell } from '../../../ext/leadacid/index.js';
 import { menuXY } from './menu.js';
 import { microChoose, microConfirm } from './prompts.js';
+import { CONTEXT_TRI_CAP, openBlob, openDrillholeLayer, openWfrFile, reopenBlockChan } from './open.js';
+import { applyHoleFilter, ensureDhSetGroups } from './drillholes.js';
+import { applyTreeVisibility, createLayerGroup, renderLayers, treeFromManifest, treeToManifest } from './tree.js';
+import { captureLayerSurface, recolorSurface } from './surfaces.js';
+import { dhGroupName, openFilesDialog } from './open-dialog.js';
+import { ensureValueTex, valueTexEligible } from './color.js';
+import { flushViewsScenes, loadViewsScenes } from './views.js';
+import { wfrExportable, writeGridDisplayCache } from './meshexport.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): CONTEXT_TRI_CAP, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, dhGroupName, ensureDhSetGroups, ensureValueTex, flushViewsScenes, hasFSAA, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects, renderLayers, reopenBlockChan, treeFromManifest, treeToManifest, valueTexEligible, wfrExportable, writeGridDisplayCache
+// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, deliverBlob, hasFSAA, pickDirectory, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -120,7 +128,7 @@ export function setAutoPack(v) { _autoPack = v; try { if (v == null) localStorag
 
 export let _autoPackSkip = false;
 
-export const packableMesh = (L) => H.wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob);
+export const packableMesh = (L) => wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob);
 
 export async function packLayersToWfr(Ls) {
   if (!S.project || !Ls.length) return 0;
@@ -153,7 +161,7 @@ export async function packLayersToWfr(Ls) {
       S.renderer.removeLayer(L.id);
       L.docs = {};
       L.name = fname; L.handle = fh; L.storage = 'project';
-      await H.openWfrFile(file, fname, { layer: L.id, first: false, element: els[0], tint: keep.tint, opacity: keep.opacity });
+      await openWfrFile(file, fname, { layer: L.id, first: false, element: els[0], tint: keep.tint, opacity: keep.opacity });
       if (keep.label) L.label = keep.label;
       L.lineage = mkLineage('store', { format: 'wfr', file: `meshes/${fname}`, element: els[0] }, [keep.lineage]);
       if (keep.visible === false) { L.visible = false; S.renderer.setLayerVisible(L.id, false); }
@@ -162,7 +170,7 @@ export async function packLayersToWfr(Ls) {
       packed++;
     }
   }
-  H.recomputeUnion(); H.renderLayers(); markProjectDirty(); requestRender();
+  H.recomputeUnion(); renderLayers(); markProjectDirty(); requestRender();
   return packed;
 }
 
@@ -255,9 +263,9 @@ export function projectManifest() {
       edges: L.edges != null ? L.edges : undefined,        // per-layer block-edge override (tri-state; absent = follow View)
       gtUnits: L.gtUnits || undefined,                     // grade-tonnage unit declarations (grade unit, density col/const + unit)
       analysis: L.analysis || undefined,                   // GT/swath window setups (series by layer NAME) + pinned-open state + geometry
-      ...H.captureLayerSurface(L),   // gridSurface · drape · flatZ · faceted · band — the ONE surface-state source (shared with scenes; parity-tested)
+      ...captureLayerSurface(L),   // gridSurface · drape · flatZ · faceted · band — the ONE surface-state source (shared with scenes; parity-tested)
       soup: (L.kind === 'mesh' && L.docs.meshDoc && L.docs.meshDoc.header.soup) || undefined,
-      exact: (L.kind === 'mesh' && L.docs.meshDoc && !L.docs.meshDoc.header.soup && L.docs.meshDoc.header.triCount > H.CONTEXT_TRI_CAP) || undefined,   // promoted past the cap
+      exact: (L.kind === 'mesh' && L.docs.meshDoc && !L.docs.meshDoc.header.soup && L.docs.meshDoc.header.triCount > CONTEXT_TRI_CAP) || undefined,   // promoted past the cap
       traces: L.kind === 'mesh' && L.traces && L.traces.length ? L.traces.map((t) => ({ set: (setColOf(L) || { dict: [] }).dict[t.set] || '', pts: t.pts, path: t.path })) : undefined,   // fracture traces: file-vertex indices, set by NAME
       element: ((L.docs.meshDoc || L.docs.stringsDoc || {}).header || {}).element ?? undefined,   // a .wfr layer reopens ITS element of a shared file
       hiddenCats: L.catHidden && L.catHidden.size
@@ -287,7 +295,7 @@ export function projectManifest() {
     // project.json) — see flushViewsScenes / loadViewsScenes
     tree: (() => {                                         // groups (§4.1) — layers by manifest index
       const idOf = new Map(S.layers.filter((L) => !L.derivedOf).map((L, i) => [L.id, i]));   // same filter as layers: above
-      return H.treeToManifest(idOf);
+      return treeToManifest(idOf);
     })(),
   };
 }
@@ -351,7 +359,7 @@ export function canCopyIntoProject(L) { return !!(S.project && !S.project.pack &
 export function copyLayerIntoProject(L) {
   if (!canCopyIntoProject(L)) { $('#meta').textContent = S.project && S.project.pack ? 'copy: a project pack is read-only — save it as a folder first' : S.project ? 'copy: this layer is already in the project (or has no file)' : 'copy: open a project folder first'; return; }
   setTimeout(() => menuXY(innerWidth / 2 - 120, innerHeight / 3, [
-    { label: `Copy “${L.name}”${L.dh ? ' (collar + survey + intervals)' : ''} (${fmtSize(layerBytes(L))}) into ${S.project.name}/`, action: async () => { $('#meta').textContent = `copying ${L.name}…`; await copyLayerIn(L, S.project.dir); markProjectDirty(); $('#meta').textContent = `copied ${L.name} into the project (${fmtSize(layerBytes(L))})`; H.renderLayers(); } },
+    { label: `Copy “${L.name}”${L.dh ? ' (collar + survey + intervals)' : ''} (${fmtSize(layerBytes(L))}) into ${S.project.name}/`, action: async () => { $('#meta').textContent = `copying ${L.name}…`; await copyLayerIn(L, S.project.dir); markProjectDirty(); $('#meta').textContent = `copied ${L.name} into the project (${fmtSize(layerBytes(L))})`; renderLayers(); } },
     { label: 'Cancel', action: () => {} },
   ]), 0);
 }
@@ -370,7 +378,7 @@ export async function copyLayerIn(L, dir) {
     if (!L.dh) L.handle = fh;
   }
   L.storage = 'project';
-  H.renderLayers();
+  renderLayers();
 }
 
 export function askCopyOutside(outside) {
@@ -515,7 +523,7 @@ export async function saveProject() {
     // grid display-cache sidecars: the decimated/overview DISPLAY grid, stored
     // as compact Surfer binary so a huge DEM's project reopens WITHOUT
     // re-decimating the source (eval still windows the source at full res)
-    for (const L of S.layers) { try { await H.writeGridDisplayCache(L, dir); } catch { /* cache, never a failure */ } }
+    for (const L of S.layers) { try { await writeGridDisplayCache(L, dir); } catch { /* cache, never a failure */ } }
     // the element manifest + its columns: NOT derived — paint is hand-brushed, a
     // calc is authored, a join brought another file's values. A failure here is
     // reported (and the project stays unsaved), never swallowed.
@@ -564,14 +572,14 @@ export async function saveProject() {
         await mw.close();
       } catch { /* sidecars are a cache, never a failure */ }
     }
-    await H.flushViewsScenes(dir);                            // bookmarks/ + scenes/ — write any not yet persisted
+    await flushViewsScenes(dir);                            // bookmarks/ + scenes/ — write any not yet persisted
     const fh = await dir.getFileHandle('project.json', { create: true });
     const w = await fh.createWritable();
     await w.write(JSON.stringify(projectManifest(), null, 2) + '\n');
     await w.close();
     S.project.dirty = colFails.length > 0;                 // columns that didn't save: still unsaved work
     updateProjectTitle();
-    H.renderLayers();
+    renderLayers();
     rememberProject(dir);                                  // refresh the stored links alongside
     const ext = S.layers.filter((L) => L.storage === 'external').length;
     if (colFails.length) {
@@ -681,7 +689,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
     S.project = { dir, name: dir.name, dirty: false, pack };
-    await H.loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
+    await loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
     H.closeAllLayers();
     $('#empty').style.display = 'none';
     let links = {};
@@ -712,7 +720,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           catch { missing = dhRef[role]; break; }
         }
         if (missing) { $('#meta').textContent = `project: drillhole file “${missing}” missing from the folder — layer skipped`; plRow(i, `skipped — ${missing} missing`, 'skip'); continue; }
-        await H.openDrillholeLayer(dhFiles, dhRef.config || {}, S.layers.length ? 'add' : 'replace');
+        await openDrillholeLayer(dhFiles, dhRef.config || {}, S.layers.length ? 'add' : 'replace');
         const Ld = activeLayer();
         if (Ld) {
           Ld.storage = 'project';
@@ -723,7 +731,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           try { await loadElement(Ld, dir); } catch (e) { (Ld._colsUnread || (Ld._colsUnread = [])).push({ name: 'columns', why: e && e.message || String(e) }); }   // ƒ + matcols BEFORE filter/color (both may reference them); never blocks the load, always reported
           if (ls.calcCols && !(Ld.calcCols || []).length) Ld.calcCols = ls.calcCols;   // legacy projects (no element manifest)
           addPaintColorOptions(Ld);
-          if (ls.holeFilter) { try { await H.applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
+          if (ls.holeFilter) { try { await applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
           await H.refilterLayer(Ld, ls.filter);
           if (ls.visible === false) { Ld.visible = false; S.renderer.setLayerVisible(Ld.id, false); }
           if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(Ld.id, ls.sectioned);
@@ -813,7 +821,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           }
         } catch { /* no sidecar — full discovery as usual */ }
       }
-      const _got = await H.openBlob(file, basename(ls.source), i === 0 || !S.layers.length ? 'replace' : 'add', null, overR);
+      const _got = await openBlob(file, basename(ls.source), i === 0 || !S.layers.length ? 'replace' : 'add', null, overR);
       { const Lx = layerById(_got); if (Lx) { Lx.storage = ls.external ? 'external' : 'project'; if (ls.label) Lx.label = ls.label; if (ls.opacity != null && Lx.kind !== 'mesh') { Lx.opacity = ls.opacity; S.renderer.setLayerOpacity(Lx.id, ls.opacity); } if (ls.recHide && ls.recHide.length) Lx._recHide = new Set(ls.recHide); if (ls.legend) Lx.legend = true; if (ls.legendTitle) Lx.legendTitle = ls.legendTitle; if (ls.edges != null) { Lx.edges = ls.edges; S.renderer.setLayerEdges(Lx.id, ls.edges); } if (ls.gtUnits) Lx.gtUnits = ls.gtUnits; } }   // mesh opacity rides overR
       const L = layerById(_got);
       if (!L) { plRow(i, 'failed to open', 'skip'); continue; }   // that open failed; its layer rolled back
@@ -830,15 +838,15 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (ls.colorSel && ls.colorSel !== $('#colorBy').value && [...$('#colorBy').options].some((o) => o.value === ls.colorSel)) {
         L.colorSel = ls.colorSel;
         if (ls.colorSel.startsWith('chan:') && L.docs.blockDoc && +ls.colorSel.slice(5) !== L.docs.blockDoc.header.mapping.chan) {
-          const ok = H.valueTexEligible(L) ? await H.ensureValueTex(L, ls.colorSel) : null;
-          if (ok === null) await H.reopenBlockChan(L.docs.blockDoc, +ls.colorSel.slice(5), { keepFilter: false });
+          const ok = valueTexEligible(L) ? await ensureValueTex(L, ls.colorSel) : null;
+          if (ok === null) await reopenBlockChan(L.docs.blockDoc, +ls.colorSel.slice(5), { keepFilter: false });
         }
         if ([...$('#colorBy').options].some((o) => o.value === ls.colorSel)) $('#colorBy').value = ls.colorSel;
       }
       if (String(L.colorSel || '').startsWith('calc:')) { applyRamp(L, true); syncRuleMode(L); }   // realize + color the ƒ channel
       if (ls.clip && (ls.clip[0] || ls.clip[1])) { L.clip = [String(ls.clip[0] || ''), String(ls.clip[1] || '')]; $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1]; }
       await H.refilterLayer(L, ls.filter);
-      if (ls.visible === false) { L.visible = false; H.applyTreeVisibility(); }
+      if (ls.visible === false) { L.visible = false; applyTreeVisibility(); }
       if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(L.id, ls.sectioned);
       restoreHiddenCats(L, ls.hiddenCats);
       if (ls.ramps) { L.ramps = ls.ramps; applyRamp(L, true); }
@@ -847,8 +855,8 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       idAt[i] = L.id;
       plRow(i, 'done', 'done');
     }
-    if (mf.tree) H.treeFromManifest(mf.tree, idAt);
-    H.ensureDhSetGroups();                                   // pre-set-group projects: solo dh layers get their element group
+    if (mf.tree) treeFromManifest(mf.tree, idAt);
+    ensureDhSetGroups();                                   // pre-set-group projects: solo dh layers get their element group
     H.applyCamera(mf.camera);
     H.applySection(mf.section);
     // drapes come after ALL layers land — the drape grid may load later than its surface
@@ -856,7 +864,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (!L._pendingDrape) continue;
       const g = S.layers.find((x) => x.name === L._pendingDrape && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid);
       L._pendingDrape = null;
-      if (g) { try { H.recolorSurface(L, g); } catch { /* drape grid gone/incompatible → stays elevation */ } }
+      if (g) { try { recolorSurface(L, g); } catch { /* drape grid gone/incompatible → stays elevation */ } }
     }
     await settleQualifyReopens();                          // stored <x / >x policies: re-read a channel the open coloured by the default
     await loadRecipes(dir);                               // recipes/ *.yaml → Tools → Recipes
@@ -871,7 +879,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (a.open.includes('xtab')) { try { openCrosstab(L); } catch { /* same */ } }
       if (a.open.includes('xy')) { try { openXyPlot(L); } catch { /* same */ } }
     }
-    H.renderLayers();
+    renderLayers();
     S.project.dirty = false;
     updateProjectTitle();
     rememberProject(dir);
@@ -1211,13 +1219,13 @@ export async function scanFolderForNewData() {
         const ids = [];
         for (const iv of s.ivs) {                            // one dh layer per interval table, sharing the set
           const intervals = await resolveDhFile(dir, s.setDir, iv);
-          const _got = await H.openDrillholeLayer({ collar, survey, intervals }, s.desc.config || {}, S.layers.length ? 'add' : 'replace');
+          const _got = await openDrillholeLayer({ collar, survey, intervals }, s.desc.config || {}, S.layers.length ? 'add' : 'replace');
           const L = layerById(_got); if (L) { L.storage = 'project'; L._setPath = s.e.path; L._setKey = s.e.path; L._intervalName = iv; ids.push(L.id); }
         }
-        if (ids.length) H.createLayerGroup(H.dhGroupName(s.desc.collar), ids, { collapsed: false, dhSet: true });
+        if (ids.length) createLayerGroup(dhGroupName(s.desc.collar), ids, { collapsed: false, dhSet: true });
       } catch (err) { $('#meta').textContent = `scan: “${s.e.name}” — ${err.message}`; }
     }
-    if (looseFiles.length) await H.openFilesDialog(looseFiles);   // the dialog is the confirmation for loose files
+    if (looseFiles.length) await openFilesDialog(looseFiles);   // the dialog is the confirmation for loose files
     const nRcp = S.recipes.length;
     await loadRecipes(dir);                                 // recipes dropped into recipes/ arrive via the same inbox
     const rcpNew = S.recipes.length - nRcp;

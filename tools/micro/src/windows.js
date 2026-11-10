@@ -2,11 +2,10 @@
 // resize, snap to edges, minimise to the strip, ONE stacking order (nextZ) shared
 // with dialogs and menus — and, below 720px, the same window as a bottom SHEET
 // (peek / half / tall, one at a time). Carved from index.html (phase 3).
+import { _propOpen, closeProps } from './props.js';
+import { toggleLayersPanel } from './tree.js';
 
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setWindowsHooks): _propOpen, closeProps, toggleLayersPanel
-let H = {};
-export function setWindowsHooks(h) { H = h; }
 
 export const _isMobile = () => document.body.classList.contains('mobile');
 
@@ -16,8 +15,8 @@ export function _sheetExclusive(keep) {
   if (!_isMobile()) return;
   for (const w of document.querySelectorAll('.fwin')) if (w !== keep && w.style.display !== 'none' && w._minimize) w._minimize();
   const lp = $('#layersPanel'), pp = $('#propPanel'), rp = $('#recPanel');
-  if (keep !== lp && lp.classList.contains('show')) H.toggleLayersPanel(false);
-  if (keep !== pp && H._propOpen) H.closeProps();
+  if (keep !== lp && lp.classList.contains('show')) toggleLayersPanel(false);
+  if (keep !== pp && _propOpen) closeProps();
   if (keep !== rp) rp.classList.remove('show');
 }
 

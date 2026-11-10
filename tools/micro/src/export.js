@@ -12,8 +12,11 @@ import { coordNum, createMortonSorter } from '../../../ext/condenser/src/main.js
 import { fmtSize } from './paths.js';
 import { S } from './state.js';
 import { addPaintColorOptions } from './props.js';
+import { markProjectDirty } from './project.js';
+import { openParquetBlocks } from './open.js';
+import { renderLayers } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection, deliverBlob, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel
+// the app's side, passed in once (setExportHooks): applyLayerSelection, deliverBlob, refilterLayer, setActiveLayer, setLayerColorSel
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -234,7 +237,7 @@ async function convertInner(L, cvOpts) {
   const oldHandle = L.handle;                              // the PRE-optimize source file (CSV/.dm) — now stale + orphanable
   const savedActive = S.activeId; H.setActiveLayer(L.id);
   try {
-    await H.openParquetBlocks(outBlob, `${base}.parquet`, { layer: L.id, first: false });
+    await openParquetBlocks(outBlob, `${base}.parquet`, { layer: L.id, first: false });
   } catch (e) { $('#meta').textContent = `store as Parquet: reopen — ${e.message}`; H.setActiveLayer(savedActive); return; }
   L.name = `${base}.parquet`;                              // so save/reload routes to the parquet path
   L.lineage = optLineage;                                  // provenance: this layer was optimized in place
@@ -267,6 +270,6 @@ async function convertInner(L, cvOpts) {
   // calc columns recompute from the reordered base (no per-record cache); the
   // filter re-sweeps (with pushdown) against the new order
   await H.refilterLayer(L, keepFilter);
-  H.renderLayers(); H.markProjectDirty();
+  renderLayers(); markProjectDirty();
   $('#meta').textContent = `optimized “${base}.parquet” — ${n.toLocaleString()} blocks, Morton-sorted (spatial index) · painting stays editable. Save the project to store it.`;
 }

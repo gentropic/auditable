@@ -17,8 +17,10 @@ import { gridWindowFromGTiff, windowForWorldBbox } from '../../../ext/gtiff/inde
 import { paintRecount } from './columns.js';
 import { mkLineage } from './lineage.js';
 import { addPaintColorOptions } from './props.js';
+import { layerWorldBbox } from './gridtools.js';
+import { markProjectDirty } from './project.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel
+// the app's side, passed in once (setBygeomHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus, setLayerColorSel
 let H = {};
 export function setBygeomHooks(h) { H = h; }
 
@@ -432,7 +434,7 @@ export function gridSurfaceOf(gridL) { return surfaceFromGrid(gridL.docs.gridDoc
 // XY world bbox [minX, minY, maxX, maxY] over a set of layers
 export function targetsXYBbox(list) {
   let u = null;
-  for (const L of list) { const b = H.layerWorldBbox(L); if (!b) continue; const w = [b[0], b[1], b[3], b[4]]; if (!u) u = w; else { if (w[0] < u[0]) u[0] = w[0]; if (w[1] < u[1]) u[1] = w[1]; if (w[2] > u[2]) u[2] = w[2]; if (w[3] > u[3]) u[3] = w[3]; } }
+  for (const L of list) { const b = layerWorldBbox(L); if (!b) continue; const w = [b[0], b[1], b[3], b[4]]; if (!u) u = w; else { if (w[0] < u[0]) u[0] = w[0]; if (w[1] < u[1]) u[1] = w[1]; if (w[2] > u[2]) u[2] = w[2]; if (w[3] > u[3]) u[3] = w[3]; } }
   return u;
 }
 
@@ -533,7 +535,7 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
     H.applyLayerSelection(L);
   }
   if (epoch !== H.selEpoch()) return;
-  H.selectionStatus(); H.markProjectDirty(); requestRender();
+  H.selectionStatus(); markProjectDirty(); requestRender();
 }
 
 export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode = 'below', meshB = null, onProgress = null } = {}) {
@@ -570,7 +572,7 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
   H.setLayerColorSel(L, 'paint:' + col.name);
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `ratio by surface: ${touched.toLocaleString()} of ${n.toLocaleString()} blocks vs “${gridL.label || gridL.name}” → ${col.name}`;
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
   return col;
 }
 
@@ -610,7 +612,7 @@ export async function flagByGridSurface(gridL, targets, { name, label = 'IN', mo
     made++;
     $('#meta').textContent = `flag by surface: ${cnt.toLocaleString()} of ${n.toLocaleString()} → ${name} = ${label} · ${L.label || L.name}`;
   }
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
   return made;
 }
 
@@ -684,7 +686,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
   }
   if (epoch !== H.selEpoch()) return;
   H.selectionStatus();
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
 }
 
 // fraction-inside ratio column (block grids): res³ sub-samples across each
@@ -751,7 +753,7 @@ export async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', m
   H.setLayerColorSel(L, 'paint:' + col.name);                // see the result land
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `ratio by solid: ${touched.toLocaleString()} of ${n.toLocaleString()} blocks touch “${meshL.label || meshL.name}” → ${col.name} (${dense.engine})`;
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
   return col;
 }
 
@@ -839,7 +841,7 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
     made++;
     $('#meta').textContent = `flag by solid: ${cnt.toLocaleString()} of ${n.toLocaleString()} inside → ${name} · filter with ${name} == "${label}"`;
   }
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
   if (failed.length) throw new Error(`flag by solid failed on ${failed.length} of ${targets.length} target${targets.length > 1 ? 's' : ''} — ${failed[0]}`);
   return made;
 }
@@ -907,6 +909,6 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   H.setLayerColorSel(L, 'paint:' + col.name);
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   $('#meta').textContent = `assign domains: ${assigned.toLocaleString()} of ${n.toLocaleString()} claimed by ${solids.length} solids → ${name}`;
-  H.markProjectDirty(); requestRender();
+  markProjectDirty(); requestRender();
   return col;
 }
