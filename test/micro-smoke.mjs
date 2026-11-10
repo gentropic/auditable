@@ -556,6 +556,15 @@ const sft = await p.evaluate(async () => {
 });
 chk(`surface combine (min): A-only ${sft && sft.aOnly}, overlap ${sft && sft.overlap} (lower wins), B-only ${sft && sft.bOnly}, lineage ${sft && sft.op}`,
   sft && sft.aOnly === 100 && sft.overlap === 50 && sft.bOnly === 50 && sft.op === 'surface.combine');
+// the ESRI ASCII export names the file it wrote in the status line. It used to deliver
+// the file and then throw, on a variable that only exists inside deliverBlob.
+const ascMsg = await p.evaluate(async () => {
+  const m = window._micro; const L = m.layers().find((x) => /^min_/.test(x.name));
+  if (!L) return 'no grid layer';
+  try { await m.exportGridAsc(L); } catch (e) { return 'threw: ' + e.message; }
+  return document.querySelector('#meta').textContent;
+});
+chk(`grid export reports its file (“${ascMsg}”)`, /^exported .+\.asc \(\d+×\d+\)$/.test(ascMsg || ''));
 await p.evaluate(() => { const m = window._micro; for (const nm of ['sfA.obj', 'sfB.obj']) { const L = m.layers().find((x) => x.name === nm); if (L) { m.renderer.removeLayer(L.id); m.layers().splice(m.layers().indexOf(L), 1); } } const C = m.layers().find((x) => /^min_/.test(x.name)); if (C) { m.renderer.removeLayer(C.id); m.layers().splice(m.layers().indexOf(C), 1); } });
 
 // ── 7b. spatial join: resample a compatible fine model onto a coarse grid →
@@ -744,6 +753,13 @@ await p2.waitForFunction(() => /project “microsmoke”/.test(document.querySel
 const back = await p2.evaluate(() => { const L = window._micro.layers().find((x) => x.docs.blockDoc); const h = L && L.docs.blockDoc.header; return { n: L ? window._micro.renderer.layerElementCount(L.id) : 0, grid: h && h.grid && [h.grid.x.count, h.grid.y.count, h.grid.z.count].join(), parquet: !!(L && L.docs.blockDoc.parquet), name: L && L.name, linOp: L && L.lineage && L.lineage.op, linSrc: L && L.lineage && L.lineage.sources[0] && L.lineage.sources[0].op }; });
 chk(`project round trip: ${back.n} blocks back, grid ${back.grid}, auto-optimized to Parquet (${back.parquet}, “${back.name}”)`, back.n === NBLOCKS && back.grid === '30,20,2' && back.parquet && /\.parquet$/.test(back.name || ''));
 chk(`lineage survives round trip: optimize wrapping the opened file (${back.linOp}←${back.linSrc})`, back.linOp === 'optimize' && back.linSrc === 'open');
+// the lineage report names its file in the status line (same fault as the grid export)
+const repMsg = await p2.evaluate(() => {
+  const m = window._micro; const L = m.layers().find((x) => x.docs.blockDoc);
+  try { m.exportLineageReport(L); } catch (e) { return 'threw: ' + e.message; }
+  return document.querySelector('#meta').textContent;
+});
+chk(`lineage report names its file (“${repMsg}”)`, /^lineage report → .+\.lineage\.html$/.test(repMsg || ''));
 
 // ── 8b. RE-SAVE after auto-optimize (the data-loss bug): a CSV already IN a project
 //    → enable optimize → save AGAIN. The layer's stale handle used to make save skip

@@ -34,8 +34,9 @@ export async function exportGridAsc(L) {
   if (!g) return;
   if (Math.abs(g.dx - g.dy) > g.dx * 1e-3) $('#meta').textContent = `note: non-square grid exported at cellsize ${g.dx}`;
   const blob = new Blob([writeEsriAsc(g)], { type: 'text/plain' });
-  H.deliverBlob(blob, (L.label || L.name).replace(/\.[^.]+$/, '') + '.asc');
-  $('#meta').textContent = `exported ${a.download} (${g.nx}×${g.ny})`;
+  const name = (L.label || L.name).replace(/\.[^.]+$/, '') + '.asc';
+  H.deliverBlob(blob, name);
+  $('#meta').textContent = `exported ${name} (${g.nx}×${g.ny})`;
 }
 
 // ── MESH EXPORT — OBJ / PLY / MSH / LFM ──────────────────────────────────

@@ -2887,9 +2887,10 @@ details{margin-top:1.5rem}pre{background:#f6f6f4;padding:8px;overflow:auto;font-
 function exportLineageReport(L) {
   if (!L || !L.lineage) return;
   const blob = new Blob([lineageReportHtml(L)], { type: 'text/html' });
-  deliverBlob(blob, (L.label || L.name).replace(/\.[^.]+$/, '') + '.lineage.html');
+  const name = (L.label || L.name).replace(/\.[^.]+$/, '') + '.lineage.html';
+  deliverBlob(blob, name);
   window._lastReport = blob;
-  $('#meta').textContent = `lineage report → ${a.download}`;
+  $('#meta').textContent = `lineage report → ${name}`;
 }
 
 // the by-geometry dialogs' buttons — assign domains, select by solid (src/bygeom-ui.js)
