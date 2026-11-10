@@ -352,7 +352,7 @@ export function treePlace(id, slot) {
   arr.splice(Math.min(slot.i, arr.length), 0, id);
 }
 
-export const _successor = new Map();
+export const _successor = new Map();   // replaced id → the id that replaced it
 
 export function layerReplaced(oldId, newId, slot) {
   treePlace(newId, slot);

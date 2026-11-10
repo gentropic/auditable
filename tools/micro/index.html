@@ -2413,9 +2413,6 @@ $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPale
 // src/export.js reaches back into the app through these
 setExportHooks({ busyCancel, addPaintColorOptions, applyLayerSelection, deliverBlob, get frame() { return frame; }, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
 
-
-
-
 // ── the export dialog ──
 let _exDlg = null;
 function openExportDialog(L0) {
@@ -2567,55 +2564,14 @@ $('#exGo').onclick = async () => {
 // src/bygeom.js reaches back into the app through these
 setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintColorOptions, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, get frame() { return frame; }, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, requestRender, selEpoch, selectionStatus, setLayerColorSel });
 
-
-
-
-
-
-
-
-
-
-                                      // { W, meshL, reject } while a dense run is up
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // src/joins.js reaches back into the app through these
 setJoinsHooks({ addPaintValue, applyRamp, createPaintCol, markProjectDirty, openBlob, renderLayers, renderProps, requestRender, setLayerColorSel, setRampCfg });
-
-
 
 // src/analysis-ui.js reaches back into the app through these
 setAnalysisUiHooks({ deliverBlob, markProjectDirty, resultToLayer });
 
-
-
 // src/gt.js reaches back into the app through these
 setGtHooks({ markProjectDirty, saveRecipe });
-
-
-
-
-
-
 
 // redraw open GT/swath windows bound to L when their scope's input changed
 // (kind: 'selection' after brushing, 'filtered' after a filter run)
@@ -2623,9 +2579,6 @@ function refreshLinkedWindows(L, kind = 'selection') {
   if (!L) return;
   for (const map of [_gtWins, _swathWins, _statsWins]) { const e = map.get(L.id); if (e && e.st && e.st.scope === kind) e.redraw(); }
 }
-
-
-
 
 // export / copy a chart canvas (PNG at its dpr-scaled resolution); tableFn,
 // when given, adds a TSV copy of the computed NUMBERS (what lands in memos)
@@ -2644,11 +2597,6 @@ async function resultToLayer(title, tsv, lineageOp) {
   markProjectDirty();
   return L;
 }
-
-
-
-
-
 
 // src/recipes.js reaches back into the app through these
 setRecipesHooks({ applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, menuXY, microConfirm, microPrompt, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe });
@@ -2681,21 +2629,6 @@ function applyCalcCols(L, cols) {
   return { applied, bad };
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // does a layer already carry this column? (any kind — source, ƒ, painted, stored)
 function layerHasColumn(name, layerName) {
   const L = S.layers.find((x) => x.name === layerName || x.label === layerName);
@@ -2710,36 +2643,8 @@ function layerHasColumn(name, layerName) {
   return all.some((n) => String(n).toLowerCase() === String(name).toLowerCase());
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // src/swath.js reaches back into the app through these
 setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintColorOptions, addPaintValue, applyLayerSelection, applyPaintPalette, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, menuXY, paintColByName, paintSelOf, get rendererDocBbox() { return rendererDocBbox; }, requestRender, saveRecipe, selectionStatus, setLayerColorSel, setSwathBand });
-
-
-
-
-
-
-
-
-
 
 // src/stats.js reaches back into the app through these
 setStatsHooks({ menuXY, saveRecipe });
@@ -2806,20 +2711,6 @@ setDhQaHooks({
   },
   deliverBlob: (blob, name) => deliverBlob(blob, name),
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // ── lineage inspector + report ────────────────────────────────────────────────
 const LINEAGE_LABEL = { open: 'opened', join: 'spatial join', reconcile: 'reconcile', optimize: 'optimize', keyjoin: 'key join', 'grid-cover': 'common grid', 'grid-new': 'new grid', export: 'export' };
@@ -4303,7 +4194,6 @@ _mqPhone.addEventListener('change', layoutBars);
 addEventListener('resize', syncLand);
 layoutBars();
 
-
 // the view yields to whatever sheet is open: --sheet-inset = its height, so the
 // canvas (a ResizeObserver resizes it) shrinks to the region above and the camera
 // centre — hence the model — moves up with it. Re-measured on any sheet change.
@@ -4327,8 +4217,6 @@ function _sheetLayout() {
 }
 new MutationObserver(_sheetLayout).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'] });
 addEventListener('resize', _sheetLayout);
-
-
 
 // a pick card's handle: a tap or a pull toward the middle of the screen grows it into the
 // record sheet; a flick toward its edge closes it
@@ -4382,7 +4270,6 @@ function fitFromHeader(header, first = true) {
 // src/open.js reaches back into the app through these
 setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, get cam() { return cam; }, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, get frame() { return frame; }, microConfirm, recomputeUnion, removeLayerUI, renderLayers, get renderer() { return renderer; }, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray });
 
-
 // ── layers (micro-layers spec §1): see src/state.js — S.layers/S.activeId. One
 // layer open == exactly the old single-doc behavior (ids 0-shifted, panel hidden).
 const LAYER_CAP = 64;                                     // a UI limit now, not an arithmetic one
@@ -4429,104 +4316,20 @@ function setActiveLayer(id) {
   renderLayers();
 }
 
-
-
-
-
-
-
-
-
 // src/lineage.js reaches back into the app through these
 setLineageHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; } });
-
-
-
 
 // src/ingest.js reaches back into the app through these
 setIngestHooks({ get _fileHandles() { return _fileHandles; }, get colorHeaderOf() { return colorHeaderOf; }, colorSelFor, fileLayersInGroup, removeLayerUI, renderLayers, setLayerColorBy, setLayerColorRange, setLayerPalette, writePlyMeshBytes });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // src/surfaces.js reaches back into the app through these
 setSurfacesHooks({ get frame() { return frame; }, renderLayers, get renderer() { return renderer; }, reopenReplacing, requestRender });
-
-
-
-
-
-
-
-
-
-
 
 // src/reopen.js reaches back into the app through these
 setReopenHooks({ get _fileHandles() { return _fileHandles; }, closeAttrTable, layerReplaced, menuXY, refilterLayer, renderLayers, get renderer() { return renderer; }, setLayerColorSel, treeSlotOf });
 
-
-
-
-
-
-
-
-
-
-
-
-
-              // an OBJ past this streams (its text announces no triangle count)
-
-
-
-
-
-
-
-
-
-
 // src/open-dialog.js reaches back into the app through these
 setOpenDialogHooks({ get _fileHandles() { return _fileHandles; }, closeAllLayers, createLayerGroup });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // the two dialogs' buttons
 $('#ofOpen').onclick = ofConfirm;
@@ -4534,32 +4337,11 @@ $('#ofCancel').onclick = ofCancel;
 $('#dhImport').onclick = dhImport;
 $('#dhCancel').onclick = dhCancel;
 
-
 // src/filter.js reaches back into the app through these
 setFilterHooks({ attrTableFilterChanged, get frame() { return frame; }, pushDhMask, refreshLinkedWindows, get renderer() { return renderer; }, requestRender, rowsProgress, syncHL });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // src/color.js reaches back into the app through these
 setColorHooks({ followLayer, get renderer() { return renderer; }, requestRender, setActiveLayer });
-
-
 
 // (blockCaps / layerRecords / docPositionStream live in src/records.js)
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
@@ -4569,31 +4351,11 @@ $('#colorBy').addEventListener('change', () => {
   else requestRender();
 });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 for (const id of ['clipMin', 'clipMax']) $('#' + id).addEventListener('input', () => {
   const L = activeLayer(); if (L) { L.clip = [$('#clipMin').value, $('#clipMax').value]; const pcR = paintActiveCol(L) || calcDisplayCol(L); if (rampCfgOf(L) || (pcR && pcR.kind === 'ratio')) applyRamp(L, true); }
   dispatchEvent(new Event('micro:project-dirty'));
 });
 
-                          // layer id → its latest filter (a newer filter on that layer aborts the older sweep)
-
-   // every layer closed
 // re-sweep a layer's filter after something changed under it (a re-read, new ƒ
 // definitions, a reload) — ANY layer; the box mirrors it when it's the active one
 async function refilterLayer(L, expr = L && L.filterExpr) {
@@ -4601,8 +4363,6 @@ async function refilterLayer(L, expr = L && L.filterExpr) {
   if (L.id === S.activeId) { $('#filter').value = expr; syncFilterClear(); }
   await applyBlockFilter(expr, L);
 }
-
-
 
 // ── autocomplete (lamina's engine over @gcu/expr complete()): columns, functions,
 // keywords, and DATA VALUES (the category dictionary — picking "HEMATITE" from the
@@ -5005,19 +4765,11 @@ async function deliverBlob(blob, filename) {
 // src/project.js reaches back into the app through these
 setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _fileHandles() { return _fileHandles; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, menuXY, microChoose, microConfirm, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, get renderer() { return renderer; }, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
 
-
    // 'on' | 'off' | null (unasked)
    // null = ask again
 
-
-
-
    // 'on' | 'off' | null
    // null = ask again
-
-
-
-
 
 function captureCamera() {
   const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
@@ -5198,30 +4950,7 @@ function setSelectionRecords(L, recs, mode = 'replace') {
   return L._selCount || 0;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 $('#plClose').onclick = () => { $('#plDlg').classList.remove('show'); };
-
-
 
 addEventListener('beforeunload', (e) => { if (unsavedWork()) { e.preventDefault(); e.returnValue = ''; } });
 // a long job the user can stop (export, optimize): the footer's cancel button —
@@ -5231,18 +4960,6 @@ function busyCancel() {
   b.hidden = false; b.onclick = () => { ac.abort(); b.hidden = true; };
   return { signal: ac.signal, done: () => { b.hidden = true; b.onclick = null; } };
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 // the in-app prompt — same grammar as window.prompt (null on cancel), but
 // it's OUR dialog: Enter accepts, Esc/backdrop cancel, text pre-selected
@@ -5308,22 +5025,6 @@ $('#pmDlg').addEventListener('keydown', (e) => {
 });
 // src/views.js reaches back into the app through these
 setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, microConfirm, microPrompt, get renderer() { return renderer; }, requestRender, setActiveLayer, setLayerColorSel, syncFilterClear });
-
-
-
-
-
-
-
-                                          // the g-leader timer (0 = disarmed)
-
-
-
-
-
-
-
-
 
 // recent projects on the empty state (chips, like recent files)
 async function renderEmptyProjects() {
@@ -6013,60 +5714,8 @@ async function openSample(n = 2_000_000) {
 }
 document.querySelectorAll('[data-sample]').forEach((a) => a.onclick = () => openSample(+a.dataset.sample));
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 // src/deco.js reaches back into the app through these
 setDecoHooks({ applyCamera, applySection, get cam() { return cam; }, captureCamera, captureSection, get cv() { return cv; }, deliverBlob, renderFigureCanvas, get renderer() { return renderer; }, requestRender });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-   // back-compat alias (View menu / palette)
-
-
-
 
 applyBg();                                                 // restore the saved background at boot
 // ── window management: as the float windows multiply (GT · swath · validate ·
@@ -7254,13 +6903,6 @@ async function openDemoProject() {
 }
 $('#sampleDemo').onclick = () => openDemoProject();
 
-
-
-
-
-
-
-
 // ── dialog lifecycle — one manager for every #…Dlg overlay ──────────────────
 // Two kinds, one contract. MODAL = flow gates (open/import/save/progress):
 // centered, backdrop, backdrop-click cancels. MODELESS = operation config that
@@ -7533,7 +7175,6 @@ setTreeHooks({ applyLayerOpacity, get cam() { return cam; }, fitLayer, layerMenu
   if (saved.pp) setW('pp', saved.pp);
 }
 
-
 $('#lpClose').onclick = closeLayersPanel;
 
 function fitLayer(L) { if (L.bboxLocal) { cam.fit(L.bboxLocal); requestRender(); } }
@@ -7744,29 +7385,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
 // src/props.js reaches back into the app through these
 setPropsHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, collarCells, get colorHeaderOf() { return colorHeaderOf; }, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, get frame() { return frame; }, hexToRgb01, markProjectDirty, menuXY, microPrompt, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, get renderer() { return renderer; }, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth });
 
-
-
-
-
-
 $('#ppClose').onclick = closeProps;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 $('#ppAuto').onchange = () => {
   setAutoApply($('#ppAuto').checked);
@@ -7776,49 +7395,6 @@ $('#ppAuto').onchange = () => {
 };
 $('#ppApply').onclick = () => { const L = activeLayer(); if (L) { pushAllStyle(L); markProjectDirty(); } };
 $('#ppRevert').onclick = () => { const L = activeLayer(); if (L) revertStyle(L); };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function appendColStats(body, stat, onCtx) {
   if (!stat) return;
@@ -7842,30 +7418,6 @@ function appendColStats(body, stat, onCtx) {
 // src/drillholes.js reaches back into the app through these
 setDrillholesHooks({ get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, get frame() { return frame; }, groupLayerIds, menuXY, microPrompt, refilterLayer, renderLayers, get renderer() { return renderer; }, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                                   // { prev, hist } — the ramp section's live canvases
-
-
-
-
-
-
-
-
 function targetAxes(jf, L, R) {
   if (jf.target === 'left') return gridAxesOf(L);
   if (jf.target === 'right') return gridAxesOf(R);
@@ -7885,84 +7437,10 @@ async function runSpatialJoinUI(L, R, jf) {
   } catch (e) { $('#meta').textContent = `join: ${e.message}`; }
 }
 
-
-
 function openReconcileMenu(L, R, jf, shared, anchor) {
   const r = anchor.getBoundingClientRect();
   menuXY(r.left - 40, r.bottom + 2, shared.map((g) => ({ label: `Δ on ${g}`, action: () => runReconcile(L, R, jf, g) })));
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                              // replaced id → the id that replaced it
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // ── pick → record inspector: a CLICK (not a drag) GPU-picks the element under
 // the cursor (record index), then fetches the full source row — O(1) for LAS

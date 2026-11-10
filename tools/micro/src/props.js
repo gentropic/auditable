@@ -1841,7 +1841,7 @@ export function applyRamp(L, force) {
   H.requestRender();
 }
 
-export let _rampRepaint = null;
+export let _rampRepaint = null;   // { prev, hist } — the ramp section's live canvases
 
 export function setRampCfg(L, patch) {
   const cfg = rampCfgOf(L, true);

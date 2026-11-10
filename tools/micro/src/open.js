@@ -637,7 +637,7 @@ export async function openPlyBlob(blob, name, opts = {}) {
 // over-the-cap paths (promote-to-context) on a mesh small enough to build in a test.
 export const CONTEXT_TRI_CAP = (() => { try { const n = +new URLSearchParams(location.search).get('ctxcap'); if (n > 0) return n; } catch {} return 2_000_000; })();
 
-export const MESH_STREAM_BYTES = 160 * 1024 * 1024;
+export const MESH_STREAM_BYTES = 160 * 1024 * 1024;   // an OBJ past this streams (its text announces no triangle count)
 
 export async function plyFaceCount(blob) {
   try {

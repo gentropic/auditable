@@ -68,11 +68,11 @@ export async function applyTableFilter(L, expr) {
 // ── filter: lamina's expression language over EVERY column, evaluated in one
 // sweep over the file → a bitmask by record index → a GPU mask texture (dim or
 // isolate). The §4 selection contract, arriving via the local UI first. ──
-export const _filterEpochs = new Map();
+export const _filterEpochs = new Map();   // layer id → its latest filter (a newer filter on that layer aborts the older sweep)
 
 export let _filterSeq = 0;
 
-export function resetFilterState() { _filterEpochs.clear(); }
+export function resetFilterState() { _filterEpochs.clear(); }   // every layer closed
 
 // L defaults to the active layer (the filter box). It used to BE the active layer,
 // so every path that re-filters after a re-read did it only `if active`, and a

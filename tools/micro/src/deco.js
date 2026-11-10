@@ -276,7 +276,7 @@ export function openDecoPanel() {
   render();
 }
 
-export function decorationsMenu() { openDecoPanel(); }
+export function decorationsMenu() { openDecoPanel(); }   // back-compat alias (View menu / palette)
 
 // ── the FIGURE recipe: camera + decorations + background + export scale.
 // Running applies the lot, waits for the render to converge, exports the PNG,

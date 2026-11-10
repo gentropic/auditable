@@ -69,7 +69,7 @@ export function recallViewSlot(n) {
   else $('#meta').textContent = `no view in slot ${n} — g then Shift+${n} saves the current view there`;
 }
 
-export let _gotoArm = 0;
+export let _gotoArm = 0;   // the g-leader timer (0 = disarmed)
 
 export function gotoDisarm() { if (_gotoArm) { clearTimeout(_gotoArm); _gotoArm = 0; } }
 

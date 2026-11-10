@@ -226,7 +226,7 @@ export function etaStr(t0, frac) {
   return rem >= 90 ? ` · ~${Math.round(rem / 60)} min left` : ` · ~${Math.max(1, Math.round(rem))}s left`;
 }
 
-export let _sbActive = null;
+export let _sbActive = null;   // { W, meshL, reject } while a dense run is up
 
 export async function evalSolidOnGrid(meshL, L, { mode, resolution = [3, 3, 3], onProgress, variant = 'solid', method = 'winding' } = {}) {
   const doc = L.docs.blockDoc;
