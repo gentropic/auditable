@@ -15,6 +15,7 @@ import { applyRamp, renderProps, setRampCfg } from './props.js';
 import { markProjectDirty } from './project.js';
 import { openBlob } from './open.js';
 import { renderLayers } from './tree.js';
+import { menuXY } from './menu.js';
 import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setJoinsHooks): addPaintValue, createPaintCol
@@ -361,4 +362,32 @@ export async function runReconcile(L, R, jf, grade) {
     }
     renderLayers();
   } catch (e) { $('#meta').textContent = `reconcile: ${e.message}`; }
+}
+
+// ── the join tab's two buttons (Properties → join) ──
+// the grid the form names: one side's own, or the common lattice of the two
+function targetAxes(jf, L, R) {
+  if (jf.target === 'left') return gridAxesOf(L);
+  if (jf.target === 'right') return gridAxesOf(R);
+  const c = commonLattice([gridAxesOf(L), gridAxesOf(R)], { resolution: jf.target === 'coarsest' ? 'coarsest' : 'finest' });
+  if (!c.ok) throw new Error(c.reason);
+  return c;
+}
+// run the spatial join and open the result as a new layer, with its lineage
+export async function runSpatialJoinUI(L, R, jf) {
+  try {
+    const T = targetAxes(jf, L, R);
+    const columns = joinColumnsFromForm(jf, L, R);
+    const name = `${shortName(L)}⋈${shortName(R)}.csv`;
+    const { blob, cells } = await runSpatialJoin({ leftL: L, rightL: R, target: T, columns, label: 'join', useSelection: !!jf.useSel });
+    const lin = mkLineage('join', { target: jf.target, ...(jf.useSel ? { selection: true } : {}), columns: columns.map((c) => ({ src: c.src, name: c.name, out: c.out, op: c.op || undefined, weight: c.weight || undefined })) }, [L.lineage, R.lineage]);
+    await openBlob(blob, name, 'add', null, { lineage: lin, ...(T.rot ? { lattice: T } : {}) });
+    $('#meta').textContent = `joined ${cells.toLocaleString()} cells → ${name}`;
+  } catch (e) { $('#meta').textContent = `join: ${e.message}`; }
+}
+
+// "Reconcile…": a menu with one entry per grade both models share
+export function openReconcileMenu(L, R, jf, shared, anchor) {
+  const r = anchor.getBoundingClientRect();
+  menuXY(r.left - 40, r.bottom + 2, shared.map((g) => ({ label: `Δ on ${g}`, action: () => runReconcile(L, R, jf, g) })));
 }

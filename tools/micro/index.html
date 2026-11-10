@@ -1148,7 +1148,7 @@ import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell sh
 import { declusterWeights } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
 import { compileValue } from '../../ext/expr/index.js';   // lamina's filter language + autocomplete, verbatim
 import { raycastBVH } from '../../ext/winding/index.js';   // select-by-solid containment (spec 17)
-import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
+import { html, trusted, setHTML } from './src/html.js';
 import { installLongPress } from './src/longpress.js';
 import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
@@ -1170,9 +1170,9 @@ import { runWfrJob, packLayers, handleSink, partsSink } from './src/wfr-write.js
 import { applyBlockFilter, applyTableFilter, dhFilterSweep, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
 import { mkLineage } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
-import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
+import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, runReconcile, setJoinsHooks } from './src/joins.js';
 import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, _sheetDrag, _sheetExclusive, _isMobile } from './src/windows.js';
-import { fmtStat, setAnalysisUiHooks } from './src/analysis-ui.js';
+import { setAnalysisUiHooks } from './src/analysis-ui.js';
 import { openGradeTonnage, _gtWins } from './src/gt.js';
 import { openSwath, _swathWins, applySwathZebra, setSwathHooks } from './src/swath.js';
 import { openStats, _statsWins } from './src/stats.js';
@@ -1184,7 +1184,7 @@ import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './sr
 import { openValidation } from './src/validation.js';
 import { recipeSlug, routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems, openRoutineWindow, openInputsDialog, setRecipesHooks } from './src/recipes.js';
 import { meshSolidOf, setWindingGpu, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
-import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, sparkline, useAsCategory, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
+import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, useAsCategory, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
 import { PROJECTS_KEY, markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, openPackFromHandle, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks } from './src/project.js';
 import { openBlob, openGridBlob, openObjSplit, openLfmSplit, openDrillholeLayer, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob } from './src/open.js';
 import { addLayer, ingestSource } from './src/ingest.js';
@@ -1202,7 +1202,7 @@ import { _menuChain, closeMenu, menuXY, menuAt } from './src/menu.js';
 import { exportGridAsc, exportMeshes, openMeshExportDialog, wfrExportable, openWfrDialog, writeGridDisplayCache } from './src/meshexport.js';
 import { openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo } from './src/gridtools.js';
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
-import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
+import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo } from './src/bygeom-ui.js';
 import { filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, syncHL } from './src/exprfield.js';
 import { _fdOpen, renderFilterDrawer, toggleFilterDrawer } from './src/filter-drawer.js';
 import { HELP_KEYS, HELP_TOUCH, HELP_ANALYSIS, showAbout, showHelp, checkForUpdates, sealedInfo, setHelpHooks } from './src/help.js';
@@ -1214,7 +1214,7 @@ import { _recents, _remember, refreshRecents, addRecent, clearRecents, setRememb
 import { renameActiveLayer, openBatchRename } from './src/rename.js';
 import { deliverBlob } from './src/hostio.js';
 import { _attrTables, openAttrTable, attrTableSelChanged, attrTableReveal, setAttrtableHooks } from './src/attrtable.js';
-import { allocLayerId, closeAllLayers, recomputeUnion, setActiveLayer, removeLayerUI, rendererDocBbox, fitFromHeader } from './src/layers.js';
+import { allocLayerId, closeAllLayers, recomputeUnion, setActiveLayer, removeLayerUI, rendererDocBbox, fitFromHeader, layerShown } from './src/layers.js';
 import { fitLayer, confirmRemoveLayer, convertMeshLayer, setMeshTint, setLayermenuHooks } from './src/layermenu.js';
 // src/layermenu.js reaches back into the app through these
 setLayermenuHooks({ get _blockEdges() { return _blockEdges; }, filterToSelection, selectionToColumn });
@@ -1224,8 +1224,6 @@ setAttrtableHooks({ emitPick, showRecord });
 setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { return _nlOn; }, get _secFollow() { return _secFollow; }, get _selStick() { return _selStick; }, nlEnsureTrained, nlSetEnabled, setBlockEdges, setSelStick });
 // src/help.js reaches back into the app through these
 setHelpHooks({ get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
-// src/bygeom-ui.js reaches back into the app through these
-setBygeomUiHooks({ layerShown });
 // src/overlay.js reaches back into the app through these
 setOverlayHooks({ get _viewMode() { return _viewMode; }, currentSection, pickHitPoint });
 const __MICRO_BUILD__ = 'dev';                             // stamped '<version> · <hash> · <date>' by node build.js --target=micro
@@ -1784,17 +1782,6 @@ function selectByPolygon(poly, mode, isRect, only = null) {
 // selected the filtered-out blocks too — into selection → column, exports of the
 // selection, grade-tonnage on it. The anywidget's select_through always had this
 // rule.) ONE scan for select and paint, so the two can't disagree.
-function layerShown(lid) {
-  let shown = null;
-  const walk = (arr, on) => {                              // applyTreeVisibility's own walk
-    for (const nd of arr) {
-      if (typeof nd === 'number') { if (nd === lid) shown = !!(on && (layerById(nd) || {}).visible); }
-      else walk(nd.children, on && nd.visible);
-    }
-  };
-  walk(S.layerTree, true);
-  return shown == null ? !!(layerById(lid) || {}).visible : shown;
-}
 // → (chunk, i, r) => is record r (chunk row i) on screen? null when nothing hides
 function throughDrawnTest(L) {
   const isDh = !!(L.docs && L.docs.dhDoc);
@@ -2426,7 +2413,7 @@ setExportHooks({ busyCancel, applyLayerSelection });
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
 
 // src/bygeom.js reaches back into the app through these
-setBygeomHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus });
+setBygeomHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, nextSelEpoch, selEpoch, selectionStatus });
 
 // src/joins.js reaches back into the app through these
 setJoinsHooks({ addPaintValue, createPaintCol });
@@ -4516,7 +4503,7 @@ setTreeHooks({ syncSelBar, syncUndoBtn });
 $('#lpClose').onclick = closeLayersPanel;
 
 // src/props.js reaches back into the app through these
-setPropsHooks({ addPaintValue, appendColStats, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI });
+setPropsHooks({ addPaintValue, createPaintCol, openPaintPalette, paintColByName });
 
 $('#ppClose').onclick = closeProps;
 
@@ -4528,50 +4515,6 @@ $('#ppAuto').onchange = () => {
 };
 $('#ppApply').onclick = () => { const L = activeLayer(); if (L) { pushAllStyle(L); markProjectDirty(); } };
 $('#ppRevert').onclick = () => { const L = activeLayer(); if (L) revertStyle(L); };
-
-function appendColStats(body, stat, onCtx) {
-  if (!stat) return;
-  const d = document.createElement('div'); d.className = 'pp-stats';
-  if (onCtx) d.oncontextmenu = onCtx;
-  if (stat.footer) {                                       // Parquet's footer, before any scan
-    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br><span class="v">${fmtStat(stat.min)}</span> … <span class="v">${fmtStat(stat.max)}</span> <span class="pp-footnote">from the file's footer — scan for mean, sd + quantiles</span>`);
-  } else if (stat.kind === 'num') {
-    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>mean <span class="v">${fmtStat(stat.mean)}</span> · std <span class="v">${fmtStat(stat.std)}</span><br><span class="v">${fmtStat(stat.min)}</span> · p25 <span class="v">${fmtStat(stat.p25)}</span> · p50 <span class="v">${fmtStat(stat.p50)}</span> · p75 <span class="v">${fmtStat(stat.p75)}</span> · <span class="v">${fmtStat(stat.max)}</span>`);
-    if (stat.qual) {                                       // detection-limit values were substituted — never silently
-      const t = stat.qual, bits = [t.below && `${t.below.toLocaleString()} below detection`, t.above && `${t.above.toLocaleString()} above`, t.code && `${t.code.toLocaleString()} lab codes → blank`].filter(Boolean);
-      appendHTML(d, html`<br><span class="pp-footnote">${bits.join(' · ')} — substituted on read</span>`);
-    }
-    if (stat.centroids && stat.centroids.length && stat.max > stat.min) d.appendChild(sparkline(stat.centroids, stat.total, stat.min, stat.max));
-  } else {
-    const top = joinH(stat.top.map(([v, n]) => html`${v} <span class="v">${Math.round((100 * n) / (stat.n || 1))}%</span>`), ' · ');
-    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · distinct <span class="v">${stat.distinct}${stat.overflow ? '+' : ''}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>${top}`);
-  }
-  body.appendChild(d);
-}
-
-function targetAxes(jf, L, R) {
-  if (jf.target === 'left') return gridAxesOf(L);
-  if (jf.target === 'right') return gridAxesOf(R);
-  const c = commonLattice([gridAxesOf(L), gridAxesOf(R)], { resolution: jf.target === 'coarsest' ? 'coarsest' : 'finest' });
-  if (!c.ok) throw new Error(c.reason);
-  return c;
-}
-async function runSpatialJoinUI(L, R, jf) {
-  try {
-    const T = targetAxes(jf, L, R);
-    const columns = joinColumnsFromForm(jf, L, R);
-    const name = `${shortName(L)}⋈${shortName(R)}.csv`;
-    const { blob, cells } = await runSpatialJoin({ leftL: L, rightL: R, target: T, columns, label: 'join', useSelection: !!jf.useSel });
-    const lin = mkLineage('join', { target: jf.target, ...(jf.useSel ? { selection: true } : {}), columns: columns.map((c) => ({ src: c.src, name: c.name, out: c.out, op: c.op || undefined, weight: c.weight || undefined })) }, [L.lineage, R.lineage]);
-    await openBlob(blob, name, 'add', null, { lineage: lin, ...(T.rot ? { lattice: T } : {}) });
-    $('#meta').textContent = `joined ${cells.toLocaleString()} cells → ${name}`;
-  } catch (e) { $('#meta').textContent = `join: ${e.message}`; }
-}
-
-function openReconcileMenu(L, R, jf, shared, anchor) {
-  const r = anchor.getBoundingClientRect();
-  menuXY(r.left - 40, r.bottom + 2, shared.map((g) => ({ label: `Δ on ${g}`, action: () => runReconcile(L, R, jf, g) })));
-}
 
 // ── pick → record inspector: a CLICK (not a drag) GPU-picks the element under
 // the cursor (record index), then fetches the full source row — O(1) for LAS

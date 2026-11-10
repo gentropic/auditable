@@ -21,8 +21,9 @@ import { layerWorldBbox } from './gridtools.js';
 import { markProjectDirty } from './project.js';
 import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
+import { layerShown } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus
+// the app's side, passed in once (setBygeomHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, nextSelEpoch, selEpoch, selectionStatus
 let H = {};
 export function setBygeomHooks(h) { H = h; }
 
@@ -506,7 +507,7 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
   const epoch = H.nextSelEpoch();
   if (combine === 'replace') H.clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
-  const Ls = targets || S.layers.filter((L) => H.layerShown(L.id) && hasRecords(L) && !L.docs.gridDoc);   // what's on screen (a hidden group hides its layers)
+  const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L) && !L.docs.gridDoc);   // what's on screen (a hidden group hides its layers)
   const bbox4 = targetsXYBbox(Ls);
   const surfA = surfaceFromGrid(await residentGridForEval(gridL, bbox4));
   const surfB = mode === 'between' && meshB && meshB.docs.gridDoc ? surfaceFromGrid(await residentGridForEval(meshB, bbox4)) : null;
@@ -626,7 +627,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
   const epoch = H.nextSelEpoch();
   if (combine === 'replace') H.clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
-  const Ls = targets || S.layers.filter((L) => H.layerShown(L.id) && hasRecords(L));
+  const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L));
   let SA = null, SB = null;                                 // the sparse-path BVHs, built lazily
   for (let li = 0; li < Ls.length; li++) {
     const L = Ls[li];

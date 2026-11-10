@@ -7,7 +7,7 @@ import { _sheetExclusive } from './windows.js';
 import { S, activeLayer, layerById, requestRender } from './state.js';
 import { attrRowCountOf, blockCaps, calcOrder, colIsNumeric, extendRow, layerHeaderOf, layerRecords, layerRows, layerTableHeader, locationsOf, numOf, qualifyPolicy, rowQualifier, schemaExt } from './records.js';
 import { fmtSize } from './paths.js';
-import { html, setHTML, trusted } from './html.js';
+import { appendHTML, html, joinH, setHTML, trusted } from './html.js';
 import { compileBool, compileChunk, compileValue, deps, parse, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { PAINT_BLANK, censusChunkCols, colStatsComplete, ensureStoredValues, expandedDeps, footerColStats, matColCodes, matColSet, matColSourceHash, paintRecount, pinEvictLayer, pinGet, pinWindow, ruleDefaultColor, scanColumns } from './columns.js';
 import { fmtStat } from './analysis-ui.js';
@@ -16,7 +16,7 @@ import { basisAngles, categoryPalettePixels, coordNum, describeQualified, gridsC
 import { mkLineage } from './lineage.js';
 import { persistElement } from './element-store.js';
 import { gridAxesOf } from './grid-ops.js';
-import { keyJoinToCols, runKeyJoin, shortName, spatialJoinToCols } from './joins.js';
+import { keyJoinToCols, openReconcileMenu, runKeyJoin, runSpatialJoinUI, shortName, spatialJoinToCols } from './joins.js';
 import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
@@ -31,7 +31,7 @@ import { reopenWithMapping } from './reopen.js';
 import { refilterLayer } from './filter.js';
 import { applyLayerOpacity, convertMeshLayer, setMeshTint } from './layermenu.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): addPaintValue, appendColStats, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI
+// the app's side, passed in once (setPropsHooks): addPaintValue, createPaintCol, openPaintPalette, paintColByName
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -1645,6 +1645,29 @@ export async function settleQualifyReopens() {
 // column into L._bands — the .dm/CSV pushdown substrate (parquet's footer
 // stats, retrofitted). Same single pass; band numbering = RAW record order.
 // (scanColumns lives in src/columns.js)
+// One column's statistics as a block of the panel: the Parquet footer's numbers
+// before any scan, the scanned numbers after it (with the sparkline), or a
+// categorical column's top values.
+function appendColStats(body, stat, onCtx) {
+  if (!stat) return;
+  const d = document.createElement('div'); d.className = 'pp-stats';
+  if (onCtx) d.oncontextmenu = onCtx;
+  if (stat.footer) {                                       // Parquet's footer, before any scan
+    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br><span class="v">${fmtStat(stat.min)}</span> … <span class="v">${fmtStat(stat.max)}</span> <span class="pp-footnote">from the file's footer — scan for mean, sd + quantiles</span>`);
+  } else if (stat.kind === 'num') {
+    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>mean <span class="v">${fmtStat(stat.mean)}</span> · std <span class="v">${fmtStat(stat.std)}</span><br><span class="v">${fmtStat(stat.min)}</span> · p25 <span class="v">${fmtStat(stat.p25)}</span> · p50 <span class="v">${fmtStat(stat.p50)}</span> · p75 <span class="v">${fmtStat(stat.p75)}</span> · <span class="v">${fmtStat(stat.max)}</span>`);
+    if (stat.qual) {                                       // detection-limit values were substituted — never silently
+      const t = stat.qual, bits = [t.below && `${t.below.toLocaleString()} below detection`, t.above && `${t.above.toLocaleString()} above`, t.code && `${t.code.toLocaleString()} lab codes → blank`].filter(Boolean);
+      appendHTML(d, html`<br><span class="pp-footnote">${bits.join(' · ')} — substituted on read</span>`);
+    }
+    if (stat.centroids && stat.centroids.length && stat.max > stat.min) d.appendChild(sparkline(stat.centroids, stat.total, stat.min, stat.max));
+  } else {
+    const top = joinH(stat.top.map(([v, n]) => html`${v} <span class="v">${Math.round((100 * n) / (stat.n || 1))}%</span>`), ' · ');
+    setHTML(d, html`n <span class="v">${stat.n.toLocaleString()}</span> · distinct <span class="v">${stat.distinct}${stat.overflow ? '+' : ''}</span> · nulls <span class="v">${stat.nulls.toLocaleString()}</span><br>${top}`);
+  }
+  body.appendChild(d);
+}
+
 export function sparkline(centroids, total, min, max) {
   const c = document.createElement('canvas'); c.width = 120; c.height = 18; c.className = 'pp-spark';
   const g = c.getContext('2d');
@@ -1706,7 +1729,7 @@ export function renderColumnsTab(body, L) {
     kb.onclick = (e) => { e.stopPropagation(); const r2 = kb.getBoundingClientRect(); openMenu(r2.left - 60, r2.bottom + 2); };
     row.appendChild(kb);
     body.appendChild(row);
-    H.appendColStats(body, (L._colStats && L._colStats[name]) || (footer && footer[name]), onCtx);
+    appendColStats(body, (L._colStats && L._colStats[name]) || (footer && footer[name]), onCtx);
   }
   // ── ƒ calculated columns (§10.1): row-extensions the filter/scan/record all see ──
   const calc = L.calcCols || [];
@@ -1726,7 +1749,7 @@ export function renderColumnsTab(body, L) {
     kb.onclick = (e) => { e.stopPropagation(); const r2 = kb.getBoundingClientRect(); openMenu(r2.left - 60, r2.bottom + 2); };
     row.appendChild(kb);
     body.appendChild(row);
-    H.appendColStats(body, L._colStats && L._colStats[c.name], onCtx);
+    appendColStats(body, L._colStats && L._colStats[c.name], onCtx);
   });
   body.appendChild(ppNote('right-click a column: type (number/text — drives the filter and color-by) · use as category / color channel · ƒ columns work in the filter, the scan, and the record panel'));
 }
@@ -1962,13 +1985,13 @@ export function renderSpatialJoinUI(body, L, R, jf) {
   const run = document.createElement('button'); run.className = 'pp-scan'; run.textContent = `→ new layer`;
   run.disabled = !jf.cols.length;
   run.title = 'a new block-model layer on the target grid';
-  run.onclick = () => H.runSpatialJoinUI(L, R, jf);
+  run.onclick = () => runSpatialJoinUI(L, R, jf);
   btns.appendChild(run);
   // reconcile enabled when a numeric column exists in BOTH
   const shared = lh.columns.filter((n) => colIsNumeric(L, lh, lh.columns.indexOf(n)) && rh.columns.includes(n) && colIsNumeric(R, rh, rh.columns.indexOf(n)) && ![lh.mapping.x, lh.mapping.y, lh.mapping.z].includes(lh.columns.indexOf(n)));
   const rec = document.createElement('button'); rec.className = 'pp-scan'; rec.textContent = 'Reconcile…'; rec.disabled = !shared.length;
   rec.title = shared.length ? `Δ on ${shared.join(', ')}` : 'needs a numeric column present in both models';
-  rec.onclick = () => H.openReconcileMenu(L, R, jf, shared, rec);
+  rec.onclick = () => openReconcileMenu(L, R, jf, shared, rec);
   btns.appendChild(rec);
   body.appendChild(btns);
   body.appendChild(ppNote('a new block-model layer on the target grid, carrying the chosen columns as real (filter/colour/export-able) columns'));

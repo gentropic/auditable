@@ -7,10 +7,8 @@ import { _windingGpu, assignDomains, flagBySolid, ratioBySolid, sbCancelActive, 
 import { ppNote } from './props.js';
 import { hasRecords, layerTableHeader } from './records.js';
 import { saveRecipe } from './recipes.js';
+import { layerShown } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomUiHooks): layerShown
-let H = {};
-export function setBygeomUiHooks(h) { H = h; }
 
 // ── the assign-domains dialog ──
 export let _adDlg = null;
@@ -120,7 +118,7 @@ export function openSolidDialog(meshL0) {
     solid: (meshL0 && geoms.includes(meshL0) ? meshL0 : geoms[0]).id,
     act: 'select', side: null, combine: 'replace', method: 'winding',
     res: [3, 3, 3], name: null, flagName: null, flagLabel: 'IN',
-    targets: new Set(elements.filter((L) => H.layerShown(L.id)).map((L) => L.id)),
+    targets: new Set(elements.filter((L) => layerShown(L.id)).map((L) => L.id)),
     ratioLid: null, surfB: null,
   };
   renderSolidDialog();
@@ -412,7 +410,7 @@ export async function sbStateFromParams(p) {
   } else {
     const wanted = Array.isArray(p.targets) && p.targets.length ? p.targets.map(String) : null;
     const elements = S.layers.filter((L) => hasRecords(L) && !L.docs.gridDoc);
-    for (const L of elements) if (wanted ? wanted.some((n2) => L.name === n2 || L.label === n2) : H.layerShown(L.id)) d.targets.add(L.id);
+    for (const L of elements) if (wanted ? wanted.some((n2) => L.name === n2 || L.label === n2) : layerShown(L.id)) d.targets.add(L.id);
     if (wanted) {
       const missing = wanted.filter((n2) => !elements.some((L) => L.name === n2 || L.label === n2));
       if (missing.length) throw new Error(`solid recipe: target layer${missing.length > 1 ? 's' : ''} not loaded — ${missing.join(', ')}`);

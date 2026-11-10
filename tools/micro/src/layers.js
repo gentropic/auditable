@@ -98,3 +98,17 @@ export function removeLayerUI(id) {
   renderLayers(); requestRender();
   dispatchEvent(new CustomEvent('micro:layer-removed', { detail: { id } }));
 }
+
+// Is layer `lid` on screen? Its own switch, and the switch of every group above it
+// in the tree. A layer the tree does not hold answers with its own switch.
+export function layerShown(lid) {
+  let shown = null;
+  const walk = (arr, on) => {                              // applyTreeVisibility's own walk
+    for (const nd of arr) {
+      if (typeof nd === 'number') { if (nd === lid) shown = !!(on && (layerById(nd) || {}).visible); }
+      else walk(nd.children, on && nd.visible);
+    }
+  };
+  walk(S.layerTree, true);
+  return shown == null ? !!(layerById(lid) || {}).visible : shown;
+}
