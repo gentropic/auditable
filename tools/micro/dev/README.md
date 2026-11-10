@@ -68,8 +68,9 @@ Each hook is one of four kinds:
   modules import each other. That is allowed under one rule (see `cycles.mjs`
   below), so `--direct` leaves these alone unless `--cycles` is given.
 
-A hook written as a wrapper (`(...a) => fn(...a)`) or as a getter with a single
-`return` counts as a hook on what it forwards to.
+A hook written as a wrapper (`(...a) => fn(...a)`, or `(x, y) => fn(x, y)` with
+the same names in the same order) or as a getter with a single `return` counts as
+a hook on what it forwards to.
 
 `--direct` converts the stale ones. In the module it replaces `H.<name>` with the
 name (or with `S.<prop>`), adds the import, and removes `let H` and the setter when

@@ -90,6 +90,8 @@ const audit = (src) => {
       else if (v.type === 'Identifier') points = v.name;
       // (...a) => f(...a) points at f
       else if (call && call.callee.type === 'Identifier' && call.arguments.length === 1 && call.arguments[0].type === 'SpreadElement' && call.arguments[0].argument.name === v.params[0].argument.name) points = call.callee.name;
+      // (x, y) => f(x, y) points at f too: the same names, in the same order, nothing else
+      else if (v.type === 'ArrowFunctionExpression' && v.body.type === 'CallExpression' && v.body.callee.type === 'Identifier' && v.params.length && v.params.length === v.body.arguments.length && v.params.every((q, i) => q.type === 'Identifier' && v.body.arguments[i].type === 'Identifier' && v.body.arguments[i].name === q.name)) points = v.body.callee.name;
       else points = src.slice(v.start, Math.min(v.end, v.start + 50)).replace(/\s+/g, ' ');
       const plain = /^[A-Za-z_$][\w$]*$/.test(points);
       // where: 'module' — the app imports the target itself; 'state' — the target is a property of
