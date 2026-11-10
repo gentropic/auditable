@@ -3,10 +3,8 @@
 import { keysHelpHtml } from './keys.js';
 import { setHTML, trusted } from './html.js';
 import { S } from './state.js';
+import { _nlOn, nlEnsureTrained, nlSetEnabled } from './nl.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setHelpHooks): _nlOn, nlEnsureTrained, nlSetEnabled
-let HK = {};
-export function setHelpHooks(h) { HK = h; }
 
 export const HELP_KEYS = `
 <b>every key</b> (the same list as the manual and the printable card)<br>${keysHelpHtml()}<br><br>
@@ -125,7 +123,7 @@ export function showAbout() {
   <h3 style="margin-top:1.2em">Experimental</h3>
   <p class="fi-note">Off by default, and rightly so — these are not finished.</p>
   <label style="display:flex;gap:.5em;align-items:flex-start;cursor:pointer">
-    <input type="checkbox" id="nlToggle"${HK._nlOn ? ' checked' : ''} style="margin-top:.25em">
+    <input type="checkbox" id="nlToggle"${_nlOn ? ' checked' : ''} style="margin-top:.25em">
     <span><b>Natural-language command bar</b><br>
     <span class="fi-note">Press ⌘K / Ctrl+K and type a phrase — <i>“colour by FE”</i>, <i>“hematite above 60 iron”</i>,
     <i>“section on Z at 1020”</i>. It <b>proposes</b> a command and never runs it: you read what it understood, and press Enter.<br>
@@ -135,7 +133,7 @@ export function showAbout() {
   </label>`;
   showHelp('about micro', trusted(HELP_ABOUT + exp));
   const cb = $('#nlToggle');
-  if (cb) cb.onchange = () => { HK.nlSetEnabled(cb.checked); if (cb.checked) HK.nlEnsureTrained(); };
+  if (cb) cb.onchange = () => { nlSetEnabled(cb.checked); if (cb.checked) nlEnsureTrained(); };
 }
 
 export function showHelp(title, html) {
