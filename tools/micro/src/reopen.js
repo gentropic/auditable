@@ -15,10 +15,9 @@ import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
 import { layerReplaced, renderLayers, treeSlotOf } from './tree.js';
 import { menuXY } from './menu.js';
 import { setLayerColorSel } from './color.js';
+import { refilterLayer } from './filter.js';
+import { closeAttrTable } from './attrtable.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setReopenHooks): closeAttrTable, refilterLayer
-let H = {};
-export function setReopenHooks(h) { H = h; }
 
 // ── identity that MUST survive a single-blob reopen ──
 // setGridBand · applyLayerSurface · reopenAs all tear a grid/block layer down and
@@ -119,7 +118,7 @@ export function applyLayerStyling(L2, keep, { clearCats = false } = {}) {
 // re-open a delimited layer with a patched column mapping (X/Y/Z/cat re-keys)
 export async function reopenWithMapping(L, patch, { clearCats = false } = {}) {
   const doc = L.docs.blockDoc; if (!doc) return;
-  H.closeAttrTable(L.id);
+  closeAttrTable(L.id);
   const m = { ...doc.header.mapping, ...patch };
   const style = captureLayerStyling(L, { clearCats });                // id is reused in place (layer: L.id) → identity intact, styling only
   const ropts = {
@@ -223,7 +222,7 @@ export async function reloadLayerFromDisk(L) {
   const old2 = layerBlob(L);
   const sizeNote = old2 && fresh.size !== old2.size ? ' · size changed — painted/materialized columns may be stale (positional)' : '';
   const doc = L.docs.blockDoc;
-  H.closeAttrTable(L.id);
+  closeAttrTable(L.id);
   if (doc && !doc.header.dm && !doc.parquet) {
     // delimited blocks/points: IN PLACE, keeping the column mapping (the
     // reopenWithMapping flow, just with fresh bytes) — identity untouched
@@ -251,7 +250,7 @@ export async function reloadLayerFromDisk(L) {
     }
     // re-sweep against the fresh bytes — any layer (applyBlockFilter used to act on
     // the active layer only, and a background one was left unfiltered until refocused)
-    await H.refilterLayer(L2);                               // the filter scan posts its own status
+    await refilterLayer(L2);                               // the filter scan posts its own status
     $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;
   } else {
     // dm / parquet / mesh / grid / las / ply: remove → re-open fresh → restore
@@ -266,7 +265,7 @@ export async function reloadLayerFromDisk(L) {
       applyLayerStyling(L2, style);
       await applyLayerSurface(L2, surf);
       L2.filterExpr = filterExpr;
-      await H.refilterLayer(L2, filterExpr);                 // any layer (was: only if it had been the active one)
+      await refilterLayer(L2, filterExpr);                 // any layer (was: only if it had been the active one)
     }
     renderLayers();
     $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;

@@ -21,8 +21,9 @@ import { layerWorldBbox } from './gridtools.js';
 import { markProjectDirty } from './project.js';
 import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
+import { _attrTables } from './attrtable.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, rendererDocBbox, selectionStatus
+// the app's side, passed in once (setSwathHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, rendererDocBbox, selectionStatus
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -457,7 +458,7 @@ export async function applySwathZebra(L, dir, bandWidth, offset) {
   }
   paintRecount(col); col._swathParity = true;
   applyPaintPalette && setLayerColorSel(L, 'paint:_swath');
-  const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
+  const t2 = _attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   requestRender();
 }
 

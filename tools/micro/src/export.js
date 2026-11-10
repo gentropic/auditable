@@ -17,8 +17,9 @@ import { openParquetBlocks } from './open.js';
 import { renderLayers } from './tree.js';
 import { deliverBlob } from './hostio.js';
 import { setLayerColorSel } from './color.js';
+import { refilterLayer } from './filter.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection, refilterLayer, setActiveLayer
+// the app's side, passed in once (setExportHooks): applyLayerSelection, setActiveLayer
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -271,7 +272,7 @@ async function convertInner(L, cvOpts) {
   if (keepColorSel && [...$('#colorBy').options].some((o) => o.value === keepColorSel)) { L.colorSel = keepColorSel; setLayerColorSel(L, keepColorSel); }
   // calc columns recompute from the reordered base (no per-record cache); the
   // filter re-sweeps (with pushdown) against the new order
-  await H.refilterLayer(L, keepFilter);
+  await refilterLayer(L, keepFilter);
   renderLayers(); markProjectDirty();
   $('#meta').textContent = `optimized “${base}.parquet” — ${n.toLocaleString()} blocks, Morton-sorted (spatial index) · painting stays editable. Save the project to store it.`;
 }

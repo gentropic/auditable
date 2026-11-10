@@ -12,10 +12,8 @@ import { numericColsOf } from './analysis.js';
 import { pushUndo } from './undo.js';
 import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
+import { refilterLayer } from './filter.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setCalcHooks): refilterLayer
-let H = {};
-export function setCalcHooks(h) { H = h; }
 
 // ── ƒ CALCULATIONS window — the calc-column authoring workbench (Leapfrog's
 // calculations-editor shape): the column list on a left rail, ONE expression
@@ -40,7 +38,7 @@ export function openCalcWindow(L, selIdx) {
   const select = (k) => { sel = k; render(); };
   function invalidate() {
     L._calcFns = null; L._colStats = null; markProjectDirty();
-    if (L.filterExpr) H.refilterLayer(L);                     // a live filter picks up the new definition (any layer)
+    if (L.filterExpr) refilterLayer(L);                     // a live filter picks up the new definition (any layer)
     if (L.id === S.activeId) addPaintColorOptions(L);       // ƒ color-by options track the column set
     if (calcSelOf(L)) { applyRamp(L, true); syncRuleMode(L); }   // a live ƒ color re-realizes (closure-hash gated)
     renderProps();

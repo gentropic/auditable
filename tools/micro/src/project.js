@@ -37,8 +37,9 @@ import { ensureValueTex, valueTexEligible } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
 import { wfrExportable, writeGridDisplayCache } from './meshexport.js';
 import { deliverBlob, pickDirectory, rehydrateHandle } from './hostio.js';
+import { refilterLayer } from './filter.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, refilterLayer, renderEmptyProjects
+// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, renderEmptyProjects
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -733,7 +734,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           if (ls.calcCols && !(Ld.calcCols || []).length) Ld.calcCols = ls.calcCols;   // legacy projects (no element manifest)
           addPaintColorOptions(Ld);
           if (ls.holeFilter) { try { await applyHoleFilter(Ld, ls.holeFilter); } catch { /* collar missing → no mask */ } }
-          await H.refilterLayer(Ld, ls.filter);
+          await refilterLayer(Ld, ls.filter);
           if (ls.visible === false) { Ld.visible = false; S.renderer.setLayerVisible(Ld.id, false); }
           if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(Ld.id, ls.sectioned);
           restoreHiddenCats(Ld, ls.hiddenCats);
@@ -846,7 +847,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       }
       if (String(L.colorSel || '').startsWith('calc:')) { applyRamp(L, true); syncRuleMode(L); }   // realize + color the ƒ channel
       if (ls.clip && (ls.clip[0] || ls.clip[1])) { L.clip = [String(ls.clip[0] || ''), String(ls.clip[1] || '')]; $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1]; }
-      await H.refilterLayer(L, ls.filter);
+      await refilterLayer(L, ls.filter);
       if (ls.visible === false) { L.visible = false; applyTreeVisibility(); }
       if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(L.id, ls.sectioned);
       restoreHiddenCats(L, ls.hiddenCats);

@@ -28,8 +28,9 @@ import { markProjectDirty } from './project.js';
 import { openCalcWindow } from './calc.js';
 import { recolorSurface, setGridBand, setSurfaceFlatZ, setSurfaceSmooth } from './surfaces.js';
 import { reopenWithMapping } from './reopen.js';
+import { refilterLayer } from './filter.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): _docBbox, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setMeshTint
+// the app's side, passed in once (setPropsHooks): _docBbox, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -1616,8 +1617,8 @@ export async function refreshQualified(L, rechan) {
   pinEvictLayer(L.id);
   const d = L.docs || {};
   if (rechan && d.dhDoc) { L = (await reopenDh(L, { qualify: L.qualify || null })) || L; }
-  else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await H.refilterLayer(L); applyRamp(L, true); }
-  else await H.refilterLayer(L);
+  else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await refilterLayer(L); applyRamp(L, true); }
+  else await refilterLayer(L);
   if (L.docs && L.docs.blockDoc) await ensureValueTex(L);
   refreshProps();
   requestRender();

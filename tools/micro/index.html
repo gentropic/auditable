@@ -1182,7 +1182,7 @@ import { elementGeometry, layerColumnsOps, buildElementManifest, dhElementName, 
 import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc, wfrPointsDoc, vertexColorOf } from './src/wfr-io.js';   // .wfr elements → the mesh / strings / points shapes micro already reads
 import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';
 import { inventoryProject, writeBackup, readBackup, restoreBackup, openPack, writeTree, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
-import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, closeCompactBuilder, resetFilterState, setFilterHooks } from './src/filter.js';
+import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, closeCompactBuilder, resetFilterState, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
 import { mkLineage, microModelOf } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
@@ -1209,7 +1209,7 @@ import { nextDhSetKey, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImp
 import { reopenDh, invalidateWholeHoles, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces, setDrillholesHooks } from './src/drillholes.js';
 import { resolveColorMode, setColorLabels, dropValueTex, setLayerColorBy, setLayerColorSel, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList, setColorHooks } from './src/color.js';
 import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, applyLayerSurface, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
-import { reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk, setReopenHooks } from './src/reopen.js';
+import { reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
 import { applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, treeMoveStep, moveLayerToGroupMenu, secModeLabel, setLayerSectionMode, sectionModeItems, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
 import { saveViewAs, applyView, saveViewSlot, recallViewSlot, _gotoArm, gotoDisarm, armGoto, removeBookmark, captureScene, applyScene, saveSceneAs, removeScene, setViewsHooks } from './src/views.js';
@@ -1221,23 +1221,22 @@ import { openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, o
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
 import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
 import { columnValues, filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, renderExprHL, syncHL } from './src/exprfield.js';
-import { _fdOpen, fdBounds, fdValues, fdNum, fdRenderChain, fdRenderLeaf, renderFilterDrawer, toggleFilterDrawer, setFilterDrawerHooks } from './src/filter-drawer.js';
+import { _fdOpen, fdBounds, fdValues, fdNum, fdRenderChain, fdRenderLeaf, renderFilterDrawer, toggleFilterDrawer } from './src/filter-drawer.js';
 import { HELP_KEYS, HELP_TOUCH, HELP_ANALYSIS, showAbout, showHelp, checkForUpdates, sealedInfo, setHelpHooks } from './src/help.js';
-import { openCalcWindow, setCalcHooks } from './src/calc.js';
+import { openCalcWindow } from './src/calc.js';
 import { showMemoryInfo, showFileInfo } from './src/fileinfo.js';
 import { openSettingsWindow, setSettingsHooks } from './src/settings.js';
 import { openLineageWindow, lineageReportHtml, exportLineageReport } from './src/lineage-ui.js';
 import { _recents, _remember, refreshRecents, addRecent, clearRecents, setRemember, openRecent, openFilePicker } from './src/recents.js';
 import { renameActiveLayer, openBatchRename } from './src/rename.js';
 import { deliverBlob } from './src/hostio.js';
+import { _attrTables, openAttrTable, attrTableSelChanged, closeAttrTable, attrTableReveal, setAttrtableHooks } from './src/attrtable.js';
+// src/attrtable.js reaches back into the app through these
+setAttrtableHooks({ emitPick, showRecord });
 // src/settings.js reaches back into the app through these
 setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { return _nlOn; }, get _secFollow() { return _secFollow; }, get _selStick() { return _selStick; }, nlEnsureTrained, nlSetEnabled, setBlockEdges, setSelStick });
-// src/calc.js reaches back into the app through these
-setCalcHooks({ refilterLayer });
 // src/help.js reaches back into the app through these
 setHelpHooks({ get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
-// src/filter-drawer.js reaches back into the app through these
-setFilterDrawerHooks({ syncFilterClear });
 // src/bygeom-ui.js reaches back into the app through these
 setBygeomUiHooks({ layerShown });
 // src/gridtools.js reaches back into the app through these
@@ -2436,13 +2435,13 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, applyLayerSelection, refilterLayer, setActiveLayer });
+setExportHooks({ busyCancel, applyLayerSelection, setActiveLayer });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
 
 // src/bygeom.js reaches back into the app through these
-setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus });
+setBygeomHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerShown, nextSelEpoch, selEpoch, selectionStatus });
 
 // src/joins.js reaches back into the app through these
 setJoinsHooks({ addPaintValue, createPaintCol });
@@ -2521,7 +2520,7 @@ function layerHasColumn(name, layerName) {
 }
 
 // src/swath.js reaches back into the app through these
-setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, selectionStatus });
+setSwathHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, selectionStatus });
 
 setOmfHooks({ closeAllLayers });
 // frame a WORLD point (radius 0 → a close look, else that much around it)
@@ -2795,8 +2794,6 @@ function setActiveLayer(id) {
 // src/ingest.js reaches back into the app through these
 setIngestHooks({ removeLayerUI });
 
-// src/reopen.js reaches back into the app through these
-setReopenHooks({ closeAttrTable, refilterLayer });
 
 // src/open-dialog.js reaches back into the app through these
 setOpenDialogHooks({ closeAllLayers });
@@ -2808,7 +2805,7 @@ $('#dhImport').onclick = dhImport;
 $('#dhCancel').onclick = dhCancel;
 
 // src/filter.js reaches back into the app through these
-setFilterHooks({ attrTableFilterChanged, refreshLinkedWindows });
+setFilterHooks({ refreshLinkedWindows });
 
 // src/color.js reaches back into the app through these
 setColorHooks({ setActiveLayer });
@@ -2825,14 +2822,6 @@ for (const id of ['clipMin', 'clipMax']) $('#' + id).addEventListener('input', (
   const L = activeLayer(); if (L) { L.clip = [$('#clipMin').value, $('#clipMax').value]; const pcR = paintActiveCol(L) || calcDisplayCol(L); if (rampCfgOf(L) || (pcR && pcR.kind === 'ratio')) applyRamp(L, true); }
   dispatchEvent(new Event('micro:project-dirty'));
 });
-
-// re-sweep a layer's filter after something changed under it (a re-read, new ƒ
-// definitions, a reload) — ANY layer; the box mirrors it when it's the active one
-async function refilterLayer(L, expr = L && L.filterExpr) {
-  if (!L || (!String(expr || '').trim() && !L._holeMask && !L._secHoleMask)) return;   // a hole filter masks with no expression; a whole-holes section still has to be drawn
-  if (L.id === S.activeId) { $('#filter').value = expr; syncFilterClear(); }
-  await applyBlockFilter(expr, L);
-}
 
 attachAutocomplete($('#filter'), filterCtx);
 
@@ -2851,7 +2840,6 @@ attachAutocomplete($('#filter'), filterCtx);
 }
 exprField($('#filter'), filterCtx);
 
-function syncFilterClear() { $('#filterWrap').classList.toggle('has', !!$('#filter').value); syncHL($('#filter'), $('#filterHL')); }
 $('#filter').addEventListener('input', syncFilterClear);
 $('#filterClear').onclick = () => {
   $('#filter').value = ''; syncFilterClear(); acClose();
@@ -2896,7 +2884,7 @@ S.hasFSAA = shell.present ? false : !!window.showDirectoryPicker;
 if (shell.present) shell.tree.probe().then((ok) => { S.hasFSAA = ok; renderEmptyProjects(); }).catch(() => {});
 
 // src/project.js reaches back into the app through these
-setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, refilterLayer, renderEmptyProjects });
+setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, renderEmptyProjects });
 
 function captureCamera() {
   const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
@@ -3098,7 +3086,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmClose(null); }
 });
 // src/views.js reaches back into the app through these
-setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer, syncFilterClear });
+setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer });
 
 // recent projects on the empty state (chips, like recent files)
 async function renderEmptyProjects() {
@@ -4590,120 +4578,7 @@ addEventListener('keydown', (e) => {                       // Ctrl+` cycles the 
   wins.sort((a, b2) => (+a.style.zIndex || 0) - (+b2.style.zIndex || 0));
   raiseWindow(wins[0]);
 });
-const _attrTables = new Map();                             // layerId → { win, grid, view }
-// (fetchLayerRow / attrColumnsOf / the LOCATIONS vocabulary — primaryLocationOf,
-// locationsOf, attrRowCountOf, hasRecords — live in src/records.js)
-function openAttrTable(L) {
-  if (_attrTables.has(L.id)) { const t2 = _attrTables.get(L.id); focusWindow(t2.win.el); return; }
-  const cols = attrColumnsOf(L);
-  if (!cols) { $('#meta').textContent = 'no table behind this layer'; return; }
-  const total = attrRowCountOf(L);
-  const view = { matches: null, only: false };
-  const cache = new Map();                                 // rec → extended fields
-  const queue = new Set();
-  let fetching = false, readyCbs = [];
-  const notify = () => { for (const cb of readyCbs) { try { cb(); } catch { /* gone */ } } };
-  const pump = async () => {
-    if (fetching) return;
-    fetching = true;
-    while (queue.size) {
-      const batch = [...queue].slice(0, 300);
-      for (const r of batch) queue.delete(r);
-      for (const r of batch) {
-        if (cache.has(r)) continue;
-        try { cache.set(r, extendRow(L, await fetchLayerRow(L, r), r) || []); }
-        catch { cache.set(r, []); }
-      }
-      if (cache.size > 6000) { const it = cache.keys(); for (let i = 0; i < 2000; i++) cache.delete(it.next().value); }
-      notify();
-      await new Promise((r2) => setTimeout(r2));
-    }
-    fetching = false;
-  };
-  const recOf = (r) => (view.matches ? view.matches[r] : r);
-  const provider = {
-    dims: () => ({ rows: view.matches ? view.matches.length : total, cols: cols.length }),
-    header: (c) => ({ label: cols[c].name }),
-    rowHeader: (r) => String(recOf(r)),
-    cellAt(r, c) {
-      const rec = recOf(r);
-      const row = cache.get(rec);
-      if (row === undefined) { queue.add(rec); pump(); return PENDING; }
-      const v = row[c];
-      if (v == null || v === '') return null;
-      return { value: v, type: cols[c].num ? 'number' : 'text' };
-    },
-    onReady(cb) { readyCbs.push(cb); return () => { readyCbs = readyCbs.filter((x) => x !== cb); }; },
-  };
-  const win = floatWin({
-    title: `table · ${L.label || L.name}`,
-    sub: `${total.toLocaleString()} rows`,
-    x: 80 + (_attrTables.size % 4) * 36, y: 80 + (_attrTables.size % 4) * 30,
-    w: Math.min(innerWidth - 120, 880),
-    onClose: () => { grid.destroy(); _attrTables.delete(L.id); },
-  });
-  // view toggles: 'matches' rides the retained filter mask, 'selected' the
-  // §15 selection mask — mutually exclusive (a view, not a query language)
-  const mkToggle = (label2, title2) => {
-    const lab = document.createElement('label');
-    const cb2 = document.createElement('input'); cb2.type = 'checkbox';
-    lab.append(cb2, ' ' + label2);
-    lab.title = title2;
-    win.head.insertBefore(lab, win.head.querySelector('button'));
-    return cb2;
-  };
-  const oc = mkToggle('matches', 'show only rows matching the current filter');
-  const sc = mkToggle('selected', 'show only selected rows (r / v to select in the scene)');
-  const rebuildView = () => {
-    const src = sc.checked ? L._selMask : oc.checked ? L._filterMask : null;
-    if (src) {
-      const out = [];
-      for (let i = 0; i < src.length; i++) if (src[i]) out.push(i);
-      view.matches = Uint32Array.from(out);
-    } else view.matches = null;
-    win.sub.textContent = `${(view.matches ? view.matches.length : total).toLocaleString()} rows${view.matches ? ` of ${total.toLocaleString()}` : ''}`;
-    grid.refresh();
-  };
-  oc.onchange = () => { if (oc.checked) sc.checked = false; rebuildView(); };
-  sc.onchange = () => { if (sc.checked) oc.checked = false; rebuildView(); };
-  const grid = createGrid(win.body, provider, { readOnly: true, defaultColW: 96, rowH: 22, hdrH: 22, rowHdrW: 64, fontPx: 12 });
-  win.el._onResized = () => grid.refresh();
-  let syncing = false;
-  grid.onSelect((sel) => {
-    if (syncing || !sel) return;                           // loom sel = {r0,c0,r1,c1}
-    const rec = recOf(sel.r0);
-    if (rec == null) return;
-    renderer.setPicked({ layer: L.id, rec });
-    showRecord({ layer: L.id, rec });
-    requestRender();
-    emitPick({ layer: L.id, rec }, 'table');
-  });
-  _attrTables.set(L.id, {
-    win, grid, view,
-    revealRec(rec) {
-      let row = rec;
-      if (view.matches) {
-        let lo2 = 0, hi2 = view.matches.length - 1, at = -1;
-        while (lo2 <= hi2) { const mid = (lo2 + hi2) >> 1; if (view.matches[mid] === rec) { at = mid; break; } if (view.matches[mid] < rec) lo2 = mid + 1; else hi2 = mid - 1; }
-        if (at < 0) return;
-        row = at;
-      }
-      syncing = true;
-      grid.setSelection({ r0: row, c0: 0, r1: row, c1: cols.length - 1 });
-      grid.revealCell(row, 0);
-      syncing = false;
-      win.el.style.zIndex = nextZ();
-    },
-    filterChanged() { if (oc.checked) rebuildView(); },
-    selChanged() { if (sc.checked) rebuildView(); },
-    invalidate() { cache.clear(); grid.refresh(); },       // painted values changed under the cache
-    close: () => win.close(),
-  });
-  rebuildView();
-}
-function attrTableFilterChanged(lid) { const t2 = _attrTables.get(lid); if (t2) t2.filterChanged(); }
-function attrTableSelChanged(lid) { const t2 = _attrTables.get(lid); if (t2 && t2.selChanged) t2.selChanged(); }
-function closeAttrTable(lid) { const t2 = _attrTables.get(lid); if (t2) t2.close(); }
+
 // src/tree.js reaches back into the app through these
 setTreeHooks({ applyLayerOpacity, fitLayer, layerMenu, setActiveLayer, syncSelBar, syncUndoBtn });
 
@@ -4942,7 +4817,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   action: () => applyLayerOpacity(L, pc / 100),
 }));
 // src/props.js reaches back into the app through these
-setPropsHooks({ get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, refilterLayer, runSpatialJoinUI, setMeshTint });
+setPropsHooks({ get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint });
 
 $('#ppClose').onclick = closeProps;
 
@@ -4975,7 +4850,7 @@ function appendColStats(body, stat, onCtx) {
   body.appendChild(d);
 }
 // src/drillholes.js reaches back into the app through these
-setDrillholesHooks({ get allocLayerId() { return allocLayerId; }, closeAttrTable, refilterLayer, setActiveLayer });
+setDrillholesHooks({ get allocLayerId() { return allocLayerId; }, setActiveLayer });
 
 function targetAxes(jf, L, R) {
   if (jf.target === 'left') return gridAxesOf(L);
@@ -5122,8 +4997,6 @@ $('#rpList').addEventListener('contextmenu', (e) => {
 });
 $('#rpClose').onclick = () => { _recSeq++; $('#recPanel').classList.remove('show'); $('#rpCfg').classList.remove('show'); renderer.setPicked(null); requestRender(); emitPick(null); };
 
-// (fetchCsvRecord lives in src/records.js)
-function attrTableReveal(lid, rec) { const t2 = _attrTables.get(lid); if (t2) t2.revealRec(rec); }
 function appendCalcRows(rows, L, f, h, rec) {
   if (!L || ((!L.calcCols || !L.calcCols.length) && (!L.paintCols || !L.paintCols.length))) return;
   const ext = extendRow(L, f, rec);

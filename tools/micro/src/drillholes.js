@@ -6,7 +6,7 @@
 import { S, _fileHandles, layerById, requestRender } from './state.js';
 import { openDrillholeLayer } from './open.js';
 import { broadcastCollarCol, refreshProps } from './props.js';
-import { dhFilterMeta, dhFilterSweep } from './filter.js';
+import { dhFilterMeta, dhFilterSweep, refilterLayer } from './filter.js';
 import { createStickChunkBuilder, delimitedRecords, delimiterOfLine, openDrillholeTraces, splitDelimitedRecord } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
 import { peekCollarCols } from './manifest.js';
@@ -18,8 +18,9 @@ import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { applyLayerStyling, captureLayerStyling, captureReopenIdentity, restoreReopenIdentity } from './reopen.js';
 import { applyTreeVisibility, createLayerGroup, groupLayerIds, renderLayers, treeMove, treeSync } from './tree.js';
+import { closeAttrTable } from './attrtable.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDrillholesHooks): allocLayerId, closeAttrTable, refilterLayer, setActiveLayer
+// the app's side, passed in once (setDrillholesHooks): allocLayerId, setActiveLayer
 let H = {};
 export function setDrillholesHooks(h) { H = h; }
 
@@ -28,7 +29,7 @@ export function setDrillholesHooks(h) { H = h; }
 // unless the category itself changed
 export async function reopenDh(L, patch, { clearCats = false } = {}) {
   const dh = L.docs.dhDoc; if (!dh) return;
-  H.closeAttrTable(L.id);
+  closeAttrTable(L.id);
   const files = dh.blobs, cfg = { ...dh.config, qualify: L.qualify || null, ...patch };
   const id = captureReopenIdentity(L);                                // label · visible · storage (handle n/a for compound dh)
   const setKey = L._setKey, intervalName = L._intervalName;           // dh-set membership (dh-specific, not generic identity)
@@ -52,7 +53,7 @@ export async function reopenDh(L, patch, { clearCats = false } = {}) {
   L2._setKey = setKey; L2._intervalName = intervalName;             // stay in the same drillhole set
   applyLayerStyling(L2, style, { clearCats });
   if (id.visible === false) applyTreeVisibility();
-  await H.refilterLayer(L2);                                 // any layer: a re-read dropped its GPU mask
+  await refilterLayer(L2);                                 // any layer: a re-read dropped its GPU mask
   // re-reading a layer that wasn't active (a host's setColorBy) mustn't take the focus
   if (prevActive !== oldId && layerById(prevActive)) H.setActiveLayer(prevActive);
   renderLayers();

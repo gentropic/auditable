@@ -1,7 +1,7 @@
 // micro — the filter drawer: the structured view of the filter expression,
 // one row per condition, with the bounds and values each column offers.
 import { pinGet } from './columns.js';
-import { applyBlockFilter, pqGroupRanges } from './filter.js';
+import { applyBlockFilter, pqGroupRanges, syncFilterClear } from './filter.js';
 import { layerTableHeader, schemaExt } from './records.js';
 import { numericColsOf } from './analysis.js';
 import { createFilterDrawer, flattenExpr as fuiFlatten, fmtNum as fuiFmtNum, renderChain as fuiRenderChain, renderLeaf as fuiRenderLeaf } from '../../../ext/filterui/index.js';
@@ -9,9 +9,6 @@ import { parse, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { activeLayer } from './state.js';
 import { renderExprHL } from './exprfield.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFilterDrawerHooks): syncFilterClear
-let H = {};
-export function setFilterDrawerHooks(h) { H = h; }
 
 // ── the FILTER WIDGET DRAWER — @gcu/filterui, driven by micro's providers ────
 // The engine (span-surgical AST↔widget projection over the expression text) is
@@ -78,7 +75,7 @@ export function fdDrawer() {
     schema: () => { const AL = activeLayer(); const h = AL && layerTableHeader(AL); return h ? schemaExt(AL, h) : undefined; },
     highlight: (hl, text) => renderExprHL(hl, text),
     apply: (text, source) => {
-      $('#filter').value = fuiFlatten(text); H.syncFilterClear();
+      $('#filter').value = fuiFlatten(text); syncFilterClear();
       clearTimeout(_fdTimer);
       if (source === 'reset' || source === 'clear') applyBlockFilter(text);
       else _fdTimer = setTimeout(() => applyBlockFilter(text), source === 'editor' ? 300 : 60);

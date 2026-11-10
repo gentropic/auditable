@@ -8,13 +8,13 @@ import { S, layerById, requestRender } from './state.js';
 import { removeFileAt, resolveFileHandle } from './paths.js';
 import { markProjectDirty, rleDecode, rleEncode } from './project.js';
 import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
-import { applyBlockFilter } from './filter.js';
+import { applyBlockFilter, syncFilterClear } from './filter.js';
 import { attrRowCountOf } from './records.js';
 import { applyTreeVisibility, renderLayers } from './tree.js';
 import { microConfirm, microPrompt } from './prompts.js';
 import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setViewsHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer, syncFilterClear
+// the app's side, passed in once (setViewsHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer
 let H = {};
 export function setViewsHooks(h) { H = h; }
 
@@ -111,7 +111,7 @@ export async function applyScene(s) {
     if (sl.visible != null) { L.visible = !!sl.visible; S.renderer.setLayerVisible(L.id, L.visible); }
     if (sl.colorSel != null && sl.colorSel !== (L.colorSel || '')) setLayerColorSel(L, sl.colorSel);
     if (sl.filter != null && (L.filterExpr || '') !== sl.filter) {   // applyBlockFilter sweeps the ACTIVE layer → focus it first
-      H.setActiveLayer(L.id); $('#filter').value = sl.filter; H.syncFilterClear(); await applyBlockFilter(sl.filter);
+      H.setActiveLayer(L.id); $('#filter').value = sl.filter; syncFilterClear(); await applyBlockFilter(sl.filter);
     }
     if (sl.sel) { L._selMask = rleDecode(sl.sel, attrRowCountOf(L)); H.applyLayerSelection(L); }   // computes _selCount + paints
   }

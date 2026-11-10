@@ -14,8 +14,9 @@ import { coordNum, lineFields, openDmModel } from '../../../ext/condenser/src/ma
 import { rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
 import { pushDhMask } from './drillholes.js';
+import { attrTableFilterChanged } from './attrtable.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, refreshLinkedWindows
+// the app's side, passed in once (setFilterHooks): refreshLinkedWindows
 let H = {};
 export function setFilterHooks(h) { H = h; }
 
@@ -44,7 +45,7 @@ export async function applyTableFilter(L, expr) {
   if (!expr.trim()) {
     L._filterMask = null; L._filterCount = 0;
     inp.classList.remove('err');
-    H.attrTableFilterChanged(L.id);
+    attrTableFilterChanged(L.id);
     $('#meta').textContent = L.docs.tableDoc.metaLine;
     return;
   }
@@ -64,7 +65,7 @@ export async function applyTableFilter(L, expr) {
     }
   }
   L._filterMask = mask; L._filterCount = hits;
-  H.attrTableFilterChanged(L.id);
+  attrTableFilterChanged(L.id);
   $('#meta').textContent = `${L.label || L.name} — ${hits.toLocaleString()} of ${h.count.toLocaleString()} rows match`;
 }
 
@@ -114,6 +115,17 @@ async function tryPinned(AL, header, m, pinNames, needL, calcChunkFns, chunkF, {
   return pinnedSweep(AL, header, m, pinNames, needL, calcChunkFns, chunkF, { mask, collect, catCode, alive: () => alive() });
 }
 
+// the filter box's chrome: the clear button shows when there is text, and the highlight follows it
+export function syncFilterClear() { $('#filterWrap').classList.toggle('has', !!$('#filter').value); syncHL($('#filter'), $('#filterHL')); }
+
+// re-sweep a layer's filter after something changed under it (a re-read, new ƒ
+// definitions, a reload) — ANY layer; the box mirrors it when it's the active one
+export async function refilterLayer(L, expr = L && L.filterExpr) {
+  if (!L || (!String(expr || '').trim() && !L._holeMask && !L._secHoleMask)) return;   // a hole filter masks with no expression; a whole-holes section still has to be drawn
+  if (L.id === S.activeId) { $('#filter').value = expr; syncFilterClear(); }
+  await applyBlockFilter(expr, L);
+}
+
 export async function applyBlockFilter(expr, L = activeLayer()) {
   const isActive = !!L && L.id === S.activeId;
   const inp = isActive ? $('#filter') : document.createElement('input');   // the box's error mark belongs to the active layer's filter
@@ -137,7 +149,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const alive = () => _filterEpochs.get(lid) === epoch;
   if (!expr.trim() && !(fDhDoc && (AL._holeMask || AL._secHoleMask))) {   // drillholes: the hole filter / the section's holes still go through the sweep
     closeCompactBuilder(lid); S.renderer.setFilter(null, {}, lid); S.renderer.clearCompact(lid); inp.classList.remove('err'); requestRender();
-    { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; H.attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
+    { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
     $('#meta').textContent = (fBlockDoc || fDhDoc).metaLine; return;
   }
   { let ast0 = null; try { ast0 = parse(expr); } catch { /* the branches report */ }
@@ -508,7 +520,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   }
   // the attribute table's only-matches mode needs the mask EITHER WAY — the
   // compact path renders matches as chunks, but the table reads rows
-  { const Lf = layerById(lid); if (Lf) { Lf._filterMask = mask; H.attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
+  { const Lf = layerById(lid); if (Lf) { Lf._filterMask = mask; attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
   requestRender();
   $('#meta').textContent = `${fBlockDoc.metaLine} · filter: ${hits.toLocaleString()} of ${rec.toLocaleString()} match${cb2 ? ' · compacted' : ''}`;
 }
@@ -529,7 +541,7 @@ export function dhFilterSweep(L, expr) {                          // the interva
     L._filterMask = hm ? hm.slice() : null;
     let hits = 0; if (hm) for (const m of hm) if (m) hits++;
     L._filterHits = hits;
-    H.attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
+    attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
     return hm ? hits : null;
   }
   const schema = schemaExt(L, dh.header);
@@ -540,6 +552,6 @@ export function dhFilterSweep(L, expr) {                          // the interva
   let hits2 = 0;
   for (let i = 0; i < dh.header.count; i++) { if (hm && !hm[i]) continue; if (fn2(extendRow(L, dh.fetchRecord(i), i))) { mask2[i] = 1; hits2++; } }
   L._filterMask = mask2; L._filterHits = hits2;
-  H.attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
+  attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
   return hits2;
 }
