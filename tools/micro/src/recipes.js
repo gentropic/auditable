@@ -20,10 +20,9 @@ import { collarCells, csvRecords } from './drillholes.js';
 import { markProjectDirty } from './project.js';
 import { openSolidRecipeConfigured, runSolidRecipe } from './bygeom-ui.js';
 import { runFigureRecipe } from './deco.js';
+import { applyCalcCols, layerHasColumn } from './calc.js';
+import { resultToLayer } from './analysis-ui.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setRecipesHooks): applyCalcCols, layerHasColumn, resultToLayer
-let H = {};
-export function setRecipesHooks(h) { H = h; }
 
 // ── RECIPES: named, re-runnable analysis setups as YAML FILES in the project
 // folder (recipes/<slug>.yaml). A recipe is DATA — the same op-shaped
@@ -302,7 +301,7 @@ export function routineLineInfo(st, i, P) {
   // every step says what it WRITES — a report path, a column, a figure, or nothing
   const wrote = [
     ...t.reports.map((r) => `→  ${r}`),
-    ...t.columns.map((c) => `→  ${c.layer || 'layer'} · ${c.kind} column “${c.name}”${H.layerHasColumn(c.name, c.layer) ? ' (replaces)' : ''}`),
+    ...t.columns.map((c) => `→  ${c.layer || 'layer'} · ${c.kind} column “${c.name}”${layerHasColumn(c.name, c.layer) ? ' (replaces)' : ''}`),
     ...t.figures.map((f) => `→  ${f}`),
   ];
   return {
@@ -428,7 +427,7 @@ export async function runRoutine(r, opts = {}) {
         if (exists) { $('#meta').textContent = `routine: guard stopped — ${rep} already exists`; return; }
       }
       for (const c of t.columns) {                          // columns count as outputs too
-        if (H.layerHasColumn(c.name, c.layer)) { $('#meta').textContent = `routine: guard stopped — ${c.layer || 'the layer'} already has a column “${c.name}”`; return; }
+        if (layerHasColumn(c.name, c.layer)) { $('#meta').textContent = `routine: guard stopped — ${c.layer || 'the layer'} already has a column “${c.name}”`; return; }
       }
     }
   }
@@ -473,7 +472,7 @@ export async function runRoutine(r, opts = {}) {
         const emit = st.emit || (merged.params && merged.params.emit);
         if (emit) {                                        // keep the result as a table layer too
           const path = typeof emit === 'object' && emit.layer ? String(emit.layer) : `${r.name}/${st._slug}`;
-          await H.resultToLayer(path, tsv);
+          await resultToLayer(path, tsv);
         }
         el.querySelector('.fwin-head button:last-child').click();   // tidy: close the step's window
       } else if (tool === 'solid') {
@@ -586,7 +585,7 @@ export function runRecipe(r, andRun = true) {
   }
   const open2 = (Lp) => {
     if (r.tool === 'calccols') {
-      const { applied, bad } = H.applyCalcCols(Lp, r.params.cols);
+      const { applied, bad } = applyCalcCols(Lp, r.params.cols);
       $('#meta').textContent = `recipe “${r.name}”: ${applied} calc column${applied === 1 ? '' : 's'} applied to ${Lp.label || Lp.name}${bad.length ? ` · skipped (invalid expr): ${bad.join(', ')}` : ''}`;
       return;
     }

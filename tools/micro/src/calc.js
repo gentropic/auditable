@@ -4,7 +4,7 @@ import { blockSchema, layerTableHeader, sampleRow, schemaExt } from './records.j
 import { floatWin, raiseWindow } from './windows.js';
 import { markProjectDirty } from './project.js';
 import { S } from './state.js';
-import { addPaintColorOptions, applyRamp, calcSelOf, colorSelOf, materializeCalcCol, refreshProps, renderProps, syncRuleMode } from './props.js';
+import { _propFor, _propOpen, addPaintColorOptions, applyRamp, calcSelOf, colorSelOf, materializeCalcCol, refreshProps, renderProps, syncRuleMode } from './props.js';
 import { compileValue, deps, parse, quoteIdent, validate } from '../../../ext/expr/index.js';
 import { columnValues, exprField, syncHL } from './exprfield.js';
 import { fdBounds, fdNum, fdRenderChain, fdRenderLeaf, fdValues } from './filter-drawer.js';
@@ -13,6 +13,7 @@ import { pushUndo } from './undo.js';
 import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
+import { _attrTables } from './attrtable.js';
 const $ = (s) => document.querySelector(s);
 
 // ── ƒ CALCULATIONS window — the calc-column authoring workbench (Leapfrog's
@@ -258,4 +259,46 @@ export function openCalcWindow(L, selIdx) {
   }
   render();
   _calcWins.set(L.id, { el: win.el, select });
+}
+
+// apply a calc-column SET to a layer — REPLACE on same name (idempotency is
+// gospel: run-twice == run-once), append the new; invalid expressions are
+// skipped and named. The recipe-facing form of Properties → columns.
+export function applyCalcCols(L, cols) {
+  const h = layerTableHeader(L); if (!h) return { applied: 0, bad: [] };
+  L.calcCols = L.calcCols || [];
+  let applied = 0; const bad = [];
+  for (const c of cols || []) {
+    if (!c || !c.name || !c.expr) continue;
+    // schema recomputed PER entry — a recipe composes in listed order (DBL may reference the FE_EQ two lines up)
+    try { compileValue(String(c.expr), schemaExt(L, h), { decimal: '.' }); } catch { bad.push(c.name); continue; }
+    const entry = { name: String(c.name), expr: String(c.expr), ty: c.ty === 'string' ? 'string' : 'number' };
+    const at = L.calcCols.findIndex((x) => x.name.toLowerCase() === entry.name.toLowerCase());
+    if (at >= 0) L.calcCols[at] = entry; else L.calcCols.push(entry);
+    applied++;
+  }
+  if (applied) {
+    L._calcFns = null; L._colStats = null;
+    const t2 = _attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
+    markProjectDirty();
+    if (L.id === S.activeId) addPaintColorOptions(L);       // new ƒ columns reach color-by now, not on the next layer switch
+    if (L.filterExpr) refilterLayer(L);                     // a live ƒ filter picks up replaced definitions (any layer, not just the active one)
+    if (calcSelOf(L)) { applyRamp(L, true); syncRuleMode(L); }   // a live ƒ color re-realizes (closure-hash gated)
+    if (_propOpen && _propFor === L.id) renderProps();
+  }
+  return { applied, bad };
+}
+
+// does a layer already carry this column? (any kind — source, ƒ, painted, stored)
+export function layerHasColumn(name, layerName) {
+  const L = S.layers.find((x) => x.name === layerName || x.label === layerName);
+  if (!L) return false;
+  const h = layerTableHeader(L);
+  const all = [
+    ...((h && h.columns) || []),
+    ...(L.calcCols || []).map((c) => c.name),
+    ...(L.paintCols || []).map((c) => c.name),
+    ...(L.dataCols || []).map((c) => c.name),
+  ];
+  return all.some((n) => String(n).toLowerCase() === String(name).toLowerCase());
 }

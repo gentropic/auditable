@@ -40,7 +40,7 @@ import { deliverBlob, pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
 import { closeAllLayers, recomputeUnion } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, renderEmptyProjects
+// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -303,6 +303,25 @@ export function projectManifest() {
   };
 }
 
+// recent projects on the empty state (chips, like recent files)
+export async function renderEmptyProjects() {
+  const el = $('#emptyProjects'); if (!el) return;
+  el.textContent = '';
+  if (!S.hasFSAA) return;
+  let list = [];
+  try { list = (await _idb.get(PROJECTS_KEY)) || []; } catch { /* ignore */ }
+  if (!list.length) return;
+  const lab = document.createElement('span'); lab.className = 'er-label'; lab.textContent = 'projects:';
+  el.appendChild(lab);
+  for (const e of list.slice(0, 6)) {
+    const chip = document.createElement('a'); chip.className = 'er-chip';
+    chip.textContent = e.pack ? `${e.name} · pack` : e.name;
+    chip.title = e.pack ? `open the pack ${e.handle && e.handle.name || ''} (read-only)` : 'open project';
+    chip.onclick = () => (e.pack ? openPackFromHandle(e.handle) : openProjectDir(e.handle));
+    el.appendChild(chip);
+  }
+}
+
 // a pack opened from a file the browser can hand back (a picker, a drop, recents)
 // joins the recent projects as itself — reopening reads the same file, read-only
 export async function rememberPack(handle, name) {
@@ -310,7 +329,7 @@ export async function rememberPack(handle, name) {
     const list = (await _idb.get(PROJECTS_KEY)) || [];
     const next = [{ name, handle, pack: true }].concat(list.filter((e) => e.name !== name || !e.pack)).slice(0, 8);
     await _idb.set(PROJECTS_KEY, next);
-    H.renderEmptyProjects();
+    renderEmptyProjects();
   } catch { /* best-effort */ }
 }
 
@@ -331,7 +350,7 @@ export async function rememberProject(dir) {
     for (const L of S.layers) if (L.storage === 'external' && L.handle) links[L.name] = L.handle;
     const next = [{ name: dir.name, handle: dir, links }].concat(list.filter((e) => e.name !== dir.name || e.pack)).slice(0, 8);
     await _idb.set(PROJECTS_KEY, next);
-    H.renderEmptyProjects();
+    renderEmptyProjects();
   } catch { /* best-effort */ }
 }
 

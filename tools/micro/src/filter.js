@@ -11,14 +11,11 @@ import { startChunkBuilder } from './chunkworker.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { readParquetRange } from '../../../ext/parquet/index.js';
 import { coordNum, lineFields, openDmModel } from '../../../ext/condenser/src/main.js';
-import { rowsProgress } from './analysis-ui.js';
+import { refreshLinkedWindows, rowsProgress } from './analysis-ui.js';
 import { syncHL } from './exprfield.js';
 import { pushDhMask } from './drillholes.js';
 import { attrTableFilterChanged } from './attrtable.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFilterHooks): refreshLinkedWindows
-let H = {};
-export function setFilterHooks(h) { H = h; }
 
 // predicate pushdown: can the filter be true for SOME row whose NUMERIC columns
 // lie in `ranges`? Now @gcu/expr's canMatch (v0.2) — the hand-rolled walker moved
@@ -149,7 +146,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const alive = () => _filterEpochs.get(lid) === epoch;
   if (!expr.trim() && !(fDhDoc && (AL._holeMask || AL._secHoleMask))) {   // drillholes: the hole filter / the section's holes still go through the sweep
     closeCompactBuilder(lid); S.renderer.setFilter(null, {}, lid); S.renderer.clearCompact(lid); inp.classList.remove('err'); requestRender();
-    { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
+    { const Lf = layerById(lid); if (Lf) { Lf._filterMask = null; attrTableFilterChanged(lid); refreshLinkedWindows(Lf, 'filtered'); } }
     $('#meta').textContent = (fBlockDoc || fDhDoc).metaLine; return;
   }
   { let ast0 = null; try { ast0 = parse(expr); } catch { /* the branches report */ }
@@ -520,7 +517,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   }
   // the attribute table's only-matches mode needs the mask EITHER WAY — the
   // compact path renders matches as chunks, but the table reads rows
-  { const Lf = layerById(lid); if (Lf) { Lf._filterMask = mask; attrTableFilterChanged(lid); H.refreshLinkedWindows(Lf, 'filtered'); } }
+  { const Lf = layerById(lid); if (Lf) { Lf._filterMask = mask; attrTableFilterChanged(lid); refreshLinkedWindows(Lf, 'filtered'); } }
   requestRender();
   $('#meta').textContent = `${fBlockDoc.metaLine} · filter: ${hits.toLocaleString()} of ${rec.toLocaleString()} match${cb2 ? ' · compacted' : ''}`;
 }
@@ -541,7 +538,7 @@ export function dhFilterSweep(L, expr) {                          // the interva
     L._filterMask = hm ? hm.slice() : null;
     let hits = 0; if (hm) for (const m of hm) if (m) hits++;
     L._filterHits = hits;
-    attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
+    attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
     return hm ? hits : null;
   }
   const schema = schemaExt(L, dh.header);
@@ -552,6 +549,6 @@ export function dhFilterSweep(L, expr) {                          // the interva
   let hits2 = 0;
   for (let i = 0; i < dh.header.count; i++) { if (hm && !hm[i]) continue; if (fn2(extendRow(L, dh.fetchRecord(i), i))) { mask2[i] = 1; hits2++; } }
   L._filterMask = mask2; L._filterHits = hits2;
-  attrTableFilterChanged(L.id); H.refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
+  attrTableFilterChanged(L.id); refreshLinkedWindows(L, 'filtered'); pushDhMask(L);
   return hits2;
 }

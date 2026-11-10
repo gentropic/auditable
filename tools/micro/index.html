@@ -1146,7 +1146,6 @@ import { decodeLasRecords, fetchDmRecord, buildMeshChunk, createChunkBuilder, gr
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
-import { compileValue } from '../../ext/expr/index.js';   // lamina's filter language + autocomplete, verbatim
 import { raycastBVH } from '../../ext/winding/index.js';   // select-by-solid containment (spec 17)
 import { html, trusted, setHTML } from './src/html.js';
 import { installLongPress } from './src/longpress.js';
@@ -1162,30 +1161,30 @@ import { startChunkBuilder } from './src/chunkworker.js';   // the block chunk b
 import { parquetRow } from './src/rowworker.js';          // a Parquet row off the page (the pick, the record panel)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { PAINT_BLANK, paintRecount, matColList, matColGet, matColSet, pinBudgetBytes, setPinBudget, pinStats, pinPutMatcol, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
-import { _idb, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
+import { persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
 import { numericColsOf, computeGT, computeSwath, extractSamples, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
 import { fmtSize } from './src/paths.js';   // project folder layout + path resolution
 import { buildElementManifest, buildDhSetManifest, descFromElement, buildGridElementManifest } from './src/manifest.js';   // element-manifest builders + hydrate (persistence stays here)
 import { runWfrJob, packLayers, handleSink, partsSink } from './src/wfr-write.js';
-import { applyBlockFilter, applyTableFilter, dhFilterSweep, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
+import { applyBlockFilter, applyTableFilter, dhFilterSweep, syncFilterClear } from './src/filter.js';
 import { mkLineage } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, runReconcile, setJoinsHooks } from './src/joins.js';
 import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, _sheetDrag, _sheetExclusive, _isMobile } from './src/windows.js';
-import { setAnalysisUiHooks } from './src/analysis-ui.js';
-import { openGradeTonnage, _gtWins } from './src/gt.js';
-import { openSwath, _swathWins, applySwathZebra, setSwathHooks } from './src/swath.js';
-import { openStats, _statsWins } from './src/stats.js';
+import { refreshLinkedWindows, resultToLayer } from './src/analysis-ui.js';
+import { openGradeTonnage } from './src/gt.js';
+import { openSwath, applySwathZebra, setSwathHooks } from './src/swath.js';
+import { openStats } from './src/stats.js';
 import { openCrosstab, _xtabWins, parseCutoffs } from './src/xtab.js';
 import { openXyPlot, _xyWins } from './src/xyplot.js';
 import { openMeshQa, setMeshQaHooks, _meshQaWins } from './src/meshqa.js';
 import { openStructure, openStereonet, importPaintedSets, setStructureHooks, structureAfterEdit, installStructurePointer, _structWins, planesToTable, structureArmed, structureTool, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
 import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './src/structure.js';
 import { openValidation } from './src/validation.js';
-import { recipeSlug, routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems, openRoutineWindow, openInputsDialog, setRecipesHooks } from './src/recipes.js';
+import { routineEval, routineFilterRows, routineSubst, routineReadTableFull, routineLoadParams, expandRoutine, routineTargets, openRoutineTracker, runRoutine, saveRecipe, loadRecipes, runRecipe, recipesMenuItems, openRoutineWindow, openInputsDialog } from './src/recipes.js';
 import { meshSolidOf, setWindingGpu, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
-import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, useAsCategory, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
-import { PROJECTS_KEY, markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, openPackFromHandle, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks } from './src/project.js';
+import { _propOpen, openProps, closeProps, propKindLine, renderProps, _autoApply, pushAllStyle, revertStyle, syncPPFooter, applyCatLegend, RULE_ELSE, ruleModeOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, useAsCategory, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
+import { markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks, renderEmptyProjects } from './src/project.js';
 import { openBlob, openGridBlob, openObjSplit, openLfmSplit, openDrillholeLayer, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob } from './src/open.js';
 import { addLayer, ingestSource } from './src/ingest.js';
 import { openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel } from './src/open-dialog.js';
@@ -1206,7 +1205,7 @@ import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, 
 import { filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, syncHL } from './src/exprfield.js';
 import { _fdOpen, renderFilterDrawer, toggleFilterDrawer } from './src/filter-drawer.js';
 import { HELP_KEYS, HELP_TOUCH, HELP_ANALYSIS, showAbout, showHelp, checkForUpdates, sealedInfo, setHelpHooks } from './src/help.js';
-import { openCalcWindow } from './src/calc.js';
+import { openCalcWindow, applyCalcCols, layerHasColumn } from './src/calc.js';
 import { showMemoryInfo, showFileInfo } from './src/fileinfo.js';
 import { openSettingsWindow, setSettingsHooks } from './src/settings.js';
 import { openLineageWindow, lineageReportHtml, exportLineageReport } from './src/lineage-ui.js';
@@ -2407,7 +2406,7 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, applyLayerSelection });
+setExportHooks({ applyLayerSelection });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
@@ -2417,79 +2416,6 @@ setBygeomHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaint
 
 // src/joins.js reaches back into the app through these
 setJoinsHooks({ addPaintValue, createPaintCol });
-
-// src/analysis-ui.js reaches back into the app through these
-setAnalysisUiHooks({ resultToLayer });
-
-// redraw open GT/swath windows bound to L when their scope's input changed
-// (kind: 'selection' after brushing, 'filtered' after a filter run)
-function refreshLinkedWindows(L, kind = 'selection') {
-  if (!L) return;
-  for (const map of [_gtWins, _swathWins, _statsWins]) { const e = map.get(L.id); if (e && e.st && e.st.scope === kind) e.redraw(); }
-}
-
-// export / copy a chart canvas (PNG at its dpr-scaled resolution); tableFn,
-// when given, adds a TSV copy of the computed NUMBERS (what lands in memos)
-// a result table (TSV) → a table layer in the project
-// `title` may be a PATH — "swaths/FE drift" files the result into a swaths group
-async function resultToLayer(title, tsv, lineageOp) {
-  if (!tsv || !tsv.trim()) { $('#meta').textContent = 'no table to keep'; return null; }
-  const leaf = String(title).split('/').pop().trim() || 'result';
-  const name = `${recipeSlug(leaf)}.tsv`;
-  const blob = new Blob([tsv], { type: 'text/tab-separated-values' });
-  const _got = await openBlob(blob, name, 'add', null, { asKind: 'table', lineage: lineageOp ? mkLineage(lineageOp.op, lineageOp.params || {}, lineageOp.sources || []) : undefined });
-  const L = layerById(_got);
-  if (L) fileLayerByPath(L, title);                        // path → group; plain name → just the label
-  const rows = L && L.docs.tableDoc ? L.docs.tableDoc.header.count.toLocaleString() : '?';
-  $('#meta').textContent = `${title} → a table layer (${rows} rows) — filter it, join it, export it`;
-  markProjectDirty();
-  return L;
-}
-
-// src/recipes.js reaches back into the app through these
-setRecipesHooks({ applyCalcCols, layerHasColumn, resultToLayer });
-
-// apply a calc-column SET to a layer — REPLACE on same name (idempotency is
-// gospel: run-twice == run-once), append the new; invalid expressions are
-// skipped and named. The recipe-facing form of Properties → columns.
-function applyCalcCols(L, cols) {
-  const h = layerTableHeader(L); if (!h) return { applied: 0, bad: [] };
-  L.calcCols = L.calcCols || [];
-  let applied = 0; const bad = [];
-  for (const c of cols || []) {
-    if (!c || !c.name || !c.expr) continue;
-    // schema recomputed PER entry — a recipe composes in listed order (DBL may reference the FE_EQ two lines up)
-    try { compileValue(String(c.expr), schemaExt(L, h), { decimal: '.' }); } catch { bad.push(c.name); continue; }
-    const entry = { name: String(c.name), expr: String(c.expr), ty: c.ty === 'string' ? 'string' : 'number' };
-    const at = L.calcCols.findIndex((x) => x.name.toLowerCase() === entry.name.toLowerCase());
-    if (at >= 0) L.calcCols[at] = entry; else L.calcCols.push(entry);
-    applied++;
-  }
-  if (applied) {
-    L._calcFns = null; L._colStats = null;
-    const t2 = _attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
-    markProjectDirty();
-    if (L.id === S.activeId) addPaintColorOptions(L);       // new ƒ columns reach color-by now, not on the next layer switch
-    if (L.filterExpr) refilterLayer(L);                     // a live ƒ filter picks up replaced definitions (any layer, not just the active one)
-    if (calcSelOf(L)) { applyRamp(L, true); syncRuleMode(L); }   // a live ƒ color re-realizes (closure-hash gated)
-    if (_propOpen && _propFor === L.id) renderProps();
-  }
-  return { applied, bad };
-}
-
-// does a layer already carry this column? (any kind — source, ƒ, painted, stored)
-function layerHasColumn(name, layerName) {
-  const L = S.layers.find((x) => x.name === layerName || x.label === layerName);
-  if (!L) return false;
-  const h = layerTableHeader(L);
-  const all = [
-    ...((h && h.columns) || []),
-    ...(L.calcCols || []).map((c) => c.name),
-    ...(L.paintCols || []).map((c) => c.name),
-    ...(L.dataCols || []).map((c) => c.name),
-  ];
-  return all.some((n) => String(n).toLowerCase() === String(name).toLowerCase());
-}
 
 // src/swath.js reaches back into the app through these
 setSwathHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, selectionStatus });
@@ -2698,9 +2624,6 @@ $('#ofCancel').onclick = ofCancel;
 $('#dhImport').onclick = dhImport;
 $('#dhCancel').onclick = dhCancel;
 
-// src/filter.js reaches back into the app through these
-setFilterHooks({ refreshLinkedWindows });
-
 // (blockCaps / layerRecords / docPositionStream live in src/records.js)
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
 $('#colorBy').addEventListener('change', () => {
@@ -2775,7 +2698,7 @@ S.hasFSAA = shell.present ? false : !!window.showDirectoryPicker;
 if (shell.present) shell.tree.probe().then((ok) => { S.hasFSAA = ok; renderEmptyProjects(); }).catch(() => {});
 
 // src/project.js reaches back into the app through these
-setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, renderEmptyProjects });
+setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection });
 
 function captureCamera() {
   const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
@@ -2959,14 +2882,6 @@ function setSelectionRecords(L, recs, mode = 'replace') {
 $('#plClose').onclick = () => { $('#plDlg').classList.remove('show'); };
 
 addEventListener('beforeunload', (e) => { if (unsavedWork()) { e.preventDefault(); e.returnValue = ''; } });
-// a long job the user can stop (export, optimize): the footer's cancel button —
-// shown while it runs, one job at a time; done() hides it again
-function busyCancel() {
-  const b = $('#metaCancel'), ac = new AbortController();
-  b.hidden = false; b.onclick = () => { ac.abort(); b.hidden = true; };
-  return { signal: ac.signal, done: () => { b.hidden = true; b.onclick = null; } };
-}
-
 $('#pmOk').onclick = () => pmClose(_pmOkValue !== undefined ? _pmOkValue : $('#pmInput').value);
 $('#pmCancel').onclick = () => pmClose(null);
 $('#pmDlg').addEventListener('pointerdown', (e) => { if (e.target === $('#pmDlg')) pmClose(null); });
@@ -2979,24 +2894,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
 // src/views.js reaches back into the app through these
 setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection });
 
-// recent projects on the empty state (chips, like recent files)
-async function renderEmptyProjects() {
-  const el = $('#emptyProjects'); if (!el) return;
-  el.textContent = '';
-  if (!S.hasFSAA) return;
-  let list = [];
-  try { list = (await _idb.get(PROJECTS_KEY)) || []; } catch { /* ignore */ }
-  if (!list.length) return;
-  const lab = document.createElement('span'); lab.className = 'er-label'; lab.textContent = 'projects:';
-  el.appendChild(lab);
-  for (const e of list.slice(0, 6)) {
-    const chip = document.createElement('a'); chip.className = 'er-chip';
-    chip.textContent = e.pack ? `${e.name} · pack` : e.name;
-    chip.title = e.pack ? `open the pack ${e.handle && e.handle.name || ''} (read-only)` : 'open project';
-    chip.onclick = () => (e.pack ? openPackFromHandle(e.handle) : openProjectDir(e.handle));
-    el.appendChild(chip);
-  }
-}
+// recent projects on the empty state (src/project.js)
 renderEmptyProjects();
 // dirty triggers: anything that lands in the manifest (camera excluded — it's
 // captured at save time; orbiting shouldn't nag)

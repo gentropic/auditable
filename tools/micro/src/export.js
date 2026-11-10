@@ -41,13 +41,21 @@ export function exportColumnsOf(L) {
 
 export let _exportEpoch = 0;
 
-// both long jobs can be STOPPED: the footer's cancel button (the app's busyCancel)
+// a long job the user can stop (export, optimize): the footer's cancel button —
+// shown while it runs, one job at a time; done() hides it again
+function busyCancel() {
+  const b = $('#metaCancel'), ac = new AbortController();
+  b.hidden = false; b.onclick = () => { ac.abort(); b.hidden = true; };
+  return { signal: ac.signal, done: () => { b.hidden = true; b.onclick = null; } };
+}
+
+// both long jobs can be STOPPED: the footer's cancel button (busyCancel)
 // aborts between batches — an export writes nothing, an optimize leaves the layer
 // exactly as it was. A caller's own signal is honoured too.
 const cancelled = (signal) => !!(signal && signal.aborted);
 export async function runExport(L, opts = {}) {
-  const bc = H.busyCancel ? H.busyCancel() : null;
-  try { return await runExportInner(L, { ...opts, signal: opts.signal || (bc && bc.signal) }); } finally { if (bc) bc.done(); }
+  const bc = busyCancel();
+  try { return await runExportInner(L, { ...opts, signal: opts.signal || bc.signal }); } finally { bc.done(); }
 }
 async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', decimalComma = false, filename = 'export.csv', download = true, format = 'csv', codec = 'SNAPPY', spatialSort = false, qualified = false, signal = null } = {}) {
   const h = layerTableHeader(L); if (!h) return -1;
@@ -169,8 +177,8 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
 // through the existing parquet path (no manifest surgery, no in-place record
 // remap). A subsequent project save stores the optimized copy.
 export async function convertLayerToParquet(L, cvOpts = {}) {
-  const bc = H.busyCancel ? H.busyCancel() : null;
-  try { return await convertInner(L, { ...cvOpts, signal: cvOpts.signal || (bc && bc.signal) }); } finally { if (bc) bc.done(); }
+  const bc = busyCancel();
+  try { return await convertInner(L, { ...cvOpts, signal: cvOpts.signal || bc.signal }); } finally { bc.done(); }
 }
 async function convertInner(L, cvOpts) {
   const signal = cvOpts.signal;

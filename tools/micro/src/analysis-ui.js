@@ -10,10 +10,14 @@ import { zoneKeeper } from './colscan.js';
 import { S, layerById } from './state.js';
 import { markProjectDirty } from './project.js';
 import { deliverBlob } from './hostio.js';
+import { _gtWins } from './gt.js';
+import { _swathWins } from './swath.js';
+import { _statsWins } from './stats.js';
+import { recipeSlug } from './recipes.js';
+import { openBlob } from './open.js';
+import { mkLineage } from './lineage.js';
+import { fileLayerByPath } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setAnalysisUiHooks): resultToLayer
-let H = {};
-export function setAnalysisUiHooks(h) { H = h; }
 
 // ── analysis windows (grade-tonnage, swath) ──────────────────────────────────
 // GCU accent palette for overlaid series (blue=info, orange=action, green, violet)
@@ -174,7 +178,7 @@ export function plotExportBtns(cv, nameFn, tableFn, group) {
     const t = tableFn && tableFn();
     if (!t) { $('#meta').textContent = 'run it first — there is no table yet'; return; }
     const leaf = nameFn().replace(/\.png$/i, '');
-    await H.resultToLayer(group ? `${group}/${leaf}` : leaf, t);   // grouped by the kind of analysis
+    await resultToLayer(group ? `${group}/${leaf}` : leaf, t);   // grouped by the kind of analysis
   };
   if (cv) {
     const save = document.createElement('button'); save.className = 'awin-btn'; save.textContent = '⤓ png'; save.title = 'save the plot as PNG';
@@ -277,3 +281,26 @@ export function niceStep(x) {
 }
 
 export const fmtStat = (v) => (v == null || !Number.isFinite(v) ? '–' : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : +v.toFixed(Math.abs(v) < 1 ? 4 : 2) + '');
+
+// redraw the open GT / swath / stats windows bound to L when their scope's input
+// changed (kind: 'selection' after brushing, 'filtered' after a filter run)
+export function refreshLinkedWindows(L, kind = 'selection') {
+  if (!L) return;
+  for (const map of [_gtWins, _swathWins, _statsWins]) { const e = map.get(L.id); if (e && e.st && e.st.scope === kind) e.redraw(); }
+}
+
+// a result table (TSV) → a table layer in the project
+// `title` may be a PATH — "swaths/FE drift" files the result into a swaths group
+export async function resultToLayer(title, tsv, lineageOp) {
+  if (!tsv || !tsv.trim()) { $('#meta').textContent = 'no table to keep'; return null; }
+  const leaf = String(title).split('/').pop().trim() || 'result';
+  const name = `${recipeSlug(leaf)}.tsv`;
+  const blob = new Blob([tsv], { type: 'text/tab-separated-values' });
+  const _got = await openBlob(blob, name, 'add', null, { asKind: 'table', lineage: lineageOp ? mkLineage(lineageOp.op, lineageOp.params || {}, lineageOp.sources || []) : undefined });
+  const L = layerById(_got);
+  if (L) fileLayerByPath(L, title);                        // path → group; plain name → just the label
+  const rows = L && L.docs.tableDoc ? L.docs.tableDoc.header.count.toLocaleString() : '?';
+  $('#meta').textContent = `${title} → a table layer (${rows} rows) — filter it, join it, export it`;
+  markProjectDirty();
+  return L;
+}
