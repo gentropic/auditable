@@ -20,7 +20,7 @@
 // Do not run it while a smoke suite is reading the tree. See README.md.
 import { readFileSync, writeFileSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { Parser } from '../../../ext/acorn/acorn.esm.min.js';
+import { parse, patIds } from './scope.mjs';
 
 const DIR = fileURLToPath(new URL('..', import.meta.url));       // tools/micro/
 const argv = process.argv.slice(2);
@@ -31,9 +31,7 @@ const one = argv.find((a) => !a.startsWith('--'));
 
 const readText = (p) => { const raw = readFileSync(p, 'utf8'), crlf = raw.includes('\r\n'); return { text: raw.split('\r\n').join('\n'), crlf }; };
 const writeText = (p, text, crlf) => writeFileSync(p, crlf ? text.split('\n').join('\r\n') : text);
-const parse = (s) => Parser.parse(s, { ecmaVersion: 'latest', sourceType: 'module', locations: true });
-const walk = (x, f, parent = null, key = null) => { if (!x || typeof x.type !== 'string') return; f(x, parent, key); for (const k in x) { const v = x[k]; if (Array.isArray(v)) v.forEach((c) => walk(c, f, x, k)); else if (v && typeof v.type === 'string') walk(v, f, x, k); } };
-const patIds = (p, out = []) => { if (!p) return out; if (p.type === 'Identifier') out.push(p.name); else if (p.type === 'ObjectPattern') p.properties.forEach((q) => patIds(q.type === 'RestElement' ? q.argument : q.value, out)); else if (p.type === 'ArrayPattern') p.elements.forEach((e) => patIds(e, out)); else if (p.type === 'AssignmentPattern') patIds(p.left, out); else if (p.type === 'RestElement') patIds(p.argument, out); return out; };
+const walk =(x, f, parent = null, key = null) => { if (!x || typeof x.type !== 'string') return; f(x, parent, key); for (const k in x) { const v = x[k]; if (Array.isArray(v)) v.forEach((c) => walk(c, f, x, k)); else if (v && typeof v.type === 'string') walk(v, f, x, k); } };
 // an Identifier node that is a NAME in a position that reads no binding
 const isLabel = (parent, key) => (parent.type === 'MemberExpression' && key === 'property' && !parent.computed)
   || (parent.type === 'Property' && key === 'key' && !parent.computed && !parent.shorthand)
@@ -66,6 +64,17 @@ const reach = (from, to, seen = new Set()) => { if (from === to) return true; if
 const audit = (src) => {
   const ast = parse(src), appImports = new Map(), rows = [];           // local → { mod, imported }
   for (const n of ast.body) if (n.type === 'ImportDeclaration' && /^\.\/src\//.test(n.source.value)) for (const s of n.specifiers) appImports.set(s.local.name, { mod: n.source.value.slice(6, -3), imported: s.imported ? s.imported.name : null });
+  // a.b.c with every step a plain name: its root identifier, else null
+  const chainRoot = (x) => { while (x && x.type === 'MemberExpression' && !x.computed && !x.optional) x = x.object; return x && x.type === 'Identifier' ? x.name : null; };
+  // a top-level `<Obj>.<prop> = <name>;`, Obj an import and name a top-level const of the app:
+  // a module can read <Obj>.<prop> where the app reads <name>
+  const consts = new Set(), alias = new Map();                         // name → 'Obj.prop'
+  for (const n of ast.body) if (n.type === 'VariableDeclaration' && n.kind === 'const') for (const d of n.declarations) patIds(d.id).forEach((x) => consts.add(x));
+  for (const n of ast.body) {
+    const e = n.type === 'ExpressionStatement' && n.expression.type === 'AssignmentExpression' && n.expression.operator === '=' ? n.expression : null;
+    if (!e || e.right.type !== 'Identifier' || !consts.has(e.right.name) || alias.has(e.right.name)) continue;
+    if (e.left.type === 'MemberExpression' && appImports.has(chainRoot(e.left))) alias.set(e.right.name, src.slice(e.left.start, e.left.end));
+  }
   walk(ast, (x) => {
     if (x.type !== 'CallExpression' || x.callee.type !== 'Identifier' || !/^set\w+Hooks$/.test(x.callee.name)) return;
     const t = appImports.get(x.callee.name), obj = x.arguments[0];
@@ -73,23 +82,34 @@ const audit = (src) => {
     for (const p of obj.properties) {
       if (p.type !== 'Property') { rows.push({ target: t.mod, setter: x.callee.name, hook: '…spread', points: '…', where: 'app' }); continue; }
       const hook = p.key.name || p.key.value, getter = p.kind === 'get';
-      let points;
-      if (getter) { const b = p.value.body.body[0]; points = b && b.argument ? src.slice(b.argument.start, b.argument.end) : '?'; }
-      else if (p.value.type === 'Identifier') points = p.value.name;
-      else points = src.slice(p.value.start, Math.min(p.value.end, p.value.start + 50)).replace(/\s+/g, ' ');
-      const imp = /^[A-Za-z_$][\w$]*$/.test(points) ? appImports.get(points) : null;
-      const where = /^S\./.test(points) ? 'S' : imp ? 'module' : 'app';
-      rows.push({ target: t.mod, setter: x.callee.name, hook, getter, points, where, from: imp ? imp.mod : null, aliased: !!imp && imp.imported !== points });
+      const v = p.value; let points, chain = null;
+      const call = v.type === 'ArrowFunctionExpression' && v.params.length === 1 && v.params[0].type === 'RestElement' && v.body.type === 'CallExpression' ? v.body : null;
+      if (getter) { const b = v.body.body[0], a = v.body.body.length === 1 && b.type === 'ReturnStatement' ? b.argument : null; points = a ? src.slice(a.start, a.end) : '?'; if (a && a.type === 'MemberExpression') chain = chainRoot(a); }
+      else if (v.type === 'Identifier') points = v.name;
+      // (...a) => f(...a) points at f
+      else if (call && call.callee.type === 'Identifier' && call.arguments.length === 1 && call.arguments[0].type === 'SpreadElement' && call.arguments[0].argument.name === v.params[0].argument.name) points = call.callee.name;
+      else points = src.slice(v.start, Math.min(v.end, v.start + 50)).replace(/\s+/g, ' ');
+      const plain = /^[A-Za-z_$][\w$]*$/.test(points);
+      // where: 'module' — the app imports the target itself; 'state' — the target is a property of
+      // an object the app imports (use = the expression a module writes, imp = the name it imports)
+      const row = { target: t.mod, setter: x.callee.name, hook, getter, points, where: 'app', from: null, use: points, imp: null, aliased: false };
+      const direct = plain ? appImports.get(points) : null;
+      const via = direct ? null : plain && alias.has(points) ? alias.get(points) : chain && appImports.has(chain) ? points : null;
+      if (direct) Object.assign(row, { where: 'module', from: direct.mod, imp: points, aliased: direct.imported !== points });
+      else if (via) { const root = via.slice(0, via.indexOf('.')), o = appImports.get(root); Object.assign(row, { where: 'state', from: o.mod, use: via, imp: root, aliased: o.imported !== root }); }
+      rows.push(row);
     }
   });
   return rows;
 };
-const verdict = (r) => (r.where !== 'module' ? r.where : (r.from === r.target || reach(r.from, r.target)) ? `import ${r.from} (CYCLE: ${r.from} reaches ${r.target})` : `import ${r.from}`);
+const cyc = (r) => r.where !== 'app' && (r.from === r.target || reach(r.from, r.target));
+const kind = (r) => (r.where === 'app' ? 'app' : cyc(r) ? 'import (cycle)' : r.where === 'state' ? 'state' : 'import');
+const verdict = (r) => (r.where === 'app' ? 'app' : (r.where === 'state' ? `${r.use}, import ${r.from}` : `import ${r.from}`) + (cyc(r) ? ` (CYCLE: ${r.from} reaches ${r.target})` : ''));
 
 if (!DIRECT) {
   const rows = audit(app), targets = [...new Set(rows.map((r) => r.target))];
   if (!one && !flag('all')) {
-    const by = {}; for (const r of rows) { const v = verdict(r), k = v.startsWith('import') ? (v.includes('CYCLE') ? 'import (cycle)' : 'import') : v; by[k] = (by[k] || 0) + 1; }
+    const by = {}; for (const r of rows) { const k = kind(r); by[k] = (by[k] || 0) + 1; }
     console.log(rows.length, 'hooks in', targets.length, 'modules:', by);
     const freq = {}; for (const r of rows) if (r.where === 'app') freq[r.points] = (freq[r.points] || 0) + 1;
     console.log('app-defined, by count:', Object.entries(freq).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(' · '));
@@ -106,7 +126,8 @@ if (!DIRECT) {
 // ── --direct ────────────────────────────────────────────────────────────────
 const applyEdits = (text, edits) => { for (const e of edits.sort((a, b) => b.start - a.start || b.end - a.end)) text = text.slice(0, e.start) + e.text + text.slice(e.end); return text; };
 
-// one module: H.<hook> → the name, imported. Returns { text, done, refused, notes, emptied }.
+// one module: H.<hook> → what it stands for (it.use), with it.imp imported from it.from.
+// Returns { text, done, refused, notes, emptied }.
 const directModule = (T, items, setter) => {
   const { text } = readText(DIR + 'src/' + T + '.js'), ast = parse(text);
   const out = { text, done: [], refused: [], notes: [], emptied: false };
@@ -141,12 +162,13 @@ const directModule = (T, items, setter) => {
 
   const edits = [], add = new Map();                             // source module → Set(names)
   for (const it of items) {
-    const have = imported.get(it.points), src = `./${it.from}.js`;
+    const src = `./${it.from}.js`; let have = imported.get(it.imp);
+    if (have && !(have.source === src && have.imported === it.imp)) have = null;
     if (it.aliased) { out.refused.push({ ...it, why: 'the app imports it under another name' }); continue; }
     if (assigned.has(it.hook)) { out.refused.push({ ...it, why: `${T}.js assigns to ${HN}.${it.hook}` }); continue; }
-    if (bound.has(it.points) && !(have && have.source === src && have.imported === it.points)) { out.refused.push({ ...it, why: `${it.points} is already bound in ${T}.js` }); continue; }
-    for (const m of uses.get(it.hook) || []) edits.push({ start: m.start, end: m.end, text: it.points });
-    if (!have) { if (!add.has(it.from)) add.set(it.from, new Set()); add.get(it.from).add(it.points); }
+    if ((bound.get(it.imp) || 0) > (have ? 1 : 0)) { out.refused.push({ ...it, why: `${it.imp} is ${have ? 'also' : 'already'} bound in ${T}.js` }); continue; }
+    for (const m of uses.get(it.hook) || []) edits.push({ start: m.start, end: m.end, text: it.use, item: it });
+    if (!have) { if (!add.has(it.from)) add.set(it.from, new Set()); add.get(it.from).add(it.imp); }
     out.done.push(it);
   }
   if (!out.done.length) return out;
@@ -159,7 +181,7 @@ const directModule = (T, items, setter) => {
       for (const nm of [...names].sort()) { let i = list.findIndex((s) => s.name > nm); if (i < 0) i = list.length; list.splice(i, 0, { name: nm, text: nm }); }
       edits.push({ start: d.specifiers[0].start, end: d.specifiers[d.specifiers.length - 1].end, text: list.map((s) => s.text).join(', ') });
     } else if (d && !d.specifiers.length) edits.push({ start: d.start, end: d.end, text: `import { ${[...names].sort().join(', ')} } from './${from}.js';` });
-    else if (d) { out.refused.push(...out.done.filter((i) => i.from === from).map((i) => ({ ...i, why: `${T}.js imports ${from}.js in a form this tool does not edit` }))); out.done = out.done.filter((i) => i.from !== from); for (let k = edits.length - 1; k >= 0; k--) if (names.has(edits[k].text)) edits.splice(k, 1); }
+    else if (d) { out.refused.push(...out.done.filter((i) => i.from === from).map((i) => ({ ...i, why: `${T}.js imports ${from}.js in a form this tool does not edit` }))); out.done = out.done.filter((i) => i.from !== from); for (let k = edits.length - 1; k >= 0; k--) if (edits[k].item && edits[k].item.from === from) edits.splice(k, 1); }
     else fresh.push(`import { ${[...names].sort().join(', ')} } from './${from}.js';`);
   }
   if (fresh.length && impDecls.length) { const last = impDecls[impDecls.length - 1]; edits.push({ start: last.end, end: last.end, text: '\n' + fresh.join('\n') }); }
@@ -232,10 +254,10 @@ const dropUnusedImport = (src, name) => {
   return cutFromList(src, decl.specifiers, decl.specifiers.indexOf(spec));
 };
 
-const rows = audit(app).filter((r) => r.where === 'module' && (!ONLY.length || ONLY.includes(r.target)));
+const rows = audit(app).filter((r) => r.where !== 'app' && (!ONLY.length || ONLY.includes(r.target)));
 const plan = new Map(), cyclic = [];
 for (const r of rows) {
-  if (r.from === r.target || reach(r.from, r.target)) { cyclic.push(r); continue; }
+  if (cyc(r)) { cyclic.push(r); continue; }
   mods[r.target].imports.add(r.from);                            // later rows see this edge
   if (!plan.has(r.target)) plan.set(r.target, []);
   plan.get(r.target).push(r);
@@ -243,9 +265,9 @@ for (const r of rows) {
 let nDone = 0, nRefused = 0; const notes = [], writes = [], dropped = new Set();
 for (const [T, items] of plan) {
   const r = directModule(T, items, items[0].setter);
-  for (const it of r.refused) { console.log(`  refused  ${T} ← ${it.points} (${it.from}): ${it.why}`); nRefused++; }
+  for (const it of r.refused) { console.log(`  refused  ${T} ← ${it.use} (${it.from}): ${it.why}`); nRefused++; }
   if (!r.done.length) continue;
-  for (const it of r.done) { app = dropHook(app, it.setter, it.hook); dropped.add(it.points); }
+  for (const it of r.done) { app = dropHook(app, it.setter, it.hook); dropped.add(it.imp); }
   if (r.emptied) {
     // the module may have had hooks the app still passes but nothing reads
     try { app = dropCall(app, items[0].setter); } catch { /* already gone with its last property */ }
@@ -253,7 +275,7 @@ for (const [T, items] of plan) {
   }
   notes.push(...r.notes); nDone += r.done.length;
   writes.push([DIR + 'src/' + T + '.js', r.text]);
-  const by = {}; for (const it of r.done) (by[it.from] = by[it.from] || []).push(it.points);
+  const by = {}; for (const it of r.done) (by[it.from] = by[it.from] || []).push(it.use);
   console.log(`${T}${r.emptied ? ' (no hooks left)' : ''}: ${Object.entries(by).map(([f, ns]) => `${ns.join(', ')} ← ${f}`).join(' · ')}`);
 }
 const unused = []; for (const nm of dropped) { const before = app; app = dropUnusedImport(app, nm); if (app !== before) unused.push(nm); }
