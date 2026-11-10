@@ -12,10 +12,8 @@ import { openBlob, openDrillholeLayer } from './open.js';
 import { colorHeaderOf, colorSelFor, setLayerColorBy, setLayerColorRange, setLayerPalette } from './color.js';
 import { fileLayersInGroup, renderLayers } from './tree.js';
 import { writePlyMeshBytes } from './meshexport.js';
+import { removeLayerUI } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setIngestHooks): removeLayerUI
-let H = {};
-export function setIngestHooks(h) { H = h; }
 
 // ── the HOST front door: _micro.addLayer(spec) ────────────────────────────────
 // A host page that already knows what its data IS hands micro typed columns and
@@ -61,7 +59,7 @@ export async function addLayer(spec = {}) {
       if (cats) {
         const h = colorHeaderOf(L), have = h ? h.columns : [];
         const bad = cats.filter((c) => !have.includes(c));
-        if (bad.length) { H.removeLayerUI(L.id); throw new Error(`addLayer: roles.categories names ${bad.map((c) => JSON.stringify(c)).join(', ')}, not ${bad.length > 1 ? 'columns' : 'a column'} of the layer (it has ${have.join(', ')})`); }
+        if (bad.length) { removeLayerUI(L.id); throw new Error(`addLayer: roles.categories names ${bad.map((c) => JSON.stringify(c)).join(', ')}, not ${bad.length > 1 ? 'columns' : 'a column'} of the layer (it has ${have.join(', ')})`); }
         L.catChoices = cats;
         addPaintColorOptions(L);
       }
@@ -71,7 +69,7 @@ export async function addLayer(spec = {}) {
       const want = spec.colorBy != null ? spec.colorBy : roles.category != null ? roles.category : roles.value != null ? roles.value : null;
       if (want != null) {
         try { lid = await setLayerColorBy(L, colorSelFor(L, want)); }
-        catch (e) { if (spec.colorBy != null) { H.removeLayerUI(L.id); throw e; } }   // a stated colorBy is checked; the role default is best-effort
+        catch (e) { if (spec.colorBy != null) { removeLayerUI(L.id); throw e; } }   // a stated colorBy is checked; the role default is best-effort
         L = layerById(lid);
       }
       // the colour scale, after the colour-by it belongs to: a stated one is checked
@@ -79,7 +77,7 @@ export async function addLayer(spec = {}) {
         try {
           if (spec.palette != null) setLayerPalette(L, spec.palette);
           if (spec.colorRange !== undefined) setLayerColorRange(L, spec.colorRange);
-        } catch (e) { H.removeLayerUI(L.id); throw e; }
+        } catch (e) { removeLayerUI(L.id); throw e; }
       }
       renderLayers();
     }

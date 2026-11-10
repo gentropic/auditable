@@ -6,8 +6,9 @@ import { fetchCsvRecord, fetchLayerRow } from './records.js';
 import { parquetRow } from './rowworker.js';
 import { coordNum, decodeLasRecords, fetchDmRecord } from '../../../ext/condenser/src/main.js';
 import { _isMobile } from './windows.js';
+import { rendererDocBbox } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOverlayHooks): _viewMode, currentSection, pickHitPoint, rendererDocBbox
+// the app's side, passed in once (setOverlayHooks): _viewMode, currentSection, pickHitPoint
 let H = {};
 export function setOverlayHooks(h) { H = h; }
 
@@ -191,7 +192,7 @@ export function drawSectionPlane() {
   const svg = $('#secSvg');
   const sec = $('#secPlaneVis').checked ? H.currentSection() : null;
   if (!sec || !S.cam.state.viewProj) { svg.style.display = 'none'; return; }
-  const pts = planeBboxCssPts(sec.n, sec.d0, H.rendererDocBbox());
+  const pts = planeBboxCssPts(sec.n, sec.d0, rendererDocBbox());
   if (!pts) { svg.style.display = 'none'; return; }
   $('#secPoly').setAttribute('points', pts.join(' '));
   svg.style.display = '';

@@ -30,7 +30,7 @@ import { recolorSurface, setGridBand, setSurfaceFlatZ, setSurfaceSmooth } from '
 import { reopenWithMapping } from './reopen.js';
 import { refilterLayer } from './filter.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): _docBbox, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint
+// the app's side, passed in once (setPropsHooks): addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -1831,7 +1831,7 @@ export function rampRangeFor(L) {
     const cd = calcDisplayCol(L);
     return [Number.isFinite(clip[0]) ? clip[0] : (cd ? cd.min : 0), Number.isFinite(clip[1]) ? clip[1] : (cd ? cd.max : 1)];
   }
-  const b = H._docBbox || [0, 0, 0, 1, 1, 1];
+  const b = S.docBbox || [0, 0, 0, 1, 1, 1];
   const o = S.frame ? S.frame.origin[2] : 0;
   return [Number.isFinite(clip[0]) ? clip[0] : b[2] + o, Number.isFinite(clip[1]) ? clip[1] : b[5] + o];
 }

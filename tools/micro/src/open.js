@@ -29,10 +29,8 @@ import { createLayerGroup, renderLayers } from './tree.js';
 import { ensureDhSetGroups, reopenDh } from './drillholes.js';
 import { setColorLabels } from './color.js';
 import { surfaceColorArray } from './surfaces.js';
+import { LAYER_CAP, allocLayerId, closeAllLayers, fitFromHeader, recomputeUnion, removeLayerUI, setActiveLayer } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOpenHooks): LAYER_CAP, _docBbox, allocLayerId, closeAllLayers, fitFromHeader, recomputeUnion, removeLayerUI, setActiveLayer
-let H = {};
-export function setOpenHooks(h) { H = h; }
 
 // the open's block chunk builder: OFF the page (src/chunkworker.js — the same
 // builder, batches and seed, so the same chunks). Building ran on the page and
@@ -63,7 +61,7 @@ export async function streamInto(cb, streamChunks, header, name, chunkPoints, li
   } finally { if (cb.close) cb.close(); }                 // every chunk is in (or the read failed): the worker can go
   const L = layerById(lid);
   if (L) L.bboxLocal = doc.bboxLocal;
-  H.recomputeUnion();
+  recomputeUnion();
   return doc;
 }
 
@@ -99,9 +97,9 @@ export async function detectDmWireframePairs(files) {
 // Open a Datamine wireframe pair as a single mesh layer (routes the joined mesh
 // through openMeshDoc's static path via opts.prebuilt).
 export async function openDmWireframeBlob(ptFile, trFile, mode = 'replace', at = null) {
-  if (mode !== 'add') H.closeAllLayers();
-  const lid = H.allocLayerId();
-  if (lid == null) { $('#meta').textContent = `layer limit reached (${H.LAYER_CAP}) — remove one first`; return; }
+  if (mode !== 'add') closeAllLayers();
+  const lid = allocLayerId();
+  if (lid == null) { $('#meta').textContent = `layer limit reached (${LAYER_CAP}) — remove one first`; return; }
   const first = S.layers.length === 0;
   const base = trFile.name.replace(/\.dm$/i, '').replace(/tr$/i, '');
   const name = `${base || 'wireframe'} (Datamine wireframe)`;
@@ -117,7 +115,7 @@ export async function openDmWireframeBlob(ptFile, trFile, mode = 'replace', at =
     const L = layerById(lid); if (L) L.colorSel = $('#colorBy').value;
     renderLayers();
     dispatchEvent(new Event('micro:project-dirty'));
-  } catch (e) { $('#meta').textContent = `${name} — ${e.message}`; const L = layerById(lid); if (L) H.removeLayerUI(lid); }
+  } catch (e) { $('#meta').textContent = `${name} — ${e.message}`; const L = layerById(lid); if (L) removeLayerUI(lid); }
 }
 
 // DXF: the drafting format mine software round-trips everything through.
@@ -166,7 +164,7 @@ export async function openWfrFile(blob, name, opts) {
     const el = els[i];
     let lid = opts.layer;
     if (i > 0) {
-      lid = H.allocLayerId();
+      lid = allocLayerId();
       if (lid == null) { skipped.push(el.name); continue; }
       S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: primary ? primary.handle : null, storage: 'loose', lineage: openLineage(name, blob) });
     }
@@ -200,7 +198,7 @@ export async function openWfrFile(blob, name, opts) {
 export async function openStringsLayer(blob, name, lid, first, r, catOpts) {
   const { header, streamChunks, fetchRecord, recordPosition } = r;
   registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord, recordPosition } });
-  H.fitFromHeader(header, first);
+  fitFromHeader(header, first);
   const catsUpfront = header.mapping && header.mapping.cat != null;
   S.renderer.setCategories(catsUpfront ? 1 : 0);
   S.renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
@@ -217,7 +215,7 @@ export async function openStringsLayer(blob, name, lid, first, r, catOpts) {
 export async function openPegsLayer(blob, name, lid, first, r, catOpts) {
   const { header, streamChunks, fetchRecord } = r;
   registerDocs(lid, 'points', { stringsDoc: { blob, name, header, fetchRecord } });
-  H.fitFromHeader(header, first);
+  fitFromHeader(header, first);
   const catsUpfront = header.mapping && header.mapping.cat != null;
   S.renderer.setCategories(catsUpfront ? 1 : 0);
   S.renderer.setLayerCats(lid, catsUpfront ? 256 : 0);
@@ -249,7 +247,7 @@ export function finishCatLayer(lid, header, doc, { authoredOnly = false } = {}) 
     };
     applyCatLegend(L, true);
   }
-  H.recomputeUnion();
+  recomputeUnion();
 }
 
 // A DXF too big to read whole (a 3DFACE topography reaches gigabytes; one JS
@@ -267,7 +265,7 @@ export async function openDxfStreamed(blob, name, opts) {
   const gb = (blob.size / 2 ** 30).toFixed(1);
   $('#meta').textContent = `${name} — ${gb} GB · sampling extents…`;
   const sd = await openDxfStream(blob, { as });
-  H.fitFromHeader(sd.header, first);
+  fitFromHeader(sd.header, first);
   const sum = sd.summary;
   const primary = layerById(opts.layer);
   const lids = {}, builders = {}, headers = {}, extra = [];
@@ -305,7 +303,7 @@ export async function openDxfStreamed(blob, name, opts) {
     let lid;
     if (!Object.keys(lids).length) lid = opts.layer;
     else {
-      lid = H.allocLayerId();
+      lid = allocLayerId();
       if (lid == null) { lids[kind] = null; return null; }  // layer limit: that kind is skipped (reported below)
       S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: primary ? primary.handle : null, storage: 'loose', lineage: openLineage(name, blob) });
       extra.push(lid);
@@ -362,8 +360,8 @@ export async function openDxfStreamed(blob, name, opts) {
         }
       }
     }
-    H.recomputeUnion();
-    if (first && H._docBbox) S.cam.fit(H._docBbox);               // the sampled bbox aimed the first view; now the true one
+    recomputeUnion();
+    if (first && S.docBbox) S.cam.fit(S.docBbox);               // the sampled bbox aimed the first view; now the true one
     const prim = layerById(opts.layer);
     if (prim) setColorLabels(prim.kind === 'mesh' ? null : headers[Object.keys(lids).find((k) => lids[k] === opts.layer)]);
     const placed = Object.entries(lids).filter(([, v]) => v != null).map(([k]) => k);
@@ -391,7 +389,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
       return r.layers.length ? r.layers[0] : null;
     } catch (e) { $('#meta').textContent = `${name} — ${e.message}`; if (over.throw) throw e; return null; }
   }
-  if (mode !== 'add') H.closeAllLayers();
+  if (mode !== 'add') closeAllLayers();
   // interpretation: honor an explicit asKind override ('points' | 'blocks' |
   // 'mesh'), else sniff by extension/content. grid-from-table isn't a provider
   // yet, so 'grid' stays extension-driven (tif/grd/asc).
@@ -406,8 +404,8 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
   // delimited file with no coordinate columns
   const isTable = over.asKind === 'table' || /\.xlsx$/i.test(name)
     || (/\.(csv|txt|dat|tsv)$/i.test(name) && !over.mapping && !over.discovered && !isMesh && over.asKind == null && !await delimitedHasCoords(blob));
-  const lid = H.allocLayerId();
-  if (lid == null) { const msg = `layer limit reached (${H.LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
+  const lid = allocLayerId();
+  if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed(name, new Error(msg), over); }
   const first = S.layers.length === 0;
   S.layers.push({ id: lid, name, kind: 'points', docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: (blob && typeof blob === 'object' && _fileHandles.get(blob)) || null, storage: 'loose', lineage: over.lineage || openLineage(name, blob) });
   S.activeId = lid;
@@ -435,7 +433,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     else {
       const { header, streamChunks } = await openLas(blob);
       registerDocs(lid, 'points', { lasDoc: { blob, header } });
-      H.fitFromHeader(header, first);
+      fitFromHeader(header, first);
       setColorLabels(null);
       const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
       const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
@@ -452,7 +450,7 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     $('#meta').textContent = `${name} — ${e.message}`;
     S.renderer.removeLayer(lid);
     S.layers = S.layers.filter((l) => l.id !== lid);
-    if (S.layers.length) H.setActiveLayer(S.layers[0].id);
+    if (S.layers.length) setActiveLayer(S.layers[0].id);
     else $('#empty').style.display = '';
     renderLayers();
     return layerFailed(name, e, over);
@@ -567,18 +565,18 @@ export async function openGridBlob(blob, name, opts = {}) {
     if (!hf) throw new Error('grid is all nodata');
     const color = surfaceColorArray(hf, opts.drape || null, (rampCfgOf(layerById(lid)) || {}).preset, zmin, zmax);
     registerDocs(lid, 'mesh', { gridDoc });
-    H.fitFromHeader({ ...header, bbox: { min: hf.bboxLocal.slice(0, 3).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)), max: hf.bboxLocal.slice(3, 6).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)) } }, opts.first !== false);
+    fitFromHeader({ ...header, bbox: { min: hf.bboxLocal.slice(0, 3).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)), max: hf.bboxLocal.slice(3, 6).map((v, i) => v + (S.frame ? S.frame.origin[i] : 0)) } }, opts.first !== false);
     const smooth = opts.smooth !== false;
     S.renderer.setLayerMeshStyle(lid, { tint: [0.6, 0.63, 0.66], opacity: 1 });
     S.renderer.addChunk({ kind: 'mesh', pos: hf.pos, idx: hf.idx, color, normal: smooth ? hf.normal : null, count: hf.count, bboxLocal: hf.bboxLocal }, 'base', lid);
     const Lg = layerById(lid);
     if (Lg) { Lg.bboxLocal = hf.bboxLocal; Lg.tint = '#9aa0a6'; Lg.gridSurface = true; Lg.surfaceFlatZ = flatZ; Lg.surfaceSmooth = smooth; }
-    H.recomputeUnion(); requestRender();
+    recomputeUnion(); requestRender();
     $('#meta').textContent = `${name} — surface · ${hf.vertexCount.toLocaleString()} nodes${stride > 1 ? ` (every ${stride}ᵗʰ)` : ''}${grid.crs ? ` · ${grid.crs}` : ''}`;
     return;
   }
   registerDocs(lid, 'points', { gridDoc });
-  H.fitFromHeader(header, opts.first !== false);
+  fitFromHeader(header, opts.first !== false);
   setColorLabels(null);
   const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   // records are SEQUENTIAL displayed indices (the 29-bit partition can't hold
@@ -614,7 +612,7 @@ export async function openGridBlob(blob, name, opts = {}) {
   gridDoc.dispIdx = dispIdx;
   const L = layerById(lid);
   if (L) L.bboxLocal = doc.bboxLocal;
-  H.recomputeUnion();
+  recomputeUnion();
   $('#meta').textContent = `${name} — ${nx.toLocaleString()}×${ny.toLocaleString()} ${grid.form}${grid.crs ? ` · ${grid.crs}` : ''}` +
     `${stride > 1 ? ` · showing every ${stride}ᵗʰ node (${shown.toLocaleString()})` : ` · ${shown.toLocaleString()} nodes`}`;
   requestRender();
@@ -627,7 +625,7 @@ export async function openPlyBlob(blob, name, opts = {}) {
   $('#meta').textContent = `${name} — reading header…`;
   const { header, streamChunks, fetchRecord } = await openPly(blob);
   registerDocs(lid, 'points', { plyDoc: { blob, name, header, fetchRecord } });
-  H.fitFromHeader(header, opts.first !== false);
+  fitFromHeader(header, opts.first !== false);
   setColorLabels(null);
   const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
@@ -776,13 +774,13 @@ export async function openMeshDoc(blob, name, opts = {}) {
       soupSrc = (o) => soupFromMesh(m, o);
     } else {
       setupLayer(header);
-      H.fitFromHeader(header, opts.first !== false);
+      fitFromHeader(header, opts.first !== false);
       const chunk = buildMeshChunk({ vertices: m.vertices, triangles: m.triangles, frame: S.frame });
       // per-vertex colour when the mesh carries it (a .wfr's color.r/g/b, a PLY's red/green/blue)
       const vcol = vertexColorOf(m.attrs, chunk.vertexCount);
       if (vcol) { chunk.color = vcol; if (L) L.vertexColored = true; }   // the shader takes vColor in place of the tint
       S.renderer.addChunk(chunk, 'base', lid);
-      if (L) L.bboxLocal = chunk.bboxLocal;      H.recomputeUnion();
+      if (L) L.bboxLocal = chunk.bboxLocal;      recomputeUnion();
       setColorLabels(null);
       $('#meta').textContent = `${name} — ${header.triCount.toLocaleString()} triangles · ${header.vertexCount.toLocaleString()} vertices · ${header.format}`;
       requestRender();
@@ -791,7 +789,7 @@ export async function openMeshDoc(blob, name, opts = {}) {
   }
   // ── the soup path: stream → Morton chunks → budgeted accumulation ──
   setupLayer(header);
-  H.fitFromHeader(header, opts.first !== false);
+  fitFromHeader(header, opts.first !== false);
   setColorLabels(null);
   const cb = createSoupChunkBuilder({ frame: S.frame, chunkSize: 1 << 17, batchSize: 1 << 19, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   let seen = 0;
@@ -803,7 +801,7 @@ export async function openMeshDoc(blob, name, opts = {}) {
   }
   const doc = cb.flush();
   if (L) L.bboxLocal = doc.bboxLocal;
-  H.recomputeUnion();
+  recomputeUnion();
   L.docs.meshDoc.metaLine = `${name} — ${doc.count.toLocaleString()} triangles · ${header.vertexCount.toLocaleString()} vertices · ${header.format} · streamed`;
   $('#meta').textContent = L.docs.meshDoc.metaLine;
   requestRender();
@@ -813,9 +811,9 @@ export async function openMeshDoc(blob, name, opts = {}) {
 // interval midpoints as ONE element layer over the assay table. recIdx = the
 // original interval row (the identity survives @gcu/drillhole's depth sort).
 export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = {}) {
-  if (mode !== 'add') H.closeAllLayers();
-  const lid = H.allocLayerId();
-  if (lid == null) { const msg = `layer limit reached (${H.LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed('drillholes', new Error(msg), over); }
+  if (mode !== 'add') closeAllLayers();
+  const lid = allocLayerId();
+  if (lid == null) { const msg = `layer limit reached (${LAYER_CAP}) — remove one first`; $('#meta').textContent = msg; return layerFailed('drillholes', new Error(msg), over); }
   const first = S.layers.length === 0;
   const name = (files.intervals && files.intervals.name) || 'drillholes';
   S.layers.push({ id: lid, name, label: `holes · ${name}`, kind: 'points', dh: true, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'loose', lineage: over.lineage || openLineage(name, files.intervals) });
@@ -829,7 +827,7 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
     peekCollarCols(dhDoc);                                 // warm the collar-column cache (menu + manifest)
     registerDocs(lid, 'points', { dhDoc });
     qualifyDhDoc(layerById(lid));                          // <0.001 → a number for every interval reader; rawRecord keeps the text
-    H.fitFromHeader(header, first);
+    fitFromHeader(header, first);
     S.renderer.setCategories(header.categories ? 1 : 0);
     S.renderer.setLayerCats(lid, header.categories ? 256 : 0);
     S.renderer.setLayerStickRadius(lid, opts.radius || 1);
@@ -842,7 +840,7 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
     const doc = cb.flush();
     const L = layerById(lid);
     if (L) { L.bboxLocal = doc.bboxLocal; L.colorSel = $('#colorBy').value; }
-    H.recomputeUnion();
+    recomputeUnion();
     const warn = header.report.checks.reduce((t, c) => t + c.count, 0);
     dhDoc.metaLine = `${name} — ${header.placed.toLocaleString()}/${header.count.toLocaleString()} intervals · ${header.holes} holes · ${header.method === 'minimumCurvature' ? 'min curvature' : header.method} · dip ${header.dipConvention}${warn ? ` · ⚠ ${warn} check${warn > 1 ? 's' : ''} (File info)` : ''}`;
     $('#meta').textContent = dhDoc.metaLine;
@@ -856,7 +854,7 @@ export async function openDrillholeLayer(files, opts = {}, mode = 'add', over = 
     $('#meta').textContent = `${name} — ${e.message}`;
     S.renderer.removeLayer(lid);
     S.layers = S.layers.filter((l) => l.id !== lid);
-    if (S.layers.length) H.setActiveLayer(S.layers[0].id);
+    if (S.layers.length) setActiveLayer(S.layers[0].id);
     else $('#empty').style.display = '';
     renderLayers();
     return layerFailed(name, e, over);
@@ -1201,7 +1199,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, parquet: prov ? prov.parquet : null, streamChunks };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
   { const L0 = layerById(lid); if (L0 && L0.lineage && header.grid && header.grid.rot) L0.lineage.params = { ...(L0.lineage.params || {}), lattice: { rotated: true, ...basisAngles(header.grid.rot), ...(header.lattice || { basis: 'declared' }) } }; }
-  H.fitFromHeader(header, opts.first !== false && opts.chan == null);
+  fitFromHeader(header, opts.first !== false && opts.chan == null);
   S.renderer.setCategories(header.categories ? header.categories.length : 0);
   setColorLabels(header);
   if (header.grid) {
@@ -1234,7 +1232,7 @@ export async function openBlocksBlob(blob, name, opts = {}) {
     }
     const doc = cb.flush();
     const L2 = layerById(lid); if (L2) L2.bboxLocal = doc.bboxLocal;
-    H.recomputeUnion();
+    recomputeUnion();
     blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids${header.latticeRejected ? ` (the declared lattice was REFUSED: ${header.latticeRejected} — points view)` : blockDoc.forcePoints ? '' : ' (no regular grid detected — points view)'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
     blockDoc.metaLine += droppedNote(header);
     $('#meta').textContent = blockDoc.metaLine;
@@ -1268,7 +1266,7 @@ export async function openDmBlob(blob, name, opts = {}) {
   const { header, streamChunks } = await openDmModel(blob, { ...(mapping ? { mapping } : {}), forcePoints: opts.forcePoints, onProgress, cached: opts.cached || null });
   const blockDoc = { blob, name, header, metaLine: '', forcePoints: opts.forcePoints, streamChunks };
   registerDocs(lid, header.grid ? 'blocks' : 'points', { blockDoc });
-  H.fitFromHeader(header, opts.first !== false && opts.chan == null);
+  fitFromHeader(header, opts.first !== false && opts.chan == null);
   S.renderer.setCategories(header.categories ? 1 : 0);
   setColorLabels(header);
   if (header.grid) {
@@ -1298,7 +1296,7 @@ export async function openDmBlob(blob, name, opts = {}) {
     }
     const doc = cb.flush();
     const L2 = layerById(lid); if (L2) L2.bboxLocal = doc.bboxLocal;
-    H.recomputeUnion();
+    recomputeUnion();
     blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids (sub-blocked .dm — points view)${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
   }
   $('#meta').textContent = blockDoc.metaLine;

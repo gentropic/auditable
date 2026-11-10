@@ -30,6 +30,7 @@ export const S = {
 
   // ── the scene
   frame: null,                                              // the shared coordinate frame — set by the first layer opened, cleared when the last one closes
+  docBbox: null,                                            // the union bbox of every layer, frame-local [x0, y0, z0, x1, y1, z1] — null while nothing is open
   dirty: true,                                              // a redraw is owed (requestRender sets it, the render loop clears it)
 };
 

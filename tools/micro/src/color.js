@@ -11,10 +11,8 @@ import { S, activeLayer, layerById, requestRender } from './state.js';
 import { reopenBlockChan, reopenDhChan } from './open.js';
 import { markProjectDirty } from './project.js';
 import { followLayer } from './tree.js';
+import { setActiveLayer } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setColorHooks): setActiveLayer
-let H = {};
-export function setColorHooks(h) { H = h; }
 
 // Color-by adapts to the document: for a block model the select lists EVERY
 // numeric column (switching re-streams sweep 2 with the new channel), plus the
@@ -142,7 +140,7 @@ export async function setLayerColorBy(L, v) {
   }
   L.colorSel = v;                                          // (re)asserted on the successor
   // a re-read rewrites the dropdown from THAT layer's header — hand it back to the active one
-  if (reread && L.id !== S.activeId && activeLayer()) H.setActiveLayer(S.activeId);
+  if (reread && L.id !== S.activeId && activeLayer()) setActiveLayer(S.activeId);
   if (L.id === S.activeId) {
     addPaintColorOptions(L);
     const cb = $('#colorBy');

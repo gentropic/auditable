@@ -15,10 +15,8 @@ import { basename, fmtSize } from './paths.js';
 import { isBackupName } from './backup.js';
 import { openPackFile } from './project.js';
 import { createLayerGroup } from './tree.js';
+import { closeAllLayers } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOpenDialogHooks): closeAllLayers
-let H = {};
-export function setOpenDialogHooks(h) { H = h; }
 
 // ── the OPEN dialog (every UI open lands here): a row per file — load toggle,
 // size, real header detection (LAS/PLY headers + delimited sniff), per-file
@@ -386,7 +384,7 @@ export async function ofConfirm() {
   const wire = assembleWireframePairs(st.rows);            // Datamine wireframe pt/tr pairs
   // non-compound rows: everything loaded that isn't a drillhole role or a wireframe half
   const toLoad = st.rows.filter((r) => r.load && !inSet.has(r.file) && !wire.wfFiles.has(r.file) && !['collar', 'survey', 'intervals'].includes(r.asKind));
-  if (st.mode === 'replace') H.closeAllLayers();
+  if (st.mode === 'replace') closeAllLayers();
   let first = st.mode === 'replace' || !S.layers.length;
   for (const { pt, tr } of wire.pairs) { await openDmWireframeBlob(pt.file, tr.file, first ? 'replace' : 'add'); first = false; }
   for (const r of toLoad) {

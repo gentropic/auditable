@@ -20,9 +20,7 @@ import { layerById } from './state.js';
 import { mkLineage, openLineage } from './lineage.js';
 import { addLayer } from './ingest.js';
 import { renderLayers } from './tree.js';
-// the app's side, passed in once (setOmfHooks): closeAllLayers()
-let H = {};
-export function setOmfHooks(h) { H = h; }
+import { closeAllLayers } from './layers.js';
 
 const KIND = { VolumeElement: 'block model', PointSetElement: 'points', SurfaceElement: 'surface', LineSetElement: 'lines' };
 const add3 = (a, b) => [(+a[0] || 0) + (+b[0] || 0), (+a[1] || 0) + (+b[1] || 0), (+a[2] || 0) + (+b[2] || 0)];
@@ -73,7 +71,7 @@ function latticeOf(g, origin) {
 
 // → { layers: [ids], notes: [text] }
 export async function openOmfBlob(blob, name, mode = 'replace') {
-  if (mode !== 'add') H.closeAllLayers();
+  if (mode !== 'add') closeAllLayers();
   const project = await readOMF(blob);
   const po = project.origin || [0, 0, 0];
   const group = String(name).replace(/\.omf$/i, '');

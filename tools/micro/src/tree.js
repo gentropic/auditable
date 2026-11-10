@@ -15,8 +15,9 @@ import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { openMeshExportDialog } from './meshexport.js';
 import { openBatchRename } from './rename.js';
+import { setActiveLayer } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): applyLayerOpacity, fitLayer, layerMenu, setActiveLayer, syncSelBar, syncUndoBtn
+// the app's side, passed in once (setTreeHooks): applyLayerOpacity, fitLayer, layerMenu, syncSelBar, syncUndoBtn
 let H = {};
 export function setTreeHooks(h) { H = h; }
 
@@ -147,7 +148,7 @@ export function stepExclusive(dir, gIn = null) {
   const next = kids[((cur + dir) % kids.length + kids.length) % kids.length];
   showNode(next, true);
   const lead = typeof next === 'number' ? next : groupLayerIds(next).find((id) => !_isTableNode(id));
-  if (lead != null && lead !== S.activeId) H.setActiveLayer(lead);
+  if (lead != null && lead !== S.activeId) setActiveLayer(lead);
   const label = typeof next === 'number' ? (layerById(next).label || layerById(next).name) : next.name;
   $('#meta').textContent = `${g.name}: ${label} (${kids.indexOf(next) + 1}/${kids.length})`;
   return true;
@@ -633,7 +634,7 @@ export function renderLayers() {
       }
       if (e.shiftKey) { lpSelRange(L.id); return; }
       if (_lpSel.size) _lpSel.clear();
-      H.setActiveLayer(L.id);
+      setActiveLayer(L.id);
     };
     row.ondblclick = () => H.fitLayer(L);
     row.oncontextmenu = (e) => { e.preventDefault(); H.layerMenu(L, e.clientX, e.clientY); };

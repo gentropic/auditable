@@ -22,8 +22,9 @@ import { markProjectDirty } from './project.js';
 import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
+import { rendererDocBbox } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, rendererDocBbox, selectionStatus
+// the app's side, passed in once (setSwathHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, selectionStatus
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -228,7 +229,7 @@ export function openSwath(L, ropts) {
   const bandBbox = () => {
     let u = null;
     for (const s of st.series) { const Lx = layerById(s.layerId); const b2 = Lx && Lx.bboxLocal; if (!b2) continue; if (!u) u = Float64Array.from(b2); else for (let i = 0; i < 3; i++) { if (b2[i] < u[i]) u[i] = b2[i]; if (b2[i + 3] > u[i + 3]) u[i + 3] = b2[i + 3]; } }
-    return u || H.rendererDocBbox();
+    return u || rendererDocBbox();
   };
   const setBand = (a, b2, sticky) => {
     st._band = a == null ? null : { a, b: b2, sticky };

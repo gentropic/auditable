@@ -15,9 +15,6 @@ import { writeEsriAsc } from './grid-io.js';
 import { groupLayerIds } from './tree.js';
 import { commonLattice } from '../../../ext/condenser/src/main.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setGridtoolsHooks): _docBbox
-let H = {};
-export function setGridtoolsHooks(h) { H = h; }
 
 // ── an empty grid or block model — a canvas to domain / rasterize into, from
 // parameters or covering existing layers ──
@@ -303,7 +300,7 @@ export function resolveGeom(d) {
 }
 
 export function openNewDialog() {
-  const bb = H._docBbox && S.frame ? unionWorldBbox(S.layers.map(layerWorldBbox)) : null;
+  const bb = S.docBbox && S.frame ? unionWorldBbox(S.layers.map(layerWorldBbox)) : null;
   _ngDlg = {
     kind: 'create',
     type: 'grid', mode: S.layers.length ? 'cover' : 'params',

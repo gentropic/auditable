@@ -24,9 +24,10 @@ import { hexToRgb01 } from './open.js';
 import { markProjectDirty } from './project.js';
 import { addLayer } from './ingest.js';
 import { deliverBlob } from './hostio.js';
+import { allocLayerId, removeLayerUI } from './layers.js';
 const $ = (s) => document.querySelector(s);
 
-// the app's side, passed in once (setStructureHooks)
+// the app's side, passed in once (setStructureHooks): addPaintValue, buildMeshChunk, convertMeshLayer, createPaintCol, meshHitAt, paintApply, pixelRay, zoomToPoint
 let H = {};
 export function setStructureHooks(h) { H = h; }
 export const _structWins = new Map();                       // mesh layer id → handle
@@ -108,7 +109,7 @@ function setDerived(L, kind, label, m, opacity) {
   let D = derivedOf(L, kind);
   if (!m || !m.triangles.length) { if (D) { S.renderer.removeLayer(D.id); S.layers = S.layers.filter((x) => x !== D); renderLayers(); requestRender(); } return; }
   if (!D) {
-    const id = H.allocLayerId(); if (id == null) return;
+    const id = allocLayerId(); if (id == null) return;
     const name = `${L.label || L.name} · ${label}`;
     D = { id, name, label: name, kind: 'mesh', derivedOf: L.id, derivedKind: kind, docs: {}, bboxLocal: null, colorSel: null, clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null, tint: '#ffffff', opacity: 1 };
     S.layers.push(D);
@@ -476,7 +477,7 @@ export async function planesToTable(L, hd) {
   const planes = (hd || L._structView || {}).planes || [];
   if (!planes.length) { $('#meta').textContent = 'structure: no planes to tabulate yet'; return null; }
   const name = `${(L.label || L.name).replace(/\.[^.]+$/, '')}-planes`;
-  for (const old of S.layers.filter((x) => x.kind === 'table' && (x.label || x.name).replace(/\.csv$/i, '') === name)) H.removeLayerUI(old.id);
+  for (const old of S.layers.filter((x) => x.kind === 'table' && (x.label || x.name).replace(/\.csv$/i, '') === name)) removeLayerUI(old.id);
   const columns = {};
   for (const c of TABLE_COLS) columns[c] = planes.map((p) => { const v = rowOf(p)[c]; return v == null || (typeof v === 'number' && !Number.isFinite(v)) ? (c === 'set' || c === 'quality' ? '' : NaN) : v; });
   const id = await addLayer({ kind: 'table', name, columns });

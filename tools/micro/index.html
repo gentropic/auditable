@@ -1142,7 +1142,7 @@
   <footer><span id="meta">—</span><button id="metaCancel" hidden title="stop this — nothing is written, nothing changes">cancel</button><span id="stats"></span><span id="camTP" title="camera look direction — plunge → trend"></span></footer>
 
 <script type="module">
-import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, cellOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, documentFrame, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, createMortonSorter, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
+import { coordNum, zonesToJSON, openLas, describeQualified, decodeLasRecords, openPly, openBlockModel, openTable, openDmModel, fetchDmRecord, peekDmColumns, dmWireframeRole, openDmWireframe, fetchDelimitedRecord, openDrillholes, openDrillholeTraces, sniffDrillholeFiles, classifyDrillholeHeader, sniffDelimited, parseLasHeader, parsePlyHeader, mapColumns, findDimColumns, isDimColumn, gridFromBasis, basisOfGrid, basisAngles, inferLatticeBasis, detectRotatedLattice, latticeMisfit, latticeMapOf, worldMapOf, cellOf, inFrameOf, splitDelimitedRecord, delimitedRecords, delimiterOfLine, inferSubBlockLattice, dimKey, makeDimKeyer, axisDistinct, DIM_PALETTE_MAX, createStickChunkBuilder, categoryPalettePixels, palettePixels, openMsh, openObj, openPlyMesh, buildMeshChunk, buildHeightfieldMesh, openPlySoup, soupFromMesh, createSoupChunkBuilder, openObjSoup, openMshSoup, readMSHLayout, openDxf, peekDxfScene, openDxfStream, peekDxfHead, DXF_STREAM_BYTES, lineFields, createChunkBuilder, createBlockChunkBuilder, makeBlockGrid, inferAxis, mortonKeys, radixSortIndices, createMortonSorter, gridsCompatible, makeResampler, makeBoxAggregator, commonLattice, createOrbitCamera, attachOrbitInput, mat4Inverse, createRenderer, createEdl, mulberry32, writeMSH, layerOfId, faceOfId, isMiss, FACE_NAMES, FACE_NORMALS, FACE_CUT, layerSection } from '../../ext/condenser/src/main.js';
 import { deriveVocab as nlDeriveVocab, trainSession as nlTrainSession, tokenize as nlTokenize, normText as nlNormText } from '../../ext/dispatch/index.js';   // @gcu/dispatch — session-trained NL → command. EXPERIMENTAL, off by default.
 import { shell } from '../../ext/leadacid/index.js';   // the lead-acid shell shim — feature-detected, dormant on the web
 import { declusterWeights, declusterSweep, declusterCell } from '../../ext/gsjs/src/decluster.js';   // @gcu/gsjs math (cell declustering) — the surface, not a reimplementation
@@ -1160,7 +1160,7 @@ import { readGTiff, gridFromGTiff, gridWindowFromGTiff, gridDecimatedFromGTiff, 
 import { parquetInfo, parquetInfoAsync, streamParquetColumns, readParquetRange, writeParquet, createParquetBlobWriter } from '../../ext/parquet/index.js';   // Apache Parquet block models (columnar, streamed row-group by row-group)
 import { html, trusted, joinH, setHTML, appendHTML } from './src/html.js';
 import { installLongPress, moreButton } from './src/longpress.js';
-import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, clearUndo, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
+import { pushUndo, undoLast, redoLast, undoLabel, redoLabel, onUndoChange, onFreshStep, freshStep, withUndoGroup, undoTopRedoable } from './src/undo.js';
 import { openDhQa, setDhQaHooks, _qaWins } from './src/dhqa.js';   // the drillhole QA report (row by row, from the set's files)   // one history of reversible actions (Ctrl+Z after paint)   // the ONE door to innerHTML (file text is never markup)
 import { v3, dirTrendPlunge, frameDipDirDipRake, swathDir } from './src/geom.js';   // first module carved from the monolith
 import { SURFER_BLANK, writeSurferGrd, readSurferGrd, writeEsriAsc, openGridSource } from './src/grid-io.js';   // grid serialization
@@ -1174,7 +1174,7 @@ import { buildValueTexture } from './src/valuetex.js';       // colour-by a colu
 import { parquetRow } from './src/rowworker.js';          // a Parquet row off the page (the pick, the record panel)
 import { alignAxis, coverGeometry, buildEmptyGrid, buildEmptyBlockCsv, rasterizeMeshToGrid, markGridExterior, fillGridNearest, fillGridTrend, applyGridExtend, surfaceFromGrid, gridAxesOf } from './src/grid-ops.js';   // the pure grid kernel (cover/rasterize/fill/sample)
 import { sourceHash, sidecarMatches } from './src/identity.js';   // source identity by content (sampled hash)
-import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinEvictLayer, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
+import { PAINT_BLANK, paintRecount, matColSourceHash, ensureSourceHash, matColLooseId, matColList, isStoredCat, storedCols, matColGet, matColCodes, matColSet, matColEncode, matColDecodeStr, matColDecode, pinBudgetBytes, setPinBudget, pinStats, pinTrim, pinPutMatcol, pinTouchMatcol, pinPut, pinGet, pinWindow, ensureStoredValues, setColumnsChangedHook, ruleDefaultColor, censusChunkCols, expandedDeps, pinnedSweep, scanColumns, colStatsComplete, footerColStats } from './src/columns.js';   // derived-column storage: matcols + the budgeted pin cache + the census scan
 import { _idb, readSidecarCol, persistElement, loadElement, matColDelete } from './src/element-store.js';   // where columns/manifests persist (project dir / IDB); self-registers the sidecar reader
 import { numericColsOf, blockVolumeOf, volumeContextOf, volumeAt, computeGT, computeSwath, extractSamples, autoDeclusterSizes, computeSampleSwath } from './src/analysis.js';   // the pure compute behind GT / swath / validation
 import { fmtSize, layerBytes, layerFiles, basename, joinPath, kindDir, relPathFor, resolveFileHandle, removeFileAt, layerRelpath, resolveDhFile, dhSetName } from './src/paths.js';   // project folder layout + path resolution
@@ -1182,7 +1182,7 @@ import { elementGeometry, layerColumnsOps, buildElementManifest, dhElementName, 
 import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc, wfrPointsDoc, vertexColorOf } from './src/wfr-io.js';   // .wfr elements → the mesh / strings / points shapes micro already reads
 import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';
 import { inventoryProject, writeBackup, readBackup, restoreBackup, openPack, writeTree, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
-import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, closeCompactBuilder, resetFilterState, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
+import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, refilterLayer, syncFilterClear, setFilterHooks } from './src/filter.js';
 import { mkLineage, microModelOf } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
@@ -1193,7 +1193,7 @@ import { openSwath, _swathWins, projRange, applySwathZebra, AXIS_NAMES, setSwath
 import { openStats, _statsWins } from './src/stats.js';
 import { openCrosstab, _xtabWins, parseCutoffs } from './src/xtab.js';
 import { openXyPlot, _xyWins } from './src/xyplot.js';
-import { openOmfBlob, omfCensus, setOmfHooks } from './src/omf.js';
+import { openOmfBlob, omfCensus } from './src/omf.js';
 import { openMeshQa, setMeshQaHooks, _meshQaWins } from './src/meshqa.js';
 import { openStructure, openStereonet, importPaintedSets, setStructureHooks, structureAfterEdit, installStructurePointer, _structWins, setColOf, planesToTable, structureArmed, structureTool, removeTrace, tracesToDxf } from './src/structure-ui.js';   // capivaras: joint planes on an outcrop mesh
 import { structureOf, prepareStructure, measurePlanes, traceNetwork } from './src/structure.js';
@@ -1203,11 +1203,11 @@ import { recipeSlug, routineEval, routineFilterRows, routineSubst, routineReadTa
 import { meshSolidOf, solidOrientedMesh, _windingGpu, setWindingGpu, sbCancelActive, targetsXYBbox, residentGridForEval, selectByGridSurface, ratioByGridSurface, flagByGridSurface, selectBySolid, ratioBySolid, flagBySolid, assignDomains, setBygeomHooks } from './src/bygeom.js';
 import { _propOpen, _propFor, openProps, closeProps, propKindLine, renderProps, ppNote, layerClassInfo, _autoApply, stageGate, pushAllStyle, revertStyle, syncPPFooter, applyCatVisibility, restoreHiddenCats, ensureLegend, applyCatLegend, RULE_ELSE, ruleModeOf, calcSelOf, calcDisplayCol, ensureCalcDisplay, paintSelOf, paintActiveCol, applyPaintPalette, addPaintColorOptions, applyRuleVisibility, syncRuleMode, runRules, broadcastCollarCol, realizeCalcPinned, realizeCalc, materializeCalcCol, setColumnQualify, _qualifyReopen, settleQualifyReopens, sparkline, useAsCategory, RAMP_PRESETS, RAMP_KIND, rampSample, bakeRampPixels, colorSelOf, rampCfgOf, rampRangeFor, applyRamp, setRampCfg, refreshProps, setPropTab, setAutoApply, setPropsHooks } from './src/props.js';
 import { PROJECTS_KEY, markProjectDirty, _autoOptimize, setAutoOptimize, openOptimizeDialog, _autoPack, setAutoPack, packableMesh, packLayersToWfr, rleEncode, rleDecode, openPackFromHandle, saveProjectAs, canCopyIntoProject, copyLayerIntoProject, cacheStamp, saveProject, openProjectDir, openProjectPicker, unsavedWork, closeProject, backupProject, openPackFile, openProjectPack, savePackAsFolder, restoreProject, tidyProject, scanFolderForNewData, newProject, setProjectHooks } from './src/project.js';
-import { detectDmWireframePairs, openDmWireframeBlob, openBlob, openGridBlob, CONTEXT_TRI_CAP, MESH_STREAM_BYTES, hexToRgb01, openObjSplit, openLfmSplit, openMeshDoc, openDrillholeLayer, reopenDhChan, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob, openDmBlob, setOpenHooks } from './src/open.js';
-import { addLayer, ingestSource, setIngestHooks } from './src/ingest.js';
-import { nextDhSetKey, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel, setOpenDialogHooks } from './src/open-dialog.js';
-import { reopenDh, invalidateWholeHoles, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces, setDrillholesHooks } from './src/drillholes.js';
-import { resolveColorMode, setColorLabels, dropValueTex, setLayerColorBy, setLayerColorSel, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList, setColorHooks } from './src/color.js';
+import { detectDmWireframePairs, openDmWireframeBlob, openBlob, openGridBlob, CONTEXT_TRI_CAP, MESH_STREAM_BYTES, hexToRgb01, openObjSplit, openLfmSplit, openMeshDoc, openDrillholeLayer, reopenDhChan, openParquetBlocks, openTableBlob, openXlsxBlob, openWorkbook, openBlocksBlob, openDmBlob } from './src/open.js';
+import { addLayer, ingestSource } from './src/ingest.js';
+import { nextDhSetKey, openFilesDialog, ofConfirm, ofCancel, openDhDialog, dhImport, dhCancel } from './src/open-dialog.js';
+import { reopenDh, invalidateWholeHoles, syncWholeHoles, applyHoleFilter, filterHolesSet, openCsvTableWindow, collarsRowMenu, surveyRowMenu, dhSetInfo, dhSetGroupOf, addIntervalToSet, redesurveySet, setHasTraces, showHoleTraces } from './src/drillholes.js';
+import { resolveColorMode, setColorLabels, setLayerColorBy, setLayerColorSel, colorChoices, colorByName, colorSelFor, layerColorRange, setLayerColorRange, layerPalette, setLayerPalette, paletteList } from './src/color.js';
 import { syncMeshPickable, meshToGridLayer, recolorSurface, setSurfaceFlatZ, applyLayerSurface, setSurfaceSmooth, setGridBand } from './src/surfaces.js';
 import { reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
@@ -1217,7 +1217,7 @@ import { _measure, recordPosition, armMeasure, clearMeasure, measureClick, _meas
 import { microPrompt, _pmOkValue, microConfirm, pmClose } from './src/prompts.js';
 import { _menuChain, closeMenu, menuXY, menuAt } from './src/menu.js';
 import { exportGridAsc, exportMeshes, openMeshExportDialog, wfrExportable, openWfrDialog, writeGridDisplayCache } from './src/meshexport.js';
-import { openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo, setGridtoolsHooks } from './src/gridtools.js';
+import { openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo } from './src/gridtools.js';
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
 import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
 import { columnValues, filterCtx, attachAutocomplete, acClose, _exprFields, exprField, exprStripField, xsKey, xsSync, renderExprHL, syncHL } from './src/exprfield.js';
@@ -1230,7 +1230,8 @@ import { openLineageWindow, lineageReportHtml, exportLineageReport } from './src
 import { _recents, _remember, refreshRecents, addRecent, clearRecents, setRemember, openRecent, openFilePicker } from './src/recents.js';
 import { renameActiveLayer, openBatchRename } from './src/rename.js';
 import { deliverBlob } from './src/hostio.js';
-import { _attrTables, openAttrTable, attrTableSelChanged, closeAttrTable, attrTableReveal, setAttrtableHooks } from './src/attrtable.js';
+import { _attrTables, openAttrTable, attrTableSelChanged, attrTableReveal, setAttrtableHooks } from './src/attrtable.js';
+import { allocLayerId, closeAllLayers, recomputeUnion, setActiveLayer, removeLayerUI, rendererDocBbox, fitFromHeader } from './src/layers.js';
 // src/attrtable.js reaches back into the app through these
 setAttrtableHooks({ emitPick, showRecord });
 // src/settings.js reaches back into the app through these
@@ -1239,10 +1240,8 @@ setSettingsHooks({ get _blockEdges() { return _blockEdges; }, get _nlOn() { retu
 setHelpHooks({ get _nlOn() { return _nlOn; }, nlEnsureTrained, nlSetEnabled });
 // src/bygeom-ui.js reaches back into the app through these
 setBygeomUiHooks({ layerShown });
-// src/gridtools.js reaches back into the app through these
-setGridtoolsHooks({ get _docBbox() { return _docBbox; } });
 // src/overlay.js reaches back into the app through these
-setOverlayHooks({ get _viewMode() { return _viewMode; }, currentSection, pickHitPoint, get rendererDocBbox() { return rendererDocBbox; } });
+setOverlayHooks({ get _viewMode() { return _viewMode; }, currentSection, pickHitPoint });
 const __MICRO_BUILD__ = 'dev';                             // stamped '<version> · <hash> · <date>' by node build.js --target=micro
 
 const $ = (s) => document.querySelector(s);
@@ -2435,7 +2434,7 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, applyLayerSelection, setActiveLayer });
+setExportHooks({ busyCancel, applyLayerSelection });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
@@ -2520,9 +2519,8 @@ function layerHasColumn(name, layerName) {
 }
 
 // src/swath.js reaches back into the app through these
-setSwathHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, selectionStatus });
+setSwathHooks({ addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, selectionStatus });
 
-setOmfHooks({ closeAllLayers });
 // frame a WORLD point (radius 0 → a close look, else that much around it)
 setMeshQaHooks({
   zoomToPoint: (p, r) => {
@@ -2533,7 +2531,6 @@ setMeshQaHooks({
 // the structure window's view of the app (capivaras): paint, the mesh pick, the renderer
 setStructureHooks({
   // wrapped, not referenced: several are const arrows declared further down (TDZ at this point)
-  allocLayerId: (...a) => allocLayerId(...a),
   buildMeshChunk: (...a) => buildMeshChunk(...a),
   createPaintCol: (...a) => createPaintCol(...a),
   addPaintValue: (...a) => addPaintValue(...a),
@@ -2541,7 +2538,6 @@ setStructureHooks({
   convertMeshLayer: (...a) => convertMeshLayer(...a),
   meshHitAt: (...a) => meshHitAt(...a),
   pixelRay: (...a) => pixelRay(...a),
-  removeLayerUI: (...a) => removeLayerUI(...a),
   zoomToPoint: (p, r) => {
     const o = S.frame ? S.frame.origin : [0, 0, 0], h = Math.max(1, r || 0);
     cam.fit([p[0] - o[0] - h, p[1] - o[1] - h, p[2] - o[2] - h, p[0] - o[0] + h, p[1] - o[1] + h, p[2] - o[2] + h]); requestRender();
@@ -2723,80 +2719,9 @@ for (const [id, head, dismiss] of [['#layersPanel', '.lp-head', () => closeLayer
     h.addEventListener('click', () => {});
   }
 }
-let _docBbox = null;
-const rendererDocBbox = () => _docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);
-
-function fitFromHeader(header, first = true) {
-  // the FIRST dataset plants the document frame; later layers REBASE into it
-  // (pure world-true translation — micro-layers spec §2). No reprojection ever.
-  if (!S.frame) S.frame = documentFrame(header, { crs: null });
-  const o = S.frame.origin, b = header.bbox;
-  const local = Float64Array.of(b.min[0] - o[0], b.min[1] - o[1], b.min[2] - o[2], b.max[0] - o[0], b.max[1] - o[1], b.max[2] - o[2]);
-  if (first) { _docBbox = local; cam.fit(local); }
-  else if (_docBbox) {
-    // adding a layer never yanks the camera — but a WILDLY disjoint bbox is a
-    // wrong-file / wrong-CRS smell worth flagging (it still loads)
-    const ext = Math.max(_docBbox[3] - _docBbox[0], _docBbox[4] - _docBbox[1]) || 1;
-    const dx = (local[0] + local[3]) / 2 - (_docBbox[0] + _docBbox[3]) / 2;
-    const dy = (local[1] + local[4]) / 2 - (_docBbox[1] + _docBbox[4]) / 2;
-    if (Math.hypot(dx, dy) > ext * 10) $('#meta').textContent = `⚠ ${Math.round(Math.hypot(dx, dy) / 1000)} km from the current data — different area or CRS?`;
-  }
-}
-// src/open.js reaches back into the app through these
-setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get allocLayerId() { return allocLayerId; }, closeAllLayers, fitFromHeader, recomputeUnion, removeLayerUI, setActiveLayer });
-
-// ── layers (micro-layers spec §1): see src/state.js — S.layers/S.activeId. One
-// layer open == exactly the old single-doc behavior (ids 0-shifted, panel hidden).
-const LAYER_CAP = 64;                                     // a UI limit now, not an arithmetic one
-const allocLayerId = () => {
-  // one pool. The old 7-layer ceiling came from packing the layer into 3 spare
-  // bits of the 32-bit pick id; the layer rides a per-draw uniform now (the pick
-  // target is RG32UI: record + layer), so nothing is scarce here.
-  for (let i = 0; i < LAYER_CAP; i++) if (!layerById(i)) return i;
-  return null;
-};
-function closeAllLayers() {
-  clearUndo();                                             // the history names layers that are going
-  for (const L of S.layers) { pinEvictLayer(L.id); closeCompactBuilder(L.id); dropValueTex(L); }   // nothing pinned (or still compacting, or a value texture) survives a clear
-  for (const [lid] of _attrTables) closeAttrTable(lid);
-  renderer.clearChunks(); renderer.setPicked(null);
-  S.layers = []; S.activeId = 0; S.frame = null; _docBbox = null;
-  resetFilterState();
-  $('#filter').value = ''; syncFilterClear();
-  $('#recPanel').classList.remove('show');
-  clearMeasure();
-  renderLayers();
-}
-function recomputeUnion() {
-  let u = null;
-  for (const L of S.layers) {
-    const b = L.bboxLocal; if (!b) continue;
-    if (!u) u = Float64Array.from(b);
-    else for (let i = 0; i < 3; i++) { if (b[i] < u[i]) u[i] = b[i]; if (b[i + 3] > u[i + 3]) u[i + 3] = b[i + 3]; }
-  }
-  _docBbox = u;
-  if (u) renderer.setDocBbox(u);
-}
-// sync the shared controls (color/clip/filter) to the active layer
-function setActiveLayer(id) {
-  const L = layerById(id); if (!L) return;
-  S.activeId = id;
-  syncMeshPickable();                                      // selecting a surface is what makes it clickable
-  const d = L.docs || {};
-  setColorLabels(d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : d.lasDoc ? { kind: 'las' } : d.plyDoc ? d.plyDoc.header : null);
-  addPaintColorOptions(L);
-  if (L.colorSel != null && [...$('#colorBy').options].some((o) => o.value === L.colorSel)) $('#colorBy').value = L.colorSel;
-  $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1];
-  $('#filter').value = L.filterExpr || ''; syncFilterClear();
-  renderLayers();
-}
-
-// src/ingest.js reaches back into the app through these
-setIngestHooks({ removeLayerUI });
 
 
-// src/open-dialog.js reaches back into the app through these
-setOpenDialogHooks({ closeAllLayers });
+
 
 // the two dialogs' buttons
 $('#ofOpen').onclick = ofConfirm;
@@ -2807,8 +2732,6 @@ $('#dhCancel').onclick = dhCancel;
 // src/filter.js reaches back into the app through these
 setFilterHooks({ refreshLinkedWindows });
 
-// src/color.js reaches back into the app through these
-setColorHooks({ setActiveLayer });
 
 // (blockCaps / layerRecords / docPositionStream live in src/records.js)
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
@@ -2884,7 +2807,7 @@ S.hasFSAA = shell.present ? false : !!window.showDirectoryPicker;
 if (shell.present) shell.tree.probe().then((ok) => { S.hasFSAA = ok; renderEmptyProjects(); }).catch(() => {});
 
 // src/project.js reaches back into the app through these
-setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, renderEmptyProjects });
+setProjectHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, renderEmptyProjects });
 
 function captureCamera() {
   const st = cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];
@@ -3086,7 +3009,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmClose(null); }
 });
 // src/views.js reaches back into the app through these
-setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, setActiveLayer });
+setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection });
 
 // recent projects on the empty state (chips, like recent files)
 async function renderEmptyProjects() {
@@ -4580,7 +4503,7 @@ addEventListener('keydown', (e) => {                       // Ctrl+` cycles the 
 });
 
 // src/tree.js reaches back into the app through these
-setTreeHooks({ applyLayerOpacity, fitLayer, layerMenu, setActiveLayer, syncSelBar, syncUndoBtn });
+setTreeHooks({ applyLayerOpacity, fitLayer, layerMenu, syncSelBar, syncUndoBtn });
 
 // panel widths: drag the inner edge; machine prefs (localStorage), CSS vars so
 // the compass dodge tracks live
@@ -4622,23 +4545,7 @@ async function confirmRemoveLayer(id) {
   if (own.length && !(await microConfirm('remove layer', `Remove “${L.label || L.name}”? Its ${own.length} column${own.length === 1 ? '' : 's'} of its own (${own.slice(0, 6).join(', ')}${own.length > 6 ? ', …' : ''}) go${own.length === 1 ? 'es' : ''} with it${S.project && !S.project.dirty ? ' from this session (the saved project still has them until the next save)' : ''}. The file on disk is untouched.`, 'Remove'))) return;
   removeLayerUI(id);
 }
-function removeLayerUI(id) {
-  dispatchEvent(new Event('micro:project-dirty'));
-  closeAttrTable(id);
-  { const Lr = layerById(id); if (Lr) dropValueTex(Lr); }
-  renderer.removeLayer(id);
-  // pinned columns outlive their layer otherwise — a leak, and worse: layer ids
-  // come from a recycled 64-slot pool, so a NEW layer taking a freed id could be
-  // served a dead layer's cached values whenever the size:rowCount guard happened
-  // to match (two exports of the same shape, a re-imported template).
-  pinEvictLayer(id); closeCompactBuilder(id);
-  S.layers = S.layers.filter((l) => l.id !== id);
-  recomputeUnion();
-  if (!S.layers.length) { closeAllLayers(); $('#empty').style.display = ''; $('#meta').textContent = ''; dispatchEvent(new CustomEvent('micro:layer-removed', { detail: { id } })); return; }
-  if (S.activeId === id) setActiveLayer(S.layers[0].id);
-  renderLayers(); requestRender();
-  dispatchEvent(new CustomEvent('micro:layer-removed', { detail: { id } }));
-}
+
 function layerMenu(L, x, y) {
   const selN = _lpSel.size;
   menuXY(x, y, [
@@ -4817,7 +4724,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   action: () => applyLayerOpacity(L, pc / 100),
 }));
 // src/props.js reaches back into the app through these
-setPropsHooks({ get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint });
+setPropsHooks({ addPaintValue, appendColStats, applyLayerOpacity, convertMeshLayer, createPaintCol, openPaintPalette, openReconcileMenu, paintColByName, runSpatialJoinUI, setMeshTint });
 
 $('#ppClose').onclick = closeProps;
 
@@ -4849,8 +4756,6 @@ function appendColStats(body, stat, onCtx) {
   }
   body.appendChild(d);
 }
-// src/drillholes.js reaches back into the app through these
-setDrillholesHooks({ get allocLayerId() { return allocLayerId; }, setActiveLayer });
 
 function targetAxes(jf, L, R) {
   if (jf.target === 'left') return gridAxesOf(L);

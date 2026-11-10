@@ -38,8 +38,9 @@ import { flushViewsScenes, loadViewsScenes } from './views.js';
 import { wfrExportable, writeGridDisplayCache } from './meshexport.js';
 import { deliverBlob, pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
+import { closeAllLayers, recomputeUnion } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, closeAllLayers, recomputeUnion, renderEmptyProjects
+// the app's side, passed in once (setProjectHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, renderEmptyProjects
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -172,7 +173,7 @@ export async function packLayersToWfr(Ls) {
       packed++;
     }
   }
-  H.recomputeUnion(); renderLayers(); markProjectDirty(); requestRender();
+  recomputeUnion(); renderLayers(); markProjectDirty(); requestRender();
   return packed;
 }
 
@@ -692,7 +693,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     if (mf.app !== 'micro') { $('#meta').textContent = 'not a micro project (project.json says otherwise)'; return; }
     S.project = { dir, name: dir.name, dirty: false, pack };
     await loadViewsScenes(dir, mf.views);                   // bookmarks/ + scenes/ (legacy mf.views migrated)
-    H.closeAllLayers();
+    closeAllLayers();
     $('#empty').style.display = 'none';
     let links = {};
     try { const list = (await _idb.get(PROJECTS_KEY)) || []; const e = list.find((x) => x.name === dir.name && !x.pack); links = (e && e.links) || {}; } catch { /* none */ }
@@ -1246,7 +1247,7 @@ export async function newProject() {
   if (S.project) parts.push(`the project link (${S.project.name})`);
   const warn = S.project && S.project.dirty ? ' Unsaved project changes will be lost.' : '';
   if (!(await microConfirm('new project', `This closes ${parts.join(' and ')}.${warn} Files on disk are untouched.`))) return;
-  H.closeAllLayers();
+  closeAllLayers();
   closeProject();
   if ($('#secMode').value !== 'off') { $('#secMode').value = 'off'; $('#secMode').dispatchEvent(new Event('input')); }
   $('#empty').style.display = '';

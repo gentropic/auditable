@@ -18,8 +18,9 @@ import { renderLayers } from './tree.js';
 import { deliverBlob } from './hostio.js';
 import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
+import { setActiveLayer } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection, setActiveLayer
+// the app's side, passed in once (setExportHooks): applyLayerSelection
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -238,10 +239,10 @@ async function convertInner(L, cvOpts) {
   // 4. replace the blockDoc IN PLACE (reuse the layer id, keep paint/calc/style)
   const base = (L.label || L.name).replace(/\.[^.]+$/, ''), keepLabel = L.label, keepColorSel = L.colorSel, keepFilter = L.filterExpr;
   const oldHandle = L.handle;                              // the PRE-optimize source file (CSV/.dm) — now stale + orphanable
-  const savedActive = S.activeId; H.setActiveLayer(L.id);
+  const savedActive = S.activeId; setActiveLayer(L.id);
   try {
     await openParquetBlocks(outBlob, `${base}.parquet`, { layer: L.id, first: false });
-  } catch (e) { $('#meta').textContent = `store as Parquet: reopen — ${e.message}`; H.setActiveLayer(savedActive); return; }
+  } catch (e) { $('#meta').textContent = `store as Parquet: reopen — ${e.message}`; setActiveLayer(savedActive); return; }
   L.name = `${base}.parquet`;                              // so save/reload routes to the parquet path
   L.lineage = optLineage;                                  // provenance: this layer was optimized in place
   if (keepLabel) L.label = keepLabel;

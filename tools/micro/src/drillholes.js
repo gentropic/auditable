@@ -19,10 +19,8 @@ import { microPrompt } from './prompts.js';
 import { applyLayerStyling, captureLayerStyling, captureReopenIdentity, restoreReopenIdentity } from './reopen.js';
 import { applyTreeVisibility, createLayerGroup, groupLayerIds, renderLayers, treeMove, treeSync } from './tree.js';
 import { closeAttrTable } from './attrtable.js';
+import { allocLayerId, setActiveLayer } from './layers.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDrillholesHooks): allocLayerId, setActiveLayer
-let H = {};
-export function setDrillholesHooks(h) { H = h; }
 
 // re-open a drillhole layer with a patched config (method / dip / category —
 // re-desurveys), keeping the layer's identity + styling; class eyes survive
@@ -55,7 +53,7 @@ export async function reopenDh(L, patch, { clearCats = false } = {}) {
   if (id.visible === false) applyTreeVisibility();
   await refilterLayer(L2);                                 // any layer: a re-read dropped its GPU mask
   // re-reading a layer that wasn't active (a host's setColorBy) mustn't take the focus
-  if (prevActive !== oldId && layerById(prevActive)) H.setActiveLayer(prevActive);
+  if (prevActive !== oldId && layerById(prevActive)) setActiveLayer(prevActive);
   renderLayers();
   refreshProps();
   return L2;
@@ -380,7 +378,7 @@ export function hideHoleTraces(nd) {
 export async function showHoleTraces(nd) {
   if (setHasTraces(nd)) { hideHoleTraces(nd); return; }   // toggle off
   let info = dhSetInfo(nd); if (!info) return;
-  const lid = H.allocLayerId();
+  const lid = allocLayerId();
   if (lid == null) { $('#meta').textContent = 'layer limit reached (7 element layers)'; return; }
   const name = dhGroupName(basename(info.blobs.collar.name || 'holes')) + ' · traces';
   const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2._holeIds);
