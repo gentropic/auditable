@@ -12,8 +12,10 @@ import { mapColumns } from '../../../ext/condenser/src/main.js';
 import { basename } from './paths.js';
 import { invalidateWholeHoles } from './drillholes.js';
 import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
+import { layerReplaced, renderLayers, treeSlotOf } from './tree.js';
+import { menuXY } from './menu.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setReopenHooks): _fileHandles, closeAttrTable, layerReplaced, menuXY, refilterLayer, renderLayers, renderer, setLayerColorSel, treeSlotOf
+// the app's side, passed in once (setReopenHooks): _fileHandles, closeAttrTable, refilterLayer, renderer, setLayerColorSel
 let H = {};
 export function setReopenHooks(h) { H = h; }
 
@@ -43,7 +45,7 @@ export async function reopenReplacing(L, blob, open) {
 }
 
 export function captureReopenIdentity(L) {
-  return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage, oldId: L.id, slot: H.treeSlotOf(L.id) };
+  return { label: L.label, visible: L.visible, handle: L.handle, storage: L.storage, oldId: L.id, slot: treeSlotOf(L.id) };
 }
 
 export function preregisterReopenHandle(blob, keep) {   // openBlob reads _fileHandles → must run BEFORE it
@@ -56,7 +58,7 @@ export function restoreReopenIdentity(L2, keep) {        // call with the fresh 
   L2.storage = keep.storage;
   if (keep.handle) L2.handle = keep.handle;
   if (keep.visible === false) { L2.visible = false; H.renderer.setLayerVisible(L2.id, false); }
-  if (keep.oldId != null) H.layerReplaced(keep.oldId, L2.id, keep.slot);
+  if (keep.oldId != null) layerReplaced(keep.oldId, L2.id, keep.slot);
   return L2;
 }
 
@@ -187,11 +189,11 @@ export async function reopenAs(L, kind) {
     name = `${basename(L.name).replace(/\.xlsx$/i, '')}-${h.sheet}.csv`;
   }
   const L2 = await reopenReplacing(L, blob, () => openBlob(blob, name, 'add', null, { asKind: kind }));   // incl. visible — reinterpreting a hidden layer used to bring it back visible
-  H.renderLayers(); markProjectDirty();
+  renderLayers(); markProjectDirty();
   return L2;
 }
 
-export function reinterpretMenu(L, x, y) { H.menuXY(x, y, reinterpretOptions(L).map((o) => ({ label: `→ ${o.label}`, action: () => reopenAs(L, o.kind) }))); }
+export function reinterpretMenu(L, x, y) { menuXY(x, y, reinterpretOptions(L).map((o) => ({ label: `→ ${o.label}`, action: () => reopenAs(L, o.kind) }))); }
 
 // ── Reload from disk — the missing verb between Scan folder (NEW files only)
 // and Reinterpret-as (re-reads the in-memory blob). Re-getFile()s FRESH bytes
@@ -265,7 +267,7 @@ export async function reloadLayerFromDisk(L) {
       L2.filterExpr = filterExpr;
       await H.refilterLayer(L2, filterExpr);                 // any layer (was: only if it had been the active one)
     }
-    H.renderLayers();
+    renderLayers();
     $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;
   }
   markProjectDirty();

@@ -37,4 +37,40 @@ node test/micro-smokes.mjs --build
 ```
 
 A hook is a stopgap. Once the thing it points at lives in a module of its own, the
-module that needed the hook should import it directly.
+module that needed the hook should import it directly. `hooks.mjs` finds those and
+converts them.
+
+## hooks.mjs
+
+Lists the hooks each module receives from the app and says where each one's target
+lives now.
+
+```
+node tools/micro/dev/hooks.mjs              # the counts
+node tools/micro/dev/hooks.mjs <module>     # one module's hooks
+node tools/micro/dev/hooks.mjs --all        # every module's hooks
+node tools/micro/dev/hooks.mjs --direct --dry
+```
+
+Each hook is one of three kinds:
+
+- `app`: the target is still declared in `tools/micro/index.html`. The hook is needed
+  until the target moves to a module.
+- `import`: the target is exported by a module, and importing it would not close an
+  import cycle. The hook is stale.
+- `import (cycle)`: the target is exported by a module, but that module already
+  depends on this one, directly or through others.
+
+`--direct` converts the stale ones. In the module it replaces `H.<name>` with the
+name, adds the import, and removes `let H` and the setter when no hooks remain. In
+the app it removes the property from the `set<Module>Hooks({ … })` call, removes the
+call when it is empty, and drops app imports that are no longer used. `--only=a,b`
+limits it to some modules.
+
+It refuses a hook, and says why, when the name is already bound in the module, when
+the module assigns to the hook, when the app imports the target under another name,
+or when the module uses the hooks object whole. It never adds an import that closes
+a cycle.
+
+A hook whose value is an arrow function (`(...a) => fn(...a)`) counts as `app` even
+when `fn` lives in a module. Those need a look by hand.

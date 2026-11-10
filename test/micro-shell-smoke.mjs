@@ -54,8 +54,8 @@ const first = await p.evaluate(async () => {
   window.__bench.files['deposit.csv'] = bytes;
   const reads0 = (window.__benchFsReads = window.__benchFsReads || 0);
   window.__bench.intake([{ kind: 'file', token: 'deposit.csv', name: 'deposit.csv', size: bytes.length, mime: 'text/csv' }]);
-  for (let i = 0; i < 100 && !(window._micro.layers().length >= 1 && window._micro.layers()[0].header); i++) await new Promise((r) => setTimeout(r, 100));
-  await new Promise((r) => setTimeout(r, 600));
+  const opened = () => window._micro.layers().length >= 1 && window._micro.layers()[0].header && /opened deposit\.csv from the shell/.test(document.getElementById('meta').textContent);
+  for (let i = 0; i < 200 && !opened(); i++) await new Promise((r) => setTimeout(r, 100));
   const L = window._micro.layers()[0];
   return { n: window._micro.layers().length, kind: L && L.kind, count: L && window._micro.attrRowCountOf(L), meta: document.getElementById('meta').textContent, size: bytes.length };
 });
@@ -85,8 +85,9 @@ const third = await p.evaluate(async () => {
   const bytes = new TextEncoder().encode(rows.join('\n') + '\n');
   window.__bench.files['late.csv'] = bytes;
   window.__bench.intake([{ kind: 'file', token: 'late.csv', name: 'late.csv', size: bytes.length, mime: 'text/csv' }]);
-  for (let i = 0; i < 100 && window._micro.layers().length < 3; i++) await new Promise((r) => setTimeout(r, 100));
-  await new Promise((r) => setTimeout(r, 400));
+  // the layer is counted before its open finishes: wait for the status line too
+  const landed = () => window._micro.layers().length >= 3 && /opened late\.csv from the shell/.test(document.getElementById('meta').textContent);
+  for (let i = 0; i < 200 && !landed(); i++) await new Promise((r) => setTimeout(r, 100));
   return { n: window._micro.layers().length, meta: document.getElementById('meta').textContent };
 });
 chk(`a file shared AFTER a pause (stream closed by the shell) still lands: ${third.n} layers; "${third.meta}"`, third.n === 3 && /opened late\.csv from the shell/.test(third.meta));

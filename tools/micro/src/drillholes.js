@@ -14,8 +14,10 @@ import { compileBool, validate } from '../../../ext/expr/index.js';
 import { floatWin } from './windows.js';
 import { basename, layerFiles } from './paths.js';
 import { dhGroupName, nextDhSetKey } from './open-dialog.js';
+import { menuXY } from './menu.js';
+import { microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDrillholesHooks): _fileHandles, allocLayerId, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, frame, groupLayerIds, menuXY, microPrompt, refilterLayer, renderLayers, renderer, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync
+// the app's side, passed in once (setDrillholesHooks): _fileHandles, allocLayerId, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, frame, groupLayerIds, refilterLayer, renderLayers, renderer, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync
 let H = {};
 export function setDrillholesHooks(h) { H = h; }
 
@@ -213,7 +215,7 @@ export async function filterHolesSet(nd) {
   const members = H.groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc);
   if (!members.length) return;
   const cc = await peekCollarCols(members[0].docs.dhDoc).catch(() => []);
-  const v = await H.microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', members[0].holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
+  const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', members[0].holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
   if (v == null) return;
   let res = null;
   for (const L of members) {
@@ -262,7 +264,7 @@ export function collarsRowMenu(nd, x, y) {
   const members = H.groupLayerIds(nd).map(layerById).filter((L2) => L2 && L2.dh && L2.docs.dhDoc);
   const rep = members[0]; if (!rep) return;
   const hf = members.find((L2) => L2.holeFilter);
-  H.menuXY(x, y, [
+  menuXY(x, y, [
     { label: 'Attribute table…', action: () => openCsvTableWindow(`collars · ${basename(info.blobs.collar.name || 'collars')}`, info.blobs.collar) },
     { label: (hf ? '✓ ' : '') + 'Filter holes…', action: () => filterHolesSet(nd) },
     { label: 'Broadcast column to intervals', submenu: () => {
@@ -277,7 +279,7 @@ export function collarsRowMenu(nd, x, y) {
 // the SURVEY row: the trajectory nouns — table view, desurvey method, traces
 export function surveyRowMenu(nd, x, y) {
   const info = dhSetInfo(nd); if (!info) return;
-  H.menuXY(x, y, [
+  menuXY(x, y, [
     { label: 'Attribute table…', action: () => openCsvTableWindow(`survey · ${basename(info.blobs.survey.name || 'survey')}`, info.blobs.survey) },
     { label: 'Re-desurvey set…', action: () => setTimeout(() => redesurveyMenu(nd, x, y), 0) },
     { label: setHasTraces(nd) ? 'Hide hole traces' : 'Show hole traces', action: () => showHoleTraces(nd) },
@@ -405,7 +407,7 @@ export async function showHoleTraces(nd) {
 }
 
 export function redesurveyMenu(nd, x, y) {
-  H.menuXY(x, y, [
+  menuXY(x, y, [
     { label: 'method: minimum curvature', action: () => redesurveySet(nd, { method: 'minimumCurvature' }) },
     { label: 'method: balanced tangential', action: () => redesurveySet(nd, { method: 'balancedTangential' }) },
     { label: 'method: tangential', action: () => redesurveySet(nd, { method: 'tangential' }) },

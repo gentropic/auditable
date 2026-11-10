@@ -11,8 +11,10 @@ import { startChunkBuilder } from './chunkworker.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
 import { readParquetRange } from '../../../ext/parquet/index.js';
 import { coordNum, lineFields, openDmModel } from '../../../ext/condenser/src/main.js';
+import { rowsProgress } from './analysis-ui.js';
+import { syncHL } from './exprfield.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, frame, pushDhMask, refreshLinkedWindows, renderer, requestRender, rowsProgress, syncHL
+// the app's side, passed in once (setFilterHooks): attrTableFilterChanged, frame, pushDhMask, refreshLinkedWindows, renderer, requestRender
 let H = {};
 export function setFilterHooks(h) { H = h; }
 
@@ -115,7 +117,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   const isActive = !!L && L.id === S.activeId;
   const inp = isActive ? $('#filter') : document.createElement('input');   // the box's error mark belongs to the active layer's filter
   expr = String(expr == null ? '' : expr);
-  if (isActive) H.syncHL(inp, $('#filterHL'));               // the input text is overlay-drawn — keep it painted on programmatic sets too
+  if (isActive) syncHL(inp, $('#filterHL'));               // the input text is overlay-drawn — keep it painted on programmatic sets too
   // the TARGET layer's docs, never the module aliases — a stale alias once
   // filtered the assay table while the model was active and hung a 7k-bit
   // mask on a 1.8M-block layer
@@ -226,7 +228,7 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
       try {
         const res = await scanColumnar(AL, { kernel: 'filter', params, exprs: [expr], extraCols: readCols, signal: ac.signal, keepZone,
           skipGroup: keepUnit ? (g, u) => { units++; const sk = !keepUnit(u); if (sk) skipped++; return sk; } : null,
-          onProgress: (d, N, w) => { if (alive() && N) $('#meta').textContent = `filter: ${H.rowsProgress(d, N)} · ${w}`; },
+          onProgress: (d, N, w) => { if (alive() && N) $('#meta').textContent = `filter: ${rowsProgress(d, N)} · ${w}`; },
           onPart: (g, part, start) => {
             if (!alive()) { ac.abort(); return; }
             mask.set(part.mask, start); hits += part.hits;

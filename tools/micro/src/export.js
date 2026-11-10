@@ -11,8 +11,9 @@ import { createParquetBlobWriter } from '../../../ext/parquet/index.js';
 import { coordNum, createMortonSorter } from '../../../ext/condenser/src/main.js';
 import { fmtSize } from './paths.js';
 import { S } from './state.js';
+import { addPaintColorOptions } from './props.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): addPaintColorOptions, applyLayerSelection, deliverBlob, frame, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel
+// the app's side, passed in once (setExportHooks): applyLayerSelection, deliverBlob, frame, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel
 let H = {};
 export function setExportHooks(h) { H = h; }
 
@@ -261,7 +262,7 @@ async function convertInner(L, cvOpts) {
     if (L._filterMask) L._filterMask = null;                // rebuilt by the re-sweep below; stale rows would be misaligned
   }
   L._colStats = null;                                      // aggregate — recomputed on demand
-  H.addPaintColorOptions(L);
+  addPaintColorOptions(L);
   if (keepColorSel && [...$('#colorBy').options].some((o) => o.value === keepColorSel)) { L.colorSel = keepColorSel; H.setLayerColorSel(L, keepColorSel); }
   // calc columns recompute from the reordered base (no per-record cache); the
   // filter re-sweeps (with pushdown) against the new order

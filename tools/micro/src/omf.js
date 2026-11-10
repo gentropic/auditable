@@ -16,8 +16,10 @@
 // counted. Project.origin offsets every element, as the format says.
 // The whole file is read into memory (OMF v1 deflates each array in one piece).
 import { readOMF, openOMF, blockModelCentroids } from '../../../ext/omf1/index.js';
+import { layerById } from './state.js';
+import { mkLineage, openLineage } from './lineage.js';
 // the app's side, passed in once (setOmfHooks): addLayer(spec) → layer id,
-// closeAllLayers(), layerById(id), mkLineage, openLineage, renderLayers()
+// closeAllLayers(), renderLayers()
 let H = {};
 export function setOmfHooks(h) { H = h; }
 
@@ -108,8 +110,8 @@ export async function openOmfBlob(blob, name, mode = 'replace') {
         for (const d of e.data || []) skipped.push(`${d.name || 'data'} (surface data)`);
       } else { notes.push(`${en}: ${KIND[e.type] || e.type} — not read yet`); continue; }
       const lid = await H.addLayer({ ...spec, name: en, group });
-      const L = H.layerById(lid);
-      if (L) L.lineage = H.mkLineage('omf', { element: en, type: e.type, ...(spec.lattice ? { lattice: 'declared' } : {}) }, [H.openLineage(name, blob)]);
+      const L = layerById(lid);
+      if (L) L.lineage = mkLineage('omf', { element: en, type: e.type, ...(spec.lattice ? { lattice: 'declared' } : {}) }, [openLineage(name, blob)]);
       ids.push(lid);
       if (skipped.length) notes.push(`${en}: skipped ${skipped.join(', ')}`);
     } catch (err) { notes.push(`${en}: ${err.message}`); }

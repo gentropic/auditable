@@ -9,8 +9,11 @@ import { addPaintColorOptions } from './props.js';
 import { parquetInfoAsync, writeParquet } from '../../../ext/parquet/index.js';
 import { DIM_PALETTE_MAX, axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, latticeMisfit, makeDimKeyer, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { openBlob, openDrillholeLayer } from './open.js';
+import { colorHeaderOf, colorSelFor, setLayerColorBy, setLayerColorRange, setLayerPalette } from './color.js';
+import { fileLayersInGroup, renderLayers } from './tree.js';
+import { writePlyMeshBytes } from './meshexport.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setIngestHooks): _fileHandles, colorHeaderOf, colorSelFor, fileLayersInGroup, removeLayerUI, renderLayers, setLayerColorBy, setLayerColorRange, setLayerPalette, writePlyMeshBytes
+// the app's side, passed in once (setIngestHooks): _fileHandles, removeLayerUI
 let H = {};
 export function setIngestHooks(h) { H = h; }
 
@@ -56,29 +59,29 @@ export async function addLayer(spec = {}) {
     if (L) {
       L.label = name;
       if (cats) {
-        const h = H.colorHeaderOf(L), have = h ? h.columns : [];
+        const h = colorHeaderOf(L), have = h ? h.columns : [];
         const bad = cats.filter((c) => !have.includes(c));
         if (bad.length) { H.removeLayerUI(L.id); throw new Error(`addLayer: roles.categories names ${bad.map((c) => JSON.stringify(c)).join(', ')}, not ${bad.length > 1 ? 'columns' : 'a column'} of the layer (it has ${have.join(', ')})`); }
         L.catChoices = cats;
         addPaintColorOptions(L);
       }
-      if (spec.group) H.fileLayersInGroup(spec.group, [L.id]);
+      if (spec.group) fileLayersInGroup(spec.group, [L.id]);
       // the host named the column it cares about: start coloured by it (category,
       // else value), not by elevation. spec.colorBy overrides.
       const want = spec.colorBy != null ? spec.colorBy : roles.category != null ? roles.category : roles.value != null ? roles.value : null;
       if (want != null) {
-        try { lid = await H.setLayerColorBy(L, H.colorSelFor(L, want)); }
+        try { lid = await setLayerColorBy(L, colorSelFor(L, want)); }
         catch (e) { if (spec.colorBy != null) { H.removeLayerUI(L.id); throw e; } }   // a stated colorBy is checked; the role default is best-effort
         L = layerById(lid);
       }
       // the colour scale, after the colour-by it belongs to: a stated one is checked
       if (L && (spec.palette != null || spec.colorRange !== undefined)) {
         try {
-          if (spec.palette != null) H.setLayerPalette(L, spec.palette);
-          if (spec.colorRange !== undefined) H.setLayerColorRange(L, spec.colorRange);
+          if (spec.palette != null) setLayerPalette(L, spec.palette);
+          if (spec.colorRange !== undefined) setLayerColorRange(L, spec.colorRange);
         } catch (e) { H.removeLayerUI(L.id); throw e; }
       }
-      H.renderLayers();
+      renderLayers();
     }
     return lid;
   } catch (e) {
@@ -327,7 +330,7 @@ export async function ingestMeshLayer(spec, name, lineage) {
   const nv = v.length / 3;
   for (let i = 0; i < tr.length; i++) if (!(tr[i] >= 0 && tr[i] < nv)) throw new Error(`addLayer: mesh.triangles[${i}] = ${tr[i]} is not a vertex index (${nv} vertices)`);
   const fileName = /\.ply$/i.test(name) ? name : `${name}.ply`;
-  const file = new File([H.writePlyMeshBytes(Float64Array.from(v), Uint32Array.from(tr))], fileName);
+  const file = new File([writePlyMeshBytes(Float64Array.from(v), Uint32Array.from(tr))], fileName);
   return openBlob(file, fileName, 'add', null, { asKind: 'mesh', lineage, throw: true, tint: spec.tint, opacity: spec.opacity });
 }
 

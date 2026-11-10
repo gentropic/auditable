@@ -14,8 +14,10 @@ import { openGradeTonnage } from './gt.js';
 import { openStats } from './stats.js';
 import { openSwath } from './swath.js';
 import { gridAxesOf } from './grid-ops.js';
+import { menuXY } from './menu.js';
+import { microConfirm, microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setRecipesHooks): applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, menuXY, microPrompt, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe
+// the app's side, passed in once (setRecipesHooks): applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe
 let H = {};
 export function setRecipesHooks(h) { H = h; }
 
@@ -521,7 +523,7 @@ export function recipeYaml(r) {
 
 export async function saveRecipe(tool, params, suggestedName) {
   if (!S.project) { $('#meta').textContent = 'recipes: open or save a project first (a recipe is a file in recipes/)'; return null; }
-  const name = ((await H.microPrompt('recipe name', suggestedName || '')) || '').trim();
+  const name = ((await microPrompt('recipe name', suggestedName || '')) || '').trim();
   if (!name) return null;
   const existing = S.recipes.find((x) => x.name === name);
   const r = { name, tool, params: JSON.parse(JSON.stringify(params)), inputs: existing ? existing.inputs : undefined, file: existing ? existing.file : 'recipes/' + recipeSlug(name) + '.yaml' };   // re-saving a window's config keeps hand-authored inputs
@@ -551,14 +553,14 @@ export async function loadRecipes(dir) {
 }
 
 export async function deleteRecipe(r) {
-  if (!(await H.microConfirm(r.tool === 'routine' ? 'delete routine' : 'delete recipe', `Delete “${r.name}” — the file ${r.file} in the project? This can't be undone.`, 'Delete'))) return;
+  if (!(await microConfirm(r.tool === 'routine' ? 'delete routine' : 'delete recipe', `Delete “${r.name}” — the file ${r.file} in the project? This can't be undone.`, 'Delete'))) return;
   await removeFileAt(S.project.dir, r.file);
   S.recipes = S.recipes.filter((x) => x !== r);
   $('#meta').textContent = `deleted recipe “${r.name}” (${r.file})`;
 }
 
 export async function renameRecipe(r) {
-  const name = ((await H.microPrompt('recipe name', r.name)) || '').trim();
+  const name = ((await microPrompt('recipe name', r.name)) || '').trim();
   if (!name || name === r.name) return;
   r.name = name;
   try { const fh = await resolveFileHandle(S.project.dir, r.file, { create: true }); const w = await fh.createWritable(); await w.write(recipeYaml(r)); await w.close(); } catch { /* file keeps the old name field */ }
@@ -593,7 +595,7 @@ export function runRecipe(r, andRun = true) {
   if (L) { open2(L); return; }
   const cands = S.layers.filter((x) => (r.tool === 'stats' || r.tool === 'calccols' ? !!layerTableHeader(x) : gridAxesOf(x)));
   if (!cands.length) { $('#meta').textContent = `recipe “${r.name}”: wants “${wantName || 'a block model'}” and no suitable layer is loaded`; return; }
-  setTimeout(() => H.menuXY(innerWidth / 2 - 140, innerHeight / 3, [
+  setTimeout(() => menuXY(innerWidth / 2 - 140, innerHeight / 3, [
     ...cands.map((c) => ({ label: `“${r.name}” wants ${wantName} — use ${c.label || c.name}`, action: () => open2(c) })),
     { label: 'Cancel', action: () => {} },
   ]), 0);
@@ -988,7 +990,7 @@ export function openRoutineWindow(r0) {
     if (!S.project) { msg('routine: open or save a project first (a routine is a file in recipes/)'); return null; }
     if (win.body.querySelector('.rw-ovr.err')) { msg('routine: fix the override YAML first (the red box)'); return null; }
     let name = nameI.value.trim();
-    if (!name) { name = ((await H.microPrompt('routine name', '')) || '').trim(); if (!name) return null; nameI.value = name; }
+    if (!name) { name = ((await microPrompt('routine name', '')) || '').trim(); if (!name) return null; nameI.value = name; }
     const goodInputs = (model.inputs || []).filter((x) => x && x.name);
     const rec = { name, tool: 'routine', params: collect(), inputs: goodInputs.length ? goodInputs : undefined, file: file || 'recipes/' + recipeSlug(name) + '.yaml' };
     try {

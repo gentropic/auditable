@@ -1,10 +1,8 @@
 // micro — the in-app PROMPTS: one small dialog that asks for a value (microPrompt), a pick
 // from a list (microChoose) or a yes/no (microConfirm). No window.prompt anywhere.
+import { _exprFields, exprField } from './exprfield.js';
 
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPromptsHooks): _exprFields, exprField
-let H = {};
-export function setPromptsHooks(h) { H = h; }
 
 // the in-app prompt — same grammar as window.prompt (null on cancel), but
 // it's OUR dialog: Enter accepts, Esc/backdrop cancel, text pre-selected
@@ -16,7 +14,7 @@ export function microPrompt(title, initial = '', opts = {}) {
     $('#pmTitle').textContent = title;
     $('#pmMsg').style.display = 'none';
     const inp = $('#pmInput');
-    if (opts.expr) H.exprField(inp, opts.expr); else H._exprFields.delete(inp);   // an expression answer gets the phone's strip
+    if (opts.expr) exprField(inp, opts.expr); else _exprFields.delete(inp);   // an expression answer gets the phone's strip
     inp.style.display = '';
     inp.value = initial;
     $('#pmDlg').classList.add('show');

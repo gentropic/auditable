@@ -14,8 +14,11 @@ import { coordNum } from '../../../ext/condenser/src/main.js';
 import { gridAxesOf } from './grid-ops.js';
 import { floatWin, focusWindow } from './windows.js';
 import { paintRecount } from './columns.js';
+import { addPaintColorOptions, applyPaintPalette, paintSelOf } from './props.js';
+import { menuXY } from './menu.js';
+import { setSwathBand } from './overlay.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): _attrTables, addPaintColorOptions, addPaintValue, applyLayerSelection, applyPaintPalette, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, menuXY, paintColByName, paintSelOf, rendererDocBbox, requestRender, saveRecipe, selectionStatus, setLayerColorSel, setSwathBand
+// the app's side, passed in once (setSwathHooks): _attrTables, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, rendererDocBbox, requestRender, saveRecipe, selectionStatus, setLayerColorSel
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -163,7 +166,7 @@ export function openSwath(L, ropts) {
   const cfgOf = () => ({ series: analysisSerCfg(st.series), mode: st.mode, axis: st.axis, dd: st.dd, dip: st.dip, rake: st.rake, trend: st.trend, plunge: st.plunge,
     bandW: st.bandW, off: st.off, bars: st.bars, scope: st.scope, gradeUnit: st.gradeUnit, locate: st.locate, ranges: rangesForCfg(st.ranges) });
   const win = floatWin({ title: `swath · ${L.label || L.name}`, sub: saved ? 'restored — Run to compute' : 'configure, then Run', x: Math.max(12, innerWidth - 660), y: 120, w: 640, h: 440,
-    onClose: () => { saveAnalysisCfg(L, 'swath', cfgOf(), win); setAnalysisOpen(L, 'swath', false); _swathWins.delete(L.id); if (st.zebra) clearSwathZebra(zebraL()); H.setSwathBand(null); removeEventListener('pointerup', onUp); } });
+    onClose: () => { saveAnalysisCfg(L, 'swath', cfgOf(), win); setAnalysisOpen(L, 'swath', false); _swathWins.delete(L.id); if (st.zebra) clearSwathZebra(zebraL()); setSwathBand(null); removeEventListener('pointerup', onUp); } });
   setAnalysisOpen(L, 'swath', true);
   applyAnalysisGeo(L, 'swath', win);
   const body = document.createElement('div'); body.className = 'sw-body'; win.body.append(body);
@@ -225,7 +228,7 @@ export function openSwath(L, ropts) {
   const setBand = (a, b2, sticky) => {
     st._band = a == null ? null : { a, b: b2, sticky };
     renderChart();
-    H.setSwathBand(a == null ? null : { a, b: b2, dir: curDir(), bbox: bandBbox(), sticky, label: `${fmtStat(a)} – ${fmtStat(b2)}` });
+    setSwathBand(a == null ? null : { a, b: b2, dir: curDir(), bbox: bandBbox(), sticky, label: `${fmtStat(a)} – ${fmtStat(b2)}` });
   };
   const tAt = (ev) => {
     const map = st._map; if (!map || !st.scan) return null;
@@ -272,7 +275,7 @@ export function openSwath(L, ropts) {
     }
     if (!was || !st._band) return;
     const { a, b: b2 } = st._band;
-    H.menuXY(ev.clientX, ev.clientY, [
+    menuXY(ev.clientX, ev.clientY, [
       { label: `Select rows in ${fmtStat(a)} – ${fmtStat(b2)}`, action: () => bandRangeSelect(a, b2, 'replace') },
       { label: 'Add to selection', action: () => bandRangeSelect(a, b2, 'add') },
       { label: 'Keep highlight', action: () => {} },
@@ -439,7 +442,7 @@ export function openSwath(L, ropts) {
 // comes back when zebra clears.
 export async function applySwathZebra(L, dir, bandWidth, offset) {
   const h = layerTableHeader(L), m = h.mapping;
-  if (H.paintSelOf(L) !== '_swath') L._preZebraSel = L.colorSel;
+  if (paintSelOf(L) !== '_swath') L._preZebraSel = L.colorSel;
   let col = H.paintColByName(L, '_swath'); if (!col) { col = H.createPaintCol(L, '_swath'); if (!col) return; }
   while (col.dict.length < 3) H.addPaintValue(L, col, col.dict.length === 1 ? 'band A' : 'band B');
   col.colors[1] = '#3a3f45'; col.colors[2] = '#c8c2b0';
@@ -449,12 +452,12 @@ export async function applySwathZebra(L, dir, bandWidth, offset) {
     if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && rec < codes.length) { const bi = Math.floor((x * dir[0] + y * dir[1] + z * dir[2] - offset) / bandWidth); codes[rec] = (bi & 1) ? 1 : 2; }
   }
   paintRecount(col); col._swathParity = true;
-  H.applyPaintPalette && H.setLayerColorSel(L, 'paint:_swath');
+  applyPaintPalette && H.setLayerColorSel(L, 'paint:_swath');
   const t2 = H._attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   H.requestRender();
 }
 
 export function clearSwathZebra(L) {
   const i = (L.paintCols || []).findIndex((c) => c.name === '_swath');
-  if (i >= 0) { L.paintCols.splice(i, 1); if (H.paintSelOf(L) === '_swath') H.setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; H.addPaintColorOptions(L); H.requestRender(); }
+  if (i >= 0) { L.paintCols.splice(i, 1); if (paintSelOf(L) === '_swath') H.setLayerColorSel(L, L._preZebraSel && L._preZebraSel !== 'paint:_swath' ? L._preZebraSel : 'elev'); L._preZebraSel = null; addPaintColorOptions(L); H.requestRender(); }
 }

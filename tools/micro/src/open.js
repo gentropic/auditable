@@ -24,8 +24,9 @@ import { census as xlsxCensus, openSheet as xlsxOpenSheet } from '../../../ext/s
 import { basename } from './paths.js';
 import { floatWin } from './windows.js';
 import { applyBlockFilter } from './filter.js';
+import { microConfirm } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOpenHooks): LAYER_CAP, _docBbox, _fileHandles, allocLayerId, cam, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, frame, microConfirm, recomputeUnion, removeLayerUI, renderLayers, renderer, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray
+// the app's side, passed in once (setOpenHooks): LAYER_CAP, _docBbox, _fileHandles, allocLayerId, cam, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, frame, recomputeUnion, removeLayerUI, renderLayers, renderer, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray
 let H = {};
 export function setOpenHooks(h) { H = h; }
 
@@ -1154,7 +1155,7 @@ export async function settleLatticeCandidate(header, name, opts = {}) {
   const g = c.grid, a = c.angles;
   const desc = `${g.x.count}×${g.y.count}×${g.z.count} blocks of ${fmtPitch(g.x.pitch)}×${fmtPitch(g.y.pitch)}×${fmtPitch(g.z.pitch)}, azimuth ${a.azimuth.toFixed(1)}°${a.zOnly ? '' : `, tilted ${a.tilt.toFixed(1)}°`}`;
   const yes = opts.acceptLattice != null ? !!opts.acceptLattice
-    : await H.microConfirm('rotated block model', `${name} isn't on an axis-aligned grid, but every centroid sits on a ROTATED lattice: ${desc}. Draw it as rotated boxes, or keep the centroids as points?`, 'rotated boxes', 'points');
+    : await microConfirm('rotated block model', `${name} isn't on an axis-aligned grid, but every centroid sits on a ROTATED lattice: ${desc}. Draw it as rotated boxes, or keep the centroids as points?`, 'rotated boxes', 'points');
   header.latticeCandidate = null;
   if (yes) { header.grid = g; header.lattice = { basis: 'inferred', confirmed: opts.acceptLattice != null ? 'caller' : 'user', azimuth: +a.azimuth.toFixed(4), tilt: +a.tilt.toFixed(4) }; }
 }

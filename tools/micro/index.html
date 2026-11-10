@@ -1183,11 +1183,11 @@ import { isWfrName, openWfrBlob, summarizeElements, wfrResidentMesh, wfrSoupDoc,
 import { runWfrJob, packLayers, handleSink, partsSink, baseName as wfrBase, WFR_SOURCE_RE } from './src/wfr-write.js';
 import { inventoryProject, writeBackup, readBackup, restoreBackup, openPack, writeTree, isBackupName, BACKUP_MIME, BACKUP_EXT } from './src/backup.js';   // a whole project as one .zip.micro   // ONE path to .wfr: convert files, export layers, store project meshes
 import { applyBlockFilter, applyTableFilter, dhFilterMeta, dhFilterSweep, pqGroupRanges, closeCompactBuilder, resetFilterState, setFilterHooks } from './src/filter.js';
-import { mkLineage, openLineage, microModelOf, setLineageHooks } from './src/lineage.js';
+import { mkLineage, microModelOf, setLineageHooks } from './src/lineage.js';
 import { runExport, convertLayerToParquet, exportColumnsOf, setExportHooks } from './src/export.js';
 import { runSpatialJoin, runKeyJoin, spatialJoinToCols, keyJoinToCols, joinColumnsFromForm, runReconcile, shortName, setJoinsHooks } from './src/joins.js';
 import { floatWin, raiseWindow, focusWindow, relayoutWindows, nextZ, topZ, _sheetDrag, _sheetExclusive, _isMobile, setWindowsHooks } from './src/windows.js';
-import { plotChart, plotExportBtns, SERIES_COLORS, scopeMask, scopeMissing, rangesOf, rangesForCfg, rangesFromCfg, rangesRow, saveAnalysisCfg, setAnalysisOpen, applyAnalysisGeo, runCancellable, checkAbort, scanProgressText, analysisSerCfg, analysisSerRestore, gradeUnitFactor, gradeUnitSel, reconcilePairs, seriesZoneKeep, niceStep, fmtStat, rowsProgress, setAnalysisUiHooks } from './src/analysis-ui.js';
+import { plotChart, plotExportBtns, SERIES_COLORS, scopeMask, scopeMissing, rangesOf, rangesForCfg, rangesFromCfg, rangesRow, saveAnalysisCfg, setAnalysisOpen, applyAnalysisGeo, runCancellable, checkAbort, scanProgressText, analysisSerCfg, analysisSerRestore, gradeUnitFactor, gradeUnitSel, reconcilePairs, seriesZoneKeep, niceStep, fmtStat, setAnalysisUiHooks } from './src/analysis-ui.js';
 import { openGradeTonnage, _gtWins, setGtHooks } from './src/gt.js';
 import { openSwath, _swathWins, projRange, applySwathZebra, AXIS_NAMES, setSwathHooks } from './src/swath.js';
 import { openStats, _statsWins, setStatsHooks } from './src/stats.js';
@@ -1211,12 +1211,12 @@ import { resolveColorMode, setColorLabels, valueTexEligible, dropValueTex, ensur
 import { syncMeshPickable, meshToGridLayer, surfaceColorArray, recolorSurface, setSurfaceFlatZ, captureLayerSurface, applyLayerSurface, setSurfaceSmooth, setGridBand, setSurfacesHooks } from './src/surfaces.js';
 import { reopenReplacing, captureReopenIdentity, restoreReopenIdentity, captureLayerStyling, applyLayerStyling, reopenWithMapping, reinterpretOptions, reopenAs, reinterpretMenu, canReloadLayer, reloadLayerFromDisk, setReopenHooks } from './src/reopen.js';
 import { _deco, saveDeco, _bgColor, applyBg, setBg, renderDeco, drawDecorations, setDeco, setDecoTitle, setLayerLegend, hostDecorations, setHostDecorations, setFigScale, exportFigure, openDecoPanel, decorationsMenu, captureFigureCfg, runFigureRecipe, setDecoHooks } from './src/deco.js';
-import { treeSync, applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, treeToManifest, treeFromManifest, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, treeSlotOf, layerReplaced, followLayer, treeMove, lpSelIds, treeMoveStep, moveLayerToGroupMenu, secModeLabel, setLayerSectionMode, sectionModeItems, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
+import { treeSync, applyTreeVisibility, showNode, setGroupExclusive, stepExclusive, groupLayerIds, ensureGroupPath, fileLayerByPath, createLayerGroup, treeToManifest, treeFromManifest, groupAt, groupPathOf, groupsList, fileLayersInGroup, setGroupVisible, ungroupAt, followLayer, treeMove, lpSelIds, treeMoveStep, moveLayerToGroupMenu, secModeLabel, setLayerSectionMode, sectionModeItems, groupMenu, renderLayers, _lpSel, toggleLayersPanel, closeLayersPanel, setTreeHooks } from './src/tree.js';
 import { saveViewAs, applyView, saveViewSlot, recallViewSlot, _gotoArm, gotoDisarm, armGoto, removeBookmark, captureScene, applyScene, saveSceneAs, removeScene, flushViewsScenes, loadViewsScenes, setViewsHooks } from './src/views.js';
 import { _measure, recordPosition, armMeasure, clearMeasure, measureClick, _measureTP, toggleMeasureTP, drawMeasure, drawSectionPlane, setSwathBand, drawSwathBand, drawCompass, setOverlayHooks } from './src/overlay.js';
-import { microPrompt, _pmOkValue, microChoose, microConfirm, pmClose, setPromptsHooks } from './src/prompts.js';
+import { microPrompt, _pmOkValue, microConfirm, pmClose } from './src/prompts.js';
 import { _menuChain, closeMenu, menuXY, menuAt } from './src/menu.js';
-import { exportGridAsc, writePlyMeshBytes, exportMeshes, openMeshExportDialog, wfrExportable, openWfrDialog, writeGridDisplayCache, setMeshexportHooks } from './src/meshexport.js';
+import { exportGridAsc, exportMeshes, openMeshExportDialog, wfrExportable, openWfrDialog, writeGridDisplayCache, setMeshexportHooks } from './src/meshexport.js';
 import { layerWorldBbox, openMeshGridDialog, rgCancel, rgGo, surfaceableLayers, gridOnLattice, openSurfaceTools, sfCancel, sfGo, openNewDialog, ngCancel, ngGo, setGridtoolsHooks } from './src/gridtools.js';
 import { openExportDialog, exCancel, exGo } from './src/export-dialog.js';
 import { openDomainsDialog, adCancel, adGo, openSolidDialog, sbCancel, sbCfgOf, runSolidRecipe, openSolidRecipeConfigured, sbRcp, sbGo, setBygeomUiHooks } from './src/bygeom-ui.js';
@@ -1249,8 +1249,6 @@ setBygeomUiHooks({ layerShown });
 setGridtoolsHooks({ get _docBbox() { return _docBbox; }, get frame() { return frame; } });
 // src/meshexport.js reaches back into the app through these
 setMeshexportHooks({ get _fileHandles() { return _fileHandles; }, deliverBlob });
-// src/prompts.js reaches back into the app through these
-setPromptsHooks({ get _exprFields() { return _exprFields; }, exprField });
 // src/overlay.js reaches back into the app through these
 setOverlayHooks({ get _viewMode() { return _viewMode; }, get cam() { return cam; }, currentSection, get cv() { return cv; }, get frame() { return frame; }, pickHitPoint, get renderer() { return renderer; }, get rendererDocBbox() { return rendererDocBbox; }, requestRender });
 const __MICRO_BUILD__ = 'dev';                             // stamped '<version> · <hash> · <date>' by node build.js --target=micro
@@ -2448,13 +2446,13 @@ function openPaintPalette(L) {
 $('#btnPaint').onclick = () => { const Lp = activeLayer(); if (Lp) openPaintPalette(Lp); };
 
 // src/export.js reaches back into the app through these
-setExportHooks({ busyCancel, addPaintColorOptions, applyLayerSelection, deliverBlob, get frame() { return frame; }, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
+setExportHooks({ busyCancel, applyLayerSelection, deliverBlob, get frame() { return frame; }, markProjectDirty, openParquetBlocks, refilterLayer, renderLayers, setActiveLayer, setLayerColorSel });
 
 // the export dialog's buttons (src/export-dialog.js)
 $('#exCancel').onclick = exCancel; $('#exGo').onclick = exGo;
 
 // src/bygeom.js reaches back into the app through these
-setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintColorOptions, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, get frame() { return frame; }, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, requestRender, selEpoch, selectionStatus, setLayerColorSel });
+setBygeomHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, get frame() { return frame; }, layerShown, layerWorldBbox, markProjectDirty, nextSelEpoch, requestRender, selEpoch, selectionStatus, setLayerColorSel });
 
 // src/joins.js reaches back into the app through these
 setJoinsHooks({ addPaintValue, applyRamp, createPaintCol, markProjectDirty, openBlob, renderLayers, renderProps, requestRender, setLayerColorSel, setRampCfg });
@@ -2491,7 +2489,7 @@ async function resultToLayer(title, tsv, lineageOp) {
 }
 
 // src/recipes.js reaches back into the app through these
-setRecipesHooks({ applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, menuXY, microConfirm, microPrompt, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe });
+setRecipesHooks({ applyCalcCols, collarCells, csvRecords, layerHasColumn, markProjectDirty, openSolidRecipeConfigured, resultToLayer, runFigureRecipe, runSolidRecipe });
 
 // apply a calc-column SET to a layer — REPLACE on same name (idempotency is
 // gospel: run-twice == run-once), append the new; invalid expressions are
@@ -2536,12 +2534,12 @@ function layerHasColumn(name, layerName) {
 }
 
 // src/swath.js reaches back into the app through these
-setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintColorOptions, addPaintValue, applyLayerSelection, applyPaintPalette, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, menuXY, paintColByName, paintSelOf, get rendererDocBbox() { return rendererDocBbox; }, requestRender, saveRecipe, selectionStatus, setLayerColorSel, setSwathBand });
+setSwathHooks({ get _attrTables() { return _attrTables; }, addPaintValue, applyLayerSelection, clearSelection, createPaintCol, layerWorldBbox, markProjectDirty, paintColByName, get rendererDocBbox() { return rendererDocBbox; }, requestRender, saveRecipe, selectionStatus, setLayerColorSel });
 
 // src/stats.js reaches back into the app through these
-setStatsHooks({ menuXY, saveRecipe });
+setStatsHooks({ saveRecipe });
 setXtabHooks({ markProjectDirty });
-setOmfHooks({ addLayer, closeAllLayers, layerById, mkLineage, openLineage, renderLayers });
+setOmfHooks({ addLayer, closeAllLayers, renderLayers });
 // frame a WORLD point (radius 0 → a close look, else that much around it)
 setMeshQaHooks({
   zoomToPoint: (p, r) => {
@@ -2773,7 +2771,7 @@ function fitFromHeader(header, first = true) {
   }
 }
 // src/open.js reaches back into the app through these
-setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, get cam() { return cam; }, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, get frame() { return frame; }, microConfirm, recomputeUnion, removeLayerUI, renderLayers, get renderer() { return renderer; }, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray });
+setOpenHooks({ get LAYER_CAP() { return LAYER_CAP; }, get _docBbox() { return _docBbox; }, get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, get cam() { return cam; }, closeAllLayers, createLayerGroup, ensureDhSetGroups, fitFromHeader, get frame() { return frame; }, recomputeUnion, removeLayerUI, renderLayers, get renderer() { return renderer; }, reopenDh, requestRender, setActiveLayer, setColorLabels, surfaceColorArray });
 
 // ── layers (micro-layers spec §1): see src/state.js — S.layers/S.activeId. One
 // layer open == exactly the old single-doc behavior (ids 0-shifted, panel hidden).
@@ -2825,13 +2823,13 @@ function setActiveLayer(id) {
 setLineageHooks({ get __MICRO_BUILD__() { return __MICRO_BUILD__; } });
 
 // src/ingest.js reaches back into the app through these
-setIngestHooks({ get _fileHandles() { return _fileHandles; }, get colorHeaderOf() { return colorHeaderOf; }, colorSelFor, fileLayersInGroup, removeLayerUI, renderLayers, setLayerColorBy, setLayerColorRange, setLayerPalette, writePlyMeshBytes });
+setIngestHooks({ get _fileHandles() { return _fileHandles; }, removeLayerUI });
 
 // src/surfaces.js reaches back into the app through these
-setSurfacesHooks({ get frame() { return frame; }, renderLayers, get renderer() { return renderer; }, reopenReplacing, requestRender });
+setSurfacesHooks({ get frame() { return frame; }, get renderer() { return renderer; }, reopenReplacing, requestRender });
 
 // src/reopen.js reaches back into the app through these
-setReopenHooks({ get _fileHandles() { return _fileHandles; }, closeAttrTable, layerReplaced, menuXY, refilterLayer, renderLayers, get renderer() { return renderer; }, setLayerColorSel, treeSlotOf });
+setReopenHooks({ get _fileHandles() { return _fileHandles; }, closeAttrTable, refilterLayer, get renderer() { return renderer; }, setLayerColorSel });
 
 // src/open-dialog.js reaches back into the app through these
 setOpenDialogHooks({ get _fileHandles() { return _fileHandles; }, closeAllLayers, createLayerGroup });
@@ -2843,10 +2841,10 @@ $('#dhImport').onclick = dhImport;
 $('#dhCancel').onclick = dhCancel;
 
 // src/filter.js reaches back into the app through these
-setFilterHooks({ attrTableFilterChanged, get frame() { return frame; }, pushDhMask, refreshLinkedWindows, get renderer() { return renderer; }, requestRender, rowsProgress, syncHL });
+setFilterHooks({ attrTableFilterChanged, get frame() { return frame; }, pushDhMask, refreshLinkedWindows, get renderer() { return renderer; }, requestRender });
 
 // src/color.js reaches back into the app through these
-setColorHooks({ followLayer, get renderer() { return renderer; }, requestRender, setActiveLayer });
+setColorHooks({ get renderer() { return renderer; }, requestRender, setActiveLayer });
 
 // (blockCaps / layerRecords / docPositionStream live in src/records.js)
 // switching the grade channel = re-stream sweep 2 with a new mapping (windowed ethos)
@@ -2966,7 +2964,7 @@ async function deliverBlob(blob, filename) {
   } catch (e) { meta.textContent = `could not save ${filename}: ${e.message || e}`; }
 }
 // src/project.js reaches back into the app through these
-setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _fileHandles() { return _fileHandles; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, menuXY, microChoose, microConfirm, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, get renderer() { return renderer; }, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
+setProjectHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get __MICRO_BUILD__() { return __MICRO_BUILD__; }, get _fileHandles() { return _fileHandles; }, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, get dhGroupName() { return dhGroupName; }, ensureDhSetGroups, ensureValueTex, flushViewsScenes, get hasFSAA() { return hasFSAA; }, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, get rehydrateHandle() { return rehydrateHandle; }, renderEmptyProjects, renderLayers, get renderer() { return renderer; }, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, get valueTexEligible() { return valueTexEligible; }, get wfrExportable() { return wfrExportable; }, writeGridDisplayCache });
 
 function captureCamera() {
   const st = cam.state, o = frame ? frame.origin : [0, 0, 0];
@@ -3168,7 +3166,7 @@ $('#pmDlg').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); pmClose(null); }
 });
 // src/views.js reaches back into the app through these
-setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, microConfirm, microPrompt, get renderer() { return renderer; }, requestRender, setActiveLayer, setLayerColorSel, syncFilterClear });
+setViewsHooks({ applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, get renderer() { return renderer; }, requestRender, setActiveLayer, setLayerColorSel, syncFilterClear });
 
 // recent projects on the empty state (chips, like recent files)
 async function renderEmptyProjects() {
@@ -4775,7 +4773,7 @@ function attrTableFilterChanged(lid) { const t2 = _attrTables.get(lid); if (t2) 
 function attrTableSelChanged(lid) { const t2 = _attrTables.get(lid); if (t2 && t2.selChanged) t2.selChanged(); }
 function closeAttrTable(lid) { const t2 = _attrTables.get(lid); if (t2) t2.close(); }
 // src/tree.js reaches back into the app through these
-setTreeHooks({ applyLayerOpacity, get cam() { return cam; }, fitLayer, layerMenu, menuXY, microPrompt, openBatchRename, openMeshExportDialog, get renderer() { return renderer; }, requestRender, setActiveLayer, syncSelBar, syncUndoBtn });
+setTreeHooks({ applyLayerOpacity, get cam() { return cam; }, fitLayer, layerMenu, openBatchRename, get renderer() { return renderer; }, requestRender, setActiveLayer, syncSelBar, syncUndoBtn });
 
 // panel widths: drag the inner edge; machine prefs (localStorage), CSS vars so
 // the compass dodge tracks live
@@ -5012,7 +5010,7 @@ const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   action: () => applyLayerOpacity(L, pc / 100),
 }));
 // src/props.js reaches back into the app through these
-setPropsHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, collarCells, get colorHeaderOf() { return colorHeaderOf; }, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, get frame() { return frame; }, hexToRgb01, markProjectDirty, menuXY, microPrompt, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, get renderer() { return renderer; }, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth });
+setPropsHooks({ get CONTEXT_TRI_CAP() { return CONTEXT_TRI_CAP; }, get _docBbox() { return _docBbox; }, addPaintValue, appendColStats, applyLayerOpacity, collarCells, get colorHeaderOf() { return colorHeaderOf; }, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, get frame() { return frame; }, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, get renderer() { return renderer; }, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth });
 
 $('#ppClose').onclick = closeProps;
 
@@ -5045,7 +5043,7 @@ function appendColStats(body, stat, onCtx) {
   body.appendChild(d);
 }
 // src/drillholes.js reaches back into the app through these
-setDrillholesHooks({ get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, get frame() { return frame; }, groupLayerIds, menuXY, microPrompt, refilterLayer, renderLayers, get renderer() { return renderer; }, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync });
+setDrillholesHooks({ get _fileHandles() { return _fileHandles; }, get allocLayerId() { return allocLayerId; }, applyLayerStyling, applyTreeVisibility, captureLayerStyling, captureReopenIdentity, closeAttrTable, createLayerGroup, get frame() { return frame; }, groupLayerIds, refilterLayer, renderLayers, get renderer() { return renderer; }, requestRender, restoreReopenIdentity, setActiveLayer, treeMove, treeSync });
 
 function targetAxes(jf, L, R) {
   if (jf.target === 'left') return gridAxesOf(L);

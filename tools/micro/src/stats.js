@@ -11,8 +11,9 @@ import { applyAnalysisGeo, checkAbort, fmtStat, plotExportBtns, runCancellable, 
 import { floatWin, focusWindow } from './windows.js';
 import { numericColsOf } from './analysis.js';
 import { canScanColumnar, scanColumnar, zoneKeeper } from './colscan.js';
+import { menuXY } from './menu.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setStatsHooks): menuXY, saveRecipe
+// the app's side, passed in once (setStatsHooks): saveRecipe
 let H = {};
 export function setStatsHooks(h) { H = h; }
 
@@ -272,7 +273,7 @@ export function openStats(L, ropts) {
     const cSec = document.createElement('div');
     cSec.append(Object.assign(document.createElement('div'), { className: 'sw-h', textContent: 'columns' }));
     const colBtn = document.createElement('button'); colBtn.className = 'sw-add'; colBtn.textContent = st.cols.length > 3 ? `${st.cols.length} columns` : st.cols.join(', ');
-    colBtn.onclick = (e) => H.menuXY(e.clientX, e.clientY, numericColsOf(L).map((c) => ({ label: (st.cols.includes(c) ? '✓ ' : '') + c, action: () => { if (st.cols.includes(c)) { if (st.cols.length > 1) st.cols = st.cols.filter((x) => x !== c); } else st.cols.push(c); markStale(); buildRail(); } })));
+    colBtn.onclick = (e) => menuXY(e.clientX, e.clientY, numericColsOf(L).map((c) => ({ label: (st.cols.includes(c) ? '✓ ' : '') + c, action: () => { if (st.cols.includes(c)) { if (st.cols.length > 1) st.cols = st.cols.filter((x) => x !== c); } else st.cols.push(c); markStale(); buildRail(); } })));
     cSec.append(colBtn); rail.append(cSec);
     const gSec = document.createElement('div');
     gSec.append(Object.assign(document.createElement('div'), { className: 'sw-h', textContent: 'group by' }));

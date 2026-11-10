@@ -10,8 +10,9 @@ import { rowsProgress } from './analysis-ui.js';
 import { S, activeLayer, layerById } from './state.js';
 import { reopenBlockChan, reopenDhChan } from './open.js';
 import { markProjectDirty } from './project.js';
+import { followLayer } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setColorHooks): followLayer, renderer, requestRender, setActiveLayer
+// the app's side, passed in once (setColorHooks): renderer, requestRender, setActiveLayer
 let H = {};
 export function setColorHooks(h) { H = h; }
 
@@ -113,7 +114,7 @@ export async function setLayerColorBy(L, v) {
     if (!(h.categories && h.mapping.cat === i)) {
       L.colorSel = 'cat';
       await useAsCategory(L, i);
-      L = layerById(H.followLayer(L.id)) || L;
+      L = layerById(followLayer(L.id)) || L;
     }
     v = 'cat';
   }
@@ -122,7 +123,7 @@ export async function setLayerColorBy(L, v) {
   let reread = false;
   if (v.startsWith('chan:')) {
     const ch = +v.slice(5);
-    if (d.dhDoc && ch !== d.dhDoc.header.mapping.chan) { await reopenDhChan(ch, L); L = layerById(H.followLayer(L.id)) || L; reread = true; }
+    if (d.dhDoc && ch !== d.dhDoc.header.mapping.chan) { await reopenDhChan(ch, L); L = layerById(followLayer(L.id)) || L; reread = true; }
     // Three sources, not two. This dispatch predated Parquet and sent it down the
     // delimited branch, where openBlocksBlob sniffed the Parquet bytes as text,
     // found no rows, and replaced a good document with an empty one — the layer

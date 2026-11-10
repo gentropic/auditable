@@ -18,8 +18,10 @@ import { persistElement } from './element-store.js';
 import { gridAxesOf } from './grid-ops.js';
 import { keyJoinToCols, runKeyJoin, shortName, spatialJoinToCols } from './joins.js';
 import { pushUndo } from './undo.js';
+import { menuXY } from './menu.js';
+import { microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): CONTEXT_TRI_CAP, _docBbox, addPaintValue, appendColStats, applyLayerOpacity, collarCells, colorHeaderOf, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, frame, hexToRgb01, markProjectDirty, menuXY, microPrompt, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, renderer, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth
+// the app's side, passed in once (setPropsHooks): CONTEXT_TRI_CAP, _docBbox, addPaintValue, appendColStats, applyLayerOpacity, collarCells, colorHeaderOf, convertMeshLayer, createPaintCol, csvRecords, droppedNote, ensureValueTex, followLayer, frame, hexToRgb01, markProjectDirty, openBlob, openCalcWindow, openPaintPalette, openReconcileMenu, paintColByName, recolorSurface, refilterLayer, renderLayers, renderer, reopenBlockChan, reopenDh, reopenWithMapping, requestRender, runSpatialJoinUI, setColorLabels, setGridBand, setLayerColorSel, setMeshTint, setSurfaceFlatZ, setSurfaceSmooth
 let H = {};
 export function setPropsHooks(h) { H = h; }
 
@@ -394,7 +396,7 @@ export function renderRuleList(body, L) {
       kb.onclick = (e) => {
         e.stopPropagation();
         const r2 = kb.getBoundingClientRect();
-        H.menuXY(r2.left - 60, r2.bottom + 2, [
+        menuXY(r2.left - 60, r2.bottom + 2, [
           { label: 'Duplicate', action: () => { remapHidden(() => rules.splice(idx + 1, 0, { name: r.name ? r.name + ' copy' : '', expr: r.expr, color: ruleDefaultColor(rules.length) })); structural(); renderProps(); } },
           { label: 'Remove', action: () => { const gone = rules[idx]; pushUndo(`remove rule ${gone.name || gone.expr || ''}`.trim(), () => { remapHidden(() => rules.splice(Math.min(idx, rules.length), 0, gone)); structural(); refreshProps(); }, { redo: () => { const j = rules.indexOf(gone); if (j >= 0) { remapHidden(() => rules.splice(j, 1)); structural(); refreshProps(); } } }); remapHidden(() => rules.splice(idx, 1)); structural(); renderProps(); } },
         ]);
@@ -1265,7 +1267,7 @@ export function renderClassList(body, L, info) {
       ev.preventDefault();
       const legS = () => ensureLegend(L, info);
       if (isOther) {
-        H.menuXY(ev.clientX, ev.clientY, [
+        menuXY(ev.clientX, ev.clientY, [
           { label: 'Split into entries', action: () => {
             const l2 = legS();
             for (const c of codes) l2.entries.push({ label: String(info.names[c]), values: [info.kind === 'las' ? c : String(info.names[c])], color: rgbCssToHex(info.colorAt(c)) });
@@ -1274,8 +1276,8 @@ export function renderClassList(body, L, info) {
         ]);
         return;
       }
-      H.menuXY(ev.clientX, ev.clientY, [
-        { label: 'Rename…', action: async () => { const v = await H.microPrompt('legend label', e.label); if (v && v.trim()) { const l2 = legS(); const me = l2.entries.find((x) => x.label === e.label); if (me) me.label = v.trim(); touch(); renderProps(); } } },
+      menuXY(ev.clientX, ev.clientY, [
+        { label: 'Rename…', action: async () => { const v = await microPrompt('legend label', e.label); if (v && v.trim()) { const l2 = legS(); const me = l2.entries.find((x) => x.label === e.label); if (me) me.label = v.trim(); touch(); renderProps(); } } },
         ...(leg.entries.length > 1 ? [{ label: 'Merge into', submenu: () => leg.entries.filter((x) => x !== e).map((t2) => ({ label: t2.label, action: () => {
           const l2 = legS();
           const src = l2.entries.find((x) => x.label === e.label), dst = l2.entries.find((x) => x.label === t2.label);
@@ -1676,7 +1678,7 @@ export function renderColumnsTab(body, L) {
       const isNum = colIsNumeric(L, h, i);
       const m = h.mapping || {};
       const spatial = i === m.x || i === m.y || i === m.z;
-      H.menuXY(x, y, [
+      menuXY(x, y, [
         { label: (isNum ? '✓ ' : '') + 'Number', action: () => { if (!isNum && !spatial) setColType(L, i, 'number'); } },
         { label: (!isNum ? '✓ ' : '') + 'Text', action: () => { if (isNum && !spatial) setColType(L, i, 'string'); } },
         ...(isNum && !spatial && rowQualifier(L) ? [{ label: 'Below / above detection', submenu: () => qualifyMenuItems(L, i) }] : []),
@@ -1704,7 +1706,7 @@ export function renderColumnsTab(body, L) {
     const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = c.name; nm.title = c.expr;
     const ty = document.createElement('span'); ty.className = 'ty'; ty.textContent = c.ty === 'string' ? 'text' : 'number';
     row.append(fx, nm, ty);
-    const openMenu = (x, y) => H.menuXY(x, y, [
+    const openMenu = (x, y) => menuXY(x, y, [
       { label: 'Edit…', action: () => H.openCalcWindow(L, k) },
       { label: 'Remove', action: () => { const gone = L.calcCols[k]; pushUndo(`remove ƒ ${gone.name}`, () => { L.calcCols.splice(Math.min(k, L.calcCols.length), 0, gone); L._calcFns = null; L._colStats = null; H.markProjectDirty(); refreshProps(); }, { redo: () => { const j = L.calcCols.indexOf(gone); if (j >= 0) { L.calcCols.splice(j, 1); L._calcFns = null; L._colStats = null; H.markProjectDirty(); refreshProps(); } } }); L.calcCols.splice(k, 1); L._calcFns = null; L._colStats = null; H.markProjectDirty(); renderProps(); } },
     ]);

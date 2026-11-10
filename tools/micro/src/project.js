@@ -26,8 +26,10 @@ import { openCrosstab } from './xtab.js';
 import { openXyPlot } from './xyplot.js';
 import { BACKUP_EXT, BACKUP_MIME, inventoryProject, openPack, readBackup, restoreBackup, writeBackup, writeTree } from './backup.js';
 import { shell } from '../../../ext/leadacid/index.js';
+import { menuXY } from './menu.js';
+import { microChoose, microConfirm } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setProjectHooks): CONTEXT_TRI_CAP, __MICRO_BUILD__, _fileHandles, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, dhGroupName, ensureDhSetGroups, ensureValueTex, flushViewsScenes, hasFSAA, loadViewsScenes, menuXY, microChoose, microConfirm, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects, renderLayers, renderer, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, valueTexEligible, wfrExportable, writeGridDisplayCache
+// the app's side, passed in once (setProjectHooks): CONTEXT_TRI_CAP, __MICRO_BUILD__, _fileHandles, applyCamera, applyHoleFilter, applyLayerSelection, applySection, applyTreeVisibility, captureCamera, captureLayerSurface, captureSection, closeAllLayers, createLayerGroup, deliverBlob, dhGroupName, ensureDhSetGroups, ensureValueTex, flushViewsScenes, hasFSAA, loadViewsScenes, openBlob, openDrillholeLayer, openFilesDialog, openWfrFile, pickDirectory, recolorSurface, recomputeUnion, refilterLayer, rehydrateHandle, renderEmptyProjects, renderLayers, renderer, reopenBlockChan, requestRender, treeFromManifest, treeToManifest, valueTexEligible, wfrExportable, writeGridDisplayCache
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -169,7 +171,7 @@ export async function maybeAutoPackMeshes() {
   if (!cands.length || _autoPack === 'off') return;
   if (_autoPack == null) {
     if (_autoPackSkip) return;                             // "Not now" holds for this session
-    const a = await H.microChoose('store meshes as .wfr',
+    const a = await microChoose('store meshes as .wfr',
       `${cands.length} mesh/strings/points layer${cands.length === 1 ? '' : 's'} (${cands.map((L) => L.label || L.name).slice(0, 4).join(', ')}${cands.length > 4 ? ', …' : ''}) can be stored in the project as .wfr — bricked, a fraction of the size, quick to reopen, attributes kept. Source files already in the project are kept. Settings → "store meshes as .wfr on save" changes your answer later.`,
       [{ label: 'Never', value: 'never', quiet: true }, { label: 'Not now', value: 'skip' }, { label: 'Yes', value: 'once' }, { label: 'Yes, always', value: 'always' }]);
     if (a === 'never') { setAutoPack('off'); return; }
@@ -348,7 +350,7 @@ export function canCopyIntoProject(L) { return !!(S.project && !S.project.pack &
 
 export function copyLayerIntoProject(L) {
   if (!canCopyIntoProject(L)) { $('#meta').textContent = S.project && S.project.pack ? 'copy: a project pack is read-only — save it as a folder first' : S.project ? 'copy: this layer is already in the project (or has no file)' : 'copy: open a project folder first'; return; }
-  setTimeout(() => H.menuXY(innerWidth / 2 - 120, innerHeight / 3, [
+  setTimeout(() => menuXY(innerWidth / 2 - 120, innerHeight / 3, [
     { label: `Copy “${L.name}”${L.dh ? ' (collar + survey + intervals)' : ''} (${fmtSize(layerBytes(L))}) into ${S.project.name}/`, action: async () => { $('#meta').textContent = `copying ${L.name}…`; await copyLayerIn(L, S.project.dir); markProjectDirty(); $('#meta').textContent = `copied ${L.name} into the project (${fmtSize(layerBytes(L))})`; H.renderLayers(); } },
     { label: 'Cancel', action: () => {} },
   ]), 0);
@@ -574,7 +576,7 @@ export async function saveProject() {
     const ext = S.layers.filter((L) => L.storage === 'external').length;
     if (colFails.length) {
       $('#meta').textContent = `project saved — but the columns of ${colFails.length} layer${colFails.length === 1 ? '' : 's'} did NOT save`;
-      H.microChoose('columns not saved', `The project file is written, but these layers' columns (paint, ƒ, joined) could not be stored — ${colFails.join(' · ')}. They are still here in this session. Save again, or export the layer, before closing.`, [{ label: 'OK', value: true }]);
+      microChoose('columns not saved', `The project file is written, but these layers' columns (paint, ƒ, joined) could not be stored — ${colFails.join(' · ')}. They are still here in this session. Save again, or export the layer, before closing.`, [{ label: 'OK', value: true }]);
     } else $('#meta').textContent = `project saved — ${S.project.name}/project.json${ext ? ` · ${ext} linked outside the folder` : ''}`;
   } catch (e) {
     $('#meta').textContent = `project save failed — ${e.message}`;
@@ -746,7 +748,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           } catch { file = null; }
         }
         if (!file) {                                       // link lost (other browser / dropped file) → locate or skip
-          const act = await new Promise((res) => H.menuXY(innerWidth / 2 - 120, innerHeight / 3, [
+          const act = await new Promise((res) => menuXY(innerWidth / 2 - 120, innerHeight / 3, [
             { label: `Locate “${ls.source}”…`, action: () => res('locate') },
             { label: 'Skip this layer', action: () => res(null) },
           ], () => res(null)));
@@ -878,7 +880,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     const unread = S.layers.flatMap((L) => (L._colsUnread || []).map((u) => `${L.label || L.name} · ${u.name}: ${u.why}`));
     if (unread.length) {
       $('#meta').textContent += ` — ${unread.length} stored column${unread.length === 1 ? '' : 's'} not read`;
-      H.microChoose('stored columns not read', `The project opened, but these stored columns could not be read — ${unread.join(' · ')}`, [{ label: 'OK', value: true }]);
+      microChoose('stored columns not read', `The project opened, but these stored columns could not be read — ${unread.join(' · ')}`, [{ label: 'OK', value: true }]);
     }
     H.requestRender();
     return true;
@@ -927,7 +929,7 @@ export async function backupProject({ lean = null, to = null, save = null, host 
   if (!S.project) { if (host) throw new Error('micro: no project is open'); $('#meta').textContent = 'back up: open or save a project first'; return null; }
   if (S.project.dirty) {
     let a = save == null ? null : (save ? 'save' : 'as-is');
-    if (a == null && !host) a = await H.microChoose('back up project', `${S.project.name} has unsaved changes. A backup is made from the project folder, so on its own it holds the last save.`,
+    if (a == null && !host) a = await microChoose('back up project', `${S.project.name} has unsaved changes. A backup is made from the project folder, so on its own it holds the last save.`,
       [{ label: 'Cancel', value: null }, { label: 'Back up the last save', value: 'as-is' }, { label: 'Save, then back up', value: 'save' }]);
     if (a == null && !host) return null;
     if (a === 'save') await saveProject();
@@ -940,7 +942,7 @@ export async function backupProject({ lean = null, to = null, save = null, host 
     const msg = `${S.project.name}: ${n} file${n === 1 ? '' : 's'}, ${fmtSize(full)}.`
       + (inv.skipped.length ? ` Lean leaves out ${inv.skipped.length} cache file${inv.skipped.length === 1 ? '' : 's'} micro rebuilds by itself (${fmtSize(inv.skippedBytes)}); a big model is then re-read once when the project opens.` : '')
       + (linked.length ? ` Not in the backup: ${linked.length} layer${linked.length === 1 ? '' : 's'} linked from outside the folder (${linked.slice(0, 3).join(', ')}${linked.length > 3 ? ', …' : ''}) — to include ${linked.length === 1 ? 'it' : 'them'}, save the project and choose “Copy into project”.` : '');
-    const a = await H.microChoose('back up project', msg, [{ label: 'Cancel', value: null },
+    const a = await microChoose('back up project', msg, [{ label: 'Cancel', value: null },
       ...(inv.skipped.length ? [{ label: `Lean (${fmtSize(inv.bytes)})`, value: 'lean' }] : []), { label: `Full (${fmtSize(full)})`, value: 'full' }]);
     if (!a) return null;
     lean = a === 'lean';
@@ -1005,7 +1007,7 @@ export function packSummary(blob, info, members, bytes) {
 export async function openPackFile(blob) {
   let rb;
   try { rb = await readBackup(blob); } catch (e) { $('#meta').textContent = `open: ${e.message}`; return null; }
-  const a = await H.microChoose('project pack', packSummary(blob, rb.info || {}, rb.members, rb.bytes)
+  const a = await microChoose('project pack', packSummary(blob, rb.info || {}, rb.members, rb.bytes)
     + ' Open it read-only to look around (nothing is unpacked), or unpack it into an empty folder to work in it.',
     [{ label: 'Cancel', value: null }, ...(H.hasFSAA ? [{ label: 'Unpack to a folder…', value: 'unpack' }] : []), { label: 'Open (read-only)', value: 'open' }]);
   if (a === 'unpack') return restoreProject(blob, null, { asked: true });
@@ -1019,7 +1021,7 @@ export async function openProjectPack(blob = null, { host = false, asked = false
   let pack;
   try { pack = await openPack(blob); } catch (e) { return fail(e.message); }
   if (!host && !asked && S.project && S.project.dirty
-    && !(await H.microConfirm('open project pack', `This closes ${S.project.name}, which has unsaved changes.`, 'Open pack', 'Cancel'))) return null;
+    && !(await microConfirm('open project pack', `This closes ${S.project.name}, which has unsaved changes.`, 'Open pack', 'Cancel'))) return null;
   if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort();
   if (!(await openProjectDir(pack.dir, { pack }))) return fail($('#meta').textContent.replace(/^project open failed — /, '') || 'the project in the pack did not open');
   updateProjectTitle();
@@ -1032,7 +1034,7 @@ export async function openProjectPack(blob = null, { host = false, asked = false
     if (v.ok) $('#meta').textContent = `pack checked — ${v.files} files intact`;
     else {
       $('#meta').textContent = `pack DAMAGED — ${v.bad.length} file${v.bad.length === 1 ? '' : 's'} fail their checksum: ${v.bad.map((b) => b.path).slice(0, 3).join(', ')}${v.bad.length > 3 ? ', …' : ''}`;
-      if (!host) H.microChoose('project pack damaged', `${v.bad.length} of the ${v.files} files in ${blob.name || 'the pack'} don't match the checksum they were written with, so what micro shows from them may be wrong: ${v.bad.map((b) => b.path).join(', ')}.`, [{ label: 'OK', value: true }]);
+      if (!host) microChoose('project pack damaged', `${v.bad.length} of the ${v.files} files in ${blob.name || 'the pack'} don't match the checksum they were written with, so what micro shows from them may be wrong: ${v.bad.map((b) => b.path).join(', ')}.`, [{ label: 'OK', value: true }]);
     }
     return v;
   }, (e) => { if (e && e.name !== 'AbortError') $('#meta').textContent = `pack check failed — ${e.message || e}`; return null; });
@@ -1045,7 +1047,7 @@ export async function savePackAsFolder({ dest = null, host = false } = {}) {
   const pack = S.project.pack;
   if (!dest && !H.hasFSAA) { $('#meta').textContent = "save: a project pack is read-only here — this browser can't write project folders"; return null; }
   if (!host && !dest) {
-    const ok = await H.microChoose('save project', `${S.project.name} is a project pack, opened read-only. To keep your changes, save it as a project folder: pick an empty folder and micro writes the whole project there (${fmtSize(pack.bytes)}), then carries on working in it. The pack itself stays as it is.`,
+    const ok = await microChoose('save project', `${S.project.name} is a project pack, opened read-only. To keep your changes, save it as a project folder: pick an empty folder and micro writes the whole project there (${fmtSize(pack.bytes)}), then carries on working in it. The pack itself stays as it is.`,
       [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]);
     if (!ok) return null;
   }
@@ -1074,7 +1076,7 @@ export async function restoreProject(blob = null, dest = null, { host = false, a
   let rb;
   try { rb = await readBackup(blob); } catch (e) { return fail(e.message); }
   if (!host && !asked) {
-    if (!(await H.microChoose('restore project', packSummary(blob, rb.info || {}, rb.members, rb.bytes) + ' Next, pick an empty folder to restore it into.',
+    if (!(await microChoose('restore project', packSummary(blob, rb.info || {}, rb.members, rb.bytes) + ' Next, pick an empty folder to restore it into.',
       [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]))) return null;
   }
   if (!dest) { try { dest = await H.pickDirectory(); } catch { return null; } }
@@ -1089,7 +1091,7 @@ export async function restoreProject(blob = null, dest = null, { host = false, a
 export async function tidyProject() {
   if (!S.project) { $('#meta').textContent = 'tidy: save the project to a folder first'; return; }
   const dir = S.project.dir;
-  const ok = await H.microConfirm('Tidy project folder',
+  const ok = await microConfirm('Tidy project folder',
     'Move each layer file into its kind subfolder (drillholes / models / clouds / meshes / grids), carry its sidecars along, and rewrite project.json. Files are moved, not copied. External/linked layers stay where they are.',
     'Tidy', 'Cancel');
   if (!ok) return;
@@ -1233,7 +1235,7 @@ export async function newProject() {
   if (S.layers.length) parts.push(`${S.layers.length} layer${S.layers.length === 1 ? '' : 's'}`);
   if (S.project) parts.push(`the project link (${S.project.name})`);
   const warn = S.project && S.project.dirty ? ' Unsaved project changes will be lost.' : '';
-  if (!(await H.microConfirm('new project', `This closes ${parts.join(' and ')}.${warn} Files on disk are untouched.`))) return;
+  if (!(await microConfirm('new project', `This closes ${parts.join(' and ')}.${warn} Files on disk are untouched.`))) return;
   H.closeAllLayers();
   closeProject();
   if ($('#secMode').value !== 'off') { $('#secMode').value = 'off'; $('#secMode').dispatchEvent(new Event('input')); }

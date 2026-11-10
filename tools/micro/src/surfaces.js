@@ -12,8 +12,9 @@ import { writeEsriAsc } from './grid-io.js';
 import { RAMP_PRESETS, rampCfgOf, rampSample } from './props.js';
 import { buildHeightfieldMesh } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
+import { renderLayers } from './tree.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSurfacesHooks): frame, renderLayers, renderer, reopenReplacing, requestRender
+// the app's side, passed in once (setSurfacesHooks): frame, renderer, reopenReplacing, requestRender
 let H = {};
 export function setSurfacesHooks(h) { H = h; }
 
@@ -192,6 +193,6 @@ export async function setGridBand(L, band) {
   if (L2) {
     if (wasSurface && drape) { const g = S.layers.find((x) => x.name === drape && x.docs && x.docs.gridDoc && x.docs.gridDoc.grid); if (g) recolorSurface(L2, g); }
   }
-  H.renderLayers(); markProjectDirty();
+  renderLayers(); markProjectDirty();
   $('#meta').textContent = `${name} — band ${band + 1} of ${gd.grid.bands}`;
 }

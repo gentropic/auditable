@@ -11,8 +11,11 @@ import { layerTableHeader } from './records.js';
 import { moreButton } from './longpress.js';
 import { basename } from './paths.js';
 import { _propFor, _propOpen, closeProps, renderProps } from './props.js';
+import { menuXY } from './menu.js';
+import { microPrompt } from './prompts.js';
+import { openMeshExportDialog } from './meshexport.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): applyLayerOpacity, cam, fitLayer, layerMenu, menuXY, microPrompt, openBatchRename, openMeshExportDialog, renderer, requestRender, setActiveLayer, syncSelBar, syncUndoBtn
+// the app's side, passed in once (setTreeHooks): applyLayerOpacity, cam, fitLayer, layerMenu, openBatchRename, renderer, requestRender, setActiveLayer, syncSelBar, syncUndoBtn
 let H = {};
 export function setTreeHooks(h) { H = h; }
 
@@ -430,10 +433,10 @@ export function moveLayerToGroupMenu(L, x, y) {
   walk(S.layerTree);
   const src = treeFindParent(L.id);
   const inGroup = src && src.arr !== S.layerTree;
-  H.menuXY(x, y, [
+  menuXY(x, y, [
     ...groups.map((g) => ({ label: `→ ${g.name}`, action: () => treeMove(L.id, g, 'into') })),
     { label: 'New group…', action: async () => {
-      const v = await H.microPrompt('group name', 'group');
+      const v = await microPrompt('group name', 'group');
       if (!v || !v.trim()) return;
       const src2 = treeFindParent(L.id);
       if (src2) src2.arr.splice(src2.i, 1);
@@ -479,7 +482,7 @@ export function sectionModeItems(L) {
   const opt = (on, t, v) => ({ label: (on ? '✓ ' : '') + t, action: () => setLayerSectionMode(L, v) });
   const askHalf = async (keepWhole = false) => {
     const cur = own || +$('#secHalf').value || 10;
-    const v = await H.microPrompt('this layer’s slab: ± metres around the section plane', String(cur));
+    const v = await microPrompt('this layer’s slab: ± metres around the section plane', String(cur));
     if (v == null || !String(v).trim()) return;
     const h = +String(v).replace(',', '.');
     if (!(h > 0)) { $('#meta').textContent = 'slab: a positive number of metres'; return; }
@@ -515,15 +518,15 @@ export function groupMenu(nd, x, y) {
     items.push({ label: 'QA report…', action: () => openDhQa(nd) });
     items.push({ sep: true });
   }
-  H.menuXY(x, y, [
+  menuXY(x, y, [
     ...items,
     { label: 'Move up', action: () => treeMoveStep(nd, -1) },
     { label: 'Move down', action: () => treeMoveStep(nd, 1) },
-    { label: 'Rename group…', action: async () => { const v = await H.microPrompt('group name', nd.name); if (v && v.trim()) { nd.name = v.trim(); renderLayers(); markProjectDirty(); } } },
+    { label: 'Rename group…', action: async () => { const v = await microPrompt('group name', nd.name); if (v && v.trim()) { nd.name = v.trim(); renderLayers(); markProjectDirty(); } } },
     ...(groupLayerIds(nd).length >= 2 ? [{ label: 'Rename layers…', action: () => H.openBatchRename(groupLayerIds(nd).map(layerById)) }] : []),
     ...(() => {
       const gm = groupLayerIds(nd).map(layerById).filter((x) => x && x.kind === 'mesh' && x.docs.meshDoc);
-      return gm.length ? [{ label: gm.length > 1 ? `Export ${gm.length} meshes…` : 'Export mesh…', action: () => H.openMeshExportDialog(gm) }] : [];
+      return gm.length ? [{ label: gm.length > 1 ? `Export ${gm.length} meshes…` : 'Export mesh…', action: () => openMeshExportDialog(gm) }] : [];
     })(),
     { label: 'Zoom to group', action: () => {
       let u = null;

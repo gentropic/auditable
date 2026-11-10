@@ -11,8 +11,9 @@ import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
 import { applyBlockFilter } from './filter.js';
 import { attrRowCountOf } from './records.js';
 import { applyTreeVisibility, renderLayers } from './tree.js';
+import { microConfirm, microPrompt } from './prompts.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setViewsHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, microConfirm, microPrompt, renderer, requestRender, setActiveLayer, setLayerColorSel, syncFilterClear
+// the app's side, passed in once (setViewsHooks): applyCamera, applyLayerSelection, applySection, captureCamera, captureSection, renderer, requestRender, setActiveLayer, setLayerColorSel, syncFilterClear
 let H = {};
 export function setViewsHooks(h) { H = h; }
 
@@ -33,7 +34,7 @@ export async function writeViewFile(v, subdir, payload) {
 
 // bookmarks (viewpoints)
 export async function saveViewAs() {
-  const name = ((await H.microPrompt('bookmark name', `view ${S.views.length + 1}`)) || '').trim();
+  const name = ((await microPrompt('bookmark name', `view ${S.views.length + 1}`)) || '').trim();
   if (!name) return;
   const existing = S.views.find((v) => v.name === name);
   const v = existing || { name, file: 'bookmarks/' + bmSlug(name) + '.json' };
@@ -80,7 +81,7 @@ export function armGoto() {
 }
 
 export async function removeBookmark(v) {
-  if (!(await H.microConfirm('remove bookmark', `Remove the bookmark “${v.name}”${S.project && v.file ? ` — and its file ${v.file} in the project` : ''}?`, 'Remove'))) return;
+  if (!(await microConfirm('remove bookmark', `Remove the bookmark “${v.name}”${S.project && v.file ? ` — and its file ${v.file} in the project` : ''}?`, 'Remove'))) return;
   S.views = S.views.filter((x) => x !== v);
   if (S.project && v.file) { try { await removeFileAt(S.project.dir, v.file); } catch { /* already gone */ } }
   markProjectDirty();
@@ -120,7 +121,7 @@ export async function applyScene(s) {
 }
 
 export async function saveSceneAs(withSel) {
-  const name = ((await H.microPrompt(withSel ? 'scene name (with selection)' : 'scene name', `scene ${S.scenes.length + 1}`)) || '').trim();
+  const name = ((await microPrompt(withSel ? 'scene name (with selection)' : 'scene name', `scene ${S.scenes.length + 1}`)) || '').trim();
   if (!name) return;
   const existing = S.scenes.find((s) => s.name === name);
   const captured = captureScene(name, withSel);
@@ -133,7 +134,7 @@ export async function saveSceneAs(withSel) {
 }
 
 export async function removeScene(s) {
-  if (!(await H.microConfirm('remove scene', `Remove the scene “${s.name}”${S.project && s.file ? ` — and its file ${s.file} in the project` : ''}?`, 'Remove'))) return;
+  if (!(await microConfirm('remove scene', `Remove the scene “${s.name}”${S.project && s.file ? ` — and its file ${s.file} in the project` : ''}?`, 'Remove'))) return;
   S.scenes = S.scenes.filter((x) => x !== s);
   if (S.project && s.file) { try { await removeFileAt(S.project.dir, s.file); } catch { /* already gone */ } }
   markProjectDirty();
