@@ -3,10 +3,8 @@ import { floatWin, focusWindow, nextZ } from './windows.js';
 import { attrColumnsOf, attrRowCountOf, extendRow, fetchLayerRow } from './records.js';
 import { PENDING, createGrid } from '../../../ext/loom/index.js';
 import { S, requestRender } from './state.js';
+import { emitPick, showRecord } from './pick.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setAttrtableHooks): emitPick, showRecord
-let H = {};
-export function setAttrtableHooks(h) { H = h; }
 
 export const _attrTables = new Map();                             // layerId → { win, grid, view }
 
@@ -93,9 +91,9 @@ export function openAttrTable(L) {
     const rec = recOf(sel.r0);
     if (rec == null) return;
     S.renderer.setPicked({ layer: L.id, rec });
-    H.showRecord({ layer: L.id, rec });
+    showRecord({ layer: L.id, rec });
     requestRender();
-    H.emitPick({ layer: L.id, rec }, 'table');
+    emitPick({ layer: L.id, rec }, 'table');
   });
   _attrTables.set(L.id, {
     win, grid, view,

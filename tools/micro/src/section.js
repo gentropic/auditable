@@ -9,10 +9,8 @@ import { S, activeDocs, requestRender } from './state.js';
 import { _isMobile } from './windows.js';
 import { markProjectDirty } from './project.js';
 import { PHI_MAX } from './camera.js';
+import { unprojectToMidZ } from './pick.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSectionHooks): unprojectToMidZ
-let HK = {};
-export function setSectionHooks(h) { HK = h; }
 
 const SEC_N = { plan: [0, 0, 1], ns: [1, 0, 0], ew: [0, 1, 0] };
 
@@ -63,7 +61,7 @@ export function currentSection() {
 
 // The knife cut: two world points → the VERTICAL plane containing the segment.
 export function knifeCut(x1, y1, x2, y2) {
-  const p1 = HK.unprojectToMidZ(x1, y1), p2 = HK.unprojectToMidZ(x2, y2);
+  const p1 = unprojectToMidZ(x1, y1), p2 = unprojectToMidZ(x2, y2);
   if (!p1 || !p2) return false;
   const dx = p2[0] - p1[0], dy = p2[1] - p1[1];
   const l = Math.hypot(dx, dy);

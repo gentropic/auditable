@@ -8,8 +8,9 @@ import { coordNum, decodeLasRecords, fetchDmRecord } from '../../../ext/condense
 import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
 import { currentSection } from './section.js';
+import { pickHitPoint } from './pick.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOverlayHooks): _viewMode, pickHitPoint
+// the app's side, passed in once (setOverlayHooks): _viewMode
 let H = {};
 export function setOverlayHooks(h) { H = h; }
 
@@ -80,7 +81,7 @@ export function clearMeasure() {
 export async function measureClick(cssX, cssY) {
   const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
   if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
-  const world = await H.pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
+  const world = await pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
   if (!world) return;
   const local = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
   if (!_measure.a) { _measure.a = local; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); }

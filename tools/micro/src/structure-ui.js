@@ -28,11 +28,9 @@ import { allocLayerId, removeLayerUI } from './layers.js';
 import { convertMeshLayer } from './layermenu.js';
 import { zoomToPoint } from './camera.js';
 import { addPaintValue, createPaintCol, paintApply } from './paint.js';
+import { meshHitAt, pixelRay } from './pick.js';
 const $ = (s) => document.querySelector(s);
 
-// the app's side, passed in once (setStructureHooks): meshHitAt, pixelRay
-let H = {};
-export function setStructureHooks(h) { H = h; }
 export const _structWins = new Map();                       // mesh layer id → handle
 export const SET_COL = 'SET';
 
@@ -530,7 +528,7 @@ export function disarm() {
 async function regionUnder(L, x, y, eraseKey) {
   const st = structureOf(L), col = setColOf(L), hd = _structWins.get(L.id);
   if (!st || !col || !hd) return null;
-  const hit = await H.meshHitAt(L, x, y);
+  const hit = await meshHitAt(L, x, y);
   if (!hit) return null;
   const erase = prefs.tool === 'erase' || eraseKey;
   const shape = prefs.tool === 'erase' ? (prefs.shape || 'wand') : prefs.tool;
@@ -538,7 +536,7 @@ async function regionUnder(L, x, y, eraseKey) {
   // painting stays out of OTHER sets; erasing walks only paint
   const exclude = new Uint8Array(st.nv);
   for (let j = 0; j < st.nv; j++) exclude[j] = erase ? (codes[j] === 0 ? 1 : 0) : (codes[j] && codes[j] !== hd.active ? 1 : 0);
-  const { o, d } = H.pixelRay(x, y), org = S.frame.origin;
+  const { o, d } = pixelRay(x, y), org = S.frame.origin;
   const ray = { origin: [o[0] + org[0], o[1] + org[1], o[2] + org[2]], direction: d };
   const r = regionAt(st, hit, ray, shape, { angle: prefs.angle, distance: prefs.distance, radius: prefs.radius }, exclude);
   // the seed itself may sit in another set (painting) or be unpainted (erasing) — nothing to do there
@@ -548,11 +546,11 @@ async function regionUnder(L, x, y, eraseKey) {
 const SNAP_PX = 10;
 async function vertexUnder(L, x, y) {
   const st = structureOf(L); if (!st) return null;
-  const hit = await H.meshHitAt(L, x, y);
+  const hit = await meshHitAt(L, x, y);
   if (!hit) return null;
   if (L.traces && L.traces.length) {
     // SNAP_PX on screen, as a distance in the world at the hit's depth
-    const r0 = H.pixelRay(x, y), r1 = H.pixelRay(x + SNAP_PX, y);
+    const r0 = pixelRay(x, y), r1 = pixelRay(x + SNAP_PX, y);
     const o = S.frame ? S.frame.origin : [0, 0, 0];
     const rel = [hit.point[0] - o[0] - r0.o[0], hit.point[1] - o[1] - r0.o[1], hit.point[2] - o[2] - r0.o[2]];
     const t = (rel[0] * r0.d[0] + rel[1] * r0.d[1] + rel[2] * r0.d[2]) / (r0.d[0] ** 2 + r0.d[1] ** 2 + r0.d[2] ** 2);
