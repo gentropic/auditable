@@ -24,10 +24,8 @@ import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
 import { rendererDocBbox } from './layers.js';
 import { applyLayerSelection, clearSelection, selectionStatus } from './selection.js';
+import { addPaintValue, createPaintCol, paintColByName } from './paint.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): addPaintValue, createPaintCol, paintColByName
-let H = {};
-export function setSwathHooks(h) { H = h; }
 
 // ── swath (drift) analysis ────────────────────────────────────────────────────
 // v3 / swath-direction helpers moved to ./src/geom.js (first extracted module)
@@ -450,8 +448,8 @@ export function openSwath(L, ropts) {
 export async function applySwathZebra(L, dir, bandWidth, offset) {
   const h = layerTableHeader(L), m = h.mapping;
   if (paintSelOf(L) !== '_swath') L._preZebraSel = L.colorSel;
-  let col = H.paintColByName(L, '_swath'); if (!col) { col = H.createPaintCol(L, '_swath'); if (!col) return; }
-  while (col.dict.length < 3) H.addPaintValue(L, col, col.dict.length === 1 ? 'band A' : 'band B');
+  let col = paintColByName(L, '_swath'); if (!col) { col = createPaintCol(L, '_swath'); if (!col) return; }
+  while (col.dict.length < 3) addPaintValue(L, col, col.dict.length === 1 ? 'band A' : 'band B');
   col.colors[1] = '#3a3f45'; col.colors[2] = '#c8c2b0';
   const codes = col.codes;
   for await (const { f, rec } of layerRecords(L)) {        // records, not rows: stripes stay on their own blocks after a dropped row

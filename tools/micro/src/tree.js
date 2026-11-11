@@ -18,10 +18,8 @@ import { openBatchRename } from './rename.js';
 import { setActiveLayer } from './layers.js';
 import { applyLayerOpacity, fitLayer, layerMenu } from './layermenu.js';
 import { syncSelBar } from './selection.js';
+import { syncUndoBtn } from './paint.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): syncUndoBtn
-let H = {};
-export function setTreeHooks(h) { H = h; }
 
 // ── the layers panel: visibility eyes, active-layer routing, and the layer
 // context menu (zoom/info/filter/remove). Auto-shows at two layers; 'p' or
@@ -693,7 +691,7 @@ export function renderLayers() {
     }
   };
   walk(S.layerTree, 0, false);
-  H.syncUndoBtn();                                           // the active layer decides whose paint strokes ↶ undoes
+  syncUndoBtn();                                           // the active layer decides whose paint strokes ↶ undoes
   syncSelBar();
   if (S.layers.length >= 1 && !_lpUserHidden && !$('#layersPanel').classList.contains('show') && !_otherSheetOpen()) toggleLayersPanel(true);   // the panel is the layer's front door — right-click is the menu
   if (S.layers.length === 0) toggleLayersPanel(false);

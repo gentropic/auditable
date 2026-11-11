@@ -23,10 +23,8 @@ import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
 import { layerShown } from './layers.js';
 import { applyLayerSelection, clearSelection, nextSelEpoch, selEpoch, selectionStatus } from './selection.js';
+import { addPaintValue, createPaintCol } from './paint.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomHooks): addPaintValue, createPaintCol
-let H = {};
-export function setBygeomHooks(h) { H = h; }
 
 // ── select by solid (§17): a closed context mesh classifies records by
 // generalized winding number (@gcu/winding: BVH + robust containment). A new
@@ -553,7 +551,7 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
   const resolution = Array.isArray(res) ? res.map((v) => Math.max(1, v | 0)) : [res, res, 1];
   const [hx, hy, hz] = [grid.size[0] / 2, grid.size[1] / 2, grid.size[2] / 2];
   const epoch = ++_ratioEpoch;
-  const col = H.createPaintCol(L, name, 'ratio'); if (!col) return null;
+  const col = createPaintCol(L, name, 'ratio'); if (!col) return null;
   const n = attrRowCountOf(L), codes = col.codes;
   const cls = gridClassify(surfA, surfB, mode, hx, hy, hz, resolution[0], resolution[1]);
   let done = 0, touched = 0;
@@ -590,8 +588,8 @@ export async function flagByGridSurface(gridL, targets, { name, label = 'IN', mo
   for (let li = 0; li < targets.length; li++) {
     const L = targets[li];
     if (!layerTableHeader(L)) continue;
-    const col = H.createPaintCol(L, name); if (!col) continue;
-    const code = H.addPaintValue(L, col, label);
+    const col = createPaintCol(L, name); if (!col) continue;
+    const code = addPaintValue(L, col, label);
     const n = attrRowCountOf(L), codes = col.codes;
     const [hx, hy, hz] = blockHalfExtents(L);
     const rr = hz > 0 ? 2 : 1;
@@ -728,7 +726,7 @@ export async function ratioBySolid(meshL, L, { name, res = 3, mode = 'inside', m
   } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `ratio by solid: ${e.message}`; return null; }
   if (!dense || (between && !denseB)) { $('#meta').textContent = (L.docs.blockDoc && L.docs.blockDoc.header.grid && L.docs.blockDoc.header.grid.rot) ? 'ratio by solid: proportions on a ROTATED model aren\'t supported yet — select / flag by solid work (per centroid)' : 'ratio by solid: needs context-tier meshes + a regular model'; return null; }
   if (epoch !== _ratioEpoch) return null;
-  const col = H.createPaintCol(L, name, 'ratio');
+  const col = createPaintCol(L, name, 'ratio');
   if (!col) return null;
   const n = attrRowCountOf(L);
   const codes = col.codes;
@@ -777,9 +775,9 @@ export async function flagBySolid(meshL, targets, { name, label = 'IN', mode = '
   for (let li = 0; li < targets.length; li++) {
     const L = targets[li];
     if (!layerTableHeader(L)) continue;                    // painted columns need a table behind them
-    const col = H.createPaintCol(L, name);
+    const col = createPaintCol(L, name);
     if (!col) continue;                                    // name taken here — createPaintCol already said so
-    const code = H.addPaintValue(L, col, label);
+    const code = addPaintValue(L, col, label);
     const n = attrRowCountOf(L);
     const codes = col.codes;
     const prog = (f, lab) => { if (onProgress) onProgress((li + f) / targets.length, `${lab} · ${L.label || L.name}`); };
@@ -882,9 +880,9 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
     if (epoch !== _ratioEpoch) return null;
     fields.push(dense);                                    // null = unreadable mesh → claims nothing
   }
-  const col = H.createPaintCol(L, name);
+  const col = createPaintCol(L, name);
   if (!col) return null;
-  const codeOf = solids.map((meshL) => H.addPaintValue(L, col, (meshL.label || meshL.name).replace(/\.[^.]+$/, '')));
+  const codeOf = solids.map((meshL) => addPaintValue(L, col, (meshL.label || meshL.name).replace(/\.[^.]+$/, '')));
   const n = attrRowCountOf(L);
   const codes = col.codes;
   let done = 0, assigned = 0;

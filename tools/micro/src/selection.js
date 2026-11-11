@@ -17,9 +17,9 @@ import { addPaintColorOptions, paintActiveCol, ruleModeOf } from './props.js';
 import { _isMobile } from './windows.js';
 import { isMiss, layerOfId, layerSection } from '../../../ext/condenser/src/main.js';
 import { layerShown } from './layers.js';
-import { PAINT } from './paint.js';
+import { PAINT, addPaintValue, createPaintCol, paintArmLabel, paintByPolygon, paintVolume } from './paint.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSelectionHooks): _viewMode, addPaintValue, createPaintCol, currentSection, paintArmLabel, paintByPolygon, paintVolume
+// the app's side, passed in once (setSelectionHooks): _viewMode, currentSection
 let H = {};
 export function setSelectionHooks(h) { H = h; }
 
@@ -114,9 +114,9 @@ export async function selectionToColumn(L) {
   if (!L || !L._selMask || !L._selCount) { $('#meta').textContent = 'selection → column: nothing selected on this layer'; return; }
   const name = (await microPrompt('column name', 'SEL') || '').trim();
   if (!name) return;
-  const col = H.createPaintCol(L, name);
+  const col = createPaintCol(L, name);
   if (!col) return;                                        // name taken — createPaintCol already said so
-  const out = H.addPaintValue(L, col, '0'), inn = H.addPaintValue(L, col, '1');
+  const out = addPaintValue(L, col, '0'), inn = addPaintValue(L, col, '1');
   const m = L._selMask, codes = col.codes, n = codes.length;
   for (let r = 0; r < n; r++) codes[r] = (r < m.length && m[r]) ? inn : out;
   col.lineage = mkLineage('selection', { rows: L._selCount, of: L.name });   // a selection-derived flag is a derived column, not hand paint
@@ -330,7 +330,7 @@ export function armSelect(kind) {
   $('#btnSelLasso').classList.toggle('on', kind === 'lasso');
   S.cv.style.cursor = 'crosshair';
   $('#meta').textContent = PAINT.arm
-    ? `painting ${H.paintArmLabel()} — drag to paint · alt erases · Esc stops` + (_selThrough ? ' · THROUGH' : '')
+    ? `painting ${paintArmLabel()} — drag to paint · alt erases · Esc stops` + (_selThrough ? ' · THROUGH' : '')
     : _isMobile()
     ? (selCountText() || (kind === 'rect' ? 'select: drag a rectangle' : 'select: draw a lasso')) + (_selThrough ? ' · through' : ' · visible only')
     : (kind === 'rect'
@@ -453,7 +453,7 @@ export function installSelectionTool() {
       if (PAINT.arm) {
         // painting: the gesture assigns the armed value (alt erases) and STAYS
         // armed — drag, drag, drag; Esc puts the brush down
-        (_selThrough ? H.paintVolume : H.paintByPolygon)(poly, e.altKey ? 0 : PAINT.arm.code, kind === 'rect');
+        (_selThrough ? paintVolume : paintByPolygon)(poly, e.altKey ? 0 : PAINT.arm.code, kind === 'rect');
         armSelect(kind);
       } else {
         const mode = selModeOf(e);

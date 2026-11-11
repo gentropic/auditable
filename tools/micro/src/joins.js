@@ -17,10 +17,8 @@ import { openBlob } from './open.js';
 import { renderLayers } from './tree.js';
 import { menuXY } from './menu.js';
 import { setLayerColorSel } from './color.js';
+import { addPaintValue, createPaintCol } from './paint.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setJoinsHooks): addPaintValue, createPaintCol
-let H = {};
-export function setJoinsHooks(h) { H = h; }
 
 // ── join & regularize ────────────────────────────────────────────────────────
 // A regular block model's grid axes { x, y, z } = { origin, pitch, count } in
@@ -229,7 +227,7 @@ export async function spatialJoinToCols(L, R, jf) {
     const out = joinOutName(taken, c.out || c.name, R);
     const o = { c, out };
     if (c.num) o.vals = new Float32Array(n);
-    else { o.pc = H.createPaintCol(L, out); if (!o.pc) throw new Error('column limit'); o.pc._noAutoColor = true; o.codeOf = new Map(); }
+    else { o.pc = createPaintCol(L, out); if (!o.pc) throw new Error('column limit'); o.pc._noAutoColor = true; o.codeOf = new Map(); }
     return o;
   });
   // RECORDS, not rows (layerRecords): a delimited row with no coordinates is not
@@ -245,7 +243,7 @@ export async function spatialJoinToCols(L, R, jf) {
       if (c.num) o.vals[rec] = c._out[idx];
       else {
         const lbl = c._dict[c._codes[idx]] || '';
-        if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = H.addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
+        if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
       }
     }
     if ((++done & 65535) === 0) { $('#meta').textContent = `join: attaching ${done.toLocaleString()} records…`; await new Promise((r) => setTimeout(r)); }
@@ -289,7 +287,7 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
     const out = joinOutName(taken, rh.columns[bi], R);
     const o = { bi, b, num: rNum[b], out };
     if (o.num) o.vals = new Float32Array(n);
-    else { o.pc = H.createPaintCol(L, out); if (!o.pc) throw new Error('column limit'); o.codeOf = new Map(); }
+    else { o.pc = createPaintCol(L, out); if (!o.pc) throw new Error('column limit'); o.codeOf = new Map(); }
     return o;
   });
   let matched = 0, done = 0;
@@ -301,7 +299,7 @@ export async function keyJoinToCols(L, R, { leftKey, rightKey, bring, dup = 'fir
       if (o.num) { const v = e ? +e.vals[o.b] : NaN; o.vals[rec] = Number.isFinite(v) ? v : NaN; }
       else {
         const lbl = e ? String(e.vals[o.b] ?? '').trim() : '';
-        if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = H.addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
+        if (lbl) { let code = o.codeOf.get(lbl); if (code == null) { code = addPaintValue(L, o.pc, lbl); if (code == null) continue; o.codeOf.set(lbl, code); } o.pc.codes[rec] = code; }
       }
     }
     if ((++done & 65535) === 0) { $('#meta').textContent = `join: attaching ${done.toLocaleString()}…`; await new Promise((r) => setTimeout(r)); }

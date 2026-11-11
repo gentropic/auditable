@@ -27,9 +27,10 @@ import { deliverBlob } from './hostio.js';
 import { allocLayerId, removeLayerUI } from './layers.js';
 import { convertMeshLayer } from './layermenu.js';
 import { zoomToPoint } from './camera.js';
+import { addPaintValue, createPaintCol, paintApply } from './paint.js';
 const $ = (s) => document.querySelector(s);
 
-// the app's side, passed in once (setStructureHooks): addPaintValue, createPaintCol, meshHitAt, paintApply, pixelRay
+// the app's side, passed in once (setStructureHooks): meshHitAt, pixelRay
 let H = {};
 export function setStructureHooks(h) { H = h; }
 export const _structWins = new Map();                       // mesh layer id → handle
@@ -53,9 +54,9 @@ export const setColOf = (L) => ((L && L.paintCols) || []).find((c) => c.name ===
 function ensureSetCol(L) {
   let col = setColOf(L);
   if (!col) {
-    col = H.createPaintCol(L, SET_COL);
+    col = createPaintCol(L, SET_COL);
     if (!col) return null;
-    const c = H.addPaintValue(L, col, 'J1');
+    const c = addPaintValue(L, col, 'J1');
     if (c) col.colors[c] = SET_COLORS[0];
   }
   return col;
@@ -249,7 +250,7 @@ export async function openStructure(L) {
     const add = document.createElement('button'); add.className = 'awin-btn'; add.textContent = '+ set';
     add.onclick = () => {
       const n = liveCodes(col).length + 1;
-      const c = H.addPaintValue(L, col, `J${n}`);
+      const c = addPaintValue(L, col, `J${n}`);
       if (c) { col.colors[c] = SET_COLORS[(n - 1) % SET_COLORS.length]; hd.active = c; }
       render();
     };
@@ -428,9 +429,9 @@ export async function importPaintedSets(L) {
   for (const g of groups) {
     const name = COLOR_NAMES[g.key] || g.key;
     let code = col.dict.indexOf(name);
-    if (code < 1) { code = H.addPaintValue(L, col, name); if (!code) continue; }
+    if (code < 1) { code = addPaintValue(L, col, name); if (!code) continue; }
     col.colors[code] = toHex(g.color);
-    if (H.paintApply(L, col, g.vertices, code)) made++;
+    if (paintApply(L, col, g.vertices, code)) made++;
   }
   $('#meta').textContent = `sets from paint: ${made} set${made === 1 ? '' : 's'} (${groups.map((g) => `${COLOR_NAMES[g.key] || g.key} ${g.vertices.length.toLocaleString()}`).join(' · ')})`;
   const hd = _structWins.get(L.id); if (hd && hd.render) hd.render();
@@ -587,7 +588,7 @@ function readout(r) {
 function commit(L, file, erase) {
   const col = setColOf(L), hd = _structWins.get(L.id);
   if (!col || !hd || !file || !file.length) return 0;
-  return H.paintApply(L, col, file, erase ? 0 : hd.active);
+  return paintApply(L, col, file, erase ? 0 : hd.active);
 }
 const inCanvas = (e) => { const r = $('#cv').getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
 export function installStructurePointer(cv) {
@@ -832,7 +833,7 @@ export function openStereonet(L) {
     let code = +v;
     if (v === 'new') {
       const k = liveCodes(col).length + 1;
-      code = H.addPaintValue(L, col, `J${k}`); if (!code) return;
+      code = addPaintValue(L, col, `J${k}`); if (!code) return;
       col.colors[code] = SET_COLORS[(k - 1) % SET_COLORS.length];
     }
     const verts = [], moved = [];
@@ -846,7 +847,7 @@ export function openStereonet(L) {
       markProjectDirty();
       if (!verts.length) structureAfterEdit(L);
     }
-    if (verts.length) H.paintApply(L, col, toFile(st, verts), code);   // → re-measure via paintAfterEdit
+    if (verts.length) paintApply(L, col, toFile(st, verts), code);   // → re-measure via paintAfterEdit
     $('#meta').textContent = `stereonet: ${n} plane${n === 1 ? '' : 's'} → ${col.dict[code]} (Ctrl+Z undoes)`;
   }
   // pointer: a click picks the nearest pole, a drag draws a lasso

@@ -30,10 +30,8 @@ import { recolorSurface, setGridBand, setSurfaceFlatZ, setSurfaceSmooth } from '
 import { reopenWithMapping } from './reopen.js';
 import { refilterLayer } from './filter.js';
 import { applyLayerOpacity, convertMeshLayer, setMeshTint } from './layermenu.js';
+import { addPaintValue, createPaintCol, openPaintPalette, paintColByName } from './paint.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setPropsHooks): addPaintValue, createPaintCol, openPaintPalette, paintColByName
-let H = {};
-export function setPropsHooks(h) { H = h; }
 
 // ── layer properties (§10 v1): follows the ACTIVE layer, live-apply, tabbed.
 // style = kind-adaptive controls; classes = per-class eyes (GPU cull — the
@@ -185,7 +183,7 @@ export function renderStyleTab(body, L) {
   const cb = $('#colorBy');
   const isTable = !!(L.docs.blockDoc || L.docs.dhDoc);
   const selv = colorSelOf(L);
-  const selPaint = typeof selv === 'string' && selv.startsWith('paint:') ? H.paintColByName(L, selv.slice(6)) : null;
+  const selPaint = typeof selv === 'string' && selv.startsWith('paint:') ? paintColByName(L, selv.slice(6)) : null;
   const mode = isTable
     ? (selv === 'solid' ? 'solid' : selv === 'cat' ? 'categorized' : selv === 'rules' ? 'rule-based'
       : selPaint && selPaint.kind !== 'ratio' ? 'painted' : 'continuous')
@@ -283,7 +281,7 @@ export function renderStyleTab(body, L) {
     }
     const open = document.createElement('button'); open.className = 'pp-tab';
     open.textContent = 'open paint palette…';
-    open.onclick = () => H.openPaintPalette(L);
+    open.onclick = () => openPaintPalette(L);
     body.appendChild(mkRow('', open));
     body.appendChild(ppNote('a painted column — values, colors, and the brush live in the palette window'));
   } else {
@@ -1429,7 +1427,7 @@ export async function broadcastCollarCol(L, colName) {
     matColSet(L, outName, vals, { lineage: lin });
     try { await persistElement(L); } catch { /* best-effort */ }
   } else {
-    const col = H.createPaintCol(L, outName);
+    const col = createPaintCol(L, outName);
     if (!col) return;
     col.lineage = lin;
     const codeOf = new Map(); let rec = 0, full = false;
@@ -1439,7 +1437,7 @@ export async function broadcastCollarCol(L, colName) {
         const v = String(map.get(String(f0[im.bhid] ?? '').trim()) ?? '').trim();
         if (v) {
           let code = codeOf.get(v);
-          if (code == null) { code = H.addPaintValue(L, col, v); if (code == null) { full = true; break; } codeOf.set(v, code); }
+          if (code == null) { code = addPaintValue(L, col, v); if (code == null) { full = true; break; } codeOf.set(v, code); }
           col.codes[rec] = code;
         }
         rec++;
