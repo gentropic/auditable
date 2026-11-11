@@ -7,8 +7,9 @@ import { parquetRow } from './rowworker.js';
 import { coordNum, decodeLasRecords, fetchDmRecord } from '../../../ext/condenser/src/main.js';
 import { _isMobile } from './windows.js';
 import { rendererDocBbox } from './layers.js';
+import { currentSection } from './section.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setOverlayHooks): _viewMode, currentSection, pickHitPoint
+// the app's side, passed in once (setOverlayHooks): _viewMode, pickHitPoint
 let H = {};
 export function setOverlayHooks(h) { H = h; }
 
@@ -77,7 +78,7 @@ export function clearMeasure() {
 }
 
 export async function measureClick(cssX, cssY) {
-  const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: H.currentSection() });
+  const hit = S.renderer.pick(cssX, cssY, S.cam, { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
   if (hit == null) { $('#meta').textContent = `measure: nothing there — ${_measure.a ? 'the second point' : 'two points'} on the model`; return; }
   const world = await H.pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
   if (!world) return;
@@ -190,7 +191,7 @@ export function planeBboxCssPts(n, d, b) {
 // the section plane made visible: a dashed outline in the overlay SVG.
 export function drawSectionPlane() {
   const svg = $('#secSvg');
-  const sec = $('#secPlaneVis').checked ? H.currentSection() : null;
+  const sec = $('#secPlaneVis').checked ? currentSection() : null;
   if (!sec || !S.cam.state.viewProj) { svg.style.display = 'none'; return; }
   const pts = planeBboxCssPts(sec.n, sec.d0, rendererDocBbox());
   if (!pts) { svg.style.display = 'none'; return; }

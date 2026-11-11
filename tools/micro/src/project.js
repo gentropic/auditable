@@ -42,9 +42,7 @@ import { closeAllLayers, recomputeUnion } from './layers.js';
 const $ = (s) => document.querySelector(s);
 import { applyCamera, captureCamera } from './camera.js';
 import { applyLayerSelection } from './selection.js';
-// the app's side, passed in once (setProjectHooks): applySection, captureSection
-let H = {};
-export function setProjectHooks(h) { H = h; }
+import { applySection, captureSection } from './section.js';
 
 export const PROJECTS_KEY = '__projects__';
 
@@ -295,7 +293,7 @@ export function projectManifest() {
       mapping: L.docs.blockDoc ? L.docs.blockDoc.header.mapping : undefined,
     })),
     camera: captureCamera(),
-    section: H.captureSection(),
+    section: captureSection(),
     // bookmarks + scenes now live as files in bookmarks/ and scenes/ (not in
     // project.json) — see flushViewsScenes / loadViewsScenes
     tree: (() => {                                         // groups (§4.1) — layers by manifest index
@@ -882,7 +880,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     if (mf.tree) treeFromManifest(mf.tree, idAt);
     ensureDhSetGroups();                                   // pre-set-group projects: solo dh layers get their element group
     applyCamera(mf.camera);
-    H.applySection(mf.section);
+    applySection(mf.section);
     // drapes come after ALL layers land — the drape grid may load later than its surface
     for (const L of S.layers) {
       if (!L._pendingDrape) continue;

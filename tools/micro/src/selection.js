@@ -18,8 +18,9 @@ import { _isMobile } from './windows.js';
 import { isMiss, layerOfId, layerSection } from '../../../ext/condenser/src/main.js';
 import { layerShown } from './layers.js';
 import { PAINT, addPaintValue, createPaintCol, paintArmLabel, paintByPolygon, paintVolume } from './paint.js';
+import { currentSection } from './section.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSelectionHooks): _viewMode, currentSection
+// the app's side, passed in once (setSelectionHooks): _viewMode
 let H = {};
 export function setSelectionHooks(h) { H = h; }
 
@@ -148,7 +149,7 @@ export function selectByPolygon(poly, mode, isRect, only = null) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [x, y] of poly) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   const region = S.renderer.pickRegion({ x: Math.max(0, x0), y: Math.max(0, y0), w: x1 - x0, h: y1 - y0 }, S.cam,
-    { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: H.currentSection() });
+    { pointPx: +$('#ptPx').value, blocksAsPoints: H._viewMode === 'points', section: currentSection() });
   if (!region) { if (mode === 'replace') clearForLasso(only); $('#meta').textContent = 'selection: nothing there'; return; }
   const { data, w, h, dpr } = region;
   const rx = Math.max(0, x0), ry = Math.max(0, y0);
@@ -205,7 +206,7 @@ function throughDrawnTest(L) {
   let codes = null, hidden = null;                         // codes null → the chunk's own category codes
   if (ruleModeOf(L)) { if (L.ruleHidden && L.ruleHidden.size && L._ruleCodes) { codes = L._ruleCodes; hidden = L.ruleHidden; } }
   else if (!paintActiveCol(L) && L.catHidden && L.catHidden.size) hidden = L.catHidden;
-  const cs = H.currentSection();
+  const cs = currentSection();
   const sec = cs ? layerSection(cs, S.renderer.layerSectioned(L.id)) : null;
   if (!mask && !hidden && !sec) return null;
   const o = S.frame ? S.frame.origin : [0, 0, 0];

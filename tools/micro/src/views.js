@@ -16,10 +16,8 @@ import { setLayerColorSel } from './color.js';
 import { setActiveLayer } from './layers.js';
 import { applyCamera, captureCamera } from './camera.js';
 import { applyLayerSelection } from './selection.js';
+import { applySection, captureSection } from './section.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setViewsHooks): applySection, captureSection
-let H = {};
-export function setViewsHooks(h) { H = h; }
 
 // ── bookmarks & scenes ──
 // A BOOKMARK is a viewpoint (camera + section) — the quick nav aid. A SCENE is
@@ -42,14 +40,14 @@ export async function saveViewAs() {
   if (!name) return;
   const existing = S.views.find((v) => v.name === name);
   const v = existing || { name, file: 'bookmarks/' + bmSlug(name) + '.json' };
-  v.camera = captureCamera(); v.section = H.captureSection();
+  v.camera = captureCamera(); v.section = captureSection();
   if (!existing) { S.views.push(v); S.views.sort((a, b) => a.name.localeCompare(b.name)); }
   await writeViewFile(v, 'bookmark', { app: 'micro', kind: 'bookmark', name: v.name, camera: v.camera, section: v.section });
   markProjectDirty();
   $('#meta').textContent = `${existing ? 'updated' : 'saved'} bookmark “${name}”${S.project ? ` → ${v.file}` : ' (in memory — save the project to keep it)'}`;
 }
 
-export function applyView(v) { applyCamera(v.camera); H.applySection(v.section); $('#meta').textContent = `bookmark “${v.name}”`; }
+export function applyView(v) { applyCamera(v.camera); applySection(v.section); $('#meta').textContent = `bookmark “${v.name}”`; }
 
 // view SLOTS — the g-leader's targets. g then a digit recalls; g then
 // Shift+digit saves the current view into "slot N". Name-addressed on
@@ -61,7 +59,7 @@ export function slotView(n) { return S.views.find((v) => v.name === `slot ${n}`)
 export async function saveViewSlot(n) {
   const existing = slotView(n);
   const v = existing || { name: `slot ${n}`, file: 'bookmarks/' + bmSlug(`slot ${n}`) + '.json' };
-  v.camera = captureCamera(); v.section = H.captureSection();
+  v.camera = captureCamera(); v.section = captureSection();
   if (!existing) { S.views.push(v); S.views.sort((a, b) => a.name.localeCompare(b.name)); }
   await writeViewFile(v, 'bookmark', { app: 'micro', kind: 'bookmark', name: v.name, camera: v.camera, section: v.section });
   markProjectDirty();
@@ -95,7 +93,7 @@ export async function removeBookmark(v) {
 // scenes (full working state)
 export function captureScene(name, withSel) {
   return {
-    name, camera: captureCamera(), section: H.captureSection(),
+    name, camera: captureCamera(), section: captureSection(),
     layers: S.layers.map((L) => {
       const o = { name: L.name, visible: L.visible !== false, colorSel: L.colorSel || '', filter: L.filterExpr || '', ...captureLayerSurface(L) };
       if (withSel && L._selMask && L._selCount) o.sel = rleEncode(L._selMask);   // opt-in; selection can be large (RLE'd)
@@ -105,7 +103,7 @@ export function captureScene(name, withSel) {
 }
 
 export async function applyScene(s) {
-  applyCamera(s.camera); H.applySection(s.section);
+  applyCamera(s.camera); applySection(s.section);
   const prevActive = S.activeId;
   for (const sl of (s.layers || [])) {
     let L = S.layers.find((x) => x.name === sl.name) || S.layers.find((x) => (x.label || x.name) === sl.name);

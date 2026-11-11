@@ -21,10 +21,8 @@ import { layerTableHeader } from './records.js';
 import { deriveVocab as nlDeriveVocab, normText as nlNormText, tokenize as nlTokenize, trainSession as nlTrainSession } from '../../../ext/dispatch/index.js';
 import { layerHasColumn } from './calc.js';
 import { setActiveLayer } from './layers.js';
+import { secRange } from './section.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setNlHooks): secRange
-let H = {};
-export function setNlHooks(h) { H = h; }
 
 const nlMsg = (m) => { $('#meta').textContent = m; };
 export let _nlOn = localStorage.getItem('micro.nl') === '1';
@@ -109,7 +107,7 @@ function nlClausesToExpr(clauses) {
 function nlSectionAt(axis, position) {
   const mode = axis === 'Z' ? 'plan' : axis === 'X' ? 'ns' : 'ew';       // X → an east-facing (N–S) plane
   const m = $('#secMode'); m.value = mode; m.dispatchEvent(new Event('input'));
-  const [lo, hi] = H.secRange();
+  const [lo, hi] = secRange();
   $('#secPos').value = hi > lo ? Math.max(0, Math.min(1, (position - lo) / (hi - lo))) : 0.5;
   $('#secPos').dispatchEvent(new Event('input'));
   requestRender();

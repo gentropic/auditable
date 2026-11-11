@@ -5,6 +5,9 @@
 import { S, requestRender } from './state.js';
 const $ = (s) => document.querySelector(s);
 
+// how close to straight down / up the orbit may tilt (exactly ±90° loses the azimuth)
+export const PHI_MAX = Math.PI / 2 - 0.02;
+
 // the view as plain data: where it looks (world), from how far and which way
 export function captureCamera() {
   const st = S.cam.state, o = S.frame ? S.frame.origin : [0, 0, 0];

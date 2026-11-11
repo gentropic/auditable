@@ -8,8 +8,9 @@ import { floatWin, raiseWindow } from './windows.js';
 import { requestRender } from './state.js';
 import { _nlOn, nlEnsureTrained, nlSetEnabled } from './nl.js';
 import { _selStick, setSelStick } from './selection.js';
+import { _secFollow } from './section.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSettingsHooks): _blockEdges, _secFollow, setBlockEdges
+// the app's side, passed in once (setSettingsHooks): _blockEdges, setBlockEdges
 let H = {};
 export function setSettingsHooks(h) { H = h; }
 
@@ -27,7 +28,7 @@ export const PREFS = [
   { sec: 'display', label: 'render budget', desc: 'elements per frame — lower is snappier while orbiting; the picture converges when the camera rests', kind: 'choice', opts: () => [...$('#budget').options].map((o) => [o.value, o.textContent]), get: () => $('#budget').value, set: (v) => { $('#budget').value = v; $('#budget').dispatchEvent(new Event('change')); requestRender(); } },
   { sec: 'interaction', label: 'selection tool stays armed', desc: 'after a rectangle / lasso: put the tool down, keep it while adding (shift/alt held on release), or keep it until Esc — middle-drag orbits either way', kind: 'choice', opts: [['oneshot', 'never (one shot)'], ['smart', 'with shift/alt held'], ['sticky', 'until Esc']], get: () => _selStick, set: (v) => setSelStick(v) },
   { sec: 'interaction', label: 'properties auto-apply', desc: 'style edits land as you make them; off = an explicit apply button', kind: 'toggle', get: () => _autoApply, set: (v) => { $('#ppAuto').checked = v; $('#ppAuto').dispatchEvent(new Event('change')); } },
-  { sec: 'interaction', label: 'camera follows the section scrub', desc: 'scrubbing a section slab carries the camera along with it', kind: 'toggle', get: () => H._secFollow, set: (v) => { $('#secFollow').checked = v; $('#secFollow').dispatchEvent(new Event('input')); } },
+  { sec: 'interaction', label: 'camera follows the section scrub', desc: 'scrubbing a section slab carries the camera along with it', kind: 'toggle', get: () => _secFollow, set: (v) => { $('#secFollow').checked = v; $('#secFollow').dispatchEvent(new Event('input')); } },
   { sec: 'compute', label: 'by-solid compute', desc: 'the flag / select-by-solid engine — CPU is slower but cannot trip the GPU driver watchdog on a huge solid', kind: 'choice', opts: [['gpu', 'GPU (fast)'], ['cpu', 'CPU (watchdog-safe)']], get: () => (_windingGpu ? 'gpu' : 'cpu'), set: (v) => setWindingGpu(v === 'gpu') },
   { sec: 'compute', label: 'derived-column residency', desc: 'how much memory derived columns may keep resident before being re-derived on demand', kind: 'choice', opts: [['auto', 'auto (scales with RAM)'], ['off', 'off (re-derive on demand)'], ['256', '256 MB'], ['512', '512 MB'], ['1024', '1 GB']], get: () => { try { return localStorage.getItem('micro.pinBudget') || 'auto'; } catch { return 'auto'; } }, set: (v) => setPinBudget(v) },
   { sec: 'data', label: 'store meshes as .wfr on save', desc: 'pack mesh, strings and points layers into meshes/*.wfr when the project saves — bricked, compact, quick to reopen, attributes kept; source files are kept', kind: 'choice', opts: [['on', 'always'], ['off', 'never'], ['ask', 'ask on next save']], get: () => (_autoPack || 'ask'), set: (v) => setAutoPack(v === 'ask' ? null : v) },

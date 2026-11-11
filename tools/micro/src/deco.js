@@ -11,8 +11,9 @@ import { floatWin, focusWindow } from './windows.js';
 import { saveRecipe } from './recipes.js';
 import { deliverBlob } from './hostio.js';
 import { applyCamera, captureCamera } from './camera.js';
+import { applySection, captureSection } from './section.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setDecoHooks): applySection, captureSection, renderFigureCanvas
+// the app's side, passed in once (setDecoHooks): renderFigureCanvas
 let HK = {};
 export function setDecoHooks(h) { HK = h; }
 
@@ -298,7 +299,7 @@ export function applyCutModes(modes) {
 // a figure recipe captures the whole picture: camera + decorations + background
 // + export scale + the SECTION (position, thickness, orientation) + per-layer
 // cut modes — so "the monthly plan/section figure" reproduces exactly.
-export function captureFigureCfg() { return { camera: captureCamera(), bg: _bgColor, deco: { ..._deco }, figScale: _figScale, section: HK.captureSection(), cutModes: captureCutModes() }; }
+export function captureFigureCfg() { return { camera: captureCamera(), bg: _bgColor, deco: { ..._deco }, figScale: _figScale, section: captureSection(), cutModes: captureCutModes() }; }
 
 export async function runFigureRecipe(params) {
   const prev = captureFigureCfg();
@@ -306,7 +307,7 @@ export async function runFigureRecipe(params) {
     if (params.camera) applyCamera(params.camera);
     if (params.bg) setBg(params.bg);
     if (params.deco) { Object.assign(_deco, params.deco); saveDeco(); }
-    if (params.section) HK.applySection(params.section);       // the section IS the figure for a section plot
+    if (params.section) applySection(params.section);       // the section IS the figure for a section plot
     if (params.cutModes) applyCutModes(params.cutModes);
     drawDecorations(); requestRender();
     $('#meta').textContent = 'figure recipe: rendering…';
@@ -315,7 +316,7 @@ export async function runFigureRecipe(params) {
   } finally {
     applyCamera(prev.camera); setBg(prev.bg);
     Object.assign(_deco, prev.deco); saveDeco();
-    HK.applySection(prev.section); applyCutModes(prev.cutModes);   // put the section + cut modes back
+    applySection(prev.section); applyCutModes(prev.cutModes);   // put the section + cut modes back
     drawDecorations(); requestRender();
     if (_decoWin && _decoWin._render) _decoWin._render();
   }
