@@ -41,7 +41,8 @@ import { refilterLayer } from './filter.js';
 import { closeAllLayers, recomputeUnion } from './layers.js';
 const $ = (s) => document.querySelector(s);
 import { applyCamera, captureCamera } from './camera.js';
-// the app's side, passed in once (setProjectHooks): applyLayerSelection, applySection, captureSection
+import { applyLayerSelection } from './selection.js';
+// the app's side, passed in once (setProjectHooks): applySection, captureSection
 let H = {};
 export function setProjectHooks(h) { H = h; }
 
@@ -652,7 +653,7 @@ export async function restoreStyleExtras(L, ls) {
       syncRuleMode(L);
     }
   }
-  if (ls.sel) { L._selMask = rleDecode(ls.sel, attrRowCountOf(L)); H.applyLayerSelection(L); }
+  if (ls.sel) { L._selMask = rleDecode(ls.sel, attrRowCountOf(L)); applyLayerSelection(L); }
   if (ls.traces && L.kind === 'mesh') {                   // after the paint: a trace's set resolves by name in SET
     const col = setColOf(L);
     L.traces = ls.traces.map((t) => ({ set: col ? Math.max(0, col.dict.indexOf(t.set)) : 0, pts: t.pts, path: t.path }));

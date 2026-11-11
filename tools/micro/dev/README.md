@@ -138,8 +138,11 @@ that a module exports (`S` in `src/state.js` unless told otherwise).
 
 ```
 node tools/micro/dev/tostate.mjs frame,dirty --dry
-node tools/micro/dev/tostate.mjs secMode,secPos --obj=SEC --from=sections
+node tools/micro/dev/tostate.mjs _paintArm:arm,_paintLastKind:lastKind --obj=PAINT --from=paint
 ```
+
+`name:property` renames on the way in (`_paintArm` becomes `PAINT.arm`); a bare
+name keeps its own.
 
 Add the property to the state object first, with its comment. Then the tool
 rewrites every reference that resolves to the variable into `<obj>.<name>`,

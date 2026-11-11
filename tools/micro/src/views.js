@@ -15,8 +15,9 @@ import { microConfirm, microPrompt } from './prompts.js';
 import { setLayerColorSel } from './color.js';
 import { setActiveLayer } from './layers.js';
 import { applyCamera, captureCamera } from './camera.js';
+import { applyLayerSelection } from './selection.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setViewsHooks): applyLayerSelection, applySection, captureSection
+// the app's side, passed in once (setViewsHooks): applySection, captureSection
 let H = {};
 export function setViewsHooks(h) { H = h; }
 
@@ -115,7 +116,7 @@ export async function applyScene(s) {
     if (sl.filter != null && (L.filterExpr || '') !== sl.filter) {   // applyBlockFilter sweeps the ACTIVE layer → focus it first
       setActiveLayer(L.id); $('#filter').value = sl.filter; syncFilterClear(); await applyBlockFilter(sl.filter);
     }
-    if (sl.sel) { L._selMask = rleDecode(sl.sel, attrRowCountOf(L)); H.applyLayerSelection(L); }   // computes _selCount + paints
+    if (sl.sel) { L._selMask = rleDecode(sl.sel, attrRowCountOf(L)); applyLayerSelection(L); }   // computes _selCount + paints
   }
   if (layerById(prevActive)) setActiveLayer(prevActive);
   applyTreeVisibility(); renderLayers(); requestRender();

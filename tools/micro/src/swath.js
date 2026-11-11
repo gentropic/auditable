@@ -23,8 +23,9 @@ import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
 import { rendererDocBbox } from './layers.js';
+import { applyLayerSelection, clearSelection, selectionStatus } from './selection.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setSwathHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, paintColByName, selectionStatus
+// the app's side, passed in once (setSwathHooks): addPaintValue, createPaintCol, paintColByName
 let H = {};
 export function setSwathHooks(h) { H = h; }
 
@@ -294,7 +295,7 @@ export function openSwath(L, ropts) {
     const dir = curDir();
     const Ls = [...new Set(st.series.map((s) => s.layerId))].map(layerById)
       .filter((Lx) => { const h = layerTableHeader(Lx); return Lx && h && h.mapping && attrRowCountOf(Lx); });
-    if (mode === 'replace') H.clearSelection({ silent: true });
+    if (mode === 'replace') clearSelection({ silent: true });
     for (const Lx of Ls) {
       const h = layerTableHeader(Lx), m = h.mapping, n = attrRowCountOf(Lx);
       if (!Lx._selMask || Lx._selMask.length !== n) Lx._selMask = new Uint8Array(n);
@@ -308,9 +309,9 @@ export function openSwath(L, ropts) {
         }
         if (((++seen) & 0xffff) === 0) await new Promise((r2) => setTimeout(r2));
       }
-      H.applyLayerSelection(Lx);
+      applyLayerSelection(Lx);
     }
-    H.selectionStatus(); markProjectDirty(); requestRender();
+    selectionStatus(); markProjectDirty(); requestRender();
   };
   win.el._onResized = () => { if (win._spec) plotChart(cv, win._spec); };
   let staleEl, progEl, runBtn;

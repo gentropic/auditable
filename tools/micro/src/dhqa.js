@@ -12,9 +12,7 @@ import { mkLineage } from './lineage.js';
 import { deliverBlob } from './hostio.js';
 import { S, layerById, requestRender } from './state.js';
 import { groupLayerIds } from './tree.js';
-// the app's side, passed in once (setDhQaHooks): applyLayerSelection
-let H = {};
-export function setDhQaHooks(h) { H = h; }
+import { applyLayerSelection } from './selection.js';
 // the set's drillhole layers (its hole traces are a derived layer, not a member)
 const membersOf = (nd) => groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc && !L.trace);
 const setNameOf = (nd) => nd.name || 'drillholes';
@@ -37,7 +35,7 @@ const selectHoles = (members, bhids) => {
     const dh = L.docs.dhDoc, im = dh.header.intervalMapping, raw = dh.rawRecord || dh.fetchRecord;
     const mask = new Uint8Array(dh.header.count);
     for (let i = 0; i < mask.length; i++) { const f = raw(i); if (f && bhids.has(String(f[im.bhid] ?? '').trim())) mask[i] = 1; }
-    L._selMask = mask; H.applyLayerSelection(L);
+    L._selMask = mask; applyLayerSelection(L);
   }
   requestRender();
 };

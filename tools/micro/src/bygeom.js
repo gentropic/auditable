@@ -22,8 +22,9 @@ import { markProjectDirty } from './project.js';
 import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
 import { layerShown } from './layers.js';
+import { applyLayerSelection, clearSelection, nextSelEpoch, selEpoch, selectionStatus } from './selection.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setBygeomHooks): addPaintValue, applyLayerSelection, clearSelection, createPaintCol, nextSelEpoch, selEpoch, selectionStatus
+// the app's side, passed in once (setBygeomHooks): addPaintValue, createPaintCol
 let H = {};
 export function setBygeomHooks(h) { H = h; }
 
@@ -325,7 +326,7 @@ export function sbCancelActive() {
   if (run.reject) run.reject(new Error('cancelled'));
   if (run.W && run.W.hasWorker) { run.W.terminate(); run.meshL._windingEngine = null; run.meshL._peelEngine = null; run.meshL._windingMeshes = null; run.meshL._peelMeshes = null; }
   _sbActive = null;
-  H.nextSelEpoch(); _ratioEpoch++;
+  nextSelEpoch(); _ratioEpoch++;
 }
 
 // which query variant answers a mode: solids by containment, surfaces by
@@ -504,8 +505,8 @@ export function blockHalfExtents(L) {
 }
 
 export async function selectByGridSurface(gridL, { mode = 'below', meshB = null, targets = null, combine = 'replace', onProgress = null } = {}) {
-  const epoch = H.nextSelEpoch();
-  if (combine === 'replace') H.clearSelection({ silent: true });
+  const epoch = nextSelEpoch();
+  if (combine === 'replace') clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
   const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L) && !L.docs.gridDoc);   // what's on screen (a hidden group hides its layers)
   const bbox4 = targetsXYBbox(Ls);
@@ -525,20 +526,20 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
     $('#meta').textContent = `select by surface: sampling ${L.label || L.name}…`;
     try {
       for await (const ch of layerPositions(L)) {
-        if (epoch !== H.selEpoch()) return;
+        if (epoch !== selEpoch()) return;
         for (let i = 0; i < ch.count; i++) {
           if (cls(ch.x[i], ch.y[i], ch.z[i]).hit) { const r = ch.recs ? ch.recs[i] : ch.base + i; if (r < n) m[r] = v; }
-          if ((i & 0x3FFF) === 0x3FFF) { if (onProgress) onProgress((li + (done + i) / n) / Ls.length, `sampling · ${L.label || L.name}`); await new Promise((r2) => setTimeout(r2)); if (epoch !== H.selEpoch()) return; }
+          if ((i & 0x3FFF) === 0x3FFF) { if (onProgress) onProgress((li + (done + i) / n) / Ls.length, `sampling · ${L.label || L.name}`); await new Promise((r2) => setTimeout(r2)); if (epoch !== selEpoch()) return; }
         }
         done += ch.count;
         if (onProgress) onProgress((li + Math.min(1, done / n)) / Ls.length, `sampling · ${L.label || L.name}`);
         await new Promise((r2) => setTimeout(r2));
       }
     } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `select by surface: ${L.name} — ${e.message}`; return; }
-    H.applyLayerSelection(L);
+    applyLayerSelection(L);
   }
-  if (epoch !== H.selEpoch()) return;
-  H.selectionStatus(); markProjectDirty(); requestRender();
+  if (epoch !== selEpoch()) return;
+  selectionStatus(); markProjectDirty(); requestRender();
 }
 
 export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode = 'below', meshB = null, onProgress = null } = {}) {
@@ -624,8 +625,8 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
   const between = mode === 'between';
   const variant = between ? 'below' : (SB_VARIANT[mode] || 'solid');
   const want = mode !== 'outside';
-  const epoch = H.nextSelEpoch();
-  if (combine === 'replace') H.clearSelection({ silent: true });
+  const epoch = nextSelEpoch();
+  if (combine === 'replace') clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
   const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L));
   let SA = null, SB = null;                                 // the sparse-path BVHs, built lazily
@@ -644,7 +645,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
       if (dense && (!between || denseB)) {
         let done = 0;
         for await (const ch of layerPositions(L, want || between ? dense.bbox : null)) {
-          if (epoch !== H.selEpoch()) return;
+          if (epoch !== selEpoch()) return;
           for (let i = 0; i < ch.count; i++) {
             const hitA = dense.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1;
             const hit = between ? (hitA && denseB.lookup(ch.x[i], ch.y[i], ch.z[i]) >= 1) : (hitA === want);
@@ -665,7 +666,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
         const inB = between ? solidHit(SB) : null;
         let done = 0;
         for await (const ch of layerPositions(L, want || between ? SA.bbox : null)) {
-          if (epoch !== H.selEpoch()) return;
+          if (epoch !== selEpoch()) return;
           for (let i = 0; i < ch.count; i++) {
             const hitA = inA(ch.x[i], ch.y[i], ch.z[i]);
             const hit = between ? (hitA && inB(ch.x[i], ch.y[i], ch.z[i])) : (hitA === want);
@@ -676,7 +677,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
             if ((i & 0x3FFF) === 0x3FFF) {                 // slice the winding loop — the UI stays live
               prog(Math.min(1, (done + i) / n), 'winding');
               await new Promise((r2) => setTimeout(r2));
-              if (epoch !== H.selEpoch()) return;
+              if (epoch !== selEpoch()) return;
             }
           }
           done += ch.count;
@@ -685,10 +686,10 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
         }
       }
     } catch (e) { if (e.message !== 'cancelled') $('#meta').textContent = `select by solid: ${L.name} — ${e.message}`; return; }
-    H.applyLayerSelection(L);
+    applyLayerSelection(L);
   }
-  if (epoch !== H.selEpoch()) return;
-  H.selectionStatus();
+  if (epoch !== selEpoch()) return;
+  selectionStatus();
   markProjectDirty(); requestRender();
 }
 

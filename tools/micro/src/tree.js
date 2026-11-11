@@ -17,8 +17,9 @@ import { openMeshExportDialog } from './meshexport.js';
 import { openBatchRename } from './rename.js';
 import { setActiveLayer } from './layers.js';
 import { applyLayerOpacity, fitLayer, layerMenu } from './layermenu.js';
+import { syncSelBar } from './selection.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setTreeHooks): syncSelBar, syncUndoBtn
+// the app's side, passed in once (setTreeHooks): syncUndoBtn
 let H = {};
 export function setTreeHooks(h) { H = h; }
 
@@ -693,7 +694,7 @@ export function renderLayers() {
   };
   walk(S.layerTree, 0, false);
   H.syncUndoBtn();                                           // the active layer decides whose paint strokes ↶ undoes
-  H.syncSelBar();
+  syncSelBar();
   if (S.layers.length >= 1 && !_lpUserHidden && !$('#layersPanel').classList.contains('show') && !_otherSheetOpen()) toggleLayersPanel(true);   // the panel is the layer's front door — right-click is the menu
   if (S.layers.length === 0) toggleLayersPanel(false);
   if (_propOpen && _propFor !== S.activeId) renderProps();  // re-target, never rebuild under a typing cursor

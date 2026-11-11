@@ -1,7 +1,8 @@
 // TOSTATE: a top-level variable of tools/micro/index.html becomes a property of a
 // state object that a module exports (S in src/state.js by default).
 //
-//   node tools/micro/dev/tostate.mjs <name>[,<name>…] [--obj=S] [--from=state] [--dry]
+//   node tools/micro/dev/tostate.mjs <name>[:<property>][,…] [--obj=S] [--from=state] [--dry]
+//   (name:property renames on the way in: _selArm:arm → SEL.arm)
 //
 // For each name, which must be a top-level let / const / var of the app script:
 //   - every reference that resolves to it becomes <obj>.<name>. References are
@@ -23,9 +24,11 @@ const DIR = fileURLToPath(new URL('..', import.meta.url));       // tools/micro/
 const argv = process.argv.slice(2);
 const val = (k, d) => { const a = argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : d; };
 const DRY = argv.includes('--dry'), OBJ = val('obj', 'S'), FROM = val('from', 'state');
-const names = (argv.find((a) => !a.startsWith('--')) || '').split(',').map((x) => x.trim()).filter(Boolean);
+const specs = (argv.find((a) => !a.startsWith('--')) || '').split(',').map((x) => x.trim()).filter(Boolean);
+const PROP = new Map(specs.map((x) => { const [v, k] = x.split(':'); return [v, k || v]; }));   // variable → property (old:new renames)
+const names = [...PROP.keys()];
 const die = (msg) => { console.error(msg); process.exit(1); };
-if (!names.length) die('usage: tostate.mjs <name>[,<name>…] [--obj=S] [--from=state] [--dry]');
+if (!names.length) die('usage: tostate.mjs <name>[:<property>][,…] [--obj=S] [--from=state] [--dry]');
 
 const readText = (p) => { const raw = readFileSync(p, 'utf8'), crlf = raw.includes('\r\n'); return { text: raw.split('\r\n').join('\n'), crlf }; };
 const squash = (s) => s.replace(/\s+/g, ' ').trim();
@@ -48,7 +51,7 @@ const held = new Map();                                    // property → the s
   }
   if (!found) die(`src/${FROM}.js does not export an object named ${OBJ}`);
 }
-for (const n of names) if (!held.has(n)) die(`src/${FROM}.js: ${OBJ} has no property '${n}' — add it there first (with its comment), then rerun`);
+for (const n of names) if (!held.has(PROP.get(n))) die(`src/${FROM}.js: ${OBJ} has no property '${PROP.get(n)}' — add it there first (with its comment), then rerun`);
 
 // ── the app script ──────────────────────────────────────────────────────────
 const htmlPath = DIR + 'index.html';
@@ -79,7 +82,7 @@ if (objTop && !(objTop.kind === 'import' && objTop.from === modPath && objTop.im
 const want = new Set(names);
 const refs = moduleRefs(ast.body).filter((r) => want.has(r.name));
 for (const r of refs) if (r.scopes.some((s) => s.has(OBJ))) die(`line ${lineOf(r.start)}: ${r.name} is used where ${OBJ} is bound to something else`);
-const edits = refs.map((r) => ({ start: r.start, end: r.end, text: r.shorthand ? `${r.name}: ${OBJ}.${r.name}` : `${OBJ}.${r.name}` }));
+const edits = refs.map((r) => ({ start: r.start, end: r.end, text: r.shorthand ? `${r.name}: ${OBJ}.${PROP.get(r.name)}` : `${OBJ}.${PROP.get(r.name)}` }));
 
 // ── declarations ────────────────────────────────────────────────────────────
 const report = [];
@@ -87,12 +90,12 @@ const count = (n) => refs.filter((r) => r.name === n).length;
 for (const st of new Set(names.map((n) => top.get(n).stmt))) {
   const going = st.declarations.filter((d) => d.id.type === 'Identifier' && want.has(d.id.name));
   const kept = st.declarations.filter((d) => !going.includes(d));
-  const differs = going.filter((d) => squash(d.init ? app.slice(d.init.start, d.init.end) : 'undefined') !== squash(held.get(d.id.name)));
+  const differs = going.filter((d) => squash(d.init ? app.slice(d.init.start, d.init.end) : 'undefined') !== squash(held.get(PROP.get(d.id.name))));
   if (differs.length && st.declarations.length > 1) die(`line ${lineOf(st.start)}: ${differs.map((d) => d.id.name).join(', ')} starts with a value other than the one in src/${FROM}.js, and shares its statement — give it a statement of its own first, or make the two values agree`);
-  for (const d of going) report.push(`${d.id.name}: ${count(d.id.name)} references → ${OBJ}.${d.id.name}; declaration (line ${lineOf(st.start)}) ${differs.includes(d) ? `becomes ${OBJ}.${d.id.name} = …` : 'removed'}`);
+  for (const d of going) report.push(`${d.id.name}: ${count(d.id.name)} references → ${OBJ}.${PROP.get(d.id.name)}; declaration (line ${lineOf(st.start)}) ${differs.includes(d) ? `becomes ${OBJ}.${PROP.get(d.id.name)} = …` : 'removed'}`);
   if (differs.length) {                                    // the one declarator: an assignment in its place (the init's own references are edited separately)
     const d = differs[0];
-    edits.push({ start: st.start, end: d.init.start, text: `${OBJ}.${d.id.name} = ` });
+    edits.push({ start: st.start, end: d.init.start, text: `${OBJ}.${PROP.get(d.id.name)} = ` });
   } else if (kept.length) {                                // cut the going declarators out of the list
     for (const d of going) {
       const i = st.declarations.indexOf(d), next = st.declarations.slice(i + 1).find((x) => kept.includes(x));

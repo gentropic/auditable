@@ -19,10 +19,8 @@ import { deliverBlob } from './hostio.js';
 import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
 import { setActiveLayer } from './layers.js';
+import { applyLayerSelection } from './selection.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setExportHooks): applyLayerSelection
-let H = {};
-export function setExportHooks(h) { H = h; }
 
 // ── export tools (§16): data leaves micro the way it came in — as ROWS.
 // An export IS a filter sweep with a writer at the end: renderer record
@@ -273,7 +271,7 @@ async function convertInner(L, cvOpts) {
         const nf = new Float32Array(n); for (let i = 0; i < n; i++) nf[i] = col.fvalues[order[i]]; col.fvalues = nf;
       }
     }
-    if (L._selMask && L._selMask.length === n) { const nm = new Uint8Array(n); for (let i = 0; i < n; i++) nm[i] = L._selMask[order[i]]; L._selMask = nm; H.applyLayerSelection(L); }
+    if (L._selMask && L._selMask.length === n) { const nm = new Uint8Array(n); for (let i = 0; i < n; i++) nm[i] = L._selMask[order[i]]; L._selMask = nm; applyLayerSelection(L); }
     if (L._filterMask) L._filterMask = null;                // rebuilt by the re-sweep below; stale rows would be misaligned
   }
   L._colStats = null;                                      // aggregate — recomputed on demand

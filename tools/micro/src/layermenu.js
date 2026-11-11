@@ -32,8 +32,9 @@ import { openStructure } from './structure-ui.js';
 import { fmtSize, layerBytes } from './paths.js';
 import { CONTEXT_TRI_CAP, hexToRgb01, openMeshDoc } from './open.js';
 import { recolorSurface } from './surfaces.js';
+import { filterToSelection, selectionToColumn } from './selection.js';
 const $ = (s) => document.querySelector(s);
-// the app's side, passed in once (setLayermenuHooks): _blockEdges, filterToSelection, selectionToColumn
+// the app's side, passed in once (setLayermenuHooks): _blockEdges
 let H = {};
 export function setLayermenuHooks(h) { H = h; }
 
@@ -77,8 +78,8 @@ export function layerMenu(L, x, y) {
     ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),
     ...(layerTableHeader(L) && numericColsOf(L).length ? [{ label: 'Stats…', action: () => openStats(L) }, { label: 'Scatter / Q-Q…', action: () => openXyPlot(L) }] : []),
     ...(gridAxesOf(L) ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
-    ...(L._filterMask ? [{ label: 'Filter → selection', action: () => H.filterToSelection(L) }] : []),
-    ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => H.selectionToColumn(L) }] : []),
+    ...(L._filterMask ? [{ label: 'Filter → selection', action: () => filterToSelection(L) }] : []),
+    ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => selectionToColumn(L) }] : []),
     { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },
     ...(L.lineage ? [{ label: 'Lineage…', action: () => openLineageWindow(L) }] : []),
     ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
