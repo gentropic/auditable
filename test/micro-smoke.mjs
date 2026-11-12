@@ -299,7 +299,9 @@ const fmask = await p.evaluate(() => { let h = 0; for (const m of window._micro.
 chk(`CSV filter LITO+FE → ${fmask} hits`, fmask === 160);
 // the CSV pin path: the scan teed its columns → the re-filter runs pinned, byte-exact
 await p.evaluate(() => { const i = document.querySelector('#filter'); i.value = 'LITO = "HEMATITE" and FE > 45 '; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); });
-await p.waitForTimeout(400);
+// poll, not a fixed sleep: with 8 suites at once a 400 ms wait lost the race
+await p.waitForFunction(() => window.__pinUsed === true, null, { timeout: 15000 }).catch(() => {});
+await p.waitForTimeout(100);
 const fpin = await p.evaluate(() => { let h = 0; for (const m of window._micro.layers()[0]._filterMask) if (m) h++; return { h, pinned: window.__pinUsed === true }; });
 chk(`CSV pin refine: re-filter from pinned columns, byte-exact (${fpin.h} hits, pinned ${fpin.pinned})`, fpin.pinned && fpin.h === 160);
 // filter → selection: the matches become a real 3D selection (reproducible sel scope)
