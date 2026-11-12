@@ -19,7 +19,7 @@ import { readOMF, openOMF, blockModelCentroids } from '../../../ext/omf1/index.j
 import { layerById } from './state.js';
 import { mkLineage, openLineage } from './lineage.js';
 import { addLayer } from './ingest.js';
-import { renderLayers } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 import { closeAllLayers } from './layers.js';
 
 const KIND = { VolumeElement: 'block model', PointSetElement: 'points', SurfaceElement: 'surface', LineSetElement: 'lines' };

@@ -15,7 +15,8 @@ import { basisAngles, describeQualified, worldMapOf } from '../../../ext/condens
 import { resetJoinForm, renderJoinTab } from './joins.js';
 import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
-import { droppedNote, hexToRgb01 } from './open.js';
+import { droppedNote } from './open-blocks.js';
+import { hexToRgb01 } from './color.js';
 import { reopenDh } from './drillholes.js';
 import { markProjectDirty } from './project.js';
 import { openCalcWindow } from './calc.js';

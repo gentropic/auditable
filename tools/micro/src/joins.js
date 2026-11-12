@@ -15,7 +15,7 @@ import { renderProps, ppNote, mkRow } from './props.js';
 import { applyRamp, setRampCfg } from './ramp.js';
 import { markProjectDirty } from './project.js';
 import { openBlob } from './open.js';
-import { renderLayers } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 import { menuXY } from './menu.js';
 import { setLayerColorSel } from './color.js';
 import { addPaintValue, createPaintCol } from './paint.js';

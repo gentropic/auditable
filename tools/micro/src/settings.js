@@ -3,7 +3,7 @@ import { _bgColor, setBg } from './deco.js';
 import { _autoApply } from './props.js';
 import { _windingGpu, setWindingGpu } from './bygeom.js';
 import { setPinBudget } from './columns.js';
-import { _autoOptimize, _autoPack, setAutoOptimize, setAutoPack } from './project.js';
+import { _autoOptimize, _autoPack, setAutoOptimize, setAutoPack } from './optimize.js';
 import { floatWin, raiseWindow } from './windows.js';
 import { requestRender } from './state.js';
 import { _nlOn, nlEnsureTrained, nlSetEnabled } from './nl.js';

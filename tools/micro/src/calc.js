@@ -21,7 +21,7 @@ import { matColSourceHash, matColCodes, PAINT_BLANK, expandedDeps, pinGet, pinWi
 import { fmtStat } from './analysis-ui.js';
 import { mkLineage } from './lineage.js';
 import { persistElement } from './element-store.js';
-import { renderLayers } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 const $ = (s) => document.querySelector(s);
 
 // ── ƒ CALCULATIONS window — the calc-column authoring workbench (Leapfrog's

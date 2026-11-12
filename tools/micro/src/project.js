@@ -1,15 +1,13 @@
-// micro — the PROJECT lifecycle: a project is a folder (or a pack) of readable files plus
-// project.json. Save writes the manifest and copies sources in; open restores every layer
-// from it; tidy and scan-for-new-data keep the folder in its by-kind layout; backup and
-// restore move a whole project as one file. The app still owns the selection and the
-// section, and hands those in as hooks.
+// micro — the PROJECT lifecycle: a project is a folder of readable files plus project.json.
+// Save writes the manifest and copies sources in; open restores every layer from it;
+// close and new. A project as one file (backup, packs, restore) is src/project-pack.js,
+// what a save optimizes first is src/optimize.js, keeping the folder in its by-kind
+// layout (tidy, scan for new data) is src/project-folder.js, and the remembered
+// projects are src/recents.js.
 import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.js';
-import { applyColTypes, attrRowCountOf, layerBlob, layerHeaderOf, layerTableHeader } from './records.js';
-import { basename, fmtSize, joinPath, kindDir, layerBytes, layerFiles, layerRelpath, relPathFor, removeFileAt, resolveDhFile, resolveFileHandle } from './paths.js';
-import { convertLayerToParquet } from './export.js';
-import { isWfrName } from './wfr-io.js';
-import { baseName as wfrBase, handleSink, packLayers } from './wfr-write.js';
-import { microModelOf, mkLineage } from './lineage.js';
+import { applyColTypes, attrRowCountOf, layerHeaderOf, layerTableHeader } from './records.js';
+import { basename, fmtSize, joinPath, kindDir, layerBytes, layerFiles, layerRelpath, relPathFor, resolveDhFile, resolveFileHandle } from './paths.js';
+import { microModelOf } from './lineage.js';
 import { _qualifyReopen, settleQualifyReopens } from './coltypes.js';
 import { addPaintColorOptions } from './paint.js';
 import { ruleModeOf, runRules, syncRuleMode } from './rules.js';
@@ -28,173 +26,31 @@ import { openSwath } from './swath.js';
 import { openStats } from './stats.js';
 import { openCrosstab } from './xtab.js';
 import { openXyPlot } from './xyplot.js';
-import { BACKUP_EXT, BACKUP_MIME, inventoryProject, openPack, readBackup, restoreBackup, writeBackup, writeTree } from './backup.js';
-import { shell } from '../../../ext/leadacid/index.js';
 import { menuXY } from './menu.js';
 import { microChoose, microConfirm } from './prompts.js';
-import { CONTEXT_TRI_CAP, openBlob, openDrillholeLayer, openWfrFile, reopenBlockChan } from './open.js';
+import { openBlob, openDrillholeLayer } from './open.js';
+import { reopenBlockChan } from './open-blocks.js';
+import { CONTEXT_TRI_CAP } from './open-mesh.js';
 import { applyHoleFilter, ensureDhSetGroups } from './drillholes.js';
-import { applyTreeVisibility, createLayerGroup, renderLayers, treeFromManifest, treeToManifest } from './tree.js';
+import { applyTreeVisibility, treeFromManifest, treeToManifest } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 import { captureLayerSurface, recolorSurface } from './surfaces.js';
-import { dhGroupName, openFilesDialog } from './open-dialog.js';
 import { ensureValueTex, valueTexEligible } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
-import { wfrExportable, writeGridDisplayCache } from './meshexport.js';
-import { deliverBlob, pickDirectory, rehydrateHandle } from './hostio.js';
+import { writeGridDisplayCache } from './meshexport.js';
+import { pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
-import { closeAllLayers, recomputeUnion } from './layers.js';
+import { closeAllLayers } from './layers.js';
 const $ = (s) => document.querySelector(s);
 import { applyCamera, captureCamera } from './camera.js';
 import { applyLayerSelection } from './selection.js';
 import { applySection, captureSection } from './section.js';
-
-export const PROJECTS_KEY = '__projects__';
+import { rememberProject, PROJECTS_KEY } from './recents.js';
+import { savePackAsFolder } from './project-pack.js';
+import { maybeAutoOptimize, maybeAutoPackMeshes } from './optimize.js';
 
 export function markProjectDirty() {
   if (S.project && !S.project.dirty) { S.project.dirty = true; updateProjectTitle(); }
-}
-
-// "Parquet is the project store": on save, non-Parquet block models get
-// reordered to Morton-sorted spatial Parquet (the same in-place op as the
-// layer-menu "Optimize to spatial Parquet"), behind a one-time remembered
-// confirm. Painting stays editable. The manual menu action is the per-layer
-// escape hatch; the remembered choice is resettable from Tools → Settings.
-export let _autoOptimize = (() => { try { return localStorage.getItem('micro.autoOptimize'); } catch { return null; } })();   // 'on' | 'off' | null (unasked)
-
-export function setAutoOptimize(v) { _autoOptimize = v; try { if (v == null) localStorage.removeItem('micro.autoOptimize'); else localStorage.setItem('micro.autoOptimize', v); } catch { /* private mode */ } }   // null = ask again
-
-export let _autoOptimizeSkip = false;
-
-// auto-optimize-on-save leaves models above this for an EXPLICIT conversion
-// (the layer menu): the external sort has no memory ceiling, but rewriting a
-// multi-GB file in the middle of a save is a surprise nobody wants.
-export const OPTIMIZE_MAX_BLOCKS = 8_000_000;
-
-// the EXPLICIT conversion dialog (less magic): per-layer rows naming the path
-// it will take (Morton-sorted vs streamed file-order), a VISIBLE keep-original
-// choice (orphan removal used to be silent), and the auto-on-save preference
-// set where its meaning is in front of you. Resolves { layers, keepOriginal,
-// auto } or null (Not now / ×).
-export function openOptimizeDialog(cands, { fromSave = false } = {}) {
-  return new Promise((resolve) => {
-    const body = $('#opDlgBody'); body.textContent = '';
-    const rows = cands.map((L) => {
-      const h = layerTableHeader(L), big = h.count > OPTIMIZE_MAX_BLOCKS;
-      const row = document.createElement('div'); row.className = 'op-row';
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true;
-      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = L.label || L.name;
-      const d = document.createElement('span'); d.className = 'd'; d.textContent = `${fmtSize(layerBlob(L) ? layerBlob(L).size : 0)} · ${h.count.toLocaleString()} blocks`;
-      const path = document.createElement('span'); path.className = 'path'; path.textContent = '→ Morton-sorted (spatial index)';
-      path.title = `reordered on the Morton curve — the footer becomes a 3D spatial index${big ? '. A big model: sorted externally in bounded memory, which takes a while' : ''}`;
-      row.append(cb, nm, d, path); body.append(row);
-      return { L, cb };
-    });
-    const opts = document.createElement('div'); opts.className = 'op-opts';
-    const mkOpt = (label, checked, title) => { const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox'; c.checked = checked; if (title) l.title = title; l.append(c, document.createTextNode(label)); opts.append(l); return c; };
-    const keepC = mkOpt('keep the original file in the project (otherwise it is removed after the parquet saves)', false);
-    const autoC = fromSave ? mkOpt('do this automatically on every save (models under 8M blocks)', _autoOptimize === 'on') : null;
-    body.append(opts);
-    const note = document.createElement('div'); note.className = 'op-note';
-    note.textContent = 'What happens: the layer swaps to the parquet in place — painting stays editable, filters re-apply, lineage records the conversion. The parquet self-describes (grid, categories, frame) and its footer is the query index.';
-    body.append(note);
-    const done = (res) => { $('#opDlg').classList.remove('show'); $('#opGo').onclick = $('#opNot').onclick = $('#opCancel').onclick = null; resolve(res); };
-    $('#opGo').onclick = () => done({ layers: rows.filter((r) => r.cb.checked).map((r) => r.L), keepOriginal: keepC.checked, auto: autoC ? autoC.checked : null });
-    $('#opNot').onclick = () => done(null);
-    $('#opCancel').onclick = () => done(null);
-    $('#opDlgMsg').textContent = fromSave ? 'asked once — the checkbox below makes it standing' : '';
-    $('#opDlg').classList.add('show');
-  });
-}
-
-export async function maybeAutoOptimize() {
-  let cands = S.layers.filter((L) => L.docs.blockDoc && !L.docs.blockDoc.parquet && layerTableHeader(L) && (layerTableHeader(L).mapping || {}).x != null);
-  const big = cands.filter((L) => layerTableHeader(L).count > OPTIMIZE_MAX_BLOCKS);
-  if (big.length) { $('#meta').textContent = `optimize: ${big.map((L) => L.label || L.name).join(', ')} over ${(OPTIMIZE_MAX_BLOCKS / 1e6)}M blocks — kept as-is (convert explicitly via the layer menu: it sorts in bounded memory, but takes a while)`; cands = cands.filter((L) => !big.includes(L)); }
-  if (!cands.length) return;
-  let choice = _autoOptimize, picked = cands, keepOriginal = false;
-  if (choice == null) {
-    if (_autoOptimizeSkip) return;
-    const res = await openOptimizeDialog(cands, { fromSave: true });
-    if (!res) { _autoOptimizeSkip = true; return; }           // Not now / ×: ask again next session, not never (Settings has never)
-    if (res.auto) setAutoOptimize('on');                    // unticked: converted this once; a NEW model still asks
-    picked = res.layers; keepOriginal = res.keepOriginal;
-    if (!picked.length) return;
-  } else if (choice !== 'on') return;
-  for (const L of picked) { $('#meta').textContent = `optimizing ${L.name}…`; try { await convertLayerToParquet(L, { keepOriginal }); } catch (e) { $('#meta').textContent = `optimize ${L.name}: ${e.message}`; } }
-}
-
-// ── meshes are .wfr in a project — the mesh twin of "Parquet is the project store" ──
-// On save, mesh / strings / pegs layers whose source isn't already a .wfr are packed into
-// meshes/<source>.wfr (one file per SOURCE: a DXF's surface, strings and pegs share one) and
-// re-open in place from their element — same layer id, label, tint, visibility, legend; lineage
-// records the store. Asked once (remembered); Tools → Settings changes it. Source files already in
-// the project are KEPT: packing never deletes data on its own (Tidy is the explicit verb).
-export let _autoPack = (() => { try { return localStorage.getItem('micro.autoPackMeshes'); } catch { return null; } })();   // 'on' | 'off' | null
-
-export function setAutoPack(v) { _autoPack = v; try { if (v == null) localStorage.removeItem('micro.autoPackMeshes'); else localStorage.setItem('micro.autoPackMeshes', v); } catch { /* private mode */ } }   // null = ask again
-
-export let _autoPackSkip = false;
-
-export const packableMesh = (L) => wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob);
-
-export async function packLayersToWfr(Ls) {
-  if (!S.project || !Ls.length) return 0;
-  const dir = S.project.dir, mdir = await dir.getDirectoryHandle('meshes', { create: true });
-  const exists = async (n) => { try { await mdir.getFileHandle(n); return true; } catch { return false; } };
-  const groups = new Map();                                   // one .wfr per source blob
-  for (const L of Ls) { const b = layerFiles(L).map((fd) => fd.blob).find(Boolean); if (!groups.has(b)) groups.set(b, []); groups.get(b).push(L); }
-  let packed = 0;
-  for (const members of groups.values()) {
-    const base = wfrBase(members[0].name);
-    let fname = `${base}.wfr`;
-    for (let i = 2; await exists(fname); i++) fname = `${base}-${i}.wfr`;
-    const fh = await mdir.getFileHandle(fname, { create: true });
-    const sink = await handleSink(fh);
-    let res;
-    try {
-      res = await packLayers({ sink, layers: members, onProgress: (p) => { $('#meta').textContent = p.phase === 'reading' ? `storing ${p.source} as .wfr${p.total ? ` — ${Math.round(100 * p.bytes / p.total)}%` : '…'}` : `storing ${fname} — writing…`; } });
-      await sink.close();
-    } catch (e) {
-      await sink.abort(); await mdir.removeEntry(fname).catch(() => {});
-      $('#meta').textContent = `store as .wfr: ${members.map((L) => L.label || L.name).join(', ')} — ${e.message}`;
-      continue;
-    }
-    const file = await fh.getFile();
-    _fileHandles.set(file, fh);
-    for (const L of members) {
-      const els = res.elementsOf.get(L);
-      if (!els || els.length !== 1) continue;                 // a source that split into several elements stays as it was
-      const keep = { label: L.label, visible: L.visible, tint: L.tint, opacity: L.opacity, catLegend: L.catLegend, lineage: L.lineage, sectioned: S.renderer.layerSectioned(L.id) };
-      S.renderer.removeLayer(L.id);
-      L.docs = {};
-      L.name = fname; L.handle = fh; L.storage = 'project';
-      await openWfrFile(file, fname, { layer: L.id, first: false, element: els[0], tint: keep.tint, opacity: keep.opacity });
-      if (keep.label) L.label = keep.label;
-      L.lineage = mkLineage('store', { format: 'wfr', file: `meshes/${fname}`, element: els[0] }, [keep.lineage]);
-      if (keep.visible === false) { L.visible = false; S.renderer.setLayerVisible(L.id, false); }
-      if (keep.sectioned != null && keep.sectioned !== true) S.renderer.setLayerSectioned(L.id, keep.sectioned);
-      if (keep.catLegend) { L.catLegend = keep.catLegend; applyCatLegend(L, true); }
-      packed++;
-    }
-  }
-  recomputeUnion(); renderLayers(); markProjectDirty(); requestRender();
-  return packed;
-}
-
-export async function maybeAutoPackMeshes() {
-  const cands = S.layers.filter(packableMesh);
-  if (!cands.length || _autoPack === 'off') return;
-  if (_autoPack == null) {
-    if (_autoPackSkip) return;                             // "Not now" holds for this session
-    const a = await microChoose('store meshes as .wfr',
-      `${cands.length} mesh/strings/points layer${cands.length === 1 ? '' : 's'} (${cands.map((L) => L.label || L.name).slice(0, 4).join(', ')}${cands.length > 4 ? ', …' : ''}) can be stored in the project as .wfr — bricked, a fraction of the size, quick to reopen, attributes kept. Source files already in the project are kept. Settings → "store meshes as .wfr on save" changes your answer later.`,
-      [{ label: 'Never', value: 'never', quiet: true }, { label: 'Not now', value: 'skip' }, { label: 'Yes', value: 'once' }, { label: 'Yes, always', value: 'always' }]);
-    if (a === 'never') { setAutoPack('off'); return; }
-    if (a === 'always') setAutoPack('on');
-    else if (a !== 'once') { _autoPackSkip = true; return; }   // Not now / × / Esc: ask again next session
-  }
-  const n = await packLayersToWfr(cands);
-  if (n) $('#meta').textContent = `stored ${n} layer${n === 1 ? '' : 's'} as .wfr in meshes/`;
 }
 
 export function updateProjectTitle() {
@@ -305,57 +161,6 @@ export function projectManifest() {
       return treeToManifest(idOf);
     })(),
   };
-}
-
-// recent projects on the empty state (chips, like recent files)
-export async function renderEmptyProjects() {
-  const el = $('#emptyProjects'); if (!el) return;
-  el.textContent = '';
-  if (!S.hasFSAA) return;
-  let list = [];
-  try { list = (await _idb.get(PROJECTS_KEY)) || []; } catch { /* ignore */ }
-  if (!list.length) return;
-  const lab = document.createElement('span'); lab.className = 'er-label'; lab.textContent = 'projects:';
-  el.appendChild(lab);
-  for (const e of list.slice(0, 6)) {
-    const chip = document.createElement('a'); chip.className = 'er-chip';
-    chip.textContent = e.pack ? `${e.name} · pack` : e.name;
-    chip.title = e.pack ? `open the pack ${e.handle && e.handle.name || ''} (read-only)` : 'open project';
-    chip.onclick = () => (e.pack ? openPackFromHandle(e.handle) : openProjectDir(e.handle));
-    el.appendChild(chip);
-  }
-}
-
-// a pack opened from a file the browser can hand back (a picker, a drop, recents)
-// joins the recent projects as itself — reopening reads the same file, read-only
-export async function rememberPack(handle, name) {
-  try {
-    const list = (await _idb.get(PROJECTS_KEY)) || [];
-    const next = [{ name, handle, pack: true }].concat(list.filter((e) => e.name !== name || !e.pack)).slice(0, 8);
-    await _idb.set(PROJECTS_KEY, next);
-    renderEmptyProjects();
-  } catch { /* best-effort */ }
-}
-
-export async function openPackFromHandle(h) {
-  try {
-    if (h.queryPermission && await h.queryPermission({ mode: 'read' }) !== 'granted' && h.requestPermission) await h.requestPermission({ mode: 'read' });
-    const f = await h.getFile();
-    _fileHandles.set(f, h);
-    return await openProjectPack(f);
-  } catch (e) { $('#meta').textContent = `open pack: ${h.name} can't be read any more (moved or deleted?) — ${e.message || e}`; return null; }
-}
-
-export async function rememberProject(dir) {
-  if (dir && dir._pack) return;                            // a pack is opened from its file, not remembered as a folder
-  try {
-    const list = (await _idb.get(PROJECTS_KEY)) || [];
-    const links = {};
-    for (const L of S.layers) if (L.storage === 'external' && L.handle) links[L.name] = L.handle;
-    const next = [{ name: dir.name, handle: dir, links }].concat(list.filter((e) => e.name !== dir.name || e.pack)).slice(0, 8);
-    await _idb.set(PROJECTS_KEY, next);
-    renderEmptyProjects();
-  } catch { /* best-effort */ }
 }
 
 export async function saveProjectAs() {
@@ -939,327 +744,6 @@ export function unsavedWork() {
 }
 
 export function closeProject() { if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort(); S.project = null; S.views = []; S.scenes = []; updateProjectTitle(); }
-
-// Tidy: migrate an already-saved project's files into their kind subfolders
-// (drillholes / models / clouds / meshes / grids), carrying sidecars along and
-// rewriting project.json + the drillhole descriptors. Files are MOVED (not
-// copied), confirmed first; external/linked layers stay put.
-// ── project backups: the folder as one `<name>-<date>.zip.micro` (src/backup.js) ──
-// Made from the FOLDER, so it holds the last save; linked layers (outside the
-// folder) aren't in it and are named. Streamed to a picked file (the web), to
-// Downloads (the shell) or, for a host, to a stream it hands in — never resident.
-// Host calls pass { lean, to, save } and get no dialogs.
-export const backupStamp = () => { const d = new Date(), z = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`; };
-
-export function progressMeta(verb) {
-  let t = 0;
-  return (p) => {
-    const now = performance.now(); if (now - t < 200 && p.done < p.total) return; t = now;
-    $('#meta').textContent = `${verb}… ${p.total ? Math.round(100 * p.done / p.total) : 100}% · ${p.index + 1}/${p.count} · ${p.path}`;
-  };
-}
-
-export async function backupProject({ lean = null, to = null, save = null, host = false } = {}) {
-  if (!S.project) { if (host) throw new Error('micro: no project is open'); $('#meta').textContent = 'back up: open or save a project first'; return null; }
-  if (S.project.dirty) {
-    let a = save == null ? null : (save ? 'save' : 'as-is');
-    if (a == null && !host) a = await microChoose('back up project', `${S.project.name} has unsaved changes. A backup is made from the project folder, so on its own it holds the last save.`,
-      [{ label: 'Cancel', value: null }, { label: 'Back up the last save', value: 'as-is' }, { label: 'Save, then back up', value: 'save' }]);
-    if (a == null && !host) return null;
-    if (a === 'save') await saveProject();
-  }
-  const dir = S.project.dir;
-  const linked = S.layers.filter((L) => L.storage === 'external').map((L) => L.label || L.name);
-  if (lean == null && !host) {
-    const inv = await inventoryProject(dir, { lean: true });   // both sizes from one walk
-    const n = inv.files.length + inv.skipped.length, full = inv.bytes + inv.skippedBytes;
-    const msg = `${S.project.name}: ${n} file${n === 1 ? '' : 's'}, ${fmtSize(full)}.`
-      + (inv.skipped.length ? ` Lean leaves out ${inv.skipped.length} cache file${inv.skipped.length === 1 ? '' : 's'} micro rebuilds by itself (${fmtSize(inv.skippedBytes)}); a big model is then re-read once when the project opens.` : '')
-      + (linked.length ? ` Not in the backup: ${linked.length} layer${linked.length === 1 ? '' : 's'} linked from outside the folder (${linked.slice(0, 3).join(', ')}${linked.length > 3 ? ', …' : ''}) — to include ${linked.length === 1 ? 'it' : 'them'}, save the project and choose “Copy into project”.` : '');
-    const a = await microChoose('back up project', msg, [{ label: 'Cancel', value: null },
-      ...(inv.skipped.length ? [{ label: `Lean (${fmtSize(inv.bytes)})`, value: 'lean' }] : []), { label: `Full (${fmtSize(full)})`, value: 'full' }]);
-    if (!a) return null;
-    lean = a === 'lean';
-  }
-  const fname = `${S.project.name.replace(/[\/:*?"<>|]+/g, '_')}-${backupStamp()}${BACKUP_EXT}`;
-  // the sink: ours to close or abort, whatever is behind it
-  let ws = null, parts = null, handle = null;
-  try {
-    if (to && typeof to.createWritable === 'function') ws = await to.createWritable();
-    else if (to && typeof to.getWriter === 'function') ws = to;
-    else if (to) throw new Error('micro: backupProject `to` must be a WritableStream or a FileSystemFileHandle');
-    else if (host) parts = [];
-    else if (shell.present) ws = shell.publishStream(fname, { collection: 'Downloads', mime: BACKUP_MIME });
-    else if (window.showSaveFilePicker) {
-      handle = await window.showSaveFilePicker({ suggestedName: fname, types: [{ description: 'micro project backup', accept: { [BACKUP_MIME]: ['.micro'] } }] });
-      ws = await handle.createWritable();
-    } else parts = [];
-  } catch (e) { if (e && e.name === 'AbortError') return null; if (host) throw e; $('#meta').textContent = `back up: can't write there — ${e.message || e}`; return null; }
-  const wr = ws ? ws.getWriter() : null;
-  const sink = wr ? { write: (b) => wr.write(b) } : { write: (b) => { parts.push(b.slice()); } };
-  let res;
-  try {
-    res = await writeBackup(dir, sink, { lean: !!lean, name: S.project.name, build: S.build, linked, onProgress: progressMeta('backing up') });
-    if (wr) await wr.close();
-  } catch (e) {
-    if (wr) { try { await wr.abort(); } catch { /* gone */ } }
-    if (host) throw e;
-    $('#meta').textContent = `back up failed: ${e.message || e}`; return null;
-  }
-  const out = { name: handle ? handle.name : fname, size: res.size, files: res.files, lean: !!lean, linked };
-  if (ws && ws.result) { try { const r = await ws.result; out.name = r.name || out.name; } catch { /* the shell reports its own */ } }
-  if (parts) out.blob = new Blob(parts, { type: BACKUP_MIME });
-  if (!host) {
-    $('#meta').textContent = `backed up ${S.project.name} → ${out.name} (${fmtSize(res.size)}, ${res.files} files${lean ? ', lean' : ''})${linked.length ? ` · ${linked.length} linked layer${linked.length === 1 ? '' : 's'} not included` : ''}`;
-    if (parts) await deliverBlob(out.blob, fname);
-  }
-  return out;
-}
-
-// ── project packs: a .zip.micro opened as the project, read-only, nothing unpacked ──
-// Each file is a slice of the pack (src/backup.js openPack). Changes in the session
-// — bookmarks, recipes, painted columns — live in memory beside it; Save writes the
-// whole project, changes included, into an empty folder and carries on there. A
-// slice skips the CRC, so the pack is read through once in the background and the
-// verdict goes to the status line (and to a host as micro:pack-checked).
-export const pickBackupFile = async () => {
-  try {
-    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker({ types: [{ description: 'micro project pack', accept: { [BACKUP_MIME]: ['.micro'] } }] }); const f = await h.getFile(); _fileHandles.set(f, h); return f; }
-    return await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.micro'; i.onchange = () => res(i.files[0] || null); i.click(); });
-  } catch { return null; }
-};
-
-export function packSummary(blob, info, members, bytes) {
-  const when = info.created ? new Date(info.created).toLocaleString() : 'unknown date';
-  const lk = info.linked || [];
-  return `${blob.name || 'backup'}: “${info.project || '?'}”, backed up ${when}${info.lean ? ' (lean)' : ''} — ${members.length} files, ${fmtSize(bytes)}.`
-    + (lk.length ? ` It doesn't hold ${lk.length} layer${lk.length === 1 ? '' : 's'} that were linked from outside the folder (${lk.slice(0, 3).join(', ')}${lk.length > 3 ? ', …' : ''}); the project will ask where they are.` : '')
-    + (S.project && S.project.dirty ? ` This closes ${S.project.name}, which has unsaved changes.` : '');
-}
-
-// a .zip.micro opened like any file (drop, Open…, "open with"): look, or unpack
-export async function openPackFile(blob) {
-  let rb;
-  try { rb = await readBackup(blob); } catch (e) { $('#meta').textContent = `open: ${e.message}`; return null; }
-  const a = await microChoose('project pack', packSummary(blob, rb.info || {}, rb.members, rb.bytes)
-    + ' Open it read-only to look around (nothing is unpacked), or unpack it into an empty folder to work in it.',
-    [{ label: 'Cancel', value: null }, ...(S.hasFSAA ? [{ label: 'Unpack to a folder…', value: 'unpack' }] : []), { label: 'Open (read-only)', value: 'open' }]);
-  if (a === 'unpack') return restoreProject(blob, null, { asked: true });
-  if (a === 'open') return openProjectPack(blob, { asked: true });
-  return null;
-}
-
-export async function openProjectPack(blob = null, { host = false, asked = false } = {}) {
-  const fail = (m) => { if (host) throw new Error(`micro: ${m}`); $('#meta').textContent = `open pack: ${m}`; return null; };
-  if (!blob) { blob = await pickBackupFile(); if (!blob) return null; }
-  let pack;
-  try { pack = await openPack(blob); } catch (e) { return fail(e.message); }
-  if (!host && !asked && S.project && S.project.dirty
-    && !(await microConfirm('open project pack', `This closes ${S.project.name}, which has unsaved changes.`, 'Open pack', 'Cancel'))) return null;
-  if (S.project && S.project.pack && S.project.pack.abort) S.project.pack.abort.abort();
-  if (!(await openProjectDir(pack.dir, { pack }))) return fail($('#meta').textContent.replace(/^project open failed — /, '') || 'the project in the pack did not open');
-  updateProjectTitle();
-  { const h = !host && _fileHandles.get(blob); if (h) rememberPack(h, pack.dir.name); }
-  pack.abort = new AbortController();
-  pack.check = pack.verify({ signal: pack.abort.signal }).then((v) => {
-    pack.checked = v;
-    dispatchEvent(new CustomEvent('micro:pack-checked', { detail: { name: blob.name || pack.dir.name, ok: v.ok, files: v.files, bad: v.bad } }));
-    if (!S.project || S.project.pack !== pack) return v;
-    if (v.ok) $('#meta').textContent = `pack checked — ${v.files} files intact`;
-    else {
-      $('#meta').textContent = `pack DAMAGED — ${v.bad.length} file${v.bad.length === 1 ? '' : 's'} fail their checksum: ${v.bad.map((b) => b.path).slice(0, 3).join(', ')}${v.bad.length > 3 ? ', …' : ''}`;
-      if (!host) microChoose('project pack damaged', `${v.bad.length} of the ${v.files} files in ${blob.name || 'the pack'} don't match the checksum they were written with, so what micro shows from them may be wrong: ${v.bad.map((b) => b.path).join(', ')}.`, [{ label: 'OK', value: true }]);
-    }
-    return v;
-  }, (e) => { if (e && e.name !== 'AbortError') $('#meta').textContent = `pack check failed — ${e.message || e}`; return null; });
-  return { name: pack.dir.name, files: pack.members.length, bytes: pack.bytes, info: pack.info, checked: pack.check };
-}
-
-// Save on a pack: the whole tree (the pack's files + this session's changes) into
-// an empty folder, which then becomes the project; a normal save writes the rest
-export async function savePackAsFolder({ dest = null, host = false } = {}) {
-  const pack = S.project.pack;
-  if (!dest && !S.hasFSAA) { $('#meta').textContent = "save: a project pack is read-only here — this browser can't write project folders"; return null; }
-  if (!host && !dest) {
-    const ok = await microChoose('save project', `${S.project.name} is a project pack, opened read-only. To keep your changes, save it as a project folder: pick an empty folder and micro writes the whole project there (${fmtSize(pack.bytes)}), then carries on working in it. The pack itself stays as it is.`,
-      [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]);
-    if (!ok) return null;
-  }
-  if (!dest) { try { dest = await pickDirectory(); } catch { return null; } }
-  const src = S.project.dir;
-  try { await writeTree(src, dest, { onProgress: progressMeta('saving the pack as a folder') }); }
-  catch (e) { if (host) throw e; $('#meta').textContent = `save failed — ${e.message || e}`; return null; }
-  // the layers' files are now in dest: point them there, and say they're micro's copies
-  for (const L of S.layers) {
-    for (const fd of layerFiles(L)) _copiedBlobs.add(fd.blob);
-    if (L.handle && L.handle._pack && L.handle._path) { try { L.handle = await resolveFileHandle(dest, L.handle._path.join('/')); } catch { /* triage finds it by path */ } }
-  }
-  if (pack.abort) pack.abort.abort();
-  S.project = { dir: dest, name: dest.name, dirty: true };
-  updateProjectTitle();
-  await saveProject();
-  rememberProject(dest);
-  return { name: dest.name };
-}
-
-// restore: a .zip.micro → an EMPTY folder → opened as the project
-export async function restoreProject(blob = null, dest = null, { host = false, asked = false } = {}) {
-  const fail = (m) => { if (host) throw new Error(`micro: ${m}`); $('#meta').textContent = `restore: ${m}`; return null; };
-  if (!dest && !S.hasFSAA) return fail("this browser can't write project folders");
-  if (!blob) { blob = await pickBackupFile(); if (!blob) return null; }
-  let rb;
-  try { rb = await readBackup(blob); } catch (e) { return fail(e.message); }
-  if (!host && !asked) {
-    if (!(await microChoose('restore project', packSummary(blob, rb.info || {}, rb.members, rb.bytes) + ' Next, pick an empty folder to restore it into.',
-      [{ label: 'Cancel', value: false }, { label: 'Choose folder…', value: true }]))) return null;
-  }
-  if (!dest) { try { dest = await pickDirectory(); } catch { return null; } }
-  let res;
-  try { res = await restoreBackup(blob, dest, { onProgress: progressMeta('restoring') }); } catch (e) { return fail(e.message || String(e)); }
-  await openProjectDir(dest);
-  if (S.hasFSAA) rememberProject(dest);
-  if (!host) $('#meta').textContent = `restored ${(rb.info && rb.info.project) || 'the project'} into ${dest.name} (${res.files} files, ${fmtSize(res.bytes)})`;
-  return { name: dest.name, files: res.files, bytes: res.bytes, info: rb.info };
-}
-
-export async function tidyProject() {
-  if (!S.project) { $('#meta').textContent = 'tidy: save the project to a folder first'; return; }
-  const dir = S.project.dir;
-  const ok = await microConfirm('Tidy project folder',
-    'Move each layer file into its kind subfolder (drillholes / models / clouds / meshes / grids), carry its sidecars along, and rewrite project.json. Files are moved, not copied. External/linked layers stay where they are.',
-    'Tidy', 'Cancel');
-  if (!ok) return;
-  try {
-    if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'tidy: write permission denied'; return; }
-    let moved = 0, collided = 0;
-    const claimed = new Map();                                      // target path → the curRel that took it, this pass
-    for (const L of S.layers) {
-      if (L.storage !== 'project') continue;
-      for (const fd of layerFiles(L)) {
-        const target = relPathFor(L, fd.name);
-        let curRel = null;                                          // where the file is now
-        if (!L.dh && L.handle && dir.resolve) { try { const p = await dir.resolve(L.handle); if (p) curRel = p.join('/'); } catch { /* not a descendant */ } }
-        if (!curRel) { for (const c of [target, basename(fd.name)]) { try { await resolveFileHandle(dir, c); curRel = c; break; } catch { /* not there */ } } }
-        if (!curRel || curRel === target) { if (curRel === target) claimed.set(target, curRel); continue; }   // not found, or already placed
-        // two layers of the same kind sharing a basename would land on ONE path —
-        // the second used to OVERWRITE the first's just-moved file (data loss).
-        // Refuse the collision, leave the file where it is, and report it.
-        const taken = claimed.get(target);
-        if (taken != null && taken !== curRel) { collided++; $('#meta').textContent = `tidy: “${basename(fd.name)}” collides in ${target.split('/')[0]}/ — left in place`; continue; }
-        claimed.set(target, curRel);
-        // STREAMED copy (pipeTo closes the writable): a whole-file read here failed
-        // outright on a multi-GB source, part-way through tidying the folder
-        const srcFile = await (await resolveFileHandle(dir, curRel)).getFile();
-        const nh = await resolveFileHandle(dir, target, { create: true });
-        await srcFile.stream().pipeTo(await nh.createWritable());
-        if (!L.dh) L.handle = nh;
-        for (const suf of ['.meta.json', '.disp.grd', '.disp.json']) {   // sidecars ride along
-          try {
-            const sf = await (await resolveFileHandle(dir, curRel + suf)).getFile();
-            const sh = await resolveFileHandle(dir, target + suf, { create: true });
-            await sf.stream().pipeTo(await sh.createWritable());
-            await removeFileAt(dir, curRel + suf);
-          } catch { /* no such sidecar */ }
-        }
-        await removeFileAt(dir, curRel);
-        moved++;
-      }
-    }
-    markProjectDirty();
-    await saveProject();                                            // rewrites project.json + writes descriptors at the new paths
-    $('#meta').textContent = (moved ? `project tidied — ${moved} file${moved === 1 ? '' : 's'} moved into kind folders` : 'project already tidy')
-      + (collided ? ` · ${collided} left in place (name collision — rename to move)` : '');
-  } catch (e) { $('#meta').textContent = `tidy failed — ${e.message}`; }
-}
-
-// Folder-as-inbox: rescan the project folder for data files dropped in by hand
-// or by another tool, and add the ones not already loaded. A .holes.json is a
-// complete drillhole set (loaded directly); other data files go through the
-// normal open dialog (header detection + mapping + loose-trio sniff). The
-// containing kind folder is the intended type hint; open-dispatch is by content.
-export async function scanFolderForNewData() {
-  if (!S.project) { $('#meta').textContent = 'scan: open or save a project first'; return; }
-  const dir = S.project.dir;
-  try {
-    if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'scan: permission denied'; return; }
-    // what current layers already use: name:size (file identity) + the resolved
-    // path of each layer's handle (set at push time, so it holds even while a
-    // block model is still discovering and its blob isn't populated yet)
-    const referenced = new Set(), refPaths = new Set();
-    for (const L of S.layers) {
-      for (const fd of layerFiles(L)) if (fd.blob) referenced.add(basename(fd.name) + ':' + fd.blob.size);
-      if (L.handle && dir.resolve) { try { const pp = await dir.resolve(L.handle); if (pp) refPaths.add(pp.join('/')); } catch { /* not a descendant */ } }
-    }
-    const found = [];
-    const walk = async (d, prefix) => {
-      for await (const [name, h] of d.entries()) {
-        const p = prefix ? prefix + '/' + name : name;
-        if (h.kind === 'directory') await walk(h, p);
-        else found.push({ path: p, name, handle: h });
-      }
-    };
-    await walk(dir, '');
-    // a sidecar is not new data: element manifests, the cache sidecars, and
-    // ANYTHING inside a `<layer>.cols/` folder (the materialized-column Parquets).
-    // Without the .cols rule an orphaned matcol fragment — left behind by a tidy
-    // or a layer removal — was re-offered to the user as a top-level data layer.
-    const isSidecar = (fullPath, n) => n === 'project.json'
-      || /(\.meta\.json|\.disp\.grd|\.disp\.json|\.element\.json)$/i.test(n)
-      || /\.cols\//i.test(fullPath);
-    const isData = (n) => /\.(las|ply|xyz|pts|csv|txt|dat|parquet|pq|dm|obj|msh|lfm|tif|tiff|grd|asc)$/i.test(n);
-    // new drillhole-set descriptors (claim their member CSVs so they don't also
-    // show up as loose files)
-    const claimed = new Set();
-    const newSets = [];
-    found.sort((a, b2) => /\.element\.json$/i.test(b2.name) - /\.element\.json$/i.test(a.name));   // element first: it claims the files an old .holes.json would re-offer
-    for (const e of found) {
-      if (!/\.(holes|element)\.json$/i.test(e.name)) continue;
-      let desc;
-      try {
-        const raw = JSON.parse(await (await e.handle.getFile()).text());
-        desc = /\.element\.json$/i.test(e.name) ? descFromElement(raw) : (raw && raw.kind === 'drillholes' ? raw : null);
-      } catch { continue; }
-      if (!desc) continue;
-      const setDir = e.path.split('/').slice(0, -1).join('/');
-      if (claimed.has(joinPath(setDir, desc.collar))) continue;   // the element manifest already owns this set
-      const ivs = Array.isArray(desc.intervals) ? desc.intervals : [desc.intervals];
-      claimed.add(joinPath(setDir, desc.collar)); claimed.add(joinPath(setDir, desc.survey));
-      for (const iv of ivs) claimed.add(joinPath(setDir, iv));
-      if (S.layers.some((L) => L.dh && L._setPath === e.path)) continue;   // already loaded
-      newSets.push({ e, desc, setDir, ivs });
-    }
-    // loose data files not referenced by a layer and not part of a descriptor
-    const looseFiles = [];
-    for (const e of found) {
-      if (!isData(e.name) || isSidecar(e.path, e.name) || claimed.has(e.path) || refPaths.has(e.path)) continue;
-      const file = await e.handle.getFile();
-      if (referenced.has(basename(e.name) + ':' + file.size)) continue;
-      _fileHandles.set(file, e.handle);                       // so opened layers ride the folder handle (no re-copy)
-      looseFiles.push(file);
-    }
-    // load complete drillhole sets directly (no decisions needed)
-    for (const s of newSets) {
-      try {
-        const collar = await resolveDhFile(dir, s.setDir, s.desc.collar);
-        const survey = await resolveDhFile(dir, s.setDir, s.desc.survey);
-        const ids = [];
-        for (const iv of s.ivs) {                            // one dh layer per interval table, sharing the set
-          const intervals = await resolveDhFile(dir, s.setDir, iv);
-          const _got = await openDrillholeLayer({ collar, survey, intervals }, s.desc.config || {}, S.layers.length ? 'add' : 'replace');
-          const L = layerById(_got); if (L) { L.storage = 'project'; L._setPath = s.e.path; L._setKey = s.e.path; L._intervalName = iv; ids.push(L.id); }
-        }
-        if (ids.length) createLayerGroup(dhGroupName(s.desc.collar), ids, { collapsed: false, dhSet: true });
-      } catch (err) { $('#meta').textContent = `scan: “${s.e.name}” — ${err.message}`; }
-    }
-    if (looseFiles.length) await openFilesDialog(looseFiles);   // the dialog is the confirmation for loose files
-    const nRcp = S.recipes.length;
-    await loadRecipes(dir);                                 // recipes dropped into recipes/ arrive via the same inbox
-    const rcpNew = S.recipes.length - nRcp;
-    const total = newSets.length + looseFiles.length + Math.max(0, rcpNew);
-    if (!total) $('#meta').textContent = 'scan: no new data files in the folder';
-    else { markProjectDirty(); if (!looseFiles.length) $('#meta').textContent = `scan: added ${[newSets.length ? `${newSets.length} drillhole set${newSets.length === 1 ? '' : 's'}` : '', rcpNew > 0 ? `${rcpNew} recipe${rcpNew === 1 ? '' : 's'}` : ''].filter(Boolean).join(' + ') || 'nothing'}`; }
-  } catch (e) { $('#meta').textContent = `scan failed — ${e.message}`; }
-}
 
 // File → New project: back to the empty slate. Confirmed — it closes every
 // layer and drops the project link; nothing on disk is touched.

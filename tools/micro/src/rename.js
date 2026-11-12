@@ -1,6 +1,7 @@
 // micro — rename a layer, or many at once by pattern.
 import { microPrompt } from './prompts.js';
-import { fileLayerByPath, renderLayers } from './tree.js';
+import { fileLayerByPath } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 import { markProjectDirty } from './project.js';
 import { setHTML, trusted } from './html.js';
 const $ = (s) => document.querySelector(s);

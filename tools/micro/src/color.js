@@ -12,7 +12,8 @@ import { buildValueTexture } from './valuetex.js';
 import { quoteIdent } from '../../../ext/expr/index.js';
 import { rowsProgress } from './analysis-ui.js';
 import { S, activeLayer, layerById, requestRender } from './state.js';
-import { reopenBlockChan, reopenDhChan } from './open.js';
+import { reopenDhChan } from './open.js';
+import { reopenBlockChan } from './open-blocks.js';
 import { markProjectDirty } from './project.js';
 import { followLayer } from './tree.js';
 import { setActiveLayer } from './layers.js';
@@ -263,3 +264,5 @@ export function setLayerPalette(L, name) {
 }
 
 export const paletteList = () => Object.keys(RAMP_PRESETS).map((name) => ({ name, kind: RAMP_KIND[name] || 'sequential' }));
+
+export function hexToRgb01(hex) { const n = parseInt(hex.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; }

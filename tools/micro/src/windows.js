@@ -3,7 +3,7 @@
 // with dialogs and menus — and, below 720px, the same window as a bottom SHEET
 // (peek / half / tall, one at a time). Carved from index.html (phase 3).
 import { _propOpen, closeProps } from './props.js';
-import { toggleLayersPanel } from './tree.js';
+import { toggleLayersPanel } from './layers-panel.js';
 
 const $ = (s) => document.querySelector(s);
 

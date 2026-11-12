@@ -7,7 +7,7 @@ import { closeCompactBuilder, resetFilterState, syncFilterClear } from './filter
 import { dropValueTex, setColorLabels } from './color.js';
 import { _attrTables, closeAttrTable } from './attrtable.js';
 import { clearMeasure } from './overlay.js';
-import { renderLayers } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 import { syncMeshPickable } from './surfaces.js';
 import { addPaintColorOptions } from './paint.js';
 const $ = (s) => document.querySelector(s);

@@ -1,9 +1,12 @@
-// micro — recent files: the remembered handles, the empty-state list, and the file picker.
+// micro — recent files and projects: the remembered handles, the empty-state lists
+// (recent files, recent projects and packs), and the file picker.
 import { _idb } from './element-store.js';
 import { closeMenu } from './menu.js';
 import { S, _fileHandles } from './state.js';
 import { openFilesDialog } from './open-dialog.js';
 import { openBlob } from './open.js';
+import { openProjectDir } from './project.js';
+import { openPackFromHandle } from './project-pack.js';
 const $ = (s) => document.querySelector(s);
 
 export const RECENTS_KEY = '__recents__', RECENTS_MAX = 12;
@@ -95,4 +98,45 @@ export function openFilePicker() {
     };
     inp.click();
   }
+}
+
+export const PROJECTS_KEY = '__projects__';
+// recent projects on the empty state (chips, like recent files)
+export async function renderEmptyProjects() {
+  const el = $('#emptyProjects'); if (!el) return;
+  el.textContent = '';
+  if (!S.hasFSAA) return;
+  let list = [];
+  try { list = (await _idb.get(PROJECTS_KEY)) || []; } catch { /* ignore */ }
+  if (!list.length) return;
+  const lab = document.createElement('span'); lab.className = 'er-label'; lab.textContent = 'projects:';
+  el.appendChild(lab);
+  for (const e of list.slice(0, 6)) {
+    const chip = document.createElement('a'); chip.className = 'er-chip';
+    chip.textContent = e.pack ? `${e.name} · pack` : e.name;
+    chip.title = e.pack ? `open the pack ${e.handle && e.handle.name || ''} (read-only)` : 'open project';
+    chip.onclick = () => (e.pack ? openPackFromHandle(e.handle) : openProjectDir(e.handle));
+    el.appendChild(chip);
+  }
+}
+// a pack opened from a file the browser can hand back (a picker, a drop, recents)
+// joins the recent projects as itself — reopening reads the same file, read-only
+export async function rememberPack(handle, name) {
+  try {
+    const list = (await _idb.get(PROJECTS_KEY)) || [];
+    const next = [{ name, handle, pack: true }].concat(list.filter((e) => e.name !== name || !e.pack)).slice(0, 8);
+    await _idb.set(PROJECTS_KEY, next);
+    renderEmptyProjects();
+  } catch { /* best-effort */ }
+}
+export async function rememberProject(dir) {
+  if (dir && dir._pack) return;                            // a pack is opened from its file, not remembered as a folder
+  try {
+    const list = (await _idb.get(PROJECTS_KEY)) || [];
+    const links = {};
+    for (const L of S.layers) if (L.storage === 'external' && L.handle) links[L.name] = L.handle;
+    const next = [{ name: dir.name, handle: dir, links }].concat(list.filter((e) => e.name !== dir.name || e.pack)).slice(0, 8);
+    await _idb.set(PROJECTS_KEY, next);
+    renderEmptyProjects();
+  } catch { /* best-effort */ }
 }

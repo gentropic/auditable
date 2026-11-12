@@ -12,7 +12,7 @@ import { writeEsriAsc } from './grid-io.js';
 import { RAMP_PRESETS, rampCfgOf, rampSample } from './ramp.js';
 import { buildHeightfieldMesh } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
-import { renderLayers } from './tree.js';
+import { renderLayers } from './layers-panel.js';
 import { reopenReplacing } from './reopen.js';
 const $ = (s) => document.querySelector(s);
 

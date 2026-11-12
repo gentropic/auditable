@@ -2,7 +2,7 @@
 // and title, drawn live on the 2D overlay and captured verbatim by Export figure; the
 // background colour (the ink flips on a light one); the decorations panel; and the
 // figure recipe. The app owns the camera, the render loop and the overlay canvas.
-import { hexToRgb01 } from './open.js';
+import { hexToRgb01 } from './color.js';
 import { ensureLegend, layerClassInfo } from './categories.js';
 import { RAMP_PRESETS, colorSelOf, rampCfgOf, rampRangeFor, rampSample } from './ramp.js';
 import { layerTableHeader } from './records.js';

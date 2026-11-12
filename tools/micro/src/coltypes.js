@@ -8,7 +8,7 @@ import { markProjectDirty } from './project.js';
 import { renderProps, refreshProps } from './props.js';
 import { pinEvictLayer } from './columns.js';
 import { reopenDh } from './drillholes.js';
-import { reopenBlockChan } from './open.js';
+import { reopenBlockChan } from './open-blocks.js';
 import { refilterLayer } from './filter.js';
 import { applyRamp } from './ramp.js';
 import { followLayer } from './tree.js';
