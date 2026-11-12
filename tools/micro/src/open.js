@@ -9,7 +9,8 @@ import { S, _fileHandles, activeLayer, layerById, requestRender } from './state.
 import { DIM_PALETTE_MAX, DXF_STREAM_BYTES, basisAngles, buildHeightfieldMesh, buildMeshChunk, createChunkBuilder, createSoupChunkBuilder, createStickChunkBuilder, detectRotatedLattice, dimKey, dmWireframeRole, findDimColumns, gridFromBasis, inferAxis, inferSubBlockLattice, isDimColumn, makeBlockGrid, mapColumns, openBlockModel, openDmModel, openDmWireframe, openDrillholes, openDxf, openDxfStream, openLas, openMsh, openMshSoup, openObj, openObjSoup, openPly, openPlyMesh, openPlySoup, openTable, parsePlyHeader, peekDmColumns, readMSHLayout, sniffDelimited, soupFromMesh } from '../../../ext/condenser/src/main.js';
 import { openLineage } from './lineage.js';
 import { isWfrName, openWfrBlob, summarizeElements, vertexColorOf, wfrPointsDoc, wfrResidentMesh, wfrSoupDoc, wfrStringsDoc } from './wfr-io.js';
-import { applyCatLegend, rampCfgOf } from './props.js';
+import { applyCatLegend } from './categories.js';
+import { rampCfgOf } from './ramp.js';
 import { isBackupName } from './backup.js';
 import { openPackFile } from './project.js';
 import { openOmfBlob } from './omf.js';

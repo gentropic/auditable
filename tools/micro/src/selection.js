@@ -13,11 +13,11 @@ import { attrRowCountOf, docPositionStream } from './records.js';
 import { microPrompt } from './prompts.js';
 import { mkLineage } from './lineage.js';
 import { paintRecount } from './columns.js';
-import { addPaintColorOptions, paintActiveCol, ruleModeOf } from './props.js';
+import { ruleModeOf } from './rules.js';
 import { _isMobile } from './windows.js';
 import { isMiss, layerOfId, layerSection } from '../../../ext/condenser/src/main.js';
 import { layerShown } from './layers.js';
-import { PAINT, addPaintValue, createPaintCol, paintArmLabel, paintByPolygon, paintVolume } from './paint.js';
+import { PAINT, addPaintValue, createPaintCol, paintArmLabel, paintByPolygon, paintVolume, addPaintColorOptions, paintActiveCol } from './paint.js';
 import { currentSection } from './section.js';
 const $ = (s) => document.querySelector(s);
 // the app's side, passed in once (setSelectionHooks): _viewMode

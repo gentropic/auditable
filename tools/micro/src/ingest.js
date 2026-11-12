@@ -5,7 +5,7 @@
 // there is no second code path. A file source is opened in place, never copied.
 import { microModelOf, mkLineage } from './lineage.js';
 import { _fileHandles, layerById } from './state.js';
-import { addPaintColorOptions } from './props.js';
+import { addPaintColorOptions } from './paint.js';
 import { parquetInfoAsync, writeParquet } from '../../../ext/parquet/index.js';
 import { DIM_PALETTE_MAX, axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, latticeMisfit, makeDimKeyer, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { openBlob, openDrillholeLayer } from './open.js';

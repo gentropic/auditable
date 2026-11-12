@@ -3,7 +3,11 @@
 // without rebuilding it, and the range and palette setters. The renderer draws; the
 // props panel and the menus ask here.
 import { html, setHTML, trusted } from './html.js';
-import { RAMP_KIND, RAMP_PRESETS, addPaintColorOptions, applyRamp, colorSelOf, rampCfgOf, rampRangeFor, refreshProps, setRampCfg, syncRuleMode, useAsCategory } from './props.js';
+import { refreshProps } from './props.js';
+import { useAsCategory } from './coltypes.js';
+import { addPaintColorOptions } from './paint.js';
+import { syncRuleMode } from './rules.js';
+import { RAMP_KIND, RAMP_PRESETS, applyRamp, colorSelOf, rampCfgOf, rampRangeFor, setRampCfg } from './ramp.js';
 import { buildValueTexture } from './valuetex.js';
 import { quoteIdent } from '../../../ext/expr/index.js';
 import { rowsProgress } from './analysis-ui.js';

@@ -11,14 +11,15 @@ import { S, activeLayer, layerById, requestRender } from './state.js';
 import { _selArm, armSelect, disarmSelect, nextSelEpoch, pipTest, selEpoch, throughScan } from './selection.js';
 import { attrRowCountOf, layerTableHeader } from './records.js';
 import { PAINT_BLANK, paintRecount, ruleDefaultColor } from './columns.js';
-import { RULE_ELSE, addPaintColorOptions, applyPaintPalette, colorSelOf, paintSelOf } from './props.js';
+import { RULE_ELSE } from './rules.js';
+import { colorSelOf, bakeRampPixels } from './ramp.js';
 import { markProjectDirty } from './project.js';
 import { freshStep, redoLabel, redoLast, undoLabel, undoLast, undoTopRedoable } from './undo.js';
 import { structureAfterEdit, structureArmed, structureTool } from './structure-ui.js';
 import { _attrTables } from './attrtable.js';
 import { isMiss, layerOfId } from '../../../ext/condenser/src/main.js';
 import { floatWin, focusWindow } from './windows.js';
-import { setLayerColorSel } from './color.js';
+import { setLayerColorSel, colorHeaderOf } from './color.js';
 import { menuXY } from './menu.js';
 import { currentSection } from './section.js';
 const $ = (s) => document.querySelector(s);
@@ -420,4 +421,76 @@ export function openPaintPalette(L) {
   _paintWins.set(L.id, { win, render });
   render();
   if (st.colName) setLayerColorSel(L, 'paint:' + st.colName);
+}
+
+export function paintSelOf(L) {
+  const v = L && colorSelOf(L);
+  return v && typeof v === 'string' && v.startsWith('paint:') ? v.slice(6) : null;
+}
+export function paintActiveCol(L) {
+  const name = paintSelOf(L);
+  return name ? (L.paintCols || []).find((c) => c.name === name) : null;
+}
+export function applyPaintPalette(L, col) {
+  if (col.kind === 'ratio') {
+    // a ratio column is a full numeric channel: preset/classed/breakpoints and
+    // the clip window all apply, baked through the palette (codes are absolute
+    // v = code/255; the LUT covers the clip range, codes remap into it)
+    const cfg = (L.ramps && L.ramps[col.selKey || ('paint:' + col.name)]) || { preset: 'viridis', classed: false, breaks: [] };
+    const clip = [parseFloat(L.clip && L.clip[0]), parseFloat(L.clip && L.clip[1])];
+    const lo = Number.isFinite(clip[0]) ? clip[0] : 0, hi = Number.isFinite(clip[1]) ? clip[1] : 1;
+    const lut = bakeRampPixels(cfg, lo, hi);
+    const px = new Uint8Array(256 * 4);
+    const span = Math.max(hi - lo, 1e-9);
+    for (let code = 0; code < 256; code++) {
+      const t = Math.max(0, Math.min(1, (code / 255 - lo) / span));
+      const s2 = Math.round(t * 255) * 4;
+      px[code * 4] = lut[s2]; px[code * 4 + 1] = lut[s2 + 1]; px[code * 4 + 2] = lut[s2 + 2]; px[code * 4 + 3] = 255;
+    }
+    S.renderer.setLayerPalette(L.id, px, 256);
+    requestRender();
+    return;
+  }
+  const px = new Uint8Array(256 * 4);
+  const put = (c, hex) => {
+    const v = parseInt(hex.slice(1), 16);
+    px[c * 4] = (v >> 16) & 255; px[c * 4 + 1] = (v >> 8) & 255; px[c * 4 + 2] = v & 255; px[c * 4 + 3] = 255;
+  };
+  for (let c = 0; c < 256; c++) put(c, col.blankColor || PAINT_BLANK);
+  col.dict.forEach((label, i) => { if (i > 0 && i < 256 && label != null) put(i, col.colors[i] || RULE_ELSE); });
+  S.renderer.setLayerPalette(L.id, px, 256);
+  requestRender();
+}
+// paint options ride the toolbar color select for the ACTIVE layer (inserted
+// before 'solid'); called on layer switch, column create, and restore
+export function addPaintColorOptions(L) {
+  if (!L || L.id !== S.activeId) return;
+  const sel = $('#colorBy');
+  for (const pc of L.paintCols || []) {
+    const v = 'paint:' + pc.name;
+    if (![...sel.options].some((o) => o.value === v)) {
+      const o = document.createElement('option'); o.value = v; o.textContent = (pc.kind === 'ratio' ? '% ' : '✎ ') + pc.name;
+      const solid = [...sel.options].find((x) => x.value === 'solid');
+      sel.insertBefore(o, solid || null);
+    }
+  }
+  for (const cc of (L.calcCols || []).filter((c) => c.ty !== 'string')) {   // ƒ numeric calcs color too
+    const v = 'calc:' + cc.name;
+    if (![...sel.options].some((o) => o.value === v)) {
+      const o = document.createElement('option'); o.value = v; o.textContent = 'ƒ ' + cc.name;
+      const solid = [...sel.options].find((x) => x.value === 'solid');
+      sel.insertBefore(o, solid || null);
+    }
+  }
+  for (const o of [...sel.options]) if (o.value.startsWith('calc:') && !(L.calcCols || []).some((c) => c.ty !== 'string' && 'calc:' + c.name === o.value)) o.remove();
+  // other text columns a host offered as categories (addLayer roles.categories):
+  // choosing one re-reads the layer with it as THE category (setLayerColorBy)
+  const h = colorHeaderOf(L), curCat = h && h.categories ? h.columns[h.mapping.cat] : null;
+  for (const o of [...sel.options]) if (o.value.startsWith('catcol:')) o.remove();
+  for (const name of L.catChoices || []) {
+    if (name === curCat) continue;
+    const o = document.createElement('option'); o.value = 'catcol:' + name; o.textContent = name;
+    const after = [...sel.options].find((x) => x.value === 'cat') || [...sel.options].find((x) => x.value === 'rules');
+    sel.insertBefore(o, after ? (after.value === 'cat' ? after.nextSibling : after) : null);
+  }
 }

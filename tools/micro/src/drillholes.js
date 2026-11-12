@@ -5,7 +5,7 @@
 // The readers live in src/open.js; the app keeps the tree, the camera and the section.
 import { S, _fileHandles, layerById, requestRender } from './state.js';
 import { openDrillholeLayer } from './open.js';
-import { broadcastCollarCol, refreshProps } from './props.js';
+import { refreshProps, renderProps } from './props.js';
 import { dhFilterMeta, dhFilterSweep, refilterLayer } from './filter.js';
 import { createStickChunkBuilder, delimitedRecords, delimiterOfLine, openDrillholeTraces, splitDelimitedRecord } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
@@ -20,6 +20,12 @@ import { applyLayerStyling, captureLayerStyling, captureReopenIdentity, restoreR
 import { applyTreeVisibility, createLayerGroup, groupLayerIds, renderLayers, treeMove, treeSync } from './tree.js';
 import { closeAttrTable } from './attrtable.js';
 import { allocLayerId, setActiveLayer } from './layers.js';
+import { layerTableHeader, attrRowCountOf, layerRows } from './records.js';
+import { mkLineage } from './lineage.js';
+import { matColSet, paintRecount } from './columns.js';
+import { persistElement } from './element-store.js';
+import { createPaintCol, addPaintValue } from './paint.js';
+import { setLayerColorSel } from './color.js';
 const $ = (s) => document.querySelector(s);
 
 // re-open a drillhole layer with a patched config (method / dip / category —
@@ -417,4 +423,74 @@ export function redesurveyMenu(nd, x, y) {
     { label: 'dip: positive down', action: () => redesurveySet(nd, { dipConvention: 'pos-down' }) },
     { label: 'dip: negative down', action: () => redesurveySet(nd, { dipConvention: 'neg-down' }) },
   ]);
+}
+
+// ── BROADCAST — the first CROSS-LOCATION op on the dh element's relations:
+// a collar column lands on an interval member BY THE HOLE-ID KEY, so hole-
+// granularity attributes (EOH, COMPANY, campaign dates) become filterable /
+// colorable / GT-able interval columns. Numeric → a MATERIALIZED column
+// (Parquet sidecar; the ops[] entry records inputs [{loc:'collars', column}]);
+// text → a dict paint-style CATEGORY column (persists via the paint channel,
+// lineage kept; the manifest records it as DERIVED with the same op — it is
+// re-derivable from the collar file the element already names). Typed string
+// sidecars are the recorded follow-up that would let text broadcasts
+// materialize like numbers do.
+export async function broadcastCollarCol(L, colName) {
+  const dh = L.docs.dhDoc; const h = layerTableHeader(L);
+  if (!dh || !h) { $('#meta').textContent = 'broadcast: not a drillhole layer'; return; }
+  const im = h.intervalMapping || {};
+  if (im.bhid == null) { $('#meta').textContent = 'broadcast: no hole-id column on the intervals'; return; }
+  const taken = new Set([...h.columns, ...(L.calcCols || []).map((c) => c.name), ...(L.paintCols || []).map((c) => c.name)].map((x) => String(x).toLowerCase()));
+  const outName = taken.has(String(colName).toLowerCase()) ? colName + '_C' : colName;
+  if (taken.has(String(outName).toLowerCase())) { $('#meta').textContent = `broadcast: “${outName}” already exists`; return; }
+  const text = await dh.blobs.collar.text();               // the collar table is small — parse it whole
+  const lines = csvRecords(text);
+  const cells2 = collarCells(lines);
+  const names = cells2(lines[0]), low = names.map((x) => x.toLowerCase());
+  const ci = low.indexOf(String(colName).toLowerCase());
+  if (ci < 0) { $('#meta').textContent = `broadcast: “${colName}” not in the collar file`; return; }
+  // the resolved collar mapping first (see collarKeyIndex); name-match only as fallback
+  const cm = dh.header.collarMapping || {};
+  let ki = (cm.bhid != null && cm.bhid >= 0 && cm.bhid < low.length) ? cm.bhid : low.indexOf(String(h.columns[im.bhid]).toLowerCase());
+  if (ki < 0) ki = 0;
+  const map = new Map(); let numeric = true, seen = 0;
+  for (let i = 1; i < lines.length; i++) {
+    const c = cells2(lines[i]); if (c.length <= Math.max(ci, ki)) continue;
+    const v = c[ci]; map.set(String(c[ki]).trim(), v);
+    if (v !== '' && v != null) { seen++; if (!Number.isFinite(+v)) numeric = false; }
+  }
+  if (!seen) numeric = false;
+  const n = attrRowCountOf(L) || 0;
+  $('#meta').textContent = `broadcast: ${colName} → ${n.toLocaleString()} intervals…`;
+  const lin = mkLineage('broadcast', { from: 'collars', column: colName, key: names[ki], holes: map.size }, [L.lineage].filter(Boolean));
+  if (numeric) {
+    const vals = new Float32Array(n); let rec = 0;
+    for await (const batch of layerRows(L, null)) { for (const f0 of batch) { if (rec >= n) break; const v = map.get(   /* rows ok: drillhole intervals: every row is a record */String(f0[im.bhid] ?? '').trim()); const x = v === '' || v == null ? NaN : +v; vals[rec] = Number.isFinite(x) ? x : NaN; rec++; } await new Promise((r) => setTimeout(r)); }
+    matColSet(L, outName, vals, { lineage: lin });
+    try { await persistElement(L); } catch { /* best-effort */ }
+  } else {
+    const col = createPaintCol(L, outName);
+    if (!col) return;
+    col.lineage = lin;
+    const codeOf = new Map(); let rec = 0, full = false;
+    for await (const batch of layerRows(L, null)) {   /* rows ok: drillhole intervals: every row is a record */
+      for (const f0 of batch) {
+        if (rec >= n || full) break;
+        const v = String(map.get(String(f0[im.bhid] ?? '').trim()) ?? '').trim();
+        if (v) {
+          let code = codeOf.get(v);
+          if (code == null) { code = addPaintValue(L, col, v); if (code == null) { full = true; break; } codeOf.set(v, code); }
+          col.codes[rec] = code;
+        }
+        rec++;
+      }
+      if (full) break;
+      await new Promise((r) => setTimeout(r));
+    }
+    paintRecount(col);
+    L._colStats = null; L._calcFns = null;
+  }
+  setLayerColorSel(L, 'paint:' + outName);
+  markProjectDirty(); renderProps(); requestRender();
+  $('#meta').textContent = `broadcast: ${outName} on ${L.label || L.name} — the filter, color ramps, GT/swath, and exports all see it`;
 }

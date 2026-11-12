@@ -5,7 +5,11 @@
 import { S, _fileHandles, layerById } from './state.js';
 import { pinEvictLayer } from './columns.js';
 import { applyColTypes, layerBlob, layerTableHeader } from './records.js';
-import { addPaintColorOptions, applyCatLegend, applyCatVisibility, applyRamp, paintActiveCol, rampCfgOf, refreshProps, ruleModeOf, runRules, syncRuleMode } from './props.js';
+import { refreshProps } from './props.js';
+import { addPaintColorOptions, paintActiveCol } from './paint.js';
+import { ruleModeOf, runRules, syncRuleMode } from './rules.js';
+import { applyCatLegend, applyCatVisibility } from './categories.js';
+import { applyRamp, rampCfgOf } from './ramp.js';
 import { openBlob, openBlocksBlob, openDmBlob, openParquetBlocks } from './open.js';
 import { markProjectDirty } from './project.js';
 import { mapColumns } from '../../../ext/condenser/src/main.js';

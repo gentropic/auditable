@@ -11,7 +11,7 @@ import { createParquetBlobWriter } from '../../../ext/parquet/index.js';
 import { coordNum, createMortonSorter } from '../../../ext/condenser/src/main.js';
 import { fmtSize } from './paths.js';
 import { S } from './state.js';
-import { addPaintColorOptions } from './props.js';
+import { addPaintColorOptions } from './paint.js';
 import { markProjectDirty } from './project.js';
 import { openParquetBlocks } from './open.js';
 import { renderLayers } from './tree.js';

@@ -14,7 +14,6 @@ import { coordNum } from '../../../ext/condenser/src/main.js';
 import { gridAxesOf } from './grid-ops.js';
 import { floatWin, focusWindow } from './windows.js';
 import { paintRecount } from './columns.js';
-import { addPaintColorOptions, applyPaintPalette, paintSelOf } from './props.js';
 import { menuXY } from './menu.js';
 import { setSwathBand } from './overlay.js';
 import { layerWorldBbox } from './gridtools.js';
@@ -24,7 +23,7 @@ import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
 import { rendererDocBbox } from './layers.js';
 import { applyLayerSelection, clearSelection, selectionStatus } from './selection.js';
-import { addPaintValue, createPaintCol, paintColByName } from './paint.js';
+import { addPaintValue, createPaintCol, paintColByName, addPaintColorOptions, applyPaintPalette, paintSelOf } from './paint.js';
 const $ = (s) => document.querySelector(s);
 
 // ── swath (drift) analysis ────────────────────────────────────────────────────

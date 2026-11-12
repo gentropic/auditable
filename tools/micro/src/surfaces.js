@@ -9,7 +9,7 @@ import { applyGridExtend, rasterizeMeshToGrid, surfaceFromGrid } from './grid-op
 import { mkLineage } from './lineage.js';
 import { openBlob } from './open.js';
 import { writeEsriAsc } from './grid-io.js';
-import { RAMP_PRESETS, rampCfgOf, rampSample } from './props.js';
+import { RAMP_PRESETS, rampCfgOf, rampSample } from './ramp.js';
 import { buildHeightfieldMesh } from '../../../ext/condenser/src/main.js';
 import { markProjectDirty } from './project.js';
 import { renderLayers } from './tree.js';

@@ -9,7 +9,7 @@ import { _attrTables, closeAttrTable } from './attrtable.js';
 import { clearMeasure } from './overlay.js';
 import { renderLayers } from './tree.js';
 import { syncMeshPickable } from './surfaces.js';
-import { addPaintColorOptions } from './props.js';
+import { addPaintColorOptions } from './paint.js';
 const $ = (s) => document.querySelector(s);
 
 export const rendererDocBbox = () => S.docBbox || Float64Array.of(0, 0, 0, 1, 1, 1);

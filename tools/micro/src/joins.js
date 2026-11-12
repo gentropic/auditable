@@ -5,13 +5,14 @@
 // columns (layerRecords: records, not rows), and RECONCILE maps the difference.
 // Carved from index.html (phase 3).
 import { attrRowCountOf, blockCaps, colIsNumeric, layerRecords, layerRows, layerTableHeader, numOf } from './records.js';
-import { cellOf, commonLattice, coordNum, latticeMapOf, makeBoxAggregator, makeResampler, worldMapOf } from '../../../ext/condenser/src/main.js';
+import { cellOf, commonLattice, coordNum, latticeMapOf, makeBoxAggregator, makeResampler, worldMapOf, gridsCompatible } from '../../../ext/condenser/src/main.js';
 import { gridAxesOf } from './grid-ops.js';
 import { mkLineage } from './lineage.js';
 import { matColSet, paintRecount } from './columns.js';
 import { persistElement } from './element-store.js';
-import { S, activeLayer, requestRender } from './state.js';
-import { applyRamp, renderProps, setRampCfg } from './props.js';
+import { S, activeLayer, requestRender, layerById } from './state.js';
+import { renderProps, ppNote, mkRow } from './props.js';
+import { applyRamp, setRampCfg } from './ramp.js';
 import { markProjectDirty } from './project.js';
 import { openBlob } from './open.js';
 import { renderLayers } from './tree.js';
@@ -181,7 +182,7 @@ export async function runKeyJoin({ leftL, rightL, leftKey, rightKey, bring, dup 
   return { blob: new Blob(parts, { type: 'text/csv' }), rows: total, matched };
 }
 
-export const shortName = (L) => (L.label || L.name || '').replace(/\.[^.]+$/, '');
+const shortName = (L) => (L.label || L.name || '').replace(/\.[^.]+$/, '');
 
 export function joinColumnsFromForm(jf, L, R) {
   const lh = layerTableHeader(L), rh = layerTableHeader(R);
@@ -372,7 +373,7 @@ function targetAxes(jf, L, R) {
   return c;
 }
 // run the spatial join and open the result as a new layer, with its lineage
-export async function runSpatialJoinUI(L, R, jf) {
+async function runSpatialJoinUI(L, R, jf) {
   try {
     const T = targetAxes(jf, L, R);
     const columns = joinColumnsFromForm(jf, L, R);
@@ -385,7 +386,151 @@ export async function runSpatialJoinUI(L, R, jf) {
 }
 
 // "Reconcile…": a menu with one entry per grade both models share
-export function openReconcileMenu(L, R, jf, shared, anchor) {
+function openReconcileMenu(L, R, jf, shared, anchor) {
   const r = anchor.getBoundingClientRect();
   menuXY(r.left - 40, r.bottom + 2, shared.map((g) => ({ label: `Δ on ${g}`, action: () => runReconcile(L, R, jf, g) })));
+}
+
+// ── join tab (§ join-spec): the active layer is the LEFT. Spatial mode
+// resamples a compatible right model onto a target grid; key mode hash-joins by
+// a key column. Both emit a NEW layer. Reconcile is a spatial preset (Δ column).
+let _joinForm = null;
+export function resetJoinForm() { _joinForm = null; }
+const joinTableLayers = (L) => S.layers.filter((x) => x.id !== L.id && layerTableHeader(x));
+const joinBlockLayers = (L) => S.layers.filter((x) => x.id !== L.id && gridAxesOf(x));
+export function renderJoinTab(body, L) {
+  if (!layerTableHeader(L)) { body.appendChild(ppNote('join needs a table-backed layer')); return; }
+  if (!_joinForm) _joinForm = { mode: gridAxesOf(L) ? 'spatial' : 'key', rightId: null, target: 'left', cols: [], ops: {}, weights: {}, keyL: '', keyR: '', bring: new Set(), dup: 'first' };
+  const jf = _joinForm;
+  const seg = document.createElement('div'); seg.className = 'pp-seg';
+  for (const md of ['spatial', 'key']) {
+    const bt = document.createElement('button'); bt.className = 'pp-segbtn' + (jf.mode === md ? ' on' : '');
+    bt.textContent = md === 'spatial' ? 'Spatial' : 'By key';
+    if (md === 'spatial' && !gridAxesOf(L)) bt.disabled = true;
+    bt.onclick = () => { jf.mode = md; renderProps(); };
+    seg.appendChild(bt);
+  }
+  body.appendChild(mkRow('mode', seg));
+  const rights = jf.mode === 'spatial' ? joinBlockLayers(L) : joinTableLayers(L);
+  if (!rights.length) { body.appendChild(ppNote(jf.mode === 'spatial' ? 'open another block model to join against' : 'open another table layer to join against')); return; }
+  const rSel = document.createElement('select');
+  { const o = document.createElement('option'); o.value = ''; o.textContent = '— pick a layer —'; rSel.appendChild(o); }
+  for (const r of rights) { const o = document.createElement('option'); o.value = String(r.id); o.textContent = r.label || r.name; rSel.appendChild(o); }
+  rSel.value = jf.rightId != null && rights.some((r) => r.id === jf.rightId) ? String(jf.rightId) : '';
+  rSel.onchange = () => { jf.rightId = rSel.value ? +rSel.value : null; jf.cols = []; jf.bring = new Set(); jf.keyL = ''; jf.keyR = ''; renderProps(); };
+  body.appendChild(mkRow('right', rSel));
+  const R = jf.rightId != null ? layerById(jf.rightId) : null;
+  if (!R) return;
+  if (jf.mode === 'spatial') renderSpatialJoinUI(body, L, R, jf); else renderKeyJoinUI(body, L, R, jf);
+}
+function renderSpatialJoinUI(body, L, R, jf) {
+  const c = gridsCompatible(gridAxesOf(L), gridAxesOf(R));
+  const ban = document.createElement('div');
+  if (c.ok) { ban.className = 'pp-banner ok'; ban.textContent = c.nested ? `compatible — clean replicate / aggregate` : `compatible — common lattice (mixed weights)`; }
+  else { ban.className = 'pp-banner bad'; ban.textContent = `incompatible — ${c.reason}`; }
+  body.appendChild(ban);
+  if (!c.ok) return;
+  // target grid
+  const tSel = document.createElement('select');
+  for (const [v, lab] of [['left', `${shortName(L)} (this)`], ['right', shortName(R)], ['finest', 'common — finest'], ['coarsest', 'common — coarsest']]) { const o = document.createElement('option'); o.value = v; o.textContent = lab; tSel.appendChild(o); }
+  tSel.value = jf.target; tSel.onchange = () => { jf.target = tSel.value; renderProps(); };
+  body.appendChild(mkRow('target grid', tSel));
+  // per-source column pickers
+  const lh = layerTableHeader(L), rh = layerTableHeader(R);
+  const addSourceCols = (side, srcL, h) => {
+    const head = document.createElement('div'); head.className = 'pp-jhead'; head.textContent = `${side === 'left' ? shortName(L) : shortName(R)} columns`; body.appendChild(head);
+    const m = h.mapping || {};
+    for (let i = 0; i < h.columns.length; i++) {
+      if (i === m.x || i === m.y || i === m.z) continue;      // coords define the grid, not joined
+      const name = h.columns[i], num = colIsNumeric(srcL, h, i), key = side + ':' + name;
+      const row = document.createElement('div'); row.className = 'pp-jcol';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = jf.cols.includes(key);
+      cb.onchange = () => { if (cb.checked) jf.cols.push(key); else jf.cols = jf.cols.filter((k) => k !== key); renderProps(); };
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; nm.title = name + (num ? ' · number' : ' · text');
+      row.append(cb, nm);
+      if (jf.cols.includes(key)) {
+        if (num) {
+          const opSel = document.createElement('select'); for (const op of ['mean', 'sum', 'count']) { const o = document.createElement('option'); o.value = op; o.textContent = op; opSel.appendChild(o); } opSel.value = jf.ops[key] || 'mean'; opSel.onchange = () => { jf.ops[key] = opSel.value; }; row.appendChild(opSel);
+          const wSel = document.createElement('select'); { const o = document.createElement('option'); o.value = ''; o.textContent = 'unweighted'; wSel.appendChild(o); }
+          for (let w = 0; w < h.columns.length; w++) if (colIsNumeric(srcL, h, w) && w !== i && w !== m.x && w !== m.y && w !== m.z) { const o = document.createElement('option'); o.value = h.columns[w]; o.textContent = '× ' + h.columns[w]; wSel.appendChild(o); }
+          wSel.value = jf.weights[key] || ''; wSel.onchange = () => { jf.weights[key] = wSel.value; }; row.appendChild(wSel);
+        } else { const t = document.createElement('span'); t.style.cssText = 'font-size:11px;color:var(--dim)'; t.textContent = 'majority'; row.appendChild(t); }
+      }
+      body.appendChild(row);
+    }
+  };
+  addSourceCols('left', L, lh); addSourceCols('right', R, rh);
+  // scope: honor each side's 3D selection (rubber-band a zone → join/reconcile just it)
+  const anySel = (L._selMask && L._selCount) || (R && R._selMask && R._selCount);
+  const selLab = document.createElement('label'); selLab.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:8px;color:var(--muted);cursor:pointer';
+  const selCb = document.createElement('input'); selCb.type = 'checkbox';
+  selCb.checked = !!jf.useSel && !!anySel; selCb.disabled = !anySel;
+  selCb.onchange = () => { jf.useSel = selCb.checked; };
+  selLab.append(selCb, anySel ? 'only the 3D selection (each side uses its own, where present)' : 'only the 3D selection — select something first (r / v)');
+  if (!anySel) jf.useSel = false;
+  body.appendChild(selLab);
+  // run + reconcile
+  const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:6px;margin-top:10px';
+  const rightPicked = jf.cols.some((k) => k.startsWith('right:'));
+  const runC = document.createElement('button'); runC.className = 'pp-scan'; runC.style.flex = '1'; runC.textContent = 'Join → columns here';
+  runC.disabled = !(jf.target === 'left' && rightPicked);
+  runC.title = jf.target === 'left' ? `resample ${shortName(R)}'s picked columns onto this model's own cells — real columns, no new layer` : 'columns land here only when the target grid is THIS model (other targets change the record set → a new layer)';
+  runC.onclick = async () => { try { const outs = await spatialJoinToCols(L, R, jf); $('#meta').textContent = `join: ${outs.join(', ')} on ${L.label || L.name} — filter, color, GT and export all see ${outs.length > 1 ? 'them' : 'it'}`; } catch (e) { $('#meta').textContent = `join: ${e.message}`; } };
+  btns.appendChild(runC);
+  const run = document.createElement('button'); run.className = 'pp-scan'; run.textContent = `→ new layer`;
+  run.disabled = !jf.cols.length;
+  run.title = 'a new block-model layer on the target grid';
+  run.onclick = () => runSpatialJoinUI(L, R, jf);
+  btns.appendChild(run);
+  // reconcile enabled when a numeric column exists in BOTH
+  const shared = lh.columns.filter((n) => colIsNumeric(L, lh, lh.columns.indexOf(n)) && rh.columns.includes(n) && colIsNumeric(R, rh, rh.columns.indexOf(n)) && ![lh.mapping.x, lh.mapping.y, lh.mapping.z].includes(lh.columns.indexOf(n)));
+  const rec = document.createElement('button'); rec.className = 'pp-scan'; rec.textContent = 'Reconcile…'; rec.disabled = !shared.length;
+  rec.title = shared.length ? `Δ on ${shared.join(', ')}` : 'needs a numeric column present in both models';
+  rec.onclick = () => openReconcileMenu(L, R, jf, shared, rec);
+  btns.appendChild(rec);
+  body.appendChild(btns);
+  body.appendChild(ppNote('a new block-model layer on the target grid, carrying the chosen columns as real (filter/colour/export-able) columns'));
+}
+function renderKeyJoinUI(body, L, R, jf) {
+  const lh = layerTableHeader(L), rh = layerTableHeader(R);
+  const colSel = (cols, val, on) => { const s = document.createElement('select'); { const o = document.createElement('option'); o.value = ''; o.textContent = '— key —'; s.appendChild(o); } for (const n of cols) { const o = document.createElement('option'); o.value = n; o.textContent = n; s.appendChild(o); } s.value = val || ''; s.onchange = () => on(s.value); return s; };
+  body.appendChild(mkRow('left key', colSel(lh.columns, jf.keyL, (v) => { jf.keyL = v; })));
+  body.appendChild(mkRow('right key', colSel(rh.columns, jf.keyR, (v) => { jf.keyR = v; })));
+  const head = document.createElement('div'); head.className = 'pp-jhead'; head.textContent = 'bring columns'; body.appendChild(head);
+  for (const n of rh.columns) {
+    if (n === jf.keyR) continue;
+    const row = document.createElement('div'); row.className = 'pp-jcol';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = jf.bring.has(n);
+    cb.onchange = () => { if (cb.checked) jf.bring.add(n); else jf.bring.delete(n); };
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = n;
+    row.append(cb, nm); body.appendChild(row);
+  }
+  const dupSel = document.createElement('select'); for (const [v, lab] of [['first', 'first match'], ['aggregate', 'average dups'], ['error', 'error on dups']]) { const o = document.createElement('option'); o.value = v; o.textContent = lab; dupSel.appendChild(o); } dupSel.value = jf.dup; dupSel.onchange = () => { jf.dup = dupSel.value; };
+  body.appendChild(mkRow('duplicate keys', dupSel));
+  const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:6px;margin-top:8px';
+  const runC = document.createElement('button'); runC.className = 'pp-scan'; runC.style.flex = '1'; runC.textContent = 'Join → columns here';
+  runC.disabled = !(jf.keyL && jf.keyR && jf.bring.size);
+  runC.title = 'the brought columns land ON this layer (rows unchanged — a key join never needs a new layer)';
+  runC.onclick = async () => {
+    try {
+      const { outs, matched, rows } = await keyJoinToCols(L, R, { leftKey: jf.keyL, rightKey: jf.keyR, bring: [...jf.bring], dup: jf.dup });
+      $('#meta').textContent = `key join: ${matched.toLocaleString()} of ${rows.toLocaleString()} rows matched — ${outs.join(', ')} on ${L.label || L.name}`;
+    } catch (e) { $('#meta').textContent = `key join: ${e.message}`; }
+  };
+  btns.appendChild(runC);
+  const run = document.createElement('button'); run.className = 'pp-scan'; run.textContent = '→ new layer';
+  run.disabled = !(jf.keyL && jf.keyR && jf.bring.size);
+  run.title = 'export-shaped: a new layer/file of this layer’s rows + the brought columns';
+  run.onclick = async () => {
+    try {
+      const { blob, rows, matched } = await runKeyJoin({ leftL: L, rightL: R, leftKey: jf.keyL, rightKey: jf.keyR, bring: [...jf.bring], dup: jf.dup, prefix: shortName(R).replace(/\W+/g, '_') + '_', label: 'join' });
+      const name = `${shortName(L)}+${shortName(R)}.csv`;
+      const lin = mkLineage('keyjoin', { leftKey: jf.keyL, rightKey: jf.keyR, bring: [...jf.bring], dup: jf.dup }, [L.lineage, R.lineage]);
+      await openBlob(blob, name, 'add', null, { lineage: lin });
+      $('#meta').textContent = `key join: ${matched.toLocaleString()} of ${rows.toLocaleString()} rows matched → ${name}`;
+    } catch (e) { $('#meta').textContent = `key join: ${e.message}`; }
+  };
+  btns.appendChild(run);
+  body.appendChild(btns);
+  body.appendChild(ppNote('columns land HERE by default (matched by key; unmatched → blank) — “new layer” writes a joined copy instead'));
 }

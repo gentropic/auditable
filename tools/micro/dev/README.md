@@ -43,6 +43,45 @@ converts them.
 A carve also leaves behind the imports that only the moved code used. `unused.mjs`
 lists and removes them.
 
+## move.mjs
+
+Moves top-level declarations from one `src/` module to another, existing or new.
+`carve.mjs` takes code out of the app; this one splits and regroups modules.
+
+```
+node tools/micro/dev/move.mjs <from> <to> --names a,b,c [--header "text"] --dry
+```
+
+- `--names`: the declarations to move. Each goes to the end of `src/<to>.js` with
+  the comment block directly above it, but only the part below the last carve
+  pointer (`// (x lives in src/y.js)`) in that block. Whatever stands above a
+  pointer belongs to something that moved earlier, or to the section.
+- `--header "text"`: the opening comment of `src/<to>.js` when it does not exist
+  yet (required then).
+- `--dry`: report what would change and write nothing.
+
+What it rewrites:
+
+- `<to>` imports what the moved code used: `<from>`'s imports from the same
+  source, and anything that stays in `<from>` from `./<from>.js` (`<from>` gains
+  `export` on those). A moved name `<to>` imported from `<from>` becomes local.
+  `$` is copied rather than imported.
+- What stays in `<from>` and still uses a moved name imports it from `./<to>.js`.
+- Every other module, and `index.html`, that imported a moved name from `<from>`
+  imports it from `<to>`.
+- `<from>` drops the imports only the moved code used.
+
+It refuses, and says why, when a moved name is already bound in `<to>`, when the
+moved code wants a name `<to>` binds differently, when either side would assign a
+binding the other now owns (an imported binding cannot be written: give the owner
+a small function such as `resetJoinForm()` and call that instead), when the moved
+code uses the hooks object `H`, on a namespace import of either module, and when a
+named declaration shares its statement with one that stays.
+
+The two modules often end up importing each other. Run `cycles.mjs` after a move,
+then build and run the smokes. A move can leave exports nobody imports any more;
+drop their `export`.
+
 ## hooks.mjs
 
 Lists the hooks each module receives from the app and says where each one's target

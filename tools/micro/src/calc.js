@@ -1,11 +1,14 @@
 // micro — the calculated-column window: write an expression, see it checked against
 // the layer's columns, and add it as a column the filter and the colouring can use.
-import { blockSchema, layerTableHeader, sampleRow, schemaExt } from './records.js';
+import { blockSchema, layerTableHeader, sampleRow, schemaExt, calcOrder, attrRowCountOf, numOf, layerRecords } from './records.js';
 import { floatWin, raiseWindow } from './windows.js';
 import { markProjectDirty } from './project.js';
-import { S } from './state.js';
-import { _propFor, _propOpen, addPaintColorOptions, applyRamp, calcSelOf, colorSelOf, materializeCalcCol, refreshProps, renderProps, syncRuleMode } from './props.js';
-import { compileValue, deps, parse, quoteIdent, validate } from '../../../ext/expr/index.js';
+import { S, requestRender } from './state.js';
+import { _propFor, _propOpen, refreshProps, renderProps } from './props.js';
+import { addPaintColorOptions } from './paint.js';
+import { syncRuleMode } from './rules.js';
+import { applyRamp, colorSelOf } from './ramp.js';
+import { compileValue, deps, parse, quoteIdent, validate, compileChunk } from '../../../ext/expr/index.js';
 import { columnValues, exprField, syncHL } from './exprfield.js';
 import { fdBounds, fdNum, fdRenderChain, fdRenderLeaf, fdValues } from './filter-drawer.js';
 import { numericColsOf } from './analysis.js';
@@ -14,6 +17,11 @@ import { saveRecipe } from './recipes.js';
 import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
 import { _attrTables } from './attrtable.js';
+import { matColSourceHash, matColCodes, PAINT_BLANK, expandedDeps, pinGet, pinWindow, censusChunkCols, ensureStoredValues, matColSet } from './columns.js';
+import { fmtStat } from './analysis-ui.js';
+import { mkLineage } from './lineage.js';
+import { persistElement } from './element-store.js';
+import { renderLayers } from './tree.js';
 const $ = (s) => document.querySelector(s);
 
 // ── ƒ CALCULATIONS window — the calc-column authoring workbench (Leapfrog's
@@ -301,4 +309,131 @@ export function layerHasColumn(name, layerName) {
     ...(L.dataCols || []).map((c) => c.name),
   ];
   return all.some((n) => String(n).toLowerCase() === String(name).toLowerCase());
+}
+
+// painted-column color channel: colorSel 'paint:<name>' → that column's codes
+// ride the SAME rule texture + palette (rules fill codes by expression,
+// painting fills them by gesture — one GPU path)
+// ── color-by-ƒ: a calc column drives the display via an EPHEMERAL realization —
+// a display CACHE, not data (never serialized, invisible to exports/records;
+// materialize→stored stays the freeze path). Freshness = a hash of the
+// DEFINITION CLOSURE (this expr + every transitively-referenced ƒ expr, via
+// deps) + source identity + the paint version (a brush stroke can feed a calc).
+// Stale → re-realize lazily (one scan) → bake codes → the same ratio-paint
+// palette/codes path materialized columns ride. One realization per layer
+// (the colored one); kept when you color away, replaced when you pick another.
+export function calcSelOf(L) { const v = L && colorSelOf(L); return v && typeof v === 'string' && v.startsWith('calc:') ? v.slice(5) : null; }
+function calcDisplayHash(L, name) {
+  const by = new Map((L.calcCols || []).map((c) => [String(c.name).toLowerCase(), c]));
+  const seen = new Set(); const parts = [];
+  (function walk(nm) {
+    const c = by.get(nm); if (!c || seen.has(nm)) return; seen.add(nm);
+    parts.push(c.name + '=' + c.expr);
+    let ds = []; try { ds = deps(c.expr); } catch { /* bad expr → no deps */ }
+    for (const d of ds) walk(String(d).toLowerCase());
+  })(String(name).toLowerCase());
+  return parts.join('\n') + '|' + matColSourceHash(L) + '|' + (L._paintVer || 0);
+}
+export function calcDisplayCol(L) {
+  const name = calcSelOf(L); if (!name) return null;
+  const cd = L._calcDisplay;
+  return cd && cd.name === name && cd.hash === calcDisplayHash(L, name) ? cd.col : null;
+}
+export async function ensureCalcDisplay(L) {
+  const name = calcSelOf(L); if (!name || calcDisplayCol(L)) return;
+  const cc = (L.calcCols || []).find((c) => c.name === name); if (!cc || cc.ty === 'string') return;
+  const hash = calcDisplayHash(L, name);
+  if (L._calcDisplayBusy === hash) return;                 // this exact state is already being realized
+  L._calcDisplayBusy = hash;
+  $('#meta').textContent = `ƒ ${name}: computing for display…`;
+  let vals;
+  try { vals = await realizeCalc(L, name); }
+  catch (e) { L._calcDisplayBusy = null; $('#meta').textContent = `ƒ ${name}: ${e.message}`; return; }
+  L._calcDisplayBusy = null;
+  if (calcSelOf(L) !== name || hash !== calcDisplayHash(L, name)) { ensureCalcDisplay(L); return; }   // went stale mid-scan
+  let mn = Infinity, mx = -Infinity, nn = 0;
+  for (let i = 0; i < vals.length; i++) { const v = vals[i]; if (Number.isFinite(v)) { if (v < mn) mn = v; if (v > mx) mx = v; nn++; } }
+  if (!nn) { mn = 0; mx = 0; }
+  const col = { name, kind: 'ratio', mat: true, selKey: 'calc:' + name, fvalues: vals, codes: matColCodes(vals, mn, mx), blankColor: PAINT_BLANK, min: mn, max: mx, count: vals.length, nonnull: nn };
+  L._calcDisplay = { name, hash, col };
+  applyRamp(L, true); syncRuleMode(L);
+  $('#meta').textContent = `ƒ ${name}: colored — ${nn.toLocaleString()} values, ${fmtStat(mn)} … ${fmtStat(mx)}`;
+}
+// freeze a computed calc column into a stored materialized column (same name):
+// evaluate its expression across every record → matColSet, drop the calc col. Bakes
+// an expensive expression, or keeps a derived column without carrying its inputs.
+// FAST PATH: when every BASE column in the target's dependency cone is PINNED
+// (a prior complete filter scan teed it), realize via compileChunk over 256K
+// typed windows — the tier-3 filter engine (~100× the row path, no file read).
+// Materialized/paint inputs come from RAM inside censusChunkCols; ƒ inputs
+// realize chunk-wise in dependency order. Any unpinned base dep → null (the
+// row path takes over, and the next complete filter scan may pin it).
+export function realizeCalcPinned(L, name) {
+  const h = layerTableHeader(L); if (!h) return null;
+  if (!(L.calcCols || []).some((c) => c.name === name)) return null;
+  let ast; try { ast = parse(quoteIdent(name)); } catch { return null; }
+  const needL = expandedDeps(L, ast); needL.add(String(name).toLowerCase());
+  const baseLow = new Map(h.columns.map((c, i) => [String(c).toLowerCase(), c]));
+  const pcsLow = new Set((L.paintCols || []).map((c) => String(c.name).toLowerCase()));
+  const ccsLow = new Set((L.calcCols || []).map((c) => String(c.name).toLowerCase()));
+  const baseNames = [];
+  for (const k of needL) {
+    if (ccsLow.has(k) || pcsLow.has(k)) continue;          // resolved from RAM by censusChunkCols
+    const bn = baseLow.get(k); if (!bn) continue;          // unknown name → blank, same as everywhere
+    if (!pinGet(L, bn)) return null;
+    baseNames.push(bn);
+  }
+  const censusSchema = schemaExt(L, h);
+  const baseLen = h.columns.length, paintLen = (L.paintCols || []).length;
+  let chunkFns;
+  try {
+    chunkFns = calcOrder(L).filter((it) => needL.has(String(it.c.name).toLowerCase()))
+      .map((it) => ({ slot: baseLen + paintLen + it.idx, fn: compileChunk(it.c.expr, censusSchema, { decimal: '.' }) }));
+  } catch { return null; }
+  const target = (L.calcCols || []).findIndex((c) => c.name === name);
+  const total = attrRowCountOf(L) || 0; if (!total) return null;
+  const vals = new Float32Array(total); const scr = {};
+  for (let at = 0; at < total; at += (1 << 18)) {
+    const n = Math.min(1 << 18, total - at);
+    const byName = {};
+    baseNames.forEach((bn, ci) => { byName[bn] = pinWindow(pinGet(L, bn), at, n, scr[ci] || (scr[ci] = [])); });
+    const ccols = censusChunkCols(L, h, byName, at, n, needL, chunkFns);
+    const col = ccols[baseLen + paintLen + target];
+    if (!col) return null;
+    for (let i = 0; i < n; i++) { const v = numOf(col[i]); vals[at + i] = Number.isFinite(v) ? v : NaN; }
+  }
+  return vals;
+}
+export async function realizeCalc(L, name) {                      // one pass → per-record Float32 values of ƒ `name`
+  const h = layerTableHeader(L); if (!h) throw new Error('no column table');
+  const fast = realizeCalcPinned(L, name);
+  if (fast) return fast;
+  try { await ensureStoredValues(L, expandedDeps(L, parse(quoteIdent(name)))); } catch { /* unknown deps → blanks */ }
+  const fn = compileValue(quoteIdent(name), schemaExt(L, h), { decimal: '.' });   // a NAME as an expression → quote
+  const n = attrRowCountOf(L) || 0; const vals = new Float32Array(n); let rec = 0;
+  // numbered as the renderer numbers (layerRecords): a CSV row with no usable
+  // coordinates is no record, so counting it shifted every later value one block on
+  for await (const { f } of layerRecords(L, null)) {
+    if (rec >= n) break;
+    let v; try { v = numOf(fn(f)); } catch { v = NaN; }
+    vals[rec] = Number.isFinite(v) ? v : NaN; rec++;
+    if ((rec & 0xFFFF) === 0) await new Promise((r) => setTimeout(r));
+  }
+  for (let i = rec; i < n; i++) vals[i] = NaN;              // past the last record: blank, never 0
+  return vals;
+}
+export async function materializeCalcCol(L, name) {
+  const cc = (L.calcCols || []).find((c) => c.name === name); if (!cc) { $('#meta').textContent = `materialize: no calc column “${name}”`; return; }
+  if (!layerTableHeader(L)) return;
+  $('#meta').textContent = `materializing “${name}”…`;
+  const vals = await realizeCalc(L, name);
+  const rec = vals.length;
+  const wasColor = colorSelOf(L) === 'calc:' + name;
+  L.calcCols = (L.calcCols || []).filter((c) => c.name !== name); L._calcFns = null;   // computed → stored (no schema collision)
+  L._calcDisplay = null;                                    // the ephemeral realization is superseded by the stored column
+  matColSet(L, name, vals, { lineage: mkLineage('materialize', { from: 'calc', expr: cc.expr }, [L.lineage].filter(Boolean)) });
+  if (wasColor) setLayerColorSel(L, 'paint:' + name);
+  try { await persistElement(L); } catch { /* best-effort */ }
+  markProjectDirty(); renderLayers(); requestRender();
+  $('#meta').textContent = `materialized “${name}” — ${rec.toLocaleString()} values stored`;
 }

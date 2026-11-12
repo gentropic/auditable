@@ -3,7 +3,8 @@
 // background colour (the ink flips on a light one); the decorations panel; and the
 // figure recipe. The app owns the camera, the render loop and the overlay canvas.
 import { hexToRgb01 } from './open.js';
-import { RAMP_PRESETS, colorSelOf, ensureLegend, layerClassInfo, rampCfgOf, rampRangeFor, rampSample } from './props.js';
+import { ensureLegend, layerClassInfo } from './categories.js';
+import { RAMP_PRESETS, colorSelOf, rampCfgOf, rampRangeFor, rampSample } from './ramp.js';
 import { layerTableHeader } from './records.js';
 import { S, activeLayer, requestRender } from './state.js';
 import { fmtStat } from './analysis-ui.js';

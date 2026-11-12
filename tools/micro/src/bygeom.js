@@ -16,14 +16,13 @@ import { surfaceFromGrid } from './grid-ops.js';
 import { gridWindowFromGTiff, windowForWorldBbox } from '../../../ext/gtiff/index.js';
 import { paintRecount } from './columns.js';
 import { mkLineage } from './lineage.js';
-import { addPaintColorOptions } from './props.js';
 import { layerWorldBbox } from './gridtools.js';
 import { markProjectDirty } from './project.js';
 import { setLayerColorSel } from './color.js';
 import { _attrTables } from './attrtable.js';
 import { layerShown } from './layers.js';
 import { applyLayerSelection, clearSelection, nextSelEpoch, selEpoch, selectionStatus } from './selection.js';
-import { addPaintValue, createPaintCol } from './paint.js';
+import { addPaintValue, createPaintCol, addPaintColorOptions } from './paint.js';
 const $ = (s) => document.querySelector(s);
 
 // ── select by solid (§17): a closed context mesh classifies records by
