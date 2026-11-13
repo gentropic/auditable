@@ -6,13 +6,25 @@
 // @gcu/rails — state operations
 // Pure functions over the State tree. Zero DOM, zero imports.
 //
-// State shape (informative, see SPEC-rails §3):
-//   State  = { rails: Rail[], floats: Float[] }           — floats deferred to next pass
-//   Rail   = { id, flex, width?, stacks: Stack[] }
-//   Stack  = { id, flex, height?, tabs: Tab[], active, tabPosition? }
-//   Tab    = { id, title, closeable?, draggable?, ...consumer }
+// State shape (informative, see SPEC §3):
+//   State = { root: Node | null, floats: Float[] }
+//   Node  = Split | Stack
+//   Split = { id, dir: 'row' | 'col', children: Node[], flex?, size?, collapsible?, collapsed? }
+//   Stack = { id, tabs: Tab[], active, flex?, size?, tabPosition?, collapsible?, collapsed? }
+//   Tab   = { id, title, closeable?, draggable?, ...consumer }
+//   Float = { id, stack: Stack, x, y, w, h, z, minimized?, maximized? }
+//
+// A Split lays its children out along `dir` ('row' = left to right, 'col' =
+// top to bottom). `flex` is a child's proportional weight inside its parent;
+// `size` is a fixed pixel size along the parent's axis. After cleanup() the
+// tree is normal: no empty stacks, no split with fewer than two children, and
+// no split directly inside a split of the same direction.
 
 let _nextIdCounter = 1;
+
+function isSplit(node) {
+  return !!node && Array.isArray(node.children);
+}
 
 // Bare numeric id — only safe when state is empty or ids don't collide.
 // Prefer freshId(state, prefix) for runtime insertions.
@@ -20,20 +32,30 @@ function makeId(prefix) {
   return prefix + (_nextIdCounter++).toString(36);
 }
 
-// Collect every id currently in state (rails, stacks, tabs, floats).
+// Depth-first walk of the docked tree. fn(node, parent, index).
+function walk(node, fn, parent = null, index = 0) {
+  if (!node) return;
+  fn(node, parent, index);
+  if (isSplit(node)) node.children.forEach((c, i) => walk(c, fn, node, i));
+}
+
+// Every docked stack, in document order.
+function dockStacks(state) {
+  const out = [];
+  walk(state.root, n => { if (!isSplit(n)) out.push(n); });
+  return out;
+}
+
+// Collect every id currently in state (splits, stacks, tabs, floats).
 function collectIds(state) {
   const used = new Set();
-  for (const rail of state.rails || []) {
-    if (rail.id) used.add(rail.id);
-    for (const stack of rail.stacks || []) {
-      if (stack.id) used.add(stack.id);
-      for (const tab of stack.tabs || []) {
-        if (tab.id) used.add(tab.id);
-      }
-    }
-  }
+  walk(state.root, n => {
+    if (n.id) used.add(n.id);
+    for (const tab of n.tabs || []) if (tab.id) used.add(tab.id);
+  });
   for (const float of state.floats || []) {
     if (float.id) used.add(float.id);
+    if (float.stack?.id) used.add(float.stack.id);
     for (const tab of float.stack?.tabs || []) {
       if (tab.id) used.add(tab.id);
     }
@@ -43,8 +65,8 @@ function collectIds(state) {
 
 // Generate an id with the given prefix that doesn't collide with anything
 // currently in state. Use this for any id created at runtime — seed states
-// with user-chosen ids (e.g., 's1', 's2', 'r1') are common and will
-// otherwise clash with naive counter-based ids.
+// with user-chosen ids (e.g., 's1', 's2') are common and will otherwise clash
+// with naive counter-based ids.
 function freshId(state, prefix) {
   const used = collectIds(state);
   while (true) {
@@ -53,13 +75,23 @@ function freshId(state, prefix) {
   }
 }
 
+// Find a docked node by id → { node, parent, index } or null.
+function findNode(state, id) {
+  let hit = null;
+  walk(state.root, (node, parent, index) => {
+    if (!hit && node.id === id) hit = { node, parent, index };
+  });
+  return hit;
+}
+
 function findTab(state, tabId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      const idx = stack.tabs.findIndex(t => t.id === tabId);
-      if (idx >= 0) return { rail, stack, tab: stack.tabs[idx], idx, container: 'rail' };
-    }
-  }
+  let hit = null;
+  walk(state.root, (node, parent) => {
+    if (hit || isSplit(node)) return;
+    const idx = node.tabs.findIndex(t => t.id === tabId);
+    if (idx >= 0) hit = { parent, stack: node, tab: node.tabs[idx], idx, container: 'dock' };
+  });
+  if (hit) return hit;
   for (const float of state.floats || []) {
     if (!float.stack) continue;
     const idx = float.stack.tabs.findIndex(t => t.id === tabId);
@@ -76,11 +108,8 @@ function findFloat(state, floatId) {
 }
 
 function findStack(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return { rail, stack, container: 'rail' };
-    }
-  }
+  const hit = findNode(state, stackId);
+  if (hit && !isSplit(hit.node)) return { parent: hit.parent, stack: hit.node, container: 'dock' };
   for (const float of state.floats || []) {
     if (float.stack && float.stack.id === stackId) {
       return { float, stack: float.stack, container: 'float' };
@@ -89,15 +118,8 @@ function findStack(state, stackId) {
   return null;
 }
 
-function findRail(state, railId) {
-  for (const rail of state.rails) {
-    if (rail.id === railId) return rail;
-  }
-  return null;
-}
-
 // Remove a tab from its stack. Returns the removed Tab or null.
-// Leaves the stack potentially empty; call cleanup(instance) after.
+// Leaves the stack potentially empty; call cleanup(state) after.
 function removeTabFromStack(state, tabId) {
   const hit = findTab(state, tabId);
   if (!hit) return null;
@@ -109,41 +131,135 @@ function removeTabFromStack(state, tabId) {
   return hit.tab;
 }
 
-// Cleanup pass: drop empty stacks, empty rails, empty floats. Reselect active
-// when needed.
+function fixActive(stack) {
+  if (!stack.tabs.find(t => t.id === stack.active)) stack.active = stack.tabs[0].id;
+}
+
+// Normalize a subtree. Returns the node to keep in its place, or null.
+//   - empty stacks go;
+//   - a split's same-direction child split is merged into it (weights scaled
+//     so the merged children keep their on-screen share);
+//   - a split left with one child is replaced by that child, which takes over
+//     the split's place: its flex, size and collapse settings.
+function tidy(node) {
+  if (!isSplit(node)) {
+    if (!node.tabs || node.tabs.length === 0) return null;
+    fixActive(node);
+    return node;
+  }
+  const out = [];
+  for (const c of node.children.map(tidy)) {
+    if (!c) continue;
+    if (isSplit(c) && c.dir === node.dir && c.size == null && !c.collapsed) {
+      const sum = c.children.reduce((a, k) => a + (k.flex ?? 1), 0) || 1;
+      const scale = (c.flex ?? 1) / sum;
+      for (const k of c.children) { k.flex = (k.flex ?? 1) * scale; out.push(k); }
+    } else {
+      out.push(c);
+    }
+  }
+  if (out.length === 0) return null;
+  if (out.length === 1) {
+    const only = out[0];
+    if (node.flex != null) only.flex = node.flex; else delete only.flex;
+    if (node.size != null) only.size = node.size; else delete only.size;
+    if (node.collapsible) only.collapsible = true;
+    if (node.collapsed) only.collapsed = true;
+    return only;
+  }
+  node.children = out;
+  return node;
+}
+
+// Cleanup pass: drop empty stacks and floats, normalize the docked tree,
+// reselect active where needed.
 //
 // Caller is responsible for deciding when to evict panels: closeTab evicts,
 // moveTab does not. This function handles the structural cleanup of empty
 // containers and does NOT touch the panel cache.
 function cleanup(state) {
-  for (const rail of state.rails) {
-    rail.stacks = rail.stacks.filter(s => s.tabs.length > 0);
-    for (const s of rail.stacks) {
-      if (!s.tabs.find(t => t.id === s.active)) {
-        s.active = s.tabs[0].id;
-      }
-    }
-  }
-  state.rails = state.rails.filter(r => r.stacks.length > 0);
+  state.root = state.root ? tidy(state.root) : null;
 
   // Empty float's stack → float removed entirely (invariant 3).
   if (Array.isArray(state.floats)) {
     state.floats = state.floats.filter(f => f.stack && f.stack.tabs.length > 0);
-    for (const f of state.floats) {
-      if (!f.stack.tabs.find(t => t.id === f.stack.active)) {
-        f.stack.active = f.stack.tabs[0].id;
-      }
-    }
+    for (const f of state.floats) fixActive(f.stack);
   }
+}
+
+const SIDE_DIR = { left: 'row', right: 'row', top: 'col', bottom: 'col' };
+
+// Place a new stack in the docked tree. Mutates state. Targets:
+//   { to: 'insert', splitId, at }   — a new child of an existing split
+//                                     (at = child index; default: the end)
+//   { to: 'split', nodeId, side }   — beside an existing node; side is
+//                                     'left' | 'right' | 'top' | 'bottom'
+// The caller fills the stack's tabs (before or after) and runs cleanup().
+function placeStack(state, target, stack) {
+  if (target.to === 'insert') {
+    const hit = findNode(state, target.splitId);
+    if (!hit || !isSplit(hit.node)) throw new Error(`rails: split ${target.splitId} not found`);
+    const split = hit.node;
+    stack.flex = avgFlex(split.children);
+    const at = target.at ?? split.children.length;
+    split.children.splice(Math.max(0, Math.min(at, split.children.length)), 0, stack);
+    return;
+  }
+  if (target.to !== 'split') throw new Error(`rails: placeStack can't handle ${target.to}`);
+  const dir = SIDE_DIR[target.side];
+  if (!dir) throw new Error(`rails: invalid side ${target.side}`);
+  const before = target.side === 'left' || target.side === 'top';
+
+  if (!state.root) {
+    state.root = stack;
+    return;
+  }
+  const hit = target.nodeId == null ? { node: state.root, parent: null, index: 0 }
+                                    : findNode(state, target.nodeId);
+  if (!hit) throw new Error(`rails: node ${target.nodeId} not found`);
+  const { node, parent, index } = hit;
+
+  if (parent && parent.dir === dir) {
+    // Same axis as the parent: take half of the target's share.
+    if (node.size != null) {
+      stack.flex = avgFlex(parent.children);
+    } else {
+      const half = (node.flex ?? 1) / 2;
+      node.flex = half;
+      stack.flex = half;
+    }
+    parent.children.splice(before ? index : index + 1, 0, stack);
+    return;
+  }
+  if (isSplit(node) && node.dir === dir) {
+    // Edge of a split along its own axis: a new end child.
+    stack.flex = avgFlex(node.children);
+    if (before) node.children.unshift(stack); else node.children.push(stack);
+    return;
+  }
+  // Different axis: wrap the target in a new split. Splitting a single stack
+  // halves it; splitting a group gives the newcomer a third.
+  const wrap = { id: freshId(state, 'n'), dir, children: before ? [stack, node] : [node, stack] };
+  if (node.flex != null) wrap.flex = node.flex;
+  if (node.size != null) wrap.size = node.size;
+  delete node.size;
+  node.flex = 1;
+  stack.flex = isSplit(node) ? 0.5 : 1;
+  if (parent) parent.children[index] = wrap;
+  else state.root = wrap;
+}
+
+function avgFlex(nodes) {
+  const flexed = nodes.filter(n => n.size == null);
+  if (!flexed.length) return 1;
+  return flexed.reduce((a, n) => a + (n.flex ?? 1), 0) / flexed.length;
 }
 
 // Collect the set of tab ids currently in state. Used to decide panel evictions.
 function liveTabIds(state) {
   const ids = new Set();
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      for (const tab of stack.tabs) ids.add(tab.id);
-    }
+  for (const stack of dockStacks(state)) {
+    for (const tab of stack.tabs) ids.add(tab.id);
   }
   for (const float of state.floats || []) {
     for (const tab of float.stack?.tabs || []) ids.add(tab.id);
@@ -151,35 +267,68 @@ function liveTabIds(state) {
   return ids;
 }
 
-// Validate that a minimal state satisfies invariants §2.2. Throws on violation.
+// Bring a state into the current shape. Accepts the pre-tree shape
+// ({ rails: [{ stacks: [...] }] } — columns of vertically stacked groups),
+// which is a row split of column splits. Returns the same object, mutated.
+function upgradeState(state) {
+  if (!state || typeof state !== 'object') return state;
+  if (!Array.isArray(state.floats)) state.floats = [];
+  if (Array.isArray(state.rails) && !('root' in state)) {
+    const rails = state.rails;
+    delete state.rails;
+    const asSize = (n, key) => {
+      if (n[key] != null) { n.size = n[key]; }
+      delete n[key];
+    };
+    const cols = rails.map(r => {
+      const col = { id: r.id, dir: 'col', children: (r.stacks || []).map(s => { asSize(s, 'height'); return s; }) };
+      if (r.flex != null) col.flex = r.flex;
+      if (r.width != null) col.size = r.width;
+      if (r.collapsible) col.collapsible = true;
+      if (r.collapsed) col.collapsed = true;
+      return col;
+    });
+    state.root = cols.length ? { id: null, dir: 'row', children: cols } : null;
+    if (state.root) state.root.id = freshId(state, 'n');
+    // Normalize without dropping anything validate would reject: an empty
+    // legacy rail had no tabs anyway.
+    state.root = state.root ? tidy(state.root) : null;
+  }
+  if (!('root' in state)) state.root = null;
+  return state;
+}
+
+// Validate that a state satisfies the invariants (SPEC §3). Throws on violation.
 // Run after deserialize / programmatic state replacement. Skipped in hot paths.
 function validateState(state) {
-  if (!state || !Array.isArray(state.rails)) {
-    throw new Error('rails: state.rails must be an array');
+  if (!state || !('root' in state)) {
+    throw new Error('rails: state.root missing (null for an empty dock)');
   }
-  const seenTabIds = new Set();
-  const seenStackIds = new Set();
-  const seenRailIds = new Set();
-  const seenFloatIds = new Set();
-
-  for (const rail of state.rails) {
-    if (!rail.id) throw new Error('rails: rail missing id');
-    if (seenRailIds.has(rail.id)) throw new Error(`rails: duplicate rail id ${rail.id}`);
-    seenRailIds.add(rail.id);
-    if (!Array.isArray(rail.stacks) || rail.stacks.length === 0) {
-      throw new Error(`rails: rail ${rail.id} must contain at least one stack`);
+  const seen = new Set();
+  const claim = (id, what) => {
+    if (!id) throw new Error(`rails: ${what} missing id`);
+    if (seen.has(id)) throw new Error(`rails: duplicate id ${id}`);
+    seen.add(id);
+  };
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') throw new Error('rails: invalid node');
+    if (isSplit(node)) {
+      claim(node.id, 'split');
+      if (node.dir !== 'row' && node.dir !== 'col') {
+        throw new Error(`rails: split ${node.id} dir must be 'row' or 'col'`);
+      }
+      if (node.children.length === 0) throw new Error(`rails: split ${node.id} has no children`);
+      node.children.forEach(visit);
+    } else {
+      validateStack(node, claim);
     }
-    for (const stack of rail.stacks) {
-      validateStack(stack, seenStackIds, seenTabIds);
-    }
-  }
+  };
+  if (state.root) visit(state.root);
 
   for (const float of state.floats || []) {
-    if (!float.id) throw new Error('rails: float missing id');
-    if (seenFloatIds.has(float.id)) throw new Error(`rails: duplicate float id ${float.id}`);
-    seenFloatIds.add(float.id);
+    claim(float.id, 'float');
     if (!float.stack) throw new Error(`rails: float ${float.id} missing stack`);
-    validateStack(float.stack, seenStackIds, seenTabIds);
+    validateStack(float.stack, claim);
     for (const dim of ['x', 'y', 'w', 'h', 'z']) {
       if (typeof float[dim] !== 'number' || !Number.isFinite(float[dim])) {
         throw new Error(`rails: float ${float.id} ${dim} must be a finite number`);
@@ -188,18 +337,12 @@ function validateState(state) {
   }
 }
 
-function validateStack(stack, seenStackIds, seenTabIds) {
-  if (!stack.id) throw new Error('rails: stack missing id');
-  if (seenStackIds.has(stack.id)) throw new Error(`rails: duplicate stack id ${stack.id}`);
-  seenStackIds.add(stack.id);
+function validateStack(stack, claim) {
+  claim(stack.id, 'stack');
   if (!Array.isArray(stack.tabs) || stack.tabs.length === 0) {
     throw new Error(`rails: stack ${stack.id} must contain at least one tab`);
   }
-  for (const tab of stack.tabs) {
-    if (!tab.id) throw new Error('rails: tab missing id');
-    if (seenTabIds.has(tab.id)) throw new Error(`rails: duplicate tab id ${tab.id}`);
-    seenTabIds.add(tab.id);
-  }
+  for (const tab of stack.tabs) claim(tab.id, 'tab');
   if (!stack.tabs.find(t => t.id === stack.active)) {
     throw new Error(`rails: stack ${stack.id} active references missing tab ${stack.active}`);
   }
@@ -230,9 +373,9 @@ function serializeState(state, replacer) {
   return JSON.stringify(state, replacer);
 }
 
-// Default empty state — valid per invariant 7 (empty workspace legal).
+// Default empty state — valid (an empty workspace is legal).
 function emptyState() {
-  return { rails: [], floats: [] };
+  return { root: null, floats: [] };
 }
 
 // ── src/render.js ──
@@ -247,7 +390,7 @@ function cssEscape(s) {
     : String(s).replace(/["\\]/g, '\\$&');
 }
 
-// z-index scheme. Rail panels sit at RAIL_PANEL_Z, above rail/stack splitters
+// z-index scheme. Docked panels sit at RAIL_PANEL_Z, above the resize bars
 // (z:2) but below the lowest float. Each float gets a 10-unit z-band:
 //   chrome  (titlebar/strip/slot)        : base + z*10 + 0
 //   panel   (the rendered tab body)      : base + z*10 + 5
@@ -278,7 +421,7 @@ function floatHandlesZ(z) {
 // Chrome sublayer structure (built once in api.js's createRails init):
 //
 //   .rails-chrome
-//     .rails-rails     — rail/stack layout, rebuilt on structural rail changes
+//     .rails-rails     — the docked tree, rebuilt on structural changes
 //     .rails-floats    — float frames, rebuilt on structural float changes
 //
 // renderChrome wipes + rebuilds both sublayers from state. Float raise and
@@ -305,7 +448,7 @@ function renderChrome(inst) {
   inst._emptyEl = null;
 
   // Empty workspace: mount renderEmpty() if provided.
-  if (inst.state.rails.length === 0 && (!inst.state.floats || inst.state.floats.length === 0)) {
+  if (!inst.state.root && (!inst.state.floats || inst.state.floats.length === 0)) {
     if (inst.callbacks.renderEmpty) {
       const el = inst.callbacks.renderEmpty();
       if (el) {
@@ -319,85 +462,90 @@ function renderChrome(inst) {
     return;
   }
 
-  renderRails(inst);
+  renderDock(inst);
   renderFloats(inst);
   reposition(inst);
   inst._emit('layout:change', { state: inst.state });
 }
 
-function buildRailBtn(inst, rail, kind) {
+// Collapse / expand button for a collapsible node. The glyph points along
+// the parent's axis: a node in a row folds sideways, one in a column folds up.
+function buildCollapseBtn(inst, node, kind, parentDir) {
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = kind === 'expand' ? 'rails-rail-expand-btn' : 'rails-rail-collapse-btn';
-  btn.textContent = kind === 'expand' ? '\u25b6' : '\u25c0';
-  btn.setAttribute('aria-label', kind === 'expand' ? 'Expand rail' : 'Collapse rail');
-  btn.title = kind === 'expand' ? 'Expand rail' : 'Collapse rail';
+  btn.className = kind === 'expand' ? 'rails-expand-btn' : 'rails-collapse-btn';
+  const row = parentDir !== 'col';
+  btn.textContent = kind === 'expand' ? (row ? '▶' : '▼') : (row ? '◀' : '▲');
+  const label = kind === 'expand' ? 'Expand' : 'Collapse';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
   btn.tabIndex = -1;
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    inst._toggleRailCollapsed(rail.id);
+    inst._toggleCollapsed(node.id);
   });
   return btn;
 }
 
-function renderRails(inst) {
-  inst.state.rails.forEach((rail, ri) => {
-    const railEl = document.createElement('div');
-    railEl.className = 'rails-rail';
-    if (rail.collapsed) railEl.classList.add('rails-collapsed');
-    railEl.dataset.railId = rail.id;
+function renderDock(inst) {
+  const root = inst.state.root;
+  if (!root) return;
+  const el = renderNode(inst, root, null);
+  el.style.flex = '1 1 auto';
+  inst.railsLayer.appendChild(el);
+}
 
-    if (rail.collapsed) {
-      // Collapsed rail: fixed-width strip with a restore button. No stacks
-      // render; their panels are hidden by reposition (no slot found).
-      railEl.style.flex = '0 0 32px';
-      railEl.appendChild(buildRailBtn(inst, rail, 'expand'));
-    } else {
-      if (rail.width != null) {
-        railEl.style.flex = `0 0 ${rail.width}px`;
-      } else {
-        railEl.style.flex = rail.flex ?? 1;
+// Build the element for one docked node (recursively for splits). The
+// caller's flex container lays it out; sizing comes from flex / size.
+function renderNode(inst, node, parent) {
+  const parentDir = parent ? parent.dir : null;
+  let el;
+  if (node.collapsed && parent) {
+    // Collapsed: a fixed 32px strip with a restore button. Nothing inside
+    // renders; the panels of its stacks are hidden by reposition (no slot).
+    el = document.createElement('div');
+    el.className = 'rails-node rails-collapsed ' + (parentDir === 'col' ? 'rails-collapsed-col' : 'rails-collapsed-row');
+    el.dataset.nodeId = node.id;
+    el.style.flex = '0 0 32px';
+    el.appendChild(buildCollapseBtn(inst, node, 'expand', parentDir));
+    return el;
+  }
+
+  if (isSplit(node)) {
+    el = document.createElement('div');
+    el.className = 'rails-node rails-split ' + (node.dir === 'col' ? 'rails-col' : 'rails-row');
+    el.dataset.nodeId = node.id;
+    node.children.forEach((child, i) => {
+      el.appendChild(renderNode(inst, child, node));
+      if (i < node.children.length - 1) {
+        const bar = document.createElement('div');
+        bar.className = 'rails-bar ' + (node.dir === 'col' ? 'rails-bar-col' : 'rails-bar-row');
+        bar.addEventListener('pointerdown', e => inst._onSplitterDown(e, node, i));
+        el.appendChild(bar);
       }
+    });
+  } else {
+    el = buildStackEl(inst, node);
+    el.classList.add('rails-node');
+    el.dataset.nodeId = node.id;
+  }
 
-      rail.stacks.forEach((stack, si) => {
-        const stackEl = buildStackEl(inst, stack);
-        if (stack.height != null) {
-          stackEl.style.flex = `0 0 ${stack.height}px`;
-        } else {
-          stackEl.style.flex = stack.flex ?? 1;
-        }
-        railEl.appendChild(stackEl);
+  if (parent) {
+    el.style.flex = node.size != null ? `0 0 ${node.size}px` : String(node.flex ?? 1);
+  }
 
-        if (si < rail.stacks.length - 1) {
-          const sp = document.createElement('div');
-          sp.className = 'rails-stack-split';
-          sp.addEventListener('pointerdown', e => inst._onSplitterDown(e, 'stack', rail, si));
-          railEl.appendChild(sp);
-        }
-      });
-
-      // For collapsible rails, append the collapse button into the first
-      // stack's strip-wrap so it sits as a flex sibling of the tabs/overflow
-      // button (intentional neighbors), not absolutely-positioned over them.
-      if (rail.collapsible && rail.stacks.length > 0) {
-        const firstWrap = railEl.querySelector('.rails-strip-wrap');
-        if (firstWrap) firstWrap.appendChild(buildRailBtn(inst, rail, 'collapse'));
-      }
-    }
-
-    inst.railsLayer.appendChild(railEl);
-
-    if (ri < inst.state.rails.length - 1) {
-      const sp = document.createElement('div');
-      sp.className = 'rails-rail-split';
-      sp.addEventListener('pointerdown', e => inst._onSplitterDown(e, 'rail', null, ri));
-      inst.railsLayer.appendChild(sp);
-    }
-  });
+  // A collapsible node puts its collapse button into its first strip-wrap,
+  // as a flex sibling of the tabs/overflow button rather than floating over
+  // them.
+  if (node.collapsible && parent) {
+    const firstWrap = el.querySelector('.rails-strip-wrap');
+    if (firstWrap) firstWrap.appendChild(buildCollapseBtn(inst, node, 'collapse', parentDir));
+  }
+  return el;
 }
 
 // Build a fully-assembled .rails-stack element (no size styling applied yet;
-// caller handles flex/width/height). Used for rail-stacks and float-stacks.
+// caller handles sizing). Used for docked stacks and float-stacks.
 function buildStackEl(inst, stack) {
   const stackEl = document.createElement('div');
   stackEl.className = 'rails-stack';
@@ -700,7 +848,7 @@ function rebuildStrip(inst, stackId) {
     renderChrome(inst);
     return;
   }
-  const stack = findStackInState(inst.state, stackId);
+  const stack = findStack(inst.state, stackId)?.stack;
   if (!stack) {
     renderChrome(inst);
     return;
@@ -716,21 +864,10 @@ function rebuildStrip(inst, stackId) {
   inst._emit('layout:change', { state: inst.state });
 }
 
-function findStackInState(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  for (const float of state.floats || []) {
-    if (float.stack && float.stack.id === stackId) return float.stack;
-  }
-  return null;
-}
 
-// Position panels for all stacks (rails + floats). Show the active tab per
+// Position panels for all stacks (dock + floats). Show the active tab per
 // stack; hide all others. Assigns per-panel z-index:
-//   - rail tabs → 5 (above rail/stack splitters at z:2, below the floats
+//   - docked tabs → 5 (above the resize bars at z:2, below the floats
 //     layer at z:100)
 //   - float tabs → 100 + float.z (same effective root z as the float's own
 //     chrome; DOM order breaks the tie and the panel wins because contentLayer
@@ -758,9 +895,7 @@ function reposition(inst) {
     activeIds.add(activeTab.id);
   };
 
-  for (const rail of inst.state.rails) {
-    for (const stack of rail.stacks) placeFromStack(stack, null);
-  }
+  for (const stack of dockStacks(inst.state)) placeFromStack(stack, null);
   for (const float of inst.state.floats || []) {
     if (float.minimized) continue; // panel hidden when float is minimized
     if (float.stack) placeFromStack(float.stack, float);
@@ -889,58 +1024,42 @@ const STRIP_EDGE_SCROLL_SPEED = 8; // px per frame
 
 // ── splitter drag ─────────────────────────────────────────────────────────
 
-const MIN_RAIL_WIDTH = 140;
-const MIN_STACK_HEIGHT = 100;
+const MIN_ROW_CHILD = 140;   // px — a child of a row split (width)
+const MIN_COL_CHILD = 100;   // px — a child of a column split (height)
 
-function onSplitterDown(inst, e, kind, rail, idx) {
+// Drag the bar between split.children[idx] and [idx + 1]. Adjusts the two
+// adjacent weights, preserving their sum, so other siblings don't move.
+function onSplitterDown(inst, e, split, idx) {
   e.preventDefault();
   e.stopPropagation();
 
-  const snapshot = [];
-  if (kind === 'rail') {
-    const a = inst.state.rails[idx], b = inst.state.rails[idx + 1];
-    snapshot.push({ target: a, flex: a.flex });
-    snapshot.push({ target: b, flex: b.flex });
-  } else {
-    const a = rail.stacks[idx], b = rail.stacks[idx + 1];
-    snapshot.push({ target: a, flex: a.flex });
-    snapshot.push({ target: b, flex: b.flex });
-  }
+  const a = split.children[idx], b = split.children[idx + 1];
+  if (!a || !b) return;
+  const snapshot = [{ target: a, flex: a.flex }, { target: b, flex: b.flex }];
+  const row = split.dir !== 'col';
+  const min = row ? MIN_ROW_CHILD : MIN_COL_CHILD;
+  const nodeEl = n => inst.railsLayer.querySelector(`[data-node-id="${cssEscape(n.id)}"]`);
 
   for (const p of inst.panels.values()) p.classList.add('rails-dragging');
 
   const scrim = document.createElement('div');
   scrim.className = 'rails-scrim';
+  scrim.style.cursor = row ? 'col-resize' : 'row-resize';
   inst.host.appendChild(scrim);
 
   const onMove = ev => {
-    if (kind === 'rail') {
-      const a = inst.state.rails[idx], b = inst.state.rails[idx + 1];
-      const ae = inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(a.id)}"]`);
-      const be = inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(b.id)}"]`);
-      if (!ae || !be) return;
-      const ra = ae.getBoundingClientRect(), rb = be.getBoundingClientRect();
-      const total = ra.width + rb.width;
-      const totalFlex = (a.flex ?? 1) + (b.flex ?? 1);
-      const w = Math.max(MIN_RAIL_WIDTH, Math.min(total - MIN_RAIL_WIDTH, ev.clientX - ra.left));
-      a.flex = (w / total) * totalFlex;
-      b.flex = totalFlex - a.flex;
-      ae.style.flex = a.flex;
-      be.style.flex = b.flex;
-    } else {
-      const a = rail.stacks[idx], b = rail.stacks[idx + 1];
-      const ae = inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(a.id)}"]`);
-      const be = inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(b.id)}"]`);
-      if (!ae || !be) return;
-      const ra = ae.getBoundingClientRect(), rb = be.getBoundingClientRect();
-      const total = ra.height + rb.height;
-      const totalFlex = (a.flex ?? 1) + (b.flex ?? 1);
-      const h = Math.max(MIN_STACK_HEIGHT, Math.min(total - MIN_STACK_HEIGHT, ev.clientY - ra.top));
-      a.flex = (h / total) * totalFlex;
-      b.flex = totalFlex - a.flex;
-      ae.style.flex = a.flex;
-      be.style.flex = b.flex;
-    }
+    const ae = nodeEl(a), be = nodeEl(b);
+    if (!ae || !be) return;
+    const ra = ae.getBoundingClientRect(), rb = be.getBoundingClientRect();
+    const total = row ? ra.width + rb.width : ra.height + rb.height;
+    const totalFlex = (a.flex ?? 1) + (b.flex ?? 1);
+    const pos = row ? ev.clientX - ra.left : ev.clientY - ra.top;
+    const lo = Math.min(min, total / 2);
+    const v = Math.max(lo, Math.min(total - lo, pos));
+    a.flex = (v / total) * totalFlex;
+    b.flex = totalFlex - a.flex;
+    ae.style.flex = a.flex;
+    be.style.flex = b.flex;
     inst._reposition();
   };
 
@@ -1035,7 +1154,7 @@ function onTabDown(inst, e, tabId) {
   document.addEventListener('keydown', onKey);
 }
 
-// ── float titlebar drag (either moves float, or redocks into rails) ───────
+// ── float titlebar drag (either moves float, or redocks into the dock) ───────
 
 function onFloatTitlebarDown(inst, e, floatId) {
   // Ignore clicks on titlebar buttons.
@@ -1061,7 +1180,7 @@ function onFloatTitlebarDown(inst, e, floatId) {
     if (!started) {
       if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < threshold) return;
       started = true;
-      // Begin as a move. If the cursor enters a rails drop zone during the drag,
+      // Begin as a move. If the cursor enters a docked drop zone during the drag,
       // we'll transition into 'redock' mode (showing zones, allowing drop).
       dragMode = 'move';
       beginFloatDrag(inst, float, origX, origY, origW, origH);
@@ -1102,8 +1221,8 @@ function beginFloatDrag(inst, float, origX, origY, origW, origH) {
   scrim.className = 'rails-scrim';
   inst.host.appendChild(scrim);
 
-  // Compute rails drop zones (not new-float — the float itself is being dragged)
-  // so the user can redock onto rails by dropping on a rail zone. Exclude the
+  // Compute docked drop zones (not new-float — the float itself is being dragged)
+  // so the user can redock by dropping on any docked zone. Exclude the
   // dragging float's own titlebar from the zone set — dropping a float on itself
   // is a no-op.
   const activeTab = float.stack?.tabs.find(t => t.id === float.stack.active);
@@ -1191,29 +1310,26 @@ function endFloatDrag(inst, ev, float) {
 }
 
 // Resolve (or create) the target stack for redocking a float's tabs in bulk.
-// For 'new-rail'/'new-stack' targets, creates the container. For stack/insert
-// targets, returns the existing stack.
+// For gap / edge targets, creates the stack. For stack/insert targets,
+// returns the existing stack.
 function resolveRedockDestination(inst, zone) {
-  if (zone.type === 'new-rail') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [], active: null };
-    const nr = { id: inst._freshId('r'), flex: 1, stacks: [ns] };
-    inst.state.rails.splice(zone.at, 0, nr);
-    return ns;
-  }
-  if (zone.type === 'new-stack') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [], active: null };
-    const rail = inst.state.rails.find(r => r.id === zone.railId);
-    if (rail) rail.stacks.splice(zone.at, 0, ns);
+  if (isNewStackZone(zone)) {
+    const ns = { id: inst._freshId('s'), tabs: [], active: null };
+    placeStack(inst.state, zoneToMoveTarget(zone), ns);
     return ns;
   }
   if (zone.type === 'tab-insert' || zone.type === 'tab-append') {
-    return findStackById(inst.state, zone.stackId);
+    return findStack(inst.state, zone.stackId)?.stack || null;
   }
   if (zone.type === 'float-titlebar') {
     const f = findFloat(inst.state, zone.floatId);
     return f?.stack || null;
   }
   return null;
+}
+
+function isNewStackZone(zone) {
+  return zone.type === 'gap' || zone.type === 'edge' || zone.type === 'workspace-edge';
 }
 
 function teardownFloatDrag(inst) {
@@ -1525,7 +1641,8 @@ function makeZoneEl(inst, z) {
   el.className = 'rails-zone';
   if (z.type === 'tab-insert') el.classList.add('rails-zone-insert');
   if (z.type === 'new-float') el.classList.add('rails-zone-float');
-  if (z.type === 'new-rail' || z.type === 'new-stack') el.classList.add('rails-zone-new');
+  if (z.type === 'gap') el.classList.add('rails-zone-new');
+  if (z.type === 'edge' || z.type === 'workspace-edge') el.classList.add('rails-zone-split');
   el.style.left = z.rect.x + 'px';
   el.style.top = z.rect.y + 'px';
   el.style.width = z.rect.w + 'px';
@@ -1536,7 +1653,7 @@ function makeZoneEl(inst, z) {
 
 // Zones for a tab drag — includes new-float.
 function computeZones(inst, tab, touch) {
-  const zones = collectRailsZones(inst);
+  const zones = collectDockZones(inst, tab);
   collectFloatStackZones(inst, zones);
   collectFloatTitlebarZones(inst, zones);
   const dropZones = inst.config.dropZones || {};
@@ -1562,8 +1679,8 @@ function inflateZonesForTouch(zones) {
       t.x -= 4;
       t.w += 8;
     }
-    // new-rail and new-stack gaps — widen from 18px to 30px.
-    if (z.type === 'new-rail' || z.type === 'new-stack') {
+    // gaps between split children — widen from 18px to 30px.
+    if (z.type === 'gap') {
       if (z.rect.w < 20) { z.rect.x -= 6; z.rect.w += 12; }
       if (z.rect.h < 20) { z.rect.y -= 6; z.rect.h += 12; }
     }
@@ -1575,7 +1692,7 @@ function inflateZonesForTouch(zones) {
 // the dragging float's own titlebar / strip / body zones so self-drops don't
 // happen.
 function computeRedockZones(inst, tab, excludeFloatId) {
-  const zones = collectRailsZones(inst);
+  const zones = collectDockZones(inst, null);
   collectFloatStackZones(inst, zones, excludeFloatId);
   collectFloatTitlebarZones(inst, zones, excludeFloatId);
   return filterZones(inst, zones, tab);
@@ -1588,56 +1705,103 @@ function filterZones(inst, zones, tab) {
   return zones;
 }
 
-function collectRailsZones(inst) {
+// Docked drop zones:
+//   gap            — the band between two children of a split: a new stack
+//                    lands there, between them;
+//   edge           — a band along each side of a stack's body: splits that
+//                    stack (left/right side by side, top/bottom one above
+//                    the other). The preview rect is the half it would take;
+//   workspace-edge — a thin band at the rim of the whole dock: a new stack
+//                    along that side spanning everything (only when the root
+//                    is a split; for a single stack it equals its edge zone);
+// plus each stack's own tab-insert / tab-append zones.
+// A smaller hit rect wins (updateTabDrag), so the rim beats a stack edge and
+// a gap beats the edges it sits between.
+const EDGE_FRACTION = 0.25;   // of the slot's width/height
+const EDGE_MAX = 96;          // px
+const RIM = 14;               // px
+
+function collectDockZones(inst, draggedTab) {
   const zones = [];
+  const root = inst.state.root;
+  if (!root) return zones;
   const wsRect = inst.host.getBoundingClientRect();
   const dropZones = inst.config.dropZones || {};
   const enabled = (type) => dropZones[type] !== false;
+  const local = r => ({ x: r.left - wsRect.left, y: r.top - wsRect.top, w: r.width, h: r.height });
+  const elOf = n => inst.railsLayer.querySelector(`[data-node-id="${cssEscape(n.id)}"]`);
 
-  inst.state.rails.forEach((rail, ri) => {
-    const railEl = inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(rail.id)}"]`);
-    if (!railEl) return;
-    const rr = railEl.getBoundingClientRect();
+  // A tab dragged out of a stack it is alone in can't usefully split it.
+  const src = draggedTab ? findTab(inst.state, draggedTab.id) : null;
+  const loneSrcId = src && src.container === 'dock' && src.stack.tabs.length === 1 ? src.stack.id : null;
 
-    if (ri === 0 && enabled('new-rail')) {
-      zones.push({ type: 'new-rail', at: 0,
-        rect: { x: 0, y: 0, w: 12, h: wsRect.height } });
-    }
-    if (enabled('new-rail')) {
-      const nextLeft = ri < inst.state.rails.length - 1
-        ? inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(inst.state.rails[ri + 1].id)}"]`).getBoundingClientRect().left
-        : wsRect.right;
-      const gx = (rr.right + nextLeft) / 2 - wsRect.left;
-      zones.push({ type: 'new-rail', at: ri + 1,
-        rect: { x: gx - 9, y: 0, w: 18, h: wsRect.height } });
-    }
-
-    rail.stacks.forEach((stack, si) => {
-      const stackEl = inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(stack.id)}"]`);
-      if (!stackEl) return;
-      const sr = stackEl.getBoundingClientRect();
-
-      if (si === 0 && enabled('new-stack')) {
-        zones.push({ type: 'new-stack', railId: rail.id, at: 0,
-          rect: { x: rr.left - wsRect.left, y: rr.top - wsRect.top, w: rr.width, h: 12 } });
+  const visit = (node) => {
+    const el = elOf(node);
+    if (!el || node.collapsed) return;
+    if (isSplit(node)) {
+      const row = node.dir !== 'col';
+      const r = local(el.getBoundingClientRect());
+      if (enabled('gap')) {
+        for (let i = 0; i < node.children.length - 1; i++) {
+          const ae = elOf(node.children[i]), be = elOf(node.children[i + 1]);
+          if (!ae || !be) continue;
+          const ar = ae.getBoundingClientRect(), br = be.getBoundingClientRect();
+          const mid = row ? (ar.right + br.left) / 2 - wsRect.left
+                          : (ar.bottom + br.top) / 2 - wsRect.top;
+          zones.push({ type: 'gap', splitId: node.id, at: i + 1,
+            rect: row ? { x: mid - 9, y: r.y, w: 18, h: r.h }
+                      : { x: r.x, y: mid - 9, w: r.w, h: 18 } });
+        }
       }
-      if (enabled('new-stack')) {
-        const nextTop = si < rail.stacks.length - 1
-          ? inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(rail.stacks[si + 1].id)}"]`).getBoundingClientRect().top
-          : rr.bottom;
-        const gy = (sr.bottom + nextTop) / 2 - wsRect.top;
-        zones.push({ type: 'new-stack', railId: rail.id, at: si + 1,
-          rect: { x: rr.left - wsRect.left, y: gy - 9, w: rr.width, h: 18 } });
+      node.children.forEach(visit);
+      return;
+    }
+    if (enabled('edge') && node.id !== loneSrcId) {
+      const slot = el.querySelector('.rails-slot');
+      const sr = slot && slot.getBoundingClientRect();
+      if (sr && sr.width > 0 && sr.height > 0) {
+        const s = local(sr);
+        const e = local(el.getBoundingClientRect());
+        const bw = Math.min(EDGE_MAX, s.w * EDGE_FRACTION);
+        const bh = Math.min(EDGE_MAX, s.h * EDGE_FRACTION);
+        // Left/right bands run the full slot height; top/bottom bands fill the
+        // middle between them, so no two edge bands overlap.
+        const edges = [
+          ['left',   { x: s.x, y: s.y, w: bw, h: s.h },                         { x: e.x, y: e.y, w: e.w / 2, h: e.h }],
+          ['right',  { x: s.x + s.w - bw, y: s.y, w: bw, h: s.h },              { x: e.x + e.w / 2, y: e.y, w: e.w / 2, h: e.h }],
+          ['top',    { x: s.x + bw, y: s.y, w: s.w - 2 * bw, h: bh },           { x: e.x, y: e.y, w: e.w, h: e.h / 2 }],
+          ['bottom', { x: s.x + bw, y: s.y + s.h - bh, w: s.w - 2 * bw, h: bh }, { x: e.x, y: e.y + e.h / 2, w: e.w, h: e.h / 2 }],
+        ];
+        for (const [side, hit, rect] of edges) {
+          if (hit.w > 0 && hit.h > 0) zones.push({ type: 'edge', nodeId: node.id, side, hit, rect });
+        }
       }
+    }
+    collectStackInternalZones(zones, el, node, wsRect, enabled);
+  };
+  visit(root);
 
-      collectStackInternalZones(zones, stackEl, stack, wsRect, enabled);
-    });
-  });
+  if (isSplit(root) && enabled('workspace-edge')) {
+    const re = elOf(root);
+    if (re) {
+      const r = local(re.getBoundingClientRect());
+      const tw = r.w / 3, th = r.h / 3;
+      const rims = [
+        ['left',   { x: r.x, y: r.y, w: RIM, h: r.h },             { x: r.x, y: r.y, w: tw, h: r.h }],
+        ['right',  { x: r.x + r.w - RIM, y: r.y, w: RIM, h: r.h }, { x: r.x + r.w - tw, y: r.y, w: tw, h: r.h }],
+        ['top',    { x: r.x, y: r.y, w: r.w, h: RIM },             { x: r.x, y: r.y, w: r.w, h: th }],
+        ['bottom', { x: r.x, y: r.y + r.h - RIM, w: r.w, h: RIM }, { x: r.x, y: r.y + r.h - th, w: r.w, h: th }],
+      ];
+      for (const [side, hit, rect] of rims) {
+        zones.push({ type: 'workspace-edge', nodeId: root.id, side, hit, rect });
+      }
+    }
+  }
   return zones;
 }
 
 // Push tab-insert / tab-append-strip / tab-append-body zones for a stack's
-// rendered DOM. Used both for rail-stacks (via collectRailsZones) and for
+// rendered DOM. Used both for docked stacks (via collectDockZones) and for
 // float-stacks (via collectFloatStackZones), so dropping into a float behaves
 // the same as dropping into a docked stack — true mini-workspace semantics.
 //
@@ -1707,7 +1871,7 @@ function collectStackInternalZones(zones, stackEl, stack, wsRect, enabled) {
   }
 }
 
-// Per-stack drop zones for floats — same set as rail-stacks but sourced from
+// Per-stack drop zones for floats — same set as docked stacks but sourced from
 // the floats sublayer. Skips minimized/maximized floats (no usable strip/slot)
 // and the dragging float's own zones (excludeFloatId) so a redock can't drop
 // the float onto itself.
@@ -1751,27 +1915,23 @@ function collectFloatTitlebarZones(inst, zones, excludeFloatId) {
 
 function zoneToMoveTarget(zone) {
   switch (zone.type) {
-    case 'new-rail':  return { to: 'new-rail', at: zone.at };
-    case 'new-stack': return { to: 'new-stack', railId: zone.railId, at: zone.at };
-    case 'tab-insert':return { to: 'stack', stackId: zone.stackId, at: zone.at };
-    case 'tab-append':return { to: 'stack', stackId: zone.stackId };
-    case 'new-float': return { to: 'new-float', x: zone._cursorX ?? 100, y: zone._cursorY ?? 100 };
+    case 'gap':            return { to: 'insert', splitId: zone.splitId, at: zone.at };
+    case 'edge':
+    case 'workspace-edge': return { to: 'split', nodeId: zone.nodeId, side: zone.side };
+    case 'tab-insert':     return { to: 'stack', stackId: zone.stackId, at: zone.at };
+    case 'tab-append':     return { to: 'stack', stackId: zone.stackId };
+    case 'new-float':      return { to: 'new-float', x: zone._cursorX ?? 100, y: zone._cursorY ?? 100 };
     case 'float-titlebar': return { to: 'float', floatId: zone.floatId };
-    default:          return null;
+    default:               return null;
   }
 }
 
 function applyMoveTarget(inst, tab, zone, srcStack) {
-  if (zone.type === 'new-rail') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-    const nr = { id: inst._freshId('r'), flex: 1, stacks: [ns] };
-    inst.state.rails.splice(zone.at, 0, nr);
-  } else if (zone.type === 'new-stack') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-    const rail = inst.state.rails.find(r => r.id === zone.railId);
-    if (rail) rail.stacks.splice(zone.at, 0, ns);
+  if (isNewStackZone(zone)) {
+    const ns = { id: inst._freshId('s'), tabs: [tab], active: tab.id };
+    placeStack(inst.state, zoneToMoveTarget(zone), ns);
   } else if (zone.type === 'tab-insert') {
-    const target = findStackById(inst.state, zone.stackId);
+    const target = findStack(inst.state, zone.stackId)?.stack;
     if (target) {
       let at = zone.at;
       if (target === srcStack) at = Math.min(at, target.tabs.length);
@@ -1779,7 +1939,7 @@ function applyMoveTarget(inst, tab, zone, srcStack) {
       target.active = tab.id;
     }
   } else if (zone.type === 'tab-append') {
-    const target = findStackById(inst.state, zone.stackId);
+    const target = findStack(inst.state, zone.stackId)?.stack;
     if (target) {
       target.tabs.push(tab);
       target.active = tab.id;
@@ -1806,18 +1966,6 @@ function applyMoveTarget(inst, tab, zone, srcStack) {
       float.stack.active = tab.id;
     }
   }
-}
-
-function findStackById(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  for (const float of state.floats || []) {
-    if (float.stack && float.stack.id === stackId) return float.stack;
-  }
-  return null;
 }
 
 // ── src/api.js ──
@@ -1847,11 +1995,9 @@ function createRails(host, options = {}) {
   const state = options.initialState
     ? JSON.parse(JSON.stringify(options.initialState))
     : emptyState();
-  // Ensure floats is an array even if consumer omitted it.
-  if (!Array.isArray(state.floats)) state.floats = [];
-
-  // Validate only if non-empty — empty state skips per invariant 7.
-  if (state.rails.length > 0) validateState(state);
+  // Accept the pre-tree shape ({ rails: [...] }) and a missing floats array.
+  upgradeState(state);
+  validateState(state);
 
   const callbacks = {
     renderPanel: options.renderPanel,
@@ -1931,12 +2077,12 @@ function createRails(host, options = {}) {
   };
   inst._activate = (stack, tabId) => activateInPlace(inst, stack, tabId);
   inst._onTabDown = (e, tabId) => onTabDown(inst, e, tabId);
-  inst._onSplitterDown = (e, kind, rail, idx) => onSplitterDown(inst, e, kind, rail, idx);
+  inst._onSplitterDown = (e, split, idx) => onSplitterDown(inst, e, split, idx);
   inst._onFloatTitlebarDown = (e, floatId) => onFloatTitlebarDown(inst, e, floatId);
   inst._onFloatResizeDown = (e, floatId, dir) => onFloatResizeDown(inst, e, floatId, dir);
   inst._onStripKeyDown = (e, stack) => onStripKeyDown(inst, e, stack);
   inst._closeTab = (tabId) => closeTab(tabId);
-  inst._toggleRailCollapsed = (railId) => toggleRailCollapsed(railId);
+  inst._toggleCollapsed = (nodeId) => toggleCollapsed(nodeId);
   inst._raiseFloat = (floatId) => raiseFloatInPlace(inst, floatId);
   inst._toggleFloatMinimized = (floatId) => toggleFloatMinimized(floatId);
   inst._toggleFloatMaximized = (floatId) => toggleFloatMaximized(floatId);
@@ -2215,12 +2361,13 @@ function createRails(host, options = {}) {
     });
   }
 
-  function toggleRailCollapsed(railId) {
-    const rail = findRail(inst.state, railId);
-    if (!rail) return;
-    rail.collapsed = !rail.collapsed;
+  function toggleCollapsed(nodeId) {
+    const hit = findNode(inst.state, nodeId);
+    if (!hit || !hit.parent) return;   // the root has nothing to fold into
+    const node = hit.node;
+    node.collapsed = !node.collapsed;
     inst._renderChrome();
-    inst._emit(rail.collapsed ? 'rail:collapse' : 'rail:expand', { rail });
+    inst._emit(node.collapsed ? 'node:collapse' : 'node:expand', { node });
   }
 
   function releasePreservedPanel(tabId) {
@@ -2238,7 +2385,7 @@ function createRails(host, options = {}) {
     const float = findFloat(inst.state, floatId);
     if (!float) return;
     // Delegate each tab through closeTab so its preserveOnClose flag routes
-    // to preserve instead of destroy (matching UI behavior for rail tabs).
+    // to preserve instead of destroy (matching UI behavior for docked tabs).
     // canCloseTab / closeable:false checks and tab:close emission happen
     // inside closeTab. batch() collapses the repeated cleanups into one
     // chrome rebuild.
@@ -2270,9 +2417,8 @@ function createRails(host, options = {}) {
   }
 
   function deserialize(str) {
-    const next = JSON.parse(str);
-    if (!Array.isArray(next.floats)) next.floats = [];
-    if (next.rails.length > 0) validateState(next);
+    const next = upgradeState(JSON.parse(str));
+    validateState(next);
     inst.state = next;
     // Deserialize evicts preserved panels whose ids aren't in the new state —
     // reconcilePanels handles the DOM + onPanelDestroy; we clear the preserved
@@ -2314,7 +2460,7 @@ function createRails(host, options = {}) {
     toggleFloatMinimized,
     toggleFloatMaximized,
     closeFloat,
-    toggleRailCollapsed,
+    toggleCollapsed,
     releasePreservedPanel,
     listPreservedPanels,
     on,
@@ -2367,27 +2513,17 @@ function focusedStack(inst) {
   const stripEl = active.closest?.('.rails-strip, .rails-stack');
   const stackId = stripEl?.dataset?.stackId;
   if (!stackId) return null;
-  for (const rail of inst.state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  for (const float of inst.state.floats || []) {
-    if (float.stack?.id === stackId) return float.stack;
-  }
-  return null;
+  return findStack(inst.state, stackId)?.stack || null;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
 function defaultAddTarget(state) {
-  if (state.rails.length === 0) {
-    // Caller is asking us to auto-create the first rail/stack. Signal this
-    // via a synthetic target that insertAtTarget understands.
-    return { to: '__bootstrap' };
-  }
-  const firstStack = state.rails[0].stacks[0];
-  return { to: 'stack', stackId: firstStack.id };
+  const first = dockStacks(state)[0];
+  // No docked stack yet: auto-create the first one. Signal this via a
+  // synthetic target that insertAtTarget understands.
+  if (!first) return { to: '__bootstrap' };
+  return { to: 'stack', stackId: first.id };
 }
 
 function insertAtTarget(inst, tab, target) {
@@ -2396,32 +2532,23 @@ function insertAtTarget(inst, tab, target) {
   }
   switch (target.to) {
     case '__bootstrap': {
-      const stack = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-      const rail = { id: inst._freshId('r'), flex: 1, stacks: [stack] };
-      inst.state.rails.push(rail);
+      const stack = { id: inst._freshId('s'), tabs: [tab], active: tab.id };
+      if (inst.state.root) placeStack(inst.state, { to: 'split', nodeId: inst.state.root.id, side: 'right' }, stack);
+      else inst.state.root = stack;
       break;
     }
     case 'stack': {
-      const stack = findStackByIdInState(inst.state, target.stackId);
+      const stack = findStack(inst.state, target.stackId)?.stack;
       if (!stack) throw new Error(`rails: stack ${target.stackId} not found`);
       const at = target.at == null ? stack.tabs.length : target.at;
       stack.tabs.splice(at, 0, tab);
       stack.active = tab.id;
       break;
     }
-    case 'new-rail': {
-      const stack = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-      const rail = { id: inst._freshId('r'), flex: 1, stacks: [stack] };
-      const at = target.at ?? inst.state.rails.length;
-      inst.state.rails.splice(at, 0, rail);
-      break;
-    }
-    case 'new-stack': {
-      const rail = findRail(inst.state, target.railId);
-      if (!rail) throw new Error(`rails: rail ${target.railId} not found`);
-      const stack = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-      const at = target.at ?? rail.stacks.length;
-      rail.stacks.splice(at, 0, stack);
+    case 'insert':
+    case 'split': {
+      const stack = { id: inst._freshId('s'), tabs: [tab], active: tab.id };
+      placeStack(inst.state, target, stack);
       break;
     }
     case 'float': {
@@ -2455,15 +2582,6 @@ function insertAtTarget(inst, tab, target) {
   }
 }
 
-function findStackByIdInState(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  return null;
-}
-
 function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 function toCamel(s) {
   return s.replace(/[:-](.)/g, (_, c) => c.toUpperCase());
@@ -2478,7 +2596,8 @@ export {
   createRails,
   findTab,
   findStack,
-  findRail,
+  findNode,
+  isSplit,
   emptyState,
   validateState,
   freshId,

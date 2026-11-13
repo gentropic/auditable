@@ -26,48 +26,38 @@
   font-size: 13px;
 }
 
-/* Rail + splitters */
-.rails-rail { background: var(--rails-surface); }
-.rails-rail.rails-collapsed {
-  background: var(--rails-chrome);
-  border-right: 1px solid var(--rails-border);
-}
+/* Docked tree + resize bars */
+.rails-node { background: var(--rails-surface); }
+.rails-node.rails-collapsed { background: var(--rails-chrome); }
+.rails-collapsed-row { border-right: 1px solid var(--rails-border); }
+.rails-collapsed-col { border-bottom: 1px solid var(--rails-border); }
 
-.rails-rail-collapse-btn {
+.rails-collapse-btn {
   color: var(--rails-text-dim);
   font-size: 11px;
   border-left: 1px solid var(--rails-border);
   transition: color 80ms, background 80ms;
 }
-.rails-rail-collapse-btn:hover {
+.rails-collapse-btn:hover {
   background: var(--rails-border);
   color: var(--rails-text);
 }
 
-.rails-rail-expand-btn {
+.rails-expand-btn {
   color: var(--rails-text-dim);
   font-size: 11px;
-  height: 28px;
   transition: color 80ms, background 80ms;
 }
-.rails-rail-expand-btn:hover {
+.rails-collapsed-row > .rails-expand-btn { height: 28px; }
+.rails-expand-btn:hover {
   background: var(--rails-border);
   color: var(--rails-text);
 }
 
-.rails-rail-split {
-  border-left: 1px solid var(--rails-border);
-  margin-left: -1px;
-  transition: background 80ms;
-}
-.rails-rail-split:hover { background: var(--rails-accent-bg); }
-
-.rails-stack-split {
-  border-top: 1px solid var(--rails-border);
-  margin-top: -1px;
-  transition: background 80ms;
-}
-.rails-stack-split:hover { background: var(--rails-accent-bg); }
+.rails-bar { transition: background 80ms; }
+.rails-bar-row { border-left: 1px solid var(--rails-border); margin-left: -1px; }
+.rails-bar-col { border-top: 1px solid var(--rails-border); margin-top: -1px; }
+.rails-bar:hover { background: var(--rails-accent-bg); }
 
 /* Tab strip */
 .rails-strip {
@@ -181,6 +171,10 @@
 .rails-zone.rails-zone-insert.rails-active {
   background: var(--rails-accent);
   box-shadow: none;
+}
+.rails-zone.rails-zone-split.rails-active {
+  background: var(--rails-accent-bg);
+  box-shadow: inset 0 0 0 2px var(--rails-accent);
 }
 .rails-zone.rails-zone-float.rails-active {
   background: transparent;

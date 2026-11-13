@@ -7,7 +7,8 @@ export { createRails } from './api.js';
 export {
   findTab,
   findStack,
-  findRail,
+  findNode,
+  isSplit,
   emptyState,
   validateState,
   freshId,

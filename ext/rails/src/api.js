@@ -4,8 +4,11 @@
 import {
   findTab,
   findStack,
-  findRail,
+  findNode,
   findFloat,
+  dockStacks,
+  placeStack,
+  upgradeState,
   removeTabFromStack,
   cleanup,
   patchTab,
@@ -52,11 +55,9 @@ export function createRails(host, options = {}) {
   const state = options.initialState
     ? JSON.parse(JSON.stringify(options.initialState))
     : emptyState();
-  // Ensure floats is an array even if consumer omitted it.
-  if (!Array.isArray(state.floats)) state.floats = [];
-
-  // Validate only if non-empty — empty state skips per invariant 7.
-  if (state.rails.length > 0) validateState(state);
+  // Accept the pre-tree shape ({ rails: [...] }) and a missing floats array.
+  upgradeState(state);
+  validateState(state);
 
   const callbacks = {
     renderPanel: options.renderPanel,
@@ -136,12 +137,12 @@ export function createRails(host, options = {}) {
   };
   inst._activate = (stack, tabId) => activateInPlace(inst, stack, tabId);
   inst._onTabDown = (e, tabId) => onTabDown(inst, e, tabId);
-  inst._onSplitterDown = (e, kind, rail, idx) => onSplitterDown(inst, e, kind, rail, idx);
+  inst._onSplitterDown = (e, split, idx) => onSplitterDown(inst, e, split, idx);
   inst._onFloatTitlebarDown = (e, floatId) => onFloatTitlebarDown(inst, e, floatId);
   inst._onFloatResizeDown = (e, floatId, dir) => onFloatResizeDown(inst, e, floatId, dir);
   inst._onStripKeyDown = (e, stack) => onStripKeyDown(inst, e, stack);
   inst._closeTab = (tabId) => closeTab(tabId);
-  inst._toggleRailCollapsed = (railId) => toggleRailCollapsed(railId);
+  inst._toggleCollapsed = (nodeId) => toggleCollapsed(nodeId);
   inst._raiseFloat = (floatId) => raiseFloatInPlace(inst, floatId);
   inst._toggleFloatMinimized = (floatId) => toggleFloatMinimized(floatId);
   inst._toggleFloatMaximized = (floatId) => toggleFloatMaximized(floatId);
@@ -420,12 +421,13 @@ export function createRails(host, options = {}) {
     });
   }
 
-  function toggleRailCollapsed(railId) {
-    const rail = findRail(inst.state, railId);
-    if (!rail) return;
-    rail.collapsed = !rail.collapsed;
+  function toggleCollapsed(nodeId) {
+    const hit = findNode(inst.state, nodeId);
+    if (!hit || !hit.parent) return;   // the root has nothing to fold into
+    const node = hit.node;
+    node.collapsed = !node.collapsed;
     inst._renderChrome();
-    inst._emit(rail.collapsed ? 'rail:collapse' : 'rail:expand', { rail });
+    inst._emit(node.collapsed ? 'node:collapse' : 'node:expand', { node });
   }
 
   function releasePreservedPanel(tabId) {
@@ -443,7 +445,7 @@ export function createRails(host, options = {}) {
     const float = findFloat(inst.state, floatId);
     if (!float) return;
     // Delegate each tab through closeTab so its preserveOnClose flag routes
-    // to preserve instead of destroy (matching UI behavior for rail tabs).
+    // to preserve instead of destroy (matching UI behavior for docked tabs).
     // canCloseTab / closeable:false checks and tab:close emission happen
     // inside closeTab. batch() collapses the repeated cleanups into one
     // chrome rebuild.
@@ -475,9 +477,8 @@ export function createRails(host, options = {}) {
   }
 
   function deserialize(str) {
-    const next = JSON.parse(str);
-    if (!Array.isArray(next.floats)) next.floats = [];
-    if (next.rails.length > 0) validateState(next);
+    const next = upgradeState(JSON.parse(str));
+    validateState(next);
     inst.state = next;
     // Deserialize evicts preserved panels whose ids aren't in the new state —
     // reconcilePanels handles the DOM + onPanelDestroy; we clear the preserved
@@ -519,7 +520,7 @@ export function createRails(host, options = {}) {
     toggleFloatMinimized,
     toggleFloatMaximized,
     closeFloat,
-    toggleRailCollapsed,
+    toggleCollapsed,
     releasePreservedPanel,
     listPreservedPanels,
     on,
@@ -572,27 +573,17 @@ function focusedStack(inst) {
   const stripEl = active.closest?.('.rails-strip, .rails-stack');
   const stackId = stripEl?.dataset?.stackId;
   if (!stackId) return null;
-  for (const rail of inst.state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  for (const float of inst.state.floats || []) {
-    if (float.stack?.id === stackId) return float.stack;
-  }
-  return null;
+  return findStack(inst.state, stackId)?.stack || null;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
 function defaultAddTarget(state) {
-  if (state.rails.length === 0) {
-    // Caller is asking us to auto-create the first rail/stack. Signal this
-    // via a synthetic target that insertAtTarget understands.
-    return { to: '__bootstrap' };
-  }
-  const firstStack = state.rails[0].stacks[0];
-  return { to: 'stack', stackId: firstStack.id };
+  const first = dockStacks(state)[0];
+  // No docked stack yet: auto-create the first one. Signal this via a
+  // synthetic target that insertAtTarget understands.
+  if (!first) return { to: '__bootstrap' };
+  return { to: 'stack', stackId: first.id };
 }
 
 function insertAtTarget(inst, tab, target) {
@@ -601,32 +592,23 @@ function insertAtTarget(inst, tab, target) {
   }
   switch (target.to) {
     case '__bootstrap': {
-      const stack = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-      const rail = { id: inst._freshId('r'), flex: 1, stacks: [stack] };
-      inst.state.rails.push(rail);
+      const stack = { id: inst._freshId('s'), tabs: [tab], active: tab.id };
+      if (inst.state.root) placeStack(inst.state, { to: 'split', nodeId: inst.state.root.id, side: 'right' }, stack);
+      else inst.state.root = stack;
       break;
     }
     case 'stack': {
-      const stack = findStackByIdInState(inst.state, target.stackId);
+      const stack = findStack(inst.state, target.stackId)?.stack;
       if (!stack) throw new Error(`rails: stack ${target.stackId} not found`);
       const at = target.at == null ? stack.tabs.length : target.at;
       stack.tabs.splice(at, 0, tab);
       stack.active = tab.id;
       break;
     }
-    case 'new-rail': {
-      const stack = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-      const rail = { id: inst._freshId('r'), flex: 1, stacks: [stack] };
-      const at = target.at ?? inst.state.rails.length;
-      inst.state.rails.splice(at, 0, rail);
-      break;
-    }
-    case 'new-stack': {
-      const rail = findRail(inst.state, target.railId);
-      if (!rail) throw new Error(`rails: rail ${target.railId} not found`);
-      const stack = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-      const at = target.at ?? rail.stacks.length;
-      rail.stacks.splice(at, 0, stack);
+    case 'insert':
+    case 'split': {
+      const stack = { id: inst._freshId('s'), tabs: [tab], active: tab.id };
+      placeStack(inst.state, target, stack);
       break;
     }
     case 'float': {
@@ -658,15 +640,6 @@ function insertAtTarget(inst, tab, target) {
     default:
       throw new Error(`rails: unknown MoveTarget ${target.to}`);
   }
-}
-
-function findStackByIdInState(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  return null;
 }
 
 function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }

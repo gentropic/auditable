@@ -7,4 +7,4 @@ import './drag.js';
 import './api.js';
 
 export { createRails } from './api.js';
-export { findTab, findStack, findRail, emptyState, validateState, freshId } from './state.js';
+export { findTab, findStack, findNode, isSplit, emptyState, validateState, freshId } from './state.js';

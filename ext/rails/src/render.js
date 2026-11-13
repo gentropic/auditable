@@ -1,7 +1,7 @@
 // @gcu/rails — chrome rendering + content positioning + panel cache
 // DOM-touching. Expects an instance object holding host/chromeLayer/contentLayer/state/panels/callbacks.
 
-import { liveTabIds } from './state.js';
+import { liveTabIds, isSplit, dockStacks, findStack } from './state.js';
 
 export function cssEscape(s) {
   return (typeof window !== 'undefined' && window.CSS && window.CSS.escape)
@@ -9,7 +9,7 @@ export function cssEscape(s) {
     : String(s).replace(/["\\]/g, '\\$&');
 }
 
-// z-index scheme. Rail panels sit at RAIL_PANEL_Z, above rail/stack splitters
+// z-index scheme. Docked panels sit at RAIL_PANEL_Z, above the resize bars
 // (z:2) but below the lowest float. Each float gets a 10-unit z-band:
 //   chrome  (titlebar/strip/slot)        : base + z*10 + 0
 //   panel   (the rendered tab body)      : base + z*10 + 5
@@ -40,7 +40,7 @@ export function floatHandlesZ(z) {
 // Chrome sublayer structure (built once in api.js's createRails init):
 //
 //   .rails-chrome
-//     .rails-rails     — rail/stack layout, rebuilt on structural rail changes
+//     .rails-rails     — the docked tree, rebuilt on structural changes
 //     .rails-floats    — float frames, rebuilt on structural float changes
 //
 // renderChrome wipes + rebuilds both sublayers from state. Float raise and
@@ -67,7 +67,7 @@ export function renderChrome(inst) {
   inst._emptyEl = null;
 
   // Empty workspace: mount renderEmpty() if provided.
-  if (inst.state.rails.length === 0 && (!inst.state.floats || inst.state.floats.length === 0)) {
+  if (!inst.state.root && (!inst.state.floats || inst.state.floats.length === 0)) {
     if (inst.callbacks.renderEmpty) {
       const el = inst.callbacks.renderEmpty();
       if (el) {
@@ -81,85 +81,90 @@ export function renderChrome(inst) {
     return;
   }
 
-  renderRails(inst);
+  renderDock(inst);
   renderFloats(inst);
   reposition(inst);
   inst._emit('layout:change', { state: inst.state });
 }
 
-function buildRailBtn(inst, rail, kind) {
+// Collapse / expand button for a collapsible node. The glyph points along
+// the parent's axis: a node in a row folds sideways, one in a column folds up.
+function buildCollapseBtn(inst, node, kind, parentDir) {
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = kind === 'expand' ? 'rails-rail-expand-btn' : 'rails-rail-collapse-btn';
-  btn.textContent = kind === 'expand' ? '\u25b6' : '\u25c0';
-  btn.setAttribute('aria-label', kind === 'expand' ? 'Expand rail' : 'Collapse rail');
-  btn.title = kind === 'expand' ? 'Expand rail' : 'Collapse rail';
+  btn.className = kind === 'expand' ? 'rails-expand-btn' : 'rails-collapse-btn';
+  const row = parentDir !== 'col';
+  btn.textContent = kind === 'expand' ? (row ? '▶' : '▼') : (row ? '◀' : '▲');
+  const label = kind === 'expand' ? 'Expand' : 'Collapse';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
   btn.tabIndex = -1;
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    inst._toggleRailCollapsed(rail.id);
+    inst._toggleCollapsed(node.id);
   });
   return btn;
 }
 
-function renderRails(inst) {
-  inst.state.rails.forEach((rail, ri) => {
-    const railEl = document.createElement('div');
-    railEl.className = 'rails-rail';
-    if (rail.collapsed) railEl.classList.add('rails-collapsed');
-    railEl.dataset.railId = rail.id;
+function renderDock(inst) {
+  const root = inst.state.root;
+  if (!root) return;
+  const el = renderNode(inst, root, null);
+  el.style.flex = '1 1 auto';
+  inst.railsLayer.appendChild(el);
+}
 
-    if (rail.collapsed) {
-      // Collapsed rail: fixed-width strip with a restore button. No stacks
-      // render; their panels are hidden by reposition (no slot found).
-      railEl.style.flex = '0 0 32px';
-      railEl.appendChild(buildRailBtn(inst, rail, 'expand'));
-    } else {
-      if (rail.width != null) {
-        railEl.style.flex = `0 0 ${rail.width}px`;
-      } else {
-        railEl.style.flex = rail.flex ?? 1;
+// Build the element for one docked node (recursively for splits). The
+// caller's flex container lays it out; sizing comes from flex / size.
+function renderNode(inst, node, parent) {
+  const parentDir = parent ? parent.dir : null;
+  let el;
+  if (node.collapsed && parent) {
+    // Collapsed: a fixed 32px strip with a restore button. Nothing inside
+    // renders; the panels of its stacks are hidden by reposition (no slot).
+    el = document.createElement('div');
+    el.className = 'rails-node rails-collapsed ' + (parentDir === 'col' ? 'rails-collapsed-col' : 'rails-collapsed-row');
+    el.dataset.nodeId = node.id;
+    el.style.flex = '0 0 32px';
+    el.appendChild(buildCollapseBtn(inst, node, 'expand', parentDir));
+    return el;
+  }
+
+  if (isSplit(node)) {
+    el = document.createElement('div');
+    el.className = 'rails-node rails-split ' + (node.dir === 'col' ? 'rails-col' : 'rails-row');
+    el.dataset.nodeId = node.id;
+    node.children.forEach((child, i) => {
+      el.appendChild(renderNode(inst, child, node));
+      if (i < node.children.length - 1) {
+        const bar = document.createElement('div');
+        bar.className = 'rails-bar ' + (node.dir === 'col' ? 'rails-bar-col' : 'rails-bar-row');
+        bar.addEventListener('pointerdown', e => inst._onSplitterDown(e, node, i));
+        el.appendChild(bar);
       }
+    });
+  } else {
+    el = buildStackEl(inst, node);
+    el.classList.add('rails-node');
+    el.dataset.nodeId = node.id;
+  }
 
-      rail.stacks.forEach((stack, si) => {
-        const stackEl = buildStackEl(inst, stack);
-        if (stack.height != null) {
-          stackEl.style.flex = `0 0 ${stack.height}px`;
-        } else {
-          stackEl.style.flex = stack.flex ?? 1;
-        }
-        railEl.appendChild(stackEl);
+  if (parent) {
+    el.style.flex = node.size != null ? `0 0 ${node.size}px` : String(node.flex ?? 1);
+  }
 
-        if (si < rail.stacks.length - 1) {
-          const sp = document.createElement('div');
-          sp.className = 'rails-stack-split';
-          sp.addEventListener('pointerdown', e => inst._onSplitterDown(e, 'stack', rail, si));
-          railEl.appendChild(sp);
-        }
-      });
-
-      // For collapsible rails, append the collapse button into the first
-      // stack's strip-wrap so it sits as a flex sibling of the tabs/overflow
-      // button (intentional neighbors), not absolutely-positioned over them.
-      if (rail.collapsible && rail.stacks.length > 0) {
-        const firstWrap = railEl.querySelector('.rails-strip-wrap');
-        if (firstWrap) firstWrap.appendChild(buildRailBtn(inst, rail, 'collapse'));
-      }
-    }
-
-    inst.railsLayer.appendChild(railEl);
-
-    if (ri < inst.state.rails.length - 1) {
-      const sp = document.createElement('div');
-      sp.className = 'rails-rail-split';
-      sp.addEventListener('pointerdown', e => inst._onSplitterDown(e, 'rail', null, ri));
-      inst.railsLayer.appendChild(sp);
-    }
-  });
+  // A collapsible node puts its collapse button into its first strip-wrap,
+  // as a flex sibling of the tabs/overflow button rather than floating over
+  // them.
+  if (node.collapsible && parent) {
+    const firstWrap = el.querySelector('.rails-strip-wrap');
+    if (firstWrap) firstWrap.appendChild(buildCollapseBtn(inst, node, 'collapse', parentDir));
+  }
+  return el;
 }
 
 // Build a fully-assembled .rails-stack element (no size styling applied yet;
-// caller handles flex/width/height). Used for rail-stacks and float-stacks.
+// caller handles sizing). Used for docked stacks and float-stacks.
 function buildStackEl(inst, stack) {
   const stackEl = document.createElement('div');
   stackEl.className = 'rails-stack';
@@ -462,7 +467,7 @@ export function rebuildStrip(inst, stackId) {
     renderChrome(inst);
     return;
   }
-  const stack = findStackInState(inst.state, stackId);
+  const stack = findStack(inst.state, stackId)?.stack;
   if (!stack) {
     renderChrome(inst);
     return;
@@ -478,21 +483,10 @@ export function rebuildStrip(inst, stackId) {
   inst._emit('layout:change', { state: inst.state });
 }
 
-function findStackInState(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  for (const float of state.floats || []) {
-    if (float.stack && float.stack.id === stackId) return float.stack;
-  }
-  return null;
-}
 
-// Position panels for all stacks (rails + floats). Show the active tab per
+// Position panels for all stacks (dock + floats). Show the active tab per
 // stack; hide all others. Assigns per-panel z-index:
-//   - rail tabs → 5 (above rail/stack splitters at z:2, below the floats
+//   - docked tabs → 5 (above the resize bars at z:2, below the floats
 //     layer at z:100)
 //   - float tabs → 100 + float.z (same effective root z as the float's own
 //     chrome; DOM order breaks the tie and the panel wins because contentLayer
@@ -520,9 +514,7 @@ export function reposition(inst) {
     activeIds.add(activeTab.id);
   };
 
-  for (const rail of inst.state.rails) {
-    for (const stack of rail.stacks) placeFromStack(stack, null);
-  }
+  for (const stack of dockStacks(inst.state)) placeFromStack(stack, null);
   for (const float of inst.state.floats || []) {
     if (float.minimized) continue; // panel hidden when float is minimized
     if (float.stack) placeFromStack(float.stack, float);

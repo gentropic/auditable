@@ -2,6 +2,7 @@
 // implementing the §5.2 Surface contract. The shell keeps one A-Bus channel
 // per surface and addresses each by its unique name.
 
+import { findTab } from '#rails';
 import { WKS, setStatus } from './state.js';
 import { kindDef, kindForExtension, kindForPath, surfaceUrl, surfaceAvailable, availableKindForExtension } from './surface-registry.js';
 
@@ -126,12 +127,7 @@ const newTabId = () => 't' + Math.random().toString(36).slice(2, 10);
 export function stackIdForTab(tabId) {
   const st = WKS.rails && WKS.rails.state;
   if (!st || !tabId) return null;
-  for (const rail of st.rails || [])
-    for (const stack of rail.stacks || [])
-      if ((stack.tabs || []).some((t) => t.id === tabId)) return stack.id;
-  for (const float of st.floats || [])
-    if (float.stack && (float.stack.tabs || []).some((t) => t.id === tabId)) return float.stack.id;
-  return null;
+  return findTab(st, tabId)?.stack.id ?? null;
 }
 
 // A rails MoveTarget that lands a new tab in the same stack as `tabId`, or

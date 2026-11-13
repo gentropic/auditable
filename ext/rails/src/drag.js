@@ -1,7 +1,7 @@
 // @gcu/rails — tab drag, splitter drag, float drag/resize, drop zones, Escape-cancel
 // All drag state lives on the instance (inst.drag); no module-scoped mutables.
 
-import { findTab, findFloat, findStack } from './state.js';
+import { findTab, findFloat, findStack, isSplit, placeStack } from './state.js';
 import { cssEscape, setFloatBoundsInPlace, raiseFloatInPlace, activateInPlace } from './render.js';
 
 const HOVER_ACTIVATE_DELAY_MS = 500;
@@ -10,58 +10,42 @@ const STRIP_EDGE_SCROLL_SPEED = 8; // px per frame
 
 // ── splitter drag ─────────────────────────────────────────────────────────
 
-const MIN_RAIL_WIDTH = 140;
-const MIN_STACK_HEIGHT = 100;
+const MIN_ROW_CHILD = 140;   // px — a child of a row split (width)
+const MIN_COL_CHILD = 100;   // px — a child of a column split (height)
 
-export function onSplitterDown(inst, e, kind, rail, idx) {
+// Drag the bar between split.children[idx] and [idx + 1]. Adjusts the two
+// adjacent weights, preserving their sum, so other siblings don't move.
+export function onSplitterDown(inst, e, split, idx) {
   e.preventDefault();
   e.stopPropagation();
 
-  const snapshot = [];
-  if (kind === 'rail') {
-    const a = inst.state.rails[idx], b = inst.state.rails[idx + 1];
-    snapshot.push({ target: a, flex: a.flex });
-    snapshot.push({ target: b, flex: b.flex });
-  } else {
-    const a = rail.stacks[idx], b = rail.stacks[idx + 1];
-    snapshot.push({ target: a, flex: a.flex });
-    snapshot.push({ target: b, flex: b.flex });
-  }
+  const a = split.children[idx], b = split.children[idx + 1];
+  if (!a || !b) return;
+  const snapshot = [{ target: a, flex: a.flex }, { target: b, flex: b.flex }];
+  const row = split.dir !== 'col';
+  const min = row ? MIN_ROW_CHILD : MIN_COL_CHILD;
+  const nodeEl = n => inst.railsLayer.querySelector(`[data-node-id="${cssEscape(n.id)}"]`);
 
   for (const p of inst.panels.values()) p.classList.add('rails-dragging');
 
   const scrim = document.createElement('div');
   scrim.className = 'rails-scrim';
+  scrim.style.cursor = row ? 'col-resize' : 'row-resize';
   inst.host.appendChild(scrim);
 
   const onMove = ev => {
-    if (kind === 'rail') {
-      const a = inst.state.rails[idx], b = inst.state.rails[idx + 1];
-      const ae = inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(a.id)}"]`);
-      const be = inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(b.id)}"]`);
-      if (!ae || !be) return;
-      const ra = ae.getBoundingClientRect(), rb = be.getBoundingClientRect();
-      const total = ra.width + rb.width;
-      const totalFlex = (a.flex ?? 1) + (b.flex ?? 1);
-      const w = Math.max(MIN_RAIL_WIDTH, Math.min(total - MIN_RAIL_WIDTH, ev.clientX - ra.left));
-      a.flex = (w / total) * totalFlex;
-      b.flex = totalFlex - a.flex;
-      ae.style.flex = a.flex;
-      be.style.flex = b.flex;
-    } else {
-      const a = rail.stacks[idx], b = rail.stacks[idx + 1];
-      const ae = inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(a.id)}"]`);
-      const be = inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(b.id)}"]`);
-      if (!ae || !be) return;
-      const ra = ae.getBoundingClientRect(), rb = be.getBoundingClientRect();
-      const total = ra.height + rb.height;
-      const totalFlex = (a.flex ?? 1) + (b.flex ?? 1);
-      const h = Math.max(MIN_STACK_HEIGHT, Math.min(total - MIN_STACK_HEIGHT, ev.clientY - ra.top));
-      a.flex = (h / total) * totalFlex;
-      b.flex = totalFlex - a.flex;
-      ae.style.flex = a.flex;
-      be.style.flex = b.flex;
-    }
+    const ae = nodeEl(a), be = nodeEl(b);
+    if (!ae || !be) return;
+    const ra = ae.getBoundingClientRect(), rb = be.getBoundingClientRect();
+    const total = row ? ra.width + rb.width : ra.height + rb.height;
+    const totalFlex = (a.flex ?? 1) + (b.flex ?? 1);
+    const pos = row ? ev.clientX - ra.left : ev.clientY - ra.top;
+    const lo = Math.min(min, total / 2);
+    const v = Math.max(lo, Math.min(total - lo, pos));
+    a.flex = (v / total) * totalFlex;
+    b.flex = totalFlex - a.flex;
+    ae.style.flex = a.flex;
+    be.style.flex = b.flex;
     inst._reposition();
   };
 
@@ -156,7 +140,7 @@ export function onTabDown(inst, e, tabId) {
   document.addEventListener('keydown', onKey);
 }
 
-// ── float titlebar drag (either moves float, or redocks into rails) ───────
+// ── float titlebar drag (either moves float, or redocks into the dock) ───────
 
 export function onFloatTitlebarDown(inst, e, floatId) {
   // Ignore clicks on titlebar buttons.
@@ -182,7 +166,7 @@ export function onFloatTitlebarDown(inst, e, floatId) {
     if (!started) {
       if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < threshold) return;
       started = true;
-      // Begin as a move. If the cursor enters a rails drop zone during the drag,
+      // Begin as a move. If the cursor enters a docked drop zone during the drag,
       // we'll transition into 'redock' mode (showing zones, allowing drop).
       dragMode = 'move';
       beginFloatDrag(inst, float, origX, origY, origW, origH);
@@ -223,8 +207,8 @@ function beginFloatDrag(inst, float, origX, origY, origW, origH) {
   scrim.className = 'rails-scrim';
   inst.host.appendChild(scrim);
 
-  // Compute rails drop zones (not new-float — the float itself is being dragged)
-  // so the user can redock onto rails by dropping on a rail zone. Exclude the
+  // Compute docked drop zones (not new-float — the float itself is being dragged)
+  // so the user can redock by dropping on any docked zone. Exclude the
   // dragging float's own titlebar from the zone set — dropping a float on itself
   // is a no-op.
   const activeTab = float.stack?.tabs.find(t => t.id === float.stack.active);
@@ -312,29 +296,26 @@ function endFloatDrag(inst, ev, float) {
 }
 
 // Resolve (or create) the target stack for redocking a float's tabs in bulk.
-// For 'new-rail'/'new-stack' targets, creates the container. For stack/insert
-// targets, returns the existing stack.
+// For gap / edge targets, creates the stack. For stack/insert targets,
+// returns the existing stack.
 function resolveRedockDestination(inst, zone) {
-  if (zone.type === 'new-rail') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [], active: null };
-    const nr = { id: inst._freshId('r'), flex: 1, stacks: [ns] };
-    inst.state.rails.splice(zone.at, 0, nr);
-    return ns;
-  }
-  if (zone.type === 'new-stack') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [], active: null };
-    const rail = inst.state.rails.find(r => r.id === zone.railId);
-    if (rail) rail.stacks.splice(zone.at, 0, ns);
+  if (isNewStackZone(zone)) {
+    const ns = { id: inst._freshId('s'), tabs: [], active: null };
+    placeStack(inst.state, zoneToMoveTarget(zone), ns);
     return ns;
   }
   if (zone.type === 'tab-insert' || zone.type === 'tab-append') {
-    return findStackById(inst.state, zone.stackId);
+    return findStack(inst.state, zone.stackId)?.stack || null;
   }
   if (zone.type === 'float-titlebar') {
     const f = findFloat(inst.state, zone.floatId);
     return f?.stack || null;
   }
   return null;
+}
+
+function isNewStackZone(zone) {
+  return zone.type === 'gap' || zone.type === 'edge' || zone.type === 'workspace-edge';
 }
 
 function teardownFloatDrag(inst) {
@@ -646,7 +627,8 @@ function makeZoneEl(inst, z) {
   el.className = 'rails-zone';
   if (z.type === 'tab-insert') el.classList.add('rails-zone-insert');
   if (z.type === 'new-float') el.classList.add('rails-zone-float');
-  if (z.type === 'new-rail' || z.type === 'new-stack') el.classList.add('rails-zone-new');
+  if (z.type === 'gap') el.classList.add('rails-zone-new');
+  if (z.type === 'edge' || z.type === 'workspace-edge') el.classList.add('rails-zone-split');
   el.style.left = z.rect.x + 'px';
   el.style.top = z.rect.y + 'px';
   el.style.width = z.rect.w + 'px';
@@ -657,7 +639,7 @@ function makeZoneEl(inst, z) {
 
 // Zones for a tab drag — includes new-float.
 function computeZones(inst, tab, touch) {
-  const zones = collectRailsZones(inst);
+  const zones = collectDockZones(inst, tab);
   collectFloatStackZones(inst, zones);
   collectFloatTitlebarZones(inst, zones);
   const dropZones = inst.config.dropZones || {};
@@ -683,8 +665,8 @@ function inflateZonesForTouch(zones) {
       t.x -= 4;
       t.w += 8;
     }
-    // new-rail and new-stack gaps — widen from 18px to 30px.
-    if (z.type === 'new-rail' || z.type === 'new-stack') {
+    // gaps between split children — widen from 18px to 30px.
+    if (z.type === 'gap') {
       if (z.rect.w < 20) { z.rect.x -= 6; z.rect.w += 12; }
       if (z.rect.h < 20) { z.rect.y -= 6; z.rect.h += 12; }
     }
@@ -696,7 +678,7 @@ function inflateZonesForTouch(zones) {
 // the dragging float's own titlebar / strip / body zones so self-drops don't
 // happen.
 function computeRedockZones(inst, tab, excludeFloatId) {
-  const zones = collectRailsZones(inst);
+  const zones = collectDockZones(inst, null);
   collectFloatStackZones(inst, zones, excludeFloatId);
   collectFloatTitlebarZones(inst, zones, excludeFloatId);
   return filterZones(inst, zones, tab);
@@ -709,56 +691,103 @@ function filterZones(inst, zones, tab) {
   return zones;
 }
 
-function collectRailsZones(inst) {
+// Docked drop zones:
+//   gap            — the band between two children of a split: a new stack
+//                    lands there, between them;
+//   edge           — a band along each side of a stack's body: splits that
+//                    stack (left/right side by side, top/bottom one above
+//                    the other). The preview rect is the half it would take;
+//   workspace-edge — a thin band at the rim of the whole dock: a new stack
+//                    along that side spanning everything (only when the root
+//                    is a split; for a single stack it equals its edge zone);
+// plus each stack's own tab-insert / tab-append zones.
+// A smaller hit rect wins (updateTabDrag), so the rim beats a stack edge and
+// a gap beats the edges it sits between.
+const EDGE_FRACTION = 0.25;   // of the slot's width/height
+const EDGE_MAX = 96;          // px
+const RIM = 14;               // px
+
+function collectDockZones(inst, draggedTab) {
   const zones = [];
+  const root = inst.state.root;
+  if (!root) return zones;
   const wsRect = inst.host.getBoundingClientRect();
   const dropZones = inst.config.dropZones || {};
   const enabled = (type) => dropZones[type] !== false;
+  const local = r => ({ x: r.left - wsRect.left, y: r.top - wsRect.top, w: r.width, h: r.height });
+  const elOf = n => inst.railsLayer.querySelector(`[data-node-id="${cssEscape(n.id)}"]`);
 
-  inst.state.rails.forEach((rail, ri) => {
-    const railEl = inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(rail.id)}"]`);
-    if (!railEl) return;
-    const rr = railEl.getBoundingClientRect();
+  // A tab dragged out of a stack it is alone in can't usefully split it.
+  const src = draggedTab ? findTab(inst.state, draggedTab.id) : null;
+  const loneSrcId = src && src.container === 'dock' && src.stack.tabs.length === 1 ? src.stack.id : null;
 
-    if (ri === 0 && enabled('new-rail')) {
-      zones.push({ type: 'new-rail', at: 0,
-        rect: { x: 0, y: 0, w: 12, h: wsRect.height } });
-    }
-    if (enabled('new-rail')) {
-      const nextLeft = ri < inst.state.rails.length - 1
-        ? inst.railsLayer.querySelector(`.rails-rail[data-rail-id="${cssEscape(inst.state.rails[ri + 1].id)}"]`).getBoundingClientRect().left
-        : wsRect.right;
-      const gx = (rr.right + nextLeft) / 2 - wsRect.left;
-      zones.push({ type: 'new-rail', at: ri + 1,
-        rect: { x: gx - 9, y: 0, w: 18, h: wsRect.height } });
-    }
-
-    rail.stacks.forEach((stack, si) => {
-      const stackEl = inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(stack.id)}"]`);
-      if (!stackEl) return;
-      const sr = stackEl.getBoundingClientRect();
-
-      if (si === 0 && enabled('new-stack')) {
-        zones.push({ type: 'new-stack', railId: rail.id, at: 0,
-          rect: { x: rr.left - wsRect.left, y: rr.top - wsRect.top, w: rr.width, h: 12 } });
+  const visit = (node) => {
+    const el = elOf(node);
+    if (!el || node.collapsed) return;
+    if (isSplit(node)) {
+      const row = node.dir !== 'col';
+      const r = local(el.getBoundingClientRect());
+      if (enabled('gap')) {
+        for (let i = 0; i < node.children.length - 1; i++) {
+          const ae = elOf(node.children[i]), be = elOf(node.children[i + 1]);
+          if (!ae || !be) continue;
+          const ar = ae.getBoundingClientRect(), br = be.getBoundingClientRect();
+          const mid = row ? (ar.right + br.left) / 2 - wsRect.left
+                          : (ar.bottom + br.top) / 2 - wsRect.top;
+          zones.push({ type: 'gap', splitId: node.id, at: i + 1,
+            rect: row ? { x: mid - 9, y: r.y, w: 18, h: r.h }
+                      : { x: r.x, y: mid - 9, w: r.w, h: 18 } });
+        }
       }
-      if (enabled('new-stack')) {
-        const nextTop = si < rail.stacks.length - 1
-          ? inst.railsLayer.querySelector(`.rails-stack[data-stack-id="${cssEscape(rail.stacks[si + 1].id)}"]`).getBoundingClientRect().top
-          : rr.bottom;
-        const gy = (sr.bottom + nextTop) / 2 - wsRect.top;
-        zones.push({ type: 'new-stack', railId: rail.id, at: si + 1,
-          rect: { x: rr.left - wsRect.left, y: gy - 9, w: rr.width, h: 18 } });
+      node.children.forEach(visit);
+      return;
+    }
+    if (enabled('edge') && node.id !== loneSrcId) {
+      const slot = el.querySelector('.rails-slot');
+      const sr = slot && slot.getBoundingClientRect();
+      if (sr && sr.width > 0 && sr.height > 0) {
+        const s = local(sr);
+        const e = local(el.getBoundingClientRect());
+        const bw = Math.min(EDGE_MAX, s.w * EDGE_FRACTION);
+        const bh = Math.min(EDGE_MAX, s.h * EDGE_FRACTION);
+        // Left/right bands run the full slot height; top/bottom bands fill the
+        // middle between them, so no two edge bands overlap.
+        const edges = [
+          ['left',   { x: s.x, y: s.y, w: bw, h: s.h },                         { x: e.x, y: e.y, w: e.w / 2, h: e.h }],
+          ['right',  { x: s.x + s.w - bw, y: s.y, w: bw, h: s.h },              { x: e.x + e.w / 2, y: e.y, w: e.w / 2, h: e.h }],
+          ['top',    { x: s.x + bw, y: s.y, w: s.w - 2 * bw, h: bh },           { x: e.x, y: e.y, w: e.w, h: e.h / 2 }],
+          ['bottom', { x: s.x + bw, y: s.y + s.h - bh, w: s.w - 2 * bw, h: bh }, { x: e.x, y: e.y + e.h / 2, w: e.w, h: e.h / 2 }],
+        ];
+        for (const [side, hit, rect] of edges) {
+          if (hit.w > 0 && hit.h > 0) zones.push({ type: 'edge', nodeId: node.id, side, hit, rect });
+        }
       }
+    }
+    collectStackInternalZones(zones, el, node, wsRect, enabled);
+  };
+  visit(root);
 
-      collectStackInternalZones(zones, stackEl, stack, wsRect, enabled);
-    });
-  });
+  if (isSplit(root) && enabled('workspace-edge')) {
+    const re = elOf(root);
+    if (re) {
+      const r = local(re.getBoundingClientRect());
+      const tw = r.w / 3, th = r.h / 3;
+      const rims = [
+        ['left',   { x: r.x, y: r.y, w: RIM, h: r.h },             { x: r.x, y: r.y, w: tw, h: r.h }],
+        ['right',  { x: r.x + r.w - RIM, y: r.y, w: RIM, h: r.h }, { x: r.x + r.w - tw, y: r.y, w: tw, h: r.h }],
+        ['top',    { x: r.x, y: r.y, w: r.w, h: RIM },             { x: r.x, y: r.y, w: r.w, h: th }],
+        ['bottom', { x: r.x, y: r.y + r.h - RIM, w: r.w, h: RIM }, { x: r.x, y: r.y + r.h - th, w: r.w, h: th }],
+      ];
+      for (const [side, hit, rect] of rims) {
+        zones.push({ type: 'workspace-edge', nodeId: root.id, side, hit, rect });
+      }
+    }
+  }
   return zones;
 }
 
 // Push tab-insert / tab-append-strip / tab-append-body zones for a stack's
-// rendered DOM. Used both for rail-stacks (via collectRailsZones) and for
+// rendered DOM. Used both for docked stacks (via collectDockZones) and for
 // float-stacks (via collectFloatStackZones), so dropping into a float behaves
 // the same as dropping into a docked stack — true mini-workspace semantics.
 //
@@ -828,7 +857,7 @@ function collectStackInternalZones(zones, stackEl, stack, wsRect, enabled) {
   }
 }
 
-// Per-stack drop zones for floats — same set as rail-stacks but sourced from
+// Per-stack drop zones for floats — same set as docked stacks but sourced from
 // the floats sublayer. Skips minimized/maximized floats (no usable strip/slot)
 // and the dragging float's own zones (excludeFloatId) so a redock can't drop
 // the float onto itself.
@@ -872,27 +901,23 @@ function collectFloatTitlebarZones(inst, zones, excludeFloatId) {
 
 function zoneToMoveTarget(zone) {
   switch (zone.type) {
-    case 'new-rail':  return { to: 'new-rail', at: zone.at };
-    case 'new-stack': return { to: 'new-stack', railId: zone.railId, at: zone.at };
-    case 'tab-insert':return { to: 'stack', stackId: zone.stackId, at: zone.at };
-    case 'tab-append':return { to: 'stack', stackId: zone.stackId };
-    case 'new-float': return { to: 'new-float', x: zone._cursorX ?? 100, y: zone._cursorY ?? 100 };
+    case 'gap':            return { to: 'insert', splitId: zone.splitId, at: zone.at };
+    case 'edge':
+    case 'workspace-edge': return { to: 'split', nodeId: zone.nodeId, side: zone.side };
+    case 'tab-insert':     return { to: 'stack', stackId: zone.stackId, at: zone.at };
+    case 'tab-append':     return { to: 'stack', stackId: zone.stackId };
+    case 'new-float':      return { to: 'new-float', x: zone._cursorX ?? 100, y: zone._cursorY ?? 100 };
     case 'float-titlebar': return { to: 'float', floatId: zone.floatId };
-    default:          return null;
+    default:               return null;
   }
 }
 
 function applyMoveTarget(inst, tab, zone, srcStack) {
-  if (zone.type === 'new-rail') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-    const nr = { id: inst._freshId('r'), flex: 1, stacks: [ns] };
-    inst.state.rails.splice(zone.at, 0, nr);
-  } else if (zone.type === 'new-stack') {
-    const ns = { id: inst._freshId('s'), flex: 1, tabs: [tab], active: tab.id };
-    const rail = inst.state.rails.find(r => r.id === zone.railId);
-    if (rail) rail.stacks.splice(zone.at, 0, ns);
+  if (isNewStackZone(zone)) {
+    const ns = { id: inst._freshId('s'), tabs: [tab], active: tab.id };
+    placeStack(inst.state, zoneToMoveTarget(zone), ns);
   } else if (zone.type === 'tab-insert') {
-    const target = findStackById(inst.state, zone.stackId);
+    const target = findStack(inst.state, zone.stackId)?.stack;
     if (target) {
       let at = zone.at;
       if (target === srcStack) at = Math.min(at, target.tabs.length);
@@ -900,7 +925,7 @@ function applyMoveTarget(inst, tab, zone, srcStack) {
       target.active = tab.id;
     }
   } else if (zone.type === 'tab-append') {
-    const target = findStackById(inst.state, zone.stackId);
+    const target = findStack(inst.state, zone.stackId)?.stack;
     if (target) {
       target.tabs.push(tab);
       target.active = tab.id;
@@ -927,16 +952,4 @@ function applyMoveTarget(inst, tab, zone, srcStack) {
       float.stack.active = tab.id;
     }
   }
-}
-
-function findStackById(state, stackId) {
-  for (const rail of state.rails) {
-    for (const stack of rail.stacks) {
-      if (stack.id === stackId) return stack;
-    }
-  }
-  for (const float of state.floats || []) {
-    if (float.stack && float.stack.id === stackId) return float.stack;
-  }
-  return null;
 }

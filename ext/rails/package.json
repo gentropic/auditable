@@ -1,6 +1,6 @@
 {
   "name": "@gcu/rails",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Layout engine for docked tab-based workspaces with floating groups. Rails, stacks, tabs, floats — no recursion, no popout. Panels never reparent, so iframes and canvases survive every drag. Zero dependencies.",
   "type": "module",
   "main": "src/index.js",

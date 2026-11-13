@@ -16,7 +16,7 @@ export function setupLayout() {
   const el = document.getElementById('works-rails');
 
   WKS.rails = createRails(el, {
-    initialState: { rails: [], floats: [] },
+    initialState: { root: null, floats: [] },
     newTabButton: true,   // "+" at the end of every strip → opens the Launcher
 
     renderPanel(tab) {
@@ -74,14 +74,14 @@ export function setupLayout() {
   });
 }
 
-// True when no tab is open anywhere (no rail stack has tabs, no float). Drives
+// True when no tab is open anywhere (nothing docked, no float). Drives
 // the boot "open the Launcher on an empty workspace" behavior.
 export function isLayoutEmpty() {
   const st = WKS.rails && WKS.rails.state;
   if (!st) return true;
-  const railHasTabs = (st.rails || []).some((r) => (r.stacks || []).some((s) => (s.tabs || []).length));
+  // rails' cleanup drops empty stacks, so a non-null root has tabs.
   const floatHasTabs = (st.floats || []).some((f) => f.stack && (f.stack.tabs || []).length);
-  return !railHasTabs && !floatHasTabs;
+  return !st.root && !floatHasTabs;
 }
 
 async function saveLayout() {

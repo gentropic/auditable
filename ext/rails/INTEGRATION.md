@@ -10,11 +10,11 @@ For the full design and API surface, see [`SPEC.md`](./SPEC.md). For installatio
 
 Three layers, three concerns:
 
-1. **Chrome** — rails, stacks, tab strips, splitters, float frames. Rebuilt on structural mutation. Lives in `.rails-chrome`.
+1. **Chrome** — splits, stacks, tab strips, resize bars, float frames. Rebuilt on structural mutation. Lives in `.rails-chrome`.
 2. **Content** — panels (your tab bodies). Absolutely positioned in `.rails-content`. **Panels are never reparented.** They move by `style.left/top/width/height` only.
 3. **State** — a plain JSON object. Read freely; mutate via API methods only.
 
-A **tab** is your unit of content. Each tab owns one panel (created once by `renderPanel(tab)`, cached for the tab's lifetime). A tab lives in exactly one **stack** (a tab group with one active tab), which lives in exactly one **rail** (a column of stacks) or one **float** (a draggable frame overlaying rails).
+A **tab** is your unit of content. Each tab owns one panel (created once by `renderPanel(tab)`, cached for the tab's lifetime). A tab lives in exactly one **stack** (a tab group with one active tab), which lives either in the **dock** (a tree of row/column **splits** with stacks at the leaves) or in one **float** (a draggable frame overlaying the dock).
 
 Panels never reparent means: iframes don't reload, canvases don't redraw, `<video>` keeps playing, form focus survives. Across every move, between rails, into floats, back to rails — one cached HTMLElement per tab, repositioned numerically.
 
@@ -27,13 +27,13 @@ import '@gcu/rails/rails-default.css'; // optional GCU theme
 
 const rails = createRails(document.getElementById('workspace'), {
   initialState: {
-    rails: [{ id: 'r1', flex: 1, stacks: [{
-      id: 's1', flex: 1, active: 'a',
+    root: {
+      id: 's1', active: 'a',
       tabs: [
         { id: 'a', title: 'notes' },
         { id: 'b', title: 'output' }
       ]
-    }] }],
+    },
     floats: []
   },
   renderPanel(tab) {
@@ -45,7 +45,7 @@ const rails = createRails(document.getElementById('workspace'), {
 });
 ```
 
-That's it. Drag tabs between strips, drop in gaps to create new rails/stacks, tear off into floats, redock by dragging float titlebars. All interactions work out of the box.
+That's it. Drag tabs between strips, drop near a panel edge to split it, tear off into floats, redock by dragging float titlebars. All interactions work out of the box.
 
 ---
 
@@ -226,19 +226,17 @@ rails.on('strip:overflow', ({ stack, overflowTabs, x, y }) => {
 
 See `demo.html` for a complete sample implementation (~30 lines). A native `<dialog>` or the `popover` attribute both work well.
 
-### Collapsible sidebar rail
+### Collapsible sidebar
 
-IDE-style layout with a sidebar rail that can collapse to an icon strip:
+IDE-style layout with a sidebar that can collapse to an icon strip:
 
 ```js
 const rails = createRails(host, {
   initialState: {
-    rails: [
-      { id: 'sidebar', flex: 0, width: 240, collapsible: true,
-        stacks: [{ id: 'files', flex: 1, active: 'f', tabs: [{ id: 'f', title: 'Files' }] }] },
-      { id: 'main', flex: 1,
-        stacks: [{ id: 'editors', flex: 1, active: 'e', tabs: [{ id: 'e', title: 'index.js' }] }] }
-    ],
+    root: { id: 'shell', dir: 'row', children: [
+      { id: 'sidebar', size: 240, collapsible: true, active: 'f', tabs: [{ id: 'f', title: 'Files' }] },
+      { id: 'editors', flex: 1, active: 'e', tabs: [{ id: 'e', title: 'index.js' }] }
+    ] },
     floats: []
   },
   renderPanel,
@@ -248,16 +246,16 @@ const rails = createRails(host, {
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
     e.preventDefault();
-    rails.toggleRailCollapsed('sidebar');
+    rails.toggleCollapsed('sidebar');
   }
 });
 
 // Hook events for analytics / UI sync:
-rails.on('rail:collapse', ({ rail }) => analytics('sidebar-collapsed', rail.id));
-rails.on('rail:expand', ({ rail }) => analytics('sidebar-expanded', rail.id));
+rails.on('node:collapse', ({ node }) => analytics('sidebar-collapsed', node.id));
+rails.on('node:expand', ({ node }) => analytics('sidebar-expanded', node.id));
 ```
 
-The collapsed rail is a 32px strip with a restore button by default. For richer collapsed UI (per-stack icons, a hover-to-preview popover), style `.rails-rail.rails-collapsed` in your own CSS — the library provides the mechanism; the visual is yours.
+The collapsed node is a 32px strip with a restore button by default. For richer collapsed UI (per-stack icons, a hover-to-preview popover), style `.rails-collapsed` in your own CSS — the library provides the mechanism; the visual is yours.
 
 ### Tab badges (unread count, dirty indicator)
 
@@ -295,7 +293,7 @@ rails.releasePreservedPanel('inspector');// force destroy (fires onPanelDestroy)
 **Singleton pattern:**
 ```js
 function activateOrOpen(tabSpec, target) {
-  const existing = rails.state.rails.flatMap(r => r.stacks).some(s => s.tabs.some(t => t.id === tabSpec.id));
+  const existing = !!findTab(rails.state, tabSpec.id);   // import { findTab } from '@gcu/rails'
   if (existing) rails.activateTab(tabSpec.id);
   else rails.addTab(tabSpec, target);  // reuses preserved panel if present
 }
@@ -317,7 +315,7 @@ Per-tab flags for ergonomic policy, hooks for runtime policy:
 // Permanent home tab that can't be closed or moved.
 { id: 'home', title: 'home', closeable: false, draggable: false }
 
-// Dynamic policy — this tab can only stay in its original rail.
+// Dynamic policy — pinned tabs only move between existing stacks; system tabs never float.
 createRails(host, {
   renderPanel,
   canMoveTab(tab, from, to) {
@@ -342,13 +340,9 @@ Most existing tab UIs (VS Code editors, Chrome tabs, Auditable Works's current t
    // Before: flat array
    const tabs = [{ id, title, doc }, ...];
 
-   // After: rails shape
+   // After: rails shape — one stack as the root
    const initialState = {
-     rails: [{ id: 'r1', flex: 1, stacks: [{
-       id: 's1', flex: 1,
-       active: tabs[0]?.id ?? null,
-       tabs
-     }] }],
+     root: tabs.length ? { id: 's1', active: tabs[0].id, tabs } : null,
      floats: []
    };
    ```
@@ -373,13 +367,13 @@ Real ones encountered while building rails:
 
 - **Custom float theming — never give `.rails-float` an opaque background.** The float frame must be transparent so the panel (in `contentLayer`, behind the floats layer) shows through the slot. Put backgrounds on `.rails-titlebar` and `.rails-strip` instead. Default theme does this correctly.
 
-- **Seed-state ID collisions.** Library-generated IDs use `freshId(state, prefix)` which scans current state and guarantees uniqueness. If you seed state with IDs like `'s1'`, `'r1'`, `'t1'`, library-generated IDs will skip those. Safe. But **don't** generate your own IDs naively with a counter — they may collide with existing state too.
+- **Seed-state ID collisions.** Library-generated IDs use `freshId(state, prefix)` which scans current state and guarantees uniqueness. If you seed state with IDs like `'s1'`, `'n1'`, `'t1'`, library-generated IDs will skip those. Safe. But **don't** generate your own IDs naively with a counter — they may collide with existing state too.
 
-- **Don't mutate `rails.state` directly.** Setting `state.rails[0].flex = 2` doesn't trigger re-render and desyncs state from DOM. Go through API methods, or call `rails.render()` if you absolutely must mutate directly.
+- **Don't mutate `rails.state` directly.** Setting `state.root.children[0].flex = 2` doesn't trigger re-render and desyncs state from DOM. Go through API methods, or call `rails.render()` if you absolutely must mutate directly.
 
 - **Reserved z-index ranges.** The library uses:
-  - `2` — rail/stack splitters
-  - `5` — rail-tab panels
+  - `2` — resize bars
+  - `5` — docked-tab panels
   - `100 + float.z * 10` — float chrome
   - `100 + float.z * 10 + 5` — float-tab panels
   - `500` — drop zones during drag
@@ -411,9 +405,7 @@ Rule: if a consumer decision needs to *prevent* something, it's a hook. If a con
 
 Rails is scoped to "docked tab-based workspaces with floating groups." Use something else if you need:
 
-- Recursive arbitrary splits (any panel splits in any direction). Use Dockview or GoldenLayout.
 - Real OS popout windows. Use named workspaces as an approximation, or accept that cross-window coordination is outside rails' scope.
-- Asymmetric splits ("terminal spans main + sidebar"). Lift to Dockview.
 - Non-tabbed layout (pure grid, graph, tree, freeform). Rails has tabs at every stack; if you don't want tabs, it's the wrong tool.
 
-For in-scope use cases (notebooks, IDE-style workspaces, analysis dashboards, tool shells), rails gives you the 20% of docking that covers 95% of real UIs at roughly 1/6 the size of a full docking library and with first-class control over every behavior.
+For in-scope use cases (notebooks, IDE-style workspaces, analysis dashboards, tool shells), rails gives you docking — splits, tabs, floats — at a fraction of the size of a full docking library and with first-class control over every behavior.

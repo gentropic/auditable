@@ -9,8 +9,8 @@
   overflow: hidden;
 }
 
-/* Chrome layer holds two sublayers: .rails-rails (rails/stacks) and
-   .rails-floats (float frames above rails). Rebuilt on structural mutation. */
+/* Chrome layer holds two sublayers: .rails-rails (the docked tree) and
+   .rails-floats (float frames above it). Rebuilt on structural mutation. */
 .rails-chrome {
   position: absolute;
   inset: 0;
@@ -63,22 +63,30 @@
   pointer-events: none;
 }
 
-/* Rail — horizontal column. */
-.rails-rail {
+/* Docked tree. Every node (split or stack) is a flex child of its parent
+   split; a split lays its children out in a row or a column, with a 6px
+   resize bar between each pair. */
+.rails-node {
   display: flex;
-  flex-direction: column;
-  min-width: 140px;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
-/* Collapsed rail: narrow icon strip. */
-.rails-rail.rails-collapsed {
-  min-width: 32px;
-}
+.rails-split.rails-row { flex-direction: row; }
+.rails-split.rails-col { flex-direction: column; }
 
-/* Collapse button: inline in the first strip-wrap, right of the overflow ⋯.
-   Expand button: inline at the top of a collapsed 32px rail. */
-.rails-rail-collapse-btn {
+/* Minimum sizes along the parent's axis. */
+.rails-row > .rails-node:not(.rails-collapsed) { min-width: 140px; }
+.rails-col > .rails-node:not(.rails-collapsed) { min-height: 100px; }
+
+/* Collapsed node: a 32px strip along its parent's axis. */
+.rails-collapsed-row { flex-direction: column; }
+.rails-collapsed-col { flex-direction: row; }
+
+/* Collapse button: inline in the node's first strip-wrap, right of the
+   overflow ⋯. Expand button: fills the collapsed 32px strip's start. */
+.rails-collapse-btn {
   flex: 0 0 auto;
   width: 28px;
   cursor: pointer;
@@ -91,9 +99,8 @@
   user-select: none;
 }
 
-.rails-rail-expand-btn {
+.rails-expand-btn {
   flex: 0 0 auto;
-  width: 100%;
   cursor: pointer;
   border: none;
   background: transparent;
@@ -103,35 +110,29 @@
   padding: 4px 0;
   user-select: none;
 }
+.rails-collapsed-row > .rails-expand-btn { width: 100%; }
+.rails-collapsed-col > .rails-expand-btn { height: 100%; width: 32px; padding: 0; }
 
-.rails-rail-split {
+.rails-bar {
   flex: 0 0 6px;
-  cursor: col-resize;
   position: relative;
   z-index: 2;
   touch-action: none;
 }
+.rails-bar-row { cursor: col-resize; }
+.rails-bar-col { cursor: row-resize; }
 
-/* Stack — vertical tab group within a rail (or inside a float). */
+/* Stack — a tab group (docked, or inside a float). */
 .rails-stack {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 100px;
   overflow: hidden;
 }
 
 .rails-stack-in-float {
   flex: 1;
   min-height: 0;
-}
-
-.rails-stack-split {
-  flex: 0 0 6px;
-  cursor: row-resize;
-  position: relative;
-  z-index: 2;
-  touch-action: none;
 }
 
 /* Strip-wrap — holds the scrollable strip + overflow button side-by-side.

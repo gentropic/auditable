@@ -1,61 +1,63 @@
 # SPEC-rails
 
 **Package:** `@gcu/rails`
-**Status:** Draft (0.3)
+**Status:** Draft (0.4 — the docked area is a split tree)
 **Role:** Layout engine for docked tab-based workspaces with floating groups.
 **Dependencies:** Zero. Uses only DOM, CSS flexbox, pointer events, and `ResizeObserver`.
-**Size estimate:** ~7 KB gzipped for library + structural CSS; +2 KB for optional default theme. See §11 — informative, not a hard budget.
+**Size:** ~13 KB minified + gzipped for the library, ~2.8 KB for the structural CSS, ~1.7 KB for the optional default theme (measured, §11).
 **Design stance:** Mechanism, not policy. Rails provides hooks and events; consumers decide behavior.
 
 ---
 
 ## 1. Motivation
 
-Notebook workspaces, dashboards, and analysis shells need multi-panel layouts with tabs, splits, floats, and drag-to-rearrange. The standard answer is a full docking library (Dockview, GoldenLayout, FlexLayout), which ship ~50 KB gzipped because they implement *freeform* docking: recursive arbitrary splits, drag-to-any-edge-of-any-panel to create a split in that direction, popout windows, rich built-in behaviors for every plausible user workflow.
+Notebook workspaces, dashboards, and analysis shells need multi-panel layouts with tabs, splits, floats, and drag-to-rearrange. The standard answer is a full docking library (Dockview, GoldenLayout, FlexLayout), which ship 30–50 KB gzipped (some plus a framework) because they implement everything a docking UI might want: arbitrary splits, popout windows, and rich built-in behaviors for every plausible user workflow.
 
-The vast majority of real notebook workflows do not use arbitrary recursive splits or popout windows. Their layouts are expressible as a fixed, shallow structure: a row of columns, each column a vertical stack of tab groups, optionally with a handful of floating panels for tools and transient views. The expressive power lost by dropping recursion and OS-window popout is negligible; the complexity saved is roughly 10×.
+Arbitrary splits turn out to be cheap once the hard part is solved, and the hard part is panel survival (§4.2). Rails keeps panels in a flat layer that is never reparented, so the docked area can be any tree of row and column splits without risk to what's inside the panels. Up to 0.3 rails restricted the dock to one row of columns, each a vertical stack of tab groups; that model could not express a panel running under several columns (an IDE's bottom panel), and lifting the restriction cost about 1.3 KB. What rails still refuses is popout to OS windows, which needs cross-window state coordination outside a layout library.
 
 Beyond size, there is a second axis where monolithic libraries bloat: **built-in behaviors**. Dockview decides what minimize means, which tabs can close, what context menus exist, how themes work, how focus propagates. These decisions are reasonable for generic web apps and wrong for almost every specific consumer, leading to either accepting the default or fighting the library. `@gcu/rails` takes the opposite stance: the library exposes hooks and events, and the consumer decides. Minimize fires an event; the consumer turns that into collapse-in-place, dock-strip, tray-icon, or nothing. Closing a tab runs through `canCloseTab`; the consumer vetoes based on dirty state or ownership rules. No baked-in policy means fewer configuration knobs to document, and consumers never have to fight the library to get the behavior they want.
 
-`@gcu/rails` is the library that occupies this design point. It refuses freeform docking and popout windows; it provides rails, stacks, tabs, and in-workspace floating groups; it delegates every behavioral decision to the consumer via hooks; and it fits in under 6 KB.
+`@gcu/rails` is the library that occupies this design point. It provides split trees of tab stacks and in-workspace floating groups; it refuses popout windows; it delegates every behavioral decision to the consumer via hooks; and it is a fraction of the size of its peers (§11).
 
 ## 2. Model
 
 ### 2.1 Workspace shape
 
-A workspace is a two-level tree of rails/stacks/tabs, plus a flat list of floats:
+A workspace is a docked tree plus a flat list of floats:
 
 ```
 workspace
-├── rail[]              (columns, arranged horizontally)
-│   └── stack[]         (tab groups, stacked vertically within a rail)
-│       └── tab[]       (one active, rest inactive)
-└── float[]             (independently-positioned stacks overlaying rails)
+├── root                (a split or a stack; null when nothing is docked)
+│   split               (children laid out in a row or a column)
+│   └── node[]          (splits or stacks, any depth)
+│   stack               (a tab group: the leaves of the tree)
+│   └── tab[]           (one active, rest inactive)
+└── float[]             (independently-positioned stacks overlaying the dock)
     └── stack           (same shape; a float contains exactly one stack)
         └── tab[]
 ```
 
-No recursion in the rails part. A rail contains stacks, not rails. A stack contains tabs, not stacks. Floats are a separate flat list; a float holds exactly one stack, which in turn holds one or more tabs. Floats render above rails and can be dragged/resized/minimized/maximized independently.
+A split arranges its children left to right (`dir: 'row'`) or top to bottom (`dir: 'col'`), with a resize bar between each pair. Its children are stacks or further splits, so any arrangement of rectangles that can be cut recursively into rows and columns is expressible: columns of stacked groups (the pre-0.4 model), a panel spanning the full width under several columns, a group split in four. A stack contains tabs, not stacks. Floats are a separate flat list; a float holds exactly one stack, which in turn holds one or more tabs. Floats render above the dock and can be dragged/resized/minimized/maximized independently.
 
 ### 2.2 Invariants
 
 1. A stack always contains at least one tab.
-2. A rail always contains at least one stack.
+2. A split has at least two children, and none of them is a split in the same direction.
 3. A float's stack always contains at least one tab (otherwise the float is removed).
 4. Exactly one tab per stack is marked `active`.
 5. `active` references a tab that exists in the stack.
 6. Float `z` values are unique per workspace and determine stacking order (higher `z` renders later/on top).
-7. The workspace itself may be empty (`state.rails.length === 0` and `state.floats.length === 0`). This arises naturally when the last tab is closed; invariants 1–6 apply vacuously.
+7. The workspace itself may be empty (`state.root === null` and `state.floats.length === 0`). This arises naturally when the last tab is closed; invariants 1–6 apply vacuously.
 
-Any operation that would violate these is followed by a cleanup pass that removes empty stacks, rails, and floats, and reselects `active` when needed. Cascade-cleanup to an empty workspace is legal — consumers provide a `renderEmpty()` callback (§5.1) to customize the empty-state affordance (e.g., a "no documents open" placeholder with a "New tab" button).
+Any operation that would violate these is followed by a cleanup pass that removes empty stacks and floats, replaces a split left with one child by that child (which takes over the split's place: its `flex`, `size` and collapse flags), merges a split into a same-direction parent (scaling the children's weights so they keep their on-screen share), and reselects `active` when needed. `validateState` accepts a split with one child or a same-direction child; cleanup normalizes them. Cascade-cleanup to an empty workspace is legal — consumers provide a `renderEmpty()` callback (§5.1) to customize the empty-state affordance (e.g., a "no documents open" placeholder with a "New tab" button).
 
 **State is owned by the library.** Consumers read `state` freely but must not mutate it directly — changes go through the API methods (§5.2) or `deserialize()`. Direct mutation will not trigger re-render and will desync the DOM from state. For bulk changes, use `batch(fn)` (§5.2) or `deserialize()`.
 
 ### 2.3 Coordinate spaces
 
 - **Workspace** — bounding rectangle of the host element. All positioning is relative to this.
-- **Chrome** — rails, stacks, tab strips, splitters, float frames. Rebuilt on every mutation. Lives in an absolute layer at `inset: 0`.
-- **Content** — panels (tab bodies). Lives in a separate absolute layer at `inset: 0`, always on top of chrome but behind interactive overlays. Panels are positioned with `left/top/width/height` derived from the chrome's panel-slot rects — whether those slots belong to a rail-stack or a float. Panels are never reparented.
+- **Chrome** — splits, stacks, tab strips, resize bars, float frames. Rebuilt on every mutation. Lives in an absolute layer at `inset: 0`.
+- **Content** — panels (tab bodies). Lives in a separate absolute layer at `inset: 0`, always on top of chrome but behind interactive overlays. Panels are positioned with `left/top/width/height` derived from the chrome's panel-slot rects — whether those slots belong to a docked stack or a float. Panels are never reparented.
 
 This separation is the core architectural decision and is non-negotiable. See §4.
 
@@ -63,29 +65,36 @@ This separation is the core architectural decision and is non-negotiable. See §
 
 ```ts
 type State = {
-  rails: Rail[];
+  root: Node | null;      // the docked tree; null when nothing is docked
   floats: Float[];
 };
 
-type Rail = {
+type Node = Split | Stack;   // a Split has `children`; a Stack has `tabs`
+
+type Split = {
   id: string;
-  flex: number;           // proportional weight
-  width?: number;         // pixel width (overrides flex when present)
-  stacks: Stack[];
+  dir: 'row' | 'col';     // children left→right, or top→bottom
+  children: Node[];
+  flex?: number;          // proportional weight in its parent (default 1)
+  size?: number;          // fixed px along the parent's axis (overrides flex)
+  collapsible?: boolean;
+  collapsed?: boolean;
 };
 
 type Stack = {
   id: string;
-  flex: number;           // proportional weight
-  height?: number;        // pixel height (overrides flex when present)
   tabs: Tab[];
   active: string;         // tab id
+  flex?: number;          // as on Split
+  size?: number;
+  collapsible?: boolean;
+  collapsed?: boolean;
   tabPosition?: 'top' | 'bottom';  // overrides construction-time default; see §6.13
 };
 
 type Float = {
   id: string;
-  stack: Stack;           // same Stack type; flex/height unused
+  stack: Stack;           // same Stack type; flex/size unused
   x: number; y: number;   // top-left in workspace coordinates
   w: number; h: number;
   z: number;              // stacking order among floats
@@ -106,9 +115,9 @@ type Tab = {
 
 ### 3.1 Sizing
 
-`flex` values are proportional weights. A rail with `flex: 2` is twice as wide as a sibling with `flex: 1`. Splitter drags adjust the two adjacent weights while preserving their sum, so resizing rail *i* does not disturb rails *j ≠ i, i+1*.
+`flex` values are proportional weights along the parent split's axis. In a row, a child with `flex: 2` is twice as wide as a sibling with `flex: 1`; in a column, twice as tall. Resize-bar drags adjust the two adjacent weights while preserving their sum, so resizing child *i* does not disturb children *j ≠ i, i+1*.
 
-`width` (on rails) or `height` (on stacks) can be specified as an alternative for pixel-fixed sizing. When present, the element uses `flex: 0 0 Npx`. Mixing fixed and proportional in the same parent is supported — proportional siblings share the remaining space.
+`size` is the alternative for pixel-fixed sizing: a width for a child of a row, a height for a child of a column. When present, the element uses `flex: 0 0 Npx`. Mixing fixed and proportional in the same parent is supported — proportional siblings share the remaining space. The root fills the workspace and ignores its own `flex`/`size`.
 
 Floats use explicit `x/y/w/h` in workspace coordinates. The library enforces a minimum float size (default 200×120px) but otherwise does not constrain positioning — a float can overhang the workspace edge if the consumer doesn't clamp it.
 
@@ -121,16 +130,18 @@ The library reads four optional flags on each tab:
 - **`preserveOnClose`** — default `false`. When `true`, UI-driven close (× click, Ctrl-W, float close) routes through `closeTab(id, { preserve: true })` — the tab is removed from state but its panel stays in the cache (hidden) so re-adding with the same ID reuses it. Programmatic `closeTab(id)` is NOT affected by this flag; callers must pass `{ preserve: true }` explicitly for programmatic preserve. Useful for inspectors, sidebars, devtools — anything whose mounted state matters across close/reopen.
 - **`badge`** — optional string or number. When set, renders as a pill after the title. Chrome-visible: changes trigger a strip rebuild via `updateTab(id, { badge })`.
 
-Rails themselves also have two optional UI flags:
+Any docked node except the root also has two optional UI flags:
 
-- **`collapsible`** — opt-in per rail. When `true`, a collapse button (◀) is rendered on the rail; clicking it flips `collapsed`.
-- **`collapsed`** — current state. Collapsed rails render as a 32px icon strip with an expand button (▶); their stacks and slots aren't rendered and their tabs' panels go to `display: none`. Consumers can decorate the collapsed state via the `.rails-collapsed` class.
+- **`collapsible`** — opt-in per node. When `true`, a collapse button is rendered in the node's first tab strip (◀ for a child of a row, ▲ for a child of a column); clicking it flips `collapsed`.
+- **`collapsed`** — current state. A collapsed node renders as a 32px strip along its parent's axis with an expand button (▶ / ▼); its stacks and slots aren't rendered and their tabs' panels go to `display: none`. Consumers can decorate the collapsed state via the `.rails-collapsed`, `.rails-collapsed-row` and `.rails-collapsed-col` classes.
 
 These are intentionally coarse. Finer-grained policy (can-move-to-specific-stack, can-close-when-dirty) flows through hooks (§5.4), not flags.
 
 ### 3.3 Serialization
 
 `State` is plain JSON. `JSON.stringify(state)` round-trips losslessly if consumer-added fields on `Tab` are JSON-serializable. A `serialize(replacer?)` method is provided; consumers embedding non-serializable handles (e.g., open notebook doc references) should pass a replacer that emits `{$ref: ...}` placeholders and rehydrate on `deserialize`.
+
+**Pre-0.4 layouts load unchanged.** `createRails({ initialState })` and `deserialize()` accept the old `{ rails: [{ stacks: [...] }] }` shape and convert it: a row split of column splits, rail `width` and stack `height` becoming `size`, rail collapse flags carried over, then normalized by cleanup (a one-stack rail becomes that stack). A saved layout therefore survives the upgrade; the next save writes the tree shape.
 
 ## 4. Architecture
 
@@ -139,16 +150,17 @@ These are intentionally coarse. Finer-grained policy (can-move-to-specific-stack
 ```
 host
 ├── .rails-chrome                 (absolute, inset: 0)
-│   ├── .rails-rails               — rail/stack layout
-│   │   └── .rails-rail[] > .rails-stack[] > (.rails-strip, .rails-slot)
-│   └── .rails-floats              — float frames (drawn above rails)
+│   ├── .rails-rails               — the docked tree
+│   │   └── .rails-node (root): .rails-split.rails-row|.rails-col > (.rails-node, .rails-bar)*
+│   │                            … down to .rails-stack.rails-node > (.rails-strip-wrap, .rails-slot)
+│   └── .rails-floats              — float frames (drawn above the dock)
 │       └── for each float: .rails-float        > (.rails-titlebar, .rails-strip, .rails-slot)
 │                            .rails-float-handles > .rails-resize-handle[]   (sibling, z above panel)
 └── .rails-content                (absolute, inset: 0, pointer-events: none)
     └── .rails-panel[]             — absolute, positioned to match slots from either chrome sub-layer
 ```
 
-On mutation, chrome is rebuilt from scratch. Content panel elements are created once per tab (lazily) and thereafter positioned via `style.left/top/width/height`. **Panels are never moved in the DOM tree.** A panel belonging to a float vs a rail-stack is the same panel element; only its target slot changes.
+On mutation, chrome is rebuilt from scratch. Content panel elements are created once per tab (lazily) and thereafter positioned via `style.left/top/width/height`. **Panels are never moved in the DOM tree.** A panel belonging to a float vs a docked stack is the same panel element; only its target slot changes.
 
 ### 4.2 Why panels are never reparented
 
@@ -158,11 +170,11 @@ When a DOM node is moved via `appendChild` to a new parent:
 - Focused form elements lose focus.
 - Some component libraries reinitialize on mount/unmount.
 
-By keeping panels in a flat layer and repositioning them numerically, these all survive every drag, split, move, workspace resize, tear-off into a float, and redock back into a rail. This is the property that makes rails suitable as the base layer for a real workspace.
+By keeping panels in a flat layer and repositioning them numerically, these all survive every drag, split, move, workspace resize, tear-off into a float, and redock back into the dock. This is the property that makes rails suitable as the base layer for a real workspace.
 
 ### 4.3 ResizeObserver
 
-A single `ResizeObserver` observes the host element. On any size change — window resize, host element flex recalculation, external style change — the observer fires `reposition()`, which reads every panel-slot rect (across rails and floats) and updates the corresponding panel's position. This is the sole mechanism keeping the two layers in sync; no explicit resize event plumbing is required.
+A single `ResizeObserver` observes the host element. On any size change — window resize, host element flex recalculation, external style change — the observer fires `reposition()`, which reads every panel-slot rect (across the dock and floats) and updates the corresponding panel's position. This is the sole mechanism keeping the two layers in sync; no explicit resize event plumbing is required.
 
 ### 4.4 Drag scrim
 
@@ -170,7 +182,7 @@ During an active drag (tab drag, splitter drag, float drag, float resize), a tra
 
 ### 4.5 Float z-ordering
 
-Floats stack via `style.zIndex = float.z`, not DOM order. Pointerdown on any part of a float's chrome (titlebar, strip, resize handle) raises that float to `max(z) + 1` by updating `state.floats[i].z` and writing `zIndex` on the single float element — no DOM children reorder, no chrome rebuild. Floats do not affect the z-order of rails; the entire `.rails-floats` sublayer sits above `.rails-rails` in DOM order, so any float is always drawn above any rail regardless of its `z`.
+Floats stack via `style.zIndex = float.z`, not DOM order. Pointerdown on any part of a float's chrome (titlebar, strip, resize handle) raises that float to `max(z) + 1` by updating `state.floats[i].z` and writing `zIndex` on the single float element — no DOM children reorder, no chrome rebuild. Floats do not affect the z-order of the dock; the entire `.rails-floats` sublayer sits above `.rails-rails` in DOM order, so any float is always drawn above any docked stack regardless of its `z`.
 
 ### 4.6 Structural rebuild vs in-place update
 
@@ -184,7 +196,7 @@ Mutations fall into two categories. The library never rebuilds more than needed.
 - `updateTab` when a chrome-visible field changed (`title`, `closeable`, `draggable`, icon-backing fields)
 
 **In-place update** — DOM elements persist; only styles or classes change:
-- Splitter drag (updates `flex` / `width` / `height` on existing rail/stack elements, then `reposition()`)
+- Resize-bar drag (updates `flex` on the two adjacent node elements, then `reposition()`)
 - Float drag (updates `style.left/top` on the float element, then `reposition()` for its panel)
 - Float resize (updates `style.width/height`, and `left/top` for N/W handles)
 - Float raise (updates `style.zIndex` to `float.z`; §4.5)
@@ -206,7 +218,7 @@ Consumers can coalesce many mutations into a single structural rebuild via `batc
 const rails = createRails(hostElement, {
   initialState,           // State object (optional; defaults to empty workspace)
   renderPanel(tab),       // required — returns HTMLElement for the tab
-  renderEmpty(),          // optional — returns HTMLElement shown when state.rails is empty
+  renderEmpty(),          // optional — returns HTMLElement shown when nothing is docked or floating
   onPanelDestroy(tab, el),// optional — called just before a panel element is removed
 
   // Optional hooks (see §5.4)
@@ -229,8 +241,9 @@ const rails = createRails(hostElement, {
     'tab-insert': true,
     'tab-append-strip': true,
     'tab-append-body': true,
-    'new-rail': true,
-    'new-stack': true,
+    'gap': true,
+    'edge': true,
+    'workspace-edge': true,
     'new-float': true,
     'float-titlebar': true
   }
@@ -261,8 +274,8 @@ const rails = createRails(hostElement, {
   releasePreservedPanel(tabId): void;     // force-destroy a preserved panel (fires onPanelDestroy)
   listPreservedPanels(): Array<{ id: string, tab: Tab }>;  // audit preserved panels
 
-  // Rail collapse
-  toggleRailCollapsed(railId): void;      // flips rail.collapsed; emits rail:collapse / rail:expand
+  // Collapse
+  toggleCollapsed(nodeId): void;          // flips node.collapsed (not the root); emits node:collapse / node:expand
 
   // Float operations
   floatTab(tabId, bounds?): void;         // tear off into a new float
@@ -280,16 +293,18 @@ const rails = createRails(hostElement, {
 type MoveTarget =
   | { to: 'stack',     stackId: string, at?: number }   // insert at index (default: append)
   | { to: 'float',     floatId: string, at?: number }
-  | { to: 'new-rail',  at: number }                     // rail index (0 = leftmost)
-  | { to: 'new-stack', railId: string, at: number }     // stack index within rail
+  | { to: 'split',     nodeId?: string, side: 'left' | 'right' | 'top' | 'bottom' }
+  | { to: 'insert',    splitId: string, at?: number }   // new child of a split (default: last)
   | { to: 'new-float', x: number, y: number, w?: number, h?: number };
 ```
+
+`split` places a new stack holding the tab beside a docked node (`nodeId` omitted = the root). If the node's parent already runs in that direction, the new stack becomes its sibling and takes half the node's weight. If the node is itself a split in that direction (typically the root), the new stack becomes its first or last child. Otherwise the node is wrapped in a new split of that direction, which takes over the node's place; the newcomer gets half when the node is a single stack, a third when it is a group. Splitting the root's bottom edge is how a panel comes to span the full width under several columns.
 
 `batch(fn)` executes `fn` synchronously with render deferred. The deferred render fires once after `fn` returns, covering every mutation made inside. Useful for session-restore, bulk tab creation, programmatic layout changes. Nested `batch` calls collapse — only the outermost triggers a render. Exceptions inside `fn` still trigger the final render so state and DOM stay consistent.
 
 ### 5.3 The `renderPanel` contract
 
-Receives a `Tab`, returns an `HTMLElement`. Called at most once per tab id; the returned element is cached and reused across all subsequent layout changes, including moves between rail-stacks, between floats, and between rails and floats.
+Receives a `Tab`, returns an `HTMLElement`. Called at most once per tab id; the returned element is cached and reused across all subsequent layout changes, including moves between docked stacks, between floats, and between the dock and floats.
 
 ```js
 renderPanel(tab) {
@@ -372,9 +387,9 @@ Hooks are synchronous functions returning a boolean. They run before the corresp
 | `canCloseTab` | `(tab) => boolean` | Veto tab close. Default: `true`. |
 | `canMoveTab` | `(tab, from, to) => boolean` | Veto tab move. `from` and `to` are target descriptors. Default: `true`. |
 | `canCreateFloat` | `(tab, at) => boolean` | Veto tear-off into a float. Default: `true`. |
-| `canDropOn` | `(zone, tab) => boolean` | Filter drop zones at drag start. `zone: { type, stackId?, railId?, floatId?, at? }`. Default: `true`. Vetoed zones are not computed into hit-testing and do not highlight, giving immediate visual feedback to the user. |
+| `canDropOn` | `(zone, tab) => boolean` | Filter drop zones at drag start. `zone: { type, stackId?, splitId?, nodeId?, side?, floatId?, at? }`. Default: `true`. Vetoed zones are not computed into hit-testing and do not highlight, giving immediate visual feedback to the user. |
 
-Consumers use hooks for policy that depends on runtime state — "can't close if dirty," "this tab cannot leave this rail," "no floats in the sidebar zone." Hooks are the right place for this logic because they run synchronously during the interaction and cleanly block it.
+Consumers use hooks for policy that depends on runtime state — "can't close if dirty," "this tab cannot leave this stack," "no floats in the sidebar zone." Hooks are the right place for this logic because they run synchronously during the interaction and cleanly block it.
 
 `canDropOn` runs once per potential zone at drag start, not per pointermove — cheap. It's the preferred way to prevent moves because vetoing *before* the drop (zone hidden) feels correct; vetoing *at* the drop (via `canMoveTab`) looks like a bug to the user. Use `canMoveTab` only for programmatic-move protection that must apply regardless of UI path.
 
@@ -397,6 +412,8 @@ Events fire *after* the corresponding mutation and are for notification, not con
 | `float:maximize` | `{ float, from }` | `toggleFloatMaximized` was called. Library *does* resize the float to workspace bounds and preserves `from` for restore. |
 | `float:raise` | `{ float }` | A float was brought to top of z-order |
 | `float:titlebar:contextmenu` | `{ float, x, y }` | Right-click on a float titlebar |
+| `node:collapse` / `node:expand` | `{ node }` | `toggleCollapsed` flipped a node |
+| `strip:newtab` | `{ stack }` | The opt-in "+" button at the end of a strip (`newTabButton: true`) was clicked |
 | `layout:change` | `{ state }` | Any mutation (debounced). Useful for autosave. |
 
 ### 5.6 Mechanism, not policy
@@ -419,11 +436,12 @@ Computed at drag start from the current layout.
 
 | Type | Shape | Effect on drop |
 |------|-------|----------------|
-| `new-rail` | 18px-wide vertical strip between rails and at outer left/right edges | Create new rail with one stack containing the dragged tab |
-| `new-stack` | 18px-tall horizontal strip between stacks in a rail, and at rail top/bottom edges | Create new stack in that rail with the dragged tab |
-| `tab-insert` | Each tab splits into two half-width targets — left half inserts before it, right half after — across the whole strip (rail-stack or float). The hit target is half a tab wide; the highlight is a thin 2px caret at the boundary, so tabs stay visible during the drag | Insert the tab at that index in that stack |
+| `gap` | 18px band over the resize bar between two children of any split | Create a new stack with the dragged tab between them |
+| `edge` | A band along each side of a docked stack's body: 25% of its width or height, at most 96px; left/right bands run the full height, top/bottom fill the middle so no two overlap. The highlight previews the half the new stack would take | Split that stack in that direction (`{ to: 'split', nodeId, side }`) |
+| `workspace-edge` | A 14px band at each rim of the dock, only when the root is a split. The highlight previews a third of the dock along that side | Split the root: a new stack spanning the whole width (or height) |
+| `tab-insert` | Each tab splits into two half-width targets — left half inserts before it, right half after — across the whole strip (docked stack or float). The hit target is half a tab wide; the highlight is a thin 2px caret at the boundary, so tabs stay visible during the drag | Insert the tab at that index in that stack |
 | `tab-append` (strip) | Only the empty strip space past the last tab (or the whole strip when it has no tabs / `tab-insert` is disabled) — so it never overlaps a tab | Append tab to that stack |
-| `tab-append` (body) | The whole panel body area — rail-stack or float — lowest priority | Append tab to that stack |
+| `tab-append` (body) | The whole panel body area — docked stack or float — lowest priority. With `edge` on, effectively the middle of the body | Append tab to that stack |
 | `new-float` | Everywhere inside the workspace not covered by a higher-priority zone | Create new float at cursor position with the dragged tab |
 | `float-titlebar` | The titlebar of each existing float | Append tab to that float's stack |
 
@@ -433,20 +451,21 @@ Floats are first-class mini-stacks: every tab-level drop zone (`tab-insert`, `ta
 
 When the cursor is inside multiple overlapping zones, the smallest-area zone wins, except:
 - `tab-append` on the body is demoted by a large penalty.
-- `new-float` is demoted below every rails zone so it only activates in genuinely empty workspace areas.
+- `new-float` is demoted below every docked zone so it only activates in genuinely empty workspace areas.
 - Within a float, `float-titlebar` wins over `new-float`.
 
-This produces the expected behavior: precise inserts near tab edges, gap-creation near splitters, titlebar-drop for joining an existing float, append elsewhere on rails, and new-float only when the cursor is in unclaimed workspace space.
+This produces the expected behavior: precise inserts near tab edges, a gap over each resize bar, the rim band at the dock's very edge before the stack edge just inside it, splits near a panel's sides, titlebar-drop for joining an existing float, append in a panel's middle, and new-float only when the cursor is in unclaimed workspace space.
+
+A tab dragged out of a stack it is alone in gets no `edge` zones on that stack: splitting a stack by its only tab would just move the stack.
 
 ### 6.3 Splitter resize
 
-- **Rail splitter** — 6px-wide vertical handle between two rails. Drag adjusts adjacent rail `flex` (or `width`) values preserving their sum.
-- **Stack splitter** — 6px-tall horizontal handle between two stacks in the same rail.
-- Minimums: 140px rail width, 100px stack height. Clamped.
+- **Resize bar** — a 6px handle between each pair of a split's children: vertical (`.rails-bar-row`, `col-resize`) in a row, horizontal (`.rails-bar-col`, `row-resize`) in a column. Drag adjusts the two adjacent `flex` values preserving their sum.
+- Minimums: 140px wide for a child of a row, 100px tall for a child of a column. Clamped (to half the pair's space when that is smaller).
 
 ### 6.4 Close tab
 
-Click on the `×` affordance. If `tab.closeable === false`, no × is rendered and click-close is a no-op. If the `canCloseTab` hook returns `false`, the close is cancelled. Otherwise: remove the tab; if it was active and the stack is non-empty, the tab to its left becomes active; cascade-cleanup removes empty stacks, rails, and floats.
+Click on the `×` affordance. If `tab.closeable === false`, no × is rendered and click-close is a no-op. If the `canCloseTab` hook returns `false`, the close is cancelled. Otherwise: remove the tab; if it was active and the stack is non-empty, the tab to its left becomes active; cascade-cleanup removes empty stacks and floats and tidies the tree (§2.2).
 
 ### 6.5 Activate tab
 
@@ -458,7 +477,7 @@ A pointerdown on a draggable tab followed by pointermove exceeding 4px (Manhatta
 
 ### 6.7 Float drag
 
-Pointerdown on a float's titlebar, pointermove updates `x/y`, pointerup commits. Scrim captures events. If the drag ends over a rails drop zone, the float's last tab is redocked instead — the float is destroyed and its tabs are inserted at the drop target. Otherwise the float stays a float at the new position.
+Pointerdown on a float's titlebar, pointermove updates `x/y`, pointerup commits. Scrim captures events. If the drag ends over a docked drop zone, the float's tabs are redocked instead — the float is destroyed and its tabs are inserted at the drop target. Otherwise the float stays a float at the new position.
 
 ### 6.8 Float resize
 
@@ -474,14 +493,14 @@ Dragging a tab into the `new-float` zone creates a float at the cursor position 
 
 ### 6.11 Redock
 
-Dragging a float's titlebar onto any rails drop zone destroys the float and inserts its tabs into the drop target. This is the same drop-zone machinery used for regular tab drags; the library does not distinguish "dragging a tab from a stack" from "dragging a float's titlebar" at the drop target level.
+Dragging a float's titlebar onto any docked drop zone (including `edge`, `gap` and `workspace-edge`) destroys the float and inserts its tabs into the drop target. This is the same drop-zone machinery used for regular tab drags; the library does not distinguish "dragging a tab from a stack" from "dragging a float's titlebar" at the drop target level.
 
 ### 6.12 Drop zone filtering
 
 Two mechanisms, both evaluated at drag start:
 
-- **`dropZones` option** (static, per-category). An object keyed by zone type with boolean values. Any type set to `false` is omitted from the computed zone list for every drag. Useful for app-wide policies: disable `tab-append-body` to make `new-float` easier to trigger; disable `new-rail`/`new-stack` for a fixed-structure app; disable `new-float` for a no-floats app.
-- **`canDropOn(zone, tab)` hook** (dynamic, per-zone-per-drag). Called once per candidate zone with the specific zone and the tab being dragged. Returning `false` omits that zone. Runtime-dependent policy goes here: "this tab cannot leave its rail," "only leaf tabs can create new rails," "controls tabs cannot float."
+- **`dropZones` option** (static, per-category). An object keyed by zone type with boolean values. Any type set to `false` is omitted from the computed zone list for every drag. Useful for app-wide policies: disable `tab-append-body` to make `new-float` easier to trigger; disable `gap`/`edge`/`workspace-edge` for a fixed-structure app; disable `new-float` for a no-floats app.
+- **`canDropOn(zone, tab)` hook** (dynamic, per-zone-per-drag). Called once per candidate zone with the specific zone and the tab being dragged. Returning `false` omits that zone. Runtime-dependent policy goes here: "this tab cannot leave its stack," "only document tabs can split the dock," "controls tabs cannot float."
 
 The static config is equivalent to `canDropOn(z) => dropZones[z.type] !== false`; the hook runs in addition. Both must pass for a zone to be considered.
 
@@ -516,7 +535,11 @@ The library ships two stylesheets:
 |-------|------|
 | `.rails-root` | Host element (added automatically) |
 | `.rails-chrome`, `.rails-rails`, `.rails-floats`, `.rails-content` | Layer containers |
-| `.rails-rail`, `.rails-stack`, `.rails-strip`, `.rails-slot` | Rails-side layout |
+| `.rails-node` | Every docked node (split, stack or collapsed strip); carries `data-node-id` |
+| `.rails-split.rails-row`, `.rails-split.rails-col` | A split and its direction |
+| `.rails-stack`, `.rails-strip`, `.rails-slot` | A tab group, its strip, its panel slot |
+| `.rails-collapsed`, `.rails-collapsed-row`, `.rails-collapsed-col` | A collapsed node's 32px strip, by parent direction |
+| `.rails-collapse-btn`, `.rails-expand-btn` | Collapse / expand buttons |
 | `.rails-stack.rails-tabs-bottom` | Stack with tabs rendered below the panel |
 | `.rails-tab` | A tab header |
 | `.rails-tab.rails-active` | The active tab in its stack |
@@ -525,7 +548,7 @@ The library ships two stylesheets:
 | `.rails-x` | The close affordance (absent when `closeable: false`) |
 | `.rails-panel` | A panel (in content layer) |
 | `.rails-panel.rails-dragging` | Active during any drag |
-| `.rails-rail-split`, `.rails-stack-split` | Rail/stack splitter handles |
+| `.rails-bar`, `.rails-bar-row`, `.rails-bar-col` | Resize bars (in a row / in a column) |
 | `.rails-float` | A float frame |
 | `.rails-float.rails-minimized` | A float whose state has `minimized: true` (library adds the class; visual effect is consumer CSS) |
 | `.rails-float.rails-maximized` | A float whose state has `maximized: true` |
@@ -541,6 +564,8 @@ The library ships two stylesheets:
 | `.rails-zone` | Drop zone overlay |
 | `.rails-zone.rails-active` | Currently highlighted drop zone |
 | `.rails-zone.rails-zone-insert` | The narrow between-tabs variant |
+| `.rails-zone.rails-zone-new` | A `gap` zone |
+| `.rails-zone.rails-zone-split` | An `edge` / `workspace-edge` zone (its rect is the preview of the new stack) |
 
 ### 7.2 The defaults sheet
 
@@ -558,19 +583,19 @@ Consumers can override any of it. All colors are CSS custom properties at `:root
 
 ### 8.1 Minimal tabbed container
 
-Single rail, single stack, N tabs. Degenerate case — common for settings panels.
+A single stack as the root, N tabs. Degenerate case — common for settings panels.
 
 ```js
 const rails = createRails(host, {
   initialState: {
-    rails: [{ id: 'r1', flex: 1, stacks: [{
-      id: 's1', flex: 1, active: 'general',
+    root: {
+      id: 's1', active: 'general',
       tabs: [
         { id: 'general', title: 'General' },
         { id: 'appearance', title: 'Appearance' },
         { id: 'keybindings', title: 'Keybindings' }
       ]
-    }] }],
+    },
     floats: []
   },
   renderPanel(tab) {
@@ -581,7 +606,7 @@ const rails = createRails(host, {
 });
 ```
 
-If you want to prevent users from creating rails/stacks/floats in this simple container, veto via hooks:
+If you want to prevent users from creating splits/stacks/floats in this simple container, veto via hooks:
 
 ```js
 createRails(host, {
@@ -593,7 +618,7 @@ createRails(host, {
 
 ### 8.2 Auditable Works notebook workspace
 
-Multiple notebooks open in rails and floats, with dirty-tab close protection and layout autosave.
+Multiple notebooks open in the dock and floats, with dirty-tab close protection and layout autosave.
 
 ```js
 const rails = createRails(host, {
@@ -638,24 +663,22 @@ const rails = createRails(host, {
 
 ### 8.3 Arborist-style analysis layout with permanent controls
 
-Fixed-width controls rail that cannot be reorganized; proportional visualization rail that can. Inspector windows are floats.
+Fixed-width controls column that cannot be reorganized; proportional visualization column that can. Inspector windows are floats.
 
 ```js
 const rails = createRails(host, {
   initialState: {
-    rails: [
-      { id: 'controls', width: 280, stacks: [{
-        id: 'cs', flex: 1, active: 'tree',
+    root: { id: 'main', dir: 'row', children: [
+      { id: 'cs', size: 280, active: 'tree',
         tabs: [
           { id: 'tree', title: 'tree.ctl', kind: 'tree-controls', draggable: false, closeable: false },
           { id: 'cv',   title: 'cv.ctl',   kind: 'cv-config',     draggable: false, closeable: false }
-        ]
-      }] },
-      { id: 'viz', flex: 1, stacks: [
+        ] },
+      { id: 'viz', dir: 'col', flex: 1, children: [
         { id: 'vs1', flex: 1.5, tabs: [{ id: 'scatter', title: 'scatter', kind: 'plot-scatter' }], active: 'scatter' },
         { id: 'vs2', flex: 1,   tabs: [{ id: 'cm', title: 'confusion', kind: 'plot-cm' }],         active: 'cm' }
       ] }
-    ],
+    ] },
     floats: []
   },
   canMoveTab(tab, from, to) {
@@ -681,32 +704,28 @@ document.addEventListener('arborist:inspect', (e) => {
 
 ### 8.4 Shell with fixed-width sidebars (IDE pattern)
 
-Three rails: file explorer (240px), main editor area with a terminal stack below it (proportional), inspector (300px).
+File explorer (240px) and editors, with a terminal panel spanning under both, and an inspector (300px) running the full height on the right — the VS Code layout.
 
 ```js
 const initialState = {
-  rails: [
-    { id: 'sidebar', width: 240, stacks: [
-      { id: 'files', flex: 1, tabs: fileExplorerTabs, active: 'fe' }
-    ] },
-    { id: 'main', flex: 1, stacks: [
-      { id: 'editors',  flex: 2, tabs: openFiles, active: openFiles[0]?.id },
+  root: { id: 'shell', dir: 'row', children: [
+    { id: 'left', dir: 'col', flex: 1, children: [
+      { id: 'top', dir: 'row', flex: 2, children: [
+        { id: 'files',   size: 240, tabs: fileExplorerTabs, active: 'fe' },
+        { id: 'editors', flex: 1,   tabs: openFiles, active: openFiles[0]?.id },
+      ] },
       { id: 'terminal', flex: 1, tabs: terminals, active: terminals[0]?.id,
-        tabPosition: 'bottom' }  // VSCode-style: Terminal / Output / Problems below the shell
+        tabPosition: 'bottom' },  // Terminal / Output / Problems below the shell
     ] },
-    { id: 'inspector', width: 300, stacks: [
-      { id: 'insp', flex: 1, tabs: inspectorTabs, active: 'props' }
-    ] }
-  ],
-  floats: []
+    { id: 'insp', size: 300, tabs: inspectorTabs, active: 'props' },
+  ] },
+  floats: [],
 };
 ```
 
-Note the limitation: this cannot express "terminal spans under both sidebar and main but not under inspector" — that's the VSCode terminal layout, which requires asymmetric splits (§9). Either accept that the terminal is scoped to the main rail, or lift to Dockview.
-
 ### 8.5 Float-first app with disabled body drops
 
-A desktop-heritage shell where floats are the primary organizing metaphor. Dragging a tab out of a strip should create a float immediately unless the user aims at another strip or an inter-rail/inter-stack gap. Disable body drops to keep the workspace "open" for new-float creation.
+A desktop-heritage shell where floats are the primary organizing metaphor. Dragging a tab out of a strip should create a float immediately unless the user aims at another strip, a gap, or a panel edge. Disable body drops to keep the workspace "open" for new-float creation.
 
 ```js
 const rails = createRails(host, {
@@ -731,14 +750,12 @@ createRails(host, {
 });
 ```
 
-Result: the system-log tab can be reordered and moved between stacks/rails but refuses to become a float; every other tab floats on any drop that isn't a strip or gap.
+Result: the system-log tab can be reordered and moved between stacks but refuses to become a float; every other tab floats on any drop that isn't a strip or gap.
 
 ## 9. Non-goals
 
 The following are **deliberately excluded**. Each entry names the alternative pattern for the use case it covers.
 
-- **Freeform recursive docking.** Use Dockview if you need this.
-- **Asymmetric splits.** A panel cannot span two rails.
 - **Popout to real OS windows.** Use named workspaces (§10.3) for "I want this on another monitor" semantics. Real popout requires cross-window state coordination outside the scope of a layout library.
 - **Modals, dialogs, confirmations.** Use the native `<dialog>` element. Consider a thin `@gcu/modal` wrapper if you want GCU-consistent styling.
 - **Popovers, dropdowns, menus.** Use the native `popover` attribute and CSS anchor-positioning. Context menus on tab right-click are a rails concern only to the extent of emitting a `tab:contextmenu` event; the menu UI itself is consumer.
@@ -763,12 +780,12 @@ The following are **deliberately excluded**. Each entry names the alternative pa
 - **Per-tab policy flags.** `closeable`, `draggable` read and respected in render + interaction.
 - **Drop zone filtering.** `dropZones` config object for per-category enable/disable. Implementation is a predicate filter applied during zone computation; boolean config is sugar over it.
 - **Tab position.** `tabPosition: 'top' | 'bottom'` as construction default and per-stack override. Affects only render order of strip vs slot inside a stack.
-- **Fixed-width rails / fixed-height stacks.** `width`/`height` as alternatives to `flex`.
+- **Fixed-size nodes.** `size` as the alternative to `flex`.
 - **Drag cancel.** `Escape` cancels any active drag (§6.14).
 - **In-place activate.** Clicking between tabs in a stack is a class swap + visibility toggle, not a chrome rebuild (§4.6).
 - **In-place raise.** Float raise is a single `zIndex` write (§4.5).
 - **Touch sizing.** Drop zones widen to ~20–40px when `pointerType === 'touch'`. `touch-action: none` and `-webkit-touch-callout: none` on tabs, splitters, titlebars, resize handles only — never the workspace root or panels. `setPointerCapture` on dragged elements. Long-press (~300ms) before drag on touch.
-- **Keyboard navigation.** Arrow keys navigate tabs within a strip. `Ctrl-Tab`/`Ctrl-Shift-Tab` cycle tabs in active stack. `Ctrl-W` closes active tab (subject to `canCloseTab`). `Ctrl-Enter` cycles active stack across rails. Focus rings.
+- **Keyboard navigation.** Arrow keys navigate tabs within a strip. `Ctrl-Tab`/`Ctrl-Shift-Tab` cycle tabs in active stack. `Ctrl-W` closes active tab (subject to `canCloseTab`). `Ctrl-Enter` cycles the active stack across the dock. Focus rings.
 - **ARIA roles.** `role="tablist"` on strips, `role="tab"` on tabs, `role="tabpanel"` on panels where feasible, `role="dialog"` on floats. `aria-selected`, `aria-controls`, `aria-labelledby`.
 - **Context menu events.** Right-click emits `tab:contextmenu`, `strip:contextmenu`, `float:titlebar:contextmenu`. Actual menu UI is consumer (using `popover` or `<dialog>`).
 - **Default theme.** `rails-default.css` with GCU-aesthetic defaults and CSS custom properties.
@@ -779,9 +796,9 @@ The following are **deliberately excluded**. Each entry names the alternative pa
 - **Scroll-during-drag.** Drag near edge of an overflowing strip → scroll the strip. Same for scrollable panel content under a dragged tab.
 - **Auto-activate on hover during drag.** Hold over an inactive tab for ~500ms while dragging → that tab becomes active.
 - **Snap-to-preset layouts.** Named layout templates the consumer can register and snap to, preserving tabs across snaps.
-- **Collapsible rails.** A rail can collapse to a thin icon-only strip. Opt-in per rail.
+- **Collapsible nodes.** A docked node can collapse to a thin strip. Opt-in per node. (Shipped.)
 - **Drag-and-drop from outside.** Consumer-registered handler for external drops (OS file drag, etc.).
-- **Float docking hints.** When a float is dragged near a workspace edge, show a preview of "drop here to dock as a new rail." Visual only; underlying mechanism is redock, which already exists.
+- **Float docking hints.** When a float is dragged near a workspace edge, show a preview of where it would dock. (Shipped as the `edge` / `workspace-edge` zone previews, which float redock shares.)
 
 ### 10.3 Long-term (2.x or later, subject to demand)
 
@@ -793,24 +810,21 @@ The following are **deliberately excluded**. Each entry names the alternative pa
 ### 10.4 Explicitly not planned
 
 - Popout windows to real OS browser windows (see §9).
-- Recursive / asymmetric splits (see §9).
 - Built-in tab pinning UI (achievable via `draggable: false` + `closeable: false` + consumer CSS).
 - Built-in minimize behavior (library emits the event; consumer decides semantics, §5.6).
 - An opinion on how tab contents should look. `@gcu/rails` renders chrome and slots; everything else is `renderPanel`.
 
 ## 11. Reference implementation
 
-The pre-floats reference POC is 348 lines of JavaScript and 91 lines of CSS, measuring at 3.5 KB gzipped combined. Adding floats, hooks, panel lifecycle, batching, metadata updates, drag cancel, and the rest of §10.1 will grow this meaningfully. Rough estimates (informative, not budgets):
+The pre-floats reference POC was 348 lines of JavaScript and 91 lines of CSS, 3.5 KB gzipped combined. Floats, hooks, panel lifecycle, batching, drag cancel, overflow, touch, keyboard, and in 0.4 the split tree grew it to about 2,700 lines of source. Measured (terser, then gzip -9; informative, not budgets):
 
-| Artifact | Estimated raw | Estimated gzipped |
-|----------|---------------|-------------------|
-| `rails.js` | ~25 KB | ~6 KB |
-| `rails.css` (structural) | ~4 KB | ~1 KB |
-| `rails-default.css` (optional) | ~7 KB | ~2 KB |
-| Total minimum (js + structural css) | — | **~7 KB** |
-| Total with default theme | — | **~9 KB** |
+| Artifact | Minified | Min + gzip |
+|----------|----------|------------|
+| `index.js` (library) | ~47 KB | ~13 KB |
+| `rails.css` (structural) | — | ~2.8 KB (gzip of the source) |
+| `rails-default.css` (optional) | — | ~1.7 KB (gzip of the source) |
 
-For comparison: Dockview core is 51 KB gzipped. Even at the upper end of our estimate, rails with floats and default theme is ~5× smaller, and the consumer gets first-class control over every behavioral decision rather than Dockview's fixed policies. Features that pay for themselves in consumer ergonomics (`onPanelDestroy`, `batch`, `updateTab`) are in regardless of size.
+The 0.4 split tree added about 1.3 KB to the library (11.7 → 13.0 KB). For comparison: Dockview is around 40–50 KB gzipped. Rails with floats, splits and the default theme is still several times smaller, and the consumer gets first-class control over every behavioral decision rather than Dockview's fixed policies. Features that pay for themselves in consumer ergonomics (`onPanelDestroy`, `batch`, `updateTab`) are in regardless of size.
 
 ## 12. Testing
 
@@ -820,10 +834,11 @@ Tests are layered so each tier is independent and failures localize. The interac
 
 Pure functions on the state tree, no DOM. Target vitest or equivalent.
 
-- `findTab(state, id)` across rails and floats
-- `cleanup(state)` removes empty stacks/rails/floats, reselects `active` correctly
+- `findTab(state, id)` across the dock and floats, at any depth
+- `cleanup(state)` removes empty stacks/floats, collapses one-child splits, merges same-direction splits, reselects `active` correctly
+- `placeStack(state, target, stack)` for every `split` / `insert` case; `upgradeState` for the pre-0.4 shape
 - Insert/move/remove operations preserve §2.2 invariants including float constraints
-- Cascade-cleanup to empty workspace is legal; `state.rails === []` round-trips through serialize/deserialize
+- Cascade-cleanup to empty workspace is legal; `state.root === null` round-trips through serialize/deserialize
 - Splitter math preserves adjacent flex sums within floating-point tolerance, clamping works
 - Float z-ordering — `raiseFloat` assigns max+1, multiple raises don't create duplicates
 - Tab policy flags honored — `closeable: false` makes close a no-op, `draggable: false` blocks drag initiation
@@ -838,31 +853,31 @@ High coverage of non-DOM paths; runs in milliseconds.
 
 Given a state, does the DOM match? Runs under jsdom.
 
-- Rail / stack / tab / float counts match state
+- Split / stack / tab / float counts match state
 - Active tab has `.rails-active`; close button absent when `closeable: false`; `.rails-locked` present when `draggable: false`
 - Splitters between siblings only, never at outer edges
 - Floats carry `style.zIndex` matching `float.z`; `raiseFloat` updates `zIndex` on that one element without mutating any other DOM node (test element identity stable)
 - `data-slot-for` attributes on every slot, including float slots
 - `.rails-minimized` / `.rails-maximized` classes present on float elements when their state flags are set
 - Stack with `tabPosition: 'bottom'` carries `.rails-tabs-bottom` and renders strip after slot in DOM order
-- Empty workspace mounts `renderEmpty()` output into chrome; switches back to rails rendering when `addTab` is called
+- Empty workspace mounts `renderEmpty()` output into chrome; switches back to the dock when `addTab` is called
 - `updateTab({title: 'x'})` rewrites the tab's strip text; panel element identity is stable (no reparent)
 - Activate tab swaps `.rails-active` class and panel visibility; strip DOM nodes are the same elements before and after
 
 ### 12.3 Interaction tests (Playwright, real browsers)
 
-Rails scenarios (from pre-floats POC, retained):
+Docked scenarios (from pre-floats POC, retained; 0.4 adds edge splits, rim splits and resize bars at any depth — `test/rails-smoke.mjs` (`npm run test:rails`) drives these against the demo):
 
 1. Tab reorder within strip — `[A, B, C]` → drag B before A → `[B, A, C]`
 2. Tab move between stacks
 3. New stack via inter-stack gap drop
-4. New rail via outer-edge drop
+4. New column via the workspace rim; split a stack via its edge
 5. Empty stack cleanup
-6. Empty rail cleanup
+6. Empty stack cleanup and tree normalization
 7. Splitter resize preserves total flex within ε
 8. Splitter respects minimums
 9. Textarea content and focus survive any drag
-10. Iframe content (srcdoc timestamp, counter, input) survives any drag — applies to moves between rails, into floats, between floats, and back to rails
+10. Iframe content (srcdoc timestamp, counter, input) survives any drag — applies to moves within the dock, into floats, between floats, and back to the dock
 11. Canvas pixel state survives drag
 12. Click-vs-drag disambiguation
 13. ResizeObserver sync
@@ -873,7 +888,7 @@ Float scenarios (new):
 15. Tear off — drag tab to empty workspace area → new float created at cursor
 16. Float titlebar drag — position updates, scrim captures events
 17. Float resize — all 8 handles work; minimum size clamps
-18. Redock — drag float titlebar to rails drop zone → float destroyed, tabs redocked, panel state preserved
+18. Redock — drag float titlebar to a docked drop zone → float destroyed, tabs redocked, panel state preserved
 19. Z-order — click inactive float → raises above others
 20. Maximize/restore — fills workspace; toggle restores previous bounds exactly
 21. Minimize emits event but does not auto-collapse (unless consumer CSS does)
@@ -901,7 +916,7 @@ Batch / empty scenarios (new):
 
 29f. `batch(() => { for 100 tabs ... addTab })` produces exactly one chrome rebuild and one `layout:change` event
 29g. `batch` with exception inside still renders once after the exception propagates; state is the partial state at the point of throw
-29h. Closing the last tab leaves `state.rails === []` and mounts the `renderEmpty()` element; `addTab` from that state creates a default rail+stack+tab
+29h. Closing the last tab leaves `state.root === null` and mounts the `renderEmpty()` element; `addTab` from that state creates a root stack
 29i. Empty workspace when no `renderEmpty` provided: chrome sublayer is simply empty; content layer holds no panels; `reposition` is a no-op
 
 Drag cancel scenarios (new):
@@ -922,7 +937,7 @@ Drop zone filtering scenarios (new):
 Tab position scenarios (new):
 
 34. Stack with `tabPosition: 'bottom'` renders strip below slot; `tab-insert` zones compute from bottom strip correctly
-35. Mixed `top`/`bottom` stacks in the same rail render independently and allow cross-drag between them
+35. Mixed `top`/`bottom` stacks in the same split render independently and allow cross-drag between them
 36. Changing `tabPosition` at runtime (by mutating state + re-render) preserves panel state — no reparenting triggered
 
 ### 12.4 Touch scenarios
@@ -943,7 +958,7 @@ Playwright CI runs Chromium, Firefox, WebKit. Per-release manual testing on iOS 
 
 Regression traps, not benchmarks.
 
-- Render 20 rails × 5 stacks × 10 tabs + 10 floats (1010 tabs total). Chrome rebuild ≤ 60ms.
+- Render 20 columns × 5 stacks × 10 tabs + 10 floats (1010 tabs total). Chrome rebuild ≤ 60ms.
 - `reposition()` after host resize on same workspace ≤ 6ms.
 - Cold start from `createRails` to first paint ≤ 25ms.
 - Float drag at 60fps with 50 floats on screen — per-frame work ≤ 8ms.
@@ -970,4 +985,4 @@ Bug fixes add minimal repros (state snapshot + scripted operation sequence) to a
 - **`onPanelDestroy` sync-vs-async.** Synchronous, matching hooks. If a consumer needs async cleanup (flush buffer, write to disk before teardown), they gate via `canCloseTab` — veto close, do async work, then call `closeTab` again. Opening async destroy would require a "pending destruction" state in the library that nothing else needs.
 - **`updateTab` field classification.** Which fields count as "chrome-visible" and trigger rebuild? Firm: `title`, `closeable`, `draggable`. Soft: anything the default theme reads (icon backing fields). Consumers with custom themes that read additional fields will need to call `rails.render()` explicitly, or we expose a `chromeVisibleFields: string[]` construction option. Leaning simple firm set + explicit `render()` escape hatch; add the option if it comes up.
 - **`batch` and exceptions.** If `fn` throws, render fires with the partial state as of the throw point, and the exception propagates. Alternative: roll back state via snapshot. Rollback is expensive (deep-copy of `state` at batch start) and the "partial state + exception" behavior matches how most imperative frameworks handle it. Leaning no rollback; document clearly.
-- **Empty-workspace `renderEmpty` update cadence.** Re-rendered on every transition empty ↔ non-empty. What if consumer wants `renderEmpty()` to be sticky or preserve its own state (e.g., form input in a "start new" screen)? Probably fine to say: just like `renderPanel`, the element is cached for the lifetime of the empty state and torn down when rails become non-empty. If the consumer wants cross-empty persistence they keep state outside.
+- **Empty-workspace `renderEmpty` update cadence.** Re-rendered on every transition empty ↔ non-empty. What if consumer wants `renderEmpty()` to be sticky or preserve its own state (e.g., form input in a "start new" screen)? Probably fine to say: just like `renderPanel`, the element is cached for the lifetime of the empty state and torn down when the workspace becomes non-empty. If the consumer wants cross-empty persistence they keep state outside.
