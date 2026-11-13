@@ -2,7 +2,8 @@
 
 import { MenuBar } from '#menu';
 import { WKS, setStatus } from './state.js';
-import { spawnSurface, openPath, getActiveSurface, callActiveNotebook } from './surfaces.js';
+import { spawnSurface, spawnInPanel, togglePanel, panelStack, moveTabToPanel, moveTabToMain, openPath, getActiveSurface, callActiveNotebook } from './surfaces.js';
+import { findTab } from '#rails';
 import { exportProject, exportProjectAsIpynb } from './project-export.js';
 import { kindDef } from './surface-registry.js';
 import { hasProfilesPayload, showSetupDialog } from './setup.js';
@@ -79,9 +80,25 @@ export function setupMenuBar() {
         { label: 'Export notebook (.ipynb)', action: 'nb:export-ipynb' },
       ] : []),
     ] },
-    { label: 'View', items: () => [
-      { label: 'Toggle sidebar', action: 'view:sidebar' },
-    ] },
+    { label: 'View', items: () => {
+      // The split / panel moves for the FOCUSED tab (the same ones its
+      // right-click menu offers).
+      const rec = getActiveSurface();
+      const hit = rec && WKS.rails ? findTab(WKS.rails.state, rec.tabId) : null;
+      const docked = !!hit && hit.container === 'dock';
+      const canSplit = docked && hit.stack.tabs.length > 1;
+      const inPanel = docked && hit.stack.role === 'panel';
+      return [
+        { label: 'Toggle sidebar', action: 'view:sidebar' },
+        { label: panelStack() ? 'Toggle panel' : 'Show panel', action: 'view:panel' },
+        '---',
+        { label: 'Split right', action: 'view:split:right', disabled: !canSplit },
+        { label: 'Split down',  action: 'view:split:bottom', disabled: !canSplit },
+        inPanel ? { label: 'Move tab to main area', action: 'view:to-main' }
+                : { label: 'Move tab to panel', action: 'view:to-panel', disabled: !hit },
+        { label: 'Float tab', action: 'view:float', disabled: !docked },
+      ];
+    } },
     // Contextual: drives the ACTIVE notebook surface over A-Bus (its transport
     // stays on the notebook; the shell can reach the same actions). Items
     // re-evaluate per menu-open, so they reflect whichever surface is focused.
@@ -163,8 +180,22 @@ export function setupMenuBar() {
       document.querySelector('.works-sidebar')?.classList.toggle('hidden');
       return;
     }
+    if (action === 'view:panel') { togglePanel(); return; }
+    if (action.startsWith('view:')) {
+      const rec = getActiveSurface();
+      const hit = rec ? findTab(WKS.rails.state, rec.tabId) : null;
+      if (!hit) return;
+      if (action.startsWith('view:split:')) {
+        WKS.rails.moveTab(rec.tabId, { to: 'split', nodeId: hit.stack.id, side: action.slice(11) });
+        WKS.rails.activateTab(rec.tabId);
+      }
+      else if (action === 'view:to-panel') moveTabToPanel(rec.tabId);
+      else if (action === 'view:to-main')  moveTabToMain(rec.tabId);
+      else if (action === 'view:float')    WKS.rails.floatTab(rec.tabId);
+      return;
+    }
     if (action === 'tools:terminal') {
-      spawnSurface('terminal', { title: 'Terminal' });
+      spawnInPanel('terminal', { title: 'Terminal' });
       return;
     }
     if (action === 'tools:library') { spawnSurface('library', { title: 'Library' }); return; }
@@ -186,7 +217,7 @@ export function setupMenuBar() {
       return;
     }
     if (action === 'debug:inspector') {
-      spawnSurface('inspector', { title: 'A-Bus Inspector' });
+      spawnInPanel('inspector', { title: 'A-Bus Inspector' });
       return;
     }
     if (action === 'help:docs') {

@@ -9,7 +9,7 @@ import { WKS, setStatus } from './state.js';
 import { Menu } from '#menu';
 import { prompt as dlgPrompt, confirm as dlgConfirm } from '#dialog';
 import { kindDef, kindForExtension, kindsForRouting } from './surface-registry.js';
-import { openPath, spawnSurface } from './surfaces.js';
+import { openPath, spawnSurface, spawnInPanel, sideTarget } from './surfaces.js';
 import { itemsForNode as extMenuItemsForNode, dispatch as extMenuDispatch } from './context-menu-registry.js';
 import { prompt as dlgPrompt2, alert as dlgAlert2, confirm as dlgConfirm2 } from '#dialog';
 import { metaGet, metaSet } from './meta.js';
@@ -443,13 +443,15 @@ async function showMenu(e, path, type) {
 
   // Path-specific actions — open / copy path / per-type extras.
   const extras = [];
-  if (type === 'project') extras.push({ label: 'Open',                  action: 'open' });
+  if (type === 'project') extras.push({ label: 'Open',                  action: 'open' },
+                                      { label: 'Open to the side',      action: 'open-side' });
   // Loose files with a registered surface kind get an explicit Open item too —
   // discoverable for users who don't know double-click opens them. LICENSE,
   // README, NOTICE etc. fall through kindForExtension's extensionlessNames
   // fallback so they land in the text surface.
   if (type === 'file' && kindForExtension(basename(path)))
-    extras.push({ label: 'Open',                                        action: 'open' });
+    extras.push({ label: 'Open',                                        action: 'open' },
+                { label: 'Open to the side',                            action: 'open-side' });
   // Open-as: any file → the hex viewer (the universal one), or any loose-file
   // surface kind from the registry. View/inspect a file in a surface other
   // than its extension default — what makes the hex viewer reach any file.
@@ -559,6 +561,7 @@ async function showMenu(e, path, type) {
 
   const action = await Menu.show(items, { x: e.clientX, y: e.clientY });
   if (action === 'open') openPath(path);
+  else if (action === 'open-side') openPath(path, sideTarget('right'));
   else if (action && action.startsWith('open-as:')) spawnSurface(action.slice(8), { path, title: basename(path) });
   else if (action === 'open-reader') spawnSurface('book', { path, title: basename(path) });
   else if (action === 'open-dd60') spawnSurface('dd60', { path, title: basename(path) });
@@ -567,7 +570,7 @@ async function showMenu(e, path, type) {
   else if (action === 'new-folder')  newFolder(dir);
   else if (action === 'new-file')    newFile(dir);
   else if (action === 'copy-path')   copyPath(path);
-  else if (action === 'terminal-here') spawnSurface('terminal',
+  else if (action === 'terminal-here') spawnInPanel('terminal',
     { path, title: 'Terminal — ' + basename(path) });
   else if (action === 'refresh')     refreshTree();
   else if (action === 'duplicate')   duplicateProject(path);

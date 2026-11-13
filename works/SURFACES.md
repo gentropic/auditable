@@ -216,6 +216,14 @@ viewer.
 tree context-menu action (right-click folder → Open terminal here), or
 both.
 
+**Placement**: `spawnSurface(kind, opts)` with no target lands in the
+main area (the group the user last worked in). A console-like tool
+that belongs at the bottom — terminal, inspector, a logs viewer —
+spawns with `spawnInPanel(kind, opts)` instead: the full-width panel
+group, created on first use and expanded if it was folded. Pass
+`sideTarget('right')` as the target for "open to the side". All three
+live in `works/js/surfaces.js`.
+
 **Worked examples**:
 - `inspector.html` — A-Bus broker introspection; spawned from Debug
   menu; singleton in practice (the user only opens it for debugging).

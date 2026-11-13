@@ -2,7 +2,7 @@
 // implementing the §5.2 Surface contract. The shell keeps one A-Bus channel
 // per surface and addresses each by its unique name.
 
-import { findTab } from '#rails';
+import { findTab, findNode, isSplit } from '#rails';
 import { WKS, setStatus } from './state.js';
 import { kindDef, kindForExtension, kindForPath, surfaceUrl, surfaceAvailable, availableKindForExtension } from './surface-registry.js';
 
@@ -203,16 +203,168 @@ export function createSurface(tabId, kind, opts = {}) {
   return rec;
 }
 
+// ── Placement ────────────────────────────────────────────────────────────
+// The docked area is a rails split tree. Works gives it two regions:
+//   · the MAIN area — every docked stack except the panel; new surfaces land
+//     in the stack you were last looking at, the way an editor group works.
+//   · the PANEL — one docked stack tagged `role: 'panel'` running the full
+//     width along the bottom (terminal, A-Bus inspector), collapsible to a
+//     strip. The tag rides in the saved layout, so it survives a reload.
+// Nothing stops the user dragging anything anywhere; these are only defaults.
+
+const PANEL_SHARE = 0.3;   // the panel's share of its column when (re)created
+
+function dockedStacks(node, out = []) {
+  if (!node) return out;
+  if (isSplit(node)) for (const c of node.children) dockedStacks(c, out);
+  else out.push(node);
+  return out;
+}
+
+// The panel stack, or null.
+export function panelStack() {
+  const st = WKS.rails && WKS.rails.state;
+  return st ? dockedStacks(st.root).find((s) => s.role === 'panel') || null : null;
+}
+
+// The docked, non-panel stack the user is working in: the active tab's, else
+// the first one in the tree. Null when only the panel (or nothing) is docked.
+function mainStack() {
+  const st = WKS.rails && WKS.rails.state;
+  if (!st || !st.root) return null;
+  const hit = _activeTabId ? findTab(st, _activeTabId) : null;
+  if (hit && hit.container === 'dock' && hit.stack.role !== 'panel') return hit.stack;
+  return dockedStacks(st.root).find((s) => s.role !== 'panel') || null;
+}
+
+// Where a new surface goes by default (a rails MoveTarget, or undefined for
+// rails' own default on an empty dock). With only the panel docked, the main
+// area is re-created above it.
+export function mainTarget() {
+  const st = WKS.rails && WKS.rails.state;
+  if (!st || !st.root) return undefined;
+  const main = mainStack();
+  if (main) return { to: 'stack', stackId: main.id };
+  return { to: 'split', nodeId: st.root.id, side: 'top' };
+}
+
+// Beside the stack the user is working in ("open to the side").
+export function sideTarget(side = 'right') {
+  const main = mainStack();
+  return main ? { to: 'split', nodeId: main.id, side } : mainTarget();
+}
+
+// Give the panel its default share of the column it sits in. Called when a
+// layout change has just created the panel or re-created the area above it,
+// where rails' even split would hand it half the height.
+// The panel REGION: the panel stack, or the split holding it when the user
+// split the panel sideways — whichever node sits directly in a column. That
+// node is what collapses and what gets the panel's share.
+function panelRegion() {
+  const panel = panelStack();
+  if (!panel) return null;
+  let hit = findNode(WKS.rails.state, panel.id);
+  while (hit && hit.parent && hit.parent.dir !== 'col') hit = findNode(WKS.rails.state, hit.parent.id);
+  return hit && hit.parent ? hit : null;
+}
+
+function fitPanel() {
+  const hit = panelRegion();
+  if (!hit) return;
+  const panel = hit.node;
+  const others = hit.parent.children.filter((c) => c !== panel && c.size == null);
+  const sum = others.reduce((a, c) => a + (c.flex ?? 1), 0) || 1;
+  delete panel.size;
+  panel.flex = sum * PANEL_SHARE / (1 - PANEL_SHARE);
+}
+
+// The target that makes a brand-new panel: full width along the bottom.
+function newPanelTarget() {
+  const st = WKS.rails.state;
+  return st.root ? { to: 'split', nodeId: st.root.id, side: 'bottom' } : undefined;
+}
+
+// Tag the stack holding `tabId` as the panel (when it is docked).
+function claimPanel(tabId) {
+  const hit = findTab(WKS.rails.state, tabId);
+  if (!hit || hit.container !== 'dock') return;
+  hit.stack.role = 'panel';
+  hit.stack.collapsible = true;
+  fitPanel();
+}
+
+function expandPanel() {
+  const region = panelRegion();
+  if (region && region.node.collapsed) WKS.rails.toggleCollapsed(region.node.id);
+}
+
+// Spawn a surface into the panel, creating the panel when there is none and
+// expanding it when it is collapsed.
+export function spawnInPanel(kind, opts = {}) {
+  let tabId = null;
+  WKS.rails.batch(() => {
+    const panel = panelStack();
+    if (panel) {
+      expandPanel();
+      tabId = spawnSurface(kind, opts, { to: 'stack', stackId: panel.id });
+    } else {
+      tabId = spawnSurface(kind, opts, newPanelTarget());
+      claimPanel(tabId);
+    }
+  });
+  return tabId;
+}
+
+// Move an existing tab into the panel (creating it if needed).
+export function moveTabToPanel(tabId) {
+  WKS.rails.batch(() => {
+    const panel = panelStack();
+    if (panel) {
+      expandPanel();
+      WKS.rails.moveTab(tabId, { to: 'stack', stackId: panel.id });
+    } else {
+      WKS.rails.moveTab(tabId, newPanelTarget());
+      claimPanel(tabId);
+    }
+  });
+  WKS.rails.activateTab(tabId);
+}
+
+// Move a tab out of the panel (or a float) into the main area.
+export function moveTabToMain(tabId) {
+  WKS.rails.batch(() => {
+    const target = mainTarget();
+    WKS.rails.moveTab(tabId, target || { to: 'split', side: 'top' });
+    if (target && target.to === 'split') fitPanel();
+  });
+  WKS.rails.activateTab(tabId);
+}
+
+// Collapse / expand the panel; with no panel, open a terminal in one.
+export function togglePanel() {
+  const panel = panelStack();
+  if (!panel) { spawnInPanel('terminal', { title: 'Terminal' }); return; }
+  const region = panelRegion();
+  if (region) WKS.rails.toggleCollapsed(region.node.id);   // else it IS the whole dock — nothing to fold into
+}
+
 // Spawn a surface of `kind` into a new rails tab. Returns the tab id.
+// `target` is a rails MoveTarget; without one the surface joins the main area.
 export function spawnSurface(kind, opts = {}, target) {
   const tabId = newTabId();
   const rec = createSurface(tabId, kind, opts);
-  WKS.rails.addTab({
-    id: tabId, title: rec.title, kind: 'surface',
-    // Consumer payload — serialized with the layout, read back by
-    // renderPanel to re-create the surface on restore.
-    surfaceKind: kind, path: rec.path,
-  }, target);   // target (a rails MoveTarget) lands the tab in a specific stack
+  WKS.rails.batch(() => {
+    const t = target || mainTarget();
+    WKS.rails.addTab({
+      id: tabId, title: rec.title, kind: 'surface',
+      // Consumer payload — serialized with the layout, read back by
+      // renderPanel to re-create the surface on restore.
+      surfaceKind: kind, path: rec.path,
+    }, t);
+    // Re-creating the main area above a lone panel splits the dock evenly;
+    // give the panel back its usual share.
+    if (!target && t && t.to === 'split') fitPanel();
+  });
   WKS.rails.activateTab(tabId);
   _activeTabId = tabId;
   return tabId;

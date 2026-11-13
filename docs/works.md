@@ -60,13 +60,25 @@ A new surface kind is a single HTML file in `works/surfaces/` plus three lines i
 
 ## Layout
 
-[@gcu/rails](https://github.com/gentropic/auditable/tree/main/ext/rails) is the docked-tab layout engine. Three primitives:
+[@gcu/rails](https://github.com/gentropic/auditable/tree/main/ext/rails) is the docked-tab layout engine. Its primitives:
 
 - **Tab** — a hosted surface.
 - **Stack** — a group of tabs, with a tab bar; one tab visible at a time.
-- **Float / Dock** — multiple stacks arranged horizontally or vertically, with draggable splitters.
+- **Split** — stacks (and other splits) side by side or one above the other, to any depth, with draggable resize bars.
+- **Float** — a stack in a free-floating window over the dock.
 
-Tabs are draggable between stacks. Stacks are draggable into new dock positions. The layout persists in shell-meta IDB (a separate key-value store from the workspace VFS) so it survives reloads.
+Works divides the dock into two regions:
+
+- **The main area** — where surfaces open by default: into the group you last worked in.
+- **The panel** — a full-width group along the bottom for the terminal and the A-Bus inspector. **View → Toggle panel** folds it to a strip and back (or use its ▲ button); with no panel open it opens one with a terminal.
+
+Moving things around:
+
+- **Drag a tab** near a group's edge to split that group on that side, to the workspace's outer rim for a group spanning the full width or height, onto a resize bar to slot a new group in between, onto another tab bar to join it, or into empty space to float it. A float's title bar drags back in the same way.
+- **Right-click a tab** for Split right / Split down, Move to bottom panel (or Move to main area), Float, Close and Close others. The View menu offers the same moves for the focused tab.
+- **Right-click a file or project** in the tree → **Open to the side** opens it in a new group beside the one you're in.
+
+The layout persists to `/home/.works/layout.json` in the workspace, so it survives reloads.
 
 ## Menus and operations
 

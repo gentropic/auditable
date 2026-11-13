@@ -12,7 +12,7 @@ import { setupMenuBar } from './menubar.js';
 import { setupTree, refreshTree, newProject, newFile, duplicateProject } from './tree.js';
 import { setupWorksService } from './works-service.js';
 import { setupWorksMcp, connectAgentPeer, worksTools, agentToolsFor, grantAgent, revokeAgent, listAgentGrants, getAuditLog } from './mcp-adapter.js';
-import { setupSurfaces, spawnSurface, openPath, getActiveSurface, callActiveNotebook } from './surfaces.js';
+import { setupSurfaces, spawnSurface, spawnInPanel, togglePanel, panelStack, sideTarget, openPath, getActiveSurface, callActiveNotebook } from './surfaces.js';
 import { decompressLibs, decompressSurfaces, installSharedLibsToVfs } from './surface-registry.js';
 import { installDocsToVfs } from './docs-loader.js';
 import { installBuiltinBooks } from './books-loader.js';
@@ -84,6 +84,10 @@ async function boot() {
   // Debug + smoke-test handles.
   WKS.spawnSurface = spawnSurface;
   WKS.openPath = openPath;
+  WKS.spawnInPanel = spawnInPanel;              // a surface in the bottom panel (terminal, inspector)
+  WKS.togglePanel = togglePanel;
+  WKS.panelStack = panelStack;
+  WKS.sideTarget = sideTarget;                  // beside the stack in use ("open to the side")
   WKS.getActiveSurface = getActiveSurface;      // the focused surface record
   WKS.callActiveNotebook = callActiveNotebook;  // drive the active notebook over A-Bus (Run All, etc.)
   WKS.connectAgentPeer = connectAgentPeer;      // numen-for-Works: a gated agent A-Bus peer
