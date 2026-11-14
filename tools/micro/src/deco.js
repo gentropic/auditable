@@ -3,6 +3,7 @@
 // background colour (the ink flips on a light one); the decorations panel; and the
 // figure recipe. The app owns the camera, the render loop and the overlay canvas.
 import { hexToRgb01 } from './color.js';
+import { SCENE_DEFAULT, resolvedTheme } from './theme.js';
 import { ensureLegend, layerClassInfo } from './categories.js';
 import { RAMP_PRESETS, colorSelOf, rampCfgOf, rampRangeFor, rampSample } from './ramp.js';
 import { layerTableHeader } from './records.js';
@@ -27,7 +28,18 @@ export function saveDeco() { try { localStorage.setItem('micro.deco', JSON.strin
 
 // background colour (renderer clear + the figure backdrop). Decorations pick a
 // contrasting ink from its luminance, so white-bg report figures stay readable.
-export let _bgColor = (() => { try { return localStorage.getItem('micro.bg') || '#121212'; } catch { return '#121212'; } })();
+// _bgPref is the CHOICE — 'auto' (match the chrome theme: basalt in dark, a
+// light gray in light) or an explicit hex; _bgColor is what's showing.
+// micro.scene replaces micro.bg, whose '#121212' was just the old default,
+// so only a non-default old value carries over as an explicit choice.
+export let _bgPref = (() => {
+  try {
+    const v = localStorage.getItem('micro.scene'); if (v) return v;
+    const old = localStorage.getItem('micro.bg'); return old && old.toLowerCase() !== '#121212' ? old : 'auto';
+  } catch { return 'auto'; }
+})();
+const resolveBg = () => (/^#[0-9a-fA-F]{6}$/.test(_bgPref) ? _bgPref : SCENE_DEFAULT[resolvedTheme()]);
+export let _bgColor = resolveBg();
 
 export let _deInk = { fg: '#fff', bg: 'rgba(0,0,0,0.6)' };
 
@@ -35,7 +47,15 @@ export function decoInk() { const c = hexToRgb01(_bgColor), lum = 0.299 * c[0] +
 
 export function applyBg() { if (S.renderer && S.renderer.setBackground) { S.renderer.setBackground(hexToRgb01(_bgColor)); requestRender(); } }
 
-export function setBg(hex) { if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return; _bgColor = hex; try { localStorage.setItem('micro.bg', hex); } catch { /* ignore */ } applyBg(); drawDecorations(); }
+/** 'auto' (follow the theme) or '#rrggbb'. */
+export function setBg(hex) {
+  if (hex !== 'auto' && !/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+  _bgPref = hex; _bgColor = resolveBg();
+  try { localStorage.setItem('micro.scene', hex); } catch { /* ignore */ }
+  applyBg(); drawDecorations();
+}
+// a theme switch moves an 'auto' scene with it
+window.addEventListener('micro:theme', () => { if (_bgPref !== 'auto') return; _bgColor = resolveBg(); applyBg(); drawDecorations(); });
 
 export function niceNum(x) { if (!(x > 0)) return 1; const e = Math.pow(10, Math.floor(Math.log10(x))), f = x / e; return (f >= 5 ? 5 : f >= 2 ? 2 : 1) * e; }
 
@@ -255,8 +275,8 @@ export function openDecoPanel() {
     const secB = document.createElement('div'); secB.className = 'deco-sec';
     const hB = document.createElement('div'); hB.className = 'deco-h'; hB.textContent = 'background'; secB.append(hB);
     const sw = document.createElement('div'); sw.className = 'deco-swatches';
-    for (const [name, hex] of [['basalt', '#121212'], ['black', '#000000'], ['white', '#ffffff'], ['paper', '#f4f2ec']]) {
-      const b = document.createElement('button'); b.className = 'deco-sw' + (_bgColor.toLowerCase() === hex ? ' on' : ''); b.style.background = hex; b.title = name;
+    for (const [name, hex] of [['match the theme', 'auto'], ['basalt', '#121212'], ['black', '#000000'], ['white', '#ffffff'], ['paper', '#f4f2ec']]) {
+      const b = document.createElement('button'); b.className = 'deco-sw' + (_bgPref.toLowerCase() === hex ? ' on' : '') + (hex === 'auto' ? ' auto' : ''); b.style.background = hex === 'auto' ? 'linear-gradient(135deg, #121212 50%, #c9c8c5 50%)' : hex; b.title = name;
       b.onclick = () => { setBg(hex); render(); }; sw.append(b);
     }
     const col = document.createElement('input'); col.type = 'color'; col.className = 'deco-color'; col.title = 'custom'; col.value = /^#[0-9a-fA-F]{6}$/.test(_bgColor) ? _bgColor : '#121212';
@@ -303,7 +323,7 @@ export function applyCutModes(modes) {
 export function captureFigureCfg() { return { camera: captureCamera(), bg: _bgColor, deco: { ..._deco }, figScale: _figScale, section: captureSection(), cutModes: captureCutModes() }; }
 
 export async function runFigureRecipe(params) {
-  const prev = captureFigureCfg();
+  const prev = captureFigureCfg(), prevBgPref = _bgPref;   // restore the CHOICE, so "match the theme" stays matched
   try {
     if (params.camera) applyCamera(params.camera);
     if (params.bg) setBg(params.bg);
@@ -315,7 +335,7 @@ export async function runFigureRecipe(params) {
     await new Promise((res) => { const t0 = performance.now(); const t = setInterval(() => { if (/converged/.test($('#stats').textContent) || performance.now() - t0 > 20000) { clearInterval(t); res(); } }, 150); });
     exportFigure(params.figScale || 1);
   } finally {
-    applyCamera(prev.camera); setBg(prev.bg);
+    applyCamera(prev.camera); setBg(prevBgPref);
     Object.assign(_deco, prev.deco); saveDeco();
     applySection(prev.section); applyCutModes(prev.cutModes);   // put the section + cut modes back
     drawDecorations(); requestRender();

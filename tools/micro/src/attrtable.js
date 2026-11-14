@@ -1,5 +1,6 @@
 // the attribute table: one window per layer over its records (filter, sort, selection, reveal)
 import { floatWin, focusWindow, nextZ } from './windows.js';
+import { loomColors } from './theme.js';
 import { attrColumnsOf, attrRowCountOf, extendRow, fetchLayerRow } from './records.js';
 import { PENDING, createGrid } from '../../../ext/loom/index.js';
 import { S, requestRender } from './state.js';
@@ -83,8 +84,8 @@ export function openAttrTable(L) {
   };
   oc.onchange = () => { if (oc.checked) sc.checked = false; rebuildView(); };
   sc.onchange = () => { if (sc.checked) oc.checked = false; rebuildView(); };
-  const grid = createGrid(win.body, provider, { readOnly: true, defaultColW: 96, rowH: 22, hdrH: 22, rowHdrW: 64, fontPx: 12 });
-  win.el._onResized = () => grid.refresh();
+  const grid = createGrid(win.body, provider, { readOnly: true, defaultColW: 96, rowH: 22, hdrH: 22, rowHdrW: 64, fontPx: 12, colors: loomColors() });
+  win.el._onResized = () => { grid.setColors(loomColors()); grid.refresh(); };   // also the theme-change repaint
   let syncing = false;
   grid.onSelect((sel) => {
     if (syncing || !sel) return;                           // loom sel = {r0,c0,r1,c1}

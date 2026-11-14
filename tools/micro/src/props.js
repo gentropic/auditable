@@ -5,6 +5,7 @@
 // drive lives in src/ramp.js, src/categories.js, src/rules.js, src/coltypes.js,
 // src/calc.js and src/paint.js. Carved from index.html (phase 3).
 import { _sheetExclusive } from './windows.js';
+import { tok } from './theme.js';
 import { S, activeLayer, requestRender } from './state.js';
 import { colIsNumeric, layerHeaderOf, layerTableHeader, locationsOf, qualifyPolicy, rowQualifier } from './records.js';
 import { appendHTML, html, joinH, setHTML, trusted } from './html.js';
@@ -211,7 +212,7 @@ function sparkline(centroids, total, min, max) {
   const g = c.getContext('2d');
   const N = 24, bins = histogramFromCentroids(centroids, total, min, max > min ? max : min + 1, N);
   let peak = 0; for (let b = 0; b < N; b++) if (bins[b] > peak) peak = bins[b];
-  g.fillStyle = '#c89b3c';
+  g.fillStyle = tok('--accent');
   for (let b = 0; b < N; b++) { const hp = peak ? Math.round((16 * bins[b]) / peak) : 0; if (hp) g.fillRect(b * 5, 17 - hp, 4, hp); }
   return c;
 }

@@ -40,7 +40,7 @@ const selectHoles = (members, bhids) => {
   requestRender();
 };
 
-const SEV = { error: ['error', '#c0584a'], warn: ['warning', '#c8a43c'], info: ['info', 'var(--info)'] };   // fault red · caution yellow · info blue
+const SEV = { error: ['error', 'var(--fault)'], warn: ['warning', 'var(--caution)'], info: ['info', 'var(--info)'] };   // fault red · caution yellow · info blue
 const ROW_CAP = 2000;                                      // rows drawn at once (the export carries all)
 export const _qaWins = new Map();                          // set key → window
 

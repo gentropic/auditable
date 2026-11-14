@@ -9,6 +9,7 @@
 //
 // The geometry lives in ./structure.js; this file is the window and the pointer.
 import { floatWin, focusWindow } from './windows.js';
+import { resolvedTheme, tok } from './theme.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
 import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY, traceNetwork, nodeMarkers, snapToTraces, NODE_COLORS } from './structure.js';
 import { Stereonet } from '../../../ext/bearing/index.js';
@@ -330,7 +331,7 @@ export async function openStructure(L) {
         cell(p.n_vertices.toLocaleString(), 'num'); cell(fmtStat(p.radius), 'num'); cell(p.eig_ratio.toFixed(3), 'num');
         cell(p.kappa != null ? fmtKappa(p.kappa) : '—', 'num');
         const q = cell(p.flags.length ? '⚠ ' + p.flags.join(', ') : '✓');
-        q.style.color = p.flags.length ? '#c8a43c' : 'var(--ok)';
+        q.style.color = p.flags.length ? 'var(--caution)' : 'var(--ok)';
         if (p.flags.length) q.title = { straight: 'straight: the trace is nearly a straight line — it fixes the strike, not the dip', rough: `rough: e₂/e₁ > ${QUALITY.rough} — the patch is not very planar`, elongated: `elongated: e₁/e₀ < ${QUALITY.elongated} — strike is well determined, dip much less so`, few: `few: under ${QUALITY.few} vertices` }[p.flags[0]];
         tr.onclick = () => { hd.sel = k; zoomToPoint([p.X, p.Y, p.Z], p.radius * 1.5); render(); };
         if (p.source === 'trace') {
@@ -725,14 +726,18 @@ export const structureTool = () => prefs.tool;
 // split a set the way a geologist reads it, and the paint follows (one undo step).
 // Hovering the rock with the wand puts its plane on the net as a ghost pole.
 const NET = 300;
-const NET_STYLE = {
-  background: '#161616',
-  primitive: { stroke: '#8a9099', strokeWidth: 1.2, fill: 'none' },
-  grid: { stroke: '#262626', strokeWidth: 0.5, majorStroke: '#333', majorStrokeWidth: 0.7 },
-  cardinals: { fontSize: 11, fontFamily: 'ui-monospace, monospace', fill: '#8a9099', offset: 12 },
-  pole: { r: 3, fill: '#bbb', stroke: 'none' },
-  plane: { stroke: '#bbb', strokeWidth: 0.8, fill: 'none' },
-  cone: { stroke: '#bbb', strokeWidth: 1, fill: 'none', strokeDasharray: '3,2' },
+// the net's chrome follows the theme (read at every render, so a theme switch repaints it)
+const netStyle = () => {
+  const light = resolvedTheme() === 'light';
+  return {
+    background: tok('--panel'),
+    primitive: { stroke: light ? '#5f5d5a' : '#8a9099', strokeWidth: 1.2, fill: 'none' },
+    grid: { stroke: light ? '#d0cfcc' : '#262626', strokeWidth: 0.5, majorStroke: light ? '#bdbbb7' : '#333', majorStrokeWidth: 0.7 },
+    cardinals: { fontSize: 11, fontFamily: 'ui-monospace, monospace', fill: light ? '#4f4e4b' : '#8a9099', offset: 12 },
+    pole: { r: 3, fill: tok('--text'), stroke: 'none' },
+    plane: { stroke: tok('--text'), strokeWidth: 0.8, fill: 'none' },
+    cone: { stroke: tok('--text'), strokeWidth: 1, fill: 'none', strokeDasharray: '3,2' },
+  };
 };
 function setGhost(hd, r) {
   const prev = hd.ghost;
@@ -756,10 +761,10 @@ export function openStereonet(L) {
   opts.append(tog('gc', 'great circles', 'each plane as its great circle, not just its pole'), tog('contour', 'density', 'Fisher-kernel density contours of all poles (3 or more)'));
   const stage = document.createElement('div'); stage.style.cssText = `position:relative;width:${NET}px;height:${NET}px;align-self:center;flex:none;touch-action:none`;
   const bg = document.createElement('canvas'); bg.width = NET; bg.height = NET; bg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:none';
-  const sn = new Stereonet({ size: NET, padding: 18, style: NET_STYLE, classPrefix: 'msn' });
+  const sn = new Stereonet({ size: NET, padding: 18, style: netStyle(), classPrefix: 'msn' });
   const el = sn.element(); el.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
   const lasso = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-  lasso.setAttribute('fill', 'rgba(200,155,60,0.12)'); lasso.setAttribute('stroke', '#c89b3c'); lasso.setAttribute('stroke-width', '1');
+  lasso.setAttribute('fill', 'color-mix(in srgb, var(--accent) 12%, transparent)'); lasso.setAttribute('stroke', 'var(--accent)'); lasso.setAttribute('stroke-width', '1');
   stage.append(bg, el);
   const selRow = document.createElement('div'); selRow.style.cssText = 'display:flex;gap:6px;align-items:center;font-size:11px;min-height:24px';
   const legend = document.createElement('div'); legend.style.cssText = 'font-size:11px;color:var(--dim);font-family:var(--mono);line-height:1.6';
@@ -771,7 +776,7 @@ export function openStereonet(L) {
   let bgFor = null;
   function drawWheel() {
     bg.style.display = prefs.orient ? '' : 'none';
-    sn.setStyle({ ...NET_STYLE, background: prefs.orient ? 'none' : NET_STYLE.background });   // setStyle REPLACES the instance style
+    { const ns = netStyle(); sn.setStyle({ ...ns, background: prefs.orient ? 'none' : ns.background }); }   // setStyle REPLACES the instance style
     if (!prefs.orient || bgFor === 'wheel') return;
     const g = bg.getContext('2d'), img = g.createImageData(NET, NET), c = [0, 0, 0];
     for (let y = 0; y < NET; y++) for (let x = 0; x < NET; x++) {
@@ -787,11 +792,11 @@ export function openStereonet(L) {
     const planes = hd.planes || [], col = setColOf(L);
     drawWheel();
     sn.clear(); sn.clearContours();
-    if (prefs.contour && planes.length >= 3) sn.contour(planes.map(poleOf), { stroke: '#5a6470', strokeWidth: 0.7 });
+    if (prefs.contour && planes.length >= 3) sn.contour(planes.map(poleOf), { stroke: resolvedTheme() === 'light' ? '#7f8a96' : '#5a6470', strokeWidth: 0.7 });
     if (prefs.gc) for (const p of planes) sn.plane(p.dip_direction, p.dip, { stroke: colOfCode(p.code), strokeWidth: 0.7 });
     planes.forEach((p, k) => {
       const sel = (hd.selSet && hd.selSet.has(k)) || k === hd.sel;
-      sn.pole(p.dip_direction, p.dip, { fill: colOfCode(p.code), r: 2.5 + Math.min(3, Math.log10(Math.max(1, p.n_vertices)) * 0.8), stroke: sel ? '#ffffff' : 'none', strokeWidth: sel ? 1.5 : 0 });
+      sn.pole(p.dip_direction, p.dip, { fill: colOfCode(p.code), r: 2.5 + Math.min(3, Math.log10(Math.max(1, p.n_vertices)) * 0.8), stroke: sel ? tok('--text-hi') : 'none', strokeWidth: sel ? 1.5 : 0 });
     });
     const lines = [];
     for (const code of col ? liveCodes(col) : []) {
@@ -803,7 +808,7 @@ export function openStereonet(L) {
       }
       lines.push([code, `${col.dict[code]} · ${m.n} · ${att(m.dip_direction, m.dip)}${m.n > 1 ? ` · κ ${fmtKappa(m.kappa)} · α95 ${m.alpha95.toFixed(1)}°` : ''}`]);
     }
-    if (hd.ghost) sn.pole(hd.ghost.dd, hd.ghost.dip, { fill: 'none', stroke: '#ffffff', strokeWidth: 1.5, r: 5, strokeDasharray: '2,2' });
+    if (hd.ghost) sn.pole(hd.ghost.dd, hd.ghost.dip, { fill: 'none', stroke: tok('--text-hi'), strokeWidth: 1.5, r: 5, strokeDasharray: '2,2' });
     sn.render();
     if (lasso.parentNode !== el) el.append(lasso);
     legend.textContent = '';
@@ -876,6 +881,7 @@ export function openStereonet(L) {
     }
     render(); if (hd.render) hd.render();
   });
+  win.el._onResized = () => render();                     // the theme-change repaint (windows.js calls it on resize too)
   hd.stereo = { win, render, sn };
   render();
   return hd.stereo;

@@ -5,6 +5,7 @@
 // grade-tonnage, swath, stats, validation — build on this. Carved from index.html
 // (phase 3).
 import { convert as unitConvert } from '../../../ext/units/index.js';
+import { tok } from './theme.js';
 import { parse } from '../../../ext/expr/index.js';
 import { zoneKeeper } from './colscan.js';
 import { S, layerById } from './state.js';
@@ -31,8 +32,7 @@ export function plotChart(cv, spec) {
   const W = cv.clientWidth || 400, CH = cv.clientHeight || 240;
   cv.width = W * dpr; cv.height = CH * dpr;
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, CH);
-  const cs = getComputedStyle(document.documentElement);
-  const ink = (cs.getPropertyValue('--au-fg') || '#dcdcdc').trim() || '#dcdcdc', dim = '#8a8f95', grid = 'rgba(140,145,150,0.16)';
+  const ink = tok('--text-hi'), dim = tok('--dim'), grid = 'rgba(140,145,150,0.2)';
   const hasRight = spec.series.some((s) => s.axis === 'right');
   const _lMax = Math.max(0, ...spec.series.filter((s2) => s2.axis !== 'right').flatMap((s2) => s2.data.map((d) => Math.abs(d[1] || 0)).filter(Number.isFinite)));
   const mL = Math.max(52, Math.round(_lMax).toLocaleString().length * 6.6 + 14), mR = hasRight ? 50 : 12, mT = 14 + (spec.series.length > 1 ? 12 : 0), mB = 30;

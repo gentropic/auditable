@@ -253,7 +253,7 @@ export async function openCsvTableWindow(title, blob) {
     for (const v of vals) {
       const td = document.createElement(th ? 'th' : 'td');
       td.textContent = v;
-      td.style.cssText = 'padding:2px 12px 2px 4px;text-align:left;border-bottom:1px solid var(--bd2);font-weight:normal;' + (th ? 'position:sticky;top:0;background:#1a1a1a;color:var(--accent);' : '');
+      td.style.cssText = 'padding:2px 12px 2px 4px;text-align:left;border-bottom:1px solid var(--bd2);font-weight:normal;' + (th ? 'position:sticky;top:0;background:var(--bg-bar);color:var(--accent);' : '');
       tr.appendChild(td);
     }
     return tr;

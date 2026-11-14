@@ -4,6 +4,7 @@
 // mesh tint. The engines they drive live in src/ramp.js, src/categories.js and
 // src/rules.js; the panel itself in src/props.js.
 import { setGridBand, recolorSurface, setSurfaceFlatZ, setSurfaceSmooth } from './surfaces.js';
+import { tok } from './theme.js';
 import { mkRow, stageGate, renderProps, ppNote, refreshProps, wireScanButton } from './props.js';
 import { layerHeaderOf, layerTableHeader, colIsNumeric, schemaExt } from './records.js';
 import { S, requestRender, activeLayer } from './state.js';
@@ -404,7 +405,7 @@ function renderRampSection(body, L) {
     const cfgNow = rampCfgOf(L);
     const bIn = document.createElement('input'); bIn.type = 'text';
     bIn.placeholder = 'e.g. 15, 25, 40';
-    bIn.style.cssText = 'flex:1;background:#242424;color:var(--text);border:1px solid var(--border);font:inherit;padding:2px 5px;';
+    bIn.style.cssText = 'flex:1;background:var(--bg-btn);color:var(--text);border:1px solid var(--border);font:inherit;padding:2px 5px;';
     bIn.value = ((cfgNow && cfgNow.breaks) || []).map((v) => fmtStat(v)).join(', ');
     const applyBreaks = () => {
       const vals = bIn.value.split(/[,;\s]+/).map(parseFloat).filter(Number.isFinite).sort((a, b2) => a - b2);
@@ -463,7 +464,7 @@ function renderRampSection(body, L) {
     const c2 = rampCfgOf(L);
     for (const v of (c2 && c2.breaks) || []) {
       const x = vx(v);
-      g2.fillStyle = '#c89b3c';
+      g2.fillStyle = tok('--accent');
       g2.fillRect(x - 1, 0, 2, cvh.height);
       g2.font = '11px monospace'; g2.textAlign = 'center';
       g2.fillText(fmtStat(v), Math.max(18, Math.min(cvh.width - 18, x)), 11);
@@ -521,7 +522,7 @@ function renderRampSection(body, L) {
   // auto-breaks from the scan's t-digest
   const bulk = document.createElement('div'); bulk.className = 'pp-bulk';
   const nIn = document.createElement('input'); nIn.type = 'number'; nIn.min = 2; nIn.max = 12; nIn.value = 5;
-  nIn.style.cssText = 'width:44px;background:#242424;color:var(--text);border:1px solid var(--border);font:inherit;padding:1px 3px;';
+  nIn.style.cssText = 'width:44px;background:var(--bg-btn);color:var(--text);border:1px solid var(--border);font:inherit;padding:1px 3px;';
   const mkA = (label, fn) => { const a = document.createElement('a'); a.textContent = label; a.onclick = fn; return a; };
   const logL = document.createElement('label');
   const logCb = document.createElement('input'); logCb.type = 'checkbox'; logCb.checked = !!L._histLog;

@@ -671,10 +671,38 @@ const fgr = await p.evaluate(async () => {
   await m.runFigureRecipe(params);
   await new Promise((res) => { const t = setInterval(() => { if (window._lastFigure) { clearInterval(t); res(); } }, 100); setTimeout(() => { clearInterval(t); res(); }, 5000); });
   const deco = JSON.parse(localStorage.getItem('micro.deco') || '{}');
-  return { png: !!(window._lastFigure && window._lastFigure.size > 1000), bg: localStorage.getItem('micro.bg'), title: deco.titleText || '', hasSection, secRestored: document.querySelector('#secMode').value };
+  return { png: !!(window._lastFigure && window._lastFigure.size > 1000), bg: localStorage.getItem('micro.scene'), title: deco.titleText || '', hasSection, secRestored: document.querySelector('#secMode').value };
 });
 chk(`figure recipe: PNG (${fgr.png}) + captures section (${fgr.hasSection}) + restores bg/title/section (${fgr.bg}/“${fgr.title}”/${fgr.secRestored})`,
   fgr.png && fgr.hasSection && fgr.bg === '#121212' && fgr.title === '' && fgr.secRestored === 'off');
+
+// theme: light/dark swap the chrome tokens, a "match the theme" scene moves
+// with it, canvas-painted windows repaint, and the choice is remembered
+const thm = await p.evaluate(async () => {
+  const m = window._micro, root = document.documentElement;
+  const cssBg = () => getComputedStyle(root).getPropertyValue('--bg').trim();
+  const A = m.layers().find((L) => L.name === 'A.csv');
+  m.setBg('auto');
+  m.openAttrTable(A);
+  const tbl = () => [...document.querySelectorAll('.fwin')].find((el) => /^table/.test(el.querySelector('.fwin-head .t')?.textContent || ''));
+  let repainted = 0; const w = tbl(); const orig = w && w._onResized; if (w) w._onResized = () => { repainted++; orig && orig(); };
+  let sceneSet = null; const sb = m.renderer.setBackground.bind(m.renderer); m.renderer.setBackground = (c) => { sceneSet = [...c]; sb(c); };
+  const dark = { attr: root.dataset.theme || '', bg: cssBg() };
+  m.setTheme('light');
+  await new Promise((r) => setTimeout(r, 50));
+  const light = { attr: root.dataset.theme || '', bg: cssBg(), stored: localStorage.getItem('micro.theme'), scene: sceneSet };
+  const lightScene = getComputedStyle(root).colorScheme;
+  m.setTheme('dark');
+  await new Promise((r) => setTimeout(r, 50));
+  const back = { attr: root.dataset.theme || '', bg: cssBg(), stored: localStorage.getItem('micro.theme') };
+  m.renderer.setBackground = sb; m.setBg('#121212'); m.closeAllWindows();
+  return { dark, light, lightScene, back, repainted };
+});
+chk(`theme: light swaps the tokens (${thm.dark.bg} → ${thm.light.bg}, color-scheme ${thm.lightScene}), remembered, and back`,
+  thm.dark.attr === '' && thm.light.attr === 'light' && thm.light.bg !== thm.dark.bg && thm.lightScene === 'light' &&
+  thm.light.stored === 'light' && thm.back.attr === '' && thm.back.bg === thm.dark.bg && thm.back.stored === 'dark');
+chk(`theme: a "match the theme" scene turns light with it (${thm.light.scene && thm.light.scene.map((x) => x.toFixed(2))})`, !!thm.light.scene && thm.light.scene[0] > 0.6);
+chk(`theme: canvas windows repaint on a switch (attribute table ×${thm.repainted})`, thm.repainted >= 2);
 
 // swath window v2: NO auto-run on open, a Run button computes, direction/band
 // re-bin live from the single scan (no re-scan)

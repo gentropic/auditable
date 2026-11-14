@@ -21,7 +21,7 @@ const ISSUES = [
   ['degenerate', 'zero-area triangles (slivers)', 'warn'],
   ['duplicate', 'duplicate triangles', 'warn'],
 ];
-const SEV = { error: '#c0584a', warn: '#c8a43c', ok: 'var(--ok)' };
+const SEV = { error: 'var(--fault)', warn: 'var(--caution)', ok: 'var(--ok)' };
 
 export async function openMeshQa(L) {
   const md = L && L.docs && L.docs.meshDoc;

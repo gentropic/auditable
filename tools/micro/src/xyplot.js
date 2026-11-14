@@ -10,6 +10,7 @@
 // Like the other analysis windows: a rail, Run, a sticky foot (png · copy ·
 // layer · table), the setup saved with the project.
 import { attrRowCountOf, layerRecords, layerTableHeader, numOf, schemaExt } from './records.js';
+import { tok, tokAlpha } from './theme.js';
 import { compileBool, compileValue, quoteIdent } from '../../../ext/expr/index.js';
 import { quantileFromCentroids } from '../../../ext/sluice/index.js';
 import { numericColsOf } from './analysis.js';
@@ -32,7 +33,7 @@ function drawXY(cv, spec) {
   const W = cv.clientWidth || 400, Hh = cv.clientHeight || 300;
   cv.width = W * dpr; cv.height = Hh * dpr;
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, Hh);
-  const dim = '#8a8f95', grid = 'rgba(140,145,150,0.16)';
+  const dim = tok('--dim'), grid = 'rgba(140,145,150,0.2)';
   if (!spec) { g.fillStyle = dim; g.font = '12px monospace'; g.textAlign = 'center'; g.fillText('press Run', W / 2, Hh / 2); return null; }
   const mL = 56, mR = 14, mT = 12, mB = 32;
   const px0 = mL, px1 = W - mR, py0 = Hh - mB, py1 = mT;
@@ -70,7 +71,7 @@ function drawXY(cv, spec) {
   }
   if (spec.line11) {
     const lo = Math.max(xr[0], yr[0]), hi = Math.min(xr[1], yr[1]);
-    if (hi > lo) { g.strokeStyle = 'rgba(200,155,60,0.8)'; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(sx(lo), sy(lo)); g.lineTo(sx(hi), sy(hi)); g.stroke(); g.setLineDash([]); }
+    if (hi > lo) { g.strokeStyle = tokAlpha('--accent', 0.85); g.setLineDash([5, 4]); g.beginPath(); g.moveTo(sx(lo), sy(lo)); g.lineTo(sx(hi), sy(hi)); g.stroke(); g.setLineDash([]); }
   }
   if (spec.qq) {
     g.strokeStyle = spec.color || '#5b7fa6'; g.fillStyle = spec.color || '#5b7fa6'; g.lineWidth = 1.4;
