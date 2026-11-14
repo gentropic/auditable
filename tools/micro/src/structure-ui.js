@@ -9,6 +9,7 @@
 //
 // The geometry lives in ./structure.js; this file is the window and the pointer.
 import { floatWin, focusWindow } from './windows.js';
+import { setHTML, trusted } from './html.js';
 import { resolvedTheme, tok } from './theme.js';
 import { plotExportBtns, fmtStat } from './analysis-ui.js';
 import { prepareStructure, structureOf, structureCost, regionAt, seedOf, fitRegion, toFile, weldedCodes, measurePlanes, tracePlanes, traceTubes, surfacePath, fileOf, setStats, poleOf, orientationColors, orientationRgb, vertexColors, discMesh, QUALITY, traceNetwork, nodeMarkers, snapToTraces, NODE_COLORS } from './structure.js';
@@ -379,7 +380,7 @@ function networkPanel(net, col) {
   for (const k of ['I', 'Y', 'X']) svg += `<text x="${P[k][0] + (k === 'I' ? -8 : k === 'Y' ? 2 : -3)}" y="${P[k][1] + (k === 'X' ? -2 : 11)}" font-size="10" fill="${rgbHex(NODE_COLORS[k])}">${k}</text>`;
   if (n) { const [x, y] = at(I / n, Y / n, X / n); svg += `<circle cx="${x}" cy="${y}" r="4" fill="var(--fg, #ddd)" stroke="#000" stroke-width="0.5"/>`; }
   svg += '</svg>';
-  const tri = document.createElement('div'); tri.innerHTML = svg; tri.title = 'Sanderson & Nixon (2015): the network by its node proportions; dashed: connections per line C_L = 1, 2, 3';
+  const tri = document.createElement('div'); setHTML(tri, trusted(svg));   // numbers + fixed labels only tri.title = 'Sanderson & Nixon (2015): the network by its node proportions; dashed: connections per line C_L = 1, 2, 3';
   const info = document.createElement('div'); info.className = 'st-netinfo';
   const line = (t, title) => { const d = document.createElement('div'); d.textContent = t; if (title) d.title = title; info.append(d); return d; };
   const h = line('trace network'); h.className = 'sw-h';
