@@ -4416,13 +4416,70 @@ if (take()) {
     out.flipHead = [...h.win.el.querySelectorAll('.xt-tbl tr:first-child th')].map((t) => t.textContent).join(' | ');
     out.tsv = h.tableTSV().split('\n');
     out.cut = [M.parseCutoffs('0,5 1 2'), M.parseCutoffs('2,0.5,1'), M.parseCutoffs('1; 1;3')].map((a) => a.join(' ')).join(' / ');
+    // a BLANK density is volume, not tonnes — the form, the measure and the result all say so
+    // (a real user read the m³ as tonnes, 2026-11-14)
+    const dIn = [...h.win.el.querySelectorAll('.sw-row')].find((r) => r.firstChild.textContent === 'density').querySelector('input');
+    const mSel = [...h.win.el.querySelectorAll('.sw-row')].find((r) => r.firstChild.textContent === 'measure').querySelector('select');
+    const note = () => (h.win.el.querySelector('.xt-nodens:not(.xt-nodens-res)') || {}).textContent || '';
+    const res = () => !!h.win.el.querySelector('.xt-nodens-res');
+    out.densBefore = { opt: mSel.options[0].textContent, note: note(), res: res() };
+    dIn.value = ''; dIn.dispatchEvent(new Event('input')); dIn.dispatchEvent(new Event('change'));
+    out.densBlankForm = { opt: mSel.options[0].textContent, note: note() };
+    h.st.measure = 'tonnage'; await h.run();
+    out.densBlankRes = { res: res(), head: h.win.el._xtab ? h.tableTSV().split(String.fromCharCode(10))[0] : '' };
+    dIn.value = 'SG'; dIn.dispatchEvent(new Event('input')); dIn.dispatchEvent(new Event('change')); await h.run();
+    out.densBack = { opt: mSel.options[0].textContent, note: note(), res: res() };
     return out;
   });
   await px.close();
   chk(`xtab: ROCK × AU bins (${r.cols}) · rows ${r.rows} — every cell the brute force (tonnage, grade, metal, count), ${r.where}${r.bad.length ? " — " + r.bad.slice(0, 3).join('; ') : ''}`, r.bad.length === 0 && r.cols === '< 1 | 1–2 | ≥ 2 | no grade | total' && r.rows === 'fr | ox | tr | total');
   chk(`xtab: the row path agrees (${r.wherePage})${r.badPage.length ? " — " + r.badPage.slice(0, 3).join('; ') : ''}`, r.badPage.length === 0 && r.wherePage === 'on this page' && r.where !== r.wherePage);
   chk(`xtab: cumulative (${r.cumCols}) · selection scope (${r.badSel.length} bad) · flip heads ${r.flipHead}`, r.cumOk && r.cumCols === '≥ 1 | ≥ 2 | all graded | no grade | total' && r.badSel.length === 0 && /^AU \\ ROCK \| fr \| ox \| tr \| total$/.test(r.flipHead));
+  chk(`xtab: a blank density says VOLUME — measure "${r.densBlankForm.opt}", note "${r.densBlankForm.note}", result warned ${r.densBlankRes.res} (${r.densBlankRes.head.split(String.fromCharCode(9))[2]}) · with SG back: "${r.densBack.opt}", no warnings`,
+    r.densBefore.opt === 'tonnage' && !r.densBefore.note && !r.densBefore.res && r.densBlankForm.opt === 'volume (no density)' && /m³, not tonnes/.test(r.densBlankForm.note) && r.densBlankRes.res && r.densBlankRes.head.includes('volume (m³)') && r.densBack.opt === 'tonnage' && !r.densBack.note && !r.densBack.res);
   chk(`xtab: the TSV is long form, every measure (${r.tsv.length - 1} rows: ${r.tsv[0]}) · cutoffs parse ${r.cut}`, r.tsv.length - 1 === 4 * 5 && /^ROCK\tAU bin\ttonnage \(t\)\tgrade \(g\/t\)\tmetal \(t\)\tblocks$/.test(r.tsv[0]) && r.cut === '0.5 1 2 / 0.5 1 2 / 1 3');
+}
+
+// ── a ROTATED Datamine model (ANGLEn about ROTAXISn): micro doesn't convert the
+//     rotation yet (no rotated fixture verified against Datamine's convention), so
+//     it must SAY so — the status line, the layer's one-line description and its
+//     Properties — instead of placing the blocks plausibly wrong. An unrotated
+//     model with all-zero ANGLE fields says nothing. ──
+if (take()) {
+  const pr = await mkPage('sm2dmrot');
+  const r = await pr.evaluate(async () => {
+    const { makeDM } = await import('/test/dm-make.mjs');
+    const M = window._micro;
+    const fields = (angle) => [
+      { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
+      { name: 'XINC', type: 'N', constant: 10 }, { name: 'YINC', type: 'N', constant: 10 }, { name: 'ZINC', type: 'N', constant: 5 },
+      { name: 'XMORIG', type: 'N', constant: 1000 }, { name: 'YMORIG', type: 'N', constant: 2000 }, { name: 'ZMORIG', type: 'N', constant: 400 },
+      { name: 'NX', type: 'N', constant: 4 }, { name: 'NY', type: 'N', constant: 3 }, { name: 'NZ', type: 'N', constant: 2 },
+      { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: angle },
+      { name: 'FE', type: 'N' },
+    ];
+    const rows = [];
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 3; j++) for (let i = 0; i < 4; i++) rows.push({ XC: 1005 + i * 10, YC: 2005 + j * 10, ZC: 402.5 + k * 5, FE: 20 + i });
+    const out = {};
+    const id = await M.openBlob(new Blob([makeDM(fields(35), rows, { precision: 'ep' })]), 'rot.dm', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    out.meta = document.querySelector('#meta').textContent;
+    out.kind = M.propKindLine(L);
+    M.setActiveLayer(L.id); M.openProps();
+    await new Promise((z) => setTimeout(z, 300));
+    const tabs = [...document.querySelectorAll('#propPanel .pp-tab')];
+    let banner = '';
+    for (const t of tabs) { t.click(); await new Promise((z) => setTimeout(z, 100)); const b = document.querySelector('#propPanel .pp-banner.bad'); if (b && /rotated Datamine/.test(b.textContent)) { banner = b.textContent; break; } }
+    out.banner = banner;
+    const id2 = await M.openBlob(new Blob([makeDM(fields(0), rows, { precision: 'ep' })]), 'flat.dm', 'replace');
+    out.flatMeta = document.querySelector('#meta').textContent;
+    out.flatKind = M.propKindLine(M.layers().find((q) => q.id === id2));
+    return out;
+  });
+  await pr.close();
+  chk(`dm rotated: the status line says so (${r.meta.includes('ROTATED Datamine model (35° about Z)')}), the layer line (${r.kind}), Properties (${r.banner ? 'banner' : 'NO banner'}) · an all-zero ANGLE says nothing`,
+    r.meta.includes('ROTATED Datamine model (35° about Z)') && r.meta.includes('volumes, grades and tonnages are right') && r.kind.includes('rotated .dm, shown unrotated')
+    && /35° about Z/.test(r.banner) && !/ROTATED/.test(r.flatMeta) && !/rotated/.test(r.flatKind));
 }
 
 // ── §69: SCATTER + Q-Q (src/xyplot.js). Scatter: a filtered subset draws every

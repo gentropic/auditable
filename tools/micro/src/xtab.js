@@ -92,7 +92,9 @@ export function openCrosstab(L, ropts) {
     const cols = columnsOf(edges);
     return { rowKeys, cols, cell: (k, c) => sumOf(k === '__total' ? tot : groups.get(k), c.slots), rowLabel: (k) => (k === '__total' ? (st.scan.grouped ? 'total' : 'all') : k) };
   };
+  let syncDensForm = null;                               // the rail's "no density" cues (set by buildRail)
   const render = () => {
+    if (syncDensForm) syncDensForm();                     // st.weight may have been set by a recipe, not typed
     main.textContent = '';
     if (!st.scan) { const d = document.createElement('div'); d.className = 'st-empty'; d.textContent = win.sub.textContent || 'configure, then Run'; main.append(d); win.el._xtab = null; return; }
     const m = model(), heads = m.cols.map((c) => c.label), measure = st.measure;
@@ -115,6 +117,11 @@ export function openCrosstab(L, ropts) {
         tr.append(td);
       }
       tbl.append(tr);
+    }
+    if (!st.scan.weighted && (measure === 'tonnage' || measure === 'metal')) {
+      const w = document.createElement('div'); w.className = 'xt-nodens xt-nodens-res';
+      w.textContent = '⚠ no density was given — these are volumes (m³), not tonnes. Set a density (a column such as SG, or a constant such as 2.7) and Run.';
+      main.append(w);
     }
     main.append(tbl);
     const grd = st.scan.groups.size;
@@ -199,7 +206,12 @@ export function openCrosstab(L, ropts) {
     dSec.append(row('grade', gS, 'the grade the bins cut'));
     dSec.append(row('cutoffs', inp(st.cutoffs, 'e.g. 0.5 1 2', (v) => { st.cutoffs = v; markStale(); }), 'grade cutoffs, ascending — bins between them (or cumulative above each). Empty: graded vs no grade only'));
     dSec.append(row('unit', gradeUnitSel(st.gradeUnit, (v) => { st.gradeUnit = v; persistUnits(); markStale(); }, 'the grade\'s declared unit — metal in tonnes when it is set'), ''));
-    dSec.append(row('density', inp(st.weight, 'blank = volume', (v) => { st.weight = v; persistUnits(); markStale(); }), 'density expression (@gcu/expr) — tonnage = density × block volume. e.g. SG, 2.7. blank = volume'));
+    // a blank density silently turns "tonnage" into VOLUME — say so where it's set
+    // and on the measure itself (a real user read m³ as tonnes: 2026-11-14)
+    const noDens = document.createElement('div'); noDens.className = 'xt-nodens';
+    const dIn = inp(st.weight, 'blank = volume', (v) => { st.weight = v; persistUnits(); markStale(); syncDens(); });
+    dIn.oninput = () => { st.weight = dIn.value.trim(); syncDens(); };
+    dSec.append(row('density', dIn, 'density expression (@gcu/expr) — tonnage = density × block volume. e.g. SG, 2.7. blank = volume'), noDens);
     const duS = sel([['t/m3', 't/m³ (=g/cm³)'], ['kg/m3', 'kg/m³'], ['lb/ft3', 'lb/ft³']], st.densUnit, (v) => { st.densUnit = v; persistUnits(); markStale(); });
     dSec.append(row('ρ unit', duS, 'declared unit of the density — converted to t/m³ so tonnage is in tonnes'));
     dSec.append(row('filter', inp(st.filter, 'optional', (v) => { st.filter = v; markStale(); }), 'rows to count (@gcu/expr) — e.g. CLASS <= 2'));
@@ -207,7 +219,15 @@ export function openCrosstab(L, ropts) {
     rail.append(dSec);
     const vSec = document.createElement('div');
     vSec.append(Object.assign(document.createElement('div'), { className: 'sw-h', textContent: 'show' }));
-    vSec.append(row('measure', sel([['tonnage', 'tonnage'], ['grade', 'grade'], ['metal', 'metal'], ['count', 'blocks']], st.measure, (v) => { st.measure = v; render(); })));
+    const mS = sel([['tonnage', 'tonnage'], ['grade', 'grade'], ['metal', 'metal'], ['count', 'blocks']], st.measure, (v) => { st.measure = v; render(); });
+    vSec.append(row('measure', mS));
+    function syncDens() {
+      const none = !(st.weight || '').trim();
+      if (dIn.value.trim() !== (st.weight || '')) dIn.value = st.weight || '';
+      noDens.textContent = none ? 'no density → volumes in m³, not tonnes' : '';
+      mS.options[0].textContent = none ? 'volume (no density)' : 'tonnage';
+    }
+    syncDens(); syncDensForm = syncDens;
     vSec.append(row('bins', seg([['bins', 'between'], ['cum', '≥ cutoff']], st.mode, (v) => { st.mode = v; buildRail(); render(); }), 'between consecutive cutoffs, or cumulative above each'));
     const fl = document.createElement('button'); fl.className = 'sw-add'; fl.textContent = '⇄ flip rows / columns'; fl.onclick = () => { st.flip = !st.flip; render(); };
     vSec.append(fl);
