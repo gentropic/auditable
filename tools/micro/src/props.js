@@ -16,7 +16,7 @@ import { basisAngles, describeQualified, worldMapOf } from '../../../ext/condens
 import { resetJoinForm, renderJoinTab } from './joins.js';
 import { pushUndo } from './undo.js';
 import { menuXY } from './menu.js';
-import { droppedNote } from './open-blocks.js';
+import { droppedNote, dmRotationText } from './open-blocks.js';
 import { hexToRgb01 } from './color.js';
 import { reopenDh } from './drillholes.js';
 import { markProjectDirty } from './project.js';
@@ -66,7 +66,7 @@ export function propKindLine(L) {
   }
   if (L.kind === 'table') return `table · ${(h ? h.count : 0).toLocaleString()} rows · ${h ? h.columns.length : 0} columns · no geometry`;
   if (L.dh) return `drillholes · ${n.toLocaleString()} intervals`;
-  const dn = L.docs.blockDoc ? droppedNote(L.docs.blockDoc.header) : '';
+  const dn = L.docs.blockDoc ? droppedNote(L.docs.blockDoc.header) + (dmRotationText(L.docs.blockDoc.header) ? ' · ⚠ rotated .dm, shown unrotated' : '') : '';
   if (L.docs.blockDoc && L.docs.blockDoc.header.grid) return `block model · ${n.toLocaleString()} blocks${dn}`;
   return `points · ${n.toLocaleString()}${dn}`;
 }
@@ -401,6 +401,7 @@ function renderSourceTab(body, L) {
     sec('position');
     line(html`<span class="v">${escS(h.kind === 'las' ? `LAS ${h.version} fmt ${h.format}` : 'PLY ' + escS(h.format))}</span> — positions from the file's own records`);
   }
+  if (dmRotationText(h)) line(html`<span class="pp-banner bad" style="display:block">⚠ rotated Datamine model — ${dmRotationText(h)}. micro shows it in the model's own frame and does not rotate it into world coordinates yet: volumes, grades and tonnages are right, positions against other layers (drillholes, topography, solids) are not.</span>`);
   if (h.grid) {
     sec('block grid');
     line(html`count <span class="v">${h.grid.x.count} × ${h.grid.y.count} × ${h.grid.z.count}</span>`);

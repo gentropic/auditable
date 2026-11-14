@@ -306,6 +306,26 @@ test('blocks: irregular coordinates → header.grid is null (points fallback sig
 import { openDmModel, fetchDmRecord } from '../ext/condenser/src/main.js';
 import { makeDM } from './dm-make.mjs';
 
+test('dm provider: a ROTATED Datamine model reports its rotation (ANGLEn about ROTAXISn), never drops it', async () => {
+  const base = [
+    { name: 'IJK', type: 'N' }, { name: 'XC', type: 'N' }, { name: 'YC', type: 'N' }, { name: 'ZC', type: 'N' },
+    { name: 'XINC', type: 'N', constant: 10 }, { name: 'YINC', type: 'N', constant: 10 }, { name: 'ZINC', type: 'N', constant: 5 },
+    { name: 'XMORIG', type: 'N', constant: 0 }, { name: 'YMORIG', type: 'N', constant: 0 }, { name: 'ZMORIG', type: 'N', constant: 0 },
+    { name: 'NX', type: 'N', constant: 2 }, { name: 'NY', type: 'N', constant: 1 }, { name: 'NZ', type: 'N', constant: 1 },
+    { name: 'FE', type: 'N' },
+  ];
+  const rows = [{ IJK: 0, XC: 5, YC: 5, ZC: 2.5, FE: 1 }, { IJK: 1, XC: 15, YC: 5, ZC: 2.5, FE: 2 }];
+  const rot = [...base, { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: 30 },
+    { name: 'ROTAXIS2', type: 'N', constant: 1 }, { name: 'ANGLE2', type: 'N', constant: -10 },
+    { name: 'ROTAXIS3', type: 'N', constant: 3 }, { name: 'ANGLE3', type: 'N', constant: 0 }];
+  const { header } = await openDmModel(new Blob([makeDM(rot, rows, { precision: 'ep' })]));
+  assert.deepEqual(header.dmRotation, [{ axis: 'Z', angle: 30 }, { axis: 'X', angle: -10 }], 'zero angles are not rotations');
+  assert.ok(!header.numericColumns.some((c) => /^(ANGLE|ROTAXIS)/.test(c.name)), 'rotation fields are not channels');
+  // all-zero rotation fields = an unrotated model
+  const flat = [...base, { name: 'ROTAXIS1', type: 'N', constant: 3 }, { name: 'ANGLE1', type: 'N', constant: 0 }];
+  assert.equal((await openDmModel(new Blob([makeDM(flat, rows, { precision: 'ep' })]))).header.dmRotation, null);
+});
+
 test('dm provider: grid from DD constants, IJK exact, raw record numbers, categories', async () => {
   // a 6×4×3 block model .dm: definition fields as constants, XC/YC/ZC centroids
   const fields = [
@@ -325,6 +345,7 @@ test('dm provider: grid from DD constants, IJK exact, raw record numbers, catego
   const blob = new Blob([makeDM(fields, rows, { precision: 'ep' })]);
   const { header, streamChunks } = await openDmModel(blob);
   assert.equal(header.count, 73);
+  assert.equal(header.dmRotation, null, 'an unrotated model reports no rotation');
   assert.deepEqual([header.grid.x.origin, header.grid.x.pitch, header.grid.x.count], [612005, 10, 6]);
   assert.deepEqual([header.grid.z.origin, header.grid.z.pitch, header.grid.z.count], [402.5, 5, 3]);
   assert.ok(header.numericColumns.some((c) => c.name === 'FE'));

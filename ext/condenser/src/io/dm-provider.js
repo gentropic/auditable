@@ -69,7 +69,7 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } 
   }
 }
 
-const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ']);
+const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
 // categories }) skips the full-file discovery sweep — a 13 GB sub-blocked model
@@ -198,8 +198,22 @@ export async function openDmModel(blob, { mapping = null, forcePoints = false, o
   const categories = catIdx >= 0 ? (cachedCats ? [...cachedCats] : []) : null;   // fills incrementally during the sweep (or prefilled from a sidecar)
   const catCode = catIdx >= 0 ? new Map(categories.map((v, i) => [v, i])) : null;
 
+  // A Datamine ROTATED model carries up to three successive rotations as DD
+  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z). The
+  // grid above is built in the model's own (unrotated) frame. Converting it to
+  // world needs Datamine's exact convention (order, sign, which frame XC/YC/ZC
+  // are stored in), and no rotated fixture has been checked against it yet —
+  // so the rotation is REPORTED, never silently applied or silently ignored.
+  // header.dmRotation = null, or [{ axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
+  const dmRotation = [];
+  for (const n of [1, 2, 3]) {
+    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
+    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
+  }
+
   const header = {
     kind: 'blockmodel', count: h.recordCount,
+    dmRotation: dmRotation.length ? dmRotation : null,
     bbox, grid, subBlocked, dimPalette, dimCols: subBlocked ? incIdx : null,
     columns: names,
     mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },

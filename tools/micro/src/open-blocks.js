@@ -210,6 +210,18 @@ async function settleLatticeCandidate(header, name, opts = {}) {
 }
 // rows a delimited model dropped because they have no usable coordinates (blank
 // or not a number) — a data error, so it's said, never silent
+// A rotated Datamine model (ANGLEn about ROTAXISn) is shown in its own,
+// unrotated frame — micro does not yet convert Datamine's rotation (no
+// rotated fixture has been checked against its convention), so it SAYS so
+// everywhere the layer is described, rather than placing blocks plausibly wrong.
+export function dmRotationText(h) {
+  const r = h && h.dmRotation;
+  return r && r.length ? r.map((x) => `${+x.angle.toFixed(3)}° about ${x.axis}`).join(', then ') : '';
+}
+export function rotationNote(h) {
+  const t = dmRotationText(h);
+  return t ? ` · ⚠ ROTATED Datamine model (${t}) — shown in the model's own frame, NOT rotated into world coordinates: volumes, grades and tonnages are right; positions against other layers are not` : '';
+}
 export function droppedNote(h) {
   const d = h && h.dropped;
   if (!d || !(d.blank + d.text)) return '';
@@ -323,6 +335,7 @@ export async function openDmBlob(blob, name, opts = {}) {
     blockDoc.metaLine = header.subBlocked
       ? `${name} — ${doc.count.toLocaleString()} sub-blocks · .dm fine ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch} · ${header.dimPalette.length} sizes${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`
       : `${name} — ${doc.count.toLocaleString()} blocks · .dm grid ${header.grid.x.count}×${header.grid.y.count}×${header.grid.z.count} @ ${header.grid.x.pitch}×${header.grid.y.pitch}×${header.grid.z.pitch}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
+    blockDoc.metaLine += rotationNote(header);
   } else {
     // sub-blocked / forced points: centroids as points (grade → intensity slot),
     // RAW record numbers preserved so a picked centroid fetches its .dm record
@@ -341,7 +354,7 @@ export async function openDmBlob(blob, name, opts = {}) {
     const doc = cb.flush();
     const L2 = layerById(lid); if (L2) L2.bboxLocal = doc.bboxLocal;
     recomputeUnion();
-    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids (sub-blocked .dm — points view)${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;
+    blockDoc.metaLine = `${name} — ${doc.count.toLocaleString()} centroids (sub-blocked .dm — points view)${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}` + rotationNote(header);
   }
   $('#meta').textContent = blockDoc.metaLine;
   { const Lk = layerById(lid); if (opts.keepFilter && Lk && (Lk.filterExpr || "").trim()) applyBlockFilter(Lk.filterExpr, Lk); }   // THIS layer's filter (was the active one's)
