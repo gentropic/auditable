@@ -51,13 +51,24 @@ export function setColorLabels(header) {
 // last is instant. Everything that colours a layer funnels through ensureValueTex:
 // the dropdown, the host, project restore, and applyRamp after any re-read — so a
 // re-read (a new document) can never keep drawing the old document's values.
-export const valueTexEligible = (L) => { const bd = L && L.docs && L.docs.blockDoc; return !!(bd && bd.grid && !bd.forcePoints && !window.__noValueTex); };
+// Every kind that draws a per-record value reads it: block models (boxes or
+// points) and drillhole intervals (sticks). A drillhole used to re-desurvey and
+// REPLACE its layer to change one number per interval.
+const valueDocOf = (L) => (L && L.docs && (L.docs.blockDoc || L.docs.dhDoc)) || null;
+export const valueTexEligible = (L) => !!valueDocOf(L) && !window.__noValueTex;
+
+// A block model drawn as POINTS (no regular grid, or opened as points) carries
+// its channel in the points' 16-bit intensity slot, quantized per streamed batch
+// to that batch's own min..max — so one colour meant different grades in
+// different batches. Those layers colour from the texture even for the chunks'
+// own channel: one document range, the clip applied, the same picture as boxes.
+const drawnAsPoints = (L) => { const bd = L.docs && L.docs.blockDoc; return !!bd && (!bd.grid || !!bd.forcePoints); };
 
 export function valueTexWant(L, sel) {                            // the column the texture must hold, or null (the chunks' own)
   sel = String(sel || ''); if (!sel.startsWith('chan:')) return null;
-  const bd = L.docs && L.docs.blockDoc; if (!bd) return null;
-  const ch = +sel.slice(5); if (ch === bd.header.mapping.chan) return null;
-  return bd.header.columns[ch] ?? null;
+  const d = valueDocOf(L); if (!d) return null;
+  const ch = +sel.slice(5); if (ch === d.header.mapping.chan && !drawnAsPoints(L)) return null;
+  return d.header.columns[ch] ?? null;
 }
 
 export const valueTexKey = (L, name) => name + '|' + JSON.stringify((L.qualify && L.qualify[name]) || null);
@@ -71,7 +82,7 @@ export function dropValueTex(L) {
 // → true (coloured from the texture, or none needed), false (superseded), null
 // (a texture can't do it — the caller re-streams)
 export function ensureValueTex(L, sel = colorSelOf(L)) {
-  const bd = L.docs && L.docs.blockDoc;
+  const bd = valueDocOf(L);
   if (L._valTex && (!bd || L._valTex.hdr !== bd.header)) dropValueTex(L);   // a re-read: those values were the old document's
   const name = valueTexWant(L, sel);
   if (!name) { if (L._valTex) { S.renderer.setLayerChanTex(L.id, null); requestRender(); } return Promise.resolve(true); }
@@ -89,7 +100,7 @@ export function ensureValueTex(L, sel = colorSelOf(L)) {
     } catch (e) { if (e && e.name === 'AbortError') return false; throw e; }
     finally { if (L._valTexBusy && L._valTexBusy.ac === ac) L._valTexBusy = null; }
     if (!r) return null;
-    if (ac.signal.aborted || !layerById(L.id) || L.docs.blockDoc !== bd || valueTexWant(L, colorSelOf(L)) !== name) { S.renderer.gl.deleteTexture(r.tex); return false; }
+    if (ac.signal.aborted || !layerById(L.id) || valueDocOf(L) !== bd || valueTexWant(L, colorSelOf(L)) !== name) { S.renderer.gl.deleteTexture(r.tex); return false; }
     if (L._valTex) { S.renderer.gl.deleteTexture(L._valTex.tex); L._valTex = null; }
     L._valTex = { key, hdr: bd.header, tex: r.tex, range: r.range, name, where: r.where };
     S.renderer.setLayerChanTex(L.id, r.tex, r.range);
@@ -126,7 +137,12 @@ export async function setLayerColorBy(L, v) {
   let reread = false;
   if (v.startsWith('chan:')) {
     const ch = +v.slice(5);
-    if (d.dhDoc && ch !== d.dhDoc.header.mapping.chan) { await reopenDhChan(ch, L); L = layerById(followLayer(L.id)) || L; reread = true; }
+    // a drillhole's other interval column: the value texture (same layer, same
+    // id); the re-desurvey — which REPLACES the layer — only when a texture can't
+    if (d.dhDoc && ch !== d.dhDoc.header.mapping.chan) {
+      const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
+      if (ok === null) { await reopenDhChan(ch, L); L = layerById(followLayer(L.id)) || L; reread = true; }
+    }
     // Three sources, not two. This dispatch predated Parquet and sent it down the
     // delimited branch, where openBlocksBlob sniffed the Parquet bytes as text,
     // found no rows, and replaced a good document with an empty one — the layer
@@ -136,11 +152,13 @@ export async function setLayerColorBy(L, v) {
     // A column the chunks weren't built with: read ONLY that column into a value
     // texture (src/valuetex.js) — the re-stream rebuilt every chunk to change one
     // number per block (17–19 s at 60M). The re-stream stays for what a texture
-    // can't draw (a points view) or hold (more records than the GPU's texture size).
-    else if (d.blockDoc && ch !== d.blockDoc.header.mapping.chan) {
+    // can't hold (more records than the GPU's texture size). A points-drawn model
+    // wants the texture for its OWN channel too (valueTexWant) — awaited here, so
+    // the caller's colour is on screen when this resolves.
+    else if (d.blockDoc && valueTexWant(L, v) != null) {
       if (L.id === S.activeId && [...$('#colorBy').options].some((o) => o.value === v)) $('#colorBy').value = v;
       const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
-      if (ok === null) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
+      if (ok === null && ch !== d.blockDoc.header.mapping.chan) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
     }
   }
   L.colorSel = v;                                          // (re)asserted on the successor

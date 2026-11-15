@@ -723,7 +723,15 @@ async function apiChecks(url, label) {
       intervals: { columns: { H: ['A', 'A', 'B'], F: Float64Array.from([0, 2, 0]), T: Float64Array.from([2, 4, 3]), AU: Float64Array.from([1, 2, 3]), CU: Float64Array.from([9, 8, 7]), DOM: ['ox', 'fr', 'ox'] }, roles: { bhid: 'H', from: 'F', to: 'T', value: 'AU', category: 'DOM' } },
     });
     out.h0 = m.layer(h);
+    // another interval column comes from the value texture: the layer stays
+    out.hTexId = await m.setColorBy(h, 'CU');
+    out.hTex = { layer: m.layer(h), replaced: ev.filter((e) => e[0] === 'micro:layer-replaced').length };
+    // the fallback (a texture that can't hold the records) re-desurveys and
+    // REPLACES the layer: it keeps its group, the old id forwards
+    await m.setColorBy(h, 'AU');
+    window.__noValueTex = true;
     out.hId = await m.setColorBy(h, 'CU');
+    window.__noValueTex = false;
     out.h1 = m.layer(h);                                  // the OLD id, followed forward
     out.hEv = ev.filter((e) => e[0] === 'micro:layer-replaced').map((e) => e[1]);
     // groups
@@ -762,7 +770,9 @@ async function apiChecks(url, label) {
   chk(`api: a value-only layer starts on ${r.c0}; setColorBy CU on a NON-active layer draws ${r.cChan} (${r.cHow}) and leaves the active layer + its dropdown alone (${r.stillActive})`,
     r.c0 === 'AU' && r.c1 === 'CU' && r.cChan === 'CU' && r.stillActive);
   chk(`api: an unknown column rejects with the choices (“${r.bad.slice(0, 70)}…”)`, /“NOPE”/.test(r.bad) && /AU, CU/.test(r.bad));
-  chk(`api: a drillhole re-channel replaces the layer (${r.h0.id} → ${r.hId}, event ${JSON.stringify(r.hEv)}); the old id follows forward, coloured by ${r.h1.colorBy}, still in “${r.h1.group}”`,
+  chk(`api: a drillhole coloured by another interval column keeps its layer (${r.h0.id} → ${r.hTexId}, ${r.hTex.replaced} replacements), coloured by ${r.hTex.layer.colorBy}`,
+    r.hTexId === r.h0.id && r.hTex.replaced === 0 && r.hTex.layer.colorBy === 'CU' && r.hTex.layer.group === 'Holes');
+  chk(`api: the re-desurvey fallback replaces the layer (${r.h0.id} → ${r.hId}, event ${JSON.stringify(r.hEv)}); the old id follows forward, coloured by ${r.h1.colorBy}, still in “${r.h1.group}”`,
     r.h0.kind === 'drillholes' && r.h0.colorBy === 'DOM' && r.hId !== r.h0.id && r.h1 && r.h1.id === r.hId && r.h1.colorBy === 'CU' && r.h1.group === 'Holes'
     && r.hEv.length === 1 && r.hEv[0].from === r.h0.id && r.hEv[0].to === r.hId);
   chk(`api: groups ${JSON.stringify(r.groups)}; group() files (${r.cGroup}); setGroupVisible hides (${r.aHidden}) and shows (${r.aBack}); ungroup lifts (${JSON.stringify(r.aAfterUngroup)}); no empty groups`,

@@ -122,7 +122,7 @@ void main() {
     float t = clamp((attr.x - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     col = texture(uRamp, vec2(t, 0.5));
   } else if (uColorMode == 1) {
-    if (uKind == 1) {                                      // blocks: grade (doc-normalized)
+    if (uKind == 1 || uChanTexOn > 0.5) {                  // blocks' grade, or a value texture (any kind): doc-normalized
       float v = uChanTexOn > 0.5 ? texelFetch(uChanTex, at, 0).r : attr.y;
       float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
       col = texture(uRamp, vec2(t, 0.5));

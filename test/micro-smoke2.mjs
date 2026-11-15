@@ -4916,6 +4916,96 @@ if (take()) {
   chk(`views: removing the view leaves the model whole (${JSON.stringify(r.after)})`, r.after.model === 100 && r.after.view === 0 && r.after.link === null && r.after.pick === 'model:33' && r.after.gone === null);
 }
 
+// ── §75: the VALUE TEXTURE beyond boxes. (a) A block model drawn as POINTS
+//     (no regular grid) put its grade in the points' 16-bit intensity slot,
+//     quantized per streamed batch to THAT batch's own min..max — so a batch of
+//     0–1 grades and a batch of 100–101 grades both spanned the whole ramp. It
+//     now colours from the per-record texture: one document range. (b) A
+//     drillhole coloured by another interval column re-desurveyed and REPLACED
+//     its layer; it now keeps its id and reads the texture, same picture. ──
+if (take()) {
+  const p = await mkPage('sm2ptsvt');
+  const r = await p.evaluate(async () => {
+    const M = window._micro, W = window.micro, out = {};
+    const settle = () => new Promise((res) => { M.requestRender(); setTimeout(res, 500); });
+    const shot = async () => {
+      const b = await W.snapshot({ decorations: false });
+      const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+      g.drawImage(bm, 0, 0); return { d: g.getImageData(0, 0, bm.width, bm.height).data, w: bm.width, h: bm.height };
+    };
+    const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) > 4 || Math.abs(a[i + 1] - b[i + 1]) > 4 || Math.abs(a[i + 2] - b[i + 2]) > 4) n++; return n / (a.length / 4); };
+    // (a) 262144 points (one streamed batch) at x 0–100 with grades 0–1, then
+    // 40000 at x 200–300 with grades 100–101; scattered, so there's no grid
+    let s = 12345; const rnd = () => ((s = (s * 1103515245 + 12345) >>> 0) / 4294967296);
+    const N1 = 1 << 18, N2 = 40000, rows = ['XC,YC,ZC,AU'];
+    for (let i = 0; i < N1 + N2; i++) {
+      const right = i >= N1, x = (right ? 200 : 0) + rnd() * 100, y = rnd() * 100, z = rnd() * 2;
+      rows.push(`${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)},${((right ? 100 : 0) + rnd()).toFixed(4)}`);
+    }
+    const id = await M.openBlob(new File([rows.join('\n') + '\n'], 'scatter.csv'), 'scatter.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    out.points = !L.docs.blockDoc.grid;
+    M.cam.phi = 0.05; M.cam.fit(M.renderer.contentBbox()); await settle();
+    // the screen columns of world x = 150 (the gap) and x = 50 (the LOW cluster):
+    // which side of the gap is which is the camera's business, not assumed
+    const o = M.frame.origin, m = M.cam.state.viewProj;
+    const ndcX = (wx) => { const X = wx - o[0], Y = 50 - o[1], Z = 1 - o[2]; return (m[0] * X + m[4] * Y + m[8] * Z + m[12]) / (m[3] * X + m[7] * Y + m[11] * Z + m[15]); };
+    const nx = ndcX(150), lowLeft = ndcX(50) < nx;
+    const sides = ({ d, w, h }) => {                        // mean green of the lit pixels: [low cluster, high cluster]
+      const split = Math.round((nx + 1) / 2 * w), acc = [[0, 0], [0, 0]];
+      for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
+        const k = (yy * w + xx) * 4; if (Math.max(d[k], d[k + 1], d[k + 2]) < 50) continue;
+        const a = acc[(xx < split) === lowLeft ? 0 : 1]; a[0] += d[k + 1]; a[1]++;
+      }
+      return acc.map(([g, n]) => (n ? Math.round(g / n) : -1));
+    };
+    await W.setColorBy(id, 'AU'); await settle();
+    out.tex = { on: !!L._valTex, range: M.renderer.layerChanRange(id) };
+    const pTex = await shot(); out.texG = sides(pTex);
+    // the old picture, for the record: the texture path off → the batch-quantized intensity
+    window.__noValueTex = true;
+    M.renderer.setLayerChanTex(id, null); await settle();
+    const pOld = await shot(); out.oldG = sides(pOld);
+    window.__noValueTex = false;
+    M.renderer.setLayerChanTex(id, L._valTex.tex, L._valTex.range); await settle();
+    // a clip applies to the points too (it was ignored in the intensity slot)
+    await W.setColorRange(id, { min: 100, max: 101 }); await settle();
+    out.clipG = sides(await shot());
+    await W.setColorRange(id, null);
+    // (b) drillholes: colour by a second interval column
+    const collar = ['HOLEID,X,Y,Z,EOH'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE,AG'];
+    for (let h = 0; h < 6; h++) {
+      const hid = 'H' + h;
+      collar.push(`${hid},${1000 + h * 30},2000,300,60`); survey.push(`${hid},0,0,-90`);
+      for (let k = 0; k < 20; k++) assay.push(`${hid},${k * 3},${k * 3 + 3},${(30 + h * 5 + k).toFixed(1)},${((k * 7 + h * 3) % 20).toFixed(1)}`);
+    }
+    const f = (a, n) => new File([a.join('\n') + '\n'], n);
+    await M.importDrillholes({ collar: f(collar, 'collars.csv'), survey: f(survey, 'survey.csv'), intervals: f(assay, 'assay.csv') }, {}, 'replace');
+    const Ld = M.layers().find((q) => q.dh), did = Ld.id;
+    M.cam.fit(M.renderer.contentBbox()); await settle();
+    const dFE = await shot();
+    await W.setColorBy(did, 'AG'); await settle();
+    const Ld2 = M.layers().find((q) => q.dh);
+    out.dh = { sameId: Ld2.id === did, on: !!Ld2._valTex, name: Ld2._valTex && Ld2._valTex.name, range: M.renderer.layerChanRange(did) };
+    const dTex = await shot();
+    // the reference: the re-desurvey (texture path off) — a NEW layer
+    await W.setColorBy(did, 'FE');
+    window.__noValueTex = true;
+    await W.setColorBy(did, 'AG'); await settle();
+    window.__noValueTex = false;
+    out.dh.refReplaced = M.layers().find((q) => q.dh).id !== did;
+    const dRe = await shot();
+    out.dh.dTexRe = differ(dTex.d, dRe.d); out.dh.dFE = differ(dTex.d, dFE.d);
+    return out;
+  });
+  await p.close();
+  chk(`points-drawn model: a scatter opens as points (${r.points}) and colours from a value texture over the WHOLE range [${r.tex.range}]`, r.points && r.tex.on && r.tex.range && r.tex.range[0] < 0.01 && r.tex.range[1] > 100.9);
+  chk(`points-drawn model: low grades read low and high grades read high (mean green, low cluster ${r.texG[0]} · high ${r.texG[1]}; batch-quantized before: ${r.oldG[0]} · ${r.oldG[1]})`, r.texG[0] < 60 && r.texG[1] > 170 && Math.abs(r.oldG[0] - r.oldG[1]) < 40);
+  chk(`points-drawn model: the clip applies (100–101 → the low cluster pinned to the bottom colour, the high one spread: ${r.clipG[0]} · ${r.clipG[1]})`, r.clipG[0] < 60 && r.clipG[1] < r.texG[1] - 30);
+  chk(`drillholes: colour by AG keeps the layer (same id ${r.dh.sameId}) and reads a value texture (${r.dh.name}, range [${r.dh.range}])`, r.dh.sameId && r.dh.on && r.dh.name === 'AG' && r.dh.range && r.dh.range[0] === 0 && r.dh.range[1] === 19);
+  chk(`drillholes: the texture draws what the re-desurvey draws (${(100 * r.dh.dTexRe).toFixed(2)}% differ; FE vs AG ${(100 * r.dh.dFE).toFixed(1)}%; the re-desurvey replaced its layer: ${r.dh.refReplaced})`, r.dh.refReplaced && r.dh.dTexRe < 0.005 && r.dh.dFE > 0.005);
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

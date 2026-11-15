@@ -65,7 +65,7 @@ async function refreshQualified(L, rechan) {
   if (rechan && d.dhDoc) { L = (await reopenDh(L, { qualify: L.qualify || null })) || L; }
   else if (rechan && d.blockDoc && !d.blockDoc.header.dm && !d.blockDoc.parquet) { await reopenBlockChan(d.blockDoc, d.blockDoc.header.mapping.chan, { layer: L.id }); await refilterLayer(L); applyRamp(L, true); }
   else await refilterLayer(L);
-  if (L.docs && L.docs.blockDoc) await ensureValueTex(L);
+  if (L.docs && (L.docs.blockDoc || L.docs.dhDoc)) await ensureValueTex(L);
   refreshProps();
   requestRender();
   return L.id;

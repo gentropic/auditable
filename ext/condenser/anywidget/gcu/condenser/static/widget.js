@@ -3903,6 +3903,8 @@ uniform sampler2D uCatVis;
 uniform float uCatVisOn;
 uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
 uniform float uRuleOn;                  // rule mode: the code replaces the category
+uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record (8192-wide) — replaces the
+uniform float uChanTexOn;               // chunk's quantized aChan in mode 1 (another interval column)
 uniform uint uPicked;                   // picked RECORD (0xFFFFFFFF = none)
 uniform uint uPickedLayer;              // …and the layer it belongs to
 uniform uint uLayer;                    // this draw's layer (per-draw, not per-element)
@@ -3962,7 +3964,9 @@ void main() {
     float t = clamp((center.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
   } else if (uColorMode == 1) {
-    float cv = uChanChunk.x + aChan * uChanChunk.y;
+    float cv;
+    if (uChanTexOn > 0.5) { int rc = int(aRec); cv = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r; }
+    else cv = uChanChunk.x + aChan * uChanChunk.y;
     float t = clamp((cv - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
   } else if (uColorMode == 2) {
@@ -4106,7 +4110,7 @@ function createSticksPipeline(gl) {
       ramp: U('uRamp'), palette: U('uPalette'), lightDir: U('uLightDir'),
       mask: U('uMask'), filterOn: U('uFilterOn'), isolate: U('uIsolate'), picked: U('uPicked'), pickedLayer: U('uPickedLayer'), layer: U('uLayer'), repaint: U('uRepaint'),
       catVis: U('uCatVis'), catVisOn: U('uCatVisOn'), sel: U('uSel'), selOn: U('uSelOn'),
-      rule: U('uRule'), ruleOn: U('uRuleOn'),
+      rule: U('uRule'), ruleOn: U('uRuleOn'), chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'),
       secPlane: U('uSecPlane'), secCfg: U('uSecCfg'),
       ortho: U('uOrtho'), fwd: U('uFwd'), orthoRay: U('uOrthoRay'), backoff: U('uBackoff'),
     } };
@@ -4158,7 +4162,7 @@ function createSticksPipeline(gl) {
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, k);
   }
 
-  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, opacity = 1 }) {
+  function begin(cam, { pointPx, colorMode, zRange, chanDoc, ramp, palette, viewportH, maskTex = null, isolate = false, pointsView = false, picked = 0xFFFFFFFF, pickedLayer = 0xFFFFFFFF, layer = 0, section = null, radius = 1, catVisTex = null, selTex = null, ruleTex = null, chanTex = null, opacity = 1 }) {
     const s = cam.state;
     for (const pp of [full, cheap]) {
       gl.useProgram(pp.prog);
@@ -4205,6 +4209,8 @@ function createSticksPipeline(gl) {
       if (selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, selTex); gl.uniform1i(uni.sel, 6); }
       gl.uniform1f(uni.ruleOn, ruleTex ? 1 : 0);
       if (ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ruleTex); gl.uniform1i(uni.rule, 7); }
+      gl.uniform1f(uni.chanTexOn, chanTex ? 1 : 0);
+      if (chanTex) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, chanTex); gl.uniform1i(uni.chanTex, 8); }
     }
     active = full;
     gl.useProgram(full.prog);
@@ -10296,7 +10302,7 @@ void main() {
     float t = clamp((attr.x - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     col = texture(uRamp, vec2(t, 0.5));
   } else if (uColorMode == 1) {
-    if (uKind == 1) {                                      // blocks: grade (doc-normalized)
+    if (uKind == 1 || uChanTexOn > 0.5) {                  // blocks' grade, or a value texture (any kind): doc-normalized
       float v = uChanTexOn > 0.5 ? texelFetch(uChanTex, at, 0).r : attr.y;
       float t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
       col = texture(uRamp, vec2(t, 0.5));
@@ -10609,6 +10615,9 @@ uniform sampler2D uSel;                 // selection bitmask by record index (81
 uniform float uSelOn;
 uniform sampler2D uRule;                // rule-code byte by record index (8192-wide)
 uniform float uRuleOn;                  // rule mode: the code REPLACES the class for palette + eyes
+uniform sampler2D uChanTex;             // OPT-IN: raw f32 VALUE by record (8192-wide) — replaces the
+uniform float uChanTexOn;               // intensity slot in mode 1, normalized over uChanDoc (the
+uniform vec2 uChanDoc;                  // document's range + clip), as gl-blocks does
 out vec4 vColor;
 flat out float vCull;
 void main() {
@@ -10637,7 +10646,12 @@ void main() {
     float t = clamp((p.z - uZRange.x) / max(uZRange.y, 1e-6), 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
   } else if (uColorMode == 1) {
-    float t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
+    float t;
+    if (uChanTexOn > 0.5) {
+      int rc = int(aRec);
+      float v = texelFetch(uChanTex, ivec2(rc & 8191, rc >> 13), 0).r;
+      t = clamp((v - uChanDoc.x) / max(uChanDoc.y, 1e-6), 0.0, 1.0);
+    } else t = clamp(aIntensity * uIntensityScale, 0.0, 1.0);
     vColor = texture(uRamp, vec2(t, 0.5));
   } else if (uColorMode == 2) {
     vColor = texture(uPalette, vec2((cls + 0.5) / uPaletteN, 0.5));
@@ -10766,6 +10780,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     catVis: U('uCatVis'), catVisOn: U('uCatVisOn'),
     sel: U('uSel'), selOn: U('uSelOn'),
     rule: U('uRule'), ruleOn: U('uRuleOn'),
+    chanTex: U('uChanTex'), chanTexOn: U('uChanTexOn'), chanDoc: U('uChanDoc'),
   };
   const ramp = lutTexture(gl, rampPixels(), 256);
   const palette = lutTexture(gl, palettePixels(), 32);   // LAS classification (points)
@@ -10799,6 +10814,13 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
   const docRangeOf = (ls) => ls.chanTex && ls.chanTexRange
     ? [ls.chanTexRange[0], ls.chanTexRange[0] + ls.chanTexRange[1]]
     : [ls.docChan[0] === Infinity ? 0 : ls.docChan[0], ls.docChan[1]];
+  // → [lo, span]: the ramp's value window in channel mode — the document range,
+  // narrowed by the layer's clip. ONE place for every kind that draws a value.
+  const chanDocOf = (ls, o) => {
+    const dr = docRangeOf(ls), on = o.clip && o.colorMode === 1;
+    const lo = on && o.clip[0] != null ? o.clip[0] : dr[0], hi = on && o.clip[1] != null ? o.clip[1] : dr[1];
+    return [lo, hi > lo ? hi - lo : 1];
+  };
   function layerOf(id) {
     let l = layers.get(id);
     if (!l) {
@@ -11500,8 +11522,6 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
             const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
             let u;
             if (group[0].kind === 'blocks') {
-              const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
-              const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
               // the cut wall faces the viewer: the section normal signed toward the eye
               const lsec = layerSecOf(ls, sec);
               let cutN = [0, 0, 1];
@@ -11511,7 +11531,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
               }
               u = {
                 kind: 'blocks', colorMode: o.colorMode, zRange: zr,
-                chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
+                chanDoc: chanDocOf(ls, o),
                 paletteN: 256, intensityScale: 1,
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette,
                 mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
@@ -11523,11 +11543,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
               };
             } else {
               u = {
-                kind: 'points', colorMode: o.colorMode, zRange: zr, chanDoc: [0, 1],
+                kind: 'points', colorMode: o.colorMode, zRange: zr, chanDoc: chanDocOf(ls, o),
                 paletteN: ls.paletteTex ? ls.paletteW : (ls.catN || 32),
                 intensityScale: 65535 / (ls.intensityMax || 1),
                 ramp: ls.rampTex || ramp, palette: ls.paletteTex || (ls.catN && catPalette ? catPalette : palette),
-                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: null,
+                mask: ls.maskTex, sel: ls.selTex, rule: ls.ruleOn ? ls.ruleTex : null, chanTex: ls.chanTex,
                 picked: pickedRec, pickedLayer, lightDir: [0, 0, 1], cutNormal: [0, 0, 1],
               };
             }
@@ -11668,6 +11688,11 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           if (ls.selTex) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, ls.selTex); gl.uniform1i(uni.sel, 6); }
           gl.uniform1f(uni.ruleOn, ls.ruleOn && ls.ruleTex ? 1 : 0);
           if (ls.ruleOn && ls.ruleTex) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, ls.ruleTex); gl.uniform1i(uni.rule, 7); }
+          gl.uniform1f(uni.chanTexOn, ls.chanTex ? 1 : 0);
+          if (ls.chanTex) {
+            gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, ls.chanTex); gl.uniform1i(uni.chanTex, 8);
+            const cd = chanDocOf(ls, o); gl.uniform2f(uni.chanDoc, cd[0], cd[1]);
+          }
           gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ls.rampTex || ramp); gl.uniform1i(uni.ramp, 0);
         };
         for (const [id, group] of ptsGroups) {
@@ -11719,11 +11744,9 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         };
         const beginLayer = (id) => {
           const ls = layerOf(id), o = lopt(id);
-          const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
-          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
           blocksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
-            chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
+            chanDoc: chanDocOf(ls, o),
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
@@ -11769,15 +11792,14 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         };
         const beginStkLayer = (id) => {
           const ls = layerOf(id), o = lopt(id);
-          const dr = docRangeOf(ls), cLo = o.clip && o.clip[0] != null && o.colorMode === 1 ? o.clip[0] : dr[0];
-          const cHi = o.clip && o.clip[1] != null && o.colorMode === 1 ? o.clip[1] : dr[1];
           sticksPipe.begin(camOf(id), {
             pointPx, colorMode: o.colorMode, zRange: zRangeOf(o),
-            chanDoc: [cLo, cHi > cLo ? cHi - cLo : 1],
+            chanDoc: chanDocOf(ls, o),
             ramp: ls.rampTex || ramp, palette: ls.paletteTex || catPalette || palette, viewportH: canvas.height,
             maskTex: ls.maskTex, isolate: ls.isolate, pointsView: blocksAsPoints, picked: pickedRec, pickedLayer, layer: id,
             section: layerSecOf(ls, sec),
             radius: ls.stickRadius, catVisTex: ls.catVisTex, selTex: ls.selTex, ruleTex: ls.ruleOn ? ls.ruleTex : null,
+            chanTex: ls.chanTex,
             opacity: ls.opacity,
           });
         };

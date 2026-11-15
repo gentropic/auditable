@@ -28,11 +28,11 @@ import { openCrosstab } from './xtab.js';
 import { openXyPlot } from './xyplot.js';
 import { menuXY } from './menu.js';
 import { microChoose, microConfirm } from './prompts.js';
-import { openBlob, openDrillholeLayer } from './open.js';
+import { openBlob, openDrillholeLayer, reopenDhChan } from './open.js';
 import { reopenBlockChan } from './open-blocks.js';
 import { CONTEXT_TRI_CAP } from './open-mesh.js';
 import { applyHoleFilter, ensureDhSetGroups } from './drillholes.js';
-import { applyTreeVisibility, treeFromManifest, treeToManifest } from './tree.js';
+import { applyTreeVisibility, treeFromManifest, treeToManifest, followLayer } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { captureLayerSurface, recolorSurface } from './surfaces.js';
 import { ensureValueTex, valueTexEligible } from './color.js';
@@ -616,8 +616,13 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           if (ls.catLegend) { Ld.catLegend = ls.catLegend; applyCatLegend(Ld, true); }
           if (Array.isArray(ls.catChoices)) { Ld.catChoices = ls.catChoices; addPaintColorOptions(Ld); }
           if (ls.colorSel && [...$('#colorBy').options].some((o) => o.value === ls.colorSel)) { Ld.colorSel = ls.colorSel; $('#colorBy').value = ls.colorSel; syncRuleMode(Ld); }
-          await restoreStyleExtras(Ld, ls);
-          idAt[i] = Ld.id;
+          let Lc = Ld;                                   // an interval column the sticks don't carry: its value texture
+          if (String(ls.colorSel || '').startsWith('chan:') && +ls.colorSel.slice(5) !== Ld.docs.dhDoc.header.mapping.chan) {
+            const ok = valueTexEligible(Ld) ? await ensureValueTex(Ld, ls.colorSel) : null;
+            if (ok === null) Lc = (await reopenDhChan(+ls.colorSel.slice(5), Ld)) && layerById(followLayer(Ld.id)) || Ld;
+          }
+          await restoreStyleExtras(Lc, ls);
+          idAt[i] = Lc.id;
         }
         plRow(i, 'done', 'done');
         continue;

@@ -89,7 +89,7 @@ export function rampRangeFor(L) {
 }
 export function applyRamp(L, force) {
   if (!force) return stageGate(L, () => applyRamp(L, true));
-  if (L.docs && L.docs.blockDoc) ensureValueTex(L).catch((e) => { $('#meta').textContent = `colour — ${e.message}`; });
+  if (L.docs && (L.docs.blockDoc || L.docs.dhDoc)) ensureValueTex(L).catch((e) => { $('#meta').textContent = `colour — ${e.message}`; });
   const pcR = paintActiveCol(L) || calcDisplayCol(L);
   if (!pcR && calcSelOf(L)) ensureCalcDisplay(L);          // realize lazily; it re-applies on completion
   if (pcR && pcR.kind === 'ratio') { applyPaintPalette(L, pcR); return; }   // ramp+clip bake INTO the palette
