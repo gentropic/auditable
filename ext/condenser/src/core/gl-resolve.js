@@ -261,7 +261,8 @@ export function createResolvePipeline(gl) {
   // one bake VAO per blocks chunk: the same buffers the instanced VAO uses, but
   // re-pointed per-VERTEX (divisor 0) so one gl.POINTS draw scatters every block
   function blocksBakeVao(c) {
-    if (c._bakeVao) return c._bakeVao;
+    c = c._src || c;                                       // a view's proxy shares its source's buffers — and this VAO
+    if (Object.prototype.hasOwnProperty.call(c, '_bakeVao')) return c._bakeVao;
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, 0);

@@ -1050,7 +1050,9 @@ function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000 } = {}
     const origin = vals[0], pitch = minDim[a] / 2;
     const count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
     if (count > 65535) return null;
-    const eps = Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6);
+    // relative slack for float noise at big magnitudes, but never past a tenth of the pitch:
+    // |origin|·1e-6 is ~7 m at a UTM northing, which would swallow a whole 2 m sub-block
+    const eps = Math.min(pitch / 10, Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6));
     for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
     return { origin, pitch, count };
   });
@@ -1156,7 +1158,10 @@ function worldMapOf(grid) {
 function inFrameOf(G, ref) {
   if (!G.rot && !(ref && ref.rot)) return G;
   if (!sameBasis(G.rot, ref.rot)) throw new Error('inFrameOf: grids do not share a basis');
-  const d = toLattice(G.rot, G.anchor[0] - ref.anchor[0], G.anchor[1] - ref.anchor[1], G.anchor[2] - ref.anchor[2]);
+  // one side may be axis-aligned (no rot, anchor = the world origin) while the
+  // other is a NEAR-identity rotation that sameBasis accepts as the same basis
+  const ga = G.anchor || [0, 0, 0], ra = (ref && ref.anchor) || [0, 0, 0];
+  const d = toLattice(G.rot || (ref && ref.rot) || I3, ga[0] - ra[0], ga[1] - ra[1], ga[2] - ra[2]);
   return {
     x: { ...G.x, origin: G.x.origin + d[0] }, y: { ...G.y, origin: G.y.origin + d[1] }, z: { ...G.z, origin: G.z.origin + d[2] },
     rot: ref.rot, anchor: ref.anchor,
@@ -1399,6 +1404,28 @@ async function detectRotatedLattice(reservoir, sweep) {
   const fit = await fitLattice(b.rot, sweep, { minStep: b.minStep });
   if (!fit || fit.misfits) return null;
   return { grid: fit.grid, angles: basisAngles(fit.grid.rot), worst: fit.worst };
+}
+
+/**
+ * An axis-aligned grid inferred from rotated centroids can be WRONG and still
+ * look regular: at 45° (or any rational-tangent angle — 3-4-5 is 36.87°) the
+ * centroids also sit on a finer axis lattice, so the model would open as boxes
+ * of the wrong size (half the volume at 45°, a 25th at 3-4-5) — tonnage wrong,
+ * nothing said. The tell is occupancy: such a lattice is mostly empty. When the
+ * inferred grid is sparse, try the rotated detector; if it finds a rotated
+ * lattice with BIGGER cells that fits every record, that is the model, and the
+ * axis grid was an artefact. A genuinely sparse axis-aligned model (ore-only
+ * export) has axis-aligned nearest neighbours, so the detector declines it.
+ * → a candidate as detectRotatedLattice gives, or null (keep the axis grid).
+ */
+async function detectRotatedOverAxisGrid(grid, count, reservoir, sweep, { maxOccupancy = 0.75 } = {}) {
+  if (!grid || grid.rot || !(count > 0) || !reservoir || reservoir.length < 24) return null;
+  const cells = grid.x.count * grid.y.count * grid.z.count;
+  if (!(cells > 0) || count / cells > maxOccupancy) return null;
+  const cand = await detectRotatedLattice(reservoir, sweep);
+  if (!cand) return null;
+  const vol = (g) => [g.x, g.y, g.z].reduce((p, a) => p * (a.pitch > 0 ? a.pitch : 1), 1);
+  return vol(cand.grid) > vol(grid) * 1.4 ? cand : null;
 }
 
 /**
@@ -1779,6 +1806,29 @@ function splitFields(line, delim) {
   }
 }
 
+/** Which fields of one record were written QUOTED (a quote at the field's start). */
+function quotedFields(line, delim) {
+  const out = [];
+  if (line.indexOf('"') < 0) { const n = splitFields(line, delim).length; for (let k = 0; k < n; k++) out.push(false); return out; }
+  const ws = delim === WS, dc = ws ? -1 : delim.charCodeAt(0), n = line.length;
+  let inQ = false, atStart = true, i = 0;
+  if (ws) while (i < n && isSpace(line.charCodeAt(i))) i++;
+  let cur = false;
+  for (; i < n; i++) {
+    const c = line.charCodeAt(i);
+    if (inQ) { if (c === 34) { if (line.charCodeAt(i + 1) === 34) i++; else inQ = false; } continue; }
+    if (ws ? isSpace(c) : c === dc) {
+      if (ws) { while (i + 1 < n && isSpace(line.charCodeAt(i + 1))) i++; if (i + 1 >= n) break; }
+      out.push(cur); cur = false; atStart = true; continue;
+    }
+    if (atStart && (c === 32 || (c === 9 && delim !== '\t'))) continue;
+    if (atStart && c === 34) { inQ = true; cur = true; atStart = false; continue; }
+    atStart = false;
+  }
+  out.push(cur);
+  return out;
+}
+
 /** Does `line` end inside an open quoted field? `open` = the state it started in. */
 function endsInQuote(line, delim, open = false) {
   if (!open && line.indexOf('"') < 0) return false;
@@ -2082,6 +2132,7 @@ function sniffDelimited(text) {
   // and a cut plain last line is dropped too unless it is all there is
   const cut = !/\n\s*$/.test(text);
   let best = null;
+  const consistent = [];
   for (const d of [',', ';', '\t', WS]) {
     let recs = sampleRecords(text, d, { max: 25 });
     if (cut && recs.length > 1 && recs.length < 25) recs = recs.slice(0, -1);
@@ -2090,10 +2141,22 @@ function sniffDelimited(text) {
     const split = splitter(d);
     const counts = recs.map((l) => split(l).length);
     const n = counts[0];
-    if (n < 2) continue;
-    if (counts.every((c) => c === n) && (!best || n > best.n)) best = { delim: d, n, first: recs[0] };
+    if (n < 2 || !counts.every((c) => c === n)) continue;
+    const cand = { delim: d, n, first: recs[0], second: recs[1] };
+    if (d !== WS) consistent.push(cand);
+    if (!best || n > best.n) best = cand;
   }
   if (!best) throw new Error('blockmodel: no consistent delimiter found');
+  // Whitespace wins on field count whenever text fields hold spaces in step
+  // ("hole id,rock type" / "DH 01,fresh rock" splits 3 ways on spaces, 2 on
+  // commas). A comma inside a whitespace token is a real delimiter, unless that
+  // token is a decimal-comma number (500 600 100 1,5: whitespace, decimal ',').
+  // Tabs that split every record alike are a TSV's (whitespace sees them as spaces).
+  if (best.delim === WS && consistent.length) {
+    const toks = splitFields(best.first, WS).map((t) => t.trim());
+    const real = consistent.filter((c) => c.delim === '\t' || toks.some((t) => t.includes(c.delim) && !COMMA_NUM.test(t)));
+    if (real.length) best = real.reduce((a, b) => (b.n > a.n ? b : a));
+  }
   const first = splitter(best.delim)(best.first).map((s) => s.trim());
   const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
   // the decimal mark: with a non-comma delimiter, data fields that are comma-
@@ -2104,7 +2167,15 @@ function sniffDelimited(text) {
     for (const r of sampleRecords(text, best.delim, { max: 25 }).slice(1)) for (const f of splitter(best.delim)(r)) { const t = f.trim(); if (COMMA_NUM.test(t)) comma++; else if (/^[<>]?=?\s*[-+]?\d*\.\d+(?:[eE][-+]?\d+)?$/.test(t)) point++; }
     if (comma > 0 && point === 0) decimal = ',';
   }
-  const hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  let hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  // all-numeric names (2019,2020) are a header when the first record QUOTES every
+  // field and the next record quotes no number: a writer marking names as text
+  // (a quote-everything writer quotes the data's numbers too, and stays headerless)
+  if (!hasHeader && best.second) {
+    const q1 = quotedFields(best.first, best.delim), q2 = quotedFields(best.second, best.delim);
+    const sec = splitter(best.delim)(best.second).map((s) => s.trim());
+    if (q1.length === first.length && q1.every(Boolean) && !q2.some((q, k) => q && numericish(sec[k]))) hasHeader = true;
+  }
   return { delim: best.delim, header: hasHeader ? first : null, columns: best.n, decimal };
 }
 
@@ -2493,7 +2564,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
       axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); if (v) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
       if (hasDims) {
         const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
         if (dx > 0 && dy > 0 && dz > 0) {
@@ -2521,15 +2592,19 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
   }
   // not an axis-aligned grid → maybe a ROTATED one (a candidate, for the caller to confirm)
   let latticeCandidate = null;
-  if (!grid && !subBlocked && rotated && res.length >= 24) {
-    const coordSweep = () => (async function* () {
+  const coordSweep = () => (async function* () {
       for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, decimal: sniff.decimal })) {
         const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
         for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
         yield { x, y, z, count: n };
       }
     })();
+  if (!grid && !subBlocked && rotated && res.length >= 24) {
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
+  } else if (grid && !lattice && !subBlocked && rotated) {
+    // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
+    const c = await detectRotatedOverAxisGrid(grid, count, Float64Array.from(res), coordSweep);
+    if (c) { grid = null; latticeCandidate = c; }
   }
   const categories = catCol != null && catCounts.size > 0 && catCounts.size <= 255
     ? [...catCounts.keys()].sort() : null;
@@ -3348,7 +3423,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   for (let i = 0, s2 = 0; i < n; i++) {
     const r = tIv.rows[i];
     chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
-    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
     if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) continue;
     const hb = r[m.intervals.bhid];
     bhid[2 * s2] = hb; bhid[2 * s2 + 1] = hb;
@@ -7942,7 +8017,7 @@ async function* dmColumnBatches(blob, h, colIdxs, { signal, shouldRead = null } 
   }
 }
 
-const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ']);
+const DEF_NAMES = new Set(['IJK', 'XC', 'YC', 'ZC', 'XINC', 'YINC', 'ZINC', 'XMORIG', 'YMORIG', 'ZMORIG', 'NX', 'NY', 'NZ', 'ANGLE1', 'ANGLE2', 'ANGLE3', 'ROTAXIS1', 'ROTAXIS2', 'ROTAXIS3']);
 
 // `cached` (a sidecar's discovery results: { grid, bbox, subBlocked, dimPalette,
 // categories }) skips the full-file discovery sweep — a 13 GB sub-blocked model
@@ -8071,8 +8146,22 @@ async function openDmModel(blob, { mapping = null, forcePoints = false, onProgre
   const categories = catIdx >= 0 ? (cachedCats ? [...cachedCats] : []) : null;   // fills incrementally during the sweep (or prefilled from a sidecar)
   const catCode = catIdx >= 0 ? new Map(categories.map((v, i) => [v, i])) : null;
 
+  // A Datamine ROTATED model carries up to three successive rotations as DD
+  // constants: ANGLEn (degrees) about ROTAXISn (1 = X, 2 = Y, 3 = Z). The
+  // grid above is built in the model's own (unrotated) frame. Converting it to
+  // world needs Datamine's exact convention (order, sign, which frame XC/YC/ZC
+  // are stored in), and no rotated fixture has been checked against it yet —
+  // so the rotation is REPORTED, never silently applied or silently ignored.
+  // header.dmRotation = null, or [{ axis: 'X'|'Y'|'Z'|'?', angle }] in file order.
+  const dmRotation = [];
+  for (const n of [1, 2, 3]) {
+    const a = constVal('ANGLE' + n), ax = constVal('ROTAXIS' + n);
+    if (Number.isFinite(a) && Math.abs(a) > 1e-9) dmRotation.push({ axis: ({ 1: 'X', 2: 'Y', 3: 'Z' })[Math.round(ax)] || '?', angle: a });
+  }
+
   const header = {
     kind: 'blockmodel', count: h.recordCount,
+    dmRotation: dmRotation.length ? dmRotation : null,
     bbox, grid, subBlocked, dimPalette, dimCols: subBlocked ? incIdx : null,
     columns: names,
     mapping: { x: xc, y: yc, z: zc, chan, cat: catIdx >= 0 ? catIdx : null },
@@ -9215,6 +9304,188 @@ async function openDxf(blob, { as = null } = {}) {
   };
 }
 
+// ── ../dxf/src/write.js ──
+
+// @gcu/dxf writer — Document → R2000 (AC1015) ASCII.
+//
+// The symmetric half of the provenance contract: it restores WORLD coordinates. Features
+// from read() are already world (canonical), so the default writes them verbatim; if a
+// consumer worked in a local frame, pass { fromLocal:true } and the doc's Frame and the
+// writer re-adds the offset via toWorld — the structural fix for the silent-shift bug.
+//
+// Emits the scaffolding strict readers want (HEADER with $ACADVER/$INSUNITS/$HANDSEED,
+// a LTYPE+LAYER TABLES section, unique handles, EOF), round-trips XDATA and blocks, and
+// maps the bulge-native model back out (arc → ARC via arcFromBulge, planar polyline →
+// LWPOLYLINE, non-planar → 3D POLYLINE). Punted (null-geometry) features are not
+// re-emitted — they had no geometry to write. (Subclass 100 markers are a v0.2 hardening.)
+
+
+const DEG$write = Math.PI / 180;
+const UNIT_CODE = { in: 1, ft: 2, mm: 4, cm: 5, m: 6, um: 8, dm: 14 };
+const normDeg = (rad) => ((rad / DEG$write) % 360 + 360) % 360;
+const identity = (p) => p;
+
+function write(doc, opts = {}) {
+  const toW = (opts.fromLocal && doc.frame) ? (p) => toWorld(p, doc.frame) : identity;
+  const out = [];
+  const push = (code, value) => out.push({ code, value });
+
+  // Handle generation: preserve source handles, assign fresh ones (above the max) where absent.
+  let max = 0;
+  const scan = (props) => { const h = props?.handle; if (h) { const n = parseInt(h, 16); if (Number.isFinite(n) && n > max) max = n; } };
+  for (const f of doc.features) scan(f.properties);
+  for (const b of Object.values(doc.blocks || {})) for (const f of b.features) scan(f.properties);
+  let hc = max;
+  const gen = (existing) => existing || (++hc).toString(16).toUpperCase();
+
+  emitHeader();
+  emitTables();
+  emitBlocks();
+  push(0, 'SECTION'); push(2, 'ENTITIES');
+  for (const f of doc.features) emitEntity(f, toW);
+  push(0, 'ENDSEC');
+  push(0, 'EOF');
+  return serializePairs(out);
+
+  // ── emit helpers (hoisted; close over out/push/gen/max) ──────────────────────────
+
+  function emitCommon(props) {
+    push(5, gen(props.handle));
+    push(8, props.layer ?? '0');
+    if (props.linetype) push(6, props.linetype);
+    for (const cp of colorToPairs(props.color || { mode: 'bylayer' })) out.push(cp);
+    if (props.lineweight != null) push(370, props.lineweight);
+  }
+
+  function emitXdata(props) {
+    if (!props.xdata) return;
+    for (const [app, items] of Object.entries(props.xdata)) { push(1001, app); for (const it of items) out.push({ code: it.code, value: it.value }); }
+  }
+
+  function emitHeader() {
+    push(0, 'SECTION'); push(2, 'HEADER');
+    push(9, '$ACADVER'); push(1, doc.header?.acadver || 'AC1015');
+    push(9, '$INSUNITS'); push(70, UNIT_CODE[doc.header?.units || doc.frame?.units || 'm'] ?? 0);
+    push(9, '$HANDSEED'); push(5, (max + 0x10000).toString(16).toUpperCase());
+    push(0, 'ENDSEC');
+  }
+
+  function emitTables() {
+    const names = new Set(['0']);
+    for (const f of doc.features) if (f.properties?.layer) names.add(f.properties.layer);
+    for (const n of Object.keys(doc.layers || {})) names.add(n);
+    push(0, 'SECTION'); push(2, 'TABLES');
+    push(0, 'TABLE'); push(2, 'LTYPE'); push(70, 1);
+    push(0, 'LTYPE'); push(5, gen()); push(2, 'CONTINUOUS'); push(70, 0); push(3, 'Solid line'); push(72, 65); push(73, 0); push(40, 0);
+    push(0, 'ENDTAB');
+    push(0, 'TABLE'); push(2, 'LAYER'); push(70, names.size);
+    for (const n of names) {
+      const ld = doc.layers?.[n];
+      push(0, 'LAYER'); push(5, gen()); push(2, n); push(70, 0);
+      push(62, (ld?.color && ld.color.mode === 'aci') ? ld.color.index : 7);
+      push(6, ld?.linetype || 'CONTINUOUS');
+    }
+    push(0, 'ENDTAB');
+    push(0, 'ENDSEC');
+  }
+
+  function emitBlocks() {
+    push(0, 'SECTION'); push(2, 'BLOCKS');
+    for (const b of Object.values(doc.blocks || {})) {
+      push(0, 'BLOCK'); push(5, gen()); push(8, '0'); push(2, b.name); push(70, 0);
+      push(10, b.base?.[0] || 0); push(20, b.base?.[1] || 0); push(30, b.base?.[2] || 0); push(3, b.name);
+      for (const f of b.features) emitEntity(f, identity);     // block body stays in block-local coords
+      push(0, 'ENDBLK'); push(5, gen());
+    }
+    push(0, 'ENDSEC');
+  }
+
+  function emitEntity(f, tw) {
+    if (!f.geometry) return;                                  // punted nulls aren't re-emitted
+    const g = f.geometry, props = f.properties || {};
+    switch (f.type) {
+      case 'line': {
+        const v = g.vertices, a = tw([v[0], v[1], v[2]]), b = tw([v[3], v[4], v[5]]);
+        push(0, 'LINE'); emitCommon(props);
+        push(10, a[0]); push(20, a[1]); push(30, a[2]); push(11, b[0]); push(21, b[1]); push(31, b[2]);
+        emitXdata(props); break;
+      }
+      case 'polyline': emitPolyline(f, tw); break;
+      case 'arc': {
+        const v = g.vertices, p0 = tw([v[0], v[1], v[2]]), p1 = tw([v[3], v[4], v[5]]), bl = g.bulges ? g.bulges[0] : 0;
+        const a = arcFromBulge([p0[0], p0[1]], [p1[0], p1[1]], bl);
+        let sa = a.startAngle, ea = a.endAngle; if (bl < 0) [sa, ea] = [ea, sa];   // DXF ARC is CCW
+        push(0, 'ARC'); emitCommon(props);
+        push(10, a.center[0]); push(20, a.center[1]); push(30, p0[2]); push(40, a.radius);
+        push(50, normDeg(sa)); push(51, normDeg(ea)); emitXdata(props); break;
+      }
+      case 'circle': {
+        const c = tw(g.center);
+        push(0, 'CIRCLE'); emitCommon(props); push(10, c[0]); push(20, c[1]); push(30, c[2]); push(40, g.radius); emitXdata(props); break;
+      }
+      case 'point': {
+        const p = tw(g.position);
+        push(0, 'POINT'); emitCommon(props); push(10, p[0]); push(20, p[1]); push(30, p[2]); emitXdata(props); break;
+      }
+      case 'text': {
+        const p = tw(g.position);
+        push(0, 'TEXT'); emitCommon(props);
+        push(10, p[0]); push(20, p[1]); push(30, p[2]); push(40, g.height || 1); push(1, g.value || '');
+        if (g.rotation) push(50, g.rotation);
+        emitXdata(props); break;
+      }
+      case 'attdef': {
+        const p = tw(g.position);
+        push(0, 'ATTDEF'); emitCommon(props);
+        push(10, p[0]); push(20, p[1]); push(30, p[2]); push(40, g.height || 1);
+        push(1, g.value || ''); push(2, g.tag || ''); push(3, g.prompt || g.tag || '');
+        if (g.rotation) push(50, g.rotation); push(70, 0);
+        emitXdata(props); break;
+      }
+      case 'face': {
+        const v = g.vertices, n = v.length / 3;
+        push(0, '3DFACE'); emitCommon(props);
+        for (let k = 0; k < 4; k++) { const i = Math.min(k, n - 1) * 3; const w = tw([v[i], v[i + 1], v[i + 2]]); push(10 + k, w[0]); push(20 + k, w[1]); push(30 + k, w[2]); }
+        emitXdata(props); break;
+      }
+      case 'insert': emitInsert(f, tw); break;
+    }
+  }
+
+  function emitPolyline(f, tw) {
+    const g = f.geometry, props = f.properties || {}, v = g.vertices, n = v.length / 3;
+    const z0 = n ? v[2] : 0;
+    let planar = true; for (let i = 0; i < n; i++) if (v[i * 3 + 2] !== z0) { planar = false; break; }
+    if (planar) {
+      push(0, 'LWPOLYLINE'); emitCommon(props); push(90, n); push(70, g.closed ? 1 : 0); if (z0) push(38, z0);
+      for (let i = 0; i < n; i++) { const w = tw([v[i * 3], v[i * 3 + 1], v[i * 3 + 2]]); push(10, w[0]); push(20, w[1]); if (g.bulges && g.bulges[i]) push(42, g.bulges[i]); }
+      emitXdata(props);
+    } else {
+      push(0, 'POLYLINE'); emitCommon(props); push(66, 1); push(70, 8 | (g.closed ? 1 : 0));
+      push(10, 0); push(20, 0); push(30, 0); emitXdata(props);
+      for (let i = 0; i < n; i++) { const w = tw([v[i * 3], v[i * 3 + 1], v[i * 3 + 2]]); push(0, 'VERTEX'); push(5, gen()); push(8, props.layer ?? '0'); push(10, w[0]); push(20, w[1]); push(30, w[2]); push(70, 32); if (g.bulges && g.bulges[i]) push(42, g.bulges[i]); }
+      push(0, 'SEQEND'); push(5, gen());
+    }
+  }
+
+  function emitInsert(f, tw) {
+    const g = f.geometry, props = f.properties || {}, t = g.transform, pos = tw(t.position);
+    const hasAttr = props.attribs?.length;
+    push(0, 'INSERT'); emitCommon(props); if (hasAttr) push(66, 1);
+    push(2, g.block); push(10, pos[0]); push(20, pos[1]); push(30, pos[2]);
+    push(41, t.scale[0]); push(42, t.scale[1]); push(43, t.scale[2]); push(50, t.rotation);
+    emitXdata(props);
+    if (hasAttr) {
+      for (const at of props.attribs) {
+        const ap = tw(at.position || pos);
+        push(0, 'ATTRIB'); push(5, gen()); push(8, props.layer ?? '0');
+        push(10, ap[0]); push(20, ap[1]); push(30, ap[2]); push(40, 1); push(1, at.value); push(2, at.tag); push(70, 0);
+      }
+      push(0, 'SEQEND'); push(5, gen());
+    }
+  }
+}
+
 // ── ../dxf/src/stream.js ──
 
 // @gcu/dxf streaming reader — the scene, read as the bytes go by.
@@ -10164,7 +10435,8 @@ function createResolvePipeline(gl) {
   // one bake VAO per blocks chunk: the same buffers the instanced VAO uses, but
   // re-pointed per-VERTEX (divisor 0) so one gl.POINTS draw scatters every block
   function blocksBakeVao(c) {
-    if (c._bakeVao) return c._bakeVao;
+    c = c._src || c;                                       // a view's proxy shares its source's buffers — and this VAO
+    if (Object.prototype.hasOwnProperty.call(c, '_bakeVao')) return c._bakeVao;
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, c.bIjk); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, 0, 0);
@@ -10559,7 +10831,36 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     if (!c) { c = { state: translateState(cam.state, o) }; if (memo) memo.set(id, c); }
     return c;
   };
-  const freeChunk = (c) => { gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
+  // ── layer VIEWS: one model drawn as several layers ─────────────────────────
+  // A view draws its SOURCE layer's chunks under its own layer id, so everything
+  // per layer (filter, selection, ramp, palette, value texture, rule codes,
+  // section, offset, opacity, visibility, the pick id) is its own while the GPU
+  // geometry exists once. Each source chunk gets a PROXY per view: an object
+  // whose prototype is the source chunk (vao, buffers, bbox, count, kind… all
+  // read through) with its own layer id and draw progress (cursor, weight,
+  // distance — one chunk can't carry two views' accumulation). A proxy owns no
+  // GPU objects. The link outlives the source's chunks: a host re-streams a
+  // layer by removeLayer(id) + addChunk(…, id), and the views re-proxy the new
+  // chunks as they arrive. Only the BASE set is viewed (compaction is per layer).
+  const viewSrc = new Map();                               // view id → source id
+  const syncViewData = (view) => {                         // what a view reads from the DATA, not its style
+    const s = layers.get(viewSrc.get(view)), v = layerOf(view);
+    v.docChan = s ? [...s.docChan] : [Infinity, -Infinity];
+    v.intensityMax = s ? s.intensityMax : 1;
+    layerMaxRec.set(view, layerMaxRec.get(viewSrc.get(view)) || 0);
+    bakeDirty.add(view);
+  };
+  const addProxy = (c, view) => {
+    const p = Object.create(c);
+    p._src = c; p._layer = view; p._set = 'base'; p.cursor = 0; p._w = 0; p._dist = 0; p.bytes = 0;
+    chunks.push(p);
+    if (c.kind === 'mesh') needClear = true;               // as for the source: a mesh draws into a fresh accumulation
+  };
+  const fanOut = (up, set, layer) => {                     // a new source chunk → one proxy per view
+    if (set !== 'base' || !viewSrc.size) return;
+    for (const [v, s] of viewSrc) if (s === layer) { addProxy(up, v); syncViewData(v); }
+  };
+  const freeChunk = (c) => { if (c._src) return; gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
   const byLayer = (arr) => {
     const m = new Map();
     for (const c of arr) { let g = m.get(c._layer); if (!g) m.set(c._layer, g = []); g.push(c); }
@@ -10662,6 +10963,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     get accumulated() { return chunks.reduce((s, c) => s + (activeChunk(c) ? c.cursor : 0), 0); },   // elements in the current accumulation
     get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
     addChunk(chunk, set = 'base', layer = 0) {
+      if (viewSrc.has(layer)) throw new Error(`renderer: layer ${layer} is a view — it draws its source's chunks, not its own`);
       const ls = layerOf(layer);
       dropCapture();                                      // new geometry: the captured id buffer is stale
       // recIdx stays RAW — the layer rides a per-draw uniform, so there is no
@@ -10675,12 +10977,14 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         const up = meshPipe.upload(chunk); up._set = set; up._layer = layer; up.bytes = cb;
         chunks.push(up);
         needClear = true;                                 // draw it into a fresh accumulation
+        fanOut(up, set, layer);
         return;
       }
       if (chunk.kind === 'soup') {                        // streaming tier: budgeted like points
         if (!soupPipe) soupPipe = createSoupPipeline(gl);
         const up = soupPipe.upload(chunk); up._set = set; up._layer = layer; up.bytes = cb;
         chunks.push(up);                                  // streams INTO the accumulation, no clear
+        fanOut(up, set, layer);
         return;
       }
       if (chunk.kind === 'blocks' || chunk.kind === 'sticks') {
@@ -10694,6 +10998,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
           if (chunk.chanRange[0] < ls.docChan[0]) ls.docChan[0] = chunk.chanRange[0];
           if (chunk.chanRange[1] > ls.docChan[1]) ls.docChan[1] = chunk.chanRange[1];
         }
+        fanOut(up, set, layer);
         return;
       }
       const up = uploadChunk(gl, chunk); up._set = set; up._layer = layer; up.bytes = cb;
@@ -10704,7 +11009,23 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         for (let i = 0; i < a.length; i++) if (a[i] > m) m = a[i];
         ls.intensityMax = Math.max(ls.intensityMax, m);
       }
+      fanOut(up, set, layer);
     },
+    // Make `view` a VIEW of `source`: it draws source's chunks under its own layer
+    // state (see the note at viewSrc). null unlinks. A view has no chunks of its
+    // own, and a view can't be a source (one level, as the host's tree has it).
+    setLayerViewOf(view, source) {
+      for (let i = chunks.length - 1; i >= 0; i--) if (chunks[i]._src && chunks[i]._layer === view) chunks.splice(i, 1);
+      needClear = true; dropCapture();
+      if (source == null) { viewSrc.delete(view); return; }
+      if (view === source || viewSrc.has(source)) throw new Error('renderer: a view must be of a layer that is not itself a view');
+      if ([...viewSrc.values()].includes(view)) throw new Error(`renderer: layer ${view} has views — it can't become one`);
+      if (chunks.some((c) => c._layer === view)) throw new Error(`renderer: layer ${view} has chunks of its own — a view has none`);
+      viewSrc.set(view, source);
+      for (const c of chunks.slice()) if (c._layer === source && c._set === 'base' && !c._src) addProxy(c, view);
+      syncViewData(view);
+    },
+    layerViewOf(view) { return viewSrc.has(view) ? viewSrc.get(view) : null; },
     setCategories(n) {                                     // block category palette (golden-angle hues)
       if (n > 0 && !catPalette) catPalette = lutTexture(gl, categoryPalettePixels(256), 256);
     },
@@ -10926,10 +11247,16 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     },
     removeLayer(layer) {
       for (let i = chunks.length - 1; i >= 0; i--) {
-        if (chunks[i]._layer !== layer) continue;
-        freeChunk(chunks[i]);
+        const c = chunks[i];
+        // its own chunks, or (a source going) its views' proxies of them
+        if (c._layer !== layer && !(c._src && c._src._layer === layer)) continue;
+        freeChunk(c);                                      // a proxy frees nothing
         chunks.splice(i, 1);
       }
+      viewSrc.delete(layer);                               // a view going: its link goes with it
+      // a source going: its views keep their link and state (a re-stream re-adds
+      // chunks under the same id and they re-proxy), but no longer its data
+      for (const [v, s] of viewSrc) if (s === layer) { const vs = layers.get(v); if (vs) { vs.docChan = [Infinity, -Infinity]; vs.intensityMax = 1; } layerMaxRec.set(v, 0); }
       const ls = layers.get(layer);
       if (ls && ls.maskTex) gl.deleteTexture(ls.maskTex);
       if (ls && ls.catVisTex) gl.deleteTexture(ls.catVisTex);
@@ -11047,7 +11374,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
       for (const c of chunks) freeChunk(c);
       chunks.length = 0; needClear = true;
       for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
-      layers.clear();
+      layers.clear(); viewSrc.clear();
       if (resolvePipe) resolvePipe.clear();
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();
@@ -11602,6 +11929,7 @@ function createEdl(gl) {
 //   core/ — chunk builders + GL pipelines + camera + EDL + Morton. Zero I/O.
 //   io/   — file providers (LAS, PLY, delimited/dm block models, drillholes, meshes).
 //   grid/ — lattice inference + the join/resample/reconcile engine.
+// @gcu/dxf's writer — micro exports traces as 3D polylines
 // mesh export (micro): the ARANZ writer rides the already-inlined @gcu/msh
 
 // ── ../../drillhole/src/desurvey.js ──

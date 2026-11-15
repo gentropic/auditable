@@ -272,7 +272,36 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     if (!c) { c = { state: translateState(cam.state, o) }; if (memo) memo.set(id, c); }
     return c;
   };
-  const freeChunk = (c) => { gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
+  // ── layer VIEWS: one model drawn as several layers ─────────────────────────
+  // A view draws its SOURCE layer's chunks under its own layer id, so everything
+  // per layer (filter, selection, ramp, palette, value texture, rule codes,
+  // section, offset, opacity, visibility, the pick id) is its own while the GPU
+  // geometry exists once. Each source chunk gets a PROXY per view: an object
+  // whose prototype is the source chunk (vao, buffers, bbox, count, kind… all
+  // read through) with its own layer id and draw progress (cursor, weight,
+  // distance — one chunk can't carry two views' accumulation). A proxy owns no
+  // GPU objects. The link outlives the source's chunks: a host re-streams a
+  // layer by removeLayer(id) + addChunk(…, id), and the views re-proxy the new
+  // chunks as they arrive. Only the BASE set is viewed (compaction is per layer).
+  const viewSrc = new Map();                               // view id → source id
+  const syncViewData = (view) => {                         // what a view reads from the DATA, not its style
+    const s = layers.get(viewSrc.get(view)), v = layerOf(view);
+    v.docChan = s ? [...s.docChan] : [Infinity, -Infinity];
+    v.intensityMax = s ? s.intensityMax : 1;
+    layerMaxRec.set(view, layerMaxRec.get(viewSrc.get(view)) || 0);
+    bakeDirty.add(view);
+  };
+  const addProxy = (c, view) => {
+    const p = Object.create(c);
+    p._src = c; p._layer = view; p._set = 'base'; p.cursor = 0; p._w = 0; p._dist = 0; p.bytes = 0;
+    chunks.push(p);
+    if (c.kind === 'mesh') needClear = true;               // as for the source: a mesh draws into a fresh accumulation
+  };
+  const fanOut = (up, set, layer) => {                     // a new source chunk → one proxy per view
+    if (set !== 'base' || !viewSrc.size) return;
+    for (const [v, s] of viewSrc) if (s === layer) { addProxy(up, v); syncViewData(v); }
+  };
+  const freeChunk = (c) => { if (c._src) return; gl.deleteVertexArray(c.vao); if (c._bakeVao) gl.deleteVertexArray(c._bakeVao); c.buffers.forEach((b) => gl.deleteBuffer(b)); };
   const byLayer = (arr) => {
     const m = new Map();
     for (const c of arr) { let g = m.get(c._layer); if (!g) m.set(c._layer, g = []); g.push(c); }
@@ -375,6 +404,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     get accumulated() { return chunks.reduce((s, c) => s + (activeChunk(c) ? c.cursor : 0), 0); },   // elements in the current accumulation
     get resolveCount() { return resolves; },               // deferred re-shade passes run (harness observability)
     addChunk(chunk, set = 'base', layer = 0) {
+      if (viewSrc.has(layer)) throw new Error(`renderer: layer ${layer} is a view — it draws its source's chunks, not its own`);
       const ls = layerOf(layer);
       dropCapture();                                      // new geometry: the captured id buffer is stale
       // recIdx stays RAW — the layer rides a per-draw uniform, so there is no
@@ -388,12 +418,14 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         const up = meshPipe.upload(chunk); up._set = set; up._layer = layer; up.bytes = cb;
         chunks.push(up);
         needClear = true;                                 // draw it into a fresh accumulation
+        fanOut(up, set, layer);
         return;
       }
       if (chunk.kind === 'soup') {                        // streaming tier: budgeted like points
         if (!soupPipe) soupPipe = createSoupPipeline(gl);
         const up = soupPipe.upload(chunk); up._set = set; up._layer = layer; up.bytes = cb;
         chunks.push(up);                                  // streams INTO the accumulation, no clear
+        fanOut(up, set, layer);
         return;
       }
       if (chunk.kind === 'blocks' || chunk.kind === 'sticks') {
@@ -407,6 +439,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
           if (chunk.chanRange[0] < ls.docChan[0]) ls.docChan[0] = chunk.chanRange[0];
           if (chunk.chanRange[1] > ls.docChan[1]) ls.docChan[1] = chunk.chanRange[1];
         }
+        fanOut(up, set, layer);
         return;
       }
       const up = uploadChunk(gl, chunk); up._set = set; up._layer = layer; up.bytes = cb;
@@ -417,7 +450,23 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         for (let i = 0; i < a.length; i++) if (a[i] > m) m = a[i];
         ls.intensityMax = Math.max(ls.intensityMax, m);
       }
+      fanOut(up, set, layer);
     },
+    // Make `view` a VIEW of `source`: it draws source's chunks under its own layer
+    // state (see the note at viewSrc). null unlinks. A view has no chunks of its
+    // own, and a view can't be a source (one level, as the host's tree has it).
+    setLayerViewOf(view, source) {
+      for (let i = chunks.length - 1; i >= 0; i--) if (chunks[i]._src && chunks[i]._layer === view) chunks.splice(i, 1);
+      needClear = true; dropCapture();
+      if (source == null) { viewSrc.delete(view); return; }
+      if (view === source || viewSrc.has(source)) throw new Error('renderer: a view must be of a layer that is not itself a view');
+      if ([...viewSrc.values()].includes(view)) throw new Error(`renderer: layer ${view} has views — it can't become one`);
+      if (chunks.some((c) => c._layer === view)) throw new Error(`renderer: layer ${view} has chunks of its own — a view has none`);
+      viewSrc.set(view, source);
+      for (const c of chunks.slice()) if (c._layer === source && c._set === 'base' && !c._src) addProxy(c, view);
+      syncViewData(view);
+    },
+    layerViewOf(view) { return viewSrc.has(view) ? viewSrc.get(view) : null; },
     setCategories(n) {                                     // block category palette (golden-angle hues)
       if (n > 0 && !catPalette) catPalette = lutTexture(gl, categoryPalettePixels(256), 256);
     },
@@ -639,10 +688,16 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     },
     removeLayer(layer) {
       for (let i = chunks.length - 1; i >= 0; i--) {
-        if (chunks[i]._layer !== layer) continue;
-        freeChunk(chunks[i]);
+        const c = chunks[i];
+        // its own chunks, or (a source going) its views' proxies of them
+        if (c._layer !== layer && !(c._src && c._src._layer === layer)) continue;
+        freeChunk(c);                                      // a proxy frees nothing
         chunks.splice(i, 1);
       }
+      viewSrc.delete(layer);                               // a view going: its link goes with it
+      // a source going: its views keep their link and state (a re-stream re-adds
+      // chunks under the same id and they re-proxy), but no longer its data
+      for (const [v, s] of viewSrc) if (s === layer) { const vs = layers.get(v); if (vs) { vs.docChan = [Infinity, -Infinity]; vs.intensityMax = 1; } layerMaxRec.set(v, 0); }
       const ls = layers.get(layer);
       if (ls && ls.maskTex) gl.deleteTexture(ls.maskTex);
       if (ls && ls.catVisTex) gl.deleteTexture(ls.catVisTex);
@@ -760,7 +815,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
       for (const c of chunks) freeChunk(c);
       chunks.length = 0; needClear = true;
       for (const ls of layers.values()) { if (ls.maskTex) gl.deleteTexture(ls.maskTex); if (ls.catVisTex) gl.deleteTexture(ls.catVisTex); if (ls.rampTex) gl.deleteTexture(ls.rampTex); if (ls.paletteTex) gl.deleteTexture(ls.paletteTex); if (ls.selTex) gl.deleteTexture(ls.selTex); if (ls.ruleTex) gl.deleteTexture(ls.ruleTex); }
-      layers.clear();
+      layers.clear(); viewSrc.clear();
       if (resolvePipe) resolvePipe.clear();
       layerMaxRec.clear(); bakeDirty.clear(); dropCapture();
       lastCosSig.clear(); cosmeticDirtyLayers.clear();

@@ -4855,6 +4855,67 @@ if (take()) {
   chk(`audit #9: an optimized drag-dropped model is written into the project on save, even on "link" (${JSON.stringify(ob)})`, /\.parquet$/.test(ob.name) && ob.storage === 'project' && ob.onDisk);
 }
 
+// ── §74: renderer layer VIEWS (condenser) — one model drawn as two layers.
+//     A view draws its source's chunks under its own layer state: it picks as
+//     itself, filters on its own, follows a re-stream of its source, and going
+//     away frees nothing of the source's. Driven on the raw renderer (micro's
+//     view layers build on this). ──
+if (take()) {
+  const p = await mkPage('sm2views');
+  const r = await p.evaluate(async () => {
+    const M = window._micro, R = M.renderer, out = {};
+    const rows = ['XC,YC,ZC,AU'];
+    for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},105,${j * 10 + i}`);
+    const id = await M.openBlob(new File([rows.join('\n') + '\n'], 'views.csv'), 'views.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id), V = 9001;
+    const settle = () => new Promise((res) => { M.requestRender(); setTimeout(res, 400); });
+    // a centroid (world) → CSS pixel, through the live camera (+ a display offset)
+    const px = (rec, off = 0) => {
+      const o = M.frame.origin, x = 1005 + (rec % 10) * 10 - o[0] + off, y = 2005 + Math.floor(rec / 10) * 10 - o[1], z = 105 - o[2];
+      const m = M.cam.state.viewProj, w = m[3] * x + m[7] * y + m[11] * z + m[15];
+      const nx = (m[0] * x + m[4] * y + m[8] * z + m[12]) / w, ny = (m[1] * x + m[5] * y + m[9] * z + m[13]) / w;
+      const cv = R.gl.canvas;
+      return [(nx + 1) / 2 * cv.clientWidth, (1 - ny) / 2 * cv.clientHeight];
+    };
+    const pickAt = (rec, off = 0) => { const [x, y] = px(rec, off); const h = R.pick(x, y, M.cam); return h ? `${h.layer === V ? 'view' : h.layer === id ? 'model' : h.layer}:${h.rec}` : null; };
+    const N = R.layerElementCount(id);
+    R.setLayerViewOf(V, id);
+    R.setLayerOffset(V, [150, 0, 0]);                      // side by side
+    out.counts = [N, R.layerElementCount(V)];
+    M.cam.phi = 1.5; M.cam.fit(R.contentBbox()); await settle();
+    out.pick = [pickAt(33), pickAt(33, 150), pickAt(77, 150)];
+    // the view's filter is its own: hide record 33 in the VIEW only
+    const mask = new Uint8Array(100).fill(1); mask[33] = 0;
+    R.setFilter(mask, { isolate: true }, V); await settle();
+    out.filtered = [pickAt(33), pickAt(33, 150), pickAt(34, 150)];
+    // a COSMETIC change on the view over a converged frame re-shades (the bake reads
+    // the source's buffers through the proxies), and the GL is clean
+    for (let k = 0; k < 40 && !R.captureReady; k++) { R.idleCapture(M.cam); await new Promise((res) => requestAnimationFrame(res)); }
+    const r0 = R.resolveCount;
+    const ramp = new Uint8Array(256 * 4); for (let i = 0; i < 256; i++) ramp.set([i, 0, 255 - i, 255], i * 4);
+    R.setLayerRamp(V, ramp); await settle();
+    out.reshade = { resolves: R.resolveCount - r0, glError: R.gl.getError() };
+    // the source re-streams in place (remove + re-add under its id): the view follows
+    await M.reopenWithMapping(L, {}); await settle();
+    out.restream = { count: R.layerElementCount(V), link: R.layerViewOf(V), pick: pickAt(34, 150) };
+    // a view can't take chunks of its own, and can't be a source
+    try { R.addChunk({ kind: 'points' }, 'base', V); out.own = 'accepted'; } catch (e) { out.own = 'refused'; }
+    try { R.setLayerViewOf(9002, V); out.chain = 'accepted'; } catch (e) { out.chain = 'refused'; }
+    // the view goes; the model keeps every chunk (a proxy frees nothing)
+    R.removeLayer(V); await settle();
+    out.after = { model: R.layerElementCount(id), view: R.layerElementCount(V), link: R.layerViewOf(V), pick: pickAt(33), gone: pickAt(33, 150) };
+    return out;
+  });
+  await p.close();
+  chk(`views: a view draws its source's ${r.counts[0]} blocks (${r.counts[1]})`, r.counts[0] === 100 && r.counts[1] === 100);
+  chk(`views: the model and the view each pick as themselves (${r.pick.join(' · ')})`, r.pick[0] === 'model:33' && r.pick[1] === 'view:33' && r.pick[2] === 'view:77');
+  chk(`views: a filter on the view hides its block, not the model's (${r.filtered.join(' · ')})`, r.filtered[0] === 'model:33' && r.filtered[1] === null && r.filtered[2] === 'view:34');
+  chk(`views: a ramp change on the view re-shades without a re-raster, GL clean (${JSON.stringify(r.reshade)})`, r.reshade.resolves > 0 && r.reshade.glError === 0);
+  chk(`views: the view follows its source's in-place re-stream (${JSON.stringify(r.restream)})`, r.restream.count === 100 && r.restream.pick === 'view:34');
+  chk(`views: a view takes no chunks of its own (${r.own}) and can't itself be viewed (${r.chain})`, r.own === 'refused' && r.chain === 'refused');
+  chk(`views: removing the view leaves the model whole (${JSON.stringify(r.after)})`, r.after.model === 100 && r.after.view === 0 && r.after.link === null && r.after.pick === 'model:33' && r.after.gone === null);
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
