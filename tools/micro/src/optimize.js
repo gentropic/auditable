@@ -15,6 +15,8 @@ import { recomputeUnion } from './layers.js';
 import { renderLayers } from './layers-panel.js';
 import { markProjectDirty } from './project.js';
 import { microChoose } from './prompts.js';
+import { holdStoredValues } from './columns.js';
+import { persistElement } from './element-store.js';
 const $ = (s) => document.querySelector(s);
 
 // "Parquet is the project store": on save, non-Parquet block models get
@@ -89,7 +91,14 @@ export async function maybeAutoOptimize() {
 export let _autoPack = (() => { try { return localStorage.getItem('micro.autoPackMeshes'); } catch { return null; } })();   // 'on' | 'off' | null
 export function setAutoPack(v) { _autoPack = v; try { if (v == null) localStorage.removeItem('micro.autoPackMeshes'); else localStorage.setItem('micro.autoPackMeshes', v); } catch { /* private mode */ } }   // null = ask again
 let _autoPackSkip = false;
-export const packableMesh = (L) => wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob);
+// .wfr numbers line and point records in BRICK order (Morton), so a strings or
+// pegs layer comes back with its records renumbered; per-record state (painted
+// or ratio columns, the 3D selection) would then sit on the wrong records, and
+// the next save would stamp it with the new file's identity. Mesh vertices are
+// safe (.wfr keeps their vid). Until the pack carries a source→brick permutation,
+// such a layer is not packed — it stays on its source file.
+const recordStateAtRisk = (L) => L.kind !== 'mesh' && ((L.paintCols && L.paintCols.length > 0) || (L._selMask && L._selMask.some((v) => v)));
+export const packableMesh = (L) => wfrExportable(L) && !L.gridSurface && !isWfrName(L.name) && layerFiles(L).some((fd) => fd.blob) && !recordStateAtRisk(L);
 export async function packLayersToWfr(Ls) {
   if (!S.project || !Ls.length) return 0;
   const dir = S.project.dir, mdir = await dir.getDirectoryHandle('meshes', { create: true });
@@ -117,6 +126,10 @@ export async function packLayersToWfr(Ls) {
     for (const L of members) {
       const els = res.elementsOf.get(L);
       if (!els || els.length !== 1) continue;                 // a source that split into several elements stays as it was
+      // the rename moves where its stored columns live: load + hold them from the
+      // old home, write them at the new one once it has reopened
+      const hold = await holdStoredValues(L);
+      try {
       const keep = { label: L.label, visible: L.visible, tint: L.tint, opacity: L.opacity, catLegend: L.catLegend, lineage: L.lineage, sectioned: S.renderer.layerSectioned(L.id) };
       S.renderer.removeLayer(L.id);
       L.docs = {};
@@ -127,7 +140,9 @@ export async function packLayersToWfr(Ls) {
       if (keep.visible === false) { L.visible = false; S.renderer.setLayerVisible(L.id, false); }
       if (keep.sectioned != null && keep.sectioned !== true) S.renderer.setLayerSectioned(L.id, keep.sectioned);
       if (keep.catLegend) { L.catLegend = keep.catLegend; applyCatLegend(L, true); }
+      try { await persistElement(L); } catch (e) { $('#meta').textContent = `${L.label || L.name}: stored as .wfr, but its columns did not save — ${e.message}`; }
       packed++;
+      } finally { hold.release(); }
     }
   }
   recomputeUnion(); renderLayers(); markProjectDirty(); requestRender();

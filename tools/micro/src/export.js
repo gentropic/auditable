@@ -5,7 +5,7 @@
 // Parquet, with everything kept per record permuted to match. Carved from
 // index.html (phase 3).
 import { blockCaps, colIsNumeric, extendRow, layerRows, layerTableHeader } from './records.js';
-import { ensureStoredValues } from './columns.js';
+import { ensureStoredValues, holdStoredValues } from './columns.js';
 import { microModelOf, mkLineage } from './lineage.js';
 import { createParquetBlobWriter } from '../../../ext/parquet/index.js';
 import { coordNum, createMortonSorter } from '../../../ext/condenser/src/main.js';
@@ -176,7 +176,10 @@ async function runExportInner(L, { scope = 'all', colIdx = null, delim = ',', de
 // remap). A subsequent project save stores the optimized copy.
 export async function convertLayerToParquet(L, cvOpts = {}) {
   const bc = busyCancel();
-  try { return await convertInner(L, { ...cvOpts, signal: cvOpts.signal || bc.signal }); } finally { bc.done(); }
+  // the reorder permutes every stored column and renames the layer (the
+  // sidecar key): an evicted column would keep its OLD order, unreadable after
+  const hold = await holdStoredValues(L);
+  try { return await convertInner(L, { ...cvOpts, signal: cvOpts.signal || bc.signal }); } finally { hold.release(); bc.done(); }
 }
 async function convertInner(L, cvOpts) {
   const signal = cvOpts.signal;

@@ -3,7 +3,9 @@
 // tool (the folder as an inbox).
 import { S, _fileHandles, layerById } from './state.js';
 import { microConfirm } from './prompts.js';
-import { layerFiles, relPathFor, basename, resolveFileHandle, removeFileAt, joinPath, resolveDhFile } from './paths.js';
+import { layerFiles, relPathFor, basename, resolveFileHandle, removeFileAt, joinPath, resolveDhFile, layerRelpath } from './paths.js';
+import { holdStoredValues } from './columns.js';
+import { elementSuffix } from './element-store.js';
 import { markProjectDirty, saveProject } from './project.js';
 import { descFromElement } from './manifest.js';
 import { openDrillholeLayer } from './open.js';
@@ -22,6 +24,17 @@ export async function tidyProject() {
   try {
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'tidy: write permission denied'; return; }
     let moved = 0, collided = 0;
+    // stored columns live beside the file (<rel>.cols/, <rel>.element.json): load
+    // every one from where it is NOW and hold it, so the save below writes it at
+    // the new path — then the old copies go. (Tidy used to move the file and
+    // leave its columns behind, unreachable.)
+    const holds = [], relBefore = new Map();
+    for (const L of S.layers) {
+      if (L.storage !== 'project') continue;
+      holds.push(await holdStoredValues(L));
+      if (!L.dh) relBefore.set(L, (await layerRelpath(L, dir)) + elementSuffix(L));
+    }
+    try {
     const claimed = new Map();                                      // target path → the curRel that took it, this pass
     for (const L of S.layers) {
       if (L.storage !== 'project') continue;
@@ -56,7 +69,19 @@ export async function tidyProject() {
       }
     }
     markProjectDirty();
-    await saveProject();                                            // rewrites project.json + writes descriptors at the new paths
+    await saveProject();                                            // rewrites project.json + writes descriptors + columns at the new paths
+    // only once the columns are written at the new paths (a save that reported
+    // column failures stays dirty: then the old copies are the only copies)
+    if (!S.project.dirty) for (const [L, old] of relBefore) {
+      if ((await layerRelpath(L, dir)) + elementSuffix(L) === old) continue;
+      try { await removeFileAt(dir, `${old}.element.json`); } catch { /* none */ }
+      try {
+        const parts = old.split('/'), leaf = parts.pop() + '.cols';
+        let d = dir; for (const seg of parts) d = await d.getDirectoryHandle(seg);
+        await d.removeEntry(leaf, { recursive: true });
+      } catch { /* none */ }
+    }
+    } finally { for (const h of holds) h.release(); }
     $('#meta').textContent = (moved ? `project tidied — ${moved} file${moved === 1 ? '' : 's'} moved into kind folders` : 'project already tidy')
       + (collided ? ` · ${collided} left in place (name collision — rename to move)` : '');
   } catch (e) { $('#meta').textContent = `tidy failed — ${e.message}`; }

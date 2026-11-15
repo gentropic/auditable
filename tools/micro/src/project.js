@@ -14,10 +14,10 @@ import { ruleModeOf, runRules, syncRuleMode } from './rules.js';
 import { applyCatLegend, restoreHiddenCats } from './categories.js';
 import { applyRamp } from './ramp.js';
 import { setColOf, structureAfterEdit } from './structure-ui.js';
-import { colStatsComplete, ensureSourceHash, isStoredCat, paintRecount, scanColumns } from './columns.js';
+import { colStatsComplete, ensureSourceHash, holdStoredValues, isStoredCat, matColSourceHash, paintRecount, scanColumns } from './columns.js';
 import { _idb, loadElement, persistElement } from './element-store.js';
 import { buildDhSetManifest, descFromElement, dhElementName } from './manifest.js';
-import { sidecarMatches, sourceHash } from './identity.js';
+import { sameSource, sidecarMatches, sourceHash, staleWhy } from './identity.js';
 import { zonesToJSON } from '../../../ext/condenser/src/main.js';
 import { readSurferGrd } from './grid-io.js';
 import { loadRecipes } from './recipes.js';
@@ -50,7 +50,9 @@ import { savePackAsFolder } from './project-pack.js';
 import { maybeAutoOptimize, maybeAutoPackMeshes } from './optimize.js';
 
 export function markProjectDirty() {
-  if (S.project && !S.project.dirty) { S.project.dirty = true; updateProjectTitle(); }
+  if (!S.project) return;
+  S.project.dirtyGen = (S.project.dirtyGen || 0) + 1;     // an edit DURING a save must survive the save marking clean
+  if (!S.project.dirty) { S.project.dirty = true; updateProjectTitle(); }
 }
 
 export function updateProjectTitle() {
@@ -146,6 +148,9 @@ export function projectManifest() {
         ? L.paintCols.filter((c) => !c.mat && !isStoredCat(c)).map((c) => ({ name: c.name, kind: c.kind, dict: c.dict, colors: c.colors, blankColor: c.blankColor, lineage: c.lineage || undefined, rle: rleEncodeBytes(c.codes) }))
         : undefined,
       sel: L._selMask && L._selCount ? rleEncode(L._selMask) : undefined,
+      // the RLE paint + selection above are POSITIONAL (record i → value i): the
+      // source they were made on, so a reopen over different rows refuses them
+      recordsAt: (L._selMask && L._selCount) || (L.paintCols && L.paintCols.some((c) => !c.mat && !isStoredCat(c))) ? matColSourceHash(L) : undefined,
       lineage: L.lineage || undefined,                     // provenance chain (how this layer was made)
       // parsing intent: the column mapping (incl. a re-keyed category) —
       // indices are stable because the file rides in the project. .dm too:
@@ -190,12 +195,20 @@ export function canCopyIntoProject(L) { return !!(S.project && !S.project.pack &
 export function copyLayerIntoProject(L) {
   if (!canCopyIntoProject(L)) { $('#meta').textContent = S.project && S.project.pack ? 'copy: a project pack is read-only — save it as a folder first' : S.project ? 'copy: this layer is already in the project (or has no file)' : 'copy: open a project folder first'; return; }
   setTimeout(() => menuXY(innerWidth / 2 - 120, innerHeight / 3, [
-    { label: `Copy “${L.name}”${L.dh ? ' (collar + survey + intervals)' : ''} (${fmtSize(layerBytes(L))}) into ${S.project.name}/`, action: async () => { $('#meta').textContent = `copying ${L.name}…`; await copyLayerIn(L, S.project.dir); markProjectDirty(); $('#meta').textContent = `copied ${L.name} into the project (${fmtSize(layerBytes(L))})`; renderLayers(); } },
+    { label: `Copy “${L.name}”${L.dh ? ' (collar + survey + intervals)' : ''} (${fmtSize(layerBytes(L))}) into ${S.project.name}/`, action: async () => { $('#meta').textContent = `copying ${L.name}…`; try { await copyLayerIn(L, S.project.dir); } catch (e) { $('#meta').textContent = `copied ${L.name}, but its columns did NOT save — ${e.message}; save the project again`; markProjectDirty(); renderLayers(); return; } markProjectDirty(); $('#meta').textContent = `copied ${L.name} into the project (${fmtSize(layerBytes(L))})`; renderLayers(); } },
     { label: 'Cancel', action: () => {} },
   ]), 0);
 }
 
 export async function copyLayerIn(L, dir) {
+  // a loose layer's stored columns live in browser storage, keyed by the loose
+  // identity; once it is a project layer they are read from the folder. Load and
+  // hold them across the switch, and write them at the new home right away.
+  const hold = await holdStoredValues(L);
+  try { await copyLayerFiles(L, dir); } finally { hold.release(); }
+  renderLayers();
+}
+async function copyLayerFiles(L, dir) {
   const kd = kindDir(L);
   for (const fd of layerFiles(L)) {
     const rel = joinPath(kd, basename(fd.name));
@@ -209,7 +222,7 @@ export async function copyLayerIn(L, dir) {
     if (!L.dh) L.handle = fh;
   }
   L.storage = 'project';
-  renderLayers();
+  if (S.project && S.project.dir === dir && (layerTableHeader(L) || (L.docs && L.docs.gridDoc))) await persistElement(L);   // throws → the caller reports it
 }
 
 export function askCopyOutside(outside) {
@@ -274,6 +287,15 @@ export function sameSourceFile(diskFile, blob) {
 export async function saveProject() {
   if (!S.project) return saveProjectAs();
   if (S.project.pack) return savePackAsFolder();
+  // a save can MOVE stored columns (optimize, pack, copy-in, a first persist):
+  // every materialized column stays resident until the save is done
+  const holds = [];
+  try {
+    for (const L of S.layers) holds.push(await holdStoredValues(L));
+    return await saveProjectInner();
+  } finally { for (const h of holds) h.release(); }
+}
+async function saveProjectInner() {
   const dir = S.project.dir;
   try {
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: write permission denied'; return; }
@@ -359,6 +381,7 @@ export async function saveProject() {
     // calc is authored, a join brought another file's values. A failure here is
     // reported (and the project stays unsaved), never swallowed.
     const colFails = [];
+    const genAtPersist = S.project.dirtyGen || 0;          // edits after this point are NOT in what gets written
     for (const L of S.layers) {
       if (!(layerTableHeader(L) || (L.docs && L.docs.gridDoc))) continue;
       try { await persistElement(L); } catch (e) { colFails.push(`${L.label || L.name}: ${e && e.message || e}`); }
@@ -408,7 +431,9 @@ export async function saveProject() {
     const w = await fh.createWritable();
     await w.write(JSON.stringify(projectManifest(), null, 2) + '\n');
     await w.close();
-    S.project.dirty = colFails.length > 0;                 // columns that didn't save: still unsaved work
+    // columns that didn't save, or an edit made while the save ran (the long
+    // indexing pass after persist): still unsaved work
+    S.project.dirty = colFails.length > 0 || (S.project.dirtyGen || 0) !== genAtPersist;
     updateProjectTitle();
     renderLayers();
     rememberProject(dir);                                  // refresh the stored links alongside
@@ -445,7 +470,19 @@ export async function restoreStyleExtras(L, ls) {
     L.ruleHidden = new Set(ls.ruleHidden || []);
     if (ruleModeOf(L)) { S.renderer.setLayerRuleMode(L.id, true); await runRules(L, true); }   // declarative: codes rebuild by sweep
   }
-  if (ls.paintCols) {
+  // positional state saved on another version of the source (edited on disk,
+  // same row count or not) would land on the wrong records: refuse it, say so
+  let positionalOk = true;
+  if (ls.recordsAt && (ls.paintCols || ls.sel)) {
+    await ensureSourceHash(L);
+    const cur = matColSourceHash(L);
+    if (!sameSource(ls.recordsAt, cur)) {
+      positionalOk = false;
+      const what = [...(ls.paintCols || []).map((c) => c.name), ...(ls.sel ? ['the selection'] : [])].join(', ');
+      (L._colsUnread || (L._colsUnread = [])).push({ name: what, why: `${staleWhy(ls.recordsAt, cur)} — painted per record on the old file` });
+    }
+  }
+  if (ls.paintCols && positionalOk) {
     const n2 = attrRowCountOf(L);
     const restored = ls.paintCols.map((c) => ({ name: c.name, kind: c.kind || undefined, dict: c.dict.slice(), colors: (c.colors || []).slice(), blankColor: c.blankColor, lineage: c.lineage || undefined, codes: rleDecodeBytes(c.rle || [], n2) }));
     const names = new Set(restored.map((c) => c.name.toLowerCase()));
@@ -460,7 +497,7 @@ export async function restoreStyleExtras(L, ls) {
       syncRuleMode(L);
     }
   }
-  if (ls.sel) { L._selMask = rleDecode(ls.sel, attrRowCountOf(L)); applyLayerSelection(L); }
+  if (ls.sel && positionalOk) { L._selMask = rleDecode(ls.sel, attrRowCountOf(L)); applyLayerSelection(L); }
   if (ls.traces && L.kind === 'mesh') {                   // after the paint: a trace's set resolves by name in SET
     const col = setColOf(L);
     L.traces = ls.traces.map((t) => ({ set: col ? Math.max(0, col.dict.indexOf(t.set)) : 0, pts: t.pts, path: t.path }));

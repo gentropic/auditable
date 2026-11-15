@@ -138,7 +138,8 @@ export function pinTrim(extra = 0) {
   if (cap === 0) { _pinCache.clear(); _pinBytes = 0; return; }
   while (_pinBytes + extra > cap && _pinCache.size) {      // LRU: evict the least-recently-used column
     let lk = null, lt = Infinity;
-    for (const [k, e] of _pinCache) if (e.t < lt) { lt = e.t; lk = k; }
+    for (const [k, e] of _pinCache) if (e.t < lt && !(e.ref && e.ref._held)) { lt = e.t; lk = k; }
+    if (lk == null) break;                                 // everything left is HELD (a relocation in flight)
     const e = _pinCache.get(lk); _pinCache.delete(lk); _pinBytes -= e.bytes;
     if (e.matcol && e.ref) e.ref.fvalues = null;           // governed residency: drop the values, keep codes (display)
   }
@@ -164,15 +165,29 @@ export function pinTouchMatcol(L, pc) { const e = _pinCache.get(L.id + ':#mat:' 
 let _readSidecarCol = async () => null;
 export function setSidecarReader(fn) { _readSidecarCol = fn; }
 export async function ensureStoredValues(L, needed) {      // needed: lowercased Set, or null = every matcol
-  if (!L) return;
+  const missing = [];
+  if (!L) return missing;
   for (const pc of matColList(L)) {
     if (needed && !needed.has(String(pc.name).toLowerCase())) continue;
     if (pc.fvalues) { pinTouchMatcol(L, pc); continue; }
     const buf = await _readSidecarCol(L, pc.name);
-    if (!buf) { const el = document.querySelector('#meta'); if (el) el.textContent = `${pc.name}: values not resident and no sidecar — re-run the op`; continue; }
+    if (!buf) { missing.push(pc.name); const el = document.querySelector('#meta'); if (el) el.textContent = `${pc.name}: values not resident and no sidecar — re-run the op`; continue; }
     pc.fvalues = await matColDecode(buf);
     pinPutMatcol(L, pc);
   }
+  return missing;
+}
+// Before a layer's stored-column LOCATION changes (copied into the project,
+// optimized to Parquet, packed, moved by Tidy) every materialized column must be
+// resident: the sidecar is keyed by the layer's path/identity, so an evicted
+// column would be read from, and persisted to, nowhere. Holds them against LRU
+// eviction until release() → { missing: [names with no values anywhere], release }.
+export async function holdStoredValues(L) {
+  const list = L ? matColList(L) : [];
+  for (const pc of list) pc._held = (pc._held || 0) + 1;   // counted: a save holds while an optimize inside it holds too
+  const missing = await ensureStoredValues(L, null);
+  let done = false;
+  return { missing, release: () => { if (done) return; done = true; for (const pc of list) { if (--pc._held <= 0) delete pc._held; } } };
 }
 export function pinPut(L, name, entry) {
   if (pinBudgetBytes() === 0) return;

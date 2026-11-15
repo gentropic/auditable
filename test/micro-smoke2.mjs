@@ -4649,6 +4649,144 @@ if (take()) {
   chk(`mesh QA: a per-face soup welds into the solid (${r.c.welded} welded, watertight ${r.c.watertight}, volume ${r.c.volume}); without the weld: ${r.c2.shells} loose shells`, r.c.welded === 28 && r.c.watertight && Math.abs(r.c.volume - 6000) < 1e-6 && !r.c2.watertight && r.c2.shells === 12);
 }
 
+// ── §72: the 2026-11 correctness audit — stored state that could land on the
+//     WRONG records, or nowhere, with nothing said:
+//     (a) a stored column EVICTED by the pin budget, then the model optimized to
+//         Parquet (reordered + renamed): its values must be permuted with the rows
+//     (b) a selection saved on one version of a file is refused on a reopen over
+//         an edited file (and kept on a reopen over the same file)
+//     (c) two layers on ONE file keep their own stored columns (same name)
+//     (d) auto-pack to .wfr skips a strings layer that carries a selection
+//         (.wfr renumbers line records) ──
+if (take()) {
+  const csvOf = (rows) => 'X,Y,Z,ID\n' + rows.map((i) => `${(i % 4) * 10},${((i / 4 | 0) % 4) * 10},${(i / 16 | 0) * 10},${i}`).join('\n') + '\n';
+  const keyOf = (f) => 'ID,V\n' + Array.from({ length: 64 }, (_, i) => `${i},${i * f}`).join('\n') + '\n';
+  // (a)
+  const pa = await mkPage('sm2evopt');
+  const a = await pa.evaluate(async ({ csv, key }) => {
+    const M = window._micro;
+    const id = await M.openBlob(new File([csv], 'ev.csv'), 'ev.csv', 'replace');
+    const kid = await M.openBlob(new File([key], 'evk.csv'), 'evk.csv', 'add');
+    const L = M.layers().find((q) => q.id === id);
+    await M.keyJoinToCols(L, M.layers().find((q) => q.id === kid), { leftKey: 'ID', rightKey: 'ID', bring: ['V'], dup: 'first' });
+    // evicted, as the pin LRU leaves it (values dropped, codes kept). Done by
+    // hand: whether a tiny budget evicts depends on the machine's 'auto' budget
+    const vc = L.paintCols.find((c) => c.name === 'V');
+    vc.fvalues = null;
+    const evicted = vc.fvalues === null;
+    await M.convertLayerToParquet(L, { keepOriginal: true });
+    const h = L.docs.blockDoc.header, idI = h.columns.indexOf('ID');
+    const v = L.paintCols.find((c) => c.name === 'V');
+    let right = 0, moved = 0;
+    for (let r = 0; r < 64; r++) {
+      const row = await M.fetchLayerRow(L, r), rid = +row[idI];
+      if (rid !== r) moved++;
+      if (v && v.fvalues && v.fvalues[r] === rid * 3) right++;
+    }
+    return { evicted, right, moved, name: L.name };
+  }, { csv: csvOf([...Array(64).keys()]), key: keyOf(3) });
+  await pa.close();
+  chk(`audit #3: an evicted stored column survives optimize — ${a.right}/64 values on their own rows (${a.moved} rows moved, evicted first: ${a.evicted}, now ${a.name})`, a.evicted && a.moved > 0 && a.right === 64);
+
+  // (b)
+  const pb = await mkPage('sm2selid');
+  await pb.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2selid', { recursive: true }); } catch { } });
+  await pb.evaluate(async (csv) => {
+    const M = window._micro;
+    const id = await M.openBlob(new File([csv], 'si.csv'), 'si.csv', 'replace');
+    const L = M.layers().find((q) => q.id === id);
+    L._selMask = new Uint8Array(64); L._selMask[5] = 1; L._selCount = 1;
+  }, csvOf([...Array(64).keys()]));
+  await saveProject(pb);
+  await pb.close();
+  const reopen = async (proj) => {
+    const p = await mkPage(proj);
+    const r = await p.evaluate(async (pr) => {
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(pr);
+      const op = window._micro.openProjectDir(dir);
+      let msg = '';
+      for (let n = 0; n < 300; n++) {
+        if (document.querySelector('#pmDlg').classList.contains('show')) { msg = document.querySelector('#pmMsg').textContent; document.querySelector('#pmOk').click(); }
+        if (window._micro.layers().length && /project|opened|loaded/.test(document.querySelector('#meta').textContent) && !document.querySelector('#pmDlg').classList.contains('show')) { await op; break; }
+        await new Promise((z) => setTimeout(z, 50));
+      }
+      await op;
+      return { msg, layers: window._micro.layers().map((L) => ({ name: L.name, sel: L._selMask ? L._selMask.reduce((s, v) => s + v, 0) : 0 })) };
+    }, proj);
+    return { p, r };
+  };
+  const same = await reopen('sm2selid');
+  await same.p.close();
+  await (await mkPage('sm2selid')).evaluate(async (csv) => {   // the file edited on disk: same rows, re-sorted
+    const models = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2selid')).getDirectoryHandle('models');
+    const w = await (await models.getFileHandle('si.csv')).createWritable(); await w.write(csv); await w.close();
+  }, csvOf([...Array(64).keys()].reverse()));
+  const edited = await reopen('sm2selid');
+  await edited.p.close();
+  chk(`audit #5: a selection reopens over the same file (${same.r.layers[0] && same.r.layers[0].sel} record)`, same.r.layers[0] && same.r.layers[0].sel === 1);
+  chk(`audit #5: …and is REFUSED over an edited file, said so (“${edited.r.msg.slice(0, 90)}”)`, edited.r.layers[0] && edited.r.layers[0].sel === 0 && /selection/.test(edited.r.msg));
+
+  // (c)
+  const pc = await mkPage('sm2twin');
+  await pc.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2twin', { recursive: true }); } catch { } });
+  await pc.evaluate(async ({ csv, k3, k5 }) => {
+    const M = window._micro;
+    const a1 = await M.openBlob(new File([csv], 'tw.csv'), 'tw.csv', 'replace');
+    const a2 = await M.openBlob(new File([csv], 'tw.csv'), 'tw.csv', 'add');
+    const kA = await M.openBlob(new File([k3], 'k3.csv'), 'k3.csv', 'add');
+    const kB = await M.openBlob(new File([k5], 'k5.csv'), 'k5.csv', 'add');
+    const by = (i) => M.layers().find((q) => q.id === i);
+    await M.keyJoinToCols(by(a1), by(kA), { leftKey: 'ID', rightKey: 'ID', bring: ['V'], dup: 'first' });
+    await M.keyJoinToCols(by(a2), by(kB), { leftKey: 'ID', rightKey: 'ID', bring: ['V'], dup: 'first' });
+  }, { csv: csvOf([...Array(64).keys()]), k3: keyOf(3), k5: keyOf(5) });
+  await saveProject(pc);
+  await pc.close();
+  const tw = await reopen('sm2twin');
+  const twin = await tw.p.evaluate(async () => {
+    const M = window._micro, out = [];
+    for (const L of M.layers().filter((q) => q.name === 'tw.csv')) {
+      const v = L.paintCols && L.paintCols.find((c) => c.name === 'V');
+      out.push(v && v.fvalues ? v.fvalues[7] / 7 : null);
+    }
+    return out;
+  });
+  await tw.p.close();
+  chk(`audit #4: two layers on one file keep their own stored column V (×${twin.join(', ×')})`, twin.length === 2 && twin[0] === 3 && twin[1] === 5);
+
+  // (d)
+  const pd = await mkPage('sm2packsel');
+  await pd.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2packsel', { recursive: true }); } catch { } });
+  await pd.evaluate(async () => {
+    const nl = String.fromCharCode(10);
+    const L = ['0', 'SECTION', '2', 'ENTITIES'];
+    for (let i = 0; i < 3; i++) L.push('0', '3DFACE', '8', 'TOPO', '10', String(500000 + i * 10), '20', '6000000', '30', '100', '11', String(500010 + i * 10), '21', '6000000', '31', '101',
+      '12', String(500010 + i * 10), '22', '6000010', '32', '102', '13', String(500000 + i * 10), '23', '6000010', '33', '101');
+    for (let s = 0; s < 3; s++) {
+      L.push('0', 'POLYLINE', '8', 'CREST', '70', '8');
+      for (let k = 0; k < 4; k++) L.push('0', 'VERTEX', '8', 'CREST', '70', '32', '10', String(500000 + k * 8 + s * 50), '20', String(6000005 + s * 40), '30', '110');
+      L.push('0', 'SEQEND');
+    }
+    L.push('0', 'ENDSEC', '0', 'EOF', '');
+    await window._micro.openBlob(new File([L.join(nl)], 'pit.dxf'), 'pit.dxf', 'replace', null, { streamDxf: true });
+  });
+  await pd.waitForFunction(() => window._micro.layers().some((x) => x.docs.stringsDoc && x.docs.stringsDoc.header.kind === 'strings'), null, { timeout: 30000 });
+  await pd.evaluate(() => {
+    const M = window._micro, S = M.layers().find((x) => x.docs.stringsDoc && x.docs.stringsDoc.header.kind === 'strings');
+    const n = M.attrRowCountOf(S); S._selMask = new Uint8Array(n); S._selMask[n - 1] = 1; S._selCount = 1;
+    M.setAutoPack('on');
+  });
+  await saveProject(pd);
+  const pk = await pd.evaluate(() => {
+    const M = window._micro;
+    const S = M.layers().find((x) => x.docs.stringsDoc && x.docs.stringsDoc.header.kind === 'strings');
+    const mesh = M.layers().find((x) => x.kind === 'mesh');
+    M.setAutoPack(null);
+    return { strings: S && S.name, sel: S && S._selMask ? S._selMask[S._selMask.length - 1] : 0, mesh: mesh && mesh.name };
+  });
+  await pd.close();
+  chk(`audit #2: a strings layer with a selection stays on its DXF (${pk.strings}, selection kept ${pk.sel}); the surface packs (${pk.mesh})`, pk.strings === 'pit.dxf' && pk.sel === 1 && /\.wfr$/.test(pk.mesh || ''));
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

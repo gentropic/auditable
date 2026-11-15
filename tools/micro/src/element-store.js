@@ -8,6 +8,7 @@ import { layerRelpath, resolveFileHandle, removeFileAt, basename } from './paths
 import { sameSource, staleWhy } from './identity.js';
 import { ensureSourceHash, storedCols, matColLooseId, matColSourceHash, matColEncode, matColDecodeStr, matColDecode, matColSet, paintRecount, PAINT_BLANK, ruleDefaultColor, columnsChanged, setSidecarReader } from './columns.js';
 import { buildElementManifest, buildGridElementManifest, elementHydrate } from './manifest.js';
+import { layerBlob } from './records.js';
 
 // a tiny IndexedDB kv (database 'micro', store 'kv') — the loose-layer fallback
 // for matcols/elements, and the app's recents/projects ledger
@@ -28,16 +29,44 @@ export const _idb = (() => {
   return {
     async get(k) { try { return await tx('readonly', (st) => st.get(k)); } catch { return undefined; } },
     async set(k, v) { try { await tx('readwrite', (st) => st.put(v, k)); } catch { /* best-effort */ } },
+    // a write whose failure the caller must report (a layer's stored columns)
+    async setStrict(k, v) { await tx('readwrite', (st) => st.put(v, k)); },
   };
 })();
+
+// Several layers can share ONE source file: a DXF's surface, strings and pegs,
+// a multi-element .wfr, the same file opened twice. Their manifests and column
+// files are kept apart by a suffix — none for the first layer of its kind on a
+// file (so existing projects keep their paths), '.strings' / '.pegs' for DXF
+// lines and points, and '.2', '.3'… for a further layer of the same kind, in
+// layer order (a project reopens its layers in saved order, so it is stable).
+// Drillhole members share their SET manifest instead, and are never suffixed.
+const kindTag = (L) => {
+  const sd = L.docs && L.docs.stringsDoc;
+  if (!sd) return '';
+  return sd.header && sd.header.kind === 'strings' ? '.strings' : '.pegs';
+};
+const fileKey = (L) => { const b = layerBlob(L); return `${L.name}:${(b && b.size) || 0}`; };
+export function elementSuffix(L, layers = S.layers) {
+  if (!L || L.dh) return '';
+  const tag = kindTag(L), key = fileKey(L);
+  let ord = 0;
+  for (const X of layers) {
+    if (X === L) break;
+    if (!X.dh && fileKey(X) === key && kindTag(X) === tag) ord++;
+  }
+  return tag + (ord ? `.${ord + 1}` : '');
+}
+const elRel = async (L, dir) => (await layerRelpath(L, dir)) + elementSuffix(L);
+const looseId = (L) => matColLooseId(L) + elementSuffix(L);
 
 export async function readSidecarCol(L, name) {
   try {
     if (L.storage === 'project' && S.project && S.project.dir) {
-      const rel = await layerRelpath(L, S.project.dir);
+      const rel = await elRel(L, S.project.dir);
       return await (await (await resolveFileHandle(S.project.dir, `${rel}.cols/${name}.parquet`)).getFile()).arrayBuffer();
     }
-    return await _idb.get(`matcol:${matColLooseId(L)}:col:${name}`);
+    return await _idb.get(`matcol:${looseId(L)}:col:${name}`);
   } catch { return null; }
 }
 setSidecarReader(readSidecarCol);                          // columns.js residency re-faults through here
@@ -48,7 +77,7 @@ export async function persistElement(L) {
   const elem = buildElementManifest(L) || buildGridElementManifest(L);
   if (!elem) return 'none';
   if (L.storage === 'project' && S.project && S.project.dir) {
-    const rel = await layerRelpath(L, S.project.dir);
+    const rel = await elRel(L, S.project.dir);
     for (const c of cols) {
       if (c.mat && !c.fvalues) continue;                   // evicted: the sidecar file already holds these values
       const fh = await resolveFileHandle(S.project.dir, `${rel}.cols/${c.name}.parquet`, { create: true }); const w = await fh.createWritable(); await w.write(matColEncode(c)); await w.close();
@@ -56,8 +85,10 @@ export async function persistElement(L) {
     if (!L.dh) { const mh = await resolveFileHandle(S.project.dir, `${rel}.element.json`, { create: true }); const w = await mh.createWritable(); await w.write(JSON.stringify(elem, null, 2)); await w.close(); }   // dh members ride the SET manifest
     return 'project';
   }
-  try { const id = matColLooseId(L); for (const c of cols) { if (c.mat && !c.fvalues) continue; await _idb.set(`matcol:${id}:col:${c.name}`, await matColEncode(c).arrayBuffer()); } await _idb.set(`matcol:${id}:element`, elem); return 'idb'; }
-  catch { return 'memory'; }
+  // a failure here THROWS: the save collects it and says the columns did not
+  // save (it used to come back as success — set() swallows its errors)
+  try { const id = looseId(L); for (const c of cols) { if (c.mat && !c.fvalues) continue; await _idb.setStrict(`matcol:${id}:col:${c.name}`, await matColEncode(c).arrayBuffer()); } await _idb.setStrict(`matcol:${id}:element`, elem); return 'idb'; }
+  catch (e) { throw new Error(`browser storage refused the columns — ${(e && e.message) || e}`); }
 }
 // a stored column the load could not apply — collected on the layer, reported
 // by the project open (never silently skipped)
@@ -66,7 +97,7 @@ export async function loadElement(L, dir) {
   L._colsUnread = null;
   let elem = null, man = null, get = null;
   if (dir && L.storage === 'project') {
-    const rel = await layerRelpath(L, dir);
+    const rel = await elRel(L, dir);
     get = async (nm) => { try { return await (await (await resolveFileHandle(dir, `${rel}.cols/${nm}.parquet`)).getFile()).arrayBuffer(); } catch { return await (await (await resolveFileHandle(dir, `${rel}.cols/${nm}.f32`)).getFile()).arrayBuffer(); } };   // legacy .f32 fallback
     const manRel = L.dh && L._setPath && /\.element\.json$/i.test(L._setPath) ? L._setPath : `${rel}.element.json`;   // dh members share the SET manifest
     try { elem = JSON.parse(await (await (await resolveFileHandle(dir, manRel)).getFile()).text()); }
@@ -74,7 +105,7 @@ export async function loadElement(L, dir) {
   }
   if (!elem && !man) {
     try {
-      const id = matColLooseId(L);
+      const id = looseId(L);
       elem = await _idb.get(`matcol:${id}:element`);
       if (!elem) man = await _idb.get(`matcol:${id}:manifest`);
       if (elem || man) get = async (nm) => await _idb.get(`matcol:${id}:col:${nm}`);
@@ -125,7 +156,7 @@ export async function loadElement(L, dir) {
 export async function matColDelete(L, name) {
   L.paintCols = (L.paintCols || []).filter((c) => c.name !== name); L._colStats = null; L._calcFns = null; columnsChanged(L);
   try {
-    if (L.storage === 'project' && S.project && S.project.dir) { const rel = await layerRelpath(L, S.project.dir); try { await removeFileAt(S.project.dir, `${rel}.cols/${name}.parquet`); } catch { /* absent */ } try { await removeFileAt(S.project.dir, `${rel}.cols/${name}.f32`); } catch { /* absent */ } await persistElement(L); }
-    else { const id = matColLooseId(L); const e2 = buildElementManifest(L); if (e2) await _idb.set(`matcol:${id}:element`, e2); }
+    if (L.storage === 'project' && S.project && S.project.dir) { const rel = await elRel(L, S.project.dir); try { await removeFileAt(S.project.dir, `${rel}.cols/${name}.parquet`); } catch { /* absent */ } try { await removeFileAt(S.project.dir, `${rel}.cols/${name}.f32`); } catch { /* absent */ } await persistElement(L); }
+    else { const id = looseId(L); const e2 = buildElementManifest(L); if (e2) await _idb.set(`matcol:${id}:element`, e2); }
   } catch { /* best-effort */ }
 }
