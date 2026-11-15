@@ -165,3 +165,45 @@ test('cellOf: a world point finds ITS cell through the basis (rotated and axis-a
   assert.equal(aa(36, 24, 999), 3 + 4 * 2);                // 2D: z ignored
   assert.equal(aa(46, 5, 0), -1);
 });
+
+// ── the 2026-11 correctness audit ────────────────────────────────────────────
+// A rotated model at 45° or 3-4-5 also sits on a finer, mostly-empty axis grid;
+// inferAxis accepts it, and the model would open as boxes of the wrong size.
+test('basis: a 45° / 3-4-5 rotated model is not taken for the sparse axis grid it also fits', async () => {
+  const { inferAxis } = await import('../ext/condenser/src/grid/infer.js');
+  const { detectRotatedOverAxisGrid } = await import('../ext/condenser/src/grid/basis.js');
+  for (const [label, az, pitch] of [['45°', 45, [10, 10, 5]], ['3-4-5 (36.87°)', Math.atan2(3, 4) * 180 / Math.PI, [10, 10, 5]]]) {
+    const pts = lattice(generators(az, 0, pitch), [600000, 7700000, 500], [20, 20, 3], 3);
+    const ax = [0, 1, 2].map((a) => { const s = new Set(); for (let i = a; i < pts.length; i += 3) s.add(pts[i]); return inferAxis([...s].sort((p, q) => p - q)); });
+    assert.ok(ax.every(Boolean), `${label}: the axis inference DOES accept a (wrong) grid — the trap`);
+    const grid = { x: ax[0], y: ax[1], z: ax[2] };
+    const cand = await detectRotatedOverAxisGrid(grid, pts.length / 3, pts, batchesOf(pts));
+    assert.ok(cand, `${label}: the rotated lattice is found over the axis grid`);
+    assert.ok(Math.abs(cand.grid.x.pitch * cand.grid.y.pitch - 100) < 0.01, `${label}: 10 × 10 blocks, not ${grid.x.pitch} × ${grid.y.pitch}`);
+  }
+});
+test('basis: a SPARSE axis-aligned model keeps its axis grid', async () => {
+  const { inferAxis } = await import('../ext/condenser/src/grid/infer.js');
+  const { detectRotatedOverAxisGrid } = await import('../ext/condenser/src/grid/basis.js');
+  const rnd = mulberry32(7), pts = [];
+  for (let k = 0; k < 4; k++) for (let j = 0; j < 30; j++) for (let i = 0; i < 30; i++) if (rnd() < 0.3) pts.push(600000 + i * 10, 7700000 + j * 10, 500 + k * 5);
+  const P = Float64Array.from(pts);
+  const ax = [0, 1, 2].map((a) => { const s = new Set(); for (let i = a; i < P.length; i += 3) s.add(P[i]); return inferAxis([...s].sort((p, q) => p - q)); });
+  const grid = { x: ax[0], y: ax[1], z: ax[2] };
+  assert.equal(await detectRotatedOverAxisGrid(grid, P.length / 3, P, batchesOf(P)), null);
+});
+test('basis: inFrameOf an axis-aligned grid against a near-identity rotation does not crash', () => {
+  const c = Math.cos(1e-6), s = Math.sin(1e-6);
+  const ref = { x: { origin: 0, pitch: 10, count: 5 }, y: { origin: 0, pitch: 10, count: 5 }, z: { origin: 0, pitch: 5, count: 2 }, rot: [c, -s, 0, s, c, 0, 0, 0, 1], anchor: [1000, 2000, 100] };
+  const G = { x: { origin: 1000, pitch: 10, count: 5 }, y: { origin: 2000, pitch: 10, count: 5 }, z: { origin: 100, pitch: 5, count: 2 } };
+  const r = inFrameOf(G, ref);
+  assert.ok(Math.abs(r.x.origin) < 0.01 && Math.abs(r.y.origin) < 0.01 && Math.abs(r.z.origin) < 0.01, 'same lattice, re-expressed about the anchor');
+});
+test('infer: the sub-block lattice tolerance stays under a tenth of the pitch at UTM magnitudes', async () => {
+  const { inferSubBlockLattice, dimKey } = await import('../ext/condenser/src/grid/infer.js');
+  const ys = [7700000, 7700001, 7700002, 7700003];
+  const ok = inferSubBlockLattice([new Set([0, 1, 2, 3]), new Set(ys), new Set([0, 1])], [2, 2, 2], new Set([dimKey(2, 2, 2), dimKey(4, 4, 4)]));
+  assert.ok(ok, 'on-lattice at a UTM northing');
+  const off = inferSubBlockLattice([new Set([0, 1, 2, 3]), new Set([...ys, 7700001.4]), new Set([0, 1])], [2, 2, 2], new Set([dimKey(2, 2, 2), dimKey(4, 4, 4)]));
+  assert.equal(off, null, 'a centroid 0.4 of a 1 m pitch off the lattice is refused (the old slack was ~7.7 m)');
+});

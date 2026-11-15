@@ -104,7 +104,9 @@ export function inferSubBlockLattice(axisValues, minDim, dimKeys, { cap = 300000
     const origin = vals[0], pitch = minDim[a] / 2;
     const count = Math.round((vals[vals.length - 1] - origin) / pitch) + 1;
     if (count > 65535) return null;
-    const eps = Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6);
+    // relative slack for float noise at big magnitudes, but never past a tenth of the pitch:
+    // |origin|·1e-6 is ~7 m at a UTM northing, which would swallow a whole 2 m sub-block
+    const eps = Math.min(pitch / 10, Math.max(pitch * 1e-3, Math.abs(origin) * 1e-6));
     for (const v of vals) if (Math.abs(origin + Math.round((v - origin) / pitch) * pitch - v) > eps) return null;
     return { origin, pitch, count };
   });

@@ -185,6 +185,57 @@ async function run(url, label) {
 // applied only on confirmation; drawn and picked as true oriented boxes; a
 // declared basis (micro:model from a producer, or addLayer) applies without a
 // confirm but is CHECKED; micro's export round-trips it; same-basis joins work
+// ── the 2026-11 correctness audit: answers that could be silently wrong ──
+async function auditChecks(url, label) {
+  const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
+  await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro && window._micro.addLayer, null, { timeout: 30000 });
+  console.log(`── audit (${label})`);
+  const r = await p.evaluate(async () => {
+    const m = window._micro, out = {};
+    const { writeParquet } = await import('/ext/parquet/index.js');
+    // (1) a 45° model also sits on a finer, mostly-empty axis grid (7.07 m): it
+    // must come out as the ROTATED 10 m lattice (or points), never that grid
+    const AZ = Math.PI / 4, X = [], Y = [], Z = [], AU = [];
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 12; j++) for (let i = 0; i < 12; i++) {
+      X.push(Math.round((600000 + i * 10 * Math.cos(AZ) + j * 10 * Math.sin(AZ)) * 1000) / 1000);
+      Y.push(Math.round((7700000 - i * 10 * Math.sin(AZ) + j * 10 * Math.cos(AZ)) * 1000) / 1000);
+      Z.push(500 + k * 5); AU.push(i + j);
+    }
+    const csv = 'XC,YC,ZC,AU\n' + X.map((_, i) => `${X[i]},${Y[i]},${Z[i]},${AU[i]}`).join('\n') + '\n';
+    const idC = await m.openBlob(new Blob([csv]), 'rot45.csv', 'replace', null, { acceptLattice: true });
+    const gC = m.layers().find((L) => L.id === idC).docs.blockDoc.header.grid;
+    out.csv = gC && { rot: !!gC.rot, pitch: [gC.x.pitch, gC.y.pitch].map((v) => +v.toFixed(3)) };
+    const pq = writeParquet({ columnData: [{ name: 'XC', data: X, type: 'DOUBLE' }, { name: 'YC', data: Y, type: 'DOUBLE' }, { name: 'ZC', data: Z, type: 'DOUBLE' }, { name: 'AU', data: AU, type: 'DOUBLE' }], codec: 'UNCOMPRESSED' });
+    const idP = await m.openBlob(new Blob([pq]), 'rot45.parquet', 'add', null, { acceptLattice: true });
+    const gP = m.layers().find((L) => L.id === idP).docs.blockDoc.header.grid;
+    out.pq = gP && { rot: !!gP.rot, pitch: [gP.x.pitch, gP.y.pitch].map((v) => +v.toFixed(3)) };
+    const idH = await m.addLayer({ kind: 'blocks', name: 'rot45-host', columns: { X: Float64Array.from(X), Y: Float64Array.from(Y), Z: Float64Array.from(Z), AU: Float64Array.from(AU) }, roles: { x: 'X', y: 'Y', z: 'Z', value: 'AU' } });
+    const LH = m.layers().find((L) => L.id === idH);
+    out.host = { kind: LH.kind, grid: !!LH.docs.blockDoc.header.grid };
+    // (6) a NUMBER-coded category column (rock codes 1/2/3) — every block went to code 0
+    const n = 30, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n), rock = new Int32Array(n);
+    for (let i = 0; i < n; i++) { x[i] = 5 + 10 * (i % 6); y[i] = 5 + 10 * Math.floor(i / 6); z[i] = 2; rock[i] = 1 + (i % 3); }
+    const idR = await m.addLayer({ kind: 'blocks', name: 'rockcodes', columns: { X: x, Y: y, Z: z, ROCK: rock }, roles: { x: 'X', y: 'Y', z: 'Z', category: 'ROCK' } });
+    out.cats = m.layers().find((L) => L.id === idR).docs.blockDoc.header.categories;
+    // (8) a FOREIGN micro:model whose axis grid is off the centroids (a corner
+    // origin where micro expects block 0's centroid) is checked, not trusted
+    const fx = [5, 15, 25, 5, 15, 25], fy = [5, 5, 5, 15, 15, 15], fz = [2, 2, 2, 2, 2, 2];
+    const model = { v: 1, grid: { x: { origin: 0, pitch: 10, count: 3 }, y: { origin: 0, pitch: 10, count: 2 }, z: { origin: 2, pitch: 4, count: 1 } }, bbox: { min: [5, 5, 2], max: [25, 15, 2] }, categories: null, subBlocked: false };
+    const fpq = writeParquet({ columnData: [{ name: 'XC', data: fx, type: 'DOUBLE' }, { name: 'YC', data: fy, type: 'DOUBLE' }, { name: 'ZC', data: fz, type: 'DOUBLE' }], codec: 'UNCOMPRESSED', kvMetadata: [{ key: 'micro:model', value: JSON.stringify(model) }] });
+    const idF = await m.openBlob(new Blob([fpq]), 'foreign-corner.parquet', 'add');
+    const hF = m.layers().find((L) => L.id === idF).docs.blockDoc.header;
+    out.foreign = { grid: !!hF.grid, rejected: hF.latticeRejected || null };
+    return out;
+  });
+  chk(`audit #1: a 45° CSV opens as the rotated 10 m lattice, not a 7.07 m axis grid (${JSON.stringify(r.csv)})`, !!(r.csv && r.csv.rot && r.csv.pitch.every((v) => Math.abs(v - 10) < 0.01)));
+  chk(`audit #1: a 45° Parquet the same (${JSON.stringify(r.pq)})`, !!(r.pq && r.pq.rot && r.pq.pitch.every((v) => Math.abs(v - 10) < 0.01)));
+  chk(`audit #1: a 45° addLayer without acceptLattice stays points, never the wrong grid (${JSON.stringify(r.host)})`, r.host.kind === 'points' && !r.host.grid);
+  chk(`audit #6: number-coded categories are named as text (${JSON.stringify(r.cats)})`, Array.isArray(r.cats) && r.cats.join() === '1,2,3' && r.cats.every((v) => typeof v === 'string'));
+  chk(`audit #8: a foreign axis grid off the centroids is refused → points (${r.foreign.rejected})`, !r.foreign.grid && !!r.foreign.rejected);
+  await p.close();
+}
+
 async function rotatedChecks(url, label) {
   const p = await ctx.newPage(); p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); ok = false; });
   await p.goto(`http://127.0.0.1:${PORT}${url}`, { waitUntil: 'load' });
@@ -1231,6 +1282,11 @@ try {
     await colourChecks('/micro.html', 'built micro.html');
     console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
   }
+  if (process.env.ONLY === 'audit') {                     // ONLY=audit: the 2026-11 correctness-audit guards
+    await auditChecks('/tools/micro/index.html', 'dev tree');
+    await auditChecks('/micro.html', 'built micro.html');
+    console.log(ok ? 'PASS' : 'FAIL'); await b.close(); server.close(); process.exit(ok ? 0 : 1);
+  }
   if (process.env.ONLY === 'open') {                      // ONLY=open: just the Parquet open paths
     await openChecks('/tools/micro/index.html', 'dev tree');
     await openChecks('/micro.html', 'built micro.html');
@@ -1256,6 +1312,7 @@ try {
   await run('/tools/micro/index.html', 'dev tree');
   await projectRoundTrip('/tools/micro/index.html', 'hostrt');
   await rotatedChecks('/tools/micro/index.html', 'dev tree');
+  await auditChecks('/tools/micro/index.html', 'dev tree');
   await fileChecks('/tools/micro/index.html', 'dev tree');
   await pickChecks('/tools/micro/index.html', 'dev tree');
   await apiChecks('/tools/micro/index.html', 'dev tree');
@@ -1267,6 +1324,7 @@ try {
   await presentChecks('/tools/micro/index.html', 'dev tree');
   await run('/micro.html', 'built micro.html');
   await rotatedChecks('/micro.html', 'built micro.html');
+  await auditChecks('/micro.html', 'built micro.html');
   await fileChecks('/micro.html', 'built micro.html');
   await pickChecks('/micro.html', 'built micro.html');
   await apiChecks('/micro.html', 'built micro.html');

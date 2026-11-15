@@ -5,7 +5,7 @@
 // (src/open.js) dispatches here.
 import { startChunkBuilder } from './chunkworker.js';
 import { layerById, S, requestRender } from './state.js';
-import { gridFromBasis, mapColumns, findDimColumns, DIM_PALETTE_MAX, inferAxis, inferSubBlockLattice, detectRotatedLattice, isDimColumn, dimKey, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
+import { gridFromBasis, mapColumns, findDimColumns, DIM_PALETTE_MAX, inferAxis, inferSubBlockLattice, detectRotatedLattice, detectRotatedOverAxisGrid, isDimColumn, dimKey, basisAngles, openBlockModel, makeBlockGrid, createChunkBuilder, dmWireframeRole, peekDmColumns, openDmModel } from '../../../ext/condenser/src/main.js';
 import { parquetInfoAsync, streamParquetColumns } from '../../../ext/parquet/index.js';
 import { scan } from './scanner.js';
 import { microConfirm } from './prompts.js';
@@ -114,7 +114,9 @@ export async function openParquetBlocks(blob, name, opts = {}) {
     // a DECLARED lattice (a producer stated it) or any rotated one is the file's
     // statement, applied without a confirm — but checked against every centroid:
     // one off it and the declaration is refused, loudly, and the model shows as points
-    if (grid && (grid.rot || cachedPq.declared) && !opts.cached) {
+    // ...and so is an axis grid another producer stated (not micro's own): a
+    // corner origin where micro expects a centroid is a half-block shift
+    if (grid && (grid.rot || cachedPq.declared || cachedPq.by !== 'micro') && !opts.cached) {
       $('#meta').textContent = `${name} — checking the declared lattice…`;
       // on the worker pool when it can run, else on the page (@gcu/scan decides)
       const { bad } = await scan.checkLattice({ file: blob, meta: info.meta, rowGroups: info.rowGroups, cols: [xN, yN, zN], grid });
@@ -155,12 +157,16 @@ export async function openParquetBlocks(blob, name, opts = {}) {
   const sb = !opts.forcePoints && !declared && dN ? inferSubBlockLattice(ax, minDim, dimSet, { cap: CAP }) : null;
   if (sb) { grid = sb.grid; subBlocked = true; dimPalette = sb.dimPalette; dimCols = dimIdx; }
   // not an axis-aligned grid → maybe a ROTATED one: a candidate the opener confirms
+  const coordSweep = () => (async function* () {
+    for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) yield { x: cols[xN], y: cols[yN], z: cols[zN], count };
+  })();
   if (!grid && !subBlocked && !opts.forcePoints && res.length >= 24) {
     $('#meta').textContent = `${name} — trying a rotated lattice…`;
-    const coordSweep = () => (async function* () {
-      for await (const { count, cols } of streamParquetColumns(blob, [xN, yN, zN], info.rowGroups, info.meta)) yield { x: cols[xN], y: cols[yN], z: cols[zN], count };
-    })();
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
+  } else if (grid && !declared && !subBlocked && !opts.forcePoints) {
+    // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
+    const c = await detectRotatedOverAxisGrid(grid, N, Float64Array.from(res), coordSweep);
+    if (c) { grid = null; latticeCandidate = c; }
   }
   categories = catSet && catSet.size > 0 && catSet.size <= 255 ? [...catSet].sort() : null;
   }

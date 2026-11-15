@@ -19,7 +19,9 @@ export function openLineage(name, blob) { return { op: 'open', at: Date.now(), b
 // The contract is in docs/index.html (#micro-model). Size columns ride as
 // NAMES (`dims`), never indices — a producer's column order is its own business.
 export function microModelOf(h) {
-  const m = { v: 1, grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: !!h.subBlocked };
+  // by: 'micro' — micro inferred (or checked) this grid itself, so a reopen may
+  // trust it; a grid any other producer states is checked against every centroid
+  const m = { v: 1, by: 'micro', grid: h.grid || null, bbox: h.bbox, categories: h.categories || null, subBlocked: !!h.subBlocked };
   // the labels belong to ONE column: say which, or a re-map to another category
   // column would read these labels as its own
   if (h.categories && h.mapping && h.mapping.cat != null && h.columns) m.catColumn = h.columns[h.mapping.cat];

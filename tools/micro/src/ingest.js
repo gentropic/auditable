@@ -7,7 +7,7 @@ import { microModelOf, mkLineage } from './lineage.js';
 import { _fileHandles, layerById } from './state.js';
 import { addPaintColorOptions } from './paint.js';
 import { parquetInfoAsync, writeParquet } from '../../../ext/parquet/index.js';
-import { DIM_PALETTE_MAX, axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, latticeMisfit, makeDimKeyer, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
+import { DIM_PALETTE_MAX, axisDistinct, coordNum, gridFromBasis, inferAxis, inferSubBlockLattice, detectRotatedOverAxisGrid, latticeMisfit, makeDimKeyer, peekDmColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { openBlob, openDrillholeLayer } from './open.js';
 import { colorHeaderOf, colorSelFor, setLayerColorBy, setLayerColorRange, setLayerPalette } from './color.js';
 import { fileLayersInGroup } from './tree.js';
@@ -279,17 +279,19 @@ export async function ingestColumnsLayer(spec, name, lineage) {
   let categories = null;
   if (ci != null) {
     const c = t.cols[t.names[ci]];
-    categories = c.labels ? c.labels : [...new Set(c.data.filter((v) => v != null && v !== '').map(String))].sort();
+    categories = c.labels ? c.labels : [...new Set(Array.from(c.data).filter((v) => v != null && v !== '' && !(typeof v === 'number' && Number.isNaN(v))).map(String))].sort();
     if (categories.length > 255) categories = null;        // past 255 the code is a u8 — no category colouring, as for a file
   }
-  let grid = null, subBlocked = false, dimPalette = null;
+  let grid = null, subBlocked = false, dimPalette = null, rotatedBy = null;
   if (spec.kind === 'blocks') {
     if (dims && spec.lattice) throw new Error('addLayer: give sizes OR a lattice — a declared SUB-BLOCK lattice isn\'t supported yet (the fine lattice is measured from the sizes)');
     if (dims) {
       const axc = [axisDistinct(Infinity), axisDistinct(Infinity), axisDistinct(Infinity)], ax = axc.map((c) => c.set), minDim = [Infinity, Infinity, Infinity], keys = new Set(), dimKeyOf = makeDimKeyer();
       const DX = t.cols[dims.x].data, DY = t.cols[dims.y].data, DZ = t.cols[dims.z].data;
       for (let i = 0; i < t.n; i++) {
-        axc[0].add(coordNum(X[i])); axc[1].add(coordNum(Y[i])); axc[2].add(coordNum(Z[i]));
+        const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]);
+        if (!(Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv))) continue;   // as the regular branch: a NaN centroid would poison the lattice
+        axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
         const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
         if (dx > 0 && dy > 0 && dz > 0) { if (dx < minDim[0]) minDim[0] = dx; if (dy < minDim[1]) minDim[1] = dy; if (dz < minDim[2]) minDim[2] = dz; if (keys.size <= DIM_PALETTE_MAX) keys.add(dimKeyOf(dx, dy, dz)); }
       }
@@ -306,9 +308,26 @@ export async function ingestColumnsLayer(spec, name, lineage) {
       for (let i = 0; i < t.n; i++) { const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) { axc[0].add(xv); axc[1].add(yv); axc[2].add(zv); } }
       const axes = ax.map((s) => (s.size < 300000 ? inferAxis([...s].sort((a, b) => a - b)) : null));
       grid = axes.every(Boolean) ? { x: axes[0], y: axes[1], z: axes[2] } : null;   // null → centroids as points, as for a file
+      // a rotated model can also read as a sparse, WRONG axis grid (45°, 3-4-5…):
+      // the same check a file gets. The detected lattice is applied only when the
+      // host said so (acceptLattice), else the centroids stay points.
+      if (grid) {
+        const fin = [];
+        for (let i = 0; i < t.n && fin.length < 150000; i++) { const xv = coordNum(X[i]), yv = coordNum(Y[i]), zv = coordNum(Z[i]); if (Number.isFinite(xv) && Number.isFinite(yv) && Number.isFinite(zv)) fin.push(xv, yv, zv); }
+        const sweep = () => (async function* () {
+          const x = new Float64Array(t.n), y = new Float64Array(t.n), z = new Float64Array(t.n);
+          for (let i = 0; i < t.n; i++) { x[i] = coordNum(X[i]); y[i] = coordNum(Y[i]); z[i] = coordNum(Z[i]); }
+          yield { x, y, z, count: t.n };
+        })();
+        const cand = await detectRotatedOverAxisGrid(grid, t.n, Float64Array.from(fin), sweep);
+        if (cand) {
+          grid = spec.acceptLattice ? cand.grid : null;
+          if (grid) rotatedBy = { basis: 'inferred', confirmed: 'caller', azimuth: +cand.angles.azimuth.toFixed(4), tilt: +cand.angles.tilt.toFixed(4) };
+        }
+      }
     }
   }
-  const header = { grid, bbox: { min, max }, categories, subBlocked, dimPalette, columns: t.names, dimCols: dims ? { x: t.names.indexOf(dims.x), y: t.names.indexOf(dims.y), z: t.names.indexOf(dims.z) } : null, lattice: spec.lattice ? { basis: 'declared', by: 'host' } : null };
+  const header = { grid, bbox: { min, max }, categories, subBlocked, dimPalette, columns: t.names, dimCols: dims ? { x: t.names.indexOf(dims.x), y: t.names.indexOf(dims.y), z: t.names.indexOf(dims.z) } : null, lattice: spec.lattice ? { basis: 'declared', by: 'host' } : rotatedBy };
   const model = { ...microModelOf(header), declared: spec.lattice ? 'host' : undefined };
   const kv = [
     { key: 'micro:model', value: JSON.stringify(model) },

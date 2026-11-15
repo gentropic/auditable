@@ -16,7 +16,7 @@
 import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
 import { WS, splitFields, RecordJoiner, sampleRecords, coordNum } from './delimited.js';
 import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
-import { detectRotatedLattice, latticeMisfit } from '../grid/basis.js';
+import { detectRotatedLattice, detectRotatedOverAxisGrid, latticeMisfit } from '../grid/basis.js';
 import { createZoneBuilder, zonesFromJSON } from './zones.js';
 
 const X_RE = /^(x|xc|xcent(er|re)?|xmid|east(ing)?|xworld|centroid_?x)$/i;
@@ -483,15 +483,19 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
   }
   // not an axis-aligned grid → maybe a ROTATED one (a candidate, for the caller to confirm)
   let latticeCandidate = null;
-  if (!grid && !subBlocked && rotated && res.length >= 24) {
-    const coordSweep = () => (async function* () {
+  const coordSweep = () => (async function* () {
       for await (const batch of lineFields(blob, sniff.delim, hasHeaderRow, { signal, decimal: sniff.decimal })) {
         const n = batch.length, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
         for (let i = 0; i < n; i++) { const f = batch[i]; x[i] = coordNum(f[map.x]); y[i] = coordNum(f[map.y]); z[i] = coordNum(f[map.z]); }
         yield { x, y, z, count: n };
       }
     })();
+  if (!grid && !subBlocked && rotated && res.length >= 24) {
     latticeCandidate = await detectRotatedLattice(Float64Array.from(res), coordSweep);
+  } else if (grid && !lattice && !subBlocked && rotated) {
+    // a rotated model can ALSO read as a sparse, wrong axis grid (45°, 3-4-5…)
+    const c = await detectRotatedOverAxisGrid(grid, count, Float64Array.from(res), coordSweep);
+    if (c) { grid = null; latticeCandidate = c; }
   }
   const categories = catCol != null && catCounts.size > 0 && catCounts.size <= 255
     ? [...catCounts.keys()].sort() : null;

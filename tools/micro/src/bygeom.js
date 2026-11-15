@@ -495,9 +495,20 @@ export function gridClassify(surfA, surfB, mode, hx, hy, hz, rx, ry) {
   };
 }
 
+// a block model on a ROTATED lattice: its boxes aren't axis-aligned, so the
+// axis-box footprint / dense-grid samplers below don't describe them
+export function rotatedModel(L) {
+  const doc = L && L.docs && L.docs.blockDoc;
+  if (!doc) return false;
+  const g = doc.grid, h = doc.header && doc.header.grid;
+  return !!((g && g.rot) || (h && h.rot));
+}
 export function blockHalfExtents(L) {
   const doc = L.docs.blockDoc;
   const g = doc && (doc.grid || (doc.header && doc.header.grid));
+  // rotated: the box's footprint isn't the axis box of these half-sizes, so
+  // decide by the centroid (as select / flag by solid do on a rotated model)
+  if (rotatedModel(L)) return [0, 0, 0];
   return g && g.size ? [g.size[0] / 2, g.size[1] / 2, g.size[2] / 2] : [0, 0, 0];
 }
 
@@ -543,6 +554,7 @@ export async function ratioByGridSurface(gridL, L, { name, res = [2, 2, 1], mode
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size) { $('#meta').textContent = 'ratio by surface: needs a regular block model'; return null; }
+  if (rotatedModel(L)) { $('#meta').textContent = 'ratio by surface: proportions on a ROTATED model are not supported yet — select / flag by surface work (per centroid)'; return null; }
   const bbox4 = targetsXYBbox([L]);
   const surfA = surfaceFromGrid(await residentGridForEval(gridL, bbox4));
   const surfB = mode === 'between' && meshB && meshB.docs.gridDoc ? surfaceFromGrid(await residentGridForEval(meshB, bbox4)) : null;
@@ -856,6 +868,9 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   const doc = L.docs.blockDoc;
   const grid = doc && (doc.grid || (doc.header && doc.header.grid));
   if (!grid || !grid.size) { $('#meta').textContent = 'assign domains: needs a regular block model'; return null; }
+  // the proportion engine samples an axis-aligned lattice (evalSolidOnGrid → null
+  // on a rotated one), so every solid would claim nothing: an empty DOMAIN column
+  if (rotatedModel(L)) { $('#meta').textContent = 'assign domains: not supported on a ROTATED model yet — select / flag by solid work (per centroid)'; return null; }
   const resolution = Array.isArray(res) ? res.map((v) => Math.max(1, v | 0)) : [res, res, res];
   const epoch = ++_ratioEpoch;
   const fields = [];

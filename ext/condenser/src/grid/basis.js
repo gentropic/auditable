@@ -90,7 +90,10 @@ export function worldMapOf(grid) {
 export function inFrameOf(G, ref) {
   if (!G.rot && !(ref && ref.rot)) return G;
   if (!sameBasis(G.rot, ref.rot)) throw new Error('inFrameOf: grids do not share a basis');
-  const d = toLattice(G.rot, G.anchor[0] - ref.anchor[0], G.anchor[1] - ref.anchor[1], G.anchor[2] - ref.anchor[2]);
+  // one side may be axis-aligned (no rot, anchor = the world origin) while the
+  // other is a NEAR-identity rotation that sameBasis accepts as the same basis
+  const ga = G.anchor || [0, 0, 0], ra = (ref && ref.anchor) || [0, 0, 0];
+  const d = toLattice(G.rot || (ref && ref.rot) || I3, ga[0] - ra[0], ga[1] - ra[1], ga[2] - ra[2]);
   return {
     x: { ...G.x, origin: G.x.origin + d[0] }, y: { ...G.y, origin: G.y.origin + d[1] }, z: { ...G.z, origin: G.z.origin + d[2] },
     rot: ref.rot, anchor: ref.anchor,
@@ -333,6 +336,28 @@ export async function detectRotatedLattice(reservoir, sweep) {
   const fit = await fitLattice(b.rot, sweep, { minStep: b.minStep });
   if (!fit || fit.misfits) return null;
   return { grid: fit.grid, angles: basisAngles(fit.grid.rot), worst: fit.worst };
+}
+
+/**
+ * An axis-aligned grid inferred from rotated centroids can be WRONG and still
+ * look regular: at 45° (or any rational-tangent angle — 3-4-5 is 36.87°) the
+ * centroids also sit on a finer axis lattice, so the model would open as boxes
+ * of the wrong size (half the volume at 45°, a 25th at 3-4-5) — tonnage wrong,
+ * nothing said. The tell is occupancy: such a lattice is mostly empty. When the
+ * inferred grid is sparse, try the rotated detector; if it finds a rotated
+ * lattice with BIGGER cells that fits every record, that is the model, and the
+ * axis grid was an artefact. A genuinely sparse axis-aligned model (ore-only
+ * export) has axis-aligned nearest neighbours, so the detector declines it.
+ * → a candidate as detectRotatedLattice gives, or null (keep the axis grid).
+ */
+export async function detectRotatedOverAxisGrid(grid, count, reservoir, sweep, { maxOccupancy = 0.75 } = {}) {
+  if (!grid || grid.rot || !(count > 0) || !reservoir || reservoir.length < 24) return null;
+  const cells = grid.x.count * grid.y.count * grid.z.count;
+  if (!(cells > 0) || count / cells > maxOccupancy) return null;
+  const cand = await detectRotatedLattice(reservoir, sweep);
+  if (!cand) return null;
+  const vol = (g) => [g.x, g.y, g.z].reduce((p, a) => p * (a.pitch > 0 ? a.pitch : 1), 1);
+  return vol(cand.grid) > vol(grid) * 1.4 ? cand : null;
 }
 
 /**
