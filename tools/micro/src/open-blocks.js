@@ -375,10 +375,11 @@ export async function openDmBlob(blob, name, opts = {}) {
 // than by an opts.chan index.
 export function reopenBlockChan(doc, chan, extra = {}) {
   const o = { keepFilter: true, forcePoints: doc.forcePoints, layer: S.activeId, first: false, ...extra };
-  if (doc.header.dm) return openDmBlob(doc.blob, doc.name, { ...o, chan });
+  const done = (r) => { dispatchEvent(new CustomEvent('micro:layer-reread', { detail: { id: o.layer } })); return r; };   // its views re-apply (src/layerviews.js)
+  if (doc.header.dm) return openDmBlob(doc.blob, doc.name, { ...o, chan }).then(done);
   if (doc.parquet) {
     const m = doc.header.mapping;
-    return openParquetBlocks(doc.blob, doc.name, { ...o, mapping: { x: m.x, y: m.y, z: m.z, chan, cat: m.cat }, reuse: doc.header });
+    return openParquetBlocks(doc.blob, doc.name, { ...o, mapping: { x: m.x, y: m.y, z: m.z, chan, cat: m.cat }, reuse: doc.header }).then(done);
   }
-  return openBlocksBlob(doc.blob, doc.name, { ...o, chan });
+  return openBlocksBlob(doc.blob, doc.name, { ...o, chan }).then(done);
 }

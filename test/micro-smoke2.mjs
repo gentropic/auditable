@@ -5006,6 +5006,117 @@ if (take()) {
   chk(`drillholes: the texture draws what the re-desurvey draws (${(100 * r.dh.dTexRe).toFixed(2)}% differ; FE vs AG ${(100 * r.dh.dFE).toFixed(1)}%; the re-desurvey replaced its layer: ${r.dh.refReplaced})`, r.dh.refReplaced && r.dh.dTexRe < 0.005 && r.dh.dFE > 0.005);
 }
 
+// ── §76: micro VIEWS of a layer — one block model shown twice, each with its
+//     own colour and filter, over ONE copy of the data. The view borrows the
+//     model's records, columns and selection (writes land on the model); it
+//     saves as display state that names its model; it goes with its model; a
+//     drillhole view follows its model through a re-desurvey. ──
+if (take()) {
+  const p = await mkPage('sm2lviews');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro, R = M_.renderer, out = {};
+    const settle = () => new Promise((res) => { M_.requestRender(); setTimeout(res, 400); });
+    const shot = async () => {
+      const b = await W.snapshot({ decorations: false });
+      const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+      g.drawImage(bm, 0, 0); return g.getImageData(0, 0, bm.width, bm.height).data;
+    };
+    const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) > 4 || Math.abs(a[i + 1] - b[i + 1]) > 4 || Math.abs(a[i + 2] - b[i + 2]) > 4) n++; return n / (a.length / 4); };
+    const rows = ['XC,YC,ZC,AU,CU'];
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i * 20 + j},${(j * 7 + i * 3) % 50}`);
+    const mid = await M_.openBlob(new File([rows.join('\n') + '\n'], 'model.csv'), 'model.csv', 'replace');
+    const M = M_.layers().find((q) => q.id === mid);
+    await W.setColorBy(mid, 'AU');
+    // (a) a view: its own layer, nested under the model, drawing all its blocks
+    const vid = await W.addView(mid, { color: 'CU' });
+    const V = M_.layers().find((q) => q.id === vid);
+    const flat = []; const walk = (a) => { for (const nd of a) typeof nd === 'number' ? flat.push(nd) : walk(nd.children); }; walk(M_.layerTree());
+    out.a = { viewOf: V.viewOf, label: V.label, tree: flat, count: [R.layerElementCount(mid), R.layerElementCount(vid)], link: R.layerViewOf(vid), info: W.layer(vid).viewOf };
+    // (b) the colour is the view's own: CU on the view, AU still on the model
+    R.setLayerOffset(vid, [250, 0, 0]);                    // side by side, for the pictures
+    M_.cam.fit(R.contentBbox()); await settle();
+    out.b = { model: W.layer(mid).colorBy, view: W.layer(vid).colorBy, mRange: R.layerChanRange(mid), vRange: R.layerChanRange(vid), vTex: V._valTex && V._valTex.name, mTex: !!M._valTex };
+    const pCU = await shot();
+    await W.setColorBy(vid, 'AU'); await settle();
+    const pAU = await shot();
+    await W.setVisible(vid, false); await settle(); const mOnly1 = await shot();
+    await W.setVisible(vid, true); await W.setColorBy(vid, 'CU'); await W.setVisible(vid, false); await settle(); const mOnly2 = await shot();
+    await W.setVisible(vid, true); await settle();
+    out.b.dView = differ(pCU, pAU); out.b.dModel = differ(mOnly1, mOnly2);
+    // (c) the filter is the view's own
+    await W.filter(vid, 'AU > 300');
+    out.c = { view: V.filterExpr, model: M.filterExpr, vMask: !!V._filterMask, mMask: !!M._filterMask };
+    // (d) the data is the model's: reads AND writes go through
+    const lin = M.lineage;
+    V.lineage = { op: 'probe' };
+    out.d = { docs: V.docs === M.docs, paint: V.paintCols === M.paintCols, kind: V.kind === M.kind, wrote: M.lineage && M.lineage.op === 'probe', own: Object.keys(V).includes('docs') };
+    M.lineage = lin;
+    // (e) one selection: picked through the view, it is the model's
+    await W.select(vid, [1, 2, 3]);
+    out.e = { model: M._selCount, view: V._selCount };
+    await W.clearSelection(vid);
+    out.e.cleared = M._selCount || 0;
+    // (f) a save writes ONE file and a view entry; a reopen brings the view back
+    return out;
+  });
+  chk(`views: a view of the model, nested right under it in the tree (${JSON.stringify(r.a.tree)}), drawing all ${r.a.count[1]} of its ${r.a.count[0]} blocks, labelled “${r.a.label}”`,
+    r.a.viewOf === 0 && r.a.link === 0 && r.a.info === 0 && r.a.count[0] === 800 && r.a.count[1] === 800 && r.a.tree.indexOf(1) === r.a.tree.indexOf(0) + 1 && /model\.csv · CU/.test(r.a.label));
+  chk(`views: the colour is the view's own (model ${r.b.model} [${r.b.mRange}], view ${r.b.view} [${r.b.vRange}] from a texture: ${r.b.vTex}; the model has none: ${!r.b.mTex})`,
+    r.b.model === 'AU' && r.b.view === 'CU' && r.b.vTex === 'CU' && !r.b.mTex && r.b.mRange[1] === 399 && r.b.vRange[1] === 49);
+  chk(`views: recolouring the view changes its picture (${(100 * r.b.dView).toFixed(1)}% of pixels) and not the model's (${(100 * r.b.dModel).toFixed(2)}%)`, r.b.dView > 0.02 && r.b.dModel < 0.002);
+  chk(`views: the filter is the view's own (view “${r.c.view}” masked ${r.c.vMask}; model “${r.c.model}” masked ${r.c.mMask})`, r.c.view === 'AU > 300' && r.c.vMask && r.c.model === '' && !r.c.mMask);
+  chk(`views: the data is the model's — same docs ${r.d.docs}, same columns ${r.d.paint}, same kind ${r.d.kind}, a write lands on the model ${r.d.wrote}, no own copy ${!r.d.own}`, r.d.docs && r.d.paint && r.d.kind && r.d.wrote && !r.d.own);
+  chk(`views: one selection — 3 records selected through the view are the model's (${r.e.model}/${r.e.view}), and cleared through it (${r.e.cleared})`, r.e.model === 3 && r.e.view === 3 && r.e.cleared === 0);
+
+  // (f) project round trip
+  await saveProject(p);
+  const f = await p.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2lviews');
+    const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
+    const files = []; for await (const [n, h] of dir.entries()) if (h.kind === 'directory') for await (const [n2] of h.entries()) files.push(n + '/' + n2); else files.push(n);
+    return { layers: mf.layers.map((l) => (l.viewOf != null ? { viewOf: l.viewOf, label: l.label, colorSel: l.colorSel, filter: l.filter } : { source: l.source })), files: files.filter((x) => /\.csv$|\.parquet$/.test(x)) };
+  });
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2lviews'); await window._micro.openProjectDir(dir); });
+  await p.waitForTimeout(800);
+  const g = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    const ls = W.layers();
+    const v = ls.find((l) => l.viewOf != null), m = ls.find((l) => l.viewOf == null);
+    const V = v && M_.layers().find((q) => q.id === v.id);
+    const out = { n: ls.length, view: v && { viewOf: v.viewOf, name: v.name, colorBy: v.colorBy, filter: V.filterExpr, tex: V._valTex && V._valTex.name, link: M_.renderer.layerViewOf(v.id) }, model: m && { id: m.id, colorBy: m.colorBy } };
+    // (g) the model goes: its view goes with it
+    await W.removeLayer(m.id);
+    out.after = W.layers().length;
+    return out;
+  });
+  chk(`views: a save writes the file once (${JSON.stringify(r && f.files)}) and the view as display over manifest layer ${f.layers[1] && f.layers[1].viewOf} (${JSON.stringify(f.layers[1])})`,
+    f.files.length === 1 && f.layers.length === 2 && f.layers[1].viewOf === 0 && f.layers[1].colorSel && f.layers[1].filter === 'AU > 300');
+  chk(`views: a reopen brings the view back over its model (${JSON.stringify(g.view)}; model coloured by ${g.model && g.model.colorBy})`,
+    g.n === 2 && g.view && g.view.viewOf === g.model.id && g.view.link === g.model.id && g.view.colorBy === 'CU' && g.view.tex === 'CU' && g.view.filter === 'AU > 300' && g.model.colorBy === 'AU');
+  chk(`views: removing the model takes its view (${g.after} layers left)`, g.after === 0);
+
+  // (h) drillholes: a view follows its model through a re-desurvey (a NEW id)
+  const h = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    const collar = ['HOLEID,X,Y,Z,EOH'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE,AG'];
+    for (let k = 0; k < 4; k++) { collar.push(`H${k},${1000 + k * 30},2000,300,30`); survey.push(`H${k},0,0,-90`); for (let q = 0; q < 10; q++) assay.push(`H${k},${q * 3},${q * 3 + 3},${30 + q},${(q * 7 + k) % 9}`); }
+    const fl = (a, n) => new File([a.join('\n') + '\n'], n);
+    await M_.importDrillholes({ collar: fl(collar, 'collars.csv'), survey: fl(survey, 'survey.csv'), intervals: fl(assay, 'assay.csv') }, {}, 'replace');
+    const D = M_.layers().find((q) => q.dh && q.viewOf == null), did = D.id;
+    const vid = await W.addView(did, { color: 'AG' });
+    const out = { before: { viewOf: M_.layers().find((q) => q.id === vid).viewOf, did } };
+    window.__noValueTex = true;                             // the model's colour switch re-desurveys → a NEW layer
+    await W.setColorBy(did, 'AG');
+    window.__noValueTex = false;
+    const D2 = M_.layers().find((q) => q.dh && q.viewOf == null), V2 = M_.layers().find((q) => q.id === vid);
+    out.after = { newId: D2.id, viewOf: V2 && V2.viewOf, link: V2 && M_.renderer.layerViewOf(vid), count: M_.renderer.layerElementCount(vid), colorBy: V2 && W.layer(vid).colorBy };
+    return out;
+  });
+  chk(`views: a drillhole view follows its model through a re-desurvey (${h.before.did} → ${h.after.newId}; the view now shows ${h.after.viewOf}, ${h.after.count} intervals, coloured by ${h.after.colorBy})`,
+    h.after.newId !== h.before.did && h.after.viewOf === h.after.newId && h.after.link === h.after.newId && h.after.count === 40 && h.after.colorBy === 'AG');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

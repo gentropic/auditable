@@ -139,6 +139,7 @@ export async function reopenWithMapping(L, patch, { clearCats = false } = {}) {
   if (doc.header.dm) {
     await openDmBlob(doc.blob, doc.name, { layer: L.id, first: false, forcePoints: doc.forcePoints, chan: m.chan, cat: m.cat });
     applyLayerStyling(layerById(L.id), style, { clearCats });
+    dispatchEvent(new CustomEvent('micro:layer-reread', { detail: { id: L.id } }));
     markProjectDirty();
     refreshProps();
     return;
@@ -153,6 +154,7 @@ export async function reopenWithMapping(L, patch, { clearCats = false } = {}) {
   if (doc.parquet) await openParquetBlocks(doc.blob, doc.name, ropts);
   else await openBlocksBlob(doc.blob, doc.name, ropts);
   applyLayerStyling(layerById(L.id), style, { clearCats });
+  dispatchEvent(new CustomEvent('micro:layer-reread', { detail: { id: L.id } }));
   markProjectDirty();
   refreshProps();
 }
@@ -275,6 +277,7 @@ export async function reloadLayerFromDisk(L) {
     // re-sweep against the fresh bytes — any layer (applyBlockFilter used to act on
     // the active layer only, and a background one was left unfiltered until refocused)
     await refilterLayer(L2);                               // the filter scan posts its own status
+    if (L2) dispatchEvent(new CustomEvent('micro:layer-reread', { detail: { id: L2.id } }));
     $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${changed ? '' : ' · unchanged'}${dropNote}`;
   } else {
     // dm / parquet / mesh / grid / las / ply: remove → re-open fresh → restore

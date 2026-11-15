@@ -119,6 +119,10 @@ export function ensureValueTex(L, sel = colorSelOf(L)) {
 // A drillhole re-read REPLACES the layer (a new id — see layerReplaced), so this
 // resolves to the id of the layer that now carries the colour.
 //   v: 'elev' | 'solid' | 'rules' | 'cat' | 'chan:i' | 'catcol:NAME' | 'paint:…' | 'calc:…' | '0'–'3' (LAS/PLY)
+// a view can't re-stream its model's file to change its own colour (that would
+// recolour the model and every other view)
+const viewTooBig = (L) => new Error(`“${L.label || L.name}”: too many records for a view's own colour (the GPU's texture limit) — colour the model instead`);
+
 export async function setLayerColorBy(L, v) {
   if (!L) return null;
   v = String(v);
@@ -126,6 +130,8 @@ export async function setLayerColorBy(L, v) {
     const name = v.slice(7), h = colorHeaderOf(L), i = h ? h.columns.indexOf(name) : -1;
     if (i < 0) throw new Error(`no column “${name}” on “${L.label || L.name}”`);
     if (!(h.categories && h.mapping.cat === i)) {
+      // re-keying the category re-reads the FILE — the model's, under every view
+      if (L.viewOf != null) throw new Error(`a view colours by its model's category column; colour the model by “${name}” to re-key it`);
       L.colorSel = 'cat';
       await useAsCategory(L, i);
       L = layerById(followLayer(L.id)) || L;
@@ -141,6 +147,7 @@ export async function setLayerColorBy(L, v) {
     // id); the re-desurvey — which REPLACES the layer — only when a texture can't
     if (d.dhDoc && ch !== d.dhDoc.header.mapping.chan) {
       const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
+      if (ok === null && L.viewOf != null) throw viewTooBig(L);
       if (ok === null) { await reopenDhChan(ch, L); L = layerById(followLayer(L.id)) || L; reread = true; }
     }
     // Three sources, not two. This dispatch predated Parquet and sent it down the
@@ -158,6 +165,7 @@ export async function setLayerColorBy(L, v) {
     else if (d.blockDoc && valueTexWant(L, v) != null) {
       if (L.id === S.activeId && [...$('#colorBy').options].some((o) => o.value === v)) $('#colorBy').value = v;
       const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
+      if (ok === null && L.viewOf != null && ch !== d.blockDoc.header.mapping.chan) throw viewTooBig(L);
       if (ok === null && ch !== d.blockDoc.header.mapping.chan) { await reopenBlockChan(d.blockDoc, ch, { layer: L.id }); reread = true; }
     }
   }

@@ -9,6 +9,11 @@ import { layerBlob, attrRowCountOf, layerTableHeader, colIsNumeric, blockCaps, l
 import { openDmModel, classifyQualified, coordNum } from '../../../ext/condenser/src/main.js';
 import { scan, STAT_SLICE, chunkView } from './scanner.js';   // @gcu/scan: the column accumulator, its Parquet pool job, the chunk view
 import { sourceHash, sourceHashSync, sameSource } from './identity.js';
+import { layerById } from './state.js';
+// a VIEW of a layer reads its model's records: one pin per DATA id, so a view
+// never holds a second copy, nor a stale one after the model's columns change
+const pinId = (L) => (L && L.viewOf != null ? L.viewOf : L.id);
+const dataId = (id) => { const L = layerById(id); return L && L.viewOf != null ? L.viewOf : id; };
 
 export const PAINT_BLANK = '#33373c';                      // unpainted recedes toward the background
 
@@ -153,7 +158,7 @@ export function pinTrim(extra = 0) {
 // lazy-chunking would build on. Budget 'off' → nothing registers → always-resident.
 export function pinPutMatcol(L, pc) {
   if (!pc.fvalues || pinBudgetBytes() === 0) return;
-  const k = L.id + ':#mat:' + String(pc.name).toLowerCase();
+  const k = pinId(L) + ':#mat:' + String(pc.name).toLowerCase();
   const old = _pinCache.get(k); if (old) _pinBytes -= old.bytes;
   const e = { matcol: true, ref: pc, bytes: pc.fvalues.byteLength, hash: matColSourceHash(L), t: ++_pinTick };
   pinTrim(e.bytes);
@@ -195,17 +200,17 @@ export function pinPut(L, name, entry) {
   entry.hash = matColSourceHash(L); entry.t = ++_pinTick;
   pinTrim(entry.bytes);
   if (entry.bytes + _pinBytes > pinBudgetBytes()) return;  // single column over budget → don't pin
-  const k = L.id + ':' + String(name).toLowerCase();
+  const k = pinId(L) + ':' + String(name).toLowerCase();
   const old = _pinCache.get(k); if (old) _pinBytes -= old.bytes;
   _pinCache.set(k, entry); _pinBytes += entry.bytes;
 }
 export function pinGet(L, name) {
-  const e = _pinCache.get(L.id + ':' + String(name).toLowerCase());
+  const e = _pinCache.get(pinId(L) + ':' + String(name).toLowerCase());
   if (!e) return null;
-  if (!sameSource(e.hash, matColSourceHash(L))) { pinEvictLayer(L.id); return null; }   // source changed → stale
+  if (!sameSource(e.hash, matColSourceHash(L))) { pinEvictLayer(pinId(L)); return null; }   // source changed → stale
   e.t = ++_pinTick; return e;
 }
-export function pinEvictLayer(id) { for (const [k, e] of [..._pinCache]) if (k.startsWith(id + ':')) { _pinCache.delete(k); _pinBytes -= e.bytes; } }
+export function pinEvictLayer(id) { id = dataId(id); for (const [k, e] of [..._pinCache]) if (k.startsWith(id + ':')) { _pinCache.delete(k); _pinBytes -= e.bytes; } }
 // a pinned column's values for records [start, start+n) as compileChunk input
 export function pinWindow(e, start, n, scratch) {
   if (e.data) return e.data.subarray(start, start + n);    // numeric: zero-copy view

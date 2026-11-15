@@ -49,6 +49,7 @@ export function createHostApi(d) {
     palette: d.layerPalette(L),                            // the current colour-by's palette | null
     visible: L.visible !== false,
     group: d.groupPathOf(L.id),
+    viewOf: L.viewOf != null ? L.viewOf : null,            // a VIEW of that layer: its own display over the same data
   });
   const chrome = () => ({
     title: !document.body.classList.contains('chrome-notitle'),
@@ -73,6 +74,14 @@ export function createHostApi(d) {
     // detected rotation unless acceptLattice says). A File, Blob or handle.
     open: verb((file, o = {}) => d.openFile(file, o)),
     removeLayer: verb((id) => { d.removeLayer(live(id).id); }),
+    // a VIEW of a block model or drillhole layer: the same records shown again,
+    // with its own colour / filter / clip / visibility. → its id.
+    //   { name, color, filter, visible }
+    addView: verb(async (id, o = {}) => {
+      const M = live(id);
+      const V = await d.createView(M, { label: o.name, colorSel: o.color != null ? d.colorSelFor(M, o.color) : undefined, filter: o.filter || undefined, visible: o.visible }, { activate: false });
+      return V.id;
+    }),
 
     // ── project backups (.zip.micro) ──
     // backupProject({ lean, to, save }): the open project folder as one zip, no

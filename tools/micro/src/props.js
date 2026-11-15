@@ -54,6 +54,10 @@ export function setPropTab(t) { _propTab = t; try { localStorage.setItem('micro.
 export function closeProps() { _propOpen = false; _propFor = null; dropRampRepaint(); $('#propPanel').classList.remove('show'); }
 
 export function propKindLine(L) {
+  if (L.viewOf != null) {                                  // a VIEW: say whose data, then what that data is
+    const M = S.layers.find((x) => x.id === L.viewOf);
+    if (M) return `view of “${M.label || M.name}” — its own colour, filter and display · ${propKindLine(M)}`;
+  }
   const h = layerHeaderOf(L);
   const n = S.renderer.layerElementCount(L.id) || 0;
   if (L.kind === 'mesh') {

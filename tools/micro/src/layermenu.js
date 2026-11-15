@@ -29,6 +29,7 @@ import { openOptimizeDialog } from './optimize.js';
 import { convertLayerToParquet } from './export.js';
 import { scanColumns } from './columns.js';
 import { openSolidDialog } from './bygeom-ui.js';
+import { isView, canView, createView, viewsOf, modelOf } from './layerviews.js';
 import { openMeshGridDialog, openSurfaceTools, surfaceableLayers } from './gridtools.js';
 import { openMeshQa } from './meshqa.js';
 import { openStructure } from './structure-ui.js';
@@ -50,6 +51,9 @@ export function fitLayer(L) { if (L.bboxLocal) { S.cam.fit(L.bboxLocal); request
 // host API and the open paths call removeLayerUI directly, without asking.
 export async function confirmRemoveLayer(id) {
   const L = layerById(id); if (!L) return;
+  if (isView(L)) { removeLayerUI(id); return; }           // display only — the data stays with its model
+  const vs = viewsOf(L);
+  if (vs.length && !(await microConfirm('remove layer', `Remove “${L.label || L.name}”? Its view${vs.length === 1 ? '' : 's'} (${vs.map((v) => v.label).join(', ')}) go${vs.length === 1 ? 'es' : ''} with it.`, 'Remove', 'Cancel'))) return;
   const own = [...(L.paintCols || []).filter((c) => c.name !== '_swath'), ...(L.calcCols || [])].map((c) => c.name);
   if (own.length && !(await microConfirm('remove layer', `Remove “${L.label || L.name}”? Its ${own.length} column${own.length === 1 ? '' : 's'} of its own (${own.slice(0, 6).join(', ')}${own.length > 6 ? ', …' : ''}) go${own.length === 1 ? 'es' : ''} with it${S.project && !S.project.dirty ? ' from this session (the saved project still has them until the next save)' : ''}. The file on disk is untouched.`, 'Remove'))) return;
   removeLayerUI(id);
@@ -73,10 +77,13 @@ export function layerMenu(L, x, y) {
       })(),
       { sep: true },
     ] : []),
+    // a VIEW: what it is, and where its file's verbs live
+    ...(isView(L) ? [{ label: `View of “${(modelOf(L) || {}).label || (modelOf(L) || {}).name}” — select it`, action: () => setActiveLayer(L.viewOf) }, { sep: true }] : []),
     ...(L.kind === 'table' ? [] : [{ label: 'Zoom to layer', action: () => fitLayer(L) }]),
-    { label: 'Rename layer…', kbd: 'F2', action: () => renameActiveLayer(L) },
-    ...(reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
-    ...(canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
+    { label: isView(L) ? 'Rename view…' : 'Rename layer…', kbd: 'F2', action: () => renameActiveLayer(L) },
+    ...(canView(L) ? [{ label: 'New view of this layer', action: () => createView(L).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) }] : []),
+    ...(!isView(L) && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
+    ...(!isView(L) && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
     { sep: true },                                          // ── inspect / analyze ──
     ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),
     ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),
@@ -88,7 +95,7 @@ export function layerMenu(L, x, y) {
     ...(L.lineage ? [{ label: 'Lineage…', action: () => openLineageWindow(L) }] : []),
     ...(layerTableHeader(L) ? [{ label: 'Export rows…', action: () => openExportDialog(L) }] : []),
     { sep: true },                                          // ── derive / store ──
-    ...((L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
+    ...(!isView(L) && (L.calcCols || []).length ? [{ label: 'Materialize calc column', submenu: () => (L.calcCols || []).map((c) => ({ label: `${c.name} → stored`, action: () => materializeCalcCol(L, c.name) })) }] : []),
     ...(L.dh && L.docs.dhDoc && !dhSetGroupOf(L.id) ? [{ label: (L.holeFilter ? '✓ ' : '') + 'Filter holes…', action: async () => {
       const cc = await peekCollarCols(L.docs.dhDoc).catch(() => []);
       const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', L.holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
@@ -96,8 +103,8 @@ export function layerMenu(L, x, y) {
       const r = await applyHoleFilter(L, v);
       $('#meta').textContent = r && r.err ? `hole filter: ${r.err}` : (r && r.holes != null ? `hole filter: ${r.holes} of ${r.total} holes` : 'hole filter cleared');
     } }] : []),
-    ...(L.docs.blockDoc && !(L.docs.blockDoc.parquet) ? [{ label: 'Store as Parquet…', action: async () => { const res = await openOptimizeDialog([L]); if (res && res.layers.length) await convertLayerToParquet(L, { keepOriginal: res.keepOriginal }); } }] : []),
-    ...(L.docs.blockDoc ? [{ label: 'Build index (stats + pushdown)…', action: async () => {
+    ...(isView(L) ? [] : L.docs.blockDoc && !(L.docs.blockDoc.parquet) ? [{ label: 'Store as Parquet…', action: async () => { const res = await openOptimizeDialog([L]); if (res && res.layers.length) await convertLayerToParquet(L, { keepOriginal: res.keepOriginal }); } }] : []),
+    ...(L.docs.blockDoc && !isView(L) ? [{ label: 'Build index (stats + pushdown)…', action: async () => {
       await scanColumns(L, (a2, b2) => { $('#meta').textContent = `indexing ${L.label || L.name} — ${b2 ? Math.round(100 * a2 / b2) : 0}%…`; }, { bands: !L.docs.blockDoc.parquet });
       $('#meta').textContent = `indexed ${L.label || L.name} — stats + band index ready (written as a sidecar on the next project save)`;
       markProjectDirty();
@@ -166,11 +173,11 @@ export function layerMenu(L, x, y) {
       { label: 'Down', action: () => treeMoveStep(L.id, 1) },
       { label: 'To group…', action: () => setTimeout(() => moveLayerToGroupMenu(L, x, y), 0) },
     ] },
-    ...(canCopyIntoProject(L) ? [{
+    ...(!isView(L) && canCopyIntoProject(L) ? [{
       label: `Copy into project (${fmtSize(layerBytes(L))})`,
       action: () => copyLayerIntoProject(L),
     }] : []),
-    { label: 'Remove layer', action: () => confirmRemoveLayer(L.id) },
+    { label: isView(L) ? 'Remove view' : 'Remove layer', action: () => confirmRemoveLayer(L.id) },
     { sep: true },
     { label: 'Properties…', action: () => { setActiveLayer(L.id); openProps(); } },
   ]);

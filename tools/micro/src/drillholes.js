@@ -298,7 +298,7 @@ export function ensureDhSetGroups() {
   treeSync();
   const bySet = new Map();
   for (const L of S.layers) {
-    if (!(L.dh && L.docs.dhDoc) || L.trace || dhSetGroupOf(L.id)) continue;
+    if (!(L.dh && L.docs.dhDoc) || L.trace || L.viewOf != null || dhSetGroupOf(L.id)) continue;
     const k = L._setKey || ('solo:' + L.id);
     if (!bySet.has(k)) bySet.set(k, []);
     bySet.get(k).push(L);

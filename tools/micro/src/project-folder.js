@@ -30,14 +30,14 @@ export async function tidyProject() {
     // leave its columns behind, unreachable.)
     const holds = [], relBefore = new Map();
     for (const L of S.layers) {
-      if (L.storage !== 'project') continue;
+      if (L.storage !== 'project' || L.viewOf != null) continue;   // a view is its model's file
       holds.push(await holdStoredValues(L));
       if (!L.dh) relBefore.set(L, (await layerRelpath(L, dir)) + elementSuffix(L));
     }
     try {
     const claimed = new Map();                                      // target path → the curRel that took it, this pass
     for (const L of S.layers) {
-      if (L.storage !== 'project') continue;
+      if (L.storage !== 'project' || L.viewOf != null) continue;   // a view is its model's file
       for (const fd of layerFiles(L)) {
         const target = relPathFor(L, fd.name);
         let curRel = null;                                          // where the file is now
@@ -100,7 +100,7 @@ export async function scanFolderForNewData() {
     // path of each layer's handle (set at push time, so it holds even while a
     // block model is still discovering and its blob isn't populated yet)
     const referenced = new Set(), refPaths = new Set();
-    for (const L of S.layers) {
+    for (const L of S.layers.filter((x) => x.viewOf == null)) {
       for (const fd of layerFiles(L)) if (fd.blob) referenced.add(basename(fd.name) + ':' + fd.blob.size);
       if (L.handle && dir.resolve) { try { const pp = await dir.resolve(L.handle); if (pp) refPaths.add(pp.join('/')); } catch { /* not a descendant */ } }
     }

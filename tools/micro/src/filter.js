@@ -185,7 +185,8 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   // mask path preserves each block's true size (it keeps the base chunks).
   // the builder runs OFF the page (src/chunkworker.js): a 2M-match batch's Morton
   // sort + packing froze the page ~0.5 s, several times per filter on a big model
-  let cb2 = isolate && fBlockDoc.grid && compactCap > 0 && !header.subBlocked
+  // a VIEW draws its model's chunks and owns none: it filters by the mask only
+  let cb2 = isolate && fBlockDoc.grid && compactCap > 0 && !header.subBlocked && (layerById(lid) || {}).viewOf == null
     ? await startChunkBuilder({ frame: S.frame, grid: fBlockDoc.grid, chunkSize: 1 << 17, batchSize: 1 << 21, seed: 2, onChunk: (c) => { if (alive()) S.renderer.addChunk(c, 'compact', lid); } })
     : null;
   if (cb2) { _compactBuilders.set(lid, cb2); window.__compactOffPage = cb2.offPage; }   // smoke hook: where compaction ran

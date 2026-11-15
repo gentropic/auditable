@@ -134,7 +134,7 @@ export async function rememberProject(dir) {
   try {
     const list = (await _idb.get(PROJECTS_KEY)) || [];
     const links = {};
-    for (const L of S.layers) if (L.storage === 'external' && L.handle) links[L.name] = L.handle;
+    for (const L of S.layers) if (L.viewOf == null && L.storage === 'external' && L.handle) links[L.name] = L.handle;
     const next = [{ name: dir.name, handle: dir, links }].concat(list.filter((e) => e.name !== dir.name || e.pack)).slice(0, 8);
     await _idb.set(PROJECTS_KEY, next);
     renderEmptyProjects();

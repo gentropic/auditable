@@ -516,7 +516,7 @@ export async function selectByGridSurface(gridL, { mode = 'below', meshB = null,
   const epoch = nextSelEpoch();
   if (combine === 'replace') clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
-  const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L) && !L.docs.gridDoc);   // what's on screen (a hidden group hides its layers)
+  const Ls = targets || onScreenData((L) => hasRecords(L) && !L.docs.gridDoc);   // what's on screen (a hidden group hides its layers)
   const bbox4 = targetsXYBbox(Ls);
   const surfA = surfaceFromGrid(await residentGridForEval(gridL, bbox4));
   const surfB = mode === 'between' && meshB && meshB.docs.gridDoc ? surfaceFromGrid(await residentGridForEval(meshB, bbox4)) : null;
@@ -637,7 +637,7 @@ export async function selectBySolid(meshL, { mode = 'inside', meshB = null, targ
   const epoch = nextSelEpoch();
   if (combine === 'replace') clearSelection({ silent: true });
   const v = combine === 'subtract' ? 0 : 1;
-  const Ls = targets || S.layers.filter((L) => layerShown(L.id) && hasRecords(L));
+  const Ls = targets || onScreenData(hasRecords);
   let SA = null, SB = null;                                 // the sparse-path BVHs, built lazily
   for (let li = 0; li < Ls.length; li++) {
     const L = Ls[li];
@@ -927,4 +927,18 @@ export async function assignDomains(solids, L, { name = 'DOMAIN', res = [2, 2, 2
   $('#meta').textContent = `assign domains: ${assigned.toLocaleString()} of ${n.toLocaleString()} claimed by ${solids.length} solids → ${name}`;
   markProjectDirty(); requestRender();
   return col;
+}
+
+// what's on screen, as DATA: a shown view stands for its model, and a model
+// shown twice (itself + a view, or two views) is queried once — a flag column
+// written per target would otherwise land on the same records twice
+function onScreenData(keep) {
+  const seen = new Set(), out = [];
+  for (const L of S.layers) {
+    if (!layerShown(L.id)) continue;
+    const M = L.viewOf != null ? S.layers.find((x) => x.id === L.viewOf) : L;
+    if (!M || seen.has(M.id) || !keep(M)) continue;
+    seen.add(M.id); out.push(M);
+  }
+  return out;
 }

@@ -27,6 +27,29 @@ export function treeSync() {
   });
   S.layerTree = prune(S.layerTree);
   for (const L of S.layers) if (!seen.has(L.id)) S.layerTree.push(L.id);
+  snapViews();
+}
+
+// a view's row sits right under its model's, wherever the model goes (a drag of
+// the model carries its views; a view dragged away comes back)
+function snapViews() {
+  const views = S.layers.filter((L) => L.viewOf != null && layerById(L.viewOf));
+  if (!views.length) return;
+  const isV = new Set(views.map((V) => V.id));
+  const order = [];                                        // the views' current order, kept
+  const pull = (arr) => { for (let i = arr.length - 1; i >= 0; i--) { const nd = arr[i]; if (typeof nd === 'number') { if (isV.has(nd)) { order.unshift(nd); arr.splice(i, 1); } } else pull(nd.children); } };
+  pull(S.layerTree);
+  const place = (arr) => {
+    for (let i = 0; i < arr.length; i++) {
+      const nd = arr[i];
+      if (typeof nd !== 'number') { place(nd.children); continue; }
+      const mine = order.filter((v) => layerById(v).viewOf === nd);
+      if (mine.length) { arr.splice(i + 1, 0, ...mine); i += mine.length; }
+    }
+  };
+  place(S.layerTree);
+  const prune = (arr) => arr.filter((nd) => typeof nd === 'number' || (nd.children = prune(nd.children)).length > 0);
+  S.layerTree = prune(S.layerTree);
 }
 
 export function applyTreeVisibility() {
@@ -119,9 +142,12 @@ export function stepExclusive(dir, gIn = null) {
 }
 
 // gather a group's layer ids (recursive)
+// a group's LAYERS — the files in it. A view (src/layerviews.js) is a row in the
+// group but not a member of it: drillhole-set verbs, counts and renames act on
+// the models, and a view follows its model.
 export function groupLayerIds(nd, out = []) {
   for (const c of nd.children) {
-    if (typeof c === 'number') out.push(c);
+    if (typeof c === 'number') { const L = layerById(c); if (!(L && L.viewOf != null)) out.push(c); }
     else groupLayerIds(c, out);
   }
   return out;

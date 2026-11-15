@@ -220,6 +220,8 @@ export function renderLayers() {
     });
   };
   const layerRow = (L, depth, dim, parent) => {
+    const M = L.viewOf != null ? layerById(L.viewOf) : null;
+    if (M) depth += 1;                                     // a view: one step in, under its model's row
     const row = document.createElement('div');
     row.className = 'lp-row' + (L.id === S.activeId ? ' active' : '') + (_lpSel.has(L.id) ? ' sel' : '') + (L.visible ? '' : ' off') + (dim ? ' dim' : '');
     row.dataset.lid = L.id;
@@ -235,8 +237,11 @@ export function renderLayers() {
       if (parent && parent.exclusive) { eye.classList.add('lp-radio'); eye.title = 'visible — one at a time in this group ({ } steps through it)'; }
     }
     const name = document.createElement('span'); name.className = 'lp-name';
-    name.textContent = (L.storage === 'external' ? '↗ ' : '') + (L.label || L.name);
-    name.title = (L.label && L.label !== L.name ? `${L.label} (${L.name})` : L.name) + (L.storage === 'external' ? ' — linked from outside the project folder' : '');
+    name.textContent = M ? '⧉ ' + (L.label || L.name) : (L.storage === 'external' ? '↗ ' : '') + (L.label || L.name);
+    name.title = M
+      ? `${L.label || L.name} — a view of “${M.label || M.name}”: its own colour, filter and display over the same data (columns, paint and selection are the model's)`
+      : (L.label && L.label !== L.name ? `${L.label} (${L.name})` : L.name) + (L.storage === 'external' ? ' — linked from outside the project folder' : '');
+    if (M) row.classList.add('lp-view');
     const n = document.createElement('span'); n.className = 'lp-n';
     n.textContent = (L.kind === 'table' ? ((layerTableHeader(L) || {}).count || 0) : (S.renderer.layerElementCount(L.id) || 0)).toLocaleString();
     armDrag(row, L.id);

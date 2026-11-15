@@ -59,11 +59,19 @@ function shadowSelection(L) {
 export function clearSelection({ silent } = {}) {
   let had = false;
   withUndoGroup('clear selection', () => { for (const L of S.layers) {
-    if (L._selMask) { had = true; L._selMask = null; L._selCount = 0; recordSelectionUndo(L, 'clear selection'); shadowSelection(L); S.renderer.setLayerSelection(L.id, null); attrTableSelChanged(L.id); refreshLinkedWindows(L); selectionChanged(L.id, 0); }
+    if (L.viewOf != null) continue;                         // a view's selection IS its model's
+    if (L._selMask) { had = true; L._selMask = null; L._selCount = 0; recordSelectionUndo(L, 'clear selection'); shadowSelection(L); for (const F of selFamily(L)) S.renderer.setLayerSelection(F.id, null); attrTableSelChanged(L.id); refreshLinkedWindows(L); selectionChanged(L.id, 0); }
   } });
   if (had) { markProjectDirty(); requestRender(); if (!silent) $('#meta').textContent = 'selection cleared'; }
   return had;
 }
+
+// the layers drawing these records: the model and its views (src/layerviews.js)
+// share ONE selection — it marks records, not a picture — so each draws it
+const selFamily = (L) => {
+  const M = L.viewOf != null ? layerById(L.viewOf) : L;
+  return M ? [M, ...S.layers.filter((v) => v.viewOf === M.id)] : [L];
+};
 
 export function applyLayerSelection(L) {
   let c = 0;
@@ -72,9 +80,8 @@ export function applyLayerSelection(L) {
   L._selCount = c;
   if (!c) L._selMask = null;
   recordSelectionUndo(L, 'selection'); shadowSelection(L);
-  S.renderer.setLayerSelection(L.id, c ? L._selMask : null);
-  attrTableSelChanged(L.id);
-  refreshLinkedWindows(L);                                 // GT/swath windows tracking the selection recompute
+  for (const F of selFamily(L)) S.renderer.setLayerSelection(F.id, c ? L._selMask : null);
+  for (const F of selFamily(L)) { attrTableSelChanged(F.id); refreshLinkedWindows(F); }   // GT/swath windows tracking the selection recompute
   selectionChanged(L.id, c);
 }
 
@@ -130,7 +137,7 @@ export async function selectionToColumn(L) {
 
 export function selectionStatus() {
   let total = 0, nL = 0;
-  for (const L of S.layers) if (L._selCount) { total += L._selCount; nL++; }
+  for (const L of S.layers) if (L._selCount && L.viewOf == null) { total += L._selCount; nL++; }
   if (_isMobile()) { $('#meta').textContent = selCountText() || 'selection: nothing there'; return; }   // the bar carries add / remove
   $('#meta').textContent = total
     ? `selected: ${total.toLocaleString()} element${total === 1 ? '' : 's'}${nL > 1 ? ` across ${nL} layers` : ''} — shift adds · alt subtracts · Esc clears`
@@ -375,7 +382,7 @@ function selBarTarget() {
 
 function selCountText() {
   let total = 0, nL = 0;
-  for (const L of S.layers) if (L._selCount) { total += L._selCount; nL++; }
+  for (const L of S.layers) if (L._selCount && L.viewOf == null) { total += L._selCount; nL++; }
   if (!total) return '';
   const T = selBarTarget();
   return `${total.toLocaleString()} selected${nL > 1 ? ` · ${nL} layers` : T ? ` · ${T.label || T.name}` : ''}`;
@@ -386,7 +393,7 @@ let _selBarTotal = 0;                                      // the count goes to 
 export function syncSelBar() {
   const mobile = document.body.classList.contains('mobile');
   let total = 0;
-  for (const L of S.layers) if (L._selCount) total += L._selCount;
+  for (const L of S.layers) if (L._selCount && L.viewOf == null) total += L._selCount;
   const on = mobile && (total > 0 || !!_selArm);
   document.body.classList.toggle('sel-on', on);
   if (!on) { _selBarTotal = total; return; }

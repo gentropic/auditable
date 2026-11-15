@@ -40,6 +40,7 @@ import { flushViewsScenes, loadViewsScenes } from './views.js';
 import { writeGridDisplayCache } from './meshexport.js';
 import { pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
+import { createView, applyViewColor, canView } from './layerviews.js';
 import { closeAllLayers } from './layers.js';
 const $ = (s) => document.querySelector(s);
 import { applyCamera, captureCamera } from './camera.js';
@@ -103,10 +104,39 @@ export function rleDecodeBytes(runs, n) {
   return m;
 }
 
+// the layers that ARE files — what a save copies, references and indexes. A
+// view (src/layerviews.js) is display state over its model's file: its entry in
+// project.json says whose, and what it shows.
+export const fileLayers = () => S.layers.filter((L) => L.viewOf == null);
+
+// a view's entry: its model (by manifest index) + its display — never data
+function viewEntry(L, indexOf) {
+  return {
+    viewOf: indexOf.get(L.viewOf), name: L.name, label: L.label,
+    colorSel: L.colorSel, clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
+    sectioned: (() => { const m = S.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
+    opacity: (L.opacity != null && L.opacity !== 1) ? L.opacity : undefined,
+    edges: L.edges != null ? L.edges : undefined,
+    legend: L.legend || undefined, legendTitle: (L.legendTitle && L.legendTitle.trim()) || undefined,
+    recHide: (L._recHide && L._recHide.size) ? [...L._recHide] : undefined,
+    gtUnits: L.gtUnits || undefined, analysis: L.analysis || undefined,
+    hiddenCats: L.catHidden && L.catHidden.size
+      ? [...L.catHidden].map((c) => { const h2 = layerHeaderOf(L); return h2 && h2.categories && h2.categories[c] != null ? h2.categories[c] : c; })
+      : undefined,
+    holeFilter: (L.dh && L.holeFilter) || undefined,
+    ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
+    catLegend: L.catLegend || undefined,
+    rules: L.rules && L.rules.list && L.rules.list.length ? L.rules : undefined,
+    ruleHidden: L.ruleHidden && L.ruleHidden.size ? [...L.ruleHidden] : undefined,
+  };
+}
+
 export function projectManifest() {
+  const listed = S.layers.filter((L) => !L.derivedOf && (L.viewOf == null || layerById(L.viewOf)));
+  const indexOf = new Map(listed.map((L, i) => [L.id, i]));
   return {
     app: 'micro', version: 1, name: S.project.name,
-    layers: S.layers.filter((L) => !L.derivedOf).map((L) => ({
+    layers: listed.map((L) => L.viewOf != null ? viewEntry(L, indexOf) : ({
       source: L._relpath || L.name,
       dh: L.dh && L.docs.dhDoc ? (L._setPath ? { set: L._setPath, interval: L._intervalName } : {
         collar: basename(layerFiles(L)[0].name), survey: basename(layerFiles(L)[1].name), intervals: basename(layerFiles(L)[2].name),
@@ -162,8 +192,7 @@ export function projectManifest() {
     // bookmarks + scenes now live as files in bookmarks/ and scenes/ (not in
     // project.json) — see flushViewsScenes / loadViewsScenes
     tree: (() => {                                         // groups (§4.1) — layers by manifest index
-      const idOf = new Map(S.layers.filter((L) => !L.derivedOf).map((L, i) => [L.id, i]));   // same filter as layers: above
-      return treeToManifest(idOf);
+      return treeToManifest(indexOf);                      // layers by the same index as layers: above
     })(),
   };
 }
@@ -291,7 +320,7 @@ export async function saveProject() {
   // every materialized column stays resident until the save is done
   const holds = [];
   try {
-    for (const L of S.layers) holds.push(await holdStoredValues(L));
+    for (const L of fileLayers()) holds.push(await holdStoredValues(L));
     return await saveProjectInner();
   } finally { for (const h of holds) h.release(); }
 }
@@ -305,7 +334,7 @@ async function saveProjectInner() {
     // (convertLayerToParquet). Write the Parquet INTO the project + delete the old
     // source here — so triage sees a clean in-project layer (no spurious "copy
     // outside files in?" prompt) and the folder shows the .parquet only.
-    for (const L of S.layers) {
+    for (const L of fileLayers()) {
       if (!L.memoryOnly) continue;
       const orphan = L._optimizedOrphan;
       L._optimizedOrphan = null;
@@ -323,7 +352,7 @@ async function saveProjectInner() {
       } catch { /* falls back to normal triage; an orphan is harmless clutter */ }
     }
     const outside = [], mustCopy = [];
-    for (const L of S.layers) {
+    for (const L of fileLayers()) {
       const flist = layerFiles(L);
       if (!flist.length) { L.storage = 'volatile'; continue; }   // samples: nothing to reference
       let allIn = true;
@@ -355,7 +384,7 @@ async function saveProjectInner() {
     }
     // record each layer's real path for the manifest + write the drillhole-set
     // descriptor (the one compound load: three CSVs + desurvey config → .holes.json)
-    for (const L of S.layers) {
+    for (const L of fileLayers()) {
       L._relpath = undefined; L._setPath = undefined;
       if (L.storage === 'external') { L._relpath = basename(L.name); continue; }
       if (L.storage !== 'project') continue;
@@ -364,7 +393,7 @@ async function saveProjectInner() {
     // drillhole sets: group dh layers by _setKey → ONE .holes.json per set with
     // an intervals[] array (multiple interval tables share one collar+survey)
     const dhGroups = new Map();
-    for (const L of S.layers) {
+    for (const L of fileLayers()) {
       if (!(L.dh && L.docs.dhDoc && L.storage === 'project')) continue;
       const key = L._setKey || ('solo:' + L.id);
       if (!dhGroups.has(key)) dhGroups.set(key, []);
@@ -384,13 +413,13 @@ async function saveProjectInner() {
     // grid display-cache sidecars: the decimated/overview DISPLAY grid, stored
     // as compact Surfer binary so a huge DEM's project reopens WITHOUT
     // re-decimating the source (eval still windows the source at full res)
-    for (const L of S.layers) { try { await writeGridDisplayCache(L, dir); } catch { /* cache, never a failure */ } }
+    for (const L of fileLayers()) { try { await writeGridDisplayCache(L, dir); } catch { /* cache, never a failure */ } }
     // the element manifest + its columns: NOT derived — paint is hand-brushed, a
     // calc is authored, a join brought another file's values. A failure here is
     // reported (and the project stays unsaved), never swallowed.
     const colFails = [];
     const genAtPersist = S.project.dirtyGen || 0;          // edits after this point are NOT in what gets written
-    for (const L of S.layers) {
+    for (const L of fileLayers()) {
       if (!(layerTableHeader(L) || (L.docs && L.docs.gridDoc))) continue;
       try { await persistElement(L); } catch (e) { colFails.push(`${L.label || L.name}: ${e && e.message || e}`); }
     }
@@ -400,7 +429,7 @@ async function saveProjectInner() {
     // get parquet-style pushdown (bands prove page-runs can't match). Built here
     // when missing — the one full read per file, ever (size-keyed). CSV + .dm +
     // parquet all get one; parquet skips bands (its footer already has them).
-    for (const L of S.layers) {
+    for (const L of fileLayers()) {
       const doc = L.docs.blockDoc;
       if (!doc || L.storage !== 'project') continue;
       try {
@@ -445,7 +474,7 @@ async function saveProjectInner() {
     updateProjectTitle();
     renderLayers();
     rememberProject(dir);                                  // refresh the stored links alongside
-    const ext = S.layers.filter((L) => L.storage === 'external').length;
+    const ext = fileLayers().filter((L) => L.storage === 'external').length;
     if (colFails.length) {
       $('#meta').textContent = `project saved — but the columns of ${colFails.length} layer${colFails.length === 1 ? '' : 's'} did NOT save`;
       microChoose('columns not saved', `The project file is written, but these layers' columns (paint, ƒ, joined) could not be stored — ${colFails.join(' · ')}. They are still here in this session. Save again, or export the layer, before closing.`, [{ label: 'OK', value: true }]);
@@ -457,6 +486,30 @@ async function saveProjectInner() {
 
 // rules + painted columns + selection restore — shared by the delimited and
 // drillhole project-restore branches (all three are per-record layer state)
+// a view (src/layerviews.js) over a model this load opened: its display state,
+// in the order the model's own restore uses (filter, then colour, then the rest)
+async function restoreView(ls, i, idAt) {
+  plRow(i, 'loading…');
+  const M = layerById(idAt[ls.viewOf]);
+  if (!M || !canView(M)) { plRow(i, 'skipped — its layer did not open', 'skip'); return; }
+  let V;
+  try {
+    V = await createView(M, { name: ls.name, label: ls.label, colorSel: ls.colorSel, clip: ls.clip, visible: ls.visible,
+      opacity: ls.opacity, edges: ls.edges, ramps: ls.ramps, catLegend: ls.catLegend }, { activate: false, apply: false });
+  } catch (e) { plRow(i, `skipped — ${e.message}`, 'skip'); return; }
+  if (ls.holeFilter) { try { await applyHoleFilter(V, ls.holeFilter); } catch { /* collar missing → no mask */ } }
+  await refilterLayer(V, ls.filter);
+  if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(V.id, ls.sectioned);
+  restoreHiddenCats(V, ls.hiddenCats);
+  try { await applyViewColor(V); } catch (e) { (M._colsUnread || (M._colsUnread = [])).push({ name: `view “${V.label}” colour`, why: e.message }); }
+  if (ls.legend) V.legend = true;
+  if (ls.legendTitle) V.legendTitle = ls.legendTitle;
+  if (ls.recHide) V._recHide = new Set(ls.recHide);
+  await restoreStyleExtras(V, ls);
+  idAt[i] = V.id;
+  plRow(i, 'done', 'done');
+}
+
 export async function restoreStyleExtras(L, ls) {
   if (ls.lineage) L.lineage = ls.lineage;                  // provenance survives project round trips
   // drillhole layers `continue` past the shared post-open restore block, so these
@@ -526,7 +579,7 @@ export function plStart(layers, name) {
   _plState.rows = layers.map((ls) => {
     const row = document.createElement('div'); row.className = 'pl-row';
     const nm = document.createElement('span'); nm.className = 'nm';
-    nm.textContent = ls.dh ? (ls.dh.collar ? `${ls.dh.collar} + survey + intervals` : basename(ls.dh.set || 'drillhole set')) : ls.source;
+    nm.textContent = ls.viewOf != null ? `view · ${ls.label || ls.name}` : ls.dh ? (ls.dh.collar ? `${ls.dh.collar} + survey + intervals` : basename(ls.dh.set || 'drillhole set')) : ls.source;
     nm.title = nm.textContent;
     const st = document.createElement('span'); st.className = 'st'; st.textContent = 'waiting…';
     row.append(nm, st);
@@ -572,8 +625,10 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     try { const list = (await _idb.get(PROJECTS_KEY)) || []; const e = list.find((x) => x.name === dir.name && !x.pack); links = (e && e.links) || {}; } catch { /* none */ }
     plStart(mf.layers, dir.name);
     const idAt = [];                                       // manifest index → restored layer id
+    const viewRows = [];                                   // views open after every model has
     for (let i = 0; i < mf.layers.length; i++) {
       const ls = mf.layers[i];
+      if (ls.viewOf != null) { viewRows.push(i); continue; }
       plRow(i, 'loading…');
       if (ls.dh) {
         // drillholes restore from the three files + config — via the .holes.json
@@ -736,6 +791,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       idAt[i] = L.id;
       plRow(i, 'done', 'done');
     }
+    for (const i of viewRows) await restoreView(mf.layers[i], i, idAt);
     if (mf.tree) treeFromManifest(mf.tree, idAt);
     ensureDhSetGroups();                                   // pre-set-group projects: solo dh layers get their element group
     applyCamera(mf.camera);

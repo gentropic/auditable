@@ -211,7 +211,12 @@ export function syncUndoBtn() {
 export function paintAfterEdit(L, col) {
   syncUndoBtn();
   if (L.kind === 'mesh' && col.name === 'SET') structureAfterEdit(L);   // the sets ARE this column: recolour + re-measure
-  if (paintSelOf(L) === col.name) S.renderer.setLayerRuleCodes(L.id, col.codes);
+  // the column is the DATA's: every layer showing it repaints — the model and
+  // its views (src/layerviews.js), whichever of them the brush was on
+  const M = L.viewOf != null ? S.layers.find((x) => x.id === L.viewOf) : L;
+  for (const F of M ? [M, ...S.layers.filter((v) => v.viewOf === M.id)] : [L]) {
+    if (paintSelOf(F) === col.name) S.renderer.setLayerRuleCodes(F.id, col.codes);
+  }
   const w = _paintWins.get(L.id); if (w) w.render();
   const t2 = _attrTables.get(L.id); if (t2 && t2.invalidate) t2.invalidate();
   L._colStats = null;                                      // stats are stale for this column

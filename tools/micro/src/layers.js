@@ -82,6 +82,8 @@ export function setActiveLayer(id) {
 }
 
 export function removeLayerUI(id) {
+  // a model's views draw ITS data — they go first, with it
+  for (const V of S.layers.filter((v) => v.viewOf === id)) removeLayerUI(V.id);
   dispatchEvent(new Event('micro:project-dirty'));
   closeAttrTable(id);
   { const Lr = layerById(id); if (Lr) dropValueTex(Lr); }

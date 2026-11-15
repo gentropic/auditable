@@ -47,7 +47,7 @@ export async function backupProject({ lean = null, to = null, save = null, host 
     if (a === 'save') await saveProject();
   }
   const dir = S.project.dir;
-  const linked = S.layers.filter((L) => L.storage === 'external').map((L) => L.label || L.name);
+  const linked = S.layers.filter((L) => L.viewOf == null && L.storage === 'external').map((L) => L.label || L.name);
   if (lean == null && !host) {
     const inv = await inventoryProject(dir, { lean: true });   // both sizes from one walk
     const n = inv.files.length + inv.skipped.length, full = inv.bytes + inv.skippedBytes;
@@ -163,7 +163,7 @@ export async function savePackAsFolder({ dest = null, host = false } = {}) {
   try { await writeTree(src, dest, { onProgress: progressMeta('saving the pack as a folder') }); }
   catch (e) { if (host) throw e; $('#meta').textContent = `save failed — ${e.message || e}`; return null; }
   // the layers' files are now in dest: point them there, and say they're micro's copies
-  for (const L of S.layers) {
+  for (const L of S.layers.filter((x) => x.viewOf == null)) {
     for (const fd of layerFiles(L)) _copiedBlobs.add(fd.blob);
     if (L.handle && L.handle._pack && L.handle._path) { try { L.handle = await resolveFileHandle(dest, L.handle._path.join('/')); } catch { /* triage finds it by path */ } }
   }
