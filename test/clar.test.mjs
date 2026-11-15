@@ -790,3 +790,21 @@ function min2(a, b) { return a < b ? a : b; }
 
 // smallest angle between two azimuths, in degrees — 359° and 1° are 2° apart
 function azDiff(a, b) { return Math.abs(((a - b + 540) % 360) - 180); }
+
+test('attitude: north is 0, never 360 or -0', () => {
+  for (const n of [[0, -0.6, -0.8], [-1e-17, -0.6, -0.8], [1e-17, -0.6, -0.8], [0, 0.6, 0.8], [-0, -0.6, -0.8]]) {
+    const { dipDirection: dd } = attitude(n);
+    assert.ok(dd >= 0 && dd < 360, `dd ${dd} for ${n}`);
+    assert.ok(!Object.is(dd, -0), `-0 for ${n}`);
+    assert.ok(Math.min(dd, 360 - dd) < 1e-9, `north reads ${dd}`);
+  }
+});
+
+test('fitPlane: a nearly collinear patch never reports a negative quality ratio', () => {
+  // a straight run of points at UTM magnitudes: the two small eigenvalues are
+  // round-off of opposite sign (this one gave eigRatio21 = -1)
+  const a = [Math.sin(3), Math.cos(3.9), Math.sin(2.1)], o = [500003, 7000009, 800], pos = [];
+  for (let i = 0; i < 9; i++) pos.push(o[0] + a[0] * i * 1.7, o[1] + a[1] * i * 1.7, o[2] + a[2] * i * 1.7);
+  const f = fitPlane(new Float64Array(pos));
+  assert.ok(f.eig[2] >= 0 && f.eigRatio21 >= 0 && f.eigRatio20 >= 0, JSON.stringify({ eig: f.eig, r: f.eigRatio21 }));
+});

@@ -215,6 +215,16 @@ const planesOf = (p) => p.evaluate(() => { const w = [...document.querySelectorA
   const tbl = await p.evaluate(() => { const M = window._micro, T = M.layers().filter((q) => q.kind === 'table'); const h = T[0] && M.attrColumnsOf ? null : null; void h; return T.map((q) => ({ name: q.name, cols: (q.docs.tableDoc && q.docs.tableDoc.header && q.docs.tableDoc.header.columns) || (q.docs.blockDoc && q.docs.blockDoc.header.columns) || null, lin: q.lineage && q.lineage.op })); });
   chk(`→ table layer, run twice, leaves ONE planes table with the capivaras columns + set + signed normal (${JSON.stringify(tbl.map((t) => [t.name, t.cols && t.cols.length, t.lin]))})`,
     tbl.length === 1 && /planes/.test(tbl[0].name) && tbl[0].cols && ['plane_id', 'set', 'dip_direction', 'dip', 'X', 'Y', 'Z', 'nx', 'ny', 'nz', 'eig0', 'eig1', 'eig2', 'n_vertices', 'average_resultant_length', 'radius', 'kappa'].every((c) => tbl[0].cols.includes(c)) && tbl[0].lin === 'structure.planes');
+  // κ on these exactly-flat faces is huge or ∞: the table holds it as the window
+  // shows it (capped at 10⁵), never blank as if the fit were missing
+  const kap = await p.evaluate(async (lid) => {
+    const M = window._micro, T = M.layers().find((q) => q.kind === 'table');
+    const lines = (await T.docs.tableDoc.blob.text()).trim().split('\n'), k = lines[0].split(',').map((s) => s.replace(/"/g, '')).indexOf('kappa');
+    const planes = M.layers().find((q) => q.id === lid)._structView.planes;
+    return lines.slice(1).map((ln, r) => ({ plane: planes[r].kappa === Infinity ? 'Infinity' : planes[r].kappa, table: ln.split(',')[k] }));
+  }, id);
+  chk(`κ in the table is a number for every fitted plane, capped at 10⁵ (${JSON.stringify(kap)})`,
+    kap.length > 0 && kap.every((x) => x.table !== '' && Number.isFinite(+x.table) && +x.table <= 1e5 && (x.plane === 'Infinity' || +x.plane > 1e5 ? +x.table === 1e5 : Math.abs(+x.table - x.plane) <= 1e-6 * x.plane)));
 
   // persistence: the sets are paint, so they come back; the discs are a view, so they're not saved
   await saveProject(p);

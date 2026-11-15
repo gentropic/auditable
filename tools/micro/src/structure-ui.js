@@ -40,7 +40,8 @@ const fmtSize = (b) => (b >= 1 << 30 ? (b / (1 << 30)).toFixed(1) + ' GB' : b >=
 const pad3 = (v) => String(Math.round(v) % 360).padStart(3, '0');
 const att = (dd, dip) => `${pad3(dd)}/${String(Math.round(dip)).padStart(2, '0')}`;
 // κ past 10⁵ is 'parallel to measurement precision' — a nine-digit number would claim more than it knows
-const fmtKappa = (k) => (!Number.isFinite(k) || k > 1e5 ? '>10⁵' : fmtStat(k));
+const KAPPA_CAP = 1e5;
+const fmtKappa = (k) => (Number.isNaN(k) ? '—' : k > KAPPA_CAP ? '>10⁵' : fmtStat(k));   // NaN = undefined (one normal), not a perfect fit
 const SET_COLORS = ['#d9534f', '#4a90d9', '#5cb85c', '#e8a33d', '#9b6fd0', '#3cbcb4', '#d96fb0', '#8f9b3c'];
 
 // tool settings ride localStorage — a preference, not project data
@@ -471,7 +472,11 @@ export function removeTrace(L, k) {
 
 // ── the planes as a table layer (replace on name: running it twice == once) ──
 const TABLE_COLS = ['plane_id', 'set', 'source', 'length', 'dip_direction', 'dip', 'X', 'Y', 'Z', 'nx', 'ny', 'nz', 'eig0', 'eig1', 'eig2', 'n_vertices', 'average_resultant_length', 'radius', 'kappa', 'rms', 'eig_ratio', 'quality'];
-const rowOf = (p) => ({ ...p, quality: p.flags.length ? p.flags.join(' ') : 'ok' });
+// κ is stored as the display shows it: past 10⁵ (∞ included, a patch whose
+// normals agree exactly) is 'parallel to measurement precision', so the column
+// holds KAPPA_CAP there. An infinite κ used to be written as blank, so the best
+// fits read as missing data.
+const rowOf = (p) => ({ ...p, quality: p.flags.length ? p.flags.join(' ') : 'ok', kappa: typeof p.kappa === 'number' && p.kappa > KAPPA_CAP ? KAPPA_CAP : p.kappa });
 function planesTSV(planes) {
   if (!planes || !planes.length) return null;
   return [TABLE_COLS.join('\t'), ...planes.map((p) => { const r = rowOf(p); return TABLE_COLS.map((c) => r[c] ?? '').join('\t'); })].join('\n');
@@ -486,7 +491,7 @@ export async function planesToTable(L, hd) {
   const id = await addLayer({ kind: 'table', name, columns });
   const T = id != null ? layerById(id) : null;
   if (T) {
-    T.lineage = mkLineage('structure.planes', { sets: [...new Set(planes.map((p) => p.set))], planes: planes.length, wand: { angle: prefs.angle, offset: prefs.distance || null } }, [L.lineage].filter(Boolean));
+    T.lineage = mkLineage('structure.planes', { sets: [...new Set(planes.map((p) => p.set))], planes: planes.length, kappaCap: KAPPA_CAP, wand: { angle: prefs.angle, offset: prefs.distance || null } }, [L.lineage].filter(Boolean));
     markProjectDirty();
     $('#meta').textContent = `structure: ${planes.length} planes → ${name}`;
   }

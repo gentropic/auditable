@@ -59,7 +59,12 @@ import { symmetricEigen3, conversions, statistics } from '@gcu/bearing';
  */
 function attitude(normal) {
   const [dd, dip] = conversions.dcosToPlane(unit(normal));
-  return { dipDirection: dd, dip };
+  // one name for north: [0, 360). A pole a hair west of north came back as 360
+  // (or -0 exactly at it), which reads wrong in a table and fails `dipdir < 10`
+  let d = dd % 360;
+  if (d < 0) d += 360;
+  if (d >= 360) d = 0;                               // -1e-14 + 360 rounds to 360
+  return { dipDirection: d + 0, dip: dip + 0 };      // + 0 turns -0 into 0
 }
 
 /**
@@ -228,7 +233,10 @@ function fitPlane(positions, indices, opts = {}) {
     if (d2 > far) far = d2;
   }
 
-  const [e0, e1, e2] = values;
+  // the eigenvalues of a positive semi-definite tensor are ≥ 0; on a nearly
+  // collinear patch the two small ones are round-off (±4e-16) in either order,
+  // and the ratios went negative (eigRatio21 = -1 on a straight line)
+  const e0 = values[0], e1 = Math.max(0, values[1]), e2 = Math.min(e1, Math.max(0, values[2]));
   const { dipDirection, dip } = attitude(normal);
   return {
     normal,
