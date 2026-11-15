@@ -14,7 +14,7 @@
 //                cat: Uint8Array|null, recStart }
 
 import { inferAxis, inferSubBlockLattice, makeDimKeyer, axisDistinct, dimCodeFromPalette, DIM_PALETTE_MAX } from '../grid/infer.js';
-import { WS, splitFields, RecordJoiner, sampleRecords, coordNum } from './delimited.js';
+import { WS, splitFields, quotedFields, RecordJoiner, sampleRecords, coordNum } from './delimited.js';
 import { qualifiedNumber, censusQualified, classifyQualified, QUALIFIED_DEFAULT } from './qualified.js';
 import { detectRotatedLattice, detectRotatedOverAxisGrid, latticeMisfit } from '../grid/basis.js';
 import { createZoneBuilder, zonesFromJSON } from './zones.js';
@@ -44,6 +44,7 @@ export function sniffDelimited(text) {
   // and a cut plain last line is dropped too unless it is all there is
   const cut = !/\n\s*$/.test(text);
   let best = null;
+  const consistent = [];
   for (const d of [',', ';', '\t', WS]) {
     let recs = sampleRecords(text, d, { max: 25 });
     if (cut && recs.length > 1 && recs.length < 25) recs = recs.slice(0, -1);
@@ -52,10 +53,22 @@ export function sniffDelimited(text) {
     const split = splitter(d);
     const counts = recs.map((l) => split(l).length);
     const n = counts[0];
-    if (n < 2) continue;
-    if (counts.every((c) => c === n) && (!best || n > best.n)) best = { delim: d, n, first: recs[0] };
+    if (n < 2 || !counts.every((c) => c === n)) continue;
+    const cand = { delim: d, n, first: recs[0], second: recs[1] };
+    if (d !== WS) consistent.push(cand);
+    if (!best || n > best.n) best = cand;
   }
   if (!best) throw new Error('blockmodel: no consistent delimiter found');
+  // Whitespace wins on field count whenever text fields hold spaces in step
+  // ("hole id,rock type" / "DH 01,fresh rock" splits 3 ways on spaces, 2 on
+  // commas). A comma inside a whitespace token is a real delimiter, unless that
+  // token is a decimal-comma number (500 600 100 1,5: whitespace, decimal ',').
+  // Tabs that split every record alike are a TSV's (whitespace sees them as spaces).
+  if (best.delim === WS && consistent.length) {
+    const toks = splitFields(best.first, WS).map((t) => t.trim());
+    const real = consistent.filter((c) => c.delim === '\t' || toks.some((t) => t.includes(c.delim) && !COMMA_NUM.test(t)));
+    if (real.length) best = real.reduce((a, b) => (b.n > a.n ? b : a));
+  }
   const first = splitter(best.delim)(best.first).map((s) => s.trim());
   const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
   // the decimal mark: with a non-comma delimiter, data fields that are comma-
@@ -66,7 +79,15 @@ export function sniffDelimited(text) {
     for (const r of sampleRecords(text, best.delim, { max: 25 }).slice(1)) for (const f of splitter(best.delim)(r)) { const t = f.trim(); if (COMMA_NUM.test(t)) comma++; else if (/^[<>]?=?\s*[-+]?\d*\.\d+(?:[eE][-+]?\d+)?$/.test(t)) point++; }
     if (comma > 0 && point === 0) decimal = ',';
   }
-  const hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  let hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  // all-numeric names (2019,2020) are a header when the first record QUOTES every
+  // field and the next record quotes no number: a writer marking names as text
+  // (a quote-everything writer quotes the data's numbers too, and stays headerless)
+  if (!hasHeader && best.second) {
+    const q1 = quotedFields(best.first, best.delim), q2 = quotedFields(best.second, best.delim);
+    const sec = splitter(best.delim)(best.second).map((s) => s.trim());
+    if (q1.length === first.length && q1.every(Boolean) && !q2.some((q, k) => q && numericish(sec[k]))) hasHeader = true;
+  }
   return { delim: best.delim, header: hasHeader ? first : null, columns: best.n, decimal };
 }
 
@@ -455,7 +476,7 @@ export async function openBlockModel(blob, { mapping = null, discovered = null, 
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
       axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); if (v) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
       if (hasDims) {
         const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
         if (dx > 0 && dy > 0 && dz > 0) {

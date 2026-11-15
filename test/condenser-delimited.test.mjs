@@ -84,3 +84,36 @@ test('delimited: drillhole interval table with free-text comments desurveys', as
   const r1 = await fetchRecord(1);
   assert.ok(r1.includes('core loss\nnear 3 m, "soft"'));
 });
+
+test('delimited: sniff — spaces inside comma fields do not make whitespace the delimiter', () => {
+  const s = sniffDelimited('hole id,rock type\nDH 01,fresh rock\nDH 02,weathered rock\nDH 03,fresh rock\n');
+  assert.equal(s.delim, ',');
+  assert.deepEqual(s.header, ['hole id', 'rock type']);
+  // …but a whitespace file whose only commas are decimal marks stays whitespace
+  const w = sniffDelimited('X Y Z G\n500 600 100 1,5\n510 600 100 2,25\n520 600 100 0,5\n');
+  assert.equal(w.delim, WS);
+  assert.equal(w.decimal, ',');
+  // and a tab file with spaced text is tab, not whitespace
+  assert.equal(sniffDelimited('a b\tc d\n1 2\t3 4\n5 6\t7 8\n').delim, '\t');
+});
+
+test('delimited: sniff — quoted all-numeric names over unquoted numbers are a header', () => {
+  assert.deepEqual(sniffDelimited('"2019","2020"\n1,4\n2,5\n').header, ['2019', '2020']);
+  assert.equal(sniffDelimited('2019,2020\n1,4\n2,5\n').header, null);                 // unquoted: still data
+  assert.equal(sniffDelimited('"1","4"\n"2","5"\n"3","6"\n').header, null);           // quote-everything: the data is quoted too
+  assert.deepEqual(sniffDelimited('"1","2"\n3,"a,b"\n').header, ['1', '2']);         // a quoted TEXT field in the data doesn't cancel it
+});
+
+test('delimited: a quoted "#" field is data, not a comment line', async () => {
+  const { header } = await openTable(new Blob(['"tag",v\n"#1",1\nA,2\n"#N/A",3\n']));
+  assert.equal(header.count, 3);
+});
+
+test('delimited: a blank category value is its own category, not the first real one', async () => {
+  const csv = 'XC,YC,ZC,AU,ROCK\n5,5,5,1,OX\n15,5,5,2,\n25,5,5,3,FR\n';
+  const { header, streamChunks } = await openBlockModel(new Blob([csv]), { rotated: false, mapping: { x: 0, y: 1, z: 2, chan: 3, cat: 4 } });
+  assert.deepEqual(header.categories, ['', 'FR', 'OX']);
+  const codes = [];
+  for await (const rc of streamChunks({ chunkPoints: 8 })) for (let i = 0; i < rc.count; i++) codes.push(header.categories[rc.cat[i]]);
+  assert.deepEqual(codes, ['OX', '', 'FR']);
+});

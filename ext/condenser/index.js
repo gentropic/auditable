@@ -1802,6 +1802,29 @@ function splitFields(line, delim) {
   }
 }
 
+/** Which fields of one record were written QUOTED (a quote at the field's start). */
+function quotedFields(line, delim) {
+  const out = [];
+  if (line.indexOf('"') < 0) { const n = splitFields(line, delim).length; for (let k = 0; k < n; k++) out.push(false); return out; }
+  const ws = delim === WS, dc = ws ? -1 : delim.charCodeAt(0), n = line.length;
+  let inQ = false, atStart = true, i = 0;
+  if (ws) while (i < n && isSpace(line.charCodeAt(i))) i++;
+  let cur = false;
+  for (; i < n; i++) {
+    const c = line.charCodeAt(i);
+    if (inQ) { if (c === 34) { if (line.charCodeAt(i + 1) === 34) i++; else inQ = false; } continue; }
+    if (ws ? isSpace(c) : c === dc) {
+      if (ws) { while (i + 1 < n && isSpace(line.charCodeAt(i + 1))) i++; if (i + 1 >= n) break; }
+      out.push(cur); cur = false; atStart = true; continue;
+    }
+    if (atStart && (c === 32 || (c === 9 && delim !== '\t'))) continue;
+    if (atStart && c === 34) { inQ = true; cur = true; atStart = false; continue; }
+    atStart = false;
+  }
+  out.push(cur);
+  return out;
+}
+
 /** Does `line` end inside an open quoted field? `open` = the state it started in. */
 function endsInQuote(line, delim, open = false) {
   if (!open && line.indexOf('"') < 0) return false;
@@ -2105,6 +2128,7 @@ function sniffDelimited(text) {
   // and a cut plain last line is dropped too unless it is all there is
   const cut = !/\n\s*$/.test(text);
   let best = null;
+  const consistent = [];
   for (const d of [',', ';', '\t', WS]) {
     let recs = sampleRecords(text, d, { max: 25 });
     if (cut && recs.length > 1 && recs.length < 25) recs = recs.slice(0, -1);
@@ -2113,10 +2137,22 @@ function sniffDelimited(text) {
     const split = splitter(d);
     const counts = recs.map((l) => split(l).length);
     const n = counts[0];
-    if (n < 2) continue;
-    if (counts.every((c) => c === n) && (!best || n > best.n)) best = { delim: d, n, first: recs[0] };
+    if (n < 2 || !counts.every((c) => c === n)) continue;
+    const cand = { delim: d, n, first: recs[0], second: recs[1] };
+    if (d !== WS) consistent.push(cand);
+    if (!best || n > best.n) best = cand;
   }
   if (!best) throw new Error('blockmodel: no consistent delimiter found');
+  // Whitespace wins on field count whenever text fields hold spaces in step
+  // ("hole id,rock type" / "DH 01,fresh rock" splits 3 ways on spaces, 2 on
+  // commas). A comma inside a whitespace token is a real delimiter, unless that
+  // token is a decimal-comma number (500 600 100 1,5: whitespace, decimal ',').
+  // Tabs that split every record alike are a TSV's (whitespace sees them as spaces).
+  if (best.delim === WS && consistent.length) {
+    const toks = splitFields(best.first, WS).map((t) => t.trim());
+    const real = consistent.filter((c) => c.delim === '\t' || toks.some((t) => t.includes(c.delim) && !COMMA_NUM.test(t)));
+    if (real.length) best = real.reduce((a, b) => (b.n > a.n ? b : a));
+  }
   const first = splitter(best.delim)(best.first).map((s) => s.trim());
   const numericish = (s) => s !== '' && !Number.isNaN(Number(s));
   // the decimal mark: with a non-comma delimiter, data fields that are comma-
@@ -2127,7 +2163,15 @@ function sniffDelimited(text) {
     for (const r of sampleRecords(text, best.delim, { max: 25 }).slice(1)) for (const f of splitter(best.delim)(r)) { const t = f.trim(); if (COMMA_NUM.test(t)) comma++; else if (/^[<>]?=?\s*[-+]?\d*\.\d+(?:[eE][-+]?\d+)?$/.test(t)) point++; }
     if (comma > 0 && point === 0) decimal = ',';
   }
-  const hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  let hasHeader = first.some((s) => !numericish(decimal === ',' ? s.replace(COMMA_NUM, '$1.$2') : s));
+  // all-numeric names (2019,2020) are a header when the first record QUOTES every
+  // field and the next record quotes no number: a writer marking names as text
+  // (a quote-everything writer quotes the data's numbers too, and stays headerless)
+  if (!hasHeader && best.second) {
+    const q1 = quotedFields(best.first, best.delim), q2 = quotedFields(best.second, best.delim);
+    const sec = splitter(best.delim)(best.second).map((s) => s.trim());
+    if (q1.length === first.length && q1.every(Boolean) && !q2.some((q, k) => q && numericish(sec[k]))) hasHeader = true;
+  }
   return { delim: best.delim, header: hasHeader ? first : null, columns: best.n, decimal };
 }
 
@@ -2516,7 +2560,7 @@ async function openBlockModel(blob, { mapping = null, discovered = null, lattice
       if (yv < min[1]) min[1] = yv; if (yv > max[1]) max[1] = yv;
       if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
       axc[0].add(xv); axc[1].add(yv); axc[2].add(zv);
-      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); if (v) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+      if (catCol != null && catCounts.size <= 256) { const v = (f[catCol] || '').trim(); catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
       if (hasDims) {
         const dx = +f[dimCols.x], dy = +f[dimCols.y], dz = +f[dimCols.z];
         if (dx > 0 && dy > 0 && dz > 0) {
@@ -3375,7 +3419,7 @@ async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   for (let i = 0, s2 = 0; i < n; i++) {
     const r = tIv.rows[i];
     chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
-    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
     if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) continue;
     const hb = r[m.intervals.bhid];
     bhid[2 * s2] = hb; bhid[2 * s2 + 1] = hb;

@@ -279,7 +279,10 @@ export async function ingestColumnsLayer(spec, name, lineage) {
   let categories = null;
   if (ci != null) {
     const c = t.cols[t.names[ci]];
-    categories = c.labels ? c.labels : [...new Set(Array.from(c.data).filter((v) => v != null && v !== '' && !(typeof v === 'number' && Number.isNaN(v))).map(String))].sort();
+    const blank = (v) => v == null || v === '' || (typeof v === 'number' && Number.isNaN(v));
+    categories = c.labels ? [...c.labels] : [...new Set(Array.from(c.data).filter((v) => !blank(v)).map(String))].sort();
+    // a blank is its own category, '' (as in every file reader), never the first real one
+    if (!categories.includes('') && Array.prototype.some.call(c.data, blank)) c.labels ? categories.push('') : categories.unshift('');
     if (categories.length > 255) categories = null;        // past 255 the code is a u8 — no category colouring, as for a file
   }
   let grid = null, subBlocked = false, dimPalette = null, rotatedBy = null;
@@ -353,10 +356,13 @@ export async function ingestMeshLayer(spec, name, lineage) {
 }
 
 // columns → RFC 4180 CSV text: a field holding the delimiter, a quote, a line
-// break or edge spaces is quoted; NaN / null are empty
+// break or edge spaces is quoted, and so is one starting with '#' (every reader
+// skips a line that starts with it, as a comment); NaN / null are empty. Header
+// names are ALWAYS quoted, so names that look like numbers (2019, 2020) still
+// read as a header: the sniff takes a quoted first row over unquoted numbers as names.
 export function columnsToCsv(t) {
-  const q = (s) => (/[",\r\n]|^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-  const out = [t.names.map(q).join(',')];
+  const q = (s) => (/[",\r\n]|^\s|\s$|^#/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  const out = [t.names.map((nm) => `"${String(nm).replace(/"/g, '""')}"`).join(',')];
   for (let i = 0; i < t.n; i++) {
     out.push(t.names.map((nm) => { const v = t.cols[nm].data[i]; if (v == null) return ''; if (typeof v === 'number' && !Number.isFinite(v)) return ''; return q(String(v)); }).join(','));
   }
@@ -396,6 +402,7 @@ export async function ingestDrillholes(spec, name, lineage) {
 
 export async function ingestTable(spec, name, lineage) {
   const t = ingestTableCols(spec.columns);
+  if (t.names.length < 2) throw new Error('addLayer: a table needs at least two columns (micro keeps tables as delimited text, and one column has no delimiter to read back)');
   const fileName = /\.csv$/i.test(name) ? name : `${name}.csv`;
   return openBlob(new File([columnsToCsv(t)], fileName, { type: 'text/csv' }), fileName, 'add', null, { asKind: 'table', lineage, throw: true });
 }

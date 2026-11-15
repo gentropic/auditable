@@ -98,7 +98,7 @@ export const rgbCssToHex = (css) => {
   return m2 ? '#' + [1, 2, 3].map((i) => (+m2[i]).toString(16).padStart(2, '0')).join('') : '#888888';
 };
 function defaultLegendEntries(info) {
-  return info.codes.map((c) => ({ label: String(info.names[c]), values: [info.kind === 'las' ? c : String(info.names[c])], color: rgbCssToHex(info.colorAt(c)) }));
+  return info.codes.map((c) => ({ label: String(info.names[c]) || '(blank)', values: [info.kind === 'las' ? c : String(info.names[c])], color: rgbCssToHex(info.colorAt(c)) }));
 }
 export function legendOf(L, info) {
   if (L.catLegend && L.catLegend.col === info.column) return L.catLegend;

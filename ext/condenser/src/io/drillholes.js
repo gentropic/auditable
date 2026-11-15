@@ -185,7 +185,7 @@ export async function openDrillholes({ collar, survey, intervals }, opts = {}) {
   for (let i = 0, s2 = 0; i < n; i++) {
     const r = tIv.rows[i];
     chanVals[i] = chan != null ? qualifiedNumber(r[chan], chanPolicy) : 0;
-    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (v && catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }
+    if (catVals) { const v = (r[catCol] || '').trim(); catVals[i] = v; if (catCounts.size <= 256) catCounts.set(v, (catCounts.get(v) || 0) + 1); }   // a blank is its own category, ''
     if (!Number.isFinite(fromOf[i]) || !Number.isFinite(toOf[i])) continue;
     const hb = r[m.intervals.bhid];
     bhid[2 * s2] = hb; bhid[2 * s2 + 1] = hb;

@@ -306,11 +306,13 @@ async function saveProjectInner() {
     // source here — so triage sees a clean in-project layer (no spurious "copy
     // outside files in?" prompt) and the folder shows the .parquet only.
     for (const L of S.layers) {
-      const orphan = L._optimizedOrphan; if (!orphan) continue;
+      if (!L.memoryOnly) continue;
+      const orphan = L._optimizedOrphan;
       L._optimizedOrphan = null;
       try {
         await copyLayerIn(L, dir);                          // writes models/<name>.parquet, sets L.handle + storage 'project'
-        const segs = dir.resolve ? await dir.resolve(orphan) : null;
+        L.memoryOnly = false;
+        const segs = orphan && dir.resolve ? await dir.resolve(orphan) : null;
         const keep = await layerRelpath(L, dir);
         if (segs && segs.length && segs.join('/') !== keep) {
           let d = dir; for (let i = 0; i < segs.length - 1; i++) d = await d.getDirectoryHandle(segs[i]);
@@ -320,7 +322,7 @@ async function saveProjectInner() {
         }
       } catch { /* falls back to normal triage; an orphan is harmless clutter */ }
     }
-    const outside = [];
+    const outside = [], mustCopy = [];
     for (const L of S.layers) {
       const flist = layerFiles(L);
       if (!flist.length) { L.storage = 'volatile'; continue; }   // samples: nothing to reference
@@ -340,7 +342,13 @@ async function saveProjectInner() {
         if (!inFolder) allIn = false;
       }
       L.storage = allIn ? 'project' : 'external';
-      if (!allIn) outside.push(L);
+      if (allIn) L.memoryOnly = false;
+      else if (L.memoryOnly) mustCopy.push(L);             // bytes made in this session: nothing on disk to link to
+      else outside.push(L);
+    }
+    for (const L of mustCopy) {
+      $('#meta').textContent = `project: writing ${L.name}…`;
+      await copyLayerIn(L, dir); L.memoryOnly = false;
     }
     if (outside.length && await askCopyOutside(outside) === 'copy') {
       for (const L of outside) { $('#meta').textContent = `project: copying ${L.name}…`; await copyLayerIn(L, dir); }

@@ -4,7 +4,7 @@
 // three ways in: reopen with a mapping, reinterpret as another kind, reload from disk.
 import { S, _fileHandles, layerById } from './state.js';
 import { pinEvictLayer } from './columns.js';
-import { applyColTypes, layerBlob, layerTableHeader } from './records.js';
+import { applyColTypes, attrRowCountOf, layerBlob, layerTableHeader } from './records.js';
 import { refreshProps } from './props.js';
 import { addPaintColorOptions, paintActiveCol } from './paint.js';
 import { ruleModeOf, runRules, syncRuleMode } from './rules.js';
@@ -23,6 +23,9 @@ import { menuXY } from './menu.js';
 import { setLayerColorSel } from './color.js';
 import { refilterLayer } from './filter.js';
 import { closeAttrTable } from './attrtable.js';
+import { sourceHash } from './identity.js';
+import { microConfirm } from './prompts.js';
+import { applyLayerSelection } from './selection.js';
 const $ = (s) => document.querySelector(s);
 
 // ── identity that MUST survive a single-blob reopen ──
@@ -225,8 +228,20 @@ export async function reloadLayerFromDisk(L) {
     if (L.handle.queryPermission && (await L.handle.queryPermission({ mode: 'read' })) === 'prompt') await L.handle.requestPermission({ mode: 'read' });
     fresh = await L.handle.getFile();
   } catch (e) { $('#meta').textContent = `reload: can't read ${L.name} — ${e.message}`; return; }
+  // Painted and stored columns and the selection are PER RECORD: on different bytes
+  // they would sit on whichever records now hold those positions. Identical bytes
+  // keep them; changed bytes drop them, after asking, and say so.
   const old2 = layerBlob(L);
-  const sizeNote = old2 && fresh.size !== old2.size ? ' · size changed — painted/materialized columns may be stale (positional)' : '';
+  const [hOld, hNew] = await Promise.all([sourceHash(old2), sourceHash(fresh)]);
+  const changed = !old2 || fresh.size !== old2.size || !hOld || !hNew || hOld !== hNew;
+  const perRecord = recordStateOf(L);
+  if (changed && perRecord.length) {
+    const ok = await microConfirm('Reload from disk',
+      `${L.label || L.name} has changed on disk. ${andList(perRecord)} ${perRecord.length > 1 ? 'were' : 'was'} made record by record on the old file and would land on the wrong records of the new one, so the reload drops ${perRecord.length > 1 ? 'them' : 'it'}. Calculated columns are kept (they recompute).`,
+      'Reload and drop', 'Cancel');
+    if (!ok) { $('#meta').textContent = `reload: cancelled — ${L.label || L.name} unchanged`; return; }
+  }
+  const dropNote = changed && perRecord.length ? ` · dropped ${andList(perRecord)} (made on the old file)` : '';
   const doc = L.docs.blockDoc;
   closeAttrTable(L.id);
   if (doc && !doc.header.dm && !doc.parquet) {
@@ -239,7 +254,9 @@ export async function reloadLayerFromDisk(L) {
       mapping: { x: m.x, y: m.y, z: m.z, chan: m.chan, cat: m.cat },
     });
     const L2 = layerById(L.id);
+    if (changed) style.paintCols = null;
     applyLayerStyling(L2, style);
+    if (L2 && changed) dropRecordState(L2);
     // Fresh bytes invalidate everything DERIVED from the old ones. This branch
     // reuses the layer object, so nothing is cleared for free: the column stats,
     // the filter-pushdown bands and the JS-side filter mask all survived a reload
@@ -251,18 +268,21 @@ export async function reloadLayerFromDisk(L) {
       L2._catCounts = null;
       L2._filterMask = null;                               // the GPU filter was cleared by the re-open; keep JS in step
       if (L2.dh) invalidateWholeHoles(L2);                 // the section's crossing holes too (next frame recomputes)
-      L2._selMask = null; L2._selCount = 0;                // and the selection's GPU twin was cleared too — same reasoning, missed first pass
-      pinEvictLayer(L2.id);                                // pinned columns belong to the OLD bytes
+      if (changed) { L2._selMask = null; L2._selCount = 0; }   // the selection's GPU twin was cleared by the re-open; identical bytes get it back below
+      else if (L2._selMask && L2._selCount) applyLayerSelection(L2);
+      pinEvictLayer(L2.id);                                // pinned columns belong to the OLD blob (re-faulted from the sidecar on demand)
     }
     // re-sweep against the fresh bytes — any layer (applyBlockFilter used to act on
     // the active layer only, and a background one was left unfiltered until refocused)
     await refilterLayer(L2);                               // the filter scan posts its own status
-    $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;
+    $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${changed ? '' : ' · unchanged'}${dropNote}`;
   } else {
     // dm / parquet / mesh / grid / las / ply: remove → re-open fresh → restore
     const style = captureLayerStyling(L);
     const surf = captureLayerSurface(L);
     const filterExpr = L.filterExpr;
+    if (changed) style.paintCols = null;
+    const sel = !changed && L._selMask && L._selCount ? L._selMask : null;
     // a DXF layer is ONE kind of what its file holds — reopen that kind, not the dominant one
     const sd = L.docs.stringsDoc;
     const dxfAs = /\.dxf$/i.test(L.name) ? (sd ? (sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh') : null;
@@ -271,11 +291,25 @@ export async function reloadLayerFromDisk(L) {
       applyLayerStyling(L2, style);
       await applyLayerSurface(L2, surf);
       L2.filterExpr = filterExpr;
+      if (sel && sel.length === attrRowCountOf(L2)) { L2._selMask = sel; L2._selCount = sel.reduce((a, v) => a + (v ? 1 : 0), 0); applyLayerSelection(L2); }
       await refilterLayer(L2, filterExpr);                 // any layer (was: only if it had been the active one)
     }
     renderLayers();
-    $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${sizeNote}`;
+    $('#meta').textContent = `reloaded ${(L2 && (L2.label || L2.name)) || L.name} from disk${changed ? '' : ' · unchanged'}${dropNote}`;
   }
   markProjectDirty();
   refreshProps();
+}
+
+const andList = (a) => (a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]);
+// the per-record state a layer carries: what can't follow its records onto other bytes
+function recordStateOf(L) {
+  const out = ((L.paintCols || []).filter((c) => c.name !== '_swath')).map((c) => `column ${c.name}`);
+  if (L._selMask && L._selCount) out.push('the selection');
+  return out;
+}
+function dropRecordState(L) {
+  L.paintCols = null; L._calcFns = null;
+  L._selMask = null; L._selCount = 0;
+  addPaintColorOptions(L);
 }

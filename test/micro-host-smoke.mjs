@@ -226,6 +226,17 @@ async function auditChecks(url, label) {
     const idF = await m.openBlob(new Blob([fpq]), 'foreign-corner.parquet', 'add');
     const hF = m.layers().find((L) => L.id === idF).docs.blockDoc.header;
     out.foreign = { grid: !!hF.grid, rejected: hF.latticeRejected || null };
+    // (9) a table written as CSV and read back: text with spaces (the sniff took
+    // whitespace for the delimiter), numeric names (read as no header), '#'-leading
+    // values (read as comment lines)
+    const idT = await m.addLayer({ kind: 'table', name: 'spaced', columns: { 'hole id': ['DH 01', '#2', 'DH 03'], 'rock type': ['fresh rock', 'weathered rock', 'fresh rock'] } });
+    const hT = m.layers().find((L) => L.id === idT).docs.tableDoc.header;
+    const idY = await m.addLayer({ kind: 'table', name: 'years', columns: { 2019: [1, 2, 3], 2020: [4, 5, 6] } });
+    const hY = m.layers().find((L) => L.id === idY).docs.tableDoc.header;
+    out.table = { cols: hT.columns, count: hT.count, ycols: hY.columns, ycount: hY.count };
+    // (10) a blank category is its own '' category, not the first real one
+    const idB = await m.addLayer({ kind: 'blocks', name: 'blankcat', columns: { X: Float64Array.from([5, 15, 25]), Y: Float64Array.from([5, 5, 5]), Z: Float64Array.from([2, 2, 2]), ROCK: ['A', null, 'B'] }, roles: { x: 'X', y: 'Y', z: 'Z', category: 'ROCK' } });
+    out.blankCats = m.layers().find((L) => L.id === idB).docs.blockDoc.header.categories;
     return out;
   });
   chk(`audit #1: a 45° CSV opens as the rotated 10 m lattice, not a 7.07 m axis grid (${JSON.stringify(r.csv)})`, !!(r.csv && r.csv.rot && r.csv.pitch.every((v) => Math.abs(v - 10) < 0.01)));
@@ -233,6 +244,8 @@ async function auditChecks(url, label) {
   chk(`audit #1: a 45° addLayer without acceptLattice stays points, never the wrong grid (${JSON.stringify(r.host)})`, r.host.kind === 'points' && !r.host.grid);
   chk(`audit #6: number-coded categories are named as text (${JSON.stringify(r.cats)})`, Array.isArray(r.cats) && r.cats.join() === '1,2,3' && r.cats.every((v) => typeof v === 'string'));
   chk(`audit #8: a foreign axis grid off the centroids is refused → points (${r.foreign.rejected})`, !r.foreign.grid && !!r.foreign.rejected);
+  chk(`audit: a host table with spaced text, a numeric name and a '#' value reads back whole (${JSON.stringify(r.table)})`, r.table.cols.join('|') === 'hole id|rock type' && r.table.count === 3 && r.table.ycols.join('|') === '2019|2020' && r.table.ycount === 3);
+  chk(`audit: a blank host category is its own '' category (${JSON.stringify(r.blankCats)})`, Array.isArray(r.blankCats) && r.blankCats.join('|') === '|A|B');
   await p.close();
 }
 

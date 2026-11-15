@@ -57,6 +57,29 @@ export function splitFields(line, delim) {
   }
 }
 
+/** Which fields of one record were written QUOTED (a quote at the field's start). */
+export function quotedFields(line, delim) {
+  const out = [];
+  if (line.indexOf('"') < 0) { const n = splitFields(line, delim).length; for (let k = 0; k < n; k++) out.push(false); return out; }
+  const ws = delim === WS, dc = ws ? -1 : delim.charCodeAt(0), n = line.length;
+  let inQ = false, atStart = true, i = 0;
+  if (ws) while (i < n && isSpace(line.charCodeAt(i))) i++;
+  let cur = false;
+  for (; i < n; i++) {
+    const c = line.charCodeAt(i);
+    if (inQ) { if (c === 34) { if (line.charCodeAt(i + 1) === 34) i++; else inQ = false; } continue; }
+    if (ws ? isSpace(c) : c === dc) {
+      if (ws) { while (i + 1 < n && isSpace(line.charCodeAt(i + 1))) i++; if (i + 1 >= n) break; }
+      out.push(cur); cur = false; atStart = true; continue;
+    }
+    if (atStart && (c === 32 || (c === 9 && delim !== '\t'))) continue;
+    if (atStart && c === 34) { inQ = true; cur = true; atStart = false; continue; }
+    atStart = false;
+  }
+  out.push(cur);
+  return out;
+}
+
 /** Does `line` end inside an open quoted field? `open` = the state it started in. */
 export function endsInQuote(line, delim, open = false) {
   if (!open && line.indexOf('"') < 0) return false;

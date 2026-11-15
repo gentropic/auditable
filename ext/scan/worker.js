@@ -733,6 +733,10 @@ function makeColAcc(sl) {
 // coordinate and key a block size by ONE definition (they were copies, three
 // times over, embedded into the worker with toString()).
 
+// a category value as its key: a blank (null, '', a NaN number) is the '' category
+// of its own (not the first real category's code, which is what a miss falls to)
+const catKey = (v) => (v == null || v === '' || (typeof v === 'number' && Number.isNaN(v)) ? '' : String(v));
+
 // ── discovery: what the open's sweep collects, for one row group ──────────────
 // Merged in group order, exactly what a sequential sweep gives: per-axis distinct
 // centroids rounded to 10 digits (capped), bbox, the category values (capped at
@@ -762,7 +766,7 @@ function discoverGroup(cd, p, cols, count, res) {
     if (zv < min[2]) min[2] = zv; if (zv > max[2]) max[2] = zv;
     add(0, xv); add(1, yv); add(2, zv);
     if (nres < res) { out[nres * 3] = xv; out[nres * 3 + 1] = yv; out[nres * 3 + 2] = zv; nres++; }
-    if (cats && cats.size <= 256) { const v = C[i]; if (v != null && v !== '') cats.add(String(v)); }
+    if (cats && cats.size <= 256) cats.add(catKey(C[i]));   // a blank is its own category, ''
     if (DX) {
       const dx = +DX[i], dy = +DY[i], dz = +DZ[i];
       if (dx > 0 && dy > 0 && dz > 0) {
@@ -816,7 +820,7 @@ function decodeGroup(cd, p, cols, start, count, codes) {
     if (!Number.isFinite(xv) || !Number.isFinite(yv) || !Number.isFinite(zv)) continue;
     x[m] = xv; y[m] = yv; z[m] = zv;
     chan[m] = CH ? (CH[i] == null ? NaN : +CH[i]) : 0;    // a null grade is missing (NaN), not 0
-    if (cat) cat[m] = codes.cat.get(String(CA[i] ?? '')) ?? 0;
+    if (cat) cat[m] = codes.cat.get(catKey(CA[i])) ?? 0;
     if (dim) dim[m] = dimCode(+DX[i], +DY[i], +DZ[i]);
     recIdx[m++] = start + i;
   }

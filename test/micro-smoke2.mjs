@@ -4787,6 +4787,74 @@ if (take()) {
   chk(`audit #2: a strings layer with a selection stays on its DXF (${pk.strings}, selection kept ${pk.sel}); the surface packs (${pk.mesh})`, pk.strings === 'pit.dxf' && pk.sel === 1 && /\.wfr$/.test(pk.mesh || ''));
 }
 
+// ── §73: the 2026-11 audit, second pass —
+//     (a) Reload from disk over IDENTICAL bytes keeps per-record state; over
+//         EDITED bytes it asks, then drops the painted/stored columns and the
+//         selection (they were made record by record on the old file)
+//     (b) a drag-dropped model optimized to Parquet, saved with "link", is
+//         written INTO the project (there is no file on disk to link to) ──
+if (take()) {
+  const csvOf = (rows) => 'X,Y,Z,ID\n' + rows.map((i) => `${(i % 4) * 10},${((i / 4 | 0) % 4) * 10},${(i / 16 | 0) * 10},${i}`).join('\n') + '\n';
+  const keyOf = (f) => 'ID,V\n' + Array.from({ length: 64 }, (_, i) => `${i},${i * f}`).join('\n') + '\n';
+  // (a)
+  const pa = await mkPage('sm2reload');
+  await pa.evaluate(async ({ csv, key }) => {
+    const root = await navigator.storage.getDirectory();
+    try { await root.removeEntry('sm2reload-src', { recursive: true }); } catch { }
+    const dir = await root.getDirectoryHandle('sm2reload-src', { create: true });
+    const fh = await dir.getFileHandle('rl.csv', { create: true });
+    const w = await fh.createWritable(); await w.write(csv); await w.close();
+    window.__rlHandle = fh;
+    const M = window._micro;
+    const id = await M.openBlob(await fh.getFile(), 'rl.csv', 'replace');
+    const kid = await M.openBlob(new File([key], 'rlk.csv'), 'rlk.csv', 'add');
+    const L = M.layers().find((q) => q.id === id);
+    L.handle = fh;
+    await M.keyJoinToCols(L, M.layers().find((q) => q.id === kid), { leftKey: 'ID', rightKey: 'ID', bring: ['V'], dup: 'first' });
+    L._selMask = new Uint8Array(64); L._selMask[9] = 1; L._selCount = 1;
+    window.__rlId = id;
+  }, { csv: csvOf([...Array(64).keys()]), key: keyOf(3) });
+  const state = () => pa.evaluate(() => {
+    const L = window._micro.layers().find((q) => q.id === window.__rlId);
+    const v = L && (L.paintCols || []).find((c) => c.name === 'V');
+    return { v: !!v, v9: v && v.fvalues ? v.fvalues[9] : null, sel: L && L._selMask ? L._selMask.reduce((s, x) => s + x, 0) : 0, meta: document.querySelector('#meta').textContent };
+  });
+  await pa.evaluate(() => window._micro.reloadLayerFromDisk(window._micro.layers().find((q) => q.id === window.__rlId)));
+  const same = await state();
+  await pa.evaluate(async (csv) => { const w = await window.__rlHandle.createWritable(); await w.write(csv); await w.close(); }, csvOf([...Array(64).keys()].reverse()));
+  pa.evaluate(() => { window.__rl = window._micro.reloadLayerFromDisk(window._micro.layers().find((q) => q.id === window.__rlId)); });
+  await pa.waitForFunction(() => document.querySelector('#pmDlg').classList.contains('show'), null, { timeout: 30000 });
+  const asked = await pa.evaluate(() => document.querySelector('#pmMsg').textContent);
+  await pa.evaluate(async () => { [...document.querySelectorAll('#pmDlg button')].find((x) => /Reload and drop/.test(x.textContent)).click(); await window.__rl; });
+  const edited = await state();
+  await pa.close();
+  chk(`audit #5b: reload over the same bytes keeps column V (${same.v9}) and the selection (${same.sel})`, same.v && same.v9 === 27 && same.sel === 1 && /unchanged/.test(same.meta));
+  chk(`audit #5b: reload over edited bytes asks first (“${asked.slice(0, 80)}”)`, /column V/.test(asked) && /selection/.test(asked));
+  chk(`audit #5b: …then drops the column and the selection and says so (${edited.meta})`, !edited.v && edited.sel === 0 && /dropped/.test(edited.meta));
+
+  // (b)
+  const pb = await mkPage('sm2optlink');
+  await pb.evaluate(async () => { try { await (await navigator.storage.getDirectory()).removeEntry('sm2optlink', { recursive: true }); } catch { } });
+  await pb.evaluate(async (csv) => {
+    const M = window._micro;
+    M.setAutoOptimize('off');
+    const id = await M.openBlob(new File([csv], 'dropped.csv'), 'dropped.csv', 'replace');   // drag-dropped: no handle
+    await M.convertLayerToParquet(M.layers().find((q) => q.id === id), {});
+  }, csvOf([...Array(64).keys()]));
+  pb.evaluate(() => window._micro.saveProjectAs());
+  await pb.waitForFunction(() => document.querySelector('#svDlg').classList.contains('show') || /project saved/.test(document.querySelector('#meta').textContent), null, { timeout: 30000 });
+  await pb.evaluate(() => { if (document.querySelector('#svDlg').classList.contains('show')) document.querySelector('#svLink').click(); });   // "link" — the answer that used to name a file that never was
+  await pb.waitForFunction(() => /project saved/.test(document.querySelector('#meta').textContent), null, { timeout: 120000 });
+  const ob = await pb.evaluate(async () => {
+    const L = window._micro.layers()[0];
+    let onDisk = false;
+    try { const d = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2optlink')).getDirectoryHandle('models'); await d.getFileHandle(L.name); onDisk = true; } catch { }
+    return { name: L.name, storage: L.storage, onDisk };
+  });
+  await pb.close();
+  chk(`audit #9: an optimized drag-dropped model is written into the project on save, even on "link" (${JSON.stringify(ob)})`, /\.parquet$/.test(ob.name) && ob.storage === 'project' && ob.onDisk);
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

@@ -261,6 +261,10 @@ async function convertInner(L, cvOpts) {
   // as still the layer's file → the parquet was never written → reload found no rows.
   L.handle = null; L.storage = 'loose';
   L._optimizedOrphan = (cvOpts.keepOriginal ? null : oldHandle) || null;   // saveProject removes the leftover source (unless the user chose to keep it)
+  // the Parquet exists only in memory: there is no file to LINK to, so the next save
+  // copies it in whatever was chosen for the files outside (a drag-dropped model has
+  // no old handle, and was then offered "link" → a project naming a file that never was)
+  L.memoryOnly = true;
   // 5. PERMUTE every per-record thing by the SAME order — paint stays editable.
   if (order) {
     for (const col of L.paintCols || []) {
