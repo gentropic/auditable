@@ -50,6 +50,7 @@ export function createHostApi(d) {
     visible: L.visible !== false,
     group: d.groupPathOf(L.id),
     viewOf: L.viewOf != null ? L.viewOf : null,            // a VIEW of that layer: its own display over the same data
+    ...(L.viewOf != null ? { offset: L.offset ? [...L.offset] : [0, 0, 0] } : {}),   // where the view is DRAWN, relative to its data
   });
   const chrome = () => ({
     title: !document.body.classList.contains('chrome-notitle'),
@@ -76,12 +77,16 @@ export function createHostApi(d) {
     removeLayer: verb((id) => { d.removeLayer(live(id).id); }),
     // a VIEW of a block model or drillhole layer: the same records shown again,
     // with its own colour / filter / clip / visibility. → its id.
-    //   { name, color, filter, visible }
+    //   { name, color, filter, visible, offset: [dx, dy, dz] }
+    // color may name ANY text column: the view classes by it on its own (its
+    // model and other views keep theirs).
     addView: verb(async (id, o = {}) => {
       const M = live(id);
-      const V = await d.createView(M, { label: o.name, colorSel: o.color != null ? d.colorSelFor(M, o.color) : undefined, filter: o.filter || undefined, visible: o.visible }, { activate: false });
+      const V = await d.createView(M, { label: o.name, colorSel: o.color != null ? d.colorSelFor(M, o.color) : undefined, filter: o.filter || undefined, visible: o.visible, offset: o.offset || undefined }, { activate: false });
       return V.id;
     }),
+    // move a view (display only — its records keep their coordinates). → [dx, dy, dz]
+    setViewOffset: verb((id, offset) => d.setViewOffset(live(id), offset)),
 
     // ── project backups (.zip.micro) ──
     // backupProject({ lean, to, save }): the open project folder as one zip, no

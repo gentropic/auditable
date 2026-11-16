@@ -8,11 +8,22 @@ import { ruleModeOf, applyRuleVisibility, applyRulePalette } from './rules.js';
 import { S, requestRender } from './state.js';
 import { markProjectDirty } from './project.js';
 import { layerHeaderOf, layerRows } from './records.js';
+import { viewCatName, viewCatData, ensureViewCat, VIEW_CAT_MAX } from './viewcat.js';
 
 // LAS classification names (ASPRS standard 0–18)
 const LAS_CLASSES = ['never classified', 'unclassified', 'ground', 'low vegetation', 'medium vegetation', 'high vegetation', 'building', 'low point (noise)', 'reserved', 'water', 'rail', 'road surface', 'reserved', 'wire — guard', 'wire — conductor', 'transmission tower', 'wire connector', 'bridge deck', 'high noise'];
 export function layerClassInfo(L) {
   const d = L.docs || {};
+  const vc = viewCatName(L);
+  if (vc) {                                                 // a view classing by its own column (src/viewcat.js)
+    const v = viewCatData(L), px = categoryPalettePixels(256);
+    const names = v ? v.names : [];
+    return {
+      kind: 'dict', names, codes: names.map((_, i) => i).filter((i) => names[i] != null),
+      colorAt: (c) => (c === VIEW_CAT_MAX ? 'rgb(85,90,95)' : `rgb(${px[c * 4]},${px[c * 4 + 1]},${px[c * 4 + 2]})`),
+      column: vc, countable: true, pending: !v,
+    };
+  }
   const h = (d.blockDoc || d.dhDoc || d.stringsDoc || {}).header;
   if (h && h.categories && h.categories.length) {
     const px = categoryPalettePixels(256);
@@ -48,12 +59,14 @@ export function applyCatVisibility(L, force) {
 export function restoreHiddenCats(L, arr) {
   if (!arr || !arr.length) return;
   const h = layerHeaderOf(L);
-  const dict = h && h.categories;
+  const vc = viewCatData(L);
+  const dict = vc ? vc.names : h && h.categories;
   L.catHidden = new Set(arr.map((v) => (typeof v === 'number' ? v : dict ? dict.indexOf(v) : -1)).filter((c) => c >= 0));
   if (L.catHidden.size) applyCatVisibility(L, true);
 }
 // counts fill in async — the eyes never wait on a sweep
 export async function ensureCatCounts(L, info) {
+  if (viewCatName(L)) { const v = viewCatData(L) || await ensureViewCat(L); return v ? { counts: v.counts, total: v.total } : null; }
   if (L._catCounts || !info.countable) return L._catCounts || null;
   const counts = new Map();
   let total = 0;
@@ -116,6 +129,11 @@ export function applyCatLegend(L, force) {
   const info = layerClassInfo(L);
   if (!info) return;
   const leg = L.catLegend && L.catLegend.col === info.column ? L.catLegend : null;
+  if (!leg && viewCatName(L)) {                            // a view's own classes: its palette is always baked (the shared
+    const px = categoryPalettePixels(256);                  // category palette exists only once some layer is categorized)
+    px[VIEW_CAT_MAX * 4] = 85; px[VIEW_CAT_MAX * 4 + 1] = 90; px[VIEW_CAT_MAX * 4 + 2] = 95; px[VIEW_CAT_MAX * 4 + 3] = 255;
+    S.renderer.setLayerPalette(L.id, px, 256); requestRender(); return;
+  }
   if (!leg) { S.renderer.setLayerPalette(L.id, null); requestRender(); return; }
   const width = info.kind === 'las' ? 32 : 256;
   const px = new Uint8Array(width * 4);

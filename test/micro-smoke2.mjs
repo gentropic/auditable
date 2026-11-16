@@ -5116,6 +5116,109 @@ if (take()) {
     h.after.newId !== h.before.did && h.after.viewOf === h.after.newId && h.after.link === h.after.newId && h.after.count === 40 && h.after.colorBy === 'AG');
   await p.close();
 }
+// ── §77: a VIEW's own category column and a view drawn somewhere else. A view
+//     classes by any text column WITHOUT re-reading its model (its codes ride
+//     the layer's code texture); its hidden classes index ITS codes, "select
+//     through" included; an offset moves it for display only — the pick, the
+//     through-selection and the section find it where it is drawn; both save. ──
+if (take()) {
+  const p = await mkPage('sm2vcat');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro, R = M_.renderer, out = {};
+    const settle = () => new Promise((res) => { M_.requestRender(); setTimeout(res, 400); });
+    const shot = async () => {
+      const b = await W.snapshot({ decorations: false });
+      const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+      g.drawImage(bm, 0, 0); return g.getImageData(0, 0, bm.width, bm.height).data;
+    };
+    const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) > 4 || Math.abs(a[i + 1] - b[i + 1]) > 4 || Math.abs(a[i + 2] - b[i + 2]) > 4) n++; return n / (a.length / 4); };
+    const ZONES = ['N', 'S', 'E'];
+    const rows = ['XC,YC,ZC,AU,ROCK,ZONE'];
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i * 20 + j},${i < 10 ? 'ox' : 'fr'},${ZONES[j % 3]}`);
+    const mid = await M_.openBlob(new File([rows.join('\n') + '\n'], 'model.csv'), 'model.csv', 'replace');
+    const M = M_.layers().find((q) => q.id === mid);
+    await W.setColorBy(mid, 'AU');
+    const doc0 = M.docs.blockDoc, hdr0 = doc0.header, cat0 = hdr0.categories ? hdr0.columns[hdr0.mapping.cat] : null;
+    // (a) a view classed by ZONE: the model is NOT re-read, keeps its own colour and class column
+    const vid = await W.addView(mid, { color: 'ZONE' });
+    const V = M_.layers().find((q) => q.id === vid);
+    const vc = V._viewCat;
+    out.a = { view: W.layer(vid).colorBy, model: W.layer(mid).colorBy, sameDoc: M.docs.blockDoc === doc0 && M.docs.blockDoc.header === hdr0, cat0,
+      catNow: hdr0.categories ? hdr0.columns[hdr0.mapping.cat] : null, names: vc && vc.names, n: vc && vc.codes.length,
+      counts: vc && [...vc.counts.entries()].sort((x, y) => x[0] - y[0]).map(([c, k]) => `${vc.names[c]}:${k}`) };
+    // (b) its picture is its own: ZONE vs the model's class column, the model untouched
+    await W.setViewOffset(vid, [600, 0, 0]);
+    M_.cam.fit(R.contentBbox()); await settle();
+    const pZone = await shot();
+    await W.setVisible(vid, false); await settle(); const mOnly1 = await shot();
+    await W.setVisible(vid, true);
+    await W.setColorBy(vid, cat0 || 'ROCK'); await settle();
+    const pRock = await shot();
+    await W.setVisible(vid, false); await settle(); const mOnly2 = await shot();
+    await W.setVisible(vid, true);
+    await W.setColorBy(vid, 'ZONE'); await settle();
+    out.b = { dView: differ(pZone, pRock), dModel: differ(mOnly1, mOnly2), back: W.layer(vid).colorBy, catColBack: V.catCol };
+    // (c) the offset: drawn 250 east, data where it was
+    const bm = R.contentBbox({ layers: [mid] }), bv = R.contentBbox({ layers: [vid] });
+    out.c = { info: W.layer(vid).offset, shift: bv && bm ? bv[0] - bm[0] : null, modelOff: W.layer(mid).offset };
+    // (d) the view's hidden class + "select through" where the view is DRAWN
+    const nCode = vc.names.indexOf('N');
+    V.catHidden = new Set([nCode]); M_.syncRuleMode(V); await settle();
+    const vp = M_.cam.state.viewProj, rc = M_.renderer.gl.canvas.getBoundingClientRect();
+    const proj = (b) => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const X of [b[0], b[3]]) for (const Y of [b[1], b[4]]) for (const Z of [b[2], b[5]]) {
+        const cw = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
+        const px = ((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / cw * 0.5 + 0.5) * rc.width, py = (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / cw * 0.5) * rc.height;
+        x0 = Math.min(x0, px); x1 = Math.max(x1, px); y0 = Math.min(y0, py); y1 = Math.max(y1, py);
+      } return [x0, y0, x1, y1]; };
+    const sv = proj(bv), sm = proj(bm);
+    M_.setSelThrough(true);
+    const poly = [[sv[0] - 2, sv[1] - 2], [sv[2] + 2, sv[1] - 2], [sv[2] + 2, sv[3] + 2], [sv[0] - 2, sv[3] + 2]];
+    await M_.selectVolume(poly, 'replace', true);
+    const nN = vc.counts.get(nCode), sel = M._selCount;
+    await M_.selectVolume(poly, 'replace', true, mid);      // the same tube over the MODEL alone: it is drawn elsewhere
+    M_.setSelThrough(false);
+    out.d = { sel, expect: 800 - nN, modelOnly: M._selCount || 0 };
+    await W.clearSelection(mid);
+    // (e) a pick on the moved view lands where it is drawn
+    const cx = (sv[0] + sv[2]) / 2, cy = (sv[1] + sv[3]) / 2;
+    const [hit] = await W.worldAt([[cx, cy]]);
+    const o = M_.frame.origin;
+    out.e = hit && { layer: hit.layer, x: hit.world[0] - o[0], vx: [bv[0], bv[3]] };
+    return out;
+  });
+  chk(`view classes: a view classes by its own text column (view ${r.a.view}, ${r.a.n} codes — ${r.a.counts}), the model keeps ${r.a.model} and its class column ${r.a.catNow}, never re-read (${r.a.sameDoc})`,
+    r.a.view === 'ZONE' && r.a.model === 'AU' && r.a.sameDoc && r.a.catNow === r.a.cat0 && JSON.stringify(r.a.names) === '["E","N","S"]' && r.a.n === 800 && r.a.counts.join() === 'E:240,N:280,S:280');
+  chk(`view classes: its picture is its own — ZONE vs ${r.a.cat0 || 'ROCK'} changes ${(100 * r.b.dView).toFixed(1)}% of pixels, the model's ${(100 * r.b.dModel).toFixed(2)}%; back on ZONE (${r.b.back})`,
+    r.b.dView > 0.01 && r.b.dModel < 0.002 && r.b.back === 'ZONE' && r.b.catColBack === 'ZONE');
+  chk(`view offset: drawn ${r.c.shift} east (${JSON.stringify(r.c.info)}), the model unmoved (${r.c.modelOff === undefined ? 'no offset' : JSON.stringify(r.c.modelOff)})`,
+    Math.abs(r.c.shift - 600) < 1e-6 && JSON.stringify(r.c.info) === '[600,0,0]' && r.c.modelOff === undefined);
+  chk(`view classes + offset: "select through" over the moved view takes ${r.d.sel} records — all but its hidden class (${r.d.expect}); the model, drawn elsewhere, gives ${r.d.modelOnly}`,
+    r.d.modelOnly === 0 && r.d.sel === r.d.expect);
+  chk(`view offset: a pick on the moved view lands on it (layer ${r.e && r.e.layer}, x ${r.e && r.e.x.toFixed(1)} in [${r.e && r.e.vx.map((v) => v.toFixed(0))}])`,
+    r.e && r.e.x >= r.e.vx[0] - 1e-6 && r.e.x <= r.e.vx[1] + 1e-6);
+
+  // (f) project round trip: the column, the offset and the hidden class come back
+  await saveProject(p);
+  const f = await p.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2vcat');
+    const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
+    const v = mf.layers.find((l) => l.viewOf != null);
+    return { catCol: v && v.catCol, offset: v && v.offset, hidden: v && v.hiddenCats };
+  });
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2vcat'); await window._micro.openProjectDir(dir); });
+  await p.waitForTimeout(800);
+  const g = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    const v = W.layers().find((l) => l.viewOf != null);
+    const V = v && M_.layers().find((q) => q.id === v.id);
+    return v && { colorBy: v.colorBy, offset: v.offset, drawn: M_.renderer.layerOffset(v.id), names: V._viewCat && V._viewCat.names, hidden: V.catHidden && [...V.catHidden].map((c) => V._viewCat.names[c]) };
+  });
+  chk(`view classes + offset: saved (${JSON.stringify(f)}) and reopened (${JSON.stringify(g)})`,
+    f.catCol === 'ZONE' && JSON.stringify(f.offset) === '[600,0,0]' && JSON.stringify(f.hidden) === '["N"]'
+    && g && g.colorBy === 'ZONE' && JSON.stringify(g.offset) === '[600,0,0]' && JSON.stringify(g.drawn) === '[600,0,0]' && JSON.stringify(g.hidden) === '["N"]');
+  await p.close();
+}
 
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();

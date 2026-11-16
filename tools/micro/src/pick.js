@@ -56,8 +56,12 @@ export function pixelRay(cssX, cssY) {
 // ray-AABB on the CPU to drift from what was drawn. A splat, a capsule or a hit
 // with no face falls back to the source record's centroid (exact, just coarser).
 export async function pickHitPoint(hit, cssX, cssY) {
-  const world = await recordPosition(hit);                 // world centroid — the fallback, and the plane's anchor
-  if (!world) return null;
+  const truePos = await recordPosition(hit);               // world centroid — the fallback, and the plane's anchor
+  if (!truePos) return null;
+  // a MOVED layer (a view with an offset) is hit where it is DRAWN: the point is
+  // on the displaced face, so a pivot or a measure lands on what was clicked
+  const off = S.renderer.layerOffset(hit.layer);
+  const world = [truePos[0] + off[0], truePos[1] + off[1], truePos[2] + off[2]];
   const face = hit.face;
   if (face == null || face === 7) return world;
   const { o, d } = pixelRay(cssX, cssY);

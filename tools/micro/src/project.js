@@ -41,6 +41,7 @@ import { writeGridDisplayCache } from './meshexport.js';
 import { pickDirectory, rehydrateHandle } from './hostio.js';
 import { refilterLayer } from './filter.js';
 import { createView, applyViewColor, canView } from './layerviews.js';
+import { viewCatData } from './viewcat.js';
 import { closeAllLayers } from './layers.js';
 const $ = (s) => document.querySelector(s);
 import { applyCamera, captureCamera } from './camera.js';
@@ -113,7 +114,8 @@ export const fileLayers = () => S.layers.filter((L) => L.viewOf == null);
 function viewEntry(L, indexOf) {
   return {
     viewOf: indexOf.get(L.viewOf), name: L.name, label: L.label,
-    colorSel: L.colorSel, clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
+    colorSel: L.colorSel, catCol: L.catCol || undefined, offset: L.offset || undefined,
+    clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
     sectioned: (() => { const m = S.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
     opacity: (L.opacity != null && L.opacity !== 1) ? L.opacity : undefined,
     edges: L.edges != null ? L.edges : undefined,
@@ -121,7 +123,7 @@ function viewEntry(L, indexOf) {
     recHide: (L._recHide && L._recHide.size) ? [...L._recHide] : undefined,
     gtUnits: L.gtUnits || undefined, analysis: L.analysis || undefined,
     hiddenCats: L.catHidden && L.catHidden.size
-      ? [...L.catHidden].map((c) => { const h2 = layerHeaderOf(L); return h2 && h2.categories && h2.categories[c] != null ? h2.categories[c] : c; })
+      ? [...L.catHidden].map((c) => { const vc = viewCatData(L), h2 = layerHeaderOf(L), dict = vc ? vc.names : h2 && h2.categories; return dict && dict[c] != null ? dict[c] : c; })
       : undefined,
     holeFilter: (L.dh && L.holeFilter) || undefined,
     ramps: L.ramps && Object.keys(L.ramps).length ? L.ramps : undefined,
@@ -494,14 +496,14 @@ async function restoreView(ls, i, idAt) {
   if (!M || !canView(M)) { plRow(i, 'skipped — its layer did not open', 'skip'); return; }
   let V;
   try {
-    V = await createView(M, { name: ls.name, label: ls.label, colorSel: ls.colorSel, clip: ls.clip, visible: ls.visible,
+    V = await createView(M, { name: ls.name, label: ls.label, colorSel: ls.colorSel, catCol: ls.catCol, offset: ls.offset, clip: ls.clip, visible: ls.visible,
       opacity: ls.opacity, edges: ls.edges, ramps: ls.ramps, catLegend: ls.catLegend }, { activate: false, apply: false });
   } catch (e) { plRow(i, `skipped — ${e.message}`, 'skip'); return; }
   if (ls.holeFilter) { try { await applyHoleFilter(V, ls.holeFilter); } catch { /* collar missing → no mask */ } }
   await refilterLayer(V, ls.filter);
   if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(V.id, ls.sectioned);
-  restoreHiddenCats(V, ls.hiddenCats);
   try { await applyViewColor(V); } catch (e) { (M._colsUnread || (M._colsUnread = [])).push({ name: `view “${V.label}” colour`, why: e.message }); }
+  restoreHiddenCats(V, ls.hiddenCats);                     // after the colour: a view's own classes exist once its column is read
   if (ls.legend) V.legend = true;
   if (ls.legendTitle) V.legendTitle = ls.legendTitle;
   if (ls.recHide) V._recHide = new Set(ls.recHide);

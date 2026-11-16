@@ -14,6 +14,9 @@ import { fmtSize } from './paths.js';
 import { colorSelOf, rampCfgOf, RAMP_PRESETS, setRampCfg, rampRangeFor, bakeRampPixels, applyRamp, rampSample } from './ramp.js';
 import { paintColByName, addPaintColorOptions, openPaintPalette } from './paint.js';
 import { useAsCategory } from './coltypes.js';
+import { viewCatName, modelCatName, viewTextColumns, ensureViewCat } from './viewcat.js';
+import { setLayerColorBy } from './color.js';
+import { setViewOffset, besideOffset } from './layerviews.js';
 import { setHTML, trusted } from './html.js';
 import { layerClassInfo, legendOf, legendCodesOf, ensureLegend, applyCatLegend, applyCatVisibility, rgbCssToHex, ensureCatCounts } from './categories.js';
 import { RULE_ELSE, runRules, applyRuleVisibility, applyRulePalette, ruleModeOf } from './rules.js';
@@ -128,6 +131,13 @@ export function renderStyleTab(body, L) {
     // categorized: needs a class column — re-key to the first text column
     // when none is mapped yet (the use-as-category machinery)
     if (!isTable) return setSel('2');
+    if (L.viewOf != null) {                                 // a view classes by its own column — no re-read of its model
+      if (viewCatName(L) || modelCatName(L)) return setSel('cat');
+      const first = viewTextColumns(L)[0];
+      if (!first) { $('#meta').textContent = 'categorized: no text column to class by — re-type one under columns (on the model)'; renderProps(); return; }
+      await setLayerColorBy(L, 'catcol:' + first).catch((e) => { $('#meta').textContent = `categorized — ${e.message}`; });
+      addPaintColorOptions(L); renderProps(); return;
+    }
     const h2 = layerTableHeader(L);
     if (h2 && h2.categories && h2.categories.length) return setSel('cat');
     const cand = h2 ? h2.columns.findIndex((_, i) => !colIsNumeric(L, h2, i)) : -1;
@@ -160,7 +170,17 @@ export function renderStyleTab(body, L) {
     body.appendChild(mkRow('clip', mkClip('clipMin'), mkClip('clipMax')));
     renderRampSection(body, L);
   } else if (mode === 'categorized') {
-    if (isTable) {
+    if (isTable && L.viewOf != null) {                       // a view: any text column, read into the view's own class codes
+      const colSel = document.createElement('select');
+      for (const c of viewTextColumns(L)) { const o = document.createElement('option'); o.value = c; o.textContent = c; colSel.appendChild(o); }
+      colSel.value = viewCatName(L) || modelCatName(L) || '';
+      colSel.title = "the class column — this view's own; its model and other views keep theirs";
+      colSel.onchange = async () => {
+        await setLayerColorBy(L, 'catcol:' + colSel.value).catch((e) => { $('#meta').textContent = `categorized — ${e.message}`; });
+        addPaintColorOptions(L); renderProps();
+      };
+      body.appendChild(mkRow('column', colSel));
+    } else if (isTable) {
       const h2 = layerTableHeader(L);
       const colSel = document.createElement('select');
       h2.columns.forEach((c, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = c; colSel.appendChild(o); });
@@ -170,7 +190,10 @@ export function renderStyleTab(body, L) {
       body.appendChild(mkRow('column', colSel));
     }
     const info = layerClassInfo(L);
-    if (info) renderClassList(body, L, info);
+    if (info && info.pending) {                             // a view's own column, still being read
+      body.appendChild(ppNote(`reading ${info.column}…`));
+      ensureViewCat(L).then((v) => { if (v) renderProps(); }).catch((e) => { $('#meta').textContent = `classes — ${e.message}`; });
+    } else if (info) renderClassList(body, L, info);
     else body.appendChild(ppNote('no category classes in this layer'));
   } else if (mode === 'rule-based') {
     renderRuleList(body, L);
@@ -210,6 +233,29 @@ export function renderStyleTab(body, L) {
     body.appendChild(mkRow('opacity', op, opVal));
   }
   if (L.dh && L.docs.dhDoc) renderStickRadius(body, L);
+  if (L.viewOf != null) renderViewOffset(body, L);
+}
+// a VIEW can be drawn somewhere else than its data — side by side with its
+// model, for two columns over the same region. Display only.
+function renderViewOffset(body, L) {
+  const cur = L.offset || [0, 0, 0];
+  const ins = ['x', 'y', 'z'].map((ax, k) => {
+    const inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.style.width = '52px';
+    inp.value = String(cur[k]); inp.title = `move the view along ${ax} (world units) — its records keep their coordinates`;
+    inp.onchange = () => { setViewOffset(L, ins.map((i) => +i.value || 0)); };
+    return inp;
+  });
+  body.appendChild(mkRow('offset', ...ins));
+  const beside = document.createElement('button'); beside.className = 'pp-tab';
+  beside.textContent = 'beside its model';
+  beside.title = 'move the view east, next to its model and its other views';
+  beside.onclick = () => { const o = besideOffset(L); if (o) { setViewOffset(L, o); renderProps(); } else $('#meta').textContent = 'offset: nothing drawn to place it beside'; };
+  const reset = document.createElement('button'); reset.className = 'pp-tab';
+  reset.textContent = 'on its model';
+  reset.disabled = !L.offset;
+  reset.onclick = () => { setViewOffset(L, null); renderProps(); };
+  body.appendChild(mkRow('', beside, reset));
+  if (L.offset) body.appendChild(ppNote('moved for display — picks, exports and analysis read the true coordinates'));
 }
 // the rules editor (§10.4): ordered rows, first match wins top-to-bottom.
 // Color/name/eye edits are texture-only (instant); expr edits, add, remove,

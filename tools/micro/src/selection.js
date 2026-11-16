@@ -14,6 +14,8 @@ import { microPrompt } from './prompts.js';
 import { mkLineage } from './lineage.js';
 import { paintRecount } from './columns.js';
 import { ruleModeOf } from './rules.js';
+import { colorSelOf } from './ramp.js';
+import { viewCatData } from './viewcat.js';
 import { _isMobile } from './windows.js';
 import { isMiss, layerOfId, layerSection } from '../../../ext/condenser/src/main.js';
 import { layerShown } from './layers.js';
@@ -212,11 +214,17 @@ function throughDrawnTest(L) {
   const mask = isDh ? (L._drawMask || null) : (L._filterMask || null);   // dh: filter AND whole-holes
   let codes = null, hidden = null;                         // codes null → the chunk's own category codes
   if (ruleModeOf(L)) { if (L.ruleHidden && L.ruleHidden.size && L._ruleCodes) { codes = L._ruleCodes; hidden = L.ruleHidden; } }
-  else if (!paintActiveCol(L) && L.catHidden && L.catHidden.size) hidden = L.catHidden;
+  else if (!paintActiveCol(L) && L.catHidden && L.catHidden.size) {
+    hidden = L.catHidden;
+    const vc = colorSelOf(L) === 'cat' ? viewCatData(L) : null;
+    if (vc) codes = vc.codes;
+  }
   const cs = currentSection();
   const sec = cs ? layerSection(cs, S.renderer.layerSectioned(L.id)) : null;
   if (!mask && !hidden && !sec) return null;
-  const o = S.frame ? S.frame.origin : [0, 0, 0];
+  const off = S.renderer.layerOffset(L.id);
+  const o0 = S.frame ? S.frame.origin : [0, 0, 0];
+  const o = [o0[0] - off[0], o0[1] - off[1], o0[2] - off[2]];   // n·(x + off − origin)
   // a block's reach along the section normal: its half-dims projected on n
   // (rotated lattices through their U/V/W; sub-blocks by their size code)
   let reach = () => 0;
@@ -258,12 +266,13 @@ export async function throughScan(L, hit, onHit, epoch, verb) {
   const streamChunks = d.dhDoc && d.dhDoc.streamChunks ? d.dhDoc.streamChunks : await docPositionStream(d);
   if (!streamChunks) return true;
   let done = 0;
+  const [dx, dy, dz] = S.renderer.layerOffset(L.id);       // a moved view is selected where it is drawn
   for await (const ch of streamChunks({ chunkPoints: 1 << 18 })) {
     if (epoch !== selEpoch()) return false;                 // superseded by a newer gesture
     const xs = ch.x, ys = ch.y, zs = ch.z, recs = ch.recIdx || null, base = ch.recStart || 0;
     for (let i = 0; i < ch.count; i++) {
       const r = recs ? recs[i] : base + i;
-      if (r >= n || !hit(xs[i], ys[i], zs[i])) continue;
+      if (r >= n || !hit(xs[i] + dx, ys[i] + dy, zs[i] + dz)) continue;
       if (drawn && !drawn(ch, i, r)) continue;
       onHit(r);
     }

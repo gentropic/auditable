@@ -17,6 +17,7 @@ import { reopenBlockChan } from './open-blocks.js';
 import { markProjectDirty } from './project.js';
 import { followLayer } from './tree.js';
 import { setActiveLayer } from './layers.js';
+import { modelCatName, ensureViewCat, viewCatName, viewTextColumns } from './viewcat.js';
 const $ = (s) => document.querySelector(s);
 
 // Color-by adapts to the document: for a block model the select lists EVERY
@@ -126,12 +127,19 @@ const viewTooBig = (L) => new Error(`“${L.label || L.name}”: too many record
 export async function setLayerColorBy(L, v) {
   if (!L) return null;
   v = String(v);
-  if (v.startsWith('catcol:')) {                           // another text column becomes THE category (a re-read)
+  if (v.startsWith('catcol:') && L.viewOf != null) {        // a view classes by its OWN column: codes, no re-read (src/viewcat.js)
+    const name = v.slice(7), h = colorHeaderOf(L), i = h ? h.columns.indexOf(name) : -1;
+    if (i < 0) throw new Error(`no column “${name}” on “${L.label || L.name}”`);
+    L.catCol = name === modelCatName(L) ? null : name;
+    if (L.catHidden) L.catHidden = null;                    // the eyes were the other column's classes
+    if (L.catCol) await ensureViewCat(L);
+    v = 'cat';
+  } else if (v.startsWith('catcol:')) {                    // another text column becomes THE category (a re-read)
     const name = v.slice(7), h = colorHeaderOf(L), i = h ? h.columns.indexOf(name) : -1;
     if (i < 0) throw new Error(`no column “${name}” on “${L.label || L.name}”`);
     if (!(h.categories && h.mapping.cat === i)) {
-      // re-keying the category re-reads the FILE — the model's, under every view
-      if (L.viewOf != null) throw new Error(`a view colours by its model's category column; colour the model by “${name}” to re-key it`);
+      // re-keying the category re-reads the FILE — the model's, under every view;
+      // a view takes the branch above instead
       L.colorSel = 'cat';
       await useAsCategory(L, i);
       L = layerById(followLayer(L.id)) || L;
@@ -200,6 +208,7 @@ export function colorChoices(L) {
   const out = ['elev', ...(h.numericColumns || []).map((c) => c.name)];
   if (h.categories) out.push(h.columns[h.mapping.cat]);
   for (const c of L.catChoices || []) if (!out.includes(c)) out.push(c);
+  if (L.viewOf != null) for (const c of viewTextColumns(L)) if (!out.includes(c)) out.push(c);
   for (const p of L.paintCols || []) out.push(p.name);
   for (const c of L.calcCols || []) if (c.ty !== 'string') out.push(c.name);
   out.push('rules', 'solid');
@@ -213,8 +222,8 @@ export function colorByName(L) {
   if (!h) return ['elevation', 'intensity', 'classification', 'rgb'][+v] || null;
   if (v === 'elev' || v === 'solid' || v === 'rules') return v;
   if (v.startsWith('chan:')) return h.columns[+v.slice(5)] ?? null;
-  if (v === 'cat') return h.categories ? h.columns[h.mapping.cat] : null;
-  if (v.startsWith('paint:') || v.startsWith('calc:')) return v.slice(v.indexOf(':') + 1);
+  if (v === 'cat') return viewCatName(L) || (h.categories ? h.columns[h.mapping.cat] : null);
+  if (v.startsWith('paint:') || v.startsWith('calc:') || v.startsWith('catcol:')) return v.slice(v.indexOf(':') + 1);
   return v || null;
 }
 
@@ -228,6 +237,7 @@ export function colorSelFor(L, col) {
     const i = h.columns.indexOf(c);
     if (i >= 0) {
       if ((h.numericColumns || []).some((n) => n.i === i)) return 'chan:' + i;
+      if (L.viewOf != null) return 'catcol:' + c;          // a view: any text column, its own classes (or back to the model's)
       if (h.categories && h.mapping.cat === i) return 'cat';
       return 'catcol:' + c;                                // another text column: becomes THE category
     }

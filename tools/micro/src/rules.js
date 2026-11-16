@@ -11,6 +11,7 @@ import { applyCatLegend, applyCatVisibility } from './categories.js';
 import { layerTableHeader, schemaExt, attrRowCountOf, blockCaps, layerRows, extendRow } from './records.js';
 import { validate, compileBool } from '../../../ext/expr/index.js';
 import { coordNum } from '../../../ext/condenser/src/main.js';
+import { viewCatName, viewCatData, ensureViewCat, applyViewCatCodes } from './viewcat.js';
 const $ = (s) => document.querySelector(s);
 
 // ── rule-based styling (spec §10.4): ordered expr predicates → colors. One
@@ -64,6 +65,13 @@ export function syncRuleMode(L) {
     applyPaintPalette(L, pc);
     S.renderer.setLayerCatVisibility(L.id, null);            // no per-value eyes on paint (v1)
     S.renderer.setLayerRuleCodes(L.id, pc.codes);
+  } else if (L.viewOf != null && (viewCatName(L) || L._viewCat)) {
+    // a view classing by its own column: its codes substitute for the chunks'
+    // class codes (src/viewcat.js); back on its model's column, they come off
+    if (viewCatName(L) && colorSelOf(L) === 'cat' && !viewCatData(L)) ensureViewCat(L).then((v) => { if (v) syncRuleMode(L); }).catch((e) => { $('#meta').textContent = `classes: ${e.message}`; });
+    if (!viewCatName(L)) L._viewCat = null;
+    applyViewCatCodes(L);
+    applyCatLegend(L, true); applyCatVisibility(L, true);
   } else {
     S.renderer.setLayerRuleMode(L.id, false);
     applyCatLegend(L, true); applyCatVisibility(L, true);

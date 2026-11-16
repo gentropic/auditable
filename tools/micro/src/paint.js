@@ -20,6 +20,7 @@ import { _attrTables } from './attrtable.js';
 import { isMiss, layerOfId } from '../../../ext/condenser/src/main.js';
 import { floatWin, focusWindow } from './windows.js';
 import { setLayerColorSel, colorHeaderOf } from './color.js';
+import { viewCatName, viewTextColumns } from './viewcat.js';
 import { menuXY } from './menu.js';
 import { currentSection } from './section.js';
 const $ = (s) => document.querySelector(s);
@@ -490,9 +491,15 @@ export function addPaintColorOptions(L) {
   for (const o of [...sel.options]) if (o.value.startsWith('calc:') && !(L.calcCols || []).some((c) => c.ty !== 'string' && 'calc:' + c.name === o.value)) o.remove();
   // other text columns a host offered as categories (addLayer roles.categories):
   // choosing one re-reads the layer with it as THE category (setLayerColorBy)
-  const h = colorHeaderOf(L), curCat = h && h.categories ? h.columns[h.mapping.cat] : null;
+  const h = colorHeaderOf(L), view = L.viewOf != null;
+  const curCat = (view && viewCatName(L)) || (h && h.categories ? h.columns[h.mapping.cat] : null);
   for (const o of [...sel.options]) if (o.value.startsWith('catcol:')) o.remove();
-  for (const name of L.catChoices || []) {
+  if (view) {                                              // a view's 'cat' = whatever IT classes by; any text column can be it
+    let co = [...sel.options].find((x) => x.value === 'cat');
+    if (!co && curCat) { co = document.createElement('option'); co.value = 'cat'; sel.insertBefore(co, [...sel.options].find((x) => x.value === 'rules') || null); }
+    if (co) co.textContent = curCat;
+  }
+  for (const name of view ? viewTextColumns(L) : L.catChoices || []) {
     if (name === curCat) continue;
     const o = document.createElement('option'); o.value = 'catcol:' + name; o.textContent = name;
     const after = [...sel.options].find((x) => x.value === 'cat') || [...sel.options].find((x) => x.value === 'rules');
