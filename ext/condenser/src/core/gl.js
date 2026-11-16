@@ -522,6 +522,10 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
     // stick thickness (world meters) — a live per-layer knob
     setLayerStickRadius(layer, r) { const ls = layerOf(layer); const v = Math.max(0.05, +r || 1); if (ls.stickRadius !== v) { ls.stickRadius = v; needClear = true; } },
     layerStickRadius(layer) { return layerOf(layer).stickRadius; },
+    // a points layer's size, as a multiple of the global point size (collar glyphs,
+    // sparse samples) — drawn and picked at that size
+    setLayerPointScale(layer, k) { const ls = layerOf(layer); const v = Math.max(0.25, Math.min(16, +k || 1)); if ((ls.pointScale || 1) !== v) { ls.pointScale = v === 1 ? undefined : v; needClear = true; } },
+    layerPointScale(layer) { return layerOf(layer).pointScale || 1; },
     layerChanRange(layer) { const ls = layers.get(layer); return ls && (ls.chanTex && ls.chanTexRange || ls.docChan[0] !== Infinity) ? docRangeOf(ls) : null; },
     // per-layer section participation: an exempt layer draws (and picks) whole
     // while the others are slabbed — e.g. topo kept for context during sectioning
@@ -1103,6 +1107,7 @@ export function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], max
         const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
+          gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas) * (ls.pointScale || 1));   // a per-layer glyph size
           gl.uniformMatrix4fv(uni.viewProj, false, camOf(id).state.viewProj);   // a moved layer's camera
           const lsec = layerSecOf(ls, sec);
           gl.uniform4f(uni.secPlane, lsec ? lsec.n[0] : 0, lsec ? lsec.n[1] : 0, lsec ? lsec.n[2] : 1, lsec ? lsec.d : 0);

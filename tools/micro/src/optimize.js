@@ -67,7 +67,7 @@ export function openOptimizeDialog(cands, { fromSave = false } = {}) {
   });
 }
 export async function maybeAutoOptimize() {
-  let cands = S.layers.filter((L) => L.viewOf == null && L.docs.blockDoc && !L.docs.blockDoc.parquet && layerTableHeader(L) && (layerTableHeader(L).mapping || {}).x != null);
+  let cands = S.layers.filter((L) => L.viewOf == null && !L.collarOf && L.docs.blockDoc && !L.docs.blockDoc.parquet && layerTableHeader(L) && (layerTableHeader(L).mapping || {}).x != null);
   const big = cands.filter((L) => layerTableHeader(L).count > OPTIMIZE_MAX_BLOCKS);
   if (big.length) { $('#meta').textContent = `optimize: ${big.map((L) => L.label || L.name).join(', ')} over ${(OPTIMIZE_MAX_BLOCKS / 1e6)}M blocks — kept as-is (convert explicitly via the layer menu: it sorts in bounded memory, but takes a while)`; cands = cands.filter((L) => !big.includes(L)); }
   if (!cands.length) return;

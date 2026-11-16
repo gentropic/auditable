@@ -81,7 +81,8 @@ export function layerMenu(L, x, y) {
     ...(isView(L) ? [{ label: `View of “${(modelOf(L) || {}).label || (modelOf(L) || {}).name}” — select it`, action: () => setActiveLayer(L.viewOf) }, { sep: true }] : []),
     ...(L.kind === 'table' ? [] : [{ label: 'Zoom to layer', action: () => fitLayer(L) }]),
     { label: isView(L) ? 'Rename view…' : 'Rename layer…', kbd: 'F2', action: () => renameActiveLayer(L) },
-    ...(canView(L) ? [{ label: 'New view of this layer', action: () => createView(L).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) }] : []),
+    ...(canView(L) ? [{ label: 'New view of this layer', action: () => createView(L).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) },
+      { label: 'New view beside it', action: () => createView(L, { beside: true }).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) }] : []),
     ...(!isView(L) && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
     ...(!isView(L) && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
     { sep: true },                                          // ── inspect / analyze ──
@@ -149,6 +150,7 @@ export function layerMenu(L, x, y) {
       }
     } }] : []),
     ...(L.kind !== 'mesh' && (L.docs.blockDoc || L.dh) ? [{ label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) }] : []),
+    ...(drawnAsPointChunks(L) ? [{ label: `Point size (×${S.renderer.layerPointScale(L.id)})`, submenu: () => pointScaleMenuItems(L) }] : []),
     ...(L.kind === 'mesh' ? [
       { label: 'Tint…', action: () => setTimeout(() => meshTintMenu(L, x, y), 0) },
       { label: `Opacity (${Math.round((L.opacity != null ? L.opacity : 1) * 100)}%)`, submenu: () => opacityMenuItems(L) },
@@ -242,6 +244,24 @@ export function applyLayerOpacity(L, v) {
   markProjectDirty(); requestRender();
 }
 
+// a layer drawn as POINTS (clouds, point-drawn models, collars) has its own
+// glyph size — a multiple of the global point size, drawn and picked at it
+export function drawnAsPointChunks(L) {
+  const d = (L && L.docs) || {};
+  if (L && L.viewOf != null) return false;                 // (a view's points are its model's chunks)
+  if (d.lasDoc || d.plyDoc) return true;
+  const bd = d.blockDoc;
+  return !!bd && (!bd.grid || !!bd.forcePoints);
+}
+export function setLayerPointScale(L, k) {
+  S.renderer.setLayerPointScale(L.id, k);
+  L.pointScale = S.renderer.layerPointScale(L.id);
+  markProjectDirty(); requestRender();
+}
+export const pointScaleMenuItems = (L) => [1, 2, 3, 5, 8].map((k) => ({
+  label: (S.renderer.layerPointScale(L.id) === k ? '✓ ' : '') + '×' + k,
+  action: () => setLayerPointScale(L, k),
+}));
 export const opacityMenuItems = (L) => [100, 75, 50, 25].map((pc) => ({
   label: (Math.round((L.opacity != null ? L.opacity : 1) * 100) === pc ? '✓ ' : '') + pc + '%',
   action: () => applyLayerOpacity(L, pc / 100),

@@ -561,7 +561,9 @@ export function createPickPipeline(gl) {
     // can't be projected — it's drawn, conservatively. The full-viewport capture
     // draws everything.
     const whole = px <= 0 && py <= 0 && px + w2 >= viewportW && py + h2 >= viewportH;
-    const margin = dpp + 2;
+    let maxScale = 1;                                      // a layer's glyph size widens what can cover the region
+    if (layerStates) for (const st of layerStates.values ? layerStates.values() : []) if (st && st.pointScale > maxScale) maxScale = st.pointScale;
+    const margin = dpp * maxScale + 2;
     const covers = (c) => {
       const b = c.bboxLocal;
       if (whole || !b || !(b[0] <= b[3])) return true;
@@ -587,6 +589,7 @@ export function createPickPipeline(gl) {
       const st = stateOf(id);
       gl.uniformMatrix4fv(uPts.viewProj, false, stateFor(st).viewProj);
       gl.uniform1ui(uPts.layer, id >>> 0);
+      gl.uniform1f(uPts.pointPx, dpp * ((st && st.pointScale) || 1));
       setSec(uPts, st);
       setCatVis(uPts, st);
       setRule(uPts, st);

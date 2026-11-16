@@ -77,12 +77,13 @@ export function createHostApi(d) {
     removeLayer: verb((id) => { d.removeLayer(live(id).id); }),
     // a VIEW of a block model or drillhole layer: the same records shown again,
     // with its own colour / filter / clip / visibility. → its id.
-    //   { name, color, filter, visible, offset: [dx, dy, dz] }
+    //   { name, color, filter, visible, offset: [dx, dy, dz], beside: true }
+    // beside: drawn just east of its model and its other views (offset wins)
     // color may name ANY text column: the view classes by it on its own (its
     // model and other views keep theirs).
     addView: verb(async (id, o = {}) => {
       const M = live(id);
-      const V = await d.createView(M, { label: o.name, colorSel: o.color != null ? d.colorSelFor(M, o.color) : undefined, filter: o.filter || undefined, visible: o.visible, offset: o.offset || undefined }, { activate: false });
+      const V = await d.createView(M, { label: o.name, colorSel: o.color != null ? d.colorSelFor(M, o.color) : undefined, filter: o.filter || undefined, visible: o.visible, offset: o.offset || undefined, beside: !!o.beside }, { activate: false });
       return V.id;
     }),
     // move a view (display only — its records keep their coordinates). → [dx, dy, dz]

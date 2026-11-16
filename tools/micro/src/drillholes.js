@@ -4,7 +4,7 @@
 // collar table, the collar and survey table windows, and the set groups in the tree.
 // The readers live in src/open.js; the app keeps the tree, the camera and the section.
 import { S, _fileHandles, layerById, requestRender } from './state.js';
-import { openDrillholeLayer } from './open.js';
+import { openDrillholeLayer, openBlob } from './open.js';
 import { refreshProps, renderProps } from './props.js';
 import { dhFilterMeta, dhFilterSweep, refilterLayer } from './filter.js';
 import { createStickChunkBuilder, delimitedRecords, delimiterOfLine, openDrillholeTraces, splitDelimitedRecord } from '../../../ext/condenser/src/main.js';
@@ -20,13 +20,13 @@ import { applyLayerStyling, captureLayerStyling, captureReopenIdentity, restoreR
 import { applyTreeVisibility, createLayerGroup, groupLayerIds, treeMove, treeSync } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { closeAttrTable } from './attrtable.js';
-import { allocLayerId, setActiveLayer } from './layers.js';
+import { allocLayerId, setActiveLayer, removeLayerUI } from './layers.js';
 import { layerTableHeader, attrRowCountOf, layerRows } from './records.js';
 import { mkLineage } from './lineage.js';
 import { matColSet, paintRecount } from './columns.js';
 import { persistElement } from './element-store.js';
 import { createPaintCol, addPaintValue } from './paint.js';
-import { setLayerColorSel } from './color.js';
+import { setLayerColorSel, setLayerColorBy, colorSelFor, colorByName } from './color.js';
 const $ = (s) => document.querySelector(s);
 
 // re-open a drillhole layer with a patched config (method / dip / category —
@@ -225,16 +225,24 @@ export async function filterHolesSet(nd) {
   const cc = await peekCollarCols(members[0].docs.dhDoc).catch(() => []);
   const v = await microPrompt('hole filter — an expression over the COLLAR columns (empty clears)', members[0].holeFilter || '', { expr: () => ({ columns: cc.map((c) => ({ name: c.name, type: c.type === 'number' ? 'number' : 'string' })) }) });
   if (v == null) return;
+  return setHoleFilter(nd, v);
+}
+// the hole filter on every member of a set, and what derives from them follows
+export async function setHoleFilter(nd, v) {
+  const members = groupLayerIds(nd).map(layerById).filter((L) => L && L.dh && L.docs.dhDoc);
   let res = null;
   for (const L of members) {
     res = await applyHoleFilter(L, v);
-    if (res && res.err) { $('#meta').textContent = `hole filter: ${res.err}`; return; }
+    if (res && res.err) { $('#meta').textContent = `hole filter: ${res.err}`; return res; }
   }
   if (setHasTraces(nd)) { hideHoleTraces(nd); await showHoleTraces(nd); }   // traces follow the verdict
+  if (setHasCollars(nd)) { noteCollarStyle(collarLayerOf(nd)); await showCollars(nd, nd.collars); }   // so do the collars, keeping their look
+  const also = [setHasTraces(nd) && 'traces', setHasCollars(nd) && 'collars'].filter(Boolean);
   $('#meta').textContent = res && res.holes != null
-    ? `hole filter: ${res.holes} of ${res.total} holes — intervals${setHasTraces(nd) ? ' + traces' : ''} follow`
+    ? `hole filter: ${res.holes} of ${res.total} holes — intervals${also.map((x) => ' + ' + x).join('')} follow`
     : 'hole filter cleared';
   renderLayers();
+  return res;
 }
 
 // a lightweight table view over a small CSV blob (the collar/survey tables —
@@ -291,6 +299,7 @@ export function surveyRowMenu(nd, x, y) {
     { label: 'Attribute table…', action: () => openCsvTableWindow(`survey · ${basename(info.blobs.survey.name || 'survey')}`, info.blobs.survey) },
     { label: 'Re-desurvey set…', action: () => setTimeout(() => redesurveyMenu(nd, x, y), 0) },
     { label: setHasTraces(nd) ? 'Hide hole traces' : 'Show hole traces', action: () => showHoleTraces(nd) },
+    { label: setHasCollars(nd) ? 'Hide collars' : 'Show collars', action: () => showCollars(nd) },
   ]);
 }
 
@@ -378,6 +387,7 @@ export async function redesurveySet(nd, patch) {
 export const setHasTraces = (nd) => groupLayerIds(nd).some((id) => { const L = layerById(id); return L && L.trace; });
 
 export function hideHoleTraces(nd) {
+  nd.traces = false;
   for (const id of groupLayerIds(nd).slice()) { const L = layerById(id); if (L && L.trace) { S.renderer.removeLayer(id); S.layers = S.layers.filter((l) => l.id !== id); } }
   treeSync(); renderLayers(); requestRender();
 }
@@ -388,15 +398,8 @@ export async function showHoleTraces(nd) {
   const lid = allocLayerId();
   if (lid == null) { $('#meta').textContent = 'layer limit reached (7 element layers)'; return; }
   const name = dhGroupName(basename(info.blobs.collar.name || 'holes')) + ' · traces';
-  const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2._holeIds);
-  if (memb && memb._holeIds) {                             // the hole filter propagates to the traces
-    const lines = csvRecords(await info.blobs.collar.text());
-    const cells2 = collarCells(lines);
-    const low = cells2(lines[0]).map((x) => x.toLowerCase());
-    const ki = collarKeyIndex(memb.docs.dhDoc, low);
-    const kept = [lines[0], ...lines.slice(1).filter((ln) => memb._holeIds.has(String(cells2(ln)[ki] ?? '').trim()))];
-    info = { ...info, blobs: { ...info.blobs, collar: new File([kept.join('\n')], basename(info.blobs.collar.name || 'collars.csv'), { type: 'text/csv' }) } };
-  }
+  info = { ...info, blobs: { ...info.blobs, collar: await keptCollarFile(nd, info) } };   // the hole filter propagates to the traces
+  nd.traces = true; markProjectDirty();
   // NOT made active — a non-active layer renders modeOf(colorSel), i.e. solid grey
   S.layers.push({ id: lid, name, label: name, kind: 'points', trace: true, docs: {}, bboxLocal: null, colorSel: 'solid', clip: ['', ''], filterExpr: '', visible: true, handle: null, storage: 'volatile', lineage: null });
   $('#meta').textContent = `${name} — desurveying…`;
@@ -412,6 +415,84 @@ export async function showHoleTraces(nd) {
     renderLayers(); requestRender();
     $('#meta').textContent = `${header.holes} hole trace${header.holes === 1 ? '' : 's'} · ${header.count.toLocaleString()} segments`;
   } catch (e) { $('#meta').textContent = `traces — ${e.message}`; S.renderer.removeLayer(lid); S.layers = S.layers.filter((l) => l.id !== lid); renderLayers(); }
+}
+
+// the collar file as the set's hole filter leaves it (every row when none)
+async function keptCollarFile(nd, info) {
+  const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2._holeIds);
+  if (!memb || !memb._holeIds) return info.blobs.collar;
+  const lines = csvRecords(await info.blobs.collar.text());
+  const cells2 = collarCells(lines);
+  const low = cells2(lines[0]).map((x) => x.toLowerCase());
+  const ki = collarKeyIndex(memb.docs.dhDoc, low);
+  const kept = [lines[0], ...lines.slice(1).filter((ln) => memb._holeIds.has(String(cells2(ln)[ki] ?? '').trim()))];
+  return new File([kept.join('\n')], basename(info.blobs.collar.name || 'collars.csv'), { type: 'text/csv' });
+}
+
+// ── COLLARS as glyphs: the set's collar table drawn as a POINTS layer, one
+// glyph per hole at its collar, nested in the set. It is the collar FILE opened
+// as points (its resolved X/Y/Z), so every collar column — hole id, EOH,
+// campaign, rig, year — colours, filters, picks and shows in the record panel
+// like any layer's. Derived: never saved as a layer of its own (the set already
+// names the file); the set remembers it is shown, its glyph size and colour.
+export const collarLayerOf = (nd) => groupLayerIds(nd).map(layerById).find((L) => L && L.collarOf);
+export const setHasCollars = (nd) => !!collarLayerOf(nd);
+export const COLLAR_SCALE = 3;                              // × the global point size
+
+export function hideCollars(nd, { keepFlag = false } = {}) {
+  const L = collarLayerOf(nd);
+  if (L) removeLayerUI(L.id);
+  if (!keepFlag) { nd.collars = null; markProjectDirty(); }
+  treeSync(); renderLayers(); requestRender();
+}
+
+// keep: { scale, color } — a rebuild (hole filter, project reopen) keeps the look
+export async function showCollars(nd, keep = null) {
+  if (!keep && setHasCollars(nd)) { hideCollars(nd); return null; }   // toggle off
+  if (keep && setHasCollars(nd)) hideCollars(nd, { keepFlag: true });
+  const info = dhSetInfo(nd); if (!info) return null;
+  const memb = groupLayerIds(nd).map(layerById).find((L2) => L2 && L2.dh && L2.docs.dhDoc);
+  const mc = memb && memb.docs.dhDoc.header.collarMapping;
+  if (!mc || mc.x == null || mc.y == null || mc.z == null) { $('#meta').textContent = 'collars: the collar X/Y/Z columns are not identified'; return null; }
+  const file = await keptCollarFile(nd, info);
+  const fname = basename(file.name || info.blobs.collar.name || 'collars.csv');
+  if (!/\.(csv|txt|tsv|dat)$/i.test(fname)) { $('#meta').textContent = `collars: ${fname} — a delimited collar file is needed`; return null; }
+  const prev = S.activeId;
+  const lid = await openBlob(file, fname, 'add', null, {
+    asKind: 'points', mapping: { x: mc.x, y: mc.y, z: mc.z, chan: null, cat: -1 }, strictMapping: true,
+    lineage: mkLineage('collars', { set: nd.name, file: fname }, []),
+  });
+  const L = lid != null ? layerById(lid) : null;
+  if (!L) { $('#meta').textContent = 'collars: the collar file did not open as points'; return null; }
+  L.collarOf = true; L.storage = 'volatile'; L.handle = null;
+  L.name = L.label = dhGroupName(basename(info.blobs.collar.name || 'holes')) + ' · collars';
+  const scale = (keep && keep.scale) || COLLAR_SCALE;
+  S.renderer.setLayerPointScale(lid, scale);
+  nd.collars = { scale, color: (keep && keep.color) || null };
+  treeSync(); treeMove(lid, nd, 'into');
+  if (keep && keep.color) { try { await setLayerColorBy(L, colorSelFor(L, keep.color)); } catch { /* the column went away */ } }
+  if (prev != null && layerById(prev)) setActiveLayer(prev);
+  markProjectDirty(); renderLayers(); requestRender();
+  $('#meta').textContent = `${(attrRowCountOf(L) || 0).toLocaleString()} collars — colour, filter and pick them like any layer`;
+  return L;
+}
+
+// the set's look of its collars, for the project (set on change)
+export function noteCollarStyle(L) {
+  if (!L || !L.collarOf) return;
+  for (const nd of allSetNodes()) if (collarLayerOf(nd) === L) nd.collars = { scale: S.renderer.layerPointScale(L.id), color: colorByName(L) };
+}
+function allSetNodes() {
+  const out = []; const walk = (a) => { for (const nd of a) if (typeof nd !== 'number') { if (nd.dhSet) out.push(nd); walk(nd.children); } };
+  walk(S.layerTree); return out;
+}
+
+// a reopened project: bring back the traces and collars each set showed
+export async function restoreSetDerived() {
+  for (const nd of allSetNodes()) {
+    if (nd.traces && !setHasTraces(nd)) { nd.traces = false; try { await showHoleTraces(nd); } catch { /* geometry gone */ } }
+    if (nd.collars && !setHasCollars(nd)) { try { await showCollars(nd, nd.collars); } catch { /* collar file gone */ } }
+  }
 }
 
 export function redesurveyMenu(nd, x, y) {

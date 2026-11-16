@@ -69,7 +69,7 @@ const display = (L) => ({
 });
 
 // → the view (a layer). `state` is the view's display: { name, label, colorSel,
-// catCol, clip, filter, visible, opacity, edges, ramps, catLegend, offset } — absent fields start
+// catCol, clip, filter, visible, opacity, edges, ramps, catLegend, offset, beside } — absent fields start
 // as the model's (colour, clip, ramps, opacity, edges) or neutral (no filter).
 // The colour is applied before this resolves.
 export async function createView(model, state = {}, { activate = true, apply = true } = {}) {
@@ -105,6 +105,10 @@ export async function createView(model, state = {}, { activate = true, apply = t
   if (V.opacity != null) S.renderer.setLayerOpacity(id, V.opacity);
   if (V.edges != null) S.renderer.setLayerEdges(id, V.edges);
   if (state.offset) setViewOffset(V, state.offset, { quiet: true });
+  else if (state.beside) {                                  // "new view beside it": just east of its family, and in sight
+    const o = besideOffset(V);
+    if (o) { setViewOffset(V, o, { quiet: true }); const bb = S.renderer.contentBbox(); if (bb && S.cam) S.cam.fit(bb); }
+  }
   if (apply) await applyViewColor(V);
   if (state.filter) { const { refilterLayer } = await import('./filter.js'); await refilterLayer(V, state.filter); }
   applyTreeVisibility();

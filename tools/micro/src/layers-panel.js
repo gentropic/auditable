@@ -9,7 +9,7 @@ import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { markProjectDirty } from './project.js';
 import { applyLayerOpacity, fitLayer, layerMenu } from './layermenu.js';
-import { setHasTraces, showHoleTraces, addIntervalToSet, dhSetInfo, collarsRowMenu, surveyRowMenu } from './drillholes.js';
+import { setHasTraces, showHoleTraces, setHasCollars, showCollars, addIntervalToSet, dhSetInfo, collarsRowMenu, surveyRowMenu } from './drillholes.js';
 import { openDhQa } from './dhqa.js';
 import { openBatchRename } from './rename.js';
 import { openMeshExportDialog } from './meshexport.js';
@@ -138,6 +138,7 @@ export function groupMenu(nd, x, y) {
   const items = [];
   if (nd.dhSet) {                                          // location verbs live on the collar/survey ROWS now
     items.push({ label: setHasTraces(nd) ? 'Hide hole traces' : 'Show hole traces', action: () => showHoleTraces(nd) });
+    items.push({ label: setHasCollars(nd) ? 'Hide collars' : 'Show collars', action: () => showCollars(nd) });
     items.push({ label: 'Add interval table…', action: () => addIntervalToSet(nd) });
     items.push({ label: 'QA report…', action: () => openDhQa(nd) });
     items.push({ sep: true });

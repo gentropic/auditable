@@ -5219,6 +5219,78 @@ if (take()) {
     && g && g.colorBy === 'ZONE' && JSON.stringify(g.offset) === '[600,0,0]' && JSON.stringify(g.drawn) === '[600,0,0]' && JSON.stringify(g.hidden) === '["N"]');
   await p.close();
 }
+// ── §78: "new view beside it", and a drillhole set's COLLARS as glyphs — the
+//     collar file drawn as points (one per hole) at a glyph size of their own,
+//     every collar column colourable and filterable; the hole filter thins
+//     them; derived (never saved as a layer), remembered by the set and back
+//     on reopen with its size and colour. ──
+if (take()) {
+  const p = await mkPage('sm2collars');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro, R = M_.renderer, out = {};
+    // (a) beside: a second view lands east of the first
+    const rows = ['XC,YC,ZC,AU'];
+    for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},105,${i + j}`);
+    const mid = await M_.openBlob(new File([rows.join('\n') + '\n'], 'small.csv'), 'small.csv', 'replace');
+    const v1 = await W.addView(mid, { beside: true }), v2 = await W.addView(mid, { beside: true });
+    const bb = (id) => R.contentBbox({ layers: [id] });
+    out.a = { m: bb(mid), v1: bb(v1), v2: bb(v2), o1: W.layer(v1).offset, o2: W.layer(v2).offset };
+    // (b) collars: one glyph per hole, the set's columns
+    const collar = ['HOLEID,X,Y,Z,EOH,RIG'], survey = ['HOLEID,DEPTH,AZ,DIP'], assay = ['HOLEID,FROM,TO,FE'];
+    for (let k = 0; k < 6; k++) { collar.push(`H${k},${1000 + k * 30},2000,${300 + k},${20 + k * 5},${k % 2 ? 'RC' : 'DD'}`); survey.push(`H${k},0,0,-90`); for (let q = 0; q < 4; q++) assay.push(`H${k},${q * 3},${q * 3 + 3},${30 + q + k}`); }
+    const fl = (a, n) => new File([a.join('\n') + '\n'], n);
+    await M_.importDrillholes({ collar: fl(collar, 'collars.csv'), survey: fl(survey, 'survey.csv'), intervals: fl(assay, 'assay.csv') }, {}, 'replace');
+    const D = M_.layers().find((q) => q.dh), nd = M_.dhSetGroupOf(D.id);
+    const C = await M_.showCollars(nd);
+    const flat = []; const walk = (a) => { for (const n of a) typeof n === 'number' ? flat.push(n) : walk(n.children); }; walk([nd]);
+    out.b = { n: C && M_.attrRowCountOf(C), name: C && C.label, nested: C && flat.includes(C.id), scale: C && R.layerPointScale(C.id), cols: C && W.layer(C.id).columns, active: M_.activeId() === D.id };
+    await W.setColorBy(C.id, 'EOH');
+    await W.filter(C.id, 'RIG = "RC"');
+    const ptOnly = W.layer(C.id).colorBy;
+    out.b.color = ptOnly; out.b.filtered = C._filterMask ? C._filterMask.reduce((a, b) => a + b, 0) : null;
+    // (c) a pick on a collar reads its row
+    const row = await M_.fetchLayerRow(C, 2);
+    out.c = { row };
+    await W.filter(C.id, '');
+    return out;
+  });
+  chk(`views: “beside” puts each new view east of everything before it (model x ${r.a.m[3].toFixed(0)} | view 1 ${r.a.v1[0].toFixed(0)}–${r.a.v1[3].toFixed(0)} | view 2 ${r.a.v2[0].toFixed(0)}–${r.a.v2[3].toFixed(0)}; offsets ${JSON.stringify(r.a.o1)} ${JSON.stringify(r.a.o2)})`,
+    r.a.v1[0] > r.a.m[3] && r.a.v2[0] > r.a.v1[3] && r.a.o1[1] === 0 && r.a.o2[2] === 0);
+  chk(`collars: ${r.b.n} glyphs, one per hole, “${r.b.name}” nested in the set (${r.b.nested}), ×${r.b.scale} the point size, the set's layer still active (${r.b.active})`,
+    r.b.n === 6 && r.b.nested && r.b.scale === 3 && /· collars$/.test(r.b.name) && r.b.active);
+  chk(`collars: every collar column is the layer's (${r.b.cols && r.b.cols.join(',')}) — coloured by ${r.b.color}, filtered to the RC holes (${r.b.filtered}); a row reads ${JSON.stringify(r.c.row)}`,
+    r.b.color === 'EOH' && r.b.filtered === 3 && r.b.cols.includes('RIG') && r.b.cols.includes('EOH') && String(r.c.row[0]) === 'H2');
+
+  // (d) the hole filter thins the collars, keeping their look
+  const d = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    const D = M_.layers().find((q) => q.dh), nd = M_.dhSetGroupOf(D.id);
+    await M_.setHoleFilter(nd, 'EOH > 30');
+    const C = M_.layers().find((q) => q.collarOf);
+    return { n: C && M_.attrRowCountOf(C), color: C && W.layer(C.id).colorBy, scale: C && M_.renderer.layerPointScale(C.id) };
+  });
+  chk(`collars: the hole filter (EOH > 30) leaves ${d.n} collars, still coloured by ${d.color} at ×${d.scale}`, d.n === 3 && d.color === 'EOH' && d.scale === 3);
+  // (e) never saved as a layer; the set brings them back
+  await p.evaluate(async () => { const M_ = window._micro, D = M_.layers().find((q) => q.dh); await M_.setHoleFilter(M_.dhSetGroupOf(D.id), ''); const C = M_.layers().find((q) => q.collarOf); M_.renderer.setLayerPointScale(C.id, 5); });
+  await saveProject(p);
+  const f = await p.evaluate(async () => {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2collars');
+    const mf = JSON.parse(await (await (await dir.getFileHandle('project.json')).getFile()).text());
+    const sets = []; const walk = (a) => { for (const n of a) if (typeof n !== 'number') { if (n.d) sets.push({ k: n.k, t: n.t }); walk(n.ch || []); } }; walk(mf.tree || []);
+    return { layers: mf.layers.length, kinds: mf.layers.map((l) => l.label || l.source), sets };
+  });
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2collars'); await window._micro.openProjectDir(dir); });
+  await p.waitForTimeout(800);
+  const g = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    const C = M_.layers().find((q) => q.collarOf);
+    return C && { n: M_.attrRowCountOf(C), color: W.layer(C.id).colorBy, scale: M_.renderer.layerPointScale(C.id), layers: M_.layers().length };
+  });
+  chk(`collars: not saved as a layer (${f.layers} manifest layers: ${f.kinds.join(', ')}) — the set remembers them (${JSON.stringify(f.sets)}) and a reopen brings them back (${JSON.stringify(g)})`,
+    f.sets.length === 1 && f.sets[0].k && f.sets[0].k.scale === 5 && f.sets[0].k.color === 'EOH' && !f.kinds.some((k) => /collars/.test(k || ''))
+    && g && g.n === 6 && g.color === 'EOH' && g.scale === 5);
+  await p.close();
+}
 
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();

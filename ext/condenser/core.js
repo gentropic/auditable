@@ -3189,7 +3189,9 @@ function createPickPipeline(gl) {
     // can't be projected — it's drawn, conservatively. The full-viewport capture
     // draws everything.
     const whole = px <= 0 && py <= 0 && px + w2 >= viewportW && py + h2 >= viewportH;
-    const margin = dpp + 2;
+    let maxScale = 1;                                      // a layer's glyph size widens what can cover the region
+    if (layerStates) for (const st of layerStates.values ? layerStates.values() : []) if (st && st.pointScale > maxScale) maxScale = st.pointScale;
+    const margin = dpp * maxScale + 2;
     const covers = (c) => {
       const b = c.bboxLocal;
       if (whole || !b || !(b[0] <= b[3])) return true;
@@ -3215,6 +3217,7 @@ function createPickPipeline(gl) {
       const st = stateOf(id);
       gl.uniformMatrix4fv(uPts.viewProj, false, stateFor(st).viewProj);
       gl.uniform1ui(uPts.layer, id >>> 0);
+      gl.uniform1f(uPts.pointPx, dpp * ((st && st.pointScale) || 1));
       setSec(uPts, st);
       setCatVis(uPts, st);
       setRule(uPts, st);
@@ -4364,6 +4367,10 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
     // stick thickness (world meters) — a live per-layer knob
     setLayerStickRadius(layer, r) { const ls = layerOf(layer); const v = Math.max(0.05, +r || 1); if (ls.stickRadius !== v) { ls.stickRadius = v; needClear = true; } },
     layerStickRadius(layer) { return layerOf(layer).stickRadius; },
+    // a points layer's size, as a multiple of the global point size (collar glyphs,
+    // sparse samples) — drawn and picked at that size
+    setLayerPointScale(layer, k) { const ls = layerOf(layer); const v = Math.max(0.25, Math.min(16, +k || 1)); if ((ls.pointScale || 1) !== v) { ls.pointScale = v === 1 ? undefined : v; needClear = true; } },
+    layerPointScale(layer) { return layerOf(layer).pointScale || 1; },
     layerChanRange(layer) { const ls = layers.get(layer); return ls && (ls.chanTex && ls.chanTexRange || ls.docChan[0] !== Infinity) ? docRangeOf(ls) : null; },
     // per-layer section participation: an exempt layer draws (and picks) whole
     // while the others are slabbed — e.g. topo kept for context during sectioning
@@ -4945,6 +4952,7 @@ function createRenderer(canvas, { background = [0.07, 0.07, 0.07, 1], maxPixelRa
         const setupPtsLayer = (id) => {
           const ls = layerOf(id), o = lopt(id), zr = zRangeOf(o);
           gl.uniform1ui(uni.layer, id >>> 0);
+          gl.uniform1f(uni.pointPx, pointPx * backingRatio(canvas) * (ls.pointScale || 1));   // a per-layer glyph size
           gl.uniformMatrix4fv(uni.viewProj, false, camOf(id).state.viewProj);   // a moved layer's camera
           const lsec = layerSecOf(ls, sec);
           gl.uniform4f(uni.secPlane, lsec ? lsec.n[0] : 0, lsec ? lsec.n[1] : 0, lsec ? lsec.n[2] : 1, lsec ? lsec.d : 0);

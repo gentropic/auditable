@@ -31,7 +31,7 @@ import { microChoose, microConfirm } from './prompts.js';
 import { openBlob, openDrillholeLayer, reopenDhChan } from './open.js';
 import { reopenBlockChan } from './open-blocks.js';
 import { CONTEXT_TRI_CAP } from './open-mesh.js';
-import { applyHoleFilter, ensureDhSetGroups } from './drillholes.js';
+import { applyHoleFilter, ensureDhSetGroups, restoreSetDerived, noteCollarStyle } from './drillholes.js';
 import { applyTreeVisibility, treeFromManifest, treeToManifest, followLayer } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { captureLayerSurface, recolorSurface } from './surfaces.js';
@@ -108,7 +108,7 @@ export function rleDecodeBytes(runs, n) {
 // the layers that ARE files — what a save copies, references and indexes. A
 // view (src/layerviews.js) is display state over its model's file: its entry in
 // project.json says whose, and what it shows.
-export const fileLayers = () => S.layers.filter((L) => L.viewOf == null);
+export const fileLayers = () => S.layers.filter((L) => L.viewOf == null && !L.collarOf);   // a view is its model's file; collars are the set's
 
 // a view's entry: its model (by manifest index) + its display — never data
 function viewEntry(L, indexOf) {
@@ -134,7 +134,8 @@ function viewEntry(L, indexOf) {
 }
 
 export function projectManifest() {
-  const listed = S.layers.filter((L) => !L.derivedOf && (L.viewOf == null || layerById(L.viewOf)));
+  const listed = S.layers.filter((L) => !L.derivedOf && !L.collarOf && (L.viewOf == null || layerById(L.viewOf)));
+  for (const L of S.layers) if (L.collarOf) noteCollarStyle(L);   // the set remembers how its collars look
   const indexOf = new Map(listed.map((L, i) => [L.id, i]));
   return {
     app: 'micro', version: 1, name: S.project.name,
@@ -155,6 +156,7 @@ export function projectManifest() {
       sheet: L._sheet || undefined,                        // an xlsx layer reopens THIS worksheet   // a grid-surface is kind 'mesh' but reopens as a grid (gridSurface flag)
       tint: L.kind === 'mesh' ? L.tint : undefined,
       opacity: (L.opacity != null && L.opacity !== 1) ? L.opacity : undefined,   // any kind (mesh/blocks/drillholes)
+      pointScale: S.renderer.layerPointScale(L.id) !== 1 ? S.renderer.layerPointScale(L.id) : undefined,   // a points layer's glyph size
       recHide: (L._recHide && L._recHide.size) ? [...L._recHide] : undefined,   // record-panel hidden fields (view pref)
       legend: L.legend || undefined, legendTitle: (L.legendTitle && L.legendTitle.trim()) || undefined,   // per-layer figure legend
       edges: L.edges != null ? L.edges : undefined,        // per-layer block-edge override (tri-state; absent = follow View)
@@ -786,6 +788,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       await refilterLayer(L, ls.filter);
       if (ls.visible === false) { L.visible = false; applyTreeVisibility(); }
       if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(L.id, ls.sectioned);
+      if (ls.pointScale) { S.renderer.setLayerPointScale(L.id, ls.pointScale); L.pointScale = ls.pointScale; }
       restoreHiddenCats(L, ls.hiddenCats);
       if (ls.ramps) { L.ramps = ls.ramps; applyRamp(L, true); }
       if (ls.catLegend) { L.catLegend = ls.catLegend; applyCatLegend(L, true); }
@@ -796,6 +799,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
     for (const i of viewRows) await restoreView(mf.layers[i], i, idAt);
     if (mf.tree) treeFromManifest(mf.tree, idAt);
     ensureDhSetGroups();                                   // pre-set-group projects: solo dh layers get their element group
+    await restoreSetDerived();                             // each set's traces and collars, as they were shown
     applyCamera(mf.camera);
     applySection(mf.section);
     // drapes come after ALL layers land — the drape grid may load later than its surface

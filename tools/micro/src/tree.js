@@ -215,14 +215,14 @@ export function createLayerGroup(name, layerIds, { collapsed = true, dhSet = fal
 export function treeToManifest(idOf) {
   const conv = (arr) => arr.map((nd) => (typeof nd === 'number'
     ? (idOf.has(nd) ? idOf.get(nd) : null)
-    : { g: nd.name, v: nd.visible, c: nd.collapsed, ch: conv(nd.children), d: nd.dhSet ? 1 : undefined, x: nd.exclusive ? 1 : undefined })).filter((x) => x !== null);
+    : { g: nd.name, v: nd.visible, c: nd.collapsed, ch: conv(nd.children), d: nd.dhSet ? 1 : undefined, x: nd.exclusive ? 1 : undefined, t: nd.dhSet && nd.traces ? 1 : undefined, k: nd.dhSet && nd.collars ? nd.collars : undefined })).filter((x) => x !== null);
   return conv(S.layerTree);
 }
 
 export function treeFromManifest(tree, idAt) {
   const conv = (arr) => arr.map((nd) => (typeof nd === 'number'
     ? (idAt[nd] != null ? idAt[nd] : null)
-    : { group: true, name: nd.g, visible: nd.v !== false, collapsed: !!nd.c, children: conv(nd.ch || []), ...(nd.d ? { dhSet: true } : {}), ...(nd.x ? { exclusive: true } : {}) }))
+    : { group: true, name: nd.g, visible: nd.v !== false, collapsed: !!nd.c, children: conv(nd.ch || []), ...(nd.d ? { dhSet: true } : {}), ...(nd.x ? { exclusive: true } : {}), ...(nd.t ? { traces: true } : {}), ...(nd.k ? { collars: nd.k } : {}) }))
     .filter((x) => x !== null && (typeof x === 'number' || x.children.length));
   S.layerTree = conv(tree || []);
   treeSync();
