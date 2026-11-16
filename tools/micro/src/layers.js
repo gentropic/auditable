@@ -73,7 +73,7 @@ export function setActiveLayer(id) {
   S.activeId = id;
   syncMeshPickable();                                      // selecting a surface is what makes it clickable
   const d = L.docs || {};
-  setColorLabels(d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : d.lasDoc ? { kind: 'las' } : d.plyDoc ? d.plyDoc.header : null);
+  setColorLabels(d.blockDoc ? d.blockDoc.header : d.dhDoc ? d.dhDoc.header : d.lasDoc ? d.lasDoc.header : d.plyDoc ? d.plyDoc.header : null);
   addPaintColorOptions(L);
   if (L.colorSel != null && [...$('#colorBy').options].some((o) => o.value === L.colorSel)) $('#colorBy').value = L.colorSel;
   $('#clipMin').value = L.clip[0]; $('#clipMax').value = L.clip[1];

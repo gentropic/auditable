@@ -36,7 +36,11 @@ export function setColorLabels(header) {
   const sel = $('#colorBy');
   const blocks = header && (header.kind === 'blockmodel' || header.kind === 'drillholes');
   if (!blocks) {
-    setHTML(sel, trusted('<option value="0">elevation</option><option value="1">intensity</option><option value="2">classification</option><option value="3">rgb</option>'));
+    // a cloud: its four drawn modes, then every other column of its points
+    // (LAS: return number, GPS time, extra bytes…; PLY: its vertex properties),
+    // each read once into the value texture
+    const cols = cloudColumnsOf(header);
+    setHTML(sel, html`${trusted('<option value="0">elevation</option><option value="1">intensity</option><option value="2">classification</option><option value="3">rgb</option>')}${cols.map((c) => html`<option value="chan:${c.i}">${c.name}</option>`)}`);
     sel.value = '0';
     return;
   }
@@ -55,7 +59,14 @@ export function setColorLabels(header) {
 // Every kind that draws a per-record value reads it: block models (boxes or
 // points) and drillhole intervals (sticks). A drillhole used to re-desurvey and
 // REPLACE its layer to change one number per interval.
-const valueDocOf = (L) => (L && L.docs && (L.docs.blockDoc || L.docs.dhDoc)) || null;
+const valueDocOf = (L) => (L && L.docs && (L.docs.blockDoc || L.docs.dhDoc || cloudDocOf(L))) || null;
+// a point CLOUD's doc (LAS, or PLY points) — when its provider can stream a column
+export const cloudDocOf = (L) => { const d = (L && L.docs) || {}; const c = d.lasDoc || d.plyDoc; return c && c.columnBatches ? c : null; };
+// the columns a cloud can colour by beyond its four modes (coordinates aside)
+export function cloudColumnsOf(header) {
+  const cs = (header && (header.kind === 'las' || header.kind === 'ply') && header.columns) || [];
+  return cs.map((name, i) => ({ i, name })).filter((c) => !/^[xyz]$/i.test(c.name));
+}
 export const valueTexEligible = (L) => !!valueDocOf(L) && !window.__noValueTex;
 
 // A block model drawn as POINTS (no regular grid, or opened as points) carries
@@ -68,7 +79,8 @@ const drawnAsPoints = (L) => { const bd = L.docs && L.docs.blockDoc; return !!bd
 export function valueTexWant(L, sel) {                            // the column the texture must hold, or null (the chunks' own)
   sel = String(sel || ''); if (!sel.startsWith('chan:')) return null;
   const d = valueDocOf(L); if (!d) return null;
-  const ch = +sel.slice(5); if (ch === d.header.mapping.chan && !drawnAsPoints(L)) return null;
+  const own = d.header.mapping ? d.header.mapping.chan : null;   // a cloud has no chunk channel: every column is the texture's
+  const ch = +sel.slice(5); if (own != null && ch === own && !drawnAsPoints(L)) return null;
   return d.header.columns[ch] ?? null;
 }
 
@@ -170,6 +182,11 @@ export async function setLayerColorBy(L, v) {
     // can't hold (more records than the GPU's texture size). A points-drawn model
     // wants the texture for its OWN channel too (valueTexWant) — awaited here, so
     // the caller's colour is on screen when this resolves.
+    else if (cloudDocOf(L) && !d.blockDoc && !d.dhDoc) {
+      if (L.id === S.activeId && [...$('#colorBy').options].some((o) => o.value === v)) $('#colorBy').value = v;
+      const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
+      if (ok === null) throw new Error(`“${L.label || L.name}”: too many points to colour by a column (the GPU's texture limit)`);
+    }
     else if (d.blockDoc && valueTexWant(L, v) != null) {
       if (L.id === S.activeId && [...$('#colorBy').options].some((o) => o.value === v)) $('#colorBy').value = v;
       const ok = valueTexEligible(L) ? await ensureValueTex(L, v) : null;
@@ -204,7 +221,7 @@ export const POINT_MODES = { elevation: '0', elev: '0', intensity: '1', classifi
 // what a layer can be coloured by, as a host names it (column names + mode words)
 export function colorChoices(L) {
   const h = colorHeaderOf(L);
-  if (!h) return L && (L.docs.lasDoc || L.docs.plyDoc) ? ['elevation', 'intensity', 'classification', 'rgb'] : [];
+  if (!h) return L && (L.docs.lasDoc || L.docs.plyDoc) ? ['elevation', 'intensity', 'classification', 'rgb', ...(cloudDocOf(L) ? cloudColumnsOf(cloudDocOf(L).header).map((c) => c.name) : [])] : [];
   const out = ['elev', ...(h.numericColumns || []).map((c) => c.name)];
   if (h.categories) out.push(h.columns[h.mapping.cat]);
   for (const c of L.catChoices || []) if (!out.includes(c)) out.push(c);
@@ -219,7 +236,7 @@ export function colorChoices(L) {
 export function colorByName(L) {
   const v = String(L.colorSel != null ? L.colorSel : L.id === S.activeId ? $('#colorBy').value : '');
   const h = colorHeaderOf(L);
-  if (!h) return ['elevation', 'intensity', 'classification', 'rgb'][+v] || null;
+  if (!h) { const cd = cloudDocOf(L); if (cd && v.startsWith('chan:')) return cd.header.columns[+v.slice(5)] ?? null; return ['elevation', 'intensity', 'classification', 'rgb'][+v] || null; }
   if (v === 'elev' || v === 'solid' || v === 'rules') return v;
   if (v.startsWith('chan:')) return h.columns[+v.slice(5)] ?? null;
   if (v === 'cat') return viewCatName(L) || (h.categories ? h.columns[h.mapping.cat] : null);
@@ -230,7 +247,11 @@ export function colorByName(L) {
 // a column NAME (or a mode word) → the colour-by selection value for that layer
 export function colorSelFor(L, col) {
   const c = String(col), h = colorHeaderOf(L);
-  if (!h) { if (POINT_MODES[c] != null && (L.docs.lasDoc || L.docs.plyDoc)) return POINT_MODES[c]; }
+  if (!h) {
+    if (POINT_MODES[c] != null && (L.docs.lasDoc || L.docs.plyDoc)) return POINT_MODES[c];
+    const cc = cloudDocOf(L) ? cloudColumnsOf(cloudDocOf(L).header).find((q) => q.name === c) : null;
+    if (cc) return 'chan:' + cc.i;
+  }
   else {
     if (c === 'elev' || c === 'elevation') return 'elev';
     if (c === 'solid' || c === 'rules') return c;

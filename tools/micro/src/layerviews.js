@@ -15,8 +15,9 @@
 // accessor it lands on the model, and the model's other views see it.
 // Everything else is the view's own, and is display state.
 //
-// Which layers can be viewed: block models (boxes or points) and drillhole
-// intervals, the kinds every colour path reaches through a value texture.
+// Which layers can be viewed: block models (boxes or points), drillhole
+// intervals and point clouds (LAS / PLY), the kinds every colour path reaches
+// through a value texture.
 // A view is one level deep (no views of views).
 import { S, layerById, requestRender } from './state.js';
 import { allocLayerId, LAYER_CAP, setActiveLayer, removeLayerUI } from './layers.js';
@@ -51,7 +52,7 @@ export const dataIdOf = (id) => { const L = layerById(id); return isView(L) ? L.
 export function canView(L) {
   if (!L || isView(L) || L.derivedOf || L.trace) return false;
   const d = L.docs || {};
-  return !!(d.blockDoc || (L.dh && d.dhDoc));
+  return !!(d.blockDoc || (L.dh && d.dhDoc) || ((d.lasDoc || d.plyDoc) && L.kind === 'points'));
 }
 
 // a name nothing else answers to (scenes, recipes and routines find layers by name)
@@ -73,7 +74,7 @@ const display = (L) => ({
 // as the model's (colour, clip, ramps, opacity, edges) or neutral (no filter).
 // The colour is applied before this resolves.
 export async function createView(model, state = {}, { activate = true, apply = true } = {}) {
-  if (!canView(model)) throw new Error(`“${model ? model.label || model.name : '?'}” can't be viewed (block models and drillholes can)`);
+  if (!canView(model)) throw new Error(`“${model ? model.label || model.name : '?'}” can't be viewed (block models, drillholes and point clouds can)`);
   const id = allocLayerId();
   if (id == null) throw new Error(`layer limit reached (${LAYER_CAP}) — remove one first`);
   const base = { ...display(model), ...Object.fromEntries(Object.entries(state).filter(([, v]) => v !== undefined)) };

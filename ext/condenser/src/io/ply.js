@@ -95,8 +95,8 @@ export async function openPly(blob, { signal, onProgress } = {}) {
   // binary: DataView slabs; ascii: line stream. Both yield {fields, recStart}
   // where fields[k] is a Float64Array per needed property.
   const NEED = [...new Set([idx.x, idx.y, idx.z, idx.i, idx.r, idx.g, idx.b].filter((v) => v >= 0))];
-  async function* recordBatches(batchRecords, s2, op2) {
-    const alloc = () => { const o = {}; for (const k of NEED) o[k] = new Float64Array(batchRecords); return o; };
+  async function* recordBatches(batchRecords, s2, op2, need = NEED) {
+    const alloc = () => { const o = {}; for (const k of need) o[k] = new Float64Array(batchRecords); return o; };
     if (!ascii) {
       let rec = 0;
       while (rec < count) {
@@ -105,7 +105,7 @@ export async function openPly(blob, { signal, onProgress } = {}) {
         const off = ply.dataOffset + rec * stride;
         const dv = new DataView(await blob.slice(off, off + n * stride).arrayBuffer());
         const fields = alloc();
-        for (const k of NEED) {
+        for (const k of need) {
           const p = props[k], g = p.getter, po = p.offset, col = fields[k];
           for (let i = 0; i < n; i++) col[i] = dv[g](i * stride + po, true);
         }
@@ -127,7 +127,7 @@ export async function openPly(blob, { signal, onProgress } = {}) {
             const t = l.trim();
             if (!t) continue;
             const f = t.split(/\s+/);
-            for (const k of NEED) fields[k][n] = +f[k];
+            for (const k of need) fields[k][n] = +f[k];
             n++;
             if (n === batchRecords) { yield { fields, n, recStart: rec }; rec += n; fields = alloc(); n = 0; }
           }
@@ -182,6 +182,16 @@ export async function openPly(blob, { signal, onProgress } = {}) {
     }
   }
 
+  // ── only the named properties, every vertex: { n, recStart, cols: { name: Float64Array } } ──
+  async function* columnBatches(names, opts = {}) {
+    const ks = names.map((nm) => { const k = props.findIndex((p) => p.name === nm); const k2 = k >= 0 ? k : props.findIndex((p) => p.name.toLowerCase() === String(nm).toLowerCase()); if (k2 < 0) throw new Error(`ply: no property “${nm}”`); return k2; });
+    for await (const { fields, n, recStart } of recordBatches(opts.chunkPoints || 1 << 18, opts.signal, null, [...new Set(ks)])) {
+      const cols = {};
+      ks.forEach((k, j) => { cols[names[j]] = fields[k].subarray(0, n); });
+      yield { n, recStart, cols };
+    }
+  }
+
   // ── record fetch (the pick join): O(1) binary, early-exit sweep ascii ──
   async function fetchRecord(rec) {
     if (rec < 0 || rec >= count) return null;
@@ -208,5 +218,5 @@ export async function openPly(blob, { signal, onProgress } = {}) {
     } finally { reader.releaseLock(); }
   }
 
-  return { header, streamChunks, fetchRecord };
+  return { header, streamChunks, columnBatches, fetchRecord };
 }

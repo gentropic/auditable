@@ -10,6 +10,7 @@ import { installSmokeWaits } from './smoke-wait.mjs';
 import http from 'http';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
+import { makeLas } from './las-make.mjs';
 // --built: run every section against the BUILT micro.html (node build.js
 // --target=micro) instead of the dev tree — the registry/blob bundle is where a
 // carve or a new import breaks without the dev tree noticing.
@@ -5271,7 +5272,7 @@ if (take()) {
   });
   chk(`collars: the hole filter (EOH > 30) leaves ${d.n} collars, still coloured by ${d.color} at ×${d.scale}`, d.n === 3 && d.color === 'EOH' && d.scale === 3);
   // (e) never saved as a layer; the set brings them back
-  await p.evaluate(async () => { const M_ = window._micro, D = M_.layers().find((q) => q.dh); await M_.setHoleFilter(M_.dhSetGroupOf(D.id), ''); const C = M_.layers().find((q) => q.collarOf); M_.renderer.setLayerPointScale(C.id, 5); });
+  await p.evaluate(async () => { const M_ = window._micro, D = M_.layers().find((q) => q.dh); await M_.setHoleFilter(M_.dhSetGroupOf(D.id), ''); const C = M_.layers().find((q) => q.collarOf); M_.renderer.setLayerPointScale(C.id, 5); await M_.showHoleTraces(M_.dhSetGroupOf(D.id)); });
   await saveProject(p);
   const f = await p.evaluate(async () => {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2collars');
@@ -5284,11 +5285,84 @@ if (take()) {
   const g = await p.evaluate(async () => {
     const M_ = window._micro, W = window.micro;
     const C = M_.layers().find((q) => q.collarOf);
-    return C && { n: M_.attrRowCountOf(C), color: W.layer(C.id).colorBy, scale: M_.renderer.layerPointScale(C.id), layers: M_.layers().length };
+    return C && { n: M_.attrRowCountOf(C), color: W.layer(C.id).colorBy, scale: M_.renderer.layerPointScale(C.id), layers: M_.layers().length, traces: M_.layers().filter((q) => q.trace).length };
   });
-  chk(`collars: not saved as a layer (${f.layers} manifest layers: ${f.kinds.join(', ')}) — the set remembers them (${JSON.stringify(f.sets)}) and a reopen brings them back (${JSON.stringify(g)})`,
-    f.sets.length === 1 && f.sets[0].k && f.sets[0].k.scale === 5 && f.sets[0].k.color === 'EOH' && !f.kinds.some((k) => /collars/.test(k || ''))
-    && g && g.n === 6 && g.color === 'EOH' && g.scale === 5);
+  chk(`collars: not saved as a layer (${f.layers} manifest layers: ${f.kinds.join(', ')}) — the set remembers them and its traces (${JSON.stringify(f.sets)}) and a reopen brings them back (${JSON.stringify(g)})`,
+    f.layers === 1 && f.sets.length === 1 && f.sets[0].k && f.sets[0].k.scale === 5 && f.sets[0].k.color === 'EOH' && !f.kinds.some((k) => /collars/.test(k || ''))
+    && g && g.n === 6 && g.color === 'EOH' && g.scale === 5 && f.sets[0].t === 1 && g.traces === 1);
+  await p.close();
+}
+// ── §79: point CLOUDS colour by any of their columns — LAS's whole point
+//     record (return number, GPS time, …) and its EXTRA BYTES, a PLY's vertex
+//     properties — through the value texture; the record panel reads the whole
+//     record; a cloud can be viewed; all of it survives a save and reopen. ──
+if (take()) {
+  const p = await mkPage('sm2clouds');
+  const pts = [];
+  for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) pts.push({ x: 1000 + i, y: 2000 + j, z: 100 + Math.sin(i / 3), intensity: 100 * i, classification: 2, ret: 1 + (i % 3), nret: 3, gps: 5000 + j, psid: 7, r: 100, g: 150, b: 200, nir: 3 * i, extra: { reflectance: i < 10 ? -10 + i * 0.5 : 20 + i * 0.25 } });
+  pts[1].extra = {};                                        // → no-data
+  const las = Array.from(new Uint8Array(makeLas(pts, { format: 8, version: [1, 4], offset: [1000, 2000, 0], extra: [{ name: 'reflectance', type: 4, scale: 0.01, offset: 0, noData: -32767 }] })));
+  const r = await p.evaluate(async (las) => {
+    const M_ = window._micro, W = window.micro, R = M_.renderer, out = {};
+    const settle = () => new Promise((res) => { M_.requestRender(); setTimeout(res, 400); });
+    const shot = async () => {
+      const b = await W.snapshot({ decorations: false });
+      const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d');
+      g.drawImage(bm, 0, 0); return g.getImageData(0, 0, bm.width, bm.height).data;
+    };
+    const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) > 4 || Math.abs(a[i + 1] - b[i + 1]) > 4 || Math.abs(a[i + 2] - b[i + 2]) > 4) n++; return n / (a.length / 4); };
+    const id = await M_.openBlob(new File([new Uint8Array(las)], 'scan.las'), 'scan.las', 'replace');
+    const L = M_.layers().find((q) => q.id === id);
+    // (a) the colour list: the four modes, then the record's columns
+    out.a = { opts: [...document.querySelectorAll('#colorBy option')].map((o) => o.textContent), choices: W.layer(id).colorChoices || null };
+    await settle(); const pElev = await shot();
+    // (b) colour by an extra-bytes column: one texture, the document range, no-data out of it
+    await W.setColorBy(id, 'reflectance'); await settle();
+    const pRefl = await shot();
+    out.b = { colorBy: W.layer(id).colorBy, tex: L._valTex && L._valTex.name, range: R.layerChanRange(id), d: differ(pElev, pRefl) };
+    await W.setColorBy(id, 'gps_time'); await settle();
+    out.b.gps = { colorBy: W.layer(id).colorBy, range: R.layerChanRange(id) };
+    await W.setColorBy(id, 'elevation'); await settle();
+    out.b.back = { colorBy: W.layer(id).colorBy, d: differ(pElev, await shot()) };
+    // (c) the record panel reads the whole point
+    out.c = { cols: M_.attrColumnsOf(L).map((c) => c.name), row: await M_.fetchLayerRow(L, 25) };
+    // (d) a view of the cloud, coloured by its own column
+    await W.setColorBy(id, 'reflectance');
+    const vid = await W.addView(id, { color: 'gps_time', beside: true });
+    const V = M_.layers().find((q) => q.id === vid);
+    out.d = { view: W.layer(vid).colorBy, model: W.layer(vid) && W.layer(id).colorBy, vTex: V._valTex && V._valTex.name, mTex: L._valTex && L._valTex.name, n: R.layerElementCount(vid) };
+    // (e) a PLY cloud's own property
+    const ply = ['ply', 'format ascii 1.0', 'element vertex 50', 'property float x', 'property float y', 'property float z', 'property float dev', 'end_header'];
+    for (let k = 0; k < 50; k++) ply.push(`${3000 + k} 2000 100 ${k * 0.1 - 2}`);
+    const pid = await M_.openBlob(new File([ply.join('\n') + '\n'], 'pts.ply'), 'pts.ply', 'add');
+    await W.setColorBy(pid, 'dev');
+    const P = M_.layers().find((q) => q.id === pid);
+    out.e = { colorBy: W.layer(pid).colorBy, tex: P._valTex && P._valTex.name, range: R.layerChanRange(pid), row: await M_.fetchLayerRow(P, 10) };
+    return out;
+  }, las);
+  const want = ['return_number', 'number_of_returns', 'scan_angle', 'gps_time', 'red', 'nir', 'reflectance'];
+  chk(`clouds: a LAS cloud offers its record's columns to colour by (${r.a.opts.slice(4).join(', ')})`,
+    want.every((w) => r.a.opts.includes(w)) && !r.a.opts.slice(4).includes('X'));
+  chk(`clouds: coloured by its extra-bytes column “reflectance” from a texture (${r.b.tex}, range ${r.b.range && r.b.range.map((v) => v.toFixed(2))}, the no-data point out of it), ${(100 * r.b.d).toFixed(1)}% of pixels changed; by gps_time [${r.b.gps.range}]; back to elevation (${(100 * r.b.back.d).toFixed(2)}%)`,
+    r.b.colorBy === 'reflectance' && r.b.tex === 'reflectance' && Math.abs(r.b.range[0] - -10) < 1e-6 && Math.abs(r.b.range[1] - 24.75) < 1e-6 && r.b.d > 0.001
+    && r.b.gps.colorBy === 'gps_time' && r.b.gps.range[0] === 5000 && r.b.gps.range[1] === 5019 && r.b.back.colorBy === 'elevation' && r.b.back.d < 0.002);
+  chk(`clouds: the record panel reads the whole point (${r.c.cols.length} columns; point 25 → return ${r.c.row[r.c.cols.indexOf('return_number')]}, gps ${r.c.row[r.c.cols.indexOf('gps_time')]}, reflectance ${r.c.row[r.c.cols.indexOf('reflectance')]})`,
+    r.c.cols.length === 16 && r.c.row[r.c.cols.indexOf('return_number')] === 3 && r.c.row[r.c.cols.indexOf('gps_time')] === 5001 && r.c.row[r.c.cols.indexOf('reflectance')] === -7.5 && r.c.row[r.c.cols.indexOf('nir')] === 15);
+  chk(`clouds: a view of the cloud coloured by its own column (view ${r.d.view} from ${r.d.vTex}, the cloud still ${r.d.model} from ${r.d.mTex}, ${r.d.n} points)`,
+    r.d.view === 'gps_time' && r.d.vTex === 'gps_time' && r.d.model === 'reflectance' && r.d.mTex === 'reflectance' && r.d.n === 400);
+  chk(`clouds: a PLY cloud colours by its own property “dev” (${r.e.tex}, range ${r.e.range}; point 10 reads ${JSON.stringify(r.e.row)})`,
+    r.e.colorBy === 'dev' && r.e.tex === 'dev' && Math.abs(r.e.range[0] - -2) < 1e-6 && Math.abs(r.e.range[1] - 2.9) < 1e-5 && Math.abs(r.e.row[3] - -1) < 1e-6);
+
+  await saveProject(p);
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2clouds'); await window._micro.openProjectDir(dir); });
+  await p.waitForTimeout(1000);
+  const g = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro;
+    return W.layers().map((l) => { const L = M_.layers().find((q) => q.id === l.id); return { name: l.name, view: l.viewOf != null, colorBy: l.colorBy, tex: L._valTex && L._valTex.name }; });
+  });
+  const las2 = g.find((l) => /scan\.las/.test(l.name) && !l.view), v2 = g.find((l) => l.view), ply2 = g.find((l) => /pts\.ply/.test(l.name));
+  chk(`clouds: a reopen colours them as saved (${JSON.stringify(g)})`,
+    las2 && las2.colorBy === 'reflectance' && las2.tex === 'reflectance' && v2 && v2.colorBy === 'gps_time' && v2.tex === 'gps_time' && ply2 && ply2.colorBy === 'dev' && ply2.tex === 'dev');
   await p.close();
 }
 

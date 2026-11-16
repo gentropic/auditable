@@ -26,9 +26,14 @@ export const BLANK = -3.0e38;
 function nameOf(expr) { try { const a = parse(expr); return a && a.t === 'field' ? a.name : null; } catch { return null; } }
 
 export async function buildValueTexture(L, gl, expr, { onProgress = null, signal = null } = {}) {
-  const columnar = canScanColumnar(L);
-  const h = layerTableHeader(L); if (!h) return null;
-  const n = columnar ? h.count : (attrRowCountOf(L) || 0);
+  // a point CLOUD (LAS / PLY points): its provider streams one column, every
+  // point a record in file order — the renderer's numbering
+  const cd = L.docs && !L.docs.blockDoc && !L.docs.dhDoc && (L.docs.lasDoc || L.docs.plyDoc);
+  const cloud = cd && cd.columnBatches ? cd : null;
+  if (cloud && !nameOf(expr)) return null;                 // a cloud colours by a column, not an expression
+  const columnar = !cloud && canScanColumnar(L);
+  const h = cloud ? cloud.header : layerTableHeader(L); if (!h) return null;
+  const n = cloud || columnar ? h.count : (attrRowCountOf(L) || 0);
   if (!n) return null;
   const H = Math.ceil(n / TEX_W);
   if (H > gl.getParameter(gl.MAX_TEXTURE_SIZE)) return null;
@@ -67,8 +72,9 @@ export async function buildValueTexture(L, gl, expr, { onProgress = null, signal
   // — read only when the layer HAS such records (the open counted what it drew)
   // (a delimited model's records ARE its drawn rows: the open numbered no other)
   const bd = L.docs.blockDoc, delim = !!bd && !bd.parquet && !bd.header.dm;
+  // (a cloud: every point is drawn, no coordinate gate)
   const undrawn = !delim && (!bd || bd.drawn == null || bd.drawn < n);
-  const coords = columnar && undrawn && m.x != null && m.y != null && m.z != null ? [h.columns[m.x], h.columns[m.y], h.columns[m.z]] : null;
+  const coords = !cloud && columnar && undrawn && m.x != null && m.y != null && m.z != null ? [h.columns[m.x], h.columns[m.y], h.columns[m.z]] : null;
   // Float64 values → Float32 + blanks → upload; the range over DRAWN records
   // (finite coordinates) when the coordinates are at hand
   const take = (V, start, C = null) => {
@@ -84,9 +90,17 @@ export async function buildValueTexture(L, gl, expr, { onProgress = null, signal
   };
   const abort = () => Object.assign(new Error('cancelled'), { name: 'AbortError' });
   try {
-    const nm = nameOf(expr), pin = nm ? pinGet(L, nm) : null;
+    const nm = nameOf(expr), pin = nm && !cloud ? pinGet(L, nm) : null;
     const pc = coords && coords.map((c) => pinGet(L, c));
-    if (pin && pin.data && pin.data.length >= n && (!coords || pc.every((e) => e && e.data && e.data.length >= n))) {   // resident already: no read at all
+    if (cloud) {
+      where = 'from the file';
+      for await (const { cols, recStart, n: k } of cloud.columnBatches([nm], { signal, chunkPoints: 1 << 18 })) {
+        if (signal && signal.aborted) throw abort();
+        take(cols[nm], recStart);
+        if (onProgress) onProgress(recStart + k, n, where);
+        await new Promise((z) => setTimeout(z));
+      }
+    } else if (pin && pin.data && pin.data.length >= n && (!coords || pc.every((e) => e && e.data && e.data.length >= n))) {   // resident already: no read at all
       where = 'from memory';
       const W = 1 << 20;
       for (let s = 0; s < n; s += W) {

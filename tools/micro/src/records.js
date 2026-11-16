@@ -473,6 +473,7 @@ export async function fetchLayerRow(L, rec) {
   if (d.blockDoc && d.blockDoc.header.dm) return await fetchDmRecord(d.blockDoc.blob, d.blockDoc.header.dm, rec);
   if (d.blockDoc) return await fetchCsvRecord(rec, d.blockDoc);
   if (d.plyDoc) return await d.plyDoc.fetchRecord(rec);
+  if (d.lasDoc && d.lasDoc.fetchRecord) return await d.lasDoc.fetchRecord(rec);   // every column of the point
   if (d.lasDoc) {
     const { blob, header } = d.lasDoc;
     const off = header.pointOffset + rec * header.recordLen;
@@ -492,6 +493,7 @@ export function attrColumnsOf(L) {
   }
   if (L.docs.gridDoc) return [{ name: 'X', num: true }, { name: 'Y', num: true }, { name: 'Z', num: true }, { name: 'row', num: true }, { name: 'col', num: true }];
   if (L.docs.plyDoc) return L.docs.plyDoc.header.columns.map((name) => ({ name, num: true }));
+  if (L.docs.lasDoc && L.docs.lasDoc.fetchRecord && L.docs.lasDoc.header.columns) return L.docs.lasDoc.header.columns.map((name) => ({ name, num: true }));
   if (L.docs.lasDoc) return [{ name: 'X', num: true }, { name: 'Y', num: true }, { name: 'Z', num: true }, { name: 'intensity', num: true }, { name: 'classification', num: true }];
   return null;
 }

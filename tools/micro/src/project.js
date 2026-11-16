@@ -35,7 +35,7 @@ import { applyHoleFilter, ensureDhSetGroups, restoreSetDerived, noteCollarStyle 
 import { applyTreeVisibility, treeFromManifest, treeToManifest, followLayer } from './tree.js';
 import { renderLayers } from './layers-panel.js';
 import { captureLayerSurface, recolorSurface } from './surfaces.js';
-import { ensureValueTex, valueTexEligible } from './color.js';
+import { ensureValueTex, valueTexEligible, valueTexWant } from './color.js';
 import { flushViewsScenes, loadViewsScenes } from './views.js';
 import { writeGridDisplayCache } from './meshexport.js';
 import { pickDirectory, rehydrateHandle } from './hostio.js';
@@ -134,7 +134,7 @@ function viewEntry(L, indexOf) {
 }
 
 export function projectManifest() {
-  const listed = S.layers.filter((L) => !L.derivedOf && !L.collarOf && (L.viewOf == null || layerById(L.viewOf)));
+  const listed = S.layers.filter((L) => !L.derivedOf && !L.collarOf && !L.trace && (L.viewOf == null || layerById(L.viewOf)));   // traces and collars: the set remembers them
   for (const L of S.layers) if (L.collarOf) noteCollarStyle(L);   // the set remembers how its collars look
   const indexOf = new Map(listed.map((L, i) => [L.id, i]));
   return {
@@ -777,9 +777,12 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       // color channel first (may re-stream), then filter (sweeps), then the rest
       if (ls.colorSel && ls.colorSel !== $('#colorBy').value && [...$('#colorBy').options].some((o) => o.value === ls.colorSel)) {
         L.colorSel = ls.colorSel;
-        if (ls.colorSel.startsWith('chan:') && L.docs.blockDoc && +ls.colorSel.slice(5) !== L.docs.blockDoc.header.mapping.chan) {
+        // the dropdown first: an ACTIVE layer's colour is read from it, and a texture
+        // that finishes against the old value is discarded as superseded
+        if (L.id === S.activeId) $('#colorBy').value = ls.colorSel;
+        if (ls.colorSel.startsWith('chan:') && valueTexWant(L, ls.colorSel) != null) {   // a column the chunks don't carry (a cloud: any column)
           const ok = valueTexEligible(L) ? await ensureValueTex(L, ls.colorSel) : null;
-          if (ok === null) await reopenBlockChan(L.docs.blockDoc, +ls.colorSel.slice(5), { keepFilter: false });
+          if (ok === null && L.docs.blockDoc && +ls.colorSel.slice(5) !== L.docs.blockDoc.header.mapping.chan) await reopenBlockChan(L.docs.blockDoc, +ls.colorSel.slice(5), { keepFilter: false });
         }
         if ([...$('#colorBy').options].some((o) => o.value === ls.colorSel)) $('#colorBy').value = ls.colorSel;
       }

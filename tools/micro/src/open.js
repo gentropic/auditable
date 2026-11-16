@@ -106,10 +106,10 @@ export async function openBlob(blob, name, mode = 'replace', at = null, over = {
     else if (/\.laz$/i.test(name)) throw new Error('LAZ (compressed LAS) isn’t supported — export as .las, or use lasZip to convert');
     else if (!/\.(las)$/i.test(name)) throw new Error(`micro doesn’t read ${(name.match(/\.[^.]+$/) || ['this file'])[0]} — it reads .csv .txt .dat .tsv .xlsx .dm .parquet .las .ply .xyz .pts .msh .obj .lfm .dxf .wfr .omf .tif .grd .asc`);
     else {
-      const { header, streamChunks } = await openLas(blob);
-      registerDocs(lid, 'points', { lasDoc: { blob, header } });
+      const { header, streamChunks, columnBatches, fetchRecord } = await openLas(blob);
+      registerDocs(lid, 'points', { lasDoc: { blob, header, columnBatches, fetchRecord } });
       fitFromHeader(header, first);
-      setColorLabels(null);
+      setColorLabels(header);
       const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
       const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
       $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · LAS ${header.version} fmt ${header.format}${S.frame.origin.some((v) => v) ? ` · origin ${S.frame.origin.map((v) => v.toLocaleString()).join(', ')}` : ''}`;
@@ -157,10 +157,10 @@ export function registerDocs(lid, kind, docs = {}) {
 async function openPlyBlob(blob, name, opts = {}) {
   const lid = opts.layer != null ? opts.layer : S.activeId;
   $('#meta').textContent = `${name} — reading header…`;
-  const { header, streamChunks, fetchRecord } = await openPly(blob);
-  registerDocs(lid, 'points', { plyDoc: { blob, name, header, fetchRecord } });
+  const { header, streamChunks, columnBatches, fetchRecord } = await openPly(blob);
+  registerDocs(lid, 'points', { plyDoc: { blob, name, header, columnBatches, fetchRecord } });
   fitFromHeader(header, opts.first !== false);
-  setColorLabels(null);
+  setColorLabels(header);
   const cb = createChunkBuilder({ frame: S.frame, chunkSize: 1 << 18, batchSize: 1 << 22, seed: 1, onChunk: (c) => { S.renderer.addChunk(c, 'base', lid); requestRender(); } });
   const doc = await streamInto(cb, streamChunks, header, name, 1 << 18, lid);
   $('#meta').textContent = `${name} — ${doc.count.toLocaleString()} points · PLY ${header.format === 'ascii' ? 'ascii' : 'binary'}${header.attributes.length ? ' · ' + header.attributes.join(', ') : ''}`;

@@ -46,6 +46,33 @@ test('las: streamChunks round-trips positions/attrs through scale/offset', async
   }
 });
 
+test('las: every record field is a column; extra bytes are named, scaled, no-data blank', async () => {
+  const pts = [
+    { x: 610000.25, y: 7760000.5, z: 901.125, intensity: 1200, classification: 2, ret: 1, nret: 3, scanAngle: -12, userData: 7, psid: 41, gps: 123456.789, r: 30000, g: 20000, b: 10000, nir: 999, extra: { reflectance: -7.25, deviation: 3 } },
+    { x: 610010.75, y: 7760020.25, z: 899.5, intensity: 340, classification: 5, ret: 3, nret: 3, scanAngle: 18.5, userData: 0, psid: 42, gps: 123457.5, r: 200, g: 100, b: 50, nir: 12, extra: { deviation: 65535 } },
+  ];
+  const extra = [{ name: 'reflectance', type: 4, scale: 0.01, offset: 0, noData: -32768 }, { name: 'deviation', type: 3, noData: 65535 }];
+  for (const format of [3, 8]) {
+    const blob = new Blob([makeLas(pts, { format, version: [1, 4], extra })]);
+    const { header, columnBatches, fetchRecord } = await openLas(blob);
+    const want = ['X', 'Y', 'Z', 'intensity', 'return_number', 'number_of_returns', 'classification', 'scan_angle', 'user_data', 'point_source_id', 'gps_time', 'red', 'green', 'blue', ...(format === 8 ? ['nir'] : []), 'reflectance', 'deviation'];
+    assert.deepEqual(header.columns, want, `format ${format} columns`);
+    const r0 = await fetchRecord(0), r1 = await fetchRecord(1);
+    const at = (r, c) => r[want.indexOf(c)];
+    assert.equal(at(r0, 'X'), 610000.25); assert.equal(at(r0, 'return_number'), 1); assert.equal(at(r0, 'number_of_returns'), 3);
+    assert.equal(at(r0, 'classification'), 2); assert.equal(at(r0, 'user_data'), 7); assert.equal(at(r0, 'point_source_id'), 41);
+    assert.equal(at(r0, 'gps_time'), 123456.789); assert.equal(at(r0, 'red'), 30000);
+    assert.ok(Math.abs(at(r1, 'scan_angle') - (format === 8 ? 18.5 : 18)) < 0.01, 'scan angle (legacy: whole degrees)');
+    if (format === 8) assert.equal(at(r0, 'nir'), 999);
+    assert.equal(at(r0, 'reflectance'), -7.25); assert.equal(at(r0, 'deviation'), 3);
+    assert.ok(Number.isNaN(at(r1, 'reflectance')) && Number.isNaN(at(r1, 'deviation')), 'no-data reads blank');
+    const got = [];
+    for await (const { n, recStart, cols } of columnBatches(['reflectance', 'Z'], { chunkPoints: 1 })) got.push([recStart, n, cols.reflectance[0], cols.Z[0]]);
+    assert.deepEqual(got.map((g) => g.slice(0, 2)), [[0, 1], [1, 1]]);
+    assert.equal(got[0][2], -7.25); assert.ok(Number.isNaN(got[1][2])); assert.equal(got[1][3], 899.5);
+  }
+});
+
 test('las: rejects non-LAS and LAZ', async () => {
   assert.throws(() => parseLasHeader(new Uint8Array(256)), /LASF/);
   const laz = new Uint8Array(makeLas(PTS, { format: 1 }));
