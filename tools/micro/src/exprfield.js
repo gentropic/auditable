@@ -18,7 +18,12 @@ export function columnValues(name) {
   return catName && catName.toLowerCase() === lc ? h.categories : [];
 }
 
-export const filterCtx = () => { const d = activeDocs(), fd = d.blockDoc || d.dhDoc; return fd ? { columns: schemaExt(activeLayer(), fd.header), values: columnValues } : null; };
+export const filterCtx = () => {
+  const d = activeDocs(), fd = d.blockDoc || d.dhDoc;
+  if (fd) return { columns: schemaExt(activeLayer(), fd.header), values: columnValues };
+  const cd = d.lasDoc || d.plyDoc;                          // a point cloud: its points' columns, all numbers
+  return cd && cd.header.columns ? { columns: cd.header.columns.map((name) => ({ name, type: 'number' })) } : null;
+};
 
 export const _ac = { input: null, res: null, sel: 0, suppress: false };
 

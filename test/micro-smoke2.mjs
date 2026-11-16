@@ -5338,6 +5338,16 @@ if (take()) {
     await W.setColorBy(pid, 'dev');
     const P = M_.layers().find((q) => q.id === pid);
     out.e = { colorBy: W.layer(pid).colorBy, tex: P._valTex && P._valTex.name, range: R.layerChanRange(pid), row: await M_.fetchLayerRow(P, 10) };
+    // (f) filter a cloud by its columns: only those columns are read; a no-data point is blank, not zero
+    const cnt = (Lx) => (Lx._filterMask ? Lx._filterMask.reduce((a, b) => a + b, 0) : null);
+    await W.filter(id, 'reflectance > 20 and return_number = 3'); const f1 = cnt(L);
+    await W.filter(id, 'reflectance < 0'); const f2 = cnt(L);
+    await W.filter(pid, 'dev > 0'); const f3 = cnt(P);
+    await W.filter(vid, 'gps_time < 5005'); const f4 = cnt(V);
+    await W.filter(id, 'reflectance > 20 and return_number = 3');
+    out.f = { f1, f2, f3, f4, model: L.filterExpr, view: V.filterExpr };
+    M_.openAttrTable(L); await new Promise((z) => setTimeout(z, 600));
+    { const tw = M_.attrTables.get(id); out.f.table = !!(tw && tw.win && tw.win.el.isConnected && tw.grid); }
     return out;
   }, las);
   const want = ['return_number', 'number_of_returns', 'scan_angle', 'gps_time', 'red', 'nir', 'reflectance'];
@@ -5350,6 +5360,8 @@ if (take()) {
     r.c.cols.length === 16 && r.c.row[r.c.cols.indexOf('return_number')] === 3 && r.c.row[r.c.cols.indexOf('gps_time')] === 5001 && r.c.row[r.c.cols.indexOf('reflectance')] === -7.5 && r.c.row[r.c.cols.indexOf('nir')] === 15);
   chk(`clouds: a view of the cloud coloured by its own column (view ${r.d.view} from ${r.d.vTex}, the cloud still ${r.d.model} from ${r.d.mTex}, ${r.d.n} points)`,
     r.d.view === 'gps_time' && r.d.vTex === 'gps_time' && r.d.model === 'reflectance' && r.d.mTex === 'reflectance' && r.d.n === 400);
+  chk(`clouds: filtered by their columns — reflectance > 20 and return 3 → ${r.f.f1}, reflectance < 0 → ${r.f.f2} (the no-data point isn't below zero), a PLY's dev > 0 → ${r.f.f3}, the view on its own gps_time < 5005 → ${r.f.f4} (model “${r.f.model}”); its attribute table opens (${r.f.table})`,
+    r.f.f1 === 60 && r.f.f2 === 199 && r.f.f3 === 29 && r.f.f4 === 100 && r.f.view === 'gps_time < 5005' && r.f.table);
   chk(`clouds: a PLY cloud colours by its own property “dev” (${r.e.tex}, range ${r.e.range}; point 10 reads ${JSON.stringify(r.e.row)})`,
     r.e.colorBy === 'dev' && r.e.tex === 'dev' && Math.abs(r.e.range[0] - -2) < 1e-6 && Math.abs(r.e.range[1] - 2.9) < 1e-5 && Math.abs(r.e.row[3] - -1) < 1e-6);
 
@@ -5358,11 +5370,11 @@ if (take()) {
   await p.waitForTimeout(1000);
   const g = await p.evaluate(async () => {
     const M_ = window._micro, W = window.micro;
-    return W.layers().map((l) => { const L = M_.layers().find((q) => q.id === l.id); return { name: l.name, view: l.viewOf != null, colorBy: l.colorBy, tex: L._valTex && L._valTex.name }; });
+    return W.layers().map((l) => { const L = M_.layers().find((q) => q.id === l.id); return { name: l.name, view: l.viewOf != null, colorBy: l.colorBy, tex: L._valTex && L._valTex.name, hits: L._filterMask ? L._filterMask.reduce((a, b) => a + b, 0) : null }; });
   });
   const las2 = g.find((l) => /scan\.las/.test(l.name) && !l.view), v2 = g.find((l) => l.view), ply2 = g.find((l) => /pts\.ply/.test(l.name));
   chk(`clouds: a reopen colours them as saved (${JSON.stringify(g)})`,
-    las2 && las2.colorBy === 'reflectance' && las2.tex === 'reflectance' && v2 && v2.colorBy === 'gps_time' && v2.tex === 'gps_time' && ply2 && ply2.colorBy === 'dev' && ply2.tex === 'dev');
+    las2 && las2.colorBy === 'reflectance' && las2.tex === 'reflectance' && las2.hits === 60 && ply2.hits === 29 && v2.hits === 100 && v2 && v2.colorBy === 'gps_time' && v2.tex === 'gps_time' && ply2 && ply2.colorBy === 'dev' && ply2.tex === 'dev');
   await p.close();
 }
 

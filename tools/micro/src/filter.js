@@ -3,7 +3,7 @@
 // bands, Parquet footer statistics, the columnar engine on workers, the row path — then handed
 // to the renderer as a mask (or compacted chunks). Table and drillhole layers have their own
 // sweeps here too. Carved from index.html (phase 3 of the 2026-10-31 review).
-import { canMatch, compileBool, compileChunk, compileChunkBool, parse, validate } from '../../../ext/expr/index.js';
+import { canMatch, compileBool, compileChunk, compileChunkBool, deps, parse, validate } from '../../../ext/expr/index.js';
 import { calcOrder, extendRow, layerRows, layerTableHeader, rowQualifier, schemaExt } from './records.js';
 import { S, activeLayer, layerById, requestRender } from './state.js';
 import { ensureStoredValues, expandedDeps, pinBudgetBytes, pinGet, pinPut, pinnedSweep } from './columns.js';
@@ -135,7 +135,8 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   if (AL && AL.kind === 'table') return applyTableFilter(AL, expr);   // no geometry to mask — the table view is the whole effect
   const fBlockDoc = AL ? AL.docs.blockDoc : null;
   const fDhDoc = AL ? AL.docs.dhDoc : null;
-  if (!fBlockDoc && !fDhDoc) { $('#meta').textContent = 'filter: open a block model or drillholes first'; return; }
+  { const cd = AL && !fBlockDoc && !fDhDoc && (AL.docs.lasDoc || AL.docs.plyDoc); if (cd && cd.columnBatches) return applyCloudFilter(AL, expr, inp, cd); }
+  if (!fBlockDoc && !fDhDoc) { $('#meta').textContent = 'filter: open a block model, drillholes or a point cloud first'; return; }
   const lid = AL.id;                                        // the sweep belongs to THIS layer even if focus moves
   AL.filterExpr = expr;
   dispatchEvent(new Event('micro:project-dirty'));
@@ -521,6 +522,57 @@ export async function applyBlockFilter(expr, L = activeLayer()) {
   { const Lf = layerById(lid); if (Lf) { Lf._filterMask = mask; attrTableFilterChanged(lid); refreshLinkedWindows(Lf, 'filtered'); } }
   requestRender();
   $('#meta').textContent = `${fBlockDoc.metaLine} · filter: ${hits.toLocaleString()} of ${rec.toLocaleString()} match${cb2 ? ' · compacted' : ''}`;
+}
+
+// ── a point CLOUD (LAS / PLY): the expression over its points' columns. Only the
+// columns the expression names are streamed from the file (the provider's
+// columnBatches), every point a record in file order — the renderer's numbering.
+// A blank (a no-data extra-bytes value) reads as blank, never as zero. ──
+export const cloudSchema = (cd) => cd.header.columns.map((name) => ({ name, type: 'number' }));
+async function applyCloudFilter(L, expr, inp, cd) {
+  const lid = L.id, N = cd.header.count;
+  L.filterExpr = expr;
+  dispatchEvent(new Event('micro:project-dirty'));
+  const epoch = ++_filterSeq;
+  _filterEpochs.set(lid, epoch);
+  const alive = () => _filterEpochs.get(lid) === epoch;
+  const name = L.label || L.name;
+  if (!expr.trim()) {
+    S.renderer.setFilter(null, {}, lid); inp.classList.remove('err');
+    L._filterMask = null; attrTableFilterChanged(lid); refreshLinkedWindows(L, 'filtered');
+    $('#meta').textContent = `${name} — ${N.toLocaleString()} points`; requestRender(); return;
+  }
+  const schema = cloudSchema(cd);
+  const v = validate(expr, schema);
+  if (!v.ok) { inp.classList.add('err'); $('#meta').textContent = `filter: ${v.errors[0] && v.errors[0].message || 'invalid expression'}`; return; }
+  inp.classList.remove('err');
+  const fn = compileBool(expr, schema, { decimal: '.' });
+  const low = new Map(cd.header.columns.map((c, i) => [String(c).toLowerCase(), i]));
+  let need = [];
+  try { need = [...new Set(deps(expr).map((d) => low.get(String(d).toLowerCase())).filter((i) => i != null))]; } catch { need = cd.header.columns.map((_, i) => i); }
+  const names = need.map((i) => cd.header.columns[i]);
+  const mask = new Uint8Array(N);
+  const f = new Array(cd.header.columns.length).fill('');
+  let hits = 0, done = 0;
+  $('#meta').textContent = 'filter: scanning…';
+  for await (const { n, recStart, cols } of cd.columnBatches(names, { chunkPoints: 1 << 18 })) {
+    if (!alive()) return;
+    const arrs = names.map((nm) => cols[nm]);
+    for (let i = 0; i < n; i++) {
+      for (let k = 0; k < need.length; k++) { const x = arrs[k][i]; f[need[k]] = Number.isFinite(x) ? x : ''; }
+      let ok = false; try { ok = !!fn(f); } catch { ok = false; }
+      if (ok) { mask[recStart + i] = 1; hits++; }
+    }
+    done = recStart + n;
+    $('#meta').textContent = `filter: ${rowsProgress(done, N)}`;
+    await new Promise((r) => setTimeout(r));
+  }
+  if (!alive()) return;
+  S.renderer.setActiveSet('base', lid);
+  S.renderer.setFilter(mask, { isolate: true }, lid);
+  L._filterMask = mask; attrTableFilterChanged(lid); refreshLinkedWindows(L, 'filtered');
+  requestRender();
+  $('#meta').textContent = `${name} · filter: ${hits.toLocaleString()} of ${N.toLocaleString()} points match`;
 }
 
 // the status line for a drillhole layer's filter (+ the section's holes, said apart)
