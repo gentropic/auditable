@@ -24,9 +24,24 @@ export function layerHeaderOf(L) {
 export const layerBlob = (L) => { const d = L.docs.blockDoc || L.docs.tableDoc || L.docs.plyDoc || L.docs.lasDoc || L.docs.meshDoc || L.docs.gridDoc || L.docs.stringsDoc; return d && d.blob || null; };
 // the layer's COLUMN TABLE header (the table behind the attribute grid /
 // filter / stats), when it has one
+// a point CLOUD (LAS / PLY with per-column reads) as a table: every column it
+// carries, all numeric, X/Y/Z mapped — so the analysis windows (stats, scatter,
+// Q–Q, a swath series) and layerRecords take it like any table. Built once per doc.
+export const cloudDocOf = (d) => (d && d.lasDoc && d.lasDoc.columnBatches && d.lasDoc) || (d && d.plyDoc && d.plyDoc.columnBatches && d.plyDoc) || null;
+export function cloudTableHeader(cd) {
+  if (cd._tableHeader !== undefined) return cd._tableHeader;
+  const cols = cd.header && cd.header.columns;
+  const find = (re) => (cols ? cols.findIndex((c) => re.test(String(c).trim())) : -1);
+  const m = { x: find(/^x$/i), y: find(/^y$/i), z: find(/^z$/i) };
+  cd._tableHeader = cols && cols.length && m.x >= 0 && m.y >= 0 && m.z >= 0
+    ? { kind: 'cloud', columns: cols, mapping: m, numericColumns: cols.map((name, i) => ({ i, name })), count: cd.header.count }
+    : null;
+  return cd._tableHeader;
+}
 export function layerTableHeader(L) {
   const d = L.docs || {};
   if (d.meshDoc) return meshVertexHeader(L);               // the `vertices` location
+  if (!d.blockDoc && !d.dhDoc && !d.stringsDoc && !d.tableDoc) { const cd = cloudDocOf(d); if (cd) return cloudTableHeader(cd); }
   const h = (d.blockDoc || d.dhDoc || d.stringsDoc || d.tableDoc || {}).header;
   return h && h.columns ? h : null;
 }
@@ -191,6 +206,19 @@ export function blockCaps(L) {
 // opts.raw: the SOURCE text (<0.001), not the detection-limit substitute — a CSV export's default
 export async function* layerRows(L, onProgress, { raw = false } = {}) {
   const d = L.docs;
+  const cd = !d.blockDoc && !d.dhDoc && !d.tableDoc && !d.stringsDoc ? cloudDocOf(d) : null;
+  if (cd && cloudTableHeader(cd)) {
+    // a cloud: every column streamed from the file, a row of numbers per point
+    // (a no-data value — NaN — reads blank, like an empty cell)
+    const names = cd.header.columns;
+    for await (const { n, cols } of cd.columnBatches(names, { chunkPoints: 1 << 16 })) {
+      const arrs = names.map((nm) => cols[nm]), rows = new Array(n);
+      for (let i = 0; i < n; i++) { const r = new Array(names.length); for (let k = 0; k < names.length; k++) { const v = arrs[k][i]; r[k] = Number.isFinite(v) ? v : ''; } rows[i] = r; }
+      yield rows;
+      if (onProgress) onProgress(rows.length, cd.header.count);
+    }
+    return;
+  }
   if (d.dhDoc) {
     const dh = d.dhDoc, rows = [], read = raw && dh.rawRecord ? dh.rawRecord : dh.fetchRecord;
     for (let i = 0; i < dh.header.count; i++) rows.push(read(i));

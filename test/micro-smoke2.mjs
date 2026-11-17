@@ -5781,6 +5781,46 @@ if (take()) {
   await p.close();
 }
 
+// ── §88: CLOUDS IN THE ANALYSIS WINDOWS — a LAS reads as a table (every column
+//     numeric, X/Y/Z mapped), so the Stats window runs on it (intensity: 400
+//     points, mean 950), its records stream with a no-data value BLANK (not zero),
+//     the layer menu offers Stats and Scatter / Q-Q, and a cloud can be the
+//     samples of a block-vs-sample pairing. ──
+if (take()) {
+  const p = await mkPage('sm2cloudwin');
+  const pts = [];
+  for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) pts.push({ x: 1000 + i, y: 2000 + j, z: 100 + i * 0.1, intensity: 100 * i, classification: 2, ret: 1, nret: 1, gps: 5000 + j, psid: 7, r: 100, g: 150, b: 200, nir: 10, extra: { reflectance: i } });
+  pts[1].extra = {};                                        // → no-data
+  const las = Array.from(new Uint8Array(makeLas(pts, { format: 8, version: [1, 4], offset: [1000, 2000, 0], extra: [{ name: 'reflectance', type: 4, scale: 0.01, offset: 0, noData: -32767 }] })));
+  const r = await p.evaluate(async (las) => {
+    const M_ = window._micro, out = {};
+    const id = await M_.openBlob(new File([new Uint8Array(las)], 'scan.las'), 'scan.las', 'replace');
+    const L = M_.layers().find((q) => q.id === id);
+    const h = M_.layerTableHeader ? M_.layerTableHeader(L) : null;
+    out.h = h ? { kind: h.kind, map: [h.columns[h.mapping.x], h.columns[h.mapping.y], h.columns[h.mapping.z]].join(','), n: h.columns.length, refl: h.columns.includes('reflectance') } : null;
+    let n = 0, blanks = 0, sumI = 0; const ii = h.columns.indexOf('intensity'), ri = h.columns.indexOf('reflectance');
+    for await (const { f } of M_.layerRecords(L)) { n++; sumI += +f[ii]; if (f[ri] === '') blanks++; }
+    out.rec = { n, meanI: sumI / n, blanks };
+    out.numeric = M_.numericColsOf(L);
+    M_.openStats(L, { run: true, cfg: { cols: ['intensity'] } });
+    const el = await new Promise((res) => { const t2 = setInterval(() => { for (const w of document.querySelectorAll('.fwin')) if (w._statsRows) { clearInterval(t2); res(w); } }, 100); setTimeout(() => res(null), 15000); });
+    const row = el && el._statsRows.find((x) => /intensity/.test(JSON.stringify(x)));
+    out.stats = row ? { n: row.n ?? row.count, mean: row.mean } : null;
+    // a cloud as the samples of a pairing (a block model under it)
+    const rows = ['XC,YC,ZC,AU']; for (let k = 0; k < 2; k++) for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) rows.push(`${1002.5 + i * 5},${2002.5 + j * 5},${100.5 + 2 * k},${i}`);
+    const mid = await M_.openBlob(new File([rows.join('\n') + '\n'], 'model.csv'), 'model.csv', 'add');
+    const M = M_.layers().find((q) => q.id === mid);
+    const pr = await M_.pairBlocksSamples(M, L, { blockCol: 'AU', sampleCol: 'intensity' });
+    out.pair = { n: pr.n, outside: pr.outside };
+    return out;
+  }, las);
+  chk(`clouds as tables: ${JSON.stringify(r.h)}`, r.h && r.h.kind === 'cloud' && /^x,y,z$/i.test(r.h.map) && r.h.refl);
+  chk(`clouds as tables: records stream (${r.rec.n}, mean intensity ${r.rec.meanI}), the no-data reflectance blank (${r.rec.blanks}); numeric columns ${r.numeric.length}`, r.rec.n === 400 && r.rec.meanI === 950 && r.rec.blanks === 1 && r.numeric.includes('intensity') && !r.numeric.some((c) => /^[xyz]$/i.test(c)));
+  chk(`clouds in the stats window: intensity over ${r.stats && r.stats.n} points, mean ${r.stats && r.stats.mean}`, r.stats && r.stats.n === 400 && Math.abs(r.stats.mean - 950) < 1e-9);
+  chk(`clouds as pairing samples: ${r.pair.n} points paired, ${r.pair.outside} outside the model`, r.pair.n === 400 && r.pair.outside === 0);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
