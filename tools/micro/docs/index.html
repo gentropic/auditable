@@ -380,6 +380,9 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
   <li><b>Top cut</b> — a maximum more than ten times the 99.9th percentile.</li>
 </ul>
 <p>Click a finding to <b>select</b> its blocks (then Selection → column, or the attribute table's selection view); a gap has no blocks to select, so a click steps the camera through examples. Below the findings is a census of every column (values, blanks, min, median, 99.9th percentile, max, mean). <b>export .tsv</b> saves both. Nothing in the model is changed.</p>
+<h3 id="shells">Grade shells</h3>
+<p><b>Grade shell…</b> (a block model's menu, or <code>⌘K</code> “shell”) draws the surface around every block at or above a cutoff — contouring a volume — and adds it as a closed <b>mesh layer</b>: <code>AU ≥ 0.8 shell</code>. The surface passes between block centres where the grade crosses the cutoff, and closes on the block faces where the model ends or a block is missing, so a shell is always a solid. <b>Smoothing</b> (light / medium / strong) averages each block with its neighbours first; it is off by default, so the shell shows the blockiness the model has. <b>Only the filtered blocks</b> counts just the blocks matching the layer's filter as inside — a shell within one domain.</p>
+<p>The shell is a solid like any wireframe: select, flag or measure the model against it (Select by solid), read its volume and tonnage in <b>Mesh QA</b>, export it as OBJ, PLY, DXF, .msh or .wfr. Its lineage records the column, cutoff and smoothing. Regular, axis-aligned models only for now; a rotated or sub-blocked model says so.</p>
 <h2 id="dh"><span class="n">10</span>Drillholes</h2>
 <p>A drillhole set is <b>three tables bound by the hole id</b> — collars (one row per hole), survey (deviation stations), intervals (from/to samples) — and micro keeps that structure first-class rather than flattening it away.</p>
 <h3>The set in the layers panel</h3>
@@ -1164,6 +1167,7 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
 <p style="margin:.15em 0">filter — <a href="#filter">§6</a></p>
 <p style="margin:.15em 0">filter drawer (widgets) — <a href="#filter">§6</a></p>
 <p style="margin:.15em 0">flag / fraction by solid — <a href="#domain">§14</a></p>
+<p style="margin:.15em 0">grade shells — <a href="#shells">§9</a></p>
 <p style="margin:.15em 0">grade–tonnage — <a href="#gt">§16</a></p>
 <p style="margin:.15em 0">grids — <a href="#grids">§12</a>, <a href="#formats">App. B</a></p>
 <p style="margin:.15em 0">hole filter — <a href="#dh">§10</a></p>

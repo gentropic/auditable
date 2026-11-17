@@ -35,6 +35,7 @@ import { openMeshQa } from './meshqa.js';
 import { openModelQa } from './modelqa.js';
 import { openComposite } from './composite-ui.js';
 import { openPairing } from './pairing.js';
+import { openGradeShell } from './shells.js';
 import { openStructure } from './structure-ui.js';
 import { fmtSize, layerBytes } from './paths.js';
 import { CONTEXT_TRI_CAP, openMeshDoc } from './open-mesh.js';
@@ -95,7 +96,7 @@ export function layerMenu(L, x, y) {
     ...(layerTableHeader(L) && numericColsOf(L).length ? [{ label: 'Stats…', action: () => openStats(L) }, { label: 'Scatter / Q-Q…', action: () => openXyPlot(L) }] : []),
     ...(gridAxesOf(L) ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
     ...(!isView(L) && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
-    ...(gridAxesOf(L) && !isView(L) ? [{ label: 'Block vs sample…', action: () => openPairing(L) }] : []),
+    ...(gridAxesOf(L) && !isView(L) ? [{ label: 'Block vs sample…', action: () => openPairing(L) }, { label: 'Grade shell…', action: () => openGradeShell(L) }] : []),
     ...(!isView(L) && L.dh && L.docs.dhDoc && !L.trace ? [{ label: 'Composite…', action: () => openComposite(L) }] : []),
     ...(L._filterMask ? [{ label: 'Filter → selection', action: () => filterToSelection(L) }] : []),
     ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => selectionToColumn(L) }] : []),

@@ -5895,6 +5895,59 @@ if (take()) {
   await p.close();
 }
 
+// ── §90: GRADE SHELLS — marching tetrahedra on the block lattice. A spherical
+//     grade field (AU = 100 − distance) at a cutoff of 30 gives a closed shell of
+//     radius ≈ 70: every edge shared by exactly two triangles, all facing out
+//     (positive volume ≈ 4/3·π·70³), every vertex ≈ 70 m from the centre. A field
+//     rising with z, cut at 200, closes against the model's own faces: the 300 × 300
+//     × 100 box to its block faces (corners chamfered a little by the tetrahedra). The shell opens as a mesh layer with its lineage. ──
+if (take()) {
+  const p = await mkPage('sm2shell');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const check = (m) => {
+      const V = m.vertices, T = m.triangles, edges = new Map();
+      let vol = 0;
+      for (let t = 0; t < T.length; t += 3) {
+        const a = T[t], b = T[t + 1], c = T[t + 2];
+        for (const [u, v] of [[a, b], [b, c], [c, a]]) { const k = u < v ? `${u},${v}` : `${v},${u}`; edges.set(k, (edges.get(k) || 0) + 1); }
+        const ax = V[3 * a], ay = V[3 * a + 1], az = V[3 * a + 2], bx = V[3 * b], by = V[3 * b + 1], bz = V[3 * b + 2], cx = V[3 * c], cy = V[3 * c + 1], cz = V[3 * c + 2];
+        vol += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+      }
+      let open = 0; for (const n of edges.values()) if (n !== 2) open++;
+      return { tris: T.length / 3, open, vol };
+    };
+    const rows = ['XC,YC,ZC,AU,ZV'];
+    for (let k = 0; k < 30; k++) for (let j = 0; j < 30; j++) for (let i = 0; i < 30; i++) {
+      const x = 5 + i * 10, y = 5 + j * 10, z = 5 + k * 10;
+      rows.push(`${x},${y},${z},${(100 - Math.hypot(x - 150, y - 150, z - 150)).toFixed(4)},${z}`);
+    }
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'sphere.csv'), 'sphere.csv', 'replace');
+    const L = M_.layers().find((q) => q.id === id);
+    const fd = await M_.readField(L, 'AU');
+    const s = M_.contourField(fd, 30);
+    const cs = check(s);
+    let dmin = Infinity, dmax = 0;
+    for (let v = 0; v < s.vertices.length; v += 3) { const d = Math.hypot(s.vertices[v] - 150, s.vertices[v + 1] - 150, s.vertices[v + 2] - 150); dmin = Math.min(dmin, d); dmax = Math.max(dmax, d); }
+    out.sphere = { ...cs, ratio: cs.vol / (4 / 3 * Math.PI * 70 ** 3), dmin, dmax, inside: s.blocksInside };
+    const b = M_.contourField(await M_.readField(L, 'ZV'), 200);
+    out.box = check(b);
+    const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let v = 0; v < b.vertices.length; v += 3) for (let a = 0; a < 3; a++) { bb[a] = Math.min(bb[a], b.vertices[v + a]); bb[a + 3] = Math.max(bb[a + 3], b.vertices[v + a]); }
+    out.box.bb = bb;
+    const res = await M_.gradeShell(L, { col: 'AU', cutoff: 30 });
+    const NL = M_.layers().find((q) => q.id === res.id);
+    out.layer = { kind: NL && NL.kind, label: NL && NL.label, lineage: NL && NL.lineage && NL.lineage.op, tris: res.triangles };
+    return out;
+  });
+  const s = r.sphere;
+  chk(`grade shell: a sphere's shell is closed (${s.tris} triangles, ${s.open} open edges) and faces out (volume ${(s.ratio * 100).toFixed(1)}% of 4/3·π·70³)`, s.open === 0 && s.ratio > 0.97 && s.ratio < 1.03);
+  chk(`grade shell: every vertex on the 70 m contour (${s.dmin.toFixed(2)}–${s.dmax.toFixed(2)} m) around ${s.inside} blocks`, s.dmin > 68.5 && s.dmax < 71.5);
+  chk(`grade shell: a field cut at the model's edge closes on the block faces — the box ${JSON.stringify(r.box.bb)}, ${r.box.vol.toFixed(0)} m³ of 9,000,000 (${r.box.open} open edges)`, r.box.open === 0 && JSON.stringify(r.box.bb) === '[0,0,200,300,300,300]' && Math.abs(r.box.vol - 9e6) / 9e6 < 0.005);
+  chk(`grade shell: a mesh layer “${r.layer.label}” (${r.layer.kind}, ${r.layer.tris} triangles, lineage ${r.layer.lineage})`, r.layer.kind === 'mesh' && /AU ≥ 30 shell/.test(r.layer.label) && r.layer.lineage === 'shell');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
