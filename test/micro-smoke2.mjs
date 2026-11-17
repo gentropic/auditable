@@ -5423,6 +5423,54 @@ if (take()) {
   await p.close();
 }
 
+// ── §81: CUSTOM THEMES — a token map over dark or light. A partial theme (one
+//     accent) applies over its base; a light-based one switches the register;
+//     switching back removes every inline token; the .json round-trips and
+//     refuses non-colours; the editor derives the twin tokens, reads contrast,
+//     starts from high contrast cleanly; the theme survives a reload. ──
+if (take()) {
+  const p = await mkPage('sm2theme');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+    out.reg = { dark: M_.registerTokens('dark')['--text'], light: M_.registerTokens('light')['--text'] };
+    M_.setCustomTheme({ name: 'blue accent', base: 'dark', tokens: { '--accent': '#2266ff' } });
+    out.a = { accent: css('--accent'), text: css('--text'), light: document.documentElement.dataset.theme || null };
+    M_.setCustomTheme({ name: 'warm paper', base: 'light', tokens: { '--accent': '#aa3300' }, scene: '#203040' });
+    out.b = { accent: css('--accent'), text: css('--text'), light: document.documentElement.dataset.theme || null, scene: M_.sceneDefault() };
+    const txt = M_.themeJson();
+    const back = M_.parseThemeJson(txt);
+    let bad = null; try { M_.parseThemeJson('{"x":1}'); } catch (e) { bad = e.message; }
+    const cleaned = M_.parseThemeJson(JSON.stringify({ format: 'micro-theme', base: 'dark', tokens: { '--accent': '#123456', '--panel': 'url(evil)', '--mono': '#000000', 'color': '#ffffff' } }));
+    out.c = { name: back.name, base: back.base, accent: back.tokens['--accent'], scene: back.scene, bad, cleaned: Object.keys(cleaned.tokens) };
+    M_.setTheme('dark');
+    out.d = { accent: css('--accent'), inline: [...document.documentElement.style].filter((k) => k in M_.registerTokens('dark')).length, scene: M_.sceneDefault() };
+    // the editor: a swatch edit derives its twin; contrast reads; high contrast passes
+    const w = M_.openThemeEditor();
+    const sw = w.body.querySelector('input[data-token="--panel"]');
+    sw.value = '#202840'; sw.dispatchEvent(new Event('input'));
+    const ct = M_.customTheme();
+    const crTxt = () => [...w.body.querySelectorAll('div')].map((d) => d.textContent).find((s) => /^contrast/.test(s)) || '';
+    out.e = { panel: ct.tokens['--panel'], glass: ct.tokens['--panel-glass'], cssPanel: css('--panel'), cr: crTxt() };
+    const sel = w.body.querySelector('select'); sel.value = 'high contrast'; sel.dispatchEvent(new Event('change'));
+    out.f = { cr: crTxt(), bg: css('--bg'), base: M_.customTheme().base };
+    return out;
+  });
+  chk(`themes: the registers read from the stylesheet (text ${r.reg.dark} / ${r.reg.light})`, r.reg.dark === '#bbb' && r.reg.light === '#3a3936');
+  chk(`themes: a partial dark theme changes just the accent (${r.a.accent}, text ${r.a.text}, register ${r.a.light || 'dark'})`, r.a.accent === '#2266ff' && r.a.text === '#bbb' && r.a.light === null);
+  chk(`themes: a light-based theme switches the register and carries its scene (${r.b.accent}, text ${r.b.text}, scene ${r.b.scene})`, r.b.accent === '#aa3300' && r.b.text === '#3a3936' && r.b.light === 'light' && r.b.scene === '#203040');
+  chk(`themes: the .json round-trips and refuses non-colours (kept ${JSON.stringify(r.c.cleaned)}; garbage → “${r.c.bad}”)`, r.c.name === 'warm paper' && r.c.base === 'light' && r.c.accent === '#aa3300' && r.c.scene === '#203040' && JSON.stringify(r.c.cleaned) === '["--accent"]' && !!r.c.bad);
+  chk(`themes: back to dark leaves no inline token (${r.d.inline}) and the stock accent ${r.d.accent}`, r.d.inline === 0 && r.d.accent === '#c89b3c' && r.d.scene === '#121212');
+  chk(`themes: the editor's swatch applies live and keeps the glass panel in step (${r.e.panel} → ${r.e.glass}); ${r.e.cr.slice(0, 60)}…`, r.e.panel === '#202840' && r.e.cssPanel === '#202840' && /rgba\(32, 40, 64, 0\.9[67]\)/.test(r.e.glass) && /contrast/.test(r.e.cr));
+  chk(`themes: high contrast starts clean (${r.f.cr.slice(0, 50)}…, bg ${r.f.bg})`, /every pair ≥ 4\.5:1/.test(r.f.cr) && r.f.bg === '#000000' && r.f.base === 'dark');
+  await p.reload({ waitUntil: 'load' });
+  await p.waitForFunction(() => window._micro, null, { timeout: 20000 });
+  const g = await p.evaluate(() => ({ bg: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(), pref: localStorage.getItem('micro.theme'), raw: (localStorage.getItem('micro.themeCustom') || '').slice(0, 80) }));
+  chk(`themes: the custom theme is back after a reload (bg ${g.bg}, pref ${g.pref}, ${g.raw})`, g.bg === '#000000');
+  await p.evaluate(() => window._micro.clearCustomTheme());
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

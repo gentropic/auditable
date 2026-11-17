@@ -3,7 +3,7 @@
 // background colour (the ink flips on a light one); the decorations panel; and the
 // figure recipe. The app owns the camera, the render loop and the overlay canvas.
 import { hexToRgb01 } from './color.js';
-import { SCENE_DEFAULT, resolvedTheme } from './theme.js';
+import { sceneDefault } from './theme.js';
 import { ensureLegend, layerClassInfo } from './categories.js';
 import { RAMP_PRESETS, colorSelOf, rampCfgOf, rampRangeFor, rampSample } from './ramp.js';
 import { layerTableHeader } from './records.js';
@@ -38,7 +38,7 @@ export let _bgPref = (() => {
     const old = localStorage.getItem('micro.bg'); return old && old.toLowerCase() !== '#121212' ? old : 'auto';
   } catch { return 'auto'; }
 })();
-const resolveBg = () => (/^#[0-9a-fA-F]{6}$/.test(_bgPref) ? _bgPref : SCENE_DEFAULT[resolvedTheme()]);
+const resolveBg = () => (/^#[0-9a-fA-F]{6}$/.test(_bgPref) ? _bgPref : sceneDefault());
 export let _bgColor = resolveBg();
 
 export let _deInk = { fg: '#fff', bg: 'rgba(0,0,0,0.6)' };

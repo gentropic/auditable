@@ -1,6 +1,7 @@
 // micro — Tools → Settings: the remembered preferences, in one window.
 import { _bgPref, setBg } from './deco.js';
 import { THEME_PREFS, _themePref, setTheme } from './theme.js';
+import { openThemeEditor } from './theme-editor.js';
 import { _autoApply } from './props.js';
 import { _windingGpu, setWindingGpu } from './bygeom.js';
 import { setPinBudget } from './columns.js';
@@ -24,7 +25,8 @@ export function setSettingsHooks(h) { H = h; }
 // live here, in localStorage micro.*, never in the project. The window renders
 // itself from PREFS; adding a preference = adding a row.
 export const PREFS = [
-  { sec: 'display', label: 'theme', desc: 'the panels, menus and windows — dark basalt or light equipment gray; "follow the system" tracks the OS setting as it changes', kind: 'choice', opts: THEME_PREFS, get: () => _themePref, set: (v) => setTheme(v) },
+  { sec: 'display', label: 'theme', desc: 'the panels, menus and windows — dark basalt or light equipment gray; "follow the system" tracks the OS setting as it changes', kind: 'choice', opts: THEME_PREFS, get: () => _themePref, set: (v) => (v === 'custom-new' ? openThemeEditor() : setTheme(v)) },
+  { sec: 'display', label: 'custom theme', desc: 'your own colours over dark or light — a swatch per token, a contrast check, and a small .json file to share it with a team', kind: 'action', button: 'edit…', run: () => openThemeEditor() },
   { sec: 'display', label: 'background', desc: 'the scene clear colour — "match the theme" moves with it; white or paper for print-bound figures (decorations flip to dark ink)', kind: 'choice', opts: () => [['auto', 'match the theme'], ['#121212', 'basalt'], ['#000000', 'black'], ['#ffffff', 'white'], ['#f4f2ec', 'paper'], ...(/^#/.test(_bgPref) && !['#121212', '#000000', '#ffffff', '#f4f2ec'].includes(_bgPref.toLowerCase()) ? [[_bgPref, 'custom ' + _bgPref]] : [])], get: () => _bgPref.toLowerCase(), set: (v) => setBg(v) },
   { sec: 'display', label: 'block edges', desc: 'outline every block face — and every cut block on a section', kind: 'toggle', get: () => H._blockEdges, set: (v) => H.setBlockEdges(v) },
   { sec: 'display', label: 'render budget', desc: 'elements per frame — lower is snappier while orbiting; the picture converges when the camera rests', kind: 'choice', opts: () => [...$('#budget').options].map((o) => [o.value, o.textContent]), get: () => $('#budget').value, set: (v) => { $('#budget').value = v; $('#budget').dispatchEvent(new Event('change')); requestRender(); } },
@@ -82,7 +84,7 @@ export function openSettingsWindow() {
         $('#meta').textContent = 'window layouts forgotten — windows open at their defaults again';
       });
       mk('reset all preferences', 'every setting back to its default (window layouts and recents stay)', () => {
-        try { for (const k of ['micro.bg', 'micro.scene', 'micro.theme', 'micro.edges', 'micro.budget', 'micro.selStick', 'micro.autoApply', 'micro.secFollow', 'micro.windingCpu', 'micro.pinBudget', 'micro.autoOptimize', 'micro.nl']) localStorage.removeItem(k); } catch { /* private */ }
+        try { for (const k of ['micro.bg', 'micro.scene', 'micro.theme', 'micro.themeCustom', 'micro.edges', 'micro.budget', 'micro.selStick', 'micro.autoApply', 'micro.secFollow', 'micro.windingCpu', 'micro.pinBudget', 'micro.autoOptimize', 'micro.nl']) localStorage.removeItem(k); } catch { /* private */ }
         $('#meta').textContent = 'preferences reset — reload micro to see every default again';
       });
       return;
@@ -94,7 +96,11 @@ export function openSettingsWindow() {
       top.style.cssText = 'display:flex;align-items:center;gap:10px';
       const lab = document.createElement('span'); lab.style.cssText = 'flex:1;min-width:0;color:var(--text)'; lab.textContent = pr.label;
       top.appendChild(lab);
-      if (pr.kind === 'toggle') {
+      if (pr.kind === 'action') {
+        const bt = document.createElement('button'); bt.className = 'awin-btn'; bt.textContent = pr.button || 'open…';
+        bt.onclick = () => pr.run();
+        top.appendChild(bt);
+      } else if (pr.kind === 'toggle') {
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!pr.get();
         cb.onchange = () => { pr.set(cb.checked); };
         top.appendChild(cb);
