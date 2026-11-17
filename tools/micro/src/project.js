@@ -148,6 +148,7 @@ export function projectManifest() {
       label: L.label && L.label !== L.name ? L.label : undefined,
       external: L.storage === 'external' || undefined,
       colorSel: L.colorSel, clip: L.clip, filter: L.filterExpr || '', visible: L.visible,
+      offset: L.offset || undefined,                       // drawn displaced (an exploded view) — display only
       catChoices: L.catChoices && L.catChoices.length ? L.catChoices : undefined,
       sectioned: (() => { const m = S.renderer.layerSectioned(L.id); return m === true ? undefined : m; })(),
       kind: (L.kind === 'mesh' && !L.gridSurface) ? 'mesh'
@@ -670,6 +671,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
           await refilterLayer(Ld, ls.filter);
           if (ls.visible === false) { Ld.visible = false; S.renderer.setLayerVisible(Ld.id, false); }
           if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(Ld.id, ls.sectioned);
+          if (Array.isArray(ls.offset) && ls.offset.some((v) => +v)) { Ld.offset = ls.offset.map(Number); S.renderer.setLayerOffset(Ld.id, Ld.offset); }
           restoreHiddenCats(Ld, ls.hiddenCats);
           if (ls.ramps) { Ld.ramps = ls.ramps; applyRamp(Ld, true); }
           if (ls.catLegend) { Ld.catLegend = ls.catLegend; applyCatLegend(Ld, true); }
@@ -792,6 +794,7 @@ export async function openProjectDir(dir, { pack = null } = {}) {
       if (ls.visible === false) { L.visible = false; applyTreeVisibility(); }
       if (ls.sectioned != null && ls.sectioned !== true) S.renderer.setLayerSectioned(L.id, ls.sectioned);
       if (ls.pointScale) { S.renderer.setLayerPointScale(L.id, ls.pointScale); L.pointScale = ls.pointScale; }
+      if (Array.isArray(ls.offset) && ls.offset.some((v) => +v)) { L.offset = ls.offset.map(Number); S.renderer.setLayerOffset(L.id, L.offset); }
       restoreHiddenCats(L, ls.hiddenCats);
       if (ls.ramps) { L.ramps = ls.ramps; applyRamp(L, true); }
       if (ls.catLegend) { L.catLegend = ls.catLegend; applyCatLegend(L, true); }

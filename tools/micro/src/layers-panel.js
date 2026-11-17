@@ -5,6 +5,7 @@
 import { _sheetExclusive, _isMobile } from './windows.js';
 import { S, requestRender, layerById } from './state.js';
 import { treeSync, treeFindParent, treeMove, groupLayerIds, treeMoveStep, setGroupExclusive, showNode } from './tree.js';
+import { openExplode } from './explode.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { markProjectDirty } from './project.js';
@@ -160,9 +161,12 @@ export function groupMenu(nd, x, y) {
         if (!u) u = Float64Array.from(b2);
         else for (let i = 0; i < 3; i++) { if (b2[i] < u[i]) u[i] = b2[i]; if (b2[i + 3] > u[i + 3]) u[i + 3] = b2[i + 3]; }
       }
+      const drawn = S.renderer.contentBbox({ layers: groupLayerIds(nd) });   // an exploded group: where it is drawn
+      if (drawn && groupLayerIds(nd).some((id) => { const L = layerById(id); return L && L.offset; })) u = Float64Array.from(drawn);
       if (u) { S.cam.fit(u); requestRender(); }
     } },
     { label: 'Opacity', submenu: () => groupOpacityItems(nd) },
+    ...(groupLayerIds(nd).length >= 2 ? [{ label: 'Explode…', action: () => openExplode(nd) }] : []),
     { label: (nd.exclusive ? '✓ ' : '') + 'Mutually exclusive', kbd: '{ }', action: () => setGroupExclusive(nd, !nd.exclusive) },
     { sep: true },
     { label: 'Ungroup (keep layers)', action: () => {

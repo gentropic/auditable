@@ -5518,6 +5518,73 @@ if (take()) {
   await p.close();
 }
 
+// ── §83: EXPLODED VIEWS — a group's members pulled apart along z, display only.
+//     Offsets stack by tree order; filters and analysis are unchanged; a pick
+//     returns the same record and a measure across two displaced layers reads the
+//     TRUE distance; the offsets save and reopen; home brings everything back. ──
+if (take()) {
+  const p = await mkPage('sm2explode');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro, R = M_.renderer, out = {};
+    const mk = (z0, au) => { const rows = ['XC,YC,ZC,AU']; for (let k = 0; k < 2; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},${z0 + 5 + k * 10},${au + i}`); return rows.join('\n') + '\n'; };
+    const ids = [];
+    for (const [nm, z0, au] of [['top.csv', 140, 30], ['mid.csv', 120, 20], ['low.csv', 100, 10]]) ids.push(await M_.openBlob(new File([mk(z0, au)], nm), nm, ids.length ? 'add' : 'replace'));
+    const nd = M_.createLayerGroup('units', ids);
+    const L = (id) => M_.layers().find((q) => q.id === id);
+    await W.filter(ids[1], 'AU > 25');
+    const hits0 = L(ids[1])._filterMask.reduce((a, b) => a + b, 0);
+    const pre = R.contentBbox({ layers: [ids[0]] })[2];
+    const res = M_.explodeGroup(nd, 50, 'z');
+    out.offs = res.map((x) => x.offset[2]);
+    const tree = M_.layerTree();
+    const g = tree.find((n) => n.group && n.name === 'units');
+    out.order = g.children.map((c) => L(c.id || c).name);
+    out.hits = L(ids[1])._filterMask.reduce((a, b) => a + b, 0) === hits0;
+    out.trueBox = (() => { const h = L(ids[0]).docs.blockDoc.header.bbox; return [h.min[2], h.max[2]]; })();
+    // the drawn box of the top layer is lifted by its offset
+    const b0 = R.contentBbox({ layers: [ids[0]] });
+    out.lift = b0 ? b0[2] - pre : null;
+    // measure across two displaced layers: drawn far apart, true distance read
+    M_.cam.fit(R.contentBbox()); M_.cam.update(); M_.requestRender();
+    await new Promise((res2) => setTimeout(res2, 400));
+    out.offset1 = R.layerOffset(ids[0]);
+    // pick the top layer from the centre of its drawn box: the record is a true record
+    const cb = R.contentBbox({ layers: [ids[0]] });
+    const c = [(cb[0] + cb[3]) / 2, (cb[1] + cb[4]) / 2, cb[5]];
+    const m = M_.cam.state.viewProj, w = m[3] * c[0] + m[7] * c[1] + m[11] * c[2] + m[15];
+    const cx = ((m[0] * c[0] + m[4] * c[1] + m[8] * c[2] + m[12]) / w + 1) / 2 * document.querySelector('#cv').clientWidth, cy = (1 - (m[1] * c[0] + m[5] * c[1] + m[9] * c[2] + m[13]) / w) / 2 * document.querySelector('#cv').clientHeight;
+    await new Promise((res2) => setTimeout(res2, 300));
+    const hit = R.pick(cx, cy, M_.cam, { pointPx: 3 });
+    out.pick = hit ? { layer: hit.layer, rec: hit.rec } : null;
+    if (hit) { const pos = await M_.recordPosition(hit); out.pickZ = pos && pos[2]; }
+    const css = (id) => { const bb = R.contentBbox({ layers: [id] }); const q = [(bb[0] + bb[3]) / 2, (bb[1] + bb[4]) / 2, bb[5]]; const w2 = m[3] * q[0] + m[7] * q[1] + m[11] * q[2] + m[15]; return [((m[0] * q[0] + m[4] * q[1] + m[8] * q[2] + m[12]) / w2 + 1) / 2 * document.querySelector('#cv').clientWidth, (1 - (m[1] * q[0] + m[5] * q[1] + m[9] * q[2] + m[13]) / w2) / 2 * document.querySelector('#cv').clientHeight]; };
+    M_.armMeasure();
+    const [ax, ay] = css(ids[0]), [bx, by2] = css(ids[2]);
+    await M_.measureClick(ax, ay); await M_.measureClick(bx, by2);
+    const ms = M_.measureState();
+    out.meas = { drawnDz: ms.a && ms.b ? Math.abs(ms.a[2] - ms.b[2]) : null, trueDz: ms.aT && ms.bT ? Math.abs(ms.aT[2] - ms.bT[2]) : null, txt: document.querySelector('#meta').textContent };
+    return out;
+  });
+  await saveProject(p);
+  chk(`explode: members stack by tree order (${r.order.join(', ')} → z ${r.offs.join(' / ')})`, JSON.stringify(r.offs) === '[100,50,0]');
+  chk(`explode: the filter is untouched (${r.hits}) and the data keeps its true z (${r.trueBox}); the top layer is drawn ${r.lift} m up`, r.hits && r.trueBox[0] === 145 && Math.abs(r.lift - 100) < 1e-6);
+  chk(`explode: a measure across two displaced layers reads the true Δz (${r.meas.trueDz}, drawn ${r.meas.drawnDz}) · “${r.meas.txt}”`, r.meas.trueDz != null && [50, 100].some((k) => Math.abs(Math.abs(r.meas.drawnDz - r.meas.trueDz) - k) < 1e-6) && /true positions/.test(r.meas.txt));
+  chk(`explode: a pick on the drawn top layer returns a TRUE record (layer ${r.pick && r.pick.layer}, z ${r.pickZ})`, r.pick && r.pickZ >= 145 && r.pickZ <= 155);
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2explode'); await window._micro.openProjectDir(dir); });
+  await p.waitForTimeout(1000);
+  const g = await p.evaluate(() => {
+    const M_ = window._micro;
+    const by = (n) => M_.layers().find((q) => q.name === n);
+    const offs = ['top.csv', 'mid.csv', 'low.csv'].map((n) => { const L = by(n); return L && L.offset ? L.offset[2] : 0; });
+    const drawn = ['top.csv', 'mid.csv', 'low.csv'].map((n) => M_.renderer.layerOffset(by(n).id)[2]);
+    const nd = M_.layerTree().find((n) => n.group && n.name === 'units');
+    M_.explodeGroup(nd, 0);
+    return { offs, drawn, home: ['top.csv', 'mid.csv', 'low.csv'].map((n) => M_.renderer.layerOffset(by(n).id)[2]), hits: by('mid.csv')._filterMask && by('mid.csv')._filterMask.reduce((a, b) => a + b, 0) };
+  });
+  chk(`explode: the offsets reopen with the project (${g.offs.join(' / ')}; drawn ${g.drawn.join(' / ')}); home → ${g.home.join(' / ')}`, JSON.stringify(g.offs) === '[100,50,0]' && JSON.stringify(g.drawn) === '[100,50,0]' && JSON.stringify(g.home) === '[0,0,0]');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

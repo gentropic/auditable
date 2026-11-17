@@ -322,7 +322,7 @@ export async function showRecord(hit) {
   _recLayer = L;                        // gate the field picker to the picked layer's own hidden set
   attrTableReveal(lid, rec);
   const docs = L ? L.docs : {};
-  const tag = S.layers.length > 1 && L ? `${L.label || L.name} · ` : '';
+  const tag = (S.layers.length > 1 && L ? `${L.label || L.name} · ` : '') + (L && L.offset ? 'drawn displaced · ' : '');
   const bd = docs.blockDoc, pd = docs.plyDoc, ld = docs.lasDoc, dd = docs.dhDoc;
   if (docs.gridDoc) {
     const gd = docs.gridDoc, g = gd.grid;

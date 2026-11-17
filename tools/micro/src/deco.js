@@ -162,6 +162,13 @@ export function renderDeco(g, W, H) {
   if (_deco.north) drawNorthArrow(g, W, H);
   drawLegendsDeco(g, W, H);
   if (_deco.title) drawTitleDeco(g, W, H);
+  if ((_deco.scale || _deco.north || _deco.title || anyLegend()) && S.layers.some((L) => L.offset && L.visible !== false)) drawDisplacedNote(g, W, H);
+}
+
+// an exploded figure says so: positions between displaced layers are not real
+function drawDisplacedNote(g, W, H) {
+  g.font = '11px sans-serif'; g.textAlign = 'left'; g.textBaseline = 'bottom';
+  _label(g, 'exploded view — some layers drawn displaced; distances between them are not real', 12, H - 10);
 }
 
 export function drawDecorations() {

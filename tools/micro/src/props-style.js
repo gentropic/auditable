@@ -17,6 +17,7 @@ import { useAsCategory } from './coltypes.js';
 import { viewCatName, modelCatName, viewTextColumns, ensureViewCat } from './viewcat.js';
 import { setLayerColorBy } from './color.js';
 import { setViewOffset, besideOffset } from './layerviews.js';
+import { setLayerDisplayOffset } from './explode.js';
 import { setHTML, trusted } from './html.js';
 import { layerClassInfo, legendOf, legendCodesOf, ensureLegend, applyCatLegend, applyCatVisibility, rgbCssToHex, ensureCatCounts } from './categories.js';
 import { RULE_ELSE, runRules, applyRuleVisibility, applyRulePalette, ruleModeOf } from './rules.js';
@@ -234,6 +235,26 @@ export function renderStyleTab(body, L) {
   }
   if (L.dh && L.docs.dhDoc) renderStickRadius(body, L);
   if (L.viewOf != null) renderViewOffset(body, L);
+  else if (L.kind !== 'table') renderLayerOffset(body, L);
+}
+// any layer can be DRAWN somewhere else — pulled aside to compare, or by a group's
+// Explode… — its data stays where it is
+function renderLayerOffset(body, L) {
+  const cur = L.offset || [0, 0, 0];
+  const ins = ['x', 'y', 'z'].map((ax, k) => {
+    const inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.style.width = '52px';
+    inp.value = String(cur[k]); inp.title = `draw the layer moved along ${ax} (world units) — its records keep their coordinates`;
+    inp.onchange = () => { setLayerDisplayOffset(L, ins.map((i) => +i.value || 0)); renderProps(); };
+    return inp;
+  });
+  body.appendChild(mkRow('offset', ...ins));
+  if (L.offset) {
+    const home = document.createElement('button'); home.className = 'pp-tab'; home.textContent = 'home';
+    home.title = 'draw it where its data is';
+    home.onclick = () => { setLayerDisplayOffset(L, null); renderProps(); };
+    body.appendChild(mkRow('', home));
+    body.appendChild(ppNote('drawn displaced — picks, measures, exports and analysis read the true coordinates'));
+  }
 }
 // a VIEW can be drawn somewhere else than its data — side by side with its
 // model, for two columns over the same region. Display only.

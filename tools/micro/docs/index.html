@@ -271,6 +271,10 @@
 </ul>
 <p>In a project a view is saved as display settings that name its model, never as a second copy of the file, and it comes back on reopen with its colour, filter, classes and offset. If the model re-reads its file (reload, re-mapping, re-desurvey), its views follow.</p>
 
+<h3 id="explode">Exploded views</h3>
+<p>Right-click a group → <b>Explode…</b> pulls its layers apart so each can be seen whole: a slider sets the gap and a choice sets the direction (up, east or north). Layers stack in list order, the top of the list highest. <b>home</b> puts them all back. Any single layer can be moved the same way from <b>Properties → style → offset</b> (dx/dy/dz) — to pull one wireframe revision aside next to another, say.</p>
+<p>It is <b>display only</b>. Every layer keeps its data where it is: filters, selections, grade–tonnage, swath, exports and joins read the true coordinates. A pick on a moved layer shows the true record and says “drawn displaced”; a <b>measure</b> is drawn where you click but reads the true positions, and says so. A figure with displaced layers carries a footnote, since the distances between them are not real. Offsets are saved with the project.</p>
+
 <h2 id="windows"><span class="n">5</span>Windows, undo &amp; safety nets</h2>
 <p>The analysis, table, calculations, QA, and paint windows are all draggable and pinned to their layer (open several at once). <b>View → Windows…</b> lists every open window — click to focus, or <b>Cascade</b> and <b>Close all</b> to tidy up. The window on top carries an amber accent in its title bar; <span class="kbd">Ctrl+`</span> cycles through the open windows.</p>
 <p><b>Minimize</b> (the <b>–</b> button) sends a window to a slim strip of chips above the status bar — click its chip to bring it back exactly where it was. <b>Drag a window to the left or right screen edge</b> to snap it to that half of the screen (a preview shows before you release). Every window kind remembers its size — and its position, when it's the only one of its kind — so your grade–tonnage window opens where you like it, every time.</p>
@@ -1135,6 +1139,7 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
 <p style="margin:.15em 0">element manifest — <a href="#parquet">§30</a>, <a href="#glossary">App. C</a></p>
 <p style="margin:.15em 0">Excel (.xlsx) workbooks — <a href="#tables">§13</a></p>
 <p style="margin:.15em 0">export (rows / mesh / grid) — <a href="#projects">§28</a>, <a href="#meshes">§11</a>, <a href="#grids">§12</a></p>
+<p style="margin:.15em 0">exploded views — <a href="#explode">§4</a></p>
 <p style="margin:.15em 0">figures &amp; decorations — <a href="#figures">§27</a></p>
 <p style="margin:.15em 0">file info — <a href="#start">§2</a>, <a href="#faq">§33</a></p>
 <p style="margin:.15em 0">filter — <a href="#filter">§6</a></p>

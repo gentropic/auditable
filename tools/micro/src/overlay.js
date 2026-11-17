@@ -84,9 +84,14 @@ export async function measureClick(cssX, cssY) {
   const world = await pickHitPoint(hit, cssX, cssY);       // ON the face you clicked, not the centroid behind it
   if (!world) return;
   const local = [world[0] - S.frame.origin[0], world[1] - S.frame.origin[1], world[2] - S.frame.origin[2]];
-  if (!_measure.a) { _measure.a = local; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); }
+  // a layer drawn displaced (an exploded view, a view beside its model): the line is
+  // drawn where you clicked, the numbers are read from where the data really is
+  const off = S.renderer.layerOffset(hit.layer) || [0, 0, 0];
+  const trueLocal = [local[0] - off[0], local[1] - off[1], local[2] - off[2]];
+  const moved = off.some((v) => v !== 0);
+  if (!_measure.a) { _measure.a = local; _measure.aT = trueLocal; _measure.moved = moved; $('#meta').textContent = _isMobile() ? 'measure: now the second point' : 'measure: click the second point'; drawMeasure(); }
   else {
-    _measure.b = local; _measure.arm = 0; _measure.mouse = null;
+    _measure.b = local; _measure.bT = trueLocal; _measure.moved = _measure.moved || moved; _measure.arm = 0; _measure.mouse = null;
     S.cv.style.cursor = '';
     $('#btnMeasure').classList.remove('on');
     updateMeasureReadout();
@@ -105,7 +110,8 @@ export function toggleMeasureTP() {
 }
 
 export function updateMeasureReadout() {
-  const d = [0, 1, 2].map((i) => _measure.b[i] - _measure.a[i]);
+  const A = _measure.aT || _measure.a, B = _measure.bT || _measure.b;
+  const d = [0, 1, 2].map((i) => B[i] - A[i]);
   const d3 = Math.hypot(...d), plan = Math.hypot(d[0], d[1]);
   let tp = '';
   if (_measureTP) {
@@ -113,7 +119,7 @@ export function updateMeasureReadout() {
     const plunge = Math.atan2(-d[2], plan) * 180 / Math.PI;   // positive DOWN (mining convention)
     tp = ` · ${Math.round(plunge)}°→${String(Math.round(trend)).padStart(3, '0')}°`;
   }
-  $('#meta').textContent = `measure: ${d3.toFixed(2)} m · plan ${plan.toFixed(2)} m · Δz ${Math.abs(d[2]).toFixed(2)} m${tp}`;
+  $('#meta').textContent = `measure: ${d3.toFixed(2)} m · plan ${plan.toFixed(2)} m · Δz ${Math.abs(d[2]).toFixed(2)} m${tp}${_measure.moved ? ' · true positions (a layer is drawn displaced)' : ''}`;
   _measure.label = `${d3.toFixed(1)} m${tp}`;
 }
 
