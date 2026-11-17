@@ -665,7 +665,12 @@ async function drive(url, tag) {
     && xs3.val === catCol + ' = ' && xs3.kinds.join() === 'k-value' && new RegExp(`^${catCol} = ".+" $`).test(xs4.val) && !xs5.shown);
   await p.evaluate(() => { const M = window._micro; M.openCalcWindow(M.layers().find((L) => L.id === M.activeId())); });
   await p.waitForTimeout(400);
-  await p.tap('.cw-edwrap textarea'); await p.waitForTimeout(150);
+  // the press and lift together (tap()), not Playwright's tap: on CI's busy page that one
+  // resolved the textarea and then stalled out its 30 s every run
+  await until(() => { const t = document.querySelector('.cw-edwrap textarea'); return t && t.getBoundingClientRect().height > 0; });
+  const edAt = await p.evaluate(() => { const r = document.querySelector('.cw-edwrap textarea').getBoundingClientRect(); return { x: r.left + Math.min(40, r.width / 2), y: r.top + r.height / 2 }; });
+  await tap(edAt.x, edAt.y);
+  await until(() => document.activeElement && document.activeElement.matches('.cw-edwrap textarea')); await p.waitForTimeout(150);
   await p.tap('#exprStrip .xs-keys button[data-k="("]'); await p.tap('#exprStrip .xs-sugg button.k-column'); await p.tap('#exprStrip .xs-keys button[data-k="+"]');
   const xsCalc = await xs();
   chk(`[${tag}] … and on the ƒ editor: "${xsCalc.val}" (focus ${xsCalc.focus})`, xsCalc.shown && /^\(\w+ \+ $/.test(xsCalc.val) && xsCalc.focus === 'TEXTAREA');
