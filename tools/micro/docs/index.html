@@ -586,6 +586,9 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 </figure>
 <p class="note"><b>Note —</b> Samples are point support, blocks are block support, so a <i>global</i> grade offset between them can be real (change of support), not an error. The swaths are what flag <i>local</i>, conditional bias.</p>
 
+<h3 id="pairing">Block vs sample</h3>
+<p><b>Block vs sample…</b> (a block model's menu, or <code>⌘K</code>) pairs every sample with the block it falls in — the most direct check that an estimate honours its data. The samples are any points layer (composites, a sample file) or a drillhole layer (each interval at its midpoint). Pick the samples' column, the model's column and, optionally, a domain column of the model to split by. The window plots the pairs as a <b>scatter</b> or a <b>Q–Q</b> plot (log axes on request) with the 1:1 line, and tabulates, overall and per domain: the pairs, both means, the <b>bias</b> of the blocks against the samples, the correlation <b>r</b>, and the <b>slope</b> of block on sample — below 1 the estimate is smoother than its data (conditional bias). A bias beyond ±10 % or a slope outside 0.8–1.2 is highlighted. Samples outside the model, in a missing block or without a value are counted, not paired. <b>select the disagreeing samples</b> marks, on the samples' layer, those whose block differs by more than a factor you choose. Rotated and sub-blocked models aren't paired yet; the window says so.</p>
+<p class="tip"><b>Tip —</b> Composite the drillholes first (see <a href="#composites">Composites</a>) so samples and blocks are compared at a like support.</p>
 <h2 id="meshqa"><span class="n">23</span>Mesh QA &amp; volume</h2>
 <p><b>Mesh QA / volume…</b> (right-click a mesh, or the palette) answers what you ask of a wireframe before it bounds an estimate: is it a solid, is it one piece, do its faces agree, and what does it hold.</p>
 <figure>
@@ -1125,6 +1128,7 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
 <p style="margin:.15em 0">blanks — <a href="#columns">§8</a>, <a href="#dh">§10</a></p>
 <p style="margin:.15em 0">block edges — <a href="#view">§4</a></p>
 <p style="margin:.15em 0">block models — <a href="#blocks">§9</a></p>
+<p style="margin:.15em 0">block vs sample — <a href="#pairing">§22</a></p>
 <p style="margin:.15em 0">bookmarks — <a href="#projects">§28</a></p>
 <p style="margin:.15em 0">breakpoints / classed ramp — <a href="#view">§4</a></p>
 <p style="margin:.15em 0">broadcast (collar → intervals) — <a href="#dh">§10</a>, <a href="#glossary">App. C</a></p>

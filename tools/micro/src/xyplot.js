@@ -28,7 +28,7 @@ const QQ_P = [0.005, ...Array.from({ length: 99 }, (_, i) => (i + 1) / 100), 0.9
 // ── the plot: axes (linear or log10), then density cells, points or Q-Q marks ──
 // spec = { xr, yr (plotted units), logX, logY, xLabel, yLabel, heat: { grid, B } |
 //   points: [x, y, …] | qq: [[x, y]…], line11, color }
-function drawXY(cv, spec) {
+export function drawXY(cv, spec) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const W = cv.clientWidth || 400, Hh = cv.clientHeight || 300;
   cv.width = W * dpr; cv.height = Hh * dpr;

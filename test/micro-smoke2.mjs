@@ -5683,6 +5683,57 @@ if (take()) {
   await p.close();
 }
 
+// ── §86: BLOCK vs SAMPLE — samples paired with the block they fall in. In the W
+//     domain the samples equal their blocks (bias 0, slope 1); in E they are
+//     twice their blocks (bias −50 %, slope 0.5). Samples outside the model and in
+//     a missing block are counted, not paired; a drillhole pairs by interval
+//     midpoint; "select the disagreeing samples" marks exactly the E ones. ──
+if (take()) {
+  const p = await mkPage('sm2pair');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU,DOMAIN'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 10; i++) {
+      if (i === 9 && j === 9 && k === 3) continue;         // a missing block
+      rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i + 1},${i < 5 ? 'W' : 'E'}`);
+    }
+    const mid = await M_.openBlob(new File([rows.join('\n') + '\n'], 'model.csv'), 'model.csv', 'replace');
+    const sm = ['X,Y,Z,AU_S'];
+    let nW = 0, nE = 0;
+    for (let i = 0; i < 10; i++) for (const j of [1, 4, 7]) { const au = i + 1; sm.push(`${1003 + i * 10},${2006 + j * 10},${112},${i < 5 ? au : 2 * au}`); if (i < 5) nW++; else nE++; }
+    sm.push('900,2050,120,5'); sm.push('1050,2050,600,5');          // outside
+    sm.push('1095,2095,135,4');                                        // in the missing block
+    const sid = await M_.openBlob(new File([sm.join('\n') + '\n'], 'samples.csv'), 'samples.csv', 'add', null, { mapping: { x: 0, y: 1, z: 2, chan: 3, cat: null }, asKind: 'points' });
+    const M = M_.layers().find((q) => q.id === mid), Sm = M_.layers().find((q) => q.id === sid);
+    const res = await M_.pairBlocksSamples(M, Sm, { blockCol: 'AU', sampleCol: 'AU_S', groupCol: 'DOMAIN' });
+    const g = (nm) => res.stats.find((s) => s.group === nm);
+    const f2 = (v) => (v == null ? null : +v.toFixed(4));
+    out.a = { n: res.n, nW, nE, outside: res.outside, noBlock: res.noBlock, W: [g('W').n, f2(g('W').bias), f2(g('W').slope), f2(g('W').r)], E: [g('E').n, f2(g('E').bias), f2(g('E').slope)] };
+    out.sel = M_.selectDisagreeing(res, 1.5);
+    out.selCount = Sm._selCount;
+    // a drillhole down through column i=2, j=2: intervals of AU 3 in blocks of AU 3
+    const collar = 'HOLEID,EAST,NORTH,RL\nH1,1025,2025,160\n', survey = 'HOLEID,DEPTH,AZIMUTH,DIP\nH1,0,0,-90\n';
+    const iv = ['HOLEID,FROM,TO,AU']; for (let d = 20; d < 60; d += 2) iv.push(`H1,${d},${d + 2},3`);
+    await M_.importDrillholes({ collar: new File([collar], 'c.csv'), survey: new File([survey], 's.csv'), intervals: new File([iv.join('\n') + '\n'], 'assay.csv') }, {}, 'add');
+    const D = M_.layers().find((q) => q.dh && !q.trace);
+    const rd = await M_.pairBlocksSamples(M, D, { blockCol: 'AU', sampleCol: 'AU' });
+    out.dh = { n: rd.n, bias: f2(rd.stats[0].bias), outside: rd.outside };
+    // the window: Run fills the table and draws
+    const e = M_.openPairing(M);
+    e.set({ samples: sid, sCol: 'AU_S', bCol: 'AU', group: '' });
+    const wr = await e.run();
+    out.win = { n: wr && wr.n, rows: e.win.el.querySelectorAll('.st-tbl tr').length, sub: e.win.sub.textContent };
+    return out;
+  });
+  chk(`block vs sample: ${r.a.n} pairs (${r.a.nW} W + ${r.a.nE} E); ${r.a.outside} outside the model and ${r.a.noBlock} in a missing block are counted, not paired`, r.a.n === 30 && r.a.outside === 2 && r.a.noBlock === 1);
+  chk(`block vs sample: W honours its samples (n, bias, slope, r = ${r.a.W.join(', ')}); E is half its samples (${r.a.E.join(', ')})`,
+    JSON.stringify(r.a.W) === '[15,0,1,1]' && JSON.stringify(r.a.E) === '[15,-0.5,0.5]');
+  chk(`block vs sample: the disagreeing samples (× 1.5) are the E ones — ${r.sel} selected on the samples' layer (${r.selCount})`, r.sel === 15 && r.selCount === 15);
+  chk(`block vs sample: a drillhole pairs by interval midpoint (${r.dh.n} intervals, bias ${r.dh.bias}, ${r.dh.outside} outside)`, r.dh.n === 20 && r.dh.bias === 0 && r.dh.outside === 0);
+  chk(`block vs sample: the window runs (${r.win.n} pairs, ${r.win.rows} table rows, “${r.win.sub}”)`, r.win.n === 30 && r.win.rows === 2);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
