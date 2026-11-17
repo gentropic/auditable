@@ -1,15 +1,18 @@
 // micro — a TURNTABLE video: the camera orbits the scene once (or part way) and
 // every frame is the figure renderer's picture — rendered to convergence, with the
 // decorations on it — so a two-million-block model records as smoothly as a small
-// one, only slower. The browser's own MediaRecorder writes the file (WebM, or MP4
-// where WebM can't be made); nothing leaves the machine. Pacing: the recorder is
-// PAUSED while a frame renders and resumed for exactly one frame's time, so the
-// video plays at an even speed however long each frame took.
+// one, only slower. Each frame is ENCODED with its own timestamp (WebCodecs'
+// VideoEncoder, VP8/VP9) and written into a WebM by src/webm.js, so the video plays
+// at exactly its frame rate however long a frame took to render or however busy the
+// machine was. A browser without WebCodecs falls back to MediaRecorder, paused while
+// a frame renders and resumed for one frame's time (real-time, so it can drop
+// frames under load). Nothing leaves the machine.
 import { S, requestRender } from './state.js';
 import { applyCamera, captureCamera } from './camera.js';
 import { floatWin, raiseWindow } from './windows.js';
 import { deliverBlob } from './hostio.js';
 import { _deco } from './deco.js';
+import { muxWebm, webcodecsCodec } from './webm.js';
 const $ = (s) => document.querySelector(s);
 
 // the app's side, passed in once (setTurntableHooks): renderFigureCanvas
@@ -17,6 +20,7 @@ let HK = {};
 export function setTurntableHooks(h) { HK = h; }
 
 export function turntableMime() {
+  if (typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined') return 'video/webm';
   if (typeof MediaRecorder === 'undefined') return null;
   for (const t of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4']) if (MediaRecorder.isTypeSupported(t)) return t;
   return null;
@@ -43,11 +47,50 @@ export async function recordTurntable({ seconds = 8, fps = 30, degrees = 360, de
   out.width = first.width & ~1; out.height = first.height & ~1;     // even sizes: video encoders want them
   const g = out.getContext('2d');
   g.drawImage(first, 0, 0);
+  const bps0 = Math.round(Math.min(16e6, Math.max(2e6, out.width * out.height * fps * 0.12)));
+  const codec = await webcodecsCodec(out.width, out.height);
+  if (codec) {
+    // WebCodecs: every frame timestamped i / fps — exact pacing, independent of render time
+    const frames = []; let encErr = null, cancelled = false;
+    const enc = new VideoEncoder({
+      output: (chunk) => { const b = new Uint8Array(chunk.byteLength); chunk.copyTo(b); frames.push({ data: b, ts: chunk.timestamp / 1000, key: chunk.type === 'key' }); },
+      error: (e) => { encErr = e; },
+    });
+    enc.configure({ codec, width: out.width, height: out.height, bitrate: bps0, framerate: fps });
+    try {
+      for (let i = 0; i < n; i++) {
+        if (signal && signal.aborted) { cancelled = true; break; }
+        if (encErr) throw encErr;
+        if (i > 0) {
+          S.cam.state.theta = cam0.theta + step * i;
+          S.cam.update();
+          g.drawImage(HK.renderFigureCanvas(scale, { decorations }), 0, 0);
+        }
+        const vf = new VideoFrame(out, { timestamp: Math.round((i * 1e6) / fps), duration: Math.round(1e6 / fps) });
+        enc.encode(vf, { keyFrame: i % Math.max(1, Math.round(fps * 2)) === 0 });
+        vf.close();
+        if (onProgress) onProgress(i + 1, n);
+        while (enc.encodeQueueSize > 4) await sleep(5);
+        await sleep(0);
+      }
+      if (!cancelled) await enc.flush();
+    } finally {
+      try { enc.close(); } catch { /* closed already */ }
+      applyCamera(cam0);
+      requestRender();
+    }
+    if (encErr) throw encErr;
+    if (cancelled) return null;
+    frames.sort((a, b) => a.ts - b.ts);
+    const bytes = muxWebm({ width: out.width, height: out.height, codec: codec.startsWith('vp09') ? 'vp9' : 'vp8', frames, durationMs: (n * 1000) / fps });
+    return { blob: new Blob([bytes], { type: 'video/webm' }), frames: n, mime: 'video/webm' };
+  }
+  if (typeof MediaRecorder === 'undefined') { applyCamera(cam0); throw new Error('this browser cannot record video'); }
   const stream = out.captureStream(0);
   const track = stream.getVideoTracks()[0];
   const chunks = [];
-  const bps = Math.round(Math.min(16e6, Math.max(2e6, out.width * out.height * fps * 0.12)));
-  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bps });
+  const recMime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find((t) => MediaRecorder.isTypeSupported(t));
+  const rec = new MediaRecorder(stream, { mimeType: recMime, videoBitsPerSecond: bps0 });
   rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   const stopped = new Promise((res) => { rec.onstop = res; });
   rec.start();
@@ -77,7 +120,7 @@ export async function recordTurntable({ seconds = 8, fps = 30, degrees = 360, de
     requestRender();
   }
   if (cancelled) return null;
-  return { blob: new Blob(chunks, { type: mime.split(';')[0] }), frames: n, mime };
+  return { blob: new Blob(chunks, { type: recMime.split(';')[0] }), frames: n, mime: recMime };
 }
 
 // ── the window: length, turn, frame rate, decorations → Record ───────────────
