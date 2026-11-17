@@ -371,6 +371,15 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <h3>Which format to keep a model in</h3>
 <p>A CSV is the most portable; a Datamine <code>.dm</code> opens instantly and reads one column at a time; a <b>Parquet</b> file is the smallest and the fastest to query — micro's own store, Morton-sorted so the filter skips whole stretches of the file it can prove don't match. <b>Store as Parquet…</b> (right-click the model) converts one; saving a project offers to do it for you. See <a href="#parquet">the project store</a>.</p>
 
+<h3 id="modelqa">Model QA</h3>
+<p><b>Model QA…</b> (right-click a block model, or <code>⌘K</code> “model QA”) reads the whole model once and reports what a reviewer should see before anyone reports from it, errors first:</p>
+<ul>
+  <li><b>The lattice</b> — two blocks in one cell, a centroid off the grid, and gaps inside a column (missing blocks between a column's lowest and highest block). Checked on regular models; a rotated or sub-blocked model says it was not.</li>
+  <li><b>Every column</b> — blank values (an error for a coordinate), sentinel codes such as −99, −999 or −1e30 read as numbers, text in a numeric column, negative values, a constant or empty column.</li>
+  <li><b>Density</b> (a column named DENSITY, SG, BD, …) — zeros, and anything outside 1–6 t/m³.</li>
+  <li><b>Top cut</b> — a maximum more than ten times the 99.9th percentile.</li>
+</ul>
+<p>Click a finding to <b>select</b> its blocks (then Selection → column, or the attribute table's selection view); a gap has no blocks to select, so a click steps the camera through examples. Below the findings is a census of every column (values, blanks, min, median, 99.9th percentile, max, mean). <b>export .tsv</b> saves both. Nothing in the model is changed.</p>
 <h2 id="dh"><span class="n">10</span>Drillholes</h2>
 <p>A drillhole set is <b>three tables bound by the hole id</b> — collars (one row per hole), survey (deviation stations), intervals (from/to samples) — and micro keeps that structure first-class rather than flattening it away.</p>
 <h3>The set in the layers panel</h3>
@@ -1159,6 +1168,7 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
 <p style="margin:.15em 0">mesh QA / volume — <a href="#meshqa">§23</a></p>
 <p style="margin:.15em 0">meshes — <a href="#meshes">§11</a></p>
 <p style="margin:.15em 0">micro:model — <a href="#dev">App. D</a></p>
+<p style="margin:.15em 0">model QA — <a href="#modelqa">§9</a></p>
 <p style="margin:.15em 0">mutually exclusive groups — <a href="#start">§2</a></p>
 <p style="margin:.15em 0">offline / install — <a href="#install">§32</a></p>
 <p style="margin:.15em 0">OMF (.omf) — <a href="#meshes">§11</a>, <a href="#formats">App. B</a></p>

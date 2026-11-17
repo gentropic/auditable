@@ -5585,6 +5585,62 @@ if (take()) {
   await p.close();
 }
 
+// ── §84: MODEL QA — a model seeded with known faults reports each of them, worst
+//     first: a block twice in one cell, three gaps inside columns, −99 sentinels,
+//     a negative grade, a 5000 among grades ≤ 60 (a top-cut question), a zero and
+//     a 9 t/m³ density, blank rock codes. A finding's click selects exactly its
+//     blocks; a clean model reports nothing. ──
+if (take()) {
+  const p = await mkPage('sm2mqa');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU,DENSITY,ROCK'];
+    let n = 0;
+    for (let k = 0; k < 5; k++) for (let j = 0; j < 10; j++) for (let i = 0; i < 20; i++) {
+      if (k === 2 && j === 0 && i < 3) continue;           // three gaps, one per column
+      n++;
+      let au = ((i * 7 + j * 3 + k) % 50) + 1, dens = 2.7, rock = 'ox';
+      if (n === 11 || n === 12) au = -99;
+      if (n === 13) au = -0.5;
+      if (n === 14) au = 5000;
+      if (n === 20) dens = 0;
+      if (n === 21) dens = 9;
+      if (n >= 30 && n < 33) rock = '';
+      rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${au},${dens},${rock}`);
+    }
+    rows.push(rows[100]);                                  // the same block again
+    const clean = ['XC,YC,ZC,AU,DENSITY'];
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) clean.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${1 + i + j},2.6`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'faults.csv'), 'faults.csv', 'replace');
+    const L = M_.layers().find((q) => q.id === id);
+    const e = await M_.openModelQa(L);
+    const res = await e.done;
+    const fs = M_.qaFindings(res);
+    out.N = res.N; out.grid = res.lattice && [res.lattice.nx, res.lattice.ny, res.lattice.nz].join('×');
+    out.f = fs.map((f) => `${f.sev}|${f.check}|${f.column}|${f.count}`);
+    out.rows = e.win.el.querySelectorAll('.mq-tbl tr').length - 1;
+    const sent = fs.find((f) => /sentinel/.test(f.check));
+    out.selSent = sent ? await M_.selectFinding(L, sent) : null;
+    const dup = fs.find((f) => /two blocks/.test(f.check));
+    out.selDup = dup ? await M_.selectFinding(L, dup) : null;
+    const top = fs.find((f) => /99\.9th/.test(f.check));
+    out.selTop = top ? await M_.selectFinding(L, top) : null;
+    const cid = await M_.openBlob(new File([clean.join('\n') + '\n'], 'clean.csv'), 'clean.csv', 'add');
+    const r2 = await M_.modelQa(M_.layers().find((q) => q.id === cid));
+    out.clean = M_.qaFindings(r2).map((f) => `${f.sev}|${f.check}`);
+    return out;
+  });
+  const has = (s) => r.f.includes(s);
+  chk(`model QA: ${r.N} blocks on ${r.grid}; ${r.f.length} findings, ${r.rows} rows in the window`, r.N === 998 && r.grid === '20×10×5' && r.rows === r.f.length);
+  chk(`model QA: the lattice — a doubled block and three gaps (${r.f.filter((x) => /cell|gap/.test(x)).join(' · ')})`, has('error|two blocks in one cell||1') && has('warn|gap inside a column||3'));
+  chk(`model QA: the grades — sentinels, a negative, a top-cut maximum (${r.f.filter((x) => /AU/.test(x)).join(' · ')})`, has('warn|sentinel values (−99, −999, −1e30…)|AU|2') && has('warn|negative values|AU|1') && has('warn|maximum far above the 99.9th percentile|AU|1'));
+  chk(`model QA: density and text (${r.f.filter((x) => /DENSITY|ROCK/.test(x)).join(' · ')})`, has('error|density outside 1–6 t/m³|DENSITY|1') && has('error|zero density|DENSITY|1') && has('info|blank values|ROCK|3'));
+  chk(`model QA: errors first (${r.f[0]})`, /^error/.test(r.f[0]) && r.f.findIndex((x) => /^warn/.test(x)) > r.f.findLastIndex((x) => /^error/.test(x)));
+  chk(`model QA: a click selects exactly the finding's blocks (sentinels ${r.selSent}, the double ${r.selDup}, the top-cut ${r.selTop})`, r.selSent === 2 && r.selDup === 1 && r.selTop === 1);
+  chk(`model QA: a clean model has no error or warning (${JSON.stringify(r.clean)} — a constant density is a note)`, r.clean.every((x) => /^info/.test(x)));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
