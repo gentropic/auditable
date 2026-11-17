@@ -5734,6 +5734,53 @@ if (take()) {
   await p.close();
 }
 
+// ── §87: SECTION SERIES — N–S sections every 50 m, rendered to one zip: four
+//     PNGs (each a different picture — the cut moves through a model graded
+//     along x) and an index.html naming them; the section, the camera and the
+//     figure title are back afterwards. ──
+if (take()) {
+  const p = await mkPage('sm2series');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU'];
+    for (let k = 0; k < 6; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i * 5 + ((j * k) % 7)}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'model.csv'), 'model.csv', 'replace');
+    await window.micro.setColorBy(id, 'AU');
+    M_.setDecoTitle('Pit 3');
+    M_.setSectionWorld({ axis: 'x', position: 1100, thickness: 10 });
+    const cam0 = JSON.stringify(window.micro.view());
+    out.pos = M_.seriesPositions(1025, 1175, 50);
+    const res = await M_.renderSectionSeries({ from: 1025, to: 1175, step: 50 });
+    out.sheets = res.sheets.map((s) => s.name);
+    out.labels = res.sheets.map((s) => s.label);
+    const u8 = new Uint8Array(await res.blob.arrayBuffer());
+    // the PNGs inside (stored, not deflated): from each signature to its IEND
+    const pngs = [];
+    for (let i = 0; i < u8.length - 8; i++) {
+      if (u8[i] === 0x89 && u8[i + 1] === 0x50 && u8[i + 2] === 0x4e && u8[i + 3] === 0x47) {
+        let j = i; while (j < u8.length - 8 && !(u8[j] === 0x49 && u8[j + 1] === 0x45 && u8[j + 2] === 0x4e && u8[j + 3] === 0x44)) j++;
+        pngs.push(u8.slice(i, j + 8)); i = j;
+      }
+    }
+    const px = [];
+    for (const b of pngs) { const bm = await createImageBitmap(new Blob([b], { type: 'image/png' })); const c = new OffscreenCanvas(bm.width, bm.height); const g = c.getContext('2d'); g.drawImage(bm, 0, 0); px.push(g.getImageData(0, 0, bm.width, bm.height).data); }
+    const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) n++; return n / (a.length / 4); };
+    out.pngs = pngs.length;
+    out.d01 = px.length > 1 ? differ(px[0], px[1]) : 0;
+    out.d03 = px.length > 3 ? differ(px[0], px[3]) : 0;
+    const txt = new TextDecoder().decode(u8);
+    out.index = txt.includes('index.html') && /4 N–S sections every 50 m/.test(txt) && out.sheets.every((n) => txt.includes(`src="${n}"`));
+    const w = M_.sectionWorld();
+    out.after = { pos: w && +w.position.toFixed(3), mode: w && w.mode, cam: JSON.stringify(window.micro.view()) === cam0, title: window.micro.decorations ? null : null };
+    out.title = document.querySelector('#meta') && M_.captureFigureCfg ? (M_.captureFigureCfg().deco || {}).titleText : null;
+    return out;
+  });
+  chk(`section series: ${JSON.stringify(r.pos)} → ${r.sheets.join(', ')} (${r.labels[0]} …)`, JSON.stringify(r.pos) === '[1025,1075,1125,1175]' && r.sheets.length === 4 && /N–S section 1025 ± 5/.test(r.labels[0]));
+  chk(`section series: the zip holds ${r.pngs} PNGs, each its own picture (${(100 * r.d01).toFixed(1)}% / ${(100 * r.d03).toFixed(1)}% of pixels differ), and an index.html naming them (${r.index})`, r.pngs === 4 && r.d01 > 0.01 && r.d03 > 0.01 && r.index);
+  chk(`section series: the section (${r.after.mode} at ${r.after.pos}), the camera (${r.after.cam}) and the title (“${r.title}”) are back`, r.after.mode === 'ns' && r.after.pos === 1100 && r.after.cam && (r.title == null || r.title === 'Pit 3'));
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
