@@ -136,10 +136,18 @@ export function openThemeEditor() {
       const r = contrast(hex6(c[ink]), hex6(c[on]));
       if (r == null) return null;
       const low = r < 4.5;
-      return `<span style="color:${low ? 'var(--fault)' : 'var(--dim)'}">${ink.slice(2)} on ${on.slice(2)} ${r.toFixed(1)}${low ? ' ⚠' : ''}</span>`;
+      const s = document.createElement('span');
+      s.style.color = low ? 'var(--fault)' : 'var(--dim)';
+      s.textContent = `${ink.slice(2)} on ${on.slice(2)} ${r.toFixed(1)}${low ? ' ⚠' : ''}`;
+      return { s, low };
     }).filter(Boolean);
-    const lows = parts.filter((p) => p.includes('⚠')).length;
-    cr.innerHTML = `<b style="color:${lows ? 'var(--fault)' : 'var(--ok)'}">contrast</b> — ${lows ? `${lows} pair${lows > 1 ? 's' : ''} below 4.5:1` : 'every pair ≥ 4.5:1'} · ${parts.join(' · ')}`;
+    const lows = parts.filter((p) => p.low).length;
+    cr.textContent = '';
+    const head = document.createElement('b');
+    head.style.color = lows ? 'var(--fault)' : 'var(--ok)';
+    head.textContent = 'contrast';
+    cr.append(head, ` — ${lows ? `${lows} pair${lows > 1 ? 's' : ''} below 4.5:1` : 'every pair ≥ 4.5:1'}`);
+    for (const p of parts) cr.append(' · ', p.s);
   };
   if (!customTheme()) commit(null);                        // opening the editor makes the theme live
   renderRows(); renderContrast();
