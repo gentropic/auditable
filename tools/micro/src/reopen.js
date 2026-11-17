@@ -13,7 +13,7 @@ import { applyRamp, rampCfgOf } from './ramp.js';
 import { openBlob } from './open.js';
 import { openBlocksBlob, openDmBlob, openParquetBlocks } from './open-blocks.js';
 import { markProjectDirty } from './project.js';
-import { mapColumns } from '../../../ext/condenser/src/main.js';
+import { mapColumns, sniffDelimited } from '../../../ext/condenser/src/main.js';
 import { basename } from './paths.js';
 import { invalidateWholeHoles } from './drillholes.js';
 import { applyLayerSurface, captureLayerSurface } from './surfaces.js';
@@ -302,6 +302,123 @@ export async function reloadLayerFromDisk(L) {
   }
   markProjectDirty();
   refreshProps();
+}
+
+// ── Change file… — Reload's sibling: the SAME layer over a DIFFERENT file. Next
+// month's model drops in under last month's setup: its place in the tree, its label,
+// its views, styling, calc columns, filter. The layer NAME becomes the new file's
+// (the name is the file; the label is the user's). Painted columns and the
+// selection were made record by record on the old file, so they go — after asking.
+// Delimited files keep the old column mapping where the new header has those
+// columns, and sniff the rest. The file must hold the same kind of data.
+const FAMILIES = [
+  [/\.(csv|txt|dat|tsv|xyz|pts|dm|parquet|pq)$/i, 'records'], [/\.las$/i, 'las'], [/\.ply$/i, 'ply'],
+  [/\.(tif|tiff|grd|asc)$/i, 'grid'], [/\.(obj|msh|lfm|wfr)$/i, 'mesh'], [/\.dxf$/i, 'dxf'],
+];
+export const fileFamily = (name) => (FAMILIES.find(([re]) => re.test(name || '')) || [])[1] || null;
+const DELIMITED = /\.(csv|txt|dat|tsv|xyz|pts)$/i;
+
+export function canChangeFile(L) {
+  if (!L || L.dh || L.trace || L.collarOf || L.viewOf != null) return false;   // drillhole sets: the set menu · derived · views follow their model
+  const md = L.docs && L.docs.meshDoc;
+  if (md && ((md.header && md.header.format) || md.format) === 'dm-wireframe') return false;   // a pair of files
+  if (L.docs && L.docs.tableDoc && L.docs.tableDoc.xlsx) return false;           // a sheet of a workbook
+  return !!fileFamily(L.name);
+}
+function sameKind(L, name) {
+  const a = fileFamily(L.name), b = fileFamily(name);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return L.kind === 'mesh' && ['ply', 'mesh', 'dxf'].includes(a) && ['ply', 'mesh', 'dxf'].includes(b);
+}
+
+export async function pickReplacementFile() {
+  try {
+    if (window.showOpenFilePicker) { const [h] = await window.showOpenFilePicker(); const f = await h.getFile(); _fileHandles.set(f, h); return { file: f, handle: h }; }
+    const f = await new Promise((res) => { const i = document.createElement('input'); i.type = 'file'; i.onchange = () => res(i.files[0] || null); i.click(); });
+    return f ? { file: f, handle: null } : null;
+  } catch { return null; }                                  // the picker was dismissed
+}
+
+// the delimited mapping for the new file: the old coordinate/grade/category columns
+// BY NAME where the new header has them, the new file's own sniff where it doesn't
+async function carriedMapping(L, file) {
+  const doc = L.docs.blockDoc;
+  const sniff = sniffDelimited(await file.slice(0, 64 * 1024).text());
+  const cols = sniff.header ? sniff.header.map((c) => String(c).trim()) : null;
+  if (!cols) return { mapping: null, why: 'it has no header row' };
+  const auto = mapColumns(cols) || {};
+  const oldCols = doc && doc.header && doc.header.columns;
+  const old = doc && !doc.header.dm && !doc.parquet && doc.header.mapping;
+  const by = (k) => {
+    const nm = old && oldCols && old[k] != null ? String(oldCols[old[k]]).trim() : null;
+    const i = nm != null ? cols.indexOf(nm) : -1;
+    return i >= 0 ? i : (auto[k] != null ? auto[k] : null);
+  };
+  const m = { x: by('x'), y: by('y'), z: by('z'), chan: by('chan'), cat: by('cat') };
+  if (m.x == null || m.y == null || m.z == null) return { mapping: null, why: 'no X/Y/Z columns were found in it' };
+  return { mapping: m };
+}
+
+export async function changeLayerFile(L, picked = null) {
+  if (!canChangeFile(L)) {
+    $('#meta').textContent = L && L.dh ? 'change file: a drillhole set is a compound source — use the set menu (add interval table / re-desurvey)' : 'change file: not offered for this layer';
+    return null;
+  }
+  picked = picked || await pickReplacementFile();
+  if (!picked || !picked.file) return null;
+  const file = picked.file, name = file.name || 'file';
+  if (picked.handle) _fileHandles.set(file, picked.handle);
+  if (!sameKind(L, name)) {
+    $('#meta').textContent = `change file: ${name} doesn't hold the same kind of data as ${L.name} — open it as a new layer instead`;
+    return null;
+  }
+  const over = {};
+  if (DELIMITED.test(name) && L.docs.blockDoc) {
+    const { mapping, why } = await carriedMapping(L, file);
+    if (!mapping) { $('#meta').textContent = `change file: can't use ${name} — ${why}`; return null; }
+    over.mapping = mapping;
+    if (L.docs.blockDoc.forcePoints) over.asKind = 'points';
+  } else if (L.docs.blockDoc && L.docs.blockDoc.forcePoints) over.asKind = 'points';
+  if (/\.dxf$/i.test(name)) { const sd = L.docs.stringsDoc; over.asKind = sd ? (sd.header.kind === 'strings' ? 'lines' : 'points') : 'mesh'; }
+  if (L.gridSurface) over.asKind = 'surface';
+  const perRecord = recordStateOf(L);
+  const [hOld, hNew] = await Promise.all([sourceHash(layerBlob(L)), sourceHash(file)]);
+  const same = !!hOld && hOld === hNew;
+  if (!same && perRecord.length) {
+    const ok = await microConfirm('Change file',
+      `${andList(perRecord)} ${perRecord.length > 1 ? 'were' : 'was'} made record by record on ${L.name} and would land on the wrong records of ${name}, so the change drops ${perRecord.length > 1 ? 'them' : 'it'}. Calculated columns, styling, the filter and the views are kept.`,
+      'Change and drop', 'Cancel');
+    if (!ok) { $('#meta').textContent = `change file: cancelled — ${L.label || L.name} unchanged`; return null; }
+  }
+  closeAttrTable(L.id);
+  const oldName = L.name, label = L.label || L.name;
+  const style = captureLayerStyling(L);
+  const surf = captureLayerSurface(L);
+  const filterExpr = L.filterExpr;
+  if (!same) style.paintCols = null;
+  const sel = same && L._selMask && L._selCount ? L._selMask : null;
+  const keep = captureReopenIdentity(L);
+  keep.label = label;                                      // what the user calls it stays; the name follows the file
+  keep.handle = picked.handle || null;
+  keep.storage = 'loose';                                  // the next save decides: inside the folder → project, else external
+  let L2 = null;
+  try { L2 = layerById(await openBlob(file, name, 'add', null, over)); } catch { L2 = null; }
+  if (!L2 || L2 === L) { $('#meta').textContent = `change file: ${name} could not be opened — ${L.label || L.name} unchanged`; return null; }
+  S.renderer.removeLayer(L.id);
+  S.layers = S.layers.filter((l) => l.id !== L.id);
+  pinEvictLayer(L.id);
+  restoreReopenIdentity(L2, keep);
+  applyLayerStyling(L2, style);
+  await applyLayerSurface(L2, surf);
+  L2.filterExpr = filterExpr;
+  if (sel && sel.length === attrRowCountOf(L2)) { L2._selMask = sel; L2._selCount = sel.reduce((a, v) => a + (v ? 1 : 0), 0); applyLayerSelection(L2); }
+  await refilterLayer(L2, filterExpr);
+  dispatchEvent(new CustomEvent('micro:layer-reread', { detail: { id: L2.id } }));
+  renderLayers(); markProjectDirty(); refreshProps();
+  const dropped = !same && perRecord.length ? ` · dropped ${andList(perRecord)}` : '';
+  $('#meta').textContent = `${label}: now reads ${name} (was ${oldName})${dropped}`;
+  return L2;
 }
 
 const andList = (a) => (a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]);

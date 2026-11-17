@@ -7,7 +7,7 @@ import { _lpSel, lpSelIds, moveLayerToGroupMenu, renderLayers, secModeLabel, sec
 import { menuXY } from './menu.js';
 import { openBatchRename, renameActiveLayer } from './rename.js';
 import { exportGridAsc, openMeshExportDialog, writeGridDisplayCache } from './meshexport.js';
-import { canReloadLayer, reinterpretMenu, reinterpretOptions, reloadLayerFromDisk } from './reopen.js';
+import { canChangeFile, canReloadLayer, changeLayerFile, reinterpretMenu, reinterpretOptions, reloadLayerFromDisk } from './reopen.js';
 import { hasRecords, layerTableHeader } from './records.js';
 import { openAttrTable } from './attrtable.js';
 import { numericColsOf } from './analysis.js';
@@ -85,6 +85,7 @@ export function layerMenu(L, x, y) {
       { label: 'New view beside it', action: () => createView(L, { beside: true }).catch((e) => { $('#meta').textContent = `view — ${e.message}`; }) }] : []),
     ...(!isView(L) && reinterpretOptions(L).length ? [{ label: 'Reinterpret as…', action: () => setTimeout(() => reinterpretMenu(L, x, y), 0) }] : []),
     ...(!isView(L) && canReloadLayer(L) ? [{ label: 'Reload from disk', action: () => reloadLayerFromDisk(L) }] : []),
+    ...(canChangeFile(L) ? [{ label: 'Change file…', action: () => changeLayerFile(L) }] : []),
     { sep: true },                                          // ── inspect / analyze ──
     ...(hasRecords(L) ? [{ label: 'Attribute table…', kbd: 't', action: () => openAttrTable(L) }] : []),
     ...(hasRecords(L) ? [{ label: 'Filter…', kbd: '/', action: () => { setActiveLayer(L.id); $('#filter').focus(); } }] : []),

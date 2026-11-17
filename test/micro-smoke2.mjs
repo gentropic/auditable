@@ -5378,6 +5378,51 @@ if (take()) {
   await p.close();
 }
 
+// ── §80: CHANGE FILE — next month's model under last month's setup. The layer
+//     reads a different file and keeps its label, colour, filter and its views;
+//     a delimited mapping is carried BY COLUMN NAME (the new file's columns are
+//     in another order); a file of another kind is refused, the layer intact. ──
+if (take()) {
+  const p = await mkPage('sm2chg');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro, out = {};
+    const jan = ['XC,YC,ZC,AU,ROCK'], feb = ['AU,ZC,ROCK,XC,YC,CU'];
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) jan.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i * 20 + j},${i < 10 ? 'ox' : 'fr'}`);
+    for (let k = 0; k < 2; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 21; i++) feb.push(`${i * 20 + j + 50},${105 + k * 10},${i < 10 ? 'ox' : 'fr'},${1005 + i * 10},${2005 + j * 10},${(i + j) / 10}`);
+    const id = await M_.openBlob(new File([jan.join('\n') + '\n'], 'jan.csv'), 'jan.csv', 'replace');
+    const L = M_.layers().find((q) => q.id === id);
+    L.label = 'ore model';
+    await W.setColorBy(id, 'AU');
+    await W.filter(id, 'AU > 300');
+    const vid = await W.addView(id, { color: 'ROCK' });
+    const cnt = (Lx) => (Lx && Lx._filterMask ? Lx._filterMask.reduce((a, b) => a + b, 0) : null);
+    out.before = { hits: cnt(L), n: L.docs.blockDoc.header.count };
+    // refused: another kind of file
+    const no = await M_.changeLayerFile(L, { file: new File(['x'], 'scan.las'), handle: null });
+    out.refused = { ret: no, still: M_.layers().some((q) => q.id === id), msg: document.querySelector('#meta').textContent };
+    // the swap
+    const L2 = await M_.changeLayerFile(L, { file: new File([feb.join('\n') + '\n'], 'feb.csv'), handle: null });
+    const id2 = L2 && L2.id;
+    const bh = L2 && L2.docs.blockDoc.header, bb = bh && [...bh.bbox.min, ...bh.bbox.max];
+    const V = M_.layers().find((q) => q.id === vid);
+    out.after = {
+      name: L2 && L2.name, label: L2 && L2.label, colorBy: id2 != null && W.layer(id2).colorBy, filter: L2 && L2.filterExpr, hits: cnt(L2),
+      n: bh && bh.count, oldGone: !M_.layers().some((q) => q.id === id),
+      xmin: bb && bb[0], xmax: bb && bb[3], viewOf: V && V.viewOf, viewColor: W.layer(vid) && W.layer(vid).colorBy, viewHits: cnt(V),
+      cols: L2 && L2.docs.blockDoc.header.columns.join(','), msg: document.querySelector('#meta').textContent,
+    };
+    return out;
+  });
+  chk(`change file: a different kind of file is refused, the layer intact (“${r.refused.msg}”)`, r.refused.ret === null && r.refused.still);
+  chk(`change file: jan.csv → feb.csv keeps label “${r.after.label}”, colour ${r.after.colorBy}, filter “${r.after.filter}” (${r.before.hits} → ${r.after.hits} matches, ${r.before.n} → ${r.after.n} blocks) · “${r.after.msg}”`,
+    r.after.name === 'feb.csv' && r.after.label === 'ore model' && r.after.colorBy === 'AU' && r.after.filter === 'AU > 300'
+    && r.before.hits === 198 && r.after.hits === 338 && r.before.n === 800 && r.after.n === 840 && r.after.oldGone);
+  chk(`change file: the mapping follows the column NAMES in a reordered header (x ${r.after.xmin}–${r.after.xmax})`,
+    Math.abs(r.after.xmin - 1005) < 1e-6 && Math.abs(r.after.xmax - 1205) < 1e-6);
+  chk(`change file: the view follows its model onto the new file (colour ${r.after.viewColor})`, r.after.viewColor === 'ROCK');
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
