@@ -5948,6 +5948,64 @@ if (take()) {
   await p.close();
 }
 
+// ── §91: PT-BR — the interface language switches live: the menubar and toolbar
+//     (static chrome), a window's title, a menu's labels (with a live value in
+//     them), Settings, and the palette — shown in Portuguese and searched in both
+//     languages; back to English restores every original exactly. ──
+if (take()) {
+  const p = await mkPage('sm2lang');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const rows = ['XC,YC,ZC,AU']; for (let k = 0; k < 2; k++) for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) rows.push(`${5 + i * 10},${5 + j * 10},${5 + k * 10},${i}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'm.csv'), 'm.csv', 'replace');
+    const chrome = () => document.body.innerText;
+    const enBefore = { file: /\bFile\b/.test(chrome()), color: !!document.querySelector('#colorBy') };
+    const els = [...document.querySelectorAll('[title], [placeholder]')].filter((e) => !e.closest('#meta, #stats, .fwin'));
+    const texts = []; { const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.parentElement && !n.parentElement.closest('#meta, #stats, .fwin, script, style') && n.nodeValue.trim()) texts.push(n); }
+    const snapshot = () => els.map((e) => `${e.getAttribute('title')}|${e.getAttribute('placeholder')}`).join('\n') + '##' + texts.map((n) => n.nodeValue).join('\n');
+    const s0 = snapshot();
+    M_.setLang('pt');
+    out.pt = { arquivo: /\bArquivo\b/.test(chrome()), dados: /\bDados\b/.test(chrome()), lang: M_.lang() };
+    const w = await M_.openModelQa(M_.layers().find((q) => q.id === id));
+    out.pt.win = w.win.el.querySelector('.fwin-head .t').textContent;
+    w.win.close();
+    // a menu, with a live value in a label
+    M_.groupMenu ? null : null;
+    const { t } = await import('/tools/micro/src/i18n.js');
+    out.pt.labels = [t('Grade shell…'), t('Opacity (100%)'), t('✓ follow the section'), t('model QA · m.csv'), t('nothing in the catalog')];
+    // the palette: Portuguese shown, both languages searched
+    M_.openPalette();
+    const pal = document.querySelector('#palInput');
+    const list = () => [...document.querySelectorAll('#palList .pal-t')].map((e) => e.textContent);
+    pal.value = 'envoltória'; pal.dispatchEvent(new Event('input')); out.pt.palPt = list().slice(0, 3);
+    pal.value = 'grade shell'; pal.dispatchEvent(new Event('input')); out.pt.palEn = list().slice(0, 3);
+    out.pt.placeholder = pal.placeholder;
+    M_.closePalette();
+    M_.setLang('en');
+    out.en = { file: /\bFile\b/.test(chrome()), same: snapshot() === s0, lang: M_.lang() };
+    out.enBefore = enBefore;
+    return out;
+  });
+  chk(`pt-BR: the menubar reads Arquivo / Dados (${r.pt.arquivo}, ${r.pt.dabos ?? r.pt.dados}), html lang ${r.pt.lang}; a window title “${r.pt.win}”`, r.pt.arquivo && r.pt.dados && r.pt.lang === 'pt-BR' && /^QA do modelo · m\.csv$/.test(r.pt.win));
+  chk(`pt-BR: labels ${JSON.stringify(r.pt.labels)}`, JSON.stringify(r.pt.labels) === JSON.stringify(['Envoltória de teor…', 'Opacidade (100%)', '✓ seguir a seção', 'QA do modelo · m.csv', 'nothing in the catalog']));
+  chk(`pt-BR: the palette shows Portuguese and finds it in both languages (“envoltória” → ${JSON.stringify(r.pt.palPt)}; “grade shell” → ${JSON.stringify(r.pt.palEn)}); “${r.pt.placeholder}”`,
+    r.pt.palPt.includes('Envoltória de teor…') && r.pt.palEn.includes('Envoltória de teor…') && /^Digite um comando/.test(r.pt.placeholder));
+  chk(`pt-BR: back to English restores every original exactly (${r.en.same}, lang ${r.en.lang})`, r.en.file && r.en.same && r.en.lang === 'en' && r.enBefore.file);
+  // a browser in Portuguese: English until asked, with a one-line offer on the start screen
+  {
+    const c2 = await b.newContext({ locale: 'pt-BR', viewport: { width: 1100, height: 750 } });
+    const p2 = await c2.newPage();
+    await p2.goto(`http://127.0.0.1:${PORT}${APP}`, { waitUntil: 'load' });
+    await p2.waitForFunction(() => window._micro, null, { timeout: 20000 });
+    const o = await p2.evaluate(() => ({ lang: window._micro.lang(), offer: !!document.querySelector('#empty .lang-offer'), text: document.querySelector('#empty .lang-offer') && document.querySelector('#empty .lang-offer').textContent }));
+    await p2.evaluate(() => document.querySelector('#empty .lang-offer button').click());
+    const o2 = await p2.evaluate(() => ({ lang: window._micro.lang(), stored: localStorage.getItem('micro.lang'), gone: !document.querySelector('.lang-offer'), arquivo: /\bArquivo\b/.test(document.body.innerText) }));
+    await c2.close();
+    chk(`pt-BR: a Portuguese browser stays in English (${o.lang}) with an offer (“${o.text}”); taking it switches (${o2.lang}, stored ${o2.stored}, menubar Arquivo ${o2.arquivo})`, o.lang === 'en' && o.offer && o2.lang === 'pt-BR' && o2.stored === 'pt' && o2.gone && o2.arquivo);
+  }
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

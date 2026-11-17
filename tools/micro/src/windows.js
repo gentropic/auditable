@@ -3,6 +3,7 @@
 // with dialogs and menus — and, below 720px, the same window as a bottom SHEET
 // (peek / half / tall, one at a time). Carved from index.html (phase 3).
 import { _propOpen, closeProps } from './props.js';
+import { t as tr } from './i18n.js';
 import { toggleLayersPanel } from './layers-panel.js';
 
 const $ = (s) => document.querySelector(s);
@@ -127,8 +128,8 @@ export function floatWin({ title, sub, x = 90, y = 90, w = 560, h = 320, onClose
   if (_isMobile()) { el.classList.add('sheet'); el.style.cssText += `z-index:${nextZ()};`; el.style.setProperty('--sheet-h', '60svh'); }
   else el.style.cssText += `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${nextZ()};`;
   const head = document.createElement('div'); head.className = 'fwin-head';
-  const t = document.createElement('span'); t.className = 't'; t.textContent = title;
-  const subEl = document.createElement('span'); subEl.className = 'sub'; subEl.textContent = sub || '';
+  const t = document.createElement('span'); t.className = 't'; t.textContent = tr(title);
+  const subEl = document.createElement('span'); subEl.className = 'sub'; subEl.textContent = tr(sub || '');
   const minB = document.createElement('button'); minB.textContent = '–'; minB.title = 'minimize';
   const closeB = document.createElement('button'); closeB.textContent = '×';
   head.append(t, subEl, minB, closeB);

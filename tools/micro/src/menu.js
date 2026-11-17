@@ -2,6 +2,7 @@
 // menuXY(x, y, items, onCancel) at a point, menuAt(anchor, items) under an element;
 // items may nest ({ submenu }) and open on hover, or on a tap after a touch.
 import { topZ } from './windows.js';
+import { t } from './i18n.js';
 const $ = (s) => document.querySelector(s);
 
 // ── menubar (lamina's compact menuAt pattern — commands in menus, knobs in the bar) ──
@@ -25,7 +26,8 @@ export function _buildMenu(items) {
   for (const it of items) {
     if (it.sep) { const d = document.createElement('div'); d.className = 'sep'; m.appendChild(d); continue; }
     const d = document.createElement('div'); d.className = 'item'; d._item = it;
-    const lab = document.createElement('span'); lab.textContent = it.label; d.appendChild(lab);
+    // a lone lowercase word is usually DATA (a column, a bookmark): left as it is
+    const lab = document.createElement('span'); lab.textContent = /^[a-z_][\w.]*$/.test(String(it.label)) ? it.label : t(it.label); d.appendChild(lab);
     if (it.submenu) { const c = document.createElement('span'); c.className = 'kbd sub'; c.textContent = '▸'; d.appendChild(c); }
     else if (it.kbd) { const kb = document.createElement('span'); kb.className = 'kbd'; kb.textContent = it.kbd; d.appendChild(kb); }
     m.appendChild(d);

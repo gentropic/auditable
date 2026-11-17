@@ -2,6 +2,7 @@
 import { _bgPref, setBg } from './deco.js';
 import { THEME_PREFS, _themePref, setTheme } from './theme.js';
 import { openThemeEditor } from './theme-editor.js';
+import { LANG, LANGS, setLang, t } from './i18n.js';
 import { _autoApply } from './props.js';
 import { _windingGpu, setWindingGpu } from './bygeom.js';
 import { setPinBudget } from './columns.js';
@@ -25,6 +26,7 @@ export function setSettingsHooks(h) { H = h; }
 // live here, in localStorage micro.*, never in the project. The window renders
 // itself from PREFS; adding a preference = adding a row.
 export const PREFS = [
+  { sec: 'display', label: 'language', desc: 'the interface language — menus, windows, the palette and these settings; messages and the manual are in English for now', kind: 'choice', opts: LANGS, get: () => LANG, set: (v) => { setLang(v); if (_settingsWin) { _settingsWin.close(); openSettingsWindow(); } } },
   { sec: 'display', label: 'theme', desc: 'the panels, menus and windows — dark basalt or light equipment gray; "follow the system" tracks the OS setting as it changes', kind: 'choice', opts: THEME_PREFS, get: () => _themePref, set: (v) => (v === 'custom-new' ? openThemeEditor() : setTheme(v)) },
   { sec: 'display', label: 'custom theme', desc: 'your own colours over dark or light — a swatch per token, a contrast check, and a small .json file to share it with a team', kind: 'action', button: 'edit…', run: () => openThemeEditor() },
   { sec: 'display', label: 'background', desc: 'the scene clear colour — "match the theme" moves with it; white or paper for print-bound figures (decorations flip to dark ink)', kind: 'choice', opts: () => [['auto', 'match the theme'], ['#121212', 'basalt'], ['#000000', 'black'], ['#ffffff', 'white'], ['#f4f2ec', 'paper'], ...(/^#/.test(_bgPref) && !['#121212', '#000000', '#ffffff', '#f4f2ec'].includes(_bgPref.toLowerCase()) ? [[_bgPref, 'custom ' + _bgPref]] : [])], get: () => _bgPref.toLowerCase(), set: (v) => setBg(v) },
@@ -56,7 +58,7 @@ export function openSettingsWindow() {
   split.append(rail, page);
   const foot = document.createElement('div');
   foot.style.cssText = 'flex:0 0 auto;border-top:1px solid var(--border);background:var(--panel);padding:6px 16px;color:var(--dim);font-family:var(--mono);font-size:11px;line-height:1.45';
-  foot.textContent = 'stored in this browser only — nothing leaves this machine (Sealed) · view state travels with the project; data decisions live in its manifests';
+  foot.textContent = t('stored in this browser only — nothing leaves this machine (Sealed) · view state travels with the project; data decisions live in its manifests');
   win.body.append(split, foot);
   const SECS = [...new Set(PREFS.map((pr) => pr.sec)), 'housekeeping'];
   const renderRail = () => {
@@ -65,7 +67,7 @@ export function openSettingsWindow() {
       const bt = document.createElement('button');
       const on = _settingsSec === sec;
       bt.style.cssText = 'text-align:left;background:none;border:none;font:inherit;cursor:pointer;padding:6px 14px;border-left:2px solid ' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? 'var(--accent)' : 'var(--muted)');
-      bt.textContent = sec;
+      bt.textContent = t(sec);
       bt.onclick = () => { _settingsSec = sec; renderRail(); renderPage(); };
       rail.appendChild(bt);
     }
@@ -94,10 +96,10 @@ export function openSettingsWindow() {
       row.style.cssText = 'margin-bottom:14px';
       const top = document.createElement('div');
       top.style.cssText = 'display:flex;align-items:center;gap:10px';
-      const lab = document.createElement('span'); lab.style.cssText = 'flex:1;min-width:0;color:var(--text)'; lab.textContent = pr.label;
+      const lab = document.createElement('span'); lab.style.cssText = 'flex:1;min-width:0;color:var(--text)'; lab.textContent = t(pr.label);
       top.appendChild(lab);
       if (pr.kind === 'action') {
-        const bt = document.createElement('button'); bt.className = 'awin-btn'; bt.textContent = pr.button || 'open…';
+        const bt = document.createElement('button'); bt.className = 'awin-btn'; bt.textContent = t(pr.button || 'open…');
         bt.onclick = () => pr.run();
         top.appendChild(bt);
       } else if (pr.kind === 'toggle') {
@@ -107,7 +109,7 @@ export function openSettingsWindow() {
       } else {
         const sel = document.createElement('select'); sel.className = 'sw-sel';
         const opts = typeof pr.opts === 'function' ? pr.opts() : pr.opts;
-        for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); }
+        for (const [v, lb] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t(lb); sel.appendChild(o); }
         const cur = String(pr.get());
         if (![...sel.options].some((o) => o.value === cur)) { const o = document.createElement('option'); o.value = cur; o.textContent = cur; sel.appendChild(o); }
         sel.value = cur;
@@ -118,7 +120,7 @@ export function openSettingsWindow() {
       if (pr.desc) {
         const d = document.createElement('div');
         d.style.cssText = 'color:var(--dim);font-size:11px;line-height:1.5;margin-top:3px;max-width:52ch';
-        d.textContent = pr.desc;
+        d.textContent = t(pr.desc);
         row.appendChild(d);
       }
       page.appendChild(row);
