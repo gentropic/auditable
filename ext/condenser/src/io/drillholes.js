@@ -15,6 +15,7 @@
 
 import { dhDesurveySamples } from '../../../drillhole/src/samples.js';
 import { dhValidate } from '../../../drillhole/src/validate.js';
+import { dhComposite, dhDefaultLength } from '../../../drillhole/src/composite.js';
 import { dhQa, dhQaSummary, DH_QA_CHECKS } from '../../../drillhole/src/qa.js';
 import { sniffDelimited, lineFields } from './blockmodel.js';
 import { coordNum } from './delimited.js';
@@ -467,4 +468,66 @@ export async function drillholeQa({ collar, survey, intervals = [] }, opts = {})
   const r = dhQa({ collars, surveys, intervals: ivTables }, opts);
   if (extra.length) { r.findings = r.findings.concat(extra); r.summary = dhQaSummary(r.findings); }
   return { ...r, values, columns: { collar: tCollar.columns, survey: tSurvey.columns } };
+}
+
+// Fixed-length DOWN-HOLE COMPOSITES of one interval table — @gcu/drillhole's
+// composite over the set's own files. Every non-key column rides: numbers
+// (incl. <x / >x / lab codes, read by the column's qualify policy) are
+// length-weighted (mass-weighted when a density column is named), text is the
+// majority by covered length. Composites restart where any split column changes
+// (domain boundaries). opts = { mappings, length (default: the commonest
+// interval length), splitCols: [names], densityCol, minSupport (0..1 — drop a
+// composite whose covered length is below this share of the composite length: a
+// short leftover at a contact or the hole's end, or a window mostly in a gap;
+// counted), method, dipConvention, qualify: { [col]: policy } }.
+// → { header: ['BHID','X','Y','Z','FROM','TO','SUPPORT', …columns], rows, report }
+export async function drillholeComposite({ collar, survey, intervals }, opts = {}) {
+  const tCollar = await readDelimited(collar);
+  const tSurvey = await readDelimited(survey);
+  const tIv = await readDelimited(intervals);
+  const mc = (opts.mappings && opts.mappings.collar) || (classifyDrillholeHeader(tCollar.columns) || {}).mapping;
+  const ms = (opts.mappings && opts.mappings.survey) || (classifyDrillholeHeader(tSurvey.columns) || {}).mapping;
+  const mi = (opts.mappings && opts.mappings.intervals) || (classifyDrillholeHeader(tIv.columns) || {}).mapping;
+  if (!mc || mc.x == null) throw new Error('composite: collar columns not identified (need BHID + X/Y/Z)');
+  if (!ms || ms.az == null) throw new Error('composite: survey columns not identified (need BHID + AZ + DIP)');
+  if (!mi || mi.from == null || mi.to == null) throw new Error('composite: interval columns not identified (need BHID + FROM + TO)');
+  const { collars } = parseCollars(tCollar, mc);
+  const { surveys } = parseSurveys(tSurvey, ms);
+  const keys = new Set([mi.bhid, mi.from, mi.to]);
+  const probe = tIv.rows.slice(0, 500);
+  const cols = [];
+  tIv.columns.forEach((name, i) => {
+    if (keys.has(i)) return;
+    const vals = probe.map((r) => (r[i] || '').trim()).filter(Boolean);
+    const cq = censusQualified(vals);
+    const pol = (opts.qualify && opts.qualify[name]) || QUALIFIED_DEFAULT;
+    cols.push(cq.numeric
+      ? { name, type: 'num', i, values: tIv.rows.map((r) => { const v = qualifiedNumber((r[i] || '').trim(), pol); return Number.isFinite(v) ? v : null; }) }
+      : { name, type: 'cat', i, values: tIv.rows.map((r) => { const v = (r[i] == null ? '' : String(r[i])).trim(); return v === '' ? null : v; }) });
+  });
+  const iv = { bhid: [], from: [], to: [], cols: cols.map((c) => ({ name: c.name, type: c.type, values: [] })) };
+  for (const r of tIv.rows) {
+    const f = coordNum(r[mi.from]), t = coordNum(r[mi.to]);
+    if (!Number.isFinite(f) || !Number.isFinite(t)) continue;
+    iv.bhid.push(r[mi.bhid]); iv.from.push(f); iv.to.push(t);
+  }
+  // the column values for the placeable rows only, in the same order
+  let k = 0;
+  tIv.rows.forEach((r, row) => {
+    const f = coordNum(r[mi.from]), t = coordNum(r[mi.to]);
+    if (!Number.isFinite(f) || !Number.isFinite(t)) return;
+    cols.forEach((c, j) => { iv.cols[j].values[k] = c.values[row]; });
+    k++;
+  });
+  const validated = dhValidate({ collars, surveys, intervals: iv }, { dipConvention: opts.dipConvention || 'auto' });
+  const length = opts.length > 0 ? +opts.length : dhDefaultLength(validated.intervals);
+  const res = dhComposite(validated, {
+    length, method: opts.method || 'minimumCurvature',
+    splitColNames: opts.splitCols && opts.splitCols.length ? opts.splitCols : null,
+    densityColName: opts.densityCol || null, combine: opts.combine || null, minCoverage: opts.minCoverage || null,
+  });
+  let rows = res.rows, short = 0;
+  if (opts.minSupport > 0) { const keep = rows.filter((r) => r[6] >= opts.minSupport * length - 1e-9); short = rows.length - keep.length; rows = keep; }
+  const checks = Object.values(validated.checks);
+  return { header: res.header, rows, report: { length, holes: validated.holes.length, composites: rows.length, short, checks, dipConvention: validated.dipConvention, intervals: iv.from.length } };
 }

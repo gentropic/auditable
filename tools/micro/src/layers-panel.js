@@ -6,6 +6,7 @@ import { _sheetExclusive, _isMobile } from './windows.js';
 import { S, requestRender, layerById } from './state.js';
 import { treeSync, treeFindParent, treeMove, groupLayerIds, treeMoveStep, setGroupExclusive, showNode } from './tree.js';
 import { openExplode } from './explode.js';
+import { openComposite } from './composite-ui.js';
 import { menuXY } from './menu.js';
 import { microPrompt } from './prompts.js';
 import { markProjectDirty } from './project.js';
@@ -142,6 +143,7 @@ export function groupMenu(nd, x, y) {
     items.push({ label: setHasCollars(nd) ? 'Hide collars' : 'Show collars', action: () => showCollars(nd) });
     items.push({ label: 'Add interval table…', action: () => addIntervalToSet(nd) });
     items.push({ label: 'QA report…', action: () => openDhQa(nd) });
+    items.push({ label: 'Composite…', action: () => openComposite(nd) });
     items.push({ sep: true });
   }
   menuXY(x, y, [

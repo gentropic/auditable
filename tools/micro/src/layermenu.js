@@ -33,6 +33,7 @@ import { isView, canView, createView, viewsOf, modelOf } from './layerviews.js';
 import { openMeshGridDialog, openSurfaceTools, surfaceableLayers } from './gridtools.js';
 import { openMeshQa } from './meshqa.js';
 import { openModelQa } from './modelqa.js';
+import { openComposite } from './composite-ui.js';
 import { openStructure } from './structure-ui.js';
 import { fmtSize, layerBytes } from './paths.js';
 import { CONTEXT_TRI_CAP, openMeshDoc } from './open-mesh.js';
@@ -93,6 +94,7 @@ export function layerMenu(L, x, y) {
     ...(layerTableHeader(L) && numericColsOf(L).length ? [{ label: 'Stats…', action: () => openStats(L) }, { label: 'Scatter / Q-Q…', action: () => openXyPlot(L) }] : []),
     ...(gridAxesOf(L) ? [{ label: 'Grade-tonnage…', action: () => openGradeTonnage(L) }, { label: 'Resource cross-tab…', action: () => openCrosstab(L) }, { label: 'Swath plot…', action: () => openSwath(L) }] : []),
     ...(!isView(L) && L.docs && L.docs.blockDoc ? [{ label: 'Model QA…', action: () => openModelQa(L) }] : []),
+    ...(!isView(L) && L.dh && L.docs.dhDoc && !L.trace ? [{ label: 'Composite…', action: () => openComposite(L) }] : []),
     ...(L._filterMask ? [{ label: 'Filter → selection', action: () => filterToSelection(L) }] : []),
     ...(L._selCount ? [{ label: `Selection → column… (${L._selCount.toLocaleString()} rows)`, action: () => selectionToColumn(L) }] : []),
     { label: 'File info…', action: () => { setActiveLayer(L.id); showFileInfo(); } },

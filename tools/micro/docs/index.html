@@ -409,6 +409,9 @@ SIO2 &gt; 10 and not (LITO = "CANGA")   # comments are fine</pre>
 <h3>Blanks, and the QA report</h3>
 <p>A blank in a drillhole table is never read as zero. A collar with a blank X, Y, or Z is <b>dropped</b> (its intervals are kept as records but not placed); a survey station with a blank depth, azimuth, or dip is dropped and the hole interpolates across it; an interval with a blank FROM or TO stays a record but isn't placed; a blank end of hole falls back to the deepest station or interval. <b>File info</b> lists each kind, by hole. For every problem row by row — orphans, duplicates, doglegs, gaps, overlaps — see the <a href="#dhqa">drillhole QA report</a>.</p>
 
+<h3 id="composites">Composites</h3>
+<p><b>Composite…</b> (a drillhole layer's menu, its set's menu, or <code>⌘K</code> “composite”) re-cuts one interval table into equal lengths down each hole — the support samples go into an estimate with, and the fair way to compare them with a block model. Choose the <b>length</b> (blank takes the commonest interval length), the text columns to <b>break at</b> (a composite never straddles a change of domain or lithology; it restarts at the contact), an optional <b>density</b> column (grades are then weighted by length × density), and a <b>min length %</b> (drop composites whose sampled length is below that share of the composite length — the short leftovers at contacts and hole ends). Numbers are length-weighted means, ignoring missing assays rather than counting them as zero; text takes the value covering most of the composite.</p>
+<p>The result is a new <b>points</b> layer, each composite at the centre of its sampled length on the desurveyed hole, carrying BHID, FROM, TO, <b>SUPPORT</b> (the length actually sampled) and every interval column. It filters, colours, exports and saves like any layer, and its lineage records how it was made. <b>export .csv</b> saves the table without adding a layer.</p>
 <h2 id="meshes"><span class="n">11</span>Meshes, wireframes &amp; CAD</h2>
 <p>micro opens surfaces and solids from the formats mine software writes: Leapfrog <code>.msh</code> and <code>.lfm</code>, <code>.obj</code>, <code>.ply</code> with faces, Datamine wireframe pairs, <b>DXF</b>, <b>.wfr</b>, and the surfaces of an <b>OMF</b> project. A mesh is a layer like any other: its own eye, tint, opacity, and section behaviour, and a sectioned mesh draws its <b>trace</b> on the cut face.</p>
 <ul>
@@ -1132,6 +1135,7 @@ addEventListener('micro:lattice-rejected', (e) => e.detail);   // { name, reason
 <p style="margin:.15em 0">column types — <a href="#columns">§8</a></p>
 <p style="margin:.15em 0">command palette — <a href="#what">§1</a></p>
 <p style="margin:.15em 0">comments (#) — <a href="#filter">§6</a>, <a href="#ref">App. A</a></p>
+<p style="margin:.15em 0">composites (down-hole) — <a href="#composites">§10</a></p>
 <p style="margin:.15em 0">cross-tab (resource) — <a href="#xtab">§17</a></p>
 <p style="margin:.15em 0">cutoffs — <a href="#gt">§16</a>, <a href="#xtab">§17</a></p>
 <p style="margin:.15em 0">decimal comma — <a href="#columns">§8</a>, <a href="#faq">§33</a></p>

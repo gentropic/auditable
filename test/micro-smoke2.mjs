@@ -5641,6 +5641,48 @@ if (take()) {
   await p.close();
 }
 
+// ── §85: DOWN-HOLE COMPOSITES — two vertical holes of 1 m assays composited at
+//     5 m: grades are the length-weighted means (2.5, 7.5, …), positions sit at the
+//     covered-length centroid on the hole; breaking at LITH restarts at the 7 m
+//     contact (a 2 m leftover keeps SUPPORT 2); a 50 % minimum length drops it
+//     and says so. The result is a points layer that saves with the project. ──
+if (take()) {
+  const p = await mkPage('sm2comp');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    const collar = 'HOLEID,EAST,NORTH,RL\nA,1000,2000,500\nB,1100,2000,500\n';
+    const survey = 'HOLEID,DEPTH,AZIMUTH,DIP\nA,0,0,-90\nB,0,0,-90\n';
+    const iv = ['HOLEID,FROM,TO,AU,LITH'];
+    for (let d = 0; d < 20; d++) iv.push(`A,${d},${d + 1},${d + 0.5},${d < 7 ? 'ox' : 'fr'}`);
+    for (let d = 0; d < 10; d++) iv.push(`B,${d},${d + 1},2,ox`);
+    await M_.importDrillholes({ collar: new File([collar], 'collars.csv'), survey: new File([survey], 'survey.csv'), intervals: new File([iv.join('\n') + '\n'], 'assay.csv') }, {}, 'replace');
+    const L = M_.layers().find((q) => q.dh && !q.trace);
+    const a = await M_.compositeLayer(L, { length: 5 });
+    const col = (res, nm) => res.header.indexOf(nm);
+    out.a = { n: a.rows.length, au: a.rows.filter((r2) => r2[0] === 'A').map((r2) => +r2[col(a, 'AU')].toFixed(3)), z: +a.rows[0][3].toFixed(3), x: a.rows[0][1], header: a.header.slice(0, 9).join(',') };
+    const b = await M_.compositeLayer(L, { length: 5, splitCols: ['LITH'] });
+    out.b = { n: b.rows.length, spans: b.rows.filter((r2) => r2[0] === 'A').map((r2) => `${r2[4]}-${r2[5]}:${r2[6]}:${r2[col(b, 'LITH')]}`) };
+    const c = await M_.compositeLayer(L, { length: 5, splitCols: ['LITH'], minSupport: 0.5 });
+    out.c = { n: c.rows.length, dropped: c.report.short };
+    const res = await M_.compositeToLayer(L, { length: 5 });
+    const NL = M_.layers().find((q) => q.id === res.id);
+    out.layer = { name: NL && NL.name, n: NL && NL.docs.blockDoc && NL.docs.blockDoc.header.count, lineage: NL && NL.lineage && NL.lineage.op, chan: NL && NL.docs.blockDoc.header.columns[NL.docs.blockDoc.header.mapping.chan] };
+    return out;
+  });
+  chk(`composites: 5 m over 1 m assays — ${r.a.n} composites, hole A grades ${r.a.au.join(' / ')}, the first at z ${r.a.z} on its hole (x ${r.a.x}) · ${r.a.header}`,
+    r.a.n === 6 && JSON.stringify(r.a.au) === '[2.5,7.5,12.5,17.5]' && r.a.z === 497.5 && r.a.x === 1000 && /^BHID,X,Y,Z,FROM,TO,SUPPORT,AU,LITH/.test(r.a.header));
+  chk(`composites: breaking at LITH restarts at the contact (${r.b.spans.join(' · ')})`,
+    r.b.n === 7 && JSON.stringify(r.b.spans) === JSON.stringify(['0-5:5:ox', '5-7:2:ox', '7-12:5:fr', '12-17:5:fr', '17-20:3:fr']));
+  chk(`composites: 50 % minimum length drops the 2 m leftover and counts it (${r.c.n} kept, ${r.c.dropped} dropped)`, r.c.n === 6 && r.c.dropped === 1);
+  chk(`composites: a points layer (${r.layer.name}, ${r.layer.n} points, colour ${r.layer.chan}, lineage ${r.layer.lineage})`, r.layer.name === 'assay-comp5m.csv' && r.layer.n === 6 && r.layer.chan === 'AU' && r.layer.lineage === 'composite');
+  await saveProject(p);
+  await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2comp'); await window._micro.openProjectDir(dir); });
+  await p.waitForTimeout(800);
+  const g = await p.evaluate(() => { const L = window._micro.layers().find((q) => /comp5m/.test(q.name)); return L ? L.docs.blockDoc.header.count : null; });
+  chk(`composites: the layer comes back with the project (${g} points)`, g === 6);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
