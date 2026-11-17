@@ -292,6 +292,9 @@ export function openDecoPanel() {
     scRow.append(scLab, scSel); foot.append(scRow);
     const ex = document.createElement('button'); ex.className = 'deco-export btn-p'; ex.textContent = 'Export figure (PNG)'; ex.onclick = () => exportFigure();
     foot.append(ex);
+    const tt = document.createElement('button'); tt.className = 'deco-export rcp'; tt.textContent = 'record turntable video…'; tt.title = 'orbit the view once and save it as a video (every frame rendered to convergence, decorations on)';
+    tt.onclick = () => { if (HK.openTurntable) HK.openTurntable(); };
+    foot.append(tt);
     const rcp = document.createElement('button'); rcp.className = 'deco-export rcp'; rcp.textContent = 'save as recipe…'; rcp.title = 'save this view + decorations + background + resolution as a re-runnable figure recipe (Tools → Recipes)';
     rcp.onclick = () => saveRecipe('figure', captureFigureCfg(), _deco.titleText || 'figure');
     foot.append(rcp); wrap.append(foot);

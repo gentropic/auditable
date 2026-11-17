@@ -5471,6 +5471,53 @@ if (take()) {
   await p.close();
 }
 
+/// ── §82: TURNTABLE — an orbit recorded frame by frame. The file decodes, lasts
+//     what was asked (the recorder is paused while a frame renders, so pacing is
+//     even however slow the render), the picture TURNS (two moments differ), and
+//     the camera comes back to where it was. micro's Sealed CSP plays no media,
+//     so the video is decoded in a blank page. ──
+if (take()) {
+  const p = await mkPage('sm2turn');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, out = {};
+    if (!M_.turntableMime()) return { skip: true };
+    const rows = ['XC,YC,ZC,AU'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 20; j++) for (let i = 0; i < 30; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i + j}`);
+    const id = await M_.openBlob(new File([rows.join('\n') + '\n'], 'spin.csv'), 'spin.csv', 'replace');
+    await window.micro.setColorBy(id, 'AU');
+    const th0 = M_.cam.state.theta;
+    const res = await M_.recordTurntable({ seconds: 1.5, fps: 10, degrees: 180, decorations: false });
+    out.frames = res.frames; out.size = res.blob.size; out.type = res.blob.type; out.thBack = Math.abs(M_.cam.state.theta - th0) < 1e-9;
+    const u8 = new Uint8Array(await res.blob.arrayBuffer());
+    let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    out.b64 = btoa(bin);
+    return out;
+  });
+  if (r.skip) chk('turntable: this browser cannot record — skipped', true);
+  else {
+    const q = await ctx.newPage();
+    const v = await q.evaluate(async ({ b64, type }) => {
+      const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const v = document.createElement('video'); v.muted = true; v.src = URL.createObjectURL(new Blob([u8], { type }));
+      await new Promise((ok, no) => { v.onloadedmetadata = ok; v.onerror = () => no(new Error('video: ' + (v.error && v.error.message))); });
+      if (!Number.isFinite(v.duration)) { v.currentTime = 1e6; await new Promise((ok) => { v.ondurationchange = ok; setTimeout(ok, 3000); }); }
+      const o = { duration: v.duration, w: v.videoWidth, h: v.videoHeight };
+      const grab = async (t) => {
+        v.currentTime = t; await new Promise((ok) => { v.onseeked = ok; setTimeout(ok, 3000); });
+        const c = new OffscreenCanvas(v.videoWidth, v.videoHeight), g = c.getContext('2d'); g.drawImage(v, 0, 0); return g.getImageData(0, 0, c.width, c.height).data;
+      };
+      const a = await grab(0.05), b = await grab(1.3);
+      let n = 0; for (let i = 0; i < a.length; i += 4) if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 30) n++;
+      o.turned = n / (a.length / 4);
+      return o;
+    }, { b64: r.b64, type: r.type });
+    await q.close();
+    chk(`turntable: ${r.frames} frames → a ${r.type} of ${r.size} bytes, ${v.w}×${v.h}, ${v.duration.toFixed(2)} s long`, r.frames === 15 && r.size > 2000 && /video\//.test(r.type) && v.w > 100 && v.duration > 1.0 && v.duration < 2.2);
+    chk(`turntable: the picture turns (${(100 * v.turned).toFixed(1)}% of pixels differ between the first and last moments) and the camera is back`, v.turned > 0.02 && r.thBack);
+  }
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);
