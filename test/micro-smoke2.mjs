@@ -5474,8 +5474,8 @@ if (take()) {
 /// ── §82: TURNTABLE — an orbit recorded frame by frame. The file decodes, lasts
 //     what was asked (the recorder is paused while a frame renders, so pacing is
 //     even however slow the render), the picture TURNS (two moments differ), and
-//     the camera comes back to where it was. micro's Sealed CSP plays no media,
-//     so the video is decoded in a blank page. ──
+//     the camera comes back to where it was. The file is decoded in a blank page;
+//     the turntable window's PREVIEW plays it inside micro (media-src blob:). ──
 if (take()) {
   const p = await mkPage('sm2turn');
   const r = await p.evaluate(async () => {
@@ -5491,6 +5491,16 @@ if (take()) {
     const u8 = new Uint8Array(await res.blob.arrayBuffer());
     let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
     out.b64 = btoa(bin);
+    // the window: record → a preview playing in micro itself, under the Sealed CSP
+    const w = M_.openTurntable();
+    const sel = [...w.body.querySelectorAll('select')]; sel[0].value = '4'; sel[2].value = '24';
+    const go = [...w.body.querySelectorAll('button')].find((x) => x.textContent === 'Record'); go.click();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 60000 && !(w.el._preview && w.el._preview.src)) await new Promise((res) => setTimeout(res, 200));
+    const v = w.el._preview;
+    if (v && v.readyState < 1) await new Promise((res) => { v.onloadedmetadata = res; v.onerror = res; setTimeout(res, 5000); });
+    out.preview = { src: !!(v && v.src), w: v && v.videoWidth, err: v && v.error ? v.error.message : null, save: !![...w.body.querySelectorAll('button')].find((x) => x.textContent === 'Save video') };
+    w.close();
     return out;
   });
   if (r.skip) chk('turntable: this browser cannot record — skipped', true);
@@ -5513,6 +5523,7 @@ if (take()) {
     }, { b64: r.b64, type: r.type });
     await q.close();
     chk(`turntable: ${r.frames} frames → a ${r.type} of ${r.size} bytes, ${v.w}×${v.h}, ${v.duration.toFixed(2)} s long`, r.frames === 15 && r.size > 2000 && /video\//.test(r.type) && v.w > 100 && v.duration > 1.0 && v.duration < 2.2);
+    chk(`turntable: the window previews the video inside micro (${JSON.stringify(r.preview)})`, r.preview.src && r.preview.w > 100 && !r.preview.err && r.preview.save);
     chk(`turntable: the picture turns (${(100 * v.turned).toFixed(1)}% of pixels differ between the first and last moments) and the camera is back`, v.turned > 0.02 && r.thBack);
   }
   await p.close();

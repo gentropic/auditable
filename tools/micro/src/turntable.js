@@ -127,7 +127,7 @@ export async function recordTurntable({ seconds = 8, fps = 30, degrees = 360, de
 let _win = null;
 export function openTurntable() {
   if (_win) { raiseWindow(_win.el); return _win; }
-  const win = floatWin({ title: 'turntable', sub: 'video', x: Math.max(12, innerWidth - 360), y: 96, w: 320, h: 300, onClose: () => { if (ctl) ctl.abort(); _win = null; } });
+  const win = floatWin({ title: 'turntable', sub: 'video', x: Math.max(12, innerWidth - 360), y: 96, w: 320, h: 300, onClose: () => { if (ctl) ctl.abort(); if (win.el._preview && win.el._preview.src) URL.revokeObjectURL(win.el._preview.src); _win = null; } });
   _win = win;
   let ctl = null;
   win.body.style.cssText += 'display:flex;flex-direction:column;font-family:var(--mono);font-size:12px;padding:10px 12px;gap:8px';
@@ -147,6 +147,23 @@ export function openTurntable() {
   const go = document.createElement('button'); go.className = 'awin-btn btn-p'; go.textContent = 'Record'; go.disabled = !mime;
   const prog = document.createElement('span'); prog.style.cssText = 'flex:1;color:var(--muted)';
   row.append(go, prog); win.body.appendChild(row);
+  // the preview: the video just made, playing in the window (media-src blob:), and Save
+  const pv = document.createElement('div'); pv.style.cssText = 'display:none;flex-direction:column;gap:6px';
+  const vid = document.createElement('video'); vid.controls = true; vid.loop = true; vid.muted = true; vid.playsInline = true;
+  vid.style.cssText = 'width:100%;max-height:220px;background:#000;border:1px solid var(--border)';
+  const save = document.createElement('button'); save.className = 'awin-btn btn-p'; save.textContent = 'Save video';
+  pv.append(vid, save);
+  win.body.insertBefore(pv, row);
+  let _url = null;
+  const showPreview = (blob, name) => {
+    if (_url) URL.revokeObjectURL(_url);
+    _url = URL.createObjectURL(blob);
+    vid.src = _url; pv.style.display = 'flex';
+    vid.play().catch(() => { /* autoplay refused: the controls are there */ });
+    save.onclick = () => { deliverBlob(blob, name); $('#meta').textContent = `turntable saved as ${name}`; };
+    win.el.style.height = Math.max(parseInt(win.el.style.height, 10) || 300, 560) + 'px';
+  };
+  win.el._preview = vid;
   go.onclick = async () => {
     if (ctl) { ctl.abort(); return; }
     ctl = new AbortController();
@@ -157,9 +174,8 @@ export function openTurntable() {
       const ext = r.mime.includes('mp4') ? 'mp4' : 'webm';
       const base = (_deco.titleText || 'micro').replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'micro';
       const name = `${base}-turntable.${ext}`;
-      prog.textContent = `${r.frames} frames → ${name}`;
-      $('#meta').textContent = `turntable saved as ${name}`;
-      deliverBlob(r.blob, name);
+      showPreview(r.blob, name);
+      prog.textContent = `${r.frames} frames — check it, then save`;
     } catch (e) { prog.textContent = e.message; }
     finally { ctl = null; go.textContent = 'Record'; }
   };

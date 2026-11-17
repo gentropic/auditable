@@ -15,6 +15,7 @@
   "reach": {
     "network": "none — the verified micro.html artifact (this file) makes zero network requests; connect-src 'none' enforces it",
     "telemetry": false,
+    "media": "media-src blob: only — a video micro just made (the turntable) plays from bytes already in the page; nothing is fetched (connect-src 'none' unchanged)",
     "hosted_pwa": {
       "note": "gentropic.org/micro wraps this artifact in a PWA shell (index.html + a service worker) that is OUTSIDE this sealed file. The SW runs in its own context (not bound by the page's connect-src) and fetches ONLY same-origin app assets (offline shell cache) + an update check ('is there a newer build?'). It never accesses opened file data — that stays in the page's memory, never handed to the SW — so data confidentiality is unaffected. For provable zero-network, run this downloaded micro.html from file:// (no SW). Update UI in the app drives the SW via postMessage, not a page fetch, so connect-src none still holds.",
       "service_worker": true,
