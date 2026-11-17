@@ -8,32 +8,38 @@
 // within DEDUPE_MS is swallowed, so a row never opens two menus. The click that
 // follows a long-press is swallowed as well — lifting the finger must not also
 // activate the row it was holding.
+//
+// The hold is measured from the events' own timestamps too: Chromium runs queued
+// input ahead of timers, so on a page whose main thread is busy (a slow phone, a
+// heavy model still converging) the lift can be handled before the timer ever
+// fires. A lift that comes LONG_MS after its press is a long-press either way.
 const LONG_MS = 500, SLOP_PX = 10, DEDUPE_MS = 900;
 
 export function installLongPress({ exclude = 'input, textarea, select, [contenteditable]' } = {}) {
   // the click to swallow is the one the HOLDING finger makes when it lifts (the menu
   // opened under it — that click would run the item it lands on), however long it
   // was held: armed at the menu, timed from that pointerup
-  let timer = 0, sx = 0, sy = 0, target = null, lastMenuAt = -1e9, swallowClickUntil = 0, held = false, touchAt = -1e9;
+  let timer = 0, sx = 0, sy = 0, target = null, downTs = 0, lastMenuAt = -1e9, swallowClickUntil = 0, held = false, touchAt = -1e9;
   const cancel = () => { if (timer) clearTimeout(timer); timer = 0; target = null; };
+  const fire = () => {
+    const t = target; if (timer) clearTimeout(timer); timer = 0; target = null;
+    if (!t || !t.isConnected) return;
+    if (performance.now() - lastMenuAt < DEDUPE_MS) return;      // the platform's own menu beat us to it
+    lastMenuAt = performance.now();
+    held = true;
+    try { navigator.vibrate && navigator.vibrate(8); } catch { /* not allowed — fine */ }
+    t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, button: 2 }));
+  };
   addEventListener('pointerdown', (e) => {
     cancel();
     if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
     touchAt = performance.now();
     if (!e.isPrimary || !(e.target instanceof Element) || e.target.closest(exclude)) return;
-    sx = e.clientX; sy = e.clientY; target = e.target;
-    timer = setTimeout(() => {
-      const t = target; timer = 0; target = null;
-      if (!t || !t.isConnected) return;
-      if (performance.now() - lastMenuAt < DEDUPE_MS) return;    // the platform's own menu beat us to it
-      lastMenuAt = performance.now();
-      held = true;
-      try { navigator.vibrate && navigator.vibrate(8); } catch { /* not allowed — fine */ }
-      t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, button: 2 }));
-    }, LONG_MS);
+    sx = e.clientX; sy = e.clientY; target = e.target; downTs = e.timeStamp;
+    timer = setTimeout(fire, LONG_MS);
   }, true);
   addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > SLOP_PX) cancel(); }, true);
-  addEventListener('pointerup', () => { if (timer) cancel(); if (held) { held = false; swallowClickUntil = performance.now() + 400; } }, true);
+  addEventListener('pointerup', (e) => { if (timer) { if (e.timeStamp - downTs >= LONG_MS) fire(); else cancel(); } if (held) { held = false; swallowClickUntil = performance.now() + 400; } }, true);
   addEventListener('pointercancel', cancel, true);
   addEventListener('contextmenu', (e) => {
     if (!e.isTrusted) return;                                   // ours

@@ -464,7 +464,13 @@ async function drive(url, tag) {
   const tgt = rowsInfo.rows.find((r) => r.name !== (rowsInfo.rows[0] && rowsInfo.rows[0].name)) || rowsInfo.rows[0];
   const activeName = () => p.evaluate(() => { const M = window._micro, L = M.layers().find((l) => l.id === M.activeId()); return L ? (L.label || L.name) : null; });
   const a0 = await activeName();
-  await touch('touchStart', tgt.x, tgt.y); await p.waitForTimeout(750); await touch('touchEnd', tgt.x, tgt.y); await p.waitForTimeout(400);
+  // the hold carries its own timestamps (as the taps do): 750 ms between press and lift as
+  // the PAGE sees them, whatever the runner's lag — and the real wait still lets the timer run
+  { const at = Date.now() / 1000;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: tgt.x, y: tgt.y }], timestamp: at });
+    await p.waitForTimeout(750);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], timestamp: at + 0.75 }); }
+  await until(() => document.querySelectorAll('.menu').length > 0); await p.waitForTimeout(400);
   const lpres = await p.evaluate(() => ({ menus: document.querySelectorAll('.menu').length, items: [...document.querySelectorAll('.menu .item')].length }));
   const a1 = await activeName();
   await p.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
