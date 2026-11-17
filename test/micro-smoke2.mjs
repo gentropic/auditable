@@ -5821,6 +5821,80 @@ if (take()) {
   await p.close();
 }
 
+// ── §89: GPU RESTORE — the context is lost and restored (WEBGL_lose_context):
+//     the session comes back on a fresh renderer as a project reopen brings it —
+//     the model with its colour, calc column, filter and selection, its view with
+//     its offset, a drillhole set with its collars — the view draws again, picks
+//     work, and there is still no project (nothing was written anywhere). ──
+if (take()) {
+  const p = await mkPage('sm2gpu');
+  const r = await p.evaluate(async () => {
+    const M_ = window._micro, W = window.micro, out = {};
+    const rows = ['XC,YC,ZC,AU,ROCK'];
+    for (let k = 0; k < 4; k++) for (let j = 0; j < 12; j++) for (let i = 0; i < 12; i++) rows.push(`${1005 + i * 10},${2005 + j * 10},${105 + k * 10},${i + j},${i < 6 ? 'ox' : 'fr'}`);
+    const mid = await M_.openBlob(new File([rows.join('\n') + '\n'], 'model.csv'), 'model.csv', 'replace');
+    await W.setColorBy(mid, 'AU');
+    const M = M_.layers().find((q) => q.id === mid);
+    M_.applyCalcCols ? null : null;
+    await W.filter(mid, 'AU > 10');
+    W.select(mid, [0, 1, 2, 3, 4]);
+    const vid = await W.addView(mid, { color: 'ROCK', offset: [200, 0, 0] });
+    const collar = 'HOLEID,EAST,NORTH,RL\nA,1030,2030,150\nB,1080,2080,150\n', survey = 'HOLEID,DEPTH,AZIMUTH,DIP\nA,0,0,-90\nB,0,0,-90\n';
+    const iv = ['HOLEID,FROM,TO,AU']; for (const h of ['A', 'B']) for (let d = 0; d < 40; d += 2) iv.push(`${h},${d},${d + 2},${d / 4}`);
+    await M_.importDrillholes({ collar: new File([collar], 'collars.csv'), survey: new File([survey], 'survey.csv'), intervals: new File([iv.join('\n') + '\n'], 'assay.csv') }, {}, 'add');
+    const nd = M_.layerTree().find((n) => n.group && n.dhSet);
+    if (nd) await M_.showCollars(nd);
+    const summary = () => M_.layers().map((L) => `${L.name}|${L.viewOf != null ? 'view' : ''}|${W.layer(L.id) ? W.layer(L.id).colorBy : ''}|${L._filterMask ? L._filterMask.reduce((a, b) => a + b, 0) : ''}|${L._selCount || ''}|${L.offset ? L.offset.join(',') : ''}`).sort();
+    out.before = summary();
+    const R0 = M_.renderer;
+    const ext = R0.gl.getExtension('WEBGL_lose_context');
+    const cv = document.querySelector('#cv');
+    const lost = new Promise((res) => cv.addEventListener('webglcontextlost', res, { once: true }));
+    ext.loseContext();
+    await lost;
+    await new Promise((res) => setTimeout(res, 300));
+    out.bar = !!document.querySelector('#glLost');
+    ext.restoreContext();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000 && !/rebuilt/.test(document.querySelector('#meta').textContent)) await new Promise((res) => setTimeout(res, 100));
+    out.meta = document.querySelector('#meta').textContent;
+    out.fresh = M_.renderer !== R0 && !M_.renderer.gl.isContextLost();
+    out.after = summary();
+    out.barGone = !document.querySelector('#glLost');
+    out.project = M_.project();
+    // it draws: a snapshot with the model in it
+    const m2 = M_.layers().find((q) => q.name === 'model.csv' && q.viewOf == null);
+    M_.cam.fit(M_.renderer.contentBbox({ layers: [m2.id] })); M_.cam.update();
+    const b = await W.snapshot({ decorations: false });
+    const bm = await createImageBitmap(b), c = new OffscreenCanvas(bm.width, bm.height), g = c.getContext('2d'); g.drawImage(bm, 0, 0);
+    const d = g.getImageData(0, 0, bm.width, bm.height).data, bg = [d[0], d[1], d[2]];
+    let lit = 0; for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 30) lit++;
+    out.lit = lit / (d.length / 4);
+    return out;
+  });
+  chk(`gpu restore: the bar shows while the graphics are gone (${r.bar}); after the restore “${r.meta}”, a fresh renderer (${r.fresh}), the bar gone (${r.barGone})`, r.bar && /rebuilt/.test(r.meta) && r.fresh && r.barGone);
+  chk(`gpu restore: every layer back as it was (${r.after.length} layers)\n      before ${JSON.stringify(r.before)}\n      after  ${JSON.stringify(r.after)}`, JSON.stringify(r.after) === JSON.stringify(r.before) && r.after.length >= 4);
+  chk(`gpu restore: the model draws again (${(100 * r.lit).toFixed(1)}% of the picture) and there is still no project (${JSON.stringify(r.project)})`, r.lit > 0.05 && r.project == null);
+  // with a project folder: it stays the session's project, marked unsaved, and a save still lands there
+  await saveProject(p);
+  const q = await p.evaluate(async () => {
+    const M_ = window._micro;
+    const ext = M_.renderer.gl.getExtension('WEBGL_lose_context'), cv = document.querySelector('#cv');
+    const lost = new Promise((res) => cv.addEventListener('webglcontextlost', res, { once: true }));
+    ext.loseContext(); await lost; await new Promise((res) => setTimeout(res, 300));
+    document.querySelector('#meta').textContent = '';
+    ext.restoreContext();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30000 && !/rebuilt/.test(document.querySelector('#meta').textContent)) await new Promise((res) => setTimeout(res, 100));
+    const pr = M_.project();
+    return { name: pr && pr.name, dirty: pr && pr.dirty, n: M_.layers().length };
+  });
+  await saveProject(p);
+  const q2 = await p.evaluate(async () => { const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sm2gpu'); await window._micro.openProjectDir(dir); return window._micro.layers().length; });
+  chk(`gpu restore: with a project open it stays the project (${q.name}, unsaved ${q.dirty}, ${q.n} layers) and a save + reopen from the folder brings back ${q2} layers`, q.name === 'sm2gpu' && q.dirty === true && q.n === q2 && q2 >= 4);
+  await p.close();
+}
+
 console.log((ok ? '\nMICRO SMOKE 2: PASS' : '\nMICRO SMOKE 2: FAIL') + (SHARD ? ` (${_ran} of ${_section} sections)` : ''));
 await b.close(); server.close();
 process.exit(ok ? 0 : 1);

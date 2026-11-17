@@ -130,7 +130,7 @@ export async function rememberPack(handle, name) {
   } catch { /* best-effort */ }
 }
 export async function rememberProject(dir) {
-  if (dir && dir._pack) return;                            // a pack is opened from its file, not remembered as a folder
+  if (dir && (dir._pack || dir._memory)) return;                            // a pack is opened from its file, not remembered as a folder
   try {
     const list = (await _idb.get(PROJECTS_KEY)) || [];
     const links = {};

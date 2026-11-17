@@ -246,6 +246,7 @@ async function copyLayerFiles(L, dir) {
   const kd = kindDir(L);
   for (const fd of layerFiles(L)) {
     const rel = joinPath(kd, basename(fd.name));
+    if (dir._memory && dir._linkBlob) { const fh = await dir._linkBlob(rel, fd.blob); _copiedBlobs.add(fd.blob); if (!L.dh) L.handle = fh; continue; }   // GPU recovery: the bytes by reference
     let exists = null;
     try { exists = await resolveFileHandle(dir, rel); } catch { /* not there */ }
     if (exists) { const f = await exists.getFile(); if (sameSourceFile(f, fd.blob)) { if (!L.dh) L.handle = exists; continue; } }
@@ -259,7 +260,12 @@ async function copyLayerFiles(L, dir) {
   if (S.project && S.project.dir === dir && (layerTableHeader(L) || (L.docs && L.docs.gridDoc))) await persistElement(L);   // throws → the caller reports it
 }
 
+// a SILENT save (GPU recovery into an in-memory folder): no prompts, no optimize or
+// mesh packing, every outside file taken in (linked by reference, never copied)
+let _silentSave = false;
+export function setSilentSave(v) { _silentSave = !!v; }
 export function askCopyOutside(outside) {
+  if (_silentSave) return Promise.resolve('copy');
   return new Promise((res) => {
     const loose = outside.length - outside.filter((L) => L.handle).length;
     // one file can back several layers (a streamed DXF's surface/strings/points
@@ -333,8 +339,8 @@ async function saveProjectInner() {
   const dir = S.project.dir;
   try {
     if (dir.requestPermission && await dir.requestPermission({ mode: 'readwrite' }) !== 'granted') { $('#meta').textContent = 'project: write permission denied'; return; }
-    await maybeAutoOptimize();                              // reorder block models to spatial Parquet BEFORE triage, so the parquet is what's referenced/copied
-    await maybeAutoPackMeshes();                            // and meshes/strings/pegs into meshes/*.wfr (written in place, so triage sees them in-project)
+    if (!_silentSave) await maybeAutoOptimize();            // reorder block models to spatial Parquet BEFORE triage, so the parquet is what's referenced/copied
+    if (!_silentSave) await maybeAutoPackMeshes();                            // and meshes/strings/pegs into meshes/*.wfr (written in place, so triage sees them in-project)
     // A just-optimized layer's bytes are now Parquet but its handle was dropped
     // (convertLayerToParquet). Write the Parquet INTO the project + delete the old
     // source here — so triage sees a clean in-project layer (no spurious "copy
