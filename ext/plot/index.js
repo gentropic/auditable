@@ -986,10 +986,11 @@ function _fromBase64(b64) {
 // marker looks the same whichever path drew it. `r` is half the marker's nominal size.
 //
 // STAMPS. A stamp is a marker's coverage, worked out by pure arithmetic (4 × 4 samples per
-// pixel), never by drawing on a canvas: the same marker gives the same bytes in a browser, a
-// worker and Node, so a rasterized figure's draw list is identical in every host. Radii are
-// quantised to 0.5 device px and positions to whole device px; at 1–3 px markers that is
-// below what the eye resolves, and it lets one stamp serve every point of a cloud.
+// pixel, 8 × 8 with an edge), never by drawing on a canvas: the same marker gives the same
+// bytes in a browser, a worker and Node, so a rasterized figure's draw list is identical in
+// every host. Positions are quantised to a quarter device pixel (16 phase stamps per marker),
+// radii to ⅛ px up to 4 px and ~4% steps above, edge widths to ¹⁄₁₆ px: below what the eye
+// resolves at those sizes, and it lets a handful of stamps serve every point of a cloud.
 //
 // BLENDING. Points composite source-over in DATA ORDER into a premultiplied RGBA byte buffer,
 // exactly as one canvas fill per point would — overlaps and alpha come out as matplotlib's do.
@@ -1093,8 +1094,10 @@ const _SS_FILL = 4, _SS_EDGE = 8;
 // it the stamp is centred on the pixel's centre. Sixteen stamps per marker keep every point
 // within ⅛ px of where it is, so a raster scatter looks like the vector one.
 function _stamp(marker, r, ew, phase) {
-  const rq = Math.max(0.5, Math.round(r * 2) / 2);
-  const eq = ew > 0 ? Math.round(ew * 2) / 2 : 0;
+  // ⅛ px steps for small markers; ~4% steps (2^(1/16)) above 4 px, so a per-point size
+  // column with thousands of distinct values still makes only dozens of stamps
+  const rq = r <= 4 ? Math.max(0.25, Math.round(r * 8) / 8) : Math.pow(2, Math.round(Math.log2(r) * 16) / 16);
+  const eq = ew > 0 ? Math.max(0.0625, Math.round(ew * 16) / 16) : 0;
   const key = `${marker}|${rq}|${eq}|${phase}`;
   let s = _stampCache.get(key);
   if (s) return s;
@@ -1126,6 +1129,7 @@ function _stamp(marker, r, ew, phase) {
     }
   }
   s = { half, size, fill, edge, f: _sparse(fill, size, half), e: edge ? _sparse(edge, size, half) : null };
+  if (_stampCache.size >= 4096) _stampCache.clear();          // a bound, not an LRU: rebuilds are cheap
   _stampCache.set(key, s);
   return s;
 }
@@ -1454,6 +1458,7 @@ class Axes {
     this._aspect = 'auto';
     this._colorIdx = 0;
     this._strict = false;
+    this._dpi = 100;             // the figure's, for sizes given in points (markers)
     this.view = null;            // set by a render: { x, y, w, h, xScale, yScale }
   }
 
@@ -1726,6 +1731,7 @@ class Axes {
     const t = new Axes(this._theme);
     t._strict = this._strict;
     t._twinOf = this;
+    t._dpi = this._dpi;
     t._xscale = this._xscale;
     t._xlim = this._xlim;
     this._twin = t;
@@ -1736,6 +1742,7 @@ class Axes {
     const t = new Axes(this._theme);
     t._strict = this._strict;
     t._twinOf = this;
+    t._dpi = this._dpi;
     t._yscale = this._yscale;
     t._ylim = this._ylim;
     this._twinY = t;
@@ -2325,9 +2332,10 @@ class Axes {
     }
     // markers
     if (opts.marker) {
-      const r = (opts.markersize || 4) / 2;
+      // markersize: the diameter in points, default 6 (matplotlib's lines.markersize)
+      const r = ((opts.markersize || 6) * this._dpi) / 144;
       const face = opts.markerfacecolor ? _cssColor(opts.markerfacecolor) : color;
-      const edge = opts.markeredgecolor ? { color: _cssColor(opts.markeredgecolor), width: opts.markeredgewidth || 1 } : null;
+      const edge = opts.markeredgecolor ? { color: _cssColor(opts.markeredgecolor), width: ((opts.markeredgewidth ?? 1) * this._dpi) / 72 } : null;   // points, as matplotlib's
       const pos = this._positions(trace, xScale, yScale);
       this._drawPoints(ctx, trace, pos, rect, { marker: opts.marker, radius: r, uniform: face, alpha, edge, cacheKey: 'mk' });
     }
@@ -2385,15 +2393,18 @@ class Axes {
   _renderScatter(ctx, trace, xScale, yScale, rect) {
     const o = trace.opts;
     const pos = this._positions(trace, xScale, yScale);
-    // matplotlib's scatter default is s=20 (markersize in points²); the radius here is √s px
-    const sz = trace.s ? trace.s : (typeof o.s === 'number' ? o.s : 20);
-    const radius = typeof sz === 'number' ? Math.sqrt(sz) : sz;   // per-point: resolved in _drawPoints
+    // s is matplotlib's: the marker's AREA in points², default 36 (lines.markersize²). Its
+    // diameter is √s points, so the radius in px is √s · dpi / 144.
+    const rk = this._dpi / 144;
+    const sz = trace.s ? trace.s : (typeof o.s === 'number' ? o.s : 36);
+    const radius = typeof sz === 'number' ? Math.sqrt(sz) * rk : sz;   // per-point: resolved in _drawPoints
     const alpha = o.alpha != null ? o.alpha : 1;
     let edge = null;
     if (o.edgecolor != null && o.edgecolor !== 'none') {
-      edge = { color: o.edgecolor === 'face' ? 'face' : _cssColor(o.edgecolor), width: o.linewidth || 0.5 };
+      // edge width in points (matplotlib's); 0.5 px when not given
+      edge = { color: o.edgecolor === 'face' ? 'face' : _cssColor(o.edgecolor), width: o.linewidth != null ? (o.linewidth * this._dpi) / 72 : 0.5 };
     }
-    const spec = { marker: o.marker || 'o', radius, alpha, edge, cacheKey: 'sc' };
+    const spec = { marker: o.marker || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
     if (trace.cvals) {
       const { vmin, vmax } = this._cmapRange(trace);
       spec.cmap = { name: o.cmap || 'viridis', vmin, vmax };
@@ -2447,7 +2458,7 @@ class Axes {
     if (spec.cmap) idx = this._cmapIdx(trace, spec.cmap.vmin, spec.cmap.vmax);
     const alpha = spec.alpha;
     const fillOf = (i) => spec.cmap ? (lut ? null : cmapFn(idx[i] < 0 ? NaN : (idx[i] + 0.5) / 256)) : spec.list ? spec.list[i] : spec.uniform;
-    const rOf = (i) => (perPoint ? Math.sqrt(spec.radius[i]) : spec.radius);
+    const rOf = (i) => (perPoint ? Math.sqrt(spec.radius[i]) * spec.rk : spec.radius);
     const X = pos.X, Y = pos.Y;
     if (_engine.batch && alpha >= 1 && !spec.edge && !perPoint) {
       // batch: one path per colour (colour-mapped points group into ≤ 256 LUT colours; within
@@ -2505,7 +2516,7 @@ class Axes {
       const n = pos.X.length;
       let rad;
       if (typeof spec.radius === 'number') rad = spec.radius * dpr;
-      else { rad = new Float32Array(n); for (let i = 0; i < n; i++) rad[i] = Math.sqrt(spec.radius[i]) * dpr; }
+      else { rad = new Float32Array(n); for (let i = 0; i < n; i++) rad[i] = Math.sqrt(spec.radius[i]) * spec.rk * dpr; }
       let colors;
       if (col.lut) {
         // the same LUT entry _cmapIdx gives: ((v - vmin) · 256 / (vmax - vmin)), and the
@@ -2899,6 +2910,8 @@ class Figure {
     // JS-side callers that pass pixel values directly).
     const rawSize = o.figsize || [4, 3];
     const dpi = o.dpi || 100;
+    // points → pixels (marker sizes are in points, as matplotlib's: 1 pt = dpi / 72 px)
+    this.dpi = dpi;
     const inchesShape = rawSize[0] <= 50 && rawSize[1] <= 50;
     this.width = inchesShape ? rawSize[0] * dpi : rawSize[0];
     this.height = inchesShape ? rawSize[1] * dpi : rawSize[1];
@@ -2928,6 +2941,7 @@ class Figure {
     for (let i = 0; i < this.nrows * this.ncols; i++) {
       const ax = new Axes(this._theme);
       ax._strict = this._strict;
+      ax._dpi = dpi;
       this.axes.push(ax);
     }
   }

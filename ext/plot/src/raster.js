@@ -6,10 +6,11 @@
 // marker looks the same whichever path drew it. `r` is half the marker's nominal size.
 //
 // STAMPS. A stamp is a marker's coverage, worked out by pure arithmetic (4 × 4 samples per
-// pixel), never by drawing on a canvas: the same marker gives the same bytes in a browser, a
-// worker and Node, so a rasterized figure's draw list is identical in every host. Radii are
-// quantised to 0.5 device px and positions to whole device px; at 1–3 px markers that is
-// below what the eye resolves, and it lets one stamp serve every point of a cloud.
+// pixel, 8 × 8 with an edge), never by drawing on a canvas: the same marker gives the same
+// bytes in a browser, a worker and Node, so a rasterized figure's draw list is identical in
+// every host. Positions are quantised to a quarter device pixel (16 phase stamps per marker),
+// radii to ⅛ px up to 4 px and ~4% steps above, edge widths to ¹⁄₁₆ px: below what the eye
+// resolves at those sizes, and it lets a handful of stamps serve every point of a cloud.
 //
 // BLENDING. Points composite source-over in DATA ORDER into a premultiplied RGBA byte buffer,
 // exactly as one canvas fill per point would — overlaps and alpha come out as matplotlib's do.
@@ -114,8 +115,10 @@ const _SS_FILL = 4, _SS_EDGE = 8;
 // it the stamp is centred on the pixel's centre. Sixteen stamps per marker keep every point
 // within ⅛ px of where it is, so a raster scatter looks like the vector one.
 export function _stamp(marker, r, ew, phase) {
-  const rq = Math.max(0.5, Math.round(r * 2) / 2);
-  const eq = ew > 0 ? Math.round(ew * 2) / 2 : 0;
+  // ⅛ px steps for small markers; ~4% steps (2^(1/16)) above 4 px, so a per-point size
+  // column with thousands of distinct values still makes only dozens of stamps
+  const rq = r <= 4 ? Math.max(0.25, Math.round(r * 8) / 8) : Math.pow(2, Math.round(Math.log2(r) * 16) / 16);
+  const eq = ew > 0 ? Math.max(0.0625, Math.round(ew * 16) / 16) : 0;
   const key = `${marker}|${rq}|${eq}|${phase}`;
   let s = _stampCache.get(key);
   if (s) return s;
@@ -147,6 +150,7 @@ export function _stamp(marker, r, ew, phase) {
     }
   }
   s = { half, size, fill, edge, f: _sparse(fill, size, half), e: edge ? _sparse(edge, size, half) : null };
+  if (_stampCache.size >= 4096) _stampCache.clear();          // a bound, not an LRU: rebuilds are cheap
   _stampCache.set(key, s);
   return s;
 }

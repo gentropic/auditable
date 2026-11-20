@@ -48,6 +48,10 @@ the same view to about a millisecond.
 - `subplots(..., { theme })` overrides palette keys for one figure.
 
 **Changed.**
+- Marker sizes are matplotlib's now: `s` is the area in points² (default 36), `markersize` the
+  diameter in points (default 6), marker edge widths in points, at the figure's dpi. 0.1.1 read
+  `s` as a radius of √s px (default 20), so markers were ~1.4× matplotlib's; small explicit
+  `s` values now draw smaller, as they would in matplotlib.
 - Trace columns are typed arrays now (internal; `_traces[i].x` was a JS array).
 - `bar` includes the bar width in the x extent (0.1.1 clipped the outer bars in half).
 - Draw lists of big scatters carry one `image` op instead of one `arc` per point.

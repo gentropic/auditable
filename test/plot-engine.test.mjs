@@ -180,6 +180,21 @@ test("format strings in any order; a marker without a line style draws markers o
   assert.equal(o.filter((x) => x[0] === 'stroke').length >= 1, true);
 });
 
+test("marker sizes are matplotlib's: s in points², markersize in points, at the figure's dpi", () => {
+  const radii = (fig) => fig.toDrawList().ops.filter((o) => o[0] === 'arc').map((o) => o[3]);
+  const a = P.subplots(1, 1, { figsize: [4, 3] });               // dpi 100
+  a.ax.scatter([1], [1]);                                        // default s = 36: 6 pt across
+  a.ax.scatter([2], [2], { s: 144 });                            // 12 pt across
+  a.ax.plot([3], [3], 'o');                                      // markersize 6 pt
+  const [r1, r2, r3] = radii(a.fig);
+  assert.ok(Math.abs(r1 - (6 * 100 / 72) / 2) < 1e-9, `default scatter radius ${r1}`);
+  assert.ok(Math.abs(r2 - 2 * r1) < 1e-9, 'area ×4 → diameter ×2');
+  assert.ok(Math.abs(r3 - r1) < 1e-9, "plot's default markersize matches scatter's default s");
+  const b = P.subplots(1, 1, { figsize: [4, 3], dpi: 200 });
+  b.ax.scatter([1], [1]);
+  assert.ok(Math.abs(radii(b.fig)[0] - 2 * r1) < 1e-9, 'points scale with dpi');
+});
+
 test('scatter takes matplotlib\'s positional s and c', () => {
   const { ax } = fig1();
   ax.scatter([1, 2, 3], [1, 2, 3], 30, [0.1, 0.5, 0.9]);

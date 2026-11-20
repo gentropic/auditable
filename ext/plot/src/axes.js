@@ -71,6 +71,7 @@ export class Axes {
     this._aspect = 'auto';
     this._colorIdx = 0;
     this._strict = false;
+    this._dpi = 100;             // the figure's, for sizes given in points (markers)
     this.view = null;            // set by a render: { x, y, w, h, xScale, yScale }
   }
 
@@ -343,6 +344,7 @@ export class Axes {
     const t = new Axes(this._theme);
     t._strict = this._strict;
     t._twinOf = this;
+    t._dpi = this._dpi;
     t._xscale = this._xscale;
     t._xlim = this._xlim;
     this._twin = t;
@@ -353,6 +355,7 @@ export class Axes {
     const t = new Axes(this._theme);
     t._strict = this._strict;
     t._twinOf = this;
+    t._dpi = this._dpi;
     t._yscale = this._yscale;
     t._ylim = this._ylim;
     this._twinY = t;
@@ -942,9 +945,10 @@ export class Axes {
     }
     // markers
     if (opts.marker) {
-      const r = (opts.markersize || 4) / 2;
+      // markersize: the diameter in points, default 6 (matplotlib's lines.markersize)
+      const r = ((opts.markersize || 6) * this._dpi) / 144;
       const face = opts.markerfacecolor ? _cssColor(opts.markerfacecolor) : color;
-      const edge = opts.markeredgecolor ? { color: _cssColor(opts.markeredgecolor), width: opts.markeredgewidth || 1 } : null;
+      const edge = opts.markeredgecolor ? { color: _cssColor(opts.markeredgecolor), width: ((opts.markeredgewidth ?? 1) * this._dpi) / 72 } : null;   // points, as matplotlib's
       const pos = this._positions(trace, xScale, yScale);
       this._drawPoints(ctx, trace, pos, rect, { marker: opts.marker, radius: r, uniform: face, alpha, edge, cacheKey: 'mk' });
     }
@@ -1002,15 +1006,18 @@ export class Axes {
   _renderScatter(ctx, trace, xScale, yScale, rect) {
     const o = trace.opts;
     const pos = this._positions(trace, xScale, yScale);
-    // matplotlib's scatter default is s=20 (markersize in points²); the radius here is √s px
-    const sz = trace.s ? trace.s : (typeof o.s === 'number' ? o.s : 20);
-    const radius = typeof sz === 'number' ? Math.sqrt(sz) : sz;   // per-point: resolved in _drawPoints
+    // s is matplotlib's: the marker's AREA in points², default 36 (lines.markersize²). Its
+    // diameter is √s points, so the radius in px is √s · dpi / 144.
+    const rk = this._dpi / 144;
+    const sz = trace.s ? trace.s : (typeof o.s === 'number' ? o.s : 36);
+    const radius = typeof sz === 'number' ? Math.sqrt(sz) * rk : sz;   // per-point: resolved in _drawPoints
     const alpha = o.alpha != null ? o.alpha : 1;
     let edge = null;
     if (o.edgecolor != null && o.edgecolor !== 'none') {
-      edge = { color: o.edgecolor === 'face' ? 'face' : _cssColor(o.edgecolor), width: o.linewidth || 0.5 };
+      // edge width in points (matplotlib's); 0.5 px when not given
+      edge = { color: o.edgecolor === 'face' ? 'face' : _cssColor(o.edgecolor), width: o.linewidth != null ? (o.linewidth * this._dpi) / 72 : 0.5 };
     }
-    const spec = { marker: o.marker || 'o', radius, alpha, edge, cacheKey: 'sc' };
+    const spec = { marker: o.marker || 'o', radius, rk, alpha, edge, cacheKey: 'sc' };
     if (trace.cvals) {
       const { vmin, vmax } = this._cmapRange(trace);
       spec.cmap = { name: o.cmap || 'viridis', vmin, vmax };
@@ -1064,7 +1071,7 @@ export class Axes {
     if (spec.cmap) idx = this._cmapIdx(trace, spec.cmap.vmin, spec.cmap.vmax);
     const alpha = spec.alpha;
     const fillOf = (i) => spec.cmap ? (lut ? null : cmapFn(idx[i] < 0 ? NaN : (idx[i] + 0.5) / 256)) : spec.list ? spec.list[i] : spec.uniform;
-    const rOf = (i) => (perPoint ? Math.sqrt(spec.radius[i]) : spec.radius);
+    const rOf = (i) => (perPoint ? Math.sqrt(spec.radius[i]) * spec.rk : spec.radius);
     const X = pos.X, Y = pos.Y;
     if (_engine.batch && alpha >= 1 && !spec.edge && !perPoint) {
       // batch: one path per colour (colour-mapped points group into ≤ 256 LUT colours; within
@@ -1122,7 +1129,7 @@ export class Axes {
       const n = pos.X.length;
       let rad;
       if (typeof spec.radius === 'number') rad = spec.radius * dpr;
-      else { rad = new Float32Array(n); for (let i = 0; i < n; i++) rad[i] = Math.sqrt(spec.radius[i]) * dpr; }
+      else { rad = new Float32Array(n); for (let i = 0; i < n; i++) rad[i] = Math.sqrt(spec.radius[i]) * spec.rk * dpr; }
       let colors;
       if (col.lut) {
         // the same LUT entry _cmapIdx gives: ((v - vmin) · 256 / (vmax - vmin)), and the

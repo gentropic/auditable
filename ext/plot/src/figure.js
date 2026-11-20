@@ -33,6 +33,8 @@ export class Figure {
     // JS-side callers that pass pixel values directly).
     const rawSize = o.figsize || [4, 3];
     const dpi = o.dpi || 100;
+    // points → pixels (marker sizes are in points, as matplotlib's: 1 pt = dpi / 72 px)
+    this.dpi = dpi;
     const inchesShape = rawSize[0] <= 50 && rawSize[1] <= 50;
     this.width = inchesShape ? rawSize[0] * dpi : rawSize[0];
     this.height = inchesShape ? rawSize[1] * dpi : rawSize[1];
@@ -62,6 +64,7 @@ export class Figure {
     for (let i = 0; i < this.nrows * this.ncols; i++) {
       const ax = new Axes(this._theme);
       ax._strict = this._strict;
+      ax._dpi = dpi;
       this.axes.push(ax);
     }
   }

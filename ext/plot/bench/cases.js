@@ -23,6 +23,7 @@ function normals(n, seed) {
 }
 
 const W = 800, H = 600;
+// s = 2.07 points² is a 2 px marker at the figure's dpi 100 (diameter √s · 100/72 px)
 const now = () => performance.now();
 
 // time one draw of `fig` in the given mode; returns ms (and ops for recording)
@@ -57,14 +58,14 @@ export const CASES = {
     const n = 1e6, x = normals(n, 1), y = normals(n, 2), c = new Float64Array(n);
     for (let i = 0; i < n; i++) c[i] = x[i] * x[i] + y[i] * y[i];
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.scatter(x, y, { c, s: 1, cmap: 'viridis' });
+    ax.scatter(x, y, { c, s: 2.07, cmap: 'viridis' });
     return firstAndAgain(fig, mode);
   },
   async scatter_500k(P, mode) {
     const n = 5e5, x = normals(n, 3), y = normals(n, 4), c = new Float64Array(n);
     for (let i = 0; i < n; i++) c[i] = x[i] - y[i];
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.scatter(x, y, { c, s: 1, cmap: 'viridis' });
+    ax.scatter(x, y, { c, s: 2.07, cmap: 'viridis' });
     return firstAndAgain(fig, mode);
   },
   async line_1M(P, mode) {
@@ -100,7 +101,7 @@ export const CASES = {
     if (mode === 'record') return { na: 'canvas only' };
     const n = 1e6, x = normals(n, 7), y = normals(n, 8);
     const { fig, ax } = P.subplots(1, 1, { figsize: [W, H] });
-    ax.scatter(x, y, { s: 1 });
+    ax.scatter(x, y, { s: 2.07 });
     if (typeof ax.pick !== 'function') return { na: 'no pick' };
     drawOnce(fig, 'canvas');
     const r = rng(9);

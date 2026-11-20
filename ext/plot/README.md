@@ -94,7 +94,8 @@ replay(ctx, pltAdder.shown()[0].toDrawList());   // on the page
 
 ## Where it differs from matplotlib
 
-- `scatter`'s `s` gives a marker radius of √s px (matplotlib: a diameter of √s points).
+Marker sizes are matplotlib's: `scatter`'s `s` is the area in points² (default 36), `markersize` the diameter in points (default 6), marker edge widths in points, all at the figure's `dpi`. Line widths and font sizes are still pixels. Otherwise:
+
 - The single-letter colours in a format string (`'r--'`) are plot's softer palette; colour *names* (`color='r'`, `'tab:blue'`, `'C3'`) are matplotlib's.
 - `axhline` / `axvline` default to a neutral grey, not the colour cycle.
 - `imshow(data, nx, ny)` takes the grid flat with its size, origin `'lower'`; for a 2D array use `matshow(Z)` (origin `'upper'`).
