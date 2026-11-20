@@ -1,0 +1,73 @@
+{
+  "label": "0.1.1",
+  "entry": "/ext/plot/bench/.baseline-0.1.1-index.js",
+  "at": "2026-11-20T16:50:53.642Z",
+  "machine": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M · 24 threads · 63 GiB",
+  "chromium": "148.0.7778.96",
+  "results": {
+    "trivial/canvas": {
+      "first": 13.300000011920929,
+      "again": null,
+      "ops": null
+    },
+    "trivial/record": {
+      "first": 6.199999988079071,
+      "again": null,
+      "ops": 91
+    },
+    "scatter_1M/canvas": {
+      "note": "timeout > 90 s"
+    },
+    "scatter_1M/record": {
+      "first": 476.19999998807907,
+      "again": 404.4000000357628,
+      "ops": 5000053
+    },
+    "scatter_500k/canvas": {
+      "note": "timeout > 90 s"
+    },
+    "scatter_500k/record": {
+      "first": 244.30000001192093,
+      "again": 216.4000000357628,
+      "ops": 2500047
+    },
+    "line_1M/canvas": {
+      "first": 568.1999999880791,
+      "again": 558.3999999761581,
+      "ops": null
+    },
+    "line_1M/record": {
+      "first": 167,
+      "again": 182.69999998807907,
+      "ops": 1000058
+    },
+    "hist_10M/canvas": {
+      "note": "RangeError: Maximum call stack size exceeded"
+    },
+    "hist_10M/record": {
+      "note": "RangeError: Maximum call stack size exceeded"
+    },
+    "imshow_2000/canvas": {
+      "first": 4316.199999988079,
+      "again": 5501,
+      "ops": null
+    },
+    "imshow_2000/record": {
+      "first": 1362.3999999761581,
+      "again": 1298.7999999523163,
+      "ops": 77
+    },
+    "contourf_500/canvas": {
+      "note": "n/a: no contourf"
+    },
+    "contourf_500/record": {
+      "note": "n/a: no contourf"
+    },
+    "pick_1M/canvas": {
+      "note": "n/a: no pick"
+    },
+    "pick_1M/record": {
+      "note": "n/a: canvas only"
+    }
+  }
+}

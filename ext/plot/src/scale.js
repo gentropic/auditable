@@ -18,10 +18,16 @@ function _niceNum(range, round) {
   return nice * Math.pow(10, exp);
 }
 
+// Hot loops don't call transform() per point: every scale also carries its fold, px = a·v + b
+// (on log10(v) for a log scale; `log` says which), worked out once per render.
 export class LinearScale {
   constructor(domain, range) {
     this.domain = domain;
     this.range = range;
+    this.log = false;
+    const dr = domain[1] - domain[0];
+    this.a = dr === 0 ? 0 : (range[1] - range[0]) / dr;
+    this.b = dr === 0 ? (range[0] + range[1]) / 2 : range[0] - domain[0] * this.a;
   }
 
   transform(v) {
@@ -76,6 +82,10 @@ export class LogScale {
     const [d0, d1] = domain;
     this.domain = [d0 > 0 ? d0 : 1e-300, d1 > 0 ? d1 : 1];
     this.range = range;
+    this.log = true;
+    const l0 = Math.log10(this.domain[0]), dl = Math.log10(this.domain[1]) - l0;
+    this.a = dl === 0 ? 0 : (range[1] - range[0]) / dl;
+    this.b = dl === 0 ? (range[0] + range[1]) / 2 : range[0] - l0 * this.a;
   }
 
   transform(v) {

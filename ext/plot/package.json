@@ -1,6 +1,6 @@
 {
   "name": "@gcu/plot",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Matplotlib-style plotting for the browser: subplots, plot, scatter, imshow, hist, bar. Canvas-based, zero runtime dependencies.",
   "type": "module",
   "main": "src/api.js",
@@ -17,7 +17,8 @@
   "files": [
     "src",
     "index.js",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "node build.js"

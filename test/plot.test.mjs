@@ -209,11 +209,11 @@ describe('parseFormat', () => {
     assert.equal(f.marker, 'o');
   });
 
-  it('parses color + marker (no linestyle)', () => {
+  it('parses color + marker (no linestyle): markers only, as matplotlib', () => {
     const f = parseFormat('bo');
     assert.equal(f.color, '#4488ff');
     assert.equal(f.marker, 'o');
-    assert.equal(f.linestyle, undefined);
+    assert.equal(f.linestyle, 'None');
   });
 
   it('parses linestyle + marker', () => {
@@ -614,7 +614,7 @@ describe('scatter/plot/bar accept Series-shaped inputs', () => {
     const series = fakeSeries([1, 2, 3, 4]);
     ax.scatter(series, series);
     const trace = ax._traces[0];
-    assert.ok(Array.isArray(trace.x));
+    assert.ok(trace.x instanceof Float64Array);   // numbers become one Float64Array
     assert.equal(trace.x.length, 4);
     assert.equal(trace.y[3], 4);
   });

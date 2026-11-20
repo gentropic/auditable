@@ -1,0 +1,83 @@
+{
+  "label": "0.2.0",
+  "entry": "/ext/plot/index.js",
+  "at": "2026-11-20T16:58:21.142Z",
+  "machine": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M · 24 threads · 63 GiB",
+  "chromium": "148.0.7778.96",
+  "results": {
+    "trivial/canvas": {
+      "first": 13.399999976158142,
+      "again": null,
+      "ops": null
+    },
+    "trivial/record": {
+      "first": 7.800000011920929,
+      "again": null,
+      "ops": 93
+    },
+    "scatter_1M/canvas": {
+      "first": 105.60000002384186,
+      "again": 0.6000000238418579,
+      "ops": null
+    },
+    "scatter_1M/record": {
+      "first": 135.30000001192093,
+      "again": 0.19999998807907104,
+      "ops": 53
+    },
+    "scatter_500k/canvas": {
+      "first": 64.79999995231628,
+      "again": 0.699999988079071,
+      "ops": null
+    },
+    "scatter_500k/record": {
+      "first": 62.19999998807907,
+      "again": 0.10000002384185791,
+      "ops": 47
+    },
+    "line_1M/canvas": {
+      "first": 32.60000002384186,
+      "again": 8.100000023841858,
+      "ops": null
+    },
+    "line_1M/record": {
+      "first": 23.799999952316284,
+      "again": 14.599999964237213,
+      "ops": 10587
+    },
+    "hist_10M/canvas": {
+      "first": 71.69999998807907,
+      "again": 0.8999999761581421,
+      "ops": null
+    },
+    "hist_10M/record": {
+      "first": 67.69999998807907,
+      "again": 0.19999998807907104,
+      "ops": 167
+    },
+    "imshow_2000/canvas": {
+      "first": 60.39999997615814,
+      "again": 1.199999988079071,
+      "ops": null
+    },
+    "imshow_2000/record": {
+      "first": 79,
+      "again": 0.19999998807907104,
+      "ops": 79
+    },
+    "contourf_500/canvas": {
+      "note": "n/a: no contourf"
+    },
+    "contourf_500/record": {
+      "note": "n/a: no contourf"
+    },
+    "pick_1M/canvas": {
+      "first": 13.900000035762787,
+      "again": 0.03660000002384186,
+      "ops": null
+    },
+    "pick_1M/record": {
+      "note": "n/a: canvas only"
+    }
+  }
+}

@@ -1,7 +1,8 @@
 // Figure — canvas management, subplot grid, DPI handling
 
 import { Axes } from './axes.js';
-import { _style } from './style.js';
+import { _snapshotStyle } from './style.js';
+import { _checkOpts, _noop } from './opts.js';
 import { recordingContext, replay } from './record.js';
 
 // Figures shown (or saved) where there is no DOM, in order. plt.shown() / plt.saved() read
@@ -17,6 +18,11 @@ export class Figure {
     this.nrows = nrows || 1;
     this.ncols = ncols || 1;
     const o = opts || {};
+    _checkOpts('subplots', o, o.strict);
+    // the palette as it stands now (style.js): this figure keeps it, whatever style.use() does
+    // later. A partial {theme} overrides keys of it.
+    this._theme = { ..._snapshotStyle(), ...(o.theme && typeof o.theme === 'object' ? o.theme : {}) };
+    this._strict = !!o.strict;
     // matplotlib's figsize is in INCHES; the canvas pixel size is
     // figsize * dpi. Default dpi 100. Notebooks like Pyrcz's pass
     // figsize=(7, 7) expecting a 700×700 canvas — without this scale
@@ -34,7 +40,7 @@ export class Figure {
     // overridden. Dark palette uses 'transparent' (notebook bg shows
     // through); light palette uses an opaque off-white card so dark
     // tick text contrasts even on a dark notebook bg.
-    this.facecolor = o.facecolor || _style.figureFacecolor;
+    this.facecolor = o.facecolor || this._theme.figureFacecolor;
     this._suptitle = null;
     // Inter-subplot gap in pixels. Callers that want a tight grid
     // (e.g. sadpan's scatter_matrix on a small figure) pass `gap` (or
@@ -54,7 +60,9 @@ export class Figure {
     // create axes grid
     this.axes = [];
     for (let i = 0; i < this.nrows * this.ncols; i++) {
-      this.axes.push(new Axes());
+      const ax = new Axes(this._theme);
+      ax._strict = this._strict;
+      this.axes.push(ax);
     }
   }
 
@@ -63,13 +71,20 @@ export class Figure {
     return this;
   }
 
-  // matplotlib's Figure.subplots_adjust(left, right, top, bottom,
-  // wspace, hspace) — adjusts margins between subplots. We don't
-  // currently honor these (our subplot layout uses fixed gaps); accept
-  // and discard so notebooks that call `fig.subplots_adjust(wspace=0.7)`
-  // proceed instead of erroring with no-attribute.
-  subplots_adjust(_opts) { return this; }
+  // matplotlib's Figure.subplots_adjust(left, right, top, bottom, wspace, hspace) isn't
+  // honoured yet (the layout uses fixed gaps): it warns rather than doing nothing quietly.
+  subplots_adjust(_opts) { _noop('subplots_adjust', this._strict); return this; }
+  // a true no-op by design: layout is always tight
   tight_layout(_opts) { return this; }
+
+  // the axes whose plot area holds (px, py), CSS px of the figure, after a render
+  axesAt(px, py) {
+    for (const ax of this.axes) {
+      const v = ax.view;
+      if (v && px >= v.x && px <= v.x + v.w && py >= v.y && py <= v.y + v.h) return ax;
+    }
+    return null;
+  }
 
   // In the notebook: a <canvas> node, which its display path picks up. With no DOM (a
   // worker, Node): the figure is recorded for plt.shown() and returned, so the host can
@@ -100,7 +115,7 @@ export class Figure {
     const supH = this._suptitle ? 24 : 0;
 
     if (this._suptitle) {
-      ctx.fillStyle = _style.textColor;
+      ctx.fillStyle = this._theme.textColor;
       ctx.font = '14px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
@@ -133,7 +148,7 @@ export class Figure {
           w: cellW,
           h: cellH,
         };
-        ax._render(ctx, rect);
+        ax._render(ctx, rect, { dpr });
       }
     }
 
@@ -143,7 +158,7 @@ export class Figure {
     // centered horizontally under each column.
     if (this._rowLabels) {
       ctx.save();
-      ctx.fillStyle = _style.textColor;
+      ctx.fillStyle = this._theme.textColor;
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -160,7 +175,7 @@ export class Figure {
       ctx.restore();
     }
     if (this._colLabels) {
-      ctx.fillStyle = _style.textColor;
+      ctx.fillStyle = this._theme.textColor;
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';

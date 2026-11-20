@@ -4,6 +4,10 @@ import { Figure, _shownFigures, _savedFigures } from './figure.js';
 import { replay } from './record.js';
 import { getCmap } from './color.js';
 import { setStyle } from './style.js';
+import { rcParams, _noop } from './opts.js';
+
+// one version string, read by the extension registration below (package.json carries the same)
+export const VERSION = '0.2.0';
 
 // matplotlib stateful interface — plt.xlabel/.ylim/.legend/etc. all
 // operate on a global "current axes". subplots() and the _quick()
@@ -81,8 +85,10 @@ function _quick(fn) {
   };
 }
 
-export const plot = _quick((ax, x, y, fmtOrOpts, opts) => ax.plot(x, y, fmtOrOpts, opts));
-export const scatter = _quick((ax, x, y, opts) => ax.scatter(x, y, opts));
+// plot(y), plot(x, y), plot(x, y, fmt, opts) … — Axes.plot sorts the forms out
+export const plot = _quick((ax, ...args) => ax.plot(...args));
+// scatter(x, y, opts) and matplotlib's positional scatter(x, y, s, c)
+export const scatter = _quick((ax, ...args) => ax.scatter(...args));
 export const imshow = _quick((ax, data, nx, ny, opts) => ax.imshow(data, nx, ny, opts));
 export const bar = _quick((ax, x, heights, opts) => ax.bar(x, heights, opts));
 export const cmap = getCmap;
@@ -102,27 +108,19 @@ export function hist(data, opts) {
   // Compute the actual counts + edges that the trace will render with,
   // so the caller sees real values matching the drawn bars.
   const trace = ax._traces[ax._traces.length - 1];
-  const { bins: edges } = ax._computeHistBins(trace);
-  const counts = ax._computeHistCounts(trace);
+  const { edges, counts } = ax._hist(trace);
   const canvas = fig.show();
   return Object.assign([counts, edges, canvas], {
     counts, edges, canvas,
   });
 }
 
-// matplotlib parity stubs — these are no-ops today but nearly every
-// Jupyter notebook calls them at the top of cell 1 to configure global
-// style. Stubbing keeps the import path running so notebooks proceed
-// to the real plotting calls; actual rcParams threading through Figure
-// construction is on the ROADMAP.
-//
-// plt.rc(group, **kwargs) — `plt.rc('font', size=14)`
-export function rc(_group, _opts) { /* no-op */ }
-// plt.rcParams — dict-like assignable bag. `plt.rcParams['figure.figsize'] = (8, 6)`
-export const rcParams = {};
-rcParams.update = function (obj) {
-  if (obj && typeof obj === 'object') for (const k of Object.keys(obj)) rcParams[k] = obj[k];
-};
+// plt.rc(group, **kwargs) — `plt.rc('font', size=14)` — isn't honoured yet; it warns once
+// (and a notebook carries on to its real plotting calls).
+export function rc(_group, _opts) { _noop('rc'); }
+// plt.rcParams — a dict-like bag (opts.js). Only 'gcu.strict' is read today: true turns every
+// "nothing is silently ignored" warning into an error.
+export { rcParams };
 // plt.style.use(name) — switches the shared palette. Auditable-native
 // default is dark; `plt.style.use('default')` (or 'classic' / a few
 // common matplotlib-style names) flips to a light palette. Notebooks
@@ -233,21 +231,17 @@ export function hlines(y, xmin, xmax, opts) { _ax().hlines(y, xmin, xmax, opts);
 export function axhline(y, opts) { _ax().axhline(y, opts); }
 export function axvline(x, opts) { _ax().axvline(x, opts); }
 export function text(x, y, s, opts) { _ax().text(x, y, s, opts); }
-// matplotlib subplots_adjust controls figure margins (left/right/top/bottom/wspace/hspace).
-// Canvas layout isn't margin-driven the same way; accept and discard.
-export function subplots_adjust(_opts) { /* no-op */ }
-export function tight_layout(_opts) { /* no-op */ }
+// subplots_adjust isn't honoured yet (it warns); tight_layout is a true no-op: layout is always tight
+export function subplots_adjust(_opts) { _noop('subplots_adjust'); }
+export function tight_layout(_opts) { /* layout is always tight */ }
 export function savefig(filename) { return _currentFig && _currentFig.savefig(filename); }
 export function clf() { _currentFig = null; _currentAx = null; _shownFigures.length = 0; _savedFigures.length = 0; }
 export function cla() { _currentAx = null; }
 
-// matplotlib's plt.xticks(ticks, labels) / yticks set tick positions
-// and labels on the current axes. Our scale.ticks() drives ticks
-// automatically — we accept and discard these calls (visual result
-// uses our auto-ticks) so notebooks that call them don't error out.
-// Real custom-tick support is on the ROADMAP.
-export function xticks(_ticks, _labels) { /* no-op; ROADMAPed */ }
-export function yticks(_ticks, _labels) { /* no-op; ROADMAPed */ }
+// plt.xticks(ticks, labels) / yticks — custom ticks aren't supported yet; they warn once and
+// the axes keep their automatic ticks.
+export function xticks(_ticks, _labels) { _noop('xticks'); }
+export function yticks(_ticks, _labels) { _noop('yticks'); }
 
 // plt.colorbar(im, ax=None, **kwargs) — attach a colorbar to the axes
 // that holds `im`. matplotlib's `im` is an AxesImage; since our
@@ -295,7 +289,7 @@ if (typeof window !== 'undefined') {
   if (register) {
     register({
       name: '@gcu/plot',
-      version: '0.1.0',
+      version: VERSION,
       description: 'Canvas 2D plotting library \u2014 line, scatter, bar, hist, imshow',
       pluginUrl: '@gcu/plot',
       exports: { plt: _plt },

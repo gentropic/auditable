@@ -1,10 +1,8 @@
 # @gcu/plot
 
-Matplotlib-style plotting for the browser. Canvas-based, zero runtime dependencies. Thin familiar API: `subplots`, `plot`, `scatter`, `imshow`, `hist`, `bar`.
+Matplotlib-style plotting for the browser. Canvas 2D, zero runtime dependencies, no WebGL, no WASM, no workers, no network: it runs under a `connect-src 'none'` page, in a worker, and in Node (as draw lists). If you know matplotlib, you know the API: `subplots`, `plot`, `scatter`, `imshow`, `hist`, `bar`, …
 
-Part of [Auditable](https://github.com/gentropic/auditable).
-
-Pre-1.0 — APIs may break on minor version bumps.
+Part of [Auditable](https://github.com/gentropic/auditable). Pre-1.0 — APIs may break on minor version bumps.
 
 ## Install
 
@@ -15,52 +13,98 @@ npm install @gcu/plot
 ## Usage
 
 ```js
-import { subplots, scatter } from '@gcu/plot';
+import { subplots } from '@gcu/plot';
 
-const { fig, ax } = subplots(1, 1);
-ax.scatter([1, 2, 3, 4], [1, 4, 9, 16]);
-ax.xlabel('x');
-ax.ylabel('y²');
-document.body.append(fig.canvas);
+const { fig, ax } = subplots(1, 1, { figsize: [6, 4] });   // inches × dpi 100, as matplotlib
+ax.scatter(x, y, { c: grade, cmap: 'viridis', s: 4 });     // typed arrays welcome, never copied
+ax.set_xlabel('easting'); ax.set_ylabel('northing');
+ax.colorbar({ label: 'Fe %' });
+document.body.append(fig.show());                          // show() returns the <canvas>
 ```
 
-Quick helpers (`plot`, `scatter`, `imshow`, `hist`, `bar`) accept an options object with `ax` to target an existing axes, otherwise create a new figure.
+Keyword arguments are a trailing options object with matplotlib's names and short aliases (`linewidth`/`lw`, `color`/`c`, `linestyle`/`ls`, `markersize`/`ms`, …). The `plt` module object (`pltAdder`) has the stateful interface too: `plt.plot(y)`, `plt.xlabel(...)`, `plt.colorbar()`, `plt.savefig(...)`.
 
-`subplots(R, C)` with both `R` and `C` greater than 1 returns a nested 2D axes array (matplotlib shape, for `[[a,b],[c,d]] = ...` destructuring) with a non-enumerable `.flat` property carrying the row-major flat axes list — mirrors matplotlib's `ndarray.flat`, so `axes.flat[k]` works without manual row/col math.
+`subplots(R, C)` with both greater than 1 returns a nested 2D axes array (matplotlib's shape) with a non-enumerable `.flat` (row-major), so `axes.flat[k]` works.
 
-## Style palette
+## Fast
 
-`plt.style.use(name)` swaps the module-level palette read by Axes / Figure / legend fallbacks (per-Axes `_bgcolor` / `_textColor` / `_gridColor` / `_frameColor` overrides still win). Default is auditable-native dark (`#1a1a1a` plot bg, `#ccc` text, transparent figure facecolor). `'default'` / `'classic'` / `'matplotlib'` / `'seaborn'` / `'ggplot'` / `'bmh'` flip to a light matplotlib-shape palette (white plot bg, dark text, opaque `#fafafa` figure card). `'dark_background'` restores dark. Unknown names are silently ignored.
+Figures of a few million elements draw in about a tenth of a second on Canvas 2D:
 
-## Figure layout extras
+| case | first draw | same view again |
+|---|---|---|
+| scatter, 1M points, colour-mapped | ~100 ms | < 1 ms |
+| line, 1M vertices | ~30 ms | ~8 ms |
+| hist, 10M values, 100 bins | ~70 ms | ~1 ms |
+| imshow, 2,000 × 2,000 | ~60 ms | ~1 ms |
+| pick (hover), 1M points | index ~15 ms | ~0.03 ms |
 
-- `gap` / `wspace` / `hspace` (px, default 10) on `subplots(..., { gap })` or `Figure` — inter-subplot spacing.
-- Figure-level `fig._rowLabels` / `fig._colLabels` (arrays of strings) render in 28px-left / 18px-bottom gutters reserved outside the subplot grid. Used by `sadpan.plotting.scatter_matrix` to live the column names on the figure edges instead of cluttering each cell with axis labels.
-- Per-Axes `ax._margins = {left, right, top, bottom}` overrides the label/tick-driven margin computation — lets a grid of cells pin identical plot rects.
-- `aspect='equal'` for `imshow`-dominated axes shrinks the plot rect to match data aspect (was: expanded the data range). `colorbar` is pinned to the cell's right edge using the pre-aspect plot height so it doesn't shrink along.
+Measured in headless Chromium; the method and every number, with 0.1.1 beside them, are in [`bench/BENCH.md`](bench/BENCH.md) (`node ext/plot/bench/run.mjs`). How:
+
+- **Columns are taken as they come.** A typed array is used in place, never copied; a plain array becomes one `Float64Array`. Ranges, histogram counts, colour indices, image buffers and pixel positions are computed once per trace and cached until the view changes.
+- **Big scatters rasterize.** Past a few thousand points each marker is an antialiased stamp (worked out arithmetically — the same bytes in every host), composited in data order into one image: one blit live, one `image` op in a draw list. Alpha and overlaps come out as one canvas fill per marker would make them; positions land within ⅛ px.
+- **Long lines decimate** (M4: first, min, max and last vertex per quarter device pixel) when x rises; the stroke matches drawing every vertex.
+- **Images are one buffer**, built through a 256-entry colour-map table, blitted once.
+
+**The ceiling.** This is for figures up to a few million elements. Past that, aggregate (`hist`, binning to the view and sending a raster) or use a GPU renderer — [`@gcu/condenser`](../condenser) has orthographic views, sections, level of detail and picking for tens of millions.
+
+## Picking and the view
+
+After a figure is drawn, each axes knows where it went:
+
+```js
+ax.view                      // { x, y, w, h, xScale, yScale } in CSS px of the figure
+ax.toPixel(x, y); ax.toData(px, py)
+fig.axesAt(px, py)           // which axes holds that pixel
+ax.pick(px, py, { radius: 8 })
+// → { axes, trace, traceIndex, kind, index, x, y, c, s, label, value? } or null
+```
+
+`pick` finds the nearest marker, then line vertex, then bar (by column) or histogram bin, then image cell (`col`, `row`, `value`), searching twins too. The first pick after a draw builds a pixel-space index; picks then take microseconds.
+
+## Nothing is silently ignored
+
+An option plot doesn't know warns once (per function and key) with the name you probably meant — `plot() has no option 'colour', did you mean 'color'?`. An option it knows but can't do yet says so and what to use instead. Calls that do nothing yet (`xticks`, `subplots_adjust`, …) warn rather than pass quietly; `tight_layout()` stays silent because layout is always tight. With `plt.rcParams['gcu.strict'] = true` (or `subplots(..., { strict: true })`) every warning throws.
+
+Mismatched inputs are errors that say what came: `scatter: c has 1,000 values but x has 999`.
+
+## Non-finite values
+
+NaN and ±Inf never throw and never reach an axis range. A line breaks at NaN (matplotlib's rule); a NaN colour value draws nothing; NaN image cells are transparent; histograms leave NaN out; a log axis ignores values ≤ 0.
+
+## Histograms
+
+`hist(x, { bins, range, weights, density, cumulative })` counts exactly as `numpy.histogram` does (checked against numpy's own output: values on edges, non-representable edges, the inclusive last edge). `plt.hist` returns `[counts, edges, canvas]`, matplotlib's order.
+
+## Themes
+
+`plt.style.use('default')` (light, matplotlib's look) or `'dark_background'` (the default here); an unknown name warns. A figure keeps the palette in force when it was made — matplotlib's rule — so two figures on one page can differ, and a later `style.use` doesn't repaint them. `subplots(..., { theme: { bgcolor, textColor, … } })` overrides keys for one figure.
 
 ## Without a DOM: figures as data
 
-The `plt` module object is built in every host and exported as `pltAdder`. A worker or Node process registers it with adder the way the notebook does:
+With no `document`, `show()` records the figure and returns it; `savefig(name)` records `{ name, figure }` for `plt.saved()`.
+
+`fig.toDrawList()` is the figure as plain JSON: `{ width, height, facecolor, ops }`, the ordered 2D-context calls as `[op, ...args]`, property assignments as `['set', name, value]`, a raster as one `['image', x, y, w, h, cols, rows, rgbaBase64]`. The same figure gives the same list in every host. `replay(ctx, list)` draws it; `fig.draw(ctx, { dpr })` draws straight onto any 2D context; `fig.toPNG()` gives PNG bytes where `OffscreenCanvas` exists.
 
 ```js
 import { pltAdder, replay } from '@gcu/plot';
-registerModule('plt', pltAdder);
+registerModule('plt', pltAdder);                 // adder, in a worker or Node
 await run('import plt\nplt.plot([1, 2, 3])\nplt.show()');
-const figs = pltAdder.shown();          // figures shown since the last clf() / close('all')
+replay(ctx, pltAdder.shown()[0].toDrawList());   // on the page
 ```
 
-With no `document`, `show()` records the figure and returns it instead of a canvas. `savefig(name)` records `{ name, figure }` for `pltAdder.saved()` instead of downloading.
+## Where it differs from matplotlib
 
-A figure becomes plain JSON with `fig.toDrawList()`. That is `{ width, height, facecolor, ops }`, the ordered 2D-context calls as `[op, ...args]`. Property assignments appear as `['set', name, value]`, and an `imshow` raster appears as one `['image', x, y, w, h, cols, rows, rgbaBase64]` op. Text widths come from the monospace advance, so a figure gives the same list in every host. `replay(ctx, list)` draws the list on a real canvas. `fig.draw(ctx)` draws straight onto any 2D context, and `fig.toPNG()` gives PNG bytes where `OffscreenCanvas` exists.
+- `scatter`'s `s` gives a marker radius of √s px (matplotlib: a diameter of √s points).
+- The single-letter colours in a format string (`'r--'`) are plot's softer palette; colour *names* (`color='r'`, `'tab:blue'`, `'C3'`) are matplotlib's.
+- `axhline` / `axvline` default to a neutral grey, not the colour cycle.
+- `imshow(data, nx, ny)` takes the grid flat with its size, origin `'lower'`; for a 2D array use `matshow(Z)` (origin `'upper'`).
+- Not yet: categorical axes, `boxplot`, `contour`, custom ticks, `sharex`/`sharey`, legend outside the axes. Each warns when asked for.
 
-In the notebook nothing changes: `show()` still returns a `<canvas>`.
+## Figure layout extras
 
-## Matplotlib compatibility
-
-- `scatter` default marker size is 20 (matplotlib parity; was 4).
-- `scatter` accepts plural matplotlib forms `edgecolors` / `linewidths` as aliases for `edgecolor` / `linewidth`.
-- `plot` / `scatter` / `bar` / `barh` coerce x/y/heights/widths through `_toArr` at trace ingress, so sadpan `Series` / numpy-shaped wrappers without a `.length` plot correctly.
+- `gap` / `wspace` / `hspace` (px, default 10) on `subplots(..., { gap })` — inter-subplot spacing.
+- `fig._rowLabels` / `fig._colLabels` render in gutters outside the subplot grid (sadpan's `scatter_matrix`).
+- `ax._margins = { left, right, top, bottom }` pins the plot rect, so a grid of cells lines up.
 
 ## License
 

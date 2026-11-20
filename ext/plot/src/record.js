@@ -51,9 +51,13 @@ export function recordingContext(width, height) {
     },
     getLineDash() { return dash.slice(); },
     // the raster op (see the header)
-    _image(x, y, w, h, cols, rows, rgba) {
+    // `holder` (optional) keeps the encoding between draws of the same raster
+    _image(x, y, w, h, cols, rows, rgba, holder) {
       if (!_finiteArgs([x, y, w, h])) return;
-      ops.push(['image', x, y, w, h, cols, rows, _toBase64(rgba)]);
+      let b64;
+      if (holder && holder.b64Of === rgba) b64 = holder.b64;
+      else { b64 = _toBase64(rgba); if (holder) { holder.b64Of = rgba; holder.b64 = b64; } }
+      ops.push(['image', x, y, w, h, cols, rows, b64]);
     },
   };
   return new Proxy(target, {
@@ -122,11 +126,42 @@ export function parseColorBytes(c) {
   return null;
 }
 
+// Base64 by table into ASCII bytes, decoded to a string once: a raster is megabytes, and
+// btoa needs it as one binary string first (a 16 MB image spent most of its draw-list time
+// there). Falls back to btoa where TextDecoder is missing.
+const _B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+let _B64PAIRS = null;
 function _toBase64(bytes) {
-  let s = '';
-  const CH = 0x8000;
-  for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
-  return btoa(s);
+  if (typeof TextDecoder === 'undefined') {
+    let s = '';
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(s);
+  }
+  if (!_B64PAIRS) {
+    // every 12-bit value → its two characters, as one 16-bit unit (little-endian bytes)
+    _B64PAIRS = new Uint16Array(4096);
+    for (let i = 0; i < 4096; i++) _B64PAIRS[i] = _B64.charCodeAt(i >> 6) | (_B64.charCodeAt(i & 63) << 8);
+  }
+  const n = bytes.length, full = n - (n % 3);
+  const out = new Uint8Array(Math.ceil(n / 3) * 4);
+  const o16 = new Uint16Array(out.buffer);
+  let j = 0;
+  for (let i = 0; i < full; i += 3) {
+    const v = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    o16[j++] = _B64PAIRS[v >> 12];
+    o16[j++] = _B64PAIRS[v & 4095];
+  }
+  let o = j * 2;
+  const rest = n - full;
+  if (rest) {
+    const v = (bytes[full] << 16) | (rest === 2 ? bytes[full + 1] << 8 : 0);
+    out[o++] = _B64.charCodeAt(v >> 18);
+    out[o++] = _B64.charCodeAt((v >> 12) & 63);
+    out[o++] = rest === 2 ? _B64.charCodeAt((v >> 6) & 63) : 61;   // '='
+    out[o++] = 61;
+  }
+  return new TextDecoder('latin1').decode(out);
 }
 
 function _fromBase64(b64) {

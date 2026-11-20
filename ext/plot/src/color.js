@@ -2,8 +2,13 @@
 // reference palettes (the retired polynomial fits went badly wrong at the
 // ends: viridis(1) came out green, coolwarm(1) white).
 
+// A NaN value has no colour: every map returns transparent for it (not 'rgb(NaN,…)', which a
+// canvas rejects and which used to push imshow off its raster path).
+const _NO_COLOR = 'rgba(0,0,0,0)';
+
 function _lerpCmap(stops) {
   return (t) => {
+    if (t !== t) return _NO_COLOR;
     t = Math.max(0, Math.min(1, t));
     const x = t * (stops.length - 1);
     const k = Math.min(stops.length - 2, Math.floor(x));
@@ -16,6 +21,7 @@ function _lerpCmap(stops) {
 // Direct-function colormaps for the easy ones — jet, gray, hot, cool
 // are well-defined by closed-form ramps.
 function _rgb(r, g, b) {
+  if (r !== r || g !== g || b !== b) return _NO_COLOR;
   const cl = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
   return `rgb(${cl(r)},${cl(g)},${cl(b)})`;
 }
@@ -85,13 +91,94 @@ export function getCmap(name) {
   // [0,1) splits into equal buckets, one color each
   if (Array.isArray(name)) {
     const n = name.length;
-    return (t) => name[Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, Math.min(1, t)) * n)))];
+    const f = (t) => (t !== t ? _NO_COLOR : name[Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, Math.min(1, t)) * n)))]);
+    f._listed = name;
+    return f;
   }
   return _cmaps[name] || _cmaps.viridis;
 }
 
 export function cmapRgb(name, t) {
   return getCmap(name)(t);
+}
+
+// ── colours as bytes ────────────────────────────────────────────────────────────────────────
+// The raster paths (imshow, big scatters) write RGBA bytes, so they need a colour as numbers,
+// not a 'rgb(…)' string, and no hot loop may build or parse strings. _colorBytes parses the
+// forms plot and its callers use; _cmapLut samples a colour map into 256 RGBA entries once.
+
+// matplotlib's single letters, its default cycle ('C0'…'C9', 'tab:blue'…), and the CSS names
+// people actually type. A name not here can't be rasterized; those draws fall back to the
+// vector path, which hands the string to the canvas as is.
+const _NAMED = {
+  // matplotlib's BASE_COLORS — color='r' used to reach the canvas as 'r', which it rejects
+  b: '#0000ff', g: '#008000', r: '#ff0000', c: '#00bfbf', m: '#bf00bf', y: '#bfbf00', k: '#000000', w: '#ffffff',
+  black: '#000000', white: '#ffffff', red: '#ff0000', green: '#008000', blue: '#0000ff', yellow: '#ffff00',
+  cyan: '#00ffff', magenta: '#ff00ff', orange: '#ffa500', purple: '#800080', brown: '#a52a2a', pink: '#ffc0cb',
+  gray: '#808080', grey: '#808080', olive: '#808000', navy: '#000080', teal: '#008080', maroon: '#800000',
+  lime: '#00ff00', gold: '#ffd700', silver: '#c0c0c0', darkgray: '#a9a9a9', darkgrey: '#a9a9a9',
+  lightgray: '#d3d3d3', lightgrey: '#d3d3d3', darkred: '#8b0000', darkgreen: '#006400', darkblue: '#00008b',
+  steelblue: '#4682b4', skyblue: '#87ceeb', crimson: '#dc143c', tomato: '#ff6347', salmon: '#fa8072',
+  coral: '#ff7f50', tan: '#d2b48c', khaki: '#f0e68c', indigo: '#4b0082', violet: '#ee82ee', orchid: '#da70d6',
+  turquoise: '#40e0d0', slategray: '#708090', slategrey: '#708090', dimgray: '#696969', dimgrey: '#696969',
+  darkorange: '#ff8c00', royalblue: '#4169e1', forestgreen: '#228b22', seagreen: '#2e8b57', firebrick: '#b22222',
+  chocolate: '#d2691e', sienna: '#a0522d', beige: '#f5f5dc', ivory: '#fffff0', lavender: '#e6e6fa',
+  transparent: 'rgba(0,0,0,0)', none: 'rgba(0,0,0,0)',
+};
+const _TAB10 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
+const _TABNAMES = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan'];
+_TABNAMES.forEach((n, i) => { _NAMED['tab:' + n] = _TAB10[i]; _NAMED['C' + i] = _TAB10[i]; });
+_NAMED['tab:grey'] = _TAB10[7];
+
+// any colour plot accepts → [r, g, b, a] bytes (a 0–255), or null when it can't tell
+export function _colorBytes(c) {
+  if (typeof c !== 'string') {
+    // an RGB(A) tuple in 0–1, matplotlib's other colour form
+    if ((Array.isArray(c) || ArrayBuffer.isView(c)) && (c.length === 3 || c.length === 4) && typeof c[0] === 'number') {
+      const f = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+      return [f(c[0]), f(c[1]), f(c[2]), c.length === 4 ? f(c[3]) : 255];
+    }
+    return null;
+  }
+  const s = c.trim();
+  const named = _NAMED[s] || _NAMED[s.toLowerCase()];
+  if (named) return _colorBytes(named);
+  let m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(s);
+  if (m) return [+m[1] | 0, +m[2] | 0, +m[3] | 0, m[4] == null ? 255 : Math.round(+m[4] * 255)];
+  m = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+  if (m) {
+    let h = m[1];
+    if (h.length <= 4) h = h.split('').map((x) => x + x).join('');
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), h.length === 8 ? parseInt(h.slice(6, 8), 16) : 255];
+  }
+  return null;
+}
+
+// a colour the canvas can take: names it might not know become hex, tuples become rgba()
+export function _cssColor(c) {
+  if (typeof c === 'string') { const n = _NAMED[c] || _NAMED[c.toLowerCase && c.toLowerCase()]; return n || c; }
+  const b = _colorBytes(c);
+  return b ? `rgba(${b[0]},${b[1]},${b[2]},${+(b[3] / 255).toFixed(4)})` : c;
+}
+
+// A colour map sampled into 256 RGBA entries, once per map (cached on the function).
+// t in [0, 1] → entry Math.min(255, (t * 256) | 0). null when the map returns a colour
+// _colorBytes can't read (a user function returning, say, 'hsl(…)'): callers then fall back
+// to calling the map per value.
+const _lutCache = new WeakMap();
+export function _cmapLut(cmap) {
+  const fn = getCmap(cmap);
+  if (_lutCache.has(fn)) return _lutCache.get(fn);
+  const lut = new Uint8ClampedArray(256 * 4);
+  let ok = true;
+  for (let i = 0; i < 256 && ok; i++) {
+    const b = _colorBytes(fn((i + 0.5) / 256));
+    if (!b) { ok = false; break; }
+    lut[i * 4] = b[0]; lut[i * 4 + 1] = b[1]; lut[i * 4 + 2] = b[2]; lut[i * 4 + 3] = b[3];
+  }
+  const out = ok ? lut : null;
+  _lutCache.set(fn, out);
+  return out;
 }
 
 export function renderColorbar(ctx, x, y, w, h, cmap, vmin, vmax, opts) {
